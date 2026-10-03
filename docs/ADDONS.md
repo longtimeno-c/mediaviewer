@@ -6,8 +6,9 @@ the person making one. The design and its reasons are in
 
 **What an add-on can hold today: themes.** Colours and a typeface for MediaViewer's bars, panes
 and text. Settings pages, keymaps, commands and whole screens are planned
-([plan/25](../plan/25-open-addons.md#7-the-contribution-model)); an add-on that names code is
-refused until MediaViewer can run it safely.
+([plan/25](../plan/25-open-addons.md#7-the-contribution-model)): code will run as a sandboxed
+script with screens described as data, and no add-on will ever get network access. An add-on
+that names code is refused until that runtime exists.
 
 ## In five minutes
 
@@ -31,6 +32,12 @@ put the file on any `https://` address and give them the address.
 
 `tools/addon-sdk/mvaddon.py` is MIT-licensed, so using it puts no licence on your add-on. A
 working example is in [examples/addons/film-tones](../examples/addons/film-tones).
+
+**Your add-on is yours.** MediaViewer is GPL, but an add-on that reaches it only through this
+format and its documented interfaces is not a work based on MediaViewer: you may publish it under
+any licence, or none, and need not publish its source
+([LICENSE-ADDONS.md](../LICENSE-ADDONS.md)). The manifest asks for an SPDX licence so the person
+installing can see what you chose.
 
 ## Your key
 

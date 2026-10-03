@@ -54,6 +54,9 @@ public static partial class IslandHost
     private static string _openProgress = "";
     private static StackPanel? _openRow;
     private static FakeInput? _openLink;
+    // What was typed into the link field, kept across the row's rebuilds (a
+    // refused link must not wipe it; seen in the first Windows run).
+    private static string _openLinkText = "";
     private static ComboBox? _themePicker;
     private static TextBlock? _themeDetail;
     private static List<string> _themeKeys = new();
@@ -185,12 +188,16 @@ public static partial class IslandHost
                         ? theme.Name : $"{theme.Name} ({addon.Name})");
                 }
             }
-            // A choice whose add-on is not installed now stays listed, so the
-            // picker shows what is chosen.
+            // A choice whose add-on is not usable now stays listed, so the
+            // picker shows what is chosen: "Not available" when the add-on is
+            // there but refused (the row's line says why), "Not installed"
+            // when it is gone.
             if (_themeSelection.Length > 0 && !_themeKeys.Contains(_themeSelection))
             {
+                string addonId = _themeSelection[.._themeSelection.IndexOf('/')];
+                bool present = _openAddons.Any(a => a.Id == addonId);
                 _themeKeys.Add(_themeSelection);
-                _themePicker.Items.Add("Not installed");
+                _themePicker.Items.Add(present ? "Not available" : "Not installed");
             }
             _themePicker.SelectedIndex = Math.Max(0, _themeKeys.IndexOf(_themeSelection));
             if (_themeDetail is not null) _themeDetail.Text = ThemeDetail();
@@ -237,6 +244,8 @@ public static partial class IslandHost
                 var line = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
                 _openLink = new FakeInput("https://…/name.mvaddon", 420);
                 AutomationProperties.SetName(_openLink, "Link to an add-on");
+                if (_openLinkText.Length > 0) _openLink.SetText(_openLinkText);
+                _openLink.Changed += () => _openLinkText = _openLink?.Text ?? _openLinkText;
                 _openLink.Submitted += OfferOpenLink;
                 line.Children.Add(_openLink);
                 line.Children.Add(SettingsButton("Download", OfferOpenLink));
@@ -456,7 +465,8 @@ public static partial class IslandHost
 
     private static void OfferOpenLink()
     {
-        Uri? uri = HttpsLink(_openLink?.Text ?? "");
+        _openLinkText = _openLink?.Text ?? _openLinkText;
+        Uri? uri = HttpsLink(_openLinkText);
         if (uri is null)
         {
             _openMessage = "A link to an add-on starts with https://.";
@@ -513,6 +523,7 @@ public static partial class IslandHost
                 {
                     DeleteQuietly(target);
                     _openMessage = failure;
+                    _openEnteringLink = updating is null;  // the link is still there to fix
                     RefreshOpenAddonRow();
                     return;
                 }

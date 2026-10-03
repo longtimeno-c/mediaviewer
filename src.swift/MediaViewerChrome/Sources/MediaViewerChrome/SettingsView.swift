@@ -270,7 +270,11 @@ struct SettingsView: View {
             // A choice whose add-on is not installed now stays listed, so the
             // picker shows what is chosen.
             if !theme.selection.isEmpty, !addons.themes.contains(where: { $0.key == theme.selection }) {
-              Text("Not installed").tag(theme.selection)
+              // "Not available" when the add-on is there but refused (the
+              // line beside says why), "Not installed" when it is gone.
+              let addonID = String(theme.selection.prefix { $0 != "/" })
+              Text(addons.installed.contains { $0.addonID == addonID } ? "Not available" : "Not installed")
+                .tag(theme.selection)
             }
           }
           .pickerStyle(.menu).frame(width: 180)

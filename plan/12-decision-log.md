@@ -3309,7 +3309,7 @@ is built on both hosts. Not a D-decision, and none is reversed.
   left to the owner** ([25 §9](25-open-addons.md#9-code-how-a-strangers-add-on-runs)): the plan
   recommends a sandboxed script with declarative screens over third-party native code, because
   native code in process cannot be held to rules 1 and 6 and on the Mac needs library validation
-  switched off for the whole app. PRs 57–60 wait on that call.
+  switched off for the whole app. (Answered 2026-10-03: the script; see that day's row.)
 - **Themes realise the backlog's "theme" row** ([10](10-roadmap.md) Viewer backlog) for the
   chrome: seven colour tokens per palette and a font family, one table for both hosts. The
   canvas's pixels are never themed (rule 2). The host refuses a palette below a WCAG contrast
@@ -3338,7 +3338,7 @@ alternated, warm cache):** in [25 "Implementation notes"](25-open-addons.md#impl
 in the app by hand.
 
 **Not verified, owed:** in the same notes. In short: install from a link on both hosts; the idle
-clause of both present-loop gates, which fails on the base too; the owner calls in [25 §17](25-open-addons.md#17-open-decisions-owner) are open.
+clause of both present-loop gates, which fails on the base too; the owner calls in [25 §17](25-open-addons.md#17-decisions-owner-2026-10-03) are open.
 
 ## 2026-10-03 — Local search: the open folder always includes its subfolders (owner)
 
@@ -3355,3 +3355,29 @@ shouldnt be an option for just this folder for indexing or search."
   already indexed folder-only still show as such and still work; the Mac's Photos scope rides on
   FOLDER). People keeps its own "This folder" choice: it is not the search panel. The base app's
   file search without Local search still filters the listing in memory (plan/16 "File search").
+
+## 2026-10-03 — Open add-ons: the owner's calls (plan/25 §17)
+
+On pull request #98 the owner answered the five calls plan/25 left open on 2026-09-29.
+
+- **A stranger's code runs in a sandboxed script, with screens described as data** (plan/25 §9
+  A, as recommended; Lua 5.4 unless PR 57's spike shows its sandbox cannot hold the limits).
+  Third-party native code in the app's process stays out: rules 1 and 6 could not be promised
+  for it, and the Mac would need library validation off for everyone.
+- **No `network` permission, ever.** Rule 6 then holds for other people's code by construction:
+  the host API has no way to open a connection. The app contacts a third party's server only on
+  a click (install from a link, check for update). plan/25 §9, §14 (PR 60) and §16 amended.
+- **`.mvaddon` is registered with the OS**, in PR 55: Windows gets a `MediaViewer.Addon` ProgId
+  with the extension pointing at it (our own type, so the association is set, not only offered;
+  plan/09's "never silently hijack" is about taking photo types), the Mac a document type with
+  `LSHandlerRank` Owner over an exported UTI (`io.github.longtimeno-c.mediaviewer.addon`,
+  conforming to `public.data`). The default-viewer prompt and the plist policy check leave that
+  type alone: it is not a photo type. Not yet seen working: neither installer was rebuilt here.
+- **Add-ons may carry any licence** (delegated to the writer): `LICENSE-ADDONS.md` is an
+  additional permission under GPL-3.0 section 7 for works that reach MediaViewer only through the
+  documented add-on interfaces, named from `LICENSE` and the author's guide. Reason: whether a
+  script that calls a GPL program's interpreter bindings is a derivative is unsettled, and a
+  theme author should not need a lawyer to publish. The SDK stays MIT. Only the owner can withdraw
+  the permission for later versions; nothing published loses it. MediaViewer's own add-ons, which
+  link the core, stay GPL.
+- **"From others"** stays the wording.

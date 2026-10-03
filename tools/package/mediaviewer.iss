@@ -159,6 +159,16 @@ Root: HKCU; Subkey: "Software\Classes\MediaViewer.Image\shell\open\command"; Val
 Root: HKCU; Subkey: "Software\Classes\MediaViewer.Video"; ValueType: string; ValueData: "MediaViewer Video"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\Classes\MediaViewer.Video\DefaultIcon"; ValueType: string; ValueData: "{app}\MediaViewer.exe,0"
 Root: HKCU; Subkey: "Software\Classes\MediaViewer.Video\shell\open\command"; ValueType: string; ValueData: """{app}\MediaViewer.exe"" ""%1"""
+; plan/25: an add-on package (.mvaddon) is MediaViewer's own type, so the
+; extension points at it outright (nothing else opens one), unlike the photo
+; and video types, which are only offered. Opening one shows Settings' install
+; sheet, never the viewer.
+Root: HKCU; Subkey: "Software\Classes\MediaViewer.Addon"; ValueType: string; ValueData: "MediaViewer Add-on"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\MediaViewer.Addon\DefaultIcon"; ValueType: string; ValueData: "{app}\MediaViewer.exe,0"
+Root: HKCU; Subkey: "Software\Classes\MediaViewer.Addon\shell\open\command"; ValueType: string; ValueData: """{app}\MediaViewer.exe"" ""%1"""
+Root: HKCU; Subkey: "Software\Classes\.mvaddon"; ValueType: string; ValueData: "MediaViewer.Addon"; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\Classes\.mvaddon\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Addon"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueType: string; ValueName: ".mvaddon"; ValueData: "MediaViewer.Addon"
 Root: HKCU; Subkey: "Software\MediaViewer\Capabilities"; ValueType: string; ValueName: "ApplicationName"; ValueData: "MediaViewer"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\MediaViewer\Capabilities"; ValueType: string; ValueName: "ApplicationDescription"; ValueData: "View photos and video from a camera dump."
 Root: HKCU; Subkey: "Software\RegisteredApplications"; ValueType: string; ValueName: "MediaViewer"; ValueData: "Software\MediaViewer\Capabilities"; Flags: uninsdeletevalue

@@ -28,7 +28,7 @@ and a verify line on each platform (D9, amended). The order is:
 | 30 | **Video Editor**: its own window with the viewer's canvas as the preview, a timeline (thumbnails, waveform), Split / Delete, marked ranges (`I` `O`, Delete, `X`), Trim start / end (`[` `]`), draggable piece edges, `J K L` shuttle, frame timecode, Undo, Export as keyframe cuts or exact on the hardware encoder; ABI 0.13 `keep_ranges` ([plan/21-video-editor.md](../plan/21-video-editor.md)); the Editor add-on is proposed ([plan/22-editor-addon.md](../plan/22-editor-addon.md)) | Both halves written and run on their platform (PR 55, `MV_EDIT_SELFTEST`, a key walk on Windows); present-loop gates with the editor open, an interactive-desktop pass, Narrator / VoiceOver and encoder spike S1 on Windows owed |
 | 49 | **Fast network copies**: F8 and Import to or from a share keep several requests and files in flight, still verified; `copybench` measures it ([plan/24-transfer.md](../plan/24-transfer.md)) | Engine and Mac F8 built; `mv_import_tests "[io]"` passes, TSan-clean; Windows half compiled by CI only; the 10 GbE share run and the present-loop gates owed |
 | 50 | **Transfer**: a general copier (copy/move any files and folders, verified, resumable) and an SMB link check | Planned |
-| 55 | **Open add-ons**: add-ons anyone can make, one `.mvaddon` file signed by its publisher, installed from a file or a link with a sheet that says what it is; themes as the first thing one can contribute; the author's tool and guide ([plan/25-open-addons.md](../plan/25-open-addons.md), [ADDONS.md](ADDONS.md)); ABI 0.16 | Shared core and SDK tested on the Mac (ASan / UBSan) and cross-checked against each other; Mac half run in the app (`MV_ADDON_SELFTEST`), launch and pacing measured against the base; Windows half compiles (`dotnet msbuild -t:Compile`), has not run, and its native side has not met MSVC. PRs 56–60 are planned; 57–60 wait on an owner call |
+| 55 | **Open add-ons**: add-ons anyone can make, one `.mvaddon` file signed by its publisher, installed from a file or a link with a sheet that says what it is; themes as the first thing one can contribute; the author's tool and guide ([plan/25-open-addons.md](../plan/25-open-addons.md), [ADDONS.md](ADDONS.md)); ABI 0.16 | Shared core and SDK tested on the Mac (ASan / UBSan) and cross-checked against each other; Mac half run in the app (`MV_ADDON_SELFTEST`), launch and pacing measured against the base; Windows half compiles (`dotnet msbuild -t:Compile`), has not run, and its native side has not met MSVC. PRs 56–60 are planned; the owner's calls for 57–60 were made 2026-10-03 (plan/25 §17) |
 
 See [plan/10-roadmap.md](../plan/10-roadmap.md). Old Mac numbers in the history below map as
 PR 16 → Mac PR 1, 17 → Mac PR 2/7, 18 → Mac PR 3/4/6, 19 → Mac PR 5, 20 → Mac PR 8.
@@ -981,7 +981,11 @@ window. To look at what the app makes of any package without the app:
 build/bin/mv_addon_verify --open some.mvaddon
 ```
 
-Add a folder as a second argument and it installs there, as the app would. Windows has no rig
+Add a folder as a second argument and it installs there, as the app would. A `.mvaddon` is
+registered with both OSes (the installer's `MediaViewer.Addon` ProgId, the Mac bundle's
+`Add-on` document type over the exported UTI `io.github.longtimeno-c.mediaviewer.addon`), so a
+double-click opens the install sheet once the installed build carries it; it is not a photo type
+and the default-viewer prompt leaves it alone. Windows has no rig
 yet; its half is checked by compiling (`dotnet msbuild src.managed/MediaViewer.Chrome/MediaViewer.Chrome.csproj -t:Compile -p:WindowsAppSDKSelfContained=false`
 works on any OS with the .NET 8 SDK) and by CI.
 

@@ -45,7 +45,7 @@ Read in order:
 | [22-editor-addon.md](22-editor-addon.md) | PRs 32–47, proposed: the optional Editor add-on — colour-managed grading (wheels, curves, qualifiers, tracked windows, nodes, LUTs, NR, scopes), a multi-track timeline, titles and captions, an audio mixer, delivery, and local model packs. |
 | [23-nle-search.md](23-nle-search.md) | Issue #71: Local search from inside Final Cut Pro — a workflow extension and a read-only search agent in MediaViewer.app, off until turned on (Mac-only, a D9 exception), and search results as FCPXML on both platforms. |
 | [24-transfer.md](24-transfer.md) | PRs 49–50: fast copies to and from a network share (several requests and files in flight, still verified), and Transfer, a general copier for any files. |
-| [25-open-addons.md](25-open-addons.md) | PRs 55–60, proposed (PR 55 built): add-ons anyone can make and install from a file or a link, signed by their publisher; a contribution model (themes, settings, keymaps, commands, screens, slots, search providers) both hosts read from one table. Read before any work on third-party add-ons, themes or contribution points. |
+| [25-open-addons.md](25-open-addons.md) | PRs 55–60 (PR 55 built, the owner's calls made 2026-10-03): add-ons anyone can make and install from a file or a link, signed by their publisher; a contribution model (themes, settings, keymaps, commands, screens, slots, search providers) both hosts read from one table. Read before any work on third-party add-ons, themes or contribution points. |
 
 ## The rules that don't bend
 

@@ -4,8 +4,8 @@
 made and installed by anyone, not just our repo… if people have a compatible file / URL they can
 install their add-on… add-ons can do a wide range of things like add new screens"). Post-v1,
 Windows and macOS together (D9). Milestone L, PRs 55–60. Not a D-decision. PR 55 is built
-([Implementation notes](#implementation-notes-pr-55-2026-09-29)); PRs 56–60 wait on the owner
-calls in [Open decisions](#open-decisions-owner), above all how a stranger's code runs.**
+([Implementation notes](#implementation-notes-pr-55-2026-09-29)); the owner's calls on code, network,
+the file type and licensing were made on 2026-10-03 ([§17](#17-decisions-owner-2026-10-03)).**
 
 ## 1. What this is
 
@@ -33,7 +33,7 @@ first-party add-on never loads through this one.
 | 2 — the canvas is C++'s | A theme colours the chrome. It never touches a photo's pixels, the swapchain, or the colour pipeline (D6) |
 | "The view comes first" | No add-on is read before first pixel. The chrome paints with the theme tokens it **cached** at the last run and verifies the add-on behind it afterwards |
 | 5 — never modify an original | No contribution point writes to a user's file. When add-on code gets file writes (PR 60) they are new files in a folder the user picked, and metadata goes through PR 12's checked writer |
-| 6 — nothing about a user's files leaves the machine | API 1–2 add-ons are data: they cannot read a file or open a connection. Code (PR 57) gets **no network and no file access by default**; each is a named permission shown before install. The app itself contacts a third party's server only when the user clicks (install from link, check for update), with a plain GET: no cookies, no identifier, nothing about files |
+| 6 — nothing about a user's files leaves the machine | API 1–2 add-ons are data: they cannot read a file or open a connection. Code (PR 57) gets **no network access at all** and **no file access by default**; file access is a named permission shown before install. The app itself contacts a third party's server only when the user clicks (install from link, check for update), with a plain GET: no cookies, no identifier, nothing about files |
 | D1 / D9 | Every contribution point exists on both hosts in the PR that adds it. An add-on is written once; WinUI and SwiftUI each render it natively. No HTML, no web view, no Electron |
 | Absent means absent | With no open add-on installed nothing is listed, nothing is read at start, no folder is created. The base install is byte-identical whatever is installed (add-ons live in the user's profile) |
 | Signed, verified, then loaded | Still true, with the publisher's key in place of ours: signature over the manifest, SHA-256 per file, nothing extra in the folder, checked at install **and at every load** |
@@ -222,8 +222,8 @@ A theme file, one per theme the add-on lists:
 ## 9. Code: how a stranger's add-on runs
 
 Themes, settings and keymaps are data. Commands, screens, providers and exports need code.
-Three ways to run it, and this plan's recommendation. **This is the owner's call
-([Open decisions](#open-decisions-owner) 1); PR 57 does not start without it.**
+Three ways to run it, and the one chosen. **Decided by the owner, 2026-10-03: A** (the
+recommendation below); the table stays as the record of why.
 
 | | A. Sandboxed script (recommended) | B. Native, in process (what Import is) | C. Native, in a helper process |
 |---|---|---|---|
@@ -237,10 +237,11 @@ Three ways to run it, and this plan's recommendation. **This is the owner's call
 | Speed | Interpreted: glue, not pixel loops. Heavy work is a host call | Native | Native, plus IPC |
 | Build cost to us | A runtime, its host API, its limits | Little: the loader exists | Two sandboxes, IPC, a view protocol |
 
-**Recommendation: A**, with Lua 5.4 as the runtime (MIT, ~250 KB, no JIT so the hardened
-runtime needs no exception, the language Lightroom's plug-ins already taught photographers'
-tool-makers), against WebAssembly (stronger isolation and any language, but a heavier toolchain
-for the person writing a first add-on) as the alternative to weigh. Under A:
+**A it is**, with Lua 5.4 as the runtime (MIT, ~250 KB, no JIT so the hardened runtime needs
+no exception, the language Lightroom's plug-ins already taught photographers' tool-makers).
+WebAssembly (stronger isolation and any language, but a heavier toolchain for the person writing
+a first add-on) was the alternative weighed; PR 57's first spike may still swap the two if Lua's
+sandbox cannot hold the limits below, and says so in [12](12-decision-log.md) if it does. Under A:
 
 - **One worker per add-on.** Host calls that answer later post to it; it never runs on the UI,
   render or decode threads.
@@ -250,8 +251,10 @@ for the person writing a first add-on) as the alternative to weigh. Under A:
 - **Permissions** are manifest entries, each a line in the consent sheet, none granted by
   default: `folder.read` (the folder model and metadata of what is open), `thumbnails`,
   `selection`, `files.write` (new files, in a folder the user picks each time or once),
-  `metadata.write` (through PR 12's writer), `network` (named hosts only, listed in the sheet).
-  Whether `network` exists at all is an owner call (2).
+  `metadata.write` (through PR 12's writer). **There is no `network` permission** (owner,
+  2026-10-03): no add-on can open a connection, so rule 6 holds for other people's code as it
+  does for ours, by construction. An add-on that wants a service does not get one; the app
+  itself fetches only what the person clicked (install from a link, check for update).
 - **The host API** is the v1 / v2 function table's read side ([18](18-import.md),
   [17](17-local-ai-search.md)) re-exposed per permission, plus the contribution points.
 
@@ -295,8 +298,15 @@ small vocabulary both hosts render with their own controls.
 - A data add-on (API 1–2) is data: its licence is its author's choice.
 - The SDK (`tools/addon-sdk`) and the examples are **MIT**, so an add-on author takes on no
   GPL obligation by using them. (The app stays GPL-3.0-or-later.)
-- What licence a script that calls the host API must carry is a question for the owner, and
-  perhaps a lawyer, before PR 57 ([Open decisions](#open-decisions-owner) 4).
+- **Add-ons are the author's, under any licence** (decided 2026-10-03, delegated by the owner):
+  the app's licence carries an additional permission under GPL-3.0 section 7
+  ([LICENSE-ADDONS.md](../LICENSE-ADDONS.md)) for works that reach MediaViewer only through the
+  documented add-on interfaces (the `.mvaddon` package, its manifest, the contribution points and
+  the script host API). Without it the question of whether a script "links" to a GPL program
+  through an interpreter's bindings has no settled answer, and an author should not need one to
+  publish a theme. Code that links the core directly (MediaViewer's own add-ons) stays under the
+  GPL as before. The exception can be withdrawn for future versions by the owner, not by anyone
+  else; add-ons already published keep it.
 
 ## 13. For people who make add-ons
 
@@ -318,13 +328,14 @@ installed.
 |---|---|---|
 | **55** | **Open packages and themes.** The `.mvaddon` reader, manifest schema 2, publisher keys, the consent sheet, install from file and from link, check for update, remove, Settings → Add-ons "From others", Settings → Appearance → Theme, the token table on both hosts, the SDK, the author's guide | A package made by the SDK with a fresh key installs from a file and from an `https` link, shows the publisher and fingerprint, and themes the chrome; choosing Default restores it exactly. **Refused, each with its reason:** one changed byte in any file or the manifest; an extra entry; a compressed, encrypted or ZIP64 package; a path with `..`; a package naming code; a second publisher's package under an installed id; an older version; a theme under the contrast floor; a package swapped after the sheet was shown. The link request carries no cookie, query or identifier of ours. With an add-on installed and a theme on: launch → first pixel and launch → full resolution within noise of none installed (alternated runs), 0 presents idle, **both present-loop gates**. With none installed: no folder created, no file read at start |
 | 56 | **Declarative contributions.** Settings pages from a schema, keymap packs, theme shape (radius, density, type scale), first-party chromes read the host's tokens | A settings page renders the same controls and order on both hosts from one schema; its values survive restart and removal-with-keep; a keymap pack rebinds and Reset restores; `?` lists what is bound |
-| 57 | **Code** (after owner call 1). The runtime, one worker per add-on, limits and watchdog, permissions in the consent sheet, commands | A script command runs from its key on both hosts; a runaway loop and an allocation bomb each stop the add-on, not the viewer, within the watchdog's bound; without `folder.read` the folder API is absent; **both gates hold while a script spins** |
+| 57 | **Code** (owner call 1, made). The runtime, one worker per add-on, limits and watchdog, permissions in the consent sheet, commands | A script command runs from its key on both hosts; a runaway loop and an allocation bomb each stop the add-on, not the viewer, within the watchdog's bound; without `folder.read` the folder API is absent; **both gates hold while a script spins** |
 | 58 | **Screens.** The view vocabulary, windows / panes / sheets, diffs, events | One add-on's screen renders natively on both hosts, keyboard-only, VoiceOver and Narrator name every control; a 2,000-tile thumbnail grid scrolls without a hitch |
 | 59 | **Slots and search providers.** Bar items, context menus, info-pane sections, tile badges; file-name search and Local search as providers | Badges for a 10,000-file folder cost no add-on call per tile (counted); a slow provider never delays typing; removing the add-on removes every item |
-| 60 | **Files.** `files.write`, exports, `metadata.write`; `network` if approved | An add-on export never overwrites and never touches an original (rule 5, tested by hash); a `network` add-on reaches only the hosts its sheet named |
+| 60 | **Files.** `files.write`, exports, `metadata.write`. No `network`, ever | An add-on export never overwrites and never touches an original (rule 5, tested by hash); no add-on can open a connection, shown by the host API's surface |
 
-**Sequencing:** 55 is useful alone and decides nothing about code. 56 needs no owner call.
-57 → 58 → 59 → 60 are the spine of "add new screens" and start only after call 1.
+**Sequencing:** 55 is useful alone and decides nothing about code. 57 → 58 → 59 → 60 are the
+spine of "add new screens"; with the owner's calls made (2026-10-03) they can start, 56 before
+or beside them.
 
 ## 15. Not in this plan
 
@@ -342,23 +353,23 @@ canvas, the colour pipeline or the present path; add-ons that change an original
 | An add-on's update is hijacked | Key pinned at first install; another key is refused |
 | A theme makes the app unusable | Contrast floor at install; high contrast overrides; Default is one click, and one key (`Reset`, Settings) |
 | Add-ons erode launch time one by one | Nothing before first pixel; cached tokens; PR 55's launch verify is inherited by every slice |
-| Rule 6 weakened by other people's code | No network or file access without a named permission in the sheet; none at all under API 1–2 |
+| Rule 6 weakened by other people's code | No network access at all, ever; no file access without a named permission in the sheet; none of either under API 1–2 |
 | Dual-track doubles every contribution point | The model exists so a point is written twice **once**, not once per add-on |
 
-## 17. Open decisions (owner)
+## 17. Decisions (owner, 2026-10-03)
 
-1. **How a stranger's code runs** ([§9](#9-code-how-a-strangers-add-on-runs)): sandboxed
-   script (recommended), or third-party native code in process with library validation off on
-   the Mac, accepting that rules 1 and 6 then bind only our own code. And if script: Lua or
-   WebAssembly.
-2. **Whether `network` exists** as a permission at all, given rule 6. Without it no add-on can
-   upload, sync or call a service; with it, one bad add-on can send a user's photos away with
-   their one-time consent.
-3. **Opening `.mvaddon` by double-click:** registering the type with the OS (installer ProgId,
-   `CFBundleDocumentTypes`) is in PR 55's scope but changes the installer and the plist policy
-   check; drop and Open With work without it.
-4. **The licence of scripts** that call the host API, and whether the SDK being MIT is right.
-5. **A word for them in the UI.** This plan uses "From others" under Add-ons.
+Asked as open calls on 2026-09-29; answered on the pull request on 2026-10-03.
+
+1. **How a stranger's code runs:** the sandboxed script with screens described as data
+   ([§9](#9-code-how-a-strangers-add-on-runs) A), as recommended. Third-party native code in the
+   app's process stays out ([§15](#15-not-in-this-plan)).
+2. **`network`: no.** There is no such permission; nothing an add-on does can reach the network.
+3. **`.mvaddon` registered with the OS: yes.** Done in PR 55: the installer's `MediaViewer.Addon`
+   ProgId and `.mvaddon` association on Windows, a document type and an exported UTI on the Mac
+   ([Implementation notes](#implementation-notes-pr-55-2026-09-29)).
+4. **Licence of add-ons:** delegated; decided as the GPL section 7 additional permission in
+   [§12](#12-licensing), with the SDK staying MIT.
+5. **"From others"** stays the wording.
 
 ## Implementation notes (PR 55, 2026-09-29)
 
@@ -487,14 +498,15 @@ Owed before this merges:
   Tab to Install, Enter).
 - **libFuzzer harnesses** for the package reader, the manifest and the theme parser, beside the
   decoders' (`tools/fuzz` is a Windows clang-cl build).
-- **Opening a `.mvaddon` by double-click** (owner call 3): no file type is registered with
-  either OS. Drop, Open With and the command line work.
+- **Opening a `.mvaddon` by double-click** is registered with both OSes (2026-10-03, owner call
+  3) but not yet seen working: neither installer nor app bundle was rebuilt and installed here.
+  Drop, Open With and the command line were.
 - **Light appearance, increased contrast and a two-palette theme following a system change**
   were not looked at by eye; the machine was in Dark Mode throughout.
 - **Intel Macs:** built for arm64 only here.
 
 Raised 2026-10-03, for later: **Import's window on the screen vocabulary.** Not now: screens are
-PR 58, after code (PR 57, owner call 1), and §1 keeps Import on its own path, so moving its
+PR 58, after code (PR 57), and §1 keeps Import on its own path, so moving its
 window reverses that and needs a row in [12](12-decision-log.md). If taken, Import's engine (copy,
 BLAKE3 skip, verify, resume) stays native and only its window, today written twice
 (`MediaViewer.Import.Chrome.dll`, `Import.bundle`), becomes one view tree both hosts render, which

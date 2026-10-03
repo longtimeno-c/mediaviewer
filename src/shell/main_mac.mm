@@ -1817,6 +1817,9 @@ static NSArray<NSString*>* MvDeclaredContentTypes(NSString* name) {
   NSMutableArray<NSString*>* types = [NSMutableArray array];
   for (NSDictionary* docType in NSBundle.mainBundle.infoDictionary[@"CFBundleDocumentTypes"]) {
     if (name != nil && ![docType[@"CFBundleTypeName"] isEqual:name]) continue;
+    // plan/25: the add-on package is ours already (LSHandlerRank Owner) and is
+    // not a photo type; "all supported photos and videos" is never it.
+    if (name == nil && [docType[@"CFBundleTypeName"] isEqual:@"Add-on"]) continue;
     for (NSString* identifier in docType[@"LSItemContentTypes"]) [types addObject:identifier];
   }
   return types;

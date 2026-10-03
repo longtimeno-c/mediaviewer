@@ -195,6 +195,7 @@ final class OpenAddonStore: ObservableObject {
           try? FileManager.default.removeItem(at: target)
           self.busy = false
           self.message = failed
+          self.enteringLink = updating == nil  // the link is still there to fix
           return
         }
         self.busy = false
