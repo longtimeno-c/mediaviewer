@@ -75,7 +75,9 @@ bool still_extension(std::wstring_view name) noexcept {
          std::wcscmp(ext, L".mos") == 0 || std::wcscmp(ext, L".raw") == 0 ||
          std::wcscmp(ext, L".mp4") == 0 || std::wcscmp(ext, L".mov") == 0 ||
          std::wcscmp(ext, L".mkv") == 0 || std::wcscmp(ext, L".webm") == 0 ||
-         std::wcscmp(ext, L".avi") == 0 || std::wcscmp(ext, L".ts") == 0 || std::wcscmp(ext, L".m4v") == 0;
+         std::wcscmp(ext, L".avi") == 0 || std::wcscmp(ext, L".ts") == 0 || std::wcscmp(ext, L".m4v") == 0 ||
+         std::wcscmp(ext, L".mp3") == 0 || std::wcscmp(ext, L".m4a") == 0 ||
+         std::wcscmp(ext, L".m4p") == 0;
 }
 
 std::string join_utf8(std::string_view dir, std::string_view name) {

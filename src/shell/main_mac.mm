@@ -498,6 +498,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)toggleHelp;
 - (uint64_t)listingGeneration;
 - (BOOL)currentItemIsVideo;
+- (BOOL)currentItemIsAudio;
 - (BOOL)itemIsVideoAtIndex:(NSInteger)index;
 - (uint64_t)marksGeneration;
 - (BOOL)isIndexMarked:(NSInteger)index;
@@ -1795,11 +1796,15 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 // The types to become the default for are read back from our own Info.plist, so
 // the prompt, Finder's Open With list and the Quick Look extension cannot
 // disagree. `name` picks one CFBundleDocumentTypes entry ("Image", "Video");
-// nil = all of them.
+// nil = every type the app may be made the default for: the photos and videos.
+// The audio and document types are declared for Open With only and are never
+// made the default here (owner, 2026-10-03; docs/plans/audio-and-documents.md §3).
 static NSArray<NSString*>* MvDeclaredContentTypes(NSString* name) {
   NSMutableArray<NSString*>* types = [NSMutableArray array];
   for (NSDictionary* docType in NSBundle.mainBundle.infoDictionary[@"CFBundleDocumentTypes"]) {
-    if (name != nil && ![docType[@"CFBundleTypeName"] isEqual:name]) continue;
+    NSString* typeName = docType[@"CFBundleTypeName"];
+    if (name != nil && ![typeName isEqual:name]) continue;
+    if (name == nil && ![typeName isEqual:@"Image"] && ![typeName isEqual:@"Video"]) continue;
     for (NSString* identifier in docType[@"LSItemContentTypes"]) [types addObject:identifier];
   }
   return types;
@@ -3592,6 +3597,11 @@ static void MvAdoptNewDefaultViewerTypes() {
   const std::size_t i = _index.current();
   return i < _items.size() && mv::shell::is_video_name(_items[i].name_utf8);
 }
+- (BOOL)currentItemIsAudio {
+  if (_items.empty()) return NO;
+  const std::size_t i = _index.current();
+  return i < _items.size() && mv::shell::is_audio_name(_items[i].name_utf8);
+}
 - (BOOL)itemIsVideoAtIndex:(NSInteger)index {
   return index >= 0 && static_cast<std::size_t>(index) < _items.size() &&
          mv::shell::is_video_name(_items[static_cast<std::size_t>(index)].name_utf8);
@@ -5138,6 +5148,8 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
 
 - (mv::shell::edit_subject)editSubject {
   if (_items.empty() || _itemId == 0) return mv::shell::edit_subject::none;
+  // An audio file plays through the video path but has nothing to edit.
+  if ([self currentItemIsAudio]) return mv::shell::edit_subject::none;
   if ([self currentItemIsVideo]) return mv::shell::edit_subject::clip;
   if (_lab.anim_active()) return mv::shell::edit_subject::none;
   return mv::shell::edit_subject::still;

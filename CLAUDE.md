@@ -11,7 +11,7 @@ on Windows and macOS together (D9 amended 2026-09-24). 16–19 is the Import add
 
 **v1 is the PR 1–7 viewer, on the camera-dump format set, packaged in PR 8.**
 Light editing and trim follow in future updates. Not a develop module.
-Not an NLE. Not a movie player.
+Not an NLE. Not a movie player — audio files play one at a time, no playlists (D5, 2026-10-03).
 
 **Stack:** C# WinUI 3 shell · C++20 core behind a flat C ABI · Direct3D 11 canvas ·
 FFmpeg + D3D11VA · libjpeg-turbo / libspng / libwebp / libheif / LibRaw · Exiv2 · SQLite ·
@@ -117,7 +117,7 @@ numbers say otherwise.
 | **D2** | FFmpeg + D3D11VA on *your* `ID3D11Device`, presented on the same swapchain as photos. Not libmpv. Not MF as the primary path. `IMFMediaEngine` is an escape hatch behind `IVideoSource` if the A/V clock overruns PR 5. |
 | **D3** | Bundle decoders. Never require a Store pack. |
 | **D4** | v1 ships the PR 1–7 viewer in PR 8. Photo editing/export waits for PR 10–11; metadata tools and further Windows integration are future updates. |
-| **D5** | v1 formats: JPEG, PNG, BMP, GIF, TIFF, WebP, HEIC/HEIF, AVIF, ICO, RAW. Video: MP4/MOV/MKV/WebM/AVI/TS — H.264, HEVC, VP9, AV1, MPEG-2; **on the Mac also Apple ProRes** (amended 2026-09-29, hardware decode only). JPEG XL / EXR / PSD / SVG / DDS wait. |
+| **D5** | v1 formats: JPEG, PNG, BMP, GIF, TIFF, WebP, HEIC/HEIF, AVIF, ICO, RAW. Video: MP4/MOV/MKV/WebM/AVI/TS — H.264, HEVC, VP9, AV1, MPEG-2; **on the Mac also Apple ProRes** (amended 2026-09-29, hardware decode only). **Amended 2026-10-03 (owner): also audio — MP3, M4A, M4P (FairPlay: shown, never played) — and documents — PDF, DOCX** (`docs/plans/audio-and-documents.md`); these are Open With only, never made the default. JPEG XL / EXR / PSD / SVG / DDS wait. |
 | **D6** | Linear FP16 *working space* (non-negotiable). 8-bit sRGB *swapchain* in v1. Untagged JPEG → sRGB. Treating a tagged image as sRGB is a bug. |
 | **D7** | Trim is post-v1 (PR 13): keyframe stream-copy **or** full re-encode, both labelled. Smart cut follows later. |
 | **D8** | AppContainer decode process is post-v1. Fuzz from PR 6/7. |
@@ -156,7 +156,7 @@ holds on both platforms **and** both present-loop verifies (Windows PR 1, Mac PR
   platforms plus both present-loop gates (PR 1 on Windows, Mac PR 1 on Mac). A slice green on one
   platform only is not done, and PR N+1 does not merge until it is (a host half may start ahead
   on a branch).
-- Do not add a format that is not in the D5 v1 set.
+- Do not add a format that is not in the D5 set (as amended).
 - Do not build a batch metadata engine before the read pane has been used. PR 12 wrote
   rating, orientation, and user comment only; from PR 29 (owner, 2026-09-26) the pane edits
   any single tag of the file on screen, still through PR 12's checked writer, sidecar rule and

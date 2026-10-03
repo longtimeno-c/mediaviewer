@@ -66,13 +66,14 @@ constexpr std::string_view kModuleExt[] = {"dll", "exe", "sys", "drv", "ocx", "c
 // alone (a module list full of them is what symbolication needs).
 constexpr std::string_view kPosixRoots[] = {"Users", "Volumes", "private", "var", "tmp",
                                             "home", "Network", "mnt", "media"};
-// D5 camera-dump set, RAW variants, companions, and the video containers.
+// D5 camera-dump set, RAW variants, companions, the video containers, and the
+// audio and document files (docs/plans/audio-and-documents.md).
 constexpr std::string_view kMediaExt[] = {
     "jpg", "jpeg", "jpe", "jfif", "png", "apng", "bmp", "dib", "gif", "tif", "tiff", "webp",
     "heic", "heif", "hif", "avif", "ico", "cur", "dng", "cr2", "cr3", "crw", "nef", "nrw",
     "arw", "srf", "sr2", "raf", "orf", "rw2", "pef", "srw", "x3f", "erf", "kdc", "mos",
     "mrw", "3fr", "iiq", "rwl", "mp4", "m4v", "mov", "mkv", "webm", "avi", "ts", "mts",
-    "m2ts", "mpg", "mpeg", "xmp", "aae", "thm", "lrv"};
+    "m2ts", "mpg", "mpeg", "xmp", "aae", "thm", "lrv", "mp3", "m4a", "m4p", "pdf", "docx"};
 
 constexpr std::uint32_t kMask = '_';
 

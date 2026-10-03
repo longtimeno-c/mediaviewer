@@ -4,6 +4,7 @@
 // fallback, copied out of the decoder pool into our own presentation ring.
 //
 // OWNER: mediaviewer-48 (5a).
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <vector>
@@ -388,6 +389,38 @@ void run_video_decode_thread(video_pipeline& pipe) noexcept {
       // out of the pool (docs/design/05 "Surface ownership").
       av_frame_unref(frame.get());
     }
+  }
+}
+
+void run_still_thread(video_pipeline& pipe) noexcept {
+  sw_convert sw;
+  std::uint32_t published = 0;  // the generation the still last went out at
+  while (!pipe.stopping.load(std::memory_order_acquire)) {
+    const std::uint32_t generation = pipe.generation.load(std::memory_order_acquire);
+    // Wait for the seek that bumped the generation to finish writing its
+    // intent (seek_request_ns is the last thing media_source::seek stores, and
+    // the demux thread clears it), or the video_done below would be undone by
+    // the seek's own reset and the file would never end.
+    if (generation == published || pipe.seek_request_ns.load(std::memory_order_acquire) >= 0) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      continue;
+    }
+    video_frame* slot = pipe.ring.valid() ? reserve_slot(pipe, generation) : nullptr;
+    if (pipe.stopping.load() || pipe.generation.load() != generation) continue;
+    // Stamped with the position the seek asked for, so the seek's preview
+    // takes it at once and the presenter holds it from there.
+    const time_ns at = std::max<time_ns>(0, pipe.audio_target_ns.load());
+    const std::int64_t pts =
+        av_rescale_q(at + pipe.start_time_ns, AVRational{1, 1'000'000'000}, pipe.time_base);
+    pipe.still->pts = pts;
+    pipe.still->best_effort_timestamp = pts;
+    if (!publish_frame(pipe, pipe.still.get(), sw, generation, slot)) {
+      pipe.frames_dropped_stale.fetch_add(1, std::memory_order_relaxed);
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      continue;
+    }
+    published = generation;
+    if (pipe.generation.load() == generation) pipe.video_done.store(true);
   }
 }
 
