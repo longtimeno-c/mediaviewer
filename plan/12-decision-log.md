@@ -3109,3 +3109,36 @@ was dropped (`playprobe`: 0 acquired, 156 starved) while the audio played on.
   once, ProRes 422 played at 55 frames/s, result OK. It is a fallback, not a format decision:
   what D5 covers is unchanged on Windows.
 
+
+## 2026-10-03 — HEIC: thumbnail item as first pixel; grid tiles on the foreground thread budget
+
+plan/04 rule 3 already named it ("HEIC has a thumbnail item … decode that immediately"), but HEIC
+had no first-pixel stage: the canvas waited for the full decode. libheif also decoded an
+iPhone's 48 grid tiles on one thread (`heif_context_set_max_decoding_threads(ctx, 0)`).
+
+- **First pixel:** `codec::decode_heic_thumbnail` decodes the primary's largest thumbnail item,
+  in the primary's colour when it has none of its own (D6). It is refused when it is not
+  smaller than the image or not its shape to 2 % (a thumbnail missing the primary's `irot`
+  would jump). `image::decode_first_pixel` serves it to the canvas only (both open paths, the
+  hand-off preview, the Mac lab); thumbnailers and search keep `decode_preview`, since a
+  320 px stand-in is below what they draw. As with a RAW's embedded preview, the full decode
+  then goes up once with mips: staging a mip-less copy over the thumbnail added a second
+  12 MP upload during the fade and cost 30-250 ms of launch → full resolution when measured.
+- **Budget:** a HEIC grid's tiles use the caller's thread limit, the one RAW already takes
+  (`raw_foreground_threads()` for the image on screen, 1 for prefetch and thumbnails). Pixels
+  do not depend on it (test). This only applies to the bundled path; WIC is unchanged.
+- **Measured** (Ryzen 7 5700X3D, Release, `make-grid-heic.py`'s 12 MP grid file, base and new
+  built in separate trees, runs alternated). `mv_tests "[.perf-bench]"` medians: first pixel
+  none → 10.8 ms (320x240); full via WIC 282/296 → 289/288 ms (unchanged); full via libheif
+  (`MV_OS_CODEC=0`) 610/615 → 248/275 ms. `mediaviewer_lab --soak 6 --static`, after one warm-up,
+  4 runs each: first pixel 495-530 → 29-40 ms; full 587-634 → 579-610 ms (overlapping);
+  with `MV_OS_CODEC=0` (3 runs) first pixel 693-696 → 29-32 ms, full 794-797 → 360-365 ms. 0
+  dropped frames in every lab run. The PR 1 `frametime` gate failed for base and new alike on
+  this machine today (3-4 vs 0-2 drops, idle 4.8 % of a core for both: other sessions,
+  Steam and Stream Deck running); not a quiet-machine result. Not measured on the Mac (it
+  uses the same libheif path, so the threading should help there too) or on a real iPhone
+  file (none licensed for the corpus; plan/09).
+- **Open, D3, not decided here:** with tiles in parallel the bundled path (360 ms) now opens a
+  12 MP HEIC faster than the WIC/HEVC-extension path D3 prefers (~600 ms) on this machine.
+  D3 says to prefer the OS codec *when hardware-backed*; whether WIC here is, and whether
+  routing should change, is the owner's call.

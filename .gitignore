@@ -68,6 +68,9 @@ tools/testmedia/*
 # PR 7: the seed generator. Its output (tests/data/seeds, tests/data/broken)
 # is tiny, synthetic and licence-clean, so unlike the clips it IS committed.
 !tools/testmedia/make-seeds.py
+# The phone-shaped HEIC generator (bench file not committed; its two tiny
+# testsrc2 fixtures in tests/data/heif are).
+!tools/testmedia/make-grid-heic.py
 
 # libFuzzer output (PR 7). tools/fuzz/run.ps1 writes working corpora and
 # artefacts under fuzz-out/ in the build tree; a harness run by hand drops
