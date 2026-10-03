@@ -3327,5 +3327,20 @@ Still no "delete all duplicates" and no keep rules.
 sideloaded, on a tree of 10 files in 4 groups, five runs: the window opens, a pick of every copy
 of a file leaves the button off, a pick of the 5 extras moves exactly those 5 and keeps one of
 each; the Import window shows the app icon. One earlier run never received the scan's done event
-(window left on "Looking…"); not reproduced in the next five. **Owed:** the Swift half's first
-compile (CI), the Mac live run, both present-loop gates while a scan runs.
+(window left on "Looking…"); not reproduced in the next five.
+
+**Windows PR 1 gate while a scan runs (2026-10-03, same build, alternated):** 60 s `--gate` soaks
+on a still with Import loaded, the Duplicates window open and a scan of 300 files / 5.9 GB (mtimes
+bumped each run so every byte is hashed again). Scanning, 18 runs: p99 16.95–17.1 ms, 11 pass, one
+run with dropped frames (6). Idle (Import loaded, no scan), 6 runs: p99 16.9–17.0 ms, 1 passes,
+one run with dropped frames (3). The failures on both sides are single 33–83 ms frames, this
+shared machine's ambient misses; the scan does not move them. So "the gate holds" is not shown
+here for either case, and the scan is not what breaks it.
+
+**Found by those runs and fixed:** quitting with a scan running fail-fasted the app in 3 of 6
+`--gate` runs (0xC000027B, CoreMessagingXP). Import's 250 ms progress timer outlived the XAML at
+quit and touched the Duplicates window's dead progress bar (`ActualWidth`, E_UNEXPECTED); an
+exception escaping a timer tick ends the process. The same lines were in PR 54's window. The tick
+now drops a window that throws (`ImportChrome.Tick`); 0 crashes in the 12 runs since.
+
+**Owed:** the Swift half's first compile (CI), the Mac live run, the Mac gate while a scan runs.

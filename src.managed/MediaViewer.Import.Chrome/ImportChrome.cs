@@ -1,5 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using MediaViewer.Interop;
 using Microsoft.UI.Dispatching;
@@ -190,8 +191,14 @@ public sealed class ImportChrome : IAddonChrome
             MvImportProgress p;
             try { p = _api.Progress(job); }
             catch (MediaViewerException) { _jobs.Remove(job); continue; }
-            _window?.OnProgress(job, p);
-            _dupWindow?.OnProgress(job, p);
+            // At quit the XAML can be torn down before Shutdown stops this timer;
+            // a dead window throws E_UNEXPECTED from any property (seen: the
+            // progress bar's ActualWidth), and an exception escaping a timer tick
+            // fail-fasts the whole app. Drop the window instead.
+            try { _window?.OnProgress(job, p); }
+            catch (COMException) { _window = null; }
+            try { _dupWindow?.OnProgress(job, p); }
+            catch (COMException) { _dupWindow = null; }
             bool active = p.State is MvImportJobState.Running or MvImportJobState.Paused or MvImportJobState.Queued;
             if (active && _jobLabels.GetValueOrDefault(job) == "duplicates")
             {
