@@ -15,6 +15,7 @@
 #include <string_view>
 
 #include "core/result.h"
+#include "io/verified_copy.h"
 
 namespace mv::io {
 
@@ -30,10 +31,13 @@ enum class transfer_kind : std::uint8_t {
 
 // Copies or moves the file at `src_utf8` into the directory `dest_dir_utf8`,
 // keeping its name unless taken. Returns the path it was written to. A copy
-// never modifies the original (rule 5).
+// never modifies the original (rule 5). `profile` shapes a move's verified
+// copy (batch_copy_profile: several requests in flight to a network share);
+// the default is the sequential path.
 [[nodiscard]] result<std::string> transfer_file(std::string_view src_utf8,
                                                 std::string_view dest_dir_utf8,
-                                                transfer_kind kind) noexcept;
+                                                transfer_kind kind,
+                                                const copy_profile& profile = {}) noexcept;
 
 enum class recycle_outcome : std::uint8_t {
   recycled,

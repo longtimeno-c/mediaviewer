@@ -3109,6 +3109,111 @@ was dropped (`playprobe`: 0 acquired, 156 starved) while the audio played on.
   once, ProRes 422 played at 55 frames/s, result OK. It is a fallback, not a format decision:
   what D5 covers is unchanged on Windows.
 
+## 2026-10-01 — Fast network copies, and a general copier (owner; PRs 49–50, plan/24)
+
+Owner: a NAS on 10 GbE copies at about 300 MB/s. Asked to "massively improve file transfer
+with a NAS", to and from it, F8 included; then chose **full read-back verify stays the default
+on a share** and **MediaViewer gets a general copier**, not only media. New product scope, so
+it is written down here and in [24](24-transfer.md); not a D-decision (no D1–D9 call is
+touched: no new present path, no format, nothing leaves the machine).
+
+- **Why ours was slow:** `verified_copy` had one blocking request in flight per file and
+  copied one file at a time, so on a share every chunk, create, flush, read-back and rename
+  waited a round trip. Fixed by a deep path (several positional requests per file, hashed in
+  order) and several files at once, **only when an end is a network share**.
+- **New budget** (CLAUDE.md "Budgets are budgets"): network profile depth 8, 2 MiB chunks,
+  4 files in flight = 80 MiB of copy buffers, capped at 128 MiB (`kCopyBufferBudget`).
+  Measured with `copybench` on this Mac's SSD with a 300 us simulated round trip: deep vs
+  sequential, verify on, runs alternated — 200 KB files 69-75 → 123-131 files/s, 16 MB files
+  484-488 → 916-941 MB/s, 512 MB files 745-758 → 1,620-1,899 MB/s. A real share is owed
+  (PR 49 verify).
+- **Unchanged on purpose:** a card is never read deep or by two files at once (plan/18
+  "Throughput"); local disks and cards keep the sequential path (base vs new within noise,
+  alternated runs). Local SSD → SSD would also gain about 2x from the deep path in the same
+  bench; not turned on, because it is unmeasured on Windows and on cards.
+- **F8 copy keeps the OS copier** (`CopyFileExW` / `copyItemAtURL`), unverified as before:
+  making it verified would add a read-back to every local copy, a regression the owner did not
+  ask for. It does get several files at once to a share. F8 move across volumes stays verified,
+  now deep.
+- **Not changed:** plan/18's read-back stays; on SMB an uncached read-back proves the bytes
+  the server holds and returns, which may come from the NAS's RAM rather than its disks.
+- **Out of the app's hands:** SMB signing, channel count and MTU. PR 50 detects and explains;
+  it never changes an OS or NAS setting.
+
+## 2026-10-03 — Find duplicates in the Import add-on (PR 54): exact duplicates are no longer out
+
+**Reverses** two "out" calls: "library-wide duplicate finding" in the 2026-09-24 Ingest entry's
+"Still out", and "Duplicate finder" in plan/16's not-in-v1 table ("Library product"). The owner
+asked for a tool in the Import add-on that checks a whole folder and its subfolders for duplicate
+media, by hash. It is a tool in an optional add-on, not a catalogue: it keeps no library of its
+own beyond remembered hashes, and near-duplicate and burst grouping stay out (plan/18 "Not in
+Import"). Design and verify line: [18 "Find duplicates"](18-import.md#find-duplicates-pr-54).
+
+**Owner calls (asked 2026-10-03):**
+
+- **Every file, not only media.** Hidden and system entries and packages are still not walked
+  (the import walk's rule), and empty files are not compared.
+- **Report each group, let each file be viewed, and offer to delete one.** Delete is taken as the
+  Recycle Bin / Trash, never a permanent delete: plan/16 already says delete uses only the bin and
+  is refused where there is none, and a tool that removes "the same file" must not be the one
+  place that rule bends.
+- **Its own PR number:** 54, the first free one (48–53 are the open add-ons branch's; 49–50 the network copies').
+
+**Calls made building it:**
+
+- **A group is never emptied.** The engine, not the chrome, checks before each move that the file
+  is unchanged since it was hashed (size and mtime) and reads another copy of the group again; with
+  no copy holding the same bytes, the request is refused. Requests run one at a time, so asking
+  for every copy leaves the last.
+- **No confirm per file**, unlike the viewer's `Delete` (plan/16, "Recycle Bin, confirm"): that
+  key may act on the only copy of a photo, while here every request is checked to leave an
+  identical copy and goes to the bin. A person clearing a few hundred copies is not asked a few
+  hundred times. The button and the hint say "Move to Recycle Bin / Trash", not "Delete".
+- **The bin is a host service.** `mv_host_api` gains `recycle_file`, appended like v2's
+  `thumbnail_jpeg` without bumping `MV_ADDON_HOST_API`: an add-on reads it only when `struct_size`
+  covers it and it is non-NULL. Windows serves it with `io::recycle_file` (already refusing where
+  there is no bin); the Mac shell with `NSFileManager trashItemAtURL`, so `io/` stays free of
+  Objective-C. Import now accepts a host table as short as table v1 (it calls nothing from v2) and
+  offers no delete when the field is missing, so a new Import still loads in an older app.
+- **`mv.import.1` gains `find_duplicates` and `trash_duplicate`** at the end of the table. The
+  Windows host's `MvImportApi` (Interop, shipped with the app) is **not** extended: the Import
+  chrome reads the two entries itself (`DuplicatesApi.cs`), so an older app runs the new chrome and
+  a newer app runs an older Import, the compatibility Milestone H's note on `IAddonHost` keeps.
+- **Hashes are remembered** in a new `import.db` table, `seen_hashes` (path, size, mtime, hash),
+  trusted while size and mtime match, as the library index is; a finished scan drops rows for files
+  under the folder that have gone. Additive (`CREATE TABLE IF NOT EXISTS`); the schema version
+  stays 1.
+- **Cached reads**, unlike verify-a-folder's uncached ones: this compares files, it does not look
+  for rot on the disk. One reader per device, and the same yield to the viewer as an import.
+- **`import.db` keeps the counts only** for a find-duplicates job; the groups live in memory for the
+  session and in the local report, so history does not carry thousands of paths.
+
+**Verified (Mac, 2026-10-03):** five engine cases on the real host table (grouping by content, the
+hash cache across a restart, the last-copy rule, a rotted and an edited copy refused, no bin and no
+host bin), green in Release and under TSan; the whole import suite under TSan with no report (one
+failure, `rename templates number per day…`, is on main already). The Swift chrome builds, and both
+C# projects compile with warnings as errors, and the whole Mac app builds. Timing (M-series Mac,
+Release, warm cache, `mv_import_tests "[.perf-bench]"`, one run): 2,400 files / 846 MB with 400
+copies, 805 sharing a size: first scan 1,042 ms, rescan 84 ms reading no file contents. **Owed:** the Windows native build (`addon_abi.cpp`) in
+CI; both live windows (a local build cannot load its own unsigned Import); both present-loop gates
+while a scan runs.
+
+## 2026-10-03 — Local search: an export with thumbnails makes the missing ones (owner)
+
+Owner: an export of a 503-file folder said 658 thumbnails "were not made yet and were left
+out", and asked that the file carry them. The export only copied what the viewer's JPEG-512
+cache held, so every photo, clip or moment never on screen was missing (here 110 photos, 91
+clips, 457 moments of 5,722).
+
+- **Amended: plan/17 "an export never decodes a library".** With "Include thumbnails" ticked, a
+  thumbnail the cache does not hold is made then, through the host calls a result tile already
+  uses (`thumbnail_path` for a still; `video_frame` + `moment_thumbnail` for a moment). A clip's
+  own tile is the frame its poster lands near (10 % in, at most 3 s), kept as a moment row; the
+  viewer's poster row stays the viewer's to make. No host-table change.
+- It runs on the pack's control thread and waits out the viewer's busy spells as an import's
+  thumbnails do; cancel (and quit) are polled every thumbnail. Export without thumbnails is
+  unchanged and still decodes nothing.
+- The summary now says how many thumbnails went in; "left out" means one could not be made.
 
 ## 2026-10-03 — HEIC: thumbnail item as first pixel; grid tiles on the foreground thread budget
 

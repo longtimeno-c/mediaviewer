@@ -3,6 +3,7 @@
 #include "addons/ai/engine.h"
 
 #include <algorithm>
+#include <numeric>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -195,6 +196,7 @@ void engine::load_assets() {
 
 void engine::stop() noexcept {
   if (stopping_.exchange(true)) return;
+  transfer_cancel_ = true;  // an export making thumbnails stops at the next one
   if (photos_) photos_->observe(nullptr);  // before the threads it wakes go
   control_cv_.notify_all();
   work_cv_.notify_all();
@@ -840,6 +842,84 @@ result<std::uint32_t> engine::person_refine(std::int64_t person) {
   // Every move leaves `person` (focus): to someone else, to nobody, or to a
   // new person made of faces that left together.
   return st.evicted + st.moved + st.regrouped;
+}
+
+result<engine::dedupe_result> engine::people_dedupe() {
+  refine_snapshot snap;
+  refine_params params;
+  std::string spec;
+  std::uint32_t dim = 0;
+  {
+    std::lock_guard lock(models_m_);
+    if (!faces_ || !faces_model_) return err(status::invalid_arg);
+    params.join = faces_model_->same_person();
+    params.core = faces_model_->same_person();
+    spec = faces_model_->spec_key();
+    dim = faces_model_->dim();
+    snap = faces_->refine_begin(true);
+  }
+  // 1. Every face re-checked: person_refine's pass, for everyone at once.
+  //    Misfiled faces move, unassigned faces join or regroup.
+  refine_input in;
+  in.dim = dim;
+  in.emb = snap.emb;
+  in.faces = snap.faces;
+  in.fixed = snap.fixed;
+  in.named = snap.named;
+  in.regroup = true;
+  in.cancel = &stopping_;
+  const refine_output out = refine_people(in, params);
+  if (stopping_) return err(status::cancelled);
+
+  // 2. Commit the moves (the user's later changes win), then read who is
+  //    named, how large, and which pairs the user kept apart.
+  dedupe_result r;
+  refine_stats st;
+  std::size_t rescanned = 0;
+  std::vector<dedupe_person> people;
+  std::vector<std::pair<std::int64_t, std::int64_t>> apart;
+  {
+    std::lock_guard lock(models_m_);
+    if (!faces_ || faces_->serial() != snap.serial) return err(status::cancelled);  // People turned off or reopened
+    st = faces_->refine_commit(snap, out);
+    for (std::int64_t asset : st.recheck_assets) {
+      if (faces_->rescan(asset, spec)) {
+        faces_scanned_.erase(asset);
+        ++rescanned;
+      }
+    }
+    for (const person_row& p : faces_->people(0, nullptr)) people.push_back({p.id, p.name, p.faces});
+    apart = faces_->merge_blocks();
+  }
+  // 3. The same person twice (face_refine.h find_duplicates), computed with
+  //    no lock held; then the merges, survivor first. merge_auto checks the
+  //    pair again (a split or a rejection since) and pins nothing.
+  dedupe_input din;
+  din.dim = dim;
+  din.protos = out.protos;
+  din.people = people;
+  din.apart = apart;
+  din.cancel = &stopping_;
+  const auto groups = find_duplicates(din, params);
+  if (stopping_) return err(status::cancelled);
+  {
+    std::lock_guard lock(models_m_);
+    if (!faces_ || faces_->serial() != snap.serial) return err(status::cancelled);
+    for (const std::vector<std::int64_t>& g : groups) {
+      for (std::size_t i = 1; i < g.size(); ++i) {
+        const auto merged = faces_->merge_auto(g[0], g[i]);
+        if (merged && merged.value()) ++r.merged;
+      }
+    }
+  }
+  if (rescanned > 0) {
+    std::lock_guard lock(work_m_);
+    queue_exhausted_ = false;
+    work_cv_.notify_all();
+  }
+  r.moved = st.evicted + st.moved + st.admitted + st.regrouped;
+  if (st.changed() || r.merged > 0) post(MV_ADDON_EVENT_AI_PEOPLE);
+  return r;
 }
 
 engine::faces_parts engine::open_faces_parts(const settings& s, std::shared_ptr<face_analyzer> model) {
@@ -2825,7 +2905,7 @@ std::string engine::run_export(const transfer_job& job, mv::status& st) {
   if (o.picture_spec.empty()) o.picture_spec = db_->meta("active_spec");
   if (o.face_spec.empty()) o.faces = false;
   if (o.thumbs && host_.has_thumbnail_bytes()) {
-    o.thumb = [this](const std::string& path, std::int64_t pts_ms) { return host_.thumbnail_jpeg(path, pts_ms); };
+    o.thumb = [this](const transfer::thumb_want& w) { return export_thumb(w); };
   }
   transfer::control c{&transfer_cancel_, [this](double f) { set_transfer_progress(f); }};
   auto r = transfer::write(job.file, o, c);
@@ -2847,6 +2927,31 @@ std::string engine::run_export(const transfer_job& job, mv::status& st) {
   w.key("bytes").integer(static_cast<std::int64_t>(r->bytes));
   w.end_object();
   return w.take();
+}
+
+result<std::vector<std::uint8_t>> engine::export_thumb(const transfer::thumb_want& w) {
+  if (auto hit = host_.thumbnail_jpeg(w.path, w.pts_ms)) return hit;
+  // Never made here (the file or moment was never on screen): made now, as
+  // the viewer and a result tile would, between the viewer's busy spells.
+  for (int i = 0; i < 500 && !stopping_ && !transfer_cancel_ && host_.should_yield(); ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  if (stopping_ || transfer_cancel_) return err(status::cancelled);
+  if (w.pts_ms < 0 && !w.video) {
+    if (auto made = host_.thumbnail(w.path); !made) return err(made.error());
+    return host_.thumbnail_jpeg(w.path, -1);
+  }
+  // A clip's own tile is its poster: the frame the viewer's poster lands near
+  // (10 % in, at most 3 s), kept as a moment row. The viewer's poster row is
+  // the viewer's to make.
+  const std::int64_t ms =
+      w.pts_ms >= 0 ? w.pts_ms : std::min<std::int64_t>(std::max<std::int64_t>(w.duration_ms, 0) / 10, 3000);
+  if (w.pts_ms < 0) {
+    if (auto hit = host_.thumbnail_jpeg(w.path, ms)) return hit;
+  }
+  MV_TRY(rgb_frame f, host_.video_frame(w.path, ms, 512));
+  if (auto made = host_.moment_thumbnail(w.path, ms, &f); !made) return err(made.error());
+  return host_.thumbnail_jpeg(w.path, ms);
 }
 
 std::string engine::run_import(const transfer_job& job, mv::status& st) {

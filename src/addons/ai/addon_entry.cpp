@@ -267,6 +267,15 @@ mv_status MV_CALL t_person_refine(void* ctx, uint64_t person, uint32_t* out_remo
     return MV_OK;
   });
 }
+mv_status MV_CALL t_people_dedupe(void* ctx, uint32_t* out_merged, uint32_t* out_moved) {
+  return guard([&] {
+    auto r = eng(ctx).people_dedupe();
+    if (!r) return to_mv(r.error());
+    if (out_merged) *out_merged = r->merged;
+    if (out_moved) *out_moved = r->moved;
+    return MV_OK;
+  });
+}
 mv_status MV_CALL t_search_person(void* ctx, uint64_t person, const char* scope_dir, uint32_t scope,
                                   uint64_t* out_id) {
   return guard([&] {
@@ -458,6 +467,7 @@ mv_status make(uint32_t host_api, const mv_host_api* host, mv_addon_api* out, bo
     a.index_photos_library = &t_index_photos;
     a.photos_access = &t_photos_access;
     a.people_in_json = &t_people_in_json;
+    a.people_dedupe = &t_people_dedupe;
 
     *out = mv_addon_api{};
     out->struct_size = sizeof(mv_addon_api);

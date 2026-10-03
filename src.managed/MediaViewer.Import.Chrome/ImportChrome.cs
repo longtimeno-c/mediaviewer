@@ -17,6 +17,8 @@ public sealed class ImportChrome : IAddonChrome
     private IAddonHost? _host;
     private ImportApi? _api;
     private ImportWindow? _window;
+    private DuplicatesApi? _dups;
+    private DuplicatesWindow? _dupWindow;
     private DispatcherQueueTimer? _timer;
     private readonly HashSet<ulong> _jobs = new();
     private readonly Dictionary<ulong, string> _jobLabels = new();
@@ -28,6 +30,7 @@ public sealed class ImportChrome : IAddonChrome
     {
         _host = host;
         _api = new ImportApi(interfaceTable);
+        _dups = new DuplicatesApi(interfaceTable);
         _timer = DispatcherQueue.GetForCurrentThread()?.CreateTimer();
         if (_timer is not null)
         {
@@ -59,6 +62,22 @@ public sealed class ImportChrome : IAddonChrome
         {
             _host?.SetStatus("Import could not start: " + ex.Status);
         }
+    }
+
+    /// <summary>The Import native library has find duplicates (PR 54).</summary>
+    internal bool HasDuplicates => _dups?.Available == true;
+
+    /// <summary>Find duplicates: its own window, so results stay open beside the viewer.</summary>
+    internal async Task OpenDuplicates()
+    {
+        if (_dups is null || !_dups.Available) return;
+        if (_dupWindow is null)
+        {
+            _dupWindow = new DuplicatesWindow(this, _dups);
+            _dupWindow.Closed += (_, _) => _dupWindow = null;
+        }
+        _dupWindow.Activate();
+        await _dupWindow.ChooseAndStart();
     }
 
     internal void Track(ulong job, string label)
@@ -103,7 +122,32 @@ public sealed class ImportChrome : IAddonChrome
                 Tick();
                 Finished(e.Id, (MvImportJobState)(uint)e.Payload);
                 break;
+            case (MvAddonEvent)DuplicatesApi.EventDone:
+                Tick();
+                _ = DuplicatesFinished(e.Id, (MvImportJobState)(uint)e.Payload);
+                break;
+            case (MvAddonEvent)DuplicatesApi.EventTrashed:
+                if (_dupWindow is not null) _ = _dupWindow.Refresh(e.Id);
+                break;
         }
+    }
+
+    private async Task DuplicatesFinished(ulong job, MvImportJobState state)
+    {
+        bool mine = _jobs.Remove(job);
+        _jobLabels.Remove(job);
+        if (_jobs.Count == 0)
+        {
+            _timer?.Stop();
+            _host?.SetStatus(null);
+        }
+        string text = state == MvImportJobState.Cancelled ? "Stopped." : "The folder could not be read.";
+        if (_dupWindow is { } w && w.Job == job)
+        {
+            await w.Refresh(job);
+            if (state == MvImportJobState.Done) text = w.Headline;
+        }
+        if (mine) _host?.Notify("Find duplicates", text);
     }
 
     private void Finished(ulong job, MvImportJobState state)
@@ -147,7 +191,13 @@ public sealed class ImportChrome : IAddonChrome
             try { p = _api.Progress(job); }
             catch (MediaViewerException) { _jobs.Remove(job); continue; }
             _window?.OnProgress(job, p);
-            if (p.State is MvImportJobState.Running or MvImportJobState.Paused or MvImportJobState.Queued)
+            _dupWindow?.OnProgress(job, p);
+            bool active = p.State is MvImportJobState.Running or MvImportJobState.Paused or MvImportJobState.Queued;
+            if (active && _jobLabels.GetValueOrDefault(job) == "duplicates")
+            {
+                line = $"Finding duplicates · {(p.UnitsTotal == 0 ? 0 : 100.0 * p.UnitsDone / p.UnitsTotal):0}%";
+            }
+            else if (active)
             {
                 double pct = p.BytesTotal == 0 ? 0 : 100.0 * p.BytesRead / p.BytesTotal;
                 line = p.State == MvImportJobState.Paused
@@ -164,7 +214,10 @@ public sealed class ImportChrome : IAddonChrome
         _timer?.Stop();
         _window?.Close();
         _window = null;
+        _dupWindow?.Close();
+        _dupWindow = null;
         _api = null;
+        _dups = null;
         _host?.SetStatus(null);
         _host = null;
     }

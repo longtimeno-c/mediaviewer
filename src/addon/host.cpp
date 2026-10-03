@@ -132,6 +132,9 @@ mv_status MV_CALL t_copy(void* host, const mv_addon_copy_request* req, mv_addon_
     }
     std::atomic<bool> cancel{false};
     io::copy_options o;
+    // Deep writes to a share, deep reads only from one: a card is still read
+    // one request at a time (plan/18 "Throughput"; plan/12 2026-10-01).
+    io::copy_profile_for(req->source_utf8, targets.front()).apply(o);
     o.read_back = req->read_back != 0;
     o.retries = static_cast<int>(std::min<uint32_t>(req->retries, 3));
     o.cancel = &cancel;
@@ -537,6 +540,18 @@ mv_status MV_CALL t_thumbnail_store_jpeg(void* host, const char* path, int64_t p
   });
 }
 
+mv_status MV_CALL t_recycle(void* host, const char* path, uint32_t* out_refused) {
+  return guarded([&] {
+    if (!path || !out_refused) return MV_ERR_INVALID_ARG;
+    const auto& fn = self(host).services().recycle;
+    if (!fn) return MV_ERR_UNSUPPORTED_FORMAT;
+    auto r = fn(path);
+    if (!r) return to_mv(r.error());
+    *out_refused = *r ? 0u : 1u;
+    return MV_OK;
+  });
+}
+
 void MV_CALL t_log(void*, int32_t, const char*) {
   // Deliberately nowhere yet: an add-on's messages are for a developer's
   // debugger, and the app has no log file that could leak a name (rule 6).
@@ -580,6 +595,7 @@ host_table::host_table(host_services services) : svc_(std::move(services)) {
   api_.audio_close = &t_audio_close;
   api_.thumbnail_jpeg = &t_thumbnail_jpeg;
   api_.thumbnail_store_jpeg = &t_thumbnail_store_jpeg;
+  api_.recycle_file = svc_.recycle ? &t_recycle : nullptr;
 }
 
 void host_table::set_negotiated(std::uint32_t version) noexcept { api_.host_api = version; }

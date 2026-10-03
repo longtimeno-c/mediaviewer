@@ -65,6 +65,7 @@ struct ImportView: View {
       explainerSheet
     }
     .sheet(isPresented: $model.confirmingImport) { importConfirmationSheet }
+    .background(DuplicatesSheetHost(model: model.duplicates))
   }
 
   // MARK: first-use explainer (issue #41)
@@ -177,6 +178,8 @@ struct ImportView: View {
       Button("Imports…") { showHistory = true }
       Button("Verify a folder…") { model.verifyFolder() }
         .help("Re-hash imported files against the library index to find silent corruption.")
+      Button("Find duplicates…") { model.duplicates.choose() }
+        .help("Compare every file in a folder and its subfolders by content, and move extra copies to the Trash.")
       Button("? About Import") { model.showExplainer() }
     }
     .padding(12)
@@ -374,5 +377,15 @@ struct ImportView: View {
         .disabled(model.importCount == 0 || model.copying)
     }
     .padding(12)
+  }
+}
+
+/// Observes the duplicates model itself, so its sheet opens and updates
+/// without re-rendering the whole Import window on every progress tick.
+private struct DuplicatesSheetHost: View {
+  @ObservedObject var model: DuplicatesModel
+
+  var body: some View {
+    Color.clear.sheet(isPresented: $model.showing) { DuplicatesView(model: model) }
   }
 }

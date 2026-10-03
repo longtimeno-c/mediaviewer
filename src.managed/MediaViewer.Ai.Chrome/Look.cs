@@ -48,6 +48,20 @@ internal sealed class Look
     public double FontSize => _host.UiFontSize;
     public bool Motion => _host.AnimationsEnabled;
 
+    /// <summary>A type-in field's look (Shared\FakeInput.cs; a WinUI TextBox
+    /// fail-fasts in this host) in these colours, at <paramref name="fontSize"/>.</summary>
+    public MediaViewer.Shared.FakeInputLook Input(double fontSize) => new()
+    {
+        Font = () => Font,
+        FontSize = () => fontSize,
+        Title = () => this[AddonColour.Title],
+        Body = () => this[AddonColour.Body],
+        Canvas = () => this[AddonColour.Canvas],
+        Hairline = () => this[AddonColour.Hairline],
+        Selection = () => LiveTint(AddonColour.Accent, 96),
+        SelectionInk = () => this[AddonColour.Title],
+    };
+
     /// <summary>A fresh brush (not shared) for a tinted variant of a role.</summary>
     public SolidColorBrush Tint(AddonColour role, byte alpha)
     {

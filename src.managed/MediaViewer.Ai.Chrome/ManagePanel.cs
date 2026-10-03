@@ -371,6 +371,10 @@ internal sealed partial class ManagePanel
         {
             _audioReady = audio;
             ShowVideoIndex();
+            // Each folder's "Videos:" menu too: built with the readiness of its
+            // day, it kept Sound and Both off until the folder list happened to
+            // rebuild (the Mac's per-folder menu follows audioReady at once).
+            RefreshRoots();
         }
         RefreshIndexRow(s);
         uint faces = s.Flags & (MvAiStatus.FlagFacesReady | MvAiStatus.FlagFacesOn);
@@ -394,7 +398,11 @@ internal sealed partial class ManagePanel
             _videoIndex[i].IsEnabled = media == MvAiMedia.Pictures || audio;
             _videoIndex[i].IsChecked = media == _videoIndexValue;
         }
-        _videoIndexHint.Text = audio ? "" : "Install Audio above to index sounds and speech.";
+        // Installed but not yet picked up by the pack: say so, not "install".
+        _videoIndexHint.Text = audio ? ""
+            : _chrome.Host.IsPieceInstalled("ai-audio")
+                ? "Audio is loading. Sound and Both turn on when it is ready."
+                : "Install Audio above to index sounds and speech.";
         _videoIndexHint.Visibility = audio ? Visibility.Collapsed : Visibility.Visible;
     }
 

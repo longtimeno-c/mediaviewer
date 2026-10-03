@@ -355,6 +355,29 @@ final class LocalSearchStore: ObservableObject {
     for id in installAllIDs { install(id) }
   }
 
+  /// What "Update all" fetches: every installed piece the channel has a newer
+  /// version of (Core first, as the queue orders it). Owner, 2026-10-03: the
+  /// pieces had been updated one by one and the 1 GB Core left behind, so the
+  /// People grid ran a chrome whose fix shipped in the Core it did not have.
+  var updateAllIDs: [String] {
+    pieces.filter { $0.updateVersion != nil && !removing.contains($0.id) && !isPending($0.id) }.map(\.id)
+  }
+
+  /// The version "Update all" goes to, when every piece agrees; "" otherwise.
+  var updateAllVersion: String {
+    let versions = Set(pieces.filter { updateAllIDs.contains($0.id) }.compactMap(\.updateVersion))
+    return versions.count == 1 ? versions.first! : ""
+  }
+
+  /// Core is behind the channel and not yet on its way: a piece update or
+  /// install queues it first, so the pieces never run ahead of the engine
+  /// they were built with.
+  var coreBehind: Bool { core.updateVersion != nil && !isPending("ai") && !removing.contains("ai") }
+
+  func updateAll() {
+    for id in updateAllIDs { install(id) }
+  }
+
   /// Queues the piece and returns at once; the queue runs one install at a
   /// time, Core first. A piece clicked before Core is installed waits for
   /// Core, and is dropped with a note if Core does not install.
@@ -371,6 +394,9 @@ final class LocalSearchStore: ObservableObject {
       return
     }
     if !anyPending { batchNotes = [] }
+    // A piece behind a Core that is itself behind: Core first (its 3 GB check
+    // runs when its turn comes, like every queued piece's).
+    if !piece.required && coreBehind { queued.insert("ai", at: 0) }
     if piece.required { queued.insert(id, at: 0) } else { queued.append(id) }
     startNext()
   }
@@ -577,6 +603,10 @@ struct LocalSearchSection: View {
     if !store.coreInstalled {
       introCard
     }
+    if store.coreInstalled, !store.anyPending, store.updateAllIDs.count > 1 {
+      updateAllRow
+        .transition(.opacity)
+    }
     VStack(spacing: 0) {
       ForEach(store.pieces) { piece in
         pieceRow(piece)
@@ -662,6 +692,23 @@ struct LocalSearchSection: View {
       return "Allow MediaViewer in System Settings → General → Login Items so Final Cut Pro can reach Local search."
     default:
       return "Search your footage from a panel inside Final Cut Pro, using this index. Nothing is downloaded."
+    }
+  }
+
+  /// Every piece with a newer version, in one click, Core first.
+  private var updateAllRow: some View {
+    let all = store.pieces.filter { store.updateAllIDs.contains($0.id) }
+    let archive = all.compactMap { $0.offeredBytes?.archive }.reduce(0, +)
+    let v = store.updateAllVersion
+    return HStack(alignment: .firstTextBaseline, spacing: 12) {
+      Button {
+        store.updateAll()
+      } label: {
+        Text((v.isEmpty ? "Update all" : "Update all to \(v)")
+             + " (\(all.map(\.title).joined(separator: ", "))) — downloads ~\(LocalSearchStore.sizeText(archive))")
+      }
+      .help("Core first, then the others, one after another.")
+      Spacer()
     }
   }
 
@@ -765,7 +812,7 @@ struct LocalSearchSection: View {
         if let v = piece.updateVersion {
           Button("Update to \(v)") { store.install(piece.id) }
             .disabled(store.refusal(for: piece) != nil)
-            .help(store.refusal(for: piece) ?? "")
+            .help(store.refusal(for: piece) ?? (!piece.required && store.coreBehind ? "Core updates first." : ""))
         }
         if piece.state != "ok" {
           Button("Reinstall") { store.install(piece.id) }

@@ -89,6 +89,14 @@ class engine {
   [[nodiscard]] std::string history_json();
   [[nodiscard]] result<std::uint64_t> verify_folder(const std::string& dir);
 
+  // ---- find duplicates (PR 54) ----
+  // A job of kind 2 over `dir` and its subfolders; the groups are its summary.
+  [[nodiscard]] result<std::uint64_t> find_duplicates(const std::string& dir);
+  // Queues one file of a finished find-duplicates job for the Recycle Bin /
+  // Trash. The checks and the move run on the job's thread; the outcome is
+  // the file's state in the summary.
+  [[nodiscard]] expected trash_duplicate(std::uint64_t job, const std::string& path);
+
   // Tests: wait until the control queue and every job are idle.
   void wait_idle();
 
@@ -107,6 +115,11 @@ class engine {
   void launch(const std::shared_ptr<job>& j);
   void run_job(const std::shared_ptr<job>& j);
   void run_verify(const std::shared_ptr<job>& j, const std::string& dir);
+  void run_duplicates(const std::shared_ptr<job>& j, const std::string& dir);
+  void trash_loop(const std::shared_ptr<job>& j);
+  // Moves one queued file to the bin if its group still has another copy;
+  // true when it went.
+  bool trash_one(job& j, const std::string& path);
   void finish_job(const std::shared_ptr<job>& j, std::uint32_t state);
   void resume_on_control(std::uint64_t id);
   // Scan + plan + start, on the control thread, into an already-made job.

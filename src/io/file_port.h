@@ -95,10 +95,18 @@ class file_reader {
   file_reader(const file_reader&) = delete;
   file_reader& operator=(const file_reader&) = delete;
 
-  [[nodiscard]] expected open(std::string_view utf8_path, read_mode mode);
+  // `concurrent`: the file will take several read_at calls at once from
+  // different threads (an overlapped handle on Windows; any fd on POSIX).
+  [[nodiscard]] expected open(std::string_view utf8_path, read_mode mode,
+                              bool concurrent = false);
   // Fills up to `into.size()` bytes; 0 at end of file. For read_mode::uncached
   // `into` must be an aligned_buffer's memory (aligned, a kIoAlign multiple).
   [[nodiscard]] result<std::size_t> read(std::span<std::uint8_t> into);
+  // Positional: does not move read()'s cursor, and calls from several threads
+  // run as separate requests (each one a round trip on a network share). For
+  // read_mode::uncached `offset` is a kIoAlign multiple too. Short only at
+  // end of file.
+  [[nodiscard]] result<std::size_t> read_at(std::uint64_t offset, std::span<std::uint8_t> into);
   [[nodiscard]] std::uint64_t size() const noexcept;
   void close() noexcept;
 
@@ -117,8 +125,16 @@ class file_writer {
   file_writer& operator=(const file_writer&) = delete;
 
   // Exclusive create: rename_outcome::name_taken if anything is at the path.
-  [[nodiscard]] result<rename_outcome> create_new(std::string_view utf8_path);
+  // `concurrent` as for file_reader::open.
+  [[nodiscard]] result<rename_outcome> create_new(std::string_view utf8_path,
+                                                  bool concurrent = false);
   [[nodiscard]] expected write(std::span<const std::uint8_t> bytes);
+  // Positional, as file_reader::read_at.
+  [[nodiscard]] expected write_at(std::uint64_t offset, std::span<const std::uint8_t> bytes);
+  // Sets the end of file. Before positional writes it sizes the file up
+  // front, so no write extends it (Windows runs extending writes one at a
+  // time, whatever the handle).
+  [[nodiscard]] expected set_size(std::uint64_t bytes);
   // To stable storage: FlushFileBuffers / F_FULLFSYNC (fsync where refused).
   [[nodiscard]] expected flush_durable();
   // Stamps the source's modification time so a later scan sees the same file.
@@ -172,5 +188,14 @@ enum class entry_kind : std::uint8_t {
 [[nodiscard]] std::string join_path(std::string_view dir, std::string_view name);
 // '/'-separated relative path to native separators.
 [[nodiscard]] std::string native_relative(std::string_view relative_slash);
+
+namespace detail {
+// Bench only (tools/copybench --rtt-us): each request the port sends (open,
+// read, write, flush, rename, stat ...) first waits `micros`, as it would on
+// a network share, so the deep copy path's effect shows on a local disk. 0,
+// the default, costs one relaxed load per request.
+void set_simulated_round_trip_us(std::uint32_t micros) noexcept;
+void simulated_round_trip() noexcept;
+}  // namespace detail
 
 }  // namespace mv::io

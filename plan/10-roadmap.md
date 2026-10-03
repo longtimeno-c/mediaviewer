@@ -32,6 +32,7 @@ Mac are both at PR 9.** The order from here is:
 | **30** | **Video Editor window, one clip** (issue #40, [21](21-video-editor.md)): timeline, strip, waveform, split / delete / in / out, keyframe or exact export | both | **Both halves written and run** (Mac 2026-09-26, Windows 2026-09-27: self-test rig, keys); both present-loop gates with the editor open owed. Does not merge before 29 |
 | 31 | Video Editor: several clips, zoom, dissolves ([21](21-video-editor.md)) | both | Planned |
 | 32–47 | **Editor add-on**, Milestone K ([22](22-editor-addon.md)): GPU port + colour management, grading (primaries, curves, secondaries, tracking, node graph, LUTs, NR), multi-track editing, motion / titles / captions, audio mixer and repair, delivery, proxies, model packs | both | Proposed (2026-09-26); S1 run on the Mac |
+| 54 | **Find duplicates** in the Import add-on ([18](18-import.md#find-duplicates-pr-54)): a folder tree compared by content (size, then BLAKE3), each copy opened, shown, or moved to the Recycle Bin / Trash, never the last | both | **Written** (2026-10-03): engine tested on the Mac (Release and TSan); Mac chrome and the Windows C# compile; the Windows native build, both live UIs and both gates while scanning are owed |
 
 Decision-log entries, branches and commits keep the numbers they were written with. Old 16–20
 → Mac halves of 1–8. Old 21–25 → 20–24. The earlier same-day draft's "PR 26 Ingest" → 16–19.
@@ -659,6 +660,11 @@ slice is dual-track, with a verify line on each platform, and both present-loop 
 - **PR 19 — Library tools.** Library-wide duplicate scope, import history, and
   verify-a-folder (silent-corruption check).
 
+- **PR 54 — Find duplicates** (added 2026-10-03, owner). A folder and every folder under it,
+  every file type, grouped by identical bytes; open, show, or move one copy to the Recycle Bin /
+  Trash, never the last. Its own number: 48–53 are taken by the open add-ons branch, 49–50 by network copies. Verify line:
+  [18 "Find duplicates"](18-import.md#find-duplicates-pr-54).
+
 The add-on mechanism built in PR 16 is the one the AI pack (PR 20) and the Voice add-on (PR 27) install through.
 
 **State (2026-09-24): built ahead on a branch** off PR 10's branch, as the dual-track rule allows
@@ -747,6 +753,36 @@ breadcrumb and `Ctrl/Cmd+Up` walk back; a mixed folder shows tiles above images 
 crosses between them in the same column; keyboard-only (`Ctrl/Cmd+Up`, arrows, `Enter`, `Esc`)
 reaches every folder; `test_dir_tree` and `test_browse_path` pass; PR 1's present-loop verify
 still holds.
+
+---
+
+## Standalone PRs 49–50 — Fast network transfer and Transfer (both platforms)
+
+Owner, 2026-10-01 ([12](12-decision-log.md)): copies to and from a NAS run at a fraction of
+the link. Full design: [24-transfer.md](24-transfer.md).
+
+### PR 49 — Network-speed copy engine
+Positional I/O in the file port; a deep path in `io::verified_copy` (several requests in
+flight per file, hashed in order, read-back the same) and several files at once, both only
+when an end is a network share; F8 and Import use it; `copybench` measures it. Cards and local
+disks keep the sequential path.
+
+**Verify (both platforms):** on a 10 GbE SMB share, `copybench --mode auto` with verify (big
+and RAW-sized sets) is >= 2x `--mode seq` on the same files, runs alternated; unverified auto
+is >= 90 % of `robocopy /MT:16 /J` (Windows) / `ditto` (Mac); local `seq` within noise of the
+base build; `mv_import_tests "[io]"` passes (the deep cases under ThreadSanitizer too); both
+present-loop gates hold while an F8 move to the share runs.
+
+### PR 50 — Transfer and the link check
+A general copier for any files and folders (copy/move, keep the tree, keep-both or skip
+identical, never overwrite, full verify by default, pause/resume/cancel with a journal), on
+`mv_transfer_*` ABI calls, with a Transfer window in WinUI and SwiftUI; and a read-only check
+that names SMB signing, encryption or a single channel when it caps the link.
+
+**Verify (both platforms):** a 50 GB mixed tree local -> share -> local with full verify is
+byte-identical; MB/s within 10 % of PR 49's auto; a kill mid-job resumes with no duplicates
+or temporaries; a move never removes an unverified source; both present-loop gates hold
+during the job.
 
 ---
 

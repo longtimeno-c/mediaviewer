@@ -38,6 +38,7 @@
 #include "addons/ai/index_db.h"
 #include "addons/ai/photos_source.h"
 #include "addons/ai/platform.h"
+#include "addons/ai/transfer.h"
 #include "addons/ai/vectors.h"
 #include "core/result.h"
 #include "infer/audio_models.h"
@@ -279,6 +280,14 @@ class engine {
   // "Refine": files this person's misplaced faces out (plan/17 "People
   // refinement"); how many left them. Only ever on request. [worker-thread]
   [[nodiscard]] result<std::uint32_t> person_refine(std::int64_t person);
+  // "Merge duplicates" (plan/17 "Merge duplicates"): person_refine's check
+  // over every face at once, then people whose faces vouch for each other
+  // become one. Only ever on request. [worker-thread]
+  struct dedupe_result {
+    std::uint32_t merged = 0;  // people merged away
+    std::uint32_t moved = 0;   // faces that moved, left, joined or regrouped
+  };
+  [[nodiscard]] result<dedupe_result> people_dedupe();
   [[nodiscard]] result<std::string> face_thumb(std::int64_t face) const;  // [worker-thread]
 
   // ---- sharing an index (plan/17 "Sharing an index") ---------------------------
@@ -473,6 +482,8 @@ class engine {
   };
   void run_transfer(transfer_job job);  // control thread
   [[nodiscard]] std::string run_export(const transfer_job& job, mv::status& st);
+  // An export's thumbnail: the viewer's cached one, else made now.
+  [[nodiscard]] result<std::vector<std::uint8_t>> export_thumb(const transfer::thumb_want& w);
   [[nodiscard]] std::string run_import(const transfer_job& job, mv::status& st);
   // The picture specs a file's rows may land under here, and the Quality to
   // adopt (0 none) when this index is empty and the file's tower is carried.

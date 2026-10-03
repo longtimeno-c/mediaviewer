@@ -31,6 +31,7 @@ public final class MVImportChrome: NSObject {
     guard let table else { return nil }
     let m = ImportModel(table: table)
     m.chrome = self
+    m.duplicates.chrome = self
     model = m
     return m
   }
@@ -87,6 +88,12 @@ public final class MVImportChrome: NSObject {
       case MV_ADDON_EVENT_JOB_DONE.rawValue, MV_ADDON_EVENT_VERIFY_DONE.rawValue:
         tick()
         finished(identifier, state: UInt32(truncatingIfNeeded: payload))
+      case MV_ADDON_EVENT_DUPLICATES_DONE.rawValue:
+        tick()
+        model?.duplicates.refresh(identifier)
+        duplicatesFinished(identifier, state: UInt32(truncatingIfNeeded: payload))
+      case MV_ADDON_EVENT_DUPLICATE_TRASHED.rawValue:
+        model?.duplicates.refresh(identifier)
       default:
         break
       }
@@ -131,15 +138,39 @@ public final class MVImportChrome: NSObject {
     for job in jobs.keys {
       var p = mv_import_progress()
       guard table.api.pointee.progress!(table.ctx, job, &p) == MV_OK else { jobs[job] = nil; continue }
-      MainActor.assumeIsolated { model?.progressed(job, p) }
+      MainActor.assumeIsolated {
+        model?.progressed(job, p)
+        model?.duplicates.progressed(job, p)
+      }
       if p.state == MV_IMPORT_JOB_RUNNING.rawValue || p.state == MV_IMPORT_JOB_PAUSED.rawValue ||
           p.state == MV_IMPORT_JOB_QUEUED.rawValue {
         let pct = p.bytes_total == 0 ? 0 : Int(100 * Double(p.bytes_read) / Double(p.bytes_total))
-        line = (p.state == MV_IMPORT_JOB_PAUSED.rawValue ? "Import paused · " : "Importing · ") + "\(pct)%"
+        if jobs[job] == "duplicates" {
+          line = "Finding duplicates · \(pct)%"
+        } else {
+          line = (p.state == MV_IMPORT_JOB_PAUSED.rawValue ? "Import paused · " : "Importing · ") + "\(pct)%"
+        }
       }
     }
     setStatus(line)
     if jobs.isEmpty { timer?.invalidate(); timer = nil }
+  }
+
+  private func duplicatesFinished(_ job: UInt64, state: UInt32) {
+    guard jobs.removeValue(forKey: job) != nil else { return }
+    let headline = MainActor.assumeIsolated { () -> String? in
+      guard let d = model?.duplicates, d.job == job else { return nil }
+      return d.headline
+    }
+    let text: String
+    if state == MV_IMPORT_JOB_DONE.rawValue, let headline {
+      text = headline
+    } else {
+      text = state == MV_IMPORT_JOB_CANCELLED.rawValue ? "Stopped." : "The folder could not be read."
+    }
+    host?.perform(NSSelectorFromString("notifyTitle:body:"), with: "Find duplicates" as NSString,
+                  with: text as NSString)
+    if jobs.isEmpty { setStatus(nil) }
   }
 
   private func finished(_ job: UInt64, state: UInt32) {
