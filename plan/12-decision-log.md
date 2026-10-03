@@ -3279,3 +3279,37 @@ review gates **bundling** NVIDIA's files, not publishing this piece. It stays op
 **Owed on hardware:** an install from a real stable release on an NVIDIA machine, both with and
 without CUDA/cuDNN on PATH (GPU used / CPU with the reason), and the PR 1 present-loop gate
 while it indexes on the GPU.
+
+## 2026-10-03 — Find duplicates: several copies to the bin in one go; the Import windows get the app mark
+
+**Reverses** PR 54's "one file at a time, picked by the person" (plan/18 "Find duplicates"), at
+the owner's request: "select more than one of the found duplicates and delete the duplicates in
+batch". What stays: only what the person picked goes, only to the Recycle Bin / Trash, and the
+engine's checks per file (unchanged since the scan, another identical copy re-read) are untouched.
+Still no "delete all duplicates" and no keep rules.
+
+- **Picking** is the platform's own: Ctrl / Shift-click and Shift+arrows in Explorer's
+  `ListView` Extended mode on Windows, ⌘ / ⇧ in a SwiftUI `List` with a `Set` selection on the
+  Mac. No check boxes and no new keys: `Delete` / `⌘⌫` now act on the pick.
+- **A pick that takes every copy of a file sends nothing.** The engine would still keep one (the
+  last request in the group is refused), but which one would depend on queue order, which the
+  person cannot see. The window says to leave one copy of each file unpicked instead.
+- **No engine or ABI change.** `trash_duplicate` already queues; the chrome calls it once per
+  picked file and the add-on's thread drains them in order.
+- **No confirm for a batch**, as for one file (PR 54's reasoning: every move is checked to leave
+  an identical copy and is recoverable from the bin). The button names the count, and the line
+  beside it the space it frees.
+- **Windows look:** the Duplicates window takes Mica, Windows 11 style cards and Segoe Fluent
+  glyphs, built only from controls that load in this island host (`tools/check-winui-controls.ps1`).
+  The Fluent brushes (`TextFillColor*`, `CardBackgroundFillColor*`) do **not** resolve here (no
+  XamlControlsResources; a XAML reference to one throws "undeclared prefix" and, from a click, fail-
+  fasts the app; seen in the first live run): secondary text is opacity and cards a neutral tint. Both Import windows load the exe's own icon (resource 1, as
+  the main window) instead of WinUI's generic one (`src.managed/Shared/AppIcon.cs`). The Mac
+  windows already carry the app's icon.
+
+**Verified (Windows, 2026-10-03):** a dev-key Release build of this tree with this Import
+sideloaded, on a tree of 10 files in 4 groups, five runs: the window opens, a pick of every copy
+of a file leaves the button off, a pick of the 5 extras moves exactly those 5 and keeps one of
+each; the Import window shows the app icon. One earlier run never received the scan's done event
+(window left on "Looking…"); not reproduced in the next five. **Owed:** the Swift half's first
+compile (CI), the Mac live run, both present-loop gates while a scan runs.
