@@ -91,6 +91,13 @@ format_family probe(std::span<const std::uint8_t> header) noexcept {
                               header[3] == 42))) {
     return format_family::tiff;
   }
+  // PDF allows bytes before the header; readers look in the first 1 KiB.
+  // Last: every format above is decided at offset 0.
+  static constexpr char kPdf[] = "%PDF-";
+  const std::size_t limit = header.size() < 1024 ? header.size() : 1024;
+  for (std::size_t i = 0; i + 5 <= limit; ++i) {
+    if (header[i] == '%' && std::memcmp(header.data() + i, kPdf, 5) == 0) return format_family::pdf;
+  }
   return format_family::unknown;
 }
 

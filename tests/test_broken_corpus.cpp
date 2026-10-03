@@ -534,6 +534,7 @@ std::vector<field_site> dimension_sites(std::span<const std::uint8_t> b) {
     case format_family::raw:
     case format_family::heic:
     case format_family::avif:
+    case format_family::pdf:
     case format_family::unknown:
       break;
   }
@@ -799,6 +800,7 @@ mv::result<mv::codec::raster> family_decoder(format_family f, std::span<const st
     case format_family::heic: return mv::codec::decode_heic(b);
     case format_family::avif: return mv::codec::decode_avif(b);
     case format_family::raw:  return mv::codec::decode_raw(b);
+    case format_family::pdf:  return mv::codec::decode_pdf(b);
     case format_family::unknown: break;
   }
   return mv::err(mv::status::unsupported_format);

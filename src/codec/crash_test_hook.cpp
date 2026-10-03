@@ -90,6 +90,7 @@ decoder_label label_for(format_family f) noexcept {
     case format_family::heic: return {"libheif", v.heif};
     case format_family::avif: return {"libavif", v.avif};
     case format_family::raw:  return {"libraw", v.raw};
+    case format_family::pdf:  return {"os-pdf", ""};
     case format_family::unknown: break;
   }
   return {"none", ""};

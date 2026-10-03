@@ -78,6 +78,11 @@ result<thumb_pixels> make_thumb_rgba(std::span<const std::uint8_t> src_bytes,
       if (decoded.error() == status::cancelled) return err(status::cancelled);
     }
   }
+  if (!decoded && codec::probe(src_bytes) == codec::format_family::pdf) {
+    // Page 1 at the preview size, not the 3200 px page (docs/plans §2.4).
+    decoded = decode_preview(src_bytes, ctx);
+    if (!decoded && decoded.error() == status::cancelled) return err(status::cancelled);
+  }
   if (!decoded) {
     decoded = decode_bytes(src_bytes, ctx);
     if (!decoded) return err(decoded.error());

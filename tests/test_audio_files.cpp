@@ -12,7 +12,7 @@
 #include "clip_fixture.h"
 #include "import_fixture.h"
 #include "io/pairing.h"
-#include "player/audio_card.h"
+#include "codec/card.h"
 #include "player/container_probe.h"
 #include "player/poster.h"
 
@@ -48,7 +48,7 @@ std::vector<std::uint8_t> iso(const char* major) {
   return padded(b);
 }
 
-std::size_t glyph_pixels(const mv::player::audio_card& card) {
+std::size_t glyph_pixels(const mv::codec::card& card) {
   std::size_t n = 0;
   for (std::size_t i = 0; i < card.rgba.size(); i += 4) n += card.rgba[i] > 120 ? 1u : 0u;
   return n;
@@ -95,8 +95,8 @@ TEST_CASE("Audio extensions route through the player", "[audio][pairing]") {
 }
 
 TEST_CASE("The audio card is opaque, even-sized and draws its glyph", "[audio][card]") {
-  using mv::player::audio_card_kind;
-  const auto music = mv::player::make_audio_card(audio_card_kind::music, 641, 361);
+  using mv::codec::card_kind;
+  const auto music = mv::codec::make_card(card_kind::music, 641, 361);
   CHECK(music.width == 640);
   CHECK(music.height == 360);
   REQUIRE(music.rgba.size() == 640u * 360u * 4u);
@@ -106,7 +106,7 @@ TEST_CASE("The audio card is opaque, even-sized and draws its glyph", "[audio][c
   const auto lit = glyph_pixels(music);
   CHECK(lit > 640u * 360u / 200u);
   CHECK(lit < 640u * 360u / 4u);
-  const auto lock = mv::player::make_audio_card(audio_card_kind::protected_, 640, 360);
+  const auto lock = mv::codec::make_card(card_kind::locked, 640, 360);
   CHECK(glyph_pixels(lock) > 640u * 360u / 200u);
   CHECK(lock.rgba != music.rgba);
 }

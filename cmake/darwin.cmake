@@ -161,6 +161,7 @@ add_library(mv_codec STATIC
   src/codec/webp.cpp
   src/codec/tiff.cpp
   src/codec/ico.cpp
+  src/codec/card.cpp
   src/codec/heif.cpp
   src/codec/avif.cpp
   src/codec/raw.cpp
@@ -171,6 +172,7 @@ add_library(mv_codec STATIC
   src/codec/orient.h
   src/codec/orientation.h
   src/codec/os_decode_mac.cpp
+  src/codec/pdf_mac.cpp
   src/codec/os_decode.h
   src/codec/crash_test_hook.cpp
   src/codec/crash_test_hook.h
@@ -181,7 +183,9 @@ add_library(mv_codec STATIC
 target_link_libraries(mv_codec
   PUBLIC mv_core
   PRIVATE JPEG::JPEG ${MV_SPNG_TARGET} GIF::GIF WebP::webp WebP::webpdemux
-          TIFF::TIFF ${MV_HEIF_TARGET} ${MV_AVIF_TARGET} libraw::raw_r)
+          TIFF::TIFF ${MV_HEIF_TARGET} ${MV_AVIF_TARGET} libraw::raw_r
+          # PDF (codec/pdf_mac.cpp): the system renderer.
+          "-framework CoreGraphics" "-framework CoreFoundation")
 add_library(mv::codec ALIAS mv_codec)
 target_link_libraries(mv_codec PRIVATE mv_raw_openmp)
 
@@ -279,7 +283,6 @@ add_library(mv_player STATIC
   src/player/presenter.cpp
   src/player/container_probe.cpp
   src/player/poster.cpp
-  src/player/audio_card.cpp
   src/player/media_source.h
   src/player/playback_hold.h
   src/player/video_source.h
@@ -778,9 +781,11 @@ if(MV_BUILD_TESTS)
     tests/test_container_probe.cpp
     tests/test_audio_files.cpp
     tests/test_pages.cpp
+    tests/test_pdf.cpp
     # Issue #43: Space at natural EOF restarts, on the real Metal player.
     tests/test_video_eof_mac.mm
     tests/test_audio_only_mac.mm
+    tests/test_pdf_mac.mm
     # PR 9: the metadata read model. Fixtures are built in the test.
     tests/test_meta.cpp
     tests/test_meta_store.cpp

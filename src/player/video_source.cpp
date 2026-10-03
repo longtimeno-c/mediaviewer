@@ -10,7 +10,7 @@
 #include <vector>
 
 #include "core/trace.h"
-#include "player/audio_card.h"
+#include "codec/card.h"
 #include "player/video_internal.h"
 
 namespace mv::player {
@@ -98,8 +98,8 @@ frame_ptr rgba_frame(std::uint32_t width, std::uint32_t height, const std::uint8
   return frame;
 }
 
-frame_ptr card_frame(audio_card_kind kind) noexcept {
-  const audio_card card = make_audio_card(kind);
+frame_ptr card_frame(codec::card_kind kind) noexcept {
+  const codec::card card = codec::make_card(kind);
   return rgba_frame(card.width, card.height, card.rgba.data(), static_cast<int>(card.width) * 4);
 }
 
@@ -244,10 +244,10 @@ class ffmpeg_video_source final : public video_source {
       // play ends at once instead of running a silent timer.
       pipe_.drm_protected = true;
       pipe_.audio_stream = -1;
-      pipe_.still = card_frame(audio_card_kind::protected_);
+      pipe_.still = card_frame(codec::card_kind::locked);
     } else {
       pipe_.still = cover_art(pipe_.format.get());
-      if (!pipe_.still) pipe_.still = card_frame(audio_card_kind::music);
+      if (!pipe_.still) pipe_.still = card_frame(codec::card_kind::music);
     }
     if (!pipe_.still) return err(status::out_of_memory);
 
