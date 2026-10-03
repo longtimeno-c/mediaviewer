@@ -919,6 +919,8 @@ format_family family_from_dir(std::string_view dir) {
   if (dir == "heic") return format_family::heic;
   if (dir == "avif") return format_family::avif;
   if (dir == "raw") return format_family::raw;
+  if (dir == "pdf") return format_family::pdf;
+  if (dir == "docx") return format_family::docx;
   return format_family::unknown;
 }
 
@@ -1001,6 +1003,8 @@ TEST_CASE("broken corpus: ICO", "[codec][broken]") { run_family("ico"); }
 TEST_CASE("broken corpus: HEIC", "[codec][broken]") { run_family("heic"); }
 TEST_CASE("broken corpus: AVIF", "[codec][broken]") { run_family("avif"); }
 TEST_CASE("broken corpus: RAW (DNG)", "[codec][broken]") { run_family("raw"); }
+TEST_CASE("broken corpus: PDF", "[codec][broken]") { run_family("pdf"); }
+TEST_CASE("broken corpus: DOCX", "[codec][broken]") { run_family("docx"); }
 
 TEST_CASE("broken corpus: hand-crafted files in tests/data/broken", "[codec][broken]") {
   const auto nasties = files_in(data_dir() / "broken", "broken/");

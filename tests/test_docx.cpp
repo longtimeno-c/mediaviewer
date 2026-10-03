@@ -270,3 +270,43 @@ TEST_CASE("DOCX sample page, written for a look", "[.docx-dump]") {
   std::ofstream(out, std::ios::binary).write(reinterpret_cast<const char*>(jpeg->data()),
                                              static_cast<std::streamsize>(jpeg->size()));
 }
+
+// Not run by default: `mv_tests "[.docx-mutate]"` decodes thousands of
+// mutations of a small package (byte flips, inserts, truncation, inside the
+// stored XML) and asks only that each returns. The Windows broken-corpus sweep
+// and tools/fuzz/fuzz_docx.cpp do the same under ASan.
+TEST_CASE("DOCX mutations decode or fail, never crash", "[.docx-mutate]") {
+  std::vector<fx::part> parts = {
+      {"[Content_Types].xml", fx::kContentTypes},
+      {"word/document.xml",
+       fx::document(fx::para("Title", R"(<w:pStyle w:val="Heading1"/>)") +
+                    fx::para("Item", R"(<w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr>)") +
+                    R"(<w:tbl><w:tblGrid><w:gridCol w:w="2000"/></w:tblGrid><w:tr><w:tc>)" + fx::para("A") +
+                    R"(</w:tc></w:tr></w:tbl>)")},
+      {"word/styles.xml", fx::kStyles},
+      {"word/numbering.xml", fx::kNumbering},
+  };
+  const auto seed = fx::zip(parts);
+  std::uint32_t state = 12345;
+  auto rnd = [&state] {
+    state = state * 1664525u + 1013904223u;
+    return state >> 8;
+  };
+  int decoded = 0;
+  for (int i = 0; i < 3000; ++i) {
+    auto bytes = seed;
+    const int edits = 1 + static_cast<int>(rnd() % 8);
+    for (int e = 0; e < edits; ++e) {
+      const std::size_t at = rnd() % bytes.size();
+      switch (rnd() % 4) {
+        case 0: bytes[at] = static_cast<std::uint8_t>(rnd()); break;
+        case 1: bytes[at] ^= static_cast<std::uint8_t>(1u << (rnd() % 8)); break;
+        case 2: bytes.insert(bytes.begin() + static_cast<std::ptrdiff_t>(at), static_cast<std::uint8_t>("<>/\"&=w:"[rnd() % 8])); break;
+        default: if (bytes.size() > 64) bytes.resize(bytes.size() - rnd() % 32); break;
+      }
+    }
+    auto r = mv::codec::decode_docx(bytes, rnd() % 3, nullptr, 256);
+    if (r) ++decoded;
+  }
+  WARN(decoded << " of 3000 mutations still decoded");
+}
