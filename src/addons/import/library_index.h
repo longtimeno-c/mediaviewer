@@ -74,6 +74,15 @@ struct job_row {
   std::uint32_t kind = 0;  // 0 import, 1 verify-a-folder
 };
 
+// A hash find-duplicates remembers (PR 54): any file, keyed by its absolute
+// path, trusted while size and mtime still match (the library's rule).
+struct seen_row {
+  std::string path;
+  std::uint64_t size = 0;
+  std::int64_t mtime = 0;
+  digest hash{};
+};
+
 class library_index {
  public:
   ~library_index();
@@ -89,6 +98,15 @@ class library_index {
   void upsert(const library_row& row);
   void drop(const std::string& root, const std::string& rel);
   [[nodiscard]] std::vector<library_row> all_rows();
+
+  // ---- find duplicates: remembered hashes ----
+  // Every row whose path starts with `prefix` (a folder with its trailing
+  // separator).
+  [[nodiscard]] std::vector<seen_row> seen_under(const std::string& prefix);
+  // Adds or refreshes `rows` in one transaction. With `replace_under` set,
+  // rows under that prefix that are not in `rows` are dropped first, so a
+  // finished scan leaves no hash for a file that has gone.
+  void seen_store(const std::vector<seen_row>& rows, const std::string* replace_under);
 
   // ---- the card memory ----
   [[nodiscard]] std::optional<card_row> card_lookup(const std::string& volume_id,

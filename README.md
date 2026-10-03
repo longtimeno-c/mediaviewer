@@ -166,6 +166,7 @@ Add-ons install from **Settings → Add-ons**. They are signed and verified, nev
   - It skips what is already there by content, and verifies every copy by reading it back.
   - It sorts into dated folders, keeping RAW+JPEG and Live Photo pairs together.
   - It resumes after an unplug and can back up to a second drive.
+  - It finds duplicate files anywhere in a folder and its subfolders by content, not name, and lets you open each copy or move extras to the Recycle Bin / Trash. The last copy is always kept.
 - **Local search.** Type what you are looking for ("guy on a skateboard", "dog barking", "happy birthday") and get the photos and the exact moments in videos. All of it is computed on your computer; nothing is uploaded.
   - **Pictures and video frames** use OpenAI CLIP: ViT-B/32 (*Fast*) or ViT-L/14 (*High*), picked for your hardware. It runs with NVIDIA acceleration on Windows and Core ML on Apple silicon. Every photo and sampled frame is indexed once in the background, so a search reads the index and never re-scans your files.
   - An optional **Sound** piece indexes what videos sound like (LAION CLAP) and what is said in them (Whisper).
