@@ -192,8 +192,13 @@ Whisper) and `mediaviewer-addon-ai-faces-*` (People). About 2.3 GB per platform.
   `AI.bundle` to the disk-image job, which signs and notarizes that code *before* the models
   are staged (the notary service never receives the weights), then stages, packs and checks
   the ceiling as on Windows. Intel builds define no AI target.
-- `publish` refuses a stable release without all six (`MV_RELEASE_AI=1`). The NVIDIA piece
-  (`ai-cuda`) is not published until its licence review is done.
+- **NVIDIA acceleration (`ai-cuda`, Windows only):** a stable run configures with
+  `-DMV_AI_CUDA_PIECE=ON`, which stages ONNX Runtime's CUDA 13 build (MIT, Microsoft-signed) in
+  `build/addons/ai-cuda`, and packs it as a fourth Windows piece (~150 MB download). It carries
+  no NVIDIA file: the CUDA runtime and cuDNN are user-supplied, and without them Local search
+  says so and runs on the CPU (plan/12, 2026-10-03). Bundling them still needs the licence review.
+- `publish` refuses a stable release without all seven (`MV_RELEASE_AI=1`): the three pieces on
+  both platforms, plus `ai-cuda` on Windows.
 
 With the patch applied, a **stable** run of the
 release workflow builds, signs and packs both, and `publish` refuses a stable release without them
