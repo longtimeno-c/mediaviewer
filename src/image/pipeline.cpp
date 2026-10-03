@@ -8,11 +8,18 @@
 namespace mv::image {
 
 result<display_image> decode_bytes(std::span<const std::uint8_t> bytes, const job_context* ctx,
-                                    unsigned raw_thread_limit) {
-  auto raster = codec::decode(bytes, ctx, raw_thread_limit);
+                                    unsigned raw_thread_limit, std::uint32_t page) {
+  auto raster = codec::decode(bytes, ctx, raw_thread_limit, page);
   if (!raster) return err(raster.error());
   if (ctx && ctx->cancelled()) return err(status::cancelled);
-  return to_display(std::move(raster).value(), ctx);
+  const std::uint32_t at = raster->page;
+  const std::uint32_t pages = raster->page_count;
+  auto out = to_display(std::move(raster).value(), ctx);
+  if (out) {
+    out->page = at;
+    out->page_count = pages;
+  }
+  return out;
 }
 
 result<display_image> decode_preview(std::span<const std::uint8_t> bytes, const job_context* ctx) {

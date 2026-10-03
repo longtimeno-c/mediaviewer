@@ -23,6 +23,9 @@ struct display_image {
   bool icc_tagged = false;
   // Packed RGBA8, 8-bit sRGB. Row stride = width * 4.
   std::vector<std::uint8_t> rgba;
+  // codec::raster's page and page_count, carried through (decode_bytes).
+  std::uint32_t page = 0;
+  std::uint32_t page_count = 1;
 };
 
 // Converts a source-encoded raster into display-referred sRGB 8-bit.

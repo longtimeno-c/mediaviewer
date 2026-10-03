@@ -29,6 +29,11 @@ struct raster {
   // untagged file and a file that declared sRGB without embedding a profile
   // are both treated as sRGB, but only the latter is *tagged*.
   bool tagged_srgb = false;
+  // Multi-page files (TIFF, PDF, DOCX — docs/plans/audio-and-documents.md §2.3):
+  // which page this is and how many the file has. One navigation stop per file;
+  // the pages are Ctrl+PageUp / Ctrl+PageDown inside it. 1 for everything else.
+  std::uint32_t page = 0;
+  std::uint32_t page_count = 1;
 };
 
 // PR 11: a RAW developed to 16-bit *linear* light, Rec.709 / sRGB primaries —

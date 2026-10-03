@@ -938,6 +938,7 @@ if(MV_BUILD_TESTS)
     tests/test_transport.cpp
     tests/test_container_probe.cpp
     tests/test_audio_files.cpp
+    tests/test_pages.cpp
     # PR 9 (docs/design/12 2026-09-24)
     tests/test_meta.cpp
     tests/test_meta_store.cpp

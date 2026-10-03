@@ -275,6 +275,8 @@ bool present_lab_mac::cache_publish(const std::string& path, std::int64_t mtime,
   if (!hit) return false;
   hit->item_id = item_id;
   hit->preview = false;
+  pages_count_.store(hit->page_count, std::memory_order_release);
+  pages_item_.store(item_id, std::memory_order_release);
   delete pending_image_.exchange(hit);
   wake();
   return true;
@@ -372,7 +374,8 @@ void present_lab_mac::submit_prefetch(const std::vector<std::string>& paths_utf8
 // call bumps it again before this finishes -- the user arrowed past this
 // item before it loaded -- ctx.cancelled() catches it below and the result
 // is discarded instead of clobbering the newer selection.
-void present_lab_mac::submit_image_load(std::string path_utf8, std::uint64_t item_id) noexcept {
+void present_lab_mac::submit_image_load(std::string path_utf8, std::uint64_t item_id,
+                                        std::uint32_t page) noexcept {
   if (path_utf8.empty() || !options_.jobs) return;
 
   void* mtl_device = device_.native_device();
@@ -382,7 +385,7 @@ void present_lab_mac::submit_image_load(std::string path_utf8, std::uint64_t ite
   const std::uint64_t cid = *crash_context::last_call_address();
 
   options_.jobs->submit(
-      [this, path = std::move(path_utf8), mtl_device, pending, item_id,
+      [this, path = std::move(path_utf8), mtl_device, pending, item_id, page,
        cid](const job_context& ctx) -> status {
         const crash_context::correlation_scope correlation(cid);
         std::ifstream f(path, std::ios::binary | std::ios::ate);
@@ -399,7 +402,10 @@ void present_lab_mac::submit_image_load(std::string path_utf8, std::uint64_t ite
         // RAW's embedded JPEG or a HEIC's thumbnail item goes up first; the full decode then replaces it
         // as a refinement of the same item (item_id), keeping the view.
         const double t_start = monotonic_seconds();
-        if (auto preview = image::decode_first_pixel(bytes, &ctx)) {
+        // A page past the first has no cheap first pixel of its own: the
+        // file's preview would be page 0.
+        if (page != 0) {
+        } else if (auto preview = image::decode_first_pixel(bytes, &ctx)) {
           if (ctx.cancelled()) return status::cancelled;
           if (auto up = image::upload(mtl_device, preview.value(), &ctx)) {
             auto* first = new image::gpu_image_mac(std::move(up).value());
@@ -423,7 +429,7 @@ void present_lab_mac::submit_image_load(std::string path_utf8, std::uint64_t ite
           // Expected for formats with no cheap first pixel (PNG, HEIC, ...).
         }
 
-        auto decoded = image::decode_bytes_mac(bytes, &ctx);
+        auto decoded = image::decode_bytes_mac(bytes, &ctx, 0, page);
         if (!decoded) {
           if (decoded.error() != status::cancelled)
             MV_LOG_WARN("open: decode failed (%s)", status_name(decoded.error()));
@@ -435,8 +441,10 @@ void present_lab_mac::submit_image_load(std::string path_utf8, std::uint64_t ite
                     decoded.value().height, (monotonic_seconds() - t_start) * 1000.0);
 
         if (ctx.cancelled()) return status::cancelled;
+        pages_count_.store(decoded.value().page_count, std::memory_order_release);
+        pages_item_.store(item_id, std::memory_order_release);
 
-        if (cacheable_still(path)) {
+        if (page == 0 && cacheable_still(path)) {
           std::int64_t mtime = 0;
           std::uint64_t size = 0;
           if (stat_stamp(path, &mtime, &size)) cache_put(path, mtime, size, uploaded.value());
@@ -820,7 +828,8 @@ bool present_lab_mac::apply_playback_input(const input_snapshot& s) noexcept {
 }
 
 std::uint64_t present_lab_mac::open_item(std::string path_utf8, std::int64_t mtime_unix,
-                                         std::uint64_t size, std::int64_t moment_ms) noexcept {
+                                         std::uint64_t size, std::int64_t moment_ms,
+                                         std::uint32_t page) noexcept {
   if (path_utf8.empty() || !options_.jobs) return 0;
   // Abandons whatever the previous open_item() call had in flight (folder
   // navigation is a new view intent) without touching folder_model_mac's own
@@ -839,9 +848,10 @@ std::uint64_t present_lab_mac::open_item(std::string path_utf8, std::int64_t mti
     return item;
   }
   clip_item_.store(0, std::memory_order_release);
-  if (!cacheable_still(path_utf8) || !cache_publish(path_utf8, mtime_unix, size, item)) {
+  if (page != 0 || !cacheable_still(path_utf8) ||
+      !cache_publish(path_utf8, mtime_unix, size, item)) {
     loading_item_.store(item, std::memory_order_release);
-    submit_image_load(std::move(path_utf8), item);
+    submit_image_load(std::move(path_utf8), item, page);
   }
   return item;
 }

@@ -40,6 +40,9 @@ struct gpu_image_mac {
   std::uint8_t mean_luma = 0;
   std::uint64_t item_id = 0;
   bool preview = false;
+  // The file's page count (display_image::page_count): kept with the texture so
+  // a cached page 0 still knows its file has more.
+  std::uint32_t page_count = 1;
 
   [[nodiscard]] bool valid() const noexcept { return texture != nullptr; }
 

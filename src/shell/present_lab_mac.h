@@ -96,8 +96,21 @@ class present_lab_mac {
   // start playing; it is paused and sought exactly to the moment as the
   // render thread adopts it, so no frame of the clip's head is shown or heard.
   // A still ignores the moment.
+  //
+  // `page` opens that page of a multi-page file (TIFF, PDF, DOCX —
+  // docs/plans/audio-and-documents.md §2.3); a still's page 0 is the file.
+  // Pages past 0 are not cached: a page turn is a decode of that page.
   std::uint64_t open_item(std::string path_utf8, std::int64_t mtime_unix = kNoStamp,
-                          std::uint64_t size = 0, std::int64_t moment_ms = -1) noexcept;
+                          std::uint64_t size = 0, std::int64_t moment_ms = -1,
+                          std::uint32_t page = 0) noexcept;
+
+  // How many pages the still `item` (open_item's id) has, once its decode has
+  // said; 0 until then or for another item. [any-thread]
+  [[nodiscard]] std::uint32_t page_count(std::uint64_t item) const noexcept {
+    return pages_item_.load(std::memory_order_acquire) == item
+               ? pages_count_.load(std::memory_order_acquire)
+               : 0u;
+  }
 
   // --browse-soak (the Windows lab's twin, present_lab.h): mark a navigation
   // just before selecting, then poll until the new item's first image is on
@@ -195,7 +208,8 @@ class present_lab_mac {
  private:
   void render_thread_main() noexcept;
   bool write_json_report() const noexcept;
-  void submit_image_load(std::string path_utf8, std::uint64_t item_id) noexcept;
+  void submit_image_load(std::string path_utf8, std::uint64_t item_id,
+                         std::uint32_t page = 0) noexcept;
 
   // Full-resolution stills already on the GPU, keyed by path + size + mtime:
   // the item on screen and its prefetched neighbours. Budgeted by bytes (a
@@ -221,6 +235,9 @@ class present_lab_mac {
   std::vector<std::string> prefetch_parked_;
   std::uint64_t prefetch_parked_for_ = 0;
   std::atomic<std::uint64_t> loading_item_{0};
+  // page_count(): written by the decode worker, count first, then the item.
+  std::atomic<std::uint32_t> pages_count_{0};
+  std::atomic<std::uint64_t> pages_item_{0};
   // Render thread only, but for the atomics the UI polls.
   void note_nav_image(const image::gpu_image_mac& ready) noexcept;
   void commit_nav_present() noexcept;

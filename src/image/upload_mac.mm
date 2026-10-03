@@ -225,6 +225,7 @@ gpu_image_mac gpu_image_mac::share() const noexcept {
   out.mean_luma = mean_luma;
   out.item_id = item_id;
   out.preview = preview;
+  out.page_count = page_count;
   return out;
 }
 
@@ -239,7 +240,8 @@ gpu_image_mac::gpu_image_mac(gpu_image_mac&& other) noexcept
       icc_tagged(other.icc_tagged),
       mean_luma(other.mean_luma),
       item_id(other.item_id),
-      preview(other.preview) {
+      preview(other.preview),
+      page_count(other.page_count) {
   other.texture = nullptr;
 }
 
@@ -257,6 +259,7 @@ gpu_image_mac& gpu_image_mac::operator=(gpu_image_mac&& other) noexcept {
   mean_luma = other.mean_luma;
   item_id = other.item_id;
   preview = other.preview;
+  page_count = other.page_count;
   other.texture = nullptr;
   return *this;
 }
@@ -324,6 +327,7 @@ result<gpu_image_mac> upload(void* mtl_device, const display_image& src,
   out.format = src.format;
   out.icc_tagged = src.icc_tagged;
   out.mean_luma = mean_luma(src);
+  out.page_count = src.page_count;
   return out;
 }
 

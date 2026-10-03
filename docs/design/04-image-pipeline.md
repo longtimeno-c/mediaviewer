@@ -16,7 +16,7 @@ filters by extension only to decide what is a candidate; decode always probes.
 | BMP | | own reader (`codec/bmp.cpp`, `codec/dib.cpp`) |
 | GIF | incl. animation | **giflib** |
 | WebP | still, animated, lossless | **libwebp** (+ demux) |
-| TIFF | tiled, striped, multi-page (page 0 shown) | **libtiff** |
+| TIFF | tiled, striped, multi-page (pages with `Ctrl+PageUp/PageDown`) | **libtiff** |
 | ICO | largest entry, ranked by the payload's own dimensions | own reader (`codec/ico.cpp`) |
 | HEIF / HEIC | HEVC-coded stills, grids, sequences | **libheif** + **libde265** (Windows OS codec first for eligible stills, below) |
 | AVIF | still + animated | **libavif** + **dav1d** |
@@ -240,6 +240,18 @@ level is D3D11's size rule `max(1, floor(prev / 2))`. The same decimation builds
 pyramid. Uploads are `CreateTexture2D(IMMUTABLE)` with `D3D11_SUBRESOURCE_DATA` on a decode
 worker (free-threaded device).
 
+## Pages
+
+A multi-page file is one navigation stop; its pages are `Ctrl+PageUp` / `Ctrl+PageDown` inside it
+(`next_page` / `prev_page`). `codec::decode(bytes, ctx, threads, page)` decodes one page and the
+raster (then `display_image`, `gpu_image_mac`, `mv_image_info.page_count`) carries `page` and
+`page_count`. TIFF pages are the full-resolution IFDs in file order; reduced-resolution subfiles (a
+scanner's thumbnail) are skipped. Page 0 is the file as always — cached, prefetched, thumbnailed. A
+page past 0 is one decode at the view generation the turn set: no cache, no prefetch, no first-pixel
+preview, published under its own key so the canvas fits it like a new stop. Windows turns pages
+through `mv_folder_select_page` (ABI 0.16); the Mac host calls `present_lab_mac::open_item(…, page)`.
+The host remembers the count the core last reported and shows "Page n of m" in its notice line.
+
 ## Not built
 
 - Android / Samsung motion photos (JPEG with an appended MP4) are not detected or played; such
@@ -251,7 +263,7 @@ worker (free-threaded device).
 - Progressive refinement of progressive JPEG / interlaced PNG passes.
 - Disk thumbnail as first pixel for a still (used only for clip placeholders).
 - An "ignore orientation" toggle.
-- TIFF page / ICO size / HEIC sequence-frame navigation with `Ctrl+PageUp/PageDown`
+- ICO size / HEIC sequence-frame navigation with `Ctrl+PageUp/PageDown` (TIFF, PDF and DOCX pages are built)
   (`codec::decode_page` takes a page index; no command uses it).
 - Populating from the OS thumbnail cache; BC7 GPU-resident thumbnails; a content-hash key.
 - macOS ImageIO path for HEIC.
