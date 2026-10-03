@@ -186,6 +186,13 @@ struct PeopleGrid: View {
 /// reads the model only in an action. The cover, with its drag, drop, hover
 /// and menus, is its own Equatable view: a face count moving while faces
 /// stream in re-renders the count, not the cover.
+///
+/// @MainActor is spelled out on these three: with no @ObservedObject left to
+/// infer it, Swift 5.10's SwiftUI (Xcode 15, the CI runner) leaves a View
+/// nonisolated, and an action calling the model would not compile there.
+/// Their `==` reads only Sendable lets, so it stays nonisolated as Equatable
+/// requires.
+@MainActor
 private struct PersonCard: View, Equatable {
   let model: ManagementModel
   let person: Person
@@ -195,7 +202,7 @@ private struct PersonCard: View, Equatable {
   let tap: () -> Void
   let open: () -> Void
 
-  static func == (a: PersonCard, b: PersonCard) -> Bool {
+  nonisolated static func == (a: PersonCard, b: PersonCard) -> Bool {
     a.person == b.person && a.selected == b.selected && a.opening == b.opening
   }
 
@@ -224,6 +231,7 @@ private struct PersonCard: View, Equatable {
 
 /// The circular cover: click, hover (the Faces… button), drag out, drop onto
 /// (merge), selection and the opening spinner.
+@MainActor
 private struct PersonCover: View, Equatable {
   let model: ManagementModel
   let person: Person
@@ -235,7 +243,7 @@ private struct PersonCover: View, Equatable {
   @State private var dropTarget = false
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-  static func == (a: PersonCover, b: PersonCover) -> Bool {
+  nonisolated static func == (a: PersonCover, b: PersonCover) -> Bool {
     a.person.id == b.person.id && a.person.name == b.person.name && a.person.coverFace == b.person.coverFace
       && a.person.coverBox == b.person.coverBox && a.selected == b.selected && a.opening == b.opening
   }
@@ -315,6 +323,7 @@ private struct PersonCover: View, Equatable {
 /// The name: a label until clicked (or Return on it), then a text field that
 /// saves on Return or when focus leaves. 200 live NSTextFields were most of
 /// the grid's layout and event cost.
+@MainActor
 private struct PersonName: View, Equatable {
   let model: ManagementModel
   let person: Person
@@ -322,7 +331,7 @@ private struct PersonName: View, Equatable {
   @State private var editingName = false
   @FocusState private var editing: Bool
 
-  static func == (a: PersonName, b: PersonName) -> Bool {
+  nonisolated static func == (a: PersonName, b: PersonName) -> Bool {
     a.person.id == b.person.id && a.person.name == b.person.name
   }
 
