@@ -206,10 +206,10 @@ else()
 endif()
 
 # ai-cuda: ORT's CUDA 13 build, its own piece (plan/17 "each its own optional
-# sub-pack"). The CUDA runtime and cuDNN are user-supplied: NVIDIA's EULA is not
-# an OSI licence, and the GPL-compatibility review of redistributing them has
-# not been done (plan/17 open item), so the piece carries only ORT's MIT files
-# and the self-test falls back to CPU, saying why, when they are missing.
+# sub-pack"), published on stable Windows releases (log 2026-10-03). The CUDA
+# runtime and cuDNN are user-supplied: NVIDIA's EULA is not an OSI licence, so
+# the piece carries only ORT's MIT files and the self-test falls back to CPU,
+# saying why, when they are missing. Bundling them still needs the review.
 if(WIN32 AND MV_AI_CUDA_PIECE)
   mv_fetch_ort("onnxruntime-win-x64-gpu_cuda13-${MV_ORT_VERSION}" "zip"
                "8fa4b08359af682cd605892cb59077049700b640128bb93fd2c7776cf9f55bdc" MV_ORT_CUDA_DIR)
@@ -219,6 +219,10 @@ if(WIN32 AND MV_AI_CUDA_PIECE)
             "${MV_ORT_CUDA_DIR}/lib/onnxruntime.dll"
             "${MV_ORT_CUDA_DIR}/lib/onnxruntime_providers_shared.dll"
             "${MV_ORT_CUDA_DIR}/lib/onnxruntime_providers_cuda.dll"
+            "${CMAKE_BINARY_DIR}/addons/ai-cuda"
+    # ORT's MIT licence and notices go in the piece's LICENSES/ (addon-pack.py).
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${MV_ORT_CUDA_DIR}/LICENSE" "${MV_ORT_CUDA_DIR}/ThirdPartyNotices.txt"
             "${CMAKE_BINARY_DIR}/addons/ai-cuda"
     COMMENT "Staging the ai-cuda piece (ORT CUDA 13 build)")
 endif()
