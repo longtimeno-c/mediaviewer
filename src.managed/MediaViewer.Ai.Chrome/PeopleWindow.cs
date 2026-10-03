@@ -78,7 +78,9 @@ internal sealed class PeopleWindow : Window
     // with the pack's face model; the people carry over. Progress from status.
     private readonly Button _reanalyse;
     private readonly TextBlock _rerunText;
-    private readonly ProgressBar _rerunBar;
+    // FlatBar, not a WinUI ProgressBar: that fail-fasts in this island host
+    // (tools/check-winui-controls.ps1).
+    private readonly MediaViewer.Shared.FlatBar _rerunBar;
     private MvAiScope _scope = MvAiScope.Tree;
     private static readonly string[] ScopeNames = { "This folder", "+ Subfolders", "Everywhere" };
     private static readonly string[] ScopeHelp =
@@ -295,11 +297,13 @@ internal sealed class PeopleWindow : Window
             "Look at every photo and video again, then file the faces into the people you have. Names, merges and splits are kept.");
         _rerunText = _look.Text("", 12, wrap: false);
         _rerunText.VerticalAlignment = VerticalAlignment.Center;
-        _rerunBar = new ProgressBar { Width = 160, Minimum = 0, Maximum = 1, Visibility = Visibility.Collapsed };
-        _rerunBar.VerticalAlignment = VerticalAlignment.Center;
+        _rerunBar = new MediaViewer.Shared.FlatBar(_look[AddonColour.Hairline], _look[AddonColour.Accent]);
+        _rerunBar.Root.Width = 160;
+        _rerunBar.Root.Visibility = Visibility.Collapsed;
+        _rerunBar.Root.VerticalAlignment = VerticalAlignment.Center;
         var rerunRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         rerunRow.Children.Add(_reanalyse);
-        rerunRow.Children.Add(_rerunBar);
+        rerunRow.Children.Add(_rerunBar.Root);
         rerunRow.Children.Add(_rerunText);
         leftHead.Children.Add(rerunRow);
         left.Children.Add(leftHead);
@@ -340,7 +344,7 @@ internal sealed class PeopleWindow : Window
         bool settling = (s.Flags & MvAiStatus.FlagPeopleSettling) != 0;
         bool running = (s.Flags & MvAiStatus.FlagPeopleRerun) != 0;
         _reanalyse.Visibility = running || settling ? Visibility.Collapsed : Visibility.Visible;
-        _rerunBar.Visibility = running || settling ? Visibility.Visible : Visibility.Collapsed;
+        _rerunBar.Root.Visibility = running || settling ? Visibility.Visible : Visibility.Collapsed;
         _rerunBar.IsIndeterminate = settling || s.PeopleScanTotal == 0;
         _rerunBar.Value = s.PeopleScanTotal == 0 ? 0 : (double)s.PeopleScanDone / s.PeopleScanTotal;
         string model = s.PeopleModelText;
