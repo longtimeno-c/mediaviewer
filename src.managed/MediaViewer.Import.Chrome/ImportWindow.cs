@@ -122,7 +122,6 @@ internal sealed class ImportWindow : Window
         _chrome = chrome;
         _api = chrome.Api;
         Title = "Import";
-        MediaViewer.Shared.AppIcon.Apply(this);
         AppWindow.Resize(new Windows.Graphics.SizeInt32(1280, 760));
         Content = BuildLayout();
         _groups.Source = _days;
