@@ -3251,5 +3251,9 @@ is built on both hosts. Not a D-decision, and none is reversed.
 **Measured (Mac, arm64, Release, 2026-09-29; base in its own worktree and build directory, runs
 alternated, warm cache):** in [25 "Implementation notes"](25-open-addons.md#implementation-notes-pr-55-2026-09-29).
 
-**Not verified, owed:** in the same notes. In short: the Windows half compiles but has not run;
-the owner calls in [25 §17](25-open-addons.md#17-open-decisions-owner) are open.
+**Measured (Windows, x64, MSVC Release, 2026-10-03):** in the same notes; the Windows half was run
+in the app by hand.
+
+**Not verified, owed:** in the same notes. In short: install from a link on both hosts; the idle
+clause of both present-loop gates, which fails on the base too; the owner calls in [25 §17](25-open-addons.md#17-open-decisions-owner) are open.
+
