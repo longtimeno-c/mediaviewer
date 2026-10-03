@@ -85,6 +85,8 @@ Every chart is re-measured and redrawn by one command, `python tools/perf/regene
 
 - **Everything in one folder.** JPEG, PNG, BMP, GIF, TIFF, WebP, HEIC, AVIF, ICO, camera RAW (CR2, CR3, NEF, ARW, DNG)
   and MP4, MOV, MKV, WebM, AVI, TS video open in the same window on the same canvas.
+- **Music and documents too.** MP3 and M4A play with their cover art; PDF and Word (DOCX) files open page by page,
+  `Ctrl+PageUp` / `Ctrl+PageDown` to turn. MediaViewer offers to open them, and never makes itself their default app.
 - **RAW+JPEG and Live Photo pairs are one entry**, one arrow-key stop, badged RAW or LIVE. Copy, move and delete act on both files.
 - **Filmstrip and gallery.** A virtualised filmstrip on a persistent thumbnail cache; `G` opens a full grid.
 - **Nested folders as tiles.** Child folders show with covers and counts, a path bar stays on screen, and
