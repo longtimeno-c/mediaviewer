@@ -66,6 +66,10 @@ typedef enum mv_addon_event_kind {
   MV_ADDON_EVENT_VOLUME_ARRIVED = 5,
   MV_ADDON_EVENT_VOLUME_REMOVED = 6,
   MV_ADDON_EVENT_VERIFY_DONE = 7,    /* verify-a-folder finished */
+  /* Find duplicates (PR 54): the scan finished (payload = job state), and
+   * one trash request settled (id = job; re-read the job's summary). */
+  MV_ADDON_EVENT_DUPLICATES_DONE = 8,
+  MV_ADDON_EVENT_DUPLICATE_TRASHED = 9,
 
   /* The AI pack (plan/17), 20 and up so a chrome can route by kind alone. */
   MV_ADDON_EVENT_AI_STATUS = 20,     /* indexing progress / state; poll mv.ai.1 status */
@@ -323,6 +327,14 @@ typedef struct mv_host_api {
    * and refuses anything but a JPEG whose long edge is at most 512. */
   mv_status(MV_CALL* thumbnail_store_jpeg)(void* host, const char* path_utf8, int64_t pts_ms,
                                            const uint8_t* jpeg, uint64_t size);
+
+  /* ---- the Recycle Bin / Trash (2026-10-03, PR 54 find duplicates) -------- */
+  /* [worker-thread] Moves one file to the Recycle Bin (Windows) or the Trash
+   * (macOS). Never a permanent delete: where the location has no bin (a
+   * network share, some removable drives, the bin turned off) nothing is
+   * removed and *out_refused is set to 1. Appended, so an add-on reads it
+   * only when `struct_size` covers it and the pointer is non-NULL. */
+  mv_status(MV_CALL* recycle_file)(void* host, const char* path_utf8, uint32_t* out_refused);
 } mv_host_api;
 
 typedef struct mv_addon_api {

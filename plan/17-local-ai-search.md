@@ -931,6 +931,41 @@ refinement live, the real SFace pack (so flip averaging's gain and the threshold
 real faces), a labelled people set (none exists; it is what should tune join / keep / margin),
 and PR 1's present-loop gate on either platform while a full call runs.
 
+### Merge duplicates (2026-10-03, owner)
+
+Owner: "a rescan all option that goes through and does A/B testing on images and tries to merge
+them into the right person … I have a lot of duplicates." Shared core, `mv.ai.1` appended
+(`people_dedupe`), a button in both chromes. Only ever on request (plan/12, 2026-09-28: nothing
+refines People in the background; the idle consolidate merge is unchanged).
+
+**What a click does** (`engine::people_dedupe`):
+
+1. **Every face re-checked.** The refinement above, with no focus: a full snapshot, every
+   person rebuilt, every unpinned face judged (move, evict, admit, regroup), Jacobi passes,
+   then `refine_commit` (the user's later changes win, as before).
+2. **The same person twice** (`find_duplicates` in `face_refine.h`, pure, no lock held). Over
+   the rebuilt prototypes: two people link when each one's exemplars **vouch** for the other's
+   at `join` (the model's `same_person`, 0.40), vouching being the refinement's own support
+   (each exemplar's top-3 mean cosine to the other's exemplars), averaged, both ways, the
+   smaller kept. Links are grouped strongest first by **complete linkage**: a group takes a
+   person only when every member links to it, so a chain of lookalikes cannot walk (the lesson
+   of the old consolidate). Exemplars are pinned and good-quality faces, so weak crops that
+   drag a cluster's average down do not hide a duplicate: this is what the idle consolidate,
+   which compares whole-cluster averages at 0.42, misses. Never linked: two people **named
+   differently**, a pair a **split** kept apart (`no_merge`), a pair where a face of one was
+   **rejected** from the other. Cores far apart (mean pairwise below 0.24) are not scored.
+3. **Who survives.** In a group: a named person over an unnamed one, then the one with more
+   faces, then the older; the others merge into it (`faces_db::merge_auto`, which checks the
+   pair again). Nothing is pinned: the user did not say "same person".
+
+The call returns people merged away and faces moved; the chrome says "3 people merged, 12 faces
+moved." or "No duplicates found, and every face matches." Undo is Split (a split pair never
+merges again on its own). Cost is the full refinement's (above) plus pairs × exemplars²:
+negligible beside it at hundreds of people. `mv_ai_tests "[dedupe]"` covers it on synthetic
+SFace-like vectors (a duplicate the cluster average misses, strangers, a lookalike chain, names,
+apart pairs, survivors) and through faces.db and the engine (a split stays apart, a second call
+changes nothing).
+
 ### People in the open folder (2026-09-28, owner)
 
 Owner: "in people I can see everyone in any folder I open; can I just show people from the

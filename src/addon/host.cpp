@@ -540,6 +540,18 @@ mv_status MV_CALL t_thumbnail_store_jpeg(void* host, const char* path, int64_t p
   });
 }
 
+mv_status MV_CALL t_recycle(void* host, const char* path, uint32_t* out_refused) {
+  return guarded([&] {
+    if (!path || !out_refused) return MV_ERR_INVALID_ARG;
+    const auto& fn = self(host).services().recycle;
+    if (!fn) return MV_ERR_UNSUPPORTED_FORMAT;
+    auto r = fn(path);
+    if (!r) return to_mv(r.error());
+    *out_refused = *r ? 0u : 1u;
+    return MV_OK;
+  });
+}
+
 void MV_CALL t_log(void*, int32_t, const char*) {
   // Deliberately nowhere yet: an add-on's messages are for a developer's
   // debugger, and the app has no log file that could leak a name (rule 6).
@@ -583,6 +595,7 @@ host_table::host_table(host_services services) : svc_(std::move(services)) {
   api_.audio_close = &t_audio_close;
   api_.thumbnail_jpeg = &t_thumbnail_jpeg;
   api_.thumbnail_store_jpeg = &t_thumbnail_store_jpeg;
+  api_.recycle_file = svc_.recycle ? &t_recycle : nullptr;
 }
 
 void host_table::set_negotiated(std::uint32_t version) noexcept { api_.host_api = version; }

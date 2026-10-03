@@ -127,7 +127,13 @@ final class ImportModel: ObservableObject {
   private(set) var confirmBytes: Int64 = 0
   var destinationPreview: String { destination }
 
-  init(table: ImportTable) { self.table = table }
+  /// Find duplicates (PR 54): its own sheet over the same table.
+  let duplicates: DuplicatesModel
+
+  init(table: ImportTable) {
+    self.table = table
+    duplicates = DuplicatesModel(table: table)
+  }
 
   var api: mv_import_api { table.api.pointee }
 

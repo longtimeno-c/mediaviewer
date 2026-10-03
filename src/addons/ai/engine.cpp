@@ -3,6 +3,7 @@
 #include "addons/ai/engine.h"
 
 #include <algorithm>
+#include <numeric>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -840,6 +841,84 @@ result<std::uint32_t> engine::person_refine(std::int64_t person) {
   // Every move leaves `person` (focus): to someone else, to nobody, or to a
   // new person made of faces that left together.
   return st.evicted + st.moved + st.regrouped;
+}
+
+result<engine::dedupe_result> engine::people_dedupe() {
+  refine_snapshot snap;
+  refine_params params;
+  std::string spec;
+  std::uint32_t dim = 0;
+  {
+    std::lock_guard lock(models_m_);
+    if (!faces_ || !faces_model_) return err(status::invalid_arg);
+    params.join = faces_model_->same_person();
+    params.core = faces_model_->same_person();
+    spec = faces_model_->spec_key();
+    dim = faces_model_->dim();
+    snap = faces_->refine_begin(true);
+  }
+  // 1. Every face re-checked: person_refine's pass, for everyone at once.
+  //    Misfiled faces move, unassigned faces join or regroup.
+  refine_input in;
+  in.dim = dim;
+  in.emb = snap.emb;
+  in.faces = snap.faces;
+  in.fixed = snap.fixed;
+  in.named = snap.named;
+  in.regroup = true;
+  in.cancel = &stopping_;
+  const refine_output out = refine_people(in, params);
+  if (stopping_) return err(status::cancelled);
+
+  // 2. Commit the moves (the user's later changes win), then read who is
+  //    named, how large, and which pairs the user kept apart.
+  dedupe_result r;
+  refine_stats st;
+  std::size_t rescanned = 0;
+  std::vector<dedupe_person> people;
+  std::vector<std::pair<std::int64_t, std::int64_t>> apart;
+  {
+    std::lock_guard lock(models_m_);
+    if (!faces_ || faces_->serial() != snap.serial) return err(status::cancelled);  // People turned off or reopened
+    st = faces_->refine_commit(snap, out);
+    for (std::int64_t asset : st.recheck_assets) {
+      if (faces_->rescan(asset, spec)) {
+        faces_scanned_.erase(asset);
+        ++rescanned;
+      }
+    }
+    for (const person_row& p : faces_->people(0, nullptr)) people.push_back({p.id, p.name, p.faces});
+    apart = faces_->merge_blocks();
+  }
+  // 3. The same person twice (face_refine.h find_duplicates), computed with
+  //    no lock held; then the merges, survivor first. merge_auto checks the
+  //    pair again (a split or a rejection since) and pins nothing.
+  dedupe_input din;
+  din.dim = dim;
+  din.protos = out.protos;
+  din.people = people;
+  din.apart = apart;
+  din.cancel = &stopping_;
+  const auto groups = find_duplicates(din, params);
+  if (stopping_) return err(status::cancelled);
+  {
+    std::lock_guard lock(models_m_);
+    if (!faces_ || faces_->serial() != snap.serial) return err(status::cancelled);
+    for (const std::vector<std::int64_t>& g : groups) {
+      for (std::size_t i = 1; i < g.size(); ++i) {
+        const auto merged = faces_->merge_auto(g[0], g[i]);
+        if (merged && merged.value()) ++r.merged;
+      }
+    }
+  }
+  if (rescanned > 0) {
+    std::lock_guard lock(work_m_);
+    queue_exhausted_ = false;
+    work_cv_.notify_all();
+  }
+  r.moved = st.evicted + st.moved + st.admitted + st.regrouped;
+  if (st.changed() || r.merged > 0) post(MV_ADDON_EVENT_AI_PEOPLE);
+  return r;
 }
 
 engine::faces_parts engine::open_faces_parts(const settings& s, std::shared_ptr<face_analyzer> model) {

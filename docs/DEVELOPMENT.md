@@ -21,6 +21,7 @@ and a verify line on each platform (D9, amended). The order is:
 | 11 | Colour adjusts, plus Mac crash reporting (Crashpad + the same scrub as Windows) | Planned |
 | 12–15 | Metadata write · two-path trim · extract & remux · OS integration | Planned |
 | 16–19 | **Import add-on**: copy cards with content-hash duplicate skip, verify, date folders, backup, resume ([plan/18-import.md](../plan/18-import.md)) | In main, optional download; release packing is `tools/package/release-addon.patch`, to apply; hardware verify owed |
+| 54 | **Find duplicates** in the Import add-on: a folder tree compared by content, one copy at a time to the Recycle Bin / Trash, never the last ([plan/18](../plan/18-import.md#find-duplicates-pr-54)) | Engine tested on the Mac (Release, TSan); Swift and C# compile; Windows native build, both live windows and both gates while scanning owed |
 | 20–24 | Local AI search add-on, both platforms (Core ML on Mac) ([plan/17-local-ai-search.md](../plan/17-local-ai-search.md)) | Built and tested on both with the real pack (PR #59); quiet-machine gates and the Mac in-app walk-through owed. Mac Photos library as a source (issue #72): built on a branch, with engine tests and a real-library bench; its owner calls are open (plan/17) |
 | 27–28 | **Voice query add-on**: speak a Local search query, on-device, as its own download ([plan/19-voice.md](../plan/19-voice.md)) | Proposed |
 | 29 | **Edit workspace**: an Edit image / Edit video button, a docked Edit pane, crop presets, every metadata tag editable ([plan/20-edit-workspace.md](../plan/20-edit-workspace.md)) | Both halves written and run on their platform (PR 54); Mac build of the merged tree, the quiet-machine present-loop gates, Narrator / VoiceOver owed |
@@ -135,7 +136,7 @@ interactive checks are documented in [System appearance verification](system-the
 | **`frametime.exe`** | The frame-time regression harness. Runs a soak, writes a JSON report, compares against a rolling baseline, and fails on a dropped frame. |
 | **`mediaviewer_lab` (Darwin)** | Mac PRs 1–6 Metal present lab. AppKit window, `CAMetalLayer` (max drawable 2 — Metal's minimum, see plan/12 — 8-bit sRGB), `CAMetalDisplayLink` wait-before-encode, idle → stop presenting, F3 overlay. Decodes a JPEG/PNG/BMP (plus the rest of the D5 stills) onto an immutable Metal texture; wheel-zoom-toward-cursor, drag-pan, `0`–`4` zoom presets. Real folder browsing: argv/drag-drop opens a folder or a file (selecting it), `←`/`→`/`A`/`D`/`Space`/`Home`/`End`/`PageUp`/`PageDown` navigate it (every key goes through the same command table and key router as Windows, with `⌘` standing for `Ctrl` and the Mac Delete key for `Delete`), an FSEvents watch keeps the listing live. SwiftUI chrome hosted in the same window via a C bridge into the render thread's `input_snapshot`: a Windows-style command bar (Open / View / Settings / About, `?` at the right), a Settings screen (`⌘,`: filmstrip/wrap/sticky-zoom/background preferences and remappable keys, persisted in `NSUserDefaults`), a bottom filmstrip (`T` toggles) and a full-grid gallery overlay (`G` toggles), both lazy-loading JPEG-512 thumbnails from a shared SQLite cache. **Nested folders (PR 26):** child folders show as tiles. A folder of only folders uses big tiles; one that also holds photos keeps a short folder row above them. A tile says when photos were found further down, when it is only more folders, and when that look stopped early. The path stays on screen while a photo is open. `⌘↑` goes up and returns to the folder you left; `⌘←` / `⌘→` open the folder beside it; `/` on the folder row finds a tile by name. The Windows host matches that chrome. Marks (`Insert`/`Shift+Space`/`Ctrl+A`/`Ctrl+D`), copy/move to a chosen folder (`F7`/`F8`, collision-safe), Trash delete with confirm (`Delete`), fullscreen (`F11`/`F`), a stills-only slideshow (`F5`), and drag-out (`⌘`+drag on the canvas; a plain drag from a gallery, filmstrip or search-result cell, the marks when that cell is marked, as the original files). **Video (Mac PR 5):** FFmpeg + VideoToolbox decode, copied out of the decoder pool into a presentation ring of our own Metal textures, an MSL twin of the video shader (NV12/P010, the stream's matrix/range/transfer, HLG/PQ tone-mapped to SDR), Core Audio as the master A/V clock (no `AVPlayer`), a SwiftUI transport strip and the plan/16 video keys, and poster thumbnails for clips. Metadata read (PR 9, see above); no rating/metadata writes or RAW-pairing UI yet. Builds on Apple Silicon and Intel, macOS 14+ (Intel: unverified for frame pacing). |
 | **`MediaViewer.Interop`** | The C# side of the ABI — `SafeHandle`, struct layouts, completion drain. The filmstrip island borrows the session and drains folder/thumb completions. |
-| **Import add-on** (Milestone G) | An optional add-on installed from Settings → Add-ons ([plan/18](../plan/18-import.md)): copy a card or folder into a library, skip what is already there by content (size, then BLAKE3), verify every copy by reading it back, sort into dated folders with RAW+JPEG / Live Photo pairs and camera sidecars kept together, resume after an unplug, back up to a second drive from one read, verify an old folder for silent corruption. Never deletes from, formats or overwrites anything. `mv_import.dll` / `libmv_import.dylib` plus its chrome (`MediaViewer.Import.Chrome.dll` / `Import.bundle`) are built beside the app in `build/addons/import` and shipped as a separate signed download that a stable run of the release workflow packs beside the app once `tools/package/release-addon.patch` is applied (RELEASING.md); the base install does not contain them. Settings → Add-ons offers Install only when that download exists and verifies for the running app. With it absent, `Ctrl+Shift+I` / `Ctrl+Shift+F7` do not exist. The shared engine is tested; the Windows and Mac hosts are written but their first platform builds and every hardware verify line are owed (plan/10). Also from this work, in the base app: `F8` across drives now deletes the source only after a verified copy. |
+| **Import add-on** (Milestone G) | An optional add-on installed from Settings → Add-ons ([plan/18](../plan/18-import.md)): copy a card or folder into a library, skip what is already there by content (size, then BLAKE3), verify every copy by reading it back, sort into dated folders with RAW+JPEG / Live Photo pairs and camera sidecars kept together, resume after an unplug, back up to a second drive from one read, verify an old folder for silent corruption, and **find duplicates** in a folder tree (every file, grouped by identical bytes; PR 54), where one copy at a time can be moved to the Recycle Bin / Trash, never the last. Apart from that, never deletes from, formats or overwrites anything. `mv_import.dll` / `libmv_import.dylib` plus its chrome (`MediaViewer.Import.Chrome.dll` / `Import.bundle`) are built beside the app in `build/addons/import` and shipped as a separate signed download that a stable run of the release workflow packs beside the app once `tools/package/release-addon.patch` is applied (RELEASING.md); the base install does not contain them. Settings → Add-ons offers Install only when that download exists and verifies for the running app. With it absent, `Ctrl+Shift+I` / `Ctrl+Shift+F7` do not exist. The shared engine is tested; the Windows and Mac hosts are written but their first platform builds and every hardware verify line are owed (plan/10). Also from this work, in the base app: `F8` across drives now deletes the source only after a verified copy. |
 
 ## Build
 
@@ -656,7 +657,9 @@ owed: [plan/17](../plan/17-local-ai-search.md); the Mac checklist is
 
 `mv_ai_tests "[refine]"` runs the People refinement (plan/17 "People refinement") on synthetic
 face vectors and a temporary faces.db; it needs no pack. In the app it runs only from
-**Refine faces** on a person under Settings → People.
+**Refine faces** on a person under Settings → People, and library-wide from **Merge
+duplicates** above the grid (plan/17 "Merge duplicates": the same check for everyone, then people
+who are the same person merged; never two named differently, never a split pair).
 
 The People grid (Settings → People on the Mac, the People window on Windows) follows the folder
 the viewer has open: **People in · This folder | + Subfolders**, + Subfolders by default;
@@ -709,6 +712,14 @@ in the pack by `src/addons/ai/query.*`, so both chromes share it. `mv_ai_tests "
 the parser, names, suggestions and the singular / plural pair with no models; it is pure C++20
 and also compiles on its own (`clang++ -std=c++20 tests/test_ai_query.cpp
 src/addons/ai/query.cpp` with `-Isrc -Itests` and any Catch2).
+
+**The Mac AI chrome's own measurements** (`src.swift/AIChrome/Tests`, not part of the cmake
+build): `cd src.swift/AIChrome && swift test -c release -Xswiftc -enable-testing --filter
+PeopleGridBench` lays the Settings People grid out at 200 people with an empty table (no pack)
+and reports CPU time for the grid at rest, one layout pass, a status-line publish, and a people
+update with and without a re-sort. Compare runs of the same build alternated with the base;
+the 2026-10-03 numbers are in the PR that added it (a publish 51 → 8 ms, a people update
+500 → 46 ms of CPU).
 
 **The Photos library source (Mac, issue #72; plan/17 "Photos library source").** Engine
 behaviour is tested with a fake PhotoKit: `mv_ai_tests "[photos]"`. On a real library, two
@@ -800,6 +811,9 @@ dotnet publish src.managed\MediaViewer.Chrome\MediaViewer.Chrome.csproj -c Relea
 
 # Milestone G: the Import add-on's suite (built with the core, both platforms)
 ctest --test-dir build -C Release -R import_ --output-on-failure
+# PR 54 find duplicates: time a first scan and a cached rescan (synthetic tree,
+# or MV_DUP_BENCH_DIR=<folder>, read only; the hash cache is a scratch import.db)
+build/bin/mv_import_tests "[.perf-bench]"
 
 # ...and the same engine headless on Linux or any POSIX machine (the
 # portable-core CI job in tools/portable/ci-portable-core.patch; SQLite, libsodium, BLAKE3 and Catch2 from vcpkg via

@@ -527,10 +527,38 @@ expected faces_db::rename(std::int64_t person, const std::string& name) {
 expected faces_db::merge(std::int64_t into, std::int64_t from) {
   std::lock_guard lock(m_);
   if (into == from) return {};
-  if (!exec("BEGIN")) return err(status::io);
   // Both covers were on screen when the user said "same person": anchors.
   pin_cover_locked(into);
   pin_cover_locked(from);
+  return merge_locked(into, from);
+}
+
+result<bool> faces_db::merge_auto(std::int64_t into, std::int64_t from) {
+  std::lock_guard lock(m_);
+  if (into == from || !clusters_.count(into) || !clusters_.count(from)) return false;
+  // The user kept them apart (a split), or said a face of one is not the other.
+  stmt nm(db_, "SELECT 1 FROM no_merge WHERE a = ?1 AND b = ?2");
+  if (nm.bind(1, std::min(into, from)).bind(2, std::max(into, from)).step_row()) return false;
+  stmt rj(db_, "SELECT 1 FROM rejected r JOIN faces f ON f.id = r.face_id"
+               " WHERE (f.person_id = ?1 AND r.person_id = ?2) OR (f.person_id = ?2 AND r.person_id = ?1)");
+  if (rj.bind(1, into).bind(2, from).step_row()) return false;
+  MV_TRY_VOID(merge_locked(into, from));
+  return true;
+}
+
+std::vector<std::pair<std::int64_t, std::int64_t>> faces_db::merge_blocks() {
+  std::lock_guard lock(m_);
+  std::set<std::pair<std::int64_t, std::int64_t>> out;
+  stmt nm(db_, "SELECT a, b FROM no_merge");
+  while (nm.step_row()) out.insert({std::min(nm.i64(0), nm.i64(1)), std::max(nm.i64(0), nm.i64(1))});
+  stmt rj(db_, "SELECT DISTINCT f.person_id, r.person_id FROM rejected r JOIN faces f ON f.id = r.face_id"
+               " WHERE f.person_id IS NOT NULL AND f.person_id != r.person_id");
+  while (rj.step_row()) out.insert({std::min(rj.i64(0), rj.i64(1)), std::max(rj.i64(0), rj.i64(1))});
+  return {out.begin(), out.end()};
+}
+
+expected faces_db::merge_locked(std::int64_t into, std::int64_t from) {
+  if (!exec("BEGIN")) return err(status::io);
   stmt f(db_, "UPDATE faces SET person_id = ?1 WHERE person_id = ?2");
   stmt r(db_, "UPDATE OR IGNORE rejected SET person_id = ?1 WHERE person_id = ?2");
   stmt n(db_, "UPDATE people SET name = (SELECT CASE WHEN a.name = '' THEN b.name ELSE a.name END"

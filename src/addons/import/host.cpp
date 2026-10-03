@@ -156,6 +156,18 @@ result<std::string> host::thumbnail(const std::string& path) const {
   return buf;
 }
 
+// The add-on's copy of the table is zeroed past an older host's struct_size
+// (addon_entry.cpp), so a NULL here is "this app has no bin call".
+bool host::can_recycle() const noexcept { return api_->recycle_file != nullptr; }
+
+result<bool> host::recycle(const std::string& path) const {
+  if (!api_->recycle_file) return err(status::unsupported_format);
+  uint32_t refused = 0;
+  const mv_status s = api_->recycle_file(api_->host, path.c_str(), &refused);
+  if (s != MV_OK) return err(to_status(s));
+  return refused == 0;
+}
+
 bool host::should_yield() const noexcept {
   return api_->should_yield && api_->should_yield(api_->host) != 0;
 }
