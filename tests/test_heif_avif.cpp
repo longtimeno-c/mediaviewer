@@ -22,6 +22,7 @@
 #include "codec/os_decode.h"
 #include "corpus.h"
 #include "image/colour.h"
+#include "image/pipeline.h"
 
 using namespace mv::codec;
 
@@ -261,6 +262,65 @@ TEST_CASE("a HEIC still is not an animation", "[codec][heif]") {
   auto anim = open_animation(shared);
   REQUIRE_FALSE(anim);
   CHECK(anim.error() == mv::status::unsupported_format);
+}
+
+// An iPhone still is a grid of tiles with a thumbnail item beside it
+// (tools/testmedia/make-grid-heic.py --fixture writes these at 120x90).
+TEST_CASE("a HEIC grid decodes the same on one thread and on several", "[codec][heif]") {
+  const auto bytes = fixture("heif/grid_thumb.heic");
+  auto serial = decode_heic(bytes, nullptr, 1);
+  auto parallel = decode_heic(bytes, nullptr, 4);
+  REQUIRE(serial);
+  REQUIRE(parallel);
+  REQUIRE(serial.value().width == 120);  // 2x2 tiles of 64, cropped by the grid
+  REQUIRE(serial.value().height == 90);
+  REQUIRE_FALSE(serial.value().icc.empty());
+  const bool same_pixels = serial.value().rgba == parallel.value().rgba;
+  CHECK(same_pixels);
+}
+
+TEST_CASE("a HEIC's thumbnail item is its first pixel, in the image's colour", "[codec][heif]") {
+  const auto bytes = fixture("heif/grid_thumb.heic");
+  auto thumb = decode_heic_thumbnail(bytes);
+  auto full = decode_heic(bytes);
+  REQUIRE(thumb);
+  REQUIRE(full);
+  CHECK(thumb.value().width == 32);
+  CHECK(thumb.value().height == 24);
+  CHECK(thumb.value().format == format_family::heic);
+  CHECK(thumb.value().icc == full.value().icc);  // tagged P3, never shown as sRGB
+  // The same picture: mean colour within a few levels of the full decode's.
+  const auto mean = [](const raster& r) {
+    double sum[3] = {0, 0, 0};
+    for (std::size_t i = 0; i < r.rgba.size(); i += 4) {
+      for (int c = 0; c < 3; ++c) sum[c] += r.rgba[i + static_cast<std::size_t>(c)];
+    }
+    const double n = static_cast<double>(r.rgba.size() / 4);
+    return rgb{static_cast<int>(sum[0] / n), static_cast<int>(sum[1] / n), static_cast<int>(sum[2] / n)};
+  };
+  CHECK(near(mean(thumb.value()), mean(full.value()), 12));
+
+  // The canvas takes it as first pixel; thumbnailers and search do not (a
+  // 32 px stand-in is below what they draw).
+  auto first = mv::image::decode_first_pixel(bytes);
+  REQUIRE(first);
+  CHECK(first.value().width == 32);
+  CHECK_FALSE(mv::image::decode_preview(bytes));
+}
+
+TEST_CASE("a HEIC thumbnail that is not the image's shape is no first pixel", "[codec][heif]") {
+  // 24x24 beside a 120x90 image: what a thumbnail missing the primary's irot
+  // looks like. Showing it would jump when the full decode lands.
+  auto thumb = decode_heic_thumbnail(fixture("heif/grid_thumb_square.heic"));
+  REQUIRE_FALSE(thumb);
+  CHECK(thumb.error() == mv::status::unsupported_format);
+  CHECK_FALSE(mv::image::decode_first_pixel(fixture("heif/grid_thumb_square.heic")));
+}
+
+TEST_CASE("a HEIC without a thumbnail item has no first pixel of its own", "[codec][heif]") {
+  auto thumb = decode_heic_thumbnail(fixture("heif/srgb_8bit.heic"));
+  REQUIRE_FALSE(thumb);
+  CHECK(thumb.error() == mv::status::unsupported_format);
 }
 
 // --- AVIF -------------------------------------------------------------------

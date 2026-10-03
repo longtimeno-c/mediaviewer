@@ -151,9 +151,9 @@ TEST_CASE("perf: decode, colour and folder timings", "[.perf-bench]") {
     if (!bytes) continue;
     const std::string name = path.filename().string();
     std::uint32_t pw = 0, ph = 0, fw = 0, fh = 0;
-    (void)mv::image::decode_preview(bytes.value());  // warm the code and the allocator
+    (void)mv::image::decode_first_pixel(bytes.value());  // warm the code and the allocator
     const double preview = median_ms(5, [&] {
-      auto r = mv::image::decode_preview(bytes.value());
+      auto r = mv::image::decode_first_pixel(bytes.value());
       if (r) {
         pw = r->width;
         ph = r->height;
