@@ -94,7 +94,10 @@ jobs:
         uses: ./.github/actions/windows-vcpkg
 
       - name: Configure
-        run: cmake -S . -B build -A x64 "-DMV_IMPORT_VERSION=$env:VERSION" "-DMV_AI_VERSION=$env:VERSION"
+        run: |
+          # NVIDIA acceleration (ai-cuda) is packed on stable runs only, like the other add-ons.
+          $cuda = if ($env:MODE -eq 'stable') { 'ON' } else { 'OFF' }
+          cmake -S . -B build -A x64 "-DMV_IMPORT_VERSION=$env:VERSION" "-DMV_AI_VERSION=$env:VERSION" "-DMV_AI_CUDA_PIECE=$cuda"
 
       - name: Save dependencies before packaging can fail
         if: steps.vcpkg.outputs.cache-hit != 'true'
@@ -282,6 +285,14 @@ jobs:
               --version $env:VERSION --key $env:MANIFEST_KEY --out dist/addon --require-pinned-key
             if ($LASTEXITCODE) { throw "packing $piece failed" }
           }
+          # NVIDIA acceleration: ORT's CUDA build only (MIT, Microsoft-signed), no models;
+          # the CUDA runtime and cuDNN stay user-supplied (log 2026-10-03).
+          foreach ($f in 'onnxruntime.dll', 'onnxruntime_providers_shared.dll', 'onnxruntime_providers_cuda.dll') {
+            if (-not (Test-Path "build/addons/ai-cuda/$f")) { throw "ai-cuda: $f was not staged" }
+          }
+          python tools/package/addon-pack.py pack --addon ai-cuda --platform win-x64 --src build/addons/ai-cuda `
+            --version $env:VERSION --key $env:MANIFEST_KEY --out dist/addon --require-pinned-key
+          if ($LASTEXITCODE) { throw 'packing ai-cuda failed' }
           python tools/package/addon-pack.py ceiling (Get-ChildItem dist/addon/mediaviewer-addon-ai*-win-x64.json).FullName
           if ($LASTEXITCODE) { throw 'the AI family is over its 3 GB ceiling' }
 
@@ -296,7 +307,7 @@ jobs:
           }
           # Add-ons stay on the stable feed (plan/18): previews carry none.
           if ($env:MODE -eq 'stable') {
-            foreach ($addon in 'import', 'ai', 'ai-audio', 'ai-faces') {
+            foreach ($addon in 'import', 'ai', 'ai-audio', 'ai-faces', 'ai-cuda') {
               Copy-Item "dist/addon/mediaviewer-addon-$addon-win-x64.zip", "dist/addon/mediaviewer-addon-$addon-win-x64.json", "dist/addon/mediaviewer-addon-$addon-win-x64.json.sig" upload
             }
           }
@@ -652,7 +663,8 @@ jobs:
           MODE: ${{ inputs.mode }}
           # The jobs above pack the Import add-on; publish requires it (stable).
           MV_RELEASE_ADDONS: '1'
-          # ...and the Local search pack with its Sound and People pieces.
+          # ...and the Local search pack with its Sound and People pieces (and,
+          # on Windows, NVIDIA acceleration).
           MV_RELEASE_AI: '1'
           VERSION: ${{ needs.prepare.outputs.version }}
           TAG: ${{ needs.prepare.outputs.tag }}

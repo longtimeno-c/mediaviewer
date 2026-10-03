@@ -646,6 +646,10 @@ owed: [plan/17](../plan/17-local-ai-search.md); the Mac checklist is
 3. Pack, sign and install into a scratch folder:
    `python3 tools/package/ai-sideload.py --build <build> --models <staged> --key <key file>
    --addons <folder> --platform win-x64|macos --pieces ai,ai-audio,ai-faces`.
+   NVIDIA acceleration (Windows): configure with `-DMV_AI_CUDA_PIECE=ON` to stage ORT's CUDA 13
+   build in `build/addons/ai-cuda`, and add `ai-cuda` to `--pieces`. It needs NVIDIA's CUDA 13
+   and cuDNN 9 on `PATH` (never shipped; plan/12 2026-10-03); without them the panel says
+   "CUDA 13 or cuDNN 9 not found — using CPU". Stable releases publish this piece.
 4. Run the app or `ai-bench --addons <folder> --index <media folder> --query "a dog"` with
    `MV_DEV_ADDONS_DIR=<folder>` and `MV_DEV_THUMBS_DIR=<another folder>`, so a real install
    is untouched.
@@ -698,7 +702,9 @@ index"). `mv_ai_tests "[transfer]"` runs two engines as two machines over one li
 elsewhere: nothing embedded twice, an edited file re-embedded, an empty index adopting the
 file's Quality, a used one skipping another model's vectors, People and thumbnails only when
 ticked, a non-index file refused. Thumbnails cross the host table as bytes (`thumbnail_jpeg`,
-`thumbnail_store_jpeg`, appended to v2; the host decodes what it stores).
+`thumbnail_store_jpeg`, appended to v2; the host decodes what it stores). An export with
+thumbnails makes any the viewer's cache does not hold yet, so it can take a while on a library
+that was never browsed.
 With the real pack, two sideloaded add-on folders are two machines:
 `ai-bench --addons <A> --index <library> --make-thumbs <library> --export <file> --export-flags 2`,
 then `ai-bench --addons <B> --import <file> --import-to <copy elsewhere> --import-flags 2
@@ -913,7 +919,12 @@ suite itself (every chart reproduces byte-for-byte from the committed reports) a
 under `ctest -R perf_tools`.
 
 `mv_tests "[.perf-bench]"` is the quick loop for decode work: `MV_BENCH_JSON=path` writes
-its medians, `MV_BENCH_DIR=folder` adds your own files to the decode rows.
+its medians, `MV_BENCH_DIR=folder` adds your own files to the decode rows. Its `preview` row is
+the canvas's first pixel (`decode_first_pixel`). libheif's example is one small image, so for
+camera-sized HEIC run `python tools/testmedia/make-grid-heic.py` (after `fetch-heif.ps1`; needs
+an ffmpeg with libx265 on `PATH`, a dev tool only): it writes `tools/testmedia/heif/grid-12mp.heic`,
+an iPhone's layout (4032x3024 as 8x6 tiles of 512, a 320x240 thumbnail item, Display P3 ICC).
+`MV_OS_CODEC=0` times the bundled libheif path, the one a PC without the HEVC extension takes.
 
 ### Copy throughput: `copybench` (PR 49)
 

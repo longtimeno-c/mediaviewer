@@ -22,6 +22,7 @@
 
 #include "addon/host.h"
 #include "addons/import/engine.h"
+#include "addons/import/naming.h"
 #include "core/json.h"
 #include "import_fixture.h"
 
@@ -33,6 +34,15 @@ fs::path from_utf8(const std::string& s) { return fs::path(std::u8string(s.begin
 
 constexpr std::int64_t kSat = 1789999385;  // 2026-09-21 14:03:05
 constexpr std::int64_t kSun = 1790069400;  // 2026-09-22 09:30:00
+
+// The card's file time: the UTC instant this machine shows as a minute before
+// kSat. Capture times are local wall clock, and the scanner reads a file time
+// as local wall clock too, so stamping kSat - 60 as UTC sorts the dateless HEIC
+// after kSat on any machine east of UTC.
+std::int64_t card_mtime() {
+  const std::int64_t wall = kSat - 60;
+  return wall - (mv::import::local_wall_from_utc(wall) - wall);
+}
 
 // Wraps the real host table: counts copies and hashes, injects faults, and
 // answers volume_of for fake "cards" (a Linux temp folder is no removable
@@ -174,7 +184,7 @@ struct rig {
     dates["MVI_0003.MP4"] = kSun;
     // Every file gets a fixed mtime, like a camera's.
     for (const auto& e : fs::recursive_directory_iterator(card())) {
-      if (e.is_regular_file()) set_mtime(e.path(), kSat - 60);
+      if (e.is_regular_file()) set_mtime(e.path(), card_mtime());
     }
     wrap.cards[utf8(card())] = "uuid:CARD-A";
   }
@@ -461,7 +471,7 @@ TEST_CASE("a duplicate already in the library still goes to a backup that lacks 
   const fs::path other = r.dir / "OTHER_CARD";
   fs::copy(r.card(), other, fs::copy_options::recursive);
   for (const auto& e : fs::recursive_directory_iterator(other)) {
-    if (e.is_regular_file()) set_mtime(e.path(), kSat - 60);  // as make_card() stamps them
+    if (e.is_regular_file()) set_mtime(e.path(), card_mtime());  // as make_card() stamps them
   }
   r.wrap.cards[utf8(other)] = "uuid:CARD-B";
   auto [p1, pl1] = r.plan(other, r.preset());

@@ -395,11 +395,11 @@ void present_lab_mac::submit_image_load(std::string path_utf8, std::uint64_t ite
         f.seekg(0);
         if (!f.read(reinterpret_cast<char*>(bytes.data()), size)) return status::io;
 
-        // Rule 3: first pixel is never the full decode. A JPEG's DCT 1/4 or a
-        // RAW's embedded JPEG goes up first; the full decode then replaces it
+        // Rule 3: first pixel is never the full decode. A JPEG's DCT 1/4, a
+        // RAW's embedded JPEG or a HEIC's thumbnail item goes up first; the full decode then replaces it
         // as a refinement of the same item (item_id), keeping the view.
         const double t_start = monotonic_seconds();
-        if (auto preview = image::decode_preview(bytes, &ctx)) {
+        if (auto preview = image::decode_first_pixel(bytes, &ctx)) {
           if (ctx.cancelled()) return status::cancelled;
           if (auto up = image::upload(mtl_device, preview.value(), &ctx)) {
             auto* first = new image::gpu_image_mac(std::move(up).value());

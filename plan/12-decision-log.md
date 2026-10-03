@@ -3198,6 +3198,88 @@ copies, 805 sharing a size: first scan 1,042 ms, rescan 84 ms reading no file co
 CI; both live windows (a local build cannot load its own unsigned Import); both present-loop gates
 while a scan runs.
 
+## 2026-10-03 — Local search: an export with thumbnails makes the missing ones (owner)
+
+Owner: an export of a 503-file folder said 658 thumbnails "were not made yet and were left
+out", and asked that the file carry them. The export only copied what the viewer's JPEG-512
+cache held, so every photo, clip or moment never on screen was missing (here 110 photos, 91
+clips, 457 moments of 5,722).
+
+- **Amended: plan/17 "an export never decodes a library".** With "Include thumbnails" ticked, a
+  thumbnail the cache does not hold is made then, through the host calls a result tile already
+  uses (`thumbnail_path` for a still; `video_frame` + `moment_thumbnail` for a moment). A clip's
+  own tile is the frame its poster lands near (10 % in, at most 3 s), kept as a moment row; the
+  viewer's poster row stays the viewer's to make. No host-table change.
+- It runs on the pack's control thread and waits out the viewer's busy spells as an import's
+  thumbnails do; cancel (and quit) are polled every thumbnail. Export without thumbnails is
+  unchanged and still decodes nothing.
+- The summary now says how many thumbnails went in; "left out" means one could not be made.
+
+## 2026-10-03 — HEIC: thumbnail item as first pixel; grid tiles on the foreground thread budget
+
+plan/04 rule 3 already named it ("HEIC has a thumbnail item … decode that immediately"), but HEIC
+had no first-pixel stage: the canvas waited for the full decode. libheif also decoded an
+iPhone's 48 grid tiles on one thread (`heif_context_set_max_decoding_threads(ctx, 0)`).
+
+- **First pixel:** `codec::decode_heic_thumbnail` decodes the primary's largest thumbnail item,
+  in the primary's colour when it has none of its own (D6). It is refused when it is not
+  smaller than the image or not its shape to 2 % (a thumbnail missing the primary's `irot`
+  would jump). `image::decode_first_pixel` serves it to the canvas only (both open paths, the
+  hand-off preview, the Mac lab); thumbnailers and search keep `decode_preview`, since a
+  320 px stand-in is below what they draw. As with a RAW's embedded preview, the full decode
+  then goes up once with mips: staging a mip-less copy over the thumbnail added a second
+  12 MP upload during the fade and cost 30-250 ms of launch → full resolution when measured.
+- **Budget:** a HEIC grid's tiles use the caller's thread limit, the one RAW already takes
+  (`raw_foreground_threads()` for the image on screen, 1 for prefetch and thumbnails). Pixels
+  do not depend on it (test). This only applies to the bundled path; WIC is unchanged.
+- **Measured** (Ryzen 7 5700X3D, Release, `make-grid-heic.py`'s 12 MP grid file, base and new
+  built in separate trees, runs alternated). `mv_tests "[.perf-bench]"` medians: first pixel
+  none → 10.8 ms (320x240); full via WIC 282/296 → 289/288 ms (unchanged); full via libheif
+  (`MV_OS_CODEC=0`) 610/615 → 248/275 ms. `mediaviewer_lab --soak 6 --static`, after one warm-up,
+  4 runs each: first pixel 495-530 → 29-40 ms; full 587-634 → 579-610 ms (overlapping);
+  with `MV_OS_CODEC=0` (3 runs) first pixel 693-696 → 29-32 ms, full 794-797 → 360-365 ms. 0
+  dropped frames in every lab run. The PR 1 `frametime` gate failed for base and new alike on
+  this machine today (3-4 vs 0-2 drops, idle 4.8 % of a core for both: other sessions,
+  Steam and Stream Deck running); not a quiet-machine result. Not measured on a real iPhone
+  file (none licensed for the corpus; plan/09).
+- **Mac** (Apple M5, Release, same generated file, base `main` and new built in separate trees,
+  runs alternated; the Mac always takes libheif): bench (3 runs) first pixel none → 5.3-5.6 ms,
+  full 506-553 → 177-187 ms, every other row unchanged. Lab `--soak 6 --static`, after one
+  warm-up, 4 runs each: first pixel 548-559 → 15-17 ms, full 548-559 → 231-246 ms, 0 dropped
+  frames. Mac PR 1 `frametime --seconds 60`: 3,600 frames, 0 dropped, p99 16.95 ms, 0 idle
+  presents for base and new alike; both failed only on idle CPU (28 / 27 % of a core, a
+  Simulator from another session running), so not a quiet-machine result either.
+- **Open, D3, not decided here:** with tiles in parallel the bundled path (360 ms) now opens a
+  12 MP HEIC faster than the WIC/HEVC-extension path D3 prefers (~600 ms) on this machine.
+  D3 says to prefer the OS codec *when hardware-backed*; whether WIC here is, and whether
+  routing should change, is the owner's call.
+
+## 2026-10-03 — NVIDIA acceleration (`ai-cuda`) is published, CUDA and cuDNN user-supplied (owner)
+
+**Was:** RELEASING.md held the `ai-cuda` piece back "until its licence review is done" (log
+2026-09-26, plan/17 "Sizes").
+
+**Now:** every stable Windows release packs and publishes it. That review asked whether NVIDIA's
+CUDA runtime and cuDNN, under NVIDIA's EULA, can be *redistributed* inside a GPL-3.0-or-later
+app's download. The piece as built redistributes neither: it is ONNX Runtime's CUDA 13 build
+(three Microsoft-signed DLLs, MIT) and ORT's own LICENSE and notices. The person installs CUDA 13
+and cuDNN 9 from NVIDIA themselves; ORT, not our code, loads them at run time, and without them the
+Auto self-test falls back to the CPU and says "CUDA 13 or cuDNN 9 not found — using CPU". So the
+review gates **bundling** NVIDIA's files, not publishing this piece. It stays open for that.
+
+- `release.yml` configures stable runs with `-DMV_AI_CUDA_PIECE=ON` and packs `ai-cuda` for
+  `win-x64` only; `github-release.py` requires it on Windows with `MV_RELEASE_AI=1` and never on
+  the Mac (Core ML there; `addons_mac.mm` already never offers it). The family ceiling check
+  includes it.
+- The piece row says it needs CUDA 13 and cuDNN 9 installed separately, before anyone downloads
+  ~150 MB that will not help them without those.
+- Never installed unasked: offered only on a machine with an NVIDIA adapter, and not part of
+  "Install all" (plan/17), unchanged.
+
+**Owed on hardware:** an install from a real stable release on an NVIDIA machine, both with and
+without CUDA/cuDNN on PATH (GPU used / CPU with the reason), and the PR 1 present-loop gate
+while it indexes on the GPU.
+
 ## 2026-10-03 — Find duplicates: several copies to the bin in one go; the Import windows get the app mark
 
 **Reverses** PR 54's "one file at a time, picked by the person" (plan/18 "Find duplicates"), at
