@@ -302,6 +302,48 @@ int32_t mv_chrome_current_folder(char* buf, int32_t size);
 // Opens `dir_utf8` exactly as Open Folder does. [main-thread]
 void mv_chrome_open_folder(const char* dir_utf8);
 
+// docs/design/26: the Photos library as a folder (macOS). Available once the user
+// added the library in Settings (Local search -> Add Photos Library) and
+// PhotoKit access is granted: the folder tree shows a "Photos Library" row
+// then. Opening lists every asset as a result list titled "Photos Library",
+// oldest first, newest selected, in the gallery; an item resolves to its file
+// (in place, or a preview of an iCloud-only original, whose original is
+// fetched after a short stay) as it is shown. [main-thread]
+bool mv_chrome_photos_library_available(void);
+bool mv_chrome_photos_library_open(void);
+void mv_chrome_open_photos_library(void);
+
+// docs/design/26 "Backup": every original of the Photos library (iCloud Photos and
+// the Hidden album included; a Live Photo's video and a RAW+JPEG pair's RAW
+// too) copied, verified, into <destination>/YYYY/YYYY-MM-DD. Originals only
+// iCloud has are downloaded for it. A manifest in the destination makes the
+// next run copy only what is new or missing. One run at a time; it survives
+// Settings closing and is cancelled at quit (nothing half-written is left).
+// Settings polls `progress` while it shows. [main-thread]
+typedef struct mv_chrome_photos_backup {
+  uint32_t state;  // 0 idle, 1 listing, 2 copying, 3 done, 4 cancelled, 5 failed
+  uint64_t total;
+  uint64_t done;     // copied and verified this run
+  uint64_t skipped;  // already in the backup
+  uint64_t failed;
+  uint64_t fetched;  // of `done`, downloaded from iCloud first
+  uint64_t bytes;    // copied this run
+  int64_t started_unix;
+  int64_t finished_unix;
+  char current[256];  // the file being copied ("" between files)
+  char error[200];    // why state is 5
+} mv_chrome_photos_backup;
+// False when a run is going, the library is not available, or the folder is "".
+bool mv_chrome_photos_backup_start(const char* destination_utf8);
+void mv_chrome_photos_backup_cancel(void);
+// The current (or last finished) run of this session; state 0 when none.
+void mv_chrome_photos_backup_progress(mv_chrome_photos_backup* out);
+// The destination last used (persisted); length needed, "" when none.
+int32_t mv_chrome_photos_backup_destination(char* buf, int32_t size);
+// The last run that finished, this session or an earlier one (persisted:
+// finished_unix, done, skipped, failed, state). False when there was none.
+bool mv_chrome_photos_backup_last(mv_chrome_photos_backup* out);
+
 // Sort (docs/design/16). Packed as sort_order.h pack_sort: key in bits 0-2 (0 name,
 // 1 modified, 2 size, 3 type, 4 date taken), descending in bit 3. Changing it
 // re-sorts the listing and keeps the current item selected. [main-thread]

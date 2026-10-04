@@ -51,6 +51,7 @@ Read `docs/design/README.md` first, then the doc for the area you are touching:
 | `docs/design/22-editor-addon.md` | Editor add-on (not built) |
 | `docs/design/23-nle-search.md` | Local search inside Final Cut Pro (Mac-only D9 exception), FCPXML export |
 | `docs/design/24-transfer.md` | Network-speed verified copies. Read before touching `io/verified_copy` or the file port |
+| `docs/design/26-photos-library.md` | The Mac Photos library as a folder (virtual list items), its backup, and the display-matrix fix for clips. Read before touching `photos:` keys, the folder model's lists, or the video blitters |
 | `docs/plans/` | Forward plans not yet built (e.g. `audio-and-documents.md`) |
 
 If a change would contradict a **D1–D9** decision, stop and say so. Do not “just this once.”

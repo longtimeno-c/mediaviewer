@@ -35,6 +35,40 @@ TEST_CASE("BMP 24-bit round-trips BGR to RGBA", "[codec][bmp]") {
   REQUIRE(img->rgba[5] == 255);
 }
 
+TEST_CASE("BMP BI_BITFIELDS with an empty channel mask decodes that channel as 0", "[codec][bmp]") {
+  // A 1x1 32-bit BI_BITFIELDS image whose green mask is zero: a channel the
+  // file does not carry. The fuzzer found the scaler dividing by its zero
+  // maximum (src/codec/dib.cpp channel::get); it reads 0 now.
+  std::vector<std::uint8_t> b;
+  auto put16 = [&](std::uint32_t v) { b.push_back(v & 0xFF); b.push_back((v >> 8) & 0xFF); };
+  auto put32 = [&](std::uint32_t v) { for (int i = 0; i < 4; ++i) b.push_back((v >> (8 * i)) & 0xFF); };
+  b.push_back('B'); b.push_back('M');
+  put32(14 + 40 + 12 + 4);  // file size
+  put32(0);                 // reserved
+  put32(14 + 40 + 12);      // pixel offset: after the header and the three masks
+  put32(40);                // BITMAPINFOHEADER
+  put32(1); put32(1);       // 1 x 1
+  put16(1); put16(32);      // planes, bpp
+  put32(3);                 // BI_BITFIELDS
+  put32(4);                 // image size
+  put32(2835); put32(2835); // ppm
+  put32(0); put32(0);       // colours used / important
+  put32(0x00FF0000u);       // red mask
+  put32(0u);                // green mask: EMPTY
+  put32(0x000000FFu);       // blue mask
+  put32(0x00AA00CCu);       // the pixel: red 0xAA, blue 0xCC
+  auto img = decode(b);
+  REQUIRE(img);
+  REQUIRE(img->format == format_family::bmp);
+  REQUIRE(img->width == 1);
+  REQUIRE(img->height == 1);
+  REQUIRE(img->rgba.size() == 4);
+  CHECK(img->rgba[0] == 0xAA);
+  CHECK(img->rgba[1] == 0);
+  CHECK(img->rgba[2] == 0xCC);
+  CHECK(img->rgba[3] == 255);
+}
+
 TEST_CASE("PNG round-trips RGBA", "[codec][png]") {
   const std::uint8_t rgba[] = {10, 20, 30, 255, 40, 50, 60, 128};
   auto bytes = fixtures::png_rgba(2, 1, rgba);
