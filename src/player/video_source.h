@@ -51,6 +51,10 @@ struct video_frame {
   std::uint32_t    generation = 0;
   gfx::colour_desc colour{};
   bool             ten_bit    = false;  // P010 when true, NV12 when false
+  // The container's display matrix as quarter turns clockwise (0..3): a
+  // portrait phone clip is stored landscape with a 90 degree matrix, and the
+  // blitter turns it on the way to the screen (video_stream_info::rotation).
+  std::uint8_t     rotation   = 0;
 };
 
 // Where the pixels actually came from. The F3 overlay names this, so a software
@@ -73,8 +77,23 @@ struct video_stream_info {
   time_ns       start_time_ns  = 0;
   decoder_kind  decoder        = decoder_kind::none;
   bool          ten_bit        = false;
+  // Clockwise degrees the container asks a player to turn the decoded frame
+  // (the MOV/MP4 tkhd matrix, AV_PKT_DATA_DISPLAYMATRIX): 0, 90, 180 or 270.
+  // `width` / `height` are the CODED frame; the picture the user sees is
+  // height x width when this is 90 or 270.
+  std::uint32_t rotation       = 0;
   char          codec_name[32] = {};  // e.g. "hevc", "av1" — for the overlay
 };
+
+// The size of the picture as displayed, after the rotation.
+[[nodiscard]] constexpr std::uint32_t displayed_width(std::uint32_t w, std::uint32_t h,
+                                                      std::uint32_t rotation) noexcept {
+  return rotation == 90 || rotation == 270 ? h : w;
+}
+[[nodiscard]] constexpr std::uint32_t displayed_height(std::uint32_t w, std::uint32_t h,
+                                                       std::uint32_t rotation) noexcept {
+  return rotation == 90 || rotation == 270 ? w : h;
+}
 
 // Owns demux + video decode + the presentation ring for one clip.
 // Implemented by 5a. All methods [any-thread][no-block] unless marked.

@@ -570,8 +570,11 @@ void present_lab_mac::update_video_status() noexcept {
 
 bool present_lab_mac::picture_size(float* w, float* h) const noexcept {
   if (video_frame_) {
-    *w = static_cast<float>(video_frame_->width);
-    *h = static_cast<float>(video_frame_->height);
+    // The picture as displayed: a clip with a 90 / 270 degree matrix is
+    // coded landscape and shown portrait (video_source.h rotation).
+    const bool turned = (video_frame_->rotation & 1u) != 0;
+    *w = static_cast<float>(turned ? video_frame_->height : video_frame_->width);
+    *h = static_cast<float>(turned ? video_frame_->width : video_frame_->height);
     return true;
   }
   if (current_image_) {
@@ -1773,6 +1776,7 @@ void present_lab_mac::render_thread_main() noexcept {
           vp.origin_y = static_cast<float>(snapshot.chrome_height_px);
           vp.image_w = static_cast<float>(video_frame_->width);
           vp.image_h = static_cast<float>(video_frame_->height);
+          vp.rotation = video_frame_->rotation;
           id<MTLTexture> luma_tex = (__bridge id<MTLTexture>)video_frame_->luma;
           vp.texture_w = static_cast<float>(luma_tex.width);
           vp.texture_h = static_cast<float>(luma_tex.height);

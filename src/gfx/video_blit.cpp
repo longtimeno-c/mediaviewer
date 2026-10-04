@@ -45,7 +45,7 @@ cbuffer VideoCamera : register(b0) {
   float2 texture_size;  // the decoder's ALLOCATION, padded up to its alignment
   float2 origin;
   uint4  colour_a;      // x matrix, y transfer, z range, w bit_depth
-  uint4  colour_b;      // x primaries, yzw unused
+  uint4  colour_b;      // x primaries, y quarter turns clockwise, zw unused
 };
 
 Texture2D<float>  luma_tex   : register(t0);
@@ -139,12 +139,21 @@ float4 ps_main(VSOut vin) : SV_Target {
   uint range_id  = colour_a.z;
   uint depth     = colour_a.w;
   uint primaries = colour_b.x;
+  uint turns     = colour_b.y & 3;
 
+  // The camera frames the DISPLAYED picture: the coded frame turned by the
+  // container's matrix (a portrait phone clip is coded landscape).
+  float2 shown_size = ((turns & 1) != 0) ? image_size.yx : image_size;
   float2 image_px = pan + (vin.pos.xy - (origin + window_size * 0.5)) / zoom;
-  float2 uv = image_px / image_size;
+  float2 uv = image_px / shown_size;
   if (any(uv < 0.0) || any(uv > 1.0)) {
     return float4(0.016, 0.018, 0.024, 1.0);
   }
+  // Back from the displayed picture to the coded frame: the inverse of a
+  // clockwise turn. 90: shown (x, y) came from coded (y, 1 - x).
+  if (turns == 1)      uv = float2(uv.y, 1.0 - uv.x);
+  else if (turns == 2) uv = float2(1.0 - uv.x, 1.0 - uv.y);
+  else if (turns == 3) uv = float2(1.0 - uv.y, uv.x);
   // Sample the VISIBLE rect, not the allocation: a decoder surface is padded up
   // to its alignment, and sampling the full texture shows garbage down the
   // right and bottom edges.
@@ -229,7 +238,7 @@ struct alignas(16) video_blit_cb {
   float texture_w, texture_h;
   float origin_x, origin_y;
   std::uint32_t matrix, transfer, range, bit_depth;
-  std::uint32_t primaries, pad1, pad2, pad3;
+  std::uint32_t primaries, turns, pad2, pad3;
 };
 static_assert(sizeof(video_blit_cb) == 80, "cbuffer layout must match the HLSL declaration");
 
@@ -333,6 +342,7 @@ void video_blitter::draw(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* lum
   cb.range = static_cast<std::uint32_t>(colour.range);
   cb.bit_depth = colour.bit_depth;
   cb.primaries = static_cast<std::uint32_t>(colour.primaries);
+  cb.turns = p.rotation & 3u;
 
   D3D11_MAPPED_SUBRESOURCE mapped{};
   if (SUCCEEDED(ctx->Map(cb_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
