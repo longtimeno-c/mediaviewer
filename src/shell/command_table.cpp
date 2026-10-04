@@ -4,6 +4,7 @@
 // muscle memory. Later slices add rows here; they do not grow a second router.
 #include "shell/commands.h"
 
+#include <algorithm>
 #include <atomic>
 #include <iterator>
 #include <vector>
