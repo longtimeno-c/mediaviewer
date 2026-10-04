@@ -38,6 +38,7 @@ struct channel {
     bits = static_cast<unsigned>(std::bit_width(m >> shift));
   }
   [[nodiscard]] std::uint8_t get(std::uint32_t px) const noexcept {
+    if (bits == 0) return 0;  // an empty mask: no channel (fuzz: divide by zero below)
     const std::uint32_t v = (px & mask) >> shift;
     if (bits >= 8) return static_cast<std::uint8_t>(v >> (bits - 8));
     const std::uint32_t max = (1u << bits) - 1u;

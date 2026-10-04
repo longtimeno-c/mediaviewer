@@ -388,9 +388,11 @@ TEST_CASE("JPEG variants fail cleanly when truncated", "[codec][jpeg][variants]"
   lossless.in = JCS_GRAYSCALE;
   lossless.components = 1;
   lossless.lossless = true;
-  for (const auto& [spec, px] : {std::pair{cmyk, std::initializer_list<std::uint16_t>{1, 2, 3, 4}},
-                                 std::pair{lossless, std::initializer_list<std::uint16_t>{777}}}) {
-    const auto full = jpeg_write(spec, solid(spec, px));
+  // The samples are spelled out per case: an initializer_list held in a pair
+  // inside a braced range dangles by the loop body (msvc-asan:
+  // stack-use-after-scope).
+  for (const jpeg_spec& spec : {cmyk, lossless}) {
+    const auto full = jpeg_write(spec, spec.components == 4 ? solid(spec, {1, 2, 3, 4}) : solid(spec, {777}));
     for (std::size_t len = 0; len < full.size(); len += 7) {
       CAPTURE(len);
       auto r = decode(std::span<const std::uint8_t>(full.data(), len));
