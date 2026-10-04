@@ -391,12 +391,10 @@ TEST_CASE("JPEG variants fail cleanly when truncated", "[codec][jpeg][variants]"
   lossless.in = JCS_GRAYSCALE;
   lossless.components = 1;
   lossless.lossless = true;
-  // Vectors, not initializer_lists: a braced list's array lives only as long
-  // as the full expression it is in, so one held in a pair across the loop
-  // was read after its scope (the ASan build caught it).
-  const std::vector<std::uint16_t> cmyk_px{1, 2, 3, 4};
-  const std::vector<std::uint16_t> lossless_px{777};
-  for (const auto& [spec, px] : {std::pair{cmyk, cmyk_px}, std::pair{lossless, lossless_px}}) {
+  // Vectors, not initializer_lists: an initializer_list inside a braced pair
+  // keeps no backing array past the full expression (ASan: use-after-scope).
+  for (const auto& [spec, px] : {std::pair{cmyk, std::vector<std::uint16_t>{1, 2, 3, 4}},
+                                 std::pair{lossless, std::vector<std::uint16_t>{777}}}) {
     const auto full = jpeg_write(spec, solid(spec, px));
     for (std::size_t len = 0; len < full.size(); len += 7) {
       CAPTURE(len);

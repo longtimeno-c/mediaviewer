@@ -38,9 +38,9 @@ struct channel {
     bits = static_cast<unsigned>(std::bit_width(m >> shift));
   }
   [[nodiscard]] std::uint8_t get(std::uint32_t px) const noexcept {
-    // An empty mask is an empty channel (found by the ICO fuzzer: a zero
-    // mask made `max` 0 below). parse() refuses all three colour masks
-    // empty; one of them, or the alpha mask, may be.
+    // An empty mask is a channel the file does not carry (a 2-channel
+    // BI_BITFIELDS image, or BI_ALPHABITFIELDS with no alpha bits): it reads
+    // 0, never divides by its zero maximum (the ICO fuzzer found this).
     if (bits == 0) return 0;
     const std::uint32_t v = (px & mask) >> shift;
     if (bits >= 8) return static_cast<std::uint8_t>(v >> (bits - 8));

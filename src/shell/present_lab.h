@@ -251,12 +251,18 @@ class present_lab {
   // same shape as the F3 crash, one guard away from being the same bug.
   // PR 10: a still's size is its *edited* size (a quarter turn swaps it, a
   // crop shrinks it): the camera frames what the edit shows.
+  // A clip's size is the picture as DISPLAYED: a 90 / 270 degree container
+  // matrix (a portrait phone clip) swaps the coded width and height.
   float media_width() const {
-    if (current_video_.texture) return static_cast<float>(current_video_.width);
+    if (current_video_.texture) {
+      return static_cast<float>((current_video_.rotation & 1u) ? current_video_.height : current_video_.width);
+    }
     return current_image_ ? static_cast<float>(place_image(*current_image_).cropped.w) : 0.0f;
   }
   float media_height() const {
-    if (current_video_.texture) return static_cast<float>(current_video_.height);
+    if (current_video_.texture) {
+      return static_cast<float>((current_video_.rotation & 1u) ? current_video_.width : current_video_.height);
+    }
     return current_image_ ? static_cast<float>(place_image(*current_image_).cropped.h) : 0.0f;
   }
   // PR 10 edit geometry (shell/edit_view.h). The snapshot's slot for `img`, or

@@ -3433,6 +3433,36 @@ folder") offered "This folder | + Subfolders | Everywhere" with + Subfolders the
   and took it for a bug), and the home page already shows everyone.
 - The search panel keeps its three scopes: a search is a question, a folder is a place.
 
+
+## 2026-10-03 — The Photos library as a folder and its backup; clips with a display matrix (owner)
+
+Owner, while trying the Photos source: "can we have it as a folder that is opened? instead of
+just searching? (only if it has been added in settings)"; videos from the library "play
+sideways"; and "a tool using the same kind of tech as indexing the photos, to export them to a
+nas … backup all my icloud photos to a local directory". Design: `plan/26-photos-library.md`.
+
+- **Added: virtual items in a result list** (`shell/folder_model_mac.h`): an entry with no file,
+  listed as given under the pack's `photos:<id>` key, tiled by a provider, resolved to a file by
+  the host only as it is shown. The library opens as a listing titled *Photos Library*; the AI
+  chrome's search results take the same path (its own pre-resolve and on-view download are
+  gone). Only once the library was added in Settings (`mv.photosLibrary.added`): the folder row,
+  menu item and backup section are absent otherwise.
+- **Amended: "an original is downloaded only when viewed."** It is also downloaded when the user
+  **copies it out** (Copy To, drag-out) and when the user **runs the backup**: both are the user
+  asking for the file. The index still never downloads; viewing still fetches after a 400 ms stay
+  and clears after.
+- **Added: the backup** (`shell/photos_backup.h`): originals only (the shot, a Live Photo's
+  video, a RAW+JPEG pair's RAW, Hidden included), Import's `YYYY/YYYY-MM-DD` layout, every copy
+  through `io::verified_copy`, a manifest in the destination so a re-run writes zero bytes for
+  what is there. Not a mirror, no schedule.
+- **Fixed, both platforms: the player ignored the container's display matrix.** A portrait
+  phone clip played sideways, and its poster was sideways too. `video_stream_info::rotation`,
+  `video_frame::rotation`, both blitters, both hosts' picture size and `poster_frame` honour it.
+  **Thumbnail spec `jpg512.2` → `jpg512.3`**: posters of turned clips were wrong under .2, so
+  every .2 row regenerates on view (a one-time sweep, as PR 10's .1 → .2 was).
+- **Not changed:** the Photos source stays Mac-only (D9); Windows gets the rotation fix and the
+  portable engine's tests only.
+
 ## 2026-10-03 — Open add-ons: the owner's calls (plan/25 §17)
 
 On pull request #98 the owner answered the five calls plan/25 left open on 2026-09-29.

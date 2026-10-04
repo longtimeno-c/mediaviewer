@@ -42,6 +42,7 @@ Read in order:
 | [19-voice.md](19-voice.md) | Voice query add-on (PRs 27–28): on-device speech-to-text and a spoken count, over Local search, as its own Settings install. |
 | [20-edit-workspace.md](20-edit-workspace.md) | PR 29: one visible way in to every edit (Edit image / Edit video, `Enter`), a docked Edit pane, crop presets, and every metadata tag editable. Video editing goes to its own window. |
 | [21-video-editor.md](21-video-editor.md) | PRs 30–31: the Video Editor window (timeline, thumbnails, waveform, split / delete / in / out, keyframe or exact export). |
+| [26-photos-library.md](26-photos-library.md) | The Mac Photos library as a folder (virtual items, once added in Settings), its backup to a folder or NAS (originals, verified, resumable), and clips with a display matrix playing upright on both platforms. |
 | [22-editor-addon.md](22-editor-addon.md) | PRs 32–47, proposed: the optional Editor add-on — colour-managed grading (wheels, curves, qualifiers, tracked windows, nodes, LUTs, NR, scopes), a multi-track timeline, titles and captions, an audio mixer, delivery, and local model packs. |
 | [23-nle-search.md](23-nle-search.md) | Issue #71: Local search from inside Final Cut Pro — a workflow extension and a read-only search agent in MediaViewer.app, off until turned on (Mac-only, a D9 exception), and search results as FCPXML on both platforms. |
 | [24-transfer.md](24-transfer.md) | PRs 49–50: fast copies to and from a network share (several requests and files in flight, still verified), and Transfer, a general copier for any files. |
