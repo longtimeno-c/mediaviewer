@@ -1365,7 +1365,9 @@ void present_lab::render_thread_main() noexcept {
       gfx::video_blit_params bp;
       bp.pan_x = camera_.pan_x(); bp.pan_y = camera_.pan_y(); bp.zoom = camera_.zoom();
       bp.window_w = view.w; bp.window_h = view.h; bp.origin_x = view.x; bp.origin_y = view.y;
-      bp.image_w = media_width(); bp.image_h = media_height();
+      // The blitter wants the CODED frame plus the turn; media_width() is the displayed picture.
+      bp.image_w = static_cast<float>(current_video_.width); bp.image_h = static_cast<float>(current_video_.height);
+      bp.rotation = current_video_.rotation;
       bp.texture_w = static_cast<float>(desc.Width); bp.texture_h = static_cast<float>(desc.Height);
       video_blitter_.draw(device_.context(), current_video_.luma.Get(), current_video_.chroma.Get(), current_video_.colour, bp);
     }

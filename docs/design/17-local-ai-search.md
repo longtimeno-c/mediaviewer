@@ -632,6 +632,10 @@ names; nothing about it is logged or sent.
 
 ## Photos library source (macOS)
 
+A Photos result's path stays its key: the host lists it as a virtual item and resolves it to the
+file as it is shown, the same mechanism that opens the whole library as a folder once it was added
+in Settings ([26](26-photos-library.md)). The chrome prepares no files itself.
+
 The system Photos library (where iCloud Photos lives on a Mac) is one more remembered root beside
 folder roots, feeding the same indexer, index and search. Mac only: the source sits behind a
 portable interface (`src/addons/ai/photos_source.h`; PhotoKit in `photos_mac.mm`,

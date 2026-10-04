@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Darwin twin of image/thumb.cpp. Same on-disk cache spec (jpg512.2) and
+// Darwin twin of image/thumb.cpp. Same on-disk cache spec (jpg512.3) and
 // SQLite schema; two differences from the Windows file: POSIX '/' path
 // joining instead of thumb.cpp's hardcoded '\\', and decode_bytes_mac()
 // (PR 17, JPEG/PNG/BMP) instead of decode_bytes()'s full codec::decode()

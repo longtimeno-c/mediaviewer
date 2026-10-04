@@ -267,6 +267,9 @@ struct SettingsView: View {
             .pickerStyle(.menu).frame(width: 180)
           }
         }
+        // docs/design/26: the Photos library's backup, once the library was added
+        // (Local search -> Add Photos Library); absent otherwise.
+        PhotosBackupSection()
         // Import and (Milestone H, docs/design/17) Local search, as items of one
         // Add-ons section; Local search is absent on an Intel Mac.
         AddonsSection().padding(.top, 20)
