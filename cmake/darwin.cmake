@@ -476,6 +476,9 @@ add_library(mv_shell STATIC
   # Issue #72: files the viewer shows but must never change (a Photos library).
   src/shell/write_guard.cpp
   src/shell/write_guard.h
+  # docs/design/26: the Photos library backup engine (portable; PhotoKit is the host's).
+  src/shell/photos_backup.cpp
+  src/shell/photos_backup.h
   # PR 10: per-item edit stacks, crop mode, the lossless-write / export jobs.
   src/shell/edit_session.cpp
   src/shell/edit_session.h
@@ -498,7 +501,8 @@ add_library(mv_shell STATIC
   src/shell/os_integration.h
 )
 target_include_directories(mv_shell PUBLIC src/abi/include)
-target_link_libraries(mv_shell PUBLIC mv_core mv_io mv_meta mv_edit mv_addon mv_addon_media mv_clip)
+target_link_libraries(mv_shell PUBLIC mv_core mv_io mv_meta mv_edit mv_addon mv_addon_media mv_clip
+  PRIVATE ${MV_SQLITE_TARGET})
 add_library(mv::shell ALIAS mv_shell)
 
 find_package(imgui CONFIG REQUIRED)
@@ -575,6 +579,10 @@ set(MV_MAC_HOST_SOURCES
   src/shell/input_state.h
   src/shell/folder_model_mac.cpp
   src/shell/folder_model_mac.h
+  src/shell/photos_items_mac.mm
+  src/shell/photos_items_mac.h
+  src/shell/photos_backup_mac.mm
+  src/shell/photos_backup_mac.h
   # Milestone G: add-ons (Settings > Add-ons, the Import chrome's host side).
   src/shell/addons_mac.mm
   src/shell/addons_mac.h
@@ -612,6 +620,10 @@ function(mv_mac_host target)
     "-framework DiskArbitration"
     "-framework UniformTypeIdentifiers"
     "-framework MediaPlayer"  # PR 15: Now Playing / MPRemoteCommandCenter
+    # docs/design/26: the Photos library as a folder and its backup (shell/photos_items_mac.mm).
+    "-framework Photos"
+    "-framework AVFoundation"
+    "-framework ImageIO"
     "-framework SwiftUI"
     "-framework Combine"
     # PR 11: Crashpad's macOS client (audit tokens, IOKit registry reads) and
@@ -754,6 +766,10 @@ if(MV_BUILD_TESTS)
     tests/test_key_router.cpp
     tests/test_key_router_review.cpp
     tests/test_write_guard.cpp
+    tests/test_photos_backup.cpp
+    # docs/design/26: virtual items in a result list (the Photos library as a folder).
+    tests/test_folder_virtual_mac.cpp
+    src/shell/folder_model_mac.cpp
     # The D5 still set (PR 17, folded-in PR 7): in-code fixtures, plus the
     # optional corpora which SKIP when absent (docs/design/09: no RAW in git).
     tests/test_probe.cpp
@@ -796,6 +812,7 @@ if(MV_BUILD_TESTS)
     src/shell/minidump_scrub.cpp
     # PR 13 / 14: the clip core on synthetic clips, the clip session, trim mode.
     tests/test_clip.cpp
+    tests/test_poster.cpp
     tests/test_clip_helper.cpp
     tests/test_clip_session.cpp
     tests/test_trim_state.cpp

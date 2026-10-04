@@ -195,8 +195,6 @@ final class SearchModel: ObservableObject {
   @Published private(set) var folder = ""           // the scope folder ("" none open)
   /// The Photos library is an indexed root (issue #72): the "Photos" scope shows.
   @Published private(set) var photosIndexed = false
-  /// Photos results being made into files for the viewer: (done, total).
-  @Published private(set) var preparing: (done: Int, total: Int)?
   @Published private(set) var resultsGeneration = 0 // moves with every new result set
 
   private var slots: [String: ImageSlot] = [:]
@@ -760,99 +758,13 @@ final class SearchModel: ObservableObject {
 
   private func openNow(gallery: Bool) -> Bool {
     guard !results.isEmpty, shown != 0 else { return false }
-    if results.contains(where: { $0.isPhotos }) {
-      preparePhotosThenOpen(gallery: gallery)
-      return true
-    }
+    // A Photos result's path is its library key ("photos:<id>"): the host
+    // lists it as a virtual item and resolves it to a file as it is shown
+    // (docs/design/26; shell/photos_items_mac.h). Nothing is prepared here.
     return openList(results.map { $0.path }, results, gallery: gallery)
   }
 
-  private var prepareTask: Task<Void, Never>?
-
-  /// Photos results are opened where Photos keeps them, read-only, or as a
-  /// preview when only iCloud has the original (PhotosLibrary "Opening").
-  /// Usually a few milliseconds each; the panel says so while it runs, and
-  /// Esc stops it.
-  private func preparePhotosThenOpen(gallery: Bool) {
-    prepareTask?.cancel()
-    fetchTask?.cancel()
-    let list = results
-    let keys = list.filter { $0.isPhotos }.map { $0.path }
-    let search = shown
-    let total = keys.count
-    preparing = (0, total)
-    let model = self  // main-actor isolated, so Sendable; the task is short
-    let report: @Sendable (Int) -> Void = { done in
-      Task { @MainActor in
-        if let p = model.preparing, done > p.done { model.preparing = (done, total) }
-      }
-    }
-    prepareTask = Task { [weak self] in
-      let files = await PhotosLibrary.viewerFiles(for: keys, progress: report)
-      guard let self, !Task.isCancelled else { return }
-      self.preparing = nil
-      self.prepareTask = nil
-      // A newer search replaced these results meanwhile: nothing to open.
-      guard self.shown == search else { return }
-      var fileOf: [String: PhotosLibrary.ViewerFile] = [:]
-      for (k, f) in zip(keys, files) { if let f { fileOf[k] = f } }
-      // An asset deleted from Photos since it was indexed drops out.
-      let kept = list.filter { !$0.isPhotos || fileOf[$0.path] != nil }
-      guard !kept.isEmpty else {
-        self.showFailure()
-        return
-      }
-      PhotosOpened.shared.forget()
-      for (k, f) in fileOf { PhotosOpened.shared.remember(file: f.path, key: k, preview: f.preview) }
-      _ = self.openList(kept.map { fileOf[$0.path]?.path ?? $0.path }, kept, gallery: gallery,
-                        readOnly: fileOf.values.map { $0.path })
-    }
-  }
-
-  // The Photos list the viewer shows, for swapping a preview for its original.
-  private var listedPaths: [String] = []
-  private var listedMoments: [NSNumber] = []
-  private var listedReadOnly: [String] = []
-  private var listedTitle = ""
-  private var fetchTask: Task<Void, Never>?
-
-  /// The viewer landed on a preview: after a short pause (arrowing past
-  /// fetches nothing), its original comes from iCloud and replaces it in
-  /// place, as a full-resolution refinement of the first picture.
-  private func fetchOriginalIfPreview(_ path: String) {
-    fetchTask?.cancel()
-    fetchTask = nil
-    guard PhotosOpened.shared.isPreview(path), let i = listedPaths.firstIndex(of: path) else { return }
-    let key = PhotosOpened.shared.key(for: path)
-    fetchTask = Task { [weak self] in
-      try? await Task.sleep(nanoseconds: 400_000_000)
-      guard !Task.isCancelled else { return }
-      let original = await PhotosLibrary.downloadOriginal(for: key)
-      guard let self, !Task.isCancelled, let original,
-            i < self.listedPaths.count, self.listedPaths[i] == path else { return }
-      self.listedPaths[i] = original
-      self.listedReadOnly.append(original)
-      PhotosOpened.shared.remember(file: original, key: key)
-      let request: NSDictionary = [
-        "title": self.listedTitle,
-        "paths": self.listedPaths,
-        "moments": self.listedMoments,
-        "select": NSNumber(value: i),
-        "gallery": NSNumber(value: false),
-        "readOnly": self.listedReadOnly,
-      ]
-      _ = self.chrome?.hostOpenList(request, from: self)
-    }
-  }
-
-  func cancelPreparing() {
-    fetchTask?.cancel()
-    prepareTask?.cancel()
-    prepareTask = nil
-    preparing = nil
-  }
-
-  private func openList(_ paths: [String], _ list: [AIResult], gallery: Bool, readOnly: [String] = []) -> Bool {
+  private func openList(_ paths: [String], _ list: [AIResult], gallery: Bool) -> Bool {
     let chosen = results.indices.contains(selected) ? results[selected].id : ""
     let select = list.firstIndex(where: { $0.id == chosen }) ?? 0
     let request: NSDictionary = [
@@ -861,20 +773,8 @@ final class SearchModel: ObservableObject {
       "moments": list.map { NSNumber(value: $0.ptsMs) },
       "select": NSNumber(value: min(max(select, 0), list.count - 1)),
       "gallery": NSNumber(value: gallery),
-      // Photos files: the host refuses every write to them (shell/write_guard.h).
-      "readOnly": readOnly,
     ]
-    fetchTask?.cancel()
-    listedPaths = paths
-    listedMoments = list.map { NSNumber(value: $0.ptsMs) }
-    listedReadOnly = readOnly
-    listedTitle = request["title"] as? String ?? ""
     guard chrome?.hostOpenList(request, from: self) == true else { return false }
-    // The last list's on-view iCloud downloads go now that the viewer has let
-    // go of that list ("cleared after", issue #72): not before, when Cancel or
-    // a failure would have left the viewer on a file that was gone. Nothing in
-    // the new list is one of them (an original is fetched only on view).
-    DispatchQueue.global(qos: .utility).async { PhotosLibrary.clearDownloads() }
     let old = listed
     listed = shown
     if old != listed { releaseIfUnused(old) }
@@ -892,8 +792,7 @@ final class SearchModel: ObservableObject {
   func findSimilar(path: String, isVideo: Bool, positionMs: Int64) {
     guard !path.isEmpty else { return }
     let pts = isVideo ? max(0, positionMs) : -1
-    // An opened Photos result asks about its library asset, not the copy.
-    reference = Reference(kind: .similar(path: PhotosOpened.shared.key(for: path), ptsMs: pts),
+    reference = Reference(kind: .similar(path: path, ptsMs: pts),
                           label: "Similar to \((path as NSString).lastPathComponent)")
     run(keepSelection: false)
   }
@@ -926,14 +825,13 @@ final class SearchModel: ObservableObject {
   /// The canvas item changed: if it is a clip in the listed (or shown) search,
   /// its matches become the scrub markers; the current one is where it opened.
   func itemChanged(_ path: String, isVideo: Bool) {
-    fetchOriginalIfPreview(path)
     let search = listed != 0 ? listed : shown
     markerSeq += 1
     guard isVideo, search != 0, !path.isEmpty else {
       if !markerPath.isEmpty { clearMarkers() }
       return
     }
-    let asked = PhotosOpened.shared.key(for: path)
+    let asked = path  // a Photos result's viewer path is its library key (docs/design/26)
     let opened = search == shown ? (results.first(where: { $0.path == asked })?.ptsMs ?? -1) : -1
     let t = table
     let seq = markerSeq
@@ -984,7 +882,7 @@ final class SearchModel: ObservableObject {
     // Read now if the markers are for another clip (a no-block count and copy).
     if markerPath != path {
       markerSeq += 1  // an older read still in flight does not overwrite these
-      markerMs = SearchModel.clipMatches(table, search: search, path: PhotosOpened.shared.key(for: path))
+      markerMs = SearchModel.clipMatches(table, search: search, path: path)
       markerPath = path
     }
     guard !markerMs.isEmpty else { return false }

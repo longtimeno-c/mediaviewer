@@ -27,6 +27,11 @@ struct video_blit_params_mac {
   float texture_h = 1.0f;
   float origin_x = 0.0f;
   float origin_y = 0.0f;
+  // Quarter turns clockwise (0..3) the container asks for (the stream's
+  // display matrix; player's video_frame::rotation). `image_w` / `image_h`
+  // stay the CODED frame; the camera (pan, zoom, fit) works in the DISPLAYED
+  // picture, which is image_h x image_w for 1 and 3.
+  std::uint32_t rotation = 0;
 };
 
 class video_blitter_mac {

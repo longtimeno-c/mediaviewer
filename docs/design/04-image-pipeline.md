@@ -175,8 +175,9 @@ instead of refitting. Default off. Camera state only — prefetch and generation
 [`src/image/thumb.h`](../../src/image/thumb.h) (Windows), `thumb_mac.cpp` (macOS, same spec
 and schema).
 
-- **Spec `jpg512.2`:** a JPEG, long edge 512, never enlarged, ICC → sRGB, EXIF orientation
-  applied. Produced by the same first-pixel ladder (DCT scaling, RAW embedded preview, else a
+- **Spec `jpg512.3`:** a JPEG, long edge 512, never enlarged, ICC → sRGB, EXIF orientation
+  applied, and a clip's poster turned by its display matrix ([26](26-photos-library.md); `.2` rows
+  regenerate on view). Produced by the same first-pixel ladder (DCT scaling, RAW embedded preview, else a
   decode).
 - **Store:** SQLite (WAL) table `thumbs(path, mtime, size, spec, file)`, primary key
   `(path, mtime, size, spec)`, with the JPEG files beside the database in the per-user cache

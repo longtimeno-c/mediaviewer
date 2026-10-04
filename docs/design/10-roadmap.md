@@ -506,6 +506,20 @@ RAW-sized sets) is >= 2x `--mode seq` on the same files, runs alternated; unveri
 build; `mv_import_tests "[io]"` passes (the deep cases under ThreadSanitizer too); both
 present-loop gates hold while an `F8` move to the share runs.
 
+## Standalone PR 51 — The Photos library as a folder, its backup, and upright clips
+
+Design: [26-photos-library.md](26-photos-library.md). Mac for the library (D9, like the source);
+the rotation fix on both platforms. Once added in Settings, the library is a *Photos Library* row
+in the folder tree and File → Open Photos Library, listing virtual items resolved as shown; the
+backup copies every original, verified, into `YYYY/YYYY-MM-DD` with a manifest; clips with a
+display matrix play upright and their posters turn with them (`jpg512.3`).
+
+**Verify:** `mv_tests "[poster]" "[write_guard]" "[photos_backup]" "[folder][photos]"`; a 90°
+fixture clip shows portrait and upright; with the library added, the row opens it in the gallery,
+an iCloud-only item becomes its original after a moment, writes are refused, Copy To copies the
+original; a backup to a folder, then a second run that writes zero bytes; the Mac PR 1
+present-loop gate still holds.
+
 ## Not built
 
 - **PR 31** — Video Editor: several clips, zoom, dissolves ([21](21-video-editor.md)).

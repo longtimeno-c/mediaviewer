@@ -4,12 +4,29 @@
 // and decode threads, and hands frames to the render thread.
 //
 // OWNER: mediaviewer-48 (5a).
+#include <cmath>
 #include <cstdio>
 
 #include "core/trace.h"
 #include "player/video_internal.h"
 
 namespace mv::player {
+
+int stream_rotation_degrees(const AVStream* stream) noexcept {
+  if (!stream || !stream->codecpar) return 0;
+  const AVCodecParameters* p = stream->codecpar;
+  const AVPacketSideData* sd = av_packet_side_data_get(p->coded_side_data, p->nb_coded_side_data,
+                                                       AV_PKT_DATA_DISPLAYMATRIX);
+  if (sd == nullptr || sd->size < 9 * sizeof(std::int32_t)) return 0;
+  // av_display_rotation_get is counter-clockwise; a player turns the other way
+  // (the same convention as edit/clip_common.cpp's stream_rotation).
+  const double ccw = av_display_rotation_get(reinterpret_cast<const std::int32_t*>(sd->data));
+  if (ccw != ccw) return 0;  // NaN: a degenerate matrix
+  int cw = static_cast<int>(std::lround(-ccw / 90.0)) * 90;
+  cw %= 360;
+  if (cw < 0) cw += 360;
+  return cw;
+}
 
 gfx::colour_desc colour_from_stream(int avcol_space, int avcol_primaries, int avcol_trc,
                                     int avcol_range, int bit_depth) noexcept {
@@ -109,6 +126,8 @@ class ffmpeg_video_source final : public video_source {
     pipe_.info.width = static_cast<std::uint32_t>(pipe_.codec->width);
     pipe_.info.height = static_cast<std::uint32_t>(pipe_.codec->height);
     pipe_.info.ten_bit = bit_depth > 8;
+    // A portrait phone clip: coded landscape, shown turned (video_source.h).
+    pipe_.info.rotation = static_cast<std::uint32_t>(stream_rotation_degrees(stream));
     pipe_.info.start_time_ns = pipe_.start_time_ns;
     const AVRational fps = av_guess_frame_rate(pipe_.format.get(), stream, nullptr);
     pipe_.info.frame_rate = fps.den > 0 ? av_q2d(fps) : 0.0;
