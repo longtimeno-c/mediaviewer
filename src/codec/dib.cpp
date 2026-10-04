@@ -38,6 +38,10 @@ struct channel {
     bits = static_cast<unsigned>(std::bit_width(m >> shift));
   }
   [[nodiscard]] std::uint8_t get(std::uint32_t px) const noexcept {
+    // An empty mask is an empty channel (found by the ICO fuzzer: a zero
+    // mask made `max` 0 below). parse() refuses all three colour masks
+    // empty; one of them, or the alpha mask, may be.
+    if (bits == 0) return 0;
     const std::uint32_t v = (px & mask) >> shift;
     if (bits >= 8) return static_cast<std::uint8_t>(v >> (bits - 8));
     const std::uint32_t max = (1u << bits) - 1u;
@@ -79,7 +83,8 @@ status unpacked(const header& h, const palette_view& pal, std::span<const std::u
   const std::uint32_t m[4] = {masked ? h.mask[0] : 0x7C00u, masked ? h.mask[1] : 0x03E0u,
                               masked ? h.mask[2] : 0x001Fu, masked ? h.mask[3] : 0u};
   const channel cr(m[0]), cg(m[1]), cb(m[2]), ca(m[3]);
-  const bool alpha = h.alpha_channel();
+  // An alpha mask of zero bits is no alpha channel: opaque, as GDI draws it.
+  const bool alpha = h.alpha_channel() && (!masked || ca.bits != 0);
 
   for (std::uint32_t sy = 0; sy < h.height; ++sy) {
     if ((sy & 63u) == 0 && ctx && ctx->cancelled()) return status::cancelled;

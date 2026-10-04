@@ -137,11 +137,14 @@ std::vector<std::uint8_t> jpeg_write(const jpeg_spec& s, const std::vector<std::
   return out;
 }
 
-std::vector<std::uint16_t> solid(const jpeg_spec& s, std::initializer_list<std::uint16_t> px) {
+std::vector<std::uint16_t> solid(const jpeg_spec& s, std::span<const std::uint16_t> px) {
   std::vector<std::uint16_t> v;
   v.reserve(static_cast<std::size_t>(s.width) * s.height * px.size());
-  for (std::uint32_t i = 0; i < s.width * s.height; ++i) v.insert(v.end(), px);
+  for (std::uint32_t i = 0; i < s.width * s.height; ++i) v.insert(v.end(), px.begin(), px.end());
   return v;
+}
+std::vector<std::uint16_t> solid(const jpeg_spec& s, std::initializer_list<std::uint16_t> px) {
+  return solid(s, std::span<const std::uint16_t>(px.begin(), px.size()));
 }
 
 // ---- BMP / DIB writer --------------------------------------------------------
@@ -388,8 +391,12 @@ TEST_CASE("JPEG variants fail cleanly when truncated", "[codec][jpeg][variants]"
   lossless.in = JCS_GRAYSCALE;
   lossless.components = 1;
   lossless.lossless = true;
-  for (const auto& [spec, px] : {std::pair{cmyk, std::initializer_list<std::uint16_t>{1, 2, 3, 4}},
-                                 std::pair{lossless, std::initializer_list<std::uint16_t>{777}}}) {
+  // Vectors, not initializer_lists: a braced list's array lives only as long
+  // as the full expression it is in, so one held in a pair across the loop
+  // was read after its scope (the ASan build caught it).
+  const std::vector<std::uint16_t> cmyk_px{1, 2, 3, 4};
+  const std::vector<std::uint16_t> lossless_px{777};
+  for (const auto& [spec, px] : {std::pair{cmyk, cmyk_px}, std::pair{lossless, lossless_px}}) {
     const auto full = jpeg_write(spec, solid(spec, px));
     for (std::size_t len = 0; len < full.size(); len += 7) {
       CAPTURE(len);
