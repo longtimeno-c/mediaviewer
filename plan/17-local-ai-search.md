@@ -1244,6 +1244,11 @@ includes the library.
   rendition, so there is no second thumbnail cache.
 - A result shows a small Photos badge.
 
+**Amended 2026-10-03 (plan/26):** a Photos result's path stays its key; the host lists it as a
+*virtual item* and resolves it to the file as it is shown, and the same mechanism opens the whole
+library as a folder once it was added here. The paragraphs below describe the behaviour the user
+sees, which is unchanged; the chrome no longer prepares files itself.
+
 **Opening a result (owner, 2026-09-28: "without writing").** The viewer reads each result where
 Photos keeps it: the current rendition's file (`requestContentEditingInput` / `requestAVAsset`).
 There are no copies. The host refuses every write to it (`src/shell/write_guard.h`). Any path
