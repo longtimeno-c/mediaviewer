@@ -1,7 +1,9 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // On-disk JPEG-512 thumbnail cache. Spec jpg512.2 (docs/design/04, docs/design/12 2026-09-07;
-// .2 since PR 10: JPEG thumbs carry the EXIF orientation, so .1 rows regenerate).
+// .2 since PR 10: JPEG thumbs carry the EXIF orientation, so .1 rows regenerate;
+// .3 since 2026-10-03: a clip's poster is turned by its display matrix, so .2
+// rows regenerate).
 #pragma once
 
 #include <cstdint>
@@ -19,7 +21,7 @@ struct sqlite3;
 
 namespace mv::image {
 
-inline constexpr char kThumbSpec[] = "jpg512.2";
+inline constexpr char kThumbSpec[] = "jpg512.3";
 inline constexpr std::uint32_t kThumbLongEdge = 512;
 inline constexpr int kThumbJpegQuality = 80;
 
@@ -88,7 +90,7 @@ struct thumb_pixels {
 [[nodiscard]] result<std::vector<std::uint8_t>> make_thumb_jpeg(
     std::span<const std::uint8_t> src_bytes, const job_context* ctx = nullptr);
 
-// Same cache spec (jpg512.2), for callers that already hold pixels rather than
+// Same cache spec (jpg512.3), for callers that already hold pixels rather than
 // an encoded file — the video poster frame, which image/ must not decode
 // itself (player/ owns FFmpeg, and image/ never depends on player/). `rgba` is
 // tightly packed and already no larger than kThumbLongEdge on its long edge.

@@ -196,8 +196,9 @@ FairPlay; it is shown with a padlock and never played (nothing decrypts it). The
 only on both platforms: not in Windows' Default apps capabilities, and skipped by the Mac's
 make-default and adopt-new-types paths — the owner asked that they never be made the default.
 
-**Thumbnails are JPEG files on disk (2026-09-07).** Spec `jpg512.2` (was `.1`; bumped
-2026-09-24 when JPEG orientation was applied), keyed in SQLite by `(path, mtime, size, spec)`. The
+**Thumbnails are JPEG files on disk (2026-09-07).** Spec `jpg512.3` (was `.1`; bumped
+2026-09-24 when JPEG orientation was applied, and 2026-10-03 when clip posters began following
+the display matrix), keyed in SQLite by `(path, mtime, size, spec)`. The
 ABI returns a UTF-8 path; C# `BitmapImage` loads the file, so pixels never cross the ABI. On-disk
 BC7 is not used: a BC7 blob cannot be an `Image.Source`; it is the format to take if thumbs ever
 need to be GPU-resident. The Mac uses the same spec and schema (`image/thumb_mac.cpp`, 2026-09-17).
@@ -788,6 +789,16 @@ name, pin and rejections.
 "This folder | + Subfolders" only; everyone shows only with no folder open. A folder open is the
 user saying what they are looking at, and everyone-from-everywhere inside one read as a leak. A
 search is a question rather than a place, so the search panel keeps "Everywhere".
+
+**The Photos library as a folder, its backup, upright clips (2026-10-03, owner).** Once the
+library is added in Settings it opens as a listing of *virtual items* (`photos:<id>` keys, tiled
+from PhotoKit's cache, resolved to a file only as shown), and search results take the same path.
+An original is downloaded when viewed (after a 400 ms stay), copied out, or backed up — each is the
+user asking for the file; the index still never downloads. The backup copies originals into
+`YYYY/YYYY-MM-DD` through `io::verified_copy` with a manifest, so a re-run writes nothing for what is
+there; not a mirror, no schedule. Both platforms: the player honours a clip's display matrix
+(`video_stream_info::rotation`), because portrait phone clips played sideways. See
+[26](26-photos-library.md).
 
 **The Mac Photos library as a source (2026-09-28).** Read-only: no PhotoKit write API is called,
 and `shell/write_guard.h` refuses every write, move, bin, rotate, export and trim of a Photos file

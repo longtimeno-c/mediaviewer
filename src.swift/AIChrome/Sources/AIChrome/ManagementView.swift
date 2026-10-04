@@ -265,7 +265,11 @@ final class ManagementModel: ObservableObject {
                 kind: $0["kind"] as? String ?? "folder", access: $0["access"] as? String ?? "",
                 unavailable: int64($0["unavailable"]))
       }
-      await MainActor.run { if rows != self.roots { self.roots = rows } }
+      await MainActor.run {
+        if rows != self.roots { self.roots = rows }
+        // docs/design/26: the library is "added" while it is a root of the index.
+        PhotosLibrary.setAdded(rows.contains { $0.isPhotos })
+      }
     }
   }
 

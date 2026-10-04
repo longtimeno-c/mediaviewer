@@ -985,6 +985,10 @@ if(MV_BUILD_TESTS)
     src/shell/adjust_pane.cpp
     # PR 13 / 14: clip core on synthetic clips, the ABI's clip session, trim mode.
     tests/test_clip.cpp
+    tests/test_poster.cpp
+    # docs/design/26: the Photos backup engine, portable; PhotoKit is the Mac host's.
+    tests/test_photos_backup.cpp
+    src/shell/photos_backup.cpp
     tests/test_clip_helper.cpp
     tests/test_clip_session.cpp
     tests/test_trim_state.cpp
@@ -1053,6 +1057,7 @@ if(MV_BUILD_TESTS)
     set_tests_properties(updater_manifest_verification PROPERTIES TIMEOUT 300 LABELS updater)
   endif()
   target_link_libraries(mv_tests PRIVATE
+    ${MV_SQLITE_TARGET}  # docs/design/26: the Photos backup engine's manifest
     mv_core
     mv_gfx
     mv_player

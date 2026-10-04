@@ -15,12 +15,17 @@
 
 namespace mv::shell {
 
-// Inside a Photos library bundle, or registered read-only. Any thread.
+// Inside a Photos library bundle, a Photos item key ("photos:<id>",
+// docs/design/26), under the registered prefix, or registered read-only. Any thread.
 [[nodiscard]] bool write_protected(std::string_view path);
 // Any of these.
 [[nodiscard]] bool any_write_protected(std::span<const std::string> paths);
 // Replaces the registered set (a list opener's files; empty clears). Any thread.
 void set_read_only_paths(std::span<const std::string> paths);
+// A folder whose every file is read-only (docs/design/26: the Photos previews and
+// on-view downloads, ~/Library/Caches/MediaViewer/Photos Library). Empty
+// clears. Any thread.
+void set_read_only_prefix(std::string_view dir);
 
 // What a refused action says.
 inline constexpr const char* kWriteProtectedNotice =

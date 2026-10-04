@@ -31,6 +31,7 @@
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
+#include <libavutil/display.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/pixdesc.h>
 #include <libswscale/swscale.h>
@@ -429,6 +430,11 @@ void close_video_source(video_source* source) noexcept;
   return tag == MKTAG('d', 'r', 'm', 's') || tag == MKTAG('d', 'r', 'm', 'i') ||
          tag == MKTAG('d', 'r', 'a', 'c') || tag == MKTAG('e', 'n', 'c', 'a');
 }
+
+// The stream's display matrix (AV_PKT_DATA_DISPLAYMATRIX) as clockwise degrees
+// a player turns the frame by: 0, 90, 180 or 270. 0 when there is none or it
+// is degenerate. Pure; tested through poster_frame on a rotated fixture.
+[[nodiscard]] int stream_rotation_degrees(const AVStream* stream) noexcept;
 
 // Rescales a stream PTS to nanoseconds and makes it stream-relative.
 // AV_NOPTS_VALUE maps to `fallback`.
