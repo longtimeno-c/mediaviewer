@@ -123,7 +123,7 @@ struct engine::impl {
     std::shared_ptr<const std::vector<std::uint8_t>> bytes;
     hb_blob_t* blob = nullptr;
     hb_face_t* face = nullptr;
-    hb_font_t* font = nullptr;
+    hb_font_t* shaper = nullptr;  // not `font`: MSVC reads that as the struct's constructor
     FT_Face ft = nullptr;
     double upem = 1000.0;
     double ascent = 800.0, descent = 200.0, gap = 0.0;  // font units
@@ -138,7 +138,7 @@ struct engine::impl {
 
   ~impl() {
     for (font& f : fonts) {
-      if (f.font) hb_font_destroy(f.font);
+      if (f.shaper) hb_font_destroy(f.shaper);
       if (f.face) hb_face_destroy(f.face);
       if (f.blob) hb_blob_destroy(f.blob);
       if (f.ft) FT_Done_Face(f.ft);
@@ -198,11 +198,11 @@ struct engine::impl {
     f.blob = hb_blob_create(reinterpret_cast<const char*>(data), static_cast<unsigned>(size),
                             HB_MEMORY_MODE_READONLY, nullptr, nullptr);
     f.face = hb_face_create(f.blob, static_cast<unsigned>(index));
-    f.font = hb_font_create(f.face);
+    f.shaper = hb_font_create(f.face);
     f.upem = std::max(16u, hb_face_get_upem(f.face));
-    hb_font_set_scale(f.font, static_cast<int>(f.upem), static_cast<int>(f.upem));
+    hb_font_set_scale(f.shaper, static_cast<int>(f.upem), static_cast<int>(f.upem));
     hb_font_extents_t ext{};
-    if (hb_font_get_h_extents(f.font, &ext)) {
+    if (hb_font_get_h_extents(f.shaper, &ext)) {
       f.ascent = ext.ascender;
       f.descent = -ext.descender;
       f.gap = std::max<hb_position_t>(0, ext.line_gap);
@@ -245,7 +245,7 @@ struct engine::impl {
   }
 
   bool covers(int slot, std::string_view utf8) {
-    hb_font_t* f = fonts[static_cast<std::size_t>(slot)].font;
+    hb_font_t* f = fonts[static_cast<std::size_t>(slot)].shaper;
     for (std::size_t i = 0; i < utf8.size();) {
       const std::uint32_t cp = next_cp(utf8, i);
       if (!needs_glyph(cp)) continue;
@@ -303,7 +303,7 @@ shaped engine::shape(std::string_view utf8, const style& s) {
   hb_buffer_t* buf = hb_buffer_create();
   hb_buffer_add_utf8(buf, utf8.data(), static_cast<int>(utf8.size()), 0, static_cast<int>(utf8.size()));
   hb_buffer_guess_segment_properties(buf);
-  hb_shape(f.font, buf, nullptr, 0);
+  hb_shape(f.shaper, buf, nullptr, 0);
   unsigned count = 0;
   const hb_glyph_info_t* info = hb_buffer_get_glyph_infos(buf, &count);
   const hb_glyph_position_t* pos = hb_buffer_get_glyph_positions(buf, &count);
