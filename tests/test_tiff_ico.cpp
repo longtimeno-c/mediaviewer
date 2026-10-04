@@ -665,3 +665,38 @@ TEST_CASE("ICO round-trips through image::decode_bytes", "[codec][ico]") {
   CHECK(shown->rgba[2] == 120);
   CHECK(shown->rgba[3] == 255);
 }
+
+TEST_CASE("A BI_BITFIELDS BMP with an empty channel mask decodes that channel as 0", "[bmp][dib]") {
+  // Fuzz (ico harness, 2026-10-04): a zero mask made a zero-width channel and
+  // its scaling divided by zero. 16 bpp, 2 x 1, red 0xF800, green 0x07E0, blue 0.
+  std::vector<std::uint8_t> b(14 + 40 + 12 + 4, 0);
+  auto put16 = [&](std::size_t at, std::uint32_t v) {
+    b[at] = static_cast<std::uint8_t>(v);
+    b[at + 1] = static_cast<std::uint8_t>(v >> 8);
+  };
+  auto put32 = [&](std::size_t at, std::uint32_t v) {
+    for (int i = 0; i < 4; ++i) b[at + static_cast<std::size_t>(i)] = static_cast<std::uint8_t>(v >> (8 * i));
+  };
+  b[0] = 'B';
+  b[1] = 'M';
+  put32(2, static_cast<std::uint32_t>(b.size()));
+  put32(10, 14 + 40 + 12);
+  put32(14, 40);     // BITMAPINFOHEADER
+  put32(18, 2);      // width
+  put32(22, 1);      // height
+  put16(26, 1);      // planes
+  put16(28, 16);     // bpp
+  put32(30, 3);      // BI_BITFIELDS
+  put32(54, 0xF800);
+  put32(58, 0x07E0);
+  put32(62, 0);      // blue: empty
+  put16(66, 0xFFFF);
+  put16(68, 0xF800);
+  auto r = mv::codec::decode_bmp(b);
+  REQUIRE(r);
+  REQUIRE(r->width == 2);
+  CHECK(r->rgba[0] == 255);
+  CHECK(r->rgba[2] == 0);  // the empty channel
+  CHECK(r->rgba[4] == 255);
+  CHECK(r->rgba[5] == 0);
+}
