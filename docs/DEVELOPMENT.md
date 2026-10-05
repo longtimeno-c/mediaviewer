@@ -456,6 +456,7 @@ copy, and check Finder's **Open With** and a Quick Look thumbnail.
 | `Space` / `Backspace` | next / previous. On a clip, `Space` is play/pause. It is no longer the lab sweep |
 | `Home` / `End` | first / last in the folder |
 | `PageUp` / `PageDown` | back / forward ten |
+| `Ctrl+PageUp` / `Ctrl+PageDown` | previous / next page of a TIFF, PDF or DOCX (`⌘` on the Mac). Within a page: zoom (wheel, `+` `-`, `1`–`4`) and drag to pan |
 | `J` / `K` / `L` | clip transport: −10 s / pause / +10 s ([docs/design/16](design/16-commands.md)) |
 | `,` / `.` | frame step back / forward while paused |
 | `A` / `D` | previous / next beside the arrows, in every mode including on a clip |
@@ -1311,6 +1312,12 @@ pictures and breaks; not headers, footers, footnotes, text boxes or columns (doc
 Measured on the Mac (`mv_tests "[docx]"`; a `textutil`-written DOCX rendered by
 `MV_DOCX_DUMP=out.jpg MV_DOCX_FILE=x.docx mv_tests "[.docx-dump]"` and looked at). The Windows font
 lookup (`fonts_win.cpp`) and the DLLs' packaging are compiled and staged by CI only.
+
+**Settings → File types:** "Show audio files" and "Show documents" (on by default) leave MP3/M4A/M4P
+or PDF/DOCX out of folder listings; the file a folder was opened on, and the current stop, stay.
+Windows filters in the core (`mv_folder_set_hidden_kinds`, ABI 0.19, `[view] hide_audio` /
+`hide_documents` in settings.ini); the Mac host filters its folder model's listing (`mv.viewFlags`
+bits 12–13). Test: `mv_tests "[settings]"`. Gallery folder-tile counts still include hidden kinds.
 
 ### Performance pass (2026-09-26)
 

@@ -35,6 +35,17 @@ TEST_CASE("view settings round-trip through the flag word") {
   REQUIRE(mv::shell::view_settings::from_flags(settings.flags()).background == 4);
   REQUIRE(mv::shell::view_settings::from_flags(7 << mv::shell::kSettingBackgroundShift).background == 0);
   REQUIRE(mv::shell::view_settings::from_flags(0).flags() == 0);
+
+  // "Show audio files" / "Show documents": off sets a hide bit; a saved word
+  // from before the bits existed lists everything.
+  REQUIRE(settings.hidden_kinds() == 0);
+  settings.hide_audio = true;
+  settings.hide_documents = true;
+  const auto hidden = mv::shell::view_settings::from_flags(settings.flags());
+  REQUIRE(hidden.hide_audio);
+  REQUIRE(hidden.hide_documents);
+  REQUIRE(hidden.hidden_kinds() == (mv::io::kHideAudio | mv::io::kHideDocuments));
+  REQUIRE((settings.flags() & mv::shell::kSettingBackgroundMask) == (4 << mv::shell::kSettingBackgroundShift));
 }
 
 TEST_CASE("chrome bar height is 48 DIP, plus 28 with a path row") {

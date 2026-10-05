@@ -27,6 +27,10 @@ final class SettingsStore: ObservableObject {
   static let stickyZoom: Int32 = 1 << 3
   static let backgroundShift: Int32 = 4
   static let backgroundMask: Int32 = 7 << 4
+  /// Set = folder listings leave the kind out (settings.h kSettingHide*);
+  /// shown as "Show ..." switches, on while clear.
+  static let hideAudio: Int32 = 1 << 12
+  static let hideDocuments: Int32 = 1 << 13
 
   @Published private(set) var visible = false
   @Published private(set) var flags: Int32 = 0
@@ -159,12 +163,14 @@ private struct SettingsToggle: View {
   let title: String
   let detail: String
   let bit: Int32
+  /// On while the bit is clear (a "Show ..." row over a hide bit).
+  var inverted = false
   @ObservedObject var store: SettingsStore
   var body: some View {
     SettingsRow(title: title, detail: detail) {
       Toggle(title, isOn: Binding(
-        get: { store.flags & bit != 0 },
-        set: { store.setFlag(bit, $0) }))
+        get: { (store.flags & bit != 0) != inverted },
+        set: { store.setFlag(bit, $0 != inverted) }))
         .toggleStyle(.switch)
         .fixedSize()
     }
@@ -247,6 +253,13 @@ struct SettingsView: View {
           Toggle("Descending order", isOn: Binding(get: { store.sortDescending }, set: { store.sortDescending = $0 }))
             .toggleStyle(.switch).fixedSize()
         }
+        section("File types")
+        SettingsToggle(title: "Show audio files",
+                       detail: "List MP3, M4A and M4P files in folders. A file you open directly still opens.",
+                       bit: SettingsStore.hideAudio, inverted: true, store: store)
+        SettingsToggle(title: "Show documents",
+                       detail: "List PDF and Word (DOCX) files in folders. A file you open directly still opens.",
+                       bit: SettingsStore.hideDocuments, inverted: true, store: store)
         section("Appearance")
         SettingsRow(title: "Canvas background", detail: "The area behind your photos and videos.") {
           Picker("Canvas background", selection: Binding(get: { store.background }, set: { store.background = $0 })) {

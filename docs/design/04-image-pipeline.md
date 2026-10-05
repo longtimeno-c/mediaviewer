@@ -276,6 +276,17 @@ page past 0 is one decode at the view generation the turn set: no cache, no pref
 preview, published under its own key so the canvas fits it like a new stop. Windows turns pages
 through `mv_folder_select_page` (ABI 0.16); the Mac host calls `present_lab_mac::open_item(…, page)`.
 The host remembers the count the core last reported and shows "Page n of m" in its notice line.
+There is no scrolling between pages: the wheel and trackpad zoom, drag pans, as on any still.
+
+## Leaving kinds out of a listing
+
+Settings → File types, "Show audio files" and "Show documents" (both on by default), set
+`io::kHideAudio` / `kHideDocuments` (`io::is_hidden_kind`, by extension). The scan is unchanged
+and kept whole; the filter runs where the listing is applied, so switching a kind back on needs no
+rescan. Windows: `apply_folder_list` in the core, set by `mv_folder_set_hidden_kinds` (ABI 0.19).
+Mac: `-refreshFolderIfChanged` over the folder model's snapshot. The file a folder was opened on,
+and the stop on screen, always stay, so Open With on a hidden kind still shows it. Folder-tile
+counts (`folder_summary`) are not filtered.
 
 ## Not built
 

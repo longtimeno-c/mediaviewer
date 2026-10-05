@@ -50,7 +50,7 @@ extern "C" {
  * wrong is a struct layout change nobody notices until a field reads garbage.
  * ------------------------------------------------------------------------- */
 #define MV_ABI_VERSION_MAJOR 0
-#define MV_ABI_VERSION_MINOR 18 /* 0.10: PR 13 / 14 clip jobs and keyframe index (mediaviewer_clip.h); 0.11: issue #44 mv_video_set_hold; 0.12: issue #42 mv_status eject error categories; 0.13: PR 30 keep_ranges; 0.14: Milestone H result listings (mv_folder_open_list); 0.15: mv_folder_item clip flag; 0.16: pages (mv_image_info.page_count, mv_folder_select_page); 0.17: docs/design/25 open add-ons (mv_open_addon_*); 0.18: docs/design/25 contributed commands (mv_addon_commands_json) */
+#define MV_ABI_VERSION_MINOR 19 /* 0.10: PR 13 / 14 clip jobs and keyframe index (mediaviewer_clip.h); 0.11: issue #44 mv_video_set_hold; 0.12: issue #42 mv_status eject error categories; 0.13: PR 30 keep_ranges; 0.14: Milestone H result listings (mv_folder_open_list); 0.15: mv_folder_item clip flag; 0.16: pages (mv_image_info.page_count, mv_folder_select_page); 0.17: docs/design/25 open add-ons (mv_open_addon_*); 0.18: docs/design/25 contributed commands (mv_addon_commands_json); 0.19: mv_folder_set_hidden_kinds */
 
 /* Packed as (major << 16) | minor. [any-thread] */
 MV_API uint32_t MV_CALL mv_abi_version(void);
@@ -382,6 +382,18 @@ MV_API mv_status MV_CALL mv_folder_request_summary(mv_session_t session, uint32_
  * [any-thread][no-block] */
 MV_API mv_status MV_CALL mv_folder_set_sort(mv_session_t session, int32_t packed);
 MV_API mv_status MV_CALL mv_folder_get_sort(mv_session_t session, int32_t* out_packed);
+
+/* 0.19. Kinds the folder listing leaves out (Settings, "Show audio files" /
+ * "Show documents"): MV_FOLDER_HIDE_AUDIO (MP3, M4A, M4P) and
+ * MV_FOLDER_HIDE_DOCUMENTS (PDF, DOCX). The file a folder was opened on, and
+ * the current stop, stay listed even when of a hidden kind, so opening one
+ * explicitly still shows it. `set` re-applies the current listing on a worker
+ * like mv_folder_set_sort (FOLDER_CHANGED) and applies to every later open;
+ * unknown bits are dropped. Default 0, everything listed.
+ * [any-thread][no-block] */
+#define MV_FOLDER_HIDE_AUDIO 0x1u
+#define MV_FOLDER_HIDE_DOCUMENTS 0x2u
+MV_API mv_status MV_CALL mv_folder_set_hidden_kinds(mv_session_t session, uint32_t mask);
 
 /* 0.6 (PR 9). The immediate subdirectories of `utf8_dir` for the folder tree:
  * hidden, system and dot directories skipped, sorted case-insensitively. One

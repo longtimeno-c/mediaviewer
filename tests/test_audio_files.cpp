@@ -94,6 +94,24 @@ TEST_CASE("Audio extensions route through the player", "[audio][pairing]") {
   CHECK_FALSE(is_audio_name("song.mp3.jpg"));
 }
 
+TEST_CASE("Settings can leave audio and documents out of a listing", "[audio][pairing][settings]") {
+  using mv::io::is_hidden_kind;
+  using mv::io::kHideAudio;
+  using mv::io::kHideDocuments;
+  CHECK(mv::io::is_document_name("Report.PDF"));
+  CHECK(mv::io::is_document_name("letter.docx"));
+  CHECK_FALSE(mv::io::is_document_name("photo.jpg"));
+  CHECK_FALSE(is_hidden_kind("song.mp3", 0));
+  CHECK(is_hidden_kind("song.mp3", kHideAudio));
+  CHECK_FALSE(is_hidden_kind("song.mp3", kHideDocuments));
+  CHECK(is_hidden_kind("a.pdf", kHideDocuments));
+  CHECK_FALSE(is_hidden_kind("a.pdf", kHideAudio));
+  for (const char* name : {"photo.jpg", "clip.mp4", "raw.nef"}) {
+    CAPTURE(name);
+    CHECK_FALSE(is_hidden_kind(name, kHideAudio | kHideDocuments));
+  }
+}
+
 TEST_CASE("The audio card is opaque, even-sized and draws its glyph", "[audio][card]") {
   using mv::codec::card_kind;
   const auto music = mv::codec::make_card(card_kind::music, 641, 361);

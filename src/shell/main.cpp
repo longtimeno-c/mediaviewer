@@ -3887,6 +3887,7 @@ void chrome_on_command(void* ctx, int command, float arg) {
       }
       app->input.sticky_zoom = app->settings.sticky_zoom;
       app->input.background = app->settings.background;
+      (void)mv_folder_set_hidden_kinds(app->session, app->settings.hidden_kinds());
       app->chrome.apply_settings(chrome_flags(app), app->settings.sort);
       apply_view_state(app);
       return;
@@ -7524,6 +7525,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   }
   // PR 9: the saved folder sort applies to every open from here on.
   (void)mv_folder_set_sort(app.session, app.settings.sort);
+  (void)mv_folder_set_hidden_kinds(app.session, app.settings.hidden_kinds());
   // PR 13 / 14: every clip job that opens a decoder or an encoder runs in
   // MediaViewerClipJob.exe beside this exe, never in the viewer (docs/design/12
   // 2026-09-25). Set even if the file is missing: those jobs then fail

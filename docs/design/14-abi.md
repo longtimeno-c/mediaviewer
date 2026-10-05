@@ -267,6 +267,8 @@ typedef enum mv_pair_kind { MV_PAIR_NONE = 0, MV_PAIR_RAW_JPEG = 1, MV_PAIR_LIVE
 /* key in bits 0-2 (0 name, 1 modified, 2 size, 3 type, 4 date taken), descending in bit 3 */
 mv_status mv_folder_set_sort(mv_session_t, int32_t packed);
 mv_status mv_folder_get_sort(mv_session_t, int32_t* out_packed);
+/* 0.19: MV_FOLDER_HIDE_AUDIO | MV_FOLDER_HIDE_DOCUMENTS; the opened file and current stop stay */
+mv_status mv_folder_set_hidden_kinds(mv_session_t, uint32_t mask);
 mv_status mv_list_subdirectories(const char* utf8_dir, char* utf8, uint32_t cap, uint32_t* out_bytes);
 ```
 
@@ -503,6 +505,7 @@ Windows shell turns into live command rows ([25 §7](25-open-addons.md#7-the-con
 | 0.16 | `mv_image_info.page_count` (was `reserved`), `mv_folder_select_page` — pages of a multi-page still |
 | 0.17 | Open add-ons: `mv_open_addon_inspect` / `_install` / `_list_json` / `_remove` / `_theme_json` |
 | 0.18 | Contributed commands: `mv_addon_commands_json`; `description`, `hint_on`, `hint_text` in the installed / check JSON |
+| 0.19 | `mv_folder_set_hidden_kinds` — Settings can leave audio and/or documents out of the listing |
 
 ## Not built
 
