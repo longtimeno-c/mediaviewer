@@ -1654,8 +1654,12 @@ void present_lab_mac::render_thread_main() noexcept {
               fade_from_.reset();
               fade_.cancel();
               camera_.reset();
-              camera_.fit(static_cast<float>(frame->width), static_cast<float>(frame->height),
-                          usable_window_w(snapshot), usable_window_h(snapshot),
+              // Fit the picture as displayed, not the coded frame: an iPhone
+              // portrait clip is coded landscape with a 90 degree matrix, and
+              // fitting the coded size pinned it left and ran it off the bottom.
+              float pw = 0, ph = 0;
+              (void)picture_size(&pw, &ph);
+              camera_.fit(pw, ph, usable_window_w(snapshot), usable_window_h(snapshot),
                           /*immediate=*/true);
               media_fitted_ = true;
             }
