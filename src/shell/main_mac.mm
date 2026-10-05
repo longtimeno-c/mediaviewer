@@ -41,6 +41,7 @@
 #include <vector>
 
 #include "core/job_system.h"
+#include "core/json.h"
 #include "core/trace.h"
 #include "edit/histogram.h"
 #include "image/linear.h"
@@ -467,6 +468,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (BOOL)galleryVisible;
 - (void)runMenuCmd:(NSInteger)cmd;
 - (void)syncHomeAppearance;
+- (void)commandsChanged;
 - (void)setThemeCanvasActive:(BOOL)active
                      hasDark:(BOOL)hasDark
                         dark:(uint32_t)dark
@@ -694,6 +696,14 @@ extern "C" void mv_chrome_request_thumb(int32_t index) {
 extern "C" void mv_chrome_menu(int32_t cmd) {
   (void)mv::shell::crash::note_native_call();
   if (g_chrome_app) [g_chrome_app runMenuCmd:cmd];
+}
+void MvAppCommandsChanged() {
+  if (!g_chrome_app) return;
+  if ([NSThread isMainThread]) {
+    [g_chrome_app commandsChanged];
+  } else {
+    dispatch_async(dispatch_get_main_queue(), ^{ [g_chrome_app commandsChanged]; });
+  }
 }
 extern "C" bool mv_chrome_settings_visible(void) {
   return g_chrome_app ? [g_chrome_app settingsVisible] == YES : false;
@@ -5074,6 +5084,31 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
       MvAddonsOpenImport(marks);
       return YES;
     }
+    // plan/25: a row an add-on's manifest contributed. The payload it asked
+    // for rides along as JSON; the add-on's chrome does the work.
+    case addon_cmd_0: case addon_cmd_1: case addon_cmd_2: case addon_cmd_3:
+    case addon_cmd_4: case addon_cmd_5: case addon_cmd_6: case addon_cmd_7: {
+      const mv::shell::addon_command_row* row = mv::shell::addon_command(command);
+      if (!row) return NO;
+      mv::json::writer w;
+      if (row->payload == "marks") {
+        w.begin_array();
+        for (const std::string& m : _marks) w.string(m);
+        w.end_array();
+      } else if (row->payload == "marked_or_current") {
+        w.begin_array();
+        for (const auto& entry : [self markedOrCurrentEntries]) w.string(entry.path_utf8);
+        w.end_array();
+      } else if (row->payload == "screen") {
+        w.begin_object();
+        w.key("path").string([self currentItemPathForDrag].UTF8String ?: "");
+        w.key("video").boolean([self currentItemIsVideo] == YES);
+        w.end_object();
+      } else {
+        w.null();
+      }
+      return MvAddonsRunContributedCommand(row->addon, row->id, w.str()) ? YES : NO;
+    }
     case import_now: {
       if (!mv::shell::addon_commands_available()) return NO;
       std::vector<std::string> paths;
@@ -8366,6 +8401,11 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
 
 - (int)captureRow { return _captureRow; }
 - (uint64_t)keysGeneration { return _keysGeneration; }
+// plan/25: an add-on's rows came or went (addons_mac.mm).
+- (void)commandsChanged {
+  _router.rebuild(mv::shell::live_bindings());
+  ++_keysGeneration;
+}
 
 - (void)cancelKeyCapture {
   if (_captureMonitor) [NSEvent removeMonitor:_captureMonitor];

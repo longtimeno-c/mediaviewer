@@ -4,6 +4,7 @@
 // muscle memory. Later slices add rows here; they do not grow a second router.
 #include "shell/commands.h"
 
+#include <algorithm>
 #include <atomic>
 #include <iterator>
 #include <vector>
@@ -442,6 +443,17 @@ constexpr command_info kCommands[] = {
     {search_similar, "Find similar"},
     {search_next_match, "Next matching moment"},
     {search_prev_match, "Previous matching moment"},
+    // plan/25: the slots add-ons' manifests fill (set_addon_commands). Named
+    // and keyless here so the wire ids stay dense; a filled slot answers
+    // find_command with the add-on's own name instead.
+    {addon_cmd_0, "Add-on command 1", true},
+    {addon_cmd_1, "Add-on command 2", true},
+    {addon_cmd_2, "Add-on command 3", true},
+    {addon_cmd_3, "Add-on command 4", true},
+    {addon_cmd_4, "Add-on command 5", true},
+    {addon_cmd_5, "Add-on command 6", true},
+    {addon_cmd_6, "Add-on command 7", true},
+    {addon_cmd_7, "Add-on command 8", true},
 };
 
 const char* named_key(key k) noexcept {
@@ -498,12 +510,122 @@ std::vector<binding>& live_store() {
   return live;
 }
 
+// plan/25: the rows add-ons contribute, after the built-in ones. The slot's
+// command_info holds a pointer into `names`, which lives as long as the row.
+struct addon_slots {
+  std::vector<addon_command_row> rows;
+  std::string names[kAddonCommandSlots];
+  command_info infos[kAddonCommandSlots]{};
+};
+addon_slots& addon_store() {
+  static addon_slots* const s = new addon_slots;
+  return *s;
+}
+
+int addon_slot_of(command_id id) noexcept {
+  const int n = static_cast<int>(id) - static_cast<int>(addon_cmd_0);
+  return n >= 0 && n < kAddonCommandSlots ? n : -1;
+}
+
+void append_addon_rows(std::vector<binding>& live) {
+  const addon_slots& s = addon_store();
+  for (std::size_t i = 0; i < s.rows.size(); ++i) {
+    const addon_command_row& r = s.rows[i];
+    live.push_back(row(r.k, r.mods, r.modes, edge,
+                       static_cast<command_id>(static_cast<int>(addon_cmd_0) + static_cast<int>(i))));
+  }
+}
+
 }  // namespace
 
 std::span<const binding> live_bindings() noexcept { return live_store(); }
 
 void reset_live_bindings() noexcept {
   live_store().assign(std::begin(kBindings), std::end(kBindings));
+  append_addon_rows(live_store());
+}
+
+void set_addon_commands(std::span<const addon_command_row> rows) {
+  addon_slots& s = addon_store();
+  s.rows.assign(rows.begin(), rows.begin() + std::min<std::size_t>(rows.size(), kAddonCommandSlots));
+  for (int i = 0; i < kAddonCommandSlots; ++i) {
+    const bool live = static_cast<std::size_t>(i) < s.rows.size();
+    s.names[i] = live ? s.rows[static_cast<std::size_t>(i)].name : std::string();
+    s.infos[i] = command_info{static_cast<command_id>(static_cast<int>(addon_cmd_0) + i),
+                              s.names[i].c_str(), !live};
+  }
+  // The built-in rows keep whatever remaps they carry; the contributed rows
+  // start from their manifest keys.
+  auto& table = live_store();
+  table.resize(std::size(kBindings));
+  // An add-on whose manifest contributes rows supersedes the rows the table
+  // has built in for it (Import's two, plan/18): those lose their key, so the
+  // router never answers them ahead of the contributed row on the same key,
+  // and get it back when the add-on's rows go. Their indices never move.
+  const auto superseded = [&s](addon_family family) {
+    const char* id = family == addon_family::import ? "import" : family == addon_family::ai ? "ai" : "";
+    return std::any_of(s.rows.begin(), s.rows.end(),
+                       [id](const addon_command_row& r) { return r.addon == id; });
+  };
+  for (std::size_t i = 0; i < std::size(kBindings); ++i) {
+    const addon_family family = addon_family_of(kBindings[i].command);
+    if (family == addon_family::none) continue;
+    if (superseded(family)) {
+      table[i].k = key::none;
+    } else if (table[i].k == key::none) {
+      table[i].k = kBindings[i].k;
+      table[i].mods = kBindings[i].mods;
+    }
+  }
+  append_addon_rows(table);
+}
+
+const addon_command_row* addon_command(command_id id) noexcept {
+  const int n = addon_slot_of(id);
+  const addon_slots& s = addon_store();
+  return n >= 0 && static_cast<std::size_t>(n) < s.rows.size() ? &s.rows[static_cast<std::size_t>(n)]
+                                                               : nullptr;
+}
+
+mode_mask parse_modes(std::string_view modes) noexcept {
+  if (modes == "viewing") return kBrowse | kVideo | kIsland | kGallery;
+  if (modes == "video") return kVideo;
+  if (modes == "browse") return kBrowse;
+  if (modes == "all") return kAllModes;
+  return 0;
+}
+
+bool parse_key_label(std::string_view label, key& k, std::uint8_t& mods) noexcept {
+  k = key::none;
+  mods = mod_none;
+  if (label.empty() || label.size() > 32) return false;
+  std::string_view rest = label;
+  for (;;) {
+    const auto plus = rest.find('+');
+    // "Shift++" would name the plus key; a key of its own is the last part.
+    if (plus == std::string_view::npos || plus + 1 == rest.size()) break;
+    const std::string_view part = rest.substr(0, plus);
+    if (part == "Ctrl" || part == "Cmd") mods |= mod_ctrl;
+    else if (part == "Shift") mods |= mod_shift;
+    else if (part == "Alt" || part == "Option") mods |= mod_alt;
+    else return false;
+    rest.remove_prefix(plus + 1);
+  }
+  if (rest.empty()) return false;
+  if (rest.size() == 1) {
+    const char c = rest[0];
+    if (c < 0x21 || c > 0x7E) return false;
+    k = char_key(c >= 'a' && c <= 'z' ? static_cast<char>(c - 'a' + 'A') : c);
+    return k != key::none;
+  }
+  for (int v = 1; v < kKeyCount; ++v) {
+    const auto candidate = static_cast<key>(v);
+    if (const char* name = named_key(candidate); name && rest == name) {
+      k = candidate;
+      return true;
+    }
+  }
+  return false;
 }
 
 bool rebind_live(int index, key k, std::uint8_t mods) noexcept {
@@ -557,7 +679,9 @@ addon_family addon_family_of(command_id id) noexcept {
       return addon_family::none;
   }
 }
-bool is_addon_command(command_id id) noexcept { return addon_family_of(id) != addon_family::none; }
+bool is_addon_command(command_id id) noexcept {
+  return addon_slot_of(id) >= 0 || addon_family_of(id) != addon_family::none;
+}
 void set_addon_commands_available(addon_family family, bool available) noexcept {
   g_addon_commands[static_cast<int>(family)] = available;
 }
@@ -565,6 +689,7 @@ bool addon_commands_available(addon_family family) noexcept {
   return family == addon_family::none || g_addon_commands[static_cast<int>(family)].load();
 }
 bool addon_command_available(command_id id) noexcept {
+  if (addon_slot_of(id) >= 0) return addon_command(id) != nullptr;
   return addon_commands_available(addon_family_of(id));
 }
 void set_addon_commands_available(bool available) noexcept {
@@ -637,6 +762,10 @@ std::string describe_commands() {
 }
 
 const command_info* find_command(command_id id) noexcept {
+  if (const int n = addon_slot_of(id); n >= 0) {
+    const addon_slots& s = addon_store();
+    if (static_cast<std::size_t>(n) < s.rows.size()) return &s.infos[n];
+  }
   for (const auto& info : kCommands) {
     if (info.id == id) return &info;
   }
