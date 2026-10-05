@@ -54,6 +54,10 @@
        shows this once, from a click in Settings. Read-only, on this Mac only. -->
   <key>NSPhotoLibraryUsageDescription</key>
   <string>Local search can find photos and videos in your Photos library by what they show. It reads only what is already on this Mac, never changes your library, and sends nothing anywhere.</string>
+  <!-- Cmd+E on a Photos library item (docs/design/26): the Automation prompt
+       shows this once, the first time MediaViewer asks Photos to show a photo. -->
+  <key>NSAppleEventsUsageDescription</key>
+  <string>MediaViewer asks Photos to show the photo or video you are viewing when you choose Show in Photos. It sends nothing else to Photos.</string>
   <key>NSHumanReadableCopyright</key>
   <string>Copyright (C) 2026 longtimeno-c. Licensed under GPL-3.0-or-later. https://github.com/longtimeno-c/mediaviewer</string>
 

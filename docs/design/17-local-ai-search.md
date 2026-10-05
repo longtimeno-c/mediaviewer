@@ -682,6 +682,8 @@ host refuses every write to it (`src/shell/write_guard.h`): any path inside a
   show disabled), rotate / flip, Save copy / export, trims and clip exports. A refusal beeps and
   says "From your Photos library: read-only here."
 - **Allowed:** Copy To and drag-out, because both copy.
+- **`⌘E`** shows the result in the Photos app, selected, not its file in Finder
+  ([26](26-photos-library.md) "Show in Photos").
 
 **An original only iCloud has** opens at once as Photos' best local picture,
 `<name> (preview).jpg`, in `~/Library/Caches/MediaViewer/Photos Library/`. If the user stays on

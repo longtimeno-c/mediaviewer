@@ -485,6 +485,65 @@ expected fetch_file(std::string_view key, int kind, std::string_view dest_utf8, 
   }
 }
 
+namespace {
+
+// Photos.sdef: `spotlight` is event IPXS/spot; a media item is class IPmi and
+// its scripting id is PHAsset.localIdentifier. Built as a descriptor, not as
+// script source, so the identifier is data and nothing is compiled.
+NSAppleEventDescriptor* spotlight_event(NSString* local_id) {
+  NSAppleEventDescriptor* spec = [NSAppleEventDescriptor recordDescriptor];
+  [spec setDescriptor:[NSAppleEventDescriptor descriptorWithTypeCode:'IPmi'] forKeyword:keyAEDesiredClass];
+  [spec setDescriptor:[NSAppleEventDescriptor nullDescriptor] forKeyword:keyAEContainer];
+  [spec setDescriptor:[NSAppleEventDescriptor descriptorWithEnumCode:formUniqueID] forKeyword:keyAEKeyForm];
+  [spec setDescriptor:[NSAppleEventDescriptor descriptorWithString:local_id] forKeyword:keyAEKeyData];
+  spec = [spec coerceToDescriptorType:typeObjectSpecifier];
+  if (!spec) return nil;
+  NSAppleEventDescriptor* ev = [NSAppleEventDescriptor
+      appleEventWithEventClass:'IPXS'
+                       eventID:'spot'
+              targetDescriptor:[NSAppleEventDescriptor descriptorWithBundleIdentifier:@"com.apple.Photos"]
+                      returnID:kAutoGenerateReturnID
+                 transactionID:kAnyTransactionID];
+  [ev setParamDescriptor:spec forKeyword:keyDirectObject];
+  return ev;
+}
+
+}  // namespace
+
+bool show_in_photos(std::string_view key) noexcept {
+  if (!is_key(key)) return false;
+  @autoreleasepool {
+    NSString* local_id = ns(key.substr(kKeyPrefix.size()));
+    NSURL* app = [[NSWorkspace sharedWorkspace] URLForApplicationWithBundleIdentifier:@"com.apple.Photos"];
+    if (!local_id || !app) return false;
+    NSWorkspaceOpenConfiguration* config = [NSWorkspaceOpenConfiguration configuration];
+    config.activates = YES;
+    // Launch (or bring forward) first: an Apple Event to an app that is not
+    // running fails. The completion runs on a private queue, never main;
+    // the send waits for Photos' reply there, and the first one also waits
+    // on the user's answer to the Automation prompt.
+    [[NSWorkspace sharedWorkspace]
+        openApplicationAtURL:app
+               configuration:config
+           completionHandler:^(NSRunningApplication* running, NSError* error) {
+             if (!running || error) return;
+             NSAppleEventDescriptor* ev = spotlight_event(local_id);
+             if (!ev) return;
+             // A Photos that is still launching cannot take the event yet;
+             // try again for a few seconds. Any other answer is final:
+             // consent refused (errAEEventNotPermitted) or an asset Photos
+             // does not show leaves Photos open, unselected.
+             for (int attempt = 0; attempt < 10; ++attempt) {
+               NSError* send_error = nil;
+               [ev sendEventWithOptions:NSAppleEventSendWaitForReply timeout:30 error:&send_error];
+               if (!send_error || (send_error.code != procNotFound && send_error.code != connectionInvalid)) return;
+               [NSThread sleepForTimeInterval:0.5];
+             }
+           }];
+  }
+  return true;
+}
+
 std::string cache_dir() {
   NSArray<NSString*>* caches = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
   NSString* base = caches.firstObject ?: [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Caches"];

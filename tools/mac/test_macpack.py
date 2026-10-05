@@ -302,6 +302,8 @@ class CrashpadHandlerTests(unittest.TestCase):
         with open(macpack.APP_ENTITLEMENTS, "rb") as f:
             ent = plistlib.load(f)
         self.assertIs(ent.get("com.apple.security.personal-information.photos-library"), True)
+        # Cmd+E on a Photos item asks Photos to show it (docs/design/26 "Show in Photos").
+        self.assertIs(ent.get("com.apple.security.automation.apple-events"), True)
         # The viewer opens any folder: sandboxing the app is a different decision.
         self.assertNotIn("com.apple.security.app-sandbox", ent)
 

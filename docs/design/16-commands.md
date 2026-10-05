@@ -130,7 +130,7 @@ crop. Keys are shown Windows-style; on macOS read `⌘` for `Ctrl`.
 | `F` / `F11` | all | Fullscreen |
 | `Ctrl+O` | All but crop | Open media… |
 | `Ctrl+Shift+O` | All but crop | Open folder… |
-| `Ctrl+E` | all | Reveal the current file in Explorer / Finder |
+| `Ctrl+E` | all | Reveal the current file in Explorer / Finder; a Mac Photos library item opens in Photos instead ([26](26-photos-library.md)) |
 | `Ctrl+W` | all | Close window |
 | `Ctrl+,` | All but crop | Settings |
 | `Ctrl+G` | Viewing | Go to index |

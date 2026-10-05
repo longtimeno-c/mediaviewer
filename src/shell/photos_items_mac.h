@@ -119,6 +119,14 @@ struct library_file {
 [[nodiscard]] expected fetch_file(std::string_view key, int kind, std::string_view dest_utf8,
                                   const std::atomic<bool>* cancel);
 
+// [main] Show In Photos (Cmd+E on a library item): opens Photos with the
+// asset selected, through Photos' scripting `spotlight` command (an Apple
+// Event; the user answers the system's Automation prompt once). Returns at
+// once: the launch and the event run off the main thread (rule 1). Without
+// Automation consent, or if Photos does not answer, Photos is still opened
+// and brought forward, just without the selection. False for a non-key.
+bool show_in_photos(std::string_view key) noexcept;
+
 // ~/Library/Caches/MediaViewer/Photos Library: previews and on-view downloads.
 // Every file under it is write-protected (the host registers the prefix).
 [[nodiscard]] std::string cache_dir();
