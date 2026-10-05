@@ -125,6 +125,10 @@ endif()
 find_package(GIF REQUIRED)
 find_package(WebP CONFIG REQUIRED)
 find_package(TIFF REQUIRED)
+# DOCX text (codec/text.cpp): FreeType (FTL) draws, HarfBuzz (MIT) shapes.
+find_package(Freetype REQUIRED)
+find_package(harfbuzz CONFIG REQUIRED)
+find_package(ZLIB REQUIRED)
 find_package(libheif CONFIG REQUIRED)
 if(TARGET libheif::heif)
   set(MV_HEIF_TARGET libheif::heif)
@@ -173,6 +177,15 @@ add_library(mv_codec STATIC
   src/codec/orientation.h
   src/codec/os_decode_mac.cpp
   src/codec/pdf_mac.cpp
+  src/codec/zip.cpp
+  src/codec/zip.h
+  src/codec/xml.cpp
+  src/codec/xml.h
+  src/codec/text.cpp
+  src/codec/text.h
+  src/codec/fonts.h
+  src/codec/docx.cpp
+  src/codec/fonts_mac.cpp
   src/codec/os_decode.h
   src/codec/crash_test_hook.cpp
   src/codec/crash_test_hook.h
@@ -185,7 +198,10 @@ target_link_libraries(mv_codec
   PRIVATE JPEG::JPEG ${MV_SPNG_TARGET} GIF::GIF WebP::webp WebP::webpdemux
           TIFF::TIFF ${MV_HEIF_TARGET} ${MV_AVIF_TARGET} libraw::raw_r
           # PDF (codec/pdf_mac.cpp): the system renderer.
-          "-framework CoreGraphics" "-framework CoreFoundation")
+          "-framework CoreGraphics" "-framework CoreFoundation"
+          # DOCX (codec/docx.cpp, text.cpp, zip.cpp; fonts_mac.cpp finds files
+          # through CoreText and reads them through io/).
+          Freetype::Freetype harfbuzz::harfbuzz ZLIB::ZLIB "-framework CoreText" mv_io)
 add_library(mv::codec ALIAS mv_codec)
 target_link_libraries(mv_codec PRIVATE mv_raw_openmp)
 
@@ -798,6 +814,7 @@ if(MV_BUILD_TESTS)
     tests/test_audio_files.cpp
     tests/test_pages.cpp
     tests/test_pdf.cpp
+    tests/test_docx.cpp
     # Issue #43: Space at natural EOF restarts, on the real Metal player.
     tests/test_video_eof_mac.mm
     tests/test_audio_only_mac.mm

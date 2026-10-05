@@ -87,6 +87,17 @@ inline constexpr std::uint32_t kPdfPreviewEdge = 1024;
                                         const job_context* ctx = nullptr,
                                         std::uint32_t long_edge = kPdfLongEdge);
 
+// DOCX (docs/plans/audio-and-documents.md §2.5): laid out and drawn by codec/
+// itself (docx.cpp over codec/text: HarfBuzz + FreeType, fonts found by the
+// OS), so it is the same everywhere. A page is `long_edge` px on its long edge
+// in sRGB on white; the raster carries page and page_count, which do not
+// depend on the size. Readable pages, not Word's: see docx.cpp for what is drawn.
+inline constexpr std::uint32_t kDocxLongEdge = 3200;
+inline constexpr std::uint32_t kDocxPreviewEdge = 1024;
+[[nodiscard]] result<raster> decode_docx(std::span<const std::uint8_t> bytes, std::uint32_t page = 0,
+                                         const job_context* ctx = nullptr,
+                                         std::uint32_t long_edge = kDocxLongEdge);
+
 // How many LibRaw threads the image on screen may use. Leaves processors for
 // the present loop; prefetch passes 1 instead. Output pixels do not depend on it.
 [[nodiscard]] unsigned raw_foreground_threads() noexcept;

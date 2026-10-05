@@ -84,6 +84,17 @@
       "platform": "windows | osx"
     },
     {
+      "$comment": "DOCX (2026-10-04, docs/plans/audio-and-documents.md §2.5): codec/ lays out and draws the pages itself, one code path on both platforms. No optional features: TrueType/OpenType outlines and OpenType shaping only.",
+      "name": "freetype",
+      "default-features": false,
+      "platform": "windows | osx"
+    },
+    {
+      "name": "harfbuzz",
+      "default-features": false,
+      "platform": "windows | osx"
+    },
+    {
       "name": "libheif",
       "default-features": false,
       "platform": "windows"

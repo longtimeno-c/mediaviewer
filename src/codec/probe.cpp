@@ -3,6 +3,7 @@
 #include "codec/format.h"
 
 #include <cstring>
+#include <string_view>
 
 namespace mv::codec {
 namespace {
@@ -90,6 +91,17 @@ format_family probe(std::span<const std::uint8_t> header) noexcept {
                              (header[0] == 'M' && header[1] == 'M' && header[2] == 0 &&
                               header[3] == 42))) {
     return format_family::tiff;
+  }
+  // DOCX: a zip whose first parts are an Office package's. The first local
+  // header is "[Content_Types].xml" or a word/ part; decode_docx checks for
+  // word/document.xml before it believes it.
+  if (header.size() >= 30 && header[0] == 'P' && header[1] == 'K' && header[2] == 3 && header[3] == 4) {
+    const std::size_t limit = header.size() < 1024 ? header.size() : 1024;
+    const std::string_view head(reinterpret_cast<const char*>(header.data()), limit);
+    if (head.find("word/") != std::string_view::npos ||
+        head.substr(30, 19) == "[Content_Types].xml") {
+      return format_family::docx;
+    }
   }
   // PDF allows bytes before the header; readers look in the first 1 KiB.
   // Last: every format above is decided at offset 0.
