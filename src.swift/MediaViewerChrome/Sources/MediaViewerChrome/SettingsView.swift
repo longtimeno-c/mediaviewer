@@ -195,6 +195,7 @@ struct SettingsView: View {
   @ObservedObject private var store = SettingsStore.shared
   @ObservedObject private var theme = ThemeStore.shared
   @ObservedObject private var addons = OpenAddonStore.shared
+  @ObservedObject private var photos = PhotosBackupStore.shared
   @State private var filter = ""
   @State private var keyboard = false
 
@@ -295,6 +296,7 @@ struct SettingsView: View {
         // docs/design/26: the Photos library's backup, once the library was added
         // (Local search -> Add Photos Library); absent otherwise.
         PhotosBackupSection()
+          .id(PhotosBackupStore.anchor)
         // Import and (Milestone H, docs/design/17) Local search, as items of one
         // Add-ons section; Local search is absent on an Intel Mac.
         AddonsSection().padding(.top, 20)
@@ -312,9 +314,19 @@ struct SettingsView: View {
         withAnimation(nil) { scroll.scrollTo(OpenAddonSheet.anchor, anchor: .center) }
       }
     }
+    // docs/design/26: the welcome card's iCloud Photos row opens Settings here.
+    .onChange(of: photos.revealRequests) { _, _ in
+      guard photos.takeReveal() else { return }
+      keyboard = false
+      DispatchQueue.main.async {
+        withAnimation(nil) { scroll.scrollTo(PhotosBackupStore.anchor, anchor: .top) }
+      }
+    }
     .onAppear {
       if addons.offer != nil {
         scroll.scrollTo(OpenAddonSheet.anchor, anchor: .center)
+      } else if photos.takeReveal() {
+        scroll.scrollTo(PhotosBackupStore.anchor, anchor: .top)
       } else if theme.takeChosenHere() {
         // Choosing a theme rebuilds the chrome; stay at the row that did it.
         scroll.scrollTo(ThemeStore.rowAnchor, anchor: .center)

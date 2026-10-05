@@ -12,14 +12,16 @@ doing them and is a viewer fix on both platforms.
 
 1. **The library as a folder.** Once the user has added the Photos library in Settings (Local
    search → *Add Photos Library*), it is one more place to open: a **Photos Library** row at the
-   top of the folder tree (`⌘⇧E`), an **iCloud Photos** row with a cloud at the top of the
-   welcome card's recent folders and of **File → Open Recent** / the Dock menu (owner,
-   2026-10-05; it has no remove button and follows Settings when the window is key again),
-   **File → Open Photos Library**, and
+   top of the folder tree (`⌘⇧E`), an **iCloud Photos** row with a cloud at the top of
+   **File → Open Recent** / the Dock menu (owner, 2026-10-05; it has no remove button and
+   follows Settings when the window is key again), **File → Open Photos Library**, and
    `mv_chrome_open_photos_library` for the chrome. It opens as a listing titled *Photos
    Library* — the gallery, filmstrip, keys and marks of any folder — oldest first (the Photos
    app's Library order), the newest selected. Not before the library was added: the row, the
    menu item and the backup section are absent until then, and absent again after *Remove*.
+   The welcome card also shows an **iCloud Photos** row, on its own above *Recent folders*.
+   It opens Settings at *Photos Library* (the backup), not the listing (owner, 2026-10-05):
+   from the empty window, the library's settings are what the row is for.
 2. **Backup.** Settings → *Photos Library* → **Back Up Now**: every original of the library,
    copied and verified into a folder of the user's choosing (a NAS share, a drive), under
    Import's layout `YYYY/YYYY-MM-DD/<original name>`. Run again, it copies only what is new or
