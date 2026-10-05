@@ -6294,6 +6294,15 @@ bool handle_app_key(app_state* app, const MSG& msg) noexcept {
   }
   const auto event = translate_key(msg, is_up);
   if (event.k == mv::shell::key::none) return false;
+  // The router yields every Settings key to XAML, but XAML only sees keys
+  // aimed at its island. With focus on the canvas HWND (or on no window, after
+  // an Alt+Tab or a picker returned activation) Esc reached nobody and
+  // Settings stayed open; close it here, as the Mac host does.
+  if (app->settings_open && is_down && msg.hwnd == app->window &&
+      event.k == mv::shell::key::escape && event.mods == mv::shell::mod_none && !event.repeat) {
+    walk_back(app, mv::shell::back_target::settings);
+    return true;
+  }
   if (handle_folder_find(app, event, is_down)) return true;
   const auto routed = app->router.on_key(event, view_state_of(app));
   if (!routed.handled) return false;
@@ -7634,7 +7643,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
 
   MSG msg{};
   while (::GetMessageW(&msg, nullptr, 0, 0) > 0) {
-    // The router yields every Settings key, including Escape, to XAML.
+    // The router yields every Settings key, including Escape, to XAML (an Esc
+    // aimed at the canvas HWND closes Settings in handle_app_key).
     if (handle_app_key(&app, msg)) continue;
     if (app.chrome.pre_translate(&msg)) continue;
     ::TranslateMessage(&msg);

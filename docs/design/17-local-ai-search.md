@@ -487,8 +487,7 @@ faces:
 | **IR-50 (0.30), full size** | **0.9994** | **0.9982** | **0.9988** | 426 |
 | **IR-50 (0.30), ~24 px faces** | **0.9994** | **0.9966** | **0.9980** | 429 |
 
-**Re-run** (`people_reanalyse`; "Re-analyse faces" in Settings → People on the Mac, the People
-window on Windows). It forgets what the People pass scanned and the workers analyse every photo
+**Re-run** (`people_reanalyse`; "Re-analyse faces" in Settings → People on both platforms). It forgets what the People pass scanned and the workers analyse every photo
 and clip again. faces.db records each vector's embedder (`faces.spec`) and compares only vectors
 of the current one. A re-analysed face whose box matches an existing one (IoU ≥ 0.5) **keeps its
 row: id, person, name, pin, "not this person"**; a new face waits unassigned; an old face the
@@ -581,9 +580,9 @@ qualifies at all* (minimum faces, or a name) is still judged over the whole inde
 `faces_db::people(min, assets)` does one indexed pass per person against the scope's asset set.
 
 Chrome: a "People in · This folder | + Subfolders · <folder>" control at the top of the People
-grid (Settings → People on the Mac, the People window on Windows). Default **+ Subfolders**; it
+grid (Settings → People on both platforms). Default **+ Subfolders**; it
 follows the folder the viewer opens. Everyone shows only when no folder is open (the viewer's
-home): the control is then absent on the Mac, and disabled reading "Everywhere" on Windows. A scope
+home): the control is then absent. A scope
 of Everywhere left from before reads as + Subfolders when a folder opens. "Show photos" on a card
 and the empty-grid wording search the same scope. The choice is not persisted. The status bar's
 people count stays the whole index's. A pack without the entry shows everyone. The search panel
