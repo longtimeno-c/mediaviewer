@@ -628,8 +628,9 @@ struct ManagementView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
       StatusPill(line: model.status, onIndexAnyway: { model.indexAnyway() }) { model.setPaused($0) }
-      if !model.status.sound.isEmpty {
-        // "Sound: 12 of 40 clips · Speech: 8 of 40", also once it is done.
+      if !model.status.sound.isEmpty && model.status.stages.isEmpty {
+        // "Sound: 12 of 40 clips · Speech: 8 of 40" once it is done; while a
+        // pass runs, the pill's stages say it.
         Label(model.status.sound, systemImage: "speaker.wave.2")
           .font(AITheme.font(12)).foregroundStyle(AITheme.body)
           .contentTransition(.numericText())

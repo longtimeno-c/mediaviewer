@@ -454,9 +454,12 @@ MV_AI_SPEECH_CLIP=/tmp/speech.mp4 \
       clicked, with the hint "install Sound above", until the piece is loaded; enabled after. Each indexed
       folder's menu offers Default / Pictures / Sound / Both (→ `root_set_media`; Sound/Both
       disabled without the piece) and shows its choice ("Videos: Sound").
-- [ ] **Status:** the management view and the panel footer show
-      "Sound: 12 of 40 clips · Speech: 8 of 40" while it runs; the command-bar pill says
-      "Indexing sound 12 of 40 clips" once pictures are done.
+- [ ] **Status:** the panel footer and the management view name the running pass
+      ("Indexing pictures 1,162 of 24,300 · about 3–4 h", then "Indexing sound 12 of 40 clips",
+      then "Indexing speech …"), the ring follows that pass, and the other passes sit under it
+      as stages ("✓ Pictures  ◔ Speech 26%"); the pictures ETA is not shown once pictures are
+      done. The management view shows "Sound: 40 of 40 clips · Speech: 40 of 40" once all are
+      done. The command-bar pill says "Indexing sound 12 of 40 clips" once pictures are done.
 - [ ] **Sound search:** a clip with a dog barking at a known time; with Sound indexed, ⌘F
       "dog barking" (Sounds chip on, or no chip) finds that clip; the tile carries the
       `speaker.wave.2` badge; Enter opens it paused at the moment, within 2 s of the bark.
