@@ -992,6 +992,12 @@ folder / subfolders I'm on?" Both halves, one shared core change.
   counted. Everywhere is exactly what the grid showed before.
 - **Not persisted:** the choice is per window / per Settings session; reopening starts at
   + Subfolders. The status bar's people count (`mv_ai_status.people`) stays the whole index's.
+- **Amended 2026-10-03 (owner):** "Everywhere" is no longer a choice while a folder is open.
+  The control is "This folder | + Subfolders"; a folder shows its own people, and everyone
+  shows only when no folder is open (the control is then absent on the Mac, disabled and
+  reading "Everywhere" on Windows). A scope of Everywhere left from before reads as
+  + Subfolders when a folder opens. "Show photos" and the empty-grid wording follow.
+  plan/12, 2026-10-03.
 - A pack from before the entry (its `struct_size` stops short) shows everyone, as before.
 
 ### Sharing an index (2026-09-28, owner)
@@ -1237,6 +1243,11 @@ includes the library.
 - A Photos still's tile is the key itself. The chrome draws it from PhotoKit's own cached
   rendition, so there is no second thumbnail cache.
 - A result shows a small Photos badge.
+
+**Amended 2026-10-03 (plan/26):** a Photos result's path stays its key; the host lists it as a
+*virtual item* and resolves it to the file as it is shown, and the same mechanism opens the whole
+library as a folder once it was added here. The paragraphs below describe the behaviour the user
+sees, which is unchanged; the chrome no longer prepares files itself.
 
 **Opening a result (owner, 2026-09-28: "without writing").** The viewer reads each result where
 Photos keeps it: the current rendition's file (`requestContentEditingInput` / `requestAVAsset`).

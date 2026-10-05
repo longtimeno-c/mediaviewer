@@ -47,6 +47,7 @@ Read `plan/README.md` first, then the doc for the slice you are touching:
 | `plan/19-voice.md` | Voice query add-on (PRs 27–28): on-device STT/TTS over Local search, separate install |
 | `plan/20-edit-workspace.md` | PR 29: the Edit button / `Enter`, the docked Edit pane, crop presets, every-tag metadata editing; video editing moves to its own window |
 | `plan/21-video-editor.md` | PRs 30–31: the Video Editor window (base) |
+| `plan/26-photos-library.md` | The Mac Photos library as a folder (virtual list items), its backup, and the display-matrix fix for clips. Read before touching `photos:` keys, the folder model's lists, or the video blitters |
 | `plan/22-editor-addon.md` | PRs 32–47, proposed: the Editor add-on — GPU port, colour management and grading, multi-track editing, audio, delivery, model packs. Read before any add-on GPU, colour or timeline work |
 | `plan/23-nle-search.md` | Issue #71: Local search inside Final Cut Pro (agent and extension in MediaViewer.app, off until turned on; Mac-only D9 exception) over the pack's read-only reader, and FCPXML export on both platforms |
 | `plan/24-transfer.md` | PRs 49–50: fast copies to and from a network share (deep I/O, files in flight), and Transfer, the general copier. Read before touching `io/verified_copy` or the file port |

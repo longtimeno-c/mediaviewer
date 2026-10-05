@@ -3357,3 +3357,48 @@ of a file leaves the button off, a pick of the 5 extras moves exactly those 5 an
 each; the Import window shows the app icon. One earlier run never received the scan's done event
 (window left on "Looking…"); not reproduced in the next five. **Owed:** the Swift half's first
 compile (CI), the Mac live run, both present-loop gates while a scan runs.
+
+## 2026-10-03 — People: a folder shows only its own people; everyone only when no folder is open
+
+Owner: "people should just show the currently opened folder … it should only show all when I'm
+on the home page with no open folder." The 2026-09-28 control (plan/17 "People in the open
+folder") offered "This folder | + Subfolders | Everywhere" with + Subfolders the default.
+
+- **Reversed: "Everywhere" as a choice while a folder is open.** The control is
+  "This folder | + Subfolders"; everyone shows only when no folder is open, as the viewer's home
+  (no scope control then). A scope of Everywhere left from before reads as + Subfolders when a
+  folder opens. Both chromes; no core or ABI change (`people_in_json` already takes the scope).
+- Why: a folder open is the user saying what they are looking at. Everyone-from-everywhere in a
+  folder reads as a leak (the owner saw their whole iCloud library's people while in one folder
+  and took it for a bug), and the home page already shows everyone.
+- The search panel keeps its three scopes: a search is a question, a folder is a place.
+
+
+## 2026-10-03 — The Photos library as a folder and its backup; clips with a display matrix (owner)
+
+Owner, while trying the Photos source: "can we have it as a folder that is opened? instead of
+just searching? (only if it has been added in settings)"; videos from the library "play
+sideways"; and "a tool using the same kind of tech as indexing the photos, to export them to a
+nas … backup all my icloud photos to a local directory". Design: `plan/26-photos-library.md`.
+
+- **Added: virtual items in a result list** (`shell/folder_model_mac.h`): an entry with no file,
+  listed as given under the pack's `photos:<id>` key, tiled by a provider, resolved to a file by
+  the host only as it is shown. The library opens as a listing titled *Photos Library*; the AI
+  chrome's search results take the same path (its own pre-resolve and on-view download are
+  gone). Only once the library was added in Settings (`mv.photosLibrary.added`): the folder row,
+  menu item and backup section are absent otherwise.
+- **Amended: "an original is downloaded only when viewed."** It is also downloaded when the user
+  **copies it out** (Copy To, drag-out) and when the user **runs the backup**: both are the user
+  asking for the file. The index still never downloads; viewing still fetches after a 400 ms stay
+  and clears after.
+- **Added: the backup** (`shell/photos_backup.h`): originals only (the shot, a Live Photo's
+  video, a RAW+JPEG pair's RAW, Hidden included), Import's `YYYY/YYYY-MM-DD` layout, every copy
+  through `io::verified_copy`, a manifest in the destination so a re-run writes zero bytes for
+  what is there. Not a mirror, no schedule.
+- **Fixed, both platforms: the player ignored the container's display matrix.** A portrait
+  phone clip played sideways, and its poster was sideways too. `video_stream_info::rotation`,
+  `video_frame::rotation`, both blitters, both hosts' picture size and `poster_frame` honour it.
+  **Thumbnail spec `jpg512.2` → `jpg512.3`**: posters of turned clips were wrong under .2, so
+  every .2 row regenerates on view (a one-time sweep, as PR 10's .1 → .2 was).
+- **Not changed:** the Photos source stays Mac-only (D9); Windows gets the rotation fix and the
+  portable engine's tests only.

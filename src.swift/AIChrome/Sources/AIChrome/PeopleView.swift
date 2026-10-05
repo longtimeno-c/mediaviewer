@@ -71,8 +71,8 @@ struct PeopleGrid: View {
         Text(model.peopleScopeDir == nil
              ? "No people yet. Faces are grouped as your folders are indexed."
              : model.peopleScope == .folder
-               ? "Nobody in \(model.folderName) yet. Faces are grouped as the folder is indexed; Everywhere shows every person found."
-               : "Nobody in \(model.folderName) or its subfolders yet. Faces are grouped as the folder is indexed; Everywhere shows every person found.")
+               ? "Nobody in \(model.folderName) yet. Faces are grouped as the folder is indexed; everyone found shows when no folder is open."
+               : "Nobody in \(model.folderName) or its subfolders yet. Faces are grouped as the folder is indexed; everyone found shows when no folder is open.")
           .font(AITheme.font(12)).foregroundStyle(AITheme.body)
           .fixedSize(horizontal: false, vertical: true)
       } else {
@@ -137,24 +137,24 @@ struct PeopleGrid: View {
     }
   }
 
-  /// "People in · This folder | + Subfolders | Everywhere · Photos": the grid
-  /// follows the folder the viewer has open (plan/17 "People in the open
-  /// folder"), the search panel's three scopes with the same words.
+  /// "People in · This folder | + Subfolders · Photos": the grid follows the
+  /// folder the viewer has open (plan/17 "People in the open folder"), the
+  /// search panel's words. Everywhere is not a choice here (owner,
+  /// 2026-10-03): a folder shows its own people, and everyone shows when no
+  /// folder is open (this bar is then absent).
   private var scopeBar: some View {
     HStack(spacing: 8) {
       Text("People in").font(AITheme.font(12)).foregroundStyle(AITheme.body)
       Picker("People in", selection: $model.peopleScope) {
-        ForEach([SearchScope.folder, .tree, .all]) { scope in
+        ForEach([SearchScope.folder, .tree]) { scope in
           Text(scope.label).tag(scope)
         }
       }
       .pickerStyle(.segmented).labelsHidden().fixedSize()
       .help(scopeHelp)
-      if model.peopleScope != .all {
-        Text(model.folderName).font(AITheme.font(12)).foregroundStyle(AITheme.title)
-          .lineLimit(1).truncationMode(.middle)
-          .help(model.folder)
-      }
+      Text(model.folderName).font(AITheme.font(12)).foregroundStyle(AITheme.title)
+        .lineLimit(1).truncationMode(.middle)
+        .help(model.folder)
     }
   }
 

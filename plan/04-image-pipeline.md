@@ -154,6 +154,8 @@ only — does not disable prefetch or the generation counter ([16-commands.md](1
 - **PR 4 spec `jpg512.1`:** JPEG, long edge 512, written next to the database.
   **PR 10 bumps it to `jpg512.2`**: JPEG sources now carry their EXIF orientation
   into the thumb (display-path orientation, [12](12-decision-log.md) 2026-09-24).
+  **2026-10-03 bumps it to `jpg512.3`**: a clip's poster is turned by its display matrix
+  ([26](26-photos-library.md)), so posters made under .2 regenerate.
   The ABI returns a UTF-8 path. The filmstrip island loads it with `BitmapImage`.
   Pixels do not cross the ABI ([14](14-abi.md), [12](12-decision-log.md) 2026-09-07).
 - **Later spec (not PR 4):** BC7-compressed 512 px squares — 1/4 the VRAM,

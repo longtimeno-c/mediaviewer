@@ -46,12 +46,31 @@ class folder_model {
   // a moment (>= 0) is a clip that opens paused on that frame. directory() is
   // "" while a list is open; open() of a directory ends it. Real I/O (a stat
   // per item, the thumbnail cache): call it on a worker, as open() is.
+  //
+  // plan/26: a VIRTUAL entry is an item with no file (a Photos library asset,
+  // "photos:<id>"). It is listed as given -- name, stamp and size from the
+  // provider, no stat -- and its tile comes from the virtual thumb provider
+  // (set_virtual_items) under the same cache key as a file's. The host
+  // resolves it to a real file when it is about to be shown.
   struct list_entry {
     std::string path_utf8;
     std::int64_t moment_ms = -1;
+    bool is_virtual = false;
+    std::string name_utf8;      // virtual only
+    std::int64_t mtime_unix = 0;  // virtual only
+    std::uint64_t size = 0;       // virtual only
   };
   [[nodiscard]] expected open_list(std::string title_utf8, std::vector<list_entry> entries,
                                    job_system& jobs) noexcept;
+
+  // [pool thread] A JPEG tile (<= image::kThumbLongEdge) for a virtual item,
+  // or an error. Called by request_thumb for a path under `prefix` when the
+  // cache has no row for it; the result is stored under the item's key.
+  using virtual_thumb_fn = std::function<result<std::vector<std::uint8_t>>(const std::string& path_utf8)>;
+  // Paths starting with `prefix` are virtual items. Set before the first
+  // open_list that lists one; an empty prefix turns the provider off.
+  void set_virtual_items(std::string prefix, virtual_thumb_fn thumb) noexcept;
+  [[nodiscard]] bool is_virtual_path(std::string_view path_utf8) const noexcept;
 
   // Everything a relist replaced, read under one lock so the pieces agree
   // (moments[i] belongs to items[i]; empty unless is_list).
@@ -134,6 +153,9 @@ class folder_model {
     std::vector<std::int64_t> moments;
     std::string list_title;
     bool is_list = false;
+    // plan/26 virtual items (set once, before any list; read on pool threads).
+    std::string virtual_prefix;
+    virtual_thumb_fn virtual_thumb;
     image::thumb_store thumbs;
     std::atomic<bool> changed{false};
     changed_fn notify = nullptr;
