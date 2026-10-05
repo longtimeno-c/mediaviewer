@@ -12,7 +12,10 @@ doing them and is a viewer fix on both platforms.
 
 1. **The library as a folder.** Once the user has added the Photos library in Settings (Local
    search → *Add Photos Library*), it is one more place to open: a **Photos Library** row at the
-   top of the folder tree (`⌘⇧E`), **File → Open Photos Library**, and
+   top of the folder tree (`⌘⇧E`), an **iCloud Photos** row with a cloud at the top of the
+   welcome card's recent folders and of **File → Open Recent** / the Dock menu (owner,
+   2026-10-05; it has no remove button and follows Settings when the window is key again),
+   **File → Open Photos Library**, and
    `mv_chrome_open_photos_library` for the chrome. It opens as a listing titled *Photos
    Library* — the gallery, filmstrip, keys and marks of any folder — oldest first (the Photos
    app's Library order), the newest selected. Not before the library was added: the row, the
@@ -86,10 +89,19 @@ the deep network path once docs/design/24's PR 49 lands, since the copy goes thr
   asset with the same name on the same day gets ` (2)` (`io/collision_name.h`). Nothing is
   overwritten.
 - **Resumable, idempotent:** `<destination>/.mediaviewer-photos-backup/manifest.sqlite` records
-  every file copied and verified. The next run skips a recorded file that is still there (one
+  every file copied and verified, by its place under the destination (`YYYY/YYYY-MM-DD/name`),
+  not its absolute path, so a share that remounts elsewhere (`/Volumes/photos-1`) or a drive
+  whose letter moved is still the same backup (rows from before 2026-10-05 held absolute paths;
+  their last three components rebase the same way). The next run skips a recorded file that is still there (one
   stat), copies one the user deleted again, and a cancelled run picks up where it stopped.
   Zero bytes are written for an asset already backed up. `last-run.txt` beside it lists what
-  did not make it.
+  did not make it. If the destination itself disappears mid-run (the NAS drops off the
+  network, the drive is unplugged), the run stops as failed rather than failing — and
+  possibly downloading from iCloud — every remaining file.
+- **An edited photo's original:** the editing input's full-size image is the original only
+  while a photo has no edits; for an edited one PhotoKit hands back the render. Such a photo
+  (a full-size render or adjustment data among its resources) is streamed from its original
+  resource instead.
 - **iCloud-only originals are downloaded for this** — owner call, this is the user asking for a
   copy of them — into `~/Library/Caches/MediaViewer/Photos Backup/`, copied verified, removed.
   The index's rule (never download) and the viewer's (only on view) are unchanged.

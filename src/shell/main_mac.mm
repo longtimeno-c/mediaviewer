@@ -7845,7 +7845,12 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
   mv::shell::welcome_recents next;
   if ([self welcomeListsRecents]) {
     const char* home = NSHomeDirectory().fileSystemRepresentation;
-    mv::shell::fill_welcome_recents(_recentFolders, home ? home : "", next);
+    mv::shell::fill_welcome_recents(_recentFolders, home ? home : "", next, [self photosLibraryAvailable] == YES);
+  }
+  // A row index survives the refresh only if the rows did not move.
+  if (next.count == _snap.recents.count && next.icloud == _snap.recents.icloud) {
+    next.hover = _snap.recents.hover;
+    next.hover_remove = _snap.recents.hover_remove;
   }
   if (std::memcmp(&next, &_snap.recents, sizeof(next)) == 0) return;
   _snap.recents = next;
@@ -7864,7 +7869,10 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
       mv::shell::layout_welcome(static_cast<float>(_snap.width), static_cast<float>(_snap.height),
                                 static_cast<float>(_snap.chrome_height_px), scale, _snap.recents.count);
   const int row = mv::shell::welcome_row_at(g, _snap.mouse_x, _snap.mouse_y);
-  if (row >= 0 && onRemove) *onRemove = mv::shell::welcome_on_remove(g, _snap.mouse_x);
+  // The iCloud row has no remove button.
+  if (row >= 0 && onRemove && !(_snap.recents.icloud && row == 0)) {
+    *onRemove = mv::shell::welcome_on_remove(g, _snap.mouse_x);
+  }
   return row;
 }
 
@@ -7883,6 +7891,10 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
 // The x on a welcome card row: the folder leaves the card, the Dock menu and
 // File > Open Recent. The folder itself is not touched.
 - (void)removeWelcomeRow:(int)row {
+  if (_snap.recents.icloud) {
+    if (row == 0) return;  // the library leaves from Settings, not the card
+    --row;
+  }
   if (row < 0 || static_cast<std::size_t>(row) >= _recentFolders.size()) return;
   _recentFolders.erase(_recentFolders.begin() + row);
   [self persistRecentFolders];
@@ -7890,6 +7902,14 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
 }
 
 - (void)openWelcomeRow:(int)row {
+  if (_snap.recents.icloud) {
+    if (row == 0) {
+      [NSCursor.arrowCursor set];
+      [self openPhotosLibrary];
+      return;
+    }
+    --row;
+  }
   if (row < 0 || static_cast<std::size_t>(row) >= _recentFolders.size()) return;
   NSString* path = [NSString stringWithUTF8String:_recentFolders[static_cast<std::size_t>(row)].c_str()];
   if (!path) return;
@@ -7909,7 +7929,7 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
 
 - (NSMenu*)applicationDockMenu:(NSApplication*)sender {
   (void)sender;
-  if (_recentFolders.empty()) return nil;
+  if (_recentFolders.empty() && ![self photosLibraryAvailable]) return nil;
   NSMenu* menu = [[NSMenu alloc] initWithTitle:@""];
   [menu addItem:[NSMenuItem sectionHeaderWithTitle:@"Recent Folders"]];
   [self addRecentFolderItemsTo:menu];
@@ -7922,10 +7942,18 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
   if (menu != _openRecentMenu) return;
   [menu removeAllItems];
   [self addRecentFolderItemsTo:menu];
-  if (_recentFolders.empty()) [menu addItemWithTitle:@"No Recent Folders" action:nil keyEquivalent:@""];
+  if (menu.numberOfItems == 0) [menu addItemWithTitle:@"No Recent Folders" action:nil keyEquivalent:@""];
 }
 
 - (void)addRecentFolderItemsTo:(NSMenu*)menu {
+  // docs/design/26: the iCloud Photos library first, while it is added in Settings.
+  if ([self photosLibraryAvailable]) {
+    NSMenuItem* icloud = [menu addItemWithTitle:@"iCloud Photos" action:@selector(openPhotosLibraryFromMenu:)
+                                  keyEquivalent:@""];
+    icloud.target = self;
+    icloud.image = [NSImage imageWithSystemSymbolName:@"icloud" accessibilityDescription:@"iCloud"];
+    if (!_recentFolders.empty()) [menu addItem:[NSMenuItem separatorItem]];
+  }
   const std::vector<std::string> labels = mv::shell::recent_folder_labels(_recentFolders);
   for (std::size_t i = 0; i < _recentFolders.size(); ++i) {
     NSString* path = [NSString stringWithUTF8String:_recentFolders[i].c_str()];
@@ -7935,6 +7963,13 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
     item.target = self;
     item.representedObject = path;
   }
+}
+
+- (void)openPhotosLibraryFromMenu:(NSMenuItem*)item {
+  (void)item;
+  [NSApp activate];
+  [self.window makeKeyAndOrderFront:nil];
+  [self openPhotosLibrary];
 }
 
 - (void)openRecentFolder:(NSMenuItem*)item {
@@ -8184,7 +8219,8 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   // A launch with a path to open never shows the rows, not even for a frame.
   if (_options.open_path.empty() && [self welcomeListsRecents]) {
     const char* home = NSHomeDirectory().fileSystemRepresentation;
-    mv::shell::fill_welcome_recents(_recentFolders, home ? home : "", _snap.recents);
+    mv::shell::fill_welcome_recents(_recentFolders, home ? home : "", _snap.recents,
+                                    [self photosLibraryAvailable] == YES);
   }
   // Straight into the state (no publish: the render thread is not up yet at
   // launch, and the next input publishes the snapshot anyway).
@@ -8540,6 +8576,9 @@ static std::uint64_t MvNowMs() {
 - (void)windowDidBecomeKey:(NSNotification*)notification {
   (void)notification;
   _snap.window_active = true;
+  // Back from Settings, where the Photos library may have been added or
+  // removed: the welcome card's iCloud row follows (a memcmp when unchanged).
+  [self refreshWelcomeRecents];
   [self.view publish];
   // The render thread presents only while the window is key (present_policy).
   // What landed while another window was (the search panel: a clip opened on

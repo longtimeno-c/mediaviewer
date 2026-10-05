@@ -41,9 +41,11 @@ inline constexpr std::size_t kMaxRecentFolders = 10;
 // The welcome card's rows for `utf8_dirs` (most recent first; the first
 // welcome_recents::kMax): each folder's display name, and where it lives -- its
 // parent, with `home` (the user's home folder, "" for none) written as "~".
-// Text is cut at a UTF-8 boundary to fit. The hover is cleared.
+// Text is cut at a UTF-8 boundary to fit. The hover is cleared. `icloud`
+// (the Mac host, while the Photos library is added: docs/design/26) puts an
+// "iCloud Photos" row first and the folders after it, still kMax rows in all.
 void fill_welcome_recents(std::span<const std::string> utf8_dirs, std::string_view home,
-                          welcome_recents& out) noexcept;
+                          welcome_recents& out, bool icloud = false) noexcept;
 
 // Ctrl+Shift+C / ⌘⇧C: the paths as text, one per line, in the order given,
 // separated by `newline` ("\r\n" on Windows, "\n" on macOS) with none after
