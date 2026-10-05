@@ -235,6 +235,7 @@ struct StatusLine: Equatable {
   var paused = false       // the user paused it
   var onBattery = false    // waiting on battery: "Index anyway" can override it
   var idle = true
+  var help = ""            // the provider's own words for a fault (a tooltip), paths replaced
   var sound = ""           // "Sound: 12 of 40 clips · Speech: 8 of 40"; "" without the piece
   var audioReady = false   // the ai-audio piece is loaded
   /// The passes beside the one `text` names, while any runs: "Pictures ✓",
@@ -332,6 +333,13 @@ struct StatusLine: Equatable {
       case 5: notes.append("Core ML was slower than the CPU here — using CPU")
       default: notes.append("Using CPU")
       }
+    }
+    if s.flags & MV_AI_STATUS_SMALL_FALLBACK != 0 {
+      // Auto keeps the large model off a provider that failed it here (2026-10-05).
+      notes.append("Using the smaller search model: the larger one failed on Core ML on this Mac")
+    }
+    help = withUnsafeBytes(of: s.provider_detail_utf8) { raw in
+      String(decoding: raw.prefix(while: { $0 != 0 }), as: UTF8.self)
     }
     if s.migrate_total > 0 && s.migrate_done < s.migrate_total {
       notes.append("Upgrading the index: \(countText(s.migrate_done)) of \(countText(s.migrate_total)). Searches use the current index until it finishes")
@@ -499,7 +507,7 @@ struct StatusPill: View {
         if !line.detail.isEmpty {
           Text(line.detail).font(AITheme.font(12)).foregroundStyle(AITheme.body)
             .lineLimit(2)
-            .help(line.detail)
+            .help(line.help.isEmpty ? line.detail : "\(line.detail)\n\nCore ML said: \(line.help)")
         }
       }
       Spacer(minLength: 8)

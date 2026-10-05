@@ -179,6 +179,16 @@ on that thread (no `Map`, `Flush`, `ClearState` or GPU wait); `extra_hw_frames` 
 depth; the `AVFrame` is released right after submit. If PR 1's gate regresses (p99 > 10 % or any
 frame > 2× refresh), the copy moves to the render thread.
 
+**Auto does not run the large tower on CPU after a provider failed it (2026-10-05, owner).** On an
+M5 (macOS 26.6) Core ML takes ~8 min and 12.7 GB to open ViT-L/14 from its cache, and when the
+background upgrade failed, Auto kept ViT-L/14 on CPU: ~1,570 ms per four images against ~120 ms
+for ViT-B/32 on CPU and 7–11 ms on Core ML, so a 24 k library showed "about 3–4 h". The pack now
+records each provider's verdict per tower (`provider.txt`) and keeps ORT's message (paths
+replaced); Auto opens ViT-B/32 on the provider wherever it failed ViT-L/14, says so, and offers
+"Try the larger model again". Starting every machine on ViT-B/32 until ViT-L/14 proved itself was
+rejected: each tower change re-indexes the library, so a working ViT-L/14 index would be rebuilt
+twice. The 8-minute open itself is not fixed (docs/design/17 "Verified on macOS").
+
 **Model loading waits for a quiet viewer (2026-09-27).** Loading the Local search pack during the
 PR 1 soak dropped two frames. The provider self-test's CPU half is kept between runs (~15 s of a
 40 s load), and Settings never loads the runtime on the UI thread.

@@ -115,6 +115,34 @@ bool ok(const OrtApi* api, OrtStatus* st, std::string* message = nullptr) {
   return false;
 }
 
+// ORT's message for this thread's last failed open or run (session::last_error).
+thread_local std::string t_last_error;
+
+// A message with every path in it replaced (rule 6): the model's and the
+// cache's, then anything under a home folder ("/Users/...", "C:\Users\...").
+std::string scrub_paths(std::string m, const std::string& model_utf8, const std::string& cache_utf8) {
+  const auto replace_all = [&m](const std::string& what, const char* with) {
+    if (what.empty()) return;
+    for (std::size_t at = m.find(what); at != std::string::npos; at = m.find(what, at)) {
+      m.replace(at, what.size(), with);
+    }
+  };
+  replace_all(model_utf8, "<model>");
+  replace_all(cache_utf8, "<cache>");
+  for (const char* home : {"/Users/", "/home/", "\\Users\\", "/private/"}) {
+    for (std::size_t at = m.find(home); at != std::string::npos; at = m.find(home, at)) {
+      std::size_t end = at;
+      while (end < m.size() && m[end] != ' ' && m[end] != '\'' && m[end] != '"' && m[end] != '\n' && m[end] != ',' &&
+             m[end] != ')') {
+        ++end;
+      }
+      m.replace(at, end - at, "<path>");
+      at += 6;
+    }
+  }
+  return m;
+}
+
 // A provider's load error names DLLs, never the user's files; classify it.
 provider_fault classify(const std::string& message) {
   std::string m = message;
@@ -200,6 +228,7 @@ result<std::unique_ptr<session>> session::open(const runtime& rt, const std::str
                                                const session_options& options,
                                                provider_fault* fault) {
   if (fault) *fault = provider_fault::none;
+  t_last_error.clear();
   const OrtApi* api = rt.get().api;
   auto p = std::make_unique<impl>();
   p->api = api;
@@ -265,12 +294,14 @@ result<std::unique_ptr<session>> session::open(const runtime& rt, const std::str
   }
   if (!appended) {
     if (fault) *fault = classify(message);
+    t_last_error = scrub_paths(message, model_utf8, options.cache_dir_utf8);
     return err(status::unsupported_format);
   }
   const std::vector<char> path = dylib::native_path(model_utf8);
   if (!ok(api, api->CreateSession(rt.get().env, reinterpret_cast<const ORTCHAR_T*>(path.data()), so, &p->s),
           &message)) {
     if (fault) *fault = options.on == backend::cpu ? provider_fault::failed : classify(message);
+    t_last_error = scrub_paths(message, model_utf8, options.cache_dir_utf8);
     return err(options.on == backend::cpu ? status::corrupt : status::unsupported_format);
   }
   if (!ok(api, api->CreateCpuMemoryInfo(OrtArenaAllocator, OrtMemTypeDefault, &p->mem))) {
@@ -384,7 +415,8 @@ result<std::vector<tensor_f32>> session::run(std::span<const tensor_f32> inputs)
   values outs(api);
   outs.v.assign(out_names.size(), nullptr);
   if (!ok(api, api->Run(p_->s, nullptr, in_names.data(), ins.v.data(), ins.v.size(), out_names.data(),
-                        out_names.size(), outs.v.data()))) {
+                        out_names.size(), outs.v.data()), &t_last_error)) {
+    t_last_error = scrub_paths(std::move(t_last_error), "", "");
     return err(status::internal);
   }
   return collect(api, outs);
@@ -392,10 +424,6 @@ result<std::vector<tensor_f32>> session::run(std::span<const tensor_f32> inputs)
 
 const std::vector<std::string>& session::input_names() const noexcept { return p_->in_names; }
 const std::vector<std::string>& session::output_names() const noexcept { return p_->out_names; }
-
-namespace {
-thread_local std::string t_last_error;
-}  // namespace
 
 const std::string& session::last_error() noexcept { return t_last_error; }
 
@@ -498,7 +526,8 @@ result<std::vector<tensor_f32>> session::run_ids(const tensor_i64& ids) const {
   values outs(api);
   outs.v.assign(out_names.size(), nullptr);
   if (!ok(api, api->Run(p_->s, nullptr, in_names.data(), ins.v.data(), ins.v.size(), out_names.data(),
-                        out_names.size(), outs.v.data()))) {
+                        out_names.size(), outs.v.data()), &t_last_error)) {
+    t_last_error = scrub_paths(std::move(t_last_error), "", "");
     return err(status::internal);
   }
   return collect(api, outs);

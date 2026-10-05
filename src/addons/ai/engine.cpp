@@ -320,6 +320,16 @@ expected engine::set_setting(const std::string& key, const std::string& value_js
   const auto v = json::parse(value_json, 2);
   if (!v || v->k != json::kind::number) return err(status::invalid_arg);
   const double x = v->is_integer ? static_cast<double>(v->i) : v->d;
+  if (key == "retry_large") {
+    // "Try the larger model again" (2026-10-05): forget that the provider
+    // failed it here; Auto opens it again (and re-indexes once it passes).
+    if (deps_.forget_accelerated_failure) deps_.forget_accelerated_failure(MV_AI_QUALITY_HIGH);
+    fallback_asked_ = false;
+    reload_models_ = true;
+    control_cv_.notify_all();
+    post(MV_ADDON_EVENT_AI_STATUS);
+    return {};
+  }
   if (key == "battery_override") {
     // "Index anyway": for this spell on battery only, never written to
     // settings.json. The workers pick it up on their next turn (wait_turn).
@@ -476,9 +486,12 @@ void engine::refresh_counts() {
   copy_str(status_.people_model_utf8, sizeof(status_.people_model_utf8), people_model);
   // Read live: on the Mac, Core ML takes over from CPU once it has compiled.
   status_.backend = static_cast<std::uint32_t>(build.model ? build.model->on() : build.on);
-  const infer::provider_fault fault =
-      build.fault != infer::provider_fault::none || !build.model ? build.fault : build.model->fault();
+  const bool own_fault = build.fault != infer::provider_fault::none || !build.model;
+  const infer::provider_fault fault = own_fault ? build.fault : build.model->fault();
   status_.provider_fault = static_cast<std::uint32_t>(fault);
+  copy_str(status_.provider_detail_utf8, sizeof(status_.provider_detail_utf8),
+           fault != infer::provider_fault::none ? (own_fault ? build.fault_detail : build.model->fault_detail())
+           : small_fallback_ ? fallback_detail_ : std::string());
   status_.quality = build.meta.quality;
   copy_str(status_.model_utf8, sizeof(status_.model_utf8), build.meta.name);
   copy_str(status_.active_root_utf8, sizeof(status_.active_root_utf8), active_root_);
@@ -492,6 +505,7 @@ void engine::refresh_counts() {
   if (first_compile_ && (loading_ || !models_ready_) && !models_failed_) flags |= MV_AI_STATUS_FIRST_COMPILE;
   if (!sound_spec.empty() || !speech_spec.empty()) flags |= MV_AI_STATUS_AUDIO_READY;
   if (rerun) flags |= MV_AI_STATUS_PEOPLE_RERUN;
+  if (small_fallback_) flags |= MV_AI_STATUS_SMALL_FALLBACK;
   if (settling_) flags |= MV_AI_STATUS_PEOPLE_SETTLING;
   status_.flags = flags;
 
@@ -561,11 +575,16 @@ std::uint32_t engine::effective_quality(infer::backend on) const {
   const auto has = [&](std::uint32_t x) { return std::find(have.begin(), have.end(), x) != have.end(); };
   if (q == MV_AI_QUALITY_AUTO) {
     // docs/design/17 PR 20 spike: the large tower where a GPU / Neural Engine runs
-    // it, the small one on CPU only (it is ~12x faster there).
-    q = on != infer::backend::cpu ? MV_AI_QUALITY_HIGH : MV_AI_QUALITY_FAST;
+    // it, the small one on CPU only (it is ~12x faster there), and the small
+    // one where that provider failed the large one on this machine.
+    q = on != infer::backend::cpu && !large_failed_here() ? MV_AI_QUALITY_HIGH : MV_AI_QUALITY_FAST;
   }
   if (!has(q)) q = has(MV_AI_QUALITY_FAST) ? MV_AI_QUALITY_FAST : MV_AI_QUALITY_HIGH;
   return q;
+}
+
+bool engine::large_failed_here() const {
+  return deps_.accelerated_failure && deps_.accelerated_failure(MV_AI_QUALITY_HIGH).has_value();
 }
 
 bool engine::wait_viewer_quiet() {
@@ -645,8 +664,17 @@ void engine::load_models() {
   // backend that tower lands on decides between the two.
   const std::vector<std::uint32_t> have = deps_.qualities ? deps_.qualities() : std::vector<std::uint32_t>{};
   std::uint32_t first = s.quality;
+  bool fallback = false;
   if (first == MV_AI_QUALITY_AUTO) {
-    first = s.compute == MV_AI_COMPUTE_CPU_ONLY ? MV_AI_QUALITY_FAST : MV_AI_QUALITY_HIGH;
+    fallback = s.compute != MV_AI_COMPUTE_CPU_ONLY && large_failed_here();
+    first = s.compute == MV_AI_COMPUTE_CPU_ONLY || fallback ? MV_AI_QUALITY_FAST : MV_AI_QUALITY_HIGH;
+  }
+  small_fallback_ = fallback;
+  {
+    std::lock_guard lock(status_m_);
+    fallback_detail_ = fallback && deps_.accelerated_failure
+                           ? deps_.accelerated_failure(MV_AI_QUALITY_HIGH).value_or(std::string())
+                           : std::string();
   }
   if (std::find(have.begin(), have.end(), first) == have.end() && !have.empty()) first = have.front();
   // "The first time on this Mac takes a few minutes" only when it is: Core
@@ -1338,6 +1366,23 @@ void engine::control_loop() {
     }
     refresh_counts();
     scanning_ = false;
+    {
+      // Auto's large tower, still on CPU because the provider failed it in
+      // the background (Core ML's upgrade): the small tower from here, and
+      // from every start (the verdict is kept; 2026-10-05).
+      bool auto_quality = false;
+      {
+        std::lock_guard sl(settings_m_);
+        auto_quality = settings_.quality == MV_AI_QUALITY_AUTO && settings_.compute != MV_AI_COMPUTE_CPU_ONLY;
+      }
+      bool failed = false;
+      {
+        std::lock_guard ml(models_m_);
+        failed = auto_quality && build_.model && build_.meta.quality == MV_AI_QUALITY_HIGH &&
+                 !build_.model->settling() && build_.model->fault() != infer::provider_fault::none;
+      }
+      if (failed && large_failed_here() && !fallback_asked_.exchange(true)) reload_models_ = true;
+    }
     maybe_finish_migration();
     reap_retired();
     // Plugging in ends an override even while no worker is asking (idle).
