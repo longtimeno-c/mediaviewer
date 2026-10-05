@@ -416,6 +416,62 @@ TEST_CASE("mv_folder_set_sort re-sorts the listing and keeps the current stop", 
   mv::io::set_thumb_cache_dir_override({});
 }
 
+// 0.19: Settings can leave audio and documents out of the listing. The file a
+// folder was opened on and the current stop stay; turning a kind back on
+// re-applies the kept scan.
+TEST_CASE("mv_folder_set_hidden_kinds leaves audio and documents out", "[abi][folder][settings]") {
+  const auto dir = temp_dir();
+  write_bmp(dir, L"a.bmp");
+  for (const wchar_t* name : {L"b.mp3", L"c.pdf", L"d.docx"}) {
+    std::ofstream f(dir + L"\\" + name, std::ios::binary);
+    f << "not really";
+  }
+  mv::io::set_thumb_cache_dir_override(utf8(dir + L"\\thumbs"));
+  REQUIRE(::CreateDirectoryW((dir + L"\\thumbs").c_str(), nullptr));
+
+  const auto names = [](mv_session_t s) {
+    std::string out;
+    uint32_t n = 0;
+    REQUIRE(mv_folder_count(s, &n) == MV_OK);
+    for (uint32_t i = 0; i < n; ++i) out += item_string(s, i, mv_folder_item_name) + " ";
+    return out;
+  };
+  mv_completion c{};
+  uint64_t job = 0;
+  {
+    session_guard session;
+    REQUIRE(mv_folder_set_hidden_kinds(session.handle, MV_FOLDER_HIDE_AUDIO | MV_FOLDER_HIDE_DOCUMENTS) ==
+            MV_OK);
+    REQUIRE(mv_folder_open(session.handle, utf8(dir).c_str(), utf8(dir + L"\\a.bmp").c_str(), &job) ==
+            MV_OK);
+    REQUIRE(wait_kind(session.handle, MV_COMPLETION_FOLDER_READY, &c));
+    CHECK(names(session.handle) == "a.bmp ");
+
+    REQUIRE(mv_folder_set_hidden_kinds(session.handle, 0) == MV_OK);
+    REQUIRE(wait_kind(session.handle, MV_COMPLETION_FOLDER_CHANGED, &c));
+    CHECK(names(session.handle) == "a.bmp b.mp3 c.pdf d.docx ");
+
+    REQUIRE(mv_folder_set_hidden_kinds(session.handle, MV_FOLDER_HIDE_AUDIO) == MV_OK);
+    REQUIRE(wait_kind(session.handle, MV_COMPLETION_FOLDER_CHANGED, &c));
+    CHECK(names(session.handle) == "a.bmp c.pdf d.docx ");
+    REQUIRE(mv_folder_close(session.handle) == MV_OK);
+  }
+  {
+    // Opening a hidden kind explicitly still shows it.
+    session_guard session;
+    REQUIRE(mv_folder_set_hidden_kinds(session.handle, MV_FOLDER_HIDE_DOCUMENTS) == MV_OK);
+    REQUIRE(mv_folder_open(session.handle, utf8(dir).c_str(), utf8(dir + L"\\c.pdf").c_str(), &job) ==
+            MV_OK);
+    REQUIRE(wait_kind(session.handle, MV_COMPLETION_FOLDER_READY, &c));
+    CHECK(names(session.handle) == "a.bmp b.mp3 c.pdf ");
+    uint32_t selected = 0;
+    REQUIRE(mv_folder_selected(session.handle, &selected) == MV_OK);
+    CHECK(selected == 2);
+    REQUIRE(mv_folder_close(session.handle) == MV_OK);
+  }
+  mv::io::set_thumb_cache_dir_override({});
+}
+
 TEST_CASE("mv_list_subdirectories lists visible folders only, sorted", "[abi][folder][tree]") {
   const auto dir = temp_dir();
   REQUIRE(::CreateDirectoryW((dir + L"\\beta").c_str(), nullptr));

@@ -27,6 +27,9 @@ final class SettingsStore: ObservableObject {
   static let stickyZoom: Int32 = 1 << 3
   static let backgroundShift: Int32 = 4
   static let backgroundMask: Int32 = 7 << 4
+  /// Set = folders list the kind (settings.h kSettingShow*). Off by default.
+  static let showAudio: Int32 = 1 << 12
+  static let showDocuments: Int32 = 1 << 13
 
   @Published private(set) var visible = false
   @Published private(set) var flags: Int32 = 0
@@ -248,6 +251,13 @@ struct SettingsView: View {
           Toggle("Descending order", isOn: Binding(get: { store.sortDescending }, set: { store.sortDescending = $0 }))
             .toggleStyle(.switch).fixedSize()
         }
+        section("File types")
+        SettingsToggle(title: "Show audio files",
+                       detail: "List MP3, M4A and M4P files in folders. A file you open directly still opens.",
+                       bit: SettingsStore.showAudio, store: store)
+        SettingsToggle(title: "Show documents",
+                       detail: "List PDF and Word (DOCX) files in folders. A file you open directly still opens.",
+                       bit: SettingsStore.showDocuments, store: store)
         section("Appearance")
         SettingsRow(title: "Canvas background", detail: "The area behind your photos and videos.") {
           Picker("Canvas background", selection: Binding(get: { store.background }, set: { store.background = $0 })) {

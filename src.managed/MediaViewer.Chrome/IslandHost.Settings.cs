@@ -29,6 +29,8 @@ public static partial class IslandHost
     private static ToggleSwitch? _stripImage;
     private static ToggleSwitch? _wrap;
     private static ToggleSwitch? _sticky;
+    private static ToggleSwitch? _showAudio;
+    private static ToggleSwitch? _showDocuments;
     private static ComboBox? _background;
     private static ComboBox? _sortKey;
     private static ToggleSwitch? _sortDescending;
@@ -116,6 +118,13 @@ public static partial class IslandHost
             Send(Command.SetSort, _sortDescending.IsOn ? _sortPacked | 8 : _sortPacked & ~8);
         };
         view.Children.Add(SettingsRow("Descending order", "Reverse the selected sort order.", _sortDescending));
+        view.Children.Add(SettingsSection("File types"));
+        _showAudio = SettingsToggle("Show audio files", SettingFlag.ShowAudio);
+        _showDocuments = SettingsToggle("Show documents", SettingFlag.ShowDocuments);
+        view.Children.Add(SettingsRow("Show audio files",
+            "List MP3, M4A and M4P files in folders. A file you open directly still opens.", _showAudio));
+        view.Children.Add(SettingsRow("Show documents",
+            "List PDF and Word (DOCX) files in folders. A file you open directly still opens.", _showDocuments));
         view.Children.Add(SettingsSection("Appearance"));
         view.Children.Add(SettingsRow("Canvas background", "The area behind your photos and videos.", _background));
         // docs/design/25: the chrome's colours, from an installed add-on.
@@ -461,6 +470,8 @@ public static partial class IslandHost
             if (_stripImage is not null) _stripImage.IsOn = HasFlag(SettingFlag.FilmstripForImage);
             if (_wrap is not null) _wrap.IsOn = HasFlag(SettingFlag.Wrap);
             if (_sticky is not null) _sticky.IsOn = HasFlag(SettingFlag.StickyZoom);
+            if (_showAudio is not null) _showAudio.IsOn = HasFlag(SettingFlag.ShowAudio);
+            if (_showDocuments is not null) _showDocuments.IsOn = HasFlag(SettingFlag.ShowDocuments);
             RefreshUpdateSettingsRow();
             RefreshTelemetrySettingsRow();
             if (_background is not null)

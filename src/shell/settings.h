@@ -21,6 +21,7 @@
 #include <string_view>
 #include <vector>
 
+#include "io/pairing.h"
 #include "shell/settings_store.h"
 
 namespace mv::shell {
@@ -31,6 +32,12 @@ inline constexpr std::int32_t kSettingWrap = 1 << 2;  // docs/design/16: wrap at
 inline constexpr std::int32_t kSettingStickyZoom = 1 << 3;
 inline constexpr std::int32_t kSettingBackgroundShift = 4;
 inline constexpr std::int32_t kSettingBackgroundMask = 7 << kSettingBackgroundShift;
+// Bits 8-11 are the Windows chrome's update / telemetry bits (IslandHost.cs).
+// Set = list that kind in folders (Settings, "Show audio files" / "Show
+// documents"). Off by default, and a word saved before these existed reads
+// as off: audio and documents are Open With types (D5, 2026-10-03).
+inline constexpr std::int32_t kSettingShowAudio = 1 << 12;
+inline constexpr std::int32_t kSettingShowDocuments = 1 << 13;
 
 // A folder open is an explicit "show me this folder", so the filmstrip earns
 // its 112 DIP. Opening one image is a viewing intent: the folder is still
@@ -44,6 +51,10 @@ struct view_settings {
   bool wrap = true;
   bool sticky_zoom = false;
   std::uint8_t background = 0;  // 0 system, 1 grey, 2 white, 3 checkerboard, 4 dark
+  // Settings, "Show audio files" / "Show documents". Off: folders leave that
+  // kind out; a file opened directly still shows.
+  bool show_audio = false;
+  bool show_documents = false;
   // PR 9: the folder sort, packed by io::pack_sort (key in bits 0-2, descending
   // in bit 3). Not part of flags(): the chrome gets it beside them.
   std::int32_t sort = 0;
@@ -53,6 +64,8 @@ struct view_settings {
            (filmstrip_for_image ? kSettingFilmstripImage : 0) |
            (wrap ? kSettingWrap : 0) |
            (sticky_zoom ? kSettingStickyZoom : 0) |
+           (show_audio ? kSettingShowAudio : 0) |
+           (show_documents ? kSettingShowDocuments : 0) |
            ((static_cast<std::int32_t>(background <= 4 ? background : 0)) << kSettingBackgroundShift);
   }
 
@@ -62,9 +75,16 @@ struct view_settings {
     s.filmstrip_for_image = (flags & kSettingFilmstripImage) != 0;
     s.wrap = (flags & kSettingWrap) != 0;
     s.sticky_zoom = (flags & kSettingStickyZoom) != 0;
+    s.show_audio = (flags & kSettingShowAudio) != 0;
+    s.show_documents = (flags & kSettingShowDocuments) != 0;
     const auto background = (flags & kSettingBackgroundMask) >> kSettingBackgroundShift;
     s.background = static_cast<std::uint8_t>(background <= 4 ? background : 0);
     return s;
+  }
+
+  // The io::is_hidden_kind mask (== MV_FOLDER_HIDE_*) these ask for.
+  [[nodiscard]] std::uint32_t hidden_kinds() const noexcept {
+    return (show_audio ? 0u : io::kHideAudio) | (show_documents ? 0u : io::kHideDocuments);
   }
 };
 

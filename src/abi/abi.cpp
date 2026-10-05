@@ -217,6 +217,9 @@ struct mv_session {
     std::optional<std::int64_t> key;
   };
   std::atomic<std::int32_t> sort_packed{0};
+  // 0.19: io::kHideAudio / kHideDocuments. `folder_listing` stays unfiltered,
+  // so turning a kind back on re-applies without another scan.
+  std::atomic<std::uint32_t> hidden_kinds{0};
   std::vector<mv::io::listed_item> folder_listing;
   std::unordered_map<std::string, date_stamp> date_stamps;
 
@@ -1341,6 +1344,25 @@ void apply_folder_list(mv_session* session, std::vector<mv::io::listed_item> lis
     std::lock_guard lock(session->folder_mutex);
     is_list = session->folder_is_list;
   }
+  if (const std::uint32_t hide = session->hidden_kinds.load(); hide != 0) {
+    // Settings left a kind out. The file the folder was opened on and the stop
+    // on screen stay: an explicit open still shows, and a relist never pulls
+    // the current item out from under the user.
+    std::string keep_want;
+    std::string keep_current;
+    {
+      std::lock_guard lock(session->folder_mutex);
+      keep_want = session->folder_select_path;
+      if (session->folder_selected < session->folder_items.size()) {
+        keep_current = session->folder_items[session->folder_selected].path;
+      }
+    }
+    std::erase_if(listed, [&](const mv::io::listed_item& e) {
+      if (!mv::io::is_hidden_kind(e.primary.name_utf8, hide)) return false;
+      const std::string& p = e.primary.path_utf8;
+      return !((!keep_want.empty() && p == keep_want) || (!keep_current.empty() && p == keep_current));
+    });
+  }
   if (!is_list) {
     refresh_subdirs(session);
     sort_listed(session, listed);
@@ -1911,6 +1933,34 @@ mv_status MV_CALL mv_folder_set_sort(mv_session_t session, int32_t packed) {
     const auto order = mv::io::unpack_sort(packed);
     const std::int32_t next = mv::io::pack_sort(order);
     if (session->sort_packed.exchange(next) == next) return status::ok;
+    bool have = false;
+    {
+      std::lock_guard lock(session->folder_mutex);
+      have = !session->folder_listing.empty();
+    }
+    if (!have) return status::ok;  // applies to the next open
+    const mv::job_id id = session->jobs.submit_at(
+        mv::background_generation, [session](const mv::job_context&) -> status {
+          std::vector<mv::io::listed_item> again;
+          {
+            std::lock_guard lock(session->folder_mutex);
+            again = session->folder_listing;
+          }
+          if (again.empty()) return status::ok;
+          apply_folder_list(session, std::move(again), true);
+          return status::ok;
+        });
+    return id == mv::invalid_job ? status::internal : status::ok;
+  }));
+}
+
+mv_status MV_CALL mv_folder_set_hidden_kinds(mv_session_t session, uint32_t mask) {
+  return static_cast<mv_status>(guard("mv_folder_set_hidden_kinds", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    static_assert(MV_FOLDER_HIDE_AUDIO == mv::io::kHideAudio);
+    static_assert(MV_FOLDER_HIDE_DOCUMENTS == mv::io::kHideDocuments);
+    const std::uint32_t next = mask & (mv::io::kHideAudio | mv::io::kHideDocuments);
+    if (session->hidden_kinds.exchange(next) == next) return status::ok;
     bool have = false;
     {
       std::lock_guard lock(session->folder_mutex);

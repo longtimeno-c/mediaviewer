@@ -113,6 +113,29 @@ inline std::string key_of(std::string_view name) {
   return false;
 }
 
+// A document (PDF, DOCX), by its extension. Decoded page by page as a still
+// (docs/design/04 "Pages").
+[[nodiscard]] inline bool is_document_name(std::string_view name) noexcept {
+  static constexpr const char* k[] = {".pdf", ".docx"};
+  const std::string_view ext = pairing_detail::extension(name);
+  for (const char* e : k) {
+    if (pairing_detail::eq_lower(ext, e)) return true;
+  }
+  return false;
+}
+
+// Kinds a listing can leave out (Settings, "Show audio files" / "Show
+// documents"). Bits of one word so a host can pass it through the ABI as is.
+inline constexpr std::uint32_t kHideAudio = 1u << 0;
+inline constexpr std::uint32_t kHideDocuments = 1u << 1;
+
+// True when `name` is of a kind `hide` leaves out of a folder listing.
+[[nodiscard]] inline bool is_hidden_kind(std::string_view name, std::uint32_t hide) noexcept {
+  if (hide == 0) return false;
+  return ((hide & kHideAudio) != 0 && is_audio_name(name)) ||
+         ((hide & kHideDocuments) != 0 && is_document_name(name));
+}
+
 // Played through player/ rather than decoded as a still, by its extension: a
 // clip in the D5 video containers, or an audio file. Same set as dir_win.cpp /
 // dir_mac.cpp's; the player probes the real container when it opens the file.

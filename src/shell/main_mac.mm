@@ -2127,6 +2127,9 @@ static void MvAdoptNewDefaultViewerTypes() {
   bool _transportPlaying;
   bool _transportShown;
   int32_t _viewFlags;
+  // Settings changed which kinds a listing leaves out: the next
+  // -refreshFolderIfChanged re-applies the folder model's listing.
+  BOOL _refilterListing;
   int _captureRow;
   id _captureMonitor;
   id _textEditMonitor;
@@ -3143,13 +3146,31 @@ static void MvAdoptNewDefaultViewerTypes() {
   if (_meta.consume_dates_changed() && _sort.key == mv::io::sort_key::date_taken && !_listOpen) {
     [self resortKeepingSelection];
   }
-  if (!_folder.consume_changed()) return;
+  if (!_folder.consume_changed() && !_refilterListing) return;
+  _refilterListing = NO;
   mv::shell::folder_model::listing listing = _folder.snapshot();
   // A relist that belongs to the other kind of listing (a folder's watch
   // firing just as a result list opens, or the list a folder open is
   // replacing) is not what is on screen now.
   if (listing.is_list != static_cast<bool>(_listOpen)) return;
   _items = std::move(listing.items);
+  if (const std::uint32_t hide = mv::shell::view_settings::from_flags(_viewFlags).hidden_kinds();
+      hide != 0) {
+    // Settings left a kind out (same rule as abi.cpp's apply_folder_list): the
+    // file being opened or on screen stays, so an explicit open still shows.
+    // A result list keeps its moments aligned with its items.
+    const bool aligned = _listOpen && listing.moments.size() == _items.size();
+    std::size_t out = 0;
+    for (std::size_t i = 0; i < _items.size(); ++i) {
+      const auto& e = _items[i];
+      if (mv::io::is_hidden_kind(e.name_utf8, hide) && e.path_utf8 != _wantSelectedPath) continue;
+      if (aligned) listing.moments[out] = listing.moments[i];
+      if (out != i) _items[out] = std::move(_items[i]);
+      ++out;
+    }
+    _items.resize(out);
+    if (aligned) listing.moments.resize(out);
+  }
   _subdirs = std::move(listing.subdirs);
   if (_folderCursor >= static_cast<NSInteger>(_subdirs.size())) {
     _folderCursor = static_cast<NSInteger>(_subdirs.size()) - 1;
@@ -8526,7 +8547,10 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   [self pokeSnapshot];
 }
 - (void)setViewFlags:(int32_t)flags {
+  const auto before = mv::shell::view_settings::from_flags(_viewFlags).hidden_kinds();
   _viewFlags = flags;
+  // Picked up by the 0.2 s folder timer, like any relist.
+  if (mv::shell::view_settings::from_flags(flags).hidden_kinds() != before) _refilterListing = YES;
   [[NSUserDefaults standardUserDefaults] setInteger:flags forKey:kDefaultsViewFlags];
   [self applyViewFlags];
   ++_keysGeneration;  // the Settings screen re-reads flags and keys on this
