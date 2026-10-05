@@ -125,6 +125,21 @@ typedef struct mv_addon_file_entry {
 /* Return non-zero to continue the walk, zero to stop it. */
 typedef int32_t(MV_CALL* mv_addon_walk_fn)(void* user, const mv_addon_file_entry* entry);
 
+/* walk_files2's entry (2026-10-05): the same file, and what it is. */
+#define MV_ADDON_FILE_CLOUD_ONLY 0x1u /* its bytes are only in the cloud (a OneDrive online-only
+                                       * file, an evicted iCloud Drive file): reading it downloads it */
+typedef struct mv_addon_file_entry2 {
+  uint32_t struct_size;
+  uint32_t flags;             /* MV_ADDON_FILE_* */
+  const char* path_utf8;      /* absolute */
+  const char* relative_utf8;  /* from the walk root, '/'-separated */
+  const char* name_utf8;
+  uint64_t size;
+  int64_t mtime_unix;
+} mv_addon_file_entry2;
+
+typedef int32_t(MV_CALL* mv_addon_walk2_fn)(void* user, const mv_addon_file_entry2* entry);
+
 typedef struct mv_addon_volume {
   char volume_id[128];
   char root_utf8[1024];
@@ -335,6 +350,15 @@ typedef struct mv_host_api {
    * removed and *out_refused is set to 1. Appended, so an add-on reads it
    * only when `struct_size` covers it and the pointer is non-NULL. */
   mv_status(MV_CALL* recycle_file)(void* host, const char* path_utf8, uint32_t* out_refused);
+
+  /* ---- cloud files (2026-10-05, docs/plans/document-search.md slice 0) ------- */
+  /* [worker-thread] walk_files, with the files only a cloud provider has
+   * (OneDrive online-only, evicted iCloud Drive) listed too and flagged
+   * MV_ADDON_FILE_CLOUD_ONLY. walk_files leaves those out: everything it lists
+   * can be read without the network. Appended: read it only when
+   * `struct_size` covers it and the pointer is non-NULL. */
+  mv_status(MV_CALL* walk_files2)(void* host, const char* root_utf8, int32_t max_depth,
+                                  mv_addon_walk2_fn visit, void* user);
 } mv_host_api;
 
 typedef struct mv_addon_api {

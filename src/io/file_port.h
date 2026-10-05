@@ -152,11 +152,18 @@ struct tree_entry {
   std::string name_utf8;
   std::uint64_t size = 0;
   std::int64_t mtime_unix = 0;
+  // Listed, but its bytes are only in the cloud (a OneDrive Files On-Demand
+  // placeholder; an iCloud Drive file the Mac has evicted, SF_DATALESS).
+  // Opening it for reading downloads it, so a caller that must not touch the
+  // network skips it (docs/plans/document-search.md slice 0, 2026-10-05).
+  bool cloud_only = false;
 };
 
 // Every regular file under `utf8_root`, recursively, hidden and system entries
 // (and macOS packages) skipped, sorted by relative path (byte order) so two
-// walks of the same card list in the same order. `max_depth` bounds recursion
+// walks of the same card list in the same order. Links and junctions are never
+// followed; a cloud provider's files (and folders) are walked like any other,
+// with `cloud_only` set on those not on this machine. `max_depth` bounds recursion
 // (a card is shallow; a network share might not be). `visit` returning false
 // stops the walk and the call returns status::cancelled.
 [[nodiscard]] expected walk_files(std::string_view utf8_root, int max_depth,

@@ -171,7 +171,7 @@ the index cannot touch thumbnails. Schema (`index_db.cpp`):
 ```
 meta(key, value)
 roots(id, path, recursive, enabled, last_scan_at, media)          -- remembered index locations
-assets(id, path, root_id, mtime, size, kind, duration_ms, seen)
+assets(id, path, root_id, mtime, size, kind, duration_ms, seen, cloud)   -- cloud: schema 3
 progress(asset_id, spec, state, resume_ms, tries, indexed_at)     -- per asset and model spec
 frames(id, asset_id, spec, pts_ms, pts_tb, tb_num, tb_den, flags, generic, scale, emb)
 speech(id, asset_id, spec, start_ms, end_ms, text)                 -- Whisper transcript lines
@@ -190,6 +190,32 @@ the CPU self-test reference in `selftest.txt` (keyed by runtime, provider, model
   `path#t=ms` rows through the host table. There is no second thumbnail path.
 - Resumable: state is per asset and spec; a kill mid-clip resumes at the last committed frame
   (`resume_ms`).
+- A folder whose walk fails (offline, moved, no access) keeps its rows; `roots_json` says
+  `"error":"unreadable"` and Settings says "Couldn't read this folder" rather than "Up to date".
+
+## Cloud files in indexed folders
+
+OneDrive (Windows) and iCloud Drive (Mac) keep some files online-only. They appear in the folder,
+but reading one downloads it. The walk lists them, flagged: host table `walk_files2`, from
+`FILE_ATTRIBUTE_RECALL_ON_*` on Windows and `SF_DATALESS` on the Mac. It still never follows a
+symlink or junction. Table v1's `walk_files` leaves them out, so Import never starts a download.
+The index marks them (`assets.cloud`): no picture, sound, speech or People pass reads one, they
+are not counted as work in hand, and the status and each folder's row say "N only in OneDrive" /
+"only in iCloud Drive" (`cloud_files_left`, roots `cloud_only`).
+
+**Index online-only files** (`cloud_files`, off by default; owner, 2026-10-05) mirrors the Photos
+library's iCloud videos. The same fetch thread brings a file down in place: on Windows through the
+Cloud Files API (`CfHydratePlaceholder` in 16 MB slices, so it reports progress and stops between
+them), and on the Mac through `startDownloadingUbiquitousItemAtURL`. It clears the mark, so every
+track takes the file first, and makes it online-only again once no track wants it
+(`CfDehydratePlaceholder`, `evictUbiquitousItemAtURL`). The two-files-on-disk limit is shared
+with iCloud clips. It waits on battery, on a metered network (Network List Manager cost /
+`NWPathMonitor`), under 10 GB plus the file free on the file's drive, and while paused. A file the
+provider will not send is skipped until the next start. Row ids of files brought down are kept in
+`<data>/cache/cloud-fetched`, so a crash's leftovers are made online-only again at the next start.
+The port is `src/addons/ai/cloud_files.h` (`cloud_win.cpp`, `cloud_mac.mm`, `cloud_none.cpp`), in
+the pack, not the base app. Another sync client's files on the Mac (not ubiquitous items) stay
+unindexed.
 - The index holds paths locally and is excluded from crash reporting and telemetry.
 
 ## Search
@@ -339,8 +365,10 @@ people.
   completed work (`mv_ai_status`). The Windows pill does not appear for a load that is waiting
   on the viewer.
 - **Settings → Local search:** per-piece install, Compute, Quality, Precision, "Index videos
-  for", battery threshold, index size and cap, remembered roots, People, sharing, the Photos
-  Library (Mac) and Final Cut Pro search (Mac, [23](23-nle-search.md)).
+  for", battery threshold, index size and cap, remembered roots (with *Index Pictures* / *Videos*
+  (*Movies*) offered while no root covers them, and the reason when an add fails), *Index
+  online-only files* (shown once there are any), People, sharing, the Photos Library (Mac) and
+  Final Cut Pro search (Mac, [23](23-nle-search.md)).
 
 ## Not hurting the viewer
 

@@ -65,8 +65,24 @@ mv_status MV_CALL t_walk(void*, const char* root, int32_t depth, mv_addon_walk_f
   return guarded([&] {
     if (!root || !visit) return MV_ERR_INVALID_ARG;
     auto r = io::walk_files(root, depth, [&](const io::tree_entry& e) {
+      // Table v1's promise: every file listed is on this machine. A copy
+      // from it must never start a download.
+      if (e.cloud_only) return true;
       mv_addon_file_entry fe{e.path_utf8.c_str(), e.relative_utf8.c_str(), e.name_utf8.c_str(),
                              e.size, e.mtime_unix};
+      return visit(user, &fe) != 0;
+    });
+    return r ? MV_OK : to_mv(r.error());
+  });
+}
+
+mv_status MV_CALL t_walk2(void*, const char* root, int32_t depth, mv_addon_walk2_fn visit, void* user) {
+  return guarded([&] {
+    if (!root || !visit) return MV_ERR_INVALID_ARG;
+    auto r = io::walk_files(root, depth, [&](const io::tree_entry& e) {
+      mv_addon_file_entry2 fe{sizeof(mv_addon_file_entry2), e.cloud_only ? MV_ADDON_FILE_CLOUD_ONLY : 0u,
+                              e.path_utf8.c_str(), e.relative_utf8.c_str(), e.name_utf8.c_str(),
+                              e.size, e.mtime_unix};
       return visit(user, &fe) != 0;
     });
     return r ? MV_OK : to_mv(r.error());
@@ -596,6 +612,7 @@ host_table::host_table(host_services services) : svc_(std::move(services)) {
   api_.thumbnail_jpeg = &t_thumbnail_jpeg;
   api_.thumbnail_store_jpeg = &t_thumbnail_store_jpeg;
   api_.recycle_file = svc_.recycle ? &t_recycle : nullptr;
+  api_.walk_files2 = &t_walk2;
 }
 
 void host_table::set_negotiated(std::uint32_t version) noexcept { api_.host_api = version; }

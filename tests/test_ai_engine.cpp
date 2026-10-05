@@ -426,6 +426,75 @@ class fake_photos final : public mv::ai::photos_source {
   std::shared_ptr<photos_lib> lib_;
 };
 
+// Cloud files (2026-10-05): which of a folder's files a provider keeps
+// online-only, by file name. The host's real walk lists the files; the rig's
+// walk_files2 flags these, the way OneDrive's attributes would.
+struct cloud_world {
+  std::mutex m;
+  std::set<std::string> online_only;
+  std::vector<std::string> log;  // "hydrate x" / "dehydrate x", in order
+  std::atomic<bool> unmetered{true};
+  bool is_online_only(const std::string& name) {
+    std::lock_guard lock(m);
+    return online_only.count(name) != 0;
+  }
+};
+
+class fake_cloud final : public mv::ai::cloud_files {
+ public:
+  explicit fake_cloud(std::shared_ptr<cloud_world> w) : w_(std::move(w)) {}
+  mv::expected hydrate(const std::string& path, const std::function<bool(double)>& progress) override {
+    const std::string name = utf8(fs::path(path).filename());
+    {
+      std::lock_guard lock(w_->m);
+      w_->online_only.erase(name);
+      w_->log.push_back("hydrate " + name);
+    }
+    if (progress) (void)progress(1.0);
+    return {};
+  }
+  mv::expected dehydrate(const std::string& path) override {
+    const std::string name = utf8(fs::path(path).filename());
+    std::lock_guard lock(w_->m);
+    w_->online_only.insert(name);
+    w_->log.push_back("dehydrate " + name);
+    return {};
+  }
+  bool network_unmetered() override { return w_->unmetered.load(); }
+
+ private:
+  std::shared_ptr<cloud_world> w_;
+};
+
+struct walk2_ctx {
+  cloud_world* world;
+  mv_addon_walk2_fn visit;
+  void* user;
+};
+std::mutex g_walks_m;
+std::map<void*, std::pair<decltype(mv_host_api::walk_files2), cloud_world*>> g_walks;  // by host
+
+int32_t MV_CALL flag_cloud(void* user, const mv_addon_file_entry2* e) {
+  auto* c = static_cast<walk2_ctx*>(user);
+  mv_addon_file_entry2 x = *e;
+  if (e->name_utf8 && c->world->is_online_only(e->name_utf8)) x.flags |= MV_ADDON_FILE_CLOUD_ONLY;
+  return c->visit(c->user, &x);
+}
+
+mv_status MV_CALL walk2_with_cloud(void* host, const char* root, int32_t depth, mv_addon_walk2_fn visit, void* user) {
+  decltype(mv_host_api::walk_files2) real = nullptr;
+  cloud_world* world = nullptr;
+  {
+    std::lock_guard lock(g_walks_m);
+    const auto it = g_walks.find(host);
+    if (it == g_walks.end()) return MV_ERR_INTERNAL;
+    real = it->second.first;
+    world = it->second.second;
+  }
+  walk2_ctx c{world, visit, user};
+  return real(host, root, depth, &flag_cloud, &c);
+}
+
 struct rig {
   scratch_dir dir{"ai"};
   std::mutex events_m;
@@ -438,6 +507,10 @@ struct rig {
   std::atomic<int> battery_percent{100};
   std::atomic<int> stills_decoded{0};
   std::unique_ptr<mv::addon::host_table> table;
+  std::shared_ptr<cloud_world> cloud = std::make_shared<cloud_world>();
+  mv_host_api api{};  // the table, its walk_files2 flagging `cloud`'s online-only names
+  std::mutex decoded_m;
+  std::vector<std::string> decoded;  // every still the host decoded, by name
   std::shared_ptr<fake_embedder> fast = std::make_shared<fake_embedder>("fake-fast/fp16/pre1");
   std::shared_ptr<fake_embedder> high = std::make_shared<fake_embedder>("fake-high/fp16/pre1", 0.01f);
   std::atomic<bool> faces_available{true};
@@ -475,6 +548,10 @@ struct rig {
     svc.still_rgb = [this](const std::string& path, std::uint32_t) -> mv::result<mv::addon::rgb_image> {
       ++stills_decoded;
       const std::string name = utf8(fs::path(path).filename());
+      {
+        std::lock_guard lock(decoded_m);
+        decoded.push_back(name);
+      }
       if (name.find("broken") != std::string::npos) return mv::err(mv::status::corrupt);
       auto img = solid(colour_named(name));
       if (name.rfind("anna", 0) == 0) img.rgb[2] = 11;
@@ -521,8 +598,22 @@ struct rig {
     };
     table = std::make_unique<mv::addon::host_table>(std::move(svc));
     table->set_negotiated(MV_ADDON_HOST_API);
+    api = *table->api();
+    {
+      std::lock_guard lock(g_walks_m);
+      g_walks[api.host] = {api.walk_files2, cloud.get()};
+    }
+    api.walk_files2 = &walk2_with_cloud;
   }
-  ~rig() { eng.reset(); }
+  ~rig() {
+    eng.reset();
+    std::lock_guard lock(g_walks_m);
+    g_walks.erase(api.host);
+  }
+  bool was_decoded(const std::string& name) {
+    std::lock_guard lock(decoded_m);
+    return std::find(decoded.begin(), decoded.end(), name) != decoded.end();
+  }
 
   mv::ai::engine_deps deps() {
     mv::ai::engine_deps d;
@@ -577,6 +668,7 @@ struct rig {
     };
     d.photos = [this] { return std::unique_ptr<mv::ai::photos_source>(new fake_photos(library)); };
     d.photos_rescan_gap_s = 0;
+    d.cloud = [this] { return std::unique_ptr<mv::ai::cloud_files>(new fake_cloud(cloud)); };
     d.open_speech = [this](std::uint32_t, std::uint32_t) -> mv::result<mv::ai::loaded_speech> {
       if (!audio_available) return mv::err(mv::status::io);
       mv::ai::loaded_speech s;
@@ -590,7 +682,7 @@ struct rig {
 
   void start() {
     eng.reset();
-    eng = std::make_unique<engine>(table->api(), deps());
+    eng = std::make_unique<engine>(&api, deps());
     REQUIRE(eng->start());
   }
 
@@ -2229,6 +2321,112 @@ TEST_CASE("the opt-in iCloud fetch downloads iCloud-only clips, indexes them, th
   REQUIRE(eventually([&] { return r.status().icloud_fetch == MV_AI_ICLOUD_DONE; }));
   CHECK(r.library->fetches == 1);
   CHECK(r.eng->settings_json().find("\"icloud_videos\":true") != std::string::npos);
+}
+
+TEST_CASE("online-only cloud files are counted, never read, and fetched in place only with the opt-in",
+          "[ai][engine][cloud]") {
+  rig r;
+  r.file("red_car.jpg");
+  r.file("blue_sea.jpg");  // OneDrive keeps this one online-only
+  {
+    std::lock_guard lock(r.cloud->m);
+    r.cloud->online_only = {"blue_sea.jpg"};
+  }
+  r.start();
+  auto root = r.eng->index_folder(utf8(r.photos()), true);
+  REQUIRE(root);
+  REQUIRE(r.idle());
+  mv_ai_status s = r.status();
+  CHECK(s.assets_total == 2);
+  CHECK(s.assets_done == 1);
+  CHECK(s.cloud_files_left == 1);
+  // Not "indexing" forever: the online-only file is not work in hand.
+  REQUIRE(eventually([&] { return r.status().state == MV_AI_STATE_IDLE; }));
+  CHECK(s.cloud_fetch == MV_AI_ICLOUD_OFF);  // off by default
+  CHECK_FALSE(r.was_decoded("blue_sea.jpg"));  // reading it would have downloaded it
+  CHECK(r.search("something blue").empty());
+  CHECK(r.eng->roots_json().find("\"cloud_only\":1") != std::string::npos);
+  CHECK(r.cloud->log.empty());
+
+  REQUIRE(r.eng->set_setting("cloud_files", "1"));
+  // On battery, then metered: it waits.
+  r.cloud->unmetered = false;
+  r.on_battery = true;
+  REQUIRE(eventually([&] { return r.status().cloud_fetch == MV_AI_ICLOUD_WAIT_POWER; }));
+  r.on_battery = false;
+  REQUIRE(eventually([&] { return r.status().cloud_fetch == MV_AI_ICLOUD_WAIT_NETWORK; }));
+  CHECK(r.cloud->log.empty());
+
+  r.cloud->unmetered = true;
+  REQUIRE(eventually([&] { return has_row(r.search("something blue"), "blue_sea.jpg"); }));
+  REQUIRE(eventually([&] { return r.status().cloud_fetch == MV_AI_ICLOUD_DONE; }));
+  REQUIRE(r.idle());
+  // Brought down, indexed, then made online-only again.
+  REQUIRE(eventually([&] { return r.cloud->is_online_only("blue_sea.jpg"); }));
+  {
+    std::lock_guard lock(r.cloud->m);
+    CHECK(r.cloud->log == std::vector<std::string>{"hydrate blue_sea.jpg", "dehydrate blue_sea.jpg"});
+  }
+  s = r.status();
+  CHECK(s.state == MV_AI_STATE_IDLE);
+  CHECK(s.assets_done == 2);
+  CHECK(s.cloud_files_left == 0);
+  CHECK(s.cloud_files_fetched == 1);
+  // The crash note goes once the file is given back (just after the provider call).
+  CHECK(eventually([&] { return !fs::exists(r.dir / "data" / "cache" / "cloud-fetched"); }));
+
+  // A rescan sees it online-only again; it is indexed, so nothing is fetched.
+  REQUIRE(r.eng->root_rescan(*root));
+  REQUIRE(r.idle());
+  r.start();
+  REQUIRE(r.idle());
+  REQUIRE(eventually([&] { return r.status().cloud_fetch == MV_AI_ICLOUD_DONE; }));
+  CHECK(r.status().assets_done == 2);
+  {
+    std::lock_guard lock(r.cloud->m);
+    CHECK(r.cloud->log.size() == 2);
+  }
+  CHECK(r.eng->settings_json().find("\"cloud_files\":true") != std::string::npos);
+}
+
+TEST_CASE("a cloud file a crash left on disk is made online-only again at the next start",
+          "[ai][engine][cloud]") {
+  rig r;
+  r.file("red_car.jpg");
+  r.start();
+  auto root = r.eng->index_folder(utf8(r.photos()), true);
+  REQUIRE(root);
+  REQUIRE(r.idle());
+  r.eng.reset();
+  // A crash between hydrate and give-back leaves the row ids behind.
+  const fs::path note = r.dir / "data" / "cache" / "cloud-fetched";
+  fs::create_directories(note.parent_path());
+  {
+    std::ofstream out(note, std::ios::binary);
+    out << "1\n";
+  }
+  r.start();
+  REQUIRE(eventually([&] { return !fs::exists(note); }));
+  REQUIRE(eventually([&] { return r.cloud->is_online_only("red_car.jpg"); }));
+}
+
+TEST_CASE("a folder that cannot be read says so on its row and keeps its rows", "[ai][engine][cloud]") {
+  rig r;
+  r.file("sub/red_car.jpg");
+  r.start();
+  auto root = r.eng->index_folder(utf8(r.photos() / "sub"), true);
+  REQUIRE(root);
+  REQUIRE(r.idle());
+  CHECK(r.status().assets_done == 1);
+  r.eng.reset();
+  fs::rename(r.photos() / "sub", r.photos() / "moved");
+  r.start();
+  REQUIRE(r.idle());
+  REQUIRE(eventually([&] { return r.eng->roots_json().find("\"error\":\"unreadable\"") != std::string::npos; }));
+  CHECK(r.status().assets_done == 1);  // a missing drive does not throw work away
+  fs::rename(r.photos() / "moved", r.photos() / "sub");
+  REQUIRE(r.eng->root_rescan(*root));
+  REQUIRE(eventually([&] { return r.eng->roots_json().find("\"error\"") == std::string::npos; }));
 }
 
 TEST_CASE("the People pass leaves iCloud-only Photos assets alone until they are local",
