@@ -582,7 +582,11 @@ matches." Undo is Split (a split pair never merges again on its own). Tests: `"[
 `people_in_json(scope_dir, scope, …)`: `people_json` narrowed to the people with a face in a
 photo or clip under `scope_dir` by the same scopes `search_text` takes. `faces` counts their faces
 there and the cover is the clearest of those, so a card's count and face are the folder's. *Who
-qualifies at all* (minimum faces, or a name) is still judged over the whole index.
+qualifies at all* (minimum faces, or a name) is still judged over the whole index. The minimum
+is two faces, or **one when fewer than 100 photos and clips are in view** (the scoped folder's,
+or the whole index for Everywhere and the status count): in a small folder nobody may appear
+twice, and the grid said "No people found yet" over five clear faces (owner, 2026-10-05). A
+large library keeps two so a stranger in one photo does not fill it (`people_min_faces`).
 `faces_db::people(min, assets)` does one indexed pass per person against the scope's asset set.
 
 Chrome: a "People in · This folder | + Subfolders · <folder>" control at the top of the People

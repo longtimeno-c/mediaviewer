@@ -104,6 +104,16 @@ constexpr std::int32_t kMaxTries = 3;
 constexpr std::size_t kFetchAhead = 2;
 constexpr std::uint64_t kFetchMinFreeBytes = 10'000'000'000;
 constexpr std::uint32_t kPeopleMinFaces = 2;
+// Below this many photos and clips in view (the open folder's, or the whole
+// index), one face is enough to be listed: in a small folder nobody may be in
+// two photos, and People read "No people found yet" over five clear faces
+// (owner report, 2026-10-05). A large library keeps two, so a stranger in one
+// photo does not fill the grid.
+constexpr std::size_t kPeopleSmallSet = 100;
+
+std::uint32_t people_min_faces(std::size_t assets) noexcept {
+  return assets < kPeopleSmallSet ? 1u : kPeopleMinFaces;
+}
 
 }  // namespace
 
@@ -442,10 +452,10 @@ void engine::refresh_counts() {
     if (faces_model_) people_model = faces_model_->name();
     if (faces_) {
       face_total = faces_->face_count();
-      people = faces_->person_count(kPeopleMinFaces);
       rerun = faces_->rerun_pending();
       std::lock_guard al(assets_m_);
       people_total = assets_.size();
+      people = faces_->person_count(people_min_faces(people_total));
       if (rerun) {
         // Exact while a re-run shows progress; one pass over the assets.
         for (const auto& [id, m] : assets_) people_done += faces_scanned_.count(id);
@@ -4365,9 +4375,16 @@ std::string engine::people_json(const std::string& scope_dir, std::uint32_t scop
   // caller wants everyone.
   std::shared_ptr<std::set<std::int64_t>> here;
   if (scope != MV_AI_SCOPE_ALL && !scope_dir.empty()) here = scope_assets(scope_dir, scope, MV_AI_KIND_ALL);
+  std::size_t in_view = 0;
+  if (here) {
+    in_view = here->size();
+  } else {
+    std::lock_guard lock(assets_m_);
+    in_view = assets_.size();
+  }
   {
     std::lock_guard lock(models_m_);
-    if (faces_) people = faces_->people(kPeopleMinFaces, here.get());
+    if (faces_) people = faces_->people(people_min_faces(in_view), here.get());
   }
   for (const person_row& p : people) {
     w.begin_object();

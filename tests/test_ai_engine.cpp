@@ -1087,6 +1087,40 @@ TEST_CASE("find similar returns the other stills of the same look, not the query
   CHECK(rows.front().first == "red_b.jpg");
 }
 
+// Owner report, 2026-10-05: a 26-photo Downloads with five clear faces, none
+// twice, said "No people found yet". Under 100 photos and clips in view one
+// face lists a person; a larger view keeps two, and a small folder inside it
+// still shows its own one-off faces.
+TEST_CASE("people: one face is enough in a small folder, not across a large library", "[ai][engine][faces]") {
+  rig r;
+  r.file("solo/ben_1.jpg");
+  r.file("anna_1.jpg");
+  r.file("anna_2.jpg");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
+  REQUIRE(r.eng->faces_enable(true));
+  for (int i = 0; i < 300 && !(r.status().flags & MV_AI_STATUS_FACES_READY); ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  REQUIRE(r.idle());
+  auto small = mv::json::parse(r.eng->people_json());
+  REQUIRE(small);
+  CHECK(small->a.size() == 2);  // Anna, and Ben from his one photo
+  CHECK(r.status().people == 2);
+
+  for (int i = 0; i < 100; ++i) r.file("red_" + std::to_string(i) + ".jpg");
+  REQUIRE(r.eng->root_rescan(1));
+  REQUIRE(r.idle());
+  auto large = mv::json::parse(r.eng->people_json());
+  REQUIRE(large);
+  REQUIRE(large->a.size() == 1);  // Ben's one face no longer lists him everywhere
+  CHECK(*large->a[0].integer("faces") == 2);
+  CHECK(r.status().people == 1);
+  auto solo = mv::json::parse(r.eng->people_json(utf8(r.photos() / "solo"), MV_AI_SCOPE_TREE));
+  REQUIRE(solo);
+  CHECK(solo->a.size() == 1);  // but his own small folder shows him
+}
+
 TEST_CASE("people: opt-in, clusters, names, corrections, and deletion that leaves no vectors",
           "[ai][engine][faces]") {
   rig r;
