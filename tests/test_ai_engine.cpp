@@ -807,6 +807,44 @@ TEST_CASE("a folder already covered by a tree root is not remembered twice", "[a
   CHECK(roots->a.size() == 1);  // the tree swallowed the folder root
 }
 
+// Owner report, 2026-10-05: Settings read "0 of 26 · 0 KB" for a folder that
+// had finished, and Rescan looked like it did nothing. The rows follow the
+// work through AI_ROOTS, carry a size, and say when a root is being walked.
+TEST_CASE("folder rows follow indexing, carry a size and show a rescan", "[ai][engine]") {
+  rig r;
+  r.file("red.jpg");
+  r.file("sub/blue.jpg");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
+  REQUIRE(r.idle());
+  const auto roots_events = [&] {
+    std::lock_guard lock(r.events_m);
+    return std::count_if(r.events.begin(), r.events.end(),
+                         [](const mv_addon_event& e) { return e.kind == MV_ADDON_EVENT_AI_ROOTS; });
+  };
+  {
+    const auto roots = mv::json::parse(r.eng->roots_json());
+    REQUIRE(roots);
+    REQUIRE(roots->a.size() == 1);
+    const auto& row = roots->a[0];
+    CHECK(*row.integer("assets") == 2);
+    CHECK(*row.integer("done") == 2);
+    CHECK(*row.integer("bytes") > 0);
+    CHECK(!row.boolean("scanning").value_or(true));
+  }
+  // A rescan is announced at once and again when its walk ends, even when
+  // it finds nothing new.
+  const auto before = roots_events();
+  REQUIRE(r.eng->root_rescan(1));
+  CHECK(roots_events() > before);
+  REQUIRE(r.idle());
+  CHECK(roots_events() >= before + 2);
+  const auto after = mv::json::parse(r.eng->roots_json());
+  REQUIRE(after);
+  CHECK(!after->a[0].boolean("scanning").value_or(true));
+  CHECK(*after->a[0].integer("done") == 2);
+}
+
 TEST_CASE("indexing waits while the viewer is busy and says so", "[ai][engine]") {
   rig r;
   r.file("red.jpg");

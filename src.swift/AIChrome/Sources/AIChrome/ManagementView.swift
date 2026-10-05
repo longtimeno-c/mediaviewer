@@ -30,6 +30,9 @@ struct RootRow: Identifiable, Equatable {
   var kind = "folder"
   var access = ""
   var unavailable: Int64 = 0
+  // The pack is walking it now (a Rescan, or the scan at start): the row says
+  // so and Rescan waits, so a click never looks like it did nothing.
+  var scanning = false
   var isPhotos: Bool { kind == "photos" }
 }
 
@@ -266,7 +269,7 @@ final class ManagementModel: ObservableObject {
                 assets: int64($0["assets"]), done: int64($0["done"]), bytes: int64($0["bytes"]),
                 media: UInt32(clamping: int64($0["media"])),
                 kind: $0["kind"] as? String ?? "folder", access: $0["access"] as? String ?? "",
-                unavailable: int64($0["unavailable"]))
+                unavailable: int64($0["unavailable"]), scanning: $0["scanning"] as? Bool ?? false)
       }
       await MainActor.run {
         if rows != self.roots { self.roots = rows }
@@ -904,7 +907,7 @@ struct ManagementView: View {
         .menuStyle(.borderlessButton)
         .fixedSize()
         .help("What the library's videos are indexed for")
-        Button("Rescan") { model.rescan(root.id) }.disabled(off)
+        Button(root.scanning ? "Checking…" : "Rescan") { model.rescan(root.id) }.disabled(off || root.scanning)
         if model.confirming == .removeRoot(root.id) {
           Button("Remove from index", role: .destructive) { model.removeRoot(root.id) }
           Button("Cancel") { model.confirming = nil }
@@ -945,7 +948,7 @@ struct ManagementView: View {
           .progressViewStyle(.linear)
           .tint(root.enabled ? .accentColor : .secondary)
         Text("\(countText(UInt64(max(0, root.done)))) of \(countText(UInt64(max(0, root.assets)))) · \(bytesText(UInt64(max(0, root.bytes))))" +
-             (root.enabled ? "" : " · paused"))
+             (root.enabled ? (root.scanning ? " · checking for changes…" : "") : " · paused"))
           .font(AITheme.font(11)).foregroundStyle(AITheme.body)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -965,7 +968,8 @@ struct ManagementView: View {
       .menuStyle(.borderlessButton)
       .fixedSize()
       .help("What this folder's videos are indexed for")
-      Button("Rescan") { model.rescan(root.id) }
+      Button(root.scanning ? "Checking…" : "Rescan") { model.rescan(root.id) }
+        .disabled(!root.enabled || root.scanning)
       if model.confirming == .removeRoot(root.id) {
         Button("Remove from index", role: .destructive) { model.removeRoot(root.id) }
         Button("Cancel") { model.confirming = nil }

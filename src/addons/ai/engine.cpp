@@ -415,8 +415,9 @@ void engine::refresh_counts() {
   const counts cp = speech_spec.empty() ? counts{} : db_->count(speech_spec, audio);
   std::map<std::int64_t, std::pair<std::uint64_t, std::uint64_t>> per_root;
   const std::vector<root_row> roots = db_->roots();
+  const std::string root_spec = counting_spec();
   for (const root_row& r : roots) {
-    per_root[r.id] = {db_->assets_in_root(r.id), build_spec.empty() ? 0 : db_->done_in_root(r.id, build_spec)};
+    per_root[r.id] = {db_->assets_in_root(r.id), root_spec.empty() ? 0 : db_->done_in_root(r.id, root_spec)};
   }
   std::uint64_t bytes = db_->bytes();
   std::uint64_t face_total = 0;
@@ -455,8 +456,13 @@ void engine::refresh_counts() {
   }
   if (s.index_cap != 0 && bytes > s.index_cap && !index_full_) index_full_ = true;
 
-  std::lock_guard lock(status_m_);
+  std::unique_lock lock(status_m_);
   counts_ = c;
+  // A folder's count moved (a file indexed, added or gone): Settings' folder
+  // rows read roots_json on AI_ROOTS, so they follow the work, not only a
+  // root being added (owner report, 2026-10-05: "0 of 26" after it finished).
+  // At most once a pass of the control loop (~1 s) while indexing.
+  const bool roots_moved = per_root != root_counts_;
   root_counts_ = std::move(per_root);
   roots_cache_ = roots;
   status_.assets_total = c.assets;
@@ -547,6 +553,17 @@ void engine::refresh_counts() {
   status_.yield_reason = state == MV_AI_STATE_YIELDING || state == MV_AI_STATE_LOADING
                              ? static_cast<std::uint32_t>(yield_now_.load())
                              : 0;
+  lock.unlock();
+  if (roots_moved) post(MV_ADDON_EVENT_AI_ROOTS);
+}
+
+std::string engine::counting_spec() {
+  {
+    std::lock_guard lock(models_m_);
+    if (!build_.meta.spec_key.empty()) return build_.meta.spec_key;
+    if (!answer_.meta.spec_key.empty()) return answer_.meta.spec_key;
+  }
+  return db_->meta("active_spec");
 }
 
 // ---- models ---------------------------------------------------------------------------------
@@ -1326,7 +1343,11 @@ void engine::control_loop() {
       rescan_all_ = false;
       some.swap(rescan_roots_);
       scanning_ = all || !some.empty();
+      scanning_roots_ = some;
+      if (all) scanning_roots_.insert(0);
     }
+    const bool walked = all || !some.empty();
+    if (walked) post(MV_ADDON_EVENT_AI_ROOTS);  // "Checking for changes…"
     if (all || some.count(photos_root_)) last_photos_scan = t;
     if (all || (t - last_full_scan) > 15 * 60) {
       scan_all();
@@ -1336,8 +1357,14 @@ void engine::control_loop() {
         if (some.count(r.id) && r.enabled) scan_root(r);
       }
     }
+    {
+      std::lock_guard lock(control_m_);
+      scanning_roots_.clear();
+    }
     refresh_counts();
     scanning_ = false;
+    // The walk is over even when it found nothing new: the rows stop saying so.
+    if (walked) post(MV_ADDON_EVENT_AI_ROOTS);
     maybe_finish_migration();
     reap_retired();
     // Plugging in ends an override even while no worker is asking (idle).
@@ -2756,10 +2783,23 @@ std::string engine::active_spec() const {
 
 std::string engine::roots_json() {
   const std::vector<root_row> roots = db_->roots();
-  std::string spec;
+  const std::string spec = counting_spec();
+  std::set<std::int64_t> walking;
+  bool walking_all = false;
+  if (!options_.read_only) {  // a reader walks nothing (its rescan_all_ is never taken)
+    std::lock_guard lock(control_m_);
+    walking = scanning_roots_;
+    walking.insert(rescan_roots_.begin(), rescan_roots_.end());
+    walking_all = walking.count(0) != 0 || rescan_all_;
+  }
+  // A folder's share of the index on disk, by its picture rows: the file is
+  // one SQLite database, so this is an estimate, not a per-folder file size.
+  std::uint64_t total_bytes = 0;
+  std::uint64_t total_frames = 0;
   {
-    std::lock_guard lock(models_m_);
-    spec = build_.meta.spec_key;
+    std::lock_guard lock(status_m_);
+    total_bytes = status_.index_bytes;
+    total_frames = counts_.frames;
   }
   json::writer w;
   w.begin_array();
@@ -2778,7 +2818,12 @@ std::string engine::roots_json() {
     w.key("media").integer(r.media);
     w.key("assets").integer(static_cast<std::int64_t>(db_->assets_in_root(r.id)));
     w.key("done").integer(static_cast<std::int64_t>(spec.empty() ? 0 : db_->done_in_root(r.id, spec)));
-    w.key("frames").integer(static_cast<std::int64_t>(spec.empty() ? 0 : db_->frames_in_root(r.id, spec)));
+    const std::uint64_t frames = spec.empty() ? 0 : db_->frames_in_root(r.id, spec);
+    w.key("frames").integer(static_cast<std::int64_t>(frames));
+    const double share = total_frames == 0 ? 0.0 : static_cast<double>(std::min(frames, total_frames)) /
+                                                       static_cast<double>(total_frames);
+    w.key("bytes").integer(static_cast<std::int64_t>(share * static_cast<double>(total_bytes)));
+    w.key("scanning").boolean(r.enabled && (walking_all || walking.count(r.id) != 0));
     w.key("last_scan").integer(r.last_scan_at);
     w.end_object();
   }
@@ -2882,6 +2927,10 @@ expected engine::root_rescan(std::int64_t id) {
     rescan_roots_.insert(id);
   }
   control_cv_.notify_all();
+  // The row says "Checking for changes…" at once (roots_json "scanning"),
+  // and again when the walk ends, even if it found nothing (owner report,
+  // 2026-10-05: Rescan looked like it did nothing).
+  post(MV_ADDON_EVENT_AI_ROOTS, static_cast<std::uint64_t>(id));
   return {};
 }
 

@@ -341,6 +341,11 @@ people.
 - **Settings → Local search:** per-piece install, Compute, Quality, Precision, "Index videos
   for", battery threshold, index size and cap, remembered roots, People, sharing, the Photos
   Library (Mac) and Final Cut Pro search (Mac, [23](23-nle-search.md)).
+  Each remembered root shows "N of M" (or "Up to date"), its share of the index on disk, and
+  "Checking for changes…" while it is being walked. The rows follow the work: the pack posts
+  `AI_ROOTS` when a root's count moves (at most once a control pass, ~1 s), when a rescan is
+  asked for, and when a walk starts and ends; a row button greys out until the row is read
+  again, and Windows re-reads the panel each time Settings opens (2026-10-05).
 
 ## Not hurting the viewer
 
