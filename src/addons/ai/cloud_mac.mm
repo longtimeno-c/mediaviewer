@@ -9,14 +9,23 @@
 
 #include <sys/stat.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <memory>
 #include <thread>
 
 #include "addons/ai/cloud_files.h"
 
 namespace mv::ai {
 namespace {
+
+// nil for a path that is not UTF-8: fileURLWithPath: throws on nil, and an
+// Objective-C exception must not cross into the engine.
+NSURL* file_url(const std::string& path) {
+  NSString* s = [NSString stringWithUTF8String:path.c_str()];
+  return s ? [NSURL fileURLWithPath:s] : nil;
+}
 
 bool dataless(const std::string& path) {
   struct stat st{};
@@ -33,7 +42,9 @@ class icloud_drive final : public cloud_files {
   icloud_drive() {
     monitor_ = nw_path_monitor_create();
     nw_path_monitor_set_queue(monitor_, dispatch_queue_create("mv.ai.cloud.network", DISPATCH_QUEUE_SERIAL));
-    std::atomic<bool>* ok = &unmetered_;
+    // The block owns the flag with this object: the monitor's queue may still
+    // run a last update after cancel.
+    std::shared_ptr<std::atomic<bool>> ok = unmetered_;
     nw_path_monitor_set_update_handler(monitor_, ^(nw_path_t p) {
       ok->store(nw_path_get_status(p) == nw_path_status_satisfied && !nw_path_is_expensive(p) &&
                 !nw_path_is_constrained(p));
@@ -46,7 +57,7 @@ class icloud_drive final : public cloud_files {
 
   expected hydrate(const std::string& path, const std::function<bool(double)>& progress) override {
     @autoreleasepool {
-      NSURL* url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path.c_str()]];
+      NSURL* url = file_url(path);
       if (!url) return err(status::invalid_arg);
       NSNumber* ubiquitous = nil;
       [url getResourceValue:&ubiquitous forKey:NSURLIsUbiquitousItemKey error:nil];
@@ -79,18 +90,18 @@ class icloud_drive final : public cloud_files {
 
   expected dehydrate(const std::string& path) override {
     @autoreleasepool {
-      NSURL* url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path.c_str()]];
+      NSURL* url = file_url(path);
       NSError* e = nil;
       return url && [[NSFileManager defaultManager] evictUbiquitousItemAtURL:url error:&e] ? expected{}
                                                                                              : err(status::io);
     }
   }
 
-  bool network_unmetered() override { return unmetered_.load(); }
+  bool network_unmetered() override { return unmetered_->load(); }
 
  private:
   nw_path_monitor_t monitor_ = nullptr;
-  std::atomic<bool> unmetered_{false};
+  std::shared_ptr<std::atomic<bool>> unmetered_ = std::make_shared<std::atomic<bool>>(false);
 };
 
 }  // namespace

@@ -21,8 +21,10 @@ found while looking, and it comes first. Written 2026-10-05.
 **Slice 0** is built: see §0 and [17](../design/17-local-ai-search.md) "Cloud files in indexed
 folders". It was run on Windows: `mv_ai_tests` (all, plus `[cloud]`) and `mv_import_tests`
 (`[port]`: links and junctions not followed, past `MAX_PATH`). The WinUI half compiles. The Mac
-half (`cloud_mac.mm`, the SwiftUI rows) is written but has not been compiled or run, so it is owed
-on a Mac. The LOADING pill item is dropped: `Look.PillVisible` keeps the pill off during a load on
+half compiles and passes the same suites, and it ran in the app against real iCloud Drive: evicted
+files were counted and not read, then fetched, indexed and evicted again, with crash give-back,
+the unreadable-root row and the Mac PR 1 gate holding (DEVELOPMENT, "Local search: cloud folders
+and folder adds"). Still owed on hardware: the power and Low Data Mode waits. The LOADING pill item is dropped: `Look.PillVisible` keeps the pill off during a load on
 purpose, because appearing over a busy viewer would cost it a frame. Settings already says
 "Getting ready…".
 

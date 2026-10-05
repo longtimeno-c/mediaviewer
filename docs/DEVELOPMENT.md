@@ -1304,7 +1304,18 @@ while they are not indexed, and an unreadable folder says so.
   set, with a fake provider) and `mv_import_tests` (`"[port]"`: links and junctions skipped, a
   file past 260 characters listed) pass. The WinUI chrome compiles. Not yet run against real
   OneDrive placeholders or in the running app.
-- **Mac:** `cloud_mac.mm` and the SwiftUI rows are written but have not been compiled or run.
+- **Mac (M-series, 2026-10-05):** compiles clean (`-Werror`). `mv_ai_tests` 101 cases (93 passed, 8
+  skipped), `"[cloud]"` 10 of 10 runs, `mv_import_tests` 70 of 70, `mv_tests` 611 passed (8
+  skipped). Against real iCloud Drive (a scratch folder, 4 of 8 photos evicted): the walk flags
+  exactly the 4 `SF_DATALESS` files without faulting them in. With a dev-sideloaded pack the row
+  read "4 of 4 · 4 only in iCloud Drive" and nothing was downloaded. With the switch on, all 4
+  came down, were indexed (search finds them), and were evicted again, and `cache/cloud-fetched`
+  was gone. A leftover marker plus a hydrated file was given back at the next launch. An ejected
+  disk-image root read "Couldn't read this folder…". *Index Pictures* / *Index Movies* showed
+  while uncovered. Mac PR 1 gate: 2 × 60 s, 0 dropped, p99 16.9 ms, 0 idle presents.
+  **Not run:** the power and Low Data Mode waits on hardware (the fake provider covers them),
+  the two-at-a-time cap (4 small files fetched too fast to observe), the "An import is running"
+  add error, and another File Provider client's files (none installed).
 - **Building on a machine where the Visual Studio installer has lost its Build Tools registration**
   (`vswhere` lists nothing; the VS generator and vcpkg both refuse): configure with
   `-G "NMake Makefiles"` from a `vcvars64.bat` shell, with `-DVCPKG_MANIFEST_INSTALL=OFF`,
