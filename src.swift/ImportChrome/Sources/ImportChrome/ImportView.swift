@@ -1,8 +1,9 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The Import window (docs/design/18 "The Import window"), SwiftUI, the Mac twin of
-// ImportWindow.cs: sources, the day-grouped grid, the preset with "Where
-// files go", one primary button; progress while copying, summary after.
+// ImportWindow.cs: sources, the day-grouped grid, and three plain steps on the
+// right (where to, what to import, how to organise) with the rest of the preset
+// under More Options; one primary button; progress while copying, summary after.
 // Keyboard-complete: Return imports (⌘Return from anywhere; Return on a tile
 // opens it in the viewer), Space toggles a tile (pauses / resumes while
 // copying), ⇧Space a day, ⌃Tab / ⌃⇧Tab the next / previous source, ⌘J ejects,
@@ -21,6 +22,7 @@ struct ImportView: View {
   @State private var useForCard = false
   @State private var autoImport = false
   @State private var showHistory = false
+  @State private var showMore = false
 
   var body: some View {
     VStack(spacing: 0) {
@@ -161,54 +163,124 @@ struct ImportView: View {
 
   // MARK: columns
 
+  /// Left: where the files come from, then the occasional tools in one menu.
   private var sourcesColumn: some View {
     VStack(alignment: .leading, spacing: 8) {
-      Text("SOURCES").font(.caption).foregroundStyle(bodyColor)
-      List(model.sources, selection: Binding(
-        get: { model.selectedSource },
-        set: { root in if let s = model.sources.first(where: { $0.root == root }) { model.load(s) } })) { s in
-        VStack(alignment: .leading) {
-          Text(s.label).foregroundStyle(titleColor)
-          Text(s.detail).font(.caption).foregroundStyle(bodyColor)
+      Text("Import from").font(.headline).foregroundStyle(titleColor)
+      if model.sources.isEmpty {
+        Text("Insert a memory card or a drive, or add a folder.")
+          .font(.callout).foregroundStyle(bodyColor)
+          .fixedSize(horizontal: false, vertical: true)
+        Spacer()
+      } else {
+        List(model.sources, selection: Binding(
+          get: { model.selectedSource },
+          set: { root in if let s = model.sources.first(where: { $0.root == root }) { model.load(s) } })) { s in
+          HStack(spacing: 8) {
+            Image(systemName: s.removable ? "sdcard" : "folder").foregroundStyle(bodyColor)
+            VStack(alignment: .leading) {
+              Text(s.label).foregroundStyle(titleColor).lineLimit(1).truncationMode(.middle)
+              if !s.detail.isEmpty { Text(s.detail).font(.caption).foregroundStyle(bodyColor) }
+            }
+          }
+          .tag(s.root)
         }
-        .tag(s.root)
+        .scrollContentBackground(.hidden)
       }
-      .scrollContentBackground(.hidden)
-      Button("＋ Folder…") { model.addFolder() }
-      Button("Imports…") { showHistory = true }
-      Button("Verify a folder…") { model.verifyFolder() }
-        .help("Re-hash imported files against the library index to find silent corruption.")
-      Button("Find duplicates…") { model.duplicates.choose() }
-        .help("Compare every file in a folder and its subfolders by content, and move extra copies to the Trash.")
-      Button("? About Import") { model.showExplainer() }
+      Button { model.addFolder() } label: { Label("Add a folder…", systemImage: "plus") }
+      Divider()
+      Menu {
+        Button("Past imports…") { showHistory = true }
+        Button("Check a folder for damaged files…") { model.verifyFolder() }
+        Button("Find duplicates…") { model.duplicates.choose() }
+        Divider()
+        Button("About Import") { model.showExplainer() }
+      } label: {
+        Label("Tools", systemImage: "wrench.and.screwdriver")
+      }
+      .menuStyle(.borderlessButton)
+      .fixedSize()
     }
     .padding(12)
   }
 
+  /// Centre: the files, by day, or a sentence saying why there are none.
   private var gridColumn: some View {
     VStack(alignment: .leading, spacing: 4) {
-      Text(model.title).font(.title3).foregroundStyle(titleColor).padding(8)
-      ScrollView {
-        LazyVStack(alignment: .leading, spacing: 8, pinnedViews: [.sectionHeaders]) {
-          ForEach(model.days) { day in
-            Section {
-              LazyVGrid(columns: [GridItem(.adaptive(minimum: 128, maximum: 128), spacing: 6)], spacing: 6) {
-                ForEach(day.tiles) { tile in tileView(tile) }
+      HStack {
+        Text(model.title).font(.title3).foregroundStyle(titleColor).lineLimit(1)
+        if model.planUnits > 0 {
+          Text("\(model.planNew) new of \(model.planUnits)").foregroundStyle(bodyColor)
+        }
+        Spacer()
+        if !model.days.isEmpty && !model.copying {
+          Button("Select All") { model.selectAll(true) }.controlSize(.small)
+          Button("Select None") { model.selectAll(false) }.controlSize(.small)
+        }
+      }
+      .padding(8)
+      if model.days.isEmpty {
+        emptyGrid.frame(maxWidth: .infinity, maxHeight: .infinity)
+      } else {
+        if model.planNew == 0 && model.string("selection", "new") == "new" && !model.copying {
+          HStack(spacing: 8) {
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+            Text("Everything here has already been imported. Click a file to import it again.")
+              .foregroundStyle(titleColor)
+            Spacer()
+          }
+          .padding(8)
+          .background(RoundedRectangle(cornerRadius: 6).fill(Color.green.opacity(0.1)))
+          .padding(.horizontal, 8)
+        }
+        ScrollView {
+          LazyVStack(alignment: .leading, spacing: 8, pinnedViews: [.sectionHeaders]) {
+            ForEach(model.days) { day in
+              Section {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 128, maximum: 128), spacing: 6)], spacing: 6) {
+                  ForEach(day.tiles) { tile in tileView(tile) }
+                }
+              } header: {
+                Button(day.header) { model.toggleDay(day.day) }
+                  .buttonStyle(.plain)
+                  .foregroundStyle(titleColor)
+                  .padding(.vertical, 4)
+                  .frame(maxWidth: .infinity, alignment: .leading)
+                  .background(canvas)
+                  .help("Click to select or clear the whole day")
               }
-            } header: {
-              Button(day.header) { model.toggleDay(day.day) }
-                .buttonStyle(.plain)
-                .foregroundStyle(titleColor)
-                .padding(.vertical, 4)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(canvas)
             }
           }
+          .padding(8)
         }
-        .padding(8)
+        .disabled(model.copying)
       }
-      .disabled(model.copying)
     }
+  }
+
+  @ViewBuilder private var emptyGrid: some View {
+    VStack(spacing: 10) {
+      if model.selectedSource.isEmpty {
+        Image(systemName: "sdcard").font(.system(size: 40)).foregroundStyle(bodyColor)
+        Text("Insert a memory card, or choose a folder to import from.").foregroundStyle(titleColor)
+        Button("Choose a Folder…") { model.addFolder() }
+      } else if model.scanState == "reading" {
+        ProgressView()
+        Text("Looking for photos and videos…").foregroundStyle(bodyColor)
+      } else if model.scanState == "failed" {
+        Image(systemName: "exclamationmark.triangle").font(.system(size: 32)).foregroundStyle(.orange)
+        Text("This source could not be read. Check that it is still connected.").foregroundStyle(titleColor)
+      } else if model.planUnits > 0 && model.string("selection", "new") == "new" {
+        Image(systemName: "checkmark.circle").font(.system(size: 40)).foregroundStyle(.green)
+        Text("Everything here has already been imported.").foregroundStyle(titleColor)
+        Button("Show All \(model.planUnits) Files") { model.set("selection", "all") }
+      } else {
+        Image(systemName: "photo.on.rectangle").font(.system(size: 40)).foregroundStyle(bodyColor)
+        Text("No photos or videos match these settings.").foregroundStyle(titleColor)
+      }
+    }
+    .multilineTextAlignment(.center)
+    .padding()
   }
 
   private func tileView(_ tile: ImportTile) -> some View {
@@ -218,87 +290,183 @@ struct ImportView: View {
       } else {
         Rectangle().fill(Color.primary.opacity(0.05))
       }
-      Text(tile.selected ? "☑" : "☐").font(.title3).padding(4)
+      Image(systemName: tile.selected ? "checkmark.circle.fill" : "circle")
+        .font(.title3)
+        .foregroundStyle(tile.selected ? Color.accentColor : Color.white)
+        .shadow(radius: 1)
+        .padding(5)
       VStack {
         HStack { Spacer(); Text(tile.badge).font(.caption2).padding(4) }
         Spacer()
-        Text(tile.name).font(.caption2).lineLimit(1).padding(4)
+        Text(tile.state == "duplicate" || tile.state == "imported" ? "Already imported" : tile.name)
+          .font(.caption2).lineLimit(1).padding(4)
           .frame(maxWidth: .infinity, alignment: .leading)
+          .background(Color.black.opacity(0.35))
+          .foregroundStyle(.white)
       }
     }
     .frame(width: 128, height: 128)
-    .clipped()
-    .opacity(tile.dimmed ? 0.4 : 1)
-    .overlay(RoundedRectangle(cornerRadius: 2).stroke(focusedTile == tile.index ? Color.accentColor : .clear, lineWidth: 2))
+    .clipShape(RoundedRectangle(cornerRadius: 4))
+    .opacity(tile.dimmed ? 0.45 : 1)
+    .overlay(RoundedRectangle(cornerRadius: 4)
+      .stroke(focusedTile == tile.index ? Color.accentColor : tile.selected ? Color.accentColor.opacity(0.6) : .clear,
+              lineWidth: 2))
     .focusable()
     .focused($focusedTile, equals: tile.index)
     .onTapGesture { model.toggle(tile) }
-    .help(tile.tip)
+    .help(tile.tip.isEmpty ? tile.name : tile.tip)
     .onAppear { model.thumbnail(for: tile) }
   }
 
+  /// Right: three plain questions (where, what, how organised), the backup
+  /// and eject switches, and everything else under More Options.
   private var presetColumn: some View {
     ScrollView {
-      VStack(alignment: .leading, spacing: 8) {
-        Text("PRESET").font(.caption).foregroundStyle(bodyColor)
-        Picker("Preset", selection: Binding(get: { model.string("name", "Default") },
-                                            set: { model.choosePreset($0) })) {
-          ForEach(model.presetNames, id: \.self) { Text($0).tag($0) }
+      VStack(alignment: .leading, spacing: 14) {
+        if model.presetNames.count > 1 {
+          Picker("Saved settings", selection: Binding(get: { model.string("name", "Default") },
+                                                      set: { model.choosePreset($0) })) {
+            ForEach(model.presetNames, id: \.self) { Text($0).tag($0) }
+          }
         }
-        folderRow("To", key: "destination", allowOff: false)
-        folderRow("Backup", key: "backup", allowOff: true)
-        helpLink("What the destination preview means", .destination)
-        picker("Selection", "selection", [("new", "New since last import"), ("all", "All"),
-                                          ("marked", "Marked in viewer"), ("date_range", "Date range")])
-        if model.string("selection") == "date_range" {
-          textField("From (YYYY-MM-DD)", "range_from")
-          textField("To (YYYY-MM-DD)", "range_to")
+        step("Where to") { destinationRow }
+        step("What to import") {
+          Picker("What to import", selection: Binding(get: { model.string("selection", "new") },
+                                                      set: { model.set("selection", $0) })) {
+            Text("New").tag("new")
+            Text("All").tag("all")
+            Text("Marked").tag("marked")
+            Text("Dates").tag("date_range")
+          }
+          .pickerStyle(.segmented)
+          .labelsHidden()
+          Text(selectionHint).font(.caption).foregroundStyle(bodyColor)
+            .fixedSize(horizontal: false, vertical: true)
+          if model.string("selection") == "date_range" {
+            HStack {
+              textField("From YYYY-MM-DD", "range_from")
+              textField("To YYYY-MM-DD", "range_to")
+            }
+          }
         }
-        helpLink("How these filters and duplicate matching work", .filters)
-        typeFilter
-        picker("Layout", "layout", [("YYYY/YYYY-MM-DD", "YYYY/YYYY-MM-DD"), ("YYYY/MM/DD", "YYYY/MM/DD"),
-                                    ("YYYY-MM-DD", "YYYY-MM-DD"), ("card", "Keep card structure"), ("flat", "Flat")])
-        toggle("+ camera model", "layout_camera", false)
-        toggle("+ type folders (RAW / JPEG / Video)", "layout_type", false)
-        picker("Date", "dates", [("taken", "Date taken, else file time"), ("file_time", "File time only")])
-        textField("Rename ({date} {time} {camera} {seq} {original}), empty = off", "rename")
-        toggle("Skip duplicates (by content)", "skip_duplicates", true)
-        picker("Duplicate scope", "scope", [("destination", "This destination"), ("library", "The whole library index")])
-        toggle("Full verify (read back from the drive)", "full_verify", true)
-        // Eject only ever means something for a card, USB or network drive
-        // (issue #41/#42): an ordinary folder has nothing to eject.
-        if model.removable {
-          toggle("Eject the card when done", "eject_after", true)
-          helpLink("Why Eject is offered here, and when it isn't", .eject)
+        step("How to organise") {
+          Picker("How to organise", selection: Binding(get: { model.string("layout", "YYYY/YYYY-MM-DD") },
+                                                       set: { model.set("layout", $0) })) {
+            Text("Year, then day").tag("YYYY/YYYY-MM-DD")
+            Text("Year, month, then day").tag("YYYY/MM/DD")
+            Text("A folder per day").tag("YYYY-MM-DD")
+            Text("Same folders as the card").tag("card")
+            Text("All in one folder").tag("flat")
+          }
+          .labelsHidden()
+          if !model.folders.isEmpty {
+            VStack(alignment: .leading, spacing: 2) {
+              ForEach(model.folders.prefix(4)) { f in
+                HStack {
+                  Image(systemName: "folder").font(.caption)
+                  Text(f.folder).lineLimit(1).truncationMode(.head)
+                  Spacer()
+                  Text("\(f.units)")
+                }
+                .font(.caption).foregroundStyle(bodyColor)
+              }
+              if model.folders.count > 4 {
+                Text("and \(model.folders.count - 4) more folders").font(.caption).foregroundStyle(bodyColor)
+              }
+            }
+            .help("Where the selected files will go. Nothing is copied until you click Import.")
+          }
         }
-        toggle("Notify when done", "notify", true)
-        toggle("Fast (does not wait for the viewer)", "fast", false)
-        Text("Never offered: deleting from or formatting the card, overwriting a file, or any upload.")
+        VStack(alignment: .leading, spacing: 6) {
+          Toggle("Also copy to a backup drive", isOn: Binding(
+            get: { !model.string("backup").isEmpty },
+            set: { on in if on { model.chooseFolder("backup") } else { model.set("backup", "") } }))
+          if !model.string("backup").isEmpty {
+            Text(model.string("backup")).font(.caption).foregroundStyle(bodyColor)
+              .lineLimit(1).truncationMode(.middle)
+          }
+          // Eject only ever means something for a card, USB or network drive
+          // (issue #41/#42): an ordinary folder has nothing to eject.
+          if model.removable {
+            toggle("Eject the card when done", "eject_after", true)
+          }
+        }
+        DisclosureGroup("More options", isExpanded: $showMore) { moreOptions.padding(.top, 6) }
+        Text("Import only copies. Nothing on the card is deleted, changed or overwritten, and every copy is checked.")
           .font(.caption).foregroundStyle(bodyColor)
-        Text("WHERE FILES GO").font(.caption).foregroundStyle(bodyColor)
-        ForEach(model.folders) { f in
-          HStack { Text(f.folder); Spacer(); Text("\(f.units)") }.font(.caption).foregroundStyle(titleColor)
-        }
-        TextField("Preset name", text: $presetName)
-        Button("Save preset") { model.savePreset(named: presetName) }
-        if model.hasCard {
-          Toggle("Use this preset for this card", isOn: $useForCard)
-            .onChange(of: useForCard) { model.bindCard(use: useForCard, auto: autoImport) }
-          Toggle("Auto-import this card on insert (never deletes)", isOn: $autoImport)
-            .onChange(of: autoImport) { model.bindCard(use: useForCard, auto: autoImport) }
-        }
+          .fixedSize(horizontal: false, vertical: true)
       }
       .padding(12)
     }
   }
 
-  private func folderRow(_ label: String, key: String, allowOff: Bool) -> some View {
-    VStack(alignment: .leading, spacing: 2) {
-      let value = model.string(key)
-      Text("\(label): \(value.isEmpty ? "Off" : value)").font(.caption).foregroundStyle(titleColor)
+  private var selectionHint: String {
+    switch model.string("selection", "new") {
+    case "all": return "Everything on the source, even what you imported before."
+    case "marked": return "Only what you marked in the viewer."
+    case "date_range": return "Only what was taken between two dates."
+    default: return "Only what has not been imported from here before."
+    }
+  }
+
+  private func step<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {
+    VStack(alignment: .leading, spacing: 6) {
+      Text(title).font(.headline).foregroundStyle(titleColor)
+      content()
+    }
+  }
+
+  @ViewBuilder private var destinationRow: some View {
+    let dest = model.string("destination")
+    if dest.isEmpty {
+      Button { model.chooseFolder("destination") } label: {
+        Label("Choose a Folder…", systemImage: "folder.badge.plus").frame(maxWidth: .infinity)
+      }
+      .controlSize(.large)
+    } else {
+      HStack(spacing: 8) {
+        Image(systemName: "folder.fill").foregroundStyle(Color.accentColor)
+        VStack(alignment: .leading, spacing: 0) {
+          Text((dest as NSString).lastPathComponent).foregroundStyle(titleColor).lineLimit(1)
+          Text((dest as NSString).abbreviatingWithTildeInPath).font(.caption).foregroundStyle(bodyColor)
+            .lineLimit(1).truncationMode(.middle)
+        }
+        Spacer()
+        Button("Change…") { model.chooseFolder("destination") }.controlSize(.small)
+      }
+      .help(dest)
+    }
+  }
+
+  /// Everything a first import does not need to touch.
+  private var moreOptions: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Text("File types").font(.caption).foregroundStyle(bodyColor)
+      typeFilter
+      toggle("Add a folder per camera", "layout_camera", false)
+      toggle("Add RAW / JPEG / Video folders", "layout_type", false)
+      picker("Date from", "dates", [("taken", "When it was taken"), ("file_time", "The file's date")])
+      textField("Rename files, e.g. {date}_{seq} (empty keeps names)", "rename")
+      toggle("Skip files already in the library", "skip_duplicates", true)
+      if model.bool("skip_duplicates", true) {
+        picker("Look for them in", "scope", [("destination", "This folder"), ("library", "The whole library")])
+      }
+      toggle("Read every copy back to check it", "full_verify", true)
+      toggle("Notify me when done", "notify", true)
+      toggle("Copy at full speed (the viewer may lag)", "fast", false)
+      helpLink("How duplicates, verifying and the folder preview work", .filters)
+      Divider()
+      Text("Saved settings").font(.caption).foregroundStyle(bodyColor)
       HStack {
-        Button("Choose…") { model.chooseFolder(key) }
-        if allowOff && !value.isEmpty { Button("Off") { model.set(key, "") } }
+        TextField("Name", text: $presetName)
+        Button("Save") { model.savePreset(named: presetName) }
+      }
+      if model.hasCard {
+        Toggle("Always use these settings for this card", isOn: $useForCard)
+          .onChange(of: useForCard) { model.bindCard(use: useForCard, auto: autoImport) }
+        Toggle("Import this card as soon as it is inserted", isOn: $autoImport)
+          .onChange(of: autoImport) { model.bindCard(use: useForCard, auto: autoImport) }
+          .disabled(!useForCard)
       }
     }
   }
@@ -328,9 +496,9 @@ struct ImportView: View {
 
   private var typeFilter: some View {
     HStack {
-      ForEach(["raw", "jpeg", "heic", "video", "other"], id: \.self) { t in
+      ForEach([("raw", "RAW"), ("jpeg", "JPEG"), ("heic", "HEIC"), ("video", "Video"), ("other", "Other")], id: \.0) { t, label in
         let types = model.preset["types"] as? [String] ?? ["raw", "jpeg", "heic", "video", "other"]
-        Toggle(t.uppercased(), isOn: Binding(
+        Toggle(label, isOn: Binding(
           get: { types.contains(t) },
           set: { on in
             var next = types.filter { $0 != t }
@@ -353,6 +521,9 @@ struct ImportView: View {
             Button("Why?") { model.showExplainer(s) }.buttonStyle(.link).font(.caption)
           }
         }
+        if !model.copying && model.summaryTitle.isEmpty && !model.bottomDetail.isEmpty {
+          Text(model.bottomDetail).font(.caption).foregroundStyle(bodyColor)
+        }
         if model.copying {
           ForEach(Array(model.progress.enumerated()), id: \.offset) { ProgressView(value: $0.element).frame(width: 520) }
           Text(model.progressLine).font(.caption).foregroundStyle(bodyColor)
@@ -372,9 +543,19 @@ struct ImportView: View {
         }
       }
       Spacer()
-      Button("Import \(model.importCount)") { model.start() }
-        .keyboardShortcut(.defaultAction)
-        .disabled(model.importCount == 0 || model.copying)
+      if model.string("destination").isEmpty {
+        Button("Choose Where to Import…") { model.chooseFolder("destination") }
+          .keyboardShortcut(.defaultAction)
+          .buttonStyle(.borderedProminent)
+          .controlSize(.large)
+          .disabled(model.copying)
+      } else {
+        Button("Import \(model.importCount)") { model.start() }
+          .keyboardShortcut(.defaultAction)
+          .buttonStyle(.borderedProminent)
+          .controlSize(.large)
+          .disabled(model.importCount == 0 || model.copying)
+      }
     }
     .padding(12)
   }

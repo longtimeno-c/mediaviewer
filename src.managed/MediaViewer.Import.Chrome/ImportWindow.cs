@@ -74,8 +74,9 @@ public sealed class SourceVm
 
 /// <summary>
 /// The Import window (docs/design/18 "The Import window"): sources on the left, the
-/// day-grouped grid in the middle, the preset and "Where files go" on the
-/// right, one primary button at the bottom. It becomes the progress view
+/// day-grouped grid in the middle, three plain steps on the right (where to, what
+/// to import, how to organise) with the rest of the preset under More options,
+/// one primary button at the bottom. It becomes the progress view
 /// while copying and the summary after. Keyboard-complete:
 /// Enter imports (or opens the focused tile in the viewer), Ctrl+Enter
 /// imports from anywhere, Space toggles a file (pauses / resumes while
@@ -94,6 +95,17 @@ internal sealed class ImportWindow : Window
     private readonly ObservableCollection<DayGroup> _days = new();
     private readonly TextBlock _sourceTitle = Text("", 18);
     private readonly TextBlock _bottomText = Text("");
+    /// <summary>The bottom bar's quieter line: what is skipped, how long it takes.</summary>
+    private readonly TextBlock _bottomDetail = new() { FontSize = 12, Opacity = 0.7, TextWrapping = TextWrapping.Wrap };
+    private readonly TextBlock _sourceCounts = new() { FontSize = 15, Opacity = 0.7, VerticalAlignment = VerticalAlignment.Center };
+    private readonly StackPanel _selectButtons = new() { Orientation = Orientation.Horizontal, Spacing = 6, Visibility = Visibility.Collapsed };
+    private readonly Border _allDoneStrip = new() { Padding = new Thickness(8), Margin = new Thickness(8, 0, 8, 4), CornerRadius = new CornerRadius(6), Visibility = Visibility.Collapsed };
+    private readonly StackPanel _emptyPanel = new() { Spacing = 10, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+    private readonly TextBlock _noSources = new() { Text = "Insert a memory card or a drive, or add a folder.", FontSize = 13, Opacity = 0.7, TextWrapping = TextWrapping.Wrap };
+    private long _planUnits, _planNew;
+    /// <summary>"reading", "failed" or "" (planned): what the empty grid says.</summary>
+    private string _scanState = "";
+    private bool _showMore;
     private readonly Button _importButton = new() { Content = "Import", Style = AccentStyle() };
     private readonly StackPanel _presetPanel = new() { Spacing = 8, Padding = new Thickness(12) };
     private readonly ListView _whereFilesGo = new() { SelectionMode = ListViewSelectionMode.None, MaxHeight = 220 };
@@ -162,7 +174,8 @@ internal sealed class ImportWindow : Window
 
         // Sources.
         var left = new StackPanel { Spacing = 8, Padding = new Thickness(12) };
-        left.Children.Add(Text("SOURCES", 12));
+        left.Children.Add(new TextBlock { Text = "Import from", FontSize = 15, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
+        left.Children.Add(_noSources);
         _sources.ItemTemplate = Template(
             "<StackPanel Padding=\"4\"><TextBlock Text=\"{Binding Label}\" FontSize=\"15\"/>" +
             "<TextBlock Text=\"{Binding Detail}\" FontSize=\"12\" Opacity=\"0.7\"/></StackPanel>");
@@ -171,36 +184,63 @@ internal sealed class ImportWindow : Window
             if (!_building && _sources.SelectedItem is SourceVm s) Load(s.Root, s.VolumeId, s.Removable);
         };
         left.Children.Add(_sources);
-        var addFolder = new Button { Content = "＋ Folder…" };
+        var addFolder = new Button { Content = "+ Add a folder…" };
         addFolder.Click += async (_, _) => await AddFolderSource();
         left.Children.Add(addFolder);
-        var history = new Button { Content = "Imports…" };
+        // The occasional tools, in one menu rather than four buttons.
+        var tools = new MenuFlyout();
+        var history = new MenuFlyoutItem { Text = "Past imports…" };
         history.Click += (_, _) => ShowHistory();
-        left.Children.Add(history);
-        var verify = new Button { Content = "Verify a folder…" };
+        tools.Items.Add(history);
+        var verify = new MenuFlyoutItem { Text = "Check a folder for damaged files…" };
         ToolTipService.SetToolTip(verify, "Re-hash imported files against the library index to find silent corruption.");
         verify.Click += async (_, _) => await VerifyFolder();
-        left.Children.Add(verify);
+        tools.Items.Add(verify);
         if (_chrome.HasDuplicates)
         {
-            var dups = new Button { Content = "Find duplicates…" };
+            var dups = new MenuFlyoutItem { Text = "Find duplicates…" };
             ToolTipService.SetToolTip(dups,
                 "Compare every file in a folder and its subfolders by content, and move extra copies to the Recycle Bin.");
             dups.Click += async (_, _) => await _chrome.OpenDuplicates();
-            left.Children.Add(dups);
+            tools.Items.Add(dups);
         }
-        var help = new Button { Content = "? About Import" };
+        tools.Items.Add(new MenuFlyoutSeparator());
+        var help = new MenuFlyoutItem { Text = "About Import" };
         help.Click += (_, _) => _ = ShowExplainer();
-        left.Children.Add(help);
+        tools.Items.Add(help);
+        left.Children.Add(new Button { Content = "Tools ▾", Flyout = tools });
         Grid.SetRow(left, 1);
         root.Children.Add(left);
 
         // Contents.
         var centre = new Grid();
         centre.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        centre.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         centre.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        _sourceTitle.Margin = new Thickness(8);
-        centre.Children.Add(_sourceTitle);
+        var titleRow = new Grid { Margin = new Thickness(8), ColumnSpacing = 10 };
+        titleRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        titleRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        titleRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        _sourceTitle.TextWrapping = TextWrapping.NoWrap;
+        _sourceTitle.TextTrimming = TextTrimming.CharacterEllipsis;
+        titleRow.Children.Add(_sourceTitle);
+        Grid.SetColumn(_sourceCounts, 1);
+        titleRow.Children.Add(_sourceCounts);
+        var selectAll = new Button { Content = "Select all" };
+        selectAll.Click += (_, _) => SelectAll(true);
+        var selectNone = new Button { Content = "Select none" };
+        selectNone.Click += (_, _) => SelectAll(false);
+        _selectButtons.Children.Add(selectAll);
+        _selectButtons.Children.Add(selectNone);
+        Grid.SetColumn(_selectButtons, 2);
+        titleRow.Children.Add(_selectButtons);
+        centre.Children.Add(titleRow);
+        _allDoneStrip.Background = new SolidColorBrush(ColorHelper.FromArgb(0x30, 0x34, 0xC7, 0x59));
+        _allDoneStrip.Child = Text("✓  Everything here has already been imported. Click a file to import it again.", 13);
+        Grid.SetRow(_allDoneStrip, 1);
+        centre.Children.Add(_allDoneStrip);
+        Grid.SetRow(_emptyPanel, 2);
+        centre.Children.Add(_emptyPanel);
         _grid.ItemTemplate = Template(
             "<Grid Width=\"128\" Height=\"128\" Opacity=\"{Binding Dim}\">" +
             "<Image Source=\"{Binding Thumb}\" Stretch=\"UniformToFill\"/>" +
@@ -218,7 +258,7 @@ internal sealed class ImportWindow : Window
         {
             if (e.Item is TileVm t && !t.ThumbRequested) RequestThumb(t);
         };
-        Grid.SetRow(_grid, 1);
+        Grid.SetRow(_grid, 2);
         centre.Children.Add(_grid);
         Grid.SetRow(centre, 1);
         Grid.SetColumn(centre, 1);
@@ -239,6 +279,7 @@ internal sealed class ImportWindow : Window
         bottomRow.Children.Add(_bottomText);
         bottomRow.Children.Add(_whyLink);
         info.Children.Add(bottomRow);
+        info.Children.Add(_bottomDetail);
         info.Children.Add(_progressPanel);
         info.Children.Add(_summaryPanel);
         bottom.Children.Add(info);
@@ -261,6 +302,7 @@ internal sealed class ImportWindow : Window
         Activate();
         _ = RefreshSources(sourceRoot);
         _ = CheckUnfinished();
+        UpdateGridState();
         _importButton.Focus(FocusState.Programmatic);
         ShowFirstUseExplainerIfNeeded();
     }
@@ -275,7 +317,7 @@ internal sealed class ImportWindow : Window
             "(an original is never modified, on the card or off it)."),
         ("sources", "Cards vs. folders",
             "A card, USB drive or network share appears on the left with its free space and how " +
-            "many files on it are new. A folder you add with “+ Folder…” is scanned and copied the " +
+            "many files on it are new. A folder you add with “Add a folder…” is scanned and copied the " +
             "same way, but — because it is not removable media — Import never offers to eject it."),
         ("filters", "New / All / Marked / date range, and duplicates",
             "“New since last import” skips anything this source has given you before, tracked per " +
@@ -285,7 +327,7 @@ internal sealed class ImportWindow : Window
             "destination (or the whole library, with the wider duplicate scope); an exact match is " +
             "skipped, never overwritten or duplicated."),
         ("destination", "Destination and name preview",
-            "“Where files go” and the grid show exactly which folder — and, if renaming is turned " +
+            "The folder list under “How to organise” and the grid show exactly which folder — and, if renaming is turned " +
             "on, which file name — each file will get before you click Import. Nothing is copied " +
             "until you start the import."),
         ("verify", "Verified copies",
@@ -414,6 +456,7 @@ internal sealed class ImportWindow : Window
             {
                 _sourceItems.Insert(0, new SourceVm { Root = current, Label = current, Detail = "", Kind = "folder", Removable = false });
             }
+            _noSources.Visibility = _sourceItems.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
             SourceVm? pick = _sourceItems.FirstOrDefault(s => s.Root == current) ?? _sourceItems.FirstOrDefault();
             _sources.SelectedItem = pick;
             BuildPresetPanel();
@@ -488,12 +531,15 @@ internal sealed class ImportWindow : Window
         _root = root;
         _volumeId = volumeId;
         _removable = removable;
-        _sourceTitle.Text = root + " · reading…";
+        _sourceTitle.Text = _sourceItems.FirstOrDefault(s => s.Root == root)?.Label ?? root;
+        _scanState = "reading";
+        _planUnits = _planNew = 0;
         _days.Clear();
         _plan = 0;
         try { _scan = _api.Scan(root); }
-        catch (MediaViewerException ex) { _sourceTitle.Text = root + " · " + ex.Status; }
+        catch (MediaViewerException) { _scanState = "failed"; }
         BuildPresetPanel();
+        UpdateGridState();
     }
 
     internal void OnScanDone(ulong scan, MvStatus status)
@@ -501,7 +547,8 @@ internal sealed class ImportWindow : Window
         if (scan != _scan) return;
         if (status != MvStatus.Ok)
         {
-            _sourceTitle.Text = _root + " · could not be read";
+            _scanState = "failed";
+            UpdateGridState();
             return;
         }
         Replan();
@@ -538,7 +585,10 @@ internal sealed class ImportWindow : Window
             _removable = srcRemovable.GetBoolean();
             BuildPresetPanel();
         }
-        _sourceTitle.Text = $"{(label.Length > 0 ? label : _root)} · {t.GetProperty("new").GetInt64()} new of {t.GetProperty("units").GetInt64()} · {Format.Bytes(t.GetProperty("bytes").GetInt64())}";
+        _sourceTitle.Text = label.Length > 0 ? label : _root;
+        _scanState = "";
+        _planUnits = t.GetProperty("units").GetInt64();
+        _planNew = t.GetProperty("new").GetInt64();
         _destinationForOpen = r.GetProperty("destination").GetString() ?? "";
 
         // Tiles: rebuilt when the unit list changed, else only re-checked.
@@ -613,10 +663,15 @@ internal sealed class ImportWindow : Window
         long dups = t.GetProperty("duplicates").GetInt64();
         long eta = t.GetProperty("eta_seconds").GetInt64();
         double rate = t.GetProperty("bytes_per_second").GetDouble();
-        _bottomText.Text = $"{selFiles} files · {Format.Bytes(selBytes)} · {dups} duplicates skipped" +
-                           (eta >= 0 ? $" · {Format.Eta(eta)} at {Format.Rate(rate)}" : " · time shown after the first import from this device");
-        _importButton.Content = $"Import {selUnits}";
-        _importButton.IsEnabled = selUnits > 0 && !_copying;
+        _bottomText.Text = selUnits == 0
+            ? "Nothing selected"
+            : $"{selUnits} item{(selUnits == 1 ? "" : "s")} selected · {Format.Bytes(selBytes)}";
+        var detail = new List<string>();
+        if (dups > 0) detail.Add($"{dups} already in your library will be skipped");
+        if (eta >= 0 && selUnits > 0) detail.Add($"{Format.Eta(eta)} at {Format.Rate(rate)}");
+        _bottomDetail.Text = string.Join(" · ", detail);
+        UpdateImportButton(selUnits);
+        UpdateGridState();
     }
 
     private static string DayLabel(string day) =>
@@ -665,6 +720,68 @@ internal sealed class ImportWindow : Window
         catch (MediaViewerException) { }
     }
 
+    /// <summary>Everything on (or off) at once: unit -1 with no day (mediaviewer_import.h).</summary>
+    private void SelectAll(bool on)
+    {
+        if (_copying || _plan == 0) return;
+        try { _api.Select(_plan, -1, null, on); }
+        catch (MediaViewerException) { }
+    }
+
+    /// <summary>The grid, or a sentence saying why it is empty; the counts and the
+    /// "already imported" strip above it.</summary>
+    private void UpdateGridState()
+    {
+        bool hasTiles = _days.Count > 0;
+        bool onlyNew = P("selection", "new") == "new";
+        _grid.Visibility = hasTiles ? Visibility.Visible : Visibility.Collapsed;
+        _sourceCounts.Text = _planUnits > 0 ? $"{_planNew} new of {_planUnits}" : "";
+        _selectButtons.Visibility = hasTiles && !_copying ? Visibility.Visible : Visibility.Collapsed;
+        _allDoneStrip.Visibility = hasTiles && !_copying && _planNew == 0 && onlyNew ? Visibility.Visible : Visibility.Collapsed;
+        _emptyPanel.Children.Clear();
+        _emptyPanel.Visibility = hasTiles ? Visibility.Collapsed : Visibility.Visible;
+        if (hasTiles) return;
+        void Line(string text) => _emptyPanel.Children.Add(new TextBlock
+        {
+            Text = text, FontSize = 15, TextWrapping = TextWrapping.Wrap,
+            HorizontalAlignment = HorizontalAlignment.Center, TextAlignment = TextAlignment.Center,
+        });
+        if (_root.Length == 0)
+        {
+            Line("Insert a memory card, or choose a folder to import from.");
+            var choose = new Button { Content = "Choose a folder…", HorizontalAlignment = HorizontalAlignment.Center };
+            choose.Click += async (_, _) => await AddFolderSource();
+            _emptyPanel.Children.Add(choose);
+        }
+        else if (_scanState == "reading")
+        {
+            Line("Looking for photos and videos…");
+        }
+        else if (_scanState == "failed")
+        {
+            Line("This source could not be read. Check that it is still connected.");
+        }
+        else if (_planUnits > 0 && onlyNew)
+        {
+            Line("✓ Everything here has already been imported.");
+            var all = new Button { Content = $"Show all {_planUnits} files", HorizontalAlignment = HorizontalAlignment.Center };
+            all.Click += (_, _) => { Set("selection", "all"); BuildPresetPanel(); };
+            _emptyPanel.Children.Add(all);
+        }
+        else
+        {
+            Line("No photos or videos match these settings.");
+        }
+    }
+
+    /// <summary>"Import N", or, with no destination yet, the step that comes first.</summary>
+    private void UpdateImportButton(long selUnits)
+    {
+        bool noDestination = P("destination").Length == 0;
+        _importButton.Content = noDestination ? "Choose where to import…" : $"Import {selUnits}";
+        _importButton.IsEnabled = !_copying && (noDestination || selUnits > 0);
+    }
+
     // ---- the preset panel ---------------------------------------------------------------
 
     private string P(string key, string fallback = "") => _preset[key]?.GetValue<string>() ?? fallback;
@@ -676,69 +793,142 @@ internal sealed class ImportWindow : Window
         if (!_building) Replan();
     }
 
+    /// <summary>Three plain questions (where to, what to import, how to organise),
+    /// the backup and eject switches, and everything else under More options.</summary>
     private void BuildPresetPanel()
     {
         bool was = _building;
         _building = true;
         _presetPanel.Children.Clear();
-        _presetPanel.Children.Add(Text("PRESET", 12));
+        _presetPanel.Spacing = 12;
 
-        var presetBox = new ComboBox { MinWidth = 260 };
-        foreach (JsonNode? n in _presets) presetBox.Items.Add(n?["name"]?.GetValue<string>() ?? "");
-        presetBox.SelectedItem = P("name", "Default");
-        presetBox.SelectionChanged += (_, _) =>
+        if (_presets.Count > 1)
         {
-            if (_building) return;
-            JsonNode? chosen = _presets.FirstOrDefault(n => n?["name"]?.GetValue<string>() == presetBox.SelectedItem as string);
-            if (chosen is null) return;
-            _preset = chosen.DeepClone().AsObject();
-            BuildPresetPanel();
-            Replan();
-        };
-        _presetPanel.Children.Add(presetBox);
+            var presetBox = new ComboBox { Header = "Saved settings", MinWidth = 260 };
+            foreach (JsonNode? n in _presets) presetBox.Items.Add(n?["name"]?.GetValue<string>() ?? "");
+            presetBox.SelectedItem = P("name", "Default");
+            presetBox.SelectionChanged += (_, _) =>
+            {
+                if (_building) return;
+                JsonNode? chosen = _presets.FirstOrDefault(n => n?["name"]?.GetValue<string>() == presetBox.SelectedItem as string);
+                if (chosen is null) return;
+                _preset = chosen.DeepClone().AsObject();
+                BuildPresetPanel();
+                Replan();
+            };
+            _presetPanel.Children.Add(presetBox);
+        }
 
-        _presetPanel.Children.Add(FolderRow("To", "destination", allowOff: false));
-        _presetPanel.Children.Add(FolderRow("Backup", "backup", allowOff: true));
-        _presetPanel.Children.Add(HelpLine("What the destination preview means", "destination"));
+        _presetPanel.Children.Add(Heading("Where to"));
+        _presetPanel.Children.Add(DestinationRow());
 
-        _presetPanel.Children.Add(Combo("Selection", "selection",
-            new[] { ("new", "New since last import"), ("all", "All"), ("marked", "Marked in viewer"), ("date_range", "Date range") }));
+        _presetPanel.Children.Add(Heading("What to import"));
+        _presetPanel.Children.Add(Combo("", "selection",
+            new[] { ("new", "New since the last import"), ("all", "Everything"), ("marked", "Only what I marked in the viewer"), ("date_range", "Taken between two dates") }));
         if (P("selection") == "date_range")
         {
             _presetPanel.Children.Add(TextField("From (YYYY-MM-DD)", "range_from"));
             _presetPanel.Children.Add(TextField("To (YYYY-MM-DD)", "range_to"));
         }
-        _presetPanel.Children.Add(HelpLine("How these filters and duplicate matching work", "filters"));
-        _presetPanel.Children.Add(TypeFilter());
-        _presetPanel.Children.Add(Combo("Layout", "layout",
-            new[] { ("YYYY/YYYY-MM-DD", "YYYY/YYYY-MM-DD"), ("YYYY/MM/DD", "YYYY/MM/DD"), ("YYYY-MM-DD", "YYYY-MM-DD"),
-                    ("card", "Keep card structure"), ("flat", "Flat") }));
-        _presetPanel.Children.Add(Toggle("+ camera model", "layout_camera", false));
-        _presetPanel.Children.Add(Toggle("+ type folders (RAW / JPEG / Video)", "layout_type", false));
-        _presetPanel.Children.Add(Combo("Date", "dates",
-            new[] { ("taken", "Date taken, else file time"), ("file_time", "File time only") }));
-        _presetPanel.Children.Add(TextField("Rename ({date} {time} {camera} {seq} {original}), empty = off", "rename"));
-        _presetPanel.Children.Add(Toggle("Skip duplicates (by content)", "skip_duplicates", true));
-        _presetPanel.Children.Add(Combo("Duplicate scope", "scope",
-            new[] { ("destination", "This destination"), ("library", "The whole library index") }));
-        _presetPanel.Children.Add(Toggle("Full verify (read back from the drive)", "full_verify", true));
-        // Eject only ever means something for a card or a USB/network drive
-        // (issue #41/#42): an ordinary folder has nothing to eject.
-        if (_removable)
-        {
-            _presetPanel.Children.Add(Toggle("Eject the card when done", "eject_after", true));
-            _presetPanel.Children.Add(HelpLine("Why Eject is offered here, and when it isn't", "eject"));
-        }
-        _presetPanel.Children.Add(Toggle("Notify when done", "notify", true));
-        _presetPanel.Children.Add(Toggle("Fast (does not wait for the viewer)", "fast", false));
-        _presetPanel.Children.Add(Text("Never offered: deleting from or formatting the card, overwriting a file, or any upload.", 11));
 
-        _presetPanel.Children.Add(Text("WHERE FILES GO", 12));
+        _presetPanel.Children.Add(Heading("How to organise"));
+        _presetPanel.Children.Add(Combo("", "layout",
+            new[] { ("YYYY/YYYY-MM-DD", "Year, then day"), ("YYYY/MM/DD", "Year, month, then day"), ("YYYY-MM-DD", "A folder per day"),
+                    ("card", "Same folders as the card"), ("flat", "All in one folder") }));
+        ToolTipService.SetToolTip(_whereFilesGo, "Where the selected files will go. Nothing is copied until you click Import.");
         _presetPanel.Children.Add(_whereFilesGo);
 
-        var name = new MediaViewer.Shared.FakeInput(Banner.InputLook, "Preset name");
+        var backup = new ToggleSwitch { Header = "Also copy to a backup drive", IsOn = P("backup").Length > 0 };
+        backup.Toggled += async (_, _) =>
+        {
+            if (_building) return;
+            if (backup.IsOn)
+            {
+                string? dir = await PickFolder();
+                if (dir is not null) Set("backup", dir);
+            }
+            else
+            {
+                Set("backup", "");
+            }
+            BuildPresetPanel();
+        };
+        _presetPanel.Children.Add(backup);
+        if (P("backup").Length > 0) _presetPanel.Children.Add(Text(P("backup"), 12));
+        // Eject only ever means something for a card or a USB/network drive
+        // (issue #41/#42): an ordinary folder has nothing to eject.
+        if (_removable) _presetPanel.Children.Add(Toggle("Eject the card when done", "eject_after", true));
+
+        var more = new Button { Content = (_showMore ? "▾ " : "▸ ") + "More options" };
+        more.Click += (_, _) => { _showMore = !_showMore; BuildPresetPanel(); };
+        _presetPanel.Children.Add(more);
+        if (_showMore) AddMoreOptions();
+
+        _presetPanel.Children.Add(Text("Import only copies. Nothing on the card is deleted, changed or overwritten, and every copy is checked.", 11));
+        _building = was;
+    }
+
+    private static TextBlock Heading(string s) =>
+        new() { Text = s, FontSize = 15, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold };
+
+    private UIElement DestinationRow()
+    {
+        string dest = P("destination");
+        if (dest.Length == 0)
+        {
+            var choose = new Button { Content = "Choose a folder…", Style = AccentStyle(), HorizontalAlignment = HorizontalAlignment.Stretch };
+            choose.Click += async (_, _) => await ChooseDestination();
+            return choose;
+        }
+        var row = new Grid { ColumnSpacing = 8 };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var names = new StackPanel();
+        names.Children.Add(new TextBlock { Text = System.IO.Path.GetFileName(dest.TrimEnd('\\', '/')) is { Length: > 0 } leaf ? leaf : dest, FontSize = 14 });
+        names.Children.Add(new TextBlock { Text = dest, FontSize = 11, Opacity = 0.7, TextTrimming = TextTrimming.CharacterEllipsis });
+        ToolTipService.SetToolTip(names, dest);
+        row.Children.Add(names);
+        var change = new Button { Content = "Change…" };
+        change.Click += async (_, _) => await ChooseDestination();
+        Grid.SetColumn(change, 1);
+        row.Children.Add(change);
+        return row;
+    }
+
+    private async Task ChooseDestination()
+    {
+        string? dir = await PickFolder();
+        if (dir is null) return;
+        Set("destination", dir);
+        BuildPresetPanel();
+        UpdateImportButton(_confirmUnits);
+    }
+
+    /// <summary>Everything a first import does not need to touch.</summary>
+    private void AddMoreOptions()
+    {
+        _presetPanel.Children.Add(Text("File types", 12));
+        _presetPanel.Children.Add(TypeFilter());
+        _presetPanel.Children.Add(Toggle("Add a folder per camera", "layout_camera", false));
+        _presetPanel.Children.Add(Toggle("Add RAW / JPEG / Video folders", "layout_type", false));
+        _presetPanel.Children.Add(Combo("Date from", "dates",
+            new[] { ("taken", "When it was taken"), ("file_time", "The file's date") }));
+        _presetPanel.Children.Add(TextField("Rename files, e.g. {date}_{seq} (empty keeps names)", "rename"));
+        _presetPanel.Children.Add(Toggle("Skip files already in the library", "skip_duplicates", true));
+        if (B("skip_duplicates", true))
+        {
+            _presetPanel.Children.Add(Combo("Look for them in", "scope",
+                new[] { ("destination", "This folder"), ("library", "The whole library") }));
+        }
+        _presetPanel.Children.Add(Toggle("Read every copy back to check it", "full_verify", true));
+        _presetPanel.Children.Add(Toggle("Notify me when done", "notify", true));
+        _presetPanel.Children.Add(Toggle("Copy at full speed (the viewer may lag)", "fast", false));
+        _presetPanel.Children.Add(HelpLine("How duplicates, verifying and the folder preview work", "filters"));
+
+        _presetPanel.Children.Add(Text("Saved settings", 12));
+        var name = new MediaViewer.Shared.FakeInput(Banner.InputLook, "Name");
         name.SetText(P("name", "Default"));
-        var save = new Button { Content = "Save preset" };
+        var save = new Button { Content = "Save" };
         save.Click += async (_, _) =>
         {
             _preset["name"] = name.Text.Trim().Length > 0 ? name.Text.Trim() : "Default";
@@ -751,10 +941,11 @@ internal sealed class ImportWindow : Window
 
         if (_volumeId.Length > 0)
         {
-            var bind = new CheckBox { Content = "Use this preset for this card" };
-            var auto = new CheckBox { Content = "Auto-import this card on insert (never deletes)" };
+            var bind = new CheckBox { Content = "Always use these settings for this card" };
+            var auto = new CheckBox { Content = "Import this card as soon as it is inserted", IsEnabled = false };
             RoutedEventHandler apply = async (_, _) =>
             {
+                auto.IsEnabled = bind.IsChecked == true;
                 string vol = _volumeId;
                 string preset = bind.IsChecked == true ? P("name", "Default") : "";
                 bool on = auto.IsChecked == true && bind.IsChecked == true;
@@ -765,7 +956,6 @@ internal sealed class ImportWindow : Window
             _presetPanel.Children.Add(bind);
             _presetPanel.Children.Add(auto);
         }
-        _building = was;
     }
 
     private UIElement FolderRow(string label, string key, bool allowOff)
@@ -795,7 +985,8 @@ internal sealed class ImportWindow : Window
 
     private UIElement Combo(string label, string key, (string Value, string Text)[] options)
     {
-        var box = new ComboBox { Header = label, MinWidth = 260 };
+        var box = new ComboBox { MinWidth = 260 };
+        if (label.Length > 0) box.Header = label;
         foreach (var (_, text) in options) box.Items.Add(text);
         string current = P(key, options[0].Value);
         box.SelectedIndex = Math.Max(0, Array.FindIndex(options, o => o.Value == current));
@@ -803,7 +994,7 @@ internal sealed class ImportWindow : Window
         {
             if (_building || box.SelectedIndex < 0) return;
             Set(key, options[box.SelectedIndex].Value);
-            if (key == "selection") BuildPresetPanel();
+            if (key is "selection" or "skip_duplicates") BuildPresetPanel();
         };
         return box;
     }
@@ -811,7 +1002,12 @@ internal sealed class ImportWindow : Window
     private UIElement Toggle(string label, string key, bool fallback)
     {
         var t = new ToggleSwitch { Header = label, IsOn = B(key, fallback) };
-        t.Toggled += (_, _) => { if (!_building) Set(key, t.IsOn); };
+        t.Toggled += (_, _) =>
+        {
+            if (_building) return;
+            Set(key, t.IsOn);
+            if (key == "skip_duplicates") BuildPresetPanel();
+        };
         return t;
     }
 
@@ -858,7 +1054,11 @@ internal sealed class ImportWindow : Window
     /// actually starts is exactly what will happen and where it will go.</summary>
     private async Task StartImportAsync()
     {
-        if (_copying || _plan == 0) return;
+        if (_copying) return;
+        // No destination yet: choosing one is the next step, not a confirmation
+        // that says "(not set)".
+        if (P("destination").Length == 0) { await ChooseDestination(); return; }
+        if (_plan == 0) return;
         var dialog = new ContentDialog
         {
             Title = "Import these files?",
@@ -877,7 +1077,7 @@ internal sealed class ImportWindow : Window
         try
         {
             _job = _api.Start(_plan);
-            _chrome.Track(_job, _sourceTitle.Text.Split(" · ")[0]);
+            _chrome.Track(_job, _sourceTitle.Text);
             SetCopying(true);
         }
         catch (MediaViewerException ex)
@@ -893,6 +1093,8 @@ internal sealed class ImportWindow : Window
         _grid.IsEnabled = !on;
         _progressPanel.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
         if (on) _summaryPanel.Visibility = Visibility.Collapsed;
+        _bottomDetail.Visibility = on ? Visibility.Collapsed : Visibility.Visible;
+        UpdateGridState();
     }
 
     internal void OnProgress(ulong job, MvImportProgress p)
