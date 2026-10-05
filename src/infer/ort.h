@@ -128,8 +128,10 @@ class session {
   [[nodiscard]] result<std::vector<tensor_f32>> run_named(std::span<const named_input> inputs) const;
   [[nodiscard]] const std::vector<std::string>& input_names() const noexcept;
   [[nodiscard]] const std::vector<std::string>& output_names() const noexcept;
-  // ORT's message for this thread's last run_named failure (tensor shapes and
-  // types; never a file name). For tests and a debugger, never logged.
+  // ORT's message for this thread's last failed open or run, with paths
+  // replaced ("<model>", "<cache>", "<path>"). Shown beside a provider fault
+  // in Settings and kept in the pack's data folder; never in telemetry or a
+  // crash report (rule 6).
   [[nodiscard]] static const std::string& last_error() noexcept;
 
   struct impl;
