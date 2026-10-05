@@ -53,6 +53,8 @@ $table = [ordered]@{
     decode      = @{ Seeds = @('jpeg','png','bmp','gif','webp','tiff','ico','heic','avif','raw'); MaxLen = 131072 }
     thumbnail   = @{ Seeds = @('jpeg','png','bmp','gif','webp','tiff','ico','heic','avif','raw'); MaxLen = 131072 }
     animation   = @{ Seeds = @('gif', 'webp', 'png', 'heic', 'avif');   MaxLen = 131072 }
+    pdf         = @{ Seeds = @('pdf');                                  MaxLen = 65536 }
+    docx        = @{ Seeds = @('docx');                                 MaxLen = 65536 }
 }
 
 if ($Harness.Count -eq 1 -and $Harness[0] -match ',') { $Harness = $Harness[0] -split ',' }

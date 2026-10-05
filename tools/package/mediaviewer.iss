@@ -277,6 +277,12 @@ Root: HKCU; Subkey: "Software\Classes\MediaViewer.Audio\shell\open\command"; Val
 Root: HKCU; Subkey: "Software\Classes\.mp3\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Audio"; ValueData: ""; Flags: uninsdeletevalue
 Root: HKCU; Subkey: "Software\Classes\.m4a\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Audio"; ValueData: ""; Flags: uninsdeletevalue
 Root: HKCU; Subkey: "Software\Classes\.m4p\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Audio"; ValueData: ""; Flags: uninsdeletevalue
+; Documents: "Open with" only, the same rule as audio.
+Root: HKCU; Subkey: "Software\Classes\MediaViewer.Document"; ValueType: string; ValueData: "MediaViewer Document"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\MediaViewer.Document\DefaultIcon"; ValueType: string; ValueData: "{app}\MediaViewer.exe,0"
+Root: HKCU; Subkey: "Software\Classes\MediaViewer.Document\shell\open\command"; ValueType: string; ValueData: """{app}\MediaViewer.exe"" ""%1"""
+Root: HKCU; Subkey: "Software\Classes\.pdf\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Document"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\Classes\.docx\OpenWithProgids"; ValueType: string; ValueName: "MediaViewer.Document"; ValueData: ""; Flags: uninsdeletevalue
 
 [UninstallDelete]
 ; The whole Velopack layout. Inno removes what it installed by itself, and it

@@ -532,7 +532,7 @@ tokens per palette and a font family for the chrome, one table both hosts read, 
 contrast floor. A manifest that names code is refused. `tools/addon-sdk/mvaddon.py` (MIT) packs
 and checks; `docs/ADDONS.md` is the author's guide. `.mvaddon` is registered with both OSes.
 Code: `src/addon/package.*`, `open_manifest.*`, `theme.*`, `open_store.*`, `open_json.*`; ABI
-0.16 `mv_open_addon_*` / bridge `mv_open_addons_*`; `Theme.swift`, `OpenAddons.swift`;
+0.17 `mv_open_addon_*` / bridge `mv_open_addons_*`; `Theme.swift`, `OpenAddons.swift`;
 `IslandHost.ThemePack.cs`, `IslandHost.OpenAddons.cs`. Design, calls and measurements:
 [25](25-open-addons.md).
 
@@ -557,7 +557,7 @@ at start. Where each part stands:
   data, slots and search providers, files. The owner's calls for them were made 2026-10-03
   ([25 §17](25-open-addons.md#17-decisions-owner-2026-10-03)). PR 56's first half is built
   (2026-10-04): Import's commands, keys, Settings line and card hint come from its manifest
-  (`contributes`, eight `addon_cmd_*` slots, ABI 0.17), with an older Import kept working
+  (`contributes`, eight `addon_cmd_*` slots, ABI 0.18), with an older Import kept working
   through the built-in rows.
 - Windows grouped as tabs / `Ctrl+Tab` (split out of PR 15; Mac windows have tabbing disabled).
 - The Windows property handler (split out of PR 15; it needs HKLM).

@@ -280,6 +280,10 @@ constexpr binding kBindings[] = {
     row(C('F'), mod_ctrl | mod_shift, kViewing, edge, search_similar),
     row(C('N'), mod_none, kVideo, edge, search_next_match),
     row(C('N'), mod_shift, kVideo, edge, search_prev_match),
+    // Pages (docs/plans/audio-and-documents.md §2.3). Appended. Ctrl+PageUp /
+    // PageDown inside one stop; plain PageUp / PageDown still skip ten stops.
+    row(key::page_down, mod_ctrl, kBrowse | kIsland, repeat, next_page),
+    row(key::page_up, mod_ctrl, kBrowse | kIsland, repeat, prev_page),
 };
 
 // The router's index stores row + 1 in a byte.
@@ -443,6 +447,8 @@ constexpr command_info kCommands[] = {
     {search_similar, "Find similar"},
     {search_next_match, "Next matching moment"},
     {search_prev_match, "Previous matching moment"},
+    {next_page, "Next page"},
+    {prev_page, "Previous page"},
     // docs/design/25: the slots add-ons' manifests fill (set_addon_commands). Named
     // and keyless here so the wire ids stay dense; a filled slot answers
     // find_command with the add-on's own name instead.

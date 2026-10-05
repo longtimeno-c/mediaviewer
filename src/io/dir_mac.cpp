@@ -33,7 +33,7 @@ bool still_extension(std::string_view name) noexcept {
       ".heif", ".hif", ".avif", ".dng", ".cr2", ".cr3", ".nef", ".nrw", ".arw", ".srf",
       ".sr2", ".orf", ".raf", ".rw2", ".pef", ".ptx", ".srw", ".rwl", ".3fr", ".fff",
       ".iiq", ".mef", ".mos", ".raw", ".mp4", ".mov", ".mkv", ".webm", ".avi", ".ts", ".m4v",
-      ".mp3", ".m4a", ".m4p",
+      ".mp3", ".m4a", ".m4p", ".pdf", ".docx",
   };
   for (const char* e : kExt) {
     if (std::strcmp(ext, e) == 0) return true;

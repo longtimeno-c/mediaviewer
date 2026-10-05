@@ -53,7 +53,12 @@ VIDEO_UTIS = {"public.mpeg-4", "com.apple.m4v-video", "com.apple.quicktime-movie
 # them) and never thumbnailed by the Quick Look extension.
 OPEN_WITH_UTIS = {
     "Audio": {"public.mp3", "com.apple.m4a-audio", "com.apple.protected-mpeg-4-audio"},
+    "Document": {"com.adobe.pdf", "org.openxmlformats.wordprocessingml.document"},
 }
+# format_family values that are documents: declared under "Document", not as
+# viewer stills, and not thumbnailed by the Quick Look extension.
+DOCUMENT_FAMILIES = {"pdf": {"com.adobe.pdf"},
+                     "docx": {"org.openxmlformats.wordprocessingml.document"}}
 
 
 def configure(template: Path, extra: dict[str, str] | None = None) -> dict:
@@ -124,6 +129,11 @@ def main() -> int:
 
     families = format_families()
     for family in families:
+        if family in DOCUMENT_FAMILIES:
+            missing = DOCUMENT_FAMILIES[family] - open_with.get("Document", set())
+            if missing:
+                problems.append(f"format_family::{family}: {sorted(missing)} not in the Document type")
+            continue
         if family not in FAMILY_UTIS:
             problems.append(f"format_family::{family} has no UTI row in tools/mac/check_plists.py")
             continue

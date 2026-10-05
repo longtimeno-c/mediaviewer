@@ -1,7 +1,7 @@
 # 14 — The C ABI
 
 The flat C ABI between the hosts' chrome and the C++ core, as declared in
-[`src/abi/include/mediaviewer/`](../../src/abi/include/mediaviewer/) (current version **0.17**).
+[`src/abi/include/mediaviewer/`](../../src/abi/include/mediaviewer/) (current version **0.18**).
 
 The Windows host is C# WinUI over `mediaviewer_core.dll` and calls this ABI through P/Invoke
 ([`src.managed/MediaViewer.Interop`](../../src.managed/MediaViewer.Interop/)). The Mac host links
@@ -204,10 +204,12 @@ typedef struct mv_image_info {   /* 24 bytes */
   uint32_t format;               /* codec::format_family */
   uint32_t icc_tagged;           /* an ICC profile (or sRGB chunk) was used */
   uint32_t transfer_intent;      /* 0 = display-referred */
-  uint32_t reserved;
+  uint32_t page_count;           /* 0.16: pages in the file; 1 for a single-page still */
 } mv_image_info;
 
 mv_status mv_image_open(mv_session_t, const char* utf8_path, uint64_t* out_job_id);
+/* 0.16: page `page` of the selected stop; IMAGE_OPENED follows. Page 0 = mv_folder_select. */
+mv_status mv_folder_select_page(mv_session_t, uint32_t page, uint64_t* out_job_id);
 mv_status mv_session_image_info(mv_session_t, mv_image_info* out);   /* last opened */
 ```
 
@@ -465,7 +467,7 @@ nothing of the core and reaches it only through the host function table.
   destructors), `mv_volume_watch` (card-arrival hint), and `mv_present_set_busy` (the render
   loop's busy flag for `should_yield`).
 
-## PR 55 — open add-ons (ABI 0.16)
+## PR 55 — open add-ons (ABI 0.17)
 
 Minor bump, additive, in `mediaviewer_addon.h`: `mv_open_addon_inspect`, `mv_open_addon_install`,
 `mv_open_addon_list_json`, `mv_open_addon_remove`, `mv_open_addon_theme_json`
@@ -476,7 +478,7 @@ the JSON says: a refused package is an answer, not an error. `install` takes the
 for a size. The Mac host reaches the same code through `mv_open_addons_*` in the chrome bridge.
 Both are thin wrappers over `src/addon/open_json.h`, which writes the one JSON both chromes read.
 
-## PR 56 — contributed commands (ABI 0.17)
+## PR 56 — contributed commands (ABI 0.18)
 
 Minor bump, additive: `mv_addon_commands_json` returns the rows the loaded first-party add-ons'
 manifests contribute (`[{"addon","id","name","windows","mac","modes","payload"}]`), which the
@@ -498,8 +500,9 @@ Windows shell turns into live command rows ([25 §7](25-open-addons.md#7-the-con
 | 0.13 | `MV_CLIP_KEEP_RANGES`, `ranges_ns` |
 | 0.14 | Result listings (`mv_folder_open_list`, `_list_title`, `_item_moment`) |
 | 0.15 | `mv_folder_item.flags` bit 2 (video) |
-| 0.16 | Open add-ons: `mv_open_addon_inspect` / `_install` / `_list_json` / `_remove` / `_theme_json` |
-| 0.17 | Contributed commands: `mv_addon_commands_json`; `description`, `hint_on`, `hint_text` in the installed / check JSON |
+| 0.16 | `mv_image_info.page_count` (was `reserved`), `mv_folder_select_page` — pages of a multi-page still |
+| 0.17 | Open add-ons: `mv_open_addon_inspect` / `_install` / `_list_json` / `_remove` / `_theme_json` |
+| 0.18 | Contributed commands: `mv_addon_commands_json`; `description`, `hint_on`, `hint_text` in the installed / check JSON |
 
 ## Not built
 

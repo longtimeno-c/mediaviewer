@@ -1,8 +1,8 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // TIFF via libtiff, decoded from memory. Page 0 is the still; pages are
-// Ctrl+PageUp/PageDown (docs/design/04), not extra filmstrip stops — decode_page()
-// already takes a page index so that feature does not need a rewrite.
+// Ctrl+PageUp/PageDown (docs/plans/audio-and-documents.md §2.3), not extra
+// filmstrip stops — decode_tiff_page().
 //
 // What the raster holds (RGBA8, source-encoded, stored pixel order):
 //  - uint 1/2/4/8/16/32-bit grey (min-is-black / min-is-white), palette, RGB,
@@ -673,7 +673,24 @@ status read_rgba_image(TIFF* tif, const layout& L, raster& out, const job_contex
   return status::ok;
 }
 
-result<raster> decode_page(std::span<const std::uint8_t> bytes, std::uint16_t page,
+// The directories that are pages: every IFD but reduced-resolution
+// subfiles. Directory 0 always counts, so a file whose first IFD is odd still
+// opens as before. Capped: a looping or hostile IFD chain stops at 4096.
+std::vector<tdir_t> page_directories(TIFF* tif) {
+  std::vector<tdir_t> out;
+  tdir_t dir = 0;
+  do {
+    std::uint32_t subfile = 0;
+    if (dir == 0 || !TIFFGetField(tif, TIFFTAG_SUBFILETYPE, &subfile) ||
+        !(subfile & FILETYPE_REDUCEDIMAGE)) {
+      out.push_back(dir);
+    }
+    ++dir;
+  } while (out.size() < 4096 && TIFFReadDirectory(tif) == 1);
+  return out;
+}
+
+result<raster> decode_page(std::span<const std::uint8_t> bytes, std::uint32_t page,
                            const job_context* ctx) {
   open_options o;
   if (!o.opts) return err(status::out_of_memory);
@@ -690,13 +707,17 @@ result<raster> decode_page(std::span<const std::uint8_t> bytes, std::uint16_t pa
   h.tif = TIFFClientOpenExt("tiff", "rm", &stream, mem_read, mem_write, mem_seek, mem_close,
                             mem_size, mem_map, mem_unmap, o.opts);
   if (!h.tif) return err(status::corrupt);
-  if (page != 0 && TIFFSetDirectory(h.tif, page) != 1) return err(status::invalid_arg);
+  const std::vector<tdir_t> pages = page_directories(h.tif);
+  if (page >= pages.size()) return err(status::invalid_arg);
+  if (TIFFSetDirectory(h.tif, pages[page]) != 1) return err(status::corrupt);
 
   layout L;
   auto kind = inspect(h.tif, L);
   if (!kind) return err(kind.error());
 
   raster out;
+  out.page = page;
+  out.page_count = static_cast<std::uint32_t>(pages.size());
   out.format = format_family::tiff;
   out.intent = transfer_intent::display_referred;
   out.width = L.width;
@@ -722,6 +743,13 @@ result<raster> decode_tiff(std::span<const std::uint8_t> bytes, const job_contex
   if (probe(bytes) != format_family::tiff) return err(status::unsupported_format);
   if (ctx && ctx->cancelled()) return err(status::cancelled);
   return decode_page(bytes, 0, ctx);
+}
+
+result<raster> decode_tiff_page(std::span<const std::uint8_t> bytes, std::uint32_t page,
+                                const job_context* ctx) {
+  if (probe(bytes) != format_family::tiff) return err(status::unsupported_format);
+  if (ctx && ctx->cancelled()) return err(status::cancelled);
+  return decode_page(bytes, page, ctx);
 }
 
 }  // namespace mv::codec

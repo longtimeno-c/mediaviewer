@@ -897,9 +897,9 @@ an add-on adds, can and cannot do, and why one is refused, is written by the cor
 **The SDK and the example are MIT; the app stays GPL-3.0-or-later (2026-09-29).** Making an
 add-on with `tools/addon-sdk/mvaddon.py` puts no licence on it. The SDK signs with its own
 Ed25519 (RFC 8032's reference arithmetic, tested against the RFC's vectors and against libsodium
-through the C++ reader), so an author installs nothing but Python. ABI 0.16 adds
+through the C++ reader), so an author installs nothing but Python. ABI 0.17 (0.16 until main's pages took it, 2026-10-05) adds
 `mv_open_addon_inspect`, `_install`, `_list_json`, `_remove`, `_theme_json`, additive
-([14](14-abi.md#pr-55--open-add-ons-abi-016)). Measurements (both platforms, base in its own
+([14](14-abi.md#pr-55--open-add-ons-abi-017)). Measurements (both platforms, base in its own
 worktree and build directory, runs alternated) and what is still owed are in
 [25 "Implementation notes"](25-open-addons.md#implementation-notes-pr-55-2026-09-29).
 
@@ -949,7 +949,7 @@ manifest say those things and the app read them.
 - **The AI pack stays on its built-in rows** for now: Ctrl+F without the pack is the app's file
   search, which a contributed row cannot express. The list of first-party channels stays in the
   app: it is what the app can offer to download.
-- **ABI 0.17:** `mv_addon_commands_json`, additive; `mv_addon_installed_json` and
+- **ABI 0.18** (0.17 before the same renumbering): `mv_addon_commands_json`, additive; `mv_addon_installed_json` and
   `mv_addon_check_manifest` carry `description`, `hint_on`, `hint_text`.
 
 Verified on the Mac: the shell suite (contributed rows, the key-label round trip over every

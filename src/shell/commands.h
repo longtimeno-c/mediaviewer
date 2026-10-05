@@ -312,6 +312,10 @@ enum class command_id : std::uint16_t {
   search_similar,      // Ctrl+Shift+F: photos and moments like the one on screen
   search_next_match,   // N on a clip opened from results: the next matching moment
   search_prev_match,   // Shift+N: the previous one
+  // Pages of a multi-page file — TIFF, PDF, DOCX (docs/plans/audio-and-documents.md
+  // §2.3). Appended. One navigation stop per file; these move inside it.
+  next_page,           // Ctrl/Cmd+PageDown
+  prev_page,           // Ctrl/Cmd+PageUp
   // docs/design/25 (2026-10-03): rows an add-on's manifest contributes. Their name,
   // key and modes are set when the add-on loads (set_addon_commands) and the
   // row is listed, routed and shown only while it is. Eight is the ceiling;

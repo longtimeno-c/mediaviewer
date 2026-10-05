@@ -16,13 +16,37 @@ filters by extension only to decide what is a candidate; decode always probes.
 | BMP | | own reader (`codec/bmp.cpp`, `codec/dib.cpp`) |
 | GIF | incl. animation | **giflib** |
 | WebP | still, animated, lossless | **libwebp** (+ demux) |
-| TIFF | tiled, striped, multi-page (page 0 shown) | **libtiff** |
+| TIFF | tiled, striped, multi-page (pages with `Ctrl+PageUp/PageDown`) | **libtiff** |
 | ICO | largest entry, ranked by the payload's own dimensions | own reader (`codec/ico.cpp`) |
 | HEIF / HEIC | HEVC-coded stills, grids, sequences | **libheif** + **libde265** (Windows OS codec first for eligible stills, below) |
 | AVIF | still + animated | **libavif** + **dav1d** |
 | RAW | CR2/CR3, NEF, ARW, ORF, RAF, RW2, DNG, … | **LibRaw** (OpenMP) |
+| PDF | every page, `/Rotate` applied, on white | the OS: **CoreGraphics** (`codec/pdf_mac.cpp`), **Windows.Data.Pdf** (`codec/pdf_win.cpp`) |
+| DOCX | every page; text, styles, lists, tables, pictures (below) | own layout (`codec/docx.cpp`) over **HarfBuzz** + **FreeType** (`codec/text.cpp`), fonts found by CoreText / DirectWrite (`codec/fonts_*.cpp`) |
 
-That is the shipped set: JPEG, PNG, BMP, GIF, TIFF, WebP, HEIC/HEIF, AVIF, ICO and RAW.
+That is the shipped set: JPEG, PNG, BMP, GIF, TIFF, WebP, HEIC/HEIF, AVIF, ICO, RAW, PDF and DOCX.
+
+**PDF** (`%PDF-` in the first 1 KiB) renders through the OS, so no PDF library ships. A page is
+`kPdfLongEdge` (3200) px on its long edge in sRGB on white; the first pixel and the thumbnails
+ask for `kPdfPreviewEdge` (1024) through `decode_preview`, and the full page refines it. A file
+that needs a password is the locked card (`codec/card.h`), one page; one locked only by an owner
+password renders. Windows renders each page to an in-memory BMP that the bundled BMP reader
+takes, waiting on the WinRT operation from the worker with a 30 s ceiling. Zoom past the render
+size is a resample of the 3200 px page, not a re-render.
+
+**DOCX** (a zip whose first parts are an Office package's; `word/document.xml` must exist) is laid
+out by `codec/docx.cpp`: readable pages, not a Word replica. It reads the styles (docDefaults,
+`basedOn` chains, theme fonts), numbering and relationships, then the body: paragraphs and runs
+(font, size, bold, italic, underline, strike, colour, caps, super/subscript), alignment incl.
+justify, indents, spacing, line spacing, numbered and bulleted lists, tabs, line / page / section
+breaks, inline and anchored pictures (at their extent, as inline), and tables (grid widths, spans,
+borders). Not drawn: headers and footers, footnotes, comments, text boxes and shapes, columns,
+floating placement, right-to-left reordering. Text is shaped by HarfBuzz in unhinted font units, so
+layout is in points and the page count does not depend on the drawing size; FreeType draws it. Fonts
+are found by family through the OS (`codec/fonts.h`), with metric-compatible substitutes (Calibri →
+Carlito → Helvetica Neue / Arial …) and a per-platform fallback list for missing characters (CJK,
+Greek …). Every page before the one asked for is laid out; only that page is drawn. The zip reader
+caps every entry at 64 MiB and the XML reader refuses a DOCTYPE, so neither can be made to explode.
 TIFF-container RAWs probe as `tiff` and are reclassified by `looks_like_raw`.
 
 The registry is `codec::decode` in [`src/codec/decode.cpp`](../../src/codec/decode.cpp): one
@@ -241,6 +265,18 @@ level is D3D11's size rule `max(1, floor(prev / 2))`. The same decimation builds
 pyramid. Uploads are `CreateTexture2D(IMMUTABLE)` with `D3D11_SUBRESOURCE_DATA` on a decode
 worker (free-threaded device).
 
+## Pages
+
+A multi-page file is one navigation stop; its pages are `Ctrl+PageUp` / `Ctrl+PageDown` inside it
+(`next_page` / `prev_page`). `codec::decode(bytes, ctx, threads, page)` decodes one page and the
+raster (then `display_image`, `gpu_image_mac`, `mv_image_info.page_count`) carries `page` and
+`page_count`. TIFF pages are the full-resolution IFDs in file order; reduced-resolution subfiles (a
+scanner's thumbnail) are skipped. Page 0 is the file as always — cached, prefetched, thumbnailed. A
+page past 0 is one decode at the view generation the turn set: no cache, no prefetch, no first-pixel
+preview, published under its own key so the canvas fits it like a new stop. Windows turns pages
+through `mv_folder_select_page` (ABI 0.16); the Mac host calls `present_lab_mac::open_item(…, page)`.
+The host remembers the count the core last reported and shows "Page n of m" in its notice line.
+
 ## Not built
 
 - Android / Samsung motion photos (JPEG with an appended MP4) are not detected or played; such
@@ -252,7 +288,7 @@ worker (free-threaded device).
 - Progressive refinement of progressive JPEG / interlaced PNG passes.
 - Disk thumbnail as first pixel for a still (used only for clip placeholders).
 - An "ignore orientation" toggle.
-- TIFF page / ICO size / HEIC sequence-frame navigation with `Ctrl+PageUp/PageDown`
+- ICO size / HEIC sequence-frame navigation with `Ctrl+PageUp/PageDown` (TIFF, PDF and DOCX pages are built)
   (`codec::decode_page` takes a page index; no command uses it).
 - Populating from the OS thumbnail cache; BC7 GPU-resident thumbnails; a content-hash key.
 - macOS ImageIO path for HEIC.

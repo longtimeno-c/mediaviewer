@@ -115,6 +115,20 @@
         <string>com.apple.protected-mpeg-4-audio</string>
       </array>
     </dict>
+    <!-- Documents: Open With only, like Audio above. -->
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>Document</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>com.adobe.pdf</string>
+        <string>org.openxmlformats.wordprocessingml.document</string>
+      </array>
+    </dict>
     <!-- docs/design/25: an add-on package (.mvaddon) is MediaViewer's own type, so
          it owns it. Opening one shows Settings' install sheet, never the
          viewer; it is not a photo type and the default-viewer prompt does
