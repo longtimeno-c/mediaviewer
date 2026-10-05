@@ -1,7 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // AppKit host for the Metal present lab. PR 16/17 built the canvas; PR 18
-// adds the SwiftUI command bar hosted alongside it (plan/10, plan/15 —
+// adds the SwiftUI command bar hosted alongside it (docs/design/10, docs/design/15 —
 // "the canvas is not ported to SwiftUI"). MvMetalView keeps covering the
 // whole content view, exactly as PR 16/17 built it; the command bar is a
 // sibling NSView drawn on top of its own top strip, the same "swapchain
@@ -13,7 +13,7 @@
 #import <QuartzCore/CAMetalLayer.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
-// Sparkle 2 (PR 20, plan/13): only MediaViewer.app links it, and only when the
+// Sparkle 2 (PR 20, docs/design/13): only MediaViewer.app links it, and only when the
 // build was given the EdDSA public key (cmake/darwin-app.cmake). The bare
 // mediaviewer_lab never checks for updates.
 #if MV_WITH_SPARKLE
@@ -131,7 +131,7 @@ namespace {
 // CommandBarView.swift). Set once in -applicationDidFinishLaunching:, same
 // lifetime as the window; the lab and its snapshot outlive the app delegate
 // only because both are ivars of the single MvLabApp instance that owns this
-// process's only window (plan/14-abi.md's shape, scoped to the lab).
+// process's only window (docs/design/14-abi.md's shape, scoped to the lab).
 static bool MvCommandSupported(mv::shell::command_id c) {
   using enum mv::shell::command_id;
   switch (c) {
@@ -170,13 +170,13 @@ static bool MvCommandSupported(mv::shell::command_id c) {
     case edit_workspace: case crop_aspect_cycle: case crop_aspect_swap: case show_original:
     case show_original_release:
     // ⌘F is always there: Local search's panel while the pack is loaded, file
-    // search otherwise (plan/16 "File search", 2026-09-28).
+    // search otherwise (docs/design/16 "File search", 2026-09-28).
     case search_open:
       return true;
-    // Milestone G: only while the Import add-on is loaded (plan/18).
+    // Milestone G: only while the Import add-on is loaded (docs/design/18).
     case open_import: case import_now:
       return mv::shell::addon_commands_available(mv::shell::addon_family::import);
-    // Milestone H: only while the AI pack is loaded (plan/17 "UI and commands").
+    // Milestone H: only while the AI pack is loaded (docs/design/17 "UI and commands").
     case search_similar: case search_next_match: case search_prev_match:
       return mv::shell::addon_commands_available(mv::shell::addon_family::ai);
     default:
@@ -185,7 +185,7 @@ static bool MvCommandSupported(mv::shell::command_id c) {
 }
 mv::shell::input_snapshot* g_chrome_snap = nullptr;
 mv::shell::present_lab_mac* g_chrome_lab = nullptr;
-// Filmstrip/gallery bridge target (plan/12 2026-09-17): same lifetime and
+// Filmstrip/gallery bridge target (docs/design/12 2026-09-17): same lifetime and
 // same reasoning as g_chrome_snap/g_chrome_lab above, set/cleared alongside
 // them. Needed because mv_chrome_item_count() etc read `_items`/`_folder`,
 // private MvLabApp ivars only MvLabApp's own methods can reach — the bridge
@@ -310,10 +310,10 @@ constexpr CGFloat kChromeBarHeightPoints = 48.0;  // Windows bar height
 // treatment as kChromeBarHeightPoints, landing in input_snapshot.chrome_bottom_px.
 constexpr CGFloat kFilmstripHeightPoints = 96.0;
 constexpr CGFloat kMetaPaneWidthPoints = 360.0;  // PR 9 panes float over the canvas
-// PR 29 (plan/20): the Edit workspace's strip (title, tabs, actions) at the top
+// PR 29 (docs/design/20): the Edit workspace's strip (title, tabs, actions) at the top
 // of the right pane column; the tab's pane hangs under it.
 constexpr CGFloat kEditStripHeightPoints = 124.0;
-// PR 30 (plan/21): the Video Editor window's timeline area under the preview.
+// PR 30 (docs/design/21): the Video Editor window's timeline area under the preview.
 constexpr CGFloat kEditorTimelinePoints = 280.0;
 constexpr int kEditorThumbs = 48;          // thumbnails across the source
 constexpr std::uint32_t kEditorThumbPx = 96;  // their height in pixels (48 pt at 2x)
@@ -347,7 +347,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 @property(nonatomic, strong) NSView* transportHost;
 @property(nonatomic, strong) NSLayoutConstraint* transportBottom;
 // PR 9: the metadata pane (right) and folder tree (left) float over the canvas like the
-// gallery does. Mac has no horizontal canvas inset yet (plan/12 2026-09-24).
+// gallery does. Mac has no horizontal canvas inset yet (docs/design/12 2026-09-24).
 @property(nonatomic, strong) NSView* metaHost;
 @property(nonatomic, strong) NSView* treeHost;
 @property(nonatomic, strong) NSLayoutConstraint* metaBottom;
@@ -360,7 +360,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 @property(nonatomic, strong) NSView* jobsHost;
 @property(nonatomic, strong) NSLayoutConstraint* jobsBottom;
 @property(nonatomic, strong) NSView* clipToolsHost;
-// PR 29 (plan/20): the Edit workspace's strip and its Crop / Trim pane. The
+// PR 29 (docs/design/20): the Edit workspace's strip and its Crop / Trim pane. The
 // right-edge panes' tops follow the strip while it is open.
 @property(nonatomic, strong) NSView* editStripHost;
 @property(nonatomic, strong) NSView* editPaneHost;
@@ -368,14 +368,14 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 @property(nonatomic, strong) NSLayoutConstraint* adjustTop;
 @property(nonatomic, strong) NSLayoutConstraint* jobsTop;
 @property(nonatomic, strong) NSLayoutConstraint* editPaneTop;
-// PR 30 (plan/21): the Video Editor window. The canvas moves into its preview
+// PR 30 (docs/design/21): the Video Editor window. The canvas moves into its preview
 // while it is open (one canvas, one present path) and back when it closes.
 @property(nonatomic, strong) NSWindow* editorWindow;
 @property(nonatomic, strong) NSView* editorPreview;
 @property(nonatomic, strong) NSView* editorChrome;
 @property(nonatomic, strong) NSTextField* canvasAwayLabel;
 
-// plan/16-commands.md "Opening (argv, drop, PR 6)": the first entry that
+// docs/design/16-commands.md "Opening (argv, drop, PR 6)": the first entry that
 // exists wins -- a folder opens that folder, a file opens its folder with
 // that file selected. Used by argv parsing (main(), below) and
 // -[MvMetalView performDragOperation:]. Returns NO (and the caller beeps)
@@ -388,8 +388,8 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)navigateLast;
 - (void)navigateSkip:(std::ptrdiff_t)delta;
 
-// Marks, copy/move, Trash (plan/16-commands.md "Marks, copy, move"; folded
-// into PR 18 from Windows PR 6, plan/12 2026-09-17).
+// Marks, copy/move, Trash (docs/design/16-commands.md "Marks, copy, move"; folded
+// into PR 18 from Windows PR 6, docs/design/12 2026-09-17).
 - (void)toggleMarkCurrent;
 - (BOOL)refuseWriteTo:(const std::string&)path;  // issue #72: a Photos library file
 - (void)markAll;
@@ -402,7 +402,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 // failure path, not in destination resolution or collision handling.
 - (void)transferMarkedPickDestination:(BOOL)pick move:(BOOL)move;
 
-// plan/26: the Photos library as a listing of virtual items ("photos:<id>",
+// docs/design/26: the Photos library as a listing of virtual items ("photos:<id>",
 // shell/photos_items_mac.h). -openPhotosLibrary lists it (the folder row, the
 // File menu, mv_chrome_open_photos_library); an item resolves to its file on a
 // worker as it is about to be shown; a preview's original is fetched after a
@@ -416,7 +416,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
                      entry:(const mv::io::dir_entry&)entry
                     moment:(std::int64_t)moment;
 - (void)fetchPhotosOriginal:(const std::string&)key;
-// plan/26 "Backup" (shell/photos_backup.h), from Settings.
+// docs/design/26 "Backup" (shell/photos_backup.h), from Settings.
 - (BOOL)startPhotosBackupTo:(const std::string&)destination;
 - (void)cancelPhotosBackup;
 - (void)photosBackupProgress:(mv_chrome_photos_backup*)out;
@@ -430,7 +430,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 // to ("" while unresolved or when only a preview stands in).
 - (std::string)fileForEntry:(const mv::io::dir_entry&)entry;
 
-// Fullscreen (F11 / F) and slideshow (F5), plan/16's Browse and Slideshow
+// Fullscreen (F11 / F) and slideshow (F5), docs/design/16's Browse and Slideshow
 // tables. No video on Mac yet (PR 19), so slideshow is a plain interval
 // timer over stills only.
 - (void)toggleFullscreen;
@@ -440,13 +440,13 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)toggleSlideshowPause;
 - (void)adjustSlideshowInterval:(double)deltaSeconds;
 
-// Drag-out (plan/16 "Opening (argv, drop, PR 6)" mentions drag-in; drag-out
+// Drag-out (docs/design/16 "Opening (argv, drop, PR 6)" mentions drag-in; drag-out
 // is the symmetric case -- dragging the displayed item to Finder/another
 // app). nil when nothing is open.
 - (NSString*)currentItemPathForDrag;
 - (NSFilePromiseProvider*)flattenedPromiseForDrag;  // PR 15: ⌘⌥-drag, nil on a clip
 
-// Filmstrip/gallery follow-up (plan/12 2026-09-17): -selectIndex: is already
+// Filmstrip/gallery follow-up (docs/design/12 2026-09-17): -selectIndex: is already
 // defined below (folder_model relist / navigateNext etc all call it as a
 // same-@implementation self-call, which doesn't need a declaration here) but
 // the mv_chrome_* bridge functions call it on a statically-typed MvLabApp*
@@ -467,7 +467,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)runMenuCmd:(NSInteger)cmd;
 - (void)syncHomeAppearance;
 
-// One key router, one command table (plan/16), shared with Windows. Keys are
+// One key router, one command table (docs/design/16), shared with Windows. Keys are
 // translated to `mv::shell::key` at the edge (MvKeyFromEvent) and routed; the
 // route's command runs here. -handleKeyEvent: returns whether the key was ours.
 - (BOOL)handleKeyEvent:(NSEvent*)event;
@@ -486,7 +486,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (BOOL)welcomePointerMoved;
 - (void)openWelcomeRow:(int)row;
 - (void)removeWelcomeRow:(int)row;
-// Settings screen (plan/16 Settings): view preferences, persisted in
+// Settings screen (docs/design/16 Settings): view preferences, persisted in
 // NSUserDefaults, and the remappable key table.
 - (BOOL)settingsVisible;
 - (void)setSettingsVisible:(BOOL)visible;
@@ -506,7 +506,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)setFilmstripVisible:(BOOL)visible;
 - (void)applyFilmstripLayout;
 - (void)toggleGallery;
-// Gallery keyboard navigation (plan/16 `G` row): Up/Down/W/S move by row, `+`/`-`
+// Gallery keyboard navigation (docs/design/16 `G` row): Up/Down/W/S move by row, `+`/`-`
 // resize the cells. Enter just closes the gallery -- the selection is already
 // what the canvas shows.
 - (void)galleryMoveRows:(NSInteger)rows;
@@ -536,7 +536,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (BOOL)isIndexMarked:(NSInteger)index;
 - (NSInteger)markedCount;
 
-// PR 20 updates (plan/13): an update Sparkle has downloaded and staged waits
+// PR 20 updates (docs/design/13): an update Sparkle has downloaded and staged waits
 // for the user. The command bar shows "Checking for updates…" /
 // "Downloading update…" quietly, then "Update ready — restart"; nothing
 // restarts the app on its own. Phase: 0 idle, 1 checking, 2 downloading,
@@ -554,7 +554,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)openFolderPath:(const char*)utf8_path;
 - (int32_t)sortOrder;
 - (void)setSortOrder:(int32_t)packed;
-// Update channel (plan/12, 2026-09-26): -1 without an updater, 0 stable,
+// Update channel (docs/design/12, 2026-09-26): -1 without an updater, 0 stable,
 // 1 preview (signed prereleases as well). Persisted in NSUserDefaults.
 - (int32_t)updateChannel;
 - (void)setUpdateChannel:(int32_t)channel;
@@ -564,7 +564,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (uint64_t)adjustGeneration;
 - (mv::shell::adjust_view)adjustView;
 - (void)adjustSet:(int32_t)param value:(float)value;
-// PR 13 / 14 (plan/08): trim mode, clip tools, Jobs pane. The bridge reads
+// PR 13 / 14 (docs/design/08): trim mode, clip tools, Jobs pane. The bridge reads
 // these; the state is MvLabApp's.
 - (uint64_t)trimGeneration;
 - (const mv::shell::trim_state&)trim;
@@ -591,7 +591,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)metaSetDate:(const char*)value;                        // NULL removes
 - (uint64_t)metaFocusSeq;
 - (void)metaBlur;
-// File search (plan/16 "File search", 2026-09-28): shown over the gallery on
+// File search (docs/design/16 "File search", 2026-09-28): shown over the gallery on
 // request; the field hands the keyboard back to the grid, and publishes what
 // its name filter shows.
 - (BOOL)openFileSearch;
@@ -604,7 +604,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
                    count:(int32_t)folderCount;
 - (uint64_t)noticeGeneration;
 - (std::string)noticeText;
-// PR 29 (plan/20): the Edit workspace, read and driven by the bridge.
+// PR 29 (docs/design/20): the Edit workspace, read and driven by the bridge.
 - (uint64_t)editGeneration;
 // Points the Edit workspace docks on the right (0 when closed): the canvas
 // frames the picture left of it (input_snapshot.chrome_right_px).
@@ -618,7 +618,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)editCancelCrop;
 - (void)editShowOriginal:(BOOL)on;
 - (void)editSaveCopy;
-// PR 30 (plan/21): the Video Editor window, read and driven by the bridge.
+// PR 30 (docs/design/21): the Video Editor window, read and driven by the bridge.
 - (BOOL)editorOwnsCanvas;
 - (uint64_t)editorGeneration;
 - (void)editorViewInto:(mv_editor_view*)out;
@@ -638,7 +638,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)editorShuttle:(int32_t)key phase:(int32_t)phase;
 - (void)editorRequestClose;
 - (void)setEditorOpen:(BOOL)open;
-// Milestone H (plan/17): result listings from the AI pack's search panel, and
+// Milestone H (docs/design/17): result listings from the AI pack's search panel, and
 // its match markers on the scrub bar. The Mac twin of mv_folder_open_list.
 - (BOOL)openListTitled:(const std::string&)title
                  paths:(std::vector<std::string>)paths
@@ -868,7 +868,7 @@ extern "C" int32_t mv_chrome_folder_cursor(void) {
 extern "C" bool mv_chrome_folder_query(char* out_buf, int32_t out_buf_size) {
   return g_chrome_app && [g_chrome_app folderQueryInto:out_buf size:out_buf_size] == YES;
 }
-// ---- Milestone H: result listings and scrub markers (plan/17) -------------------
+// ---- Milestone H: result listings and scrub markers (docs/design/17) -------------------
 extern "C" bool mv_chrome_open_list(const char* title_utf8, const char* const* paths_utf8,
                                     const int64_t* moments_ms, int32_t count, int32_t select_index,
                                     bool gallery) {
@@ -1112,7 +1112,7 @@ extern "C" void mv_chrome_open_folder(const char* dir_utf8) {
   (void)mv::shell::crash::note_native_call();
   if (g_chrome_app && dir_utf8) [g_chrome_app openFolderPath:dir_utf8];
 }
-// plan/26: the Photos library as a folder.
+// docs/design/26: the Photos library as a folder.
 extern "C" bool mv_chrome_photos_library_available(void) {
   return g_chrome_app && [g_chrome_app photosLibraryAvailable] == YES;
 }
@@ -1123,7 +1123,7 @@ extern "C" void mv_chrome_open_photos_library(void) {
   (void)mv::shell::crash::note_native_call();
   if (g_chrome_app) [g_chrome_app openPhotosLibrary];
 }
-// plan/26 "Backup".
+// docs/design/26 "Backup".
 extern "C" bool mv_chrome_photos_backup_start(const char* destination_utf8) {
   (void)mv::shell::crash::note_native_call();
   if (!g_chrome_app || !destination_utf8 || !*destination_utf8) return false;
@@ -1197,7 +1197,7 @@ extern "C" void mv_chrome_adjust_blur(void) {
   if (g_chrome_app) [g_chrome_app adjustBlur];
 }
 
-// ---- PR 29: the Edit workspace (plan/20) ------------------------------------------
+// ---- PR 29: the Edit workspace (docs/design/20) ------------------------------------------
 // The Swift views hard-code these (EditStore.swift): keep them in step.
 static_assert(static_cast<int>(mv::shell::command_id::edit_workspace) == 150);
 static_assert(static_cast<int>(mv::shell::edit_tab::jobs) == 4);
@@ -1492,7 +1492,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 
   NSString* ignored = event.charactersIgnoringModifiers;
   const unichar c = ignored.length > 0 ? [ignored characterAtIndex:0] : 0;
-  // PR 12 (plan/16 Rate): the keypad's digits are their own keys, apart from the
+  // PR 12 (docs/design/16 Rate): the keypad's digits are their own keys, apart from the
   // number row's, which stay zoom. (The keypad's arrows carry the same flag.)
   if ((event.modifierFlags & NSEventModifierFlagNumericPad) && c >= '0' && c <= '9') {
     return static_cast<key>(static_cast<int>(key::numpad0) + (c - '0'));
@@ -1533,7 +1533,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   return mv::shell::resolve_layout_symbol(plainChar, c, produced, command, mods_out);
 }
 
-// PR 15: ⌘⌥-drag hands out the edited copy (⌘⌥C's twin, plan/10 PR 15) as a
+// PR 15: ⌘⌥-drag hands out the edited copy (⌘⌥C's twin, docs/design/10 PR 15) as a
 // file promise. The bake happens only if a drop asks for it, on this queue,
 // never the main thread (rule 1), and writes straight to where the drop
 // wants the file.
@@ -1621,7 +1621,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   layer.framebufferOnly = YES;
   // 2, not 1: found on real hardware (2026-09-18) -- CAMetalLayer rejects
   // maximumDrawableCount outside [2, 3] and throws
-  // CAMetalLayerInvalidMaximumDrawableCount. plan/15's PR 16 spec says "max
+  // CAMetalLayerInvalidMaximumDrawableCount. docs/design/15's PR 16 spec says "max
   // drawable 1", carried over from D3D11's SetMaximumFrameLatency(1); Metal
   // has no equivalent of 1, so 2 (the minimum it allows) is the actual
   // lowest-latency setting achievable, not a relaxation of the same intent.
@@ -1675,7 +1675,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   [self syncSize];
 }
 
-// plan/16-commands.md "Opening (argv, drop, PR 6)": accept the drop as long
+// docs/design/16-commands.md "Opening (argv, drop, PR 6)": accept the drop as long
 // as it names at least one file: URL, so -performDragOperation: can apply
 // the same "first folder wins, else the first file's folder" rule -openEntryPath:
 // already implements for argv. Any other pasteboard content (text, a web
@@ -1718,7 +1718,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 }
 
 - (void)mouseDown:(NSEvent*)event {
-  // Drag-out (plan/16 "Opening (argv, drop, PR 6)"): Cmd+drag starts a file
+  // Drag-out (docs/design/16 "Opening (argv, drop, PR 6)"): Cmd+drag starts a file
   // drag of the currently displayed item instead of panning. Gated on a
   // modifier rather than any mouseDown+move, because mouseDragged: already
   // means "pan" for every existing gesture -- overloading the same bare
@@ -1848,7 +1848,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   if (self.lab) self.lab->wake();
 }
 - (void)keyDown:(NSEvent*)event {
-  // Every key goes through the shared router (plan/16); MvLabApp runs the
+  // Every key goes through the shared router (docs/design/16); MvLabApp runs the
   // command. An unhandled key is simply ignored -- no system beep per stray key.
   if (self.app) (void)[self.app handleKeyEvent:event];
 }
@@ -1857,7 +1857,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 }
 @end
 
-// ---- Default viewer (plan/13) --------------------------------------------------
+// ---- Default viewer (docs/design/13) --------------------------------------------------
 
 // The types to become the default for are read back from our own Info.plist, so
 // the prompt, Finder's Open With list and the Quick Look extension cannot
@@ -1946,10 +1946,10 @@ static void MvAdoptNewDefaultViewerTypes() {
   mv::shell::mac_lab_options _options;
   bool _terminating;
 
-  // Folder navigation (PR 18, folded-in PR 4/6 -- plan/12 2026-09-17).
+  // Folder navigation (PR 18, folded-in PR 4/6 -- docs/design/12 2026-09-17).
   // `_items`/`_index` are a cache: refreshed only when -refreshFolderIfChanged
   // sees folder_model_mac's watch fire, not re-fetched on every keypress --
-  // plan/16's own speed rule ("warm arrow-key < 40 ms... no marshalling hop
+  // docs/design/16's own speed rule ("warm arrow-key < 40 ms... no marshalling hop
   // per key-repeat") is why this isn't just `_folder.items()` called from
   // -navigateNext etc, which would copy the whole listing (paths and all)
   // on every arrow key.
@@ -1971,7 +1971,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   std::vector<std::string> _siblings;
   NSInteger _siblingIndex;
   std::uint64_t _siblingGeneration;
-  // File search (plan/16, 2026-09-28): the name filter the grid shows,
+  // File search (docs/design/16, 2026-09-28): the name filter the grid shows,
   // in grid order, for the listing generation it was made from. While it is
   // on and the gallery is up, the gallery's keys move among these only; the
   // viewer itself always walks the whole folder (the folder model is not
@@ -1993,7 +1993,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   // elsewhere in the folder don't move the selection); not found (removed)
   // -> falls back to clamping the old numeric index, which is "the next one
   // slides into its place" for a mid-list removal and "the previous one" for
-  // the last item, without needing to special-case either (plan/16).
+  // the last item, without needing to special-case either (docs/design/16).
   std::string _wantSelectedPath;
   // Bumped by every -openEntryPath: call, read from the background job it
   // submits. folder_model::open() writes state_->dir/generation under its
@@ -2057,18 +2057,18 @@ static void MvAdoptNewDefaultViewerTypes() {
   id _textEditMonitor;
   uint64_t _keysGeneration;
 
-  // Marks, copy/move, Trash (plan/16 "Marks, copy, move"). Keyed by path, not
-  // index -- plan/16: "Marks clear only for items that succeeded," which only
+  // Marks, copy/move, Trash (docs/design/16 "Marks, copy, move"). Keyed by path, not
+  // index -- docs/design/16: "Marks clear only for items that succeeded," which only
   // means something if a mark identifies a specific file rather than a slot
   // that survives a relist meaning something else.
   std::set<std::string> _marks;
   NSURL* _lastDestination;
 
-  // Slideshow (plan/16 "Slideshow", folded into PR 18 -- stills only, no
+  // Slideshow (docs/design/16 "Slideshow", folded into PR 18 -- stills only, no
   // video on Mac yet, PR 19). _enteredFullscreenForSlideshow distinguishes
   // "F5 made us fullscreen, so Esc/leave should undo that" from "the window
   // was already fullscreen when F5 fired, so leaving shouldn't un-fullscreen
-  // it" (plan/16: "starts from the canvas in browse (fullscreen if the
+  // it" (docs/design/16: "starts from the canvas in browse (fullscreen if the
   // window is not; leaving puts it back)").
   BOOL _slideshowActive;
   BOOL _gameOn;  // Space on an empty window started the runner (the lab owns its state)
@@ -2077,13 +2077,13 @@ static void MvAdoptNewDefaultViewerTypes() {
   double _slideshowIntervalSeconds;
   NSTimer* _slideshowTimer;
 
-  // Filmstrip/gallery visibility (plan/16 View table's T/G, folded-in PR 4,
-  // plan/12 2026-09-17). _filmstripVisible is the wish; -filmstripVisible is
+  // Filmstrip/gallery visibility (docs/design/16 View table's T/G, folded-in PR 4,
+  // docs/design/12 2026-09-17). _filmstripVisible is the wish; -filmstripVisible is
   // what is on screen, and it also needs items -- the empty window shows no
   // strip, the same as Windows' have_media gate. Filmstrip defaults visible
   // once a folder is open --
   // there is no Settings screen yet to remember a per-mode preference
-  // (plan/10-roadmap.md PR 4's own note that this is normally per-open-mode
+  // (docs/design/10-roadmap.md PR 4's own note that this is normally per-open-mode
   // and persisted; both wait on Settings existing at all). Gallery defaults
   // hidden: it is an explicit `G`, not something a folder open should show.
   BOOL _filmstripVisible;
@@ -2095,12 +2095,12 @@ static void MvAdoptNewDefaultViewerTypes() {
   // _options.open_path, the same slot argv uses.
   BOOL _launched;
   BOOL _askedDefaultViewer;
-  // The setup sheet waits for the installer lookup (plan/13): a mounted
+  // The setup sheet waits for the installer lookup (docs/design/13): a mounted
   // MediaViewer disk or a left-over .dmg adds the eject-and-Trash checkbox.
   BOOL _installerChecked;
   mv::shell::installer_leftover _installer;
 
-  // PR 9 (plan/06, plan/16). `_meta` owns every metadata read; the pane, the info
+  // PR 9 (docs/design/06, docs/design/16). `_meta` owns every metadata read; the pane, the info
   // overlay and the AF quads all read `_metaRecord`, so toggling any of them is a
   // lookup and never a file read. A record is asked for only while something is
   // showing it, and after a short pause so arrow-key scrubbing queues no reads.
@@ -2110,7 +2110,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   BOOL _metaPaneVisible;
   BOOL _treeVisible;
   NSTimer* _metaDebounce;
-  // PR 12 (plan/06 "Writing", plan/16 Rate). Rating, comment and revert are
+  // PR 12 (docs/design/06 "Writing", docs/design/16 Rate). Rating, comment and revert are
   // queued here and written on the pool: a plain JPEG in place, everything else
   // in an XMP sidecar. `_metaWritten` is the paths written this session, the
   // ones "revert metadata" has a snapshot for.
@@ -2121,13 +2121,13 @@ static void MvAdoptNewDefaultViewerTypes() {
   std::string _noticeText;
   std::uint64_t _noticeGeneration;
   NSTimer* _noticeTimer;
-  // PR 10 (plan/07, plan/16). `_edits` owns every item's edit stack and crop
+  // PR 10 (docs/design/07, docs/design/16). `_edits` owns every item's edit stack and crop
   // mode; the render thread gets the geometry through _snap.edit, tagged with
   // the item id _lab.open_item returned (so a reload never borrows it).
   mv::shell::edit_session _edits;
   std::uint64_t _itemId;
   NSTimer* _rotateDebounce;
-  // plan/26: Photos library items. What each key resolved to (a file in place,
+  // docs/design/26: Photos library items. What each key resolved to (a file in place,
   // a cache preview, or a fetched original); the sequence that tells a stale
   // resolve from the current one; the 400 ms stay before a preview's original
   // is fetched; and the cancel for the fetch in flight.
@@ -2135,17 +2135,17 @@ static void MvAdoptNewDefaultViewerTypes() {
   std::uint64_t _photosResolveSeq;
   NSTimer* _photosFetchTimer;
   std::shared_ptr<std::atomic<bool>> _photosFetchCancel;
-  // plan/26 "Backup": the one run, on its own thread; whether its end has
+  // docs/design/26 "Backup": the one run, on its own thread; whether its end has
   // been written to the defaults (the "last backup" line).
   std::unique_ptr<mv::shell::backup::engine> _photosBackup;
   BOOL _photosBackupRecorded;
   BOOL _exportVisible;
   int32_t _exportChoice;  // pack_export; 0 until the first export picks defaults
-  // PR 11 (plan/07, plan/16). The adjust pane's state and the preview-sized
+  // PR 11 (docs/design/07, docs/design/16). The adjust pane's state and the preview-sized
   // FP16 working image the histogram reduces (the render thread holds its own
   // GPU copy). `_adjustGen` cancels a build for an item the user has left.
   mv::shell::adjust_pane _adjust;
-  // PR 13 / 14 (plan/08). `_trim` is trim mode over the clip on screen (shared
+  // PR 13 / 14 (docs/design/08). `_trim` is trim mode over the clip on screen (shared
   // with Windows); `_clipJobs` is the clip job queue and keyframe index the
   // Windows ABI also drives, its completions hopped to the main queue.
   mv::shell::trim_state _trim;
@@ -2159,7 +2159,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   std::atomic<mv::generation> _adjustGen;
   std::uint64_t _adjustViewGeneration;
   NSTimer* _histogramDebounce;
-  // PR 29 (plan/20): the Edit workspace (shell/edit_workspace.h) and Show
+  // PR 29 (docs/design/20): the Edit workspace (shell/edit_workspace.h) and Show
   // original. _wsShown is what the panes were last synced to, so closing the
   // workspace closes only the panes it opened.
   mv::shell::edit_workspace _ws;
@@ -2167,7 +2167,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   BOOL _wsSyncing;
   BOOL _showOriginal;
   std::uint64_t _editGeneration;
-  // PR 30 (plan/21): the Video Editor. _editorToken bumps on open and close, so
+  // PR 30 (docs/design/21): the Video Editor. _editorToken bumps on open and close, so
   // a strip job that lands for an older clip is dropped.
   BOOL _editorOpen;
   std::string _editorPath;
@@ -2203,7 +2203,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   NSTimer* _nowPlayingTimer;
   BOOL _remoteCommandsWired;
   mv::shell::present_lab_mac::video_status _nowPlayingShown;
-  // Milestone H (plan/17): a result listing is open. `_currentDir` is "" then,
+  // Milestone H (docs/design/17): a result listing is open. `_currentDir` is "" then,
   // `_moments` is parallel to `_items` (the moment a clip opens paused on, -1
   // none) and `_listNames` holds display names made unique within the list
   // (two folders' IMG_0001.JPG), which also key Swift's thumbnail slots.
@@ -2234,7 +2234,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   self = [super init];
   if (self) {
     _options = options;
-    _slideshowIntervalSeconds = 4.0;  // plan/16 Slideshow table's default
+    _slideshowIntervalSeconds = 4.0;  // docs/design/16 Slideshow table's default
     _filmstripVisible = YES;
     _captureRow = -1;
     // PR 11: generation 0 is "never cancelled" (core/job_system.h); a build's
@@ -2262,7 +2262,7 @@ static void MvAdoptNewDefaultViewerTypes() {
           if (app && path) (void)[app openEntryPath:path];
         },
         nullptr);
-    // plan/23: Final Cut Pro search stays as Settings left it (background, later).
+    // docs/design/23: Final Cut Pro search stays as Settings left it (background, later).
     MvFcpStart();
   }
   NSRect rect = NSMakeRect(0, 0, 1280, 720);
@@ -2277,7 +2277,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   // Tabs to the View menu.
   self.window.tabbingMode = NSWindowTabbingModeDisallowed;
   self.window.delegate = self;
-  // F11/F (plan/16): -toggleFullscreen below needs this set once, up front,
+  // F11/F (docs/design/16): -toggleFullscreen below needs this set once, up front,
   // or [self.window toggleFullScreen:nil] silently does nothing.
   self.window.collectionBehavior |= NSWindowCollectionBehaviorFullScreenPrimary;
   [self.window center];
@@ -2421,7 +2421,7 @@ static void MvAdoptNewDefaultViewerTypes() {
     preferredWidth,
   ]];
 
-  // Gallery: an overlay over the canvas below the command bar (plan/16:
+  // Gallery: an overlay over the canvas below the command bar (docs/design/16:
   // "covers the canvas like an overlay"), hidden by default -- `G` shows it, a
   // click or Esc hides it again. The canvas keeps rendering underneath; hiding
   // this view is enough, no chrome_*_px accounting needed the way the
@@ -2458,7 +2458,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   // PR 9: metadata pane (right) and folder tree (left). Both float over the canvas
   // between the command bar and the filmstrip, hidden until `I` / Cmd+Shift+E. The
   // canvas keeps its full width: a horizontal inset is a present-path change, and
-  // PR 1's present-loop verify has to keep holding (plan/12 2026-09-24).
+  // PR 1's present-loop verify has to keep holding (docs/design/12 2026-09-24).
   self.metaHost = [MVChromeHost makeMetadataView];
   self.metaHost.hidden = YES;
   self.metaHost.translatesAutoresizingMaskIntoConstraints = NO;
@@ -2497,7 +2497,7 @@ static void MvAdoptNewDefaultViewerTypes() {
     [self.jobsHost.widthAnchor constraintEqualToConstant:kMetaPaneWidthPoints],
     self.jobsBottom,
   ]];
-  // PR 29 (plan/20): the Edit workspace. The strip sits where the panes'
+  // PR 29 (docs/design/20): the Edit workspace. The strip sits where the panes'
   // tops were; while it is open they (and the Crop / Trim pane) start under it.
   self.editStripHost = [MVChromeHost makeEditStripView];
   self.editStripHost.hidden = YES;
@@ -2526,7 +2526,7 @@ static void MvAdoptNewDefaultViewerTypes() {
     [self.editPaneHost.bottomAnchor constraintEqualToAnchor:self.adjustHost.bottomAnchor],
   ]];
   // The clip job queue. Its completions arrive on its workers and hop to the
-  // main queue here (plan/14: the core never calls the host's dispatcher).
+  // main queue here (docs/design/14: the core never calls the host's dispatcher).
   {
     MvLabApp* __weak weakClip = self;
     _clipJobs = std::make_unique<mv::abi::clip_session>([weakClip](const mv_completion& c) {
@@ -2536,7 +2536,7 @@ static void MvAdoptNewDefaultViewerTypes() {
       });
     });
     // Encode and decode jobs run in MediaViewerClipJob, never in the viewer
-    // (plan/12 2026-09-25): Contents/Helpers in the app, beside the lab in a
+    // (docs/design/12 2026-09-25): Contents/Helpers in the app, beside the lab in a
     // build tree. Set even when missing, so those jobs fail instead.
     NSString* macos = [[[NSBundle mainBundle] executablePath] stringByDeletingLastPathComponent];
     NSString* bundled = [[macos stringByAppendingPathComponent:@"../Helpers/MediaViewerClipJob"]
@@ -2618,12 +2618,12 @@ static void MvAdoptNewDefaultViewerTypes() {
     return;
   }
 
-  // plan/16 "Opening (argv, drop, PR 6)": --open (or a bare positional path,
+  // docs/design/16 "Opening (argv, drop, PR 6)": --open (or a bare positional path,
   // parsed into the same options_.open_path below) resolves through the same
   // folder+select rule a drop does, now that folder_model_mac exists to
   // resolve it -- not a direct one-off open_item() with no folder context.
 #if MV_APP_BUNDLE
-  // An update restart puts the user back where they were (plan/13 "Preserve
+  // An update restart puts the user back where they were (docs/design/13 "Preserve
   // state across the restart"): the folder and the selected file. Only an
   // explicit open (argv, Finder) outranks it.
   NSUserDefaults* defaults = NSUserDefaults.standardUserDefaults;
@@ -2653,7 +2653,7 @@ static void MvAdoptNewDefaultViewerTypes() {
         });
       },
       nullptr);
-  // plan/26: Photos library items. Their tiles come from PhotoKit under the
+  // docs/design/26: Photos library items. Their tiles come from PhotoKit under the
   // "photos:" key; every file in the cache folder (previews, on-view
   // downloads) is read-only; the folder starts the session empty.
   mv::shell::set_read_only_prefix(mv::shell::photos::cache_dir());
@@ -2674,7 +2674,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   // just flips an atomic). Polling consume_changed() on a UI-thread timer,
   // rather than doing real work from that callback, is what keeps this
   // rule intact while still picking up "a file dropped into the folder
-  // appears without restart" (plan/10-roadmap.md PR 4's verify line).
+  // appears without restart" (docs/design/10-roadmap.md PR 4's verify line).
   _folderPollTimer = [NSTimer scheduledTimerWithTimeInterval:0.2
                                                        target:self
                                                      selector:@selector(refreshFolderIfChanged)
@@ -2954,7 +2954,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   _subdirs.clear();
   _galleryIfEmptyDir = dir;
   // Settings: a folder open earns the filmstrip; opening one image is a viewing
-  // intent and keeps it off until asked (plan/16, same as Windows).
+  // intent and keeps it off until asked (docs/design/16, same as Windows).
   if (!navigation) {
     const auto prefs = mv::shell::view_settings::from_flags(_viewFlags);
     const BOOL want = is_dir.value() ? prefs.filmstrip_for_folder : prefs.filmstrip_for_image;
@@ -3137,7 +3137,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   [self nowPlayingItemChanged];
 
   if (!_scrubMs.empty()) ++_scrubGeneration;  // markers belong to one clip
-  // plan/26: a preview's pending fetch belongs to the item the user has left.
+  // docs/design/26: a preview's pending fetch belongs to the item the user has left.
   [_photosFetchTimer invalidate];
   _photosFetchTimer = nil;
   if (_items.empty()) {
@@ -3169,7 +3169,7 @@ static void MvAdoptNewDefaultViewerTypes() {
                        (_shownMtime == entry.mtime_unix && _shownSize == entry.size));
     if (!same) {
       if (mv::shell::photos::is_key(entry.path_utf8)) {
-        // plan/26: through its file, resolved on a worker if not yet.
+        // docs/design/26: through its file, resolved on a worker if not yet.
         if (_photosFetchCancel) _photosFetchCancel->store(true, std::memory_order_release);
         _photosFetchCancel.reset();
         _shownItem = 0;
@@ -3254,7 +3254,7 @@ static void MvAdoptNewDefaultViewerTypes() {
 
 - (NSString*)currentItemPathForDrag {
   if (_items.empty() || _index.current() >= _items.size()) return nil;
-  // plan/26: a Photos item drags as its file, once it has one (not a preview).
+  // docs/design/26: a Photos item drags as its file, once it has one (not a preview).
   const std::string path = [self fileForEntry:_items[_index.current()]];
   if (path.empty()) return nil;
   return [NSString stringWithUTF8String:path.c_str()];
@@ -3330,7 +3330,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   [self transferMarkedPickDestination:pick move:YES];
 }
 
-// plan/16 "Marks, copy, move": F7/F8 to the last destination, Shift+F7/F8 to
+// docs/design/16 "Marks, copy, move": F7/F8 to the last destination, Shift+F7/F8 to
 // pick one first; never overwrite an original (collision: "name (2).ext");
 // same-volume move is a rename, cross-volume falls back to copy+delete
 // (-[NSFileManager moveItemAtURL:toURL:error:] does this internally -- it is
@@ -3378,7 +3378,7 @@ static void MvAdoptNewDefaultViewerTypes() {
         NSFileManager* fm = [NSFileManager defaultManager];
         NSString* destPath = destDir.path;
         // To or from a share: several files at once, and each verified copy
-        // with several requests in flight (io/verified_copy.h, plan/12
+        // with several requests in flight (io/verified_copy.h, docs/design/12
         // 2026-10-01). A card or a local disk keeps one file at a time.
         const mv::io::copy_profile profile = mv::io::batch_copy_profile(
             std::string(mv::io::parent_of(src_paths.front())), destPath.UTF8String);
@@ -3400,7 +3400,7 @@ static void MvAdoptNewDefaultViewerTypes() {
                   return [fm fileExistsAtPath:candidatePath];
                 });
             if (chosen.empty()) return;  // every "(n).ext" up to the cap is taken
-            // plan/26: a Photos item copies out as its original, fetched from
+            // docs/design/26: a Photos item copies out as its original, fetched from
             // iCloud here if this Mac does not hold it (the user asked for the file).
             std::string src_path = src_paths[i];
             if (mv::shell::photos::is_key(src_path)) {
@@ -3416,7 +3416,7 @@ static void MvAdoptNewDefaultViewerTypes() {
             NSError* error = nil;
             BOOL ok = NO;
             if (move && !MvSameVolume(srcURL, destDir)) {
-              // plan/18: F8 across volumes deletes the source only after the
+              // docs/design/18: F8 across volumes deletes the source only after the
               // copy is verified (hashed while read, F_FULLFSYNC, read back
               // with F_NOCACHE, compared). -moveItemAtURL: would copy and
               // delete with no check in between.
@@ -3462,7 +3462,7 @@ static void MvAdoptNewDefaultViewerTypes() {
       });
 }
 
-// plan/16 "Delete only ever uses the Recycle Bin [Trash]... refused, not
+// docs/design/16 "Delete only ever uses the Recycle Bin [Trash]... refused, not
 // deleted... there is no silent permanent delete." -recycleURLs:completionHandler:
 // is documented async (it returns immediately and reports back through the
 // handler), which is why this calls it directly from the confirm alert's
@@ -3530,7 +3530,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   if (_slideshowActive || _items.empty()) return;
   _slideshowActive = YES;
   _slideshowPaused = NO;
-  // plan/16: "starts from the canvas in browse (fullscreen if the window is
+  // docs/design/16: "starts from the canvas in browse (fullscreen if the window is
   // not; leaving puts it back)".
   _enteredFullscreenForSlideshow = (self.window.styleMask & NSWindowStyleMaskFullScreen) ? NO : YES;
   if (_enteredFullscreenForSlideshow) [self.window toggleFullScreen:nil];
@@ -3562,7 +3562,7 @@ static void MvAdoptNewDefaultViewerTypes() {
 
 - (void)adjustSlideshowInterval:(double)deltaSeconds {
   if (!_slideshowActive) return;
-  // plan/16's step ladder: 1/2/3/4/5/7/10/15/20/30/60s. +/- move one rung,
+  // docs/design/16's step ladder: 1/2/3/4/5/7/10/15/20/30/60s. +/- move one rung,
   // not a fixed number of seconds -- deltaSeconds here is +1/-1, a rung
   // index delta, despite the "seconds" name matching the public selector's
   // intent (adjust the interval); the ladder itself is the actual unit.
@@ -3582,7 +3582,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   if (!_slideshowPaused) [self armSlideshowTimer];
 }
 
-// Filmstrip/gallery bridge (mv_chrome_bridge.h), folded-in PR 4 -- plan/12
+// Filmstrip/gallery bridge (mv_chrome_bridge.h), folded-in PR 4 -- docs/design/12
 // 2026-09-17. `itemCount`/`currentIndex`/`itemNameAtIndex:into:size:` mirror
 // the same `_items`/`_index` state -selectIndex: and the navigate* methods
 // already use; nothing new is computed here, just exposed across the bridge.
@@ -3691,7 +3691,7 @@ static void MvAdoptNewDefaultViewerTypes() {
 - (void)toggleGallery {
   [self setGalleryVisible:!_galleryVisible];
 }
-// File search (plan/16 "File search"): the grid comes up if it is not, and the
+// File search (docs/design/16 "File search"): the grid comes up if it is not, and the
 // field above it takes the keyboard. NO with nothing listed to search.
 - (BOOL)openFileSearch {
   if (_items.empty() && _subdirs.empty()) return NO;
@@ -3904,7 +3904,7 @@ static void MvAdoptNewDefaultViewerTypes() {
 }
 
 // The selection follows the filter: a folder tile or an image that is no
-// longer shown gives way to the first one that is (plan/17). Also when the
+// longer shown gives way to the first one that is (docs/design/17). Also when the
 // grid comes back after the viewer walked onto a tile the filter hides.
 - (void)followGalleryFilter {
   if (![self galleryFiltered]) return;
@@ -4172,14 +4172,14 @@ enum MvMenuCmd : NSInteger {
   kMenuOpen = 1, kMenuTrash, kMenuCopyTo, kMenuMoveTo, kMenuMark,
   kMenuFit, kMenuOneToOne, kMenuFilmstrip, kMenuGallery, kMenuFullscreen, kMenuSlideshow,
   kMenuNext, kMenuPrev, kMenuFirst, kMenuLast, kMenuHelp, kMenuOpenFolder, kMenuSettings, kMenuOverlay, kMenuReveal,
-  // plan/26
+  // docs/design/26
   kMenuOpenPhotos,
   // PR 9
   kMenuMetadata, kMenuFolderTree, kMenuSortName, kMenuSortModified, kMenuSortSize, kMenuSortType,
   kMenuSortDateTaken, kMenuSortDescending,
   // PR 15
   kMenuShare, kMenuCopyPath, kMenuCopyEdited,
-  // PR 29 (plan/20): the Edit menu, a visible way in to every edit.
+  // PR 29 (docs/design/20): the Edit menu, a visible way in to every edit.
   kMenuEditWorkspace, kMenuEditCrop, kMenuEditColour, kMenuRotateLeft, kMenuRotateRight,
   kMenuFlipH, kMenuFlipV, kMenuUndoEdit, kMenuResetEdits, kMenuSaveCopy, kMenuTrim,
 };
@@ -4356,7 +4356,7 @@ enum MvMenuCmd : NSInteger {
   [self addMenuItem:@"Settings…" cmd:kMenuSettings key:@"," mods:NSEventModifierFlagCommand toMenu:app];
 #if MV_WITH_SPARKLE
   // The update check is a network call even with nothing else ever sent
-  // (plan/13): it can be turned off here and stays off.
+  // (docs/design/13): it can be turned off here and stays off.
   NSMenuItem* check = [app addItemWithTitle:@"Check for Updates…"
                                      action:@selector(checkForUpdates:)
                               keyEquivalent:@""];
@@ -4379,7 +4379,7 @@ enum MvMenuCmd : NSInteger {
 
   NSMenu* file = submenu(@"File");
   [self addMenuItem:@"Open…" cmd:kMenuOpen key:@"o" mods:NSEventModifierFlagCommand toMenu:file];
-  // plan/26: shown once the library was added in Settings (validateMenuItem:).
+  // docs/design/26: shown once the library was added in Settings (validateMenuItem:).
   [self addMenuItem:@"Open Photos Library" cmd:kMenuOpenPhotos key:@"" mods:0 toMenu:file];
   NSMenuItem* openRecent = [file addItemWithTitle:@"Open Recent" action:nil keyEquivalent:@""];
   _openRecentMenu = [[NSMenu alloc] initWithTitle:@"Open Recent"];
@@ -4403,7 +4403,7 @@ enum MvMenuCmd : NSInteger {
   [file addItemWithTitle:@"Close Window" action:@selector(performClose:) keyEquivalent:@"w"];
 
   // Plain-letter equivalents (no modifier) mirror keyDown:'s bindings.
-  // PR 29 (plan/20). No key equivalents: the router owns Return, ⇧C, ⇧A, [ ]
+  // PR 29 (docs/design/20). No key equivalents: the router owns Return, ⇧C, ⇧A, [ ]
   // and ⌘Z, so a menu equivalent would run them twice. `?` lists the keys.
   NSMenu* edit = submenu(@"Edit");
   [self addMenuItem:@"Edit Image" cmd:kMenuEditWorkspace key:@"" mods:0 toMenu:edit];
@@ -4470,7 +4470,7 @@ enum MvMenuCmd : NSInteger {
 }
 
 // Finder: double-click, Open With, or a drop on the Dock icon (PR 20).
-// Same "first entry that exists wins" rule as argv and drag-in (plan/16).
+// Same "first entry that exists wins" rule as argv and drag-in (docs/design/16).
 - (void)application:(NSApplication*)application openURLs:(NSArray<NSURL*>*)urls {
   (void)application;
   for (NSURL* url in urls) {
@@ -4493,7 +4493,7 @@ enum MvMenuCmd : NSInteger {
 // only after Continue. Existing choices are preserved across updates; the app
 // menu keeps the command available later. The canvas keeps presenting.
 // After a drag install a second checkbox, also on, ejects the MediaViewer
-// disk if it is still mounted and moves the .dmg to the Trash (plan/13).
+// disk if it is still mounted and moves the .dmg to the Trash (docs/design/13).
 - (void)askDefaultViewerOnce {
   if (!self.window || self.window.attachedSheet) return;
   _askedDefaultViewer = YES;
@@ -4602,7 +4602,7 @@ enum MvMenuCmd : NSInteger {
 // Sparkle has a verified update staged. YES = we own the timing: nothing
 // installs until the user clicks "Update ready — restart", or quits normally
 // (then it installs on the way out, without a relaunch). Never a modal, never
-// a forced restart (plan/13 "Never interrupt").
+// a forced restart (docs/design/13 "Never interrupt").
 - (BOOL)updater:(SPUUpdater*)updater
     willInstallUpdateOnQuit:(SUAppcastItem*)item
     immediateInstallationBlock:(void (^)(void))immediateInstallHandler {
@@ -4613,7 +4613,7 @@ enum MvMenuCmd : NSInteger {
   return YES;
 }
 
-// The steps before that, for the command bar's quiet status (plan/13 "never
+// The steps before that, for the command bar's quiet status (docs/design/13 "never
 // interrupt": text only, nothing to click until the update is staged). A
 // check that finds nothing, or fails, just clears it.
 - (BOOL)updater:(SPUUpdater*)updater
@@ -4873,14 +4873,14 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
 
 - (BOOL)runCommand:(mv::shell::command_id)command back:(mv::shell::back_target)target {
   using enum mv::shell::command_id;
-  // PR 11 (plan/13): every command is a native call with its own id, so a
+  // PR 11 (docs/design/13): every command is a native call with its own id, so a
   // chrome exception or a crash in the work it starts carries the same one.
   (void)mv::shell::crash::note_native_call();
   const bool clip = [self currentItemIsVideo];
   const bool anim = !clip && _lab.anim_active();
-  // PR 29 (plan/20): the keys that open a tab of the Edit workspace. The
+  // PR 29 (docs/design/20): the keys that open a tab of the Edit workspace. The
   // workspace decides the tab; crop_mode and trim_mode then do their own work.
-  // PR 30 (plan/21, owner): video is edited in its own window, not a pane.
+  // PR 30 (docs/design/21, owner): video is edited in its own window, not a pane.
   if (command == edit_workspace && (_editorOpen || [self editSubject] == mv::shell::edit_subject::clip)) {
     if (_editorOpen) {
       [self editorRequestClose];
@@ -5003,7 +5003,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
       return YES;
     case help: [self toggleHelp]; return YES;
     case open_settings: [self setSettingsVisible:!_settingsVisible]; return YES;
-    // Milestone G (plan/18 "Commands"): ⌘⇧I and ⌘⇧F7, while Import is loaded.
+    // Milestone G (docs/design/18 "Commands"): ⌘⇧I and ⌘⇧F7, while Import is loaded.
     case open_import: {
       if (!mv::shell::addon_commands_available()) return NO;
       std::vector<std::string> marks(_marks.begin(), _marks.end());
@@ -5017,10 +5017,10 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
       MvAddonsImportNow(paths);
       return !paths.empty();
     }
-    // Milestone H (plan/17 "UI and commands"): the AI chrome runs these; the
+    // Milestone H (docs/design/17 "UI and commands"): the AI chrome runs these; the
     // key falls through, as if unbound, while the pack is not loaded. ⌘F
     // then opens its panel once a starting pack attaches, or file search
-    // when nothing is on its way (plan/16 "File search", 2026-09-28).
+    // when nothing is on its way (docs/design/16 "File search", 2026-09-28).
     case search_open:
     case search_similar:
     case search_next_match:
@@ -5130,7 +5130,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
       [board clearContents];
       return [board writeObjects:urls] ? YES : NO;
     }
-    // PR 15 (plan/16 View): the keyboard twins of drag-out.
+    // PR 15 (docs/design/16 View): the keyboard twins of drag-out.
     case copy_path: {
       std::vector<std::string> paths;
       for (const auto& entry : [self markedOrCurrentEntries]) paths.push_back(entry.path_utf8);
@@ -5147,20 +5147,20 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
       if (!_metaPaneVisible && _jobsVisible) [self setJobsVisible:NO];
       [self setMetaPaneVisible:!_metaPaneVisible];
       return YES;
-    // PR 12 (plan/16 Rate): 0-5 write the rating of the item on screen.
+    // PR 12 (docs/design/16 Rate): 0-5 write the rating of the item on screen.
     case set_rating_0: case set_rating_1: case set_rating_2: case set_rating_3:
     case set_rating_4: case set_rating_5:
       return [self rateCurrentItem:mv::shell::rating_of_command(command)];
     case edit_comment: return [self focusCommentField];
-    // PR 11 (plan/16 Pane): ⇧A shows the adjust pane and focuses it.
+    // PR 11 (docs/design/16 Pane): ⇧A shows the adjust pane and focuses it.
     case adjust_pane: [self setAdjustVisible:!_adjust.visible()]; return YES;
-    // PR 13 / 14 (plan/08, plan/16 "Video and trim").
+    // PR 13 / 14 (docs/design/08, docs/design/16 "Video and trim").
     case trim_mode: case trim_in: case trim_out: case trim_clear: case trim_preview:
     case trim_keyframe: case trim_reencode: case trim_remove_middle: case keyframe_prev:
     case keyframe_next: case jobs_pane: case clip_tools: case clip_split:
       return [self runClipCommand:command];
     case folder_tree: [self setTreeVisible:!_treeVisible]; return YES;
-    // PR 10 geometry, crop mode and export (plan/16 View + Crop).
+    // PR 10 geometry, crop mode and export (docs/design/16 View + Crop).
     case rotate_ccw: case rotate_cw: case flip_horizontal: case flip_vertical: case crop_mode:
     case crop_commit: case crop_move_left: case crop_move_right: case crop_move_up:
     case crop_move_down: case crop_narrower: case crop_wider: case crop_shorter:
@@ -5258,7 +5258,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   }
 }
 
-// ---- PR 29: the Edit workspace (plan/20) --------------------------------------
+// ---- PR 29: the Edit workspace (docs/design/20) --------------------------------------
 
 - (mv::shell::edit_subject)editSubject {
   if (_items.empty() || _itemId == 0) return mv::shell::edit_subject::none;
@@ -5415,7 +5415,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
 
 // `[` `]` `H` `V` on a JPEG: the preview has already turned. The file is
 // rewritten once the keys stop (a quick `]]` is one half-turn write), on the
-// pool, never the main thread (plan/16 speed rule 2).
+// pool, never the main thread (docs/design/16 speed rule 2).
 - (void)scheduleRotationWrite {
   [_rotateDebounce invalidate];
   __weak MvLabApp* weakSelf = self;
@@ -5509,7 +5509,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   [self exportCurrentItem:mv::shell::unpack_export(packed)];
 }
 
-// ---- PR 13 / 14: trim mode, the clip tools and the Jobs pane (plan/08) --------
+// ---- PR 13 / 14: trim mode, the clip tools and the Jobs pane (docs/design/08) --------
 // The twin of main.cpp's block of the same name. Trim is host state over the
 // clip on screen (shell/trim_state.h); the keyframe index and every job run in
 // the core (abi/clip_session over edit/clip). Nothing here reads the file or
@@ -5605,7 +5605,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
 }
 
 // Queues a job and shows the Jobs pane (without taking the keyboard); the
-// pane is where it is cancelled (plan/08: never a modal progress dialog).
+// pane is where it is cancelled (docs/design/08: never a modal progress dialog).
 - (BOOL)submitClipJob:(const mv::edit::clip::request&)r {
   if (!_clipJobs || r.source.empty()) return NO;
   // Trims, splits and exports write beside their source: never inside a
@@ -5854,7 +5854,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
                                     }];
 }
 
-// ---- PR 30: the Video Editor window (plan/21, owner 2026-09-26) ----------------
+// ---- PR 30: the Video Editor window (docs/design/21, owner 2026-09-26) ----------------
 //
 // Enter (or Edit video) on a clip opens a window of its own: the preview on
 // top -- the viewer's canvas, moved in, so there is still one present path
@@ -6280,7 +6280,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   [self publish];
 }
 
-// J K L (plan/16): key 0 J, 1 K, 2 L; phase 0 down, 1 auto-repeat, 2 up.
+// J K L (docs/design/16): key 0 J, 1 K, 2 L; phase 0 down, 1 auto-repeat, 2 up.
 - (void)editorShuttle:(int32_t)key phase:(int32_t)phase {
   if (!_timeline.loaded()) return;
   const auto st = _lab.video_status_snapshot();
@@ -6384,7 +6384,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
 
 // ---- PR 29: the Edit workspace's verify rig ------------------------------------
 
-// MV_EDIT_SELFTEST=<folder> (plan/20 verify). Inert unless set. After launch it
+// MV_EDIT_SELFTEST=<folder> (docs/design/20 verify). Inert unless set. After launch it
 // walks the workspace through the commands its buttons and keys run -- open,
 // a 1:1 crop, apply, the Colour and Info tabs, Show original, Save copy, Esc
 // -- or, on a clip, Trim and Jobs, and writes the window (the chrome; the
@@ -6725,7 +6725,7 @@ static double mv_wall_seconds() {
 - (mv::shell::adjust_view)adjustView { return _adjust.view(_edits.colour()); }
 - (void)bumpAdjustView { ++_adjustViewGeneration; }
 
-// Read, develop (a RAW: LibRaw's linear 16-bit develop — plan/07 waits for it,
+// Read, develop (a RAW: LibRaw's linear 16-bit develop — docs/design/07 waits for it,
 // never the embedded preview), downscale to the preview edge, upload as an
 // immutable RGBA16Float texture — all on the pool (rule 1). The same _jobs the
 // lab's decode uses, so it is drained before the Metal device goes away.
@@ -6934,7 +6934,7 @@ static double mv_wall_seconds() {
   _metaDebounce = nil;
   if (_metaRecord || _items.empty() || _index.current() >= _items.size()) return;
   mv::io::dir_entry entry = _items[_index.current()];
-  // plan/26: a Photos item's record is its file's (in place, or the preview /
+  // docs/design/26: a Photos item's record is its file's (in place, or the preview /
   // the fetched original); nothing to read until it has resolved.
   if (mv::shell::photos::is_key(entry.path_utf8)) {
     const auto hit = _photosResolved.find(entry.path_utf8);
@@ -7295,7 +7295,7 @@ static double mv_wall_seconds() {
 }
 
 - (void)resortKeepingSelection {
-  // A result list is ranked, not sorted (plan/17 "best match first").
+  // A result list is ranked, not sorted (docs/design/17 "best match first").
   if (_items.empty() || _listOpen) return;
   const std::size_t at = std::min(_index.current(), _items.size() - 1);
   const std::string current = _items[at].path_utf8;
@@ -7315,7 +7315,7 @@ static double mv_wall_seconds() {
   [self publish];
 }
 
-// ---- Milestone H: result listings (plan/17; mv_folder_open_list's twin) -------
+// ---- Milestone H: result listings (docs/design/17; mv_folder_open_list's twin) -------
 - (const std::string&)displayNameAt:(std::size_t)index {
   if (_listOpen && index < _listNames.size()) return _listNames[index];
   return _items[index].name_utf8;
@@ -7337,7 +7337,7 @@ static double mv_wall_seconds() {
       continue;
     }
     if (mv::shell::photos::is_key(e.path_utf8)) {
-      // plan/26: a library item has no folder; its date tells two IMG_0001s apart.
+      // docs/design/26: a library item has no folder; its date tells two IMG_0001s apart.
       char date[32] = {};
       const time_t t = static_cast<time_t>(e.mtime_unix);
       struct tm tmv {};
@@ -7422,7 +7422,7 @@ static double mv_wall_seconds() {
                     if (open_generation->load(std::memory_order_acquire) != my_generation) {
                       return mv::status::cancelled;
                     }
-                    // plan/26: a Photos key given as a plain path (a search
+                    // docs/design/26: a Photos key given as a plain path (a search
                     // result) becomes a virtual entry: one PhotoKit fetch for
                     // the lot gives names and stamps; a deleted asset drops out.
                     std::vector<std::string> keys;
@@ -7470,7 +7470,7 @@ static double mv_wall_seconds() {
                     return mv::status::ok;
                   });
   // Enter shows the chosen result on the canvas; Cmd+Enter the whole list as
-  // the gallery grid (the chrome brief, plan/17 "Results are the gallery").
+  // the gallery grid (the chrome brief, docs/design/17 "Results are the gallery").
   // A list opened from Settings (a person's photos) is what the person asked
   // to see: Settings steps aside (owner report, 2026-09-27).
   [self setSettingsVisible:NO];
@@ -7498,7 +7498,7 @@ static double mv_wall_seconds() {
 
 - (BOOL)listOpen { return _listOpen; }
 
-// ---- plan/26: the Photos library as a folder -----------------------------------
+// ---- docs/design/26: the Photos library as a folder -----------------------------------
 
 - (BOOL)photosListOpen {
   return _listOpen && _listTitle == mv::shell::photos::kListTitle;
@@ -7511,7 +7511,7 @@ static double mv_wall_seconds() {
 
 // The whole library, oldest first, as a list of virtual items; the newest
 // selected, in the gallery (what Photos lands on). Enumeration is PhotoKit
-// on a worker: a second on a 23 k-asset library (plan/17 measured 0.9 s).
+// on a worker: a second on a 23 k-asset library (docs/design/17 measured 0.9 s).
 - (void)openPhotosLibrary {
   if (![self photosLibraryAvailable]) {
     NSBeep();
@@ -7691,7 +7691,7 @@ static double mv_wall_seconds() {
   });
 }
 
-// ---- plan/26 "Backup": the Photos library's originals to a folder ------------
+// ---- docs/design/26 "Backup": the Photos library's originals to a folder ------------
 
 static NSString* const kPhotosBackupDestinationDefault = @"mv.photosBackup.destination";
 static NSString* const kPhotosBackupLastDefault = @"mv.photosBackup.last";
@@ -7820,7 +7820,7 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
   [self resortKeepingSelection];
 }
 
-// ---- PR 15: OS integration (plan/10 "OS integration", plan/16 View) ------------
+// ---- PR 15: OS integration (docs/design/10 "OS integration", docs/design/16 View) ------------
 
 // The Dock menu's recent folders, the twin of the Windows jump list. A folder
 // opened from Finder, the Dock, Open, a drop or argv counts; walking siblings
@@ -8373,7 +8373,7 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   _rotateDebounce = nil;
   [_metaWriteDebounce invalidate];
   _metaWriteDebounce = nil;
-  // plan/26: a Photos original being fetched stops; the downloads go (below).
+  // docs/design/26: a Photos original being fetched stops; the downloads go (below).
   [_photosFetchTimer invalidate];
   _photosFetchTimer = nil;
   if (_photosFetchCancel) _photosFetchCancel->store(true, std::memory_order_release);
@@ -8395,7 +8395,7 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
     _clipJobs.reset();
     _jobs.shutdown();
     mv::shell::photos::clear_downloads();  // "cleared after" (owner, 2026-09-28)
-    // plan/26: a backup run stops between buffers and leaves no part file.
+    // docs/design/26: a backup run stops between buffers and leaves no part file.
     if (_photosBackup) {
       _photosBackup->cancel();
       _photosBackup->join();
@@ -8567,7 +8567,7 @@ void usage() {
                "  --soak N --json PATH [--gate] [--static] [--no-overlay]\n"
                "  --browse-soak --json PATH FOLDER   time arrows and jumps (tools/perf)\n"
                "  --open PATH   or a bare PATH: a folder opens that folder; a file opens its\n"
-               "                folder with that file selected (plan/16-commands.md). Wheel to\n"
+               "                folder with that file selected (docs/design/16-commands.md). Wheel to\n"
                "                zoom toward the cursor, drag to pan, 0 fit, 1 one-to-one.\n"
                "                Left/Right or A/D previous/next, Home/End first/last,\n"
                "                PageUp/PageDown skip ~10, Space next once a folder is open.\n");
@@ -8577,7 +8577,7 @@ void usage() {
 
 int main(int argc, char** argv) {
 #if defined(MV_WITH_SEARCH_AGENT)
-  // plan/23: launchd runs this executable as Final Cut Pro's search agent
+  // docs/design/23: launchd runs this executable as Final Cut Pro's search agent
   // (Contents/Library/LaunchAgents). Before anything of the viewer: no window,
   // no crash reporter, no add-ons.
   if (argc == 2 && std::strcmp(argv[1], "--search-agent") == 0) return MvSearchAgentMain();
@@ -8610,7 +8610,7 @@ int main(int argc, char** argv) {
       // from Finder).
     } else if (arg[0] != '-') {
       // A bare positional path: "the first entry that exists wins"
-      // (plan/16-commands.md) -- MvLabApp resolves it (folder, or a file's
+      // (docs/design/16-commands.md) -- MvLabApp resolves it (folder, or a file's
       // containing folder with that file selected) after the lab starts.
       // The first one given wins if more than one is passed; later ones are
       // ignored rather than erroring, matching a drop of several files.
@@ -8642,7 +8642,7 @@ int main(int argc, char** argv) {
     options.start_animating = !saw_static;
   }
 
-  // PR 11 (plan/13): Crashpad out of process, and the NSException capture,
+  // PR 11 (docs/design/13): Crashpad out of process, and the NSException capture,
   // before anything else can crash. Never waits on the handler's report scan.
   (void)mv::shell::crash::start();
 

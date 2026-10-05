@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The MPMC job queue and its worker pool.
 //
-// plan/02-architecture.md: one MPMC job queue, N = cores-2 workers, and
+// docs/design/02-architecture.md: one MPMC job queue, N = cores-2 workers, and
 // "Every job carries a generation counter tied to the current view intent.
 // Navigating away bumps the generation; in-flight decodes check it at tile
 // boundaries and abandon."
@@ -79,7 +79,7 @@ using job_fn = std::function<status(const job_context&)>;
 
 // Called on the pool thread when a job finishes, including when it was
 // cancelled before it ran. This is where the ABI layer pushes a completion
-// record — it does NOT marshal to a dispatcher (plan/14-abi.md).
+// record — it does NOT marshal to a dispatcher (docs/design/14-abi.md).
 // Must not throw. Violations are logged and contained; callbacks are not retried.
 using job_done_fn = std::function<void(job_id, generation, status)>;
 

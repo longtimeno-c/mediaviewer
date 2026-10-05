@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The system Photos library as an index source (issue #72, plan/17 "Photos
+// The system Photos library as an index source (issue #72, docs/design/17 "Photos
 // library source"). macOS only: PhotoKit reads the library the Photos app
 // shows, iCloud Photos included, with the user's Photos permission. Windows
 // has no PhotoKit (iCloud for Windows syncs to a folder, which is an ordinary
@@ -19,7 +19,7 @@
 //   6  identifiers are paths: never logged, never in a crash report.
 //      Local only: every request has network access off. An iCloud-only
 //      original with no local derivative is `unavailable`, not downloaded
-//      (plan/12 2026-09-28: downloading originals is an owner call, not a
+//      (docs/design/12 2026-09-28: downloading originals is an owner call, not a
 //      default).
 //   1  every call here may block for milliseconds (PhotoKit's own caches, a
 //      decode); worker / control threads only, never the UI or render thread.

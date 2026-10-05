@@ -22,7 +22,7 @@ bool write_fd(int fd, std::span<const std::uint8_t> bytes) noexcept {
   }
 #if defined(__APPLE__)
   // fsync(2) on macOS only reaches the drive's cache; F_FULLFSYNC asks the
-  // drive to flush it (plan/10 PR 10: "after F_FULLFSYNC"). Some filesystems
+  // drive to flush it (docs/design/10 PR 10: "after F_FULLFSYNC"). Some filesystems
   // (SMB, FAT on a card) refuse it; fall back to fsync there.
   if (::fcntl(fd, F_FULLFSYNC) == 0) return true;
 #endif

@@ -506,7 +506,7 @@ TEST_CASE("the 8-bit display transform matches the float reference within one co
     }
   }
   // A grey profile on RGB pixels still fails rather than displaying as sRGB;
-  // on grey pixels (R = G = B) it is applied (plan/12, PR 7 row 5).
+  // on grey pixels (R = G = B) it is applied (docs/design/12, PR 7 row 5).
   auto grey_icc = save_profile(cmsCreateGrayProfile(cmsD50_xyY(), [] {
     static cmsToneCurve* g = cmsBuildGamma(nullptr, 2.2);
     return g;

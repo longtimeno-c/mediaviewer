@@ -9,7 +9,7 @@ using Microsoft.UI.Xaml.Controls;
 namespace MediaViewer.Chrome;
 
 /// <summary>
-/// PR 8 in-app updater chrome (plan/13 Part 1): a quiet "Update ready —
+/// PR 8 in-app updater chrome (docs/design/13 Part 1): a quiet "Update ready —
 /// restart" button in the command bar and two Settings rows (automatic checks,
 /// update channel). All network and
 /// disk work is on <see cref="UpdateService"/>'s own low-priority thread; this
@@ -17,7 +17,7 @@ namespace MediaViewer.Chrome;
 /// that no clip is playing and builds the restart arguments.
 /// </summary>
 /// <remarks>
-/// Not a command-table row (plan/16): no key, nothing in <c>?</c>. The id
+/// Not a command-table row (docs/design/16): no key, nothing in <c>?</c>. The id
 /// <see cref="Command.UpdateRestart"/> is an island notification like Popup.
 /// </remarks>
 public static partial class IslandHost
@@ -109,7 +109,7 @@ public static partial class IslandHost
                 clickable = true;
             }
             // Checking/Downloading are quiet, non-clickable states: same command-bar
-            // spot, no popup, nothing to click yet (plan/13 "never interrupt").
+            // spot, no popup, nothing to click yet (docs/design/13 "never interrupt").
             // Without these the button just stays hidden for the whole check +
             // download, which reads as "nothing is happening" — most noticeable
             // right after switching the update channel in Settings.

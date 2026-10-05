@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The search agent's XPC interface (plan/23): the one surface between Final
+// The search agent's XPC interface (docs/design/23): the one surface between Final
 // Cut Pro's workflow extension (sandboxed, in FCP's process tree) and the AI
 // pack's reader (in the agent). Everything that crosses is NSData of the
 // search_wire format or a plain string; the agent accepts a connection only

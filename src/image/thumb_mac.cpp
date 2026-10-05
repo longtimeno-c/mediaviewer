@@ -5,7 +5,7 @@
 // joining instead of thumb.cpp's hardcoded '\\', and decode_bytes_mac()
 // (PR 17, JPEG/PNG/BMP) instead of decode_bytes()'s full codec::decode()
 // dispatch, which pulls in formats and the OS-codec probe not yet built on
-// Darwin (plan/12 2026-09-17).
+// Darwin (docs/design/12 2026-09-17).
 #include "image/thumb.h"
 
 #include <algorithm>

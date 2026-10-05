@@ -5,7 +5,7 @@
 // OWNER: mediaviewer-08 (5b).
 //
 // The master clock is derived from samples ACTUALLY PLAYED — the endpoint's own
-// position — never from a wall clock. plan/05 is explicit about why: a wall
+// position — never from a wall clock. docs/design/05 is explicit about why: a wall
 // clock drifts slowly against the endpoint's crystal, the ramp takes minutes to
 // become visible, and by the time it does it looks like a decode bug rather
 // than a clock bug. The whole 30-minute verify exists to catch exactly that.
@@ -32,7 +32,7 @@ constexpr std::int64_t ns_per_second = 1'000'000'000;
 // refresh interval, so two seconds is ~120 missed frames.
 constexpr time_ns host_gap_threshold_ns = 2 * ns_per_second;
 
-// std::chrono::steady_clock is the D9-clean spelling of what plan/05 calls QPC:
+// std::chrono::steady_clock is the D9-clean spelling of what docs/design/05 calls QPC:
 // QueryPerformanceCounter on MSVC, mach_absolute_time on macOS. Using it here
 // rather than <windows.h> is what lets a Core Audio host reuse this file
 // unchanged (tools/check-hostable-core.ps1 would reject the alternative).
@@ -142,7 +142,7 @@ void drift_tracker::fill(clock_stats& out) const noexcept {
 
   // Fixed-size stack copy; no allocation, and 240 floats is a few microseconds
   // of partial sort. Percentiles come from the rolling window, matching
-  // plan/05's "track drift over a rolling window".
+  // docs/design/05's "track drift over a rolling window".
   std::array<float, live_size> scratch{};
   std::copy_n(live_.begin(), valid, scratch.begin());
   std::sort(scratch.begin(), scratch.begin() + static_cast<std::ptrdiff_t>(valid));
@@ -189,7 +189,7 @@ struct av_clock::impl {
   bool sink_open = false;
   time_ns retry_after_ns = 0;
 
-  // Decode -> pump handoff. plan/02: SPSC rings of POD, nothing else.
+  // Decode -> pump handoff. docs/design/02: SPSC rings of POD, nothing else.
   spsc_ring<audio_block, audio_ring_slots> ring;
 
   std::thread pump;
@@ -204,7 +204,7 @@ struct av_clock::impl {
   std::atomic<time_ns> anchor_played_ns{0};
   std::atomic<bool> anchored{false};
 
-  // Host-clock fallback, seeded at playback start (plan/05).
+  // Host-clock fallback, seeded at playback start (docs/design/05).
   std::atomic<time_ns> host_start_ns{0};
 
   std::atomic<bool> audio_master{true};
@@ -322,7 +322,7 @@ expected av_clock::start(std::uint32_t sample_rate, std::uint32_t channels) noex
   }
 
   if (const auto opened = impl_->sink->open(sample_rate, channels); !opened) {
-    // The endpoint refused. plan/05 and the verify line both require playback to
+    // The endpoint refused. docs/design/05 and the verify line both require playback to
     // continue; only the master changes.
     impl_->audio_master.store(false, std::memory_order_relaxed);
     impl_->fallback.store(clock_fallback_reason::device_open_failed, std::memory_order_relaxed);
@@ -433,7 +433,7 @@ time_ns av_clock::impl::master_now_ns() const noexcept {
     }
   }
 
-  // Host master: seeded at playback start, per plan/05. A clip with no audio
+  // Host master: seeded at playback start, per docs/design/05. A clip with no audio
   // track playing at correct speed is exactly this path — the third clause of
   // the verify line.
   return anchor + static_cast<time_ns>(static_cast<double>(elapsed_host_ns()) * scale);
@@ -645,7 +645,7 @@ void av_clock::impl::pump_loop() noexcept {
           state.starved_feeds.fetch_add(1, std::memory_order_relaxed);
         }
         // Nothing decoded yet. This thread is neither the UI nor the render
-        // thread, so a bounded wait here is not plan/03 rule 1's "never Sleep"
+        // thread, so a bounded wait here is not docs/design/03 rule 1's "never Sleep"
         // — that rule governs the present loop, which is untouched by this.
         std::unique_lock<std::mutex> lock(state.wake_mutex);
         state.wake.wait_for(lock, std::chrono::milliseconds(2));

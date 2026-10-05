@@ -3,7 +3,7 @@
  *
  * MediaViewer core — the flat C ABI between the C# shell and the C++ core.
  *
- * This header is the contract specified in plan/14-abi.md. Read that document
+ * This header is the contract specified in docs/design/14-abi.md. Read that document
  * before changing anything here; the rules below are load-bearing, not style.
  *
  *   - No C++ types cross this line. No std::, no COM interfaces, no
@@ -89,7 +89,7 @@ MV_API const char* MV_CALL mv_last_error_message(void);
 
 /* The correlation id of the last failing call on the calling thread. This is
  * what ties a managed MediaViewerException back to the native minidump that
- * caused it (plan/13-updates-and-telemetry.md). [any-thread][no-block] */
+ * caused it (docs/design/13-updates-and-telemetry.md). [any-thread][no-block] */
 MV_API uint64_t MV_CALL mv_last_error_correlation_id(void);
 
 /* ---------------------------------------------------------------------------
@@ -123,7 +123,7 @@ MV_API mv_status MV_CALL mv_session_release(mv_session_t session);
  * Every job carries the generation current when it was submitted. Navigating
  * away bumps the generation and everything queued at the old one is abandoned
  * at its next check. Without this, fast arrow-key browsing queues two hundred
- * dead decodes (plan/02-architecture.md).
+ * dead decodes (docs/design/02-architecture.md).
  * ------------------------------------------------------------------------- */
 
 /* [any-thread][no-block] Returns the new generation. */
@@ -146,7 +146,7 @@ MV_API mv_status MV_CALL mv_session_current_generation(mv_session_t session,
  *
  * IMAGE_OPENED means pixels may be ready on the native canvas. Draining this
  * queue does not wake an idle render thread; the lab/shell must
- * (plan/03-rendering.md rule 4).
+ * (docs/design/03-rendering.md rule 4).
  * ------------------------------------------------------------------------- */
 typedef enum mv_completion_kind {
   MV_COMPLETION_NONE = 0,
@@ -197,7 +197,7 @@ MV_API uint32_t MV_CALL mv_completion_drain(mv_session_t session, mv_completion*
 /* ---------------------------------------------------------------------------
  * The PR 1 round-trip
  *
- * plan/14-abi.md's PR 1 deliverable is "a header, an mv_guard, one call, a
+ * docs/design/14-abi.md's PR 1 deliverable is "a header, an mv_guard, one call, a
  * SafeHandle, and a completion drain — proving the shape end to end before
  * anything is built on it."
  *
@@ -230,7 +230,7 @@ MV_API mv_status MV_CALL mv_session_job_stats(mv_session_t session, mv_job_stats
 /* ---------------------------------------------------------------------------
  * Image open — same shape as echo: returns a job id immediately, the answer
  * arrives as MV_COMPLETION_IMAGE_OPENED. Pixels never cross this line
- * (plan/14). The native present lab binds the D3D device out of band and
+ * (docs/design/14). The native present lab binds the D3D device out of band and
  * takes the resulting texture on the render thread.
  * ------------------------------------------------------------------------- */
 
@@ -261,7 +261,7 @@ MV_API mv_status MV_CALL mv_session_image_info(mv_session_t session, mv_image_in
  * ------------------------------------------------------------------------- */
 
 /* PR 7 (ABI 0.5). A folder item is a navigation STOP, not a file: a camera's
- * RAW+JPEG and an iPhone Live Photo are paired at scan time (plan/04) into one
+ * RAW+JPEG and an iPhone Live Photo are paired at scan time (docs/design/04) into one
  * item. The primary (the JPEG / HEIC still) is what name, path, size, mtime,
  * thumbs, decode and prefetch use; the secondary is reachable through
  * mv_folder_item_pair_path. Unpaired and ambiguous files are single stops. */
@@ -324,7 +324,7 @@ MV_API mv_status MV_CALL mv_folder_thumbs_visible(mv_session_t session, uint32_t
 MV_API mv_status MV_CALL mv_folder_close(mv_session_t session);
 
 /* ---------------------------------------------------------------------------
- * PR 26 — child folders of the open directory (plan/10 folder tiles)
+ * PR 26 — child folders of the open directory (docs/design/10 folder tiles)
  *
  * Listed on the same relist as media items, additive: a folder whose
  * subfolders cannot be read still shows its files. Strings use the same
@@ -390,7 +390,7 @@ MV_API mv_status MV_CALL mv_list_subdirectories(const char* utf8_dir, char* utf8
  * decode or touch the file. [any-thread][no-block] */
 MV_API mv_status MV_CALL mv_folder_forget(mv_session_t session, const char* utf8_path);
 
-/* 0.14 (Milestone H, PR 22; plan/17 "UI and commands"). A listing that is
+/* 0.14 (Milestone H, PR 22; docs/design/17 "UI and commands"). A listing that is
  * not a directory: search results, shown by the same gallery, filmstrip,
  * selection, keyboard model and thumbnail cache as a folder. Items keep the
  * order given (best match first; the sort order does not apply), are never
@@ -413,10 +413,10 @@ MV_API mv_status MV_CALL mv_folder_item_moment(mv_session_t session, uint32_t in
                                                int64_t* out_ms);
 
 /* -------------------------------------------------------------------------
- * PR 5 — video. plan/05-video-pipeline.md, plan/14-abi.md.
+ * PR 5 — video. docs/design/05-video-pipeline.md, docs/design/14-abi.md.
  *
  * Times are int64 NANOSECONDS everywhere, matching player::time_ns. No frame,
- * texture or ID3D11* ever crosses this line (plan/14 "What crosses, and what
+ * texture or ID3D11* ever crosses this line (docs/design/14 "What crosses, and what
  * does not"): the host learns a clip is open and sends it transport commands.
  * Pixels stay in C++.
  * ------------------------------------------------------------------------- */
@@ -489,7 +489,7 @@ MV_API mv_status MV_CALL mv_video_set_hold(mv_session_t session, int32_t hold, i
 
 /* [any-thread][no-block] `exact` 0 while dragging the scrubber (nearest
  * keyframe, no decode — instant); 1 on release or a typed position (decode
- * forward to the exact frame). plan/05's fast-then-accurate rule. */
+ * forward to the exact frame). docs/design/05's fast-then-accurate rule. */
 MV_API mv_status MV_CALL mv_video_seek(mv_session_t session, int64_t position_ns,
                                        int32_t exact);
 

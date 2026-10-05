@@ -1,7 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Image blit: linear sample of an 8-bit sRGB texture into the 8-bit sRGB
-// swapchain. Filter follows plan/03: anisotropic/trilinear when zoomed out,
+// swapchain. Filter follows docs/design/03: anisotropic/trilinear when zoomed out,
 // Catmull-Rom between 100 % and 400 %, nearest above 400 %.
 #pragma once
 
@@ -31,7 +31,7 @@ struct blit_params {
   // is above this; fit/pan are in this rect, not the full client.
   float origin_x = 0.0f;
   float origin_y = 0.0f;
-  // plan/16 view overlays, all in the same draw (no extra pass):
+  // docs/design/16 view overlays, all in the same draw (no extra pass):
   // 0 system, 1 grey, 2 white, 3 checkerboard, 4 dark (the alpha case).
   int background = 0;
   // Linear RGB for mode 0, resolved by the native host's UI thread.

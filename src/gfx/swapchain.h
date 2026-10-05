@@ -3,7 +3,7 @@
 // The flip-model, frame-latency-waitable swapchain, hosted in a
 // DirectComposition visual tree.
 //
-// plan/03-rendering.md, non-negotiable:
+// docs/design/03-rendering.md, non-negotiable:
 //   BufferCount 3, FLIP_DISCARD, FRAME_LATENCY_WAITABLE_OBJECT,
 //   SetMaximumFrameLatency(1), and the render thread waits on the waitable
 //   object BEFORE recording the frame — not after Present. That ordering is
@@ -53,7 +53,7 @@ class swapchain {
   // Present with vsync. `allow_tearing` is only honoured when the swapchain was
   // created with the tearing flag AND the caller has established the display
   // supports VRR — note that a composition swapchain cannot tear, so this is
-  // effectively lab-only (plan/03).
+  // effectively lab-only (docs/design/03).
   [[nodiscard]] HRESULT present(bool allow_tearing = false) noexcept;
 
   // A no-render visibility probe for the occlusion path.
@@ -61,7 +61,7 @@ class swapchain {
 
   [[nodiscard]] expected resize(std::uint32_t width, std::uint32_t height) noexcept;
 
-  // PR 30 (plan/21): shows this same swapchain in another window. The one
+  // PR 30 (docs/design/21): shows this same swapchain in another window. The one
   // visual moves to a DComp target on `window` (the old target is emptied and
   // released), so the Video Editor's preview is the viewer's canvas, never a
   // second swapchain or present path (rule 2). The caller resizes after.
@@ -76,7 +76,7 @@ class swapchain {
   [[nodiscard]] bool tearing_supported() const noexcept { return tearing_supported_; }
 
   // The current output interval in seconds, or zero when unavailable.
-  // Re-queried on WM_DISPLAYCHANGE and on window move (plan/03).
+  // Re-queried on WM_DISPLAYCHANGE and on window move (docs/design/03).
   [[nodiscard]] double refresh_interval_seconds() const noexcept { return refresh_seconds_; }
   void refresh_output_info() noexcept;
 

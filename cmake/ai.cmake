@@ -1,7 +1,7 @@
 # Copyright (C) 2026 longtimeno-c
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Milestone H (plan/17-local-ai-search.md): the AI pack. Included by the
+# Milestone H (docs/design/17-local-ai-search.md): the AI pack. Included by the
 # Windows root, cmake/darwin.cmake and the headless cmake/portable build, after
 # cmake/import.cmake (it reuses mv_addon for the tests' host table).
 #
@@ -23,7 +23,7 @@
 # the build tree: the header for mv_infer, and the runtime files the pack
 # stages beside mv_ai. macOS ships arm64 only (Microsoft publishes no x86_64
 # macOS build of 1.30): mv_ai is arm64-only on the Mac and Intel Macs are not
-# offered Local search (plan/17, 2026-09-26).
+# offered Local search (docs/design/17, 2026-09-26).
 #
 # Expects, already defined by the includer:
 #   mv_project_options, MV_SQLITE_TARGET, mv_addon (cmake/import.cmake)
@@ -205,7 +205,7 @@ else()
     COMMENT "Staging ONNX Runtime beside mv_ai")
 endif()
 
-# ai-cuda: ORT's CUDA 13 build, its own piece (plan/17 "each its own optional
+# ai-cuda: ORT's CUDA 13 build, its own piece (docs/design/17 "each its own optional
 # sub-pack"), published on stable Windows releases (log 2026-10-03). The CUDA
 # runtime and cuDNN are user-supplied: NVIDIA's EULA is not an OSI licence, so
 # the piece carries only ORT's MIT files and the self-test falls back to CPU,
@@ -230,5 +230,5 @@ endif()
 set(MV_ORT_LICENSE "${MV_ORT_DIR}/LICENSE")
 set(MV_ORT_NOTICES "${MV_ORT_DIR}/ThirdPartyNotices.txt")
 
-# plan/23: Local search from inside an editing app (portable half).
+# docs/design/23: Local search from inside an editing app (portable half).
 include("${CMAKE_CURRENT_LIST_DIR}/nle.cmake")

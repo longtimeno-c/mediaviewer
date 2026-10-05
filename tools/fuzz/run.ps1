@@ -1,7 +1,7 @@
 # Copyright (C) 2026 longtimeno-c
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Runs the libFuzzer harnesses (PR 7, plan/09) for a fixed time each.
+# Runs the libFuzzer harnesses (PR 7, docs/design/09) for a fixed time each.
 #
 #   ./tools/fuzz/run.ps1 -BuildDir build-fuzz -Seconds 60              # PR smoke
 #   ./tools/fuzz/run.ps1 -BuildDir build-fuzz -Seconds 1200 -Harness png,gif

@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Portable half of multi-folder browsing (plan/10 PR 26): natural ordering,
+// Portable half of multi-folder browsing (docs/design/10 PR 26): natural ordering,
 // housekeeping filter, folder summaries. The directory scan itself is the
 // platform primitive scan_subdirs() (dir_win.cpp / dir_mac.cpp).
 #include <algorithm>

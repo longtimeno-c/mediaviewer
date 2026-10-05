@@ -14,7 +14,7 @@ namespace {
 
 // Portable Mitchell mip-chain generator. The Windows twin (image/upload.cpp)
 // has the same logic under the same names; kept separate rather than shared
-// so this port never risks the D3D11-owned file (plan/12 2026-09-17).
+// so this port never risks the D3D11-owned file (docs/design/12 2026-09-17).
 
 float mitchell(float x) noexcept {
   x = std::fabs(x);

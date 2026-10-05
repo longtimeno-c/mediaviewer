@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// plan/26 "Backup": Settings -> Photos Library. Every original of the Photos
+// docs/design/26 "Backup": Settings -> Photos Library. Every original of the Photos
 // library, copied and verified into a folder of the user's choosing (a NAS,
 // a drive) under YYYY/YYYY-MM-DD, by the host's engine (shell/photos_backup.h
 // over PhotoKit). This view only asks and watches: the destination picker,

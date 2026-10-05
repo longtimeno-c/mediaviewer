@@ -80,7 +80,7 @@ expected folder_model::open_list(std::string title_utf8, std::vector<list_entry>
   for (list_entry& e : entries) {
     io::dir_entry d;
     if (e.is_virtual) {
-      // plan/26: no file to stat; the provider's name and stamp stand.
+      // docs/design/26: no file to stat; the provider's name and stamp stand.
       if (e.name_utf8.empty()) continue;
       d.name_utf8 = std::move(e.name_utf8);
       d.size = e.size;
@@ -297,7 +297,7 @@ void folder_model::request_thumb(std::string path_utf8, std::int64_t mtime_unix,
                        return status::cancelled;
                      }
 
-                     // plan/26: a virtual item (a Photos asset). Its row in the
+                     // docs/design/26: a virtual item (a Photos asset). Its row in the
                      // cache first (the pack stores moment rows under the same
                      // key); then the provider's picture, stored like a file's.
                      bool is_virtual = false;

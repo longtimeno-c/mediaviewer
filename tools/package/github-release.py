@@ -74,8 +74,8 @@ def prepare():
 
 # The optional add-ons, one signed package per add-on and platform. The apps
 # fetch them from releases/latest, so once the release workflow packs them every
-# stable release must carry them: Import (plan/18) with MV_RELEASE_ADDONS=1, and
-# the Local search pack and its pieces (plan/17) with MV_RELEASE_AI=1. NVIDIA
+# stable release must carry them: Import (docs/design/18) with MV_RELEASE_ADDONS=1, and
+# the Local search pack and its pieces (docs/design/17) with MV_RELEASE_AI=1. NVIDIA
 # acceleration (ai-cuda) is a Windows-only piece: ONNX Runtime's CUDA build
 # (MIT); the CUDA runtime and cuDNN stay user-supplied (log 2026-10-03).
 ADDON_PLATFORMS = ('win-x64', 'macos')

@@ -313,7 +313,7 @@ TEST_CASE("scrubbing a folder abandons the decodes it passed", "[abi][folder][ca
   // The regression: folder decodes were submitted at background_generation, so
   // ctx.cancelled() was always false and nothing a held arrow key queued could
   // ever be abandoned. Forty steps left forty full decodes (plus prefetch) to
-  // finish after the key came up — plan/02's "chewing gum".
+  // finish after the key came up — docs/design/02's "chewing gum".
   const auto dir = temp_dir();
   constexpr int files = 40;
   for (int i = 0; i < files; ++i) {

@@ -21,7 +21,7 @@ TEST_CASE("anything inside a Photos library bundle is write-protected", "[shell]
 }
 
 TEST_CASE("a Photos item key and the Photos cache folder are write-protected", "[shell][write_guard]") {
-  // plan/26: the item itself has no file; its previews and on-view downloads
+  // docs/design/26: the item itself has no file; its previews and on-view downloads
   // live under one folder the host registers.
   CHECK(write_protected("photos:0A1B2C3D-4E5F-6071-8293-A4B5C6D7E8F9/L0/001"));
   CHECK_FALSE(write_protected("photos:"));  // the root alone is not an item

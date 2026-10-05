@@ -16,7 +16,7 @@ constexpr int slot(key k, std::uint8_t mods, mode m) noexcept {
 
 mode resolve_mode(const view_state& s) noexcept {
   if (s.gallery_open && !s.popup_open) return mode::gallery;
-  // Island mode is in-pane traversal and typeahead (plan/16, plan/12 2026-09-13):
+  // Island mode is in-pane traversal and typeahead (docs/design/16, docs/design/12 2026-09-13):
   // the filmstrip and the gallery. The command bar, the transport, and a `?`
   // flyout's popup HWND are not a mode — A/D still walk the folder, Q/E still
   // skip a clip. Treating them as island was why those keys died until the
@@ -24,10 +24,10 @@ mode resolve_mode(const view_state& s) noexcept {
   if (s.focus == focus_kind::filmstrip || s.focus == focus_kind::gallery) {
     return mode::island;
   }
-  // Crop is a canvas mode (plan/16): it only exists on a still, and the
+  // Crop is a canvas mode (docs/design/16): it only exists on a still, and the
   // host leaves it when the item changes.
   if (s.crop && s.item == item_kind::still) return mode::crop;
-  // Trim is a clip mode (plan/08, plan/16): it layers over video.
+  // Trim is a clip mode (docs/design/08, docs/design/16): it layers over video.
   if (s.trim && s.item == item_kind::clip && !s.slideshow) return mode::trim;
   if (s.game && s.item == item_kind::none && !s.popup_open) return mode::runner;
   if (s.loupe_held) return mode::loupe;
@@ -51,7 +51,7 @@ back_target resolve_back(const view_state& s) noexcept {
   if (s.trim) return back_target::trim;
   if (s.pane_open) return back_target::pane;
   // The gallery covers the canvas like an overlay, so it goes before the
-  // window-level states (plan/16 "Esc walks out").
+  // window-level states (docs/design/16 "Esc walks out").
   if (s.gallery_open) return back_target::gallery;
   if (s.slideshow) return back_target::slideshow;
   if (s.fullscreen) return back_target::fullscreen;
@@ -157,7 +157,7 @@ route key_router::on_key(const key_event& e, const view_state& s) noexcept {
   if (s.settings_open) return {};
 
   // A focused pane owns its keys (arrows walk it, Enter opens); Esc returns to the
-  // canvas (plan/16 "Pane": in-pane traversal, Esc returns).
+  // canvas (docs/design/16 "Pane": in-pane traversal, Esc returns).
   if (s.focus == focus_kind::pane) {
     if (e.k == key::escape && e.mods == mod_none && !e.repeat) {
       return {command_id::back, back_target::canvas_focus, true};
@@ -208,7 +208,7 @@ route key_router::on_key(const key_event& e, const view_state& s) noexcept {
       default: return {};
     }
   }
-  // Review note 38 / plan/12 2026-09-13: with the strip or the gallery focused,
+  // Review note 38 / docs/design/12 2026-09-13: with the strip or the gallery focused,
   // a character typed without Ctrl or Alt is typeahead, not a command — so
   // letter bindings added later cannot eat it either. Named keys (F3, arrows)
   // and chords (Ctrl+O) still route. Command-bar and transport focus is not
@@ -227,7 +227,7 @@ route key_router::on_key(const key_event& e, const view_state& s) noexcept {
   }
   if (!b && m == mode::trim) {
     // Trim layers over video like the loupe over browse: the transport keys
-    // keep working while the markers are set (plan/08 "preview the cut").
+    // keep working while the markers are set (docs/design/08 "preview the cut").
     b = lookup(e.k, e.mods, mode::video);
   }
   if (!b) return {};

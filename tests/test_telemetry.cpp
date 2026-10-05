@@ -13,7 +13,7 @@
 using namespace mv::shell::telemetry;
 
 TEST_CASE("telemetry: the gate rejects anything that could name a file", "[telemetry]") {
-  // The things plan/13 says must never leave the machine.
+  // The things docs/design/13 says must never leave the machine.
   CHECK(looks_like_user_data("C:\\Users\\alice\\DCIM"));
   CHECK(looks_like_user_data("/home/alice/photos"));
   CHECK(looks_like_user_data("IMG_0001.JPG"));
@@ -32,7 +32,7 @@ TEST_CASE("telemetry: the gate rejects anything that could name a file", "[telem
   CHECK(looks_like_user_data(std::string("a\nb")));
   CHECK(looks_like_user_data(""));
 
-  // The whitelisted vocabulary plan/13 does allow.
+  // The whitelisted vocabulary docs/design/13 does allow.
   CHECK(tag_allowed("heif"));
   CHECK(tag_allowed("jpeg"));
   CHECK(tag_allowed("libde265"));
@@ -63,7 +63,7 @@ TEST_CASE("telemetry: an unknown metric name drops the whole event", "[telemetry
 }
 
 TEST_CASE("telemetry: off by default, and records nothing while off", "[telemetry]") {
-  // The suite does not opt in, so this is the shipped default: plan/13's
+  // The suite does not opt in, so this is the shipped default: docs/design/13's
   // "Default off. Opt-in, once, honestly." The first-run screen has not been
   // answered either.
   CHECK_FALSE(enabled());

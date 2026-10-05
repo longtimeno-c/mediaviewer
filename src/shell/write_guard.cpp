@@ -36,7 +36,7 @@ bool inside_photos_library(std::string_view path) {
 bool write_protected(std::string_view path) {
   if (path.empty()) return false;
   if (inside_photos_library(path)) return true;
-  // A Photos library item itself (plan/26): no file, and never a write.
+  // A Photos library item itself (docs/design/26): no file, and never a write.
   if (path.size() > kPhotosKey.size() && path.substr(0, kPhotosKey.size()) == kPhotosKey) return true;
   std::lock_guard lock(g_m);
   if (!g_prefix.empty() && path.size() > g_prefix.size() && path.substr(0, g_prefix.size()) == g_prefix) {

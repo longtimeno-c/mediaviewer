@@ -41,7 +41,7 @@ struct presenter_input {
   bool    has_following    = false;
 };
 
-// plan/05: present the frame whose PTS is closest to master + one vblank; if the
+// docs/design/05: present the frame whose PTS is closest to master + one vblank; if the
 // next frame has been superseded by another due frame, drop it; otherwise
 // show the best available frame. Adjacent PTS, not display Hz or nominal FPS,
 // define a frame's lifetime (including variable-frame-rate content).

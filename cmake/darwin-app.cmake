@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # PR 20: MediaViewer.app, its Quick Look thumbnail extension, and Sparkle 2
-# (plan/23 adds the Final Cut Pro agent and extension: cmake/darwin-fcp.cmake).
+# (docs/design/23 adds the Final Cut Pro agent and extension: cmake/darwin-fcp.cmake).
 # Included from cmake/darwin.cmake after the host sources are defined.
 #
 #   cmake --build build --target mediaviewer_app   ->  build/MediaViewer.app
@@ -13,7 +13,7 @@
 # Makefile/Ninja generators cannot express, and one script doing both keeps the
 # layout in one place. Developer ID signing, the disk image, notarization, and
 # the update archive are `macpack.py release` (README "Ship a Mac build").
-# plan/13 "macOS first install", plan/15 PR 20.
+# docs/design/13 "macOS first install", docs/design/15 PR 20.
 
 set(MV_MAC_BUNDLE_ID "io.github.longtimeno-c.mediaviewer" CACHE STRING
   "CFBundleIdentifier of MediaViewer.app; the Quick Look extension appends .thumbnails")
@@ -36,7 +36,7 @@ set(MV_SPARKLE_SHA256 "52bf9e88cdd972fc0c81501377a880e90d47031bd8ca5462488f843e2
 
 if(MV_SPARKLE_PUBLIC_ED_KEY)
   if(NOT MV_SPARKLE_FEED_URL MATCHES "^https://")
-    message(FATAL_ERROR "MV_SPARKLE_FEED_URL must be https:// (plan/13 Signing)")
+    message(FATAL_ERROR "MV_SPARKLE_FEED_URL must be https:// (docs/design/13 Signing)")
   endif()
   set(MV_SPARKLE_DIR "${CMAKE_BINARY_DIR}/_deps/sparkle-${MV_SPARKLE_VERSION}")
   set(MV_SPARKLE_ARCHIVE "${CMAKE_BINARY_DIR}/_deps/Sparkle-${MV_SPARKLE_VERSION}.tar.xz")
@@ -49,7 +49,7 @@ if(MV_SPARKLE_PUBLIC_ED_KEY)
       SHOW_PROGRESS)
     file(ARCHIVE_EXTRACT INPUT "${MV_SPARKLE_ARCHIVE}" DESTINATION "${MV_SPARKLE_DIR}")
   endif()
-  # Info.plist keys, spliced into packaging/macos/Info.plist.in. plan/13:
+  # Info.plist keys, spliced into packaging/macos/Info.plist.in. docs/design/13:
   #  - check on launch and every 6 h, download and stage in the background;
   #  - SUEnableAutomaticChecks: no Sparkle permission prompt stacked on first
   #    run; the app menu turns checking off and it stays off;
@@ -97,7 +97,7 @@ if(MV_SPARKLE_PUBLIC_ED_KEY)
   target_link_libraries(MediaViewer PRIVATE "-framework Sparkle")
 endif()
 
-# --- plan/23: the Final Cut Pro search agent and workflow extension ----------
+# --- docs/design/23: the Final Cut Pro search agent and workflow extension ----------
 # In the bundle, dormant until turned on in Settings > Local search.
 include("${CMAKE_CURRENT_LIST_DIR}/darwin-fcp.cmake")
 
@@ -120,7 +120,7 @@ target_link_libraries(MediaViewerThumbnails PRIVATE
 # --- MediaViewerSpotlight: the Spotlight importer (PR 15) ---------------------
 # A CFPlugIn bundle mdworker loads for the clip containers macOS does not index
 # (packaging/macos/Spotlight-Info.plist.in); the Mac twin of the Explorer
-# property handler (plan/12 2026-09-25). No lib prefix, no suffix: the bundle's
+# property handler (docs/design/12 2026-09-25). No lib prefix, no suffix: the bundle's
 # CFBundleExecutable names the file.
 add_library(MediaViewerSpotlight MODULE
   src/shell/spotlight_importer_mac.mm
@@ -160,7 +160,7 @@ list(APPEND MV_ASSEMBLE_ARGS --clipjob "$<TARGET_FILE:MediaViewerClipJob>")
 list(APPEND MV_ASSEMBLE_ARGS
   --mdimporter-exe "$<TARGET_FILE:MediaViewerSpotlight>"
   --mdimporter-plist "${CMAKE_BINARY_DIR}/packaging/MediaViewerSpotlight-Info.plist")
-# plan/23: the FCP agent and extension (arm64 builds; cmake/darwin-fcp.cmake).
+# docs/design/23: the FCP agent and extension (arm64 builds; cmake/darwin-fcp.cmake).
 list(APPEND MV_ASSEMBLE_ARGS ${MV_FCP_ASSEMBLE_ARGS})
 add_custom_target(mediaviewer_app
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/mac/macpack.py" ${MV_ASSEMBLE_ARGS}

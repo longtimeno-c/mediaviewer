@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Single-producer / single-consumer ring of POD messages.
 //
-// plan/02-architecture.md: "Communication is exclusively single-producer/
+// docs/design/02-architecture.md: "Communication is exclusively single-producer/
 // single-consumer ring buffers of POD messages plus one MPMC job queue."
 //
 // Lock-free and wait-free on both ends, bounded. Full means the producer drops
@@ -66,14 +66,14 @@ class spsc_ring {
 
 // Lock-free snapshot publish: the UI thread publishes a state snapshot, the
 // render thread consumes one, and they never share a mutable object
-// (plan/02-architecture.md, "The frame loop").
+// (docs/design/02-architecture.md, "The frame loop").
 //
 // A wait-free triple buffer. Three slots and one atomic; the producer owns one
 // index, the consumer owns another, and they hand slots over through the third
 // with an exchange. Neither side ever writes a slot the other is holding, so
 // there is nothing to tear, and neither side ever waits.
 //
-// The slot ownership invariant makes reads bounded; design history is in plan/12.
+// The slot ownership invariant makes reads bounded; design history is in docs/design/12.
 template <typename T>
 class publish_slot {
   static_assert(std::is_trivially_copyable_v<T>, "snapshots are POD");

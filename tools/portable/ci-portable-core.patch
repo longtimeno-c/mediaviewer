@@ -7,7 +7,7 @@ index 62fbbec..9648a0a 100644
        - run: python3 tools/mac/test_macpack.py -v
        - run: python3 tools/package/test_github_release.py -v
 +  # ---------------------------------------------------------------------------
-+  # Milestone G (plan/18): the shared Import engine, add-on host and verified
++  # Milestone G (docs/design/18): the shared Import engine, add-on host and verified
 +  # copy, built headless on Linux (cmake/portable) with the pinned vcpkg
 +  # baseline, under ASan + UBSan. Includes the add-on packer's cross-check
 +  # against the C++ verifier. The Windows and Mac legs run the same suite

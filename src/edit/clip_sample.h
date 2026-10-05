@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Frames sampled from a clip for the local search index (plan/17 "Frame
+// Frames sampled from a clip for the local search index (docs/design/17 "Frame
 // sampling", Milestone H PR 21). A decoder instance of its own on the
 // calling worker, never the player's: software decode, like every clip job
 // (clip_encode.cpp), so it never takes a surface from the canvas's pool.
@@ -13,7 +13,7 @@
 //     grid. min_gap thins scene-cut bursts.
 //  3. Pixels: 8-bit sRGB RGB, box-fitted to max_long_edge with the pixel
 //     aspect applied and the display rotation turned in; PQ / HLG through
-//     the same SDR tone map as the canvas (D6, plan/17 step 4).
+//     the same SDR tone map as the canvas (D6, docs/design/17 step 4).
 //
 // No FFmpeg type crosses this header.
 #pragma once

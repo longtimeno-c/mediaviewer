@@ -15,7 +15,7 @@ using Windows.UI;
 namespace MediaViewer.Chrome;
 
 /// <summary>
-/// PR 13 / 14 (plan/08): trim mode on the scrub bar, the clip tools flyout
+/// PR 13 / 14 (docs/design/08): trim mode on the scrub bar, the clip tools flyout
 /// (Ctrl+S on a clip) and the Jobs pane (Ctrl+J).
 /// </summary>
 /// <remarks>
@@ -26,7 +26,7 @@ namespace MediaViewer.Chrome;
 /// job: the pane polls [no-block] calls on its UI timer. Keyboard-complete
 /// without XY focus (it fail-fasts in these islands): the pane and the flyout
 /// take the arrows themselves, Delete cancels the focused job, Enter reveals its
-/// output, R retries, Esc returns to the canvas (plan/08 "Execution &amp; UX").
+/// output, R retries, Esc returns to the canvas (docs/design/08 "Execution &amp; UX").
 /// </remarks>
 public static partial class IslandHost
 {
@@ -169,7 +169,7 @@ public static partial class IslandHost
         double h = _trimMarks.ActualHeight > 1 ? _trimMarks.ActualHeight : 32;
 
         // What Path 1 keeps, shaded; the grid under it so snapping is visible
-        // before it happens (plan/08: "show the keyframe grid on the timeline").
+        // before it happens (docs/design/08: "show the keyframe grid on the timeline").
         if (_trimCutIn >= 0 && _trimCutOut > _trimCutIn)
         {
             double x0 = TrimX(_trimCutIn), x1 = TrimX(_trimCutOut);
@@ -438,7 +438,7 @@ public static partial class IslandHost
         _jobRows[Math.Min(_jobCursor, _jobRows.Count - 1)].Root.StartBringIntoView();
     }
 
-    // Explorer, the output selected (plan/08: "reveal in Explorer").
+    // Explorer, the output selected (docs/design/08: "reveal in Explorer").
     private static void RevealJob(ulong id)
     {
         if (_folderSession is null) return;

@@ -643,7 +643,7 @@ expected index_db::clear() {
   if (!exec("DELETE FROM speech; DELETE FROM frames; DELETE FROM progress; DELETE FROM assets; DELETE FROM roots;")) {
     return err(status::io);
   }
-  // Give the space back (plan/17 PR 23 verify: "clearing the index frees the disk").
+  // Give the space back (docs/design/17 PR 23 verify: "clearing the index frees the disk").
   exec("PRAGMA wal_checkpoint(TRUNCATE);");
   if (!exec("VACUUM;")) return err(status::io);
   exec("PRAGMA wal_checkpoint(TRUNCATE);");

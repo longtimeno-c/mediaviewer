@@ -4,7 +4,7 @@ Windows viewer for a real camera dump — photos and video in one folder. Opens 
 instantly and pans without a dropped frame. The first release ships the viewer through
 PR 7, packaged in PR 8; metadata tools, photo edits/export, video trimming, and additional
 Windows integration follow in future updates. **v1 is Windows.** From PR 4 the native core is
-kept hostable; macOS is a second host of the same core (`plan/15-platforms.md`, D9), not a
+kept hostable; macOS is a second host of the same core (`docs/design/15-platforms.md`, D9), not a
 UI-only port. **One PR number per feature on both platforms:** the Mac host (built as old
 PRs 16–20) is the Mac halves of PRs 1–8, both platforms are at PR 9, and every PR from 9 lands
 on Windows and macOS together (D9 amended 2026-09-24). 16–19 is the Import add-on, 20–24 AI search, 27–28 Voice query.
@@ -17,43 +17,45 @@ Not an NLE. Not a movie player.
 FFmpeg + D3D11VA · libjpeg-turbo / libspng / libwebp / libheif / LibRaw · Exiv2 · SQLite ·
 CMake + vcpkg.
 
-The repo is greenfield. `plan/` is the spec. Code follows the plan; the plan is not
-inferred from code.
+`docs/design/` describes how the product works today, one subsystem per doc; it replaced the
+original `plan/` spec once that was built (2026-10-03, full text in git history). New work is
+planned in `docs/plans/`; when a plan lands, fold what it built into `docs/design/`.
 
 ## Source of truth
 
-Read `plan/README.md` first, then the doc for the slice you are touching:
+Read `docs/design/README.md` first, then the doc for the area you are touching:
 
 | Doc | When to read |
 |---|---|
-| `plan/01-decisions.md` | Before any stack, shell, codec, or scope change |
-| `plan/02-architecture.md` | Modules, threading, memory budgets |
-| `plan/03-rendering.md` | Swapchain, pacing, colour, resampling |
-| `plan/04-image-pipeline.md` | Decoders, tiling, prefetch, thumbs |
-| `plan/05-video-pipeline.md` | FFmpeg + D3D11VA, A/V clock, seek |
-| `plan/06-metadata.md` | Read model, atomic writes, RAW sidecars |
-| `plan/07-photo-editing.md` | EditStack; first editing update vs later op split |
-| `plan/08-video-editing.md` | Two-path trim; smart cut is v1.1 |
-| `plan/09-build-and-test.md` | Toolchain, harnesses, Windows integration |
-| `plan/10-roadmap.md` | Current PR, verify line, sequencing |
-| `plan/11-licensing.md` | Linkage, FFmpeg configure, Exiv2 |
-| `plan/12-decision-log.md` | Why a call was reversed — do not re-reverse quietly |
-| `plan/13-updates-and-telemetry.md` | Updater, crash reports, privacy line |
-| `plan/14-abi.md` | C ABI between host and core |
-| `plan/15-platforms.md` | Windows v1, hostable core from PR 4, macOS as Milestone F, dual-track from PR 9 — **D9**. Read before any new Win32/D3D11 or Cocoa/Metal leak out of the hosts / `gfx/` |
-| `plan/16-commands.md` | Keyboard-complete v1, command table, mouse-free verify. Remap UI is v1.1. Read before adding a key, overlay, or chrome command |
-| `plan/17-local-ai-search.md` | AI search add-on (PRs 20–24), both platforms, proposed |
-| `plan/18-import.md` | Import add-on (PRs 16–19): card copy with hash dedupe + verify; the add-on mechanism |
-| `plan/19-voice.md` | Voice query add-on (PRs 27–28): on-device STT/TTS over Local search, separate install |
-| `plan/20-edit-workspace.md` | PR 29: the Edit button / `Enter`, the docked Edit pane, crop presets, every-tag metadata editing; video editing moves to its own window |
-| `plan/21-video-editor.md` | PRs 30–31: the Video Editor window (base) |
-| `plan/26-photos-library.md` | The Mac Photos library as a folder (virtual list items), its backup, and the display-matrix fix for clips. Read before touching `photos:` keys, the folder model's lists, or the video blitters |
-| `plan/22-editor-addon.md` | PRs 32–47, proposed: the Editor add-on — GPU port, colour management and grading, multi-track editing, audio, delivery, model packs. Read before any add-on GPU, colour or timeline work |
-| `plan/23-nle-search.md` | Issue #71: Local search inside Final Cut Pro (agent and extension in MediaViewer.app, off until turned on; Mac-only D9 exception) over the pack's read-only reader, and FCPXML export on both platforms |
-| `plan/24-transfer.md` | PRs 49–50: fast copies to and from a network share (deep I/O, files in flight), and Transfer, the general copier. Read before touching `io/verified_copy` or the file port |
+| `docs/design/01-decisions.md` | Before any stack, shell, codec, or scope change |
+| `docs/design/02-architecture.md` | Modules, threading, memory budgets |
+| `docs/design/03-rendering.md` | Swapchain, pacing, colour, resampling |
+| `docs/design/04-image-pipeline.md` | Decoders, tiling, prefetch, thumbs |
+| `docs/design/05-video-pipeline.md` | FFmpeg + D3D11VA, A/V clock, seek |
+| `docs/design/06-metadata.md` | Read model, atomic writes, RAW sidecars |
+| `docs/design/07-photo-editing.md` | EditStack, evaluation, export |
+| `docs/design/08-video-editing.md` | Two-path trim, remux, extract |
+| `docs/design/09-build-and-test.md` | Toolchain, harnesses, gates, Windows integration |
+| `docs/design/10-roadmap.md` | What each PR delivered, and its verify line |
+| `docs/design/11-licensing.md` | Linkage, FFmpeg configure, Exiv2 |
+| `docs/design/12-decision-log.md` | Why current behaviour is the way it is — do not re-reverse quietly |
+| `docs/design/13-updates-and-telemetry.md` | Updater, crash reports, privacy line |
+| `docs/design/14-abi.md` | C ABI between host and core |
+| `docs/design/15-platforms.md` | One core, two hosts — **D9**. Read before any new Win32/D3D11 or Cocoa/Metal leak out of the hosts / `gfx/` |
+| `docs/design/16-commands.md` | Command table, key router, default keys. Read before adding a key, overlay, or chrome command |
+| `docs/design/17-local-ai-search.md` | Local AI search add-on |
+| `docs/design/18-import.md` | Import add-on; the add-on mechanism |
+| `docs/design/19-voice.md` | Voice query (parser only; the add-on is not built) |
+| `docs/design/20-edit-workspace.md` | The Edit button / `Enter`, the docked Edit pane, every-tag metadata editing |
+| `docs/design/21-video-editor.md` | The Video Editor window |
+| `docs/design/22-editor-addon.md` | Editor add-on (not built) |
+| `docs/design/23-nle-search.md` | Local search inside Final Cut Pro (Mac-only D9 exception), FCPXML export |
+| `docs/design/24-transfer.md` | Network-speed verified copies. Read before touching `io/verified_copy` or the file port |
+| `docs/design/26-photos-library.md` | The Mac Photos library as a folder (virtual list items), its backup, and the display-matrix fix for clips. Read before touching `photos:` keys, the folder model's lists, or the video blitters |
+| `docs/plans/` | Forward plans not yet built (e.g. `audio-and-documents.md`) |
 
 If a change would contradict a **D1–D9** decision, stop and say so. Do not “just this once.”
-If you reverse a decision, add a dated row to `plan/12-decision-log.md` with the reason.
+If you reverse a decision, add a dated row to `docs/design/12-decision-log.md` with the reason.
 
 ## Rules that don't bend
 
@@ -104,7 +106,7 @@ numbers say otherwise.
   loops (`core/parallel.h`), capped so presents keep a core.
 - **Budgets are budgets.** ~2 ms/frame uploads, 512 MB viewer LRU, ±2 prefetch window,
   foreground RAW threads capped for presents. Changing one needs a measurement and a
-  line in `plan/12-decision-log.md`.
+  line in `docs/design/12-decision-log.md`.
 - **Report honestly.** Numbers that did not improve, cases the harness did not cover and
   platforms not measured go in the PR description, not under the rug.
 
@@ -127,7 +129,7 @@ Do not introduce Electron, Tauri, Node, D3D12, Vulkan, or a second present path 
 ## Open — do not silently decide
 
 - **A quiet machine for the D6 gate.** Closed on owner sign-off 2026-09-24 (no recorded
-  soak artefact); every PR still inherits the gate. `plan/12-decision-log.md`.
+  soak artefact); every PR still inherits the gate. `docs/design/12-decision-log.md`.
 - **Whether WinUI 3 XAML islands hold up** is answered by PR 3, not by preference.
   The canvas is already native (D1 amendment). Fallback: a WinUI app with
   `SwapChainPanel` and an accepted composed frame.
@@ -143,7 +145,7 @@ not revert unrelated changes. If concurrent work prevents a meaningful build,
 validate the current PR in an isolated checkout and report which source was
 tested. Keep changes to shared files compatible with the other work.
 
-Work is **one PR slice from `plan/10-roadmap.md`**. Do not merge PR N+1 until N's verify
+Work is **one PR slice** from a plan in `docs/plans/` (what landed is in `docs/design/10-roadmap.md`). Do not merge PR N+1 until N's verify
 holds on both platforms **and** both present-loop verifies (Windows PR 1, Mac PR 1) still hold.
 
 - The verify line is the success criterion. Quote it before you start; do not invent a
@@ -176,12 +178,12 @@ verified" caveats, verify-line results, dated notes, runbooks, command-line flag
 test commands or harness output. Those belong in **`docs/DEVELOPMENT.md`**, the
 contributor notes: build and run recipes for both platforms, the key table, tests and
 gates, crash-report and packaging runbooks, the performance suite, and "Where this
-actually is" (the honest status). Decisions and their history stay in `plan/`.
+actually is" (the honest status). How things work and why stays in `docs/design/`.
 
 Keep `docs/DEVELOPMENT.md` up to date in the same change that would make it stale:
 build, run or test commands; layout, dependencies or toolchain; a roadmap PR landing;
 install/update or licence changes; a new verify or harness. Write it for someone cloning
-the repo. Link to `plan/` rather than pasting it.
+the repo. Link to `docs/design/` rather than pasting it.
 
 Touch the README only when the *product* changes in a way a user would notice (a new
 format, feature, platform, release, or re-measured chart). Its charts come from
@@ -199,8 +201,8 @@ No deep template metaprogramming. Compile `/W4 /WX /permissive- /GR- /utf-8`.
 Dependencies point **downward only**:
 `shell → abi → {canvas, edit, player, image, meta, addon} → {codec, gfx, io} → core`.
 No back-edges. Add-ons (`src/addons/<name>`, Milestone G) link nothing of the core and reach it
-only through the host function table (`mediaviewer_addon.h`, `plan/18-import.md`). After D1, chrome is C#; the native top is the C ABI. From PR 4, `HWND` /
-`ID3D11*` / `wchar_t` paths stay in `shell/` and the D3D11 backend (`plan/15-platforms.md`).
+only through the host function table (`mediaviewer_addon.h`, `docs/design/18-import.md`). After D1, chrome is C#; the native top is the C ABI. From PR 4, `HWND` /
+`ID3D11*` / `wchar_t` paths stay in `shell/` and the D3D11 backend (`docs/design/15-platforms.md`).
 
 Five thread roles. UI and render **never** wait on I/O, decode, or a lock a worker holds.
 Decode workers create **immutable** GPU textures with `D3D11_SUBRESOURCE_DATA` on Windows
@@ -217,7 +219,7 @@ Designed in PR 1, not retrofitted.
 - C++ does not call the WinUI dispatcher (or any host dispatcher). Completions are a queue
   the shell pumps, or a documented any-thread callback that the host marshals.
 - Give every core call a correlation id so a managed error can be tied to the native
-  failure (crash reporting, `plan/13-updates-and-telemetry.md`).
+  failure (crash reporting, `docs/design/13-updates-and-telemetry.md`).
 
 ## Canvas and colour
 
@@ -271,19 +273,19 @@ src/edit     EditStack, GPU ops, export
 src/canvas   pan/zoom/springs; host publishes a POD input snapshot
 src/abi      C ABI surface
 src/shell    Windows host (Win32 window, islands, CLI) and the Mac host (AppKit + Metal, `*_mac.mm`)
-src/nle      Local search from an editing app (plan/23): a read-only host of the AI pack, FCPXML; the FCP agent/extension in `nle/mac`
+src/nle      Local search from an editing app (docs/design/23): a read-only host of the AI pack, FCPXML; the FCP agent/extension in `nle/mac`
 src.swift    SwiftUI chrome for the Mac host
 src.managed  C# WinUI 3 chrome
 tests/
 tools/       frametime harness, golden-image runner, fuzzers
-plan/        spec — not code
+docs/design  how it works; docs/plans  forward plans
 ```
 
 Adding a format is one file plus one registry line. Probe by magic bytes, never extension.
 
 ## Build
 
-Not scaffolded until PR 1. Target, from `plan/09-build-and-test.md`:
+Not scaffolded until PR 1. Target, from `docs/design/09-build-and-test.md`:
 
 - CMake ≥ 3.28, vcpkg manifest mode, MSVC 2022, clang-cl in CI, .NET 8+ WinUI 3.
 - ASan configuration in CI.

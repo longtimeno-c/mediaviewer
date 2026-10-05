@@ -1,7 +1,7 @@
 # Copyright (C) 2026 longtimeno-c
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# libFuzzer harnesses, one per decoder entry point (PR 7, plan/09: "libFuzzer
+# libFuzzer harnesses, one per decoder entry point (PR 7, docs/design/09: "libFuzzer
 # harness per decoder against the corpus, run in CI nightly").
 #
 #   cmake -S . -B build-fuzz -A x64 -T ClangCL -DMV_FUZZ=ON -DMV_BUILD_TESTS=OFF
@@ -93,7 +93,7 @@ else()
     "clang_rt.asan_dynamic-x86_64.lib with clang_rt.asan_static_runtime_thunk-x86_64.lib "
     "(/MT) or clang_rt.asan_dynamic_runtime_thunk-x86_64.lib + clang_rt.fuzzer_MD-x86_64.lib "
     "(/MD). Fuzzing without ASan is not the fallback: the harnesses exist to catch memory "
-    "errors (plan/09).")
+    "errors (docs/design/09).")
 endif()
 if(NOT MV_FUZZ_MODE MATCHES "^static"
    AND EXISTS "${_mv_rt}/clang_rt.asan_static-x86_64.lib")

@@ -82,7 +82,7 @@ void read_still(std::span<const std::uint8_t> bytes, bool decoder_orients, metad
 [[nodiscard]] bool load_sidecar(std::string_view sidecar_utf8_path, Exiv2::XmpData& xmp) noexcept;
 
 // PR 12: the rating, comment and (for tree rows) properties held by the XMP
-// sidecar beside `utf8_path` (plan/06), applied over what the file itself
+// sidecar beside `utf8_path` (docs/design/06), applied over what the file itself
 // said. A missing or unparsable sidecar changes nothing. Never throws.
 void overlay_sidecar(std::string_view utf8_path, metadata& out) noexcept;
 

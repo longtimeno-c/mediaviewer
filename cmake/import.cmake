@@ -1,7 +1,7 @@
 # Copyright (C) 2026 longtimeno-c
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Milestone G (plan/18-import.md): the add-on host (src/addon) and the Import
+# Milestone G (docs/design/18-import.md): the add-on host (src/addon) and the Import
 # add-on (src/addons/import). Included by the Windows root, cmake/darwin.cmake
 # and the headless cmake/portable build, so the three cannot drift.
 #
@@ -18,7 +18,7 @@
 # mv_import is the add-on: ONE shared library whose only export is
 # mv_addon_get. It links SQLite and nothing of the core -- the core's io,
 # metadata, pairing and volume ports reach it only through the host function
-# table (plan/18 "does not link the core statically"). It includes a few of
+# table (docs/design/18 "does not link the core statically"). It includes a few of
 # the core's header-only pieces (result.h, status.h, json.h). It is NOT
 # installed with the app: tools/package/addon-pack.py packs it separately,
 # signed, and the base install tree is byte-identical without it (PR 16 verify).
@@ -108,7 +108,7 @@ set_target_properties(mv_import PROPERTIES
   LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/addons/import"
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/addons/import")
 if(APPLE)
-  # plan/18: libmv_import.dylib, loaded under library validation.
+  # docs/design/18: libmv_import.dylib, loaded under library validation.
   set_target_properties(mv_import PROPERTIES PREFIX "lib" SUFFIX ".dylib")
 elseif(WIN32)
   set_target_properties(mv_import PROPERTIES PREFIX "")

@@ -150,7 +150,7 @@ float4 finish(float4 c, float2 screen, float2 image_px) {
   float3 bg = background_at(screen);
   float3 rgb = lerp(bg, c.rgb, saturate(c.a));
 
-  // Display-referred blinkies (plan/16 `C`): a channel at sRGB 254+ is a
+  // Display-referred blinkies (docs/design/16 `C`): a channel at sRGB 254+ is a
   // clipped highlight, every channel at sRGB 1 or below is a crushed shadow.
   // Same thresholds as edit::kClipHighLinear / kClipLowLinear (the adjust
   // pane's readout). They test the adjusted colour, so on an edited RAW they

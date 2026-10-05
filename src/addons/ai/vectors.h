@@ -1,17 +1,17 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The search matrix (plan/17 "Search"): every stored frame of the model that
+// The search matrix (docs/design/17 "Search"): every stored frame of the model that
 // answers queries, int8 with a per-row scale, contiguous, scanned brute force.
-// No ANN index until a measured p95 says brute force is too slow (plan/17);
+// No ANN index until a measured p95 says brute force is too slow (docs/design/17);
 // tools/ai-bench measures it at 100 k frames for the PR 22 verify.
 //
 // Rows are appended as the indexer commits and tombstoned when an asset is
 // dropped; compaction rebuilds the arrays when a quarter are dead. Readers
 // (queries) share the lock; the indexer's appends take it briefly.
 //
-// A deviation from plan/17's "mapped, not copied": the rows live in memory
+// A deviation from docs/design/17's "mapped, not copied": the rows live in memory
 // (0.5-0.75 KB a frame), loaded from index.db at start. At the 100 k frames
-// the verify names that is 50-77 MB, inside plan/02's budget for a feature
+// the verify names that is 50-77 MB, inside docs/design/02's budget for a feature
 // that is off by default; a mapped file is the upgrade if a library of
 // millions of frames needs it.
 #pragma once
@@ -58,9 +58,9 @@ class vector_store {
     // What top10_z is for a query that matches nothing (the ten best of
     // `assets` draws of noise): it grows with the library, ~2.2 at 300 assets,
     // 2.6 at 1,000, 3.3 at 10,000, so a fixed z threshold stops meaning
-    // "stands out" as the index grows (plan/17, 2026-09-27).
+    // "stands out" as the index grows (docs/design/17, 2026-09-27).
     [[nodiscard]] float null_top10_z() const noexcept;
-    // The "nothing found" rule on these stats (plan/17; recalibrated at 1,000
+    // The "nothing found" rule on these stats (docs/design/17; recalibrated at 1,000
     // to 25,000 COCO photos, both towers, issue #85). A real library's best
     // scores have a heavier tail than noise, so gibberish sits at 0.9-1.35 x
     // noise's z and real subjects at 1.15-1.8: z alone cannot tell them apart,
@@ -139,7 +139,7 @@ class vector_store {
   std::size_t dead_ = 0;
 };
 
-// Settings -> Local search -> Precision (plan/17 "Precision scale
+// Settings -> Local search -> Precision (docs/design/17 "Precision scale
 // (2026-09-27)"): 0 broader, 2 the calibrated rule above, 4 stricter. Read by
 // each search as it starts; nothing is re-indexed.
 inline constexpr std::uint32_t kPrecisionLevels = 5;

@@ -1,7 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The Windows encode port: NVENC, Quick Sync, AMF, then Media Foundation
-// (whose MFT is itself usually the GPU vendor's). plan/11: the OS/GPU encoder,
+// (whose MFT is itself usually the GPU vendor's). docs/design/11: the OS/GPU encoder,
 // never a bundled software one. The FFmpeg port is built with the nvcodec,
 // qsv and amf features (vcpkg.json); the MF encoders come with the port's
 // --enable-mediafoundation. Drivers are loaded at open, so a machine without

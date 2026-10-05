@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 15 (plan/12 2026-09-25): what the Spotlight importer tells Spotlight
+// PR 15 (docs/design/12 2026-09-25): what the Spotlight importer tells Spotlight
 // about a clip, decided here from the shared read model (meta::read) so the
 // rule is tested without mdworker. The importer (spotlight_importer_mac.mm)
 // only turns these into CF values.

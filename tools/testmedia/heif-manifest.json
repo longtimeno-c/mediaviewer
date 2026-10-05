@@ -1,5 +1,5 @@
 {
-  "note": "Real-world HEIC samples for tests/test_heif_avif.cpp. Downloaded by fetch-heif.ps1 into tools/testmedia/ (gitignored), never committed (plan/09). Only clearly-licensed files belong here.",
+  "note": "Real-world HEIC samples for tests/test_heif_avif.cpp. Downloaded by fetch-heif.ps1 into tools/testmedia/ (gitignored), never committed (docs/design/09). Only clearly-licensed files belong here.",
   "files": [
     {
       "dest": "heif/libheif-example.heic",

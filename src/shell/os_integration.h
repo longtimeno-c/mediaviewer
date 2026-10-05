@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 15 (plan/10 "OS integration", plan/16 View): the portable halves of the
+// PR 15 (docs/design/10 "OS integration", docs/design/16 View): the portable halves of the
 // shell verbs each host wires to its OS. Recent folders feed the Windows jump
 // list and the macOS Dock menu; the path text is what Ctrl+Shift+C / ⌘⇧C puts
 // on the clipboard; the flattened-copy name is what Ctrl+Alt+C / ⌘⌥C writes.

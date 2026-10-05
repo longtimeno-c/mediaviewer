@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The label vocabulary (plan/17 "Nothing found at scale", issue #85): 705
+// The label vocabulary (docs/design/17 "Nothing found at scale", issue #85): 705
 // everyday labels, embedded once per picture tower and cached. A row is a
 // result only when the query scores at least like the row's ninth-best label
 // (vector_store::set_labels): in a large library every string finds some

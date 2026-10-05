@@ -3,7 +3,7 @@
 // settings.ini as an in-memory document, persisted off the UI thread.
 //
 // Rule 1: nothing that can block touches the UI or render thread. A settings
-// write is small, but it is a file write (plan/12, "Settings writes on the UI
+// write is small, but it is a file write (docs/design/12, "Settings writes on the UI
 // thread", closed in PR 8). So:
 //
 //   * The whole file is read once, at startup, into a settings_doc.

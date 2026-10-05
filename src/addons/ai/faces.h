@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// People (plan/17 PR 24): face vectors, their clusters, and the corrections a
+// People (docs/design/17 PR 24): face vectors, their clusters, and the corrections a
 // user makes, in their OWN file (faces.db, beside index.db) so one click
 // deletes every face vector while the frame index stays intact.
 //
@@ -23,7 +23,7 @@
 // evicting outliers to unassigned and moving clear mistakes, in passes, with
 // the user's own faces (split, and the cover they named or merged) pinned as
 // anchors it never moves. Nothing here leaves the machine or reaches a log (rule 6), and a
-// crash report never carries this file (plan/13; the minidump filter excludes
+// crash report never carries this file (docs/design/13; the minidump filter excludes
 // the add-on's heaps).
 #pragma once
 
@@ -45,7 +45,7 @@ struct sqlite3;
 
 namespace mv::ai {
 
-// An embedder's pairwise-cosine thresholds (infer::face_spec; plan/17
+// An embedder's pairwise-cosine thresholds (infer::face_spec; docs/design/17
 // "People model"). The defaults are SFace's.
 struct face_tuning {
   float same_person = 0.40f;  // join a person; also the refinement's join and core
@@ -124,7 +124,7 @@ class faces_db {
                                                               const std::string& spec);
   [[nodiscard]] static result<std::unique_ptr<faces_db>> open(const std::string& path_utf8,
                                                               float same_person, std::uint32_t dim);
-  // A reader's view (the search agent, plan/23): SQLITE_OPEN_READONLY, no
+  // A reader's view (the search agent, docs/design/23): SQLITE_OPEN_READONLY, no
   // schema or migration. Names and faces_of answer; every write fails. A
   // faces.db from before the refinement columns is status::unsupported_format
   // until the app has opened it once.
@@ -142,7 +142,7 @@ class faces_db {
   [[nodiscard]] expected forget_asset(std::int64_t asset);
 
   // Every person with min_faces faces or a name. With `assets` (the open
-  // folder's, plan/17 "People in the open folder"): only those with a face in
+  // folder's, docs/design/17 "People in the open folder"): only those with a face in
   // one of them, `faces` counting those faces and `cover` the clearest of them;
   // the min_faces / name rule still judges the whole person.
   [[nodiscard]] std::vector<person_row> people(std::uint32_t min_faces,
@@ -151,7 +151,7 @@ class faces_db {
   [[nodiscard]] result<face_row> face(std::int64_t id);
   [[nodiscard]] expected rename(std::int64_t person, const std::string& name);
   [[nodiscard]] expected merge(std::int64_t into, std::int64_t from);
-  // The duplicate pass (plan/17 "Merge duplicates"): `from` into `into`, as
+  // The duplicate pass (docs/design/17 "Merge duplicates"): `from` into `into`, as
   // merge, unless a split kept them apart (no_merge) or a face of one was
   // rejected from the other. Pins nothing: the user did not say so. False
   // when the pair is left alone.
@@ -172,7 +172,7 @@ class faces_db {
   // not to). Returns how many merged.
   [[nodiscard]] std::size_t consolidate(float merge_at);
 
-  // Refinement (plan/17 "People refinement"), in three steps so the compute
+  // Refinement (docs/design/17 "People refinement"), in three steps so the compute
   // holds no lock: begin (a snapshot), refine_people (pure), commit (applies
   // what still holds: a face the user or a scan changed meanwhile is skipped).
   // Incremental unless `full` or nothing is cached yet: only persons whose
@@ -186,7 +186,7 @@ class faces_db {
   [[nodiscard]] expected rescan(std::int64_t asset, const std::string& spec);
   [[nodiscard]] std::uint64_t serial() const noexcept { return serial_; }
 
-  // Re-run (plan/17 "People model"): every asset is analysed again, new boxes
+  // Re-run (docs/design/17 "People model"): every asset is analysed again, new boxes
   // replacing old ones in place (person and pin kept), new faces waiting
   // unassigned; then the engine settles (a full refinement and merge) and
   // calls rerun_done. Pending from open too, when rows of another embedder

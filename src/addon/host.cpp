@@ -133,7 +133,7 @@ mv_status MV_CALL t_copy(void* host, const mv_addon_copy_request* req, mv_addon_
     std::atomic<bool> cancel{false};
     io::copy_options o;
     // Deep writes to a share, deep reads only from one: a card is still read
-    // one request at a time (plan/18 "Throughput"; plan/12 2026-10-01).
+    // one request at a time (docs/design/18 "Throughput"; docs/design/12 2026-10-01).
     io::copy_profile_for(req->source_utf8, targets.front()).apply(o);
     o.read_back = req->read_back != 0;
     o.retries = static_cast<int>(std::min<uint32_t>(req->retries, 3));
@@ -655,7 +655,7 @@ result<std::unique_ptr<loaded_addon>> loaded_addon::load(const store& s, const s
   if (services.data_dir.empty()) services.data_dir = info.data_dir;
   if (!services.piece_dir) {
     // Only this add-on's own verified pieces; a store copy is a root, a key
-    // and a version, and every call re-verifies (plan/18 verify-before-load).
+    // and a version, and every call re-verifies (docs/design/18 verify-before-load).
     services.piece_dir = [s, parent = info.id](const std::string& piece) -> result<std::string> {
       MV_TRY(installed p, s.find(piece));
       if (p.m.part_of != parent) return err(status::invalid_arg);

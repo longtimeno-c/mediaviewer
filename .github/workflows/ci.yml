@@ -10,7 +10,7 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
-  # PR 7: nightly long fuzz run (plan/09 "run in CI nightly"). Build, ABI
+  # PR 7: nightly long fuzz run (docs/design/09 "run in CI nightly"). Build, ABI
   # smoke and the frame-time gate skip it. The dependency job still runs,
   # because the nightly fuzz and the full broken-corpus sweep need it.
   schedule:
@@ -141,7 +141,7 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Build + unit tests. MSVC is primary; clang-cl is the second opinion, because
-  # it catches different bugs (plan/09).
+  # it catches different bugs (docs/design/09).
   # ---------------------------------------------------------------------------
   build:
     name: Build (${{ matrix.toolchain }}, ${{ matrix.config }})
@@ -363,9 +363,9 @@ jobs:
 
       # fuzz_decode and fuzz_animation died at 0xC0000142 on this image again
       # (2026-09-25) after the provisional re-enable of 2026-09-24, so they are
-      # out of the gating list (plan/12). They are still built, and the step
+      # out of the gating list (docs/design/12). They are still built, and the step
       # below runs them alone, non-gating, so every CI run records whether they
-      # start on the runner. Read plan/12 before moving them back.
+      # start on the runner. Read docs/design/12 before moving them back.
       - name: Fuzz
         run: |
           $seconds = if ('${{ github.event_name }}' -eq 'schedule') { 1200 } else { 60 }

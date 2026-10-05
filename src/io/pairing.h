@@ -1,11 +1,11 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Scan-time pairing and companion filtering (plan/04, PR 7).
+// Scan-time pairing and companion filtering (docs/design/04, PR 7).
 //
 // RAW+JPEG: same basename, one filmstrip stop, JPEG/HEIC is the primary.
 // Live Photo: HEIC+MOV same basename, still is primary, motion is the pair.
 // iPhones set to "Most Compatible" write JPG+MOV for the same Live Photo, so a
-// JPEG+MOV of one stem pairs the same way (plan/04 names HEIC; the JPG case is
+// JPEG+MOV of one stem pairs the same way (docs/design/04 names HEIC; the JPG case is
 // a PR 7 call, flagged for the decision log). MP4 never pairs.
 // Ambiguous groups (three files, mixed stems) stay separate — never hide a
 // file. Portable; no windows.h (D9).

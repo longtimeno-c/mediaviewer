@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Which item a folder listing selects (plan/16, PR 6 verify: "a file dropped
+// Which item a folder listing selects (docs/design/16, PR 6 verify: "a file dropped
 // into the folder appears without restart").
 //
 // A fresh open selects the file that was asked for, else the first item. A

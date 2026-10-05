@@ -21,7 +21,7 @@ namespace {
 // avcodec calls this to let us pick the surface format. Returning AV_PIX_FMT_D3D11
 // is what selects the hardware path; anything else and the decoder produces CPU
 // frames and we take the software fallback.
-// ProRes on the Mac (D5 amended, plan/12 2026-09-29): VideoToolbox decodes it
+// ProRes on the Mac (D5 amended, docs/design/12 2026-09-29): VideoToolbox decodes it
 // in hardware on Apple silicon, but to 4:2:2 or 4:4:4, and the ring and the
 // shader take 4:2:0. VideoToolbox converts to any layout it is asked for, so
 // ask it for P010 (10-bit 4:2:0, the HEVC Main10 layout) and ProRes stays on
@@ -57,7 +57,7 @@ AVPixelFormat pick_hw_format(AVCodecContext* ctx, const AVPixelFormat* formats) 
       break;  // software, as below
     }
   }
-  // plan/05: "Fall back to software decode (with a visible indicator in the
+  // docs/design/05: "Fall back to software decode (with a visible indicator in the
   // debug overlay) when the GPU lacks a profile. Never silently."
   MV_LOG_WARN("player: no %s surface format offered; falling back to software decode",
               kHwDecoderName);
@@ -112,7 +112,7 @@ struct sw_convert {
   // A hardware frame in a layout the ring cannot take (4:2:2 / 4:4:4 decoder
   // output): copied back to memory and converted like a software frame, so
   // the clip plays -- slower, and said so -- rather than every frame being
-  // dropped while the audio plays over nothing (plan/05 "never silently").
+  // dropped while the audio plays over nothing (docs/design/05 "never silently").
   frame_ptr readback;
   bool readback_logged = false;
 
@@ -135,7 +135,7 @@ struct sw_convert {
 //
 // The ordering is the whole point. Receiving first and then looking for a slot
 // means the decode thread sits on a decoded frame — which IS a held DPB slice —
-// every time presentation is behind, and that is precisely the stall plan/05
+// every time presentation is behind, and that is precisely the stall docs/design/05
 // warns about. Reserving first turns the same situation into ordinary
 // back-pressure: the decoder simply keeps its pool and produces nothing until
 // we can take delivery.
@@ -163,7 +163,7 @@ struct sw_convert {
 // This is not hypothetical: for AV1 the vcpkg build registers libdav1d, which
 // accepts a hw_device_ctx and quietly ignores it. Taking the default would
 // decode 4K AV1 on the CPU while every diagnostic said "D3D11VA" — the silent
-// software fallback plan/05 forbids, wearing a hardware label.
+// software fallback docs/design/05 forbids, wearing a hardware label.
 [[nodiscard]] const AVCodec* pick_decoder(AVCodecID id) noexcept {
   void* iter = nullptr;
   while (const AVCodec* candidate = av_codec_iterate(&iter)) {
@@ -226,7 +226,7 @@ struct sw_convert {
 
   if (!slot) slot = pipe.ring.begin_write(); // First frame creates the ring above.
   if (!slot) {
-    // A frame in hand with nowhere to copy it. This is the plan/05 hazard and
+    // A frame in hand with nowhere to copy it. This is the docs/design/05 hazard and
     // should be unreachable, because the slot was reserved before the frame was
     // received. Counted rather than ignored so it cannot hide.
     pipe.surface_waits.fetch_add(1, std::memory_order_relaxed);
@@ -290,7 +290,7 @@ expected open_video_codec(video_pipeline& pipe, AVStream* stream) {
     pipe.hw_device.reset(hw.value());
     pipe.codec->hw_device_ctx = av_buffer_ref(pipe.hw_device.get());
     pipe.codec->get_format = pick_hw_format;
-    // plan/12 (2026-09-07): belt-and-braces for "the decoder never stalls
+    // docs/design/12 (2026-09-07): belt-and-braces for "the decoder never stalls
     // waiting for a surface over a 10-minute play". The copy is what keeps the
     // pool free; this covers a scheduling delay between decode and copy so a
     // late render thread can never starve the DPB.
@@ -333,7 +333,7 @@ void run_video_decode_thread(video_pipeline& pipe) noexcept {
   while (!pipe.stopping.load(std::memory_order_acquire)) {
     // A generation bump means a seek or a navigation happened. Flush the codec
     // so no pre-seek frame is decoded into the post-seek generation
-    // (plan/05: "Flush decoders on every seek").
+    // (docs/design/05: "Flush decoders on every seek").
     const std::uint32_t generation = pipe.generation.load(std::memory_order_acquire);
     if (generation != local_generation) {
       avcodec_flush_buffers(pipe.codec.get());
@@ -386,7 +386,7 @@ void run_video_decode_thread(video_pipeline& pipe) noexcept {
         pipe.frames_dropped_stale.fetch_add(1, std::memory_order_relaxed);
       }
       // Released the moment the copy is submitted — the whole point of copying
-      // out of the pool (plan/05 "Surface ownership").
+      // out of the pool (docs/design/05 "Surface ownership").
       av_frame_unref(frame.get());
     }
   }

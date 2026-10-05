@@ -1,11 +1,11 @@
 /* Copyright (C) 2026 longtimeno-c
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * The AI pack's interface to the chrome (plan/17-local-ai-search.md,
+ * The AI pack's interface to the chrome (docs/design/17-local-ai-search.md,
  * Milestone H, PRs 20-24), obtained with
  * mv_addon_api.query(addon, MV_AI_INTERFACE). Both chromes call it: the WinUI
  * AI chrome through function pointers in C#, the SwiftUI AI.bundle through
- * this header. Flat C, POD, status codes (plan/14).
+ * this header. Flat C, POD, status codes (docs/design/14).
  *
  * Rich, read-mostly data (settings, roots, people) crosses as UTF-8 JSON in a
  * caller buffer: `cap` bytes, `needed` reports the full size including the
@@ -35,7 +35,7 @@ extern "C" {
 
 #define MV_AI_INTERFACE "mv.ai.1"
 
-/* A second export beside mv_addon_get (plan/23, the search agent): the same
+/* A second export beside mv_addon_get (docs/design/23, the search agent): the same
  * table over the same data folder, read-only. index.db and faces.db open
  * SQLITE_OPEN_READONLY, the text towers only load, nothing is scanned or
  * indexed, and every call that would change the index, the people or the
@@ -46,7 +46,7 @@ extern "C" {
  * load it the same way. */
 #define MV_AI_READER_ENTRY_SYMBOL "mv_ai_reader_get"
 
-/* Where inference runs (plan/17 "Runtime"). CPU is always underneath. */
+/* Where inference runs (docs/design/17 "Runtime"). CPU is always underneath. */
 typedef enum mv_ai_backend {
   MV_AI_BACKEND_CPU = 0,
   MV_AI_BACKEND_CUDA = 1,      /* Windows vendor piece "ai-cuda" */
@@ -63,7 +63,7 @@ typedef enum mv_ai_compute {
   MV_AI_COMPUTE_COREML = 4
 } mv_ai_compute;
 
-/* Settings -> Local search -> Search quality (plan/17 PR 20 spike): which
+/* Settings -> Local search -> Search quality (docs/design/17 PR 20 spike): which
  * tower indexes. Changing it migrates: the old index answers until the new
  * one completes (PR 23). */
 typedef enum mv_ai_quality {
@@ -144,7 +144,7 @@ typedef enum mv_ai_photos_access {
   MV_AI_PHOTOS_FULL = 5
 } mv_ai_photos_access;
 
-/* Sharing an index (2026-09-28, plan/17 "Sharing an index"): what an export
+/* Sharing an index (2026-09-28, docs/design/17 "Sharing an index"): what an export
  * carries besides the index rows, and what an import takes from a file. */
 #define MV_AI_TRANSFER_PEOPLE 1u       /* face vectors, people and their names: the file
                                           then identifies the people in it. Off by default */
@@ -185,7 +185,7 @@ typedef struct mv_ai_status {
    * local could be indexed (an iCloud-only clip's poster is). Not failed, not
    * pending: counted apart. */
   uint64_t assets_unavailable;
-  /* People (2026-10-03, plan/17 "People model"): assets the People pass must
+  /* People (2026-10-03, docs/design/17 "People model"): assets the People pass must
    * (re-)analyse with the current face model, and those it has. While
    * MV_AI_STATUS_PEOPLE_RERUN is set this is the re-run's progress. */
   uint64_t people_scan_total;
@@ -194,7 +194,7 @@ typedef struct mv_ai_status {
 } mv_ai_status;
 
 /* One result: a photo, or the best moment of a clip with the others grouped
- * under it (plan/17 "Ranking"). */
+ * under it (docs/design/17 "Ranking"). */
 typedef struct mv_ai_result {
   uint64_t asset_id;
   int64_t pts_ms;              /* -1 for a photo */
@@ -224,7 +224,7 @@ typedef struct mv_ai_api {
    * Sound once the ai-audio piece is installed) | "precision" (0 broader .. 2 the calibrated
    * "nothing found" rule, the default .. 4 stricter; out of range clamps; saved; read by each
    * search as it starts, so it needs no reload or re-index, and the chrome re-runs an open
-   * search; plan/17 "Precision scale"); value: a JSON number. Compute re-creates the
+   * search; docs/design/17 "Precision scale"); value: a JSON number. Compute re-creates the
    * sessions (no re-index); quality starts a migration. "reload" (any value)
    * re-reads the installed pieces after one is installed or removed: People
    * (ai-faces) and Sound (ai-audio) are picked up at once, without reopening
@@ -264,7 +264,7 @@ typedef struct mv_ai_api {
   /* Natural-language query. `scope_dir` may be NULL for MV_AI_SCOPE_ALL.
    * Runs on a worker; MV_ADDON_EVENT_AI_SEARCH_DONE carries the id and the
    * result count (0: "nothing found" — the min-score cutoff, not the
-   * least-bad ten). The query language (plan/17 "Query syntax"): a named
+   * least-bad ten). The query language (docs/design/17 "Query syntax"): a named
    * person narrows to them, "quoted words" must be said, -x leaves x out,
    * video / photo and in: / before: / after: filter; the kind bits here and
    * the query's must both hold. [no-block] */
@@ -334,7 +334,7 @@ typedef struct mv_ai_api {
   mv_status(MV_CALL* result_snippet)(void* ctx, uint64_t search_id, uint32_t index, char* out_utf8,
                                      uint32_t cap);
 
-  /* ---- query language (2026-09-28, plan/17 "Query syntax") ---------------- */
+  /* ---- query language (2026-09-28, docs/design/17 "Query syntax") ---------------- */
   /* search_text parses its query in the pack (people, "words said",
    * -exclusions, video / photo, in: / before: / after: file dates), so both
    * chromes mean the same by the same words. This names people for the word
@@ -345,7 +345,7 @@ typedef struct mv_ai_api {
   mv_status(MV_CALL* suggest_json)(void* ctx, const char* query_utf8, char* out, uint32_t cap,
                                    uint32_t* needed);
 
-  /* ---- people refinement on request (2026-09-28, plan/17 "People refinement") */
+  /* ---- people refinement on request (2026-09-28, docs/design/17 "People refinement") */
   /* "Refine": re-checks every face filed under this person against them and
    * everyone else, in passes, and files the misplaced ones out (to another
    * person, to nobody, or to a new person when several leave together).
@@ -355,13 +355,13 @@ typedef struct mv_ai_api {
    * MV_ADDON_EVENT_AI_PEOPLE when anything moved. [worker-thread] */
   mv_status(MV_CALL* person_refine)(void* ctx, uint64_t person_id, uint32_t* out_removed);
 
-  /* ---- appended 2026-09-28 (plan/23): an NLE hand-off's clip length -------- */
+  /* ---- appended 2026-09-28 (docs/design/23): an NLE hand-off's clip length -------- */
   /* The length of a result's clip in ms, as the index recorded it; 0 for a
    * still or a clip whose length is not known yet. An FCPXML asset needs it
    * (nle/fcpxml.h). Check struct_size before calling. [worker-thread] */
   mv_status(MV_CALL* result_duration)(void* ctx, uint64_t search_id, uint32_t index,
                                       int64_t* out_ms);
-  /* ---- sharing an index (2026-09-28, plan/17 "Sharing an index") ---------- */
+  /* ---- sharing an index (2026-09-28, docs/design/17 "Sharing an index") ---------- */
   /* Writes the index of `root_ids` (NULL / 0: every root) to `dest_utf8` (a
    * .mvindex file, through dest.part), with the MV_AI_TRANSFER_* extras in
    * `flags`. Runs on the pack's own thread while indexing goes on;
@@ -417,7 +417,7 @@ typedef struct mv_ai_api {
   /* mv_ai_photos_access. [no-block] */
   mv_status(MV_CALL* photos_access)(void* ctx, uint32_t* out_access);
 
-  /* ---- people in the open folder (2026-09-28, plan/17 "People in the open folder") */
+  /* ---- people in the open folder (2026-09-28, docs/design/17 "People in the open folder") */
   /* people_json narrowed to `scope_dir` and `scope` (mv_ai_scope, as
    * search_text takes them): the people with a face in a photo or clip there.
    * "faces" counts their faces there and "cover_*" is the clearest of those;
@@ -428,7 +428,7 @@ typedef struct mv_ai_api {
   mv_status(MV_CALL* people_in_json)(void* ctx, const char* scope_dir_utf8, uint32_t scope, char* out,
                                      uint32_t cap, uint32_t* needed);
 
-  /* ---- merge duplicates on request (2026-10-03, plan/17 "Merge duplicates") */
+  /* ---- merge duplicates on request (2026-10-03, docs/design/17 "Merge duplicates") */
   /* "Merge duplicates": person_refine's check for everyone at once (misfiled
    * faces move, unassigned faces join or regroup), then people whose faces
    * vouch for each other become one: an unnamed person into a named one, two
@@ -440,7 +440,7 @@ typedef struct mv_ai_api {
    * anything changed. [worker-thread] */
   mv_status(MV_CALL* people_dedupe)(void* ctx, uint32_t* out_merged, uint32_t* out_moved);
 
-  /* ---- re-analysing people (2026-10-03, plan/17 "People model") ---------- */
+  /* ---- re-analysing people (2026-10-03, docs/design/17 "People model") ---------- */
   /* "Re-analyse faces": every photo and clip is analysed again with the face
    * model the pack carries now, in the background like any People pass. A
    * face found where one was before keeps its person, name, pin and "not

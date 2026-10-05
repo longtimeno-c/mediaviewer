@@ -17,7 +17,7 @@ constexpr time_ns sec(double v) { return static_cast<time_ns>(v * 1'000'000'000.
 // --- seek mode --------------------------------------------------------------
 
 TEST_CASE("dragging the scrubber seeks to a keyframe, releasing is exact", "[transport]") {
-  // plan/05's fast-then-accurate rule. Getting this backwards makes scrubbing
+  // docs/design/05's fast-then-accurate rule. Getting this backwards makes scrubbing
   // feel like treacle, which is the whole thing 5c's verify line asks for.
   REQUIRE(make_seek(sec(30), /*dragging=*/true, 1).mode == seek_mode::keyframe);
   REQUIRE(make_seek(sec(30), /*dragging=*/false, 1).mode == seek_mode::exact);
@@ -45,7 +45,7 @@ TEST_CASE("rates inside atempo's range use a single instance", "[transport]") {
 }
 
 TEST_CASE("the extremes are chained, because atempo caps at 0.5-2.0", "[transport]") {
-  // plan/05 names this case explicitly. One instance cannot do 0.25x or 4x.
+  // docs/design/05 names this case explicitly. One instance cannot do 0.25x or 4x.
   REQUIRE(build_atempo_chain(0.25) == "atempo=0.500,atempo=0.500");
   REQUIRE(build_atempo_chain(4.0) == "atempo=2.000,atempo=2.000");
 }

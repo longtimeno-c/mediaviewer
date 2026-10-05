@@ -8,25 +8,25 @@ using Microsoft.UI.Xaml.Media;
 namespace MediaViewer.Chrome;
 
 /// <summary>
-/// PR 8 telemetry consent (plan/13 Part 3): the first-run screen, and the one
+/// PR 8 telemetry consent (docs/design/13 Part 3): the first-run screen, and the one
 /// Settings row that turns it off again.
 /// </summary>
 /// <remarks>
-/// <para>The rules this file exists to hold, all from plan/13:</para>
+/// <para>The rules this file exists to hold, all from docs/design/13:</para>
 /// <list type="bullet">
 /// <item>Default off. The screen opens with NEITHER answer selected - there is
 /// no pre-ticked box and no default button, so closing it without reading
 /// leaves telemetry off.</item>
 /// <item>One screen, once. It is shown while native reports the Asked bit
 /// clear, and answering it either way sets that bit for good.</item>
-/// <item>No second modal after it. plan/13 puts the PR 15 default-viewer
+/// <item>No second modal after it. docs/design/13 puts the PR 15 default-viewer
 /// prompt after this choice, on a later launch - not stacked behind it.</item>
 /// <item>Honest about the update check being a network call of its own, with
 /// the setting that disables it named on the same screen.</item>
 /// </list>
 /// <para>Native owns the value (settings.ini [telemetry]); this is a view of
 /// it, pushed back by ApplySettings, exactly like every other settings row.
-/// Not a command-table entry (plan/16): no key, nothing in <c>?</c>.</para>
+/// Not a command-table entry (docs/design/16): no key, nothing in <c>?</c>.</para>
 /// </remarks>
 public static partial class IslandHost
 {

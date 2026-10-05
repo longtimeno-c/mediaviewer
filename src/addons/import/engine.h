@@ -1,12 +1,12 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The Import engine (plan/18-import.md): scans, plans and jobs, over the host
+// The Import engine (docs/design/18-import.md): scans, plans and jobs, over the host
 // function table and import.db. Behind mv_import_api (addon_entry.cpp).
 //
 // Threads (rule 1: never the UI or render thread): one control thread runs
 // scans, plans and card arrivals in order; each job runs on its own thread.
 // A per-device lock gives one reader per physical source and one writer per
-// physical destination (plan/18 "Throughput"). Every public method returns at
+// physical destination (docs/design/18 "Throughput"). Every public method returns at
 // once unless marked [worker].
 #pragma once
 

@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// People refinement (plan/17 PR 24, "Refinement"): a re-check of a person's
+// People refinement (docs/design/17 PR 24, "Refinement"): a re-check of a person's
 // faces against the person they were filed under, after the online
 // clustering in faces_db::add. Runs only when the user asks (the person's
 // "Refine" in People), never in the background. Pure logic over vectors: no SQLite, no model,
@@ -113,7 +113,7 @@ struct refine_output {
 
 [[nodiscard]] refine_output refine_people(const refine_input& in, const refine_params& p);
 
-// ---- duplicates (plan/17 "Merge duplicates") ----------------------------------
+// ---- duplicates (docs/design/17 "Merge duplicates") ----------------------------------
 
 struct dedupe_person {
   std::int64_t id = 0;

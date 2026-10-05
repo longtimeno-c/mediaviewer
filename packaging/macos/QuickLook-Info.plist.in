@@ -6,7 +6,7 @@
   MediaViewerThumbnails.appex: Finder thumbnails for the D5 still set (PR 20).
   A Quick Look thumbnail extension runs in its own sandboxed process, never in
   Finder. A decoder that crashes on a corrupt file takes down that process
-  only. Loading libheif / LibRaw into Finder is the landmine plan/15 names,
+  only. Loading libheif / LibRaw into Finder is the landmine docs/design/15 names,
   the same one as an in-process Explorer handler.
 -->
 <plist version="1.0">

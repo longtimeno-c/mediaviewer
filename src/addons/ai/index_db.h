@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// index.db (plan/17 "Index store"): remembered roots, the assets under them,
+// index.db (docs/design/17 "Index store"): remembered roots, the assets under them,
 // per-model progress (resumable per asset), and the sampled frames with their
 // embeddings. A separate SQLite file in the add-on's data folder, so clearing
 // the index can never touch the thumbnail cache, and vice versa.
@@ -26,7 +26,7 @@
 // embeddings are frames rows under the CLAP spec, and transcripts live in
 // `speech`. A schema-1 index is upgraded in place.
 //
-// plan/17 sketches one assets row per (path, mtime, size, spec); progress is
+// docs/design/17 sketches one assets row per (path, mtime, size, spec); progress is
 // that row's per-model half, so two models' vectors live side by side while
 // a quality change migrates (PR 23: "old index kept until the new one
 // completes"). `emb` is int8 with a per-vector scale (0.5 KB a frame at 512
@@ -135,7 +135,7 @@ class index_db {
   index_db& operator=(const index_db&) = delete;
 
   [[nodiscard]] static result<std::unique_ptr<index_db>> open(const std::string& path_utf8);
-  // Another process's view of the app's index (the search agent, plan/23):
+  // Another process's view of the app's index (the search agent, docs/design/23):
   // SQLITE_OPEN_READONLY, no schema created or migrated, so every write this
   // connection could try fails (SQLITE_READONLY). WAL gives it a consistent
   // snapshot while the app goes on indexing. A missing file, or an index of

@@ -398,7 +398,7 @@ class LipoMergeTests(unittest.TestCase):
         self.assertEqual(warnings, [])
 
     def test_final_cut_pro_pieces_may_be_arm64_only(self):
-        # plan/23: the Intel build has no AI pack, so no agent or extension.
+        # docs/design/23: the Intel build has no AI pack, so no agent or extension.
         fcp = {"Contents/Library/LaunchAgents/x.search.plist": b"job",
                "Contents/PlugIns/MediaViewerSearch.appex/Contents/MacOS/MediaViewerSearch": self._macho("arm64"),
                "Contents/PlugIns/MediaViewerSearch.appex/Contents/_CodeSignature/CodeResources": b"sig"}
@@ -415,7 +415,7 @@ class LipoMergeTests(unittest.TestCase):
 
 
 class FinalCutProPackTests(unittest.TestCase):
-    """plan/23: the extension is signed before the app, with the assemble
+    """docs/design/23: the extension is signed before the app, with the assemble
     entitlements or (a release) the ones it carries. The agent is the app's
     own executable."""
 

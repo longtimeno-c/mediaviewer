@@ -102,7 +102,7 @@ attempt move_to(const std::wstring& src, const std::wstring& dest,
 
   // Across volumes: a verified copy -- hashed while read, flushed, read back
   // uncached, compared, renamed into place -- and only then let the source go
-  // (plan/18: F8 never removes an unverified source). Any failure leaves the
+  // (docs/design/18: F8 never removes an unverified source). Any failure leaves the
   // source where it was and no partial copy behind.
   const std::string targets[] = {utf8_from_wide(dest)};
   copy_options options;

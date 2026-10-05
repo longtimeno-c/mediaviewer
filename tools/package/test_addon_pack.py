@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026 longtimeno-c
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Tests for addon-pack.py (plan/18 "Signed, verified, then loaded").
+"""Tests for addon-pack.py (docs/design/18 "Signed, verified, then loaded").
 
 With MV_ADDON_VERIFY pointing at tools/addon-verify's binary (the portable
 build sets it), every package is also checked by the app's own C++ verifier,
@@ -118,7 +118,7 @@ class AddonPackTest(unittest.TestCase):
         self.assertEqual(addon_pack.main(["verify", str(manifest), "--public-key", raw_public(self.key)]), 1)
 
     def test_pinned_keys_agree(self):
-        # The native add-on key is the update key (plan/18); two copies, one value.
+        # The native add-on key is the update key (docs/design/18); two copies, one value.
         cs = (ROOT / "src.managed/MediaViewer.Updater/UpdateKeys.cs").read_text()
         hex_cs = re.search(r'ProductionPublicKeyHex\s*=\s*"([0-9a-f]{64})"', cs)[1]
         cpp = (ROOT / "src/addon/manifest.cpp").read_text()
@@ -142,7 +142,7 @@ class AddonPackTest(unittest.TestCase):
 
 
 class AiPackTest(unittest.TestCase):
-    """Milestone H (plan/17 "The AI pack"): the Core pack and its pieces."""
+    """Milestone H (docs/design/17 "The AI pack"): the Core pack and its pieces."""
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())

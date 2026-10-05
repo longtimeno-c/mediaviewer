@@ -446,7 +446,7 @@ TEST_CASE("a metadata rewrite of a file that is not open moves its stack too", "
   CHECK_FALSE(s.colour().identity());
 }
 
-// ---- PR 29 (plan/20): the Crop pane's aspect presets and straighten slider ----
+// ---- PR 29 (docs/design/20): the Crop pane's aspect presets and straighten slider ----
 
 namespace {
 

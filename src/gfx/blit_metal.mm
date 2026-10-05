@@ -14,7 +14,7 @@ namespace {
 
 // Line-for-line twin of gfx/blit.cpp's kHlsl vs_main/catmull_rom_1d/texel/
 // sample_catmull/background_at/sample_filtered/image_px_at/finish/ps_main.
-// Buffer(0) here is the Camera cbuffer's register(b0) twin (plan/15 binding
+// Buffer(0) here is the Camera cbuffer's register(b0) twin (docs/design/15 binding
 // note); no Tile buffer — the tiled path is not ported in PR 17.
 // PR 11: the source is kMslHead, the colour kernel's own tokens
 // (gfx/adjust_kernel.h — the HLSL twin pastes the same text), then kMsl.

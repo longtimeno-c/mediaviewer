@@ -13,7 +13,7 @@ using Microsoft.UI.Xaml.Shapes;
 namespace MediaViewer.Chrome;
 
 /// <summary>
-/// plan/16 `?`, go-to and find: XAML flyouts on the command bar, built from
+/// docs/design/16 `?`, go-to and find: XAML flyouts on the command bar, built from
 /// the same static table the native router dispatches from (native pushes it
 /// once, via SetCommandTable). Nothing here composites onto the swapchain.
 /// </summary>
@@ -56,11 +56,11 @@ public static partial class IslandHost
     private static readonly List<CommandRow> CommandRows = new();
     private static Flyout? _popup;
     // Go-to / find type onto a label. Report text focus so the router yields
-    // keys (plan/16) without putting a TextBox in the Flyout.
+    // keys (docs/design/16) without putting a TextBox in the Flyout.
     private static bool _popupTakesText;
 
-    // Explorer-style typeahead in the strip and the gallery (plan/16,
-    // plan/12 2026-09-13): what was typed within 300 ms of the last key.
+    // Explorer-style typeahead in the strip and the gallery (docs/design/16,
+    // docs/design/12 2026-09-13): what was typed within 300 ms of the last key.
     private static string _typed = "";
     private static DateTime _typedAt = DateTime.MinValue;
 
@@ -382,7 +382,7 @@ public static partial class IslandHost
         return panel;
     }
 
-    // PR 10 export dialog (plan/10: "export dialog in WinUI"). Keyboard-complete
+    // PR 10 export dialog (docs/design/10: "export dialog in WinUI"). Keyboard-complete
     // and TextBox-free (the 0xC000027B fail-fast): ↑ ↓ pick a row, ← → change
     // it, Enter exports, Esc cancels. Clicking a value steps it. The answer goes
     // back as one integer, the same packing the Mac sheet uses

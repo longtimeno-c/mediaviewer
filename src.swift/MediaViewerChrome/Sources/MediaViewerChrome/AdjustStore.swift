@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 11 (plan/07, plan/16): the state the adjust pane reads. It mirrors the
+// PR 11 (docs/design/07, docs/design/16): the state the adjust pane reads. It mirrors the
 // host's shell::adjust_view -- readiness, slider values, histogram, clipping --
 // and re-reads it only when the host's adjust generation moves, which it does
 // for everything except the pane's own slider (so a drag is never fought).

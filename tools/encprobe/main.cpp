@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// encprobe: spike S1 for the video/audio editor add-on (plan/21-video-editor.md).
+// encprobe: spike S1 for the video/audio editor add-on (docs/design/21-video-editor.md).
 //
 // What can THIS machine's build encode and filter, and how fast? Prints a
 // Markdown report on stdout:
@@ -259,7 +259,7 @@ void video_section() {
       continue;
     }
     if (!licence_ok(c)) {
-      std::printf("| `%s` | %s | all | refused: software encoder (plan/11) | | | |\n", name,
+      std::printf("| `%s` | %s | all | refused: software encoder (docs/design/11) | | | |\n", name,
                   hw::family_label(name));
       continue;
     }
@@ -310,7 +310,7 @@ void audio_section() {
     const std::size_t len = std::strlen(name);
     const bool os = len > 3 && (std::strcmp(name + len - 3, "_at") == 0 || std::strcmp(name + len - 3, "_mf") == 0);
     const char* kind = os || is_hardware(c) ? "OS encoder" : "bundled software";
-    if (std::strcmp(name, "aac") == 0) kind = "bundled software AAC: plan/11 says prefer the OS encoder";
+    if (std::strcmp(name, "aac") == 0) kind = "bundled software AAC: docs/design/11 says prefer the OS encoder";
     if (c->capabilities & AV_CODEC_CAP_EXPERIMENTAL) kind = "bundled software, experimental";
     std::printf("| `%s` | yes | %s | %s |\n", name, ok ? "yes" : "no", kind);
     avcodec_free_context(&ctx);
@@ -348,7 +348,7 @@ void hwdevice_section() {
 
 int main() {
   av_log_set_level(AV_LOG_QUIET);
-  std::printf("# encprobe (plan/21 spike S1)\n\n");
+  std::printf("# encprobe (docs/design/21 spike S1)\n\n");
   std::printf("libavcodec %s · libavfilter %s\n\n", AV_STRINGIFY(LIBAVCODEC_VERSION),
               AV_STRINGIFY(LIBAVFILTER_VERSION));
   video_section();

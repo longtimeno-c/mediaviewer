@@ -6,7 +6,7 @@ namespace mv::gfx {
 
 colour_desc resolve_unspecified(colour_desc desc, std::uint32_t width,
                                 std::uint32_t height) noexcept {
-  // plan/05: "Do not assume BT.709 limited range; phone video is frequently
+  // docs/design/05: "Do not assume BT.709 limited range; phone video is frequently
   // BT.2020, and getting this wrong is the classic 'why is my video washed
   // out' bug." An explicit tag always wins; this only fills real gaps, and it
   // resolves them by resolution, which is what the specs actually imply.

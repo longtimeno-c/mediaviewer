@@ -549,7 +549,7 @@ TEST_CASE("synthetic DNG: embedded preview and full decode agree", "[codec][raw]
 
 TEST_CASE("synthetic DNG: the linear develop is the full decode before the sRGB curve",
           "[codec][raw][adjust]") {
-  // PR 11 (plan/07): the adjust pane edits LibRaw's real linear data, and with
+  // PR 11 (docs/design/07): the adjust pane edits LibRaw's real linear data, and with
   // every slider at zero that must look like the viewer's full decode.
   const auto dng = make_dng();
   auto full = mv::codec::decode_raw(dng);

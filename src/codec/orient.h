@@ -1,11 +1,11 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Display-path orientation (plan/04: "Apply EXIF/container orientation on the
+// Display-path orientation (docs/design/04: "Apply EXIF/container orientation on the
 // display path, never as a surprise 90° pixel rotate of the original").
 //
 // The decoded raster is reordered in memory on the worker that decoded it;
 // the file is never touched. HEIC/AVIF get this from libheif, RAW from
-// LibRaw's flip; JPEG gets it here (PR 10, closing plan/12 PR 7 row 4 for
+// LibRaw's flip; JPEG gets it here (PR 10, closing docs/design/12 PR 7 row 4 for
 // JPEG). TIFF, PNG and WebP orientation stay unapplied, as before.
 #pragma once
 

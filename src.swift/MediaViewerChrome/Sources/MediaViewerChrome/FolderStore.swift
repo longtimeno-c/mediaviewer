@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 18's filmstrip/gallery follow-up (plan/12 2026-09-17): the SwiftUI-side
+// PR 18's filmstrip/gallery follow-up (docs/design/12 2026-09-17): the SwiftUI-side
 // state both views read. Owns nothing MvLabApp doesn't already own on the
 // C++ side (folder_model, browse_index) — this only mirrors item
 // count/selection/names (cheap, polled) and caches decoded thumbnails as they
@@ -29,7 +29,7 @@ final class ThumbSlot: ObservableObject {
   @Published fileprivate(set) var image: CGImage?
 }
 
-/// One folder tile (plan/10 PR 26). Like ThumbSlot, tiles observe their own
+/// One folder tile (docs/design/10 PR 26). Like ThumbSlot, tiles observe their own
 /// card, so a cover arriving re-renders one tile, not the grid.
 @MainActor
 final class FolderCard: ObservableObject {
@@ -74,11 +74,11 @@ final class FolderStore: ObservableObject {
   @Published private(set) var names: [String] = []
   /// Parallel to `names`: which items are clips, for the gallery's play badge.
   @Published private(set) var clips: [Bool] = []
-  /// Names of marked items (plan/16 marks), rebuilt only when the host's marks
+  /// Names of marked items (docs/design/16 marks), rebuilt only when the host's marks
   /// generation or listing changes.
   @Published private(set) var markedNames: Set<String> = []
   @Published private(set) var markedCount: Int = 0
-  /// Gallery cell edge in points (plan/16 `+`/`-`: 24 pt steps, 80-344, start 152).
+  /// Gallery cell edge in points (docs/design/16 `+`/`-`: 24 pt steps, 80-344, start 152).
   @Published private(set) var galleryCellSize: CGFloat = 152
   /// Child folders of the open folder, as full paths (natural order).
   @Published private(set) var folders: [String] = []
@@ -90,7 +90,7 @@ final class FolderStore: ObservableObject {
   /// `/` on the folder row. Nil when idle; empty while the query is open and
   /// nothing has been typed.
   @Published private(set) var folderQuery: String?
-  /// The updater's step, for the command bar (plan/13): 0 idle, 1 checking,
+  /// The updater's step, for the command bar (docs/design/13): 0 idle, 1 checking,
   /// 2 downloading, 3 staged and waiting ("Update ready — restart").
   @Published private(set) var updatePhase: Int32 = 0
   /// The version being downloaded or staged; nil until Sparkle names one.

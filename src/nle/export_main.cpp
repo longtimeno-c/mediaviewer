@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// mv-nle-export: one Local search, written as FCPXML (plan/23 "Export results
+// mv-nle-export: one Local search, written as FCPXML (docs/design/23 "Export results
 // as FCPXML"). Both platforms: the reader loads the installed AI pack
 // read-only, exactly as the search agent does, and the document imports into
 // Final Cut Pro (File > Import > XML), DaVinci Resolve and Premiere Pro.

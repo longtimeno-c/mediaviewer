@@ -79,7 +79,7 @@ canvas_view usable_canvas(const input_snapshot& s) noexcept {
     v.x = left;
     v.w -= left;
   }
-  // PR 29 (plan/20): a docked right pane (the Edit workspace). The picture is
+  // PR 29 (docs/design/20): a docked right pane (the Edit workspace). The picture is
   // framed beside it; the swapchain still spans the client, so docking is a
   // refit on the same present path, never a resize.
   const float right = static_cast<float>(s.chrome_right_px);
@@ -194,7 +194,7 @@ void present_lab::wake() noexcept {
 }
 
 // --- PR 7 no-pop instrument -------------------------------------------------
-// plan/10 PR 7: "the full decode replaces it without a visible pop". A person
+// docs/design/10 PR 7: "the full decode replaces it without a visible pop". A person
 // still has to look at a RAW once; these three make the rest of it a number in
 // the report, so a hard cut, a jumped view or a stutter inside the fade fails a
 // gate instead of passing quietly. Render thread only.
@@ -492,7 +492,7 @@ void present_lab::render_thread_main() noexcept {
       seen_display_seq_ = snapshot.display_change_seq;
       redraw = true;
       // The window may have moved to a monitor on another GPU. Same recovery
-      // path as device removal (plan/03, "Adapter selection & hybrid GPUs").
+      // path as device removal (docs/design/03, "Adapter selection & hybrid GPUs").
       if (device_.adapter_changed_for(window_)) {
         MV_LOG_INFO("present_lab: adapter changed under the window; rebuilding");
         if (auto r = rebuild_device(); !r) { exit_code_ = 2; break; }
@@ -504,7 +504,7 @@ void present_lab::render_thread_main() noexcept {
         pacer_.set_refresh(swapchain_.refresh_interval_seconds());
       }
     }
-    // PR 30 (plan/21): the Video Editor borrows the canvas. The same swapchain
+    // PR 30 (docs/design/21): the Video Editor borrows the canvas. The same swapchain
     // moves to its preview window and back; the resize below then fits it.
     if (const HWND host = snapshot.canvas_window != 0 ? reinterpret_cast<HWND>(snapshot.canvas_window) : window_;
         host != canvas_host_) {
@@ -583,7 +583,7 @@ void present_lab::render_thread_main() noexcept {
             mv::abi::release_gpu_image(ready);
             ++stale_drops_;
           } else if (kind == canvas::publish_kind::refinement) {
-            // plan/04 step 4: the same item at a better quality. The view is
+            // docs/design/04 step 4: the same item at a better quality. The view is
             // kept as a fraction of the image — including a zoom or pan made
             // while it loaded — and the new texture fades in over the old one.
             // Hold-previous and a playing animation are not touched.
@@ -692,7 +692,7 @@ void present_lab::render_thread_main() noexcept {
             note_nav_full(*current_image_);
             {
               const auto view = usable_canvas(snapshot);
-              // plan/16 sticky zoom: off (default) fits every item; on keeps the
+              // docs/design/16 sticky zoom: off (default) fits every item; on keeps the
               // mode, or the zoom and pan fraction. Camera state only, so
               // prefetch is untouched.
               if (snapshot.sticky_zoom && had_media && camera_.fill_mode()) {
@@ -805,7 +805,7 @@ void present_lab::render_thread_main() noexcept {
       if (video_open_ != was_video_open) redraw = true;
     }
 
-    // Animation (plan/04, PR 6). Frames come from the session's decode ring
+    // Animation (docs/design/04, PR 6). Frames come from the session's decode ring
     // into anim_frame_ — never through the ready-image branch — so hold-previous
     // keeps the last *item* and the camera is not refitted per frame.
     if (session_) {
@@ -1001,12 +1001,12 @@ void present_lab::render_thread_main() noexcept {
                               media_width(), media_height(), view.w, view.h);
         redraw = true;
       }
-      // The UI thread reads this to let ↑ ↓ fall through at fit (plan/16:
+      // The UI thread reads this to let ↑ ↓ fall through at fit (docs/design/16:
       // they pan only when zoomed). Lock-free; the UI never waits on it.
       view_fitted_.store(!(current_image_ || current_video_.texture) || camera_.fit_mode(),
                          std::memory_order_relaxed);
       showing_still_.store(current_image_ != nullptr, std::memory_order_relaxed);
-      // The title-bar status line reads these (plan/16 "Status / title").
+      // The title-bar status line reads these (docs/design/16 "Status / title").
       status_width_.store(static_cast<std::uint32_t>(media_width()), std::memory_order_relaxed);
       status_height_.store(static_cast<std::uint32_t>(media_height()), std::memory_order_relaxed);
       status_zoom_pct_.store(static_cast<std::uint32_t>(std::lround(camera_.target_zoom() * 100.0f)),
@@ -1060,7 +1060,7 @@ void present_lab::render_thread_main() noexcept {
     }
 
     // --- Should we present at all? --------------------------------------
-    // plan/03 rule 4: idle means stop presenting entirely (0 % GPU on a static
+    // docs/design/03 rule 4: idle means stop presenting entirely (0 % GPU on a static
     // image), and keep presenting for ~500 ms after the last input so a flick
     // does not stutter at the tail.
     //
@@ -1074,16 +1074,16 @@ void present_lab::render_thread_main() noexcept {
     // "Clip open, no frame yet" is live: it ends the instant the first frame
     // arrives, so this is a bounded wait for the decoder, not a spin.
     const bool video_loading = video_open_ && !current_video_.texture;
-    // plan/03 rule 4's one labelled exception: blinkies animate, so a still with
+    // docs/design/03 rule 4's one labelled exception: blinkies animate, so a still with
     // them on presents until C turns them off. Everything else here idles.
     const bool blinkies = snapshot.clipping && current_image_ != nullptr;
     const bool fading = fade_from_ && fade_.active(elapsed);
     const bool live = video_active_ || video_loading || animating_ || camera_.moving() ||
                       pan_tail || blinkies || anim_live_ || fading;
     live_presenting_ = live;
-    // plan/18 "Priority": a background import waits between buffers while
+    // docs/design/18 "Priority": a background import waits between buffers while
     // this loop is presenting frames. One relaxed store; never blocks.
-    // plan/17 "Yield policy": a dropped frame keeps the signal up for two
+    // docs/design/17 "Yield policy": a dropped frame keeps the signal up for two
     // seconds, so the AI indexer also backs off when presents run late.
     if (const std::uint64_t drops = pacer_.dropped_frames_so_far(); drops > busy_drops_seen_) {
       busy_drops_seen_ = drops;
@@ -1145,7 +1145,7 @@ void present_lab::render_thread_main() noexcept {
 
     // --- The frame ------------------------------------------------------
     // Wait BEFORE recording, never after Present. This ordering is the whole
-    // point of the waitable object (plan/03).
+    // point of the waitable object (docs/design/03).
     if (!swapchain_.wait_for_next_frame()) {
       if (device_.removed_reason() != S_OK) {
         if (auto r = rebuild_device(); !r) { exit_code_ = 2; break; }
@@ -1376,7 +1376,7 @@ void present_lab::render_thread_main() noexcept {
 
     // A composition swapchain cannot tear, so this is always a vsync present
     // under D1. The flag is plumbed because the PR 1 lab can be re-hosted on an
-    // HWND swapchain to measure VRR behaviour (plan/03).
+    // HWND swapchain to measure VRR behaviour (docs/design/03).
     const HRESULT hr = swapchain_.present(false);
     if (warmed_up_ && !options_.start_animating) ++idle_stats_.presents;
     if (hr == S_OK) {
@@ -1525,7 +1525,7 @@ void present_lab::note_still_landed() noexcept {
   shown_key_.store(current_image_->item_key, std::memory_order_release);
 }
 
-// Crop mode (plan/16): the frame outside the draft rect is dimmed, the rect
+// Crop mode (docs/design/16): the frame outside the draft rect is dimmed, the rect
 // has a border and thirds. ImGui draws in the same present as the picture —
 // the twin of present_lab_mac's draw_crop_overlay.
 void present_lab::draw_crop_overlay(const input_snapshot& snapshot) noexcept {
@@ -1757,7 +1757,7 @@ void present_lab::draw_view_overlays(const input_snapshot& snapshot) noexcept {
     float y = view.y + view.h - fs - pad;
     label(view.x + pad, y, line);
     // Whatever the property model filled, stacked upward; an empty field has no
-    // line (plan/06).
+    // line (docs/design/06).
     for (const char* extra : {snapshot.meta.exposure_line, snapshot.meta.camera_line,
                               snapshot.meta.date_line}) {
       if (!extra[0]) continue;
@@ -1951,7 +1951,7 @@ void present_lab::draw_overlay(const input_snapshot& snapshot) noexcept {
     ImGui::Text("decode is off the render thread — pan must not start one");
     if (snapshot.clipping && current_image_) {
       ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.35f, 1.0f),
-                         "blinkies on: presenting until C (plan/03 rule 4 exception)");
+                         "blinkies on: presenting until C (docs/design/03 rule 4 exception)");
     }
     if (session_ && mv::abi::animation_open(session_, anim_generation_)) {
       const auto anim_stats = mv::abi::animation_stats_now(session_);

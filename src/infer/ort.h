@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// ONNX Runtime behind our own interface (plan/17 "Runtime"): the library is
+// ONNX Runtime behind our own interface (docs/design/17 "Runtime"): the library is
 // loaded at run time from the AI pack (never linked, never in the base
 // install), its C API is reached through OrtGetApiBase, and no ORT type
 // crosses this header. The same discipline as IVideoSource (D9): headers

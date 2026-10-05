@@ -127,9 +127,9 @@ void background_pass(std::wstring db_dir, bool uploads_allowed, bool url_configu
   const std::size_t rewritten = scrub_reports_in(db_dir + L"\\reports", local_identities());
 
   const crash_settings cs = load_crash_settings();
-  // plan/13: "Ask before the first send, plainly, once." No endpoint exists
+  // docs/design/13: "Ask before the first send, plainly, once." No endpoint exists
   // in PR 7, so this is always false today; the dialog is PR 15 and must not
-  // stack with other first-run prompts (plan/09).
+  // stack with other first-run prompts (docs/design/09).
   const bool ask = should_ask_crash_consent(cs, pending);
   MV_LOG_INFO("crash: %zu pending report(s), %zu scrubbed this launch, uploads %s%s",
               pending, rewritten, uploads_allowed ? "enabled" : "disabled",
@@ -197,7 +197,7 @@ start_result start() noexcept {
       MV_LOG_WARN("crash: crashpad_handler.exe not found beside the exe; crash reporting is off");
     } else {
       auto* info = crashpad::CrashpadInfo::GetCrashpadInfo();
-      // plan/13: stacks, contexts, modules — no heap walk, no extra ranges,
+      // docs/design/13: stacks, contexts, modules — no heap walk, no extra ranges,
       // and no hand-off to WER (which would upload an unscrubbed dump).
       info->set_gather_indirectly_referenced_memory(crashpad::TriState::kDisabled, 0);
       info->set_system_crash_reporter_forwarding(crashpad::TriState::kDisabled);

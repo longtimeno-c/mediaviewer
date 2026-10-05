@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The audio index's models (plan/17 "Audio", owner 2026-09-27): what a clip
+// The audio index's models (docs/design/17 "Audio", owner 2026-09-27): what a clip
 // SOUNDS like (LAION CLAP: an audio tower and a text tower in one space, so a
 // description finds "dog barking" the way CLIP finds a picture) and what is
 // SAID in it (OpenAI Whisper: timestamped transcripts, searched as text).
@@ -47,7 +47,7 @@ class clap_model {
   [[nodiscard]] static result<std::unique_ptr<clap_model>> open(const runtime& rt, const clap_spec& spec,
                                                                 const session_options& options,
                                                                 provider_fault* fault = nullptr);
-  // The text tower only (the search agent, plan/23): embed_audio is
+  // The text tower only (the search agent, docs/design/23): embed_audio is
   // status::unsupported_format.
   [[nodiscard]] static result<std::unique_ptr<clap_model>> open_text_only(const runtime& rt, const clap_spec& spec,
                                                                           const session_options& options);

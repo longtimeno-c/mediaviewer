@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// On-disk JPEG-512 thumbnail cache. Spec jpg512.2 (plan/04, plan/12 2026-09-07;
+// On-disk JPEG-512 thumbnail cache. Spec jpg512.2 (docs/design/04, docs/design/12 2026-09-07;
 // .2 since PR 10: JPEG thumbs carry the EXIF orientation, so .1 rows regenerate;
 // .3 since 2026-10-03: a clip's poster is turned by its display matrix, so .2
 // rows regenerate).
@@ -31,7 +31,7 @@ struct thumb_key {
   std::uint64_t size = 0;
 };
 
-// Milestone H (plan/17): a clip moment is its own row beside the file's poster,
+// Milestone H (docs/design/17): a clip moment is its own row beside the file's poster,
 // under the file's own stamp and its path with "#t=<ms>" appended. The cache
 // keys absolute paths and no real file name ends that way, so the two cannot
 // collide. The AI pack stores these rows (host table moment_thumbnail); result

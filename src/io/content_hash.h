@@ -1,8 +1,8 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Content hashing for verified copies (plan/18-import.md "The engine").
+// Content hashing for verified copies (docs/design/18-import.md "The engine").
 //
-// BLAKE3-256, taken under CC0 (plan/18: Apache-2.0 alone does not combine with
+// BLAKE3-256, taken under CC0 (docs/design/18: Apache-2.0 alone does not combine with
 // GPL-2.0). A duplicate is decided by size first and this hash second, never
 // by name. Portable; no platform header (D9). The hash of a user's file never
 // leaves the machine (rule 6).

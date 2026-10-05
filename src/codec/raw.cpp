@@ -13,7 +13,7 @@
 //   (gamm = 1/2.4, 12.92), camera white balance, camera matrix. That is
 //   display-referred sRGB already, so the raster is `display_referred`,
 //   tagged sRGB, no ICC: the colour stage copies it through with no tone map
-//   (D6). "Untagged RAW -> camera matrix from LibRaw" (plan/04) happens here.
+//   (D6). "Untagged RAW -> camera matrix from LibRaw" (docs/design/04) happens here.
 // - Highlights clip (highlight=0), matching what the embedded JPEG shows.
 // - Auto-bright stays on (dcraw default, 1 % clip). A fixed white point is
 //   visibly darker than the camera's own JPEG, which is the pop the verify
@@ -760,7 +760,7 @@ namespace raw_detail {
 //   DNG K-50   (16)     739    2305     791    1983 ms |  68 -> 33 ms (2464 px)
 //
 // PPG: within ~10 % of linear, 2.5-3x faster than AHD, without linear's
-// zipper aliasing on edges. None of them meets plan/09's < 500 ms on 45 MP on
+// zipper aliasing on edges. None of them meets docs/design/09's < 500 ms on 45 MP on
 // the CPU; the embedded preview is what keeps the viewer instant.
 //
 // Auto-bright vs the embedded JPEG (mean luma, 0-255, full / preview):
@@ -769,7 +769,7 @@ namespace raw_detail {
 // On is consistently closer (mean gap ~20 vs ~36), so it stays on.
 //
 // Preview: DCT 1/2 while the long side stays >= 2048 px keeps first pixel
-// under plan/09's 60 ms; the full decode refines it (rule 3).
+// under docs/design/09's 60 ms; the full decode refines it (rule 3).
 // 2026-09-24: LibRaw OpenMP, team capped by raw_foreground_threads(). PPG and
 // the raw-to-image copy scale; unpack and the colour/gamma loops do not.
 // Stage timings and byte-equivalence tests are in test_raw.cpp.

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // C bridge from Swift chrome to the present lab's input_snapshot
 // (src/shell/input_state.h). Implemented in src/shell/main_mac.mm, not here:
-// this header only declares the boundary, same shape rule as plan/14-abi.md
+// this header only declares the boundary, same shape rule as docs/design/14-abi.md
 // (POD/void args, no C++ types, no exceptions across the line) scoped down
 // to what PR 18's command-bar scaffold needs.
 #pragma once
@@ -21,7 +21,7 @@ void mv_chrome_fit(void);
 // in-window menus and the system menu bar share one dispatcher). [main-thread]
 void mv_chrome_menu(int32_t cmd);
 
-// Settings screen (plan/16 Settings). View flags use the bit layout of
+// Settings screen (docs/design/16 Settings). View flags use the bit layout of
 // view_settings::flags() (shell/settings.h): 1 filmstrip for a folder,
 // 2 filmstrip for an image, 4 wrap, 8 sticky zoom, bits 4-5 canvas background.
 // [main-thread]
@@ -49,11 +49,11 @@ void mv_chrome_one_to_one(void);
 // when the host was built without a version or `size` < 1. [any-thread]
 bool mv_chrome_app_version(char* buf, int32_t size);
 
-// PR 18 (folded-in PR 4, plan/12 2026-09-17): the filmstrip/gallery
+// PR 18 (folded-in PR 4, docs/design/12 2026-09-17): the filmstrip/gallery
 // SwiftUI-side follow-up. These all read/mutate state MvLabApp owns
 // (folder_model + browse_index, src/shell/main_mac.mm) — never folder_model
 // or browse_index directly, so this stays the one boundary between Swift
-// chrome and the host, same as plan/14-abi.md's C-ABI shape rule scoped down
+// chrome and the host, same as docs/design/14-abi.md's C-ABI shape rule scoped down
 // to what this lab needs. [main-thread] for all of these: SwiftUI runs on
 // the main actor, and so does every keyDown:/NSTimer call on the C++ side
 // that also touches this state, so there is no cross-thread synchronization
@@ -125,7 +125,7 @@ void mv_chrome_select_index_and_close_gallery(int32_t index);
 // another removed). [main-thread]
 uint64_t mv_chrome_listing_generation(void);
 
-// Marks (plan/16 "Marks, copy, move"): bumped whenever the mark set changes,
+// Marks (docs/design/16 "Marks, copy, move"): bumped whenever the mark set changes,
 // so Swift can rebuild its marked-item cache only when it must.
 // `mv_chrome_is_marked` is false for an out-of-range index. [main-thread]
 uint64_t mv_chrome_marks_generation(void);
@@ -138,11 +138,11 @@ bool mv_chrome_is_marked(int32_t index);
 bool mv_chrome_item_is_video(int32_t index);
 
 // The gallery reports how many cells it currently lays out per row, so the
-// host can move the selection by row for Up/Down/W/S (plan/16 `G` row).
+// host can move the selection by row for Up/Down/W/S (docs/design/16 `G` row).
 // Values < 1 are clamped to 1. [main-thread]
 void mv_chrome_set_gallery_columns(int32_t columns);
 
-// PR 20 updates (plan/13). Phase: 0 idle, 1 checking, 2 downloading, 3 a
+// PR 20 updates (docs/design/13). Phase: 0 idle, 1 checking, 2 downloading, 3 a
 // verified update is staged and waiting for the user; always 0 in the bare
 // lab. The version is the one being downloaded or staged (false if none yet).
 // Restart installs a staged update and relaunches onto the same folder and
@@ -151,7 +151,7 @@ int32_t mv_chrome_update_phase(void);
 bool mv_chrome_update_version(char* out, int32_t cap);
 void mv_chrome_restart_to_update(void);
 
-// Multi-folder browsing (plan/10 PR 26). The open folder's child folders are
+// Multi-folder browsing (docs/design/10 PR 26). The open folder's child folders are
 // shown as tiles above its images; the breadcrumb runs from the highest folder
 // reached to the one on screen. All [main-thread]. Folder tiles are keyed by
 // their full path, which survives a relist.
@@ -184,7 +184,7 @@ int32_t mv_chrome_folder_cursor(void);
 // The in-progress folder-name query (`/`, folder row active). False when idle;
 // an empty string means the query is open and nothing has been typed yet.
 bool mv_chrome_folder_query(char* out_buf, int32_t out_buf_size);
-// File search (plan/16 "File search", 2026-09-28): find by name over the
+// File search (docs/design/16 "File search", 2026-09-28): find by name over the
 // gallery, base app, no index. Shows the gallery if it is hidden and gives the
 // field above the grid the keyboard. The path bar's search icon runs it when
 // Local search is not installed; ⌘F falls back to it the same way. [main-thread]
@@ -200,7 +200,7 @@ void mv_chrome_set_gallery_filter(uint64_t listing_generation, bool active,
                                   const int32_t* items, int32_t item_count,
                                   const int32_t* folders, int32_t folder_count);
 
-// Video transport (PR 19, plan/16 "Video"). The render thread owns the clip;
+// Video transport (PR 19, docs/design/16 "Video"). The render thread owns the clip;
 // these read the status it publishes and post commands back as latched counters.
 // [main-thread]
 //
@@ -219,10 +219,10 @@ void mv_chrome_video_speed_step(int32_t direction);
 void mv_chrome_video_toggle_mute(void);
 // Absolute volume 0..1, from the transport strip's "More" panel slider.
 void mv_chrome_video_set_volume(float volume);
-// Frame step, paused only: -1 back, +1 forward (plan/16 "More" panel buttons).
+// Frame step, paused only: -1 back, +1 forward (docs/design/16 "More" panel buttons).
 void mv_chrome_video_step(int32_t frames);
 
-// ---- PR 9: metadata pane, folder tree, sort (plan/06, plan/16) ---------------
+// ---- PR 9: metadata pane, folder tree, sort (docs/design/06, docs/design/16) ---------------
 //
 // The pane reads a record the host already holds (meta_store). Nothing here
 // reads the file on the main thread, and toggling the pane, the info overlay or
@@ -248,7 +248,7 @@ int32_t mv_chrome_meta_summary(char* buf, int32_t size);
 int32_t mv_chrome_meta_properties(char* buf, int32_t size);
 int32_t mv_chrome_meta_streams(char* buf, int32_t size);
 
-// ---- PR 12: rating, comment, revert (plan/06 "Writing", plan/16 Rate) ---------
+// ---- PR 12: rating, comment, revert (docs/design/06 "Writing", docs/design/16 Rate) ---------
 //
 // The pane's star row, its comment field and its Revert button. The keys 0-5
 // go through the command table like every other key; these are the pointer
@@ -302,7 +302,7 @@ int32_t mv_chrome_current_folder(char* buf, int32_t size);
 // Opens `dir_utf8` exactly as Open Folder does. [main-thread]
 void mv_chrome_open_folder(const char* dir_utf8);
 
-// plan/26: the Photos library as a folder (macOS). Available once the user
+// docs/design/26: the Photos library as a folder (macOS). Available once the user
 // added the library in Settings (Local search -> Add Photos Library) and
 // PhotoKit access is granted: the folder tree shows a "Photos Library" row
 // then. Opening lists every asset as a result list titled "Photos Library",
@@ -313,7 +313,7 @@ bool mv_chrome_photos_library_available(void);
 bool mv_chrome_photos_library_open(void);
 void mv_chrome_open_photos_library(void);
 
-// plan/26 "Backup": every original of the Photos library (iCloud Photos and
+// docs/design/26 "Backup": every original of the Photos library (iCloud Photos and
 // the Hidden album included; a Live Photo's video and a RAW+JPEG pair's RAW
 // too) copied, verified, into <destination>/YYYY/YYYY-MM-DD. Originals only
 // iCloud has are downloaded for it. A manifest in the destination makes the
@@ -344,7 +344,7 @@ int32_t mv_chrome_photos_backup_destination(char* buf, int32_t size);
 // finished_unix, done, skipped, failed, state). False when there was none.
 bool mv_chrome_photos_backup_last(mv_chrome_photos_backup* out);
 
-// Sort (plan/16). Packed as sort_order.h pack_sort: key in bits 0-2 (0 name,
+// Sort (docs/design/16). Packed as sort_order.h pack_sort: key in bits 0-2 (0 name,
 // 1 modified, 2 size, 3 type, 4 date taken), descending in bit 3. Changing it
 // re-sorts the listing and keeps the current item selected. [main-thread]
 int32_t mv_chrome_sort_order(void);
@@ -356,7 +356,7 @@ void mv_chrome_set_sort_order(int32_t packed);
 int32_t mv_chrome_update_channel(void);
 void mv_chrome_set_update_channel(int32_t channel);
 
-// ---- PR 10: export sheet (plan/10 "SwiftUI crop mode and export sheet") -------
+// ---- PR 10: export sheet (docs/design/10 "SwiftUI crop mode and export sheet") -------
 //
 // The sheet's choice is one integer, packed exactly as the Windows export
 // dialog packs it (shell/edit_session.h pack_export): quality in bits 0-6, PNG
@@ -369,7 +369,7 @@ int32_t mv_chrome_export_last_choice(void);
 void mv_chrome_export_confirm(int32_t packed);
 void mv_chrome_export_cancel(void);
 
-// Milestone G add-ons (plan/18 "Add-ons"), implemented in src/shell/addons_mac.mm.
+// Milestone G add-ons (docs/design/18 "Add-ons"), implemented in src/shell/addons_mac.mm.
 // Strings follow mv_chrome_command_table's rule: returns the length needed,
 // writes at most `size` bytes NUL-terminated. [worker-thread] where noted:
 // those hash files and must not run on the main actor.
@@ -387,7 +387,7 @@ int32_t mv_addons_status(char* buf, int32_t size);
 bool mv_addons_hint_pending(void);
 void mv_addons_hint_done(bool never_again);
 
-// Milestone H (plan/17): the same management by add-on id, for the AI pack
+// Milestone H (docs/design/17): the same management by add-on id, for the AI pack
 // ("ai" = Core, "ai-faces" = People, "ai-audio" = Sound) beside Import. Also addons_mac.mm. The
 // mv_addons_* functions above stay Import's, unchanged. mv_addons_check_manifest
 // now also reports "id", "part_of" and "installed_size"; mv_addons_install and
@@ -409,7 +409,7 @@ bool mv_addon2_load(const char* id);
 bool mv_addon2_reload(const char* id);                                     // [main-thread]
 // Removing "ai" also removes its pieces; keep_data keeps the search index.
 bool mv_addon2_remove(const char* id, bool keep_data);                     // [main-thread]
-// plan/23: Final Cut Pro search, in the bundle and dormant until turned on
+// docs/design/23: Final Cut Pro search, in the bundle and dormant until turned on
 // (src/shell/fcp_mac.mm). States: 0 absent (not in this build, or an Intel
 // Mac), 1 off, 2 on, 3 on but waiting for Login Items approval.
 int32_t mv_fcp_state(void);                                                 // [worker]
@@ -448,7 +448,7 @@ typedef struct mv_chrome_ai_status {
 } mv_chrome_ai_status;
 bool mv_addon2_ai_status(mv_chrome_ai_status* out);
 
-// ---- Milestone H: result listings and match markers (plan/17) -----------------
+// ---- Milestone H: result listings and match markers (docs/design/17) -----------------
 //
 // The Mac twin of mv_folder_open_list (mediaviewer.h 0.14). A listing that is
 // not a directory: search results shown by the same gallery, filmstrip,
@@ -481,7 +481,7 @@ uint64_t mv_chrome_scrub_markers_generation(void);
 // Up to `cap` marker times (ms) for the clip on screen; returns the full count.
 int32_t mv_chrome_scrub_markers(int64_t* out, int32_t cap, int32_t* current);
 
-// ---- PR 11: adjust pane (plan/10 "SwiftUI adjust pane", plan/07) -------------
+// ---- PR 11: adjust pane (docs/design/10 "SwiftUI adjust pane", docs/design/07) -------------
 //
 // The twin of the Windows adjust pane (IslandHost.Adjust.cs). The host owns the
 // edit stack; the pane posts slider values and draws what the host reports.
@@ -517,7 +517,7 @@ void mv_chrome_adjust_close(void);
 // Esc in the pane: keyboard focus back to the canvas (the pane stays open).
 void mv_chrome_adjust_blur(void);
 
-// ---- PR 13 / 14: trim mode, clip tools, Jobs pane (plan/08, plan/10) ---------
+// ---- PR 13 / 14: trim mode, clip tools, Jobs pane (docs/design/08, docs/design/10) ---------
 //
 // The twin of the Windows transport overlay, clip tools flyout and Jobs pane
 // (IslandHost.Clip.cs). The host owns trim mode (shell/trim_state.h, shared
@@ -587,7 +587,7 @@ void mv_chrome_jobs_close(void);
 // Esc in the pane: focus back to the canvas (the pane stays open).
 void mv_chrome_jobs_blur(void);
 
-// ---- PR 29: the Edit workspace (plan/20) ---------------------------------------
+// ---- PR 29: the Edit workspace (docs/design/20) ---------------------------------------
 //
 // One visible door to the PR 10-14 edits: the strip (title, tabs, Undo / Reset
 // / Original / Save copy) and its Crop and Trim panes. The Colour, Info and
@@ -627,7 +627,7 @@ void mv_chrome_edit_show_original(int32_t on);
 // Save copy…: applies a crop draft, then opens the export sheet (PR 10).
 void mv_chrome_edit_save_copy(void);
 
-// ---- PR 30: the Video Editor window (plan/21) ------------------------------------
+// ---- PR 30: the Video Editor window (docs/design/21) ------------------------------------
 //
 // Its own window: the viewer's canvas as the preview, and this timeline. The
 // cut list is the host's (shell/video_timeline.h, shared with Windows); Swift
