@@ -8,7 +8,8 @@
 // It is drawn only while there is no picture and no lab sweep, and it costs
 // nothing once a file is open. Below the hints it lists the recent folders the
 // host hands it (welcome_layout.h); the host hit-tests the same geometry. The
-// hovered row shows an x that removes the folder from the list.
+// hovered row shows an x that removes the folder from the list. On the Mac the
+// first row can be the iCloud Photos library, drawn with a cloud.
 #pragma once
 
 #include <algorithm>
@@ -132,12 +133,23 @@ inline void draw_welcome(ImDrawList* bg, ImFont* font, float w, float h, float c
       bg->AddRect(ImVec2(g.row_x0, top + 1.0f * scale), ImVec2(g.row_x1, top + g.row_h - 1.0f * scale),
                   c_edge, 8.0f * scale, 0, 1.0f * scale);
     }
-    // A folder glyph: tab and body.
+    const bool icloud_row = recents->icloud && i == 0;
     const float fx = g.row_x0 + 10.0f * scale;
     const float fy = top + g.row_h * 0.5f - 6.0f * scale;
-    bg->AddRectFilled(ImVec2(fx, fy), ImVec2(fx + 7.0f * scale, fy + 3.0f * scale), c_glyph, 1.0f * scale);
-    bg->AddRectFilled(ImVec2(fx, fy + 2.0f * scale), ImVec2(fx + 16.0f * scale, fy + 12.0f * scale), c_glyph,
-                      2.0f * scale);
+    if (icloud_row) {
+      // A cloud: a flat base and three puffs, the middle one tallest.
+      const float base_y = fy + 12.0f * scale;
+      bg->AddRectFilled(ImVec2(fx + 1.0f * scale, base_y - 5.0f * scale), ImVec2(fx + 17.0f * scale, base_y),
+                        c_glyph, 2.5f * scale);
+      bg->AddCircleFilled(ImVec2(fx + 4.5f * scale, base_y - 4.0f * scale), 3.5f * scale, c_glyph);
+      bg->AddCircleFilled(ImVec2(fx + 9.5f * scale, base_y - 6.5f * scale), 5.0f * scale, c_glyph);
+      bg->AddCircleFilled(ImVec2(fx + 14.0f * scale, base_y - 4.5f * scale), 3.5f * scale, c_glyph);
+    } else {
+      // A folder glyph: tab and body.
+      bg->AddRectFilled(ImVec2(fx, fy), ImVec2(fx + 7.0f * scale, fy + 3.0f * scale), c_glyph, 1.0f * scale);
+      bg->AddRectFilled(ImVec2(fx, fy + 2.0f * scale), ImVec2(fx + 16.0f * scale, fy + 12.0f * scale), c_glyph,
+                        2.0f * scale);
+    }
 
     const float fs_label = 15.0f * scale;
     const float fs_where = 13.0f * scale;
@@ -156,7 +168,9 @@ inline void draw_welcome(ImDrawList* bg, ImFont* font, float w, float h, float c
       bg->AddText(font, fs_where, ImVec2(right - where_w, top + (g.row_h - fs_where) * 0.5f), c_mute, where);
     }
     // The hovered row's remove button: an x, ringed while the pointer is on it.
-    if (recents->hover == i) {
+    // The iCloud row has none: it leaves the card when the library is removed
+    // in Settings, not from here.
+    if (recents->hover == i && !icloud_row) {
       const ImVec2 c(g.row_x1 - kWelcomeRemoveW * 0.5f * scale, top + g.row_h * 0.5f);
       if (recents->hover_remove) bg->AddCircleFilled(c, 10.0f * scale, c_edge);
       const ImU32 c_x = recents->hover_remove ? c_title : c_mute;

@@ -467,8 +467,17 @@ result<std::string> local_original(std::string_view key, int kind) {
       if (dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC)) != 0) return std::string();
       return url.isFileURL ? utf8(url.path) : std::string();
     }
-    // The editing input's full-size image is the original (edits are described
-    // beside it, not baked in), when this Mac has it.
+    // The editing input's full-size image is the original only while the photo
+    // has no edits: for an edited one Photos hands back its render (a JPEG of
+    // the edit, FullSizeRender), which the backup would file under the
+    // original's name. An edited photo has a full-size render (or adjustment
+    // data) among its resources; then the original is streamed from its own
+    // resource instead (fetch_file: a local read when this Mac has it).
+    for (PHAssetResource* r in [PHAssetResource assetResourcesForAsset:a]) {
+      if (r.type == PHAssetResourceTypeFullSizePhoto || r.type == PHAssetResourceTypeAdjustmentData) {
+        return std::string();
+      }
+    }
     NSURL* url = local_image_url(a);
     return url ? utf8(url.path) : std::string();
   }

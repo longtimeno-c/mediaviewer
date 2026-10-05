@@ -99,9 +99,16 @@ void copy_utf8(std::string_view src, char* dst, std::size_t cap) noexcept {
 }  // namespace
 
 void fill_welcome_recents(std::span<const std::string> utf8_dirs, std::string_view home,
-                          welcome_recents& out) noexcept {
+                          welcome_recents& out, bool icloud) noexcept {
   out.count = 0;
   out.hover = -1;
+  out.hover_remove = false;
+  out.icloud = icloud;
+  if (icloud) {
+    const int i = out.count++;
+    copy_utf8("iCloud Photos", out.label[i], sizeof(out.label[i]));
+    copy_utf8("Photos Library", out.where[i], sizeof(out.where[i]));
+  }
   home = trim_separator(home);
   for (const std::string& d : utf8_dirs) {
     if (out.count >= welcome_recents::kMax) break;

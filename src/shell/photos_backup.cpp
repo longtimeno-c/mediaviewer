@@ -36,6 +36,27 @@ std::string sanitize(std::string_view s) {
   return out;
 }
 
+// The last `n` components of a path, '/'-joined: a backed-up file's place
+// under the destination ("2024/2024-05-17/IMG_0001.HEIC"). The manifest keeps
+// this, not the absolute path, so the backup is still found when the share
+// mounts somewhere else (/Volumes/photos-1 after a stale /Volumes/photos, a
+// drive letter that moved). Rows written before this held absolute paths;
+// their tail is the same three components, so they rebase too.
+std::string tail_components(std::string_view path, int n) {
+  std::size_t end = path.size();
+  while (end > 0 && (path[end - 1] == '/' || path[end - 1] == '\\')) --end;
+  std::size_t begin = end;
+  for (int seen = 0; begin > 0; --begin) {
+    const char c = path[begin - 1];
+    if ((c == '/' || c == '\\') && ++seen == n) break;
+  }
+  std::string out(path.substr(begin, end - begin));
+  for (char& c : out) {
+    if (c == '\\') c = '/';
+  }
+  return out;
+}
+
 // The files copied so far, keyed by (asset, kind). SQLite, one row per file;
 // WAL off and synchronous FULL: it lives on the destination, often a share.
 class manifest {
@@ -262,6 +283,22 @@ void engine::run() {
 
   std::vector<std::string> failures;
   bool stopped = false;
+  const char* abort_why = nullptr;
+  // One file did not make it. If the destination itself has gone (the NAS
+  // dropped off the network, the drive was unplugged) every file after it
+  // would fail too -- each one listed in the report, an iCloud original
+  // possibly fetched for nothing -- so the run stops instead; run it again
+  // when the folder is back. One stat, only on a failure.
+  const auto fail_file = [&](const asset_file& f) {
+    failures.push_back(f.filename);
+    set([&](progress& p) { ++p.failed; });
+    const auto root = io::stat_path(options_.destination);
+    if (!root || !root->is_directory) {
+      abort_why = "The destination folder is no longer reachable; run again when it is back.";
+      return true;
+    }
+    return false;
+  };
   for (const asset_file& f : files) {
     if (cancel_.load(std::memory_order_acquire)) {
       stopped = true;
@@ -271,7 +308,9 @@ void engine::run() {
 
     // Already there: the manifest says so and the file is where it was.
     if (const auto row = log.lookup(f)) {
-      if (auto st = io::stat_path(row->path); st && !st->is_directory && st->size == row->bytes) {
+      const std::string where =
+          io::join_path(options_.destination, io::native_relative(tail_components(row->path, 3)));
+      if (auto st = io::stat_path(where); st && !st->is_directory && st->size == row->bytes) {
         set([&](progress& p) { ++p.skipped; });
         continue;
       }
@@ -279,8 +318,7 @@ void engine::run() {
 
     const std::string dir = layout_dir(options_.destination, f.created_unix);
     if (!io::make_directories(dir)) {
-      failures.push_back(f.filename);
-      set([&](progress& p) { ++p.failed; });
+      if (fail_file(f)) break;
       continue;
     }
     // Never overwrite: another asset's file of the same name on the same day
@@ -288,8 +326,7 @@ void engine::run() {
     const std::string name = io::unique_name(
         f.filename, [&](std::string_view candidate) { return io::file_exists(io::join_path(dir, candidate)); });
     if (name.empty()) {
-      failures.push_back(f.filename);
-      set([&](progress& p) { ++p.failed; });
+      if (fail_file(f)) break;
       continue;
     }
     const std::string final_path = io::join_path(dir, name);
@@ -308,8 +345,7 @@ void engine::run() {
           stopped = true;
           break;
         }
-        failures.push_back(f.filename);
-        set([&](progress& p) { ++p.failed; });
+        if (fail_file(f)) break;
         continue;
       }
       src = tmp;
@@ -328,8 +364,7 @@ void engine::run() {
         stopped = true;
         break;
       }
-      failures.push_back(f.filename);
-      set([&](progress& p) { ++p.failed; });
+      if (fail_file(f)) break;
       continue;
     }
     const io::copy_target_result& t = copied->targets[0];
@@ -338,11 +373,10 @@ void engine::run() {
         stopped = true;
         break;
       }
-      failures.push_back(f.filename);
-      set([&](progress& p) { ++p.failed; });
+      if (fail_file(f)) break;
       continue;
     }
-    log.record(f, final_path, copied->bytes, copied->source_hash.hex());
+    log.record(f, tail_components(final_path, 3), copied->bytes, copied->source_hash.hex());
     set([&](progress& p) {
       ++p.done;
       if (!tmp.empty()) ++p.fetched;
@@ -350,12 +384,12 @@ void engine::run() {
   }
 
   (void)io::remove_tree(options_.scratch);
-  finish(stopped ? run_state::cancelled : run_state::done, nullptr);
+  finish(abort_why ? run_state::failed : stopped ? run_state::cancelled : run_state::done, abort_why);
   const progress final_state = snapshot();
   log.record_run(final_state);
   write_report(keep, final_state, failures);
   MV_LOG_INFO("photos backup: %s, %llu copied, %llu already there, %llu failed",
-              stopped ? "cancelled" : "done", static_cast<unsigned long long>(final_state.done),
+              abort_why ? "destination gone" : stopped ? "cancelled" : "done", static_cast<unsigned long long>(final_state.done),
               static_cast<unsigned long long>(final_state.skipped),
               static_cast<unsigned long long>(final_state.failed));
 }

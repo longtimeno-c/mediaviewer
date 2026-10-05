@@ -131,6 +131,22 @@ TEST_CASE("the welcome card's recent rows name the folder and where it lives", "
     fill_welcome_recents(many, "", r);
     CHECK(r.count == welcome_recents::kMax);
   }
+  SECTION("the iCloud Photos row comes first and the folders follow it") {
+    std::vector<std::string> many;
+    for (int i = 0; i < 10; ++i) many.push_back("/x/" + std::to_string(i));
+    fill_welcome_recents(many, "", r, true);
+    CHECK(r.icloud);
+    CHECK(r.count == welcome_recents::kMax);  // still kMax rows in all
+    CHECK(std::string(r.label[0]) == "iCloud Photos");
+    CHECK(std::string(r.label[1]) == "0");
+    CHECK(std::string(r.label[welcome_recents::kMax - 1]) == std::to_string(welcome_recents::kMax - 2));
+    fill_welcome_recents(many, "", r);
+    CHECK_FALSE(r.icloud);
+    CHECK(std::string(r.label[0]) == "0");
+    const std::vector<std::string> none;
+    fill_welcome_recents(none, "", r, true);
+    CHECK(r.count == 1);  // the library alone, before any folder was opened
+  }
   SECTION("a long name is cut at a character boundary") {
     std::string name;
     for (int i = 0; i < 60; ++i) name += "\xC3\xA9";  // é, two bytes each

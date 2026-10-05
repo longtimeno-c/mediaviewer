@@ -23,6 +23,10 @@ struct welcome_recents {
   std::uint8_t count = 0;  // 0 = no rows: nothing opened yet, or something is open
   std::int8_t hover = -1;  // the row under the pointer, drawn highlighted
   bool hover_remove = false;  // the pointer is on that row's remove button
+  // Row 0 is the iCloud Photos library (docs/design/26), not a folder: drawn
+  // with a cloud and without a remove button, listed first while the library
+  // is added in Settings. The folders follow it, one row down.
+  bool icloud = false;
   char label[kMax][96] = {};
   char where[kMax][192] = {};
 };

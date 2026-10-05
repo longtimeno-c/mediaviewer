@@ -244,3 +244,86 @@ TEST_CASE("cancel stops the run and leaves no part file or scratch behind", "[sh
     CHECK(entry.path().extension() != ".part");
   }
 }
+
+TEST_CASE("a backup moved to a new mount point is still found; nothing is copied twice", "[shell][photos_backup]") {
+  // A NAS share remounts as /Volumes/photos-1 when a stale /Volumes/photos is
+  // in the way: the manifest keeps each file's place under the destination,
+  // not its absolute path, so the next run sees the same backup.
+  scratch_dir lib("pb_lib5");
+  scratch_dir dest("pb_dest5");
+  scratch_dir scratch("pb_scratch5");
+  auto first = std::make_unique<fake_library>();
+  first->files.push_back(make(lib, "A", bk::file_kind::original, "IMG_0001.HEIC", kDay1, 120'000, 12, true));
+  first->files.push_back(make(lib, "B", bk::file_kind::original, "IMG_0002.MOV", kDay2, 200'000, 13, false));
+  auto second = std::make_unique<fake_library>();
+  second->files = first->files;
+  fake_library* raw2 = second.get();
+
+  const fs::path old_root = dest / "photos";
+  const fs::path new_root = dest / "photos-1";
+  {
+    bk::engine e;
+    REQUIRE(e.start(std::move(first), {utf8(old_root), utf8(scratch / "tmp")}));
+    CHECK(run_to_end(e).done == 2);
+  }
+  fs::rename(old_root, new_root);
+  {
+    bk::engine e;
+    REQUIRE(e.start(std::move(second), {utf8(new_root), utf8(scratch / "tmp")}));
+    const bk::progress p = run_to_end(e);
+    CHECK(p.state == bk::run_state::done);
+    CHECK(p.skipped == 2);
+    CHECK(p.done == 0);
+    CHECK(raw2->fetches == 0);
+  }
+  CHECK_FALSE(fs::exists(fs::path(bk::layout_dir(utf8(new_root), kDay1)) / "IMG_0001 (2).HEIC"));
+}
+
+namespace {
+
+// A library whose fetch pulls the destination out from under the run, as a
+// NAS dropping off the network does.
+class vanishing_destination final : public bk::source {
+ public:
+  fake_library inner;
+  fs::path destination;
+  std::atomic<int> fetches{0};
+  std::atomic<bool> removed{false};
+
+  mv::result<std::vector<bk::asset_file>> enumerate(const std::atomic<bool>* c) override { return inner.enumerate(c); }
+  mv::result<std::string> local_file(const bk::asset_file& f) override { return inner.local_file(f); }
+  mv::expected fetch(const bk::asset_file& f, const std::string& tmp, const std::atomic<bool>* c) override {
+    if (++fetches == 1) {
+      std::error_code ec;
+      fs::remove_all(destination, ec);
+      removed = !fs::exists(destination);
+    }
+    return inner.fetch(f, tmp, c);
+  }
+};
+
+}  // namespace
+
+TEST_CASE("a destination that disappears stops the run instead of failing every file", "[shell][photos_backup]") {
+  scratch_dir lib("pb_lib6");
+  scratch_dir dest("pb_dest6");
+  scratch_dir scratch("pb_scratch6");
+  auto src = std::make_unique<vanishing_destination>();
+  src->destination = dest / "nas";
+  src->inner.files.push_back(make(lib, "A", bk::file_kind::original, "IMG_0001.JPG", kDay1, 10'000, 14, false));
+  src->inner.files.push_back(make(lib, "B", bk::file_kind::original, "IMG_0002.JPG", kDay1, 10'000, 15, false));
+  src->inner.files.push_back(make(lib, "C", bk::file_kind::original, "IMG_0003.JPG", kDay2, 10'000, 16, false));
+  vanishing_destination* raw = src.get();
+  bk::engine e;
+  REQUIRE(e.start(std::move(src), {utf8(dest / "nas"), utf8(scratch / "tmp")}));
+  const bk::progress p = run_to_end(e);
+  // Windows will not delete a folder holding an open file, and the run keeps
+  // its manifest open in the destination, so the folder cannot be pulled away
+  // here; a share that drops off the network is a different event.
+  if (!raw->removed) SKIP("the destination could not be removed while the manifest is open (Windows)");
+  CHECK(p.state == bk::run_state::failed);
+  CHECK(p.failed == 1);
+  CHECK(p.done == 0);
+  CHECK_FALSE(p.error.empty());
+  CHECK(raw->fetches == 1);  // nothing more was downloaded for a folder that is gone
+}
