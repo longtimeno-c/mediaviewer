@@ -63,6 +63,8 @@ final class ManagementModel: ObservableObject {
   @Published private(set) var batteryPercent: Int = 30
   @Published private(set) var capBytes: Int64 = 0
   @Published private(set) var facesOn = false
+  /// Settings → Photos Library → "Download iCloud videos to index them" (2026-10-05).
+  @Published private(set) var icloudVideos = false
   @Published private(set) var coreMLAvailable = true
   /// Settings "Index videos for" (MV_AI_MEDIA_*: 1 Pictures, 2 Sound, 3 Both).
   @Published private(set) var videoIndex: Int = 1
@@ -215,6 +217,7 @@ final class ManagementModel: ObservableObject {
     batteryPercent = Int(int64(obj["pause_on_battery_percent"]))
     capBytes = int64(obj["index_cap_bytes"])
     facesOn = obj["faces"] as? Bool ?? false
+    icloudVideos = obj["icloud_videos"] as? Bool ?? false
     coreMLAvailable = (obj["available"] as? [String: Any])?["coreml"] as? Bool ?? false
     let index = Int(int64(obj["video_index"]))
     videoIndex = index == 0 ? Int(MV_AI_MEDIA_PICTURES) : index
@@ -811,6 +814,17 @@ struct ManagementView: View {
   private var photosSection: some View {
     if let root = model.photosRoot {
       photosRow(root)
+      Divider().padding(.horizontal, 12)
+      row("Download iCloud videos to index them",
+          detail: "Videos that only iCloud has are found by their poster alone. With this on, MediaViewer downloads "
+            + "them a couple at a time, indexes what they show and say, then deletes each download. Only on power "
+            + "and an unmetered network, with 10 GB free. Photos are not downloaded: Photos keeps a preview of each "
+            + "on this Mac, and that is what is indexed. Your library is never changed. Off by default.") {
+        Toggle("Download iCloud videos to index them",
+               isOn: Binding(get: { model.icloudVideos }, set: { model.set("icloud_videos", $0 ? 1 : 0) }))
+          .toggleStyle(.switch)
+          .labelsHidden()
+      }
     } else if !PhotosLibrary.declared {
       row("Search your Photos library",
           detail: "This version of MediaViewer cannot ask for access to Photos. Update MediaViewer to search your Photos library.") {
@@ -864,9 +878,9 @@ struct ManagementView: View {
             Text("\(countText(UInt64(indexed))) of \(countText(UInt64(max(0, root.assets)))) indexed")
             if root.unavailable > 0 {
               Text(" · \(countText(UInt64(root.unavailable))) only in iCloud")
-                .help("Optimize Mac Storage keeps these originals in iCloud and no picture of them on this Mac, "
-                      + "so there is nothing to read without downloading. They are indexed once Photos has them "
-                      + "here (MediaViewer checks each of them when it starts). An iCloud-only video is found by its poster.")
+                .help("Optimize Mac Storage keeps these originals in iCloud. They are indexed once Photos has them "
+                      + "here (MediaViewer checks each of them when it starts). An iCloud-only video is found by its "
+                      + "poster, or fully once \u{201C}Download iCloud videos to index them\u{201D} is on.")
             }
             Text(root.enabled ? "" : " · paused")
           }

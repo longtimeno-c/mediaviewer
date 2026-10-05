@@ -340,6 +340,8 @@ struct photos_lib {
   std::atomic<int> enumerations{0};
   std::atomic<int> stills{0};
   std::atomic<int> videos{0};  // video_file asks
+  std::atomic<int> fetches{0};  // fetch_video downloads (the opt-in iCloud fetch)
+  std::atomic<bool> unmetered{true};
   void notify() {
     std::function<void()> f;
     {
@@ -393,6 +395,21 @@ class fake_photos final : public mv::ai::photos_source {
     if (!it->local) return mv::err(mv::status::io);
     return it->clip_file;
   }
+  // "Downloads" a clip: an empty file the fake sampler reads by name (red,
+  // green, then blue, whatever the name).
+  mv::result<std::string> fetch_video(std::string_view id, const std::string& dest_stem,
+                                      const std::function<bool(double)>& progress) override {
+    if (!mv::ai::readable(access())) return mv::err(mv::status::permission_denied);
+    auto it = find(id);
+    if (!it) return mv::err(mv::status::not_found);
+    if (it->kind != mv::ai::asset_kind::video) return mv::err(mv::status::unsupported_format);
+    if (progress && !progress(0.5)) return mv::err(mv::status::cancelled);
+    ++lib_->fetches;
+    const std::string file = dest_stem + ".mp4";
+    std::ofstream(fs::path(file), std::ios::binary) << "clip";
+    return file;
+  }
+  bool network_unmetered() const override { return lib_->unmetered.load(); }
   void observe(std::function<void()> changed) override {
     std::lock_guard lock(lib_->m);
     lib_->changed = std::move(changed);
@@ -2164,6 +2181,54 @@ TEST_CASE("an iCloud-only asset is tried again after a restart and indexes once 
   // its poster row stayed, and nothing was re-embedded for it.
   CHECK(has_row(r.search("red"), "photos:red-cloudclip"));
   CHECK(r.library->stills == posters + 2);  // the photo: the launch check, then its embedding
+}
+
+TEST_CASE("the opt-in iCloud fetch downloads iCloud-only clips, indexes them, then deletes the files",
+          "[ai][engine][photos][icloud]") {
+  rig r;
+  r.library->items = {
+      {"red-rose", 1, mv::ai::asset_kind::photo, true, ""},
+      {"blue-cloud", 1, mv::ai::asset_kind::photo, false, ""},      // a photo: never fetched
+      {"red-cloudclip", 1, mv::ai::asset_kind::video, false, ""},   // only in iCloud
+  };
+  r.start();
+  REQUIRE(r.eng->index_photos_library());
+  REQUIRE(r.idle());
+  CHECK(r.status().assets_unavailable == 2);
+  CHECK(r.status().icloud_fetch == MV_AI_ICLOUD_OFF);  // off by default
+  CHECK_FALSE(has_row(r.search("blue"), "photos:red-cloudclip"));  // only its red poster
+  CHECK(r.library->fetches == 0);
+
+  // On battery, then on a metered network: it waits, downloading nothing.
+  r.on_battery = true;
+  REQUIRE(r.eng->set_setting("icloud_videos", "1"));
+  REQUIRE(eventually([&] { return r.status().icloud_fetch == MV_AI_ICLOUD_WAIT_POWER; }));
+  CHECK(r.status().icloud_videos_left == 1);
+  r.library->unmetered = false;
+  r.on_battery = false;
+  REQUIRE(eventually([&] { return r.status().icloud_fetch == MV_AI_ICLOUD_WAIT_NETWORK; }));
+  CHECK(r.library->fetches == 0);
+
+  r.library->unmetered = true;
+  // Downloaded, then indexed from the original: its blue moment is found.
+  REQUIRE(eventually([&] { return has_row(r.search("blue"), "photos:red-cloudclip"); }));
+  REQUIRE(eventually([&] { return r.status().icloud_fetch == MV_AI_ICLOUD_DONE; }));
+  REQUIRE(r.idle());
+  const mv_ai_status s = r.status();
+  CHECK(r.library->fetches == 1);
+  CHECK(s.icloud_videos_fetched == 1);
+  CHECK(s.icloud_videos_left == 0);
+  CHECK(s.assets_unavailable == 1);  // the photo, whose local preview is all there is
+  CHECK(s.assets_done == 2);
+  // Its file is gone once every track is done with it.
+  const fs::path cache = r.dir / "data" / "cache" / "icloud";
+  REQUIRE(eventually([&] { return !fs::exists(cache) || fs::is_empty(cache); }));
+  // A restart does not fetch it again: it is indexed.
+  r.start();
+  REQUIRE(r.idle());
+  REQUIRE(eventually([&] { return r.status().icloud_fetch == MV_AI_ICLOUD_DONE; }));
+  CHECK(r.library->fetches == 1);
+  CHECK(r.eng->settings_json().find("\"icloud_videos\":true") != std::string::npos);
 }
 
 TEST_CASE("the People pass leaves iCloud-only Photos assets alone until they are local",

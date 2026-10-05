@@ -17,10 +17,11 @@
 //   5  read-only: nothing here writes to the library (no albums, keywords,
 //      favourites, edits).
 //   6  identifiers are paths: never logged, never in a crash report.
-//      Local only: every request has network access off. An iCloud-only
-//      original with no local derivative is `unavailable`, not downloaded
-//      (docs/design/12 2026-09-28: downloading originals is an owner call, not a
-//      default).
+//      Local only: every read has network access off. An iCloud-only
+//      original with no local derivative is `unavailable`. The one exception
+//      is fetch_video, the opt-in "Download iCloud videos to index them"
+//      (docs/design/12 2026-10-05): it copies a clip's original to a file the
+//      engine owns and deletes once the clip is indexed.
 //   1  every call here may block for milliseconds (PhotoKit's own caches, a
 //      decode); worker / control threads only, never the UI or render thread.
 //
@@ -108,6 +109,24 @@ class photos_source {
   // original) that the host's sampler and audio reader can open read-only.
   // status::io when only iCloud has it.
   [[nodiscard]] virtual result<std::string> video_file(std::string_view id) = 0;
+
+  // The opt-in iCloud fetch (2026-10-05): downloads a video's file (its
+  // current edit when Photos keeps one, else the original) from iCloud into
+  // `dest_stem` + its extension (".mov", ".mp4"), and answers that path.
+  // Blocks for as long as the download takes; `progress` (0..1) is called as
+  // it goes, and returning false from it cancels (status::cancelled). Nothing
+  // in the library changes. unsupported_format where there is no PhotoKit.
+  [[nodiscard]] virtual result<std::string> fetch_video(std::string_view id, const std::string& dest_stem,
+                                                        const std::function<bool(double)>& progress) {
+    (void)id;
+    (void)dest_stem;
+    (void)progress;
+    return err(status::unsupported_format);
+  }
+
+  // Whether the network suits a bulk download now: up, and not marked
+  // expensive or constrained (a phone's hotspot, Low Data Mode).
+  [[nodiscard]] virtual bool network_unmetered() const { return false; }
 
   // `changed` runs on a PhotoKit thread when the library changes (an import,
   // an edit, a delete, an iCloud download). It must return quickly. Replaces

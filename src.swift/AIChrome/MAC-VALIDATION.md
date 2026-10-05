@@ -460,6 +460,13 @@ MV_AI_SPEECH_CLIP=/tmp/speech.mp4 \
       as stages ("✓ Pictures  ◔ Speech 26%"); the pictures ETA is not shown once pictures are
       done. The management view shows "Sound: 40 of 40 clips · Speech: 40 of 40" once all are
       done. The command-bar pill says "Indexing sound 12 of 40 clips" once pictures are done.
+- [ ] **iCloud clips (2026-10-05):** Settings → Photos Library → *Download iCloud videos to index
+      them* is off by default. Turned on, on power and Wi‑Fi: the status line says "Downloading
+      from iCloud (N%) · M clips left", at most two files sit in
+      `~/Library/Application Support/MediaViewer/Add-ons/AI/data/cache/icloud`, each is deleted once
+      indexed, and an iCloud-only clip's later moment (and words said in it) is then found. On
+      battery it says "iCloud downloads wait for power"; on a phone hotspot "…wait for an unmetered
+      network". Pause stops downloads; quitting deletes what is there.
 - [ ] **Sound search:** a clip with a dog barking at a known time; with Sound indexed, ⌘F
       "dog barking" (Sounds chip on, or no chip) finds that clip; the tile carries the
       `speaker.wave.2` badge; Enter opens it paused at the moment, within 2 s of the bark.

@@ -320,6 +320,24 @@ constexpr const char* kTrackWhere =
 
 std::vector<work_item> index_db::pending(const std::string& spec, std::size_t limit,
                                          std::int32_t max_tries, const track_filter& filter) {
+  return pending_where(spec, limit, max_tries, filter, "");
+}
+
+std::vector<work_item> index_db::pending_among(const std::string& spec, std::span<const std::int64_t> ids,
+                                               std::int32_t max_tries, const track_filter& filter) {
+  if (ids.empty()) return {};
+  // Integers only, so written into the SQL; a handful at most.
+  std::string in = " AND a.id IN (";
+  for (std::size_t i = 0; i < ids.size(); ++i) {
+    if (i) in += ",";
+    in += std::to_string(ids[i]);
+  }
+  in += ")";
+  return pending_where(spec, ids.size(), max_tries, filter, in);
+}
+
+std::vector<work_item> index_db::pending_where(const std::string& spec, std::size_t limit, std::int32_t max_tries,
+                                               const track_filter& filter, const std::string& extra) {
   std::lock_guard lock(m_);
   std::vector<work_item> out;
   const std::string sql = std::string("SELECT ") + kAssetCols +
@@ -327,7 +345,7 @@ std::vector<work_item> index_db::pending(const std::string& spec, std::size_t li
       " FROM assets a JOIN roots r ON r.id = a.root_id AND r.enabled = 1"
       " LEFT JOIN progress p ON p.asset_id = a.id AND p.spec = ?1"
       " WHERE (p.state IS NULL OR p.state = 0 OR p.state = 1 OR (p.state = 3 AND p.tries < ?2))" +
-      std::string(kTrackWhere) +
+      std::string(kTrackWhere) + extra +
       " ORDER BY COALESCE(p.state, 0) = 1 DESC, a.kind ASC, a.id ASC LIMIT ?3";
   stmt s(db_, sql.c_str());
   s.bind(1, spec).bind(2, std::int64_t{max_tries}).bind(3, static_cast<std::int64_t>(limit))
@@ -417,6 +435,26 @@ std::vector<asset_row> index_db::unavailable_assets(std::int64_t root) {
   q.bind(1, root);
   while (q.step_row()) out.push_back(asset_from(q, 0));
   return out;
+}
+
+std::vector<asset_row> index_db::unavailable_videos(std::int64_t root, std::size_t limit) {
+  std::lock_guard lock(m_);
+  std::vector<asset_row> out;
+  const std::string sql = std::string("SELECT ") + kAssetCols +
+      " FROM assets a WHERE a.root_id = ?1 AND a.kind = 2 AND EXISTS"
+      " (SELECT 1 FROM progress p WHERE p.asset_id = a.id AND p.state = 4) ORDER BY a.mtime DESC, a.id LIMIT ?2";
+  stmt q(db_, sql.c_str());
+  q.bind(1, root).bind(2, static_cast<std::int64_t>(limit));
+  while (q.step_row()) out.push_back(asset_from(q, 0));
+  return out;
+}
+
+std::uint64_t index_db::unavailable_video_count(std::int64_t root) {
+  std::lock_guard lock(m_);
+  stmt q(db_, "SELECT COUNT(*) FROM assets a WHERE a.root_id = ?1 AND a.kind = 2 AND EXISTS"
+              " (SELECT 1 FROM progress p WHERE p.asset_id = a.id AND p.state = 4)");
+  q.bind(1, root);
+  return q.step_row() ? static_cast<std::uint64_t>(q.i64(0)) : 0;
 }
 
 expected index_db::requeue_unavailable(std::span<const std::int64_t> ids) {

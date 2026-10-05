@@ -3,13 +3,17 @@
 // PhotoKit behind photos_source (photos_source.h, issue #72). Read-only, local
 // only: every image and video request has networkAccessAllowed = NO, and
 // nothing here changes the library. Identifiers never reach a log (rule 6).
+// The one network read is fetch_video, the opt-in iCloud fetch (2026-10-05).
 #include "addons/ai/photos_source.h"
 
 #import <AVFoundation/AVFoundation.h>
 #import <AppKit/AppKit.h>
+#import <Network/Network.h>
 #import <Photos/Photos.h>
 
 #include <algorithm>
+#include <atomic>
+#include <cstdio>
 #include <mutex>
 #include <vector>
 
@@ -92,9 +96,94 @@ result<rgb_frame> to_rgb(CGImageRef image, std::uint32_t max_edge) {
   return f;
 }
 
+// The resource fetch_video downloads: the rendered current edit when Photos
+// keeps one (a trimmed or filtered clip, as Photos plays it), else the
+// original video. Not paired Live Photo video (a Live Photo is a photo here).
+PHAssetResource* video_resource(PHAsset* a) {
+  PHAssetResource* original = nil;
+  for (PHAssetResource* r in [PHAssetResource assetResourcesForAsset:a]) {
+    if (r.type == PHAssetResourceTypeFullSizeVideo) return r;
+    if (r.type == PHAssetResourceTypeVideo && !original) original = r;
+  }
+  return original;
+}
+
 class photokit_source final : public photos_source {
  public:
-  ~photokit_source() override { observe(nullptr); }
+  photokit_source() {
+    // The latest path, read by network_unmetered(); the monitor runs on its
+    // own queue from the first source to the last.
+    monitor_ = nw_path_monitor_create();
+    nw_path_monitor_set_queue(monitor_, dispatch_queue_create("mv.ai.photos.network", DISPATCH_QUEUE_SERIAL));
+    std::atomic<bool>* ok = &unmetered_;
+    nw_path_monitor_set_update_handler(monitor_, ^(nw_path_t path) {
+      ok->store(nw_path_get_status(path) == nw_path_status_satisfied && !nw_path_is_expensive(path) &&
+                !nw_path_is_constrained(path));
+    });
+    nw_path_monitor_start(monitor_);
+  }
+  ~photokit_source() override {
+    observe(nullptr);
+    if (monitor_) nw_path_monitor_cancel(monitor_);
+  }
+
+  bool network_unmetered() const override { return unmetered_.load(); }
+
+  result<std::string> fetch_video(std::string_view id, const std::string& dest_stem,
+                                  const std::function<bool(double)>& progress) override {
+    if (!readable(access())) return err(status::permission_denied);
+    @autoreleasepool {
+      PHAsset* a = asset_for(id);
+      if (!a) return err(status::not_found);
+      if (a.mediaType != PHAssetMediaTypeVideo) return err(status::unsupported_format);
+      PHAssetResource* r = video_resource(a);
+      if (!r) return err(status::unsupported_format);
+      NSString* ext = r.originalFilename.pathExtension.lowercaseString;
+      std::string path = dest_stem + "." + (ext.length > 0 && ext.length <= 5 && ext.UTF8String ? ext.UTF8String : "mov");
+      std::FILE* f = std::fopen(path.c_str(), "wb");
+      if (!f) return err(status::io);
+      PHAssetResourceRequestOptions* o = [[PHAssetResourceRequestOptions alloc] init];
+      o.networkAccessAllowed = YES;
+      // Shared with PhotoKit's queue. It outlives every handler: this waits
+      // for the completion handler, which PhotoKit calls after a cancel too.
+      struct shared {
+        std::atomic<double> fraction{0};
+        std::atomic<bool> cancel{false};
+        bool write_failed = false;  // the data handler's (serial) only
+      } st;
+      shared* sp = &st;
+      o.progressHandler = ^(double p) { sp->fraction.store(p); };
+      dispatch_semaphore_t done = dispatch_semaphore_create(0);
+      __block NSError* failed = nil;
+      const PHAssetResourceDataRequestID req = [[PHAssetResourceManager defaultManager]
+          requestDataForAssetResource:r
+                              options:o
+                  dataReceivedHandler:^(NSData* data) {
+                    if (sp->write_failed || sp->cancel.load()) return;
+                    if (std::fwrite(data.bytes, 1, data.length, f) != data.length) sp->write_failed = true;
+                  }
+                    completionHandler:^(NSError* e) {
+                      failed = e;
+                      dispatch_semaphore_signal(done);
+                    }];
+      // The caller's progress runs here, on its own thread, four times a second.
+      while (dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 250 * NSEC_PER_MSEC)) != 0) {
+        if (!st.cancel.load() && progress && !progress(st.fraction.load())) {
+          st.cancel = true;
+          [[PHAssetResourceManager defaultManager] cancelDataRequest:req];
+        }
+      }
+      const bool closed = std::fclose(f) == 0;
+      if (st.cancel.load() || failed || st.write_failed || !closed) {
+        std::remove(path.c_str());
+        if (st.cancel.load()) return err(status::cancelled);
+        // A full disk, or iCloud would not answer (offline, signed out).
+        return err(status::io);
+      }
+      if (progress) (void)progress(1.0);
+      return path;
+    }
+  }
 
   photos_access access() const override {
     return map([PHPhotoLibrary authorizationStatusForAccessLevel:PHAccessLevelReadWrite]);
@@ -213,6 +302,8 @@ class photokit_source final : public photos_source {
  private:
   std::mutex m_;
   MVAIPhotosObserver* observer_ = nil;
+  nw_path_monitor_t monitor_ = nil;
+  std::atomic<bool> unmetered_{false};
 };
 
 }  // namespace

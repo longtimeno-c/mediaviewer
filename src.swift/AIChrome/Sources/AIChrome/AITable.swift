@@ -260,6 +260,9 @@ struct StatusLine: Equatable {
       // clips' sound, then their speech. The ETA covers pictures only (the
       // pack's estimate), so it is shown only while pictures run.
       switch Self.phase(s) {
+      case .pictures where Self.picturesDone(s) >= s.assets_total && s.icloud_videos_left > 0:
+        // Everything on this Mac is done; a clip is on its way from iCloud.
+        text = "Downloading from iCloud · \(countText(s.icloud_videos_left)) clips left"
       case .pictures:
         let eta = etaText(s.eta_low_seconds, s.eta_high_seconds)
         text = (s.sound_total > 0 || s.speech_total > 0 ? "Indexing pictures " : "Indexing ")
@@ -336,6 +339,7 @@ struct StatusLine: Equatable {
     if s.flags & MV_AI_STATUS_INDEX_FULL != 0 {
       notes.append("Index is full — raise the cap or remove a folder")
     }
+    if let fetch = Self.icloudNote(s) { notes.append(fetch) }
     if s.flags & MV_AI_STATUS_NO_MODELS != 0 {
       notes.append("The search models could not be loaded. Reinstall Core in Settings")
     }
@@ -362,6 +366,29 @@ struct StatusLine: Equatable {
   }
 
   enum Phase { case pictures, sound, speech }
+
+  /// The opt-in iCloud fetch (Settings → Photos Library), when it has
+  /// something to say: what it is downloading, or what it waits for.
+  static func icloudNote(_ s: mv_ai_status) -> String? {
+    let left = countText(s.icloud_videos_left)
+    switch s.icloud_fetch {
+    case MV_AI_ICLOUD_DOWNLOADING.rawValue:
+      let pct = Int((Double(s.icloud_fetch_progress) * 100).rounded(.down))
+      return "Downloading from iCloud (\(pct)%) · \(left) clips left"
+    case MV_AI_ICLOUD_WAIT_INDEXER.rawValue:
+      return "iCloud: \(left) clips left to download"
+    case MV_AI_ICLOUD_WAIT_NETWORK.rawValue:
+      return s.icloud_videos_left > 0 ? "iCloud downloads wait for an unmetered network · \(left) clips left" : nil
+    case MV_AI_ICLOUD_WAIT_POWER.rawValue:
+      return s.icloud_videos_left > 0 ? "iCloud downloads wait for power · \(left) clips left" : nil
+    case MV_AI_ICLOUD_LOW_DISK.rawValue:
+      return s.icloud_videos_left > 0 ? "iCloud downloads wait: under 10 GB free · \(left) clips left" : nil
+    case MV_AI_ICLOUD_RETRY_LATER.rawValue:
+      return "iCloud did not send \(left) clips; they are tried again next time MediaViewer starts"
+    default:
+      return nil
+    }
+  }
 
   /// Pictures are handled once indexed, failed, or only in iCloud (issue #72).
   static func picturesDone(_ s: mv_ai_status) -> UInt64 {

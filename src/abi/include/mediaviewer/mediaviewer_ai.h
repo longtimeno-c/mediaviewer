@@ -191,7 +191,27 @@ typedef struct mv_ai_status {
   uint64_t people_scan_total;
   uint64_t people_scan_done;
   char people_model_utf8[64];  /* "AdaFace IR-50": the face model in use; "" none */
+  /* The opt-in iCloud fetch (2026-10-05, macOS; settings "icloud_videos"): clips
+   * only iCloud has are downloaded a couple ahead of the indexer, indexed like a
+   * local clip, then deleted. icloud_videos_left counts those not yet indexed
+   * from their original (0 with the option off, and on Windows). */
+  uint64_t icloud_videos_left;
+  uint64_t icloud_videos_fetched;  /* downloaded since the pack started */
+  uint32_t icloud_fetch;           /* mv_ai_icloud_fetch */
+  float icloud_fetch_progress;     /* the download in progress, 0..1 */
 } mv_ai_status;
+
+typedef enum mv_ai_icloud_fetch {
+  MV_AI_ICLOUD_OFF = 0,            /* the option is off, or there is no Photos library */
+  MV_AI_ICLOUD_DOWNLOADING = 1,
+  MV_AI_ICLOUD_WAIT_NETWORK = 2,   /* offline, or on an expensive / Low Data network */
+  MV_AI_ICLOUD_WAIT_POWER = 3,     /* on battery: downloads wait for power */
+  MV_AI_ICLOUD_WAIT_INDEXER = 4,   /* two clips are downloaded and waiting to be indexed */
+  MV_AI_ICLOUD_LOW_DISK = 5,       /* under 10 GB free */
+  MV_AI_ICLOUD_PAUSED = 6,         /* indexing is paused */
+  MV_AI_ICLOUD_DONE = 7,           /* nothing left only in iCloud */
+  MV_AI_ICLOUD_RETRY_LATER = 8     /* iCloud did not answer for every clip tried: next launch */
+} mv_ai_icloud_fetch;
 
 /* One result: a photo, or the best moment of a clip with the others grouped
  * under it (docs/design/17 "Ranking"). */
@@ -215,12 +235,14 @@ typedef struct mv_ai_api {
    *  "battery_override":false, "video_index":1..3 (in effect: an unset choice is Pictures, or Both once
    *  ai-audio is installed), "video_index_setting":0..3, "audio_ready":bool,
    *  "index_cap_bytes":N,"faces":false,"min_score":0.2,"precision":0..4,
+   *  "icloud_videos":false (macOS: download iCloud-only clips to index them, 2026-10-05),
    *  "available":{"cuda":bool,"openvino":bool,"coreml":bool},
    *  "models":[{"quality":1,"name":"CLIP ViT-B/32","dim":512},...],
    *  "runtime":"1.30.0"}  [no-block] */
   mv_status(MV_CALL* settings_json)(void* ctx, char* out, uint32_t cap, uint32_t* needed);
   /* key: "compute" | "quality" | "pause_on_battery_percent" | "battery_override"
-   * | "index_cap_bytes" | "min_score" | "reload" | "video_index" (MV_AI_MEDIA_*, 0 = Pictures, plus
+   * | "index_cap_bytes" | "min_score" | "reload" | "icloud_videos" (1 / 0, saved)
+   * | "video_index" (MV_AI_MEDIA_*, 0 = Pictures, plus
    * Sound once the ai-audio piece is installed) | "precision" (0 broader .. 2 the calibrated
    * "nothing found" rule, the default .. 4 stricter; out of range clamps; saved; read by each
    * search as it starts, so it needs no reload or re-index, and the chrome re-runs an open
