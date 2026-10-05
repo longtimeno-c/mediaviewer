@@ -261,6 +261,16 @@ Import was the first add-on, and its mechanism is the one every add-on uses: the
   (`--require-pinned-key`; Mac via `macpack.py addon`, Developer ID + notarization), and
   `publish` refuses a stable release without it (`MV_RELEASE_ADDONS=1`).
 
+### One host process
+
+Each window is its own process (`Ctrl+N`, [16](16-commands.md) "Window"). The add-ons —
+Import's volume watch, the AI pack and its indexer, Final Cut search on the Mac — load in
+the first window's process only: the one that owns `Add-ons/.host.lock` (an `flock` on the
+Mac) or the `Local\MediaViewer.AddonHost` mutex (Windows). Two indexers writing one index
+would fight over it. The lock is the process's until it exits, crash or not. Later windows
+view and browse but show no add-on features. Closing the first window does not hand the
+add-ons to a window that is already open; the next window to start takes them.
+
 ## Commands
 
 Rows in the shared command table (`src/shell/command_table.cpp`), present only while Import is

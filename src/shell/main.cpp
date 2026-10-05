@@ -2865,10 +2865,46 @@ void push_browse_state(app_state* app) {
                            app->folder_query);
 }
 
+// A result list opened from the empty window (a search from the welcome)
+// has no folder to go back to: back is the empty window again. The core drops
+// the clip and the listing (mv_folder_close tells the island the list is
+// empty) and the canvas drops the picture it held.
+void return_to_welcome(app_state* app) {
+  (void)mv_video_close(app->session);
+  (void)mv_folder_close(app->session);
+  app->list_title.clear();
+  app->list_return_select.clear();
+  app->folder_find = false;
+  app->folder_query.clear();
+  app->folder_cursor = -1;
+  app->reveal_child.clear();
+  app->gallery_if_empty_dir.clear();
+  app->trail.reset("");
+  app->mode = open_mode::none;  // the welcome card lists recent folders again
+  set_gallery(app, false);
+  ++app->input.discard_media_seq;
+  ++app->folder_token;
+  refresh_item_info(app);
+  refresh_mark_state(app);
+  edit_item_opened(app);
+  push_browse_state(app);
+  ++app->input.activity_seq;
+  publish(app);
+  apply_view_state(app);
+  layout_chrome(app);
+  refresh_welcome_recents(app);
+}
+
 // Milestone H: back from a result list to the folder it was opened over, on
-// the item that was open then. False when no list is open.
+// the item that was open then; to the empty window when it was opened from
+// there. False when no list is open.
 bool leave_result_list(app_state* app) {
-  if (!app || app->list_title.empty() || app->current_dir.empty()) return false;
+  if (!app || app->list_title.empty()) return false;
+  if (app->current_dir.empty()) {
+    if (!app->session) return false;
+    return_to_welcome(app);
+    return true;
+  }
   const std::string select = app->list_return_select;
   open_folder(app, wide_from_utf8(app->current_dir), wide_from_utf8(select), true);
   return true;
@@ -4329,7 +4365,7 @@ mv::shell::view_state view_state_of(app_state* app) noexcept {
   s.game = app->game_on;
   // Milestone H: Esc from a result list is the path bar's "Back to folder"
   // (leave_result_list's own condition, so the key is never swallowed).
-  s.list_open = !app->list_title.empty() && !app->current_dir.empty();
+  s.list_open = !app->list_title.empty();
   return s;
 }
 
@@ -5417,6 +5453,28 @@ std::wstring jump_list_exe() {
   return n > 0 && n < std::size(exe) ? std::wstring(exe, n) : std::wstring();
 }
 
+// docs/design/16 "Window": Ctrl+N is another window, its own process on the empty
+// window (--new-instance: it neither forwards to this one nor takes the
+// single-instance pipe). Windows places it, cascaded from this one.
+void open_new_window() {
+  const std::wstring exe = jump_list_exe();
+  if (exe.empty()) {
+    ::MessageBeep(MB_ICONWARNING);
+    return;
+  }
+  std::wstring cmd = L"\"" + exe + L"\" --new-instance";
+  STARTUPINFOW si{};
+  si.cb = sizeof(si);
+  PROCESS_INFORMATION pi{};
+  if (!::CreateProcessW(exe.c_str(), cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
+    MV_LOG_WARN("new window: CreateProcessW failed (%lu)", ::GetLastError());
+    ::MessageBeep(MB_ICONWARNING);
+    return;
+  }
+  ::CloseHandle(pi.hThread);
+  ::CloseHandle(pi.hProcess);
+}
+
 void publish_jump_list(app_state* app) {
   if (!app || !app->window) return;
   const HWND hwnd = app->window;
@@ -5782,6 +5840,9 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     }
     case close_window:
       if (app->window) ::PostMessageW(app->window, WM_CLOSE, 0, 0);
+      return true;
+    case new_window:
+      open_new_window();
       return true;
     case prev:
       if (folder_cursor_step(app, -1)) return true;

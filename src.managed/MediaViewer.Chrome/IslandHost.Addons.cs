@@ -225,11 +225,40 @@ public static partial class IslandHost
         return client;
     }
 
+    // docs/design/16 "Window": every window is its own process (Ctrl+N). Add-ons -- the
+    // AI pack and its indexer, Import's volume watch -- run in one of them only,
+    // the first to own this mutex: two indexers would write one index. It is the
+    // process's until it exits, and the next window to start takes it over.
+    private static System.Threading.Mutex? _addonHostMutex;
+
+    private static bool ClaimAddonHost()
+    {
+        try
+        {
+            var mutex = new System.Threading.Mutex(false, @"Local\MediaViewer.AddonHost");
+            bool owned;
+            try { owned = mutex.WaitOne(0); }
+            catch (System.Threading.AbandonedMutexException) { owned = true; }  // its owner crashed
+            if (!owned)
+            {
+                mutex.Dispose();
+                return false;
+            }
+            _addonHostMutex = mutex;  // held, never released, until exit
+            return true;
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or System.IO.IOException)
+        {
+            return true;  // cannot tell: as before, this process hosts them
+        }
+    }
+
     /// <summary>Once a session is borrowed: load installed add-ons, watch for cards.</summary>
     private static void StartAddons()
     {
         if (_addonsStarted || _folderSession is null) return;
         _addonsStarted = true;
+        if (!ClaimAddonHost()) return;  // another window's process hosts them
         MediaViewerSession session = _folderSession;
         _ = Task.Run(() =>
         {

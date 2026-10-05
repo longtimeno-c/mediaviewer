@@ -2166,15 +2166,24 @@ mv_status MV_CALL mv_folder_close(mv_session_t session) {
     MV_REQUIRE(valid(session), "session must not be null");
     session->watcher.stop();
     session->folder_generation.fetch_add(1, std::memory_order_relaxed);
-    std::lock_guard lock(session->folder_mutex);
-    session->folder_dir.clear();
-    session->folder_is_list = false;
-    session->folder_list_title.clear();
-    session->folder_list_moments.clear();
-    session->folder_select_path.clear();
-    session->folder_items.clear();
-    session->folder_subdirs.clear();
-    session->folder_selected = 0;
+    {
+      std::lock_guard lock(session->folder_mutex);
+      session->folder_dir.clear();
+      session->folder_is_list = false;
+      session->folder_list_title.clear();
+      session->folder_list_moments.clear();
+      session->folder_select_path.clear();
+      session->folder_items.clear();
+      session->folder_subdirs.clear();
+      session->folder_selected = 0;
+    }
+    // A host showing the listing learns it is empty (a result list closed
+    // back to the empty window), the same way it learns of any listing.
+    mv_completion c{};
+    c.kind = MV_COMPLETION_FOLDER_READY;
+    c.status = MV_OK;
+    c.payload = 0;
+    session->push_completion(c);
     return status::ok;
   }));
 }
