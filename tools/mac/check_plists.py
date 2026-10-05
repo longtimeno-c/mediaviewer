@@ -45,6 +45,14 @@ VIDEO_UTIS = {"public.mpeg-4", "com.apple.m4v-video", "com.apple.quicktime-movie
               "public.mpeg-2-transport-stream"}
 
 
+# Open With only (docs/plans/audio-and-documents.md §3): declared so Finder offers
+# MediaViewer, never made the default (main_mac.mm MvDeclaredContentTypes skips
+# them) and never thumbnailed by the Quick Look extension.
+OPEN_WITH_UTIS = {
+    "Audio": {"public.mp3", "com.apple.m4a-audio", "com.apple.protected-mpeg-4-audio"},
+}
+
+
 def configure(template: Path, extra: dict[str, str] | None = None) -> dict:
     text = template.read_text()
     values = {"MV_MAC_BUNDLE_ID": "io.example.check", "PROJECT_VERSION": "0.0.0",
@@ -77,9 +85,13 @@ def main() -> int:
     doc_types = app.get("CFBundleDocumentTypes", [])
     app_utis: set[str] = set()
     video_utis: set[str] = set()
+    open_with: dict[str, set[str]] = {}
     for doc in doc_types:
-        (video_utis if doc.get("CFBundleTypeName") == "Video" else app_utis).update(
-            doc.get("LSItemContentTypes", []))
+        name = doc.get("CFBundleTypeName")
+        if name in OPEN_WITH_UTIS:
+            open_with[name] = set(doc.get("LSItemContentTypes", []))
+        else:
+            (video_utis if name == "Video" else app_utis).update(doc.get("LSItemContentTypes", []))
         if doc.get("LSHandlerRank") != "Alternate":
             problems.append(f"document type {doc.get('CFBundleTypeName')!r}: LSHandlerRank must be "
                             "Alternate (never a silent default-app hijack)")
@@ -109,6 +121,11 @@ def main() -> int:
     if extra:
         problems.append(f"types outside the D5 still set: {sorted(extra)}")
 
+    for name, want in OPEN_WITH_UTIS.items():
+        if open_with.get(name) != want:
+            got = open_with.get(name, set())
+            problems.append(f"{name} document type must list exactly {sorted(want)}: "
+                            f"missing {sorted(want - got)}, extra {sorted(got - want)}")
     if video_utis != VIDEO_UTIS:
         problems.append(f"video document type must list exactly the D5 containers: "
                         f"missing {sorted(VIDEO_UTIS - video_utis)}, extra {sorted(video_utis - VIDEO_UTIS)}")

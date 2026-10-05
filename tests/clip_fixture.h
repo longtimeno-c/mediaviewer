@@ -11,6 +11,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -169,6 +170,73 @@ inline bool make(const std::string& path, const spec& s) {
   avio_closep(&out->pb);
   avformat_free_context(out);
   return ok;
+}
+
+// Writes an audio-only file: AAC (FFmpeg's own encoder, LGPL) in the "ipod"
+// muxer, so an iTunes M4A (major brand "M4A "). `fairplay` then renames the
+// sample entry 'mp4a' -> 'drms', which is how an iTunes M4P announces FairPlay
+// to a demuxer (no real key or sinf: nothing reads further than the tag).
+inline bool make_audio(const std::string& path, double seconds, bool fairplay = false) {
+  AVFormatContext* out = nullptr;
+  if (avformat_alloc_output_context2(&out, nullptr, "ipod", path.c_str()) < 0) return false;
+  const AVCodec* ac = avcodec_find_encoder(AV_CODEC_ID_AAC);
+  if (!ac) return false;
+  AVCodecContext* aenc = avcodec_alloc_context3(ac);
+  aenc->sample_rate = 48000;
+  aenc->sample_fmt = AV_SAMPLE_FMT_FLTP;
+  aenc->bit_rate = 128000;
+  av_channel_layout_default(&aenc->ch_layout, 2);
+  aenc->time_base = AVRational{1, 48000};
+  if (out->oformat->flags & AVFMT_GLOBALHEADER) aenc->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+  if (avcodec_open2(aenc, ac, nullptr) < 0) return false;
+  AVStream* ast = avformat_new_stream(out, nullptr);
+  avcodec_parameters_from_context(ast->codecpar, aenc);
+  ast->time_base = aenc->time_base;
+  if (avio_open(&out->pb, path.c_str(), AVIO_FLAG_WRITE) < 0) return false;
+  if (avformat_write_header(out, nullptr) < 0) return false;
+  AVPacket* pkt = av_packet_alloc();
+  AVFrame* af = av_frame_alloc();
+  af->format = AV_SAMPLE_FMT_FLTP;
+  af->nb_samples = aenc->frame_size;
+  af->sample_rate = 48000;
+  av_channel_layout_copy(&af->ch_layout, &aenc->ch_layout);
+  av_frame_get_buffer(af, 0);
+  const auto total = static_cast<std::int64_t>(seconds * 48000);
+  bool ok = true;
+  for (std::int64_t at = 0; ok && at < total; at += af->nb_samples) {
+    av_frame_make_writable(af);
+    for (int c = 0; c < 2; ++c) {
+      auto* d = reinterpret_cast<float*>(af->data[c]);
+      for (int n = 0; n < af->nb_samples; ++n)
+        d[n] = 0.25f * static_cast<float>(std::sin(2 * 3.14159265 * 440 * static_cast<double>(at + n) / 48000.0));
+    }
+    af->pts = at;
+    ok = avcodec_send_frame(aenc, af) >= 0 && detail::drain(aenc, out, ast, pkt);
+  }
+  ok = ok && avcodec_send_frame(aenc, nullptr) >= 0 && detail::drain(aenc, out, ast, pkt);
+  ok = ok && av_write_trailer(out) >= 0;
+  av_frame_free(&af);
+  av_packet_free(&pkt);
+  avcodec_free_context(&aenc);
+  avio_closep(&out->pb);
+  avformat_free_context(out);
+  if (!ok || !fairplay) return ok;
+
+  std::FILE* f = std::fopen(path.c_str(), "r+b");
+  if (!f) return false;
+  std::vector<char> bytes;
+  char buf[4096];
+  for (std::size_t n; (n = std::fread(buf, 1, sizeof buf, f)) > 0;) bytes.insert(bytes.end(), buf, buf + n);
+  bool patched = false;
+  for (std::size_t i = 0; i + 4 <= bytes.size(); ++i) {
+    if (std::memcmp(bytes.data() + i, "mp4a", 4) == 0) {
+      std::fseek(f, static_cast<long>(i), SEEK_SET);
+      patched = std::fwrite("drms", 1, 4, f) == 4;
+      break;
+    }
+  }
+  std::fclose(f);
+  return patched;
 }
 
 struct decoded {

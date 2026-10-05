@@ -101,17 +101,30 @@ inline std::string key_of(std::string_view name) {
 
 }  // namespace pairing_detail
 
-// A clip (played through player/) rather than a still, by its extension. Same
-// set as dir_win.cpp / dir_mac.cpp's video containers (D5); the player probes
-// the real container when it opens the file. Drives the gallery's play badge
-// and the hosts' clip-vs-still routing, never a decode.
+// An audio file (MP3, iTunes M4A / M4P), by its extension. Played through
+// player/ like a clip, with its cover art or a card as the picture
+// (docs/plans/audio-and-documents.md §2.2).
+[[nodiscard]] inline bool is_audio_name(std::string_view name) noexcept {
+  static constexpr const char* k[] = {".mp3", ".m4a", ".m4p"};
+  const std::string_view ext = pairing_detail::extension(name);
+  for (const char* e : k) {
+    if (pairing_detail::eq_lower(ext, e)) return true;
+  }
+  return false;
+}
+
+// Played through player/ rather than decoded as a still, by its extension: a
+// clip in the D5 video containers, or an audio file. Same set as dir_win.cpp /
+// dir_mac.cpp's; the player probes the real container when it opens the file.
+// Drives the gallery's play badge and the hosts' clip-vs-still routing, never
+// a decode.
 [[nodiscard]] inline bool is_video_name(std::string_view name) noexcept {
   static constexpr const char* k[] = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".ts", ".m4v"};
   const std::string_view ext = pairing_detail::extension(name);
   for (const char* e : k) {
     if (pairing_detail::eq_lower(ext, e)) return true;
   }
-  return false;
+  return is_audio_name(name);
 }
 
 // A RAW by its extension. The listing already filters by extension; this only

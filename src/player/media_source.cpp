@@ -28,8 +28,14 @@ class ffmpeg_media_source final : public media_source {
     for (unsigned i = 0; i < pipe_->format->nb_streams; ++i) {
       const auto type = pipe_->format->streams[i]->codecpar->codec_type;
       if (type == AVMEDIA_TYPE_AUDIO) ++info_.audio_tracks;
-      if (type == AVMEDIA_TYPE_VIDEO) ++info_.video_tracks;
+      if (type == AVMEDIA_TYPE_VIDEO &&
+          !(pipe_->format->streams[i]->disposition & AV_DISPOSITION_ATTACHED_PIC)) {
+        ++info_.video_tracks;
+      }
     }
+    info_.audio_only = pipe_->audio_only;
+    info_.drm_protected = pipe_->drm_protected;
+    if (info_.drm_protected) info_.audio_tracks = 0;
     info_.has_audio = info_.audio_tracks > 0;
     path_ = path;
     load_resume();
@@ -58,6 +64,9 @@ class ffmpeg_media_source final : public media_source {
     pipe_->clock.set_paused(false);
   }
   void pause() noexcept override {
+    // An audio-only file shows one still for the whole play-out, so the frame
+    // on screen says nothing about where playback is: hold the clock's.
+    if (info_.audio_only && state_ == play_state::playing && !preview_) shown_pts_ = pipe_->clock.now_ns();
     pipe_->clock.set_paused(true); state_ = play_state::paused;
   }
   void seek(time_ns pts, bool exact) noexcept override {
@@ -80,6 +89,11 @@ class ffmpeg_media_source final : public media_source {
   void step(int frames) noexcept override {
     if (!frames) return;
     pause();
+    if (info_.audio_only) {
+      // No frames to step between: `,` `.` move by kAudioStepNs.
+      seek(std::max<time_ns>(0, shown_pts_ + frames * kAudioStepNs), true);
+      return;
+    }
     if (frames > 0) {
       // Forward is the cheap direction and must stay that way (transport.h:
       // "Forward is cheap: decode the next frame"). It used to seek — a
@@ -152,7 +166,10 @@ class ffmpeg_media_source final : public media_source {
         }
       }
       auto* result = candidate_; candidate_ = nullptr;
-      shown_pts_ = result->pts_ns; preview_ = false;
+      // An audio-only file's still carries its seek target through the stream
+      // time base; the position is the target itself, unrounded.
+      if (!info_.audio_only) shown_pts_ = result->pts_ns;
+      preview_ = false;
 
       pipe_->clock.set_paused(state_ != play_state::playing);
       return result;
@@ -166,6 +183,7 @@ class ffmpeg_media_source final : public media_source {
     for (unsigned i = 0; i <= frame_ring_slots; ++i) {
       in.has_next = video_->peek_next_pts(&in.next_pts_ns);
       in.has_following = pipe_->ring.peek_next_pts(&in.following_pts_ns, 1);
+      if (info_.audio_only) shown_pts_ = std::min(in.master_clock_ns, std::max<time_ns>(info_.duration_ns, 0));
       if (!in.has_next && pipe_->video_done.load() &&
           (info_.duration_ns <= 0 || in.master_clock_ns >= info_.duration_ns)) {
         pipe_->clock.set_paused(true); state_ = play_state::ended; return nullptr;
@@ -176,7 +194,7 @@ class ffmpeg_media_source final : public media_source {
       }
       video_frame* result = nullptr;
       if (decision.action == present_action::show) result = video_->acquire(gen, decision.target_ns);
-      if (result) shown_pts_ = result->pts_ns;
+      if (result && !info_.audio_only) shown_pts_ = result->pts_ns;
       pipe_->clock.record_present(decision, result != nullptr);
       return result;
     }

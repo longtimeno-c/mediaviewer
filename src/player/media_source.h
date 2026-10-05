@@ -25,7 +25,16 @@ struct media_info {
   std::uint32_t audio_tracks = 0;
   std::uint32_t video_tracks = 0;
   bool          has_audio    = false;
+  // No video stream: the picture is the cover art or a card, and a frame step
+  // moves by kAudioStepNs instead (docs/plans/audio-and-documents.md §2.2).
+  bool          audio_only   = false;
+  // FairPlay-protected (an iTunes M4P). Opened so the art and tags show; never
+  // played — nothing here can decrypt it, and nothing tries.
+  bool          drm_protected = false;
 };
+
+// What a frame step moves an audio-only file by.
+inline constexpr time_ns kAudioStepNs = 5'000'000'000;
 
 // All methods are [any-thread][no-block] unless marked otherwise: they post
 // intent to the demux/decode threads and return. Nothing here decodes inline.

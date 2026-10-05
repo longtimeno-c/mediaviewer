@@ -17,9 +17,10 @@
 
 namespace mv::player {
 
-// The D5 v1 container set. Anything else is not_video, including formats we
-// deliberately do not ship in v1 — being able to name a container is not the
-// same as being willing to open it.
+// The containers the player opens: the D5 video set plus the audio-only files
+// (MP3, iTunes M4A/M4P — docs/plans/audio-and-documents.md). Anything else is
+// unknown, including formats we deliberately do not open — being able to name a
+// container is not the same as being willing to open it.
 enum class container : std::uint8_t {
   unknown = 0,
   mp4,        // ISO-BMFF: .mp4, .m4v, and most .mov from phones
@@ -28,6 +29,8 @@ enum class container : std::uint8_t {
   webm,
   avi,        // RIFF
   mpeg_ts,    // .ts, 0x47 sync bytes on a 188-byte cadence
+  mp3,        // ID3v2 tag, or an MPEG audio frame header
+  m4a,        // ISO-BMFF with an iTunes audio brand: M4A, M4B, M4P (FairPlay)
 };
 
 // How many bytes probe() can make use of. Reading more is wasted I/O; reading
@@ -36,9 +39,14 @@ inline constexpr std::size_t probe_bytes = 1024;
 
 [[nodiscard]] container probe(std::span<const std::uint8_t> head) noexcept;
 
-// True for every container in the D5 v1 video set.
+// True for every container the player opens (a clip or an audio file). Named
+// for the clip routing it drives: an audio file goes the clip's way.
 [[nodiscard]] constexpr bool is_video(container c) noexcept {
   return c != container::unknown;
+}
+
+[[nodiscard]] constexpr bool is_audio(container c) noexcept {
+  return c == container::mp3 || c == container::m4a;
 }
 
 [[nodiscard]] const char* container_name(container c) noexcept;

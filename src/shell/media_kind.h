@@ -17,4 +17,10 @@ namespace mv::shell {
   return mv::io::is_video_name(name);
 }
 
+// An audio file (MP3 / M4A / M4P): plays like a clip, but has no frames to
+// edit, so it offers no edit workspace (docs/plans/audio-and-documents.md §2.2).
+[[nodiscard]] inline bool is_audio_name(std::string_view name) noexcept {
+  return mv::io::is_audio_name(name);
+}
+
 }  // namespace mv::shell

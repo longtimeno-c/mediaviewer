@@ -1248,6 +1248,14 @@ There is no upload endpoint yet, exactly as there is none for crash reports.
 
 ## Where this actually is
 
+### Audio and documents (docs/plans/audio-and-documents.md, 2026-10-04)
+
+**Audio (slice 1):** MP3, M4A and M4P are listed and open as audio-only clips on both platforms:
+the cover art or a music card is the picture, the transport and keys are the clip's, `,` `.` jump
+5 s, and a FairPlay M4P shows a padlock and does not play. Measured on the Mac only (`mv_tests
+"[audio]"`, `playprobe` on MP3/M4A with and without art: seek, pause, play-out). The Windows half
+(dir scan, installer, `main.cpp`) is compiled by CI only, and has not been run.
+
 ### Performance pass (2026-09-26)
 
 Open and navigation latency, measured on an Apple M5 (60 Hz) with the macOS lab and the
