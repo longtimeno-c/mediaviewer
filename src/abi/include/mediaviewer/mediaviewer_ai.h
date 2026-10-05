@@ -130,6 +130,9 @@ typedef enum mv_ai_scope {
 #define MV_AI_STATUS_PEOPLE_RERUN 64u  /* People is re-analysing every photo and clip
                                           (people_reanalyse, or a new face model): see
                                           people_scan_total / _done (2026-10-03) */
+#define MV_AI_STATUS_SMALL_FALLBACK 256u /* Auto runs the small tower because the accelerated
+                                           provider failed the large one on this machine
+                                           (2026-10-05): provider_detail_utf8 says why */
 #define MV_AI_STATUS_PEOPLE_SETTLING 128u /* ...every one is analysed: the faces are being
                                              filed into the people (seconds) */
 
@@ -199,6 +202,10 @@ typedef struct mv_ai_status {
   uint64_t icloud_videos_fetched;  /* downloaded since the pack started */
   uint32_t icloud_fetch;           /* mv_ai_icloud_fetch */
   float icloud_fetch_progress;     /* the download in progress, 0..1 */
+  /* The accelerated provider's own message for provider_fault, or for the large
+   * tower's failure under MV_AI_STATUS_SMALL_FALLBACK (2026-10-05), with paths
+   * replaced ("<model>", "<path>"). "" when it gave none. Display only. */
+  char provider_detail_utf8[256];
 } mv_ai_status;
 
 typedef enum mv_ai_icloud_fetch {
@@ -242,6 +249,8 @@ typedef struct mv_ai_api {
   mv_status(MV_CALL* settings_json)(void* ctx, char* out, uint32_t cap, uint32_t* needed);
   /* key: "compute" | "quality" | "pause_on_battery_percent" | "battery_override"
    * | "index_cap_bytes" | "min_score" | "reload" | "icloud_videos" (1 / 0, saved)
+   * | "retry_large" (any value: forget that the accelerated provider failed the large tower
+   * here, MV_AI_STATUS_SMALL_FALLBACK, and let Auto try it again; 2026-10-05)
    * | "video_index" (MV_AI_MEDIA_*, 0 = Pictures, plus
    * Sound once the ai-audio piece is installed) | "precision" (0 broader .. 2 the calibrated
    * "nothing found" rule, the default .. 4 stricter; out of range clamps; saved; read by each

@@ -69,10 +69,16 @@ void print_status(const mv_ai_api* ai, double t0) {
   mv_ai_status s{};
   s.struct_size = sizeof(s);
   if (ai->status(ai->ctx, &s) != MV_OK) return;
+  // The provider's message (paths already replaced), as a JSON string.
+  std::string detail;
+  for (const char* c = s.provider_detail_utf8; *c && c < s.provider_detail_utf8 + sizeof(s.provider_detail_utf8); ++c) {
+    if (*c == '"' || *c == '\\') detail += '\\';
+    detail += static_cast<unsigned char>(*c) < 0x20 ? ' ' : *c;
+  }
   std::printf("{\"t\":%.1f,\"state\":%u,\"yield\":%u,\"backend\":%u,\"fault\":%u,\"model\":\"%s\","
               "\"assets\":%llu,\"done\":%llu,\"failed\":%llu,\"frames\":%llu,\"assets_per_s\":%.2f,"
               "\"frames_per_s\":%.2f,\"eta\":[%.0f,%.0f],\"sound\":[%llu,%llu],\"speech\":[%llu,%llu],"
-              "\"index_bytes\":%llu,\"flags\":%u,\"unavailable\":%llu}\n",
+              "\"index_bytes\":%llu,\"flags\":%u,\"unavailable\":%llu,\"fault_detail\":\"%s\"}\n",
               now_s() - t0, s.state, s.yield_reason, s.backend, s.provider_fault, s.model_utf8,
               static_cast<unsigned long long>(s.assets_total), static_cast<unsigned long long>(s.assets_done),
               static_cast<unsigned long long>(s.assets_failed), static_cast<unsigned long long>(s.frames_indexed),
@@ -80,7 +86,7 @@ void print_status(const mv_ai_api* ai, double t0) {
               static_cast<unsigned long long>(s.sound_done), static_cast<unsigned long long>(s.sound_total),
               static_cast<unsigned long long>(s.speech_done), static_cast<unsigned long long>(s.speech_total),
               static_cast<unsigned long long>(s.index_bytes), s.flags,
-              static_cast<unsigned long long>(s.assets_unavailable));
+              static_cast<unsigned long long>(s.assets_unavailable), detail.c_str());
   std::fflush(stdout);
 }
 

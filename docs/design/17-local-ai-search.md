@@ -33,7 +33,7 @@ The Core pack ships two OpenAI CLIP towers (Xenova ONNX exports, MIT), fp16, as 
 | Quality | Tower | Dim | Used by Auto when |
 |---|---|---|---|
 | Fast (1) | CLIP ViT-B/32 | 512 | CPU only |
-| High (2) | CLIP ViT-L/14 | 768 | an accelerated provider runs it (CUDA, Core ML) |
+| High (2) | CLIP ViT-L/14 | 768 | an accelerated provider runs it (CUDA, Core ML), unless that provider failed it on this machine |
 
 Stored vectors are int8 with a per-vector scale (≤ 0.5 points R@1 lost on both towers). Each
 tower's thresholds, generic prompts and preprocessing live in its `model.json`
@@ -87,8 +87,17 @@ src/infer   embedder { embed_image(s), embed_text }    clip_model, clap, whisper
   specific provider · **CPU only** (`mv_ai_compute`). Mac offers Auto / Core ML / CPU only.
 - **The self-test:** a provider is kept only if it agrees with CPU within cosine 0.99 on a fixed
   input and is faster; otherwise Auto falls back to CPU and the status says why
-  (`provider_fault`: not in this build, runtime missing, failed, mismatch, slower). Changing
-  compute re-creates the sessions; it does not re-index.
+  (`provider_fault`: not in this build, runtime missing, failed, mismatch, slower), with the
+  provider's own message in `provider_detail_utf8` (`session::last_error`, paths replaced by
+  `<model>` / `<path>`; a tooltip on the Mac, never telemetry). Changing compute re-creates the
+  sessions; it does not re-index.
+- **Auto never runs the large tower on CPU because a provider failed it (2026-10-05).** How the
+  provider did with each tower is kept in `data/provider.txt` (runtime | provider | spec → ok or
+  the fault, open seconds, message). Where it failed ViT-L/14, Auto opens ViT-B/32 on that provider
+  instead, at once (the control thread reloads when a background upgrade fails) and on every later
+  start, and sets `MV_AI_STATUS_SMALL_FALLBACK`. Settings → *Compute* then offers **Try the larger
+  model again** (`"retry_large"`), which forgets the verdict. A new runtime tries again by itself.
+  Each switch re-indexes (the towers' vectors differ), so a passing or untried tower is left alone.
 - **Windows providers:** CUDA as the `ai-cuda` piece (ORT's CUDA 13 build; the CUDA runtime and
   cuDNN 9 are user-supplied, on PATH; without them Local search runs on the CPU). OpenVINO has
   a code path (`MV_AI_BACKEND_OPENVINO`) but no published piece. AMD GPUs run on CPU. There is
@@ -751,6 +760,14 @@ Apple M5, 24 GB, macOS 26.6, ORT 1.30. Core ML with the image tower's dimensions
 |---|---|---|---|---|---|
 | ViT-B/32 fp16 | 73 img/s | **499 img/s** | 0.9992 | 82 s | 17 s |
 | ViT-L/14 fp16 | 4.9 img/s | **31 img/s** | 0.9983 | 5.3 min | 64 s |
+
+Re-measured 2026-10-05 on the same Mac (macOS 26.6), a standalone probe with the pack's settings:
+B/32 opens in 99 s cold / 20 s cached (peak 6.8 / 5.0 GB); **L/14 takes 493 s from its cache, peak
+12.7 GB**, and a cold compile was still running after 28 min. Core ML re-compiles on every load and
+writes the program as text (ORT inlines the transposed `linear` weights: `model.mil` 1.05 GB for
+B/32, 3.5 GB for L/14), single-threaded. So on this Mac an L/14 start runs on CPU for minutes, and
+a failed upgrade left it on CPU for good (the 2026-10-05 fallback). Not yet fixed: shipping the
+large tower so Core ML need not rewrite it each load.
 
 With shapes left dynamic ORT placed only 130 of 830 (B/32) and 250 of 1,622 (L/14) nodes on
 Core ML, no faster than CPU. `MLComputeUnits` stays `ALL`. The Mac checklist is

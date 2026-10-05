@@ -182,6 +182,27 @@ TEST_CASE("the welcome card's rows are hit where they are drawn", "[shell][os]")
   CHECK_FALSE(welcome_on_remove(g, cx));
   CHECK_FALSE(welcome_on_remove(g, g.row_x1));
 
+  SECTION("the iCloud Photos library leads, above the folders' header") {
+    const welcome_geometry lead = layout_welcome(w, h, chrome, scale, 3, 0.0f, true);
+    REQUIRE(lead.fits);
+    REQUIRE(lead.lead);
+    REQUIRE(lead.rows == 3);
+    CHECK(lead.rows_top < g.rows_top);  // above where the header used to start the rows
+    CHECK(welcome_row_top(lead, 0) == lead.rows_top);
+    CHECK(welcome_row_top(lead, 1) == lead.folders_top);
+    CHECK(lead.folders_top >= lead.rows_top + lead.row_h + 20.0f * scale);  // room for the header
+    CHECK(welcome_row_at(lead, cx, lead.rows_top + 1.0f) == 0);
+    CHECK(welcome_row_at(lead, cx, lead.rows_top + lead.row_h + 1.0f) == -1);  // the header
+    CHECK(welcome_row_at(lead, cx, lead.folders_top + 1.0f) == 1);
+    CHECK(welcome_row_at(lead, cx, lead.folders_top + lead.row_h * 1.5f) == 2);
+    CHECK(welcome_row_at(lead, cx, lead.folders_top + lead.row_h * 2.0f) == -1);
+    CHECK(lead.hi_y >= lead.folders_top + 2.0f * lead.row_h);
+
+    const welcome_geometry alone = layout_welcome(w, h, chrome, scale, 1, 0.0f, true);
+    REQUIRE(alone.rows == 1);
+    CHECK(welcome_row_at(alone, cx, alone.rows_top + 1.0f) == 0);
+    CHECK(alone.hi_y < alone.folders_top);  // no header, no empty folder room
+  }
   SECTION("a short window drops rows before it drops the card") {
     const welcome_geometry tight = layout_welcome(w, 700.0f, chrome, scale, 6);
     REQUIRE(tight.fits);

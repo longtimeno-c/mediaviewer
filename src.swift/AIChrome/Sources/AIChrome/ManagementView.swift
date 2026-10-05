@@ -659,6 +659,17 @@ struct ManagementView: View {
         // it quickly, the smaller one on CPU only. A Fast or High chosen
         // before stays as it was, said here with a way back to Auto; nothing
         // rewrites it behind the person's back.
+        if model.flags & MV_AI_STATUS_SMALL_FALLBACK != 0 && model.quality == Int(MV_AI_QUALITY_AUTO.rawValue) {
+          // Auto runs the small model where Core ML failed the large one here
+          // (2026-10-05); trying again forgets that and re-indexes if it passes.
+          row("Search model",
+              detail: "Using the smaller model: the larger one failed on Core ML on this Mac"
+                + (model.status.help.isEmpty ? "." : " (\(model.status.help)).")
+                + " Trying again prepares it in the background, which can take several minutes, "
+                + "and re-indexes your library with it if it works.") {
+            Button("Try the larger model again") { model.set("retry_large", 1) }
+          }
+        }
         if model.quality != Int(MV_AI_QUALITY_AUTO.rawValue) {
           row("Search model", detail: legacyQualityDetail) {
             Button("Use Auto") { model.set("quality", Int64(MV_AI_QUALITY_AUTO.rawValue)) }

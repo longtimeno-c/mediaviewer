@@ -447,6 +447,14 @@ struct rig {
   std::function<std::shared_ptr<mv::infer::embedder>(std::uint32_t quality)> tower;
   // The backend open_clip reports (Core ML: Auto quality chooses High).
   mv::infer::backend lands_on = mv::infer::backend::cpu;
+  // The pack's provider verdict for the High tower (provider.txt): set, the
+  // accelerated provider failed it here, with this message.
+  std::mutex verdict_m;
+  std::optional<std::string> large_failure;
+  void set_large_failure(std::optional<std::string> v) {
+    std::lock_guard lock(verdict_m);
+    large_failure = std::move(v);
+  }
   std::shared_ptr<fake_sound> sound = std::make_shared<fake_sound>();
   std::shared_ptr<fake_speech> speech = std::make_shared<fake_speech>();
   // Never the real library: PhotoKit is not asked in a test.
@@ -557,6 +565,13 @@ struct rig {
       return std::unique_ptr<mv::ai::face_analyzer>(new fake_faces());
     };
     d.runtime_version = [] { return std::string("fake"); };
+    d.accelerated_failure = [this](std::uint32_t q) -> std::optional<std::string> {
+      std::lock_guard lock(verdict_m);
+      return q == 2 ? large_failure : std::nullopt;
+    };
+    d.forget_accelerated_failure = [this](std::uint32_t q) {
+      if (q == 2) set_large_failure(std::nullopt);
+    };
     d.power = [this] {
       mv::ai::platform::power p;
       p.on_battery = on_battery.load();
@@ -1578,6 +1593,82 @@ TEST_CASE("choosing the quality Auto already chose reopens nothing", "[ai][engin
   REQUIRE(wait_for([&] { return r.eng->reloads_done() >= 3; }, 5000));
   CHECK(r.clip_opens.load() > opens);
   REQUIRE(r.idle());
+  REQUIRE(wait_for([&] { return r.eng->active_spec() == "fake-fast/fp16/pre1"; }, 5000));
+  CHECK(r.search("red").front().first == "red.jpg");
+}
+
+// A large tower whose Core ML upgrade failed in the background: still on
+// CPU, with the provider's fault and words.
+class failed_upgrade final : public mv::infer::embedder {
+ public:
+  explicit failed_upgrade(std::shared_ptr<fake_embedder> inner) : inner_(std::move(inner)) {}
+  std::uint32_t dim() const noexcept override { return inner_->dim(); }
+  const std::string& spec_key() const noexcept override { return inner_->spec_key(); }
+  mv::infer::backend on() const noexcept override { return mv::infer::backend::cpu; }
+  mv::infer::provider_fault fault() const noexcept override {
+    return failed.load() ? mv::infer::provider_fault::failed : mv::infer::provider_fault::none;
+  }
+  std::string fault_detail() const override { return failed.load() ? "Error compiling model" : ""; }
+  mv::expected embed_images(std::span<const mv::infer::rgb_view> images, std::vector<float>& out) override {
+    return inner_->embed_images(images, out);
+  }
+  mv::result<std::vector<float>> embed_text(std::string_view text) override { return inner_->embed_text(text); }
+  std::atomic<bool> failed{false};
+
+ private:
+  std::shared_ptr<fake_embedder> inner_;
+};
+
+// Auto runs the large tower on the Neural Engine, never on CPU (2026-10-05):
+// where Core ML failed it on this Mac, the small tower runs, says why, and
+// "Try the larger model again" goes back to it.
+TEST_CASE("Auto runs the small tower where the provider failed the large one here", "[ai][engine][fallback]") {
+  rig r;
+  r.lands_on = mv::infer::backend::coreml;
+  r.set_large_failure("Error compiling model: <path>");
+  r.file("red.jpg");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  mv_ai_status s = r.status();
+  CHECK(s.quality == 1u);
+  CHECK((s.flags & MV_AI_STATUS_SMALL_FALLBACK) != 0);
+  CHECK(std::string(s.provider_detail_utf8) == "Error compiling model: <path>");
+  CHECK(r.eng->active_spec() == "fake-fast/fp16/pre1");
+  CHECK(r.search("red").front().first == "red.jpg");
+
+  REQUIRE(r.eng->set_setting("retry_large", "1"));
+  REQUIRE(wait_for([&] { return r.status().quality == 2u; }, 5000));
+  REQUIRE(r.idle());
+  s = r.status();
+  CHECK((s.flags & MV_AI_STATUS_SMALL_FALLBACK) == 0);
+  CHECK(std::string(s.provider_detail_utf8).empty());
+  REQUIRE(wait_for([&] { return r.eng->active_spec() == "fake-high/fp16/pre1"; }, 5000));
+  CHECK(r.search("red").front().first == "red.jpg");
+}
+
+TEST_CASE("a large tower whose Core ML upgrade fails gives way to the small one", "[ai][engine][fallback]") {
+  rig r;
+  r.lands_on = mv::infer::backend::coreml;
+  auto large = std::make_shared<failed_upgrade>(r.high);
+  r.tower = [&](std::uint32_t q) -> std::shared_ptr<mv::infer::embedder> {
+    if (q == 2) return large;
+    return r.fast;
+  };
+  r.file("red.jpg");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  REQUIRE(r.status().quality == 2u);
+
+  // The pack records the verdict, then the tower reports its fault.
+  r.set_large_failure("Error compiling model");
+  large->failed = true;
+  REQUIRE(wait_for([&] { return r.status().quality == 1u; }, 10000));
+  REQUIRE(r.idle());
+  const mv_ai_status s = r.status();
+  CHECK((s.flags & MV_AI_STATUS_SMALL_FALLBACK) != 0);
+  CHECK(std::string(s.provider_detail_utf8) == "Error compiling model");
   REQUIRE(wait_for([&] { return r.eng->active_spec() == "fake-fast/fp16/pre1"; }, 5000));
   CHECK(r.search("red").front().first == "red.jpg");
 }
