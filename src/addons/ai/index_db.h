@@ -187,6 +187,10 @@ class index_db {
   // then clips. The indexer puts the folder on screen first.
   [[nodiscard]] std::vector<work_item> pending(const std::string& spec, std::size_t limit,
                                                std::int32_t max_tries, const track_filter& filter = {});
+  // pending(), limited to `ids`: the clips the iCloud fetch has downloaded,
+  // which go to the front of the queue (2026-10-05).
+  [[nodiscard]] std::vector<work_item> pending_among(const std::string& spec, std::span<const std::int64_t> ids,
+                                                     std::int32_t max_tries, const track_filter& filter = {});
   [[nodiscard]] expected set_duration(std::int64_t asset, std::int64_t duration_ms);
   // Stores frames and moves progress in one transaction (a kill between two
   // commits resumes at `resume_ms`; nothing committed is redone).
@@ -202,6 +206,10 @@ class index_db {
   // The assets of `root` that some track found unavailable, for the engine to
   // ask whether they are on this Mac now.
   [[nodiscard]] std::vector<asset_row> unavailable_assets(std::int64_t root);
+  // The clips of `root` only iCloud has, newest first, and how many: what the
+  // opt-in iCloud fetch downloads (2026-10-05).
+  [[nodiscard]] std::vector<asset_row> unavailable_videos(std::int64_t root, std::size_t limit);
+  [[nodiscard]] std::uint64_t unavailable_video_count(std::int64_t root);
   // These go back to pending, their stand-in rows (an iCloud-only clip's
   // poster) dropped: their originals have been downloaded since. The caller
   // drops them from the search matrix too (engine::forget_vectors).
@@ -249,6 +257,8 @@ class index_db {
   index_db() = default;
   bool exec(const char* sql);
   result<upsert> see_one(std::int64_t root, const seen_file& f, std::int64_t generation);
+  std::vector<work_item> pending_where(const std::string& spec, std::size_t limit, std::int32_t max_tries,
+                                       const track_filter& filter, const std::string& extra);
   std::mutex m_;
   sqlite3* db_ = nullptr;
   std::string path_;

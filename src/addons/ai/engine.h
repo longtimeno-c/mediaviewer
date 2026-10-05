@@ -214,6 +214,7 @@ struct settings {
   bool faces = false;                        // the separate People opt-in
   std::uint32_t video_index = MV_AI_MEDIA_DEFAULT;  // 0: Pictures, plus Sound once ai-audio is in
   std::uint32_t precision = kPrecisionDefault;      // 0 broader .. 2 calibrated .. 4 stricter
+  bool icloud_videos = false;  // download iCloud-only clips to index them (2026-10-05, opt-in)
 };
 
 // A spoken-phrase search's share of the query's words a transcript line must
@@ -434,6 +435,14 @@ class engine {
     return photos_readable_ ? 0 : photos_root_.load();
   }
   void refresh_counts();
+  // The opt-in iCloud fetch (docs/design/17 "Photos library source", 2026-10-05):
+  // its thread downloads iCloud-only clips a couple ahead of the workers,
+  // re-queues each at the front, and deletes its file once every track is done.
+  void fetch_loop();
+  [[nodiscard]] mv_ai_icloud_fetch fetch_gate() const;  // why it waits; DOWNLOADING when it may go
+  void fetch_reap(bool all);  // delete the files the workers are done with (all: every one)
+  [[nodiscard]] bool fetch_wanted(std::int64_t asset);  // a track still wants this clip
+  [[nodiscard]] std::vector<std::int64_t> fetched_ids() const;
   // models
   void load_models();
   // People and Sound only ("reload", People turned on); the towers stay.
@@ -632,6 +641,23 @@ class engine {
   std::atomic<bool> scanning_{true};  // the control thread is scanning (wait_idle)
   std::thread control_;
   std::vector<std::thread> workers_;
+
+  // The iCloud fetch: at most kFetchAhead clips on disk, keyed by asset id;
+  // file_of answers these paths for their "photos:" keys.
+  struct fetched_clip {
+    std::int64_t id = 0;
+    std::string key;   // "photos:<localIdentifier>"
+    std::string file;  // under <data>/cache/icloud
+  };
+  std::thread fetch_thread_;
+  mutable std::mutex fetch_m_;
+  std::condition_variable fetch_cv_;
+  std::vector<fetched_clip> fetched_;     // under fetch_m_
+  std::set<std::int64_t> fetch_skip_;     // iCloud did not answer for these this run (fetch thread)
+  std::atomic<std::uint32_t> fetch_state_{MV_AI_ICLOUD_OFF};
+  std::atomic<float> fetch_progress_{0};
+  std::atomic<std::uint64_t> fetched_count_{0};
+  std::atomic<std::uint64_t> icloud_left_{0};
 
   // status
   mutable std::mutex status_m_;

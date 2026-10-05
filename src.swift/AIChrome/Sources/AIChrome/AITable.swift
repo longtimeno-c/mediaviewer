@@ -238,6 +238,18 @@ struct StatusLine: Equatable {
   var help = ""            // the provider's own words for a fault (a tooltip), paths replaced
   var sound = ""           // "Sound: 12 of 40 clips · Speech: 8 of 40"; "" without the piece
   var audioReady = false   // the ai-audio piece is loaded
+  /// The passes beside the one `text` names, while any runs: "Pictures ✓",
+  /// "Sound 14%". Empty without the audio piece (pictures is then the only pass).
+  var stages: [Stage] = []
+
+  struct Stage: Equatable, Identifiable {
+    var name: String
+    var done: UInt64
+    var total: UInt64
+    var id: String { name }
+    var finished: Bool { done >= total }
+    var fraction: Double { total == 0 ? 1 : min(1, Double(done) / Double(total)) }
+  }
 
   init() {}
 
@@ -245,10 +257,23 @@ struct StatusLine: Equatable {
     let state = s.state
     switch state {
     case MV_AI_STATE_INDEXING.rawValue:
-      let eta = etaText(s.eta_low_seconds, s.eta_high_seconds)
-      // iCloud-only Photos assets are handled too: nothing more to read (issue #72).
-      text = "Indexing \(countText(s.assets_done + s.assets_unavailable)) of \(countText(s.assets_total))"
-        + (eta.isEmpty ? "" : " · \(eta)")
+      // The line names the pass that is running: pictures first, then the
+      // clips' sound, then their speech. The ETA covers pictures only (the
+      // pack's estimate), so it is shown only while pictures run.
+      switch Self.phase(s) {
+      case .pictures where Self.picturesDone(s) >= s.assets_total && s.icloud_videos_left > 0:
+        // Everything on this Mac is done; a clip is on its way from iCloud.
+        text = "Downloading from iCloud · \(countText(s.icloud_videos_left)) clips left"
+      case .pictures:
+        let eta = etaText(s.eta_low_seconds, s.eta_high_seconds)
+        text = (s.sound_total > 0 || s.speech_total > 0 ? "Indexing pictures " : "Indexing ")
+          + "\(countText(Self.picturesDone(s))) of \(countText(s.assets_total))"
+          + (eta.isEmpty ? "" : " · \(eta)")
+      case .sound:
+        text = "Indexing sound \(countText(s.sound_done)) of \(countText(s.sound_total)) clips"
+      case .speech:
+        text = "Indexing speech \(countText(s.speech_done)) of \(countText(s.speech_total)) clips"
+      }
       spinning = true
       indexing = true
       idle = false
@@ -286,8 +311,16 @@ struct StatusLine: Equatable {
       text = s.frames_indexed == 0 ? "Nothing indexed yet"
         : "Up to date · \(countText(s.frames_indexed)) moments"
     }
-    progress = s.assets_total == 0 ? 0
-      : min(1, Double(s.assets_done + s.assets_unavailable) / Double(s.assets_total))
+    // The ring follows the pass the line names.
+    func fraction(_ done: UInt64, _ total: UInt64) -> Double {
+      total == 0 ? 0 : min(1, Double(done) / Double(total))
+    }
+    let phase = Self.phase(s)
+    switch phase {
+    case .pictures: progress = fraction(Self.picturesDone(s), s.assets_total)
+    case .sound: progress = fraction(s.sound_done, s.sound_total)
+    case .speech: progress = fraction(s.speech_done, s.speech_total)
+    }
     audioReady = s.flags & MV_AI_STATUS_AUDIO_READY != 0
     badge = s.backend == MV_AI_BACKEND_COREML.rawValue ? "Neural Engine" : "CPU"
     var notes: [String] = []  // appended below; the sound line goes first while it runs
@@ -314,6 +347,7 @@ struct StatusLine: Equatable {
     if s.flags & MV_AI_STATUS_INDEX_FULL != 0 {
       notes.append("Index is full — raise the cap or remove a folder")
     }
+    if let fetch = Self.icloudNote(s) { notes.append(fetch) }
     if s.flags & MV_AI_STATUS_NO_MODELS != 0 {
       notes.append("The search models could not be loaded. Reinstall Core in Settings")
     }
@@ -323,37 +357,126 @@ struct StatusLine: Equatable {
       if s.sound_total > 0 { parts.append("Sound: \(countText(s.sound_done)) of \(countText(s.sound_total)) clips") }
       if s.speech_total > 0 { parts.append("Speech: \(countText(s.speech_done)) of \(countText(s.speech_total))") }
       sound = parts.joined(separator: " · ")
-      if s.sound_done < s.sound_total || s.speech_done < s.speech_total { notes.insert(sound, at: 0) }
+      // While any pass runs, the others sit beside the line as stages
+      // rather than as a sentence under it.
+      if !idle && (Self.picturesDone(s) < s.assets_total || s.sound_done < s.sound_total
+                   || s.speech_done < s.speech_total) {
+        let all: [(Phase, Stage)] = [
+          (.pictures, Stage(name: "Pictures", done: Self.picturesDone(s), total: s.assets_total)),
+          (.sound, Stage(name: "Sound", done: s.sound_done, total: s.sound_total)),
+          (.speech, Stage(name: "Speech", done: s.speech_done, total: s.speech_total)),
+        ]
+        let shown = state == MV_AI_STATE_INDEXING.rawValue ? phase : nil
+        stages = all.filter { $0.0 != shown && $0.1.total > 0 }.map(\.1)
+      }
     }
     detail = notes.joined(separator: " · ")
   }
+
+  enum Phase { case pictures, sound, speech }
+
+  /// The opt-in iCloud fetch (Settings → Photos Library), when it has
+  /// something to say: what it is downloading, or what it waits for.
+  static func icloudNote(_ s: mv_ai_status) -> String? {
+    let left = countText(s.icloud_videos_left)
+    switch s.icloud_fetch {
+    case MV_AI_ICLOUD_DOWNLOADING.rawValue:
+      let pct = Int((Double(s.icloud_fetch_progress) * 100).rounded(.down))
+      return "Downloading from iCloud (\(pct)%) · \(left) clips left"
+    case MV_AI_ICLOUD_WAIT_INDEXER.rawValue:
+      return "iCloud: \(left) clips left to download"
+    case MV_AI_ICLOUD_WAIT_NETWORK.rawValue:
+      return s.icloud_videos_left > 0 ? "iCloud downloads wait for an unmetered network · \(left) clips left" : nil
+    case MV_AI_ICLOUD_WAIT_POWER.rawValue:
+      return s.icloud_videos_left > 0 ? "iCloud downloads wait for power · \(left) clips left" : nil
+    case MV_AI_ICLOUD_LOW_DISK.rawValue:
+      return s.icloud_videos_left > 0 ? "iCloud downloads wait: under 10 GB free · \(left) clips left" : nil
+    case MV_AI_ICLOUD_RETRY_LATER.rawValue:
+      return "iCloud did not send \(left) clips; they are tried again next time MediaViewer starts"
+    default:
+      return nil
+    }
+  }
+
+  /// Pictures are handled once indexed, failed, or only in iCloud (issue #72).
+  static func picturesDone(_ s: mv_ai_status) -> UInt64 {
+    s.assets_done + s.assets_failed + s.assets_unavailable
+  }
+
+  /// The pass running now: pictures until they are all handled, then sound,
+  /// then speech. Pictures again once everything is handled.
+  static func phase(_ s: mv_ai_status) -> Phase {
+    if picturesDone(s) < s.assets_total { return .pictures }
+    if s.sound_done < s.sound_total { return .sound }
+    if s.speech_done < s.speech_total { return .speech }
+    return .pictures
+  }
 }
 
-/// A small ring: determinate progress, with a turning arc while work runs.
+/// A small ring: the running pass's progress as a solid arc over a faint
+/// track, and while work runs a soft comet that sweeps the track. The comet is
+/// a gradient tail, not a second hard arc, so it never reads as progress.
+/// Driven by a TimelineView (stable under the 4 Hz status re-renders, paused
+/// when nothing turns); Reduce Motion leaves the arc alone.
 struct AIProgressRing: View {
   let progress: Double
   let spinning: Bool
-  @State private var angle: Double = 0
+  var lineWidth: CGFloat = 2.5
 
   var body: some View {
     ZStack {
-      Circle().stroke(Color.primary.opacity(0.15), lineWidth: 2)
-      Circle()
-        .trim(from: 0, to: max(0.04, progress))
-        .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2, lineCap: .round))
-        .rotationEffect(.degrees(-90))
-        .animation(.easeOut(duration: 0.3), value: progress)
+      Circle().stroke(Color.primary.opacity(0.12), lineWidth: lineWidth)
       if spinning {
+        TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: false)) { context in
+          let t = context.date.timeIntervalSinceReferenceDate
+          Circle()
+            .trim(from: 0, to: 0.32)
+            .stroke(AngularGradient(gradient: Gradient(colors: [Color.accentColor.opacity(0),
+                                                                Color.accentColor.opacity(0.7)]),
+                                    center: .center,
+                                    startAngle: .degrees(0), endAngle: .degrees(0.32 * 360)),
+                    style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+            .rotationEffect(.degrees((t.truncatingRemainder(dividingBy: 1.4) / 1.4) * 360))
+        }
+        .transition(.opacity)
+      }
+      if progress > 0.002 {
         Circle()
-          .trim(from: 0, to: 0.18)
-          .stroke(Color.accentColor.opacity(0.55), style: StrokeStyle(lineWidth: 2, lineCap: .round))
-          .rotationEffect(.degrees(angle))
-          .onAppear {
-            withAnimation(.linear(duration: 1.1).repeatForever(autoreverses: false)) { angle = 360 }
-          }
-          .onDisappear { angle = 0 }
+          .trim(from: 0, to: min(1, progress))
+          .stroke(Color.accentColor, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+          .rotationEffect(.degrees(-90))
+          .animation(.easeOut(duration: 0.4), value: progress)
       }
     }
+    .padding(lineWidth / 2)
+    .animation(.easeInOut(duration: 0.25), value: spinning)
+  }
+}
+
+/// "Sound 14%" or "Pictures ✓": one pass beside the status line.
+struct StageChip: View {
+  let stage: StatusLine.Stage
+
+  var body: some View {
+    HStack(spacing: 4) {
+      if stage.finished {
+        Image(systemName: "checkmark").font(.system(size: 9, weight: .semibold))
+          .foregroundStyle(Color.accentColor)
+        Text(stage.name)
+      } else {
+        AIProgressRing(progress: stage.fraction, spinning: false, lineWidth: 1.5)
+          .frame(width: 10, height: 10)
+        Text("\(stage.name) \(Int((stage.fraction * 100).rounded(.down)))%")
+          .monospacedDigit()
+      }
+    }
+    .font(AITheme.font(11.5))
+    .foregroundStyle(AITheme.body)
+    .help(stage.finished ? "\(stage.name): all \(countText(stage.total)) done"
+          : "\(stage.name): \(countText(stage.done)) of \(countText(stage.total))")
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(stage.finished ? "\(stage.name) done"
+                        : "\(stage.name) \(countText(stage.done)) of \(countText(stage.total))")
   }
 }
 
@@ -369,13 +492,18 @@ struct StatusPill: View {
     HStack(spacing: 8) {
       if !line.idle {
         AIProgressRing(progress: line.progress, spinning: line.spinning && !reduceMotion)
-          .frame(width: 14, height: 14)
+          .frame(width: 18, height: 18)
       } else {
         Image(systemName: "checkmark.circle").foregroundStyle(AITheme.body)
       }
-      VStack(alignment: .leading, spacing: 1) {
+      VStack(alignment: .leading, spacing: 2) {
         Text(line.text).font(AITheme.font(13)).foregroundStyle(AITheme.title)
           .lineLimit(1).contentTransition(.numericText())
+        if !line.stages.isEmpty {
+          HStack(spacing: 10) {
+            ForEach(line.stages) { StageChip(stage: $0) }
+          }
+        }
         if !line.detail.isEmpty {
           Text(line.detail).font(AITheme.font(12)).foregroundStyle(AITheme.body)
             .lineLimit(2)

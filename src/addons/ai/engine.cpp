@@ -99,6 +99,10 @@ void copy_str(char* dst, std::size_t cap, const std::string& src) {
 constexpr std::size_t kPhotoBatch = 4;
 constexpr std::size_t kFrameBatch = 8;
 constexpr std::int32_t kMaxTries = 3;
+// The iCloud fetch: clips on disk ahead of the workers, and the free space it
+// leaves alone (2026-10-05).
+constexpr std::size_t kFetchAhead = 2;
+constexpr std::uint64_t kFetchMinFreeBytes = 10'000'000'000;
 constexpr std::uint32_t kPeopleMinFaces = 2;
 
 }  // namespace
@@ -173,6 +177,7 @@ expected engine::start() {
     control_ = std::thread([this] { reader_loop(); });
   } else {
     control_ = std::thread([this] { control_loop(); });
+    if (photos_) fetch_thread_ = std::thread([this] { fetch_loop(); });
   }
   search_thread_ = std::thread([this] { search_loop(); });
   return {};
@@ -201,6 +206,8 @@ void engine::stop() noexcept {
   control_cv_.notify_all();
   work_cv_.notify_all();
   search_cv_.notify_all();
+  fetch_cv_.notify_all();
+  if (fetch_thread_.joinable()) fetch_thread_.join();  // a download in flight cancels (stopping_)
   if (control_.joinable()) control_.join();
   for (std::thread& t : workers_) {
     if (t.joinable()) t.join();
@@ -231,6 +238,7 @@ void engine::load_settings() {
   settings_.video_index = static_cast<std::uint32_t>(std::clamp<std::int64_t>(doc->integer("video_index").value_or(0), 0, 3));
   settings_.precision = static_cast<std::uint32_t>(std::clamp<std::int64_t>(
       doc->integer("precision").value_or(kPrecisionDefault), 0, kPrecisionLevels - 1));
+  settings_.icloud_videos = doc->boolean("icloud_videos").value_or(false);
 }
 
 void engine::save_settings() const {
@@ -245,6 +253,7 @@ void engine::save_settings() const {
     w.key("faces").boolean(settings_.faces);
     w.key("video_index").integer(settings_.video_index);
     w.key("precision").integer(settings_.precision);
+    w.key("icloud_videos").boolean(settings_.icloud_videos);
     w.end_object();
   }
   const std::string tmp = join(data_dir_, "settings.json.tmp");
@@ -276,6 +285,7 @@ std::string engine::settings_json() const {
   w.key("video_index").integer(default_media());
   w.key("video_index_setting").integer(s.video_index);
   w.key("precision").integer(s.precision);
+  w.key("icloud_videos").boolean(s.icloud_videos);
   {
     // Not models_m_: this is the UI thread's call (pieces_).
     std::lock_guard lock(pieces_m_);
@@ -350,6 +360,8 @@ expected engine::set_setting(const std::string& key, const std::string& value_js
     } else if (key == "video_index") {
       if (x < 0 || x > 3) return err(status::invalid_arg);
       settings_.video_index = static_cast<std::uint32_t>(x);
+    } else if (key == "icloud_videos") {
+      settings_.icloud_videos = x != 0;
     } else if (key == "precision") {
       // Read by each search as it starts: no reload, no re-index (docs/design/17
       // "Precision scale"). Out of range clamps to the nearest end.
@@ -363,6 +375,7 @@ expected engine::set_setting(const std::string& key, const std::string& value_js
     (reload ? reload_models_ : reload_pieces_) = true;
     control_cv_.notify_all();
   }
+  if (key == "icloud_videos") fetch_cv_.notify_all();
   if (key == "video_index") {
     std::lock_guard lock(work_m_);
     queue_.clear();
@@ -535,6 +548,14 @@ void engine::refresh_counts() {
     state = MV_AI_STATE_IDLE;
   } else if (yield_now_ != MV_AI_YIELD_NONE) {
     state = MV_AI_STATE_YIELDING;
+  }
+  status_.icloud_fetch = fetch_state_.load();
+  status_.icloud_fetch_progress = fetch_progress_.load();
+  status_.icloud_videos_left = icloud_left_.load();
+  status_.icloud_videos_fetched = fetched_count_.load();
+  if (state == MV_AI_STATE_IDLE && (status_.icloud_fetch == MV_AI_ICLOUD_DOWNLOADING ||
+                                    status_.icloud_fetch == MV_AI_ICLOUD_WAIT_INDEXER)) {
+    state = MV_AI_STATE_INDEXING;  // nothing local left, but a clip is on its way
   }
   status_.state = state;
   status_.yield_reason = state == MV_AI_STATE_YIELDING || state == MV_AI_STATE_LOADING
@@ -1835,6 +1856,13 @@ result<rgb_frame> engine::still_of(const std::string& path, std::uint32_t edge) 
 result<std::string> engine::file_of(const std::string& path) const {
   if (!is_photos_key(path)) return path;
   if (!photos_) return err(status::unsupported_format);
+  {
+    // A clip the iCloud fetch downloaded: its file, until every track is done.
+    std::lock_guard lock(fetch_m_);
+    for (const fetched_clip& f : fetched_) {
+      if (f.key == path) return f.file;
+    }
+  }
   return photos_->video_file(photos_id(path));
 }
 
@@ -1847,6 +1875,202 @@ result<rgb_frame> engine::frame_of(const std::string& path, std::int64_t pts_ms,
     return err(file.error());
   }
   return host_.video_frame(*file, pts_ms, edge);
+}
+
+// ---- the iCloud fetch (2026-10-05) -------------------------------------------------------
+//
+// The opt-in "Download iCloud videos to index them" (docs/design/17 "Photos
+// library source"; docs/design/12 2026-10-05). A clip only iCloud has was
+// indexed by its poster alone. With the option on, this thread downloads such
+// clips a couple ahead of the workers (kFetchAhead) into <data>/cache/icloud,
+// puts each back to pending at the front of the queue (claim), and deletes the
+// file once pictures, sound, speech and People are done with it. Only on
+// power, on an unmetered network, with 10 GB free, and never while paused.
+// A file left by a crash is deleted at the next start; its clip, still
+// pending, is found unavailable again and fetched again.
+
+std::vector<std::int64_t> engine::fetched_ids() const {
+  std::lock_guard lock(fetch_m_);
+  std::vector<std::int64_t> ids;
+  ids.reserve(fetched_.size());
+  for (const fetched_clip& f : fetched_) ids.push_back(f.id);
+  return ids;
+}
+
+mv_ai_icloud_fetch engine::fetch_gate() const {
+  {
+    std::lock_guard lock(settings_m_);
+    if (!settings_.icloud_videos) return MV_AI_ICLOUD_OFF;
+  }
+  if (!photos_ || photos_root_ == 0 || !photos_readable_) return MV_AI_ICLOUD_OFF;
+  if (paused_ || index_full_ || clearing_ || transferring_) return MV_AI_ICLOUD_PAUSED;
+  if (power_state().on_battery) return MV_AI_ICLOUD_WAIT_POWER;
+  if (!photos_->network_unmetered()) return MV_AI_ICLOUD_WAIT_NETWORK;
+  std::error_code ec;
+  const auto space = std::filesystem::space(fs_path(data_dir_), ec);
+  if (!ec && space.available < kFetchMinFreeBytes) return MV_AI_ICLOUD_LOW_DISK;
+  return MV_AI_ICLOUD_DOWNLOADING;
+}
+
+bool engine::fetch_wanted(std::int64_t asset) {
+  {
+    std::lock_guard lock(work_m_);
+    if (in_flight_.count(asset)) return true;
+  }
+  {
+    // Deleted in Photos, or the library removed, since it was fetched.
+    std::lock_guard lock(assets_m_);
+    if (!assets_.count(asset)) return false;
+  }
+  std::string spec, sound_spec, speech_spec;
+  bool faces_on = false;
+  {
+    std::lock_guard lock(models_m_);
+    spec = build_.meta.spec_key;
+    if (sound_.model) sound_spec = sound_.spec_key;
+    if (speech_.model) speech_spec = speech_.spec_key;
+    faces_on = faces_ != nullptr;
+    if (faces_on && !faces_scanned_.count(asset)) return true;
+  }
+  const std::uint32_t media = default_media();
+  const std::int64_t skip = skip_root();
+  const std::int64_t ids[] = {asset};
+  const auto wants = [&](const std::string& track_spec, const track_filter& f) {
+    return !track_spec.empty() && !db_->pending_among(track_spec, ids, kMaxTries, f).empty();
+  };
+  // No picture tower yet (a model load): keep the file for when it comes.
+  if (spec.empty()) return true;
+  return wants(spec, track_filter{true, MV_AI_MEDIA_PICTURES, media, skip}) ||
+         wants(sound_spec, track_filter{false, MV_AI_MEDIA_SOUND, media, skip}) ||
+         wants(speech_spec, track_filter{false, MV_AI_MEDIA_SOUND, media, skip});
+}
+
+void engine::fetch_reap(bool all) {
+  std::vector<std::int64_t> done;
+  for (std::int64_t id : fetched_ids()) {
+    if (all || !fetch_wanted(id)) done.push_back(id);
+  }
+  if (done.empty()) return;
+  std::vector<std::string> files;
+  {
+    std::lock_guard lock(fetch_m_);
+    for (auto it = fetched_.begin(); it != fetched_.end();) {
+      if (std::find(done.begin(), done.end(), it->id) != done.end()) {
+        files.push_back(std::move(it->file));
+        it = fetched_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+  for (const std::string& f : files) {
+    std::error_code ec;
+    std::filesystem::remove(fs_path(f), ec);
+  }
+}
+
+void engine::fetch_loop() {
+  platform::enter_background();
+  const std::string dir = join(join(data_dir_, "cache"), "icloud");
+  {
+    std::error_code ec;
+    std::filesystem::remove_all(fs_path(dir), ec);  // a crash's leftovers
+  }
+  std::vector<asset_row> candidates;
+  std::size_t next = 0;
+  while (!stopping_) {
+    fetch_reap(false);
+    mv_ai_icloud_fetch gate = fetch_gate();
+    const std::int64_t root = photos_root_.load();
+    std::size_t on_disk = 0;
+    {
+      std::lock_guard lock(fetch_m_);
+      on_disk = fetched_.size();
+    }
+    // Left: the clips still only indexed by their poster, plus those on disk
+    // and not yet done (they are pending again, no longer unavailable).
+    icloud_left_ = gate == MV_AI_ICLOUD_OFF || root == 0 ? 0 : db_->unavailable_video_count(root) + on_disk;
+    bool fetched_one = false;
+    if (gate == MV_AI_ICLOUD_DOWNLOADING) {
+      if (on_disk >= kFetchAhead || !models_ready_ || loading_) {
+        gate = MV_AI_ICLOUD_WAIT_INDEXER;
+      } else {
+        // The next clip: newest first, skipping those iCloud did not answer for.
+        std::optional<asset_row> pick;
+        for (int pass = 0; pass < 2 && !pick; ++pass) {
+          while (next < candidates.size()) {
+            const asset_row& a = candidates[next++];
+            if (!fetch_skip_.count(a.id)) {
+              pick = a;
+              break;
+            }
+          }
+          if (!pick) {
+            candidates = db_->unavailable_videos(root, 64 + fetch_skip_.size());
+            next = 0;
+            if (candidates.empty()) break;
+          }
+        }
+        if (!pick) {
+          gate = icloud_left_ == 0 ? MV_AI_ICLOUD_DONE : MV_AI_ICLOUD_RETRY_LATER;
+        } else {
+          fetch_state_ = MV_AI_ICLOUD_DOWNLOADING;
+          fetch_progress_ = 0;
+          {
+            std::error_code ec;
+            std::filesystem::create_directories(fs_path(dir), ec);
+          }
+          // The file is named by the index's row id, never the asset's
+          // identifier (rule 6: identifiers are paths).
+          auto file = photos_->fetch_video(photos_id(pick->path), join(dir, std::to_string(pick->id)),
+                                           [this](double p) {
+                                             fetch_progress_ = static_cast<float>(p);
+                                             return !stopping_ && fetch_gate() == MV_AI_ICLOUD_DOWNLOADING;
+                                           });
+          fetch_progress_ = 0;
+          if (file) {
+            {
+              std::lock_guard lock(fetch_m_);
+              fetched_.push_back(fetched_clip{pick->id, pick->path, *file});
+            }
+            const std::int64_t ids[] = {pick->id};
+            if (db_->requeue_unavailable(ids)) {
+              ++fetched_count_;
+              fetched_one = true;
+              // Its poster row goes; the queue is rebuilt with it first.
+              forget_vectors(std::vector<std::int64_t>(std::begin(ids), std::end(ids)));
+            } else {
+              fetch_skip_.insert(pick->id);
+              std::string drop;
+              {
+                std::lock_guard lock(fetch_m_);
+                drop = std::move(fetched_.back().file);
+                fetched_.pop_back();
+              }
+              std::error_code ec;
+              std::filesystem::remove(fs_path(drop), ec);
+            }
+          } else if (file.error() == status::permission_denied) {
+            photos_readable_ = false;
+          } else if (file.error() != status::cancelled) {
+            // Gone, not a clip, or iCloud would not answer: not again this run.
+            fetch_skip_.insert(pick->id);
+          }
+          gate = fetch_gate();
+          if (gate == MV_AI_ICLOUD_DOWNLOADING) {
+            std::lock_guard lock(fetch_m_);
+            if (fetched_.size() >= kFetchAhead) gate = MV_AI_ICLOUD_WAIT_INDEXER;
+          }
+        }
+      }
+    }
+    fetch_state_ = gate;
+    if (fetched_one) continue;  // the next one at once, while this one indexes
+    std::unique_lock lock(fetch_m_);
+    fetch_cv_.wait_for(lock, std::chrono::milliseconds(1000), [this] { return stopping_.load(); });
+  }
+  fetch_reap(true);
+  fetch_state_ = MV_AI_ICLOUD_OFF;
 }
 
 // ---- workers --------------------------------------------------------------------------------
@@ -1925,6 +2149,36 @@ bool engine::claim(std::vector<work_item>& out, track& t) {
       }
     };
     const std::int64_t skip = skip_root();
+    {
+      // Clips the iCloud fetch downloaded go first: their files wait on disk
+      // until every track is done with them (fetch_reap).
+      const std::vector<std::int64_t> fetched = fetched_ids();
+      if (!fetched.empty()) {
+        const auto among = [&](const std::string& track_spec, track which, const track_filter& f) {
+          if (track_spec.empty()) return;
+          for (work_item& w : db_->pending_among(track_spec, fetched, kMaxTries, f)) {
+            if (!in_flight_.count(w.asset.id)) queue_.push_back(job{std::move(w), which});
+          }
+        };
+        among(spec, track::picture, track_filter{true, MV_AI_MEDIA_PICTURES, media, skip});
+        among(sound_spec, track::sound, track_filter{false, MV_AI_MEDIA_SOUND, media, skip});
+        among(speech_spec, track::speech, track_filter{false, MV_AI_MEDIA_SOUND, media, skip});
+        if (queue_.empty() && faces_on) {
+          std::lock_guard ml(models_m_);
+          std::lock_guard al(assets_m_);
+          for (std::int64_t id : fetched) {
+            const auto it = assets_.find(id);
+            if (it == assets_.end() || faces_scanned_.count(id) || in_flight_.count(id)) continue;
+            work_item w;
+            w.asset.id = id;
+            w.asset.path = it->second.path;
+            w.asset.kind = it->second.kind;
+            w.asset.root_id = it->second.root;
+            queue_.push_back(job{std::move(w), track::faces});
+          }
+        }
+      }
+    }
     take(spec, track::picture, track_filter{true, MV_AI_MEDIA_PICTURES, media, skip});
     take(sound_spec, track::sound, track_filter{false, MV_AI_MEDIA_SOUND, media, skip});
     take(speech_spec, track::speech, track_filter{false, MV_AI_MEDIA_SOUND, media, skip});
