@@ -30,6 +30,9 @@ struct RootRow: Identifiable, Equatable {
   var kind = "folder"
   var access = ""
   var unavailable: Int64 = 0
+  // The pack is walking it now (a Rescan, or the scan at start): the row says
+  // so and Rescan waits, so a click never looks like it did nothing.
+  var scanning = false
   // Cloud files (2026-10-05): evicted iCloud Drive files not yet indexed; the
   // last walk of the folder failed (offline, moved, no access); its last scan.
   var cloudOnly: Int64 = 0
@@ -284,7 +287,8 @@ final class ManagementModel: ObservableObject {
                 assets: int64($0["assets"]), done: int64($0["done"]), bytes: int64($0["bytes"]),
                 media: UInt32(clamping: int64($0["media"])),
                 kind: $0["kind"] as? String ?? "folder", access: $0["access"] as? String ?? "",
-                unavailable: int64($0["unavailable"]), cloudOnly: int64($0["cloud_only"]),
+                unavailable: int64($0["unavailable"]), scanning: $0["scanning"] as? Bool ?? false,
+                cloudOnly: int64($0["cloud_only"]),
                 unreadable: $0["error"] as? String == "unreadable", lastScan: int64($0["last_scan"]))
       }
       await MainActor.run {
@@ -986,7 +990,7 @@ struct ManagementView: View {
         .menuStyle(.borderlessButton)
         .fixedSize()
         .help("What the library's videos are indexed for")
-        Button("Rescan") { model.rescan(root.id) }.disabled(off)
+        Button(root.scanning ? "Checking…" : "Rescan") { model.rescan(root.id) }.disabled(off || root.scanning)
         if model.confirming == .removeRoot(root.id) {
           Button("Remove from index", role: .destructive) { model.removeRoot(root.id) }
           Button("Cancel") { model.confirming = nil }
@@ -1037,7 +1041,7 @@ struct ManagementView: View {
   /// one with nothing to index, and files only iCloud Drive has.
   private func rootState(_ root: RootRow) -> String {
     if root.unreadable { return "Couldn't read this folder: it may be offline, moved or renamed. Its index is kept." }
-    if root.assets == 0 && root.lastScan != 0 { return "No photos or videos found here" }
+    if root.assets == 0 && root.lastScan != 0 && !root.scanning { return "No photos or videos found here" }
     let local = max(0, root.assets - root.cloudOnly)
     var text = "\(countText(UInt64(max(0, root.done)))) of \(countText(UInt64(local))) · \(bytesText(UInt64(max(0, root.bytes))))"
     if root.cloudOnly > 0 { text += " · \(countText(UInt64(root.cloudOnly))) only in iCloud Drive" }
@@ -1059,7 +1063,7 @@ struct ManagementView: View {
                        : min(1, Double(root.done) / Double(root.assets - root.cloudOnly)))
           .progressViewStyle(.linear)
           .tint(root.enabled ? .accentColor : .secondary)
-        Text(rootState(root) + (root.enabled ? "" : " · paused"))
+        Text(rootState(root) + (root.enabled ? (root.scanning ? " · checking for changes…" : "") : " · paused"))
           .font(AITheme.font(11)).foregroundStyle(root.unreadable ? Color.accentColor : AITheme.body)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -1079,7 +1083,8 @@ struct ManagementView: View {
       .menuStyle(.borderlessButton)
       .fixedSize()
       .help("What this folder's videos are indexed for")
-      Button("Rescan") { model.rescan(root.id) }
+      Button(root.scanning ? "Checking…" : "Rescan") { model.rescan(root.id) }
+        .disabled(!root.enabled || root.scanning)
       if model.confirming == .removeRoot(root.id) {
         Button("Remove from index", role: .destructive) { model.removeRoot(root.id) }
         Button("Cancel") { model.confirming = nil }

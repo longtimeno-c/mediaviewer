@@ -104,6 +104,12 @@ class present_lab_mac {
                           std::uint64_t size = 0, std::int64_t moment_ms = -1,
                           std::uint32_t page = 0) noexcept;
 
+  // [any-thread] Nothing on screen: the open item (still, clip, or a load still
+  // in flight) is dropped and the canvas shows the empty-window welcome again.
+  // Used when a result list opened from the welcome closes ("Back to folder"
+  // with no folder behind it). A later open_item() is unaffected.
+  void close_item() noexcept;
+
   // How many pages the still `item` (open_item's id) has, once its decode has
   // said; 0 until then or for another item. [any-thread]
   [[nodiscard]] std::uint32_t page_count(std::uint64_t item) const noexcept {
@@ -336,6 +342,10 @@ class present_lab_mac {
   std::atomic<image::gpu_image_mac*> pending_image_{nullptr};
   // Bumped by every open_item(); stamped on the images that open produces.
   std::atomic<std::uint64_t> item_counter_{0};
+  // close_item(): every item id up to this one is off screen for good. The
+  // render thread drops what it holds (and a late load) once it sees it move.
+  std::atomic<std::uint64_t> cleared_through_{0};
+  std::uint64_t cleared_applied_ = 0;  // render thread
   std::unique_ptr<image::gpu_image_mac> current_image_;
   std::unique_ptr<image::gpu_image_mac> fade_from_;
   canvas::crossfade fade_;

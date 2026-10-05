@@ -441,6 +441,11 @@ class engine {
     return photos_readable_ ? 0 : photos_root_.load();
   }
   void refresh_counts();
+  // The spec a folder's progress is counted against: the tower indexing now,
+  // else the one answering, else the index's active spec. Never empty while
+  // the index holds vectors, so Settings never reads "0 of N" for a folder
+  // that is done (owner report, 2026-10-05).
+  [[nodiscard]] std::string counting_spec();
   // The opt-in iCloud fetch (docs/design/17 "Photos library source", 2026-10-05):
   // its thread downloads iCloud-only clips a couple ahead of the workers,
   // re-queues each at the front, and deletes its file once every track is done.
@@ -652,6 +657,9 @@ class engine {
   std::set<std::int64_t> rescan_roots_;
   bool rescan_all_ = true;
   std::atomic<bool> scanning_{true};  // the control thread is scanning (wait_idle)
+  // The roots the control thread is walking now (control_m_; 0 = every root):
+  // roots_json's "scanning", so Rescan shows it is working.
+  std::set<std::int64_t> scanning_roots_;
   std::thread control_;
   std::vector<std::thread> workers_;
 

@@ -49,7 +49,15 @@ internal sealed partial class ManagePanel
     private readonly TextBlock _cloudDetail;
     private bool _cloudProvider;
     private readonly StackPanel _indexRow;
+    // People, as on the Mac: the notices (the off confirmation, "Install
+    // People"), Re-analyse, then the grid itself (PeopleGrid.cs).
     private readonly StackPanel _people;
+    private readonly FrameworkElement _reanalyseRow;
+    private readonly Border _rerunRow;
+    private readonly TextBlock _rerunText;
+    private readonly MediaViewer.Shared.FlatBar _rerunBar;
+    private readonly TextBlock _reanalyseDetail;
+    private readonly PeopleGrid _peopleGrid;
     private readonly ToggleSwitch _faces;
     private bool _updating;
     private bool _confirmClear;
@@ -268,15 +276,44 @@ internal sealed partial class ManagePanel
         _faces.Toggled += (_, _) => OnFacesToggled();
         var facesDetail = new StackPanel { Spacing = 2 };
         facesDetail.Children.Add(_look.Text(
-            "Face data stays on this computer unless you include People in an index export, and can be deleted at any time.", 12));
+            "Face data stays on this computer unless you include People in an index export, and can be deleted at any time. Off by default.", 12));
         Root.Children.Add(Row("Find people in your photos", facesDetail, _faces));
         _people = new StackPanel { Spacing = 8 };
         Root.Children.Add(_people);
+        // "Re-analyse faces" (docs/design/17 "People model"): every photo and clip
+        // again with the pack's face model; the people carry over. While it runs,
+        // how far it is (a FlatBar: ProgressBar fail-fasts in this island host).
+        _reanalyseDetail = _look.Text("", 12);
+        _reanalyseRow = Row("Re-analyse faces", _reanalyseDetail, _look.Button("Re-analyse", Reanalyse));
+        _reanalyseRow.Visibility = Visibility.Collapsed;
+        Root.Children.Add(_reanalyseRow);
+        _rerunText = _look.Text("", 12, AddonColour.Title);
+        _rerunBar = new MediaViewer.Shared.FlatBar(_look[AddonColour.Hairline], _look[AddonColour.Accent]);
+        var rerun = new StackPanel { Spacing = 6 };
+        rerun.Children.Add(_rerunText);
+        rerun.Children.Add(_rerunBar.Root);
+        _rerunRow = _look.Card(rerun);
+        _rerunRow.Visibility = Visibility.Collapsed;
+        Root.Children.Add(_rerunRow);
+        // The grid, inline as on the Mac (PeopleGrid.cs).
+        _peopleGrid = new PeopleGrid(_chrome);
+        _peopleGrid.Root.Visibility = Visibility.Collapsed;
+        Root.Children.Add(_peopleGrid.Root);
 
         _chrome.StatusChanged += OnStatus;
         RefreshSettings();
         RefreshRoots();
         OnStatus();
+        // Settings keeps this panel and re-attaches it each time it opens
+        // (IslandHost.LocalSearch): read everything again then, as the Mac's
+        // appeared() does, so it never shows what was true when it was built
+        // (owner report, 2026-10-05: "0 of 26" long after the folder finished).
+        Root.Loaded += (_, _) =>
+        {
+            RefreshSettings();
+            RefreshRoots();
+            _chrome.ReadStatus();
+        };
     }
 
     // ---- building blocks -------------------------------------------------------------
@@ -408,7 +445,14 @@ internal sealed partial class ManagePanel
         RefreshIndexRow(s);
         ShowCloud(s);
         uint faces = s.Flags & (MvAiStatus.FlagFacesReady | MvAiStatus.FlagFacesOn);
-        if (faces != _facesFlags || s.People != _peopleShown) RefreshPeople();
+        if (faces != _facesFlags) RefreshPeople();
+        else if (s.People != _peopleShown)
+        {
+            // People found: the grid reads again (not rebuilt, at most twice a second).
+            _peopleShown = s.People;
+            _peopleGrid.Refresh();
+        }
+        UpdateRerun(s);
         PollTransfer();
     }
 
@@ -484,7 +528,11 @@ internal sealed partial class ManagePanel
     // ---- index size and Clear -------------------------------------------------------
 
     /// <summary>Stops following status; Settings built a newer panel.</summary>
-    internal void Detach() => _chrome.StatusChanged -= OnStatus;
+    internal void Detach()
+    {
+        _chrome.StatusChanged -= OnStatus;
+        _peopleGrid.Detach();
+    }
 
     // Rebuilt only when it changes shape: the status arrives at 4 Hz, and a
     // rebuilt button would drop keyboard focus.
@@ -537,11 +585,18 @@ internal sealed partial class ManagePanel
     // ---- roots ----------------------------------------------------------------------
 
     private sealed record RootRow(ulong Id, string Path, bool Recursive, bool Enabled, long Assets, long Done, long Bytes,
-                                  MvAiMedia Media, long CloudOnly, bool Unreadable, long LastScan);
+                                  MvAiMedia Media, bool Scanning, long CloudOnly, bool Unreadable, long LastScan);
+
+    // The newest roots read: an older one finishing late never draws over it.
+    private int _rootsRead;
+    // A row's button was pressed: redraw even if the numbers did not move, so
+    // the button it disabled comes back.
+    private bool _rootsPressed;
 
     internal void RefreshRoots()
     {
         AiApi api = _api;
+        int read = ++_rootsRead;
         _ = Task.Run(() =>
         {
             var rows = new List<RootRow>();
@@ -560,6 +615,7 @@ internal sealed partial class ManagePanel
                         r.TryGetProperty("bytes", out JsonElement b) ? b.GetInt64() : 0,
                         r.TryGetProperty("media", out JsonElement m) && m.GetUInt32() <= 3
                             ? (MvAiMedia)m.GetUInt32() : MvAiMedia.Default,
+                        r.TryGetProperty("scanning", out JsonElement sc) && sc.ValueKind == JsonValueKind.True,
                         r.TryGetProperty("cloud_only", out JsonElement co) ? co.GetInt64() : 0,
                         r.TryGetProperty("error", out JsonElement er) && er.GetString() == "unreadable",
                         r.TryGetProperty("last_scan", out JsonElement ls) ? ls.GetInt64() : 0));
@@ -567,12 +623,19 @@ internal sealed partial class ManagePanel
             }
             catch (Exception ex) when (ex is MediaViewerException or JsonException or KeyNotFoundException
                                            or InvalidOperationException) { }
-            _chrome.Host.Post(() => ShowRoots(rows));
+            _chrome.Host.Post(() =>
+            {
+                if (read == _rootsRead) ShowRoots(rows);
+            });
         });
     }
 
     private void ShowRoots(List<RootRow> rows)
     {
+        // The engine posts AI_ROOTS as each folder's count moves (~1 s while
+        // indexing): unchanged rows are left alone, so a button keeps focus.
+        if (!_rootsPressed && _roots.Children.Count > 0 && rows.SequenceEqual(_rootsShown)) return;
+        _rootsPressed = false;
         // Export offers these folders; its button waits for one to exist.
         bool had = _rootsShown.Count > 0;
         _rootsShown = rows;
@@ -598,12 +661,12 @@ internal sealed partial class ManagePanel
             long local = Math.Max(0, r.Assets - r.CloudOnly);
             string state = !r.Enabled ? "Paused"
                 : r.Unreadable ? "Couldn't read this folder: it may be offline, moved or renamed. Its index is kept."
-                : r.Assets == 0 && r.LastScan != 0 ? "No photos or videos found here"
-                : r.Done >= local ? "Up to date" : $"{r.Done:N0} of {local:N0}";
+                : r.Assets == 0 && r.LastScan != 0 && !r.Scanning ? "No photos or videos found here"
+                : r.Done >= local ? (r.Scanning ? "Checking for changes…" : "Up to date")
+                : $"{r.Done:N0} of {local:N0}" + (r.Scanning ? " · checking for changes…" : "");
             if (r.CloudOnly > 0 && !r.Unreadable) state += $" · {r.CloudOnly:N0} only in OneDrive";
-            TextBlock stateText = _look.Text((r.Recursive ? "and subfolders · " : "") + state + " · " + Look.Size(r.Bytes), 12,
-                r.Unreadable ? AddonColour.Accent : AddonColour.Body);
-            labels.Children.Add(stateText);
+            labels.Children.Add(_look.Text((r.Recursive ? "and subfolders · " : "") + state + " · " + Look.Size(r.Bytes), 12,
+                r.Unreadable ? AddonColour.Accent : AddonColour.Body));
             var bar = new MediaViewer.Shared.FlatBar(_look[AddonColour.Hairline], _look[AddonColour.Accent])
             {
                 Value = local <= 0 ? 0 : Math.Min(1, (double)r.Done / local),
@@ -615,9 +678,11 @@ internal sealed partial class ManagePanel
             ulong id = r.Id;
             bool enabled = r.Enabled;
             buttons.Children.Add(MediaMenu(id, r.Media));
-            buttons.Children.Add(_look.Button(enabled ? "Pause" : "Resume", () => RootCall(() => _api.RootSetEnabled(id, !enabled))));
-            buttons.Children.Add(_look.Button("Rescan", () => RootCall(() => _api.RootRescan(id))));
-            buttons.Children.Add(_look.Button("Remove", () => RootCall(() => _api.RootRemove(id))));
+            buttons.Children.Add(RootButton(enabled ? "Pause" : "Resume", () => _api.RootSetEnabled(id, !enabled)));
+            Button rescan = RootButton(r.Scanning ? "Checking…" : "Rescan", () => _api.RootRescan(id));
+            rescan.IsEnabled = !r.Scanning && enabled;
+            buttons.Children.Add(rescan);
+            buttons.Children.Add(RootButton("Remove", () => _api.RootRemove(id)));
             foreach (UIElement b in buttons.Children)
             {
                 if (b is Button button) AutomationProperties.SetName(button, $"{button.Content} {System.IO.Path.GetFileName(r.Path)}");
@@ -663,6 +728,20 @@ internal sealed partial class ManagePanel
         return button;
     }
 
+    // A row button answers at once: it greys out until the row is read again
+    // (the engine posts AI_ROOTS for every root change and each scan's start
+    // and end), so a click never looks like it did nothing.
+    private Button RootButton(string label, Action call)
+    {
+        Button self = null!;
+        self = _look.Button(label, () =>
+        {
+            self.IsEnabled = false;
+            RootCall(call);
+        });
+        return self;
+    }
+
     private void RootCall(Action call)
     {
         // Said, not swallowed (2026-10-05: a folder add that did nothing looked
@@ -680,6 +759,7 @@ internal sealed partial class ManagePanel
             };
         }
         ShowRootError(error);
+        _rootsPressed = true;
         RefreshRoots();
         _chrome.RefreshCoverage();
         _chrome.ReadStatus();
@@ -794,45 +874,91 @@ internal sealed partial class ManagePanel
     internal void RefreshPeople()
     {
         _people.Children.Clear();
+        MvAiStatus s = _chrome.Status;
+        _facesFlags = s.Flags & (MvAiStatus.FlagFacesReady | MvAiStatus.FlagFacesOn);
+        _peopleShown = s.People;
+        bool ready = _chrome.StatusValid && (s.Flags & MvAiStatus.FlagFacesReady) != 0;
+        _peopleGrid.Root.Visibility = _faces.IsOn && !_confirmFacesOff && ready ? Visibility.Visible : Visibility.Collapsed;
+        UpdateRerun(s);
         if (_confirmFacesOff)
         {
-            var box = new StackPanel { Spacing = 8 };
-            box.Children.Add(_look.Text(
-                "Turn off people and delete all face data? Names and corrections go too. Photos and the search index stay.",
-                null, AddonColour.Title));
-            var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-            buttons.Children.Add(_look.Button("Delete face data", () =>
+            // Off deletes every face vector, crop and name: confirm first (the Mac's row).
+            var box = new Grid { ColumnSpacing = 10 };
+            box.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            box.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            box.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            TextBlock text = _look.Text("Turn off people search? Every face, crop and name is deleted now.", 12, AddonColour.Title);
+            text.VerticalAlignment = VerticalAlignment.Center;
+            box.Children.Add(text);
+            Button delete = _look.Button("Delete face data", () =>
             {
                 _confirmFacesOff = false;
                 try { _api.FacesEnable(false); }
                 catch (MediaViewerException) { }
                 RefreshSettings();
                 _chrome.ReadStatus();
-            }));
-            buttons.Children.Add(_look.Button("Keep it on", () =>
+            });
+            delete.VerticalAlignment = VerticalAlignment.Center;
+            Grid.SetColumn(delete, 1);
+            box.Children.Add(delete);
+            Button cancel = _look.Button("Cancel", () =>
             {
                 _confirmFacesOff = false;
                 _updating = true;
                 _faces.IsOn = true;
                 _updating = false;
                 RefreshPeople();
-            }));
-            box.Children.Add(buttons);
-            _people.Children.Add(_look.Card(box));
+            });
+            cancel.VerticalAlignment = VerticalAlignment.Center;
+            Grid.SetColumn(cancel, 2);
+            box.Children.Add(cancel);
+            Border card = _look.Card(box, 12);
+            card.Background = _look.Tint(AddonColour.Accent, 20);
+            _people.Children.Add(card);
             return;
         }
-        MvAiStatus s = _chrome.Status;
-        _facesFlags = s.Flags & (MvAiStatus.FlagFacesReady | MvAiStatus.FlagFacesOn);
-        _peopleShown = s.People;
         if (!_faces.IsOn) return;
-        bool ready = _chrome.StatusValid && (s.Flags & MvAiStatus.FlagFacesReady) != 0;
-        if (!ready && !_chrome.Host.IsPieceInstalled("ai-faces"))
+        if (!ready)
         {
-            _people.Children.Add(_look.Text("Install People in the list above to find people.", 13));
+            _people.Children.Add(_look.Text(_chrome.Host.IsPieceInstalled("ai-faces")
+                ? "People is loading. Faces are found once it is ready."
+                : "Install People above to find faces. Until then nothing about faces is computed.", 12));
             return;
         }
-        string found = s.People == 0 ? "No people found yet." : s.People == 1 ? "1 person found." : $"{s.People:N0} people found.";
-        _people.Children.Add(Row("People", found + " Name them, merge the same person found twice, and split them in the people window.",
-            _look.Button("People…", _chrome.OpenPeople)));
+        _peopleGrid.Refresh();
     }
+
+    private void Reanalyse()
+    {
+        try { _api.PeopleReanalyse(); }
+        catch (MediaViewerException)
+        {
+            _peopleGrid.Note("Faces could not be re-analysed. Try again.");
+            return;
+        }
+        _chrome.RequestStatus();
+    }
+
+    /// <summary>"Re-analyse faces": the model in use and a button, or while it runs how far it is.</summary>
+    private void UpdateRerun(in MvAiStatus s)
+    {
+        bool people = _faces.IsOn && !_confirmFacesOff && _chrome.StatusValid && (s.Flags & MvAiStatus.FlagFacesReady) != 0;
+        bool settling = (s.Flags & MvAiStatus.FlagPeopleSettling) != 0;
+        bool running = (s.Flags & MvAiStatus.FlagPeopleRerun) != 0;
+        _reanalyseRow.Visibility = people && !running && !settling ? Visibility.Visible : Visibility.Collapsed;
+        _rerunRow.Visibility = people && (running || settling) ? Visibility.Visible : Visibility.Collapsed;
+        _rerunBar.IsIndeterminate = settling || s.PeopleScanTotal == 0;
+        _rerunBar.Value = s.PeopleScanTotal == 0 ? 0 : (double)s.PeopleScanDone / s.PeopleScanTotal;
+        _rerunText.Text = settling ? "Filing faces into people…"
+            : $"Re-analysing faces… {s.PeopleScanDone:N0} of {s.PeopleScanTotal:N0}";
+        string model = s.PeopleModelText;
+        _reanalyseDetail.Text = "Looks at every photo and video again" + (model.Length > 0 ? $" with {model}" : "") +
+                                ", then files the faces into the people you have. Names, merges and splits are kept.";
+    }
+
+    /// <summary>AI_PEOPLE: the grid reads again (at most twice a second).</summary>
+    internal void PeopleChanged() => _peopleGrid.Refresh();
+
+    /// <summary>The viewer opened another folder: People follows it.</summary>
+    internal void OnFolderChanged() => _peopleGrid.OnFolderChanged();
 }

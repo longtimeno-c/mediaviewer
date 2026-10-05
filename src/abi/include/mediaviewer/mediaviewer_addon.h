@@ -74,7 +74,7 @@ typedef enum mv_addon_event_kind {
   /* The AI pack (docs/design/17), 20 and up so a chrome can route by kind alone. */
   MV_ADDON_EVENT_AI_STATUS = 20,     /* indexing progress / state; poll mv.ai.1 status */
   MV_ADDON_EVENT_AI_SEARCH_DONE = 21,/* id = search id; payload = result count */
-  MV_ADDON_EVENT_AI_ROOTS = 22,      /* the remembered roots changed */
+  MV_ADDON_EVENT_AI_ROOTS = 22,      /* the remembered roots, a root's progress or its scan changed */
   MV_ADDON_EVENT_AI_COMPUTE = 23,    /* the compute self-test finished; payload = mv_ai_backend */
   MV_ADDON_EVENT_AI_PEOPLE = 24      /* the people clusters changed (PR 24) */
 } mv_addon_event_kind;

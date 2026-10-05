@@ -328,6 +328,9 @@ enum class command_id : std::uint16_t {
   addon_cmd_5,
   addon_cmd_6,
   addon_cmd_7,
+  // Ctrl/Cmd+N: another window, its own process (docs/design/16 "Window").
+  // Appended after the add-on slots so every earlier wire id stays put.
+  new_window,
   count
 };
 inline constexpr int kAddonCommandSlots = 8;

@@ -22,7 +22,10 @@
 
 #include <dlfcn.h>
 #include <sys/resource.h>
+#include <fcntl.h>
+#include <sys/file.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <atomic>
@@ -147,7 +150,7 @@ static bool MvCommandSupported(mv::shell::command_id c) {
     case move_to: case move_to_pick: case delete_to_recycle_bin: case slideshow_start:
     case slideshow_pause: case slideshow_faster: case slideshow_slower: case help:
     case reveal_in_explorer: case open_settings: case cycle_background: case sticky_zoom:
-    case reset_stats: case always_on_top: case close_window: case pan_up: case pan_down:
+    case reset_stats: case always_on_top: case close_window: case new_window: case pan_up: case pan_down:
     case folder_up: case folder_prev: case folder_next:
     // PR 9
     case info_overlay: case af_points: case eyedropper: case copy_clipboard: case metadata_pane: case folder_tree:
@@ -195,6 +198,28 @@ mv::shell::present_lab_mac* g_chrome_lab = nullptr;
 // private MvLabApp ivars only MvLabApp's own methods can reach — the bridge
 // functions below call through this pointer rather than duplicating state.
 MvLabApp* g_chrome_app = nullptr;
+
+// docs/design/16 "Window": a new window (Cmd+N) is a new MediaViewer process on the
+// empty window; the viewer's state is one per process. Set from --new-window:
+// the top-left of the window that asked, so this one cascades from it.
+bool g_new_window = false;
+NSPoint g_new_window_from = NSZeroPoint;
+
+// Add-ons -- the AI pack and its indexer, Import's volume watch, Final Cut
+// search -- run in one window's process only, the first to take this lock: two
+// indexers would write one index. The lock is the process's until it exits,
+// crash or not, and the next window to start takes it over.
+bool MvClaimAddonHost() {
+  auto dir = mv::io::addons_dir();
+  if (!dir) return true;
+  (void)::mkdir(dir->c_str(), 0700);
+  const std::string path = mv::io::join_path(*dir, ".host.lock");
+  const int fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+  if (fd < 0) return true;  // cannot tell: as before, this process hosts them
+  if (::flock(fd, LOCK_EX | LOCK_NB) == 0) return true;  // fd kept open until exit
+  ::close(fd);
+  return false;
+}
 
 constexpr std::int64_t kShownStampUnknown = INT64_MIN;
 // _shownMoment after a new search: matches no moment, so the clip reopens.
@@ -658,6 +683,8 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
                 select:(std::size_t)select
                gallery:(BOOL)gallery;
 - (void)closeList;
+- (void)returnToWelcome;
+- (void)openNewWindow;
 - (BOOL)listOpen;
 - (BOOL)liveClipIsShown;
 - (std::string)listTitle;
@@ -2303,7 +2330,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   g_addon_app = weakApp;
   // The editor soak measures the editor: an add-on indexing in the background
   // (the AI pack compiles its models) would swamp it.
-  if (std::getenv("MV_EDIT_SELFTEST_SOAK") == nullptr) {
+  if (std::getenv("MV_EDIT_SELFTEST_SOAK") == nullptr && MvClaimAddonHost()) {
     MvAddonsStart(
         [](void*, const char* path) {
           MvLabApp* app = g_addon_app;
@@ -2329,6 +2356,10 @@ static void MvAdoptNewDefaultViewerTypes() {
   // or [self.window toggleFullScreen:nil] silently does nothing.
   self.window.collectionBehavior |= NSWindowCollectionBehaviorFullScreenPrimary;
   [self.window center];
+  if (g_new_window && !NSEqualPoints(g_new_window_from, NSZeroPoint)) {
+    // Cmd+N: down and to the right of the window that asked, as AppKit cascades.
+    [self.window setFrameTopLeftPoint:NSMakePoint(g_new_window_from.x + 26.0, g_new_window_from.y - 26.0)];
+  }
   // Found on real hardware (2026-09-18), alongside the Auto Layout fix a few
   // lines down: even with every subview properly pinned, a hard floor here
   // means a future layout mistake shrinks a control, not the whole window.
@@ -4277,7 +4308,41 @@ enum MvMenuCmd : NSInteger {
   // PR 29 (docs/design/20): the Edit menu, a visible way in to every edit.
   kMenuEditWorkspace, kMenuEditCrop, kMenuEditColour, kMenuRotateLeft, kMenuRotateRight,
   kMenuFlipH, kMenuFlipV, kMenuUndoEdit, kMenuResetEdits, kMenuSaveCopy, kMenuTrim,
+  // docs/design/16 "Window"
+  kMenuNewWindow,
 };
+
+// docs/design/16 "Window": another window is another MediaViewer process, on the
+// empty window, cascaded from this one. The bundle starts as a new instance
+// (LaunchServices would otherwise just activate this one); the bare lab
+// binary, which has no bundle, starts itself.
+- (void)openNewWindow {
+  const NSRect frame = self.window.frame;
+  NSArray<NSString*>* args = @[
+    @"--new-window", [NSString stringWithFormat:@"%.0f", NSMinX(frame)],
+    [NSString stringWithFormat:@"%.0f", NSMaxY(frame)]
+  ];
+  NSBundle* bundle = NSBundle.mainBundle;
+  if ([bundle.bundlePath.pathExtension isEqualToString:@"app"]) {
+    NSWorkspaceOpenConfiguration* config = [NSWorkspaceOpenConfiguration configuration];
+    config.createsNewApplicationInstance = YES;
+    config.arguments = args;
+    config.activates = YES;
+    [NSWorkspace.sharedWorkspace openApplicationAtURL:bundle.bundleURL
+                                        configuration:config
+                                    completionHandler:^(NSRunningApplication* app, NSError*) {
+                                      if (!app) dispatch_async(dispatch_get_main_queue(), ^{
+                                        NSBeep();
+                                      });
+                                    }];
+    return;
+  }
+  NSError* error = nil;
+  if (!bundle.executableURL ||
+      ![NSTask launchedTaskWithExecutableURL:bundle.executableURL arguments:args error:&error terminationHandler:nil]) {
+    NSBeep();
+  }
+}
 
 - (void)menuAction:(NSMenuItem*)item {
   [self runMenuCmd:item.tag];
@@ -4288,6 +4353,7 @@ enum MvMenuCmd : NSInteger {
 - (void)runMenuCmd:(NSInteger)cmd {
   switch (static_cast<MvMenuCmd>(cmd)) {
     case kMenuOpen: [self openFolderPanel:NO]; break;
+    case kMenuNewWindow: [self openNewWindow]; break;
     case kMenuOpenFolder: [self openFolderPanel:YES]; break;
     case kMenuOpenPhotos: [self openPhotosLibrary]; break;
     case kMenuTrash: [self deleteMarkedToTrash]; break;
@@ -4377,6 +4443,7 @@ enum MvMenuCmd : NSInteger {
   switch (static_cast<MvMenuCmd>(item.tag)) {
     case kMenuMetadata: case kMenuFolderTree:
     case kMenuOpen: case kMenuOpenFolder: case kMenuFit: case kMenuOneToOne: case kMenuFullscreen: case kMenuHelp: case kMenuSettings: case kMenuOverlay:
+    case kMenuNewWindow:
       return YES;
     case kMenuOpenPhotos:
       item.hidden = ![self photosLibraryAvailable];
@@ -4473,6 +4540,7 @@ enum MvMenuCmd : NSInteger {
   [app addItemWithTitle:@"Quit MediaViewer" action:@selector(terminate:) keyEquivalent:@"q"];
 
   NSMenu* file = submenu(@"File");
+  [self addMenuItem:@"New Window" cmd:kMenuNewWindow key:@"n" mods:NSEventModifierFlagCommand toMenu:file];
   [self addMenuItem:@"Open…" cmd:kMenuOpen key:@"o" mods:NSEventModifierFlagCommand toMenu:file];
   // docs/design/26: shown once the library was added in Settings (validateMenuItem:).
   [self addMenuItem:@"Open Photos Library" cmd:kMenuOpenPhotos key:@"" mods:0 toMenu:file];
@@ -5094,6 +5162,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     case gallery_smaller: [self adjustGalleryCellSize:-1]; return YES;
     case fullscreen: [self toggleFullscreen]; return YES;
     case close_window: [self.window performClose:nil]; return YES;
+    case new_window: [self openNewWindow]; return YES;
     case always_on_top:
       self.window.level = self.window.level == NSFloatingWindowLevel ? NSNormalWindowLevel
                                                                       : NSFloatingWindowLevel;
@@ -7712,16 +7781,61 @@ static double mv_wall_seconds() {
   [self photosListEnding];
   const std::string back = _listReturnDir;
   if (!back.empty() && [self openPath:back.c_str() navigation:NO]) return;
-  // Nothing to return to: an empty window, as before anything was opened.
+  [self returnToWelcome];
+}
+
+// Nothing to return to (the list was opened from the empty window, a search
+// from the welcome): the window as it was before anything was opened. The
+// canvas drops the result it showed, the folder model drops the list, and the
+// welcome card lists the recent folders again.
+- (void)returnToWelcome {
   _listOpen = NO;
   _listTitle.clear();
   _listReturnDir.clear();
   _moments.clear();
   _listNames.clear();
   _items.clear();
+  _subdirs.clear();
+  _siblings.clear();
+  _siblingIndex = -1;
+  _folderCursor = -1;
+  _revealChild.clear();
+  _galleryIfEmptyDir.clear();
+  _currentDir.clear();
+  _browsePath.reset("");
+  _wantSelectedPath.clear();
+  if (!_marks.empty()) {
+    _marks.clear();
+    ++_marksGeneration;
+  }
+  _metaRecord.reset();
+  ++_metaGeneration;
   ++_listingGeneration;
+  mv::shell::set_read_only_paths({});  // the list's Photos files (write_guard.h)
+
+  // The list may still be opening on a worker: a newer generation supersedes
+  // it, and the model closes there too (it joins its watch thread, rule 1).
+  mv::shell::folder_model* folder = &_folder;
+  const std::uint64_t my_generation = _openGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
+  std::atomic<std::uint64_t>* open_generation = &_openGeneration;
+  std::mutex* open_mutex = &_folderOpenMutex;
+  _jobs.submit_at(mv::background_generation,
+                  [folder, my_generation, open_generation, open_mutex](const mv::job_context&) -> mv::status {
+                    std::lock_guard<std::mutex> lock(*open_mutex);
+                    if (open_generation->load(std::memory_order_acquire) != my_generation) {
+                      return mv::status::cancelled;
+                    }
+                    folder->close();
+                    return mv::status::ok;
+                  });
+
+  _lab.close_item();
+  _shownItem = 0;
+  _shownMoment = -1;
+  [self setGalleryVisible:NO];
   [self selectIndex:0];
   [self updateChromeBarHeight];
+  [self refreshWelcomeRecents];
 }
 
 - (BOOL)listOpen { return _listOpen; }
@@ -8161,8 +8275,12 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
 
 - (NSMenu*)applicationDockMenu:(NSApplication*)sender {
   (void)sender;
-  if (_recentFolders.empty() && ![self photosLibraryAvailable]) return nil;
   NSMenu* menu = [[NSMenu alloc] initWithTitle:@""];
+  NSMenuItem* newWindow = [menu addItemWithTitle:@"New Window" action:@selector(menuAction:) keyEquivalent:@""];
+  newWindow.target = self;
+  newWindow.tag = kMenuNewWindow;
+  if (_recentFolders.empty() && ![self photosLibraryAvailable]) return menu;
+  [menu addItem:[NSMenuItem separatorItem]];
   [menu addItem:[NSMenuItem sectionHeaderWithTitle:@"Recent Folders"]];
   [self addRecentFolderItemsTo:menu];
   return menu;
@@ -8901,6 +9019,12 @@ int main(int argc, char** argv) {
       options.overlay_visible = false;
     } else if (std::strcmp(arg, "--open") == 0) {
       options.open_path = next();
+    } else if (std::strcmp(arg, "--new-window") == 0) {
+      // Cmd+N in another MediaViewer window: "--new-window X Y", its top-left.
+      g_new_window = true;
+      const double x = std::strtod(next(), nullptr);
+      const double y = std::strtod(next(), nullptr);
+      g_new_window_from = NSMakePoint(x, y);
     } else if (std::strcmp(arg, "--browse-soak") == 0) {
       g_mac_browse.enabled = true;
     } else if (std::strcmp(arg, "--help") == 0 || std::strcmp(arg, "-h") == 0) {

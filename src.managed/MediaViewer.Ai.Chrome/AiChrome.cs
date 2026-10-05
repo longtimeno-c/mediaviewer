@@ -7,8 +7,8 @@ namespace MediaViewer.Ai.Chrome;
 
 /// <summary>
 /// The AI pack's chrome entry point (docs/design/17 "UI and commands"). Owns the
-/// search panel, the management panel Settings embeds, the people window, the
-/// command-bar pill's text, and the search the viewer's result list came from
+/// search panel, the management panel Settings embeds (People is a section of
+/// it, as on the Mac), the command-bar pill's text, and the search the viewer's result list came from
 /// (its clip matches are the scrub bar's dots and what N / Shift+N walk).
 /// </summary>
 /// <remarks>
@@ -25,7 +25,7 @@ public sealed class AiChrome : IAddonChrome, ISearchChrome
     private Look? _look;
     private SearchWindow? _window;
     private ManagePanel? _panel;
-    private PeopleWindow? _people;
+    private FaceCrops? _crops;
     private DispatcherQueue? _queue;
     private DispatcherQueueTimer? _statusThrottle;
     private long _lastStatusTick;
@@ -48,6 +48,7 @@ public sealed class AiChrome : IAddonChrome, ISearchChrome
     internal AiApi Api => _api ?? throw new InvalidOperationException("not attached");
     internal IAddonHost2 Host => _host ?? throw new InvalidOperationException("not attached");
     internal Look Look => _look ?? throw new InvalidOperationException("not attached");
+    internal FaceCrops Crops => _crops ??= new FaceCrops(Api, Look);
     internal MvAiStatus Status => _status;
     internal bool StatusValid => _statusValid;
     internal string? Folder => _folder;
@@ -110,8 +111,7 @@ public sealed class AiChrome : IAddonChrome, ISearchChrome
                 RequestStatus();
                 break;
             case MvAddonEvent.AiPeople:
-                _panel?.RefreshPeople();
-                _people?.Refresh();
+                _panel?.PeopleChanged();
                 break;
         }
     }
@@ -121,8 +121,6 @@ public sealed class AiChrome : IAddonChrome, ISearchChrome
         _statusThrottle?.Stop();
         _window?.Dispose();
         _window = null;
-        _people?.Close();
-        _people = null;
         _panel?.Detach();
         _panel = null;
         if (_host is not null)
@@ -183,7 +181,7 @@ public sealed class AiChrome : IAddonChrome, ISearchChrome
             _coverage = 0;
         }
         _window?.OnFolderChanged();
-        _people?.OnFolderChanged();
+        _panel?.OnFolderChanged();
     }
 
     public void OnItemChanged(string? path)
@@ -283,15 +281,19 @@ public sealed class AiChrome : IAddonChrome, ISearchChrome
     /// <summary>A search whose answer goes to <paramref name="done"/> instead of the panel.</summary>
     internal void AwaitSearch(ulong search, Action<MvStatus, long> done) => _searchWaiters[search] = done;
 
+    /// <summary>How opening a person's photos went (the Mac's PersonOpen).</summary>
+    internal enum PersonOpen { Opened, Nothing, Failed }
+
     /// <summary>When <paramref name="search"/> answers, its results become the viewer's
-    /// listing (the people window's "Show their photos").</summary>
-    internal void OpenSearchAsList(ulong search, string title)
+    /// listing (People's "Show photos"); <paramref name="done"/> hears how it went.</summary>
+    internal void OpenSearchAsList(ulong search, string title, Action<PersonOpen>? done = null)
     {
         AwaitSearch(search, (status, count) =>
         {
             if (status != MvStatus.Ok || count <= 0 || _api is null)
             {
                 ReleaseSearch(search);
+                done?.Invoke(status == MvStatus.Ok && _api is not null ? PersonOpen.Nothing : PersonOpen.Failed);
                 return;
             }
             AiApi api = _api;
@@ -311,23 +313,18 @@ public sealed class AiChrome : IAddonChrome, ISearchChrome
                 catch (MediaViewerException) { }
                 _queue?.TryEnqueue(() =>
                 {
-                    if (_host is null || paths.Count == 0) return;
+                    if (_host is null || paths.Count == 0)
+                    {
+                        ReleaseSearch(search);
+                        done?.Invoke(PersonOpen.Failed);
+                        return;
+                    }
                     SetActiveSearch(search, paths.Where((_, i) => moments[i] >= 0));
                     _host.OpenList(title, paths, moments, 0, gallery: true);
+                    done?.Invoke(PersonOpen.Opened);
                 });
             });
         });
-    }
-
-    internal void OpenPeople()
-    {
-        if (_api is null || _host is null) return;
-        if (_people is null)
-        {
-            _people = new PeopleWindow(this);
-            _people.Closed += (_, _) => _people = null;
-        }
-        _people.Present();
     }
 
     // ---- N / Shift+N ------------------------------------------------------------------------
@@ -413,6 +410,5 @@ public sealed class AiChrome : IAddonChrome, ISearchChrome
     {
         _look?.Refresh();
         _window?.OnThemeChanged();
-        _people?.OnThemeChanged();
     }
 }

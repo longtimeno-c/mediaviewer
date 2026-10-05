@@ -172,9 +172,18 @@ internal sealed class Look
         var timer = e.DispatcherQueue.CreateTimer();
         timer.Interval = TimeSpan.FromMilliseconds(150);
         timer.IsRepeating = false;
-        timer.Tick += (_, _) => done();
+        timer.Tick += (t, _) =>
+        {
+            _fading.Remove(t);
+            done();
+        };
+        // Held until it fires: a timer only a local refers to can be collected
+        // mid-fade, and then the panel is left faded out but never hidden.
+        _fading.Add(timer);
         timer.Start();
     }
+
+    private static readonly HashSet<Microsoft.UI.Dispatching.DispatcherQueueTimer> _fading = new();
 
     private static bool CentreScale(UIElement e)
     {

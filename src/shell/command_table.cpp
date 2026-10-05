@@ -67,6 +67,7 @@ constexpr binding kBindings[] = {
     row(C('O'), mod_ctrl | mod_shift, kNotCrop, edge, open_folder),
     row(C('E'), mod_ctrl, kAllModes, edge, reveal_in_explorer),
     row(C('W'), mod_ctrl, kAllModes, edge, close_window),
+    row(C('N'), mod_ctrl, kAllModes, edge, new_window),
 
     // View. Number row is zoom; ratings never take these keys.
     row(C('0'), mod_none, kViewing, edge, fit),
@@ -460,6 +461,7 @@ constexpr command_info kCommands[] = {
     {addon_cmd_5, "Add-on command 6", true},
     {addon_cmd_6, "Add-on command 7", true},
     {addon_cmd_7, "Add-on command 8", true},
+    {new_window, "New window"},
 };
 
 const char* named_key(key k) noexcept {

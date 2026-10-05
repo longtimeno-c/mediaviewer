@@ -89,7 +89,10 @@ folder and `Q` / `E` still skip.
 `resolve_back` picks one target per press, never quitting: text field → popup (`?`, go-to, find)
 → Settings → Live Photo motion → crop (cancel) → trim (disarm, markers kept) → pane → gallery →
 slideshow → fullscreen → runner → canvas focus → result list ("Back to folder", the outermost:
-a search result list is a place, not an overlay). With nothing to leave, the key is not handled.
+a search result list is a place, not an overlay). A list opened from the empty window (a search
+from the welcome) goes back to the empty window: the welcome card with its recent folders, the
+canvas cleared (2026-10-05; it used to leave the last result up, and on Windows did nothing).
+With nothing to leave, the key is not handled.
 `Ctrl+W` / `Alt+F4` close the window.
 
 ## Focus
@@ -132,6 +135,7 @@ crop. Keys are shown Windows-style; on macOS read `⌘` for `Ctrl`.
 | `Ctrl+Shift+O` | All but crop | Open folder… |
 | `Ctrl+E` | all | Reveal the current file in Explorer / Finder; a Mac Photos library item opens in Photos instead ([26](26-photos-library.md)) |
 | `Ctrl+W` | all | Close window |
+| `Ctrl+N` | all | New window (⌘N; also File ▸ New Window and the Dock menu on the Mac) |
 | `Ctrl+,` | All but crop | Settings |
 | `Ctrl+G` | Viewing | Go to index |
 | `/` | browse, video, gallery | Find by name in the loaded listing (gallery folder row: find a folder tile) |
@@ -407,6 +411,13 @@ An animated item is in video mode: `Space` play / pause, `,` `.` frame step.
 
 - **Always on top** (`Ctrl+Shift+A`), host-side.
 - Dark / light follow the OS.
+- **New window** (`Ctrl+N`, 2026-10-05): another MediaViewer process on the empty window,
+  cascaded from the one that asked. The viewer's state is one per process (the hosts and the
+  SwiftUI stores are single-window), so a window is a process, not a second `NSWindow` or
+  `HWND` in this one. The Mac starts the bundle as a new instance (`--new-window X Y`, the
+  asking window's top-left); Windows starts the exe with `--new-instance`, which skips the
+  single-instance pipe. Add-ons run in one window's process only (see
+  [18](18-import.md) "One host process").
 
 ## ABI
 
@@ -418,7 +429,7 @@ No hot-path ABI for commands. Commands invoke existing session calls (`mv_folder
 
 - `F2` rename.
 - `Ctrl+Enter` open in an external editor; set as wallpaper.
-- `Ctrl+Tab` / tabs and multi-window.
+- `Ctrl+Tab` / tabs, and several windows inside one process.
 - `Ctrl+PageUp` / `Ctrl+PageDown` for ICO sizes and HEIC sequences (pages of TIFF, PDF and DOCX are built).
 - `U` clear label and `X` reject mark.
 - A filter (all / photos / videos / RAW) on the listing.

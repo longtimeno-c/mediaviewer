@@ -378,6 +378,11 @@ people.
   (*Movies*) offered while no root covers them, and the reason when an add fails), *Index
   online-only files* (shown once there are any), People, sharing, the Photos Library (Mac) and
   Final Cut Pro search (Mac, [23](23-nle-search.md)).
+  Each remembered root shows "N of M" (or "Up to date"), its share of the index on disk, and
+  "Checking for changes…" while it is being walked. The rows follow the work: the pack posts
+  `AI_ROOTS` when a root's count moves (at most once a control pass, ~1 s), when a rescan is
+  asked for, and when a walk starts and ends; a row button greys out until the row is read
+  again, and Windows re-reads the panel each time Settings opens (2026-10-05).
 
 ## Not hurting the viewer
 
@@ -515,8 +520,7 @@ faces:
 | **IR-50 (0.30), full size** | **0.9994** | **0.9982** | **0.9988** | 426 |
 | **IR-50 (0.30), ~24 px faces** | **0.9994** | **0.9966** | **0.9980** | 429 |
 
-**Re-run** (`people_reanalyse`; "Re-analyse faces" in Settings → People on the Mac, the People
-window on Windows). It forgets what the People pass scanned and the workers analyse every photo
+**Re-run** (`people_reanalyse`; "Re-analyse faces" in Settings → People on both platforms). It forgets what the People pass scanned and the workers analyse every photo
 and clip again. faces.db records each vector's embedder (`faces.spec`) and compares only vectors
 of the current one. A re-analysed face whose box matches an existing one (IoU ≥ 0.5) **keeps its
 row: id, person, name, pin, "not this person"**; a new face waits unassigned; an old face the
@@ -605,13 +609,17 @@ matches." Undo is Split (a split pair never merges again on its own). Tests: `"[
 `people_in_json(scope_dir, scope, …)`: `people_json` narrowed to the people with a face in a
 photo or clip under `scope_dir` by the same scopes `search_text` takes. `faces` counts their faces
 there and the cover is the clearest of those, so a card's count and face are the folder's. *Who
-qualifies at all* (minimum faces, or a name) is still judged over the whole index.
+qualifies at all* (minimum faces, or a name) is still judged over the whole index. The minimum
+is two faces, or **one when fewer than 100 photos and clips are in view** (the scoped folder's,
+or the whole index for Everywhere and the status count): in a small folder nobody may appear
+twice, and the grid said "No people found yet" over five clear faces (owner, 2026-10-05). A
+large library keeps two so a stranger in one photo does not fill it (`people_min_faces`).
 `faces_db::people(min, assets)` does one indexed pass per person against the scope's asset set.
 
 Chrome: a "People in · This folder | + Subfolders · <folder>" control at the top of the People
-grid (Settings → People on the Mac, the People window on Windows). Default **+ Subfolders**; it
+grid (Settings → People on both platforms). Default **+ Subfolders**; it
 follows the folder the viewer opens. Everyone shows only when no folder is open (the viewer's
-home): the control is then absent on the Mac, and disabled reading "Everywhere" on Windows. A scope
+home): the control is then absent. A scope
 of Everywhere left from before reads as + Subfolders when a folder opens. "Show photos" on a card
 and the empty-grid wording search the same scope. The choice is not persisted. The status bar's
 people count stays the whole index's. A pack without the entry shows everyone. The search panel
