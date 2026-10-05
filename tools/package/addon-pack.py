@@ -121,7 +121,8 @@ ADDONS = {
         },
         "licences": [],
         "notice": ("People (face search) for MediaViewer's Local search. Models: YuNet (MIT,\n"
-                   "Shiqi Yu), SFace (Apache-2.0, OpenCV Zoo). Face data never leaves this computer.\n"),
+                   "Shiqi Yu), AdaFace IR-50 (MIT, CVLface; fp16 ONNX export). Face data never leaves\n"
+                   "this computer.\n"),
     },
     "ai-cuda": {
         "name": "AI CUDA",
