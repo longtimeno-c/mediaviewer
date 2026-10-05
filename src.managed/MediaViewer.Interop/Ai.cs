@@ -34,6 +34,20 @@ public enum MvAiQuality : uint
 }
 
 /// <summary>Mirrors <c>mv_ai_state</c>.</summary>
+/// <summary>Mirrors <c>mv_ai_icloud_fetch</c>, which the cloud-file fetch shares (2026-10-05).</summary>
+public enum MvAiCloudFetch : uint
+{
+    Off = 0,
+    Downloading = 1,
+    WaitNetwork = 2,  // offline, or a metered connection
+    WaitPower = 3,
+    WaitIndexer = 4,  // two files are down and waiting to be indexed
+    LowDisk = 5,
+    Paused = 6,
+    Done = 7,
+    RetryLater = 8,
+}
+
 public enum MvAiState : uint
 {
     Idle = 0,
@@ -153,6 +167,23 @@ public unsafe struct MvAiStatus
     public ulong PeopleScanTotal;
     public ulong PeopleScanDone;
     public fixed byte PeopleModel[64];
+    // The Mac's opt-in iCloud fetch (2026-10-05), appended: kept so the fields
+    // after it line up; 0 on Windows.
+    public ulong IcloudVideosLeft;
+    public ulong IcloudVideosFetched;
+    public uint IcloudFetch;
+    public float IcloudFetchProgress;
+    // The accelerated provider's own message (2026-10-05, main), appended:
+    // display only; kept so the fields after it line up.
+    public fixed byte ProviderDetail[256];
+    // Cloud files in indexed folders (2026-10-05), appended: OneDrive online-only
+    // files listed but not yet indexed, those fetched to index them since the
+    // pack started, and the fetch's state (MvAiCloudFetch) and progress. Zero
+    // from a pack before them.
+    public ulong CloudFilesLeft;
+    public ulong CloudFilesFetched;
+    public MvAiCloudFetch CloudFetch;
+    public float CloudFetchProgress;
 
     /// <summary>Display only (rule 6: never logged).</summary>
     public readonly string ActiveRootText

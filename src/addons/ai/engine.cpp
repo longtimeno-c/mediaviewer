@@ -7,6 +7,7 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -180,6 +181,7 @@ expected engine::start() {
   // A reader (the search agent) never touches PhotoKit: that would ask for
   // Photos access from a background process. It still knows the Photos root.
   if (!options_.read_only) photos_ = deps_.photos ? deps_.photos() : make_photos_source();
+  if (!options_.read_only) cloud_ = deps_.cloud ? deps_.cloud() : make_cloud_files();
   for (const root_row& r : roots_cache_) {
     if (is_photos_key(r.path)) photos_root_ = r.id;
   }
@@ -187,7 +189,7 @@ expected engine::start() {
     control_ = std::thread([this] { reader_loop(); });
   } else {
     control_ = std::thread([this] { control_loop(); });
-    if (photos_) fetch_thread_ = std::thread([this] { fetch_loop(); });
+    if (photos_ || cloud_) fetch_thread_ = std::thread([this] { fetch_loop(); });
   }
   search_thread_ = std::thread([this] { search_loop(); });
   return {};
@@ -203,6 +205,7 @@ void engine::load_assets() {
     m.kind = a.kind;
     m.root = a.root_id;
     m.mtime = a.mtime;
+    m.cloud = a.cloud;
     all.emplace(a.id, std::move(m));
   }
   std::lock_guard lock(assets_m_);
@@ -249,6 +252,7 @@ void engine::load_settings() {
   settings_.precision = static_cast<std::uint32_t>(std::clamp<std::int64_t>(
       doc->integer("precision").value_or(kPrecisionDefault), 0, kPrecisionLevels - 1));
   settings_.icloud_videos = doc->boolean("icloud_videos").value_or(false);
+  settings_.cloud_files = doc->boolean("cloud_files").value_or(false);
 }
 
 void engine::save_settings() const {
@@ -264,6 +268,7 @@ void engine::save_settings() const {
     w.key("video_index").integer(settings_.video_index);
     w.key("precision").integer(settings_.precision);
     w.key("icloud_videos").boolean(settings_.icloud_videos);
+    w.key("cloud_files").boolean(settings_.cloud_files);
     w.end_object();
   }
   const std::string tmp = join(data_dir_, "settings.json.tmp");
@@ -296,6 +301,14 @@ std::string engine::settings_json() const {
   w.key("video_index_setting").integer(s.video_index);
   w.key("precision").integer(s.precision);
   w.key("icloud_videos").boolean(s.icloud_videos);
+  w.key("cloud_files").boolean(s.cloud_files);
+#if defined(_WIN32)
+  w.key("cloud_provider").string(cloud_ ? "onedrive" : "");
+#elif defined(__APPLE__)
+  w.key("cloud_provider").string(cloud_ ? "icloud" : "");
+#else
+  w.key("cloud_provider").string("");
+#endif
   {
     // Not models_m_: this is the UI thread's call (pieces_).
     std::lock_guard lock(pieces_m_);
@@ -372,6 +385,8 @@ expected engine::set_setting(const std::string& key, const std::string& value_js
       settings_.video_index = static_cast<std::uint32_t>(x);
     } else if (key == "icloud_videos") {
       settings_.icloud_videos = x != 0;
+    } else if (key == "cloud_files") {
+      settings_.cloud_files = x != 0;
     } else if (key == "precision") {
       // Read by each search as it starts: no reload, no re-index (docs/design/17
       // "Precision scale"). Out of range clamps to the nearest end.
@@ -385,7 +400,10 @@ expected engine::set_setting(const std::string& key, const std::string& value_js
     (reload ? reload_models_ : reload_pieces_) = true;
     control_cv_.notify_all();
   }
-  if (key == "icloud_videos") fetch_cv_.notify_all();
+  if (key == "icloud_videos" || key == "cloud_files") {
+    fetch_wake_ = true;
+    fetch_cv_.notify_all();
+  }
   if (key == "video_index") {
     std::lock_guard lock(work_m_);
     queue_.clear();
@@ -439,6 +457,7 @@ void engine::refresh_counts() {
   for (const root_row& r : roots) {
     per_root[r.id] = {db_->assets_in_root(r.id), root_spec.empty() ? 0 : db_->done_in_root(r.id, root_spec)};
   }
+  const std::uint64_t cloud_left = db_->cloud_count();
   std::uint64_t bytes = db_->bytes();
   std::uint64_t face_total = 0;
   std::uint32_t people = 0;
@@ -489,6 +508,7 @@ void engine::refresh_counts() {
   status_.assets_done = c.done;
   status_.assets_failed = c.failed;
   status_.assets_unavailable = c.unavailable;
+  status_.cloud_files_left = cloud_left;
   status_.sound_total = cs.assets;
   status_.sound_done = cs.done + cs.failed + cs.unavailable;
   status_.speech_total = cp.assets;
@@ -512,7 +532,7 @@ void engine::refresh_counts() {
   copy_str(status_.model_utf8, sizeof(status_.model_utf8), build.meta.name);
   copy_str(status_.active_root_utf8, sizeof(status_.active_root_utf8), active_root_);
   status_.migrate_total = build_spec != active_spec ? c.assets : 0;
-  status_.migrate_done = build_spec != active_spec ? c.done + c.failed + c.unavailable : 0;
+  status_.migrate_done = build_spec != active_spec ? c.done + c.failed + c.unavailable + c.cloud_only : 0;
   std::uint32_t flags = 0;
   if (index_full_) flags |= MV_AI_STATUS_INDEX_FULL;
   if (s.faces) flags |= MV_AI_STATUS_FACES_ON;
@@ -550,9 +570,11 @@ void engine::refresh_counts() {
       status_.eta_high_seconds = -1;
     }
   }
-  const bool pending = c.assets > c.done + c.failed + c.unavailable ||
-                       cs.assets > cs.done + cs.failed + cs.unavailable ||
-                       cp.assets > cp.done + cp.failed + cp.unavailable;
+  // Online-only cloud files are not work in hand: they wait for the opt-in
+  // fetch, whose own state says when one is on its way.
+  const bool pending = c.assets > c.done + c.failed + c.unavailable + c.cloud_only ||
+                       cs.assets > cs.done + cs.failed + cs.unavailable + cs.cloud_only ||
+                       cp.assets > cp.done + cp.failed + cp.unavailable + cp.cloud_only;
   std::uint32_t state = MV_AI_STATE_INDEXING;
   if (models_failed_) {
     state = MV_AI_STATE_ERROR;
@@ -569,9 +591,14 @@ void engine::refresh_counts() {
   status_.icloud_fetch_progress = fetch_progress_.load();
   status_.icloud_videos_left = icloud_left_.load();
   status_.icloud_videos_fetched = fetched_count_.load();
+  status_.cloud_fetch = cloud_state_.load();
+  status_.cloud_fetch_progress = cloud_progress_.load();
+  status_.cloud_files_fetched = cloud_fetched_count_.load();
   if (state == MV_AI_STATE_IDLE && (status_.icloud_fetch == MV_AI_ICLOUD_DOWNLOADING ||
-                                    status_.icloud_fetch == MV_AI_ICLOUD_WAIT_INDEXER)) {
-    state = MV_AI_STATE_INDEXING;  // nothing local left, but a clip is on its way
+                                    status_.icloud_fetch == MV_AI_ICLOUD_WAIT_INDEXER ||
+                                    status_.cloud_fetch == MV_AI_ICLOUD_DOWNLOADING ||
+                                    status_.cloud_fetch == MV_AI_ICLOUD_WAIT_INDEXER)) {
+    state = MV_AI_STATE_INDEXING;  // nothing local left, but a file is on its way
   }
   status_.state = state;
   status_.yield_reason = state == MV_AI_STATE_YIELDING || state == MV_AI_STATE_LOADING
@@ -1662,6 +1689,7 @@ bool engine::see_batch(const root_row& root, std::vector<index_db::seen_file>& b
     m.kind = batch[i].kind;
     m.root = root.id;
     m.mtime = batch[i].mtime;
+    m.cloud = batch[i].cloud;
   }
   batch.clear();
   return true;
@@ -1695,9 +1723,21 @@ void engine::scan_root(const root_row& root) {
   });
   if (!walked && walked.error() != status::cancelled) {
     // An unreachable root (a share offline, a card pulled) keeps its index:
-    // deleting rows because a drive is absent would throw work away.
+    // deleting rows because a drive is absent would throw work away. Settings
+    // says so on the folder's row (roots_json "error") instead of "Up to date".
+    {
+      std::lock_guard lock(status_m_);
+      root_errors_.insert(root.id);
+    }
+    post(MV_ADDON_EVENT_AI_ROOTS, static_cast<std::uint64_t>(root.id));
     return;
   }
+  bool was_error = false;
+  {
+    std::lock_guard lock(status_m_);
+    was_error = root_errors_.erase(root.id) != 0;
+  }
+  if (was_error) post(MV_ADDON_EVENT_AI_ROOTS, static_cast<std::uint64_t>(root.id));
   if (stopping_) return;
   for (auto& [dir, files] : by_dir) {
     std::vector<std::string> names;
@@ -1725,8 +1765,10 @@ void engine::scan_root(const root_row& root) {
           if (!is_jpeg_like) continue;
         }
       }
+      // An online-only file is listed (so it is counted, and fetched with the
+      // opt-in) but no track reads it: reading it would download it.
       batch.push_back(index_db::seen_file{files[i].path, files[i].mtime, files[i].size,
-                                          k == 2 ? asset_kind::video : asset_kind::photo});
+                                          k == 2 ? asset_kind::video : asset_kind::photo, files[i].cloud_only});
       if (batch.size() >= 512) flush();
     }
   }
@@ -1989,11 +2031,16 @@ void engine::fetch_reap(bool all) {
   }
   if (done.empty()) return;
   std::vector<std::string> files;
+  std::vector<fetched_clip> given_back;
   {
     std::lock_guard lock(fetch_m_);
     for (auto it = fetched_.begin(); it != fetched_.end();) {
       if (std::find(done.begin(), done.end(), it->id) != done.end()) {
-        files.push_back(std::move(it->file));
+        if (it->in_place) {
+          given_back.push_back(std::move(*it));
+        } else {
+          files.push_back(std::move(it->file));
+        }
         it = fetched_.erase(it);
       } else {
         ++it;
@@ -2004,6 +2051,159 @@ void engine::fetch_reap(bool all) {
     std::error_code ec;
     std::filesystem::remove(fs_path(f), ec);
   }
+  if (given_back.empty()) return;
+  // Online-only again, as the user left it; marked so no track reads it.
+  for (const fetched_clip& c : given_back) {
+    if (cloud_) (void)cloud_->dehydrate(c.file);
+    (void)db_->set_cloud(c.id, true);
+    std::lock_guard lock(assets_m_);
+    if (auto it = assets_.find(c.id); it != assets_.end()) it->second.cloud = true;
+  }
+  note_hydrated();
+}
+
+// ---- cloud files (2026-10-05) ---------------------------------------------------------
+//
+// The opt-in "cloud_files" (docs/plans/document-search.md slice 0): a file
+// OneDrive or iCloud Drive keeps online-only in an indexed folder is listed
+// but never read. With the option on, the fetch thread brings one down in
+// place (at most kFetchAhead on disk, counting iCloud clips), clears its mark
+// so every track takes it first (claim, fetched_ids), and fetch_reap makes it
+// online-only again once no track wants it. Only on power, on an unmetered
+// network, with the floor of free space plus the file, and never while paused.
+
+mv_ai_icloud_fetch engine::cloud_gate() const {
+  {
+    std::lock_guard lock(settings_m_);
+    if (!settings_.cloud_files) return MV_AI_ICLOUD_OFF;
+  }
+  if (!cloud_) return MV_AI_ICLOUD_OFF;
+  if (paused_ || index_full_ || clearing_ || transferring_) return MV_AI_ICLOUD_PAUSED;
+  if (power_state().on_battery) return MV_AI_ICLOUD_WAIT_POWER;
+  if (!cloud_->network_unmetered()) return MV_AI_ICLOUD_WAIT_NETWORK;
+  return MV_AI_ICLOUD_DOWNLOADING;
+}
+
+void engine::note_hydrated() const {
+  std::string ids;
+  {
+    std::lock_guard lock(fetch_m_);
+    for (const fetched_clip& f : fetched_) {
+      if (f.in_place) ids += std::to_string(f.id) + "\n";  // row ids only, never a path (rule 6)
+    }
+  }
+  const std::string dir = join(data_dir_, "cache");
+  const std::string file = join(dir, "cloud-fetched");
+  std::error_code ec;
+  if (ids.empty()) {
+    std::filesystem::remove(fs_path(file), ec);
+    return;
+  }
+  std::filesystem::create_directories(fs_path(dir), ec);
+  const std::string tmp = file + ".tmp";
+  {
+    std::ofstream out(fs_path(tmp), std::ios::binary | std::ios::trunc);
+    if (!out) return;
+    out << ids;
+  }
+  std::filesystem::rename(fs_path(tmp), fs_path(file), ec);
+}
+
+void engine::give_back_crashed() {
+  const std::string file = join(join(data_dir_, "cache"), "cloud-fetched");
+  std::ifstream in(fs_path(file), std::ios::binary);
+  if (!in) return;
+  std::string line;
+  while (std::getline(in, line)) {
+    char* end = nullptr;
+    const long long id = std::strtoll(line.c_str(), &end, 10);
+    if (end == line.c_str() || id <= 0) continue;
+    auto a = db_->asset_by_id(id);
+    if (!a) continue;
+    if (cloud_) (void)cloud_->dehydrate(a->path);
+    // Marked again: a half-indexed file is fetched again, a done one is left.
+    (void)db_->set_cloud(id, true);
+    std::lock_guard lock(assets_m_);
+    if (auto it = assets_.find(id); it != assets_.end()) it->second.cloud = true;
+  }
+  in.close();
+  std::error_code ec;
+  std::filesystem::remove(fs_path(file), ec);
+}
+
+bool engine::fetch_cloud_one(std::vector<asset_row>& candidates, std::size_t& next) {
+  const auto fetched_already = [&](std::int64_t id) {
+    std::lock_guard lock(fetch_m_);
+    return std::any_of(fetched_.begin(), fetched_.end(), [&](const fetched_clip& f) { return f.id == id; });
+  };
+  std::optional<asset_row> pick;
+  for (int pass = 0; pass < 2 && !pick; ++pass) {
+    while (next < candidates.size()) {
+      const asset_row& a = candidates[next++];
+      if (!cloud_skip_.count(a.id) && !fetched_already(a.id)) {
+        pick = a;
+        break;
+      }
+    }
+    if (!pick) {
+      const std::vector<std::int64_t> skip(cloud_skip_.begin(), cloud_skip_.end());
+      candidates = db_->cloud_assets(64, skip);
+      next = 0;
+      if (candidates.empty()) break;
+    }
+  }
+  if (!pick) {
+    cloud_state_ = db_->cloud_count() == 0 ? MV_AI_ICLOUD_DONE : MV_AI_ICLOUD_RETRY_LATER;
+    return false;
+  }
+  {
+    // The provider puts the bytes on the file's own drive.
+    std::error_code ec;
+    const auto space = std::filesystem::space(fs_path(pick->path).parent_path(), ec);
+    if (!ec && space.available < kFetchMinFreeBytes + pick->size) {
+      cloud_state_ = MV_AI_ICLOUD_LOW_DISK;
+      return false;
+    }
+  }
+  cloud_state_ = MV_AI_ICLOUD_DOWNLOADING;
+  cloud_progress_ = 0;
+  {
+    // Noted before the download: a crash part-way still gives it back.
+    std::lock_guard lock(fetch_m_);
+    fetched_.push_back(fetched_clip{pick->id, pick->path, pick->path, true});
+  }
+  note_hydrated();
+  const expected got = cloud_->hydrate(pick->path, [this](double p) {
+    cloud_progress_ = static_cast<float>(p);
+    return !stopping_ && cloud_gate() == MV_AI_ICLOUD_DOWNLOADING;
+  });
+  cloud_progress_ = 0;
+  if (!got || !db_->set_cloud(pick->id, false)) {
+    {
+      std::lock_guard lock(fetch_m_);
+      fetched_.erase(std::remove_if(fetched_.begin(), fetched_.end(),
+                                    [&](const fetched_clip& f) { return f.id == pick->id; }),
+                     fetched_.end());
+    }
+    note_hydrated();
+    // Whatever arrived goes back; a refusal is not asked again this run.
+    (void)cloud_->dehydrate(pick->path);
+    if (got || got.error() != status::cancelled) cloud_skip_.insert(pick->id);
+    return false;
+  }
+  {
+    std::lock_guard lock(assets_m_);
+    if (auto it = assets_.find(pick->id); it != assets_.end()) it->second.cloud = false;
+  }
+  ++cloud_fetched_count_;
+  {
+    // The queue is rebuilt with it first (claim takes fetched_ids first).
+    std::lock_guard lock(work_m_);
+    queue_.clear();
+    queue_exhausted_ = false;
+  }
+  work_cv_.notify_all();
+  return true;
 }
 
 void engine::fetch_loop() {
@@ -2013,8 +2213,9 @@ void engine::fetch_loop() {
     std::error_code ec;
     std::filesystem::remove_all(fs_path(dir), ec);  // a crash's leftovers
   }
-  std::vector<asset_row> candidates;
-  std::size_t next = 0;
+  give_back_crashed();
+  std::vector<asset_row> candidates, cloud_candidates;
+  std::size_t next = 0, cloud_next = 0;
   while (!stopping_) {
     fetch_reap(false);
     mv_ai_icloud_fetch gate = fetch_gate();
@@ -2102,9 +2303,36 @@ void engine::fetch_loop() {
       }
     }
     fetch_state_ = gate;
-    if (fetched_one) continue;  // the next one at once, while this one indexes
+    // Cloud files: the same thread, the same files-on-disk limit.
+    bool cloud_one = false;
+    mv_ai_icloud_fetch cloud = cloud_gate();
+    if (cloud == MV_AI_ICLOUD_DOWNLOADING) {
+      std::size_t held = 0;
+      {
+        std::lock_guard lock(fetch_m_);
+        held = fetched_.size();
+      }
+      if (held >= kFetchAhead || !models_ready_ || loading_) {
+        cloud_state_ = MV_AI_ICLOUD_WAIT_INDEXER;
+      } else {
+        cloud_one = fetch_cloud_one(cloud_candidates, cloud_next);
+        if (cloud_one) cloud_state_ = MV_AI_ICLOUD_DOWNLOADING;
+      }
+    } else {
+      cloud_state_ = cloud;
+    }
+    if (fetched_one || cloud_one) continue;  // the next one at once, while this one indexes
     std::unique_lock lock(fetch_m_);
-    fetch_cv_.wait_for(lock, std::chrono::milliseconds(1000), [this] { return stopping_.load(); });
+    // With both options off and nothing on disk there is nothing to watch:
+    // sleep until a setting changes (set_setting wakes it), not once a second
+    // (idle cost; Windows runs this thread for OneDrive since 2026-10-05).
+    bool quiet = fetched_.empty();
+    {
+      std::lock_guard sl(settings_m_);
+      quiet = quiet && !settings_.icloud_videos && !settings_.cloud_files;
+    }
+    fetch_cv_.wait_for(lock, std::chrono::milliseconds(quiet ? 30000 : 1000),
+                       [this] { return stopping_.load() || fetch_wake_.exchange(false); });
   }
   fetch_reap(true);
   fetch_state_ = MV_AI_ICLOUD_OFF;
@@ -2226,6 +2454,7 @@ bool engine::claim(std::vector<work_item>& out, track& t) {
       for (const auto& [id, m] : assets_) {
         if (faces_scanned_.count(id) || in_flight_.count(id)) continue;
         if (skip_faces != 0 && m.root == skip_faces) continue;
+        if (m.cloud) continue;  // online-only: the fetch brings it down first
         work_item w;
         w.asset.id = id;
         w.asset.path = m.path;
@@ -2880,6 +3109,13 @@ std::string engine::roots_json() {
     w.key("bytes").integer(static_cast<std::int64_t>(share * static_cast<double>(total_bytes)));
     w.key("scanning").boolean(r.enabled && (walking_all || walking.count(r.id) != 0));
     w.key("last_scan").integer(r.last_scan_at);
+    if (!photos) w.key("cloud_only").integer(static_cast<std::int64_t>(db_->cloud_in_root(r.id)));
+    bool unreadable = false;
+    {
+      std::lock_guard lock(status_m_);
+      unreadable = root_errors_.count(r.id) != 0;
+    }
+    if (unreadable) w.key("error").string("unreadable");
     w.end_object();
   }
   w.end_array();

@@ -831,6 +831,25 @@ downloaded: PhotoKit keeps a local preview of nearly every photo, and the indexe
 library is still never written, and nothing about it leaves the Mac (the download is the user's own
 iCloud to their own Mac). Mac only: on Windows iCloud for Windows syncs to a folder.
 
+**Cloud files in indexed folders: walked, counted, never read unasked (2026-10-05, owner).** A
+Pictures folder moved to OneDrive was not being searched. The folder walk (`io::walk_files`,
+written for camera cards) skipped every reparse point, and OneDrive's Files On-Demand files and
+folders are reparse points, so such a folder indexed nothing and still said "Up to date". The walk
+now skips only name-surrogate reparse points (symlinks, junctions), which are still never
+followed. It lists cloud files, flagging the online-only ones (`FILE_ATTRIBUTE_RECALL_ON_*`;
+`SF_DATALESS` for an evicted iCloud Drive file on the Mac), and reaches past `MAX_PATH`. Host
+table v1's `walk_files` still leaves online-only files out (a copy never starts a download).
+`walk_files2` (appended) lists them flagged. The index marks them (`assets.cloud`, schema 3), and
+no track reads one, since reading it is a download. Settings says "N only in OneDrive / iCloud
+Drive". *Index online-only files* (`cloud_files`, off by default; the owner chose an opt-in
+matching the Mac's iCloud videos) brings a couple at a time down in place. It uses the Cloud Files
+API on Windows and NSFileManager's ubiquitous-item calls on the Mac, both in the pack, not the base
+app. Each file is indexed first and made online-only again once no track wants it. It runs only on
+power and an unmetered network, with 10 GB plus the file free, and never while paused. A crash
+leaves row ids in `<data>/cache/cloud-fetched`, and those files are given back at the next start.
+Folder adds that fail now say why. A folder whose walk fails reads "Couldn't read this folder",
+and one with nothing to index reads "No photos or videos found here", rather than "Up to date".
+
 **The Mac Photos library as a source (2026-09-28).** Read-only: no PhotoKit write API is called,
 and `shell/write_guard.h` refuses every write, move, bin, rotate, export and trim of a Photos file
 or listed preview. Indexing never downloads (amended 2026-10-05: iCloud-only clips, opt-in, above);

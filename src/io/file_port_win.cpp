@@ -364,6 +364,17 @@ expected file_writer::close() {
 // ---------------------------------------------------------------------------
 namespace {
 
+// The same path in the \\?\ form, so a tree deeper than MAX_PATH still lists.
+// Only for the call: entries keep the plain path the caller gave.
+std::wstring long_form(const std::wstring& path) {
+  if (path.size() < 240 || path.rfind(L"\\\\?\\", 0) == 0) return path;
+  std::wstring p = path;
+  std::replace(p.begin(), p.end(), L'/', L'\\');
+  if (p.size() >= 3 && p[1] == L':' && p[2] == L'\\') return L"\\\\?\\" + p;
+  if (p.rfind(L"\\\\", 0) == 0) return L"\\\\?\\UNC\\" + p.substr(2);
+  return path;
+}
+
 bool walk_dir(const std::wstring& dir, const std::string& rel, int depth, int max_depth,
               std::vector<tree_entry>& out) {
   std::wstring glob = dir;
@@ -371,7 +382,7 @@ bool walk_dir(const std::wstring& dir, const std::string& rel, int depth, int ma
   const std::wstring prefix = glob;
   glob.push_back(L'*');
   WIN32_FIND_DATAW fd{};
-  HANDLE find = ::FindFirstFileExW(glob.c_str(), FindExInfoBasic, &fd, FindExSearchNameMatch,
+  HANDLE find = ::FindFirstFileExW(long_form(glob).c_str(), FindExInfoBasic, &fd, FindExSearchNameMatch,
                                    nullptr, FIND_FIRST_EX_LARGE_FETCH);
   if (find == INVALID_HANDLE_VALUE) return depth > 0;
   std::vector<std::wstring> subdirs;
@@ -384,8 +395,12 @@ bool walk_dir(const std::wstring& dir, const std::string& rel, int depth, int ma
     // card must list the same files on both platforms.
     if (name.front() == L'.') continue;
     // Junctions and symlinks are never followed: a card has none, and a share
-    // that loops back on itself must not walk forever.
-    if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) continue;
+    // that loops back on itself must not walk forever. A cloud provider's
+    // reparse points (OneDrive's files and folders) are not links and are
+    // walked, so a Pictures folder moved to OneDrive lists (2026-10-05).
+    if ((fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) && IsReparseTagNameSurrogate(fd.dwReserved0)) {
+      continue;
+    }
     if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
       if (depth < max_depth) subdirs.emplace_back(name);
       continue;
@@ -397,6 +412,9 @@ bool walk_dir(const std::wstring& dir, const std::string& rel, int depth, int ma
     e.name_utf8 = name8;
     e.size = (static_cast<std::uint64_t>(fd.nFileSizeHigh) << 32) | fd.nFileSizeLow;
     e.mtime_unix = unix_from_filetime(fd.ftLastWriteTime);
+    // Online-only: opening it for reading would download it.
+    e.cloud_only = (fd.dwFileAttributes &
+                    (FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS | FILE_ATTRIBUTE_RECALL_ON_OPEN | FILE_ATTRIBUTE_OFFLINE)) != 0;
     out.push_back(std::move(e));
   } while (::FindNextFileW(find, &fd));
   ::FindClose(find);

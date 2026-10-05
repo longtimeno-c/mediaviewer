@@ -264,6 +264,10 @@ struct StatusLine: Equatable {
       case .pictures where Self.picturesDone(s) >= s.assets_total && s.icloud_videos_left > 0:
         // Everything on this Mac is done; a clip is on its way from iCloud.
         text = "Downloading from iCloud · \(countText(s.icloud_videos_left)) clips left"
+      case .pictures where s.cloud_fetch == MV_AI_ICLOUD_DOWNLOADING.rawValue:
+        // A file from iCloud Drive is on its way (2026-10-05).
+        text = "Downloading from iCloud Drive (\(Int((s.cloud_fetch_progress * 100).rounded()))%) · "
+          + "\(countText(s.cloud_files_left)) left to index"
       case .pictures:
         let eta = etaText(s.eta_low_seconds, s.eta_high_seconds)
         text = (s.sound_total > 0 || s.speech_total > 0 ? "Indexing pictures " : "Indexing ")
@@ -310,6 +314,7 @@ struct StatusLine: Equatable {
     default:
       text = s.frames_indexed == 0 ? "Nothing indexed yet"
         : "Up to date · \(countText(s.frames_indexed)) moments"
+      if s.cloud_files_left > 0 { text += " · \(countText(s.cloud_files_left)) only in iCloud Drive" }
     }
     // The ring follows the pass the line names.
     func fraction(_ done: UInt64, _ total: UInt64) -> Double {
@@ -400,7 +405,8 @@ struct StatusLine: Equatable {
 
   /// Pictures are handled once indexed, failed, or only in iCloud (issue #72).
   static func picturesDone(_ s: mv_ai_status) -> UInt64 {
-    s.assets_done + s.assets_failed + s.assets_unavailable
+    // Evicted iCloud Drive files wait for their opt-in fetch: not work in hand.
+    s.assets_done + s.assets_failed + s.assets_unavailable + s.cloud_files_left
   }
 
   /// The pass running now: pictures until they are all handled, then sound,

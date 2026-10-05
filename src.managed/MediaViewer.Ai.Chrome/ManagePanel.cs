@@ -39,6 +39,15 @@ internal sealed partial class ManagePanel
     private readonly TextBlock _restart;
     private readonly ComboBox _batteryBox;
     private readonly StackPanel _roots;
+    // Under the folder list: why the last add or folder action did nothing, and
+    // the Pictures / Videos folders no root covers yet (2026-10-05).
+    private readonly TextBlock _rootError;
+    private readonly StackPanel _suggest;
+    // OneDrive online-only files (2026-10-05): fetch them to index them.
+    private readonly FrameworkElement _cloudRow;
+    private readonly ToggleSwitch _cloudSwitch;
+    private readonly TextBlock _cloudDetail;
+    private bool _cloudProvider;
     private readonly StackPanel _indexRow;
     // People, as on the Mac: the notices (the off confirmation, "Install
     // People"), Re-analyse, then the grid itself (PeopleGrid.cs).
@@ -226,7 +235,25 @@ internal sealed partial class ManagePanel
         var add = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         // A folder is always indexed with its subfolders (owner 2026-10-03).
         add.Children.Add(_look.Button("Add a folder…", () => _ = AddFolder()));
+        // Pictures and Videos where Windows keeps them (moved to OneDrive or
+        // not), offered while no folder covers them: never added unasked.
+        _suggest = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
+        add.Children.Add(_suggest);
         Root.Children.Add(add);
+        _rootError = _look.Text("", 12, AddonColour.Accent);
+        _rootError.Visibility = Visibility.Collapsed;
+        Root.Children.Add(_rootError);
+
+        _cloudSwitch = new ToggleSwitch { OnContent = "", OffContent = "", MinWidth = 0, Width = 48 };
+        _cloudSwitch.Toggled += (_, _) =>
+        {
+            if (_updating) return;
+            Set("cloud_files", _cloudSwitch.IsOn ? "1" : "0");
+        };
+        _cloudDetail = _look.Text("", 12);
+        _cloudRow = Row("Index online-only OneDrive files", _cloudDetail, _cloudSwitch);
+        _cloudRow.Visibility = Visibility.Collapsed;
+        Root.Children.Add(_cloudRow);
 
         _indexRow = new StackPanel { Spacing = 8 };
         Root.Children.Add(_indexRow);
@@ -376,6 +403,8 @@ internal sealed partial class ManagePanel
             _videoIndexValue = videoIndex is >= 1 and <= 3 ? (MvAiMedia)videoIndex : MvAiMedia.Pictures;
             _audioReady = r.TryGetProperty("audio_ready", out JsonElement ar) && ar.ValueKind == JsonValueKind.True;
             ShowVideoIndex();
+            _cloudProvider = r.TryGetProperty("cloud_provider", out JsonElement cp) && cp.GetString() == "onedrive";
+            _cloudSwitch.IsOn = r.TryGetProperty("cloud_files", out JsonElement cf) && cf.ValueKind == JsonValueKind.True;
         }
         catch (Exception ex) when (ex is JsonException or InvalidOperationException or FormatException) { }
         finally
@@ -414,6 +443,7 @@ internal sealed partial class ManagePanel
             RefreshRoots();
         }
         RefreshIndexRow(s);
+        ShowCloud(s);
         uint faces = s.Flags & (MvAiStatus.FlagFacesReady | MvAiStatus.FlagFacesOn);
         if (faces != _facesFlags) RefreshPeople();
         else if (s.People != _peopleShown)
@@ -460,6 +490,24 @@ internal sealed partial class ManagePanel
         _videoIndexValue = media;
         ShowVideoIndex();
         Set("video_index", ((uint)media).ToString());
+    }
+
+    // ---- OneDrive online-only files -----------------------------------------------------
+
+    // Shown once there are online-only files in an indexed folder, or the option
+    // is on. The text is kept stable at 4 Hz: only its words change.
+    private void ShowCloud(in MvAiStatus s)
+    {
+        bool show = _cloudProvider && (s.CloudFilesLeft > 0 || s.CloudFilesFetched > 0 || _cloudSwitch.IsOn);
+        _cloudRow.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        if (!show) return;
+        string n = s.CloudFilesLeft.ToString("N0", System.Globalization.CultureInfo.CurrentCulture);
+        string left = s.CloudFilesLeft == 0 ? "Every online-only file in your folders is indexed."
+            : s.CloudFilesLeft == 1 ? "1 file in your folders is only in OneDrive, so it is not searchable yet."
+            : $"{n} files in your folders are only in OneDrive, so they are not searchable yet.";
+        string how = " When on, MediaViewer downloads a couple at a time while this PC is plugged in and on an unmetered connection, indexes them, and makes them online-only again.";
+        string? wait = _cloudSwitch.IsOn ? Look.CloudWait(s) : null;
+        _cloudDetail.Text = left + how + (wait is null ? "" : " " + wait);
     }
 
     private void IndexAnyway()
@@ -537,7 +585,7 @@ internal sealed partial class ManagePanel
     // ---- roots ----------------------------------------------------------------------
 
     private sealed record RootRow(ulong Id, string Path, bool Recursive, bool Enabled, long Assets, long Done, long Bytes,
-                                  MvAiMedia Media, bool Scanning);
+                                  MvAiMedia Media, bool Scanning, long CloudOnly, bool Unreadable, long LastScan);
 
     // The newest roots read: an older one finishing late never draws over it.
     private int _rootsRead;
@@ -567,7 +615,10 @@ internal sealed partial class ManagePanel
                         r.TryGetProperty("bytes", out JsonElement b) ? b.GetInt64() : 0,
                         r.TryGetProperty("media", out JsonElement m) && m.GetUInt32() <= 3
                             ? (MvAiMedia)m.GetUInt32() : MvAiMedia.Default,
-                        r.TryGetProperty("scanning", out JsonElement sc) && sc.ValueKind == JsonValueKind.True));
+                        r.TryGetProperty("scanning", out JsonElement sc) && sc.ValueKind == JsonValueKind.True,
+                        r.TryGetProperty("cloud_only", out JsonElement co) ? co.GetInt64() : 0,
+                        r.TryGetProperty("error", out JsonElement er) && er.GetString() == "unreadable",
+                        r.TryGetProperty("last_scan", out JsonElement ls) ? ls.GetInt64() : 0));
                 }
             }
             catch (Exception ex) when (ex is MediaViewerException or JsonException or KeyNotFoundException
@@ -590,6 +641,7 @@ internal sealed partial class ManagePanel
         _rootsShown = rows;
         if (had != (rows.Count > 0) && !_exportOpen) ShowTransfer();
         _roots.Children.Clear();
+        ShowSuggestions();
         if (rows.Count == 0)
         {
             _roots.Children.Add(_look.Text(
@@ -605,13 +657,19 @@ internal sealed partial class ManagePanel
             TextBlock path = _look.Text(r.Path, 14, AddonColour.Title, wrap: false);
             ToolTipService.SetToolTip(path, r.Path);
             labels.Children.Add(path);
+            // Online-only files wait for the OneDrive fetch: the rest can be up to date.
+            long local = Math.Max(0, r.Assets - r.CloudOnly);
             string state = !r.Enabled ? "Paused"
-                : r.Done >= r.Assets ? (r.Scanning ? "Checking for changes…" : "Up to date")
-                : $"{r.Done:N0} of {r.Assets:N0}" + (r.Scanning ? " · checking for changes…" : "");
-            labels.Children.Add(_look.Text((r.Recursive ? "and subfolders · " : "") + state + " · " + Look.Size(r.Bytes), 12));
+                : r.Unreadable ? "Couldn't read this folder: it may be offline, moved or renamed. Its index is kept."
+                : r.Assets == 0 && r.LastScan != 0 && !r.Scanning ? "No photos or videos found here"
+                : r.Done >= local ? (r.Scanning ? "Checking for changes…" : "Up to date")
+                : $"{r.Done:N0} of {local:N0}" + (r.Scanning ? " · checking for changes…" : "");
+            if (r.CloudOnly > 0 && !r.Unreadable) state += $" · {r.CloudOnly:N0} only in OneDrive";
+            labels.Children.Add(_look.Text((r.Recursive ? "and subfolders · " : "") + state + " · " + Look.Size(r.Bytes), 12,
+                r.Unreadable ? AddonColour.Accent : AddonColour.Body));
             var bar = new MediaViewer.Shared.FlatBar(_look[AddonColour.Hairline], _look[AddonColour.Accent])
             {
-                Value = r.Assets <= 0 ? 0 : Math.Min(1, (double)r.Done / r.Assets),
+                Value = local <= 0 ? 0 : Math.Min(1, (double)r.Done / local),
             };
             bar.Root.Margin = new Thickness(0, 4, 0, 0);
             labels.Children.Add(bar.Root);
@@ -686,12 +744,31 @@ internal sealed partial class ManagePanel
 
     private void RootCall(Action call)
     {
+        // Said, not swallowed (2026-10-05: a folder add that did nothing looked
+        // like indexing that never ran).
+        string? error = null;
         try { call(); }
-        catch (MediaViewerException) { }
+        catch (MediaViewerException ex)
+        {
+            error = ex.Status switch
+            {
+                MvStatus.Busy => "An import is running. Try again when it finishes.",
+                MvStatus.InvalidArg => "That isn't a folder on this PC.",
+                MvStatus.PermissionDenied => "MediaViewer isn't allowed to read that folder.",
+                _ => "That didn't work. Try again, or pick the folder another way.",
+            };
+        }
+        ShowRootError(error);
         _rootsPressed = true;
         RefreshRoots();
         _chrome.RefreshCoverage();
         _chrome.ReadStatus();
+    }
+
+    private void ShowRootError(string? text)
+    {
+        _rootError.Text = text ?? "";
+        _rootError.Visibility = text is null ? Visibility.Collapsed : Visibility.Visible;
     }
 
     private async Task AddFolder()
@@ -706,7 +783,73 @@ internal sealed partial class ManagePanel
             return;
         }
         if (folder is null) return;
-        RootCall(() => _api.IndexFolder(folder.Path, recursive: true));
+        string path = folder.Path;
+        // A library (the Pictures entry in the picker's side bar) has no path of
+        // its own: index the folder it saves into, where Windows keeps them.
+        if (string.IsNullOrEmpty(path)) path = await LibraryFolder(folder) ?? "";
+        if (string.IsNullOrEmpty(path))
+        {
+            ShowRootError("That is a library, not a folder. Pick the folder itself, for example Pictures under This PC.");
+            return;
+        }
+        RootCall(() => _api.IndexFolder(path, recursive: true));
+    }
+
+    private static async Task<string?> LibraryFolder(Windows.Storage.StorageFolder picked)
+    {
+        foreach (Windows.Storage.KnownLibraryId id in new[]
+                 {
+                     Windows.Storage.KnownLibraryId.Pictures, Windows.Storage.KnownLibraryId.Videos,
+                     Windows.Storage.KnownLibraryId.Documents, Windows.Storage.KnownLibraryId.Music,
+                 })
+        {
+            try
+            {
+                Windows.Storage.StorageLibrary lib = await Windows.Storage.StorageLibrary.GetLibraryAsync(id);
+                if (lib.SaveFolder is { } save && !string.IsNullOrEmpty(save.Path) &&
+                    string.Equals(save.DisplayName, picked.DisplayName, StringComparison.CurrentCultureIgnoreCase))
+                {
+                    return save.Path;
+                }
+            }
+            catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException or UnauthorizedAccessException) { }
+        }
+        // Fall back on the Known Folder of the same name (Pictures moved to OneDrive included).
+        string pictures = Environment.GetFolderPath(Environment.SpecialFolder.MyPictures);
+        string videos = Environment.GetFolderPath(Environment.SpecialFolder.MyVideos);
+        foreach (string known in new[] { pictures, videos })
+        {
+            if (known.Length > 0 &&
+                string.Equals(System.IO.Path.GetFileName(known), picked.DisplayName, StringComparison.CurrentCultureIgnoreCase))
+            {
+                return known;
+            }
+        }
+        return null;
+    }
+
+    // "Index Pictures" / "Index Videos": the user's own folders, wherever
+    // Windows keeps them, while no folder covers them (folder_coverage).
+    private void ShowSuggestions()
+    {
+        _suggest.Children.Clear();
+        (string Name, string Path)[] known =
+        {
+            ("Pictures", Environment.GetFolderPath(Environment.SpecialFolder.MyPictures)),
+            ("Videos", Environment.GetFolderPath(Environment.SpecialFolder.MyVideos)),
+        };
+        foreach ((string name, string dir) in known)
+        {
+            if (dir.Length == 0 || !System.IO.Directory.Exists(dir)) continue;
+            uint covered;
+            try { covered = _api.FolderCoverage(dir); }  // [no-block]
+            catch (MediaViewerException) { continue; }
+            if (covered != 0) continue;
+            Button b = _look.Button("Index " + name, () => RootCall(() => _api.IndexFolder(dir, recursive: true)));
+            ToolTipService.SetToolTip(b, dir);
+            AutomationProperties.SetName(b, $"Index your {name} folder and its subfolders");
+            _suggest.Children.Add(b);
+        }
     }
 
     // ---- people -----------------------------------------------------------------------

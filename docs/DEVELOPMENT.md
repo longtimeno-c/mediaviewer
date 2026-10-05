@@ -1292,6 +1292,38 @@ There is no upload endpoint yet, exactly as there is none for crash reports.
 
 ## Where this actually is
 
+### Local search: cloud folders and folder adds (docs/plans/document-search.md slice 0, 2026-10-05)
+
+A folder moved to OneDrive now indexes. The folder walk steps into OneDrive's reparse points but
+never follows a link or junction, and it reaches past `MAX_PATH`. Online-only files are counted
+("N only in OneDrive") and never read. *Index online-only OneDrive files* (off by default) brings a
+couple down at a time, indexes them, and makes them online-only again; the Mac does the same for
+evicted iCloud Drive files. Failed folder adds now say why, Settings offers Pictures and Videos
+while they are not indexed, and an unreadable folder says so.
+
+- **Windows:** `mv_ai_tests` (97 cases, 8 skipped for absent model files; `"[cloud]"` is the new
+  set, with a fake provider) and `mv_import_tests` (`"[port]"`: links and junctions skipped, a
+  file past 260 characters listed) pass. The WinUI chrome compiles. Not yet run against real
+  OneDrive placeholders or in the running app.
+- **Mac (M-series, 2026-10-05):** compiles clean (`-Werror`). `mv_ai_tests` 101 cases (93 passed, 8
+  skipped), `"[cloud]"` 10 of 10 runs, `mv_import_tests` 70 of 70, `mv_tests` 611 passed (8
+  skipped). Against real iCloud Drive (a scratch folder, 4 of 8 photos evicted): the walk flags
+  exactly the 4 `SF_DATALESS` files without faulting them in. With a dev-sideloaded pack the row
+  read "4 of 4 · 4 only in iCloud Drive" and nothing was downloaded. With the switch on, all 4
+  came down, were indexed (search finds them), and were evicted again, and `cache/cloud-fetched`
+  was gone. A leftover marker plus a hydrated file was given back at the next launch. An ejected
+  disk-image root read "Couldn't read this folder…". *Index Pictures* / *Index Movies* showed
+  while uncovered. Mac PR 1 gate: 2 × 60 s, 0 dropped, p99 16.9 ms, 0 idle presents.
+  **Not run:** the power and Low Data Mode waits on hardware (the fake provider covers them),
+  the two-at-a-time cap (4 small files fetched too fast to observe), the "An import is running"
+  add error, and another File Provider client's files (none installed).
+- **Building on a machine where the Visual Studio installer has lost its Build Tools registration**
+  (`vswhere` lists nothing; the VS generator and vcpkg both refuse): configure with
+  `-G "NMake Makefiles"` from a `vcvars64.bat` shell, with `-DVCPKG_MANIFEST_INSTALL=OFF`,
+  `-DVCPKG_INSTALLED_DIR` pointing at an existing `vcpkg_installed` tree, and
+  `-DMSVC_REDIST_DIR=<BuildTools>/VC/Redist/MSVC/<version>`. A Visual Studio Installer *Repair* is
+  the real fix.
+
 ### Audio and documents (docs/plans/audio-and-documents.md, 2026-10-04)
 
 **Audio (slice 1):** MP3, M4A and M4P are listed and open as audio-only clips on both platforms:

@@ -228,11 +228,28 @@ internal sealed class Look
                 {
                     return $"Upgrading search quality · {n(s.MigrateDone)} of {n(s.MigrateTotal)}" + Eta(s);
                 }
-                return $"Indexing {n(s.AssetsDone)} of {n(s.AssetsTotal)}" + Eta(s);
+                if (s.CloudFetch == MvAiCloudFetch.Downloading)
+                {
+                    return $"Downloading from OneDrive ({(int)Math.Round(s.CloudFetchProgress * 100)}%) · {n(s.CloudFilesLeft)} left to index";
+                }
+                // Online-only files wait for the fetch: they are not "of" the work in hand.
+                return $"Indexing {n(s.AssetsDone)} of {n(s.AssetsTotal - Math.Min(s.AssetsTotal, s.CloudFilesLeft))}" + Eta(s);
             default:
-                return s.FramesIndexed == 0 ? "Nothing indexed yet" : $"Up to date · {n(s.FramesIndexed)} moments";
+                string done = s.FramesIndexed == 0 ? "Nothing indexed yet" : $"Up to date · {n(s.FramesIndexed)} moments";
+                return s.CloudFilesLeft > 0 ? $"{done} · {n(s.CloudFilesLeft)} only in OneDrive" : done;
         }
     }
+
+    /// <summary>Why the OneDrive fetch is waiting, for Settings; null when it is not.</summary>
+    public static string? CloudWait(in MvAiStatus s) => s.CloudFetch switch
+    {
+        MvAiCloudFetch.WaitNetwork => "Waiting for an unmetered connection.",
+        MvAiCloudFetch.WaitPower => "Waiting until this PC is plugged in.",
+        MvAiCloudFetch.LowDisk => "Waiting: the drive has less than 10 GB free.",
+        MvAiCloudFetch.Paused => "Waiting: indexing is paused.",
+        MvAiCloudFetch.RetryLater => "OneDrive did not send some files. They are tried again next time MediaViewer starts.",
+        _ => null,
+    };
 
     /// <summary>" · about 6–9 min", from completed work only (docs/design/17: no hard-coded claim).</summary>
     private static string Eta(in MvAiStatus s)

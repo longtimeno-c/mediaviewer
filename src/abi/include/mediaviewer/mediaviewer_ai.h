@@ -206,6 +206,17 @@ typedef struct mv_ai_status {
    * tower's failure under MV_AI_STATUS_SMALL_FALLBACK (2026-10-05), with paths
    * replaced ("<model>", "<path>"). "" when it gave none. Display only. */
   char provider_detail_utf8[256];
+  /* Cloud files in indexed folders (2026-10-05; settings "cloud_files"): files
+   * OneDrive (Windows) or iCloud Drive (macOS) keeps online-only. They are
+   * listed but never read, since reading one downloads it; with the option on
+   * a couple at a time are brought down in place, indexed, and made
+   * online-only again. cloud_files_left counts those not yet indexed, with
+   * the option on or off (so Settings can say "N only in OneDrive"). Read
+   * these only when struct_size covers them. */
+  uint64_t cloud_files_left;
+  uint64_t cloud_files_fetched;    /* brought down and indexed since the pack started */
+  uint32_t cloud_fetch;            /* mv_ai_icloud_fetch: the same states */
+  float cloud_fetch_progress;      /* the file in progress, 0..1 */
 } mv_ai_status;
 
 typedef enum mv_ai_icloud_fetch {
@@ -243,12 +254,16 @@ typedef struct mv_ai_api {
    *  ai-audio is installed), "video_index_setting":0..3, "audio_ready":bool,
    *  "index_cap_bytes":N,"faces":false,"min_score":0.2,"precision":0..4,
    *  "icloud_videos":false (macOS: download iCloud-only clips to index them, 2026-10-05),
+   *  "cloud_files":false (fetch online-only OneDrive / iCloud Drive files in indexed folders
+   *  to index them, then make them online-only again; 2026-10-05), "cloud_provider":"onedrive" |
+   *  "icloud" | "" (none on this platform),
    *  "available":{"cuda":bool,"openvino":bool,"coreml":bool},
    *  "models":[{"quality":1,"name":"CLIP ViT-B/32","dim":512},...],
    *  "runtime":"1.30.0"}  [no-block] */
   mv_status(MV_CALL* settings_json)(void* ctx, char* out, uint32_t cap, uint32_t* needed);
   /* key: "compute" | "quality" | "pause_on_battery_percent" | "battery_override"
    * | "index_cap_bytes" | "min_score" | "reload" | "icloud_videos" (1 / 0, saved)
+   * | "cloud_files" (1 / 0, saved)
    * | "retry_large" (any value: forget that the accelerated provider failed the large tower
    * here, MV_AI_STATUS_SMALL_FALLBACK, and let Auto try it again; 2026-10-05)
    * | "video_index" (MV_AI_MEDIA_*, 0 = Pictures, plus
@@ -272,7 +287,10 @@ typedef struct mv_ai_api {
 
   /* ---- remembered roots (PR 21, 23) --------------------------------------- */
   /* [{"id":1,"path":"...","recursive":true,"enabled":true,"assets":N,
-   *   "done":N,"frames":N,"bytes":N,"last_scan":unix}] [worker-thread] */
+   *   "done":N,"frames":N,"bytes":N,"last_scan":unix,
+   *   "cloud_only":N (online-only files not yet indexed, 2026-10-05),
+   *   "error":"unreadable" (present when the last walk of the folder failed: offline,
+   *   moved, no access; the rows are kept)}] [worker-thread] */
   mv_status(MV_CALL* roots_json)(void* ctx, char* out, uint32_t cap, uint32_t* needed);
   /* "Index this folder" / "... and subfolders": remembers a root and starts
    * work in the background; results become searchable as they commit. A

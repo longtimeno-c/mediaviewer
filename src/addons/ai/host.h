@@ -41,8 +41,11 @@ class host {
     std::string path;
     std::uint64_t size = 0;
     std::int64_t mtime = 0;
+    bool cloud_only = false;  // only a cloud provider has its bytes: reading it downloads it
   };
-  // Files under `root` (depth 0 = the folder only, -1 unlimited).
+  // Files under `root` (depth 0 = the folder only, -1 unlimited), cloud-only
+  // ones flagged when the host can say (walk_files2).
+  [[nodiscard]] bool has_walk2() const noexcept;
   [[nodiscard]] expected walk(const std::string& root, int max_depth,
                               const std::function<bool(const entry&)>& visit) const;
   struct stat_result {

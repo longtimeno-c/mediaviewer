@@ -33,6 +33,11 @@ struct RootRow: Identifiable, Equatable {
   // The pack is walking it now (a Rescan, or the scan at start): the row says
   // so and Rescan waits, so a click never looks like it did nothing.
   var scanning = false
+  // Cloud files (2026-10-05): evicted iCloud Drive files not yet indexed; the
+  // last walk of the folder failed (offline, moved, no access); its last scan.
+  var cloudOnly: Int64 = 0
+  var unreadable = false
+  var lastScan: Int64 = 0
   var isPhotos: Bool { kind == "photos" }
 }
 
@@ -68,6 +73,15 @@ final class ManagementModel: ObservableObject {
   @Published private(set) var facesOn = false
   /// Settings → Photos Library → "Download iCloud videos to index them" (2026-10-05).
   @Published private(set) var icloudVideos = false
+  /// Settings → Indexed folders → "Download iCloud Drive files to index them" (2026-10-05).
+  @Published private(set) var cloudFiles = false
+  /// "icloud" when the pack can fetch evicted iCloud Drive files here.
+  @Published private(set) var cloudProvider = ""
+  /// Evicted files in indexed folders not yet indexed, and the fetch's state.
+  @Published private(set) var cloudLeft: UInt64 = 0
+  @Published private(set) var cloudFetch: UInt32 = 0
+  /// Why the last folder action did nothing, said under the list.
+  @Published private(set) var rootError = ""
   @Published private(set) var coreMLAvailable = true
   /// Settings "Index videos for" (MV_AI_MEDIA_*: 1 Pictures, 2 Sound, 3 Both).
   @Published private(set) var videoIndex: Int = 1
@@ -195,6 +209,8 @@ final class ManagementModel: ObservableObject {
     if filing != settling { settling = filing }
     let line = StatusLine(s)
     if line != status { status = line }
+    if s.cloud_files_left != cloudLeft { cloudLeft = s.cloud_files_left }
+    if s.cloud_fetch != cloudFetch { cloudFetch = s.cloud_fetch }
     transfer.poll()
   }
 
@@ -221,6 +237,8 @@ final class ManagementModel: ObservableObject {
     capBytes = int64(obj["index_cap_bytes"])
     facesOn = obj["faces"] as? Bool ?? false
     icloudVideos = obj["icloud_videos"] as? Bool ?? false
+    cloudFiles = obj["cloud_files"] as? Bool ?? false
+    cloudProvider = obj["cloud_provider"] as? String ?? ""
     coreMLAvailable = (obj["available"] as? [String: Any])?["coreml"] as? Bool ?? false
     let index = Int(int64(obj["video_index"]))
     videoIndex = index == 0 ? Int(MV_AI_MEDIA_PICTURES) : index
@@ -269,7 +287,9 @@ final class ManagementModel: ObservableObject {
                 assets: int64($0["assets"]), done: int64($0["done"]), bytes: int64($0["bytes"]),
                 media: UInt32(clamping: int64($0["media"])),
                 kind: $0["kind"] as? String ?? "folder", access: $0["access"] as? String ?? "",
-                unavailable: int64($0["unavailable"]), scanning: $0["scanning"] as? Bool ?? false)
+                unavailable: int64($0["unavailable"]), scanning: $0["scanning"] as? Bool ?? false,
+                cloudOnly: int64($0["cloud_only"]),
+                unreadable: $0["error"] as? String == "unreadable", lastScan: int64($0["last_scan"]))
       }
       await MainActor.run {
         if rows != self.roots { self.roots = rows }
@@ -318,10 +338,44 @@ final class ManagementModel: ObservableObject {
     panel.canChooseFiles = false
     panel.prompt = "Index"
     guard panel.runModal() == .OK, let url = panel.url else { return }
+    indexFolder(url.path)
+  }
+
+  /// Remembers a folder and its subfolders; says why when that did nothing
+  /// (2026-10-05: a silent refusal looked like indexing that never ran).
+  func indexFolder(_ path: String) {
     var root: UInt64 = 0
-    _ = table.a.index_folder?(table.ctx, url.path, 1, &root)
+    let st = table.call { table.a.index_folder?(table.ctx, path, 1, &root) ?? MV_ERR_INVALID_ARG }
+    switch st {
+    case MV_OK: rootError = ""
+    case MV_ERR_BUSY: rootError = "An import is running. Try again when it finishes."
+    case MV_ERR_INVALID_ARG: rootError = "That isn't a folder on this Mac."
+    default: rootError = "That didn't work. Try again, or pick the folder another way."
+    }
     reloadRoots()
     pollStatus()
+  }
+
+  /// Pictures and Movies in the home folder, while no indexed folder covers
+  /// them: offered under the list, never added unasked (2026-10-05).
+  struct SuggestedFolder: Identifiable {
+    let name: String
+    let path: String
+    var id: String { path }
+  }
+
+  var suggestedFolders: [SuggestedFolder] {
+    let fm = FileManager.default
+    var out: [SuggestedFolder] = []
+    for (name, dir) in [("Pictures", FileManager.SearchPathDirectory.picturesDirectory),
+                        ("Movies", FileManager.SearchPathDirectory.moviesDirectory)] {
+      guard let url = fm.urls(for: dir, in: .userDomainMask).first,
+            fm.fileExists(atPath: url.path) else { continue }
+      var state: UInt32 = 0
+      guard table.a.folder_coverage?(table.ctx, url.path, &state) == MV_OK, state == 0 else { continue }
+      out.append(SuggestedFolder(name: name, path: url.path))
+    }
+    return out
   }
 
   /// Settings → Photos Library → Add: the system's prompt (only here, only
@@ -715,10 +769,28 @@ struct ManagementView: View {
         HStack {
           Button("Add a folder…") { model.addFolder() }
             .help("Index a folder and every folder inside it.")
+          ForEach(model.suggestedFolders) { folder in
+            Button("Index \(folder.name)") { model.indexFolder(folder.path) }
+              .help(folder.path)
+          }
           Spacer()
         }
         .font(AITheme.font(12))
         .padding(12)
+        if !model.rootError.isEmpty {
+          Text(model.rootError)
+            .font(AITheme.font(11)).foregroundStyle(Color.accentColor)
+            .padding(.horizontal, 12).padding(.bottom, 8)
+        }
+        if model.cloudProvider == "icloud" && (model.cloudLeft > 0 || model.cloudFiles) {
+          Divider().padding(.horizontal, 12)
+          row("Download iCloud Drive files to index them", detail: cloudDetail) {
+            Toggle("Download iCloud Drive files to index them",
+                   isOn: Binding(get: { model.cloudFiles }, set: { model.set("cloud_files", $0 ? 1 : 0) }))
+              .toggleStyle(.switch)
+              .labelsHidden()
+          }
+        }
       }
       section("Index") {
         row("Search index",
@@ -944,6 +1016,38 @@ struct ManagementView: View {
     .padding(12)
   }
 
+  /// The iCloud Drive row's words: how many wait, what the switch does, and
+  /// why the fetch is waiting when it is.
+  private var cloudDetail: String {
+    let left = model.cloudLeft == 0 ? "Every iCloud Drive file in your folders is indexed."
+      : model.cloudLeft == 1 ? "1 file in your folders is only in iCloud Drive, so it is not searchable yet."
+      : "\(countText(model.cloudLeft)) files in your folders are only in iCloud Drive, so they are not searchable yet."
+    let how = " With this on, MediaViewer downloads a couple at a time, only on power and an unmetered network, "
+      + "indexes them, then removes the download again. Off by default."
+    guard model.cloudFiles else { return left + how }
+    let wait: String
+    switch model.cloudFetch {
+    case MV_AI_ICLOUD_WAIT_NETWORK.rawValue: wait = " Waiting for an unmetered network."
+    case MV_AI_ICLOUD_WAIT_POWER.rawValue: wait = " Waiting for power."
+    case MV_AI_ICLOUD_LOW_DISK.rawValue: wait = " Waiting: less than 10 GB free."
+    case MV_AI_ICLOUD_PAUSED.rawValue: wait = " Waiting: indexing is paused."
+    case MV_AI_ICLOUD_RETRY_LATER.rawValue: wait = " iCloud did not send some files; they are tried again next launch."
+    default: wait = ""
+    }
+    return left + how + wait
+  }
+
+  /// A folder row's state line: honest about a folder that could not be read,
+  /// one with nothing to index, and files only iCloud Drive has.
+  private func rootState(_ root: RootRow) -> String {
+    if root.unreadable { return "Couldn't read this folder: it may be offline, moved or renamed. Its index is kept." }
+    if root.assets == 0 && root.lastScan != 0 && !root.scanning { return "No photos or videos found here" }
+    let local = max(0, root.assets - root.cloudOnly)
+    var text = "\(countText(UInt64(max(0, root.done)))) of \(countText(UInt64(local))) · \(bytesText(UInt64(max(0, root.bytes))))"
+    if root.cloudOnly > 0 { text += " · \(countText(UInt64(root.cloudOnly))) only in iCloud Drive" }
+    return text
+  }
+
   private func rootRow(_ root: RootRow) -> some View {
     HStack(spacing: 12) {
       VStack(alignment: .leading, spacing: 4) {
@@ -955,12 +1059,12 @@ struct ManagementView: View {
             Text("and subfolders").font(AITheme.font(11)).foregroundStyle(AITheme.body)
           }
         }
-        ProgressView(value: root.assets == 0 ? 0 : min(1, Double(root.done) / Double(root.assets)))
+        ProgressView(value: root.assets - root.cloudOnly <= 0 ? 0
+                       : min(1, Double(root.done) / Double(root.assets - root.cloudOnly)))
           .progressViewStyle(.linear)
           .tint(root.enabled ? .accentColor : .secondary)
-        Text("\(countText(UInt64(max(0, root.done)))) of \(countText(UInt64(max(0, root.assets)))) · \(bytesText(UInt64(max(0, root.bytes))))" +
-             (root.enabled ? (root.scanning ? " · checking for changes…" : "") : " · paused"))
-          .font(AITheme.font(11)).foregroundStyle(AITheme.body)
+        Text(rootState(root) + (root.enabled ? (root.scanning ? " · checking for changes…" : "") : " · paused"))
+          .font(AITheme.font(11)).foregroundStyle(root.unreadable ? Color.accentColor : AITheme.body)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
       Button(root.enabled ? "Pause" : "Resume") { model.setRootEnabled(root.id, !root.enabled) }

@@ -37,6 +37,7 @@
 #include "addons/ai/faces.h"
 #include "addons/ai/host.h"
 #include "addons/ai/index_db.h"
+#include "addons/ai/cloud_files.h"
 #include "addons/ai/photos_source.h"
 #include "addons/ai/platform.h"
 #include "addons/ai/transfer.h"
@@ -187,6 +188,9 @@ struct engine_deps {
   // The system Photos library (issue #72): null uses make_photos_source()
   // (PhotoKit on macOS, none elsewhere). The tests pass a fake.
   std::function<std::unique_ptr<photos_source>()> photos;
+  // Online-only files in indexed folders (cloud_files.h): null uses
+  // make_cloud_files() (OneDrive / iCloud Drive). The tests pass a fake.
+  std::function<std::unique_ptr<cloud_files>()> cloud;
   // At most one change-driven Photos library rescan per this many seconds
   // (PhotoKit reports an iCloud sync as a burst of changes).
   double photos_rescan_gap_s = 10;
@@ -215,6 +219,7 @@ struct settings {
   std::uint32_t video_index = MV_AI_MEDIA_DEFAULT;  // 0: Pictures, plus Sound once ai-audio is in
   std::uint32_t precision = kPrecisionDefault;      // 0 broader .. 2 calibrated .. 4 stricter
   bool icloud_videos = false;  // download iCloud-only clips to index them (2026-10-05, opt-in)
+  bool cloud_files = false;    // fetch online-only OneDrive / iCloud Drive files to index them (2026-10-05, opt-in)
 };
 
 // A spoken-phrase search's share of the query's words a transcript line must
@@ -343,6 +348,7 @@ class engine {
     asset_kind kind = asset_kind::photo;
     std::int64_t root = 0;
     std::int64_t mtime = 0;  // unix seconds: in: / before: / after: (query.h)
+    bool cloud = false;      // online-only: no track reads it until fetched
   };
   struct result_row {
     std::int64_t asset = 0;
@@ -448,6 +454,13 @@ class engine {
   void fetch_reap(bool all);  // delete the files the workers are done with (all: every one)
   [[nodiscard]] bool fetch_wanted(std::int64_t asset);  // a track still wants this clip
   [[nodiscard]] std::vector<std::int64_t> fetched_ids() const;
+  // Cloud files (cloud_files.h, 2026-10-05), on the same thread and under the
+  // same two-on-disk rule: an online-only file is brought down in place,
+  // indexed first, and made online-only again once no track wants it.
+  [[nodiscard]] mv_ai_icloud_fetch cloud_gate() const;
+  [[nodiscard]] bool fetch_cloud_one(std::vector<asset_row>& candidates, std::size_t& next);
+  void note_hydrated() const;    // <data>/cache/cloud-fetched: the row ids given back after a crash
+  void give_back_crashed();      // makes those online-only again at start
   // models
   void load_models();
   // People and Sound only ("reload", People turned on); the towers stay.
@@ -655,7 +668,8 @@ class engine {
   struct fetched_clip {
     std::int64_t id = 0;
     std::string key;   // "photos:<localIdentifier>"
-    std::string file;  // under <data>/cache/icloud
+    std::string file;  // under <data>/cache/icloud; a cloud file: the file itself
+    bool in_place = false;  // a cloud file brought down where it is: given back, not deleted
   };
   std::thread fetch_thread_;
   mutable std::mutex fetch_m_;
@@ -666,6 +680,14 @@ class engine {
   std::atomic<float> fetch_progress_{0};
   std::atomic<std::uint64_t> fetched_count_{0};
   std::atomic<std::uint64_t> icloud_left_{0};
+  std::unique_ptr<cloud_files> cloud_;
+  std::atomic<bool> fetch_wake_{false};  // a fetch setting changed: look again now
+  std::set<std::int64_t> cloud_skip_;  // the provider would not bring these down this run (fetch thread)
+  std::atomic<std::uint32_t> cloud_state_{MV_AI_ICLOUD_OFF};
+  std::atomic<float> cloud_progress_{0};
+  std::atomic<std::uint64_t> cloud_fetched_count_{0};
+  // Roots whose last walk failed (unreadable, offline), under status_m_.
+  std::set<std::int64_t> root_errors_;
 
   // status
   mutable std::mutex status_m_;

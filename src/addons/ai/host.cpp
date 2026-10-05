@@ -17,6 +17,16 @@ int32_t MV_CALL walk_thunk(void* user, const mv_addon_file_entry* e) {
   return (*fn)(x) ? 1 : 0;
 }
 
+int32_t MV_CALL walk2_thunk(void* user, const mv_addon_file_entry2* e) {
+  const auto* fn = static_cast<const std::function<bool(const host::entry&)>*>(user);
+  host::entry x;
+  x.path = e->path_utf8 ? e->path_utf8 : "";
+  x.size = e->size;
+  x.mtime = e->mtime_unix;
+  x.cloud_only = (e->flags & MV_ADDON_FILE_CLOUD_ONLY) != 0;
+  return (*fn)(x) ? 1 : 0;
+}
+
 // A pixel call with the grow-and-retry buffer rule (mediaviewer_addon.h v2).
 template <typename Call>
 result<rgb_frame> pixels(Call&& call) {
@@ -53,10 +63,18 @@ bool host::has_pixels() const noexcept {
          api_->decode_still_rgb && api_->sampler_open;
 }
 
+bool host::has_walk2() const noexcept {
+  return api_ && api_->struct_size >= offsetof(mv_host_api, walk_files2) + sizeof(api_->walk_files2) &&
+         api_->walk_files2;
+}
+
 expected host::walk(const std::string& root, int max_depth,
                     const std::function<bool(const entry&)>& visit) const {
-  const mv_status s = api_->walk_files(api_->host, root.c_str(), max_depth, &walk_thunk,
-                                       const_cast<void*>(static_cast<const void*>(&visit)));
+  void* user = const_cast<void*>(static_cast<const void*>(&visit));
+  // An older host has no walk_files2: its walk leaves cloud-only files out
+  // (or, before 2026-10-05, every OneDrive file), which is what it was.
+  const mv_status s = has_walk2() ? api_->walk_files2(api_->host, root.c_str(), max_depth, &walk2_thunk, user)
+                                  : api_->walk_files(api_->host, root.c_str(), max_depth, &walk_thunk, user);
   return s == MV_OK ? expected{} : err(to_status(s));
 }
 

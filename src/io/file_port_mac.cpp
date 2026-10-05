@@ -385,6 +385,11 @@ bool walk_dir(const std::string& dir, const std::string& rel, int depth, int max
     e.name_utf8 = std::string(name);
     e.size = st.st_size > 0 ? static_cast<std::uint64_t>(st.st_size) : 0;
     e.mtime_unix = mtime_of(st);
+#ifdef SF_DATALESS
+    // Evicted by iCloud Drive (or another File Provider): reading it would
+    // download it (2026-10-05).
+    e.cloud_only = (st.st_flags & SF_DATALESS) != 0;
+#endif
     out.push_back(std::move(e));
   }
   ::closedir(d);

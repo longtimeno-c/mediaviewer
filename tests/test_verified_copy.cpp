@@ -4,6 +4,7 @@
 #include "catch_compat.h"
 
 #include <atomic>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -166,6 +167,50 @@ TEST_CASE("the file port refuses to replace and walks in a stable order", "[io][
 
   REQUIRE(mv::io::remove_tree(utf8(s / "tree")));
   REQUIRE_FALSE(fs::exists(s / "tree"));
+}
+
+// 2026-10-05 (docs/plans/document-search.md slice 0): the walk now steps into
+// a cloud provider's reparse points (OneDrive) but still never follows a link,
+// lists a tree deeper than MAX_PATH, and says nothing is cloud-only for a
+// plain local file.
+TEST_CASE("the walk never follows a link, reaches past MAX_PATH, and flags only cloud files", "[io][port]") {
+  scratch_dir s("walk");
+  write_text(s / "tree/a/IMG_0001.JPG", "1");
+  write_text(s / "elsewhere/IMG_9999.JPG", "9");
+  std::error_code ec;
+  fs::create_directory_symlink(s / "elsewhere", s / "tree/link", ec);  // needs Developer Mode on Windows
+  bool linked = !ec;
+#ifdef _WIN32
+  if (!linked) {
+    // A junction needs no privilege, and is the link a Windows tree really has.
+    const std::string cmd = "mklink /J \"" + utf8(s / "tree" / "link") + "\" \"" + utf8(s / "elsewhere") + "\" >NUL";
+    linked = std::system(cmd.c_str()) == 0 && fs::exists(s / "tree" / "link" / "IMG_9999.JPG");
+  }
+#endif
+
+  // A folder chain whose files sit past 260 characters.
+  fs::path deep = s / "tree";
+  std::string name(60, 'd');
+  for (int i = 0; i < 5; ++i) deep /= name + std::to_string(i);
+#ifdef _WIN32
+  fs::create_directories(fs::path(L"\\\\?\\" + deep.wstring()));
+  { std::ofstream(fs::path(L"\\\\?\\" + (deep / "IMG_0002.JPG").wstring())) << "2"; }
+#else
+  fs::create_directories(deep);
+  { std::ofstream(deep / "IMG_0002.JPG") << "2"; }
+#endif
+  REQUIRE(utf8(deep / "IMG_0002.JPG").size() > 260);
+
+  std::vector<std::string> seen;
+  REQUIRE(mv::io::walk_files(utf8(s / "tree"), 16, [&](const mv::io::tree_entry& e) {
+    seen.push_back(e.name_utf8);
+    CHECK_FALSE(e.cloud_only);
+    return true;
+  }));
+  CHECK(std::count(seen.begin(), seen.end(), "IMG_0001.JPG") == 1);
+  CHECK(std::count(seen.begin(), seen.end(), "IMG_0002.JPG") == 1);
+  CHECK(std::count(seen.begin(), seen.end(), "IMG_9999.JPG") == 0);  // through the link: never
+  if (!linked) WARN("no link could be made here: the link case was not exercised");
 }
 
 // The deep path (copy_options::read_depth / write_depth > 1): what a network

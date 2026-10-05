@@ -6,7 +6,7 @@
 // the index can never touch the thumbnail cache, and vice versa.
 //
 //   roots(id, path, recursive, enabled, last_scan_at)
-//   assets(id, path, root_id, mtime, size, kind, duration_ms, seen)   key: path;
+//   assets(id, path, root_id, mtime, size, kind, duration_ms, seen, cloud)   key: path;
 //        a changed (mtime, size) drops the asset's frames and re-queues it
 //   progress(asset_id, spec, state, resume_ms, tries, indexed_at)     key: (asset, spec)
 //   frames(id, asset_id, spec, pts_ms, pts_tb, tb_num, tb_den, flags, generic, scale, emb)
@@ -84,6 +84,7 @@ struct asset_row {
   std::uint64_t size = 0;
   asset_kind kind = asset_kind::photo;
   std::int64_t duration_ms = 0;
+  bool cloud = false;  // only a cloud provider has it (schema 3): never read until fetched
 };
 
 // One embedding to store. `emb` is float and L2-normalised; the store
@@ -123,6 +124,7 @@ struct counts {
   std::uint64_t pending_video_ms = 0;  // remaining clip time, for the ETA
   std::uint64_t pending_photos = 0;
   std::uint64_t unavailable = 0;  // only in iCloud (the Photos library)
+  std::uint64_t cloud_only = 0;   // cloud files not yet indexed (OneDrive, iCloud Drive)
 };
 
 // int8 quantisation of an L2-normalised vector: v ~= q * scale.
@@ -170,6 +172,7 @@ class index_db {
     std::int64_t mtime = 0;
     std::uint64_t size = 0;
     asset_kind kind = asset_kind::photo;
+    bool cloud = false;  // its bytes are only in the cloud (host walk_files2)
   };
   // Records a batch of files found under `root` in scan `generation`, in one
   // transaction. The result is in the batch's order.
@@ -214,6 +217,14 @@ class index_db {
   // poster) dropped: their originals have been downloaded since. The caller
   // drops them from the search matrix too (engine::forget_vectors).
   [[nodiscard]] expected requeue_unavailable(std::span<const std::int64_t> ids);
+  // Cloud files (schema 3, 2026-10-05): assets of enabled roots only a cloud
+  // provider has and not yet indexed, newest first, leaving out `skip`; their
+  // count, overall and in a root. pending() never returns one: the opt-in
+  // fetch brings it down and clears the mark (set_cloud) first.
+  [[nodiscard]] std::vector<asset_row> cloud_assets(std::size_t limit, std::span<const std::int64_t> skip = {});
+  [[nodiscard]] std::uint64_t cloud_count();
+  [[nodiscard]] std::uint64_t cloud_in_root(std::int64_t root);
+  [[nodiscard]] expected set_cloud(std::int64_t asset, bool cloud);
   // A clip's transcript segments, with progress, in one transaction.
   [[nodiscard]] expected commit_speech(std::int64_t asset, const std::string& spec,
                                        std::span<const speech_in> segments, work_state state,

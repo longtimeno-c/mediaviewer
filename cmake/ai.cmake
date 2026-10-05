@@ -94,6 +94,15 @@ if(APPLE)
 else()
   list(APPEND MV_AI_PLATFORM ${R}/src/addons/ai/photos_none.cpp)
 endif()
+# Cloud files in indexed folders (2026-10-05): OneDrive on Windows, iCloud
+# Drive on the Mac (src/addons/ai/cloud_files.h).
+if(WIN32)
+  list(APPEND MV_AI_PLATFORM ${R}/src/addons/ai/cloud_win.cpp)
+elseif(APPLE)
+  list(APPEND MV_AI_PLATFORM ${R}/src/addons/ai/cloud_mac.mm)
+else()
+  list(APPEND MV_AI_PLATFORM ${R}/src/addons/ai/cloud_none.cpp)
+endif()
 
 add_library(mv_infer STATIC
   ${R}/src/infer/clip_tokenizer.cpp
