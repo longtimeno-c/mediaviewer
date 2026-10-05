@@ -173,6 +173,9 @@ public unsafe struct MvAiStatus
     public ulong IcloudVideosFetched;
     public uint IcloudFetch;
     public float IcloudFetchProgress;
+    // The accelerated provider's own message (2026-10-05, main), appended:
+    // display only; kept so the fields after it line up.
+    public fixed byte ProviderDetail[256];
     // Cloud files in indexed folders (2026-10-05), appended: OneDrive online-only
     // files listed but not yet indexed, those fetched to index them since the
     // pack started, and the fetch's state (MvAiCloudFetch) and progress. Zero

@@ -30,6 +30,21 @@ final class PhotosBackupStore: ObservableObject {
 
   var running: Bool { run.state == 1 || run.state == 2 }
 
+  /// The welcome card's iCloud Photos row opens Settings at this section. A
+  /// count, so a second click while Settings is open scrolls again; `pending`
+  /// carries a request made before the page first appeared.
+  static let anchor = "photos-library-section"
+  @Published private(set) var revealRequests = 0
+  private var revealPending = false
+  func reveal() {
+    revealPending = true
+    revealRequests += 1
+  }
+  func takeReveal() -> Bool {
+    defer { revealPending = false }
+    return revealPending
+  }
+
   private func refresh() {
     let now = mv_chrome_photos_library_available()
     if now != available { available = now }

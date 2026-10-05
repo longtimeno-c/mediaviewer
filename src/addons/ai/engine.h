@@ -25,6 +25,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <thread>
@@ -69,6 +70,7 @@ struct loaded_clip {
   std::vector<std::vector<float>> generic;  // the generic prompts, embedded once
   infer::backend on = infer::backend::cpu;
   infer::provider_fault fault = infer::provider_fault::none;
+  std::string fault_detail;  // the provider's message for `fault` (paths replaced)
 };
 
 // Faces: detect + embed one image. Boxes come back as fractions (face_in).
@@ -164,6 +166,13 @@ struct engine_deps {
   // with nothing cached yet (Core ML's first compile: minutes). Cheap: a look
   // at the cache folder, after `prepare`. Null or false: an ordinary load.
   std::function<bool(std::uint32_t quality, std::uint32_t compute)> first_compile;
+  // Auto's accelerated provider (Core ML, CUDA) failed this tower on this
+  // machine with this runtime: its recorded message (may be ""), else nullopt
+  // (it passed, or was never tried). Auto then runs the small tower rather
+  // than the large one on CPU (2026-10-05). Null: never failed.
+  std::function<std::optional<std::string>(std::uint32_t quality)> accelerated_failure;
+  // Forgets that verdict: Settings' "Try the larger model again".
+  std::function<void(std::uint32_t quality)> forget_accelerated_failure;
 
   // ---- a reader (engine_options::read_only; the search agent, docs/design/23) ----
   // A tower's index key ("clip-vit-b32/fp16/pre1") without opening it.
@@ -471,6 +480,9 @@ class engine {
   void load_vectors(const std::string& spec, std::uint32_t dim);
   void load_labels();  // after load_vectors: the label vocabulary into store_ (issue #85)
   std::uint32_t effective_quality(infer::backend on) const;
+  // Auto with an accelerated provider: the large tower failed on it here
+  // (deps_.accelerated_failure), so the small one runs (2026-10-05).
+  [[nodiscard]] bool large_failed_here() const;
   void maybe_finish_migration();
   // The answering tower and the search matrix change together (a reload, the
   // end of a migration): answer_gen_ is odd while they do, and a search that
@@ -624,6 +636,11 @@ class engine {
   std::atomic<bool> stopping_{false};
   std::atomic<bool> paused_{false};
   std::atomic<bool> index_full_{false};
+  // Auto fell back to the small tower (large_failed_here); its reason, for the
+  // status. Set by load_models; the switch is asked for once per engine.
+  std::atomic<bool> small_fallback_{false};
+  std::atomic<bool> fallback_asked_{false};
+  std::string fallback_detail_;  // under status_m_
   std::atomic<int> yield_now_{MV_AI_YIELD_NONE};
   // "Index anyway": the user's session override of the battery pause. Never
   // saved; ended by the machine going back to AC (so the next unplug pauses

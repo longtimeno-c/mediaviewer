@@ -66,6 +66,9 @@ class embedder {
   [[nodiscard]] virtual result<std::vector<float>> embed_text_mean(std::span<const std::string> texts);
   // Why a provider asked for was not used (Settings' reason line), once known.
   [[nodiscard]] virtual provider_fault fault() const noexcept { return provider_fault::none; }
+  // The provider's own words for that fault (session::last_error: paths
+  // replaced); "" when there is none or it gave none.
+  [[nodiscard]] virtual std::string fault_detail() const { return {}; }
   // Still finishing an open in the background (Core ML compiling it): the
   // destructor would wait for that, so the last reference should not go on a
   // thread that must stay responsive.

@@ -9,7 +9,7 @@
 // nothing once a file is open. Below the hints it lists the recent folders the
 // host hands it (welcome_layout.h); the host hit-tests the same geometry. The
 // hovered row shows an x that removes the folder from the list. On the Mac the
-// first row can be the iCloud Photos library, drawn with a cloud.
+// iCloud Photos library can lead, drawn with a cloud above the folders' header.
 #pragma once
 
 #include <algorithm>
@@ -82,8 +82,8 @@ inline void draw_welcome(ImDrawList* bg, ImFont* font, float w, float h, float c
   };
 
   const int want_rows = recents != nullptr ? recents->count : 0;
-  const welcome_geometry g =
-      layout_welcome(w, h, chrome, scale, want_rows, (1.0f - alpha) * 28.0f * scale);
+  const welcome_geometry g = layout_welcome(w, h, chrome, scale, want_rows, (1.0f - alpha) * 28.0f * scale,
+                                            recents != nullptr && recents->icloud);
   if (!g.fits) return;  // window too short: draw nothing rather than clip
   const float cx = w * 0.5f;
   const ImVec2 lo(g.lo_x, g.lo_y);
@@ -116,24 +116,27 @@ inline void draw_welcome(ImDrawList* bg, ImFont* font, float w, float h, float c
   centred(text.keys, 13.0f * scale, cx, y, c_mute);
 
   if (g.rows <= 0) return;
-  // Recent folders: a hairline, a quiet header, then one row per folder. The
-  // hovered row gets the card's fill again so it reads as a button.
+  // A hairline, the iCloud Photos library if it leads, then a quiet header and
+  // one row per folder. The hovered row gets the card's fill again so it reads
+  // as a button.
   const float rule_y = lo.y + (kWelcomeBaseH - 6.0f) * scale;
   bg->AddLine(ImVec2(lo.x + 24.0f * scale, rule_y), ImVec2(hi.x - 24.0f * scale, rule_y), c_edge,
               1.0f * scale);
-  bg->AddText(font, 12.0f * scale, ImVec2(g.row_x0 + 10.0f * scale, g.rows_top - 20.0f * scale), c_mute,
-              "RECENT FOLDERS");
+  if (g.rows > (g.lead ? 1 : 0)) {
+    bg->AddText(font, 12.0f * scale, ImVec2(g.row_x0 + 10.0f * scale, g.folders_top - 20.0f * scale), c_mute,
+                "RECENT FOLDERS");
+  }
   char label_buf[256];
   char where_buf[256];
   for (int i = 0; i < g.rows; ++i) {
-    const float top = g.rows_top + static_cast<float>(i) * g.row_h;
+    const float top = welcome_row_top(g, i);
     if (recents->hover == i) {
       bg->AddRectFilled(ImVec2(g.row_x0, top + 1.0f * scale), ImVec2(g.row_x1, top + g.row_h - 1.0f * scale),
                         c_fill, 8.0f * scale);
       bg->AddRect(ImVec2(g.row_x0, top + 1.0f * scale), ImVec2(g.row_x1, top + g.row_h - 1.0f * scale),
                   c_edge, 8.0f * scale, 0, 1.0f * scale);
     }
-    const bool icloud_row = recents->icloud && i == 0;
+    const bool icloud_row = g.lead && i == 0;
     const float fx = g.row_x0 + 10.0f * scale;
     const float fy = top + g.row_h * 0.5f - 6.0f * scale;
     if (icloud_row) {
