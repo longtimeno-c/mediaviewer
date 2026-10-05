@@ -649,7 +649,8 @@ shared albums and the Hidden album excluded, one row per burst and per Live Phot
 `PHPhotoLibraryChangeObserver` rescans at most once per 10 s; the full re-enumeration is the
 delta (0.9 s cold, 0.4 s warm for 23 k assets).
 
-**Local only, read-only.** Every PhotoKit request has network access off; nothing is written to
+**Local only, read-only.** Every PhotoKit read has network access off (except the opt-in fetch
+below); nothing is written to
 the library. A still is embedded from PhotoKit's local rendition at the indexer's size (the edit
 as Photos shows it, colour-matched to sRGB). A clip is sampled from its local file
 (`requestAVAsset`), opened read-only. An asset only iCloud has is **unavailable** (progress state
@@ -659,6 +660,25 @@ as Photos shows it, colour-matched to sRGB). A clip is sampled from its local fi
 - An iCloud-only clip is found by its local poster, stored as one row at 0 ms.
 - Once per launch, and when access returns, each is asked whether it is on this Mac now; only
   those that are go back to pending. The People pass treats them the same way.
+
+**Downloading iCloud-only clips (opt-in, 2026-10-05).** Settings → Photos Library → *Download
+iCloud videos to index them* (`"icloud_videos"`, off by default; [12](12-decision-log.md)). The
+engine's fetch thread (`engine::fetch_loop`) takes unavailable clips newest first and downloads each
+with `photos_source::fetch_video` (`PHAssetResourceManager`, network on; the current edit, else the
+original) into `<data>/cache/icloud/<row id>.<ext>`:
+
+- At most two on disk (`kFetchAhead`). Each is put back to pending (`requeue_unavailable`, its
+  poster row dropped) and `claim` takes the fetched clips' pictures, sound, speech and People work
+  before anything else (`index_db::pending_among`), so a download is indexed at once.
+- `file_of` answers the downloaded file for that `photos:` key; `fetch_reap` deletes it once no track
+  wants the clip. A file left by a crash is deleted at the next start, and its clip, still pending,
+  goes back to unavailable and is fetched again.
+- It waits (`mv_ai_status.icloud_fetch`) on battery, on an expensive or constrained network
+  (`network_unmetered`, `NWPathMonitor`), under 10 GB free, and while indexing is paused. A clip iCloud
+  does not send is skipped until the next start. `icloud_videos_left` / `_fetched` and the download's
+  progress are in the status; the status line says "Downloading from iCloud (42%) · 1,847 clips left".
+- Photos are never fetched: PhotoKit keeps a local preview of nearly every photo, which is what the
+  picture pass reads.
 
 **Permission.** The pack never raises the system prompt itself. Settings → Local search →
 *Photos Library* → **Add Photos Library** asks from that click, then calls

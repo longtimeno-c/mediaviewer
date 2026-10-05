@@ -153,7 +153,7 @@ target_link_libraries(mv_ai_engine PUBLIC Threads::Threads)
 if(APPLE)
   target_link_libraries(mv_ai_engine PRIVATE "-framework CoreFoundation" "-framework IOKit"
                         "-framework Foundation" "-framework AppKit" "-framework Photos"
-                        "-framework AVFoundation")
+                        "-framework AVFoundation" "-framework Network")
 endif()
 set_target_properties(mv_ai_engine PROPERTIES POSITION_INDEPENDENT_CODE ON
   CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)

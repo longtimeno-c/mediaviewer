@@ -794,16 +794,30 @@ search is a question rather than a place, so the search panel keeps "Everywhere"
 library is added in Settings it opens as a listing of *virtual items* (`photos:<id>` keys, tiled
 from PhotoKit's cache, resolved to a file only as shown), and search results take the same path.
 An original is downloaded when viewed (after a 400 ms stay), copied out, or backed up — each is the
-user asking for the file; the index still never downloads. The backup copies originals into
+user asking for the file; the index downloads only clips, and only with the 2026-10-05 opt-in. The backup copies originals into
 `YYYY/YYYY-MM-DD` through `io::verified_copy` with a manifest, so a re-run writes nothing for what is
 there; not a mirror, no schedule. Both platforms: the player honours a clip's display matrix
 (`video_stream_info::rotation`), because portrait phone clips played sideways. See
 [26](26-photos-library.md).
 
+**The index may download iCloud-only clips, opt-in (2026-10-05, owner).** Reverses "Indexing never
+downloads" below for videos only. With Optimize Mac Storage most of an iCloud library's clips are
+iCloud-only, so they were found by a poster frame alone: no moments, no sound, no speech, no faces
+(the owner's library: 4,466 clips). Settings → Photos Library → *Download iCloud videos to index
+them*, off by default: a fetch thread downloads such clips through `PHAssetResourceManager`
+(network on, the current edit else the original) two ahead of the workers into
+`<data>/cache/icloud/<row id>.<ext>`, re-queues each at the front of every track, and deletes the
+file once pictures, sound, speech and People are done with it. It waits on battery, on an
+expensive or constrained network (`NWPathMonitor`: a hotspot, Low Data Mode), under 10 GB free, and
+while indexing is paused; a clip iCloud does not send is tried again next start. Photos are not
+downloaded: PhotoKit keeps a local preview of nearly every photo, and the indexer reads 448 px. The
+library is still never written, and nothing about it leaves the Mac (the download is the user's own
+iCloud to their own Mac). Mac only: on Windows iCloud for Windows syncs to a folder.
+
 **The Mac Photos library as a source (2026-09-28).** Read-only: no PhotoKit write API is called,
 and `shell/write_guard.h` refuses every write, move, bin, rotate, export and trim of a Photos file
-or listed preview. Indexing never downloads; an iCloud original is fetched only when its preview is
-viewed (400 ms) and deleted when the next list opens and at quit. `photos:<localIdentifier>` is
+or listed preview. Indexing never downloads (amended 2026-10-05: iCloud-only clips, opt-in, above);
+an iCloud original is fetched only when its preview is viewed (400 ms) and deleted when the next list opens and at quit. `photos:<localIdentifier>` is
 treated like a path (never logged). The base app carries `NSPhotoLibraryUsageDescription` and the
 photos-library entitlement, because TCC attributes the request to the app; access is asked only on
 a click. A full re-enumeration of 23,089 assets takes 0.43 s, so no change tokens.
