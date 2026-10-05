@@ -400,6 +400,7 @@ add_library(mv_player STATIC
   src/player/presenter.cpp
   src/player/container_probe.cpp
   src/player/poster.cpp
+  src/player/audio_card.cpp
   # headers, listed so they show up in the IDE
   src/player/media_source.h
   src/player/playback_hold.h
@@ -936,6 +937,7 @@ if(MV_BUILD_TESTS)
     tests/test_audio_sink.cpp
     tests/test_transport.cpp
     tests/test_container_probe.cpp
+    tests/test_audio_files.cpp
     # PR 9 (docs/design/12 2026-09-24)
     tests/test_meta.cpp
     tests/test_meta_store.cpp

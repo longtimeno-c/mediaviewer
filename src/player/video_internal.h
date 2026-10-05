@@ -326,7 +326,19 @@ struct video_pipeline {
   gpu_device_ptr  device = nullptr;
   int             video_stream = -1;
   int             audio_stream = -1;  // demuxed for 5b; dropped while unclaimed
+  // The stream seeks are expressed in; time_base and start_time_ns are its.
+  // video_stream for a clip, the audio stream for an audio-only file.
+  int             seek_stream = -1;
   AVRational      time_base{0, 1};
+
+  // An audio-only file (MP3, M4A, M4P — docs/plans/audio-and-documents.md
+  // §2.2): no video stream, so demux and seek follow the audio and the picture
+  // is `still` — the cover art, or an audio_card — republished by
+  // run_still_thread at every seek's target so the presenter always has one.
+  // `drm_protected`: FairPlay. Nothing is decoded; the still is the padlock.
+  bool            audio_only = false;
+  bool            drm_protected = false;
+  frame_ptr       still;
   time_ns         start_time_ns = 0;
 
   packet_queue    video_packets;
@@ -386,6 +398,9 @@ struct video_pipeline {
 void run_demux_thread(video_pipeline& pipe) noexcept;
 void run_video_decode_thread(video_pipeline& pipe) noexcept;
 void run_audio_decode_thread(video_pipeline& pipe) noexcept;
+// Audio-only files: publishes `still` once per generation, then marks the
+// generation's video done. Takes the decode thread's place.
+void run_still_thread(video_pipeline& pipe) noexcept;
 
 // Opens the decoder for `stream`, preferring D3D11VA on our device and falling
 // back to software. Lives in video_decode.cpp because the get_format callback
@@ -407,6 +422,14 @@ void close_video_source(video_source* source) noexcept;
 [[nodiscard]] gfx::colour_desc colour_from_stream(int avcol_space, int avcol_primaries,
                                                   int avcol_trc, int avcol_range,
                                                   int bit_depth) noexcept;
+
+// FairPlay (an iTunes M4P) or another encrypted audio sample entry: 'drms' /
+// 'drmi' / 'drac', or CENC's 'enca'. Nothing here decrypts it, and nothing tries.
+[[nodiscard]] inline bool is_protected_audio(const AVStream* s) noexcept {
+  const std::uint32_t tag = s->codecpar->codec_tag;
+  return tag == MKTAG('d', 'r', 'm', 's') || tag == MKTAG('d', 'r', 'm', 'i') ||
+         tag == MKTAG('d', 'r', 'a', 'c') || tag == MKTAG('e', 'n', 'c', 'a');
+}
 
 // The stream's display matrix (AV_PKT_DATA_DISPLAYMATRIX) as clockwise degrees
 // a player turns the frame by: 0, 90, 180 or 270. 0 when there is none or it

@@ -99,6 +99,22 @@
         <string>public.mpeg-2-transport-stream</string>
       </array>
     </dict>
+    <!-- Audio: in Finder's Open With, never made the default — not by the
+         first-launch offer, not by adopting new types (owner, 2026-10-03). -->
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>Audio</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>public.mp3</string>
+        <string>com.apple.m4a-audio</string>
+        <string>com.apple.protected-mpeg-4-audio</string>
+      </array>
+    </dict>
     <!-- docs/design/25: an add-on package (.mvaddon) is MediaViewer's own type, so
          it owns it. Opening one shows Settings' install sheet, never the
          viewer; it is not a photo type and the default-viewer prompt does

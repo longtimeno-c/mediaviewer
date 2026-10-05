@@ -279,6 +279,7 @@ add_library(mv_player STATIC
   src/player/presenter.cpp
   src/player/container_probe.cpp
   src/player/poster.cpp
+  src/player/audio_card.cpp
   src/player/media_source.h
   src/player/playback_hold.h
   src/player/video_source.h
@@ -791,8 +792,10 @@ if(MV_BUILD_TESTS)
     tests/test_presenter.cpp
     tests/test_transport.cpp
     tests/test_container_probe.cpp
+    tests/test_audio_files.cpp
     # Issue #43: Space at natural EOF restarts, on the real Metal player.
     tests/test_video_eof_mac.mm
+    tests/test_audio_only_mac.mm
     # PR 9: the metadata read model. Fixtures are built in the test.
     tests/test_meta.cpp
     tests/test_meta_store.cpp

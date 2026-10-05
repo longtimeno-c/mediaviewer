@@ -4,10 +4,14 @@
 // and decode threads, and hands frames to the render thread.
 //
 // OWNER: mediaviewer-48 (5a).
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
+#include <vector>
 
 #include "core/trace.h"
+#include "player/audio_card.h"
 #include "player/video_internal.h"
 
 namespace mv::player {
@@ -73,6 +77,91 @@ gfx::colour_desc colour_from_stream(int avcol_space, int avcol_primaries, int av
 
 namespace {
 
+// The best video stream that moves. Cover art is exposed by FFmpeg as a video
+// stream with the attached-picture disposition; it is a still, not a timeline,
+// and seeking on it never lands (docs/plans/audio-and-documents.md §2.2).
+int find_moving_video(AVFormatContext* format) noexcept {
+  const int best = av_find_best_stream(format, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+  if (best >= 0 && !(format->streams[best]->disposition & AV_DISPOSITION_ATTACHED_PIC)) return best;
+  for (unsigned i = 0; i < format->nb_streams; ++i) {
+    const AVStream* s = format->streams[i];
+    if (s->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
+        !(s->disposition & AV_DISPOSITION_ATTACHED_PIC)) {
+      return static_cast<int>(i);
+    }
+  }
+  return -1;
+}
+
+frame_ptr rgba_frame(std::uint32_t width, std::uint32_t height, const std::uint8_t* rgba,
+                     int stride) noexcept {
+  frame_ptr frame(av_frame_alloc());
+  if (!frame) return {};
+  frame->format = AV_PIX_FMT_RGBA;
+  frame->width = static_cast<int>(width);
+  frame->height = static_cast<int>(height);
+  if (av_frame_get_buffer(frame.get(), 0) < 0) return {};
+  for (std::uint32_t y = 0; y < height; ++y) {
+    std::memcpy(frame->data[0] + static_cast<std::size_t>(y) * frame->linesize[0],
+                rgba + static_cast<std::size_t>(y) * static_cast<std::size_t>(stride),
+                static_cast<std::size_t>(width) * 4u);
+  }
+  // swscale's RGB -> NV12 default is BT.601 limited range; say so, so the
+  // shader decodes it with the matrix it was encoded with.
+  frame->colorspace = AVCOL_SPC_BT470BG;
+  frame->color_range = AVCOL_RANGE_MPEG;
+  frame->color_primaries = AVCOL_PRI_BT709;
+  frame->color_trc = AVCOL_TRC_IEC61966_2_1;
+  return frame;
+}
+
+frame_ptr card_frame(audio_card_kind kind) noexcept {
+  const audio_card card = make_audio_card(kind);
+  return rgba_frame(card.width, card.height, card.rgba.data(), static_cast<int>(card.width) * 4);
+}
+
+// The file's cover art as RGBA, at most 2048 px on its long edge (it is shown
+// fitted; a 6000 px scan only costs memory). Null when there is none or it
+// does not decode — the caller falls back to the music card.
+frame_ptr cover_art(AVFormatContext* format) noexcept {
+  for (unsigned i = 0; i < format->nb_streams; ++i) {
+    AVStream* s = format->streams[i];
+    if (!(s->disposition & AV_DISPOSITION_ATTACHED_PIC) || s->attached_pic.size <= 0) continue;
+    const AVCodec* codec = avcodec_find_decoder(s->codecpar->codec_id);
+    if (!codec) continue;
+    codec_ctx_ptr dec(avcodec_alloc_context3(codec));
+    if (!dec || avcodec_parameters_to_context(dec.get(), s->codecpar) < 0) continue;
+    dec->thread_count = 1;
+    if (avcodec_open2(dec.get(), codec, nullptr) < 0) continue;
+    frame_ptr decoded(av_frame_alloc());
+    if (!decoded || avcodec_send_packet(dec.get(), &s->attached_pic) < 0) continue;
+    (void)avcodec_send_packet(dec.get(), nullptr);
+    if (avcodec_receive_frame(dec.get(), decoded.get()) < 0) continue;
+    if (decoded->width < 2 || decoded->height < 2) continue;
+
+    int w = decoded->width, h = decoded->height;
+    const int long_edge = std::max(w, h);
+    if (long_edge > 2048) {
+      w = static_cast<int>(static_cast<std::int64_t>(w) * 2048 / long_edge);
+      h = static_cast<int>(static_cast<std::int64_t>(h) * 2048 / long_edge);
+    }
+    w = std::max(2, w & ~1);
+    h = std::max(2, h & ~1);
+    sws_ptr sws(sws_getContext(decoded->width, decoded->height,
+                               static_cast<AVPixelFormat>(decoded->format), w, h,
+                               AV_PIX_FMT_RGBA, SWS_BILINEAR, nullptr, nullptr, nullptr));
+    if (!sws) continue;
+    std::vector<std::uint8_t> rgba(static_cast<std::size_t>(w) * h * 4u);
+    std::uint8_t* dst[4] = {rgba.data(), nullptr, nullptr, nullptr};
+    int stride[4] = {w * 4, 0, 0, 0};
+    if (sws_scale(sws.get(), decoded->data, decoded->linesize, 0, decoded->height, dst, stride) <= 0)
+      continue;
+    return rgba_frame(static_cast<std::uint32_t>(w), static_cast<std::uint32_t>(h), rgba.data(),
+                      w * 4);
+  }
+  return {};
+}
+
 class ffmpeg_video_source final : public video_source {
  public:
   ~ffmpeg_video_source() override { stop(); }
@@ -91,12 +180,15 @@ class ffmpeg_video_source final : public video_source {
     pipe_.format.reset(format);
     if (avformat_find_stream_info(pipe_.format.get(), nullptr) < 0) return err(status::corrupt);
 
-    pipe_.video_stream =
-        av_find_best_stream(pipe_.format.get(), AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
-    if (pipe_.video_stream < 0) return err(status::unsupported_format);
+    pipe_.video_stream = find_moving_video(pipe_.format.get());
     // Audio uses the same demux timeline as video.
     pipe_.audio_stream =
         av_find_best_stream(pipe_.format.get(), AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
+    if (pipe_.video_stream < 0) {
+      if (pipe_.audio_stream < 0) return err(status::unsupported_format);
+      return open_audio_only();
+    }
+    pipe_.seek_stream = pipe_.video_stream;
 
     AVStream* stream = pipe_.format->streams[pipe_.video_stream];
     pipe_.time_base = stream->time_base;
@@ -148,6 +240,68 @@ class ffmpeg_video_source final : public video_source {
       pipe_.audio_thread = std::thread([this] { run_audio_decode_thread(pipe_); });
     pipe_.demux_thread = std::thread([this] { run_demux_thread(pipe_); });
     pipe_.decode_thread = std::thread([this] { run_video_decode_thread(pipe_); });
+    return {};
+  }
+
+  // An MP3/M4A/M4P: the audio is the timeline, the picture a still
+  // (docs/plans/audio-and-documents.md §2.2).
+  [[nodiscard]] expected open_audio_only() {
+    pipe_.audio_only = true;
+    AVStream* audio = pipe_.format->streams[pipe_.audio_stream];
+    pipe_.seek_stream = pipe_.audio_stream;
+    pipe_.time_base = audio->time_base;
+    const AVRational ns{1, 1'000'000'000};
+    pipe_.start_time_ns = 0;
+    if (pipe_.format->start_time != AV_NOPTS_VALUE) {
+      pipe_.start_time_ns = av_rescale_q(pipe_.format->start_time, AVRational{1, AV_TIME_BASE}, ns);
+    } else if (audio->start_time != AV_NOPTS_VALUE) {
+      pipe_.start_time_ns = av_rescale_q(audio->start_time, audio->time_base, ns);
+    }
+
+    if (is_protected_audio(audio)) {
+      // Shown, never played: no audio thread, a host clock, no duration, so
+      // play ends at once instead of running a silent timer.
+      pipe_.drm_protected = true;
+      pipe_.audio_stream = -1;
+      pipe_.still = card_frame(audio_card_kind::protected_);
+    } else {
+      pipe_.still = cover_art(pipe_.format.get());
+      if (!pipe_.still) pipe_.still = card_frame(audio_card_kind::music);
+    }
+    if (!pipe_.still) return err(status::out_of_memory);
+
+    pipe_.info.width = static_cast<std::uint32_t>(pipe_.still->width);
+    pipe_.info.height = static_cast<std::uint32_t>(pipe_.still->height);
+    pipe_.info.ten_bit = false;
+    pipe_.info.start_time_ns = pipe_.start_time_ns;
+    pipe_.info.frame_rate = 0.0;
+    pipe_.info.decoder = decoder_kind::software;
+    if (!pipe_.drm_protected) {
+      pipe_.info.duration_ns =
+          audio->duration != AV_NOPTS_VALUE
+              ? av_rescale_q(audio->duration, audio->time_base, ns)
+              : (pipe_.format->duration != AV_NOPTS_VALUE
+                     ? av_rescale_q(pipe_.format->duration, AVRational{1, AV_TIME_BASE}, ns)
+                     : 0);
+    }
+    const AVCodecDescriptor* desc = avcodec_descriptor_get(audio->codecpar->codec_id);
+    std::snprintf(pipe_.info.codec_name, sizeof(pipe_.info.codec_name), "%s",
+                  pipe_.drm_protected ? "fairplay" : (desc ? desc->name : "audio"));
+    pipe_.colour = gfx::resolve_unspecified(
+        colour_from_stream(pipe_.still->colorspace, pipe_.still->color_primaries,
+                           pipe_.still->color_trc, pipe_.still->color_range, 8),
+        pipe_.info.width, pipe_.info.height);
+
+    pipe_.selected_audio.store(pipe_.audio_stream);
+    if (pipe_.audio_stream >= 0) {
+      MV_TRY_VOID(pipe_.clock.start(48000, 2));
+    } else pipe_.clock.start_host_only();
+    pipe_.clock.set_paused(true);
+    pipe_.clock.seeked(0, pipe_.generation.load());
+    if (pipe_.audio_stream >= 0)
+      pipe_.audio_thread = std::thread([this] { run_audio_decode_thread(pipe_); });
+    pipe_.demux_thread = std::thread([this] { run_demux_thread(pipe_); });
+    pipe_.decode_thread = std::thread([this] { run_still_thread(pipe_); });
     return {};
   }
 
