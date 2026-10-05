@@ -5060,6 +5060,12 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
       return MvAddonsRunCommand(name) ? YES : NO;
     }
     case reveal_in_explorer: {
+      // docs/design/26: a Photos library item is shown where it lives, in
+      // Photos, not as its rendition inside the library bundle or the cache.
+      if (!_items.empty() && _index.current() < _items.size() &&
+          mv::shell::photos::is_key(_items[_index.current()].path_utf8)) {
+        return mv::shell::photos::show_in_photos(_items[_index.current()].path_utf8) ? YES : NO;
+      }
       NSString* path = [self currentItemPathForDrag];
       if (!path) return NO;
       [[NSWorkspace sharedWorkspace] activateFileViewerSelectingURLs:@[ [NSURL fileURLWithPath:path] ]];

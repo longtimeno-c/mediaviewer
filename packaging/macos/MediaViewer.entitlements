@@ -12,10 +12,17 @@
   PhotoKit silently. The permission prompt still belongs to the user, from a
   click in Settings; nothing reads the library until they allow it, and the
   base viewer never touches PhotoKit.
+
+  automation.apple-events: Cmd+E on a Photos library item asks Photos to show
+  it (its `spotlight` command; docs/design/26). The hardened runtime refuses
+  every Apple Event without it. macOS still asks the user, once, before the
+  first event reaches Photos; nothing else is sent to any app.
 -->
 <plist version="1.0">
 <dict>
   <key>com.apple.security.personal-information.photos-library</key>
+  <true/>
+  <key>com.apple.security.automation.apple-events</key>
   <true/>
 </dict>
 </plist>

@@ -494,7 +494,7 @@ A one-pixel grid appears at 400 % and above.
 | `+` / `-` | zoom in / out (`=` and the numpad keys too) |
 | `Ctrl+O` | open a photo or a clip (JPEG/PNG/BMP/GIF/WebP/TIFF/ICO/HEIC/AVIF/RAW, MP4/MOV/MKV/WebM/AVI/TS) |
 | `Ctrl+Shift+O` | open a folder |
-| `Ctrl+E` | show the current file in Explorer, selected. Open menu: **Open: filename** |
+| `Ctrl+E` | show the current file in Explorer, selected (`⌘E`: Finder; a Photos library item opens in Photos, selected). Open menu: **Open: filename** |
 | Open ▸ **Recent folders** | the folders you opened lately, the jump list's (File ▸ Open Recent on the Mac). From the keyboard: `Tab` to the command bar, `Enter` on Open, arrow to Recent folders, `Right`. A folder that has gone beeps and leaves the list, as a welcome-card row does. The welcome card writes your profile folder as `~` (`~\Pictures`) |
 | `Space` / `,` / `.` on an animation | play or pause (a finished one plays again) / previous frame / next frame, like a clip. Delays follow browsers: 10 ms or less plays as 100 ms |
 | `?` | the shortcuts for what you are doing right now. Also the `?` button on the right of the command bar |

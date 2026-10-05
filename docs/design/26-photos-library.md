@@ -69,8 +69,20 @@ is that flag and PhotoKit access, both.
 Back) and at quit; the whole cache folder is emptied at launch. Previews are small and stay
 for the session.
 
+**Show in Photos.** `⌘E` on a library item (a search result or the library opened as a folder)
+opens it in the Photos app, selected, instead of revealing its rendition inside the library
+bundle or the cache folder in Finder (owner, 2026-10-05). Photos has no API for this; its
+scripting `spotlight` command does it, sent as an Apple Event built from the key's
+`localIdentifier` (Photos' scripting id for a media item), never as script source
+(`photos::show_in_photos`). Photos is launched and brought forward first, then the event goes
+from a private queue; the main thread never waits on it. macOS asks once whether MediaViewer may
+control Photos (`NSAppleEventsUsageDescription`; the hardened runtime needs
+`com.apple.security.automation.apple-events`). Refused, or an asset Photos does not show (the
+Hidden album), Photos still comes forward, without the selection. Opening a result stays in the
+viewer; only `⌘E` changes.
+
 **Not done:** the list does not follow the library live (an import in Photos shows after the
-folder is reopened; the index rescans on its own); Reveal in Finder, Share and Copy Path act
+folder is reopened; the index rescans on its own); Share and Copy Path act
 on the resolved file only when there is one; a Live Photo's video is not shown beside its
 still.
 
