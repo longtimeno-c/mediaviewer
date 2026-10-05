@@ -7993,7 +7993,7 @@ static double mv_wall_seconds() {
 // direct as a file's; otherwise PhotoKit resolves it on a worker (milliseconds
 // in place; a preview JPEG written once for an iCloud-only original) and the
 // open follows on the main thread if the user is still on it. The neighbours
-// resolve in the same job, so the next arrow does not wait.
+// resolve in a job of their own after it, so the next arrow does not wait.
 - (void)openPhotosEntry:(const mv::io::dir_entry&)entry moment:(std::int64_t)moment {
   const auto hit = _photosResolved.find(entry.path_utf8);
   if (hit != _photosResolved.end()) {
@@ -8011,26 +8011,19 @@ static double mv_wall_seconds() {
     if (mv::shell::photos::is_key(p) && !_photosResolved.count(p)) near.push_back(p);
   }
   MvLabApp* __weak weakSelf = self;
-  _jobs.submit([weakSelf, key, near, seq](const mv::job_context& ctx) -> mv::status {
+  mv::job_system* jobs = &_jobs;
+  // The item first, on its own: it goes up as soon as it resolves. The
+  // neighbours followed it in the same job, so a click waited for up to four
+  // more PhotoKit reads (iCloud-only ones the slowest) before anything showed
+  // (2026-10-05). They resolve after, in the background, for the next arrow.
+  _jobs.submit([weakSelf, key, near, seq, jobs](const mv::job_context&) -> mv::status {
     auto got = mv::shell::photos::resolve(key, false);
-    auto extra = std::make_shared<std::vector<std::pair<std::string, mv::shell::photos::resolved>>>();
-    if (got) {
-      for (const std::string& n : near) {
-        if (ctx.cancelled()) break;
-        if (auto r = mv::shell::photos::resolve(n, false)) extra->emplace_back(n, std::move(r).value());
-      }
-    }
     const mv::status st = got ? mv::status::ok : got.error();
     auto resolved = std::make_shared<std::optional<mv::shell::photos::resolved>>();
     if (got) *resolved = std::move(got).value();
     dispatch_async(dispatch_get_main_queue(), ^{
       MvLabApp* strongSelf = weakSelf;
       if (!strongSelf) return;
-      std::vector<std::string> prefetch;
-      for (auto& [k, r] : *extra) {
-        if (!r.preview || !strongSelf->_photosResolved.count(k)) strongSelf->_photosResolved[k] = r;
-        if (!mv::shell::is_video_name(r.path)) prefetch.push_back(r.path);
-      }
       if (*resolved) strongSelf->_photosResolved[key] = **resolved;
       if (seq != strongSelf->_photosResolveSeq) return;  // the user has moved on
       if (strongSelf->_items.empty() || strongSelf->_index.current() >= strongSelf->_items.size()) return;
@@ -8046,7 +8039,25 @@ static double mv_wall_seconds() {
                                   ? strongSelf->_moments[strongSelf->_index.current()]
                                   : -1;
       [strongSelf showResolvedPhotos:**resolved entry:now moment:at];
-      if (!prefetch.empty()) strongSelf->_lab.prefetch(prefetch);
+    });
+    if (!got || near.empty()) return st;
+    jobs->submit_at(mv::background_generation, [weakSelf, near, seq](const mv::job_context&) -> mv::status {
+      auto extra = std::make_shared<std::vector<std::pair<std::string, mv::shell::photos::resolved>>>();
+      for (const std::string& n : near) {
+        if (auto r = mv::shell::photos::resolve(n, false)) extra->emplace_back(n, std::move(r).value());
+      }
+      dispatch_async(dispatch_get_main_queue(), ^{
+        MvLabApp* strongSelf = weakSelf;
+        if (!strongSelf) return;
+        std::vector<std::string> prefetch;
+        for (auto& [k, r] : *extra) {
+          if (!r.preview || !strongSelf->_photosResolved.count(k)) strongSelf->_photosResolved[k] = r;
+          if (!mv::shell::is_video_name(r.path)) prefetch.push_back(r.path);
+        }
+        // Still on the item they are the neighbours of: decode them ahead.
+        if (seq == strongSelf->_photosResolveSeq && !prefetch.empty()) strongSelf->_lab.prefetch(prefetch);
+      });
+      return mv::status::ok;
     });
     return st;
   });

@@ -475,6 +475,9 @@ class engine {
   // Auto with an accelerated provider: the large tower failed on it here
   // (deps_.accelerated_failure), so the small one runs (2026-10-05).
   [[nodiscard]] bool large_failed_here() const;
+  // The tower is still its CPU stand-in while an accelerated provider compiles.
+  [[nodiscard]] static bool upgrading(const loaded_clip& c);
+  [[nodiscard]] bool upgrading() const;
   void maybe_finish_migration();
   // The answering tower and the search matrix change together (a reload, the
   // end of a migration): answer_gen_ is odd while they do, and a search that

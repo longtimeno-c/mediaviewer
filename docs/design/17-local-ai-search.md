@@ -111,6 +111,12 @@ src/infer   embedder { embed_image(s), embed_text }    clip_model, clap, whisper
   (`data/cache/coreml`, ~1.2 GB B/32 / ~4.1 GB L/14, outside the 3 GB ceiling), so the pack
   **answers on CPU at once** and a background thread opens Core ML, runs the self-test and swaps
   it in (`upgrading_clip` in `pack.cpp`). Text queries stay on CPU (3.3 ms B/32, 6.4 ms L/14).
+  **Indexing waits for the swap** (`engine::upgrading`, 2026-10-05): the status stays *Loading* /
+  *Preparing … Search works meanwhile*, and no picture is embedded on the stand-in. L/14 on CPU
+  is a twelfth of B/32's rate there and took the cores the Core ML load needed (a MacBook Air
+  loaded L/14 from its cache in 694 s while it ran). A cache entry a quit cut short (ORT writes
+  `model.txt` first and takes any `model` folder as converted) is dropped at the next start, so
+  it is converted again rather than loaded broken and recorded as Core ML failing the tower.
 - **Audio stays on CPU on the Mac:** CLAP's audio tower does not compile on Core ML (unbounded
   dimensions) and Whisper's aborts the process inside MPSGraph; `pack.cpp` never gives audio
   models Core ML.
