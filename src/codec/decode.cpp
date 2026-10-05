@@ -9,7 +9,23 @@
 namespace mv::codec {
 
 result<raster> decode(std::span<const std::uint8_t> bytes, const job_context* ctx,
-                      unsigned raw_thread_limit) {
+                      unsigned raw_thread_limit, std::uint32_t page) {
+  // Pages (docs/plans/audio-and-documents.md §2.3): only the paged formats
+  // have any but page 0. A camera TIFF-RAW is never paged.
+  if (page != 0) {
+    const decode_crash_scope crash_scope(bytes, ctx);
+    switch (probe(bytes)) {
+      case format_family::tiff:
+        if (looks_like_raw(bytes)) return err(status::invalid_arg);
+        return decode_tiff_page(bytes, page, ctx);
+      case format_family::pdf:
+        return decode_pdf(bytes, page, ctx);
+      case format_family::docx:
+        return decode_docx(bytes, page, ctx);
+      default:
+        return err(status::invalid_arg);
+    }
+  }
   // D3 (policy in codec/os_decode.h): the OS codec is offered HEIC stills only —
   // the one camera-dump format where the OS path can be hardware-backed and
   // still match the bundled colour and orientation. Every other format goes
@@ -38,6 +54,8 @@ result<raster> decode(std::span<const std::uint8_t> bytes, const job_context* ct
     case format_family::heic: return decode_heic(bytes, ctx, raw_thread_limit);
     case format_family::avif: return decode_avif(bytes, ctx);
     case format_family::raw:  return decode_raw(bytes, ctx, raw_thread_limit);
+    case format_family::pdf:  return decode_pdf(bytes, 0, ctx);
+    case format_family::docx: return decode_docx(bytes, 0, ctx);
     case format_family::unknown:
       if (looks_like_raw(bytes)) return decode_raw(bytes, ctx, raw_thread_limit);
       return err(status::unsupported_format);
@@ -59,6 +77,8 @@ result<std::unique_ptr<animation_source>> open_animation(
     case format_family::tiff:
     case format_family::ico:
     case format_family::raw:
+    case format_family::pdf:
+    case format_family::docx:
     case format_family::unknown:
       return err(status::unsupported_format);
   }

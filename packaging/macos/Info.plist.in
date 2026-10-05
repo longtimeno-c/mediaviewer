@@ -115,6 +115,20 @@
         <string>com.apple.protected-mpeg-4-audio</string>
       </array>
     </dict>
+    <!-- Documents: Open With only, like Audio above. -->
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>Document</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>com.adobe.pdf</string>
+        <string>org.openxmlformats.wordprocessingml.document</string>
+      </array>
+    </dict>
   </array>
 
   <!-- macOS 14 declares every type above except AVIF, Matroska and WebM,

@@ -27,6 +27,8 @@ safe to redistribute. The real format corpus stays out of git (docs/design/09).
 | HEIC | 8-bit, 10-bit | pillow-heif (libheif + x265, dev venv only — never a product dependency, docs/design/11) |
 | AVIF | still, animated (3 frames) | Pillow AVIF plugin (libavif + aom) |
 | RAW | `tiny.dng`: DNG 1.4, 8-bit RGB thumbnail IFD0 + 16-bit RGGB CFA SubIFD | hand-built |
+| PDF | two pages, the second `/Rotate 90` | `pdf_two_pages()`, hand-written objects and xref |
+| DOCX | heading, bold run, list item, two-cell table, a small page size | `docx_small()`, Python `zipfile` |
 
 Regenerate (bytes may change with encoder versions; that alone is not a bug):
 

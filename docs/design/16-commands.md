@@ -125,6 +125,7 @@ crop. Keys are shown Windows-style; on macOS read `⌘` for `Ctrl`.
 | `Space` | browse | Next. On a clip or animation: play / pause; in a slideshow: pause; in the runner: jump |
 | `Home` / `End` | Walk | First / last |
 | `PageUp` / `PageDown` | Walk | Back / forward ten |
+| `Ctrl+PageUp` / `Ctrl+PageDown` | Browse, island | Previous / next page of a multi-page file (TIFF, PDF, DOCX); a notice says "Page n of m" |
 | `F5` | browse, video | Slideshow |
 | `F` / `F11` | all | Fullscreen |
 | `Ctrl+O` | All but crop | Open media… |
@@ -418,7 +419,7 @@ No hot-path ABI for commands. Commands invoke existing session calls (`mv_folder
 - `F2` rename.
 - `Ctrl+Enter` open in an external editor; set as wallpaper.
 - `Ctrl+Tab` / tabs and multi-window.
-- `Ctrl+PageUp` / `Ctrl+PageDown` for TIFF pages, ICO sizes, HEIC sequences.
+- `Ctrl+PageUp` / `Ctrl+PageDown` for ICO sizes and HEIC sequences (pages of TIFF, PDF and DOCX are built).
 - `U` clear label and `X` reject mark.
 - A filter (all / photos / videos / RAW) on the listing.
 - Touch gestures (swipe, pinch).

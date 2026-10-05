@@ -273,6 +273,10 @@ find_package(WebP CONFIG REQUIRED)
 # hard dependency of the port, so HEIC decode does not pull a software HEVC
 # encoder. LibRaw uses the thread-safe raw_r target — decode is on the pool.
 find_package(TIFF REQUIRED)
+# DOCX text (codec/text.cpp): FreeType (FTL) draws, HarfBuzz (MIT) shapes.
+find_package(Freetype REQUIRED)
+find_package(harfbuzz CONFIG REQUIRED)
+find_package(ZLIB REQUIRED)
 find_package(libheif CONFIG REQUIRED)
 if(TARGET libheif::heif)
   set(MV_HEIF_TARGET libheif::heif)
@@ -316,6 +320,7 @@ add_library(mv_codec STATIC
   src/codec/webp.cpp
   src/codec/tiff.cpp
   src/codec/ico.cpp
+  src/codec/card.cpp
   src/codec/heif.cpp
   src/codec/avif.cpp
   src/codec/raw.cpp
@@ -326,6 +331,16 @@ add_library(mv_codec STATIC
   src/codec/orient.h
   src/codec/orientation.h
   src/codec/os_decode_win.cpp
+  src/codec/pdf_win.cpp
+  src/codec/zip.cpp
+  src/codec/zip.h
+  src/codec/xml.cpp
+  src/codec/xml.h
+  src/codec/text.cpp
+  src/codec/text.h
+  src/codec/fonts.h
+  src/codec/docx.cpp
+  src/codec/fonts_win.cpp
   src/codec/crash_test_hook.cpp
   src/codec/crash_test_hook.h
   src/codec/os_decode.h
@@ -337,7 +352,13 @@ target_link_libraries(mv_codec
   PUBLIC mv_core
   PRIVATE JPEG::JPEG ${MV_SPNG_TARGET} GIF::GIF WebP::webp WebP::webpdemux
           TIFF::TIFF ${MV_HEIF_TARGET} ${MV_AVIF_TARGET} libraw::raw_r
-          windowscodecs ole32)
+          windowscodecs ole32
+          # Windows.Data.Pdf (codec/pdf_win.cpp): WinRT activation and the
+          # IStream <-> IRandomAccessStream bridges.
+          runtimeobject shcore shlwapi
+          # DOCX (codec/docx.cpp, text.cpp, zip.cpp; fonts_win.cpp finds files
+          # through DirectWrite and reads them through io/).
+          Freetype::Freetype harfbuzz::harfbuzz ZLIB::ZLIB dwrite mv_io)
 add_library(mv::codec ALIAS mv_codec)
 target_link_libraries(mv_codec PRIVATE mv_raw_openmp)
 
@@ -400,7 +421,6 @@ add_library(mv_player STATIC
   src/player/presenter.cpp
   src/player/container_probe.cpp
   src/player/poster.cpp
-  src/player/audio_card.cpp
   # headers, listed so they show up in the IDE
   src/player/media_source.h
   src/player/playback_hold.h
@@ -938,6 +958,9 @@ if(MV_BUILD_TESTS)
     tests/test_transport.cpp
     tests/test_container_probe.cpp
     tests/test_audio_files.cpp
+    tests/test_pages.cpp
+    tests/test_pdf.cpp
+    tests/test_docx.cpp
     # PR 9 (docs/design/12 2026-09-24)
     tests/test_meta.cpp
     tests/test_meta_store.cpp

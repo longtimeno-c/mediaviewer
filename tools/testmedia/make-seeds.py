@@ -312,6 +312,63 @@ def gif_many_frames(frames: int, screen_w: int, screen_h: int) -> bytes:
 
 
 # ---------------------------------------------------------------------------
+def pdf_two_pages() -> bytes:
+    """Two pages, the second turned by /Rotate: what decode_pdf reads."""
+    pages = [("0 0 200 100", "", b"0 0 1 rg 0 0 100 100 re f"),
+             ("0 0 100 200", " /Rotate 90", b"1 0 0 rg 0 0 100 100 re f")]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+
+    def obj(body: bytes) -> None:
+        offsets.append(len(out))
+        out.extend(b"%d 0 obj\n" % len(offsets) + body + b"\nendobj\n")
+
+    obj(b"<< /Type /Catalog /Pages 2 0 R >>")
+    kids = b" ".join(b"%d 0 R" % (3 + 2 * i) for i in range(len(pages)))
+    obj(b"<< /Type /Pages /Kids [" + kids + b"] /Count %d >>" % len(pages))
+    for i, (box, extra, content) in enumerate(pages):
+        obj(b"<< /Type /Page /Parent 2 0 R /MediaBox [" + box.encode() + b"] /Contents %d 0 R" % (4 + 2 * i)
+            + extra.encode() + b" >>")
+        obj(b"<< /Length %d >>\nstream\n" % len(content) + content + b"\nendstream")
+    xref = len(out)
+    out.extend(b"xref\n0 %d\n0000000000 65535 f \n" % (len(offsets) + 1))
+    for off in offsets:
+        out.extend(b"%010d 00000 n \n" % off)
+    out.extend(b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(offsets) + 1, xref))
+    return bytes(out)
+
+
+def docx_small() -> bytes:
+    """A heading, a paragraph, a list item and a two-cell table: what decode_docx reads."""
+    import io
+    import zipfile
+    w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+    body = ("<w:p><w:pPr><w:pStyle w:val=\"Heading1\"/></w:pPr><w:r><w:t>Seed</w:t></w:r></w:p>"
+            "<w:p><w:pPr><w:jc w:val=\"both\"/></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>Bold</w:t></w:r>"
+            "<w:r><w:t xml:space=\"preserve\"> and plain text.</w:t></w:r></w:p>"
+            "<w:p><w:pPr><w:numPr><w:ilvl w:val=\"0\"/><w:numId w:val=\"1\"/></w:numPr></w:pPr>"
+            "<w:r><w:t>Item</w:t></w:r></w:p>"
+            "<w:tbl><w:tblGrid><w:gridCol w:w=\"2000\"/><w:gridCol w:w=\"2000\"/></w:tblGrid>"
+            "<w:tr><w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>B</w:t></w:r></w:p></w:tc></w:tr></w:tbl>"
+            "<w:sectPr><w:pgSz w:w=\"5000\" w:h=\"4000\"/></w:sectPr>")
+    parts = {
+        "[Content_Types].xml": '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>',
+        "word/document.xml": f"<w:document {w}><w:body>{body}</w:body></w:document>",
+        "word/styles.xml": f'<w:styles {w}><w:style w:type="paragraph" w:styleId="Heading1">'
+                           '<w:rPr><w:b/><w:sz w:val="32"/></w:rPr></w:style></w:styles>',
+        "word/numbering.xml": f'<w:numbering {w}><w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0">'
+                              '<w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum>'
+                              '<w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num></w:numbering>',
+    }
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, text in parts.items():
+            info = zipfile.ZipInfo(name, date_time=(2026, 1, 1, 0, 0, 0))  # reproducible
+            info.compress_type = zipfile.ZIP_DEFLATED
+            z.writestr(info, text)
+    return buf.getvalue()
+
+
 def build(out_root: Path) -> list[str]:
     seeds = out_root / "seeds"
     broken = out_root / "broken"
@@ -320,6 +377,10 @@ def build(out_root: Path) -> list[str]:
 
     rgb = gradient_rgb(48, 32)
     rgba = gradient_rgba(48, 32)
+
+    # Documents (docs/plans/audio-and-documents.md): no Pillow involved.
+    files["pdf/two_pages.pdf"] = pdf_two_pages()
+    files["docx/small.docx"] = docx_small()
 
     # JPEG
     files["jpeg/baseline.jpg"] = save(rgb, "JPEG", quality=85)

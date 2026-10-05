@@ -17,6 +17,7 @@ namespace mv::image {
 // so a folder of RAWs does not fan out a full demosaic per file.
 [[nodiscard]] result<display_image> decode_bytes_mac(std::span<const std::uint8_t> bytes,
                                                       const job_context* ctx = nullptr,
-                                                      unsigned raw_thread_limit = 0);
+                                                      unsigned raw_thread_limit = 0,
+                                                      std::uint32_t page = 0);
 
 }  // namespace mv::image

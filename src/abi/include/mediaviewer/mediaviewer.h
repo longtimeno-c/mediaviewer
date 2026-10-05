@@ -50,7 +50,7 @@ extern "C" {
  * wrong is a struct layout change nobody notices until a field reads garbage.
  * ------------------------------------------------------------------------- */
 #define MV_ABI_VERSION_MAJOR 0
-#define MV_ABI_VERSION_MINOR 15 /* 0.10: PR 13 / 14 clip jobs and keyframe index (mediaviewer_clip.h); 0.11: issue #44 mv_video_set_hold; 0.12: issue #42 mv_status eject error categories; 0.13: PR 30 keep_ranges; 0.14: Milestone H result listings (mv_folder_open_list); 0.15: mv_folder_item clip flag */
+#define MV_ABI_VERSION_MINOR 16 /* 0.10: PR 13 / 14 clip jobs and keyframe index (mediaviewer_clip.h); 0.11: issue #44 mv_video_set_hold; 0.12: issue #42 mv_status eject error categories; 0.13: PR 30 keep_ranges; 0.14: Milestone H result listings (mv_folder_open_list); 0.15: mv_folder_item clip flag; 0.16: pages (mv_image_info.page_count, mv_folder_select_page) */
 
 /* Packed as (major << 16) | minor. [any-thread] */
 MV_API uint32_t MV_CALL mv_abi_version(void);
@@ -240,7 +240,8 @@ typedef struct mv_image_info {
   uint32_t format;          /* 1 JPEG, 2 PNG, 3 BMP — matches codec::format_family */
   uint32_t icc_tagged;      /* non-zero if an ICC profile (or sRGB chunk) was used */
   uint32_t transfer_intent; /* 0 = display-referred (no tone map) */
-  uint32_t reserved;
+  uint32_t page_count;      /* 0.16: pages in the file (TIFF, PDF, DOCX); 1 for a
+                               single-page still. Was `reserved` (always 0). */
 } mv_image_info;
 
 /* [any-thread][no-block] `utf8_path` is owned by the caller and copied before
@@ -315,6 +316,15 @@ MV_API mv_status MV_CALL mv_folder_select(mv_session_t session, uint32_t index,
 
 /* [any-thread][no-block] */
 MV_API mv_status MV_CALL mv_folder_selected(mv_session_t session, uint32_t* out_index);
+
+/* 0.16 [any-thread][no-block] Show page `page` (0-based) of the selected stop:
+ * a multi-page TIFF, PDF or DOCX (docs/plans/audio-and-documents.md §2.3). Bumps
+ * the view generation like a selection and decodes that page, without the LRU
+ * or prefetch (a page turn is one decode). MV_COMPLETION_IMAGE_OPENED follows;
+ * mv_session_image_info then reports the page count. A page past the end
+ * completes with MV_ERR_INVALID_ARG; page 0 is the same as mv_folder_select. */
+MV_API mv_status MV_CALL mv_folder_select_page(mv_session_t session, uint32_t page,
+                                               uint64_t* out_job_id);
 
 /* [any-thread][no-block] Visible-first thumbs. Skipping still generates every
  * thumb, just not visible-first. */
