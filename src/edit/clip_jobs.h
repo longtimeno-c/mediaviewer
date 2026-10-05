@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The clip job queue (plan/08 "Execution & UX", plan/10 PR 13): one worker,
+// The clip job queue (docs/design/08 "Execution & UX", docs/design/10 PR 13): one worker,
 // FIFO, every job cancellable, queued or running. The job panel on both hosts
 // is a view of this: it polls snapshot() and never waits on a job.
 //
@@ -12,7 +12,7 @@
 // Thread rules: submit / cancel / retry / snapshot / ids / clear_finished are
 // [any-thread][no-block] — the lock is only ever held for bookkeeping, never
 // across a job's I/O. The listener is called on the worker (or the calling
-// thread for a job cancelled while queued); the host marshals (plan/14).
+// thread for a job cancelled while queued); the host marshals (docs/design/14).
 #pragma once
 
 #include <atomic>
@@ -64,7 +64,7 @@ class job_queue {
   // The MediaViewerClipJob executable (UTF-8). Once set, every job that opens
   // a decoder or an encoder (clip_wire.h runs_in_helper) runs in it, never in
   // this process; a missing helper fails those jobs rather than running them
-  // here (plan/12 2026-09-25, owner: "the main app shouldn't be affected").
+  // here (docs/design/12 2026-09-25, owner: "the main app shouldn't be affected").
   // Unset (the core tests), everything runs in process.
   void set_helper(std::string helper_utf8);
 

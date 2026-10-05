@@ -2,7 +2,7 @@
 
 The in-app updater trusts nothing from the update channel until the signed
 manifest verifies against a public key compiled into the app
-([plan/13](../../plan/13-updates-and-telemetry.md), "Signing").
+([docs/design/13](../../docs/design/13-updates-and-telemetry.md), "Signing").
 
 ## What is signed
 

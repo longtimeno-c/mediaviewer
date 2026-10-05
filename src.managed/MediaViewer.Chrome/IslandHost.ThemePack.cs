@@ -12,7 +12,7 @@ namespace MediaViewer.Chrome;
 
 /// <summary>
 /// The theme an open add-on may put in place of the chrome's own colours
-/// (plan/25 "Themes"; the Mac twin is Theme.swift). IslandHost.Theme.cs owns
+/// (docs/design/25 "Themes"; the Mac twin is Theme.swift). IslandHost.Theme.cs owns
 /// the brushes; this owns which theme is chosen and its tokens.
 ///
 /// The core reads and checks a theme (contrast included) and hands it over as

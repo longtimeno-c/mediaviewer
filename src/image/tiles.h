@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Tiled pyramid for large images (plan/04, "Tiled pyramid for large images").
+// Tiled pyramid for large images (docs/design/04, "Tiled pyramid for large images").
 //
 // Above ~64 MP — or wider/taller than the 16384 texture limit — a still is not
 // one texture:
@@ -17,14 +17,14 @@
 //   * The render thread says which tiles it wants (visible at the current LOD
 //     plus a one-tile ring) through lock-free per-tile states; the session's
 //     tile_service thread builds and creates them, a few per refresh interval
-//     (plan/03 upload budget). The render thread draws ready tiles coarse to
+//     (docs/design/03 upload budget). The render thread draws ready tiles coarse to
 //     fine over the overview and evicts least-recently-used tiles above a VRAM
 //     budget. It never waits on the service and never creates a texture.
 //
 // CPU memory retained for a tiled image: the decoded full-resolution RGBA
 // (which the session already kept for device-rebuild re-upload) plus the
 // pyramid levels below it, one third again — 533 MB for a 100 MP still, held
-// only while that image is current, inside plan/02's min(25 % RAM, 4 GB).
+// only while that image is current, inside docs/design/02's min(25 % RAM, 4 GB).
 #pragma once
 
 #include <atomic>

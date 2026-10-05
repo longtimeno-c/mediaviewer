@@ -25,10 +25,10 @@ struct dir_entry {
 // PR 7 camera-dump stills (TIFF, ICO, HEIC/HEIF, AVIF, RAW), plus the PR 5
 // video containers. The listing filters by extension; decode still probes
 // magic bytes. Sorted by name, case-insensitive. Pairing (RAW+JPEG, Live
-// Photo) and companion hiding happen after the scan (plan/04).
+// Photo) and companion hiding happen after the scan (docs/design/04).
 [[nodiscard]] result<std::vector<dir_entry>> list_still_files(std::string_view utf8_dir);
 
-// A direct child directory (plan/10 PR 26, multi-folder browsing).
+// A direct child directory (docs/design/10 PR 26, multi-folder browsing).
 struct subdir_entry {
   std::string name_utf8;
   std::string path_utf8;

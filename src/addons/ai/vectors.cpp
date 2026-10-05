@@ -320,7 +320,7 @@ double normal_quantile(double p) {
 }  // namespace
 
 precision_scale precision_scale::at(std::uint32_t level) noexcept {
-  // Calibrated on 300 and 1,000 COCO photos with both towers (plan/17
+  // Calibrated on 300 and 1,000 COCO photos with both towers (docs/design/17
   // "Precision scale (2026-09-27)", mv_ai_tests "[.calibration]"). Stricter:
   // 3 is where L/14 stops answering "helicopter" with planes, 4 where B/32
   // does too (its "a helicopter" stands out at 1.33 x noise, like its "a
@@ -377,7 +377,7 @@ std::vector<vector_store::hit> find_text(const vector_store& store, std::span<co
   // Against what noise scores in an index this size (scan_stats): at 1,000
   // COCO photos every nonsense query cleared a fixed z of 2.5 (2.56-2.88)
   // while real ones sat at 3.49 and up; one nonsense query's best margin was
-  // 0.050 at 300 (plan/17, 2026-09-27). The calibrated query_z moves with the
+  // 0.050 at 300 (docs/design/17, 2026-09-27). The calibrated query_z moves with the
   // level's stand-out factor, so a small index is as strict as a large one.
   const float query_z = t.query_z * (p.stand_out / vector_store::scan_stats::kStandOutOverNoise);
   const bool stands_out = z_rule && stats.stands_out(query_z, p.stand_out);
@@ -387,7 +387,7 @@ std::vector<vector_store::hit> find_text(const vector_store& store, std::span<co
   const bool answered = stands_out && best >= stats.stand_out_margin(t.query_margin) * p.query_margin;
   if (stands_out && stats.sd > 0) {
     // A short query clears few rows by the margin; the rows that stand out as
-    // far as a match does are results as well (plan/17).
+    // far as a match does are results as well (docs/design/17).
     const float result_z = t.result_z * p.result_z;
     std::set<std::pair<std::int64_t, std::int64_t>> have;
     for (const auto& h : hits) have.insert({h.asset, h.pts_ms});
@@ -401,7 +401,7 @@ std::vector<vector_store::hit> find_text(const vector_store& store, std::span<co
   // the generic prompts by the margin describes nothing in the index, unless
   // its best assets stand out from the rest: a one-word subject ("dog") sits
   // close to "a photo." and misses the margin while ranking correctly
-  // (2026-09-27, plan/17).
+  // (2026-09-27, docs/design/17).
   if (gate && !answered && best < margin_needed) return {};
   if (z_rule && p.within > 0 && stats.sd > 0) {
     // Stricter: only what scores close to the best match, so the near-miss

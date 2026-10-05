@@ -22,12 +22,12 @@ vcpkg_installed/
 
 # Frame-time harness artefacts. The report is per-run; the baseline is per-machine
 # and is restored from CI cache rather than committed — a baseline captured on a
-# noisy box lowers the bar for every later PR (plan/09).
+# noisy box lowers the bar for every later PR (docs/design/09).
 frametime-report.json
 frametime-idle-report.json
 frametime-baseline.json
 
-# The test corpus does not live in git (plan/09). Tens of GB of RAW, HEIC and 4K
+# The test corpus does not live in git (docs/design/09). Tens of GB of RAW, HEIC and 4K
 # video, most of it not redistributable. A manifest of (url, sha256, licence)
 # belongs here; the files do not.
 corpus/
@@ -48,7 +48,7 @@ tests/corpus/
 project.lock.json
 
 # PR 5 test corpus — generated locally, never committed.
-# plan/09: "Do not put the RAW corpus in git." Same rule for 4K video clips:
+# docs/design/09: "Do not put the RAW corpus in git." Same rule for 4K video clips:
 # they live in the repo so every session can reach them, and stay out of history.
 #
 # The GENERATOR is not corpus. Ignoring the whole directory took generate.sh
@@ -91,8 +91,7 @@ scratch-av.csv
 drift.csv
 soak.json
 
-# Scratch notes. Working files for a slice in progress, not the plan — the
-# plan is plan/.
+# Scratch notes. Working files for a slice in progress.
 PR5UInotes.txt
 
 .claude/

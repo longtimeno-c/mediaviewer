@@ -1,13 +1,13 @@
 # Copyright (C) 2026 longtimeno-c
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Generate the fuzz seeds and the hand-crafted broken files (PR 7, plan/09).
+"""Generate the fuzz seeds and the hand-crafted broken files (PR 7, docs/design/09).
 
     python tools/testmedia/make-seeds.py            # writes tests/data/seeds and tests/data/broken
     python tools/testmedia/make-seeds.py --check    # regenerate into a temp dir and list differences
 
 Every file is synthesised here from code: no camera, no downloaded sample, so
 the whole set is licence-clean and can live in git (the real corpus cannot —
-plan/09). Output is small on purpose (target < 1 MB for everything): seeds are
+docs/design/09). Output is small on purpose (target < 1 MB for everything): seeds are
 starting points for libFuzzer and the broken-corpus test, not a format corpus.
 
 Requirements (dev tool only, never shipped):
@@ -16,7 +16,7 @@ Requirements (dev tool only, never shipped):
     Python:  python -m venv .venv-seeds && .venv-seeds/Scripts/pip install pillow pillow-heif
     pillow-heif's wheel carries an x265 encoder. That is fine for making a few
     test bytes on a developer box; it never enters vcpkg.json or the product
-    (plan/11 forbids bundling a software HEVC encoder, not reading its output).
+    (docs/design/11 forbids bundling a software HEVC encoder, not reading its output).
     Without pillow-heif the HEIC seeds are skipped with a warning.
 TIFF (tiled, 16-bit), DNG and ICO are written by hand below so their structure
 is exact and documented.

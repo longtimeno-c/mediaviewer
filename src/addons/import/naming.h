@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Where files go: layouts, rename templates, safe names (plan/18 "Layout",
+// Where files go: layouts, rename templates, safe names (docs/design/18 "Layout",
 // "Rename"). Pure functions of their inputs, identical on Windows and Mac
 // (PR 18 verify: "a rename template yields identical names on Windows and Mac
 // for the same card"), so nothing here asks the OS anything.
@@ -66,7 +66,7 @@ struct rename_input {
 [[nodiscard]] bool template_uses_seq(std::string_view tmpl) noexcept;
 
 // "IMG_0001 (2).CR3": the clash suffix goes after the stem, so every member
-// of a unit keeps the same stem (plan/18: pairs stay together).
+// of a unit keeps the same stem (docs/design/18: pairs stay together).
 // `name` with its leading `old_stem` (the unit primary's stem, which every
 // member starts with, ASCII case-insensitively) replaced by `new_stem`.
 [[nodiscard]] std::string with_stem(std::string_view name, std::string_view old_stem,

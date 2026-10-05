@@ -16,13 +16,13 @@ namespace mv::io {
 // Tests only. Empty path restores the default.
 void set_thumb_cache_dir_override(std::string_view utf8_dir);
 
-// Where add-ons install (plan/18 "Location"): %LocalAppData%\MediaViewer\addons
+// Where add-ons install (docs/design/18 "Location"): %LocalAppData%\MediaViewer\addons
 // on Windows, ~/Library/Application Support/MediaViewer/Add-ons on Mac.
 // Per-user; created if missing.
 [[nodiscard]] result<std::string> addons_dir();
 void set_addons_dir_override(std::string_view utf8_dir);  // tests; empty restores
 
-// Where add-ons from other makers install (plan/25 "Install, update, remove"):
+// Where add-ons from other makers install (docs/design/25 "Install, update, remove"):
 // %LocalAppData%\MediaViewer\open-addons on Windows, ~/Library/Application
 // Support/MediaViewer/Open Add-ons on Mac. Beside the folder above, never in
 // it, so neither store lists the other's. NOT created here: with no open
@@ -37,14 +37,14 @@ void set_open_addons_dir_override(std::string_view utf8_dir);  // tests; empty r
 void set_clipboard_dir_override(std::string_view utf8_dir);  // tests; empty restores
 
 // PR 12: where "revert metadata" keeps the prior value of the fields a write
-// changed (plan/06 "Undo"): %LocalAppData%\MediaViewer\metadata-snapshots on
+// changed (docs/design/06 "Undo"): %LocalAppData%\MediaViewer\metadata-snapshots on
 // Windows, ~/Library/Application Support/MediaViewer/Metadata Snapshots on
 // Mac. Per-user, local, never uploaded (rule 6); created if missing. Not a
 // cache: nothing may purge it behind the user's back.
 [[nodiscard]] result<std::string> metadata_snapshot_dir();
 void set_metadata_snapshot_dir_override(std::string_view utf8_dir);  // tests; empty restores
 
-// Import's default destination (plan/18 "Painless by default"):
+// Import's default destination (docs/design/18 "Painless by default"):
 // Pictures\MediaViewer / ~/Pictures/MediaViewer. Not created here; the
 // first import creates it.
 [[nodiscard]] result<std::string> default_library_dir();

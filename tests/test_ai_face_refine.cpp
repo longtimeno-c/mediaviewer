@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// People refinement (plan/17 PR 24, "Refinement") on synthetic embeddings:
+// People refinement (docs/design/17 PR 24, "Refinement") on synthetic embeddings:
 // the chaining case, the outlier case, the anchor case, weak faces,
 // rejections, an incremental call, and convergence. Vectors are 128-d like
 // SFace's: a person is a random unit direction, a face that direction plus
@@ -483,7 +483,7 @@ TEST_CASE("refine through faces.db: a re-analysis replaces a face's vector in pl
   CHECK((*db)->faces_of(before[0].id).size() == 3);
 }
 
-// ---- duplicates (plan/17 "Merge duplicates") ----------------------------------------
+// ---- duplicates (docs/design/17 "Merge duplicates") ----------------------------------------
 
 namespace {
 
@@ -791,7 +791,7 @@ TEST_CASE("re-analysing with the same model keeps every person and correction", 
   CHECK(((people[0].name == "Anna" && people[1].name == "Ben") || (people[0].name == "Ben" && people[1].name == "Anna")));
 }
 
-// ---- the People bench (plan/17 "People model") ------------------------------------------
+// ---- the People bench (docs/design/17 "People model") ------------------------------------------
 //
 // mv_ai_tests "[.people-bench]" with MV_FACE_EVAL=<file>: real face vectors
 // (tools: an LFW export, uint32 n, uint32 dim, n int32 identity labels, n x dim

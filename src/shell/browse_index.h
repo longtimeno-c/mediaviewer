@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Wrapping index arithmetic for folder navigation (plan/16-commands.md's
+// Wrapping index arithmetic for folder navigation (docs/design/16-commands.md's
 // Browse table: prev/next, first/last, skip ~10, all wrapping by default —
 // "Wrap at end of folder: on by default, toggle in settings"). Pure logic,
 // no I/O, no AppKit — deliberately unit-testable on its own rather than only
@@ -22,7 +22,7 @@ class browse_index {
   [[nodiscard]] std::size_t count() const noexcept { return count_; }
   [[nodiscard]] bool empty() const noexcept { return count_ == 0; }
 
-  // "Wrap at the end of the folder" (plan/16, Settings). Off: next/prev/skip
+  // "Wrap at the end of the folder" (docs/design/16, Settings). Off: next/prev/skip
   // stop at the ends instead of going round. On by default.
   void set_wrap(bool wrap) noexcept { wrap_ = wrap; }
   [[nodiscard]] bool wrap() const noexcept { return wrap_; }

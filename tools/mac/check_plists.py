@@ -8,7 +8,7 @@ here needs a Mac.
     are the same list, and it covers every still format_family the codec
     probes (src/codec/format.h), the D5 still set.
   - Every document type is LSHandlerRank Alternate: listed in Open With,
-    never a silent default-app hijack (plan/15 PR 20).
+    never a silent default-app hijack (docs/design/15 PR 20).
   - The extension is sandboxed and asks for nothing else.
   - The Sparkle keys cmake/darwin-app.cmake injects require a signed feed and
     a verified archive, use HTTPS, and never send a system profile (rule 6).
@@ -40,7 +40,7 @@ FAMILY_UTIS = {
 
 # The D5 video containers (src/shell/media_kind.h). Video has its own document
 # type; Quick Look thumbnails stay stills-only.
-# plan/25: the add-on package, MediaViewer's own exported type.
+# docs/design/25: the add-on package, MediaViewer's own exported type.
 ADDON_UTIS = {"io.github.longtimeno-c.mediaviewer.addon"}
 
 VIDEO_UTIS = {"public.mpeg-4", "com.apple.m4v-video", "com.apple.quicktime-movie",
@@ -83,7 +83,7 @@ def main() -> int:
     exported = {d.get("UTTypeIdentifier") for d in app.get("UTExportedTypeDeclarations", [])}
     for doc in doc_types:
         if doc.get("CFBundleTypeName") == "Add-on":
-            # plan/25: the add-on package is MediaViewer's own type (an
+            # docs/design/25: the add-on package is MediaViewer's own type (an
             # exported UTI), so it may own it; it is not a photo or video type.
             utis = set(doc.get("LSItemContentTypes", []))
             if utis != ADDON_UTIS or not utis <= exported:
@@ -129,7 +129,7 @@ def main() -> int:
 
     for name, plist in (("app", app), ("extension", appex)):
         if plist.get("LSMinimumSystemVersion") != "14.0":
-            problems.append(f"{name}: LSMinimumSystemVersion must be 14.0 (plan/15 floor)")
+            problems.append(f"{name}: LSMinimumSystemVersion must be 14.0 (docs/design/15 floor)")
     if appex.get("CFBundleIdentifier") != app.get("CFBundleIdentifier") + ".thumbnails":
         problems.append("extension bundle id must be <app id>.thumbnails")
 

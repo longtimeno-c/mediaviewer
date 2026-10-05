@@ -10,7 +10,7 @@ clips with FFmpeg's own MPEG-4 and MP2 encoders; a headless build has no
 hardware encoder (`hwencode_none.cpp`), so Path 2 is driven through a test
 hook there. `mv_clip_tests "[bench]"` times a keyframe trim of a ~1 GB MP4
 (or `MV_CLIP_BENCH_FILE`). It is a test build, not a
-product platform (plan/12, 2026-09-24).
+product platform (docs/design/12, 2026-09-24).
 
 ```
 cmake -S cmake/portable -B build-portable \

@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Themes: the first thing an open add-on can contribute (plan/25 "Themes").
+// Themes: the first thing an open add-on can contribute (docs/design/25 "Themes").
 //
 // A theme is a JSON file of colour tokens for the CHROME: the bars, panes,
 // Settings and text around the photo. It never reaches the canvas's pixels

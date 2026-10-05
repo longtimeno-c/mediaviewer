@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// What to open from a command line or a drop (plan/16, PR 6 "drag-and-drop in,
+// What to open from a command line or a drop (docs/design/16, PR 6 "drag-and-drop in,
 // argv handling"). Pure: the caller probes the paths, this decides.
 //
 // Rule: the first entry that exists wins. A folder opens that folder; a file
@@ -9,7 +9,7 @@
 // mixed drop opens the first file's folder. Entries that do not exist are
 // skipped; if none exists the request is `missing` and nothing is opened.
 //
-// An add-on package (plan/25, a file named *.mvaddon) is never opened in the
+// An add-on package (docs/design/25, a file named *.mvaddon) is never opened in the
 // viewer: when it is the first entry that exists, the request is
 // `addon_package` and the host hands it to Settings' install sheet.
 #pragma once

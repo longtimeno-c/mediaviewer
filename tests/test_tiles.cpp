@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Tiled pyramid for large images (plan/04): geometry, CPU pyramid, and the
+// Tiled pyramid for large images (docs/design/04): geometry, CPU pyramid, and the
 // request / create / evict cycle against WARP.
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>

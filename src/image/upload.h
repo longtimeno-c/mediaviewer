@@ -26,7 +26,7 @@ namespace mv::image {
 
 // One 2x decimation step of that chain: separable Mitchell (B = C = 1/3) in
 // linear light, sRGB-encoded result, floor-half extents (`max(1, floor(n/2))`,
-// the D3D11 mip pitch — plan/03). Shared by the single-texture upload and the
+// the D3D11 mip pitch — docs/design/03). Shared by the single-texture upload and the
 // tiled pyramid (image/tiles.h). Any thread; holds four filtered rows at a time,
 // not a float copy of the whole level. False only when `ctx` was cancelled.
 [[nodiscard]] bool downsample_half(const std::uint8_t* src, std::uint32_t sw, std::uint32_t sh,

@@ -3,7 +3,7 @@
 // Host table v2's pixels and sound (addon/media.h's types) from the viewer's
 // own decoders: the still first-pixel path, the clip sampler, the JPEG-512
 // cache and an audio reader. The host's side of the add-on line, so it lives
-// above image/ and edit/ (plan/02); abi/addon_abi.cpp (Windows) and
+// above image/ and edit/ (docs/design/02); abi/addon_abi.cpp (Windows) and
 // shell/addons_mac.mm (Mac) install it into host_services. Portable: FFmpeg,
 // no GPU, no OS UI. Worker threads only: every call reads and decodes.
 #pragma once
@@ -36,7 +36,7 @@ namespace media {
 // whose moment the pack has not thumbed). `cancel` is polled when given.
 [[nodiscard]] result<std::vector<std::uint8_t>> encode_moment_thumb(
     const std::string& path, std::int64_t pts_ms, const std::atomic<bool>* cancel = nullptr);
-// Sharing an index (plan/17): the cached JPEG-512 of a still (pts_ms < 0)
+// Sharing an index (docs/design/17): the cached JPEG-512 of a still (pts_ms < 0)
 // or a moment as bytes, looked up only (status::io on a miss); and bytes made
 // on another machine stored under this machine's stamp of the file. The bytes
 // are untrusted: they are decoded, and only a JPEG whose long edge is at most

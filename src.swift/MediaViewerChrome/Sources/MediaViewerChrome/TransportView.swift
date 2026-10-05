@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 19: the clip transport strip (plan/05, plan/16 "Video": bottom-centre,
+// PR 19: the clip transport strip (docs/design/05, docs/design/16 "Video": bottom-centre,
 // play/pause, scrubber, time, speed, mute). Chrome only: the clock, the seek
 // model and the canvas are native; this posts commands over the bridge.
 import SwiftUI
@@ -32,7 +32,7 @@ enum TrimCommand {
   static let reencode: Int32 = 140
 }
 
-/// Trim over the scrubber (plan/08: "show the keyframe grid on the timeline so
+/// Trim over the scrubber (docs/design/08: "show the keyframe grid on the timeline so
 /// the snapping is visible and expected rather than surprising").
 private struct TrimMarks: View {
   @ObservedObject private var store = VideoStore.shared
@@ -70,7 +70,7 @@ private struct TrimMarks: View {
   }
 }
 
-/// Milestone H (plan/17 "the scrub bar marking the other matches from the same
+/// Milestone H (docs/design/17 "the scrub bar marking the other matches from the same
 /// clip"): accent dots just above the track, the current match larger. They
 /// fade in when a clip in the search opens and move with a spring, never on
 /// the canvas's render path (this is SwiftUI chrome over it).

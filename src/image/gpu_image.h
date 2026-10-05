@@ -1,7 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Immutable GPU texture produced on a decode worker
-// (plan/02: CreateTexture2D + D3D11_SUBRESOURCE_DATA, never Map on the
+// (docs/design/02: CreateTexture2D + D3D11_SUBRESOURCE_DATA, never Map on the
 // immediate context).
 #pragma once
 
@@ -47,7 +47,7 @@ struct gpu_image {
   // levels; the render thread lengthens the refinement fade when they do.
   std::uint8_t mean_luma = 0;
 
-  // Images above ~64 MP or wider than the texture limit (plan/04 "Tiled
+  // Images above ~64 MP or wider than the texture limit (docs/design/04 "Tiled
   // pyramid"): `texture` is the always-resident overview and the tiles are
   // created on demand. Held here only; the render thread never copies it.
   std::shared_ptr<tile_set> tiles;

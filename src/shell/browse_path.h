@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Where the user is inside a tree of folders (plan/10 PR 26): the breadcrumb
+// Where the user is inside a tree of folders (docs/design/10 PR 26): the breadcrumb
 // trail from the highest folder they have reached down to the one on screen,
 // and what "up" means. Pure string logic, no I/O, no platform header — both
 // '/' and '\\' separate components, so the same rules hold for a POSIX path and

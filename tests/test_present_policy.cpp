@@ -100,7 +100,7 @@ TEST_CASE("camera springs keep presenting until they settle", "[gfx][present_pol
   REQUIRE(mv::gfx::decide_present(r).wants_frame);
 }
 
-TEST_CASE("constants match plan/03", "[gfx][present_policy]") {
+TEST_CASE("constants match docs/design/03", "[gfx][present_policy]") {
   REQUIRE(mv::gfx::k_input_tail_seconds == 0.5);
   REQUIRE(mv::gfx::k_warmup_seconds == 1.0);
   REQUIRE(mv::gfx::k_occlusion_poll_ms == 200);

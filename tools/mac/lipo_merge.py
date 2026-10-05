@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Callable
 
 REQUIRED = frozenset({"arm64", "x86_64"})
-# plan/23: Final Cut Pro search needs the AI pack, which is arm64 only (ONNX
+# docs/design/23: Final Cut Pro search needs the AI pack, which is arm64 only (ONNX
 # Runtime ships no x86_64 macOS build), so an Intel build has none of these.
 # They stay arm64 in the universal app, copied as the arm64 build signed them;
 # on an Intel Mac the app never turns them on.

@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The Mac host's add-ons (plan/18 "Add-ons"; the Windows twin is
+// The Mac host's add-ons (docs/design/18 "Add-ons"; the Windows twin is
 // abi/addon_abi.cpp + IslandHost.Addons.cs). Owns the add-on store, the
 // loaded add-ons and their chromes:
 //
@@ -8,7 +8,7 @@
 //                          drives an NSWindow hosting the SwiftUI Import view.
 //   AI      (Milestone H)  AI.bundle, principal class MVAIChrome: the search
 //                          panel and the Settings -> Local search management
-//                          view (plan/17). Pieces of its family ("ai-faces")
+//                          view (docs/design/17). Pieces of its family ("ai-faces")
 //                          carry no code; the AI pack reaches their verified
 //                          folders through the host table's piece_dir. Apple
 //                          silicon only: ONNX Runtime ships no x86_64 macOS
@@ -147,7 +147,7 @@ mac_addons& state() {
   return *s;
 }
 
-// The Mac AI pack is arm64 only (plan/17, 2026-09-26): ONNX Runtime has no
+// The Mac AI pack is arm64 only (docs/design/17, 2026-09-26): ONNX Runtime has no
 // x86_64 macOS build. On Intel, Local search does not exist at all.
 constexpr bool ai_supported() {
 #if defined(__arm64__) || defined(__aarch64__)
@@ -268,7 +268,7 @@ void unload_import() {
   s.chrome = nil;
   s.import.reset();  // shutdown, then the dylib goes
   // NSBundle -unload is not safe for Swift code; the bundle stays mapped
-  // until quit, inert (plan/18: removal completes at next start).
+  // until quit, inert (docs/design/18: removal completes at next start).
   s.bundle = nil;
   mv::shell::set_addon_commands_available(mv::shell::addon_family::import, false);
 }
@@ -342,7 +342,7 @@ mv::addon::host_services ai_services() {
   mv::addon::host_services svc;
   svc.capture = &capture_info;
   svc.thumbnail = &thumbnail;
-  // Indexing waits while the present loop is busy (plan/17 "Yield policy":
+  // Indexing waits while the present loop is busy (docs/design/17 "Yield policy":
   // playback, panning, a slideshow, a transition).
   svc.should_yield = [] { return mv::shell::g_present_busy.load(std::memory_order_relaxed); };
   svc.post = [](const mv_addon_event& e) {
@@ -826,7 +826,7 @@ extern "C" int32_t mv_addons_check_manifest(const uint8_t* manifest, int32_t man
   return copy_out(w.str(), buf, size);
 }
 
-// ---- open add-ons (plan/25) ---------------------------------------------------
+// ---- open add-ons (docs/design/25) ---------------------------------------------------
 // Data only: nothing below loads code, so none of it touches the loaded
 // add-ons above. One writer at a time; reads need no lock (the store keeps no
 // state beyond its root).
@@ -1047,7 +1047,7 @@ extern "C" bool mv_addon2_remove(const char* id, bool keep_data) {
   return true;
 }
 
-// [worker-thread] A family's installed bytes and its ceiling (plan/17: 3 GB
+// [worker-thread] A family's installed bytes and its ceiling (docs/design/17: 3 GB
 // for "ai"); the Swift side refuses a piece that would not fit before it
 // downloads anything, and install refuses it again.
 extern "C" bool mv_addon2_family_usage(const char* family, uint64_t* used, uint64_t* ceiling) {

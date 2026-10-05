@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # PR 5 test corpus generator.
 #
-# THE CLIPS are gitignored (plan/09: the corpus does not go in git). THIS
+# THE CLIPS are gitignored (docs/design/09: the corpus does not go in git). THIS
 # SCRIPT is tracked — see .gitignore. Ignoring the whole directory used to take
 # the generator with it, so a clean clone had no clips and no way to make them,
 # and every real-clip test skipped while ctest still reported success.
@@ -12,7 +12,7 @@
 # never a link target. x264/x265 here are a command you run, not something the
 # app is built against, so tools/licence-check.ps1 (scoped to the vcpkg install
 # tree) is correct not to look at it. Do NOT confuse this with the LGPL FFmpeg
-# the app links (plan/11, D3).
+# the app links (docs/design/11, D3).
 #
 # THE CLIPS ARE SYNTHETIC. None of them is an iPhone HLG clip, and one real one
 # is worth more than this whole set for the "looks correct rather than washed

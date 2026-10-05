@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 14 clip tools sheet (⌘S on a clip; plan/10: "SwiftUI job panel entries").
+// PR 14 clip tools sheet (⌘S on a clip; docs/design/10: "SwiftUI job panel entries").
 // The twin of the Windows flyout (IslandHost.Clip.cs BuildClipTools): the same
 // entries in the same order, the same packed answer (shell/trim_state.h
 // pack_clip_choice: op | option << 8). Keyboard-complete: ↑ ↓ choose, Return

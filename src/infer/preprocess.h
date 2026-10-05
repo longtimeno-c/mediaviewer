@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Pixels -> model tensors (plan/17 "Frame -> tensor"). CPU, portable, no
+// Pixels -> model tensors (docs/design/17 "Frame -> tensor"). CPU, portable, no
 // allocation beyond the output. The CLIP path matches the reference
 // (Hugging Face CLIPImageProcessor / PIL): shortest side to `size` with a
 // bicubic (a = -0.5) antialiasing filter, centre crop, x/255, per-channel

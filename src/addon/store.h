@@ -1,13 +1,13 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Installed add-ons on disk (plan/18 "Location", "Updates").
+// Installed add-ons on disk (docs/design/18 "Location", "Updates").
 //
 //   <addons>/<dir>/<version>/   manifest.json, manifest.json.sig, the files
 //   <addons>/<dir>/data/        the add-on's own data (import.db)
 //   <addons>/.staging/<n>/      a download being verified
 //
 // <dir> is the id on Windows ("import") and the name on Mac ("Import"), as
-// plan/18 spells the two locations. Every load re-verifies the signature and
+// docs/design/18 spells the two locations. Every load re-verifies the signature and
 // every file, so an offline sideload (a folder dropped in) is checked exactly
 // like a download. With no add-on installed nothing here writes anything.
 // Worker threads only.

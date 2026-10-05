@@ -126,7 +126,7 @@ TEST_CASE("a clip with no audio track plays at correct speed", "[clock]") {
 }
 
 TEST_CASE("an endpoint that will not open still plays", "[clock]") {
-  // plan/05 and the verify line both require playback to continue when audio
+  // docs/design/05 and the verify line both require playback to continue when audio
   // fails. Only the master changes. start() reports ok because a dead sound
   // card is not a failure to open the clip.
   auto* sink = new fake_sink();
@@ -147,7 +147,7 @@ TEST_CASE("an endpoint that will not open still plays", "[clock]") {
 }
 
 TEST_CASE("the master clock follows samples played, not wall time", "[clock]") {
-  // The core of plan/05: "derive presentation time from samples actually
+  // The core of docs/design/05: "derive presentation time from samples actually
   // played, not from a wall clock." A frozen endpoint must freeze the clock —
   // if this test fails by the clock advancing anyway, the implementation has
   // silently become a wall clock and the 30-minute soak would ramp.
@@ -288,7 +288,7 @@ TEST_CASE("a device that stays gone keeps playing on the host clock", "[clock]")
 }
 
 TEST_CASE("blocks at a stale generation are never written to the endpoint", "[clock]") {
-  // plan/02 generation counters. A block decoded before a seek must not be
+  // docs/design/02 generation counters. A block decoded before a seek must not be
   // heard after it.
   auto* sink = new fake_sink();
   av_clock clock;

@@ -275,7 +275,7 @@ expected chrome_host::load() noexcept {
   // PR 29, optional the same way: without it there is no Edit workspace.
   show_edit_pane_ = get_entry(L"ShowEditPane");
   set_edit_view_ = get_entry(L"SetEditView");
-  // PR 30 (plan/21): the Video Editor window. Optional, like the panes.
+  // PR 30 (docs/design/21): the Video Editor window. Optional, like the panes.
   attach_editor_ = get_entry(L"AttachVideoEditor");
   layout_editor_ = get_entry(L"LayoutVideoEditor");
   set_editor_view_ = get_entry(L"SetVideoEditorView");
@@ -288,7 +288,7 @@ expected chrome_host::load() noexcept {
   share_files_ = get_entry(L"ShareFiles");
   // Optional (Milestone H): the add-on command hand-off by family.
   show_addon_ = get_entry(L"ShowAddon");
-  // Optional (plan/25): without it a dropped add-on package is not offered.
+  // Optional (docs/design/25): without it a dropped add-on package is not offered.
   offer_addon_ = get_entry(L"OfferAddon");
   // Optional: without them a drag carries one cell and Open lists no recents.
   set_drag_paths_ = get_entry(L"SetDragPaths");

@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The drop/hold/show rules from plan/05, tested headlessly — no device, no
+// The drop/hold/show rules from docs/design/05, tested headlessly — no device, no
 // audio endpoint, no clip. That is the whole point of keeping choose() pure.
 #include <catch2/catch_test_macros.hpp>
 
@@ -28,7 +28,7 @@ presenter_input at(time_ns clock, time_ns next, bool has_next = true, double rat
 }  // namespace
 
 TEST_CASE("starved queue holds rather than stalling", "[presenter]") {
-  // plan/05: "if the queue is starved, hold the current frame rather than
+  // docs/design/05: "if the queue is starved, hold the current frame rather than
   // stalling." Never show, never drop.
   const auto d = choose(at(ms(1000), 0, /*has_next=*/false));
   REQUIRE(d.action == present_action::hold_starved);

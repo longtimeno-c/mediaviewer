@@ -9,7 +9,7 @@ the following additional permission.
 An **add-on** is a work that reaches MediaViewer only through its documented add-on
 interfaces: the `.mvaddon` package format and its manifest, the contribution points an add-on
 declares (themes, settings, keymaps, commands, screens, slots, search providers), and the
-script host API, all as described in `plan/25-open-addons.md` and `docs/ADDONS.md`.
+script host API, all as described in `docs/design/25-open-addons.md` and `docs/ADDONS.md`.
 
 Making, distributing and running an add-on does **not** make it a work based on MediaViewer
 for the purposes of the GNU GPL, however it is combined with MediaViewer at run time. You may

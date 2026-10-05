@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The viewer's JPEG-512 cache, looked up from another process (plan/23): the
+// The viewer's JPEG-512 cache, looked up from another process (docs/design/23): the
 // search agent serves the tiles the app already made and never makes one
 // (no decoder is linked into it). thumbs.sqlite is opened read-only, the row
 // is keyed exactly as image/thumb.h keys it (path + mtime + size + spec, a

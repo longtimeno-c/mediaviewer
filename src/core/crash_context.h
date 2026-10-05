@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // What a crash report is allowed to say about the work in flight.
 //
-// plan/13 Part 2, "Scrubbing": attach the format, codec, dimensions, bit depth
+// docs/design/13 Part 2, "Scrubbing": attach the format, codec, dimensions, bit depth
 // and decoder version — never the path, filename, bytes or EXIF. This block is
 // the ONLY app-supplied content of a minidump. The host (shell/) registers the
 // slots with its crash reporter as fixed-size annotations; the core never

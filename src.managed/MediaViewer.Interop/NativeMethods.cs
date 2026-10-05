@@ -10,7 +10,7 @@ namespace MediaViewer.Interop;
 /// SafeHandle and the copying rules.
 /// </summary>
 /// <remarks>
-/// plan/14-abi.md. Every entry point here is <c>__cdecl</c> and returns
+/// docs/design/14-abi.md. Every entry point here is <c>__cdecl</c> and returns
 /// <see cref="MvStatus"/>; a bool or a -1 anywhere in this file is a bug.
 /// </remarks>
 internal static partial class NativeMethods

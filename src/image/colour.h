@@ -1,7 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Display-referred colour: ICC → linear Rec.709 → sRGB encode. No tone map
-// (D6, plan/03-rendering.md). Untagged JPEG/PNG/BMP is assumed sRGB.
+// (D6, docs/design/03-rendering.md). Untagged JPEG/PNG/BMP is assumed sRGB.
 #pragma once
 
 #include <array>

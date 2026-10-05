@@ -1,5 +1,5 @@
 {
-  "comment": "The AI pack's model files (plan/17 'Model choice'), pinned by revision and SHA-256. Chosen by the PR 20 spike (plan/17 'PR 20 spike results'); the People embedder by plan/17 'People model' (2026-10-03). Every file names its licence; tools/package/ai-models.py refuses one outside ALLOWED_LICENCES (the weights-licence gate). An entry with 'export' pins its source (size, sha256) and is built by face-export.py; 'installed_size' is what the pack carries.",
+  "comment": "The AI pack's model files (docs/design/17 'Model choice'), pinned by revision and SHA-256. Chosen by the PR 20 spike (docs/design/17 'PR 20 spike results'); the People embedder by docs/design/17 'People model' (2026-10-03). Every file names its licence; tools/package/ai-models.py refuses one outside ALLOWED_LICENCES (the weights-licence gate). An entry with 'export' pins its source (size, sha256) and is built by face-export.py; 'installed_size' is what the pack carries.",
   "pieces": {
     "ai": {
       "folders": {

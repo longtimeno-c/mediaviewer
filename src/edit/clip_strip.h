@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 30 (the Video Editor, plan/21): what a timeline draws -- a strip of
+// PR 30 (the Video Editor, docs/design/21): what a timeline draws -- a strip of
 // thumbnails and a waveform -- for one clip. Worker thread only: both decode.
 // Neither writes anything or logs a path (rules 5, 6).
 #pragma once

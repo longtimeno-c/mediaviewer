@@ -1,11 +1,11 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 11 (plan/10: "SwiftUI adjust pane"): exposure, contrast, saturation,
+// PR 11 (docs/design/10: "SwiftUI adjust pane"): exposure, contrast, saturation,
 // temperature and tint, the histogram and the clipping readout. The twin of
 // the Windows pane (IslandHost.Adjust.cs): same sliders, same ranges, same
 // histogram bins (edit::pack_histogram), same "Preparing" rule -- the sliders
 // stay disabled until the FP16 working image exists, which for a RAW is
-// LibRaw's full linear develop, never the embedded preview (plan/07).
+// LibRaw's full linear develop, never the embedded preview (docs/design/07).
 //
 // Keyboard-complete without Full Keyboard Access: ↑ ↓ pick a slider, ← →
 // step it (⇧ for ten steps), 0 sets it back to zero, R resets every slider,

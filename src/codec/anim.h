@@ -1,13 +1,13 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Animation timing and compositing shared by GIF, APNG and animated WebP
-// (plan/04 "Animation"). Pure CPU code: no decoder, no clock, no GPU.
+// (docs/design/04 "Animation"). Pure CPU code: no decoder, no clock, no GPU.
 //
 // Timing follows browsers, because PR 6's verify says "animation timing
 // matches a browser": Chromium and Firefox treat a frame delay of 10 ms or
-// less as 100 ms. (plan/04 said "< 20 ms"; for GIF's centisecond delays the two
+// less as 100 ms. (docs/design/04 said "< 20 ms"; for GIF's centisecond delays the two
 // rules agree, and for APNG / WebP millisecond delays the browser rule is the
-// one people compare against — plan/12 2026-09-13.)
+// one people compare against — docs/design/12 2026-09-13.)
 #pragma once
 
 #include <cstddef>
@@ -108,7 +108,7 @@ struct animation_frames {
 
 // decode_animation (tests and tools) collects every frame; this caps what it
 // will hold. Playback never collects frames — it pulls them one at a time from
-// an animation_source into a small ring (plan/04).
+// an animation_source into a small ring (docs/design/04).
 inline constexpr std::size_t kAnimationByteBudget = 512ull * 1024ull * 1024ull;
 
 struct animation_info {
@@ -128,7 +128,7 @@ struct canvas_frame {
   std::vector<std::uint8_t> rgba;    // width*height*4, straight alpha; reused between calls
 };
 
-// One animation, decoded one frame at a time (plan/04: "decode frames ahead
+// One animation, decoded one frame at a time (docs/design/04: "decode frames ahead
 // into a small ring"). A source holds its canvas and, for dispose-previous, one
 // saved copy — never all frames — so a long 4K animation costs a few canvases,
 // not its whole length, and frame 0 is ready before frame 1 is decoded.
@@ -149,7 +149,7 @@ class animation_source {
   [[nodiscard]] virtual expected rewind() = 0;
 };
 
-// Play / pause / frame step for an animation on the QPC frame clock (plan/16:
+// Play / pause / frame step for an animation on the QPC frame clock (docs/design/16:
 // when the current item is animated, Space plays and pauses, `,` `.` step
 // frames, like video). Pure: the caller passes "now" in milliseconds.
 // Paused holds a frame and lets the canvas idle; stepping pauses, as it does
@@ -192,7 +192,7 @@ class animation_clock {
 };
 
 // When the next animation frame is due, for frames that arrive one at a time
-// from a decode ring instead of a complete delay list (plan/04). Pure: the
+// from a decode ring instead of a complete delay list (docs/design/04). Pure: the
 // render thread passes QPC milliseconds.
 class frame_schedule {
  public:

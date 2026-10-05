@@ -256,7 +256,7 @@ class Bench(Stage):
 
 class Search(Stage):
     """Local search accuracy: mv_ai_tests "[.calibration]" over a labelled photo set at library
-    sizes (plan/17, issue #85). The per-query JSONL (MBs) goes to a temporary folder; search.json
+    sizes (docs/design/17, issue #85). The per-query JSONL (MBs) goes to a temporary folder; search.json
     keeps the default Precision level's summary per tower and size."""
 
     timing = False

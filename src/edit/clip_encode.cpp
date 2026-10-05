@@ -5,7 +5,7 @@
 //
 // Decode here is software on the job's own thread, never the player's
 // D3D11VA / VideoToolbox decoder on the render device: a clip job must not
-// take a surface from the pool the canvas is presenting from (plan/05
+// take a surface from the pool the canvas is presenting from (docs/design/05
 // "Surface ownership"), and a job runs whether or not the clip is on screen.
 #include <algorithm>
 #include <array>
@@ -141,7 +141,7 @@ template <class OnFrame, class OnOther>
   return fmts.empty() ? AV_PIX_FMT_YUV420P : fmts.front();
 }
 
-// plan/11: never x264 / x265, never a software HEVC encoder. FFmpeg marks the
+// docs/design/11: never x264 / x265, never a software HEVC encoder. FFmpeg marks the
 // hardware wrappers (NVENC, AMF, VideoToolbox) HARDWARE and the MFT / QSV ones
 // HYBRID.
 [[nodiscard]] bool licence_ok(const AVCodec* enc, bool allow_software) noexcept {
@@ -250,7 +250,7 @@ result<std::string> reencode(std::string_view src_path, const std::string& out_p
   av_dict_set(&vost->metadata, "encoder", nullptr, 0);
 
   // Audio is copied, packet-accurate at the edges: no software AAC encoder
-  // anywhere (plan/11).
+  // anywhere (docs/design/11).
   std::vector<int> audio_map(s.format->nb_streams, -1);
   for (unsigned i = 0; i < s.format->nb_streams; ++i) {
     AVStream* ast = s.format->streams[i];

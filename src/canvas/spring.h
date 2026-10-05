@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Critically damped spring. plan/03: ω=18, ζ=1, driven from real QPC dt,
+// Critically damped spring. docs/design/03: ω=18, ζ=1, driven from real QPC dt,
 // never a fixed-step tween. Interruption-safe: grabbing mid-settle continues
 // from the current position and velocity.
 #pragma once

@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 11 — the full-resolution export bake (plan/07: "run the full-res chain
+// PR 11 — the full-resolution export bake (docs/design/07: "run the full-res chain
 // once on export"): geometry, then the colour kernel, over the FP16 working
 // image, encoded to 8-bit sRGB.
 //

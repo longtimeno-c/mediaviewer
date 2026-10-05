@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// AF-point geometry from maker-note arrays (plan/06 "Overlays that fall out of
+// AF-point geometry from maker-note arrays (docs/design/06 "Overlays that fall out of
 // the read model"). Pure functions over already-parsed numbers so each
 // vendor's layout is unit-tested without a camera file; still.cpp does the
 // Exiv2 extraction and calls these.
@@ -22,7 +22,7 @@ namespace mv::meta {
 // Sign of Y: taken as positive-down like the X axis is positive-right. That is
 // how the layout reads in the ExifTool tag docs, but it has not been checked
 // against a real Canon file in this repo (there is no corpus for it) — see the
-// PR 9 entry in plan/12. A wrong sign mirrors the quads vertically about the
+// PR 9 entry in docs/design/12. A wrong sign mirrors the quads vertically about the
 // image centre.
 [[nodiscard]] std::vector<af_point> canon_af_points(
     std::uint32_t image_w, std::uint32_t image_h, std::span<const std::int64_t> widths,

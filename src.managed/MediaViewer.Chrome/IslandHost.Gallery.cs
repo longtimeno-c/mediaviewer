@@ -556,7 +556,7 @@ public static partial class IslandHost
             {
                 case Windows.System.VirtualKey.Escape:
                     // The grid closes, over a result list too; the next Esc,
-                    // on the canvas, is "Back to folder" (plan/16 `Esc`, the
+                    // on the canvas, is "Back to folder" (docs/design/16 `Esc`, the
                     // native router's result_list step, same as the Mac).
                     Send(Command.CloseGallery);
                     e.Handled = true;
@@ -689,7 +689,7 @@ public static partial class IslandHost
 
     // Always there (owner, 2026-09-28): it does what Ctrl+F does. With Local
     // search loaded, or verified and starting at launch, that is its panel;
-    // without it, file search, which needs no add-on and no index (plan/16
+    // without it, file search, which needs no add-on and no index (docs/design/16
     // "File search"). Only the tip and the name follow the pack.
     private static void UpdatePathSearchButton()
     {

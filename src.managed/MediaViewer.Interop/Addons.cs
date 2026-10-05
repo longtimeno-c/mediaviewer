@@ -18,7 +18,7 @@ public enum MvAddonEvent : uint
     VolumeRemoved = 6,
     VerifyDone = 7,
 
-    // The AI pack (plan/17), 20 and up so the base chrome routes by kind alone.
+    // The AI pack (docs/design/17), 20 and up so the base chrome routes by kind alone.
     AiStatus = 20,
     AiSearchDone = 21,  // id = search id, payload = result count
     AiRoots = 22,
@@ -326,7 +326,7 @@ public static unsafe partial class AddonNative
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     private static partial MvStatus mv_volume_watch(IntPtr session, uint enable);
 
-    // ---- open add-ons (plan/25): add-ons from other makers, data only ----------
+    // ---- open add-ons (docs/design/25): add-ons from other makers, data only ----------
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
@@ -543,7 +543,7 @@ public static unsafe partial class AddonNative
 }
 
 /// <summary>
-/// What the base chrome gives an add-on's chrome (plan/18: "given the
+/// What the base chrome gives an add-on's chrome (docs/design/18: "given the
 /// chrome's IAddonHost"). Lives in this assembly so the add-on's own
 /// AssemblyLoadContext shares the one type.
 /// </summary>
@@ -557,7 +557,7 @@ public interface IAddonHost
     IReadOnlyList<string> MarkedPaths();
     /// <summary>A progress line for the command bar while a job runs; null hides it.</summary>
     void SetStatus(string? text);
-    /// <summary>A system notification when a job finishes (plan/18).</summary>
+    /// <summary>A system notification when a job finishes (docs/design/18).</summary>
     void Notify(string title, string body);
 }
 
@@ -590,7 +590,7 @@ public enum AddonColour
 }
 
 /// <summary>
-/// Milestone H additions to <see cref="IAddonHost"/> (plan/17 "UI and
+/// Milestone H additions to <see cref="IAddonHost"/> (docs/design/17 "UI and
 /// commands"). Every member is UI-thread only unless it says otherwise, and
 /// none of them blocks.
 /// </summary>

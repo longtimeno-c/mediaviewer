@@ -1,27 +1,27 @@
 ; Copyright (C) 2026 longtimeno-c
 ; SPDX-License-Identifier: GPL-3.0-or-later
 ;
-; MediaViewer first-install wizard (PR 8, plan/13 Part 1 "First install").
+; MediaViewer first-install wizard (PR 8, docs/design/13 Part 1 "First install").
 ;
 ; This script is the WIZARD ONLY. It does not lay the payload down itself: it
 ; runs the Velopack bundle silently with --installto, which writes the versioned
-; layout plan/13 requires (stub MediaViewer.exe, Update.exe, current\, packages\)
+; layout docs/design/13 requires (stub MediaViewer.exe, Update.exe, current\, packages\)
 ; so that every LATER update is a directory swap done by Velopack and NEVER
 ; re-opens this wizard.
 ;
 ; Per-user, no UAC:  PrivilegesRequired=lowest and a {localappdata} default.
 ; A per-machine install would need elevation for every update, which is the
-; whole reason plan/13 rejects it. The enterprise MSI is a separate artefact.
+; whole reason docs/design/13 rejects it. The enterprise MSI is a separate artefact.
 ;
-; Pages, in order, and no more (plan/13): Welcome, Licence, Location, Options,
+; Pages, in order, and no more (docs/design/13): Welcome, Licence, Location, Options,
 ; Progress, Finish. The Ready and Start-Menu-folder pages are disabled to keep
 ; that list exact.
 ;
 ; NOT in this wizard, deliberately:
 ;   * silently becoming the default app - Windows does not allow it. The wizard
 ;     registers the associations ([Registry]) and offers, pre-ticked, to open
-;     Settings > Default apps on the Finish page. The in-app ask (plan/09) stays.
-;   * telemetry - the first-run screen inside the app (plan/13 Part 3).
+;     Settings > Default apps on the Finish page. The in-app ask (docs/design/09) stays.
+;   * telemetry - the first-run screen inside the app (docs/design/13 Part 3).
 ;   * "install for all users" - see above.
 ;   * pre-ticked promotional links or telemetry.
 ;
@@ -100,7 +100,7 @@ WelcomeLabel2=This will install [name/ver] - a viewer for a real camera dump, ph
 FinishedHeadingLabel=MediaViewer is installed
 
 [Tasks]
-; The whole Options page. Start Menu on, Desktop off (plan/13).
+; The whole Options page. Start Menu on, Desktop off (docs/design/13).
 Name: "startmenu"; Description: "Create a Start Menu shortcut"; GroupDescription: "Shortcuts:"
 Name: "desktopicon"; Description: "Create a Desktop shortcut"; GroupDescription: "Shortcuts:"; Flags: unchecked
 
@@ -119,7 +119,7 @@ Source: "{#MvPayloadSetup}"; Flags: dontcopy
 [Run]
 ; Finish page. "Launch" is the primary checkbox; GitHub and Licence are the two
 ; secondary links. Launch and the default-app setup are pre-ticked. Nothing opens
-; a browser unless the user asks for it (plan/13: do not auto-open the repo).
+; a browser unless the user asks for it (docs/design/13: do not auto-open the repo).
 Filename: "{app}\MediaViewer.exe"; Description: "Launch {#MvAppName}"; \
   Flags: nowait postinstall skipifsilent
 ; Opens Settings > Default apps on MediaViewer. Pre-ticked: Windows makes the user
@@ -139,7 +139,7 @@ Filename: "{cmd}"; Parameters: "/c exit 0"; \
   Flags: nowait postinstall skipifsilent runhidden; BeforeInstall: NoteDeleteInstaller
 
 [Icons]
-; Both point at the root stub, which plan/13 makes the stable target: it never
+; Both point at the root stub, which docs/design/13 makes the stable target: it never
 ; changes, and it launches the newest version folder that has started. A
 ; shortcut into current\ or app-1.2.3\ would break on the next update. The icon
 ; is the stub's own, set by `vpk pack --icon` from assets/icon/mediaviewer.ico,
@@ -153,12 +153,12 @@ Name: "{userdesktop}\{#MvAppName}"; Filename: "{app}\MediaViewer.exe"; \
   IconFilename: "{app}\MediaViewer.exe"; AppUserModelID: "MediaViewer.Viewer"; Tasks: desktopicon
 
 [Registry]
-; File associations (plan/09 "Windows integration"). REGISTER, never take: Windows
+; File associations (docs/design/09 "Windows integration"). REGISTER, never take: Windows
 ; will not let an app write UserChoice, so nothing here changes what opens a file
 ; today. It puts MediaViewer in "Open with", makes it a candidate in Settings >
 ; Default apps, and the Finish page can open that page. Every key is per-user
 ; (HKCU) and points at the root stub, which survives updates. All of it is
-; removed on uninstall (uninsdeletekey / uninsdeletevalue): plan/10 "an update
+; removed on uninstall (uninsdeletekey / uninsdeletevalue): docs/design/10 "an update
 ; that leaves a zombie association is a failed uninstall".
 Root: HKCU; Subkey: "Software\Classes\MediaViewer.Image"; ValueType: string; ValueData: "MediaViewer Photo"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\Classes\MediaViewer.Image\DefaultIcon"; ValueType: string; ValueData: "{app}\MediaViewer.exe,0"
@@ -166,7 +166,7 @@ Root: HKCU; Subkey: "Software\Classes\MediaViewer.Image\shell\open\command"; Val
 Root: HKCU; Subkey: "Software\Classes\MediaViewer.Video"; ValueType: string; ValueData: "MediaViewer Video"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\Classes\MediaViewer.Video\DefaultIcon"; ValueType: string; ValueData: "{app}\MediaViewer.exe,0"
 Root: HKCU; Subkey: "Software\Classes\MediaViewer.Video\shell\open\command"; ValueType: string; ValueData: """{app}\MediaViewer.exe"" ""%1"""
-; plan/25: an add-on package (.mvaddon) is MediaViewer's own type, so the
+; docs/design/25: an add-on package (.mvaddon) is MediaViewer's own type, so the
 ; extension points at it outright (nothing else opens one), unlike the photo
 ; and video types, which are only offered. Opening one shows Settings' install
 ; sheet, never the viewer.
@@ -179,7 +179,7 @@ Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueT
 Root: HKCU; Subkey: "Software\MediaViewer\Capabilities"; ValueType: string; ValueName: "ApplicationName"; ValueData: "MediaViewer"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\MediaViewer\Capabilities"; ValueType: string; ValueName: "ApplicationDescription"; ValueData: "View photos and video from a camera dump."
 Root: HKCU; Subkey: "Software\RegisteredApplications"; ValueType: string; ValueName: "MediaViewer"; ValueData: "Software\MediaViewer\Capabilities"; Flags: uninsdeletevalue
-; PR 15: the Explorer thumbnail handler (plan/12 2026-09-25). The app copies
+; PR 15: the Explorer thumbnail handler (docs/design/12 2026-09-25). The app copies
 ; it to {app}\shellext\<version> and writes these keys' values on its first
 ; start (shell/shellext_install.cpp); the wizard only creates them, so that
 ; uninstall deletes them. The handler's ShellEx sits under MediaViewer.Image
@@ -276,7 +276,7 @@ Root: HKCU; Subkey: "Software\MediaViewer\Capabilities\FileAssociations"; ValueT
 ; Update.exe behind and the directory cannot be removed. Measured - "dirGone
 ; False" with only the folders listed.
 ;
-; plan/13 asks for the install directory "including leftover app-* folders",
+; docs/design/13 asks for the install directory "including leftover app-* folders",
 ; which is the shape a half-applied update leaves.
 ;
 ; Entries are enumerated rather than globbing {app}\* because the user may have
@@ -357,7 +357,7 @@ begin
 end;
 
 (* What --installto would wipe that is not the app: the add-ons and their
-   models (up to 3 GB, plan/17), the thumbnail cache, settings, crash reports.
+   models (up to 3 GB, docs/design/17), the thumbnail cache, settings, crash reports.
    These live in %LocalAppData%\MediaViewer, which is also the default install
    directory, so a reinstall over the top deleted them - the "install local
    search" offer came back after every reinstall. updater\ is deliberately not
@@ -432,7 +432,7 @@ begin
   RemoveDir(KeepDir);  { only if everything went back }
 end;
 
-(* plan/17 and plan/18: uninstalling the app removes the add-ons, with a
+(* docs/design/17 and docs/design/18: uninstalling the app removes the add-ons, with a
    separate choice about the search index. Each add-on's data\ (the Local
    search index, Import's history) goes only when the user says so; a silent
    uninstall keeps it. *)
@@ -570,7 +570,7 @@ end;
 
    The ProgId, OpenWithProgids and RegisteredApplications keys are [Registry]
    entries with uninsdeletekey / uninsdeletevalue, so Inno removes them with
-   the tree - plan/10: "an update that leaves a zombie association is a failed
+   the tree - docs/design/10: "an update that leaves a zombie association is a failed
    uninstall". *)
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin

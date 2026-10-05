@@ -9,7 +9,7 @@ import AppKit
 import SwiftUI
 import MVChromeBridge
 
-// MVTheme, the chrome's colours and face, is in Theme.swift (plan/25).
+// MVTheme, the chrome's colours and face, is in Theme.swift (docs/design/25).
 
 /// The chrome's one button look: CozetteVector text, no border, a faint wash
 /// on hover. `selected` keeps the pressed wash (a chosen tab or preset);
@@ -78,7 +78,7 @@ private func aboutVersionLine() -> String {
 /// Opens a file bundled in Contents/Resources (macpack.py puts LICENSE.txt,
 /// NOTICE.txt and THIRD-PARTY.md there); if it is not there — a bare `swift
 /// run` — the same file on GitHub. Part of the About flyout, which is the
-/// GPLv3 "Appropriate Legal Notices" (plan/11).
+/// GPLv3 "Appropriate Legal Notices" (docs/design/11).
 private func openLegalFile(_ name: String, github: String) {
   if let url = Bundle.main.resourceURL?.appendingPathComponent(name),
      FileManager.default.fileExists(atPath: url.path) {
@@ -152,7 +152,7 @@ public struct CommandBarView: View {
             FlyoutItem(title: "Frame-time overlay", shortcut: key("Frame-time overlay")) { close(); mv_chrome_menu(19) }
             FlyoutItem(title: "Keyboard shortcuts", shortcut: key("Keyboard shortcuts")) { close(); mv_chrome_menu(16) }
           }
-          // PR 29 (plan/20): the visible way in to every edit, a bar button like
+          // PR 29 (docs/design/20): the visible way in to every edit, a bar button like
           // Settings. Return does the same. Shown only over media.
           if edit.showsBarButton {
             Button(edit.open ? "Done" : edit.title) { edit.toggle() }
@@ -214,7 +214,7 @@ public struct CommandBarView: View {
             .lineLimit(1)
             .accessibilityLabel(notice.text)
         }
-        // What F7 / F8 / Delete will act on (plan/16): the marks if any, else
+        // What F7 / F8 / Delete will act on (docs/design/16): the marks if any, else
         // the current item.
         if store.markedCount > 0 {
           Text("\(store.markedCount) marked")
@@ -241,7 +241,7 @@ public struct CommandBarView: View {
   }
 }
 
-/// PR 20 updates (plan/13), after About like the Windows bar: quiet text while
+/// PR 20 updates (docs/design/13), after About like the Windows bar: quiet text while
 /// Sparkle checks or downloads, then the one button that restarts the app for
 /// an update. Never a modal; quitting normally installs it too.
 private struct UpdateBarItem: View {
@@ -405,7 +405,7 @@ struct PathBar: View {
   }
 }
 
-/// The path row while search results are open (plan/17 "Results are the
+/// The path row while search results are open (docs/design/17 "Results are the
 /// gallery"): what was searched, how many results, and the way back.
 private struct ListTitleBar: View {
   @ObservedObject private var store = FolderStore.shared
@@ -472,7 +472,7 @@ private struct TrailWidthKey: PreferenceKey {
 /// search bar). Always there: it does what ⌘F does. With Local search loaded
 /// or still starting at launch it opens that panel (a click while it starts
 /// opens it once it attaches); without it, file search, which needs no add-on
-/// and no index (plan/16 "File search").
+/// and no index (docs/design/16 "File search").
 private struct PathSearchButton: View {
   @ObservedObject private var search = LocalSearchStore.shared
 

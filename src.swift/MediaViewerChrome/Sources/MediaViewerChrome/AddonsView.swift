@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Settings → Add-ons and the one-time card hint (plan/18 "Add-ons: how Import
+// Settings → Add-ons and the one-time card hint (docs/design/18 "Add-ons: how Import
 // is installed"), the Mac twin of IslandHost.Addons.cs.
 //
 // The download is a plain GET of fixed release-asset URLs: no query, no
@@ -19,7 +19,7 @@ import MVChromeBridge
 /// every add-on shares. Manifest and signature first; the archive only after
 /// the host trusts them; size and SHA-256 before it is opened; the host's full
 /// verify-and-install last. A plain GET of a fixed URL: no query, no cookies,
-/// no identifier (rule 6, plan/17 "The AI pack").
+/// no identifier (rule 6, docs/design/17 "The AI pack").
 struct AddonChannel: Sendable {
   static let base = "https://github.com/longtimeno-c/mediaviewer/releases/latest/download/"
   /// "mediaviewer-addon-import-macos", "mediaviewer-addon-ai-macos", …
@@ -301,7 +301,7 @@ final class AddonStore: ObservableObject {
   /// Settings opening, the hint, or Try again: two small GETs of fixed URLs
   /// (the same channel as updates), then the host verifies the manifest.
   func probe() {
-    // Installed too: Settings offers a newer version (plan/18).
+    // Installed too: Settings offers a newer version (docs/design/18).
     guard !probing else { return }
     probing = true
     offer = .checking
@@ -433,7 +433,7 @@ struct AddonsSection: View {
       // The second add-on: install-only until Core is loaded, then the pack's
       // own management view (LocalSearchView.swift).
       LocalSearchSection().padding(.top, 16)
-      // plan/25: add-ons from other makers, under their own heading.
+      // docs/design/25: add-ons from other makers, under their own heading.
       OpenAddonsSection().padding(.top, 16)
     }
     // Opening Settings asks the channel, whatever the automatic-check switch

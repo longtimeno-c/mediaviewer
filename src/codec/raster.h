@@ -32,7 +32,7 @@ struct raster {
 };
 
 // PR 11: a RAW developed to 16-bit *linear* light, Rec.709 / sRGB primaries —
-// the source of the edit working space (D6; plan/07 "wait for LibRaw's full
+// the source of the edit working space (D6; docs/design/07 "wait for LibRaw's full
 // decode"). RGBA, alpha 65535. Row stride = width * 4 samples.
 struct raster16 {
   std::uint32_t width = 0;

@@ -1,10 +1,10 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 5b — the A/V clock. plan/05: "Budget 2-4 weeks and treat it as a
+// PR 5b — the A/V clock. docs/design/05: "Budget 2-4 weeks and treat it as a
 // first-class subsystem, not glue."
 //
 // Audio is the master. Video presents against it. When there is no audio the
-// master is a monotonic host clock seeded at playback start — plan/05 calls
+// master is a monotonic host clock seeded at playback start — docs/design/05 calls
 // that "QPC", and std::chrono::steady_clock is the D9-clean spelling of it
 // (QueryPerformanceCounter on MSVC, mach_absolute_time on macOS). That is not
 // a deviation from the plan.
@@ -77,11 +77,11 @@ struct clock_stats {
 
   double playback_rate = 1.0;  // 0.25 .. 4.0, owned by 5c, in the clock from day one
 
-  // Fixed constant, reported not tuned. plan/03 has the render loop wait on the
+  // Fixed constant, reported not tuned. docs/design/03 has the render loop wait on the
   // frame-latency waitable BEFORE recording, so an audio_clock sampled there is
   // already ~one refresh stale by the time the pixels are photons. The honest
   // target is audio_clock + one vblank + present-to-photon; we implement one
-  // vblank exactly as plan/05 says and report the residual here. A fixed
+  // vblank exactly as docs/design/05 says and report the residual here. A fixed
   // non-zero p50 err is explained by this, not a defect.
   double present_bias_ms = 0.0;
 

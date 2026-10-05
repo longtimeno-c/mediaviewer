@@ -1,7 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Clip editing: PR 13 (two-path trim) and PR 14 (extract & remux).
-// plan/08-video-editing.md, plan/10 Milestone E, D7.
+// docs/design/08-video-editing.md, docs/design/10 Milestone E, D7.
 //
 // Everything a host offers on a clip is one `request` run by `run()` on a
 // worker (the clip job queue, edit/clip_jobs.h). Hosts only add UI: the op
@@ -22,7 +22,7 @@
 //   frame          The frame shown at `in`, as PNG or JPEG, sRGB.
 //   audio          The first audio track: stream copy, WAV or FLAC.
 //   animation      [in, out) as GIF (two-pass palette) or animated WebP.
-//   keep_ranges    PR 30 (the Video Editor, plan/21): the listed ranges of
+//   keep_ranges    PR 30 (the Video Editor, docs/design/21): the listed ranges of
 //                  the source, in order, in one file. Each end snaps to the
 //                  nearest keyframe and the packets are copied, like
 //                  remove_middle (which is keep_ranges of two). With
@@ -32,7 +32,7 @@
 // Rule 5: the source is opened read-only and never written. Outputs go beside
 // the source (or into `out_dir`) under a name that is free when published;
 // they are written to a hidden `.mvpart` sibling first, so a cancel or a
-// failure leaves no partial output (plan/10 PR 13 verify).
+// failure leaves no partial output (docs/design/10 PR 13 verify).
 // Rule 6: nothing here logs a path.
 //
 // Times are the PLAYER's timeline (player::time_ns): nanoseconds from the
@@ -85,7 +85,7 @@ struct clip_info {
 [[nodiscard]] time_ns keyframe_nearest(const std::vector<time_ns>& kf, time_ns t) noexcept;
 
 // What Path 1 will actually write for a requested [in, out): the A-B loop
-// preview uses this, so the preview is exactly the output (plan/08).
+// preview uses this, so the preview is exactly the output (docs/design/08).
 struct range {
   time_ns in_ns = 0;
   time_ns out_ns = 0;

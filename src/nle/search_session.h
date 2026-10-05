@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// One search, start to finish, over the AI pack's mv.ai.1 table (plan/23):
+// One search, start to finish, over the AI pack's mv.ai.1 table (docs/design/23):
 // what the search agent runs for each request from Final Cut Pro, and what
 // a Windows NLE bridge or the FCPXML export would run the same way. It asks
 // the table the app's chrome asks, so a result here is the in-app result

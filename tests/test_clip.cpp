@@ -1,7 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // PR 13 (two-path trim) and PR 14 (extract & remux), shared core.
-// plan/10 Milestone E verify lines, walked on synthetic clips (clip_fixture.h):
+// docs/design/10 Milestone E verify lines, walked on synthetic clips (clip_fixture.h):
 //   * keyframe trim is proportional in size and snaps to the keyframe grid;
 //   * the re-encode path is frame-accurate;
 //   * the source file is never modified;
@@ -601,7 +601,7 @@ TEST_CASE("the job queue runs, cancels and retries", "[clip][pr13][jobs]") {
 }
 
 
-// plan/10 PR 13 verify: "keyframe trim of a 1 GB MP4 completes in seconds
+// docs/design/10 PR 13 verify: "keyframe trim of a 1 GB MP4 completes in seconds
 // with proportional output size". Hidden ([.]): it writes ~1 GB first. Run it
 // with `mv_clip_tests "[bench]"`; MV_CLIP_BENCH_FILE points it at a real clip.
 TEST_CASE("keyframe trim of a 1 GB MP4 takes seconds", "[.][bench]") {

@@ -40,7 +40,7 @@ struct job_system::impl {
   // Two queues, not one. A view-tied job (the image the user is looking at)
   // must never queue behind the thumbnail sweep of a 2000-file camera dump:
   // FIFO across both meant the first arrow press after opening a folder waited
-  // for every thumb job ahead of it (plan/02, "nothing blocks the view").
+  // for every thumb job ahead of it (docs/design/02, "nothing blocks the view").
   std::deque<job_record> foreground;
   std::deque<job_record> background;
   std::vector<std::thread> workers;

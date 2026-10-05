@@ -97,7 +97,7 @@ using buffer_ref_ptr = std::unique_ptr<AVBufferRef, buffer_ref_deleter>;
 using sws_ptr        = std::unique_ptr<SwsContext, sws_deleter>;
 
 // ---------------------------------------------------------------------------
-// Bounded packet queue. plan/05: "packet queue (bounded, ~2 s)".
+// Bounded packet queue. docs/design/05: "packet queue (bounded, ~2 s)".
 //
 // This is a hand-rolled SPSC ring rather than core/spsc_ring.h for one reason:
 // the demux thread must BLOCK when the queue is full, or it reads a 10-minute
@@ -149,7 +149,7 @@ class packet_queue {
 // ---------------------------------------------------------------------------
 // The presentation ring — textures WE own.
 //
-// plan/05 "Surface ownership": a D3D11VA output surface is a (pool texture,
+// docs/design/05 "Surface ownership": a D3D11VA output surface is a (pool texture,
 // array slice) pair, not a texture of its own. Holding one keeps that slice out
 // of the decoder's pool until the decoder stalls, which reads as a periodic
 // hitch that looks like a decode performance problem and isn't. We copy out and
@@ -168,7 +168,7 @@ class packet_queue {
 // cannot express it.
 // ---------------------------------------------------------------------------
 
-// plan/05: "3-4 is plenty". Four at 4K P010 is ~100 MB of VRAM, which is the
+// docs/design/05: "3-4 is plenty". Four at 4K P010 is ~100 MB of VRAM, which is the
 // right trade against a decoder stall.
 #if defined(MV_DARWIN)
 // The Metal host holds a presented frame for two more presents before releasing
@@ -258,7 +258,7 @@ class frame_ring {
 // ---------------------------------------------------------------------------
 
 // Builds the FFmpeg D3D11VA hardware device context from OUR ID3D11Device
-// (plan/05: "not a device FFmpeg makes"). The device is AddRef'd for the
+// (docs/design/05: "not a device FFmpeg makes"). The device is AddRef'd for the
 // lifetime of the returned ref.
 [[nodiscard]] result<AVBufferRef*> create_hw_device_ctx(gpu_device_ptr device) noexcept;
 
@@ -278,7 +278,7 @@ class frame_ring {
 // the copy ahead of the decoder's next write to that slice. Move this copy to a
 // private or deferred context and that guarantee silently disappears — you get
 // intermittent wrong-frame corruption that only shows under DPB pressure, i.e.
-// on 4K clips and never in a short test. See plan/12, 2026-09-07.
+// on 4K clips and never in a short test. See docs/design/12, 2026-09-07.
 //
 // The lock taken is the AVHWDeviceContext's own (hwctx->lock), not
 // ID3D10Multithread directly: it defaults to the same lock but stays correct if
@@ -300,7 +300,7 @@ class frame_ring {
 #endif
 
 // Software-decode fallback. Creates a NEW texture from CPU planes with
-// D3D11_SUBRESOURCE_DATA and no device context at all — which is plan/02's
+// D3D11_SUBRESOURCE_DATA and no device context at all — which is docs/design/02's
 // blessed worker-thread pattern, and deliberately does not extend the
 // immediate-context exception above to a path that does not need it.
 [[nodiscard]] status create_texture_from_planes(gpu_device_ptr device, std::uint32_t width,
@@ -343,7 +343,7 @@ struct video_pipeline {
   gfx::colour_desc  colour{};
 
   // Bumped by flush()/seek. Frames decoded at an older value are discarded at
-  // acquire and never presented (plan/02 generation counters).
+  // acquire and never presented (docs/design/02 generation counters).
   std::atomic<std::uint32_t> generation{1};
   std::atomic<bool>          stopping{false};
   std::atomic<bool>          eof{false};
@@ -362,7 +362,7 @@ struct video_pipeline {
   //      presentation clock, which is what we want; the decoder keeps its whole
   //      DPB while we wait, so nothing is starved.
   //  surface_waits : the decode thread was HOLDING a decoded frame and had
-  //      nowhere to copy it. THIS is the plan/05 hazard — a held frame is a held
+  //      nowhere to copy it. THIS is the docs/design/05 hazard — a held frame is a held
   //      DPB slice. It should be zero by construction, because a ring slot is
   //      reserved BEFORE avcodec_receive_frame is called.
   std::atomic<std::uint64_t> frames_decoded{0};
@@ -375,7 +375,7 @@ struct video_pipeline {
   // format. 0 = nothing yet; otherwise a decoder_kind. Asking for hardware and
   // getting it are different things: libdav1d accepts a hw_device_ctx and
   // ignores it, which would otherwise report as D3D11VA while decoding on the
-  // CPU — exactly the silent fallback plan/05 forbids.
+  // CPU — exactly the silent fallback docs/design/05 forbids.
   std::atomic<std::uint8_t> observed_decoder{0};
 
   std::thread demux_thread;

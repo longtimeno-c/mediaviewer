@@ -45,7 +45,7 @@ TEST_CASE("probe is by magic bytes, never by length of a guess", "[codec][probe]
                               'R', 'A', 'W', 0};
   REQUIRE(probe(raf) == format_family::raw);
 
-  // PR 6 brought WebP and GIF forward from PR 7 (plan/12 2026-09-13).
+  // PR 6 brought WebP and GIF forward from PR 7 (docs/design/12 2026-09-13).
   const std::uint8_t webp[] = {'R', 'I', 'F', 'F', 0, 0, 0, 0, 'W', 'E', 'B', 'P'};
   REQUIRE(probe(webp) == format_family::webp);
   const std::uint8_t riff_short[] = {'R', 'I', 'F', 'F', 0, 0, 0, 0, 'W', 'E', 'B'};

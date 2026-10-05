@@ -512,7 +512,7 @@ copy_profile copy_profile_for(std::string_view src_utf8, std::string_view dest_u
 copy_profile batch_copy_profile(std::string_view src_dir_utf8, std::string_view dest_dir_utf8) {
   copy_profile p = copy_profile_for(src_dir_utf8, dest_dir_utf8);
   if (p.read_depth == 1 && p.write_depth == 1) return p;  // no share at either end
-  // A card is read one request at a time, one file at a time (plan/18).
+  // A card is read one request at a time, one file at a time (docs/design/18).
   const auto vol = volume_of(src_dir_utf8);
   if (vol && vol->removable) {
     p.read_depth = 1;

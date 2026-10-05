@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Open add-ons (plan/25; PR 55 verify: a package from a fresh key installs,
+// Open add-ons (docs/design/25; PR 55 verify: a package from a fresh key installs,
 // and every way of getting it wrong is refused with its reason).
 #include "catch_compat.h"
 

@@ -1,11 +1,11 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 9 (plan/06, plan/16 `I`): the metadata pane. Summary card, the searchable full
+// PR 9 (docs/design/06, docs/design/16 `I`): the metadata pane. Summary card, the searchable full
 // tag tree, and -- for a clip -- the per-stream inspector. A field the file does
 // not have shows as a dash; a file with no metadata at all is an empty pane, never
 // an error.
 //
-// PR 29 (owner, 2026-09-26; plan/12): every tag is editable here, not just a
+// PR 29 (owner, 2026-09-26; docs/design/12): every tag is editable here, not just a
 // rating and a comment. The date taken has its own editor (it moves every
 // capture-time tag together), location can be removed in one go, and each tag
 // in the tree can be edited or removed where the file allows it. A lock marks

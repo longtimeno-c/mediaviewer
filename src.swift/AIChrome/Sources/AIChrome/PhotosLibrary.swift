@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The Photos library in the chrome (issue #72, plan/17 "Photos library
+// The Photos library in the chrome (issue #72, docs/design/17 "Photos library
 // source"): asking for access (only ever from a click), result tiles from
 // PhotoKit's own thumbnail cache, and opening a result in the viewer.
 //
@@ -8,7 +8,7 @@
 // asks of PhotoKit. Every request here has network access off: nothing is
 // downloaded from iCloud, and nothing in the library is ever changed (rule 5).
 //
-// Opening a result is the host's (plan/26, shell/photos_items_mac.h): a
+// Opening a result is the host's (docs/design/26, shell/photos_items_mac.h): a
 // result's path is its library key, the host lists it as a virtual item and
 // resolves it to the file Photos keeps (read-only), or to a preview whose
 // original is fetched after a short stay. The "added" flag below is how the

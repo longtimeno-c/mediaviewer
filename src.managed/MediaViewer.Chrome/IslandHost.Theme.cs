@@ -38,7 +38,7 @@ public static partial class IslandHost
         var accessibility = new AccessibilitySettings();
         _themeSettings = settings;
         _accessibilitySettings = accessibility;
-        // plan/25: the theme in use, from its cached tokens, before the first
+        // docs/design/25: the theme in use, from its cached tokens, before the first
         // brush exists; its add-on is verified on a worker afterwards.
         LoadCachedTheme();
         // Brushes first: every Brush(role) lookup depends on them, so a failed
@@ -81,7 +81,7 @@ public static partial class IslandHost
         Color foreground = _themeSettings.GetColorValue(UIColorType.Foreground);
         bool dark = foreground.R * 299 + foreground.G * 587 + foreground.B * 114 > 128000;
         bool contrast = _accessibilitySettings?.HighContrast == true;
-        // plan/25: a theme from an add-on, unless Windows is in a contrast
+        // docs/design/25: a theme from an add-on, unless Windows is in a contrast
         // theme, which outranks it. With one palette the chrome keeps that
         // appearance, so Windows' own controls match it.
         ThemePalette? themed = contrast ? null : ThemedPalette(ref dark);

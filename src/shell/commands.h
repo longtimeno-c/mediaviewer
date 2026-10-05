@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The command table: host keys, modes, command ids, and the default map.
 //
-// plan/16-commands.md: one router, one table. Dispatch is an array index, not a
+// docs/design/16-commands.md: one router, one table. Dispatch is an array index, not a
 // string lookup; the palette and `?` filter this same static table in memory.
 //
 // Nothing here includes <windows.h>. Win32 virtual keys are translated to
@@ -38,7 +38,7 @@ enum class key : std::uint16_t {
   up,
   down,
   f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12,
-  // PR 12 (plan/16 Rate): the numeric keypad's digits, apart from the number
+  // PR 12 (docs/design/16 Rate): the numeric keypad's digits, apart from the number
   // row, which stays zoom. Appended so every value above keeps its number.
   numpad0, numpad1, numpad2, numpad3, numpad4, numpad5, numpad6, numpad7, numpad8, numpad9,
   count
@@ -79,11 +79,11 @@ enum mod : std::uint8_t {
 
 inline constexpr int kModCombos = 8;
 
-// plan/16 "Modes". Derived from state at keydown (key_router.h), never kept on
+// docs/design/16 "Modes". Derived from state at keydown (key_router.h), never kept on
 // a stack that can go stale when navigation lands somewhere else. Crop and the
 // panes arrive with their PRs. `island` is the filmstrip or the gallery, where
 // in-pane traversal keys fall through to XAML and letters are typeahead. The
-// command bar and the transport keep the mode underneath (plan/12 2026-09-13).
+// command bar and the transport keep the mode underneath (docs/design/12 2026-09-13).
 enum class mode : std::uint8_t {
   browse = 0,
   video = 1,      // current item is a clip or an animation
@@ -149,7 +149,7 @@ enum class command_id : std::uint16_t {
   // 15 set_settings, 16 folder_ready: notifications
   toggle_filmstrip = 17,
   // 18 video_active, 19 set_rate, 20 focus_changed: notifications
-  back = 21,             // Esc walks out (plan/16)
+  back = 21,             // Esc walks out (docs/design/16)
   first,
   last,
   skip_back,
@@ -186,7 +186,7 @@ enum class command_id : std::uint16_t {
   pan_down,   // ↓ when zoomed, Shift+↓
   pan_left,   // Shift+←
   pan_right,  // Shift+→
-  loupe_nudge_left,   // arrows while Z is held (plan/16 "keyboard-nudgeable")
+  loupe_nudge_left,   // arrows while Z is held (docs/design/16 "keyboard-nudgeable")
   loupe_nudge_right,
   loupe_nudge_up,
   loupe_nudge_down,
@@ -219,18 +219,18 @@ enum class command_id : std::uint16_t {
   open_settings,  // Ctrl+, and the Settings button: the settings screen
   gallery_larger,
   gallery_smaller,
-  // PR 7 pairs (plan/04, plan/16)
+  // PR 7 pairs (docs/design/04, docs/design/16)
   play_motion,  // `;`: play a Live Photo's motion once, back to the still
   open_raw,     // show the RAW half of a RAW+JPEG stop (unbound by default)
   open_jpeg,    // back to the JPEG / HEIC half (unbound by default)
-  mute,         // Shift+M (plan/16 Video): toggle the clip's audio
+  mute,         // Shift+M (docs/design/16 Video): toggle the clip's audio
   game_toggle_3d,  // 3 in the empty-window runner only
-  // PR 9 (plan/16 View + Overlays)
+  // PR 9 (docs/design/16 View + Overlays)
   metadata_pane,  // `I`: summary card, full tree, clip stream inspector
   af_points,      // Shift+O: AF-point quads from the maker notes already read
   eyedropper,     // Shift+I: one-pixel readout under the cursor
   copy_clipboard, // Ctrl/Cmd+C: the eyedropper's readout if it is on, else the marked / current file(s)
-  // PR 10 (plan/16 View + Crop mode). Appended; every id above keeps its value.
+  // PR 10 (docs/design/16 View + Crop mode). Appended; every id above keeps its value.
   rotate_ccw,       // `[`: −90°, a lossless file write on a JPEG
   rotate_cw,        // `]`: +90°
   flip_horizontal,  // H
@@ -253,7 +253,7 @@ enum class command_id : std::uint16_t {
   folder_up,        // Ctrl/Cmd+Up, open the enclosing folder. Appended so the ids above keep their values.
   folder_prev,      // Ctrl/Cmd+Left, open the previous sibling folder
   folder_next,      // Ctrl/Cmd+Right, open the next sibling folder
-  // PR 11 (plan/16 Pane: adjust). Appended; every id above keeps its value.
+  // PR 11 (docs/design/16 Pane: adjust). Appended; every id above keeps its value.
   adjust_pane,         // Shift+A: show / hide the adjust pane, focus its first slider
   // Island-only, keyless: the pane's sliders post their value as the command's
   // float argument, one id per parameter (edit::adjust_param order).
@@ -263,11 +263,11 @@ enum class command_id : std::uint16_t {
   adjust_temperature,
   adjust_tint,
   adjust_reset,        // the pane's Reset button: every slider back to 0, one undo step
-  // Milestone G (plan/18 "Commands"). Appended. Listed, routed and shown only
+  // Milestone G (docs/design/18 "Commands"). Appended. Listed, routed and shown only
   // while the Import add-on is installed (set_addon_commands_available).
   open_import,      // Ctrl+Shift+I: the Import window
   import_now,       // Ctrl+Shift+F7: import the marked / current file(s), last preset
-  // PR 12 (plan/16 Rate). Appended; every id above keeps its value. Numpad
+  // PR 12 (docs/design/16 Rate). Appended; every id above keeps its value. Numpad
   // 0-5 or Ctrl+Shift+0-5 (Cmd+Shift on a Mac, which has no keypad on a laptop).
   // 0 clears the rating. Written to the file, or its sidecar, on the I/O pool.
   set_rating_0,
@@ -277,7 +277,7 @@ enum class command_id : std::uint16_t {
   set_rating_4,
   set_rating_5,
   edit_comment,  // Ctrl+I: show the metadata pane and put the keyboard in its comment field
-  // PR 13 (plan/16 Video and trim, plan/08). Appended; every id above keeps its value.
+  // PR 13 (docs/design/16 Video and trim, docs/design/08). Appended; every id above keeps its value.
   trim_mode,           // Ctrl+T on a clip: arm / disarm trim
   trim_in,             // `[` in trim: in marker at the playhead
   trim_out,            // `]` in trim: out marker at the playhead
@@ -285,18 +285,18 @@ enum class command_id : std::uint16_t {
   trim_preview,        // P in trim: A-B loop over exactly what Path 1 will write
   trim_keyframe,       // Enter in trim: Path 1, keyframe stream copy
   trim_reencode,       // Shift+Enter in trim: Path 2, frame-accurate re-encode (slower)
-  keyframe_prev,       // Ctrl+Left in trim: previous keyframe (plan/16)
+  keyframe_prev,       // Ctrl+Left in trim: previous keyframe (docs/design/16)
   keyframe_next,       // Ctrl+Right in trim: next keyframe
-  jobs_pane,           // Ctrl+J: the job queue panel (plan/08: keyboard-reachable)
-  // PR 14 (plan/08 "Other operations"). Appended.
+  jobs_pane,           // Ctrl+J: the job queue panel (docs/design/08: keyboard-reachable)
+  // PR 14 (docs/design/08 "Other operations"). Appended.
   clip_tools,          // Ctrl+S on a clip: rotate / split / remux / frame / audio / GIF flyout
   clip_split,          // Ctrl+B on a clip: split at the playhead's nearest keyframe
   trim_remove_middle,  // Ctrl+X in trim: a copy without [in, out)
-  // PR 15 (plan/16 View, plan/10 "OS integration"). Appended.
+  // PR 15 (docs/design/16 View, docs/design/10 "OS integration"). Appended.
   copy_path,           // Ctrl/Cmd+Shift+C: the marked / current path(s) as text
   copy_flattened,      // Ctrl+Alt+C / Cmd+Opt+C: the current still, edits baked, as a PNG
   share,               // Ctrl/Cmd+Shift+S: the OS share sheet with the marked / current file(s)
-  // PR 29 (plan/20 the Edit workspace). Appended; every id above keeps its value.
+  // PR 29 (docs/design/20 the Edit workspace). Appended; every id above keeps its value.
   edit_workspace,         // Enter (Return) on a still or a clip: open / close the Edit workspace
   crop_aspect_cycle,      // A in crop: the next aspect preset (Free, Original, 1:1, 4:3, 3:2, 16:9, 5:4)
   crop_aspect_swap,       // X in crop: portrait <-> landscape for the locked preset
@@ -306,7 +306,7 @@ enum class command_id : std::uint16_t {
   // + 16 for portrait) and its straighten slider (argument = degrees).
   crop_aspect_set,
   crop_straighten_set,
-  // Milestone H, PR 22 (plan/17 "UI and commands", plan/16). Appended. Listed,
+  // Milestone H, PR 22 (docs/design/17 "UI and commands", docs/design/16). Appended. Listed,
   // routed and shown only while the AI pack is loaded.
   search_open,         // Ctrl+F: the search box, keyboard-focused
   search_similar,      // Ctrl+Shift+F: photos and moments like the one on screen
@@ -328,15 +328,15 @@ inline constexpr int kCommandCount = static_cast<int>(command_id::count);
 }
 
 // Ids that once were commands and are kept as holes so later ids keep their
-// wire values. 76 is the dropped Ctrl+K palette (plan/12 2026-09-13): no
+// wire values. 76 is the dropped Ctrl+K palette (docs/design/12 2026-09-13): no
 // command_info, no binding, never dispatched.
 [[nodiscard]] constexpr bool is_retired_command(int id) noexcept {
   return id == static_cast<int>(command_id::palette);
 }
 
 // A row whose key is key::none is listed (Settings can give it one) but not
-// routed. Only commands plan/16 names without a key ship that way (PR 7: Open
-// RAW / Open JPEG, which plan/04 put in the dropped palette).
+// routed. Only commands docs/design/16 names without a key ship that way (PR 7: Open
+// RAW / Open JPEG, which docs/design/04 put in the dropped palette).
 struct binding {
   key k = key::none;
   std::uint8_t mods = mod_none;
@@ -369,7 +369,7 @@ void reset_live_bindings() noexcept;
 // Bound commands whose effect has not landed yet. Empty before PR 6 ships.
 [[nodiscard]] std::span<const command_id> pending_commands() noexcept;
 
-// Add-on commands (plan/18: "They exist only while Import is installed").
+// Add-on commands (docs/design/18: "They exist only while Import is installed").
 // With the add-on absent, describe_commands() does not list them and the host
 // does not run them, so the key falls through as if unbound.
 // Milestone H: one flag per add-on family, so Import's keys and the AI pack's
@@ -387,7 +387,7 @@ void set_addon_commands_available(bool available) noexcept;
 // "Ctrl+Shift+O", "Space", "F3", "?" — what `?` and the palette show.
 [[nodiscard]] std::string key_label(key k, std::uint8_t mods);
 
-// The table for the chrome (plan/16: the palette and `?` filter the same
+// The table for the chrome (docs/design/16: the palette and `?` filter the same
 // static table). One UTF-8 line per binding: "id\tmodes\tname\tkeys\n", where
 // modes is the mode_mask the binding is live in and keys is its label
 // ("hold Z" for a momentary key, "hold Q" for a tap/hold's hold command).

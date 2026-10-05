@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// shell/folder_model_mac (plan/26): a result list may hold VIRTUAL items (a
+// shell/folder_model_mac (docs/design/26): a result list may hold VIRTUAL items (a
 // Photos library asset, "photos:<id>") with no file: listed as given, their
 // tiles from the virtual thumb provider under the same cache key as a file's.
 // The real provider is PhotoKit (shell/photos_items_mac.mm); here it is a

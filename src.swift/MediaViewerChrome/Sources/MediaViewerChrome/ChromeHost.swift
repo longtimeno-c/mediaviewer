@@ -6,7 +6,7 @@
 // main_mac.mm imports to call this — Swift owns the SwiftUI/NSHostingView
 // bridging, C++ only ever sees an NSView*, the same "host owns its own
 // widget toolkit, core stays out of it" boundary the Windows XAML islands
-// use (plan/14-abi.md's shape, D1).
+// use (docs/design/14-abi.md's shape, D1).
 import AppKit
 import SwiftUI
 
@@ -20,7 +20,7 @@ public final class MVChromeHost: NSObject {
   // 2026-09-19). Empty options = the hosting view takes whatever frame it is
   // given.
   private static func host<V: View>(_ root: V) -> NSView {
-    // plan/25: every root is rebuilt when the theme changes.
+    // docs/design/25: every root is rebuilt when the theme changes.
     let hosting = NSHostingView(rootView: ThemedRoot(content: root))
     hosting.sizingOptions = []
     hosting.translatesAutoresizingMaskIntoConstraints = false
@@ -31,9 +31,9 @@ public final class MVChromeHost: NSObject {
     host(CommandBarView())
   }
 
-  // PR 18 filmstrip/gallery follow-up (plan/12 2026-09-17). Same hosting
+  // PR 18 filmstrip/gallery follow-up (docs/design/12 2026-09-17). Same hosting
   // shape as makeCommandBarView above -- main_mac.mm only ever sees an
-  // NSView*, never SwiftUI/NSHostingView types (plan/14-abi.md's boundary,
+  // NSView*, never SwiftUI/NSHostingView types (docs/design/14-abi.md's boundary,
   // scoped to this lab).
   @objc public static func makeFilmstripView() -> NSView {
     host(FilmstripView())
@@ -60,7 +60,7 @@ public final class MVChromeHost: NSObject {
     host(SettingsView())
   }
 
-  /// plan/25: an add-on package handed to the app (a drop, Open With, the
+  /// docs/design/25: an add-on package handed to the app (a drop, Open With, the
   /// command line). The host has opened Settings; this shows what the package
   /// is and asks. Nothing is installed without that answer.
   @MainActor @objc public static func offerAddonPackage(_ path: String) {
@@ -123,7 +123,7 @@ public final class MVChromeHost: NSObject {
     host(ClipToolsView())
   }
 
-  /// PR 29 (plan/20): the Edit workspace's strip and its Crop / Trim pane.
+  /// PR 29 (docs/design/20): the Edit workspace's strip and its Crop / Trim pane.
   @objc public static func makeEditStripView() -> NSView {
     host(EditStripView())
   }
@@ -132,7 +132,7 @@ public final class MVChromeHost: NSObject {
     host(EditPaneView())
   }
 
-  /// PR 30 (plan/21): the Video Editor window's timeline, under its preview.
+  /// PR 30 (docs/design/21): the Video Editor window's timeline, under its preview.
   @objc public static func makeVideoEditorView() -> NSView {
     host(VideoEditorView())
   }
@@ -151,7 +151,7 @@ public final class MVChromeHost: NSObject {
     _ = empty[Int.random(in: 1...2)]
   }
 
-  /// File search (plan/16 "File search"): the field above the grid appears and
+  /// File search (docs/design/16 "File search"): the field above the grid appears and
   /// takes the keyboard with its text selected. main_mac.mm has already shown
   /// the gallery and made its hosting view first responder.
   @objc public static func openFileSearch() {
@@ -176,7 +176,7 @@ public final class MVChromeHost: NSObject {
     }
   }
 
-  /// Gallery `+` / `-` (plan/16): called from main_mac.mm's keyDown: on the
+  /// Gallery `+` / `-` (docs/design/16): called from main_mac.mm's keyDown: on the
   /// main thread; `direction` is +1 or -1.
   @objc public static func adjustGalleryCellSize(_ direction: Int) {
     MainActor.assumeIsolated { FolderStore.shared.adjustGalleryCellSize(direction: direction) }

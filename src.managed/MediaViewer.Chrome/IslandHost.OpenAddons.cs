@@ -12,7 +12,7 @@ using Windows.Storage.Pickers;
 namespace MediaViewer.Chrome;
 
 /// <summary>
-/// Settings → Add-ons → From others (plan/25): add-ons from other makers, one
+/// Settings → Add-ons → From others (docs/design/25): add-ons from other makers, one
 /// <c>.mvaddon</c> file each, installed from a file or a link. The Windows
 /// twin of OpenAddons.swift.
 ///
@@ -315,7 +315,7 @@ public static partial class IslandHost
         return entry;
     }
 
-    // What a package is, and the question (plan/25 "Identity and trust"). Every
+    // What a package is, and the question (docs/design/25 "Identity and trust"). Every
     // line but the description comes from the core. Cancel is first and takes
     // the focus: Enter does not install.
     private static FrameworkElement BuildOpenSheet(OpenOffer offer)

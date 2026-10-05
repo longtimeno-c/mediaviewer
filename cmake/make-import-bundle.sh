@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Wraps an add-on chrome's SwiftPM dynamic library into a loadable bundle
-# (plan/18 "Mac chrome": loaded with NSBundle, reached through its principal
-# class). Milestone G's Import.bundle, and Milestone H's AI.bundle (plan/17).
+# (docs/design/18 "Mac chrome": loaded with NSBundle, reached through its principal
+# class). Milestone G's Import.bundle, and Milestone H's AI.bundle (docs/design/17).
 #
 # Usage: make-import-bundle.sh <swift build path> <bundle path> <version>
 #            [<product> <executable> <bundle identifier> <principal class>]

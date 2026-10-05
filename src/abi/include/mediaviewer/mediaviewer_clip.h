@@ -3,8 +3,8 @@
  *
  * Clip editing (PR 13 two-path trim, PR 14 extract & remux): the keyframe
  * index for the scrub-bar grid, and the clip job queue the Jobs pane shows.
- * plan/08-video-editing.md, plan/14-abi.md. ABI 0.10; 0.13 adds KEEP_RANGES
- * (plan/21, the Video Editor).
+ * docs/design/08-video-editing.md, docs/design/14-abi.md. ABI 0.10; 0.13 adds KEEP_RANGES
+ * (docs/design/21, the Video Editor).
  *
  * Same rules as mediaviewer.h: opaque session, POD structs with explicit
  * padding, status codes, UTF-8 caller buffers, nothing retained. No pixels.

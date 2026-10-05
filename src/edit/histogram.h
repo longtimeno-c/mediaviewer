@@ -1,7 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 11 — the adjust pane's histogram and clipping readout (plan/07:
-// "Histogram + clipping warnings", plan/16: "11, on the adjust pane").
+// PR 11 — the adjust pane's histogram and clipping readout (docs/design/07:
+// "Histogram + clipping warnings", docs/design/16: "11, on the adjust pane").
 //
 // A reduction over the preview working image (image/linear.h, ~3072 px on the
 // long edge) *after* the colour kernel and the display encode, so it shows

@@ -3,7 +3,7 @@
 #
 # MediaViewer — native core + present lab.
 #
-# plan/09-build-and-test.md: CMake >= 3.28, vcpkg manifest mode, MSVC 2022
+# docs/design/09-build-and-test.md: CMake >= 3.28, vcpkg manifest mode, MSVC 2022
 # primary with clang-cl in CI as a second opinion, /W4 /WX /permissive- /GR-
 # /utf-8, and an ASan configuration.
 #
@@ -53,7 +53,7 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 option(MV_BUILD_TESTS "Build the core test suite" ON)
-option(MV_ASAN "Build with AddressSanitizer (plan/09 CI configuration)" OFF)
+option(MV_ASAN "Build with AddressSanitizer (docs/design/09 CI configuration)" OFF)
 
 # PR 16: Apple Silicon present lab. Windows targets are not defined on Darwin.
 if(APPLE)
@@ -63,7 +63,7 @@ endif()
 if(NOT WIN32)
   message(FATAL_ERROR
     "MediaViewer v1 is a Windows application; macOS is Milestone F "
-    "(plan/15-platforms.md).")
+    "(docs/design/15-platforms.md).")
 endif()
 
 # ---------------------------------------------------------------------------
@@ -91,7 +91,7 @@ if(MSVC)
     _UNICODE
     _CRT_SECURE_NO_WARNINGS
   )
-  # clang-cl in CI catches different bugs than MSVC (plan/09). It also
+  # clang-cl in CI catches different bugs than MSVC (docs/design/09). It also
   # diagnoses a few MSVC-isms that are not ours to fix.
   if(CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC" AND
      CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
@@ -170,7 +170,7 @@ endfunction()
 # ---------------------------------------------------------------------------
 # mv_core — arena, job system, result<T>, logging, ETW
 #
-# Dependencies point downward only (plan/02):
+# Dependencies point downward only (docs/design/02):
 #   shell -> abi -> {canvas, edit, player, image, meta} -> {codec, gfx, io} -> core
 # No back-edges, and no native module may depend on shell.
 # tools/check-module-graph.ps1 enforces it in CI.
@@ -238,7 +238,7 @@ add_library(mv_io STATIC
   src/io/pairing.h
   src/io/sort_order.cpp
   src/io/sort_order.h
-  # Milestone G (plan/18): verified copy (also F8 across volumes), the file
+  # Milestone G (docs/design/18): verified copy (also F8 across volumes), the file
   # and volume ports Import reaches through the add-on host table.
   src/io/content_hash.cpp
   src/io/content_hash.h
@@ -253,23 +253,23 @@ add_library(mv_io STATIC
   src/io/volume_win.cpp
 )
 # ole32 + uuid: IFileOperation for the Recycle Bin (PR 6).
-# setupapi + cfgmgr32: the volume port's eject (plan/18).
-# blake3: CC0-1.0 (plan/18, THIRD-PARTY.md).
+# setupapi + cfgmgr32: the volume port's eject (docs/design/18).
+# blake3: CC0-1.0 (docs/design/18, THIRD-PARTY.md).
 find_package(blake3 CONFIG REQUIRED)
 target_link_libraries(mv_io PUBLIC mv_core
   PRIVATE shell32 ole32 uuid setupapi cfgmgr32 BLAKE3::blake3)
 add_library(mv::io ALIAS mv_io)
 
 # ---------------------------------------------------------------------------
-# mv_codec — JPEG / PNG / BMP, magic-byte probe (plan/04)
+# mv_codec — JPEG / PNG / BMP, magic-byte probe (docs/design/04)
 # ---------------------------------------------------------------------------
 find_package(JPEG REQUIRED)
-# PR 6: animated GIF / WebP (plan/12 2026-09-13, resequenced from PR 7).
+# PR 6: animated GIF / WebP (docs/design/12 2026-09-13, resequenced from PR 7).
 # giflib is MIT, libwebp BSD-3: both permissive, dynamic in the x64-windows triplet.
 find_package(GIF REQUIRED)
 find_package(WebP CONFIG REQUIRED)
 # PR 7: camera-dump formats. libheif default-features are OFF in vcpkg.json
-# because the port's `hevc` feature is x265 encode (plan/11). libde265 is a
+# because the port's `hevc` feature is x265 encode (docs/design/11). libde265 is a
 # hard dependency of the port, so HEIC decode does not pull a software HEVC
 # encoder. LibRaw uses the thread-safe raw_r target — decode is on the pool.
 find_package(TIFF REQUIRED)
@@ -429,11 +429,11 @@ target_link_libraries(mv_player
 add_library(mv::player ALIAS mv_player)
 
 # ---------------------------------------------------------------------------
-# mv_meta -- PR 9 metadata read model (plan/06). Exiv2 (GPL-2.0, DLL only) for
+# mv_meta -- PR 9 metadata read model (docs/design/06). Exiv2 (GPL-2.0, DLL only) for
 # EXIF / IPTC / XMP and maker notes, libavformat for container and per-stream
 # facts. Depends downward only: meta -> {codec, io, core}.
 #
-# Built and tested on Windows (plan/12 2026-09-24, /W4 /WX clean). Shares every
+# Built and tested on Windows (docs/design/12 2026-09-24, /W4 /WX clean). Shares every
 # source with the macOS twin. The vcpkg exiv2 port needs its `xmp`, `bmff` and
 # `png` features (without `xmp` a PNG's XMP is silently empty).
 # ---------------------------------------------------------------------------
@@ -463,7 +463,7 @@ target_link_libraries(mv_meta
 add_library(mv::meta ALIAS mv_meta)
 
 # ---------------------------------------------------------------------------
-# mv_edit -- PR 10 (plan/07): the EditStack and its geometry ops, the
+# mv_edit -- PR 10 (docs/design/07): the EditStack and its geometry ops, the
 # full-resolution CPU evaluation for export, lossless JPEG rotate / flip /
 # MCU-aligned crop on libjpeg's coefficient API, and the JPEG / PNG export
 # encoders. Pure C++ over codec + io + core: no GPU, no platform header (D9);
@@ -497,7 +497,7 @@ target_link_libraries(mv_edit
 add_library(mv::edit ALIAS mv_edit)
 
 # ---------------------------------------------------------------------------
-# mv_clip -- PR 13 / 14 (plan/08): two-path trim, extract & remux, and the
+# mv_clip -- PR 13 / 14 (docs/design/08): two-path trim, extract & remux, and the
 # clip job queue. Module `edit` in the dependency graph (src/edit/clip*), a
 # separate library only because it links FFmpeg and mv_edit does not. The
 # encode port's Windows half lists the hardware encoders (hwencode_win.cpp);
@@ -532,7 +532,7 @@ target_link_libraries(mv_clip
 add_library(mv::clip ALIAS mv_clip)
 
 # ---------------------------------------------------------------------------
-# MediaViewerThumbs.dll -- PR 15's Explorer thumbnail handler (plan/09
+# MediaViewerThumbs.dll -- PR 15's Explorer thumbnail handler (docs/design/09
 # "Windows integration"). Explorer's host, beside the app's: it reaches the
 # core through image/ and codec/ only, shares no state with the app, and is
 # loaded by an isolated surrogate, never by Explorer itself. The app copies it
@@ -556,7 +556,7 @@ file(GENERATE
   CONTENT "$<TARGET_FILE_NAME:MediaViewerThumbs>\n$<JOIN:$<PATH:GET_FILENAME,$<TARGET_RUNTIME_DLLS:MediaViewerThumbs>>,\n>\n")
 
 # MediaViewerClipJob.exe -- PR 13 / 14's encode and decode jobs, out of process
-# (plan/08 "Execution & UX"; plan/12 2026-09-25). Beside MediaViewer.exe; no
+# (docs/design/08 "Execution & UX"; docs/design/12 2026-09-25). Beside MediaViewer.exe; no
 # mv_ prefix, so tools/package/build-release.ps1 ships it in the payload.
 add_executable(MediaViewerClipJob tools/clipjob/main.cpp)
 target_link_libraries(MediaViewerClipJob PRIVATE mv_clip mv_project_options)
@@ -584,18 +584,18 @@ target_link_libraries(mv_addon_media PUBLIC mv_core mv_io PRIVATE mv_image mv_cl
 # app) and its WinUI chrome. cmake/ai.cmake.
 include("${CMAKE_SOURCE_DIR}/cmake/ai.cmake")
 include("${CMAKE_SOURCE_DIR}/cmake/ai-chrome-win.cmake" OPTIONAL)
-# copybench: the copy engine headless, base vs new (plan/12 2026-10-01).
+# copybench: the copy engine headless, base vs new (docs/design/12 2026-10-01).
 add_executable(copybench tools/copybench/main.cpp)
 target_link_libraries(copybench PRIVATE mv_io mv_core mv_project_options)
 target_include_directories(copybench PRIVATE src)
 
-# ai-bench: the AI pack headless, for plan/17's timings (tools/ai-bench).
+# ai-bench: the AI pack headless, for docs/design/17's timings (tools/ai-bench).
 add_executable(ai-bench tools/ai-bench/main.cpp)
 target_link_libraries(ai-bench PRIVATE mv_addon mv_addon_media mv_io mv_core mv_project_options)
 target_include_directories(ai-bench PRIVATE src src/abi/include)
 
 # ---------------------------------------------------------------------------
-# mv_canvas — pan/zoom springs (plan/03)
+# mv_canvas — pan/zoom springs (docs/design/03)
 # ---------------------------------------------------------------------------
 add_library(mv_canvas STATIC
   src/canvas/camera.cpp
@@ -610,7 +610,7 @@ add_library(mv::canvas ALIAS mv_canvas)
 # mediaviewer_core — the shared library exposing the flat C ABI.
 #
 # A DLL, not a static lib: the C# shell P/Invokes it, and the ABI is the only
-# way in. plan/14-abi.md.
+# way in. docs/design/14-abi.md.
 # ---------------------------------------------------------------------------
 add_library(mediaviewer_core SHARED
   src/abi/abi.cpp
@@ -638,13 +638,13 @@ add_library(mv::abi ALIAS mediaviewer_core)
 # ---------------------------------------------------------------------------
 # mediaviewer_lab — the PR 1 present lab.
 #
-# Stays in the tree as the debug harness (plan/10, PR 1). Under the D1
+# Stays in the tree as the debug harness (docs/design/10, PR 1). Under the D1
 # amendment its window and swapchain are the app; PR 3 hosts WinUI chrome
 # inside them rather than re-implementing presentation.
 # ---------------------------------------------------------------------------
 find_package(imgui CONFIG REQUIRED)
 # PR 7: Crashpad (Apache-2.0) client, static; crashpad_handler.exe runs
-# out-of-process beside the lab (plan/13 Part 2).
+# out-of-process beside the lab (docs/design/13 Part 2).
 find_package(crashpad CONFIG REQUIRED)
 
 add_executable(mediaviewer_lab WIN32
@@ -838,7 +838,7 @@ if(DOTNET_EXE)
   # PR 8 clean-VM install: the Windows App SDK ships IN the payload
   # (WindowsAppSDKSelfContained in MediaViewer.Chrome.csproj), because the
   # wizard is per-user and takes no UAC and so cannot install a machine-wide
-  # framework package (plan/10 verify, plan/13).
+  # framework package (docs/design/10 verify, docs/design/13).
   #
   # Self-contained WinUI activates its WinRT classes registration-free, and
   # registration-free activation reads the manifest of the EXECUTABLE. Our
@@ -876,7 +876,7 @@ else()
 endif()
 
 # ---------------------------------------------------------------------------
-# tools/frametime — the frame-time regression harness (plan/09).
+# tools/frametime — the frame-time regression harness (docs/design/09).
 # ---------------------------------------------------------------------------
 add_executable(mv_frametime
   tools/frametime/main.cpp
@@ -936,7 +936,7 @@ if(MV_BUILD_TESTS)
     tests/test_audio_sink.cpp
     tests/test_transport.cpp
     tests/test_container_probe.cpp
-    # PR 9 (plan/12 2026-09-24)
+    # PR 9 (docs/design/12 2026-09-24)
     tests/test_meta.cpp
     tests/test_meta_store.cpp
     # PR 12: the metadata writer, and the host-shared write queue.
@@ -961,7 +961,7 @@ if(MV_BUILD_TESTS)
     # PR 13 / 14: clip core on synthetic clips, the ABI's clip session, trim mode.
     tests/test_clip.cpp
     tests/test_poster.cpp
-    # plan/26: the Photos backup engine, portable; PhotoKit is the Mac host's.
+    # docs/design/26: the Photos backup engine, portable; PhotoKit is the Mac host's.
     tests/test_photos_backup.cpp
     src/shell/photos_backup.cpp
     tests/test_clip_helper.cpp
@@ -1032,7 +1032,7 @@ if(MV_BUILD_TESTS)
     set_tests_properties(updater_manifest_verification PROPERTIES TIMEOUT 300 LABELS updater)
   endif()
   target_link_libraries(mv_tests PRIVATE
-    ${MV_SQLITE_TARGET}  # plan/26: the Photos backup engine's manifest
+    ${MV_SQLITE_TARGET}  # docs/design/26: the Photos backup engine's manifest
     mv_core
     mv_gfx
     mv_player
@@ -1114,7 +1114,7 @@ if(MV_BUILD_TESTS)
   catch_discover_tests(mv_pr16_tests TEST_PREFIX "pr16_"
     PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT ${MV_TEST_TIMEOUT})
 
-  # Milestone G (plan/18): verified copy, add-on manifests / store / loader,
+  # Milestone G (docs/design/18): verified copy, add-on manifests / store / loader,
   # and the Import engine end to end. The same sources run on Linux CI
   # (cmake/portable) and on the Mac (cmake/darwin.cmake).
   add_executable(mv_import_tests
@@ -1141,7 +1141,7 @@ if(MV_BUILD_TESTS)
     PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT ${MV_TEST_TIMEOUT}
                ENVIRONMENT "TZ=UTC")
 
-  # plan/25: the add-on SDK (tools/addon-sdk) packs, and the app's own reader
+  # docs/design/25: the add-on SDK (tools/addon-sdk) packs, and the app's own reader
   # says what it makes of each package, so the two cannot drift.
   add_executable(mv_addon_verify tools/addon-verify/main.cpp)
   target_link_libraries(mv_addon_verify PRIVATE mv_addon mv_io mv_project_options)
@@ -1154,7 +1154,7 @@ if(MV_BUILD_TESTS)
   endif()
   mv_asan_runtime_beside(mv_addon_verify)
 
-  # Milestone H (plan/17): the AI pack's engine over the real host table with
+  # Milestone H (docs/design/17): the AI pack's engine over the real host table with
   # deterministic models, and src/infer (tokenizer, preprocessing, ORT). The
   # pack-dependent cases skip unless MV_AI_PACK_DIR (and MV_AI_CUDA_DIR,
   # MV_AI_EVAL_DIR) point at staged files; tools/ai-bench runs the timings.
@@ -1197,7 +1197,7 @@ if(MV_BUILD_TESTS)
 endif()
 
 # ---------------------------------------------------------------------------
-# PR 7 — broken-file corpus (plan/09, plan/10 PR 7 verify: "nothing in the
+# PR 7 — broken-file corpus (docs/design/09, docs/design/10 PR 7 verify: "nothing in the
 # broken corpus crashes or hangs"). Its own executable so the Job Object
 # memory cap and crash attribution in tests/test_broken_corpus.cpp apply to
 # nothing else. Seeds live in tests/data (committed, synthetic, licence-clean).
@@ -1239,4 +1239,4 @@ if(MV_FUZZ)
   add_subdirectory(tools/fuzz)
 endif()
 
-message(STATUS "MediaViewer ${PROJECT_VERSION} — licence GPL-3.0-or-later (plan/11)")
+message(STATUS "MediaViewer ${PROJECT_VERSION} — licence GPL-3.0-or-later (docs/design/11)")

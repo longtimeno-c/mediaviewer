@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Add-on management over the C ABI (mediaviewer_addon.h, plan/18 "Add-ons"),
+// Add-on management over the C ABI (mediaviewer_addon.h, docs/design/18 "Add-ons"),
 // for the Windows chrome. The Mac host drives src/addon directly.
 //
 // The core never downloads anything: the chrome fetches the manifest, asks
@@ -223,7 +223,7 @@ MV_API mv_status MV_CALL mv_addon_check_manifest(const void* manifest, uint32_t 
   }));
 }
 
-// ---- open add-ons (plan/25) ---------------------------------------------------
+// ---- open add-ons (docs/design/25) ---------------------------------------------------
 
 MV_API mv_status MV_CALL mv_open_addon_inspect(const char* package_utf8, char* out, uint32_t cap,
                                                uint32_t* needed) {

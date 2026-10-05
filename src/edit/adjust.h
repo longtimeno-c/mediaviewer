@@ -1,9 +1,9 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 11 — colour adjusts, the first editing set (plan/07 scope line:
+// PR 11 — colour adjusts, the first editing set (docs/design/07 scope line:
 // exposure, contrast, saturation, temperature / tint; histogram + clipping).
 //
-// Order is plan/07's fixed pipeline: geometry → white balance (temperature,
+// Order is docs/design/07's fixed pipeline: geometry → white balance (temperature,
 // tint) → exposure → contrast → saturation → display encode. White balance
 // and exposure are one per-channel gain, so the whole chain is one small
 // per-pixel kernel (gfx/adjust_kernel.h) with eight uniforms. On the canvas

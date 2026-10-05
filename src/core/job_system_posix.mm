@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // POSIX job pool. Same queues and cancellation as job_system_win.cpp; the
 // Windows file is thread-description / priority, this file is pthread name
-// and QoS. plan/15: the Mac file arrives with Milestone F as a real impl.
+// and QoS. docs/design/15: the Mac file arrives with Milestone F as a real impl.
 //
 // .mm rather than .cpp: job bodies may call Metal/AppKit APIs (image upload,
 // decode) that autorelease temporaries. A worker thread with no pool in

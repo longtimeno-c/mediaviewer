@@ -1,8 +1,8 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The Local search query language (plan/17 "Query syntax", 2026-09-28): one
+// The Local search query language (docs/design/17 "Query syntax", 2026-09-28): one
 // parser in the shared core, so the WinUI and SwiftUI search fields, and the
-// Voice add-on after them (plan/19), mean the same thing by the same words.
+// Voice add-on after them (docs/design/19), mean the same thing by the same words.
 //
 //   Tristan beach          a person AND what the picture shows
 //   Tristan "hello"        a person AND words said in the clip (quoted = exact)

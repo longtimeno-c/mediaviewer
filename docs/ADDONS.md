@@ -2,11 +2,11 @@
 
 Anyone can make an add-on, and anyone can install one from a file or a link. This page is for
 the person making one. The design and its reasons are in
-[plan/25-open-addons.md](../plan/25-open-addons.md).
+[docs/design/25-open-addons.md](design/25-open-addons.md).
 
 **What an add-on can hold today: themes.** Colours and a typeface for MediaViewer's bars, panes
 and text. Settings pages, keymaps, commands and whole screens are planned
-([plan/25](../plan/25-open-addons.md#7-the-contribution-model)): code will run as a sandboxed
+([docs/design/25](design/25-open-addons.md#7-the-contribution-model)): code will run as a sandboxed
 script with screens described as data, and no add-on will ever get network access. An add-on
 that names code is refused until that runtime exists.
 

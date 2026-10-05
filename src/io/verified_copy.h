@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Verified copy (plan/18-import.md "Verify"; the base app's F8 across volumes).
+// Verified copy (docs/design/18-import.md "Verify"; the base app's F8 across volumes).
 //
 // One read of the source feeds every destination (Import's backup copy is
 // written from the same read). The source is hashed while it is read; each
@@ -19,7 +19,7 @@
 // read_depth / write_depth above 1, several reader threads fetch chunks at
 // their offsets, the calling thread hashes them in order, and several writer
 // threads per destination write them at their offsets; the read-back is
-// pipelined the same way. A card is never read that way (plan/18: no parallel
+// pipelined the same way. A card is never read that way (docs/design/18: no parallel
 // reads of a card), and cards and local disks keep the sequential path.
 #pragma once
 
@@ -65,7 +65,7 @@ struct copy_options {
   std::size_t buffer_bytes = 4u << 20;      // per buffer, rounded to kIoAlign
   unsigned buffers_in_flight = 3;           // clamped to 2..4
   bool keep_mtime = true;                   // destination keeps the source's mtime
-  int retries = 1;                          // plan/18: retry once, then fail the file
+  int retries = 1;                          // docs/design/18: retry once, then fail the file
   // Requests in flight per file: reads of the source (and of each read-back),
   // and writes to each destination. 1 is the sequential path. Set from
   // copy_profile_for(); clamped to kMaxIoDepth.
@@ -94,8 +94,8 @@ struct copy_outcome {
   bool source_unstable = false;
 };
 
-// The I/O shape of one copy, from where its two ends live (plan/18
-// "Throughput", network profile; plan/12 2026-10-01).
+// The I/O shape of one copy, from where its two ends live (docs/design/18
+// "Throughput", network profile; docs/design/12 2026-10-01).
 inline constexpr unsigned kMaxIoDepth = 16;
 inline constexpr unsigned kNetworkIoDepth = 8;
 inline constexpr std::size_t kNetworkChunkBytes = 2u << 20;

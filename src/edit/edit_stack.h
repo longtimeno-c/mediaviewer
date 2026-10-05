@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 10 — the EditStack (plan/07-photo-editing.md) and its geometry ops.
+// PR 10 — the EditStack (docs/design/07-photo-editing.md) and its geometry ops.
 //
 // An edit is an ordered list of small POD parameter blocks. The original is
 // never modified by the stack; undo pops, reset clears. Geometry is folded
@@ -9,10 +9,10 @@
 //
 //   source → D4 (rotate / flip) → straighten about the centre → crop → resize
 //
-// This is plan/07's "crop, straighten, rotate, flip" order read the other way
+// This is docs/design/07's "crop, straighten, rotate, flip" order read the other way
 // round (the ops commute once the crop and angle are carried through the D4,
 // which `fold` does). Colour ops (PR 11, edit/adjust.h) share the stack and
-// fold separately (`fold_colour`); plan/07 evaluates them after geometry.
+// fold separately (`fold_colour`); docs/design/07 evaluates them after geometry.
 // Nothing here knows about pixels or a GPU.
 //
 // Straighten, resize and exact crop change pixels; rotate, flip and an
@@ -83,7 +83,7 @@ struct edit_stack {
 
   [[nodiscard]] bool empty() const noexcept { return ops.empty(); }
   void push(const op& o) { ops.push_back(o); }
-  // Undo is popping the list (plan/07). False when there is nothing to undo.
+  // Undo is popping the list (docs/design/07). False when there is nothing to undo.
   bool undo() noexcept {
     if (ops.empty()) return false;
     ops.pop_back();

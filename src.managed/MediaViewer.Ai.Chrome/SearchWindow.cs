@@ -44,12 +44,12 @@ internal sealed class ResultTile
 }
 
 /// <summary>
-/// The search panel (plan/17 PR 22, the brief's "Search panel"): a floating,
+/// The search panel (docs/design/17 PR 22, the brief's "Search panel"): a floating,
 /// translucent window centred over the viewer. Never modal — the viewer stays
 /// usable behind it; it steps aside when the viewer is clicked.
 /// </summary>
 /// <remarks>
-/// Keyboard-complete (plan/16 verify: open search, type, navigate results,
+/// Keyboard-complete (docs/design/16 verify: open search, type, navigate results,
 /// open a moment, next / previous match, close — no mouse): the query is
 /// focused with the last query selected; typing searches after ~200 ms; Enter
 /// or Down enters the grid (Enter on words still being searched waits for their
@@ -118,7 +118,7 @@ internal sealed class SearchWindow : Window, IDisposable
     private bool _visible;
     private bool _disposing;
     private bool _settingText;
-    // People while typing (plan/17 "Query syntax"): "Trist" → Tristan; Tab takes the first.
+    // People while typing (docs/design/17 "Query syntax"): "Trist" → Tristan; Tab takes the first.
     private StackPanel _suggestRow = null!;
     private List<(ulong Id, string Name, string Completion)> _suggestions = new();
     private long _lastRunTick;
@@ -1214,7 +1214,7 @@ internal sealed class SearchWindow : Window, IDisposable
         _empty.Children.Add(Centre(_look.Text(detail, 14)));
         if (syntax)
         {
-            // The query language in one line (plan/17 "Query syntax"); the pack
+            // The query language in one line (docs/design/17 "Query syntax"); the pack
             // parses it, so the Mac panel shows the same examples.
             TextBlock examples = Centre(_look.Text(
                 "Sam beach   ·   Sam “happy birthday”   ·   Sam or Alex   ·   -video   ·   in:2024", 12, AddonColour.Title));

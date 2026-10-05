@@ -17,14 +17,14 @@
     <WindowsPackageType>None</WindowsPackageType>
 
     <!-- PR 8, clean-VM install. The wizard is per-user and takes no UAC
-         (plan/10 verify, plan/13), so it cannot install a machine-wide
+         (docs/design/10 verify, docs/design/13), so it cannot install a machine-wide
          Windows App SDK runtime as a prerequisite - and a prerequisite it
          neither installs nor detects drops the user straight into the failure
          that verify line forbids. So the runtime ships in the payload.
 
          SelfContained pulls the WinAppSDK runtime DLLs in beside the app and
          removes the framework-package dependency; with it there is no
-         framework package to find, so the bootstrapper is off. plan/13's
+         framework package to find, so the bootstrapper is off. docs/design/13's
          "do not ship Windows App SDK AI / ONNX / DirectML / WebView2" is
          about trimming exactly this payload, and build-release.ps1 strips
          them and fails if they come back.

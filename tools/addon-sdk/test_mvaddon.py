@@ -6,7 +6,7 @@
 With MV_ADDON_VERIFY set to the built `mv_addon_verify`, every package here is
 also read by the app's own C++ (src/addon), so the SDK's idea of what
 MediaViewer accepts and refuses is proved against MediaViewer, not against a
-second Python copy of it (plan/25 "Cross-check").
+second Python copy of it (docs/design/25 "Cross-check").
 """
 import hashlib
 import importlib.util

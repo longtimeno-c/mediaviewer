@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 5a - the presentation ring of textures WE own (plan/05), and the bounded
+// PR 5a - the presentation ring of textures WE own (docs/design/05), and the bounded
 // packet queue that feeds the decoder.
 //
 // OWNER: mediaviewer-48 (5a).
@@ -111,7 +111,7 @@ expected frame_ring::create_slot(video_frame& slot) {
   HRESULT hr = device_->CreateTexture2D(&desc, nullptr, texture.GetAddressOf());
   if (FAILED(hr)) return err(hr == E_OUTOFMEMORY ? status::out_of_memory : status::internal);
 
-  // plan/05's SRV table. Getting the 10-bit pair wrong does not fail to draw —
+  // docs/design/05's SRV table. Getting the 10-bit pair wrong does not fail to draw —
   // it draws the wrong colours, which is why the table is spelled out rather
   // than derived.
   D3D11_SHADER_RESOURCE_VIEW_DESC luma{};
@@ -221,7 +221,7 @@ video_frame* frame_ring::acquire(std::uint32_t generation, time_ns deadline_ns) 
 
     if (frame->generation != generation) {
       // Stale: decoded before a navigation or a seek. Recycle it here rather
-      // than present it (plan/02 generation counters).
+      // than present it (docs/design/02 generation counters).
       ready_tail_.store((tail + 1) % index_capacity, std::memory_order_release);
       release(frame);
       continue;

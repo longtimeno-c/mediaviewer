@@ -1,15 +1,15 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 18's gallery (plan/10-roadmap.md, folded-in Windows PR 4, plan/12
+// PR 18's gallery (docs/design/10-roadmap.md, folded-in Windows PR 4, docs/design/12
 // 2026-09-17): "a full-client thumbnail grid... a click opens it in the
-// viewer" (plan/16-commands.md's `G` row). `G` toggles visibility and `Esc`
+// viewer" (docs/design/16-commands.md's `G` row). `G` toggles visibility and `Esc`
 // closes it (main_mac.mm's keyDown:, checked ahead of the fallback
 // Esc-closes-window case). Up/Down/W/S move by row, `+`/`-` resize the cells
 // (also main_mac.mm's keyDown:); this view lays out the grid and reports how
 // many cells sit in a row (mv_chrome_set_gallery_columns) so the host can do
 // that arithmetic.
 //
-// File search (plan/16 "File search", 2026-09-28) sits above the tiles while
+// File search (docs/design/16 "File search", 2026-09-28) sits above the tiles while
 // it is open (FileSearch.swift). Its name filter only chooses which tiles are
 // drawn: each tile keeps its identity (its index in the listing) and its
 // thumbnail slot, so filtering reloads nothing and a tile that stays shown is

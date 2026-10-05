@@ -5,9 +5,9 @@
 //
 //   "a header, an mv_guard, one call, a SafeHandle, and a completion drain —
 //    proving the shape end to end before anything is built on it."
-//                                                    plan/14-abi.md
+//                                                    docs/design/14-abi.md
 //
-// A console app, not WinUI. PR 1 has no WinUI (plan/10), and the point of this
+// A console app, not WinUI. PR 1 has no WinUI (docs/design/10), and the point of this
 // program is that the core is exercised over the real ABI with no shell and no
 // dispatcher present — which is the property that keeps it testable headlessly.
 //
@@ -131,7 +131,7 @@ using (var session = MediaViewerSession.Create(workerCount: 2, enableEtw: false)
 
     Console.WriteLine();
     Console.WriteLine("batching");
-    // plan/14: a folder scan finishing 400 thumbnails must be one drain, not
+    // docs/design/14: a folder scan finishing 400 thumbnails must be one drain, not
     // 400 marshalling hops.
     const int batch = 400;
     for (int i = 0; i < batch; i++) session.Echo("thumb");

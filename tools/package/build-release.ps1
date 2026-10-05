@@ -1,7 +1,7 @@
 # Copyright (C) 2026 longtimeno-c
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# PR 8 release pipeline (plan/13 Part 1, plan/11).
+# PR 8 release pipeline (docs/design/13 Part 1, docs/design/11).
 #
 #   payload  -> the files that go in a version folder
 #   vpk pack -> the Velopack release set (.nupkg + delta + *-win-Setup.exe)
@@ -27,7 +27,7 @@ param(
     [string]$Version,
     # Where the release set and the wizard land.
     [string]$OutputDir,
-    # Azure Trusted Signing metadata.json (plan/13 "Signing"). Signs the
+    # Azure Trusted Signing metadata.json (docs/design/13 "Signing"). Signs the
     # payload binaries and Velopack bundle. Sign the Inno wizard afterwards.
     [string]$SigningMetadata,
     # Alternative: raw signtool.exe parameters, for an EV cert or a test cert.
@@ -58,8 +58,8 @@ $packId = "MediaViewer"
 $channel = "win"
 
 # ---- the private .NET runtime ----------------------------------------------
-# plan/10's verify line starts on a CLEAN VM and forbids a missing-codec dialog
-# anywhere; plan/13 makes the wizard per-user with no UAC. A machine-wide .NET
+# docs/design/10's verify line starts on a CLEAN VM and forbids a missing-codec dialog
+# anywhere; docs/design/13 makes the wizard per-user with no UAC. A machine-wide .NET
 # prerequisite fails both, so the runtime ships in the payload.
 #
 # It is NOT `dotnet publish --self-contained`: the chrome is loaded by the
@@ -118,7 +118,7 @@ if (-not $NoWizard) {
 # What goes in a version folder: the host exe (renamed to the product name, so
 # the Velopack stub and the taskbar agree), the chrome, every codec DLL, the
 # crash handler, and the licence texts About links to. What does NOT: the test
-# binaries, the frame-time harness, the fuzzers, and PDBs. plan/13 "Symbols":
+# binaries, the frame-time harness, the fuzzers, and PDBs. docs/design/13 "Symbols":
 # PDBs go to the symbol server, never in the payload.
 $bin = Join-Path $repo "$BuildDir\bin\$Config"
 if (-not (Test-Path $bin)) { Fail "no build output at $bin - configure and build $Config first" }
@@ -130,7 +130,7 @@ New-Item -ItemType Directory -Force $payload, $releases | Out-Null
 
 $skipFile = '^(mv_.*|.*_tests?|frametime.*|mediaviewer_lab\.exe)$'
 
-# plan/13, "Delta patches earn their keep here": "Do not ship Windows App SDK
+# docs/design/13, "Delta patches earn their keep here": "Do not ship Windows App SDK
 # AI / ONNX / DirectML / WebView2: they are not a dependency, and they are
 # currently the largest files in a framework-dependent publish."
 #
@@ -160,7 +160,7 @@ foreach ($required in "MediaViewer.exe", "MediaViewer.Chrome.dll", "crashpad_han
 # ban is asserted on the finished tree rather than trusted to the filter.
 $bloat = Get-ChildItem $payload -Recurse -File | Where-Object { $_.Name -match $forbiddenBloat }
 if ($bloat) {
-    Fail ("plan/13 forbids shipping these: " + (($bloat | Select-Object -Expand Name) -join ", "))
+    Fail ("docs/design/13 forbids shipping these: " + (($bloat | Select-Object -Expand Name) -join ", "))
 }
 
 # ---- the private .NET runtime ----------------------------------------------
@@ -206,26 +206,26 @@ if (-not $fxr -or -not (Test-Path (Join-Path $fxr[0].FullName "hostfxr.dll"))) {
 Write-Host ("private .NET runtime: {0} ({1} MB)" -f $fxr[0].Name,
     [math]::Round((Get-ChildItem $dotnetPayload -Recurse -File | Measure-Object Length -Sum).Sum / 1MB, 1))
 
-# plan/09 "Installed size - pick the .NET deployment model deliberately" caps
+# docs/design/09 "Installed size - pick the .NET deployment model deliberately" caps
 # the app at < 250 MB and expects ~200-250 MB *because* it chose to ship the
 # runtime: "Take self-contained and publish the honest number. A viewer whose
 # whole pitch is 'point it at a folder and it works' cannot open with a runtime
 # prerequisite dialog - that's the same mistake as a codec-pack prompt (D3)."
 #
 # This is the app. Velopack's packages\ cache is measured separately after the
-# pack, because it is a working set that plan/13 prunes, not the application.
+# pack, because it is a working set that docs/design/13 prunes, not the application.
 $payloadBytes = (Get-ChildItem $payload -Recurse -File | Measure-Object Length -Sum).Sum
 $size = [math]::Round($payloadBytes / 1MB, 1)
 Write-Host "payload (the app): $size MB"
-if ($size -gt 250) { Fail "payload is $size MB; plan/09 caps the app at 250 MB" }
+if ($size -gt 250) { Fail "payload is $size MB; docs/design/09 caps the app at 250 MB" }
 
 # ---- licence gate ----------------------------------------------------------
-# plan/11 is enforced in the build, not in review: an --enable-gpl FFmpeg or a
+# docs/design/11 is enforced in the build, not in review: an --enable-gpl FFmpeg or a
 # LibRaw GPL demosaic pack must never reach a release artefact.
 # It reads the configure string out of the built FFmpeg DLLs in the vcpkg
 # install tree those payload DLLs were copied from.
 & (Join-Path $repo "tools\licence-check.ps1") -RepoRoot $repo
-if ($LASTEXITCODE) { Fail "licence-check failed (plan/11)" }
+if ($LASTEXITCODE) { Fail "licence-check failed (docs/design/11)" }
 # Belt and braces on the artefact itself: the forbidden encoders must not have
 # reached the payload by any route.
 $forbidden = Get-ChildItem $payload -Recurse -File |
@@ -291,7 +291,7 @@ if (-not $setup) { Fail "vpk produced no Setup bundle" }
 
 # What the user's disk actually holds after a first install: the app, plus the
 # one full package Velopack keeps so a bad update can be rolled back
-# (plan/13 "Rollback and the kill switch"). Reported rather than gated - the
+# (docs/design/13 "Rollback and the kill switch"). Reported rather than gated - the
 # cap is on the application, and this cache is neither shipped nor permanent.
 $fullPkg = Get-ChildItem $releases -Filter "$packId-$Version-full.nupkg" | Select-Object -First 1
 $installedBytes = $payloadBytes

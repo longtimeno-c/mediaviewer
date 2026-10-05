@@ -8,11 +8,11 @@ using Microsoft.UI.Xaml.Media.Imaging;
 
 namespace MediaViewer.Chrome;
 
-// PR 8 About (plan/13 "About", plan/11): the mark, the running version, the
+// PR 8 About (docs/design/13 "About", docs/design/11): the mark, the running version, the
 // copyright line, GPL, LICENSE / NOTICE / THIRD-PARTY.md, GitHub and the LGPL
 // source offer for *this* build. This flyout is the GPLv3 "Appropriate Legal
-// Notices" (plan/11); keep the copyright line, licence line and links in it.
-// No command-table entry (plan/16 PR 8 row); the flyout is reached from the
+// Notices" (docs/design/11); keep the copyright line, licence line and links in it.
+// No command-table entry (docs/design/16 PR 8 row); the flyout is reached from the
 // bar and every link is a tab stop.
 public static partial class IslandHost
 {

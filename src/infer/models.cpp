@@ -336,7 +336,7 @@ result<std::unique_ptr<face_models>> face_models::open(const runtime& rt, const 
   m->embedder_ = std::move(emb);
   if (embedder && embedder->on != backend::cpu) {
     // An AdaFace IR-50 is ~5x SFace's cost on one CPU thread and ~15x
-    // faster on Core ML (plan/17 "People model"): worth a provider when it
+    // faster on Core ML (docs/design/17 "People model"): worth a provider when it
     // gives the same vectors. One fixed crop through both decides.
     session_options acc = *embedder;
     acc.fixed_dims.emplace_back("n", 1);  // face-export.py's batch: Core ML wants static shapes
@@ -461,7 +461,7 @@ result<std::vector<float>> face_models::embed(const rgb_view& img, const face_bo
   MV_TRY(auto outs, embedder_->run(std::span<const tensor_f32>(&in, 1)));
   if (outs.empty() || outs[0].data.size() != spec_.dim) return err(status::corrupt);
   std::vector<float> v = outs[0].data;
-  // Flip averaging (plan/17 "People refinement"): the ArcFace template is
+  // Flip averaging (docs/design/17 "People refinement"): the ArcFace template is
   // mirror-symmetric, so the mirrored crop is aligned too; the mean of the
   // two vectors is steadier on a turned or unevenly lit face. A second run of
   // the 112 x 112 embedder.

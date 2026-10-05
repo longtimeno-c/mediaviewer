@@ -3,12 +3,12 @@
 <!--
   Copyright (C) 2026 longtimeno-c
   SPDX-License-Identifier: GPL-3.0-or-later
-  MediaViewer.app (PR 20, plan/15). Configured by cmake/darwin.cmake.
+  MediaViewer.app (PR 20, docs/design/15). Configured by cmake/darwin.cmake.
 
   Document types are the D5 still set plus the D5 video containers, at
   LSHandlerRank Alternate: MediaViewer appears in Finder's "Open With" and
   never becomes the default on its own. Becoming the default is an in-app
-  prompt, once, after the first still opens (plan/13); it reads this list, so
+  prompt, once, after the first still opens (docs/design/13); it reads this list, so
   video is offered with the stills. QuickLook-Info.plist.in lists the still
   types; tools/mac/check_plists.py fails if the two drift or a D5 still
   format goes missing.
@@ -99,7 +99,7 @@
         <string>public.mpeg-2-transport-stream</string>
       </array>
     </dict>
-    <!-- plan/25: an add-on package (.mvaddon) is MediaViewer's own type, so
+    <!-- docs/design/25: an add-on package (.mvaddon) is MediaViewer's own type, so
          it owns it. Opening one shows Settings' install sheet, never the
          viewer; it is not a photo type and the default-viewer prompt does
          not list it (main_mac.mm MvDeclaredContentTypes). -->

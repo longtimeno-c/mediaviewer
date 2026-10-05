@@ -1,7 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Scanning a source: walk, units (the viewer's pairing plus camera sidecars),
-// capture dates, and the card memory (plan/18 "Units", "Per-card memory").
+// capture dates, and the card memory (docs/design/18 "Units", "Per-card memory").
 // I/O threads only.
 #pragma once
 

@@ -1,9 +1,9 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Copy / move / Recycle Bin for marks (plan/16 "Marks, copy, move").
+// Copy / move / Recycle Bin for marks (docs/design/16 "Marks, copy, move").
 // Portable header; Windows impl is file_ops_win.cpp (D9).
 //
-// I/O pool only — never the UI or render thread (plan/16 speed rule 2). None
+// I/O pool only — never the UI or render thread (docs/design/16 speed rule 2). None
 // of these ever overwrites: a name that is taken becomes `name (2).ext`
 // (collision_name.h), and a race that takes the name between the check and the
 // write moves on to the next number rather than replacing the file. Nothing
@@ -24,7 +24,7 @@ enum class transfer_kind : std::uint8_t {
   // Same volume: a rename. Across volumes: a verified copy (io/verified_copy.h:
   // hashed while read, read back uncached, compared), then delete the source.
   // A copy that fails or does not verify is removed and the source is left
-  // where it was (plan/18: F8 never removes an unverified source). Moving a file into the folder it is already in is a
+  // where it was (docs/design/18: F8 never removes an unverified source). Moving a file into the folder it is already in is a
   // no-op that succeeds (unlike a copy, which lands beside it as `name (2)`).
   move,
 };

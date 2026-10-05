@@ -19,7 +19,7 @@ void MvAddonsOpenImport(const std::vector<std::string>& marks);
 // ⌘⇧F7: import these now with the last preset.
 void MvAddonsImportNow(const std::vector<std::string>& paths);
 
-// Milestone H (plan/17): the AI chrome follows the viewer. A directory was
+// Milestone H (docs/design/17): the AI chrome follows the viewer. A directory was
 // opened (never a result list); the item on the canvas changed ("" = none).
 // Both are cheap message sends; with the AI pack absent they do nothing.
 void MvAddonsFolderOpened(const std::string& dir);

@@ -289,7 +289,7 @@ result<display_image> to_display(codec::raster&& src, const job_context* ctx) {
   }
 
   // D6: a broken profile is still a tagged file. Fail-open as sRGB would
-  // display tagged bytes as sRGB (plan/04, plan/12).
+  // display tagged bytes as sRGB (docs/design/04, docs/design/12).
   auto transform = cached_transform(src.icc);
   if (!transform) return err(transform.error());
   return transform.value()->apply(std::move(src), ctx);

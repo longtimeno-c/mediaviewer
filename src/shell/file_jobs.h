@@ -1,12 +1,12 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Copy / move / Recycle Bin jobs for marks (plan/16 "Marks, copy, move").
+// Copy / move / Recycle Bin jobs for marks (docs/design/16 "Marks, copy, move").
 //
 // The UI thread may open a picker and ask for confirmation; it never copies a
-// byte (plan/16 speed rule 2). Work runs on one I/O worker of its own, at the
+// byte (docs/design/16 speed rule 2). Work runs on one I/O worker of its own, at the
 // background generation so navigating away does not abandon a copy, and the
 // result comes back as one posted window message the host pumps — the core is
-// not asked to marshal anything (plan/14). The file operations themselves are
+// not asked to marshal anything (docs/design/14). The file operations themselves are
 // io/file_ops (portable header, Windows impl); this orchestration is host-side.
 #pragma once
 

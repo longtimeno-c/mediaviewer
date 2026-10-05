@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 13 / 14 (plan/08: "All jobs go to a queue panel: progress, ETA, speed,
+// PR 13 / 14 (docs/design/08: "All jobs go to a queue panel: progress, ETA, speed,
 // cancel, retry, reveal"): the twin of the Windows Jobs pane
 // (IslandHost.Clip.cs). Never a modal progress dialog. Keyboard-complete
 // without Full Keyboard Access: ↑ ↓ choose a job, Delete cancels it, R retries,

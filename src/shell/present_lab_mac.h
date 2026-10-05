@@ -1,7 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Metal present lab — PR 16's instrument, kept as a debug harness the way
-// the Win32 lab is. No SwiftUI. plan/10, plan/15.
+// the Win32 lab is. No SwiftUI. docs/design/10, docs/design/15.
 #pragma once
 
 #include <atomic>
@@ -49,7 +49,7 @@ struct mac_lab_options {
   // does not stall it.
   bool harness = false;
   // PR 17: a still to open on start (--open PATH), decoded and uploaded on a
-  // job_system worker, never on the render thread (rule 1, plan/02).
+  // job_system worker, never on the render thread (rule 1, docs/design/02).
   std::string open_path;
   mv::job_system* jobs = nullptr;  // non-owning; started by main_mac.mm
   // Milestone H, rule 3 for a clip opened on a moment: [pool thread] the cached
@@ -91,7 +91,7 @@ class present_lab_mac {
   // resolution, with no read or decode. Without one the file always loads.
   static constexpr std::int64_t kNoStamp = INT64_MIN;
   //
-  // Milestone H (plan/17 "Enter on a video tile opens the clip and seeks to
+  // Milestone H (docs/design/17 "Enter on a video tile opens the clip and seeks to
   // that PTS, paused on the frame"): a clip with `moment_ms` >= 0 does not
   // start playing; it is paused and sought exactly to the moment as the
   // render thread adopts it, so no frame of the clip's head is shown or heard.
@@ -248,7 +248,7 @@ class present_lab_mac {
   // media_source (which joins its threads) on a worker, never here.
   void retire_media() noexcept;
   // Latched transport from the UI thread: video AND animated-still playback
-  // share this (plan/16 "Video" -- Space/,/. mean the same thing on either;
+  // share this (docs/design/16 "Video" -- Space/,/. mean the same thing on either;
   // key_router.cpp maps both item_kind::clip and item_kind::animation to
   // mode::video for exactly this reason). Returns true when it changed what
   // should be on screen, so the caller redraws.
@@ -258,7 +258,7 @@ class present_lab_mac {
   [[nodiscard]] bool picture_size(float* w, float* h) const noexcept;
   // [render-thread] PR 9 overlays: the info lines, AF quads and eyedropper. All
   // three draw bytes the UI thread already published in `snapshot.meta`; none of
-  // them touches a file or the metadata store (plan/16).
+  // them touches a file or the metadata store (docs/design/16).
   void draw_photo_overlays(const input_snapshot& snapshot) noexcept;
   // [render-thread] PR 10 edit geometry. The snapshot's slot for `item`, or
   // null; the placement of `img` through it (identity when there is none).
@@ -364,8 +364,8 @@ class present_lab_mac {
   std::uint32_t seen_video_seek_ = 0;
   std::uint32_t seen_video_loop_ = 0;  // PR 13
 
-  // Animated GIF/APNG/WebP playback (plan/04, folded into PR 18's "animated
-  // GIF/APNG/WebP on the display-link frame clock", plan/15). Frame 0 already
+  // Animated GIF/APNG/WebP playback (docs/design/04, folded into PR 18's "animated
+  // GIF/APNG/WebP on the display-link frame clock", docs/design/15). Frame 0 already
   // went through the still path (current_image_, rule 3); animation_session
   // decodes and uploads frames 1.. on its own thread into a small ring, and
   // anim_frame_ -- never current_image_ -- is what the draw call samples once
@@ -418,7 +418,7 @@ class present_lab_mac {
   bool soak_complete_ = false;
   std::uint64_t total_presents_ = 0;
   bool was_presenting_ = false;
-  // plan/17 "Yield policy": the last dropped frame holds the busy signal for
+  // docs/design/17 "Yield policy": the last dropped frame holds the busy signal for
   // background add-on work (the AI indexer) for two seconds.
   std::uint64_t busy_drops_seen_ = 0;
   double busy_drop_at_ = -1.0e9;

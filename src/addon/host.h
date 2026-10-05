@@ -49,7 +49,7 @@ struct host_services {
                                                       std::uint32_t sample_rate,
                                                       std::int64_t start_ms)>
       open_audio;
-  // Sharing an index (plan/17): the cache's JPEG-512 bytes for a still
+  // Sharing an index (docs/design/17): the cache's JPEG-512 bytes for a still
   // (pts_ms < 0) or a moment, looked up only; and storing bytes made elsewhere.
   std::function<result<std::vector<std::uint8_t>>(const std::string& path, std::int64_t pts_ms)>
       thumbnail_jpeg;
@@ -131,7 +131,7 @@ class loaded_addon {
   // since install is refused: status::corrupt. An add-on built for another
   // host API: status::unsupported_format ("needs an update").
   // `entry`: the export to call. A second host of an add-on's code (the
-  // search agent, plan/23) names its own door (MV_AI_READER_ENTRY_SYMBOL); an
+  // search agent, docs/design/23) names its own door (MV_AI_READER_ENTRY_SYMBOL); an
   // add-on without that symbol is status::unsupported_format ("needs an
   // update"), never loaded through mv_addon_get instead.
   [[nodiscard]] static result<std::unique_ptr<loaded_addon>> load(const store& s,

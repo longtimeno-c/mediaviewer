@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Status codes shared by the native core and the C ABI (plan/14-abi.md).
+// Status codes shared by the native core and the C ABI (docs/design/14-abi.md).
 //
 // The values here MUST stay numerically identical to `mv_status` in
 // <mediaviewer/mediaviewer.h>. The ABI layer static_asserts that.

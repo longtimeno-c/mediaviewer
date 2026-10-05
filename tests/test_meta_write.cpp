@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 12 verify (plan/10): write-then-read round-trips preserve maker notes
+// PR 12 verify (docs/design/10): write-then-read round-trips preserve maker notes
 // byte-for-byte; a write that dies mid-way leaves the original intact; a
 // rating written to a file (or its sidecar) reads back the same wherever the
 // file is copied. Fixtures are built here — nothing needs the corpus.

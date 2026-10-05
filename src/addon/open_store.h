@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Installed open add-ons (plan/25 "Identity and trust", "Install, update,
+// Installed open add-ons (docs/design/25 "Identity and trust", "Install, update,
 // remove"): add-ons from other makers, each signed by its publisher.
 //
 //   <root>/<id>/<version>/     manifest.json, manifest.json.sig, the files

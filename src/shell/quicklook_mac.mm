@@ -1,12 +1,12 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Finder thumbnails for the D5 still set (PR 20, plan/15): the principal class
+// Finder thumbnails for the D5 still set (PR 20, docs/design/15): the principal class
 // of MediaViewerThumbnails.appex, a Quick Look thumbnail extension.
 //
 // Out of process by construction: macOS runs the extension in its own
 // sandboxed process, never inside Finder, so a decoder that crashes on a
 // corrupt HEIC or RAW kills this process and Finder keeps running (the PR 20
-// verify). This is the Mac twin of plan/09's out-of-process Explorer handler.
+// verify). This is the Mac twin of docs/design/09's out-of-process Explorer handler.
 //
 // The pixels come from the same path the filmstrip uses (image::make_thumb_jpeg:
 // JPEG DCT scaling, the RAW's embedded preview, else a full decode, ICC ->

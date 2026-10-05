@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// src/infer and the pack's models: plan/17 PR 20's verify lines that need
+// src/infer and the pack's models: docs/design/17 PR 20's verify lines that need
 // weights, plus the pure parts that do not.
 //
 //   always         tokenizer rules, half floats, int8 dot, YuNet decode, the
@@ -16,7 +16,7 @@
 //   MV_AI_FACES_DIR the ai-faces piece (staged), with MV_AI_FACE_SET a folder of
 //                  <person>/<photo> (e.g. LFW, kept out of git): the model.json
 //                  thresholds separate the people, and the accelerated
-//                  embedder agrees with CPU (plan/17 "People model")
+//                  embedder agrees with CPU (docs/design/17 "People model")
 #include "catch_compat.h"
 
 #include <algorithm>
@@ -158,7 +158,7 @@ TEST_CASE("half floats and int8 vectors round-trip within their precision", "[ai
 }
 
 TEST_CASE("a query scans 100 k ViT-L frames in under 100 ms", "[ai][infer][vectors][perf]") {
-  // plan/17 PR 22: "< 100 ms over 100 k frames". 2,000 clips of 50 frames,
+  // docs/design/17 PR 22: "< 100 ms over 100 k frames". 2,000 clips of 50 frames,
   // pseudo-random unit vectors; the scan as search_text runs it (margin
   // filter, top 5000, the per-asset stats).
   constexpr std::uint32_t dim = 768;
@@ -706,7 +706,7 @@ TEST_CASE("a description ranks the labelled photos, and nonsense finds nothing",
         }
         INFO(spec->id << " \"" << qc.text << "\": " << relevant << " of top " << k << " relevant (pool " << pool << ")");
         REQUIRE(k > 0);
-        CHECK(relevant >= static_cast<int>(k) - 1);  // plan/17 PR 20 target: P@5 >= 0.8
+        CHECK(relevant >= static_cast<int>(k) - 1);  // docs/design/17 PR 20 target: P@5 >= 0.8
         float best_margin = -1;  // the engine's rule: the best of the top ten
         for (std::size_t r = 0; r < 10 && r < order.size(); ++r) best_margin = std::max(best_margin, margin_of(q, order[r]));
         const float z = top10_z(q);
@@ -831,7 +831,7 @@ TEST_CASE("the Core ML provider agrees with the reference", "[ai][infer][pack][c
   }
 }
 
-// Timings for plan/17 (hidden: `mv_ai_tests "[.bench]"`). Batches as shipped:
+// Timings for docs/design/17 (hidden: `mv_ai_tests "[.bench]"`). Batches as shipped:
 // four photos (engine.cpp kPhotoBatch), two CPU threads (pack.cpp).
 TEST_CASE("bench: CLIP towers, CPU against Core ML", "[.bench][ai][coreml]") {
   const std::string pack = env("MV_AI_PACK_DIR");
@@ -1056,12 +1056,12 @@ std::vector<decoded> decode_all(const std::vector<std::string>& paths) {
 //
 // The index is the first N photos of labels.json that decode, in its order.
 // Sizes: MV_AI_CALIBRATION_SIZES=1000,5000,... (default 300 and every photo up
-// to 1,000, plan/17 "Precision scale"; a size past what decodes runs at what
+// to 1,000, docs/design/17 "Precision scale"; a size past what decodes runs at what
 // did). The held-out captions are photos 150-299 and, when every size is at
 // least 1,000, every other photo of 300-999 as well: in the index at every size.
 // MV_AI_CALIBRATION_TOWERS=clip-b32,clip-l14 (default both). The image tower
 // runs on Core ML where the runtime has it, on CUDA with MV_AI_CUDA_DIR, else
-// CPU (MV_AI_CALIBRATION_CPU=1 forces CPU, as the plan/17 table was measured).
+// CPU (MV_AI_CALIBRATION_CPU=1 forces CPU, as the docs/design/17 table was measured).
 // MV_AI_CALIBRATION_CACHE=<dir> keeps the image embeddings (embedding_cache
 // above) and Core ML's compiled towers between runs.
 //
@@ -1110,7 +1110,7 @@ TEST_CASE("calibration: captions are found, nonsense is not", "[.calibration][ai
   // in file order), for a vocabulary check replayed offline; nothing else runs.
   const std::string vocab = env("MV_AI_CALIBRATION_VOCAB");
   const bool cpu_only = env("MV_AI_CALIBRATION_CPU") == "1" || !vocab.empty();
-  // What the rule was tuned on (plan/17, 2026-09-27)...
+  // What the rule was tuned on (docs/design/17, 2026-09-27)...
   const std::vector<const char*> nonsense_tune{
       "xyzzy plugh qwertyuiop", "asdf", "blorf zxqv", "qqqq", "lorem ipsum dolor", "zzzzzz",
       "hjkl hjkl", "fnord", "kwyjibo", "wibble wobble", "12345", "!!!", "the the the",
@@ -1650,7 +1650,7 @@ TEST_CASE("calibration: captions are found, nonsense is not", "[.calibration][ai
 #endif
 }
 
-// plan/17 "People model": the staged ai-faces piece through face_models as the
+// docs/design/17 "People model": the staged ai-faces piece through face_models as the
 // pack runs it (decode at 1024, detect, align, flip-averaged embed), on a
 // labelled folder. Same-person pairs sit well above model.json's same_person,
 // strangers below it, and the accelerated embedder gives the CPU's vectors.

@@ -17,7 +17,7 @@ namespace MediaViewer.Chrome;
 /// <summary>
 /// PR 9: the metadata pane (right) and the folder tree (left). Two islands that
 /// float over the canvas like the gallery does; neither insets the swapchain, so
-/// opening one never refits the photo or touches the present path (plan/12
+/// opening one never refits the photo or touches the present path (docs/design/12
 /// 2026-09-24, the same call the macOS host made).
 /// </summary>
 /// <remarks>
@@ -183,7 +183,7 @@ public static partial class IslandHost
                 source.Content = build();
                 onShown();
             }
-            // `I` / Ctrl+Shift+E focus the pane (plan/16): the first focusable
+            // `I` / Ctrl+Shift+E focus the pane (docs/design/16): the first focusable
             // element takes it, arrows walk, and Esc returns to the canvas.
             if (args.Focus != 0)
             {
@@ -806,7 +806,7 @@ public static partial class IslandHost
         {
             cell.Children.Add(Text(t.Value.Length == 0 ? "—" : t.Value, Body, UiFontSize - 2, maxLines: 3));
         }
-        // The untranslated origin is always one hover away (plan/06).
+        // The untranslated origin is always one hover away (docs/design/06).
         ToolTipService.SetToolTip(label, t.Raw);
         return cell;
     }

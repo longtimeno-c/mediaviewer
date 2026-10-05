@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The Local search agent (plan/23 Phase 1): a launchd agent, started on
+// The Local search agent (docs/design/23 Phase 1): a launchd agent, started on
 // demand when Final Cut Pro's workflow extension looks up its Mach service,
 // as MediaViewer.app's own executable with `--search-agent` (main_mac.mm
 // calls MvSearchAgentMain before anything of the viewer starts; the app
@@ -18,7 +18,7 @@
 //     last connection closes (or after launch, if nobody connects).
 //   - Privacy (rule 6): nothing here logs a query, a path or a result; the
 //     log carries status names only. No network.
-//   - Cost to the viewer (plan/23 "Performance"): the pack loads its text
+//   - Cost to the viewer (docs/design/23 "Performance"): the pack loads its text
 //     towers only; searches run at user-initiated QoS, one at a time.
 #import <Foundation/Foundation.h>
 #import <Security/Security.h>

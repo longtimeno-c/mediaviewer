@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// shell/photos_backup (plan/26 "Backup"): the engine over a fake library. The
+// shell/photos_backup (docs/design/26 "Backup"): the engine over a fake library. The
 // real one is PhotoKit (shell/photos_backup_mac.mm) and needs the user's
 // permission, so what is proved here is the engine: layout, verified copies,
 // the manifest making a second run free, a deleted file coming back, a cloud

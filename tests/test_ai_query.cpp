@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The Local search query language (src/addons/ai/query.h, plan/17 "Query
+// The Local search query language (src/addons/ai/query.h, docs/design/17 "Query
 // syntax"): parsing, names, suggestions and the singular / plural pair. Pure
 // C++, no models: every case runs everywhere.
 #include "catch_compat.h"
@@ -143,7 +143,7 @@ TEST_CASE("query: kinds, first or last, or is:", "[ai][query]") {
   p = run("is:video -is:video");
   CHECK(p.impossible);
 
-  // A spoken request (plan/19): "photos of" asks for anything, as before.
+  // A spoken request (docs/design/19): "photos of" asks for anything, as before.
   p = run("show me photos of Nico");
   CHECK(p.kinds == 0);
   CHECK(ids(p.people, 0) == std::vector<std::int64_t>{2});

@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Settings → Local search and the command bar's indexing pill (plan/17 "The AI
+// Settings → Local search and the command bar's indexing pill (docs/design/17 "The AI
 // pack", Milestone H PRs 20–24), the Mac twin of the Windows Local search page.
 //
 // The base app only installs, removes and loads the pack: everything the pack
@@ -22,7 +22,7 @@ import MVChromeBridge
 final class LocalSearchStore: ObservableObject {
   static let shared = LocalSearchStore()
 
-  /// One installable piece of the AI family (plan/17 per-piece Install/Remove).
+  /// One installable piece of the AI family (docs/design/17 per-piece Install/Remove).
   struct Piece: Identifiable, Equatable {
     let id: String          // "ai" (Core), "ai-faces" (People), "ai-audio" (Sound)
     let title: String
@@ -94,7 +94,7 @@ final class LocalSearchStore: ObservableObject {
   @Published private(set) var removing: Set<String> = []
   /// Moves whenever the chrome is (re)attached, so the embedded view is rebuilt.
   @Published private(set) var chromeGeneration = 0
-  /// plan/23: Final Cut Pro search (mv_fcp_state): 0 not in this app or Mac,
+  /// docs/design/23: Final Cut Pro search (mv_fcp_state): 0 not in this app or Mac,
   /// 1 off, 2 on, 3 on once allowed in Login Items. The agent and extension
   /// ship in MediaViewer.app; turning this on only registers them.
   @Published private(set) var finalCut: Int32 = 0
@@ -328,7 +328,7 @@ final class LocalSearchStore: ObservableObject {
     }
   }
 
-  /// The 3 GB rule (plan/17), before anything downloads: the piece's installed
+  /// The 3 GB rule (docs/design/17), before anything downloads: the piece's installed
   /// size, plus what the family already uses minus the copy it replaces.
   func refusal(for piece: Piece) -> String? {
     guard let bytes = piece.offeredBytes?.installed, ceiling > 0 else { return nil }
@@ -617,7 +617,7 @@ struct LocalSearchSection: View {
     }
     .background(RoundedRectangle(cornerRadius: 8).fill(MVTheme.surface))
     .overlay(RoundedRectangle(cornerRadius: 8).stroke(MVTheme.hairline, lineWidth: 1))
-    // plan/23: offered once Core is installed, on a Mac that carries the pieces.
+    // docs/design/23: offered once Core is installed, on a Mac that carries the pieces.
     if store.coreInstalled, !store.removing.contains("ai"), store.finalCut != 0 {
       finalCutRow
         .background(RoundedRectangle(cornerRadius: 8).fill(MVTheme.surface))
@@ -655,7 +655,7 @@ struct LocalSearchSection: View {
     }
   }
 
-  /// Final Cut Pro search on or off (plan/23). Off, nothing of it runs and
+  /// Final Cut Pro search on or off (docs/design/23). Off, nothing of it runs and
   /// Final Cut Pro lists no MediaViewer extension.
   private var finalCutRow: some View {
     HStack(alignment: .firstTextBaseline, spacing: 16) {

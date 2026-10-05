@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The host-side cache in front of meta::read (PR 9, plan/06 + plan/16).
+// The host-side cache in front of meta::read (PR 9, docs/design/06 + docs/design/16).
 //
 // Two jobs, both off the UI and render threads (rule 1):
 //   * one full `metadata` per opened item, read once on a worker and kept in a
@@ -15,7 +15,7 @@
 //
 // Thread model: `get` / `peek` / `date_key` are UI-thread calls that only take
 // a short mutex; loads and key scans run on the job system. `on_ready` fires on
-// the pool thread — the host marshals it (no dispatcher here, plan/14).
+// the pool thread — the host marshals it (no dispatcher here, docs/design/14).
 #pragma once
 
 #include <atomic>

@@ -9,7 +9,7 @@ using Microsoft.UI.Xaml.Media;
 namespace MediaViewer.Chrome;
 
 /// <summary>
-/// PR 29 (plan/20): the Edit workspace — one visible door to the PR 10–14 edits.
+/// PR 29 (docs/design/20): the Edit workspace — one visible door to the PR 10–14 edits.
 /// A fifth panel island at the top of the right column: the strip (title, tabs,
 /// Undo / Reset / Original / Save copy) and, under it, the Crop or Trim pane.
 /// The Colour, Info and Jobs tabs are the adjust, metadata and Jobs panes,

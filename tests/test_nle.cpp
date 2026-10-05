@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// plan/23's portable half: the search agent's wire format (every length
+// docs/design/23's portable half: the search agent's wire format (every length
 // checked), the FCPXML a drag or an export writes, and the viewer's thumbnail
 // cache read by another process without a write. The session over the AI
 // pack's table is in test_ai_engine.cpp, beside the engine it compares with.

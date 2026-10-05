@@ -5,7 +5,7 @@
 # CMakeLists.txt and then returns, so none of the Windows targets are defined.
 # MediaViewer.app, the Quick Look extension, and Sparkle are in darwin-app.cmake.
 #
-# plan/15: AppKit + CAMetalLayer + CAMetalDisplayLink. No SwiftUI, no
+# docs/design/15: AppKit + CAMetalLayer + CAMetalDisplayLink. No SwiftUI, no
 # VideoToolbox, no FFmpeg on this slice.
 
 enable_language(OBJCXX)
@@ -19,7 +19,7 @@ elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
   set(MV_MAC_VCPKG_ARCH "x64")
 else()
   message(FATAL_ERROR
-    "MediaViewer on macOS needs arm64 or x86_64 (plan/15, D9). "
+    "MediaViewer on macOS needs arm64 or x86_64 (docs/design/15, D9). "
     "CMAKE_SYSTEM_PROCESSOR=${CMAKE_SYSTEM_PROCESSOR}")
 endif()
 set(MV_MAC_TRIPLET "${MV_MAC_VCPKG_ARCH}-osx")
@@ -83,12 +83,12 @@ target_link_libraries(mv_gfx PRIVATE
 add_library(mv::gfx ALIAS mv_gfx)
 
 # ---------------------------------------------------------------------------
-# mv_codec — the D5 still set, same TUs as the Windows target (plan/12
+# mv_codec — the D5 still set, same TUs as the Windows target (docs/design/12
 # 2026-09-17 folded the PR 7 camera-dump formats into PR 17): JPEG, PNG, BMP,
 # GIF, WebP, TIFF, ICO, HEIC/HEIF, AVIF, RAW, APNG. Only the OS-codec hook
 # differs (os_decode_mac.cpp).
 #
-# Linkage (CLAUDE.md "Licensing", plan/11): libheif, libde265 and LibRaw are
+# Linkage (CLAUDE.md "Licensing", docs/design/11): libheif, libde265 and LibRaw are
 # dynamic-link only, so they come from vcpkg's arm64-osx-dynamic triplet;
 # giflib, libwebp, libtiff and libavif+dav1d are permissive and stay static
 # in the default arm64-osx triplet, installed from the root manifest.
@@ -186,7 +186,7 @@ add_library(mv::codec ALIAS mv_codec)
 target_link_libraries(mv_codec PRIVATE mv_raw_openmp)
 
 # ---------------------------------------------------------------------------
-# mv_io — portable io/dir.h + io/file.h (PR 18, folded-in PR 4 — plan/12
+# mv_io — portable io/dir.h + io/file.h (PR 18, folded-in PR 4 — docs/design/12
 # 2026-09-17). dir_mac.cpp uses FSEvents for the watch; dir_win.cpp/file.cpp
 # stay Windows-only.
 # ---------------------------------------------------------------------------
@@ -200,7 +200,7 @@ add_library(mv_io STATIC
   src/io/dir.h
   src/io/file.h
   src/io/paths.h
-  # Milestone G (plan/18): verified copy (also F8 across volumes) and the file
+  # Milestone G (docs/design/18): verified copy (also F8 across volumes) and the file
   # and volume ports Import reaches through the add-on host table.
   src/io/content_hash.cpp
   src/io/content_hash.h
@@ -224,7 +224,7 @@ add_library(mv::io ALIAS mv_io)
 # PR 18's JPEG-512 thumbnail cache (folded-in PR 4). image/pipeline.cpp/
 # upload.cpp/gpu_image.h/thumb.cpp stay Windows-only (D3D11 or the '\\'
 # path-join bug in thumb.cpp); PR 17/18 use the _mac twins instead
-# (plan/12 2026-09-17).
+# (docs/design/12 2026-09-17).
 # ---------------------------------------------------------------------------
 find_package(lcms2 CONFIG REQUIRED)
 find_package(unofficial-sqlite3 CONFIG REQUIRED)
@@ -250,7 +250,7 @@ target_link_libraries(mv_image PUBLIC mv_codec mv_gfx mv_io
 add_library(mv::image ALIAS mv_image)
 
 # ---------------------------------------------------------------------------
-# mv_player -- demux, decode, A/V clock, transport (PR 19, plan/05 + plan/15).
+# mv_player -- demux, decode, A/V clock, transport (PR 19, docs/design/05 + docs/design/15).
 # The same portable TUs as the Windows target; the D9 host files are the Metal /
 # VideoToolbox / Core Audio twins: hwdecode_mac.mm, frame_ring_mac.mm,
 # audio_mac.cpp. FFmpeg is LGPL and dynamic-link only (CLAUDE.md), so it comes
@@ -303,7 +303,7 @@ target_link_libraries(mv_player
 add_library(mv::player ALIAS mv_player)
 
 # ---------------------------------------------------------------------------
-# mv_meta -- PR 9 metadata read model (plan/06): Exiv2 for EXIF / IPTC / XMP and
+# mv_meta -- PR 9 metadata read model (docs/design/06): Exiv2 for EXIF / IPTC / XMP and
 # maker notes, libavformat for container and per-stream facts. Exiv2 is GPL-2.0
 # and dynamic-link only (CLAUDE.md "Licensing"), so it comes from the
 # arm64-osx-dynamic triplet with FFmpeg. meta sits beside player/image in the
@@ -336,7 +336,7 @@ target_link_libraries(mv_meta
 add_library(mv::meta ALIAS mv_meta)
 
 # ---------------------------------------------------------------------------
-# mv_edit -- PR 10 (plan/07): the EditStack and its geometry ops, the
+# mv_edit -- PR 10 (docs/design/07): the EditStack and its geometry ops, the
 # full-resolution CPU evaluation for export, lossless JPEG rotate / flip /
 # MCU-aligned crop on libjpeg's coefficient API, and the JPEG / PNG export
 # encoders. Pure C++ over codec + io + core: no GPU, no platform header (D9);
@@ -370,7 +370,7 @@ target_link_libraries(mv_edit
 add_library(mv::edit ALIAS mv_edit)
 
 # ---------------------------------------------------------------------------
-# mv_clip -- PR 13 / 14 (plan/08): two-path trim, extract & remux, the clip
+# mv_clip -- PR 13 / 14 (docs/design/08): two-path trim, extract & remux, the clip
 # job queue. The same sources as Windows; the encode port's Mac half lists
 # VideoToolbox (hwencode_mac.cpp). FFmpeg dynamic and LGPL, as for mv_player.
 # ---------------------------------------------------------------------------
@@ -400,7 +400,7 @@ target_link_libraries(mv_clip
   PRIVATE mv_edit ${FFMPEG_LIBRARIES})
 add_library(mv::clip ALIAS mv_clip)
 
-# MediaViewerClipJob -- encode and decode jobs out of process (plan/12
+# MediaViewerClipJob -- encode and decode jobs out of process (docs/design/12
 # 2026-09-25). Beside mediaviewer_lab; macpack.py puts it in Contents/Helpers.
 add_executable(MediaViewerClipJob tools/clipjob/main.cpp)
 target_link_libraries(MediaViewerClipJob PRIVATE mv_clip)
@@ -437,7 +437,7 @@ target_link_libraries(playprobe PRIVATE mv_player mv_core "-framework Foundation
 target_include_directories(playprobe PRIVATE src)
 
 # ---------------------------------------------------------------------------
-# mv_canvas — pan/zoom camera + springs (plan/03: omega=18, zeta=1). Zero
+# mv_canvas — pan/zoom camera + springs (docs/design/03: omega=18, zeta=1). Zero
 # platform dependency; identical to the Windows target's source.
 # ---------------------------------------------------------------------------
 add_library(mv_canvas STATIC
@@ -450,7 +450,7 @@ add_library(mv::canvas ALIAS mv_canvas)
 
 # ---------------------------------------------------------------------------
 # mv_shell — browse_index, the wrapping next/prev/first/last/skip arithmetic
-# behind PR 18's folded-in PR 4/6 navigation (plan/16-commands.md's Browse
+# behind PR 18's folded-in PR 4/6 navigation (docs/design/16-commands.md's Browse
 # table). Zero platform dependency on purpose, so it is unit-testable without
 # the AppKit glue that drives it (main_mac.mm).
 # ---------------------------------------------------------------------------
@@ -458,7 +458,7 @@ add_library(mv_shell STATIC
   src/shell/browse_index.cpp
   src/shell/browse_index.h
   src/shell/browse_path.h
-  # The one key router and command table, shared with Windows (plan/16): the
+  # The one key router and command table, shared with Windows (docs/design/16): the
   # Mac host translates NSEvents to `key` at the edge, exactly as main.cpp
   # translates virtual keys. Pure C++, no platform header.
   src/shell/command_table.cpp
@@ -476,7 +476,7 @@ add_library(mv_shell STATIC
   # Issue #72: files the viewer shows but must never change (a Photos library).
   src/shell/write_guard.cpp
   src/shell/write_guard.h
-  # plan/26: the Photos library backup engine (portable; PhotoKit is the host's).
+  # docs/design/26: the Photos library backup engine (portable; PhotoKit is the host's).
   src/shell/photos_backup.cpp
   src/shell/photos_backup.h
   # PR 10: per-item edit stacks, crop mode, the lossless-write / export jobs.
@@ -509,7 +509,7 @@ find_package(imgui CONFIG REQUIRED)
 
 # ---------------------------------------------------------------------------
 # MediaViewerChrome — PR 18's SwiftUI command bar, hosted in the AppKit
-# window (plan/10, plan/15: "the canvas is not ported to SwiftUI"; command
+# window (docs/design/10, docs/design/15: "the canvas is not ported to SwiftUI"; command
 # bar and window chrome only). Its own SwiftPM package
 # (src.swift/MediaViewerChrome), built via `swift build` rather than folded
 # into this file's C++ target graph — CMake only invokes it and links the
@@ -560,7 +560,7 @@ add_custom_target(mv_swift_chrome_build
 # PR 16 instrument frametime drives, a bare binary) and MediaViewer (PR 20,
 # the executable inside MediaViewer.app, with MV_APP_BUNDLE and, given a key,
 # Sparkle).
-# PR 11 (plan/10: Mac crash reporting, owed since old PR 17): Crashpad, out of
+# PR 11 (docs/design/10: Mac crash reporting, owed since old PR 17): Crashpad, out of
 # process, with the Windows host's privacy scrub. Crashpad is Apache-2.0 and
 # static, from the root manifest's arm64-osx install like the permissive codecs.
 find_package(crashpad CONFIG REQUIRED)
@@ -586,7 +586,7 @@ set(MV_MAC_HOST_SOURCES
   # Milestone G: add-ons (Settings > Add-ons, the Import chrome's host side).
   src/shell/addons_mac.mm
   src/shell/addons_mac.h
-  # plan/23: Final Cut Pro on / off (the agent and extension in the bundle).
+  # docs/design/23: Final Cut Pro on / off (the agent and extension in the bundle).
   src/shell/fcp_mac.mm
   src/shell/present_busy.h
 )
@@ -620,7 +620,7 @@ function(mv_mac_host target)
     "-framework DiskArbitration"
     "-framework UniformTypeIdentifiers"
     "-framework MediaPlayer"  # PR 15: Now Playing / MPRemoteCommandCenter
-    # plan/26: the Photos library as a folder and its backup (shell/photos_items_mac.mm).
+    # docs/design/26: the Photos library as a folder and its backup (shell/photos_items_mac.mm).
     "-framework Photos"
     "-framework AVFoundation"
     "-framework ImageIO"
@@ -631,7 +631,7 @@ function(mv_mac_host target)
     "-framework SystemConfiguration"
     "-framework IOKit"
     "-framework Security"
-    "-framework ServiceManagement"  # plan/23: the FCP search agent (SMAppService)
+    "-framework ServiceManagement"  # docs/design/23: the FCP search agent (SMAppService)
     bsm)
   target_include_directories(${target} PRIVATE src "${MV_SWIFT_CHROME_BUILD_DIR}"
     "${MV_SWIFT_CHROME_DIR}/Sources/MVChromeBridge/include")
@@ -670,7 +670,7 @@ add_custom_command(
 add_custom_target(mv_import_chrome ALL DEPENDS "${MV_IMPORT_BUNDLE}/Contents/MacOS/Import" mv_import)
 
 # ---------------------------------------------------------------------------
-# Milestone H: AI.bundle, the AI pack's SwiftUI chrome (plan/17): the search
+# Milestone H: AI.bundle, the AI pack's SwiftUI chrome (docs/design/17): the search
 # panel and the Settings -> Local search management view, principal class
 # MVAIChrome. Built beside libmv_ai.dylib in build/addons/ai (cmake/ai.cmake)
 # and packed with it by tools/package/addon-pack.py -- never copied into
@@ -767,11 +767,11 @@ if(MV_BUILD_TESTS)
     tests/test_key_router_review.cpp
     tests/test_write_guard.cpp
     tests/test_photos_backup.cpp
-    # plan/26: virtual items in a result list (the Photos library as a folder).
+    # docs/design/26: virtual items in a result list (the Photos library as a folder).
     tests/test_folder_virtual_mac.cpp
     src/shell/folder_model_mac.cpp
     # The D5 still set (PR 17, folded-in PR 7): in-code fixtures, plus the
-    # optional corpora which SKIP when absent (plan/09: no RAW in git).
+    # optional corpora which SKIP when absent (docs/design/09: no RAW in git).
     tests/test_probe.cpp
     tests/test_decode.cpp
     tests/test_tiff_ico.cpp
@@ -894,7 +894,7 @@ if(MV_BUILD_TESTS)
   add_dependencies(mv_import_tests mv_import)
   catch_discover_tests(mv_import_tests TEST_PREFIX "import_" PROPERTIES ENVIRONMENT "TZ=UTC")
 
-  # plan/25: the add-on SDK (tools/addon-sdk) packs, and the app's own reader
+  # docs/design/25: the add-on SDK (tools/addon-sdk) packs, and the app's own reader
   # says what it makes of each package, so the two cannot drift.
   add_executable(mv_addon_verify tools/addon-verify/main.cpp)
   target_link_libraries(mv_addon_verify PRIVATE mv_addon mv_io mv_project_options)
@@ -906,7 +906,7 @@ if(MV_BUILD_TESTS)
       ENVIRONMENT "MV_ADDON_VERIFY=$<TARGET_FILE:mv_addon_verify>")
   endif()
 
-  # Milestone H (plan/17): the same AI suite as Windows. The pack-dependent
+  # Milestone H (docs/design/17): the same AI suite as Windows. The pack-dependent
   # cases skip unless MV_AI_PACK_DIR (MV_AI_AUDIO_DIR, MV_AI_SPEECH_CLIP,
   # MV_AI_EVAL_DIR) point at staged files. arm64 only, like the pack.
   if(TARGET mv_ai)
@@ -929,12 +929,12 @@ if(MV_BUILD_TESTS)
   endif()
 endif()
 
-# copybench: the copy engine headless, base vs new (plan/12 2026-10-01).
+# copybench: the copy engine headless, base vs new (docs/design/12 2026-10-01).
 add_executable(copybench tools/copybench/main.cpp)
 target_link_libraries(copybench PRIVATE mv_io mv_core mv_project_options)
 target_include_directories(copybench PRIVATE src)
 
-# ai-bench: the AI pack headless, for plan/17's timings (tools/ai-bench).
+# ai-bench: the AI pack headless, for docs/design/17's timings (tools/ai-bench).
 if(TARGET mv_ai)
   add_executable(ai-bench tools/ai-bench/main.cpp tools/ai-bench/photos_ask_mac.mm)
   target_link_libraries(ai-bench PRIVATE "-framework Photos")

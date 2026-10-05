@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// plan/13 Part 2 scrub, on a synthetic minidump shaped like Crashpad's.
+// docs/design/13 Part 2 scrub, on a synthetic minidump shaped like Crashpad's.
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
@@ -142,7 +142,7 @@ TEST_CASE("scrub_text strips paths and filenames from a managed message", "[cras
   CHECK(s.find("0x80070002") != std::string::npos);
 }
 
-// ---- PR 11: the same scrub on a macOS dump (plan/13: "the same Crashpad
+// ---- PR 11: the same scrub on a macOS dump (docs/design/13: "the same Crashpad
 // handler and the same scrub") --------------------------------------------------
 
 namespace {
@@ -180,7 +180,7 @@ TEST_CASE("scrub masks macOS paths and identities; keeps bundle and system modul
   auto dump = make_mac_dump();
   const auto r = mv::shell::scrub_minidump(dump, {{"alice", "Alice Smith", "alices-macbook"}});
   REQUIRE(r.valid);
-  // The canaries of the verify (plan/10 PR 11, macOS crash reporting),
+  // The canaries of the verify (docs/design/10 PR 11, macOS crash reporting),
   // including the unrooted stack fragment in both encodings.
   CHECK_FALSE(contains(dump, "PRIVATE_FOLDER_canary", false));
   CHECK_FALSE(contains(dump, "PRIVATE_FOLDER_canary", true));
