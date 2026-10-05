@@ -1313,11 +1313,11 @@ Measured on the Mac (`mv_tests "[docx]"`; a `textutil`-written DOCX rendered by
 `MV_DOCX_DUMP=out.jpg MV_DOCX_FILE=x.docx mv_tests "[.docx-dump]"` and looked at). The Windows font
 lookup (`fonts_win.cpp`) and the DLLs' packaging are compiled and staged by CI only.
 
-**Settings → File types:** "Show audio files" and "Show documents" (on by default) leave MP3/M4A/M4P
-or PDF/DOCX out of folder listings; the file a folder was opened on, and the current stop, stay.
-Windows filters in the core (`mv_folder_set_hidden_kinds`, ABI 0.19, `[view] hide_audio` /
-`hide_documents` in settings.ini); the Mac host filters its folder model's listing (`mv.viewFlags`
-bits 12–13). Test: `mv_tests "[settings]"`. Gallery folder-tile counts still include hidden kinds.
+**Settings → File types:** "Show audio files" and "Show documents" are off by default, which leaves
+MP3/M4A/M4P and PDF/DOCX out of folder listings; the file a folder was opened on, and the current
+stop, stay, so Open With still shows one. Windows filters in the core (`mv_folder_set_hidden_kinds`,
+ABI 0.19, `[view] show_audio` / `show_documents` in settings.ini); the Mac host filters its folder
+model's listing (`mv.viewFlags` bits 12–13). Test: `mv_tests "[settings]"`. Gallery folder-tile counts still include hidden kinds.
 
 ### Performance pass (2026-09-26)
 

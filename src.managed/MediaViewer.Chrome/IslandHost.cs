@@ -230,10 +230,9 @@ public static partial class IslandHost
         public const int TelemetryAsked = 1 << 10;
         // [update] channel = preview (update_guard.h kChromeFlagUpdatePreview).
         public const int UpdatePreview = 1 << 11;
-        // Set = folder listings leave the kind out (settings.h kSettingHide*).
-        // Settings shows them as "Show ..." switches, on while clear.
-        public const int HideAudio = 1 << 12;
-        public const int HideDocuments = 1 << 13;
+        // Set = folders list the kind (settings.h kSettingShow*). Off by default.
+        public const int ShowAudio = 1 << 12;
+        public const int ShowDocuments = 1 << 13;
     }
 
     // Telemetry is absent from this initial word on purpose: until native

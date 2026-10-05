@@ -67,8 +67,8 @@ view_settings load_view_settings(const settings_store& store) noexcept {
   s.filmstrip_for_image = doc->get_int(kView, "filmstrip_for_image", s.filmstrip_for_image ? 1 : 0) != 0;
   s.wrap = doc->get_int(kView, "wrap", s.wrap ? 1 : 0) != 0;
   s.sticky_zoom = doc->get_int(kView, "sticky_zoom", s.sticky_zoom ? 1 : 0) != 0;
-  s.hide_audio = doc->get_int(kView, "hide_audio", 0) != 0;
-  s.hide_documents = doc->get_int(kView, "hide_documents", 0) != 0;
+  s.show_audio = doc->get_int(kView, "show_audio", s.show_audio ? 1 : 0) != 0;
+  s.show_documents = doc->get_int(kView, "show_documents", s.show_documents ? 1 : 0) != 0;
   const int bg = doc->get_int(kView, "background", s.background);
   s.background = static_cast<std::uint8_t>(bg < 0 || bg > 4 ? 0 : bg);
   // Normalised, so a hand-edited or future value cannot leave an unknown key.
@@ -82,8 +82,8 @@ void save_view_settings(settings_store& store, const view_settings& s) noexcept 
     d.set(kView, "filmstrip_for_image", s.filmstrip_for_image ? "1" : "0");
     d.set(kView, "wrap", s.wrap ? "1" : "0");
     d.set(kView, "sticky_zoom", s.sticky_zoom ? "1" : "0");
-    d.set(kView, "hide_audio", s.hide_audio ? "1" : "0");
-    d.set(kView, "hide_documents", s.hide_documents ? "1" : "0");
+    d.set(kView, "show_audio", s.show_audio ? "1" : "0");
+    d.set(kView, "show_documents", s.show_documents ? "1" : "0");
     d.set(kView, "background", std::to_string(static_cast<unsigned>(s.background <= 4 ? s.background : 0)));
     d.set(kView, "sort", std::to_string(s.sort));
   });

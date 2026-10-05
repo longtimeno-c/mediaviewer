@@ -280,8 +280,10 @@ There is no scrolling between pages: the wheel and trackpad zoom, drag pans, as 
 
 ## Leaving kinds out of a listing
 
-Settings → File types, "Show audio files" and "Show documents" (both on by default), set
-`io::kHideAudio` / `kHideDocuments` (`io::is_hidden_kind`, by extension). The scan is unchanged
+Settings → File types, "Show audio files" and "Show documents", are **off by default**: audio and
+documents are Open With types (D5, 2026-10-03), so a camera folder holding a stray PDF or MP3 does
+not list it unless asked. Off maps to `io::kHideAudio` / `kHideDocuments` (`io::is_hidden_kind`, by
+extension). The scan is unchanged
 and kept whole; the filter runs where the listing is applied, so switching a kind back on needs no
 rescan. Windows: `apply_folder_list` in the core, set by `mv_folder_set_hidden_kinds` (ABI 0.19).
 Mac: `-refreshFolderIfChanged` over the folder model's snapshot. The file a folder was opened on,

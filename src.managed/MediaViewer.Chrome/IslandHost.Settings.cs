@@ -119,8 +119,8 @@ public static partial class IslandHost
         };
         view.Children.Add(SettingsRow("Descending order", "Reverse the selected sort order.", _sortDescending));
         view.Children.Add(SettingsSection("File types"));
-        _showAudio = SettingsToggle("Show audio files", SettingFlag.HideAudio, inverted: true);
-        _showDocuments = SettingsToggle("Show documents", SettingFlag.HideDocuments, inverted: true);
+        _showAudio = SettingsToggle("Show audio files", SettingFlag.ShowAudio);
+        _showDocuments = SettingsToggle("Show documents", SettingFlag.ShowDocuments);
         view.Children.Add(SettingsRow("Show audio files",
             "List MP3, M4A and M4P files in folders. A file you open directly still opens.", _showAudio));
         view.Children.Add(SettingsRow("Show documents",
@@ -341,13 +341,11 @@ public static partial class IslandHost
         return row;
     }
 
-    // `inverted`: the switch is on while the flag is clear (a "Show ..." row
-    // over a hide bit).
-    private static ToggleSwitch SettingsToggle(string header, int flag, bool inverted = false)
+    private static ToggleSwitch SettingsToggle(string header, int flag)
     {
         var toggle = new ToggleSwitch
         {
-            IsOn = HasFlag(flag) != inverted,
+            IsOn = HasFlag(flag),
             FontFamily = UiFont,
             FontSize = UiFontSize,
             Foreground = Brush(Title),
@@ -356,7 +354,7 @@ public static partial class IslandHost
         toggle.Toggled += (_, _) =>
         {
             if (_updatingSettingsUi) return;
-            SetFlag(flag, toggle.IsOn != inverted);
+            SetFlag(flag, toggle.IsOn);
         };
         return toggle;
     }
@@ -472,8 +470,8 @@ public static partial class IslandHost
             if (_stripImage is not null) _stripImage.IsOn = HasFlag(SettingFlag.FilmstripForImage);
             if (_wrap is not null) _wrap.IsOn = HasFlag(SettingFlag.Wrap);
             if (_sticky is not null) _sticky.IsOn = HasFlag(SettingFlag.StickyZoom);
-            if (_showAudio is not null) _showAudio.IsOn = !HasFlag(SettingFlag.HideAudio);
-            if (_showDocuments is not null) _showDocuments.IsOn = !HasFlag(SettingFlag.HideDocuments);
+            if (_showAudio is not null) _showAudio.IsOn = HasFlag(SettingFlag.ShowAudio);
+            if (_showDocuments is not null) _showDocuments.IsOn = HasFlag(SettingFlag.ShowDocuments);
             RefreshUpdateSettingsRow();
             RefreshTelemetrySettingsRow();
             if (_background is not null)
