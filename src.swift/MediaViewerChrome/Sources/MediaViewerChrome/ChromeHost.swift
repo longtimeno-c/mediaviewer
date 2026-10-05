@@ -67,6 +67,12 @@ public final class MVChromeHost: NSObject {
     OpenAddonStore.shared.offer(file: path)
   }
 
+  /// docs/design/26: the welcome card's iCloud Photos row. The host has opened
+  /// Settings; this brings its Photos Library section into view.
+  @MainActor @objc public static func revealPhotosSettings() {
+    PhotosBackupStore.shared.reveal()
+  }
+
   /// The host's MV_ADDON_SELFTEST rig (main_mac.mm): the same calls the
   /// buttons make, and one line of state for its log. Inert otherwise.
   @MainActor @objc public static func addonSelfTest(_ action: String, argument: String) -> String {

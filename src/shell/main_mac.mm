@@ -8095,7 +8095,8 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
   const float scale = _snap.dpi_scale > 0.0f ? _snap.dpi_scale : 1.0f;
   const mv::shell::welcome_geometry g =
       mv::shell::layout_welcome(static_cast<float>(_snap.width), static_cast<float>(_snap.height),
-                                static_cast<float>(_snap.chrome_height_px), scale, _snap.recents.count);
+                                static_cast<float>(_snap.chrome_height_px), scale, _snap.recents.count, 0.0f,
+                                _snap.recents.icloud);
   const int row = mv::shell::welcome_row_at(g, _snap.mouse_x, _snap.mouse_y);
   // The iCloud row has no remove button.
   if (row >= 0 && onRemove && !(_snap.recents.icloud && row == 0)) {
@@ -8132,8 +8133,11 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
 - (void)openWelcomeRow:(int)row {
   if (_snap.recents.icloud) {
     if (row == 0) {
+      // The library's settings (its backup), not the library itself: listing
+      // every asset is File > Open Photos Library and the folder tree's row.
       [NSCursor.arrowCursor set];
-      [self openPhotosLibrary];
+      [self setSettingsVisible:YES];
+      [MVChromeHost revealPhotosSettings];
       return;
     }
     --row;
