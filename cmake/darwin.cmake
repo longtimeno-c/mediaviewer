@@ -903,6 +903,7 @@ if(MV_BUILD_TESTS)
     tests/test_content_hash.cpp
     tests/test_verified_copy.cpp
     tests/test_addon_manifest.cpp
+    tests/test_open_addons.cpp
     tests/test_import_naming.cpp
     tests/test_import_engine.cpp
     tests/test_json.cpp
@@ -918,6 +919,18 @@ if(MV_BUILD_TESTS)
   endif()
   add_dependencies(mv_import_tests mv_import)
   catch_discover_tests(mv_import_tests TEST_PREFIX "import_" PROPERTIES ENVIRONMENT "TZ=UTC")
+
+  # docs/design/25: the add-on SDK (tools/addon-sdk) packs, and the app's own reader
+  # says what it makes of each package, so the two cannot drift.
+  add_executable(mv_addon_verify tools/addon-verify/main.cpp)
+  target_link_libraries(mv_addon_verify PRIVATE mv_addon mv_io mv_project_options)
+  find_package(Python3 COMPONENTS Interpreter QUIET)
+  if(Python3_FOUND)
+    add_test(NAME addon_sdk COMMAND Python3::Interpreter
+             "${CMAKE_SOURCE_DIR}/tools/addon-sdk/test_mvaddon.py" -v)
+    set_tests_properties(addon_sdk PROPERTIES
+      ENVIRONMENT "MV_ADDON_VERIFY=$<TARGET_FILE:mv_addon_verify>")
+  endif()
 
   # Milestone H (docs/design/17): the same AI suite as Windows. The pack-dependent
   # cases skip unless MV_AI_PACK_DIR (MV_AI_AUDIO_DIR, MV_AI_SPEECH_CLIP,

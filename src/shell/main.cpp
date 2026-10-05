@@ -629,6 +629,7 @@ void open_dropped_wide_list(app_state* app, std::wstring_view blob) noexcept;
 void persist_live_keys() noexcept;
 void publish_command_table(app_state* app) noexcept;
 void set_settings_open(app_state* app, bool on) noexcept;
+void refresh_contributed_commands(app_state* app) noexcept;
 void stop_motion(app_state* app) noexcept;
 // PR 29 (docs/design/20): the Edit workspace.
 void push_edit_view(app_state* app) noexcept;
@@ -781,6 +782,12 @@ void open_paths(app_state* app, const std::vector<std::wstring>& raw) {
     case mv::shell::open_kind::folder:
     case mv::shell::open_kind::file:
       open_path(app, request.path);
+      return;
+    case mv::shell::open_kind::addon_package:
+      // docs/design/25: never the viewer. Settings opens and the chrome asks; the
+      // package is read on a worker, by the core.
+      set_settings_open(app, true);
+      if (!app->chrome.offer_addon(utf8_from_wide(request.path))) ::MessageBeep(MB_ICONWARNING);
       return;
     case mv::shell::open_kind::missing:
       MV_LOG_WARN("open: none of the %zu requested paths exists", raw.size());
@@ -4004,6 +4011,10 @@ void chrome_on_command(void* ctx, int command, float arg) {
       const int v = static_cast<int>(arg);
       mv::shell::set_addon_commands_available(
           v >= 2 ? mv::shell::addon_family::ai : mv::shell::addon_family::import, (v & 1) != 0);
+      // docs/design/25: the rows the loaded add-ons' manifests contribute, from the
+      // core (it holds the verified manifests); they supersede the built-in
+      // rows of the same add-on. The router re-reads the live table.
+      refresh_contributed_commands(app);
     }
       app->chrome.set_command_table(mv::shell::describe_commands());
       return;
@@ -4796,6 +4807,47 @@ void persist_live_keys() noexcept {
 void publish_command_table(app_state* app) noexcept {
   if (!app || !app->chrome.attached()) return;
   app->chrome.set_command_table(mv::shell::describe_commands());
+}
+
+// docs/design/25: the loaded add-ons' contributed rows, from the core's verified
+// manifests (mv_addon_commands_json), into the live table; then the router.
+void refresh_contributed_commands(app_state* app) noexcept {
+  if (!app) return;
+  std::vector<mv::shell::addon_command_row> rows;
+  std::string json(64 * 1024, '\0');
+  uint32_t needed = 0;
+  mv_status status = mv_addon_commands_json(json.data(), static_cast<uint32_t>(json.size()), &needed);
+  if (status == MV_ERR_INVALID_ARG && needed > json.size()) {
+    json.assign(needed, '\0');
+    status = mv_addon_commands_json(json.data(), static_cast<uint32_t>(json.size()), &needed);
+  }
+  if (status == MV_OK && needed > 0) {
+    json.resize(needed - 1);
+    if (const auto doc = mv::json::parse(json); doc && doc->k == mv::json::kind::array) {
+      for (const mv::json::value& c : doc->a) {
+        const std::string* addon = c.str("addon");
+        const std::string* id = c.str("id");
+        const std::string* name = c.str("name");
+        if (!addon || !id || !name) continue;
+        mv::shell::addon_command_row r;
+        r.addon = *addon;
+        r.id = *id;
+        r.name = *name;
+        const std::string* label = c.str("windows");
+        if (label && !label->empty() && !mv::shell::parse_key_label(*label, r.k, r.mods)) {
+          r.k = mv::shell::key::none;  // listed; Settings may give it a key
+          r.mods = 0;
+        }
+        const std::string* modes = c.str("modes");
+        r.modes = mv::shell::parse_modes(modes ? *modes : "viewing");
+        const std::string* payload = c.str("payload");
+        r.payload = payload ? *payload : "none";
+        rows.push_back(std::move(r));
+      }
+    }
+  }
+  mv::shell::set_addon_commands(rows);
+  app->router.rebuild(mv::shell::live_bindings());
 }
 
 void set_settings_open(app_state* app, bool on) noexcept {
@@ -5636,6 +5688,35 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       return true;
     // Milestone G: Import's commands exist only while it is installed; with
     // it absent the key falls through as if unbound (docs/design/18).
+    // docs/design/25: a row an add-on's manifest contributed. The payload it asked
+    // for rides along as JSON; the add-on's chrome does the work.
+    case addon_cmd_0: case addon_cmd_1: case addon_cmd_2: case addon_cmd_3:
+    case addon_cmd_4: case addon_cmd_5: case addon_cmd_6: case addon_cmd_7: {
+      const mv::shell::addon_command_row* row = mv::shell::addon_command(command);
+      if (!row) return false;
+      mv::json::writer w;
+      if (row->payload == "marks") {
+        w.begin_array();
+        if (!app->marks.empty()) {
+          for (const std::string& t : expand_pair_targets(app, app->marks.targets({}))) w.string(t);
+        }
+        w.end_array();
+      } else if (row->payload == "marked_or_current") {
+        const auto targets = expand_pair_targets(app, app->marks.targets(current_item_path(app)));
+        if (targets.empty()) return false;
+        w.begin_array();
+        for (const std::string& t : targets) w.string(t);
+        w.end_array();
+      } else if (row->payload == "screen") {
+        w.begin_object();
+        w.key("path").string(current_item_path(app));
+        w.key("video").boolean(video_mode(app));
+        w.end_object();
+      } else {
+        w.null();
+      }
+      return app->chrome.run_addon_command(row->addon, row->id, w.str());
+    }
     case open_import: {
       if (!mv::shell::addon_commands_available()) return false;
       // The viewer's marks ride along for the window's "Marked in viewer"

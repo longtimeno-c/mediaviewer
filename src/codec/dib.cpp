@@ -83,7 +83,8 @@ status unpacked(const header& h, const palette_view& pal, std::span<const std::u
   const std::uint32_t m[4] = {masked ? h.mask[0] : 0x7C00u, masked ? h.mask[1] : 0x03E0u,
                               masked ? h.mask[2] : 0x001Fu, masked ? h.mask[3] : 0u};
   const channel cr(m[0]), cg(m[1]), cb(m[2]), ca(m[3]);
-  const bool alpha = h.alpha_channel();
+  // An alpha mask of zero bits is no alpha channel: opaque, as GDI draws it.
+  const bool alpha = h.alpha_channel() && (!masked || ca.bits != 0);
 
   for (std::uint32_t sy = 0; sy < h.height; ++sy) {
     if ((sy & 63u) == 0 && ctx && ctx->cancelled()) return status::cancelled;

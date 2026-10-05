@@ -384,7 +384,7 @@ public static partial class IslandHost
         };
         var root = new Grid
         {
-            RequestedTheme = ElementTheme.Default,
+            RequestedTheme = IslandTheme,
             Background = Brush(Canvas),
             Height = FilmstripDip,
             Children = { scroll },

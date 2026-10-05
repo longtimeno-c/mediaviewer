@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <condition_variable>
+#include <initializer_list>
 #include <map>
 #include <mutex>
 #include <set>
@@ -68,6 +69,87 @@ bool read_file(const json::value& v, manifest_file& out, bool need_licence) {
   return true;
 }
 
+// One line a person reads: bounded, no control characters.
+bool plain_text(std::string_view s, std::size_t max_bytes, bool may_be_empty) noexcept {
+  if (s.empty()) return may_be_empty;
+  if (s.size() > max_bytes) return false;
+  return std::all_of(s.begin(), s.end(), [](char c) {
+    const auto u = static_cast<unsigned char>(c);
+    return u >= 0x20 && u != 0x7F;
+  });
+}
+
+bool command_id_text(std::string_view s) noexcept {
+  if (s.empty() || s.size() > 32) return false;
+  return std::all_of(s.begin(), s.end(), [](char c) { return (c >= 'a' && c <= 'z') || c == '_'; });
+}
+
+bool one_of(std::string_view s, std::initializer_list<std::string_view> allowed) noexcept {
+  return std::find(allowed.begin(), allowed.end(), s) != allowed.end();
+}
+
+// `description`, `contributes.commands` and `contributes.hint`, all optional
+// (2026-10-03). A present field that is not as described is malformed: a
+// typo in a key fails loudly instead of doing nothing.
+bool read_contributions(const json::value& doc, manifest& m) {
+  if (const json::value* v = doc.find("description")) {
+    if (v->k != json::kind::string || !plain_text(v->s, 280, true)) return false;
+    m.description = v->s;
+  }
+  const json::value* contributes = doc.find("contributes");
+  if (!contributes) return true;
+  if (contributes->k != json::kind::object) return false;
+  for (const auto& [key, value] : contributes->o) {
+    if (key == "commands") {
+      if (value.k != json::kind::array || value.a.size() > 16) return false;
+      std::set<std::string> ids;
+      for (const json::value& c : value.a) {
+        if (c.k != json::kind::object) return false;
+        const std::string* id = c.str("id");
+        const std::string* name = c.str("name");
+        if (!id || !name || !command_id_text(*id) || !plain_text(*name, 48, false) ||
+            !ids.insert(*id).second) {
+          return false;
+        }
+        manifest_command cmd;
+        cmd.id = *id;
+        cmd.name = *name;
+        for (const auto& [field, out] : {std::pair{"windows", &cmd.windows}, std::pair{"mac", &cmd.mac}}) {
+          if (const json::value* k = c.find(field)) {
+            if (k->k != json::kind::string || !plain_text(k->s, 32, true)) return false;
+            *out = k->s;
+          }
+        }
+        cmd.modes = "viewing";
+        if (const std::string* modes = c.str("modes")) {
+          if (!one_of(*modes, {"viewing", "video", "browse", "all"})) return false;
+          cmd.modes = *modes;
+        } else if (c.find("modes")) {
+          return false;
+        }
+        cmd.payload = "none";
+        if (const std::string* payload = c.str("payload")) {
+          if (!one_of(*payload, {"none", "marks", "marked_or_current", "screen"})) return false;
+          cmd.payload = *payload;
+        } else if (c.find("payload")) {
+          return false;
+        }
+        m.commands.push_back(std::move(cmd));
+      }
+    } else if (key == "hint") {
+      if (value.k != json::kind::object) return false;
+      const std::string* on = value.str("on");
+      const std::string* text = value.str("text");
+      if (!on || !text || !one_of(*on, {"card"}) || !plain_text(*text, 120, false)) return false;
+      m.hint_on = *on;
+      m.hint_text = *text;
+    } else {
+      return false;
+    }
+  }
+  return true;
+}
+
 }  // namespace
 
 const char* rejection_name(rejection r) noexcept {
@@ -85,6 +167,14 @@ const char* rejection_name(rejection r) noexcept {
     case rejection::unexpected_file: return "unexpected_file";
     case rejection::needs_update: return "needs_update";
     case rejection::over_ceiling: return "over_ceiling";
+    case rejection::too_large: return "too_large";
+    case rejection::bad_package: return "bad_package";
+    case rejection::code_not_allowed: return "code_not_allowed";
+    case rejection::other_publisher: return "other_publisher";
+    case rejection::downgrade: return "downgrade";
+    case rejection::not_approved: return "not_approved";
+    case rejection::changed: return "changed";
+    case rejection::invalid_theme: return "invalid_theme";
   }
   return "unknown";
 }
@@ -242,6 +332,7 @@ decision check_manifest(std::span<const std::uint8_t> bytes, std::span<const std
   m.installed_size = static_cast<std::uint64_t>(*size);
   m.host_api_min = static_cast<std::uint32_t>(*host_min);
   m.host_api_max = static_cast<std::uint32_t>(*host_max);
+  if (!read_contributions(*doc, m)) return d;
   if (!read_file(*archive, m.archive, false)) return d;
   std::set<std::string> seen;
   for (const json::value& f : files->a) {
@@ -381,11 +472,15 @@ void note_verified_move(const std::string& from_dir, const std::string& to_dir) 
 }
 
 rejection verify_files(const std::string& dir, const manifest& m) {
+  return verify_files(dir, std::span<const manifest_file>(m.files));
+}
+
+rejection verify_files(const std::string& dir, std::span<const manifest_file> files) {
   std::set<std::string> listed;
   std::string key = dir;
   verified_snapshot now;
-  now.files.reserve(m.files.size());
-  for (const manifest_file& f : m.files) {
+  now.files.reserve(files.size());
+  for (const manifest_file& f : files) {
     const std::string full = io::join_path(dir, io::native_relative(f.path));
     auto st = io::stat_path(full);
     if (!st || st->is_directory) return rejection::file_missing;
@@ -416,7 +511,7 @@ rejection verify_files(const std::string& dir, const manifest& m) {
         g_verified_cv.notify_all();
       }
     } const release{key};
-    for (const manifest_file& f : m.files) {
+    for (const manifest_file& f : files) {
       if (sha256_file(io::join_path(dir, io::native_relative(f.path))) != f.sha256) {
         std::lock_guard lock(g_verified_m);
         g_verified.erase(key);
@@ -428,7 +523,7 @@ rejection verify_files(const std::string& dir, const manifest& m) {
     std::lock_guard lock(g_verified_m);
     g_verified[key] = now;
   }
-  for (const manifest_file& f : m.files) listed.insert(f.path);
+  for (const manifest_file& f : files) listed.insert(f.path);
   // Nothing else may sit beside them: a dropped-in DLL would otherwise ride
   // along with a valid signature. The walk skips nothing (a hidden DLL loads
   // as well as a visible one) and follows no link: a link, a junction, or a

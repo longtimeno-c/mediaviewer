@@ -220,7 +220,7 @@ private struct FolderTile: View {
         }
         .overlay(
           RoundedRectangle(cornerRadius: 6)
-            .strokeBorder(isCursor ? Color.accentColor : .clear, lineWidth: 2)
+            .strokeBorder(isCursor ? MVTheme.accent : .clear, lineWidth: 2)
         )
       HStack(spacing: 4) {
         Image(systemName: "folder").font(.caption).foregroundStyle(.secondary)
@@ -271,11 +271,11 @@ private struct FolderChip: View {
     .padding(4)
     .background(
       RoundedRectangle(cornerRadius: 6)
-        .fill(isCursor ? Color.accentColor.opacity(0.18) : Color.primary.opacity(0.04))
+        .fill(isCursor ? MVTheme.accent.opacity(0.18) : Color.primary.opacity(0.04))
     )
     .overlay(
       RoundedRectangle(cornerRadius: 6)
-        .strokeBorder(isCursor ? Color.accentColor : .clear, lineWidth: 2)
+        .strokeBorder(isCursor ? MVTheme.accent : .clear, lineWidth: 2)
     )
     .onAppear { FolderStore.shared.requestFolderSummaryIfNeeded(at: index) }
   }
@@ -308,7 +308,7 @@ private struct GalleryCell: View {
         .clipShape(RoundedRectangle(cornerRadius: 6))
         .overlay(
           RoundedRectangle(cornerRadius: 6)
-            .strokeBorder(isCurrent ? Color.accentColor : .clear, lineWidth: 2)
+            .strokeBorder(isCurrent ? MVTheme.accent : .clear, lineWidth: 2)
         )
         .overlay { if isClip { PlayBadge(diameter: 40) } }
         .overlay(alignment: .topTrailing) { if isMarked { MarkBadge() } }

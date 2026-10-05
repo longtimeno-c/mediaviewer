@@ -93,6 +93,13 @@ final class ImportModel: ObservableObject {
   @Published var days: [ImportDay] = []
   @Published var folders: [FolderCount] = []
   @Published var bottom = ""
+  /// The bottom bar's quieter second line: what is skipped, how long it takes.
+  @Published var bottomDetail = ""
+  /// The plan's totals, for the grid's empty states and the folder preview.
+  @Published var planUnits = 0
+  @Published var planNew = 0
+  /// "reading", "failed" or "" (planned): what the grid says while it has no tiles.
+  @Published var scanState = ""
   @Published var importCount = 0
   @Published var preset: [String: Any] = [:]
   @Published var presetNames: [String] = []
@@ -201,7 +208,10 @@ final class ImportModel: ObservableObject {
     selectedSource = source.root
     volumeID = source.volumeID
     removable = source.removable
-    title = source.root + " · reading…"
+    title = source.label
+    scanState = "reading"
+    planUnits = 0
+    planNew = 0
     days = []
     thumbs = [:]
     requested = []
@@ -232,7 +242,7 @@ final class ImportModel: ObservableObject {
 
   func scanDone(_ id: UInt64, _ status: UInt32) {
     guard id == scan else { return }
-    if status != MV_OK.rawValue { title = selectedSource + " · could not be read"; return }
+    if status != MV_OK.rawValue { scanState = "failed"; return }
     replan()
   }
 
@@ -262,8 +272,10 @@ final class ImportModel: ObservableObject {
     let label = (source["label"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? selectedSource
     if let sourceRemovable = source["removable"] as? Bool { removable = sourceRemovable }
     let n = { (k: String) in totals[k] as? Int ?? 0 }
-    title = "\(label) · \(n("new")) new of \(n("units")) · " +
-      ByteCountFormatter.string(fromByteCount: Int64(n("bytes")), countStyle: .file)
+    title = label
+    scanState = ""
+    planUnits = n("units")
+    planNew = n("new")
     destination = root["destination"] as? String ?? ""
 
     var byDay: [String: ImportDay] = [:]
@@ -289,7 +301,7 @@ final class ImportModel: ObservableObject {
       guard let day = d["day"] as? String, var g = byDay[day] else { continue }
       let units = d["units"] as? Int ?? 0, fresh = d["new"] as? Int ?? 0, sel = d["selected"] as? Int ?? 0
       let check = sel == 0 ? "☐" : sel == units ? "☑" : "◧"
-      g.header = "\(check) \(day) · \(units)" + (fresh == units ? " (all new)" : fresh == 0 ? " (already imported)" : " (\(fresh) new)")
+      g.header = "\(check) \(Self.dayLabel(day)) · \(units)" + (fresh == units ? " (all new)" : fresh == 0 ? " (already imported)" : " (\(fresh) new)")
       byDay[day] = g
     }
     days = order.compactMap { byDay[$0] }
@@ -299,13 +311,30 @@ final class ImportModel: ObservableObject {
     }
     let eta = totals["eta_seconds"] as? Int ?? -1
     let rate = totals["bytes_per_second"] as? Double ?? 0
-    bottom = "\(n("selected_files")) files · " +
-      ByteCountFormatter.string(fromByteCount: Int64(n("selected_bytes")), countStyle: .file) +
-      " · \(n("duplicates")) duplicates skipped" +
-      (eta >= 0 ? " · ≈ \(max(1, eta / 60)) min at \(Int(rate / 1_000_000)) MB/s" : " · time shown after the first import from this device")
+    let units = n("selected_units")
+    bottom = units == 0
+      ? "Nothing selected"
+      : "\(units) \(units == 1 ? "item" : "items") selected · " +
+        ByteCountFormatter.string(fromByteCount: Int64(n("selected_bytes")), countStyle: .file)
+    var detail: [String] = []
+    if n("duplicates") > 0 { detail.append("\(n("duplicates")) already in your library will be skipped") }
+    if eta >= 0 && units > 0 { detail.append("about \(max(1, eta / 60)) min at \(Int(rate / 1_000_000)) MB/s") }
+    bottomDetail = detail.joined(separator: " · ")
     importCount = n("selected_units")
     confirmFiles = n("selected_files")
     confirmBytes = Int64(n("selected_bytes"))
+  }
+
+  /// "2026-09-21" as the person reads a date ("Sun 21 Sep 2026"), as the
+  /// Windows window's DayLabel; an unparsable day is shown as it is.
+  nonisolated static func dayLabel(_ day: String) -> String {
+    let parse = DateFormatter()
+    parse.locale = Locale(identifier: "en_US_POSIX")
+    parse.dateFormat = "yyyy-MM-dd"
+    guard let date = parse.date(from: day) else { return day }
+    let show = DateFormatter()
+    show.setLocalizedDateFormatFromTemplate("EEE d MMM yyyy")
+    return show.string(from: date)
   }
 
   func thumbnail(for tile: ImportTile) {
@@ -322,6 +351,12 @@ final class ImportModel: ObservableObject {
   func toggle(_ tile: ImportTile) {
     guard !copying else { return }
     _ = api.select!(table.ctx, plan, Int32(tile.index), nil, tile.selected ? 0 : 1)
+  }
+
+  /// Everything on (or off) at once: unit -1 with no day (mediaviewer_import.h).
+  func selectAll(_ on: Bool) {
+    guard !copying, plan != 0 else { return }
+    _ = api.select!(table.ctx, plan, -1, nil, on ? 1 : 0)
   }
 
   func toggleDay(_ day: String) {
@@ -379,7 +414,11 @@ final class ImportModel: ObservableObject {
   /// Asks for a clear count-and-destination confirmation before anything is
   /// copied (issue #41); `startConfirmed()` is what actually starts the job.
   func start() {
-    guard !copying, plan != 0 else { return }
+    guard !copying else { return }
+    // No destination yet: choosing one is the next step, not a confirmation
+    // that says "(not set)".
+    if string("destination").isEmpty { chooseFolder("destination"); return }
+    guard plan != 0 else { return }
     confirmingImport = true
   }
 
@@ -389,7 +428,7 @@ final class ImportModel: ObservableObject {
     job = id
     copying = true
     summary = []
-    chrome?.track(id, label: title.components(separatedBy: " · ").first ?? "Import")
+    chrome?.track(id, label: title.isEmpty ? "Import" : title)
   }
 
   func pauseResume() {
@@ -588,7 +627,7 @@ enum ExplainerSection: String, CaseIterable, Identifiable {
         "original is never modified, on the card or off it)."
     case .sources:
       return "A card, USB drive or network share appears on the left with its free space and how " +
-        "many files on it are new. A folder you add with “＋ Folder…” is scanned and copied the " +
+        "many files on it are new. A folder you add with “Add a folder…” is scanned and copied the " +
         "same way, but — because it is not removable media — Import never offers to eject it."
     case .filters:
       return "“New since last import” skips anything this source has given you before, tracked " +
@@ -598,7 +637,7 @@ enum ExplainerSection: String, CaseIterable, Identifiable {
         "destination (or the whole library, with the wider duplicate scope); an exact match is " +
         "skipped, never overwritten or duplicated."
     case .destination:
-      return "“WHERE FILES GO” and the grid show exactly which folder — and, if renaming is " +
+      return "The folder list under “How to organise” and the grid show exactly which folder — and, if renaming is " +
         "turned on, which file name — each file will get before you click Import. Nothing is " +
         "copied until you start the import."
     case .verify:

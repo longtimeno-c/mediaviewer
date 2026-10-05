@@ -851,6 +851,114 @@ MTU are never changed by the app.
 
 ---
 
+## Open add-ons
+
+**Anyone can make an add-on; a contribution model (2026-09-29, owner, issue #79).** "Add-ons can
+be made and installed by anyone, not just our repo… if people have a compatible file / URL they
+can install their add-on… add-ons can do a wide range of things like add new screens." Designed
+in [25](25-open-addons.md) as PRs 55–60; PR 55 is built on both hosts. Not a D-decision, and
+none is reversed. [18 "Signed, verified, then loaded"](18-import.md#add-ons-how-import-is-installed)
+stays true of MediaViewer's own add-ons (Import, Local search, Voice), whose channel, key,
+folder and native code are untouched. Beside them there is a second kind, the **open add-on**:
+manifest schema 2, signed by its **publisher's** Ed25519 key, which is a field of the manifest.
+The signature proves the files and the continuity of updates, **not who the publisher is**, and
+the install sheet says so. The two kinds cannot meet: open ids have a dot and ours do not,
+`mediaviewer.` is reserved, the release key is refused as a publisher key, and each kind has its
+own folder and store.
+
+**The key is pinned per add-on at first install (2026-09-29).** `publisher.json`, written by the
+app outside the version folders. Another key under an installed id is refused; so is an older
+version; a folder put in place by hand has no record of consent and is not loaded. **Consent is
+bound to bytes:** the sheet shows a package whose SHA-256 the core returned, and install refuses
+a file that differs.
+
+**The package is a ZIP with nothing compressed (2026-09-29).** Stored entries only, no ZIP64,
+encryption, extra fields, comments or gaps; 64 MB, 2,048 entries. A stranger's file gets the
+narrowest reader there is and no inflate code to attack; the cost is download size, which for
+themes and scripts is kilobytes. No new dependency.
+
+**Contribution API 1 is data only: themes (2026-09-29).** A manifest that names code (`native`,
+`chrome`, `scripts`, `main`) is refused whatever API range it claims. Themes realise the
+backlog's "theme" row for the chrome: seven colour tokens per palette and a font family, one
+table for both hosts. The canvas's pixels are never themed (rule 2). The host refuses a palette
+below a WCAG contrast floor (title 4.5 : 1, body and accent 3 : 1), since Settings is where a
+theme is turned off. The canvas colour scheme, F3 overlay and user font file stay in the
+backlog.
+
+**Nothing automatic reaches a third party's server (2026-09-29).** Install from a link and Check
+for update are clicks; there is no background check, so a publisher cannot learn when the app
+runs. The GET is https at every hop, with no cookies and the fixed User-Agent. **Start-up reads
+no add-on:** the chrome paints with the tokens it cached and verifies the add-on on a worker
+afterwards (Mac: the defaults; Windows: `theme.json` beside `settings.ini`, read once when the
+chrome starts, like the font beside the exe). **One wording for both hosts:** what the sheet says
+an add-on adds, can and cannot do, and why one is refused, is written by the core
+(`src/addon/open_json.cpp`) and shown as given.
+
+**The SDK and the example are MIT; the app stays GPL-3.0-or-later (2026-09-29).** Making an
+add-on with `tools/addon-sdk/mvaddon.py` puts no licence on it. The SDK signs with its own
+Ed25519 (RFC 8032's reference arithmetic, tested against the RFC's vectors and against libsodium
+through the C++ reader), so an author installs nothing but Python. ABI 0.17 (0.16 until main's pages took it, 2026-10-05) adds
+`mv_open_addon_inspect`, `_install`, `_list_json`, `_remove`, `_theme_json`, additive
+([14](14-abi.md#pr-55--open-add-ons-abi-017)). Measurements (both platforms, base in its own
+worktree and build directory, runs alternated) and what is still owed are in
+[25 "Implementation notes"](25-open-addons.md#implementation-notes-pr-55-2026-09-29).
+
+**The owner's calls (2026-10-03, on pull request #98;
+[25 §17](25-open-addons.md#17-decisions-owner-2026-10-03)).**
+
+- **A stranger's code runs in a sandboxed script, with screens described as data** (as
+  recommended; Lua 5.4 unless PR 57's spike shows its sandbox cannot hold the limits).
+  Third-party native code in the app's process stays out: rules 1 and 6 could not be promised
+  for it, and the Mac would need library validation off for everyone.
+- **No `network` permission, ever.** Rule 6 then holds for other people's code by construction:
+  the host API has no way to open a connection. The app contacts a third party's server only on
+  a click (install from a link, check for update).
+- **`.mvaddon` is registered with the OS**, in PR 55: Windows gets a `MediaViewer.Addon` ProgId
+  with the extension pointing at it (our own type, so the association is set, not only offered;
+  "never silently hijack" is about taking photo types), the Mac a document type with
+  `LSHandlerRank` Owner over an exported UTI (`io.github.longtimeno-c.mediaviewer.addon`,
+  conforming to `public.data`). The default-viewer prompt and the plist policy check leave that
+  type alone. Not yet seen working: neither installer was rebuilt here.
+- **Add-ons may carry any licence** (delegated to the writer): `LICENSE-ADDONS.md` is an
+  additional permission under GPL-3.0 section 7 for works that reach MediaViewer only through the
+  documented add-on interfaces, named from `LICENSE` and the author's guide. Whether a script
+  that calls a GPL program's interpreter bindings is a derivative is unsettled, and a theme author
+  should not need a lawyer to publish. Only the owner can withdraw the permission for later
+  versions; nothing published loses it. MediaViewer's own add-ons, which link the core, stay GPL.
+- **"From others"** stays the wording in Settings.
+
+**Import described by its manifest (2026-10-04; PR 56's first half,
+[25](25-open-addons.md#pr-56-first-half-import-described-by-its-manifest-2026-10-04)).** Owner:
+"can I now convert all of the Import add-on to be an actual add-on? it's still included in app
+code mostly". Import's engine and both windows already ship in the add-on package, not the app;
+what the app held was the plumbing that named Import: two command rows, their dispatch, the
+Settings text, the card hint, and selectors each chrome knew by name. This slice makes the
+manifest say those things and the app read them.
+
+- **Schema 1 gains `description`, `contributes.commands` and `contributes.hint`**, all optional
+  and additive; an older manifest is the same add-on as before.
+- **Eight reserved command ids** (`addon_cmd_0..7`) take the loaded add-ons' rows at load. Kept
+  as named keyless placeholders so the wire ids stay dense; a filled slot answers with the
+  add-on's own name. Appended after the built-in rows so built-in remaps keep their indices.
+- **A manifest's rows supersede the built-in rows of the same add-on** (their key is cleared
+  while the add-on's rows are live) rather than being removed: indices never move, and the
+  router cannot answer the old row ahead of the new one on the same key.
+- **Compatibility first:** an installed Import from before this (the owner's is 0.1.20) has no
+  `contributes` and no generic entry; it keeps the built-in rows and the two frozen calls.
+  The built-in rows and the fallback go once the published Import carries contributions.
+- **The AI pack stays on its built-in rows** for now: Ctrl+F without the pack is the app's file
+  search, which a contributed row cannot express. The list of first-party channels stays in the
+  app: it is what the app can offer to download.
+- **ABI 0.18** (0.17 before the same renumbering): `mv_addon_commands_json`, additive; `mv_addon_installed_json` and
+  `mv_addon_check_manifest` carry `description`, `hint_on`, `hint_text`.
+
+Verified on the Mac: the shell suite (contributed rows, the key-label round trip over every
+built-in binding, superseding and restoring), the manifest cases, the packer's cross-check,
+the full suite and the add-on rig. Not verified: a signed Import carrying the new manifest in
+the app (a local build cannot load its own unsigned Import); Windows beyond compiling.
+
+---
+
 ## Not built
 
 - Voice query add-on (PRs 27–28): no voice add-on or `search_query` host entry exists.
@@ -858,7 +966,8 @@ MTU are never changed by the app.
 - Multi-window viewers grouped as OS tabs with `Ctrl+Tab`: Mac windows disallow tabbing; one window.
 - Explorer property handler: per-user installs cannot register one.
 - Staged rollout (5 % → 25 % → 100 %): one channel per release goes to everyone.
-- Keymap import/export and named layouts; a user font.
+- Keymap import/export and named layouts (planned as keymap packs, PR 56); a user font file.
+- Open add-ons PRs 56–60: settings pages, keymap packs, the Lua sandbox, screens, slots, files.
 - Live Photo ContentIdentifier check: pairing is by name only.
 - `F2` rename and an `X` reject mark.
 - Reverse playback in the Video Editor.

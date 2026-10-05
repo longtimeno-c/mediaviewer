@@ -288,6 +288,9 @@ expected chrome_host::load() noexcept {
   share_files_ = get_entry(L"ShareFiles");
   // Optional (Milestone H): the add-on command hand-off by family.
   show_addon_ = get_entry(L"ShowAddon");
+  // Optional (docs/design/25): without it a dropped add-on package is not offered.
+  offer_addon_ = get_entry(L"OfferAddon");
+  run_addon_command_ = get_entry(L"RunAddonCommand");
   // Optional: without them a drag carries one cell and Open lists no recents.
   set_drag_paths_ = get_entry(L"SetDragPaths");
   set_recent_folders_ = get_entry(L"SetRecentFolders");
@@ -932,6 +935,29 @@ bool chrome_host::show_addon(std::int32_t family, std::int32_t kind,
   std::memcpy(buf.data() + 8, &len, 4);
   if (!json.empty()) std::memcpy(buf.data() + 12, json.data(), json.size());
   return show_addon_(buf.data(), static_cast<std::int32_t>(buf.size())) == 0;
+}
+
+bool chrome_host::run_addon_command(const std::string& addon, const std::string& id,
+                                    const std::string& json) noexcept {
+  if (!attached_ || !run_addon_command_) return false;
+  // Three UTF-8 strings, each NUL-terminated, mirrored by IslandHost.RunAddonCommand.
+  std::vector<std::uint8_t> buf;
+  buf.reserve(addon.size() + id.size() + json.size() + 3);
+  for (const std::string* part : {&addon, &id, &json}) {
+    buf.insert(buf.end(), part->begin(), part->end());
+    buf.push_back(0);
+  }
+  return run_addon_command_(buf.data(), static_cast<std::int32_t>(buf.size())) == 0;
+}
+
+bool chrome_host::offer_addon(const std::string& path_utf8) noexcept {
+  if (!attached_ || !offer_addon_ || path_utf8.empty()) return false;
+  // { int32 byte count; UTF-8 path }, mirrored by IslandHost.OfferAddon.
+  std::vector<std::uint8_t> buf(4 + path_utf8.size());
+  const auto len = static_cast<std::int32_t>(path_utf8.size());
+  std::memcpy(buf.data(), &len, 4);
+  std::memcpy(buf.data() + 4, path_utf8.data(), path_utf8.size());
+  return offer_addon_(buf.data(), static_cast<std::int32_t>(buf.size())) == 0;
 }
 
 void chrome_host::navigate_gallery(std::int32_t direction, std::int32_t index) noexcept {

@@ -9,6 +9,9 @@
  Foundation, either version 3 of the License, or (at your option) any later
  version. The full text follows.
 
+ Add-ons that reach MediaViewer only through its documented add-on interfaces
+ have an additional permission under section 7: see LICENSE-ADDONS.md.
+
 
  Copyright (C) 2007 Free Software Foundation, Inc. <https://fsf.org/>
  Everyone is permitted to copy and distribute verbatim copies

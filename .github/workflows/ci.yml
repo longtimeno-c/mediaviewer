@@ -148,7 +148,9 @@ jobs:
     needs: windows-deps
     if: ${{ github.event_name != 'schedule' }}
     runs-on: windows-latest
-    timeout-minutes: 40
+    # ASan runs the same suite several times slower; its leg gets the room
+    # below, the others keep the tighter budget that catches a hang early.
+    timeout-minutes: ${{ matrix.toolchain == 'msvc-asan' && 55 || 40 }}
     strategy:
       fail-fast: false
       matrix:
@@ -215,7 +217,10 @@ jobs:
       # crashes or hangs") in every matrix leg, ASan included. A failing input
       # is written to broken-dump/ and uploaded below.
       - name: Unit tests
-        timeout-minutes: 15
+        # The suite under ASan passed 12 of 15 minutes on #121 alone, and the
+        # broken corpus's PDF and DOCX sweeps take minutes each there; 15 stays
+        # the budget for the other legs (a hang still fails them fast).
+        timeout-minutes: ${{ matrix.toolchain == 'msvc-asan' && 30 || 15 }}
         env:
           MV_BROKEN_DUMP: ${{ github.workspace }}/broken-dump
         run: ctest --test-dir build -C ${{ matrix.config }} --output-on-failure

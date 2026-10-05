@@ -12,7 +12,7 @@ namespace MediaViewer.Import.Chrome;
 /// keeps an import running with a small indicator in the main command bar,
 /// and a notification when it finishes.
 /// </summary>
-public sealed class ImportChrome : IAddonChrome
+public sealed class ImportChrome : IAddonChrome, IAddonCommands
 {
     private IAddonHost? _host;
     private ImportApi? _api;
@@ -39,7 +39,9 @@ public sealed class ImportChrome : IAddonChrome
         }
     }
 
-    public void Open(string? sourceRoot)
+    public void Open(string? sourceRoot) => Show(sourceRoot, _host?.MarkedPaths() ?? Array.Empty<string>());
+
+    private void Show(string? sourceRoot, IReadOnlyList<string> marks)
     {
         if (_api is null || _host is null) return;
         if (_window is null)
@@ -47,7 +49,39 @@ public sealed class ImportChrome : IAddonChrome
             _window = new ImportWindow(this);
             _window.Closed += (_, _) => _window = null;
         }
-        _window.Show(sourceRoot, _host.MarkedPaths());
+        _window.Show(sourceRoot, marks);
+    }
+
+    /// <summary>docs/design/25: the commands the manifest contributes, by their ids.</summary>
+    public bool RunCommand(string id, string payloadJson)
+    {
+        switch (id)
+        {
+            case "open":
+            {
+                var marks = new List<string>();
+                try
+                {
+                    using JsonDocument doc = JsonDocument.Parse(payloadJson.Length == 0 ? "[]" : payloadJson);
+                    if (doc.RootElement.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (JsonElement e in doc.RootElement.EnumerateArray())
+                        {
+                            if (e.GetString() is { Length: > 0 } path) marks.Add(path);
+                        }
+                    }
+                }
+                catch (JsonException) { }
+                Show(null, marks);
+                return true;
+            }
+            case "import_now":
+                if (payloadJson == "[]" || payloadJson == "null") return false;
+                ImportNow(payloadJson);
+                return true;
+            default:
+                return false;
+        }
     }
 
     public void ImportNow(string pathsJson)

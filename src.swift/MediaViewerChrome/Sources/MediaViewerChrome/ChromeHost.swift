@@ -20,7 +20,8 @@ public final class MVChromeHost: NSObject {
   // 2026-09-19). Empty options = the hosting view takes whatever frame it is
   // given.
   private static func host<V: View>(_ root: V) -> NSView {
-    let hosting = NSHostingView(rootView: root)
+    // docs/design/25: every root is rebuilt when the theme changes.
+    let hosting = NSHostingView(rootView: ThemedRoot(content: root))
     hosting.sizingOptions = []
     hosting.translatesAutoresizingMaskIntoConstraints = false
     return hosting
@@ -57,6 +58,40 @@ public final class MVChromeHost: NSObject {
 
   @objc public static func makeSettingsView() -> NSView {
     host(SettingsView())
+  }
+
+  /// docs/design/25: an add-on package handed to the app (a drop, Open With, the
+  /// command line). The host has opened Settings; this shows what the package
+  /// is and asks. Nothing is installed without that answer.
+  @MainActor @objc public static func offerAddonPackage(_ path: String) {
+    OpenAddonStore.shared.offer(file: path)
+  }
+
+  /// The host's MV_ADDON_SELFTEST rig (main_mac.mm): the same calls the
+  /// buttons make, and one line of state for its log. Inert otherwise.
+  @MainActor @objc public static func addonSelfTest(_ action: String, argument: String) -> String {
+    guard ProcessInfo.processInfo.environment["MV_ADDON_SELFTEST"] != nil else { return "" }
+    let addons = OpenAddonStore.shared
+    let theme = ThemeStore.shared
+    switch action {
+    case "offered": return addons.offer?.addon?.addonID ?? addons.installed.first?.addonID ?? ""
+    case "confirm": addons.confirm()
+    case "choose": theme.choose(argument)
+    case "choose-first": theme.choose(addons.themes.first?.key ?? "")
+    case "choose-last": theme.choose(addons.themes.last?.key ?? "")
+    case "changed":
+      addons.refresh()
+      theme.addonsChanged()
+    case "remove":
+      if let addon = addons.installed.first(where: { $0.folder == argument }) { addons.remove(addon) }
+    default: break
+    }
+    let offer = addons.offer.map {
+      "offer(ok=\($0.ok) relation=\($0.relation) name=\($0.addon?.name ?? "") key=\($0.addon?.fingerprint ?? "") adds=\($0.addon?.adds ?? ""))"
+    } ?? "offer(none)"
+    let installed = addons.installed.map { "\($0.addonID) \($0.version) \($0.state)" }.joined(separator: ",")
+    return "\(offer) installed=[\(installed)] themes=\(addons.themes.count) theme=\"\(theme.selection)\" "
+      + "themed=\(MVTheme.themed != nil) note=\"\(theme.note)\" message=\"\(addons.message)\""
   }
 
   /// PR 9: the metadata pane and folder tree, floating over the canvas.

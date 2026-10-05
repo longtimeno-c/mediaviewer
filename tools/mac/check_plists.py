@@ -40,6 +40,9 @@ FAMILY_UTIS = {
 
 # The D5 video containers (src/shell/media_kind.h). Video has its own document
 # type; Quick Look thumbnails stay stills-only.
+# docs/design/25: the add-on package, MediaViewer's own exported type.
+ADDON_UTIS = {"io.github.longtimeno-c.mediaviewer.addon"}
+
 VIDEO_UTIS = {"public.mpeg-4", "com.apple.m4v-video", "com.apple.quicktime-movie",
               "org.matroska.mkv", "org.webmproject.webm", "public.avi",
               "public.mpeg-2-transport-stream"}
@@ -90,9 +93,20 @@ def main() -> int:
     doc_types = app.get("CFBundleDocumentTypes", [])
     app_utis: set[str] = set()
     video_utis: set[str] = set()
+    exported = {d.get("UTTypeIdentifier") for d in app.get("UTExportedTypeDeclarations", [])}
     open_with: dict[str, set[str]] = {}
     for doc in doc_types:
         name = doc.get("CFBundleTypeName")
+        if name == "Add-on":
+            # docs/design/25: the add-on package is MediaViewer's own type (an
+            # exported UTI), so it may own it; it is not a photo or video type.
+            utis = set(doc.get("LSItemContentTypes", []))
+            if utis != ADDON_UTIS or not utis <= exported:
+                problems.append("the Add-on document type must list exactly the exported "
+                                f"{sorted(ADDON_UTIS)}; got {sorted(utis)}")
+            if doc.get("LSHandlerRank") != "Owner" or doc.get("CFBundleTypeRole") != "Viewer":
+                problems.append("the Add-on document type is Owner / Viewer")
+            continue
         if name in OPEN_WITH_UTIS:
             open_with[name] = set(doc.get("LSItemContentTypes", []))
         else:

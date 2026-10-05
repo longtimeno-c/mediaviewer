@@ -27,6 +27,12 @@ void MvAddonsItemChanged(const std::string& path);
 // search_open / search_similar / search_next_match / search_prev_match, from
 // the command router. False when the AI chrome is not loaded or declined.
 bool MvAddonsRunCommand(const char* name);
+// docs/design/25 (2026-10-03): a command an add-on's manifest contributed
+// (shell/commands.h addon_command_row), with the payload the row asked for as
+// JSON. The add-on's chrome runs it; an older Import chrome without the
+// generic entry gets its two frozen selectors. False when nothing ran.
+bool MvAddonsRunContributedCommand(const std::string& addon, const std::string& id,
+                                   const std::string& payload_json);
 // Quit, on the main thread, never waiting on a pack (addon/host.h "Quit"):
 // each chrome closes its table (the AI chrome without waiting out a slow
 // read), and each add-on's stop starts on a thread of its own -- or, if its

@@ -387,6 +387,26 @@ int32_t mv_addons_status(char* buf, int32_t size);
 bool mv_addons_hint_pending(void);
 void mv_addons_hint_done(bool never_again);
 
+// Open add-ons (docs/design/25): add-ons from other makers, one `.mvaddon` file each,
+// signed by its publisher; data only (themes). Also addons_mac.mm, over
+// src/addon/open_json.h, so the sheet is fed the same JSON as on Windows.
+// Every one reads and hashes files: [worker], never the main actor. Call each
+// ONCE, with a buffer (OpenAddonBridge.read): the usual ask-for-the-size-first
+// call would hash a package twice and run an install twice.
+int32_t mv_open_addons_inspect(const char* package, char* buf, int32_t size);   // [worker]
+int32_t mv_open_addons_install(const char* package, const char* approved_sha256,
+                               char* buf, int32_t size);                        // [worker]
+int32_t mv_open_addons_list(char* buf, int32_t size);                           // [worker]
+bool mv_open_addons_remove(const char* folder);                                 // [worker]
+// "" when the add-on or theme is gone or no longer verifies.
+int32_t mv_open_addons_theme(const char* addon_id, const char* theme_id,
+                             char* buf, int32_t size);                          // [worker]
+// The theme's canvas colours (0xRRGGBB), so the viewer's own "System"
+// background follows the theme; has_dark / has_light say which palettes the
+// theme gives. active = false returns it to the window's colour. [main-thread]
+void mv_chrome_set_theme_canvas(bool active, bool has_dark, uint32_t dark_rgb,
+                                bool has_light, uint32_t light_rgb);
+
 // Milestone H (docs/design/17): the same management by add-on id, for the AI pack
 // ("ai" = Core, "ai-faces" = People, "ai-audio" = Sound) beside Import. Also addons_mac.mm. The
 // mv_addons_* functions above stay Import's, unchanged. mv_addons_check_manifest

@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "light": {
+    "canvas": "#f4f1ea",
+    "surface": "#ffffff",
+    "title": "#1c1b1a",
+    "body": "#57534c",
+    "disabled": "#9a958c",
+    "hairline": "#d6d1c6",
+    "accent": "#b5542d"
+  },
+  "dark": {
+    "canvas": "#22201d",
+    "surface": "#2d2a26",
+    "title": "#f4f1ea",
+    "body": "#bdb7ab",
+    "disabled": "#746f66",
+    "hairline": "#403c36",
+    "accent": "#e58a55"
+  }
+}

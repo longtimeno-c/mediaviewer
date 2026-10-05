@@ -34,6 +34,7 @@ old PR 15 is PR 8; old AI-search PRs 21–25 are 20–24. PR 25 is unused.
 | 30 | Video Editor window, one clip ([21](21-video-editor.md)) | both |
 | 49 | Network-speed copy engine ([24](24-transfer.md)) | both |
 | 54 | Find duplicates in the Import add-on ([18](18-import.md#find-duplicates-pr-54)) | both |
+| 55 | Open add-ons: packages and themes ([25](25-open-addons.md)) | both |
 
 Local search inside Final Cut Pro and FCPXML export (issue #71) has no PR number:
 [23](23-nle-search.md).
@@ -520,6 +521,30 @@ an iCloud-only item becomes its original after a moment, writes are refused, Cop
 original; a backup to a folder, then a second run that writes zero bytes; the Mac PR 1
 present-loop gate still holds.
 
+## PR 55 — Open add-ons: packages and themes
+
+Add-ons anyone can make, installed from a file or an `https` link (issue #79). One `.mvaddon`
+file, a strict stored-only ZIP, signed by its publisher's own Ed25519 key; manifest schema 2;
+the key pinned per add-on at first install, no downgrades, consent bound to the package's
+SHA-256; a sheet in Settings → Add-ons → From others that says what the add-on adds, can and
+cannot do, and that MediaViewer has not checked it. Contribution API 1 is themes: seven colour
+tokens per palette and a font family for the chrome, one table both hosts read, behind a WCAG
+contrast floor. A manifest that names code is refused. `tools/addon-sdk/mvaddon.py` (MIT) packs
+and checks; `docs/ADDONS.md` is the author's guide. `.mvaddon` is registered with both OSes.
+Code: `src/addon/package.*`, `open_manifest.*`, `theme.*`, `open_store.*`, `open_json.*`; ABI
+0.17 `mv_open_addon_*` / bridge `mv_open_addons_*`; `Theme.swift`, `OpenAddons.swift`;
+`IslandHost.ThemePack.cs`, `IslandHost.OpenAddons.cs`. Design, calls and measurements:
+[25](25-open-addons.md).
+
+**Verify (both platforms):** a package from the SDK with a fresh key installs from a file and
+from an `https` link, shows publisher and fingerprint, themes the chrome, and Default restores
+it exactly; each refusal is shown with its reason; an installed add-on changed on disk is not
+used; the link request carries no cookie, query or identifier; launch → first pixel and → full
+resolution within noise with the add-on installed and its theme on; 0 presents idle; both
+present-loop gates; with none installed, no folder is created and nothing of an add-on is read
+at start. Where each part stands:
+[25 "Implementation notes"](25-open-addons.md#implementation-notes-pr-55-2026-09-29).
+
 ## Not built
 
 - **PR 31** — Video Editor: several clips, zoom, dissolves ([21](21-video-editor.md)).
@@ -527,9 +552,17 @@ present-loop gate still holds.
   spike exist.
 - **PRs 27–28** — Voice query add-on ([19](19-voice.md)).
 - **PR 50** — Transfer, the general copier, and the SMB link check (no `mv_transfer_*` ABI).
+- **PRs 56–60** — the rest of the open add-ons ([25](25-open-addons.md)): declarative
+  contributions (settings pages, keymap packs), a sandboxed script runtime (Lua), screens as
+  data, slots and search providers, files. The owner's calls for them were made 2026-10-03
+  ([25 §17](25-open-addons.md#17-decisions-owner-2026-10-03)). PR 56's first half is built
+  (2026-10-04): Import's commands, keys, Settings line and card hint come from its manifest
+  (`contributes`, eight `addon_cmd_*` slots, ABI 0.18), with an older Import kept working
+  through the built-in rows.
 - Windows grouped as tabs / `Ctrl+Tab` (split out of PR 15; Mac windows have tabbing disabled).
 - The Windows property handler (split out of PR 15; it needs HKLM).
 - Backlog: further photo adjusts and local edits, full RAW develop, smart cut, HDR output,
   formats outside the D5 set (JPEG XL, EXR, PSD, SVG, DDS, JPEG 2000, VVC), batch metadata
-  tools, JSON keymap import/export, themes, AppContainer decode process, per-machine MSI,
-  Windows ARM64.
+  tools, JSON keymap import/export (planned as keymap packs, PR 56), a canvas and F3-overlay
+  colour scheme and a user font file (the chrome's themes landed as add-on themes in PR 55),
+  AppContainer decode process, per-machine MSI, Windows ARM64.

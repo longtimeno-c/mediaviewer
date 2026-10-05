@@ -37,7 +37,7 @@ final class LocalSearchStore: ObservableObject {
 
     var channel: AddonChannel { AddonChannel(name: "mediaviewer-addon-\(id)-macos") }
     var offeredBytes: (archive: Int, installed: Int)? {
-      if case .available(let a, let i, _) = probe { return (a, i) }
+      if case .available(let a, let i, _, _, _) = probe { return (a, i) }
       return nil
     }
     /// A newer published version of an installed piece, or nil.
@@ -968,13 +968,13 @@ struct ProgressRing: View {
       Circle().stroke(Color.primary.opacity(0.15), lineWidth: 2)
       Circle()
         .trim(from: 0, to: max(0.04, progress))
-        .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+        .stroke(MVTheme.accent, style: StrokeStyle(lineWidth: 2, lineCap: .round))
         .rotationEffect(.degrees(-90))
         .animation(.easeOut(duration: 0.3), value: progress)
       if spinning {
         Circle()
           .trim(from: 0, to: 0.18)
-          .stroke(Color.accentColor.opacity(0.55), style: StrokeStyle(lineWidth: 2, lineCap: .round))
+          .stroke(MVTheme.accent.opacity(0.55), style: StrokeStyle(lineWidth: 2, lineCap: .round))
           .rotationEffect(.degrees(angle))
           .onAppear {
             withAnimation(.linear(duration: 1.1).repeatForever(autoreverses: false)) { angle = 360 }

@@ -49,6 +49,7 @@
 
 #include "addon/host.h"
 #include "addon/manifest.h"
+#include "addon/open_json.h"
 #include "abi/addon_media.h"
 #include "addon/store.h"
 #include "core/json.h"
@@ -72,6 +73,12 @@
 - (void)importNow:(NSString*)pathsJson;
 - (void)deliverEvent:(uint32_t)kind status:(uint32_t)status identifier:(uint64_t)ident payload:(int64_t)payload;
 - (void)shutdown;
+@optional
+// docs/design/25 (2026-10-03): a command the add-on's manifest contributed, by its
+// own id ("open", "import_now"), with the payload its row asked for as JSON.
+// Checked with -respondsToSelector:; an Import 1.0.0 bundle has only the two
+// selectors above and is driven through them.
+- (BOOL)runCommand:(NSString*)name payload:(NSString*)json;
 @end
 
 // Milestone H: what AI.bundle's principal class (MVAIChrome in
@@ -101,7 +108,13 @@
 @interface MvAddonHostMac : NSObject
 @end
 
+// main_mac.mm: the command table changed; rebuild the router and let
+// Settings and `?` re-read it. Main thread.
+void MvAppCommandsChanged();
+
 namespace {
+
+void refresh_contributed_commands();
 
 // One loaded add-on with a chrome.
 struct addon_slot {
@@ -270,6 +283,37 @@ void unload_import() {
   // until quit, inert (docs/design/18: removal completes at next start).
   s.bundle = nil;
   mv::shell::set_addon_commands_available(mv::shell::addon_family::import, false);
+  refresh_contributed_commands();
+}
+
+// docs/design/25: the rows the loaded add-ons' manifests contribute, into the
+// command table (shell/commands.h set_addon_commands). An add-on with rows of
+// its own supersedes the rows the table has built in for it; one without
+// (an older Import) keeps them. Then the router and Settings re-read the
+// table (main_mac.mm MvAppCommandsChanged).
+void refresh_contributed_commands() {
+  std::vector<mv::shell::addon_command_row> rows;
+  const auto add = [&rows](const mv::addon::loaded_addon* addon) {
+    if (!addon) return;
+    const mv::addon::manifest& m = addon->info().m;
+    for (const mv::addon::manifest_command& c : m.commands) {
+      mv::shell::addon_command_row r;
+      r.addon = m.id;
+      r.id = c.id;
+      r.name = c.name;
+      if (!c.mac.empty() && !mv::shell::parse_key_label(c.mac, r.k, r.mods)) {
+        r.k = mv::shell::key::none;  // listed, Settings may give it a key
+        r.mods = 0;
+      }
+      r.modes = mv::shell::parse_modes(c.modes);
+      r.payload = c.payload;
+      rows.push_back(std::move(r));
+    }
+  };
+  const mac_addons& s = state();
+  add(s.import.get());
+  mv::shell::set_addon_commands(rows);
+  MvAppCommandsChanged();
 }
 
 bool load_import() {
@@ -329,6 +373,7 @@ bool load_import() {
   s.bundle = bundle;
   s.chrome = chrome;
   mv::shell::set_addon_commands_available(mv::shell::addon_family::import, true);
+  refresh_contributed_commands();
   return true;
 }
 
@@ -750,6 +795,40 @@ void MvAddonsWaitStopped(double seconds) {
   if (!queue_idle || !stopped) g_exit_fast.store(true, std::memory_order_release);
 }
 
+bool MvAddonsRunContributedCommand(const std::string& addon, const std::string& command,
+                                   const std::string& payload_json) {
+  mac_addons& s = state();
+  if (addon != "import" || !s.chrome) return false;
+  NSString* name = [NSString stringWithUTF8String:command.c_str()];
+  NSString* json = [NSString stringWithUTF8String:payload_json.c_str()];
+  if (!name || !json) return false;
+  @try {
+    if ([s.chrome respondsToSelector:@selector(runCommand:payload:)]) {
+      return [(id)s.chrome runCommand:name payload:json] == YES;
+    }
+    // Import 1.0.0: the frozen selectors, fed what its manifest-less rows got.
+    if (command == "open") {
+      NSArray* marks = [NSJSONSerialization JSONObjectWithData:[json dataUsingEncoding:NSUTF8StringEncoding]
+                                                       options:0
+                                                         error:nil];
+      NSMutableArray<NSString*>* list = [NSMutableArray array];
+      for (NSObject* item in [marks isKindOfClass:[NSArray class]] ? marks : @[]) {
+        if ([item isKindOfClass:[NSString class]]) [list addObject:(NSString*)item];
+      }
+      [s.chrome openWithSource:@"" marks:list];
+      return true;
+    }
+    if (command == "import_now") {
+      if ([json isEqualToString:@"[]"]) return false;
+      [s.chrome importNow:json];
+      return true;
+    }
+  } @catch (NSException*) {
+    return false;
+  }
+  return false;
+}
+
 bool MvAddonsRunCommand(const char* name) {
   id<MVAIChrome> chrome = ai_chrome();
   if (!name || !chrome || ![chrome respondsToSelector:@selector(runCommand:)]) return false;
@@ -790,6 +869,10 @@ extern "C" int32_t mv_addons_state_json(char* buf, int32_t size) {
       w.key("version").string(found->version);
       w.key("size").integer(static_cast<std::int64_t>(found->size));
       w.key("state").string(state_name(found->state));
+      // docs/design/25: Settings' line and the card hint, from the manifest.
+      w.key("description").string(found->m.description);
+      w.key("hint_on").string(found->m.hint_on);
+      w.key("hint_text").string(found->m.hint_text);
     }
   }
   w.key("installed").boolean(installed);
@@ -820,9 +903,72 @@ extern "C" int32_t mv_addons_check_manifest(const uint8_t* manifest, int32_t man
     w.key("sha256").string(d.m.archive.sha256);
     w.key("size").integer(static_cast<std::int64_t>(d.m.archive.size));
     w.end_object();
+    // docs/design/25: what the channel's add-on says about itself.
+    w.key("name").string(d.m.name);
+    w.key("description").string(d.m.description);
+    w.key("hint_on").string(d.m.hint_on);
+    w.key("hint_text").string(d.m.hint_text);
   }
   w.end_object();
   return copy_out(w.str(), buf, size);
+}
+
+// ---- open add-ons (docs/design/25) ---------------------------------------------------
+// Data only: nothing below loads code, so none of it touches the loaded
+// add-ons above. One writer at a time; reads need no lock (the store keeps no
+// state beyond its root).
+
+namespace {
+std::mutex& open_writes() {
+  static std::mutex* const m = new std::mutex;
+  return *m;
+}
+
+mv::result<mv::addon::open_store> open_store_once() {
+  auto s = mv::addon::default_open_store();
+  if (s) {
+    static std::once_flag cleaned;
+    std::call_once(cleaned, [&] { s->startup_cleanup(); });
+  }
+  return s;
+}
+}  // namespace
+
+extern "C" int32_t mv_open_addons_inspect(const char* package, char* buf, int32_t size) {
+  auto s = open_store_once();
+  if (!package || !s) return copy_out({}, buf, size);
+  return copy_out(mv::addon::open_inspect_json(*s, package), buf, size);
+}
+
+extern "C" int32_t mv_open_addons_install(const char* package, const char* approved_sha256,
+                                          char* buf, int32_t size) {
+  auto s = open_store_once();
+  if (!package || !approved_sha256 || !s) return copy_out({}, buf, size);
+  // Without room for the answer the install is not attempted: the caller
+  // could not learn what happened.
+  if (!buf || size < 1024) return 1024;
+  std::lock_guard<std::mutex> lock(open_writes());
+  return copy_out(mv::addon::open_install_json(*s, package, approved_sha256), buf, size);
+}
+
+extern "C" int32_t mv_open_addons_list(char* buf, int32_t size) {
+  auto s = open_store_once();
+  return copy_out(s ? mv::addon::open_list_json(*s) : std::string("[]"), buf, size);
+}
+
+extern "C" bool mv_open_addons_remove(const char* folder) {
+  auto s = open_store_once();
+  if (!folder || !s) return false;
+  std::lock_guard<std::mutex> lock(open_writes());
+  return s->remove(folder).has_value();
+}
+
+extern "C" int32_t mv_open_addons_theme(const char* addon_id, const char* theme_id, char* buf,
+                                        int32_t size) {
+  auto s = open_store_once();
+  if (!addon_id || !theme_id || !s) return copy_out({}, buf, size);
+  auto theme = s->theme_json(addon_id, theme_id);
+  return copy_out(theme ? *theme : std::string(), buf, size);
 }
 
 extern "C" int32_t mv_addons_sha256(const char* path, char* buf, int32_t size) {

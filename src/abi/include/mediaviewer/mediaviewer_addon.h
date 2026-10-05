@@ -370,12 +370,15 @@ typedef mv_status(MV_CALL* mv_addon_get_fn)(uint32_t host_api, const mv_host_api
  * ------------------------------------------------------------------------- */
 
 /* [{"id","name","version","dir","size","state":"ok|needs_update|invalid",
- *   "why","loaded"}] for every add-on folder present. Empty array when none. */
+ *   "why","loaded","description","hint_on","hint_text","commands":[...]}] for
+ * every add-on folder present (the last four from docs/design/25's contributions;
+ * empty for an older manifest). Empty array when none. */
 MV_API mv_status MV_CALL mv_addon_installed_json(char* out, uint32_t cap, uint32_t* needed);
 
 /* Checks a downloaded manifest and its signature against the pinned key
  * before anything else is fetched: {"ok","why","id","name","version",
- * "installed_size","archive":{"path","sha256","size"}}. [any-thread] */
+ * "installed_size","description","hint_on","hint_text",
+ * "archive":{"path","sha256","size"}}. [any-thread] */
 MV_API mv_status MV_CALL mv_addon_check_manifest(const void* manifest, uint32_t manifest_len,
                                                  const void* signature, uint32_t signature_len,
                                                  char* out, uint32_t cap, uint32_t* needed);
@@ -412,6 +415,13 @@ MV_API mv_status MV_CALL mv_addon_load(mv_session_t session, const char* id,
                                        const char* interface_id, const void** out_interface,
                                        char* out_chrome_utf8, uint32_t chrome_cap);
 
+/* docs/design/25 (2026-10-03): the commands the LOADED add-ons' manifests
+ * contribute, for the host's command table:
+ *   [{"addon","id","name","windows","mac","modes","payload"}]
+ * "[]" when none is loaded or none declares any. [any-thread] (no file is
+ * read: the manifests were verified at load). */
+MV_API mv_status MV_CALL mv_addon_commands_json(char* out, uint32_t cap, uint32_t* needed);
+
 /* Shuts the add-on down (its jobs stop, resumable) and unloads it. [ui-thread] */
 MV_API mv_status MV_CALL mv_addon_unload(const char* id);
 
@@ -430,6 +440,62 @@ MV_API mv_status MV_CALL mv_addon_quit(void);
  * lose mid-step: SQLite WAL transactions and temporaries renamed into place.
  * [any-thread] */
 MV_API mv_status MV_CALL mv_addon_quit_wait(uint32_t timeout_ms);
+
+/* ---------------------------------------------------------------------------
+ * Open add-ons (docs/design/25): add-ons from other makers, one `.mvaddon` file
+ * each, signed by its publisher. Data only under contribution API 1 (themes):
+ * nothing here loads code. They live beside the add-ons above, under their
+ * own folder, and neither set of calls sees the other's.
+ *
+ * The core downloads nothing: the chrome fetches a link into a temporary file
+ * and hands its path here, exactly as it hands over a file the user picked.
+ * [worker-thread]: every call reads and hashes files. JSON out follows the
+ * buffer rule above (cap / needed, MV_ERR_INVALID_ARG when short).
+ * ------------------------------------------------------------------------- */
+
+/* The contribution API this host serves (an add-on's manifest declares the
+ * range it was written for).  1  themes. */
+#define MV_ADDON_CONTRIBUTION_API 1
+
+/* What a package is, for the consent sheet; installs and creates nothing.
+ * MV_OK whenever the JSON was written, whatever it says:
+ *   {"ok","why","detail","message","sha256","relation":"fresh|update|repair|
+ *    downgrade|other_publisher","installed_version","adds","can":[...],
+ *    "cannot","id","name","version",
+ *    "description","licence","size","update_url",
+ *    "publisher":{"name","url","key","fingerprint"},"api":{"min","max"},
+ *    "themes":[{"id","name"}]}
+ * The add-on's fields are present whenever its publisher's signature held,
+ * so a refusal can still say whose add-on it was. */
+MV_API mv_status MV_CALL mv_open_addon_inspect(const char* package_utf8, char* out, uint32_t cap,
+                                               uint32_t* needed);
+
+/* Installs the package the user agreed to. `approved_sha256` is the "sha256"
+ * mv_open_addon_inspect returned for the sheet that was shown; a file that
+ * has changed since is refused ("changed"). {"ok","why","message","id",
+ * "version"}. Call it ONCE, with `cap` of 1024 or more (less is
+ * MV_ERR_INVALID_ARG and nothing is installed): the ask-for-the-size-first
+ * pattern would install twice. */
+MV_API mv_status MV_CALL mv_open_addon_install(const char* package_utf8,
+                                               const char* approved_sha256, char* out,
+                                               uint32_t cap, uint32_t* needed);
+
+/* [{"folder","id","name","version","state":"ok|needs_update|invalid","why",
+ *   "description","licence","size","update_url","publisher":{...},
+ *   "themes":[{"id","name"}]}], re-verified. "[]" when none are installed;
+ * the folder is not created. */
+MV_API mv_status MV_CALL mv_open_addon_list_json(char* out, uint32_t cap, uint32_t* needed);
+
+/* Removes every version of the add-on in `folder` (the list's "folder"). */
+MV_API mv_status MV_CALL mv_open_addon_remove(const char* folder);
+
+/* A theme of an installed, verified add-on, as both chromes read it:
+ *   {"addon","id","name","theme":{"font","dark":{"canvas":"#rrggbbaa",...}
+ *    |null,"light":{...}|null}}
+ * MV_ERR_NOT_FOUND: no such add-on or theme. MV_ERR_CORRUPT: the add-on no
+ * longer verifies, and the chrome returns to its default. */
+MV_API mv_status MV_CALL mv_open_addon_theme_json(const char* addon_id, const char* theme_id,
+                                                  char* out, uint32_t cap, uint32_t* needed);
 
 /* The base app's own card watch, for the one-time "Install Import?" hint
  * when a card appears and Import is not installed (docs/design/18). Posts

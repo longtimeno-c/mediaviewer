@@ -1125,3 +1125,91 @@ TEST_CASE("PR 12: the rating rows are listed for `?` with their keys", "[shell][
   REQUIRE(table.find("Ctrl+Shift+3") != std::string::npos);
   REQUIRE(key_label(key::numpad0, mod_none) == "Numpad 0");
 }
+
+TEST_CASE("an add-on's manifest contributes command rows (docs/design/25)", "[shell][commands]") {
+  using mv::shell::addon_command_row;
+  using mv::shell::command_id;
+  using mv::shell::key;
+  using mv::shell::mode_mask;
+  key k = key::none;
+  std::uint8_t mods = 0;
+  REQUIRE(mv::shell::parse_key_label("Ctrl+Shift+I", k, mods));
+  REQUIRE(k == mv::shell::char_key('I'));
+  REQUIRE(mods == (mv::shell::mod_ctrl | mv::shell::mod_shift));
+  REQUIRE(mv::shell::parse_key_label("Cmd+Shift+F7", k, mods));
+  REQUIRE(k == key::f7);
+  REQUIRE(mods == (mv::shell::mod_ctrl | mv::shell::mod_shift));
+  REQUIRE(mv::shell::parse_key_label("Option+Space", k, mods));
+  REQUIRE(k == key::space);
+  REQUIRE(mods == mv::shell::mod_alt);
+  REQUIRE(mv::shell::parse_key_label("i", k, mods));
+  REQUIRE(k == mv::shell::char_key('I'));
+  REQUIRE(mods == 0);
+  REQUIRE(mv::shell::parse_key_label("Shift++", k, mods));
+  REQUIRE(k == mv::shell::char_key('+'));
+  for (const char* bad : {"", "Ctrl+", "Hyper+I", "F99", "Ctrl+Shift", "Ctrl++I", "Ctrl+Shift+Ii"}) {
+    INFO(bad);
+    REQUIRE_FALSE(mv::shell::parse_key_label(bad, k, mods));
+  }
+  // The label the parser reads is the label the table prints.
+  for (const auto& b : mv::shell::default_bindings()) {
+    if (b.k == key::none) continue;
+    const std::string label = mv::shell::key_label(b.k, b.mods);
+    if (label.empty()) continue;
+    INFO(label);
+    REQUIRE(mv::shell::parse_key_label(label, k, mods));
+    REQUIRE(k == b.k);
+    REQUIRE(mods == b.mods);
+  }
+  REQUIRE(mv::shell::parse_modes("viewing") == (mv::shell::kBrowse | mv::shell::kVideo | mv::shell::kIsland | mv::shell::kGallery));
+  REQUIRE(mv::shell::parse_modes("nowhere") == 0);
+
+  const std::size_t builtin = mv::shell::default_bindings().size();
+  REQUIRE(mv::shell::addon_command(command_id::addon_cmd_0) == nullptr);
+  REQUIRE_FALSE(mv::shell::addon_command_available(command_id::addon_cmd_0));
+  REQUIRE(mv::shell::describe_commands().find("Add-on command") == std::string::npos);
+
+  std::vector<addon_command_row> rows;
+  for (int i = 0; i < mv::shell::kAddonCommandSlots + 1; ++i) {
+    addon_command_row r;
+    r.addon = "import";
+    r.id = "cmd_" + std::to_string(i);
+    r.name = "Contributed " + std::to_string(i);
+    r.k = i == 0 ? mv::shell::char_key('I') : key::none;
+    r.mods = mv::shell::mod_ctrl | mv::shell::mod_shift;
+    r.modes = mv::shell::parse_modes("viewing");
+    r.payload = "marks";
+    rows.push_back(r);
+  }
+  mv::shell::set_addon_commands(rows);
+  // Eight at most, appended after the built-in rows, which keep their indices.
+  REQUIRE(mv::shell::live_bindings().size() == builtin + mv::shell::kAddonCommandSlots);
+  REQUIRE(mv::shell::live_bindings()[builtin].command == command_id::addon_cmd_0);
+  REQUIRE(mv::shell::addon_command(command_id::addon_cmd_7) != nullptr);
+  REQUIRE(mv::shell::addon_command(command_id::addon_cmd_7)->id == "cmd_7");
+  REQUIRE(mv::shell::addon_command_available(command_id::addon_cmd_0));
+  REQUIRE(mv::shell::is_addon_command(command_id::addon_cmd_3));
+  const mv::shell::command_info* info = mv::shell::find_command(command_id::addon_cmd_0);
+  REQUIRE(info != nullptr);
+  REQUIRE(std::string(info->name) == "Contributed 0");
+  REQUIRE_FALSE(info->keyless);
+  const std::string table = mv::shell::describe_commands();
+  REQUIRE(table.find("\tContributed 0\tCtrl+Shift+I\t") != std::string::npos);
+  REQUIRE(table.find("Add-on command") == std::string::npos);
+  // The router finds it like any row.
+  key_router r;
+  r.rebuild(mv::shell::live_bindings());
+  const mv::shell::binding* hit = r.lookup(mv::shell::char_key('I'), mv::shell::mod_ctrl | mv::shell::mod_shift, mv::shell::mode::browse);
+  REQUIRE(hit != nullptr);
+  REQUIRE(hit->command == command_id::addon_cmd_0);
+  // A remap of a built-in row survives the add-on's rows coming and going;
+  // reset restores both.
+  REQUIRE(mv::shell::rebind_live(0, key::f9, 0));
+  mv::shell::set_addon_commands({});
+  REQUIRE(mv::shell::live_bindings().size() == builtin);
+  REQUIRE(mv::shell::live_bindings()[0].k == key::f9);
+  REQUIRE(mv::shell::addon_command(command_id::addon_cmd_0) == nullptr);
+  REQUIRE(std::string(mv::shell::find_command(command_id::addon_cmd_0)->name) == "Add-on command 1");
+  mv::shell::reset_live_bindings();
+  REQUIRE(mv::shell::live_bindings()[0].k == mv::shell::default_bindings()[0].k);
+}

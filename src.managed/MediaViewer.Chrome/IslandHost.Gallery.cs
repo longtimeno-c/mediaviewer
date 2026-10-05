@@ -576,7 +576,7 @@ public static partial class IslandHost
         // search, while open, sits over the grid, never over a tile.
         var root = new Grid
         {
-            RequestedTheme = ElementTheme.Default,
+            RequestedTheme = IslandTheme,
             Background = Brush(Canvas),
         };
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });

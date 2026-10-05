@@ -79,10 +79,24 @@ A separate window on both platforms (WinUI 3 `MediaViewer.Import.Chrome`; SwiftU
   checkbox per day and per file. Files already imported are dimmed. RAW+JPEG and Live Photo
   pairs are one tile. `Space` toggles; `Enter` on a focused tile opens it in the main viewer
   (culling before copying); viewer marks carry over.
-- **Preset** (right): destination, backup, layout, rename, and a **Where files go** preview that
-  updates as settings change (`preview_names_json`).
-- **Bottom bar:** count, size, duplicates skipped, and an ETA from measured throughput per
-  device.
+- **Preset** (right), simplified 2026-10-05 (owner: "its really complicated to use"): three plain
+  steps — **Where to** (the destination, or one *Choose a folder…* button while none is set),
+  **What to import** (New / All / Marked / Dates) and **How to organise** (the layout in words,
+  with the first folders of the **Where files go** preview under it) — then *Also copy to a
+  backup drive*, *Eject the card when done* (removable sources only), and everything else
+  (file types, camera / type folders, date source, rename, duplicate skipping and scope, full
+  verify, notify, fast, saving settings, card binding) under a collapsed **More options**. The
+  preset keys and the engine are unchanged. The saved-settings picker shows only once there
+  is more than one.
+- **Empty states:** no source ("Insert a memory card, or choose a folder"), reading, unreadable,
+  everything already imported (a strip over the grid, or *Show all N files* when the grid is
+  empty), and nothing matching. **Select all / Select none** sit over the grid.
+- **Tools** (Past imports, Check a folder for damaged files, Find duplicates, About Import) are
+  one menu under the sources instead of four buttons.
+- **Bottom bar:** what is selected and its size, then a quieter line with what will be skipped
+  and an ETA from measured throughput per device. With no destination the button reads
+  *Choose where to import…* (and Return opens the folder picker) instead of confirming an
+  import to nowhere.
 - **While copying:** the window becomes a progress view: per-destination bars, the current file,
   MB/s, verified so far, **Pause** and **Cancel**. Closing the window keeps the job running, with
   a progress indicator in the main command bar. A notification arrives when it finishes.
@@ -236,6 +250,9 @@ Import was the first add-on, and its mechanism is the one every add-on uses: the
     `AddonsView.swift`).
   - **The Mac add-on is universal** (arm64 + x86_64, platform `macos`): both architectures'
     trees are joined with `tools/mac/lipo_merge.py` before signing and packing.
+- **Add-ons from other makers** are a second kind, with their own package, key, folder and
+  store: [25-open-addons.md](25-open-addons.md). Nothing in this section changes for
+  MediaViewer's own add-ons, and neither kind loads through the other's path.
 - **Absent means absent.** With no add-on installed nothing under the add-ons folder is
   written, the base install tree carries none of the add-on payloads, and no Import command,
   menu or key appears. `F7`/`F8` behave as in the base app.

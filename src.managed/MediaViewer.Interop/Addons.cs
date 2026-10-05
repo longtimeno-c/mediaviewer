@@ -326,7 +326,112 @@ public static unsafe partial class AddonNative
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     private static partial MvStatus mv_volume_watch(IntPtr session, uint enable);
 
+    // ---- open add-ons (docs/design/25): add-ons from other makers, data only ----------
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial MvStatus mv_open_addon_inspect(byte* package, byte* output, uint cap, uint* needed);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial MvStatus mv_open_addon_install(byte* package, byte* approvedSha256, byte* output,
+        uint cap, uint* needed);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial MvStatus mv_open_addon_list_json(byte* output, uint cap, uint* needed);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial MvStatus mv_open_addon_remove(byte* folder);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial MvStatus mv_open_addon_theme_json(byte* addon, byte* theme, byte* output, uint cap,
+        uint* needed);
+
     private static byte[] Z(string s) => Encoding.UTF8.GetBytes(s + "\0");
+
+    /// <summary>What a package is, for the consent sheet (mediaviewer_addon.h). Installs nothing.</summary>
+    public static string OpenInspect(string packagePath)
+    {
+        byte[] path = Z(packagePath);
+        return Json((b, c, n) =>
+        {
+            fixed (byte* p = path) return mv_open_addon_inspect(p, (byte*)b, c, (uint*)n);
+        }, "mv_open_addon_inspect");
+    }
+
+    /// <summary>
+    /// Installs the package the user agreed to. Called once: the answer is a
+    /// few hundred bytes, so the buffer is never too small and the call is
+    /// never repeated for a size (an install must not run twice).
+    /// </summary>
+    public static string OpenInstall(string packagePath, string approvedSha256)
+    {
+        byte[] path = Z(packagePath);
+        byte[] sha = Z(approvedSha256);
+        byte[] buf = new byte[8 * 1024];
+        uint needed = 0;
+        MvStatus s;
+        fixed (byte* p = path)
+        fixed (byte* h = sha)
+        fixed (byte* o = buf)
+        {
+            s = mv_open_addon_install(p, h, o, (uint)buf.Length, &needed);
+        }
+        Check(s, "mv_open_addon_install");
+        return Encoding.UTF8.GetString(buf, 0, (int)Math.Max(0, Math.Min(needed, (uint)buf.Length) - 1));
+    }
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial MvStatus mv_addon_commands_json(byte* output, uint cap, uint* needed);
+
+    /// <summary>docs/design/25: the loaded add-ons' contributed commands; "[]" on an older core.</summary>
+    public static string CommandsJson()
+    {
+        try
+        {
+            return Json((b, c, n) => mv_addon_commands_json((byte*)b, c, (uint*)n), "mv_addon_commands_json");
+        }
+        catch (EntryPointNotFoundException)
+        {
+            return "[]";
+        }
+    }
+
+    /// <summary>Installed open add-ons, re-verified. "[]" when none.</summary>
+    public static string OpenList() =>
+        Json((b, c, n) => mv_open_addon_list_json((byte*)b, c, (uint*)n), "mv_open_addon_list_json");
+
+    public static void OpenRemove(string folder)
+    {
+        fixed (byte* p = Z(folder)) Check(mv_open_addon_remove(p), "mv_open_addon_remove");
+    }
+
+    /// <summary>A theme of an installed, verified add-on; null when it is gone
+    /// or no longer verifies.</summary>
+    public static string? OpenTheme(string addonId, string themeId)
+    {
+        byte[] addon = Z(addonId);
+        byte[] theme = Z(themeId);
+        try
+        {
+            return Json((b, c, n) =>
+            {
+                fixed (byte* a = addon)
+                fixed (byte* t = theme)
+                {
+                    return mv_open_addon_theme_json(a, t, (byte*)b, c, (uint*)n);
+                }
+            }, "mv_open_addon_theme_json");
+        }
+        catch (MediaViewerException)
+        {
+            return null;
+        }
+    }
 
     private static void Check(MvStatus s, string what)
     {
@@ -561,6 +666,19 @@ public static class SearchCommand
     public const int Similar = 1;     // Ctrl+Shift+F
     public const int NextMatch = 2;   // N on a clip
     public const int PrevMatch = 3;   // Shift+N
+}
+
+/// <summary>
+/// docs/design/25 (2026-10-03): the commands an add-on's manifest contributes come
+/// to its chrome by their own ids, with the payload the row asked for as
+/// JSON (an array of paths for "marks" and "marked_or_current", an object for
+/// "screen", null for "none"). A chrome without this interface gets the frozen
+/// <see cref="IAddonChrome"/> calls for the two ids Import always had.
+/// </summary>
+public interface IAddonCommands
+{
+    /// <summary>False: the add-on had nothing to do, and the key falls through.</summary>
+    bool RunCommand(string id, string payloadJson);
 }
 
 /// <summary>The AI chrome's side of Milestone H, next to <see cref="IAddonChrome"/>.</summary>

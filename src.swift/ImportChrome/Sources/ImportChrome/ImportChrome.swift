@@ -58,6 +58,24 @@ public final class MVImportChrome: NSObject {
     }
   }
 
+  /// docs/design/25: the commands the manifest contributes, by their ids, with the
+  /// payload each row asked for (an array of paths here).
+  @objc(runCommand:payload:)
+  public func runCommand(_ name: String, payload json: String) -> Bool {
+    let paths = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String] ?? []
+    switch name {
+    case "open":
+      open(source: "", marks: paths)
+      return true
+    case "import_now":
+      if paths.isEmpty { return false }
+      importNow(json)
+      return true
+    default:
+      return false
+    }
+  }
+
   @objc(importNow:)
   public func importNow(_ pathsJSON: String) {
     guard let table else { return }

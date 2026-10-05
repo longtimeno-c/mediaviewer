@@ -6,34 +6,10 @@
 // under the bar. The commands are the same ones the system menu bar runs
 // (mv_chrome_menu tags mirror MvMenuCmd in main_mac.mm).
 import AppKit
-import CoreText
 import SwiftUI
 import MVChromeBridge
 
-/// Semantic AppKit colours remain dynamic inside SwiftUI: light, dark and
-/// increased contrast follow the hosting window without forcing a colour scheme.
-/// These are chrome surfaces, independent of the native photo canvas setting.
-enum MVTheme {
-  static let canvas = Color(nsColor: .windowBackgroundColor)
-  static let title = Color(nsColor: .labelColor)
-  static let body = Color(nsColor: .secondaryLabelColor)
-  static let hairline = Color(nsColor: .separatorColor)
-
-  static let surface = Color(nsColor: .controlBackgroundColor)
-  static let disabled = Color(nsColor: .disabledControlTextColor)
-
-  private static let registered: Bool = {
-    // CMake copies the face beside the executable (cmake/darwin.cmake).
-    let dir = Bundle.main.executableURL?.deletingLastPathComponent()
-    guard let url = dir?.appendingPathComponent("CozetteVector.ttf") else { return false }
-    return CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
-  }()
-
-  static func font(_ size: CGFloat = 16) -> Font {
-    _ = registered
-    return .custom("CozetteVector", size: size)
-  }
-}
+// MVTheme, the chrome's colours and face, is in Theme.swift (docs/design/25).
 
 /// The chrome's one button look: CozetteVector text, no border, a faint wash
 /// on hover. `selected` keeps the pressed wash (a chosen tab or preset);

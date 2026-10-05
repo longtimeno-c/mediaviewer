@@ -316,8 +316,21 @@ enum class command_id : std::uint16_t {
   // §2.3). Appended. One navigation stop per file; these move inside it.
   next_page,           // Ctrl/Cmd+PageDown
   prev_page,           // Ctrl/Cmd+PageUp
+  // docs/design/25 (2026-10-03): rows an add-on's manifest contributes. Their name,
+  // key and modes are set when the add-on loads (set_addon_commands) and the
+  // row is listed, routed and shown only while it is. Eight is the ceiling;
+  // a ninth command is dropped and the add-on told so in its log.
+  addon_cmd_0,
+  addon_cmd_1,
+  addon_cmd_2,
+  addon_cmd_3,
+  addon_cmd_4,
+  addon_cmd_5,
+  addon_cmd_6,
+  addon_cmd_7,
   count
 };
+inline constexpr int kAddonCommandSlots = 8;
 
 inline constexpr int kCommandCount = static_cast<int>(command_id::count);
 
@@ -387,6 +400,33 @@ void set_addon_commands_available(addon_family family, bool available) noexcept;
 [[nodiscard]] bool addon_command_available(command_id id) noexcept;
 void set_addon_commands_available(bool available) noexcept;
 [[nodiscard]] bool addon_commands_available() noexcept;
+
+// A command an add-on's manifest contributes (docs/design/25, manifest_command),
+// resolved by the host into a live row: `addon` and `id` name it to the
+// add-on's chrome, `payload` says what rides along ("none", "marks",
+// "marked_or_current", "screen").
+struct addon_command_row {
+  std::string addon;
+  std::string id;
+  std::string name;
+  key k = key::none;
+  std::uint8_t mods = mod_none;
+  mode_mask modes = 0;
+  std::string payload;
+};
+// Replaces every contributed row with `rows` (at most kAddonCommandSlots;
+// the rest are dropped): they take addon_cmd_0.. in order and are appended
+// to the live table after the built-in rows, so remaps of built-in rows keep
+// their indices. The caller rebuilds the router and the chrome's table.
+void set_addon_commands(std::span<const addon_command_row> rows);
+// The row behind addon_cmd_n, or null when that slot is empty.
+[[nodiscard]] const addon_command_row* addon_command(command_id id) noexcept;
+// "Ctrl+Shift+I" / "Cmd+Shift+F7" (Cmd and Option are the Mac spellings of
+// Ctrl and Alt) to a key and modifiers; false for anything else. The inverse
+// of key_label for the keys it names.
+[[nodiscard]] bool parse_key_label(std::string_view label, key& k, std::uint8_t& mods) noexcept;
+// "viewing" | "video" | "browse" | "all" to a mode mask; 0 for anything else.
+[[nodiscard]] mode_mask parse_modes(std::string_view modes) noexcept;
 
 // "Ctrl+Shift+O", "Space", "F3", "?" — what `?` and the palette show.
 [[nodiscard]] std::string key_label(key k, std::uint8_t mods);

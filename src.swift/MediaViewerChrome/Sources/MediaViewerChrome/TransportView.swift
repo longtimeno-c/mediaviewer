@@ -53,7 +53,7 @@ private struct TrimMarks: View {
       if store.trimCutInNs >= 0, store.trimCutOutNs > store.trimCutInNs {
         let a = x(store.trimCutInNs), b = x(store.trimCutOutNs)
         ctx.fill(Path(CGRect(x: a, y: 0, width: max(1, b - a), height: size.height)),
-                 with: .color(Color.accentColor.opacity(0.25)))
+                 with: .color(MVTheme.accent.opacity(0.25)))
       }
       var last: CGFloat = -10
       for k in store.trimKeyframesNs {
@@ -64,7 +64,7 @@ private struct TrimMarks: View {
                  with: .color(Color.secondary.opacity(0.8)))
       }
       for m in [store.trimInNs, store.trimOutNs] where m >= 0 {
-        ctx.fill(Path(CGRect(x: x(m) - 1, y: 0, width: 2, height: size.height)), with: .color(.accentColor))
+        ctx.fill(Path(CGRect(x: x(m) - 1, y: 0, width: 2, height: size.height)), with: .color(MVTheme.accent))
       }
     }
   }
@@ -89,7 +89,7 @@ private struct MatchMarks: View {
         let current = i == store.matchCurrent
         let d: CGFloat = current ? 7 : 4
         Circle()
-          .fill(Color.accentColor.opacity(current ? 1 : 0.75))
+          .fill(MVTheme.accent.opacity(current ? 1 : 0.75))
           .frame(width: d, height: d)
           .overlay(Circle().stroke(Color(nsColor: .windowBackgroundColor).opacity(current ? 0.9 : 0), lineWidth: 1))
           .position(x: inset + span * CGFloat(min(max(Double(ms) / duration, 0), 1)),

@@ -8,7 +8,7 @@ struct MarkBadge: View {
   var body: some View {
     Image(systemName: "checkmark.circle.fill")
       .symbolRenderingMode(.palette)
-      .foregroundStyle(.white, Color.accentColor)
+      .foregroundStyle(.white, MVTheme.accent)
       .font(.system(size: 16))
       .shadow(radius: 1)
       .padding(3)
