@@ -83,6 +83,8 @@ final class EditStore: ObservableObject {
   @Published private(set) var tab: EditTab = .crop
   @Published private(set) var subject: Int32 = 0  // 0 none, 1 still, 2 clip
   @Published private(set) var galleryVisible = false
+  /// A PDF or DOCX: the bar offers "Open in <app>" instead (OpenInStore).
+  @Published private(set) var document = false
   @Published private(set) var cropActive = false
   @Published private(set) var aspect: CropAspect = .free
   @Published private(set) var portrait = false
@@ -118,6 +120,8 @@ final class EditStore: ObservableObject {
     var v = mv_edit_view()
     guard mv_chrome_edit_view(&v) else { return }
     if v.subject != subject { subject = v.subject }
+    if (v.document != 0) != document { document = v.document != 0 }
+    if document { OpenInStore.shared.follow() }
     let gallery = mv_chrome_gallery_visible()
     if gallery != galleryVisible { galleryVisible = gallery }
     guard g != generation else { return }

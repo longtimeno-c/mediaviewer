@@ -118,6 +118,14 @@ class present_lab_mac {
                : 0u;
   }
 
+  // [any-thread][no-block] canvas::camera::kEdgeTop / kEdgeBottom: the
+  // picture cannot pan further that way (both at fit or with nothing open),
+  // as of the render thread's last input pass. The host turns a document's
+  // page on a scroll past an edge (docs/design/04 "Pages").
+  [[nodiscard]] unsigned scroll_edges() const noexcept {
+    return scroll_edges_.load(std::memory_order_relaxed);
+  }
+
   // --browse-soak (the Windows lab's twin, present_lab.h): mark a navigation
   // just before selecting, then poll until the new item's first image is on
   // screen. ready_ms is mark -> image adopted by the render thread, present_ms
@@ -244,6 +252,7 @@ class present_lab_mac {
   // page_count(): written by the decode worker, count first, then the item.
   std::atomic<std::uint32_t> pages_count_{0};
   std::atomic<std::uint64_t> pages_item_{0};
+  std::atomic<unsigned> scroll_edges_{3};
   // Render thread only, but for the atomics the UI polls.
   void note_nav_image(const image::gpu_image_mac& ready) noexcept;
   void commit_nav_present() noexcept;
@@ -479,6 +488,7 @@ class present_lab_mac {
   // the Windows shell) rather than published as a delta.
   std::uint32_t seen_fit_seq_ = 0;
   std::uint32_t seen_one_to_one_seq_ = 0;
+  std::uint32_t seen_page_land_seq_ = 0;
   float last_mouse_x_ = 0.0f;
   float last_mouse_y_ = 0.0f;
   bool was_dragging_ = false;

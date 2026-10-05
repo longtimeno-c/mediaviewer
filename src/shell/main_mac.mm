@@ -83,6 +83,7 @@
 #include "io/sort_order.h"
 #include "shell/settings.h"
 #include "shell/input_state.h"
+#include "io/pairing.h"
 #include "shell/install_from_dmg_mac.h"
 #include "shell/present_lab_mac.h"
 
@@ -417,6 +418,11 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)navigateLast;
 - (void)navigateSkip:(std::ptrdiff_t)delta;
 - (void)turnPage:(int)delta;
+- (BOOL)turnPage:(int)delta land:(BOOL)land;
+// Document scrolling (docs/design/04 "Pages"): the wheel or trackpad over a PDF or
+// DOCX with the filmstrip hidden pans the page and turns it past an edge.
+- (BOOL)documentScrolls;
+- (void)scrollDocument:(NSEvent*)event;
 
 // Marks, copy/move, Trash (docs/design/16-commands.md "Marks, copy, move"; folded
 // into PR 18 from Windows PR 6, docs/design/12 2026-09-17).
@@ -655,6 +661,8 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)editCancelCrop;
 - (void)editShowOriginal:(BOOL)on;
 - (void)editSaveCopy;
+- (BOOL)currentItemIsDocument;
+- (void)openDocumentInApp:(NSURL*)app;
 // PR 30 (docs/design/21): the Video Editor window, read and driven by the bridge.
 - (BOOL)editorOwnsCanvas;
 - (uint64_t)editorGeneration;
@@ -1293,6 +1301,14 @@ extern "C" void mv_chrome_edit_set_straighten(float degrees) {
   (void)mv::shell::crash::note_native_call();
   if (g_chrome_app) [g_chrome_app editSetStraighten:degrees];
 }
+extern "C" void mv_chrome_open_in_app(const char* app_path_utf8) {
+  (void)mv::shell::crash::note_native_call();
+  if (!g_chrome_app) return;
+  NSURL* app = (app_path_utf8 && *app_path_utf8)
+                   ? [NSURL fileURLWithPath:[NSString stringWithUTF8String:app_path_utf8] isDirectory:YES]
+                   : nil;
+  [g_chrome_app openDocumentInApp:app];
+}
 extern "C" void mv_chrome_edit_cancel_crop(void) {
   if (g_chrome_app) [g_chrome_app editCancelCrop];
 }
@@ -1847,11 +1863,29 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   [self publish];
 }
 - (void)scrollWheel:(NSEvent*)event {
+  // Over a document with the filmstrip hidden the wheel scrolls; Cmd zooms, as
+  // does a pinch (docs/design/04 "Pages").
+  if ((event.modifierFlags & NSEventModifierFlagCommand) == 0 && self.app && [self.app documentScrolls]) {
+    [self.app scrollDocument:event];
+    if (self.app) [self.app transportActivity];
+    return;
+  }
   self.snap->wheel_total += static_cast<std::int64_t>(event.scrollingDeltaY * 120.0);
   ++self.snap->activity_seq;
   [self publish];
   if (self.lab) self.lab->wake();
   if (self.app) [self.app transportActivity];
+}
+// A trackpad pinch zooms toward the pointer, as the wheel does: one wheel notch
+// is a 15 % step (canvas/camera.cpp kWheelFactor).
+- (void)magnifyWithEvent:(NSEvent*)event {
+  const double factor = 1.0 + event.magnification;
+  if (factor <= 0.0) return;
+  [self trackPointer:event];
+  self.snap->wheel_total += static_cast<std::int64_t>(std::lround(std::log(factor) / std::log(1.15) * 120.0));
+  ++self.snap->activity_seq;
+  [self publish];
+  if (self.lab) self.lab->wake();
 }
 // Without a tracking area AppKit never sends mouseMoved: to a plain view, which is
 // why the eyedropper had no cursor to read. Idle stays idle: the move only wakes
@@ -2093,6 +2127,14 @@ static void MvAdoptNewDefaultViewerTypes() {
   // §2.3): 0 for the file itself; a new stop starts at 0.
   std::uint32_t _shownPage;
   std::uint32_t _shownPageCount;  // last count the lab reported for this stop; 0 unknown
+  // Document scrolling: travel pushed past an edge (screen px, signed), the
+  // sub-pixel remainders, and the latch that lets one gesture turn one page.
+  double _overscroll;
+  double _scrollRemX;
+  double _scrollRemY;
+  double _lastScrollTime;
+  double _pageTurnTime;
+  BOOL _pageTurnLatched;
   // Milestone H: the moment the shown clip was opened at (-1 none). The same
   // result selected again keeps the clip where it is; another moment of it
   // reopens. kShownMomentStale after a new search, so its moment opens afresh.
@@ -3855,6 +3897,53 @@ static void MvAdoptNewDefaultViewerTypes() {
   const std::size_t i = _index.current();
   return i < _items.size() && mv::shell::is_audio_name(_items[i].name_utf8);
 }
+- (BOOL)currentItemIsDocument {
+  if (_items.empty()) return NO;
+  const std::size_t i = _index.current();
+  return i < _items.size() && mv::io::is_document_name(_items[i].name_utf8);
+}
+// "Open in <app>" and Return on a PDF or DOCX (docs/design/20): the file goes to
+// another app; MediaViewer never edits a document. `app` nil is the file's
+// default app, or the first other one when MediaViewer is the default. The Launch
+// Services lookups and the open run off the main thread (CLAUDE.md rule 1).
+- (void)openDocumentInApp:(NSURL*)app {
+  if (![self currentItemIsDocument]) return;
+  const std::string path = [self currentItemPath];
+  if (path.empty()) return;
+  NSURL* file = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path.c_str()] isDirectory:NO];
+  // Every MediaViewer build (release, .dev, a test copy) shares this id prefix.
+  NSString* const ours = @"io.github.longtimeno-c.mediaviewer";
+  BOOL (^isOurs)(NSURL*) = ^BOOL(NSURL* candidate) {
+    NSString* bid = [NSBundle bundleWithURL:candidate].bundleIdentifier;
+    return bid != nil && [bid hasPrefix:ours];
+  };
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    NSURL* with = app;
+    NSWorkspace* ws = NSWorkspace.sharedWorkspace;
+    if (with == nil) {
+      with = [ws URLForApplicationToOpenURL:file];
+      if (with == nil || isOurs(with)) {
+        with = nil;
+        for (NSURL* candidate in [ws URLsForApplicationsToOpenURL:file]) {
+          if (!isOurs(candidate)) {
+            with = candidate;
+            break;
+          }
+        }
+      }
+    }
+    if (with == nil) {
+      dispatch_async(dispatch_get_main_queue(), ^{ NSBeep(); });
+      return;
+    }
+    [ws openURLs:@[ file ]
+        withApplicationAtURL:with
+               configuration:[NSWorkspaceOpenConfiguration configuration]
+           completionHandler:^(NSRunningApplication*, NSError* error) {
+             if (error) dispatch_async(dispatch_get_main_queue(), ^{ NSBeep(); });
+           }];
+  });
+}
 - (BOOL)itemIsVideoAtIndex:(NSInteger)index {
   return index >= 0 && static_cast<std::size_t>(index) < _items.size() &&
          mv::shell::is_video_name(_items[static_cast<std::size_t>(index)].name_utf8);
@@ -5065,6 +5154,11 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   // PR 29 (docs/design/20): the keys that open a tab of the Edit workspace. The
   // workspace decides the tab; crop_mode and trim_mode then do their own work.
   // PR 30 (docs/design/21, owner): video is edited in its own window, not a pane.
+  // Return (the bar's "Open in <app>") on a PDF or DOCX: its own app opens it.
+  if (command == edit_workspace && !_ws.open && !_editorOpen && [self currentItemIsDocument]) {
+    [self openDocumentInApp:nil];
+    return YES;
+  }
   if (command == edit_workspace && (_editorOpen || [self editSubject] == mv::shell::edit_subject::clip)) {
     if (_editorOpen) {
       [self editorRequestClose];
@@ -5482,6 +5576,8 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   if (_items.empty() || _itemId == 0) return mv::shell::edit_subject::none;
   // An audio file plays through the video path but has nothing to edit.
   if ([self currentItemIsAudio]) return mv::shell::edit_subject::none;
+  // A document opens in its own app instead (the bar's "Open in <app>").
+  if ([self currentItemIsDocument]) return mv::shell::edit_subject::none;
   if ([self currentItemIsVideo]) return mv::shell::edit_subject::clip;
   if (_lab.anim_active()) return mv::shell::edit_subject::none;
   return mv::shell::edit_subject::still;
@@ -5545,6 +5641,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
 - (void)editViewInto:(mv_edit_view*)out {
   *out = mv_edit_view{};
   const mv::shell::edit_subject subject = [self editSubject];
+  out->document = [self currentItemIsDocument] ? 1 : 0;
   out->open = _ws.open ? 1 : 0;
   out->tab = static_cast<int32_t>(_ws.tab);
   out->subject = static_cast<int32_t>(subject);
@@ -8732,17 +8829,24 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
 // the page count when the file decodes; until then, and on a single-page
 // file or a clip, the keys do nothing.
 - (void)turnPage:(int)delta {
-  if (_shownItem == 0 || _shownPath.empty() || [self currentItemIsVideo]) return;
+  (void)[self turnPage:delta land:NO];
+}
+// `land`: a scroll turned it, so the page keeps the zoom and lands at its top
+// (forward) or bottom (back) instead of fitting. NO when nothing turned.
+- (BOOL)turnPage:(int)delta land:(BOOL)land {
+  if (_shownItem == 0 || _shownPath.empty() || [self currentItemIsVideo]) return NO;
   // A Photos library item (docs/design/26) is a key, not a file, and never paged.
-  if (mv::shell::photos::is_key(_shownPath)) return;
+  if (mv::shell::photos::is_key(_shownPath)) return NO;
   // The page just asked for may still be decoding: keep the count it reported.
   if (const std::uint32_t known = _lab.page_count(_shownItem)) _shownPageCount = known;
   const std::uint32_t count = _shownPageCount;
-  if (count <= 1) return;
+  if (count <= 1) return NO;
   const std::int64_t want = std::clamp<std::int64_t>(static_cast<std::int64_t>(_shownPage) + delta, 0,
                                                      static_cast<std::int64_t>(count) - 1);
-  if (want == static_cast<std::int64_t>(_shownPage)) return;
+  if (want == static_cast<std::int64_t>(_shownPage)) return NO;
   _shownPage = static_cast<std::uint32_t>(want);
+  ++_snap.page_land_seq;
+  _snap.page_land = land ? (delta > 0 ? 1 : -1) : 0;
   const std::int64_t mtime =
       _shownMtime == kShownStampUnknown ? mv::shell::present_lab_mac::kNoStamp : _shownMtime;
   _shownItem = _lab.open_item(_shownPath, mtime, _shownSize, -1, _shownPage);
@@ -8750,6 +8854,64 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
     [self editItemOpened:_items[_index.current()] item:_shownItem];
   }
   [self noticeShow:"Page " + std::to_string(_shownPage + 1) + " of " + std::to_string(count)];
+  [self pokeSnapshot];
+  return YES;
+}
+
+- (BOOL)documentScrolls {
+  if (_items.empty() || _shownItem == 0 || _shownPath.empty()) return NO;
+  if (_galleryVisible || [self filmstripVisible] || _editorOpen) return NO;
+  if (mv::shell::photos::is_key(_shownPath)) return NO;
+  return mv::io::is_document_name(_shownPath) ? YES : NO;
+}
+// Pans the page in screen pixels; a scroll held against the top or bottom edge
+// for kTurnPx turns to the previous or next page, landing at its bottom or top
+// at the same zoom. A trackpad gesture turns at most one page (its momentum
+// does not run on through the document); a mouse wheel one per notch.
+- (void)scrollDocument:(NSEvent*)event {
+  const double scale = self.window.backingScaleFactor > 0 ? self.window.backingScaleFactor : 1.0;
+  const BOOL precise = event.hasPreciseScrollingDeltas;
+  // A wheel notch is a tenth of the canvas, as a keyboard pan step is.
+  const double step = precise ? scale : std::max(1.0, 0.1 * static_cast<double>(_snap.height));
+  const double dx = -event.scrollingDeltaX * step;
+  double dy = -event.scrollingDeltaY * step;
+  const double now = CACurrentMediaTime();
+  // A new trackpad gesture unlatches; its momentum never does. Scrolls outside
+  // any gesture (a wheel, a synthesized scroll) unlatch after a short pause.
+  if (event.phase == NSEventPhaseBegan || event.phase == NSEventPhaseMayBegin) _pageTurnLatched = NO;
+  const bool in_gesture = event.phase != NSEventPhaseNone || event.momentumPhase != NSEventPhaseNone;
+  if (!in_gesture && now - _pageTurnTime > 0.12) _pageTurnLatched = NO;
+  const double kTurnPx = 60.0 * scale;
+  const unsigned edges = _lab.scroll_edges();
+  const bool vertical = std::abs(dy) >= std::abs(dx);
+  const bool at_edge = vertical && dy != 0.0 &&
+                       (dy > 0 ? (edges & mv::canvas::camera::kEdgeBottom) != 0
+                               : (edges & mv::canvas::camera::kEdgeTop) != 0);
+  if (at_edge) {
+    if ((_overscroll > 0) != (dy > 0) || now - _lastScrollTime > 0.3) _overscroll = 0;
+    _overscroll += dy;
+    if (!_pageTurnLatched && std::abs(_overscroll) >= kTurnPx) {
+      const int delta = _overscroll > 0 ? 1 : -1;
+      _overscroll = 0;
+      if ([self turnPage:delta land:YES]) {
+        _pageTurnLatched = YES;
+        _pageTurnTime = now;
+      }
+    }
+    dy = 0;
+  } else {
+    _overscroll = 0;
+  }
+  _lastScrollTime = now;
+  _scrollRemX += dx;
+  _scrollRemY += dy;
+  const auto px = static_cast<std::int64_t>(std::trunc(_scrollRemX));
+  const auto py = static_cast<std::int64_t>(std::trunc(_scrollRemY));
+  _scrollRemX -= static_cast<double>(px);
+  _scrollRemY -= static_cast<double>(py);
+  if (px == 0 && py == 0) return;
+  _snap.scroll_px_x += px;
+  _snap.scroll_px_y += py;
   [self pokeSnapshot];
 }
 

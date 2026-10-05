@@ -776,6 +776,7 @@ if(MV_BUILD_TESTS)
     tests/test_spsc_ring.cpp
     tests/test_job_system.cpp
     tests/test_input_state.cpp
+    tests/test_camera.cpp
     tests/test_present_policy.cpp
     tests/test_metal_pacer.cpp
     tests/test_frametime_report.cpp
@@ -860,6 +861,7 @@ if(MV_BUILD_TESTS)
     mv_core
     mv_io
     mv_gfx
+    mv_canvas
     mv_shell
     mv_edit
     mv_codec

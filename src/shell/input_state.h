@@ -104,6 +104,17 @@ struct input_snapshot {
   // publications lose none (docs/design/16: ↑ ↓ when zoomed, Shift+arrows).
   std::int64_t pan_steps_x = 0;
   std::int64_t pan_steps_y = 0;
+  // Document scrolling (docs/design/04 "Pages"): the wheel or trackpad over a
+  // PDF or DOCX with the filmstrip hidden pans, in screen pixels (positive
+  // moves the view down / right). Cumulative like the wheel. The host decides
+  // per event whether a delta zooms (wheel_total) or scrolls (these).
+  std::int64_t scroll_px_x = 0;
+  std::int64_t scroll_px_y = 0;
+  // A page turned by scrolling past an edge: the next still that lands (not a
+  // refinement) keeps the zoom and lands at the top (+1) or bottom (-1)
+  // instead of fitting. Latched by page_land_seq.
+  std::uint32_t page_land_seq = 0;
+  std::int32_t page_land = 0;
 
   // docs/design/16 view state. Levels, not edges: the render thread draws what these
   // say, and redraws once when any of them changes.
@@ -217,6 +228,17 @@ struct input_cursor {
     pan_steps_x = s.pan_steps_x;
     pan_steps_y = s.pan_steps_y;
     return dx != 0 || dy != 0;
+  }
+  std::int64_t scroll_px_x = 0;
+  std::int64_t scroll_px_y = 0;
+
+  // Document scroll since the last call, in screen pixels.
+  bool consume_scroll(const input_snapshot& s, float& dx, float& dy) noexcept {
+    dx = static_cast<float>(s.scroll_px_x - scroll_px_x);
+    dy = static_cast<float>(s.scroll_px_y - scroll_px_y);
+    scroll_px_x = s.scroll_px_x;
+    scroll_px_y = s.scroll_px_y;
+    return dx != 0.0f || dy != 0.0f;
   }
   bool consume_activity(const input_snapshot& s) noexcept {
     const bool changed = s.activity_seq != activity_seq;

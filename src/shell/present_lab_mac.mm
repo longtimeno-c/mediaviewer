@@ -1396,7 +1396,13 @@ void present_lab_mac::render_thread_main() noexcept {
             const auto win_w = usable_window_w(snapshot);
             const float win_h = usable_window_h(snapshot);
             const bool had_media = old_w > 0.0f;
-            if (snapshot.sticky_zoom && had_media && camera_.fill_mode()) {
+            // A page turned by scrolling past an edge lands at the top or
+            // bottom at the zoom it was read at (docs/design/04 "Pages").
+            const bool page_land = snapshot.page_land_seq != seen_page_land_seq_;
+            seen_page_land_seq_ = snapshot.page_land_seq;
+            if (page_land && had_media && snapshot.page_land != 0) {
+              camera_.turn_page(old_w, old_h, new_w, new_h, snapshot.page_land < 0, win_w, win_h);
+            } else if (snapshot.sticky_zoom && had_media && camera_.fill_mode()) {
               camera_.fill(new_w, new_h, win_w, win_h, /*immediate=*/true);
             } else if (snapshot.sticky_zoom && had_media && !camera_.fit_mode()) {
               camera_.carry(old_w, old_h, new_w, new_h, win_w, win_h);
@@ -1505,6 +1511,10 @@ void present_lab_mac::render_thread_main() noexcept {
         update_video_status();
         const float wheel = input_cursor_.consume_wheel(snapshot);
         if (wheel != 0.0f) redraw = true;
+        // Consumed with or without a picture, so no scroll banks up for the next one.
+        float scroll_x = 0.0f, scroll_y = 0.0f;
+        const bool scrolled = input_cursor_.consume_scroll(snapshot, scroll_x, scroll_y);
+        unsigned edges = canvas::camera::kEdgeTop | canvas::camera::kEdgeBottom;
 
         if (float image_w = 0, image_h = 0; picture_size(&image_w, &image_h)) {
           const auto window_w = usable_window_w(snapshot);
@@ -1548,7 +1558,13 @@ void present_lab_mac::render_thread_main() noexcept {
                                  window_w, window_h,
                                  image_w, image_h);
           }
+          if (scrolled) {
+            camera_.pan_by_screen(scroll_x, scroll_y, image_w, image_h, window_w, window_h);
+            redraw = true;
+          }
+          edges = camera_.vertical_edges(image_h, window_h);
         }
+        scroll_edges_.store(edges, std::memory_order_relaxed);
         if (redraw) last_input_time_ = elapsed;
         if (fade_from_ && !fade_.active(elapsed)) {
           fade_from_.reset();

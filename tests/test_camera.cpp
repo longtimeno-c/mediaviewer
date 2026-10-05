@@ -123,6 +123,40 @@ TEST_CASE("keyboard pan is locked at fit and never shows background", "[canvas]"
   REQUIRE_THAT(camera::clamp_centre(10.0f, 400.0f, 500.0f, 1.0f), WithinAbs(200.0f, 1e-3f));
 }
 
+TEST_CASE("document scrolling: edges, and a page turned past one lands at the far edge",
+          "[canvas][pages]") {
+  camera cam;
+  // A page at fit: nowhere to pan, so both edges (a scroll turns the page).
+  cam.fit(800.0f, 1100.0f, 1000.0f, 700.0f, true);
+  REQUIRE(cam.vertical_edges(1100.0f, 700.0f) == (camera::kEdgeTop | camera::kEdgeBottom));
+  // Fit stays fit on a turn.
+  cam.turn_page(800.0f, 1100.0f, 800.0f, 1100.0f, false, 1000.0f, 700.0f);
+  REQUIRE(cam.fit_mode());
+
+  // 100 %: 1100 px of page in a 700 px window, opened centred -- neither edge.
+  cam.one_to_one();
+  REQUIRE(cam.vertical_edges(1100.0f, 700.0f) == 0u);
+  cam.pan_by_screen(0.0f, 5000.0f, 800.0f, 1100.0f, 1000.0f, 700.0f);
+  REQUIRE(cam.vertical_edges(1100.0f, 700.0f) == camera::kEdgeBottom);
+  cam.pan_by_screen(0.0f, -5000.0f, 800.0f, 1100.0f, 1000.0f, 700.0f);
+  REQUIRE(cam.vertical_edges(1100.0f, 700.0f) == camera::kEdgeTop);
+
+  // Past the bottom: the next page lands at its top, the same width on screen
+  // even though it arrived as a half-size preview, and snapped (no spring).
+  cam.pan_by_screen(0.0f, 5000.0f, 800.0f, 1100.0f, 1000.0f, 700.0f);
+  cam.turn_page(800.0f, 1100.0f, 400.0f, 550.0f, /*land_bottom=*/false, 1000.0f, 700.0f);
+  REQUIRE_THAT(cam.zoom(), WithinAbs(2.0f, 1e-5f));
+  REQUIRE_FALSE(cam.moving());
+  REQUIRE_THAT(cam.pan_y(), WithinAbs(175.0f, 1e-3f));  // half the window, in preview pixels
+  REQUIRE(cam.vertical_edges(550.0f, 700.0f) == camera::kEdgeTop);
+
+  // Back past the top: the previous page lands at its bottom.
+  cam.turn_page(400.0f, 550.0f, 800.0f, 1100.0f, /*land_bottom=*/true, 1000.0f, 700.0f);
+  REQUIRE_THAT(cam.zoom(), WithinAbs(1.0f, 1e-5f));
+  REQUIRE_THAT(cam.pan_y(), WithinAbs(750.0f, 1e-3f));
+  REQUIRE(cam.vertical_edges(1100.0f, 700.0f) == camera::kEdgeBottom);
+}
+
 TEST_CASE("a critically damped spring settles on its target", "[canvas][spring]") {
   float x = 0.0f;
   float v = 0.0f;

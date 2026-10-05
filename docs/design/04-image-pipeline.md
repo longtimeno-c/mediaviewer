@@ -276,7 +276,16 @@ page past 0 is one decode at the view generation the turn set: no cache, no pref
 preview, published under its own key so the canvas fits it like a new stop. Windows turns pages
 through `mv_folder_select_page` (ABI 0.16); the Mac host calls `present_lab_mac::open_item(…, page)`.
 The host remembers the count the core last reported and shows "Page n of m" in its notice line.
-There is no scrolling between pages: the wheel and trackpad zoom, drag pans, as on any still.
+**Scrolling a document.** Over a PDF or DOCX with the filmstrip hidden, the wheel and trackpad
+scroll instead of zooming (`⌘`/`Ctrl`+wheel and a pinch still zoom; with the filmstrip shown the
+wheel zooms as on any still). The host turns each event into screen pixels
+(`input_snapshot::scroll_px_x/y`; a wheel notch is a tenth of the canvas) and the render thread pans
+with `camera::pan_by_screen`. The render thread publishes which vertical edges the camera rests on
+(`scroll_edges()`, both at fit); a scroll held 60 px past one turns the page with `page_land_seq`,
+and the new page keeps its on-screen width and lands at its top (forward) or bottom (back)
+(`camera::turn_page`) instead of fitting. One trackpad gesture, or one wheel burst, turns at most one
+page. Hosts: `-scrollDocument:` (main_mac.mm), `scroll_document` (main.cpp, `WM_MOUSEWHEEL` /
+`WM_MOUSEHWHEEL`).
 
 ## Leaving kinds out of a listing
 

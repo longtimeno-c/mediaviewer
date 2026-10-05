@@ -157,6 +157,36 @@ void camera::carry(float old_w, float old_h, float new_w, float new_h, float win
   pan_vx_ = pan_vy_ = zoom_v_ = 0.0f;
 }
 
+void camera::turn_page(float old_w, float old_h, float new_w, float new_h, bool land_bottom,
+                       float window_w, float window_h) noexcept {
+  if (old_w <= 0.0f || old_h <= 0.0f || new_w <= 0.0f || new_h <= 0.0f) return;
+  if (fit_mode_ || target_zoom_ <= 0.0f) {
+    fit(new_w, new_h, window_w, window_h, /*immediate=*/true);
+    return;
+  }
+  clear_rubber();
+  fill_mode_ = false;
+  const float fx = target_pan_x_ / old_w;
+  target_zoom_ = std::min(target_zoom_ * old_w / new_w, kMaxZoom);
+  target_pan_x_ = clamp_centre(fx * new_w, new_w, window_w, target_zoom_);
+  target_pan_y_ = clamp_centre(land_bottom ? new_h : 0.0f, new_h, window_h, target_zoom_);
+  pan_x_ = target_pan_x_;
+  pan_y_ = target_pan_y_;
+  zoom_ = target_zoom_;
+  pan_vx_ = pan_vy_ = zoom_v_ = 0.0f;
+}
+
+unsigned camera::vertical_edges(float image_h, float window_h) const noexcept {
+  if (fit_mode_ || target_zoom_ <= 0.0f || image_h <= 0.0f) return kEdgeTop | kEdgeBottom;
+  if (image_h * target_zoom_ <= window_h + 0.5f) return kEdgeTop | kEdgeBottom;
+  // Half a screen pixel of slack: the springs settle on the clamp, not past it.
+  const float slack = 0.5f / target_zoom_;
+  unsigned edges = 0;
+  if (target_pan_y_ <= clamp_centre(0.0f, image_h, window_h, target_zoom_) + slack) edges |= kEdgeTop;
+  if (target_pan_y_ >= clamp_centre(image_h, image_h, window_h, target_zoom_) - slack) edges |= kEdgeBottom;
+  return edges;
+}
+
 void camera::refine(float old_w, float old_h, float new_w, float new_h, float window_w,
                     float window_h) noexcept {
   if (old_w <= 0.0f || old_h <= 0.0f || new_w <= 0.0f || new_h <= 0.0f) return;

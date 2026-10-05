@@ -41,6 +41,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <cwctype>
 #include <utility>
 #include <vector>
 
@@ -70,6 +71,7 @@
 #include "image/linear.h"
 #include "io/file.h"
 #include "io/file_port.h"
+#include "io/pairing.h"
 #include "io/sort_order.h"
 #include "meta/meta.h"
 #include "meta/tables.h"
@@ -87,6 +89,7 @@
 #include "shell/settings.h"
 #include "shell/shellext_install.h"
 #include "shell/single_instance_win.h"
+#include "shell/open_with_win.h"
 #include "shell/telemetry.h"
 #include "shell/update_guard.h"
 #include "shell/av_soak.h"
@@ -129,6 +132,8 @@ constexpr UINT kMsgOpenForwarded = WM_APP + 0x78;   // a second instance handed 
 // One of our own drags ended. Posted, not handled inline, so a WM_DROPFILES
 // the shell posted for that drop is seen (and refused) while the flag holds.
 constexpr UINT kMsgOwnDragEnded = WM_APP + 0x7A;
+// A document's "Open in <app>" list (shell/open_with_win.h) came back.
+constexpr UINT kMsgOpenWithReady = WM_APP + 0x7B;
 constexpr UINT kThumbPrev = 0x5101;                 // taskbar thumbnail toolbar button ids
 constexpr UINT kThumbPlay = 0x5102;
 constexpr UINT kThumbNext = 0x5103;
@@ -296,6 +301,19 @@ struct app_state {
   std::uint32_t page = 0;
   std::uint32_t page_of = UINT32_MAX;
   std::uint32_t page_count = 0;
+  // Document scrolling (docs/design/04 "Pages"): travel pushed past an edge
+  // (screen px, signed), the sub-pixel remainders, and the latch that lets one
+  // flick turn one page.
+  double overscroll = 0.0;
+  double scroll_rem_x = 0.0;
+  double scroll_rem_y = 0.0;
+  ULONGLONG last_scroll_tick = 0;
+  ULONGLONG page_turn_tick = 0;
+  bool page_turn_latched = false;
+  // A document's "Open in <app>" (docs/design/20): the apps for open_with_ext,
+  // default first, looked up once per extension off the UI thread.
+  std::wstring open_with_ext;
+  std::vector<mv::shell::open_with_app> open_with_apps;
   mv_session_t session = nullptr;
   bool tracking_mouse = false;
   bool chrome_enabled = true;
@@ -2094,7 +2112,9 @@ void folder_select(app_state* app, std::uint32_t index) {
 // on screen (docs/plans/audio-and-documents.md §2.3). The count is what the
 // core reported for the image on screen; until it has, and on a single-page
 // still or a clip, the keys do nothing.
-bool turn_page(app_state* app, int delta) {
+// `land`: a scroll turned it, so the page keeps the zoom and lands at its top
+// (forward) or bottom (back) instead of fitting.
+bool turn_page(app_state* app, int delta, bool land = false) {
   if (!app || !app->session || video_mode(app)) return false;
   std::uint32_t index = 0;
   if (mv_folder_selected(app->session, &index) != MV_OK) return false;
@@ -2114,10 +2134,70 @@ bool turn_page(app_state* app, int delta) {
   std::uint64_t job = 0;
   if (mv_folder_select_page(app->session, static_cast<std::uint32_t>(want), &job) != MV_OK) return false;
   app->page = static_cast<std::uint32_t>(want);
+  ++app->input.page_land_seq;
+  app->input.page_land = land ? (delta > 0 ? 1 : -1) : 0;
   notice_show(app, "Page " + std::to_string(app->page + 1) + " of " + std::to_string(app->page_count));
   ++app->input.activity_seq;
   publish(app);
   return true;
+}
+
+// The wheel over a PDF or DOCX with the filmstrip hidden scrolls the page
+// instead of zooming (docs/design/04 "Pages"); Ctrl+wheel and a touchpad pinch
+// (which arrives as Ctrl+wheel) still zoom.
+bool document_scrolls(app_state* app) {
+  if (!app || !app->session || app->mode == open_mode::none || app->edit_path.empty()) return false;
+  if (app->gallery_visible || app->editor.open || app->chrome.filmstrip_visible()) return false;
+  return mv::io::is_document_name(app->edit_path);
+}
+
+// `dx` / `dy` in wheel units (120 a notch; a touchpad sends less), positive
+// moving the view right / down. A notch is a tenth of the canvas, as a
+// keyboard pan step is. A scroll held against the top or bottom edge for
+// kTurnPx turns the page: one per notch on a wheel, one per flick on a
+// touchpad (its inertia does not run on through the document).
+void scroll_document(app_state* app, int dx, int dy) {
+  const ULONGLONG now = ::GetTickCount64();
+  const bool notched = dx % WHEEL_DELTA == 0 && dy % WHEEL_DELTA == 0;
+  if (notched ? now - app->page_turn_tick > 120 : now - app->last_scroll_tick > 250) {
+    app->page_turn_latched = false;
+  }
+  const double step = std::max(1.0, 0.1 * static_cast<double>(app->input.height)) / WHEEL_DELTA;
+  const double px = dx * step;
+  double py = dy * step;
+  const double turn_px = 60.0 * std::max(1.0f, app->input.dpi_scale);
+  const unsigned edges = app->lab.scroll_edges();
+  const bool at_edge = std::abs(py) >= std::abs(px) && py != 0.0 &&
+                       (py > 0 ? (edges & mv::canvas::camera::kEdgeBottom) != 0
+                               : (edges & mv::canvas::camera::kEdgeTop) != 0);
+  if (at_edge) {
+    if ((app->overscroll > 0) != (py > 0) || now - app->last_scroll_tick > 300) app->overscroll = 0;
+    app->overscroll += py;
+    if (!app->page_turn_latched && std::abs(app->overscroll) >= turn_px) {
+      const int delta = app->overscroll > 0 ? 1 : -1;
+      app->overscroll = 0;
+      const std::uint32_t before = app->page;
+      if (turn_page(app, delta, /*land=*/true) && app->page != before) {
+        app->page_turn_latched = true;
+        app->page_turn_tick = now;
+      }
+    }
+    py = 0;
+  } else {
+    app->overscroll = 0;
+  }
+  app->last_scroll_tick = now;
+  app->scroll_rem_x += px;
+  app->scroll_rem_y += py;
+  const auto ix = static_cast<std::int64_t>(std::trunc(app->scroll_rem_x));
+  const auto iy = static_cast<std::int64_t>(std::trunc(app->scroll_rem_y));
+  app->scroll_rem_x -= static_cast<double>(ix);
+  app->scroll_rem_y -= static_cast<double>(iy);
+  if (ix == 0 && iy == 0) return;
+  app->input.scroll_px_x += ix;
+  app->input.scroll_px_y += iy;
+  ++app->input.activity_seq;
+  publish(app);
 }
 
 void folder_step(app_state* app, int delta) {
@@ -2471,12 +2551,55 @@ mv::shell::edit_subject edit_subject_of(app_state* app) noexcept {
   if (!app || app->mode == open_mode::none || app->edit_path.empty()) return mv::shell::edit_subject::none;
   // An audio file plays through the video path but has nothing to edit.
   if (mv::shell::is_audio_name(app->edit_path)) return mv::shell::edit_subject::none;
+  // A document opens in its own app instead (the bar's "Open in <app>").
+  if (mv::io::is_document_name(app->edit_path)) return mv::shell::edit_subject::none;
   // A Live Photo's motion plays through the video path but the stop is a still.
   if (mv::shell::is_video_name(app->edit_path) || (video_mode(app) && !app->motion_playing)) {
     return mv::shell::edit_subject::clip;
   }
   if (app->lab.animation() != mv::shell::animation_state::none) return mv::shell::edit_subject::none;
   return mv::shell::edit_subject::still;
+}
+
+struct open_with_result {
+  std::wstring extension;
+  std::vector<mv::shell::open_with_app> apps;
+};
+
+// The document on screen has a new extension: ask the shell for its apps on a
+// thread of its own (COM, and a shell that may be slow).
+void refresh_open_with(app_state* app) {
+  const std::size_t dot = app->edit_path.find_last_of('.');
+  if (dot == std::string::npos) return;
+  std::wstring ext = wide_from_utf8(std::string_view(app->edit_path).substr(dot));
+  for (wchar_t& c : ext) c = static_cast<wchar_t>(::towlower(c));
+  if (ext == app->open_with_ext) return;
+  app->open_with_ext = ext;
+  app->open_with_apps.clear();
+  const HWND hwnd = app->window;
+  if (!hwnd) return;
+  std::thread([ext, hwnd] {
+    auto* r = new (std::nothrow) open_with_result{ext, mv::shell::list_open_with(ext)};
+    if (r && !::PostMessageW(hwnd, kMsgOpenWithReady, 0, reinterpret_cast<LPARAM>(r))) delete r;
+  }).detach();
+}
+
+void on_open_with_ready(app_state* app, std::unique_ptr<open_with_result> r) {
+  if (!r || r->extension != app->open_with_ext) return;
+  app->open_with_apps = std::move(r->apps);
+  push_edit_view(app);
+}
+
+// "Open in <app>" (row of the list; -1 the default) and Return on a document.
+void open_document_with(app_state* app, int row) {
+  if (!app || app->edit_path.empty() || !mv::io::is_document_name(app->edit_path)) return;
+  std::wstring exe;
+  if (row >= 0 && static_cast<std::size_t>(row) < app->open_with_apps.size()) {
+    exe = app->open_with_apps[static_cast<std::size_t>(row)].exe;
+  }
+  std::thread([file = wide_from_utf8(app->edit_path), exe] {
+    if (!mv::shell::open_with(file, exe)) ::MessageBeep(MB_ICONWARNING);
+  }).detach();
 }
 
 void push_edit_view(app_state* app) noexcept {
@@ -2521,6 +2644,18 @@ void push_edit_view(app_state* app) noexcept {
     a.name_len = static_cast<std::int32_t>(name.size());
     a.trim_label_utf8 = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(label.data()));
     a.trim_label_len = static_cast<std::int32_t>(label.size());
+    // A document: the bar's "Open in <app>" rows, one name a line, default first.
+    std::string apps;
+    if (mv::io::is_document_name(app->edit_path)) {
+      a.document = 1;
+      refresh_open_with(app);
+      for (const auto& o : app->open_with_apps) {
+        apps += utf8_from_wide(o.name);
+        apps += '\n';
+      }
+    }
+    a.open_apps_utf8 = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(apps.data()));
+    a.open_apps_len = static_cast<std::int32_t>(apps.size());
     app->chrome.set_edit_view(a);
   } catch (...) {
   }
@@ -4070,6 +4205,10 @@ void chrome_on_command(void* ctx, int command, float arg) {
     // (arg = preset, + 16 portrait) and straighten slider (arg = degrees).
     case mv::shell::chrome_cmd_edit_tab:
       edit_select_tab(app, static_cast<int>(arg));
+      return;
+    // A document's "Open in <app>": arg is the row SetEditView listed, -1 the default.
+    case mv::shell::chrome_cmd_open_in_app:
+      open_document_with(app, static_cast<int>(arg));
       return;
     case mv::shell::chrome_cmd_edit_action:
       run_edit_action(app, static_cast<int>(arg));
@@ -5706,6 +5845,12 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     publish(app);
     return true;
   };
+  // Return (the bar's "Open in <app>") on a PDF or DOCX: its own app opens it.
+  if (command == edit_workspace && !app->ws.open && !app->editor.open &&
+      mv::io::is_document_name(app->edit_path)) {
+    open_document_with(app, -1);
+    return true;
+  }
   // PR 30 (docs/design/21, owner): video is edited in its own window, not a pane.
   if (command == edit_workspace &&
       (app->editor.open || edit_subject_of(app) == mv::shell::edit_subject::clip)) {
@@ -7123,10 +7268,22 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
     }
 
     case WM_MOUSEWHEEL: {
+      if ((GET_KEYSTATE_WPARAM(wparam) & MK_CONTROL) == 0 && document_scrolls(app)) {
+        scroll_document(app, 0, -GET_WHEEL_DELTA_WPARAM(wparam));
+        transport_activity(app);
+        return 0;
+      }
       app->input.wheel_total += GET_WHEEL_DELTA_WPARAM(wparam);
       ++app->input.activity_seq;
       publish(app);
       transport_activity(app);
+      return 0;
+    }
+
+    case WM_MOUSEHWHEEL: {
+      // Tilt / two-finger sideways: pans a document only (it never zoomed).
+      if (!document_scrolls(app)) break;
+      scroll_document(app, GET_WHEEL_DELTA_WPARAM(wparam), 0);
       return 0;
     }
 
@@ -7236,6 +7393,10 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
 
     case kMsgMetaReady:
       metadata_ready(app);
+      return 0;
+
+    case kMsgOpenWithReady:
+      on_open_with_ready(app, std::unique_ptr<open_with_result>(reinterpret_cast<open_with_result*>(lparam)));
       return 0;
 
     case kMsgSiblingsReady:

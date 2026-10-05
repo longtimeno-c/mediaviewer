@@ -125,6 +125,9 @@ enum chrome_command : int {
   // source time in milliseconds (exact to 4.6 h in a float). One undo a drag.
   chrome_cmd_editor_trim_grab = 1028,
   chrome_cmd_editor_trim_to = 1029,
+  // A document's "Open in <app>" (docs/design/20): arg is the row of the apps
+  // set_edit_view last listed, or -1 for the default.
+  chrome_cmd_open_in_app = 1030,
 };
 
 // chrome_cmd_editor_action's argument; 1-6 are mv_chrome_editor_edit's codes
@@ -260,6 +263,7 @@ static_assert(chrome_cmd_editor_seek >= kCommandCount && chrome_cmd_editor_actio
 static_assert(chrome_cmd_drag_items >= kCommandCount && chrome_cmd_drag_ended >= kCommandCount);
 static_assert(chrome_cmd_open_recent >= kCommandCount);
 static_assert(chrome_cmd_editor_trim_grab >= kCommandCount && chrome_cmd_editor_trim_to >= kCommandCount);
+static_assert(chrome_cmd_open_in_app >= kCommandCount);
 static_assert(is_reserved_notification(chrome_cmd_set_settings));
 static_assert(is_reserved_notification(chrome_cmd_folder_ready));
 static_assert(is_reserved_notification(chrome_cmd_video_active));
@@ -285,7 +289,7 @@ static_assert(is_reserved_notification(chrome_cmd_focus_changed));
       chrome_cmd_edit_tab, chrome_cmd_edit_action, chrome_cmd_meta_tags, chrome_cmd_meta_date,
       chrome_cmd_editor_seek, chrome_cmd_editor_action,
       chrome_cmd_drag_items, chrome_cmd_drag_ended, chrome_cmd_open_recent,
-      chrome_cmd_editor_trim_grab, chrome_cmd_editor_trim_to};
+      chrome_cmd_editor_trim_grab, chrome_cmd_editor_trim_to, chrome_cmd_open_in_app};
   std::uint32_t h = 17;
   for (const int id : ids) h = h * 31u + static_cast<std::uint32_t>(id);
   return static_cast<std::int32_t>(h);
@@ -421,9 +425,14 @@ struct chrome_edit_args {
   std::uint64_t trim_label_utf8;  // trim_state::label() while armed
   std::int32_t name_len;
   std::int32_t trim_label_len;
+  // A PDF or DOCX: nothing to edit; the bar offers "Open in <app>" instead.
+  // open_apps: the apps' names, one a line, default first ("" until known).
+  std::uint64_t open_apps_utf8;
+  std::int32_t open_apps_len;
+  std::int32_t document;
 };
 
-static_assert(sizeof(chrome_edit_args) == 72, "keep in sync with IslandHost.Edit EditArgsSize");
+static_assert(sizeof(chrome_edit_args) == 88, "keep in sync with IslandHost.Edit EditArgsSize");
 
 // PR 30 (docs/design/21): the Video Editor window. Its timeline is an island on the
 // editor's own top-level window; the card that says where the picture went is

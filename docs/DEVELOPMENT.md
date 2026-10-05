@@ -456,7 +456,8 @@ copy, and check Finder's **Open With** and a Quick Look thumbnail.
 | `Space` / `Backspace` | next / previous. On a clip, `Space` is play/pause. It is no longer the lab sweep |
 | `Home` / `End` | first / last in the folder |
 | `PageUp` / `PageDown` | back / forward ten |
-| `Ctrl+PageUp` / `Ctrl+PageDown` | previous / next page of a TIFF, PDF or DOCX (`⌘` on the Mac). Within a page: zoom (wheel, `+` `-`, `1`–`4`) and drag to pan |
+| `Ctrl+PageUp` / `Ctrl+PageDown` | previous / next page of a TIFF, PDF or DOCX (`⌘` on the Mac). Within a page: zoom (wheel, `+` `-`, `1`–`4`) and drag to pan. On a PDF or DOCX with the filmstrip hidden the wheel / trackpad scrolls and turns pages at the edges; `⌘`/`Ctrl`+wheel or a pinch zooms |
+| `Enter` on a PDF or DOCX | open it in its default app (the bar's **Open in <app>**, ▾ for the others) |
 | `J` / `K` / `L` | clip transport: −10 s / pause / +10 s ([docs/design/16](design/16-commands.md)) |
 | `,` / `.` | frame step back / forward while paused |
 | `A` / `D` | previous / next beside the arrows, in every mode including on a clip |
