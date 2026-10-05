@@ -229,7 +229,16 @@ Import was the first add-on, and its mechanism is the one every add-on uses: the
 - **Updates:** Settings offers **Update to X** when the release channel has a newer signed
   version than the installed one; nothing downloads until it is clicked. The new version
   installs beside the running one and the store removes the old one at the next start
-  (`prune.pending`), so a running add-on never loses its files. The manifest declares the host
+  (`prune.pending`), so a running add-on never loses its files. An update of a running Import or
+  Local search Core therefore takes over only at the next start, so the app offers one
+  (2026-10-05, owner): Settings says "Restart MediaViewer to use it" with **Restart now**, and the
+  command bar shows **Add-on updated — restart** until then. Never a forced restart. The restart
+  puts back the folder and file (as an app update's does); with an app update also staged it is
+  that update's restart, which loads the new add-on too. Otherwise Windows starts the exe again
+  with `--relaunch-after <pid>`, which waits for the old process to exit before claiming the
+  single instance (`update_guard.h`), and the Mac opens the app again from a small waiter once
+  the old process is gone (`-restartForAddons`). A People or Sound piece needs none: the loaded
+  pack reloads it. The manifest declares the host
   API range it supports; an add-on outside that range is not loaded and the app says "Import
   needs an update". **No downgrades:** install refuses a signed manifest older than a working
   installed version; the same version again is a repair. Offline sideloading works: a folder

@@ -150,6 +150,11 @@ void mv_chrome_set_gallery_columns(int32_t columns);
 int32_t mv_chrome_update_phase(void);
 bool mv_chrome_update_version(char* out, int32_t cap);
 void mv_chrome_restart_to_update(void);
+// An add-on update installed beside a running copy and waits on a restart.
+// With an app update staged this is mv_chrome_restart_to_update (Sparkle
+// installs it, and the new add-on loads on the way back up); else MediaViewer
+// quits and opens again onto the same folder and file. [main-thread]
+void mv_chrome_restart_for_addons(void);
 
 // Multi-folder browsing (docs/design/10 PR 26). The open folder's child folders are
 // shown as tiles above its images; the breadcrumb runs from the highest folder

@@ -200,6 +200,43 @@ struct AddonChannel: Sendable {
   }
 }
 
+/// Add-on updates that installed beside a running copy and take over only at
+/// the next start ("Import 0.2.0", "Local search 0.3.1"): a loaded bundle
+/// cannot be replaced in the running app. While any is here the command bar
+/// and Settings offer a restart (owner, 2026-10-05). Never a forced restart
+/// (docs/design/13 "Never interrupt"). The Mac twin of IslandHost.Update.cs.
+@MainActor
+final class AddonRestart: ObservableObject {
+  static let shared = AddonRestart()
+  @Published private(set) var pending: [String] = []
+
+  func needed(_ what: String) {
+    if !pending.contains(what) { pending.append(what) }
+  }
+
+  var text: String {
+    let one = pending.count == 1
+    return "\(pending.joined(separator: " and ")) \(one ? "is" : "are") installed. "
+      + "Restart MediaViewer to use \(one ? "it" : "them")."
+  }
+
+  /// Onto the same folder and file: through Sparkle when an app update is
+  /// staged too (it installs both), else MediaViewer opens again once this
+  /// process has exited.
+  func restart() { mv_chrome_restart_for_addons() }
+}
+
+/// Settings' "Restart now", under an add-on's line, while an update waits on it.
+struct AddonRestartButton: View {
+  @ObservedObject var restart = AddonRestart.shared
+
+  var body: some View {
+    if !restart.pending.isEmpty {
+      Button("Restart now") { restart.restart() }.help(restart.text)
+    }
+  }
+}
+
 @MainActor
 final class AddonStore: ObservableObject {
   static let shared = AddonStore()
@@ -362,7 +399,8 @@ final class AddonStore: ObservableObject {
         self.message = result
         if result == "Import installed." {
           if let v = update, running {
-            self.message = "Import \(v) is installed. It takes over the next time MediaViewer starts."
+            self.message = "Import \(v) is installed. Restart MediaViewer to use it."
+            AddonRestart.shared.needed("Import \(v)")
           } else if !mv_addons_load() {
             self.message = "Import is installed but did not pass verification, so it was not loaded."
           } else if let v = update {
@@ -445,6 +483,7 @@ struct AddonsSection: View {
       } else if !store.message.isEmpty {
         Text(store.message).font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
       }
+      AddonRestartButton()
       // The second add-on: install-only until Core is loaded, then the pack's
       // own management view (LocalSearchView.swift).
       LocalSearchSection().padding(.top, 16)
