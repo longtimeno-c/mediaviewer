@@ -277,6 +277,16 @@ internal sealed partial class ManagePanel
         RefreshSettings();
         RefreshRoots();
         OnStatus();
+        // Settings keeps this panel and re-attaches it each time it opens
+        // (IslandHost.LocalSearch): read everything again then, as the Mac's
+        // appeared() does, so it never shows what was true when it was built
+        // (owner report, 2026-10-05: "0 of 26" long after the folder finished).
+        Root.Loaded += (_, _) =>
+        {
+            RefreshSettings();
+            RefreshRoots();
+            _chrome.ReadStatus();
+        };
     }
 
     // ---- building blocks -------------------------------------------------------------
@@ -527,11 +537,18 @@ internal sealed partial class ManagePanel
     // ---- roots ----------------------------------------------------------------------
 
     private sealed record RootRow(ulong Id, string Path, bool Recursive, bool Enabled, long Assets, long Done, long Bytes,
-                                  MvAiMedia Media);
+                                  MvAiMedia Media, bool Scanning);
+
+    // The newest roots read: an older one finishing late never draws over it.
+    private int _rootsRead;
+    // A row's button was pressed: redraw even if the numbers did not move, so
+    // the button it disabled comes back.
+    private bool _rootsPressed;
 
     internal void RefreshRoots()
     {
         AiApi api = _api;
+        int read = ++_rootsRead;
         _ = Task.Run(() =>
         {
             var rows = new List<RootRow>();
@@ -549,17 +566,25 @@ internal sealed partial class ManagePanel
                         r.TryGetProperty("done", out JsonElement d) ? d.GetInt64() : 0,
                         r.TryGetProperty("bytes", out JsonElement b) ? b.GetInt64() : 0,
                         r.TryGetProperty("media", out JsonElement m) && m.GetUInt32() <= 3
-                            ? (MvAiMedia)m.GetUInt32() : MvAiMedia.Default));
+                            ? (MvAiMedia)m.GetUInt32() : MvAiMedia.Default,
+                        r.TryGetProperty("scanning", out JsonElement sc) && sc.ValueKind == JsonValueKind.True));
                 }
             }
             catch (Exception ex) when (ex is MediaViewerException or JsonException or KeyNotFoundException
                                            or InvalidOperationException) { }
-            _chrome.Host.Post(() => ShowRoots(rows));
+            _chrome.Host.Post(() =>
+            {
+                if (read == _rootsRead) ShowRoots(rows);
+            });
         });
     }
 
     private void ShowRoots(List<RootRow> rows)
     {
+        // The engine posts AI_ROOTS as each folder's count moves (~1 s while
+        // indexing): unchanged rows are left alone, so a button keeps focus.
+        if (!_rootsPressed && _roots.Children.Count > 0 && rows.SequenceEqual(_rootsShown)) return;
+        _rootsPressed = false;
         // Export offers these folders; its button waits for one to exist.
         bool had = _rootsShown.Count > 0;
         _rootsShown = rows;
@@ -580,7 +605,9 @@ internal sealed partial class ManagePanel
             TextBlock path = _look.Text(r.Path, 14, AddonColour.Title, wrap: false);
             ToolTipService.SetToolTip(path, r.Path);
             labels.Children.Add(path);
-            string state = !r.Enabled ? "Paused" : r.Done >= r.Assets ? "Up to date" : $"{r.Done:N0} of {r.Assets:N0}";
+            string state = !r.Enabled ? "Paused"
+                : r.Done >= r.Assets ? (r.Scanning ? "Checking for changes…" : "Up to date")
+                : $"{r.Done:N0} of {r.Assets:N0}" + (r.Scanning ? " · checking for changes…" : "");
             labels.Children.Add(_look.Text((r.Recursive ? "and subfolders · " : "") + state + " · " + Look.Size(r.Bytes), 12));
             var bar = new MediaViewer.Shared.FlatBar(_look[AddonColour.Hairline], _look[AddonColour.Accent])
             {
@@ -593,9 +620,11 @@ internal sealed partial class ManagePanel
             ulong id = r.Id;
             bool enabled = r.Enabled;
             buttons.Children.Add(MediaMenu(id, r.Media));
-            buttons.Children.Add(_look.Button(enabled ? "Pause" : "Resume", () => RootCall(() => _api.RootSetEnabled(id, !enabled))));
-            buttons.Children.Add(_look.Button("Rescan", () => RootCall(() => _api.RootRescan(id))));
-            buttons.Children.Add(_look.Button("Remove", () => RootCall(() => _api.RootRemove(id))));
+            buttons.Children.Add(RootButton(enabled ? "Pause" : "Resume", () => _api.RootSetEnabled(id, !enabled)));
+            Button rescan = RootButton(r.Scanning ? "Checking…" : "Rescan", () => _api.RootRescan(id));
+            rescan.IsEnabled = !r.Scanning && enabled;
+            buttons.Children.Add(rescan);
+            buttons.Children.Add(RootButton("Remove", () => _api.RootRemove(id)));
             foreach (UIElement b in buttons.Children)
             {
                 if (b is Button button) AutomationProperties.SetName(button, $"{button.Content} {System.IO.Path.GetFileName(r.Path)}");
@@ -641,10 +670,25 @@ internal sealed partial class ManagePanel
         return button;
     }
 
+    // A row button answers at once: it greys out until the row is read again
+    // (the engine posts AI_ROOTS for every root change and each scan's start
+    // and end), so a click never looks like it did nothing.
+    private Button RootButton(string label, Action call)
+    {
+        Button self = null!;
+        self = _look.Button(label, () =>
+        {
+            self.IsEnabled = false;
+            RootCall(call);
+        });
+        return self;
+    }
+
     private void RootCall(Action call)
     {
         try { call(); }
         catch (MediaViewerException) { }
+        _rootsPressed = true;
         RefreshRoots();
         _chrome.RefreshCoverage();
         _chrome.ReadStatus();
