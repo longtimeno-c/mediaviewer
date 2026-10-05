@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // PR 11 — the colour-adjust kernel, written once.
 //
-// plan/10 PR 11: "HLSL and MSL twins that disagree fail the PR." Rather than
+// docs/design/10 PR 11: "HLSL and MSL twins that disagree fail the PR." Rather than
 // three hand-kept copies (HLSL, MSL, the C++ export bake) that a test can only
 // sample, the kernel is one token sequence, MV_ADJUST_KERNEL, in the subset of
 // syntax HLSL, the Metal Shading Language and C++ share:

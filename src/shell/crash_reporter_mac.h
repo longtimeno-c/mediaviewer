@@ -1,7 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Crashpad client for the macOS host — PR 11's Mac half (plan/10 PR 11, owner
-// call 2026-09-24; plan/13 Part 2). The twin of crash_reporter_win.h:
+// Crashpad client for the macOS host — PR 11's Mac half (docs/design/10 PR 11, owner
+// call 2026-09-24; docs/design/13 Part 2). The twin of crash_reporter_win.h:
 //
 //  - crashpad_handler out of process: Contents/Helpers/crashpad_handler in
 //    MediaViewer.app, or beside mediaviewer_lab. Crashpad catches the Mach
@@ -10,7 +10,7 @@
 //    so a smashed stack or heap in the app does not stop the report.
 //  - Database: ~/Library/Application Support/MediaViewer/Crashes. No upload
 //    URL, ever, from this client, and uploads disabled: there is no endpoint
-//    on either platform yet (plan/13). A dump is only ever sendable after the
+//    on either platform yet (docs/design/13). A dump is only ever sendable after the
 //    scrub below has rewritten it.
 //  - Indirectly-referenced memory OFF, forwarding to Apple's ReportCrash OFF
 //    (it would keep an unscrubbed report of its own), no extra ranges.
@@ -21,7 +21,7 @@
 //    database (shell/minidump_scrub.h — the Windows scrub, which now knows
 //    POSIX paths) before any send could be offered.
 //
-// The second capture path (plan/13 "two capture paths"): Swift / AppKit.
+// The second capture path (docs/design/13 "two capture paths"): Swift / AppKit.
 // NSApplicationCrashOnExceptions is set so AppKit does not keep running after
 // an exception in event handling. AppKit still catches that exception itself
 // and calls -[NSApplication reportException:], which traps in
@@ -67,7 +67,7 @@ std::size_t scrub_reports_in(const std::string& dir,
 // [main thread] A native call is starting (a routed command, a bridge call
 // from the SwiftUI chrome, an open). Stamps a fresh correlation id into the
 // core's crash context (mv_last_call_cid) and returns it, so a chrome
-// exception and a native crash can be tied to the same call (plan/13).
+// exception and a native crash can be tied to the same call (docs/design/13).
 std::uint64_t note_native_call() noexcept;
 
 // The deliberate crashes of the verify, armed only by MV_CRASH_TEST:

@@ -121,7 +121,7 @@ bool downsample_half(const std::uint8_t* src, std::uint32_t sw, std::uint32_t sh
                      std::vector<std::uint8_t>& dst, std::uint32_t& dw, std::uint32_t& dh,
                      const job_context* ctx) {
   // D3D11 mip extents are floor-half, not ceil. (w+1)/2 is the wrong pitch on
-  // odd camera JPEGs (plan/04).
+  // odd camera JPEGs (docs/design/04).
   dw = std::max(1u, sw / 2u);
   dh = std::max(1u, sh / 2u);
   dst.assign(static_cast<std::size_t>(dw) * dh * 4, 0);

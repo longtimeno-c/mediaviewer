@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Immutable 8-bit sRGB textures created on a worker (plan/02: CreateTexture2D
+// Immutable 8-bit sRGB textures created on a worker (docs/design/02: CreateTexture2D
 // with D3D11_SUBRESOURCE_DATA on the free-threaded device, never Map on the
 // immediate context). One place for the desc, so the single-texture still and
 // the tiled pyramid cannot drift apart.

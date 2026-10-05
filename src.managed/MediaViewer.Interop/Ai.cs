@@ -84,7 +84,7 @@ public enum MvAiMedia : uint
     Both = 3,
 }
 
-/// <summary>Mirrors <c>MV_AI_TRANSFER_*</c> (plan/17 "Sharing an index").</summary>
+/// <summary>Mirrors <c>MV_AI_TRANSFER_*</c> (docs/design/17 "Sharing an index").</summary>
 [Flags]
 public enum MvAiTransfer : uint
 {
@@ -148,7 +148,7 @@ public unsafe struct MvAiStatus
     public ulong SpeechDone;
     // The Mac's Photos library (issue #72), appended: iCloud-only assets.
     public ulong AssetsUnavailable;
-    // People (2026-10-03, plan/17 "People model"), appended: assets the People
+    // People (2026-10-03, docs/design/17 "People model"), appended: assets the People
     // pass must (re-)analyse and has; the face model in use.
     public ulong PeopleScanTotal;
     public ulong PeopleScanDone;
@@ -239,15 +239,15 @@ public unsafe struct MvAiApi
     public delegate* unmanaged[Cdecl]<IntPtr, ulong, uint, MvStatus> RootSetMedia;
     public delegate* unmanaged[Cdecl]<IntPtr, ulong, uint, byte*, uint, MvStatus> ResultSnippet;
 
-    // query language (2026-09-28, plan/17 "Query syntax")
+    // query language (2026-09-28, docs/design/17 "Query syntax")
     public delegate* unmanaged[Cdecl]<IntPtr, byte*, byte*, uint, uint*, MvStatus> SuggestJson;
 
-    // people refinement on request (2026-09-28, plan/17 "People refinement")
+    // people refinement on request (2026-09-28, docs/design/17 "People refinement")
     public delegate* unmanaged[Cdecl]<IntPtr, ulong, uint*, MvStatus> PersonRefine;
 
-    // appended 2026-09-28 (plan/23): a result clip's length for an NLE hand-off
+    // appended 2026-09-28 (docs/design/23): a result clip's length for an NLE hand-off
     public delegate* unmanaged[Cdecl]<IntPtr, ulong, uint, long*, MvStatus> ResultDuration;
-    // sharing an index (2026-09-28, plan/17 "Sharing an index")
+    // sharing an index (2026-09-28, docs/design/17 "Sharing an index")
     public delegate* unmanaged[Cdecl]<IntPtr, byte*, ulong*, uint, uint, ulong*, MvStatus> ExportIndex;
     public delegate* unmanaged[Cdecl]<IntPtr, byte*, byte*, uint, uint*, MvStatus> InspectExport;
     public delegate* unmanaged[Cdecl]<IntPtr, byte*, byte*, uint, ulong*, MvStatus> ImportIndex;
@@ -259,13 +259,13 @@ public unsafe struct MvAiApi
     public delegate* unmanaged[Cdecl]<IntPtr, ulong*, MvStatus> IndexPhotosLibrary;
     public delegate* unmanaged[Cdecl]<IntPtr, uint*, MvStatus> PhotosAccess;
 
-    // people in the open folder (2026-09-28, plan/17 "People in the open folder")
+    // people in the open folder (2026-09-28, docs/design/17 "People in the open folder")
     public delegate* unmanaged[Cdecl]<IntPtr, byte*, uint, byte*, uint, uint*, MvStatus> PeopleInJson;
 
-    // merge duplicates on request (2026-10-03, plan/17 "Merge duplicates")
+    // merge duplicates on request (2026-10-03, docs/design/17 "Merge duplicates")
     public delegate* unmanaged[Cdecl]<IntPtr, uint*, uint*, MvStatus> PeopleDedupe;
 
-    // re-analysing people (2026-10-03, plan/17 "People model")
+    // re-analysing people (2026-10-03, docs/design/17 "People model")
     public delegate* unmanaged[Cdecl]<IntPtr, MvStatus> PeopleReanalyse;
 }
 
@@ -452,7 +452,7 @@ public sealed unsafe class AiApi
     /// <summary>
     /// Worker: the people with a face in <paramref name="scopeDir"/> under
     /// <paramref name="scope"/>, their faces there counted and covered there
-    /// (plan/17 "People in the open folder"). No folder, or All, is everyone.
+    /// (docs/design/17 "People in the open folder"). No folder, or All, is everyone.
     /// </summary>
     public string PeopleJson(string? scopeDir, MvAiScope scope)
     {
@@ -525,7 +525,7 @@ public sealed unsafe class AiApi
 
     /// <summary>
     /// Worker: a result clip's length in ms as the index recorded it (0 for a
-    /// still or an unknown length), for an FCPXML hand-off (plan/23). 0 from an
+    /// still or an unknown length), for an FCPXML hand-off (docs/design/23). 0 from an
     /// older pack whose table stops before the field.
     /// </summary>
     public long ResultDurationMs(ulong search, uint index)
@@ -561,7 +561,7 @@ public sealed unsafe class AiApi
     /// (or the app restarts). Never saved; the threshold setting is unchanged.</summary>
     public void IndexAnyway() => SetSetting("battery_override", "1");
 
-    // ---- sharing an index (plan/17 "Sharing an index") ----
+    // ---- sharing an index (docs/design/17 "Sharing an index") ----
     /// <summary>
     /// Queues an export of <paramref name="roots"/> (empty: every root) to
     /// <paramref name="dest"/>. Runs on the pack's own thread; progress and the

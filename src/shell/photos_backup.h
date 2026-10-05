@@ -1,11 +1,11 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Backing up a Photos library's originals to a folder (plan/26-photos-library.md
+// Backing up a Photos library's originals to a folder (docs/design/26-photos-library.md
 // "Backup"; owner, 2026-10-03: "backup all my icloud photos to a local
 // directory"). Portable: the library is behind `source` (PhotoKit on the Mac,
 // shell/photos_backup_mac.mm; a fake in the tests), the copies are
 // io/verified_copy (hashed while read, read back, compared: the Import
-// add-on's rule, plan/18), and the layout is Import's default,
+// add-on's rule, docs/design/18), and the layout is Import's default,
 // <destination>/YYYY/YYYY-MM-DD/<original file name>.
 //
 // What is backed up: every asset's ORIGINAL files -- the photo or video as
@@ -21,7 +21,7 @@
 // written for an asset already backed up.
 //
 // The originals of an iCloud-only asset are fetched from iCloud for this (the
-// user asked for a copy of them: plan/12 2026-10-03), into a scratch folder,
+// user asked for a copy of them: docs/design/12 2026-10-03), into a scratch folder,
 // then copied verified to the destination and removed. The index and the
 // viewer's rules are not changed by this.
 //

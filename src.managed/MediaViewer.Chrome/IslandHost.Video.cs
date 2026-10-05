@@ -20,7 +20,7 @@ namespace MediaViewer.Chrome;
 /// It used to be a StackPanel inside the command bar, which put the scrubber at
 /// the top of the window and left it there — collapsed, but still holding a slot
 /// — for every photo. Then it was a full-width strip the canvas shrank for.
-/// Issue #38 (plan/12 2026-09-26) made it float like the Mac's and leave after
+/// Issue #38 (docs/design/12 2026-09-26) made it float like the Mac's and leave after
 /// an idle interval while the clip plays: native owns the geometry and the idle
 /// rule (shell/transport_autohide.h), and parks the island — content kept —
 /// when it hides, so the canvas never refits.
@@ -200,7 +200,7 @@ public static partial class IslandHost
             if (_updatingVideo || _folderSession is null) return;
             long now = Environment.TickCount64;
             // A drag is a scrub: nearest keyframe, throttled. The release is the
-            // exact seek (plan/05's two modes).
+            // exact seek (docs/design/05's two modes).
             if (_draggingSeek && now - _lastScrub < 75) return;
             _lastScrub = now;
             _folderSession.VideoSeek((long)(e.NewValue * 1e9), !_draggingSeek);

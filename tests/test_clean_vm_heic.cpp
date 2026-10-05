@@ -11,7 +11,7 @@
 //
 // So: decode a HEIC with MV_OS_CODEC=0 and then look at what the process has
 // loaded. libheif and libde265 must be in, because that is who did the work
-// (they are dynamic-link by licence — plan/11 — so they are visible as
+// (they are dynamic-link by licence — docs/design/11 — so they are visible as
 // modules). Media Foundation, WIC's codec extensions, and anything out of
 // C:\Program Files\WindowsApps must be absent: those are exactly what a clean
 // VM does not have, and any one of them appearing means the decode had help
@@ -178,7 +178,7 @@ TEST_CASE("a HEIC decodes with nothing a clean VM lacks", "[codec][heif][cleanvm
 
 TEST_CASE("the fetched real-world HEIC decodes the same way", "[codec][heif][cleanvm]") {
   // tools/testmedia/fetch-heif.ps1 downloads it; absent, this case says so
-  // rather than passing quietly (plan/09, tests/corpus.h).
+  // rather than passing quietly (docs/design/09, tests/corpus.h).
   const std::filesystem::path path =
       std::filesystem::path(MV_TESTMEDIA_DIR) / "heif" / "libheif-example.heic";
   if (!std::filesystem::exists(path)) {

@@ -359,7 +359,7 @@ using mv::status;
 // `session` is validated by every entry point before use. There is no way to
 // tell a stale pointer from a live one across an ABI, so this checks only for
 // null — the SafeHandle on the managed side is what actually prevents
-// use-after-free, which is why plan/14 makes it non-negotiable.
+// use-after-free, which is why docs/design/14 makes it non-negotiable.
 constexpr bool valid(mv_session_t s) noexcept { return s != nullptr; }
 
 mv_image_info info_from(const mv::image::display_image& cpu) noexcept {
@@ -377,7 +377,7 @@ std::uint64_t key_for(const std::string& path) noexcept {
 }
 
 // [caller holds image_mutex] Stores the CPU copy and hands the texture to the
-// render thread, stamped with who it is (plan/04 step 4): the item key the
+// render thread, stamped with who it is (docs/design/04 step 4): the item key the
 // caller decoded for and the view generation at this moment. A second publish
 // with the same stamp is a refinement the render thread fades in without
 // moving the camera; anything else is navigation.
@@ -436,7 +436,7 @@ mv::image::tile_service& tile_service_for(mv_session* session) {
 
 // [worker] The full-resolution GPU form of a decoded still: one texture, or -
 // above ~64 MP or past the 16384 texture limit - a tiled pyramid with its
-// overview (plan/04). `mip_limit` 1 is the top-level-only staging upload of
+// overview (docs/design/04). `mip_limit` 1 is the top-level-only staging upload of
 // the single-texture path; a tiled image has no such stage.
 status upload_still(mv_session* session, ID3D11Device* device,
                     const std::shared_ptr<mv::image::display_image>& cpu,
@@ -504,7 +504,7 @@ status open_video_worker(mv_session* session, const std::string& path, const mv:
   auto device = session->copy_device();
   if (!device) return status::device_lost;
   // Milestone H: a clip opened from search results lands paused on its moment
-  // (plan/17 "Enter on a video tile opens the clip and seeks to that PTS").
+  // (docs/design/17 "Enter on a video tile opens the clip and seeks to that PTS").
   std::int64_t moment_ms = -1;
   std::int64_t item_mtime = 0;
   std::uint64_t item_size = 0;
@@ -565,7 +565,7 @@ std::unique_ptr<mv::image::gpu_image> clone_gpu(const mv::image::gpu_image& src)
   return p;
 }
 
-// plan/02 sizes the viewer cache in bytes, not entries: five 45 MP stills and
+// docs/design/02 sizes the viewer cache in bytes, not entries: five 45 MP stills and
 // five phone JPEGs are the same count and a 10x difference in VRAM. A fixed
 // count of 5 also meant the +/-2 prefetch window evicted itself, so every step
 // re-decoded neighbours it had just paid for.
@@ -855,7 +855,7 @@ bool full_decode_shown(mv_session* session, const std::string& path) {
   return session->cpu && session->cpu_key == key_for(path);
 }
 
-// A folder decode is view-tied work, not background work. plan/02: "Navigating
+// A folder decode is view-tied work, not background work. docs/design/02: "Navigating
 // away bumps the generation; in-flight decodes check it and abandon. Without
 // this, fast arrow-key scrubbing through a folder queues 200 decodes and the
 // app feels like it's chewing gum." Submitting these at background_generation
@@ -920,7 +920,7 @@ void submit_handoff_preview(mv_session* session, std::string path, mv::generatio
   (void)session->jobs.submit_at(
       gen, [session, path = std::move(path), ticket = std::move(ticket),
             correlation](const mv::job_context& ctx) -> status {
-        const mv::crash_context::correlation_scope crash_cid(correlation);  // plan/13
+        const mv::crash_context::correlation_scope crash_cid(correlation);  // docs/design/13
         if (ctx.cancelled() || ticket->shown.load(std::memory_order_relaxed)) return status::ok;
         if (video_path(path)) return status::ok;  // never read a whole clip for a preview
         auto bytes = mv::io::read_all(path);
@@ -965,7 +965,7 @@ void submit_decode_to_lru(mv_session* session, std::string path, mv::generation 
   (void)session->jobs.submit_at(
       gen,
       [session, path, folder_gen, correlation, ticket](const mv::job_context& pool_ctx) -> status {
-        const mv::crash_context::correlation_scope crash_cid(correlation);  // plan/13
+        const mv::crash_context::correlation_scope crash_cid(correlation);  // docs/design/13
         allow_handoff(session, ticket.get(), true);
         const mv::job_context ctx = pool_ctx.handed_off_via(&ticket->handoff);
         if (ctx.cancelled()) return status::cancelled;
@@ -1052,7 +1052,7 @@ void submit_decode_to_lru(mv_session* session, std::string path, mv::generation 
 
         // The CPU mip pyramid of a large still costs more than the decode did.
         // Get the top level on screen first, then pay for the pyramid - same
-        // staging mv_image_open already uses (plan/04). A tiled image has no
+        // staging mv_image_open already uses (docs/design/04). A tiled image has no
         // such stage: its overview is small and its tiles come on demand.
         const bool large = !tiled &&
             static_cast<std::uint64_t>(cpu->width) * cpu->height >= 2048ull * 2048ull;
@@ -1326,7 +1326,7 @@ void resolve_date_stamps(mv_session* session) {
       });
 }
 
-// `listed` is already paired (plan/16 speed rule 4: pairing happens at scan,
+// `listed` is already paired (docs/design/16 speed rule 4: pairing happens at scan,
 // never per next), so every folder_items entry is one arrow-key stop. It arrives
 // in scan order; this puts it in the session's sort order.
 void apply_folder_list(mv_session* session, std::vector<mv::io::listed_item> listed,
@@ -1578,7 +1578,7 @@ mv_status MV_CALL mv_session_echo(mv_session_t session, const char* utf8_text,
     MV_REQUIRE(utf8_text != nullptr, "utf8_text must not be null");
 
     // The caller owns the string. Copy it before returning; never retain the
-    // pointer past this call (plan/14, ownership table).
+    // pointer past this call (docs/design/14, ownership table).
     std::string owned(utf8_text);
     const auto correlation = mv::abi::current_correlation_id();
 
@@ -1630,14 +1630,14 @@ mv_status MV_CALL mv_image_open(mv_session_t session, const char* utf8_path, uin
     std::string owned(utf8_path);
     const auto correlation = mv::abi::current_correlation_id();
     // Opening is submitted at the caller's current view generation. The host
-    // bumps first when this is a new view intent (plan/14); doing it again here
+    // bumps first when this is a new view intent (docs/design/14); doing it again here
     // made the managed OpenImage wrapper advance twice.
     const mv::generation gen = session->jobs.current_generation();
 
     const mv::job_id id = session->jobs.submit_at(
         gen,
         [session, path = std::move(owned), correlation](const mv::job_context& ctx) -> status {
-          const mv::crash_context::correlation_scope crash_cid(correlation);  // plan/13
+          const mv::crash_context::correlation_scope crash_cid(correlation);  // docs/design/13
           if (ctx.cancelled()) return status::cancelled;
 
           if (video_path(path)) return open_video_worker(session, path, ctx);
@@ -1677,7 +1677,7 @@ mv_status MV_CALL mv_image_open(mv_session_t session, const char* utf8_path, uin
           auto cpu = std::make_shared<mv::image::display_image>(std::move(decoded).value());
           const mv_image_info info = info_from(*cpu);
           // CPU cache first so a device rebuild can re-upload if CreateTexture2D
-          // is still in flight against the old device (plan/12).
+          // is still in flight against the old device (docs/design/12).
           if (!publish_view(session, ctx, key_for(path), info, cpu, nullptr)) {
             return status::cancelled;
           }
@@ -2389,7 +2389,7 @@ status attach_device(mv_session_t session, ID3D11Device* device) {
 void detach_device(mv_session_t session) {
   if (!session) return;
   // In-flight CreateTexture2D against this device must not publish onto the
-  // next one (plan/12). CPU cache is kept; attach_device re-uploads.
+  // next one (docs/design/12). CPU cache is kept; attach_device re-uploads.
   session->jobs.bump_generation();
   delete session->ready.exchange(nullptr, std::memory_order_acq_rel);
   std::lock_guard lock(session->device_mutex);
@@ -2474,7 +2474,7 @@ bool poll_video(mv_session_t session, player::time_ns vblank, player::video_fram
   // MV_COMPLETION_VIDEO_STATE / _VIDEO_ENDED have been declared since ABI 0.4
   // and were never pushed, so the chrome had no way to learn about a state the
   // core changes on its own — reaching the end of a clip, most of all — and
-  // could only find out on its next poll. plan/14: the ABI is designed, not
+  // could only find out on its next poll. docs/design/14: the ABI is designed, not
   // retrofitted, and declared surface that nothing sends is not a design.
   //
   // Every transition is pushed, not only the self-initiated ones: telling the

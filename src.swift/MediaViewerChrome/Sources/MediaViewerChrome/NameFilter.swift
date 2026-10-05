@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// File search's name filter (plan/16 "File search", 2026-09-28; first the
+// File search's name filter (docs/design/16 "File search", 2026-09-28; first the
 // 2026-09-27 gallery search bar's Names mode): case- and diacritic-insensitive
 // substring match on the names the tiles show. Pure: no bridge, no UI, so it
 // can be measured on its own.

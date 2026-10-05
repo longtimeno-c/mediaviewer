@@ -12,7 +12,7 @@
 // with matchedGeometryEffect. Reduce motion keeps the fades and drops the rest.
 // Nothing here runs on the canvas's render path.
 //
-// Keyboard-complete (plan/17 PR 22 verify: "the whole flow … works without the
+// Keyboard-complete (docs/design/17 PR 22 verify: "the whole flow … works without the
 // mouse"): typing searches; Return or Down enters the grid (Return on words
 // still being searched, as while indexing, waits for their answer and enters
 // it then; nothing found stays in the field); arrows move; Return in the grid
@@ -723,7 +723,7 @@ private struct SearchStatusPill: View {
 
 // MARK: query syntax
 
-/// The query language in one line (plan/17 "Query syntax"): the pack parses
+/// The query language in one line (docs/design/17 "Query syntax"): the pack parses
 /// it, so the Windows panel shows the same examples.
 private struct SyntaxHint: View {
   var body: some View {

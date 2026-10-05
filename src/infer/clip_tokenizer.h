@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The CLIP text tokenizer (byte-level BPE, OpenAI's simple_tokenizer and the
 // Hugging Face tokenizer.json of the same checkpoints): the pack's vocab.json
-// and merges.txt in, token ids out. plan/17 "Model choice"; the query encode
+// and merges.txt in, token ids out. docs/design/17 "Model choice"; the query encode
 // is ~10 ms and needs nothing but this and the text tower.
 //
 // Normalisation: whitespace runs collapse to one space and the text is
 // lower-cased. The hosts pass NFC (C# string.Normalize, Swift
-// precomposedStringWithCanonicalMapping); an English-first pack is plan/17's
+// precomposedStringWithCanonicalMapping); an English-first pack is docs/design/17's
 // accepted floor, and letters outside the ranges below split as punctuation
 // rather than failing. Pure C++; no OS or ORT dependency.
 #pragma once
@@ -54,7 +54,7 @@ class clip_tokenizer {
   std::uint32_t context_ = 77;
 };
 
-// GPT-2's byte-level BPE (plan/17 "Audio"): the CLAP text tower's RoBERTa
+// GPT-2's byte-level BPE (docs/design/17 "Audio"): the CLAP text tower's RoBERTa
 // tokenizer (encode, <s> ... </s>) and Whisper's (decode). Unlike CLIP's: no
 // lower-casing, no end-of-word mark; a leading space belongs to the next word
 // ("Ġword"). Same vocab.json / merges.txt files.

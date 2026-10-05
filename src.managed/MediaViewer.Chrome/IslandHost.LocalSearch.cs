@@ -15,7 +15,7 @@ using Windows.UI;
 namespace MediaViewer.Chrome;
 
 /// <summary>
-/// Milestone H, the base app's half of Local search (plan/17 "The AI pack",
+/// Milestone H, the base app's half of Local search (docs/design/17 "The AI pack",
 /// "UI and commands"): Settings → Local search (install / remove per piece,
 /// the 3 GB family budget, the add-on's own management panel once loaded),
 /// the command-bar indexing pill, the match dots over the scrub bar, and the
@@ -24,7 +24,7 @@ namespace MediaViewer.Chrome;
 /// <remarks>
 /// With no piece installed this file adds exactly one thing to the app: the
 /// Settings section that offers the install. No key, no bar item, no menu
-/// (plan/17: "Nothing about it appears elsewhere in the UI until the core pack
+/// (docs/design/17: "Nothing about it appears elsewhere in the UI until the core pack
 /// is installed"). Nothing downloads before the Install click, and the
 /// download carries no identifier (rule 6).
 /// </remarks>
@@ -366,7 +366,7 @@ public static partial class IslandHost
             _matchMarks.Children.Add(dot);
         }
         if (!fadeIn) return;
-        // ~200 ms fade (plan/17 brief); a fade is also the reduced-motion form.
+        // ~200 ms fade (docs/design/17 brief); a fade is also the reduced-motion form.
         var fade = new DoubleAnimation
         {
             From = 0,
@@ -486,7 +486,7 @@ public static partial class IslandHost
                     card.Children.Add(install);
                     // Core, People and Audio in one click, one after another.
                     // Offered while none is installed; NVIDIA acceleration is
-                    // never installed unasked (plan/17).
+                    // never installed unasked (docs/design/17).
                     AddonSlot[] all = InstallAllSlots();
                     if (!AnyAiPending() && all.Length > 1 && !FacesSlot.State.Installed && !AudioSlot.State.Installed)
                     {
@@ -561,7 +561,7 @@ public static partial class IslandHost
             _localSearchPanel.Children.Add(SettingsButton("Reinstall", () => StartPieceInstall(AiSlot)));
         }
 
-        // The add-on's own management panel, once it is loaded (plan/17 PR 23).
+        // The add-on's own management panel, once it is loaded (docs/design/17 PR 23).
         if (SearchChrome is ISearchChrome search)
         {
             try { _aiSettingsPanel ??= search.BuildSettingsPanel() as UIElement; }
@@ -908,7 +908,7 @@ public static partial class IslandHost
         });
     }
 
-    /// <summary>Refused before anything is downloaded (plan/17: 3 GB).</summary>
+    /// <summary>Refused before anything is downloaded (docs/design/17: 3 GB).</summary>
     private sealed class OverBudgetException(string sentence) : Exception(sentence);
 
     private static string? BudgetRefusal(AddonSlot slot, long installedSize)
@@ -1022,7 +1022,7 @@ public static partial class IslandHost
     /// <summary>
     /// Worker. Whether any adapter is NVIDIA's (DXGI vendor 0x10DE), for the
     /// "NVIDIA acceleration" piece: offered on hardware that can use it, never
-    /// auto-installed (plan/17). Raw vtable calls; the shell owns no DXGI
+    /// auto-installed (docs/design/17). Raw vtable calls; the shell owns no DXGI
     /// wrapper and this is the only question it asks.
     /// </summary>
     private static unsafe bool HasNvidiaAdapter()

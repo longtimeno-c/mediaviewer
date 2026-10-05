@@ -3,7 +3,7 @@
 namespace MediaViewer.Updater;
 
 /// <summary>
-/// The update-manifest signing key pinned into the app (plan/13 "Signing").
+/// The update-manifest signing key pinned into the app (docs/design/13 "Signing").
 /// </summary>
 /// <remarks>
 /// <para><b>PRODUCTION PUBLIC KEY.</b> 32 bytes of raw Ed25519 public key,

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026 longtimeno-c
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Generate the MediaViewer app mark (plan/13-updates-and-telemetry.md, "Icon").
+"""Generate the MediaViewer app mark (docs/design/13-updates-and-telemetry.md, "Icon").
 
 One mark, one .ico, used everywhere the OS shows the app:
 

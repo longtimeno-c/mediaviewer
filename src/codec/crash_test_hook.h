@@ -6,8 +6,8 @@
 //
 //  1. Annotates this worker's crash-context slot with the format family and
 //     bundled decoder name/version (never a path, filename or bytes —
-//     plan/13) for the lifetime of the decode.
-//  2. The verify hook (plan/10 PR 7: "a deliberately-corrupted RAW produces a
+//     docs/design/13) for the lifetime of the decode.
+//  2. The verify hook (docs/design/10 PR 7: "a deliberately-corrupted RAW produces a
 //     minidump containing no path, filename, or pixel data"). Compiled into
 //     every build, inert unless BOTH:
 //       - the environment variable MV_CRASH_TEST=decode is set, and

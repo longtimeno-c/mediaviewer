@@ -73,7 +73,7 @@ public sealed class SourceVm
 }
 
 /// <summary>
-/// The Import window (plan/18 "The Import window"): sources on the left, the
+/// The Import window (docs/design/18 "The Import window"): sources on the left, the
 /// day-grouped grid in the middle, the preset and "Where files go" on the
 /// right, one primary button at the bottom. It becomes the progress view
 /// while copying and the summary after. Keyboard-complete:

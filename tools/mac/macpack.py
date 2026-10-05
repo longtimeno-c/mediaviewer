@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026 longtimeno-c
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""MediaViewer.app packaging (PR 20, plan/13 "macOS first install", plan/15).
+"""MediaViewer.app packaging (PR 20, docs/design/13 "macOS first install", docs/design/15).
 
   macpack.py assemble ...   build/MediaViewer.app, ad-hoc signed (CMake's
                             `mediaviewer_app` target runs this)
@@ -36,7 +36,7 @@ from typing import Callable, Iterable
 APP_NAME = "MediaViewer"
 APPEX_NAME = "MediaViewerThumbnails"
 MDIMPORTER_NAME = "MediaViewerSpotlight"
-# plan/23: Final Cut Pro search, dormant until turned on in Settings (arm64 only).
+# docs/design/23: Final Cut Pro search, dormant until turned on in Settings (arm64 only).
 # The agent is MediaViewer's own executable (`--search-agent`); only its
 # launchd job and the extension are separate files.
 FCP_APPEX_NAME = "MediaViewerSearch"
@@ -187,7 +187,7 @@ def is_macho(path: Path) -> bool:
 # ---------------------------------------------------------------------------
 
 def make_icns(png: Path, out: Path) -> None:
-    """One mark (plan/13 Icon): 16-512 at @1x and @2x, from the same PNG as
+    """One mark (docs/design/13 Icon): 16-512 at @1x and @2x, from the same PNG as
     the Windows .ico."""
     with tempfile.TemporaryDirectory() as tmp:
         iconset = Path(tmp) / f"{APP_NAME}.iconset"
@@ -322,12 +322,12 @@ def cmd_assemble(args: argparse.Namespace) -> None:
         (main_exe, "@executable_path/../Frameworks"),
         (appex_exe, "@executable_path/../../../../Frameworks"),
     ]
-    # PR 11: Crashpad's out-of-process handler (plan/13), a helper tool.
+    # PR 11: Crashpad's out-of-process handler (docs/design/13), a helper tool.
     if args.crashpad_handler:
         handler = copy_crashpad_handler(Path(args.crashpad_handler), app)
         roots.append((handler, "@executable_path/../Frameworks"))
     # PR 13 / 14: encode and decode jobs run in this helper, never in the app
-    # (plan/12 2026-09-25). It links FFmpeg, so its dylibs are bundled too.
+    # (docs/design/12 2026-09-25). It links FFmpeg, so its dylibs are bundled too.
     if args.clipjob:
         helpers = app / "Contents" / "Helpers"
         helpers.mkdir(parents=True, exist_ok=True)
@@ -347,7 +347,7 @@ def cmd_assemble(args: argparse.Namespace) -> None:
         shutil.copyfile(args.mdimporter_plist, importer / "Info.plist")
         roots.append((importer_exe, "@loader_path/../../../../../Frameworks"))
 
-    # plan/23: the Final Cut Pro search agent's launchd job (the app registers
+    # docs/design/23: the Final Cut Pro search agent's launchd job (the app registers
     # it only when turned on; it runs this app's executable) and the workflow
     # extension, which links the system only.
     if args.fcp_appex_exe:
@@ -405,7 +405,7 @@ def sign_app(app: Path, identity: str, appex_entitlements: Path, hardened: bool,
     --deep: it signs everything with one set of options, which is wrong for
     the sandboxed extension.
 
-    The Final Cut Pro extension (plan/23) is signed with the entitlements given
+    The Final Cut Pro extension (docs/design/23) is signed with the entitlements given
     at assemble (its app group names the team); a release, which gets no path,
     keeps the ones it already carries. lipo_merge copies it untouched (arm64
     only), so the assemble signature and its entitlements survive to the
@@ -453,9 +453,9 @@ def notarize(path: Path, profile: str) -> None:
 
 
 def sign_addon(addon: Path, identity: str, piece: bool = False) -> list[Path]:
-    """Developer ID-sign an add-on folder (plan/18 "Mac chrome"): every dylib
+    """Developer ID-sign an add-on folder (docs/design/18 "Mac chrome"): every dylib
     outside a bundle (at any depth: the AI pack keeps ONNX Runtime beside its
-    own library, plan/17), then every bundle, inside out. The app loads them
+    own library, docs/design/17), then every bundle, inside out. The app loads them
     under library validation, so they must carry the app's Team ID. Returns
     what it signed.
 
@@ -519,7 +519,7 @@ def cmd_release(args: argparse.Namespace) -> None:
     has_sparkle = (app / "Contents" / "Frameworks" / "Sparkle.framework").exists()
     if not has_sparkle and not args.allow_no_updater:
         raise SystemExit("macpack: this build has no updater (configure with "
-                         "MV_SPARKLE_PUBLIC_ED_KEY). plan/13: the first build that reaches "
+                         "MV_SPARKLE_PUBLIC_ED_KEY). docs/design/13: the first build that reaches "
                          "anyone else's machine must be able to update. --allow-no-updater "
                          "overrides for a private test build.")
 
@@ -540,7 +540,7 @@ def cmd_release(args: argparse.Namespace) -> None:
         run(["xcrun", "stapler", "staple", str(app)])
         run(["spctl", "--assess", "--type", "execute", "--verbose=2", str(app)])
 
-    # 3. First install: the branded disk image, GPL on mount (plan/13).
+    # 3. First install: the branded disk image, GPL on mount (docs/design/13).
     dmg = out / f"{APP_NAME}-{version}.dmg"
     if dmg.exists():
         dmg.unlink()
@@ -605,7 +605,7 @@ def main(argv: list[str]) -> None:
     a.add_argument("--clipjob", help="the MediaViewerClipJob helper (PR 13 / 14)")
     a.add_argument("--mdimporter-exe", help="the Spotlight importer's binary (PR 15)")
     a.add_argument("--mdimporter-plist", help="its Info.plist (PR 15)")
-    a.add_argument("--fcp-appex-exe", help="MediaViewerSearch, the Final Cut Pro workflow extension (plan/23)")
+    a.add_argument("--fcp-appex-exe", help="MediaViewerSearch, the Final Cut Pro workflow extension (docs/design/23)")
     a.add_argument("--fcp-agent-plist",
                    help="the search agent's launchd job, <Mach service>.plist (runs MediaViewer --search-agent)")
     a.add_argument("--fcp-appex-plist", help="its Info.plist")
@@ -626,7 +626,7 @@ def main(argv: list[str]) -> None:
     r.add_argument("--download-url-prefix",
                    help="where the update zips are served, e.g. a GitHub release URL")
     r.add_argument("--phased-rollout-seconds", type=int, default=0,
-                   help="Sparkle phased rollout interval (plan/13 staged rollout)")
+                   help="Sparkle phased rollout interval (docs/design/13 staged rollout)")
     r.set_defaults(func=cmd_release)
 
     d = sub.add_parser("addon", help="sign (and notarize) an add-on folder before addon-pack.py packs it")

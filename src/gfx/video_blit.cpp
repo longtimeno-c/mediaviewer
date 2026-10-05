@@ -117,7 +117,7 @@ float3 to_bt709(float3 rgb, uint primaries) {
 }
 
 // ---------------------------------------------------------------------------
-// HDR -> SDR. plan/03: "HDR video -> SDR tone-mapping is a v1 correctness
+// HDR -> SDR. docs/design/03: "HDR video -> SDR tone-mapping is a v1 correctness
 // requirement, not a v1.1 feature." Reference white is 203 nits (ITU-R
 // BT.2408), so an HDR clip's diffuse white lands where SDR white is rather than
 // at the top of the range — that mapping is the difference between "correct"
@@ -187,7 +187,7 @@ float4 ps_main(VSOut vin) : SV_Target {
   float cb = (cc.x - c_mid) / c_span;
   float cr = (cc.y - c_mid) / c_span;
 
-  // YCbCr -> R'G'B' from the stream's real matrix. plan/05: "Do not assume
+  // YCbCr -> R'G'B' from the stream's real matrix. docs/design/05: "Do not assume
   // BT.709 limited range; phone video is frequently BT.2020."
   float kr, kb;
   if (matrix_id == 2)      { kr = 0.299;  kb = 0.114;  }  // BT.601

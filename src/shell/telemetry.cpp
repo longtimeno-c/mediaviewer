@@ -117,7 +117,7 @@ void set_enabled(bool on) noexcept {
   // Answering the screen either way is the answer. The opt-in never reappears.
   settings.set_int(kSection, "asked", 1);
   if (!on) {
-    // "A setting that turns it off later and actually does" (plan/13): the id
+    // "A setting that turns it off later and actually does" (docs/design/13): the id
     // is dropped and the spool is deleted, not merely ignored.
     settings.set(kSection, "install_id", "");
     const std::wstring spool = spool_path();

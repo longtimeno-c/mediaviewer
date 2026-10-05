@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// ai-bench: the AI pack without the chrome (Milestone H, plan/17 PR 21-22
+// ai-bench: the AI pack without the chrome (Milestone H, docs/design/17 PR 21-22
 // timings). Loads the installed add-on exactly as the app does (the store
 // verifies it, the loader maps it, the host table carries the viewer's own
 // media services), remembers a folder, prints status as JSON lines while it
@@ -16,7 +16,7 @@
 //            [--import <file> --import-to <dir> [--import-flags N]]   every root of the file -> dir
 //            [--make-thumbs <dir>] [--count-thumbs <dir>]   the viewer's JPEG-512 cache, first / last
 //
-// --export / --import (plan/17 "Sharing an index"): two --addons folders are two
+// --export / --import (docs/design/17 "Sharing an index"): two --addons folders are two
 // machines. Import prints what inspect_export said and the outcome, then waits
 // for the rescan; "assets_per_s" staying 0 says nothing was embedded again.
 //

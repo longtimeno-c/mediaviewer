@@ -1,7 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 12 — metadata write (plan/06 "Writing"): rating, orientation and user
-// comment. PR 29 (owner, 2026-09-26; plan/12): any EXIF / IPTC / XMP tag can
+// PR 12 — metadata write (docs/design/06 "Writing"): rating, orientation and user
+// comment. PR 29 (owner, 2026-09-26; docs/design/12): any EXIF / IPTC / XMP tag can
 // be set or removed, and the capture date set across every tag that holds
 // it -- through the same checked rewrite and the same sidecar rule. Shared by
 // both hosts; portable (no Win32 or Cocoa, D9).
@@ -118,7 +118,7 @@ struct write_outcome {
 // by extension. `status::io` when the file cannot be read.
 [[nodiscard]] result<write_target> write_target_for(std::string_view utf8_path);
 
-// "IMG_1234.CR2" -> "IMG_1234.xmp", beside the file (plan/06). A name with no
+// "IMG_1234.CR2" -> "IMG_1234.xmp", beside the file (docs/design/06). A name with no
 // extension gets ".xmp" appended.
 [[nodiscard]] std::string sidecar_path_for(std::string_view utf8_path);
 

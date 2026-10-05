@@ -7,16 +7,16 @@ namespace mv::player {
 present_decision choose(const presenter_input& in) noexcept {
   present_decision out;
 
-  // plan/03 has the render loop wait on the frame-latency waitable BEFORE
+  // docs/design/03 has the render loop wait on the frame-latency waitable BEFORE
   // recording, so the frame we decide now reaches the glass about one refresh
-  // from now. plan/05: present the frame closest to master + one vblank.
+  // from now. docs/design/05: present the frame closest to master + one vblank.
   const double rate = in.playback_rate > 0.0 ? in.playback_rate : 1.0;
   const time_ns interval = static_cast<time_ns>(static_cast<double>(in.vblank_ns) * rate);
   const time_ns target = in.master_clock_ns + interval;
   out.target_ns = target;
 
   if (!in.has_next) {
-    // Starved. plan/05: "if the queue is starved, hold the current frame rather
+    // Starved. docs/design/05: "if the queue is starved, hold the current frame rather
     // than stalling." This is a fault and is counted separately from cadence.
     out.action = present_action::hold_starved;
     out.err_ms = 0.0;

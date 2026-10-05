@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Minidump privacy scrub — plan/13 Part 2, rule 6.
+// Minidump privacy scrub — docs/design/13 Part 2, rule 6.
 //
 // Crashpad's Windows handler cannot be told to leave things out, and a stock
 // dump of this app contains, besides stacks and contexts:

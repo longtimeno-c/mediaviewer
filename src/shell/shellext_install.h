@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 15 (plan/09 "Windows integration", plan/12 2026-09-25): installs and
+// PR 15 (docs/design/09 "Windows integration", docs/design/12 2026-09-25): installs and
 // registers the Explorer thumbnail handler (MediaViewerThumbs.dll) for the
 // running version. Windows host only.
 //

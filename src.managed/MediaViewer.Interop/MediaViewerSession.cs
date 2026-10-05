@@ -11,7 +11,7 @@ namespace MediaViewer.Interop;
 /// </summary>
 /// <remarks>
 /// This type never blocks. Every call it makes is annotated <c>[no-block]</c> in
-/// the header, which is the rule that follows from plan/02: anything the UI
+/// the header, which is the rule that follows from docs/design/02: anything the UI
 /// thread calls must return without I/O, decode, or lock contention. Opening an
 /// image is a request that returns a job id, never a call that decodes first.
 /// </remarks>
@@ -391,7 +391,7 @@ public sealed partial class MediaViewerSession : IDisposable
         if (status == MvStatus.Ok) return;
 
         // Copy immediately. The core's buffer is valid only until the next call
-        // on this thread (plan/14 ownership table), so storing the pointer or
+        // on this thread (docs/design/14 ownership table), so storing the pointer or
         // deferring the read is a use-after-free waiting for a busy moment.
         string message = Marshal.PtrToStringUTF8(NativeMethods.mv_last_error_message())
                          ?? string.Empty;

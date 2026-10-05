@@ -7,7 +7,7 @@ using Microsoft.UI.Dispatching;
 namespace MediaViewer.Import.Chrome;
 
 /// <summary>
-/// The add-on chrome's entry point (plan/18 "Windows chrome"). Owns the one
+/// The add-on chrome's entry point (docs/design/18 "Windows chrome"). Owns the one
 /// Import window and every running job's progress, so closing the window
 /// keeps an import running with a small indicator in the main command bar,
 /// and a notification when it finishes.

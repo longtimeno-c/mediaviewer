@@ -61,7 +61,7 @@ function Stage-Payload($version, [switch]$Broken) {
         -r win-x64 --no-self-contained -p:Platform=x64 -p:MvUpdaterDev=true -o $dir | Out-Null
     if ($LASTEXITCODE) { throw "dev chrome publish failed" }
     # Same exclusion build-release.ps1 applies, and for the same reason
-    # (plan/13: do not ship Windows App SDK AI / ONNX / DirectML / WebView2).
+    # (docs/design/13: do not ship Windows App SDK AI / ONNX / DirectML / WebView2).
     # It matters twice over here: this check must exercise the payload that
     # actually ships, and without it the run packs three versions of an extra
     # 43 MB each, plus Velopack's temp copies - which is how this script first

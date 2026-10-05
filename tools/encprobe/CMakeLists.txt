@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# encprobe — plan/21 spike S1. An opt-in tool, deliberately not part of the app
+# encprobe — docs/design/21 spike S1. An opt-in tool, deliberately not part of the app
 # build: point it at the vcpkg tree the app was configured with.
 #
 #   cmake -S tools/encprobe -B build-encprobe -G Ninja \

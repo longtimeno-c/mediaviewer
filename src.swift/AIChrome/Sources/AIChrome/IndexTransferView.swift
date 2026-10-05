@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Settings → Local search → Import and export (plan/17 "Sharing an index",
+// Settings → Local search → Import and export (docs/design/17 "Sharing an index",
 // 2026-09-28): the index of some folders written to one .mvindex file, and a
 // file merged into this index with each of its folders pointed at where those
 // files are on this Mac (a NAS mounted elsewhere, a copied card). People and

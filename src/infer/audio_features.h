@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Log-mel spectrograms for the audio index (plan/17 "Audio", 2026-09-27),
+// Log-mel spectrograms for the audio index (docs/design/17 "Audio", 2026-09-27),
 // matching the Hugging Face feature extractors the ONNX exports were made
 // with (transformers.audio_utils: centred reflect-padded STFT, periodic Hann,
 // power 2, Slaney mel banks):

@@ -2,7 +2,7 @@
 
   <!-- Copyright (C) 2026 longtimeno-c -->
   <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
-  <!-- Updater verification tests (plan/10 PR 8: "Exercise update signature
+  <!-- Updater verification tests (docs/design/10 PR 8: "Exercise update signature
        rejection and rollback") plus the dev signing tool the local e2e uses.
        Same console-runner shape as MediaViewer.AbiSmokeTest: exit 0 = pass. -->
   <PropertyGroup>

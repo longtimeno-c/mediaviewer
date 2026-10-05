@@ -6,7 +6,7 @@ using Microsoft.UI.Dispatching;
 namespace MediaViewer.Ai.Chrome;
 
 /// <summary>
-/// The AI pack's chrome entry point (plan/17 "UI and commands"). Owns the
+/// The AI pack's chrome entry point (docs/design/17 "UI and commands"). Owns the
 /// search panel, the management panel Settings embeds, the people window, the
 /// command-bar pill's text, and the search the viewer's result list came from
 /// (its clip matches are the scrub bar's dots and what N / Shift+N walk).

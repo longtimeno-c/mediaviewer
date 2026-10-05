@@ -56,7 +56,7 @@ bool file_jobs::submit(HWND notify, file_job_kind kind, std::vector<std::string>
             const auto how = work->kind == file_job_kind::copy ? io::transfer_kind::copy
                                                                : io::transfer_kind::move;
             // To or from a share: several files at once, a move's verified
-            // copy with several requests in flight (plan/12 2026-10-01). A
+            // copy with several requests in flight (docs/design/12 2026-10-01). A
             // card or a local disk keeps one file at a time, in order.
             const io::copy_profile profile = io::batch_copy_profile(
                 io::parent_of(work->items.front().path), *dest);

@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Export metadata preservation policy (plan/07 "Export": all / minus GPS /
+// Export metadata preservation policy (docs/design/07 "Export": all / minus GPS /
 // none). The ICC profile is colour, not metadata: every policy keeps it, or
 // the exported pixels would change meaning.
 #pragma once

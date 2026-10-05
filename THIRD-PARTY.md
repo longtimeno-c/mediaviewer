@@ -3,8 +3,8 @@
 MediaViewer is licensed **GPL-3.0-or-later** ([LICENSE](LICENSE), [NOTICE](NOTICE)). It was
 settled as GPL-2.0-or-later in PR 1 and moved to GPL-3.0-or-later on 2026-09-25. Both decisions are recorded, with
 reasoning, in
-[plan/12-decision-log.md](plan/12-decision-log.md) and
-[plan/11-licensing.md](plan/11-licensing.md).
+[docs/design/12-decision-log.md](docs/design/12-decision-log.md) and
+[docs/design/11-licensing.md](docs/design/11-licensing.md).
 
 The short version: the Microsoft Store is not a distribution requirement, so Exiv2 is
 used under the GPL rather than bought commercially, and FFmpeg, libheif, libde265 and
@@ -33,13 +33,13 @@ added by the PR that adds the dependency.
 | [nv-codec-headers (ffnvcodec)](https://github.com/FFmpeg/nv-codec-headers) | 13.0.19.0 | MIT | Headers only; the NVIDIA driver is loaded at run time | Via FFmpeg's `nvcodec` feature: NVENC for PR 13's frame-accurate re-encode. Nothing of NVIDIA's is shipped. |
 | [AMD AMF headers](https://github.com/GPUOpen-LibrariesAndSDKs/AMF) | 1.5.2 | MIT | Headers only; the AMD driver is loaded at run time | Via FFmpeg's `amf` feature: AMF for PR 13's re-encode. |
 | [oneVPL (libvpl)](https://github.com/intel/libvpl) | 2.17.0 | MIT | Dynamic, via FFmpeg | Via FFmpeg's `qsv` feature: Quick Sync (`h264_qsv`) for PR 13's re-encode; the Intel runtime comes with the driver. |
-| [Crashpad](https://chromium.googlesource.com/crashpad/crashpad) (client, util, mini_chromium base) | vcpkg 2026-07-02 | **Apache-2.0** (mini_chromium: BSD-3) | Client **static** in `mediaviewer_lab`; `crashpad_handler.exe` shipped as a **separate program** beside it | Out-of-process crash capture (PR 7, plan/13 Part 2). No upload URL; dumps are scrubbed locally before any send could be offered. **Licence note:** Apache-2.0 is compatible with GPL-3.0 but not GPL-2.0-only. The app is now GPL-3.0-or-later (plan/12, 2026-09-25), so statically linking the client is compatible outright. (Before that move a distributed binary was conveyed under GPL-3.0 terms via the "or later" — plan/12, 2026-09-14.) |
+| [Crashpad](https://chromium.googlesource.com/crashpad/crashpad) (client, util, mini_chromium base) | vcpkg 2026-07-02 | **Apache-2.0** (mini_chromium: BSD-3) | Client **static** in `mediaviewer_lab`; `crashpad_handler.exe` shipped as a **separate program** beside it | Out-of-process crash capture (PR 7, docs/design/13 Part 2). No upload URL; dumps are scrubbed locally before any send could be offered. **Licence note:** Apache-2.0 is compatible with GPL-3.0 but not GPL-2.0-only. The app is now GPL-3.0-or-later (docs/design/12, 2026-09-25), so statically linking the client is compatible outright. (Before that move a distributed binary was conveyed under GPL-3.0 terms via the "or later" — docs/design/12, 2026-09-14.) |
 | .NET 8 / runtime libraries | 8.0 | MIT | Framework-dependent | Hosts the WinUI chrome island via hostfxr. Interop assembly too. Self-contained ships in PR 8. |
 | [Windows App SDK / WinUI 3](https://github.com/microsoft/WindowsAppSDK) | 2.4.0 | MIT | Framework package | Command bar chrome in a `DesktopWindowXamlSource` island. Not the canvas. Runtime must be installed on the machine (unpackaged). |
 | Windows SDK (D3D11, DXGI, DirectComposition, MMCSS, TraceLogging, D3DCompile) | 10.0.26100 | Microsoft SDK licence | OS import libraries | — |
 | [Cozette](https://github.com/the-moonwitch/Cozette) | 1.30.0 | MIT | Bundled TTF | Empty canvas and chrome labels. Bitmap terminal face (Proggy/Dina lineage); `CozetteVector.ttf` for WinUI. Licence: `assets/fonts/LICENSE-Cozette.txt`. |
 | [libtiff](https://libtiff.gitlab.io/libtiff/) | 4.7.2 | libtiff (BSD-like) | Dynamic (vcpkg x64-windows) | TIFF and ICO decode (PR 7). |
-| **[libheif](https://github.com/strukturag/libheif)** | 1.23.2 | **LGPL-3** | **Dynamic (DLL)** | HEIC/HEIF decode (PR 7). vcpkg `default-features` OFF: the port's `hevc` feature is x265 **encode**, which plan/11 forbids. |
+| **[libheif](https://github.com/strukturag/libheif)** | 1.23.2 | **LGPL-3** | **Dynamic (DLL)** | HEIC/HEIF decode (PR 7). vcpkg `default-features` OFF: the port's `hevc` feature is x265 **encode**, which docs/design/11 forbids. |
 | **[libde265](https://github.com/strukturag/libde265)** | 1.1.1 | **LGPL-3** | **Dynamic (DLL)** | HEVC **decode** for libheif. A hard dependency of the port, not a feature, so HEIC decode does not pull x265. |
 | [libavif](https://github.com/AOMediaCodec/libavif) | 1.4.2 | BSD-2 | Dynamic (vcpkg x64-windows) | AVIF still and animated (PR 7), on dav1d. |
 | **[LibRaw](https://www.libraw.org/)** | 0.22.2 | **LGPL-2.1** | **Dynamic (DLL)** | Camera RAW (PR 7): embedded preview first, then the full decode. No GPL demosaic pack. |
@@ -49,10 +49,10 @@ added by the PR that adds the dependency.
 | Microsoft OpenMP runtime | MSVC toolset redist | Microsoft redistributable terms | Dynamic, Windows | `vcomp140.dll` is copied from the Visual C++ redist alongside LibRaw; parallel RAW decoding does not require a separate runtime install. |
 | [libyuv](https://chromium.googlesource.com/libyuv/libyuv/) | 1916 | BSD-3 | Dynamic (vcpkg x64-windows) | Transitive, via libheif/libavif. |
 | [liblzma (xz)](https://tukaani.org/xz/) | 5.8.3 | 0BSD | Dynamic (vcpkg x64-windows) | Transitive, via libtiff. |
-| [Velopack](https://github.com/velopack/velopack) | 1.2.0 | MIT | Managed assembly + `Update.exe` beside the app | PR 8 updater: versioned folders, delta packages, staging, rollback (plan/13 Part 1). |
+| [Velopack](https://github.com/velopack/velopack) | 1.2.0 | MIT | Managed assembly + `Update.exe` beside the app | PR 8 updater: versioned folders, delta packages, staging, rollback (docs/design/13 Part 1). |
 | [BouncyCastle.Cryptography](https://github.com/bcgit/bc-csharp) | 2.7.0 | MIT (Bouncy Castle) | Managed assembly | Ed25519 verification of the signed update manifest (PR 8). The signature check runs before anything from the channel is trusted. |
-| [BLAKE3](https://github.com/BLAKE3-team/BLAKE3) | 1.8.7 | **CC0-1.0** (dual CC0-1.0 OR Apache-2.0; taken under CC0) | vcpkg (Windows DLL, macOS static) | Content hashes for verified copies: F8 across volumes and the Import add-on (Milestone G, plan/18). CC0 was chosen when the app was GPL-2.0-or-later, where Apache-2.0 alone does not combine; the choice stands. |
-| [libsodium](https://libsodium.org) | 1.0.22 | ISC | vcpkg (Windows DLL, macOS static) | Ed25519 check of signed add-on manifests and SHA-256 of add-on files (plan/18 "Signed, verified, then loaded"). |
+| [BLAKE3](https://github.com/BLAKE3-team/BLAKE3) | 1.8.7 | **CC0-1.0** (dual CC0-1.0 OR Apache-2.0; taken under CC0) | vcpkg (Windows DLL, macOS static) | Content hashes for verified copies: F8 across volumes and the Import add-on (Milestone G, docs/design/18). CC0 was chosen when the app was GPL-2.0-or-later, where Apache-2.0 alone does not combine; the choice stands. |
+| [libsodium](https://libsodium.org) | 1.0.22 | ISC | vcpkg (Windows DLL, macOS static) | Ed25519 check of signed add-on manifests and SHA-256 of add-on files (docs/design/18 "Signed, verified, then loaded"). |
 
 ## macOS (MediaViewer.app, PR 20)
 
@@ -63,7 +63,7 @@ This file and `LICENSE` are copied into `Contents/Resources`. Mac-only additions
 
 | Component | Version | Licence | Linkage | Notes |
 |---|---|---|---|---|
-| [Sparkle](https://sparkle-project.org) | 2.9.6 | MIT | Dynamic framework (`Contents/Frameworks/Sparkle.framework`) | Updates (plan/13). Pinned by SHA-256 in `cmake/darwin-app.cmake`; linked only when the build has an EdDSA public key. |
+| [Sparkle](https://sparkle-project.org) | 2.9.6 | MIT | Dynamic framework (`Contents/Frameworks/Sparkle.framework`) | Updates (docs/design/13). Pinned by SHA-256 in `cmake/darwin-app.cmake`; linked only when the build has an EdDSA public key. |
 | [dmgbuild](https://github.com/dmgbuild/dmgbuild) | 1.6.7 | MIT | Build tool only | Builds the first-install disk image. Not in a shipped binary. |
 | [LLVM OpenMP runtime](https://openmp.llvm.org/) | Build machine's Homebrew libomp | Apache-2.0 WITH LLVM-exception; legacy notices included | Dynamic, macOS | Bounded parallel LibRaw processing. Bundled in Frameworks; full notices in `llvm-openmp.txt` in Resources (source: `assets/licenses/llvm-openmp.txt`). |
 
@@ -74,7 +74,7 @@ is settled before it arrives, rather than discovered afterwards.
 
 | Component | Licence | Required linkage | Arrives in |
 |---|---|---|---|
-| DirectXTex | MIT | Static | Deferred from PR 4 until a thumbnail must be GPU-resident (plan/12 2026-09-07) |
+| DirectXTex | MIT | Static | Deferred from PR 4 until a thumbnail must be GPU-resident (docs/design/12 2026-09-07) |
 
 ### Rules the build enforces
 
@@ -84,7 +84,7 @@ is settled before it arrives, rather than discovered afterwards.
    requires GPL FFmpeg, find another way.
 2. **A software HEVC or AAC encoder anywhere in the dependency graph** — x264, x265, fdk-aac.
    Decode is what users need; encode is delegated to the GPU or to Media Foundation
-   ([plan/11](plan/11-licensing.md)).
+   ([docs/design/11](docs/design/11-licensing.md)).
 3. **A LibRaw GPL demosaic pack** (`LibRaw-demosaic-pack-GPL2`, `-GPL3`).
 4. **FFmpeg, libheif, libde265, LibRaw or Exiv2 linked statically.** LGPL requires that a
    user be able to replace the library with their own build; dynamic linking satisfies
@@ -99,7 +99,7 @@ formality, and PR 8 is where the release pipeline that produces it lands.
 
 ### How it tracks the running build (PR 8)
 
-plan/13 is explicit that the offer must track the **running build**, not a frozen v1.0
+docs/design/13 is explicit that the offer must track the **running build**, not a frozen v1.0
 snapshot: "have the About dialog link to the offer for *the running build*".
 
 - About reads the version from the host exe's `VERSIONINFO`, which CMake fills from
@@ -113,5 +113,5 @@ snapshot: "have the About dialog link to the offer for *the running build*".
 libheif, libde265 and LibRaw sources with the configure lines from the pinned vcpkg
 baseline in `vcpkg.json` — is not automated yet. Until it is, a published release whose tag
 carries no source archive is out of compliance, and About links to a tag that does not
-answer the offer. This is exactly the obligation plan/13 warns "quietly rots"; it belongs
+answer the offer. This is exactly the obligation docs/design/13 warns "quietly rots"; it belongs
 in the same pipeline step that signs.

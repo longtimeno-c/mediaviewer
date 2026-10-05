@@ -187,10 +187,10 @@ Search for something your library does not have and you mostly get "nothing foun
 
 | Soon | |
 |---|---|
-| **Search from Final Cut Pro** (Mac) | A MediaViewer Search panel inside Final Cut Pro that uses your Local search index, so you can drag the matching moments straight into an event or the timeline. It is off until you turn it on under Local search ([plan/23](plan/23-nle-search.md)) |
-| **Voice search** (optional add-on) | Speak the query to Local search. Speech runs on-device ([plan/19](plan/19-voice.md)) |
-| **Video Editor, several clips** | Several clips on one timeline, zoom and dissolves ([plan/21](plan/21-video-editor.md)) |
-| **Editor add-on** (optional) | Colour grading, multi-track editing, titles and captions, an audio mixer and delivery presets ([plan/22](plan/22-editor-addon.md)) |
+| **Search from Final Cut Pro** (Mac) | A MediaViewer Search panel inside Final Cut Pro that uses your Local search index, so you can drag the matching moments straight into an event or the timeline. It is off until you turn it on under Local search ([docs/design/23](docs/design/23-nle-search.md)) |
+| **Voice search** (optional add-on) | Speak the query to Local search. Speech runs on-device ([docs/design/19](docs/design/19-voice.md)) |
+| **Video Editor, several clips** | Several clips on one timeline, zoom and dissolves ([docs/design/21](docs/design/21-video-editor.md)) |
+| **Editor add-on** (optional) | Colour grading, multi-track editing, titles and captions, an audio mixer and delivery presets ([docs/design/22](docs/design/22-editor-addon.md)) |
 | **Explorer details** | Explorer's Details-pane properties and tab-grouped windows |
 
 ## From source
@@ -209,7 +209,7 @@ Reproduce every chart above with `python tools/perf/regenerate.py` (about 15 min
 
 ## Licence
 
-GPL-3.0-or-later, see [LICENSE](LICENSE) and [NOTICE](NOTICE); the reasoning is in [plan/11-licensing.md](plan/11-licensing.md).
+GPL-3.0-or-later, see [LICENSE](LICENSE) and [NOTICE](NOTICE); the reasoning is in [docs/design/11-licensing.md](docs/design/11-licensing.md).
 Copyright (C) 2026 longtimeno-c. Copies and forks must keep the copyright notices, `LICENSE`, `NOTICE` and the
 in-app legal notices; they may charge for it, as the GPL allows. Please do not present a fork as the original MediaViewer.
 Bundled libraries and their licences are listed in [THIRD-PARTY.md](THIRD-PARTY.md).

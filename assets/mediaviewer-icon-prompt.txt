@@ -1,5 +1,5 @@
 Generated using the built-in image_gen tool.
-Source: roadmap PR 8 in plan/10-roadmap.md and plan/13-updates-and-telemetry.md.
+Source: roadmap PR 8 in docs/design/10-roadmap.md and docs/design/13-updates-and-telemetry.md.
 Deliverables: mediaviewer-icon.png master and mediaviewer-icon.ico containing 16, 20, 24, 32, 40, 48, 64, 256 pixel sizes.
 Assets generated only; application and installer wiring is a separate packaging step.
 

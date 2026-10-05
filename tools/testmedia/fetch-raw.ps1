@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Fetch the PR 7 RAW sample set into tools/testmedia/raw/ and verify it.
 #
-# plan/09: the corpus does not live in git. The manifest beside this script —
+# docs/design/09: the corpus does not live in git. The manifest beside this script —
 # raw-manifest.json, one (url, sha256, licence) row per file — does. Every
 # sample is from raw.pixls.us and CC0-1.0 there (checked per file when the
 # manifest was written; the repository marks non-CC0 samples separately).

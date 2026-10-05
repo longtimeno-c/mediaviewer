@@ -1,9 +1,9 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The Import engine end to end, over the real host table (io ports, pairing,
-// verified copy), at card scale: plan/18's PR 16-19 verify lines, the ones a
+// verified copy), at card scale: docs/design/18's PR 16-19 verify lines, the ones a
 // machine without a card reader can check. The 64 GB timing, eject, and the
-// present-loop gates while importing are hardware runs (plan/10).
+// present-loop gates while importing are hardware runs (docs/design/10).
 #include "catch_compat.h"
 
 #include <mediaviewer/mediaviewer_import.h>

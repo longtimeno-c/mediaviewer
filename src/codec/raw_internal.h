@@ -17,7 +17,7 @@
 namespace mv::codec::raw_detail {
 
 // LibRaw `user_qual`. Only the built-in, non-GPL interpolators are listed —
-// the GPL demosaic packs are never linked (plan/11).
+// the GPL demosaic packs are never linked (docs/design/11).
 enum class demosaic : int {
   linear = 0,
   vng = 1,

@@ -4,7 +4,7 @@
 //
 //   "Verify: presents at exactly display refresh, 0 dropped frames over 60 s,
 //    ~0 % CPU idle, on Apple Silicon, measured from the Metal / display-link
-//    side."  (plan/10-roadmap.md, PR 16)
+//    side."  (docs/design/10-roadmap.md, PR 16)
 //
 // A Windows DXGI soak is not this verify. This file has no Metal and no DXGI
 // types so the arithmetic can be tested on a Windows box. The Darwin lab feeds

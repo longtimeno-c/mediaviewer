@@ -4,7 +4,7 @@
 // with deterministic stand-ins for the parts that need hardware or weights:
 // pixels come from a file's NAME (a "red" photo, a clip that is red, then
 // green, then blue), and the embedder turns a colour into a direction. What
-// that proves is the machinery plan/17's PR 21-24 verify lines rest on:
+// that proves is the machinery docs/design/17's PR 21-24 verify lines rest on:
 // resume without redoing committed frames, stale detection, delta scans,
 // dedupe, scope, per-clip grouping, "nothing found", migration without mixed
 // vector spaces, clearing, the size cap, the yield policy, and people with
@@ -577,7 +577,7 @@ struct rig {
     REQUIRE(eng->start());
   }
 
-  // The search agent's engine (plan/23): the same data folder, read-only,
+  // The search agent's engine (docs/design/23): the same data folder, read-only,
   // the towers' text halves only (here the same fakes: the vectors match).
   mv::ai::engine_deps reader_deps() {
     mv::ai::engine_deps d = deps();
@@ -665,7 +665,7 @@ TEST_CASE("a remembered folder indexes in the background and answers a descripti
   REQUIRE_FALSE(red.empty());
   CHECK(red.front().first == "red_car.jpg");
   CHECK(red.front().second == -1);
-  // plan/17: a nonsense query says "nothing found", not the least-bad ten.
+  // docs/design/17: a nonsense query says "nothing found", not the least-bad ten.
   CHECK(r.search("xyzzy plugh").empty());
   CHECK(r.eng->folder_coverage(utf8(r.photos())) == 2u);
   CHECK(r.eng->folder_coverage(utf8(r.dir / "Elsewhere")) == 0u);
@@ -1046,7 +1046,7 @@ TEST_CASE("people: opt-in, clusters, names, corrections, and deletion that leave
 
   auto photos_of = r.search("photos of Anna");
   CHECK(photos_of.size() == 3);
-  // The query language (plan/17 "Query syntax"): a name while it is typed, an
+  // The query language (docs/design/17 "Query syntax"): a name while it is typed, an
   // explicit @prefix, leaving a person out, and a kind nobody has.
   CHECK(r.search("Ann").size() == 3);
   CHECK(r.search("anna").size() == 3);
@@ -1215,7 +1215,7 @@ TEST_CASE("audio: a clip's sounds and speech are indexed and found at their mome
   // Photos still answer as pictures alongside.
   CHECK(r.search("red").front().first == "red_photo.jpg");
 
-  // Quoted words must be said, in that order (plan/17 "Query syntax"); the
+  // Quoted words must be said, in that order (docs/design/17 "Query syntax"); the
   // phrase is the snippet. A kind or a date narrows them like anything else.
   const std::uint64_t quoted = r.eng->search_text("\"make a wish\"", "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
   REQUIRE(r.eng->wait_search(quoted, 5000));
@@ -1591,7 +1591,7 @@ TEST_CASE("searches during a migration and across its end use the answering towe
   CHECK(r.status().frames_indexed == 3);  // the old rows went; nothing doubled
 }
 
-// ---- the search agent's reader (plan/23 Phase 1) ---------------------------------------
+// ---- the search agent's reader (docs/design/23 Phase 1) ---------------------------------------
 
 namespace {
 
@@ -1658,7 +1658,7 @@ TEST_CASE("the reader answers exactly as the app's engine on the same index", "[
   CHECK(rd->read_only());
   CHECK(rd->active_spec() == r.eng->active_spec());
 
-  // plan/17's eval set shape: subjects, a moment in a clip, sounds, words
+  // docs/design/17's eval set shape: subjects, a moment in a clip, sounds, words
   // said, people, exclusions, kinds, dates and nonsense.
   const char* const queries[] = {"red", "something red", "green", "blue", "a dog barking", "birthday anna",
                                  "\"make a wish\"", "Anna", "@an", "-Anna", "red video", "red photo",
@@ -1769,7 +1769,7 @@ TEST_CASE("the reader catches up with what the app indexes after it started", "[
   REQUIRE(r.eng->root_rescan(1));
   REQUIRE(r.idle());
   CHECK(ranked(*r.eng, "blue").size() == 1);
-  // Within the catch-up interval (plan/23), appended rather than reloaded.
+  // Within the catch-up interval (docs/design/23), appended rather than reloaded.
   bool found = false;
   for (int i = 0; i < 200 && !found; ++i) {
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -1790,7 +1790,7 @@ TEST_CASE("the reader catches up with what the app indexes after it started", "[
   CHECK(gone);
 }
 
-// ---- the search agent's session over the pack's table (plan/23 Phase 1) ------------------
+// ---- the search agent's session over the pack's table (docs/design/23 Phase 1) ------------------
 
 namespace {
 
@@ -1982,7 +1982,7 @@ bool eventually(const std::function<bool()>& ok, int ms = 10000) {
 
 }  // namespace
 
-// ---- sharing an index (plan/17 "Sharing an index") ---------------------------------------
+// ---- sharing an index (docs/design/17 "Sharing an index") ---------------------------------------
 
 namespace {
 
@@ -2406,7 +2406,7 @@ TEST_CASE("People travel only when ticked, and named people join by name", "[ai]
   REQUIRE(here->a.size() == 2);
 }
 
-// The duplicate pass (plan/17 "Merge duplicates") through the engine: what it
+// The duplicate pass (docs/design/17 "Merge duplicates") through the engine: what it
 // finds is covered on synthetic vectors in test_ai_face_refine.cpp ("[dedupe]");
 // here, that the call is wired, keeps the user's split, and settles.
 TEST_CASE("merge duplicates: wired through the engine, a split stays apart, a second call does nothing",

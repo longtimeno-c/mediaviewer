@@ -72,7 +72,7 @@ format_family probe(std::span<const std::uint8_t> header) noexcept {
     return format_family::heic;
   }
   // Non-TIFF RAW magics. TIFF-container RAWs (CR2/NEF/ARW/DNG) probe as TIFF;
-  // decode() reclassifies through LibRaw (plan/04: magic, then identify).
+  // decode() reclassifies through LibRaw (docs/design/04: magic, then identify).
   if (header.size() >= 16 && std::memcmp(header.data(), "FUJIFILMCCD-RAW", 15) == 0) {
     return format_family::raw;
   }

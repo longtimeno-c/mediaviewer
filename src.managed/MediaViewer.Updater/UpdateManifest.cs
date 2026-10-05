@@ -149,7 +149,7 @@ public sealed record ManifestDecision(
 
 /// <summary>
 /// Every rule the updater applies before it trusts a byte of the manifest
-/// (plan/13 "Signing", "Rollback and the kill switch"). Pure: no I/O, no clock.
+/// (docs/design/13 "Signing", "Rollback and the kill switch"). Pure: no I/O, no clock.
 /// </summary>
 public static class ManifestVerifier
 {

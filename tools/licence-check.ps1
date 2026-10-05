@@ -1,7 +1,7 @@
 # Copyright (C) 2026 longtimeno-c
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# The licence gate from plan/11-licensing.md's PR 1 checklist.
+# The licence gate from docs/design/11-licensing.md's PR 1 checklist.
 #
 # MediaViewer is GPL-3.0-or-later, which makes Exiv2, FFmpeg, libheif, libde265
 # and LibRaw all compliant. It does NOT make everything permissible: two
@@ -59,7 +59,7 @@ foreach ($manifestName in @('vcpkg.json', 'tools/mac/dependencies/vcpkg.json')) 
     foreach ($forbidden in @('x264', 'x265', 'fdk-aac', 'libbluray')) {
         if ($declared -contains $forbidden) {
             Add-Violation 'forbidden encoder / GPL-only port' `
-                "$manifestName declares '$forbidden'. plan/11: never bundle a software HEVC or AAC encoder."
+                "$manifestName declares '$forbidden'. docs/design/11: never bundle a software HEVC or AAC encoder."
         }
     }
 
@@ -81,14 +81,14 @@ foreach ($manifestName in @('vcpkg.json', 'tools/mac/dependencies/vcpkg.json')) 
         foreach ($feature in $dep.features) {
             if ($feature -in @('gpl', 'all-gpl', 'nonfree', 'all-nonfree', 'x264', 'x265', 'fdk-aac', 'all', 'version3')) {
                 Add-Violation 'FFmpeg feature' `
-                    "$manifestName enables ffmpeg[$feature]. plan/11: LGPL-2.1 only, hardware encoders only."
+                    "$manifestName enables ffmpeg[$feature]. docs/design/11: LGPL-2.1 only, hardware encoders only."
             }
         }
     }
 }
 
 # --- 2. FFmpeg configure line, as actually built ---------------------------
-# plan/11: "The configure line is checked directly rather than trusted."
+# docs/design/11: "The configure line is checked directly rather than trusted."
 #
 # Scope matters as much as the check. This must look ONLY at the FFmpeg this
 # repo links, never at whatever ffmpeg happens to be on PATH -- a developer with
@@ -120,7 +120,7 @@ if ($VcpkgInstalledRoot -and (Test-Path $VcpkgInstalledRoot)) {
 
         if ($text -match '--enable-gpl') {
             Add-Violation 'FFmpeg configured GPL' `
-                "$($binary.Name) was built with --enable-gpl. plan/11: LGPL only, and --enable-gpl pulls in x264/x265."
+                "$($binary.Name) was built with --enable-gpl. docs/design/11: LGPL only, and --enable-gpl pulls in x264/x265."
         }
         if ($text -match '--enable-nonfree') {
             Add-Violation 'FFmpeg configured nonfree' `
@@ -129,7 +129,7 @@ if ($VcpkgInstalledRoot -and (Test-Path $VcpkgInstalledRoot)) {
         foreach ($encoder in @('--enable-libx264', '--enable-libx265', '--enable-libfdk-aac')) {
             if ($text -match [regex]::Escape($encoder)) {
                 Add-Violation 'forbidden encoder in FFmpeg' `
-                    "$($binary.Name) was built with $encoder. plan/11: never bundle a software HEVC or AAC encoder."
+                    "$($binary.Name) was built with $encoder. docs/design/11: never bundle a software HEVC or AAC encoder."
             }
         }
     }
@@ -158,7 +158,7 @@ if ($VcpkgInstalledRoot -and (Test-Path $VcpkgInstalledRoot)) {
     # --- 3. LGPL components must be DLLs, not static libs ------------------
     foreach ($lgpl in @('avcodec', 'avformat', 'avutil', 'swscale', 'swresample',
                         'heif', 'de265', 'raw', 'exiv2')) {
-        # An import library beside a DLL is normal and correct; what plan/11
+        # An import library beside a DLL is normal and correct; what docs/design/11
         # forbids is a .lib with NO .dll, which means the component was linked
         # statically and the user cannot substitute their own build.
         $staticLibs = Get-ChildItem -Path $VcpkgInstalledRoot -Recurse -File -Filter "*$lgpl*.lib" `
@@ -168,7 +168,7 @@ if ($VcpkgInstalledRoot -and (Test-Path $VcpkgInstalledRoot)) {
 
         if ($staticLibs -and -not $dlls) {
             Add-Violation 'LGPL component linked statically' `
-                "$lgpl appears as a static library with no DLL. plan/11: LGPL requires the user be able to replace it."
+                "$lgpl appears as a static library with no DLL. docs/design/11: LGPL requires the user be able to replace it."
         }
     }
 
@@ -180,7 +180,7 @@ if ($VcpkgInstalledRoot -and (Test-Path $VcpkgInstalledRoot)) {
             -ErrorAction SilentlyContinue
         foreach ($hit in $hits) {
             Add-Violation 'forbidden encoder DLL installed' `
-                "$($hit.FullName) is in the vcpkg install tree. plan/11: never bundle a software HEVC or AAC encoder."
+                "$($hit.FullName) is in the vcpkg install tree. docs/design/11: never bundle a software HEVC or AAC encoder."
         }
     }
 }
@@ -192,24 +192,24 @@ if (-not (Test-Path $licensePath)) {
 } else {
     $licenseText = Get-Content -Raw -LiteralPath $licensePath
     if ($licenseText -notmatch 'GNU GENERAL PUBLIC LICENSE\s+Version 3,') {
-        Add-Violation 'unexpected LICENSE' 'LICENSE is not the GNU GPL version 3 text the plan settled on (plan/12, 2026-09-25).'
+        Add-Violation 'unexpected LICENSE' 'LICENSE is not the GNU GPL version 3 text the plan settled on (docs/design/12, 2026-09-25).'
     }
 }
 
 if (-not (Test-Path (Join-Path $RepoRoot 'NOTICE'))) {
-    Add-Violation 'missing NOTICE' 'plan/11 requires NOTICE (copyright line, licence, pointer to THIRD-PARTY.md) beside LICENSE.'
+    Add-Violation 'missing NOTICE' 'docs/design/11 requires NOTICE (copyright line, licence, pointer to THIRD-PARTY.md) beside LICENSE.'
 }
 
 $rootManifest = Join-Path $RepoRoot 'vcpkg.json'
 if (Test-Path $rootManifest) {
     $declared = (Get-Content -Raw -LiteralPath $rootManifest | ConvertFrom-Json).license
     if ($declared -ne 'GPL-3.0-or-later') {
-        Add-Violation 'app licence not GPL-3.0-or-later' "vcpkg.json declares '$declared'. plan/11: the app is GPL-3.0-or-later."
+        Add-Violation 'app licence not GPL-3.0-or-later' "vcpkg.json declares '$declared'. docs/design/11: the app is GPL-3.0-or-later."
     }
 }
 
 if (-not (Test-Path (Join-Path $RepoRoot 'THIRD-PARTY.md'))) {
-    Add-Violation 'missing THIRD-PARTY.md' 'plan/11 requires a generated attribution file.'
+    Add-Violation 'missing THIRD-PARTY.md' 'docs/design/11 requires a generated attribution file.'
 }
 
 # --- Report -----------------------------------------------------------------
@@ -220,7 +220,7 @@ if ($violations.Count -eq 0) {
 
 Write-Host ''
 Write-Host 'LICENCE VIOLATIONS' -ForegroundColor Red
-Write-Host 'plan/11-licensing.md. These are not style preferences.'
+Write-Host 'docs/design/11-licensing.md. These are not style preferences.'
 Write-Host ''
 foreach ($v in $violations) {
     Write-Host ("  [{0}]" -f $v.Rule) -ForegroundColor Red

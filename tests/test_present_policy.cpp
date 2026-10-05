@@ -128,7 +128,7 @@ TEST_CASE("the yield signal is up only while the loop presents", "[gfx][present_
   REQUIRE_FALSE(mv::gfx::present_busy(mv::gfx::decide_present(still), false));
 }
 
-TEST_CASE("constants match plan/03", "[gfx][present_policy]") {
+TEST_CASE("constants match docs/design/03", "[gfx][present_policy]") {
   REQUIRE(mv::gfx::k_input_tail_seconds == 0.5);
   REQUIRE(mv::gfx::k_warmup_seconds == 1.0);
   REQUIRE(mv::gfx::k_occlusion_poll_ms == 200);

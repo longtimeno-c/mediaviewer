@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// "MediaViewer Search": the Final Cut Pro workflow extension (plan/23). FCP
+// "MediaViewer Search": the Final Cut Pro workflow extension (docs/design/23). FCP
 // shows this view controller in a floating window from its Extensions button.
 // Searches and tiles come from the search agent over XPC (agent_protocol.h);
 // the panel plays and scrubs the files itself, read-only (Extension.entitlements).
@@ -26,7 +26,7 @@
 // match, N / Shift+N next / previous match in the clip, Cmd+Shift+F find
 // similar, Tab accepts the first name suggestion, Esc clears.
 //
-// Phase 0 (plan/23): FCP needs ProExtension.framework's classes, so main()
+// Phase 0 (docs/design/23): FCP needs ProExtension.framework's classes, so main()
 // below loads it from the installed Final Cut Pro before the extension starts;
 // we ship nothing of Apple's. Our view controller is named by
 // NSExtension > ProExtensionPrincipalViewControllerClass.
@@ -732,7 +732,7 @@ NSURL* active_library_url() {
   if (_field.stringValue.length > 0) [self search];
 }
 
-// The spike's hard-coded drag (plan/23 Phase 0 verify): two clips with ranges and a photo.
+// The spike's hard-coded drag (docs/design/23 Phase 0 verify): two clips with ranges and a photo.
 - (void)showTestDrag:(id)sender {
   (void)sender;
   ++_generation;
@@ -1340,7 +1340,7 @@ namespace {
 // still searches, over every indexed folder. Loaded from the Final Cut Pro
 // installed here, so they always match the host and nothing of Apple's is
 // redistributed; Apple signs them, hence
-// com.apple.security.cs.disable-library-validation (plan/12 2026-09-28).
+// com.apple.security.cs.disable-library-validation (docs/design/12 2026-09-28).
 bool load_pro_extension(os_log_t log) {
   NSMutableArray<NSURL*>* apps = [NSMutableArray array];
   for (NSString* bundle in @[ @"com.apple.FinalCut", @"com.apple.FinalCutTrial" ]) {

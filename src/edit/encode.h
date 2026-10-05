@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Export encoders (plan/07 "Export"): JPEG through libjpeg-turbo, PNG through
+// Export encoders (docs/design/07 "Export"): JPEG through libjpeg-turbo, PNG through
 // libspng — the same libraries the decoders already link, so export adds no
 // dependency. Worker thread only.
 //

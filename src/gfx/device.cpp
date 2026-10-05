@@ -95,7 +95,7 @@ expected device::create(HWND window) noexcept {
   flags |= D3D11_CREATE_DEVICE_DEBUG;
 #endif
 
-  // 11_0 is the floor. Windows 10 21H2 (plan/02 platform floor) guarantees it
+  // 11_0 is the floor. Windows 10 21H2 (docs/design/02 platform floor) guarantees it
   // on anything with a display driver.
   static const D3D_FEATURE_LEVEL levels[] = {
       D3D_FEATURE_LEVEL_11_1,
@@ -125,7 +125,7 @@ expected device::create(HWND window) noexcept {
   }
 
   // Decode workers create immutable textures from their own threads
-  // (plan/02, "Free-threaded resource creation") and PR 5a hands this device to
+  // (docs/design/02, "Free-threaded resource creation") and PR 5a hands this device to
   // FFmpeg. Both require the multithread-protected flag to be honest about it.
   com_ptr<ID3D10Multithread> multithread;
   if (SUCCEEDED(d3d_.As(&multithread))) {

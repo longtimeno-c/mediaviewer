@@ -1,8 +1,8 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Clip jobs out of process (plan/08 "Execution & UX": "as a child process for
+// Clip jobs out of process (docs/design/08 "Execution & UX": "as a child process for
 // encode jobs. A child process means a crash in an encode can't take the
-// viewer down, and cancelling is a clean kill"; owner's call, plan/12
+// viewer down, and cancelling is a clean kill"; owner's call, docs/design/12
 // 2026-09-25).
 //
 // The queue (edit/clip_jobs) starts tools/clipjob (MediaViewerClipJob) for

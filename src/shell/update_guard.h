@@ -1,7 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // PR 8 updater, native half: Velopack hook exit, start-attempt guard, rollback,
-// and the restart-state arguments (plan/13 Part 1, "Rollback and the kill
+// and the restart-state arguments (docs/design/13 Part 1, "Rollback and the kill
 // switch", "Preserve state across the restart").
 //
 // Why native: a version that fails to start usually fails before .NET or the
@@ -23,18 +23,18 @@
 namespace mv::shell::update {
 
 // Bit in the chrome settings word (chrome_flags_args) for [update] auto_check,
-// the "disable automatic update checks" switch (plan/13 Part 3). Above the
+// the "disable automatic update checks" switch (docs/design/13 Part 3). Above the
 // view_settings bits; stored in settings.ini through the settings store, not
 // in view_settings. The island mirrors it as SettingFlag.UpdateAutoCheck.
 inline constexpr std::int32_t kChromeFlagUpdateAutoCheck = 1 << 8;
 
 // Bit for [update] channel = preview: follow signed prerelease builds as well
-// as stable ones (plan/12, 2026-09-26). Default stable. The island mirrors it
+// as stable ones (docs/design/12, 2026-09-26). Default stable. The island mirrors it
 // as SettingFlag.UpdatePreview. Bits 9 and 10 are telemetry (telemetry.h).
 inline constexpr std::int32_t kChromeFlagUpdatePreview = 1 << 11;
 
 // A version that has failed to start this many times is rolled back on the
-// next start (plan/13: "fails to start twice").
+// next start (docs/design/13: "fails to start twice").
 inline constexpr int kMaxFailedStarts = 2;
 
 // Velopack runs the main exe with --veloapp-install/-updated/-obsolete/

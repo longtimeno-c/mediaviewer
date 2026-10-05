@@ -244,7 +244,7 @@ result<installed> store::install(const std::string& staged_dir) const {
     return err(status::corrupt);
   }
 
-  // plan/17: a family (the AI pack's Core, vendor piece and Faces) has one
+  // docs/design/17: a family (the AI pack's Core, vendor piece and Faces) has one
   // installed-size ceiling. The manifest's own size is signed; so are the
   // installed ones this sums. Replacing a version replaces its size.
   if (const std::uint64_t ceiling = family_ceiling(family_of(d.m)); ceiling != 0) {

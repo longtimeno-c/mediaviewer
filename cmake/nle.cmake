@@ -1,7 +1,7 @@
 # Copyright (C) 2026 longtimeno-c
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# plan/23: Local search from inside an editing app. Included by cmake/ai.cmake,
+# docs/design/23: Local search from inside an editing app. Included by cmake/ai.cmake,
 # so the Windows root, cmake/darwin.cmake and the headless cmake/portable build
 # all build the portable half.
 #
@@ -14,7 +14,7 @@
 #                    FCPXML": Final Cut Pro, DaVinci Resolve, Premiere Pro).
 #
 # The Final Cut Pro pieces (the XPC search agent and the workflow extension)
-# are Mac-only (D9 exception, plan/12 2026-09-28) and live in
+# are Mac-only (D9 exception, docs/design/12 2026-09-28) and live in
 # cmake/darwin-fcp.cmake: they ship inside MediaViewer.app, dormant until
 # Final Cut Pro is turned on in Settings > Local search. mv_nle itself is
 # linked by the agent and the tools, never by the app.

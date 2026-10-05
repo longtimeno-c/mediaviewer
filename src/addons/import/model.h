@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The Import add-on's data model (plan/18-import.md "The engine").
+// The Import add-on's data model (docs/design/18-import.md "The engine").
 //
 // A *unit* is what is copied, verified, skipped and sorted together: one file,
 // a RAW+JPEG pair, or a Live Photo, with its camera sidecars (.xmp .THM .LRV
@@ -27,7 +27,7 @@ enum class file_type : std::uint8_t {
   none = 6,     // not media: camera system files, never imported
 };
 
-// Bits for preset::types (plan/18 "type filter").
+// Bits for preset::types (docs/design/18 "type filter").
 inline constexpr std::uint32_t kTypeRaw = 1u << 0;
 inline constexpr std::uint32_t kTypeJpeg = 1u << 1;
 inline constexpr std::uint32_t kTypeHeic = 1u << 2;
@@ -90,7 +90,7 @@ struct scan_result {
 };
 
 // ---------------------------------------------------------------------------
-// Presets (plan/18 "Configurability").
+// Presets (docs/design/18 "Configurability").
 
 enum class selection_mode : std::uint8_t { new_only = 0, all = 1, marked = 2, date_range = 3 };
 enum class date_source : std::uint8_t { taken = 0, file_time = 1 };
@@ -151,7 +151,7 @@ struct plan_unit {
   bool renamed_for_clash = false;
   std::uint32_t seq = 0;   // the {seq} it was given, 0 if none
   // A duplicate on the main destination that the backup does not hold: the
-  // backup still gets it, so the backup mirrors the card (plan/18 "Backup").
+  // backup still gets it, so the backup mirrors the card (docs/design/18 "Backup").
   bool backup_needed = false;  // the planner's finding
   bool backup_only = false;    // selected for the backup copy (follows selection)
 };

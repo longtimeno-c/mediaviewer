@@ -23,7 +23,7 @@ namespace MediaViewer.Chrome;
 /// </summary>
 /// <remarks>
 /// Pixels never cross this line. The island is command-bar chrome; pan/zoom
-/// stay on the native window procedure (plan/02, plan/14).
+/// stay on the native window procedure (docs/design/02, docs/design/14).
 /// </remarks>
 public static partial class IslandHost
 {
@@ -122,7 +122,7 @@ public static partial class IslandHost
         public const int TrimReencode = 140;
         public const int JobsPane = 143;
         public const int ClipToolsFlyout = 144;
-        // PR 29 (plan/20): the Edit workspace. EditTab: arg is the tab
+        // PR 29 (docs/design/20): the Edit workspace. EditTab: arg is the tab
         // (shell::edit_tab); EditAction: arg is an EditActions value. The
         // keyed ids below are what the strip and the Crop / Trim panes send
         // (chrome_host.h pins each).
@@ -133,7 +133,7 @@ public static partial class IslandHost
         // or arg 1 to remove every date-taken tag.
         public const int MetaTags = 1021;
         public const int MetaDate = 1022;
-        // PR 30 (plan/21): the Video Editor window. EditorSeek: arg is the
+        // PR 30 (docs/design/21): the Video Editor window. EditorSeek: arg is the
         // program time in ms (and selects the piece there); EditorAction: arg
         // is an EditorActions value (chrome_editor_action).
         public const int EditorSeek = 1023;
@@ -202,7 +202,7 @@ public static partial class IslandHost
         public const int Gallery = 3;
         public const int Transport = 4;
         public const int Text = 5;
-        // PR 9: the metadata pane or the folder tree holds focus (plan/16 "Pane").
+        // PR 9: the metadata pane or the folder tree holds focus (docs/design/16 "Pane").
         public const int Pane = 6;
     }
 
@@ -225,7 +225,7 @@ public static partial class IslandHost
         public const int UpdateAutoCheck = 1 << 8;
         // [telemetry] enabled / asked (telemetry.h kChromeFlagTelemetry*).
         // Consent, default off. Asked records that the first-run screen has
-        // been answered - either way. Asked is not consent (plan/13 Part 3).
+        // been answered - either way. Asked is not consent (docs/design/13 Part 3).
         public const int Telemetry = 1 << 9;
         public const int TelemetryAsked = 1 << 10;
         // [update] channel = preview (update_guard.h kChromeFlagUpdatePreview).
@@ -233,7 +233,7 @@ public static partial class IslandHost
     }
 
     // Telemetry is absent from this initial word on purpose: until native
-    // pushes the real settings in, the chrome assumes off (plan/13).
+    // pushes the real settings in, the chrome assumes off (docs/design/13).
     // Packed sort order (key in bits 0-2: name, modified, size, type, date taken;
     // descending in bit 3). Native owns it; the menu and Settings are a view of it.
     private static int _sortPacked;
@@ -427,7 +427,7 @@ public static partial class IslandHost
 
     /// <summary>
     /// Tells the native key router which island holds focus, and whether it is
-    /// a text control (plan/16: then every key but Esc belongs to the island).
+    /// a text control (docs/design/16: then every key but Esc belongs to the island).
     /// Native checks GetFocus() itself for the canvas, so a stale island value
     /// after focus returns to the swapchain is harmless.
     /// </summary>
@@ -563,7 +563,7 @@ public static partial class IslandHost
     /// <summary>
     /// Native pushing the current playback rate in. The dropdown is a view of
     /// the rate, never a second place it is decided — the keyboard is the one
-    /// router (plan/16), so Q/E and this menu cannot drift apart.
+    /// router (docs/design/16), so Q/E and this menu cannot drift apart.
     /// </summary>
     public static int ApplyRate(IntPtr arg, int sizeBytes)
     {
@@ -639,7 +639,7 @@ public static partial class IslandHost
     private static void EnsureApp()
     {
         if (_dispatcher is not null) return;
-        CrashCapture.Install();  // plan/13: managed exceptions -> local report
+        CrashCapture.Install();  // docs/design/13: managed exceptions -> local report
         _dispatcher = DispatcherQueueController.CreateOnCurrentThread();
         // What Application.Start gives a normal WinUI app, and islands do not:
         // without it every `await` in UI code (ours and the add-ons') resumed
@@ -1401,7 +1401,7 @@ public static partial class IslandHost
             if (viewBtn is not null) FlyoutBase.ShowAttachedFlyout(viewBtn);
         });
         AttachBarFlyout(viewBtn, viewFlyout);
-        // PR 29 (plan/20): the visible way in to every edit, a bar button like
+        // PR 29 (docs/design/20): the visible way in to every edit, a bar button like
         // Settings. Enter does the same. Native's SetEditView keeps its label.
         Button editBtn = BuildEditBarButton();
         Button? settingsBtn = null;

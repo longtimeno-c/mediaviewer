@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The Settings screen (plan/16 "Settings"), laid out like the Windows one
+// The Settings screen (docs/design/16 "Settings"), laid out like the Windows one
 // (IslandHost.Settings.cs): grouped General preferences and a separate keyboard
 // shortcuts tab, with a persistent Done footer. Native owns every value -- this view
 // reads the flags and the live command table through the bridge and posts
@@ -267,10 +267,10 @@ struct SettingsView: View {
             .pickerStyle(.menu).frame(width: 180)
           }
         }
-        // plan/26: the Photos library's backup, once the library was added
+        // docs/design/26: the Photos library's backup, once the library was added
         // (Local search -> Add Photos Library); absent otherwise.
         PhotosBackupSection()
-        // Import and (Milestone H, plan/17) Local search, as items of one
+        // Import and (Milestone H, docs/design/17) Local search, as items of one
         // Add-ons section; Local search is absent on an Intel Mac.
         AddonsSection().padding(.top, 20)
       }

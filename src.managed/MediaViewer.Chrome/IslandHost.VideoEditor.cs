@@ -16,7 +16,7 @@ using XamlCanvas = Microsoft.UI.Xaml.Controls.Canvas;
 namespace MediaViewer.Chrome;
 
 /// <summary>
-/// PR 30 (plan/21, issue #40; owner 2026-09-26): the Video Editor window's
+/// PR 30 (docs/design/21, issue #40; owner 2026-09-26): the Video Editor window's
 /// timeline — the WinUI twin of VideoEditorView.swift. The preview above it is
 /// the viewer's own swapchain, moved into the window by native (one canvas,
 /// one present path, rule 2); this island sits under it: transport, the cut

@@ -23,7 +23,7 @@ internal sealed record PersonVm(ulong Id, string Name, long Faces, ulong CoverFa
 internal sealed record FaceVm(ulong Id, string Path, long PtsMs, double[] Box);
 
 /// <summary>
-/// People (plan/17 PR 24): the clusters as circular covers, a person's faces,
+/// People (docs/design/17 PR 24): the clusters as circular covers, a person's faces,
 /// and the minimum corrections — rename, "Not this person" (Delete), "Split
 /// into new person" on a multi-selection, and merging: drag a person onto
 /// another, Ctrl-click several and "Merge into…", or the detail pane's
@@ -55,7 +55,7 @@ internal sealed class PeopleWindow : Window
     private readonly Button _photos;
     private readonly Button _refine;
     private bool _refining;
-    // "Merge duplicates" (plan/17): the whole library, on request.
+    // "Merge duplicates" (docs/design/17): the whole library, on request.
     private readonly Button _dedupe;
     private bool _deduping;
     // Buttons with a Flyout, not DropDownButtons: that control has no default
@@ -67,14 +67,14 @@ internal sealed class PeopleWindow : Window
     private readonly Button _mergeSelected;
     private readonly TextBlock _hint;
     private readonly TextBlock _note;
-    // "People in: This folder ▾" (plan/17 "People in the open folder"): the
+    // "People in: This folder ▾" (docs/design/17 "People in the open folder"): the
     // grid follows the folder the viewer has open, in it and below by default.
     // A Button with a Flyout, like _merge: DropDownButton fail-fasts here
     // (tools/check-winui-controls.ps1).
     private readonly Button _scopeButton;
     private readonly TextBlock _scopeFolder;
     private readonly TextBlock _empty;
-    // "Re-analyse faces" (plan/17 "People model"): every photo and clip again
+    // "Re-analyse faces" (docs/design/17 "People model"): every photo and clip again
     // with the pack's face model; the people carry over. Progress from status.
     private readonly Button _reanalyse;
     private readonly TextBlock _rerunText;
@@ -792,7 +792,7 @@ internal sealed class PeopleWindow : Window
 
     /// <summary>
     /// "Merge duplicates": the pack re-checks every face and merges people who
-    /// are the same person (plan/17 "Merge duplicates"). Only ever on request.
+    /// are the same person (docs/design/17 "Merge duplicates"). Only ever on request.
     /// </summary>
     private void MergeDuplicates()
     {

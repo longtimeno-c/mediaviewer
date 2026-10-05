@@ -57,7 +57,7 @@ public struct MvSessionConfig
 /// <remarks>
 /// The size is asserted at startup against the native <c>sizeof</c>. A silent
 /// layout change here reads as corrupted job ids rather than as an error, which
-/// is precisely the class of bug plan/14-abi.md exists to prevent.
+/// is precisely the class of bug docs/design/14-abi.md exists to prevent.
 /// </remarks>
 [StructLayout(LayoutKind.Sequential)]
 public struct MvCompletion
@@ -136,7 +136,7 @@ public struct MvFolderItem
 /// <summary>
 /// Thrown when a core call fails. Carries the correlation id, which is what ties
 /// this exception to the native minidump that produced it
-/// (plan/13-updates-and-telemetry.md).
+/// (docs/design/13-updates-and-telemetry.md).
 /// </summary>
 public sealed class MediaViewerException : Exception
 {

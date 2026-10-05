@@ -4,7 +4,7 @@
 //
 // Exiv2 reports failure by throwing. That is confined to this file: every
 // entry point catches at the boundary and turns it into "fewer fields"
-// (CLAUDE.md: no exceptions across the line; plan/06: missing or damaged
+// (CLAUDE.md: no exceptions across the line; docs/design/06: missing or damaged
 // metadata is an empty field, never an error).
 #include <exiv2/exiv2.hpp>
 

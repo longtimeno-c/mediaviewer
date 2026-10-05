@@ -3,7 +3,7 @@
 **Status: built 2026-10-03 on the branch `claude/macos-icloud-photos-improvements`, owner request
 of 2026-10-03 ("can we have it as a folder that is opened? instead of just searching? (only if it
 has been added in settings)"; "a tool … to export them to a nas … backup all my icloud photos to a
-local directory"). Mac-only under D9, like the source it extends (plan/17 "Photos library
+local directory"). Mac-only under D9, like the source it extends (docs/design/17 "Photos library
 source", issue #72). The Windows half is nothing by design: iCloud for Windows syncs to a folder,
 which a folder root already is.**
 
@@ -28,7 +28,7 @@ doing them and is a viewer fix on both platforms.
 ## Virtual items (the folder)
 
 A Photos asset has no path, and a 23 k-asset library cannot be turned into 23 k files to list
-it (plan/17 measured 7 ms a resolve, and most originals are only in iCloud). So the folder
+it (docs/design/17 measured 7 ms a resolve, and most originals are only in iCloud). So the folder
 model gains **virtual entries**: a `list_entry` whose `is_virtual` is set is listed as given —
 name, stamp and size from the provider, no stat — under the pack's own key, `photos:<id>`
 (`shell/folder_model_mac.h`). Everything the host does with a listing (gallery, filmstrip, marks,
@@ -49,7 +49,7 @@ sort-free list order, duplicate names) works on it unchanged; three things learn
   fetch and removes its part file.
 - **Writes.** `shell/write_guard.h` protects the key itself and everything under the cache
   folder: Move, Trash, ratings, every metadata edit, rotate / flip, Save copy and trims are
-  refused with the plan/17 notice. **Copy To** and drag-out copy the original, fetched from
+  refused with the docs/design/17 notice. **Copy To** and drag-out copy the original, fetched from
   iCloud for it if this Mac does not hold it (the user asked for the file).
 
 **Search results use the same path.** The AI chrome used to resolve every Photos result into a
@@ -75,8 +75,8 @@ still.
 
 `shell/photos_backup.h` is the portable engine, over a `source` (PhotoKit in
 `photos_backup_mac.mm`; a fake in `tests/test_photos_backup.cpp`) and `io::verified_copy`
-(hashed while read, read back from the destination uncached, compared — plan/18's rule, and
-the deep network path once plan/24's PR 49 lands, since the copy goes through the same call).
+(hashed while read, read back from the destination uncached, compared — docs/design/18's rule, and
+the deep network path once docs/design/24's PR 49 lands, since the copy goes through the same call).
 
 - **What:** every asset's **originals** — the photo or video as shot, a Live Photo's paired
   video, a RAW+JPEG pair's RAW — the Hidden album included (a backup keeps what the user hid).
@@ -110,7 +110,7 @@ video blitters (HLSL and its MSL twin) take the turn: the camera frames the *dis
 (coded height × width for 90 / 270) and the shader maps back to the coded frame before sampling
 the visible rect. Both hosts size the picture after the turn (`picture_size`, `media_width`).
 `player::poster_frame` turns the tile the same way, so the thumbnail spec moves
-`jpg512.2 → jpg512.3` and old posters regenerate on view (plan/04). Tests:
+`jpg512.2 → jpg512.3` and old posters regenerate on view (docs/design/04). Tests:
 `tests/test_poster.cpp` on the synthetic fixture's 0°, 90° and 180° clips.
 
 ## Verify
@@ -125,7 +125,7 @@ the visible rect. Both hosts size the picture after the turn (`picture_size`, `m
   Settings → Photos Library backs up to a chosen folder, a second run writes nothing; the Mac
   PR 1 present-loop gate still holds.
 
-## Owner calls recorded here (plan/12, 2026-10-03)
+## Owner calls recorded here (docs/design/12, 2026-10-03)
 
 The library opens as a folder once added in Settings; the backup downloads iCloud-only
 originals on the user's own run; the thumbnail spec bump for turned posters.

@@ -104,7 +104,7 @@ std::string_view current_arch() noexcept {
 }
 
 std::uint64_t family_ceiling(std::string_view family) noexcept {
-  // plan/17 "The AI pack": Core + the selected vendor piece + Faces <= 3 GB.
+  // docs/design/17 "The AI pack": Core + the selected vendor piece + Faces <= 3 GB.
   // Decimal GB, the unit the Settings page shows.
   if (family == "ai") return 3'000'000'000ull;
   return 0;

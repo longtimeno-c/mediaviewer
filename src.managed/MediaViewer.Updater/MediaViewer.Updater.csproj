@@ -2,7 +2,7 @@
 
   <!-- Copyright (C) 2026 longtimeno-c -->
   <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
-  <!-- PR 8 in-app updater (plan/13 Part 1). No WinUI here: the verification
+  <!-- PR 8 in-app updater (docs/design/13 Part 1). No WinUI here: the verification
        rules are testable from a console runner, and the chrome only renders
        what this library decides. -->
   <PropertyGroup>

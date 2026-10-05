@@ -1,7 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Decoder registry. Adding a format is one file plus one line in decode.cpp
-// (plan/04-image-pipeline.md).
+// (docs/design/04-image-pipeline.md).
 #pragma once
 
 #include <memory>
@@ -56,7 +56,7 @@ struct jpeg_size {
                                          const job_context* ctx = nullptr,
                                          unsigned thread_limit = 1);
 // The primary image's largest thumbnail item (an iPhone writes 320x240), with
-// the primary's colour when it carries none. First pixel for HEIC (plan/04).
+// the primary's colour when it carries none. First pixel for HEIC (docs/design/04).
 // `unsupported_format` when there is none, or it is not smaller than the image
 // or not its shape (a thumbnail without the primary's rotation).
 [[nodiscard]] result<raster> decode_heic_thumbnail(std::span<const std::uint8_t> bytes,
@@ -75,7 +75,7 @@ struct jpeg_size {
                                         unsigned thread_limit = 4);
 
 // PR 11: the same develop as decode_raw, at 16 bits with a linear curve — the
-// adjust pane's working data and the export bake's source (plan/07: the
+// adjust pane's working data and the export bake's source (docs/design/07: the
 // pane waits for this, never for the embedded preview). Same size and
 // orientation as decode_raw.
 [[nodiscard]] result<raster16> decode_raw_linear(std::span<const std::uint8_t> bytes,
@@ -83,7 +83,7 @@ struct jpeg_size {
 
 // Embedded JPEG/preview inside a RAW, if any. `unsupported_format` when the
 // file is not RAW or has no usable preview. First pixel for CR2/NEF/ARW
-// (plan/04). Does not write the original bytes.
+// (docs/design/04). Does not write the original bytes.
 [[nodiscard]] result<raster> decode_raw_preview(std::span<const std::uint8_t> bytes,
                                                 const job_context* ctx = nullptr);
 
@@ -96,7 +96,7 @@ struct jpeg_size {
 [[nodiscard]] result<raster> try_os_decode(std::span<const std::uint8_t> bytes,
                                            const job_context* ctx = nullptr);
 
-// Frame-at-a-time animation (plan/04). The bytes are shared, not copied, and
+// Frame-at-a-time animation (docs/design/04). The bytes are shared, not copied, and
 // kept alive by the source. `unsupported_format` when the file is known to be
 // a still (a one-frame WebP, a PNG without acTL); a one-frame GIF can only be
 // told apart by asking for a second frame.
@@ -121,7 +121,7 @@ struct jpeg_size {
     std::size_t max_bytes = kAnimationByteBudget);
 
 // RGBA8 in, JPEG bytes out. `quality` is 1–100. Used for the filmstrip cache
-// (plan/04 spec jpg512.3); not an export path.
+// (docs/design/04 spec jpg512.3); not an export path.
 [[nodiscard]] result<std::vector<std::uint8_t>> encode_jpeg_rgba(
     std::span<const std::uint8_t> rgba, std::uint32_t width, std::uint32_t height, int quality);
 

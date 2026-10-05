@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // PR 5b — the audio endpoint, behind a portable interface.
 //
-// D9 / plan/15: the WASAPI implementation is audio_win.cpp and NOTHING else.
+// D9 / docs/design/15: the WASAPI implementation is audio_win.cpp and NOTHING else.
 // A Core Audio host must be able to replace that one file without touching the
 // clock. That is why no <audioclient.h> / <mmdeviceapi.h> appears here, and why
 // tools/check-hostable-core.ps1 bans those headers everywhere but *_win.cpp.

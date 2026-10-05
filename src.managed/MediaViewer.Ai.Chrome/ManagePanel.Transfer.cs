@@ -10,7 +10,7 @@ using Windows.Storage.Pickers;
 namespace MediaViewer.Ai.Chrome;
 
 /// <summary>
-/// Settings → Local search → Import and export (plan/17 "Sharing an index",
+/// Settings → Local search → Import and export (docs/design/17 "Sharing an index",
 /// 2026-09-28): the index of some folders written to one .mvindex file, and a
 /// file merged into this index with each of its folders pointed at where those
 /// files are on this PC (a NAS mapped to another letter, a copied card).

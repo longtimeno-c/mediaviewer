@@ -27,7 +27,7 @@ namespace mv::shell {
 
 inline constexpr std::int32_t kSettingFilmstripFolder = 1 << 0;
 inline constexpr std::int32_t kSettingFilmstripImage = 1 << 1;
-inline constexpr std::int32_t kSettingWrap = 1 << 2;  // plan/16: wrap at folder ends
+inline constexpr std::int32_t kSettingWrap = 1 << 2;  // docs/design/16: wrap at folder ends
 inline constexpr std::int32_t kSettingStickyZoom = 1 << 3;
 inline constexpr std::int32_t kSettingBackgroundShift = 4;
 inline constexpr std::int32_t kSettingBackgroundMask = 7 << kSettingBackgroundShift;
@@ -40,7 +40,7 @@ struct view_settings {
   bool filmstrip_for_folder = true;
   bool filmstrip_for_image = false;
   // Arrow keys, Space and the slideshow go round from the last item to the
-  // first. On by default (plan/16).
+  // first. On by default (docs/design/16).
   bool wrap = true;
   bool sticky_zoom = false;
   std::uint8_t background = 0;  // 0 system, 1 grey, 2 white, 3 checkerboard, 4 dark
@@ -85,7 +85,7 @@ void save_view_settings(settings_store& store, const view_settings& settings) no
 [[nodiscard]] view_settings load_view_settings() noexcept;
 void save_view_settings(const view_settings& settings) noexcept;
 
-// F7 / F8 destinations, most recent first, at most five (plan/16). UTF-8
+// F7 / F8 destinations, most recent first, at most five (docs/design/16). UTF-8
 // folder paths the user picked; they stay in the local settings file.
 inline constexpr std::size_t kMaxDestinations = 5;
 // Read once at startup; the app keeps the list and saves it when it changes.
@@ -109,7 +109,7 @@ void save_recent_folders(const std::vector<std::string>& list) noexcept;
                                                         std::string_view utf8_dir,
                                                         std::size_t max = kMaxDestinations);
 
-// Crash reporting (plan/13 Part 2), section [crash]. consent: -1 never asked,
+// Crash reporting (docs/design/13 Part 2), section [crash]. consent: -1 never asked,
 // 0 declined, 1 accepted. upload_url: empty in PR 7 -- no endpoint exists, and
 // nothing uploads without both a URL and consent. No path of a user file is
 // ever stored here.

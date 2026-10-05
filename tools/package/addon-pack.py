@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026 longtimeno-c
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Pack and sign an add-on (plan/18 "Add-ons: how Import is installed").
+"""Pack and sign an add-on (docs/design/18 "Add-ons: how Import is installed").
 
     addon-pack.py pack [--addon import|ai|ai-faces|ai-cuda] --platform win-x64|macos \
         --src build/addons/<addon> --version 1.0.0 --key <ed25519-private-key-hex-file> --out dist/
@@ -13,13 +13,13 @@ writes, for the release to publish beside the app's own assets:
     mediaviewer-addon-<addon>-<platform>.json       the manifest (schema 1)
     mediaviewer-addon-<addon>-<platform>.json.sig   64-byte raw Ed25519, detached
 
-Milestone H (plan/17 "The AI pack") adds the AI pack's pieces: `ai` (the
+Milestone H (docs/design/17 "The AI pack") adds the AI pack's pieces: `ai` (the
 Core: mv_ai, ONNX Runtime, the CLIP towers, the chrome), and the model-only
 or runtime-only pieces `ai-faces` and `ai-cuda` (`part_of: ai`, no native
 entry, no chrome). Model files carry the licence tools/package/ai-models.py
 recorded in the staged `licences.json`; a licence outside the allowed set
 fails the pack (the weights-licence gate). `ceiling` refuses a family whose
-supported installed combination exceeds 3 GB (plan/17).
+supported installed combination exceeds 3 GB (docs/design/17).
 
 The manifest lists every file with its SHA-256, size and licence, the host API
 range the add-on supports, and the archive's own name, size and SHA-256. It
@@ -48,7 +48,7 @@ import zipfile
 
 ALLOWED_LICENCES = {"GPL-3.0-or-later", "MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause",
                     "Zlib", "ISC", "CC0-1.0"}
-CEILINGS = {"ai": 3_000_000_000}  # plan/17; src/addon/manifest.cpp family_ceiling agrees
+CEILINGS = {"ai": 3_000_000_000}  # docs/design/17; src/addon/manifest.cpp family_ceiling agrees
 
 # What ships, per add-on and platform. Anything else in the build folder stays
 # out. `licences`: (prefix, SPDX) for files the staged licences.json does not

@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Final Cut Pro search on / off (plan/23), for main_mac.mm. The bridge calls
+// Final Cut Pro search on / off (docs/design/23), for main_mac.mm. The bridge calls
 // Swift uses (mv_fcp_*) are in mv_chrome_bridge.h; both are fcp_mac.mm.
 #pragma once
 

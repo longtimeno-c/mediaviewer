@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 9 — metadata read model (plan/06-metadata.md).
+// PR 9 — metadata read model (docs/design/06-metadata.md).
 //
 // One vocabulary for the UI: EXIF / IPTC / XMP from Exiv2, container and
 // per-stream facts from libavformat, and a few computed rows, all normalised
@@ -9,7 +9,7 @@
 //
 // Reading is worker-thread work (rule 1) and happens once per opened item.
 // Toggling the info overlay or the AF-point quads reads this struct, never
-// the file (plan/16, PR 9 verify).
+// the file (docs/design/16, PR 9 verify).
 //
 // Missing metadata is not an error: a PNG with no XMP, a BMP, a clip with no
 // tags all come back as a `metadata` whose fields are empty. An error result
@@ -30,7 +30,7 @@ namespace mv::meta {
 enum class origin : std::uint8_t { exif, iptc, xmp, container, computed };
 
 // One row of the full tree. `raw_tag` is always kept ("Exif.Photo.ExposureTime")
-// so the origin of a value is never lost to normalisation (plan/06).
+// so the origin of a value is never lost to normalisation (docs/design/06).
 struct property {
   origin space = origin::exif;
   std::string group;    // "Exif.Photo", "Xmp.dc", "Container", "Video #0"
@@ -65,7 +65,7 @@ struct summary {
   int audio_channels = 0;        // first audio stream
   int audio_sample_rate = 0;     // Hz, first audio stream
   std::vector<std::string> codecs;  // every audio / video stream's codec, file order, no repeats
-  // The date-taken sort key (plan/16): the stamp read as if it were UTC.
+  // The date-taken sort key (docs/design/16): the stamp read as if it were UTC.
   // Camera stamps carry no zone, so this orders correctly within a folder and
   // is not a real instant. 0 = unknown.
   std::int64_t date_taken_key = 0;
@@ -114,7 +114,7 @@ struct metadata {
   std::vector<af_point> af_points;
   // The EXIF orientation that the decoder has *already applied* to the pixels
   // on screen: RAW and (from PR 10) JPEG are decoded rotated, TIFF is not
-  // (plan/04). AF quads
+  // (docs/design/04). AF quads
   // must be transformed by exactly this and no more.
   std::uint8_t display_orientation = 1;
   bool is_clip = false;

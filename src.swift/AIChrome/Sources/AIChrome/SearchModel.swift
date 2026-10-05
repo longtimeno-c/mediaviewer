@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The search panel's model over mv.ai.1 (plan/17 "Search", "UI and commands"):
+// The search panel's model over mv.ai.1 (docs/design/17 "Search", "UI and commands"):
 // the query, scope and kind chips, the debounced search, result tiles and their
 // thumbnails, the empty states, find-similar, the status footer, opening the
 // results as a gallery listing, and the matching moments of the clip on screen
@@ -335,7 +335,7 @@ final class SearchModel: ObservableObject {
     run(keepSelection: true)
   }
 
-  // MARK: people while typing (plan/17 "Query syntax")
+  // MARK: people while typing (docs/design/17 "Query syntax")
 
   /// A named person the word being typed could be ("Trist" → Tristan). Tab
   /// takes the first; `completion` is the whole field with the word replaced.
@@ -760,7 +760,7 @@ final class SearchModel: ObservableObject {
     guard !results.isEmpty, shown != 0 else { return false }
     // A Photos result's path is its library key ("photos:<id>"): the host
     // lists it as a virtual item and resolves it to a file as it is shown
-    // (plan/26; shell/photos_items_mac.h). Nothing is prepared here.
+    // (docs/design/26; shell/photos_items_mac.h). Nothing is prepared here.
     return openList(results.map { $0.path }, results, gallery: gallery)
   }
 
@@ -831,7 +831,7 @@ final class SearchModel: ObservableObject {
       if !markerPath.isEmpty { clearMarkers() }
       return
     }
-    let asked = path  // a Photos result's viewer path is its library key (plan/26)
+    let asked = path  // a Photos result's viewer path is its library key (docs/design/26)
     let opened = search == shown ? (results.first(where: { $0.path == asked })?.ptsMs ?? -1) : -1
     let t = table
     let seq = markerSeq

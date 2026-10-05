@@ -8,7 +8,7 @@
   otherwise refuse.
 
   photos-library: Local search may index the system Photos library (issue #72,
-  plan/17 "Photos library source"). Without it the hardened runtime denies
+  docs/design/17 "Photos library source"). Without it the hardened runtime denies
   PhotoKit silently. The permission prompt still belongs to the user, from a
   click in Settings; nothing reads the library until they allow it, and the
   base viewer never touches PhotoKit.

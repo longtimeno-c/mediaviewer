@@ -257,7 +257,7 @@ expected engine::start(const std::string& db_path_override) {
   idx_ = std::move(idx);
   next_job_ = idx_->max_job_id() + 1;
   // A job still "running" in the journal is one a crash, an unplug or a
-  // closed app cut short. It is resumable, not lost (plan/18).
+  // closed app cut short. It is resumable, not lost (docs/design/18).
   for (const job_row& j : idx_->unfinished_jobs()) {
     if (j.state != MV_IMPORT_JOB_INTERRUPTED) {
       idx_->set_job_state(j.id, MV_IMPORT_JOB_INTERRUPTED, 0, "");
@@ -355,7 +355,7 @@ preset engine::last_preset() {
   if (!name.empty()) {
     if (auto text = idx_->preset_json(name)) (void)parse_preset(*text, p);
   }
-  // plan/18 "Painless by default": the last destination used.
+  // docs/design/18 "Painless by default": the last destination used.
   if (p.destination.empty()) p.destination = idx_->setting("last_destination");
   return p;
 }
@@ -932,7 +932,7 @@ void engine::progress_tick(job& j, std::uint64_t delta) {
 }
 
 void engine::run_job(const std::shared_ptr<job>& j) {
-  // One reader per physical source (plan/18: never parallel reads of a card).
+  // One reader per physical source (docs/design/18: never parallel reads of a card).
   std::unique_lock source_lock(device_lock(j->device_key));
   {
     std::lock_guard lock(j->m);
@@ -949,7 +949,7 @@ void engine::run_job(const std::shared_ptr<job>& j) {
   cb.progress = [this, &j](std::uint64_t delta) { progress_tick(*j, delta); };
   cb.yield = [this, &j] {
     // Pause, and background priority: wait between buffers while the viewer
-    // needs the machine (plan/18 "Priority"). Both present-loop gates are
+    // needs the machine (docs/design/18 "Priority"). Both present-loop gates are
     // measured with this in place.
     while (!j->cancel.load() && (j->paused.load() || (!j->fast.load() && host_.should_yield()))) {
       std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -1161,7 +1161,7 @@ void engine::run_job(const std::shared_ptr<job>& j) {
 
   if (state == MV_IMPORT_JOB_DONE && j->settings.eject_after && j->source_removable &&
       !j->explicit_files && !j->source_root.empty()) {
-    // plan/18 "After import: Eject card" (the default). Unmount and eject
+    // docs/design/18 "After import: Eject card" (the default). Unmount and eject
     // only; Import never formats or erases.
     const bool ok = host_.eject(j->source_root).has_value();
     std::lock_guard lock(j->m);
@@ -1750,7 +1750,7 @@ void engine::run_verify(const std::shared_ptr<job>& j, const std::string& dir) {
 // Find duplicates (PR 54)
 //
 // Size first, then BLAKE3-256 where a size repeats; never by name (the same
-// test Import uses, plan/18 "The engine"). Every file type, empty files
+// test Import uses, docs/design/18 "The engine"). Every file type, empty files
 // aside. Hashes are remembered by path, size and mtime in import.db, so a
 // second scan of a folder reads only what changed. Nothing is removed by the
 // scan; trash_duplicate moves one file the user picked to the bin, and only

@@ -9,7 +9,7 @@
 // permission prompt, so tools/ai/photos-spike.sh wraps this in a throwaway
 // .app and runs it with `open`. It prints counts and timings only: never an
 // identifier, a file name or a path (rule 6), so its output can be pasted into
-// plan/17.
+// docs/design/17.
 //
 //   photos-spike.sh [--stills N] [--videos N] [--edge 448] [--threads 2] [--out report.json]
 #include "addons/ai/photos_source.h"

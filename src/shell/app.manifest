@@ -7,7 +7,7 @@
 
   <!-- Per-monitor-v2 DPI. Without this the window is bitmap-stretched on a
        high-DPI monitor and every measurement the present lab takes is of a
-       scaled surface rather than the panel. plan/03-rendering.md. -->
+       scaled surface rather than the panel. docs/design/03-rendering.md. -->
   <application xmlns="urn:schemas-microsoft-com:asm.v3">
     <windowsSettings>
       <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
@@ -16,7 +16,7 @@
     </windowsSettings>
   </application>
 
-  <!-- The platform floor is Windows 10 21H2 (plan/02-architecture.md), which is
+  <!-- The platform floor is Windows 10 21H2 (docs/design/02-architecture.md), which is
        why OVERLAPPED rather than Win11-only IoRing is the async I/O path. The
        GUIDs below are the standard OS-compatibility entries; Windows 11 is
        included because it is a superset, not because we require it. -->

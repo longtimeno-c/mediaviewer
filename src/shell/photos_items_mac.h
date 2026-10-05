@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The Photos library as items the viewer can list (plan/26-photos-library.md,
+// The Photos library as items the viewer can list (docs/design/26-photos-library.md,
 // the Mac half of issue #72's follow-up). A library asset has no path: it is
 // a VIRTUAL item keyed "photos:<localIdentifier>" (the key the Local search
 // pack already uses), listed through folder_model::open_list as a virtual
@@ -100,7 +100,7 @@ struct resolved {
 [[nodiscard]] result<resolved> resolve(std::string_view key, bool want_original,
                                        const std::atomic<bool>* cancel = nullptr);
 
-// ---- For the backup (shell/photos_backup.h; plan/26 "Backup"), all [worker].
+// ---- For the backup (shell/photos_backup.h; docs/design/26 "Backup"), all [worker].
 // `kind`: 0 the original photo or video as shot, 1 a Live Photo's paired
 // video, 2 a RAW+JPEG pair's RAW (backup::file_kind).
 struct library_file {

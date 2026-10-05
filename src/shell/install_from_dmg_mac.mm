@@ -6,7 +6,7 @@
 // (an image cannot be unmounted while its executable is running).
 //
 // After a drag install, the first-launch setup sheet offers to eject the image
-// if it is still mounted and to move the .dmg to the Trash (plan/13). hdiutil
+// if it is still mounted and to move the .dmg to the Trash (docs/design/13). hdiutil
 // runs on a utility queue only, bounded, never on the main thread (rule 1).
 #include "shell/install_from_dmg_mac.h"
 

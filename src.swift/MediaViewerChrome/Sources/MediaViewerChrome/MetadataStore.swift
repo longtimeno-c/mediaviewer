@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 9 (plan/06, plan/16): the state the metadata pane reads. It mirrors a record
+// PR 9 (docs/design/06, docs/design/16): the state the metadata pane reads. It mirrors a record
 // the host already holds -- summary rows, the full tag tree, per-stream inspector
 // -- and re-reads it only when the host's metadata generation moves. Nothing here
 // reads the file; the pane opening, closing or switching tabs is free.
@@ -82,7 +82,7 @@ final class MetadataStore: ObservableObject {
   @Published private(set) var streams: [MetaStream] = []
   @Published private(set) var chapters: [MetaChapter] = []
 
-  // PR 12 (plan/06 "Writing"): what the pane edits. The host owns the truth; a
+  // PR 12 (docs/design/06 "Writing"): what the pane edits. The host owns the truth; a
   // change is queued there and lands on its I/O pool. These mirror it, and a
   // change still waiting to be written already counts.
   @Published private(set) var rating = 0  // -1 rejected, 0 none, 1...5

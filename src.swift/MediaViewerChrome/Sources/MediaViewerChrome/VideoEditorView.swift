@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 30 (plan/21, issue #40; owner 2026-09-26): the Video Editor window's
+// PR 30 (docs/design/21, issue #40; owner 2026-09-26): the Video Editor window's
 // timeline. The preview above it is the viewer's own canvas, moved into the
 // window (main_mac.mm); this is the SwiftUI under it: transport, the cut
 // tools, a thumbnail track and a waveform over the edited program, a playhead
@@ -7,7 +7,7 @@
 // list lives in the host (shell/video_timeline.h); this polls it and posts
 // edits back.
 //
-// Keyboard-complete (plan/16): Space play · ← → frame (⇧ ten) · J K L shuttle
+// Keyboard-complete (docs/design/16): Space play · ← → frame (⇧ ten) · J K L shuttle
 // (J skims back, L plays faster on each press) · I O mark in / out · X clear
 // the marks · [ ] trim start / end · ⌘B split · ⌫ delete the marked range or
 // the selected piece · ⌘Z / ⇧⌘Z undo / redo · ⌘E export · ⌘W close.

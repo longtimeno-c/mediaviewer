@@ -7,7 +7,7 @@ licence-clean: the pixels are trivial test patterns (CC0 / public domain), and
 the Display P3 ICC profile embedded in some files was written by
 `gen_heif.py` from the published primaries.
 
-Real camera media does **not** go here (plan/09). Real iPhone samples are
+Real camera media does **not** go here (docs/design/09). Real iPhone samples are
 fetched by `tools/testmedia/fetch-heif.ps1` into the gitignored
 `tools/testmedia/`, and their tests skip visibly when absent.
 
@@ -32,7 +32,7 @@ python patch_nclx.py heif/pq_10bit.heic 9 16 9 1
 ```
 
 (pillow-heif's wheel bundles x265 to *encode* the HEIC fixtures on the
-developer machine. That is the fixture tool, not the product; plan/11's
+developer machine. That is the fixture tool, not the product; docs/design/11's
 no-x265 rule is about what MediaViewer links.)
 
 | File | What it pins |

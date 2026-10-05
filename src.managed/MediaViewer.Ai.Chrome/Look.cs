@@ -145,7 +145,7 @@ internal sealed class Look
         Background = this[AddonColour.Surface],
     };
 
-    // ---- motion (plan/17 brief: quick, physical, never blocking input) ------------
+    // ---- motion (docs/design/17 brief: quick, physical, never blocking input) ------------
 
     /// <summary>Panel in: opacity 0→1 and scale 0.96→1, ~220 ms; a fade alone under reduce motion.</summary>
     public void PanelIn(UIElement e)
@@ -225,7 +225,7 @@ internal sealed class Look
         }
     }
 
-    /// <summary>" · about 6–9 min", from completed work only (plan/17: no hard-coded claim).</summary>
+    /// <summary>" · about 6–9 min", from completed work only (docs/design/17: no hard-coded claim).</summary>
     private static string Eta(in MvAiStatus s)
     {
         if (s.EtaLowSeconds < 0 || s.EtaHighSeconds <= 0) return "";

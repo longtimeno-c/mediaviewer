@@ -1,15 +1,15 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 19 -- VideoToolbox hardware decode. Metal host (D9 / plan/15-platforms.md):
+// PR 19 -- VideoToolbox hardware decode. Metal host (D9 / docs/design/15-platforms.md):
 // the counterpart of hwdecode_win.cpp and the only player/ file that names
 // CoreVideo or Metal.
 //
-// "FFmpeg + VideoToolbox on *your* MTLDevice" (plan/10 PR 19): VideoToolbox
+// "FFmpeg + VideoToolbox on *your* MTLDevice" (docs/design/10 PR 19): VideoToolbox
 // owns its own decode sessions, so the device is used where it matters -- the
 // CVMetalTextureCache that wraps the decoder's IOSurface-backed pixel buffers
 // is built on OUR MTLDevice, and the blit that copies them OUT of the decoder's
 // pool into our presentation ring runs on a queue of that device. The decoder
-// pool is never presented from (plan/05 "Surface ownership").
+// pool is never presented from (docs/design/05 "Surface ownership").
 //
 // Threading: everything here runs on the video decode thread. It waits for its
 // own blit to finish (`waitUntilCompleted`): that thread is neither the UI nor

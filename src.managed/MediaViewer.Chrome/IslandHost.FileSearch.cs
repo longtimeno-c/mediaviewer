@@ -13,7 +13,7 @@ using Microsoft.UI.Xaml.Hosting;
 namespace MediaViewer.Chrome;
 
 /// <summary>
-/// File search (plan/16 "File search", 2026-09-28): a find-by-name field over
+/// File search (docs/design/16 "File search", 2026-09-28): a find-by-name field over
 /// the gallery, part of the base app. No add-on and no index: it filters the
 /// folder already listed by file and folder name as you type. The path bar's
 /// search icon and Ctrl+F open it whenever Local search is not installed (or

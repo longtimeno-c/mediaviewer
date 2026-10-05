@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// plan/05: "Do not assume BT.709 limited range." Every clip found on the dev
+// docs/design/05: "Do not assume BT.709 limited range." Every clip found on the dev
 // box is untagged, so this resolution path is what stands between us and the
 // classic washed-out-video bug.
 #include <catch2/catch_test_macros.hpp>

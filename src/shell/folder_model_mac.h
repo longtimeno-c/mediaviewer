@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 18 (folded-in PR 4, plan/12 2026-09-17): the backend a SwiftUI
+// PR 18 (folded-in PR 4, docs/design/12 2026-09-17): the backend a SwiftUI
 // filmstrip/gallery consumes. Folder listing + FSEvents watch (io/dir_mac.cpp)
 // tied to the JPEG-512 thumbnail cache (image/thumb_mac.cpp). No UI, no key
 // router, no marks/copy-to/Trash/drag-drop, no RAW+JPEG/Live Photo pairing —
@@ -39,7 +39,7 @@ class folder_model {
   [[nodiscard]] expected open(std::string_view dir_utf8, job_system& jobs) noexcept;
   void close() noexcept;
 
-  // Milestone H (plan/17 "UI and commands"; the Mac twin of mv_folder_open_list
+  // Milestone H (docs/design/17 "UI and commands"; the Mac twin of mv_folder_open_list
   // in abi/abi.cpp): a listing that is not a directory -- search results. The
   // items keep the order given (best match first; no sort), are not paired
   // and are not watched; a file that no longer exists drops out. An item with
@@ -47,7 +47,7 @@ class folder_model {
   // "" while a list is open; open() of a directory ends it. Real I/O (a stat
   // per item, the thumbnail cache): call it on a worker, as open() is.
   //
-  // plan/26: a VIRTUAL entry is an item with no file (a Photos library asset,
+  // docs/design/26: a VIRTUAL entry is an item with no file (a Photos library asset,
   // "photos:<id>"). It is listed as given -- name, stamp and size from the
   // provider, no stat -- and its tile comes from the virtual thumb provider
   // (set_virtual_items) under the same cache key as a file's. The host
@@ -91,7 +91,7 @@ class folder_model {
   [[nodiscard]] std::vector<io::dir_entry> items() const;
   [[nodiscard]] std::size_t item_count() const noexcept;
 
-  // Child folders of the open directory (plan/10 PR 26), natural order,
+  // Child folders of the open directory (docs/design/10 PR 26), natural order,
   // refreshed by the same relist that refreshes items().
   [[nodiscard]] std::vector<io::subdir_entry> subfolders() const;
   [[nodiscard]] std::string directory() const;
@@ -119,7 +119,7 @@ class folder_model {
 
   // Looks up (or generates and caches) the thumbnail for `path_utf8`/
   // `mtime_unix`/`size`. `on_ready` runs on the pool thread that produced the
-  // result (job_system's contract, plan/02) — never the calling thread — with
+  // result (job_system's contract, docs/design/02) — never the calling thread — with
   // an empty `thumb_path` on failure. The caller marshals to its own thread.
   // Safe to call after this object is later destroyed while the job is still
   // in flight: `on_ready` still fires (job_system's contract), operating on
@@ -153,7 +153,7 @@ class folder_model {
     std::vector<std::int64_t> moments;
     std::string list_title;
     bool is_list = false;
-    // plan/26 virtual items (set once, before any list; read on pool threads).
+    // docs/design/26 virtual items (set once, before any list; read on pool threads).
     std::string virtual_prefix;
     virtual_thumb_fn virtual_thumb;
     image::thumb_store thumbs;

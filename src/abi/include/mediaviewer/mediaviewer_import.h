@@ -1,10 +1,10 @@
 /* Copyright (C) 2026 longtimeno-c
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * The Import add-on's interface to the chrome (plan/18-import.md), obtained
+ * The Import add-on's interface to the chrome (docs/design/18-import.md), obtained
  * with mv_addon_api.query(addon, MV_IMPORT_INTERFACE). Both chromes call it:
  * the WinUI Import window through function pointers in C#, the SwiftUI
- * Import.bundle through this header. Flat C, POD, status codes (plan/14).
+ * Import.bundle through this header. Flat C, POD, status codes (docs/design/14).
  *
  * Rich, read-mostly data (sources, plans, presets, summaries, history)
  * crosses as UTF-8 JSON written into a caller buffer: `cap` bytes, `needed`
@@ -16,7 +16,7 @@
  * returns at once; scans, plans, jobs and verifies run on the add-on's own
  * I/O threads and report through the host completion queue
  * (MV_COMPLETION_ADDON, mediaviewer_addon.h). Nothing here deletes from a
- * source, formats a card, overwrites a destination, or uploads (plan/18
+ * source, formats a card, overwrites a destination, or uploads (docs/design/18
  * "Never offered at any setting"). The one removal is trash_duplicate: one
  * file the user picked, to the Recycle Bin / Trash, only while an identical
  * copy is still there.
@@ -98,7 +98,7 @@ typedef struct mv_import_api {
    * a JSON array of paths. */
   mv_status(MV_CALL* scan_files)(void* ctx, const char* paths_json, uint64_t* out_scan_id);
   /* [ui-thread][no-block] A plan from a finished scan and a preset (JSON, see
-   * plan/18 "Configurability"; NULL = the last used preset). `marked_json`
+   * docs/design/18 "Configurability"; NULL = the last used preset). `marked_json`
    * is the viewer's marked paths for selection "marked", or NULL.
    * Duplicate tests that need a hash run here. MV_ADDON_EVENT_PLAN_READY. */
   mv_status(MV_CALL* plan)(void* ctx, uint64_t scan_id, const char* preset_json,

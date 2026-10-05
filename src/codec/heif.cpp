@@ -1,7 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // HEIC/HEIF via libheif + libde265 (LGPL, dynamic). No x265 — the vcpkg
-// `hevc` feature is an encoder and is forbidden (plan/11, plan/12).
+// `hevc` feature is an encoder and is forbidden (docs/design/11, docs/design/12).
 //
 // libheif applies the container transforms (clap, irot, imir) by default; that
 // is kept, so the displayed orientation comes from the container, as on an
