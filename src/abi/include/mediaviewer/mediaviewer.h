@@ -331,6 +331,10 @@ MV_API mv_status MV_CALL mv_folder_select_page(mv_session_t session, uint32_t pa
 MV_API mv_status MV_CALL mv_folder_thumbs_visible(mv_session_t session, uint32_t first,
                                                   uint32_t count);
 
+/* [any-thread][no-block] Ends the directory or result list: nothing is listed
+ * afterwards. Pushes MV_COMPLETION_FOLDER_READY with payload 0, so a host
+ * showing the listing empties it (a result list opened from the empty window
+ * closing back to it). */
 MV_API mv_status MV_CALL mv_folder_close(mv_session_t session);
 
 /* ---------------------------------------------------------------------------

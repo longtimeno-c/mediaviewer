@@ -859,6 +859,16 @@ std::uint64_t present_lab_mac::open_item(std::string path_utf8, std::int64_t mti
   return item;
 }
 
+void present_lab_mac::close_item() noexcept {
+  if (options_.jobs) options_.jobs->bump_generation();  // abandons a load in flight
+  const std::uint64_t item = ++item_counter_;
+  clip_item_.store(0, std::memory_order_release);
+  loading_item_.store(0, std::memory_order_release);
+  video_opening_.store(0, std::memory_order_release);
+  cleared_through_.store(item, std::memory_order_release);
+  wake();
+}
+
 expected present_lab_mac::start(void* nsview, const mac_lab_options& options) noexcept {
   if (!nsview) return err(status::invalid_arg);
   view_ = nsview;
@@ -1300,9 +1310,26 @@ void present_lab_mac::render_thread_main() noexcept {
           redraw = true;
         }
 
+        // close_item(): the canvas goes back to the welcome. A clip closes on
+        // a worker (retire_media), never here.
+        const std::uint64_t cleared = cleared_through_.load(std::memory_order_acquire);
+        if (cleared != cleared_applied_) {
+          cleared_applied_ = cleared;
+          retire_media();
+          current_image_.reset();
+          fade_from_.reset();
+          fade_.cancel();
+          camera_.reset();
+          redraw = true;
+        }
+
         // PR 17: a background job finished decoding --open. Take it over and
         // fit it once; a resize while in fit mode re-fits below.
         image::gpu_image_mac* loaded = pending_image_.exchange(nullptr);
+        if (loaded && loaded->item_id != 0 && loaded->item_id <= cleared_applied_) {
+          delete loaded;  // finished after close_item(): nothing to show it in
+          loaded = nullptr;
+        }
         // Milestone H: a clip's placeholder (submit_clip_placeholder) stands in
         // until the clip's first frame; one that lands after it is too late.
         const bool clip_placeholder = loaded && loaded->preview && loaded->item_id != 0 &&
@@ -1434,7 +1461,17 @@ void present_lab_mac::render_thread_main() noexcept {
 
         // PR 19: a clip finished opening on a worker. The previous picture stays
         // up until the clip's first frame is ready.
-        if (pending_media* pm = pending_media_.exchange(nullptr)) {
+        pending_media* pm = pending_media_.exchange(nullptr);
+        if (pm && pm->item <= cleared_applied_) {
+          // Opened after close_item(): adopt it only to retire it on a worker.
+          retire_media();
+          media_ = pm->source;
+          media_item_ = pm->item;
+          delete pm;
+          pm = nullptr;
+          retire_media();
+        }
+        if (pm) {
           retire_media();
           media_ = pm->source;
           media_item_ = pm->item;
