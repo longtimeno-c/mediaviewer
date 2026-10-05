@@ -831,6 +831,8 @@ public static partial class IslandHost
         _addonStatus.TextWrapping = TextWrapping.Wrap;
         view.Children.Add(_addonRow);
         view.Children.Add(_addonStatus);
+        _importRestartButton = AddonRestartButton();
+        view.Children.Add(_importRestartButton);
         RefreshAddonRow();
         // Opening Settings asks the channel, whatever the automatic-check
         // switch says: the person is looking at what can be installed, or
@@ -968,9 +970,11 @@ public static partial class IslandHost
         if (ImportSlot.Busy || !_addonStatesRead) return;
         ImportSlot.Busy = true;
         // An update of a running Import installs beside it and takes over at
-        // the next start (the store keeps the running copy until then).
+        // the next start (the store keeps the running copy until then), so a
+        // restart is offered once it has landed.
         string? update = UpdateVersion(ImportSlot);
         bool running = ImportSlot.Chrome is not null;
+        bool restart = false;
         SetAddonStatus(update is null ? "Downloading Import…" : $"Downloading Import {update}…");
         ImportSlot.Phase = new AddonPhase(AddonPhaseKind.Downloading);
         IProgress<AddonPhase> progress = PhaseReporter(ImportSlot);
@@ -982,8 +986,9 @@ public static partial class IslandHost
             {
                 await DownloadAndInstall(ImportSlot, null, progress).ConfigureAwait(false);
                 message = update is null ? "Import installed."
-                    : running ? $"Import {update} is installed. It takes over the next time MediaViewer starts."
+                    : running ? $"Import {update} is installed. Restart MediaViewer to use it."
                     : $"Import updated to {update}.";
+                restart = update is not null && running;
             }
             catch (AddonNotPublishedException)
             {
@@ -1012,6 +1017,7 @@ public static partial class IslandHost
                 ImportSlot.Phase = null;
                 ApplyAddonStates(states);
                 SetAddonStatus(message);
+                if (restart) AddonRestartNeeded($"Import {update}");
                 RefreshAddonRow();
                 if (ImportSlot.Usable && ImportSlot.Chrome is null) LoadAddon(ImportSlot);
             });

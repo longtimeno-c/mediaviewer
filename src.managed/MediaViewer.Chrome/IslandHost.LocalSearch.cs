@@ -393,6 +393,8 @@ public static partial class IslandHost
         _localSearchStatus = WrappedLabel("");
         view.Children.Add(_localSearchPanel);
         view.Children.Add(_localSearchStatus);
+        _localSearchRestartButton = AddonRestartButton();
+        view.Children.Add(_localSearchRestartButton);
         RefreshLocalSearch();
         // Opening Settings asks the channel for every piece, like Import: the
         // person is looking at what can be installed or updated. The GETs
@@ -980,8 +982,10 @@ public static partial class IslandHost
                 }, progress).ConfigureAwait(false);
                 string capital = $"{char.ToUpperInvariant(what[0])}{what[1..]}";
                 message = update is null ? $"{capital} installed."
-                    : coreRunning ? $"Local search {update} is installed. It takes over the next time MediaViewer starts."
+                    : coreRunning ? $"Local search {update} is installed. Restart MediaViewer to use it."
                     : $"{capital} updated to {update}.";
+                if (update is not null && coreRunning)
+                    DispatcherQueueControllerTryEnqueue(() => AddonRestartNeeded($"Local search {update}"));
             }
             catch (OverBudgetException ex)
             {

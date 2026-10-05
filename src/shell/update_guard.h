@@ -87,6 +87,10 @@ struct view_restore {
 // Pure. NUL-separated UTF-16 argument blob for the managed updater.
 [[nodiscard]] std::wstring join_arguments(const std::vector<std::wstring>& args);
 
+// Pure. One CreateProcess command line: each argument quoted as
+// CommandLineToArgvW reads it back (spaces, quotes, trailing backslashes).
+[[nodiscard]] std::wstring command_line(const std::vector<std::wstring>& args);
+
 // ---- Win32 -----------------------------------------------------------------
 
 struct install_layout {
@@ -133,5 +137,16 @@ bool remove_velopack_uninstall_entry(const install_layout& layout) noexcept;
 // is left alone.
 [[nodiscard]] bool is_velopack_uninstall_string(std::wstring_view uninstall_string,
                                                 std::wstring_view update_exe) noexcept;
+
+// An add-on update's restart, no app update staged: starts this exe again
+// with `--relaunch-after <this pid>` and `args`. The new process waits for
+// this one to exit (wait_for_relaunch_parent) before anything else, so it
+// claims the single instance and loads the newest add-on. Exit path only.
+void relaunch_after_exit(const std::vector<std::wstring>& args) noexcept;
+
+// [startup, before the single-instance claim] The --relaunch-after pid: waits
+// for that process to exit, at most `timeout_ms`. True once it has (or was
+// already gone).
+bool wait_for_relaunch_parent(unsigned long pid, unsigned long timeout_ms) noexcept;
 
 }  // namespace mv::shell::update

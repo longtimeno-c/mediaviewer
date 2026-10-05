@@ -246,10 +246,17 @@ public struct CommandBarView: View {
 /// an update. Never a modal; quitting normally installs it too.
 private struct UpdateBarItem: View {
   @ObservedObject private var store = FolderStore.shared
+  @ObservedObject private var addons = AddonRestart.shared
 
   var body: some View {
     let version = store.updateVersion
-    switch store.updatePhase {
+    // An add-on update waiting on a restart is an action, so it wins over a
+    // quiet check or download of the app; a staged app update restarts both.
+    switch addons.pending.isEmpty || store.updatePhase == 3 ? store.updatePhase : -1 {
+    case -1:
+      Button("Add-on updated — restart") { addons.restart() }
+        .buttonStyle(FlatButtonStyle())
+        .help(addons.text)
     case 1:
       status("Checking for updates…", help: "Asking GitHub for a newer version.")
     case 2:
@@ -268,8 +275,9 @@ private struct UpdateBarItem: View {
     case 3:
       Button("Update ready — restart") { mv_chrome_restart_to_update() }
         .buttonStyle(FlatButtonStyle())
-        .help(version.map { "Version \($0) is downloaded. Restart to use it, or it installs when you quit MediaViewer." }
-              ?? "A new version is downloaded. Restart to use it, or it installs when you quit MediaViewer.")
+        .help((version.map { "Version \($0) is downloaded. Restart to use it, or it installs when you quit MediaViewer." }
+               ?? "A new version is downloaded. Restart to use it, or it installs when you quit MediaViewer.")
+              + (addons.pending.isEmpty ? "" : " " + addons.text))
     default:
       EmptyView()
     }

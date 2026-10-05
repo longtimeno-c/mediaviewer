@@ -397,6 +397,9 @@ struct app_state {
   int thumb_state = -1;
   // PR 15: the single instance. A second start hands its paths over here.
   mv::shell::instance_listener instance;
+  // An add-on update's restart with no app update staged: MediaViewer starts
+  // again with these arguments once this process has exited.
+  std::optional<std::vector<std::wstring>> relaunch;
   std::uint64_t folder_token = 0;         // bumped per folder open
   // docs/design/16 slideshow, a mode: order and interval in `show`, advancing through
   // the same folder_select as browse.
@@ -430,6 +433,9 @@ struct pending_restore {
 // PR 15: `--new-instance` runs a second, independent window (docs/design/09
 // "overridable"); without it a second start hands its paths to the first.
 bool g_new_instance = false;
+// An add-on update's restart (update_guard.h relaunch_after_exit): the pid of
+// the MediaViewer that started this one and is exiting. 0 = not a relaunch.
+unsigned long g_relaunch_after = 0;
 
 // --browse-soak. Neighbours of the open photo are decoded ahead (±1, ±2, no
 // wrap). Cold jumps are the photos past that window, taken before the walk
@@ -4233,9 +4239,15 @@ void chrome_on_command(void* ctx, int command, float arg) {
       view.fullscreen = app->fullscreen;
       view.gallery = app->gallery_visible;
       const auto args = mv::shell::update::restart_arguments(view);
-      if (!app->chrome.request_update_restart(mv::shell::update::join_arguments(args))) {
-        ::MessageBeep(MB_ICONWARNING);
+      if (app->chrome.request_update_restart(mv::shell::update::join_arguments(args))) return;
+      if (arg == 2.0f && app->window) {
+        // An add-on update and no app update staged: start again on our own,
+        // after this process has exited (the exit path below).
+        app->relaunch = args;
+        ::PostMessageW(app->window, WM_CLOSE, 0, 0);
+        return;
       }
+      ::MessageBeep(MB_ICONWARNING);
       return;
     }
     case mv::shell::chrome_cmd_popup:
@@ -7443,6 +7455,11 @@ bool parse_options(lab_options& options, std::vector<std::wstring>& open_paths, 
         const unsigned long pct = std::wcstoul(value.c_str(), nullptr, 10);
         g_restore.zoom_percent = pct <= 6400 ? static_cast<unsigned>(pct) : 0;
       }
+    } else if (arg == L"--relaunch-after") {
+      // Written by an add-on update's restart, never by a user.
+      std::wstring value;
+      next(value);
+      if (ok) g_relaunch_after = std::wcstoul(value.c_str(), nullptr, 10);
     } else if (arg == L"--new-instance") {
       g_new_instance = true;
     } else if (arg == L"--restore-fullscreen") {
@@ -7528,8 +7545,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   const bool edit_selftest = ::GetEnvironmentVariableW(L"MV_EDIT_SELFTEST", nullptr, 0) > 0;
   const bool harness_run = options.soak_seconds != 0.0 || options.av_soak_seconds != 0 || g_browse.enabled ||
                            options.scripted_pan || edit_selftest;
-  const bool single_instance = chrome_enabled && !g_new_instance && !harness_run && g_restore.zoom_percent == 0 &&
-                               !g_restore.fullscreen && !g_restore.gallery;
+  // An add-on update's restart waits for the old process to be gone first, so
+  // it claims the name like any start instead of handing its paths to the
+  // window that is closing (the restore flags do not opt it out).
+  const bool relaunched =
+      g_relaunch_after != 0 && mv::shell::update::wait_for_relaunch_parent(g_relaunch_after, 15000);
+  const bool single_instance = chrome_enabled && !g_new_instance && !harness_run &&
+                               (relaunched || (g_restore.zoom_percent == 0 && !g_restore.fullscreen &&
+                                               !g_restore.gallery));
   // Claimed here, not once the window exists: starts that arrive while this
   // one is still loading queue on the pipe instead of becoming "first" too.
   mv::shell::instance_claim instance_claim;
@@ -7795,6 +7818,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
 
   mv_session_release(app.session);
   mv::trace::provider_unregister();
+  // An add-on update's restart: the new process waits for this one to exit
+  // (--relaunch-after), so it becomes the single instance and loads the new
+  // add-on, never the copy this process still holds.
+  if (app.relaunch) mv::shell::update::relaunch_after_exit(*app.relaunch);
   if (!addons_stopped) {
     // An add-on thread may still be running (the AI pack always is): static
     // destructors and DLL detach must not run under it. Everything this

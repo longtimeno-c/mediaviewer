@@ -49,7 +49,9 @@ enum chrome_command : int {
   chrome_cmd_reset_keys = 1002,      // restore the default map
   // PR 8 updater. Chrome, not a command: no key, no row in `?` or Settings
   // (docs/design/16 — an update affordance is chrome). arg 0: the user clicked
-  // "Update ready — restart"; arg 1: Update.exe is armed, close now.
+  // "Update ready — restart"; arg 1: Update.exe is armed, close now; arg 2:
+  // an add-on update waits on a restart (through Update.exe when an app
+  // update is staged too, else MediaViewer starts again after it exits).
   chrome_cmd_update_restart = 1003,
   // PR 9. tree_open: the user chose a folder in the tree; native pulls the path
   // with take_tree_path (the callback carries only a float). set_sort: arg is the

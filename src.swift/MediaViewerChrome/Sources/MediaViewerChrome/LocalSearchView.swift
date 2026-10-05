@@ -478,7 +478,8 @@ final class LocalSearchStore: ObservableObject {
           // Core loads now (verified again, on a worker); a new piece is
           // picked up by the loaded pack at once ("reload").
           if id == "ai" && coreRunning, let v = update {
-            text = "Local search \(v) is installed. It takes over the next time MediaViewer starts."
+            text = "Local search \(v) is installed. Restart MediaViewer to use it."
+            AddonRestart.shared.needed("Local search \(v)")
           } else if id == "ai" {
             if !mv_addon2_load("ai") { text = "Local search is installed but could not be started." }
           } else if self.loaded || self.loading {
@@ -633,6 +634,7 @@ struct LocalSearchSection: View {
         .fixedSize(horizontal: false, vertical: true)
         .transition(.opacity)
     }
+    AddonRestartButton()
     if store.loading {
       HStack(spacing: 8) {
         ProgressView().controlSize(.small)

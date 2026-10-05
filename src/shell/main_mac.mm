@@ -581,6 +581,8 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (int32_t)updatePhase;
 - (NSString*)updateVersion;
 - (void)restartToUpdate;
+// An add-on update waits on a restart (mv_chrome_restart_for_addons).
+- (void)restartForAddons;
 // PR 9
 - (BOOL)metaPaneVisible;
 - (BOOL)metaLoading;
@@ -1531,6 +1533,9 @@ extern "C" bool mv_chrome_update_version(char* out, int32_t cap) {
 }
 extern "C" void mv_chrome_restart_to_update(void) {
   if (g_chrome_app) [g_chrome_app restartToUpdate];
+}
+extern "C" void mv_chrome_restart_for_addons(void) {
+  if (g_chrome_app) [g_chrome_app restartForAddons];
 }
 
 // NSEvent -> host key + modifiers, at the edge (commands.h): letters are
@@ -4759,6 +4764,49 @@ enum MvMenuCmd : NSInteger {
   _installUpdateNow = nil;
   install();  // Sparkle quits, installs, and relaunches
 #endif
+}
+
+// An add-on update installed beside a running copy (a loaded bundle cannot
+// be replaced in the running app) and the user clicked restart. A staged app
+// update goes the Sparkle way, which relaunches too and loads the newest
+// add-on. Otherwise a small waiter opens MediaViewer again once this process
+// has exited: macOS would only bring a still-running copy forward. The waiter
+// gives up after a minute rather than open the app at some later moment.
+- (void)restartForAddons {
+#if MV_WITH_SPARKLE
+  if (_installUpdateNow) {
+    [self restartToUpdate];
+    return;
+  }
+#endif
+  if (!_wantSelectedPath.empty()) {
+    [NSUserDefaults.standardUserDefaults
+        setObject:[NSString stringWithUTF8String:_wantSelectedPath.c_str()]
+           forKey:@"MVResumeAfterUpdate"];
+  }
+  NSBundle* bundle = NSBundle.mainBundle;
+  const BOOL app = [bundle.bundlePath.pathExtension isEqualToString:@"app"];
+  NSString* target = app ? bundle.bundlePath : bundle.executablePath;
+  if (target.length == 0) return;
+  NSTask* waiter = [[NSTask alloc] init];
+  waiter.executableURL = [NSURL fileURLWithPath:@"/bin/sh"];
+  NSString* script =
+      @"i=0; while /bin/kill -0 \"$1\" 2>/dev/null; do i=$((i+1)); [ $i -gt 600 ] && exit 0; "
+      @"/bin/sleep 0.1; done; if [ \"$3\" = app ]; then exec /usr/bin/open \"$2\"; else exec \"$2\"; fi";
+  waiter.arguments = @[
+    @"-c", script, @"mv-relaunch", [NSString stringWithFormat:@"%d", static_cast<int>(::getpid())], target,
+    app ? @"app" : @"exe"
+  ];
+  waiter.standardInput = NSFileHandle.fileHandleWithNullDevice;
+  waiter.standardOutput = NSFileHandle.fileHandleWithNullDevice;
+  waiter.standardError = NSFileHandle.fileHandleWithNullDevice;
+  NSError* error = nil;
+  if (![waiter launchAndReturnError:&error]) {
+    MV_LOG_WARN("relaunch: could not start the waiter");
+    NSBeep();
+    return;
+  }
+  [NSApp terminate:nil];
 }
 
 #if MV_WITH_SPARKLE

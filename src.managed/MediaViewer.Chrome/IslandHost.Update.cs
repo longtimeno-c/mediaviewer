@@ -35,6 +35,15 @@ public static partial class IslandHost
     // Set when Settings sends a channel change; the check runs once native has
     // stored it and pushed the flags back (ApplySettings), not before.
     private static bool _channelChangePending;
+    // The updater's last status, so an add-on restart arriving between two
+    // status changes can redraw the bar button.
+    private static UpdateStatus? _lastUpdateStatus;
+    // Add-on updates that installed beside a running copy and take over only
+    // at the next start ("Import 0.2.0", "Local search 0.3.1"). While any is
+    // here, the bar offers a restart and each Settings row a Restart now.
+    private static readonly List<string> _addonRestartFor = new();
+    private static Button? _importRestartButton;
+    private static Button? _localSearchRestartButton;
 
     private static void StartUpdater()
     {
@@ -72,7 +81,9 @@ public static partial class IslandHost
 
     private static StackPanel BuildUpdateButton()
     {
-        _updateButton = TextButton("Update ready — restart", () => Send(Command.UpdateRestart, 0));
+        // Tag 2: the button is offering an add-on restart (RequestAddonRestart).
+        _updateButton = TextButton("Update ready — restart",
+            () => Send(Command.UpdateRestart, _updateButton?.Tag is int arg ? arg : 0));
         _updateButton.Visibility = Visibility.Collapsed;
         ToolTipService.SetToolTip(_updateButton,
             "A new version is downloaded. Restart to use it, or it installs when you close MediaViewer.");
@@ -87,14 +98,54 @@ public static partial class IslandHost
         return group;
     }
 
+    /// <summary>
+    /// An add-on update installed beside a running copy: it takes over at the
+    /// next start, so the bar and Settings offer a restart (owner, 2026-10-05:
+    /// "prompt an app restart"). Never a forced restart (docs/design/13).
+    /// </summary>
+    private static void AddonRestartNeeded(string what)
+    {
+        if (!_addonRestartFor.Contains(what)) _addonRestartFor.Add(what);
+        RefreshRestartPrompts();
+    }
+
+    private static string AddonRestartText() =>
+        $"{string.Join(" and ", _addonRestartFor)} {(_addonRestartFor.Count == 1 ? "is" : "are")} installed. Restart MediaViewer to use {(_addonRestartFor.Count == 1 ? "it" : "them")}.";
+
+    /// <summary>A Settings row's "Restart now", hidden until an add-on update waits on a restart.</summary>
+    private static Button AddonRestartButton()
+    {
+        Button b = SettingsButton("Restart now", RequestAddonRestart);
+        b.Visibility = _addonRestartFor.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        return b;
+    }
+
+    /// <summary>
+    /// Native checks no clip is playing, then restarts onto the same view:
+    /// through Update.exe when an app update is staged too (it applies both),
+    /// else by starting MediaViewer again once this process has exited.
+    /// </summary>
+    private static void RequestAddonRestart() => Send(Command.UpdateRestart, 2);
+
+    private static void RefreshRestartPrompts()
+    {
+        Visibility v = _addonRestartFor.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        if (_importRestartButton is not null) _importRestartButton.Visibility = v;
+        if (_localSearchRestartButton is not null) _localSearchRestartButton.Visibility = v;
+        ShowUpdateStatus(_lastUpdateStatus ?? _updater?.Status
+                         ?? new UpdateStatus(UpdatePhase.Inert, null, UpdateUrgency.Normal, null));
+    }
+
     private static void ShowUpdateStatus(UpdateStatus s)
     {
+        _lastUpdateStatus = s;
         if (_updateButton is null) return;
         try
         {
             string? text = null;
             string tip = "";
             bool clickable = false;
+            int restartArg = 0;
             if (s.Phase == UpdatePhase.Ready)
             {
                 text = s.Urgency == UpdateUrgency.Normal ? "Update ready — restart" : "Important update — restart";
@@ -106,7 +157,18 @@ public static partial class IslandHost
                         $"Version {s.Version} is downloaded and fixes a problem in this version. Restart to use it.",
                     _ => $"Version {s.Version} is downloaded. Restart to use it, or it installs when you close MediaViewer.",
                 };
+                // The restart loads the newest add-ons too.
+                if (_addonRestartFor.Count > 0) tip += " " + AddonRestartText();
                 clickable = true;
+            }
+            else if (_addonRestartFor.Count > 0)
+            {
+                // An add-on update waits on a restart: an action, so it wins
+                // over a quiet check or download of the app.
+                text = "Add-on updated — restart";
+                tip = AddonRestartText();
+                clickable = true;
+                restartArg = 2;
             }
             // Checking/Downloading are quiet, non-clickable states: same command-bar
             // spot, no popup, nothing to click yet (docs/design/13 "never interrupt").
@@ -147,6 +209,7 @@ public static partial class IslandHost
                 label.FontSize = clickable ? UiFontSize : UpdateStatusFontSize;
             ToolTipService.SetToolTip(_updateButton, tip);
             _updateButton.IsEnabled = clickable;
+            _updateButton.Tag = restartArg;
             _updateButton.Visibility = Visibility.Visible;
         }
         catch (Exception ex)

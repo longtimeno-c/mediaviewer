@@ -86,6 +86,33 @@ std::wstring join_arguments(const std::vector<std::wstring>& args) {
   return blob;
 }
 
+std::wstring command_line(const std::vector<std::wstring>& args) {
+  std::wstring line;
+  for (const auto& a : args) {
+    if (!line.empty()) line.push_back(L' ');
+    if (!a.empty() && a.find_first_of(L" \t\n\v\"") == std::wstring::npos) {
+      line += a;
+      continue;
+    }
+    // CommandLineToArgvW: 2n backslashes before a quote are n backslashes,
+    // 2n+1 are n and a literal quote; backslashes elsewhere are literal.
+    line.push_back(L'"');
+    std::size_t slashes = 0;
+    for (const wchar_t c : a) {
+      if (c == L'\\') {
+        ++slashes;
+        continue;
+      }
+      line.append(c == L'"' ? slashes * 2 + 1 : slashes, L'\\');
+      slashes = 0;
+      line.push_back(c);
+    }
+    line.append(slashes * 2, L'\\');
+    line.push_back(L'"');
+  }
+  return line;
+}
+
 // ---- Win32 -----------------------------------------------------------------
 
 namespace {
@@ -355,6 +382,44 @@ bool remove_velopack_uninstall_entry(const install_layout& layout) noexcept {
   } catch (...) {
     return false;
   }
+}
+
+void relaunch_after_exit(const std::vector<std::wstring>& args) noexcept {
+  try {
+    std::wstring exe(MAX_PATH, L'\0');
+    for (;;) {
+      const DWORD n = ::GetModuleFileNameW(nullptr, exe.data(), static_cast<DWORD>(exe.size()));
+      if (n == 0) return;
+      if (n < exe.size()) {
+        exe.resize(n);
+        break;
+      }
+      exe.resize(exe.size() * 2);
+    }
+    std::vector<std::wstring> all{exe, L"--relaunch-after", std::to_wstring(::GetCurrentProcessId())};
+    all.insert(all.end(), args.begin(), args.end());
+    std::wstring line = command_line(all);
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    if (!::CreateProcessW(exe.c_str(), line.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
+      MV_LOG_WARN("relaunch: could not start MediaViewer again (%lu)", ::GetLastError());
+      return;
+    }
+    ::CloseHandle(pi.hThread);
+    ::CloseHandle(pi.hProcess);
+  } catch (...) {
+    MV_LOG_WARN("relaunch: out of memory");
+  }
+}
+
+bool wait_for_relaunch_parent(unsigned long pid, unsigned long timeout_ms) noexcept {
+  if (pid == 0 || pid == ::GetCurrentProcessId()) return true;
+  HANDLE h = ::OpenProcess(SYNCHRONIZE, FALSE, pid);
+  if (!h) return true;  // already gone (or a pid we may not wait on)
+  const DWORD r = ::WaitForSingleObject(h, timeout_ms);
+  ::CloseHandle(h);
+  return r == WAIT_OBJECT_0;
 }
 
 }  // namespace mv::shell::update

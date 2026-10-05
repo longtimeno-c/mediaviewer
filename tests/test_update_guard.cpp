@@ -105,6 +105,20 @@ TEST_CASE("update guard: restart arguments carry the view", "[update]") {
   CHECK(blob == std::wstring(L"a\0bc\0", 5));
 }
 
+// An add-on update's restart starts the exe itself: each argument must come
+// back from CommandLineToArgvW exactly as it went in.
+TEST_CASE("update guard: relaunch command line quotes like CommandLineToArgvW", "[update]") {
+  CHECK(command_line({L"a", L"--restore-gallery"}) == L"a --restore-gallery");
+  CHECK(command_line({LR"(C:\Program Files\MV\mv.exe)"}) == LR"("C:\Program Files\MV\mv.exe")");
+  CHECK(command_line({L""}) == L"\"\"");
+  // A folder with a space keeps its trailing backslash.
+  CHECK(command_line({LR"(D:\My Photos\)"}) == LR"("D:\My Photos\\")");
+  // Backslashes before a quote double, and the quote is escaped.
+  CHECK(command_line({LR"(a\"b c)"}) == LR"("a\\\"b c")");
+  // Backslashes elsewhere stay as they are.
+  CHECK(command_line({LR"(D:\DCIM\IMG 1.JPG)"}) == LR"("D:\DCIM\IMG 1.JPG")");
+}
+
 // docs/design/10 PR 8 verify: "Uninstall from Apps & features removes the shortcuts
 // and install directory." Velopack writes a second entry that would remove the
 // directory WITHOUT the wizard's shortcuts (and, from PR 15, without the
