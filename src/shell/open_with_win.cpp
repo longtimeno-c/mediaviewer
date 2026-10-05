@@ -56,7 +56,7 @@ std::wstring default_exe(const std::wstring& extension) {
 template <typename Fn>
 void each_handler(const std::wstring& extension, Fn&& fn) {
   IEnumAssocHandlers* handlers = nullptr;
-  if (FAILED(::SHAssocEnumHandlers(extension.c_str(), ASSOCFILTER_RECOMMENDED, &handlers)) || !handlers) {
+  if (FAILED(::SHAssocEnumHandlers(extension.c_str(), ASSOC_FILTER_RECOMMENDED, &handlers)) || !handlers) {
     return;
   }
   const std::wstring me = own_exe();
