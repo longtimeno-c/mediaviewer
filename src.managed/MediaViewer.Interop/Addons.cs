@@ -384,6 +384,23 @@ public static unsafe partial class AddonNative
         return Encoding.UTF8.GetString(buf, 0, (int)Math.Max(0, Math.Min(needed, (uint)buf.Length) - 1));
     }
 
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial MvStatus mv_addon_commands_json(byte* output, uint cap, uint* needed);
+
+    /// <summary>docs/design/25: the loaded add-ons' contributed commands; "[]" on an older core.</summary>
+    public static string CommandsJson()
+    {
+        try
+        {
+            return Json((b, c, n) => mv_addon_commands_json((byte*)b, c, (uint*)n), "mv_addon_commands_json");
+        }
+        catch (EntryPointNotFoundException)
+        {
+            return "[]";
+        }
+    }
+
     /// <summary>Installed open add-ons, re-verified. "[]" when none.</summary>
     public static string OpenList() =>
         Json((b, c, n) => mv_open_addon_list_json((byte*)b, c, (uint*)n), "mv_open_addon_list_json");
@@ -649,6 +666,19 @@ public static class SearchCommand
     public const int Similar = 1;     // Ctrl+Shift+F
     public const int NextMatch = 2;   // N on a clip
     public const int PrevMatch = 3;   // Shift+N
+}
+
+/// <summary>
+/// docs/design/25 (2026-10-03): the commands an add-on's manifest contributes come
+/// to its chrome by their own ids, with the payload the row asked for as
+/// JSON (an array of paths for "marks" and "marked_or_current", an object for
+/// "screen", null for "none"). A chrome without this interface gets the frozen
+/// <see cref="IAddonChrome"/> calls for the two ids Import always had.
+/// </summary>
+public interface IAddonCommands
+{
+    /// <summary>False: the add-on had nothing to do, and the key falls through.</summary>
+    bool RunCommand(string id, string payloadJson);
 }
 
 /// <summary>The AI chrome's side of Milestone H, next to <see cref="IAddonChrome"/>.</summary>

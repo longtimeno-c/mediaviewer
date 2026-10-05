@@ -57,6 +57,20 @@ ADDONS = {
     "import": {
         "name": "Import",
         "host_api": {"min": 1, "max": 1},  # MV_ADDON_HOST_API range this build supports
+        # docs/design/25 (2026-10-03): what the add-on contributes, so the app names
+        # none of it. The chromes read these; an older manifest without them
+        # gets the hosts' built-in Import rows.
+        "description": ("Copy a card or folder into your library: skips what is already there by "
+                        "content, verifies every copy, sorts by date. Never deletes from the card."),
+        "contributes": {
+            "commands": [
+                {"id": "open", "name": "Import…", "windows": "Ctrl+Shift+I", "mac": "Cmd+Shift+I",
+                 "modes": "viewing", "payload": "marks"},
+                {"id": "import_now", "name": "Import marked now", "windows": "Ctrl+Shift+F7",
+                 "mac": "Cmd+Shift+F7", "modes": "viewing", "payload": "marked_or_current"},
+            ],
+            "hint": {"on": "card", "text": "Card inserted — install Import?"},
+        },
         "files": {
             "win-x64": {
                 "native": "mv_import.dll",
@@ -261,6 +275,10 @@ def build_manifest(platform: str, version: str, files: list, archive: Path,
     }
     if addon.get("part_of"):
         manifest["part_of"] = addon["part_of"]
+    if addon.get("description"):
+        manifest["description"] = addon["description"]
+    if addon.get("contributes"):
+        manifest["contributes"] = addon["contributes"]
     if spec.get("arch"):
         manifest["arch"] = spec["arch"]
     return (json.dumps(manifest, indent=1, sort_keys=False) + "\n").encode()

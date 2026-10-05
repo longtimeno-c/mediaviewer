@@ -37,7 +37,7 @@ final class LocalSearchStore: ObservableObject {
 
     var channel: AddonChannel { AddonChannel(name: "mediaviewer-addon-\(id)-macos") }
     var offeredBytes: (archive: Int, installed: Int)? {
-      if case .available(let a, let i, _) = probe { return (a, i) }
+      if case .available(let a, let i, _, _, _) = probe { return (a, i) }
       return nil
     }
     /// A newer published version of an installed piece, or nil.

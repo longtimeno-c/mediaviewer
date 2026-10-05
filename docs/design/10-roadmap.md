@@ -555,7 +555,10 @@ at start. Where each part stands:
 - **PRs 56–60** — the rest of the open add-ons ([25](25-open-addons.md)): declarative
   contributions (settings pages, keymap packs), a sandboxed script runtime (Lua), screens as
   data, slots and search providers, files. The owner's calls for them were made 2026-10-03
-  ([25 §17](25-open-addons.md#17-decisions-owner-2026-10-03)).
+  ([25 §17](25-open-addons.md#17-decisions-owner-2026-10-03)). PR 56's first half is built
+  (2026-10-04): Import's commands, keys, Settings line and card hint come from its manifest
+  (`contributes`, eight `addon_cmd_*` slots, ABI 0.17), with an older Import kept working
+  through the built-in rows.
 - Windows grouped as tabs / `Ctrl+Tab` (split out of PR 15; Mac windows have tabbing disabled).
 - The Windows property handler (split out of PR 15; it needs HKLM).
 - Backlog: further photo adjusts and local edits, full RAW develop, smart cut, HDR output,

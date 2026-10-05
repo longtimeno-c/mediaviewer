@@ -1,7 +1,7 @@
 # 14 — The C ABI
 
 The flat C ABI between the hosts' chrome and the C++ core, as declared in
-[`src/abi/include/mediaviewer/`](../../src/abi/include/mediaviewer/) (current version **0.16**).
+[`src/abi/include/mediaviewer/`](../../src/abi/include/mediaviewer/) (current version **0.17**).
 
 The Windows host is C# WinUI over `mediaviewer_core.dll` and calls this ABI through P/Invoke
 ([`src.managed/MediaViewer.Interop`](../../src.managed/MediaViewer.Interop/)). The Mac host links
@@ -476,6 +476,14 @@ the JSON says: a refused package is an answer, not an error. `install` takes the
 for a size. The Mac host reaches the same code through `mv_open_addons_*` in the chrome bridge.
 Both are thin wrappers over `src/addon/open_json.h`, which writes the one JSON both chromes read.
 
+## PR 56 — contributed commands (ABI 0.17)
+
+Minor bump, additive: `mv_addon_commands_json` returns the rows the loaded first-party add-ons'
+manifests contribute (`[{"addon","id","name","windows","mac","modes","payload"}]`), which the
+Windows shell turns into live command rows ([25 §7](25-open-addons.md#7-the-contribution-model)).
+`mv_addon_installed_json` and `mv_addon_check_manifest` gain `description`, `hint_on` and
+`hint_text`. The Mac host reads the same manifests directly.
+
 ## Version history
 
 | Minor | Change |
@@ -491,6 +499,7 @@ Both are thin wrappers over `src/addon/open_json.h`, which writes the one JSON b
 | 0.14 | Result listings (`mv_folder_open_list`, `_list_title`, `_item_moment`) |
 | 0.15 | `mv_folder_item.flags` bit 2 (video) |
 | 0.16 | Open add-ons: `mv_open_addon_inspect` / `_install` / `_list_json` / `_remove` / `_theme_json` |
+| 0.17 | Contributed commands: `mv_addon_commands_json`; `description`, `hint_on`, `hint_text` in the installed / check JSON |
 
 ## Not built
 

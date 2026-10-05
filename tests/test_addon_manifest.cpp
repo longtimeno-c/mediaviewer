@@ -367,3 +367,50 @@ TEST_CASE("the real Import module installs, loads, answers, and shuts down", "[a
   CHECK(fs::exists(data / "import.db"));
   CHECK_FALSE(fs::exists(data / "cache"));
 }
+
+TEST_CASE("a manifest may say what it contributes (docs/design/25)", "[addon][manifest]") {
+  keypair k;
+  const std::vector<file_spec> files{{"mv_import.bin", {1, 2, 3}}};
+  std::string m = manifest_json(files, "mv_import.bin");
+  const auto with = [&](const std::string& extra) {
+    std::string out = m;
+    out.insert(out.size() - 1, "," + extra);
+    return out;
+  };
+  const std::string ok = with(
+      R"("description":"Copy a card.","contributes":{"commands":[)"
+      R"({"id":"open","name":"Import…","windows":"Ctrl+Shift+I","mac":"Cmd+Shift+I","modes":"viewing","payload":"marks"},)"
+      R"({"id":"import_now","name":"Import marked now","windows":"Ctrl+Shift+F7"}],)"
+      R"("hint":{"on":"card","text":"Card inserted — install Import?"}})");
+  const auto d = mv::addon::check_manifest(bytes_of(ok), k.sign(ok), k.pub, MV_ADDON_HOST_API);
+  REQUIRE(d.trusted());
+  REQUIRE(d.m.description == "Copy a card.");
+  REQUIRE(d.m.commands.size() == 2);
+  REQUIRE(d.m.commands[0].id == "open");
+  REQUIRE(d.m.commands[0].mac == "Cmd+Shift+I");
+  REQUIRE(d.m.commands[0].payload == "marks");
+  REQUIRE(d.m.commands[1].mac.empty());
+  REQUIRE(d.m.commands[1].modes == "viewing");  // the default
+  REQUIRE(d.m.commands[1].payload == "none");
+  REQUIRE(d.m.hint_on == "card");
+  // An older manifest without them is the same add-on as before.
+  const auto plain = mv::addon::check_manifest(bytes_of(m), k.sign(m), k.pub, MV_ADDON_HOST_API);
+  REQUIRE(plain.trusted());
+  REQUIRE(plain.m.commands.empty());
+  REQUIRE(plain.m.hint_on.empty());
+  for (const char* bad : {
+           R"("contributes":{"commands":[{"id":"Open","name":"x"}]})",      // not [a-z_]
+           R"("contributes":{"commands":[{"id":"a","name":"x"},{"id":"a","name":"y"}]})",
+           R"("contributes":{"commands":[{"id":"a","name":""}]})",
+           R"("contributes":{"commands":[{"id":"a","name":"x","modes":"everywhere"}]})",
+           R"("contributes":{"commands":[{"id":"a","name":"x","payload":"files"}]})",
+           R"("contributes":{"hint":{"on":"launch","text":"x"}})",
+           R"("contributes":{"screens":[]})",
+           R"("description":5)",
+       }) {
+    const std::string text = with(bad);
+    INFO(bad);
+    REQUIRE(mv::addon::check_manifest(bytes_of(text), k.sign(text), k.pub, MV_ADDON_HOST_API).why ==
+            rejection::malformed);
+  }
+}

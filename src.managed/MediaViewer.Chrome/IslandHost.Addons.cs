@@ -33,13 +33,15 @@ public static partial class IslandHost
 {
     private const string UpdateReleaseBase = "https://github.com/longtimeno-c/mediaviewer/releases/latest/download/";
 
-    private sealed record AddonState(bool Installed, string Version, string State, long Size, bool Loaded);
+    private sealed record AddonState(bool Installed, string Version, string State, long Size, bool Loaded,
+        string Description = "", string HintText = "");
 
     // Whether the release channel has a piece this build can install. Only
     // a manifest that verifies counts: the button never offers a download that
     // does not exist or that the core would refuse.
     private enum OfferKind { Unknown, Checking, Available, NotPublished, NeedsNewerApp, Unreachable }
-    private sealed record AddonOffer(OfferKind Kind, long ArchiveSize, long InstalledSize = 0, string Version = "");
+    private sealed record AddonOffer(OfferKind Kind, long ArchiveSize, long InstalledSize = 0, string Version = "",
+        string Description = "", string HintText = "");
 
     // Dotted numeric versions ("0.1.10" > "0.1.9"), as the store compares them.
     private static bool IsNewer(string published, string installed)
@@ -258,7 +260,10 @@ public static partial class IslandHost
                 if (Array.FindIndex(AddonSlots, s => s.Id == id) < 0) continue;
                 states[id] = new AddonState(true, a.GetProperty("version").GetString() ?? "",
                     a.GetProperty("state").GetString() ?? "invalid", a.GetProperty("size").GetInt64(),
-                    a.GetProperty("loaded").GetBoolean());
+                    a.GetProperty("loaded").GetBoolean(),
+                    // docs/design/25: Settings' line and the card hint, from the manifest.
+                    a.TryGetProperty("description", out JsonElement d) ? d.GetString() ?? "" : "",
+                    a.TryGetProperty("hint_text", out JsonElement h) ? h.GetString() ?? "" : "");
             }
         }
         catch (Exception ex) when (ex is MediaViewerException or JsonException or KeyNotFoundException)
@@ -552,6 +557,49 @@ public static partial class IslandHost
         }
     }
 
+    /// <summary>
+    /// Native (docs/design/25): a command an add-on's manifest contributed. In: three
+    /// NUL-terminated UTF-8 strings, the add-on's id, the command's id and the
+    /// payload JSON. Returns 0 when the add-on ran it, 1 when it had nothing
+    /// to do or is not loaded.
+    /// </summary>
+    public static int RunAddonCommand(IntPtr arg, int sizeBytes)
+    {
+        try
+        {
+            if (arg == IntPtr.Zero || sizeBytes < 3) return unchecked((int)0x80070057);
+            byte[] bytes = new byte[sizeBytes];
+            Marshal.Copy(arg, bytes, 0, sizeBytes);
+            var parts = new List<string>(3);
+            int start = 0;
+            for (int i = 0; i < bytes.Length && parts.Count < 3; ++i)
+            {
+                if (bytes[i] != 0) continue;
+                parts.Add(System.Text.Encoding.UTF8.GetString(bytes, start, i - start));
+                start = i + 1;
+            }
+            if (parts.Count != 3) return unchecked((int)0x80070057);
+            AddonSlot? slot = Array.Find(AddonSlots, s => s.Id == parts[0]);
+            if (slot?.Chrome is null) return 1;
+            if (slot.Chrome is IAddonCommands commands) return commands.RunCommand(parts[1], parts[2]) ? 0 : 1;
+            // An Import chrome from before the generic entry: its two frozen calls.
+            if (slot == ImportSlot)
+            {
+                switch (parts[1])
+                {
+                    case "open": return RunImportCommand(0, parts[2]);
+                    case "import_now": return parts[2] == "[]" ? 1 : RunImportCommand(1, parts[2]);
+                }
+            }
+            return 1;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+            return unchecked((int)0x80004005);
+        }
+    }
+
     /// <summary>From the session drain (IslandHost.Filmstrip.cs). Routed by
     /// kind: 1–7 are Import's, 20 and up the AI pack's.</summary>
     private static void OnAddonCompletion(AddonCompletion e)
@@ -647,7 +695,9 @@ public static partial class IslandHost
                 long installed = root.TryGetProperty("installed_size", out JsonElement size) ? size.GetInt64() : 0;
                 string version = root.TryGetProperty("version", out JsonElement v) ? v.GetString() ?? "" : "";
                 return new AddonOffer(OfferKind.Available, root.GetProperty("archive").GetProperty("size").GetInt64(),
-                    installed, version);
+                    installed, version,
+                    root.TryGetProperty("description", out JsonElement d) ? d.GetString() ?? "" : "",
+                    root.TryGetProperty("hint_text", out JsonElement h) ? h.GetString() ?? "" : "");
             }
             // A signed piece for a newer host API; anything else that does not
             // verify is, to this build, nothing to offer.
@@ -729,7 +779,13 @@ public static partial class IslandHost
         if (_importHint is null || _importHintDismiss is null) return;
         if (show && _importHint.Content is TextBlock text)
         {
-            text.Text = $"Card inserted — install Import ({DownloadSize(ImportSlot.Offer.ArchiveSize)})?";
+            // docs/design/25: the manifest's own words, with the size; the built-in
+            // line for a channel manifest from before it said any.
+            string hint = ImportSlot.Offer.HintText.Length > 0 ? ImportSlot.Offer.HintText
+                : "Card inserted — install Import?";
+            text.Text = hint.EndsWith('?')
+                ? $"{hint[..^1]} ({DownloadSize(ImportSlot.Offer.ArchiveSize)})?"
+                : $"{hint} ({DownloadSize(ImportSlot.Offer.ArchiveSize)})";
         }
         Visibility v = show ? Visibility.Visible : Visibility.Collapsed;
         _importHint.Visibility = v;
@@ -771,7 +827,12 @@ public static partial class IslandHost
         _addonRow.Children.Clear();
         var title = Label("Import");
         _addonRow.Children.Add(title);
-        var about = Label("Copy a card or folder into your library: skips what is already there by content, verifies every copy, sorts by date. Never deletes from the card.");
+        // docs/design/25: the line is the manifest's (installed, else the channel's);
+        // the built-in one serves a manifest from before it carried any.
+        string description = ImportSlot.State.Description.Length > 0 ? ImportSlot.State.Description
+            : ImportSlot.Offer.Description.Length > 0 ? ImportSlot.Offer.Description
+            : "Copy a card or folder into your library: skips what is already there by content, verifies every copy, sorts by date. Never deletes from the card.";
+        var about = Label(description);
         about.TextWrapping = TextWrapping.Wrap;
         _addonRow.Children.Add(about);
         if (!_addonStatesRead)

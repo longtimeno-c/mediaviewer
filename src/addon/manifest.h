@@ -36,6 +36,18 @@ struct manifest_file {
   std::string licence;  // SPDX
 };
 
+// What a first-party add-on contributes to the app, from its manifest
+// (docs/design/25 "The contribution model", 2026-10-03): the base app no longer
+// names an add-on's commands, keys, Settings text or hints; it reads them.
+struct manifest_command {
+  std::string id;        // the add-on's own name for it ("open"); [a-z_]{1,32}, unique
+  std::string name;      // the palette label ("Import…")
+  std::string windows;   // the default key as docs/design/16 spells it ("Ctrl+Shift+I"); may be empty
+  std::string mac;       // "Cmd+Shift+I"; may be empty
+  std::string modes;     // "viewing" (browse, video, island, gallery) | "video" | "browse" | "all"
+  std::string payload;   // what rides along: "none" | "marks" | "marked_or_current" | "screen"
+};
+
 struct manifest {
   int schema = 0;
   std::string id;       // "import"
@@ -58,6 +70,14 @@ struct manifest {
   std::string arch;
   manifest_file archive;  // the download: name, sha256, size (licence unused)
   std::vector<manifest_file> files;
+  // Optional (2026-10-03): one line for Settings; the commands and keys it
+  // adds; the one-time hint it asks for ("card": offer it when a removable
+  // volume appears and it is not installed). An older manifest has none,
+  // and the hosts keep their built-in rows for it.
+  std::string description;
+  std::vector<manifest_command> commands;
+  std::string hint_on;    // "card", or empty
+  std::string hint_text;
 };
 
 enum class rejection : std::uint8_t {
