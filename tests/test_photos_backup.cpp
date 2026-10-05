@@ -288,6 +288,7 @@ class vanishing_destination final : public bk::source {
   fake_library inner;
   fs::path destination;
   std::atomic<int> fetches{0};
+  std::atomic<bool> removed{false};
 
   mv::result<std::vector<bk::asset_file>> enumerate(const std::atomic<bool>* c) override { return inner.enumerate(c); }
   mv::result<std::string> local_file(const bk::asset_file& f) override { return inner.local_file(f); }
@@ -295,6 +296,7 @@ class vanishing_destination final : public bk::source {
     if (++fetches == 1) {
       std::error_code ec;
       fs::remove_all(destination, ec);
+      removed = !fs::exists(destination);
     }
     return inner.fetch(f, tmp, c);
   }
@@ -315,6 +317,10 @@ TEST_CASE("a destination that disappears stops the run instead of failing every 
   bk::engine e;
   REQUIRE(e.start(std::move(src), {utf8(dest / "nas"), utf8(scratch / "tmp")}));
   const bk::progress p = run_to_end(e);
+  // Windows will not delete a folder holding an open file, and the run keeps
+  // its manifest open in the destination, so the folder cannot be pulled away
+  // here; a share that drops off the network is a different event.
+  if (!raw->removed) SKIP("the destination could not be removed while the manifest is open (Windows)");
   CHECK(p.state == bk::run_state::failed);
   CHECK(p.failed == 1);
   CHECK(p.done == 0);
