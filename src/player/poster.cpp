@@ -4,7 +4,7 @@
 
 #include <algorithm>
 
-#include "player/audio_card.h"
+#include "codec/card.h"
 #include "player/video_internal.h"
 
 namespace mv::player {
@@ -21,9 +21,9 @@ constexpr time_ns kPosterOffsetCapNs = 3'000'000'000;
 
 // An audio file's tile when it has no cover art: the same card the player
 // shows (docs/plans/audio-and-documents.md §2.2), at the tile's size.
-poster_image card_poster(audio_card_kind kind, std::uint32_t max_long_edge) {
+poster_image card_poster(codec::card_kind kind, std::uint32_t max_long_edge) {
   const std::uint32_t w = std::max<std::uint32_t>(2, max_long_edge);
-  const audio_card card = make_audio_card(kind, w, std::max<std::uint32_t>(2, w * 9 / 16));
+  const codec::card card = codec::make_card(kind, w, std::max<std::uint32_t>(2, w * 9 / 16));
   poster_image out;
   out.width = card.width;
   out.height = card.height;
@@ -74,7 +74,8 @@ result<poster_image> poster_frame(const char* utf8_path, std::uint32_t max_long_
   if (stream_index < 0) {
     const int audio = av_find_best_stream(format.get(), AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
     if (audio < 0) return err(status::unsupported_format);
-    return card_poster(is_protected_audio(format->streams[audio]) ? audio_card_kind::protected_ : audio_card_kind::music,
+    return card_poster(is_protected_audio(format->streams[audio]) ? codec::card_kind::locked
+                                                               : codec::card_kind::music,
                        max_long_edge);
   }
   AVStream* stream = format->streams[stream_index];

@@ -74,6 +74,19 @@ struct jpeg_size {
                                                    const job_context* ctx = nullptr);
 [[nodiscard]] result<raster> decode_avif(std::span<const std::uint8_t> bytes,
                                          const job_context* ctx = nullptr);
+// PDF (docs/plans/audio-and-documents.md §2.4), rendered by the OS: CoreGraphics
+// on macOS (pdf_mac.cpp), Windows.Data.Pdf on Windows (pdf_win.cpp) — no bundled
+// PDF library. One page, white behind it, `kPdfLongEdge` px on its long edge, in
+// sRGB; the raster carries page and page_count. A password-protected file
+// (one that does not open with the empty password) is the locked card, one
+// page. `invalid_arg` for a page past the end. `long_edge` is the page's size;
+// the first pixel and the thumbnails ask for kPdfPreviewEdge.
+inline constexpr std::uint32_t kPdfLongEdge = 3200;
+inline constexpr std::uint32_t kPdfPreviewEdge = 1024;
+[[nodiscard]] result<raster> decode_pdf(std::span<const std::uint8_t> bytes, std::uint32_t page = 0,
+                                        const job_context* ctx = nullptr,
+                                        std::uint32_t long_edge = kPdfLongEdge);
+
 // How many LibRaw threads the image on screen may use. Leaves processors for
 // the present loop; prefetch passes 1 instead. Output pixels do not depend on it.
 [[nodiscard]] unsigned raw_foreground_threads() noexcept;
