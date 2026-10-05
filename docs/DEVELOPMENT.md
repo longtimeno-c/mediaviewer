@@ -670,7 +670,7 @@ who are the same person merged; never two named differently, never a split pair)
 The People embedder is AdaFace IR-50 (docs/design/17 "People model"). It has no upstream ONNX: staging
 `ai-faces` runs `tools/package/face-export.py` on the pinned safetensors, so the pack builder needs
 `pip install -r tools/package/requirements-export.txt` (torch, onnx); `ai-models.py check` does
-not. **Re-analyse faces** (Settings → People on the Mac, the People window on Windows;
+not. **Re-analyse faces** (Settings → People;
 `people_reanalyse`) runs every photo through the People pass again and keeps the user's people;
 a pack with a new face model does the same by itself. Tests: `mv_ai_tests "[rerun]"` (no pack);
 `"[people]"` with `MV_AI_PACK_DIR` (the ORT folder), `MV_AI_FACES_DIR` (a staged ai-faces) and
@@ -680,7 +680,7 @@ n x dim float32) and optionally `MV_FACE_TUNING="same keep keep_weak margin ambi
 which runs real vectors through faces.db's online clustering and the re-run's settle and prints
 BCubed precision and recall.
 
-The People grid (Settings → People on the Mac, the People window on Windows) follows the folder
+The People grid (Settings → People, on both platforms) follows the folder
 the viewer has open: **People in · This folder | + Subfolders**, + Subfolders by default;
 everyone shows only when no folder is open (docs/design/17 "People in the open folder", amended
 2026-10-03; `people_in_json` in `mediaviewer_ai.h`).

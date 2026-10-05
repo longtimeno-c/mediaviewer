@@ -790,6 +790,13 @@ name, pin and rejections.
 user saying what they are looking at, and everyone-from-everywhere inside one read as a leak. A
 search is a question rather than a place, so the search panel keeps "Everywhere".
 
+**People lives in Settings on Windows too (2026-10-05, owner).** The Windows People window
+(a grid on the left, a person's faces on the right; a click selected, a double-click showed
+photos) is gone: People is the Mac's inline grid in Settings → Local search, a click shows that
+person's photos, names are edited on the card, and a person's faces open in a small sheet. The
+window existed because the Settings island could not hold a text field; FakeInput can, so the two
+platforms now behave the same.
+
 **The Photos library as a folder, its backup, upright clips (2026-10-03, owner).** Once the
 library is added in Settings it opens as a listing of *virtual items* (`photos:<id>` keys, tiled
 from PhotoKit's cache, resolved to a file only as shown), and search results take the same path.
