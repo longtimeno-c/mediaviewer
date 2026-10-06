@@ -533,7 +533,9 @@ row: id, person, name, pin, "not this person"**; a new face waits unassigned; an
 new pass does not find goes when its asset is done. Until then old faces still show their person
 but are compared with nothing. When every asset is done and indexing is idle, the control thread
 **settles** once: a full refinement with no focus (up to three calls until nothing moves), then
-the merge. Pinned faces never move. A new face model in a pack update starts the same re-run by
+the merge. The same settle, without reading any asset again, is owed when faces.db's people were
+filed under older clustering rules (meta `rules`, `faces_db::settle_due`; rules 2 = the quality
+floor, 2026-10-06): ~13 s once on the control thread for the owner's 36 k faces. Pinned faces never move. A new face model in a pack update starts the same re-run by
 itself (faces.db notes the spec it last opened with). Progress: `MV_AI_STATUS_PEOPLE_RERUN` /
 `_SETTLING`, `people_scan_total` / `_done`, `people_model_utf8`. Settle cost: ~0.3 s for 6 k
 faces on the control thread.
@@ -543,15 +545,37 @@ faces on the control thread.
 `faces.cpp`. Scores are mean pairwise cosine (sum · v / n) everywhere — assign, "this person",
 consolidate — not cosine to a normalised centroid (which inflates a stranger by ~√ρ). A new face
 joins the best person at `same_person`; one with a second person within `ambiguous` of the best
-waits **unassigned** (`person_id` NULL). The idle consolidate merges at mean pairwise `merge_at`,
+waits **unassigned** (`person_id` NULL). **Quality gates it:** an *unusable* face (quality < 0.10)
+joins nobody, and a *weak* one (< 0.35) may join a person but never starts one. The idle consolidate merges at mean pairwise `merge_at`,
 an average that stays an average after a merge (no chaining). The user's faces are **pinned**:
 faces they split out; the cover of a person when they name it and of both sides when they merge;
 covers prefer pinned faces.
 
+**Cost at a large library (2026-10-06, owner: "a lot of other UI seems to lag").** Every People
+read holds the engine's model lock, which a search, a rename and the status counts wait on, so
+none may grow with the library. `faces_cover (person_id, pinned, quality, score·w·h, asset_id)`
+answers the grid's covers and photo counts without the face rows (each carries a 2 KB vector);
+the idle merge looks only at pairs with a person changed since its last pass; a face landing sets
+a flag the control loop turns into one `AI_PEOPLE` a second, not one per frame; the Mac's People
+re-reads only while Settings shows them; `note_folder_opened` (a host's UI thread) hands the
+folder to the next claim instead of waiting on the work queue's lock. On the owner's library
+(36 k faces, 2 k people; `"[.people-api]"` on a copy): people list 69 → 3 ms, scoped 83 → 4 ms,
+the per-second person count 34 → 1.7 ms, the minutely merge 550–770 → 8–11 ms.
+
 **Quality** = min(size, sharpness, frontal) × (0.6 + 0.4 × detector score): size ramps 40 → 112
 px, sharpness is the Laplacian variance of the aligned crop's luma on a log ramp 20 → 300,
 frontal is the nose's offset from the eye midline against half the eye distance. Weak = quality
-< 0.35. Rows without a recorded quality get a proxy from score and box size.
+< 0.35; unusable = quality < 0.10 (`refine_params::unusable_quality`). Rows without a recorded
+quality get a proxy from score and box size.
+
+**Why the floor (2026-10-06).** On the owner's library (36 k faces, 31 k of them clip frames)
+54 % of faces scored below 0.1: blurred frames, 25–60 px strangers, hoods and ears. Their vectors
+resemble each other more than anyone, so online clustering made "people" of them — the largest
+was 297 frames of one clip, every one below 0.1 — and 424 of the 710 people in two or more photos
+were more than 80 % weak faces. The same library settled under the floor (`mv_ai_tests
+"[.people-settle]"` on a copy): 284 people in two or more photos, 6 of them mostly weak (named
+ones), mean face quality per person 0.21 → 0.58; named people kept 7,645 of 7,767 faces. LFW
+(`[.people-bench]`, every face clear) is unchanged: F 0.9988, 426 people.
 
 ### People refinement
 
@@ -566,7 +590,7 @@ mean, the top 3 re-scored by exemplars. For every face that is not pinned:
 | Verdict | Rule |
 |---|---|
 | **move** to b | support(b) ≥ join (`same_person`) and beats both its own person and the runner-up by `margin`; never a weak face; never into a person it was rejected from |
-| **evict** to unassigned | support(own) < `keep` (`keep_weak` for a weak face) |
+| **evict** to unassigned | support(own) < `keep` (`keep_weak` for a weak face); always when unusable, or when its person is unnamed, unpinned and has no face that is not weak (`weak_only`: nothing vouches for it, and it is no candidate) |
 | **admit** (unassigned) | the same test as move |
 | **regroup** | unassigned good faces within join of a leader and at join mean to the group so far (average linkage), ≥ 2, become a new unnamed person |
 
@@ -613,10 +637,12 @@ matches." Undo is Split (a split pair never merges again on its own). Tests: `"[
 ### People in the open folder
 
 `people_in_json(scope_dir, scope, …)`: `people_json` narrowed to the people with a face in a
-photo or clip under `scope_dir` by the same scopes `search_text` takes. `faces` counts their faces
-there and the cover is the clearest of those, so a card's count and face are the folder's. *Who
+photo or clip under `scope_dir` by the same scopes `search_text` takes. `faces` counts the
+**photos and clips** they are in there (not faces: a clip sampled every few seconds gave one
+stranger hundreds, 2026-10-06) and the cover is the clearest of those (pinned, then quality), so a
+card's count and face are the folder's. *Who
 qualifies at all* (minimum faces, or a name) is still judged over the whole index. The minimum
-is two faces, or **one when fewer than 100 photos and clips are in view** (the scoped folder's,
+is two photos or clips, or **one when fewer than 100 photos and clips are in view** (the scoped folder's,
 or the whole index for Everywhere and the status count): in a small folder nobody may appear
 twice, and the grid said "No people found yet" over five clear faces (owner, 2026-10-05). A
 large library keeps two so a stranger in one photo does not fill it (`people_min_faces`).
@@ -630,6 +656,13 @@ of Everywhere left from before reads as + Subfolders when a folder opens. "Show 
 and the empty-grid wording search the same scope. The choice is not persisted. The status bar's
 people count stays the whole index's. A pack without the entry shows everyone. The search panel
 keeps all three scopes.
+
+**The first 24 (2026-10-06, owner: "200 people … the settings screen now scrolls quite slowly").**
+Settings shows the first 24 people (named, then most photos) and "Show all N people". On the Mac
+the base Settings list is not lazy, so every card in it is live: "Show all" opens a sheet whose
+grid is in its own scroll view, where only the cards on screen exist (`AllPeopleSheet`;
+`PeopleGridBench`: a re-sorted list costs 16 ms of CPU with 24 shown against 89 ms with 200). On
+Windows the repeater is virtualised already, so "Show all" expands the grid in place.
 
 ## Sharing an index
 

@@ -81,6 +81,10 @@ float mean_cosine(const std::vector<float>& sum, std::uint32_t n, std::span<cons
   return static_cast<float>(d / n);
 }
 
+// The clustering rules faces.db's people were last settled under. A new
+// value makes the next idle settle judge every face again (open).
+constexpr const char* kRules = "2";
+
 // The embedder every row predates the `spec` column with (2026-10-03).
 constexpr const char* kLegacySpec = "yunet-2023mar+sface-2021dec/pre1";
 
@@ -179,6 +183,13 @@ result<std::unique_ptr<faces_db>> faces_db::open(const std::string& path, const 
       " PRIMARY KEY(asset_id, spec));"
       "CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);";
   if (!d->exec(schema) || !d->migrate()) return err(status::corrupt);
+  // People's reads without the rows (each carries a 2 KB vector): the cover
+  // order, and the photos a person is in (people, person_count). After
+  // migrate: it names columns an old faces.db gains there. ~0.4 s once at 36 k.
+  if (!d->exec("CREATE INDEX IF NOT EXISTS faces_cover ON faces(person_id, pinned DESC,"
+               " COALESCE(quality, 0) DESC, score * w * h DESC, asset_id)")) {
+    return err(status::corrupt);
+  }
   std::lock_guard lock(d->m_);
   // Faces from another embedder (a new model in the People piece): their
   // vectors are in another space, so nothing here compares them, and the
@@ -198,6 +209,17 @@ result<std::unique_ptr<faces_db>> faces_db::open(const std::string& path, const 
     }
     stmt r(d->db_, "SELECT value FROM meta WHERE key = 'rerun'");
     d->rerun_ = r.step_row() && r.text(0) == "1";
+    // People filed under older rules (kRules) are judged again by the next
+    // settle: no asset is read again, every face is checked against the
+    // rules it has now (2026-10-06: unusable faces and weak-only people).
+    stmt k(d->db_, "SELECT value FROM meta WHERE key = 'rules'");
+    const bool current = k.step_row() && k.text(0) == kRules;
+    stmt any(d->db_, "SELECT 1 FROM faces LIMIT 1");
+    if (!current && any.step_row()) {
+      d->resettle_ = true;
+    } else if (!current) {
+      d->rules_current_locked();
+    }
   }
   d->load_locked();
   return d;
@@ -224,6 +246,11 @@ result<std::unique_ptr<faces_db>> faces_db::open_read_only(const std::string& pa
   std::lock_guard lock(d->m_);
   d->load_locked();
   return d;
+}
+
+void faces_db::rules_current_locked() {
+  stmt w(db_, "INSERT OR REPLACE INTO meta(key, value) VALUES('rules', ?1)");
+  (void)w.bind(1, std::string(kRules)).run();
 }
 
 void faces_db::set_rerun_locked(bool on) {
@@ -289,6 +316,7 @@ void faces_db::pin_cover_locked(std::int64_t person) {
 void faces_db::load_locked() {
   clusters_.clear();
   full_due_ = true;
+  consolidate_full_ = true;
   stmt s(db_, "SELECT person_id, emb FROM faces WHERE person_id IS NOT NULL AND spec = ?1");
   s.bind(1, spec_);
   while (s.step_row()) {
@@ -316,7 +344,15 @@ expected faces_db::import_with(const std::function<expected(sqlite3*)>& fn) {
   return r;
 }
 
-std::int64_t faces_db::assign_locked(std::span<const float> emb, const std::set<std::int64_t>& rejected) {
+std::int64_t faces_db::assign_locked(std::span<const float> emb, float quality,
+                                     const std::set<std::int64_t>& rejected) {
+  // A face nobody can be told from joins no one (refine_params::unusable_quality);
+  // a weak one may join a person its betters made, never start one. Unknown
+  // quality (< 0, a row from before it was recorded) counts as good.
+  const refine_params rules;
+  const bool known = quality >= 0;
+  if (known && quality < rules.unusable_quality) return 0;
+  const bool may_start = !known || quality >= rules.weak_quality;
   std::int64_t best = 0;
   float best_score = -2.0f, second = -2.0f;
   for (const auto& [id, c] : clusters_) {
@@ -336,6 +372,7 @@ std::int64_t faces_db::assign_locked(std::span<const float> emb, const std::set<
     return 0;  // two people fit about as well: unassigned until refined
   }
   if (best == 0) {
+    if (!may_start) return 0;
     stmt ins(db_, "INSERT INTO people(name) VALUES('')");
     if (!ins.run()) return 0;
     best = sqlite3_last_insert_rowid(db_);
@@ -442,7 +479,7 @@ expected faces_db::add(std::int64_t asset, const std::string& path, std::int64_t
     } else {
       // During a re-run a new face waits unassigned: the people it could join
       // are still mostly old vectors. The settle pass at the end files it.
-      const std::int64_t person = rerun_ ? 0 : assign_locked(f.emb, {});
+      const std::int64_t person = rerun_ ? 0 : assign_locked(f.emb, f.quality, {});
       ins.reset();
       ins.bind(1, asset).bind(2, path).bind(3, pts_ms).bind_real(4, f.x).bind_real(5, f.y)
           .bind_real(6, f.w).bind_real(7, f.h).bind_real(8, f.score)
@@ -520,9 +557,11 @@ expected faces_db::forget_asset(std::int64_t asset) {
 std::vector<person_row> faces_db::people(std::uint32_t min_faces, const std::set<std::int64_t>* assets) {
   std::lock_guard lock(m_);
   std::vector<person_row> out;
-  stmt s(db_, "SELECT p.id, p.name, COUNT(f.id) FROM people p JOIN faces f ON f.person_id = p.id"
-              " GROUP BY p.id HAVING COUNT(f.id) >= ?1 OR p.name != ''"
-              " ORDER BY p.name = '' ASC, COUNT(f.id) DESC");
+  // Counted in photos and clips, not faces: a clip sampled every few seconds
+  // gave one stranger hundreds of faces, and "297 photos" of one video.
+  stmt s(db_, "SELECT p.id, p.name, COUNT(DISTINCT f.asset_id) FROM people p JOIN faces f ON f.person_id = p.id"
+              " GROUP BY p.id HAVING COUNT(DISTINCT f.asset_id) >= ?1 OR p.name != ''"
+              " ORDER BY p.name = '' ASC, COUNT(DISTINCT f.asset_id) DESC");
   s.bind(1, std::int64_t{min_faces});
   while (s.step_row()) {
     person_row p;
@@ -531,25 +570,33 @@ std::vector<person_row> faces_db::people(std::uint32_t min_faces, const std::set
     p.faces = static_cast<std::uint32_t>(s.i64(2));
     out.push_back(std::move(p));
   }
-  // The cover: the user's pinned face first, else the largest confident one.
-  // In a folder scope the same order, over that folder's faces only, and the
-  // count is theirs too; nobody there, no card.
-  const std::string sql = std::string("SELECT ") + kFaceCols +
-                          " FROM faces WHERE person_id = ?1 ORDER BY pinned DESC, score * w * h DESC" +
-                          (assets ? "" : " LIMIT 1");
+  // The cover: the user's pinned face first, else the clearest (quality),
+  // else the largest confident one. In a folder scope the same order, over
+  // that folder's faces only, and the count (photos and clips) is theirs
+  // too; nobody there, no card.
+  // Both from faces_cover alone; only the cover's own row is read.
+  stmt order(db_, (std::string("SELECT id, asset_id FROM faces WHERE person_id = ?1"
+                               " ORDER BY pinned DESC, COALESCE(quality, 0) DESC, score * w * h DESC") +
+                   (assets ? "" : " LIMIT 1")).c_str());
+  stmt row(db_, (std::string("SELECT ") + kFaceCols + " FROM faces WHERE id = ?1").c_str());
+  const auto cover_of = [&](std::int64_t id, person_row& p) {
+    row.reset();
+    if (row.bind(1, id).step_row()) p.cover = face_from(row);
+  };
   for (person_row& p : out) {
-    stmt c(db_, sql.c_str());
-    c.bind(1, p.id);
+    order.reset();
+    order.bind(1, p.id);
     if (!assets) {
-      if (c.step_row()) p.cover = face_from(c);
+      if (order.step_row()) cover_of(order.i64(0), p);
       continue;
     }
-    std::uint32_t here = 0;
-    while (c.step_row()) {
-      if (assets->count(c.i64(1)) == 0) continue;
-      if (here++ == 0) p.cover = face_from(c);
+    std::set<std::int64_t> here;
+    while (order.step_row()) {
+      if (assets->count(order.i64(1)) == 0) continue;
+      if (here.empty()) cover_of(order.i64(0), p);
+      here.insert(order.i64(1));
     }
-    p.faces = here;
+    p.faces = static_cast<std::uint32_t>(here.size());
   }
   if (assets) {
     out.erase(std::remove_if(out.begin(), out.end(), [](const person_row& p) { return p.faces == 0; }),
@@ -586,10 +633,9 @@ expected faces_db::rename(std::int64_t person, const std::string& name) {
   stmt s(db_, "UPDATE people SET name = ?2 WHERE id = ?1");
   if (!s.bind(1, person).bind(2, name).run()) return err(status::io);
   // The cover is the face the user looked at when naming: an anchor.
-  if (!folded(name).empty()) {
-    pin_cover_locked(person);
-    touch_locked(person);
-  }
+  if (!folded(name).empty()) pin_cover_locked(person);
+  // Touched either way: a name taken away lets the idle merge look at it again.
+  touch_locked(person);
   return {};
 }
 
@@ -652,11 +698,13 @@ expected faces_db::reject(std::int64_t face) {
   std::lock_guard lock(m_);
   std::int64_t person = 0;
   std::vector<float> emb;
+  float quality = -1;
   {
-    stmt q(db_, "SELECT COALESCE(person_id, 0), emb, spec FROM faces WHERE id = ?1");
+    stmt q(db_, "SELECT COALESCE(person_id, 0), emb, spec, quality FROM faces WHERE id = ?1");
     if (!q.bind(1, face).step_row()) return err(status::invalid_arg);
     person = q.i64(0);
     if (q.text(2) == spec_) emb = q.floats(1);  // another embedder's: re-run files it
+    quality = q.null(3) ? -1.0f : static_cast<float>(q.real(3));
   }
   if (person == 0) return {};
   stmt r(db_, "INSERT OR IGNORE INTO rejected(face_id, person_id) VALUES(?1, ?2)");
@@ -671,7 +719,7 @@ expected faces_db::reject(std::int64_t face) {
   stmt all(db_, "SELECT person_id FROM rejected WHERE face_id = ?1");
   all.bind(1, face);
   while (all.step_row()) no.insert(all.i64(0));
-  const std::int64_t next = assign_locked(emb, no);
+  const std::int64_t next = assign_locked(emb, quality, no);
   if (next == 0) {
     loose_.insert(face);
     return {};
@@ -763,10 +811,28 @@ std::size_t faces_db::consolidate(float merge_at) {
     stmt s(db_, "SELECT id, name FROM people");
     while (s.step_row()) names[s.i64(0)] = s.text(1);
   }
+  // Only pairs with a person changed since the last pass: two that were not
+  // are as far apart as they were then (or a split or a name keeps them so).
+  // Every pair, every minute, was 0.5-0.8 s with the engine's lock held at
+  // 2 k people (owner's library, 2026-10-06).
+  const bool full = consolidate_full_;
+  const std::uint64_t since = consolidated_gen_;
+  consolidate_full_ = false;
+  consolidated_gen_ = touch_gen_;
+  const auto changed = [&](std::int64_t id) {
+    if (full) return true;
+    const auto it = touched_at_.find(id);
+    return it != touched_at_.end() && it->second > since;
+  };
   std::size_t merged = 0;
   for (auto a = clusters_.begin(); a != clusters_.end(); ++a) {
+    bool a_changed = changed(a->first);
     for (auto b = std::next(a); b != clusters_.end();) {
       const std::int64_t ia = a->first, ib = b->first;
+      if (!a_changed && !changed(ib)) {
+        ++b;
+        continue;
+      }
       const bool both_named = !names[ia].empty() && !names[ib].empty();
       // Mean cosine across the two (average linkage): sum_a . sum_b / (n_a n_b).
       // It stays an average after a merge, so a chain of merges cannot walk.
@@ -790,6 +856,7 @@ std::size_t faces_db::consolidate(float merge_at) {
       protos_.erase(ib);
       dirty_.erase(ib);
       touch_locked(ia);
+      a_changed = true;  // its average moved: the rest of its pairs are new
       b = clusters_.erase(b);
       ++merged;
     }
@@ -806,7 +873,7 @@ std::uint64_t faces_db::face_count() {
 std::uint32_t faces_db::person_count(std::uint32_t min_faces) {
   std::lock_guard lock(m_);
   stmt s(db_, "SELECT COUNT(*) FROM (SELECT p.id FROM people p JOIN faces f ON f.person_id = p.id"
-              " GROUP BY p.id HAVING COUNT(f.id) >= ?1 OR p.name != '')");
+              " GROUP BY p.id HAVING COUNT(DISTINCT f.asset_id) >= ?1 OR p.name != '')");
   s.bind(1, std::int64_t{min_faces});
   return s.step_row() ? static_cast<std::uint32_t>(s.i64(0)) : 0;
 }
@@ -1030,6 +1097,11 @@ bool faces_db::rerun_pending() {
   return rerun_;
 }
 
+bool faces_db::settle_due() {
+  std::lock_guard lock(m_);
+  return rerun_ || resettle_;
+}
+
 std::uint64_t faces_db::stale_count() {
   std::lock_guard lock(m_);
   stmt s(db_, "SELECT COUNT(*) FROM faces WHERE spec != ?1");
@@ -1052,6 +1124,8 @@ void faces_db::rerun_done() {
   // add / mark_scanned replace them like any other.
   full_due_ = true;
   set_rerun_locked(false);
+  if (resettle_) rules_current_locked();
+  resettle_ = false;
 }
 
 }  // namespace mv::ai

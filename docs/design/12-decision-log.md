@@ -804,6 +804,13 @@ on request ("Refine faces" for one person; "Re-analyse faces" or a new face mode
 library-wide settle). Vectors are tagged with their embedder, and re-found faces keep their person,
 name, pin and rejections.
 
+**People need a face someone could recognise (2026-10-06, owner: "terrible at categorising
+them").** Faces below quality 0.10 belong to no person; weak faces (< 0.35) may join a person but
+never start one, and an unnamed person of weak faces only dissolves. People are counted in photos
+and clips, not faces, and Settings lists the first 24 with "Show all". The online clustering had
+made people of blurred clip frames that resembled each other more than anyone; numbers in
+docs/design/17 "People model". Libraries settle once under the new rules, nothing read again.
+
 **People follow the open folder (2026-10-03).** While a folder is open the People grid offers
 "This folder | + Subfolders" only; everyone shows only with no folder open. A folder open is the
 user saying what they are looking at, and everyone-from-everywhere inside one read as a leak. A

@@ -1484,7 +1484,7 @@ void engine::control_loop() {
         // as soon as the last asset is analysed.
         std::lock_guard lock(models_m_);
         if (faces_ && faces_model_ && idle) {
-          if (faces_->rerun_pending()) {
+          if (faces_->settle_due()) {
             settle = true;
           } else if (t - last_consolidate > 60) {
             if (faces_->consolidate(faces_model_->tuning().merge_at) > 0) post(MV_ADDON_EVENT_AI_PEOPLE);
@@ -1503,6 +1503,7 @@ void engine::control_loop() {
       post(MV_ADDON_EVENT_AI_STATUS);
       last_state = state;
     }
+    if (people_changed_.exchange(false)) post(MV_ADDON_EVENT_AI_PEOPLE);
     std::unique_lock lock(control_m_);
     control_cv_.wait_for(lock, std::chrono::milliseconds(1000), [this] {
       if (stopping_.load() || reload_models_.load() || reload_pieces_.load() || rescan_all_ ||
@@ -2422,6 +2423,17 @@ bool engine::claim(std::vector<work_item>& out, track& t) {
   }
   if (spec.empty()) return false;
   std::lock_guard lock(work_m_);
+  {
+    // A folder opened (note_folder_opened): it goes first from now on.
+    std::lock_guard pl(prefer_m_);
+    if (prefer_due_) {
+      prefer_due_ = false;
+      prefer_dir_key_ = std::move(prefer_next_);
+      prefer_next_.clear();
+      queue_.clear();  // re-ordered below
+      queue_exhausted_ = false;
+    }
+  }
   if (queue_.empty() && !queue_exhausted_) {
     // Pictures first (fast, and what most searches need), then what clips
     // sound like, then what is said in them, then the People pass.
@@ -2771,7 +2783,9 @@ void engine::faces_of(std::int64_t asset, const std::string& path, std::int64_t 
   if (!found || found->empty()) return;
   std::lock_guard lock(models_m_);
   if (faces_) {
-    if (faces_->add(asset, path, pts_ms, *found)) post(MV_ADDON_EVENT_AI_PEOPLE);
+    // Not one event per frame: each makes every chrome read the people again
+    // (a full people_json at 36 k faces). The control loop posts it once a tick.
+    if (faces_->add(asset, path, pts_ms, *found)) people_changed_ = true;
   }
 }
 
@@ -3322,11 +3336,14 @@ void engine::note_folder_opened(const std::string& dir) {
     }
   }
   {
-    std::lock_guard lock(work_m_);
-    prefer_dir_key_ = key;
-    queue_.clear();  // re-ordered on the next claim
-    queue_exhausted_ = false;
+    // Not work_m_: a host calls this on its UI thread, and claim holds
+    // work_m_ across the database and the People lock. The next claim takes
+    // it (workers ask at least every 500 ms).
+    std::lock_guard lock(prefer_m_);
+    prefer_next_ = key;
+    prefer_due_ = true;
   }
+  work_cv_.notify_all();
   if (root != 0) {
     std::lock_guard lock(control_m_);
     rescan_roots_.insert(root);

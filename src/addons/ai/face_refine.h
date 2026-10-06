@@ -24,7 +24,9 @@
 //            its own person and the runner-up by `margin` (never a weak face,
 //            never into a person the user rejected it from)
 //   leaves   to unassigned when support(f, own) < keep (keep_weak if weak):
-//            a doubtful face is better filed under nobody than a wrong name
+//            a doubtful face is better filed under nobody than a wrong name;
+//            and always when it is unusable (quality < unusable_quality), or
+//            its person is unnamed, unpinned and has no face that is not weak
 //   joins    (unassigned) the clear winner, by the same join + margin test
 // Passes repeat until nothing changes or `passes` run; a face changes at
 // most once per call. With `regroup`, unassigned good faces that are close to
@@ -48,6 +50,10 @@ struct refine_params {
   float margin = 0.08f;     // a move or admission beats own and runner-up by this
   float core = 0.40f;       // one hop from an anchor
   float weak_quality = 0.35f;  // below: never a reference, never moved, never admitted
+  // Below: nobody can be told from this face (a blurred clip frame, a
+  // 25 px stranger, a hood or an ear the detector took for a face). It
+  // belongs to no person; it is evicted from any it is in.
+  float unusable_quality = 0.10f;
   std::uint32_t top_k = 3;
   std::uint32_t max_exemplars = 12;
   std::uint32_t max_refs = 256;     // caps the medoid's O(n^2) on a huge person
@@ -73,6 +79,9 @@ struct person_proto {
   std::int64_t person = 0;
   bool named = false;
   bool pinned = false;              // it has a pinned face (always a candidate)
+  // Every member is weak: unnamed and unpinned, nothing vouches for it as a
+  // person, so its faces leave and it is no candidate.
+  bool weak_only = false;
   std::vector<float> exemplars;     // n * dim, L2-normalised
   std::vector<std::int64_t> exemplar_ids;
   std::vector<float> core_mean;     // dim; unnormalised, so dot = mean pairwise cosine

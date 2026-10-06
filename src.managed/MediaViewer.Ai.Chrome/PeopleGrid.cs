@@ -38,6 +38,9 @@ namespace MediaViewer.Ai.Chrome;
 internal sealed class PeopleGrid
 {
     private const double Cover = 84, CardWidth = 112, CardHeight = 140;
+    // People shown until "Show all": named first, then most photos (the Mac's
+    // ManagementView.peopleShown). 200 strangers are no way to find anyone.
+    private const int FirstShown = 24;
     private const string DragPrefix = "mediaviewer-person:";
 
     private readonly AiChrome _chrome;
@@ -46,6 +49,12 @@ internal sealed class PeopleGrid
     // Slots, not the records: a person whose count or name changed is
     // redrawn in its card, never swapped under the repeater.
     private readonly ObservableCollection<Slot> _items = new();
+    // What the repeater shows: the first FirstShown of _items, or all of them.
+    // The same Slot objects, so a card redrawn in place (Set) is redrawn here.
+    private readonly ObservableCollection<Slot> _visible = new();
+    private readonly Button _more;
+    private bool _showAll;
+    private bool _applying;
     private readonly Dictionary<ulong, Card> _cards = new();
     private readonly HashSet<ulong> _selection = new();
     private readonly StackPanel _root;
@@ -199,9 +208,21 @@ internal sealed class PeopleGrid
                 ItemsJustification = UniformGridLayoutItemsJustification.Start,
             },
             ItemTemplate = new CardFactory(this),
-            ItemsSource = _items,
+            ItemsSource = _visible,
         };
         _root.Children.Add(_repeater);
+        _more = _look.Button("", () =>
+        {
+            _showAll = !_showAll;
+            SyncVisible();
+        });
+        _more.HorizontalAlignment = HorizontalAlignment.Left;
+        _more.Visibility = Visibility.Collapsed;
+        _root.Children.Add(_more);
+        _items.CollectionChanged += (_, _) =>
+        {
+            if (!_applying) SyncVisible();
+        };
 
         _note = _look.Text("", 12, AddonColour.Title);
         _note.Visibility = Visibility.Collapsed;
@@ -369,14 +390,31 @@ internal sealed class PeopleGrid
         }
         else
         {
+            _applying = true;
             _items.Clear();
             foreach (PersonVm p in people) _items.Add(new Slot(p));
+            _applying = false;
+            SyncVisible();
         }
         // A merged or regrouped person leaves the selection with the grid.
         _selection.IntersectWith(All.Select(p => p.Id));
         if (_opening != 0 && All.All(p => p.Id != _opening)) _opening = 0;
         UpdateChrome();
         _sheet?.PeopleChanged();
+    }
+
+    /// <summary>The repeater follows _items, cut to FirstShown until "Show all".</summary>
+    private void SyncVisible()
+    {
+        IEnumerable<Slot> want = _showAll ? _items : _items.Take(FirstShown);
+        if (!_visible.SequenceEqual(want))
+        {
+            _visible.Clear();
+            foreach (Slot s in want) _visible.Add(s);
+        }
+        int n = _items.Count;
+        _more.Visibility = n > FirstShown ? Visibility.Visible : Visibility.Collapsed;
+        _more.Content = _showAll ? "Show fewer" : $"Show all {n:N0} people";
     }
 
     private void Set(Slot slot, PersonVm person)

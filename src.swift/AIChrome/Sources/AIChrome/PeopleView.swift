@@ -56,6 +56,13 @@ private struct FaceImage: View {
 struct PeopleGrid: View {
   @ObservedObject var model: ManagementModel
   let open: (Person) -> Void
+  /// Settings lists the first `limit` people (named, then most photos) and a
+  /// "Show all" that calls `showAll`: the base Settings list is not lazy, so
+  /// every card there is live at once, and 200 of them made it scroll slowly
+  /// (owner, 2026-10-06). The all-people sheet passes nil: its grid is in a
+  /// ScrollView of its own, where the LazyVGrid is lazy.
+  var limit: Int? = nil
+  var showAll: (() -> Void)? = nil
   /// ⌘-click (or ⇧-click) picks several people to merge.
   @State private var selection = Set<UInt64>()
   /// "Merge duplicates" is running in the pack.
@@ -96,12 +103,16 @@ struct PeopleGrid: View {
           }
         }
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 104, maximum: 132), spacing: 14)], spacing: 16) {
-          ForEach(model.people) { person in
+          ForEach(shown) { person in
             PersonCard(model: model, person: person, selected: selection.contains(person.id),
                        opening: model.opening == person.id,
                        tap: { tap(person) }, open: { open(person) })
               .equatable()
           }
+        }
+        if let showAll, shown.count < model.people.count {
+          Button("Show all \(model.people.count) people…", action: showAll)
+            .help("Every person found, to name, merge and correct")
         }
       }
       if !model.peopleNote.isEmpty {
@@ -124,6 +135,12 @@ struct PeopleGrid: View {
       if !selection.isSubset(of: ids) { selection.formIntersection(ids) }
     }
     .onExitCommand { selection = [] }
+  }
+
+  /// The people this grid shows: the first `limit`, or everyone.
+  private var shown: ArraySlice<Person> {
+    guard let limit else { return model.people[...] }
+    return model.people.prefix(limit)
   }
 
   /// The selected people, in grid order.
@@ -252,7 +269,7 @@ private struct PersonCard: View, Equatable {
       Button("Show photos") { model.showPhotos(of: person) }
       Button("Faces…") { open() }
       Menu("Merge into…") {
-        ForEach(model.people.filter { $0.id != person.id }) { other in
+        ForEach(model.mergeTargets(for: person)) { other in
           Button(model.displayName(other)) { model.merge(into: other.id, from: person.id) }
         }
       }
@@ -411,6 +428,38 @@ private struct PersonName: View, Equatable {
 }
 
 /// A person's faces: "Not this person", split, merge, show photos.
+/// Everyone, from "Show all … people" under the Settings grid: the same grid,
+/// in a scroll view of its own so only the cards on screen are live.
+struct AllPeopleSheet: View {
+  @ObservedObject var model: ManagementModel
+  let done: () -> Void
+  @State private var openPerson: Person?
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      HStack(alignment: .firstTextBaseline) {
+        Text("People").font(AITheme.font(18)).foregroundStyle(AITheme.title)
+        Text(model.people.count == 1 ? "1 person" : "\(model.people.count) people")
+          .font(AITheme.font(12)).foregroundStyle(AITheme.body)
+        Spacer()
+        Button("Done", action: done).keyboardShortcut(.defaultAction)
+      }
+      ScrollView {
+        PeopleGrid(model: model, open: { openPerson = $0 })
+      }
+    }
+    .padding(20)
+    .frame(minWidth: 640, idealWidth: 820, minHeight: 420, idealHeight: 640)
+    // Their photos open in the gallery, as from Settings: the sheet steps aside.
+    .onChange(of: model.opening) { _, id in
+      if id != nil { done() }
+    }
+    .sheet(item: $openPerson) { person in
+      PersonSheet(model: model, person: person) { openPerson = nil }
+    }
+  }
+}
+
 struct PersonSheet: View {
   @ObservedObject var model: ManagementModel
   let person: Person
