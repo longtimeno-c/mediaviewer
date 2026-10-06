@@ -20,6 +20,7 @@ class ffmpeg_media_source final : public media_source {
     if (video_) {
       save_resume(); close_video_source(video_);
     }
+    set_timer_held(false);
   }
   expected open(const char* path, void* device) {
     MV_TRY(auto* video, open_video_source(path, device));
@@ -55,6 +56,7 @@ class ffmpeg_media_source final : public media_source {
   void play() noexcept override {
     if (state_ == play_state::ended) seek(0, true);
     state_ = play_state::playing;
+    set_timer_held(true);
     // Seek parks the clock so a scrub cannot run away, and leaves preview_
     // set so the first frame of the new generation shows immediately. Resume
     // still has to start the clock: waiting for preview used to skip this
@@ -68,6 +70,7 @@ class ffmpeg_media_source final : public media_source {
     // on screen says nothing about where playback is: hold the clock's.
     if (info_.audio_only && state_ == play_state::playing && !preview_) shown_pts_ = pipe_->clock.now_ns();
     pipe_->clock.set_paused(true); state_ = play_state::paused;
+    set_timer_held(false);
   }
   void seek(time_ns pts, bool exact) noexcept override {
     if (candidate_) { video_->release(candidate_); candidate_ = nullptr; }
@@ -186,7 +189,7 @@ class ffmpeg_media_source final : public media_source {
       if (info_.audio_only) shown_pts_ = std::min(in.master_clock_ns, std::max<time_ns>(info_.duration_ns, 0));
       if (!in.has_next && pipe_->video_done.load() &&
           (info_.duration_ns <= 0 || in.master_clock_ns >= info_.duration_ns)) {
-        pipe_->clock.set_paused(true); state_ = play_state::ended; return nullptr;
+        pipe_->clock.set_paused(true); state_ = play_state::ended; set_timer_held(false); return nullptr;
       }
       auto decision = choose(in);
       if (decision.action == present_action::drop) {
@@ -207,9 +210,16 @@ class ffmpeg_media_source final : public media_source {
     out.decode_errors = pipe_->decode_errors.load();
     out.surface_waits = pipe_->surface_waits.load();
     out.ring_backpressure = pipe_->ring_backpressure.load();
+    out.frames_decoded = pipe_->frames_decoded.load();
+    out.frames_dropped_stale = pipe_->frames_dropped_stale.load();
     return out;
   }
  private:
+  void set_timer_held(bool held) noexcept {
+    if (held == timer_held_) return;
+    timer_held_ = held;
+    hold_playback_timer(held);
+  }
   std::filesystem::path resume_file() const {
     auto cache = io::thumb_cache_dir();
     if (!cache) return {};
@@ -252,6 +262,7 @@ class ffmpeg_media_source final : public media_source {
   play_state state_ = play_state::paused;
   time_ns shown_pts_ = 0, step_before_ = -1;
   bool preview_ = true;
+  bool timer_held_ = false;  // hold_playback_timer, paired
   ab_loop loop_{};
 };
 }

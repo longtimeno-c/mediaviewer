@@ -8,6 +8,7 @@
 // that header drags d3d11.h in without ever naming it.
 // A Metal host replaces this file and nothing else.
 #include <d3d11.h>
+#include <timeapi.h>
 
 extern "C" {
 #include <libavutil/hwcontext_d3d11va.h>
@@ -208,6 +209,13 @@ status create_texture_from_planes(ID3D11Device* device, std::uint32_t width,
   out->luma = std::move(luma_view);
   out->chroma = std::move(chroma_view);
   return status::ok;
+}
+
+void hold_playback_timer(bool raised) noexcept {
+  // timeBeginPeriod / timeEndPeriod are counted by the OS, so two clips open
+  // at once (a navigation's retiring source and the new one) pair correctly.
+  if (raised) timeBeginPeriod(1);
+  else timeEndPeriod(1);
 }
 
 }  // namespace mv::player

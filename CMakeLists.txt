@@ -446,7 +446,7 @@ target_link_directories(mv_player PRIVATE ${FFMPEG_LIBRARY_DIRS})
 target_link_libraries(mv_player
   PUBLIC mv_core mv_gfx
   PRIVATE mv_codec mv_io ${FFMPEG_LIBRARIES}
-          mfplat mfuuid ole32 uuid avrt ksuser)
+          mfplat mfuuid ole32 uuid avrt ksuser winmm)
 add_library(mv::player ALIAS mv_player)
 
 # ---------------------------------------------------------------------------
