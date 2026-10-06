@@ -105,6 +105,29 @@ private struct BarFlyout<Content: View>: View {
   }
 }
 
+/// "Open in Word" (the default app; Return does the same), and a ▾ listing every
+/// app that can open the document.
+private struct OpenInBarItem: View {
+  @ObservedObject private var store = OpenInStore.shared
+  var body: some View {
+    let first = store.apps.first
+    HStack(spacing: 0) {
+      Button(first.map { "Open in " + $0.name } ?? "Open in…") { store.open(first) }
+        .buttonStyle(FlatButtonStyle())
+        .help(first.map { "Open this document in \($0.name) (Return)" } ?? "Open this document in its app (Return)")
+        .accessibilityHint("Key Return")
+      if store.apps.count > 1 {
+        BarFlyout(title: "▾") { close in
+          ForEach(store.apps) { app in
+            FlyoutItem(title: "Open in " + app.name) { close(); store.open(app) }
+          }
+        }
+        .accessibilityLabel("Open with another app")
+      }
+    }
+  }
+}
+
 public struct CommandBarView: View {
   @ObservedObject private var store = FolderStore.shared
   @ObservedObject private var notice = NoticeStore.shared
@@ -162,6 +185,10 @@ public struct CommandBarView: View {
                                              : "Edit image: crop, rotate, colour, info (Return)"))
               .accessibilityLabel(edit.open ? "Done editing" : edit.title)
               .accessibilityHint("Key Return")
+          }
+          // A PDF or DOCX has nothing to edit: the same place offers its own apps.
+          if edit.document && !edit.open && !edit.galleryVisible {
+            OpenInBarItem()
           }
           Button("Settings") { mv_chrome_menu(18) }.buttonStyle(FlatButtonStyle())
           BarFlyout(title: "About") { _ in

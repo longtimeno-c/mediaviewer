@@ -149,6 +149,9 @@ public static partial class IslandHost
         // 1 out), or -1 to let go; EditorTrimTo arg is the edge's source ms.
         public const int EditorTrimGrab = 1028;
         public const int EditorTrimTo = 1029;
+        // A document's "Open in <app>" (docs/design/20): arg is the row of the
+        // apps SetEditView listed, -1 the default.
+        public const int OpenInApp = 1030;
         public const int RotateCcw = 96;
         public const int RotateCw = 97;
         public const int FlipHorizontal = 98;
@@ -183,7 +186,7 @@ public static partial class IslandHost
                 EditTab, EditAction, MetaTags, MetaDate,
                 EditorSeek, EditorAction,
                 DragItems, DragEnded, OpenRecent,
-                EditorTrimGrab, EditorTrimTo,
+                EditorTrimGrab, EditorTrimTo, OpenInApp,
             };
             unchecked
             {
@@ -1407,6 +1410,7 @@ public static partial class IslandHost
         // PR 29 (docs/design/20): the visible way in to every edit, a bar button like
         // Settings. Enter does the same. Native's SetEditView keeps its label.
         Button editBtn = BuildEditBarButton();
+        StackPanel openInBar = BuildOpenInBar();  // a document's "Open in <app>" in its place
         Button? settingsBtn = null;
         settingsBtn = TextButton("Settings", () => Send(Command.OpenSettings));
         Button? aboutBtn = null;
@@ -1430,6 +1434,7 @@ public static partial class IslandHost
         row.Children.Add(openBtn);
         row.Children.Add(viewBtn);
         row.Children.Add(editBtn);
+        row.Children.Add(openInBar);
         row.Children.Add(settingsBtn);
         row.Children.Add(aboutBtn);
         row.Children.Add(BuildUpdateButton());

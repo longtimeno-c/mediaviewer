@@ -633,6 +633,7 @@ typedef struct mv_edit_view {
   int32_t show_original;  // Y held, or the strip's Original toggle
   int32_t crop_width;     // what Apply would keep, in pixels (0 = not known yet)
   int32_t crop_height;
+  int32_t document;       // a PDF or DOCX: nothing to edit; the bar offers "Open in <app>"
 } mv_edit_view;
 uint64_t mv_chrome_edit_generation(void);
 bool mv_chrome_edit_view(mv_edit_view* out);
@@ -651,6 +652,10 @@ void mv_chrome_edit_cancel_crop(void);
 void mv_chrome_edit_show_original(int32_t on);
 // Save copy…: applies a crop draft, then opens the export sheet (PR 10).
 void mv_chrome_edit_save_copy(void);
+// A document's "Open in <app>" (docs/design/20): opens the file on the canvas in
+// the app at `app_path_utf8`, or in its default app (never this one) when NULL
+// or "". Asynchronous; never blocks the caller. [main-thread]
+void mv_chrome_open_in_app(const char* app_path_utf8);
 
 // ---- PR 30: the Video Editor window (docs/design/21) ------------------------------------
 //

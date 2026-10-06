@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using Microsoft.UI;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Hosting;
 using Microsoft.UI.Xaml.Media;
 
@@ -26,8 +27,9 @@ namespace MediaViewer.Chrome;
 /// </remarks>
 public static partial class IslandHost
 {
-    // chrome_host.h chrome_edit_args: 12 int/float words, two pointers, two lengths.
-    internal const int EditArgsSize = 72;
+    // chrome_host.h chrome_edit_args: 12 int/float words, two pointers, two lengths,
+    // then the document's app list (pointer, length) and its flag.
+    internal const int EditArgsSize = 88;
 
     private static DesktopWindowXamlSource? _editPane;
     private static bool _editPaneVisible;
@@ -71,6 +73,14 @@ public static partial class IslandHost
     private static bool _updatingEdit;
 
     private static Button? _editBarButton;
+    // A PDF or DOCX (docs/design/20): "Open in <app>" and a ▾ of every app,
+    // in place of the Edit button. Names come from native, default first.
+    private static bool _editDocument;
+    private static string[] _openApps = Array.Empty<string>();
+    private static StackPanel? _openInBar;
+    private static Button? _openInButton;
+    private static Button? _openInMore;
+    private static MenuFlyout? _openInFlyout;
     private static TextBlock? _editNameText;
     private static TextBlock? _editCountText;
     private static Button? _editUndo;
@@ -134,6 +144,9 @@ public static partial class IslandHost
                 ptr == 0 || len <= 0 ? "" : Marshal.PtrToStringUTF8(checked((IntPtr)ptr), len) ?? "";
             _editName = Utf8(Marshal.ReadInt64(arg, 48), Marshal.ReadInt32(arg, 64));
             _editTrimLabel = Utf8(Marshal.ReadInt64(arg, 56), Marshal.ReadInt32(arg, 68));
+            _openApps = Utf8(Marshal.ReadInt64(arg, 72), Marshal.ReadInt32(arg, 80))
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            _editDocument = Marshal.ReadInt32(arg, 84) != 0;
             RenderEditBarButton();
             if (_editPaneVisible) RenderEdit();
             return 0;
@@ -174,6 +187,61 @@ public static partial class IslandHost
                                   : "Edit image: crop, rotate, colour, info  Enter";
         ToolTipService.SetToolTip(_editBarButton, tip);
         AutomationProperties_SetName(_editBarButton, _editOpen ? "Done editing" : EditTitle);
+        RenderOpenInBar();
+    }
+
+    // A document's "Open in <app>": the default app (Enter does the same), and a
+    // ▾ listing every app Explorer's Open with would offer. Shown where the
+    // Edit button would be, only over a document.
+    private static StackPanel BuildOpenInBar()
+    {
+        _openInButton = TextButton("Open in…", () => Send(Command.OpenInApp, _openApps.Length > 0 ? 0 : -1));
+        FlattenButton(_openInButton);
+        _openInFlyout = new MenuFlyout
+        {
+            ShouldConstrainToRootBounds = false,
+            MenuFlyoutPresenterStyle = MenuFlyoutPresenterStyle(),
+        };
+        _openInFlyout.Opening += (_, _) => RefreshOpenInMenu();
+        Button? more = null;
+        more = TextButton("▾", () =>
+        {
+            if (more is not null) FlyoutBase.ShowAttachedFlyout(more);
+        });
+        FlattenButton(more);
+        AttachBarFlyout(more, _openInFlyout);
+        ToolTipService.SetToolTip(more, "Open with another app");
+        AutomationProperties_SetName(more, "Open with another app");
+        _openInMore = more;
+        _openInBar = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 0 };
+        _openInBar.Children.Add(_openInButton);
+        _openInBar.Children.Add(more);
+        RenderOpenInBar();
+        return _openInBar;
+    }
+
+    private static void RefreshOpenInMenu()
+    {
+        if (_openInFlyout is null) return;
+        _openInFlyout.Items.Clear();
+        for (int i = 0; i < _openApps.Length; i++)
+        {
+            int row = i;
+            _openInFlyout.Items.Add(Item("Open in " + _openApps[i], null, () => Send(Command.OpenInApp, row)));
+        }
+    }
+
+    private static void RenderOpenInBar()
+    {
+        if (_openInBar is null || _openInButton is null || _openInMore is null) return;
+        _openInBar.Visibility = _editDocument && !_editOpen && !_galleryVisible
+            ? Visibility.Visible : Visibility.Collapsed;
+        string label = _openApps.Length > 0 ? "Open in " + _openApps[0] : "Open in…";
+        SetButtonText(_openInButton, label);
+        string app = _openApps.Length > 0 ? _openApps[0] : "its app";
+        ToolTipService.SetToolTip(_openInButton, $"Open this document in {app}  Enter");
+        AutomationProperties_SetName(_openInButton, label);
+        _openInMore.Visibility = _openApps.Length > 1 ? Visibility.Visible : Visibility.Collapsed;
     }
 
     // ---- buttons in the chrome's flat style --------------------------------------

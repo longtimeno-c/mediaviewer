@@ -705,6 +705,8 @@ add_executable(mediaviewer_lab WIN32
   src/shell/shellext_install.h
   src/shell/single_instance_win.cpp
   src/shell/single_instance_win.h
+  src/shell/open_with_win.cpp
+  src/shell/open_with_win.h
   src/shell/slideshow.h
   src/shell/navigation.h
   src/shell/settings.cpp
@@ -748,6 +750,7 @@ target_link_libraries(mediaviewer_lab PRIVATE
   uuid      # IFileOpenDialog
   avrt      # MMCSS for the render thread
   comctl32  # LoadIconWithScaleDown (PR 8 window icon)
+  shlwapi   # AssocQueryString (shell/open_with_win.cpp)
   crashpad::crashpad
 )
 target_compile_definitions(mediaviewer_lab PRIVATE MV_APP_VERSION="${PROJECT_VERSION}")

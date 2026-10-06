@@ -104,6 +104,14 @@ class present_lab {
     return view_fitted_.load(std::memory_order_relaxed);
   }
 
+  // [any-thread][no-block] canvas::camera::kEdgeTop / kEdgeBottom: the
+  // picture cannot pan further that way (both at fit or with nothing open).
+  // The host turns a document's page on a scroll past an edge
+  // (docs/design/04 "Pages").
+  [[nodiscard]] unsigned scroll_edges() const noexcept {
+    return scroll_edges_.load(std::memory_order_relaxed);
+  }
+
   // [any-thread][no-block] True while a still (not a clip) is on the canvas.
   [[nodiscard]] bool showing_still() const noexcept {
     return showing_still_.load(std::memory_order_relaxed);
@@ -404,6 +412,8 @@ class present_lab {
   std::atomic<bool> running_{false};
   std::atomic<bool> finished_{false};
   std::atomic<bool> view_fitted_{true};
+  std::atomic<unsigned> scroll_edges_{3};
+  std::uint32_t seen_page_land_seq_ = 0;
   std::atomic<bool> showing_still_{false};
   std::atomic<std::uint8_t> anim_state_{0};
   std::atomic<std::uint32_t> status_width_{0};

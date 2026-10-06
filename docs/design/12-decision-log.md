@@ -206,6 +206,15 @@ FairPlay; it is shown with a padlock and never played (nothing decrypts it). The
 only on both platforms: not in Windows' Default apps capabilities, and skipped by the Mac's
 make-default and adopt-new-types paths — the owner asked that they never be made the default.
 
+**A document scrolls; it is never edited (2026-10-05, owner).** Over a PDF or DOCX with the
+filmstrip hidden, the wheel and trackpad scroll the page instead of zooming (this replaces "no
+scrolling between pages" from the same day): held against the top or bottom edge they turn the page,
+which keeps its zoom and lands at the far edge (`camera::turn_page`). One trackpad gesture or one
+wheel burst turns one page, so momentum cannot run through a document. `⌘`/`Ctrl`+wheel and a pinch
+still zoom; with the filmstrip shown the wheel zooms as on any still. The Edit button gives way to
+**Open in <app>** (the default app, never MediaViewer) and a ▾ of the other apps, and `Enter` opens
+the default: there is nothing for the workspace to edit in a document.
+
 **Thumbnails are JPEG files on disk (2026-09-07).** Spec `jpg512.3` (was `.1`; bumped
 2026-09-24 when JPEG orientation was applied, and 2026-10-03 when clip posters began following
 the display matrix), keyed in SQLite by `(path, mtime, size, spec)`. The

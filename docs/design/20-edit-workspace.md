@@ -19,6 +19,11 @@ in the core (`edit/`, `shell/edit_session`).
      ([21](21-video-editor.md)), not this pane. `Ctrl+T` on a clip opens the workspace on its
      Trim tab and arms trim.
    - Inside the workspace `Enter` keeps its meaning: apply the crop, save the trim.
+   - A document (PDF, DOCX) has nothing to edit: the button is **Open in <app>** (its default
+     app, never MediaViewer) with a ▾ listing the other apps that open it, and `Enter` opens the
+     default. Mac: `OpenInStore.swift` asks Launch Services; `-openDocumentInApp:` opens it.
+     Windows: `shell/open_with_win.cpp` (Explorer's recommended Open with handlers, on a thread
+     of its own), pushed through `chrome_edit_args.open_apps`, run by `chrome_cmd_open_in_app`.
 2. **One pane, tabs, docked.** The workspace is a strip at the top of the right pane column
    (title, file name and edit count, tabs, Undo / Reset / Show original / Save copy…) over one
    tab's pane. It docks: the canvas frames the picture in the rect beside it

@@ -67,6 +67,22 @@ class camera {
   void wheel_toward(float mouse_x, float mouse_y, float notches, float window_w,
                     float window_h, float image_w, float image_h) noexcept;
 
+  // A document's next or previous page, turned by scrolling past an edge
+  // (docs/design/04 "Pages"). Fit stays fit. Zoomed in, the page keeps its
+  // on-screen width and horizontal fraction and lands at its top
+  // (`land_bottom` false, scrolling down) or bottom (scrolling up). Snaps,
+  // like carry. Sizes are in image pixels of the old and the new picture,
+  // which may differ (a fit-size preview of the new page).
+  void turn_page(float old_w, float old_h, float new_w, float new_h, bool land_bottom,
+                 float window_w, float window_h) noexcept;
+
+  // Where the target sits vertically: kEdgeTop / kEdgeBottom when it cannot
+  // pan further that way (both in fit mode, or when the image fits the
+  // height). The host reads it to turn a page on a scroll past the edge.
+  static constexpr unsigned kEdgeTop = 1;
+  static constexpr unsigned kEdgeBottom = 2;
+  [[nodiscard]] unsigned vertical_edges(float image_h, float window_h) const noexcept;
+
   void drag_begin() noexcept;
   void drag_delta(float dx_screen, float dy_screen) noexcept;
   void drag_end() noexcept;

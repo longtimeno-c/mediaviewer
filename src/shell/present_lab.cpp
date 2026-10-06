@@ -696,7 +696,14 @@ void present_lab::render_thread_main() noexcept {
               // docs/design/16 sticky zoom: off (default) fits every item; on keeps the
               // mode, or the zoom and pan fraction. Camera state only, so
               // prefetch is untouched.
-              if (snapshot.sticky_zoom && had_media && camera_.fill_mode()) {
+              // A page turned by scrolling past an edge lands at the top or
+              // bottom at the zoom it was read at (docs/design/04 "Pages").
+              const bool page_land = snapshot.page_land_seq != seen_page_land_seq_;
+              seen_page_land_seq_ = snapshot.page_land_seq;
+              if (page_land && had_media && snapshot.page_land != 0) {
+                camera_.turn_page(old_w, old_h, media_width(), media_height(), snapshot.page_land < 0,
+                                  view.w, view.h);
+              } else if (snapshot.sticky_zoom && had_media && camera_.fill_mode()) {
                 camera_.fill(media_width(), media_height(), view.w, view.h, true);
               } else if (snapshot.sticky_zoom && had_media && !camera_.fit_mode()) {
                 camera_.carry(old_w, old_h, media_width(), media_height(), view.w, view.h);
@@ -1002,6 +1009,18 @@ void present_lab::render_thread_main() noexcept {
                               media_width(), media_height(), view.w, view.h);
         redraw = true;
       }
+      // Document scrolling (docs/design/04 "Pages"): screen pixels, consumed
+      // with or without a picture so none banks up for the next one.
+      float scroll_x = 0.0f;
+      float scroll_y = 0.0f;
+      if (input_cursor_.consume_scroll(snapshot, scroll_x, scroll_y) && current_image_) {
+        const auto view = usable_canvas(snapshot);
+        camera_.pan_by_screen(scroll_x, scroll_y, media_width(), media_height(), view.w, view.h);
+        redraw = true;
+      }
+      scroll_edges_.store(current_image_ ? camera_.vertical_edges(media_height(), usable_canvas(snapshot).h)
+                                         : canvas::camera::kEdgeTop | canvas::camera::kEdgeBottom,
+                          std::memory_order_relaxed);
       // The UI thread reads this to let ↑ ↓ fall through at fit (docs/design/16:
       // they pan only when zoomed). Lock-free; the UI never waits on it.
       view_fitted_.store(!(current_image_ || current_video_.texture) || camera_.fit_mode(),
