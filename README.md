@@ -1,12 +1,28 @@
 # MediaViewer
 
-**Open a camera dump the moment you double-click it. Pan a 42-megapixel RAW without dropping a frame.**
+**Open a camera dump the moment you double-click it. Pan a 42-megapixel RAW without dropping a frame.
+Find any photo, or any moment in any video, by typing what you remember.**
 
 MediaViewer is a fast, keyboard-first viewer for the folder that comes off your camera: photos, RAW and
-video side by side in one window. It draws on its own Direct3D 11 surface instead of a stock image or
-media-player control, so decoding never stands between you and the screen.
+video side by side in one window, with music and documents when you want them. It draws on its own GPU surface
+(Direct3D 11 on Windows, Metal on the Mac) instead of a stock image or media-player control, so decoding never
+stands between you and the screen. It runs natively on Windows and macOS, and nothing about your files ever
+leaves your computer.
 
 ![MediaViewer showing a RAW photo with the filmstrip underneath](docs/img/viewer.png)
+
+### At a glance
+
+| | |
+|---|---|
+| **Instant** | A RAW preview on screen in 44–125 ms, the next photo ready in 0.2 ms, zero dropped frames while panning |
+| **Everything in one window** | Photos, camera RAW, HEIC, AVIF, animated GIF/WebP, HDR video, MP3/M4A, PDF and Word |
+| **Search what's in them** | "dog on a beach", "happy birthday", "videos of Anna": photos and the exact moments in clips, all computed on your machine |
+| **People** | Faces grouped into people. Name someone once, then find every photo and clip they are in |
+| **Edit without fear** | Crop, straighten, colour, lossless rotate, edit any metadata tag, trim and cut video. Originals are never touched |
+| **Import and back up** | Verified copies from a card at network speed, sorted by date, duplicates skipped. Back up your whole Photos library to a NAS |
+| **Make it yours** | Every key remappable, light or dark, and themes from anyone, installed from a file or a link |
+| **Private by design** | No account, no cloud, no upload. Telemetry is off unless you turn it on |
 
 ## Download
 
@@ -15,7 +31,7 @@ media-player control, so decoding never stands between you and the screen.
 | **Windows 10/11, x64** | `MediaViewer-<version>-Setup.exe` from the [latest release](https://github.com/longtimeno-c/mediaviewer/releases/latest) |
 | **Mac, macOS 14+, Apple Silicon and Intel** | `MediaViewer-<version>.dmg` from the [latest release](https://github.com/longtimeno-c/mediaviewer/releases/latest) |
 
-Windows may show a SmartScreen warning the first time: the installer is not Authenticode-signed. Checksums are on each release page.
+Free and open source. Windows may show a SmartScreen warning the first time: the installer is not Authenticode-signed. Checksums are on each release page.
 
 Setup's Finish page offers to delete the setup `.exe` once it closes. On a Mac, the first-launch setup sheet offers to eject the MediaViewer disk and move the `.dmg` to the Trash. Both boxes start ticked.
 
@@ -85,8 +101,6 @@ Every chart is re-measured and redrawn by one command, `python tools/perf/regene
 
 - **Everything in one folder.** JPEG, PNG, BMP, GIF, TIFF, WebP, HEIC, AVIF, ICO, camera RAW (CR2, CR3, NEF, ARW, DNG)
   and MP4, MOV, MKV, WebM, AVI, TS video open in the same window on the same canvas.
-- **Music and documents too.** MP3 and M4A play with their cover art; PDF and Word (DOCX) files open page by page,
-  `Ctrl+PageUp` / `Ctrl+PageDown` to turn. MediaViewer offers to open them, and never makes itself their default app.
 - **RAW+JPEG and Live Photo pairs are one entry**, one arrow-key stop, badged RAW or LIVE. Copy, move and delete act on both files.
 - **Filmstrip and gallery.** A virtualised filmstrip on a persistent thumbnail cache; `G` opens a full grid.
 - **Nested folders as tiles.** Child folders show with covers and counts, a path bar stays on screen, and
@@ -94,6 +108,7 @@ Every chart is re-measured and redrawn by one command, `python tools/perf/regene
 - **Folder tree** (`Ctrl+Shift+E`) and sort by name, date modified, size, type or EXIF date taken.
 - **Fit, fill, 100 %, or any zoom.** Wheel zoom toward the cursor with springy, physical-feeling pan and zoom.
 - **Animated GIF, APNG and WebP** play on the same frame clock.
+- **As many windows as you like.** `Ctrl/⌘+N` opens a new window, from the File menu or the Dock too.
 - **Light or dark.** Follows the system appearance on Windows and macOS, and so does the canvas surround unless you pick Grey, White, Checkerboard or Dark.
 
 | Gallery | Frame-time overlay (`F3`) |
@@ -108,10 +123,19 @@ Arrow keys or `A`/`D` browse, `Space` advances, `Insert` marks, `F7`/`F8` copy o
 
 ## Video that lives with your photos
 
-FFmpeg decode with D3D11 hardware acceleration on the same swapchain as photos. H.264, HEVC, VP9, AV1 and MPEG-2 (and Apple ProRes on the Mac),
-including 10-bit HDR clips mapped to SDR. Audio is the master clock. Seek, frame step (`,` `.`), speed
+Hardware-accelerated decode on the same surface as your photos. H.264, HEVC, VP9, AV1 and MPEG-2 (and Apple ProRes on the Mac),
+including 10-bit HDR clips mapped to SDR. Audio is the master clock, so lips stay in sync. Seek, frame step (`,` `.`), speed
 0.25x-4x, A-B loop, resume where you left off, and media keys. `;` plays a Live Photo's motion and returns to the still.
 The transport floats over the video and gets out of the way after a moment of playback; any movement brings it back.
+
+## Music and documents, when you want them
+
+- **MP3 and M4A** play with their cover art.
+- **PDF and Word (DOCX)** open page by page. The wheel or trackpad scrolls the page and turns to the next one at the edge;
+  `Ctrl+PageUp` / `Ctrl+PageDown` jump a page, and `Ctrl/⌘`+wheel or a pinch zooms.
+- **Open in your usual app.** On a document, the Edit button becomes *Open in &lt;app&gt;*, with every app that can open it one click away.
+- **Your camera folders stay clean.** Audio and documents are hidden in folders until you switch them on in
+  **Settings → File types**; a file you open directly always shows. MediaViewer offers to open them, and never makes itself their default app.
 
 ## Know your shot
 
@@ -123,18 +147,6 @@ one-pixel colour eyedropper (`Ctrl+C` copies the value).
 
 Images are converted from their embedded ICC profile through a linear working space to sRGB. A tagged image is
 never assumed to be sRGB, and camera JPEGs are never tone-mapped. HDR video is mapped to SDR.
-
-## Trustworthy by design
-
-- **Your originals are never modified.** Browsing is read-only; edits write new files or an XMP sidecar.
-- **Nothing about your files leaves the machine.** Telemetry is opt-in and off by default. Crash reports are captured
-  locally, scrubbed of paths, filenames and your username, and never sent without asking.
-- **No codec packs.** Decoders are bundled; you never need the Store HEVC extension.
-- **Installs per user**, with a public installer and a background updater. The installer is not Authenticode-signed, so SmartScreen may warn once. It never takes over your file associations.
-- **Stable or preview updates.** Updates follow stable releases by default. **Settings → Update channel → Preview**
-  also installs signed preview builds as they are published; switching back to Stable keeps the installed version
-  until a newer stable release arrives.
-- **Hardened decoding.** A corpus of broken files and per-decoder fuzzers run in CI.
 
 ---
 
@@ -153,43 +165,94 @@ never assumed to be sRGB, and camera JPEGs are never tone-mapped. HDR video is m
 - **Trim, extract and remux.** Lossless trims on keyframes or frame-accurate ones, a frame as PNG or JPEG, the audio track (copy, WAV or FLAC), a range as GIF or WebP, and MP4 ↔ MKV.
 - **Every result is a new file** beside the clip.
 
-## At home on Windows and macOS
+---
 
-- **Explorer thumbnails** for HEIC, AVIF and RAW, and a **Spotlight importer** and **Quick Look** on the Mac.
-- **Recent folders** on the home screen, in the jump list and the Dock.
-- **Taskbar and Now Playing media controls**, drag-out, copy path or edited image, the Share sheet, and single-window open.
-- **The same core on both platforms:** Direct3D 11 and WinUI on Windows, Metal and SwiftUI on the Mac.
+## Find anything by describing it
 
-## Optional add-ons
+The optional **Local search** add-on reads your library the way you remember it. Type what you are looking for
+("guy on a skateboard", "dog barking", "happy birthday") and get the photos and the exact moments in videos.
+All of it is computed on your computer; nothing is uploaded.
 
-Add-ons install from **Settings → Add-ons**. They are signed and verified, never bundled with the app, and removable at any time.
+- **Pictures and video frames** use OpenAI CLIP: ViT-B/32 (*Fast*) or ViT-L/14 (*High*), picked for your hardware. It runs with NVIDIA acceleration on Windows and Core ML on Apple silicon. Every photo and sampled frame is indexed once in the background, so a search reads the index and never re-scans your files.
+- **Sound and speech.** An optional **Sound** piece indexes what videos sound like (LAION CLAP) and what is said in them (Whisper).
+- **Narrow it as you type:** `-beach` leaves something out, `video` or `is:photo` picks a kind, `in:2024` or `before:2025` limits the date, and quotes find words that are said.
+- **Jump straight to the moment.** `Ctrl/⌘+F` searches, `Ctrl/⌘+Shift+F` finds similar, and `N` / `Shift+N` walk the matching moments in a clip.
+- **Your cloud folders too.** Folders on OneDrive or iCloud Drive are indexed, online-only files included if you let it fetch them.
+- **Move house without re-indexing.** Export the index to one file and import it on another computer, or after moving a library to a NAS. Thumbnails and People go only if you tick them.
+- **You can see it working.** Settings shows each folder's progress, the pass that is running, and a Rescan that says what it is doing.
+- Pieces install separately: Core about 1.2 GB, Sound about 1 GB, People about 40 MB, and at most 3 GB in all. On a Mac, Local search needs Apple silicon.
 
-- **Import.** Copies a card or folder into your library.
-  - It skips what is already there by content, and verifies every copy by reading it back.
-  - It sorts into dated folders, keeping RAW+JPEG and Live Photo pairs together.
-  - It resumes after an unplug and can back up to a second drive.
-  - It finds duplicate files anywhere in a folder and its subfolders by content, not name, and lets you open each copy or move extras to the Recycle Bin / Trash. The last copy is always kept.
-- **Local search.** Type what you are looking for ("guy on a skateboard", "dog barking", "happy birthday") and get the photos and the exact moments in videos. All of it is computed on your computer; nothing is uploaded.
-  - **Pictures and video frames** use OpenAI CLIP: ViT-B/32 (*Fast*) or ViT-L/14 (*High*), picked for your hardware. It runs with NVIDIA acceleration on Windows and Core ML on Apple silicon. Every photo and sampled frame is indexed once in the background, so a search reads the index and never re-scans your files.
-  - An optional **Sound** piece indexes what videos sound like (LAION CLAP) and what is said in them (Whisper).
-  - An optional, deletable **People** piece finds faces (YuNet) and groups them (AdaFace). Name a person once, then search "Anna" or "videos of Anna".
-  - On a Mac it can also search your **Photos library**, iCloud Photos included. It reads only what is already on the Mac and never changes the library. Once added, the library is also a **folder you can open** (the folder tree, File → Open Photos Library), and Settings can **back up every original** — iCloud-only ones downloaded for it — into year and day folders on a drive or a NAS, every copy verified; run it again and only what is new is copied.
-  - Narrow a search as you type: `-beach` leaves something out, `video` or `is:photo` picks a kind, `in:2024` or `before:2025` limits the date, and quotes find words that are said.
-  - Pieces install separately: Core about 1.2 GB, Sound about 1 GB, People about 40 MB, and at most 3 GB in all. On a Mac, Local search needs Apple silicon.
-  - Export the index to one file and import it on another computer, or after moving a library to a NAS, so nothing is indexed twice. Thumbnails and People go only if you tick them.
-  - `Ctrl/⌘+F` searches, `Ctrl/⌘+Shift+F` finds similar, and `N` / `Shift+N` walk the matching moments in a clip.
-
-**How well Local search finds things.** Measured on a 25,000-photo library of captioned COCO photos, the size of a real camera roll, with the setting you get out of the box. Every result is checked against the photo's own captions. The raw report is [`docs/perf/search.json`](docs/perf/search.json).
+**How well it finds things.** Measured on a 25,000-photo library of captioned COCO photos, the size of a real camera roll, with the setting you get out of the box. Every result is checked against the photo's own captions. The raw report is [`docs/perf/search.json`](docs/perf/search.json).
 
 ![Local search accuracy on a 25,000-photo library](docs/img/search-accuracy.svg)
 
 Search for something your library does not have and you mostly get "nothing found". The exception is text CLIP recognises: "qwerty" finds keyboards and "314159" finds numbers, and some placeholder text such as "lorem ipsum" still returns photos.
+
+### People
+
+An optional, deletable **People** piece finds faces (YuNet) and groups them into people (AdaFace).
+
+- **Name someone once**, then search "Anna" or "videos of Anna", or click their card to see every photo and clip they are in.
+- **Only faces you could recognise** start a person, so the list is the people in your life, not every blurry face in the background of a clip.
+- **Tidy it in seconds.** People live in **Settings → Local search → People**: rename on the card, select several and merge duplicates, or open a person's faces to check who is who.
+- **Scope it** to the folder you are in, with or without its subfolders.
+
+### Your Mac Photos library
+
+On a Mac, Local search can also search your **Photos library**, iCloud Photos included.
+
+- It reads what is already on the Mac and never changes the library. Opt in and it will also download iCloud-only videos, one or two at a time, so their moments, sound and faces are searchable too.
+- **Browse it like a folder.** Once added, the library opens from the folder tree, the welcome screen or **File → Open Photos Library**, and `⌘E` shows the photo in Photos.
+- **Back up every original** into year and day folders on a drive or a NAS, iCloud-only ones downloaded for it and edited photos saved as their untouched original. Every copy is verified, a run only copies what is new, and a NAS that remounts under a new name or drops off the network mid-run picks up where it left off.
+
+## Import: off the card, verified
+
+The optional **Import** add-on copies a card or folder into your library.
+
+- **Three questions:** where to, what to import, how to organise. Everything else waits under *More options*.
+- **Nothing twice.** It skips what is already there by content, and verifies every copy by reading it back.
+- **At network speed.** Copies keep several requests in flight, so importing straight to a NAS runs as fast as the link allows.
+- **Sorted for you** into dated folders, keeping RAW+JPEG and Live Photo pairs together.
+- **Unplug-proof.** It resumes after an unplug, can back up to a second drive, and ejects the card when it is done.
+- **Find duplicates** anywhere in a folder and its subfolders by content, not name. Open each copy or move extras to the Recycle Bin / Trash; the last copy is always kept.
+
+## Themes and add-ons from anyone
+
+- **Anyone can make an add-on.** One `.mvaddon` file, signed by the person who made it. Drop it on MediaViewer, or use
+  **Settings → Add-ons → From others** to install from a file or a link.
+- **Themes first.** Colours and a typeface for MediaViewer's bars, panes and text. A theme dresses the app and never touches your photos' colour.
+- **Safe to try.** You see who signed it and what it is before it installs, only its original publisher can update it, and an add-on never gets network access.
+- **Make your own in five minutes** with a single-file Python tool and a guide: [docs/ADDONS.md](docs/ADDONS.md). Your add-on is yours to licence however you like.
+
+All add-ons install from **Settings → Add-ons**, are verified at every start, and are removable at any time. Nothing of them is installed or read until you ask. When an add-on updates while it is running, MediaViewer offers a restart and puts you back where you were; it never forces one.
+
+---
+
+## At home on Windows and macOS
+
+- **Native on both.** Direct3D 11 and WinUI on Windows, Metal and SwiftUI on the Mac, on one shared core. Not a web view, not a port.
+- **Explorer thumbnails** for HEIC, AVIF and RAW, and a **Spotlight importer** and **Quick Look** on the Mac.
+- **Recent folders** on the home screen, in the jump list and the Dock.
+- **Taskbar and Now Playing media controls**, drag-out, copy path or edited image, the Share sheet, and single-window open.
+
+## Trustworthy by design
+
+- **Your originals are never modified.** Browsing is read-only; edits write new files or an XMP sidecar.
+- **Nothing about your files leaves the machine.** Search, faces and indexing run locally. Telemetry is opt-in and off by default. Crash reports are captured
+  locally, scrubbed of paths, filenames and your username, and never sent without asking.
+- **No codec packs.** Decoders are bundled; you never need the Store HEVC extension.
+- **Installs per user**, with a public installer and a background updater. It never takes over your file associations.
+- **Stable or preview updates.** Updates follow stable releases by default. **Settings → Update channel → Preview**
+  also installs signed preview builds as they are published; switching back to Stable keeps the installed version
+  until a newer stable release arrives.
+- **Hardened decoding.** A corpus of broken files and per-decoder fuzzers run in CI, documents included.
 
 ## Coming next
 
 | Soon | |
 |---|---|
 | **Search from Final Cut Pro** (Mac) | A MediaViewer Search panel inside Final Cut Pro that uses your Local search index, so you can drag the matching moments straight into an event or the timeline. It is off until you turn it on under Local search ([docs/design/23](docs/design/23-nle-search.md)) |
+| **More from add-ons** | Add-ons that bring settings pages, commands, keymaps and whole screens, as sandboxed scripts with no network access ([docs/design/25](docs/design/25-open-addons.md)) |
 | **Voice search** (optional add-on) | Speak the query to Local search. Speech runs on-device ([docs/design/19](docs/design/19-voice.md)) |
 | **Video Editor, several clips** | Several clips on one timeline, zoom and dissolves ([docs/design/21](docs/design/21-video-editor.md)) |
 | **Editor add-on** (optional) | Colour grading, multi-track editing, titles and captions, an audio mixer and delivery presets ([docs/design/22](docs/design/22-editor-addon.md)) |
