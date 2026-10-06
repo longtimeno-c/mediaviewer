@@ -1799,6 +1799,55 @@ TEST_CASE("a large tower whose Core ML upgrade fails gives way to the small one"
   CHECK(r.search("red").front().first == "red.jpg");
 }
 
+// Core ML's stand-in (pack.cpp upgrading_clip): CPU until `upgraded`, then
+// the accelerated provider, as the real one swaps itself.
+class upgrading_stand_in final : public mv::infer::embedder {
+ public:
+  explicit upgrading_stand_in(std::shared_ptr<fake_embedder> inner) : inner_(std::move(inner)) {}
+  std::uint32_t dim() const noexcept override { return inner_->dim(); }
+  const std::string& spec_key() const noexcept override { return inner_->spec_key(); }
+  mv::infer::backend on() const noexcept override {
+    return upgraded.load() ? mv::infer::backend::coreml : mv::infer::backend::cpu;
+  }
+  bool settling() const noexcept override { return !upgraded.load(); }
+  mv::expected embed_images(std::span<const mv::infer::rgb_view> images, std::vector<float>& out) override {
+    return inner_->embed_images(images, out);
+  }
+  mv::result<std::vector<float>> embed_text(std::string_view text) override { return inner_->embed_text(text); }
+  std::atomic<bool> upgraded{false};
+
+ private:
+  std::shared_ptr<fake_embedder> inner_;
+};
+
+// While Core ML compiles the large tower, searches answer on its CPU stand-in
+// but nothing is embedded with it: L/14 on CPU beside the compile took a
+// MacBook Air 694 s to load a cached model (2026-10-05). The status says it is
+// still loading; indexing starts once the Neural Engine has it.
+TEST_CASE("indexing waits while the tower is still its CPU stand-in for Core ML", "[ai][engine][fallback]") {
+  rig r;
+  r.lands_on = mv::infer::backend::coreml;
+  auto large = std::make_shared<upgrading_stand_in>(r.high);
+  r.tower = [&](std::uint32_t q) -> std::shared_ptr<mv::infer::embedder> {
+    if (q == 2) return large;
+    return r.fast;
+  };
+  r.file("red.jpg");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(wait_for([&] { return r.status().state == MV_AI_STATE_LOADING && r.status().quality == 2u; }, 5000));
+  std::this_thread::sleep_for(std::chrono::milliseconds(600));
+  CHECK(r.high->images_embedded.load() == 0);
+  CHECK(r.status().state == MV_AI_STATE_LOADING);
+  CHECK(r.search("red").empty());  // answers (nothing yet), never waits on the compile
+
+  large->upgraded = true;
+  REQUIRE(r.idle());
+  CHECK(r.high->images_embedded.load() > 0);
+  CHECK(r.status().backend == static_cast<std::uint32_t>(mv::infer::backend::coreml));
+  CHECK(r.search("red").front().first == "red.jpg");
+}
+
 // The query is embedded by the tower whose vectors are in the matrix, and
 // the two change as one at a migration's end: never a Fast query against High
 // vectors (another size here, so a mix would find nothing).

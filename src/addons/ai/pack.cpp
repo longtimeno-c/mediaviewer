@@ -249,10 +249,29 @@ clip_meta meta_of(const infer::clip_spec& s) {
   return m;
 }
 
+// Whether ORT finished a cache entry: <hash>/<n>_<shape>_<format>/model is the
+// converted package and compiled_model.mlmodelc beside its parts is Core ML's
+// compile, moved in whole once it ends. ORT writes model.txt before either and
+// takes any existing model folder as converted, so a quit mid-conversion left
+// an entry every later start loaded, failed, and recorded as Core ML failing
+// the tower here (Auto then runs the small one for good). Mid-compile there
+// is no .mlmodelc yet; ORT would compile again, but the package may be cut.
+bool coreml_entry_complete(const std::filesystem::path& entry) {
+  std::error_code ec;
+  bool any = false;
+  for (const auto& sub : std::filesystem::directory_iterator(entry, ec)) {
+    if (!sub.is_directory(ec)) continue;
+    any = true;
+    if (!std::filesystem::exists(sub.path() / "model" / "compiled_model.mlmodelc", ec)) return false;
+  }
+  return any;
+}
+
 // Core ML's compiled models (Mac), under data/cache: derived, so Remove drops
 // them even when it keeps the index (store.h). ORT keys an entry by the model's
 // path, which holds the pack's version: once per start, entries whose model
-// no longer exists (an older pack) go.
+// no longer exists (an older pack) go, and so do entries a quit cut short
+// (before this process opens anything, so none is being written).
 std::string coreml_cache(pack_state& p) {
   const std::string dir = join(join(p.data_dir, "cache"), "coreml");
   std::call_once(p.cache_pruned, [&] {
@@ -260,7 +279,11 @@ std::string coreml_cache(pack_state& p) {
     for (const auto& e : std::filesystem::directory_iterator(fs_path(dir), ec)) {
       std::ifstream in(e.path() / "model.txt", std::ios::binary);
       std::string model;
-      if (in && std::getline(in, model) && std::filesystem::exists(fs_path(model), ec)) continue;
+      if (in && std::getline(in, model) && std::filesystem::exists(fs_path(model), ec) &&
+          coreml_entry_complete(e.path())) {
+        continue;
+      }
+      in.close();
       std::filesystem::remove_all(e.path(), ec);
     }
     // The first Mac builds cached beside the index.
@@ -687,7 +710,9 @@ engine_deps pack_deps(const host& h, const std::string& self_dir, const std::str
     for (const auto& e : std::filesystem::directory_iterator(fs_path(coreml_cache(*p)), ec)) {
       std::ifstream in(e.path() / "model.txt", std::ios::binary);
       std::string model;
-      if (in && std::getline(in, model) && model == it->second.image_file) return false;
+      if (in && std::getline(in, model) && model == it->second.image_file && coreml_entry_complete(e.path())) {
+        return false;
+      }
     }
     return true;
   };

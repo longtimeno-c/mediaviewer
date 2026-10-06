@@ -85,6 +85,8 @@ item item_of(PHAsset* a) {
 // The largest picture of `a` this Mac has, without the network. A synchronous
 // request is answered in full quality or not at all, so the sizes are asked
 // in turn, largest first; Optimize Mac Storage keeps a screen-sized one.
+// `first_edge` 0 starts at the full size and still tries the smaller ones
+// (it skipped them all, so an iCloud-only photo had no preview, 2026-10-05).
 NSImage* best_local_image(PHAsset* a, CGFloat first_edge) {
   PHImageRequestOptions* o = [[PHImageRequestOptions alloc] init];
   o.synchronous = YES;
@@ -94,7 +96,7 @@ NSImage* best_local_image(PHAsset* a, CGFloat first_edge) {
   o.version = PHImageRequestOptionsVersionCurrent;
   CGFloat edges[] = {first_edge, 2048, 1024, 512, 256, 128};
   for (CGFloat edge : edges) {
-    if (edge > first_edge) continue;
+    if (first_edge > 0 && edge > first_edge) continue;
     __block NSImage* got = nil;
     const CGSize size = edge > 0 ? CGSizeMake(edge, edge) : PHImageManagerMaximumSize;
     [[PHImageManager defaultManager] requestImageForAsset:a

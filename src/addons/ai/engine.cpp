@@ -538,7 +538,10 @@ void engine::refresh_counts() {
   if (s.faces) flags |= MV_AI_STATUS_FACES_ON;
   if (face_total > 0 || faces_ready) flags |= MV_AI_STATUS_FACES_READY;
   if (models_failed_) flags |= MV_AI_STATUS_NO_MODELS;
-  if (first_compile_ && (loading_ || !models_ready_) && !models_failed_) flags |= MV_AI_STATUS_FIRST_COMPILE;
+  const bool upgrading_now = upgrading(build);
+  if (first_compile_ && (loading_ || !models_ready_ || upgrading_now) && !models_failed_) {
+    flags |= MV_AI_STATUS_FIRST_COMPILE;
+  }
   if (!sound_spec.empty() || !speech_spec.empty()) flags |= MV_AI_STATUS_AUDIO_READY;
   if (rerun) flags |= MV_AI_STATUS_PEOPLE_RERUN;
   if (small_fallback_) flags |= MV_AI_STATUS_SMALL_FALLBACK;
@@ -578,7 +581,7 @@ void engine::refresh_counts() {
   std::uint32_t state = MV_AI_STATE_INDEXING;
   if (models_failed_) {
     state = MV_AI_STATE_ERROR;
-  } else if (!models_ready_ || loading_) {
+  } else if (!models_ready_ || loading_ || upgrading_now) {
     state = MV_AI_STATE_LOADING;
   } else if (paused_ || index_full_) {
     state = MV_AI_STATE_PAUSED;
@@ -635,6 +638,21 @@ std::uint32_t engine::effective_quality(infer::backend on) const {
   }
   if (!has(q)) q = has(MV_AI_QUALITY_FAST) ? MV_AI_QUALITY_FAST : MV_AI_QUALITY_HIGH;
   return q;
+}
+
+// The tower is headed for an accelerated provider and still answers on its
+// CPU stand-in while that compiles (pack.cpp upgrading_clip; Core ML, minutes
+// for L/14 on a MacBook Air). Searches answer meanwhile; the indexer waits:
+// embedding the library with L/14 on CPU is a twelfth of the small tower's
+// speed and fought the compile for the cores (694 s for a load from the
+// cache, 2026-10-05).
+bool engine::upgrading(const loaded_clip& c) {
+  return c.model && c.on != infer::backend::cpu && c.model->on() == infer::backend::cpu && c.model->settling();
+}
+
+bool engine::upgrading() const {
+  std::lock_guard lock(models_m_);
+  return upgrading(build_);
 }
 
 bool engine::large_failed_here() const {
@@ -2363,7 +2381,7 @@ platform::power engine::power_state() const {
 
 bool engine::wait_turn() {
   while (!stopping_) {
-    if (clearing_ || transferring_ || !models_ready_ || loading_ || paused_ || index_full_) {
+    if (clearing_ || transferring_ || !models_ready_ || loading_ || paused_ || index_full_ || upgrading()) {
       std::unique_lock lock(work_m_);
       work_cv_.wait_for(lock, std::chrono::milliseconds(200));
       continue;

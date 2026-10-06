@@ -301,10 +301,11 @@ struct StatusLine: Equatable {
       let waiting = s.yield_reason != 0
       // Core ML compiles each model for this Mac once (minutes, cached
       // after): the pack says when this load is that first one. Every other
-      // start is an ordinary load, and says so (2026-09-27).
+      // start is an ordinary load, and says so (2026-09-27). Search answers
+      // meanwhile, on CPU; indexing waits for the Neural Engine (2026-10-05).
       let first = s.flags & MV_AI_STATUS_FIRST_COMPILE != 0
       text = waiting ? "Loading the search model when the viewer is idle"
-        : first ? "Preparing the search model for this Mac — the first time takes a few minutes"
+        : first ? "Preparing the search model for this Mac (first time only, a few minutes). Search works meanwhile"
         : "Loading the search model…"
       spinning = !waiting
       idle = false
