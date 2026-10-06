@@ -134,7 +134,9 @@ lost (such a run copies beside it as ` (2)`); Photos' edited renditions as an op
 `edit/clip_common.cpp` already used); every `video_frame` carries it as quarter turns. The
 video blitters (HLSL and its MSL twin) take the turn: the camera frames the *displayed* picture
 (coded height × width for 90 / 270) and the shader maps back to the coded frame before sampling
-the visible rect. Both hosts size the picture after the turn (`picture_size`, `media_width`).
+the visible rect. Both hosts size the picture after the turn (`picture_size`, `media_width`),
+including the Mac's fit on a clip's first frame (until 2026-10-05 it fitted the coded size, so an
+iPhone portrait clip sat pinned left and ran off the bottom).
 `player::poster_frame` turns the tile the same way, so the thumbnail spec moves
 `jpg512.2 → jpg512.3` and old posters regenerate on view (docs/design/04). Tests:
 `tests/test_poster.cpp` on the synthetic fixture's 0°, 90° and 180° clips.
