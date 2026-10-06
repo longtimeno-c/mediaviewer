@@ -682,6 +682,11 @@ a pack with a new face model does the same by itself. Tests: `mv_ai_tests "[reru
 n x dim float32) and optionally `MV_FACE_TUNING="same keep keep_weak margin ambiguous merge"`,
 which runs real vectors through faces.db's online clustering and the re-run's settle and prints
 BCubed precision and recall.
+LFW has only clear faces, so check a clustering or People-speed change on a real library too:
+copy its `faces.db` (`sqlite3 "file:<faces.db>?mode=ro" ".backup <copy>"`; opening migrates, so
+never the live one), then `MV_FACES_DB=<copy> mv_ai_tests "[.people-settle]"` (the settle, with
+people listed before and after) or `"[.people-api]"` (what each People read the chrome makes
+costs). Delete the copy after: it is face data.
 
 The People grid (Settings → People, on both platforms) follows the folder
 the viewer has open: **People in · This folder | + Subfolders**, + Subfolders by default;

@@ -50,8 +50,8 @@ final class PeopleGridBench: XCTestCase {
 
   /// A hosted grid in an offscreen window, laid out and settled; torn down
   /// after the test so nothing of it runs into the next.
-  private func hosted(_ m: ManagementModel) -> NSHostingView<PeopleGrid> {
-    let host = NSHostingView(rootView: PeopleGrid(model: m, open: { _ in }))
+  private func hosted(_ m: ManagementModel, limit: Int? = nil) -> NSHostingView<PeopleGrid> {
+    let host = NSHostingView(rootView: PeopleGrid(model: m, open: { _ in }, limit: limit, showAll: {}))
     host.sizingOptions = []
     let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: Self.width, height: 4000),
                           styleMask: [.borderless], backing: .buffered, defer: false)
@@ -86,11 +86,33 @@ final class PeopleGridBench: XCTestCase {
     }
   }
 
+  /// The same pass for the grid as Settings has it since 2026-10-06: the
+  /// first 24 people and "Show all" (ManagementView.peopleShown).
+  func testLayoutPassSettings() {
+    let m = model()
+    measure(metrics: metrics) {
+      let c = NSHostingController(rootView: PeopleGrid(model: m, open: { _ in }, limit: ManagementView.peopleShown,
+                                                       showAll: {}))
+      c.sizingOptions = []
+      let size = c.sizeThatFits(in: CGSize(width: Self.width, height: .greatestFiniteMagnitude))
+      XCTAssertGreaterThan(size.height, 300)
+    }
+  }
+
   /// The counts moved and the list came back in the index's order (most
   /// faces first), as it does while faces stream in and after a merge.
   func testPeopleReorder200() {
+    reorder(limit: nil)
+  }
+
+  /// The same, for the grid Settings shows (24 people and "Show all").
+  func testPeopleReorderSettings() {
+    reorder(limit: ManagementView.peopleShown)
+  }
+
+  private func reorder(limit: Int?) {
     let m = model()
-    _ = hosted(m)
+    _ = hosted(m, limit: limit)
     var bump = 0
     measure(metrics: metrics) {
       bump += 1

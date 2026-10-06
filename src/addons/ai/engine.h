@@ -477,6 +477,8 @@ class engine {
   // The control thread, when indexing is idle.
   void settle_people();
   std::atomic<bool> settling_{false};
+  // Faces landed since the control loop last posted AI_PEOPLE (faces_of).
+  std::atomic<bool> people_changed_{false};
   // `replacing`: a piece reload, so an absent piece clears what it answered.
   void load_audio(const settings& s, std::uint32_t speech_quality, bool replacing);
   // Blocks until the viewer is quiet (or stopping): opening sessions contends
@@ -637,6 +639,11 @@ class engine {
   std::deque<job> queue_;
   std::set<std::int64_t> in_flight_;
   std::string prefer_dir_key_;
+  // The folder a host just opened, for the next claim (note_folder_opened
+  // never waits on work_m_). Leaf lock: nothing is taken while it is held.
+  std::mutex prefer_m_;
+  std::string prefer_next_;
+  bool prefer_due_ = false;
   bool queue_exhausted_ = false;
   unsigned busy_workers_ = 0;
 

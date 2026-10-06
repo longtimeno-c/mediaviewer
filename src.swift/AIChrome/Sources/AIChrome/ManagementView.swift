@@ -180,7 +180,13 @@ final class ManagementModel: ObservableObject {
     visible = 0
   }
 
-  func statusChanged() { pollStatus() }
+  /// Events while Settings is not showing are dropped: appeared() reads
+  /// everything again. People re-read on every face that landed while hidden
+  /// was 70 ms of the pack's lock twice a second at 36 k faces (2026-10-06).
+  func statusChanged() {
+    guard visible > 0 else { return }
+    pollStatus()
+  }
 
   private func pollStatus() {
     guard let s = table.status() else { return }
@@ -278,6 +284,7 @@ final class ManagementModel: ObservableObject {
   // MARK: roots
 
   func reloadRoots() {
+    guard visible > 0 else { return }  // appeared() reads them
     let t = table
     Task.detached {
       let json = t.json { t.a.roots_json?(t.ctx, $0, $1, $2) ?? MV_ERR_INVALID_ARG }
@@ -460,6 +467,7 @@ final class ManagementModel: ObservableObject {
   }
 
   func reloadPeople() {
+    guard visible > 0 else { return }  // appeared() reads them
     guard facesOn else {
       if !people.isEmpty { people = [] }
       return
@@ -517,6 +525,20 @@ final class ManagementModel: ObservableObject {
       try? await Task.sleep(nanoseconds: 5_000_000_000)
       if self.noteGeneration == g { self.peopleNote = "" }
     }
+  }
+
+  /// A card's "Merge into…": the named people and the most-seen ones, not
+  /// everyone. A context menu is built with its card's body, and 2,000
+  /// entries on each card made every card cost as much as the whole list.
+  /// Anyone else is a drag, or ⌘-click and "Merge into…", away.
+  func mergeTargets(for person: Person) -> [Person] {
+    var out: [Person] = []
+    for (i, p) in people.enumerated() where p.id != person.id {
+      guard !p.name.isEmpty || i < ManagementView.peopleShown else { continue }
+      out.append(p)
+      if out.count >= 60 { break }
+    }
+    return out
   }
 
   func displayName(_ p: Person) -> String {
@@ -684,6 +706,8 @@ struct ManagementView: View {
   @ObservedObject var model: ManagementModel
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var openPerson: Person?
+  /// "Show all … people": every person, in a sheet whose grid is lazy.
+  @State private var allPeople = false
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
@@ -848,7 +872,8 @@ struct ManagementView: View {
           reanalyseRow
         }
         if model.facesOn && model.facesReady {
-          PeopleGrid(model: model, open: { openPerson = $0 })
+          PeopleGrid(model: model, open: { openPerson = $0 }, limit: Self.peopleShown,
+                     showAll: { allPeople = true })
         }
       }
     }
@@ -860,7 +885,14 @@ struct ManagementView: View {
     .sheet(item: $openPerson) { person in
       PersonSheet(model: model, person: person) { openPerson = nil }
     }
+    .sheet(isPresented: $allPeople) {
+      AllPeopleSheet(model: model) { allPeople = false }
+    }
   }
+
+  /// People on the Settings page itself: four rows at its usual width. The
+  /// rest are a "Show all" away (PeopleGrid.limit).
+  static let peopleShown = 24
 
   struct MediaChoice: Identifiable {
     let value: UInt32

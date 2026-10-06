@@ -79,7 +79,12 @@ person_proto build_proto(const refine_input& in, const refine_params& p, std::in
   for (std::size_t i : members) {
     if (in.faces[i].pinned || in.faces[i].quality >= p.weak_quality) refs.push_back(i);
   }
-  if (refs.empty()) refs = members;  // all weak: the best of them still describe the person
+  if (refs.empty()) {
+    // All weak: the best of them still describe a person the user named;
+    // anyone else has nothing that vouches for them (refine_params).
+    out.weak_only = !named;
+    refs = members;
+  }
   if (refs.size() > p.max_refs) refs.resize(p.max_refs);
   const std::size_t n = refs.size();
   if (n == 0) return out;
@@ -154,7 +159,7 @@ person_proto build_proto(const refine_input& in, const refine_params& p, std::in
 bool eligible(const person_proto& p) {
   // An unnamed, unpinned one-face person is not evidence of anybody: joining
   // it is regroup's call, not a move's.
-  return p.named || p.pinned || p.exemplar_ids.size() >= 2;
+  return p.named || p.pinned || (!p.weak_only && p.exemplar_ids.size() >= 2);
 }
 
 struct verdict {
@@ -231,10 +236,24 @@ refine_output refine_people(const refine_input& in, const refine_params& p) {
       const float* v = row(i);
       const std::int64_t own = where[i];
       verdict vd;
+      const person_proto* own_proto = nullptr;
       if (own > 0) {
         if (auto it = built.find(own); it != built.end()) {
+          own_proto = &it->second;
           vd.own = support(v, it->second, dim, f.id, p.top_k);
         }
+      }
+      // Unusable, or filed under a person nothing vouches for: unassigned,
+      // and never admitted anywhere.
+      if (f.quality < p.unusable_quality || (own_proto && own_proto->weak_only)) {
+        if (own > 0) {
+          vd.change = true;
+          vd.to = 0;
+          vd.why = refine_why::evict;
+          last[i] = vd;
+          changes.emplace_back(i, vd);
+        }
+        continue;
       }
       // Prefilter by the core mean (mean pairwise cosine), then exemplars.
       shortlist.clear();

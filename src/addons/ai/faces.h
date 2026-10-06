@@ -106,7 +106,7 @@ struct refine_stats {
 struct person_row {
   std::int64_t id = 0;
   std::string name;
-  std::uint32_t faces = 0;
+  std::uint32_t faces = 0;  // photos and clips with their face (not faces: a clip has many)
   face_row cover;  // the clearest face
 };
 
@@ -141,10 +141,11 @@ class faces_db {
   [[nodiscard]] expected mark_scanned(std::int64_t asset, const std::string& spec);
   [[nodiscard]] expected forget_asset(std::int64_t asset);
 
-  // Every person with min_faces faces or a name. With `assets` (the open
-  // folder's, docs/design/17 "People in the open folder"): only those with a face in
-  // one of them, `faces` counting those faces and `cover` the clearest of them;
-  // the min_faces / name rule still judges the whole person.
+  // Every person in min_faces photos or clips, or with a name. With `assets`
+  // (the open folder's, docs/design/17 "People in the open folder"): only those
+  // with a face in one of them, `faces` counting those photos and clips and
+  // `cover` the clearest of them; the min_faces / name rule still judges the
+  // whole person.
   [[nodiscard]] std::vector<person_row> people(std::uint32_t min_faces,
                                                const std::set<std::int64_t>* assets = nullptr);
   [[nodiscard]] std::vector<face_row> faces_of(std::int64_t person);
@@ -193,6 +194,9 @@ class faces_db {
   // are present. Survives a restart (meta).
   [[nodiscard]] expected rerun_all();
   [[nodiscard]] bool rerun_pending();
+  // A settle is owed: a re-run's, or people filed under older clustering
+  // rules (faces.db meta 'rules'), which need no asset read again.
+  [[nodiscard]] bool settle_due();
   [[nodiscard]] std::uint64_t stale_count();       // faces of another embedder
   [[nodiscard]] std::uint64_t unassigned_count();  // this embedder's faces with no person
   void rerun_done();
@@ -210,12 +214,13 @@ class faces_db {
   bool exec(const char* sql);
   bool migrate();
   void load_locked();
-  std::int64_t assign_locked(std::span<const float> emb, const std::set<std::int64_t>& rejected);
+  std::int64_t assign_locked(std::span<const float> emb, float quality, const std::set<std::int64_t>& rejected);
   void recompute_locked(std::int64_t person);
   expected merge_locked(std::int64_t into, std::int64_t from);
   void pin_cover_locked(std::int64_t person);
   void touch_locked(std::int64_t person);
   void set_rerun_locked(bool on);
+  void rules_current_locked();
 
   struct cluster {
     std::vector<float> sum;  // unnormalised
@@ -229,6 +234,7 @@ class faces_db {
   std::uint32_t dim_ = 128;
   std::string spec_;
   bool rerun_ = false;
+  bool resettle_ = false;
   std::map<std::int64_t, cluster> clusters_;
   // Refinement state (in memory: rebuilt by the first, full, pass after open).
   std::set<std::int64_t> dirty_;               // persons whose faces changed
@@ -236,6 +242,9 @@ class faces_db {
   std::map<std::int64_t, person_proto> protos_;  // cached, for clean persons
   std::map<std::int64_t, std::uint64_t> touched_at_;  // person -> touch generation
   std::uint64_t touch_gen_ = 0;
+  // consolidate: the touch generation it last ran at, or every pair next time.
+  std::uint64_t consolidated_gen_ = 0;
+  bool consolidate_full_ = true;
   std::set<std::int64_t> rechecked_;           // assets re-analysed this session
   bool full_due_ = true;
   std::uint32_t incremental_since_full_ = 0;
