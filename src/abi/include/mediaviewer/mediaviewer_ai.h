@@ -256,7 +256,10 @@ typedef struct mv_ai_api {
    *  "icloud_videos":false (macOS: download iCloud-only clips to index them, 2026-10-05),
    *  "cloud_files":false (fetch online-only OneDrive / iCloud Drive files in indexed folders
    *  to index them, then make them online-only again; 2026-10-05), "cloud_provider":"onedrive" |
-   *  "icloud" | "" (none on this platform),
+   *  "icloud" | "" (none on this platform), "cloud_supported":bool (Windows only: false when
+   *  this Windows has no Cloud Files API, before 10 1709; 2026-10-07),
+   *  "read_only":bool (loaded through MV_AI_READER_ENTRY_SYMBOL: a second window's reader,
+   *  2026-10-07),
    *  "available":{"cuda":bool,"openvino":bool,"coreml":bool},
    *  "models":[{"quality":1,"name":"CLIP ViT-B/32","dim":512},...],
    *  "runtime":"1.30.0"}  [no-block] */

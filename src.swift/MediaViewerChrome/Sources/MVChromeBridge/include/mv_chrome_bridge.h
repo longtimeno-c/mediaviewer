@@ -424,8 +424,28 @@ bool mv_addon2_supported(const char* id);
 int32_t mv_addon2_state_json(const char* id, char* buf, int32_t size);   // [worker]
 bool mv_addon2_loaded(const char* id);                                     // [main-thread]
 bool mv_addon2_loading(const char* id);                                    // [main-thread]
-// "" or why the last load failed (a status name, "bundle", "chrome").
+// "" or why the last load failed (a status name, "bundle", "chrome"). "import" too.
 int32_t mv_addon2_load_error(const char* id, char* buf, int32_t size);     // [main-thread]
+// The same in words a person can act on, for Settings' status line; never a
+// path (rule 6). "ai" or "import". [main-thread]
+int32_t mv_addon2_load_reason(const char* id, char* buf, int32_t size);
+// 2026-10-07 (docs/design/18 "One host process"): true in a window whose
+// process does not host the add-ons. It searches through the AI pack's
+// read-only reader, loaded on demand; it installs, updates and removes nothing.
+bool mv_addon2_elsewhere(void);                                            // [main-thread]
+// Such a window: start the reader if it is due (Settings opened). [main-thread]
+bool mv_addon2_reader_start(void);
+// Such a window: what ⌘F does while Local search is not attached; false = file
+// search is the caller's to open. [main-thread]
+bool mv_addon2_reader_search(void);
+// Such a window: its last reader try found Local search not installed.
+bool mv_addon2_reader_absent(void);                                        // [main-thread]
+// The window's add-on alert (the command bar): an add-on that did not load or
+// start, and why. seq moves on every change; read the JSON only then:
+// {"seq","addon":"ai"|"import"|"" (none),"title","body","warn":bool,"open":bool}.
+uint64_t mv_addon2_alert_seq(void);                                        // [main-thread]
+int32_t mv_addon2_alert_json(char* buf, int32_t size);                     // [main-thread]
+void mv_addon2_alert_dismiss(uint64_t seq);                                // [main-thread]
 // Import loads at once; "ai" verifies and starts on a worker and attaches
 // later (poll mv_addon2_loaded / mv_addon2_loading). [main-thread]
 bool mv_addon2_load(const char* id);

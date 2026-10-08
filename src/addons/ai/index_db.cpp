@@ -169,10 +169,11 @@ result<std::unique_ptr<index_db>> index_db::open(const std::string& path) {
 result<std::unique_ptr<index_db>> index_db::open_read_only(const std::string& path) {
   std::unique_ptr<index_db> d(new index_db());
   d->path_ = path;
-  if (sqlite3_open_v2(path.c_str(), &d->db_, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nullptr) !=
-      SQLITE_OK) {
-    return err(status::unsupported_format);
-  }
+  const int rc = sqlite3_open_v2(path.c_str(), &d->db_, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nullptr);
+  // No index yet (the app has not indexed anything): not_found, so a second
+  // window says "nothing indexed yet" rather than "needs an update".
+  if (rc == SQLITE_CANTOPEN) return err(status::not_found);
+  if (rc != SQLITE_OK) return err(status::unsupported_format);
   sqlite3_busy_timeout(d->db_, 5000);
   // An index this build cannot read as it is (older or newer): the app
   // migrates it, never a reader.

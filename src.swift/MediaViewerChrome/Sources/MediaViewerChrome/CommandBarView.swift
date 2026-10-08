@@ -515,7 +515,8 @@ private struct PathSearchButton: View {
     PathIcon(symbol: "magnifyingglass", enabled: true) {
       if search.searchAvailable {
         search.openSearchWhenReady()
-      } else {
+      } else if !mv_addon2_reader_search() {
+        // A later window starts its reader on this click (as on ⌘F); otherwise file search.
         mv_chrome_file_search()
       }
     }

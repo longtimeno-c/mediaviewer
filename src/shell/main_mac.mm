@@ -2380,15 +2380,20 @@ static void MvAdoptNewDefaultViewerTypes() {
   g_addon_app = weakApp;
   // The editor soak measures the editor: an add-on indexing in the background
   // (the AI pack compiles its models) would swamp it.
-  if (std::getenv("MV_EDIT_SELFTEST_SOAK") == nullptr && MvClaimAddonHost()) {
-    MvAddonsStart(
-        [](void*, const char* path) {
-          MvLabApp* app = g_addon_app;
-          if (app && path) (void)[app openEntryPath:path];
-        },
-        nullptr);
-    // docs/design/23: Final Cut Pro search stays as Settings left it (background, later).
-    MvFcpStart();
+  const MvAddonsOpenPathFn open_from_addon = [](void*, const char* path) {
+    MvLabApp* app = g_addon_app;
+    if (app && path) (void)[app openEntryPath:path];
+  };
+  if (std::getenv("MV_EDIT_SELFTEST_SOAK") == nullptr) {
+    if (MvClaimAddonHost()) {
+      MvAddonsStart(open_from_addon, nullptr);
+      // docs/design/23: Final Cut Pro search stays as Settings left it (background, later).
+      MvFcpStart();
+    } else {
+      // A later window (2026-10-07): Local search through the AI pack's
+      // read-only reader, started on the first ⌘F; nothing at launch.
+      MvAddonsStartReader(open_from_addon, nullptr);
+    }
   }
   NSRect rect = NSMakeRect(0, 0, 1280, 720);
   self.window = [[NSWindow alloc]
@@ -5381,6 +5386,8 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     case search_prev_match: {
       if (!mv::shell::addon_command_available(command)) {
         if (command != search_open) return NO;
+        // A later window: its reader starts now (docs/design/18 "One host process").
+        if (MvAddonsReaderSearch()) return YES;
         if ([MVChromeHost openLocalSearchWhenStarting]) return YES;
         return [self openFileSearch];
       }

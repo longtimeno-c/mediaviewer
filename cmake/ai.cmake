@@ -171,6 +171,12 @@ set_target_properties(mv_ai_engine PROPERTIES POSITION_INDEPENDENT_CODE ON
 add_library(mv_ai MODULE "${R}/src/addons/ai/addon_entry.cpp")
 target_link_libraries(mv_ai PRIVATE mv_ai_engine)
 target_compile_definitions(mv_ai PRIVATE MV_AI_VERSION="${MV_AI_VERSION}")
+if(WIN32)
+  # The Cloud Files API (OneDrive, cloud_win.cpp) is optional: a Windows
+  # without cldapi.dll still loads the pack and searches (2026-10-07).
+  target_link_options(mv_ai PRIVATE "/DELAYLOAD:cldapi.dll")
+  target_link_libraries(mv_ai PRIVATE delayimp)
+endif()
 set_target_properties(mv_ai PROPERTIES
   OUTPUT_NAME "mv_ai"
   CXX_VISIBILITY_PRESET hidden

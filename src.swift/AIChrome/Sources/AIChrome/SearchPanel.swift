@@ -515,20 +515,29 @@ struct SearchRootView: View {
         .padding(.top, 4)
       } else if model.coverage == 0 && model.scope != .all && !model.folder.isEmpty {
         Image(systemName: "rectangle.stack.badge.plus").font(.system(size: 34)).foregroundStyle(AITheme.body)
-        Text("“\(model.folderName)” is not indexed yet")
+        Text("“\(model.folderName)” is not indexed yet" + (model.readOnly ? "." : ""))
           .font(AITheme.font(17)).foregroundStyle(AITheme.title)
           .multilineTextAlignment(.center).frame(maxWidth: 480)
-        Text("Indexing runs in the background, on this Mac: you can close this panel and keep viewing. "
-             + "Results appear as it goes.")
-          .font(AITheme.font(13)).foregroundStyle(AITheme.body)
-          .multilineTextAlignment(.center).frame(maxWidth: 440)
-          .fixedSize(horizontal: false, vertical: true)
-        HStack(spacing: 10) {
-          Button("Index this folder and subfolders") { model.indexFolder() }
-            .keyboardShortcut(.defaultAction)
+        if model.readOnly {
+          // A later window: indexing is the first window's (no Index button here).
+          Text("Index it from the first MediaViewer window you opened. Results then appear here within a few seconds. "
+               + "Look in: Everywhere searches what is already indexed.")
+            .font(AITheme.font(13)).foregroundStyle(AITheme.body)
+            .multilineTextAlignment(.center).frame(maxWidth: 440)
+            .fixedSize(horizontal: false, vertical: true)
+        } else {
+          Text("Indexing runs in the background, on this Mac: you can close this panel and keep viewing. "
+               + "Results appear as it goes.")
+            .font(AITheme.font(13)).foregroundStyle(AITheme.body)
+            .multilineTextAlignment(.center).frame(maxWidth: 440)
+            .fixedSize(horizontal: false, vertical: true)
+          HStack(spacing: 10) {
+            Button("Index this folder and subfolders") { model.indexFolder() }
+              .keyboardShortcut(.defaultAction)
+          }
+          .controlSize(.large)
+          .padding(.top, 4)
         }
-        .controlSize(.large)
-        .padding(.top, 4)
       } else if model.searching {
         Text("Searching…").font(AITheme.font(14)).foregroundStyle(AITheme.body)
       } else if model.failed {
@@ -670,7 +679,9 @@ struct SearchRootView: View {
   private var footer: some View {
     HStack(spacing: 14) {
       // Its own view over the status: 4 Hz updates re-render the pill only.
-      SearchStatusPill(status: model.status, onIndexAnyway: { model.indexAnyway() }) { model.setPaused($0) }
+      // A later window's reader: the pill without Pause or Index anyway.
+      SearchStatusPill(status: model.status, onIndexAnyway: model.readOnly ? nil : { model.indexAnyway() },
+                       onPause: model.readOnly ? nil : { model.setPaused($0) })
         .frame(maxWidth: 520, alignment: .leading)
       Spacer(minLength: 0)
       if !model.results.isEmpty {
@@ -715,8 +726,8 @@ private struct KeyHint: View {
 
 private struct SearchStatusPill: View {
   @ObservedObject var status: SearchStatus
-  let onIndexAnyway: () -> Void
-  let onPause: (Bool) -> Void
+  let onIndexAnyway: (() -> Void)?
+  let onPause: ((Bool) -> Void)?
 
   var body: some View { StatusPill(line: status.line, onIndexAnyway: onIndexAnyway, onPause: onPause) }
 }

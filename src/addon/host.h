@@ -110,7 +110,13 @@ class shared_library {
   shared_library(const shared_library&) = delete;
   shared_library& operator=(const shared_library&) = delete;
 
+  // A library that verified but will not load (a DLL it imports is missing,
+  // another processor, the OS refused its signature) is status::io, not
+  // corrupt: its files are exactly as signed. last_error() then says why in
+  // words a person can act on, without a path (rule 6), on this thread until
+  // the next open().
   [[nodiscard]] static result<shared_library> open(const std::string& utf8_path);
+  [[nodiscard]] static const std::string& last_error() noexcept;
   [[nodiscard]] void* symbol(const char* name) const noexcept;
   void close() noexcept;
 
