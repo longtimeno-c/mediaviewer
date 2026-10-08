@@ -396,6 +396,10 @@ struct app_state {
   std::vector<std::string> destinations;  // F7 / F8, most recent first
   // PR 15: the jump list's recent folders (settings.ini [recent]), most recent first.
   std::vector<std::string> recent_folders;
+  // The OneDrive folder this user has set up (the OneDrive client's %OneDrive%),
+  // "" for none: the welcome card's cloud row above the recent folders, as the
+  // Mac's iCloud Photos (2026-10-07). Read once from the environment, no I/O.
+  std::string onedrive_utf8;
   // The user's profile folder (FOLDERID_Profile) as UTF-8, read once: the
   // welcome card writes it as "~" (the Mac passes NSHomeDirectory()).
   std::string home_utf8;
@@ -557,10 +561,34 @@ void publish(app_state* app) noexcept {
   app->lab.wake();
 }
 
+// "~\OneDrive" for the card's second line, as the folder rows write their parents.
+std::string onedrive_where(const app_state* app) noexcept {
+  try {
+    const std::string& d = app->onedrive_utf8;
+    const std::string& home = app->home_utf8;
+    if (!home.empty() && d.size() > home.size() && d.compare(0, home.size(), home) == 0 &&
+        (d[home.size()] == '\\' || d[home.size()] == '/')) {
+      return "~" + d.substr(home.size());
+    }
+    return d;
+  } catch (...) {
+    return {};
+  }
+}
+
+// The card's rows: OneDrive first when it is set up, then the recent folders.
+void fill_welcome_card(const app_state* app, mv::shell::welcome_recents& out) noexcept {
+  if (app->onedrive_utf8.empty()) {
+    mv::shell::fill_welcome_recents(app->recent_folders, app->home_utf8, out);
+  } else {
+    mv::shell::fill_welcome_recents(app->recent_folders, app->home_utf8, out, "OneDrive", onedrive_where(app));
+  }
+}
+
 // The rows from app->recent_folders; one redraw when they change.
 void refresh_welcome_recents(app_state* app) noexcept {
   mv::shell::welcome_recents next;
-  if (welcome_lists_recents(app)) mv::shell::fill_welcome_recents(app->recent_folders, app->home_utf8, next);
+  if (welcome_lists_recents(app)) fill_welcome_card(app, next);
   if (std::memcmp(&next, &app->input.recents, sizeof(next)) == 0) return;
   app->input.recents = next;
   ++app->input.activity_seq;
@@ -579,9 +607,11 @@ int welcome_row_at_pointer(const app_state* app, bool* on_remove = nullptr) noex
   const float scale = in.dpi_scale > 0.0f ? in.dpi_scale : 1.0f;
   const mv::shell::welcome_geometry g =
       mv::shell::layout_welcome(static_cast<float>(in.width), static_cast<float>(in.height),
-                                static_cast<float>(in.chrome_height_px), scale, in.recents.count);
+                                static_cast<float>(in.chrome_height_px), scale, in.recents.count, 0.0f,
+                                in.recents.icloud);
   const int row = mv::shell::welcome_row_at(g, in.mouse_x, in.mouse_y);
-  if (row >= 0 && on_remove) *on_remove = mv::shell::welcome_on_remove(g, in.mouse_x);
+  // OneDrive's row has no remove button: it leaves when OneDrive does.
+  if (row >= 0 && on_remove && !(in.recents.icloud && row == 0)) *on_remove = mv::shell::welcome_on_remove(g, in.mouse_x);
   return row;
 }
 
@@ -642,6 +672,7 @@ void layout_chrome(app_state* app) noexcept;
 bool run_command(app_state* app, mv::shell::command_id command) noexcept;
 void note_recent_folder(app_state* app, const std::string& utf8_dir);
 void open_welcome_row(app_state* app, int row);
+void open_recent_folder(app_state* app, int index);
 void remove_welcome_row(app_state* app, int row);
 void push_recent_folders(app_state* app);
 void trim_item_opened(app_state* app) noexcept;
@@ -880,6 +911,9 @@ void open_folder_dialog(app_state* app, HWND hwnd) {
   app->mode = open_mode::folder;
   app->gallery_visible = false;
   sync_video_hold(app, false);
+  // A folder the user chose is a recent folder, as from Explorer or a drop
+  // (it was missing here: the welcome card never listed a picked folder).
+  note_recent_folder(app, utf8_from_wide(folder));
   open_folder(app, folder, {});
   focus_canvas(app);
 }
@@ -1005,6 +1039,21 @@ void end_own_drag(app_state* app) noexcept {
   if (app->window && ::PostMessageW(app->window, kMsgOwnDragEnded, 0, 0)) return;
   app->own_drag = false;
   app->chrome.set_drag_paths({}, false);
+}
+
+// The OneDrive folder the OneDrive client set up for this user, from the
+// variables it sets (personal, else work or school), without touching the disk:
+// this runs before the first pixel. "" when OneDrive is not set up.
+std::string onedrive_folder_utf8() {
+  for (const wchar_t* name : {L"OneDrive", L"OneDriveConsumer", L"OneDriveCommercial"}) {
+    wchar_t buf[MAX_PATH * 2];
+    const DWORD n = ::GetEnvironmentVariableW(name, buf, static_cast<DWORD>(std::size(buf)));
+    if (n == 0 || n >= std::size(buf)) continue;
+    std::wstring dir(buf, n);
+    while (dir.size() > 3 && (dir.back() == L'\\' || dir.back() == L'/')) dir.pop_back();
+    return utf8_from_wide(dir);
+  }
+  return {};
 }
 
 // %USERPROFILE% as UTF-8, from the known folder rather than the environment.
@@ -4181,7 +4230,7 @@ void chrome_on_command(void* ctx, int command, float arg) {
       end_own_drag(app);
       return;
     case mv::shell::chrome_cmd_open_recent:
-      open_welcome_row(app, static_cast<int>(arg));
+      open_recent_folder(app, static_cast<int>(arg));
       return;
     case mv::shell::chrome_cmd_addon_state: {
       // The chrome installed, loaded, or removed an add-on: 0 / 1 Import
@@ -5679,9 +5728,43 @@ void forget_recent_folder(app_state* app, const std::string& dir) {
   refresh_welcome_recents(app);
 }
 
-// A click on one of the welcome card's recent folders, or Open > Recent
-// folders: the jump list's route.
+// A card row is a recent folder's index, one down when OneDrive leads; -1 for OneDrive.
+int welcome_row_folder(const app_state* app, int row) noexcept {
+  return app->input.recents.icloud ? row - 1 : row;
+}
+
+// The card's OneDrive row: its Pictures folder, where a phone's camera uploads
+// land, else OneDrive itself. Not a recent folder: opening it does not list it.
+void open_onedrive(app_state* app) {
+  const std::string pictures = app->onedrive_utf8 + "\\Pictures";
+  const auto has_pictures = mv::io::is_directory(pictures);
+  const std::string dir = has_pictures && has_pictures.value() ? pictures : app->onedrive_utf8;
+  const auto is_dir = mv::io::is_directory(dir);
+  if (!is_dir || !is_dir.value()) {
+    ::MessageBeep(MB_ICONWARNING);
+    return;
+  }
+  app->mode = open_mode::folder;
+  app->gallery_visible = false;
+  sync_video_hold(app, false);
+  open_folder(app, wide_from_utf8(dir), {});
+  focus_canvas(app);
+}
+
+// A click on one of the welcome card's rows.
 void open_welcome_row(app_state* app, int row) {
+  if (!app || row < 0) return;
+  if (app->input.recents.icloud && row == 0) {
+    open_onedrive(app);
+    return;
+  }
+  open_recent_folder(app, welcome_row_folder(app, row));
+}
+
+// Recent folder `index` (most recent first): a card row, or Open > Recent
+// folders, the jump list's route.
+void open_recent_folder(app_state* app, int index) {
+  const int row = index;
   if (!app || row < 0 || static_cast<std::size_t>(row) >= app->recent_folders.size()) return;
   const std::string dir = app->recent_folders[static_cast<std::size_t>(row)];
   const auto is_dir = mv::io::is_directory(dir);
@@ -5697,8 +5780,10 @@ void open_welcome_row(app_state* app, int row) {
 
 // The x on a welcome card row: the folder leaves the card, the jump list and
 // Open > Recent folders. The folder itself is not touched.
-void remove_welcome_row(app_state* app, int row) {
-  if (!app || row < 0 || static_cast<std::size_t>(row) >= app->recent_folders.size()) return;
+void remove_welcome_row(app_state* app, int card_row) {
+  if (!app) return;
+  const int row = welcome_row_folder(app, card_row);  // OneDrive's row (-1) has no x
+  if (row < 0 || static_cast<std::size_t>(row) >= app->recent_folders.size()) return;
   forget_recent_folder(app, app->recent_folders[static_cast<std::size_t>(row)]);
   // The next folder slides up under the pointer: hover it without waiting for a move.
   update_welcome_hover(app);
@@ -7757,11 +7842,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   app.destinations = mv::shell::load_destinations();
   app.recent_folders = mv::shell::load_recent_folders();
   app.home_utf8 = profile_folder_utf8();
+  app.onedrive_utf8 = onedrive_folder_utf8();
   app.record_recent = !harness_run;
   // Straight into the snapshot: the render thread is not up yet. A launch
   // with a path to open never shows the rows, not even for its first frame.
   if (requested_paths.empty() && welcome_lists_recents(&app)) {
-    mv::shell::fill_welcome_recents(app.recent_folders, app.home_utf8, app.input.recents);
+    fill_welcome_card(&app, app.input.recents);
   }
   // The toolbar is added when Explorer reports the button, not before.
   app.taskbar_created_msg = ::RegisterWindowMessageW(L"TaskbarButtonCreated");

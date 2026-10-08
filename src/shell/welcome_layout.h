@@ -23,9 +23,11 @@ struct welcome_recents {
   std::uint8_t count = 0;  // 0 = no rows: nothing opened yet, or something is open
   std::int8_t hover = -1;  // the row under the pointer, drawn highlighted
   bool hover_remove = false;  // the pointer is on that row's remove button
-  // Row 0 is the iCloud Photos library (docs/design/26), not a folder: drawn
-  // with a cloud and without a remove button, above the RECENT FOLDERS header,
-  // while the library is added in Settings. The folders follow, one row down.
+  // Row 0 is a cloud place, not a recent folder: drawn with a cloud and
+  // without a remove button, above the RECENT FOLDERS header. The folders
+  // follow, one row down. The Mac: the iCloud Photos library (docs/design/26),
+  // while it is added in Settings. Windows: OneDrive, while it is set up on
+  // this PC (2026-10-07). The name is the Mac's, from before Windows had one.
   bool icloud = false;
   char label[kMax][96] = {};
   char where[kMax][192] = {};
