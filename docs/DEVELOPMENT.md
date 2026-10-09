@@ -975,6 +975,11 @@ an ffmpeg with libx265 on `PATH`, a dev tool only): it writes `tools/testmedia/h
 an iPhone's layout (4032x3024 as 8x6 tiles of 512, a 320x240 thumbnail item, Display P3 ICC).
 `MV_OS_CODEC=0` times the bundled libheif path, the one a PC without the HEVC extension takes.
 
+The pacing soak cannot see a paused clip's cost (it presents nothing). `mv_tests "[idle]"`
+(macOS, headless, a synthetic clip) does: it prints the process's context switches and CPU
+per second with a clip paused on its poster and with one played out, and fails above 200
+wakes a second (issue #230: the sleep-polling player measured ~1,750 paused, now single digits).
+
 ### Copy throughput: `copybench` (PR 49)
 
 `copybench` runs the copy engine (`io/verified_copy`, what F8 and Import use) over a folder

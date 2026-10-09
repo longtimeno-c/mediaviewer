@@ -62,6 +62,17 @@ not `image::gpu_image`. Time is `int64` **nanoseconds** everywhere in `player/` 
 so audio can account in whole samples. The container `start_time` is subtracted (MPEG-TS starts
 non-zero).
 
+A worker that cannot move **parks; it never sleep-polls** (issue #230). A clip opened paused on
+its poster frame is the normal state while arrowing through a folder, and there the queues and
+the ring stay full. The demux, video/still decode and audio decode threads wait on one
+`wake_signal` per clip ([`src/player/wake_signal.h`](../../src/player/wake_signal.h): a futex
+word, `std::atomic` wait/notify, so the render thread can notify without a lock). The packet
+queues, the ring's release, the audio pump taking a block, a seek, a generation bump and stop
+notify it. The audio pump parks the same way while paused or played out, until play, pause, a
+seek, a block or stop; a device change while paused is taken on resume. Measured on an M-series
+Mac (`mv_tests "[idle]"`): a paused clip went from ~1,750 wakes and ~15 ms CPU a second to
+single digits and ~0.03 ms.
+
 ### Surface ownership
 
 A hardware decoder's output surface belongs to its pool, sized from the stream's DPB; holding

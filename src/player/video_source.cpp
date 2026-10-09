@@ -307,6 +307,7 @@ class ffmpeg_video_source final : public video_source {
 
   void stop() noexcept {
     pipe_.stopping.store(true, std::memory_order_release);
+    pipe_.wake.notify();
     pipe_.video_packets.stop();
     pipe_.audio_packets.stop();
     if (pipe_.demux_thread.joinable()) pipe_.demux_thread.join();
@@ -339,7 +340,7 @@ class ffmpeg_video_source final : public video_source {
     // generation test at acquire. No cross-thread queue surgery, which is what
     // keeps both rings single-producer.
     pipe_.generation.store(generation, std::memory_order_release);
-
+    pipe_.wake.notify();  // a decode thread parked on the old generation
   }
 
   [[nodiscard]] video_pipeline& pipeline() noexcept { return pipe_; }
