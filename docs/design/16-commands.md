@@ -98,7 +98,7 @@ With nothing to leave, the key is not handled.
 ## Focus
 
 Rings, visible: **canvas** (default), **filmstrip**, **gallery**, **pane** (folder tree,
-metadata, adjust, jobs), plus the command bar and the transport. `Tab` / `Shift+Tab` cross the
+metadata, adjust, Edit, jobs), plus the command bar and the transport. `Tab` / `Shift+Tab` cross the
 island boundary; `Esc` returns to the canvas. Fullscreen hides chrome.
 
 No island grows over the canvas, except a clip's **transport bar**, which floats over the bottom of
