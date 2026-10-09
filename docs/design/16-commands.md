@@ -248,7 +248,7 @@ Marks are a separate set from the selection, so arrow-key browsing never makes a
 | Key | Modes | Command |
 |---|---|---|
 | Numpad `0`–`5`, or `Ctrl+Shift+0`–`5` | Viewing | Rating (0 clears) |
-| `Ctrl+I` | Viewing | Show the metadata pane (Windows: with the keyboard in its comment field; `Enter` saves, `Esc` drops; Mac: the pane's *All tags* editor) |
+| `Ctrl+I` | Viewing | Show the metadata pane (Windows: on *All tags* with its comment editor open on the file's comment and the keyboard in it; `Enter` saves, `Esc` drops; Mac: the pane's *All tags* editor) |
 
 A rating writes the item on screen only, on the I/O pool: a JPEG is rewritten in place, anything
 else gets an XMP sidecar. The command bar shows what landed ("★★★★☆", or "— IMG_1234.xmp" when a

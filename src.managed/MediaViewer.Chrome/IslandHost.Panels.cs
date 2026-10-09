@@ -299,6 +299,9 @@ public static partial class IslandHost
     private static string _metaDraft = "";
     private static bool _metaEditingDate;
     private static bool _metaAddingTag;
+    private static bool _metaEditingComment;  // Ctrl+I: the user comment, through PR 12's writer
+    private static bool _metaCommentAsked;    // Ctrl+I came before the record it edits
+    private static string _metaComment = "";  // native's comment for the item, pending write included
     private static string _metaNewKey = "";
     private static string _metaNewValue = "";
     private static FakeInput? _metaFocusField;  // the field to focus once built
@@ -311,6 +314,7 @@ public static partial class IslandHost
         _metaTabs = null;
         _metaRevert = null;
         _metaFocusField = null;
+        _metaCommentAsked = false;
         CancelMetaEdits();
     }
 
@@ -319,6 +323,7 @@ public static partial class IslandHost
         _metaEditingKey = null;
         _metaEditingDate = false;
         _metaAddingTag = false;
+        _metaEditingComment = false;
         _metaDraft = "";
         _metaNewKey = "";
         _metaNewValue = "";
@@ -666,6 +671,12 @@ public static partial class IslandHost
             host.Children.Add(form);
             _metaFocusField = key;
         }
+        else if (_metaEditingComment)
+        {
+            StackPanel form = BuildCommentForm();
+            Grid.SetRow(form, 1);
+            host.Children.Add(form);
+        }
 
         // A plain scrolling stack, not a ListView: clearing and refilling a ListView of
         // elements from a key event fail-fasts in these islands. A tag list is at most
@@ -811,6 +822,57 @@ public static partial class IslandHost
         return cell;
     }
 
+    // Ctrl+I's comment editor (docs/design/16). The comment is one field over
+    // several tags (EXIF UserComment, XMP exif:UserComment, a RAW's sidecar), so
+    // it goes through native's comment write rather than as one tag, and it is
+    // there whether or not the file has a comment yet.
+    private static StackPanel BuildCommentForm()
+    {
+        var form = new StackPanel { Spacing = 6, Padding = new Thickness(10, 0, 10, 10) };
+        form.Children.Add(Text("Comment", Title));
+        var box = new FakeInput("Comment");
+        box.SetText(_metaDraft);
+        box.Changed += () => _metaDraft = box.Text;
+        box.Submitted += () => SaveMetaComment(box.Text);
+        AutomationProperties_SetName(box, "Comment");
+        form.Children.Add(box);
+        form.Children.Add(Row(MetaButton("Save", () => SaveMetaComment(_metaDraft), tip: "Enter"),
+                              MetaButton("Cancel", () =>
+                              {
+                                  CancelMetaEdits();
+                                  RenderMeta();
+                              }, tip: "Esc")));
+        _metaFocusField = box;
+        return form;
+    }
+
+    // Ctrl+I's ask, once there is a record to edit: All tags with the comment
+    // editor open on the file's comment. The island's window takes the keyboard
+    // now; the field takes it once it is in the tree (FocusMetaFieldSoon).
+    private static bool OpenAskedComment()
+    {
+        if (!_metaCommentAsked || !_metaPaneVisible || !_metaCanEdit || _metaLoading ||
+            _metaSummary.Count == 0) return false;
+        _metaCommentAsked = false;
+        CancelMetaEdits();
+        _metaTab = MetaTab.Tags;
+        _metaEditingComment = true;
+        _metaDraft = _metaComment;
+        RenderMeta();
+        _metaPane?.NavigateFocus(new XamlSourceFocusNavigationRequest(
+            XamlSourceFocusNavigationReason.First));
+        return true;
+    }
+
+    private static void SaveMetaComment(string text)
+    {
+        CancelMetaEdits();
+        // Native leaves an unchanged comment alone; "" removes it.
+        _treePending = text;
+        Send(Command.MetaComment);
+        RenderMeta();
+    }
+
     private static void AddMetaTag()
     {
         string key = _metaNewKey.Trim();
@@ -891,7 +953,11 @@ public static partial class IslandHost
             // Native re-pushes on every layout; identical data must not rebuild the
             // pane, which would drop the keyboard focus sitting on one of its rows.
             string fingerprint = string.Concat(a.Loading.ToString(), "\u0001", summary, "\u0001", props, "\u0001", streams);
-            if (fingerprint == _metaLast) return 0;
+            if (fingerprint == _metaLast)
+            {
+                OpenAskedComment();
+                return 0;
+            }
             _metaLast = fingerprint;
             // Another item (or a write landing, which re-reads): an editor open
             // on the old record would write the wrong file's value.
@@ -910,7 +976,7 @@ public static partial class IslandHost
             _metaStreamLines = streams.Split('\n', StringSplitOptions.RemoveEmptyEntries).ToList();
             _metaIsClip = _metaStreamLines.Count > 0;
             _metaLoading = a.Loading != 0;
-            if (_metaPaneVisible) RenderMeta();
+            if (_metaPaneVisible && !OpenAskedComment()) RenderMeta();
             return 0;
         }
         catch (Exception ex)
@@ -944,6 +1010,9 @@ public static partial class IslandHost
         {
             if (arg == IntPtr.Zero || sizeBytes < MetaEditArgsSize) return unchecked((int)0x80070057);
             ChromeMetaEditArgs a = Marshal.PtrToStructure<ChromeMetaEditArgs>(arg);
+            _metaComment = a.Comment == 0 || a.CommentLen <= 0
+                ? ""
+                : Marshal.PtrToStringUTF8(checked((IntPtr)a.Comment), a.CommentLen) ?? "";
             bool canEdit = (a.Flags & MetaEditFlags.CanEdit) != 0;
             bool canRevert = (a.Flags & MetaEditFlags.CanRevert) != 0;
             bool changed = canEdit != _metaCanEdit;
@@ -953,15 +1022,15 @@ public static partial class IslandHost
             if (_metaRevert is not null) _metaRevert.IsEnabled = canRevert;
             // Esc in a field: forget what was typed, show the file's.
             bool drop = (a.Flags & MetaEditFlags.DropDraft) != 0 &&
-                        (_metaEditingKey is not null || _metaEditingDate || _metaAddingTag);
+                        (_metaEditingKey is not null || _metaEditingDate || _metaAddingTag ||
+                         _metaEditingComment);
             if (drop) CancelMetaEdits();
+            if ((a.Flags & MetaEditFlags.DropDraft) != 0) _metaCommentAsked = false;
+            // Ctrl+I: the comment editor opens once the item's record is in the
+            // pane (SetMetaData follows every push of this), so its draft starts
+            // from the file's comment, never from an empty "not read yet".
+            if ((a.Flags & MetaEditFlags.Focus) != 0) _metaCommentAsked = _metaCanEdit;
             if (drop || changed) RenderMeta();
-            if ((a.Flags & MetaEditFlags.Focus) != 0 && _metaCanEdit)
-            {
-                // Ctrl+I: the pane takes the keyboard.
-                _metaPane?.NavigateFocus(new XamlSourceFocusNavigationRequest(
-                    XamlSourceFocusNavigationReason.First));
-            }
             return 0;
         }
         catch (Exception ex)
