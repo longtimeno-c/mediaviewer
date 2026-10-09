@@ -132,6 +132,10 @@ surface format is unsupported. It is never silent: `mv_video_info.decoder` repor
 - **No audio** (silent clip, or the track played out) → a monotonic host clock
   (`std::chrono::steady_clock`) seeded at playback start; `mv_video_stats.audio_master` is 0 and
   `fallback_reason` says why.
+- **No device** (the endpoint will not open, or a rebuild found nothing): the clock stays on the
+  host master and retries the open after 1 s, doubling to 8 s between tries, never while paused.
+  A failed retry is not a rebuild: `device_rebuilds` counts devices lost, `fallback_reason`
+  stays `device_open_failed` until an open succeeds, and the failure is logged once.
 - **Device change** (`IMMNotificationClient` on Windows) rebuilds the audio client and re-seeds
   the clock without interrupting video.
 - Stats are published wait-free (`core/spsc_ring.h`); `player/` makes no ImGui calls.
