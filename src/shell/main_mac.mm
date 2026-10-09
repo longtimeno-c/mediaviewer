@@ -4427,6 +4427,140 @@ enum MvMenuCmd : NSInteger {
   kMenuNewWindow,
 };
 
+// Issue #182: the table row behind a menu item, for its mode mask. None for
+// the Sort items (no row) and the Edit menu, which validateMenuItem: gates by
+// the edit subject.
+static mv::shell::command_id MvMenuCommand(NSInteger cmd) {
+  using enum mv::shell::command_id;
+  switch (static_cast<MvMenuCmd>(cmd)) {
+    case kMenuOpen: return open;
+    case kMenuOpenFolder: case kMenuOpenPhotos: return open_folder;
+    case kMenuTrash: return delete_to_recycle_bin;
+    case kMenuCopyTo: return copy_to_pick;
+    case kMenuMoveTo: return move_to_pick;
+    case kMenuMark: return toggle_mark;
+    case kMenuFit: return fit;
+    case kMenuOneToOne: return one_to_one;
+    case kMenuFilmstrip: return toggle_filmstrip;
+    case kMenuGallery: return toggle_gallery;
+    case kMenuFullscreen: return fullscreen;
+    case kMenuSlideshow: return slideshow_start;
+    case kMenuNext: return next;
+    case kMenuPrev: return prev;
+    case kMenuFirst: return first;
+    case kMenuLast: return last;
+    case kMenuHelp: return help;
+    case kMenuSettings: return open_settings;
+    case kMenuOverlay: return overlay;
+    case kMenuReveal: return reveal_in_explorer;
+    case kMenuMetadata: return metadata_pane;
+    case kMenuFolderTree: return folder_tree;
+    case kMenuShare: return share;
+    case kMenuCopyPath: return copy_path;
+    case kMenuCopyEdited: return copy_flattened;
+    case kMenuNewWindow: return new_window;
+    default: return none;
+  }
+}
+
+// Issue #182: the menu items whose key equivalent is a table row. Their chord
+// is read from the live table (syncMenuKeyEquivalents), never fixed here, so a
+// remap in Settings moves the menu with the router.
+static mv::shell::command_id MvMenuChordCommand(NSMenuItem* item) {
+  using enum mv::shell::command_id;
+  if (item.action == @selector(performClose:)) return close_window;
+  if (item.action != @selector(menuAction:)) return none;
+  switch (static_cast<MvMenuCmd>(item.tag)) {
+    case kMenuSettings: return open_settings;
+    case kMenuNewWindow: return new_window;
+    case kMenuOpen: return open;
+    case kMenuFolderTree: return folder_tree;
+    default: return none;
+  }
+}
+
+// The key equivalent AppKit matches for a table key, or nil for one a menu
+// does not carry (the router keeps it). Delete is ⌫, as Move to Trash shows it.
+static NSString* MvKeyEquivalent(mv::shell::key k) {
+  using mv::shell::key;
+  const auto v = static_cast<std::uint16_t>(k);
+  if (v >= 'A' && v <= 'Z') return [NSString stringWithFormat:@"%c", static_cast<char>(v - 'A' + 'a')];
+  if (v >= 0x21 && v <= 0x7E) return [NSString stringWithFormat:@"%c", static_cast<char>(v)];
+  unichar c = 0;
+  if (k >= key::f1 && k <= key::f12) {
+    c = static_cast<unichar>(NSF1FunctionKey + (v - static_cast<std::uint16_t>(key::f1)));
+  } else {
+    switch (k) {
+      case key::space: c = ' '; break;
+      case key::enter: c = '\r'; break;
+      case key::del: c = NSBackspaceCharacter; break;
+      case key::home: c = NSHomeFunctionKey; break;
+      case key::end: c = NSEndFunctionKey; break;
+      case key::page_up: c = NSPageUpFunctionKey; break;
+      case key::page_down: c = NSPageDownFunctionKey; break;
+      case key::left: c = NSLeftArrowFunctionKey; break;
+      case key::right: c = NSRightArrowFunctionKey; break;
+      case key::up: c = NSUpArrowFunctionKey; break;
+      case key::down: c = NSDownArrowFunctionKey; break;
+      default: return nil;
+    }
+  }
+  return [NSString stringWithFormat:@"%C", c];
+}
+
+static NSEventModifierFlags MvModifierMask(std::uint8_t mods) {
+  NSEventModifierFlags mask = 0;
+  if (mods & mv::shell::mod_ctrl) mask |= NSEventModifierFlagCommand;
+  if (mods & mv::shell::mod_shift) mask |= NSEventModifierFlagShift;
+  if (mods & mv::shell::mod_alt) mask |= NSEventModifierFlagOption;
+  return mask;
+}
+
+// MvKeyFromEvent's answer for a menu item's own key equivalent (Command and
+// Control are both `ctrl` there), or none.
+static mv::shell::key MvKeyOfEquivalent(NSMenuItem* item, std::uint8_t* mods) {
+  NSString* eq = item.keyEquivalent;
+  if (eq.length != 1) return mv::shell::key::none;
+  const NSEventModifierFlags flags = item.keyEquivalentModifierMask;
+  std::uint8_t m = mv::shell::mod_none;
+  if (flags & (NSEventModifierFlagCommand | NSEventModifierFlagControl)) m |= mv::shell::mod_ctrl;
+  if (flags & NSEventModifierFlagShift) m |= mv::shell::mod_shift;
+  if (flags & NSEventModifierFlagOption) m |= mv::shell::mod_alt;
+  *mods = m;
+  const unichar c = [eq characterAtIndex:0];
+  if (c == NSBackspaceCharacter) return mv::shell::key::del;
+  if (c >= 0x21 && c <= 0x7E) return mv::shell::char_key(static_cast<char>(c));
+  return mv::shell::key::none;
+}
+
+// Issue #182: a chord a fixed menu item answers (⌘H Hide, ⌘Q Quit, ⌘M
+// Minimize, ⌘⌫ Move to Trash) reaches the menu before keyDown:, so a row
+// given it would never run. Settings refuses it; the chord items are skipped,
+// they follow the table.
+static BOOL MvMenuOwnsChord(NSMenu* menu, mv::shell::key k, std::uint8_t mods) {
+  if (k == mv::shell::key::none) return NO;
+  for (NSMenuItem* item in menu.itemArray) {
+    if (item.submenu != nil && MvMenuOwnsChord(item.submenu, k, mods)) return YES;
+    if (MvMenuChordCommand(item) != mv::shell::command_id::none) continue;
+    std::uint8_t m = 0;
+    if (MvKeyOfEquivalent(item, &m) == k && m == mods) return YES;
+  }
+  return NO;
+}
+
+static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
+  for (NSMenuItem* item in menu.itemArray) {
+    if (item.submenu != nil) MvSyncKeyEquivalents(item.submenu, bar);
+    const mv::shell::command_id command = MvMenuChordCommand(item);
+    if (command == mv::shell::command_id::none) continue;
+    const mv::shell::binding* chord = mv::shell::menu_chord(command);
+    NSString* eq = chord ? MvKeyEquivalent(chord->k) : nil;
+    if (eq != nil && MvMenuOwnsChord(bar, chord->k, chord->mods)) eq = nil;
+    item.keyEquivalent = eq ?: @"";
+    item.keyEquivalentModifierMask = eq != nil ? MvModifierMask(chord->mods) : 0;
+  }
+}
+
 // docs/design/16 "Window": another window is another MediaViewer process, on the
 // empty window, cascaded from this one. The bundle starts as a new instance
 // (LaunchServices would otherwise just activate this one); the bare lab
@@ -4466,6 +4600,10 @@ enum MvMenuCmd : NSInteger {
 // Shared by the menu bar and the in-window menu buttons (CommandBarView), so
 // the two cannot disagree.
 - (void)runMenuCmd:(NSInteger)cmd {
+  if ([self menuCmdBlocked:cmd]) {
+    NSBeep();
+    return;
+  }
   switch (static_cast<MvMenuCmd>(cmd)) {
     case kMenuOpen: [self openFolderPanel:NO]; break;
     case kMenuNewWindow: [self openNewWindow]; break;
@@ -4523,6 +4661,18 @@ enum MvMenuCmd : NSInteger {
   }
 }
 
+// Issue #182: mid-crop, an item whose command the table does not run there
+// (Open, Go ▸ Next, Settings…) is off, as its key is: walking away would drop
+// the crop draft. The menu bar and the command bar's flyouts both ask.
+// Closing Settings is never refused.
+- (BOOL)menuCmdBlocked:(NSInteger)cmd {
+  const mv::shell::command_id command = MvMenuCommand(cmd);
+  if (command == mv::shell::command_id::none) return NO;
+  if (cmd == kMenuSettings && _settingsVisible) return NO;
+  if (mv::shell::resolve_mode([self currentViewState]) != mv::shell::mode::crop) return NO;
+  return !mv::shell::command_live_in(command, mv::shell::kCrop);
+}
+
 - (BOOL)validateMenuItem:(NSMenuItem*)item {
 #if MV_WITH_SPARKLE
   if (item.action == @selector(toggleAutomaticUpdateChecks:)) {
@@ -4555,6 +4705,7 @@ enum MvMenuCmd : NSInteger {
     return subject == mv::shell::edit_subject::still;
   }
   if (tag == kMenuFolderTree) item.state = _treeVisible ? NSControlStateValueOn : NSControlStateValueOff;
+  if ([self menuCmdBlocked:tag]) return NO;
   switch (static_cast<MvMenuCmd>(item.tag)) {
     case kMenuMetadata: case kMenuFolderTree:
     case kMenuOpen: case kMenuOpenFolder: case kMenuFit: case kMenuOneToOne: case kMenuFullscreen: case kMenuHelp: case kMenuSettings: case kMenuOverlay:
@@ -4630,7 +4781,8 @@ enum MvMenuCmd : NSInteger {
                                keyEquivalent:@""];
   about.target = self;
   [app addItem:[NSMenuItem separatorItem]];
-  [self addMenuItem:@"Settings…" cmd:kMenuSettings key:@"," mods:NSEventModifierFlagCommand toMenu:app];
+  // ⌘, ⌘N ⌘O ⇧⌘E ⌘W are the table's rows: syncMenuKeyEquivalents sets them.
+  [self addMenuItem:@"Settings…" cmd:kMenuSettings key:@"" mods:0 toMenu:app];
 #if MV_WITH_SPARKLE
   // The update check is a network call even with nothing else ever sent
   // (docs/design/13): it can be turned off here and stays off.
@@ -4655,8 +4807,8 @@ enum MvMenuCmd : NSInteger {
   [app addItemWithTitle:@"Quit MediaViewer" action:@selector(terminate:) keyEquivalent:@"q"];
 
   NSMenu* file = submenu(@"File");
-  [self addMenuItem:@"New Window" cmd:kMenuNewWindow key:@"n" mods:NSEventModifierFlagCommand toMenu:file];
-  [self addMenuItem:@"Open…" cmd:kMenuOpen key:@"o" mods:NSEventModifierFlagCommand toMenu:file];
+  [self addMenuItem:@"New Window" cmd:kMenuNewWindow key:@"" mods:0 toMenu:file];
+  [self addMenuItem:@"Open…" cmd:kMenuOpen key:@"" mods:0 toMenu:file];
   // docs/design/26: shown once the library was added in Settings (validateMenuItem:).
   [self addMenuItem:@"Open Photos Library" cmd:kMenuOpenPhotos key:@"" mods:0 toMenu:file];
   NSMenuItem* openRecent = [file addItemWithTitle:@"Open Recent" action:nil keyEquivalent:@""];
@@ -4678,7 +4830,7 @@ enum MvMenuCmd : NSInteger {
   [self addMenuItem:@"Copy Path" cmd:kMenuCopyPath key:@"" mods:0 toMenu:file];
   [self addMenuItem:@"Copy Edited Image" cmd:kMenuCopyEdited key:@"" mods:0 toMenu:file];
   [file addItem:[NSMenuItem separatorItem]];
-  [file addItemWithTitle:@"Close Window" action:@selector(performClose:) keyEquivalent:@"w"];
+  [file addItemWithTitle:@"Close Window" action:@selector(performClose:) keyEquivalent:@""];
 
   // Plain-letter equivalents (no modifier) mirror keyDown:'s bindings.
   // PR 29 (docs/design/20). No key equivalents: the router owns Return, ⇧C, ⇧A, [ ]
@@ -4706,11 +4858,7 @@ enum MvMenuCmd : NSInteger {
   [self addMenuItem:@"Filmstrip" cmd:kMenuFilmstrip key:@"" mods:0 toMenu:view];
   [self addMenuItem:@"Gallery" cmd:kMenuGallery key:@"" mods:0 toMenu:view];
   [self addMenuItem:@"Metadata" cmd:kMenuMetadata key:@"" mods:0 toMenu:view];
-  [self addMenuItem:@"Folder Tree"
-                cmd:kMenuFolderTree
-                key:@"e"
-               mods:NSEventModifierFlagCommand | NSEventModifierFlagShift
-             toMenu:view];
+  [self addMenuItem:@"Folder Tree" cmd:kMenuFolderTree key:@"" mods:0 toMenu:view];
   NSMenuItem* sortHolder = [view addItemWithTitle:@"Sort By" action:nil keyEquivalent:@""];
   NSMenu* sortMenu = [[NSMenu alloc] initWithTitle:@"Sort By"];
   sortHolder.submenu = sortMenu;
@@ -4745,6 +4893,18 @@ enum MvMenuCmd : NSInteger {
   NSApp.helpMenu = help;
 
   NSApp.mainMenu = bar;
+  [self syncMenuKeyEquivalents];
+}
+
+// Issue #182: after every change to the live table (a remap, Reset, loading
+// Settings, an add-on's rows), so the menu answers the chord the router would.
+- (void)syncMenuKeyEquivalents {
+  if (NSApp.mainMenu != nil) MvSyncKeyEquivalents(NSApp.mainMenu, NSApp.mainMenu);
+}
+
+- (void)rebuildKeys {
+  _router.rebuild(mv::shell::live_bindings());
+  [self syncMenuKeyEquivalents];
 }
 
 // Finder: double-click, Open With, or a drop on the Dock icon (PR 20).
@@ -8737,7 +8897,7 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
       (void)mv::shell::rebind_live(idx, static_cast<mv::shell::key>(k), static_cast<std::uint8_t>(m));
     }
   }
-  _router.rebuild(mv::shell::live_bindings());
+  [self rebuildKeys];
   _sort = mv::io::unpack_sort(static_cast<std::int32_t>([d integerForKey:@"mv.sort"]));
   _recentFolders.clear();
   for (id entry in [d arrayForKey:kDefaultsRecentFolders]) {
@@ -8763,7 +8923,7 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
 - (void)resetKeys {
   [self cancelKeyCapture];
   mv::shell::reset_live_bindings();
-  _router.rebuild(mv::shell::live_bindings());
+  [self rebuildKeys];
   [self persistKeys];
   ++_keysGeneration;
 }
@@ -8772,7 +8932,7 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
 - (uint64_t)keysGeneration { return _keysGeneration; }
 // docs/design/25: an add-on's rows came or went (addons_mac.mm).
 - (void)commandsChanged {
-  _router.rebuild(mv::shell::live_bindings());
+  [self rebuildKeys];
   ++_keysGeneration;
 }
 
@@ -8838,7 +8998,9 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
 
 // "Choose a shortcut, then press its replacement. Esc cancels." A local monitor
 // sees the key before anything else, so it can take chords the menu bar would
-// otherwise claim (Cmd+something) and never lets the key reach a command.
+// otherwise claim (Cmd+something) and never lets the key reach a command. A
+// chord a fixed menu item owns is refused; the table's own items follow the
+// remap (syncMenuKeyEquivalents).
 - (void)beginKeyCaptureForRow:(int)row {
   [self cancelKeyCapture];
   _captureRow = row;
@@ -8856,10 +9018,16 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
                                        return nil;
                                      }
                                      if (k == mv::shell::key::none) return nil;
+                                     // Issue #182: ⌘H, ⌘Q, ⌘M, ⌘⌫ are the menu's, which sees
+                                     // them first; the row would never run. Pick another.
+                                     if (MvMenuOwnsChord(NSApp.mainMenu, k, mods)) {
+                                       NSBeep();
+                                       return nil;
+                                     }
                                      const int row = strong->_captureRow;
                                      [strong cancelKeyCapture];
                                      if (mv::shell::rebind_live(row, k, mods)) {
-                                       strong->_router.rebuild(mv::shell::live_bindings());
+                                       [strong rebuildKeys];
                                        [strong persistKeys];
                                        ++strong->_keysGeneration;
                                      }
