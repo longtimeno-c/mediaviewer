@@ -7,7 +7,9 @@
 
 #include <d3d11.h>
 
+#include <atomic>
 #include <chrono>
+#include <memory>
 #include <thread>
 #include <vector>
 
@@ -261,5 +263,50 @@ TEST_CASE("tiled upload on WARP: overview, on-demand tiles, budget and cancel", 
   REQUIRE(set.stats().created == created_before);
 
   gpu = mv::err(mv::status::cancelled);
+  jobs.shutdown();
+}
+
+TEST_CASE("tile service sleeps without polling and wakes on every poke", "[tiles][gpu]") {
+  mv::gfx::com_ptr<ID3D11Device> device;
+  D3D_FEATURE_LEVEL level{};
+  const HRESULT hr =
+      ::D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0,
+                          D3D11_SDK_VERSION, device.GetAddressOf(), &level, nullptr);
+  if (FAILED(hr)) SKIP("WARP is unavailable");
+
+  mv::job_system jobs;
+  REQUIRE(jobs.start(1) == mv::status::ok);
+  std::atomic<int> landed{0};
+  auto service = std::make_unique<mv::image::tile_service>(
+      &jobs, [](void* u) noexcept { static_cast<std::atomic<int>*>(u)->fetch_add(1); }, &landed);
+
+  auto gpu = mv::image::upload_tiled(device.Get(), gradient(20000, 1000),
+                                     jobs.current_generation(), *service);
+  REQUIRE(gpu);
+  auto& set = *gpu->tiles;
+  std::vector<mv::gfx::tile_quad> draws;
+  draws.reserve(256);
+
+  // Each view is asked for after the service has gone back to sleep: there is
+  // no timeout to cover a lost poke, so every one of them has to land.
+  for (const float pan_x : {2000.0f, 10000.0f, 18000.0f}) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    mv::image::tile_view view{pan_x, 500.0f, 1.0f, 1280.0f, 720.0f};
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(kLandSeconds);
+    set.frame(view, draws);
+    while (set.pending() && std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      set.frame(view, draws);
+    }
+    REQUIRE_FALSE(set.pending());
+    REQUIRE_FALSE(draws.empty());
+  }
+
+  // A sleeping service is woken to stop, not left to notice on a tick.
+  std::this_thread::sleep_for(std::chrono::milliseconds(150));
+  const auto t0 = std::chrono::steady_clock::now();
+  gpu = mv::err(mv::status::cancelled);
+  service.reset();
+  CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(2));
   jobs.shutdown();
 }
