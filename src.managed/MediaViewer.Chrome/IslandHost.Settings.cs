@@ -1,5 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
+using System.Runtime.InteropServices;
 using Microsoft.UI;
 using Microsoft.UI.Input;
 using Microsoft.UI.Xaml;
@@ -594,12 +595,11 @@ public static partial class IslandHost
             CancelKeyCapture();
             return;
         }
-        bool shift = Down(VirtualKey.Shift);
-        int k = EncodeCaptureKey(e, shift);
+        int k = EncodeCaptureKey(e);
         if (k <= 0) return;
         int mods = 0;
         if (Down(VirtualKey.Control)) mods |= 1;
-        if (shift) mods |= 2;
+        if (Down(VirtualKey.Shift)) mods |= 2;
         if (Down(VirtualKey.Menu)) mods |= 4;
         // Shift that produced a symbol is not a modifier on the table (`?`, `+`).
         if (k >= 0x21 && k <= 0x7E && (k < '0' || k > '9') && (k < 'A' || k > 'Z'))
@@ -648,14 +648,19 @@ public static partial class IslandHost
     private static bool Down(VirtualKey vk) =>
         InputKeyboardSource.GetKeyStateForCurrentThread(vk).HasFlag(CoreVirtualKeyStates.Down);
 
-    // Host key codes (commands.h): letters are the character, named keys live
-    // at 0x100. Same translation the native edge uses, so a remap round-trips.
-    private static int EncodeCaptureKey(KeyRoutedEventArgs e, bool shift)
+    // Host key codes (commands.h): letters and digits are the character, named
+    // keys live at 0x100, the keypad digits after F12. Symbols resolve through
+    // the active layout as translate_key (main.cpp) does at the native edge,
+    // so a remap round-trips on any layout (issue #218).
+    private static int EncodeCaptureKey(KeyRoutedEventArgs e)
     {
         VirtualKey vk = e.OriginalKey;
         int v = (int)vk;
         if (v >= (int)VirtualKey.A && v <= (int)VirtualKey.Z) return v;
         if (v >= (int)VirtualKey.Number0 && v <= (int)VirtualKey.Number9) return v;
+        // The keypad's digits are their own keys (key::numpad0 follows F12).
+        if (v >= (int)VirtualKey.NumberPad0 && v <= (int)VirtualKey.NumberPad9)
+            return 0x11B + (v - (int)VirtualKey.NumberPad0);
         return vk switch
         {
             VirtualKey.Space => 0x100,
@@ -687,16 +692,34 @@ public static partial class IslandHost
             VirtualKey.F12 => 0x11A,
             VirtualKey.Add => (int)'+',
             VirtualKey.Subtract => (int)'-',
-            _ => v switch
-            {
-                187 => shift ? (int)'+' : (int)'=',  // VK_OEM_PLUS
-                189 => (int)'-',                     // VK_OEM_MINUS
-                188 => (int)',',                     // VK_OEM_COMMA
-                190 => (int)'.',                     // VK_OEM_PERIOD
-                191 => shift ? (int)'?' : (int)'/',  // VK_OEM_2
-                220 => (int)'\\',                    // VK_OEM_5
-                _ => 0,
-            },
+            >= VirtualKey.Multiply and <= VirtualKey.Divide => 0,  // the keypad's other keys are unbound
+            _ => LayoutSymbol(v, e.KeyStatus.ScanCode),
         };
     }
+
+    // The character the key types on the active layout, without Ctrl/Alt so
+    // Ctrl+? still resolves to '?'. Dead keys and non-ASCII glyphs are 0.
+    private static int LayoutSymbol(int vk, uint scanCode)
+    {
+        var state = new byte[256];
+        if (!GetKeyboardState(state)) return 0;
+        state[0x11] = state[0xA2] = state[0xA3] = 0;  // VK_CONTROL, VK_LCONTROL, VK_RCONTROL
+        state[0x12] = state[0xA4] = state[0xA5] = 0;  // VK_MENU, VK_LMENU, VK_RMENU
+        var chars = new char[4];
+        // 0x4: do not change keyboard state (dead keys stay pending for XAML).
+        int n = ToUnicodeEx((uint)vk, scanCode & 0xFF, state, chars, chars.Length, 0x4,
+                            GetKeyboardLayout(0));
+        return n == 1 && chars[0] > 0x20 && chars[0] < 0x7F ? chars[0] : 0;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern bool GetKeyboardState(byte[] lpKeyState);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetKeyboardLayout(uint idThread);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int ToUnicodeEx(uint wVirtKey, uint wScanCode, byte[] lpKeyState,
+                                          [Out] char[] pwszBuff, int cchBuff, uint wFlags,
+                                          IntPtr dwhkl);
 }
