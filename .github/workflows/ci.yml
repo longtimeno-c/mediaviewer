@@ -140,12 +140,76 @@ jobs:
           key: ${{ steps.vcpkg.outputs.cache-primary-key }}
 
   # ---------------------------------------------------------------------------
+  # The test media the corpus-gated cases need (tests/corpus.h): the generated
+  # video clips, and the fetched RAW and HEIC samples. None of it is in git
+  # (docs/design/09), and without it every MV_REQUIRE_CLIP case skipped on every
+  # run: D3D11VA, colour through a real decode, seek, frame step and the
+  # texture-leak check were never proved in CI. Made once here, on Linux, where
+  # apt has an ffmpeg with x264/x265/SVT-AV1; no Windows image ships one. Cached
+  # on the scripts and manifests, so a run only regenerates (~20 min, ~1.5 GB)
+  # when one of them changes. Runs beside windows-deps, so a hit costs nothing.
+  # ---------------------------------------------------------------------------
+  test-media:
+    name: Test media
+    if: ${{ github.event_name != 'schedule' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      # The path list and enableCrossOsArchive must match the restore in
+      # Build exactly, or the Windows legs compute a different cache version
+      # and miss.
+      - name: Restore test media
+        id: media
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            tools/testmedia/*.mp4
+            tools/testmedia/raw
+            tools/testmedia/heif
+          key: testmedia-v1-${{ hashFiles('tools/testmedia/generate.sh', 'tools/testmedia/fetch-raw.ps1', 'tools/testmedia/raw-manifest.json', 'tools/testmedia/fetch-heif.ps1', 'tools/testmedia/heif-manifest.json') }}
+          enableCrossOsArchive: true
+          lookup-only: true
+
+      - name: Install ffmpeg
+        if: steps.media.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+
+      - name: Generate the video corpus
+        if: steps.media.outputs.cache-hit != 'true'
+        run: bash tools/testmedia/generate.sh
+
+      - name: Fetch the RAW and HEIC samples
+        if: steps.media.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          ./tools/testmedia/fetch-raw.ps1
+          ./tools/testmedia/fetch-heif.ps1
+
+      - name: Save test media
+        if: steps.media.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            tools/testmedia/*.mp4
+            tools/testmedia/raw
+            tools/testmedia/heif
+          key: ${{ steps.media.outputs.cache-primary-key }}
+          enableCrossOsArchive: true
+
+  # ---------------------------------------------------------------------------
   # Build + unit tests. MSVC is primary; clang-cl is the second opinion, because
   # it catches different bugs (docs/design/09).
   # ---------------------------------------------------------------------------
   build:
     name: Build (${{ matrix.toolchain }}, ${{ matrix.config }})
-    needs: windows-deps
+    needs: [windows-deps, test-media]
     if: ${{ github.event_name != 'schedule' }}
     runs-on: windows-latest
     # ASan runs the same suite several times slower; its leg gets the room
@@ -213,6 +277,19 @@ jobs:
       - name: Build
         run: cmake --build build --config ${{ matrix.config }}
 
+      # Test media made once by the test-media job. A miss here is a broken
+      # workflow, not a reason to run the suite without it.
+      - name: Restore test media
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            tools/testmedia/*.mp4
+            tools/testmedia/raw
+            tools/testmedia/heif
+          key: testmedia-v1-${{ hashFiles('tools/testmedia/generate.sh', 'tools/testmedia/fetch-raw.ps1', 'tools/testmedia/raw-manifest.json', 'tools/testmedia/fetch-heif.ps1', 'tools/testmedia/heif-manifest.json') }}
+          enableCrossOsArchive: true
+          fail-on-cache-miss: true
+
       # Includes mv_broken_tests (PR 7 verify: "nothing in the broken corpus
       # crashes or hangs") in every matrix leg, ASan included. A failing input
       # is written to broken-dump/ and uploaded below.
@@ -223,6 +300,9 @@ jobs:
         timeout-minutes: ${{ matrix.toolchain == 'msvc-asan' && 30 || 15 }}
         env:
           MV_BROKEN_DUMP: ${{ github.workspace }}/broken-dump
+          # A missing clip or sample FAILS here instead of skipping
+          # (tests/corpus.h); test_corpus.cpp fails if a CI run drops this.
+          MV_REQUIRE_CORPUS: '1'
         run: ctest --test-dir build -C ${{ matrix.config }} --output-on-failure
 
       - name: Upload broken-corpus reproducers

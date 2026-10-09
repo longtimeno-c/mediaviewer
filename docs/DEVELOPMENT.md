@@ -847,7 +847,10 @@ ctest --test-dir build -C Release -R corpus --output-on-failure   # confirm
 # native unit tests and synthetic harness regression tests
 ctest --test-dir build -C Release --output-on-failure
 
-# ...and in CI, where an absent corpus must fail rather than skip
+# ...and as CI runs it, where an absent corpus must fail rather than skip. CI's
+# test-media job makes the clips and fetches the RAW/HEIC samples once (cached);
+# every Build leg restores them and sets this. With CI set, test_corpus.cpp fails
+# if MV_REQUIRE_CORPUS is unset ('0' is an explicit opt-out, as release.yml uses).
 $env:MV_REQUIRE_CORPUS = "1"; ctest --test-dir build -C Release --output-on-failure
 
 # the ABI, end to end from C#: SafeHandle, struct layout, completion drain
@@ -1637,8 +1640,9 @@ The corpus is the load-bearing part of all of that: without
 `tools/testmedia/generate.sh` having been run, twelve cases skip and every
 hardware-decode, colour, seek, frame-step, texture-leak and video-ABI assertion
 above disappears. `ctest` reports those as **Skipped**, not passed, and
-`MV_REQUIRE_CORPUS=1` turns them into failures — set it in CI, or a build that
-proves nothing about video will look exactly like one that proves all of it.
+`MV_REQUIRE_CORPUS=1` turns them into failures. CI's Build job sets it, over media
+the test-media job generates; without that, a build that proves nothing about video
+looks exactly like one that proves all of it.
 
 PR 2's verify line is:
 

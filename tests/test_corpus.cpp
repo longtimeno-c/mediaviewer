@@ -45,3 +45,24 @@ TEST_CASE("the video corpus is present, or the build says it is not",
   SKIP("video corpus incomplete — see the warning above. Set MV_REQUIRE_CORPUS=1 "
        "to make this a failure.");
 }
+
+// The switch above only works if CI throws it. Until issue #145 nothing in
+// .github set it, and every corpus case skipped on every PR while the header
+// said CI demanded them. So a CI run (CI is set by GitHub Actions and
+// most other runners) must say what it wants: '1' to demand the corpus, or an
+// explicit '0' from a job that has decided not to carry it. Unset is the
+// oversight this test exists to catch. Not tagged [video], so the ASan leg,
+// which filters those out, still runs it.
+TEST_CASE("a CI run states whether it requires the corpus", "[corpus]") {
+  const char* ci = std::getenv("CI");
+  if (ci == nullptr || ci[0] == '\0') {
+    SUCCEED("not a CI run");
+    return;
+  }
+  if (std::getenv("MV_REQUIRE_CORPUS") == nullptr) {
+    FAIL("CI is set but MV_REQUIRE_CORPUS is not, so every corpus case may have "
+         "skipped unnoticed. Set MV_REQUIRE_CORPUS=1 on the test step (and make "
+         "the media, see the test-media job in .github/workflows/ci.yml), or '0' "
+         "if this job deliberately runs without it.");
+  }
+}
