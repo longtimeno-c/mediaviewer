@@ -7723,7 +7723,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
     if (!instance_claim.claim()) {
       // Another start claimed the name between our look and our claim.
       if (mv::shell::forward_to_running_instance(requested_paths)) return 0;
-      MV_LOG_WARN("single instance: another MediaViewer owns the pipe; this one runs alone");
+      MV_LOG_WARN("single instance: another process owns the pipe; this one runs alone");
     }
   }
 
