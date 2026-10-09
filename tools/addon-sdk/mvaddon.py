@@ -168,9 +168,16 @@ def ed25519_verify(public: bytes, message: bytes, signature: bytes) -> bool:
 def safe_relative_path(path: str) -> bool:
     if not path or len(path.encode()) > 512 or path[0] in "/\\" or path[-1] == "/":
         return False
-    if "\\" in path or ":" in path or any(ord(c) < 0x20 for c in path):
+    if any(c in '\\:<>"|?*' or ord(c) < 0x20 for c in path):
         return False
-    return all(part not in ("", ".", "..") for part in path.split("/"))
+    return all(part not in ("", ".", "..") and part[-1] not in ". " and not _device(part)
+               for part in path.split("/"))
+
+
+def _device(part: str) -> bool:
+    """A name Windows opens as a device in every folder, with or without an extension."""
+    base = part.split(".", 1)[0].rstrip(" ").lower()
+    return base in DEVICE_NAMES or re.fullmatch(r"(com|lpt)[0-9\u00b9\u00b2\u00b3]", base) is not None
 
 
 def _id_part(part: str) -> bool:
