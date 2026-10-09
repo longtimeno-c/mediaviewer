@@ -77,6 +77,13 @@ bool mv_chrome_item_name(int32_t index, char* out_buf, int32_t out_buf_size);
 // byte length needed, as the tables; 0 when `index` is out of range.
 int32_t mv_chrome_item_path(int32_t index, char* buf, int32_t size);
 
+// The thumbnail key of the item at `index`: an opaque UTF-8 string naming the
+// file and its bytes (path + size + mtime, and a result list's moment), the
+// key the thumb-ready callback below reports. Two folders' IMG_0001.JPG, or a
+// file before and after a rewrite, never share one (issue #177). Returns the
+// byte length needed, as mv_chrome_item_path; 0 when `index` is out of range.
+int32_t mv_chrome_item_thumb_key(int32_t index, char* buf, int32_t size);
+
 // Navigates to `index` the same way clicking a filmstrip/gallery cell does
 // (calls MvLabApp's existing -selectIndex:, the same path arrow keys use).
 // A no-op if `index` is out of range or no folder is open.
@@ -88,14 +95,16 @@ void mv_chrome_select_index(int32_t index);
 // after the host has already hopped back to the main thread — the callback
 // this registers is never invoked from a pool thread).
 //
-// `name_utf8` identifies which item this result is for — not the index it
-// was requested at. A directory can't have two entries with the same name,
-// so it is a stable key across a relist the way a raw index is not: if the
-// listing reorders (including from the app's own copy/move/Trash) between
-// the request and this callback firing, an index-keyed cache would attach
-// the result to whatever item now sits at that index instead of the one
-// that was actually asked for. Always non-NULL.
-typedef void (*mv_chrome_thumb_ready_fn)(const char* name_utf8, const char* thumb_path_utf8);
+// `key_utf8` identifies which item this result is for — the
+// mv_chrome_item_thumb_key it was requested under, not the index it was
+// requested at nor its name. It is a stable key across a relist the way a raw
+// index is not: if the listing reorders (including from the app's own
+// copy/move/Trash) between the request and this callback firing, an
+// index-keyed cache would attach the result to whatever item now sits at that
+// index. And unlike a name it is not repeated by a same-named file in another
+// folder, so a late result for the folder just left matches nothing on
+// screen (issue #177). Always non-NULL.
+typedef void (*mv_chrome_thumb_ready_fn)(const char* key_utf8, const char* thumb_path_utf8);
 void mv_chrome_set_thumb_ready_callback(mv_chrome_thumb_ready_fn callback);
 
 // Asynchronously requests (looks up, or decodes + caches) the JPEG-512
@@ -124,6 +133,12 @@ void mv_chrome_select_index_and_close_gallery(int32_t index);
 // stale even if the item count is unchanged (a rename, or one file added and
 // another removed). [main-thread]
 uint64_t mv_chrome_listing_generation(void);
+
+// Bumped when the host rewrites a listed file in place (a lossless rotate, a
+// metadata write) and updates its size / mtime without a relist, so Swift
+// re-reads mv_chrome_item_thumb_key and the cell asks for the new thumbnail.
+// [main-thread]
+uint64_t mv_chrome_thumb_generation(void);
 
 // Marks (docs/design/16 "Marks, copy, move"): bumped whenever the mark set changes,
 // so Swift can rebuild its marked-item cache only when it must.
