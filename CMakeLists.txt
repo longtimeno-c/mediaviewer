@@ -999,6 +999,8 @@ if(MV_BUILD_TESTS)
     tests/test_transport_autohide.cpp
     # Issue #44: no clip plays under the gallery, both hosts.
     tests/test_playback_hold.cpp
+    # Issue #236: a stale pending clip is retired, both hosts.
+    tests/test_video_session.cpp
     src/abi/clip_session.cpp
     src/shell/trim_state.cpp
     tests/test_corpus.cpp
