@@ -51,10 +51,18 @@ result<shared_library> shared_library::open(const std::string& utf8_path) {
   std::wstring path(static_cast<std::size_t>(n), L'\0');
   ::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8_path.data(),
                         static_cast<int>(utf8_path.size()), path.data(), n);
+  // No system dialog on failure: a bad image or a missing dependency would
+  // otherwise put up a modal "Bad Image" / "System Error" box on this worker
+  // and wait for a click (it hung the test on a CI runner). The person gets
+  // the reason from load_reason instead. This thread only, restored after.
+  DWORD old_mode = 0;
+  const BOOL set_mode = ::SetThreadErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX, &old_mode);
   HMODULE h = ::LoadLibraryExW(path.c_str(), nullptr,
                                LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+  const DWORD code = h ? 0 : ::GetLastError();
+  if (set_mode) ::SetThreadErrorMode(old_mode, nullptr);
   if (!h) {
-    t_load_error = load_reason(::GetLastError());
+    t_load_error = load_reason(code);
     return err(status::io);
   }
   shared_library lib;
