@@ -4564,6 +4564,15 @@ enum MvMenuCmd : NSInteger {
       item.hidden = ![self photosLibraryAvailable];
       return !item.hidden;
     case kMenuTrash:
+      // The menu answers ⌘⌫ before any first responder sees it (issue #180).
+      // A text field's ⌘⌫ is "delete to start of line"; in trim and crop
+      // Delete edits, in the Video Editor it removes a piece, and a slideshow
+      // is not browsing: none of them trashes the file on screen.
+      if ([NSApp.keyWindow.firstResponder isKindOfClass:[NSText class]] || _editorOpen || _slideshowActive ||
+          _edits.crop_active() || (_trim.armed() && [self currentItemIsVideo])) {
+        return NO;
+      }
+      [[fallthrough]];
     case kMenuMoveTo: {
       // Photos library files are never trashed or moved (issue #72). The
       // marks themselves, not a copy of their entries: this runs per validation.

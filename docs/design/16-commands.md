@@ -207,7 +207,9 @@ Marks are a separate set from the selection, so arrow-key browsing never makes a
   remembered.
 - **Delete** only uses the Recycle Bin / Trash. Where there is none (a share, some removable
   drives, bin off) the item is refused, not deleted, and the user is told how many. Marks clear
-  only for items that succeeded.
+  only for items that succeeded. On the Mac, File ▸ Move to Trash (`⌘⌫`) is off while a text
+  field has the keyboard (there `⌘⌫` deletes to the start of the line), in trim or crop, with
+  the Video Editor open, and during a slideshow: the menu sees the key before anything else does.
 - **Drag-out** (mouse): a gallery or filmstrip cell drags the original file (and its pair) as
   `CF_HDROP`, copy-only; a marked cell drags every marked item in listing order. The canvas drags
   too (at fit on Windows, `⌘`-drag on the Mac). A drag of ours dropped on our own window is
