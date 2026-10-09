@@ -1389,7 +1389,7 @@ internal sealed class ImportWindow : Window
         TileVm? tile = (focused as GridViewItem)?.Content as TileVm;
         switch (e.Key)
         {
-            case VirtualKey.Enter when ctrl:
+            case VirtualKey.Enter when ctrl || tile is null:
                 StartImport();
                 e.Handled = true;
                 break;
