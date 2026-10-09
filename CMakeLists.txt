@@ -1011,6 +1011,8 @@ if(MV_BUILD_TESTS)
     tests/test_update_guard.cpp
     tests/test_telemetry.cpp
     tests/test_folder_reselect.cpp
+    # Issue #231: the selection's stamp from the listing, not a UI-thread stat.
+    tests/test_listing_stamp.cpp
     tests/test_marks.cpp
     tests/test_open_request.cpp
     tests/test_os_integration.cpp

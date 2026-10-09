@@ -108,6 +108,11 @@ Errors: `invalid_arg` (value out of range, non-UTF-8 comment, a field this file 
 `mv_folder_forget` so the navigation LRU does not republish the old pixels
 ([14-abi.md](14-abi.md)).
 
+**The selected file's stamp** (path, size, mtime: the key records and edits are filed under) is
+the folder listing's, never a stat on the UI thread. A write moves it before the watcher
+relists, so its job stats the file on the worker and the host keys by that stamp until the
+listing catches up (Windows `shell/listing_stamp.h`; the Mac patches its own listing).
+
 **Export carry** (`read_carried`): for a re-encoded export of a non-JPEG/PNG still, EXIF is
 rebuilt as a TIFF block and XMP as a packet from what Exiv2 read — structural IFD0 tags left
 out, orientation written as 1, maker notes kept only while the block fits one APP1 segment.
