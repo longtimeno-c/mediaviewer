@@ -5035,6 +5035,10 @@ void refresh_contributed_commands(app_state* app) noexcept {
     }
   }
   mv::shell::set_addon_commands(rows);
+  // rebuild forgets held keys; release them first (issue #186).
+  mv::shell::command_id released[mv::shell::key_router::kHeldSlots]{};
+  const std::size_t n = app->router.cancel_holds(released);
+  for (std::size_t i = 0; i < n; ++i) (void)run_command(app, released[i]);
   app->router.rebuild(mv::shell::live_bindings());
 }
 

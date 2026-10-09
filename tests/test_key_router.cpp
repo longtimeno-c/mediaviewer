@@ -664,6 +664,35 @@ TEST_CASE("losing activation fires the releases held keys owe", "[shell][router]
   REQUIRE_FALSE(r.on_key(up(char_key('Z')), s).handled);
 }
 
+TEST_CASE("a hold owes its release even after its table is rewritten", "[shell][router]") {
+  // Issue #186: an add-on's rows can rewrite (and move) the live table while Y
+  // is down; the host then cancels the holds before it rebuilds the router.
+  key_router r;
+  std::vector<binding> rows(default_bindings().begin(), default_bindings().end());
+  r.rebuild(rows);
+  REQUIRE(r.on_key(down(char_key('Y')), still()).command == command_id::show_original);
+  REQUIRE(r.on_key(down(char_key('E')), clip()).command == command_id::skim_forward);
+  REQUIRE(r.on_key(rep(char_key('E')), clip()).command == command_id::skim_forward);
+  for (auto& b : rows) b.release = command_id::none;
+  rows.clear();
+  rows.shrink_to_fit();
+  command_id released[key_router::kHeldSlots]{};
+  const auto n = r.cancel_holds(released);
+  REQUIRE(n == 2);
+  const bool original =
+      released[0] == command_id::show_original_release || released[1] == command_id::show_original_release;
+  const bool settle = released[0] == command_id::skim_settle || released[1] == command_id::skim_settle;
+  REQUIRE(original);
+  REQUIRE(settle);
+
+  // A key-up after a rewrite answers from the hold, not the table.
+  std::vector<binding> again(default_bindings().begin(), default_bindings().end());
+  r.rebuild(again);
+  REQUIRE(r.on_key(down(char_key('Y')), still()).command == command_id::show_original);
+  for (auto& b : again) b.release = command_id::none;
+  REQUIRE(r.on_key(up(char_key('Y')), still()).command == command_id::show_original_release);
+}
+
 TEST_CASE("pending commands are bound and not yet claimed as landed", "[shell][commands]") {
   std::set<int> bound;
   for (const auto& b : default_bindings()) bound.insert(static_cast<int>(b.command));
