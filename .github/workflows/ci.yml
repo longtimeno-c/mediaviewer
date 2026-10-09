@@ -128,6 +128,13 @@ jobs:
         if: steps.vcpkg.outputs.cache-hit != 'true'
         run: cmake -S . -B build -A x64 -DMV_BUILD_TESTS=OFF
 
+      # The licence gate's binary half (docs/design/11): the configure string
+      # in the FFmpeg DLLs we link, static LGPL libraries, encoder DLLs. The
+      # policy job has no install tree, so this is where a pull request gets
+      # it. Runs on a cache hit too, and every build job waits on this one.
+      - name: Licence policy (vcpkg tree)
+        run: ./tools/licence-check.ps1 -VcpkgInstalledRoot build/vcpkg_installed
+
       # A release job can reserve the same key in the same minute. Losing that
       # race is not a failed install; the tree is already in this workspace and
       # the other writer published it.
