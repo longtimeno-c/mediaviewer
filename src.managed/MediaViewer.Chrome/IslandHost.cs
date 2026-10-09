@@ -33,6 +33,7 @@ public static partial class IslandHost
     internal const int ShowArgsSize = 16;
     internal const int FlagsArgsSize = 8;
     internal const int RateArgsSize = 8;
+    internal const int AudioArgsSize = 16;
 
     internal static class Command
     {
@@ -152,6 +153,14 @@ public static partial class IslandHost
         // A document's "Open in <app>" (docs/design/20): arg is the row of the
         // apps SetEditView listed, -1 the default.
         public const int OpenInApp = 1030;
+        // Issue #214: the transport's More flyout. Native owns these, as it
+        // owns the rate, and pushes them back with ApplyAudio. VideoVolume:
+        // arg 0..1; VideoMuted: arg 1 / 0; VideoTrack: arg is the track
+        // index; VideoLoop: arg is a LoopActions value (chrome_loop_action).
+        public const int VideoVolume = 1031;
+        public const int VideoMuted = 1032;
+        public const int VideoTrack = 1033;
+        public const int VideoLoop = 1034;
         public const int RotateCcw = 96;
         public const int RotateCw = 97;
         public const int FlipHorizontal = 98;
@@ -187,6 +196,7 @@ public static partial class IslandHost
                 EditorSeek, EditorAction,
                 DragItems, DragEnded, OpenRecent,
                 EditorTrimGrab, EditorTrimTo, OpenInApp,
+                VideoVolume, VideoMuted, VideoTrack, VideoLoop,
             };
             unchecked
             {
@@ -578,6 +588,27 @@ public static partial class IslandHost
             if (arg == IntPtr.Zero || sizeBytes < RateArgsSize) return unchecked((int)0x80070057);
             ChromeRateArgs args = Marshal.PtrToStructure<ChromeRateArgs>(arg);
             SetSpeedSelection(args.Rate);
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+            return unchecked((int)0x80004005);
+        }
+    }
+
+    /// <summary>
+    /// Native pushing volume, mute and the audio track in (issue #214). The
+    /// More flyout is a view of them, like the speed dropdown, so Up / Down and
+    /// Shift+M move its slider and switch.
+    /// </summary>
+    public static int ApplyAudio(IntPtr arg, int sizeBytes)
+    {
+        try
+        {
+            if (arg == IntPtr.Zero || sizeBytes < AudioArgsSize) return unchecked((int)0x80070057);
+            ChromeAudioArgs args = Marshal.PtrToStructure<ChromeAudioArgs>(arg);
+            SetAudioSelection(args.Volume, args.Muted != 0, args.Track);
             return 0;
         }
         catch (Exception ex)
@@ -1552,6 +1583,15 @@ internal struct ChromeResizeArgs
 internal struct ChromeRateArgs
 {
     public float Rate;
+    public int Reserved;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+internal struct ChromeAudioArgs
+{
+    public float Volume;
+    public int Muted;
+    public int Track;
     public int Reserved;
 }
 

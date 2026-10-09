@@ -294,6 +294,9 @@ expected chrome_host::load() noexcept {
   // Optional: without them a drag carries one cell and Open lists no recents.
   set_drag_paths_ = get_entry(L"SetDragPaths");
   set_recent_folders_ = get_entry(L"SetRecentFolders");
+  // Optional the same way (issue #214): without it the More flyout's audio
+  // controls do not follow the keys.
+  apply_audio_ = get_entry(L"ApplyAudio");
   // Optional the same way: file search (Ctrl+F without Local search, its Esc
   // and filter steps).
   gallery_search_ = get_entry(L"GallerySearch");
@@ -864,6 +867,15 @@ void chrome_host::apply_rate(float rate) noexcept {
   chrome_rate_args args{};
   args.rate = rate;
   (void)apply_rate_(&args, static_cast<std::int32_t>(sizeof(args)));
+}
+
+void chrome_host::apply_audio(float volume, bool muted, std::uint32_t track) noexcept {
+  if (!attached_ || !apply_audio_) return;
+  chrome_audio_args args{};
+  args.volume = volume;
+  args.muted = muted ? 1 : 0;
+  args.track = static_cast<std::int32_t>(track);
+  (void)apply_audio_(&args, static_cast<std::int32_t>(sizeof(args)));
 }
 
 void chrome_host::set_command_table(const std::string& utf8) noexcept {
