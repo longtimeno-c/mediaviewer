@@ -2328,6 +2328,9 @@ static void MvAdoptNewDefaultViewerTypes() {
   NSTimer* _nowPlayingTimer;
   BOOL _remoteCommandsWired;
   mv::shell::present_lab_mac::video_status _nowPlayingShown;
+  // Issue #228: held while a clip plays or a slideshow runs, so the idle timer
+  // neither dims the display nor sleeps the Mac. nil when not presenting.
+  id<NSObject> _keepAwakeActivity;
   // Milestone H (docs/design/17): a result listing is open. `_currentDir` is "" then,
   // `_moments` is parallel to `_items` (the moment a clip opens paused on, -1
   // none) and `_listNames` holds display names made unique within the list
@@ -3724,6 +3727,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   _enteredFullscreenForSlideshow = (self.window.styleMask & NSWindowStyleMaskFullScreen) ? NO : YES;
   if (_enteredFullscreenForSlideshow) [self.window toggleFullScreen:nil];
   [self armSlideshowTimer];
+  [self syncKeepAwake];
 }
 
 - (void)leaveSlideshow {
@@ -3736,6 +3740,7 @@ static void MvAdoptNewDefaultViewerTypes() {
     [self.window toggleFullScreen:nil];
   }
   _enteredFullscreenForSlideshow = NO;
+  [self syncKeepAwake];
 }
 
 - (void)toggleSlideshowPause {
@@ -3747,6 +3752,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   } else {
     [self armSlideshowTimer];
   }
+  [self syncKeepAwake];
 }
 
 - (void)adjustSlideshowInterval:(double)deltaSeconds {
@@ -8590,6 +8596,7 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
   MPNowPlayingInfoCenter* center = MPNowPlayingInfoCenter.defaultCenter;
   const BOOL video = [self currentItemIsVideo];
   const auto st = _lab.video_status_snapshot();
+  [self syncKeepAwake];  // issue #228: this poll is where play / pause / end is seen
   if (!video) {
     center.nowPlayingInfo = nil;
     center.playbackState = MPNowPlayingPlaybackStateStopped;
@@ -8619,6 +8626,25 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
     MPNowPlayingInfoPropertyDefaultPlaybackRate : @1.0,
   };
   center.playbackState = st.playing ? MPNowPlayingPlaybackStatePlaying : MPNowPlayingPlaybackStatePaused;
+}
+
+// Issue #228: media is being presented -- a clip plays, or a slideshow runs --
+// so hold an activity that keeps the display (and the Mac) awake; pause, the
+// end of the clip, leaving it or the slideshow lets it go. Driven from the
+// slideshow transitions and the Now Playing poll; quitting ends it with the process.
+- (void)syncKeepAwake {
+  const auto st = _lab.video_status_snapshot();
+  const BOOL clipPlaying = [self currentItemIsVideo] && st.active && st.playing;
+  const BOOL want = clipPlaying || (_slideshowActive && !_slideshowPaused);
+  if (want == (_keepAwakeActivity != nil)) return;
+  if (want) {
+    _keepAwakeActivity = [NSProcessInfo.processInfo
+        beginActivityWithOptions:NSActivityIdleDisplaySleepDisabled | NSActivityIdleSystemSleepDisabled
+                          reason:@"Presenting media"];
+  } else {
+    [NSProcessInfo.processInfo endActivity:_keepAwakeActivity];
+    _keepAwakeActivity = nil;
+  }
 }
 
 - (void)wireRemoteCommands {

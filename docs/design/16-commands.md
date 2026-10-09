@@ -296,6 +296,9 @@ later, the interval or the end of the clip while it plays (a paused clip goes on
 a finite animation likewise, an endless one on the interval. Intervals 1 / 2 / 3 / 4 / 5 / 7 /
 10 / 15 / 20 / 30 / 60 s, default 4 s. Shuffle visits every item once per round, starting from the
 current one. Wrap is on. The slideshow is stills and clips from the folder; Mac's is stills only.
+While a slideshow runs (not paused), or a clip plays, the display and the machine are kept
+awake: `SetThreadExecutionState(ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED)` on Windows, an
+`NSProcessInfo` activity on the Mac. Pause, the end of the clip, leaving and exit let it go.
 
 ### Import (while the add-on is installed)
 

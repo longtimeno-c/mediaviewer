@@ -429,6 +429,9 @@ struct app_state {
   // Esc or `;` again re-selects the stop so the still comes back from the LRU.
   bool motion_playing = false;
   ULONGLONG motion_started = 0;
+  // Issue #228: the display (and the system) stay awake while a clip plays or a
+  // slideshow runs. Set on the UI thread only: the request is per thread.
+  bool keep_awake = false;
 };
 
 // PR 8 updater (shell/update_guard.h). Set once at startup on the UI thread.
@@ -638,6 +641,7 @@ void sync_video_hold(app_state* app, bool resume = true) noexcept;
 void push_tree_root(app_state* app) noexcept;
 void push_meta_pane(app_state* app) noexcept;
 void update_title(app_state* app) noexcept;
+void sync_keep_awake(app_state* app) noexcept;
 void layout_chrome(app_state* app) noexcept;
 bool run_command(app_state* app, mv::shell::command_id command) noexcept;
 void note_recent_folder(app_state* app, const std::string& utf8_dir);
@@ -4567,6 +4571,23 @@ void publish_slideshow(app_state* app) noexcept {
   app->input.blackout = app->show.active() && app->show.blackout();
   ++app->input.activity_seq;
   publish(app);
+  sync_keep_awake(app);
+}
+
+// Issue #228: media is being presented — a clip plays, or a slideshow runs —
+// so the OS idle timer must not dim the display or suspend the machine. Driven
+// from the slideshow transitions and the title tick (which already polls the
+// play state), and cleared on pause, end and exit. A call only on a change.
+void sync_keep_awake(app_state* app) noexcept {
+  if (!app) return;
+  std::uint32_t state = MV_PLAY_STOPPED;
+  if (app->session) (void)mv_video_state(app->session, &state);
+  const bool playing = app->session && mv::abi::video_open(app->session) && state == MV_PLAY_PLAYING;
+  const bool want = playing || (app->show.active() && !app->show.paused());
+  if (want == app->keep_awake) return;
+  app->keep_awake = want;
+  (void)::SetThreadExecutionState(want ? ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED
+                                       : ES_CONTINUOUS);
 }
 
 // F5 (docs/design/16). Fullscreen unless it already is; leaving puts it back.
@@ -7449,6 +7470,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         }
         update_title(app);
         update_thumb_bar(app);
+        sync_keep_awake(app);
         // An update restart's zoom goes back once the still is on screen; a
         // preset before the decode lands would be replaced by the fit.
         if (g_restore.zoom_percent > 0 && app->lab.showing_still()) {
@@ -7537,6 +7559,10 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
     }
 
     case WM_DESTROY:
+      if (app->keep_awake) {
+        app->keep_awake = false;
+        (void)::SetThreadExecutionState(ES_CONTINUOUS);
+      }
       app->instance.stop();
       release_taskbar(app);
       app->chrome.detach();
