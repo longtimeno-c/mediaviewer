@@ -52,8 +52,9 @@ public final class MVChromeHost: NSObject {
   }
 
   /// `?` opened: the sheet re-reads the live table (Settings may have remapped).
-  @MainActor @objc public static func reloadHelp() {
-    HelpStore.shared.reload()
+  /// `modes`: the mode_mask of the mode underneath; only its bindings are listed.
+  @MainActor @objc public static func reloadHelp(modes: Int32) {
+    HelpStore.shared.reload(modes: modes)
   }
 
   @objc public static func makeSettingsView() -> NSView {

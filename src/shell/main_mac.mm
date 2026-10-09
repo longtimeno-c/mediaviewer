@@ -187,6 +187,11 @@ static bool MvCommandSupported(mv::shell::command_id c) {
     // ⌘F is always there: Local search's panel while the pack is loaded, file
     // search otherwise (docs/design/16 "File search", 2026-09-28).
     case search_open:
+    // Issue #184: `/` (find by name in the gallery), the runner's `3`, and the
+    // rows an add-on's manifest fills; runCommand: handles each.
+    case typeahead: case game_toggle_3d:
+    case addon_cmd_0: case addon_cmd_1: case addon_cmd_2: case addon_cmd_3:
+    case addon_cmd_4: case addon_cmd_5: case addon_cmd_6: case addon_cmd_7:
       return true;
     // Milestone G: only while the Import add-on is loaded (docs/design/18).
     case open_import: case import_now:
@@ -4450,7 +4455,13 @@ static BOOL MvCopyUtf8(const std::string& text, char* buf, int32_t size) {
 }
 - (void)setHelpVisible:(BOOL)visible {
   _helpVisible = visible;
-  if (visible) [MVChromeHost reloadHelp];
+  if (visible) {
+    // `?` lists the bindings of the mode underneath (docs/design/16), as the
+    // Windows flyout does: not the popup's own state.
+    mv::shell::view_state under = [self currentViewState];
+    under.popup_open = false;
+    [MVChromeHost reloadHelpWithModes:mv::shell::mask_of(mv::shell::resolve_mode(under))];
+  }
   self.helpHost.hidden = !visible;
 }
 - (void)toggleHelp {

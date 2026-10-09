@@ -338,7 +338,9 @@ keystroke is one pass (≤ 2 ms for 10,000 items). No disk walk.
 `?` toggles a mode-sensitive cheat sheet generated from the live table
 (`describe_commands()`: id, modes, label, key label). On Windows it is a XAML flyout with
 `ShouldConstrainToRootBounds = false`, so a strip does not clip it; it does not composite onto the
-swapchain. There is no command palette; Settings search and `?` cover finding a command.
+swapchain. On the Mac it is a SwiftUI overlay over the canvas, filtered the same way. Both list
+the bindings live in the mode underneath, as if the canvas had focus. There is no command palette;
+Settings search and `?` cover finding a command.
 
 ### Empty window
 
