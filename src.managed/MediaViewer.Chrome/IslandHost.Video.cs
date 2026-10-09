@@ -335,9 +335,11 @@ public static partial class IslandHost
             _smtc.PlaybackPositionChangeRequested += OnMediaSeek;
         }
         catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
+        // Armed only while a clip is open (issue #216), so a still costs no
+        // tick: the open and state completions start it (DrainFolder), and the
+        // tick that finds no clip stops it.
         _videoTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(150) };
         _videoTimer.Tick += (_, _) => UpdateVideoControls();
-        _videoTimer.Start();
     }
 
     private static void OnMediaButton(SystemMediaTransportControls sender, SystemMediaTransportControlsButtonPressedEventArgs args)
@@ -363,11 +365,13 @@ public static partial class IslandHost
             _smtc.PlaybackPositionChangeRequested -= OnMediaSeek;
             _smtc.IsEnabled = false; _smtc = null;
         }
+        ForgetMediaControls();
     }
 
     /// <summary>
-    /// 150 ms playback poll. It runs whether or not the strip is up, because it
-    /// is also what tells native when to raise and lower it.
+    /// 150 ms playback poll, while a clip is open. It runs whether or not the
+    /// strip is up, because it is also what tells native when to raise and
+    /// lower it. Completions call it too, which is what starts it.
     /// </summary>
     private static void UpdateVideoControls()
     {
@@ -387,8 +391,20 @@ public static partial class IslandHost
             _videoPlaying = playing;
             Send(Command.VideoActive, video ? (playing ? 2 : 1) : 0);
         }
-        if (_smtc is not null) _smtc.IsEnabled = video;
-        if (!video) return;
+        if (_videoTimer is not null && _videoTimer.IsEnabled != video)
+        {
+            if (video) _videoTimer.Start(); else _videoTimer.Stop();
+        }
+        if (_smtc is not null && _smtcEnabled != video)
+        {
+            _smtc.IsEnabled = video;
+            _smtcEnabled = video;
+        }
+        if (!video)
+        {
+            ForgetMediaControls();
+            return;
+        }
 
         long position = Math.Max(0, _folderSession.VideoPosition);
         UpdateMatchDuration(Math.Max(0, info.DurationNs) / 1_000_000);
@@ -407,17 +423,69 @@ public static partial class IslandHost
             _updatingVideo = false;
         }
 
-        if (_smtc is not null) {
-            _smtc.PlaybackStatus = state == 1 ? MediaPlaybackStatus.Playing : MediaPlaybackStatus.Paused;
+        UpdateMediaControls(state, Math.Max(0, info.DurationNs), position);
+    }
+
+    // What the media controls were last told (issue #216). Each setter is a
+    // cross-process call, and the system runs the position on by itself while
+    // it is told Playing, so they are pushed on a change, not per tick.
+    private static bool? _smtcEnabled;
+    private static uint _smtcState = uint.MaxValue;
+    private static string? _smtcTitle;
+    private static long _smtcDurationNs = -1;
+    private static long _smtcPositionNs;
+    private static long _smtcAtMs;
+    private static double _smtcRate = 1;
+    // Native's playback rate, from ApplyRate.
+    private static double _videoRate = 1;
+
+    // The next clip pushes everything again.
+    private static void ForgetMediaControls()
+    {
+        _smtcState = uint.MaxValue;
+        _smtcTitle = null;
+        _smtcDurationNs = -1;
+        if (_smtc is null) _smtcEnabled = null;
+    }
+
+    private static void UpdateMediaControls(uint state, long durationNs, long position)
+    {
+        if (_smtc is null) return;
+        string title = _selectedIndex >= 0 && _selectedIndex < Items.Count ? Items[_selectedIndex].Name : "MediaViewer";
+        if (title != _smtcTitle)
+        {
             var updater = _smtc.DisplayUpdater; updater.Type = MediaPlaybackType.Video;
-            updater.VideoProperties.Title = _selectedIndex >= 0 && _selectedIndex < Items.Count ? Items[_selectedIndex].Name : "MediaViewer";
+            updater.VideoProperties.Title = title;
             updater.Update();
-            _smtc.UpdateTimelineProperties(new SystemMediaTransportControlsTimelineProperties {
-                StartTime = TimeSpan.Zero, MinSeekTime = TimeSpan.Zero,
-                EndTime = TimeSpan.FromTicks(Math.Max(0, info.DurationNs) / 100),
-                MaxSeekTime = TimeSpan.FromTicks(Math.Max(0, info.DurationNs) / 100),
-                Position = TimeSpan.FromTicks(position / 100)
-            });
+            _smtcTitle = title;
         }
+
+        long now = Environment.TickCount64;
+        bool playing = state == 1;
+        bool timeline = state != _smtcState || durationNs != _smtcDurationNs || _videoRate != _smtcRate;
+        if (!timeline)
+        {
+            // A seek is the position leaving the line it was on: still while
+            // paused, the rate times the wall clock while playing. Half a
+            // second covers a tick's jitter and an audio-clock correction.
+            double expected = _smtcPositionNs + (playing ? (now - _smtcAtMs) * 1e6 * _smtcRate : 0);
+            timeline = Math.Abs(position - expected) > 500_000_000;
+        }
+        if (!timeline) return;
+
+        if (state != _smtcState)
+            _smtc.PlaybackStatus = playing ? MediaPlaybackStatus.Playing : MediaPlaybackStatus.Paused;
+        if (_videoRate != _smtcRate) _smtc.PlaybackRate = _videoRate;
+        _smtc.UpdateTimelineProperties(new SystemMediaTransportControlsTimelineProperties {
+            StartTime = TimeSpan.Zero, MinSeekTime = TimeSpan.Zero,
+            EndTime = TimeSpan.FromTicks(durationNs / 100),
+            MaxSeekTime = TimeSpan.FromTicks(durationNs / 100),
+            Position = TimeSpan.FromTicks(position / 100)
+        });
+        _smtcState = state;
+        _smtcDurationNs = durationNs;
+        _smtcRate = _videoRate;
+        _smtcPositionNs = position;
+        _smtcAtMs = now;
     }
 }

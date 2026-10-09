@@ -190,7 +190,8 @@ public static partial class IslandHost
                 // Pause label and the transport strip react now instead of on
                 // the next 150 ms tick. The timer stays: it is the position
                 // pump for the scrubber and the clock, and no completion can
-                // replace something that moves continuously.
+                // replace something that moves continuously. These and the
+                // opens are what start it; it stops itself on a still (#216).
                 video = true;
             }
         }

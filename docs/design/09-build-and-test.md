@@ -186,6 +186,9 @@ Velopack keeps one full package for rollback. `build-release.ps1` fails above 25
   HKLM registration a per-user install cannot make (macOS has a Spotlight importer instead).
 - **Jump list** of recent folders (`ICustomDestinationList`, honouring user removals).
 - **SMTC** (`SystemMediaTransportControls`) for media keys and the OS overlay during video.
+  The chrome's 150 ms playback poll runs only while a clip is open, and it pushes SMTC's title,
+  status and timeline only when one changes or the position jumps (a seek); the OS runs the
+  position on between pushes.
 - **Drag and clipboard out:** files go out as `CF_HDROP` (the original file, not a stream)
   from the canvas (`SHDoDragDrop`), gallery and filmstrip, and to the clipboard; keyboard twins
   are in [commands](16-commands.md). Drop in opens a file or folder.
