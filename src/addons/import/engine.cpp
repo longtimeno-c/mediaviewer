@@ -698,8 +698,8 @@ void engine::persist(const std::shared_ptr<job>& j) {
   j->persisted = idx_->create_job(row) != 0;
 }
 
-void engine::fill_job_from_plan(const std::shared_ptr<job>& j, const scan_result& scan,
-                                const plan_result& plan) {
+expected engine::fill_job_from_plan(const std::shared_ptr<job>& j, const scan_result& scan,
+                                    const plan_result& plan) {
   j->source_root = scan.root;
   j->volume_id = scan.volume_id;
   j->label = scan.label;
@@ -773,7 +773,9 @@ void engine::fill_job_from_plan(const std::shared_ptr<job>& j, const scan_result
     if (pu.seq > 0) idx_->commit_seq(plan.destination, pu.day, pu.seq);
     ++unit_no;
   }
-  idx_->journal_add(rows);
+  // The job runs from the rows in memory, but a resume rebuilds it from the
+  // journal: a journal that did not land in full fails the job unstarted.
+  const expected journaled = idx_->journal_add(rows);
   idx_->set_setting("last_preset", plan.settings.name);
   idx_->set_setting("last_destination", plan.destination);
   std::lock_guard lock(j->m);
@@ -782,6 +784,7 @@ void engine::fill_job_from_plan(const std::shared_ptr<job>& j, const scan_result
   j->prog.units_skipped = skipped;
   j->prog.bytes_total = bytes;
   j->prog.destination_count = static_cast<std::uint32_t>(j->dest_roots.size());
+  return journaled;
 }
 
 void engine::launch(const std::shared_ptr<job>& j) {
@@ -820,8 +823,11 @@ result<std::uint64_t> engine::start_job(std::uint64_t plan_id) {
       scan = slot->scan->scan;
       plan = slot->plan;
     }
-    fill_job_from_plan(j, scan, plan);
-    launch(j);
+    if (fill_job_from_plan(j, scan, plan)) {
+      launch(j);
+    } else {
+      finish_job(j, MV_IMPORT_JOB_FAILED);
+    }
   });
   return j->id;
 }
@@ -845,7 +851,10 @@ void engine::pipeline_into(const std::shared_ptr<job>& j, const std::vector<std:
     finish_job(j, MV_IMPORT_JOB_FAILED);
     return;
   }
-  fill_job_from_plan(j, *scanned, *planned);
+  if (!fill_job_from_plan(j, *scanned, *planned)) {
+    finish_job(j, MV_IMPORT_JOB_FAILED);
+    return;
+  }
   launch(j);
 }
 
@@ -1912,7 +1921,9 @@ void engine::run_duplicates(const std::shared_ptr<job>& j, const std::string& di
   // 5. Remember the hashes. A finished walk also forgets files that have
   // gone; a cancelled one only adds what it read.
   const bool complete = walked.has_value() && !cancelled;
-  idx_->seen_store(store, complete ? &prefix : nullptr);
+  // Only a cache: if the store fails it rolls back, and the next scan reads
+  // those files again.
+  (void)idx_->seen_store(store, complete ? &prefix : nullptr);
 
   {
     std::lock_guard lock(j->m);
