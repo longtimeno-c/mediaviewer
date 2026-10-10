@@ -73,7 +73,7 @@ result<bgra_thumb> render_thumbnail_by(std::vector<std::uint8_t> bytes, std::uin
   // the last thing it does, after it has released everything it holds.
   if (g_in_flight.fetch_add(1, std::memory_order_acq_rel) >= kMaxInFlight) {
     g_in_flight.fetch_sub(1, std::memory_order_acq_rel);
-    return err(status::cancelled);
+    return err(status::busy);  // refused, not abandoned: nothing of ours is running
   }
   std::shared_ptr<pending> job;
   try {
