@@ -4516,14 +4516,18 @@ static NSEventModifierFlags MvModifierMask(std::uint8_t mods) {
   return mask;
 }
 
-// MvKeyFromEvent's answer for a menu item's own key equivalent (Command and
-// Control are both `ctrl` there), or none.
+// MvKeyFromEvent's answer for a menu item's own key equivalent, or none. Only
+// a plain Command chord counts: AppKit also injects items such as Start
+// Dictation (fn D), Emoji & Symbols (fn E) and the window tiling items
+// (fn Control F, C, ...), which a plain key or a Command chord never fires, so
+// counting them would refuse E, D or Cmd+F in Settings for no reason.
 static mv::shell::key MvKeyOfEquivalent(NSMenuItem* item, std::uint8_t* mods) {
   NSString* eq = item.keyEquivalent;
   if (eq.length != 1) return mv::shell::key::none;
   const NSEventModifierFlags flags = item.keyEquivalentModifierMask;
-  std::uint8_t m = mv::shell::mod_none;
-  if (flags & (NSEventModifierFlagCommand | NSEventModifierFlagControl)) m |= mv::shell::mod_ctrl;
+  if ((flags & NSEventModifierFlagCommand) == 0) return mv::shell::key::none;
+  if (flags & (NSEventModifierFlagControl | NSEventModifierFlagFunction)) return mv::shell::key::none;
+  std::uint8_t m = mv::shell::mod_ctrl;
   if (flags & NSEventModifierFlagShift) m |= mv::shell::mod_shift;
   if (flags & NSEventModifierFlagOption) m |= mv::shell::mod_alt;
   *mods = m;
