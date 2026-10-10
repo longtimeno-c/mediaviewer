@@ -17,6 +17,7 @@
 #include "io/paths.h"
 #include "io/replace.h"
 #include "meta/meta.h"
+#include "shell/os_integration.h"
 
 namespace mv::shell {
 namespace {
@@ -650,6 +651,14 @@ std::string flattened_file_name(std::string_view source_path) {
   const std::size_t sep = source_path.find_last_of("/\\");
   const std::string_view name = sep == std::string_view::npos ? source_path : source_path.substr(sep + 1);
   return edit::export_file_name(name, edit::image_format::png);
+}
+
+result<codec::raster> render_print_raster(std::string_view source_path, const edit::geometry& g,
+                                          const edit::colour& c, bool bgra) {
+  MV_TRY(std::vector<std::uint8_t> bytes, io::read_all(source_path));
+  MV_TRY(codec::raster out, edit::render_baked(bytes, g, c));
+  prepare_print_pixels(out.rgba, bgra);
+  return out;
 }
 
 namespace {

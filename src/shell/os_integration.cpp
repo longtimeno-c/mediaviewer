@@ -3,6 +3,7 @@
 #include "shell/os_integration.h"
 
 #include <algorithm>
+#include <utility>
 
 namespace mv::shell {
 namespace {
@@ -156,6 +157,40 @@ std::vector<std::string> parse_shellext_file_list(std::string_view text) {
     out.emplace_back(line);
   }
   return out;
+}
+
+print_rect place_print(std::uint32_t width, std::uint32_t height, print_rect page,
+                       double units_per_inch_x, double units_per_inch_y, print_scale scale) noexcept {
+  if (width == 0 || height == 0 || !(page.w > 0) || !(page.h > 0) || !(units_per_inch_x > 0) ||
+      !(units_per_inch_y > 0)) {
+    return {};
+  }
+  // Inches per image pixel, the same across and down so the still keeps its
+  // shape whatever the device's units.
+  double inches = 1.0 / kPrintPixelsPerInch;
+  if (scale == print_scale::fit) {
+    inches = std::min(page.w / units_per_inch_x / width, page.h / units_per_inch_y / height);
+  }
+  print_rect r;
+  r.w = width * inches * units_per_inch_x;
+  r.h = height * inches * units_per_inch_y;
+  r.x = page.x + (page.w - r.w) / 2;
+  r.y = page.y + (page.h - r.h) / 2;
+  return r;
+}
+
+void prepare_print_pixels(std::span<std::uint8_t> rgba, bool bgra) noexcept {
+  for (std::size_t i = 0; i + 3 < rgba.size(); i += 4) {
+    const unsigned a = rgba[i + 3];
+    if (a != 255) {
+      // Straight alpha over white: c * a + 255 * (1 - a), rounded.
+      for (std::size_t k = 0; k < 3; ++k) {
+        rgba[i + k] = static_cast<std::uint8_t>((static_cast<unsigned>(rgba[i + k]) * a + 255u * (255u - a) + 127u) / 255u);
+      }
+      rgba[i + 3] = 255;
+    }
+    if (bgra) std::swap(rgba[i], rgba[i + 2]);
+  }
 }
 
 shellext_plan plan_shellext_install(std::string_view version, std::span<const std::string> existing) {

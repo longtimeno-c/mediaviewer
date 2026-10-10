@@ -285,6 +285,9 @@ constexpr binding kBindings[] = {
     // PageDown inside one stop; plain PageUp / PageDown still skip ten stops.
     row(key::page_down, mod_ctrl, kBrowse | kIsland, repeat, next_page),
     row(key::page_up, mod_ctrl, kBrowse | kIsland, repeat, prev_page),
+    // Print… (docs/design/07 "Print"). Appended. Ctrl+P was free in every mode (P
+    // alone is trim's preview). On a clip it is not bound, so it does nothing.
+    row(C('P'), mod_ctrl, kBrowse | kIsland, edge, print),
 };
 
 // The router's index stores row + 1 in a byte.
@@ -462,6 +465,7 @@ constexpr command_info kCommands[] = {
     {addon_cmd_6, "Add-on command 7", true},
     {addon_cmd_7, "Add-on command 8", true},
     {new_window, "New window"},
+    {print, "Print…"},
 };
 
 const char* named_key(key k) noexcept {

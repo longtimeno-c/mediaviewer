@@ -277,6 +277,8 @@ static_assert(static_cast<int>(command_id::clip_split) == 145 &&
               static_cast<int>(command_id::trim_remove_middle) == 146);
 static_assert(static_cast<int>(command_id::crop_aspect_set) == 155);
 static_assert(static_cast<int>(command_id::crop_straighten_set) == 156);
+// docs/design/07 "Print": the Open flyout's Print… (IslandHost.cs Command.Print).
+static_assert(static_cast<int>(command_id::print) == 172);
 static_assert(chrome_cmd_edit_tab >= kCommandCount && chrome_cmd_edit_action >= kCommandCount);
 static_assert(chrome_cmd_meta_tags >= kCommandCount && chrome_cmd_meta_date >= kCommandCount);
 static_assert(chrome_cmd_editor_seek >= kCommandCount && chrome_cmd_editor_action >= kCommandCount);

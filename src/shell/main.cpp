@@ -134,6 +134,9 @@ constexpr UINT kMsgOpenForwarded = WM_APP + 0x78;   // a second instance handed 
 constexpr UINT kMsgOwnDragEnded = WM_APP + 0x7A;
 // A document's "Open in <app>" list (shell/open_with_win.h) came back.
 constexpr UINT kMsgOpenWithReady = WM_APP + 0x7B;
+// Print… (docs/design/07 "Print"): wparam 0, the bake is ready (lparam a
+// print_bake); wparam 1, the spool finished (lparam 1 if it printed).
+constexpr UINT kMsgPrint = WM_APP + 0x7C;
 constexpr UINT kThumbPrev = 0x5101;                 // taskbar thumbnail toolbar button ids
 constexpr UINT kThumbPlay = 0x5102;
 constexpr UINT kThumbNext = 0x5103;
@@ -224,6 +227,8 @@ struct app_state {
   // mode; the render thread gets the geometry through input.edit, tagged with
   // the item's path key and the view generation of the select that showed it.
   mv::shell::edit_session edits;
+  // Print…: a bake, the dialog or a spool is running; a second Ctrl+P waits.
+  bool printing = false;
   std::string edit_path;
   std::uint64_t edit_key = 0;
   std::uint32_t edit_generation = 0;
@@ -5586,6 +5591,278 @@ bool share_targets(app_state* app) {
   return app->chrome.share_files(app->window, w.str());
 }
 
+// ---- Print… (docs/design/07 "Print") ------------------------------------------------
+//
+// Ctrl+P bakes the still on the pool (render_print_raster, rule 1), then shows
+// the Win32 print dialog (PrintDlgEx) with a Scale tab, and spools on the pool
+// again through GDI. Win32 rather than Windows.Graphics.Printing.PrintManager:
+// PrintManager needs a XAML PrintDocument page (Microsoft.UI.Xaml.Printing has
+// no working path in an unpackaged island app) or a Direct2D print-preview
+// source; PrintDlgEx takes our HWND as is, offers printer, copies,
+// Preferences (paper, orientation) and one extra tab, and needs no package.
+
+struct print_bake {
+  bool ok = false;
+  std::wstring title;      // the file name, for the print queue
+  mv::codec::raster dib;   // BGRA over white, top-down; `icc` is its profile
+};
+
+// The OS dialog's answer, copied out of its global handles for the spool.
+struct print_job {
+  std::wstring title;
+  std::wstring device;
+  std::vector<BYTE> devmode;  // DEVMODEW plus the driver's extra bytes
+  int copies = 1;             // copies the driver does not do itself
+  mv::shell::print_scale scale = mv::shell::print_scale::fit;
+  mv::codec::raster dib;
+};
+
+bool can_print(app_state* app) {
+  return app && app->window && !app->printing &&
+         edit_subject_of(app) == mv::shell::edit_subject::still && app->edits.can_bake();
+}
+
+bool start_print(app_state* app) {
+  if (!can_print(app)) return false;
+  app->printing = true;
+  const HWND hwnd = app->window;
+  const std::string& path = app->edit_path;
+  const std::size_t slash = path.find_last_of("/\\");
+  std::wstring title = wide_from_utf8(slash == std::string::npos ? path : path.substr(slash + 1));
+  app->jobs.submit_at(mv::background_generation,
+                      [path, g = app->edits.export_geometry(), c = app->edits.colour(), title,
+                       hwnd](const mv::job_context&) -> mv::status {
+                        mv::result<mv::codec::raster> out = mv::shell::render_print_raster(path, g, c, true);
+                        auto* r = new (std::nothrow) print_bake{};
+                        if (r) r->title = title;
+                        if (r && out) {
+                          r->ok = true;
+                          r->dib = std::move(out).value();
+                        }
+                        if (r && !::PostMessageW(hwnd, kMsgPrint, 0, reinterpret_cast<LPARAM>(r))) delete r;
+                        return out ? mv::status::ok : out.error();
+                      });
+  return true;
+}
+
+constexpr WORD kPrintFitId = 101;
+constexpr WORD kPrintActualId = 102;
+
+// The Scale tab: Preview's "Scale to Fit" (the default) or "Actual Size".
+INT_PTR CALLBACK print_scale_proc(HWND dlg, UINT msg, WPARAM wparam, LPARAM lparam) {
+  switch (msg) {
+    case WM_INITDIALOG: {
+      const auto* psp = reinterpret_cast<const PROPSHEETPAGEW*>(lparam);
+      ::SetWindowLongPtrW(dlg, DWLP_USER, psp->lParam);
+      const auto* scale = reinterpret_cast<const mv::shell::print_scale*>(psp->lParam);
+      ::CheckRadioButton(dlg, kPrintFitId, kPrintActualId,
+                         *scale == mv::shell::print_scale::actual_size ? kPrintActualId : kPrintFitId);
+      return TRUE;
+    }
+    case WM_COMMAND:
+      if (HIWORD(wparam) == BN_CLICKED && (LOWORD(wparam) == kPrintFitId || LOWORD(wparam) == kPrintActualId)) {
+        if (auto* scale = reinterpret_cast<mv::shell::print_scale*>(::GetWindowLongPtrW(dlg, DWLP_USER))) {
+          *scale = LOWORD(wparam) == kPrintActualId ? mv::shell::print_scale::actual_size
+                                                    : mv::shell::print_scale::fit;
+        }
+      }
+      return FALSE;
+    default:
+      return FALSE;
+  }
+}
+
+// The Scale tab's dialog template, built in memory (the app has no .rc
+// dialogs): a DLGTEMPLATE, then each DLGITEMTEMPLATE on a DWORD boundary.
+std::vector<WORD> print_scale_template() {
+  std::vector<WORD> t;
+  const auto dword = [&t](DWORD v) {
+    t.push_back(LOWORD(v));
+    t.push_back(HIWORD(v));
+  };
+  const auto text = [&t](const wchar_t* s) {
+    for (; *s != L'\0'; ++s) t.push_back(static_cast<WORD>(*s));
+    t.push_back(0);
+  };
+  dword(WS_CHILD | WS_CAPTION | DS_SETFONT | DS_CONTROL);
+  dword(0);
+  t.push_back(2);  // controls
+  t.push_back(0);  // x, y, cx, cy in dialog units
+  t.push_back(0);
+  t.push_back(220);
+  t.push_back(60);
+  t.push_back(0);  // no menu
+  t.push_back(0);  // default class
+  text(L"Scale");  // the tab's caption
+  t.push_back(8);
+  text(L"MS Shell Dlg");
+  const struct {
+    WORD id;
+    short y;
+    DWORD group;
+    const wchar_t* label;
+  } radios[] = {{kPrintFitId, 10, WS_GROUP, L"Scale to Fit"}, {kPrintActualId, 26, 0, L"Actual Size"}};
+  for (const auto& r : radios) {
+    if (t.size() % 2 != 0) t.push_back(0);  // DWORD alignment
+    dword(WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTORADIOBUTTON | r.group);
+    dword(0);
+    t.push_back(10);
+    t.push_back(static_cast<WORD>(r.y));
+    t.push_back(180);
+    t.push_back(12);
+    t.push_back(r.id);
+    t.push_back(0xFFFF);  // predefined class: Button
+    t.push_back(0x0080);
+    text(r.label);
+    t.push_back(0);  // no creation data
+  }
+  return t;
+}
+
+// The OS print dialog, on the UI thread like the open dialog. The page starts
+// in the still's orientation; copies are the driver's where it can do them.
+// False when cancelled or there is no printer.
+bool choose_printer(HWND owner, std::uint32_t width, std::uint32_t height, print_job& job) {
+  PRINTDLGEXW pd{};
+  pd.lStructSize = sizeof(pd);
+  pd.hwndOwner = owner;
+  pd.Flags = PD_RETURNDEFAULT;
+  pd.nStartPage = START_PAGE_GENERAL;
+  if (SUCCEEDED(::PrintDlgExW(&pd)) && pd.hDevMode != nullptr) {
+    if (auto* dm = static_cast<DEVMODEW*>(::GlobalLock(pd.hDevMode))) {
+      dm->dmFields |= DM_ORIENTATION;
+      dm->dmOrientation = static_cast<short>(mv::shell::print_landscape(width, height) ? DMORIENT_LANDSCAPE
+                                                                                         : DMORIENT_PORTRAIT);
+      ::GlobalUnlock(pd.hDevMode);
+    }
+  }
+  std::vector<WORD> page_template = print_scale_template();
+  PROPSHEETPAGEW psp{};
+  psp.dwSize = sizeof(psp);
+  psp.dwFlags = PSP_DLGINDIRECT;
+  psp.hInstance = ::GetModuleHandleW(nullptr);
+  psp.pResource = reinterpret_cast<LPCDLGTEMPLATEW>(page_template.data());
+  psp.pfnDlgProc = print_scale_proc;
+  psp.lParam = reinterpret_cast<LPARAM>(&job.scale);
+  HPROPSHEETPAGE scale_page = ::CreatePropertySheetPageW(&psp);
+
+  pd.Flags = PD_NOPAGENUMS | PD_NOSELECTION | PD_NOCURRENTPAGE | PD_USEDEVMODECOPIESANDCOLLATE;
+  pd.nCopies = 1;
+  pd.nPropertyPages = scale_page != nullptr ? 1 : 0;
+  pd.lphPropertyPages = scale_page != nullptr ? &scale_page : nullptr;
+  const HRESULT hr = ::PrintDlgExW(&pd);
+  const bool chosen = SUCCEEDED(hr) && pd.dwResultAction == PD_RESULT_PRINT && pd.hDevNames != nullptr;
+  if (chosen) {
+    if (const auto* names = static_cast<const DEVNAMES*>(::GlobalLock(pd.hDevNames))) {
+      job.device = reinterpret_cast<const wchar_t*>(names) + names->wDeviceOffset;
+      ::GlobalUnlock(pd.hDevNames);
+    }
+    if (pd.hDevMode != nullptr) {
+      if (const auto* dm = static_cast<const DEVMODEW*>(::GlobalLock(pd.hDevMode))) {
+        const auto* bytes = reinterpret_cast<const BYTE*>(dm);
+        job.devmode.assign(bytes, bytes + dm->dmSize + dm->dmDriverExtra);
+        ::GlobalUnlock(pd.hDevMode);
+      }
+    }
+    job.copies = std::clamp(static_cast<int>(pd.nCopies), 1, 999);
+  }
+  if (pd.hDevMode != nullptr) ::GlobalFree(pd.hDevMode);
+  if (pd.hDevNames != nullptr) ::GlobalFree(pd.hDevNames);
+  if (pd.hDC != nullptr) ::DeleteDC(pd.hDC);
+  return chosen && !job.device.empty();
+}
+
+// The pool's half: a printer DC of its own, the still placed by the shared
+// rule (os_integration.h place_print) on the printable area, one page per
+// copy. The DIB carries its ICC profile so GDI's ICM converts it for the
+// printer; untagged is sRGB (D6).
+bool spool_print(const print_job& job) {
+  const auto* dm = job.devmode.size() >= sizeof(DEVMODEW) ? reinterpret_cast<const DEVMODEW*>(job.devmode.data())
+                                                          : nullptr;
+  const HDC dc = ::CreateDCW(nullptr, job.device.c_str(), nullptr, dm);
+  if (dc == nullptr) return false;
+  const int iw = static_cast<int>(job.dib.width);
+  const int ih = static_cast<int>(job.dib.height);
+  const mv::shell::print_rect at = mv::shell::place_print(
+      job.dib.width, job.dib.height,
+      mv::shell::print_rect{0, 0, static_cast<double>(::GetDeviceCaps(dc, HORZRES)),
+                            static_cast<double>(::GetDeviceCaps(dc, VERTRES))},
+      ::GetDeviceCaps(dc, LOGPIXELSX), ::GetDeviceCaps(dc, LOGPIXELSY), job.scale);
+  // An RGB profile only: GDI cannot apply a grey or CMYK one to an RGB DIB.
+  const bool icc = job.dib.icc.size() >= 20 && std::memcmp(job.dib.icc.data() + 16, "RGB ", 4) == 0;
+  std::vector<BYTE> header(sizeof(BITMAPV5HEADER) + (icc ? job.dib.icc.size() : 0));
+  auto* bi = reinterpret_cast<BITMAPV5HEADER*>(header.data());
+  bi->bV5Size = sizeof(BITMAPV5HEADER);
+  bi->bV5Width = iw;
+  bi->bV5Height = -ih;  // top-down, as the raster is
+  bi->bV5Planes = 1;
+  bi->bV5BitCount = 32;
+  bi->bV5Compression = BI_RGB;
+  bi->bV5SizeImage = static_cast<DWORD>(job.dib.rgba.size());
+  bi->bV5Intent = LCS_GM_IMAGES;
+  if (icc) {
+    bi->bV5CSType = PROFILE_EMBEDDED;
+    bi->bV5ProfileData = sizeof(BITMAPV5HEADER);
+    bi->bV5ProfileSize = static_cast<DWORD>(job.dib.icc.size());
+    std::memcpy(header.data() + sizeof(BITMAPV5HEADER), job.dib.icc.data(), job.dib.icc.size());
+  } else {
+    bi->bV5CSType = LCS_sRGB;
+  }
+  DOCINFOW doc{};
+  doc.cbSize = sizeof(doc);
+  doc.lpszDocName = job.title.c_str();
+  bool ok = ::StartDocW(dc, &doc) > 0;
+  if (ok) {
+    (void)::SetICMMode(dc, ICM_ON);
+    ::SetStretchBltMode(dc, HALFTONE);
+    ::SetBrushOrgEx(dc, 0, 0, nullptr);
+    for (int copy = 0; ok && copy < job.copies; ++copy) {
+      ok = ::StartPage(dc) > 0;
+      if (!ok) break;
+      const int lines = ::StretchDIBits(
+          dc, static_cast<int>(std::lround(at.x)), static_cast<int>(std::lround(at.y)),
+          static_cast<int>(std::lround(at.w)), static_cast<int>(std::lround(at.h)), 0, 0, iw, ih,
+          job.dib.rgba.data(), reinterpret_cast<const BITMAPINFO*>(header.data()), DIB_RGB_COLORS, SRCCOPY);
+      // Lines drawn; 0 or GDI_ERROR (-1 as an int) is a failure.
+      ok = lines > 0 && ::EndPage(dc) > 0;
+    }
+    if (ok) {
+      ok = ::EndDoc(dc) > 0;
+    } else {
+      ::AbortDoc(dc);
+    }
+  }
+  ::DeleteDC(dc);
+  return ok;
+}
+
+void on_print(app_state* app, WPARAM stage, LPARAM lparam) {
+  if (stage != 0) {  // the spool finished
+    app->printing = false;
+    if (lparam == 0) ::MessageBeep(MB_ICONWARNING);
+    return;
+  }
+  std::unique_ptr<print_bake> r(reinterpret_cast<print_bake*>(lparam));
+  if (!r || !r->ok || !app->window) {
+    app->printing = false;
+    ::MessageBeep(MB_ICONWARNING);
+    return;
+  }
+  auto job = std::make_shared<print_job>();
+  if (!choose_printer(app->window, r->dib.width, r->dib.height, *job)) {
+    app->printing = false;
+    return;
+  }
+  job->title = std::move(r->title);
+  job->dib = std::move(r->dib);
+  const HWND hwnd = app->window;
+  app->jobs.submit_at(mv::background_generation, [job, hwnd](const mv::job_context&) -> mv::status {
+    const bool ok = spool_print(*job);
+    ::PostMessageW(hwnd, kMsgPrint, 1, ok ? 1 : 0);
+    return ok ? mv::status::ok : mv::status::io;
+  });
+}
+
 // The command line a jump list entry runs: the folder, quoted. A trailing
 // backslash ("D:\") is doubled, or CommandLineToArgvW reads `\"` as a quote.
 std::wstring jump_list_arguments(const std::string& utf8_dir) {
@@ -6327,6 +6604,8 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       return copy_paths_to_clipboard(app);
     case copy_flattened:
       return start_flatten(app);
+    case print:
+      return start_print(app);
     case share:
       return share_targets(app);
     // PR 10 geometry, crop mode and export (docs/design/16 View + Crop).
@@ -7451,6 +7730,10 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
 
     case kMsgFlattenDone:
       on_flatten_done(app, std::unique_ptr<flatten_job_result>(reinterpret_cast<flatten_job_result*>(lparam)));
+      return 0;
+
+    case kMsgPrint:
+      on_print(app, wparam, lparam);
       return 0;
 
     case kMsgEditorLoaded:  // PR 30: the Video Editor's probe and strip

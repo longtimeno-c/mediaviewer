@@ -202,6 +202,7 @@ Marks are a separate set from the selection, so arrow-key browsing never makes a
 | `Ctrl+Shift+C` | Viewing | Copy path(s) as text |
 | `Ctrl+Alt+C` | browse | Copy the current still with edits baked, as PNG (worker thread) |
 | `Ctrl+Shift+S` | Viewing | Share (Windows Share / macOS share sheet) |
+| `Ctrl+P` | browse, island | Print… the current still, edits baked ([07](07-photo-editing.md) "Print"). Also the bar's Open ▸ Print… and the Mac's File ▸ Print… (`⌘P`), greyed off a still |
 
 - **Move** on one volume is a rename (`MoveFileEx`); across volumes it is a **verified** copy
   (hashed while read, read back uncached, compared) and only then the delete. I/O thread.

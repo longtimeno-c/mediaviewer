@@ -165,6 +165,11 @@ public struct CommandBarView: View {
                        shortcut: key("Show in Explorer"), enabled: current != nil) {
               close(); mv_chrome_menu(20)
             }
+            // docs/design/07 "Print": File > Print…'s twin, greyed off a still.
+            FlyoutRule()
+            FlyoutItem(title: "Print…", shortcut: key("Print…"), enabled: edit.subject == 1 && !edit.cropActive) {
+              close(); mv_chrome_menu(45)
+            }
           }
           BarFlyout(title: "View") { close in
             FlyoutItem(title: "Zoom in", shortcut: key("Zoom in")) { close(); mv_chrome_run_command(ViewCommand.zoomIn) }

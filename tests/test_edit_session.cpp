@@ -332,6 +332,62 @@ TEST_CASE("a flattened copy is a PNG in the app's own folder, a few at a time", 
   mv::io::set_clipboard_dir_override("");
 }
 
+TEST_CASE("print waits for a crop and for a lossless write, as export does", "[shell][edit][print]") {
+  edit_session s;
+  CHECK_FALSE(s.can_bake());
+  (void)s.set_item(jpeg_item());
+  CHECK(s.can_bake());
+  REQUIRE(s.run(command_id::crop_mode) != edit_effect::refused);
+  CHECK_FALSE(s.can_bake());
+  s.cancel_crop();
+  CHECK(s.can_bake());
+  REQUIRE(s.run(command_id::rotate_cw) == edit_effect::write_rotation);
+  REQUIRE(s.take_pending_write());
+  CHECK_FALSE(s.can_bake());
+}
+
+TEST_CASE("print bakes the still as shown and writes nothing", "[shell][edit][print]") {
+  temp_dir src;
+  const fs::path p = src.path / "IMG_0006.jpg";
+  const auto bytes = jpeg_bytes(64, 48);
+  {
+    std::ofstream f(p, std::ios::binary);
+    f.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+  }
+  mv::edit::geometry g;
+  g.crop = {0.0f, 0.0f, 0.5f, 0.5f};
+  auto rgba = mv::shell::render_print_raster(p.string(), g, {}, false);
+  REQUIRE(rgba);
+  CHECK(rgba->width == 32);
+  CHECK(rgba->height == 24);
+  REQUIRE(rgba->rgba.size() == std::size_t{32} * 24 * 4);
+  for (std::size_t i = 3; i < rgba->rgba.size(); i += 4) REQUIRE(rgba->rgba[i] == 255);
+
+  // The Windows DIB order is the same pixels with red and blue swapped.
+  auto bgra = mv::shell::render_print_raster(p.string(), g, {}, true);
+  REQUIRE(bgra);
+  REQUIRE(bgra->rgba.size() == rgba->rgba.size());
+  for (std::size_t i = 0; i < rgba->rgba.size(); i += 4) {
+    REQUIRE(bgra->rgba[i] == rgba->rgba[i + 2]);
+    REQUIRE(bgra->rgba[i + 1] == rgba->rgba[i + 1]);
+    REQUIRE(bgra->rgba[i + 2] == rgba->rgba[i]);
+  }
+
+  // A colour adjust takes the bake path; the stack's geometry still applies.
+  mv::edit::geometry turned;
+  turned.orient = mv::codec::kRotateCw;
+  mv::edit::colour c;
+  c.v[static_cast<std::size_t>(mv::edit::adjust_param::exposure)] = 0.5f;
+  auto baked = mv::shell::render_print_raster(p.string(), turned, c, false);
+  REQUIRE(baked);
+  CHECK(baked->width == 48);
+  CHECK(baked->height == 64);
+
+  // Nothing is written beside the original.
+  CHECK(std::distance(fs::directory_iterator(src.path), fs::directory_iterator{}) == 1);
+  CHECK_FALSE(mv::shell::render_print_raster((src.path / "gone.jpg").string(), {}, {}, false));
+}
+
 TEST_CASE("the export dialog's choice round-trips through one small integer", "[shell][edit]") {
   for (auto format : {mv::edit::image_format::jpeg, mv::edit::image_format::png}) {
     for (auto policy : {mv::edit::metadata_policy::all, mv::edit::metadata_policy::minus_gps,

@@ -94,6 +94,10 @@ class edit_session {
   void cancel_crop() noexcept;
 
   [[nodiscard]] bool crop_active() const noexcept { return crop_; }
+  // Whether the stack can be baked now (Print…, as export_image refuses):
+  // not mid-crop, and not while a lossless write is on its way back to the
+  // canvas, when the stack still holds turns the file already has.
+  [[nodiscard]] bool can_bake() const noexcept { return has_item_ && !crop_ && !awaiting_disk(); }
   // What the canvas draws: the committed stack, or in crop mode the whole
   // straightened frame. Place it against the displayed size with
   // `preview_keeps_frame()` as place()'s keep_frame.
@@ -254,5 +258,14 @@ struct flattened_copy {
 };
 [[nodiscard]] result<flattened_copy> run_flatten(std::string_view source_path, const edit::geometry& g,
                                                  const edit::colour& c = {});
+
+// Print… (Ctrl+P / ⌘P, docs/design/07 "Print"): the still as the canvas shows it,
+// edits baked at full resolution (the export's bake, edit::render_baked),
+// over white and, with `bgra`, in a Windows DIB's byte order. Nothing is
+// written. `icc` / `tagged_srgb` say what space the pixels are in, so the
+// host can hand the profile to the print system. Worker thread only.
+[[nodiscard]] result<codec::raster> render_print_raster(std::string_view source_path,
+                                                        const edit::geometry& g,
+                                                        const edit::colour& c, bool bgra);
 
 }  // namespace mv::shell
