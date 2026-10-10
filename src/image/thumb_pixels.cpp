@@ -78,14 +78,22 @@ result<thumb_pixels> make_thumb_rgba(std::span<const std::uint8_t> src_bytes,
       if (decoded.error() == status::cancelled) return err(status::cancelled);
     }
   }
-  if (!decoded && (codec::probe(src_bytes) == codec::format_family::pdf ||
-                   codec::probe(src_bytes) == codec::format_family::docx)) {
-    // Page 1 at the preview size, not the 3200 px page (docs/plans §2.4, §2.5).
-    decoded = decode_preview(src_bytes, ctx);
-    if (!decoded && decoded.error() == status::cancelled) return err(status::cancelled);
+  if (!decoded) {
+    // A RAW's embedded JPEG is the thumbnail source: a full LibRaw demosaic
+    // per file would make a folder of RAWs take minutes to thumbnail. A PDF or
+    // DOCX gets page 1 at the preview size, not the 3200 px page (docs/plans
+    // §2.4, §2.5). decode_preview is unsupported for the other formats, so
+    // this is a no-op for them. Same ladder as thumb_mac.cpp.
+    if (auto preview = decode_preview(src_bytes, ctx)) {
+      decoded = std::move(preview);
+    } else if (preview.error() == status::cancelled) {
+      return err(status::cancelled);
+    }
   }
   if (!decoded) {
-    decoded = decode_bytes(src_bytes, ctx);
+    // One RAW thread, as for prefetch: the sweep must not take OpenMP workers
+    // from the foreground decode (docs/design/12).
+    decoded = decode_bytes(src_bytes, ctx, 1);
     if (!decoded) return err(decoded.error());
   }
   if (ctx && ctx->cancelled()) return err(status::cancelled);
