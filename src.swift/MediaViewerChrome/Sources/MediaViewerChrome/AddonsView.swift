@@ -287,6 +287,9 @@ final class AddonStore: ObservableObject {
     timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
       MainActor.assumeIsolated { self?.poll() }
     }
+    // Issue #178: an install's progress moves off the main thread, so this one
+    // still ticks; the tolerance lets the system fire it with other wake-ups.
+    timer?.tolerance = 0.1
     refresh()
   }
 

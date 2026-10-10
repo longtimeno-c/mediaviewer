@@ -122,6 +122,9 @@ final class LocalSearchStore: ObservableObject {
     timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
       MainActor.assumeIsolated { self?.poll() }
     }
+    // Issue #178: the pack's load and indexing move off the main thread, so
+    // this one still ticks; the tolerance lets the system coalesce it.
+    timer?.tolerance = 0.1
     refresh()
   }
 

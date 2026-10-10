@@ -40,12 +40,13 @@ final class SettingsStore: ObservableObject {
   /// -1 without an updater (unsigned build), 0 stable, 1 preview.
   @Published private(set) var updateChannel: Int32 = -1
 
-  private var timer: Timer?
   private var generation: UInt64 = .max
 
   private init() {
-    timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-      MainActor.assumeIsolated { self?.poll() }
+    // Issue #178: polled when the main run loop has run (ChromePulse), not on a timer.
+    ChromePulse.shared.add { [weak self] in
+      self?.poll()
+      return false
     }
   }
 
