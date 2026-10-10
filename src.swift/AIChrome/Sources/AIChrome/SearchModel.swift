@@ -222,6 +222,9 @@ final class SearchModel: ObservableObject {
   private var freshDue = false
   /// The title the results on screen were asked for (not the live field).
   private var shownTitle = ""
+  /// Another folder opened under a scope that reads it since the last run:
+  /// the results are for the old folder. Every run clears it.
+  private var folderStale = false
 
   // Re-runs while indexing (the Windows OnStatus rule).
   private var framesIndexed: UInt64 = 0
@@ -238,9 +241,25 @@ final class SearchModel: ObservableObject {
   // MARK: folder and visibility
 
   func folderChanged(_ dir: String) {
+    let moved = dir != folder
     folder = dir
     if !dir.isEmpty { _ = table.a.note_folder_opened?(table.ctx, dir) }
-    if visible { refreshCoverage() }
+    // The folder scope reads the open folder: what was found in the last one
+    // is not this one's answer, on screen or under Return (issue #191).
+    if moved && (scope == .tree || scope == .folder) { folderStale = true }
+    if visible {
+      refreshCoverage()
+      if folderStale { rerunForFolder() }
+    }
+  }
+
+  /// The results were asked of another folder: they go, and the same words
+  /// (or reference) ask again of this one. Hidden, it waits for `appeared`.
+  private func rerunForFolder() {
+    setResults([], search: 0, run: nil)
+    finished = false
+    failed = false
+    run(keepSelection: false)
   }
 
   /// Settings → Precision changed: an open description answers again under
@@ -276,9 +295,13 @@ final class SearchModel: ObservableObject {
     refreshCoverage()
     pollStatus()
     updateTimer()
-    // Closed while it indexed: what was indexed meanwhile answers the same
-    // words now (the re-run above waits for more while it is still going).
-    if debounce == nil, pending == 0, reading == 0, framesIndexed != lastRunFrames,
+    // Another folder was opened while it was closed: its results, not the
+    // last one's. Else, closed while it indexed: what was indexed meanwhile
+    // answers the same words now (the re-run above waits for more while it
+    // is still going).
+    if folderStale {
+      rerunForFolder()
+    } else if debounce == nil, pending == 0, reading == 0, framesIndexed != lastRunFrames,
        reference != nil || !query.trimmingCharacters(in: .whitespaces).isEmpty {
       run(keepSelection: true)
     }
@@ -344,17 +367,30 @@ final class SearchModel: ObservableObject {
     let name: String
     let completion: String
   }
-  @Published private(set) var suggestions: [PersonSuggestion] = []
+  /// The names and the words they were looked up for (issue #191): a list
+  /// for older words is neither shown nor taken by Tab ("Sa" → Sam must not
+  /// complete "Sar").
+  private struct Offered: Equatable {
+    var query = ""
+    var list: [PersonSuggestion] = []
+  }
+  @Published private var offered = Offered()
+  /// The names for the field as it is now.
+  var suggestions: [PersonSuggestion] { offered.query == query ? offered.list : [] }
   private var suggestTask: Task<Void, Never>?
+  /// Tab before the names for these words came: the first is taken when they do.
+  private var tabFor: String?
+  /// Moves when a name completes the field: the view puts the caret after it.
+  @Published private(set) var completedSeq = 0
 
   /// The pack names people for the last word ([worker-thread]: a faces.db
   /// read), off the main actor; an answer for words since changed is dropped.
   private func refreshSuggestions() {
     suggestTask?.cancel()
+    suggestTask = nil
     let text = query  // untrimmed: a trailing space means the word is finished
-    guard reference == nil, table.has(\mv_ai_api.suggest_json),
-          let last = text.last, !last.isWhitespace else {
-      if !suggestions.isEmpty { suggestions = [] }
+    guard looksUpNames(text) else {
+      if offered.query != text || !offered.list.isEmpty { offered = Offered(query: text) }
       return
     }
     let t = table
@@ -369,16 +405,39 @@ final class SearchModel: ObservableObject {
         return found
       }.value
       guard let self, !Task.isCancelled, self.query == text else { return }
-      if self.suggestions != list { self.suggestions = list }
+      self.suggestTask = nil
+      let answer = Offered(query: text, list: list)
+      if self.offered != answer { self.offered = answer }
+      if self.tabFor == text {
+        self.tabFor = nil
+        self.acceptSuggestion()
+      }
     }
+  }
+
+  private func looksUpNames(_ text: String) -> Bool {
+    guard reference == nil, table.has(\mv_ai_api.suggest_json), let last = text.last else { return false }
+    return !last.isWhitespace
   }
 
   /// Tab or a click on a name: the field takes its completion (and searches).
   @discardableResult
   func acceptSuggestion(_ s: PersonSuggestion? = nil) -> Bool {
     guard let pick = s ?? suggestions.first else { return false }
-    suggestions = []
+    tabFor = nil
+    offered = Offered()
     query = pick.completion
+    completedSeq += 1
+    return true
+  }
+
+  /// Tab in the field: the first name for the words as they are now. While
+  /// those are still being looked up it waits for them, as Return waits for
+  /// results; false when no name can come (Tab then moves focus as usual).
+  func completeName() -> Bool {
+    if acceptSuggestion() { return true }
+    guard offered.query != query, looksUpNames(query) else { return false }
+    tabFor = query
     return true
   }
 
@@ -406,6 +465,11 @@ final class SearchModel: ObservableObject {
     if scope == .photos { return PhotosLibrary.rootKey }
     return scope == .all || folder.isEmpty ? nil : folder
   }
+  /// The chip that reads as on: with no folder open a folder scope searches
+  /// everywhere, so "Everywhere" says so (the choice is kept for the next folder).
+  var shownScope: SearchScope {
+    folder.isEmpty && (scope == .tree || scope == .folder) ? .all : scope
+  }
   private var effectiveScope: UInt32 {
     if scope == .photos { return SearchScope.folder.rawValue }
     return folder.isEmpty ? SearchScope.all.rawValue : scope.rawValue
@@ -424,6 +488,7 @@ final class SearchModel: ObservableObject {
   func run(keepSelection: Bool) {
     debounce?.cancel()
     debounce = nil
+    folderStale = false
     // New words or chips: a Return waiting on the old ones no longer applies.
     if !keepSelection { focusResultsWhenReady = false }
     runSeq += 1
@@ -742,6 +807,9 @@ final class SearchModel: ObservableObject {
     focusResultsWhenReady = pending != 0 || reading != 0
     return false
   }
+
+  /// A Return or Down in the field waits for its answer to enter the grid.
+  var awaitingResults: Bool { focusResultsWhenReady }
 
   /// Enter: the results as a gallery listing, the chosen tile on the canvas
   /// (a clip paused on its moment). Cmd+Enter: the gallery grid. Typed and
