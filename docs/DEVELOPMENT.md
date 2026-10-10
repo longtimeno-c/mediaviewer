@@ -824,7 +824,7 @@ File gains *Open Photos Library*: the host lists the library as **virtual items*
 needed: `mv_tests "[folder][photos]"` (virtual entries and tiles over a fake provider),
 `"[photos_backup]"` (the engine over a fake library: layout, verified copies, the manifest, a
 collision, a cancel), `"[write_guard]"` and `"[poster]"` (a clip's display matrix turns its
-poster; the thumbnail spec is `jpg512.3`). A dev build shows the row and the section only when
+poster; the thumbnail spec is `jpg512.4`). A dev build shows the row and the section only when
 its own bundle id has Photos access and the flag `mv.photosLibrary.added` is set in its
 defaults; the flag is set by the pack's Settings when the library is a root, so a dev build
 without the pack loaded can be pointed at it by hand (`defaults write

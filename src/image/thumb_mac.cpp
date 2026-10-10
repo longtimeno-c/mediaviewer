@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Darwin twin of image/thumb.cpp. Same on-disk cache spec (jpg512.3) and
+// Darwin twin of image/thumb.cpp. Same on-disk cache spec (jpg512.4) and
 // SQLite schema; two differences from the Windows file: POSIX '/' path
 // joining instead of thumb.cpp's hardcoded '\\', and decode_bytes_mac()
 // (PR 17, JPEG/PNG/BMP) instead of decode_bytes()'s full codec::decode()
@@ -80,22 +80,30 @@ void box_fit_rgba(const display_image& src, std::uint32_t dst_w, std::uint32_t d
       const std::uint32_t x0 = x * src.width / dst_w;
       const std::uint32_t x1 = ((x + 1) * src.width + dst_w - 1) / dst_w;
       const std::uint32_t xb = x1 > x0 ? x1 : x0 + 1;
-      std::uint32_t r = 0, g = 0, b = 0, a = 0, n = 0;
+      // Straight alpha: colour is weighted by coverage, or the RGB under a
+      // transparent pixel (often black) bleeds into the edges (issue #169).
+      // An opaque box comes out exactly as the plain mean. 64-bit sums: a
+      // panorama's box can exceed 2^32 / 255^2 samples.
+      std::uint64_t r = 0, g = 0, b = 0, a = 0;
+      std::uint32_t n = 0;
       for (std::uint32_t sy = y0; sy < yb && sy < src.height; ++sy) {
         const std::uint8_t* row = src.rgba.data() + static_cast<std::size_t>(sy) * src.width * 4u;
         for (std::uint32_t sx = x0; sx < xb && sx < src.width; ++sx) {
-          r += row[sx * 4u + 0];
-          g += row[sx * 4u + 1];
-          b += row[sx * 4u + 2];
-          a += row[sx * 4u + 3];
+          const std::uint32_t w = row[sx * 4u + 3];
+          r += static_cast<std::uint32_t>(row[sx * 4u + 0]) * w;
+          g += static_cast<std::uint32_t>(row[sx * 4u + 1]) * w;
+          b += static_cast<std::uint32_t>(row[sx * 4u + 2]) * w;
+          a += w;
           ++n;
         }
       }
       if (n == 0) n = 1;
       std::uint8_t* p = dst.data() + (static_cast<std::size_t>(y) * dst_w + x) * 4u;
-      p[0] = static_cast<std::uint8_t>(r / n);
-      p[1] = static_cast<std::uint8_t>(g / n);
-      p[2] = static_cast<std::uint8_t>(b / n);
+      if (a != 0) {
+        p[0] = static_cast<std::uint8_t>(r / a);
+        p[1] = static_cast<std::uint8_t>(g / a);
+        p[2] = static_cast<std::uint8_t>(b / a);
+      }
       p[3] = static_cast<std::uint8_t>(a / n);
     }
   }
@@ -286,9 +294,25 @@ result<thumb_pixels> make_thumb_rgba(std::span<const std::uint8_t> src_bytes,
   return out;
 }
 
+void composite_thumb_matte(thumb_pixels& t) noexcept {
+  const std::size_t count = static_cast<std::size_t>(t.width) * t.height;
+  if (t.rgba.size() < count * 4u) return;
+  std::uint8_t* p = t.rgba.data();
+  for (std::size_t i = 0; i < count; ++i, p += 4) {
+    const std::uint32_t a = p[3];
+    if (a == 255) continue;
+    const std::uint32_t m = kThumbMatte * (255u - a);
+    p[0] = static_cast<std::uint8_t>((p[0] * a + m + 127u) / 255u);
+    p[1] = static_cast<std::uint8_t>((p[1] * a + m + 127u) / 255u);
+    p[2] = static_cast<std::uint8_t>((p[2] * a + m + 127u) / 255u);
+    p[3] = 255;
+  }
+}
+
 result<std::vector<std::uint8_t>> make_thumb_jpeg(std::span<const std::uint8_t> src_bytes,
                                                   const job_context* ctx) {
   MV_TRY(thumb_pixels t, make_thumb_rgba(src_bytes, kThumbLongEdge, ctx));
+  composite_thumb_matte(t);
   return codec::encode_jpeg_rgba(t.rgba, t.width, t.height, kThumbJpegQuality);
 }
 
