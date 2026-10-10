@@ -157,6 +157,7 @@ struct mv_session {
   // and never touched by the render thread except in the drain.
   std::mutex completion_mutex;
   std::vector<mv_completion> completions;
+  std::atomic<std::uint64_t> completions_dropped{0};  // over the cap, or out of memory
   HANDLE completion_event = nullptr;
   // PR 13 / 14: the clip job queue and keyframe index (mediaviewer_clip.h).
   // Created in mv_session_create once the completion event exists; reset
@@ -340,10 +341,29 @@ struct mv_session {
         return std::make_unique<mv::image::gpu_image>(std::move(uploaded).value());
       }};
 
+  // Issue #236: a host that stops draining must not grow the queue without
+  // bound, and this is noexcept, so a bad_alloc or a mutex failure here would
+  // be std::terminate. At the cap the oldest quarter goes in one move (not one
+  // memmove per push); anything dropped is counted.
+  static constexpr std::size_t kCompletionCap = 65536;
   void push_completion(const mv_completion& c) noexcept {
-    {
+    std::size_t dropped = 0;
+    try {
       std::lock_guard lock(completion_mutex);
+      if (completions.size() >= kCompletionCap) {
+        dropped = kCompletionCap / 4;
+        completions.erase(completions.begin(),
+                          completions.begin() + static_cast<std::ptrdiff_t>(dropped));
+      }
       completions.push_back(c);
+    } catch (...) {
+      dropped += 1;
+    }
+    if (dropped != 0) {
+      const auto total =
+          completions_dropped.fetch_add(dropped, std::memory_order_relaxed) + dropped;
+      ::mv::log::write(::mv::log::level::warn, "completion queue: dropped %zu (total %llu)",
+                       dropped, static_cast<unsigned long long>(total));
     }
     if (completion_event) ::SetEvent(completion_event);
   }
@@ -528,7 +548,8 @@ status open_video_worker(mv_session* session, const std::string& path, const mv:
   auto* source = result.value();
   if (ctx.cancelled()) { mv::player::close_media(source); return status::cancelled; }
   const auto info = source->info();
-  session->video.publish(source, ctx.gen());
+  // Refused (and closed) when the view has already moved past this generation.
+  if (!session->video.publish(source, ctx.gen())) return status::cancelled;
   if (moment_ms >= 0) {
     const std::int64_t at_ns = moment_ms * 1'000'000;
     session->video.command([at_ns](mv::player::media_source& s) {
@@ -1569,28 +1590,41 @@ mv_status MV_CALL mv_session_current_generation(mv_session_t session, uint32_t* 
   }));
 }
 
+// These two return a handle and a count, not a status, but are guarded all the
+// same (issue #236): a failure gets a correlation id and a last-error, and
+// nothing escapes into P/Invoke.
 void* MV_CALL mv_completion_wait_handle(mv_session_t session) {
-  if (!valid(session)) return nullptr;
-  return session->completion_event;
+  void* handle = nullptr;
+  (void)guard("mv_completion_wait_handle", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    handle = session->completion_event;
+    return status::ok;
+  });
+  return handle;
 }
 
 uint32_t MV_CALL mv_completion_drain(mv_session_t session, mv_completion* out, uint32_t capacity) {
-  if (!valid(session) || out == nullptr || capacity == 0) return 0;
+  uint32_t count = 0;
+  (void)guard("mv_completion_drain", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    MV_REQUIRE(out != nullptr && capacity != 0, "out must hold at least one completion");
 
-  std::lock_guard lock(session->completion_mutex);
-  const auto available = static_cast<uint32_t>(session->completions.size());
-  const uint32_t count = available < capacity ? available : capacity;
-  if (count == 0) {
-    ::ResetEvent(session->completion_event);
-    return 0;
-  }
+    std::lock_guard lock(session->completion_mutex);
+    const auto available = static_cast<uint32_t>(session->completions.size());
+    count = available < capacity ? available : capacity;
+    if (count == 0) {
+      ::ResetEvent(session->completion_event);
+      return status::ok;
+    }
 
-  std::memcpy(out, session->completions.data(), count * sizeof(mv_completion));
-  session->completions.erase(session->completions.begin(),
-                             session->completions.begin() + static_cast<std::ptrdiff_t>(count));
-  // Reset only when the queue is genuinely empty, so a partial drain leaves the
-  // caller a reason to come back.
-  if (session->completions.empty()) ::ResetEvent(session->completion_event);
+    std::memcpy(out, session->completions.data(), count * sizeof(mv_completion));
+    session->completions.erase(session->completions.begin(),
+                               session->completions.begin() + static_cast<std::ptrdiff_t>(count));
+    // Reset only when the queue is genuinely empty, so a partial drain leaves the
+    // caller a reason to come back.
+    if (session->completions.empty()) ::ResetEvent(session->completion_event);
+    return status::ok;
+  });
   return count;
 }
 
@@ -2316,18 +2350,23 @@ mv_status MV_CALL mv_folder_request_summary(mv_session_t session, uint32_t index
 }
 
 mv_status MV_CALL mv_video_open(mv_session_t session, const char* path, uint64_t* job) {
-  // Unlike mv_image_open, the legacy video entry point owns the view-intent
-  // bump (its public contract promises that it does).
-  if (!valid(session) || !path || path[0] == '\0') return MV_ERR_INVALID_ARG;
-  const mv_status bumped = mv_session_bump_generation(session, nullptr);
-  if (bumped != MV_OK) return bumped;
-  return mv_image_open(session, path, job);
+  return static_cast<mv_status>(guard("mv_video_open", [&]() -> status {
+    // Unlike mv_image_open, the legacy video entry point owns the view-intent
+    // bump (its public contract promises that it does).
+    MV_REQUIRE(valid(session), "session must not be null");
+    MV_REQUIRE(path != nullptr && path[0] != '\0', "path must not be empty");
+    const mv_status bumped = mv_session_bump_generation(session, nullptr);
+    if (bumped != MV_OK) return static_cast<status>(bumped);
+    return static_cast<status>(mv_image_open(session, path, job));
+  }));
 }
 mv_status MV_CALL mv_video_close(mv_session_t session) {
-  if (!session) return MV_ERR_INVALID_ARG;
-  session->jobs.bump_generation();
-  if (session->image_ready_event) ::SetEvent(session->image_ready_event);
-  return MV_OK;
+  return static_cast<mv_status>(guard("mv_video_close", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    session->jobs.bump_generation();
+    if (session->image_ready_event) ::SetEvent(session->image_ready_event);
+    return status::ok;
+  }));
 }
 mv_status MV_CALL mv_video_play(mv_session_t session) {
   return static_cast<mv_status>(guard("mv_video_play", [&]() -> status {
@@ -2412,40 +2451,49 @@ mv_status MV_CALL mv_video_set_loop(mv_session_t session, int64_t a, int64_t b) 
   }));
 }
 mv_status MV_CALL mv_video_position(mv_session_t session, int64_t* out) {
-  if (!session || !out) return MV_ERR_INVALID_ARG;
-  mv::player::media_info info; mv::player::clock_stats stats; mv::player::play_state state;
-  session->video.snapshot(info, stats, *out, state); return MV_OK;
+  return static_cast<mv_status>(guard("mv_video_position", [&]() -> status {
+    MV_REQUIRE(valid(session) && out != nullptr, "session and out must not be null");
+    mv::player::media_info info; mv::player::clock_stats stats; mv::player::play_state state;
+    session->video.snapshot(info, stats, *out, state); return status::ok;
+  }));
 }
 mv_status MV_CALL mv_video_state(mv_session_t session, uint32_t* out) {
-  if (!session || !out) return MV_ERR_INVALID_ARG;
-  mv::player::media_info info; mv::player::clock_stats stats;
-  mv::player::play_state state; mv::player::time_ns position;
-  session->video.snapshot(info, stats, position, state); *out = static_cast<uint32_t>(state); return MV_OK;
+  return static_cast<mv_status>(guard("mv_video_state", [&]() -> status {
+    MV_REQUIRE(valid(session) && out != nullptr, "session and out must not be null");
+    mv::player::media_info info; mv::player::clock_stats stats;
+    mv::player::play_state state; mv::player::time_ns position;
+    session->video.snapshot(info, stats, position, state); *out = static_cast<uint32_t>(state);
+    return status::ok;
+  }));
 }
 mv_status MV_CALL mv_video_get_info(mv_session_t session, mv_video_info* out) {
-  if (!session || !out) return MV_ERR_INVALID_ARG;
-  mv::player::media_info info; mv::player::clock_stats stats;
-  mv::player::play_state state; mv::player::time_ns position;
-  session->video.snapshot(info, stats, position, state);
-  *out = {}; out->duration_ns = info.duration_ns; out->width = info.video.width; out->height = info.video.height;
-  out->frame_rate = info.video.frame_rate; out->audio_tracks = info.audio_tracks; out->video_tracks = info.video_tracks;
-  out->decoder = static_cast<uint32_t>(info.video.decoder);
-  out->flags = (info.has_audio ? 1u : 0u) | (info.video.ten_bit ? 2u : 0u);
-  std::memcpy(out->codec_name, info.video.codec_name, sizeof(out->codec_name)); return MV_OK;
+  return static_cast<mv_status>(guard("mv_video_get_info", [&]() -> status {
+    MV_REQUIRE(valid(session) && out != nullptr, "session and out must not be null");
+    mv::player::media_info info; mv::player::clock_stats stats;
+    mv::player::play_state state; mv::player::time_ns position;
+    session->video.snapshot(info, stats, position, state);
+    *out = {}; out->duration_ns = info.duration_ns; out->width = info.video.width; out->height = info.video.height;
+    out->frame_rate = info.video.frame_rate; out->audio_tracks = info.audio_tracks; out->video_tracks = info.video_tracks;
+    out->decoder = static_cast<uint32_t>(info.video.decoder);
+    out->flags = (info.has_audio ? 1u : 0u) | (info.video.ten_bit ? 2u : 0u);
+    std::memcpy(out->codec_name, info.video.codec_name, sizeof(out->codec_name)); return status::ok;
+  }));
 }
 mv_status MV_CALL mv_video_get_stats(mv_session_t session, mv_video_stats* out) {
-  if (!session || !out) return MV_ERR_INVALID_ARG;
-  mv::player::media_info info; mv::player::clock_stats stats;
-  mv::player::play_state state; mv::player::time_ns position;
-  session->video.snapshot(info, stats, position, state);
-  *out = {}; out->position_ns = position; out->audio_clock_ns = stats.audio_clock_ns;
-  out->err_ms_p50 = stats.err_ms_p50; out->err_ms_p99 = stats.err_ms_p99;
-  out->drift_slope_ms_per_min = stats.drift_slope_ms_per_min; out->playback_rate = stats.playback_rate;
-  out->frames_presented = stats.counters.presented; out->frames_dropped_late = stats.counters.dropped_late;
-  out->holds_cadence = stats.counters.held_cadence; out->holds_starved = stats.counters.held_starved;
-  out->device_rebuilds = stats.counters.device_rebuilds; out->position_discontinuities = stats.position_discontinuities;
-  out->audio_master = stats.audio_master ? 1u : 0u; out->fallback_reason = static_cast<uint32_t>(stats.fallback);
-  return MV_OK;
+  return static_cast<mv_status>(guard("mv_video_get_stats", [&]() -> status {
+    MV_REQUIRE(valid(session) && out != nullptr, "session and out must not be null");
+    mv::player::media_info info; mv::player::clock_stats stats;
+    mv::player::play_state state; mv::player::time_ns position;
+    session->video.snapshot(info, stats, position, state);
+    *out = {}; out->position_ns = position; out->audio_clock_ns = stats.audio_clock_ns;
+    out->err_ms_p50 = stats.err_ms_p50; out->err_ms_p99 = stats.err_ms_p99;
+    out->drift_slope_ms_per_min = stats.drift_slope_ms_per_min; out->playback_rate = stats.playback_rate;
+    out->frames_presented = stats.counters.presented; out->frames_dropped_late = stats.counters.dropped_late;
+    out->holds_cadence = stats.counters.held_cadence; out->holds_starved = stats.counters.held_starved;
+    out->device_rebuilds = stats.counters.device_rebuilds; out->position_discontinuities = stats.position_discontinuities;
+    out->audio_master = stats.audio_master ? 1u : 0u; out->fallback_reason = static_cast<uint32_t>(stats.fallback);
+    return status::ok;
+  }));
 }
 mv_status MV_CALL mv_probe_is_video(mv_session_t session, const char* path, int32_t* out) {
   return static_cast<mv_status>(guard("mv_probe_is_video", [&]() -> status {
