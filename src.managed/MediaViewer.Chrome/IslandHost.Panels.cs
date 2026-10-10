@@ -858,9 +858,13 @@ public static partial class IslandHost
         _metaTab = MetaTab.Tags;
         _metaEditingComment = true;
         _metaDraft = _metaComment;
+        bool tabHadKeyboard = MetaTabButtons.Any(b => b.FocusState != FocusState.Unfocused);
         RenderMeta();
         _metaPane?.NavigateFocus(new XamlSourceFocusNavigationRequest(
             XamlSourceFocusNavigationReason.First));
+        // RenderMeta keeps the keyboard on the tab bar when it was there (`I`
+        // then Ctrl+I); Ctrl+I wants it in the field regardless.
+        if (tabHadKeyboard) FocusMetaFieldSoon();
         return true;
     }
 
