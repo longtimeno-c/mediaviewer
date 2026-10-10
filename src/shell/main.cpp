@@ -77,6 +77,7 @@
 #include "meta/tables.h"
 #include "meta/write.h"
 #include "core/json.h"
+#include "shell/listing_stamp.h"
 #include "shell/marks.h"
 #include "shell/media_kind.h"
 #include "shell/meta_store.h"
@@ -292,6 +293,9 @@ struct app_state {
   // ones Revert has a snapshot for. The notice rides the title's status line.
   mv::shell::meta_writer meta_writer;
   std::set<std::string> meta_written;
+  // Issue #231: the selection's stamp is the listing's, corrected for this
+  // app's own writes until the watcher relists (shell/listing_stamp.h).
+  mv::shell::listing_stamps restamped;
   bool focus_comment_next = false;  // Ctrl+I: the next pane push focuses the comment
   std::wstring notice;
   ULONGLONG notice_until = 0;
@@ -1112,27 +1116,22 @@ bool metadata_wanted(const app_state* app) noexcept {
   return app->input.info_overlay || app->input.af_points || app->meta_pane_visible;
 }
 
-// The selected item as the store keys it: path + mtime + size, from one stat.
+// The selected item as the store keys it: path + mtime + size, from the
+// listing the core already holds, so an arrow press does no I/O here (issue
+// #231). A write this app made since the listing was taken overrides it.
 bool current_dir_entry(app_state* app, mv::io::dir_entry& out) {
-  const std::string utf8 = current_item_path(app);
+  std::uint32_t selected = 0;
+  if (!selected_index(app, selected)) return false;
+  mv_folder_item rec{};
+  if (mv_folder_item_at(app->session, selected, &rec) != MV_OK) return false;
+  std::string utf8 = item_path_at(app, selected);
   if (utf8.empty()) return false;
-  const int n = ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
-  if (n <= 1) return false;
-  std::wstring wide(static_cast<std::size_t>(n), L'\0');
-  ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, wide.data(), n);
-  WIN32_FILE_ATTRIBUTE_DATA fa{};
-  if (!::GetFileAttributesExW(wide.c_str(), GetFileExInfoStandard, &fa)) return false;
-  ULARGE_INTEGER size{};
-  size.LowPart = fa.nFileSizeLow;
-  size.HighPart = fa.nFileSizeHigh;
-  ULARGE_INTEGER ft{};
-  ft.LowPart = fa.ftLastWriteTime.dwLowDateTime;
-  ft.HighPart = fa.ftLastWriteTime.dwHighDateTime;
-  out.path_utf8 = utf8;
+  const mv::shell::file_stamp stamp = app->restamped.resolve(utf8, {rec.size_bytes, rec.mtime_unix});
+  out.size = stamp.size;
+  out.mtime_unix = stamp.mtime_unix;
   const std::size_t slash = utf8.find_last_of("\\/");
   out.name_utf8 = slash == std::string::npos ? utf8 : utf8.substr(slash + 1);
-  out.size = size.QuadPart;
-  out.mtime_unix = static_cast<std::int64_t>(ft.QuadPart / 10000000ULL) - 11644473600LL;
+  out.path_utf8 = std::move(utf8);
   return true;
 }
 
@@ -1526,6 +1525,7 @@ void on_meta_write_done(app_state* app, std::unique_ptr<meta_write_result> r) {
     // The bytes changed, the pixels did not: keep the item's edits, and let
     // the next listing see the same item rather than a new one.
     app->edits.metadata_rewritten(out.path, r->old_size, r->old_mtime, r->new_size, r->new_mtime);
+    app->restamped.rewritten(out.path, {r->old_size, r->old_mtime}, {r->new_size, r->new_mtime});
     if (app->edit_path == out.path && app->edit_size == r->old_size && app->edit_mtime == r->old_mtime) {
       app->edit_size = r->new_size;
       app->edit_mtime = r->new_mtime;
@@ -1689,6 +1689,12 @@ struct edit_job_result {
   bool export_job = false;  // else a lossless rotate write
   bool ok = false;
   std::string path;         // the file written (rotate) or the source (export)
+  // A rotate's stamp either side of the write, stat'ed on the worker (issue #231).
+  bool stamped = false;
+  std::uint64_t old_size = 0;
+  std::int64_t old_mtime = 0;
+  std::uint64_t new_size = 0;
+  std::int64_t new_mtime = 0;
 };
 
 struct sibling_job_result {
@@ -1788,8 +1794,22 @@ void start_rotation_write(app_state* app) {
   const HWND hwnd = app->window;
   app->jobs.submit_at(mv::background_generation,
                       [job = *w, hwnd](const mv::job_context&) -> mv::status {
+                        const auto before = mv::io::stat_path(job.path);
                         const mv::expected written = mv::shell::run_rotation_write(job);
-                        auto* r = new (std::nothrow) edit_job_result{false, static_cast<bool>(written), job.path};
+                        auto* r = new (std::nothrow) edit_job_result{};
+                        if (r) {
+                          r->ok = static_cast<bool>(written);
+                          r->path = job.path;
+                        }
+                        if (r && written) {
+                          if (const auto after = mv::io::stat_path(job.path); before && after) {
+                            r->stamped = true;
+                            r->old_size = before->size;
+                            r->old_mtime = before->mtime_unix;
+                            r->new_size = after->size;
+                            r->new_mtime = after->mtime_unix;
+                          }
+                        }
                         if (r && !::PostMessageW(hwnd, kMsgEditJobDone, 0, reinterpret_cast<LPARAM>(r))) delete r;
                         return written ? mv::status::ok : written.error();
                       });
@@ -1804,7 +1824,12 @@ void start_export(app_state* app, const mv::edit::export_options& opt) {
                       [path = app->edit_path, g = app->edits.export_geometry(), opt,
                        c = app->edits.colour(), hwnd](const mv::job_context&) -> mv::status {
                         const mv::result<std::string> out = mv::shell::run_export(path, g, opt, c);
-                        auto* r = new (std::nothrow) edit_job_result{true, static_cast<bool>(out), path};
+                        auto* r = new (std::nothrow) edit_job_result{};
+                        if (r) {
+                          r->export_job = true;
+                          r->ok = static_cast<bool>(out);
+                          r->path = path;
+                        }
                         if (r && !::PostMessageW(hwnd, kMsgEditJobDone, 0, reinterpret_cast<LPARAM>(r))) delete r;
                         return out ? mv::status::ok : out.error();
                       });
@@ -1831,6 +1856,7 @@ void on_edit_job_done(app_state* app, std::unique_ptr<edit_job_result> r) {
   // The navigation LRU still holds the old pixels under this path: drop them,
   // then reselect so the rewritten file decodes (ABI 0.7).
   (void)mv_folder_forget(app->session, r->path.c_str());
+  if (r->stamped) app->restamped.rewritten(r->path, {r->old_size, r->old_mtime}, {r->new_size, r->new_mtime});
   std::uint32_t selected = 0;
   if (selected_index(app, selected) && current_item_path(app) == r->path) {
     folder_select(app, selected);

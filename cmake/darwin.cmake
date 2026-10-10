@@ -858,6 +858,8 @@ if(MV_BUILD_TESTS)
     tests/test_transport_autohide.cpp
     # Issue #44: no clip plays under the gallery, both hosts.
     tests/test_playback_hold.cpp
+    # Issue #231: the Windows host's selection stamp (the logic is portable).
+    tests/test_listing_stamp.cpp
   )
   target_link_libraries(mv_tests PRIVATE
     mv_core
