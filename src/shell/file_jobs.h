@@ -22,7 +22,10 @@
 
 namespace mv::shell {
 
-enum class file_job_kind : std::uint8_t { copy, move, recycle };
+// duplicate (issue #289): one stop beside itself, its paths the primary and
+// then the other half of a pair; io/duplicate.h adds the XMP sidecar. Only
+// the primary's item reports, its `dest` the copy to select.
+enum class file_job_kind : std::uint8_t { copy, move, recycle, duplicate };
 
 struct file_job_item {
   std::string path;          // source, UTF-8

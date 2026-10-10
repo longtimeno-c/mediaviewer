@@ -481,6 +481,15 @@ the end of the folder path runs `Ctrl+F` / `⌘F`: with Local search loaded (or 
 search panel; without it, **file search**, a name filter over the listed folder with no index (the
 Windows chrome entry is still named `GallerySearch`). `/` in the gallery is the folder row's find.
 
+**Duplicate (2026-10-10, issue #289).** File ▸ Duplicate copies the item on screen beside itself
+under the platform file manager's own name: `NAME copy.ext`, `NAME copy 2.ext` on the Mac (Finder,
+Preview), `NAME - Copy.ext`, `NAME - Copy (2).ext` on Windows (Explorer), not F7's `name (2).ext`,
+because that is what each platform's users already read as "a duplicate". Its pair and XMP sidecar
+take the same number so the copies pair and keep their sidecar (`io/duplicate.h`); each file is a
+verified copy, so a large clip reads twice (the read-back), on the I/O pool. The key is
+`Ctrl+Shift+D` / `⌘⇧D`: Preview's `⇧⌘S` is Share here since PR 15 and `Ctrl+D` is Unmark all.
+The copy is then selected. It is the item on screen only, never the marks, as in Preview.
+
 ---
 
 ## Windows chrome (XAML islands)

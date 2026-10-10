@@ -398,6 +398,10 @@ struct app_state {
   // file work runs on files' own I/O worker and reports back by message.
   mv::shell::mark_set marks;
   mv::shell::file_jobs files;
+  // Issue #289: a duplicate just written, selected by the first listing that
+  // holds it, in the folder it was made in (folder_token).
+  std::string select_when_listed;
+  std::uint64_t select_when_listed_token = 0;
   std::vector<std::string> destinations;  // F7 / F8, most recent first
   // PR 15: the jump list's recent folders (settings.ini [recent]), most recent first.
   std::vector<std::string> recent_folders;
@@ -1816,6 +1820,7 @@ void start_export(app_state* app, const mv::edit::export_options& opt) {
 
 void folder_select(app_state* app, std::uint32_t index);
 bool video_mode(app_state* app) noexcept;
+bool select_listed_path(app_state* app, const std::string& path);  // issue #289
 
 void on_edit_job_done(app_state* app, std::unique_ptr<edit_job_result> r) {
   if (!r) return;
@@ -4358,6 +4363,13 @@ void chrome_on_command(void* ctx, int command, float arg) {
         app->list_title = title;
         if (app->list_title.empty()) app->list_return_select.clear();
       }
+      // Issue #289: a duplicate made in this folder is selected once listed.
+      if (!app->select_when_listed.empty()) {
+        if (app->select_when_listed_token != app->folder_token ||
+            select_listed_path(app, app->select_when_listed)) {
+          app->select_when_listed.clear();
+        }
+      }
       refresh_item_info(app);
       refresh_mark_state(app);
       // The watcher fires this for a folder that gained or lost a subfolder too.
@@ -5387,9 +5399,64 @@ bool start_recycle(app_state* app) {
   return true;
 }
 
+// Issue #289 (docs/design/16 "Marks, copy, move"): File > Duplicate. The stop on
+// screen, never the marks, as Preview duplicates the open document: its pair
+// and XMP sidecar go with it as "NAME - Copy.ext" (io/duplicate.h, Explorer's
+// rule), a verified copy on the file-job worker. Not in a slideshow, crop,
+// trim or the Video Editor (the command-bar item can be clicked there).
+bool start_duplicate(app_state* app) {
+  if (!app || !app->window) return false;
+  if (app->show.active() || app->edits.crop_active() || app->editor.open ||
+      (app->trim.armed() && video_mode(app))) {
+    return false;
+  }
+  std::uint32_t selected = 0;
+  if (!selected_index(app, selected)) return false;
+  std::vector<std::string> paths{item_path_at(app, selected)};
+  if (paths.front().empty()) return false;
+  if (std::string pair = item_pair_path_at(app, selected); !pair.empty()) paths.push_back(std::move(pair));
+  if (!app->files.submit(app->window, mv::shell::file_job_kind::duplicate, std::move(paths), {},
+                         app->folder_token)) {
+    MV_LOG_WARN("files: could not queue the job");
+    ::MessageBeep(MB_ICONWARNING);
+  }
+  return true;
+}
+
+// The stop holding `path` (either half of a pair), selected if it is listed.
+bool select_listed_path(app_state* app, const std::string& path) {
+  const std::uint32_t count = folder_count(app);
+  for (std::uint32_t i = 0; i < count; ++i) {
+    if (item_path_at(app, i) != path && item_pair_path_at(app, i) != path) continue;
+    folder_select(app, i);
+    return true;
+  }
+  return false;
+}
+
+// A duplicate finished: select the copy, or say it failed. No dialog and no
+// marks: it acted on the item on screen only.
+void on_duplicate_done(app_state* app, const mv::shell::file_job_result& result) {
+  const mv::shell::file_job_item* item = result.items.empty() ? nullptr : &result.items.front();
+  MV_LOG_INFO("files: duplicate ok=%d", item && item->status == mv::status::ok ? 1 : 0);
+  if (!item || item->status != mv::status::ok) {
+    ::MessageBeep(MB_ICONWARNING);
+    notice_show(app, "Could not duplicate");
+    return;
+  }
+  // The watcher lists the copy; until then it waits to be selected.
+  if (result.token != app->folder_token || select_listed_path(app, item->dest)) return;
+  app->select_when_listed = item->dest;
+  app->select_when_listed_token = result.token;
+}
+
 // A copy / move / delete finished. Counts only in logs and dialogs (rule 6).
 void on_file_job_done(app_state* app, std::unique_ptr<mv::shell::file_job_result> result) {
   if (!app || !result || app->closing) return;
+  if (result->kind == mv::shell::file_job_kind::duplicate) {
+    on_duplicate_done(app, *result);
+    return;
+  }
   // Marks clear only for what succeeded; a failure keeps its mark to retry.
   for (const auto& item : result->items) {
     if (item.status == mv::status::ok && !item.refused) app->marks.erase(item.path);
@@ -6375,6 +6442,8 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       return start_transfer(app, mv::shell::file_job_kind::move, command == move_to_pick);
     case delete_to_recycle_bin:
       return start_recycle(app);
+    case duplicate:
+      return start_duplicate(app);
 
     // Slideshow (docs/design/16): a mode, no transition pass.
     case slideshow_start:

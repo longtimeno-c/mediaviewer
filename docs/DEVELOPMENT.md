@@ -479,6 +479,7 @@ copy, and check Finder's **Open With** and a Quick Look thumbnail.
 | `Insert` / `Shift+Space` | mark or unmark the current item. `Ctrl+A` marks all, `Ctrl+D` clears |
 | `F5` | slideshow (fullscreen). In it: `Space` pause, `+` / `-` interval, `.` blackout, `R` shuffle, `Esc` leave. A clip plays to its end before advancing |
 | `F7` / `F8` | copy / move the marked items (or the current one) to the last folder used. `Shift+F7` / `Shift+F8` pick a folder. Never overwrites: a taken name becomes `name (2).ext` |
+| `Ctrl+Shift+D` | duplicate the current item beside itself (`NAME - Copy.ext`; on the Mac `NAME copy.ext`), with its pair and XMP sidecar, and select the copy. Also Open ▸ Duplicate, and File ▸ Duplicate on the Mac |
 | `Delete` | move the marked items (or the current one) to the Recycle Bin, after asking. A drive with no Recycle Bin is refused, never deleted permanently |
 
 Drop files or a folder on the window, the gallery, or the filmstrip. Drag a

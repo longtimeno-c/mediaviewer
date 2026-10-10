@@ -49,6 +49,7 @@
 #include "edit/histogram.h"
 #include "image/linear.h"
 #include "io/collision_name.h"
+#include "io/duplicate.h"
 #include "io/paths.h"
 #include "io/file.h"
 #include "io/replace.h"
@@ -179,6 +180,8 @@ static bool MvCommandSupported(mv::shell::command_id c) {
     case keyframe_next: case jobs_pane: case clip_tools: case clip_split:
     // PR 15
     case copy_path: case copy_flattened: case share:
+    // Issue #289
+    case duplicate:
     // Pages (docs/plans/audio-and-documents.md §2.3)
     case next_page: case prev_page:
     // PR 29
@@ -2138,6 +2141,9 @@ static void MvAdoptNewDefaultViewerTypes() {
   // slides into its place" for a mid-list removal and "the previous one" for
   // the last item, without needing to special-case either (docs/design/16).
   std::string _wantSelectedPath;
+  // Issue #289: a duplicate just written, selected by the first relist that
+  // lists it. Cleared by a folder open.
+  std::string _selectWhenListed;
   // Bumped by every -openEntryPath: call, read from the background job it
   // submits. folder_model::open() writes state_->dir/generation under its
   // own mutex, but its thumbs.open()/watcher_.start() calls run outside
@@ -3165,6 +3171,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   // here, just clearing C++ containers), means a relist that lands for a
   // *different* folder in flight can never be mistaken for this one's.
   _wantSelectedPath = select_path;
+  _selectWhenListed.clear();
   _currentDir = dir;
   // Walking siblings and the tree is browsing, not a new place to go back to.
   if (!navigation) [self noteRecentFolder:dir];
@@ -3302,6 +3309,15 @@ static void MvAdoptNewDefaultViewerTypes() {
       return !live_paths.count(path);
     });
     ++_marksGeneration;
+  }
+
+  if (!_selectWhenListed.empty()) {
+    for (const auto& entry : _items) {
+      if (entry.path_utf8 != _selectWhenListed) continue;
+      _wantSelectedPath = _selectWhenListed;
+      _selectWhenListed.clear();
+      break;
+    }
   }
 
   std::size_t new_index = 0;
@@ -4510,7 +4526,10 @@ enum MvMenuCmd : NSInteger {
   kMenuFlipH, kMenuFlipV, kMenuUndoEdit, kMenuResetEdits, kMenuSaveCopy, kMenuTrim,
   // docs/design/16 "Window"
   kMenuNewWindow,
+  // Issue #289: File > Duplicate (CommandBarView's Open flyout sends 45 too).
+  kMenuDuplicate,
 };
+static_assert(kMenuDuplicate == 45, "CommandBarView.swift sends 45 for Duplicate");
 
 // docs/design/16 "Window": another window is another MediaViewer process, on the
 // empty window, cascaded from this one. The bundle starts as a new instance
@@ -4577,6 +4596,7 @@ enum MvMenuCmd : NSInteger {
     case kMenuMetadata: [self runCommand:mv::shell::command_id::metadata_pane back:mv::shell::back_target::none]; break;
     case kMenuFolderTree: [self runCommand:mv::shell::command_id::folder_tree back:mv::shell::back_target::none]; break;
     case kMenuShare: [self runCommand:mv::shell::command_id::share back:mv::shell::back_target::none]; break;
+    case kMenuDuplicate: [self runCommand:mv::shell::command_id::duplicate back:mv::shell::back_target::none]; break;
     case kMenuCopyPath: [self runCommand:mv::shell::command_id::copy_path back:mv::shell::back_target::none]; break;
     case kMenuCopyEdited:
       if (![self runCommand:mv::shell::command_id::copy_flattened back:mv::shell::back_target::none]) NSBeep();
@@ -4648,6 +4668,8 @@ enum MvMenuCmd : NSInteger {
     case kMenuOpenPhotos:
       item.hidden = ![self photosLibraryAvailable];
       return !item.hidden;
+    case kMenuDuplicate:
+      return [self canDuplicateCurrent];
     case kMenuTrash:
       // The menu answers ⌘⌫ before any first responder sees it (issue #180).
       // A text field's ⌘⌫ is "delete to start of line"; in trim and crop
@@ -4757,6 +4779,9 @@ enum MvMenuCmd : NSInteger {
   _openRecentMenu = [[NSMenu alloc] initWithTitle:@"Open Recent"];
   _openRecentMenu.delegate = self;
   openRecent.submenu = _openRecentMenu;
+  [file addItem:[NSMenuItem separatorItem]];
+  // Issue #289: where Preview has it. The key (⌘⇧D) is a router row, as for Share.
+  [self addMenuItem:@"Duplicate" cmd:kMenuDuplicate key:@"" mods:0 toMenu:file];
   [file addItem:[NSMenuItem separatorItem]];
   [self addMenuItem:@"Mark / Unmark" cmd:kMenuMark key:@"" mods:0 toMenu:file];
   [self addMenuItem:@"Copy Marked To…" cmd:kMenuCopyTo key:@"" mods:0 toMenu:file];
@@ -5655,6 +5680,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     }
     case copy_flattened: return [self copyFlattened];
     case share: return [self shareMarkedOrCurrent];
+    case duplicate: return [self duplicateCurrent];
     case metadata_pane:
       if (!_metaPaneVisible && _adjust.visible()) [self setAdjustVisible:NO];
       if (!_metaPaneVisible && _jobsVisible) [self setJobsVisible:NO];
@@ -7636,6 +7662,64 @@ static double mv_wall_seconds() {
 - (const mv::io::dir_entry*)currentEntry {
   if (_items.empty() || _index.current() >= _items.size()) return nullptr;
   return &_items[_index.current()];
+}
+
+// Issue #289 (docs/design/16 "Marks, copy, move"): File > Duplicate. The item on
+// screen, never the marks, as Preview duplicates the open document. Not a
+// Photos library file (nothing is saved beside one, issue #72), not in a
+// slideshow, crop or trim, and not from the Video Editor.
+- (BOOL)canDuplicateCurrent {
+  const mv::io::dir_entry* entry = [self currentEntry];
+  if (!entry || _slideshowActive || _editorOpen || _edits.crop_active() ||
+      (_trim.armed() && [self currentItemIsVideo])) {
+    return NO;
+  }
+  return !mv::shell::write_protected(entry->path_utf8);
+}
+
+// The copy is "NAME copy.ext" beside the original (io/duplicate.h, Finder's
+// rule), a verified copy on the job pool (rule 1), never an overwrite. The
+// Mac listing does not pair, so the file goes alone with its XMP sidecar.
+// The duplicate is selected once a relist lists it.
+- (BOOL)duplicateCurrent {
+  const mv::io::dir_entry* entry = [self currentEntry];
+  if (!entry) return NO;
+  if ([self refuseWriteTo:entry->path_utf8]) return YES;
+  if (![self canDuplicateCurrent]) return NO;
+  const std::string path = entry->path_utf8;
+  const std::string dir = _currentDir;
+  MvLabApp* __weak weakSelf = self;
+  _jobs.submit_at(mv::background_generation, [path, dir, weakSelf](const mv::job_context&) -> mv::status {
+    std::string copied;
+    mv::status st = mv::status::ok;
+    try {
+      const std::vector<std::string> group = mv::io::duplicate_group(path, {});
+      auto r = mv::io::duplicate_files(group, mv::io::native_duplicate_style());
+      if (r) copied = r.value().front();
+      else st = r.error();
+    } catch (...) {
+      st = mv::status::out_of_memory;
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+      MvLabApp* strongSelf = weakSelf;
+      if (!strongSelf) return;
+      if (copied.empty()) {
+        NSBeep();
+        [strongSelf noticeShow:std::string("Could not duplicate")];
+        return;
+      }
+      if (strongSelf->_currentDir != dir || strongSelf->_listOpen) return;
+      for (std::size_t i = 0; i < strongSelf->_items.size(); ++i) {
+        if (strongSelf->_items[i].path_utf8 != copied) continue;
+        [strongSelf selectIndex:i];
+        [strongSelf publish];
+        return;
+      }
+      strongSelf->_selectWhenListed = copied;
+    });
+    return st;
+  });
+  return YES;
 }
 
 - (BOOL)rateCurrentItem:(int)stars {

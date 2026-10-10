@@ -165,6 +165,11 @@ public struct CommandBarView: View {
                        shortcut: key("Show in Explorer"), enabled: current != nil) {
               close(); mv_chrome_menu(20)
             }
+            FlyoutRule()
+            // Issue #289: File > Duplicate's twin (kMenuDuplicate in main_mac.mm).
+            FlyoutItem(title: "Duplicate", shortcut: key("Duplicate"), enabled: current != nil) {
+              close(); mv_chrome_menu(45)
+            }
           }
           BarFlyout(title: "View") { close in
             FlyoutItem(title: "Zoom in", shortcut: key("Zoom in")) { close(); mv_chrome_run_command(ViewCommand.zoomIn) }

@@ -285,6 +285,10 @@ constexpr binding kBindings[] = {
     // PageDown inside one stop; plain PageUp / PageDown still skip ten stops.
     row(key::page_down, mod_ctrl, kBrowse | kIsland, repeat, next_page),
     row(key::page_up, mod_ctrl, kBrowse | kIsland, repeat, prev_page),
+    // Issue #289: Duplicate. Appended. Preview's ⇧⌘S is Share here (PR 15), so
+    // the D twin of it; Ctrl+D alone is Unmark all. Not in a slideshow, crop
+    // or trim: a write beside the original is not made from those by accident.
+    row(C('D'), mod_ctrl | mod_shift, kViewing, edge, duplicate),
 };
 
 // The router's index stores row + 1 in a byte.
@@ -462,6 +466,7 @@ constexpr command_info kCommands[] = {
     {addon_cmd_6, "Add-on command 7", true},
     {addon_cmd_7, "Add-on command 8", true},
     {new_window, "New window"},
+    {duplicate, "Duplicate"},
 };
 
 const char* named_key(key k) noexcept {

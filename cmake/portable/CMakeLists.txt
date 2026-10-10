@@ -81,6 +81,7 @@ add_library(mv_io STATIC
   "${MV_ROOT}/src/io/file_port.cpp"
   "${MV_ROOT}/src/io/file_port_mac.cpp"
   "${MV_ROOT}/src/io/verified_copy.cpp"
+  "${MV_ROOT}/src/io/duplicate.cpp"
   "${MV_ROOT}/src/io/volume_mac.cpp"
   "${MV_ROOT}/src/io/paths_mac.cpp"
   "${MV_ROOT}/src/io/replace_mac.cpp"
@@ -113,6 +114,7 @@ endif()
 add_executable(mv_import_tests
   "${MV_ROOT}/tests/test_content_hash.cpp"
   "${MV_ROOT}/tests/test_verified_copy.cpp"
+  "${MV_ROOT}/tests/test_duplicate.cpp"
   "${MV_ROOT}/tests/test_addon_manifest.cpp"
   "${MV_ROOT}/tests/test_open_addons.cpp"
   "${MV_ROOT}/tests/test_import_naming.cpp"

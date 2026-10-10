@@ -244,6 +244,8 @@ static_assert(chrome_cmd_toggle_filmstrip == static_cast<int>(command_id::toggle
 static_assert(static_cast<int>(command_id::folder_tree) == 78);
 static_assert(static_cast<int>(command_id::metadata_pane) == 92);
 static_assert(static_cast<int>(command_id::folder_up) == 115);
+// Issue #289: the Open menu's Duplicate.
+static_assert(static_cast<int>(command_id::duplicate) == 172);
 // PR 11: the adjust pane's close button and its sliders (arg = the value).
 static_assert(static_cast<int>(command_id::adjust_pane) == 118);
 static_assert(static_cast<int>(command_id::adjust_exposure) == 119);
