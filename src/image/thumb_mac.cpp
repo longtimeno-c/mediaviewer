@@ -20,6 +20,7 @@
 #include "image/pipeline.h"
 #include "image/pipeline_mac.h"
 #include "io/file.h"
+#include "io/memory_file.h"
 
 namespace mv::image {
 namespace {
@@ -194,6 +195,8 @@ result<std::string> thumb_store::lookup(const thumb_key& key) {
 
 result<std::string> thumb_store::store(const thumb_key& key, std::span<const std::uint8_t> jpeg) {
   if (jpeg.empty()) return err(status::invalid_arg);
+  // An unsaved item (New from Clipboard) leaves nothing on disk, not even a tile.
+  if (io::is_memory_path(key.path)) return err(status::permission_denied);
 
   std::string file = cache_name(key);
   std::string path;

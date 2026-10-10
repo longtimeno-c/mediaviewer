@@ -214,6 +214,8 @@ add_library(mv_io STATIC
   src/io/dir_mac.cpp
   src/io/dir_tree.cpp
   src/io/file_mac.cpp
+  src/io/memory_file.cpp
+  src/io/memory_file.h
   src/io/replace_mac.cpp
   src/io/replace.h
   src/io/paths_mac.cpp
@@ -502,6 +504,9 @@ add_library(mv_shell STATIC
   # PR 10: per-item edit stacks, crop mode, the lossless-write / export jobs.
   src/shell/edit_session.cpp
   src/shell/edit_session.h
+  # New from Clipboard (docs/design/16): the unsaved item, both hosts.
+  src/shell/clipboard_image.cpp
+  src/shell/clipboard_image.h
   src/shell/edit_workspace.cpp
   src/shell/edit_workspace.h
   src/shell/video_timeline.cpp
@@ -831,6 +836,7 @@ if(MV_BUILD_TESTS)
     # PR 10: edit stack, lossless JPEG, export, the edit session.
     tests/test_edit.cpp
     tests/test_edit_session.cpp
+    tests/test_clipboard_image.cpp
     tests/test_edit_workspace.cpp
     tests/test_video_timeline.cpp
     tests/test_export_carried.cpp

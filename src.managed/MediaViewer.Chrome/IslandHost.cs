@@ -179,6 +179,9 @@ public static partial class IslandHost
         public const int EditWorkspace = 150;
         public const int CropAspectSet = 155;      // arg: preset, + 16 portrait
         public const int CropStraightenSet = 156;  // arg: degrees
+        // docs/design/16 "New from Clipboard": the Open flyout's row (commands.h
+        // new_from_clipboard; chrome_host.h pins 172).
+        public const int NewFromClipboard = 172;
 
         // Mirrors chrome_command_checksum() in chrome_host.h: same constants,
         // same order, same arithmetic. Probe hands it to native for the test.
@@ -1252,6 +1255,16 @@ public static partial class IslandHost
         flyout.Items.Clear();
         flyout.Items.Add(Item("Media…", "Ctrl+O", () => { Send(Command.Open); RestoreCanvasFocus(); }));
         flyout.Items.Add(Item("Folder…", "Ctrl+Shift+O", () => { Send(Command.OpenFolder); RestoreCanvasFocus(); }));
+        // Preview's File > New from Clipboard: the clipboard's image as an unsaved
+        // item. Dimmed, never hidden, while there is none (the formats native
+        // reads; asking is not reading, so this never makes an app render).
+        MenuFlyoutItem paste = Item("New from Clipboard", "Ctrl+Shift+V", () =>
+        {
+            Send(Command.NewFromClipboard);
+            RestoreCanvasFocus();
+        });
+        paste.IsEnabled = ClipboardHasImage();
+        flyout.Items.Add(paste);
         flyout.Items.Add(RecentFoldersSubMenu());
         flyout.Items.Add(Sep());
         string? name = _selectedIndex >= 0 && _selectedIndex < Items.Count
@@ -1275,6 +1288,23 @@ public static partial class IslandHost
             flyout.Items.Add(reveal);
         }
     }
+
+    private const uint CfDib = 8;
+    private const uint CfDibV5 = 17;
+
+    private static bool ClipboardHasImage()
+    {
+        uint png = RegisterClipboardFormatW("PNG");
+        return IsClipboardFormatAvailable(CfDib) || IsClipboardFormatAvailable(CfDibV5) ||
+               (png != 0 && IsClipboardFormatAvailable(png));
+    }
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsClipboardFormatAvailable(uint format);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern uint RegisterClipboardFormatW(string format);
 
     // Open > Recent folders: the Mac's File > Open Recent, so the keyboard
     // reaches the jump list's folders (Tab to the bar, Open, arrows). Native

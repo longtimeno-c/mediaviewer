@@ -3,6 +3,7 @@
 // Windows half of the io replace port (io/replace.h): CREATE_NEW for an
 // export, a sibling temporary + ReplaceFileW for the viewer's lossless rotate.
 #include "io/replace.h"
+#include "io/memory_file.h"
 
 #include <windows.h>
 
@@ -38,6 +39,7 @@ bool write_handle(HANDLE file, std::span<const std::uint8_t> bytes) noexcept {
 
 expected write_new(std::string_view utf8_path, std::span<const std::uint8_t> bytes) {
   if (utf8_path.empty()) return err(status::invalid_arg);
+  if (is_memory_path(utf8_path)) return err(status::permission_denied);  // unsaved: never written
   std::wstring wide;
   if (!widen(utf8_path, wide)) return err(status::invalid_arg);
   HANDLE file = ::CreateFileW(wide.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
@@ -54,6 +56,7 @@ expected write_new(std::string_view utf8_path, std::span<const std::uint8_t> byt
 
 expected write_new_atomic(std::string_view utf8_path, std::span<const std::uint8_t> bytes) {
   if (utf8_path.empty()) return err(status::invalid_arg);
+  if (is_memory_path(utf8_path)) return err(status::permission_denied);  // unsaved: never written
   std::wstring wide;
   if (!widen(utf8_path, wide)) return err(status::invalid_arg);
   std::wstring temp;
@@ -77,6 +80,7 @@ expected write_new_atomic(std::string_view utf8_path, std::span<const std::uint8
 
 expected replace_atomic(std::string_view utf8_path, std::span<const std::uint8_t> bytes) {
   if (utf8_path.empty()) return err(status::invalid_arg);
+  if (is_memory_path(utf8_path)) return err(status::permission_denied);  // unsaved: never written
   std::wstring wide;
   if (!widen(utf8_path, wide)) return err(status::invalid_arg);
   const DWORD attrs = ::GetFileAttributesW(wide.c_str());

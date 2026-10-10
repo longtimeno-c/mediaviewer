@@ -6,6 +6,7 @@
 #include <bit>
 #include <cstring>
 #include <limits>
+#include <new>
 
 namespace mv::codec::dib {
 namespace {
@@ -304,6 +305,37 @@ status pixels(const header& h, std::span<const std::uint8_t> dib, std::span<cons
     default:
       return status::unsupported_format;
   }
+}
+
+result<std::vector<std::uint8_t>> bmp_from_packed(std::span<const std::uint8_t> dib) {
+  MV_TRY(header h, parse(dib, dib.size(), false));
+  constexpr std::uint64_t kFileHeader = 14;
+  std::uint64_t bits_at = h.after_tables;
+  if (h.size >= 52 && h.compression == bi_bitfields) {
+    // The profile, when there is one, sits after the bits.
+    const std::uint64_t end = h.icc_size != 0 ? h.icc_offset : dib.size();
+    const std::uint64_t stride = (static_cast<std::uint64_t>(h.width) * h.bpp + 31) / 32 * 4;
+    if (end >= bits_at && end - bits_at == stride * h.height + 12) bits_at += 12;
+  }
+  if (bits_at >= dib.size()) return err(status::corrupt);
+  const std::uint64_t total = kFileHeader + dib.size();
+  if (total > std::numeric_limits<std::uint32_t>::max()) return err(status::unsupported_format);
+
+  std::vector<std::uint8_t> out;
+  try {
+    out.resize(static_cast<std::size_t>(total));
+  } catch (const std::bad_alloc&) {
+    return err(status::out_of_memory);
+  }
+  const auto put32 = [&out](std::size_t at, std::uint64_t v) {
+    for (int i = 0; i < 4; ++i) out[at + static_cast<std::size_t>(i)] = static_cast<std::uint8_t>(v >> (8 * i));
+  };
+  out[0] = 'B';
+  out[1] = 'M';
+  put32(2, total);
+  put32(10, kFileHeader + bits_at);  // bytes 6-9 are reserved, zero
+  std::memcpy(out.data() + kFileHeader, dib.data(), dib.size());
+  return out;
 }
 
 }  // namespace mv::codec::dib

@@ -1,6 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "io/file.h"
+#include "io/memory_file.h"
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -19,6 +20,7 @@ constexpr std::uint64_t kMaxFileBytes = 2ull * 1024ull * 1024ull * 1024ull;  // 
 
 result<std::vector<std::uint8_t>> read_prefix(std::string_view utf8_path, std::size_t max_bytes) {
   if (utf8_path.empty()) return err(status::invalid_arg);
+  if (is_memory_path(utf8_path)) return read_memory_prefix(utf8_path, max_bytes);
   const std::string path(utf8_path);
 
   const int fd = ::open(path.c_str(), O_RDONLY);
@@ -66,6 +68,7 @@ result<std::vector<std::uint8_t>> read_all(std::string_view path) { return read_
 
 expected write_all(std::string_view utf8_path, std::span<const std::uint8_t> bytes) {
   if (utf8_path.empty()) return err(status::invalid_arg);
+  if (is_memory_path(utf8_path)) return err(status::permission_denied);  // unsaved: never written
   const std::string path(utf8_path);
 
   const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
@@ -87,6 +90,10 @@ expected write_all(std::string_view utf8_path, std::span<const std::uint8_t> byt
 
 bool file_exists(std::string_view utf8_path) noexcept {
   if (utf8_path.empty()) return false;
+  if (is_memory_path(utf8_path)) {
+    memory_file_stamp stamp;
+    return memory_file_stat(utf8_path, stamp);
+  }
   struct stat st{};
   if (::stat(std::string(utf8_path).c_str(), &st) != 0) return false;
   return S_ISREG(st.st_mode);
