@@ -6,7 +6,6 @@
 // OWNER: mediaviewer-48 (5a).
 #include <algorithm>
 #include <atomic>
-#include <chrono>
 #include <vector>
 
 extern "C" {
@@ -143,19 +142,22 @@ struct sw_convert {
 //
 // So waiting here is NORMAL and is counted as ring_backpressure, not as a
 // fault. The fault counter is surface_waits, incremented only where a frame is
-// already in hand with nowhere to go.
+// already in hand with nowhere to go. It is also where a paused clip's decode
+// thread spends the pause, so it parks until the render thread releases a slot
+// rather than polling for one (issue #230).
 [[nodiscard]] video_frame* reserve_slot(video_pipeline& pipe, std::uint32_t generation) noexcept {
   if (video_frame* slot = pipe.ring.begin_write()) return slot;
   pipe.ring_backpressure.fetch_add(1, std::memory_order_relaxed);
-  while (!pipe.stopping.load(std::memory_order_acquire)) {
+  for (;;) {
+    const std::uint32_t seen = pipe.wake.epoch();
+    if (pipe.stopping.load(std::memory_order_acquire)) return nullptr;
     if (video_frame* slot = pipe.ring.begin_write()) return slot;
     // A seek while we are parked here must not be made to wait for a render
     // thread that may never call again — the caller re-enters at the new
     // generation and flushes the codec.
     if (pipe.generation.load(std::memory_order_acquire) != generation) return nullptr;
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    pipe.wake.wait(seen);
   }
-  return nullptr;
 }
 
 // Prefers a decoder that actually advertises D3D11VA over whichever decoder
@@ -343,11 +345,12 @@ void run_video_decode_thread(video_pipeline& pipe) noexcept {
 
     packet_ptr packet;
     std::uint32_t packet_generation = 0;
+    const std::uint32_t seen = pipe.wake.epoch();
     if (!pipe.video_packets.try_pop(packet, &packet_generation)) {
       if (pipe.stopping.load(std::memory_order_acquire)) break;
-      // Stopped-and-drained, or EOF with nothing queued. Idle rather than spin;
-      // a seek can still restart the demuxer.
-      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      // Stopped-and-drained, or EOF with nothing queued. Park until the
+      // demuxer queues a packet (a seek can still restart it) or stop.
+      pipe.wake.wait(seen);
       continue;
     }
 
@@ -396,14 +399,18 @@ void run_video_decode_thread(video_pipeline& pipe) noexcept {
 void run_still_thread(video_pipeline& pipe) noexcept {
   sw_convert sw;
   std::uint32_t published = 0;  // the generation the still last went out at
-  while (!pipe.stopping.load(std::memory_order_acquire)) {
+  for (;;) {
+    const std::uint32_t seen = pipe.wake.epoch();
+    if (pipe.stopping.load(std::memory_order_acquire)) break;
     const std::uint32_t generation = pipe.generation.load(std::memory_order_acquire);
     // Wait for the seek that bumped the generation to finish writing its
     // intent (seek_request_ns is the last thing media_source::seek stores, and
     // the demux thread clears it), or the video_done below would be undone by
-    // the seek's own reset and the file would never end.
+    // the seek's own reset and the file would never end. Parked, not polled
+    // (issue #230): the seek notifies, and so does the demuxer's flush as it
+    // takes the request.
     if (generation == published || pipe.seek_request_ns.load(std::memory_order_acquire) >= 0) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      pipe.wake.wait(seen);
       continue;
     }
     video_frame* slot = pipe.ring.valid() ? reserve_slot(pipe, generation) : nullptr;
@@ -416,8 +423,9 @@ void run_still_thread(video_pipeline& pipe) noexcept {
     pipe.still->pts = pts;
     pipe.still->best_effort_timestamp = pts;
     if (!publish_frame(pipe, pipe.still.get(), sw, generation, slot)) {
+      // Retried on the next thing that happens to the pipeline, not on a timer.
       pipe.frames_dropped_stale.fetch_add(1, std::memory_order_relaxed);
-      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      pipe.wake.wait(seen);
       continue;
     }
     published = generation;

@@ -56,11 +56,15 @@ void run_audio_decode_thread(video_pipeline& pipe) noexcept {
   double rate = 1;
   time_ns next_pts = 0;
   bool seeded = false;
-  while (!pipe.stopping.load()) {
+  for (;;) {
+    // Parked, not polled, while there is nothing to decode (issue #230): a
+    // queued packet or stop wakes it.
+    const std::uint32_t seen = pipe.wake.epoch();
+    if (pipe.stopping.load()) break;
     packet_ptr packet;
     std::uint32_t packet_generation = 0;
     if (!pipe.audio_packets.try_pop(packet, &packet_generation)) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(2)); continue;
+      pipe.wake.wait(seen); continue;
     }
     if (packet_generation != pipe.generation.load()) continue;
     const int selected = pipe.selected_audio.load();
@@ -121,8 +125,14 @@ void run_audio_decode_thread(video_pipeline& pipe) noexcept {
             block.frames -= trim; block.pts_ns = target;
             std::memmove(block.samples, block.samples + trim * 2, block.frames * 2 * sizeof(float));
           }
-          while (!pipe.clock.submit(block) && !pipe.stopping.load() && generation == pipe.generation.load())
-            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+          // The clock's ring stays full for the whole of a pause: park until the
+          // pump takes a block, a seek moves on, or stop.
+          for (;;) {
+            const std::uint32_t seen_space = pipe.wake.epoch();
+            if (pipe.stopping.load() || generation != pipe.generation.load()) break;
+            if (pipe.clock.submit(block)) break;
+            pipe.wake.wait(seen_space);
+          }
         }
         av_frame_unref(filtered.get());
       }

@@ -206,6 +206,13 @@ struct av_clock::impl {
   std::atomic<bool> running{false};
   std::mutex wake_mutex;
   std::condition_variable wake;
+  // Where the pump parks while paused or played out (issue #230): no timeout,
+  // so everything it waits for notifies it -- play, pause, a seek, a submitted
+  // block, the end of the track, stop. A futex word rather than `wake` because
+  // set_paused is called from the render thread, which must not take a lock.
+  wake_signal idle;
+  // The decoder's side: notified when the pump frees a ring slot.
+  wake_signal* space = nullptr;
 
   // Anchoring. The endpoint plays everything written to it in order and
   // contiguously, so the PTS of the sample at endpoint position P is
@@ -379,6 +386,7 @@ void av_clock::stop() noexcept {
   if (impl_ == nullptr) return;
   impl_->running.store(false, std::memory_order_release);
   impl_->wake.notify_all();
+  impl_->idle.notify();
   if (impl_->pump.joinable()) impl_->pump.join();
   if (impl_->sink != nullptr && impl_->sink_open) {
     impl_->sink->close();
@@ -395,8 +403,15 @@ bool av_clock::submit(const audio_block& block) noexcept {
   }
   if (!impl_->running.load()) return true; // No working endpoint: decode may drain.
   const bool pushed = impl_->ring.try_push(block);
-  if (pushed) impl_->wake.notify_one();
+  if (pushed) {
+    impl_->wake.notify_one();
+    impl_->idle.notify();
+  }
   return pushed;
+}
+
+void av_clock::notify_on_space(wake_signal* signal) noexcept {
+  if (impl_ != nullptr) impl_->space = signal;
 }
 
 void av_clock::audio_ended(std::uint32_t generation) noexcept {
@@ -404,6 +419,7 @@ void av_clock::audio_ended(std::uint32_t generation) noexcept {
   // Release: every submit() of this generation happens-before the pump sees it.
   impl_->ended_generation.store(generation, std::memory_order_release);
   impl_->wake.notify_one();
+  impl_->idle.notify();
 }
 
 void av_clock::impl::overlay_live_state(clock_stats& out) const noexcept {
@@ -507,6 +523,9 @@ void av_clock::set_paused(bool paused) noexcept {
     impl_->paused.store(false, std::memory_order_release);
     impl_->wake.notify_all();
   }
+  // Both ways: a pump parked at the end of the track must still hand the
+  // pause to the endpoint.
+  impl_->idle.notify();
 }
 
 void av_clock::set_volume(float volume) noexcept {
@@ -532,6 +551,7 @@ void av_clock::seeked(time_ns to_ns, std::uint32_t generation) noexcept {
   // discontinuity, not evidence of one. Restarting it keeps a scrub from
   // showing up as a drift ramp.
   impl_->drift.reset();
+  impl_->idle.notify();  // a parked pump still takes the new generation now
 }
 
 void av_clock::record_present(const present_decision& decision, bool showed) noexcept {
@@ -650,8 +670,14 @@ void av_clock::impl::pump_loop() noexcept {
 
     if (state.sink) state.sink->set_paused(state.paused.load());
     if (state.paused.load(std::memory_order_acquire)) {
-      std::unique_lock<std::mutex> lock(state.wake_mutex);
-      state.wake.wait_for(lock, std::chrono::milliseconds(5));
+      // Parked until play, a seek or stop (issue #230). A device change while
+      // paused is taken on the next wake, at the top of the loop: nothing is
+      // playing through the endpoint meanwhile.
+      state.idle.wait_until([&] {
+        return !state.paused.load(std::memory_order_acquire) ||
+               !state.running.load(std::memory_order_acquire) ||
+               state.generation.load(std::memory_order_acquire) != state.pump_generation;
+      });
       continue;
     }
 
@@ -674,9 +700,13 @@ void av_clock::impl::pump_loop() noexcept {
             state.anchor_pts_ns.store(position, std::memory_order_relaxed);
             state.host_start_ns.store(host_now_ns(), std::memory_order_relaxed);
           }
-          // Out of audio is not an underrun: nothing is counted.
-          std::unique_lock<std::mutex> lock(state.wake_mutex);
-          state.wake.wait_for(lock, std::chrono::milliseconds(5));
+          // Out of audio is not an underrun: nothing is counted. Parked until
+          // a seek, a pause (handed to the endpoint above), a block, or stop.
+          state.idle.wait_until([&] {
+            return !state.running.load(std::memory_order_acquire) ||
+                   state.paused.load(std::memory_order_acquire) || !state.ring.empty() ||
+                   state.generation.load(std::memory_order_acquire) != state.pump_generation;
+          });
           continue;
         }
         // The decoder is behind. Counted here because this is where the cause
@@ -691,6 +721,7 @@ void av_clock::impl::pump_loop() noexcept {
         state.wake.wait_for(lock, std::chrono::milliseconds(2));
         continue;
       }
+      if (state.space != nullptr) state.space->notify();  // room for the decoder
       state.pending_offset = 0;
       if (state.pending.generation != state.generation.load(std::memory_order_acquire)) {
         state.pending.frames = 0;  // stale: discard without writing it

@@ -20,6 +20,7 @@
 #include "player/audio_sink.h"
 #include "player/presenter.h"
 #include "player/video_source.h"
+#include "player/wake_signal.h"
 
 namespace mv::player {
 
@@ -163,6 +164,11 @@ class av_clock {
   // [decode-thread][no-block] False when the ring is full; the caller backs off
   // rather than blocking.
   [[nodiscard]] bool submit(const audio_block& block) noexcept;
+
+  // [setup] Notified each time the pump takes a block off the ring, so a
+  // decoder that found it full parks instead of polling (issue #230). Set
+  // before start(); null for none.
+  void notify_on_space(wake_signal* signal) noexcept;
 
   // [decode-thread][no-block] Every block of `generation` has been submitted.
   // Once the pump has handed the last of them to the endpoint, the host clock
