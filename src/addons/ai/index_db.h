@@ -267,7 +267,6 @@ class index_db {
  private:
   index_db() = default;
   bool exec(const char* sql);
-  result<upsert> see_one(std::int64_t root, const seen_file& f, std::int64_t generation);
   std::vector<work_item> pending_where(const std::string& spec, std::size_t limit, std::int32_t max_tries,
                                        const track_filter& filter, const std::string& extra);
   std::mutex m_;

@@ -193,7 +193,9 @@ speech(id, asset_id, spec, start_ms, end_ms, text)                 -- Whisper tr
 ```
 
 `emb` is the int8 vector, `scale` its per-vector scale, `generic` its best cosine against the
-tower's generic prompts. People live in a separate `faces.db`; the label bars in `labels.f32`;
+tower's generic prompts. Each schema step (1 -> 2 `media`, 2 -> 3 `cloud`) is one transaction and
+skips a column already there, so a crash mid-migration never leaves an index that will not open.
+People live in a separate `faces.db`; the label bars in `labels.f32`;
 the CPU self-test reference in `selftest.txt` (keyed by runtime, provider, model and piece).
 
 - **Folder roots persist.** Indexing a folder (with its subfolders) writes a `roots` row.

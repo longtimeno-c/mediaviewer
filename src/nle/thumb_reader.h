@@ -34,7 +34,6 @@ class thumb_reader {
   std::mutex m_;
   std::string dir_;
   sqlite3* db_ = nullptr;
-  bool tried_ = false;
 };
 
 }  // namespace mv::nle
