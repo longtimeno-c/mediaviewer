@@ -43,6 +43,9 @@ uint64_t mv_chrome_keys_generation(void);
 
 // Bumps input_snapshot.one_to_one_seq and wakes the render thread. [any-thread]
 void mv_chrome_one_to_one(void);
+// Sets input_snapshot.zoom_preset to `factor` (0.5, 1, 2, 4: the View flyout's
+// rows), bumps zoom_preset_seq and wakes the render thread. [any-thread]
+void mv_chrome_zoom_preset(float factor);
 
 // The running version, from CMake project(VERSION) — the same string Windows
 // shows in About. Writes a NUL-terminated string into `buf`. Returns false

@@ -82,6 +82,7 @@
 #include "shell/meta_writer.h"
 #include "io/sort_order.h"
 #include "shell/settings.h"
+#include "shell/slideshow.h"
 #include "shell/input_state.h"
 #include "io/pairing.h"
 #include "shell/install_from_dmg_mac.h"
@@ -153,6 +154,12 @@ static bool MvCommandSupported(mv::shell::command_id c) {
     case reveal_in_explorer: case open_settings: case cycle_background: case sticky_zoom:
     case reset_stats: case always_on_top: case close_window: case new_window: case pan_up: case pan_down:
     case folder_up: case folder_prev: case folder_next:
+    // Issue #183: the View keys, the loupe, hold-previous and the slideshow's
+    // blackout and shuffle, ported from the Windows host.
+    case zoom_in: case zoom_out: case zoom_200: case zoom_400: case fill: case pan_left:
+    case pan_right: case clipping: case loupe: case loupe_release: case loupe_nudge_left:
+    case loupe_nudge_right: case loupe_nudge_up: case loupe_nudge_down: case hold_previous:
+    case hold_previous_release: case blackout: case shuffle:
     // PR 9
     case info_overlay: case af_points: case eyedropper: case copy_clipboard: case metadata_pane: case folder_tree:
     // PR 10
@@ -223,6 +230,10 @@ bool MvClaimAddonHost() {
 }
 
 constexpr std::int64_t kShownStampUnknown = INT64_MIN;
+// view_fitted is the render thread's last pass; a `1` then ↓ inside one frame
+// would read the old fit. Zoom commands open this window so the first ↓ after
+// them pans instead of falling through (main.cpp kZoomIntentMs).
+constexpr double kZoomIntentSeconds = 0.25;
 // _shownMoment after a new search: matches no moment, so the clip reopens.
 constexpr std::int64_t kShownMomentStale = INT64_MIN;
 
@@ -308,6 +319,13 @@ extern "C" void mv_chrome_fit(void) {
 extern "C" void mv_chrome_one_to_one(void) {
   if (!g_chrome_snap) return;
   ++g_chrome_snap->one_to_one_seq;
+  if (g_chrome_lab) g_chrome_lab->publish(*g_chrome_snap);
+  if (g_chrome_lab) g_chrome_lab->wake();
+}
+extern "C" void mv_chrome_zoom_preset(float factor) {
+  if (!g_chrome_snap || !(factor > 0.0f)) return;
+  g_chrome_snap->zoom_preset = factor;
+  ++g_chrome_snap->zoom_preset_seq;
   if (g_chrome_lab) g_chrome_lab->publish(*g_chrome_snap);
   if (g_chrome_lab) g_chrome_lab->wake();
 }
@@ -1424,6 +1442,12 @@ extern "C" void mv_chrome_run_command(int32_t command_id) {
   if (mv::shell::is_reserved_notification(command_id) || mv::shell::is_retired_command(command_id)) return;
   [g_chrome_app runCommand:static_cast<mv::shell::command_id>(command_id) back:mv::shell::back_target::none];
 }
+// CommandBarView.swift's ViewCommand spells these ids out (Swift cannot see commands.h).
+static_assert(static_cast<int>(mv::shell::command_id::zoom_in) == 4);
+static_assert(static_cast<int>(mv::shell::command_id::zoom_out) == 5);
+static_assert(static_cast<int>(mv::shell::command_id::zoom_200) == 39);
+static_assert(static_cast<int>(mv::shell::command_id::zoom_400) == 40);
+static_assert(static_cast<int>(mv::shell::command_id::clipping) == 46);
 extern "C" uint64_t mv_chrome_trim_generation(void) {
   return g_chrome_app ? [g_chrome_app trimGeneration] : 0;
 }
@@ -1920,9 +1944,9 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
     (void)[self.app welcomePointerMoved];
     [NSCursor.arrowCursor set];
   }
-  if (self.snap->eyedropper) ++self.snap->activity_seq;
+  if (self.snap->eyedropper || self.snap->loupe) ++self.snap->activity_seq;
   [self publish];
-  if (self.snap->eyedropper && self.lab) self.lab->wake();
+  if ((self.snap->eyedropper || self.snap->loupe) && self.lab) self.lab->wake();
   if (self.app) [self.app transportActivity];  // a pointer hidden over the video comes back
 }
 - (void)trackPointer:(NSEvent*)event {
@@ -1939,9 +1963,9 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   if (self.app && self.snap->recents.count > 0) {
     [([self.app welcomePointerMoved] ? NSCursor.pointingHandCursor : NSCursor.arrowCursor) set];
   }
-  if (self.snap->eyedropper) ++self.snap->activity_seq;
+  if (self.snap->eyedropper || self.snap->loupe) ++self.snap->activity_seq;
   [self publish];
-  if (self.snap->eyedropper && self.lab) self.lab->wake();
+  if ((self.snap->eyedropper || self.snap->loupe) && self.lab) self.lab->wake();
   // Issue #38: movement (and entry, which arrives as a move) wakes the clip's
   // transport. A bool test and nothing else when no clip is on screen.
   if (self.app) [self.app transportActivity];
@@ -2213,6 +2237,13 @@ static void MvAdoptNewDefaultViewerTypes() {
   BOOL _enteredFullscreenForSlideshow;
   double _slideshowIntervalSeconds;
   NSTimer* _slideshowTimer;
+  // `R` in a slideshow: the shared no-repeat order (shell/slideshow.h). Only its
+  // shuffle is used here; the timer above keeps the interval. Blackout (`.`)
+  // is _snap.blackout.
+  mv::shell::slideshow _slideshowOrder;
+  // When a zoom command last ran (CACurrentMediaTime), 0 after fit: see
+  // kZoomIntentSeconds.
+  double _zoomIntentAt;
 
   // Filmstrip/gallery visibility (docs/design/16 View table's T/G, folded-in PR 4,
   // docs/design/12 2026-09-17). _filmstripVisible is the wish; -filmstripVisible is
@@ -3721,11 +3752,24 @@ static void MvAdoptNewDefaultViewerTypes() {
   return _slideshowActive;
 }
 
+// The timer's tick: the next item in folder order, or in the shuffled order
+// once `R` turned it on (every item once per round, wrapping as browse does).
+- (void)slideshowAdvance {
+  if (_items.empty()) return;
+  if (!_slideshowOrder.shuffled()) {
+    [self navigateNext];
+    return;
+  }
+  const auto current = static_cast<std::uint32_t>(_index.current());
+  _slideshowOrder.set_count(static_cast<std::uint32_t>(_items.size()), current);
+  if (const auto next = _slideshowOrder.next(current, _index.wrap())) [self selectIndex:*next];
+}
+
 - (void)armSlideshowTimer {
   [_slideshowTimer invalidate];
   _slideshowTimer = [NSTimer scheduledTimerWithTimeInterval:_slideshowIntervalSeconds
                                                       target:self
-                                                    selector:@selector(navigateNext)
+                                                    selector:@selector(slideshowAdvance)
                                                     userInfo:nil
                                                      repeats:YES];
 }
@@ -3738,6 +3782,10 @@ static void MvAdoptNewDefaultViewerTypes() {
   // not; leaving puts it back)".
   _enteredFullscreenForSlideshow = (self.window.styleMask & NSWindowStyleMaskFullScreen) ? NO : YES;
   if (_enteredFullscreenForSlideshow) [self.window toggleFullScreen:nil];
+  _slideshowOrder.start(static_cast<std::uint32_t>(_items.size()),
+                        static_cast<std::uint32_t>(_index.current()),
+                        static_cast<std::uint64_t>(CACurrentMediaTime() * 1000.0));
+  _snap.blackout = false;
   [self armSlideshowTimer];
 }
 
@@ -3747,6 +3795,11 @@ static void MvAdoptNewDefaultViewerTypes() {
   _slideshowPaused = NO;
   [_slideshowTimer invalidate];
   _slideshowTimer = nil;
+  _slideshowOrder.stop();
+  if (_snap.blackout) {
+    _snap.blackout = false;
+    [self pokeSnapshot];
+  }
   if (_enteredFullscreenForSlideshow && (self.window.styleMask & NSWindowStyleMaskFullScreen)) {
     [self.window toggleFullScreen:nil];
   }
@@ -5155,6 +5208,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   s.slideshow = _slideshowActive;
   s.fullscreen = (self.window.styleMask & NSWindowStyleMaskFullScreen) != 0;
   s.popup_open = _helpVisible;
+  s.loupe_held = _snap.loupe;
   if (!_items.empty()) _gameOn = NO;  // a file opened over the runner; the lab leaves it too
   s.game = _gameOn;
   s.settings_open = _settingsVisible;
@@ -5260,8 +5314,23 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   switch (command) {
     case open: [self openFolderPanel:NO]; return YES;
     case open_folder: [self openFolderPanel:YES]; return YES;
-    case fit: case reset_view: ++_snap.fit_seq; [self pokeSnapshot]; return YES;
-    case one_to_one: ++_snap.one_to_one_seq; [self pokeSnapshot]; return YES;
+    case fit: case reset_view:
+      _zoomIntentAt = 0.0;
+      ++_snap.fit_seq; [self pokeSnapshot]; return YES;
+    case one_to_one:
+      _zoomIntentAt = CACurrentMediaTime();
+      ++_snap.one_to_one_seq; [self pokeSnapshot]; return YES;
+    case zoom_in:
+      _zoomIntentAt = CACurrentMediaTime();
+      ++_snap.zoom_in_seq; [self pokeSnapshot]; return YES;
+    case zoom_out: ++_snap.zoom_out_seq; [self pokeSnapshot]; return YES;
+    case zoom_200: case zoom_400:
+      _snap.zoom_preset = command == zoom_200 ? 2.0f : 4.0f;
+      _zoomIntentAt = CACurrentMediaTime();
+      ++_snap.zoom_preset_seq; [self pokeSnapshot]; return YES;
+    case fill:
+      _zoomIntentAt = CACurrentMediaTime();
+      ++_snap.fill_seq; [self pokeSnapshot]; return YES;
     case overlay: ++_snap.toggle_overlay_seq; [self pokeSnapshot]; return YES;
     case reset_stats: ++_snap.reset_stats_seq; [self pokeSnapshot]; return YES;
     case game_toggle_3d:
@@ -5458,10 +5527,43 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     case mute:
       if (!clip) return NO;
       ++_snap.video_mute_seq; [self pokeSnapshot]; return YES;
-    // ↑ ↓ on a clip are its volume (the Mac view has no arrow-key pan).
-    case pan_up: case pan_down:
-      if (!clip) return NO;
-      _snap.video_volume_steps += command == pan_up ? 1 : -1; [self pokeSnapshot]; return YES;
+    // docs/design/16: pan only when zoomed. At fit the view is locked, so the key is
+    // not ours and falls through; on a fitted clip ↑ ↓ are its volume.
+    case pan_up: case pan_down: case pan_left: case pan_right: {
+      const bool zooming = _zoomIntentAt > 0.0 && CACurrentMediaTime() - _zoomIntentAt < kZoomIntentSeconds;
+      if (_lab.view_fitted() && !zooming) {
+        if (!clip || (command != pan_up && command != pan_down)) return NO;
+        _snap.video_volume_steps += command == pan_up ? 1 : -1; [self pokeSnapshot]; return YES;
+      }
+      if (command == pan_up) --_snap.pan_steps_y;
+      if (command == pan_down) ++_snap.pan_steps_y;
+      if (command == pan_left) --_snap.pan_steps_x;
+      if (command == pan_right) ++_snap.pan_steps_x;
+      [self pokeSnapshot];
+      return YES;
+    }
+    // View state the render thread draws from (levels, not edges).
+    case clipping: _snap.clipping = !_snap.clipping; [self pokeSnapshot]; return YES;
+    case loupe: case loupe_release:
+      // The loupe magnifies a still. On a clip or an empty canvas Z is not
+      // ours: do not swallow it and then draw nothing.
+      if (command == loupe && (clip || _items.empty() || !_lab.showing_still())) return NO;
+      _snap.loupe = command == loupe;
+      if (command == loupe) {
+        // Each hold starts at the cursor, or the canvas centre with none.
+        _snap.loupe_steps_x = 0;
+        _snap.loupe_steps_y = 0;
+      }
+      [self pokeSnapshot];
+      return YES;
+    case loupe_nudge_left: --_snap.loupe_steps_x; [self pokeSnapshot]; return YES;
+    case loupe_nudge_right: ++_snap.loupe_steps_x; [self pokeSnapshot]; return YES;
+    case loupe_nudge_up: --_snap.loupe_steps_y; [self pokeSnapshot]; return YES;
+    case loupe_nudge_down: ++_snap.loupe_steps_y; [self pokeSnapshot]; return YES;
+    case hold_previous: case hold_previous_release:
+      _snap.hold_previous = command == hold_previous;
+      [self pokeSnapshot];
+      return YES;
     case toggle_mark: [self toggleMarkCurrent]; return YES;
     case mark_all: [self markAll]; return YES;
     case unmark_all: [self unmarkAll]; return YES;
@@ -5480,6 +5582,16 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     case slideshow_pause: [self toggleSlideshowPause]; return YES;
     case slideshow_faster: [self adjustSlideshowInterval:-1.0]; return YES;
     case slideshow_slower: [self adjustSlideshowInterval:1.0]; return YES;
+    case blackout:
+      if (!_slideshowActive) return NO;
+      _snap.blackout = !_snap.blackout;
+      [self pokeSnapshot];
+      return YES;
+    case shuffle:
+      if (!_slideshowActive) return NO;
+      _slideshowOrder.toggle_shuffle(static_cast<std::uint32_t>(_index.current()),
+                                     static_cast<std::uint64_t>(CACurrentMediaTime() * 1000.0));
+      return YES;
     // PR 9. The overlays are levels the render thread draws from `_snap.meta`;
     // turning one on asks for the record if it is not already here, and never
     // reads the file a second time.
@@ -9069,8 +9181,8 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   _folderPollTimer = nil;
   // _slideshowTimer's target is self, retained by NSTimer until invalidated
   // -- nulling g_chrome_app above does not stop it, since it calls
-  // -navigateNext directly rather than through the bridge globals. Left
-  // running, it would keep firing -navigateNext/-selectIndex: on a
+  // -slideshowAdvance directly rather than through the bridge globals. Left
+  // running, it would keep firing -slideshowAdvance/-selectIndex: on a
   // half-torn-down MvLabApp after the window (and _folder) are gone, racing
   // -applicationShouldTerminate:'s own off-main-thread teardown. Not
   // routed through -leaveSlideshow: that also un-fullscreens the window,

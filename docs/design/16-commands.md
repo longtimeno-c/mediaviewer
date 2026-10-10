@@ -137,7 +137,7 @@ crop. Keys are shown Windows-style; on macOS read `⌘` for `Ctrl`.
 | `Ctrl+W` | all | Close window |
 | `Ctrl+N` | all | New window (⌘N; also File ▸ New Window and the Dock menu on the Mac) |
 | `Ctrl+,` | All but crop | Settings |
-| `Ctrl+G` | Viewing | Go to index |
+| `Ctrl+G` | Viewing | Go to index. **Mac: not built** (no go-to popup yet; `⌘G` falls through) |
 | `/` | browse, video, gallery | Find by name in the loaded listing (gallery folder row: find a folder tile) |
 | `Ctrl+Shift+E` | All but crop | Folder tree: show and focus |
 | `Ctrl+↑` | Viewing | Up one folder, selecting the folder just left |
@@ -147,7 +147,7 @@ crop. Keys are shown Windows-style; on macOS read `⌘` for `Ctrl`.
 | `F3` | all | Frame-time overlay |
 | `R` | Viewing | Reset frame-time stats |
 | `Esc` | all | Back (above) |
-| *(unbound)* | browse, video | **Open RAW of pair** / **Open JPEG of pair** — listed in Settings |
+| *(unbound)* | browse, video | **Open RAW of pair** / **Open JPEG of pair** — listed in Settings. **Mac: not built** (not listed) |
 | *(menu)* | — | **Recent folders**: the jump-list folders; Windows: Open ▸ Recent folders on the command bar; Mac: File ▸ Open Recent. A folder that has gone beeps and leaves the list |
 
 ### View
@@ -173,8 +173,8 @@ crop. Keys are shown Windows-style; on macOS read `⌘` for `Ctrl`.
 | `Shift+I` | Viewing | Eyedropper: one-pixel sRGB 8-bit + hex readout under the cursor (stills) |
 | `Ctrl+C` | Viewing | With the eyedropper on: copy `#RRGGBB  rgb(r, g, b)  x y`. Otherwise copy the marked (else current / gallery-selected) file(s) |
 | hold `Z` | browse, video | Loupe: 100 % around the cursor or a keyboard point; arrows nudge it. Same texture, no decode |
-| hold `\` | browse, video | Previous item, for burst pick, from the five-slot GPU LRU |
-| `;` | browse, video | Play a Live Photo's motion once, with audio, and return to the still. `;` again, `Esc` or navigation return early |
+| hold `\` | browse, video | Previous item, for burst pick, from the five-slot GPU LRU (Mac: the last still shown, kept on the GPU) |
+| `;` | browse, video | Play a Live Photo's motion once, with audio, and return to the still. `;` again, `Esc` or navigation return early. **Mac: not built** |
 | `Ctrl+Shift+A` | all | Always on top (`HWND_TOPMOST`) |
 
 **Gallery.** Full-client grid of the folder. `A` `D` / `←` `→` move by item, `W` `S` / `↑` `↓`
@@ -438,3 +438,7 @@ No hot-path ABI for commands. Commands invoke existing session calls (`mv_folder
 - Touch gestures (swipe, pinch).
 - Import / export of key maps and named alternate layouts.
 - Voice add-on hold-to-talk (`Ctrl+Shift+Space`).
+- **On the Mac** (issue #183): `Ctrl+G` go to index, `;` Live Photo motion, and Open RAW /
+  Open JPEG of a pair. `MvCommandSupported` leaves them out, so `?` and Settings do not list
+  them and their keys fall through. The rest of the View table, the loupe, hold `\` and the
+  slideshow's `.` / `R` run on both hosts.

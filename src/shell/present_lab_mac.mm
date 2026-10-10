@@ -4,6 +4,7 @@
 #include "shell/present_busy.h"
 #include "shell/video_report.h"
 #include "shell/edit_view.h"
+#include "shell/loupe.h"
 #include "shell/dino_draw.h"
 #include "shell/welcome_screen.h"
 
@@ -1317,6 +1318,7 @@ void present_lab_mac::render_thread_main() noexcept {
           cleared_applied_ = cleared;
           retire_media();
           current_image_.reset();
+          previous_image_.reset();
           fade_from_.reset();
           fade_.cancel();
           camera_.reset();
@@ -1370,6 +1372,9 @@ void present_lab_mac::render_thread_main() noexcept {
           } else if (!loaded->preview && full_seconds_ < 0.0) {
             full_seconds_ = elapsed;
           }
+          // Hold `\` (docs/design/16): the still just left stays as the
+          // previous one; a re-publish of the same item is not an advance.
+          if (!refinement && current_image_) previous_image_ = std::move(current_image_);
           current_image_.reset(loaded);
           {
             const edit_view* ev = edit_for(current_image_->item_id);
@@ -1509,6 +1514,20 @@ void present_lab_mac::render_thread_main() noexcept {
         }
         if (apply_playback_input(snapshot)) redraw = true;
         update_video_status();
+        // Keyboard zoom and pan (docs/design/16 "View"), the Windows lab's twins.
+        // Edges are consumed with or without a picture, so none banks up for
+        // the next one, and applied only to one.
+        const bool zoom_in = snapshot.zoom_in_seq != seen_zoom_in_seq_;
+        const bool zoom_out = snapshot.zoom_out_seq != seen_zoom_out_seq_;
+        const bool zoom_preset = snapshot.zoom_preset_seq != seen_zoom_preset_seq_;
+        const bool fill = snapshot.fill_seq != seen_fill_seq_;
+        seen_zoom_in_seq_ = snapshot.zoom_in_seq;
+        seen_zoom_out_seq_ = snapshot.zoom_out_seq;
+        seen_zoom_preset_seq_ = snapshot.zoom_preset_seq;
+        seen_fill_seq_ = snapshot.fill_seq;
+        std::int64_t pan_steps_x = 0, pan_steps_y = 0;
+        const bool panned = input_cursor_.consume_pan(snapshot, pan_steps_x, pan_steps_y);
+        bool picture_framed = false;
         const float wheel = input_cursor_.consume_wheel(snapshot);
         if (wheel != 0.0f) redraw = true;
         // Consumed with or without a picture, so no scroll banks up for the next one.
@@ -1523,6 +1542,7 @@ void present_lab_mac::render_thread_main() noexcept {
           // composited over it" shape as blit.h's origin_x/origin_y on
           // Windows (gfx/blit.h) -- fit/pan only see the rect below it.
           const float window_h = usable_window_h(snapshot);
+          picture_framed = true;
 
           if (snapshot.fit_seq != seen_fit_seq_) {
             seen_fit_seq_ = snapshot.fit_seq;
@@ -1532,6 +1552,27 @@ void present_lab_mac::render_thread_main() noexcept {
           if (snapshot.one_to_one_seq != seen_one_to_one_seq_) {
             seen_one_to_one_seq_ = snapshot.one_to_one_seq;
             camera_.one_to_one();
+            redraw = true;
+          }
+          // + / - zoom toward the centre of the canvas, a wheel notch each.
+          if (zoom_in) {
+            camera_.wheel_toward(window_w * 0.5f, window_h * 0.5f, 1.0f, window_w, window_h, image_w,
+                                 image_h);
+          }
+          if (zoom_out) {
+            camera_.wheel_toward(window_w * 0.5f, window_h * 0.5f, -1.0f, window_w, window_h, image_w,
+                                 image_h);
+          }
+          if (zoom_preset) camera_.set_zoom(snapshot.zoom_preset, image_w, image_h, window_w, window_h);
+          if (fill) camera_.fill(image_w, image_h, window_w, window_h, /*immediate=*/false);
+          if (zoom_in || zoom_out || zoom_preset || fill) redraw = true;
+          if (panned) {
+            // One keyboard pan step is a tenth of the canvas, whatever the
+            // zoom: what moves is what you see, not a fixed number of pixels.
+            constexpr float kPanStepFraction = 0.1f;
+            camera_.pan_by_screen(static_cast<float>(pan_steps_x) * window_w * kPanStepFraction,
+                                  static_cast<float>(pan_steps_y) * window_h * kPanStepFraction,
+                                  image_w, image_h, window_w, window_h);
             redraw = true;
           }
 
@@ -1565,6 +1606,8 @@ void present_lab_mac::render_thread_main() noexcept {
           edges = camera_.vertical_edges(image_h, window_h);
         }
         scroll_edges_.store(edges, std::memory_order_relaxed);
+        // The UI thread reads this to let ↑ ↓ fall through at fit. Lock-free.
+        view_fitted_.store(!picture_framed || camera_.fit_mode(), std::memory_order_relaxed);
         if (redraw) last_input_time_ = elapsed;
         if (fade_from_ && !fade_.active(elapsed)) {
           fade_from_.reset();
@@ -1577,7 +1620,11 @@ void present_lab_mac::render_thread_main() noexcept {
         req.window_active = snapshot.window_active;
         req.occluded = occluded_;
         req.soak = options_.soak_seconds > 0.0 || options_.harness;
-        req.animating = animating_;
+        // docs/design/03 rule 4's one labelled exception, as on Windows: blinkies
+        // animate, so a still with them on presents until C turns them off.
+        const bool blinkies =
+            snapshot.clipping && current_image_ && !video_frame_ && !snapshot.blackout;
+        req.animating = animating_ || blinkies;
         {
           float pw = 0, ph = 0;
           const bool has_picture = picture_size(&pw, &ph);
@@ -1709,9 +1756,11 @@ void present_lab_mac::render_thread_main() noexcept {
         {
           const bool have_picture = current_image_ != nullptr || video_frame_ != nullptr;
           const double lvl = gfx::background_clear_mac(snapshot.background);
-          if (!snapshot.blackout &&
-              ((!have_picture && !media_ && !(sweep_mode_ && animating_)) ||
-               snapshot.background == 0)) {
+          if (snapshot.blackout) {
+            // Slideshow `.`: the canvas goes black and nothing is drawn over it.
+            pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
+          } else if ((!have_picture && !media_ && !(sweep_mode_ && animating_)) ||
+                     snapshot.background == 0) {
             pass.colorAttachments[0].clearColor = MTLClearColorMake(
                 theme_rgb[0], theme_rgb[1], theme_rgb[2], 1.0);
           } else {
@@ -1815,15 +1864,42 @@ void present_lab_mac::render_thread_main() noexcept {
           ImGui::End();
         }
 
-        draw_photo_overlays(snapshot);
-        draw_crop_overlay(snapshot);
+        // Hold `\` and hold Z need a still under them; neither draws on a clip.
+        const bool still_up = current_image_ && !video_frame_ && !snapshot.blackout;
+        const bool show_previous = still_up && snapshot.hold_previous && previous_image_;
+        const float view_x = canvas_origin_x(snapshot);
+        const float view_y = static_cast<float>(snapshot.chrome_height_px);
+        const float view_w = usable_window_w(snapshot);
+        const float view_h = usable_window_h(snapshot);
+        if (!snapshot.blackout) {
+          draw_photo_overlays(snapshot);
+          draw_crop_overlay(snapshot);
+          const float scale = snapshot.dpi_scale > 0.0f ? snapshot.dpi_scale : 1.0f;
+          const ImU32 text = IM_COL32(230, 230, 235, 255);
+          ImDrawList* fg = ImGui::GetForegroundDrawList();
+          if (still_up && snapshot.loupe && !show_previous) {
+            const loupe_box box = loupe_rect(snapshot, view_x, view_y, view_w, view_h);
+            fg->AddRect(ImVec2(box.x, box.y), ImVec2(box.x + box.size, box.y + box.size), text, 0.0f,
+                        0, 1.5f * scale);
+          }
+          if (show_previous) {
+            const float pad = 12.0f * scale;
+            const float fs = 16.0f * scale;
+            fg->AddText(ImGui::GetFont(), fs, ImVec2(view_x + pad + scale, view_y + pad + scale),
+                        IM_COL32(0, 0, 0, 200), "\\  previous");
+            fg->AddText(ImGui::GetFont(), fs, ImVec2(view_x + pad, view_y + pad), text,
+                        "\\  previous");
+          }
+        }
 
         ImGui::Render();
 
         id<MTLCommandQueue> queue = (__bridge id<MTLCommandQueue>)device_.native_queue();
         id<MTLCommandBuffer> cb = [queue commandBuffer];
         id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:pass];
-        if (video_frame_) {
+        if (snapshot.blackout) {
+          // Nothing but the black clear.
+        } else if (video_frame_) {
           gfx::video_blit_params_mac vp;
           vp.pan_x = camera_.pan_x();
           vp.pan_y = camera_.pan_y();
@@ -1864,6 +1940,7 @@ void present_lab_mac::render_thread_main() noexcept {
           bp.background = snapshot.background;
           for (int i = 0; i < 3; ++i) bp.theme_background[i] = theme_rgb[i];
           bp.time_seconds = static_cast<float>(elapsed);
+          bp.clipping = snapshot.clipping;
           // PR 11: the colour kernel's uniforms, and the FP16 working texture
           // in place of the 8-bit one once it has landed for this still; until
           // then the same kernel runs on the 8-bit texture.
@@ -1874,19 +1951,73 @@ void present_lab_mac::render_thread_main() noexcept {
             bp.texture_w = static_cast<float>(working_->image.texture_width);
             bp.texture_h = static_cast<float>(working_->image.texture_height);
           }
-          if (fade_from_ && !anim_frame_) {
-            auto base = bp;
-            // The preview covers the full image's output rectangle and uses
-            // the same normalized edit map, even if its raster size differs.
-            base.texture_w = static_cast<float>(fade_from_->width);
-            base.texture_h = static_cast<float>(fade_from_->height);
-            blitter_.draw((__bridge void*)enc, fade_from_->texture, base);
-            bp.opacity = fade_.alpha(elapsed);
+          if (show_previous) {
+            // Hold `\`: the previous still through its own placement. A
+            // same-size burst keeps the camera so the pick is like for like; a
+            // different frame is shown whole rather than at the wrong crop.
+            const image::gpu_image_mac& prev = *previous_image_;
+            const edit::placement pp = place_image(prev);
+            const edit_view* pev = edit_for(prev.item_id);
+            gfx::blit_params_mac pb = bp;
+            pb.image_w = static_cast<float>(pp.cropped.w);
+            pb.image_h = static_cast<float>(pp.cropped.h);
+            pb.texture_w = static_cast<float>(prev.texture_width ? prev.texture_width : prev.width);
+            pb.texture_h = static_cast<float>(prev.texture_height ? prev.texture_height : prev.height);
+            for (int i = 0; i < 6; ++i) pb.uv_map[i] = pp.map.m[i];
+            pb.clip_to_source = pev && pev->keep_frame;
+            apply_adjust(pev, pb);
+            if (pb.image_w != bp.image_w || pb.image_h != bp.image_h) {
+              pb.zoom = canvas::camera::fit_zoom(pb.image_w, pb.image_h, view_w, view_h);
+              pb.pan_x = pb.image_w * 0.5f;
+              pb.pan_y = pb.image_h * 0.5f;
+            }
+            blitter_.draw((__bridge void*)enc, prev.texture, pb);
+          } else {
+            if (fade_from_ && !anim_frame_) {
+              auto base = bp;
+              // The preview covers the full image's output rectangle and uses
+              // the same normalized edit map, even if its raster size differs.
+              base.texture_w = static_cast<float>(fade_from_->width);
+              base.texture_h = static_cast<float>(fade_from_->height);
+              blitter_.draw((__bridge void*)enc, fade_from_->texture, base);
+              bp.opacity = fade_.alpha(elapsed);
+            }
+            void* const shown =
+                use_working ? working_->image.texture
+                            : (anim_frame_ ? anim_frame_->texture : current_image_->texture);
+            blitter_.draw((__bridge void*)enc, shown, bp);
+            if (snapshot.loupe) {
+              // Hold Z: the same texture again, through a second viewport -- a
+              // camera change, not a decode (shell/loupe.h, shared with Windows).
+              const loupe_box box = loupe_rect(snapshot, view_x, view_y, view_w, view_h);
+              const loupe_camera lc =
+                  loupe_view(box, view_x, view_y, view_w, view_h, bp.pan_x, bp.pan_y, bp.zoom);
+              gfx::blit_params_mac lp = bp;
+              lp.pan_x = lc.pan_x;
+              lp.pan_y = lc.pan_y;
+              lp.zoom = lc.zoom;
+              lp.window_w = box.size;
+              lp.window_h = box.size;
+              lp.origin_x = box.x;
+              lp.origin_y = box.y;
+              lp.opacity = 1.0f;
+              const auto target_w = static_cast<float>(drawable.texture.width);
+              const auto target_h = static_cast<float>(drawable.texture.height);
+              const float x0 = std::clamp(box.x, 0.0f, target_w);
+              const float y0 = std::clamp(box.y, 0.0f, target_h);
+              const float x1 = std::clamp(box.x + box.size, x0, target_w);
+              const float y1 = std::clamp(box.y + box.size, y0, target_h);
+              if (x1 - x0 >= 1.0f && y1 - y0 >= 1.0f) {
+                [enc setScissorRect:MTLScissorRect{static_cast<NSUInteger>(x0),
+                                                   static_cast<NSUInteger>(y0),
+                                                   static_cast<NSUInteger>(x1 - x0),
+                                                   static_cast<NSUInteger>(y1 - y0)}];
+                blitter_.draw((__bridge void*)enc, shown, lp);
+                [enc setScissorRect:MTLScissorRect{0, 0, drawable.texture.width,
+                                                   drawable.texture.height}];
+              }
+            }
           }
-          blitter_.draw((__bridge void*)enc,
-                        use_working ? working_->image.texture
-                                    : (anim_frame_ ? anim_frame_->texture : current_image_->texture),
-                        bp);
         }
         ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(), cb, enc);
         [enc endEncoding];
@@ -1947,6 +2078,7 @@ void present_lab_mac::render_thread_main() noexcept {
       imgui_ready_ = false;
     }
     current_image_.reset();
+    previous_image_.reset();
     fade_from_.reset();
     fade_.cancel();
     delete pending_image_.exchange(nullptr);
