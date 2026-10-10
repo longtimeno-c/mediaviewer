@@ -19,13 +19,16 @@ result<std::string> thumb_reader::lookup(const std::string& path, std::int64_t p
   const image::thumb_key key = pts_ms >= 0 ? image::moment_thumb_key(path, pts_ms, st.mtime_unix, st.size)
                                            : image::thumb_key{path, st.mtime_unix, st.size};
   std::lock_guard lock(m_);
-  if (!db_ && !tried_) {
-    tried_ = true;
+  // Opened once it exists: an agent started before the viewer ever ran picks
+  // the cache up when the viewer makes it, not at its next launch. Until then
+  // a lookup costs one stat.
+  if (!db_) {
     const std::string file = io::join_path(dir_, "thumbs.sqlite");
-    if (sqlite3_open_v2(file.c_str(), &db_, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nullptr) != SQLITE_OK) {
-      if (db_) sqlite3_close(db_);
+    if (io::file_exists(file) &&
+        sqlite3_open_v2(file.c_str(), &db_, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nullptr) != SQLITE_OK) {
+      sqlite3_close(db_);  // a handle even on failure; null-safe
       db_ = nullptr;
-    } else {
+    } else if (db_) {
       sqlite3_busy_timeout(db_, 2000);
     }
   }

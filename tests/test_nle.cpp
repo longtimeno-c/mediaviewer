@@ -207,6 +207,8 @@ TEST_CASE("the viewer's thumbnails are read by another process without a write",
   CHECK(fs::path(*r.lookup(utf8(media), 4000)).filename() == "moment.jpg");
   CHECK(r.lookup(utf8(media), 8000)->empty());   // its file went: a miss, the row stays
   CHECK(r.lookup(utf8(media), 12000)->empty());  // never made
+  // The reader that started before the cache existed picks it up now.
+  CHECK(fs::path(*none.lookup(utf8(media), -1)).filename() == "poster.jpg");
   const std::string after = [&] {
     std::ifstream in(cache / "thumbs.sqlite", std::ios::binary);
     return std::string(std::istreambuf_iterator<char>(in), {});
