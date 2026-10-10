@@ -66,7 +66,20 @@ fi
 echo "ffmpeg: $FF"
 
 encoders="$("$FF" -hide_banner -loglevel error -encoders 2>/dev/null)"
-has() { printf '%s' "$encoders" | grep -q "[[:space:]]$1[[:space:]]"; }
+listed() { printf '%s' "$encoders" | grep -q "[[:space:]]$1[[:space:]]"; }
+# Listed is not usable: distro ffmpeg builds (Ubuntu's apt one, which CI's
+# test-media job uses) compile NVENC in, so -encoders lists hevc_nvenc on a
+# runner with no GPU and every clip then fails with "Cannot load libcuda.so.1".
+# Hardware encoders are probed with a one-frame encode before they are chosen.
+has() {
+  listed "$1" || return 1
+  case "$1" in
+    *_nvenc)
+      "$FF" -hide_banner -loglevel error -f lavfi -i color=size=256x256:duration=0.04 \
+        -frames:v 1 -c:v "$1" -f null - >/dev/null 2>&1 ;;
+    *) return 0 ;;
+  esac
+}
 
 # NVENC when the box has it (seconds, not minutes, for 4K), software otherwise.
 # The clips only have to be DECODABLE and correctly TAGGED — nothing in the
