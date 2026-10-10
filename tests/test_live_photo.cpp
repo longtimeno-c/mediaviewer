@@ -250,6 +250,9 @@ TEST_CASE("`;` plays the motion of a Live Photo whose halves are real files",
   // container, though NOT for an iPhone's HEVC+PCM motion track. That last
   // step is the human check.
   MV_REQUIRE_CLIP(clip, "av_transport.mp4");
+  // Before the temp folder and the thumb-cache override, so a skip leaves neither.
+  mv::gfx::device device;
+  if (!device.create(nullptr)) SKIP("no D3D11 device on this machine (hosted CI has no GPU)");
   const auto data = test_data_dir();
   REQUIRE_FALSE(data.empty());
 
@@ -259,8 +262,6 @@ TEST_CASE("`;` plays the motion of a Live Photo whose halves are real files",
   mv::io::set_thumb_cache_dir_override(to_utf8(dir + L"\\thumbs"));
   REQUIRE(::CreateDirectoryW((dir + L"\\thumbs").c_str(), nullptr));
 
-  mv::gfx::device device;
-  REQUIRE(device.create(nullptr));
   mv_session_t session = nullptr;
   REQUIRE(mv_session_create(nullptr, &session) == MV_OK);
   struct release { mv_session_t s; ~release() { (void)mv_session_release(s); } } cleanup{session};

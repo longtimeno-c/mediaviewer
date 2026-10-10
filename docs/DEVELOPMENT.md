@@ -1642,7 +1642,10 @@ hardware-decode, colour, seek, frame-step, texture-leak and video-ABI assertion
 above disappears. `ctest` reports those as **Skipped**, not passed, and
 `MV_REQUIRE_CORPUS=1` turns them into failures. CI's Build job sets it, over media
 the test-media job generates; without that, a build that proves nothing about video
-looks exactly like one that proves all of it.
+looks exactly like one that proves all of it. Hosted runners have no GPU (only the
+Basic Render Driver), so the cases that assert hardware decode — D3D11VA on the 4K
+HEVC/AV1 clips, the no-stall ring, and the ones that need an `mv::gfx::device` — SKIP
+there and are proved only on a machine with a GPU.
 
 PR 2's verify line is:
 

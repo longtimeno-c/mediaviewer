@@ -65,7 +65,8 @@ Suites are registered with CTest and run by `ctest` on both platforms; see
    Corpus tests skip when files are absent, and fail instead when `MV_REQUIRE_CORPUS=1`.
    CI's `test-media` job (Linux, apt ffmpeg) generates and fetches the corpus once, cached
    on the scripts and manifests; the Build legs restore it and set `MV_REQUIRE_CORPUS=1`,
-   and `test_corpus.cpp` fails any CI run that leaves the variable unset.
+   and `test_corpus.cpp` fails any CI run that leaves the variable unset. Hosted runners
+   have no GPU, so cases asserting hardware decode or needing a `gfx::device` skip there.
    Small synthetic, licence-clean files under `tests/data/` (AVIF, HEIF, seeds, broken) are
    committed and run everywhere.
 4. **Broken-file corpus** (`test_broken_corpus.cpp`, label `broken`). Every seed in
