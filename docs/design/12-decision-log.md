@@ -215,9 +215,12 @@ still zoom; with the filmstrip shown the wheel zooms as on any still. The Edit b
 **Open in <app>** (the default app, never MediaViewer) and a ▾ of the other apps, and `Enter` opens
 the default: there is nothing for the workspace to edit in a document.
 
-**Thumbnails are JPEG files on disk (2026-09-07).** Spec `jpg512.3` (was `.1`; bumped
-2026-09-24 when JPEG orientation was applied, and 2026-10-03 when clip posters began following
-the display matrix), keyed in SQLite by `(path, mtime, size, spec)`. The
+**Thumbnails are JPEG files on disk (2026-09-07).** Spec `jpg512.4` (was `.1`; bumped
+2026-09-24 when JPEG orientation was applied, 2026-10-03 when clip posters began following
+the display matrix, and 2026-10-10 when transparent images began to be alpha-weighted and
+composited onto a dark matte instead of showing the RGB under transparent pixels, issue #169;
+opaque thumbnails come out byte-identical, but the spec is one key, so every row regenerates once
+on view), keyed in SQLite by `(path, mtime, size, spec)`. The
 ABI returns a UTF-8 path; C# `BitmapImage` loads the file, so pixels never cross the ABI. On-disk
 BC7 is not used: a BC7 blob cannot be an `Image.Source`; it is the format to take if thumbs ever
 need to be GPU-resident. The Mac uses the same spec and schema (`image/thumb_mac.cpp`, 2026-09-17).
