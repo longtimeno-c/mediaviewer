@@ -191,8 +191,10 @@ Velopack keeps one full package for rollback. `build-release.ps1` fails above 25
   are in [commands](16-commands.md). Drop in opens a file or folder.
 - **Single instance** (`shell/single_instance_win.cpp`): a second start hands its paths over a
   per-user, per-session named pipe (`\\.\pipe\MediaViewer.Viewer.<session>.<SID>`, local
-  clients only, `FIRST_PIPE_INSTANCE`) to the running instance and exits. `--new-instance`
-  overrides it.
+  clients only, `FIRST_PIPE_INSTANCE`, a DACL that admits only this user) to the running
+  instance and exits. The name is computable by any local account, so the second start first
+  checks that the pipe's server process runs as the same user; if not, it sends nothing and
+  runs alone. `--new-instance` overrides it.
 - **Command line:** `mediaviewer <path>` opens a file or folder. The remaining switches are
   lab / harness switches (`--soak`, `--browse-soak`, `--no-chrome`, `--restore-*`, …).
 

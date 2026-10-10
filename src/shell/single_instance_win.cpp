@@ -18,33 +18,71 @@ constexpr DWORD kMaxMessageBytes = 256 * 1024;
 constexpr DWORD kClientWaitMs = 10000;
 constexpr DWORD kReadWaitMs = 2000;
 
-std::wstring pipe_name() {
-  std::wstring sid_text;
+// The token user of `process` as a TOKEN_USER buffer; empty when unreadable.
+std::vector<unsigned char> token_user(HANDLE process) {
+  std::vector<unsigned char> buf;
   HANDLE token = nullptr;
-  if (::OpenProcessToken(::GetCurrentProcess(), TOKEN_QUERY, &token)) {
-    DWORD bytes = 0;
-    (void)::GetTokenInformation(token, TokenUser, nullptr, 0, &bytes);
-    std::vector<unsigned char> buf(bytes);
-    if (bytes > 0 && ::GetTokenInformation(token, TokenUser, buf.data(), bytes, &bytes)) {
-      LPWSTR text = nullptr;
-      if (::ConvertSidToStringSidW(reinterpret_cast<TOKEN_USER*>(buf.data())->User.Sid, &text)) {
-        sid_text = text;
-        ::LocalFree(text);
-      }
-    }
-    ::CloseHandle(token);
-  }
-  DWORD session = 0;
-  (void)::ProcessIdToSessionId(::GetCurrentProcessId(), &session);
-  return L"\\\\.\\pipe\\MediaViewer.Viewer." + std::to_wstring(session) + L"." + sid_text;
+  if (!::OpenProcessToken(process, TOKEN_QUERY, &token)) return buf;
+  DWORD bytes = 0;
+  (void)::GetTokenInformation(token, TokenUser, nullptr, 0, &bytes);
+  buf.resize(bytes);
+  if (bytes == 0 || !::GetTokenInformation(token, TokenUser, buf.data(), bytes, &bytes)) buf.clear();
+  ::CloseHandle(token);
+  return buf;
 }
 
+PSID sid_of(std::vector<unsigned char>& token_user_buf) {
+  return reinterpret_cast<TOKEN_USER*>(token_user_buf.data())->User.Sid;
+}
+
+std::wstring user_sid_text() {
+  std::wstring sid_text;
+  std::vector<unsigned char> user = token_user(::GetCurrentProcess());
+  LPWSTR text = nullptr;
+  if (!user.empty() && ::ConvertSidToStringSidW(sid_of(user), &text)) {
+    sid_text = text;
+    ::LocalFree(text);
+  }
+  return sid_text;
+}
+
+std::wstring pipe_name() {
+  DWORD session = 0;
+  (void)::ProcessIdToSessionId(::GetCurrentProcessId(), &session);
+  return L"\\\\.\\pipe\\MediaViewer.Viewer." + std::to_wstring(session) + L"." + user_sid_text();
+}
+
+// The name is computable by any local account, so the pipe admits this user
+// only (protected DACL, no inherited entries). No SID: no pipe, run alone.
 HANDLE create_pipe(const std::wstring& name, bool first) {
-  return ::CreateNamedPipeW(name.c_str(),
-                            PIPE_ACCESS_INBOUND | FILE_FLAG_OVERLAPPED |
-                                (first ? FILE_FLAG_FIRST_PIPE_INSTANCE : 0),
-                            PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-                            1, 0, kMaxMessageBytes, 0, nullptr);
+  const std::wstring sid = user_sid_text();
+  if (sid.empty()) return INVALID_HANDLE_VALUE;
+  const std::wstring sddl = L"D:P(A;;GA;;;" + sid + L")";
+  PSECURITY_DESCRIPTOR sd = nullptr;
+  if (!::ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &sd, nullptr)) {
+    return INVALID_HANDLE_VALUE;
+  }
+  SECURITY_ATTRIBUTES sa{static_cast<DWORD>(sizeof(sa)), sd, FALSE};
+  const HANDLE pipe = ::CreateNamedPipeW(name.c_str(),
+                                         PIPE_ACCESS_INBOUND | FILE_FLAG_OVERLAPPED |
+                                             (first ? FILE_FLAG_FIRST_PIPE_INSTANCE : 0),
+                                         PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT |
+                                             PIPE_REJECT_REMOTE_CLIENTS,
+                                         1, 0, kMaxMessageBytes, 0, &sa);
+  ::LocalFree(sd);
+  return pipe;
+}
+
+// The pipe namespace is machine-wide: another account can create our name
+// before we do. Only a server running as this user gets the paths.
+bool server_is_this_user(HANDLE pipe, ULONG& server) {
+  if (!::GetNamedPipeServerProcessId(pipe, &server)) return false;
+  const HANDLE process = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, server);
+  if (!process) return false;
+  std::vector<unsigned char> theirs = token_user(process);
+  ::CloseHandle(process);
+  std::vector<unsigned char> ours = token_user(::GetCurrentProcess());
+  return !theirs.empty() && !ours.empty() && ::EqualSid(sid_of(theirs), sid_of(ours)) != FALSE;
 }
 
 std::wstring absolute(const std::wstring& path) {
@@ -85,6 +123,11 @@ bool forward_to_running_instance(const std::vector<std::wstring>& paths) noexcep
       (void)::WaitNamedPipeW(name.c_str(), static_cast<DWORD>(give_up - now));
     }
     if (pipe == INVALID_HANDLE_VALUE) return false;  // nobody is listening: be the first
+    ULONG server = 0;
+    if (!server_is_this_user(pipe, server)) {
+      ::CloseHandle(pipe);  // not ours: send it nothing and run alone
+      return false;
+    }
     std::wstring message;
     for (const std::wstring& p : paths) {
       if (p.empty()) continue;
@@ -93,8 +136,7 @@ bool forward_to_running_instance(const std::vector<std::wstring>& paths) noexcep
     }
     // The running instance may bring its window forward: this process has
     // the foreground right now (the user just opened something), it does not.
-    ULONG server = 0;
-    if (::GetNamedPipeServerProcessId(pipe, &server)) (void)::AllowSetForegroundWindow(server);
+    (void)::AllowSetForegroundWindow(server);
     const DWORD bytes = static_cast<DWORD>(message.size() * sizeof(wchar_t));
     DWORD written = 0;
     // An empty message is still a message: "come to the front".
