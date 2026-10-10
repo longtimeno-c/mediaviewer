@@ -331,6 +331,9 @@ enum class command_id : std::uint16_t {
   // Ctrl/Cmd+N: another window, its own process (docs/design/16 "Window").
   // Appended after the add-on slots so every earlier wire id stays put.
   new_window,
+  // Preview's Edit > Copy Text in Image (docs/design/16 View): on-device OCR of the
+  // still on screen to the clipboard. Keyless, as in Preview. Appended.
+  copy_text_in_image,
   count
 };
 inline constexpr int kAddonCommandSlots = 8;

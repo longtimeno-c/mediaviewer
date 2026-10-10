@@ -502,6 +502,9 @@ add_library(mv_shell STATIC
   # PR 10: per-item edit stacks, crop mode, the lossless-write / export jobs.
   src/shell/edit_session.cpp
   src/shell/edit_session.h
+  # Copy Text in Image (Vision is the host's, shell/text_recognition_mac.mm).
+  src/shell/text_in_image.cpp
+  src/shell/text_in_image.h
   src/shell/edit_workspace.cpp
   src/shell/edit_workspace.h
   src/shell/video_timeline.cpp
@@ -609,6 +612,9 @@ set(MV_MAC_HOST_SOURCES
   # docs/design/23: Final Cut Pro on / off (the agent and extension in the bundle).
   src/shell/fcp_mac.mm
   src/shell/present_busy.h
+  # Copy Text in Image: the Vision half of shell/text_in_image.h's port.
+  src/shell/text_recognition_mac.mm
+  src/shell/text_recognition_mac.h
 )
 set_source_files_properties(
   src/shell/main_mac.mm
@@ -617,6 +623,7 @@ set_source_files_properties(
   src/shell/addons_mac.mm
   src/shell/fcp_mac.mm
   src/shell/install_from_dmg_mac.mm
+  src/shell/text_recognition_mac.mm
   PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 
 function(mv_mac_host target)
@@ -652,6 +659,7 @@ function(mv_mac_host target)
     "-framework IOKit"
     "-framework Security"
     "-framework ServiceManagement"  # docs/design/23: the FCP search agent (SMAppService)
+    "-framework Vision"  # Copy Text in Image (shell/text_recognition_mac.mm), on device
     bsm)
   target_include_directories(${target} PRIVATE src "${MV_SWIFT_CHROME_BUILD_DIR}"
     "${MV_SWIFT_CHROME_DIR}/Sources/MVChromeBridge/include")
@@ -834,6 +842,7 @@ if(MV_BUILD_TESTS)
     tests/test_edit_workspace.cpp
     tests/test_video_timeline.cpp
     tests/test_export_carried.cpp
+    tests/test_text_in_image.cpp
     # PR 11: colour adjusts, the FP16 working space, bake, histogram, pane state.
     tests/test_adjust.cpp
     # PR 11 (macOS crash reporting): the scrub, now with POSIX paths.

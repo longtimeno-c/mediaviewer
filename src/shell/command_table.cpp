@@ -285,6 +285,9 @@ constexpr binding kBindings[] = {
     // PageDown inside one stop; plain PageUp / PageDown still skip ten stops.
     row(key::page_down, mod_ctrl, kBrowse | kIsland, repeat, next_page),
     row(key::page_up, mod_ctrl, kBrowse | kIsland, repeat, prev_page),
+    // Copy Text in Image (docs/design/16 View). Appended. No key, as in Preview:
+    // the menu bar (Mac), the command bar's Tools flyout, or one from Settings.
+    row(key::none, mod_none, kBrowse, edge, copy_text_in_image),
 };
 
 // The router's index stores row + 1 in a byte.
@@ -462,6 +465,7 @@ constexpr command_info kCommands[] = {
     {addon_cmd_6, "Add-on command 7", true},
     {addon_cmd_7, "Add-on command 8", true},
     {new_window, "New window"},
+    {copy_text_in_image, "Copy text in image"},
 };
 
 const char* named_key(key k) noexcept {

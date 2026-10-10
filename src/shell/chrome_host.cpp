@@ -286,6 +286,8 @@ expected chrome_host::load() noexcept {
   show_import_ = get_entry(L"ShowImport");
   // PR 15, optional the same way: without it Ctrl+Shift+S is not handled.
   share_files_ = get_entry(L"ShareFiles");
+  // Optional the same way: without it Copy Text in Image says OCR is not available.
+  recognize_text_ = get_entry(L"RecognizeText");
   // Optional (Milestone H): the add-on command hand-off by family.
   show_addon_ = get_entry(L"ShowAddon");
   // Optional (docs/design/25): without it a dropped add-on package is not offered.

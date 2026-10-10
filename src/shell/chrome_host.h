@@ -223,6 +223,24 @@ struct chrome_table_args {
 
 static_assert(sizeof(chrome_table_args) == 16, "keep in sync with ChromeTableArgs");
 
+// Copy Text in Image: one still for Windows.Media.Ocr (IslandHost.TextRecognition.cs).
+// The pixels are BGRA8, opaque, row stride width * 4; the island writes the
+// lines it read, UTF-8, into `out_utf8` and says how many bytes in
+// `out_length`. Both buffers are valid for the call only. Back: 0 read (the
+// text may be empty), 1 no OCR language for the user's profile, 2 no OCR on
+// this system, anything else failed.
+struct chrome_text_recognition_args {
+  std::uint64_t pixels;
+  std::int32_t width;
+  std::int32_t height;
+  std::uint64_t out_utf8;
+  std::int32_t out_capacity;
+  std::int32_t out_length;
+};
+
+static_assert(sizeof(chrome_text_recognition_args) == 32,
+              "keep in sync with IslandHost.RecognizeText");
+
 // Commands and island notifications share one id space (docs/design/16). These pin
 // the values the island already sends; commands.h reserves the notifications.
 static_assert(chrome_cmd_open == static_cast<int>(command_id::open));
@@ -821,6 +839,14 @@ class chrome_host {
   // PR 15, Ctrl+Shift+S: Windows Share over `window` with the files in
   // `paths_json` (a UTF-8 JSON array). False when the chrome cannot share.
   bool share_files(HWND window, const std::string& paths_json) noexcept;
+  // Copy Text in Image: the island's Windows.Media.Ocr entry
+  // (chrome_text_recognition_args). It runs the recognition synchronously on
+  // the thread that calls it, so only a worker calls it: the UI thread reads
+  // the pointer here and hands it to the job. Null without a chrome or on a
+  // chrome without the entry.
+  [[nodiscard]] chrome_entry_fn text_recognition_entry() const noexcept {
+    return attached_ ? recognize_text_ : nullptr;
+  }
   // Milestone H: an add-on command by family (commands.h addon_family; 2 is
   // the AI pack, kinds 0 search / 1 similar / 2 next match / 3 previous
   // match). `json` is what is on screen. True when the add-on ran it; false
@@ -919,6 +945,7 @@ class chrome_host {
   chrome_entry_fn set_command_table_ = nullptr;
   chrome_entry_fn show_import_ = nullptr;
   chrome_entry_fn share_files_ = nullptr;
+  chrome_entry_fn recognize_text_ = nullptr;  // Copy Text in Image, optional
   chrome_entry_fn show_addon_ = nullptr;  // Milestone H
   chrome_entry_fn offer_addon_ = nullptr;  // docs/design/25, optional
   chrome_entry_fn run_addon_command_ = nullptr;  // docs/design/25, optional

@@ -202,6 +202,7 @@ Marks are a separate set from the selection, so arrow-key browsing never makes a
 | `Ctrl+Shift+C` | Viewing | Copy path(s) as text |
 | `Ctrl+Alt+C` | browse | Copy the current still with edits baked, as PNG (worker thread) |
 | `Ctrl+Shift+S` | Viewing | Share (Windows Share / macOS share sheet) |
+| (none) | browse | Copy Text in Image: on-device OCR of the current still to the clipboard (Edit menu on the Mac, Tools flyout on both bars; worker thread) |
 
 - **Move** on one volume is a rename (`MoveFileEx`); across volumes it is a **verified** copy
   (hashed while read, read back uncached, compared) and only then the delete. I/O thread.
@@ -439,6 +440,7 @@ No hot-path ABI for commands. Commands invoke existing session calls (`mv_folder
 - `Ctrl+Tab` / tabs, and several windows inside one process.
 - `Ctrl+PageUp` / `Ctrl+PageDown` for ICO sizes and HEIC sequences (pages of TIFF, PDF and DOCX are built).
 - `U` clear label and `X` reject mark.
+- Selecting text on the canvas (a Live Text overlay); Copy Text in Image copies all of it.
 - A filter (all / photos / videos / RAW) on the listing.
 - Touch gestures (swipe, pinch).
 - Import / export of key maps and named alternate layouts.
