@@ -217,18 +217,22 @@ public static partial class IslandHost
         return t;
     }
 
-    private static Button CloseButton(int command)
+    // The Mac's xmark with its .help: an icon, a tooltip and an accessible
+    // name rather than a bare "×" a screen reader cannot name.
+    private static Button CloseButton(int command, string title)
     {
         var b = new Button
         {
-            Content = new TextBlock { Text = "×", FontSize = 18, Foreground = Brush(Body) },
+            Content = new FontIcon { Glyph = Glyph.Close, FontFamily = IconFont, FontSize = TypeCaption, Foreground = Brush(Body) },
             Background = Brush(Colors.Transparent),
             BorderThickness = new Thickness(0),
-            Padding = new Thickness(8, 0, 8, 2),
+            Padding = new Thickness(8, 6, 8, 6),
             IsTabStop = false,
             AllowFocusOnInteraction = false,
         };
-        b.Click += (_, _) => Send(command);
+        FlattenButton(b);
+        SetIconTip(b, $"Close {title}");
+        b.Click += (_, _) => Guarded(() => Send(command));
         return b;
     }
 
@@ -247,7 +251,7 @@ public static partial class IslandHost
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         header.Children.Add(Text(title, Title, UiFontSize, bold: true));
-        Button close = CloseButton(closeCommand);
+        Button close = CloseButton(closeCommand, title);
         Grid.SetColumn(close, 1);
         header.Children.Add(close);
         root.Children.Add(header);
@@ -418,7 +422,7 @@ public static partial class IslandHost
                 Text = label, FontFamily = UiFont, FontSize = UiFontSize,
                 Foreground = Brush(on ? Title : Body),
             },
-            Background = on ? Brush(Hairline) : Brush(Colors.Transparent),
+            Background = on ? Brush(ChromeColour.PressedWash) : Brush(Colors.Transparent),
             BorderThickness = new Thickness(0),
             Padding = new Thickness(10, 3, 10, 3),
             AllowFocusOnInteraction = false,
@@ -1066,7 +1070,7 @@ public static partial class IslandHost
 
     private static Button FlatButton(UIElement content, Thickness padding, bool tabStop = true)
     {
-        return new Button
+        var b = new Button
         {
             Content = content,
             Background = Brush(Colors.Transparent),
@@ -1076,6 +1080,10 @@ public static partial class IslandHost
             AllowFocusOnInteraction = false,
             HorizontalContentAlignment = HorizontalAlignment.Left,
         };
+        // No grey disabled fill (a disabled clip tool read as selected) and
+        // the chrome's washes, not Windows' stock ones.
+        FlattenButton(b);
+        return b;
     }
 
     private static void RebuildTreeRoot()

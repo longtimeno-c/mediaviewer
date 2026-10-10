@@ -181,7 +181,11 @@ public static partial class IslandHost
 
     private static UIElement BuildTransport()
     {
-        _play = TextButton("Pause", ToggleVideo);
+        // The Mac's strip (TransportView.swift): back 10 s, play / pause and
+        // forward 10 s as icons, each with its key in the tooltip.
+        _play = IconButton(Glyph.Pause, "Pause  Space", ToggleVideo);
+        Button back = IconButton(Glyph.Rewind, "Back 10 seconds", () => SkipVideo(-10_000_000_000));
+        Button forward = IconButton(Glyph.FastForward, "Forward 10 seconds", () => SkipVideo(10_000_000_000));
         _seek = new Slider
         {
             Minimum = 0,
@@ -208,17 +212,19 @@ public static partial class IslandHost
         _videoTime = new TextBlock
         {
             FontFamily = UiFont,
-            FontSize = 12,
+            FontSize = TypeCaption,
             Foreground = Brush(Body),
             VerticalAlignment = VerticalAlignment.Center,
             MinWidth = 92,
         };
 
-        var more = TextButton("More", () => { });
+        Button more = IconButton(Glyph.More, "More: frame step, volume, audio track, loop", () => { });
         var panel = new StackPanel { Spacing = 10, Padding = new Thickness(12), MinWidth = 260 };
         var steps = new StackPanel { Orientation = Orientation.Horizontal };
         steps.Children.Add(TextButton("Previous frame", () => _folderSession?.VideoStep(-1)));
         steps.Children.Add(TextButton("Next frame", () => _folderSession?.VideoStep(1)));
+        ToolTipService.SetToolTip(steps.Children[0], ",");
+        ToolTipService.SetToolTip(steps.Children[1], ".");
         panel.Children.Add(steps);
         var volume = new Slider { Header = "Volume", Minimum = 0, Maximum = 1, Value = 1, StepFrequency = .01 };
         volume.ValueChanged += (_, e) => _folderSession?.VideoVolume((float)e.NewValue);
@@ -261,7 +267,9 @@ public static partial class IslandHost
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
         };
+        row.Children.Add(back);
         row.Children.Add(_play);
+        row.Children.Add(forward);
         // PR 13: trim's markers, keyframe grid and kept range over the scrubber,
         // and its label and save buttons after the clock (IslandHost.Clip.cs).
         row.Children.Add(WrapSeekForTrim(_seek));
@@ -314,6 +322,14 @@ public static partial class IslandHost
         _draggingSeek = false;
         SetTransportHeld(false);
         _folderSession?.VideoSeek((long)(_seek.Value * 1e9), true);
+    }
+
+    private static void SkipVideo(long deltaNs)
+    {
+        if (_folderSession is null) return;
+        long duration = Math.Max(0, _folderSession.VideoInfo.DurationNs);
+        long target = Math.Clamp(_folderSession.VideoPosition + deltaNs, 0, duration);
+        _folderSession.VideoSeek(target, true);
     }
 
     private static void ToggleVideo()
@@ -397,8 +413,9 @@ public static partial class IslandHost
             _updatingVideo = true;
             _seek.Maximum = Math.Max(.001, info.DurationNs / 1e9);
             if (!_draggingSeek) _seek.Value = Math.Clamp(position / 1e9, 0, _seek.Maximum);
-            if (_play.Content is TextBlock label) label.Text = state == 1 ? "Pause" : "Play";
-            _videoTime.Text = $"{TimeSpan.FromTicks(position / 100):mm\\:ss} / {TimeSpan.FromTicks(Math.Max(0, info.DurationNs) / 100):mm\\:ss}";
+            SetIcon(_play, state == 1 ? Glyph.Pause : Glyph.Play, state == 1 ? "Pause  Space" : "Play  Space");
+            // m:ss, h:mm:ss from an hour: "mm\:ss" dropped the hours of a long clip.
+            _videoTime.Text = $"{Clock(position)} / {Clock(info.DurationNs)}";
             if (_audioTracks.Items.Count != info.AudioTracks) {
                 _audioTracks.Items.Clear();
                 for (uint i = 0; i < info.AudioTracks; ++i) _audioTracks.Items.Add($"Track {i + 1}");

@@ -119,8 +119,23 @@ public static partial class IslandHost
     private static void StartDrain()
     {
         _completionWait?.Unregister(null);
+        _completionWait = null;
         if (_folderSession is null) return;
         StartAddons();  // Milestone G: needs the session (IslandHost.Addons.cs)
+        ArmCompletionWait();
+    }
+
+    // The core's completion event is manual-reset: it stays signalled until a
+    // drain empties the queue. A repeating wait on it re-fired back to back on
+    // a pool thread, queueing a DrainFolder each time, for as long as the UI
+    // thread was busy. One shot per drain instead: the drain re-arms it, and a
+    // completion that lands after the drain leaves the event set, so the new
+    // wait fires at once and nothing is lost.
+    private static void ArmCompletionWait()
+    {
+        _completionWait?.Unregister(null);
+        _completionWait = null;
+        if (_folderSession is null) return;
         _completionWait = ThreadPool.RegisterWaitForSingleObject(
             _folderSession.CompletionSignal,
             (_, _) =>
@@ -129,10 +144,22 @@ public static partial class IslandHost
             },
             null,
             -1,
-            false);
+            true);
     }
 
     private static void DrainFolder()
+    {
+        try
+        {
+            DrainFolderOnce();
+        }
+        finally
+        {
+            ArmCompletionWait();
+        }
+    }
+
+    private static void DrainFolderOnce()
     {
         if (_folderSession is null) return;
 
@@ -426,8 +453,9 @@ public static partial class IslandHost
             {
                 Width = 96,
                 Padding = new Thickness(4),
+                CornerRadius = new CornerRadius(RadiusButton),
                 BorderThickness = new Thickness(vm.Selected ? 2 : 0),
-                BorderBrush = Brush(Title),
+                BorderBrush = Brush(ChromeColour.Accent),  // the Mac's accent outline
                 Child = col,
             };
             vm.PropertyChanged += (_, e) =>
