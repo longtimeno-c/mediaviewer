@@ -49,8 +49,10 @@ only the narrowest ZIP there is, because it comes from a stranger:
 - no ZIP64, encryption, data descriptors, extra fields, comments, or folder entries;
 - entries laid end to end from byte 0 to the central directory, which ends where the end record
   begins, which is the last 22 bytes. No gap to hide anything in;
-- every name a safe relative path (`/`-separated, no `..`, no drive, no control character), no
-  two names equal when case is folded;
+- every name a safe relative path (`/`-separated, no `..`, no drive, no control character, none
+  of `<>"|?*`, no part ending in a dot or space, no part a Windows device name such as `con`,
+  `nul.json` or `com1`, so nothing written on install lands on a device), no two names equal when
+  case is folded;
 - **64 MB and 2,048 entries at most.** A package is themes, settings and scripts, not models.
 
 It holds `manifest.json`, `manifest.json.sig` (64-byte raw Ed25519, detached, over the exact
