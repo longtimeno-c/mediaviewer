@@ -45,6 +45,8 @@ enum class key : std::uint16_t {
 };
 
 inline constexpr int kKeyCount = static_cast<int>(key::count);
+// Settings key capture (IslandHost.Settings.cs) encodes these numbers by hand.
+static_assert(static_cast<int>(key::f12) == 0x11A && static_cast<int>(key::numpad0) == 0x11B);
 
 [[nodiscard]] constexpr key char_key(char c) noexcept {
   if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
