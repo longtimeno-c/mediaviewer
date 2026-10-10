@@ -128,10 +128,10 @@ void run_audio_decode_thread(video_pipeline& pipe) noexcept {
           // The clock's ring stays full for the whole of a pause: park until the
           // pump takes a block, a seek moves on, or stop.
           for (;;) {
-            const std::uint32_t seen = pipe.wake.epoch();
+            const std::uint32_t seen_space = pipe.wake.epoch();
             if (pipe.stopping.load() || generation != pipe.generation.load()) break;
             if (pipe.clock.submit(block)) break;
-            pipe.wake.wait(seen);
+            pipe.wake.wait(seen_space);
           }
         }
         av_frame_unref(filtered.get());
