@@ -2226,7 +2226,7 @@ bool engine::fetch_cloud_one(std::vector<asset_row>& candidates, std::size_t& ne
 }
 
 void engine::fetch_loop() {
-  platform::enter_background();
+  if (options_.background_threads) platform::enter_background();
   const std::string dir = join(join(data_dir_, "cache"), "icloud");
   {
     std::error_code ec;
@@ -2529,7 +2529,7 @@ bool engine::claim(std::vector<work_item>& out, track& t) {
 }
 
 void engine::worker_loop(unsigned) {
-  platform::enter_background();
+  if (options_.background_threads) platform::enter_background();
   while (!stopping_) {
     if (!wait_turn()) break;
     std::vector<work_item> items;
@@ -4040,8 +4040,13 @@ void engine::group(search_state& st, const std::vector<vector_store::hit>& hits,
 }
 
 void engine::finish(search_state& st) {
-  std::stable_sort(st.rows.begin(), st.rows.end(),
-                   [](const result_row& a, const result_row& b) { return a.rank > b.rank; });
+  // An exact tie (a photo and a clip's frame of the same look) goes by asset,
+  // not by the order the vectors were loaded: the app's matrix grows in
+  // commit order, a reader's loads from the database, and the two must rank
+  // alike (docs/design/23).
+  std::sort(st.rows.begin(), st.rows.end(), [](const result_row& a, const result_row& b) {
+    return a.rank != b.rank ? a.rank > b.rank : a.asset < b.asset;
+  });
   st.row_of.clear();
   for (auto& [asset, list] : st.moments) std::sort(list.begin(), list.end());
 }

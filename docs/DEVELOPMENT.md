@@ -968,6 +968,12 @@ also writes `machine.json` (OS, CPU, commit). `tools/perf/test_perf_tools.py` ch
 suite itself (every chart reproduces byte-for-byte from the committed reports) and runs
 under `ctest -R perf_tools`.
 
+Timing asserts are not in the unit suite (it runs under `ctest -j` and on shared runners):
+they are hidden `[.perf-bench]` tests beside the bench, run on a quiet machine in an optimised
+build. `mv_tests "[.perf-bench]"` holds the colour-stage starvation bound, pairing a 4000-file
+dump and, on Windows, the WARP tile frame and create budgets; `mv_ai_tests "[.perf-bench]"`
+holds the 100 k-row search scan.
+
 `mv_tests "[.perf-bench]"` is the quick loop for decode work: `MV_BENCH_JSON=path` writes
 its medians, `MV_BENCH_DIR=folder` adds your own files to the decode rows. Its `preview` row is
 the canvas's first pixel (`decode_first_pixel`). libheif's example is one small image, so for

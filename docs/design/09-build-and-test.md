@@ -102,6 +102,9 @@ Suites are registered with CTest and run by `ctest` on both platforms; see
    reports to `docs/perf/` and redraws the README charts from them.
    `tools/perf/test_perf_tools.py` (`ctest -R perf_tools`) checks that every chart reproduces
    byte-for-byte from the committed reports.
+   Wall-clock bounds live only in hidden `[.perf-bench]` tests (issue #154): the unit suite
+   runs on shared runners and under `ctest -j`, so it asserts counters and states and waits
+   on conditions, never on a sleep or a time budget.
 10. **Other harnesses:** `copybench` (copy-engine throughput), `clipjob`, `encprobe`,
     `playprobe`, `ai-bench`, the Edit workspace self-test, and the crash-report canary
     ([13](13-updates-and-telemetry.md)).

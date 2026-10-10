@@ -114,15 +114,29 @@ TEST_CASE("a clip with no audio track plays at correct speed", "[clock]") {
   const clock_stats before = clock.stats();
   CHECK_FALSE(before.audio_master);
 
+  // Real time, measured rather than assumed: bracket the two clock reads
+  // with the steady clock (the host clock's own source) instead of trusting
+  // a sleep to last as long as asked. A loaded machine can stretch the sleep
+  // as far as it likes (issue #154); the clock must still match the wall.
+  using steady = std::chrono::steady_clock;
+  const auto outer_start = steady::now();
   const time_ns first = clock.now_ns();
+  const auto inner_start = steady::now();
   std::this_thread::sleep_for(std::chrono::milliseconds(250));
+  const auto inner_end = steady::now();
   const time_ns second = clock.now_ns();
+  const auto outer_end = steady::now();
 
-  const double elapsed_s = static_cast<double>(second - first) / ns_per_second;
-  INFO("host clock advanced " << elapsed_s << " s over a 250 ms sleep");
-  // Generous bounds: this asserts "real time", not "a precise timer".
-  CHECK(elapsed_s > 0.15);
-  CHECK(elapsed_s < 0.60);
+  const auto ns = [](steady::duration d) {
+    return static_cast<time_ns>(std::chrono::duration_cast<std::chrono::nanoseconds>(d).count());
+  };
+  const time_ns elapsed = second - first;
+  INFO("host clock advanced " << elapsed << " ns; the wall between the reads: "
+                              << ns(inner_end - inner_start) << " to " << ns(outer_end - outer_start) << " ns");
+  // At rate 1 the clock advances exactly as the wall does; 1 ms of slack
+  // covers the clock's integer rounding, nothing else.
+  CHECK(elapsed >= ns(inner_end - inner_start) - 1'000'000);
+  CHECK(elapsed <= ns(outer_end - outer_start) + 1'000'000);
 }
 
 TEST_CASE("an endpoint that will not open still plays", "[clock]") {
