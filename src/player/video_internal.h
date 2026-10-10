@@ -299,6 +299,16 @@ class frame_ring {
                                      ID3D11Texture2D* dst) noexcept;
 #endif
 
+// [render-thread] Raises the OS timer to 1 ms while a clip plays (true) and
+// gives it back (false); calls pair. Windows' default timer is ~15.6 ms, so
+// every short sleep in the pipeline -- reserve_slot's wait for a ring slot,
+// the demuxer's full-queue retry, and FFmpeg's own Sleep(2) retry when
+// D3D11VA reports E_PENDING -- otherwise lasts a whole 15.6 ms tick, which at
+// 4K is enough to starve a 4-slot ring. Media players raise it the same way,
+// only while playing, so a paused clip or a still costs nothing (rule: idle
+// means idle). The Mac's sleeps are already precise: a no-op there.
+void hold_playback_timer(bool raised) noexcept;
+
 // Software-decode fallback. Creates a NEW texture from CPU planes with
 // D3D11_SUBRESOURCE_DATA and no device context at all — which is docs/design/02's
 // blessed worker-thread pattern, and deliberately does not extend the

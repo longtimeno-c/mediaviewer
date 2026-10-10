@@ -1035,6 +1035,19 @@ the app (a local build cannot load its own unsigned Import); Windows beyond comp
 
 ---
 
+## Video at 4K on Windows
+
+**One decode thread on D3D11VA, and a 1 ms timer while a clip plays (2026-10-06).** A 4K 30 fps
+HEVC clip showed ~24 fps on Windows (screen comparison, worst gap 367 ms) while the same clip
+plays at 29.7 decoded frames/s on the Mac. `thread_count = 0` had been set on the claim that
+it "is ignored on the hardware path"; FFmpeg runs frame threads around a D3D11VA hwaccel too, so
+a 16-thread CPU got ~15 frames of start-up latency and contended for the device lock. The
+pipeline's short waits (`reserve_slot`, the demuxer's full queue, FFmpeg's `Sleep(2)` on
+`E_PENDING`) each lasted a 15.6 ms Windows tick. Now: one thread on D3D11VA (VideoToolbox keeps
+auto), and `timeBeginPeriod(1)` held only while a clip is playing, so a still or a paused clip
+keeps the default tick. `--av-soak` reports `decoded`, `stale` and `decoder` so decode rate is
+told apart from selector drops. Windows before/after numbers are owed from the 4070 desktop.
+
 ## Not built
 
 - Voice query add-on (PRs 27–28): no voice add-on or `search_query` host entry exists.

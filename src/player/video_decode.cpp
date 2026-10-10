@@ -302,8 +302,18 @@ expected open_video_codec(video_pipeline& pipe, AVStream* stream) {
   }
 
   // Threaded software decode still matters: it is the fallback path's only
-  // chance of keeping up, and it is ignored on the hardware path.
+  // chance of keeping up. It is NOT ignored on the hardware path: FFmpeg runs
+  // frame threads around a D3D11VA hwaccel too, serialising the hwaccel calls,
+  // so on a 16-thread CPU it adds ~15 frames of latency before the first frame
+  // (dropped against a clock that is already running), threads contending with
+  // the render thread for the device lock, and back-to-back submits that meet
+  // E_PENDING. The GPU does the decoding; one thread parses the bitstream.
+  // VideoToolbox keeps auto: its hwaccel decodes synchronously per frame, and
+  // the Mac is measured at full rate at 4K60 with it.
   pipe.codec->thread_count = 0;
+  if constexpr (kHwDeviceType == AV_HWDEVICE_TYPE_D3D11VA) {
+    if (pipe.codec->hw_device_ctx) pipe.codec->thread_count = 1;
+  }
 
   if (avcodec_open2(pipe.codec.get(), codec, nullptr) < 0) {
     return err(status::unsupported_format);

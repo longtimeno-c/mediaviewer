@@ -11,6 +11,18 @@
 #include <memory>
 #include <thread>
 namespace mv::shell {
+namespace {
+// Named, not numbered: a software fallback has to read as one in the CSV.
+const char* decoder_name(player::decoder_kind kind) noexcept {
+  switch (kind) {
+    case player::decoder_kind::d3d11va: return "d3d11va";
+    case player::decoder_kind::software: return "software";
+    case player::decoder_kind::videotoolbox: return "videotoolbox";
+    case player::decoder_kind::none: break;
+  }
+  return "none";
+}
+}  // namespace
 int run_av_soak(const av_soak_options& options) {
   if (!options.clip_utf8 || !options.csv_out_utf8 || options.seconds == 0) return 2;
   gfx::device device;
@@ -23,7 +35,7 @@ int run_av_soak(const av_soak_options& options) {
   // This harness selects/releases textures; it never presents to a display.
   // Keep the original column names for existing plots, but expose timer and
   // decoder health so selection losses cannot masquerade as display drops.
-  csv << "elapsed_s,position_ns,audio_master,error_p50_ms,error_p99_ms,slope_ms_min,presented,dropped,cadence,starved,rebuilds,discontinuities,host_gaps,surface_waits,poll_gap_max_ms,decode_errors,ring_backpressure\n";
+  csv << "elapsed_s,position_ns,audio_master,error_p50_ms,error_p99_ms,slope_ms_min,presented,dropped,cadence,starved,rebuilds,discontinuities,host_gaps,surface_waits,poll_gap_max_ms,decode_errors,ring_backpressure,decoded,stale,decoder\n";
   source->seek(0, true); // repeatable, independent of the interactive resume file
   source->play();
   const auto start = std::chrono::steady_clock::now();
@@ -52,7 +64,8 @@ int run_av_soak(const av_soak_options& options) {
           << stats.counters.held_starved << ',' << stats.counters.device_rebuilds << ','
           << stats.position_discontinuities << ',' << stats.host_clock_gaps << ','
           << stats.surface_waits << ',' << poll_gap_max_ms << ',' << stats.decode_errors << ','
-          << stats.ring_backpressure << '\n';
+          << stats.ring_backpressure << ',' << stats.frames_decoded << ','
+          << stats.frames_dropped_stale << ',' << decoder_name(stats.decoder) << '\n';
       csv.flush();
     }
     if (finished) break;

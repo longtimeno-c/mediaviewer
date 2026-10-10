@@ -86,6 +86,10 @@ blit on macOS) into a ring the app owns and the `AVFrame` is released immediatel
 `AV_HWDEVICE_TYPE_D3D11VA` context is created from the app's own device, which is created with
 `D3D11_CREATE_DEVICE_VIDEO_SUPPORT` and `ID3D10Multithread::SetMultithreadProtected(TRUE)`. The
 device crosses into `player/` as `void*` so headers stay free of `d3d11.h`.
+The decoder runs **one** FFmpeg thread on D3D11VA (the GPU decodes; frame threads only add
+latency and lock contention there), and while a clip plays the process holds a **1 ms timer**
+(`hold_playback_timer`, released on pause, end and close): Windows' default 15.6 ms tick
+otherwise stretches every short wait in the pipeline, FFmpeg's `E_PENDING` retry included.
 
 **macOS** ([`src/player/hwdecode_mac.mm`](../../src/player/hwdecode_mac.mm)): VideoToolbox
 owns its sessions; the `CVMetalTextureCache` and the copy-out blit are on the app's `MTLDevice`.

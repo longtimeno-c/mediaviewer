@@ -44,6 +44,11 @@ struct clock_stats {
   std::uint64_t decode_errors = 0;
   std::uint64_t surface_waits = 0;
   std::uint64_t ring_backpressure = 0;
+  // Frames out of the decoder, and those discarded before the ring (a seek
+  // landed mid-decode). Decoded per second below the source rate means the
+  // decoder is the bottleneck; at the rate with drops, it is the selector.
+  std::uint64_t frames_decoded = 0;
+  std::uint64_t frames_dropped_stale = 0;
   bool                  audio_master = true;
   clock_fallback_reason fallback     = clock_fallback_reason::none;
   decoder_kind          decoder      = decoder_kind::none;
