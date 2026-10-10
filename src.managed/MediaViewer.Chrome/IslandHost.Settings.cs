@@ -709,7 +709,9 @@ public static partial class IslandHost
         // 0x4: do not change keyboard state (dead keys stay pending for XAML).
         int n = ToUnicodeEx((uint)vk, scanCode & 0xFF, state, chars, chars.Length, 0x4,
                             GetKeyboardLayout(0));
-        return n == 1 && chars[0] > 0x20 && chars[0] < 0x7F ? chars[0] : 0;
+        if (n != 1 || chars[0] <= 0x20 || chars[0] >= 0x7F) return 0;
+        // char_key (commands.h) upper-cases letters; a layout's OEM key can type one.
+        return chars[0] >= 'a' && chars[0] <= 'z' ? chars[0] - 'a' + 'A' : chars[0];
     }
 
     [DllImport("user32.dll")]
