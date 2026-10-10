@@ -11,6 +11,7 @@
 #include <windows.h>
 
 #include <cstdint>
+#include <iterator>
 #include <string>
 
 #include "core/result.h"
@@ -585,6 +586,21 @@ inline constexpr int kTransportSideDip = 16;    // minimum gap to the window's s
   return static_cast<int>((kTransportDip * static_cast<int>(dpi) + 48) / 96);
 }
 
+// IslandWindow ids of the islands that classify as focus_kind::pane, past the
+// focus kinds: metadata, folder tree (PR 9), adjust (PR 11), Edit workspace
+// (PR 29), Jobs (PR 13). The C# side numbers them the same (IslandHost.cs).
+// A pane missing here falls through to command_bar and the router runs viewer
+// commands on keys meant for it (issue #213).
+inline constexpr std::int32_t kPaneIslandIds[] = {6, 7, 8, 9, 10};
+inline constexpr int kPaneIslandCount = static_cast<int>(std::size(kPaneIslandIds));
+
+// classify_focus over explicit bridge windows. `islands` is indexed by
+// focus_kind [command_bar .. transport] (index 0 unused); `panes` are the pane
+// islands' roots. Split out so a host test can drive it with plain HWNDs.
+[[nodiscard]] focus_kind classify_island_focus(HWND focus, HWND canvas, const HWND* islands,
+                                               int island_count, const HWND* panes,
+                                               int pane_count) noexcept;
+
 class chrome_host {
  public:
   chrome_host() = default;
@@ -920,7 +936,7 @@ class chrome_host {
   chrome_entry_fn shutdown_for_exit_ = nullptr;
   // Indexed by focus_kind: [command_bar .. transport]. Refreshed after attach.
   HWND island_hwnds_[static_cast<int>(focus_kind::transport) + 1]{};
-  HWND pane_hwnds_[2]{};  // metadata pane, folder tree (PR 9)
+  HWND pane_hwnds_[kPaneIslandCount]{};  // in kPaneIslandIds order
   using pre_translate_fn = BOOL(WINAPI*)(const MSG*);
   pre_translate_fn pre_translate_ = nullptr;
   bool attached_ = false;

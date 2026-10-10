@@ -76,3 +76,48 @@ TEST_CASE("chrome host attaches and detaches an island on an hwnd") {
   // the real check, and the 30 chrome-on exits in docs/design/12 cover it.
   SUCCEED("XAML island Dispose AVs on a test HWND; covered by lab exit soaks");
 }
+
+TEST_CASE("focus in any pane island classifies as pane, not the command bar") {
+  // Issue #213: only the metadata and tree islands were cached, so focus in the
+  // Adjust, Edit or Jobs pane fell through to command_bar and ran viewer keys.
+  REQUIRE(mv::shell::kPaneIslandCount == 5);
+  REQUIRE(mv::shell::kPaneIslandIds[2] == 8);   // adjust
+  REQUIRE(mv::shell::kPaneIslandIds[3] == 9);   // Edit workspace
+  REQUIRE(mv::shell::kPaneIslandIds[4] == 10);  // Jobs
+
+  const HINSTANCE instance = ::GetModuleHandleW(nullptr);
+  const HWND top = ::CreateWindowExW(0, L"STATIC", L"", WS_OVERLAPPED, 0, 0, 64, 64, nullptr,
+                                     nullptr, instance, nullptr);
+  REQUIRE(top != nullptr);
+  const auto child = [instance](HWND parent) {
+    return ::CreateWindowExW(0, L"STATIC", L"", WS_CHILD, 0, 0, 8, 8, parent, nullptr, instance,
+                             nullptr);
+  };
+  constexpr int kIslands = static_cast<int>(mv::shell::focus_kind::transport) + 1;
+  HWND islands[kIslands]{};
+  for (int i = 1; i < kIslands; ++i) islands[i] = child(top);
+  HWND panes[mv::shell::kPaneIslandCount]{};
+  HWND inner[mv::shell::kPaneIslandCount]{};
+  for (int i = 0; i < mv::shell::kPaneIslandCount; ++i) {
+    panes[i] = child(top);
+    inner[i] = child(panes[i]);  // a control's window under the island's bridge
+  }
+  const HWND canvas = top;
+  const auto classify = [&](HWND focus) {
+    return mv::shell::classify_island_focus(focus, canvas, islands, kIslands, panes,
+                                            mv::shell::kPaneIslandCount);
+  };
+
+  REQUIRE(classify(canvas) == mv::shell::focus_kind::canvas);
+  REQUIRE(classify(islands[static_cast<int>(mv::shell::focus_kind::filmstrip)]) ==
+          mv::shell::focus_kind::filmstrip);
+  for (int i = 0; i < mv::shell::kPaneIslandCount; ++i) {
+    REQUIRE(panes[i] != nullptr);
+    REQUIRE(classify(panes[i]) == mv::shell::focus_kind::pane);
+    REQUIRE(classify(inner[i]) == mv::shell::focus_kind::pane);
+  }
+  // A popup or an unknown window is still never the canvas.
+  REQUIRE(classify(nullptr) == mv::shell::focus_kind::command_bar);
+
+  ::DestroyWindow(top);  // takes the children with it
+}
