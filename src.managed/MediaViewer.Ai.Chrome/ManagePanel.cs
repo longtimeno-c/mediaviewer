@@ -532,7 +532,7 @@ internal sealed partial class ManagePanel
             : s.CloudFilesLeft == 1 ? "1 file in your folders is only in OneDrive, so it is not searchable yet."
             : $"{n} files in your folders are only in OneDrive, so they are not searchable yet.";
         string how = " When on, MediaViewer downloads a couple at a time while this PC is plugged in and on an unmetered connection, indexes them, and makes them online-only again." +
-            (_cloudSwitch.IsOn ? "" : " Off, they are skipped; everything else is searchable as usual.");;
+            (_cloudSwitch.IsOn ? "" : " Off, they are skipped; everything else is searchable as usual.");
         string? wait = _cloudSwitch.IsOn ? Look.CloudWait(s) : null;
         _cloudDetail.Text = left + how + (wait is null ? "" : " " + wait);
     }
