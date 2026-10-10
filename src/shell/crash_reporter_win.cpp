@@ -62,10 +62,13 @@ void register_annotations() {
   mv_crash_context_info info{};
   if (mv_crash_context(&info) != MV_OK || !info.slots) return;
   crashpad::AnnotationList::Register();
-  static constexpr const char* kNames[] = {"mv_decode_0", "mv_decode_1", "mv_decode_2",
-                                           "mv_decode_3", "mv_decode_4", "mv_decode_5",
-                                           "mv_decode_6", "mv_decode_7"};
-  const std::uint32_t count = info.slot_count < 8 ? info.slot_count : 8;
+  static constexpr const char* kNames[] = {
+      "mv_decode_0",  "mv_decode_1",  "mv_decode_2",  "mv_decode_3",
+      "mv_decode_4",  "mv_decode_5",  "mv_decode_6",  "mv_decode_7",
+      "mv_decode_8",  "mv_decode_9",  "mv_decode_10", "mv_decode_11",
+      "mv_decode_12", "mv_decode_13", "mv_decode_14", "mv_decode_15"};
+  constexpr auto kNameCount = static_cast<std::uint32_t>(std::size(kNames));
+  const std::uint32_t count = info.slot_count < kNameCount ? info.slot_count : kNameCount;
   for (std::uint32_t i = 0; i < count; ++i) {
     // Leaked on purpose: annotations must outlive every thread that can crash.
     // The value lives in the core DLL; the handler reads it at crash time.

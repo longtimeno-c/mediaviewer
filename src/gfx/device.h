@@ -64,9 +64,15 @@ class device {
   [[nodiscard]] std::uint64_t video_memory_budget() const noexcept;
 
  private:
-  [[nodiscard]] result<com_ptr<IDXGIAdapter4>> adapter_for_window(HWND window) const noexcept;
+  [[nodiscard]] static result<com_ptr<IDXGIAdapter4>> adapter_for_window(
+      IDXGIFactory6* factory, HWND window) noexcept;
 
   com_ptr<IDXGIFactory6> factory_;
+  // Enumerates for adapter_changed_for only. A factory snapshots the adapter
+  // list when it is made: after a GPU hot-plug (IsCurrent() FALSE) factory_
+  // still lists the old set, so the change would never be seen. factory_
+  // itself stays — the swapchain must come from the device's own factory.
+  mutable com_ptr<IDXGIFactory6> probe_factory_;
   com_ptr<IDXGIAdapter4> adapter_;
   com_ptr<ID3D11Device5> d3d_;
   com_ptr<ID3D11DeviceContext4> context_;

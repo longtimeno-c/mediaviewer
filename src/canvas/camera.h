@@ -114,6 +114,8 @@ class camera {
 
  private:
   void clear_rubber() noexcept;
+  // Image px per screen px: pan rest thresholds are in screen pixels.
+  [[nodiscard]] float pan_settle_scale() const noexcept;
 
   float pan_x_ = 0.0f;
   float pan_y_ = 0.0f;

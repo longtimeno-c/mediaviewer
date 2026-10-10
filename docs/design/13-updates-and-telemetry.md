@@ -213,8 +213,9 @@ on the next launch, before any send could be offered:
 - **Capture.** `crashpad_handler.exe` beside the exe, started asynchronously (~3 ms on the UI
   thread). Database `%LocalAppData%\MediaViewer\Crashes`. No URL, indirect memory off, WER
   forwarding off.
-- **Annotations.** Eight `mv_decode_N` slots (`core/crash_context`, 128 bytes each, one per
-  decoding worker) plus `mv_last_call_cid`.
+- **Annotations.** Sixteen `mv_decode_N` slots (`core/crash_context`, 128 bytes each; each
+  decode claims a free one for its duration, so concurrent decodes never share) plus
+  `mv_last_call_cid`.
 - **Scrub.** In-app on start, or `tools/minidump-scrub`.
 - **Verify.** `tools/make-crash-raw.ps1` → `MV_CRASH_TEST=decode` → `tools/minidump-scan.ps1`
   ([DEVELOPMENT.md](../DEVELOPMENT.md#crash-reports-pr-7)).
@@ -226,7 +227,7 @@ on the next launch, before any send could be offered:
   `main()` (Crashpad has no asynchronous start on macOS), restartable. Database
   `~/Library/Application Support/MediaViewer/Crashes`. No URL, uploads disabled, indirect memory
   off, forwarding to ReportCrash off, so Apple keeps no unscrubbed copy.
-- **Annotations.** The same eight slots and `mv_last_call_cid`, read from `core/crash_context`.
+- **Annotations.** The same sixteen slots and `mv_last_call_cid`, read from `core/crash_context`.
   Every routed command and every mutating chrome bridge call stamps a fresh correlation id; a
   still's decode job carries the id of the call that opened it.
 - **Scrub.** The Windows scrub, plus POSIX paths under `/Users`, `/Volumes`, `/private`, `/var`,

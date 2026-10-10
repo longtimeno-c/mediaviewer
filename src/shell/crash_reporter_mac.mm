@@ -99,11 +99,14 @@ bool make_dirs(const std::string& path) noexcept {
 
 void register_annotations() {
   crashpad::AnnotationList::Register();
-  static constexpr const char* kNames[] = {"mv_decode_0", "mv_decode_1", "mv_decode_2",
-                                           "mv_decode_3", "mv_decode_4", "mv_decode_5",
-                                           "mv_decode_6", "mv_decode_7"};
+  static constexpr const char* kNames[] = {
+      "mv_decode_0",  "mv_decode_1",  "mv_decode_2",  "mv_decode_3",
+      "mv_decode_4",  "mv_decode_5",  "mv_decode_6",  "mv_decode_7",
+      "mv_decode_8",  "mv_decode_9",  "mv_decode_10", "mv_decode_11",
+      "mv_decode_12", "mv_decode_13", "mv_decode_14", "mv_decode_15"};
+  constexpr auto kNameCount = static_cast<std::uint32_t>(std::size(kNames));
   const auto slots = mv::crash_context::slots();
-  for (std::size_t i = 0; i < mv::crash_context::kSlotCount && i < 8; ++i) {
+  for (std::size_t i = 0; i < mv::crash_context::kSlotCount && i < kNameCount; ++i) {
     // Leaked on purpose: annotations must outlive every thread that can crash.
     auto* a = new crashpad::Annotation(crashpad::Annotation::Type::kString, kNames[i],
                                        slots.data() + i * mv::crash_context::kSlotBytes);

@@ -1,6 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "core/job_system.h"
+#include "core/parallel.h"
 
 #include <windows.h>
 
@@ -188,5 +189,16 @@ std::size_t job_system::queue_depth() const noexcept {
   std::lock_guard lock(impl_->mutex);
   return impl_->foreground.size() + impl_->background.size();
 }
+
+namespace core::detail {
+
+int current_thread_priority() noexcept { return ::GetThreadPriority(::GetCurrentThread()); }
+
+void set_current_thread_priority(int priority) noexcept {
+  if (priority == THREAD_PRIORITY_ERROR_RETURN) return;
+  (void)::SetThreadPriority(::GetCurrentThread(), priority);
+}
+
+}  // namespace core::detail
 
 }  // namespace mv

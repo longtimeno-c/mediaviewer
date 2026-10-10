@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "core/job_system.h"
+#include "core/parallel.h"
 
 using namespace std::chrono_literals;
 
@@ -307,3 +308,24 @@ TEST_CASE("view-tied work does not queue behind the background sweep",
 
   jobs.shutdown();
 }
+
+#if !defined(__APPLE__)
+TEST_CASE("parallel bands run at their caller's thread priority", "[core][parallel]") {
+  // A band started at the default NORMAL outranked a below-normal pool worker
+  // and competed with the UI thread. -1 is THREAD_PRIORITY_BELOW_NORMAL.
+  namespace d = mv::core::detail;
+  const int before = d::current_thread_priority();
+  d::set_current_thread_priority(-1);
+  REQUIRE(d::current_thread_priority() == -1);
+  std::mutex m;
+  std::vector<int> seen;
+  mv::core::parallel_bands(64, 1, [&](std::size_t, std::size_t) {
+    const int p = d::current_thread_priority();
+    std::lock_guard lock(m);
+    seen.push_back(p);
+  });
+  d::set_current_thread_priority(before);
+  REQUIRE_FALSE(seen.empty());
+  for (int p : seen) CHECK(p == -1);
+}
+#endif
