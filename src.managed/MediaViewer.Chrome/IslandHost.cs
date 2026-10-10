@@ -210,8 +210,13 @@ public static partial class IslandHost
     }
 
     // IslandWindow asks for the pane islands by these ids (past the focus kinds).
+    // Mirrors kPaneIslandIds (chrome_host.h): native classifies focus in any of
+    // them as FocusKind.Pane, so a pane left out here runs viewer commands (#213).
     internal const int PaneMetaIsland = 6;
     internal const int PaneTreeIsland = 7;
+    internal const int PaneAdjustIsland = 8;
+    internal const int PaneEditIsland = 9;
+    internal const int PaneJobsIsland = 10;
 
     // Mirrors mv::shell::view_settings. The native side owns the file; the
     // menu is a view of it, pushed in by ApplySettings so a T keypress and the
@@ -294,6 +299,9 @@ public static partial class IslandHost
                 FocusKind.Transport => _transport,
                 PaneMetaIsland => _metaPane,
                 PaneTreeIsland => _tree,
+                PaneAdjustIsland => _adjustPane,
+                PaneEditIsland => _editPane,
+                PaneJobsIsland => _jobsPane,
                 _ => null,
             };
             long hwnd = source?.SiteBridge is null
@@ -466,7 +474,8 @@ public static partial class IslandHost
                 else if (OwnsRoot(_gallery, root)) kind = FocusKind.Gallery;
                 else if (OwnsRoot(_transport, root)) kind = FocusKind.Transport;
                 else if (OwnsRoot(_metaPane, root) || OwnsRoot(_tree, root) || OwnsRoot(_adjustPane, root) ||
-                         OwnsRoot(_editPane, root) || OwnsRoot(_editorTimeline, root) || OwnsRoot(_editorAway, root))
+                         OwnsRoot(_editPane, root) || OwnsRoot(_jobsPane, root) ||
+                         OwnsRoot(_editorTimeline, root) || OwnsRoot(_editorAway, root))
                 {
                     // PR 11: the adjust pane too — its sliders own the arrows.
                     kind = FocusKind.Pane;

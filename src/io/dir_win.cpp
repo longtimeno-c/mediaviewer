@@ -373,7 +373,12 @@ expected directory_watcher::start(std::string_view utf8_dir, callback cb, void* 
         HANDLE waits[2] = {raw->stop, ov.hEvent};
         const DWORD wr = ::WaitForMultipleObjects(2, waits, FALSE, INFINITE);
         if (wr == WAIT_OBJECT_0) {
+          // CancelIoEx only requests the cancel: the kernel still completes
+          // the read into `ov`, its event and `raw->buf`. Wait for that
+          // completion so none of them is gone when it lands.
           ::CancelIoEx(raw->dir, &ov);
+          DWORD cancelled = 0;
+          (void)::GetOverlappedResult(raw->dir, &ov, &cancelled, TRUE);
           break;
         }
         DWORD transferred = 0;

@@ -890,6 +890,7 @@ ctest --test-dir build -C Release -R "clip|trim" --output-on-failure
                                    # fail-fast in the island host (use JobBar, Shared\FlatBar.cs, a Button + Flyout,
                                    # Shared\FakeInput.cs)
 .\tools\licence-check.ps1          # no GPL FFmpeg, no software HEVC/AAC encoder
+.\tools\telemetry-schema-check.ps1 # telemetry payload stays fixed vocabulary: no path/filename field
 
 # PR 7 broken-file corpus: every seed in tests/data/seeds truncated, stomped,
 # bit-flipped and given absurd dimensions, plus tests/data/broken, through every
