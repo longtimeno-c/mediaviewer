@@ -101,7 +101,8 @@ TEST_CASE("abandoned decodes are capped, and the cap frees up", "[shellext]") {
   std::vector<std::uint8_t> big = png(3000, 3000, 9, 9, 9, 255);
   for (std::uint32_t i = 0; i < mv::shellext::kMaxInFlight + 4; ++i) {
     auto r = mv::shellext::render_thumbnail_by(big, 256, std::chrono::milliseconds(0));
-    CHECK_FALSE(r);
+    REQUIRE_FALSE(r);
+    CHECK((r.error() == mv::status::cancelled || r.error() == mv::status::busy));
   }
   CHECK(mv::shellext::decodes_in_flight() <= mv::shellext::kMaxInFlight);
   for (auto end = std::chrono::steady_clock::now() + std::chrono::seconds(60);
@@ -110,4 +111,36 @@ TEST_CASE("abandoned decodes are capped, and the cap frees up", "[shellext]") {
   REQUIRE(mv::shellext::decodes_in_flight() == 0);
   auto ok = mv::shellext::render_thumbnail_by(png(64, 64, 9, 9, 9, 255), 32, std::chrono::seconds(10));
   CHECK(ok);
+}
+
+TEST_CASE("a request refused at the cap is busy, not abandoned", "[shellext]") {
+  // Abandoned (status::cancelled) leaves a thread of ours running, so the
+  // Explorer DLL pins itself; refused (status::busy) started nothing and must
+  // not. Fill every slot with requests still being waited for, then ask again.
+  std::vector<std::uint8_t> big = png(3000, 3000, 9, 9, 9, 255);
+  std::vector<std::thread> holders;
+  for (std::uint32_t i = 0; i < mv::shellext::kMaxInFlight; ++i) {
+    holders.emplace_back([&big] {
+      (void)mv::shellext::render_thumbnail_by(big, 256, std::chrono::seconds(30));
+    });
+  }
+  for (auto end = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+       mv::shellext::decodes_in_flight() < mv::shellext::kMaxInFlight &&
+       std::chrono::steady_clock::now() < end;)
+    std::this_thread::yield();
+  bool refused = false;
+  while (mv::shellext::decodes_in_flight() == mv::shellext::kMaxInFlight) {
+    auto r = mv::shellext::render_thumbnail_by(png(64, 64, 9, 9, 9, 255), 32,
+                                               std::chrono::seconds(10));
+    if (!r && r.error() == mv::status::busy) {
+      refused = true;
+      break;
+    }
+  }
+  for (auto& t : holders) t.join();
+  CHECK(refused);
+  for (auto end = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+       mv::shellext::decodes_in_flight() != 0 && std::chrono::steady_clock::now() < end;)
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  CHECK(mv::shellext::decodes_in_flight() == 0);
 }
