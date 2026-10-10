@@ -120,6 +120,8 @@ texture limit — a still is not one texture:
   through lock-free per-tile states; the session's `tile_service` thread builds and creates
   them — 4 per 16 ms tick, at most 24 in flight — and the render thread draws ready tiles coarse
   to fine over the overview. It never waits on the service and never creates a texture.
+  The service sleeps on an atomic poke count with no timeout (0 wakeups on a still); a tile
+  request, a new set, and dropping a set's last outside handle each poke it.
 - Resident tile VRAM is capped at **256 MB** (~750 tiles), LRU-evicted, separate from the
   viewer LRU.
 - A tiled image is not kept in the navigation LRU; a revisit decodes again. Its CPU pyramid
