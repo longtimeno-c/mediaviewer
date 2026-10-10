@@ -23,6 +23,13 @@ constexpr float kRubberMin = 0.84f;
 constexpr float kRubberNear = 1.12f;
 constexpr float kRubberFollow = 0.5f;
 constexpr float kRubberHold = 0.22f;
+// Rest thresholds. Pan is in *screen* pixels (divided by zoom before use): an
+// image-pixel threshold at 6400 % left the picture ~3 screen px short of its
+// target. Zoom is absolute.
+constexpr float kPanSettlePx = 0.05f;
+constexpr float kPanSettlePxPerS = 0.5f;
+constexpr float kZoomSettle = 0.0005f;
+constexpr float kZoomSettlePerS = 0.01f;
 
 bool at_or_below(float zoom, float rest) noexcept {
   if (rest <= 0.0f) return false;
@@ -322,13 +329,25 @@ void camera::step(float dt) noexcept {
   spring_step(pan_x_, pan_vx_, target_pan_x_, dt);
   spring_step(pan_y_, pan_vy_, target_pan_y_, dt);
   spring_step(zoom_, zoom_v_, target_zoom_, dt);
+  // Snap each settled spring onto its target so the frame that stops the
+  // present loop shows the final pose, not one a redraw would later correct.
+  const float s = pan_settle_scale();
+  spring_snap(pan_x_, pan_vx_, target_pan_x_, kPanSettlePx * s, kPanSettlePxPerS * s);
+  spring_snap(pan_y_, pan_vy_, target_pan_y_, kPanSettlePx * s, kPanSettlePxPerS * s);
+  spring_snap(zoom_, zoom_v_, target_zoom_, kZoomSettle, kZoomSettlePerS);
+}
+
+float camera::pan_settle_scale() const noexcept {
+  // Screen px -> image px. Guard zoom 0 (no picture yet) with the old 1:1.
+  return zoom_ > 0.0f ? 1.0f / zoom_ : 1.0f;
 }
 
 bool camera::moving() const noexcept {
   if (dragging_ || rubber_held_) return true;
-  return !spring_settled(pan_x_, pan_vx_, target_pan_x_) ||
-         !spring_settled(pan_y_, pan_vy_, target_pan_y_) ||
-         !spring_settled(zoom_, zoom_v_, target_zoom_, 0.0005f, 0.01f);
+  const float s = pan_settle_scale();
+  return !spring_settled(pan_x_, pan_vx_, target_pan_x_, kPanSettlePx * s, kPanSettlePxPerS * s) ||
+         !spring_settled(pan_y_, pan_vy_, target_pan_y_, kPanSettlePx * s, kPanSettlePxPerS * s) ||
+         !spring_settled(zoom_, zoom_v_, target_zoom_, kZoomSettle, kZoomSettlePerS);
 }
 
 }  // namespace mv::canvas

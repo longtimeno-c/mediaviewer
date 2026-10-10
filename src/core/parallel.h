@@ -20,6 +20,15 @@
 
 namespace mv::core {
 
+#if !defined(__APPLE__)
+namespace detail {
+// Win32 thread priority of the calling thread / set on the calling thread
+// (core/job_system_win.cpp), kept out of this header so it pulls no <windows.h>.
+[[nodiscard]] int current_thread_priority() noexcept;
+void set_current_thread_priority(int priority) noexcept;
+}  // namespace detail
+#endif
+
 // Extra cores a decode may borrow. Leaves two logical processors for the
 // present thread and the UI (the same margin as raw_thread_ceiling), and never
 // more than four: prefetch runs beside the selected image and must not starve it.
@@ -55,7 +64,13 @@ void parallel_bands(std::size_t count, std::size_t min_per_thread, Fn&& fn) noex
         fn(begin, end);
       });
 #else
-      extra[started] = std::thread([&fn, begin, end] { fn(begin, end); });
+      // Likewise the caller's priority: pool workers run below normal, and a
+      // band started at the default NORMAL would outrank the UI thread.
+      const int priority = detail::current_thread_priority();
+      extra[started] = std::thread([&fn, begin, end, priority] {
+        detail::set_current_thread_priority(priority);
+        fn(begin, end);
+      });
 #endif
       ++started;
     } catch (...) {

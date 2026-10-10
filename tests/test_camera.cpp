@@ -165,6 +165,28 @@ TEST_CASE("a critically damped spring settles on its target", "[canvas][spring]"
   REQUIRE_THAT(v, WithinAbs(0.0f, 0.1f));
 }
 
+TEST_CASE("at 6400 percent the camera rests exactly on its target", "[canvas][spring]") {
+  // Image-pixel rest thresholds left the picture ~3 screen px short at 64x;
+  // the next unrelated redraw then jumped it. Settle in screen px and snap.
+  camera cam;
+  cam.fit(4000.0f, 3000.0f, 800.0f, 600.0f, true);
+  for (int i = 0; i < 50; ++i)
+    cam.wheel_toward(400.0f, 300.0f, 1.0f, 800.0f, 600.0f, 4000.0f, 3000.0f);
+  for (int i = 0; i < 600 && cam.moving(); ++i) cam.step(1.0f / 60.0f);
+  REQUIRE_THAT(cam.zoom(), WithinAbs(64.0f, 1e-6f));
+  cam.pan_by_screen(100.0f, 0.0f, 4000.0f, 3000.0f, 800.0f, 600.0f);
+  REQUIRE(cam.moving());
+  for (int i = 0; i < 600 && cam.moving(); ++i) cam.step(1.0f / 60.0f);
+  REQUIRE_FALSE(cam.moving());
+  REQUIRE(cam.pan_x() == cam.target_pan_x());
+  REQUIRE(cam.pan_y() == cam.target_pan_y());
+  REQUIRE(cam.zoom() == cam.target_zoom());
+  // A later redraw steps the springs again; nothing moves.
+  const float x = cam.pan_x();
+  cam.step(1.0f / 60.0f);
+  REQUIRE(cam.pan_x() == x);
+}
+
 TEST_CASE("fit centres the image and one_to_one is 100 percent", "[canvas]") {
   camera cam;
   cam.fit(4000.0f, 3000.0f, 800.0f, 600.0f, true);
