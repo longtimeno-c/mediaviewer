@@ -70,6 +70,8 @@
 #include "shell/commands.h"
 #include "shell/crash_reporter_mac.h"
 #include "shell/edit_session.h"
+#include "shell/text_in_image.h"
+#include "shell/text_recognition_mac.h"
 #include "shell/edit_view.h"
 #include "shell/edit_workspace.h"
 #include "shell/video_timeline.h"
@@ -179,6 +181,8 @@ static bool MvCommandSupported(mv::shell::command_id c) {
     case keyframe_next: case jobs_pane: case clip_tools: case clip_split:
     // PR 15
     case copy_path: case copy_flattened: case share:
+    // Preview's Copy Text in Image (Vision, shell/text_recognition_mac.mm)
+    case copy_text_in_image:
     // Pages (docs/plans/audio-and-documents.md §2.3)
     case next_page: case prev_page:
     // PR 29
@@ -4510,6 +4514,8 @@ enum MvMenuCmd : NSInteger {
   kMenuFlipH, kMenuFlipV, kMenuUndoEdit, kMenuResetEdits, kMenuSaveCopy, kMenuTrim,
   // docs/design/16 "Window"
   kMenuNewWindow,
+  // Preview's Edit > Copy Text in Image
+  kMenuCopyText,
 };
 
 // docs/design/16 "Window": another window is another MediaViewer process, on the
@@ -4554,6 +4560,9 @@ enum MvMenuCmd : NSInteger {
   switch (static_cast<MvMenuCmd>(cmd)) {
     case kMenuOpen: [self openFolderPanel:NO]; break;
     case kMenuNewWindow: [self openNewWindow]; break;
+    case kMenuCopyText:
+      if (![self runCommand:mv::shell::command_id::copy_text_in_image back:mv::shell::back_target::none]) NSBeep();
+      break;
     case kMenuOpenFolder: [self openFolderPanel:YES]; break;
     case kMenuOpenPhotos: [self openPhotosLibrary]; break;
     case kMenuTrash: [self deleteMarkedToTrash]; break;
@@ -4639,6 +4648,9 @@ enum MvMenuCmd : NSInteger {
     if (tag == kMenuTrim) return subject == mv::shell::edit_subject::clip;
     return subject == mv::shell::edit_subject::still;
   }
+  // Disabled, never hidden, when there is no still on screen (a clip, audio,
+  // a document, an animation, the gallery).
+  if (tag == kMenuCopyText) return [self editSubject] == mv::shell::edit_subject::still && !_galleryVisible;
   if (tag == kMenuFolderTree) item.state = _treeVisible ? NSControlStateValueOn : NSControlStateValueOff;
   switch (static_cast<MvMenuCmd>(item.tag)) {
     case kMenuMetadata: case kMenuFolderTree:
@@ -4792,6 +4804,9 @@ enum MvMenuCmd : NSInteger {
   [self addMenuItem:@"Save Copy…" cmd:kMenuSaveCopy key:@"" mods:0 toMenu:edit];
   [edit addItem:[NSMenuItem separatorItem]];
   [self addMenuItem:@"Trim Video" cmd:kMenuTrim key:@"" mods:0 toMenu:edit];
+  // Where Preview has it, and as there, no key (one can be given in Settings).
+  [edit addItem:[NSMenuItem separatorItem]];
+  [self addMenuItem:@"Copy Text in Image" cmd:kMenuCopyText key:@"" mods:0 toMenu:edit];
 
   NSMenu* view = submenu(@"View");
   [self addMenuItem:@"Fit to Window" cmd:kMenuFit key:@"" mods:0 toMenu:view];
@@ -5654,6 +5669,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
       return [board setString:[NSString stringWithUTF8String:text.c_str()] forType:NSPasteboardTypeString];
     }
     case copy_flattened: return [self copyFlattened];
+    case copy_text_in_image: return [self copyTextInImage];
     case share: return [self shareMarkedOrCurrent];
     case metadata_pane:
       if (!_metaPaneVisible && _adjust.visible()) [self setAdjustVisible:NO];
@@ -8730,6 +8746,41 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
       NSPasteboard* board = NSPasteboard.generalPasteboard;
       [board clearContents];
       if (![board writeObjects:@[ item ]]) NSBeep();
+    });
+    return mv::status::ok;
+  });
+  return YES;
+}
+
+// Edit > Copy Text in Image (Preview's): Vision reads the still as the canvas
+// shows its geometry, on the pool (rule 1) and on device (rule 6); the text
+// goes on the pasteboard on the main thread and the notice says how much.
+// Nothing found leaves the pasteboard as it was.
+- (BOOL)copyTextInImage {
+  if (_items.empty() || _index.current() >= _items.size() ||
+      [self editSubject] != mv::shell::edit_subject::still || _galleryVisible) {
+    return NO;
+  }
+  const std::string path = _items[_index.current()].path_utf8;
+  const mv::edit::geometry g = _edits.export_geometry();
+  MvLabApp* __weak weakSelf = self;
+  _jobs.submit_at(mv::background_generation, [path, g, weakSelf](const mv::job_context&) -> mv::status {
+    mv::shell::vision_text_recognizer recognizer;
+    const mv::shell::copied_text out = mv::shell::run_copy_text(path, g, recognizer);
+    NSString* text = out.text.empty() ? nil : [NSString stringWithUTF8String:out.text.c_str()];
+    const std::string notice = mv::shell::copy_text_notice(out);
+    dispatch_async(dispatch_get_main_queue(), ^{
+      MvLabApp* strongSelf = weakSelf;
+      if (!strongSelf) return;
+      if (text) {
+        NSPasteboard* board = NSPasteboard.generalPasteboard;
+        [board clearContents];
+        if (![board setString:text forType:NSPasteboardTypeString]) {
+          NSBeep();
+          return;
+        }
+      }
+      [strongSelf noticeShow:notice];
     });
     return mv::status::ok;
   });

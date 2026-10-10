@@ -688,6 +688,8 @@ add_executable(mediaviewer_lab WIN32
   src/shell/meta_writer.h
   src/shell/edit_session.cpp
   src/shell/edit_session.h
+  src/shell/text_in_image.cpp
+  src/shell/text_in_image.h
   src/shell/edit_workspace.cpp
   src/shell/edit_workspace.h
   src/shell/video_timeline.cpp
@@ -977,6 +979,10 @@ if(MV_BUILD_TESTS)
     tests/test_edit_session.cpp
     tests/test_export_carried.cpp
     src/shell/edit_session.cpp
+    # Copy Text in Image: the recogniser's pixels, word count and notice (the
+    # OCR itself is the hosts' OS API).
+    tests/test_text_in_image.cpp
+    src/shell/text_in_image.cpp
     # PR 29: the Edit workspace's tab model.
     tests/test_edit_workspace.cpp
     src/shell/edit_workspace.cpp

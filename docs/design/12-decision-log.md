@@ -481,6 +481,22 @@ the end of the folder path runs `Ctrl+F` / `⌘F`: with Local search loaded (or 
 search panel; without it, **file search**, a name filter over the listed folder with no index (the
 Windows chrome entry is still named `GallerySearch`). `/` in the gallery is the folder row's find.
 
+**Copy Text in Image (2026-10-10, issue #289).** Preview's Edit ▸ Copy Text in Image: the still on
+screen goes through the OS's on-device text recognition and the lines it read go on the clipboard
+as plain text, with a notice ("Copied 42 words", "No text found"). The recogniser is a port
+(`shell/text_in_image.h`, D9): Vision `VNRecognizeTextRequest` (accurate, language correction,
+automatic language) on the Mac; `Windows.Media.Ocr` (`OcrEngine.TryCreateFromUserProfileLanguages`
+on a `SoftwareBitmap`) in the WinUI chrome on Windows, called synchronously from a pool worker. The
+decode, the geometry (rotate, flip, crop, straighten — colour adjusts change no letter), a cap of
+4096 px on the long edge, alpha flattened over white, the tidy-up and the count are shared C++.
+Nothing leaves the machine (rule 6) and no Store download is offered (rule 7): a Windows profile
+with no OCR language gets a notice naming the Language settings page. Reached as Preview has it —
+Edit ▸ Copy Text in Image on the Mac menu bar — and from a **Tools** flyout beside View on both
+command bars; disabled, never hidden, without a still on screen. Keyless like Preview's (Settings
+can give it one). No off switch: the owner's ease-of-access call (2026-10-10) was "no extra
+concepts or settings", and the command does nothing until it is chosen. Selecting text on the
+canvas (a Live Text overlay) is not built.
+
 ---
 
 ## Windows chrome (XAML islands)

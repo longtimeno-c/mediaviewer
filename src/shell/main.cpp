@@ -58,6 +58,7 @@
 #include "shell/browse_path.h"
 #include "shell/chrome_host.h"
 #include "shell/edit_session.h"
+#include "shell/text_in_image.h"
 #include "shell/edit_view.h"
 #include "shell/edit_workspace.h"
 #include "shell/video_timeline.h"
@@ -134,6 +135,7 @@ constexpr UINT kMsgOpenForwarded = WM_APP + 0x78;   // a second instance handed 
 constexpr UINT kMsgOwnDragEnded = WM_APP + 0x7A;
 // A document's "Open in <app>" list (shell/open_with_win.h) came back.
 constexpr UINT kMsgOpenWithReady = WM_APP + 0x7B;
+constexpr UINT kMsgCopyTextDone = WM_APP + 0x7C;  // Copy Text in Image read the still (any thread posts)
 constexpr UINT kThumbPrev = 0x5101;                 // taskbar thumbnail toolbar button ids
 constexpr UINT kThumbPlay = 0x5102;
 constexpr UINT kThumbNext = 0x5103;
@@ -5573,6 +5575,85 @@ void on_flatten_done(app_state* app, std::unique_ptr<flatten_job_result> r) {
   }
 }
 
+// Copy Text in Image (Preview's; docs/design/16 View): shell/text_in_image.h's
+// port on Windows. Windows.Media.Ocr is WinRT, so the chrome runs it
+// (IslandHost.RecognizeText), synchronously, on the worker that calls this.
+// On device (rule 6); no text or pixel is logged.
+class chrome_text_recognizer final : public mv::shell::text_recognizer {
+ public:
+  explicit chrome_text_recognizer(mv::shell::chrome_entry_fn entry) noexcept : entry_(entry) {}
+
+  mv::shell::text_recognition recognise(const mv::shell::text_image& image,
+                                        std::string& text) noexcept override {
+    using mv::shell::text_recognition;
+    text.clear();
+    if (!entry_) return text_recognition::unavailable;
+    try {
+      // A 4096 px page of small print is tens of KB; this is far beyond it.
+      std::string buf(std::size_t{1} << 20, '\0');
+      mv::shell::chrome_text_recognition_args args{};
+      args.pixels = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(image.pixels.data()));
+      args.width = static_cast<std::int32_t>(image.width);
+      args.height = static_cast<std::int32_t>(image.height);
+      args.out_utf8 = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(buf.data()));
+      args.out_capacity = static_cast<std::int32_t>(buf.size());
+      switch (entry_(&args, static_cast<std::int32_t>(sizeof(args)))) {
+        case 0:
+          if (args.out_length < 0 || args.out_length > args.out_capacity) return text_recognition::failed;
+          buf.resize(static_cast<std::size_t>(args.out_length));
+          text = std::move(buf);
+          return text_recognition::ok;
+        case 1: return text_recognition::no_language;
+        case 2: return text_recognition::unavailable;
+        default: return text_recognition::failed;
+      }
+    } catch (...) {
+      return text_recognition::failed;
+    }
+  }
+
+ private:
+  mv::shell::chrome_entry_fn entry_ = nullptr;
+};
+
+// Decode, OCR and count on the pool (rule 1); kMsgCopyTextDone puts the text
+// on the clipboard. Stills only, as Preview: the item is disabled otherwise.
+bool start_copy_text(app_state* app) {
+  if (!app || !app->window || app->gallery_visible ||
+      edit_subject_of(app) != mv::shell::edit_subject::still) {
+    return false;
+  }
+  const HWND hwnd = app->window;
+  app->jobs.submit_at(mv::background_generation,
+                      [path = app->edit_path, g = app->edits.export_geometry(),
+                       entry = app->chrome.text_recognition_entry(), hwnd](const mv::job_context&) -> mv::status {
+                        chrome_text_recognizer recognizer(entry);
+                        auto* r = new (std::nothrow) mv::shell::copied_text(mv::shell::run_copy_text(
+                            path, g, recognizer, mv::shell::text_pixel_order::bgra));
+                        if (r && !::PostMessageW(hwnd, kMsgCopyTextDone, 0, reinterpret_cast<LPARAM>(r))) delete r;
+                        return mv::status::ok;
+                      });
+  return true;
+}
+
+// Nothing found leaves the clipboard as it was; the notice says which.
+void on_copy_text_done(app_state* app, std::unique_ptr<mv::shell::copied_text> r) {
+  if (!app || !r) return;
+  if (!r->text.empty()) {
+    std::string crlf;
+    crlf.reserve(r->text.size() + r->text.size() / 16);
+    for (const char c : r->text) {
+      if (c == '\n') crlf.push_back('\r');
+      crlf.push_back(c);
+    }
+    if (!set_clipboard(app, CF_UNICODETEXT, text_to_global(crlf))) {
+      ::MessageBeep(MB_ICONWARNING);
+      return;
+    }
+  }
+  notice_show(app, mv::shell::copy_text_notice(*r));
+}
+
 // Ctrl+Shift+S: Windows Share with the marked (else current) file(s). The
 // share sheet is WinRT, so the chrome shows it (IslandHost.Share.cs).
 bool share_targets(app_state* app) {
@@ -6327,6 +6408,8 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       return copy_paths_to_clipboard(app);
     case copy_flattened:
       return start_flatten(app);
+    case copy_text_in_image:
+      return start_copy_text(app);
     case share:
       return share_targets(app);
     // PR 10 geometry, crop mode and export (docs/design/16 View + Crop).
@@ -7451,6 +7534,10 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
 
     case kMsgFlattenDone:
       on_flatten_done(app, std::unique_ptr<flatten_job_result>(reinterpret_cast<flatten_job_result*>(lparam)));
+      return 0;
+
+    case kMsgCopyTextDone:
+      on_copy_text_done(app, std::unique_ptr<mv::shell::copied_text>(reinterpret_cast<mv::shell::copied_text*>(lparam)));
       return 0;
 
     case kMsgEditorLoaded:  // PR 30: the Video Editor's probe and strip

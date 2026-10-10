@@ -39,9 +39,11 @@ TEST_CASE("no two bindings share a key, modifiers and mode", "[shell][commands]"
   for (const auto& b : default_bindings()) {
     REQUIRE(b.modes != 0);
     REQUIRE(b.command != command_id::none);
-    // PR 7: Open RAW / Open JPEG ship listed but unbound (docs/design/04, docs/design/16).
+    // PR 7: Open RAW / Open JPEG ship listed but unbound (docs/design/04, docs/design/16),
+    // and Copy Text in Image, which Preview has no key for either.
     if (b.k == key::none) {
-      REQUIRE((b.command == command_id::open_raw || b.command == command_id::open_jpeg));
+      REQUIRE((b.command == command_id::open_raw || b.command == command_id::open_jpeg ||
+               b.command == command_id::copy_text_in_image));
       continue;
     }
     for (int m = 0; m < kModeCount; ++m) {
@@ -109,6 +111,8 @@ TEST_CASE("the PR 3-5 island command ids keep their wire values", "[shell][comma
   REQUIRE(static_cast<int>(command_id::help) == 75);
   REQUIRE(static_cast<int>(command_id::reveal_in_explorer) == 80);
   REQUIRE(static_cast<int>(command_id::open_settings) == 84);
+  // The two chromes send these by number (IslandHost.cs, CommandBarView.swift via kMenuCopyText).
+  REQUIRE(static_cast<int>(command_id::copy_text_in_image) == 172);
 }
 
 TEST_CASE("number row is zoom, never rating", "[shell][commands]") {
