@@ -55,6 +55,14 @@ class fake_sink final : public audio_sink {
 
   void close() noexcept override { ++closes; }
 
+  std::atomic<bool> fail_flush{false};
+  std::atomic<int> flushes{0};
+  mv::expected flush() noexcept override {
+    ++flushes;
+    if (fail_flush.load()) return mv::err(mv::status::io);
+    return {};
+  }
+
   audio_endpoint_info info() const noexcept override {
     audio_endpoint_info out;
     out.sample_rate = rate_;
@@ -350,6 +358,50 @@ TEST_CASE("blocks at a stale generation are never written to the endpoint", "[cl
   // A current-generation block does get through.
   REQUIRE(clock.submit(make_block(10 * ns_per_second, /*generation=*/7)));
   CHECK(wait_until([&] { return sink->frames_taken.load() > 0; }));
+
+  clock.stop();
+}
+
+TEST_CASE("a seek flushes the endpoint rather than rebuilding it", "[clock]") {
+  // Issue #229. Every seek, rate change, track switch and A-B wrap bumps the
+  // generation; each one used to close and reopen the device, an audible gap
+  // per loop wrap. Only device loss rebuilds.
+  auto* sink = new fake_sink();
+  av_clock clock;
+  clock.set_sink_for_test(sink);
+  REQUIRE(clock.start(48000, 2).has_value());
+  REQUIRE(sink->opens.load() == 1);
+
+  for (std::uint32_t generation = 1; generation <= 5; ++generation) {
+    clock.seeked(generation * ns_per_second, generation);
+    REQUIRE(wait_until([&] { return sink->flushes.load() == static_cast<int>(generation); }));
+  }
+  CHECK(sink->opens.load() == 1);
+  CHECK(sink->closes.load() == 0);
+  CHECK(clock.stats().counters.device_rebuilds == 0);
+
+  // Audio still flows on the flushed endpoint.
+  REQUIRE(clock.submit(make_block(5 * ns_per_second, /*generation=*/5)));
+  CHECK(wait_until([&] { return sink->frames_taken.load() > 0; }));
+  CHECK(clock.stats().audio_master);
+
+  clock.stop();
+}
+
+TEST_CASE("a flush that fails falls back to reopening the endpoint", "[clock]") {
+  auto* sink = new fake_sink();
+  av_clock clock;
+  clock.set_sink_for_test(sink);
+  REQUIRE(clock.start(48000, 2).has_value());
+
+  sink->fail_flush.store(true);
+  clock.seeked(ns_per_second, /*generation=*/1);
+  REQUIRE(wait_until([&] { return sink->opens.load() == 2; }));
+  CHECK(sink->closes.load() == 1);
+
+  REQUIRE(clock.submit(make_block(ns_per_second, /*generation=*/1)));
+  CHECK(wait_until([&] { return sink->frames_taken.load() > 0; }));
+  CHECK(clock.stats().audio_master);
 
   clock.stop();
 }

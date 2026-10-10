@@ -608,10 +608,16 @@ void av_clock::impl::pump_loop() noexcept {
       while (state.sink_readers.load() != 0) std::this_thread::yield();
       state.pending.frames = state.pending_offset = 0;
       if (state.sink && state.sink_open) {
-        const auto endpoint = state.sink->info();
-        state.sink->close();
-        state.sink_open = false;
-        if (state.sink->open(endpoint.sample_rate, endpoint.channels)) state.sink_open = true;
+        // A seek, rate change, track switch or A-B wrap: drop the queued audio
+        // and keep the device. Rebuilding it here cost an audible gap on every
+        // loop wrap and many a second under a held skim key (issue #229).
+        // close() + open() is the fallback when the stream itself is broken.
+        if (!state.sink->flush()) {
+          const auto endpoint = state.sink->info();
+          state.sink->close();
+          state.sink_open = false;
+          if (state.sink->open(endpoint.sample_rate, endpoint.channels)) state.sink_open = true;
+        }
         state.audio_master.store(state.sink_open);
         // A seek after the track played out: the endpoint is master again.
         if (state.sink_open) state.fallback.store(clock_fallback_reason::none);

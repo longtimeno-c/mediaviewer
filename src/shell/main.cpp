@@ -362,6 +362,11 @@ struct app_state {
   int  rate_index = 2;  // kRateLadder: 1.00x
   float volume = 1.0f;  // 0..1, Up / Down on a clip
   bool muted = false;   // Shift+M; a fresh clip starts unmuted
+  // Issue #214: the More flyout's audio track (a fresh clip starts on 0) and
+  // its A-B loop's A. Native owns both, as it owns volume and mute, and
+  // pushes them back (push_audio) so the flyout and the keys agree.
+  std::uint32_t audio_track = 0;
+  std::int64_t loop_a_ns = 0;
   mv::shell::view_settings settings;
   HWND window = nullptr;
   mv::shell::chrome_host chrome;
@@ -2291,6 +2296,55 @@ void apply_trim_preview(app_state* app) noexcept {
   }
 }
 
+// Issue #214: the More flyout is a view of volume, mute and the audio track,
+// as the speed dropdown is of the rate, so the keys and the flyout cannot drift.
+void push_audio(app_state* app) noexcept {
+  if (app) app->chrome.apply_audio(app->volume, app->muted, app->audio_track);
+}
+
+void set_clip_volume(app_state* app, float volume) noexcept {
+  if (!app || !app->session) return;
+  app->volume = std::clamp(volume, 0.0f, 1.0f);
+  (void)mv_video_set_volume(app->session, app->volume);
+  push_audio(app);
+}
+
+void set_clip_muted(app_state* app, bool muted) noexcept {
+  if (!app || !app->session) return;
+  app->muted = muted;
+  (void)mv_video_set_muted(app->session, app->muted ? 1 : 0);
+  push_audio(app);
+}
+
+void set_clip_audio_track(app_state* app, std::uint32_t track) noexcept {
+  if (!app || !app->session) return;
+  app->audio_track = track;
+  (void)mv_video_select_audio_track(app->session, track);
+  push_audio(app);
+}
+
+// The More flyout's A-B loop. The player has one loop, so a loop set here
+// replaces trim's P preview, and the Trim pane must stop offering "Stop preview".
+void apply_ab_loop(app_state* app, int action) noexcept {
+  using mv::shell::chrome_loop_action;
+  if (!app || !app->session || !video_mode(app)) return;
+  const auto a = static_cast<chrome_loop_action>(action);
+  if (a == chrome_loop_action::set_a) {
+    app->loop_a_ns = clip_position(app);
+    return;
+  }
+  if (a != chrome_loop_action::set_b && a != chrome_loop_action::clear) return;
+  if (app->trim.previewing()) {
+    (void)app->trim.toggle_preview();
+    push_trim(app);
+  }
+  if (a == chrome_loop_action::set_b) {
+    (void)mv_video_set_loop(app->session, app->loop_a_ns, clip_position(app));
+  } else {
+    (void)mv_video_set_loop(app->session, 0, -1);
+  }
+}
+
 // The item changed: trim and its markers belong to the clip that was left.
 void trim_item_opened(app_state* app) noexcept {
   if (!app || app->trim.path().empty()) return;
@@ -4132,6 +4186,9 @@ void chrome_on_command(void* ctx, int command, float arg) {
         // Volume, unlike the rate, is the listener's and carries across clips.
         (void)mv_video_set_volume(app->session, app->volume);
         app->muted = false;
+        app->audio_track = 0;
+        app->loop_a_ns = 0;
+        push_audio(app);
       }
       apply_view_state(app);
       workspace_item_changed(app);  // PR 29: a clip playing is Trim's subject
@@ -4215,6 +4272,19 @@ void chrome_on_command(void* ctx, int command, float arg) {
     // A document's "Open in <app>": arg is the row SetEditView listed, -1 the default.
     case mv::shell::chrome_cmd_open_in_app:
       open_document_with(app, static_cast<int>(arg));
+      return;
+    // Issue #214: the transport's More flyout, through the same state as the keys.
+    case mv::shell::chrome_cmd_video_volume:
+      set_clip_volume(app, arg);
+      return;
+    case mv::shell::chrome_cmd_video_muted:
+      set_clip_muted(app, arg != 0.0f);
+      return;
+    case mv::shell::chrome_cmd_video_track:
+      if (arg >= 0.0f) set_clip_audio_track(app, static_cast<std::uint32_t>(arg));
+      return;
+    case mv::shell::chrome_cmd_video_loop:
+      apply_ab_loop(app, static_cast<int>(arg));
       return;
     case mv::shell::chrome_cmd_edit_action:
       run_edit_action(app, static_cast<int>(arg));
@@ -5035,6 +5105,10 @@ void refresh_contributed_commands(app_state* app) noexcept {
     }
   }
   mv::shell::set_addon_commands(rows);
+  // rebuild forgets held keys; release them first (issue #186).
+  mv::shell::command_id released[mv::shell::key_router::kHeldSlots]{};
+  const std::size_t n = app->router.cancel_holds(released);
+  for (std::size_t i = 0; i < n; ++i) (void)run_command(app, released[i]);
   app->router.rebuild(mv::shell::live_bindings());
 }
 
@@ -6096,8 +6170,7 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     case pause: (void)mv_video_pause(app->session); return true;
     case mute:
       if (!video_mode(app)) return false;
-      app->muted = !app->muted;
-      (void)mv_video_set_muted(app->session, app->muted ? 1 : 0);
+      set_clip_muted(app, !app->muted);
       return true;
     // docs/design/16: J / L are -10 s / +10 s, and a jump is not part of a skim burst.
     case jump_back:
@@ -6168,8 +6241,7 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
         }
         // A fitted clip has nothing to pan: ↑ ↓ are its volume.
         if ((command == pan_up || command == pan_down) && video_mode(app)) {
-          app->volume = std::clamp(app->volume + (command == pan_up ? 0.1f : -0.1f), 0.0f, 1.0f);
-          (void)mv_video_set_volume(app->session, app->volume);
+          set_clip_volume(app, app->volume + (command == pan_up ? 0.1f : -0.1f));
           return true;
         }
         return false;
@@ -7723,7 +7795,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
     if (!instance_claim.claim()) {
       // Another start claimed the name between our look and our claim.
       if (mv::shell::forward_to_running_instance(requested_paths)) return 0;
-      MV_LOG_WARN("single instance: another MediaViewer owns the pipe; this one runs alone");
+      MV_LOG_WARN("single instance: another process owns the pipe; this one runs alone");
     }
   }
 

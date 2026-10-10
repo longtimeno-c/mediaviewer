@@ -60,6 +60,9 @@ jobs:
       - name: Licence policy
         run: ./tools/licence-check.ps1
 
+      - name: Telemetry schema
+        run: ./tools/telemetry-schema-check.ps1
+
   # Build both chrome hosts directly, without waiting for the codec toolchain.
   # SwiftPM's static library needs the bridge declarations, not a linked core.
   mac-chrome:

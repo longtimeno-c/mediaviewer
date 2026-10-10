@@ -43,6 +43,14 @@ class audio_sink {
                                       std::uint32_t channels) = 0;
   virtual void close() noexcept = 0;
 
+  // [clock thread] Drops everything written but not yet played and restarts the
+  // stream on the SAME endpoint: a seek, rate change, track switch or A-B loop
+  // wrap. close() + open() rebuild the device and are for device loss only.
+  // played_ns() starts again from zero, which is not a discontinuity: the clock
+  // re-anchors on the next block. The caller guarantees no played_ns() reader is
+  // inside. An error means the stream is unusable; the caller rebuilds it.
+  [[nodiscard]] virtual expected flush() noexcept = 0;
+
   [[nodiscard]] virtual audio_endpoint_info info() const noexcept = 0;
 
   // [audio-thread] Returns frames accepted; may be < `frames` when the endpoint

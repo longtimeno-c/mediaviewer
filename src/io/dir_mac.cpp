@@ -5,12 +5,18 @@
 #include <CoreServices/CoreServices.h>
 #include <dispatch/dispatch.h>
 #include <dirent.h>
+#include <fcntl.h>
+#include <sys/attr.h>
 #include <sys/stat.h>
+#include <sys/vnode.h>
+#include <unistd.h>
 
 #include <algorithm>
+#include <cerrno>
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <new>
 
 namespace mv::io {
 namespace {
@@ -88,37 +94,119 @@ bool may_be_dir(const dirent* ent) noexcept {
 result<std::vector<dir_entry>> list_still_files(std::string_view utf8_dir) {
   if (utf8_dir.empty()) return err(status::invalid_arg);
 
+  // getattrlistbulk, not readdir + a stat per file: name, type, flags, mtime and
+  // size come back with the listing, a buffer of entries per call, as
+  // FindFirstFileEx hands them to dir_win.cpp. On SMB/AFP the per-file lstat was
+  // a round-trip each, so a 2000-file dump paid 2000 before the listing existed.
   std::string dir_path(utf8_dir);
-  DIR* d = ::opendir(dir_path.c_str());
-  if (!d) return err(status::io);
+  const int fd = ::open(dir_path.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (fd < 0) return err(status::io);
+
+  attrlist req{};
+  req.bitmapcount = ATTR_BIT_MAP_COUNT;
+  req.commonattr = ATTR_CMN_RETURNED_ATTRS | ATTR_CMN_NAME | ATTR_CMN_ERROR | ATTR_CMN_OBJTYPE |
+                   ATTR_CMN_MODTIME | ATTR_CMN_FLAGS;
+  req.fileattr = ATTR_FILE_DATALENGTH;
+
+  // Entries are packed back to back, 4-byte aligned; off_t and timespec are
+  // read with memcpy for that reason.
+  constexpr std::size_t kBufBytes = 64 * 1024;
+  const std::unique_ptr<char[]> buf(new (std::nothrow) char[kBufBytes]);
+  if (!buf) {
+    ::close(fd);
+    return err(status::out_of_memory);
+  }
 
   std::vector<dir_entry> out;
-  while (dirent* ent = ::readdir(d)) {
-    const std::string_view name(ent->d_name);
-    if (name == "." || name == "..") continue;
-    // Companion hiding (docs/design/04): dotfiles cover .DS_Store, AppleDouble
-    // "._foo", and ordinary Unix hidden files in one check.
-    if (!name.empty() && name.front() == '.') continue;
-    if (iequals_ascii(name, "Thumbs.db") || iequals_ascii(name, "desktop.ini")) continue;
-    if (!still_extension(name)) continue;
-    if (ent->d_type == DT_DIR) continue;
+  bool read_any = false;
+  for (;;) {
+    const int count = ::getattrlistbulk(fd, &req, buf.get(), kBufBytes, 0);
+    if (count < 0) {
+      if (errno == EINTR) continue;
+      // Mid-listing failure keeps what was read, as readdir stopping early did.
+      if (!read_any) {
+        ::close(fd);
+        return err(status::io);
+      }
+      break;
+    }
+    if (count == 0) break;
+    read_any = true;
 
-    const std::string full = join_utf8(utf8_dir, name);
-    struct stat st{};
-    if (::lstat(full.c_str(), &st) != 0) continue;
-    if (S_ISDIR(st.st_mode)) continue;
-#ifdef UF_HIDDEN
-    if (st.st_flags & UF_HIDDEN) continue;
-#endif
+    const char* entry = buf.get();
+    for (int i = 0; i < count; ++i) {
+      std::uint32_t length = 0;
+      std::memcpy(&length, entry, sizeof(length));
+      const char* field = entry + sizeof(length);
+      entry += length;  // advance first: every skip below is a `continue`
 
-    dir_entry e;
-    e.name_utf8 = std::string(name);
-    e.path_utf8 = full;
-    e.size = static_cast<std::uint64_t>(st.st_size);
-    e.mtime_unix = static_cast<std::int64_t>(st.st_mtimespec.tv_sec);
-    out.push_back(std::move(e));
+      attribute_set_t returned{};
+      std::memcpy(&returned, field, sizeof(returned));
+      field += sizeof(returned);
+      if (returned.commonattr & ATTR_CMN_ERROR) {
+        std::uint32_t error = 0;
+        std::memcpy(&error, field, sizeof(error));
+        field += sizeof(error);
+        if (error != 0) continue;
+      }
+      if (!(returned.commonattr & ATTR_CMN_NAME)) continue;
+      attrreference_t name_ref{};
+      std::memcpy(&name_ref, field, sizeof(name_ref));
+      const char* const name_ptr = field + name_ref.attr_dataoffset;
+      field += sizeof(name_ref);
+      // attr_length counts the terminating NUL.
+      const std::string_view name(name_ptr, name_ref.attr_length > 0 ? name_ref.attr_length - 1 : 0);
+
+      fsobj_type_t type = VNON;
+      if (returned.commonattr & ATTR_CMN_OBJTYPE) {
+        std::memcpy(&type, field, sizeof(type));
+        field += sizeof(type);
+      }
+      timespec mtime{};
+      if (returned.commonattr & ATTR_CMN_MODTIME) {
+        std::memcpy(&mtime, field, sizeof(mtime));
+        field += sizeof(mtime);
+      }
+      std::uint32_t flags = 0;
+      if (returned.commonattr & ATTR_CMN_FLAGS) {
+        std::memcpy(&flags, field, sizeof(flags));
+        field += sizeof(flags);
+      }
+      off_t size = 0;
+      if (returned.fileattr & ATTR_FILE_DATALENGTH) {
+        std::memcpy(&size, field, sizeof(size));
+        field += sizeof(size);
+      }
+
+      if (name.empty() || name == "." || name == "..") continue;
+      // Companion hiding (docs/design/04): dotfiles cover .DS_Store, AppleDouble
+      // "._foo", and ordinary Unix hidden files in one check.
+      if (name.front() == '.') continue;
+      if (iequals_ascii(name, "Thumbs.db") || iequals_ascii(name, "desktop.ini")) continue;
+      if (!still_extension(name)) continue;
+      if (flags & UF_HIDDEN) continue;
+      if (type != VREG && type != VLNK) continue;
+
+      std::string full = join_utf8(utf8_dir, name);
+      if (type == VLNK) {
+        // Only a link costs a stat, and it follows the link: the target's size
+        // and mtime are what the thumbnail cache keys on (path + size + mtime),
+        // not the link's own.
+        struct stat st{};
+        if (::stat(full.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) continue;
+        size = st.st_size;
+        mtime = st.st_mtimespec;
+      }
+
+      dir_entry e;
+      e.name_utf8 = std::string(name);
+      e.path_utf8 = std::move(full);
+      e.size = static_cast<std::uint64_t>(size);
+      e.mtime_unix = static_cast<std::int64_t>(mtime.tv_sec);
+      out.push_back(std::move(e));
+    }
   }
-  ::closedir(d);
+  ::close(fd);
 
   std::sort(out.begin(), out.end(), [](const dir_entry& a, const dir_entry& b) {
     return less_casefold(a.name_utf8, b.name_utf8);

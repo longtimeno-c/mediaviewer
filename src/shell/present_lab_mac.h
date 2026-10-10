@@ -144,6 +144,13 @@ class present_lab_mac {
   [[nodiscard]] bool showing_still() const noexcept {
     return shown_item_.load(std::memory_order_acquire) != 0;
   }
+  // [any-thread][no-block] True while nothing is open or the camera is in fit
+  // mode, as of the render thread's last input pass: the host lets ↑ ↓ fall
+  // through at fit (docs/design/16: they pan only when zoomed). The Windows
+  // lab's twin.
+  [[nodiscard]] bool view_fitted() const noexcept {
+    return view_fitted_.load(std::memory_order_relaxed);
+  }
 
   // [UI thread] Decode the neighbours of the item just opened into the still
   // cache (Windows' ±2 prefetch, abi.cpp submit_prefetch), at the current view
@@ -357,6 +364,9 @@ class present_lab_mac {
   std::uint64_t cleared_applied_ = 0;  // render thread
   std::unique_ptr<image::gpu_image_mac> current_image_;
   std::unique_ptr<image::gpu_image_mac> fade_from_;
+  // Hold `\` (docs/design/16): the last *different* still, kept when the next
+  // one lands, so burst pick swaps textures and never decodes.
+  std::unique_ptr<image::gpu_image_mac> previous_image_;
   canvas::crossfade fade_;
   std::atomic<std::uint32_t> stills_shown_{0};
 
@@ -488,6 +498,11 @@ class present_lab_mac {
   // the Windows shell) rather than published as a delta.
   std::uint32_t seen_fit_seq_ = 0;
   std::uint32_t seen_one_to_one_seq_ = 0;
+  std::uint32_t seen_zoom_in_seq_ = 0;
+  std::uint32_t seen_zoom_out_seq_ = 0;
+  std::uint32_t seen_zoom_preset_seq_ = 0;
+  std::uint32_t seen_fill_seq_ = 0;
+  std::atomic<bool> view_fitted_{true};
   std::uint32_t seen_page_land_seq_ = 0;
   float last_mouse_x_ = 0.0f;
   float last_mouse_y_ = 0.0f;

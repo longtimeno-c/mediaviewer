@@ -137,7 +137,10 @@ surface format is unsupported. It is never silent: `mv_video_info.decoder` repor
   A failed retry is not a rebuild: `device_rebuilds` counts devices lost, `fallback_reason`
   stays `device_open_failed` until an open succeeds, and the failure is logged once.
 - **Device change** (`IMMNotificationClient` on Windows) rebuilds the audio client and re-seeds
-  the clock without interrupting video.
+  the clock without interrupting video. Device loss is the only rebuild: a seek, rate change,
+  track switch or A–B wrap **flushes** the endpoint (`audio_sink::flush`: WASAPI
+  `Stop`/`Reset`/`Start`, `AudioUnitReset` on the Mac) and keeps the device, falling back to a
+  rebuild only if the flush fails.
 - Stats are published wait-free (`core/spsc_ring.h`); `player/` makes no ImGui calls.
 
 ## Transport & seeking

@@ -276,7 +276,8 @@ class Refusals(unittest.TestCase):
                     self.assertEqual(said[0]["ok"], ours)
 
     def test_unsafe_paths(self):
-        for bad in ("../evil", "/abs", "a\\b", "C:x", "a//b", "folder/"):
+        for bad in ("../evil", "/abs", "a\\b", "C:x", "a//b", "folder/", "themes/COM1",
+                    "nul.json", "Aux .json", "lpt\u00b9", "themes/dusk.", "themes /x", "a?b", "a*b"):
             with self.subTest(path=bad):
                 files = {"themes/dusk.json": THEME}
                 package = signed(manifest_for(files), dict(files, **{bad: b"x"}))

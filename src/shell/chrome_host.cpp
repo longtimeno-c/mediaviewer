@@ -294,6 +294,9 @@ expected chrome_host::load() noexcept {
   // Optional: without them a drag carries one cell and Open lists no recents.
   set_drag_paths_ = get_entry(L"SetDragPaths");
   set_recent_folders_ = get_entry(L"SetRecentFolders");
+  // Optional the same way (issue #214): without it the More flyout's audio
+  // controls do not follow the keys.
+  apply_audio_ = get_entry(L"ApplyAudio");
   // Optional the same way: file search (Ctrl+F without Local search, its Esc
   // and filter steps).
   gallery_search_ = get_entry(L"GallerySearch");
@@ -347,9 +350,9 @@ void chrome_host::refresh_island_windows() noexcept {
       island_hwnds_[island] = reinterpret_cast<HWND>(static_cast<std::intptr_t>(args.hwnd));
     }
   }
-  // The pane islands are asked for by ids past the focus kinds (6 metadata, 7 tree).
-  for (int i = 0; i < 2; ++i) {
-    island_window_args args{6 + i, 0, 0};
+  // The pane islands are asked for by ids past the focus kinds (kPaneIslandIds).
+  for (int i = 0; i < kPaneIslandCount; ++i) {
+    island_window_args args{kPaneIslandIds[i], 0, 0};
     if (island_window_(&args, static_cast<std::int32_t>(sizeof(args))) == 0) {
       pane_hwnds_[i] = reinterpret_cast<HWND>(static_cast<std::intptr_t>(args.hwnd));
     }
@@ -378,21 +381,28 @@ bool chrome_host::cursor_over_transport() const noexcept {
   return ::GetWindowRect(root, &r) && ::PtInRect(&r, pt);
 }
 
-focus_kind chrome_host::classify_focus(HWND focus, HWND canvas) const noexcept {
+focus_kind classify_island_focus(HWND focus, HWND canvas, const HWND* islands, int island_count,
+                                 const HWND* panes, int pane_count) noexcept {
   if (focus && focus == canvas) return focus_kind::canvas;
   for (int island = static_cast<int>(focus_kind::command_bar);
-       island <= static_cast<int>(focus_kind::transport); ++island) {
-    const HWND root = island_hwnds_[island];
+       island <= static_cast<int>(focus_kind::transport) && island < island_count; ++island) {
+    const HWND root = islands[island];
     if (root && focus && (focus == root || ::IsChild(root, focus))) {
       return static_cast<focus_kind>(island);
     }
   }
-  for (const HWND root : pane_hwnds_) {
+  for (int i = 0; i < pane_count; ++i) {
+    const HWND root = panes[i];
     if (root && focus && (focus == root || ::IsChild(root, focus))) return focus_kind::pane;
   }
   // A flyout's own popup window, or anything unrecognised: never the canvas,
   // so the router leaves traversal keys to XAML.
   return focus_kind::command_bar;
+}
+
+focus_kind chrome_host::classify_focus(HWND focus, HWND canvas) const noexcept {
+  return classify_island_focus(focus, canvas, island_hwnds_, static_cast<int>(std::size(island_hwnds_)),
+                               pane_hwnds_, kPaneIslandCount);
 }
 
 expected chrome_host::attach(HWND parent, void* context, chrome_command_fn on_command,
@@ -864,6 +874,15 @@ void chrome_host::apply_rate(float rate) noexcept {
   chrome_rate_args args{};
   args.rate = rate;
   (void)apply_rate_(&args, static_cast<std::int32_t>(sizeof(args)));
+}
+
+void chrome_host::apply_audio(float volume, bool muted, std::uint32_t track) noexcept {
+  if (!attached_ || !apply_audio_) return;
+  chrome_audio_args args{};
+  args.volume = volume;
+  args.muted = muted ? 1 : 0;
+  args.track = static_cast<std::int32_t>(track);
+  (void)apply_audio_(&args, static_cast<std::int32_t>(sizeof(args)));
 }
 
 void chrome_host::set_command_table(const std::string& utf8) noexcept {

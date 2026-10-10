@@ -82,6 +82,7 @@
 #include "shell/meta_writer.h"
 #include "io/sort_order.h"
 #include "shell/settings.h"
+#include "shell/slideshow.h"
 #include "shell/input_state.h"
 #include "io/pairing.h"
 #include "shell/install_from_dmg_mac.h"
@@ -153,6 +154,12 @@ static bool MvCommandSupported(mv::shell::command_id c) {
     case reveal_in_explorer: case open_settings: case cycle_background: case sticky_zoom:
     case reset_stats: case always_on_top: case close_window: case new_window: case pan_up: case pan_down:
     case folder_up: case folder_prev: case folder_next:
+    // Issue #183: the View keys, the loupe, hold-previous and the slideshow's
+    // blackout and shuffle, ported from the Windows host.
+    case zoom_in: case zoom_out: case zoom_200: case zoom_400: case fill: case pan_left:
+    case pan_right: case clipping: case loupe: case loupe_release: case loupe_nudge_left:
+    case loupe_nudge_right: case loupe_nudge_up: case loupe_nudge_down: case hold_previous:
+    case hold_previous_release: case blackout: case shuffle:
     // PR 9
     case info_overlay: case af_points: case eyedropper: case copy_clipboard: case metadata_pane: case folder_tree:
     // PR 10
@@ -223,6 +230,10 @@ bool MvClaimAddonHost() {
 }
 
 constexpr std::int64_t kShownStampUnknown = INT64_MIN;
+// view_fitted is the render thread's last pass; a `1` then ↓ inside one frame
+// would read the old fit. Zoom commands open this window so the first ↓ after
+// them pans instead of falling through (main.cpp kZoomIntentMs).
+constexpr double kZoomIntentSeconds = 0.25;
 // _shownMoment after a new search: matches no moment, so the clip reopens.
 constexpr std::int64_t kShownMomentStale = INT64_MIN;
 
@@ -308,6 +319,13 @@ extern "C" void mv_chrome_fit(void) {
 extern "C" void mv_chrome_one_to_one(void) {
   if (!g_chrome_snap) return;
   ++g_chrome_snap->one_to_one_seq;
+  if (g_chrome_lab) g_chrome_lab->publish(*g_chrome_snap);
+  if (g_chrome_lab) g_chrome_lab->wake();
+}
+extern "C" void mv_chrome_zoom_preset(float factor) {
+  if (!g_chrome_snap || !(factor > 0.0f)) return;
+  g_chrome_snap->zoom_preset = factor;
+  ++g_chrome_snap->zoom_preset_seq;
   if (g_chrome_lab) g_chrome_lab->publish(*g_chrome_snap);
   if (g_chrome_lab) g_chrome_lab->wake();
 }
@@ -576,6 +594,8 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (BOOL)currentItemIsAudio;
 - (BOOL)itemIsVideoAtIndex:(NSInteger)index;
 - (uint64_t)marksGeneration;
+- (uint64_t)thumbGeneration;
+- (std::string)thumbKeyAtIndex:(NSInteger)index;
 - (BOOL)isIndexMarked:(NSInteger)index;
 - (NSInteger)markedCount;
 
@@ -821,6 +841,9 @@ extern "C" void mv_chrome_select_index_and_close_gallery(int32_t index) {
 extern "C" uint64_t mv_chrome_listing_generation(void) {
   return g_chrome_app ? [g_chrome_app listingGeneration] : 0;
 }
+extern "C" uint64_t mv_chrome_thumb_generation(void) {
+  return g_chrome_app ? [g_chrome_app thumbGeneration] : 0;
+}
 extern "C" uint64_t mv_chrome_marks_generation(void) {
   return g_chrome_app ? [g_chrome_app marksGeneration] : 0;
 }
@@ -1048,6 +1071,9 @@ extern "C" int32_t mv_chrome_current_item_path(char* buf, int32_t size) {
 // A gallery / filmstrip file drag (FileDrag.swift): the original's path, no I/O.
 extern "C" int32_t mv_chrome_item_path(int32_t index, char* buf, int32_t size) {
   return MvCopyOut(g_chrome_app ? [g_chrome_app itemPathAtIndex:index] : std::string{}, buf, size);
+}
+extern "C" int32_t mv_chrome_item_thumb_key(int32_t index, char* buf, int32_t size) {
+  return MvCopyOut(g_chrome_app ? [g_chrome_app thumbKeyAtIndex:index] : std::string{}, buf, size);
 }
 
 extern "C" uint64_t mv_chrome_meta_generation(void) {
@@ -1416,6 +1442,12 @@ extern "C" void mv_chrome_run_command(int32_t command_id) {
   if (mv::shell::is_reserved_notification(command_id) || mv::shell::is_retired_command(command_id)) return;
   [g_chrome_app runCommand:static_cast<mv::shell::command_id>(command_id) back:mv::shell::back_target::none];
 }
+// CommandBarView.swift's ViewCommand spells these ids out (Swift cannot see commands.h).
+static_assert(static_cast<int>(mv::shell::command_id::zoom_in) == 4);
+static_assert(static_cast<int>(mv::shell::command_id::zoom_out) == 5);
+static_assert(static_cast<int>(mv::shell::command_id::zoom_200) == 39);
+static_assert(static_cast<int>(mv::shell::command_id::zoom_400) == 40);
+static_assert(static_cast<int>(mv::shell::command_id::clipping) == 46);
 extern "C" uint64_t mv_chrome_trim_generation(void) {
   return g_chrome_app ? [g_chrome_app trimGeneration] : 0;
 }
@@ -1714,6 +1746,13 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   // where A / D would walk the folder out from under the edit.
   return !(self.app && [self.app editorOwnsCanvas]);
 }
+- (BOOL)resignFirstResponder {
+  // Issue #186: a command that hands focus to a pane (adjust, metadata, Jobs,
+  // the gallery) or a click into one takes the key-up with it. Release what
+  // the canvas holds now, or a held Y keeps showing the original.
+  if (self.app) [self.app cancelKeyHolds];
+  return [super resignFirstResponder];
+}
 - (BOOL)isOpaque {
   return YES;
 }
@@ -1912,9 +1951,9 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
     (void)[self.app welcomePointerMoved];
     [NSCursor.arrowCursor set];
   }
-  if (self.snap->eyedropper) ++self.snap->activity_seq;
+  if (self.snap->eyedropper || self.snap->loupe) ++self.snap->activity_seq;
   [self publish];
-  if (self.snap->eyedropper && self.lab) self.lab->wake();
+  if ((self.snap->eyedropper || self.snap->loupe) && self.lab) self.lab->wake();
   if (self.app) [self.app transportActivity];  // a pointer hidden over the video comes back
 }
 - (void)trackPointer:(NSEvent*)event {
@@ -1931,9 +1970,9 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   if (self.app && self.snap->recents.count > 0) {
     [([self.app welcomePointerMoved] ? NSCursor.pointingHandCursor : NSCursor.arrowCursor) set];
   }
-  if (self.snap->eyedropper) ++self.snap->activity_seq;
+  if (self.snap->eyedropper || self.snap->loupe) ++self.snap->activity_seq;
   [self publish];
-  if (self.snap->eyedropper && self.lab) self.lab->wake();
+  if ((self.snap->eyedropper || self.snap->loupe) && self.lab) self.lab->wake();
   // Issue #38: movement (and entry, which arrives as a move) wakes the clip's
   // transport. A bool test and nothing else when no clip is on screen.
   if (self.app) [self.app transportActivity];
@@ -2151,6 +2190,10 @@ static void MvAdoptNewDefaultViewerTypes() {
   // Bumped by every change to `_marks`; Swift rebuilds its marked-name set
   // when it moves (mv_chrome_marks_generation).
   std::uint64_t _marksGeneration;
+  // Bumped when the app rewrites a listed file in place (lossless rotate, a
+  // metadata write) and refreshes its size / mtime without a relist: Swift
+  // re-reads the thumbnail keys when it moves (mv_chrome_thumb_generation).
+  std::uint64_t _thumbGeneration;
   BOOL _helpVisible;
 
   // Settings screen + the router. _viewFlags uses the same bit layout as
@@ -2201,6 +2244,13 @@ static void MvAdoptNewDefaultViewerTypes() {
   BOOL _enteredFullscreenForSlideshow;
   double _slideshowIntervalSeconds;
   NSTimer* _slideshowTimer;
+  // `R` in a slideshow: the shared no-repeat order (shell/slideshow.h). Only its
+  // shuffle is used here; the timer above keeps the interval. Blackout (`.`)
+  // is _snap.blackout.
+  mv::shell::slideshow _slideshowOrder;
+  // When a zoom command last ran (CACurrentMediaTime), 0 after fit: see
+  // kZoomIntentSeconds.
+  double _zoomIntentAt;
 
   // Filmstrip/gallery visibility (docs/design/16 View table's T/G, folded-in PR 4,
   // docs/design/12 2026-09-17). _filmstripVisible is the wish; -filmstripVisible is
@@ -2315,6 +2365,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   bool _shuttleSkimmed;                   // a J burst left a keyframe-seek to settle
   std::int64_t _shuttleTarget;            // where the last J was going (program time)
   BOOL _editorClosePrompt;                // the discard sheet is up
+  BOOL _closeAfterEditor;                 // the viewer window closes once the editor has
   int32_t _editorTrimIndex;               // the piece whose edge is being dragged
   int32_t _editorTrimEdge;                // 0 in, 1 out
   double _soakHold, _soakCpu0, _soakWall0, _soakPlayCpu, _soakPlayWall, _soakPausedCpu;
@@ -2398,6 +2449,8 @@ static void MvAdoptNewDefaultViewerTypes() {
                   backing:NSBackingStoreBuffered
                     defer:NO];
   self.window.title = @"MediaViewer";
+  // self.window holds it: AppKit's release on close would over-release it under ARC.
+  self.window.releasedWhenClosed = NO;
   // Single-window viewer: without this AppKit adds Show Tab Bar / Show All
   // Tabs to the View menu.
   self.window.tabbingMode = NSWindowTabbingModeDisallowed;
@@ -3706,11 +3759,24 @@ static void MvAdoptNewDefaultViewerTypes() {
   return _slideshowActive;
 }
 
+// The timer's tick: the next item in folder order, or in the shuffled order
+// once `R` turned it on (every item once per round, wrapping as browse does).
+- (void)slideshowAdvance {
+  if (_items.empty()) return;
+  if (!_slideshowOrder.shuffled()) {
+    [self navigateNext];
+    return;
+  }
+  const auto current = static_cast<std::uint32_t>(_index.current());
+  _slideshowOrder.set_count(static_cast<std::uint32_t>(_items.size()), current);
+  if (const auto next = _slideshowOrder.next(current, _index.wrap())) [self selectIndex:*next];
+}
+
 - (void)armSlideshowTimer {
   [_slideshowTimer invalidate];
   _slideshowTimer = [NSTimer scheduledTimerWithTimeInterval:_slideshowIntervalSeconds
                                                       target:self
-                                                    selector:@selector(navigateNext)
+                                                    selector:@selector(slideshowAdvance)
                                                     userInfo:nil
                                                      repeats:YES];
 }
@@ -3723,6 +3789,10 @@ static void MvAdoptNewDefaultViewerTypes() {
   // not; leaving puts it back)".
   _enteredFullscreenForSlideshow = (self.window.styleMask & NSWindowStyleMaskFullScreen) ? NO : YES;
   if (_enteredFullscreenForSlideshow) [self.window toggleFullScreen:nil];
+  _slideshowOrder.start(static_cast<std::uint32_t>(_items.size()),
+                        static_cast<std::uint32_t>(_index.current()),
+                        static_cast<std::uint64_t>(CACurrentMediaTime() * 1000.0));
+  _snap.blackout = false;
   [self armSlideshowTimer];
 }
 
@@ -3732,6 +3802,11 @@ static void MvAdoptNewDefaultViewerTypes() {
   _slideshowPaused = NO;
   [_slideshowTimer invalidate];
   _slideshowTimer = nil;
+  _slideshowOrder.stop();
+  if (_snap.blackout) {
+    _snap.blackout = false;
+    [self pokeSnapshot];
+  }
   if (_enteredFullscreenForSlideshow && (self.window.styleMask & NSWindowStyleMaskFullScreen)) {
     [self.window toggleFullScreen:nil];
   }
@@ -3799,19 +3874,20 @@ static void MvAdoptNewDefaultViewerTypes() {
   if (index < 0 || static_cast<std::size_t>(index) >= _items.size()) return;
   const mv::io::dir_entry& entry = _items[static_cast<std::size_t>(index)];
   // Captured by value (not read from `_items`/index again when the job
-  // completes): if a relist reorders `_items` between the request and the
-  // callback firing, `name` still names the file this thumbnail is actually
-  // for, which is exactly why mv_chrome_bridge.h keys the callback by name
-  // rather than by the index this request started at.
-  const std::string name = [self displayNameAt:static_cast<std::size_t>(index)];
+  // completes): if a relist reorders `_items` or another folder opens between
+  // the request and the callback firing, `key` still names the file (and the
+  // bytes) this thumbnail is actually for, which is exactly why
+  // mv_chrome_bridge.h keys the callback by it rather than by the index this
+  // request started at, or by a name another folder can repeat (issue #177).
+  const std::string key = [self thumbKeyAtIndex:index];
   // Milestone H: a result list's clip tile shows its matched moment.
   const auto at = static_cast<std::size_t>(index);
   const std::int64_t moment = _listOpen && at < _moments.size() ? _moments[at] : -1;
   _folder.request_thumb(entry.path_utf8, entry.mtime_unix, entry.size,
-                        [name](std::string /*path_utf8*/, std::string thumb_path) {
+                        [key](std::string /*path_utf8*/, std::string thumb_path) {
                           dispatch_async(dispatch_get_main_queue(), ^{
                             if (!g_thumb_ready_callback) return;
-                            g_thumb_ready_callback(name.c_str(), thumb_path.empty()
+                            g_thumb_ready_callback(key.c_str(), thumb_path.empty()
                                                                       ? nullptr
                                                                       : thumb_path.c_str());
                           });
@@ -3955,6 +4031,9 @@ static void MvAdoptNewDefaultViewerTypes() {
 }
 - (uint64_t)marksGeneration {
   return _marksGeneration;
+}
+- (uint64_t)thumbGeneration {
+  return _thumbGeneration;
 }
 - (NSInteger)markedCount {
   return static_cast<NSInteger>(_marks.size());
@@ -4564,6 +4643,15 @@ enum MvMenuCmd : NSInteger {
       item.hidden = ![self photosLibraryAvailable];
       return !item.hidden;
     case kMenuTrash:
+      // The menu answers ⌘⌫ before any first responder sees it (issue #180).
+      // A text field's ⌘⌫ is "delete to start of line"; in trim and crop
+      // Delete edits, in the Video Editor it removes a piece, and a slideshow
+      // is not browsing: none of them trashes the file on screen.
+      if ([NSApp.keyWindow.firstResponder isKindOfClass:[NSText class]] || _editorOpen || _slideshowActive ||
+          _edits.crop_active() || (_trim.armed() && [self currentItemIsVideo])) {
+        return NO;
+      }
+      [[fallthrough]];
     case kMenuMoveTo: {
       // Photos library files are never trashed or moved (issue #72). The
       // marks themselves, not a copy of their entries: this runs per validation.
@@ -5127,6 +5215,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   s.slideshow = _slideshowActive;
   s.fullscreen = (self.window.styleMask & NSWindowStyleMaskFullScreen) != 0;
   s.popup_open = _helpVisible;
+  s.loupe_held = _snap.loupe;
   if (!_items.empty()) _gameOn = NO;  // a file opened over the runner; the lab leaves it too
   s.game = _gameOn;
   s.settings_open = _settingsVisible;
@@ -5232,8 +5321,23 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   switch (command) {
     case open: [self openFolderPanel:NO]; return YES;
     case open_folder: [self openFolderPanel:YES]; return YES;
-    case fit: case reset_view: ++_snap.fit_seq; [self pokeSnapshot]; return YES;
-    case one_to_one: ++_snap.one_to_one_seq; [self pokeSnapshot]; return YES;
+    case fit: case reset_view:
+      _zoomIntentAt = 0.0;
+      ++_snap.fit_seq; [self pokeSnapshot]; return YES;
+    case one_to_one:
+      _zoomIntentAt = CACurrentMediaTime();
+      ++_snap.one_to_one_seq; [self pokeSnapshot]; return YES;
+    case zoom_in:
+      _zoomIntentAt = CACurrentMediaTime();
+      ++_snap.zoom_in_seq; [self pokeSnapshot]; return YES;
+    case zoom_out: ++_snap.zoom_out_seq; [self pokeSnapshot]; return YES;
+    case zoom_200: case zoom_400:
+      _snap.zoom_preset = command == zoom_200 ? 2.0f : 4.0f;
+      _zoomIntentAt = CACurrentMediaTime();
+      ++_snap.zoom_preset_seq; [self pokeSnapshot]; return YES;
+    case fill:
+      _zoomIntentAt = CACurrentMediaTime();
+      ++_snap.fill_seq; [self pokeSnapshot]; return YES;
     case overlay: ++_snap.toggle_overlay_seq; [self pokeSnapshot]; return YES;
     case reset_stats: ++_snap.reset_stats_seq; [self pokeSnapshot]; return YES;
     case game_toggle_3d:
@@ -5430,10 +5534,43 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     case mute:
       if (!clip) return NO;
       ++_snap.video_mute_seq; [self pokeSnapshot]; return YES;
-    // ↑ ↓ on a clip are its volume (the Mac view has no arrow-key pan).
-    case pan_up: case pan_down:
-      if (!clip) return NO;
-      _snap.video_volume_steps += command == pan_up ? 1 : -1; [self pokeSnapshot]; return YES;
+    // docs/design/16: pan only when zoomed. At fit the view is locked, so the key is
+    // not ours and falls through; on a fitted clip ↑ ↓ are its volume.
+    case pan_up: case pan_down: case pan_left: case pan_right: {
+      const bool zooming = _zoomIntentAt > 0.0 && CACurrentMediaTime() - _zoomIntentAt < kZoomIntentSeconds;
+      if (_lab.view_fitted() && !zooming) {
+        if (!clip || (command != pan_up && command != pan_down)) return NO;
+        _snap.video_volume_steps += command == pan_up ? 1 : -1; [self pokeSnapshot]; return YES;
+      }
+      if (command == pan_up) --_snap.pan_steps_y;
+      if (command == pan_down) ++_snap.pan_steps_y;
+      if (command == pan_left) --_snap.pan_steps_x;
+      if (command == pan_right) ++_snap.pan_steps_x;
+      [self pokeSnapshot];
+      return YES;
+    }
+    // View state the render thread draws from (levels, not edges).
+    case clipping: _snap.clipping = !_snap.clipping; [self pokeSnapshot]; return YES;
+    case loupe: case loupe_release:
+      // The loupe magnifies a still. On a clip or an empty canvas Z is not
+      // ours: do not swallow it and then draw nothing.
+      if (command == loupe && (clip || _items.empty() || !_lab.showing_still())) return NO;
+      _snap.loupe = command == loupe;
+      if (command == loupe) {
+        // Each hold starts at the cursor, or the canvas centre with none.
+        _snap.loupe_steps_x = 0;
+        _snap.loupe_steps_y = 0;
+      }
+      [self pokeSnapshot];
+      return YES;
+    case loupe_nudge_left: --_snap.loupe_steps_x; [self pokeSnapshot]; return YES;
+    case loupe_nudge_right: ++_snap.loupe_steps_x; [self pokeSnapshot]; return YES;
+    case loupe_nudge_up: --_snap.loupe_steps_y; [self pokeSnapshot]; return YES;
+    case loupe_nudge_down: ++_snap.loupe_steps_y; [self pokeSnapshot]; return YES;
+    case hold_previous: case hold_previous_release:
+      _snap.hold_previous = command == hold_previous;
+      [self pokeSnapshot];
+      return YES;
     case toggle_mark: [self toggleMarkCurrent]; return YES;
     case mark_all: [self markAll]; return YES;
     case unmark_all: [self unmarkAll]; return YES;
@@ -5452,6 +5589,16 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     case slideshow_pause: [self toggleSlideshowPause]; return YES;
     case slideshow_faster: [self adjustSlideshowInterval:-1.0]; return YES;
     case slideshow_slower: [self adjustSlideshowInterval:1.0]; return YES;
+    case blackout:
+      if (!_slideshowActive) return NO;
+      _snap.blackout = !_snap.blackout;
+      [self pokeSnapshot];
+      return YES;
+    case shuffle:
+      if (!_slideshowActive) return NO;
+      _slideshowOrder.toggle_shuffle(static_cast<std::uint32_t>(_index.current()),
+                                     static_cast<std::uint64_t>(CACurrentMediaTime() * 1000.0));
+      return YES;
     // PR 9. The overlays are levels the render thread draws from `_snap.meta`;
     // turning one on asks for the record if it is not already here, and never
     // reads the file a second time.
@@ -5833,6 +5980,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
       entry.size = static_cast<std::uint64_t>(st.st_size);
       entry.mtime_unix = static_cast<std::int64_t>(st.st_mtimespec.tv_sec);
     }
+    ++_thumbGeneration;
   }
   if (!_items.empty() && _index.current() < _items.size() &&
       _items[_index.current()].path_utf8 == path) {
@@ -6342,6 +6490,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   self.editorPreview = nil;
   self.editorChrome = nil;
   ++_editorGeneration;
+  if (_closeAfterEditor) return;  // the viewer window is closing too (issue #181)
   [self.window makeKeyAndOrderFront:nil];
   [self.window makeFirstResponder:self.view];
 }
@@ -6720,11 +6869,25 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
                   MvLabApp* me = weakSelf;
                   if (me == nil) return;
                   me->_editorClosePrompt = NO;
+                  const BOOL closeViewer = me->_closeAfterEditor;
                   if (response == NSAlertSecondButtonReturn) [me setEditorOpen:NO];
+                  me->_closeAfterEditor = NO;
+                  if (closeViewer && response == NSAlertSecondButtonReturn) [me.window close];
                 }];
 }
 
 - (BOOL)windowShouldClose:(NSWindow*)sender {
+  // Issue #181: the viewer window closing clears the chrome bridge and the
+  // folder, which the editor's chrome and canvas still use. The editor closes
+  // first, through the discard prompt when its edit is not exported; Discard
+  // then closes the viewer window, Keep editing leaves both open.
+  if (sender == self.window && _editorOpen) {
+    _closeAfterEditor = YES;
+    [self editorRequestClose];
+    if (_editorOpen) return NO;
+    _closeAfterEditor = NO;
+    return YES;
+  }
   if (self.editorWindow != nil && sender == self.editorWindow && _editorOpen && _timeline.edited() &&
       _timeline.revision() != _editorExportedRevision) {
     [self editorRequestClose];
@@ -7656,6 +7819,7 @@ static double mv_wall_seconds() {
       entry.size = new_size;
       entry.mtime_unix = new_mtime;
     }
+    ++_thumbGeneration;
     // The bytes changed, the pixels did not: keep the item's edits.
     _edits.metadata_rewritten(out.path, old_size, old_mtime, new_size, new_mtime);
   }
@@ -7785,7 +7949,8 @@ static double mv_wall_seconds() {
 }
 
 // Two results can share a file name (every camera writes IMG_0001.JPG). The
-// gallery keys thumbnails by name, so a repeated name gets its folder added.
+// tile captions and the gallery's marks go by name, so a repeated name gets
+// its folder added.
 - (void)makeListNames {
   _listNames.clear();
   _listNames.reserve(_items.size());
@@ -8309,6 +8474,25 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
   if (index < 0 || static_cast<std::size_t>(index) >= _items.size()) return {};
   return [self fileForEntry:_items[static_cast<std::size_t>(index)]];
 }
+// The gallery / filmstrip thumbnail key (mv_chrome_item_thumb_key): the
+// content identity the thumb cache already uses (path + size + mtime), plus a
+// result list's moment, so a same-named file in another folder or a rewritten
+// file never matches an old thumbnail (issue #177).
+- (std::string)thumbKeyAtIndex:(NSInteger)index {
+  if (index < 0 || static_cast<std::size_t>(index) >= _items.size()) return {};
+  const auto at = static_cast<std::size_t>(index);
+  const mv::io::dir_entry& entry = _items[at];
+  std::string key = entry.path_utf8;
+  key += '\n';
+  key += std::to_string(entry.size);
+  key += '\n';
+  key += std::to_string(entry.mtime_unix);
+  if (_listOpen && at < _moments.size() && _moments[at] >= 0) {
+    key += '\n';
+    key += std::to_string(_moments[at]);
+  }
+  return key;
+}
 
 - (void)setScrubMarkers:(std::vector<std::int64_t>)ms
                 current:(int32_t)current
@@ -8772,6 +8956,8 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
 - (uint64_t)keysGeneration { return _keysGeneration; }
 // docs/design/25: an add-on's rows came or went (addons_mac.mm).
 - (void)commandsChanged {
+  // rebuild forgets held keys; release them first (issue #186).
+  [self cancelKeyHolds];
   _router.rebuild(mv::shell::live_bindings());
   ++_keysGeneration;
 }
@@ -9004,8 +9190,8 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   _folderPollTimer = nil;
   // _slideshowTimer's target is self, retained by NSTimer until invalidated
   // -- nulling g_chrome_app above does not stop it, since it calls
-  // -navigateNext directly rather than through the bridge globals. Left
-  // running, it would keep firing -navigateNext/-selectIndex: on a
+  // -slideshowAdvance directly rather than through the bridge globals. Left
+  // running, it would keep firing -slideshowAdvance/-selectIndex: on a
   // half-torn-down MvLabApp after the window (and _folder) are gone, racing
   // -applicationShouldTerminate:'s own off-main-thread teardown. Not
   // routed through -leaveSlideshow: that also un-fullscreens the window,
