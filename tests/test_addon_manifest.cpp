@@ -149,6 +149,16 @@ TEST_CASE("manifest policy: platform, host API range, unsafe paths", "[addon][ma
             rejection::none);
   }
   REQUIRE(mv::addon::safe_relative_path("Import.bundle/Contents/MacOS/Import"));
+  // A name Windows would open as a device, or write somewhere else, is refused on every OS.
+  for (const char* bad : {"CON", "prn.json", "themes/Aux", "NUL.tar.gz", "com1", "LPT9.txt", "Com0",
+                          "nul /x", "com\xC2\xB2", "a.", "a ", "dir./x", "dir /x", "a<b", "a>b",
+                          "a\"b", "a|b", "a?b", "a*b"}) {
+    REQUIRE_FALSE(mv::addon::safe_relative_path(bad));
+  }
+  for (const char* good : {"console.json", "nul_theme.json", "com10", "lpt", "comx.json", "a.b/c d.json",
+                           ".hidden", "themes/aux-dark.json"}) {
+    REQUIRE(mv::addon::safe_relative_path(good));
+  }
   // The name is the add-on's folder on the Mac: never a way out of Add-ons/.
   for (const char* bad : {"..", ".", ".hidden", "a/b", "a\\b", "C:"}) {
     std::string m = manifest_json(files, "lib/mv_import.bin");

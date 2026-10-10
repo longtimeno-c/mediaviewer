@@ -25,7 +25,7 @@ struct FilmstripView: View {
                 index: index, name: store.names[index], isCurrent: index == store.currentIndex,
                 isMarked: store.markedNames.contains(store.names[index]),
                 isClip: store.isClip(at: index),
-                slot: store.slot(for: store.names[index])
+                thumbKey: store.thumbKey(at: index), slot: store.slot(at: index)
               )
               .id(index)
               .onTapGesture { store.select(index) }
@@ -55,6 +55,7 @@ private struct FilmstripCell: View {
   let isCurrent: Bool
   let isMarked: Bool
   let isClip: Bool
+  let thumbKey: String
   // Observed per cell: a thumbnail arriving re-renders this cell only.
   @ObservedObject var slot: ThumbSlot
 
@@ -78,7 +79,8 @@ private struct FilmstripCell: View {
     .overlay(alignment: .topTrailing) { if isMarked { MarkBadge() } }
     .onAppear { FolderStore.shared.requestThumbnailIfNeeded(at: index) }
     // Cells are identified by index: a new listing (a result list replacing
-    // the folder) reuses them without a fresh onAppear, so ask again.
-    .onChange(of: name) { _, _ in FolderStore.shared.requestThumbnailIfNeeded(at: index) }
+    // the folder, another folder with the same names) or a rewritten file
+    // reuses them without a fresh onAppear, so ask again.
+    .onChange(of: thumbKey) { _, _ in FolderStore.shared.requestThumbnailIfNeeded(at: index) }
   }
 }

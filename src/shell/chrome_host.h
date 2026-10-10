@@ -11,6 +11,7 @@
 #include <windows.h>
 
 #include <cstdint>
+#include <iterator>
 #include <string>
 
 #include "core/result.h"
@@ -130,6 +131,23 @@ enum chrome_command : int {
   // A document's "Open in <app>" (docs/design/20): arg is the row of the apps
   // set_edit_view last listed, or -1 for the default.
   chrome_cmd_open_in_app = 1030,
+  // Issue #214: the transport's More flyout. Native owns volume, mute, the
+  // audio track and the A-B loop, as it owns the rate, so the flyout and the
+  // keys (Up / Down, Shift+M, trim's P) cannot drift; native pushes the result
+  // back with apply_audio. video_volume: arg is 0..1. video_muted: arg != 0
+  // mutes. video_track: arg is the audio track index. video_loop: arg is a
+  // chrome_loop_action.
+  chrome_cmd_video_volume = 1031,
+  chrome_cmd_video_muted = 1032,
+  chrome_cmd_video_track = 1033,
+  chrome_cmd_video_loop = 1034,
+};
+
+// chrome_cmd_video_loop's argument. The C# side mirrors it.
+enum class chrome_loop_action : std::int32_t {
+  set_a = 0,  // remember the playhead as A
+  set_b = 1,  // loop A..playhead (A and B are normalised by the player)
+  clear = 2,
 };
 
 // chrome_cmd_editor_action's argument; 1-6 are mv_chrome_editor_edit's codes
@@ -266,6 +284,7 @@ static_assert(chrome_cmd_drag_items >= kCommandCount && chrome_cmd_drag_ended >=
 static_assert(chrome_cmd_open_recent >= kCommandCount);
 static_assert(chrome_cmd_editor_trim_grab >= kCommandCount && chrome_cmd_editor_trim_to >= kCommandCount);
 static_assert(chrome_cmd_open_in_app >= kCommandCount);
+static_assert(chrome_cmd_video_volume >= kCommandCount && chrome_cmd_video_loop >= kCommandCount);
 static_assert(is_reserved_notification(chrome_cmd_set_settings));
 static_assert(is_reserved_notification(chrome_cmd_folder_ready));
 static_assert(is_reserved_notification(chrome_cmd_video_active));
@@ -291,7 +310,9 @@ static_assert(is_reserved_notification(chrome_cmd_focus_changed));
       chrome_cmd_edit_tab, chrome_cmd_edit_action, chrome_cmd_meta_tags, chrome_cmd_meta_date,
       chrome_cmd_editor_seek, chrome_cmd_editor_action,
       chrome_cmd_drag_items, chrome_cmd_drag_ended, chrome_cmd_open_recent,
-      chrome_cmd_editor_trim_grab, chrome_cmd_editor_trim_to, chrome_cmd_open_in_app};
+      chrome_cmd_editor_trim_grab, chrome_cmd_editor_trim_to, chrome_cmd_open_in_app,
+      chrome_cmd_video_volume, chrome_cmd_video_muted, chrome_cmd_video_track,
+      chrome_cmd_video_loop};
   std::uint32_t h = 17;
   for (const int id : ids) h = h * 31u + static_cast<std::uint32_t>(id);
   return static_cast<std::int32_t>(h);
@@ -534,6 +555,16 @@ struct chrome_rate_args {
 
 static_assert(sizeof(chrome_rate_args) == 8, "keep in sync with ChromeRateArgs");
 
+// Issue #214: the same rule for the More flyout's volume, mute and audio track.
+struct chrome_audio_args {
+  float        volume;  // 0..1
+  std::int32_t muted;   // non-zero = muted
+  std::int32_t track;   // audio track index
+  std::int32_t reserved;
+};
+
+static_assert(sizeof(chrome_audio_args) == 16, "keep in sync with ChromeAudioArgs");
+
 struct chrome_navigate_args {
   std::int32_t reverse;  // non-zero = Shift+Tab
   std::int32_t reserved;
@@ -584,6 +615,21 @@ inline constexpr int kTransportSideDip = 16;    // minimum gap to the window's s
   if (dpi == 0) dpi = 96;
   return static_cast<int>((kTransportDip * static_cast<int>(dpi) + 48) / 96);
 }
+
+// IslandWindow ids of the islands that classify as focus_kind::pane, past the
+// focus kinds: metadata, folder tree (PR 9), adjust (PR 11), Edit workspace
+// (PR 29), Jobs (PR 13). The C# side numbers them the same (IslandHost.cs).
+// A pane missing here falls through to command_bar and the router runs viewer
+// commands on keys meant for it (issue #213).
+inline constexpr std::int32_t kPaneIslandIds[] = {6, 7, 8, 9, 10};
+inline constexpr int kPaneIslandCount = static_cast<int>(std::size(kPaneIslandIds));
+
+// classify_focus over explicit bridge windows. `islands` is indexed by
+// focus_kind [command_bar .. transport] (index 0 unused); `panes` are the pane
+// islands' roots. Split out so a host test can drive it with plain HWNDs.
+[[nodiscard]] focus_kind classify_island_focus(HWND focus, HWND canvas, const HWND* islands,
+                                               int island_count, const HWND* panes,
+                                               int pane_count) noexcept;
 
 class chrome_host {
  public:
@@ -762,6 +808,9 @@ class chrome_host {
 
   // Push the current playback rate into the command bar's speed dropdown.
   void apply_rate(float rate) noexcept;
+  // Issue #214: push volume, mute and the audio track into the More flyout.
+  // Optional entry point: a chrome without it ignores the call.
+  void apply_audio(float volume, bool muted, std::uint32_t track) noexcept;
 
   // The command table for `?` (describe_commands). Once at attach.
   void set_command_table(const std::string& utf8) noexcept;
@@ -866,6 +915,7 @@ class chrome_host {
   chrome_entry_fn detach_transport_ = nullptr;
   chrome_entry_fn apply_settings_ = nullptr;
   chrome_entry_fn apply_rate_ = nullptr;
+  chrome_entry_fn apply_audio_ = nullptr;
   chrome_entry_fn set_command_table_ = nullptr;
   chrome_entry_fn show_import_ = nullptr;
   chrome_entry_fn share_files_ = nullptr;
@@ -920,7 +970,7 @@ class chrome_host {
   chrome_entry_fn shutdown_for_exit_ = nullptr;
   // Indexed by focus_kind: [command_bar .. transport]. Refreshed after attach.
   HWND island_hwnds_[static_cast<int>(focus_kind::transport) + 1]{};
-  HWND pane_hwnds_[2]{};  // metadata pane, folder tree (PR 9)
+  HWND pane_hwnds_[kPaneIslandCount]{};  // in kPaneIslandIds order
   using pre_translate_fn = BOOL(WINAPI*)(const MSG*);
   pre_translate_fn pre_translate_ = nullptr;
   bool attached_ = false;

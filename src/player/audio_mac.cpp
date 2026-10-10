@@ -139,6 +139,21 @@ class core_audio_sink final : public audio_sink {
     started_ = false;
   }
 
+  [[nodiscard]] expected flush() noexcept override {
+    if (!unit_) return err(status::invalid_arg);
+    // Stopping waits for a render callback in flight, so the ring and the anchor
+    // are ours until the unit starts again. AudioUnitReset clears the unit's own
+    // converter state, so nothing from before the seek is heard after it.
+    AudioOutputUnitStop(unit_);
+    AudioUnitReset(unit_, kAudioUnitScope_Global, 0);
+    write_pos_.store(0, std::memory_order_relaxed);
+    read_pos_.store(0, std::memory_order_relaxed);
+    have_anchor_.store(false, std::memory_order_release);
+    // Paused stays stopped; set_paused(false) starts it.
+    if (!paused_ && AudioOutputUnitStart(unit_) != noErr) return err(status::internal);
+    return {};
+  }
+
   [[nodiscard]] audio_endpoint_info info() const noexcept override {
     audio_endpoint_info out;
     out.sample_rate = rate_;

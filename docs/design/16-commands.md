@@ -64,8 +64,10 @@ need AltGr (e.g. `\`, `[`, `]` on German / French layouts) do not resolve. On ma
 | `tap_hold` | Command on the down edge (a tap does not wait for key-up); the first repeat makes it a hold (`hold` per repeat), key-up sends `release`. Used for `Q` / `E` on a clip |
 | `momentary` | Command on down, `release` on up (hold `Z`, hold `\`, hold `Y`) |
 
-Up to four held keys are tracked independently; when the window loses activation every held key
-is released (`cancel_holds`).
+Up to four held keys are tracked independently; when the window loses activation, Settings
+opens, the canvas gives up focus (on the Mac a pane or the gallery taking first responder), or the
+table is rebuilt for an add-on's rows, every held key is released (`cancel_holds`). A hold keeps
+its own copy of the release it owes, so a rewritten table cannot lose it.
 
 **Keyboard pan** moves a tenth of the canvas per step through the springs. At fit `↑` `↓` are not a
 pan; in fullscreen `↓` reveals the strips for 3 s after the last navigation, as does the bottom
@@ -104,7 +106,7 @@ With nothing to leave, the key is not handled.
 ## Focus
 
 Rings, visible: **canvas** (default), **filmstrip**, **gallery**, **pane** (folder tree,
-metadata, adjust, jobs), plus the command bar and the transport. `Tab` / `Shift+Tab` cross the
+metadata, adjust, Edit, jobs), plus the command bar and the transport. `Tab` / `Shift+Tab` cross the
 island boundary; `Esc` returns to the canvas. Fullscreen hides chrome.
 
 No island grows over the canvas, except a clip's **transport bar**, which floats over the bottom of
@@ -143,7 +145,7 @@ crop. Keys are shown Windows-style; on macOS read `⌘` for `Ctrl`.
 | `Ctrl+W` | all | Close window |
 | `Ctrl+N` | all | New window (⌘N; also File ▸ New Window and the Dock menu on the Mac) |
 | `Ctrl+,` | All but crop | Settings |
-| `Ctrl+G` | Viewing | Go to index |
+| `Ctrl+G` | Viewing | Go to index. **Mac: not built** (no go-to popup yet; `⌘G` falls through) |
 | `/` | browse, video, gallery | Find by name in the loaded listing (gallery folder row: find a folder tile) |
 | `Ctrl+Shift+E` | All but crop | Folder tree: show and focus |
 | `Ctrl+↑` | Viewing | Up one folder, selecting the folder just left |
@@ -153,7 +155,7 @@ crop. Keys are shown Windows-style; on macOS read `⌘` for `Ctrl`.
 | `F3` | all | Frame-time overlay |
 | `R` | Viewing | Reset frame-time stats |
 | `Esc` | all | Back (above) |
-| *(unbound)* | browse, video | **Open RAW of pair** / **Open JPEG of pair** — listed in Settings |
+| *(unbound)* | browse, video | **Open RAW of pair** / **Open JPEG of pair** — listed in Settings. **Mac: not built** (not listed) |
 | *(menu)* | — | **Recent folders**: the jump-list folders; Windows: Open ▸ Recent folders on the command bar; Mac: File ▸ Open Recent. A folder that has gone beeps and leaves the list |
 
 ### View
@@ -179,8 +181,8 @@ crop. Keys are shown Windows-style; on macOS read `⌘` for `Ctrl`.
 | `Shift+I` | Viewing | Eyedropper: one-pixel sRGB 8-bit + hex readout under the cursor (stills) |
 | `Ctrl+C` | Viewing | With the eyedropper on: copy `#RRGGBB  rgb(r, g, b)  x y`. Otherwise copy the marked (else current / gallery-selected) file(s) |
 | hold `Z` | browse, video | Loupe: 100 % around the cursor or a keyboard point; arrows nudge it. Same texture, no decode |
-| hold `\` | browse, video | Previous item, for burst pick, from the five-slot GPU LRU |
-| `;` | browse, video | Play a Live Photo's motion once, with audio, and return to the still. `;` again, `Esc` or navigation return early |
+| hold `\` | browse, video | Previous item, for burst pick, from the five-slot GPU LRU (Mac: the last still shown, kept on the GPU) |
+| `;` | browse, video | Play a Live Photo's motion once, with audio, and return to the still. `;` again, `Esc` or navigation return early. **Mac: not built** |
 | `Ctrl+Shift+A` | all | Always on top (`HWND_TOPMOST`) |
 
 **Gallery.** Full-client grid of the folder. `A` `D` / `←` `→` move by item, `W` `S` / `↑` `↓`
@@ -213,7 +215,9 @@ Marks are a separate set from the selection, so arrow-key browsing never makes a
   remembered.
 - **Delete** only uses the Recycle Bin / Trash. Where there is none (a share, some removable
   drives, bin off) the item is refused, not deleted, and the user is told how many. Marks clear
-  only for items that succeeded.
+  only for items that succeeded. On the Mac, File ▸ Move to Trash (`⌘⌫`) is off while a text
+  field has the keyboard (there `⌘⌫` deletes to the start of the line), in trim or crop, with
+  the Video Editor open, and during a slideshow: the menu sees the key before anything else does.
 - **Drag-out** (mouse): a gallery or filmstrip cell drags the original file (and its pair) as
   `CF_HDROP`, copy-only; a marked cell drags every marked item in listing order. The canvas drags
   too (at fit on Windows, `⌘`-drag on the Mac). A drag of ours dropped on our own window is
@@ -272,10 +276,10 @@ works regardless.
 | `Shift+Q` / `Shift+E` | video | Playback speed one rung down / up: 0.25 / 0.5 / 1 / 1.5 / 2 / 4. The command bar's speed dropdown is a view of this; native owns the rate |
 | `J` `K` `L` | video | −10 s / pause / +10 s |
 | `,` `.` | video | Frame step (also on animations) |
-| `Shift+M` | video | Mute (`M` is left free) |
+| `Shift+M` | video | Mute (`M` is left free). The transport's More flyout (volume, mute, audio track, A–B loop) is a view of native's state, as the speed dropdown is; `↑` `↓` at fit are the volume |
 | `Ctrl+T` | video, trim | Arm / disarm trim |
 | `[` `]` | trim | In / out marker at the playhead |
-| `P` | trim | Preview the cut: A–B loop over exactly what the keyframe save writes |
+| `P` | trim | Preview the cut: A–B loop over exactly what the keyframe save writes. A loop set from the More flyout replaces it and ends the preview |
 | `Enter` / `Shift+Enter` | trim | Save the keyframe cut (instant) / the frame-accurate re-encode (slower) |
 | `Ctrl+X` | trim | A copy without in–out |
 | `Backspace` / `Delete` | trim | Clear the markers (in trim, `Delete` never trashes the clip) |
@@ -302,6 +306,9 @@ later, the interval or the end of the clip while it plays (a paused clip goes on
 a finite animation likewise, an endless one on the interval. Intervals 1 / 2 / 3 / 4 / 5 / 7 /
 10 / 15 / 20 / 30 / 60 s, default 4 s. Shuffle visits every item once per round, starting from the
 current one. Wrap is on. The slideshow is stills and clips from the folder; Mac's is stills only.
+While a slideshow runs (not paused), or a clip plays, the display and the machine are kept
+awake: `SetThreadExecutionState(ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED)` on Windows, an
+`NSProcessInfo` activity on the Mac. Pause, the end of the clip, leaving and exit let it go.
 
 ### Import (while the add-on is installed)
 
@@ -442,3 +449,7 @@ No hot-path ABI for commands. Commands invoke existing session calls (`mv_folder
 - Touch gestures (swipe, pinch).
 - Import / export of key maps and named alternate layouts.
 - Voice add-on hold-to-talk (`Ctrl+Shift+Space`).
+- **On the Mac** (issue #183): `Ctrl+G` go to index, `;` Live Photo motion, and Open RAW /
+  Open JPEG of a pair. `MvCommandSupported` leaves them out, so `?` and Settings do not list
+  them and their keys fall through. The rest of the View table, the loupe, hold `\` and the
+  slideshow's `.` / `R` run on both hosts.

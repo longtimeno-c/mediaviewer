@@ -19,6 +19,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
@@ -34,6 +35,7 @@
 #include "corpus.h"
 #include "fixtures.h"
 #include "image/pipeline.h"
+#include "image/thumb.h"
 #include "io/file.h"
 
 using mv::codec::format_family;
@@ -226,6 +228,7 @@ struct dng_options {
   std::uint16_t orientation = 1;
   bool preview_prerotated = false;  // preview pixels already in display orientation (90° only)
   bool with_preview = true;
+  bool preview_flat = false;  // preview is flat grey, unlike the CFA: tells the two apart
 };
 
 std::vector<std::uint8_t> make_dng(const dng_options& opt = {}) {
@@ -249,7 +252,7 @@ std::vector<std::uint8_t> make_dng(const dng_options& opt = {}) {
       }
       for (int c = 0; c < 3; ++c) {
         rgb[(static_cast<std::size_t>(y) * pw + x) * 3 + static_cast<std::size_t>(c)] =
-            srgb8(scene(sx, sy, c));
+            opt.preview_flat ? std::uint8_t{200} : srgb8(scene(sx, sy, c));
       }
     }
   }
@@ -545,6 +548,24 @@ TEST_CASE("synthetic DNG: embedded preview and full decode agree", "[codec][raw]
   const auto gp = luma_grid(preview->rgba, preview->width, preview->height);
   const auto gf = luma_grid(full->rgba, full->width, full->height);
   CHECK(pearson(gp, gf) > 0.9);
+}
+
+// Issue #159: a RAW's thumbnail is its embedded preview, never a demosaic per
+// file (docs/design/04 "Thumbs"). The preview here is flat grey and the CFA a
+// gradient, so the thumbnail's pixels say which one it came from.
+TEST_CASE("a RAW thumbnail comes from its embedded preview", "[codec][raw][image][thumb]") {
+  dng_options opt;
+  opt.preview_flat = true;
+  const auto dng = make_dng(opt);
+  auto t = mv::image::make_thumb_rgba(dng, 256);
+  REQUIRE(t);
+  CHECK(t->width == 256);
+  CHECK(t->height == 170);
+  int worst = 0;  // a demosaic would carry the scene's gradient, tens of levels off
+  for (std::size_t i = 0; i < t->rgba.size(); i += 4) {
+    for (std::size_t c = 0; c < 3; ++c) worst = std::max(worst, std::abs(t->rgba[i + c] - 200));
+  }
+  CHECK(worst <= 8);
 }
 
 TEST_CASE("synthetic DNG: the linear develop is the full decode before the sRGB curve",
