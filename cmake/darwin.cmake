@@ -784,6 +784,8 @@ if(MV_BUILD_TESTS)
     tests/test_browse_index.cpp
     tests/test_browse_path.cpp
     tests/test_dir_tree.cpp
+    # Issue #167: the folder listing reads size + mtime in bulk; links stat'ed.
+    tests/test_dir_mac.cpp
     tests/test_key_router.cpp
     tests/test_key_router_review.cpp
     tests/test_write_guard.cpp
@@ -856,6 +858,8 @@ if(MV_BUILD_TESTS)
     tests/test_transport_autohide.cpp
     # Issue #44: no clip plays under the gallery, both hosts.
     tests/test_playback_hold.cpp
+    # Issue #236: a stale pending clip is retired, both hosts.
+    tests/test_video_session.cpp
   )
   target_link_libraries(mv_tests PRIVATE
     mv_core

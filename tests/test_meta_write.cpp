@@ -523,6 +523,73 @@ TEST_CASE("revert puts the fields back to the session's first snapshot", "[meta]
   }
 }
 
+TEST_CASE("revert leaves a sidecar alone once something else has changed it", "[meta][write][snapshot]") {
+  scratch_dir d("revert_side");
+  mv::meta::reset_snapshot_session();
+  std::vector<std::uint8_t> rgba(16 * 16 * 4, 90);
+  const auto png = fixtures::png_rgba(16, 16, rgba.data());
+  const auto other_app = [&](const std::string& name) {
+    auto side = d.read(name);
+    const std::string add = "<!-- edited elsewhere -->\n";
+    side.insert(side.end(), add.begin(), add.end());
+    d.write(name, side);
+    return side;
+  };
+
+  SECTION("another app edited the sidecar") {
+    d.write("a.png", png);
+    REQUIRE(mv::meta::write(d.path("a.png"), rating(4), d.snapshots()));
+    const auto theirs = other_app("a.xmp");
+    const auto rv = mv::meta::revert(d.path("a.png"), d.snapshots());
+    REQUIRE_FALSE(rv);
+    CHECK(rv.error() == mv::status::io);
+    CHECK(d.read("a.xmp") == theirs);  // neither deleted nor overwritten
+    // A later write of ours does not make their change revertible.
+    REQUIRE(mv::meta::write(d.path("a.png"), rating(2), d.snapshots()));
+    CHECK_FALSE(mv::meta::revert(d.path("a.png"), d.snapshots()));
+    CHECK(fs::exists(d.path("a.xmp")));
+  }
+
+  SECTION("another app created one beside an in-file JPEG") {
+    d.write("j.jpg", flat_jpeg());
+    REQUIRE(mv::meta::write(d.path("j.jpg"), rating(3), d.snapshots()));
+    REQUIRE_FALSE(fs::exists(d.path("j.xmp")));
+    const auto edited = d.read("j.jpg");
+    const std::string packet = "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"/>\n";
+    d.write("j.xmp", std::vector<std::uint8_t>(packet.begin(), packet.end()));
+    CHECK_FALSE(mv::meta::revert(d.path("j.jpg"), d.snapshots()));
+    CHECK(d.read("j.jpg") == edited);  // checked before the JPEG is touched
+    CHECK(fs::exists(d.path("j.xmp")));
+  }
+
+  SECTION("a second file sharing the sidecar wrote to it") {
+    d.write("s.png", png);
+    d.write("s.gif", png);  // the bytes do not matter: neither is opened for writing
+    REQUIRE(mv::meta::write(d.path("s.png"), rating(4), d.snapshots()));
+    REQUIRE(mv::meta::write(d.path("s.gif"), rating(1), d.snapshots()));
+    const auto both = d.read("s.xmp");
+    CHECK_FALSE(mv::meta::revert(d.path("s.png"), d.snapshots()));
+    CHECK(d.read("s.xmp") == both);
+    // The last writer may still revert its own change.
+    REQUIRE(mv::meta::revert(d.path("s.gif"), d.snapshots()));
+    auto m = mv::meta::read(d.path("s.png"));
+    REQUIRE(m);
+    CHECK(m->s.rating == 4);
+  }
+
+  SECTION("unchanged, revert works, and again") {
+    d.write("u.png", png);
+    REQUIRE(mv::meta::write(d.path("u.png"), rating(4), d.snapshots()));
+    REQUIRE(mv::meta::write(d.path("u.png"), rating(5), d.snapshots()));
+    REQUIRE(mv::meta::revert(d.path("u.png"), d.snapshots()));
+    CHECK_FALSE(fs::exists(d.path("u.xmp")));
+    REQUIRE(mv::meta::revert(d.path("u.png"), d.snapshots()));
+    REQUIRE(mv::meta::write(d.path("u.png"), rating(2), d.snapshots()));
+    REQUIRE(mv::meta::revert(d.path("u.png"), d.snapshots()));
+    CHECK_FALSE(fs::exists(d.path("u.xmp")));
+  }
+}
+
 TEST_CASE("a write that cannot be swapped in leaves the original whole", "[meta][write][crash]") {
 #if defined(_WIN32)
   SKIP("directory permissions differ on Windows; the kill test below is the crash check there");

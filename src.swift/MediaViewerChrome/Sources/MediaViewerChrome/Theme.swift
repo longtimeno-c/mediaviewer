@@ -111,6 +111,11 @@ final class ThemeStore: ObservableObject {
   @Published private(set) var note = ""
 
   private var tokens: ThemeTokens?
+  /// What was last painted (an inner nil is the system's colours); nil before
+  /// the first paint. A repaint that would show the same returns early, so
+  /// Reduce Motion or Reduce Transparency never rebuilds the chrome and
+  /// drops what is typed in it.
+  private var painted: ThemeTokens??
   private static let keySelection = "mv.theme.selection"
   private static let keyTokens = "mv.theme.tokens"
   // The verify rig (MV_ADDON_SELFTEST, main_mac.mm) keeps its choice in
@@ -212,7 +217,13 @@ final class ThemeStore: ObservableObject {
 
   private func paint() {
     let contrast = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
-    guard let t = tokens, !contrast else {
+    let shown = contrast ? nil : tokens
+    if let painted, painted == shown {
+      chosenHere = false  // nothing rebuilds, so Settings has no row to return to
+      return
+    }
+    painted = .some(shown)
+    guard let t = shown else {
       MVTheme.themed = nil
       MVTheme.family = nil
       NSApp?.appearance = nil

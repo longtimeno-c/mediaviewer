@@ -169,7 +169,9 @@ runs scans, plans and card arrivals in order; each job runs on its own thread.
   lacks it still gets it, so the backup mirrors the card. A copy on the backup drive does not
   count as "in the library". A member is all-or-nothing across destinations too: if one
   destination fails, the copy the other verified is removed.
-- **Resume and cancel:** the job journal (`jobs`, `journal` tables) lives in `import.db`. After
+- **Resume and cancel:** the job journal (`jobs`, `journal` tables) lives in `import.db`. A job's
+  journal is written in one transaction before it starts; if any of it fails to land (busy, disk
+  full) it is rolled back and the job fails unstarted, since a resume could not see it. After
   a crash or unplug, verified files are done and the rest re-queue; resume after a crash between
   two destinations' renames keeps the destination that holds matching bytes and copies only the
   missing one. Cancel leaves no temporary files.

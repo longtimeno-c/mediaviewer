@@ -165,7 +165,10 @@ uint32_t mv_completion_drain(mv_session_t, mv_completion* out, uint32_t capacity
 
 Draining is non-blocking and batched (a folder's 400 thumbnails are one drain). `IMAGE_OPENED`
 means pixels may be ready on the native canvas; draining does not wake an idle render thread —
-the shell wakes the presenter ([03-rendering.md](03-rendering.md)).
+the shell wakes the presenter ([03-rendering.md](03-rendering.md)). The queue is capped at
+65,536 entries: a host that stops draining loses the oldest quarter at the cap, and every drop
+is counted and logged, never a `std::terminate` (issue #236). Both drain calls go through
+`mv_guard` like every other export.
 
 `mv_session_echo` is the minimal round trip (validate, copy, submit, return a job id, answer as
 `ECHO`), and `mv_session_job_stats` reports submitted / completed / cancelled / queue depth /

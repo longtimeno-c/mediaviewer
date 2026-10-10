@@ -137,6 +137,13 @@ width on `chrome_cmd_transport_width` (1018); native sizes the bar to that plus
 `kTransportPadDip` (14) each side, bounded by the window's side gaps. 880 DIP is only the width
 before the first report.
 
+**Native owns the More flyout's audio and loop (2026-10-09).** Issue #214: the Windows flyout
+called `mv_video_set_volume` / `set_muted` / `select_audio_track` / `set_loop` itself, so native's
+volume and mute (what `↑` `↓` and `Shift+M` step from) drifted, and a flyout loop silently replaced
+trim's `P` preview. It now posts `chrome_cmd_video_volume` / `_muted` / `_track` / `_loop`
+(1031–1034); native applies them and pushes volume, mute and track back (`ApplyAudio`), the rate
+rule. A flyout loop ends the trim preview. The Mac already read both back from native.
+
 **The Video Editor moves the one canvas (2026-09-26, 2026-09-27).** While the editor is open the
 viewer's canvas moves into its window and back, so there is no second renderer. Mac: the one
 `CAMetalLayer` view moves and refuses first responder. Windows: `gfx::swapchain::retarget` moves

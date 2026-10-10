@@ -186,13 +186,18 @@ Velopack keeps one full package for rollback. `build-release.ps1` fails above 25
   HKLM registration a per-user install cannot make (macOS has a Spotlight importer instead).
 - **Jump list** of recent folders (`ICustomDestinationList`, honouring user removals).
 - **SMTC** (`SystemMediaTransportControls`) for media keys and the OS overlay during video.
+  The chrome's 150 ms playback poll runs only while a clip is open, and it pushes SMTC's title,
+  status and timeline only when one changes or the position jumps (a seek); the OS runs the
+  position on between pushes.
 - **Drag and clipboard out:** files go out as `CF_HDROP` (the original file, not a stream)
   from the canvas (`SHDoDragDrop`), gallery and filmstrip, and to the clipboard; keyboard twins
   are in [commands](16-commands.md). Drop in opens a file or folder.
 - **Single instance** (`shell/single_instance_win.cpp`): a second start hands its paths over a
   per-user, per-session named pipe (`\\.\pipe\MediaViewer.Viewer.<session>.<SID>`, local
-  clients only, `FIRST_PIPE_INSTANCE`) to the running instance and exits. `--new-instance`
-  overrides it.
+  clients only, `FIRST_PIPE_INSTANCE`, a DACL that admits only this user) to the running
+  instance and exits. The name is computable by any local account, so the second start first
+  checks that the pipe's server process runs as the same user; if not, it sends nothing and
+  runs alone. `--new-instance` overrides it.
 - **Command line:** `mediaviewer <path>` opens a file or folder. The remaining switches are
   lab / harness switches (`--soak`, `--browse-soak`, `--no-chrome`, `--restore-*`, …).
 

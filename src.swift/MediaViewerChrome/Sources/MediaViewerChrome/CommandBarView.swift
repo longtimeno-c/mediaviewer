@@ -128,6 +128,15 @@ private struct OpenInBarItem: View {
   }
 }
 
+/// commands.h ids the View flyout runs (as their keys would).
+enum ViewCommand {
+  static let zoomIn: Int32 = 4
+  static let zoomOut: Int32 = 5
+  static let zoom200: Int32 = 39
+  static let zoom400: Int32 = 40
+  static let clipping: Int32 = 46
+}
+
 public struct CommandBarView: View {
   @ObservedObject private var store = FolderStore.shared
   @ObservedObject private var notice = NoticeStore.shared
@@ -158,20 +167,20 @@ public struct CommandBarView: View {
             }
           }
           BarFlyout(title: "View") { close in
-            FlyoutItem(title: "Zoom in", shortcut: key("Zoom in"), enabled: false) {}
-            FlyoutItem(title: "Zoom out", shortcut: key("Zoom out"), enabled: false) {}
+            FlyoutItem(title: "Zoom in", shortcut: key("Zoom in")) { close(); mv_chrome_run_command(ViewCommand.zoomIn) }
+            FlyoutItem(title: "Zoom out", shortcut: key("Zoom out")) { close(); mv_chrome_run_command(ViewCommand.zoomOut) }
             FlyoutRule()
             FlyoutItem(title: "Fit to window", shortcut: key("Fit")) { close(); mv_chrome_fit() }
-            FlyoutItem(title: "50 %", enabled: false) {}
+            FlyoutItem(title: "50 %") { close(); mv_chrome_zoom_preset(0.5) }
             FlyoutItem(title: "100 %", shortcut: key("Zoom 100 %")) { close(); mv_chrome_one_to_one() }
-            FlyoutItem(title: "200 %", enabled: false) {}
-            FlyoutItem(title: "400 %", enabled: false) {}
+            FlyoutItem(title: "200 %", shortcut: key("Zoom 200 %")) { close(); mv_chrome_run_command(ViewCommand.zoom200) }
+            FlyoutItem(title: "400 %", shortcut: key("Zoom 400 %")) { close(); mv_chrome_run_command(ViewCommand.zoom400) }
             FlyoutRule()
             FlyoutItem(title: "Gallery", shortcut: key("Gallery"), enabled: hasFolder) { close(); mv_chrome_menu(9) }
             FlyoutItem(title: "Full screen", shortcut: key("Fullscreen")) { close(); mv_chrome_menu(10) }
             FlyoutItem(title: "Filmstrip", shortcut: key("Filmstrip"), enabled: hasFolder) { close(); mv_chrome_menu(8) }
             FlyoutRule()
-            FlyoutItem(title: "Clipping warnings", shortcut: key("Clipping"), enabled: false) {}
+            FlyoutItem(title: "Clipping warnings", shortcut: key("Clipping")) { close(); mv_chrome_run_command(ViewCommand.clipping) }
             FlyoutItem(title: "Frame-time overlay", shortcut: key("Frame-time overlay")) { close(); mv_chrome_menu(19) }
             FlyoutItem(title: "Keyboard shortcuts", shortcut: key("Keyboard shortcuts")) { close(); mv_chrome_menu(16) }
           }

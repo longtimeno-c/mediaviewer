@@ -135,7 +135,9 @@ struct write_outcome {
                                           std::string_view snapshot_dir = {});
 
 // Puts the three fields back to what they were before this session's first
-// write to the file. `status::io` when there is no snapshot.
+// write to the file. `status::io` when there is no snapshot, or when the XMP
+// sidecar is no longer what our last write left (another app, or another file
+// sharing the sidecar, changed it): nothing is replaced then.
 [[nodiscard]] result<write_outcome> revert(std::string_view utf8_path,
                                            std::string_view snapshot_dir);
 [[nodiscard]] bool has_snapshot(std::string_view utf8_path, std::string_view snapshot_dir);

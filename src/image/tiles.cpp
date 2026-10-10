@@ -409,7 +409,7 @@ tile_service::~tile_service() {
     std::lock_guard lock(mutex_);
     stop_ = true;
   }
-  cv_.notify_all();
+  poke();  // after stop_: the woken thread reads it under the lock
   if (thread_.joinable()) thread_.join();
   std::lock_guard lock(mutex_);
   for (auto& set : sets_) set->detach_service();
@@ -428,8 +428,8 @@ void tile_service::serve(std::shared_ptr<tile_set> set) {
 }
 
 void tile_service::poke() noexcept {
-  pokes_.fetch_add(1, std::memory_order_relaxed);
-  cv_.notify_one();
+  pokes_.fetch_add(1, std::memory_order_release);
+  pokes_.notify_one();
 }
 
 void tile_service::run() noexcept {
@@ -439,23 +439,24 @@ void tile_service::run() noexcept {
   std::uint32_t seen = 0;
   bool more = false;
   while (true) {
-    {
-      std::unique_lock lock(mutex_);
-      if (!more) {
-        // A poke racing the wait is caught by the timeout; nothing here is
-        // the render thread's latency, only tile arrival.
-        cv_.wait_for(lock, std::chrono::milliseconds(100), [&] {
-          return stop_ || pokes_.load(std::memory_order_relaxed) != seen;
-        });
-      }
+    // Sleeps until the count is not `seen`. The compare is the wait's own, so
+    // a poke landing any time after `seen` was read ends it: no timeout, and a
+    // still image costs this thread no wakeups.
+    if (!more) pokes_.wait(seen, std::memory_order_acquire);
+    const std::uint32_t pokes = pokes_.load(std::memory_order_acquire);
+    // A busy tick with no poke since the last changed nothing: keep `work`
+    // rather than rescan and copy the sets.
+    if (pokes != seen) {
+      work.clear();  // this thread's references first, or no set is ever the last held
+      std::lock_guard lock(mutex_);
       if (stop_) break;
       // Read the generation here, awake, and not before the wait. That wait
-      // is up to 100 ms long and navigation is exactly what ends it, so a
-      // value sampled before it is the view the user has just left: the poke
-      // that follows a bump would service it, creating a tick's worth of
-      // tiles for an image nobody is looking at.
+      // can be long and navigation is exactly what ends it, so a value
+      // sampled before it is the view the user has just left: the poke that
+      // follows a bump would service it, creating a tick's worth of tiles for
+      // an image nobody is looking at.
       const generation current = jobs_->current_generation();
-      seen = pokes_.load(std::memory_order_relaxed);
+      seen = pokes;
       // A set nobody else holds and whose view has moved on is done. Its CPU
       // pyramid is freed here, on this thread, not in a render-thread release.
       for (auto it = sets_.begin(); it != sets_.end();) {
@@ -480,7 +481,7 @@ void tile_service::run() noexcept {
       if (made >= k_tiles_per_tick) break;
     }
     more = made >= k_tiles_per_tick;
-    work.clear();
+    if (!more) work.clear();  // hold no set while asleep
     if (made > 0 && on_ready_) on_ready_(user_);
     if (more) {
       // docs/design/03 rule 3: a few tile creates per refresh, the rest waits. This
@@ -529,8 +530,18 @@ result<gpu_image> upload_tiled(ID3D11Device* device, std::shared_ptr<const displ
   out.icc_tagged = full->icc_tagged;
   out.quality = gpu_quality::full;
   out.mean_luma = mean_luma(*full);
-  out.tiles = std::make_shared<tile_set>(device, std::move(source), gen, &service);
-  service.serve(out.tiles);
+  auto set = std::make_shared<tile_set>(device, std::move(source), gen, &service);
+  service.serve(set);
+  // The handle everyone outside the service holds. When its last holder lets
+  // go - a render-thread release, a worker dropping a stale upload, a ready
+  // image superseded before it was taken - the service is poked, so it retires
+  // the set (and its CPU pyramid) now: it no longer wakes on a timeout to look.
+  tile_set* const raw = set.get();
+  out.tiles = std::shared_ptr<tile_set>(raw, [held = std::move(set)](tile_set*) mutable noexcept {
+    tile_service* const svc = held->service();
+    held.reset();  // before the poke, so the woken service sees the set unheld
+    if (svc) svc->poke();
+  });
   return out;
 }
 

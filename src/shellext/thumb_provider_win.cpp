@@ -119,6 +119,8 @@ class thumb_provider final : public IInitializeWithStream, public IThumbnailProv
     // No path, name or pixels are logged, here or by the core (rule 6).
     auto thumb = mv::shellext::render_thumbnail_by(std::move(bytes_), cx);
     bytes_ = {};
+    // Only an abandoned decode leaves a thread of ours running; a request
+    // refused at the cap (status::busy) started nothing, so it does not pin.
     if (!thumb && thumb.error() == mv::status::cancelled) pin_module();
     if (!thumb) return thumb.error() == mv::status::out_of_memory ? E_OUTOFMEMORY : E_FAIL;
 
