@@ -19,12 +19,14 @@ final class PhotosBackupStore: ObservableObject {
   @Published private(set) var run = mv_chrome_photos_backup()
   @Published private(set) var last: mv_chrome_photos_backup?
   @Published private(set) var startFailed = false
-  private var timer: Timer?
-
   private init() {
-    refresh()
-    timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-      MainActor.assumeIsolated { self?.refresh() }
+    // Issue #178: polled when the main run loop has run (ChromePulse), and
+    // only while Settings, where the backup shows, is open; its timer runs
+    // while a backup there is in progress.
+    ChromePulse.shared.add { [weak self] in
+      guard let self, mv_chrome_settings_visible() else { return false }
+      self.refresh()
+      return self.running
     }
   }
 

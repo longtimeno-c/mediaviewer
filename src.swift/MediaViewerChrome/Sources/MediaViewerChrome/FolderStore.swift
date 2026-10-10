@@ -124,7 +124,6 @@ final class FolderStore: ObservableObject {
   private(set) var listingGeneration: UInt64 = .max
   private var marksGeneration: UInt64 = .max
   private var thumbGeneration: UInt64 = .max
-  private var pollTimer: Timer?
 
   private static let decodeQueue = DispatchQueue(
     label: "mediaviewer.thumb-decode", qos: .userInitiated, attributes: .concurrent)
@@ -134,14 +133,13 @@ final class FolderStore: ObservableObject {
     // thread (mv_chrome_bridge.h's contract).
     mv_chrome_set_thumb_ready_callback(thumbReadyTrampoline)
     mv_chrome_set_folder_summary_callback(folderSummaryTrampoline)
-    // itemCount/currentIndex are plain integer reads (mv_chrome_bridge.h) --
-    // the same 0.15 s cadence MvLabApp's own -refreshFolderIfChanged uses.
-    pollTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in
-      // scheduledTimer fires on the run loop it was scheduled from (main,
-      // since init runs on the main actor).
-      MainActor.assumeIsolated { self?.poll() }
+    // itemCount/currentIndex are plain integer reads (mv_chrome_bridge.h). The
+    // listing, cursor and marks all move on the main thread, so this polls
+    // when the main run loop has run (issue #178, ChromePulse), not on a timer.
+    ChromePulse.shared.add { [weak self] in
+      self?.poll()
+      return false
     }
-    poll()
   }
 
   private func poll() {
@@ -165,12 +163,11 @@ final class FolderStore: ObservableObject {
     }
     let cursor = Int(mv_chrome_folder_cursor())
     if cursor != folderCursor { folderCursor = cursor }
-    var queryBuf = [CChar](repeating: 0, count: 512)
-    let querying = queryBuf.withUnsafeMutableBufferPointer { ptr -> Bool in
-      guard let base = ptr.baseAddress else { return false }
-      return mv_chrome_folder_query(base, Int32(ptr.count))
+    // On the stack: this runs on every pass of the main run loop.
+    let query: String? = withUnsafeTemporaryAllocation(of: CChar.self, capacity: 512) { ptr in
+      guard let base = ptr.baseAddress, mv_chrome_folder_query(base, Int32(ptr.count)) else { return nil }
+      return String(cString: base)
     }
-    let query: String? = querying ? String(cString: queryBuf) : nil
     if query != folderQuery { folderQuery = query }
     let marks = mv_chrome_marks_generation()
     if listingChanged || marks != marksGeneration {

@@ -491,9 +491,12 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 // of that same bridge — declared here because they read `_items`/`_folder`,
 // private ivars only MvLabApp's own methods can reach.
 - (void)selectIndex:(std::size_t)new_index;
-// folder_model's change notify hops here on the main queue (and the 0.2 s
-// timer still calls it for everything else it polls).
+// folder_model's change notify, the date-key scan and a Settings refilter hop
+// here on the main queue (issue #178: no timer polls it).
 - (void)refreshFolderIfChanged;
+// Issue #178: re-arms the Video Editor's 60 Hz cut-follow tick, which stops
+// while the clip is paused. Called on every snapshot publish.
+- (void)editorTickResume;
 - (NSInteger)itemCount;
 - (NSInteger)currentIndex;
 - (BOOL)itemNameAtIndex:(NSInteger)index into:(char*)buf size:(int32_t)size;
@@ -844,7 +847,10 @@ extern "C" bool mv_chrome_item_is_video(int32_t index) {
 static void MvPublishVideoInput() {
   if (!g_chrome_snap) return;
   // Issue #38: a press or a scrub on the strip keeps it up for another interval.
-  if (g_chrome_app) [g_chrome_app transportActivity];
+  if (g_chrome_app) {
+    [g_chrome_app transportActivity];
+    [g_chrome_app editorTickResume];
+  }
   ++g_chrome_snap->activity_seq;
   if (g_chrome_lab) {
     g_chrome_lab->publish(*g_chrome_snap);
@@ -2126,7 +2132,10 @@ static void MvAdoptNewDefaultViewerTypes() {
   // check and then run after the newer one (leaving a result list, or a
   // folder, the user has already left). Worker threads only.
   std::mutex _folderOpenMutex;
-  NSTimer* _folderPollTimer;
+  // Issue #178: the clip transport's poll of the render thread's status. Runs
+  // only while a clip or a sound is the current item (or its strip is still
+  // up); on a still nothing ticks.
+  NSTimer* _transportPollTimer;
   // What -selectIndex: last handed to the lab, and the lab's item id for it.
   // A relist that lands on the same file (same size and mtime) keeps that
   // load instead of decoding it again; opening a file starts its load before
@@ -2315,6 +2324,8 @@ static void MvAdoptNewDefaultViewerTypes() {
   std::vector<mv::edit::clip::strip_frame> _editorStrip;
   std::vector<float> _editorPeaks;
   NSTimer* _editorTick;
+  // Ticks in a row that saw the clip paused; the tick stops after kEditorIdleTicks.
+  int _editorIdleTicks;
   std::int64_t _editorLastSeek;
   // MV_EDIT_SELFTEST_SOAK: ticks that saw the player inside a cut while playing
   // (a frame of what was cut may be on screen), and the jumps over cuts.
@@ -2539,7 +2550,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   ]];
 
   // Clip transport (PR 19): bottom-centre, floating above the filmstrip. Hidden
-  // until a clip is on screen (-refreshFolderIfChanged flips it).
+  // until a clip is on screen (-pollTransport flips it).
   self.transportHost = [MVChromeHost makeTransportView];
   self.transportHost.hidden = YES;
   self.transportHost.translatesAutoresizingMaskIntoConstraints = NO;
@@ -2780,6 +2791,7 @@ static void MvAdoptNewDefaultViewerTypes() {
     mv::shell::find_installer_leftover(^(mv::shell::installer_leftover found) {
       self->_installer = found;
       self->_installerChecked = YES;
+      [self refreshFolderIfChanged];  // asks now: no timer polls for it (issue #178)
     });
   }
 #else
@@ -2813,15 +2825,11 @@ static void MvAdoptNewDefaultViewerTypes() {
 
   // folder_model_mac's relist/thumb watch fires on its own FSEvents thread
   // (io/dir.h: "must not block and must not re-enter the watcher" -- it
-  // just flips an atomic). Polling consume_changed() on a UI-thread timer,
-  // rather than doing real work from that callback, is what keeps this
-  // rule intact while still picking up "a file dropped into the folder
-  // appears without restart" (docs/design/10-roadmap.md PR 4's verify line).
-  _folderPollTimer = [NSTimer scheduledTimerWithTimeInterval:0.2
-                                                       target:self
-                                                     selector:@selector(refreshFolderIfChanged)
-                                                     userInfo:nil
-                                                      repeats:YES];
+  // just flips an atomic) and relists on the pool, whose notify above hops
+  // to the main queue: "a file dropped into the folder appears without
+  // restart" (docs/design/10-roadmap.md PR 4's verify line) needs no poll.
+  // Issue #178: the 0.2 s timer that used to poll it ran for the whole
+  // session; what else it watched now posts, or polls only while a clip is up.
   // Issue #38: closing one of the transport's menus (speed, More) restarts the
   // idle clock, as the Windows flyout's Closed does. SwiftUI's borderless
   // menus are NSMenus, and a menu closed without a pick posts nothing else.
@@ -3181,25 +3189,50 @@ static void MvAdoptNewDefaultViewerTypes() {
   return YES;
 }
 
+// The transport strip belongs to a clip: shown while one is on screen (the
+// render thread publishes that), hidden otherwise so it never blocks the
+// canvas's mouse. Polled every 0.2 s while a clip or a sound is the current
+// item (issue #178: not on a still); a clip opening, pausing, ending, or the
+// gallery / Settings covering it is what re-runs the idle rule (issue #38).
+// Pause and end bring it back.
+- (void)transportPollItemChanged {
+  const bool want = [self currentItemIsVideo] || [self currentItemIsAudio] || _transportClip;
+  if (!want || _transportPollTimer) return;
+  _transportPollTimer = [NSTimer scheduledTimerWithTimeInterval:0.2
+                                                         target:self
+                                                       selector:@selector(transportPollTick:)
+                                                       userInfo:nil
+                                                        repeats:YES];
+  _transportPollTimer.tolerance = 0.04;
+}
+
+- (void)transportPollTick:(NSTimer*)timer {
+  (void)timer;
+  [self pollTransport];
+  // A play the editor's tick missed (it stops while paused) is caught here.
+  if (_editorOpen && !_editorTick && _transportPlaying) [self editorTickResume];
+  if ([self currentItemIsVideo] || [self currentItemIsAudio] || _transportClip) return;
+  [_transportPollTimer invalidate];
+  _transportPollTimer = nil;
+}
+
+- (void)pollTransport {
+  if (!self.transportHost) return;
+  const auto st = _lab.video_status_snapshot();
+  const bool clip = st.active && !_galleryVisible && !_settingsVisible;
+  const bool playing = clip && st.playing;
+  if (clip != _transportClip || playing != _transportPlaying) {
+    _transportClip = clip;
+    _transportPlaying = playing;
+    [self applyTransportAutohide];
+  }
+}
+
 - (void)refreshFolderIfChanged {
   if (!_askedDefaultViewer && _installerChecked && _options.soak_seconds <= 0.0) {
     [self askDefaultViewerOnce];
   }
-  // The transport strip belongs to a clip: shown while one is on screen (the
-  // render thread publishes that), hidden otherwise so it never blocks the
-  // canvas's mouse. Polled here, on the 0.2 s timer that already exists; a
-  // clip opening, pausing, ending, or the gallery / Settings covering it is
-  // what re-runs the idle rule (issue #38). Pause and end bring it back.
-  if (self.transportHost) {
-    const auto st = _lab.video_status_snapshot();
-    const bool clip = st.active && !_galleryVisible && !_settingsVisible;
-    const bool playing = clip && st.playing;
-    if (clip != _transportClip || playing != _transportPlaying) {
-      _transportClip = clip;
-      _transportPlaying = playing;
-      [self applyTransportAutohide];
-    }
-  }
+  [self pollTransport];
   // Date-taken keys arriving on the pool re-sort the listing in place: the same
   // items, the current one still selected, no image reload.
   if (_meta.consume_dates_changed() && _sort.key == mv::io::sort_key::date_taken && !_listOpen) {
@@ -3308,6 +3341,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   [self applyFilmstripLayout];
   [self trimItemChanged];
   [self nowPlayingItemChanged];
+  [self transportPollItemChanged];
 
   if (!_scrubMs.empty()) ++_scrubGeneration;  // markers belong to one clip
   // docs/design/26: a preview's pending fetch belongs to the item the user has left.
@@ -3404,6 +3438,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   ++_snap.activity_seq;
   [self.view publish];
   _lab.wake();
+  [self editorTickResume];
 }
 
 - (void)setThemeCanvasActive:(BOOL)active
@@ -6332,13 +6367,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     [self buildEditorWindow];
     [self moveCanvasToEditor:YES];
     [self editorLoadClip];
-    __weak MvLabApp* weakSelf = self;
-    _editorTick = [NSTimer scheduledTimerWithTimeInterval:1.0 / 60.0
-                                                  repeats:YES
-                                                    block:^(NSTimer* timer) {
-                                                      (void)timer;
-                                                      [weakSelf editorFollowPlayback];
-                                                    }];
+    [self editorTickResume];
     [self.editorWindow makeKeyAndOrderFront:nil];
   } else {
     [self.editorWindow close];  // windowWillClose -> editorWindowClosed
@@ -6495,16 +6524,35 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   ++_editorGeneration;
 }
 
-// 60 Hz while the editor is open: playback skips what was cut, and stops at
-// the end of the program.
+// 60 Hz while the editor's clip plays: playback skips what was cut, and stops
+// at the end of the program. Issue #178: paused (or still opening) for
+// kEditorIdleTicks in a row, the tick stops; a publish (a play key, a click,
+// Now Playing) or the transport poll seeing it play starts it again.
+static constexpr int kEditorIdleTicks = 30;  // half a second
+
+- (void)editorTickResume {
+  _editorIdleTicks = 0;
+  if (!_editorOpen || _editorTick) return;
+  __weak MvLabApp* weakSelf = self;
+  _editorTick = [NSTimer scheduledTimerWithTimeInterval:1.0 / 60.0
+                                                repeats:YES
+                                                  block:^(NSTimer* timer) {
+                                                    (void)timer;
+                                                    [weakSelf editorFollowPlayback];
+                                                  }];
+}
+
 - (void)editorFollowPlayback {
-  if (!_editorOpen || !_timeline.loaded()) return;
   const auto st = _lab.video_status_snapshot();
-  if (!st.active) return;
-  if (!st.playing) {
-    _editorLastSeek = -1;
+  if (!_editorOpen || !_timeline.loaded() || !st.active || !st.playing) {
+    if (st.active && !st.playing) _editorLastSeek = -1;
+    if (++_editorIdleTicks >= kEditorIdleTicks) {
+      [_editorTick invalidate];
+      _editorTick = nil;
+    }
     return;
   }
+  _editorIdleTicks = 0;
   if (!_timeline.to_timeline(st.position_ns)) ++_editorGlimpses;
   const std::int64_t lead = 20'000'000;  // a frame's worth, so a cut is not glimpsed
   const std::int64_t want = _timeline.next_play_start(st.position_ns, lead);
@@ -7771,7 +7819,10 @@ static double mv_wall_seconds() {
   });
   if (_sort.key == mv::io::sort_key::date_taken && !_items.empty()) {
     // One background scan fills the keys; the listing re-sorts when it lands.
-    _meta.resolve_date_keys(_items, _jobs, {});
+    // Issue #178: the scan posts when it lands (no timer polls for it).
+    _meta.resolve_date_keys(_items, _jobs, [] {
+      dispatch_async(dispatch_get_main_queue(), ^{ [g_chrome_app refreshFolderIfChanged]; });
+    });
   }
 }
 
@@ -8743,8 +8794,11 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
 - (void)setViewFlags:(int32_t)flags {
   const auto before = mv::shell::view_settings::from_flags(_viewFlags).hidden_kinds();
   _viewFlags = flags;
-  // Picked up by the 0.2 s folder timer, like any relist.
-  if (mv::shell::view_settings::from_flags(flags).hidden_kinds() != before) _refilterListing = YES;
+  // Picked up on the main queue, like any relist.
+  if (mv::shell::view_settings::from_flags(flags).hidden_kinds() != before) {
+    _refilterListing = YES;
+    dispatch_async(dispatch_get_main_queue(), ^{ [g_chrome_app refreshFolderIfChanged]; });
+  }
   [[NSUserDefaults standardUserDefaults] setInteger:flags forKey:kDefaultsViewFlags];
   [self applyViewFlags];
   ++_keysGeneration;  // the Settings screen re-reads flags and keys on this
@@ -9038,8 +9092,10 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   g_chrome_snap = nullptr;
   g_chrome_lab = nullptr;
   g_chrome_app = nullptr;
-  [_folderPollTimer invalidate];
-  _folderPollTimer = nil;
+  [_transportPollTimer invalidate];
+  _transportPollTimer = nil;
+  [_editorTick invalidate];
+  _editorTick = nil;
   // _slideshowTimer's target is self, retained by NSTimer until invalidated
   // -- nulling g_chrome_app above does not stop it, since it calls
   // -navigateNext directly rather than through the bridge globals. Left
