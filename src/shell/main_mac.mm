@@ -4460,7 +4460,11 @@ static BOOL MvCopyUtf8(const std::string& text, char* buf, int32_t size) {
     // Windows flyout does: not the popup's own state.
     mv::shell::view_state under = [self currentViewState];
     under.popup_open = false;
-    [MVChromeHost reloadHelpWithModes:mv::shell::mask_of(mv::shell::resolve_mode(under))];
+    const mv::shell::mode under_mode = mv::shell::resolve_mode(under);
+    auto modes = static_cast<std::int32_t>(mv::shell::mask_of(under_mode));
+    // Trim layers over video (key_router.cpp), so `?` lists both, as on Windows.
+    if (under_mode == mv::shell::mode::trim) modes |= mv::shell::kVideo;
+    [MVChromeHost reloadHelpWithModes:modes];
   }
   self.helpHost.hidden = !visible;
 }
