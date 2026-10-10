@@ -706,11 +706,10 @@ public static partial class IslandHost
     private static void FillPathTrail(StackPanel? trail, Button? up, Button? root, TextBlock? current, FrameworkElement? row)
     {
         if (trail is null || up is null || root is null || current is null || row is null) return;
+        // TextButton's FlattenButton dims a disabled button.
         up.IsEnabled = _canGoUp;
-        up.Opacity = _canGoUp ? 1 : 0.4;
         row.Visibility = Crumbs.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
         root.IsEnabled = Crumbs.Count > 1;
-        root.Opacity = root.IsEnabled ? 1 : 0.4;
         ToolTipService.SetToolTip(root, Crumbs.Count > 0 ? "Return to browsing root: " + Crumbs[0].Path : "No folder open");
         current.Text = Crumbs.Count > 0 ? (Crumbs.Count > 1 ? "›  " : "") + Crumbs[^1].Name : "";
         ToolTipService.SetToolTip(current, Crumbs.Count > 0 ? Crumbs[^1].Path : "");
@@ -961,7 +960,7 @@ public static partial class IslandHost
                 Padding = new Thickness(0),
                 CornerRadius = new CornerRadius(6),
                 BorderThickness = new Thickness(vm.Selected && _folderCursor < 0 ? 2 : 0),
-                BorderBrush = Brush(Title),
+                BorderBrush = Brush(ChromeColour.Accent),  // the Mac's accent outline
                 Child = col,
             };
 
@@ -1079,7 +1078,7 @@ public static partial class IslandHost
                 Padding = new Thickness(0),
                 CornerRadius = new CornerRadius(6),
                 BorderThickness = new Thickness(vm.Cursor ? 2 : 0),
-                BorderBrush = Brush(Title),
+                BorderBrush = Brush(ChromeColour.Accent),  // the Mac's accent outline
                 Child = col,
             };
 
@@ -1194,7 +1193,7 @@ public static partial class IslandHost
                 Padding = new Thickness(4),
                 CornerRadius = new CornerRadius(6),
                 BorderThickness = new Thickness(vm.Cursor ? 2 : 0),
-                BorderBrush = Brush(Title),
+                BorderBrush = Brush(ChromeColour.Accent),  // the Mac's accent outline
                 Background = Brush(vm.Cursor ? ChromeColour.Selection : ChromeColour.Surface),
                 Child = row,
             };

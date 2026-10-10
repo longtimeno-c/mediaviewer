@@ -85,6 +85,12 @@ public static partial class IslandHost
         _updateButton = TextButton("Update ready — restart",
             () => Send(Command.UpdateRestart, _updateButton?.Tag is int arg ? arg : 0));
         _updateButton.Visibility = Visibility.Collapsed;
+        // Not clickable, it is a status line (the Mac's plain Body text), not a
+        // dimmed button: undo FlattenButton's disabled dim, which runs first.
+        Button status = _updateButton;
+        void Undim() { if (!status.IsEnabled) status.Opacity = 1; }
+        status.IsEnabledChanged += (_, _) => Undim();
+        status.Loaded += (_, _) => Undim();
         ToolTipService.SetToolTip(_updateButton,
             "A new version is downloaded. Restart to use it, or it installs when you close MediaViewer.");
         _updateProgress = new JobBar { Visibility = Visibility.Collapsed };
@@ -206,7 +212,10 @@ public static partial class IslandHost
             }
             SetButtonText(_updateButton, text);
             if (_updateButton.Content is TextBlock label)
+            {
                 label.FontSize = clickable ? UiFontSize : UpdateStatusFontSize;
+                label.Foreground = Brush(clickable ? Title : Body);
+            }
             ToolTipService.SetToolTip(_updateButton, tip);
             _updateButton.IsEnabled = clickable;
             _updateButton.Tag = restartArg;

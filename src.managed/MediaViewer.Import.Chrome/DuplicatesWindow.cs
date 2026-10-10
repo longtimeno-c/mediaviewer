@@ -320,7 +320,7 @@ internal sealed class DuplicatesWindow : Window
         _open.Click += (_, _) => OpenFocused();
         _reveal.Click += (_, _) => RevealFocused();
         _clear.Click += (_, _) => _list.SelectedItems.Clear();
-        _trash.Style = (Style)Application.Current.Resources["AccentButtonStyle"];
+        if (ImportWindow.AccentStyle() is Style accent) _trash.Style = accent;
         _trash.Click += (_, _) => TrashSelection();
         ToolTipService.SetToolTip(_open, "Enter");
         ToolTipService.SetToolTip(_reveal, "Ctrl+E");

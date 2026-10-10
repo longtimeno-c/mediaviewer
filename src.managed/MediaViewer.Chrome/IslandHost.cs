@@ -873,61 +873,6 @@ public static partial class IslandHost
         return new FontFamily("Consolas");
     }
 
-    private static ControlTemplate? _flatButtonTemplate;
-
-    // This template does not load: its XAML uses x:Name without declaring the
-    // x namespace, so XamlReader.Load throws and every bar button falls back to
-    // WinUI's own template -- which is what has always shipped. Do not "fix" it
-    // by declaring x: tried 2026-09-27, and once a custom template actually
-    // loads in these islands, opening or closing a bar flyout fail-fasts in
-    // Microsoft.UI.Xaml (0xC000027B). IslandHost.Edit.cs FlattenButton is the
-    // safe way to restyle a button (lightweight resources, no template).
-    private static ControlTemplate? FlatButtonTemplate()
-    {
-        if (_flatButtonTemplate is not null) return _flatButtonTemplate;
-        const string xaml =
-            """
-            <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-                             TargetType="Button">
-              <Border x:Name="Root" Background="Transparent" Padding="14,7" CornerRadius="4">
-                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
-                                  Content="{TemplateBinding Content}"
-                                  ContentTemplate="{TemplateBinding ContentTemplate}"
-                                  FontFamily="{TemplateBinding FontFamily}"
-                                  FontSize="{TemplateBinding FontSize}"
-                                  FontWeight="{TemplateBinding FontWeight}"
-                                  Foreground="{TemplateBinding Foreground}"/>
-                <VisualStateManager.VisualStateGroups>
-                  <VisualStateGroup x:Name="CommonStates">
-                    <VisualState x:Name="Normal"/>
-                    <VisualState x:Name="PointerOver">
-                      <VisualState.Setters>
-                        <Setter Target="Root.Background" Value="{ThemeResource SubtleFillColorSecondaryBrush}"/>
-                      </VisualState.Setters>
-                    </VisualState>
-                    <VisualState x:Name="Pressed">
-                      <VisualState.Setters>
-                        <Setter Target="Root.Background" Value="{ThemeResource SubtleFillColorTertiaryBrush}"/>
-                      </VisualState.Setters>
-                    </VisualState>
-                    <VisualState x:Name="Disabled"/>
-                  </VisualStateGroup>
-                </VisualStateManager.VisualStateGroups>
-              </Border>
-            </ControlTemplate>
-            """;
-        try
-        {
-            _flatButtonTemplate = (ControlTemplate)XamlReader.Load(xaml);
-        }
-        catch (Exception ex)
-        {
-            System.Diagnostics.Debug.WriteLine(ex);
-            _flatButtonTemplate = null;
-        }
-        return _flatButtonTemplate;
-    }
-
     private static Button TextButton(string label, Action click)
     {
         var button = new Button
@@ -953,8 +898,10 @@ public static partial class IslandHost
             // island, or A/D/Q/E wait for the window to be deactivated.
             AllowFocusOnInteraction = false,
         };
-        ControlTemplate? template = FlatButtonTemplate();
-        if (template is not null) button.Template = template;
+        // WinUI's own template, restyled through lightweight resources only:
+        // a custom ControlTemplate that loads in these islands fail-fasts
+        // (0xC000027B) once a bar flyout opens or closes (2026-09-27).
+        FlattenButton(button);
         button.Click += (_, _) => Guarded(click);
         return button;
     }
@@ -974,7 +921,7 @@ public static partial class IslandHost
         style.Setters.Add(new Setter(FlyoutPresenter.BackgroundProperty, Brush(Canvas)));
         style.Setters.Add(new Setter(FlyoutPresenter.BorderBrushProperty, Brush(Hairline)));
         style.Setters.Add(new Setter(FlyoutPresenter.BorderThicknessProperty, new Thickness(1)));
-        style.Setters.Add(new Setter(FlyoutPresenter.CornerRadiusProperty, new CornerRadius(6)));
+        style.Setters.Add(new Setter(FlyoutPresenter.CornerRadiusProperty, new CornerRadius(RadiusFlyout)));
         style.Setters.Add(new Setter(FlyoutPresenter.PaddingProperty, new Thickness(4)));
         style.Setters.Add(new Setter(FlyoutPresenter.FontFamilyProperty, UiFont));
         style.Setters.Add(new Setter(FlyoutPresenter.FontSizeProperty, UiFontSize));
@@ -988,78 +935,11 @@ public static partial class IslandHost
         style.Setters.Add(new Setter(MenuFlyoutPresenter.BackgroundProperty, Brush(Canvas)));
         style.Setters.Add(new Setter(MenuFlyoutPresenter.BorderBrushProperty, Brush(Hairline)));
         style.Setters.Add(new Setter(MenuFlyoutPresenter.BorderThicknessProperty, new Thickness(1)));
-        style.Setters.Add(new Setter(MenuFlyoutPresenter.CornerRadiusProperty, new CornerRadius(6)));
+        style.Setters.Add(new Setter(MenuFlyoutPresenter.CornerRadiusProperty, new CornerRadius(RadiusFlyout)));
         style.Setters.Add(new Setter(MenuFlyoutPresenter.PaddingProperty, new Thickness(4)));
         style.Setters.Add(new Setter(MenuFlyoutPresenter.FontFamilyProperty, UiFont));
         style.Setters.Add(new Setter(MenuFlyoutPresenter.FontSizeProperty, UiFontSize));
         return style;
-    }
-
-    private static ControlTemplate? _flatMenuItemTemplate;
-
-    // This template does not load: its XAML uses x:Name without declaring the
-    // x namespace, so XamlReader.Load throws and every menu item falls back to
-    // WinUI's own template -- which is what has always shipped. Do not "fix" it
-    // by declaring x: tried 2026-09-27, and once a custom template actually
-    // loads in these islands, opening or closing a bar flyout fail-fasts in
-    // Microsoft.UI.Xaml (0xC000027B). IslandHost.Edit.cs FlattenButton is the
-    // safe way to restyle a button (lightweight resources, no template).
-    private static ControlTemplate? FlatMenuItemTemplate()
-    {
-        if (_flatMenuItemTemplate is not null) return _flatMenuItemTemplate;
-        const string xaml =
-            """
-            <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-                             TargetType="MenuFlyoutItem">
-              <Border x:Name="Root" Background="Transparent" Padding="12,8" CornerRadius="4">
-                <Grid>
-                  <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="Auto"/>
-                  </Grid.ColumnDefinitions>
-                  <TextBlock Text="{TemplateBinding Text}"
-                             FontFamily="{TemplateBinding FontFamily}"
-                             FontSize="{TemplateBinding FontSize}"
-                             Foreground="{TemplateBinding Foreground}"
-                             VerticalAlignment="Center"/>
-                  <TextBlock Grid.Column="1"
-                             Text="{TemplateBinding KeyboardAcceleratorTextOverride}"
-                             FontFamily="{TemplateBinding FontFamily}"
-                             FontSize="{TemplateBinding FontSize}"
-                             Foreground="{TemplateBinding Foreground}"
-                             Margin="28,0,4,0"
-                             Opacity="0.5"
-                             VerticalAlignment="Center"/>
-                </Grid>
-                <VisualStateManager.VisualStateGroups>
-                  <VisualStateGroup x:Name="CommonStates">
-                    <VisualState x:Name="Normal"/>
-                    <VisualState x:Name="PointerOver">
-                      <VisualState.Setters>
-                        <Setter Target="Root.Background" Value="{ThemeResource SubtleFillColorSecondaryBrush}"/>
-                      </VisualState.Setters>
-                    </VisualState>
-                    <VisualState x:Name="Pressed">
-                      <VisualState.Setters>
-                        <Setter Target="Root.Background" Value="{ThemeResource SubtleFillColorTertiaryBrush}"/>
-                      </VisualState.Setters>
-                    </VisualState>
-                    <VisualState x:Name="Disabled"/>
-                  </VisualStateGroup>
-                </VisualStateManager.VisualStateGroups>
-              </Border>
-            </ControlTemplate>
-            """;
-        try
-        {
-            _flatMenuItemTemplate = (ControlTemplate)XamlReader.Load(xaml);
-        }
-        catch (Exception ex)
-        {
-            System.Diagnostics.Debug.WriteLine(ex);
-            _flatMenuItemTemplate = null;
-        }
-        return _flatMenuItemTemplate;
     }
 
     private static MenuFlyoutItem Item(string text, string? shortcut, Action action)
@@ -1073,8 +953,15 @@ public static partial class IslandHost
             Background = new SolidColorBrush(Colors.Transparent),
             Padding = new Thickness(12, 8, 12, 8),
         };
-        ControlTemplate? template = FlatMenuItemTemplate();
-        if (template is not null) item.Template = template;
+        // Lightweight resources, never a template (see TextButton): the
+        // chrome's washes and colours in place of Windows' own.
+        item.Resources["MenuFlyoutItemBackgroundPointerOver"] = Brush(ChromeColour.HoverWash);
+        item.Resources["MenuFlyoutItemBackgroundPressed"] = Brush(ChromeColour.PressedWash);
+        foreach (string key in new[] { "MenuFlyoutItemForegroundPointerOver", "MenuFlyoutItemForegroundPressed" })
+            item.Resources[key] = Brush(Title);
+        item.Resources["MenuFlyoutItemForegroundDisabled"] = Brush(ChromeColour.Disabled);
+        item.Resources["MenuFlyoutItemKeyboardAcceleratorTextForeground"] = Brush(Body);
+        item.CornerRadius = new CornerRadius(RadiusButton);
         if (!string.IsNullOrEmpty(shortcut))
         {
             item.KeyboardAcceleratorTextOverride = shortcut;
