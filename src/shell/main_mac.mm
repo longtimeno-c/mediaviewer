@@ -2315,6 +2315,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   bool _shuttleSkimmed;                   // a J burst left a keyframe-seek to settle
   std::int64_t _shuttleTarget;            // where the last J was going (program time)
   BOOL _editorClosePrompt;                // the discard sheet is up
+  BOOL _closeAfterEditor;                 // the viewer window closes once the editor has
   int32_t _editorTrimIndex;               // the piece whose edge is being dragged
   int32_t _editorTrimEdge;                // 0 in, 1 out
   double _soakHold, _soakCpu0, _soakWall0, _soakPlayCpu, _soakPlayWall, _soakPausedCpu;
@@ -2398,6 +2399,8 @@ static void MvAdoptNewDefaultViewerTypes() {
                   backing:NSBackingStoreBuffered
                     defer:NO];
   self.window.title = @"MediaViewer";
+  // self.window holds it: AppKit's release on close would over-release it under ARC.
+  self.window.releasedWhenClosed = NO;
   // Single-window viewer: without this AppKit adds Show Tab Bar / Show All
   // Tabs to the View menu.
   self.window.tabbingMode = NSWindowTabbingModeDisallowed;
@@ -6342,6 +6345,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   self.editorPreview = nil;
   self.editorChrome = nil;
   ++_editorGeneration;
+  if (_closeAfterEditor) return;  // the viewer window is closing too (issue #181)
   [self.window makeKeyAndOrderFront:nil];
   [self.window makeFirstResponder:self.view];
 }
@@ -6720,11 +6724,25 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
                   MvLabApp* me = weakSelf;
                   if (me == nil) return;
                   me->_editorClosePrompt = NO;
+                  const BOOL closeViewer = me->_closeAfterEditor;
                   if (response == NSAlertSecondButtonReturn) [me setEditorOpen:NO];
+                  me->_closeAfterEditor = NO;
+                  if (closeViewer && response == NSAlertSecondButtonReturn) [me.window close];
                 }];
 }
 
 - (BOOL)windowShouldClose:(NSWindow*)sender {
+  // Issue #181: the viewer window closing clears the chrome bridge and the
+  // folder, which the editor's chrome and canvas still use. The editor closes
+  // first, through the discard prompt when its edit is not exported; Discard
+  // then closes the viewer window, Keep editing leaves both open.
+  if (sender == self.window && _editorOpen) {
+    _closeAfterEditor = YES;
+    [self editorRequestClose];
+    if (_editorOpen) return NO;
+    _closeAfterEditor = NO;
+    return YES;
+  }
   if (self.editorWindow != nil && sender == self.editorWindow && _editorOpen && _timeline.edited() &&
       _timeline.revision() != _editorExportedRevision) {
     [self editorRequestClose];
