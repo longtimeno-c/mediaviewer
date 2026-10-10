@@ -247,7 +247,10 @@ unindexed.
 - **Scope:** the open folder and its subfolders (default) · all indexed folders
   (`MV_AI_SCOPE_TREE` / `MV_AI_SCOPE_ALL`; the panel offers no folder-only scope). Kind filter
   (photos / videos) and tower filter (pictures / sounds / speech). A nonsense query returns
-  "nothing found", not the least-bad ten (below).
+  "nothing found", not the least-bad ten (below). With no folder open the folder scope searches
+  everywhere, and the Mac panel shows *Everywhere* chosen; opening another folder asks a
+  folder-scoped search again (on the panel's next showing if it is closed), never leaving the
+  last folder's results under the new one (issue #191).
 - **Find similar:** the current still or the paused frame as the query. An indexed still or
   moment uses its stored vector; another paused frame is embedded on demand.
 

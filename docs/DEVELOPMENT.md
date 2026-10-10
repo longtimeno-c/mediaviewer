@@ -749,6 +749,9 @@ and reports CPU time for the grid at rest, one layout pass, a status-line publis
 update with and without a re-sort. Compare runs of the same build alternated with the base;
 the 2026-10-03 numbers are in the PR that added it (a publish 51 → 8 ms, a people update
 500 → 46 ms of CPU).
+`--filter SearchModelTests` checks the search panel's model against a fake table (issue #191):
+a search re-asks when another folder opens under "Folder & subfolders", and Tab only takes a
+name looked up for the words as typed.
 
 **The Photos library source (Mac, issue #72; docs/design/17 "Photos library source").** Engine
 behaviour is tested with a fake PhotoKit: `mv_ai_tests "[photos]"`. On a real library, two
