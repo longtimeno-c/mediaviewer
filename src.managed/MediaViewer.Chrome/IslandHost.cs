@@ -179,6 +179,8 @@ public static partial class IslandHost
         public const int EditWorkspace = 150;
         public const int CropAspectSet = 155;      // arg: preset, + 16 portrait
         public const int CropStraightenSet = 156;  // arg: degrees
+        // docs/design/07 "Print": the Open flyout's Print… (Ctrl+P).
+        public const int Print = 172;
 
         // Mirrors chrome_command_checksum() in chrome_host.h: same constants,
         // same order, same arithmetic. Probe hands it to native for the test.
@@ -1274,6 +1276,12 @@ public static partial class IslandHost
             if (!string.IsNullOrEmpty(path)) ToolTipService.SetToolTip(reveal, path);
             flyout.Items.Add(reveal);
         }
+        // docs/design/07 "Print": the Mac's File > Print…. Greyed, never hidden, off a
+        // still (a clip, audio, a document) and mid-crop; native checks again.
+        flyout.Items.Add(Sep());
+        MenuFlyoutItem print = Item("Print…", "Ctrl+P", () => { Send(Command.Print); RestoreCanvasFocus(); });
+        print.IsEnabled = _editSubject == SubjectStill && !_editCropActive;
+        flyout.Items.Add(print);
     }
 
     // Open > Recent folders: the Mac's File > Open Recent, so the keyboard

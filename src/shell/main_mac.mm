@@ -179,6 +179,8 @@ static bool MvCommandSupported(mv::shell::command_id c) {
     case keyframe_next: case jobs_pane: case clip_tools: case clip_split:
     // PR 15
     case copy_path: case copy_flattened: case share:
+    // docs/design/07 "Print"
+    case print:
     // Pages (docs/plans/audio-and-documents.md §2.3)
     case next_page: case prev_page:
     // PR 29
@@ -1695,6 +1697,151 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 }
 @end
 
+// docs/design/07 "Print": the page NSPrintOperation draws. One page: the baked still,
+// placed by mv::shell::place_print (shared with Windows) in the printable area
+// of the printer, paper and orientation the panel has chosen. knowsPageRange:
+// runs again whenever one of those changes, so the preview follows.
+@interface MvPrintView : NSView
+- (instancetype)initWithImage:(NSImage*)image width:(std::uint32_t)w height:(std::uint32_t)h;
+@property(nonatomic) mv::shell::print_scale scale;
+@end
+
+@implementation MvPrintView {
+  NSImage* _image;
+  std::uint32_t _width;
+  std::uint32_t _height;
+}
+- (instancetype)initWithImage:(NSImage*)image width:(std::uint32_t)w height:(std::uint32_t)h {
+  if ((self = [super initWithFrame:NSMakeRect(0, 0, 1, 1)])) {
+    _image = image;
+    _width = w;
+    _height = h;
+    _scale = mv::shell::print_scale::fit;
+  }
+  return self;
+}
+- (BOOL)isFlipped {
+  return YES;
+}
+- (BOOL)knowsPageRange:(NSRangePointer)range {
+  // The whole printable area is the page: margins are what the printer
+  // cannot reach, as in Preview.
+  if (NSPrintInfo* info = NSPrintOperation.currentOperation.printInfo) {
+    const NSRect b = info.imageablePageBounds;
+    const NSSize paper = info.paperSize;
+    info.leftMargin = NSMinX(b);
+    info.bottomMargin = NSMinY(b);
+    info.rightMargin = paper.width - NSMaxX(b);
+    info.topMargin = paper.height - NSMaxY(b);
+    [self setFrameSize:b.size];
+  }
+  *range = NSMakeRange(1, 1);
+  return YES;
+}
+- (NSRect)rectForPage:(NSInteger)page {
+  (void)page;
+  return self.bounds;
+}
+- (void)drawRect:(NSRect)dirty {
+  (void)dirty;
+  const NSRect b = self.bounds;
+  const mv::shell::print_rect r = mv::shell::place_print(
+      _width, _height, mv::shell::print_rect{0, 0, b.size.width, b.size.height},
+      mv::shell::kPrintPixelsPerInch, mv::shell::kPrintPixelsPerInch, _scale);
+  [_image drawInRect:NSMakeRect(r.x, r.y, r.w, r.h)
+            fromRect:NSZeroRect
+           operation:NSCompositingOperationCopy
+            fraction:1.0
+      respectFlipped:YES
+               hints:@{NSImageHintInterpolation : @(NSImageInterpolationHigh)}];
+}
+@end
+
+// Preview's choice, in the panel beside its own: Scale to Fit (the default)
+// or Actual Size. Two radio buttons; the arrow keys and Space move between
+// them like any other panel control.
+@interface MvPrintScaleController : NSViewController <NSPrintPanelAccessorizing>
+- (instancetype)initWithPrintView:(MvPrintView*)view;
+@property(nonatomic) BOOL actualSize;  // observed by the panel's preview
+@end
+
+@implementation MvPrintScaleController {
+  MvPrintView* __weak _printView;
+}
+- (instancetype)initWithPrintView:(MvPrintView*)view {
+  if ((self = [super initWithNibName:nil bundle:nil])) _printView = view;
+  return self;
+}
+- (void)loadView {
+  NSButton* fit = [NSButton radioButtonWithTitle:@"Scale to Fit" target:self action:@selector(pick:)];
+  NSButton* actual = [NSButton radioButtonWithTitle:@"Actual Size" target:self action:@selector(pick:)];
+  fit.tag = 0;
+  actual.tag = 1;
+  fit.state = self.actualSize ? NSControlStateValueOff : NSControlStateValueOn;
+  actual.state = self.actualSize ? NSControlStateValueOn : NSControlStateValueOff;
+  NSStackView* stack = [NSStackView stackViewWithViews:@[ fit, actual ]];
+  stack.orientation = NSUserInterfaceLayoutOrientationVertical;
+  stack.alignment = NSLayoutAttributeLeading;
+  stack.edgeInsets = NSEdgeInsetsMake(8, 20, 8, 20);
+  stack.frame = NSMakeRect(0, 0, stack.fittingSize.width, stack.fittingSize.height);
+  self.view = stack;
+  self.preferredContentSize = stack.frame.size;
+}
+- (void)pick:(NSButton*)sender {
+  _printView.scale = sender.tag == 1 ? mv::shell::print_scale::actual_size : mv::shell::print_scale::fit;
+  self.actualSize = sender.tag == 1;
+}
+- (NSSet<NSString*>*)keyPathsForValuesAffectingPreview {
+  return [NSSet setWithObject:@"actualSize"];
+}
+- (NSArray<NSDictionary<NSPrintPanelAccessorySummaryKey, NSString*>*>*)localizedSummaryItems {
+  return @[ @{
+    NSPrintPanelAccessorySummaryItemNameKey : @"Scale",
+    NSPrintPanelAccessorySummaryItemDescriptionKey : self.actualSize ? @"Actual Size" : @"Scale to Fit",
+  } ];
+}
+@end
+
+// The baked raster as an image the print system colour-manages: its own ICC
+// profile when it has an RGB one, else sRGB (untagged is sRGB, D6). The
+// pixels are handed over, not copied. Any thread.
+static NSImage* MvPrintImage(mv::codec::raster&& r) {
+  if (r.width == 0 || r.height == 0 || r.rgba.size() < std::size_t{r.width} * r.height * 4) return nil;
+  CGColorSpaceRef space = nullptr;
+  if (!r.icc.empty()) {
+    NSData* icc = [NSData dataWithBytes:r.icc.data() length:r.icc.size()];
+    space = CGColorSpaceCreateWithICCData((__bridge CFDataRef)icc);
+    if (space && CGColorSpaceGetModel(space) != kCGColorSpaceModelRGB) {
+      CGColorSpaceRelease(space);
+      space = nullptr;
+    }
+  }
+  if (!space) space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+  auto* keep = new (std::nothrow) std::vector<std::uint8_t>(std::move(r.rgba));
+  if (!keep) {
+    CGColorSpaceRelease(space);
+    return nil;
+  }
+  NSData* pixels = [[NSData alloc] initWithBytesNoCopy:keep->data()
+                                                length:keep->size()
+                                           deallocator:^(void* bytes, NSUInteger length) {
+                                             (void)bytes;
+                                             (void)length;
+                                             delete keep;
+                                           }];
+  CGDataProviderRef provider = CGDataProviderCreateWithCFData((__bridge CFDataRef)pixels);
+  CGImageRef cg = CGImageCreate(r.width, r.height, 8, 32, std::size_t{r.width} * 4, space,
+                                static_cast<CGBitmapInfo>(kCGImageAlphaNoneSkipLast), provider, nullptr,
+                                true, kCGRenderingIntentDefault);
+  CGDataProviderRelease(provider);
+  CGColorSpaceRelease(space);
+  if (!cg) return nil;
+  // One pixel per point: Actual Size is the image's own size.
+  NSImage* image = [[NSImage alloc] initWithCGImage:cg size:NSMakeSize(r.width, r.height)];
+  CGImageRelease(cg);
+  return image;
+}
+
 @interface MvMetalView : NSView <NSDraggingSource>
 @property(nonatomic, assign) mv::shell::present_lab_mac* lab;
 @property(nonatomic, assign) mv::shell::input_snapshot* snap;
@@ -2345,6 +2492,8 @@ static void MvAdoptNewDefaultViewerTypes() {
   // PR 30 (docs/design/21): the Video Editor. _editorToken bumps on open and close, so
   // a strip job that lands for an older clip is dropped.
   BOOL _editorOpen;
+  // docs/design/07 "Print": a bake or a print panel is up; a second ⌘P waits for it.
+  BOOL _printing;
   std::string _editorPath;
   mv::shell::video_timeline _timeline;
   int32_t _editorSelected;
@@ -4510,7 +4659,11 @@ enum MvMenuCmd : NSInteger {
   kMenuFlipH, kMenuFlipV, kMenuUndoEdit, kMenuResetEdits, kMenuSaveCopy, kMenuTrim,
   // docs/design/16 "Window"
   kMenuNewWindow,
+  // docs/design/07 "Print": File > Print…, and the command bar's Open flyout.
+  kMenuPrint,
 };
+// CommandBarView.swift sends these by number.
+static_assert(kMenuNewWindow == 44 && kMenuPrint == 45, "keep CommandBarView.swift's mv_chrome_menu tags in step");
 
 // docs/design/16 "Window": another window is another MediaViewer process, on the
 // empty window, cascaded from this one. The bundle starts as a new instance
@@ -4554,6 +4707,9 @@ enum MvMenuCmd : NSInteger {
   switch (static_cast<MvMenuCmd>(cmd)) {
     case kMenuOpen: [self openFolderPanel:NO]; break;
     case kMenuNewWindow: [self openNewWindow]; break;
+    case kMenuPrint:
+      if (![self printCurrent]) NSBeep();
+      break;
     case kMenuOpenFolder: [self openFolderPanel:YES]; break;
     case kMenuOpenPhotos: [self openPhotosLibrary]; break;
     case kMenuTrash: [self deleteMarkedToTrash]; break;
@@ -4640,6 +4796,7 @@ enum MvMenuCmd : NSInteger {
     return subject == mv::shell::edit_subject::still;
   }
   if (tag == kMenuFolderTree) item.state = _treeVisible ? NSControlStateValueOn : NSControlStateValueOff;
+  if (tag == kMenuPrint) return [self canPrint];
   switch (static_cast<MvMenuCmd>(item.tag)) {
     case kMenuMetadata: case kMenuFolderTree:
     case kMenuOpen: case kMenuOpenFolder: case kMenuFit: case kMenuOneToOne: case kMenuFullscreen: case kMenuHelp: case kMenuSettings: case kMenuOverlay:
@@ -4771,6 +4928,10 @@ enum MvMenuCmd : NSInteger {
   [self addMenuItem:@"Share…" cmd:kMenuShare key:@"" mods:0 toMenu:file];
   [self addMenuItem:@"Copy Path" cmd:kMenuCopyPath key:@"" mods:0 toMenu:file];
   [self addMenuItem:@"Copy Edited Image" cmd:kMenuCopyEdited key:@"" mods:0 toMenu:file];
+  [file addItem:[NSMenuItem separatorItem]];
+  // docs/design/07 "Print": Preview's place and key. ⌘P is also the table's row,
+  // so `?` and Settings list it; the menu answers it first, greyed on a clip.
+  [self addMenuItem:@"Print…" cmd:kMenuPrint key:@"p" mods:NSEventModifierFlagCommand toMenu:file];
   [file addItem:[NSMenuItem separatorItem]];
   [file addItemWithTitle:@"Close Window" action:@selector(performClose:) keyEquivalent:@"w"];
 
@@ -5655,6 +5816,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     }
     case copy_flattened: return [self copyFlattened];
     case share: return [self shareMarkedOrCurrent];
+    case print: return [self printCurrent];
     case metadata_pane:
       if (!_metaPaneVisible && _adjust.visible()) [self setAdjustVisible:NO];
       if (!_metaPaneVisible && _jobsVisible) [self setJobsVisible:NO];
@@ -8734,6 +8896,76 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
     return mv::status::ok;
   });
   return YES;
+}
+
+// docs/design/07 "Print": a still on screen whose stack can be baked now. Not a
+// clip, an animation, audio or a document (Open in <app> prints those), not
+// mid-crop, not while a lossless turn is on its way back to the canvas.
+- (BOOL)canPrint {
+  return [self editSubject] == mv::shell::edit_subject::still && _edits.can_bake() && !_printing;
+}
+
+// ⌘P: Preview's Print…. The still is baked as the canvas shows it on the pool
+// (rule 1), then the standard print panel opens as a sheet with the page
+// turned to the image's orientation, Scale to Fit chosen, and copies, paper
+// and printer left to the panel. Return prints, Esc cancels.
+- (BOOL)printCurrent {
+  if (![self canPrint] || _index.current() >= _items.size()) return NO;
+  const std::string path = _items[_index.current()].path_utf8;
+  const mv::edit::geometry g = _edits.export_geometry();
+  const mv::edit::colour c = _edits.colour();
+  _printing = YES;
+  MvLabApp* __weak weakSelf = self;
+  _jobs.submit_at(mv::background_generation, [path, g, c, weakSelf](const mv::job_context&) -> mv::status {
+    mv::result<mv::codec::raster> out = mv::shell::render_print_raster(path, g, c, false);
+    const std::uint32_t w = out ? out->width : 0;
+    const std::uint32_t h = out ? out->height : 0;
+    NSImage* image = out ? MvPrintImage(std::move(out).value()) : nil;
+    NSString* title = [[NSString stringWithUTF8String:path.c_str()] lastPathComponent];
+    dispatch_async(dispatch_get_main_queue(), ^{
+      MvLabApp* app = weakSelf;
+      if (!app) return;
+      if (!image || ![app showPrintPanelFor:image width:w height:h title:title]) {
+        app->_printing = NO;
+        NSBeep();
+      }
+    });
+    return out ? mv::status::ok : out.error();
+  });
+  return YES;
+}
+
+- (BOOL)showPrintPanelFor:(NSImage*)image width:(std::uint32_t)w height:(std::uint32_t)h title:(NSString*)title {
+  if (!self.window) return NO;
+  NSPrintInfo* info = [NSPrintInfo.sharedPrintInfo copy];
+  info.orientation = mv::shell::print_landscape(w, h) ? NSPaperOrientationLandscape : NSPaperOrientationPortrait;
+  info.horizontalPagination = NSPrintingPaginationModeClip;
+  info.verticalPagination = NSPrintingPaginationModeClip;
+  info.horizontallyCentered = NO;
+  info.verticallyCentered = NO;
+  MvPrintView* view = [[MvPrintView alloc] initWithImage:image width:w height:h];
+  NSPrintOperation* op = [NSPrintOperation printOperationWithView:view printInfo:info];
+  op.jobTitle = title;
+  op.showsPrintPanel = YES;
+  op.showsProgressPanel = YES;
+  // The spool renders the full-resolution still off the main thread.
+  op.canSpawnSeparateThread = YES;
+  NSPrintPanel* panel = op.printPanel;
+  panel.options = panel.options | NSPrintPanelShowsCopies | NSPrintPanelShowsPaperSize |
+                  NSPrintPanelShowsOrientation | NSPrintPanelShowsPreview;
+  [panel addAccessoryController:[[MvPrintScaleController alloc] initWithPrintView:view]];
+  [op runOperationModalForWindow:self.window
+                        delegate:self
+                  didRunSelector:@selector(printOperationDidRun:success:contextInfo:)
+                     contextInfo:nullptr];
+  return YES;
+}
+
+- (void)printOperationDidRun:(NSPrintOperation*)op success:(BOOL)success contextInfo:(void*)context {
+  (void)op;
+  (void)success;
+  (void)context;
+  _printing = NO;
 }
 
 // ⌘⇧S: the system share picker with the marked files, else the current one,

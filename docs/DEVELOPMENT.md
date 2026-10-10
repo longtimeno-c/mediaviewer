@@ -521,6 +521,7 @@ first; turn that off under Settings.
 | `Esc` | walks out one level: gallery, fullscreen, then island focus back to the canvas, and last, in a search result list, **Back to folder**. It never quits |
 | `Ctrl+W` / `Alt+F4` | close the window |
 | `Ctrl+N` (`⌘N`) | a new window: its own process on the empty window; add-ons stay in the first window's process |
+| `Ctrl+P` (`⌘P`) | print the photo as you see it, edits applied: the system print dialog, the page turned to the photo, **Scale to Fit** or **Actual Size** (a Scale tab on Windows, beside the panel's own options on the Mac), copies and printer in the dialog. Also Open ▸ **Print…** (File ▸ Print… on the Mac); greyed on a clip, audio, a document and mid-crop |
 
 **Editing (PR 10, Windows and macOS).** Edits are kept per file for the session; the
 original is only ever rewritten by a lossless JPEG rotate / flip.

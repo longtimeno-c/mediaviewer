@@ -395,6 +395,14 @@ disabled until the working image exists.
 menu open a workspace of tabs over the existing panes, a base feature with no new engine. It docks
 (see "Panes float" above).
 
+**Print is stills only, through the OS dialog (2026-10-10).** Issue #289: Print… (`Ctrl+P` /
+`⌘P`) bakes the stack with the export's own code on the pool and hands the pixels to
+`NSPrintOperation` / Win32 `PrintDlgEx` + GDI. Clips, animations, audio and documents leave it
+greyed: a clip's frame is PR 14's frame export, and a PDF or DOCX prints from its own app ("Open
+in <app>", D5: documents are Open With only). Windows uses `PrintDlgEx` rather than `PrintManager`,
+which needs a XAML `PrintDocument` the unpackaged island app cannot use or a Direct2D preview
+source. Actual Size is 72 pixels per inch, Preview's 100 %, on one page.
+
 ---
 
 ## Clip editing and the Video Editor

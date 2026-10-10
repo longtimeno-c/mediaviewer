@@ -45,7 +45,7 @@ public static partial class IslandHost
 
     // shell::edit_tab and shell::crop_aspect values (both stable on the wire).
     private const int TabCrop = 0, TabColour = 1, TabInfo = 2, TabTrim = 3, TabJobs = 4;
-    private const int SubjectNone = 0, SubjectClip = 2;
+    private const int SubjectNone = 0, SubjectStill = 1, SubjectClip = 2;
     private static readonly string[] AspectLabels = { "Free", "Original", "1:1", "4:3", "3:2", "16:9", "5:4" };
 
     // chrome_host.h kEditTrim*.

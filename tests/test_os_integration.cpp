@@ -1,5 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
@@ -9,6 +10,73 @@
 #include "shell/os_integration.h"
 
 using namespace mv::shell;
+using Catch::Approx;
+
+TEST_CASE("print fits the still on the page, centred, keeping its shape", "[shell][os][print]") {
+  // US Letter's printable area at 600 dpi, less a quarter inch all round.
+  const print_rect page{150, 150, 4800, 6300};
+  // A 3:2 landscape still on a portrait page: width-bound.
+  print_rect r = place_print(6000, 4000, page, 600, 600, print_scale::fit);
+  CHECK(r.w == Approx(4800));
+  CHECK(r.h == Approx(3200));
+  CHECK(r.x == Approx(150));
+  CHECK(r.y == Approx(150 + (6300 - 3200) / 2.0));
+  // A portrait still: height-bound, centred across.
+  r = place_print(3000, 4500, page, 600, 600, print_scale::fit);
+  CHECK(r.h == Approx(6300));
+  CHECK(r.w == Approx(4200));
+  CHECK(r.x == Approx(150 + 300));
+  // A small still is scaled up to the page, as Preview's Scale to Fit does.
+  r = place_print(48, 32, page, 600, 600, print_scale::fit);
+  CHECK(r.w == Approx(4800));
+  // Square pixels on a 600 x 300 dpi device stay square on paper.
+  r = place_print(1000, 1000, print_rect{0, 0, 4800, 3150}, 600, 300, print_scale::fit);
+  CHECK(r.w / 600 == Approx(r.h / 300));
+  CHECK(r.w <= 4800 + 1e-9);
+  CHECK(r.h <= 3150 + 1e-9);
+}
+
+TEST_CASE("print at actual size is one pixel per point, cut at the page", "[shell][os][print]") {
+  const print_rect page{0, 0, 612, 792};  // Letter in points, the Mac's units
+  print_rect r = place_print(144, 72, page, 72, 72, print_scale::actual_size);
+  CHECK(r.w == Approx(144));
+  CHECK(r.h == Approx(72));
+  CHECK(r.x == Approx((612 - 144) / 2.0));
+  CHECK(r.y == Approx((792 - 72) / 2.0));
+  // At 600 dpi the same still is two inches by one.
+  r = place_print(144, 72, print_rect{0, 0, 5100, 6600}, 600, 600, print_scale::actual_size);
+  CHECK(r.w == Approx(1200));
+  CHECK(r.h == Approx(600));
+  // Larger than the page: centred, overhanging every edge; the device clips.
+  r = place_print(6000, 4000, page, 72, 72, print_scale::actual_size);
+  CHECK(r.w == Approx(6000));
+  CHECK(r.x < 0);
+  CHECK(r.x + r.w / 2 == Approx(306));
+  // Nothing to place.
+  r = place_print(0, 10, page, 72, 72, print_scale::fit);
+  CHECK(r.w == 0);
+  r = place_print(10, 10, print_rect{}, 72, 72, print_scale::fit);
+  CHECK(r.w == 0);
+}
+
+TEST_CASE("print orientation follows the still", "[shell][os][print]") {
+  CHECK(print_landscape(6000, 4000));
+  CHECK_FALSE(print_landscape(4000, 6000));
+  CHECK_FALSE(print_landscape(4000, 4000));
+}
+
+TEST_CASE("print pixels are composited over white", "[shell][os][print]") {
+  std::vector<std::uint8_t> px = {
+      10, 20, 30, 255,   // opaque: unchanged
+      0, 0, 0, 0,        // clear: white paper
+      200, 100, 0, 128,  // half: halfway to white
+  };
+  prepare_print_pixels(px, false);
+  CHECK(px == std::vector<std::uint8_t>{10, 20, 30, 255, 255, 255, 255, 255, 227, 177, 127, 255});
+  std::vector<std::uint8_t> dib = {1, 2, 3, 255};
+  prepare_print_pixels(dib, true);
+  CHECK(dib == std::vector<std::uint8_t>{3, 2, 1, 255});
+}
 
 TEST_CASE("recent folders are most recent first, one entry per folder", "[shell][os]") {
   std::vector<std::string> list;

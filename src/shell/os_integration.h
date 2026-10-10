@@ -3,11 +3,13 @@
 // PR 15 (docs/design/10 "OS integration", docs/design/16 View): the portable halves of the
 // shell verbs each host wires to its OS. Recent folders feed the Windows jump
 // list and the macOS Dock menu; the path text is what Ctrl+Shift+C / ⌘⇧C puts
-// on the clipboard; the flattened-copy name is what Ctrl+Alt+C / ⌘⌥C writes.
+// on the clipboard; the flattened-copy name is what Ctrl+Alt+C / ⌘⌥C writes;
+// where Print… (Ctrl+P / ⌘P) puts the still on the page and the pixels it sends.
 // Pure C++, no platform header, so both hosts and the tests share one rule.
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <span>
 #include <string>
 #include <string_view>
@@ -52,6 +54,41 @@ void fill_welcome_recents(std::span<const std::string> utf8_dirs, std::string_vi
 // the last. Unquoted, so a single path pastes straight into a path box.
 [[nodiscard]] std::string paths_as_text(std::span<const std::string> utf8_paths,
                                         std::string_view newline);
+
+// ---- Print… (docs/design/07 "Print") ------------------------------------------
+
+// Preview's two choices: the whole still as large as the page allows, or one
+// pixel per point (1/72 in, Preview's 100 %), centred and cut at the page edge.
+enum class print_scale : std::uint8_t { fit = 0, actual_size = 1 };
+inline constexpr double kPrintPixelsPerInch = 72.0;
+
+struct print_rect {
+  double x = 0;
+  double y = 0;
+  double w = 0;
+  double h = 0;
+};
+
+// The orientation the page starts in: landscape for a wider-than-tall still.
+// The user can still turn it in the OS dialog.
+[[nodiscard]] constexpr bool print_landscape(std::uint32_t width, std::uint32_t height) noexcept {
+  return width > height;
+}
+
+// Where an image of `width` x `height` pixels goes on the printable area
+// `page`, in the page's own units (device pixels on Windows, points on the
+// Mac), y down. `units_per_inch_*` may differ (a 600 x 300 dpi printer): the
+// still keeps its shape on paper. Centred on `page`; an actual-size still
+// larger than the page overhangs it and the device clips it. Empty when
+// either size is zero.
+[[nodiscard]] print_rect place_print(std::uint32_t width, std::uint32_t height, print_rect page,
+                                     double units_per_inch_x, double units_per_inch_y,
+                                     print_scale scale) noexcept;
+
+// The baked still (packed RGBA8, straight alpha) made ready for paper, in
+// place: transparency composited over white, alpha 255. `bgra` also swaps
+// red and blue for a Windows DIB.
+void prepare_print_pixels(std::span<std::uint8_t> rgba, bool bgra) noexcept;
 
 // ---- The Explorer thumbnail handler's install (Windows; the rule is pure) ----
 // The handler runs from <root>\shellext\<version>\, a copy made by the app,
