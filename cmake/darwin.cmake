@@ -902,7 +902,13 @@ if(MV_BUILD_TESTS)
   target_link_directories(mv_tests PRIVATE ${FFMPEG_LIBRARY_DIRS})
   target_link_libraries(mv_tests PRIVATE Exiv2::exiv2lib ${FFMPEG_LIBRARIES})
   include(Catch)
-  catch_discover_tests(mv_tests)
+  # The same properties as Windows (CMakeLists.txt): Catch2's SKIPPED marker so a
+  # corpus-gated or Mac-gated case is reported as Skipped, not Passed, even where
+  # the exit code alone would not say so; and a per-test timeout, so a wedged test
+  # is named by ctest instead of running until the CI job dies.
+  set(MV_TEST_TIMEOUT 300)
+  catch_discover_tests(mv_tests
+    PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT ${MV_TEST_TIMEOUT})
 
   # Milestone G: the same Import suite as Windows and Linux CI.
   add_executable(mv_import_tests
@@ -924,7 +930,8 @@ if(MV_BUILD_TESTS)
     target_compile_definitions(mv_import_tests PRIVATE MV_TEST_DEV_ADDON_KEY=1)
   endif()
   add_dependencies(mv_import_tests mv_import)
-  catch_discover_tests(mv_import_tests TEST_PREFIX "import_" PROPERTIES ENVIRONMENT "TZ=UTC")
+  catch_discover_tests(mv_import_tests TEST_PREFIX "import_" PROPERTIES ENVIRONMENT "TZ=UTC"
+    SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT ${MV_TEST_TIMEOUT})
 
   # docs/design/25: the add-on SDK (tools/addon-sdk) packs, and the app's own reader
   # says what it makes of each package, so the two cannot drift.
