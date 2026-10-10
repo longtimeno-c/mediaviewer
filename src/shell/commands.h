@@ -331,6 +331,9 @@ enum class command_id : std::uint16_t {
   // Ctrl/Cmd+N: another window, its own process (docs/design/16 "Window").
   // Appended after the add-on slots so every earlier wire id stays put.
   new_window,
+  // Issue #289: File > Duplicate, the item on screen copied beside itself
+  // (io/duplicate.h) with its pair and sidecar, then selected. Appended.
+  duplicate,
   count
 };
 inline constexpr int kAddonCommandSlots = 8;

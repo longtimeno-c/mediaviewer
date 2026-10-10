@@ -231,6 +231,8 @@ add_library(mv_io STATIC
   src/io/child_process_posix.cpp
   src/io/verified_copy.cpp
   src/io/verified_copy.h
+  src/io/duplicate.cpp
+  src/io/duplicate.h
   src/io/volume.h
   src/io/volume_mac.cpp
 )
@@ -914,6 +916,7 @@ if(MV_BUILD_TESTS)
   add_executable(mv_import_tests
     tests/test_content_hash.cpp
     tests/test_verified_copy.cpp
+    tests/test_duplicate.cpp
     tests/test_addon_manifest.cpp
     tests/test_open_addons.cpp
     tests/test_import_naming.cpp

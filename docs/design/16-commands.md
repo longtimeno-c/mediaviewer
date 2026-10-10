@@ -202,11 +202,18 @@ Marks are a separate set from the selection, so arrow-key browsing never makes a
 | `Ctrl+Shift+C` | Viewing | Copy path(s) as text |
 | `Ctrl+Alt+C` | browse | Copy the current still with edits baked, as PNG (worker thread) |
 | `Ctrl+Shift+S` | Viewing | Share (Windows Share / macOS share sheet) |
+| `Ctrl+Shift+D` | Viewing | **Duplicate** the item on screen beside itself, then select the copy. Mac: File ▸ Duplicate; both: the command bar's Open menu |
 
 - **Move** on one volume is a rename (`MoveFileEx`); across volumes it is a **verified** copy
   (hashed while read, read back uncached, compared) and only then the delete. I/O thread.
 - Copy / move never overwrite: a collision becomes `name (2).ext`. The last five destinations are
   remembered.
+- **Duplicate** names the copy as the platform's file manager does: `NAME copy.ext`, then
+  `NAME copy 2.ext` on the Mac; `NAME - Copy.ext`, then `NAME - Copy (2).ext` on Windows
+  (`io/duplicate.h`). A RAW+JPEG or Live Photo stop and its XMP sidecar take one number together,
+  so the copies pair again. Verified copies on the I/O pool; the copy is selected once the watcher
+  lists it. The Mac listing does not pair, so there a file goes with its sidecar only. Off in a
+  slideshow, crop, trim and the Video Editor, and on a Photos library item (issue #72).
 - **Delete** only uses the Recycle Bin / Trash. Where there is none (a share, some removable
   drives, bin off) the item is refused, not deleted, and the user is told how many. Marks clear
   only for items that succeeded. On the Mac, File ▸ Move to Trash (`⌘⌫`) is off while a text

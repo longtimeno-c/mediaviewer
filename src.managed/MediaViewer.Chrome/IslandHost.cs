@@ -74,6 +74,7 @@ public static partial class IslandHost
         public const int OpenCrumb = 1008;
         public const int GalleryColumns = 1009;
         public const int FolderUp = 115;  // mirrors command_id::folder_up
+        public const int Duplicate = 172;  // mirrors command_id::duplicate (issue #289)
         // Milestone G: arg 1/0 = the Import add-on is loaded / absent (its
         // commands exist only while it is). OpenPath: native pulls the path
         // with TakeTreePath and opens it in the viewer.
@@ -1274,6 +1275,16 @@ public static partial class IslandHost
             if (!string.IsNullOrEmpty(path)) ToolTipService.SetToolTip(reveal, path);
             flyout.Items.Add(reveal);
         }
+        // Issue #289: the Mac's File > Duplicate. Native refuses it where it
+        // cannot apply (slideshow, crop, trim); here it is off with nothing open.
+        flyout.Items.Add(Sep());
+        MenuFlyoutItem duplicate = Item("Duplicate", "Ctrl+Shift+D", () =>
+        {
+            Send(Command.Duplicate);
+            RestoreCanvasFocus();
+        });
+        duplicate.IsEnabled = !string.IsNullOrEmpty(name);
+        flyout.Items.Add(duplicate);
     }
 
     // Open > Recent folders: the Mac's File > Open Recent, so the keyboard
