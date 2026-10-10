@@ -803,6 +803,64 @@ bool load_blob_snapshot(const std::string& file, blob_snapshot& out) {
   return true;
 }
 
+// ---- The sidecar as our last write left it -----------------------------------
+//
+// IMG_1234.HEIC, .MOV and .CR2 share IMG_1234.xmp, and Lightroom or darktable
+// may edit it too. Revert puts the snapshot's bytes over the sidecar (or
+// deletes it), so it first checks the sidecar is still exactly what our last
+// write to this file left there. The mark is "-" for no sidecar, else the
+// BLAKE3 of its bytes. No mark (or one that no longer matches) and revert
+// refuses with `status::io`, as an in-file revert does when the JPEG changed.
+
+std::string sidecar_mark_file(std::string_view dir, std::string_view media_path) {
+  return blob_file(dir, media_path) + ".side";  // "<hash>.mvsnap2.side"
+}
+
+// What the sidecar is now. False when it is there but cannot be read whole.
+bool sidecar_mark_of(const std::string& side_path, std::string& out) {
+  std::error_code ec;
+  if (!fs::exists(to_path(side_path), ec)) {
+    if (ec) return false;
+    out = "-";
+    return true;
+  }
+  auto side = io::read_prefix(side_path, kMaxSidecarBytes + 1);
+  if (!side || side->size() > kMaxSidecarBytes) return false;
+  out = digest_of(*side).hex();
+  return true;
+}
+
+bool load_sidecar_mark(const std::string& file, std::string& out) {
+  auto bytes = io::read_prefix(file, 256);
+  if (!bytes) return false;
+  const std::string text(reinterpret_cast<const char*>(bytes->data()), bytes->size());
+  if (text.rfind("mvside 1 ", 0) != 0 || text.size() < 11 || text.back() != '\n') return false;
+  out = text.substr(9, text.size() - 10);
+  return true;
+}
+
+// Records the sidecar as it is now; on any failure leaves no mark, so revert refuses.
+void save_sidecar_mark(const std::string& file, const std::string& side_path) {
+  std::string mark;
+  if (sidecar_mark_of(side_path, mark)) {
+    const std::string text = "mvside 1 " + mark + "\n";
+    std::error_code ec;
+    fs::create_directories(to_path(file).parent_path(), ec);
+    if (io::write_all(file, std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(text.data()),
+                                                          text.size()))) {
+      return;
+    }
+  }
+  std::error_code ec;
+  fs::remove(to_path(file), ec);
+}
+
+// True when the sidecar is still what the mark says our last write left.
+bool sidecar_unchanged(const std::string& mark_file, const std::string& side_path) {
+  std::string was, now;
+  return load_sidecar_mark(mark_file, was) && sidecar_mark_of(side_path, now) && was == now;
+}
+
 // ---- The two writers -------------------------------------------------------
 
 std::vector<std::uint8_t> bytes_of(Exiv2::Image& image) {
@@ -1020,9 +1078,16 @@ result<write_outcome> apply(std::string_view utf8_path, const write_fields& file
   const bool sidecar_existed = detail::load_sidecar(side_path, existing_sidecar);
 
   // ---- Snapshot (before any change) -------------------------------------
-  if (take_snapshot && !snapshot_dir.empty()) {
+  // `keep_mark`: the sidecar is what the snapshot or our last write left, so
+  // after this write the mark follows it; otherwise someone else changed it
+  // and revert must not put the snapshot over their change.
+  const bool marks = take_snapshot && !snapshot_dir.empty();
+  const std::string mark_file = marks ? sidecar_mark_file(snapshot_dir, utf8_path) : std::string{};
+  bool keep_mark = false;
+  if (marks) {
     const std::string snap_file = snapshot_file(snapshot_dir, utf8_path);
     std::lock_guard<std::mutex> lock(g_snapshot_mutex);
+    keep_mark = g_snapshotted.count(snap_file) == 0 || sidecar_unchanged(mark_file, side_path);
     if (g_snapshotted.count(snap_file) == 0) {
       snapshot s;
       s.target = target;
@@ -1056,6 +1121,7 @@ result<write_outcome> apply(std::string_view utf8_path, const write_fields& file
       }
       if (!save_snapshot(snap_file, s)) return err(status::io);
       if (!save_blob_snapshot(blob_file(snapshot_dir, utf8_path), b)) return err(status::io);
+      save_sidecar_mark(mark_file, side_path);  // the sidecar the snapshot holds
       g_snapshotted.insert(snap_file);
     }
   }
@@ -1099,6 +1165,14 @@ result<write_outcome> apply(std::string_view utf8_path, const write_fields& file
     if (!done) return err(done.error());
     out.sidecar_touched = true;
   }
+  if (marks) {
+    if (keep_mark) {
+      save_sidecar_mark(mark_file, side_path);
+    } else {
+      std::error_code ec;
+      fs::remove(to_path(mark_file), ec);
+    }
+  }
   return out;
 }
 
@@ -1137,10 +1211,15 @@ bool has_snapshot(std::string_view utf8_path, std::string_view snapshot_dir) {
 namespace {
 
 // Puts back what a blob snapshot holds (see blob_snapshot).
-result<write_outcome> revert_blobs(std::string_view utf8_path, const blob_snapshot& b) {
+result<write_outcome> revert_blobs(std::string_view utf8_path, std::string_view snapshot_dir,
+                                   const blob_snapshot& b) {
   write_outcome out;
   out.target = b.target;
   out.sidecar_path = sidecar_path_for(utf8_path);
+  // Before anything is replaced: the sidecar is still what our last write left
+  // (not edited by another app, or through the other half of a RAW+JPEG pair).
+  const std::string mark_file = sidecar_mark_file(snapshot_dir, utf8_path);
+  if (!sidecar_unchanged(mark_file, out.sidecar_path)) return err(status::io);
   if (b.target == write_target::in_file) {
     auto plan = load_and_plan(utf8_path);
     if (!plan) return err(plan.error());
@@ -1181,6 +1260,7 @@ result<write_outcome> revert_blobs(std::string_view utf8_path, const blob_snapsh
     if (!fs::remove(to_path(out.sidecar_path), ec)) return err(status::io);
     out.sidecar_touched = true;
   }
+  save_sidecar_mark(mark_file, out.sidecar_path);  // a later write or revert starts from here
   return out;
 }
 
@@ -1237,7 +1317,7 @@ result<write_outcome> revert(std::string_view utf8_path, std::string_view snapsh
   if (snapshot_dir.empty()) return err(status::io);
   // PR 29: every tag, when this session's snapshot holds them.
   if (blob_snapshot b; load_blob_snapshot(blob_file(snapshot_dir, utf8_path), b)) {
-    return revert_blobs(utf8_path, b);
+    return revert_blobs(utf8_path, snapshot_dir, b);
   }
   snapshot s;
   if (!load_snapshot(snapshot_file(snapshot_dir, utf8_path), s)) return err(status::io);
