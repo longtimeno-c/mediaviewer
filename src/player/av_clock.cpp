@@ -616,7 +616,18 @@ void av_clock::impl::pump_loop() noexcept {
           const auto endpoint = state.sink->info();
           state.sink->close();
           state.sink_open = false;
-          if (state.sink->open(endpoint.sample_rate, endpoint.channels)) state.sink_open = true;
+          if (state.sink->open(endpoint.sample_rate, endpoint.channels)) {
+            state.sink_open = true;
+          } else {
+            // The device went with the stream: a loss, counted once here. The
+            // retries that follow are open attempts on the backoff timer, which
+            // leave this reason and count alone (issue #234).
+            state.fallback.store(clock_fallback_reason::device_lost, std::memory_order_release);
+            state.device_rebuilds.fetch_add(1, std::memory_order_relaxed);
+            state.open_failure_logged = false;
+            state.retry_backoff_ns = endpoint_retry_first_ns;
+            state.retry_after_ns = 0;  // first retry now, as rebuild_endpoint's would be
+          }
         }
         state.audio_master.store(state.sink_open);
         // A seek after the track played out: the endpoint is master again.

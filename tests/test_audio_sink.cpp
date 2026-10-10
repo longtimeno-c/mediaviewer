@@ -406,6 +406,35 @@ TEST_CASE("a flush that fails falls back to reopening the endpoint", "[clock]") 
   clock.stop();
 }
 
+TEST_CASE("a seek whose reopen fails reports one device loss", "[clock]") {
+  // A failed flush() + reopen leaves the endpoint closed. The backoff retries
+  // that follow are not rebuilds (issue #234), so the loss is counted and named
+  // where it happened, not left as fallback none on the host clock.
+  auto* sink = new fake_sink();
+  av_clock clock;
+  clock.set_sink_for_test(sink);
+  REQUIRE(clock.start(48000, 2).has_value());
+
+  sink->fail_flush.store(true);
+  sink->fail_open.store(true);
+  clock.seeked(ns_per_second, /*generation=*/1);
+  REQUIRE(wait_until([&] { return sink->open_attempts.load() >= 3; }));
+  clock_stats stats = clock.stats();
+  CHECK_FALSE(stats.audio_master);
+  CHECK(stats.fallback == clock_fallback_reason::device_lost);
+  CHECK(stats.counters.device_rebuilds == 1);
+
+  // The device comes back: the next retry opens it.
+  sink->fail_open.store(false);
+  REQUIRE(wait_until([&] { return sink->opens.load() == 2; }));
+  stats = clock.stats();
+  CHECK(stats.audio_master);
+  CHECK(stats.fallback == clock_fallback_reason::none);
+  CHECK(stats.counters.device_rebuilds == 1);
+
+  clock.stop();
+}
+
 TEST_CASE("a partially accepted block is not dropped", "[clock]") {
   // The endpoint buffer fills; write() takes what fits. The remainder must be
   // held and written next time, not discarded — dropping it would be an audible
