@@ -522,9 +522,10 @@ TEST_CASE("the 8-bit display transform matches the float reference within one co
   REQUIRE(grey.value()->apply(std::move(neutral)));
 }
 
-TEST_CASE("a 2048 x 2048 tagged frame avoids the starvation regression", "[image][colour][perf]") {
+TEST_CASE("perf: a 2048 x 2048 tagged frame avoids the starvation regression", "[.perf-bench][image][colour]") {
   // Review note 43: 755 ms per frame starved a 25 fps animation. Timed in
-  // optimised builds only; a Debug LCMS proves nothing about speed.
+  // optimised builds only; a Debug LCMS proves nothing about speed. A perf
+  // run, not the unit suite (issue #154): `mv_tests "[.perf-bench]"`.
   mv::codec::raster raster;
   raster.width = 2048;
   raster.height = 2048;

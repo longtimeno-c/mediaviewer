@@ -207,6 +207,11 @@ struct engine_deps {
 // every kReaderCatchUpSeconds, appending new frames rather than reloading.
 struct engine_options {
   bool read_only = false;
+  // Workers and the iCloud fetch run at the OS's background priority
+  // (platform::enter_background). The engine's tests turn it off: on a
+  // loaded machine a background thread can wait a minute for a core, and a
+  // test asserts what the engine does, not how the OS ranks it (issue #154).
+  bool background_threads = true;
 };
 inline constexpr double kReaderCatchUpSeconds = 5.0;
 

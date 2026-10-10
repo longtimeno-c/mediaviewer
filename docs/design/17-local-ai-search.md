@@ -814,7 +814,7 @@ Ryzen 16-thread, RTX 4070, ORT 1.30.
   grouping, dedupe, yield, pause, migration never mixing specs, clear, size cap, find-similar,
   people corrections, face deletion leaving no faces.db.
 - Query scan: 100,000 ViT-L int8 rows (2,000 clips × 50, with per-asset stats) in **31 ms** on
-  one core (`mv_ai_tests "[perf]"`, which fails over 100 ms in optimised builds); with the ~30 ms
+  one core (`mv_ai_tests "[.perf-bench]"`, which fails over 100 ms in optimised builds); with the ~30 ms
   CUDA text tower a query is ~60 ms.
 - A 1-hour 4K HEVC clip (synthetic, with a soundtrack): pictures, sound and speech in **302 s**
   on CUDA with ViT-L and Whisper small — model load ~25 s, 255 picture moments ~190 s, sound

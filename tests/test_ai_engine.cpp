@@ -43,6 +43,41 @@ namespace {
 
 constexpr std::uint32_t kDim = 8;
 
+// How long a test waits for the engine to reach a state it must reach. An
+// upper bound, not an expectation: a passing wait ends as soon as the state
+// holds, usually in well under a second. `ctest -j` beside other builds has
+// stretched waits of a few seconds past their bounds (issue #154), so every
+// wait is for a condition, bounded only to fail a hang rather than stall.
+constexpr int kSettleMs = 60000;
+
+// Workers at normal priority: QOS_CLASS_BACKGROUND (the product's) left them
+// without a core for over a minute under `ctest -j` beside other builds.
+constexpr mv::ai::engine_options kTestOptions{.background_threads = false};
+
+double ms_since(std::chrono::steady_clock::time_point t0) {
+  return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+}
+
+template <typename Fn>
+double timed(Fn&& fn) {
+  const auto t0 = std::chrono::steady_clock::now();
+  fn();
+  return ms_since(t0);
+}
+
+bool wait_for(const std::function<bool()>& done, int ms) {
+  const auto t0 = std::chrono::steady_clock::now();
+  while (!done()) {
+    if (ms_since(t0) > ms) return false;
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  return true;
+}
+
+bool has_row(const std::vector<std::pair<std::string, std::int64_t>>& rows, const std::string& path) {
+  return std::any_of(rows.begin(), rows.end(), [&](const auto& r) { return r.first == path; });
+}
+
 // A colour -> a unit vector. Channels 0-2 carry the colour, 3-7 a small bias
 // every image shares (so the generic prompts sit near every image, as real
 // CLIP's do).
@@ -278,6 +313,12 @@ struct gates {
   std::mutex m;
   std::vector<std::thread::id> died_on;
 };
+
+// A UI call made while a gate is held must not wait for it. A wait would
+// last the whole hold (10 s and more), so the bound sits far below that and
+// far above a loaded machine's scheduling noise: it is not a speed check
+// (the old 50 ms bounds failed under `ctest -j`, issue #154).
+constexpr double kAnswersNowMs = 2000.0;
 
 void hold_while(const std::atomic<bool>& flag) {
   for (int i = 0; i < 2000 && flag.load(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -697,7 +738,7 @@ struct rig {
 
   void start() {
     eng.reset();
-    eng = std::make_unique<engine>(&api, deps());
+    eng = std::make_unique<engine>(&api, deps(), kTestOptions);
     REQUIRE(eng->start());
   }
 
@@ -718,14 +759,16 @@ struct rig {
     return d;
   }
   std::unique_ptr<engine> start_reader() {
-    auto rd = std::make_unique<engine>(table->api(), reader_deps(), mv::ai::engine_options{.read_only = true});
+    auto rd = std::make_unique<engine>(table->api(), reader_deps(),
+                                       mv::ai::engine_options{.read_only = true, .background_threads = false});
     REQUIRE(rd->start());
-    for (int i = 0; i < 500; ++i) {
-      mv_ai_status s{};
-      rd->status(s);
-      if (s.state != MV_AI_STATE_LOADING) break;
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
+    REQUIRE(wait_for(
+        [&] {
+          mv_ai_status s{};
+          rd->status(s);
+          return s.state != MV_AI_STATE_LOADING;
+        },
+        kSettleMs));
     return rd;
   }
 
@@ -743,7 +786,7 @@ struct rig {
                                                            const std::string& dir_scope = "",
                                                            std::uint32_t kinds = MV_AI_KIND_ALL) {
     const std::uint64_t id = eng->search_text(q, dir_scope, scope, kinds);
-    REQUIRE(eng->wait_search(id, 5000));
+    REQUIRE(eng->wait_search(id, kSettleMs));
     return rows(id);
   }
   std::vector<std::pair<std::string, std::int64_t>> rows(std::uint64_t id) {
@@ -764,7 +807,15 @@ struct rig {
   // CPU and I/O priority), and a Debug build on a CI runner indexing 40 photos
   // has taken more than 15 s ("clearing the index...", msvc Debug, 2026-09-28,
   // twice), which says nothing about whether the engine goes idle.
-  bool idle(int ms = 60000) { return eng->wait_idle(ms); }
+  bool idle(int ms = kSettleMs) {
+    if (eng->wait_idle(ms)) return true;
+    // Where it stuck, for the failure that follows.
+    const mv_ai_status s = status();
+    UNSCOPED_INFO("not idle after " << ms << " ms: state " << s.state << ", yield " << s.yield_reason << ", assets "
+                                    << s.assets_done << "/" << s.assets_total << ", failed " << s.assets_failed
+                                    << ", flags " << s.flags);
+    return false;
+  }
 };
 
 }  // namespace
@@ -811,7 +862,7 @@ TEST_CASE("a clip keeps one row per distinct moment and groups its matches", "[a
   CHECK(green.front().second == 3000);  // the moment, not the clip's start
 
   const std::uint64_t id = r.eng->search_text("red", "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
-  REQUIRE(r.eng->wait_search(id, 5000));
+  REQUIRE(r.eng->wait_search(id, kSettleMs));
   const auto rows = r.rows(id);
   REQUIRE(rows.size() == 2);  // the photo and the clip: one row per asset
   auto m = r.eng->clip_matches(id, utf8(r.photos() / "holiday_rgb.mp4"));
@@ -837,9 +888,7 @@ TEST_CASE("killing mid-clip resumes without redoing committed frames", "[ai][eng
   r.start();
   REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
   // Wait for the first batch to commit, then stop (the app quitting).
-  for (int i = 0; i < 400 && r.fast->images_embedded.load() < 8; ++i) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  }
+  REQUIRE(wait_for([&] { return r.fast->images_embedded.load() >= 8; }, kSettleMs));
   r.eng->stop();
   const int first_run = r.fast->images_embedded.load();
   REQUIRE(first_run >= 8);
@@ -958,12 +1007,14 @@ TEST_CASE("indexing waits while the viewer is busy and says so", "[ai][engine]")
   r.busy = true;
   r.start();
   REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
-  std::this_thread::sleep_for(std::chrono::milliseconds(1500));
-  CHECK(r.stills_decoded.load() == 0);
   // Not even the models open while the viewer is busy (they cost frames).
-  const mv_ai_status s = r.status();
-  CHECK(s.state == MV_AI_STATE_LOADING);
-  CHECK(s.yield_reason == MV_AI_YIELD_VIEWER);
+  REQUIRE(wait_for(
+      [&] {
+        const mv_ai_status s = r.status();
+        return s.state == MV_AI_STATE_LOADING && s.yield_reason == MV_AI_YIELD_VIEWER;
+      },
+      kSettleMs));
+  CHECK(r.stills_decoded.load() == 0);
   r.busy = false;
   REQUIRE(r.idle());
   CHECK(r.stills_decoded.load() == 1);
@@ -972,11 +1023,14 @@ TEST_CASE("indexing waits while the viewer is busy and says so", "[ai][engine]")
   r.busy = true;
   r.file("blue.jpg");
   REQUIRE(r.eng->root_rescan(1));
-  std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+  // YIELDING means the rescan found the new file and a worker is holding it.
+  REQUIRE(wait_for(
+      [&] {
+        const mv_ai_status y = r.status();
+        return y.state == MV_AI_STATE_YIELDING && y.yield_reason == MV_AI_YIELD_VIEWER;
+      },
+      kSettleMs));
   CHECK(r.stills_decoded.load() == 1);
-  const mv_ai_status y = r.status();
-  CHECK(y.state == MV_AI_STATE_YIELDING);
-  CHECK(y.yield_reason == MV_AI_YIELD_VIEWER);
   r.busy = false;
   REQUIRE(r.idle());
   CHECK(r.stills_decoded.load() == 2);
@@ -984,9 +1038,13 @@ TEST_CASE("indexing waits while the viewer is busy and says so", "[ai][engine]")
   r.eng->pause(true);
   r.file("green.jpg");
   REQUIRE(r.eng->root_rescan(1));
-  std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+  REQUIRE(wait_for(
+      [&] {
+        const mv_ai_status p = r.status();
+        return p.state == MV_AI_STATE_PAUSED && p.assets_total == 3;
+      },
+      kSettleMs));
   CHECK(r.stills_decoded.load() == 2);
-  CHECK(r.status().state == MV_AI_STATE_PAUSED);
   r.eng->pause(false);
   REQUIRE(r.idle());
   CHECK(r.stills_decoded.load() == 3);
@@ -1005,11 +1063,13 @@ TEST_CASE("indexing pauses on a low battery until the user says index anyway", "
   r.battery_percent = 12;
   r.file("blue.jpg");
   REQUIRE(r.eng->root_rescan(1));
-  std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+  REQUIRE(wait_for(
+      [&] {
+        const mv_ai_status s = r.status();
+        return s.state == MV_AI_STATE_YIELDING && s.yield_reason == MV_AI_YIELD_BATTERY;
+      },
+      kSettleMs));
   CHECK(r.stills_decoded.load() == 1);
-  const mv_ai_status s = r.status();
-  CHECK(s.state == MV_AI_STATE_YIELDING);
-  CHECK(s.yield_reason == MV_AI_YIELD_BATTERY);
 
   // "Index anyway": the session override, reported but never saved.
   REQUIRE(r.eng->set_setting("battery_override", "1"));
@@ -1028,14 +1088,18 @@ TEST_CASE("indexing pauses on a low battery until the user says index anyway", "
 
   // Plugged in and out again: the override has ended and the pause is back.
   r.on_battery = false;
-  std::this_thread::sleep_for(std::chrono::milliseconds(1500));
-  CHECK(r.eng->settings_json().find("\"battery_override\":false") != std::string::npos);
+  REQUIRE(wait_for(
+      [&] { return r.eng->settings_json().find("\"battery_override\":false") != std::string::npos; }, kSettleMs));
   r.on_battery = true;
   r.file("green.jpg");
   REQUIRE(r.eng->root_rescan(1));
-  std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+  REQUIRE(wait_for(
+      [&] {
+        const mv_ai_status s = r.status();
+        return s.state == MV_AI_STATE_YIELDING && s.yield_reason == MV_AI_YIELD_BATTERY;
+      },
+      kSettleMs));
   CHECK(r.stills_decoded.load() == 2);
-  CHECK(r.status().yield_reason == MV_AI_YIELD_BATTERY);
 
   // A restart forgets an override too.
   REQUIRE(r.eng->set_setting("battery_override", "1"));
@@ -1124,14 +1188,14 @@ TEST_CASE("a quality change migrates without ever mixing vector spaces", "[ai][e
 
   REQUIRE(r.eng->set_setting("quality", "2"));
   // Until the new tower has embedded everything, queries use the old one.
-  for (int i = 0; i < 300 && r.eng->active_spec() != "fake-high/fp16/pre1"; ++i) {
-    CHECK((r.eng->active_spec() == "fake-fast/fp16/pre1" || r.eng->active_spec() == "fake-high/fp16/pre1"));
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
-  }
+  REQUIRE(wait_for(
+      [&] {
+        const std::string spec = r.eng->active_spec();
+        CHECK((spec == "fake-fast/fp16/pre1" || spec == "fake-high/fp16/pre1"));
+        return spec == "fake-high/fp16/pre1";
+      },
+      kSettleMs));
   REQUIRE(r.idle());
-  for (int i = 0; i < 300 && r.eng->active_spec() != "fake-high/fp16/pre1"; ++i) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
-  }
   CHECK(r.eng->active_spec() == "fake-high/fp16/pre1");
   CHECK(r.high->images_embedded.load() == 2);
   CHECK(r.status().frames_indexed == 2);  // the old rows went; nothing doubled
@@ -1156,10 +1220,7 @@ TEST_CASE("clearing the index frees it and a size cap stops indexing", "[ai][eng
 
   REQUIRE(r.eng->set_setting("index_cap_bytes", "1"));
   REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
-  for (int i = 0; i < 200 && !(r.status().flags & MV_AI_STATUS_INDEX_FULL); ++i) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(25));
-  }
-  CHECK((r.status().flags & MV_AI_STATUS_INDEX_FULL) != 0);
+  REQUIRE(wait_for([&] { return (r.status().flags & MV_AI_STATUS_INDEX_FULL) != 0; }, kSettleMs));
   CHECK(r.status().state == MV_AI_STATE_PAUSED);
 }
 
@@ -1173,7 +1234,7 @@ TEST_CASE("find similar returns the other stills of the same look, not the query
   REQUIRE(r.idle());
   const std::uint64_t id =
       r.eng->search_similar(utf8(r.photos() / "red_a.jpg"), -1, "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
-  REQUIRE(r.eng->wait_search(id, 5000));
+  REQUIRE(r.eng->wait_search(id, kSettleMs));
   const auto rows = r.rows(id);
   REQUIRE(rows.size() == 1);
   CHECK(rows.front().first == "red_b.jpg");
@@ -1191,9 +1252,7 @@ TEST_CASE("people: one face is enough in a small folder, not across a large libr
   r.start();
   REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
   REQUIRE(r.eng->faces_enable(true));
-  for (int i = 0; i < 300 && !(r.status().flags & MV_AI_STATUS_FACES_READY); ++i) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
-  }
+  REQUIRE(wait_for([&] { return (r.status().flags & MV_AI_STATUS_FACES_READY) != 0; }, kSettleMs));
   REQUIRE(r.idle());
   auto small = mv::json::parse(r.eng->people_json());
   REQUIRE(small);
@@ -1228,9 +1287,7 @@ TEST_CASE("people: opt-in, clusters, names, corrections, and deletion that leave
   CHECK(mv::json::parse(r.eng->people_json())->a.empty());  // off until the opt-in
 
   REQUIRE(r.eng->faces_enable(true));
-  for (int i = 0; i < 300 && !(r.status().flags & MV_AI_STATUS_FACES_READY); ++i) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
-  }
+  REQUIRE(wait_for([&] { return (r.status().flags & MV_AI_STATUS_FACES_READY) != 0; }, kSettleMs));
   REQUIRE(r.idle());
   auto people = mv::json::parse(r.eng->people_json());
   REQUIRE(people);
@@ -1293,9 +1350,7 @@ TEST_CASE("people in the open folder: only those with a face there, counted and 
   r.start();
   REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
   REQUIRE(r.eng->faces_enable(true));
-  for (int i = 0; i < 300 && !(r.status().flags & MV_AI_STATUS_FACES_READY); ++i) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
-  }
+  REQUIRE(wait_for([&] { return (r.status().flags & MV_AI_STATUS_FACES_READY) != 0; }, kSettleMs));
   REQUIRE(r.idle());
   const auto is_anna = [](const mv::json::value& p) {
     const std::string* cover = p.str("cover_path");
@@ -1373,7 +1428,7 @@ TEST_CASE("audio: a clip's sounds and speech are indexed and found at their mome
   r.file("red_photo.jpg");
   r.start();
   REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
-  REQUIRE(r.idle(30000));
+  REQUIRE(r.idle());
   const mv_ai_status s = r.status();
   CHECK((s.flags & MV_AI_STATUS_AUDIO_READY) != 0);
   CHECK(s.sound_total == 2);   // videos only: photos have no soundtrack
@@ -1384,7 +1439,7 @@ TEST_CASE("audio: a clip's sounds and speech are indexed and found at their mome
 
   // What it sounds like: the bark window (10-20 s), not the talk before it.
   const std::uint64_t bark = r.eng->search_text("a dog barking", "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
-  REQUIRE(r.eng->wait_search(bark, 5000));
+  REQUIRE(r.eng->wait_search(bark, kSettleMs));
   auto rows = r.rows(bark);
   REQUIRE_FALSE(rows.empty());
   CHECK(rows.front().first == "party_talk_bark.mp4");
@@ -1394,7 +1449,7 @@ TEST_CASE("audio: a clip's sounds and speech are indexed and found at their mome
 
   // What is said: the words, with a snippet, at the moment they start.
   const std::uint64_t said = r.eng->search_text("birthday anna", "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
-  REQUIRE(r.eng->wait_search(said, 5000));
+  REQUIRE(r.eng->wait_search(said, kSettleMs));
   rows = r.rows(said);
   REQUIRE(rows.size() == 1);
   CHECK(rows.front().first == "party_talk_bark.mp4");
@@ -1405,16 +1460,18 @@ TEST_CASE("audio: a clip's sounds and speech are indexed and found at their mome
   // "Find in" narrows: pictures only never answers from the soundtrack.
   const std::uint64_t pics =
       r.eng->search_text("birthday anna", "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL | MV_AI_FIND_PICTURES);
-  REQUIRE(r.eng->wait_search(pics, 5000));
+  REQUIRE(r.eng->wait_search(pics, kSettleMs));
   CHECK(r.rows(pics).empty());
 
-  // Photos still answer as pictures alongside.
-  CHECK(r.search("red").front().first == "red_photo.jpg");
+  // Photos still answer as pictures alongside. Not necessarily first: both
+  // clips open on red frames that tie with the photo exactly, and a tie's
+  // order is the order the workers committed in.
+  CHECK(has_row(r.search("red"), "red_photo.jpg"));
 
   // Quoted words must be said, in that order (docs/design/17 "Query syntax"); the
   // phrase is the snippet. A kind or a date narrows them like anything else.
   const std::uint64_t quoted = r.eng->search_text("\"make a wish\"", "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
-  REQUIRE(r.eng->wait_search(quoted, 5000));
+  REQUIRE(r.eng->wait_search(quoted, kSettleMs));
   rows = r.rows(quoted);
   REQUIRE(rows.size() == 1);
   CHECK(rows.front().first == "party_talk_bark.mp4");
@@ -1424,7 +1481,9 @@ TEST_CASE("audio: a clip's sounds and speech are indexed and found at their mome
   CHECK(r.search("said:birthday video").size() == 1);
   CHECK(r.search("said:birthday photo").empty());
   CHECK(r.search("\"birthday\" before:2000").empty());
-  CHECK(r.search("red -\"birthday\"").front().first == "red_photo.jpg");
+  const auto not_said = r.search("red -\"birthday\"");
+  CHECK(has_row(not_said, "red_photo.jpg"));
+  CHECK_FALSE(has_row(not_said, "party_talk_bark.mp4"));
   CHECK(r.search("\"make a wi").size() == 1);  // a quote still being typed
 }
 
@@ -1436,14 +1495,14 @@ TEST_CASE("audio: a folder indexed for pictures only does no audio work", "[ai][
   REQUIRE(r.eng->set_setting("video_index", "1"));  // Pictures
   auto root = r.eng->index_folder(utf8(r.photos()), false);
   REQUIRE(root);
-  REQUIRE(r.idle(30000));
+  REQUIRE(r.idle());
   CHECK(r.sound->windows_embedded.load() == 0);
   CHECK(r.speech->windows.load() == 0);
   CHECK(r.status().sound_total == 0);
 
   // Switching this folder to Both queues its sound and speech.
   REQUIRE(r.eng->root_set_media(*root, MV_AI_MEDIA_BOTH));
-  REQUIRE(r.idle(30000));
+  REQUIRE(r.idle());
   CHECK(r.sound->windows_embedded.load() > 0);
   CHECK(r.speech->windows.load() > 0);
   CHECK(r.status().sound_done == 1);
@@ -1457,7 +1516,7 @@ TEST_CASE("audio: without the ai-audio piece nothing changes", "[ai][engine][aud
   r.file("party_talk_bark.mp4");
   r.start();
   REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
-  REQUIRE(r.idle(30000));
+  REQUIRE(r.idle());
   CHECK((r.status().flags & MV_AI_STATUS_AUDIO_READY) == 0);
   CHECK(r.status().sound_total == 0);
   CHECK(r.search("birthday anna").empty());
@@ -1532,15 +1591,14 @@ TEST_CASE("audio: video_index flips while the Sound piece comes and goes", "[ai]
     reader.join();
     // The reload lands on the control thread: wait for it and for the work
     // it queues, not only for an idle moment before it.
-    bool settled = false;
-    mv_ai_status s{};
-    for (int t = 0; t < 600 && !settled; ++t) {
-      if (!r.idle(100)) continue;
-      s = r.status();
-      settled = s.state == MV_AI_STATE_IDLE && (s.flags & MV_AI_STATUS_AUDIO_READY) != 0 && s.sound_total == 3 &&
-                s.sound_done == s.sound_total && s.speech_done == s.speech_total;
-    }
-    REQUIRE(settled);
+    REQUIRE(wait_for(
+        [&] {
+          if (!r.idle(100)) return false;
+          const mv_ai_status s = r.status();
+          return s.state == MV_AI_STATE_IDLE && (s.flags & MV_AI_STATUS_AUDIO_READY) != 0 && s.sound_total == 3 &&
+                 s.sound_done == s.sound_total && s.speech_done == s.speech_total;
+        },
+        kSettleMs));
   }
 }
 
@@ -1553,59 +1611,29 @@ TEST_CASE("audio: a piece installed under a running pack keeps the picture tower
   r.file("red_photo.jpg");
   r.start();
   REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
-  REQUIRE(r.idle(30000));
+  REQUIRE(r.idle());
   const int opens = r.clip_opens.load();
   CHECK((r.status().flags & MV_AI_STATUS_AUDIO_READY) == 0);
 
   r.audio_available = true;
   REQUIRE(r.eng->set_setting("reload", "1"));
-  bool ready = false;
-  for (int t = 0; t < 300 && !ready; ++t) {
-    const mv_ai_status s = r.status();
-    ready = (s.flags & MV_AI_STATUS_AUDIO_READY) != 0 && s.sound_total == 1 && s.sound_done == 1 &&
-            s.speech_done == 1 && s.state == MV_AI_STATE_IDLE;
-    if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(50));
-  }
-  REQUIRE(ready);
+  REQUIRE(wait_for(
+      [&] {
+        const mv_ai_status s = r.status();
+        return (s.flags & MV_AI_STATUS_AUDIO_READY) != 0 && s.sound_total == 1 && s.sound_done == 1 &&
+               s.speech_done == 1 && s.state == MV_AI_STATE_IDLE;
+      },
+      kSettleMs));
   CHECK(r.clip_opens.load() == opens);
-  CHECK(r.search("red").front().first == "red_photo.jpg");
+  CHECK(has_row(r.search("red"), "red_photo.jpg"));  // ties with the clip's red frames
 
   // And removing it clears what it answered, still without a tower reload.
   r.audio_available = false;
   REQUIRE(r.eng->set_setting("reload", "1"));
-  bool gone = false;
-  for (int t = 0; t < 300 && !gone; ++t) {
-    gone = (r.status().flags & MV_AI_STATUS_AUDIO_READY) == 0;
-    if (!gone) std::this_thread::sleep_for(std::chrono::milliseconds(20));
-  }
-  REQUIRE(gone);
+  REQUIRE(wait_for([&] { return (r.status().flags & MV_AI_STATUS_AUDIO_READY) == 0; }, kSettleMs));
   CHECK(r.search("birthday anna").empty());
   CHECK(r.clip_opens.load() == opens);
 }
-
-namespace {
-
-double ms_since(std::chrono::steady_clock::time_point t0) {
-  return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-}
-
-template <typename Fn>
-double timed(Fn&& fn) {
-  const auto t0 = std::chrono::steady_clock::now();
-  fn();
-  return ms_since(t0);
-}
-
-bool wait_for(const std::function<bool()>& done, int ms) {
-  const auto t0 = std::chrono::steady_clock::now();
-  while (!done()) {
-    if (ms_since(t0) > ms) return false;
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
-  }
-  return true;
-}
-
-}  // namespace
 
 // Owner, 2026-09-28: "I set Search quality to High, then tried to adjust the
 // search Precision and it crashed." The reload opened L/14 again beside the
@@ -1638,18 +1666,21 @@ TEST_CASE("a quality change never blocks Settings, Precision or a search while t
   g.open = true;
   g.death = true;
   REQUIRE(r.eng->set_setting("quality", "2"));
-  REQUIRE(wait_for([&] { return g.opens_waiting.load() == 1; }, 5000));
+  REQUIRE(wait_for([&] { return g.opens_waiting.load() == 1; }, kSettleMs));
 
   // The new tower is still opening: Settings, Precision and its re-run answer
-  // now, the re-run from the tower in service.
-  CHECK(timed([&] { REQUIRE(r.eng->set_setting("precision", "1")); }) < 250);
-  CHECK(timed([&] { (void)r.eng->settings_json(); }) < 50);
-  CHECK(timed([&] { (void)r.status(); }) < 50);
+  // now, the re-run from the tower in service. What proves it is that the
+  // open is still held after them (a call that waited would have outlasted
+  // hold_while); the time bound only catches a wait that is long but not that.
+  CHECK(timed([&] { REQUIRE(r.eng->set_setting("precision", "1")); }) < kAnswersNowMs);
+  CHECK(timed([&] { (void)r.eng->settings_json(); }) < kAnswersNowMs);
+  CHECK(timed([&] { (void)r.status(); }) < kAnswersNowMs);
   std::vector<std::pair<std::string, std::int64_t>> red;
-  CHECK(timed([&] { red = r.search("red"); }) < 1000);
+  CHECK(timed([&] { red = r.search("red"); }) < kAnswersNowMs);
   REQUIRE_FALSE(red.empty());
   CHECK(red.front().first == "red.jpg");
   CHECK(r.status().state == MV_AI_STATE_LOADING);
+  CHECK(g.opens_waiting.load() == 1);
 
   // Open: the swap, the migration, and its end, when the Fast tower goes
   // while its destructor is held. Nothing the UI calls waits for any of it.
@@ -1669,19 +1700,19 @@ TEST_CASE("a quality change never blocks Settings, Precision or a search while t
         if (rows.empty() || rows.front().first != "red.jpg") ++empty_results;
         return r.eng->reloads_done() >= 1 && r.eng->active_spec() == "fake-high/fp16/pre1";
       },
-      15000);
+      kSettleMs);
   REQUIRE(migrated);
-  CHECK(worst_settings < 50);
-  CHECK(worst_status < 50);
-  CHECK(worst_set < 250);
-  CHECK(worst_search < 1000);
+  CHECK(worst_settings < kAnswersNowMs);
+  CHECK(worst_status < kAnswersNowMs);
+  CHECK(worst_set < kAnswersNowMs);
+  CHECK(worst_search < kAnswersNowMs);
   CHECK(empty_results == 0);
 
   // The Fast tower is out of service but still "compiling": it is kept,
   // then released on the engine's own thread once that is done.
   CHECK(g.died.load() == died_before);
   g.death = false;
-  REQUIRE(wait_for([&] { return g.died.load() == died_before + 1; }, 5000));
+  REQUIRE(wait_for([&] { return g.died.load() == died_before + 1; }, kSettleMs));
   {
     std::lock_guard lock(g.m);
     CHECK(g.died_on.back() != std::this_thread::get_id());
@@ -1704,10 +1735,10 @@ TEST_CASE("choosing the quality Auto already chose reopens nothing", "[ai][engin
   const int embedded = r.high->images_embedded.load();
 
   REQUIRE(r.eng->set_setting("quality", "2"));  // High, explicitly
-  REQUIRE(wait_for([&] { return r.eng->reloads_done() >= 1; }, 5000));
+  REQUIRE(wait_for([&] { return r.eng->reloads_done() >= 1; }, kSettleMs));
   CHECK(r.clip_opens.load() == opens);
   REQUIRE(r.eng->set_setting("quality", "0"));  // and back to Auto
-  REQUIRE(wait_for([&] { return r.eng->reloads_done() >= 2; }, 5000));
+  REQUIRE(wait_for([&] { return r.eng->reloads_done() >= 2; }, kSettleMs));
   CHECK(r.clip_opens.load() == opens);
   REQUIRE(r.idle());
   CHECK(r.eng->active_spec() == "fake-high/fp16/pre1");
@@ -1716,10 +1747,10 @@ TEST_CASE("choosing the quality Auto already chose reopens nothing", "[ai][engin
 
   // Another tower does open, and migrates.
   REQUIRE(r.eng->set_setting("quality", "1"));
-  REQUIRE(wait_for([&] { return r.eng->reloads_done() >= 3; }, 5000));
+  REQUIRE(wait_for([&] { return r.eng->reloads_done() >= 3; }, kSettleMs));
   CHECK(r.clip_opens.load() > opens);
   REQUIRE(r.idle());
-  REQUIRE(wait_for([&] { return r.eng->active_spec() == "fake-fast/fp16/pre1"; }, 5000));
+  REQUIRE(wait_for([&] { return r.eng->active_spec() == "fake-fast/fp16/pre1"; }, kSettleMs));
   CHECK(r.search("red").front().first == "red.jpg");
 }
 
@@ -1764,12 +1795,12 @@ TEST_CASE("Auto runs the small tower where the provider failed the large one her
   CHECK(r.search("red").front().first == "red.jpg");
 
   REQUIRE(r.eng->set_setting("retry_large", "1"));
-  REQUIRE(wait_for([&] { return r.status().quality == 2u; }, 5000));
+  REQUIRE(wait_for([&] { return r.status().quality == 2u; }, kSettleMs));
   REQUIRE(r.idle());
   s = r.status();
   CHECK((s.flags & MV_AI_STATUS_SMALL_FALLBACK) == 0);
   CHECK(std::string(s.provider_detail_utf8).empty());
-  REQUIRE(wait_for([&] { return r.eng->active_spec() == "fake-high/fp16/pre1"; }, 5000));
+  REQUIRE(wait_for([&] { return r.eng->active_spec() == "fake-high/fp16/pre1"; }, kSettleMs));
   CHECK(r.search("red").front().first == "red.jpg");
 }
 
@@ -1790,12 +1821,12 @@ TEST_CASE("a large tower whose Core ML upgrade fails gives way to the small one"
   // The pack records the verdict, then the tower reports its fault.
   r.set_large_failure("Error compiling model");
   large->failed = true;
-  REQUIRE(wait_for([&] { return r.status().quality == 1u; }, 10000));
+  REQUIRE(wait_for([&] { return r.status().quality == 1u; }, kSettleMs));
   REQUIRE(r.idle());
   const mv_ai_status s = r.status();
   CHECK((s.flags & MV_AI_STATUS_SMALL_FALLBACK) != 0);
   CHECK(std::string(s.provider_detail_utf8) == "Error compiling model");
-  REQUIRE(wait_for([&] { return r.eng->active_spec() == "fake-fast/fp16/pre1"; }, 5000));
+  REQUIRE(wait_for([&] { return r.eng->active_spec() == "fake-fast/fp16/pre1"; }, kSettleMs));
   CHECK(r.search("red").front().first == "red.jpg");
 }
 
@@ -1835,7 +1866,7 @@ TEST_CASE("indexing waits while the tower is still its CPU stand-in for Core ML"
   r.file("red.jpg");
   r.start();
   REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
-  REQUIRE(wait_for([&] { return r.status().state == MV_AI_STATE_LOADING && r.status().quality == 2u; }, 5000));
+  REQUIRE(wait_for([&] { return r.status().state == MV_AI_STATE_LOADING && r.status().quality == 2u; }, kSettleMs));
   std::this_thread::sleep_for(std::chrono::milliseconds(600));
   CHECK(r.high->images_embedded.load() == 0);
   CHECK(r.status().state == MV_AI_STATE_LOADING);
@@ -1868,7 +1899,7 @@ TEST_CASE("searches during a migration and across its end use the answering towe
 
   g.embed = true;  // the High tower's indexing waits: the migration stays mid-way
   REQUIRE(r.eng->set_setting("quality", "2"));
-  REQUIRE(wait_for([&] { return r.eng->reloads_done() >= 1; }, 5000));
+  REQUIRE(wait_for([&] { return r.eng->reloads_done() >= 1; }, kSettleMs));
   CHECK(r.eng->active_spec() == "fake-fast/fp16/pre1");
   for (int i = 0; i < 3; ++i) {
     const auto rows = r.search("red");
@@ -1884,7 +1915,7 @@ TEST_CASE("searches during a migration and across its end use the answering towe
   std::thread searcher([&] {
     while (!stop) {
       const std::uint64_t id = r.eng->search_text("red", "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
-      bool ok = r.eng->wait_search(id, 5000);
+      bool ok = r.eng->wait_search(id, kSettleMs);
       if (ok) {
         auto n = r.eng->result_count(id);
         ok = n && *n > 0;
@@ -1898,9 +1929,9 @@ TEST_CASE("searches during a migration and across its end use the answering towe
     }
   });
   g.embed = false;
-  const bool migrated = wait_for([&] { return r.eng->active_spec() == "fake-high/fp16/pre1"; }, 15000);
+  const bool migrated = wait_for([&] { return r.eng->active_spec() == "fake-high/fp16/pre1"; }, kSettleMs);
   const int at_end = runs.load();
-  (void)wait_for([&] { return runs.load() >= at_end + 3; }, 5000);
+  (void)wait_for([&] { return runs.load() >= at_end + 3; }, kSettleMs);
   stop = true;
   searcher.join();
   REQUIRE(migrated);
@@ -1925,7 +1956,7 @@ struct scored {
 
 std::vector<scored> ranked(engine& e, const std::string& q, std::uint32_t kinds = MV_AI_KIND_ALL) {
   const std::uint64_t id = e.search_text(q, "", MV_AI_SCOPE_ALL, kinds);
-  REQUIRE(e.wait_search(id, 5000));
+  REQUIRE(e.wait_search(id, kSettleMs));
   std::vector<scored> out;
   auto n = e.result_count(id);
   REQUIRE(n);
@@ -1964,7 +1995,7 @@ TEST_CASE("the reader answers exactly as the app's engine on the same index", "[
   r.start();
   REQUIRE(r.eng->faces_enable(true));
   REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
-  REQUIRE(r.idle(30000));
+  REQUIRE(r.idle());
   auto people = mv::json::parse(r.eng->people_json());
   REQUIRE(people);
   REQUIRE_FALSE(people->a.empty());
@@ -2003,7 +2034,7 @@ TEST_CASE("the reader answers exactly as the app's engine on the same index", "[
   const int decoded = r.stills_decoded.load();
   const std::uint64_t sim = rd->search_similar(utf8(r.photos() / "red_car.jpg"), -1, "", MV_AI_SCOPE_ALL,
                                                MV_AI_KIND_ALL);
-  REQUIRE(rd->wait_search(sim, 5000));
+  REQUIRE(rd->wait_search(sim, kSettleMs));
   auto n = rd->result_count(sim);
   REQUIRE(n);
   REQUIRE(*n >= 1);
@@ -2016,7 +2047,7 @@ TEST_CASE("the reader answers exactly as the app's engine on the same index", "[
   }
   const std::uint64_t moment = rd->search_similar(utf8(r.photos() / "holiday_rgb.mp4"), 3100, "",
                                                   MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
-  REQUIRE(rd->wait_search(moment, 5000));
+  REQUIRE(rd->wait_search(moment, kSettleMs));
   CHECK(r.stills_decoded.load() == decoded);
 }
 
@@ -2091,24 +2122,14 @@ TEST_CASE("the reader catches up with what the app indexes after it started", "[
   REQUIRE(r.idle());
   CHECK(ranked(*r.eng, "blue").size() == 1);
   // Within the catch-up interval (docs/design/23), appended rather than reloaded.
-  bool found = false;
-  for (int i = 0; i < 200 && !found; ++i) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    found = ranked(*rd, "blue").size() == 1;
-  }
-  CHECK(found);
+  CHECK(wait_for([&] { return ranked(*rd, "blue").size() == 1; }, kSettleMs));
   CHECK(ranked(*rd, "red").size() == 1);
 
   // A file removed in the app drops out of the reader too.
   fs::remove(r.photos() / "red_car.jpg");
   REQUIRE(r.eng->root_rescan(1));
   REQUIRE(r.idle());
-  bool gone = false;
-  for (int i = 0; i < 200 && !gone; ++i) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    gone = ranked(*rd, "red").empty();
-  }
-  CHECK(gone);
+  CHECK(wait_for([&] { return ranked(*rd, "red").empty(); }, kSettleMs));
 }
 
 // ---- the search agent's session over the pack's table (docs/design/23 Phase 1) ------------------
@@ -2204,7 +2225,7 @@ TEST_CASE("the panel's scope picker and completions come from the reader", "[ai]
   auto rd = r.start_reader();
   table_over t(*rd);
   auto session = mv::nle::search_session::over(&t.api);
-  auto roots = session->roots_json(5000);
+  auto roots = session->roots_json(kSettleMs);
   REQUIRE(roots);
   auto parsed = mv::json::parse(*roots);
   REQUIRE(parsed);
@@ -2213,7 +2234,7 @@ TEST_CASE("the panel's scope picker and completions come from the reader", "[ai]
   REQUIRE(path);
   CHECK(*path == utf8(r.photos()));
   // The reader sees the name the app gave, as the panel types it.
-  auto names = session->suggest_json("@An", 5000);
+  auto names = session->suggest_json("@An", kSettleMs);
   REQUIRE(names);
   CHECK(names->find("\"Anna\"") != std::string::npos);
   CHECK(*names == r.eng->suggest_json("@An"));
@@ -2231,14 +2252,14 @@ TEST_CASE("the agent's session returns the in-app top-K through the reader, over
   auto rd = r.start_reader();
   table_over t(*rd);
   auto session = mv::nle::search_session::over(&t.api);
-  REQUIRE(session->wait_ready(5000));
+  REQUIRE(session->wait_ready(kSettleMs));
 
   for (const char* q : {"red", "green", "blue", "xyzzy plugh", "red video"}) {
     INFO(q);
     const auto app = ranked(*r.eng, q);
     mv::nle::request req;
     req.correlation_id = 7;
-    const mv::nle::reply rep = session->run(req, q, "", 5000);
+    const mv::nle::reply rep = session->run(req, q, "", kSettleMs);
     REQUIRE(rep.code == mv::status::ok);
     CHECK(rep.correlation_id == 7);
     // What FCP's extension decodes is what the app's engine answered.
@@ -2254,7 +2275,7 @@ TEST_CASE("the agent's session returns the in-app top-K through the reader, over
   // A clip carries its length (for the FCPXML asset) and its matches (markers).
   mv::nle::request req;
   req.kinds = MV_AI_KIND_VIDEOS;
-  const mv::nle::reply green = session->run(req, "green", "", 5000);
+  const mv::nle::reply green = session->run(req, "green", "", kSettleMs);
   REQUIRE(green.rows.size() == 1);
   CHECK(green.rows[0].kind == MV_AI_KIND_VIDEOS);
   REQUIRE(green.rows[0].moments.size() == 1);
@@ -2262,10 +2283,10 @@ TEST_CASE("the agent's session returns the in-app top-K through the reader, over
   // Find similar on an indexed still, by path.
   mv::nle::request sim;
   sim.kind = mv::nle::request_kind::similar;
-  const mv::nle::reply like = session->run(sim, utf8(r.photos() / "red_car.jpg"), "", 5000);
+  const mv::nle::reply like = session->run(sim, utf8(r.photos() / "red_car.jpg"), "", kSettleMs);
   const std::uint64_t app_like =
       r.eng->search_similar(utf8(r.photos() / "red_car.jpg"), -1, "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
-  REQUIRE(r.eng->wait_search(app_like, 5000));
+  REQUIRE(r.eng->wait_search(app_like, kSettleMs));
   const auto app_rows = r.rows(app_like);
   REQUIRE(like.rows.size() == app_rows.size());
   REQUIRE_FALSE(like.rows.empty());
@@ -2280,19 +2301,15 @@ TEST_CASE("the agent's session returns the in-app top-K through the reader, over
   // Another wire version is refused rather than guessed at.
   mv::nle::request old;
   old.version = 99;
-  CHECK(session->run(old, "red", "", 5000).code == mv::status::unsupported_format);
+  CHECK(session->run(old, "red", "", kSettleMs).code == mv::status::unsupported_format);
 }
 
 // ---- the Photos library (issue #72) ------------------------------------------------
 
 namespace {
 
-bool has_row(const std::vector<std::pair<std::string, std::int64_t>>& rows, const std::string& path) {
-  return std::any_of(rows.begin(), rows.end(), [&](const auto& r) { return r.first == path; });
-}
-
 // Polls until `ok` holds (the control thread rescans on its own tick).
-bool eventually(const std::function<bool()>& ok, int ms = 10000) {
+bool eventually(const std::function<bool()>& ok, int ms = kSettleMs) {
   const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
   while (std::chrono::steady_clock::now() < until) {
     if (ok()) return true;
@@ -2317,7 +2334,7 @@ mv::json::value transfer_done(rig& r) {
         out = *t;
         return true;
       },
-      15000));
+      kSettleMs));
   return out;
 }
 
@@ -2379,7 +2396,7 @@ TEST_CASE("the Photos library indexes what is on this Mac and counts iCloud-only
 
   // A Photos still's tile is its key: the chrome draws it from PhotoKit.
   const std::uint64_t id = r.eng->search_text("red", "photos:", MV_AI_SCOPE_FOLDER, MV_AI_KIND_PHOTOS);
-  REQUIRE(r.eng->wait_search(id, 5000));
+  REQUIRE(r.eng->wait_search(id, kSettleMs));
   auto thumb = r.eng->result_thumb(id, 0);
   REQUIRE(thumb);
   CHECK(*thumb == "photos:red-rose");
@@ -2653,12 +2670,10 @@ TEST_CASE("the People pass leaves iCloud-only Photos assets alone until they are
   REQUIRE(r.eng->index_photos_library());
   REQUIRE(r.idle());
   REQUIRE(r.eng->faces_enable(true));
-  for (int i = 0; i < 300 && !(r.status().flags & MV_AI_STATUS_FACES_READY); ++i) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
-  }
+  REQUIRE(wait_for([&] { return (r.status().flags & MV_AI_STATUS_FACES_READY) != 0; }, kSettleMs));
   // Nothing to scan on this Mac: the pass ends instead of asking PhotoKit for
   // the same clip again and again (it never went idle before this held).
-  REQUIRE(r.idle(10000));
+  REQUIRE(r.idle());
   const int asked = r.library->videos;
   std::this_thread::sleep_for(std::chrono::milliseconds(300));
   CHECK(r.library->videos == asked);
@@ -2730,7 +2745,7 @@ TEST_CASE("an index exported on one machine answers on another without embedding
   CHECK(std::find(green.begin(), green.end(), std::make_pair(std::string("holiday_rgb.mp4"), std::int64_t{3000})) !=
         green.end());
   auto path = b.eng->search_text("blue", utf8(there), MV_AI_SCOPE_FOLDER, MV_AI_KIND_ALL);
-  REQUIRE(b.eng->wait_search(path, 5000));
+  REQUIRE(b.eng->wait_search(path, kSettleMs));
   auto p = b.eng->result_path(path, 0);
   REQUIRE(p);
   CHECK(fs::path(*p).parent_path() == there);  // B's paths, not A's
@@ -2781,7 +2796,7 @@ TEST_CASE("an empty index adopts the file's Quality; a used one keeps its own",
   a.start();
   REQUIRE(a.eng->set_setting("quality", "2"));
   REQUIRE(a.eng->index_folder(utf8(a.photos()), false));
-  REQUIRE(wait_for([&] { return a.eng->active_spec() == "fake-high/fp16/pre1"; }, 15000));
+  REQUIRE(wait_for([&] { return a.eng->active_spec() == "fake-high/fp16/pre1"; }, kSettleMs));
   REQUIRE(a.idle());
   const std::string file = utf8(a.dir / "high.mvindex");
   REQUIRE(a.eng->export_index(file, {}, 0));
@@ -2799,7 +2814,7 @@ TEST_CASE("an empty index adopts the file's Quality; a used one keeps its own",
     REQUIRE(b.eng->import_index(file, map_json(*info->find("roots")->a[0].integer("id"), there), 0));
     auto done = transfer_done(b);
     CHECK(*done.find("outcome")->integer("adopted_quality") == 2);
-    REQUIRE(wait_for([&] { return b.eng->active_spec() == "fake-high/fp16/pre1"; }, 15000));
+    REQUIRE(wait_for([&] { return b.eng->active_spec() == "fake-high/fp16/pre1"; }, kSettleMs));
     REQUIRE(b.idle());
     CHECK(b.high->images_embedded.load() == 0);
     CHECK(b.fast->images_embedded.load() == 0);
@@ -2837,7 +2852,7 @@ TEST_CASE("People travel only when ticked, and named people join by name", "[ai]
   a.start();
   REQUIRE(a.eng->index_folder(utf8(a.photos()), false));
   REQUIRE(a.eng->faces_enable(true));
-  REQUIRE(wait_for([&] { return (a.status().flags & MV_AI_STATUS_FACES_READY) != 0; }, 6000));
+  REQUIRE(wait_for([&] { return (a.status().flags & MV_AI_STATUS_FACES_READY) != 0; }, kSettleMs));
   REQUIRE(a.idle());
   auto people = mv::json::parse(a.eng->people_json());
   REQUIRE(people->a.size() == 2);
@@ -2896,7 +2911,7 @@ TEST_CASE("merge duplicates: wired through the engine, a split stays apart, a se
   REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
   CHECK(r.eng->people_dedupe().error() == mv::status::invalid_arg);  // People is off
   REQUIRE(r.eng->faces_enable(true));
-  REQUIRE(wait_for([&] { return (r.status().flags & MV_AI_STATUS_FACES_READY) != 0; }, 6000));
+  REQUIRE(wait_for([&] { return (r.status().flags & MV_AI_STATUS_FACES_READY) != 0; }, kSettleMs));
   REQUIRE(r.idle());
   auto people = mv::json::parse(r.eng->people_json());
   REQUIRE(people->a.size() == 2);
@@ -3004,9 +3019,7 @@ TEST_CASE("re-analysing faces keeps the user's people and settles once at the en
   REQUIRE(r.idle());
   CHECK_FALSE(r.eng->people_reanalyse());  // People is off
   REQUIRE(r.eng->faces_enable(true));
-  for (int i = 0; i < 300 && !(r.status().flags & MV_AI_STATUS_FACES_READY); ++i) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
-  }
+  REQUIRE(wait_for([&] { return (r.status().flags & MV_AI_STATUS_FACES_READY) != 0; }, kSettleMs));
   REQUIRE(r.idle());
   auto people = mv::json::parse(r.eng->people_json());
   REQUIRE(people);
@@ -3019,7 +3032,7 @@ TEST_CASE("re-analysing faces keeps the user's people and settles once at the en
   REQUIRE(r.eng->people_reanalyse());
   CHECK(r.status().flags & MV_AI_STATUS_PEOPLE_RERUN);
   REQUIRE(wait_for([&] { return (r.status().flags & (MV_AI_STATUS_PEOPLE_RERUN | MV_AI_STATUS_PEOPLE_SETTLING)) == 0; },
-                   20000));
+                   kSettleMs));
   CHECK(r.status().people_scan_done == 5);
   people = mv::json::parse(r.eng->people_json());
   REQUIRE(people);
