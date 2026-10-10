@@ -140,6 +140,16 @@ final class AITable: @unchecked Sendable {
     return guarded { fn(ctx, &access) } == MV_OK && access != MV_AI_PHOTOS_UNSUPPORTED.rawValue
   }
 
+  /// Loaded through the pack's read-only door (MV_AI_READER_ENTRY_SYMBOL): a
+  /// later MediaViewer window, whose process does not host the add-ons
+  /// (2026-10-07). Its index is the first window's, opened read-only: search,
+  /// find-similar and People's photos work; nothing that changes the index or
+  /// a setting does (the pack refuses them). settings_json says so; read once.
+  lazy var readOnly: Bool = {
+    let obj = parseJSON(json { a.settings_json?(ctx, $0, $1, $2) ?? MV_ERR_INVALID_ARG }) as? [String: Any]
+    return obj?["read_only"] as? Bool ?? false
+  }()
+
   func setSetting(_ key: String, _ valueJSON: String) {
     call { a.set_setting?(ctx, key, valueJSON) }
   }
@@ -489,10 +499,11 @@ struct StageChip: View {
 
 /// The status pill: ring, text, compute badge, Pause / Resume, and "Index
 /// anyway" while it waits on battery (when the owner passes `onIndexAnyway`).
+/// Without `onPause` (a read-only window) there is no Pause / Resume.
 struct StatusPill: View {
   let line: StatusLine
   var onIndexAnyway: (() -> Void)? = nil
-  let onPause: (Bool) -> Void
+  let onPause: ((Bool) -> Void)?
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
@@ -532,7 +543,7 @@ struct StatusPill: View {
           .help("Carry on indexing on battery until the Mac is next on power. "
                 + "The battery setting in Settings → Local search stays as it is.")
       }
-      if line.indexing || line.paused {
+      if line.indexing || line.paused, let onPause {
         Button(line.paused ? "Resume" : "Pause") { onPause(!line.paused) }
           .buttonStyle(.borderless)
           .font(AITheme.font(13))

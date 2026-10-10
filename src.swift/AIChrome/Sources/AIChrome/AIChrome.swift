@@ -122,7 +122,7 @@ public final class MVAIChrome: NSObject {
                            positionMs: int64(v["position_ms"]))
       // The command bar pill's "Index anyway" while it waits on battery.
       case "index_anyway":
-        guard let table else { return false }
+        guard let table, !table.readOnly else { return false }
         table.indexAnyway()
         search?.pollStatus()
         manage?.statusChanged()

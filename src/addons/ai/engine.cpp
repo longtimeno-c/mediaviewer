@@ -302,8 +302,15 @@ std::string engine::settings_json() const {
   w.key("precision").integer(s.precision);
   w.key("icloud_videos").boolean(s.icloud_videos);
   w.key("cloud_files").boolean(s.cloud_files);
+  // A second window's reader (docs/design/18 "One host process"): it searches,
+  // and the chrome hides what would change the index or the settings.
+  w.key("read_only").boolean(options_.read_only);
 #if defined(_WIN32)
   w.key("cloud_provider").string(cloud_ ? "onedrive" : "");
+  // The Cloud Files API is delay-loaded (cloud_win.cpp): false where Windows
+  // has none (before 10 1709, Server 2016), and the OneDrive option says so.
+  // A reader never fetches, so it does not ask.
+  w.key("cloud_supported").boolean(options_.read_only || cloud_ != nullptr);
 #elif defined(__APPLE__)
   w.key("cloud_provider").string(cloud_ ? "icloud" : "");
 #else

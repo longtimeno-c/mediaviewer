@@ -439,6 +439,18 @@ MV_API mv_status MV_CALL mv_addon_load(mv_session_t session, const char* id,
                                        const char* interface_id, const void** out_interface,
                                        char* out_chrome_utf8, uint32_t chrome_cap);
 
+/* mv_addon_load through the add-on's reader door (MV_AI_READER_ENTRY_SYMBOL,
+ * mediaviewer_ai.h), for a window whose process does not host the add-ons
+ * (docs/design/18 "One host process", 2026-10-07): the same interface over the
+ * same data, read-only, so search works in every window while one process
+ * indexes. It never sweeps the store. A process loads an add-on one way only:
+ * MV_ERR_INVALID_ARG if it is loaded the other way. MV_ERR_NOT_FOUND: nothing
+ * is indexed yet. MV_ERR_IO (also from mv_addon_load): the add-on verified but
+ * the OS would not load its library; mv_last_error_message() says why. */
+MV_API mv_status MV_CALL mv_addon_load_reader(mv_session_t session, const char* id,
+                                              const char* interface_id, const void** out_interface,
+                                              char* out_chrome_utf8, uint32_t chrome_cap);
+
 /* docs/design/25 (2026-10-03): the commands the LOADED add-ons' manifests
  * contribute, for the host's command table:
  *   [{"addon","id","name","windows","mac","modes","payload"}]
