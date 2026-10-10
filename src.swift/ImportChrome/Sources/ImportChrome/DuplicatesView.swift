@@ -83,7 +83,7 @@ final class DuplicatesModel: ObservableObject {
     chrome?.track(id, label: "duplicates")
   }
 
-  func cancel() { _ = api.cancel!(table.ctx, job) }
+  func cancel() { table.call { api.cancel!(table.ctx, job) } }
 
   func progressed(_ id: UInt64, _ p: mv_import_progress) {
     guard id == job, running else { return }
@@ -182,7 +182,7 @@ final class DuplicatesModel: ObservableObject {
   /// One copy (a row's own button), or the whole pick.
   func trash(_ path: String) {
     guard let (g, f) = file(path), canTrash(f, in: g) else { return }
-    if path.withCString({ api.trash_duplicate!(table.ctx, job, $0) }) == MV_OK { refresh(job) }
+    if table.call({ path.withCString { api.trash_duplicate!(table.ctx, job, $0) } }) == MV_OK { refresh(job) }
   }
 
   /// No-block: every call only queues; the engine checks and moves the copies
@@ -192,7 +192,7 @@ final class DuplicatesModel: ObservableObject {
     guard !running, !files.isEmpty, !every else { return }
     var queued = false
     for f in files {
-      guard f.path.withCString({ api.trash_duplicate!(table.ctx, job, $0) }) == MV_OK else { continue }
+      guard table.call({ f.path.withCString { api.trash_duplicate!(table.ctx, job, $0) } }) == MV_OK else { continue }
       selection.remove(f.path)
       queued = true
     }

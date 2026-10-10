@@ -79,6 +79,11 @@
 // Checked with -respondsToSelector:; an Import 1.0.0 bundle has only the two
 // selectors above and is driven through them.
 - (BOOL)runCommand:(NSString*)name payload:(NSString*)json;
+// Quit (issue #193): -shutdown without its bounded wait for table calls in
+// flight, as MVAIChrome's. YES when none was in flight, so the pack may stop;
+// NO leaves it running for the exit. An older chrome gets -shutdown, which
+// waits on nothing there.
+- (BOOL)shutdownForQuit;
 @end
 
 // Milestone H: what AI.bundle's principal class (MVAIChrome in
@@ -269,6 +274,9 @@ bool ai_installed_ok() {
   return found && found->state == mv::addon::install_state::ok;
 }
 
+// [main-thread] The chrome shuts down first: it closes the table and waits
+// (bounded) for the calls its detached tasks have inside the pack (a RAW
+// thumbnail, an eject), so nothing reaches the engine after the reset below.
 void unload_import() {
   mac_addons& s = state();
   if (s.chrome) {
@@ -742,14 +750,24 @@ void MvAddonsQuit() {
   g_quit_at = std::chrono::steady_clock::now();
   static bool guarded = false;
   if (!guarded) guarded = std::atexit(&exit_guard) == 0;
+  bool import_idle = true;
   if (s.chrome) {
     @try {
-      [s.chrome shutdown];  // Import's chrome waits on nothing
+      if ([s.chrome respondsToSelector:@selector(shutdownForQuit)]) {
+        import_idle = [s.chrome shutdownForQuit] == YES;
+      } else {
+        [s.chrome shutdown];  // an older chrome waits on nothing
+      }
     } @catch (NSException*) {
+      import_idle = false;
     }
   }
   s.chrome = nil;
-  mv::addon::stop_for_exit(std::move(s.import));
+  if (import_idle) {
+    mv::addon::stop_for_exit(std::move(s.import));
+  } else {
+    mv::addon::abandon_for_exit(std::move(s.import));
+  }
 
   // The AI pack: its chrome closes the table first. A read still inside the
   // pack (Settings' roots or people, a result thumbnail) would be freed under
