@@ -597,6 +597,8 @@ public static partial class IslandHost
             if (arg == IntPtr.Zero || sizeBytes < RateArgsSize) return unchecked((int)0x80070057);
             ChromeRateArgs args = Marshal.PtrToStructure<ChromeRateArgs>(arg);
             SetSpeedSelection(args.Rate);
+            // The media controls' clock (IslandHost.Video.cs, issue #216).
+            _videoRate = args.Rate > 0 ? args.Rate : 1;
             return 0;
         }
         catch (Exception ex)
