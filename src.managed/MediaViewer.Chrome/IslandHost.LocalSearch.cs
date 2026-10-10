@@ -282,7 +282,7 @@ public static partial class IslandHost
         _indexingPill.Padding = new Thickness(4, 0, 4, 0);
         _indexingPill.Visibility = Visibility.Collapsed;
         AutomationProperties.SetName(_indexingPill, "Local search indexing. Open search");
-        ToolTipService.SetToolTip(_indexingPill, "Local search is indexing. Click to search (Ctrl+F)");
+        RefreshIndexingTip();
         return _indexingPill;
     }
 
@@ -290,17 +290,23 @@ public static partial class IslandHost
     {
         if (_indexingPill is null || _indexingText is null || _indexingDot is null) return;
         _indexingPill.Visibility = text is null ? Visibility.Collapsed : Visibility.Visible;
-        if (text != _indexingText.Text)
-        {
-            // The pack's line ("Paused on battery", Look.StatusLine): say where the override is.
-            bool battery = text?.Contains("battery", StringComparison.OrdinalIgnoreCase) == true;
-            ToolTipService.SetToolTip(_indexingPill, battery
-                ? "Local search waits on battery. Click to search (Ctrl+F); Index anyway is in the panel's footer."
-                : "Local search is indexing in the background. Click to search (Ctrl+F)");
-        }
+        bool changed = (text ?? "") != _indexingText.Text;
         _indexingText.Text = text ?? "";
+        if (changed) RefreshIndexingTip();
         // The dot shows only while indexing: a still app shows a still bar.
         _indexingDot.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    // Names the live search key; RefreshKeyTips calls this again after a remap.
+    private static void RefreshIndexingTip()
+    {
+        if (_indexingPill is null || _indexingText is null) return;
+        // The pack's line ("Paused on battery", Look.StatusLine): say where the override is.
+        bool battery = _indexingText.Text.Contains("battery", StringComparison.OrdinalIgnoreCase);
+        string key = KeyNote(Command.SearchOpen);
+        ToolTipService.SetToolTip(_indexingPill, battery
+            ? $"Local search waits on battery. Click to search{key}; Index anyway is in the panel's footer."
+            : $"Local search is indexing in the background. Click to search{key}");
     }
 
     // ---- matches over the scrub bar -----------------------------------------------------
