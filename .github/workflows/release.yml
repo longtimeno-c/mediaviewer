@@ -378,7 +378,17 @@ jobs:
           path: |
             build/vcpkg_installed
             build/vcpkg_dynamic
-          key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'tools/mac/dependencies/vcpkg.json', 'tools/mac/triplets/*.cmake', 'tools/vcpkg/triplets/*-osx.cmake') }}-${{ matrix.triplet }}-mixed-v2
+            build/libomp
+          key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'tools/mac/dependencies/vcpkg.json', 'tools/mac/triplets/*.cmake', 'tools/vcpkg/triplets/*-osx.cmake', 'tools/mac/build_libomp.py') }}-${{ matrix.triplet }}-mixed-v2
+
+      # LibRaw's OpenMP runtime, built for the app's 14.0. Homebrew's libomp
+      # declares the runner's macOS as its minimum and ships in Frameworks
+      # (issue #158). The triplet and CMake read MV_LIBOMP_ROOT.
+      - name: Build libomp for the deployment target
+        run: |
+          arch=${{ matrix.arch == 'x64' && 'x86_64' || 'arm64' }}
+          python3 tools/mac/build_libomp.py --prefix "build/libomp/$arch" --arch "$arch"
+          echo "MV_LIBOMP_ROOT=$GITHUB_WORKSPACE/build/libomp/$arch" >> "$GITHUB_ENV"
 
       # CMake installs the static, permissive dependencies from the root
       # manifest. Keep the LGPL dylibs in a separate manifest/install tree:
@@ -386,7 +396,7 @@ jobs:
       - name: Install macOS dynamic codec libraries
         run: |
           # libsodium (Import add-on) builds through autoreconf in vcpkg.
-          brew install libomp nasm ninja autoconf autoconf-archive automake libtool
+          brew install nasm ninja autoconf autoconf-archive automake libtool
           "$VCPKG_ROOT/vcpkg" install --triplet "$TRIPLET-dynamic" \
             --overlay-triplets="$GITHUB_WORKSPACE/tools/mac/triplets" \
             --x-manifest-root="$GITHUB_WORKSPACE/tools/mac/dependencies" \
@@ -432,6 +442,7 @@ jobs:
           path: |
             build/vcpkg_installed
             build/vcpkg_dynamic
+            build/libomp
           key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
 
       - name: Build app and test executables
@@ -447,6 +458,10 @@ jobs:
         run: |
           python3 tools/mac/check_plists.py
           python3 tools/mac/test_macpack.py -v
+          python3 tools/mac/test_check_minos.py -v
+          # Nothing shipped may need a newer macOS than LSMinimumSystemVersion.
+          python3 tools/mac/check_minos.py build/MediaViewer.app build/addons/import \
+            $([[ -d build/addons/ai ]] && echo build/addons/ai)
 
       # upload-artifact zips drop symlinks and modes; Sparkle.framework needs both.
       - name: Archive the app

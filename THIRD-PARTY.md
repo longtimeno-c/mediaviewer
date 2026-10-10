@@ -67,7 +67,7 @@ This file and `LICENSE` are copied into `Contents/Resources`. Mac-only additions
 |---|---|---|---|---|
 | [Sparkle](https://sparkle-project.org) | 2.9.6 | MIT | Dynamic framework (`Contents/Frameworks/Sparkle.framework`) | Updates (docs/design/13). Pinned by SHA-256 in `cmake/darwin-app.cmake`; linked only when the build has an EdDSA public key. |
 | [dmgbuild](https://github.com/dmgbuild/dmgbuild) | 1.6.7 | MIT | Build tool only | Builds the first-install disk image. Not in a shipped binary. |
-| [LLVM OpenMP runtime](https://openmp.llvm.org/) | Build machine's Homebrew libomp | Apache-2.0 WITH LLVM-exception; legacy notices included | Dynamic, macOS | Bounded parallel LibRaw processing. Bundled in Frameworks; full notices in `llvm-openmp.txt` in Resources (source: `assets/licenses/llvm-openmp.txt`). |
+| [LLVM OpenMP runtime](https://openmp.llvm.org/) | LLVM 19.1.7 release sources, built by `tools/mac/build_libomp.py` for macOS 14.0 | Apache-2.0 WITH LLVM-exception; legacy notices included | Dynamic, macOS | Bounded parallel LibRaw processing. Bundled in Frameworks; full notices in `llvm-openmp.txt` in Resources (source: `assets/licenses/llvm-openmp.txt`). |
 
 ## Planned, with the PR that introduces each
 

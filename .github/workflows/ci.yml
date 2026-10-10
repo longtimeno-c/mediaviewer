@@ -102,6 +102,7 @@ jobs:
       - uses: actions/checkout@v4
       - run: python3 tools/mac/check_plists.py
       - run: python3 tools/mac/test_macpack.py -v
+      - run: python3 tools/mac/test_check_minos.py -v
       - run: python3 tools/package/test_github_release.py -v
 
   # ---------------------------------------------------------------------------
