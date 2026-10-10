@@ -2534,11 +2534,9 @@ void* image_ready_wait_handle(mv_session_t session) {
 }
 
 void release_gpu_image(image::gpu_image* image) {
-  // A tiled image's set is freed by its service thread, not here: poke it so
-  // a retired pyramid does not wait for the next tile request.
-  image::tile_service* service = image && image->tiles ? image->tiles->service() : nullptr;
+  // A tiled image's set is freed by its service thread, not here. Dropping the
+  // last outside handle pokes the service (image/tiles.cpp upload_tiled).
   delete image;
-  if (service) service->poke();
 }
 
 std::span<const gfx::tile_quad> tiles_frame(const image::gpu_image& image,

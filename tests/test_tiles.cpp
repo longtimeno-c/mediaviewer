@@ -302,10 +302,22 @@ TEST_CASE("tile service sleeps without polling and wakes on every poke", "[tiles
     REQUIRE_FALSE(draws.empty());
   }
 
+  // The view moves on, then the image is let go of with no tile request after
+  // it: dropping the last outside handle is itself the poke that retires the
+  // set, so its CPU pyramid goes without waiting for some later request.
+  const std::weak_ptr<const mv::image::tile_source> pyramid = set.source();
+  (void)jobs.bump_generation();
+  std::this_thread::sleep_for(std::chrono::milliseconds(150));
+  gpu = mv::err(mv::status::cancelled);
+  const auto retire_by = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!pyramid.expired() && std::chrono::steady_clock::now() < retire_by) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  CHECK(pyramid.expired());
+
   // A sleeping service is woken to stop, not left to notice on a tick.
   std::this_thread::sleep_for(std::chrono::milliseconds(150));
   const auto t0 = std::chrono::steady_clock::now();
-  gpu = mv::err(mv::status::cancelled);
   service.reset();
   CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(2));
   jobs.shutdown();

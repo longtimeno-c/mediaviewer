@@ -530,8 +530,18 @@ result<gpu_image> upload_tiled(ID3D11Device* device, std::shared_ptr<const displ
   out.icc_tagged = full->icc_tagged;
   out.quality = gpu_quality::full;
   out.mean_luma = mean_luma(*full);
-  out.tiles = std::make_shared<tile_set>(device, std::move(source), gen, &service);
-  service.serve(out.tiles);
+  auto set = std::make_shared<tile_set>(device, std::move(source), gen, &service);
+  service.serve(set);
+  // The handle everyone outside the service holds. When its last holder lets
+  // go - a render-thread release, a worker dropping a stale upload, a ready
+  // image superseded before it was taken - the service is poked, so it retires
+  // the set (and its CPU pyramid) now: it no longer wakes on a timeout to look.
+  tile_set* const raw = set.get();
+  out.tiles = std::shared_ptr<tile_set>(raw, [held = std::move(set)](tile_set*) mutable noexcept {
+    tile_service* const svc = held->service();
+    held.reset();  // before the poke, so the woken service sees the set unheld
+    if (svc) svc->poke();
+  });
   return out;
 }
 
