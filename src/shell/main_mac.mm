@@ -407,10 +407,12 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 
 // docs/design/16-commands.md "Opening (argv, drop, PR 6)": the first entry that
 // exists wins -- a folder opens that folder, a file opens its folder with
-// that file selected. Used by argv parsing (main(), below) and
-// -[MvMetalView performDragOperation:]. Returns NO (and the caller beeps)
-// when nothing at `utf8_path` exists.
+// that file selected. -openEntryPath: is the launch open (argv parsing, main()
+// below), which stats inline and returns NO (the caller beeps) when nothing at
+// `utf8_path` exists; every other fresh open (a drop, Open, Recent, Finder)
+// uses -openEntryPaths:failed:, which asks the disk on a worker.
 - (BOOL)openEntryPath:(const char*)utf8_path;
+- (void)openEntryPaths:(NSArray<NSString*>*)paths failed:(void (^)(void))failed;
 - (BOOL)hasFolder;
 - (void)navigateNext;
 - (void)navigatePrev;
@@ -613,7 +615,6 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 // these; the state is MvLabApp's.
 - (uint64_t)trimGeneration;
 - (const mv::shell::trim_state&)trim;
-- (BOOL)clipToolsVisible;
 - (void)setClipToolsVisible:(BOOL)visible;
 - (int32_t)clipToolFlags;
 - (void)confirmClipTool:(int32_t)packed;
@@ -734,7 +735,7 @@ extern "C" void mv_chrome_request_thumb(int32_t index) {
   if (!g_chrome_app || index < 0) return;
   [g_chrome_app requestThumbAtIndex:index];
 }
-extern "C" void mv_chrome_menu(int32_t cmd) {
+extern "C" void mv_chrome_menu(MvMenuCmd cmd) {
   (void)mv::shell::crash::note_native_call();
   if (g_chrome_app) [g_chrome_app runMenuCmd:cmd];
 }
@@ -802,9 +803,6 @@ extern "C" void mv_chrome_keys_reset(void) {
 }
 extern "C" uint64_t mv_chrome_keys_generation(void) {
   return g_chrome_app ? [g_chrome_app keysGeneration] : 0;
-}
-extern "C" bool mv_chrome_filmstrip_visible(void) {
-  return g_chrome_app ? [g_chrome_app filmstripVisible] == YES : false;
 }
 extern "C" bool mv_chrome_gallery_visible(void) {
   return g_chrome_app ? [g_chrome_app galleryVisible] == YES : false;
@@ -1013,6 +1011,24 @@ int32_t MvCopyOut(const std::string& out, char* buf, int32_t size) {
     buf[n] = '\0';
   }
   return static_cast<int32_t>(out.size());
+}
+
+// What a path handed to the app names: the folder to open and, for a file, the
+// file to select there. One stat (containing_dir() would take a second); false
+// when nothing exists. A worker's call, but for the launch open.
+bool MvResolveEntry(const std::string& path, std::string* dir, std::string* select_path) {
+  auto is_dir = mv::io::is_directory(path);
+  if (!is_dir) return false;
+  select_path->clear();
+  if (is_dir.value()) {
+    *dir = path;
+    return true;
+  }
+  const std::size_t slash = path.find_last_of('/');
+  if (slash == std::string::npos) return false;
+  *dir = slash == 0 ? std::string("/") : path.substr(0, slash);
+  *select_path = path;
+  return true;
 }
 
 const char* MvOriginName(mv::meta::origin o) {
@@ -1446,9 +1462,6 @@ extern "C" int32_t mv_chrome_trim_label(char* buf, int32_t size) {
   const mv::shell::trim_state& t = [g_chrome_app trim];
   return MvCopyText(t.armed() ? t.label() : std::string(), buf, size);
 }
-extern "C" bool mv_chrome_clip_tools_visible(void) {
-  return g_chrome_app && [g_chrome_app clipToolsVisible];
-}
 extern "C" int32_t mv_chrome_clip_tool_flags(void) {
   return g_chrome_app ? [g_chrome_app clipToolFlags] : 0;
 }
@@ -1756,16 +1769,18 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 
 // docs/design/16-commands.md "Opening (argv, drop, PR 6)": accept the drop as long
 // as it names at least one file: URL, so -performDragOperation: can apply
-// the same "first folder wins, else the first file's folder" rule -openEntryPath:
-// already implements for argv. Any other pasteboard content (text, a web
+// the same "first entry that exists wins" rule as argv (-openEntryPaths:failed:,
+// over every URL dropped). Any other pasteboard content (text, a web
 // link dragged from a browser, images) is not a file and is refused.
 // NSPasteboardURLReadingFileURLsOnlyKey matters here, not just as a filter
 // convenience: without it, readObjectsForClasses: happily decodes a
 // non-file NSURL (e.g. a Safari address-bar drag) too, so
 // -draggingEntered: would show the accept cursor for something
 // -performDragOperation: can only fail (is_directory() on a non-file path)
-// and silently beep on drop.
+// and silently beep on drop. A drag of ours (the canvas's ⌘-drag, a cell) is
+// refused too: dropped back on our own window it would reopen what is shown.
 - (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender {
+  if (sender.draggingSource != nil) return NSDragOperationNone;
   NSArray<NSURL*>* urls = [sender.draggingPasteboard
       readObjectsForClasses:@[ NSURL.class ]
                      options:@{NSPasteboardURLReadingFileURLsOnlyKey : @YES}];
@@ -1778,11 +1793,14 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   NSArray<NSURL*>* urls = [sender.draggingPasteboard
       readObjectsForClasses:@[ NSURL.class ]
                      options:@{NSPasteboardURLReadingFileURLsOnlyKey : @YES}];
-  NSString* first = urls.firstObject.path;
-  if (!first || !self.app) return NO;
-  const bool opened = [self.app openEntryPath:first.UTF8String];
-  if (!opened) NSBeep();
-  return opened ? YES : NO;
+  if (sender.draggingSource != nil || urls.count == 0 || !self.app) return NO;
+  NSMutableArray<NSString*>* paths = [NSMutableArray array];
+  for (NSURL* url in urls) {
+    if (url.path) [paths addObject:url.path];
+  }
+  if (paths.count == 0) return NO;
+  [self.app openEntryPaths:paths failed:nil];
+  return YES;
 }
 
 - (void)setFrameSize:(NSSize)newSize {
@@ -2099,7 +2117,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   // slides into its place" for a mid-list removal and "the previous one" for
   // the last item, without needing to special-case either (docs/design/16).
   std::string _wantSelectedPath;
-  // Bumped by every -openEntryPath: call, read from the background job it
+  // Bumped by every -openDir: call, read from the background job it
   // submits. folder_model::open() writes state_->dir/generation under its
   // own mutex, but its thumbs.open()/watcher_.start() calls run outside
   // that lock -- two folder->open() calls for different directories
@@ -2113,6 +2131,9 @@ static void MvAdoptNewDefaultViewerTypes() {
   // value-initializes to 0 as of C++20 (this file builds -std=c++2a), so
   // this starts at 0 regardless.
   std::atomic<std::uint64_t> _openGeneration;
+  // Bumped by each -openEntryPaths:failed: request (main thread only): a stat
+  // that lands after a newer request was made is dropped.
+  std::uint64_t _entryGeneration;
   // Held by the open job across its _openGeneration check and the
   // folder->open() / open_list() call, so a superseded job cannot pass the
   // check and then run after the newer one (leaving a result list, or a
@@ -2215,7 +2236,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   BOOL _galleryVisible;
 
   // PR 20. _launched: -applicationDidFinishLaunching: has started the lab, so
-  // a Finder open can go straight to -openEntryPath:. Before that, Finder's
+  // a Finder open can go straight to -openEntryPaths:failed:. Before that, Finder's
   // open arrives between will- and did-finish-launching and is stashed in
   // _options.open_path, the same slot argv uses.
   BOOL _launched;
@@ -2384,7 +2405,8 @@ static void MvAdoptNewDefaultViewerTypes() {
     MvAddonsStart(
         [](void*, const char* path) {
           MvLabApp* app = g_addon_app;
-          if (app && path) (void)[app openEntryPath:path];
+          NSString* entry = path ? [NSString stringWithUTF8String:path] : nil;
+          if (app && entry) [app openEntryPaths:@[ entry ] failed:nil];
         },
         nullptr);
     // docs/design/23: Final Cut Pro search stays as Settings left it (background, later).
@@ -3013,33 +3035,80 @@ static void MvAdoptNewDefaultViewerTypes() {
       return YES;
     }
   }
-  return [self openPath:utf8_path navigation:NO];
+  if (!utf8_path || !*utf8_path) return NO;
+  // The launch open only (argv, a Finder open before launch finished): its stat
+  // is on the first pixel's path either way, and done here it cannot queue
+  // behind the chrome's main-thread work. Every later fresh open asks off the
+  // main thread (-openEntryPaths:failed:).
+  std::string dir;
+  std::string select_path;
+  if (!MvResolveEntry(utf8_path, &dir, &select_path)) return NO;
+  [self openDir:dir select:select_path navigation:NO];
+  return YES;
+}
+
+// docs/design/16 "Opening": the first of `paths` that exists wins (a folder opens
+// that folder, a file its folder with the file selected; an add-on package goes
+// to Settings). What is there is asked on a worker, never here (rule 1: a Recent
+// folder on a sleeping disk or a dropped share stats for seconds), then the open
+// continues on the main thread. Nothing existing runs `failed` (a beep when
+// nil). Any open that starts meanwhile (another of these, a navigation, a list)
+// supersedes this one, which then does nothing.
+- (void)openEntryPaths:(NSArray<NSString*>*)paths failed:(void (^)(void))failed {
+  const std::uint64_t entry = ++_entryGeneration;
+  const std::uint64_t opened = _openGeneration.load(std::memory_order_acquire);
+  NSArray<NSString*>* candidates = [paths copy];
+  __weak MvLabApp* weakSelf = self;
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    NSString* addon = nil;
+    std::string dir;
+    std::string select_path;
+    bool found = false;
+    for (NSString* path in candidates) {
+      if ([path.pathExtension caseInsensitiveCompare:@"mvaddon"] == NSOrderedSame) {
+        addon = path;
+        break;
+      }
+      const char* fs = path.length > 0 ? path.fileSystemRepresentation : nullptr;
+      if (fs && MvResolveEntry(fs, &dir, &select_path)) {
+        found = true;
+        break;
+      }
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+      MvLabApp* app = weakSelf;
+      if (!app || app->_entryGeneration != entry ||
+          app->_openGeneration.load(std::memory_order_acquire) != opened) {
+        return;
+      }
+      if (addon) {
+        [app setSettingsVisible:YES];
+        [MVChromeHost offerAddonPackage:addon];
+      } else if (found) {
+        [app openDir:dir select:select_path navigation:NO];
+      } else if (failed) {
+        failed();
+      } else {
+        NSBeep();
+      }
+    });
+  });
 }
 
 // `navigation` = moving through the folder tree the user already opened (a
-// folder tile, a breadcrumb, up): the trail keeps its root and the filmstrip
-// setting is left alone. NO = a fresh open (Open, a drop, the CLI), which
-// starts a new trail.
+// folder tile, a breadcrumb, a sibling, up, the tree): the trail keeps its root
+// and the filmstrip setting is left alone. Those are folders the app listed, so
+// nothing is asked of the disk here; one that went since fails in
+// folder_model::open() below, which beeps. A fresh open (Open, a drop, Recent)
+// goes through -openEntryPaths:failed:, which starts a new trail.
 - (BOOL)openPath:(const char*)utf8_path navigation:(BOOL)navigation {
   if (!utf8_path || !*utf8_path) return NO;
-  const std::string path(utf8_path);
-  // A single stat() to answer "does anything exist here" is the one I/O
-  // this method does inline -- cheap and synchronous by nature, the same
-  // exception every "no I/O on the UI thread" codebase makes for a stat
-  // call, unlike the real I/O folder_model::open() below does.
-  auto is_dir = mv::io::is_directory(path);
-  if (!is_dir) return NO;  // stat failed: nothing exists at this path
+  [self openDir:utf8_path select:std::string() navigation:navigation];
+  return YES;
+}
 
-  std::string dir;
-  std::string select_path;
-  if (is_dir.value()) {
-    dir = path;
-  } else {
-    auto containing = mv::io::containing_dir(path);
-    if (!containing) return NO;
-    dir = containing.value();
-    select_path = path;
-  }
+// `dir` is a folder; `select_path` the file in it to show, or empty.
+- (void)openDir:(const std::string&)dir select:(const std::string&)select_path navigation:(BOOL)navigation {
   // Moving up into a folder that contains the one we are leaving: remember
   // that child so its tile is selected when the parent listing arrives.
   if (navigation && !_currentDir.empty() && dir != _currentDir &&
@@ -3098,7 +3167,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   // intent and keeps it off until asked (docs/design/16, same as Windows).
   if (!navigation) {
     const auto prefs = mv::shell::view_settings::from_flags(_viewFlags);
-    const BOOL want = is_dir.value() ? prefs.filmstrip_for_folder : prefs.filmstrip_for_image;
+    const BOOL want = select_path.empty() ? prefs.filmstrip_for_folder : prefs.filmstrip_for_image;
     if (want != _filmstripVisible) [self setFilmstripVisible:want];
   }
 
@@ -3131,7 +3200,7 @@ static void MvAdoptNewDefaultViewerTypes() {
 
   // folder_model::open() itself is real I/O -- opening, and maybe creating,
   // the thumbnail cache's SQLite file -- so it never runs on the UI thread
-  // (CLAUDE.md rule 1: "no I/O"), unlike the is_directory() stat above.
+  // (CLAUDE.md rule 1: "no I/O"), any more than the stat that found `dir`.
   // `&_folder`/`&_jobs` stay valid for the job's duration because MvLabApp
   // is never destroyed before the process exits -- unlike folder_model_mac's
   // own internal jobs, which capture a shared_ptr<shared_state> precisely
@@ -3144,7 +3213,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   _jobs.submit_at(mv::background_generation,
                   [folder, jobs, dir, my_generation, open_generation, open_mutex](
                       const mv::job_context&) -> mv::status {
-                    // A newer -openEntryPath: call already arrived: calling
+                    // A newer -openDir: call already arrived: calling
                     // folder->open() now would race that one's own open()
                     // call outside folder_model's internal locking (see
                     // _openGeneration's declaration comment). Let the newer
@@ -3166,7 +3235,6 @@ static void MvAdoptNewDefaultViewerTypes() {
   // Milestone H: the AI chrome notes the folder (note_folder_opened) so a
   // covered root queues its delta and the search panel knows its scope.
   MvAddonsFolderOpened(dir);
-  return YES;
 }
 
 - (void)refreshFolderIfChanged {
@@ -4407,25 +4475,10 @@ static BOOL MvCopyUtf8(const std::string& text, char* buf, int32_t size) {
 // ---- Main menu ------------------------------------------------------------
 // A real menu bar (it had none: the bar showed only the process name). Every
 // item routes to an action the key router already performs, so the menu and
-// the keys cannot disagree; letter keys that keyDown: owns are shown as key
-// equivalents so the menu advertises them.
-enum MvMenuCmd : NSInteger {
-  kMenuOpen = 1, kMenuTrash, kMenuCopyTo, kMenuMoveTo, kMenuMark,
-  kMenuFit, kMenuOneToOne, kMenuFilmstrip, kMenuGallery, kMenuFullscreen, kMenuSlideshow,
-  kMenuNext, kMenuPrev, kMenuFirst, kMenuLast, kMenuHelp, kMenuOpenFolder, kMenuSettings, kMenuOverlay, kMenuReveal,
-  // docs/design/26
-  kMenuOpenPhotos,
-  // PR 9
-  kMenuMetadata, kMenuFolderTree, kMenuSortName, kMenuSortModified, kMenuSortSize, kMenuSortType,
-  kMenuSortDateTaken, kMenuSortDescending,
-  // PR 15
-  kMenuShare, kMenuCopyPath, kMenuCopyEdited,
-  // PR 29 (docs/design/20): the Edit menu, a visible way in to every edit.
-  kMenuEditWorkspace, kMenuEditCrop, kMenuEditColour, kMenuRotateLeft, kMenuRotateRight,
-  kMenuFlipH, kMenuFlipV, kMenuUndoEdit, kMenuResetEdits, kMenuSaveCopy, kMenuTrim,
-  // docs/design/16 "Window"
-  kMenuNewWindow,
-};
+// the keys cannot disagree. The router owns the keys: only a few ⌘ chords are
+// key equivalents (a bare letter there would run twice), and `?` lists the rest.
+// The item tags (MvMenuCmd) are in mv_chrome_bridge.h, shared with the
+// command bar's buttons (CommandBarView.swift).
 
 // docs/design/16 "Window": another window is another MediaViewer process, on the
 // empty window, cascaded from this one. The bundle starts as a new instance
@@ -4552,11 +4605,15 @@ enum MvMenuCmd : NSInteger {
       return subject != mv::shell::edit_subject::none;
     }
     if (tag == kMenuTrim) return subject == mv::shell::edit_subject::clip;
+    // Nothing on the stack: nothing to undo; Reset also drops a crop draft.
+    if (tag == kMenuUndoEdit) return subject == mv::shell::edit_subject::still && _edits.edit_count() > 0;
+    if (tag == kMenuResetEdits) {
+      return subject == mv::shell::edit_subject::still && (_edits.edit_count() > 0 || _edits.crop_active());
+    }
     return subject == mv::shell::edit_subject::still;
   }
   if (tag == kMenuFolderTree) item.state = _treeVisible ? NSControlStateValueOn : NSControlStateValueOff;
   switch (static_cast<MvMenuCmd>(item.tag)) {
-    case kMenuMetadata: case kMenuFolderTree:
     case kMenuOpen: case kMenuOpenFolder: case kMenuFit: case kMenuOneToOne: case kMenuFullscreen: case kMenuHelp: case kMenuSettings: case kMenuOverlay:
     case kMenuNewWindow:
       return YES;
@@ -4577,6 +4634,13 @@ enum MvMenuCmd : NSInteger {
       const mv::io::dir_entry* entry = [self currentEntry];
       return entry == nullptr || !mv::shell::write_protected(entry->path_utf8);
     }
+    // A pane with nothing to show is off; one already up can still be closed.
+    // The tree lists the open folder (even an empty one) and the Photos row.
+    case kMenuMetadata: return [self hasFolder] || _metaPaneVisible;
+    case kMenuFolderTree: return !_currentDir.empty() || _treeVisible || [self photosLibraryAvailable];
+    case kMenuSlideshow: return [self hasFolder] && !_slideshowActive;
+    // A clip or an animation has no still to bake (-copyFlattened refuses it).
+    case kMenuCopyEdited: return [self hasFolder] && ![self currentItemIsVideo] && !_lab.anim_active();
     default:
       return [self hasFolder];
   }
@@ -4587,8 +4651,8 @@ enum MvMenuCmd : NSInteger {
   panel.canChooseDirectories = YES;
   panel.canChooseFiles = !foldersOnly;
   panel.allowsMultipleSelection = NO;
-  if ([panel runModal] != NSModalResponseOK || panel.URL == nil) return;
-  if (![self openEntryPath:panel.URL.fileSystemRepresentation]) NSBeep();
+  if ([panel runModal] != NSModalResponseOK || panel.URL.path == nil) return;
+  [self openEntryPaths:@[ panel.URL.path ] failed:nil];
 }
 
 - (NSMenuItem*)addMenuItem:(NSString*)title
@@ -4680,7 +4744,6 @@ enum MvMenuCmd : NSInteger {
   [file addItem:[NSMenuItem separatorItem]];
   [file addItemWithTitle:@"Close Window" action:@selector(performClose:) keyEquivalent:@"w"];
 
-  // Plain-letter equivalents (no modifier) mirror keyDown:'s bindings.
   // PR 29 (docs/design/20). No key equivalents: the router owns Return, ⇧C, ⇧A, [ ]
   // and ⌘Z, so a menu equivalent would run them twice. `?` lists the keys.
   NSMenu* edit = submenu(@"Edit");
@@ -4751,20 +4814,21 @@ enum MvMenuCmd : NSInteger {
 // Same "first entry that exists wins" rule as argv and drag-in (docs/design/16).
 - (void)application:(NSApplication*)application openURLs:(NSArray<NSURL*>*)urls {
   (void)application;
+  NSMutableArray<NSString*>* paths = [NSMutableArray array];
   for (NSURL* url in urls) {
-    if (!url.isFileURL) continue;
-    const char* path = url.fileSystemRepresentation;
-    if (!path) continue;
+    if (!url.isFileURL || !url.path) continue;
     if (!_launched) {
-      _options.open_path = path;
-      return;
+      if (const char* path = url.fileSystemRepresentation) {
+        _options.open_path = path;
+        return;
+      }
+      continue;
     }
-    if ([self openEntryPath:path]) {
-      [self.window makeKeyAndOrderFront:nil];
-      return;
-    }
+    [paths addObject:url.path];
   }
-  NSBeep();
+  if (paths.count == 0) return NSBeep();
+  [self.window makeKeyAndOrderFront:nil];
+  [self openEntryPaths:paths failed:nil];
 }
 
 // First-launch setup: the default-viewer checkbox starts on, but is applied
@@ -6132,10 +6196,6 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
 
 - (void)jobsBlur {
   [self.window makeFirstResponder:self.view];
-}
-
-- (BOOL)clipToolsVisible {
-  return _clipToolsVisible;
 }
 
 - (int32_t)clipToolFlags {
@@ -7945,9 +8005,13 @@ static double mv_wall_seconds() {
 - (void)closeList {
   if (!_listOpen) return;
   [self photosListEnding];
-  const std::string back = _listReturnDir;
-  if (!back.empty() && [self openPath:back.c_str() navigation:NO]) return;
-  [self returnToWelcome];
+  NSString* back = _listReturnDir.empty() ? nil : [NSString stringWithUTF8String:_listReturnDir.c_str()];
+  if (!back) return [self returnToWelcome];
+  __weak MvLabApp* weakSelf = self;
+  [self openEntryPaths:@[ back ]
+                failed:^{
+                  [weakSelf returnToWelcome];
+                }];
 }
 
 // Nothing to return to (the list was opened from the empty window, a search
@@ -8504,13 +8568,18 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
   if (![path isKindOfClass:[NSString class]]) return;
   [NSApp activate];
   [self.window makeKeyAndOrderFront:nil];
-  if ([self openEntryPath:path.fileSystemRepresentation]) return;
-  // The card was ejected or the folder deleted: it is no longer a place to go.
-  NSBeep();
   const std::string gone = path.UTF8String;
-  std::erase(_recentFolders, gone);
-  [self persistRecentFolders];
-  [self refreshWelcomeRecents];
+  __weak MvLabApp* weakSelf = self;
+  [self openEntryPaths:@[ path ]
+                failed:^{
+                  // The card was ejected or the folder deleted: it is no longer a place to go.
+                  MvLabApp* app = weakSelf;
+                  NSBeep();
+                  if (!app) return;
+                  std::erase(app->_recentFolders, gone);
+                  [app persistRecentFolders];
+                  [app refreshWelcomeRecents];
+                }];
 }
 
 // ⌘⌥C: the still as the canvas shows it, edits baked, as a PNG. The bake is

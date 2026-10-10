@@ -17,9 +17,31 @@ extern "C" {
 // Bumps input_snapshot.fit_seq and wakes the render thread. [any-thread]
 void mv_chrome_fit(void);
 
-// Runs a menu-bar command by tag (the MvMenuCmd enum in main_mac.mm; the
-// in-window menus and the system menu bar share one dispatcher). [main-thread]
-void mv_chrome_menu(int32_t cmd);
+// Menu commands: the tag of each menu-bar item main_mac.mm builds, and what the
+// in-window menus (CommandBarView.swift) pass to mv_chrome_menu. Numbers hold
+// within one build only; nothing stores them.
+enum MvMenuCmd : int32_t {
+  kMenuOpen = 1, kMenuTrash, kMenuCopyTo, kMenuMoveTo, kMenuMark,
+  kMenuFit, kMenuOneToOne, kMenuFilmstrip, kMenuGallery, kMenuFullscreen, kMenuSlideshow,
+  kMenuNext, kMenuPrev, kMenuFirst, kMenuLast, kMenuHelp, kMenuOpenFolder, kMenuSettings, kMenuOverlay, kMenuReveal,
+  // docs/design/26
+  kMenuOpenPhotos,
+  // PR 9
+  kMenuMetadata, kMenuFolderTree, kMenuSortName, kMenuSortModified, kMenuSortSize, kMenuSortType,
+  kMenuSortDateTaken, kMenuSortDescending,
+  // PR 15
+  kMenuShare, kMenuCopyPath, kMenuCopyEdited,
+  // PR 29 (docs/design/20): the Edit menu, a visible way in to every edit.
+  kMenuEditWorkspace, kMenuEditCrop, kMenuEditColour, kMenuRotateLeft, kMenuRotateRight,
+  kMenuFlipH, kMenuFlipV, kMenuUndoEdit, kMenuResetEdits, kMenuSaveCopy, kMenuTrim,
+  // docs/design/16 "Window"
+  kMenuNewWindow,
+};
+typedef enum MvMenuCmd MvMenuCmd;
+
+// Runs a menu command (the in-window menus and the system menu bar share one
+// dispatcher). [main-thread]
+void mv_chrome_menu(MvMenuCmd cmd);
 
 // Settings screen (docs/design/16 Settings). View flags use the bit layout of
 // view_settings::flags() (shell/settings.h): 1 filmstrip for a folder,
@@ -106,10 +128,9 @@ void mv_chrome_set_thumb_ready_callback(mv_chrome_thumb_ready_fn callback);
 // A no-op if `index` is out of range.
 void mv_chrome_request_thumb(int32_t index);
 
-// T / G toggle these from keyDown: (main_mac.mm); Swift polls them (they are
-// plain bools, not worth a push channel the way thumbnails are) to decide
-// whether to show the filmstrip/gallery views it already hosts.
-bool mv_chrome_filmstrip_visible(void);
+// G toggles this from keyDown: (main_mac.mm); Swift polls it (a plain bool,
+// not worth a push channel the way thumbnails are) to decide whether to show
+// the gallery view it already hosts.
 bool mv_chrome_gallery_visible(void);
 
 // Called by the gallery view when a cell is clicked: selects `index` (same
@@ -578,7 +599,6 @@ int32_t mv_chrome_trim_label(char* buf, int32_t size);
 // The clip tools sheet (⌘S on a clip). `flags` as trim_state.h kClipFlag*:
 // 1 markers set, 2 has audio, 4 has video. The answer is pack_clip_choice
 // (op | option << 8), exactly as the Windows flyout packs it.
-bool mv_chrome_clip_tools_visible(void);
 int32_t mv_chrome_clip_tool_flags(void);
 void mv_chrome_clip_tool_confirm(int32_t packed);
 void mv_chrome_clip_tool_cancel(void);
