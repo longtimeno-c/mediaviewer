@@ -561,6 +561,39 @@ TEST_CASE("Retry failed on an unknown job fails rather than reporting success",
   REQUIRE(r.progress(*retry).state == MV_IMPORT_JOB_FAILED);
 }
 
+TEST_CASE("a journal write that fails lands none of its rows", "[import][engine]") {
+  scratch_dir dir("journal");
+  auto idx = mv::import::library_index::open(utf8(dir / "import.db"));
+  REQUIRE(idx);
+  mv::import::job_row job;
+  job.id = 7;
+  job.created = 1;
+  REQUIRE((*idx)->create_job(job) == 7);
+
+  auto row = [](std::uint64_t job_id, std::uint32_t unit) {
+    mv::import::journal_row r;
+    r.job = job_id;
+    r.unit = unit;
+    r.src = "card/" + std::to_string(unit);
+    r.rel = std::to_string(unit);
+    return r;
+  };
+  REQUIRE((*idx)->journal_add({row(7, 0), row(7, 1)}));
+  REQUIRE((*idx)->journal(7).size() == 2);
+
+  // The last row names no job (a foreign-key failure, as a full disk would
+  // be partway through): the rows before it roll back with it.
+  REQUIRE_FALSE((*idx)->journal_add({row(7, 2), row(7, 3), row(99, 0)}));
+  REQUIRE((*idx)->journal(7).size() == 2);
+  REQUIRE((*idx)->journal(99).empty());
+
+  // The connection is usable afterwards: no transaction was left open.
+  REQUIRE((*idx)->journal_add({row(7, 2)}));
+  REQUIRE((*idx)->journal(7).size() == 3);
+  REQUIRE((*idx)->seen_store({{"/a/x.jpg", 1, 2, {}}}, nullptr));
+  REQUIRE((*idx)->seen_under("/a/").size() == 1);
+}
+
 TEST_CASE("rename templates number per day and survive re-imports", "[import][engine]") {
   rig r;
   r.make_card();
