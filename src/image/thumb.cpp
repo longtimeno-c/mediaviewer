@@ -12,6 +12,7 @@
 #include "codec/format.h"
 #include "image/pipeline.h"
 #include "io/file.h"
+#include "io/memory_file.h"
 
 namespace mv::image {
 namespace {
@@ -153,6 +154,8 @@ result<std::string> thumb_store::lookup(const thumb_key& key) {
 
 result<std::string> thumb_store::store(const thumb_key& key, std::span<const std::uint8_t> jpeg) {
   if (jpeg.empty()) return err(status::invalid_arg);
+  // An unsaved item (New from Clipboard) leaves nothing on disk, not even a tile.
+  if (io::is_memory_path(key.path)) return err(status::permission_denied);
 
   // Snapshot the directory, then write the file with the lock released: every
   // pool thread stores thumbs, and serializing them on one mutex would undo

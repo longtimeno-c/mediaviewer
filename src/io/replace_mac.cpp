@@ -3,6 +3,7 @@
 // POSIX half of the io replace port (io/replace.h). macOS in the product; the
 // Linux core test build uses it too.
 #include "io/replace.h"
+#include "io/memory_file.h"
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -33,6 +34,7 @@ bool write_fd(int fd, std::span<const std::uint8_t> bytes) noexcept {
 
 expected write_new(std::string_view utf8_path, std::span<const std::uint8_t> bytes) {
   if (utf8_path.empty()) return err(status::invalid_arg);
+  if (is_memory_path(utf8_path)) return err(status::permission_denied);  // unsaved: never written
   const std::string path(utf8_path);
   const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0644);
   if (fd < 0) return err(status::io);
@@ -46,6 +48,7 @@ expected write_new(std::string_view utf8_path, std::span<const std::uint8_t> byt
 
 expected write_new_atomic(std::string_view utf8_path, std::span<const std::uint8_t> bytes) {
   if (utf8_path.empty()) return err(status::invalid_arg);
+  if (is_memory_path(utf8_path)) return err(status::permission_denied);  // unsaved: never written
   const std::string path(utf8_path);
   std::string temp;
   int fd = -1;
@@ -64,6 +67,7 @@ expected write_new_atomic(std::string_view utf8_path, std::span<const std::uint8
 
 expected replace_atomic(std::string_view utf8_path, std::span<const std::uint8_t> bytes) {
   if (utf8_path.empty()) return err(status::invalid_arg);
+  if (is_memory_path(utf8_path)) return err(status::permission_denied);  // unsaved: never written
   const std::string path(utf8_path);
   struct stat st{};
   if (::stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) return err(status::io);

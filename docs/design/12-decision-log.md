@@ -481,6 +481,13 @@ the end of the folder path runs `Ctrl+F` / `⌘F`: with Local search loaded (or 
 search panel; without it, **file search**, a name filter over the listed folder with no index (the
 Windows chrome entry is still named `GallerySearch`). `/` in the gallery is the folder row's find.
 
+**New from Clipboard (2026-10-10, issue #289).** Preview's File ▸ New from Clipboard on both
+hosts, on `Ctrl+Shift+V` / `⌘⇧V` because `⌘N` is New window. The image is an unsaved item held in
+memory (`io/memory_file.h`, key `clipboard:<n>/Untitled`) that the io read calls answer for and
+every io write refuses, listed as a one-item list titled "Clipboard" — the search-result list, not
+a new folder concept. Nothing reaches the disk before Save Copy, which asks for a folder: so it
+has no tile (the thumbnail cache is a disk), and one item at a time (a second paste replaces it).
+
 ---
 
 ## Windows chrome (XAML islands)

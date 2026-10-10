@@ -8,6 +8,7 @@
 #include "image/thumb.h"
 #include "io/file.h"
 #include "io/file_port.h"
+#include "io/memory_file.h"
 #include "io/paths.h"
 #include "player/poster.h"
 #include "shell/media_kind.h"
@@ -268,7 +269,8 @@ std::string folder_model::cached_clip_thumb(const std::string& path_utf8, std::i
 void folder_model::request_thumb(std::string path_utf8, std::int64_t mtime_unix,
                                  std::uint64_t size, thumb_ready_fn on_ready,
                                  std::int64_t moment_ms) {
-  if (!jobs_) {
+  // An unsaved item (New from Clipboard) has no tile: the cache is a disk.
+  if (!jobs_ || io::is_memory_path(path_utf8)) {
     if (on_ready) on_ready(std::move(path_utf8), {});
     return;
   }

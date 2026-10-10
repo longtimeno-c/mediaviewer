@@ -405,7 +405,7 @@ public static partial class IslandHost
 
         var panel = new StackPanel { Spacing = 6, Margin = new Thickness(12), IsTabStop = true, MinWidth = 320 };
         panel.Children.Add(Label("Export a copy", UiFontSize + 2));
-        panel.Children.Add(Label("Beside the original as name-edit; never overwrites.", UiFontSize, mute: true));
+        panel.Children.Add(Label("Beside the original as name-edit; a pasted image asks for a folder. Never overwrites.", UiFontSize, mute: true));
         var rowLabels = new TextBlock[Rows];
         string[] names = { "Format", "Quality", "Size", "Metadata" };
         var grid = new Grid { ColumnSpacing = 16, RowSpacing = 4, Margin = new Thickness(0, 6, 0, 6) };

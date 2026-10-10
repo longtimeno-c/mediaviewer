@@ -322,6 +322,25 @@ TEST_CASE("PR 10: rotate, flip and crop mode route on a still", "[shell][router]
   REQUIRE(resolve_mode(c) == mode::video);
 }
 
+TEST_CASE("New from Clipboard is Ctrl+Shift+V, from the empty window too, never mid-crop",
+          "[shell][router]") {
+  key_router r;
+  const key_event paste_new = down(char_key('V'), mod_ctrl | mod_shift);
+  REQUIRE(r.on_key(paste_new, view_state{}).command == command_id::new_from_clipboard);
+  REQUIRE(r.on_key(paste_new, still()).command == command_id::new_from_clipboard);
+  REQUIRE(r.on_key(paste_new, clip()).command == command_id::new_from_clipboard);
+  auto g = still();
+  g.gallery_open = true;
+  REQUIRE(r.on_key(paste_new, g).command == command_id::new_from_clipboard);
+  // Plain V is still Flip vertical; Ctrl+N stays New window (Preview's key for this).
+  REQUIRE(r.on_key(down(char_key('V')), still()).command == command_id::flip_vertical);
+  REQUIRE(r.on_key(down(char_key('N'), mod_ctrl), still()).command == command_id::new_window);
+  // Crop owns its keys: opening another item would throw the draft away.
+  auto c = still();
+  c.crop = true;
+  REQUIRE_FALSE(r.on_key(paste_new, c).handled);
+}
+
 TEST_CASE("Space: next on a still, play/pause on a clip, pause in a slideshow", "[shell][router]") {
   key_router r;
   REQUIRE(r.on_key(down(key::space), still()).command == command_id::next);

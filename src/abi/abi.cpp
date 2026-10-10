@@ -47,6 +47,7 @@
 #include "io/dir.h"
 #include "io/file.h"
 #include "io/file_port.h"
+#include "io/memory_file.h"
 #include "io/pairing.h"
 #include "io/sort_order.h"
 #include "meta/meta.h"
@@ -676,6 +677,8 @@ void submit_thumb_at(mv_session* session, uint32_t index) {
     std::lock_guard lock(session->folder_mutex);
     if (index >= session->folder_items.size()) return;
     if (!session->folder_items[index].thumb_path.empty()) return;
+    // An unsaved item (New from Clipboard) has no tile: the cache is a disk.
+    if (mv::io::is_memory_path(session->folder_items[index].path)) return;
     item = session->folder_items[index];
     folder_gen = session->folder_generation.load(std::memory_order_relaxed);
   }

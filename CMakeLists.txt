@@ -225,6 +225,8 @@ add_library(mv::gfx ALIAS mv_gfx)
 add_library(mv_io STATIC
   src/io/file.cpp
   src/io/file.h
+  src/io/memory_file.cpp
+  src/io/memory_file.h
   src/io/replace.h
   src/io/replace_win.cpp
   src/io/dir_win.cpp
@@ -688,6 +690,8 @@ add_executable(mediaviewer_lab WIN32
   src/shell/meta_writer.h
   src/shell/edit_session.cpp
   src/shell/edit_session.h
+  src/shell/clipboard_image.cpp
+  src/shell/clipboard_image.h
   src/shell/edit_workspace.cpp
   src/shell/edit_workspace.h
   src/shell/video_timeline.cpp
@@ -977,6 +981,9 @@ if(MV_BUILD_TESTS)
     tests/test_edit_session.cpp
     tests/test_export_carried.cpp
     src/shell/edit_session.cpp
+    # New from Clipboard (docs/design/16): the unsaved item, both hosts.
+    tests/test_clipboard_image.cpp
+    src/shell/clipboard_image.cpp
     # PR 29: the Edit workspace's tab model.
     tests/test_edit_workspace.cpp
     src/shell/edit_workspace.cpp

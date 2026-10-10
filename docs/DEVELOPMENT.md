@@ -521,6 +521,7 @@ first; turn that off under Settings.
 | `Esc` | walks out one level: gallery, fullscreen, then island focus back to the canvas, and last, in a search result list, **Back to folder**. It never quits |
 | `Ctrl+W` / `Alt+F4` | close the window |
 | `Ctrl+N` (`⌘N`) | a new window: its own process on the empty window; add-ons stay in the first window's process |
+| `Ctrl+Shift+V` (`⌘⇧V`) | New from Clipboard (also Open ▸ New from Clipboard; Mac File ▸ New from Clipboard): the clipboard's image as an unsaved "Untitled" item, held in memory; Save Copy (`Ctrl+S`) asks for a folder. Tests: `mv_tests "[clipboard]"` ([docs/design/16](design/16-commands.md) "New from Clipboard") |
 
 **Editing (PR 10, Windows and macOS).** Edits are kept per file for the session; the
 original is only ever rewritten by a lossless JPEG rotate / flip.

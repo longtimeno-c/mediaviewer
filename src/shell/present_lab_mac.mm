@@ -49,6 +49,7 @@
 #include "image/pipeline_mac.h"
 #include "image/upload_mac.h"
 #include "io/file.h"
+#include "io/memory_file.h"
 
 using mv::gfx::k_input_tail_seconds;
 using mv::gfx::k_occlusion_poll_ms;
@@ -389,15 +390,23 @@ void present_lab_mac::submit_image_load(std::string path_utf8, std::uint64_t ite
       [this, path = std::move(path_utf8), mtl_device, pending, item_id, page,
        cid](const job_context& ctx) -> status {
         const crash_context::correlation_scope correlation(cid);
-        std::ifstream f(path, std::ios::binary | std::ios::ate);
-        if (!f) return status::io;
-        // One sized read: a byte-at-a-time istreambuf_iterator copy of a
-        // 40 MB RAW cost over a second before decoding even started.
-        const std::streamoff size = f.tellg();
-        if (size <= 0) return status::io;
-        std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
-        f.seekg(0);
-        if (!f.read(reinterpret_cast<char*>(bytes.data()), size)) return status::io;
+        std::vector<std::uint8_t> bytes;
+        if (io::is_memory_path(path)) {
+          // New from Clipboard: an unsaved item's bytes are in memory, not a file.
+          auto held = io::read_all(path);
+          if (!held) return held.error();
+          bytes = std::move(held).value();
+        } else {
+          std::ifstream f(path, std::ios::binary | std::ios::ate);
+          if (!f) return status::io;
+          // One sized read: a byte-at-a-time istreambuf_iterator copy of a
+          // 40 MB RAW cost over a second before decoding even started.
+          const std::streamoff size = f.tellg();
+          if (size <= 0) return status::io;
+          bytes.resize(static_cast<std::size_t>(size));
+          f.seekg(0);
+          if (!f.read(reinterpret_cast<char*>(bytes.data()), size)) return status::io;
+        }
 
         // Rule 3: first pixel is never the full decode. A JPEG's DCT 1/4, a
         // RAW's embedded JPEG or a HEIC's thumbnail item goes up first; the full decode then replaces it

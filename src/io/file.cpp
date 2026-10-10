@@ -1,6 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "io/file.h"
+#include "io/memory_file.h"
 
 #include <windows.h>
 
@@ -18,6 +19,7 @@ constexpr std::uint64_t kMaxFileBytes = 2ull * 1024ull * 1024ull * 1024ull;  // 
 
 result<std::vector<std::uint8_t>> read_prefix(std::string_view utf8_path, std::size_t max_bytes) {
   if (utf8_path.empty()) return err(status::invalid_arg);
+  if (is_memory_path(utf8_path)) return read_memory_prefix(utf8_path, max_bytes);
 
   const int wide_n = ::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8_path.data(),
                                            static_cast<int>(utf8_path.size()), nullptr, 0);
@@ -77,6 +79,7 @@ result<std::vector<std::uint8_t>> read_all(std::string_view path) { return read_
 
 expected write_all(std::string_view utf8_path, std::span<const std::uint8_t> bytes) {
   if (utf8_path.empty()) return err(status::invalid_arg);
+  if (is_memory_path(utf8_path)) return err(status::permission_denied);  // unsaved: never written
 
   const int wide_n = ::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8_path.data(),
                                            static_cast<int>(utf8_path.size()), nullptr, 0);
@@ -110,6 +113,10 @@ expected write_all(std::string_view utf8_path, std::span<const std::uint8_t> byt
 
 bool file_exists(std::string_view utf8_path) noexcept {
   if (utf8_path.empty()) return false;
+  if (is_memory_path(utf8_path)) {
+    memory_file_stamp stamp;
+    return memory_file_stat(utf8_path, stamp);
+  }
 
   const int wide_n = ::MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8_path.data(),
                                            static_cast<int>(utf8_path.size()), nullptr, 0);

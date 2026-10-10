@@ -140,6 +140,7 @@ crop. Keys are shown Windows-style; on macOS read `⌘` for `Ctrl`.
 | `Ctrl+E` | all | Reveal the current file in Explorer / Finder; a Mac Photos library item opens in Photos instead ([26](26-photos-library.md)) |
 | `Ctrl+W` | all | Close window |
 | `Ctrl+N` | all | New window (⌘N; also File ▸ New Window and the Dock menu on the Mac) |
+| `Ctrl+Shift+V` | All but crop | New from Clipboard (⌘⇧V; Mac File ▸ New from Clipboard; Open ▸ New from Clipboard on both command bars). Below |
 | `Ctrl+,` | All but crop | Settings |
 | `Ctrl+G` | Viewing | Go to index. **Mac: not built** (no go-to popup yet; `⌘G` falls through) |
 | `/` | browse, video, gallery | Find by name in the loaded listing (gallery folder row: find a folder tile) |
@@ -427,6 +428,48 @@ An animated item is in video mode: `Space` play / pause, `,` `.` frame step.
   asking window's top-left); Windows starts the exe with `--new-instance`, which skips the
   single-instance pipe. Add-ons run in one window's process only (see
   [18](18-import.md) "One host process").
+
+## New from Clipboard
+
+Preview's File ▸ New from Clipboard (issue #289), on both hosts. Preview's `⌘N` is New
+window here, so the key is `Ctrl+Shift+V` / `⌘⇧V`, which nothing else held.
+
+- **Where:** Windows, the command bar's **Open** flyout (under Folder…); Mac, **File ▸ New from
+  Clipboard** and the command bar's **Open** flyout. The item is dimmed, never hidden, while the
+  clipboard holds no image (Windows asks `IsClipboardFormatAvailable`, the Mac
+  `canReadItemWithDataConformingToTypes`: types only, no app is made to render). From the key
+  with no image: a beep and "There is no image on the clipboard."
+- **Reading:** on a worker, never the UI thread (rule 1): an app that delayed rendering draws
+  its image when asked, and a screenshot is tens of MB. Windows takes `"PNG"`, then
+  `CF_DIBV5`, then `CF_DIB`; a DIB gets a BMP file header (`codec::dib::bmp_from_packed`). The
+  Mac takes `public.png`, then `public.tiff`. The bytes must probe, by magic bytes, as a still
+  of the D5 set; decoding is the ordinary viewer path.
+- **The unsaved item** (`shell/clipboard_image.h`, `io/memory_file.h`): the bytes are held in
+  memory under a key no path can take, `clipboard:<n>/Untitled`. `io::read_all`,
+  `read_prefix`, `stat_path` and `file_exists` answer for it from memory, so the canvas, the
+  edit stack, the metadata pane and Save Copy read it as a file. It is listed alone as a
+  one-item list titled **Clipboard** — the list search results and the Photos library use
+  ([17](17-local-ai-search.md), [26](26-photos-library.md)) — and shown at once; the path row
+  reads "Clipboard · Not saved" (Windows: the crumb "Clipboard"). `Esc` or Back returns to the
+  folder that was open, or the empty window. One item at a time: a second New from Clipboard
+  replaces it (and frees it); its number grows, so no cache keyed by path confuses the two.
+- **Nothing is written until the user saves.** Every write primitive (`io::write_all`,
+  `write_new`, `write_new_atomic`, `replace_atomic`) refuses the key; the thumbnail cache does
+  not store it (so it has no tile in the strip or gallery); a JPEG's turns stay on the stack
+  instead of a lossless write in place. On the Mac, `write_guard` refuses Move, Trash,
+  ratings and tag edits with "Not saved yet: Save Copy… writes it to a folder."; on Windows
+  those fail at the write and beep.
+- **Saving:** Edit ▸ Save Copy… (`Ctrl+S`) opens the usual export sheet, then a folder picker
+  (Preview asks where, too). The copy is `Untitled.jpg` / `Untitled.png` there, with the edits
+  baked, through `shell::run_export_to` and `io::unique_name`, so nothing is overwritten; a
+  notice says "Saved Untitled.jpg". The item stays unsaved (a second Save Copy writes
+  `Untitled (2).jpg`). Copy Edited Image (`Ctrl+Alt+C`) works on it as on a file; like
+  every such copy, its PNG goes through the app's own clipboard folder (`io::clipboard_dir`),
+  which is the user asking for a copy, not a save of the item.
+
+Not built: a tile for the item; several unsaved items at once; other pasteboard types (a
+copied file, PDF, HEIC flavours); the saved copy becoming the item on screen, as Preview's
+document does.
 
 ## ABI
 

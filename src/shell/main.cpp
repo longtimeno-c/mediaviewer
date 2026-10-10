@@ -58,6 +58,7 @@
 #include "shell/browse_path.h"
 #include "shell/chrome_host.h"
 #include "shell/edit_session.h"
+#include "shell/clipboard_image.h"
 #include "shell/edit_view.h"
 #include "shell/edit_workspace.h"
 #include "shell/video_timeline.h"
@@ -71,6 +72,7 @@
 #include "image/linear.h"
 #include "io/file.h"
 #include "io/file_port.h"
+#include "io/memory_file.h"
 #include "io/pairing.h"
 #include "io/sort_order.h"
 #include "meta/meta.h"
@@ -134,6 +136,9 @@ constexpr UINT kMsgOpenForwarded = WM_APP + 0x78;   // a second instance handed 
 constexpr UINT kMsgOwnDragEnded = WM_APP + 0x7A;
 // A document's "Open in <app>" list (shell/open_with_win.h) came back.
 constexpr UINT kMsgOpenWithReady = WM_APP + 0x7B;
+// docs/design/16 "New from Clipboard": the clipboard read finished (any thread posts;
+// LPARAM is a std::string* key, empty for no image, owned by the handler).
+constexpr UINT kMsgClipboardReady = WM_APP + 0x7C;
 constexpr UINT kThumbPrev = 0x5101;                 // taskbar thumbnail toolbar button ids
 constexpr UINT kThumbPlay = 0x5102;
 constexpr UINT kThumbNext = 0x5103;
@@ -1693,6 +1698,7 @@ struct edit_job_result {
   bool export_job = false;  // else a lossless rotate write
   bool ok = false;
   std::string path;         // the file written (rotate) or the source (export)
+  std::string saved;        // an unsaved item's Save Copy: the name written, for the notice
 };
 
 struct sibling_job_result {
@@ -1801,17 +1807,101 @@ void start_rotation_write(app_state* app) {
 
 // Ctrl+S: the stack baked into "<name>-edit.jpg" beside the original (never
 // over it). `opt` comes from the export dialog, or the defaults without chrome.
+// An unsaved item (New from Clipboard) has nothing beside it: the folder picker
+// asks where, and the copy is "Untitled.jpg" there (docs/design/16).
 void start_export(app_state* app, const mv::edit::export_options& opt) {
   if (app->edit_path.empty()) return;
+  std::string dir;
+  if (mv::io::is_memory_path(app->edit_path)) {
+    std::wstring folder;
+    const bool picked = pick_folder(app->window, folder);
+    focus_canvas(app);
+    if (!picked) return;  // cancelled: nothing to do
+    dir = utf8_from_wide(folder);
+    if (dir.empty()) return;
+  }
   const HWND hwnd = app->window;
   app->jobs.submit_at(mv::background_generation,
-                      [path = app->edit_path, g = app->edits.export_geometry(), opt,
+                      [path = app->edit_path, dir, g = app->edits.export_geometry(), opt,
                        c = app->edits.colour(), hwnd](const mv::job_context&) -> mv::status {
-                        const mv::result<std::string> out = mv::shell::run_export(path, g, opt, c);
-                        auto* r = new (std::nothrow) edit_job_result{true, static_cast<bool>(out), path};
+                        const mv::result<std::string> out = dir.empty()
+                                                                ? mv::shell::run_export(path, g, opt, c)
+                                                                : mv::shell::run_export_to(path, dir, g, opt, c);
+                        auto* r = new (std::nothrow) edit_job_result{true, static_cast<bool>(out), path, {}};
+                        if (r && out && !dir.empty()) {
+                          try {
+                            r->saved = std::string(mv::io::file_name_of(out.value()));
+                          } catch (...) {
+                            // No notice, the copy is still written.
+                          }
+                        }
                         if (r && !::PostMessageW(hwnd, kMsgEditJobDone, 0, reinterpret_cast<LPARAM>(r))) delete r;
                         return out ? mv::status::ok : out.error();
                       });
+}
+
+// docs/design/16 "New from Clipboard". [worker] The clipboard's image, best format
+// first: "PNG" (keeps alpha), CF_DIBV5, CF_DIB. A worker, not the UI thread:
+// GetClipboardData makes an app that delayed rendering draw it now, and a
+// screenshot DIB is tens of MB. The bytes become the unsaved item
+// (shell/clipboard_image.h); unsupported_format when there is no image.
+mv::result<std::string> read_clipboard_image() {
+  // The app that is writing the clipboard holds it open for a moment.
+  bool open = false;
+  for (int attempt = 0; attempt < 5 && !open; ++attempt) {
+    open = ::OpenClipboard(nullptr) != FALSE;
+    if (!open) ::Sleep(20);
+  }
+  if (!open) return mv::err(mv::status::busy);
+  static const UINT png_format = ::RegisterClipboardFormatW(L"PNG");
+  struct candidate {
+    UINT format;
+    mv::shell::clipboard_flavor flavor;
+  };
+  const candidate order[] = {
+      {png_format, mv::shell::clipboard_flavor::file},
+      {CF_DIBV5, mv::shell::clipboard_flavor::packed_dib},
+      {CF_DIB, mv::shell::clipboard_flavor::packed_dib},
+  };
+  std::vector<std::uint8_t> bytes;
+  mv::shell::clipboard_flavor flavor = mv::shell::clipboard_flavor::file;
+  for (const candidate& c : order) {
+    if (c.format == 0 || !::IsClipboardFormatAvailable(c.format)) continue;
+    HANDLE h = ::GetClipboardData(c.format);
+    if (h == nullptr) continue;
+    const SIZE_T n = ::GlobalSize(h);
+    const auto* data = static_cast<const std::uint8_t*>(::GlobalLock(h));
+    if (data == nullptr) continue;
+    try {
+      bytes.assign(data, data + n);
+    } catch (...) {
+      bytes.clear();
+    }
+    ::GlobalUnlock(h);
+    if (!bytes.empty()) {
+      flavor = c.flavor;
+      break;
+    }
+  }
+  ::CloseClipboard();
+  if (bytes.empty()) return mv::err(mv::status::unsupported_format);
+  return mv::shell::adopt_clipboard_image(std::move(bytes), flavor);
+}
+
+void start_clipboard_read(app_state* app) {
+  const HWND hwnd = app->window;
+  if (!hwnd) return;
+  app->jobs.submit_at(mv::background_generation, [hwnd](const mv::job_context&) -> mv::status {
+    const mv::result<std::string> key = read_clipboard_image();
+    std::string* r = nullptr;
+    try {
+      r = new std::string(key ? key.value() : std::string());
+    } catch (...) {
+      return mv::status::out_of_memory;
+    }
+    if (!::PostMessageW(hwnd, kMsgClipboardReady, 0, reinterpret_cast<LPARAM>(r))) delete r;
+    return key ? mv::status::ok : key.error();
+  });
 }
 
 void folder_select(app_state* app, std::uint32_t index);
@@ -1821,7 +1911,9 @@ void on_edit_job_done(app_state* app, std::unique_ptr<edit_job_result> r) {
   if (!r) return;
   if (r->export_job) {
     // The new file shows up through the folder watcher; only a failure speaks.
+    // An unsaved item's copy went to a folder not on screen: say where it is.
     if (!r->ok) ::MessageBeep(MB_ICONWARNING);
+    else if (!r->saved.empty()) notice_show(app, "Saved " + r->saved);
     return;
   }
   app->edits.write_finished(r->ok);
@@ -3055,7 +3147,8 @@ void push_browse_state(app_state* app) {
   // goes back to the folder.
   const bool list = !app->list_title.empty();
   if (list) {
-    blob += "Search: ";
+    // New from Clipboard's list is not a search: "Clipboard", no prefix.
+    if (!mv::shell::is_clipboard_list(app->list_title)) blob += "Search: ";
     for (const char ch : app->list_title) blob += ch == '\t' || ch == '\n' ? ' ' : ch;
     blob += "\t\n";
   }
@@ -3107,6 +3200,29 @@ bool leave_result_list(app_state* app) {
   const std::string select = app->list_return_select;
   open_folder(app, wide_from_utf8(app->current_dir), wide_from_utf8(select), true);
   return true;
+}
+
+// docs/design/16 "New from Clipboard": the read landed. The unsaved item is listed
+// alone as "Clipboard" (mv_folder_open_list, the list search results use) and
+// shown on the canvas; the gallery steps aside, as for a chosen result. Esc or
+// Up goes back to the folder, like any list.
+void on_clipboard_ready(app_state* app, std::unique_ptr<std::string> key) {
+  if (!app || !app->session) return;
+  if (!key || key->empty()) {
+    ::MessageBeep(MB_ICONWARNING);
+    notice_show(app, mv::shell::kNoClipboardImageNotice);
+    return;
+  }
+  const char* paths[] = {key->c_str()};
+  uint64_t job_id = 0;
+  if (mv_folder_open_list(app->session, mv::shell::kClipboardListTitle, paths, nullptr, 1, 0, &job_id) !=
+      MV_OK) {
+    ::MessageBeep(MB_ICONWARNING);
+    return;
+  }
+  set_gallery(app, false);
+  ++app->input.activity_seq;
+  publish(app);
 }
 
 void open_utf8_dir(app_state* app, std::string_view utf8, bool navigation) {
@@ -6097,6 +6213,9 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     case new_window:
       open_new_window();
       return true;
+    case new_from_clipboard:
+      start_clipboard_read(app);
+      return true;
     case prev:
       if (folder_cursor_step(app, -1)) return true;
       // File search: with a name filter on, Left walks its matches.
@@ -7447,6 +7566,10 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
 
     case kMsgEditJobDone:
       on_edit_job_done(app, std::unique_ptr<edit_job_result>(reinterpret_cast<edit_job_result*>(lparam)));
+      return 0;
+
+    case kMsgClipboardReady:  // docs/design/16 "New from Clipboard"
+      on_clipboard_ready(app, std::unique_ptr<std::string>(reinterpret_cast<std::string*>(lparam)));
       return 0;
 
     case kMsgFlattenDone:
