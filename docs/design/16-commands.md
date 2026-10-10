@@ -58,8 +58,10 @@ need AltGr (e.g. `\`, `[`, `]` on German / French layouts) do not resolve. On ma
 | `tap_hold` | Command on the down edge (a tap does not wait for key-up); the first repeat makes it a hold (`hold` per repeat), key-up sends `release`. Used for `Q` / `E` on a clip |
 | `momentary` | Command on down, `release` on up (hold `Z`, hold `\`, hold `Y`) |
 
-Up to four held keys are tracked independently; when the window loses activation every held key
-is released (`cancel_holds`).
+Up to four held keys are tracked independently; when the window loses activation, Settings
+opens, the canvas gives up focus (on the Mac a pane or the gallery taking first responder), or the
+table is rebuilt for an add-on's rows, every held key is released (`cancel_holds`). A hold keeps
+its own copy of the release it owes, so a rewritten table cannot lose it.
 
 **Keyboard pan** moves a tenth of the canvas per step through the springs. At fit `↑` `↓` are not a
 pan; in fullscreen `↓` reveals the strips for 3 s after the last navigation, as does the bottom

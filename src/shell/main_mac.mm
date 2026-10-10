@@ -1746,6 +1746,13 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   // where A / D would walk the folder out from under the edit.
   return !(self.app && [self.app editorOwnsCanvas]);
 }
+- (BOOL)resignFirstResponder {
+  // Issue #186: a command that hands focus to a pane (adjust, metadata, Jobs,
+  // the gallery) or a click into one takes the key-up with it. Release what
+  // the canvas holds now, or a held Y keeps showing the original.
+  if (self.app) [self.app cancelKeyHolds];
+  return [super resignFirstResponder];
+}
 - (BOOL)isOpaque {
   return YES;
 }
@@ -8949,6 +8956,8 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
 - (uint64_t)keysGeneration { return _keysGeneration; }
 // docs/design/25: an add-on's rows came or went (addons_mac.mm).
 - (void)commandsChanged {
+  // rebuild forgets held keys; release them first (issue #186).
+  [self cancelKeyHolds];
   _router.rebuild(mv::shell::live_bindings());
   ++_keysGeneration;
 }
