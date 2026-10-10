@@ -576,6 +576,8 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (BOOL)currentItemIsAudio;
 - (BOOL)itemIsVideoAtIndex:(NSInteger)index;
 - (uint64_t)marksGeneration;
+- (uint64_t)thumbGeneration;
+- (std::string)thumbKeyAtIndex:(NSInteger)index;
 - (BOOL)isIndexMarked:(NSInteger)index;
 - (NSInteger)markedCount;
 
@@ -821,6 +823,9 @@ extern "C" void mv_chrome_select_index_and_close_gallery(int32_t index) {
 extern "C" uint64_t mv_chrome_listing_generation(void) {
   return g_chrome_app ? [g_chrome_app listingGeneration] : 0;
 }
+extern "C" uint64_t mv_chrome_thumb_generation(void) {
+  return g_chrome_app ? [g_chrome_app thumbGeneration] : 0;
+}
 extern "C" uint64_t mv_chrome_marks_generation(void) {
   return g_chrome_app ? [g_chrome_app marksGeneration] : 0;
 }
@@ -1048,6 +1053,9 @@ extern "C" int32_t mv_chrome_current_item_path(char* buf, int32_t size) {
 // A gallery / filmstrip file drag (FileDrag.swift): the original's path, no I/O.
 extern "C" int32_t mv_chrome_item_path(int32_t index, char* buf, int32_t size) {
   return MvCopyOut(g_chrome_app ? [g_chrome_app itemPathAtIndex:index] : std::string{}, buf, size);
+}
+extern "C" int32_t mv_chrome_item_thumb_key(int32_t index, char* buf, int32_t size) {
+  return MvCopyOut(g_chrome_app ? [g_chrome_app thumbKeyAtIndex:index] : std::string{}, buf, size);
 }
 
 extern "C" uint64_t mv_chrome_meta_generation(void) {
@@ -2151,6 +2159,10 @@ static void MvAdoptNewDefaultViewerTypes() {
   // Bumped by every change to `_marks`; Swift rebuilds its marked-name set
   // when it moves (mv_chrome_marks_generation).
   std::uint64_t _marksGeneration;
+  // Bumped when the app rewrites a listed file in place (lossless rotate, a
+  // metadata write) and refreshes its size / mtime without a relist: Swift
+  // re-reads the thumbnail keys when it moves (mv_chrome_thumb_generation).
+  std::uint64_t _thumbGeneration;
   BOOL _helpVisible;
 
   // Settings screen + the router. _viewFlags uses the same bit layout as
@@ -3802,19 +3814,20 @@ static void MvAdoptNewDefaultViewerTypes() {
   if (index < 0 || static_cast<std::size_t>(index) >= _items.size()) return;
   const mv::io::dir_entry& entry = _items[static_cast<std::size_t>(index)];
   // Captured by value (not read from `_items`/index again when the job
-  // completes): if a relist reorders `_items` between the request and the
-  // callback firing, `name` still names the file this thumbnail is actually
-  // for, which is exactly why mv_chrome_bridge.h keys the callback by name
-  // rather than by the index this request started at.
-  const std::string name = [self displayNameAt:static_cast<std::size_t>(index)];
+  // completes): if a relist reorders `_items` or another folder opens between
+  // the request and the callback firing, `key` still names the file (and the
+  // bytes) this thumbnail is actually for, which is exactly why
+  // mv_chrome_bridge.h keys the callback by it rather than by the index this
+  // request started at, or by a name another folder can repeat (issue #177).
+  const std::string key = [self thumbKeyAtIndex:index];
   // Milestone H: a result list's clip tile shows its matched moment.
   const auto at = static_cast<std::size_t>(index);
   const std::int64_t moment = _listOpen && at < _moments.size() ? _moments[at] : -1;
   _folder.request_thumb(entry.path_utf8, entry.mtime_unix, entry.size,
-                        [name](std::string /*path_utf8*/, std::string thumb_path) {
+                        [key](std::string /*path_utf8*/, std::string thumb_path) {
                           dispatch_async(dispatch_get_main_queue(), ^{
                             if (!g_thumb_ready_callback) return;
-                            g_thumb_ready_callback(name.c_str(), thumb_path.empty()
+                            g_thumb_ready_callback(key.c_str(), thumb_path.empty()
                                                                       ? nullptr
                                                                       : thumb_path.c_str());
                           });
@@ -3958,6 +3971,9 @@ static void MvAdoptNewDefaultViewerTypes() {
 }
 - (uint64_t)marksGeneration {
   return _marksGeneration;
+}
+- (uint64_t)thumbGeneration {
+  return _thumbGeneration;
 }
 - (NSInteger)markedCount {
   return static_cast<NSInteger>(_marks.size());
@@ -5845,6 +5861,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
       entry.size = static_cast<std::uint64_t>(st.st_size);
       entry.mtime_unix = static_cast<std::int64_t>(st.st_mtimespec.tv_sec);
     }
+    ++_thumbGeneration;
   }
   if (!_items.empty() && _index.current() < _items.size() &&
       _items[_index.current()].path_utf8 == path) {
@@ -7683,6 +7700,7 @@ static double mv_wall_seconds() {
       entry.size = new_size;
       entry.mtime_unix = new_mtime;
     }
+    ++_thumbGeneration;
     // The bytes changed, the pixels did not: keep the item's edits.
     _edits.metadata_rewritten(out.path, old_size, old_mtime, new_size, new_mtime);
   }
@@ -7812,7 +7830,8 @@ static double mv_wall_seconds() {
 }
 
 // Two results can share a file name (every camera writes IMG_0001.JPG). The
-// gallery keys thumbnails by name, so a repeated name gets its folder added.
+// tile captions and the gallery's marks go by name, so a repeated name gets
+// its folder added.
 - (void)makeListNames {
   _listNames.clear();
   _listNames.reserve(_items.size());
@@ -8335,6 +8354,25 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
 - (std::string)itemPathAtIndex:(NSInteger)index {
   if (index < 0 || static_cast<std::size_t>(index) >= _items.size()) return {};
   return [self fileForEntry:_items[static_cast<std::size_t>(index)]];
+}
+// The gallery / filmstrip thumbnail key (mv_chrome_item_thumb_key): the
+// content identity the thumb cache already uses (path + size + mtime), plus a
+// result list's moment, so a same-named file in another folder or a rewritten
+// file never matches an old thumbnail (issue #177).
+- (std::string)thumbKeyAtIndex:(NSInteger)index {
+  if (index < 0 || static_cast<std::size_t>(index) >= _items.size()) return {};
+  const auto at = static_cast<std::size_t>(index);
+  const mv::io::dir_entry& entry = _items[at];
+  std::string key = entry.path_utf8;
+  key += '\n';
+  key += std::to_string(entry.size);
+  key += '\n';
+  key += std::to_string(entry.mtime_unix);
+  if (_listOpen && at < _moments.size() && _moments[at] >= 0) {
+    key += '\n';
+    key += std::to_string(_moments[at]);
+  }
+  return key;
 }
 
 - (void)setScrubMarkers:(std::vector<std::int64_t>)ms
