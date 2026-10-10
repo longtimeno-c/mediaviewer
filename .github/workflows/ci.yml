@@ -154,6 +154,11 @@ jobs:
     if: ${{ github.event_name != 'schedule' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    # Build restores with THIS key rather than hashing the scripts again:
+    # windows-latest checks out with core.autocrlf=true, so hashFiles() of the
+    # same scripts gives a different key there and fail-on-cache-miss trips.
+    outputs:
+      key: ${{ steps.media.outputs.cache-primary-key }}
     defaults:
       run:
         shell: bash
@@ -286,7 +291,7 @@ jobs:
             tools/testmedia/*.mp4
             tools/testmedia/raw
             tools/testmedia/heif
-          key: testmedia-v1-${{ hashFiles('tools/testmedia/generate.sh', 'tools/testmedia/fetch-raw.ps1', 'tools/testmedia/raw-manifest.json', 'tools/testmedia/fetch-heif.ps1', 'tools/testmedia/heif-manifest.json') }}
+          key: ${{ needs.test-media.outputs.key }}
           enableCrossOsArchive: true
           fail-on-cache-miss: true
 
