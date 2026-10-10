@@ -40,6 +40,12 @@ public static partial class IslandHost
     private static Slider? _volume;
     private static ToggleSwitch? _mute;
     private static bool _updatingAudio;
+    // Native's last ApplyAudio. The strip is rebuilt every time it is shown
+    // (ShowTransport), so a new slider, switch and track box start from these,
+    // not from 100 % / unmuted / track 1.
+    private static float _audioVolume = 1f;
+    private static bool _audioMuted;
+    private static int _audioTrack;
     private static DispatcherTimer? _videoTimer;
     private static SystemMediaTransportControls? _smtc;
     private static bool _updatingVideo, _draggingSeek;
@@ -126,6 +132,8 @@ public static partial class IslandHost
                 _play = null;
                 _videoTime = null;
                 _audioTracks = null;
+                _volume = null;
+                _mute = null;
                 DropTrimUi();
                 SetTransportHeld(false);
                 _transport.Content = null;
@@ -166,6 +174,8 @@ public static partial class IslandHost
             _play = null;
             _videoTime = null;
             _audioTracks = null;
+            _volume = null;
+            _mute = null;
             DropTrimUi();
             _videoActive = false;
             _transportWidth = 0;
@@ -193,10 +203,13 @@ public static partial class IslandHost
     // back as commands.
     private static void SetAudioSelection(float volume, bool muted, int track)
     {
+        _audioVolume = Math.Clamp(volume, 0f, 1f);
+        _audioMuted = muted;
+        _audioTrack = Math.Max(0, track);
         _updatingAudio = true;
         try
         {
-            if (_volume is not null) _volume.Value = Math.Clamp(volume, 0f, 1f);
+            if (_volume is not null) _volume.Value = _audioVolume;
             if (_mute is not null) _mute.IsOn = muted;
             if (_audioTracks is not null && track >= 0 && track < _audioTracks.Items.Count)
                 _audioTracks.SelectedIndex = track;
@@ -251,13 +264,13 @@ public static partial class IslandHost
         // Issue #214: volume, mute, the track and the loop go through native,
         // which owns them for the keys too (Up / Down, Shift+M, trim's P) and
         // pushes the result back (ApplyAudio). Nothing here calls the session.
-        _volume = new Slider { Header = "Volume", Minimum = 0, Maximum = 1, Value = 1, StepFrequency = .01 };
+        _volume = new Slider { Header = "Volume", Minimum = 0, Maximum = 1, Value = _audioVolume, StepFrequency = .01 };
         _volume.ValueChanged += (_, e) =>
         {
             if (!_updatingAudio) Send(Command.VideoVolume, (float)e.NewValue);
         };
         panel.Children.Add(_volume);
-        _mute = new ToggleSwitch { Header = "Mute" };
+        _mute = new ToggleSwitch { Header = "Mute", IsOn = _audioMuted };
         _mute.Toggled += (_, _) =>
         {
             if (!_updatingAudio) Send(Command.VideoMuted, _mute.IsOn ? 1 : 0);
@@ -439,7 +452,8 @@ public static partial class IslandHost
             if (_audioTracks.Items.Count != info.AudioTracks) {
                 _audioTracks.Items.Clear();
                 for (uint i = 0; i < info.AudioTracks; ++i) _audioTracks.Items.Add($"Track {i + 1}");
-                _audioTracks.SelectedIndex = info.AudioTracks > 0 ? 0 : -1;
+                _audioTracks.SelectedIndex = info.AudioTracks == 0 ? -1
+                    : _audioTrack < info.AudioTracks ? _audioTrack : 0;
             }
             _updatingVideo = false;
         }
