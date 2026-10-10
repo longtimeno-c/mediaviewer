@@ -609,7 +609,6 @@ public static partial class IslandHost
     {
         _barUpButton = PathIconButton("\uE74A", () => Send(Command.FolderUp));
         AutomationProperties.SetName(_barUpButton, "Up one folder");
-        ToolTipService.SetToolTip(_barUpButton, "Open the enclosing folder (Ctrl+Up)");
         _barRootButton = PathIconButton("\uE80F", () => Send(Command.OpenCrumb, 0));
         AutomationProperties.SetName(_barRootButton, "Return to browsing root");
         _barCrumbTrail = new StackPanel
@@ -636,7 +635,6 @@ public static partial class IslandHost
         // or beside "Search: ..." while a result list is shown.
         _barSearchButton = PathIconButton("\uE721", OpenSearchFromPath);
         AutomationProperties.SetName(_barSearchButton, "Search");
-        ToolTipService.SetToolTip(_barSearchButton, "Search photos and videos (Ctrl+F)");
         _barSearchButton.Margin = new Thickness(4, 0, 0, 0);
         var row = new StackPanel
         {
@@ -690,16 +688,22 @@ public static partial class IslandHost
     // Always there (owner, 2026-09-28): it does what Ctrl+F does. With Local
     // search loaded, or verified and starting at launch, that is its panel;
     // without it, file search, which needs no add-on and no index (docs/design/16
-    // "File search"). Only the tip and the name follow the pack.
+    // "File search"). Only the tip and the name follow the pack. The tips here
+    // and on Up name the live keys (KeyOf); RefreshKeyTips calls this again.
     private static void UpdatePathSearchButton()
     {
+        if (_barUpButton is not null)
+        {
+            ToolTipService.SetToolTip(_barUpButton, "Open the enclosing folder" + KeyNote(Command.FolderUp));
+        }
         if (_barSearchButton is null) return;
         bool loaded = SearchChrome is not null;
         bool pack = loaded || AiStarting();
         _barSearchButton.Visibility = Visibility.Visible;
-        ToolTipService.SetToolTip(_barSearchButton, loaded ? "Search photos and videos (Ctrl+F)"
-            : pack ? "Search photos and videos (Ctrl+F). Local search is starting…"
-            : "Find files by name in this folder (Ctrl+F)");
+        string key = KeyNote(Command.SearchOpen);
+        ToolTipService.SetToolTip(_barSearchButton, loaded ? $"Search photos and videos{key}"
+            : pack ? $"Search photos and videos{key}. Local search is starting…"
+            : $"Find files by name in this folder{key}");
         AutomationProperties.SetName(_barSearchButton, pack ? "Search" : "Find files by name");
     }
 

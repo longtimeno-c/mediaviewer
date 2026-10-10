@@ -259,6 +259,14 @@ static_assert(static_cast<int>(command_id::clip_split) == 145 &&
               static_cast<int>(command_id::trim_remove_middle) == 146);
 static_assert(static_cast<int>(command_id::crop_aspect_set) == 155);
 static_assert(static_cast<int>(command_id::crop_straighten_set) == 156);
+// Keyed commands whose live key the island's menus and tooltips name (KeyOf).
+static_assert(static_cast<int>(command_id::skim_back) == 34 &&
+              static_cast<int>(command_id::skim_forward) == 35);
+static_assert(static_cast<int>(command_id::zoom_200) == 39 && static_cast<int>(command_id::zoom_400) == 40);
+static_assert(static_cast<int>(command_id::crop_aspect_cycle) == 151 &&
+              static_cast<int>(command_id::crop_aspect_swap) == 152);
+static_assert(static_cast<int>(command_id::show_original) == 153);
+static_assert(static_cast<int>(command_id::search_open) == 157);
 static_assert(chrome_cmd_edit_tab >= kCommandCount && chrome_cmd_edit_action >= kCommandCount);
 static_assert(chrome_cmd_meta_tags >= kCommandCount && chrome_cmd_meta_date >= kCommandCount);
 static_assert(chrome_cmd_editor_seek >= kCommandCount && chrome_cmd_editor_action >= kCommandCount);

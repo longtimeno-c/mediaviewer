@@ -13,8 +13,10 @@ Both hosts use the same table and router; tests are `tests/test_key_router*.cpp`
 
 - `default_bindings()` is a static array of rows: `(key, mods, mode mask, repeat policy,
   command, hold, release)`. `live_bindings()` starts as a copy; the **Settings** screen remaps
-  rows in place (`rebind_live`) and **Reset** restores the defaults. The router, `?` and
-  Settings all read the live table, so they cannot drift.
+  rows in place (`rebind_live`) and **Reset** restores the defaults. The router, `?`,
+  Settings, and the shortcut column of the bar's menus and tooltips all read the live table
+  (a command's first bound row: `KeyOf` on Windows, `SettingsStore.keyLabel` on the Mac), so
+  they cannot drift.
 - A remap onto a key another row holds in an overlapping mode **swaps** the two rows, so nothing
   is silently left unbound. Remaps persist by row index (`settings.ini [keys]` on Windows,
   `NSUserDefaults` on macOS), which is why new rows are only ever **appended**.

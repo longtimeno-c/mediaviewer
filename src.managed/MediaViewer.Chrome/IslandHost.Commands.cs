@@ -88,12 +88,53 @@ public static partial class IslandHost
                 });
             }
             RefreshSettingsKeys();
+            RefreshKeyTips();
             return 0;
         }
         catch (Exception ex)
         {
             System.Diagnostics.Debug.WriteLine(ex);
             return unchecked((int)0x80004005);
+        }
+    }
+
+    // The key bound to `commandId` now: its first row in the live table, as the
+    // Mac reads it (SettingsStore.keyLabel). Null while it has none. Menus and
+    // tooltips name keys through this, never a literal, so a remap shows.
+    private static string? KeyOf(int commandId)
+    {
+        foreach (CommandRow row in CommandRows)
+        {
+            if (row.Id == commandId && row.Keys.Length > 0) return row.Keys;
+        }
+        return null;
+    }
+
+    // A tooltip's "text  key", or the text alone while the command is unbound.
+    private static string WithKey(string text, int commandId) =>
+        KeyOf(commandId) is string key ? $"{text}  {key}" : text;
+
+    // " (key)" to follow a sentence, or nothing while the command is unbound.
+    private static string KeyNote(int commandId) =>
+        KeyOf(commandId) is string key ? $" ({key})" : "";
+
+    // Native pushes the table after the bar is built and again on every remap:
+    // tooltips that name a key read it again (the menus rebuild on Opening).
+    private static void RefreshKeyTips()
+    {
+        RenderEditBarButton();  // and the Open in button beside it
+        UpdatePathSearchButton();
+        RefreshIndexingTip();
+        if (_speed is not null) ToolTipService.SetToolTip(_speed, SpeedTip());
+        if (_helpButton is not null)
+        {
+            ToolTipService.SetToolTip(_helpButton, WithKey("Keyboard shortcuts", Command.Help));
+        }
+        // The Edit pane names its keys as it is built: rebuild a visible one.
+        if (_editPaneVisible)
+        {
+            _editShape = "";
+            RenderEdit();
         }
     }
 
