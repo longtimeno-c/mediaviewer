@@ -37,10 +37,18 @@ public static partial class IslandHost
     private static Button? _play;
     private static TextBlock? _videoTime;
     private static ComboBox? _audioTracks;
+    private static Slider? _volume;
+    private static ToggleSwitch? _mute;
+    private static bool _updatingAudio;
+    // Native's last ApplyAudio. The strip is rebuilt every time it is shown
+    // (ShowTransport), so a new slider, switch and track box start from these,
+    // not from 100 % / unmuted / track 1.
+    private static float _audioVolume = 1f;
+    private static bool _audioMuted;
+    private static int _audioTrack;
     private static DispatcherTimer? _videoTimer;
     private static SystemMediaTransportControls? _smtc;
     private static bool _updatingVideo, _draggingSeek;
-    private static long _loopA;
     private static long _lastScrub;
     private static bool _videoActive;
     private static bool _videoPlaying;
@@ -124,6 +132,8 @@ public static partial class IslandHost
                 _play = null;
                 _videoTime = null;
                 _audioTracks = null;
+                _volume = null;
+                _mute = null;
                 DropTrimUi();
                 SetTransportHeld(false);
                 _transport.Content = null;
@@ -164,6 +174,8 @@ public static partial class IslandHost
             _play = null;
             _videoTime = null;
             _audioTracks = null;
+            _volume = null;
+            _mute = null;
             DropTrimUi();
             _videoActive = false;
             _transportWidth = 0;
@@ -176,6 +188,35 @@ public static partial class IslandHost
         {
             System.Diagnostics.Debug.WriteLine(ex);
             return unchecked((int)0x80004005);
+        }
+    }
+
+    // Mirrors mv::shell::chrome_loop_action (chrome_host.h).
+    private static class LoopActions
+    {
+        public const int SetA = 0;
+        public const int SetB = 1;
+        public const int Clear = 2;
+    }
+
+    // ApplyAudio's half: native's volume, mute and track, without echoing them
+    // back as commands.
+    private static void SetAudioSelection(float volume, bool muted, int track)
+    {
+        _audioVolume = Math.Clamp(volume, 0f, 1f);
+        _audioMuted = muted;
+        _audioTrack = Math.Max(0, track);
+        _updatingAudio = true;
+        try
+        {
+            if (_volume is not null) _volume.Value = _audioVolume;
+            if (_mute is not null) _mute.IsOn = muted;
+            if (_audioTracks is not null && track >= 0 && track < _audioTracks.Items.Count)
+                _audioTracks.SelectedIndex = track;
+        }
+        finally
+        {
+            _updatingAudio = false;
         }
     }
 
@@ -220,23 +261,32 @@ public static partial class IslandHost
         steps.Children.Add(TextButton("Previous frame", () => _folderSession?.VideoStep(-1)));
         steps.Children.Add(TextButton("Next frame", () => _folderSession?.VideoStep(1)));
         panel.Children.Add(steps);
-        var volume = new Slider { Header = "Volume", Minimum = 0, Maximum = 1, Value = 1, StepFrequency = .01 };
-        volume.ValueChanged += (_, e) => _folderSession?.VideoVolume((float)e.NewValue);
-        panel.Children.Add(volume);
-        var mute = new ToggleSwitch { Header = "Mute" };
-        mute.Toggled += (_, _) => _folderSession?.VideoMuted(mute.IsOn);
-        panel.Children.Add(mute);
+        // Issue #214: volume, mute, the track and the loop go through native,
+        // which owns them for the keys too (Up / Down, Shift+M, trim's P) and
+        // pushes the result back (ApplyAudio). Nothing here calls the session.
+        _volume = new Slider { Header = "Volume", Minimum = 0, Maximum = 1, Value = _audioVolume, StepFrequency = .01 };
+        _volume.ValueChanged += (_, e) =>
+        {
+            if (!_updatingAudio) Send(Command.VideoVolume, (float)e.NewValue);
+        };
+        panel.Children.Add(_volume);
+        _mute = new ToggleSwitch { Header = "Mute", IsOn = _audioMuted };
+        _mute.Toggled += (_, _) =>
+        {
+            if (!_updatingAudio) Send(Command.VideoMuted, _mute.IsOn ? 1 : 0);
+        };
+        panel.Children.Add(_mute);
         _audioTracks = new ComboBox { Header = "Audio track" };
         _audioTracks.SelectionChanged += (_, _) =>
         {
-            if (!_updatingVideo && _audioTracks.SelectedIndex >= 0)
-                _folderSession?.VideoTrack((uint)_audioTracks.SelectedIndex);
+            if (!_updatingVideo && !_updatingAudio && _audioTracks.SelectedIndex >= 0)
+                Send(Command.VideoTrack, _audioTracks.SelectedIndex);
         };
         panel.Children.Add(_audioTracks);
         var loop = new StackPanel { Orientation = Orientation.Horizontal };
-        loop.Children.Add(TextButton("Set A", () => _loopA = _folderSession?.VideoPosition ?? 0));
-        loop.Children.Add(TextButton("Set B", () => _folderSession?.VideoLoop(_loopA, _folderSession.VideoPosition)));
-        loop.Children.Add(TextButton("Clear loop", () => _folderSession?.VideoLoop(0, -1)));
+        loop.Children.Add(TextButton("Set A", () => Send(Command.VideoLoop, LoopActions.SetA)));
+        loop.Children.Add(TextButton("Set B", () => Send(Command.VideoLoop, LoopActions.SetB)));
+        loop.Children.Add(TextButton("Clear loop", () => Send(Command.VideoLoop, LoopActions.Clear)));
         panel.Children.Add(loop);
         var flyout = new Flyout
         {
@@ -402,7 +452,8 @@ public static partial class IslandHost
             if (_audioTracks.Items.Count != info.AudioTracks) {
                 _audioTracks.Items.Clear();
                 for (uint i = 0; i < info.AudioTracks; ++i) _audioTracks.Items.Add($"Track {i + 1}");
-                _audioTracks.SelectedIndex = info.AudioTracks > 0 ? 0 : -1;
+                _audioTracks.SelectedIndex = info.AudioTracks == 0 ? -1
+                    : _audioTrack < info.AudioTracks ? _audioTrack : 0;
             }
             _updatingVideo = false;
         }

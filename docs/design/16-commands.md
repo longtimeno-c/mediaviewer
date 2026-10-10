@@ -266,10 +266,10 @@ works regardless.
 | `Shift+Q` / `Shift+E` | video | Playback speed one rung down / up: 0.25 / 0.5 / 1 / 1.5 / 2 / 4. The command bar's speed dropdown is a view of this; native owns the rate |
 | `J` `K` `L` | video | −10 s / pause / +10 s |
 | `,` `.` | video | Frame step (also on animations) |
-| `Shift+M` | video | Mute (`M` is left free) |
+| `Shift+M` | video | Mute (`M` is left free). The transport's More flyout (volume, mute, audio track, A–B loop) is a view of native's state, as the speed dropdown is; `↑` `↓` at fit are the volume |
 | `Ctrl+T` | video, trim | Arm / disarm trim |
 | `[` `]` | trim | In / out marker at the playhead |
-| `P` | trim | Preview the cut: A–B loop over exactly what the keyframe save writes |
+| `P` | trim | Preview the cut: A–B loop over exactly what the keyframe save writes. A loop set from the More flyout replaces it and ends the preview |
 | `Enter` / `Shift+Enter` | trim | Save the keyframe cut (instant) / the frame-accurate re-encode (slower) |
 | `Ctrl+X` | trim | A copy without in–out |
 | `Backspace` / `Delete` | trim | Clear the markers (in trim, `Delete` never trashes the clip) |
