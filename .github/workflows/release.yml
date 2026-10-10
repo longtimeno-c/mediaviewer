@@ -434,6 +434,12 @@ jobs:
             build/vcpkg_dynamic
           key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
 
+      # The Windows job's gate over both Mac trees: the static, permissive one
+      # and the LGPL dylibs the app bundles (docs/design/11).
+      - name: Licence policy (manifests + vcpkg trees)
+        shell: pwsh
+        run: ./tools/licence-check.ps1 -VcpkgInstalledRoot build/vcpkg_installed, build/vcpkg_dynamic
+
       - name: Build app and test executables
         run: |
           cmake --build build --config Release
