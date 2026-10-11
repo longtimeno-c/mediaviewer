@@ -246,6 +246,9 @@ struct ImportView: View {
                   .frame(maxWidth: .infinity, alignment: .leading)
                   .background(canvas)
                   .help("Click to select or clear the whole day")
+                  // Words, not the ☐ / ☑ glyphs (issue #194).
+                  .accessibilityLabel(day.spoken.isEmpty ? day.day : day.spoken)
+                  .accessibilityHint("Selects or clears the whole day")
               }
             }
           }
@@ -314,6 +317,31 @@ struct ImportView: View {
     .onTapGesture { model.toggle(tile) }
     .help(tile.tip.isEmpty ? tile.name : tile.tip)
     .onAppear { model.thumbnail(for: tile) }
+    // VoiceOver (issue #194): what it is, whether it will be imported, and
+    // the same toggle a click or Space is.
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(Self.spoken(tile))
+    .accessibilityAddTraits(tile.selected ? [.isButton, .isSelected] : .isButton)
+    .accessibilityHint("Toggles whether it is imported")
+    .accessibilityAction { model.toggle(tile) }
+    .accessibilityAction(named: "Open in viewer") { model.open(tile) }
+  }
+
+  private static func spoken(_ tile: ImportTile) -> String {
+    var parts = [tile.name.isEmpty ? "File" : tile.name]
+    switch tile.badge {
+    case "RAW+JPEG": parts.append("RAW and JPEG")
+    case "LIVE": parts.append("Live Photo")
+    case "▶": parts.append("video")
+    default: break
+    }
+    switch tile.state {
+    case "duplicate": parts.append("already in your library")
+    case "imported": parts.append("imported from here before")
+    case "filtered": parts.append("left out by the filters")
+    default: break
+    }
+    return parts.joined(separator: ", ")
   }
 
   /// Right: three plain questions (where, what, how organised), the backup
@@ -524,12 +552,7 @@ struct ImportView: View {
           Text(model.bottomDetail).font(.caption).foregroundStyle(bodyColor)
         }
         if model.copying {
-          ForEach(Array(model.progress.enumerated()), id: \.offset) { ProgressView(value: $0.element).frame(width: 520) }
-          Text(model.progressLine).font(.caption).foregroundStyle(bodyColor)
-          HStack {
-            Button(model.paused ? "Resume (Space)" : "Pause (Space)") { model.pauseResume() }
-            Button("Cancel") { model.cancel() }
-          }
+          CopyProgressRows(live: model.live, model: model)
         } else if !model.summaryTitle.isEmpty {
           Text(model.summaryTitle).foregroundStyle(titleColor)
           List(model.summary, id: \.self) { Text($0).font(.caption) }.frame(height: 120)
@@ -557,6 +580,22 @@ struct ImportView: View {
       }
     }
     .padding(12)
+  }
+}
+
+/// The copy's bars, line and Pause / Cancel. It observes the progress alone,
+/// so a tick re-renders these rows and not the grid (issue #194).
+private struct CopyProgressRows: View {
+  @ObservedObject var live: ImportProgress
+  let model: ImportModel
+
+  var body: some View {
+    ForEach(Array(live.fractions.enumerated()), id: \.offset) { ProgressView(value: $0.element).frame(width: 520) }
+    Text(live.line).font(.caption).foregroundStyle(bodyColor)
+    HStack {
+      Button(live.paused ? "Resume (Space)" : "Pause (Space)") { model.pauseResume() }
+      Button("Cancel") { model.cancel() }
+    }
   }
 }
 

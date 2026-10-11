@@ -652,6 +652,7 @@ function(mv_mac_host target)
     "-framework IOKit"
     "-framework Security"
     "-framework ServiceManagement"  # docs/design/23: the FCP search agent (SMAppService)
+    "-framework UserNotifications"  # docs/design/18: Import's "Notify me when done"
     bsm)
   target_include_directories(${target} PRIVATE src "${MV_SWIFT_CHROME_BUILD_DIR}"
     "${MV_SWIFT_CHROME_DIR}/Sources/MVChromeBridge/include")
