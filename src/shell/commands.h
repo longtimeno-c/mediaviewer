@@ -45,6 +45,8 @@ enum class key : std::uint16_t {
 };
 
 inline constexpr int kKeyCount = static_cast<int>(key::count);
+// Settings key capture (IslandHost.Settings.cs) encodes these numbers by hand.
+static_assert(static_cast<int>(key::f12) == 0x11A && static_cast<int>(key::numpad0) == 0x11B);
 
 [[nodiscard]] constexpr key char_key(char c) noexcept {
   if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
@@ -447,5 +449,16 @@ void set_addon_commands(std::span<const addon_command_row> rows);
 // in `?` but not offered to run (review note 39). The fifth column of
 // describe_commands() is this, as 1 or 0.
 [[nodiscard]] bool palette_runnable(command_id id) noexcept;
+
+// Host menu items that stand for a command (issue #182). Whether any live row
+// runs `id` in a mode in `modes`: the Mac greys Open, Next and the rest where
+// the table does not run them (mid-crop, walking away drops the draft).
+[[nodiscard]] bool command_live_in(command_id id, mode_mask modes) noexcept;
+// The chord a menu item for `id` shows and answers: the first live row of
+// `id` with Ctrl (Cmd on the Mac) whose key and modifiers no row of another
+// command holds, in any mode; null when there is none. A menu key equivalent
+// fires in every mode, so a chord shared with another command stays the
+// router's, which tells the modes apart.
+[[nodiscard]] const binding* menu_chord(command_id id) noexcept;
 
 }  // namespace mv::shell

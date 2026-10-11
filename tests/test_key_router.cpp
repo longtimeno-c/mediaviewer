@@ -664,6 +664,35 @@ TEST_CASE("losing activation fires the releases held keys owe", "[shell][router]
   REQUIRE_FALSE(r.on_key(up(char_key('Z')), s).handled);
 }
 
+TEST_CASE("a hold owes its release even after its table is rewritten", "[shell][router]") {
+  // Issue #186: an add-on's rows can rewrite (and move) the live table while Y
+  // is down; the host then cancels the holds before it rebuilds the router.
+  key_router r;
+  std::vector<binding> rows(default_bindings().begin(), default_bindings().end());
+  r.rebuild(rows);
+  REQUIRE(r.on_key(down(char_key('Y')), still()).command == command_id::show_original);
+  REQUIRE(r.on_key(down(char_key('E')), clip()).command == command_id::skim_forward);
+  REQUIRE(r.on_key(rep(char_key('E')), clip()).command == command_id::skim_forward);
+  for (auto& b : rows) b.release = command_id::none;
+  rows.clear();
+  rows.shrink_to_fit();
+  command_id released[key_router::kHeldSlots]{};
+  const auto n = r.cancel_holds(released);
+  REQUIRE(n == 2);
+  const bool original =
+      released[0] == command_id::show_original_release || released[1] == command_id::show_original_release;
+  const bool settle = released[0] == command_id::skim_settle || released[1] == command_id::skim_settle;
+  REQUIRE(original);
+  REQUIRE(settle);
+
+  // A key-up after a rewrite answers from the hold, not the table.
+  std::vector<binding> again(default_bindings().begin(), default_bindings().end());
+  r.rebuild(again);
+  REQUIRE(r.on_key(down(char_key('Y')), still()).command == command_id::show_original);
+  for (auto& b : again) b.release = command_id::none;
+  REQUIRE(r.on_key(up(char_key('Y')), still()).command == command_id::show_original_release);
+}
+
 TEST_CASE("pending commands are bound and not yet claimed as landed", "[shell][commands]") {
   std::set<int> bound;
   for (const auto& b : default_bindings()) bound.insert(static_cast<int>(b.command));
@@ -1212,4 +1241,46 @@ TEST_CASE("an add-on's manifest contributes command rows (docs/design/25)", "[sh
   REQUIRE(std::string(mv::shell::find_command(command_id::addon_cmd_0)->name) == "Add-on command 1");
   mv::shell::reset_live_bindings();
   REQUIRE(mv::shell::live_bindings()[0].k == mv::shell::default_bindings()[0].k);
+}
+
+TEST_CASE("issue #182: menu chords follow the live table and its crop mask", "[shell][commands]") {
+  mv::shell::reset_live_bindings();
+  const auto chord_of = [](command_id id) {
+    const binding* b = menu_chord(id);
+    return b ? key_label(b->k, b->mods) : std::string();
+  };
+  // The Mac menu's ⌘, ⌘N ⌘O ⇧⌘E ⌘W, read from the table.
+  REQUIRE(chord_of(command_id::open_settings) == "Ctrl+,");
+  REQUIRE(chord_of(command_id::new_window) == "Ctrl+N");
+  REQUIRE(chord_of(command_id::open) == "Ctrl+O");
+  REQUIRE(chord_of(command_id::folder_tree) == "Ctrl+Shift+E");
+  REQUIRE(chord_of(command_id::close_window) == "Ctrl+W");
+  // No Ctrl row: the router keeps the key. A chord two commands share by mode
+  // (Ctrl+S: Export on a still, clip tools on a clip) is never a menu's.
+  REQUIRE(menu_chord(command_id::next) == nullptr);
+  REQUIRE(menu_chord(command_id::export_image) == nullptr);
+
+  // Mark all onto Ctrl+O swaps Open onto Ctrl+A; the menu follows both.
+  const auto rows = live_bindings();
+  const auto it = std::find_if(rows.begin(), rows.end(),
+                               [](const binding& b) { return b.command == command_id::mark_all; });
+  REQUIRE(it != rows.end());
+  REQUIRE(rebind_live(static_cast<int>(it - rows.begin()), char_key('O'), mod_ctrl));
+  REQUIRE(chord_of(command_id::open) == "Ctrl+A");
+  REQUIRE(chord_of(command_id::mark_all) == "Ctrl+O");
+  mv::shell::reset_live_bindings();
+  REQUIRE(chord_of(command_id::open) == "Ctrl+O");
+
+  // Walking away mid-crop drops the draft: Open, Next, First, Settings and the
+  // folder tree have no crop row, so their menu items are off there.
+  for (const auto id : {command_id::open, command_id::open_folder, command_id::next, command_id::prev,
+                        command_id::first, command_id::last, command_id::open_settings,
+                        command_id::folder_tree}) {
+    INFO(static_cast<int>(id));
+    REQUIRE_FALSE(command_live_in(id, kCrop));
+    REQUIRE(command_live_in(id, kBrowse));
+  }
+  REQUIRE(command_live_in(command_id::rotate_cw, kCrop));
+  REQUIRE(command_live_in(command_id::help, kCrop));
+  REQUIRE(command_live_in(command_id::new_window, kCrop));
 }

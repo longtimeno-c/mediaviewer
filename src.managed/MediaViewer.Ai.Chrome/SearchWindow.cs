@@ -1194,6 +1194,16 @@ internal sealed class SearchWindow : Window, IDisposable
         _count.Text = "";
         string name = System.IO.Path.GetFileName(_chrome.Folder!.TrimEnd('\\', '/'));
         _empty.Children.Add(Centre(_look.Text($"“{name}” is not indexed yet.", 18, AddonColour.Title)));
+        if (_chrome.ReadOnly)
+        {
+            // A later window indexes nothing: the first window does (AiChrome.ReadOnly).
+            _empty.Children.Add(Centre(_look.Text(
+                "Index it from the first MediaViewer window you opened. Results then appear here within a few seconds. " +
+                "Look in: Everywhere searches what is already indexed.", 14)));
+            _empty.Visibility = Visibility.Visible;
+            FadeIn(_empty);
+            return;
+        }
         _empty.Children.Add(Centre(_look.Text(
             "Indexing runs in the background at low priority and pauses while you watch or pan: " +
             "you can close this panel and keep viewing. You can search as soon as the first files are done.", 14)));
@@ -1340,9 +1350,11 @@ internal sealed class SearchWindow : Window, IDisposable
         _badge.Visibility = Visibility.Visible;
         ToolTipService.SetToolTip(_badge, s.ModelText.Length > 0 ? s.ModelText : null);
         bool paused = s.State == MvAiState.Paused;
-        _indexAnyway.Visibility = Look.OnBattery(s) ? Visibility.Visible : Visibility.Collapsed;
+        _indexAnyway.Visibility = Look.OnBattery(s) && !_chrome.ReadOnly ? Visibility.Visible : Visibility.Collapsed;
         _pause.Content = paused ? "Resume" : "Pause";
-        _pause.Visibility = s.State == MvAiState.Idle && s.AssetsDone >= s.AssetsTotal ? Visibility.Collapsed : Visibility.Visible;
+        _pause.Visibility = _chrome.ReadOnly || (s.State == MvAiState.Idle && s.AssetsDone >= s.AssetsTotal)
+            ? Visibility.Collapsed : Visibility.Visible;
+        if (_chrome.ReadOnly) ToolTipService.SetToolTip(_footerText, AiChrome.ReadOnlyNote);
 
         // Results appear as the index grows: re-ask now and then while it does.
         if (_visible && _pending == 0 && s.State == MvAiState.Indexing &&

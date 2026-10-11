@@ -147,6 +147,18 @@ TEST_CASE("the welcome card's recent rows name the folder and where it lives", "
     fill_welcome_recents(none, "", r, true);
     CHECK(r.count == 1);  // the library alone, before any folder was opened
   }
+  SECTION("Windows: OneDrive leads, as iCloud Photos does on the Mac") {
+    const std::vector<std::string> one{"C:\\Users\\Ana\\Pictures\\Iceland"};
+    fill_welcome_recents(one, "C:\\Users\\Ana", r, "OneDrive", "~\\OneDrive");
+    REQUIRE(r.count == 2);
+    CHECK(r.icloud);
+    CHECK(std::string(r.label[0]) == "OneDrive");
+    CHECK(std::string(r.where[0]) == "~\\OneDrive");
+    CHECK(std::string(r.label[1]) == "Iceland");
+    fill_welcome_recents(one, "C:\\Users\\Ana", r, "", "");
+    CHECK_FALSE(r.icloud);
+    CHECK(r.count == 1);
+  }
   SECTION("a long name is cut at a character boundary") {
     std::string name;
     for (int i = 0; i < 60; ++i) name += "\xC3\xA9";  // é, two bytes each

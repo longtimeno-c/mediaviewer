@@ -366,6 +366,11 @@ struct app_state {
   int  rate_index = 2;  // kRateLadder: 1.00x
   float volume = 1.0f;  // 0..1, Up / Down on a clip
   bool muted = false;   // Shift+M; a fresh clip starts unmuted
+  // Issue #214: the More flyout's audio track (a fresh clip starts on 0) and
+  // its A-B loop's A. Native owns both, as it owns volume and mute, and
+  // pushes them back (push_audio) so the flyout and the keys agree.
+  std::uint32_t audio_track = 0;
+  std::int64_t loop_a_ns = 0;
   mv::shell::view_settings settings;
   HWND window = nullptr;
   mv::shell::chrome_host chrome;
@@ -400,6 +405,10 @@ struct app_state {
   std::vector<std::string> destinations;  // F7 / F8, most recent first
   // PR 15: the jump list's recent folders (settings.ini [recent]), most recent first.
   std::vector<std::string> recent_folders;
+  // The OneDrive folder this user has set up (the OneDrive client's %OneDrive%),
+  // "" for none: the welcome card's cloud row above the recent folders, as the
+  // Mac's iCloud Photos (2026-10-07). Read once from the environment, no I/O.
+  std::string onedrive_utf8;
   // The user's profile folder (FOLDERID_Profile) as UTF-8, read once: the
   // welcome card writes it as "~" (the Mac passes NSHomeDirectory()).
   std::string home_utf8;
@@ -433,6 +442,9 @@ struct app_state {
   // Esc or `;` again re-selects the stop so the still comes back from the LRU.
   bool motion_playing = false;
   ULONGLONG motion_started = 0;
+  // Issue #228: the display (and the system) stay awake while a clip plays or a
+  // slideshow runs. Set on the UI thread only: the request is per thread.
+  bool keep_awake = false;
 };
 
 // PR 8 updater (shell/update_guard.h). Set once at startup on the UI thread.
@@ -561,10 +573,34 @@ void publish(app_state* app) noexcept {
   app->lab.wake();
 }
 
+// "~\OneDrive" for the card's second line, as the folder rows write their parents.
+std::string onedrive_where(const app_state* app) noexcept {
+  try {
+    const std::string& d = app->onedrive_utf8;
+    const std::string& home = app->home_utf8;
+    if (!home.empty() && d.size() > home.size() && d.compare(0, home.size(), home) == 0 &&
+        (d[home.size()] == '\\' || d[home.size()] == '/')) {
+      return "~" + d.substr(home.size());
+    }
+    return d;
+  } catch (...) {
+    return {};
+  }
+}
+
+// The card's rows: OneDrive first when it is set up, then the recent folders.
+void fill_welcome_card(const app_state* app, mv::shell::welcome_recents& out) noexcept {
+  if (app->onedrive_utf8.empty()) {
+    mv::shell::fill_welcome_recents(app->recent_folders, app->home_utf8, out);
+  } else {
+    mv::shell::fill_welcome_recents(app->recent_folders, app->home_utf8, out, "OneDrive", onedrive_where(app));
+  }
+}
+
 // The rows from app->recent_folders; one redraw when they change.
 void refresh_welcome_recents(app_state* app) noexcept {
   mv::shell::welcome_recents next;
-  if (welcome_lists_recents(app)) mv::shell::fill_welcome_recents(app->recent_folders, app->home_utf8, next);
+  if (welcome_lists_recents(app)) fill_welcome_card(app, next);
   if (std::memcmp(&next, &app->input.recents, sizeof(next)) == 0) return;
   app->input.recents = next;
   ++app->input.activity_seq;
@@ -583,9 +619,11 @@ int welcome_row_at_pointer(const app_state* app, bool* on_remove = nullptr) noex
   const float scale = in.dpi_scale > 0.0f ? in.dpi_scale : 1.0f;
   const mv::shell::welcome_geometry g =
       mv::shell::layout_welcome(static_cast<float>(in.width), static_cast<float>(in.height),
-                                static_cast<float>(in.chrome_height_px), scale, in.recents.count);
+                                static_cast<float>(in.chrome_height_px), scale, in.recents.count, 0.0f,
+                                in.recents.icloud);
   const int row = mv::shell::welcome_row_at(g, in.mouse_x, in.mouse_y);
-  if (row >= 0 && on_remove) *on_remove = mv::shell::welcome_on_remove(g, in.mouse_x);
+  // OneDrive's row has no remove button: it leaves when OneDrive does.
+  if (row >= 0 && on_remove && !(in.recents.icloud && row == 0)) *on_remove = mv::shell::welcome_on_remove(g, in.mouse_x);
   return row;
 }
 
@@ -642,10 +680,12 @@ void sync_video_hold(app_state* app, bool resume = true) noexcept;
 void push_tree_root(app_state* app) noexcept;
 void push_meta_pane(app_state* app) noexcept;
 void update_title(app_state* app) noexcept;
+void sync_keep_awake(app_state* app) noexcept;
 void layout_chrome(app_state* app) noexcept;
 bool run_command(app_state* app, mv::shell::command_id command) noexcept;
 void note_recent_folder(app_state* app, const std::string& utf8_dir);
 void open_welcome_row(app_state* app, int row);
+void open_recent_folder(app_state* app, int index);
 void remove_welcome_row(app_state* app, int row);
 void push_recent_folders(app_state* app);
 void trim_item_opened(app_state* app) noexcept;
@@ -884,6 +924,9 @@ void open_folder_dialog(app_state* app, HWND hwnd) {
   app->mode = open_mode::folder;
   app->gallery_visible = false;
   sync_video_hold(app, false);
+  // A folder the user chose is a recent folder, as from Explorer or a drop
+  // (it was missing here: the welcome card never listed a picked folder).
+  note_recent_folder(app, utf8_from_wide(folder));
   open_folder(app, folder, {});
   focus_canvas(app);
 }
@@ -1009,6 +1052,21 @@ void end_own_drag(app_state* app) noexcept {
   if (app->window && ::PostMessageW(app->window, kMsgOwnDragEnded, 0, 0)) return;
   app->own_drag = false;
   app->chrome.set_drag_paths({}, false);
+}
+
+// The OneDrive folder the OneDrive client set up for this user, from the
+// variables it sets (personal, else work or school), without touching the disk:
+// this runs before the first pixel. "" when OneDrive is not set up.
+std::string onedrive_folder_utf8() {
+  for (const wchar_t* name : {L"OneDrive", L"OneDriveConsumer", L"OneDriveCommercial"}) {
+    wchar_t buf[MAX_PATH * 2];
+    const DWORD n = ::GetEnvironmentVariableW(name, buf, static_cast<DWORD>(std::size(buf)));
+    if (n == 0 || n >= std::size(buf)) continue;
+    std::wstring dir(buf, n);
+    while (dir.size() > 3 && (dir.back() == L'\\' || dir.back() == L'/')) dir.pop_back();
+    return utf8_from_wide(dir);
+  }
+  return {};
 }
 
 // %USERPROFILE% as UTF-8, from the known folder rather than the environment.
@@ -2312,6 +2370,55 @@ void apply_trim_preview(app_state* app) noexcept {
   if (app->trim.previewing()) {
     const mv::edit::clip::range r = app->trim.keyframe_range();
     (void)mv_video_set_loop(app->session, r.in_ns, r.out_ns);
+  } else {
+    (void)mv_video_set_loop(app->session, 0, -1);
+  }
+}
+
+// Issue #214: the More flyout is a view of volume, mute and the audio track,
+// as the speed dropdown is of the rate, so the keys and the flyout cannot drift.
+void push_audio(app_state* app) noexcept {
+  if (app) app->chrome.apply_audio(app->volume, app->muted, app->audio_track);
+}
+
+void set_clip_volume(app_state* app, float volume) noexcept {
+  if (!app || !app->session) return;
+  app->volume = std::clamp(volume, 0.0f, 1.0f);
+  (void)mv_video_set_volume(app->session, app->volume);
+  push_audio(app);
+}
+
+void set_clip_muted(app_state* app, bool muted) noexcept {
+  if (!app || !app->session) return;
+  app->muted = muted;
+  (void)mv_video_set_muted(app->session, app->muted ? 1 : 0);
+  push_audio(app);
+}
+
+void set_clip_audio_track(app_state* app, std::uint32_t track) noexcept {
+  if (!app || !app->session) return;
+  app->audio_track = track;
+  (void)mv_video_select_audio_track(app->session, track);
+  push_audio(app);
+}
+
+// The More flyout's A-B loop. The player has one loop, so a loop set here
+// replaces trim's P preview, and the Trim pane must stop offering "Stop preview".
+void apply_ab_loop(app_state* app, int action) noexcept {
+  using mv::shell::chrome_loop_action;
+  if (!app || !app->session || !video_mode(app)) return;
+  const auto a = static_cast<chrome_loop_action>(action);
+  if (a == chrome_loop_action::set_a) {
+    app->loop_a_ns = clip_position(app);
+    return;
+  }
+  if (a != chrome_loop_action::set_b && a != chrome_loop_action::clear) return;
+  if (app->trim.previewing()) {
+    (void)app->trim.toggle_preview();
+    push_trim(app);
+  }
+  if (a == chrome_loop_action::set_b) {
+    (void)mv_video_set_loop(app->session, app->loop_a_ns, clip_position(app));
   } else {
     (void)mv_video_set_loop(app->session, 0, -1);
   }
@@ -4158,6 +4265,9 @@ void chrome_on_command(void* ctx, int command, float arg) {
         // Volume, unlike the rate, is the listener's and carries across clips.
         (void)mv_video_set_volume(app->session, app->volume);
         app->muted = false;
+        app->audio_track = 0;
+        app->loop_a_ns = 0;
+        push_audio(app);
       }
       apply_view_state(app);
       workspace_item_changed(app);  // PR 29: a clip playing is Trim's subject
@@ -4207,7 +4317,7 @@ void chrome_on_command(void* ctx, int command, float arg) {
       end_own_drag(app);
       return;
     case mv::shell::chrome_cmd_open_recent:
-      open_welcome_row(app, static_cast<int>(arg));
+      open_recent_folder(app, static_cast<int>(arg));
       return;
     case mv::shell::chrome_cmd_addon_state: {
       // The chrome installed, loaded, or removed an add-on: 0 / 1 Import
@@ -4241,6 +4351,19 @@ void chrome_on_command(void* ctx, int command, float arg) {
     // A document's "Open in <app>": arg is the row SetEditView listed, -1 the default.
     case mv::shell::chrome_cmd_open_in_app:
       open_document_with(app, static_cast<int>(arg));
+      return;
+    // Issue #214: the transport's More flyout, through the same state as the keys.
+    case mv::shell::chrome_cmd_video_volume:
+      set_clip_volume(app, arg);
+      return;
+    case mv::shell::chrome_cmd_video_muted:
+      set_clip_muted(app, arg != 0.0f);
+      return;
+    case mv::shell::chrome_cmd_video_track:
+      if (arg >= 0.0f) set_clip_audio_track(app, static_cast<std::uint32_t>(arg));
+      return;
+    case mv::shell::chrome_cmd_video_loop:
+      apply_ab_loop(app, static_cast<int>(arg));
       return;
     case mv::shell::chrome_cmd_edit_action:
       run_edit_action(app, static_cast<int>(arg));
@@ -4593,6 +4716,23 @@ void publish_slideshow(app_state* app) noexcept {
   app->input.blackout = app->show.active() && app->show.blackout();
   ++app->input.activity_seq;
   publish(app);
+  sync_keep_awake(app);
+}
+
+// Issue #228: media is being presented — a clip plays, or a slideshow runs —
+// so the OS idle timer must not dim the display or suspend the machine. Driven
+// from the slideshow transitions and the title tick (which already polls the
+// play state), and cleared on pause, end and exit. A call only on a change.
+void sync_keep_awake(app_state* app) noexcept {
+  if (!app) return;
+  std::uint32_t state = MV_PLAY_STOPPED;
+  if (app->session) (void)mv_video_state(app->session, &state);
+  const bool playing = app->session && mv::abi::video_open(app->session) && state == MV_PLAY_PLAYING;
+  const bool want = playing || (app->show.active() && !app->show.paused());
+  if (want == app->keep_awake) return;
+  app->keep_awake = want;
+  (void)::SetThreadExecutionState(want ? ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED
+                                       : ES_CONTINUOUS);
 }
 
 // F5 (docs/design/16). Fullscreen unless it already is; leaving puts it back.
@@ -5061,6 +5201,10 @@ void refresh_contributed_commands(app_state* app) noexcept {
     }
   }
   mv::shell::set_addon_commands(rows);
+  // rebuild forgets held keys; release them first (issue #186).
+  mv::shell::command_id released[mv::shell::key_router::kHeldSlots]{};
+  const std::size_t n = app->router.cancel_holds(released);
+  for (std::size_t i = 0; i < n; ++i) (void)run_command(app, released[i]);
   app->router.rebuild(mv::shell::live_bindings());
 }
 
@@ -5705,9 +5849,43 @@ void forget_recent_folder(app_state* app, const std::string& dir) {
   refresh_welcome_recents(app);
 }
 
-// A click on one of the welcome card's recent folders, or Open > Recent
-// folders: the jump list's route.
+// A card row is a recent folder's index, one down when OneDrive leads; -1 for OneDrive.
+int welcome_row_folder(const app_state* app, int row) noexcept {
+  return app->input.recents.icloud ? row - 1 : row;
+}
+
+// The card's OneDrive row: its Pictures folder, where a phone's camera uploads
+// land, else OneDrive itself. Not a recent folder: opening it does not list it.
+void open_onedrive(app_state* app) {
+  const std::string pictures = app->onedrive_utf8 + "\\Pictures";
+  const auto has_pictures = mv::io::is_directory(pictures);
+  const std::string dir = has_pictures && has_pictures.value() ? pictures : app->onedrive_utf8;
+  const auto is_dir = mv::io::is_directory(dir);
+  if (!is_dir || !is_dir.value()) {
+    ::MessageBeep(MB_ICONWARNING);
+    return;
+  }
+  app->mode = open_mode::folder;
+  app->gallery_visible = false;
+  sync_video_hold(app, false);
+  open_folder(app, wide_from_utf8(dir), {});
+  focus_canvas(app);
+}
+
+// A click on one of the welcome card's rows.
 void open_welcome_row(app_state* app, int row) {
+  if (!app || row < 0) return;
+  if (app->input.recents.icloud && row == 0) {
+    open_onedrive(app);
+    return;
+  }
+  open_recent_folder(app, welcome_row_folder(app, row));
+}
+
+// Recent folder `index` (most recent first): a card row, or Open > Recent
+// folders, the jump list's route.
+void open_recent_folder(app_state* app, int index) {
+  const int row = index;
   if (!app || row < 0 || static_cast<std::size_t>(row) >= app->recent_folders.size()) return;
   const std::string dir = app->recent_folders[static_cast<std::size_t>(row)];
   const auto is_dir = mv::io::is_directory(dir);
@@ -5723,8 +5901,10 @@ void open_welcome_row(app_state* app, int row) {
 
 // The x on a welcome card row: the folder leaves the card, the jump list and
 // Open > Recent folders. The folder itself is not touched.
-void remove_welcome_row(app_state* app, int row) {
-  if (!app || row < 0 || static_cast<std::size_t>(row) >= app->recent_folders.size()) return;
+void remove_welcome_row(app_state* app, int card_row) {
+  if (!app) return;
+  const int row = welcome_row_folder(app, card_row);  // OneDrive's row (-1) has no x
+  if (row < 0 || static_cast<std::size_t>(row) >= app->recent_folders.size()) return;
   forget_recent_folder(app, app->recent_folders[static_cast<std::size_t>(row)]);
   // The next folder slides up under the pointer: hover it without waiting for a move.
   update_welcome_hover(app);
@@ -6122,8 +6302,7 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     case pause: (void)mv_video_pause(app->session); return true;
     case mute:
       if (!video_mode(app)) return false;
-      app->muted = !app->muted;
-      (void)mv_video_set_muted(app->session, app->muted ? 1 : 0);
+      set_clip_muted(app, !app->muted);
       return true;
     // docs/design/16: J / L are -10 s / +10 s, and a jump is not part of a skim burst.
     case jump_back:
@@ -6194,8 +6373,7 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
         }
         // A fitted clip has nothing to pan: ↑ ↓ are its volume.
         if ((command == pan_up || command == pan_down) && video_mode(app)) {
-          app->volume = std::clamp(app->volume + (command == pan_up ? 0.1f : -0.1f), 0.0f, 1.0f);
-          (void)mv_video_set_volume(app->session, app->volume);
+          set_clip_volume(app, app->volume + (command == pan_up ? 0.1f : -0.1f));
           return true;
         }
         return false;
@@ -7475,6 +7653,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         }
         update_title(app);
         update_thumb_bar(app);
+        sync_keep_awake(app);
         // An update restart's zoom goes back once the still is on screen; a
         // preset before the decode lands would be replaced by the fit.
         if (g_restore.zoom_percent > 0 && app->lab.showing_still()) {
@@ -7563,6 +7742,10 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
     }
 
     case WM_DESTROY:
+      if (app->keep_awake) {
+        app->keep_awake = false;
+        (void)::SetThreadExecutionState(ES_CONTINUOUS);
+      }
       app->instance.stop();
       release_taskbar(app);
       app->chrome.detach();
@@ -7749,7 +7932,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
     if (!instance_claim.claim()) {
       // Another start claimed the name between our look and our claim.
       if (mv::shell::forward_to_running_instance(requested_paths)) return 0;
-      MV_LOG_WARN("single instance: another MediaViewer owns the pipe; this one runs alone");
+      MV_LOG_WARN("single instance: another process owns the pipe; this one runs alone");
     }
   }
 
@@ -7783,11 +7966,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   app.destinations = mv::shell::load_destinations();
   app.recent_folders = mv::shell::load_recent_folders();
   app.home_utf8 = profile_folder_utf8();
+  app.onedrive_utf8 = onedrive_folder_utf8();
   app.record_recent = !harness_run;
   // Straight into the snapshot: the render thread is not up yet. A launch
   // with a path to open never shows the rows, not even for its first frame.
   if (requested_paths.empty() && welcome_lists_recents(&app)) {
-    mv::shell::fill_welcome_recents(app.recent_folders, app.home_utf8, app.input.recents);
+    fill_welcome_card(&app, app.input.recents);
   }
   // The toolbar is added when Explorer reports the button, not before.
   app.taskbar_created_msg = ::RegisterWindowMessageW(L"TaskbarButtonCreated");

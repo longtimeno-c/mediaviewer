@@ -375,6 +375,38 @@ class wasapi_sink final : public audio_sink {
     device_changed_.store(false, std::memory_order_relaxed);
   }
 
+  [[nodiscard]] expected flush() noexcept override {
+    if (client_ == nullptr) return err(status::invalid_arg);
+    // The render thread is the fifo's only consumer and the only caller of
+    // GetBuffer, so it is stopped rather than reached under. A new thread is
+    // microseconds; the enumerate / Activate / Initialize / notifier work that
+    // close() + open() repeat is what a seek must not pay.
+    running_.store(false, std::memory_order_release);
+    ::SetEvent(event_);
+    if (thread_.joinable()) thread_.join();
+
+    // Reset() drops what the engine still holds and zeroes IAudioClock; it
+    // requires a stopped stream.
+    (void)client_->Stop();
+    HRESULT hr = client_->Reset();
+    if (SUCCEEDED(hr)) hr = client_->Start();
+    if (FAILED(hr)) {
+      if (hr == AUDCLNT_E_DEVICE_INVALIDATED) device_changed_.store(true, std::memory_order_release);
+      MV_LOG_ERROR("audio: stream flush failed (0x%08lx)", static_cast<unsigned long>(hr));
+      return err(status::io);
+    }
+
+    fifo_.clear();
+    frames_written_.store(0, std::memory_order_relaxed);
+    // The position restarting at zero is the flush, not a stream reset under us.
+    last_position_.store(0, std::memory_order_relaxed);
+    last_reported_ns_.store(0, std::memory_order_relaxed);
+
+    running_.store(true, std::memory_order_release);
+    thread_ = std::thread([this] { render_loop(); });
+    return {};
+  }
+
   [[nodiscard]] audio_endpoint_info info() const noexcept override {
     audio_endpoint_info out;
     out.sample_rate = sample_rate_;

@@ -169,7 +169,9 @@ runs scans, plans and card arrivals in order; each job runs on its own thread.
   lacks it still gets it, so the backup mirrors the card. A copy on the backup drive does not
   count as "in the library". A member is all-or-nothing across destinations too: if one
   destination fails, the copy the other verified is removed.
-- **Resume and cancel:** the job journal (`jobs`, `journal` tables) lives in `import.db`. After
+- **Resume and cancel:** the job journal (`jobs`, `journal` tables) lives in `import.db`. A job's
+  journal is written in one transaction before it starts; if any of it fails to land (busy, disk
+  full) it is rolled back and the job fails unstarted, since a resume could not see it. After
   a crash or unplug, verified files are done and the rest re-queue; resume after a crash between
   two destinations' renames keeps the destination that holds matching bytes and copies only the
   missing one. Cancel leaves no temporary files.
@@ -276,9 +278,21 @@ Each window is its own process (`Ctrl+N`, [16](16-commands.md) "Window"). The ad
 Import's volume watch, the AI pack and its indexer, Final Cut search on the Mac — load in
 the first window's process only: the one that owns `Add-ons/.host.lock` (an `flock` on the
 Mac) or the `Local\MediaViewer.AddonHost` mutex (Windows). Two indexers writing one index
-would fight over it. The lock is the process's until it exits, crash or not. Later windows
-view and browse but show no add-on features. Closing the first window does not hand the
-add-ons to a window that is already open; the next window to start takes them.
+would fight over it. The lock is the process's until it exits, crash or not. Closing the first
+window does not hand the add-ons to a window that is already open; the next window to start
+takes them.
+
+Later windows search too (2026-10-07). At their first search (Ctrl+F / ⌘F, the search icon)
+or when Settings opens, not at launch, they load the AI pack through its reader
+(`MV_AI_READER_ENTRY_SYMBOL`; `mv_addon_load_reader` on Windows). Reading what is installed
+hashes every file once per process (~1.2 GB with the AI pack), which must not compete with
+the window's first pixel or cost a window that never searches. The reader opens the index
+read-only, loads only the text towers on CPU, and catches up with the first window's commits
+every 5 s ([23](23-nle-search.md) "The reader"). Search, Find similar and People's photos work
+there. Indexing, Local search settings, People edits, Import, and installing, updating or
+removing an add-on stay in the first window, and Settings says so. A reader never sweeps the
+store. With nothing indexed yet the reader reports `not_found`: Ctrl+F searches by name, says
+why, and tries the reader again at most every 10 s.
 
 ## Commands
 

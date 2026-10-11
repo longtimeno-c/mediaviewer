@@ -100,14 +100,20 @@ void copy_utf8(std::string_view src, char* dst, std::size_t cap) noexcept {
 
 void fill_welcome_recents(std::span<const std::string> utf8_dirs, std::string_view home,
                           welcome_recents& out, bool icloud) noexcept {
+  fill_welcome_recents(utf8_dirs, home, out, icloud ? "iCloud Photos" : "", "Photos Library");
+}
+
+void fill_welcome_recents(std::span<const std::string> utf8_dirs, std::string_view home,
+                          welcome_recents& out, std::string_view cloud_label,
+                          std::string_view cloud_where) noexcept {
   out.count = 0;
   out.hover = -1;
   out.hover_remove = false;
-  out.icloud = icloud;
-  if (icloud) {
+  out.icloud = !cloud_label.empty();
+  if (out.icloud) {
     const int i = out.count++;
-    copy_utf8("iCloud Photos", out.label[i], sizeof(out.label[i]));
-    copy_utf8("Photos Library", out.where[i], sizeof(out.where[i]));
+    copy_utf8(cloud_label, out.label[i], sizeof(out.label[i]));
+    copy_utf8(cloud_where, out.where[i], sizeof(out.where[i]));
   }
   home = trim_separator(home);
   for (const std::string& d : utf8_dirs) {

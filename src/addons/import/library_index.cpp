@@ -120,6 +120,14 @@ bool library_index::exec(const char* sql) {
   return sqlite3_exec(db_, sql, nullptr, nullptr, nullptr) == SQLITE_OK;
 }
 
+// Ends a transaction opened with BEGIN IMMEDIATE: all of it or none of it. A
+// failed step or COMMIT (busy, disk full) rolls back, so no partial write lands.
+expected library_index::finish(bool ok) {
+  if (ok && exec("COMMIT")) return {};
+  (void)exec("ROLLBACK");
+  return err(status::io);
+}
+
 result<std::unique_ptr<library_index>> library_index::open(const std::string& db_path) {
   std::unique_ptr<library_index> idx(new library_index());
   if (sqlite3_open_v2(db_path.c_str(), &idx->db_,
@@ -230,14 +238,16 @@ std::vector<seen_row> library_index::seen_under(const std::string& prefix) {
   return out;
 }
 
-void library_index::seen_store(const std::vector<seen_row>& rows, const std::string* replace_under) {
+expected library_index::seen_store(const std::vector<seen_row>& rows,
+                                   const std::string* replace_under) {
   std::lock_guard lock(mutex_);
-  (void)exec("BEGIN IMMEDIATE");
+  if (!exec("BEGIN IMMEDIATE")) return err(status::io);
+  bool ok = true;
   if (replace_under) {
     stmt d(db_, "DELETE FROM seen_hashes WHERE substr(CAST(path AS BLOB), 1, ?2) = CAST(?1 AS BLOB)");
-    d.bind(1, *replace_under).bind(2, static_cast<std::int64_t>(replace_under->size())).run();
+    ok = d.bind(1, *replace_under).bind(2, static_cast<std::int64_t>(replace_under->size())).run();
   }
-  {
+  if (ok) {
     stmt s(db_,
            "INSERT INTO seen_hashes(path, size, mtime, hash) VALUES(?1, ?2, ?3, ?4) "
            "ON CONFLICT(path) DO UPDATE SET size = excluded.size, mtime = excluded.mtime, "
@@ -245,10 +255,13 @@ void library_index::seen_store(const std::vector<seen_row>& rows, const std::str
     for (const seen_row& r : rows) {
       s.reset();
       s.bind(1, r.path).bind(2, static_cast<std::int64_t>(r.size)).bind(3, r.mtime).bind(4, r.hash);
-      s.run();
+      if (!s.run()) {
+        ok = false;
+        break;
+      }
     }
   }
-  (void)exec("COMMIT");
+  return finish(ok);
 }
 
 std::optional<card_row> library_index::card_lookup(const std::string& volume_id,
@@ -439,9 +452,10 @@ std::vector<job_row> library_index::unfinished_jobs() {
   return out;
 }
 
-void library_index::journal_add(const std::vector<journal_row>& rows) {
+expected library_index::journal_add(const std::vector<journal_row>& rows) {
   std::lock_guard lock(mutex_);
-  (void)exec("BEGIN IMMEDIATE");
+  if (!exec("BEGIN IMMEDIATE")) return err(status::io);
+  bool ok = true;
   {
     stmt s(db_,
            "INSERT OR REPLACE INTO journal(job, unit, member, src, rel, size, mtime, targets, "
@@ -454,10 +468,13 @@ void library_index::journal_add(const std::vector<journal_row>& rows) {
           .bind(6, static_cast<std::int64_t>(r.size)).bind(7, r.mtime)
           .bind(8, strings_json(r.targets)).bind(9, strings_json(r.target_roots))
           .bind(10, static_cast<std::int64_t>(r.state)).bind(11, r.reason).bind(12, r.display);
-      s.run();
+      if (!s.run()) {
+        ok = false;
+        break;
+      }
     }
   }
-  (void)exec("COMMIT");
+  return finish(ok);
 }
 
 void library_index::journal_set(std::uint64_t job, std::uint32_t unit, std::uint32_t member,

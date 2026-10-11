@@ -12,8 +12,18 @@ if(PORT STREQUAL "libraw")
   # single-threaded. Upstream's switch is -DLIBRAW_FORCE_OPENMP.
   string(APPEND VCPKG_C_FLAGS " -DLIBRAW_FORCE_OPENMP")
   string(APPEND VCPKG_CXX_FLAGS " -DLIBRAW_FORCE_OPENMP")
-  execute_process(COMMAND brew --prefix libomp OUTPUT_VARIABLE MV_LIBOMP_ROOT
-                  OUTPUT_STRIP_TRAILING_WHITESPACE COMMAND_ERROR_IS_FATAL ANY)
+  # libomp from tools/mac/build_libomp.py, built for 14.0. Homebrew's
+  # declares the build machine's macOS as its minimum (issue #158); it
+  # remains a fallback for existing dev setups, and tools/mac/check_minos.py
+  # fails a release that bundles it.
+  # Tracked: a different libomp root changes LibRaw's ABI hash.
+  set(VCPKG_ENV_PASSTHROUGH MV_LIBOMP_ROOT)
+  if(DEFINED ENV{MV_LIBOMP_ROOT})
+    set(MV_LIBOMP_ROOT "$ENV{MV_LIBOMP_ROOT}")
+  else()
+    execute_process(COMMAND brew --prefix libomp OUTPUT_VARIABLE MV_LIBOMP_ROOT
+                    OUTPUT_STRIP_TRAILING_WHITESPACE COMMAND_ERROR_IS_FATAL ANY)
+  endif()
   list(APPEND VCPKG_CMAKE_CONFIGURE_OPTIONS
        "-DOpenMP_ROOT=${MV_LIBOMP_ROOT}"
        "-DOpenMP_CXX_FLAGS=-Xpreprocessor -fopenmp"

@@ -198,6 +198,7 @@ result<std::vector<std::uint8_t>> encode_thumb_rgba(std::span<const std::uint8_t
 result<std::vector<std::uint8_t>> make_thumb_jpeg(std::span<const std::uint8_t> src_bytes,
                                                   const job_context* ctx) {
   MV_TRY(thumb_pixels t, make_thumb_rgba(src_bytes, kThumbLongEdge, ctx));
+  composite_thumb_matte(t);
   return codec::encode_jpeg_rgba(t.rgba, t.width, t.height, kThumbJpegQuality);
 }
 

@@ -48,6 +48,8 @@ internal sealed partial class ManagePanel
     private readonly ToggleSwitch _cloudSwitch;
     private readonly TextBlock _cloudDetail;
     private bool _cloudProvider;
+    // This Windows has no Cloud Files API (before 10 1709): the option is shown, off and greyed.
+    private bool _cloudUnsupported;
     private readonly StackPanel _indexRow;
     // People, as on the Mac: the notices (the off confirmation, "Install
     // People"), Re-analyse, then the grid itself (PeopleGrid.cs).
@@ -89,7 +91,7 @@ internal sealed partial class ManagePanel
         "Set to High earlier. Auto chooses the model for this computer and re-indexes in the background if it changes; the current index answers until the new one is ready.",
     };
 
-    public StackPanel Root { get; }
+    public StackPanel Root { get; private set; }
 
     public ManagePanel(AiChrome chrome)
     {
@@ -314,6 +316,17 @@ internal sealed partial class ManagePanel
             RefreshRoots();
             _chrome.ReadStatus();
         };
+
+        // A later window's reader (AiChrome.ReadOnly): the note and Open search
+        // only. The full panel above is still built, detached, so its refreshes
+        // land on nothing a person sees.
+        if (_chrome.ReadOnly)
+        {
+            Root = new StackPanel { Spacing = 8, Margin = new Thickness(0, 8, 0, 0) };
+            Root.Children.Add(_look.Card(_look.Text(AiChrome.ReadOnlyNote, 13)));
+            Root.Children.Add(Row("Search", "Open the search panel. Ctrl+F in the viewer; Ctrl+Shift+F finds similar.",
+                _look.Button("Open search", () => _chrome.RunCommand(SearchCommand.Open))));
+        }
     }
 
     // ---- building blocks -------------------------------------------------------------
@@ -404,6 +417,8 @@ internal sealed partial class ManagePanel
             _audioReady = r.TryGetProperty("audio_ready", out JsonElement ar) && ar.ValueKind == JsonValueKind.True;
             ShowVideoIndex();
             _cloudProvider = r.TryGetProperty("cloud_provider", out JsonElement cp) && cp.GetString() == "onedrive";
+            _cloudUnsupported = r.TryGetProperty("cloud_supported", out JsonElement cs) && cs.ValueKind == JsonValueKind.False;
+            _cloudSwitch.IsEnabled = !_cloudUnsupported;
             _cloudSwitch.IsOn = r.TryGetProperty("cloud_files", out JsonElement cf) && cf.ValueKind == JsonValueKind.True;
         }
         catch (Exception ex) when (ex is JsonException or InvalidOperationException or FormatException) { }
@@ -494,18 +509,30 @@ internal sealed partial class ManagePanel
 
     // ---- OneDrive online-only files -----------------------------------------------------
 
-    // Shown once there are online-only files in an indexed folder, or the option
-    // is on. The text is kept stable at 4 Hz: only its words change.
+    // Always shown on Windows (owner, 2026-10-07: OneDrive support is a setting
+    // you can turn on or off). Off, online-only files are skipped and everything
+    // else is searchable as usual: it never makes Local search unavailable. On a
+    // Windows without the Cloud Files API it is greyed and says why. The text is
+    // kept stable at 4 Hz: only its words change.
     private void ShowCloud(in MvAiStatus s)
     {
-        bool show = _cloudProvider && (s.CloudFilesLeft > 0 || s.CloudFilesFetched > 0 || _cloudSwitch.IsOn);
+        bool show = _cloudProvider || _cloudUnsupported;
         _cloudRow.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
         if (!show) return;
+        if (_cloudUnsupported)
+        {
+            _cloudDetail.Text = "Not available on this version of Windows: it needs Windows 10 version 1709 or later. " +
+                "Local search works without it; files kept only in OneDrive are skipped.";
+            return;
+        }
         string n = s.CloudFilesLeft.ToString("N0", System.Globalization.CultureInfo.CurrentCulture);
-        string left = s.CloudFilesLeft == 0 ? "Every online-only file in your folders is indexed."
+        string left = s.CloudFilesLeft == 0 && s.CloudFilesFetched == 0 && !_cloudSwitch.IsOn
+            ? "No files in your folders are kept only in OneDrive right now."
+            : s.CloudFilesLeft == 0 ? "Every online-only file in your folders is indexed."
             : s.CloudFilesLeft == 1 ? "1 file in your folders is only in OneDrive, so it is not searchable yet."
             : $"{n} files in your folders are only in OneDrive, so they are not searchable yet.";
-        string how = " When on, MediaViewer downloads a couple at a time while this PC is plugged in and on an unmetered connection, indexes them, and makes them online-only again.";
+        string how = " When on, MediaViewer downloads a couple at a time while this PC is plugged in and on an unmetered connection, indexes them, and makes them online-only again." +
+            (_cloudSwitch.IsOn ? "" : " Off, they are skipped; everything else is searchable as usual.");
         string? wait = _cloudSwitch.IsOn ? Look.CloudWait(s) : null;
         _cloudDetail.Text = left + how + (wait is null ? "" : " " + wait);
     }
