@@ -134,7 +134,8 @@ target_compile_definitions(mv_project_options INTERFACE
   _DISABLE_OPTIONAL_ANNOTATION)
 
 set(MV_FUZZ_HARNESSES
-  jpeg png bmp gif webp tiff ico heic avif raw raw_preview decode animation thumbnail pdf docx)
+  jpeg png bmp gif webp tiff ico heic avif raw raw_preview decode animation thumbnail pdf docx
+  addon_contributions)
 
 add_custom_target(mv_fuzzers)
 
@@ -145,6 +146,14 @@ foreach(name IN LISTS MV_FUZZ_HARNESSES)
   target_link_libraries(${target} PRIVATE mv_codec)
   if(name STREQUAL "decode")
     target_link_libraries(${target} PRIVATE mv_image)
+  endif()
+  # docs/design/25 PR 56: an open add-on's settings page, keymap packs and theme,
+  # from their sources (not mv_addon, which would pull libsodium in).
+  if(name STREQUAL "addon_contributions")
+    target_sources(${target} PRIVATE
+      "${CMAKE_SOURCE_DIR}/src/addon/settings_schema.cpp"
+      "${CMAKE_SOURCE_DIR}/src/addon/keymap.cpp"
+      "${CMAKE_SOURCE_DIR}/src/addon/theme.cpp")
   endif()
   # PR 15: the Explorer handler's request path, built from its source.
   if(name STREQUAL "thumbnail")

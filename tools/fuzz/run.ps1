@@ -55,6 +55,7 @@ $table = [ordered]@{
     animation   = @{ Seeds = @('gif', 'webp', 'png', 'heic', 'avif');   MaxLen = 131072 }
     pdf         = @{ Seeds = @('pdf');                                  MaxLen = 65536 }
     docx        = @{ Seeds = @('docx');                                 MaxLen = 65536 }
+    addon_contributions = @{ Seeds = @('addon');                        MaxLen = 16384 }
 }
 
 if ($Harness.Count -eq 1 -and $Harness[0] -match ',') { $Harness = $Harness[0] -split ',' }

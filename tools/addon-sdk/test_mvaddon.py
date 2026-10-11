@@ -179,7 +179,7 @@ class Pack(unittest.TestCase):
             (source(update_url="http://acme.example/a.mvaddon"), "malformed"),
             (source(scripts=["main.lua"]), "code_not_allowed"),
             (source(colour_scheme=True), "malformed"),
-            (source(api={"min": 2, "max": 2}), "needs_update"),
+            (source(api={"min": 3, "max": 3}), "needs_update"),
             (source(schema=2), "malformed"),
         ]
         for doc, why in cases:
@@ -187,6 +187,69 @@ class Pack(unittest.TestCase):
                 with self.assertRaises(mvaddon.Refused) as refused:
                     mvaddon.build_package(folder(Path(tmp), doc), SEED)
                 self.assertEqual(refused.exception.why, why)
+
+    def test_settings_keymaps_and_shape_and_the_app_agrees(self):
+        page = {"title": "Places", "sections": [{"title": "Place", "items": [
+            {"type": "toggle", "key": "show_town", "label": "Name the town", "default": True},
+            {"type": "number", "key": "radius", "label": "Radius", "min": 1, "max": 50,
+             "step": 1, "unit": "km", "default": 15, "enabled_by": "show_town"},
+            {"type": "choice", "key": "names", "label": "Names", "default": "english",
+             "options": [{"value": "english", "label": "English"},
+                         {"value": "local", "label": "Local"}]},
+            {"type": "text", "key": "home", "label": "Home", "default": ""}]}]}
+        packs = [{"id": "vim", "name": "Vim", "bindings": [
+            {"command": "next", "keys": ["L", "Right"]}, {"command": "toggle_mark", "keys": [""]}]}]
+        theme = dict(json.loads(THEME), schema=2, shape={"radius": 0.5, "density": 0.9,
+                                                          "type_scale": 1.1})
+        doc = source(api={"min": 2, "max": 2},
+                     contributes={"themes": [{"id": "dusk", "name": "Dusk", "path": "themes/dusk.json"}],
+                                  "settings": page, "keymaps": packs})
+        with tempfile.TemporaryDirectory() as tmp:
+            _, package = mvaddon.build_package(
+                folder(Path(tmp), doc, {"themes/dusk.json": json.dumps(theme).encode()}), SEED)
+            mvaddon.check_package(package)
+            said = AppSays.about(package, Path(tmp) / "store")
+            if said is not None:
+                self.assertTrue(said[0]["ok"], said[0])
+                self.assertTrue(said[0]["settings"])
+                self.assertEqual(said[0]["keymaps"][0]["name"], "Vim")
+                self.assertTrue(said[1]["ok"], said[1])
+        # Each refused by the SDK and by the app alike.
+        broken = [
+            ("settings", dict(page, sections=[])),
+            ("settings", {"sections": [{"title": "A", "items": [
+                {"type": "number", "key": "n", "label": "N", "min": 1, "max": 5, "default": 9}]}]}),
+            ("settings", {"sections": [{"title": "A", "items": [
+                {"type": "toggle", "key": "t", "label": "T", "default": True, "colour": 1}]}]}),
+            ("keymaps", [{"id": "Vim", "name": "Vim", "bindings": [{"command": "next", "keys": ["L"]}]}]),
+            ("keymaps", [{"id": "vim", "name": "Vim", "bindings": [{"command": "next", "keys": []}]}]),
+        ]
+        for point, value in broken:
+            with self.subTest(point=point, value=value):
+                files = {"themes/dusk.json": THEME}
+                manifest = manifest_for(files, api={"min": 2, "max": 2})
+                manifest["contributes"] = dict(manifest["contributes"], **{point: value})
+                self.refused(signed(manifest, files), "malformed")
+        # Named under API 1 only: a mistake, for both.
+        files = {"themes/dusk.json": THEME}
+        manifest = manifest_for(files)
+        manifest["contributes"] = dict(manifest["contributes"], settings=page)
+        self.refused(signed(manifest, files), "malformed")
+        # A shape out of range, or in a schema 1 theme.
+        for bad_theme, detail in ((dict(theme, shape={"radius": 3}), "dusk: bad_shape"),
+                                  (dict(json.loads(THEME), shape={"radius": 1}), "dusk: unknown_token")):
+            files = {"themes/dusk.json": json.dumps(bad_theme).encode()}
+            self.refused(signed(manifest_for(files, api={"min": 2, "max": 2}), files),
+                         "invalid_theme", detail)
+
+    def test_the_settings_and_keymap_examples_pack(self):
+        for name in ("vim-keys", "settings-demo"):
+            with self.subTest(example=name):
+                _, package = mvaddon.build_package(ROOT / "examples/addons" / name, SEED)
+                mvaddon.check_package(package)
+                said = AppSays.about(package)
+                if said is not None:
+                    self.assertTrue(said[0]["ok"], said[0])
 
     def test_keygen_never_overwrites_a_key(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -321,6 +384,10 @@ class Refusals(unittest.TestCase):
             newer = AppSays.about(signed(manifest_for(files, version="1.3.0"), files), store)
             self.assertEqual(newer[0]["relation"], "update")
             self.assertTrue(newer[1]["ok"])
+
+
+# Pack's API 2 test checks refusals the same way.
+Pack.refused = Refusals.refused
 
 
 if __name__ == "__main__":
