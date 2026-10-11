@@ -112,6 +112,17 @@ public static partial class IslandHost
             FontFamily = UiFont,
             FontSize = UiFontSize,
         };
+        // CC-BY 4.0 asks for attribution wherever the data is used: the Places
+        // add-on's place names (docs/design/27). Natural Earth is public domain.
+        var places = new TextBlock
+        {
+            Text = "Place names from GeoNames (geonames.org), CC BY 4.0. Borders from Natural Earth.",
+            Foreground = Brush(Body),
+            FontFamily = UiFont,
+            FontSize = UiFontSize,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 6, 0, 0),
+        };
         var hint = new TextBlock
         {
             Text = "Everything works from the keyboard. Press ? for the shortcuts of what you are doing.",
@@ -139,6 +150,7 @@ public static partial class IslandHost
         text.Children.Add(version);
         text.Children.Add(copyright);
         text.Children.Add(licence);
+        text.Children.Add(places);
         text.Children.Add(links);
         text.Children.Add(hint);
 

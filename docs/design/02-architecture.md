@@ -16,6 +16,8 @@ src/
   gfx/         D3D11 backend (device, swapchain, pacer, blit, video blit) and the Metal twins (*_metal.mm)
   player/      FFmpeg demux/decode, hwdecode (D3D11VA / VideoToolbox), audio sinks, A/V clock, transport
   meta/        Exiv2 + libavformat readers, property model, writers, XMP sidecars, AF points
+  geo/         offline reverse geocoder over the bundled place database; linked by the Places add-on,
+               not by the app ([27-places.md](27-places.md))
   edit/        EditStack, geometry and adjust ops, export bake, lossless JPEG, clip trim/encode
   canvas/      camera (pan/zoom), springs, refinement
   addon/       the add-on host: manifest verification, loader, host function table
@@ -48,7 +50,8 @@ Dependencies point **downward only**. The enforced map
 | `image`, `meta`, `player` | `codec`, `gfx`, `io`, `core` |
 | `edit`, `canvas` | `image`, `codec`, `gfx`, `io`, `core` |
 | `addon` | `io`, `core` |
-| `addons` | `core` header-only pieces (`result.h`, `status.h`, `json.h`) |
+| `geo` | `io`, `core` (`geo.cpp` / `fold.cpp`: core's header-only pieces only, so an add-on can link them). Not included by `meta`, `abi` or `shell` |
+| `addons` | `core` header-only pieces (`result.h`, `status.h`, `json.h`), `geo` |
 | `abi` | everything below it |
 | `nle` | `addon`, `image`, `io`, `core` |
 | `shellext` | `image`, `codec`, `gfx`, `io`, `core` |

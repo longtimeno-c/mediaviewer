@@ -16,8 +16,24 @@ into `docs/design/06-metadata.md` (pane, place, badge), `16-commands.md` (search
 
 ## Status (2026-10-11)
 
-Plan only; nothing built. #290 and #291 are open with no PR. Place and the map are #344 (slices
-2–3 and the place half of slice 4); the badge is #345 (slice 5).
+#290 and #291 are open with no PR. Place and the map are #344 (slices 2–3 and the place half of
+slice 4); the badge is #345 (slice 5).
+
+**Slice 2, core: built** on `feature/issue-344-place-names`, described in
+[docs/design/27-places.md](../design/27-places.md):
+- `src/geo`, the place database and `tools/geo/build_places.py`;
+- the label rule, with four refinements the fixtures needed: a 1.5 km coast snap, atoll towns,
+  a town "reach" for cities, and same-region towns;
+- the 300-row `mv_tests "[geo]"` table, the fuzzer and the perf bench. Open is 11–12 ms
+  (target < 30 ms) and the lookup p99 is 8.4 µs (target < 50 µs).
+
+**Changed by the owner (2026-10-11):** Places is an **add-on** that carries its own code and
+data (the place blob, ~5.4 MB compressed), not a core dependency of `meta`. Without the add-on
+the pane shows coordinates. So the pane half of slice 2 below becomes the add-on's info-pane
+section (#348 slots / plan/25 PR 59), and search by place in slice 4 becomes its search provider.
+
+**Not built:** the Places add-on, the pane section, the `O` overlay line, the map (slice 3) and
+search by place. The town radius stays 15 km (reasoning in doc 27).
 
 ## 0. Rules this touches
 

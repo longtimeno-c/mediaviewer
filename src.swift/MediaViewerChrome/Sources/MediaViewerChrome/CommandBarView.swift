@@ -215,6 +215,12 @@ public struct CommandBarView: View {
               Text("Licensed under GNU GPL v3 or later")
                 .font(MVTheme.font())
                 .foregroundStyle(MVTheme.body)
+              // CC-BY 4.0 attribution for the Places add-on's place names (docs/design/27).
+              Text("Place names from GeoNames (geonames.org), CC BY 4.0. Borders from Natural Earth.")
+                .font(MVTheme.font())
+                .foregroundStyle(MVTheme.body)
+                .padding(.top, 6)
+                .fixedSize(horizontal: false, vertical: true)
               FlyoutItem(title: "Licence (GPL-3.0-or-later)") {
                 openLegalFile("LICENSE.txt", github: "LICENSE")
               }

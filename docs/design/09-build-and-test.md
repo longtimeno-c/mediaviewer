@@ -67,8 +67,10 @@ Suites are registered with CTest and run by `ctest` on both platforms; see
    on the scripts and manifests; the Build legs restore it and set `MV_REQUIRE_CORPUS=1`,
    and `test_corpus.cpp` fails any CI run that leaves the variable unset. Hosted runners
    have no GPU, so cases asserting hardware decode or needing a `gfx::device` skip there.
-   Small synthetic, licence-clean files under `tests/data/` (AVIF, HEIF, seeds, broken) are
-   committed and run everywhere.
+   Small synthetic, licence-clean files under `tests/data/` (AVIF, HEIF, seeds, broken, the
+   111 KB place test blob) are committed and run everywhere. The same job builds the full place
+   database once per `tools/geo/build_places.py` revision and caches it; the Build legs restore it
+   and set `MV_REQUIRE_GEO=1` so `mv_tests "[geo]"` runs its 300-row table ([27](27-places.md)).
 4. **Broken-file corpus** (`test_broken_corpus.cpp`, label `broken`). Every seed in
    `tests/data/seeds` is truncated, stomped, bit-flipped and given absurd dimensions, plus the
    hand-made files in `tests/data/broken`, through every decode entry point. Fails on a crash,
@@ -76,8 +78,8 @@ Suites are registered with CTest and run by `ctest` on both platforms; see
    exhaustive nightly sweep; `MV_BROKEN_DUMP` writes failing inputs.
 5. **Fuzzing.** One libFuzzer harness per decoder entry point (`tools/fuzz/fuzz_*.cpp`:
    JPEG, PNG, BMP, GIF, WebP, TIFF, ICO, HEIC, AVIF, RAW, RAW preview, animation, the
-   generic decode, and the Explorer thumbnail handler), built with clang-cl + ASan
-   (`-DMV_FUZZ=ON`).
+   generic decode, the Explorer thumbnail handler, and the place database loader
+   `fuzz_geo`, [27](27-places.md)), built with clang-cl + ASan (`-DMV_FUZZ=ON`).
 6. **Clean-VM gate** (`test_clean_vm_heic.cpp`, label `cleanvm`). A HEIC decodes with
    `MV_OS_CODEC=0`, and the process has loaded libheif + libde265 and no Media Foundation,
    WIC codec extension or `\WindowsApps\` module. It is its own executable because

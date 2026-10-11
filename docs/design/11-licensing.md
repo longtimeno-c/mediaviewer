@@ -84,6 +84,22 @@ Everything in the table is attributed in [THIRD-PARTY.md](../../THIRD-PARTY.md),
 shown in the About dialog and copied into `MediaViewer.app/Contents/Resources` with `LICENSE`.
 On macOS `tools/mac/macpack.py` fails the bundle if any dylib reference points outside it.
 
+## Data
+
+The Places add-on ([27-places.md](27-places.md)) ships a place database built from data, not
+linked code:
+
+| Data | Licence | Obligation |
+|---|---|---|
+| GeoNames `cities1000`, `countryInfo`, `admin1CodesASCII` (place and region names, populations) | **CC-BY 4.0** | Attribution wherever the names are shown: a line in the About box on both hosts, [THIRD-PARTY.md](../../THIRD-PARTY.md), the add-on's notice, and the blob's own `META` |
+| Natural Earth 1:10m admin-0 / admin-1 (borders) | Public domain | None; credited anyway |
+
+CC-BY 4.0 data in a GPL program is fine. The licences cover different works: the data is not a
+derivative of the code, and the attribution is a notice, not an added restriction on the program
+(GPL §7(b) allows "preservation of specified reasonable legal notices or author
+attributions"). `tools/package/addon-pack.py` allows code licences only. The Places package needs
+`CC-BY-4.0` and a public-domain marker added to its allowed set when the add-on is packed.
+
 ## Source offer
 
 About reads the version from the host exe's `VERSIONINFO` (filled from CMake's
