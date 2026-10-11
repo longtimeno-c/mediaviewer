@@ -82,6 +82,7 @@
 #include "shell/meta_writer.h"
 #include "io/sort_order.h"
 #include "shell/settings.h"
+#include "shell/slideshow.h"
 #include "shell/input_state.h"
 #include "io/pairing.h"
 #include "shell/install_from_dmg_mac.h"
@@ -153,6 +154,12 @@ static bool MvCommandSupported(mv::shell::command_id c) {
     case reveal_in_explorer: case open_settings: case cycle_background: case sticky_zoom:
     case reset_stats: case always_on_top: case close_window: case new_window: case pan_up: case pan_down:
     case folder_up: case folder_prev: case folder_next:
+    // Issue #183: the View keys, the loupe, hold-previous and the slideshow's
+    // blackout and shuffle, ported from the Windows host.
+    case zoom_in: case zoom_out: case zoom_200: case zoom_400: case fill: case pan_left:
+    case pan_right: case clipping: case loupe: case loupe_release: case loupe_nudge_left:
+    case loupe_nudge_right: case loupe_nudge_up: case loupe_nudge_down: case hold_previous:
+    case hold_previous_release: case blackout: case shuffle:
     // PR 9
     case info_overlay: case af_points: case eyedropper: case copy_clipboard: case metadata_pane: case folder_tree:
     // PR 10
@@ -180,6 +187,11 @@ static bool MvCommandSupported(mv::shell::command_id c) {
     // ⌘F is always there: Local search's panel while the pack is loaded, file
     // search otherwise (docs/design/16 "File search", 2026-09-28).
     case search_open:
+    // Issue #184: `/` (find by name in the gallery), the runner's `3`, and the
+    // rows an add-on's manifest fills; runCommand: handles each.
+    case typeahead: case game_toggle_3d:
+    case addon_cmd_0: case addon_cmd_1: case addon_cmd_2: case addon_cmd_3:
+    case addon_cmd_4: case addon_cmd_5: case addon_cmd_6: case addon_cmd_7:
       return true;
     // Milestone G: only while the Import add-on is loaded (docs/design/18).
     case open_import: case import_now:
@@ -223,6 +235,10 @@ bool MvClaimAddonHost() {
 }
 
 constexpr std::int64_t kShownStampUnknown = INT64_MIN;
+// view_fitted is the render thread's last pass; a `1` then ↓ inside one frame
+// would read the old fit. Zoom commands open this window so the first ↓ after
+// them pans instead of falling through (main.cpp kZoomIntentMs).
+constexpr double kZoomIntentSeconds = 0.25;
 // _shownMoment after a new search: matches no moment, so the clip reopens.
 constexpr std::int64_t kShownMomentStale = INT64_MIN;
 
@@ -308,6 +324,13 @@ extern "C" void mv_chrome_fit(void) {
 extern "C" void mv_chrome_one_to_one(void) {
   if (!g_chrome_snap) return;
   ++g_chrome_snap->one_to_one_seq;
+  if (g_chrome_lab) g_chrome_lab->publish(*g_chrome_snap);
+  if (g_chrome_lab) g_chrome_lab->wake();
+}
+extern "C" void mv_chrome_zoom_preset(float factor) {
+  if (!g_chrome_snap || !(factor > 0.0f)) return;
+  g_chrome_snap->zoom_preset = factor;
+  ++g_chrome_snap->zoom_preset_seq;
   if (g_chrome_lab) g_chrome_lab->publish(*g_chrome_snap);
   if (g_chrome_lab) g_chrome_lab->wake();
 }
@@ -1430,6 +1453,12 @@ extern "C" void mv_chrome_run_command(int32_t command_id) {
   if (mv::shell::is_reserved_notification(command_id) || mv::shell::is_retired_command(command_id)) return;
   [g_chrome_app runCommand:static_cast<mv::shell::command_id>(command_id) back:mv::shell::back_target::none];
 }
+// CommandBarView.swift's ViewCommand spells these ids out (Swift cannot see commands.h).
+static_assert(static_cast<int>(mv::shell::command_id::zoom_in) == 4);
+static_assert(static_cast<int>(mv::shell::command_id::zoom_out) == 5);
+static_assert(static_cast<int>(mv::shell::command_id::zoom_200) == 39);
+static_assert(static_cast<int>(mv::shell::command_id::zoom_400) == 40);
+static_assert(static_cast<int>(mv::shell::command_id::clipping) == 46);
 extern "C" uint64_t mv_chrome_trim_generation(void) {
   return g_chrome_app ? [g_chrome_app trimGeneration] : 0;
 }
@@ -1728,6 +1757,13 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   // where A / D would walk the folder out from under the edit.
   return !(self.app && [self.app editorOwnsCanvas]);
 }
+- (BOOL)resignFirstResponder {
+  // Issue #186: a command that hands focus to a pane (adjust, metadata, Jobs,
+  // the gallery) or a click into one takes the key-up with it. Release what
+  // the canvas holds now, or a held Y keeps showing the original.
+  if (self.app) [self.app cancelKeyHolds];
+  return [super resignFirstResponder];
+}
 - (BOOL)isOpaque {
   return YES;
 }
@@ -1926,9 +1962,9 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
     (void)[self.app welcomePointerMoved];
     [NSCursor.arrowCursor set];
   }
-  if (self.snap->eyedropper) ++self.snap->activity_seq;
+  if (self.snap->eyedropper || self.snap->loupe) ++self.snap->activity_seq;
   [self publish];
-  if (self.snap->eyedropper && self.lab) self.lab->wake();
+  if ((self.snap->eyedropper || self.snap->loupe) && self.lab) self.lab->wake();
   if (self.app) [self.app transportActivity];  // a pointer hidden over the video comes back
 }
 - (void)trackPointer:(NSEvent*)event {
@@ -1945,9 +1981,9 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   if (self.app && self.snap->recents.count > 0) {
     [([self.app welcomePointerMoved] ? NSCursor.pointingHandCursor : NSCursor.arrowCursor) set];
   }
-  if (self.snap->eyedropper) ++self.snap->activity_seq;
+  if (self.snap->eyedropper || self.snap->loupe) ++self.snap->activity_seq;
   [self publish];
-  if (self.snap->eyedropper && self.lab) self.lab->wake();
+  if ((self.snap->eyedropper || self.snap->loupe) && self.lab) self.lab->wake();
   // Issue #38: movement (and entry, which arrives as a move) wakes the clip's
   // transport. A bool test and nothing else when no clip is on screen.
   if (self.app) [self.app transportActivity];
@@ -2222,6 +2258,13 @@ static void MvAdoptNewDefaultViewerTypes() {
   BOOL _enteredFullscreenForSlideshow;
   double _slideshowIntervalSeconds;
   NSTimer* _slideshowTimer;
+  // `R` in a slideshow: the shared no-repeat order (shell/slideshow.h). Only its
+  // shuffle is used here; the timer above keeps the interval. Blackout (`.`)
+  // is _snap.blackout.
+  mv::shell::slideshow _slideshowOrder;
+  // When a zoom command last ran (CACurrentMediaTime), 0 after fit: see
+  // kZoomIntentSeconds.
+  double _zoomIntentAt;
 
   // Filmstrip/gallery visibility (docs/design/16 View table's T/G, folded-in PR 4,
   // docs/design/12 2026-09-17). _filmstripVisible is the wish; -filmstripVisible is
@@ -2338,6 +2381,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   bool _shuttleSkimmed;                   // a J burst left a keyframe-seek to settle
   std::int64_t _shuttleTarget;            // where the last J was going (program time)
   BOOL _editorClosePrompt;                // the discard sheet is up
+  BOOL _closeAfterEditor;                 // the viewer window closes once the editor has
   int32_t _editorTrimIndex;               // the piece whose edge is being dragged
   int32_t _editorTrimEdge;                // 0 in, 1 out
   double _soakHold, _soakCpu0, _soakWall0, _soakPlayCpu, _soakPlayWall, _soakPausedCpu;
@@ -2351,6 +2395,9 @@ static void MvAdoptNewDefaultViewerTypes() {
   NSTimer* _nowPlayingTimer;
   BOOL _remoteCommandsWired;
   mv::shell::present_lab_mac::video_status _nowPlayingShown;
+  // Issue #228: held while a clip plays or a slideshow runs, so the idle timer
+  // neither dims the display nor sleeps the Mac. nil when not presenting.
+  id<NSObject> _keepAwakeActivity;
   // Milestone H (docs/design/17): a result listing is open. `_currentDir` is "" then,
   // `_moments` is parallel to `_items` (the moment a clip opens paused on, -1
   // none) and `_listNames` holds display names made unique within the list
@@ -2403,15 +2450,20 @@ static void MvAdoptNewDefaultViewerTypes() {
   g_addon_app = weakApp;
   // The editor soak measures the editor: an add-on indexing in the background
   // (the AI pack compiles its models) would swamp it.
-  if (std::getenv("MV_EDIT_SELFTEST_SOAK") == nullptr && MvClaimAddonHost()) {
-    MvAddonsStart(
-        [](void*, const char* path) {
-          MvLabApp* app = g_addon_app;
-          if (app && path) (void)[app openEntryPath:path];
-        },
-        nullptr);
-    // docs/design/23: Final Cut Pro search stays as Settings left it (background, later).
-    MvFcpStart();
+  const MvAddonsOpenPathFn open_from_addon = [](void*, const char* path) {
+    MvLabApp* app = g_addon_app;
+    if (app && path) (void)[app openEntryPath:path];
+  };
+  if (std::getenv("MV_EDIT_SELFTEST_SOAK") == nullptr) {
+    if (MvClaimAddonHost()) {
+      MvAddonsStart(open_from_addon, nullptr);
+      // docs/design/23: Final Cut Pro search stays as Settings left it (background, later).
+      MvFcpStart();
+    } else {
+      // A later window (2026-10-07): Local search through the AI pack's
+      // read-only reader, started on the first ⌘F; nothing at launch.
+      MvAddonsStartReader(open_from_addon, nullptr);
+    }
   }
   NSRect rect = NSMakeRect(0, 0, 1280, 720);
   self.window = [[NSWindow alloc]
@@ -2421,6 +2473,8 @@ static void MvAdoptNewDefaultViewerTypes() {
                   backing:NSBackingStoreBuffered
                     defer:NO];
   self.window.title = @"MediaViewer";
+  // self.window holds it: AppKit's release on close would over-release it under ARC.
+  self.window.releasedWhenClosed = NO;
   // Single-window viewer: without this AppKit adds Show Tab Bar / Show All
   // Tabs to the View menu.
   self.window.tabbingMode = NSWindowTabbingModeDisallowed;
@@ -3753,11 +3807,24 @@ static void MvAdoptNewDefaultViewerTypes() {
   return _slideshowActive;
 }
 
+// The timer's tick: the next item in folder order, or in the shuffled order
+// once `R` turned it on (every item once per round, wrapping as browse does).
+- (void)slideshowAdvance {
+  if (_items.empty()) return;
+  if (!_slideshowOrder.shuffled()) {
+    [self navigateNext];
+    return;
+  }
+  const auto current = static_cast<std::uint32_t>(_index.current());
+  _slideshowOrder.set_count(static_cast<std::uint32_t>(_items.size()), current);
+  if (const auto next = _slideshowOrder.next(current, _index.wrap())) [self selectIndex:*next];
+}
+
 - (void)armSlideshowTimer {
   [_slideshowTimer invalidate];
   _slideshowTimer = [NSTimer scheduledTimerWithTimeInterval:_slideshowIntervalSeconds
                                                       target:self
-                                                    selector:@selector(navigateNext)
+                                                    selector:@selector(slideshowAdvance)
                                                     userInfo:nil
                                                      repeats:YES];
 }
@@ -3770,7 +3837,12 @@ static void MvAdoptNewDefaultViewerTypes() {
   // not; leaving puts it back)".
   _enteredFullscreenForSlideshow = (self.window.styleMask & NSWindowStyleMaskFullScreen) ? NO : YES;
   if (_enteredFullscreenForSlideshow) [self.window toggleFullScreen:nil];
+  _slideshowOrder.start(static_cast<std::uint32_t>(_items.size()),
+                        static_cast<std::uint32_t>(_index.current()),
+                        static_cast<std::uint64_t>(CACurrentMediaTime() * 1000.0));
+  _snap.blackout = false;
   [self armSlideshowTimer];
+  [self syncKeepAwake];
 }
 
 - (void)leaveSlideshow {
@@ -3779,10 +3851,16 @@ static void MvAdoptNewDefaultViewerTypes() {
   _slideshowPaused = NO;
   [_slideshowTimer invalidate];
   _slideshowTimer = nil;
+  _slideshowOrder.stop();
+  if (_snap.blackout) {
+    _snap.blackout = false;
+    [self pokeSnapshot];
+  }
   if (_enteredFullscreenForSlideshow && (self.window.styleMask & NSWindowStyleMaskFullScreen)) {
     [self.window toggleFullScreen:nil];
   }
   _enteredFullscreenForSlideshow = NO;
+  [self syncKeepAwake];
 }
 
 - (void)toggleSlideshowPause {
@@ -3794,6 +3872,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   } else {
     [self armSlideshowTimer];
   }
+  [self syncKeepAwake];
 }
 
 - (void)adjustSlideshowInterval:(double)deltaSeconds {
@@ -4448,7 +4527,17 @@ static BOOL MvCopyUtf8(const std::string& text, char* buf, int32_t size) {
 }
 - (void)setHelpVisible:(BOOL)visible {
   _helpVisible = visible;
-  if (visible) [MVChromeHost reloadHelp];
+  if (visible) {
+    // `?` lists the bindings of the mode underneath (docs/design/16), as the
+    // Windows flyout does: not the popup's own state.
+    mv::shell::view_state under = [self currentViewState];
+    under.popup_open = false;
+    const mv::shell::mode under_mode = mv::shell::resolve_mode(under);
+    auto modes = static_cast<std::int32_t>(mv::shell::mask_of(under_mode));
+    // Trim layers over video (key_router.cpp), so `?` lists both, as on Windows.
+    if (under_mode == mv::shell::mode::trim) modes |= mv::shell::kVideo;
+    [MVChromeHost reloadHelpWithModes:modes];
+  }
   self.helpHost.hidden = !visible;
 }
 - (void)toggleHelp {
@@ -4477,6 +4566,144 @@ enum MvMenuCmd : NSInteger {
   // docs/design/16 "Window"
   kMenuNewWindow,
 };
+
+// Issue #182: the table row behind a menu item, for its mode mask. None for
+// the Sort items (no row) and the Edit menu, which validateMenuItem: gates by
+// the edit subject.
+static mv::shell::command_id MvMenuCommand(NSInteger cmd) {
+  using enum mv::shell::command_id;
+  switch (static_cast<MvMenuCmd>(cmd)) {
+    case kMenuOpen: return open;
+    case kMenuOpenFolder: case kMenuOpenPhotos: return open_folder;
+    case kMenuTrash: return delete_to_recycle_bin;
+    case kMenuCopyTo: return copy_to_pick;
+    case kMenuMoveTo: return move_to_pick;
+    case kMenuMark: return toggle_mark;
+    case kMenuFit: return fit;
+    case kMenuOneToOne: return one_to_one;
+    case kMenuFilmstrip: return toggle_filmstrip;
+    case kMenuGallery: return toggle_gallery;
+    case kMenuFullscreen: return fullscreen;
+    case kMenuSlideshow: return slideshow_start;
+    case kMenuNext: return next;
+    case kMenuPrev: return prev;
+    case kMenuFirst: return first;
+    case kMenuLast: return last;
+    case kMenuHelp: return help;
+    case kMenuSettings: return open_settings;
+    case kMenuOverlay: return overlay;
+    case kMenuReveal: return reveal_in_explorer;
+    case kMenuMetadata: return metadata_pane;
+    case kMenuFolderTree: return folder_tree;
+    case kMenuShare: return share;
+    case kMenuCopyPath: return copy_path;
+    case kMenuCopyEdited: return copy_flattened;
+    case kMenuNewWindow: return new_window;
+    default: return none;
+  }
+}
+
+// Issue #182: the menu items whose key equivalent is a table row. Their chord
+// is read from the live table (syncMenuKeyEquivalents), never fixed here, so a
+// remap in Settings moves the menu with the router.
+static mv::shell::command_id MvMenuChordCommand(NSMenuItem* item) {
+  using enum mv::shell::command_id;
+  if (item.action == @selector(performClose:)) return close_window;
+  if (item.action != @selector(menuAction:)) return none;
+  switch (static_cast<MvMenuCmd>(item.tag)) {
+    case kMenuSettings: return open_settings;
+    case kMenuNewWindow: return new_window;
+    case kMenuOpen: return open;
+    case kMenuFolderTree: return folder_tree;
+    default: return none;
+  }
+}
+
+// The key equivalent AppKit matches for a table key, or nil for one a menu
+// does not carry (the router keeps it). Delete is ⌫, as Move to Trash shows it.
+static NSString* MvKeyEquivalent(mv::shell::key k) {
+  using mv::shell::key;
+  const auto v = static_cast<std::uint16_t>(k);
+  if (v >= 'A' && v <= 'Z') return [NSString stringWithFormat:@"%c", static_cast<char>(v - 'A' + 'a')];
+  if (v >= 0x21 && v <= 0x7E) return [NSString stringWithFormat:@"%c", static_cast<char>(v)];
+  unichar c = 0;
+  if (k >= key::f1 && k <= key::f12) {
+    c = static_cast<unichar>(NSF1FunctionKey + (v - static_cast<std::uint16_t>(key::f1)));
+  } else {
+    switch (k) {
+      case key::space: c = ' '; break;
+      case key::enter: c = '\r'; break;
+      case key::del: c = NSBackspaceCharacter; break;
+      case key::home: c = NSHomeFunctionKey; break;
+      case key::end: c = NSEndFunctionKey; break;
+      case key::page_up: c = NSPageUpFunctionKey; break;
+      case key::page_down: c = NSPageDownFunctionKey; break;
+      case key::left: c = NSLeftArrowFunctionKey; break;
+      case key::right: c = NSRightArrowFunctionKey; break;
+      case key::up: c = NSUpArrowFunctionKey; break;
+      case key::down: c = NSDownArrowFunctionKey; break;
+      default: return nil;
+    }
+  }
+  return [NSString stringWithFormat:@"%C", c];
+}
+
+static NSEventModifierFlags MvModifierMask(std::uint8_t mods) {
+  NSEventModifierFlags mask = 0;
+  if (mods & mv::shell::mod_ctrl) mask |= NSEventModifierFlagCommand;
+  if (mods & mv::shell::mod_shift) mask |= NSEventModifierFlagShift;
+  if (mods & mv::shell::mod_alt) mask |= NSEventModifierFlagOption;
+  return mask;
+}
+
+// MvKeyFromEvent's answer for a menu item's own key equivalent, or none. Only
+// a plain Command chord counts: AppKit also injects items such as Start
+// Dictation (fn D), Emoji & Symbols (fn E) and the window tiling items
+// (fn Control F, C, ...), which a plain key or a Command chord never fires, so
+// counting them would refuse E, D or Cmd+F in Settings for no reason.
+static mv::shell::key MvKeyOfEquivalent(NSMenuItem* item, std::uint8_t* mods) {
+  NSString* eq = item.keyEquivalent;
+  if (eq.length != 1) return mv::shell::key::none;
+  const NSEventModifierFlags flags = item.keyEquivalentModifierMask;
+  if ((flags & NSEventModifierFlagCommand) == 0) return mv::shell::key::none;
+  if (flags & (NSEventModifierFlagControl | NSEventModifierFlagFunction)) return mv::shell::key::none;
+  std::uint8_t m = mv::shell::mod_ctrl;
+  if (flags & NSEventModifierFlagShift) m |= mv::shell::mod_shift;
+  if (flags & NSEventModifierFlagOption) m |= mv::shell::mod_alt;
+  *mods = m;
+  const unichar c = [eq characterAtIndex:0];
+  if (c == NSBackspaceCharacter) return mv::shell::key::del;
+  if (c >= 0x21 && c <= 0x7E) return mv::shell::char_key(static_cast<char>(c));
+  return mv::shell::key::none;
+}
+
+// Issue #182: a chord a fixed menu item answers (⌘H Hide, ⌘Q Quit, ⌘M
+// Minimize, ⌘⌫ Move to Trash) reaches the menu before keyDown:, so a row
+// given it would never run. Settings refuses it; the chord items are skipped,
+// they follow the table.
+static BOOL MvMenuOwnsChord(NSMenu* menu, mv::shell::key k, std::uint8_t mods) {
+  if (k == mv::shell::key::none) return NO;
+  for (NSMenuItem* item in menu.itemArray) {
+    if (item.submenu != nil && MvMenuOwnsChord(item.submenu, k, mods)) return YES;
+    if (MvMenuChordCommand(item) != mv::shell::command_id::none) continue;
+    std::uint8_t m = 0;
+    if (MvKeyOfEquivalent(item, &m) == k && m == mods) return YES;
+  }
+  return NO;
+}
+
+static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
+  for (NSMenuItem* item in menu.itemArray) {
+    if (item.submenu != nil) MvSyncKeyEquivalents(item.submenu, bar);
+    const mv::shell::command_id command = MvMenuChordCommand(item);
+    if (command == mv::shell::command_id::none) continue;
+    const mv::shell::binding* chord = mv::shell::menu_chord(command);
+    NSString* eq = chord ? MvKeyEquivalent(chord->k) : nil;
+    if (eq != nil && MvMenuOwnsChord(bar, chord->k, chord->mods)) eq = nil;
+    item.keyEquivalent = eq ?: @"";
+    item.keyEquivalentModifierMask = eq != nil ? MvModifierMask(chord->mods) : 0;
+  }
+}
 
 // docs/design/16 "Window": another window is another MediaViewer process, on the
 // empty window, cascaded from this one. The bundle starts as a new instance
@@ -4517,6 +4744,10 @@ enum MvMenuCmd : NSInteger {
 // Shared by the menu bar and the in-window menu buttons (CommandBarView), so
 // the two cannot disagree.
 - (void)runMenuCmd:(NSInteger)cmd {
+  if ([self menuCmdBlocked:cmd]) {
+    NSBeep();
+    return;
+  }
   switch (static_cast<MvMenuCmd>(cmd)) {
     case kMenuOpen: [self openFolderPanel:NO]; break;
     case kMenuNewWindow: [self openNewWindow]; break;
@@ -4574,6 +4805,18 @@ enum MvMenuCmd : NSInteger {
   }
 }
 
+// Issue #182: mid-crop, an item whose command the table does not run there
+// (Open, Go ▸ Next, Settings…) is off, as its key is: walking away would drop
+// the crop draft. The menu bar and the command bar's flyouts both ask.
+// Closing Settings is never refused.
+- (BOOL)menuCmdBlocked:(NSInteger)cmd {
+  const mv::shell::command_id command = MvMenuCommand(cmd);
+  if (command == mv::shell::command_id::none) return NO;
+  if (cmd == kMenuSettings && _settingsVisible) return NO;
+  if (mv::shell::resolve_mode([self currentViewState]) != mv::shell::mode::crop) return NO;
+  return !mv::shell::command_live_in(command, mv::shell::kCrop);
+}
+
 - (BOOL)validateMenuItem:(NSMenuItem*)item {
 #if MV_WITH_SPARKLE
   if (item.action == @selector(toggleAutomaticUpdateChecks:)) {
@@ -4606,6 +4849,7 @@ enum MvMenuCmd : NSInteger {
     return subject == mv::shell::edit_subject::still;
   }
   if (tag == kMenuFolderTree) item.state = _treeVisible ? NSControlStateValueOn : NSControlStateValueOff;
+  if ([self menuCmdBlocked:tag]) return NO;
   switch (static_cast<MvMenuCmd>(item.tag)) {
     case kMenuMetadata: case kMenuFolderTree:
     case kMenuOpen: case kMenuOpenFolder: case kMenuFit: case kMenuOneToOne: case kMenuFullscreen: case kMenuHelp: case kMenuSettings: case kMenuOverlay:
@@ -4615,6 +4859,15 @@ enum MvMenuCmd : NSInteger {
       item.hidden = ![self photosLibraryAvailable];
       return !item.hidden;
     case kMenuTrash:
+      // The menu answers ⌘⌫ before any first responder sees it (issue #180).
+      // A text field's ⌘⌫ is "delete to start of line"; in trim and crop
+      // Delete edits, in the Video Editor it removes a piece, and a slideshow
+      // is not browsing: none of them trashes the file on screen.
+      if ([NSApp.keyWindow.firstResponder isKindOfClass:[NSText class]] || _editorOpen || _slideshowActive ||
+          _edits.crop_active() || (_trim.armed() && [self currentItemIsVideo])) {
+        return NO;
+      }
+      [[fallthrough]];
     case kMenuMoveTo: {
       // Photos library files are never trashed or moved (issue #72). The
       // marks themselves, not a copy of their entries: this runs per validation.
@@ -4681,7 +4934,8 @@ enum MvMenuCmd : NSInteger {
                                keyEquivalent:@""];
   about.target = self;
   [app addItem:[NSMenuItem separatorItem]];
-  [self addMenuItem:@"Settings…" cmd:kMenuSettings key:@"," mods:NSEventModifierFlagCommand toMenu:app];
+  // ⌘, ⌘N ⌘O ⇧⌘E ⌘W are the table's rows: syncMenuKeyEquivalents sets them.
+  [self addMenuItem:@"Settings…" cmd:kMenuSettings key:@"" mods:0 toMenu:app];
 #if MV_WITH_SPARKLE
   // The update check is a network call even with nothing else ever sent
   // (docs/design/13): it can be turned off here and stays off.
@@ -4706,8 +4960,8 @@ enum MvMenuCmd : NSInteger {
   [app addItemWithTitle:@"Quit MediaViewer" action:@selector(terminate:) keyEquivalent:@"q"];
 
   NSMenu* file = submenu(@"File");
-  [self addMenuItem:@"New Window" cmd:kMenuNewWindow key:@"n" mods:NSEventModifierFlagCommand toMenu:file];
-  [self addMenuItem:@"Open…" cmd:kMenuOpen key:@"o" mods:NSEventModifierFlagCommand toMenu:file];
+  [self addMenuItem:@"New Window" cmd:kMenuNewWindow key:@"" mods:0 toMenu:file];
+  [self addMenuItem:@"Open…" cmd:kMenuOpen key:@"" mods:0 toMenu:file];
   // docs/design/26: shown once the library was added in Settings (validateMenuItem:).
   [self addMenuItem:@"Open Photos Library" cmd:kMenuOpenPhotos key:@"" mods:0 toMenu:file];
   NSMenuItem* openRecent = [file addItemWithTitle:@"Open Recent" action:nil keyEquivalent:@""];
@@ -4729,7 +4983,7 @@ enum MvMenuCmd : NSInteger {
   [self addMenuItem:@"Copy Path" cmd:kMenuCopyPath key:@"" mods:0 toMenu:file];
   [self addMenuItem:@"Copy Edited Image" cmd:kMenuCopyEdited key:@"" mods:0 toMenu:file];
   [file addItem:[NSMenuItem separatorItem]];
-  [file addItemWithTitle:@"Close Window" action:@selector(performClose:) keyEquivalent:@"w"];
+  [file addItemWithTitle:@"Close Window" action:@selector(performClose:) keyEquivalent:@""];
 
   // Plain-letter equivalents (no modifier) mirror keyDown:'s bindings.
   // PR 29 (docs/design/20). No key equivalents: the router owns Return, ⇧C, ⇧A, [ ]
@@ -4757,11 +5011,7 @@ enum MvMenuCmd : NSInteger {
   [self addMenuItem:@"Filmstrip" cmd:kMenuFilmstrip key:@"" mods:0 toMenu:view];
   [self addMenuItem:@"Gallery" cmd:kMenuGallery key:@"" mods:0 toMenu:view];
   [self addMenuItem:@"Metadata" cmd:kMenuMetadata key:@"" mods:0 toMenu:view];
-  [self addMenuItem:@"Folder Tree"
-                cmd:kMenuFolderTree
-                key:@"e"
-               mods:NSEventModifierFlagCommand | NSEventModifierFlagShift
-             toMenu:view];
+  [self addMenuItem:@"Folder Tree" cmd:kMenuFolderTree key:@"" mods:0 toMenu:view];
   NSMenuItem* sortHolder = [view addItemWithTitle:@"Sort By" action:nil keyEquivalent:@""];
   NSMenu* sortMenu = [[NSMenu alloc] initWithTitle:@"Sort By"];
   sortHolder.submenu = sortMenu;
@@ -4796,6 +5046,18 @@ enum MvMenuCmd : NSInteger {
   NSApp.helpMenu = help;
 
   NSApp.mainMenu = bar;
+  [self syncMenuKeyEquivalents];
+}
+
+// Issue #182: after every change to the live table (a remap, Reset, loading
+// Settings, an add-on's rows), so the menu answers the chord the router would.
+- (void)syncMenuKeyEquivalents {
+  if (NSApp.mainMenu != nil) MvSyncKeyEquivalents(NSApp.mainMenu, NSApp.mainMenu);
+}
+
+- (void)rebuildKeys {
+  _router.rebuild(mv::shell::live_bindings());
+  [self syncMenuKeyEquivalents];
 }
 
 // Finder: double-click, Open With, or a drop on the Dock icon (PR 20).
@@ -5178,6 +5440,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   s.slideshow = _slideshowActive;
   s.fullscreen = (self.window.styleMask & NSWindowStyleMaskFullScreen) != 0;
   s.popup_open = _helpVisible;
+  s.loupe_held = _snap.loupe;
   if (!_items.empty()) _gameOn = NO;  // a file opened over the runner; the lab leaves it too
   s.game = _gameOn;
   s.settings_open = _settingsVisible;
@@ -5283,8 +5546,23 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   switch (command) {
     case open: [self openFolderPanel:NO]; return YES;
     case open_folder: [self openFolderPanel:YES]; return YES;
-    case fit: case reset_view: ++_snap.fit_seq; [self pokeSnapshot]; return YES;
-    case one_to_one: ++_snap.one_to_one_seq; [self pokeSnapshot]; return YES;
+    case fit: case reset_view:
+      _zoomIntentAt = 0.0;
+      ++_snap.fit_seq; [self pokeSnapshot]; return YES;
+    case one_to_one:
+      _zoomIntentAt = CACurrentMediaTime();
+      ++_snap.one_to_one_seq; [self pokeSnapshot]; return YES;
+    case zoom_in:
+      _zoomIntentAt = CACurrentMediaTime();
+      ++_snap.zoom_in_seq; [self pokeSnapshot]; return YES;
+    case zoom_out: ++_snap.zoom_out_seq; [self pokeSnapshot]; return YES;
+    case zoom_200: case zoom_400:
+      _snap.zoom_preset = command == zoom_200 ? 2.0f : 4.0f;
+      _zoomIntentAt = CACurrentMediaTime();
+      ++_snap.zoom_preset_seq; [self pokeSnapshot]; return YES;
+    case fill:
+      _zoomIntentAt = CACurrentMediaTime();
+      ++_snap.fill_seq; [self pokeSnapshot]; return YES;
     case overlay: ++_snap.toggle_overlay_seq; [self pokeSnapshot]; return YES;
     case reset_stats: ++_snap.reset_stats_seq; [self pokeSnapshot]; return YES;
     case game_toggle_3d:
@@ -5432,6 +5710,8 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     case search_prev_match: {
       if (!mv::shell::addon_command_available(command)) {
         if (command != search_open) return NO;
+        // A later window: its reader starts now (docs/design/18 "One host process").
+        if (MvAddonsReaderSearch()) return YES;
         if ([MVChromeHost openLocalSearchWhenStarting]) return YES;
         return [self openFileSearch];
       }
@@ -5481,10 +5761,43 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     case mute:
       if (!clip) return NO;
       ++_snap.video_mute_seq; [self pokeSnapshot]; return YES;
-    // ↑ ↓ on a clip are its volume (the Mac view has no arrow-key pan).
-    case pan_up: case pan_down:
-      if (!clip) return NO;
-      _snap.video_volume_steps += command == pan_up ? 1 : -1; [self pokeSnapshot]; return YES;
+    // docs/design/16: pan only when zoomed. At fit the view is locked, so the key is
+    // not ours and falls through; on a fitted clip ↑ ↓ are its volume.
+    case pan_up: case pan_down: case pan_left: case pan_right: {
+      const bool zooming = _zoomIntentAt > 0.0 && CACurrentMediaTime() - _zoomIntentAt < kZoomIntentSeconds;
+      if (_lab.view_fitted() && !zooming) {
+        if (!clip || (command != pan_up && command != pan_down)) return NO;
+        _snap.video_volume_steps += command == pan_up ? 1 : -1; [self pokeSnapshot]; return YES;
+      }
+      if (command == pan_up) --_snap.pan_steps_y;
+      if (command == pan_down) ++_snap.pan_steps_y;
+      if (command == pan_left) --_snap.pan_steps_x;
+      if (command == pan_right) ++_snap.pan_steps_x;
+      [self pokeSnapshot];
+      return YES;
+    }
+    // View state the render thread draws from (levels, not edges).
+    case clipping: _snap.clipping = !_snap.clipping; [self pokeSnapshot]; return YES;
+    case loupe: case loupe_release:
+      // The loupe magnifies a still. On a clip or an empty canvas Z is not
+      // ours: do not swallow it and then draw nothing.
+      if (command == loupe && (clip || _items.empty() || !_lab.showing_still())) return NO;
+      _snap.loupe = command == loupe;
+      if (command == loupe) {
+        // Each hold starts at the cursor, or the canvas centre with none.
+        _snap.loupe_steps_x = 0;
+        _snap.loupe_steps_y = 0;
+      }
+      [self pokeSnapshot];
+      return YES;
+    case loupe_nudge_left: --_snap.loupe_steps_x; [self pokeSnapshot]; return YES;
+    case loupe_nudge_right: ++_snap.loupe_steps_x; [self pokeSnapshot]; return YES;
+    case loupe_nudge_up: --_snap.loupe_steps_y; [self pokeSnapshot]; return YES;
+    case loupe_nudge_down: ++_snap.loupe_steps_y; [self pokeSnapshot]; return YES;
+    case hold_previous: case hold_previous_release:
+      _snap.hold_previous = command == hold_previous;
+      [self pokeSnapshot];
+      return YES;
     case toggle_mark: [self toggleMarkCurrent]; return YES;
     case mark_all: [self markAll]; return YES;
     case unmark_all: [self unmarkAll]; return YES;
@@ -5503,6 +5816,16 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     case slideshow_pause: [self toggleSlideshowPause]; return YES;
     case slideshow_faster: [self adjustSlideshowInterval:-1.0]; return YES;
     case slideshow_slower: [self adjustSlideshowInterval:1.0]; return YES;
+    case blackout:
+      if (!_slideshowActive) return NO;
+      _snap.blackout = !_snap.blackout;
+      [self pokeSnapshot];
+      return YES;
+    case shuffle:
+      if (!_slideshowActive) return NO;
+      _slideshowOrder.toggle_shuffle(static_cast<std::uint32_t>(_index.current()),
+                                     static_cast<std::uint64_t>(CACurrentMediaTime() * 1000.0));
+      return YES;
     // PR 9. The overlays are levels the render thread draws from `_snap.meta`;
     // turning one on asks for the record if it is not already here, and never
     // reads the file a second time.
@@ -6388,6 +6711,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   self.editorPreview = nil;
   self.editorChrome = nil;
   ++_editorGeneration;
+  if (_closeAfterEditor) return;  // the viewer window is closing too (issue #181)
   [self.window makeKeyAndOrderFront:nil];
   [self.window makeFirstResponder:self.view];
 }
@@ -6785,11 +7109,25 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
                   MvLabApp* me = weakSelf;
                   if (me == nil) return;
                   me->_editorClosePrompt = NO;
+                  const BOOL closeViewer = me->_closeAfterEditor;
                   if (response == NSAlertSecondButtonReturn) [me setEditorOpen:NO];
+                  me->_closeAfterEditor = NO;
+                  if (closeViewer && response == NSAlertSecondButtonReturn) [me.window close];
                 }];
 }
 
 - (BOOL)windowShouldClose:(NSWindow*)sender {
+  // Issue #181: the viewer window closing clears the chrome bridge and the
+  // folder, which the editor's chrome and canvas still use. The editor closes
+  // first, through the discard prompt when its edit is not exported; Discard
+  // then closes the viewer window, Keep editing leaves both open.
+  if (sender == self.window && _editorOpen) {
+    _closeAfterEditor = YES;
+    [self editorRequestClose];
+    if (_editorOpen) return NO;
+    _closeAfterEditor = NO;
+    return YES;
+  }
   if (self.editorWindow != nil && sender == self.editorWindow && _editorOpen && _timeline.edited() &&
       _timeline.revision() != _editorExportedRevision) {
     [self editorRequestClose];
@@ -8679,6 +9017,7 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
   MPNowPlayingInfoCenter* center = MPNowPlayingInfoCenter.defaultCenter;
   const BOOL video = [self currentItemIsVideo];
   const auto st = _lab.video_status_snapshot();
+  [self syncKeepAwake];  // issue #228: this poll is where play / pause / end is seen
   if (!video) {
     center.nowPlayingInfo = nil;
     center.playbackState = MPNowPlayingPlaybackStateStopped;
@@ -8708,6 +9047,25 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
     MPNowPlayingInfoPropertyDefaultPlaybackRate : @1.0,
   };
   center.playbackState = st.playing ? MPNowPlayingPlaybackStatePlaying : MPNowPlayingPlaybackStatePaused;
+}
+
+// Issue #228: media is being presented -- a clip plays, or a slideshow runs --
+// so hold an activity that keeps the display (and the Mac) awake; pause, the
+// end of the clip, leaving it or the slideshow lets it go. Driven from the
+// slideshow transitions and the Now Playing poll; quitting ends it with the process.
+- (void)syncKeepAwake {
+  const auto st = _lab.video_status_snapshot();
+  const BOOL clipPlaying = [self currentItemIsVideo] && st.active && st.playing;
+  const BOOL want = clipPlaying || (_slideshowActive && !_slideshowPaused);
+  if (want == (_keepAwakeActivity != nil)) return;
+  if (want) {
+    _keepAwakeActivity = [NSProcessInfo.processInfo
+        beginActivityWithOptions:NSActivityIdleDisplaySleepDisabled | NSActivityIdleSystemSleepDisabled
+                          reason:@"Presenting media"];
+  } else {
+    [NSProcessInfo.processInfo endActivity:_keepAwakeActivity];
+    _keepAwakeActivity = nil;
+  }
 }
 
 - (void)wireRemoteCommands {
@@ -8829,7 +9187,7 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
       (void)mv::shell::rebind_live(idx, static_cast<mv::shell::key>(k), static_cast<std::uint8_t>(m));
     }
   }
-  _router.rebuild(mv::shell::live_bindings());
+  [self rebuildKeys];
   _sort = mv::io::unpack_sort(static_cast<std::int32_t>([d integerForKey:@"mv.sort"]));
   _recentFolders.clear();
   for (id entry in [d arrayForKey:kDefaultsRecentFolders]) {
@@ -8855,7 +9213,7 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
 - (void)resetKeys {
   [self cancelKeyCapture];
   mv::shell::reset_live_bindings();
-  _router.rebuild(mv::shell::live_bindings());
+  [self rebuildKeys];
   [self persistKeys];
   ++_keysGeneration;
 }
@@ -8864,7 +9222,9 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
 - (uint64_t)keysGeneration { return _keysGeneration; }
 // docs/design/25: an add-on's rows came or went (addons_mac.mm).
 - (void)commandsChanged {
-  _router.rebuild(mv::shell::live_bindings());
+  // rebuild forgets held keys; release them first (issue #186).
+  [self cancelKeyHolds];
+  [self rebuildKeys];
   ++_keysGeneration;
 }
 
@@ -8930,7 +9290,9 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
 
 // "Choose a shortcut, then press its replacement. Esc cancels." A local monitor
 // sees the key before anything else, so it can take chords the menu bar would
-// otherwise claim (Cmd+something) and never lets the key reach a command.
+// otherwise claim (Cmd+something) and never lets the key reach a command. A
+// chord a fixed menu item owns is refused; the table's own items follow the
+// remap (syncMenuKeyEquivalents).
 - (void)beginKeyCaptureForRow:(int)row {
   [self cancelKeyCapture];
   _captureRow = row;
@@ -8948,10 +9310,16 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
                                        return nil;
                                      }
                                      if (k == mv::shell::key::none) return nil;
+                                     // Issue #182: ⌘H, ⌘Q, ⌘M, ⌘⌫ are the menu's, which sees
+                                     // them first; the row would never run. Pick another.
+                                     if (MvMenuOwnsChord(NSApp.mainMenu, k, mods)) {
+                                       NSBeep();
+                                       return nil;
+                                     }
                                      const int row = strong->_captureRow;
                                      [strong cancelKeyCapture];
                                      if (mv::shell::rebind_live(row, k, mods)) {
-                                       strong->_router.rebuild(mv::shell::live_bindings());
+                                       [strong rebuildKeys];
                                        [strong persistKeys];
                                        ++strong->_keysGeneration;
                                      }
@@ -9098,8 +9466,8 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   _editorTick = nil;
   // _slideshowTimer's target is self, retained by NSTimer until invalidated
   // -- nulling g_chrome_app above does not stop it, since it calls
-  // -navigateNext directly rather than through the bridge globals. Left
-  // running, it would keep firing -navigateNext/-selectIndex: on a
+  // -slideshowAdvance directly rather than through the bridge globals. Left
+  // running, it would keep firing -slideshowAdvance/-selectIndex: on a
   // half-torn-down MvLabApp after the window (and _folder) are gone, racing
   // -applicationShouldTerminate:'s own off-main-thread teardown. Not
   // routed through -leaveSlideshow: that also un-fullscreens the window,

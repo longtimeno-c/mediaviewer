@@ -135,9 +135,14 @@ final class ManagementModel: ObservableObject {
 
   /// Settings → Import and export (docs/design/17 "Sharing an index").
   let transfer: IndexTransferModel
+  /// A later MediaViewer window's reader (AITable.readOnly): the view shows
+  /// only what works there — People and their photos — and says where the
+  /// rest is.
+  let readOnly: Bool
 
   init(table: AITable) {
     self.table = table
+    readOnly = table.readOnly
     photosSupported = table.hasPhotos
     photosAccess = PhotosLibrary.status
     transfer = IndexTransferModel(table: table)
@@ -710,6 +715,47 @@ struct ManagementView: View {
   @State private var allPeople = false
 
   var body: some View {
+    if model.readOnly {
+      readerBody
+    } else {
+      fullBody
+    }
+  }
+
+  /// In a later window: nothing that changes the index or a setting (indexing,
+  /// pause, compute, precision, folders, Clear, export / import, the People
+  /// switch, re-analyse, naming and merging). People's grid stays, to open a
+  /// person's photos.
+  static let readerNote = "Indexing and Local search settings are in the first MediaViewer window you opened. "
+    + "Search works here too, and new results appear within a few seconds."
+
+  private var readerBody: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      HStack(alignment: .firstTextBaseline, spacing: 8) {
+        Image(systemName: "info.circle").foregroundStyle(AITheme.body)
+        Text(Self.readerNote)
+          .font(AITheme.font(13)).foregroundStyle(AITheme.body)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      .padding(12)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .background(RoundedRectangle(cornerRadius: 8).fill(AITheme.surface))
+      .overlay(RoundedRectangle(cornerRadius: 8).stroke(AITheme.hairline, lineWidth: 1))
+      if model.facesOn && model.facesReady {
+        section("People") {
+          PeopleGrid(model: model, open: { _ in }, limit: Self.peopleShown, showAll: { allPeople = true })
+        }
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .onAppear { model.appeared() }
+    .onDisappear { model.disappeared() }
+    .sheet(isPresented: $allPeople) {
+      AllPeopleSheet(model: model) { allPeople = false }
+    }
+  }
+
+  private var fullBody: some View {
     VStack(alignment: .leading, spacing: 10) {
       StatusPill(line: model.status, onIndexAnyway: { model.indexAnyway() }) { model.setPaused($0) }
       if !model.status.sound.isEmpty && model.status.stages.isEmpty {

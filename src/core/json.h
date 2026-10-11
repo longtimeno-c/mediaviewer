@@ -11,6 +11,7 @@
 // when they are integers; anything fractional is also available as a double.
 #pragma once
 
+#include <algorithm>
 #include <charconv>
 #include <cstdint>
 #include <optional>
@@ -122,8 +123,10 @@ class parser {
       if (p_ >= t_.size() || t_[p_] != '"') return false;
       std::string key;
       if (!parse_string(key)) return false;
-      for (const auto& existing : v.o) {
-        if (existing.first == key) return false;  // duplicate key
+      if (v.o.size() < kLinearKeys) {
+        for (const auto& existing : v.o) {
+          if (existing.first == key) return false;  // duplicate key
+        }
       }
       ws();
       if (p_ >= t_.size() || t_[p_] != ':') return false;
@@ -140,10 +143,24 @@ class parser {
       }
       if (t_[p_] == '}') {
         ++p_;
-        return true;
+        return v.o.size() <= kLinearKeys || unique_keys(v.o);
       }
       return false;
     }
+  }
+
+  // Small objects (manifests) check each key against the earlier ones as it is
+  // read; past kLinearKeys that is quadratic (a 50k-key tokenizer vocab.json
+  // took over a second), so a large object is checked once when it closes by
+  // sorting its keys and comparing neighbours. Either way a duplicate fails.
+  static constexpr std::size_t kLinearKeys = 16;
+
+  static bool unique_keys(const std::vector<std::pair<std::string, value>>& o) {
+    std::vector<std::string_view> keys;
+    keys.reserve(o.size());
+    for (const auto& member : o) keys.emplace_back(member.first);
+    std::sort(keys.begin(), keys.end());
+    return std::adjacent_find(keys.begin(), keys.end()) == keys.end();
   }
 
   bool parse_array(value& v, int depth) {

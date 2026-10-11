@@ -4,6 +4,7 @@
 #include "shell/video_report.h"
 #include "shell/dino_draw.h"
 #include "shell/error_screen.h"
+#include "shell/loupe.h"
 #include "shell/welcome_screen.h"
 
 #include <imgui.h>
@@ -98,29 +99,9 @@ canvas_view usable_canvas(const input_snapshot& s) noexcept {
   return v;
 }
 
-// Hold-Z loupe: a square at the cursor (or the canvas centre with no cursor),
-// kept inside the canvas. The blit and the frame drawn around it both use this.
-struct loupe_box {
-  float x = 0.0f;
-  float y = 0.0f;
-  float size = 0.0f;
-  float point_x = 0.0f;
-  float point_y = 0.0f;
-};
-
+// Hold-Z loupe (shell/loupe.h, shared with the Metal lab) in this lab's canvas rect.
 loupe_box loupe_rect(const input_snapshot& s, const canvas_view& v) noexcept {
-  const float scale = s.dpi_scale > 0.0f ? s.dpi_scale : 1.0f;
-  loupe_box b;
-  b.size = std::min({240.0f * scale, v.w, v.h});
-  // Keyboard nudges (arrows while Z is held) offset the cursor or centre.
-  const float step = 0.05f * std::min(v.w, v.h);
-  const float base_x = s.mouse_in_client ? s.mouse_x : v.x + v.w * 0.5f;
-  const float base_y = s.mouse_in_client ? s.mouse_y : v.y + v.h * 0.5f;
-  b.point_x = std::clamp(base_x + static_cast<float>(s.loupe_steps_x) * step, v.x, v.x + v.w);
-  b.point_y = std::clamp(base_y + static_cast<float>(s.loupe_steps_y) * step, v.y, v.y + v.h);
-  b.x = std::clamp(b.point_x - b.size * 0.5f, v.x, v.x + v.w - b.size);
-  b.y = std::clamp(b.point_y - b.size * 0.5f, v.y, v.y + v.h - b.size);
-  return b;
+  return mv::shell::loupe_rect(s, v.x, v.y, v.w, v.h);
 }
 
 const char* drop_source_label(gfx::drop_source s) noexcept {
@@ -1364,9 +1345,11 @@ void present_lab::render_thread_main() noexcept {
       if (snapshot.loupe && !show_previous) {
         const loupe_box box = loupe_rect(snapshot, view);
         gfx::blit_params lp = bp;
-        lp.pan_x = bp.pan_x + (box.point_x - (view.x + view.w * 0.5f)) / bp.zoom;
-        lp.pan_y = bp.pan_y + (box.point_y - (view.y + view.h * 0.5f)) / bp.zoom;
-        lp.zoom = bp.zoom < 1.0f ? 1.0f : std::min(64.0f, bp.zoom * 2.0f);
+        const loupe_camera lc =
+            loupe_view(box, view.x, view.y, view.w, view.h, bp.pan_x, bp.pan_y, bp.zoom);
+        lp.pan_x = lc.pan_x;
+        lp.pan_y = lc.pan_y;
+        lp.zoom = lc.zoom;
         lp.window_w = box.size;
         lp.window_h = box.size;
         lp.origin_x = box.x;
