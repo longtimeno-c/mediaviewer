@@ -119,7 +119,9 @@ texture limit — a still is not one texture:
 - The render thread marks the tiles visible at the current LOD plus a **one-tile ring**
   through lock-free per-tile states; the session's `tile_service` thread builds and creates
   them — 4 per 16 ms tick, at most 24 in flight — and the render thread draws ready tiles coarse
-  to fine over the overview. It never waits on the service and never creates a texture.
+  to fine (up to two levels above the LOD) over the overview. Once every on-screen tile at the
+  LOD is ready, the coarser levels are hidden and are not drawn (issue #164). It never waits on
+  the service and never creates a texture.
   The service sleeps on an atomic poke count with no timeout (0 wakeups on a still); a tile
   request, a new set, and dropping a set's last outside handle each poke it.
 - Resident tile VRAM is capped at **256 MB** (~750 tiles), LRU-evicted, separate from the

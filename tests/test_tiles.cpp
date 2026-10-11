@@ -266,6 +266,67 @@ TEST_CASE("tiled upload on WARP: overview, on-demand tiles, budget and cancel", 
   jobs.shutdown();
 }
 
+TEST_CASE("a complete level is drawn alone: the coarser levels under it are skipped",
+          "[tiles][gpu]") {
+  // Issue #164: frame() pushed lod+2 and lod+1 under a complete lod, two
+  // full-view passes nobody could see.
+  mv::gfx::com_ptr<ID3D11Device> device;
+  D3D_FEATURE_LEVEL level{};
+  const HRESULT hr =
+      ::D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0,
+                          D3D11_SDK_VERSION, device.GetAddressOf(), &level, nullptr);
+  if (FAILED(hr)) SKIP("WARP is unavailable");
+
+  mv::job_system jobs;
+  REQUIRE(jobs.start(1) == mv::status::ok);
+  std::atomic<int> landed{0};
+  mv::image::tile_service service(
+      &jobs, [](void* u) noexcept { static_cast<std::atomic<int>*>(u)->fetch_add(1); }, &landed);
+  auto gpu = mv::image::upload_tiled(device.Get(), gradient(20000, 1000),
+                                     jobs.current_generation(), service);
+  REQUIRE(gpu);
+  auto& set = *gpu->tiles;
+  std::vector<mv::gfx::tile_quad> draws;
+  draws.reserve(256);
+
+  auto land = [&](const mv::image::tile_view& view) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(kLandSeconds);
+    set.frame(view, draws);
+    while (set.pending() && std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      set.frame(view, draws);
+    }
+    REQUIRE_FALSE(set.pending());
+  };
+
+  // 50 %: level 1 (two full-resolution pixels per level pixel) lands.
+  const mv::image::tile_view half{10000.0f, 500.0f, 0.5f, 1280.0f, 720.0f};
+  REQUIRE(set.layout().lod_for_zoom(half.zoom) == 1);
+  land(half);
+  REQUIRE_FALSE(draws.empty());
+  for (const auto& q : draws) CHECK_THAT(q.scale_x, WithinAbs(2.0f, 1e-4f));
+
+  // 100 %: until level 0 is complete, level 1 still shows under it...
+  const mv::image::tile_view full{10000.0f, 500.0f, 1.0f, 1280.0f, 720.0f};
+  set.frame(full, draws);
+  bool coarse_shown = false;
+  for (const auto& q : draws) coarse_shown = coarse_shown || q.scale_x > 1.5f;
+  CHECK(coarse_shown);
+
+  // ...and once it is, level 0 is all that is drawn.
+  land(full);
+  set.frame(full, draws);
+  const auto visible =
+      set.layout().visible(0, full.pan_x, full.pan_y, full.zoom, full.view_w, full.view_h, 0);
+  const std::size_t want =
+      static_cast<std::size_t>(visible.x1 - visible.x0) * (visible.y1 - visible.y0);
+  CHECK(draws.size() == want);
+  for (const auto& q : draws) CHECK_THAT(q.scale_x, WithinAbs(1.0f, 1e-4f));
+
+  gpu = mv::err(mv::status::cancelled);
+  jobs.shutdown();
+}
+
 TEST_CASE("tile service sleeps without polling and wakes on every poke", "[tiles][gpu]") {
   mv::gfx::com_ptr<ID3D11Device> device;
   D3D_FEATURE_LEVEL level{};

@@ -246,6 +246,8 @@ class tile_set {
   void request(std::uint32_t index) noexcept;
   void evict_over_budget() noexcept;
   void push_draws(std::uint32_t level, const tile_range& r, std::vector<gfx::tile_quad>& draws) noexcept;
+  // Every tile of `r` at `level` is ready to draw (render thread).
+  [[nodiscard]] bool range_ready(std::uint32_t level, const tile_range& r) const noexcept;
 
   gfx::com_ptr<ID3D11Device> device_;
   std::shared_ptr<const tile_source> source_;
