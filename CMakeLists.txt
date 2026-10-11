@@ -640,6 +640,7 @@ add_library(mediaviewer_core SHARED
   src/abi/include/mediaviewer/mediaviewer_crash.h
   src/abi/video_session.h
   src/abi/guard.h
+  src/abi/test_hooks.h
   src/abi/include/mediaviewer/mediaviewer.h
   src/abi/include/mediaviewer/mediaviewer_addon.h
   src/abi/include/mediaviewer/mediaviewer_import.h
@@ -936,6 +937,8 @@ if(MV_BUILD_TESTS)
     tests/test_spsc_ring.cpp
     tests/test_job_system.cpp
     tests/test_abi_roundtrip.cpp
+    # Issue #151: the add-on store exports (mediaviewer_addon.h).
+    tests/test_abi_addons.cpp
     tests/test_pacer.cpp
     tests/test_input_state.cpp
     tests/test_probe.cpp
@@ -1086,7 +1089,10 @@ if(MV_BUILD_TESTS)
     Catch2::Catch2WithMain
     ole32
     uuid
-    mv_io)
+    mv_io
+    # tests/open_addon_fixture.h signs packages and hashes their files.
+    mv_addon
+    ${MV_SODIUM_TARGET})
   target_include_directories(mv_tests PRIVATE src src/abi/include tools)
   # The clip helper with its test hooks (a crash, a hang, a software encoder);
   # the product MediaViewerClipJob.exe is built without them.

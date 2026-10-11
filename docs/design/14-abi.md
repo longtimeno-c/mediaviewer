@@ -198,6 +198,10 @@ DLL for the C++ present lab, never P/Invoked — `attach_device` / `detach_devic
 `image_ready_wait_handle`, `tiles_frame` / `tiles_stats`, the animation frame ring
 (`take_animation_frame`, `animation_*`), `poll_video`, `take_ready_video_frame` /
 `release_video_frame`, `video_open`, and `open_failed`. The navigation GPU LRU is native-only.
+One more side door is for `mv_tests` only: [`src/abi/test_hooks.h`](../../src/abi/test_hooks.h)
+`set_user_dirs_for_tests` points the DLL's own copy of `mv_io`'s thumbnail, add-on and open
+add-on folders at a scratch folder (the test exe links `mv_io` too, so its overrides would
+not reach the DLL).
 
 ## Image open
 

@@ -10,10 +10,13 @@
 // contract the managed half depends on.
 
 #include <windows.h>
+#include <d3d11.h>
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <string>
@@ -21,6 +24,7 @@
 #include <vector>
 
 #include "abi/native.h"
+#include "abi/test_hooks.h"
 #include "corpus.h"
 #include "gfx/device.h"
 #include "io/paths.h"
@@ -509,13 +513,18 @@ std::string session_string(mv_session_t s, session_string_fn fn) {
   return std::string(buf);
 }
 
-// The thumbnail cache goes to the scratch folder, not the user's profile.
+// The thumbnail cache goes to the scratch folder, not the user's profile. The
+// DLL has its own copy of mv_io, so its override is set through test_hooks.h.
 struct thumb_cache_override {
   explicit thumb_cache_override(const std::filesystem::path& dir) {
     std::filesystem::create_directories(dir);
     mv::io::set_thumb_cache_dir_override(mv::test::utf8(dir));
+    mv::abi::set_user_dirs_for_tests(mv::test::utf8(dir).c_str(), nullptr, nullptr);
   }
-  ~thumb_cache_override() { mv::io::set_thumb_cache_dir_override({}); }
+  ~thumb_cache_override() {
+    mv::io::set_thumb_cache_dir_override({});
+    mv::abi::set_user_dirs_for_tests("", nullptr, nullptr);
+  }
   thumb_cache_override(const thumb_cache_override&) = delete;
   thumb_cache_override& operator=(const thumb_cache_override&) = delete;
 };
@@ -699,6 +708,208 @@ TEST_CASE("the video transport rejects a null session and is harmless with no cl
   CHECK(stats.frames_presented == 0);
 }
 
+namespace {
+
+// A device with video support, as a hosted runner has one: with no GPU the
+// hardware driver type is the Basic Render Driver, which accepts
+// VIDEO_SUPPORT and has no video decoder, so the clip decodes in software
+// (test_video_ring.cpp). That is enough to drive the transport.
+struct video_device {
+  ID3D11Device* device = nullptr;
+  video_device() {
+    const UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
+    const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
+    if (FAILED(::D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags, levels,
+                                   ARRAYSIZE(levels), D3D11_SDK_VERSION, &device, nullptr,
+                                   nullptr))) {
+      device = nullptr;
+      return;
+    }
+    ID3D10Multithread* mt = nullptr;
+    if (SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&mt)))) {
+      mt->SetMultithreadProtected(TRUE);
+      mt->Release();
+    }
+  }
+  ~video_device() {
+    if (device) device->Release();
+  }
+  video_device(const video_device&) = delete;
+  video_device& operator=(const video_device&) = delete;
+};
+
+// Stands in for the present loop: poll_video is what applies the transport
+// commands and takes frames, and only the render thread calls it.
+struct video_pump {
+  explicit video_pump(mv_session_t s) : session(s) {}
+  mv_session_t session;
+  mv::player::video_frame frame;
+  bool active = false;
+  int shown = 0;
+  bool ended = false;
+  void poll() {
+    if (mv::abi::poll_video(session, 16'666'667, frame, active)) ++shown;
+    mv_completion drained[32]{};
+    const uint32_t n = mv_completion_drain(session, drained, 32);
+    for (uint32_t i = 0; i < n; ++i) ended = ended || drained[i].kind == MV_COMPLETION_VIDEO_ENDED;
+  }
+  template <class Pred>
+  bool until(Pred pred, std::chrono::milliseconds limit = 5s) {
+    const auto deadline = std::chrono::steady_clock::now() + limit;
+    while (std::chrono::steady_clock::now() < deadline) {
+      poll();
+      if (pred()) return true;
+      std::this_thread::sleep_for(4ms);
+    }
+    return false;
+  }
+  void run_for(std::chrono::milliseconds span) {
+    (void)until([] { return false; }, span);
+  }
+  int64_t position() {
+    int64_t p = -1;
+    REQUIRE(mv_video_position(session, &p) == MV_OK);
+    return p;
+  }
+  uint32_t state() {
+    uint32_t s = 99;
+    REQUIRE(mv_video_state(session, &s) == MV_OK);
+    return s;
+  }
+  mv_video_stats stats() {
+    mv_video_stats s{};
+    REQUIRE(mv_video_get_stats(session, &s) == MV_OK);
+    return s;
+  }
+};
+
+constexpr int64_t kFrameNs = 33'333'333;  // the fixture's 30 fps
+constexpr int64_t kSecondNs = 1'000'000'000;
+
+}  // namespace
+
+TEST_CASE("the video transport drives a playing synthetic clip", "[abi][video]") {
+  // Issue #151: every transport call against a clip that is really playing,
+  // with what each one is for observed through the ABI. A synthetic clip
+  // (clip_fixture.h: 4 s, 30 fps, MPEG-4 + MP2), so no corpus.
+  mv::test::scratch_dir dir("abi_transport");
+  thumb_cache_override thumbs(dir / "thumbs");  // the player's resume note goes beside it
+  const std::string path = mv::test::utf8(dir / "clip.mp4");
+  REQUIRE(mv::test::clipfx::make(path, {}));
+
+  video_device device;
+  if (!device.device) SKIP("no D3D11 device with video support on this machine");
+  session_guard s(2);
+  REQUIRE(mv::abi::attach_device(s.handle, device.device) == mv::status::ok);
+  REQUIRE(mv_video_set_muted(s.handle, 1) == MV_OK);  // the audio clock still runs at gain 0
+  uint64_t job = 0;
+  REQUIRE(mv_video_open(s.handle, path.c_str(), &job) == MV_OK);
+  video_pump pump(s.handle);
+  REQUIRE(pump.until([&] { return pump.shown > 0; }));
+  mv_video_info info{};
+  REQUIRE(mv_video_get_info(s.handle, &info) == MV_OK);
+  CHECK(info.duration_ns == 4 * kSecondNs);
+  CHECK(info.audio_tracks == 1);
+
+  // Play: frames are presented and the position moves.
+  REQUIRE(mv_video_play(s.handle) == MV_OK);
+  REQUIRE(pump.until([&] {
+    return pump.state() == MV_PLAY_PLAYING && pump.stats().frames_presented >= 10;
+  }));
+  CHECK(pump.position() > 0);
+
+  // Pause: the position holds.
+  REQUIRE(mv_video_pause(s.handle) == MV_OK);
+  REQUIRE(pump.until([&] { return pump.state() == MV_PLAY_PAUSED; }));
+  const int64_t paused_at = pump.position();
+  pump.run_for(300ms);
+  CHECK(pump.position() == paused_at);
+
+  // Exact seek while paused shows the frame at the target.
+  int before = pump.shown;
+  REQUIRE(mv_video_seek(s.handle, 2 * kSecondNs, 1) == MV_OK);
+  REQUIRE(pump.until([&] { return pump.shown > before; }));
+  const int64_t at_seek = pump.position();
+  CHECK(std::llabs(at_seek - 2 * kSecondNs) <= kFrameNs / 2);
+
+  // A step forward is the next frame; a step back returns to this one.
+  before = pump.shown;
+  REQUIRE(mv_video_step(s.handle, 1) == MV_OK);
+  REQUIRE(pump.until([&] { return pump.shown > before; }));
+  const int64_t stepped = pump.position();
+  CHECK(std::llabs(stepped - at_seek - kFrameNs) <= kFrameNs / 2);
+  before = pump.shown;
+  REQUIRE(mv_video_step(s.handle, -1) == MV_OK);
+  REQUIRE(pump.until([&] { return pump.shown > before && pump.position() < stepped; }));
+  CHECK(std::llabs(pump.position() - at_seek) <= kFrameNs / 2);
+  CHECK(pump.state() == MV_PLAY_PAUSED);
+
+  // Rate: taken, and clamped to 0.25 .. 4.0 rather than refused (mediaviewer.h).
+  for (const double rate : {2.0, 64.0, 0.1, 1.0}) {
+    const double want = rate > 4.0 ? 4.0 : (rate < 0.25 ? 0.25 : rate);
+    REQUIRE(mv_video_set_rate(s.handle, rate) == MV_OK);
+    CHECK(pump.until([&] { return pump.stats().playback_rate == want; }));
+  }
+  CHECK(std::llabs(pump.position() - at_seek) <= kFrameNs / 2);
+
+  // Volume moves nothing but the gain.
+  pump.run_for(100ms);
+  const int64_t before_volume = pump.position();
+  REQUIRE(mv_video_set_volume(s.handle, 0.5f) == MV_OK);
+  pump.run_for(200ms);
+  CHECK(pump.position() == before_volume);
+  CHECK(pump.state() == MV_PLAY_PAUSED);
+
+  // Choosing the (only) audio track re-reads from where it is; a track that
+  // is not there is ignored.
+  before = pump.shown;
+  REQUIRE(mv_video_select_audio_track(s.handle, 0) == MV_OK);
+  CHECK(pump.until([&] { return pump.shown > before; }));
+  CHECK(std::llabs(pump.position() - before_volume) <= kFrameNs / 2);
+  REQUIRE(mv_video_select_audio_track(s.handle, 5) == MV_OK);
+  pump.run_for(200ms);
+  CHECK(std::llabs(pump.position() - before_volume) <= kFrameNs / 2);
+  CHECK(pump.state() == MV_PLAY_PAUSED);
+
+  // An A-B loop over 1.0 .. 1.5 s keeps playback inside it and wraps.
+  REQUIRE(mv_video_set_loop(s.handle, kSecondNs, 3 * kSecondNs / 2) == MV_OK);
+  REQUIRE(mv_video_seek(s.handle, kSecondNs, 1) == MV_OK);
+  REQUIRE(mv_video_play(s.handle) == MV_OK);
+  int64_t highest = 0;
+  int64_t last = 0;
+  int wraps = 0;
+  (void)pump.until(
+      [&] {
+        const int64_t p = pump.position();
+        highest = std::max(highest, p);
+        if (p + 200'000'000 < last) ++wraps;
+        last = p;
+        return false;
+      },
+      1500ms);
+  CHECK(wraps >= 1);
+  CHECK(highest <= 3 * kSecondNs / 2 + 250'000'000);
+
+  // Loop off: playback runs past B to the end.
+  REQUIRE(mv_video_set_loop(s.handle, 0, -1) == MV_OK);
+  REQUIRE(mv_video_seek(s.handle, 3 * kSecondNs + kSecondNs / 2, 1) == MV_OK);
+  REQUIRE(mv_video_play(s.handle) == MV_OK);
+  CHECK(pump.until([&] { return pump.state() == MV_PLAY_ENDED; }));
+  CHECK(pump.ended);
+
+  // The stats and the position agree, and say what happened.
+  const mv_video_stats stats = pump.stats();
+  CHECK(stats.position_ns == pump.position());
+  CHECK(stats.position_ns > 3 * kSecondNs + kSecondNs / 2);
+  CHECK(stats.frames_presented >= 10);
+  CHECK(stats.playback_rate == 1.0);
+
+  REQUIRE(mv_video_close(s.handle) == MV_OK);
+  pump.poll();
+  CHECK(pump.state() == MV_PLAY_STOPPED);
+  mv::abi::detach_device(s.handle);
+}
+
 TEST_CASE("mv_probe_is_video answers by magic bytes", "[abi][video][probe]") {
   mv::test::scratch_dir dir("abi_probe");
   const std::string clip = mv::test::utf8(dir / "clip.mp4");
@@ -751,12 +962,4 @@ TEST_CASE("mv_crash_context hands out a stable table", "[abi][crash]") {
   // The crash handler reads these addresses after the fact: they never move.
   CHECK(first.slots == second.slots);
   CHECK(first.last_call_correlation_id == second.last_call_correlation_id);
-}
-
-TEST_CASE("mv_volume_watch needs a session to start, not to stop", "[abi][addon]") {
-  CHECK(mv_volume_watch(nullptr, 1) == MV_ERR_INVALID_ARG);
-  CHECK(mv_volume_watch(nullptr, 0) == MV_OK);
-  // A void any-thread flag; setting and clearing it must not fault.
-  mv_present_set_busy(1);
-  mv_present_set_busy(0);
 }
