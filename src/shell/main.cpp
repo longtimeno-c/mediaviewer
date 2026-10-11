@@ -1129,16 +1129,20 @@ void open_dropped_wide_list(app_state* app, std::wstring_view blob) noexcept {
 // and the cells' badges. Only when the marks change, never per navigation, and
 // free when nothing is or was marked. Keyed by path, as the set is, so a
 // re-sort or a new listing needs no push.
-void push_marks(app_state* app) {
+void push_marks(app_state* app) noexcept {
   if (!app || !app->chrome.attached()) return;
   if (app->marks.empty() && !app->marks_pushed) return;
-  std::string lines;
-  for (const std::string& path : app->marks.targets({})) {
-    lines += path;
-    lines += '\n';
+  try {
+    std::string lines;
+    for (const std::string& path : app->marks.targets({})) {
+      lines += path;
+      lines += '\n';
+    }
+    app->chrome.set_marks(lines, static_cast<std::int32_t>(app->marks.size()));
+    app->marks_pushed = !app->marks.empty();
+  } catch (...) {
+    return;  // out of memory: the badges lag, the marks themselves are intact
   }
-  app->chrome.set_marks(lines, static_cast<std::int32_t>(app->marks.size()));
-  app->marks_pushed = !app->marks.empty();
 }
 
 // The marked badge. Free when nothing is marked, so key-repeat navigation with
