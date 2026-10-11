@@ -109,6 +109,9 @@ struct MetadataView: View {
               .font(MVTheme.font(14))
             }
           }
+          // docs/design/25 PR 59: the add-ons' sections (Places' label, coordinates
+          // and map), each under its heading; nothing when none answered.
+          AddonInfoSections()
           Rectangle().fill(MVTheme.hairline).frame(height: 1).padding(.vertical, 4)
           HStack {
             Text("Edit any tag under All tags.").font(MVTheme.font(12)).foregroundStyle(MVTheme.body)

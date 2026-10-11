@@ -41,8 +41,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <vector>
@@ -57,6 +60,7 @@
 #include "io/file.h"
 #include "io/file_port.h"
 #include "io/paths.h"
+#include "meta/location.h"
 #include "meta/meta.h"
 #include "mv_chrome_bridge.h"
 #include "shell/commands.h"
@@ -505,6 +509,38 @@ bool load_import_attempt() {
 
 // ---- the AI pack (Milestone H) ------------------------------------------------
 
+// docs/design/25 §7 (PR 59): Local search is a search provider, not the owner of
+// the path bar's button. While the pack is attached it is the registry's
+// "local" provider: the table both chromes read says Local search answers
+// (contributions_json "local_search"), and a Local search query goes to every
+// local-scope provider (Places' `place:`). The pack's own results keep their
+// rich list (moments, faces, the scrub markers), shown by its panel; as a
+// provider it answers with no extra rows.
+class local_search_client final : public mv::addon::slot_client {
+ public:
+  mv::status info_section(const mv_slot_info_request&) override { return mv::status::unsupported_format; }
+  mv::status search(const mv_slot_search_request& r) override {
+    return mv::addon::default_slots().post_search("ai", r.provider_id, r.generation, {}, true);
+  }
+  mv::status screen_open(const mv_slot_screen_request&) override { return mv::status::unsupported_format; }
+  mv::status badges(const mv_slot_badges_request&) override { return mv::status::unsupported_format; }
+  void event(const mv_slot_event&) override {}
+};
+
+void register_local_search_provider(bool on) {
+  mv::addon::slot_registry& reg = mv::addon::default_slots();
+  if (!on) {
+    reg.detach("ai");
+    return;
+  }
+  if (reg.attached("ai")) return;
+  mv::addon::contributions c;
+  c.api_min = mv::addon::kSlotsApi;
+  c.api_max = mv::addon::kSlotsApi;
+  c.search_providers.push_back({"local", "Local search", {}, false, true});
+  (void)reg.attach("ai", "Local search", std::move(c), std::make_unique<local_search_client>());
+}
+
 // The host table v2 services the AI pack needs: the viewer's own decoders and
 // its JPEG-512 cache (src/abi/addon_media.h), the same set abi/addon_abi.cpp's
 // mv_addon_load installs on Windows.
@@ -558,6 +594,7 @@ void unload_ai() {
   s.ai.bundle = nil;   // mapped until quit, inert (NSBundle -unload is unsafe for Swift)
   s.ai.loading = false;
   mv::shell::set_addon_commands_available(mv::shell::addon_family::ai, false);
+  register_local_search_provider(false);
   // Nothing may point into the gone table's clip: drop the markers.
   mv_chrome_set_scrub_markers(nullptr, nullptr, 0, -1);
 }
@@ -596,6 +633,7 @@ bool attach_ai(std::unique_ptr<mv::addon::loaded_addon>& loaded) {
   s.ai.chrome = chrome;
   s.ai.error.clear();
   mv::shell::set_addon_commands_available(mv::shell::addon_family::ai, true);
+  register_local_search_provider(true);
   // The folder already on screen counts as opened.
   if (!s.folder.empty() && [chrome respondsToSelector:@selector(folderChanged:)]) {
     [(id<MVAIChrome>)chrome folderChanged:[NSString stringWithUTF8String:s.folder.c_str()]];
@@ -748,6 +786,10 @@ std::string read_bridge(int32_t (*fn)(char*, int32_t)) {
   mv::shell::set_read_only_paths(read_only);
   const bool ok = mv_chrome_open_list(title.UTF8String ?: "", ptrs.data(), ms.data(),
                                       static_cast<int32_t>(ptrs.size()), select, gallery);
+  // docs/design/25 PR 59: the same query to the other Local search providers
+  // (Places' `place:`), on their workers; their rows show under the result
+  // list's title when they arrive (CommandBarView ListTitleBar).
+  if (ok) (void)mv::addon::default_slots().search(MV_SLOT_SCOPE_LOCAL, title.UTF8String ?: "", "");
   return ok ? @YES : @NO;
 }
 
@@ -830,6 +872,9 @@ void MvAddonsStart(MvAddonsOpenPathFn open_path, void* ctx) {
       if (ok) (void)load_import();
       if (ai) (void)start_ai_load();
     });
+    // docs/design/25 PRs 58-59: the add-ons that fill screens and slots, behind
+    // these checks on the add-on queue (never the main thread).
+    MvSlotAddonsStart();
   });
   // The one-time hint: a removable volume mounts while Import is absent.
   s.mount_observer = [[[NSWorkspace sharedWorkspace] notificationCenter]
@@ -943,6 +988,7 @@ void exit_guard() {
 void MvAddonsQuit() {
   mac_addons& s = state();
   g_quitting.store(true, std::memory_order_relaxed);
+  MvSlotAddonsQuit();
   g_quit_at = std::chrono::steady_clock::now();
   static bool guarded = false;
   if (!guarded) guarded = std::atexit(&exit_guard) == 0;
@@ -1438,4 +1484,162 @@ extern "C" bool mv_addon2_ai_status(mv_chrome_ai_status* out) {
   out->speech_total = st.speech_total;
   out->speech_done = st.speech_done;
   return true;
+}
+
+// ---- add-ons that fill screens and slots (docs/design/25 PRs 58-59) -----------------
+//
+// MediaViewer's own native add-ons that contribute an info-pane section, a
+// search provider, items, badges or screens (Places, #344): any installed,
+// verified first-party add-on whose manifest names such points, other than
+// Import and the AI family (they load above, with chromes of their own). Each
+// loads on addon_queue() after Import's and the AI pack's checks, never on the
+// main thread; loading it attaches its contributions to the registry
+// (addon/host.cpp), and unloading detaches every item before its code goes
+// (no restart). The chrome reads the registry through mv_chrome_slots_*
+// (slots_mac.mm).
+
+namespace {
+
+struct slot_addons_state {
+  // Touched on addon_queue() only.
+  std::map<std::string, std::unique_ptr<mv::addon::loaded_addon>> loaded;
+  // What Settings reads, from any thread.
+  std::mutex m;
+  std::map<std::string, std::string> errors;  // id -> status name of the last failed load
+  std::set<std::string> loaded_ids;
+};
+
+slot_addons_state& slot_addons() {
+  static slot_addons_state* const s = new slot_addons_state;
+  return *s;
+}
+
+bool fills_slots(const mv::addon::installed& i) {
+  return !i.m.slots.empty() && i.m.part_of.empty() && i.id != "import" && !is_ai_family(i.id);
+}
+
+// A file's coordinates for the host table (location_of / locations_in): a
+// bounded read, never the full metadata read (meta/location.h).
+std::optional<mv_addon_location> read_location(const std::string& path) {
+  const auto fix = mv::meta::read_location(path);
+  if (!fix) return std::nullopt;
+  mv_addon_location l{};
+  l.has = 1;
+  l.lat = fix->lat;
+  l.lon = fix->lon;
+  if (fix->altitude) {
+    l.has_altitude = 1;
+    l.altitude_m = *fix->altitude;
+  }
+  return l;
+}
+
+mv::addon::host_services slot_services() {
+  mv::addon::host_services svc;
+  svc.capture = &capture_info;
+  svc.thumbnail = &thumbnail;
+  svc.should_yield = [] { return mv::shell::g_present_busy.load(std::memory_order_relaxed); };
+  svc.post = [](const mv_addon_event&) {};  // slot add-ons answer through the v3 rows
+  svc.location = &read_location;
+  if (auto lib = mv::io::default_library_dir()) svc.default_library = *lib;
+  return svc;
+}
+
+// [addon_queue] Loads every installed slot add-on not loaded yet.
+void load_slot_addons_now() {
+  if (g_quitting.load(std::memory_order_relaxed) || !ensure_store()) return;
+  slot_addons_state& sa = slot_addons();
+  for (const mv::addon::installed& i : state().store->list()) {
+    if (!fills_slots(i) || sa.loaded.count(i.id)) continue;
+    auto loaded = mv::addon::loaded_addon::load(*state().store, i.id, slot_services());
+    std::lock_guard<std::mutex> lock(sa.m);
+    if (!loaded) {
+      sa.errors[i.id] = mv::status_name(loaded.error());
+      continue;
+    }
+    sa.errors.erase(i.id);
+    sa.loaded_ids.insert(i.id);
+    sa.loaded.emplace(i.id, std::move(*loaded));
+  }
+}
+
+}  // namespace
+
+void MvSlotAddonsStart() {
+  if (state().reader) return;  // the first window hosts the add-ons (docs/design/18 "One host process")
+  dispatch_async(addon_queue(), ^{
+    load_slot_addons_now();
+  });
+}
+
+void MvSlotAddonsQuit() {
+  // Each one's stop on a thread of its own, as for the others; its registry
+  // items go first (loaded_addon's destructor detaches before shutdown).
+  dispatch_async(addon_queue(), ^{
+    slot_addons_state& sa = slot_addons();
+    for (auto& [id, addon] : sa.loaded) mv::addon::stop_for_exit(std::move(addon));
+    sa.loaded.clear();
+  });
+}
+
+// [worker] [{"id","name","version","description","state","why","loaded"}] for
+// every installed first-party add-on that fills screens or slots (Settings ->
+// Add-ons lists them, each with Remove).
+extern "C" int32_t mv_chrome_slot_addons(char* buf, int32_t size) {
+  if (!ensure_store()) return copy_out("[]", buf, size);
+  slot_addons_state& sa = slot_addons();
+  mv::json::writer w;
+  w.begin_array();
+  for (const mv::addon::installed& i : state().store->list()) {
+    if (!fills_slots(i)) continue;
+    std::lock_guard<std::mutex> lock(sa.m);
+    const auto err = sa.errors.find(i.id);
+    w.begin_object()
+        .key("id").string(i.id)
+        .key("name").string(i.name)
+        .key("version").string(i.version)
+        .key("description").string(i.m.description)
+        .key("state").string(state_name(i.state))
+        .key("why").string(err != sa.errors.end() ? err->second : std::string())
+        .key("loaded").boolean(sa.loaded_ids.count(i.id) != 0)
+        .end_object();
+  }
+  w.end_array();
+  return copy_out(w.str(), buf, size);
+}
+
+// [main-thread] Loads a slot add-on just installed (or sideloaded).
+extern "C" void mv_chrome_slot_addons_refresh(void) { MvSlotAddonsStart(); }
+
+// [main-thread][no-block] Removes one: every item it contributed goes at once
+// (the registry detaches it on addon_queue before its shutdown), then its
+// files; keep_data keeps its data folder. No restart.
+extern "C" bool mv_chrome_slot_addon_remove(const char* id, bool keep_data) {
+  if (!id || state().reader) return false;
+  const std::string s(id);
+  if (s == "import" || is_ai_family(s)) return false;
+  dispatch_async(addon_queue(), ^{
+    slot_addons_state& sa = slot_addons();
+    auto it = sa.loaded.find(s);
+    if (it != sa.loaded.end()) {
+      std::unique_ptr<mv::addon::loaded_addon> gone = std::move(it->second);
+      sa.loaded.erase(it);
+      gone.reset();  // detach, shutdown, unload
+    }
+    {
+      std::lock_guard<std::mutex> lock(sa.m);
+      sa.loaded_ids.erase(s);
+      sa.errors.erase(s);
+    }
+    if (!ensure_store()) return;
+    mac_addons& st = state();
+    std::lock_guard<std::mutex> lock(st.store_writes);
+    (void)st.store->remove(s, keep_data);
+  });
+  return true;
+}
+
+std::string MvAddonsThumbnailPath(const std::string& path) {
+  auto made = thumbnail(path);
+  return made ? *made : std::string();
 }

@@ -608,6 +608,8 @@ set(MV_MAC_HOST_SOURCES
   # Milestone G: add-ons (Settings > Add-ons, the Import chrome's host side).
   src/shell/addons_mac.mm
   src/shell/addons_mac.h
+  # docs/design/25 PRs 58-59: screens and slots, the registry behind the bridge.
+  src/shell/slots_mac.mm
   # docs/design/23: Final Cut Pro on / off (the agent and extension in the bundle).
   src/shell/fcp_mac.mm
   src/shell/present_busy.h
@@ -617,6 +619,7 @@ set_source_files_properties(
   src/shell/crash_reporter_mac.mm
   src/shell/present_lab_mac.mm
   src/shell/addons_mac.mm
+  src/shell/slots_mac.mm
   src/shell/fcp_mac.mm
   src/shell/install_from_dmg_mac.mm
   PROPERTIES COMPILE_FLAGS "-fobjc-arc")

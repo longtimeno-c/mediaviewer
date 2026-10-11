@@ -25,6 +25,13 @@ struct GalleryView: View {
 
   var body: some View {
     grid
+      // docs/design/25 PR 59: badges for the folder the grid shows, one request per
+      // folder (and only while the grid is open: no add-on work for a viewer
+      // that never opens it).
+      .onAppear { SlotStore.shared.requestBadges(folder: SlotTargets.folder()) }
+      .onChange(of: store.listingGeneration) { _, _ in
+        SlotStore.shared.requestBadges(folder: SlotTargets.folder())
+      }
       // A folder of folders has no image to show through the material, and the
       // canvas behind may still hold the previous folder's last photo.
       .background(store.names.isEmpty ? AnyShapeStyle(Color(nsColor: .windowBackgroundColor))
@@ -95,6 +102,8 @@ struct GalleryView: View {
                     )
                     .id(index)
                     .onTapGesture { store.selectAndCloseGallery(index) }
+                    // docs/design/25 PR 59: the add-ons' context-menu entries, when any.
+                    .contextMenu { SlotContextEntries(tile: index) }
                     // Drag out the original (the marks, when this cell is one).
                     .fileDrag { store.dragFiles(from: index) }
                   }
@@ -313,6 +322,8 @@ private struct GalleryCell: View {
         )
         .overlay { if isClip { PlayBadge(diameter: 40) } }
         .overlay(alignment: .topTrailing) { if isMarked { MarkBadge() } }
+        // docs/design/25 PR 59: the add-ons' badges, from a table (no add-on call per tile).
+        .overlay(alignment: .bottomLeading) { SlotTileBadges(name: name) }
       Text(name)
         .font(.caption)
         .lineLimit(1)
