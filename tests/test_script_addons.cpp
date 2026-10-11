@@ -317,7 +317,7 @@ TEST_CASE("the host runs installed scripts and their commands", "[script][host]"
   REQUIRE(host.find("acme.count")->wait_idle(5s));
   {
     std::lock_guard<std::mutex> lock(m);
-    REQUIRE(notices == std::vector<std::string>{"acme.count: 132 files"});
+    REQUIRE(notices == std::vector<std::string>{"acme.count: Count: 132 files"});
   }
 
   host.set_key_notes(R"([{"addon":"acme.count","id":"count-files","note":"Ctrl+Shift+K is MediaViewer's"}])");

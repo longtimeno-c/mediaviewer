@@ -424,6 +424,16 @@ bool mv_open_addons_remove(const char* folder);                                 
 // "" when the add-on or theme is gone or no longer verifies.
 int32_t mv_open_addons_theme(const char* addon_id, const char* theme_id,
                              char* buf, int32_t size);                          // [worker]
+// docs/design/25 PR 57: the script add-ons the app runs, for Settings
+// (src/addon/script_host.h status_json): [{"id","state":"running|stopped|
+// starting","stop","message","last_error","memory_peak","tasks","commands":
+// [{"id","name","key","note"}]}]. Reads no file. [any-thread]
+int32_t mv_open_addons_scripts(char* buf, int32_t size);
+// Settings "Start again" for a stopped script add-on; also what an install or
+// a remove calls, so the running set follows the store. Returns at once; the
+// work runs on the scripts' own queue. [any-thread]
+void mv_open_addons_restart(const char* addon_id);
+void mv_open_addons_reload(void);
 // The theme's canvas colours (0xRRGGBB), so the viewer's own "System"
 // background follows the theme; has_dark / has_light say which palettes the
 // theme gives. active = false returns it to the window's colour. [main-thread]

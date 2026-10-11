@@ -674,6 +674,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
                    count:(int32_t)folderCount;
 - (uint64_t)noticeGeneration;
 - (std::string)noticeText;
+- (void)noticeShow:(const std::string&)text;
 // PR 29 (docs/design/20): the Edit workspace, read and driven by the bridge.
 - (uint64_t)editGeneration;
 // Points the Edit workspace docks on the right (0 when closed): the canvas
@@ -762,6 +763,12 @@ extern "C" void mv_chrome_request_thumb(int32_t index) {
 extern "C" void mv_chrome_menu(int32_t cmd) {
   (void)mv::shell::crash::note_native_call();
   if (g_chrome_app) [g_chrome_app runMenuCmd:cmd];
+}
+void MvAppShowNotice(const std::string& text) {
+  std::string copy = text;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (g_chrome_app) [g_chrome_app noticeShow:copy];
+  });
 }
 void MvAppCommandsChanged() {
   if (!g_chrome_app) return;
@@ -2445,6 +2452,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   };
   if (std::getenv("MV_EDIT_SELFTEST_SOAK") == nullptr) {
     if (MvClaimAddonHost()) {
+      MvAddonsSetFolderModel(&_folder);  // docs/design/25 PR 57: scripts with folder.read
       MvAddonsStart(open_from_addon, nullptr);
       // docs/design/23: Final Cut Pro search stays as Settings left it (background, later).
       MvFcpStart();

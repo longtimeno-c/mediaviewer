@@ -41,7 +41,16 @@ script_host::entry script_host::make_entry(const open_store& store, const open_i
     }
     config.sources.push_back(script_source{path, std::move(*text)});
   }
-  e.addon = script_addon::start(std::move(config), services_);
+  // A line an add-on shows names it: the person sees who is talking (docs/design/25
+  // §5, the publisher's words are never passed off as MediaViewer's).
+  script_services services = services_;
+  if (services_.notify) {
+    services.notify = [notify = services_.notify, name = installed.m.name](
+                          const std::string& id, const std::string& text) {
+      notify(id, name + ": " + text);
+    };
+  }
+  e.addon = script_addon::start(std::move(config), std::move(services));
   // A stop the host asked for (reload, remove, quit) changes nothing the host
   // does not already know; a limit or a load error does.
   e.addon->set_on_stopped([this](script_stop why, const std::string&) {

@@ -418,12 +418,22 @@ struct addon_command_row {
   std::uint8_t mods = mod_none;
   mode_mask modes = 0;
   std::string payload;
+  // docs/design/25 PR 57: a row a script add-on (another maker's) contributes.
+  // Its key never displaces the base app's: on a clash with a built-in row (or
+  // an earlier contributed row) in an overlapping mode the key is dropped and
+  // `note` says why, for Settings. The host's script runtime runs it, not a chrome.
+  bool script = false;
+  std::string note;
 };
 // Replaces every contributed row with `rows` (at most kAddonCommandSlots;
 // the rest are dropped): they take addon_cmd_0.. in order and are appended
 // to the live table after the built-in rows, so remaps of built-in rows keep
 // their indices. The caller rebuilds the router and the chrome's table.
 void set_addon_commands(std::span<const addon_command_row> rows);
+// What set_addon_commands did with each script row's key, for Settings:
+// [{"addon","id","note"}] for every row whose key was dropped (a clash, or no
+// slot left). "[]" when none.
+[[nodiscard]] std::string addon_command_notes_json();
 // The row behind addon_cmd_n, or null when that slot is empty.
 [[nodiscard]] const addon_command_row* addon_command(command_id id) noexcept;
 // "Ctrl+Shift+I" / "Cmd+Shift+F7" (Cmd and Option are the Mac spellings of

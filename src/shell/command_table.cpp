@@ -4,6 +4,8 @@
 // muscle memory. Later slices add rows here; they do not grow a second router.
 #include "shell/commands.h"
 
+#include "core/json.h"
+
 #include <algorithm>
 #include <atomic>
 #include <iterator>
@@ -522,6 +524,7 @@ std::vector<binding>& live_store() {
 // command_info holds a pointer into `names`, which lives as long as the row.
 struct addon_slots {
   std::vector<addon_command_row> rows;
+  std::vector<addon_command_row> overflow;  // rows past the last slot
   std::string names[kAddonCommandSlots];
   command_info infos[kAddonCommandSlots]{};
 };
@@ -555,7 +558,9 @@ void reset_live_bindings() noexcept {
 
 void set_addon_commands(std::span<const addon_command_row> rows) {
   addon_slots& s = addon_store();
-  s.rows.assign(rows.begin(), rows.begin() + std::min<std::size_t>(rows.size(), kAddonCommandSlots));
+  const std::size_t kept = std::min<std::size_t>(rows.size(), kAddonCommandSlots);
+  s.rows.assign(rows.begin(), rows.begin() + static_cast<std::ptrdiff_t>(kept));
+  s.overflow.assign(rows.begin() + static_cast<std::ptrdiff_t>(kept), rows.end());
   for (int i = 0; i < kAddonCommandSlots; ++i) {
     const bool live = static_cast<std::size_t>(i) < s.rows.size();
     s.names[i] = live ? s.rows[static_cast<std::size_t>(i)].name : std::string();
@@ -585,7 +590,50 @@ void set_addon_commands(std::span<const addon_command_row> rows) {
       table[i].mods = kBindings[i].mods;
     }
   }
+  // docs/design/25 PR 57: another maker's key gives way. A clash with a built-in
+  // row as it is bound now (remaps included), or with a contributed row before
+  // it, in any mode they share: the key is dropped, the row stays listed and
+  // Settings can give it one.
+  for (std::size_t i = 0; i < s.rows.size(); ++i) {
+    addon_command_row& r = s.rows[i];
+    if (!r.script || r.k == key::none) continue;
+    std::string owner;
+    for (std::size_t j = 0; j < table.size() && owner.empty(); ++j) {
+      const binding& b = table[j];
+      if (b.k == r.k && b.mods == r.mods && (b.modes & r.modes) != 0) {
+        const command_info* info = find_command(b.command);
+        owner = info && info->name && *info->name ? info->name : "another command";
+      }
+    }
+    for (std::size_t j = 0; j < i && owner.empty(); ++j) {
+      const addon_command_row& o = s.rows[j];
+      if (o.k == r.k && o.mods == r.mods && (o.modes & r.modes) != 0) owner = o.name;
+    }
+    if (!owner.empty()) {
+      r.note = key_label(r.k, r.mods) + " is already " + owner + ", so this command has no key";
+      r.k = key::none;
+      r.mods = mod_none;
+    }
+  }
   append_addon_rows(table);
+}
+
+std::string addon_command_notes_json() {
+  const addon_slots& s = addon_store();
+  mv::json::writer w;
+  w.begin_array();
+  const auto add = [&w](const addon_command_row& r, const std::string& note) {
+    w.begin_object().key("addon").string(r.addon).key("id").string(r.id).key("note").string(note)
+        .end_object();
+  };
+  for (const addon_command_row& r : s.rows) {
+    if (r.script && !r.note.empty()) add(r, r.note);
+  }
+  for (const addon_command_row& r : s.overflow) {
+    if (r.script) add(r, "MediaViewer has room for 8 add-on commands, so this one is not listed");
+  }
+  w.end_array();
+  return w.take();
 }
 
 const addon_command_row* addon_command(command_id id) noexcept {
