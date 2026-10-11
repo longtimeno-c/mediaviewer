@@ -231,6 +231,7 @@ public static partial class IslandHost
             StepFrequency = 0.01,
             VerticalAlignment = VerticalAlignment.Center,
         };
+        AutomationProperties_SetName(_seek, "Seek");
         _seek.AddHandler(UIElement.PointerPressedEvent,
                          new PointerEventHandler((_, _) => { _draggingSeek = true; SetTransportHeld(true); }), true);
         _seek.AddHandler(UIElement.PointerReleasedEvent,

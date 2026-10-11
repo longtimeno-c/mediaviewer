@@ -672,6 +672,7 @@ public static partial class IslandHost
             Margin = new Thickness(0, 0, 8, 0),
             Visibility = Visibility.Collapsed,
         };
+        AutomationProperties_SetName(_speed, "Playback speed");
         foreach (double rate in SpeedLadder) _speed.Items.Add(SpeedLabel(rate));
         _speed.SelectedIndex = 2;  // 1x
         _speed.SelectionChanged += (_, _) =>

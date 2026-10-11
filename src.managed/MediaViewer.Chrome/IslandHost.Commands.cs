@@ -302,12 +302,18 @@ public static partial class IslandHost
         TextBlock label = QueryLabel(prompt);
         var panel = new StackPanel { Spacing = 4, Margin = new Thickness(10), IsTabStop = true };
         panel.Children.Add(label);
+        // Typing lands on a label, not a field: name the panel and speak the
+        // number as it is typed (issue #223).
+        AutomationProperties_SetName(panel, "Go to item");
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetHelpText(panel, prompt + ". Type a number, Enter to go");
+        MarkLive(label);
         panel.CharacterReceived += (_, e) =>
         {
             char c = e.Character;
             if (char.IsControl(c)) return;
             query += c;
             SetQuery(label, prompt, query);
+            RaiseLive(label);
             e.Handled = true;
         };
         panel.KeyDown += (_, e) =>
@@ -325,6 +331,7 @@ public static partial class IslandHost
             {
                 query = query[..^1];
                 SetQuery(label, prompt, query);
+                RaiseLive(label);
                 e.Handled = true;
             }
         };
@@ -347,11 +354,18 @@ public static partial class IslandHost
             found = FindByName(query.Trim(), prefixOnly: false);
             match.Text = found >= 0 ? $"{Items[found].Name}   ({found + 1} / {Items.Count})"
                        : query.Length > 0 ? "No match" : "";
+            AutomationProperties_SetName(match, found >= 0 ? $"{Items[found].Name}, {found + 1} of {Items.Count}"
+                                                : match.Text);
+            RaiseLive(match);
         }
 
         var panel = new StackPanel { Spacing = 6, Margin = new Thickness(10), IsTabStop = true };
         panel.Children.Add(label);
         panel.Children.Add(match);
+        // The result line is what Narrator reads as the name is typed (issue #223).
+        AutomationProperties_SetName(panel, prompt);
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetHelpText(panel, "Type part of a name, Enter to go");
+        MarkLive(match);
         panel.CharacterReceived += (_, e) =>
         {
             char c = e.Character;
@@ -425,7 +439,15 @@ public static partial class IslandHost
             {
                 rowLabels[r].Text = (r == row ? "\u25C0  " : "    ") + ValueOf(r) + (r == row ? "  \u25B6" : "");
                 rowLabels[r].Foreground = Brush(r == row ? Title : Body);
+                AutomationProperties_SetName(rowLabels[r], $"{names[r]}: {ValueOf(r)}");
             }
+        }
+        // Rows are labels on a focused panel: speak the current one as ↑ ↓ ← →
+        // move it (issue #223).
+        void Speak()
+        {
+            Refresh();
+            RaiseLive(rowLabels[row]);
         }
         void Step(int r, int delta)
         {
@@ -436,7 +458,7 @@ public static partial class IslandHost
                 case 2: size = (size + delta + ExportSizes.Length) % ExportSizes.Length; break;
                 default: policy = (policy + delta + ExportPolicies.Length) % ExportPolicies.Length; break;
             }
-            Refresh();
+            Speak();
         }
         void Confirm()
         {
@@ -452,6 +474,7 @@ public static partial class IslandHost
             Grid.SetRow(name, r);
             grid.Children.Add(name);
             rowLabels[r] = Label("", UiFontSize);
+            MarkLive(rowLabels[r]);
             int captured = r;
             var value = FlatButton(rowLabels[r], new Thickness(0));
             value.Click += (_, _) => { row = captured; Step(captured, 1); };
@@ -469,14 +492,17 @@ public static partial class IslandHost
         buttons.Children.Add(cancel);
         buttons.Children.Add(export);
         panel.Children.Add(buttons);
+        AutomationProperties_SetName(panel, "Export a copy");
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetHelpText(
+            panel, "Up and Down choose a setting, Left and Right change it, Enter exports, Escape cancels");
         Refresh();
 
         panel.KeyDown += (_, e) =>
         {
             switch (e.Key)
             {
-                case Windows.System.VirtualKey.Up: row = (row + Rows - 1) % Rows; Refresh(); e.Handled = true; break;
-                case Windows.System.VirtualKey.Down: row = (row + 1) % Rows; Refresh(); e.Handled = true; break;
+                case Windows.System.VirtualKey.Up: row = (row + Rows - 1) % Rows; Speak(); e.Handled = true; break;
+                case Windows.System.VirtualKey.Down: row = (row + 1) % Rows; Speak(); e.Handled = true; break;
                 case Windows.System.VirtualKey.Left: Step(row, -1); e.Handled = true; break;
                 case Windows.System.VirtualKey.Right: Step(row, 1); e.Handled = true; break;
                 case Windows.System.VirtualKey.Enter: Confirm(); e.Handled = true; break;
