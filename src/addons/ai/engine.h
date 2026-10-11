@@ -211,8 +211,9 @@ struct engine_options {
   // started (a quit or a kill part-way) is held, neither walked nor indexed,
   // until resume_root (set_setting "resume_root") or an explicit Rescan /
   // re-enable / Index this folder. Search answers from what it committed.
-  // Off in the shipped pack until the hosts ask first (the launch notice and
-  // Settings' Resume), and so is resume.json.
+  // On in the shipped pack (addon_entry.cpp), whose hosts ask first: the
+  // launch notice reads resume.json, and Settings' folder rows offer Resume.
+  // Off (the default) for tests and tools; resume.json is written only with it.
   bool hold_unfinished = false;
 };
 inline constexpr double kReaderCatchUpSeconds = 5.0;

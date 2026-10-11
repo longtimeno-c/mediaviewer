@@ -305,15 +305,25 @@ public static partial class IslandHost
             _folderStrip = null;
         });
 
-    public static int ShowFilmstrip(IntPtr arg, int sizeBytes) => ShowIsland(
-        arg, sizeBytes, _filmstrip, BuildFilmstrip,
-        onShown: () => _dispatcher?.DispatcherQueue.TryEnqueue(RealiseFilmstrip),
-        onHidden: () =>
+    public static int ShowFilmstrip(IntPtr arg, int sizeBytes)
+    {
+        int status = ShowIsland(
+            arg, sizeBytes, _filmstrip, BuildFilmstrip,
+            onShown: () => _dispatcher?.DispatcherQueue.TryEnqueue(RealiseFilmstrip),
+            onHidden: () =>
+            {
+                ReleaseRepeater(ref _repeater);
+                _filmstripRoot = null;
+                _filmstripScroll = null;
+            });
+        if (status == 0)
         {
-            ReleaseRepeater(ref _repeater);
-            _filmstripRoot = null;
-            _filmstripScroll = null;
-        });
+            // The resume notice (issue #299) sits above the strip while it is up.
+            ChromeShowArgs args = Marshal.PtrToStructure<ChromeShowArgs>(arg);
+            NoteFilmstripTop(args.Visible != 0, args.Y);
+        }
+        return status;
+    }
 
     public static int DetachGallery(IntPtr arg, int sizeBytes)
     {

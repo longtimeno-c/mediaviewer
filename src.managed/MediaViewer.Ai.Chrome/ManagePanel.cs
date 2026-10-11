@@ -611,8 +611,10 @@ internal sealed partial class ManagePanel
 
     // ---- roots ----------------------------------------------------------------------
 
+    // Held (issue #299): left unfinished last session, it waits for Resume.
     private sealed record RootRow(ulong Id, string Path, bool Recursive, bool Enabled, long Assets, long Done, long Bytes,
-                                  MvAiMedia Media, bool Scanning, long CloudOnly, bool Unreadable, long LastScan);
+                                  MvAiMedia Media, bool Scanning, long CloudOnly, bool Unreadable, long LastScan,
+                                  bool Held);
 
     // The newest roots read: an older one finishing late never draws over it.
     private int _rootsRead;
@@ -645,7 +647,8 @@ internal sealed partial class ManagePanel
                         r.TryGetProperty("scanning", out JsonElement sc) && sc.ValueKind == JsonValueKind.True,
                         r.TryGetProperty("cloud_only", out JsonElement co) ? co.GetInt64() : 0,
                         r.TryGetProperty("error", out JsonElement er) && er.GetString() == "unreadable",
-                        r.TryGetProperty("last_scan", out JsonElement ls) ? ls.GetInt64() : 0));
+                        r.TryGetProperty("last_scan", out JsonElement ls) ? ls.GetInt64() : 0,
+                        r.TryGetProperty("held", out JsonElement hd) && hd.ValueKind == JsonValueKind.True));
                 }
             }
             catch (Exception ex) when (ex is MediaViewerException or JsonException or KeyNotFoundException
@@ -690,7 +693,8 @@ internal sealed partial class ManagePanel
                 : r.Unreadable ? "Couldn't read this folder: it may be offline, moved or renamed. Its index is kept."
                 : r.Assets == 0 && r.LastScan != 0 && !r.Scanning ? "No photos or videos found here"
                 : r.Done >= local ? (r.Scanning ? "Checking for changes…" : "Up to date")
-                : $"{r.Done:N0} of {local:N0}" + (r.Scanning ? " · checking for changes…" : "");
+                : $"{r.Done:N0} of {local:N0}"
+                  + (r.Held ? " · paused since last time" : r.Scanning ? " · checking for changes…" : "");
             if (r.CloudOnly > 0 && !r.Unreadable) state += $" · {r.CloudOnly:N0} only in OneDrive";
             labels.Children.Add(_look.Text((r.Recursive ? "and subfolders · " : "") + state + " · " + Look.Size(r.Bytes), 12,
                 r.Unreadable ? AddonColour.Accent : AddonColour.Body));
@@ -705,7 +709,17 @@ internal sealed partial class ManagePanel
             ulong id = r.Id;
             bool enabled = r.Enabled;
             buttons.Children.Add(MediaMenu(id, r.Media));
-            buttons.Children.Add(RootButton(enabled ? "Pause" : "Resume", () => _api.RootSetEnabled(id, !enabled)));
+            if (enabled && r.Held)
+            {
+                // Issue #299: on from its last committed frame, as the launch notice's Resume.
+                Button resume = RootButton("Resume", () => _api.SetSetting("resume_root", id.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+                ToolTipService.SetToolTip(resume, "Indexing stopped part-way last time. Resume goes on from where it stopped.");
+                buttons.Children.Add(resume);
+            }
+            else
+            {
+                buttons.Children.Add(RootButton(enabled ? "Pause" : "Resume", () => _api.RootSetEnabled(id, !enabled)));
+            }
             Button rescan = RootButton(r.Scanning ? "Checking…" : "Rescan", () => _api.RootRescan(id));
             rescan.IsEnabled = !r.Scanning && enabled;
             buttons.Children.Add(rescan);

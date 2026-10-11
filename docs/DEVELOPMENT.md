@@ -669,6 +669,18 @@ owed: [docs/design/17](design/17-local-ai-search.md); the Mac checklist is
    old wait of up to 5 s, `--quit-hash` re-verifies the pack meanwhile as Settings does, and a
    larger `--quit-after` quits once the pack is idle.
 
+**An unfinished index waits for Resume** (issue #299; docs/design/17 "Unfinished roots wait for
+Resume"). A root left mid-index is held at the next start, and the window asks "Resume indexing
+…?" in a bottom-right notice without loading the pack. Tests, no pack needed:
+`mv_ai_tests "an index left unfinished waits for Resume after a restart"` (the engine: held,
+`resume.json`, `resume_root`) and `mv_import_tests "[ai-resume]"` (the host's read of
+`resume.json` and the question's wording). To see the notice in the app, use a sideloaded pack
+(above): index a large folder, quit part-way, start again. The notice should appear once the pack
+has verified, with nothing of it loaded (no ONNX Runtime in the process) until **Resume**. Or,
+with the pack installed, drop a `resume.json` by hand into its data folder (the one that holds
+`index.db`, `data` beside the pack's version folder):
+`{"version":1,"roots":[{"id":1,"path":"/some/folder","kind":"folder","done":1,"total":2,"held":true}]}`.
+
 `mv_ai_tests "[refine]"` runs the People refinement (docs/design/17 "People refinement") on synthetic
 face vectors and a temporary faces.db; it needs no pack. In the app it runs only from
 **Refine faces** on a person under Settings → People, and library-wide from **Merge
@@ -1311,6 +1323,23 @@ integers. There is no free-text field to put a filename in.
 There is no upload endpoint yet, exactly as there is none for crash reports.
 
 ## Where this actually is
+
+### Local search: ask before resuming an interrupted index (issue #299, 2026-10-11)
+
+A quit or a kill part-way through indexing no longer carries on, or loads the pack, at the next
+launch. The window asks in a bottom-right notice (Resume / Dismiss), and Settings' folder rows
+offer Resume. Built on both hosts; the shipped pack holds unfinished roots.
+
+- **Mac (M-series):** `MediaViewer`, the Swift chromes and `mv_ai` build clean. `mv_ai_tests`
+  (`[engine]`, `[nle]`, `[search-agent]`, `[infer]`, `[photos]`, `[cloud]`, `[query]`: 77
+  passed, 7 skipped for no pack), `mv_import_tests` (75 cases, `"[ai-resume]"` new) and the
+  AIChrome Swift tests pass. Not run in the app: the dev build loads no AI pack, so the notice,
+  its Resume and the rows' Resume are unexercised with a real pack.
+- **Windows:** both C# chromes compile (warnings as errors). The notice is a windowed `Popup` of
+  the command-bar island; its placement (window corner, above the filmstrip, after a resize or a
+  window move, at 100 % and 200 % scaling) is unchecked on Windows.
+- **Owed on both:** launch → first pixel and idle CPU with a root left mid-index, against no pack
+  work, with an installed pack (the same measurement #292 owes).
 
 ### Local search: cloud folders and folder adds (docs/plans/document-search.md slice 0, 2026-10-05)
 

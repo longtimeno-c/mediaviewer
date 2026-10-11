@@ -420,6 +420,15 @@ final class LocalSearchStore: ObservableObject {
     }
   }
 
+  /// The launch notice's Resume (issue #299) started the pack: the pill and
+  /// Settings say it is starting, as for Start now.
+  func resumeStarted() {
+    if mv_addon2_loading("ai") {
+      loading = true
+      onDemand = false
+    }
+  }
+
   func install(_ id: String) {
     guard stateKnown, !removing.contains(id), !isPending(id),
           let piece = pieces.first(where: { $0.id == id }) else { return }

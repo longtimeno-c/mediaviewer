@@ -38,6 +38,9 @@ struct RootRow: Identifiable, Equatable {
   var cloudOnly: Int64 = 0
   var unreadable = false
   var lastScan: Int64 = 0
+  // Issue #299: left unfinished last session, it waits for Resume (nothing of
+  // it is walked or indexed until then; search answers from what it committed).
+  var held = false
   var isPhotos: Bool { kind == "photos" }
 }
 
@@ -301,7 +304,8 @@ final class ManagementModel: ObservableObject {
                 kind: $0["kind"] as? String ?? "folder", access: $0["access"] as? String ?? "",
                 unavailable: int64($0["unavailable"]), scanning: $0["scanning"] as? Bool ?? false,
                 cloudOnly: int64($0["cloud_only"]),
-                unreadable: $0["error"] as? String == "unreadable", lastScan: int64($0["last_scan"]))
+                unreadable: $0["error"] as? String == "unreadable", lastScan: int64($0["last_scan"]),
+                held: $0["held"] as? Bool ?? false)
       }
       await MainActor.run {
         if rows != self.roots { self.roots = rows }
@@ -327,6 +331,14 @@ final class ManagementModel: ObservableObject {
   func rescan(_ id: UInt64) {
     _ = table.a.root_rescan?(table.ctx, id)
     reloadRoots()
+  }
+
+  /// Issue #299: a root held since start (left unfinished last session) goes
+  /// on from its last committed frame, as the launch notice's Resume does.
+  func resumeHeld(_ id: UInt64) {
+    table.setSetting("resume_root", String(id))
+    reloadRoots()
+    pollStatus()
   }
 
   func removeRoot(_ id: UInt64) {
@@ -1046,13 +1058,19 @@ struct ManagementView: View {
                       + "here (MediaViewer checks each of them when it starts). An iCloud-only video is found by its "
                       + "poster, or fully once \u{201C}Download iCloud videos to index them\u{201D} is on.")
             }
-            Text(root.enabled ? "" : " · paused")
+            Text(root.enabled ? (root.held ? " · paused since last time" : "") : " · paused")
           }
           .font(AITheme.font(11)).foregroundStyle(AITheme.body)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        Button(root.enabled ? "Pause" : "Resume") { model.setRootEnabled(root.id, !root.enabled) }
-          .disabled(off)
+        if root.enabled && root.held {
+          Button("Resume") { model.resumeHeld(root.id) }
+            .disabled(off)
+            .help("Indexing stopped part-way last time. Resume goes on from where it stopped.")
+        } else {
+          Button(root.enabled ? "Pause" : "Resume") { model.setRootEnabled(root.id, !root.enabled) }
+            .disabled(off)
+        }
         Menu {
           ForEach(Self.mediaChoices) { choice in
             Button {
@@ -1141,11 +1159,17 @@ struct ManagementView: View {
                        : min(1, Double(root.done) / Double(root.assets - root.cloudOnly)))
           .progressViewStyle(.linear)
           .tint(root.enabled ? .accentColor : .secondary)
-        Text(rootState(root) + (root.enabled ? (root.scanning ? " · checking for changes…" : "") : " · paused"))
+        Text(rootState(root) + (root.enabled ? (root.held ? " · paused since last time"
+                                                : root.scanning ? " · checking for changes…" : "") : " · paused"))
           .font(AITheme.font(11)).foregroundStyle(root.unreadable ? Color.accentColor : AITheme.body)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
-      Button(root.enabled ? "Pause" : "Resume") { model.setRootEnabled(root.id, !root.enabled) }
+      if root.enabled && root.held {
+        Button("Resume") { model.resumeHeld(root.id) }
+          .help("Indexing stopped part-way last time. Resume goes on from where it stopped.")
+      } else {
+        Button(root.enabled ? "Pause" : "Resume") { model.setRootEnabled(root.id, !root.enabled) }
+      }
       Menu {
         ForEach(Self.mediaChoices) { choice in
           Button {

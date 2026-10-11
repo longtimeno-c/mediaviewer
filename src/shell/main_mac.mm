@@ -412,6 +412,10 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 // tools sheet (built fresh per open, like the export sheet).
 @property(nonatomic, strong) NSView* jobsHost;
 @property(nonatomic, strong) NSLayoutConstraint* jobsBottom;
+// Issue #299: the bottom-right "Resume indexing Photos?" notice (Swift shows
+// and hides it), above the filmstrip when that is up.
+@property(nonatomic, strong) NSView* resumeHost;
+@property(nonatomic, strong) NSLayoutConstraint* resumeBottom;
 @property(nonatomic, strong) NSView* clipToolsHost;
 // PR 29 (docs/design/20): the Edit workspace's strip and its Crop / Trim pane. The
 // right-edge panes' tops follow the strip while it is open.
@@ -2779,6 +2783,20 @@ static void MvAdoptNewDefaultViewerTypes() {
     [self.settingsHost.bottomAnchor constraintEqualToAnchor:container.bottomAnchor],
   ]];
 
+  // Issue #299 (docs/design/17 "Unfinished roots wait for Resume"): a small
+  // notice in the bottom-right corner, not a modal, when an index was left
+  // unfinished last session. Last in, so it is above the panes and Settings.
+  // It sizes itself (a fixed-width card) and stays hidden, taking no clicks,
+  // until there is a question (ResumeNoticeView.swift).
+  self.resumeHost = [MVChromeHost makeResumeNoticeView];
+  [container addSubview:self.resumeHost];
+  self.resumeBottom = [self.resumeHost.bottomAnchor constraintEqualToAnchor:container.bottomAnchor
+                                                                   constant:-8.0];
+  [NSLayoutConstraint activateConstraints:@[
+    [self.resumeHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-8.0],
+    self.resumeBottom,
+  ]];
+
   [self installMainMenu];
   [self installTextEditKeys];
 
@@ -3963,6 +3981,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   self.treeBottom.constant = pane_bottom;
   self.adjustBottom.constant = pane_bottom;
   self.jobsBottom.constant = pane_bottom;
+  self.resumeBottom.constant = pane_bottom - 8.0;
   // chrome_bottom_px must reflect the toggle immediately (canvas fit/pan
   // math reads it via present_lab_mac.mm's usable_window_h()) -- -syncSize
   // already recomputes it from -filmstripVisible and republishes, the same

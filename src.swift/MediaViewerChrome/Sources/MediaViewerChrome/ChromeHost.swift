@@ -144,6 +144,18 @@ public final class MVChromeHost: NSObject {
     host(VideoEditorView())
   }
 
+  /// Issue #299: the bottom-right "Resume indexing Photos?" notice. Unlike the
+  /// panes it sizes itself (a fixed-width card): main_mac.mm pins only its
+  /// bottom-right corner. Hidden until there is a question; the store shows it.
+  @MainActor @objc public static func makeResumeNoticeView() -> NSView {
+    let hosting = NSHostingView(rootView: ThemedRoot(content: ResumeNoticeView()))
+    hosting.sizingOptions = [.intrinsicContentSize]
+    hosting.translatesAutoresizingMaskIntoConstraints = false
+    hosting.isHidden = true
+    ResumeNoticeStore.shared.host = hosting
+    return hosting
+  }
+
   /// PR 11 verify only (MV_CRASH_TEST=nsexception, crash_reporter_mac.h): an
   /// NSException raised from the chrome, inside AppKit's event handling.
   @objc public static func crashTestException() {
