@@ -296,6 +296,7 @@ add_library(mv_player STATIC
   src/player/av_clock.cpp
   src/player/audio_mac.cpp         # D9: the only player/ file that names Core Audio
   src/player/transport.cpp
+  src/player/resume_store.cpp
   src/player/presenter.cpp
   src/player/container_probe.cpp
   src/player/poster.cpp
@@ -307,6 +308,7 @@ add_library(mv_player STATIC
   src/player/av_clock.h
   src/player/presenter.h
   src/player/transport.h
+  src/player/resume_store.h
   src/player/container_probe.h
   src/player/poster.h
   src/player/video_internal.h
