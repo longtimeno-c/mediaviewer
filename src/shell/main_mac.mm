@@ -5675,8 +5675,9 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     case search_prev_match: {
       if (!mv::shell::addon_command_available(command)) {
         if (command != search_open) return NO;
-        // A later window: its reader starts now (docs/design/18 "One host process").
-        if (MvAddonsReaderSearch()) return YES;
+        // The pack waiting since launch (issue #292), or a later window's
+        // reader (docs/design/18 "One host process"), starts now.
+        if (MvAddonsSearchOnDemand()) return YES;
         if ([MVChromeHost openLocalSearchWhenStarting]) return YES;
         return [self openFileSearch];
       }

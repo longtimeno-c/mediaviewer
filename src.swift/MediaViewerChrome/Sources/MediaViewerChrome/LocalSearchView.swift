@@ -76,6 +76,9 @@ final class LocalSearchStore: ObservableObject {
   @Published private(set) var ceiling: UInt64 = 3_000_000_000
   @Published private(set) var loaded = false
   @Published private(set) var loading = false
+  /// Installed and verified, waiting unloaded for the first search (issue
+  /// #292, docs/design/17 "Starting on demand"): nothing of the pack runs yet.
+  @Published private(set) var onDemand = false
   @Published private(set) var loadError = ""
   /// The same, in words (mv_addon2_load_reason): Settings' status line.
   @Published private(set) var loadReason = ""
@@ -120,8 +123,6 @@ final class LocalSearchStore: ObservableObject {
   private var ticks = 0
   private var probed = false
   private var checkingRemovals = false
-  /// The search icon was clicked while the pack was still starting.
-  private var openWhenLoaded = false
   /// What to say once each queued removal has landed.
   private var removedText: [String: String] = [:]
 
@@ -146,25 +147,31 @@ final class LocalSearchStore: ObservableObject {
     if !loaded, !loading, busyPiece == nil, !SettingsStore.shared.visible, ticks % 4 != 0 { return }
     let l = mv_addon2_loaded("ai")
     let busy = mv_addon2_loading("ai")
+    let waiting = mv_addon2_ai_on_demand()
     if l != loaded {
       loaded = l
       chromeGeneration += 1
     }
     if busy != loading { loading = busy }
-    if openWhenLoaded, loaded || !loading {
-      // Attached: open as the click asked. The load failed: drop it.
-      openWhenLoaded = false
-      if loaded { openSearch() }
-    }
+    if waiting != onDemand { onDemand = waiting }
     let err = AddonStore.readString { mv_addon2_load_error("ai", $0, $1) }
     if err != loadError { loadError = err }
     let why = AddonStore.readString { mv_addon2_load_reason("ai", $0, $1) }
     if why != loadReason { loadReason = why }
-    // The pill: at most 2 Hz, and only while the pack is loaded.
-    guard loaded, ticks % 2 == 0 else {
-      if !loaded && pillVisible { pillVisible = false }
+    // While the pack starts (the first search after launch, issue #292): the
+    // pill says so, as the search panel cannot until it is attached.
+    if !loaded {
+      if loading {
+        if pillText != Self.startingText { pillText = Self.startingText }
+        if pillProgress != 0 { pillProgress = 0 }
+        if !pillSpinning { pillSpinning = true }
+        if pillOnBattery { pillOnBattery = false }
+      }
+      if loading != pillVisible { pillVisible = loading }
       return
     }
+    // The pill: at most 2 Hz, and only while the pack is loaded.
+    guard ticks % 2 == 0 else { return }
     var s = mv_chrome_ai_status()
     guard mv_addon2_ai_status(&s) else {
       if pillVisible { pillVisible = false }
@@ -189,6 +196,8 @@ final class LocalSearchStore: ObservableObject {
     let battery = s.state == 3 && s.yield_reason == 2
     if battery != pillOnBattery { pillOnBattery = battery }
   }
+
+  nonisolated static let startingText = "Starting Local search…"
 
   nonisolated static func count(_ n: UInt64) -> String {
     let f = NumberFormatter()
@@ -393,11 +402,22 @@ final class LocalSearchStore: ObservableObject {
   /// time, Core first. A piece clicked before Core is installed waits for
   /// Core, and is dropped with a note if Core does not install.
   /// Settings opened: what is installed, and in a later window its reader
-  /// (mv_addon2_reader_start; at most every 10 s), so the pack's view shows.
+  /// (mv_addon2_ai_wake; at most every 10 s), so the pack's view shows. The
+  /// first window's pack is not started by Settings opening (issue #292): its
+  /// row offers Start now (wake()) until the first search.
   func settingsShown() {
     refresh()
     probe()
-    if elsewhere { _ = mv_addon2_reader_start() }
+    if elsewhere { _ = mv_addon2_ai_wake() }
+  }
+
+  /// Settings' Start now: the pack that waited since launch loads, and its own
+  /// view (compute, folders, People) follows once it attaches.
+  func wake() {
+    if mv_addon2_ai_wake() {
+      loading = true
+      onDemand = false
+    }
   }
 
   func install(_ id: String) {
@@ -532,7 +552,7 @@ final class LocalSearchStore: ObservableObject {
   func remove(_ id: String, keepData: Bool) {
     confirmingRemove = nil
     let title = pieces.first(where: { $0.id == id })?.title ?? id
-    if id == "ai" { openWhenLoaded = false }
+    if id == "ai" { onDemand = false }  // the host's unload drops a pending open too
     // Final Cut Pro search hosts Core: without it, the agent and panel go too.
     if id == "ai", finalCut == 2 || finalCut == 3 { setFinalCut(false) }
     if id == "ai" && loaded {
@@ -562,19 +582,28 @@ final class LocalSearchStore: ObservableObject {
 
   func openSearch() { _ = mv_addon2_run_command("search_open") }
 
-  /// The path bar's search icon shows whenever Local search is on its way to
-  /// being usable: loaded, or verifying and starting at launch (seconds for
-  /// the 2.3 GB pack). It replaced the gallery search bar, so it must not be
-  /// missing just because the pack is still starting (owner, 2026-09-28).
-  var searchAvailable: Bool { loaded || loading }
+  /// The path bar's search icon offers Local search whenever it is usable or
+  /// on its way: loaded, starting, or installed and waiting for the first
+  /// search (issue #292). It replaced the gallery search bar, so it must not be
+  /// missing just because the pack is not running yet (owner, 2026-09-28).
+  var searchAvailable: Bool { loaded || loading || onDemand }
 
-  /// The icon's click: the panel now, or the moment the pack attaches.
-  func openSearchWhenReady() {
+  /// The icon's click (and ⌘F through the host): the panel now, or the pack
+  /// starts and its panel opens the moment it attaches (the host's
+  /// open_when_attached). False: nothing is on its way, so the caller opens
+  /// file search.
+  @discardableResult
+  func openSearchWhenReady() -> Bool {
     if loaded {
       openSearch()
-    } else if loading {
-      openWhenLoaded = true
+      return true
     }
+    guard mv_addon2_reader_search() else { return false }
+    if !elsewhere {
+      loading = true
+      onDemand = false
+    }
+    return true
   }
   /// Ignore the battery pause until the Mac is next on power (not saved).
   func indexAnyway() { _ = mv_addon2_run_command("index_anyway") }
@@ -664,7 +693,17 @@ struct LocalSearchSection: View {
     if store.loading {
       HStack(spacing: 8) {
         ProgressView().controlSize(.small)
-        Text("Starting Local search…").font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
+        Text(LocalSearchStore.startingText).font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
+      }
+    } else if store.onDemand {
+      // Issue #292: nothing of the pack runs until the first search; its own
+      // settings (compute, folders, People) need it running.
+      HStack(alignment: .firstTextBaseline, spacing: 12) {
+        Text("Local search starts the first time you search. Start it now to see its folders and settings.")
+          .font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
+          .fixedSize(horizontal: false, vertical: true)
+        Spacer(minLength: 0)
+        Button("Start now") { store.wake() }
       }
     } else if store.coreInstalled && !store.loaded && !store.loadError.isEmpty {
       // The reason, as the command bar's alert says it (addons_mac.mm load_reason).
@@ -977,7 +1016,7 @@ struct LocalSearchBarItem: View {
 
   var body: some View {
     if store.pillVisible {
-      Button { store.openSearch() } label: {
+      Button { store.openSearchWhenReady() } label: {
         HStack(spacing: 7) {
           ProgressRing(progress: store.pillProgress, spinning: store.pillSpinning && !reduceMotion)
             .frame(width: 14, height: 14)
@@ -994,12 +1033,13 @@ struct LocalSearchBarItem: View {
       .buttonStyle(.plain)
       .onHover { hover = $0 }
       .contextMenu {
-        Button("Open search") { store.openSearch() }
+        Button("Open search") { store.openSearchWhenReady() }
         if store.pillOnBattery && !store.elsewhere {
           Button("Index anyway, on battery") { store.indexAnyway() }
         }
       }
-      .help(store.pillOnBattery
+      .help(!store.loaded ? "Local search is starting. Click to search; the panel opens once it is ready."
+            : store.pillOnBattery
             ? "Indexing waits on battery. Click to search; Control-click to index anyway until the Mac is next on power."
             : "Local search is indexing in the background. Click to search.")
       .accessibilityLabel(store.pillText)

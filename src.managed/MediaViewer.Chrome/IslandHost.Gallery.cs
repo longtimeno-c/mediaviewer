@@ -688,16 +688,18 @@ public static partial class IslandHost
     }
 
     // Always there (owner, 2026-09-28): it does what Ctrl+F does. With Local
-    // search loaded, or verified and starting at launch, that is its panel;
+    // search loaded, starting, or installed and waiting for the first search
+    // (issue #292), that is its panel;
     // without it, file search, which needs no add-on and no index (docs/design/16
     // "File search"). Only the tip and the name follow the pack.
     private static void UpdatePathSearchButton()
     {
         if (_barSearchButton is null) return;
         bool loaded = SearchChrome is not null;
-        bool pack = loaded || AiStarting();
+        bool waiting = AiOnDemand();
+        bool pack = loaded || waiting || AiStarting();
         _barSearchButton.Visibility = Visibility.Visible;
-        ToolTipService.SetToolTip(_barSearchButton, loaded ? "Search photos and videos (Ctrl+F)"
+        ToolTipService.SetToolTip(_barSearchButton, loaded || waiting ? "Search photos and videos (Ctrl+F)"
             : pack ? "Search photos and videos (Ctrl+F). Local search is starting…"
             : "Find files by name in this folder (Ctrl+F)");
         AutomationProperties.SetName(_barSearchButton, pack ? "Search" : "Find files by name");

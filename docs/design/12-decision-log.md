@@ -477,8 +477,8 @@ focus. The tree follows the directory watcher and diffs rows in place.
 (`set_addon_commands_available`); hidden from `?`, Settings and the router while absent.
 
 **File search and the path-bar icon (2026-09-28).** The gallery search bar is gone. A magnifier at
-the end of the folder path runs `Ctrl+F` / `⌘F`: with Local search loaded (or starting) it opens the
-search panel; without it, **file search**, a name filter over the listed folder with no index (the
+the end of the folder path runs `Ctrl+F` / `⌘F`: with Local search loaded, starting, or installed
+and waiting for the first search (2026-10-11) it opens the search panel; without it, **file search**, a name filter over the listed folder with no index (the
 Windows chrome entry is still named `GallerySearch`). `/` in the gallery is the folder row's find.
 
 ---
@@ -914,6 +914,18 @@ could not load Local search at all. It is delay-loaded now, and `make_cloud_file
 first. Where it is missing the pack loads and searches, and Settings shows *Index online-only
 OneDrive files* greyed with the reason. The option is always shown on Windows. Turning it off
 skips online-only files and never makes search unavailable.
+
+**Local search loads nothing at launch (2026-10-11, owner; issue #292).** With the pack installed,
+ONNX Runtime, the model sessions (tokenizer vocab parsing alone was ~1.2 s a model before #251)
+and the indexing threads all started with the app, costing memory, CPU and launch time in every
+session, including those that never searched. Now the host only verifies the pack at launch; the
+first search (the icon, `Ctrl+F` / `⌘F`, the pill) or Settings → Local search → **Start now**
+loads it, and it then indexes for the rest of the session. Opening Settings alone does not load
+it, because both hosts' Settings is one page and a visit to change a key would otherwise start
+the whole pack. **Cost:** files added while search was never opened are indexed only after search
+is first opened that session, so the first search after launch may say "Indexing new files…" for
+a while. Launch → first pixel and idle memory / CPU with the pack installed, before and after, are
+owed on both platforms (the measurement needs a release-signed pack).
 
 **The Mac Photos library as a source (2026-09-28).** Read-only: no PhotoKit write API is called,
 and `shell/write_guard.h` refuses every write, move, bin, rotate, export and trim of a Photos file

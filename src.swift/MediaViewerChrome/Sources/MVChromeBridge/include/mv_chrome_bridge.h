@@ -451,10 +451,16 @@ int32_t mv_addon2_load_reason(const char* id, char* buf, int32_t size);
 // process does not host the add-ons. It searches through the AI pack's
 // read-only reader, loaded on demand; it installs, updates and removes nothing.
 bool mv_addon2_elsewhere(void);                                            // [main-thread]
-// Such a window: start the reader if it is due (Settings opened). [main-thread]
-bool mv_addon2_reader_start(void);
-// Such a window: what ⌘F does while Local search is not attached; false = file
-// search is the caller's to open. [main-thread]
+// Settings showed Local search (issue #292): start the pack that waited,
+// unloaded, since launch -- or in such a window its reader, if it is due.
+// False when nothing is on its way. [main-thread]
+bool mv_addon2_ai_wake(void);
+// Installed and verified at launch, not loaded, nothing on its way (issue
+// #292): the first search starts it, so the search icon offers it. [main-thread]
+bool mv_addon2_ai_on_demand(void);
+// What ⌘F does while Local search is not attached, in the first window (the
+// pack starts, issue #292) or such a window (its reader); the panel opens once
+// it attaches. False = file search is the caller's to open. [main-thread]
 bool mv_addon2_reader_search(void);
 // Such a window: its last reader try found Local search not installed.
 bool mv_addon2_reader_absent(void);                                        // [main-thread]

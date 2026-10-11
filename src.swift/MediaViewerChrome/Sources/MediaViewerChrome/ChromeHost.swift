@@ -170,16 +170,15 @@ public final class MVChromeHost: NSObject {
     MainActor.assumeIsolated { FileSearchStore.shared.close() }
   }
 
-  /// ⌘F while the Local search command is not there. True when the pack is
-  /// verifying and starting at launch: its panel opens once it attaches, as
-  /// the path icon's click does. False: nothing is on its way, so the host
-  /// opens file search instead.
+  /// ⌘F while the Local search command is not there and the host did not
+  /// start the pack itself (MvAddonsSearchOnDemand). True when something is on
+  /// its way: the panel opens once it attaches, as the path icon's click does.
+  /// False: nothing is, so the host opens file search instead.
   @objc public static func openLocalSearchWhenStarting() -> Bool {
     MainActor.assumeIsolated {
       let search = LocalSearchStore.shared
       guard search.searchAvailable else { return false }
-      search.openSearchWhenReady()
-      return true
+      return search.openSearchWhenReady()
     }
   }
 

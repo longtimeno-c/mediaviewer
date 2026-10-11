@@ -292,7 +292,10 @@ every 5 s ([23](23-nle-search.md) "The reader"). Search, Find similar and People
 there. Indexing, Local search settings, People edits, Import, and installing, updating or
 removing an add-on stay in the first window, and Settings says so. A reader never sweeps the
 store. With nothing indexed yet the reader reports `not_found`: Ctrl+F searches by name, says
-why, and tries the reader again at most every 10 s.
+why, and tries the reader again at most every 10 s. The first window treats the full pack the
+same way (2026-10-11, issue #292): it verifies it at launch but loads it only at the first search
+or Settings → Local search → Start now ([17](17-local-ai-search.md) "Starting on demand"); Import
+still loads at launch.
 
 ## Commands
 

@@ -363,7 +363,9 @@ people.
   thumbnail and `mm:ss`. **Enter** on a video tile opens the clip paused on that moment, with
   the scrub bar marking the clip's other matches.
 - **Search panel** (`MediaViewer.Ai.Chrome` / `AI.bundle`): opened from the search icon in the
-  path bar or `Ctrl+F` / `⌘F`. Query field with name suggestions, *Look in* (this folder and
+  path bar or `Ctrl+F` / `⌘F`. The first time in a session it starts the pack first (*Starting on
+  demand*, below): the command-bar pill reads "Starting Local search…" and the panel opens once
+  the pack attaches. Query field with name suggestions, *Look in* (this folder and
   subfolders · everywhere · Photos on the Mac when indexed), kind and Pictures / Sounds / Speech
   filters, the snippet under a spoken result. Without the pack the same icon and key open the
   base app's file search ([16](16-commands.md) "File search").
@@ -408,11 +410,25 @@ Indexing is a background load on the machine and GPU of a viewer whose point is 
   footer, Settings, the Mac command-bar pill's menu) sets `battery_override` for that spell on
   battery; it is never saved, and going back to AC or restarting ends it. The viewer's own
   yields are not overridable.
+- **Starting on demand (issue #292, 2026-10-11):** at launch nothing of the pack loads: no ONNX
+  Runtime, no model sessions, no indexing threads. The host only verifies the installed pack, so
+  the search icon and `Ctrl+F` / `⌘F` offer Local search (Windows `AiOnDemand`, Mac
+  `mv_addon2_ai_on_demand`). The first search of the session loads the pack (the query-side
+  models with the rest), and the pack's startup delta and indexing then run for the rest of the
+  session; the command-bar pill reads "Starting Local search…" meanwhile, since the panel is the
+  pack's and cannot show before it attaches. Opening Settings does not start it: Settings →
+  Local search says it starts at the first search and offers **Start now**, which loads it so the
+  pack's own panel (compute, folders, People) shows. Installing Core (or a piece with Core
+  already running) in Settings still loads it at once. A later window's reader was already on
+  demand ([18](18-import.md) "One host process"), and so is the Final Cut Pro agent: launchd
+  starts it only when the extension connects, and it exits when idle ([23](23-nle-search.md)).
+  The cost is in the decision log: files added while search was never opened are indexed only
+  once search is first opened that session.
 - **Loading:** opening the models (a GPU context, a gigabyte of weights, the self-test) waits for
   the same quiet viewer indexing does, and reports LOADING with `yield_reason` VIEWER meanwhile.
-  Pictures become searchable first; the audio models open after them. Settings never loads the
-  runtime. The self-test's CPU half is cached in `selftest.txt` (~15 s off a 40 s CUDA ViT-L
-  load); the provider still runs and is checked against it every start.
+  Pictures become searchable first; the audio models open after them. Settings' own reads never
+  load the runtime. The self-test's CPU half is cached in `selftest.txt` (~15 s off a 40 s CUDA
+  ViT-L load); the provider still runs and is checked against it every start.
 - **GPU:** a vendor provider owns its own device; the CPU backend is the pressure valve.
 - **Memory:** decoded-frame and tensor memory are capped; the search matrix is ~77 MB at 100 k
   L/14 frames.

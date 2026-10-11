@@ -137,6 +137,10 @@ struct addon_slot {
   // ⌘F started this load: the panel opens once it attaches (or file search
   // and the reason, if it does not).
   bool open_when_attached = false;
+  // The first window's pack verified at launch and waits, unloaded, for the
+  // first search or Settings (issue #292, docs/design/17 "Starting on
+  // demand"): no runtime, no model sessions, no indexing threads until then.
+  bool on_demand = false;
 };
 
 // An add-on that will not load or start, said in the window (the command bar's
@@ -557,6 +561,7 @@ void unload_ai() {
   retire(std::move(s.ai.addon));
   s.ai.bundle = nil;   // mapped until quit, inert (NSBundle -unload is unsafe for Swift)
   s.ai.loading = false;
+  s.ai.on_demand = false;  // removed or replaced: a later load is asked for anew
   mv::shell::set_addon_commands_available(mv::shell::addon_family::ai, false);
   // Nothing may point into the gone table's clip: drop the markers.
   mv_chrome_set_scrub_markers(nullptr, nullptr, 0, -1);
@@ -822,13 +827,17 @@ void MvAddonsStart(MvAddonsOpenPathFn open_path, void* ctx) {
   mac_addons& s = state();
   s.open_path = open_path;
   s.open_path_ctx = ctx;
-  // Verifying hashes every file: not on the main thread (rule 1).
+  // Verifying hashes every file: not on the main thread (rule 1). The AI pack
+  // is only verified here, not loaded (issue #292, docs/design/17 "Starting on
+  // demand"): its runtime, models and indexer start the first time search is
+  // opened (MvAddonsSearchOnDemand) or Settings shows Local search
+  // (mv_addon2_ai_wake).
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
     const bool ok = import_installed_ok();
     const bool ai = ai_installed_ok();
     dispatch_async(dispatch_get_main_queue(), ^{
       if (ok) (void)load_import();
-      if (ai) (void)start_ai_load();
+      if (ai) state().ai.on_demand = true;
     });
   });
   // The one-time hint: a removable volume mounts while Import is absent.
@@ -860,7 +869,7 @@ void MvAddonsStartReader(MvAddonsOpenPathFn open_path, void* ctx) {
   // (over a gigabyte with the AI pack) and the reader holds a text model, so
   // nothing may compete with this window's first pixel, and a window that
   // never searches costs nothing. The reader starts on the first ⌘F
-  // (MvAddonsReaderSearch) or when Settings opens (mv_addon2_reader_start).
+  // (MvAddonsSearchOnDemand) or when Settings opens (mv_addon2_ai_wake).
   // No card hint either: Import is not loaded or installed from this window.
 }
 
@@ -876,11 +885,25 @@ bool reader_begin() {
   s.ai.tried_at = std::chrono::steady_clock::now();
   return start_ai_load();
 }
+
+// The first window: start the pack that waited since launch, or join the load
+// already on its way. True when one is.
+bool ai_begin() {
+  mac_addons& s = state();
+  if (s.reader || s.ai.chrome) return false;
+  if (s.ai.loading) return true;
+  return s.ai.on_demand && start_ai_load();
+}
 }  // namespace
 
-bool MvAddonsReaderSearch() {
+bool MvAddonsSearchOnDemand() {
   mac_addons& s = state();
-  if (!s.reader || s.ai.chrome) return false;
+  if (s.ai.chrome) return false;
+  if (!s.reader) {
+    if (!ai_begin()) return false;
+    s.ai.open_when_attached = true;  // the panel once it attaches, else the reason
+    return true;
+  }
   if (reader_begin()) {
     s.ai.open_when_attached = true;  // the panel once it attaches, else file search
     return true;
@@ -1284,12 +1307,21 @@ extern "C" int32_t mv_addon2_load_reason(const char* id, char* buf, int32_t size
 // Another window's process hosts the add-ons: this one searches only.
 extern "C" bool mv_addon2_elsewhere(void) { return state().reader; }
 
-// Settings opened in a later window: start its reader if it is due (see
-// reader_begin), so Local search's view can show. False when nothing started.
-extern "C" bool mv_addon2_reader_start(void) { return reader_begin(); }
+// Settings showed Local search: start the pack that waited since launch (issue
+// #292), or in a later window its reader if it is due (see reader_begin), so
+// Local search's own view can show. False when nothing is on its way.
+extern "C" bool mv_addon2_ai_wake(void) { return state().reader ? reader_begin() : ai_begin(); }
 
-// The path bar's search icon in a later window: what ⌘F does (MvAddonsReaderSearch).
-extern "C" bool mv_addon2_reader_search(void) { return MvAddonsReaderSearch(); }
+// Installed and verified, not loaded, nothing on its way: the first search
+// (or Settings) starts it. The search icon offers Local search meanwhile.
+extern "C" bool mv_addon2_ai_on_demand(void) {
+  const mac_addons& s = state();
+  return !s.reader && s.ai.on_demand && !s.ai.chrome && !s.ai.loading;
+}
+
+// The path bar's search icon while Local search is not attached: what ⌘F does
+// (MvAddonsSearchOnDemand), in the first window or a later one.
+extern "C" bool mv_addon2_reader_search(void) { return MvAddonsSearchOnDemand(); }
 
 // A later window's reader found Local search not installed at its last try.
 extern "C" bool mv_addon2_reader_absent(void) { return state().ai.absent; }
