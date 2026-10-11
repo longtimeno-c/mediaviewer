@@ -24,7 +24,9 @@
 #include <string_view>
 #include <vector>
 
+#include "addon/keymap.h"
 #include "addon/manifest.h"
+#include "addon/settings_schema.h"
 
 namespace mv::addon {
 
@@ -32,7 +34,8 @@ inline constexpr int kOpenManifestSchema = 2;
 
 // The contribution API this host serves (docs/design/25 "Contribution API").
 //   1  themes.
-inline constexpr std::uint32_t kContributionApi = 1;
+//   2  settings pages, keymap packs, theme shape (PR 56).
+inline constexpr std::uint32_t kContributionApi = 2;
 inline constexpr std::uint32_t kContributionApiOldest = 1;
 
 // Every contribution point docs/design/25 §7 names, with the API that
@@ -89,6 +92,8 @@ struct open_manifest {
   std::uint64_t installed_size = 0;  // the sum of `files`
   std::vector<manifest_file> files;
   std::vector<theme_ref> themes;
+  settings_page settings;            // API 2; empty when the add-on has no page
+  std::vector<keymap_pack> keymaps;  // API 2
 };
 
 struct open_decision {

@@ -74,6 +74,34 @@ theme_fault parse_palette(const json::value& v, theme_palette& out) {
   return theme_fault::none;
 }
 
+theme_fault parse_shape(const json::value& v, theme_shape& out) {
+  if (v.k != json::kind::object) return theme_fault::bad_shape;
+  for (const auto& [key, value] : v.o) {
+    double* field = nullptr;
+    double lo = 0, hi = 0;
+    if (key == "radius") {
+      field = &out.radius;
+      lo = kShapeRadiusMin;
+      hi = kShapeRadiusMax;
+    } else if (key == "density") {
+      field = &out.density;
+      lo = kShapeDensityMin;
+      hi = kShapeDensityMax;
+    } else if (key == "type_scale") {
+      field = &out.type_scale;
+      lo = kShapeTypeMin;
+      hi = kShapeTypeMax;
+    } else {
+      return theme_fault::bad_shape;
+    }
+    if (value.k != json::kind::number) return theme_fault::bad_shape;
+    const double d = value.is_integer ? static_cast<double>(value.i) : value.d;
+    if (!std::isfinite(d) || d < lo || d > hi) return theme_fault::bad_shape;
+    *field = d;
+  }
+  return theme_fault::none;
+}
+
 void write_palette(json::writer& w, const std::optional<theme_palette>& p) {
   if (!p) {
     w.null();
@@ -109,6 +137,7 @@ const char* theme_fault_name(theme_fault f) noexcept {
     case theme_fault::bad_colour: return "bad_colour";
     case theme_fault::translucent: return "translucent";
     case theme_fault::low_contrast: return "low_contrast";
+    case theme_fault::bad_shape: return "bad_shape";
   }
   return "unknown";
 }
@@ -132,7 +161,7 @@ theme_result parse_theme(std::string_view text) {
   const auto doc = json::parse(text, 4);
   if (!doc || doc->k != json::kind::object) return r;
   const auto schema = doc->integer("schema");
-  if (!schema || *schema != kThemeSchema) return r;
+  if (!schema || *schema < 1 || *schema > kThemeSchema) return r;
   for (const auto& [key, value] : doc->o) {
     if (key == "schema") continue;
     if (key == "dark" || key == "light") {
@@ -148,6 +177,11 @@ theme_result parse_theme(std::string_view text) {
         if (static_cast<unsigned char>(c) < 0x20 || c == 0x7F) return r;
       }
       r.t.font = value.s;
+    } else if (key == "shape" && *schema >= 2) {
+      if (const theme_fault f = parse_shape(value, r.t.shape); f != theme_fault::none) {
+        r.fault = f;
+        return r;
+      }
     } else {
       r.fault = theme_fault::unknown_token;
       return r;
@@ -166,6 +200,11 @@ std::string theme_to_json(const theme& t) {
   write_palette(w, t.dark);
   w.key("light");
   write_palette(w, t.light);
+  w.key("shape").begin_object();
+  w.key("radius").number(t.shape.radius);
+  w.key("density").number(t.shape.density);
+  w.key("type_scale").number(t.shape.type_scale);
+  w.end_object();
   w.end_object();
   return w.take();
 }

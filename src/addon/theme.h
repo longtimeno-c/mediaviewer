@@ -12,7 +12,8 @@
 //              "body": "#b9b4aa", "disabled": "#6f6b64", "hairline": "#3a3835",
 //              "accent": "#e0793a"},
 //    "light": { ...the same seven... },
-//    "font": "Avenir Next"}
+//    "font": "Avenir Next",
+//    "shape": {"radius": 0.5, "density": 0.9, "type_scale": 1.1}}   // schema 2
 //
 // One of `dark` / `light` is enough: the chrome then keeps that appearance
 // while the theme is on. With both it follows the system. `font` names a
@@ -33,7 +34,8 @@
 
 namespace mv::addon {
 
-inline constexpr int kThemeSchema = 1;
+// 1: colours and a face (API 1). 2: also `shape` (API 2, PR 56).
+inline constexpr int kThemeSchema = 2;
 inline constexpr std::size_t kThemeMaxBytes = 64u << 10;
 
 enum class theme_token : std::uint8_t {
@@ -57,10 +59,27 @@ struct rgba {
 
 using theme_palette = std::array<rgba, kThemeTokens>;
 
+// The chrome's proportions (theme schema 2, docs/design/25 "Theme, shape").
+// Each is a scale on today's literals, which are 1: a host multiplies its
+// corner radii by `radius`, its padding and row spacing by `density`, and its
+// type sizes by `type_scale`, once, when the theme is applied. Bounded so no
+// theme can make the chrome unreadable or unclickable.
+inline constexpr double kShapeRadiusMin = 0.0, kShapeRadiusMax = 2.0;
+inline constexpr double kShapeDensityMin = 0.75, kShapeDensityMax = 1.25;
+inline constexpr double kShapeTypeMin = 0.85, kShapeTypeMax = 1.25;
+
+struct theme_shape {
+  double radius = 1.0;      // 0 square corners .. 2 twice as round
+  double density = 1.0;     // 0.75 compact .. 1.25 roomy
+  double type_scale = 1.0;  // 0.85 .. 1.25
+  friend bool operator==(const theme_shape&, const theme_shape&) = default;
+};
+
 struct theme {
   std::optional<theme_palette> dark;
   std::optional<theme_palette> light;
   std::string font;  // a family name, or empty
+  theme_shape shape;
 };
 
 enum class theme_fault : std::uint8_t {
@@ -71,6 +90,7 @@ enum class theme_fault : std::uint8_t {
   bad_colour,    // not #rrggbb or #rrggbbaa
   translucent,   // canvas or surface with alpha: there is nothing under them to show
   low_contrast,  // text that does not stand out from its background
+  bad_shape,     // a shape key unknown, not a number, or outside its range
 };
 
 [[nodiscard]] const char* theme_fault_name(theme_fault f) noexcept;
@@ -87,7 +107,9 @@ struct theme_result {
 [[nodiscard]] double contrast_ratio(rgba fg, rgba bg) noexcept;
 
 // What the chromes read: {"font": "...", "dark": {"canvas": "#rrggbbaa", ...}
-// | null, "light": ... | null}. Every colour eight digits, lowercase.
+// | null, "light": ... | null, "shape": {"radius", "density", "type_scale"}}.
+// Every colour eight digits, lowercase; `shape` always present (1s for a
+// schema 1 theme), three decimals.
 [[nodiscard]] std::string theme_to_json(const theme& t);
 
 }  // namespace mv::addon
