@@ -427,6 +427,139 @@ jobs:
           path: build/bin/Release/frametime-baseline.json
           key: frametime-v2-${{ runner.name }}-${{ github.run_id }}-${{ github.run_attempt }}
 
+  # Mac PR 1: the same 60 s animated + idle gates on Metal (frametime main_mac.cpp,
+  # drop_source "Metal display-link"). Hosted macOS runners are VMs with no real
+  # display link, so this needs an interactive Apple Silicon runner with the
+  # display awake. Same opt-in and fork rule as the Windows job: set
+  # MV_MAC_GPU_RUNNER_ENABLED only after the runner exists.
+  frametime-mac:
+    name: Frame-time gate (self-hosted Mac)
+    if: ${{ vars.MV_MAC_GPU_RUNNER_ENABLED == 'true' && github.event_name != 'schedule' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    runs-on: [self-hosted, macOS, ARM64, gpu]
+    timeout-minutes: 240
+    concurrency:
+      group: frametime-mac-gpu
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: bash
+    env:
+      TRIPLET: arm64-osx
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out vcpkg at the manifest baseline
+        uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          ref: ${{ env.VCPKG_COMMIT }}
+          path: vcpkg
+          fetch-depth: 0
+
+      - name: Bootstrap vcpkg
+        run: |
+          ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          echo "VCPKG_ROOT=${{ github.workspace }}/vcpkg" >> "$GITHUB_ENV"
+
+      # Same key as release.yml's macos-build arm64 leg.
+      - name: Cache vcpkg packages
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            build/vcpkg_installed
+            build/vcpkg_dynamic
+          key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'tools/mac/dependencies/vcpkg.json', 'tools/mac/triplets/*.cmake', 'tools/vcpkg/triplets/*-osx.cmake') }}-${{ env.TRIPLET }}-mixed-v2
+
+      # A runner service often starts without Homebrew on PATH.
+      - name: Install macOS dynamic codec libraries
+        run: |
+          if [ -x /opt/homebrew/bin/brew ]; then
+            eval "$(/opt/homebrew/bin/brew shellenv)"
+            echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          fi
+          brew install libomp nasm ninja autoconf autoconf-archive automake libtool
+          "$VCPKG_ROOT/vcpkg" install --triplet "$TRIPLET-dynamic" \
+            --overlay-triplets="$GITHUB_WORKSPACE/tools/mac/triplets" \
+            --x-manifest-root="$GITHUB_WORKSPACE/tools/mac/dependencies" \
+            --x-install-root="$GITHUB_WORKSPACE/build/vcpkg_dynamic"
+
+      - name: Configure and build the lab and the harness
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DVCPKG_TARGET_TRIPLET="$TRIPLET" \
+            -DMV_VCPKG_DYNAMIC_PREFIX="$GITHUB_WORKSPACE/build/vcpkg_dynamic/$TRIPLET-dynamic"
+          cmake --build build --config Release --target mv_frametime
+
+      # caffeinate keeps the display awake: a sleeping display stops the
+      # display link, which is a failed gate, not a pass.
+      - name: Animated and idle 60-second gates
+        run: caffeinate -dimsu ./build/bin/frametime --seconds 60 --lab ./build/bin/mediaviewer_lab
+
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frametime-mac-report
+          path: |
+            build/bin/frametime-report.json
+            build/bin/frametime-idle-report.json
+          if-no-files-found: ignore
+
+  # Rule 4: every PR must still pass both present-loop verifies. GitHub counts a
+  # skipped job as a success for branch protection, so neither gate job above
+  # protects anything as a required check while it is skipped. This job always
+  # runs and is the one to require: it fails when a gate failed or was
+  # cancelled, and warns (log annotation + run summary) when a gate was
+  # skipped. With MV_REQUIRE_PRESENT_GATES=true a skip on this repository's own
+  # branches fails too; fork PRs never reach the persistent runners and warn.
+  present-gates:
+    name: Present-loop gates (Windows PR 1 + Mac PR 1)
+    needs: [frametime, frametime-mac]
+    if: ${{ always() && github.event_name != 'schedule' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        shell: bash
+    env:
+      WIN_RESULT: ${{ needs.frametime.result }}
+      MAC_RESULT: ${{ needs.frametime-mac.result }}
+      REQUIRE: ${{ vars.MV_REQUIRE_PRESENT_GATES == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    steps:
+      - name: Report the gates
+        run: |
+          status=0
+          {
+            echo "### Present-loop gates"
+            echo
+            echo "| Gate | Result |"
+            echo "|---|---|"
+            echo "| Windows PR 1 (D3D11, self-hosted GPU) | $WIN_RESULT |"
+            echo "| Mac PR 1 (Metal, self-hosted Mac) | $MAC_RESULT |"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          for gate in "Windows PR 1:$WIN_RESULT" "Mac PR 1:$MAC_RESULT"; do
+            name="${gate%%:*}"
+            result="${gate#*:}"
+            case "$result" in
+              success)
+                echo "$name present-loop gate passed." ;;
+              skipped)
+                msg="$name present-loop gate was skipped (no runner enabled for it, or a fork PR). A skip is not a pass: rule 4 was not checked for this change."
+                if [ "$REQUIRE" = "true" ]; then
+                  echo "::error title=Present-loop gate skipped::$msg"
+                  status=1
+                else
+                  echo "::warning title=Present-loop gate skipped::$msg"
+                fi
+                echo "- **$name skipped.** Not measured; a skip is not a pass." >> "$GITHUB_STEP_SUMMARY" ;;
+              *)
+                echo "::error title=Present-loop gate $result::$name present-loop gate: $result."
+                status=1 ;;
+            esac
+          done
+          exit $status
+
   # ---------------------------------------------------------------------------
   # PR 7: libFuzzer, one harness per decoder entry point (tools/fuzz). clang-cl
   # + ASan + -fsanitize=fuzzer. Pull requests get a 60 s smoke per harness;
