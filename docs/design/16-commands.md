@@ -158,7 +158,7 @@ crop. Keys are shown Windows-style; on macOS read `⌘` for `Ctrl`.
 | `R` | Viewing | Reset frame-time stats |
 | `Esc` | all | Back (above) |
 | *(unbound)* | browse, video | **Open RAW of pair** / **Open JPEG of pair** — listed in Settings. **Mac: not built** (not listed) |
-| *(unbound)* | Viewing | **Show next kind**: cycle View ▸ Show (All → Photos → Videos → RAW → Marked), below. Listed in Settings |
+| *(unbound)* | Viewing | **Show next kind**: cycle View ▸ Show (All → Photos → Videos → RAW → Marked → Picks → Not rejected → Red … Purple; Marked is passed over when nothing is marked), below. Listed in Settings |
 | *(menu)* | — | **Recent folders**: the jump-list folders; Windows: Open ▸ Recent folders on the command bar; Mac: File ▸ Open Recent. A folder that has gone beeps and leaves the list |
 
 ### View
@@ -273,7 +273,8 @@ metadata pane's Label row has a swatch per colour (Purple has no key, as in Ligh
 are letters, so they are browse and video only (the gallery and the strips type ahead). The command bar shows what landed ("★★★★☆", or "— IMG_1234.xmp" when a
 sidecar took it). Not in a slideshow or crop. On macOS `⌘⇧3`/`4`/`5` are the system screenshot
 shortcuts (and `⌘⇧6` the Touch Bar one, on a Mac that has a Touch Bar) and do not reach the app unless turned off in System Settings; the keypad, or a remap,
-works regardless.
+works regardless. To see only the keepers, or one colour, use View ▸ Show's cull filters (below,
+"Status, sort, filter, typeahead").
 
 ### Video and trim
 
@@ -413,6 +414,22 @@ Chrome, in memory, no decode.
   opened on, so an explicit open still shows. The notice line says what is shown. A scan-time
   flag over the listing already in memory: no decode, no I/O, no rescan (`io::keeps_stop`;
   Windows `mv_folder_set_kind_filter`, the Mac host over its folder model's snapshot).
+- **Show, on the cull** (issue #207): View ▸ Show's second group filters on what `X`, the rating
+  keys and the label keys wrote: **Picks** (rated one star or more; XMP has no pick flag, and
+  Lightroom keeps its own in the catalog), **Not rejected** (everything but rating −1, unrated
+  included), and **Red**, **Yellow**, **Green**, **Blue** or **Purple** (that `xmp:Label`, in any
+  case). These are not scan-time flags: each file's rating and label is read on a worker
+  (`meta::read_cull_marks`, a bounded head read plus the sidecar, as date-taken sorting does) and
+  cached by path + size + mtime; a write this app makes drops its file's entry (a sidecar write
+  leaves the file's own stamp). Nothing of it runs on the UI or render thread, and the first
+  pixel and navigation never wait for it: the folder opens and lists as always, and a filter
+  already on applies as the reads land (a file not read yet counts as unrated and unlabelled). A
+  newly chosen cull filter keeps the listing as it is until the reads it needs are done, then
+  moves the stop on screen once. Rating or labelling the stop on screen never pulls it out of the
+  listing (the relist keeps it, as Marked keeps an unmarked file); choosing the filter again
+  re-applies it. Windows filters in the core (`MV_FOLDER_HIDE_REJECTED` / `_UNPICKED` / the
+  label in bits 8–10, ABI 0.20, and `mv_folder_note_metadata_written` after a write); the Mac
+  host's `meta_store` keeps the cache (`cull_marks_of`, `resolve_cull_marks`).
 - **Typeahead:** with the filmstrip or gallery focused, typing jumps to the first name starting
   with what was typed (300 ms idle resets). On the canvas every letter is a command, so `/` opens
   a find box over the loaded listing. `Ctrl+G` goes to an index.

@@ -393,4 +393,14 @@ std::optional<std::int64_t> still_date_key(std::span<const std::uint8_t> bytes) 
   }
 }
 
+std::optional<field_state> still_fields(std::span<const std::uint8_t> bytes) noexcept {
+  try {
+    auto image = open(bytes);
+    if (!image) return std::nullopt;
+    return read_fields(image->exifData(), image->xmpData(), comment_order_of(*image));
+  } catch (...) {
+    return std::nullopt;
+  }
+}
+
 }  // namespace mv::meta::detail

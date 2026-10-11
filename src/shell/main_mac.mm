@@ -3278,6 +3278,10 @@ static void MvAdoptNewDefaultViewerTypes() {
   if (_meta.consume_dates_changed() && _sort.key == mv::io::sort_key::date_taken && !_listOpen) {
     [self resortKeepingSelection];
   }
+  // Issue #207: ratings and labels arriving on the pool re-apply a cull filter.
+  if (_meta.consume_cull_changed() && mv::io::needs_cull_marks(mv::io::kind_filter_mask(_kindFilter))) {
+    _refilterListing = YES;
+  }
   if (!_folder.consume_changed() && !_refilterListing) return;
   _refilterListing = NO;
   mv::shell::folder_model::listing listing = _folder.snapshot();
@@ -3285,6 +3289,25 @@ static void MvAdoptNewDefaultViewerTypes() {
   // firing just as a result list opens, or the list a folder open is
   // replacing) is not what is on screen now.
   if (listing.is_list != static_cast<bool>(_listOpen)) return;
+  const std::uint32_t filter = mv::io::kind_filter_mask(_kindFilter);
+  // Issue #207: a cull filter (Picks, Not rejected, a colour) needs every
+  // file's rating and label. Here they are only looked up (one lock, no file
+  // read); the missing ones are read on a worker (meta_store, keyed by path +
+  // size + mtime) and their arrival relists again. A stop not read yet counts
+  // as unrated and unlabelled. A newly chosen filter waits for them instead,
+  // keeping what is shown, so it moves off the stop on screen only once.
+  std::vector<std::optional<mv::io::cull_marks>> cull;
+  if (mv::io::needs_cull_marks(filter)) {
+    cull = _meta.cull_marks_of(listing.items);
+    std::vector<mv::io::dir_entry> missing;
+    for (std::size_t i = 0; i < cull.size(); ++i) {
+      if (!cull[i]) missing.push_back(listing.items[i]);
+    }
+    if (!missing.empty()) {
+      _meta.resolve_cull_marks(std::move(missing), _jobs, {});
+      if (_kindFilterChanged && !_items.empty()) return;
+    }
+  }
   _items = std::move(listing.items);
   // Every file in the folder, before any kind is left out: a mark on a file
   // the listing merely hides (View > Show, Settings' kinds) is not a mark on
@@ -3294,7 +3317,6 @@ static void MvAdoptNewDefaultViewerTypes() {
     for (const auto& entry : _items) livePaths.insert(entry.path_utf8);
   }
   const std::uint32_t hide = mv::shell::view_settings::from_flags(_viewFlags).hidden_kinds();
-  const std::uint32_t filter = mv::io::kind_filter_mask(_kindFilter);
   const bool filterChanged = _kindFilterChanged;
   _kindFilterChanged = NO;
   if (hide != 0 || filter != 0) {
@@ -3316,8 +3338,9 @@ static void MvAdoptNewDefaultViewerTypes() {
     for (std::size_t i = 0; i < _items.size(); ++i) {
       const auto& e = _items[i];
       const bool stays = !_wantSelectedPath.empty() && e.path_utf8 == _wantSelectedPath;
+      const mv::io::cull_marks marks = i < cull.size() && cull[i] ? *cull[i] : mv::io::cull_marks{};
       if (!mv::io::keeps_stop(e.name_utf8, {}, _kindKept.count(e.path_utf8) != 0, stays, hide,
-                              filter, filterChanged)) {
+                              filter, filterChanged, marks)) {
         continue;
       }
       if (aligned) listing.moments[out] = listing.moments[i];
@@ -4581,7 +4604,12 @@ enum MvMenuCmd : NSInteger {
   kMenuNewWindow,
   // Issue #206: View > Show, in io::kind_filter order.
   kMenuShowAll, kMenuShowPhotos, kMenuShowVideos, kMenuShowRaw, kMenuShowMarked,
+  // Issue #207: View > Show's cull filters, continuing io::kind_filter order.
+  kMenuShowPicks, kMenuShowNotRejected, kMenuShowRed, kMenuShowYellow, kMenuShowGreen,
+  kMenuShowBlue, kMenuShowPurple,
 };
+static_assert(kMenuShowPurple - kMenuShowAll + 1 == mv::io::kKindFilterCount);
+static_assert(kMenuShowPicks - kMenuShowAll == mv::io::kFirstCullFilter);
 
 // Issue #182: the table row behind a menu item, for its mode mask. None for
 // the Sort items (no row) and the Edit menu, which validateMenuItem: gates by
@@ -4819,7 +4847,8 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
       break;
     }
     case kMenuShowAll: case kMenuShowPhotos: case kMenuShowVideos: case kMenuShowRaw:
-    case kMenuShowMarked:
+    case kMenuShowMarked: case kMenuShowPicks: case kMenuShowNotRejected: case kMenuShowRed:
+    case kMenuShowYellow: case kMenuShowGreen: case kMenuShowBlue: case kMenuShowPurple:
       (void)[self setKindFilter:mv::io::kind_filter_from(static_cast<int>(cmd - kMenuShowAll))];
       break;
   }
@@ -4856,7 +4885,7 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
     item.state = _sort.descending ? NSControlStateValueOn : NSControlStateValueOff;
     return [self hasFolder];
   }
-  if (tag >= kMenuShowAll && tag <= kMenuShowMarked) {
+  if (tag >= kMenuShowAll && tag <= kMenuShowPurple) {
     item.state = static_cast<NSInteger>(_kindFilter) == tag - kMenuShowAll ? NSControlStateValueOn
                                                                          : NSControlStateValueOff;
     return tag != kMenuShowMarked || !_marks.empty() || _kindFilter == mv::io::kind_filter::marked;
@@ -5055,6 +5084,15 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
   [self addMenuItem:@"Videos" cmd:kMenuShowVideos key:@"" mods:0 toMenu:showMenu];
   [self addMenuItem:@"RAW" cmd:kMenuShowRaw key:@"" mods:0 toMenu:showMenu];
   [self addMenuItem:@"Marked" cmd:kMenuShowMarked key:@"" mods:0 toMenu:showMenu];
+  // Issue #207: on rating and colour label (read on a worker, not at scan).
+  [showMenu addItem:[NSMenuItem separatorItem]];
+  [self addMenuItem:@"Picks" cmd:kMenuShowPicks key:@"" mods:0 toMenu:showMenu];
+  [self addMenuItem:@"Not Rejected" cmd:kMenuShowNotRejected key:@"" mods:0 toMenu:showMenu];
+  [self addMenuItem:@"Red" cmd:kMenuShowRed key:@"" mods:0 toMenu:showMenu];
+  [self addMenuItem:@"Yellow" cmd:kMenuShowYellow key:@"" mods:0 toMenu:showMenu];
+  [self addMenuItem:@"Green" cmd:kMenuShowGreen key:@"" mods:0 toMenu:showMenu];
+  [self addMenuItem:@"Blue" cmd:kMenuShowBlue key:@"" mods:0 toMenu:showMenu];
+  [self addMenuItem:@"Purple" cmd:kMenuShowPurple key:@"" mods:0 toMenu:showMenu];
   [view addItem:[NSMenuItem separatorItem]];
   // The standard action (nil target -> the window via the responder chain):
   // AppKit titles it Enter/Exit Full Screen itself, and doesn't inject a
@@ -5688,7 +5726,8 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     case fullscreen: [self toggleFullscreen]; return YES;
     case close_window: [self.window performClose:nil]; return YES;
     case new_window: [self openNewWindow]; return YES;
-    case kind_filter_next: return [self setKindFilter:mv::io::next_kind_filter(_kindFilter)];
+    case kind_filter_next:
+      return [self setKindFilter:mv::io::next_kind_filter(_kindFilter, !_marks.empty())];
     case always_on_top:
       self.window.level = self.window.level == NSFloatingWindowLevel ? NSNormalWindowLevel
                                                                       : NSFloatingWindowLevel;
@@ -8813,14 +8852,15 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
     }
     kept = _marks;
   }
-  if (f == _kindFilter && kept == _kindKept) return YES;
+  // Choosing a cull filter again re-applies it: ratings and labels set since
+  // (the stop on screen stays under a relist) are what it shows now.
+  const bool cull = mv::io::needs_cull_marks(mv::io::kind_filter_mask(f));
+  if (f == _kindFilter && kept == _kindKept && !cull) return YES;
   _kindFilter = f;
   _kindKept = std::move(kept);
   _kindFilterChanged = YES;
   _refilterListing = YES;  // picked up by the 0.2 s folder timer, like any relist
-  [self noticeShow:f == mv::io::kind_filter::all
-                       ? std::string("Showing all")
-                       : std::string("Showing ") + mv::io::kind_filter_name(f) + " only"];
+  [self noticeShow:mv::io::kind_filter_notice(f)];
   return YES;
 }
 

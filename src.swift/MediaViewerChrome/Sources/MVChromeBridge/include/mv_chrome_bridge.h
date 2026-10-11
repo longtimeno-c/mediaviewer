@@ -374,8 +374,9 @@ int32_t mv_chrome_sort_order(void);
 void mv_chrome_set_sort_order(int32_t packed);
 
 // Issue #206: View > Show, the kind filter (io::kind_filter): 0 all, 1 photos,
-// 2 videos, 3 RAW, 4 marked. For this run only. Setting "marked" with nothing
-// marked is refused (false, a notice). [main-thread]
+// 2 videos, 3 RAW, 4 marked; issue #207's cull filters 5 picks, 6 not
+// rejected, 7 red, 8 yellow, 9 green, 10 blue, 11 purple. For this run only.
+// Setting "marked" with nothing marked is refused (false, a notice). [main-thread]
 int32_t mv_chrome_kind_filter(void);
 bool mv_chrome_set_kind_filter(int32_t filter);
 

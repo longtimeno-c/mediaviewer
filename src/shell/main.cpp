@@ -1619,6 +1619,8 @@ void on_meta_write_done(app_state* app, std::unique_ptr<meta_write_result> r) {
   // What the store cached for this file is out of date: a JPEG's stamp moved,
   // a sidecar's did not, so drop it by path either way.
   app->meta.invalidate(out.path);
+  // Issue #207: and the rating / label View > Show's cull filters cached.
+  (void)mv_folder_note_metadata_written(app->session, out.path.c_str());
   if (r->stamped) {
     // The bytes changed, the pixels did not: keep the item's edits, and let
     // the next listing see the same item rather than a new one.
@@ -1665,7 +1667,10 @@ void set_sort(app_state* app, std::int32_t packed) noexcept {
 // filmstrip, the gallery and the arrow keys read one list; the stop on screen
 // moves to the nearest one shown. "Marked" keeps the marks as they are now, so
 // unmarking while culling does not pull a file out from under the user.
+// Issue #207: Picks / Not rejected / a colour filter on rating and label, which
+// the session reads on a worker (never here) before it relists.
 // For this run only: a filter left on from yesterday would look like files gone.
+static_assert(mv::io::kKindFilterCount <= 16, "the chrome's sort word carries it in bits 8-11");
 bool set_kind_filter(app_state* app, mv::io::kind_filter f) noexcept {
   if (!app || !app->session) return false;
   try {
@@ -1687,9 +1692,7 @@ bool set_kind_filter(app_state* app, mv::io::kind_filter f) noexcept {
     app->kind_filter = f;
     app->chrome.set_kind_filter(static_cast<std::int32_t>(f));
     app->chrome.apply_settings(chrome_flags(app), app->settings.sort);
-    notice_show(app, f == mv::io::kind_filter::all
-                         ? std::string("Showing all")
-                         : std::string("Showing ") + mv::io::kind_filter_name(f) + " only");
+    notice_show(app, mv::io::kind_filter_notice(f));
     return true;
   } catch (...) {
     return false;
@@ -6499,7 +6502,7 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     case crop_aspect_set: case crop_straighten_set: case kind_filter_set:
       return false;  // island-only: they carry a value (chrome_on_command)
     case kind_filter_next:
-      return set_kind_filter(app, mv::io::next_kind_filter(app->kind_filter));
+      return set_kind_filter(app, mv::io::next_kind_filter(app->kind_filter, !app->marks.empty()));
     // Marks (docs/design/16): a set separate from the selection, keyed by path.
     case toggle_mark: {
       const std::string current = current_item_path(app);

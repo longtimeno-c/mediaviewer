@@ -74,7 +74,9 @@ fit/100 % ([16-commands.md](16-commands.md)). Issue #207 adds the rest of a cull
 writer: `X` toggles reject (rating −1) and numpad / `Ctrl+Shift` `6`–`9` set the colour label
 (`U` clears it), which is the one tag XMP `xmp:Label` (a PR 29 tag edit, `shell::label_fields`)
 in Lightroom's words. The read model carries it as `summary::label` (the sidecar wins) and the
-summary card as a "Label" row.
+summary card as a "Label" row. View ▸ Show filters the listing on them (Picks, Not rejected, a
+colour; [16-commands.md](16-commands.md) "Status, sort, filter, typeahead"), from
+`read_cull_marks` below.
 
 **Where a change lands** (`write_target_for`, decided by magic bytes and structure):
 
@@ -137,6 +139,14 @@ These read the already-parsed `metadata` — no file I/O on toggle
   prefix once per file on a worker, remembered per (path, mtime, size); until a stamp lands the
   file sorts by mtime, and the listing re-sorts when stamps arrive. Camera stamps carry no zone,
   so the key is the stamp read as UTC.
+- **Rating and label for the cull filter** (issue #207) — `read_cull_marks` reads the rating and
+  `xmp:Label` alone (`io::cull_marks`: −1..5 and Red / Yellow / Green / Blue / Purple, or
+  "other" for another app's word), on a worker, once per file: the same 256 KB head as
+  `read_date_taken` (8 MB only when the head does not parse), then the sidecar, which wins as in
+  `read`. A clip is its sidecar. An in-file rating past the head (another app's PNG with XMP after
+  the pixels) is not seen; this app writes those formats' ratings to the sidecar. Cached by
+  (path, mtime, size): in the session on Windows, in the Mac host's `meta_store`; a write this app
+  makes drops its file's entry, because a sidecar write leaves the file's own stamp alone.
 
 ## Not built
 
@@ -146,4 +156,4 @@ These read the already-parsed `metadata` — no file I/O on toggle
 - Batch metadata: date/time shift across a selection, copy metadata to many, filename
   templating, strip-on-share copies.
 - GPS map pin / writing coordinates.
-- Keywords as a feature. Colour labels are built (issue #207), but no filter on them yet.
+- Keywords as a feature. (Colour labels and a filter on them are built, issue #207.)

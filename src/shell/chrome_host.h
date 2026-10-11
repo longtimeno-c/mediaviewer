@@ -542,7 +542,7 @@ inline constexpr std::int32_t kMetaEditDropDraft = 8;  // Esc: forget what was t
 struct chrome_flags_args {
   std::int32_t flags;
   // PR 9: packed sort order, so Settings and View > Sort by show the truth.
-  // Issue #206: bits 8-10 are the kind filter View > Show applied
+  // Issue #206 / #207: bits 8-11 are the kind filter View > Show applied
   // (io::kind_filter), so its marker is native's choice too.
   std::int32_t sort;
 };
@@ -810,9 +810,9 @@ class chrome_host {
   // Push the persisted toggles into the settings menu so the menu and the
   // keyboard cannot disagree about what is on.
   void apply_settings(std::int32_t flags, std::int32_t sort = 0) noexcept;
-  // Issue #206: the kind filter every later apply_settings carries (bits 8-10
+  // Issue #206: the kind filter every later apply_settings carries (bits 8-11
   // of its sort word). Set once the core has applied it; not saved.
-  void set_kind_filter(std::int32_t filter) noexcept { kind_filter_ = filter & 7; }
+  void set_kind_filter(std::int32_t filter) noexcept { kind_filter_ = filter & 15; }
 
   // Push the current playback rate into the command bar's speed dropdown.
   void apply_rate(float rate) noexcept;

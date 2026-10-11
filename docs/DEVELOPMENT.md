@@ -485,7 +485,7 @@ copy, and check Finder's **Open With** and a Quick Look thumbnail.
 | Keypad `0`–`5` / `Ctrl+Shift+0`–`5` | rate the item on screen (0 clears) |
 | `X` | reject the item on screen (rating −1, "Rejected" in Lightroom and Bridge); `X` again un-rejects |
 | Keypad `6`–`9` / `Ctrl+Shift+6`–`9` | colour label Red / Yellow / Green / Blue (Lightroom's keys; `⌘⇧` on the Mac); the same key again clears it. `U` clears the label. Written as XMP `xmp:Label`: in a plain JPEG, else in its `.xmp` sidecar. The metadata pane's Label row has a swatch per colour |
-| View ▸ **Show** | All / Photos / Videos / RAW / Marked: only that kind in the filmstrip, gallery and arrow keys, for this run (not saved). RAW is a RAW or a RAW+JPEG pair; Marked is the marks when you chose it. The stop on screen moves to the nearest one shown. Also in the command bar's View menu on the Mac. **Show next kind** cycles them; it has no key until you give it one in Settings |
+| View ▸ **Show** | All / Photos / Videos / RAW / Marked: only that kind in the filmstrip, gallery and arrow keys, for this run (not saved). RAW is a RAW or a RAW+JPEG pair; Marked is the marks when you chose it. The stop on screen moves to the nearest one shown. Also in the command bar's View menu on the Mac. Below them, **Picks** (1★ or more) / **Not rejected** / **Red** … **Purple** filter on what `X` and the rating and label keys wrote (read on a worker; the stop on screen stays when you rate it; choose the filter again to re-apply). **Show next kind** cycles them all; it has no key until you give it one in Settings |
 | `F5` | slideshow (fullscreen). In it: `Space` pause, `+` / `-` interval, `.` blackout, `R` shuffle, `Esc` leave. A clip plays to its end before advancing |
 | `F7` / `F8` | copy / move the marked items (or the current one) to the last folder used. `Shift+F7` / `Shift+F8` pick a folder. Never overwrites: a taken name becomes `name (2).ext` |
 | `Delete` | move the marked items (or the current one) to the Recycle Bin, after asking. A drive with no Recycle Bin is refused, never deleted permanently |
@@ -1370,11 +1370,14 @@ Measured on the Mac (`mv_tests "[docx]"`; a `textutil`-written DOCX rendered by
 `MV_DOCX_DUMP=out.jpg MV_DOCX_FILE=x.docx mv_tests "[.docx-dump]"` and looked at). The Windows font
 lookup (`fonts_win.cpp`) and the DLLs' packaging are compiled and staged by CI only.
 
-**Culling (issue #207, part 1):** `X` reject, colour labels on keypad / `Ctrl+Shift` `6`–`9`, `U`
+**Culling (issue #207):** `X` reject, colour labels on keypad / `Ctrl+Shift` `6`–`9`, `U`
 to clear, and the pane's Label swatches, on both hosts through PR 12's writer and sidecar rule
-(`shell::reject_toggled`, `label_toggled`, `label_fields`; `meta::summary::label`). Tests:
-`mv_tests "[cull]"`. Not yet: a filter on reject / label (it needs each file's label read on a
-worker, as date-taken sorting does).
+(`shell::reject_toggled`, `label_toggled`, `label_fields`; `meta::summary::label`). View ▸ Show
+filters on them (Picks, Not rejected, a colour), stacked on #206's kind filter: each file's rating
+and label is read on a worker (`meta::read_cull_marks`) and cached by path + size + mtime, in the
+core on Windows (ABI 0.20 cull bits, `mv_folder_note_metadata_written` after a write) and in
+`shell::meta_store` on the Mac. Tests: `mv_tests "[cull]"` (both platforms; the ABI case in
+`test_folder.cpp` is Windows-only). Not driven interactively in the app on either platform yet.
 
 **Settings → File types:** "Show audio files" and "Show documents" are off by default, which leaves
 MP3/M4A/M4P and PDF/DOCX out of folder listings; the file a folder was opened on, and the current
