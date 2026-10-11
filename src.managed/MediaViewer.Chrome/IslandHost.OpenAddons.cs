@@ -355,7 +355,7 @@ public static partial class IslandHost
             Line("Adds", a.Adds);
             foreach (string can in a.Can) Line("Can", can);
             Line("Cannot", a.Cannot);
-            Line("Size", $"{OpenSizeText(a.Size)} · {a.Licence}");
+            Line("Size", $"{MediaViewer.Shared.ByteSize.Text(a.Size)} · {a.Licence}");
             sheet.Children.Add(lines);
         }
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
@@ -400,11 +400,6 @@ public static partial class IslandHost
         };
         return card;
     }
-
-    private static string OpenSizeText(long bytes) =>
-        bytes >= 1024 * 1024 ? $"{bytes / (1024.0 * 1024.0):0.0} MB"
-        : bytes >= 1024 ? $"{Math.Max(1, (long)Math.Round(bytes / 1024.0))} KB"
-        : $"{bytes} bytes";
 
     // ---- from a file ----------------------------------------------------------------
 
@@ -496,7 +491,7 @@ public static partial class IslandHost
         var progress = new UiProgress<long>(done =>
         {
             if (!_openBusy) return;
-            _openProgress = $"Downloading… {OpenSizeText(done)}";
+            _openProgress = $"Downloading… {MediaViewer.Shared.ByteSize.Text(done)}";
             RefreshOpenAddonRow();
         });
         _ = Task.Run(async () =>

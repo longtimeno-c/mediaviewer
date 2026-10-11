@@ -33,18 +33,8 @@ public static partial class IslandHost
     {
         try
         {
-            if (arg == IntPtr.Zero || sizeBytes < FilmstripArgsSize) return unchecked((int)0x80070057);
-            ChromeFilmstripArgs args = Marshal.PtrToStructure<ChromeFilmstripArgs>(arg);
-            IntPtr parent = checked((IntPtr)args.ParentHwnd);
-            if (parent == IntPtr.Zero) return unchecked((int)0x80070057);
-
-            EnsureApp();
-            _context = checked((IntPtr)args.Context);
-            if (args.OnCommand != 0)
-            {
-                _onCommand = Marshal.GetDelegateForFunctionPointer<NativeCommand>(
-                    checked((IntPtr)args.OnCommand));
-            }
+            int hr = BeginAttach(arg, sizeBytes, out ChromeFilmstripArgs args, out IntPtr parent);
+            if (hr != 0) return hr;
 
             if (args.Session != 0)
             {
@@ -55,15 +45,11 @@ public static partial class IslandHost
                 StartVideoControls(parent);
             }
 
-            DisposeSource(ref _filmstrip);
-            _filmstrip = new DesktopWindowXamlSource();
-            EnsureFocusHook();
-            _filmstrip.Initialize(Win32Interop.GetWindowIdFromWindow(parent));
             // Park with no content, same as the gallery. Building the repeater
             // here and then immediately hiding it left an ItemsRepeater bound
             // to `Items`; the first folder-open show bound a second one and
             // AccessViolation'd in set_ItemsSource.
-            Move(_filmstrip, 1, 1, args.ClientHeight);
+            Move(NewIsland(ref _filmstrip, parent), 1, 1, args.ClientHeight);
             return 0;
         }
         catch (Exception ex)

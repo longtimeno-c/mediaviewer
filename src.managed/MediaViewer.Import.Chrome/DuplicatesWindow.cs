@@ -483,7 +483,7 @@ internal sealed class DuplicatesWindow : Window
             groups == 0 ? $"No duplicates among {files} files." :
             dupes == 0 ? "Every extra copy is in the Recycle Bin. One copy of each file is kept." :
             $"{dupes} duplicate {(dupes == 1 ? "file" : "files")} in {groups} {(groups == 1 ? "group" : "groups")} · " +
-            $"{Format.Bytes(wasted)} could be freed";
+            $"{MediaViewer.Shared.ByteSize.Text(wasted)} could be freed";
         var notes = new List<string>();
         if (s.GetProperty("cancelled").GetBoolean()) notes.Add("Stopped early: not every file was compared.");
         if (!_canTrash && groups > 0) notes.Add("Moving to the Recycle Bin needs a newer MediaViewer.");
@@ -511,7 +511,7 @@ internal sealed class DuplicatesWindow : Window
             var group = new DupGroupVm
             {
                 Header = $"{n} identical files",
-                Sub = $"{Format.Bytes(size)} each",
+                Sub = $"{MediaViewer.Shared.ByteSize.Text(size)} each",
                 Size = size,
             };
             foreach (JsonElement f in members.EnumerateArray())
@@ -600,7 +600,7 @@ internal sealed class DuplicatesWindow : Window
         _selectionText.Text =
             _groups.Count == 0 ? "" :
             every ? $"{picked.Count} picked, including every copy of a file. Leave one copy of each file unpicked." :
-            picked.Count > 1 ? $"{picked.Count} picked · {Format.Bytes(bytes)} to free" :
+            picked.Count > 1 ? $"{picked.Count} picked · {MediaViewer.Shared.ByteSize.Text(bytes)} to free" :
             "Ctrl+click or Shift+click to pick several copies, then move them to the Recycle Bin together.";
 
         _stop.Visibility = _running ? Visibility.Visible : Visibility.Collapsed;

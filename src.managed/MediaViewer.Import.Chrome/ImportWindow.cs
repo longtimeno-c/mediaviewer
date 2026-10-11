@@ -440,7 +440,7 @@ internal sealed class ImportWindow : Window
                 long total = s.GetProperty("total_bytes").GetInt64();
                 long fresh = s.GetProperty("new_count").GetInt64();
                 string kind = s.GetProperty("kind").GetString() ?? "";
-                string detail = (total > 0 ? Format.Bytes(total) + " · " : "") +
+                string detail = (total > 0 ? MediaViewer.Shared.ByteSize.Text(total) + " · " : "") +
                                 (fresh >= 0 ? $"{fresh} new" : kind == "network" ? "network (slower)" : "");
                 _sourceItems.Add(new SourceVm
                 {
@@ -665,7 +665,7 @@ internal sealed class ImportWindow : Window
         double rate = t.GetProperty("bytes_per_second").GetDouble();
         _bottomText.Text = selUnits == 0
             ? "Nothing selected"
-            : $"{selUnits} item{(selUnits == 1 ? "" : "s")} selected · {Format.Bytes(selBytes)}";
+            : $"{selUnits} item{(selUnits == 1 ? "" : "s")} selected · {MediaViewer.Shared.ByteSize.Text(selBytes)}";
         var detail = new List<string>();
         if (dups > 0) detail.Add($"{dups} already in your library will be skipped");
         if (eta >= 0 && selUnits > 0) detail.Add($"{Format.Eta(eta)} at {Format.Rate(rate)}");
@@ -1064,7 +1064,7 @@ internal sealed class ImportWindow : Window
             Title = "Import these files?",
             Content = Text(
                 $"{_confirmUnits} item" + (_confirmUnits == 1 ? "" : "s") +
-                $" ({_confirmFiles} file" + (_confirmFiles == 1 ? "" : "s") + $", {Format.Bytes(_confirmBytes)})\n" +
+                $" ({_confirmFiles} file" + (_confirmFiles == 1 ? "" : "s") + $", {MediaViewer.Shared.ByteSize.Text(_confirmBytes)})\n" +
                 $"From: {_root}\n" +
                 $"To: {(_destinationForOpen.Length > 0 ? _destinationForOpen : "(not set)")}\n\n" +
                 "Originals are never modified or deleted; every copy is verified.", 13),

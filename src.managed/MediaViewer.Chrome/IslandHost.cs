@@ -569,7 +569,6 @@ public static partial class IslandHost
             _settingFlags = args.Flags;
             _sortPacked = args.Sort;
             UpdateChannelApplied();
-            RefreshSettingsMenu();
             RefreshSettingsScreen();
             // PR 8: the telemetry first-run screen, once, when native reports
             // the choice has never been made (IslandHost.Telemetry.cs). It
@@ -1234,8 +1233,6 @@ public static partial class IslandHost
         }
     }
 
-    private static MenuFlyout? _settingsFlyout;
-
     private static bool HasFlag(int flag) => (_settingFlags & flag) != 0;
 
     // Native owns the file. Send the whole word, let it persist, and wait for
@@ -1336,26 +1333,6 @@ public static partial class IslandHost
         }
     }
 
-    private static void RefreshSettingsMenu()
-    {
-        if (_settingsFlyout is null) return;
-        _settingsFlyout.Items.Clear();
-        _settingsFlyout.Items.Add(
-            Item("Filmstrip when opening a folder",
-                 HasFlag(SettingFlag.FilmstripForFolder) ? "on" : "off",
-                 () => SetFlag(SettingFlag.FilmstripForFolder,
-                               !HasFlag(SettingFlag.FilmstripForFolder))));
-        _settingsFlyout.Items.Add(
-            Item("Filmstrip when opening an image",
-                 HasFlag(SettingFlag.FilmstripForImage) ? "on" : "off",
-                 () => SetFlag(SettingFlag.FilmstripForImage,
-                               !HasFlag(SettingFlag.FilmstripForImage))));
-        _settingsFlyout.Items.Add(
-            Item("Wrap at the end of the folder",
-                 HasFlag(SettingFlag.Wrap) ? "on" : "off",
-                 () => SetFlag(SettingFlag.Wrap, !HasFlag(SettingFlag.Wrap))));
-    }
-
     private static readonly string[] SortNames =
         { "Name", "Date modified", "Size", "Type", "Date taken (EXIF)" };
 
@@ -1408,16 +1385,6 @@ public static partial class IslandHost
         viewFlyout.Items.Add(Item("Clipping warnings", "C", () => Send(Command.Clipping)));
         viewFlyout.Items.Add(Item("Frame-time overlay", "F3", () => Send(Command.Overlay)));
         viewFlyout.Items.Add(Item("Keyboard shortcuts", "?", () => Send(Command.Help)));
-
-        _settingsFlyout = new MenuFlyout
-        {
-            ShouldConstrainToRootBounds = false,
-            MenuFlyoutPresenterStyle = MenuFlyoutPresenterStyle(),
-        };
-        // Rebuild on open as well as on ApplySettings, so the on/off column is
-        // right even if a keyboard toggle raced the last push.
-        _settingsFlyout.Opening += (_, _) => RefreshSettingsMenu();
-        RefreshSettingsMenu();
 
         var aboutFlyout = new Flyout
         {

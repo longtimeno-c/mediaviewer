@@ -112,16 +112,11 @@ public static partial class IslandHost
         public string Text => Kind switch
         {
             AddonPhaseKind.Downloading when Done <= 0 => "Connecting…",
-            AddonPhaseKind.Downloading => Total > 0 ? $"{MbText(Done)} of {MbText(Total)}" : MbText(Done),
+            AddonPhaseKind.Downloading => Total > 0 ? $"{MediaViewer.Shared.ByteSize.Text(Done)} of {MediaViewer.Shared.ByteSize.Text(Total)}" : MediaViewer.Shared.ByteSize.Text(Done),
             AddonPhaseKind.Checking => "Checking the download…",
             _ => "Installing…",
         };
     }
-
-    // "412 MB", "1.08 GB": decimal units, as Explorer's download sizes.
-    private static string MbText(long bytes) => bytes >= 1_000_000_000
-        ? $"{bytes / 1e9:0.00} GB"
-        : $"{Math.Max(0, (long)Math.Round(bytes / 1e6))} MB";
 
     /// <summary>An install's bar: "412 MB of 1.08 GB" and the percentage
     /// under it while downloading, an indeterminate bar after.</summary>
@@ -860,9 +855,6 @@ public static partial class IslandHost
         }
     }
 
-    private static string DownloadSize(long bytes) =>
-        $"{Math.Max(1, (long)Math.Round(bytes / (1024.0 * 1024.0)))} MB";
-
     // ---- the one-time hint -----------------------------------------------------
 
     private static string HintMarker => Path.Combine(
@@ -929,8 +921,8 @@ public static partial class IslandHost
             string hint = ImportSlot.Offer.HintText.Length > 0 ? ImportSlot.Offer.HintText
                 : "Card inserted — install Import?";
             text.Text = hint.EndsWith('?')
-                ? $"{hint[..^1]} ({DownloadSize(ImportSlot.Offer.ArchiveSize)})?"
-                : $"{hint} ({DownloadSize(ImportSlot.Offer.ArchiveSize)})";
+                ? $"{hint[..^1]} ({MediaViewer.Shared.ByteSize.Text(ImportSlot.Offer.ArchiveSize)})?"
+                : $"{hint} ({MediaViewer.Shared.ByteSize.Text(ImportSlot.Offer.ArchiveSize)})";
         }
         Visibility v = show ? Visibility.Visible : Visibility.Collapsed;
         _importHint.Visibility = v;
@@ -1006,7 +998,7 @@ public static partial class IslandHost
             switch (ImportSlot.Offer.Kind)
             {
                 case OfferKind.Available:
-                    _addonRow.Children.Add(SettingsButton($"Install Import, {DownloadSize(ImportSlot.Offer.ArchiveSize)}",
+                    _addonRow.Children.Add(SettingsButton($"Install Import, {MediaViewer.Shared.ByteSize.Text(ImportSlot.Offer.ArchiveSize)}",
                         StartImportInstall));
                     break;
                 case OfferKind.NotPublished:
@@ -1035,7 +1027,7 @@ public static partial class IslandHost
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         if (UpdateVersion(ImportSlot) is string newer)
         {
-            buttons.Children.Add(SettingsButton($"Update to {newer}, {DownloadSize(ImportSlot.Offer.ArchiveSize)}",
+            buttons.Children.Add(SettingsButton($"Update to {newer}, {MediaViewer.Shared.ByteSize.Text(ImportSlot.Offer.ArchiveSize)}",
                 StartImportInstall));
         }
         if (state.State != "ok") buttons.Children.Add(SettingsButton("Reinstall", StartImportInstall));

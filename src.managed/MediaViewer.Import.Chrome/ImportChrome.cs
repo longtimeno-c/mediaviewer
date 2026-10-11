@@ -265,18 +265,6 @@ public sealed class ImportChrome : IAddonChrome, IAddonCommands
 
 internal static class Format
 {
-    public static string Bytes(long b)
-    {
-        string[] units = { "B", "KB", "MB", "GB", "TB" };
-        double v = b;
-        int u = 0;
-        while (v >= 1000 && u < units.Length - 1)
-        {
-            v /= 1000;
-            ++u;
-        }
-        return u == 0 ? $"{b} B" : $"{v:0.0} {units[u]}";
-    }
 
     public static string Eta(long seconds) => seconds switch
     {

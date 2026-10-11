@@ -38,7 +38,7 @@ public sealed partial class MediaViewerSession : IDisposable
     private MediaViewerSession(MvSessionHandle handle)
     {
         _handle = handle;
-        CompletionSignal = new AutoResetEventStandIn(
+        CompletionSignal = new BorrowedWaitHandle(
             NativeMethods.mv_completion_wait_handle(handle));
     }
 
@@ -400,7 +400,8 @@ public sealed partial class MediaViewerSession : IDisposable
     }
 
     /// <summary>
-    /// A <see cref="WaitHandle"/> over a native event the core owns.
+    /// A <see cref="WaitHandle"/> over a native event the core owns: a
+    /// manual-reset event that stays signalled while completions are pending.
     /// </summary>
     /// <remarks>
     /// <c>ownsHandle: false</c> is the whole point: the session's event belongs
@@ -409,9 +410,9 @@ public sealed partial class MediaViewerSession : IDisposable
     /// symptom would be a completion signal that stops arriving on a machine
     /// under GC pressure.
     /// </remarks>
-    private sealed class AutoResetEventStandIn : WaitHandle
+    private sealed class BorrowedWaitHandle : WaitHandle
     {
-        public AutoResetEventStandIn(IntPtr nativeHandle)
+        public BorrowedWaitHandle(IntPtr nativeHandle)
         {
             SafeWaitHandle = new SafeWaitHandle(nativeHandle, ownsHandle: false);
         }

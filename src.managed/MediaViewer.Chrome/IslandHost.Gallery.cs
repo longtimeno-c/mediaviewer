@@ -215,37 +215,14 @@ public static partial class IslandHost
     {
         try
         {
-            if (arg == IntPtr.Zero || sizeBytes < FilmstripArgsSize) return unchecked((int)0x80070057);
-            ChromeFilmstripArgs args = Marshal.PtrToStructure<ChromeFilmstripArgs>(arg);
-            IntPtr parent = checked((IntPtr)args.ParentHwnd);
-            if (parent == IntPtr.Zero) return unchecked((int)0x80070057);
+            int hr = BeginAttach(arg, sizeBytes, out ChromeFilmstripArgs args, out IntPtr parent);
+            if (hr != 0) return hr;
+            BorrowSessionIfNone(args);
 
-            EnsureApp();
-            _context = checked((IntPtr)args.Context);
-            if (args.OnCommand != 0)
-            {
-                _onCommand = Marshal.GetDelegateForFunctionPointer<NativeCommand>(
-                    checked((IntPtr)args.OnCommand));
-            }
-
-            // The filmstrip normally attaches first and owns the drain. Borrow
-            // only if it did not, so a --no-filmstrip layout still lists.
-            if (_folderSession is null && args.Session != 0)
-            {
-                _folderSession = MediaViewerSession.Borrow(checked((IntPtr)args.Session));
-                StartDrain();
-            }
-
-            DisposeSource(ref _gallery);
-            _gallery = new DesktopWindowXamlSource();
-            EnsureFocusHook();
-            _gallery.Initialize(Win32Interop.GetWindowIdFromWindow(parent));
-            // Park it before content exists: a default full-client island would
-            // flash over the canvas for a frame on startup.
             // No content until the first show: the island exists so native can
             // size it, and building the grid for a folder nobody has opened yet
             // would be a listing's worth of work for a hidden view.
-            Move(_gallery, 1, 1, args.ClientHeight);
+            Move(NewIsland(ref _gallery, parent), 1, 1, args.ClientHeight);
             _galleryVisible = false;
             return 0;
         }
@@ -354,16 +331,8 @@ public static partial class IslandHost
             if (arg == IntPtr.Zero || sizeBytes < ShowArgsSize) return unchecked((int)0x80070057);
             if (source is null) return 1;
             ChromeShowArgs args = Marshal.PtrToStructure<ChromeShowArgs>(arg);
-            if (args.Visible == 0)
-            {
-                onHidden();
-                source.Content = null;
-                Move(source, args.Width, args.Height, args.Y);
-                return 0;
-            }
-            Move(source, args.Width, args.Height, args.Y);
-            source.Content = build();
-            onShown();
+            ShowOrPark(source, args.Visible != 0, () => Move(source, args.Width, args.Height, args.Y),
+                       build, rebuild: true, onShown, onHidden);
             return 0;
         }
         catch (Exception ex)

@@ -307,13 +307,6 @@ internal sealed class Look
         long sec = Math.Max(0, ms) / 1000;
         return sec >= 3600 ? $"{sec / 3600}:{sec / 60 % 60:00}:{sec % 60:00}" : $"{sec / 60}:{sec % 60:00}";
     }
-
-    public static string Size(long bytes) => bytes switch
-    {
-        >= 1_000_000_000 => $"{bytes / 1e9:0.0} GB",
-        >= 1_000_000 => $"{bytes / 1e6:0} MB",
-        _ => $"{Math.Max(0, bytes) / 1000} KB",
-    };
 }
 
 /// <summary>Win32 bits the add-on's own windows need: owner, placement, corners.</summary>

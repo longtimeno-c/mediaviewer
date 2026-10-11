@@ -413,10 +413,6 @@ public static partial class IslandHost
         if (_localSearchStatus is not null) _localSearchStatus.Text = text;
     }
 
-    private static string Gb(long bytes) => bytes >= 1_000_000_000
-        ? $"{bytes / 1e9:0.0} GB"
-        : $"{Math.Max(1, (long)Math.Round(bytes / 1e6))} MB";
-
     // Worker.
     private static void RefreshFamilyUsage()
     {
@@ -492,8 +488,8 @@ public static partial class IslandHost
             {
                 case OfferKind.Available:
                     string label = offer.InstalledSize > 0
-                        ? $"Install local search — downloads ~{Gb(offer.ArchiveSize)}, uses ~{Gb(offer.InstalledSize)}"
-                        : $"Install local search — downloads ~{Gb(offer.ArchiveSize)}";
+                        ? $"Install local search — downloads ~{MediaViewer.Shared.ByteSize.Text(offer.ArchiveSize)}, uses ~{MediaViewer.Shared.ByteSize.Text(offer.InstalledSize)}"
+                        : $"Install local search — downloads ~{MediaViewer.Shared.ByteSize.Text(offer.ArchiveSize)}";
                     Button install = SettingsButton(label, () => StartPieceInstall(AiSlot));
                     install.IsEnabled = !AiQueuedOrInstalling(AiSlot);
                     install.HorizontalAlignment = HorizontalAlignment.Left;
@@ -508,8 +504,8 @@ public static partial class IslandHost
                         long uses = all.Sum(s => s.Offer.InstalledSize);
                         string names = string.Join(", ", all.Select(s => s == AiSlot ? "Core" : s.Name));
                         Button installAll = SettingsButton(
-                            uses > 0 ? $"Install all ({names}) — downloads ~{Gb(archive)}, uses ~{Gb(uses)}"
-                                     : $"Install all ({names}) — downloads ~{Gb(archive)}",
+                            uses > 0 ? $"Install all ({names}) — downloads ~{MediaViewer.Shared.ByteSize.Text(archive)}, uses ~{MediaViewer.Shared.ByteSize.Text(uses)}"
+                                     : $"Install all ({names}) — downloads ~{MediaViewer.Shared.ByteSize.Text(archive)}",
                             () =>
                             {
                                 foreach (AddonSlot each in InstallAllSlots()) StartPieceInstall(each);
@@ -544,7 +540,7 @@ public static partial class IslandHost
             string names = string.Join(", ", updates.Select(s => s == AiSlot ? "Core" : s.Name));
             string[] versions = updates.Select(s => s.Offer.Version).Distinct().ToArray();
             string head = versions.Length == 1 ? $"Update all to {versions[0]}" : "Update all";
-            Button updateAll = SettingsButton($"{head} ({names}) — downloads ~{Gb(archive)}", () =>
+            Button updateAll = SettingsButton($"{head} ({names}) — downloads ~{MediaViewer.Shared.ByteSize.Text(archive)}", () =>
             {
                 foreach (AddonSlot each in UpdateAllSlots()) StartPieceInstall(each);
             });
@@ -625,7 +621,7 @@ public static partial class IslandHost
         row.Children.Add(labels);
 
         long size = slot.State.Installed ? slot.State.Size : slot.Offer.InstalledSize;
-        var sizeText = Label(size <= 0 ? "" : slot.State.Installed ? $"{slot.State.Version} · {Gb(size)}" : Gb(size));
+        var sizeText = Label(size <= 0 ? "" : slot.State.Installed ? $"{slot.State.Version} · {MediaViewer.Shared.ByteSize.Text(size)}" : MediaViewer.Shared.ByteSize.Text(size));
         sizeText.FontSize = 12;
         sizeText.VerticalAlignment = VerticalAlignment.Center;
         Grid.SetColumn(sizeText, 1);
@@ -938,7 +934,7 @@ public static partial class IslandHost
         long after = (long)_aiUsed - current + installedSize;
         if (after <= (long)_aiCeiling) return null;
         long free = Math.Max(0, (long)_aiCeiling - (long)_aiUsed + current);
-        return $"{slot.Name} needs {Gb(installedSize)}, but only {Gb(free)} of the {Gb((long)_aiCeiling)} " +
+        return $"{slot.Name} needs {MediaViewer.Shared.ByteSize.Text(installedSize)}, but only {MediaViewer.Shared.ByteSize.Text(free)} of the {MediaViewer.Shared.ByteSize.Text((long)_aiCeiling)} " +
                "for local search is free. Remove another piece first; nothing was downloaded.";
     }
 

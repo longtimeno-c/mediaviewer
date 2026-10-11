@@ -565,7 +565,7 @@ internal sealed partial class ManagePanel
     // rebuilt button would drop keyboard focus.
     private void RefreshIndexRow(in MvAiStatus s)
     {
-        string size = $"{Look.Size((long)s.IndexBytes)} on disk. It is your data: it does not count toward the 3 GB.";
+        string size = $"{MediaViewer.Shared.ByteSize.Text((long)s.IndexBytes)} on disk. It is your data: it does not count toward the 3 GB.";
         if (_indexRowConfirming == _confirmClear)
         {
             if (_indexSize is not null) _indexSize.Text = size;
@@ -692,7 +692,7 @@ internal sealed partial class ManagePanel
                 : r.Done >= local ? (r.Scanning ? "Checking for changes…" : "Up to date")
                 : $"{r.Done:N0} of {local:N0}" + (r.Scanning ? " · checking for changes…" : "");
             if (r.CloudOnly > 0 && !r.Unreadable) state += $" · {r.CloudOnly:N0} only in OneDrive";
-            labels.Children.Add(_look.Text((r.Recursive ? "and subfolders · " : "") + state + " · " + Look.Size(r.Bytes), 12,
+            labels.Children.Add(_look.Text((r.Recursive ? "and subfolders · " : "") + state + " · " + MediaViewer.Shared.ByteSize.Text(r.Bytes), 12,
                 r.Unreadable ? AddonColour.Accent : AddonColour.Body));
             var bar = new MediaViewer.Shared.FlatBar(_look[AddonColour.Hairline], _look[AddonColour.Accent])
             {

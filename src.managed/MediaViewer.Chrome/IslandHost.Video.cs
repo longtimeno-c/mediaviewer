@@ -61,34 +61,12 @@ public static partial class IslandHost
     {
         try
         {
-            if (arg == IntPtr.Zero || sizeBytes < FilmstripArgsSize) return unchecked((int)0x80070057);
-            ChromeFilmstripArgs args = Marshal.PtrToStructure<ChromeFilmstripArgs>(arg);
-            IntPtr parent = checked((IntPtr)args.ParentHwnd);
-            if (parent == IntPtr.Zero) return unchecked((int)0x80070057);
+            int hr = BeginAttach(arg, sizeBytes, out ChromeFilmstripArgs args, out IntPtr parent);
+            if (hr != 0) return hr;
+            BorrowSessionIfNone(args);
 
-            EnsureApp();
-            _context = checked((IntPtr)args.Context);
-            if (args.OnCommand != 0)
-            {
-                _onCommand = Marshal.GetDelegateForFunctionPointer<NativeCommand>(
-                    checked((IntPtr)args.OnCommand));
-            }
-            // The filmstrip normally attaches first and owns the drain and the
-            // session. Borrow only if it did not.
-            if (_folderSession is null && args.Session != 0)
-            {
-                _folderSession = MediaViewer.Interop.MediaViewerSession.Borrow(
-                    checked((IntPtr)args.Session));
-                StartDrain();
-            }
-
-            DisposeSource(ref _transport);
-            _transport = new DesktopWindowXamlSource();
-            EnsureFocusHook();
-            _transport.Initialize(Win32Interop.GetWindowIdFromWindow(parent));
-            // Parked, with no content: nothing is open, and a full-client
-            // default island would flash over the canvas on startup.
-            Move(_transport, 1, 1, args.ClientHeight);
+            // Parked, with no content: nothing is open.
+            Move(NewIsland(ref _transport, parent), 1, 1, args.ClientHeight);
 
             StartVideoControls(parent);
             return 0;
