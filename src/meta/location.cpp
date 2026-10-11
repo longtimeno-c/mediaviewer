@@ -108,8 +108,8 @@ std::optional<gps_fix> from_xmp(const Exiv2::XmpData& x) {
   const auto* lat = find_xmp(x, "Xmp.exif.GPSLatitude");
   const auto* lon = find_xmp(x, "Xmp.exif.GPSLongitude");
   if (!lat || !lon) return std::nullopt;
-  auto la = parse_xmp_coordinate(lat->toString());
-  auto lo = parse_xmp_coordinate(lon->toString());
+  auto la = xmp_coordinate_degrees(lat->toString());
+  auto lo = xmp_coordinate_degrees(lon->toString());
   if (!la || !lo || std::fabs(*la) > 90.0 || std::fabs(*lo) > 180.0) return std::nullopt;
   gps_fix f;
   f.lat = *la;
@@ -130,7 +130,7 @@ std::optional<gps_fix> from_still(std::span<const std::uint8_t> bytes) noexcept 
 
 }  // namespace
 
-std::optional<double> parse_xmp_coordinate(std::string_view s) noexcept {
+std::optional<double> xmp_coordinate_degrees(std::string_view s) noexcept {
   // "DDD,MM.mmmmk" or "DDD,MM,SSk", k one of N S E W (XMP spec, exif:GPSLatitude).
   if (s.size() < 3) return std::nullopt;
   const char ref = s.back();

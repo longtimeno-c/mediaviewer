@@ -682,6 +682,73 @@ MV_API mv_status MV_CALL mv_addon_quit(void);
 MV_API mv_status MV_CALL mv_addon_quit_wait(uint32_t timeout_ms);
 
 /* ---------------------------------------------------------------------------
+ * Screens and slots, the chrome's side (docs/design/25 PRs 58-59; ABI 0.20,
+ * additive). The Windows chrome reads the core's registry (src/addon/slots.h)
+ * through these; the Mac chrome has the same calls as mv_chrome_slots_* in its
+ * bridge. Add-ons that fill slots are loaded with mv_addon_load(session, id,
+ * MV_SLOTS_INTERFACE, ...), which attaches what their manifest contributes;
+ * mv_addon_unload / mv_addon_remove detach every item at once (call them off
+ * the UI thread: detaching waits for a call the add-on is in).
+ *
+ * [any-thread][no-block] for every call: reads copy a table, requests post to
+ * an add-on's worker and return. JSON out follows the buffer rule above. The
+ * shapes are slot_registry's (contributions_json, info_json, screens_json,
+ * search_json, badges_json, status_json in src/addon/slots.h).
+ * ------------------------------------------------------------------------- */
+
+/* What changed (bits): 1 contributions, 2 info, 4 screens, 8 search, 16
+ * badges, 32 status. Called on any thread; must not block (the chrome hops to
+ * its dispatcher). NULL clears it. */
+typedef void(MV_CALL* mv_slots_changed_fn)(void* user, uint32_t bits);
+MV_API mv_status MV_CALL mv_slots_set_listener(mv_slots_changed_fn fn, void* user);
+
+MV_API mv_status MV_CALL mv_slots_contributions_json(char* out, uint32_t cap, uint32_t* needed);
+MV_API mv_status MV_CALL mv_slots_info_json(char* out, uint32_t cap, uint32_t* needed);
+MV_API mv_status MV_CALL mv_slots_screens_json(char* out, uint32_t cap, uint32_t* needed);
+MV_API mv_status MV_CALL mv_slots_search_json(uint32_t scope, char* out, uint32_t cap, uint32_t* needed);
+MV_API mv_status MV_CALL mv_slots_badges_json(char* out, uint32_t cap, uint32_t* needed);
+MV_API mv_status MV_CALL mv_slots_status_json(char* out, uint32_t cap, uint32_t* needed);
+
+/* The Metadata pane shows `path_utf8`; `location_text` is the pane's own
+ * "Location" value ("" none). Sections that need a location are not asked
+ * for a file without one. */
+MV_API mv_status MV_CALL mv_slots_request_info(const char* path_utf8, const char* location_text,
+                                               const mv_slot_theme* theme, float width_pt, float scale,
+                                               uint64_t* out_generation);
+MV_API mv_status MV_CALL mv_slots_clear_info(void);
+/* MV_SLOT_SCOPE_FILES (file search, the folder `folder_utf8`) or
+ * MV_SLOT_SCOPE_LOCAL (Local search). An empty query clears and asks nobody. */
+MV_API mv_status MV_CALL mv_slots_search(uint32_t scope, const char* query_utf8, const char* folder_utf8,
+                                         uint64_t* out_generation);
+/* The gallery shows `folder_utf8`: one badges request per add-on with badges. */
+MV_API mv_status MV_CALL mv_slots_request_badges(const char* folder_utf8, uint64_t* out_generation);
+MV_API mv_status MV_CALL mv_slots_open_screen(const char* addon, const char* screen, const char* path_utf8,
+                                              const mv_slot_theme* theme, float width_pt, float height_pt,
+                                              float scale);
+MV_API mv_status MV_CALL mv_slots_close_screen(const char* addon, const char* screen);
+/* A control changed (MV_SLOT_EVENT_CLICK .. ACTIVATE). MV_ERR_INVALID_ARG when
+ * the tree refuses it (not that node, not that kind, out of range). */
+MV_API mv_status MV_CALL mv_slots_event(const char* addon, const char* screen, const char* node,
+                                        uint32_t kind, const char* value_json);
+/* A bar / path / context / status item; `paths_json` a JSON array of paths. */
+MV_API mv_status MV_CALL mv_slots_invoke(const char* addon, const char* item, const char* paths_json);
+/* A surface's BGRA (premultiplied). *out_needed = bytes; MV_ERR_INVALID_ARG
+ * when `cap` is short, MV_ERR_NOT_FOUND when there is none. */
+MV_API mv_status MV_CALL mv_slots_surface(const char* addon, const char* screen, const char* surface,
+                                          uint8_t* out, uint64_t cap, uint32_t* out_width,
+                                          uint32_t* out_height, uint64_t* out_revision,
+                                          uint64_t* out_needed);
+/* docs/design/25 §7: Local search is a provider. The chrome says when the AI
+ * pack attached (1) or went (0); the registry then lists it as the
+ * local-scope provider. Its own results stay in its panel. */
+MV_API mv_status MV_CALL mv_slots_local_search_provider(uint32_t on);
+/* [worker-thread] The viewer's JPEG-512 of a still, by path (a cache hit or
+ * made now on the calling thread), for a screen's thumbnail / thumbnail_grid
+ * tile. MV_ERR_UNSUPPORTED_FORMAT for a clip. */
+MV_API mv_status MV_CALL mv_slots_thumbnail_path(const char* path_utf8, char* out, uint32_t cap,
+                                                 uint32_t* needed);
+
+/* ---------------------------------------------------------------------------
  * Open add-ons (docs/design/25): add-ons from other makers, one `.mvaddon` file
  * each, signed by its publisher. Data only under contribution API 1 (themes):
  * nothing here loads code. They live beside the add-ons above, under their

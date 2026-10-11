@@ -509,37 +509,9 @@ bool load_import_attempt() {
 
 // ---- the AI pack (Milestone H) ------------------------------------------------
 
-// docs/design/25 §7 (PR 59): Local search is a search provider, not the owner of
-// the path bar's button. While the pack is attached it is the registry's
-// "local" provider: the table both chromes read says Local search answers
-// (contributions_json "local_search"), and a Local search query goes to every
-// local-scope provider (Places' `place:`). The pack's own results keep their
-// rich list (moments, faces, the scrub markers), shown by its panel; as a
-// provider it answers with no extra rows.
-class local_search_client final : public mv::addon::slot_client {
- public:
-  mv::status info_section(const mv_slot_info_request&) override { return mv::status::unsupported_format; }
-  mv::status search(const mv_slot_search_request& r) override {
-    return mv::addon::default_slots().post_search("ai", r.provider_id, r.generation, {}, true);
-  }
-  mv::status screen_open(const mv_slot_screen_request&) override { return mv::status::unsupported_format; }
-  mv::status badges(const mv_slot_badges_request&) override { return mv::status::unsupported_format; }
-  void event(const mv_slot_event&) override {}
-};
-
-void register_local_search_provider(bool on) {
-  mv::addon::slot_registry& reg = mv::addon::default_slots();
-  if (!on) {
-    reg.detach("ai");
-    return;
-  }
-  if (reg.attached("ai")) return;
-  mv::addon::contributions c;
-  c.api_min = mv::addon::kSlotsApi;
-  c.api_max = mv::addon::kSlotsApi;
-  c.search_providers.push_back({"local", "Local search", {}, false, true});
-  (void)reg.attach("ai", "Local search", std::move(c), std::make_unique<local_search_client>());
-}
+// docs/design/25 §7 (PR 59): Local search is a search provider, listed while the
+// pack is attached (addon/slots.h set_local_search_provider).
+void register_local_search_provider(bool on) { mv::addon::set_local_search_provider(mv::addon::default_slots(), on); }
 
 // The host table v2 services the AI pack needs: the viewer's own decoders and
 // its JPEG-512 cache (src/abi/addon_media.h), the same set abi/addon_abi.cpp's

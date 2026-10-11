@@ -638,6 +638,7 @@ add_library(mv::canvas ALIAS mv_canvas)
 add_library(mediaviewer_core SHARED
   src/abi/abi.cpp
   src/abi/addon_abi.cpp
+  src/abi/slots_abi.cpp
   src/abi/crash_export.cpp
   src/abi/include/mediaviewer/mediaviewer_crash.h
   src/abi/video_session.h

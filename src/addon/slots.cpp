@@ -1162,6 +1162,36 @@ slot_registry& default_slots() {
   return r;
 }
 
+namespace {
+class local_search_client final : public slot_client {
+ public:
+  explicit local_search_client(slot_registry& r) : r_(r) {}
+  status info_section(const mv_slot_info_request&) override { return status::unsupported_format; }
+  status search(const mv_slot_search_request& q) override {
+    return r_.post_search("ai", q.provider_id, q.generation, {}, true);
+  }
+  status screen_open(const mv_slot_screen_request&) override { return status::unsupported_format; }
+  status badges(const mv_slot_badges_request&) override { return status::unsupported_format; }
+  void event(const mv_slot_event&) override {}
+
+ private:
+  slot_registry& r_;
+};
+}  // namespace
+
+void set_local_search_provider(slot_registry& registry, bool on) {
+  if (!on) {
+    registry.detach("ai");
+    return;
+  }
+  if (registry.attached("ai")) return;
+  contributions c;
+  c.api_min = kSlotsApi;
+  c.api_max = kSlotsApi;
+  c.search_providers.push_back({"local", "Local search", {}, false, true});
+  (void)registry.attach("ai", "Local search", std::move(c), std::make_unique<local_search_client>(registry));
+}
+
 // ---- the location cache -------------------------------------------------------
 
 namespace {

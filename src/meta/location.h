@@ -27,7 +27,7 @@ struct gps_fix {
 
 // Pure helpers, exposed for tests.
 // "38,47.886N" / "38,47,53.16N" (XMP exif:GPSLatitude) -> 38.7981.
-[[nodiscard]] std::optional<double> parse_xmp_coordinate(std::string_view text) noexcept;
+[[nodiscard]] std::optional<double> xmp_coordinate_degrees(std::string_view text) noexcept;
 // "48.85837° N, 2.29448° E" (format_coordinate's pair, a clip's summary) -> the fix.
 [[nodiscard]] std::optional<gps_fix> parse_coordinate_pair(std::string_view text) noexcept;
 

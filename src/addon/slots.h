@@ -251,6 +251,15 @@ class slot_registry {
 // The process's registry, which both hosts' chromes and loaders use.
 [[nodiscard]] slot_registry& default_slots();
 
+// docs/design/25 §7: Local search is a search provider, not the owner of the
+// path bar's button. While the AI pack is attached the host lists it here as
+// the "ai" add-on's local-scope provider "local" (contributions_json says
+// "local_search": true), and a Local search query goes to every local-scope
+// provider. The pack's own results keep their rich list in its panel; as a
+// provider it answers with no extra rows. Both hosts call this when the pack
+// attaches (on = true) and goes.
+void set_local_search_provider(slot_registry& registry, bool on);
+
 // A file's coordinates, cached by path + size + mtime for the process (the
 // host table's location_of / locations_in). `read` is the host's metadata
 // read, called on the caller's (worker) thread on a miss.

@@ -94,12 +94,12 @@ TEST_CASE("coordinates come from EXIF GPS, then XMP, from a bounded read", "[met
 
 TEST_CASE("coordinate text parses both ways a file or a summary writes it", "[meta][location]") {
   using mv::meta::parse_coordinate_pair;
-  using mv::meta::parse_xmp_coordinate;
-  REQUIRE(*parse_xmp_coordinate("38,47,53.16N") == Approx(38.7981).margin(1e-6));
-  REQUIRE(*parse_xmp_coordinate("9,23.412W") == Approx(-9.3902).margin(1e-6));
-  REQUIRE_FALSE(parse_xmp_coordinate("38.7981"));
-  REQUIRE_FALSE(parse_xmp_coordinate("38,61N"));
-  REQUIRE_FALSE(parse_xmp_coordinate("N"));
+  using mv::meta::xmp_coordinate_degrees;
+  REQUIRE(*xmp_coordinate_degrees("38,47,53.16N") == Approx(38.7981).margin(1e-6));
+  REQUIRE(*xmp_coordinate_degrees("9,23.412W") == Approx(-9.3902).margin(1e-6));
+  REQUIRE_FALSE(xmp_coordinate_degrees("38.7981"));
+  REQUIRE_FALSE(xmp_coordinate_degrees("38,61N"));
+  REQUIRE_FALSE(xmp_coordinate_degrees("N"));
   const auto pair = parse_coordinate_pair("48.85837\xC2\xB0 N, 2.29448\xC2\xB0 E");
   REQUIRE(pair);
   REQUIRE(pair->lat == Approx(48.85837));
