@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// PR 9 (docs/design/06, docs/design/16 Ctrl/Cmd+Shift+E): the folder tree, rooted at the open folder (not the computer). A node lists its subfolders on first expand, in a
+// PR 9 (docs/design/06, docs/design/16 Ctrl/Cmd+Shift+E): the folder tree, rooted at the open folder (not the computer). A node lists its subfolders each time it expands, in a
 // background task through the host's portable `io::list_subdirectories` -- the
 // main actor never touches the disk (rule 1). Choosing a folder opens it exactly
 // as Open Folder does.
@@ -25,10 +25,14 @@ final class TreeNode: ObservableObject, Identifiable {
   let name: String
   let path: String
   @Published var children: [TreeNode]?  // nil until first expanded
+  /// Expanding lists the subfolders again (issue #190): a folder made or
+  /// deleted since the last look shows the next time its parent opens. What
+  /// was listed stays on screen until the new listing lands.
   @Published var isExpanded = false {
-    didSet { if isExpanded { Task { await loadIfNeeded() } } }
+    didSet { if isExpanded && !oldValue { _ = refresh() } }
   }
-  private var loading = false
+  /// The listing in flight; a second caller awaits it rather than polling.
+  private var listing: Task<Void, Never>?
 
   nonisolated var id: String { path }
 
@@ -38,26 +42,41 @@ final class TreeNode: ObservableObject, Identifiable {
   }
 
   func loadIfNeeded() async {
-    if children != nil { return }
-    if loading {
-      while loading && children == nil {
-        try? await Task.sleep(nanoseconds: 20_000_000)
-      }
-      return
-    }
-    loading = true
+    if children != nil && listing == nil { return }
+    await refresh().value
+  }
+
+  /// Lists the subfolders off the main actor, or joins the listing already
+  /// running. Children still listed keep their node (and so their own
+  /// expansion); only what changed is published.
+  @discardableResult
+  func refresh() -> Task<Void, Never> {
+    if let listing { return listing }
     let dir = path
-    let list = await Task.detached(priority: .userInitiated) {
-      readLines { mv_chrome_list_subdirectories(dir, $0, $1) } ?? []
-    }.value
-    children = list.map { TreeNode(name: $0.0, path: $0.1) }
-    loading = false
+    let task = Task { [weak self] in
+      let list = await Task.detached(priority: .userInitiated) {
+        readLines { mv_chrome_list_subdirectories(dir, $0, $1) } ?? []
+      }.value
+      guard let self else { return }
+      self.listing = nil
+      let old = Dictionary((self.children ?? []).map { ($0.path, $0) }, uniquingKeysWith: { a, _ in a })
+      let next = list.map { old[$0.1] ?? TreeNode(name: $0.0, path: $0.1) }
+      if self.children == nil || next.map(\.path) != self.children?.map(\.path) { self.children = next }
+    }
+    listing = task
+    return task
   }
 
   /// Expands this node and each descendant named by `chain` (chain[0] is `path`).
+  /// The last node, the folder just opened, is listed again even when it was
+  /// listed before.
   func reveal(_ chain: [String]) async {
     guard chain.first == path else { return }
-    if !isExpanded { isExpanded = true }
+    if !isExpanded {
+      isExpanded = true  // starts the listing
+    } else if chain.count == 1 {
+      refresh()
+    }
     await loadIfNeeded()
     guard chain.count > 1, let kids = children else { return }
     let rest = Array(chain.dropFirst())
@@ -100,7 +119,11 @@ final class FolderTreeStore: ObservableObject {
 
   private func poll() {
     let nowVisible = mv_chrome_tree_visible()
-    if nowVisible != visible { visible = nowVisible }
+    if nowVisible != visible {
+      visible = nowVisible
+      // Shown again: reveal the open folder afresh, which lists it again.
+      if nowVisible { revealedKey = "" }
+    }
     guard nowVisible else { return }
     let photos = mv_chrome_photos_library_available()
     if photos != photosAvailable { photosAvailable = photos }
@@ -201,7 +224,7 @@ struct FolderTreeView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      Text("Folders").font(.headline).padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 8)
+      Text("Folders").font(MVTheme.font()).padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 8)
       Divider()
       if store.photosAvailable {
         photosRow
@@ -240,6 +263,7 @@ struct FolderTreeView: View {
         Spacer()
       }
     }
+    .font(MVTheme.font(14))  // rows and the Up button follow a theme's font
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     .background(.regularMaterial)
     .overlay(alignment: .trailing) { Rectangle().fill(Color.primary.opacity(0.15)).frame(width: 1) }
