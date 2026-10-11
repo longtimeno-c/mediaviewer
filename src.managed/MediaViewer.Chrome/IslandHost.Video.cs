@@ -327,8 +327,10 @@ public static partial class IslandHost
     private static void SkipVideo(long deltaNs)
     {
         if (_folderSession is null) return;
-        long duration = Math.Max(0, _folderSession.VideoInfo.DurationNs);
-        long target = Math.Clamp(_folderSession.VideoPosition + deltaNs, 0, duration);
+        long duration = _folderSession.VideoInfo.DurationNs;
+        long target = Math.Max(0, _folderSession.VideoPosition + deltaNs);
+        // An unknown duration (0) must not clamp a forward skip back to the start.
+        if (duration > 0) target = Math.Min(target, duration);
         _folderSession.VideoSeek(target, true);
     }
 
