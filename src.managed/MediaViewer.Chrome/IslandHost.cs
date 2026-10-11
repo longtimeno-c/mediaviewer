@@ -1259,13 +1259,14 @@ public static partial class IslandHost
             : null;
         if (string.IsNullOrEmpty(name))
         {
-            MenuFlyoutItem empty = Item("Open: (nothing open)", "Ctrl+E", () => { });
+            // RevealInExplorer reveals the file; it does not open it (issue #187).
+            MenuFlyoutItem empty = Item("Show in Explorer", "Ctrl+E", () => { });
             empty.IsEnabled = false;
             flyout.Items.Add(empty);
         }
         else
         {
-            MenuFlyoutItem reveal = Item("Open: " + name, "Ctrl+E", () =>
+            MenuFlyoutItem reveal = Item("Show in Explorer", "Ctrl+E", () =>
             {
                 Send(Command.RevealInExplorer);
                 RestoreCanvasFocus();
