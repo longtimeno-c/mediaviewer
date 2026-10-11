@@ -631,6 +631,12 @@ class engine {
   vector_store store_;
   mutable std::mutex assets_m_;
   std::unordered_map<std::int64_t, asset_meta> assets_;
+  // path_key -> id beside assets_ (issue #174): a path's asset without a walk
+  // of every indexed asset under assets_m_. Kept with assets_ under assets_m_.
+  std::unordered_map<std::string, std::int64_t> asset_by_key_;
+  void unindex_key_locked(std::int64_t id, const std::string& key);
+  void erase_asset_locked(std::int64_t id);
+  [[nodiscard]] std::int64_t asset_of_key_locked(const std::string& key) const;
 
   // work queue. Lock order: work_m_ -> models_m_ -> assets_m_ -> status_m_;
   // no path takes an earlier one while holding a later one.

@@ -157,6 +157,34 @@ TEST_CASE("half floats and int8 vectors round-trip within their precision", "[ai
   CHECK(store.scan(v, {}, 10, false, 0, -1).empty());
 }
 
+TEST_CASE("remove_assets drops every row of a set in one pass and compacts once", "[ai][infer][vectors]") {
+  // issue #174: a root removed or a scan's gone list is one call, not one
+  // exclusive-lock scan per asset.
+  constexpr std::uint32_t dim = 4;
+  std::vector<float> v{0.5f, 0.5f, 0.5f, 0.5f};
+  std::vector<std::int8_t> q;
+  float scale = 0;
+  mv::ai::quantise(v, q, scale);
+  mv::ai::vector_store store(dim);
+  for (std::int64_t asset = 1; asset <= 3000; ++asset) {
+    store.add(asset, 0, 0.0f, scale, q);
+    store.add(asset, 1000, 0.0f, scale, q);
+  }
+  REQUIRE(store.live_rows() == 6000);
+  std::vector<std::int64_t> drop;
+  for (std::int64_t asset = 1; asset <= 3000; asset += 2) drop.push_back(asset);
+  drop.push_back(1);      // a duplicate is harmless
+  drop.push_back(99999);  // as is an asset with no rows
+  store.remove_assets(drop);
+  CHECK(store.live_rows() == 3000);
+  CHECK(store.rows() == 3000);  // half dead: compacted once at the end
+  const auto hits = store.scan(v, {}, 10000, false, 0, -1);
+  CHECK(hits.size() == 3000);
+  for (const auto& h : hits) CHECK(h.asset % 2 == 0);
+  store.remove_assets({});
+  CHECK(store.live_rows() == 3000);
+}
+
 TEST_CASE("a query scans 100 k ViT-L frames in under 100 ms", "[ai][infer][vectors][perf]") {
   // docs/design/17 PR 22: "< 100 ms over 100 k frames". 2,000 clips of 50 frames,
   // pseudo-random unit vectors; the scan as search_text runs it (margin
