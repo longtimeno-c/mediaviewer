@@ -87,6 +87,15 @@ int32_t mv_chrome_item_path(int32_t index, char* buf, int32_t size);
 // byte length needed, as mv_chrome_item_path; 0 when `index` is out of range.
 int32_t mv_chrome_item_thumb_key(int32_t index, char* buf, int32_t size);
 
+// Issue #226: the whole listing in one call, so a relist costs one bridge call
+// rather than three per item. For each of the mv_chrome_item_count() items in
+// order: the name (as mv_chrome_item_name), NUL, '1' for a clip or '0' (as
+// mv_chrome_item_is_video), NUL, the thumb key (as mv_chrome_item_thumb_key),
+// NUL. Returns the byte length of the whole block; copies what fits into
+// `buf` (NUL-terminated, as the tables), so a caller whose `size` is greater
+// than the return has all of it. [main-thread]
+int32_t mv_chrome_listing(char* buf, int32_t size);
+
 // Navigates to `index` the same way clicking a filmstrip/gallery cell does
 // (calls MvLabApp's existing -selectIndex:, the same path arrow keys use).
 // A no-op if `index` is out of range or no folder is open.
