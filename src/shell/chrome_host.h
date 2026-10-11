@@ -264,6 +264,16 @@ static_assert(static_cast<int>(command_id::trim_keyframe) == 139);
 static_assert(static_cast<int>(command_id::trim_reencode) == 140);
 static_assert(static_cast<int>(command_id::jobs_pane) == 143);
 static_assert(static_cast<int>(command_id::clip_tools) == 144);
+// Issue #220: the Open and View flyouts post these (IslandHost.FileMenu.cs).
+static_assert(static_cast<int>(command_id::first) == 22 && static_cast<int>(command_id::last) == 23);
+static_assert(static_cast<int>(command_id::toggle_mark) == 61);
+static_assert(static_cast<int>(command_id::copy_to_pick) == 65 &&
+              static_cast<int>(command_id::move_to_pick) == 67);
+static_assert(static_cast<int>(command_id::delete_to_recycle_bin) == 68 &&
+              static_cast<int>(command_id::slideshow_start) == 69);
+static_assert(static_cast<int>(command_id::copy_path) == 147 &&
+              static_cast<int>(command_id::copy_flattened) == 148 &&
+              static_cast<int>(command_id::share) == 149);
 // PR 29: the Edit workspace's buttons send these (the Mac bridge pins 150 too; PR 15 took 147-149).
 static_assert(static_cast<int>(command_id::edit_workspace) == 150);
 static_assert(static_cast<int>(command_id::rotate_ccw) == 96 && static_cast<int>(command_id::rotate_cw) == 97);

@@ -211,6 +211,11 @@ Marks are a separate set from the selection, so arrow-key browsing never makes a
 | `Ctrl+Alt+C` | browse | Copy the current still with edits baked, as PNG (worker thread) |
 | `Ctrl+Shift+S` | Viewing | Share (Windows Share / macOS share sheet) |
 
+These are on the mouse too: the Mac's File menu, and on Windows the command bar's **Open** flyout
+(Mark / Unmark, Copy / Move Marked To…, Move to Recycle Bin, Share…, Copy Path, Copy Edited
+Image). **View** carries Start Slideshow and a **Go** submenu (Next, Previous, First, Last), as the
+Mac's View and Go menus do. Each item posts its command's id, so it acts as the key does.
+
 - **Move** on one volume is a rename (`MoveFileEx`); across volumes it is a **verified** copy
   (hashed while read, read back uncached, compared) and only then the delete. I/O thread.
 - Copy / move never overwrite: a collision becomes `name (2).ext`. The last five destinations are
