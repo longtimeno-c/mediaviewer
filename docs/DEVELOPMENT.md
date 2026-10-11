@@ -984,6 +984,10 @@ an ffmpeg with libx265 on `PATH`, a dev tool only): it writes `tools/testmedia/h
 an iPhone's layout (4032x3024 as 8x6 tiles of 512, a 320x240 thumbnail item, Display P3 ICC).
 `MV_OS_CODEC=0` times the bundled libheif path, the one a PC without the HEVC extension takes.
 
+`mv_tests "foreground start latency under a background sweep"` (also `[.perf-bench]`, printed)
+times how long a view-tied job waits for a worker while 60 ms background jobs fill a two-worker
+pool: the job system's reserved foreground worker (issue #160).
+
 The pacing soak cannot see a paused clip's cost (it presents nothing). `mv_tests "[idle]"`
 (macOS, headless, a synthetic clip) does: it prints the process's context switches and CPU
 per second with a clip paused on its poster and with one played out, and fails above 200

@@ -79,6 +79,15 @@ UI thread outside the exit scope, and tests assert it. The file is UTF-16LE with
 files still load and unknown keys survive. All access goes through `app_settings()`: direct
 `*PrivateProfile*` calls would be lost when the store rewrites the file.
 
+**Background jobs leave a worker free (2026-10-11, issue #160).** The two job lanes used to order
+dequeues only: once every worker had started a generation-0 job (thumbnails, posters, scans; never
+cancelled mid-run), the decode for the photo just arrowed to waited for one of them to finish.
+Background jobs now run on at most N − 1 workers at once (N = 1 keeps its one). Measured on an M-series
+Mac, `mv_tests "foreground start latency under a background sweep"` (2 workers, a sweep of 60 ms
+jobs, base/new alternated four times): the foreground job's start waited a median 43–56 ms
+(p90 83–104 ms) before, 0.02–0.18 ms (p90 0.1–3.1 ms) after. Cost: a sweep with no foreground work
+runs on one worker fewer: −50 % thumbnail throughput on a two-worker (four-core) pool, −17 % on six.
+
 ---
 
 ## Rendering and present loop

@@ -2,8 +2,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
+#include <cstdio>
 #include <mutex>
 #include <stdexcept>
 #include <thread>
@@ -305,5 +308,109 @@ TEST_CASE("view-tied work does not queue behind the background sweep",
   REQUIRE(wait_for([&] { return view_rank.load() >= 0; }));
   REQUIRE(view_rank.load() == 0);
 
+  jobs.shutdown();
+}
+
+TEST_CASE("a foreground job gets a worker while the background sweep holds the rest",
+          "[core][jobs][priority]") {
+  // Issue #160: the lanes used to order dequeues only. Once every worker had
+  // started a thumbnail (generation 0, never cancelled mid-run), the photo
+  // just arrowed to waited for one of them to finish.
+  mv::job_system jobs;
+  REQUIRE(jobs.start(3) == mv::status::ok);
+
+  std::atomic<bool> release{false};
+  std::atomic<int> started{0};
+  std::atomic<int> finished{0};
+  constexpr int sweep = 10;
+  for (int i = 0; i < sweep; ++i) {
+    jobs.submit_at(mv::background_generation, [&](const mv::job_context&) {
+      started.fetch_add(1);
+      while (!release.load(std::memory_order_acquire)) std::this_thread::sleep_for(1ms);
+      finished.fetch_add(1);
+      return mv::status::ok;
+    });
+  }
+  // Two of three workers take background work; the third stays free.
+  REQUIRE(wait_for([&] { return started.load() == 2; }));
+  std::this_thread::sleep_for(50ms);
+  CHECK(started.load() == 2);
+
+  std::atomic<bool> view_ran{false};
+  jobs.submit([&](const mv::job_context&) {
+    view_ran.store(true);
+    return mv::status::ok;
+  });
+  CHECK(wait_for([&] { return view_ran.load(); }, 2s));
+  CHECK(started.load() == 2);  // still nothing released
+
+  release.store(true, std::memory_order_release);
+  REQUIRE(wait_for([&] { return finished.load() == sweep; }));
+  jobs.shutdown();
+}
+
+TEST_CASE("one worker still runs background work", "[core][jobs][priority]") {
+  mv::job_system jobs;
+  REQUIRE(jobs.start(1) == mv::status::ok);
+  std::atomic<int> ran{0};
+  for (int i = 0; i < 20; ++i) {
+    jobs.submit_at(mv::background_generation, [&](const mv::job_context&) {
+      ran.fetch_add(1);
+      return mv::status::ok;
+    });
+  }
+  REQUIRE(wait_for([&] { return ran.load() == 20; }));
+  jobs.shutdown();
+}
+
+// Issue #160's cost: how long a view-tied job waits for a worker while a
+// background sweep of 60 ms jobs (a RAW thumbnail, a clip poster) fills the
+// pool. Two workers, a four-core PC's pool (cores - 2). The sweep jobs sleep
+// rather than spin, so the number is the queue policy, not CPU contention.
+// Not part of the normal run: mv_tests "[.perf-bench]".
+TEST_CASE("foreground start latency under a background sweep", "[.perf-bench]") {
+  mv::job_system jobs;
+  REQUIRE(jobs.start(2) == mv::status::ok);
+  const std::uint32_t workers = jobs.worker_count();
+  std::atomic<int> sweep_started{0};
+  // Keep the background lane topped up for the whole measurement.
+  std::atomic<int> in_queue{0};
+  auto one = [&](const mv::job_context&) {
+    sweep_started.fetch_add(1);
+    std::this_thread::sleep_for(60ms);
+    in_queue.fetch_sub(1);
+    return mv::status::ok;
+  };
+  auto top_up = [&] {
+    while (in_queue.load() < static_cast<int>(workers) * 4) {
+      in_queue.fetch_add(1);
+      jobs.submit_at(mv::background_generation, one);
+    }
+  };
+  top_up();
+  REQUIRE(wait_for([&] { return sweep_started.load() > 0; }));
+  std::this_thread::sleep_for(50ms);
+
+  std::vector<double> waits;
+  for (int i = 0; i < 40; ++i) {
+    top_up();
+    std::atomic<bool> ran{false};
+    std::atomic<std::int64_t> start_ns{0};
+    const auto t0 = std::chrono::steady_clock::now();
+    jobs.submit([&](const mv::job_context&) {
+      start_ns.store(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                         std::chrono::steady_clock::now() - t0)
+                         .count());
+      ran.store(true);
+      return mv::status::ok;
+    });
+    REQUIRE(wait_for([&] { return ran.load(); }));
+    waits.push_back(static_cast<double>(start_ns.load()) / 1e6);
+    std::this_thread::sleep_for(17ms);  // land at a different point in the sweep
+  }
+  std::sort(waits.begin(), waits.end());
+  std::printf("job_system: %u workers, foreground start under a 60 ms background sweep: "
+              "median %.3f ms, p90 %.3f ms, max %.3f ms\n",
+              workers, waits[waits.size() / 2], waits[waits.size() * 9 / 10], waits.back());
   jobs.shutdown();
 }
