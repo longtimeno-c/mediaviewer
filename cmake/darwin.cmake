@@ -246,11 +246,11 @@ add_library(mv::io ALIAS mv_io)
 
 # ---------------------------------------------------------------------------
 # mv_image — colour (LCMS) + PR 17's decode entrypoint + Metal upload +
-# PR 18's JPEG-512 thumbnail cache (folded-in PR 4). image/pipeline.cpp/
-# upload.cpp/gpu_image.h/thumb.cpp stay Windows-only (D3D11, or thumb
-# pixels through decode_bytes()); PR 17/18 use the _mac twins instead
-# (docs/design/12 2026-09-17). thumb_store.cpp, the cache's SQLite index, is
-# shared by both hosts (issue #168).
+# PR 18's JPEG-512 thumbnail cache (folded-in PR 4). upload.cpp/gpu_image.h
+# stay Windows-only (D3D11); the Mac uses the _mac twins (docs/design/12
+# 2026-09-17). The thumbnail cache is shared by both hosts: thumb_store.cpp
+# (the SQLite index, issue #168), thumb_pixels.cpp (decode + box-fit) and
+# thumb.cpp (the JPEG encode), issue #170.
 # ---------------------------------------------------------------------------
 find_package(lcms2 CONFIG REQUIRED)
 find_package(unofficial-sqlite3 CONFIG REQUIRED)
@@ -263,7 +263,8 @@ add_library(mv_image STATIC
   src/image/pipeline.cpp
   src/image/pipeline_mac.cpp
   src/image/upload_mac.mm
-  src/image/thumb_mac.cpp
+  src/image/thumb.cpp
+  src/image/thumb_pixels.cpp
   src/image/thumb_store.cpp
   src/image/colour.h
   src/image/pipeline.h

@@ -200,8 +200,9 @@ instead of refitting. Default off. Camera state only — prefetch and generation
 
 ## Thumbnails / filmstrip
 
-[`src/image/thumb.h`](../../src/image/thumb.h) (Windows), `thumb_mac.cpp` (macOS, same spec
-and schema); the SQLite index is one file for both, `thumb_store.cpp`.
+[`src/image/thumb.h`](../../src/image/thumb.h), one implementation for both hosts:
+`thumb_pixels.cpp` (decode and box-fit, also linked by the Explorer handler), `thumb.cpp` (the
+JPEG encode) and `thumb_store.cpp` (the SQLite index).
 
 - **Spec `jpg512.4`:** a JPEG, long edge 512, never enlarged, ICC → sRGB, EXIF orientation
   applied, and a clip's poster turned by its display matrix ([26](26-photos-library.md)). The
