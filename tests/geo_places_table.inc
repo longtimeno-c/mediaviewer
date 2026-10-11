@@ -227,6 +227,7 @@
     {-14.2790, -170.7000, "AS", "*", "Pago Pago", "Pago Pago"},
     {-8.5211, 179.1983, "TV", "*", "Funafuti", "Funafuti"},
     {1.3290, 172.9790, "KI", "Gilbert Islands", "*", "Bairiki, Tarawa"},
+    {6.2059, 160.7033, "FM", "*", "Pingelap", "Pingelap atoll, not drawn by Natural Earth"},
     {1.8721, -157.4278, "KI", "*", "*", "Kiritimati"},
     {-17.5516, -149.5585, "PF", "*", "Papeete", "Papeete"},
     {-27.1490, -109.4320, "CL", "Valparaiso", "*", "Hanga Roa, Easter Island"},

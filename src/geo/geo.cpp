@@ -476,7 +476,9 @@ place database::lookup(double lat, double lon, const lookup_options& opts) const
       ci = l0_.polys[hit.polygon].owner;
       land = hit.km <= k_coast_snap_km;
     }
-    if (!land && hit.polygon != k_none) {
+    // Even with no polygon within 25 km: remote atolls (Micronesia, the
+    // Marshalls, Tokelau) are missing from the 1:10m data altogether.
+    if (!land) {
       double km = -1;
       if (const town* t = pick_town(x, y, k_town_land_km, k_no_country, k_no_region, km)) {
         ci = t->country;
