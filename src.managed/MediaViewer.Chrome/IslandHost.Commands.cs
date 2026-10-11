@@ -33,6 +33,7 @@ public static partial class IslandHost
         public const int Settings = 5;
         public const int Export = 6;  // PR 10; ModeMask carries the last packed choice
         public const int ClipTools = 7;  // PR 14; ModeMask carries trim_state.h kClipFlag*
+        public const int Rename = 8;     // issue #210; ModeMask carries the folder index
     }
 
     private sealed class CommandRow
@@ -129,6 +130,7 @@ public static partial class IslandHost
                 PopupKind.Find => BuildFind(out focusTarget),
                 PopupKind.Export => BuildExport(args.ModeMask, out focusTarget),
                 PopupKind.ClipTools => BuildClipTools(args.ModeMask, out focusTarget),
+                PopupKind.Rename => BuildRename(args.ModeMask, out focusTarget),
                 _ => null,
             };
             if (content is null)
@@ -140,7 +142,7 @@ public static partial class IslandHost
             // The export dialog takes the arrows and Enter itself, like go-to's
             // digits, so it reports text focus and the router yields.
             _popupTakesText = args.Kind is PopupKind.GoTo or PopupKind.Find or PopupKind.Export
-                or PopupKind.ClipTools;
+                or PopupKind.ClipTools or PopupKind.Rename;
             var flyout = new Flyout
             {
                 ShouldConstrainToRootBounds = false,
@@ -329,6 +331,43 @@ public static partial class IslandHost
             }
         };
         focusTarget = panel;
+        return panel;
+    }
+
+    // F2 (issue #210): rename the stop at `index`. The field holds the name without
+    // its extension, selected, as Explorer does; Enter parks it for native, which
+    // checks it and renames the file, its pair and its sidecars on the file
+    // worker. Esc closes and renames nothing.
+    private static UIElement? BuildRename(int index, out UIElement focusTarget)
+    {
+        focusTarget = null!;
+        if (index < 0 || index >= Items.Count) return null;
+        FolderItemVm item = Items[index];
+        string name = item.Name;
+        int dot = name.LastIndexOf('.');
+        string stem = dot > 0 ? name[..dot] : name;
+        string ext = dot > 0 ? name[dot..] : "";
+
+        var panel = new StackPanel { Spacing = 6, Margin = new Thickness(12), MinWidth = 340 };
+        panel.Children.Add(Label("Rename", UiFontSize + 2));
+        string carried = item.PairPath.Length > 0
+            ? $"Keeps {ext} and its pair; any .xmp sidecar follows. Never overwrites."
+            : $"Keeps {ext}; any .xmp sidecar follows. Never overwrites.";
+        panel.Children.Add(Label(carried, UiFontSize, mute: true));
+        var field = new FakeInput("New name", 316);
+        field.SetText(stem);
+        field.SelectAll();
+        field.Submitted += () =>
+        {
+            string typed = field.Text.Trim();
+            ClosePopup();
+            if (typed.Length == 0 || typed == stem) return;
+            _treePending = typed;
+            Send(Command.Rename);
+        };
+        AutomationProperties_SetName(field, "New name for " + name);
+        panel.Children.Add(field);
+        focusTarget = field;
         return panel;
     }
 

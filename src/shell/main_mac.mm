@@ -85,6 +85,7 @@
 #include "shell/slideshow.h"
 #include "shell/input_state.h"
 #include "io/pairing.h"
+#include "io/rename_stop.h"
 #include "shell/install_from_dmg_mac.h"
 #include "shell/present_lab_mac.h"
 
@@ -190,6 +191,8 @@ static bool MvCommandSupported(mv::shell::command_id c) {
     // Issue #184: `/` (find by name in the gallery), the runner's `3`, and the
     // rows an add-on's manifest fills; runCommand: handles each.
     case typeahead: case game_toggle_3d:
+    // Issue #210: F2.
+    case rename_file:
     case addon_cmd_0: case addon_cmd_1: case addon_cmd_2: case addon_cmd_3:
     case addon_cmd_4: case addon_cmd_5: case addon_cmd_6: case addon_cmd_7:
       return true;
@@ -2236,6 +2239,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   // that survives a relist meaning something else.
   std::set<std::string> _marks;
   NSURL* _lastDestination;
+  BOOL _renamePending;  // issue #210: one F2 rename at a time
 
   // Slideshow (docs/design/16 "Slideshow", folded into PR 18 -- stills only, no
   // video on Mac yet, PR 19). _enteredFullscreenForSlideshow distinguishes
@@ -3259,6 +3263,9 @@ static void MvAdoptNewDefaultViewerTypes() {
   if (_meta.consume_dates_changed() && _sort.key == mv::io::sort_key::date_taken && !_listOpen) {
     [self resortKeepingSelection];
   }
+  // Issue #210: an F2 rename is on its way; its relist waits for it, so the
+  // stop is found under its new name instead of the next one sliding in.
+  if (_renamePending) return;
   if (!_folder.consume_changed() && !_refilterListing) return;
   _refilterListing = NO;
   mv::shell::folder_model::listing listing = _folder.snapshot();
@@ -3558,6 +3565,116 @@ static void MvAdoptNewDefaultViewerTypes() {
     if ([self refuseWriteTo:e.path_utf8]) return YES;
   }
   return NO;
+}
+
+// Issue #210: F2 (and File > Rename…). The name without its extension, in an
+// alert's field, selected as Finder selects it; the rename runs on the pool
+// (io::rename_stop) and carries the file's pair -- found by the scan-time
+// pairing rule, though this host lists both halves -- and its XMP sidecars.
+// Refused in a result list (its items live in other folders), for a Photos
+// library file, while the file has unsaved edits (keyed by its path) or a
+// metadata write in flight (it would land on the old name).
+- (BOOL)renameCurrentItem {
+  const mv::io::dir_entry* entry = [self currentEntry];
+  if (!entry) return NO;
+  if (_listOpen) {
+    [self noticeShow:"Rename it from its own folder"];
+    return YES;
+  }
+  if ([self refuseWriteTo:entry->path_utf8]) return YES;
+  if (_edits.edit_count() > 0 || _edits.crop_active() || _edits.write_in_flight()) {
+    [self noticeShow:"Save or reset the edits first"];
+    return YES;
+  }
+  if (_metaWriter.busy_for(entry->path_utf8) || _renamePending) {
+    [self noticeShow:"Wait for the last change to finish"];
+    return YES;
+  }
+  const std::string path = entry->path_utf8;
+  const std::string oldStem(mv::io::stem_of(path));
+  const std::string ext = std::string(mv::io::file_name_of(path)).substr(oldStem.size());
+
+  // The pair's other half, by the rule the Windows core pairs with at scan.
+  std::string partner;
+  {
+    const std::string key = mv::io::pairing_detail::key_of(entry->name_utf8);
+    std::vector<mv::io::dir_entry> same;
+    for (const auto& e : _items) {
+      if (mv::io::pairing_detail::key_of(e.name_utf8) == key) same.push_back(e);
+    }
+    for (const auto& stop : mv::io::pair_listing(std::move(same))) {
+      if (stop.secondary.path_utf8.empty()) continue;
+      if (stop.primary.path_utf8 == path) partner = stop.secondary.path_utf8;
+      else if (stop.secondary.path_utf8 == path) partner = stop.primary.path_utf8;
+    }
+  }
+
+  NSAlert* alert = [[NSAlert alloc] init];
+  alert.messageText = @"Rename";
+  alert.informativeText = partner.empty()
+      ? [NSString stringWithFormat:@"Keeps %s; any .xmp sidecar follows. Never overwrites.", ext.c_str()]
+      : [NSString stringWithFormat:@"Keeps %s and its pair; any .xmp sidecar follows. Never overwrites.",
+                                   ext.c_str()];
+  NSTextField* field = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 300, 24)];
+  field.stringValue = [NSString stringWithUTF8String:oldStem.c_str()] ?: @"";
+  field.accessibilityLabel = @"New name";
+  alert.accessoryView = field;
+  [alert addButtonWithTitle:@"Rename"];
+  [alert addButtonWithTitle:@"Cancel"];
+  alert.window.initialFirstResponder = field;
+  [alert layout];
+  [field selectText:nil];
+  if ([alert runModal] != NSAlertFirstButtonReturn) return YES;
+
+  NSString* typed = [field.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+  const std::string stem = typed.UTF8String ? typed.UTF8String : "";
+  if (const auto problem = mv::io::check_stem(stem); problem != mv::io::stem_problem::ok) {
+    NSBeep();
+    [self noticeShow:mv::io::stem_problem_text(problem)];
+    return YES;
+  }
+  if (stem == oldStem) return YES;
+
+  _renamePending = YES;
+  MvLabApp* __weak weakSelf = self;
+  _jobs.submit_at(mv::background_generation,
+                  [path, partner, stem, weakSelf](const mv::job_context&) -> mv::status {
+                    auto r = mv::io::rename_stop(path, partner, stem);
+                    const mv::status st = r ? mv::status::ok : r.error();
+                    const std::string to = r ? r->primary : std::string();
+                    const std::string partnerTo = r ? r->secondary : std::string();
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                      MvLabApp* strongSelf = weakSelf;
+                      if (strongSelf) [strongSelf renameFinished:path to:to partner:partner partnerTo:partnerTo status:st];
+                    });
+                    return st;
+                  });
+  return YES;
+}
+
+- (void)renameFinished:(const std::string&)from
+                    to:(const std::string&)to
+               partner:(const std::string&)partner
+             partnerTo:(const std::string&)partnerTo
+                status:(mv::status)st {
+  _renamePending = NO;
+  if (st != mv::status::ok || to.empty()) {
+    NSBeep();
+    [self noticeShow:st == mv::status::not_found ? "The file is gone" : "Could not rename the file"];
+    return;
+  }
+  // A mark moves with its file; both halves are stops on this host.
+  bool marks = false;
+  if (_marks.erase(from) != 0) { _marks.insert(to); marks = true; }
+  if (!partner.empty() && _marks.erase(partner) != 0) { _marks.insert(partnerTo); marks = true; }
+  if (marks) [self marksDidChange];
+  // The relist selects the file under its new name; what is on screen is the
+  // same bytes (same size and stamp), so it is not loaded again.
+  if (_wantSelectedPath == from) _wantSelectedPath = to;
+  if (_shownPath == from) _shownPath = to;
+  _folder.relist();
+  [self noticeShow:"Renamed to " + std::string(mv::io::file_name_of(to))];
+  [self publish];
 }
 
 - (void)toggleMarkCurrent {
@@ -4530,6 +4647,8 @@ enum MvMenuCmd : NSInteger {
   kMenuFlipH, kMenuFlipV, kMenuUndoEdit, kMenuResetEdits, kMenuSaveCopy, kMenuTrim,
   // docs/design/16 "Window"
   kMenuNewWindow,
+  // Issue #210: File > Rename… (F2).
+  kMenuRename,
 };
 
 // Issue #182: the table row behind a menu item, for its mode mask. None for
@@ -4564,6 +4683,7 @@ static mv::shell::command_id MvMenuCommand(NSInteger cmd) {
     case kMenuCopyPath: return copy_path;
     case kMenuCopyEdited: return copy_flattened;
     case kMenuNewWindow: return new_window;
+    case kMenuRename: return rename_file;
     default: return none;
   }
 }
@@ -4719,6 +4839,7 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
     case kMenuOpenFolder: [self openFolderPanel:YES]; break;
     case kMenuOpenPhotos: [self openPhotosLibrary]; break;
     case kMenuTrash: [self deleteMarkedToTrash]; break;
+    case kMenuRename: (void)[self renameCurrentItem]; break;
     case kMenuCopyTo: [self copyMarkedPickDestination:YES]; break;
     case kMenuMoveTo: [self moveMarkedPickDestination:YES]; break;
     case kMenuMark: [self toggleMarkCurrent]; break;
@@ -4823,6 +4944,8 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
     case kMenuOpenPhotos:
       item.hidden = ![self photosLibraryAvailable];
       return !item.hidden;
+    case kMenuRename:
+      return [self currentEntry] != nullptr && !_listOpen && !_slideshowActive && !_edits.crop_active();
     case kMenuTrash:
       // The menu answers ⌘⌫ before any first responder sees it (issue #180).
       // A text field's ⌘⌫ is "delete to start of line"; in trim and crop
@@ -4937,6 +5060,8 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
   [self addMenuItem:@"Mark / Unmark" cmd:kMenuMark key:@"" mods:0 toMenu:file];
   [self addMenuItem:@"Copy Marked To…" cmd:kMenuCopyTo key:@"" mods:0 toMenu:file];
   [self addMenuItem:@"Move Marked To…" cmd:kMenuMoveTo key:@"" mods:0 toMenu:file];
+  // No key equivalent: F2 is a row in the remappable table.
+  [self addMenuItem:@"Rename…" cmd:kMenuRename key:@"" mods:0 toMenu:file];
   [self addMenuItem:@"Move to Trash"
                 cmd:kMenuTrash
                 key:[NSString stringWithFormat:@"%C", static_cast<unichar>(NSBackspaceCharacter)]
@@ -5620,6 +5745,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     case fullscreen: [self toggleFullscreen]; return YES;
     case close_window: [self.window performClose:nil]; return YES;
     case new_window: [self openNewWindow]; return YES;
+    case rename_file: return [self renameCurrentItem];
     case always_on_top:
       self.window.level = self.window.level == NSFloatingWindowLevel ? NSNormalWindowLevel
                                                                       : NSFloatingWindowLevel;

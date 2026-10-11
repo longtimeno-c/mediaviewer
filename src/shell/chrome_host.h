@@ -141,6 +141,9 @@ enum chrome_command : int {
   chrome_cmd_video_muted = 1032,
   chrome_cmd_video_track = 1033,
   chrome_cmd_video_loop = 1034,
+  // Issue #210: the rename popup was confirmed (Enter); native pulls the new
+  // name (no extension) with take_parked_text. Esc sends nothing.
+  chrome_cmd_rename = 1035,
 };
 
 // chrome_cmd_video_loop's argument. The C# side mirrors it.
@@ -191,6 +194,7 @@ enum class chrome_popup : std::int32_t {
   settings = 5,
   export_image = 6,  // PR 10; mode_mask carries the last packed choice to preselect
   clip_tools = 7,    // PR 14; mode_mask carries clip flags (trim_state.h kClipFlag*)
+  rename = 8,        // issue #210; mode_mask carries the folder index of the stop to rename
 };
 
 struct chrome_popup_args {
@@ -285,6 +289,7 @@ static_assert(chrome_cmd_open_recent >= kCommandCount);
 static_assert(chrome_cmd_editor_trim_grab >= kCommandCount && chrome_cmd_editor_trim_to >= kCommandCount);
 static_assert(chrome_cmd_open_in_app >= kCommandCount);
 static_assert(chrome_cmd_video_volume >= kCommandCount && chrome_cmd_video_loop >= kCommandCount);
+static_assert(chrome_cmd_rename >= kCommandCount);
 static_assert(is_reserved_notification(chrome_cmd_set_settings));
 static_assert(is_reserved_notification(chrome_cmd_folder_ready));
 static_assert(is_reserved_notification(chrome_cmd_video_active));
@@ -312,7 +317,7 @@ static_assert(is_reserved_notification(chrome_cmd_focus_changed));
       chrome_cmd_drag_items, chrome_cmd_drag_ended, chrome_cmd_open_recent,
       chrome_cmd_editor_trim_grab, chrome_cmd_editor_trim_to, chrome_cmd_open_in_app,
       chrome_cmd_video_volume, chrome_cmd_video_muted, chrome_cmd_video_track,
-      chrome_cmd_video_loop};
+      chrome_cmd_video_loop, chrome_cmd_rename};
   std::uint32_t h = 17;
   for (const int id : ids) h = h * 31u + static_cast<std::uint32_t>(id);
   return static_cast<std::int32_t>(h);

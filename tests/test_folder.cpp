@@ -15,6 +15,7 @@
 
 #include "fixtures.h"
 #include "io/paths.h"
+#include "io/rename_stop.h"
 #include "mediaviewer/mediaviewer.h"
 
 using namespace std::chrono_literals;
@@ -305,6 +306,45 @@ TEST_CASE("a RAW+JPEG pair and a Live Photo are one stop each over the ABI",
   REQUIRE(selected == 3);
   REQUIRE(item_string(session.handle, selected, &mv_folder_item_name) == "IMG_0003.JPG");
 
+  REQUIRE(mv_folder_close(session.handle) == MV_OK);
+  mv::io::set_thumb_cache_dir_override({});
+}
+
+// 0.20 (issue #210): F2. Told before the file moves, the watcher's relist keeps
+// the stop under its new name; without it the next one would slide in.
+TEST_CASE("mv_folder_renamed keeps the renamed stop selected", "[abi][folder][rename]") {
+  const auto dir = temp_dir();
+  write_bmp(dir, L"a.bmp");
+  write_bmp(dir, L"b.bmp");
+  write_bmp(dir, L"c.bmp");
+  mv::io::set_thumb_cache_dir_override(utf8(dir + L"\\thumbs"));
+  REQUIRE(::CreateDirectoryW((dir + L"\\thumbs").c_str(), nullptr));
+
+  session_guard session;
+  uint64_t job = 0;
+  mv_completion c{};
+  REQUIRE(mv_folder_open(session.handle, utf8(dir).c_str(), utf8(dir + L"\\b.bmp").c_str(), &job) ==
+          MV_OK);
+  REQUIRE(wait_kind(session.handle, MV_COMPLETION_FOLDER_READY, &c));
+
+  // b.bmp becomes z.bmp: it sorts last now, and the stop goes with it.
+  auto r = mv::io::rename_stop(utf8(dir + L"\\b.bmp"), {}, "z",
+                               [&](const std::string& from, const std::string& to) {
+                                 REQUIRE(mv_folder_renamed(session.handle, from.c_str(), to.c_str()) ==
+                                         MV_OK);
+                               });
+  REQUIRE(r);
+  const auto deadline = std::chrono::steady_clock::now() + 8s;
+  std::string name;
+  while (std::chrono::steady_clock::now() < deadline) {
+    uint32_t selected = 0;
+    if (mv_folder_selected(session.handle, &selected) == MV_OK) {
+      name = item_string(session.handle, selected, &mv_folder_item_name);
+      if (name == "z.bmp") break;
+    }
+    std::this_thread::sleep_for(20ms);
+  }
+  CHECK(name == "z.bmp");
   REQUIRE(mv_folder_close(session.handle) == MV_OK);
   mv::io::set_thumb_cache_dir_override({});
 }

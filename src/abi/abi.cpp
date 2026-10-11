@@ -221,6 +221,10 @@ struct mv_session {
   // 0.19: io::kHideAudio / kHideDocuments. `folder_listing` stays unfiltered,
   // so turning a kind back on re-applies without another scan.
   std::atomic<std::uint32_t> hidden_kinds{0};
+  // 0.20 (issue #210): a rename the host made (folder_mutex). The next relist
+  // follows the stop to its new name instead of letting the next one slide in.
+  std::string renamed_from;
+  std::string renamed_to;
   std::vector<mv::io::listed_item> folder_listing;
   std::unordered_map<std::string, date_stamp> date_stamps;
 
@@ -1403,6 +1407,25 @@ void apply_folder_list(mv_session* session, std::vector<mv::io::listed_item> lis
       previous_path = session->folder_items[previous_index].path;
       previous_secondary = session->folder_items[previous_index].secondary_path;
     }
+    if (!session->renamed_from.empty()) {
+      // F2 (0.20): once the listing shows the rename, the stop on screen is
+      // the file it was, under its new name.
+      bool from_listed = false;
+      bool to_listed = false;
+      for (const auto& e : listed) {
+        from_listed |= e.primary.path_utf8 == session->renamed_from;
+        to_listed |= e.primary.path_utf8 == session->renamed_to;
+      }
+      if (!from_listed && to_listed) {
+        if (previous_path == session->renamed_from) {
+          previous_path = session->renamed_to;
+          previous_secondary.clear();
+        }
+        if (want == session->renamed_from) want = session->folder_select_path = session->renamed_to;
+        session->renamed_from.clear();
+        session->renamed_to.clear();
+      }
+    }
     session->folder_items.clear();
     session->folder_items.reserve(listed.size());
     for (auto& e : listed) {
@@ -1813,6 +1836,8 @@ mv_status MV_CALL mv_folder_open(mv_session_t session, const char* utf8_dir,
       session->folder_list_title.clear();
       session->folder_list_moments.clear();
       session->folder_select_path = select;
+      session->renamed_from.clear();  // 0.20: a rename follows within one folder
+      session->renamed_to.clear();
       session->folder_listing.clear();
       session->folder_items.clear();
       session->folder_subdirs.clear();
@@ -1894,6 +1919,8 @@ mv_status MV_CALL mv_folder_open_list(mv_session_t session, const char* title_ut
       session->folder_list_title = title_utf8 ? title_utf8 : "";
       session->folder_list_moments = std::move(moments);
       session->folder_select_path = select;
+      session->renamed_from.clear();  // 0.20: a rename follows within one folder
+      session->renamed_to.clear();
       session->folder_listing.clear();
       session->folder_items.clear();
       session->folder_subdirs.clear();
@@ -2013,6 +2040,20 @@ mv_status MV_CALL mv_folder_set_hidden_kinds(mv_session_t session, uint32_t mask
           return status::ok;
         });
     return id == mv::invalid_job ? status::internal : status::ok;
+  }));
+}
+
+mv_status MV_CALL mv_folder_renamed(mv_session_t session, const char* old_utf8,
+                                    const char* new_utf8) {
+  return static_cast<mv_status>(guard("mv_folder_renamed", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    MV_REQUIRE(old_utf8 != nullptr && new_utf8 != nullptr, "paths must not be null");
+    std::lock_guard lock(session->folder_mutex);
+    if (session->folder_dir.empty() || session->folder_is_list) return status::ok;
+    // The folder watcher's relist of the rename applies it (apply_folder_list).
+    session->renamed_from = old_utf8;
+    session->renamed_to = new_utf8;
+    return status::ok;
   }));
 }
 
