@@ -25,7 +25,9 @@ the exe (Crashpad's client and imgui are static). On macOS permissive libraries 
 statically and the LGPL codecs come from a separate manifest
 (`tools/mac/dependencies/vcpkg.json`, `arm64-osx-dynamic`) and install root, so they cannot
 leak into the static tree. Either way **FFmpeg, libheif, libde265, LibRaw and Exiv2 are always
-DLLs / dylibs** ([licensing](11-licensing.md)). Shader bytecode is embedded as resources.
+DLLs / dylibs** ([licensing](11-licensing.md)). Shader bytecode is embedded at build time: on Windows `fxc` compiles `src/gfx/*.hlsl` into
+`const BYTE` headers (CMake `mv_fxc`), so no `D3DCompile` runs at device create; the Mac's MSL is
+still compiled from source at startup.
 
 ### Dependency set
 

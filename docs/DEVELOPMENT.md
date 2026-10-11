@@ -146,7 +146,8 @@ You need **Visual Studio 2022** (or Build Tools) with the C++ workload, the **Wi
 SDK**, **CMake ≥ 3.28**, **vcpkg**, the **.NET 8 SDK**, and the **Windows App SDK 2.4
 runtime** (the command-bar island is unpackaged). The native core still builds and tests
 with no .NET present; without `dotnet` on `PATH` the lab runs as it did in PR 2
-(`--no-chrome`).
+(`--no-chrome`). The build compiles the blit shaders (`src/gfx/*.hlsl`) with the SDK's `fxc.exe`,
+found in the targeted SDK's `bin` without a developer shell; pass `-DMV_FXC=<path>` to override.
 
 ```powershell
 # once

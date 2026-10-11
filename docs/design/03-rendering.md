@@ -113,7 +113,7 @@ encodes on write.
   P3 above all) get a synthesised ICC v4 matrix/shaper profile for Little CMS; **PQ/HLG stills are
   tone-mapped to SDR at decode** with the same curves and constants as the video shader.
 - **HDR video → SDR is tone-mapped** in the same shader that does YUV → RGB
-  ([`src/gfx/video_blit.cpp`](../../src/gfx/video_blit.cpp), MSL twin `video_blit_metal.mm`), driven by
+  ([`src/gfx/video_blit.hlsl`](../../src/gfx/video_blit.hlsl), MSL twin `video_blit_metal.mm`), driven by
   the stream's real matrix, primaries and transfer: PQ through the ST 2084 EOTF normalised to 203-nit
   reference white; HLG through the inverse OETF plus OOTF; then Reinhard-extended on luminance with the
   ratio applied to RGB to keep hue. iPhone HLG HEVC therefore does not look washed out on an SDR
@@ -131,7 +131,7 @@ while panning. Level sizes follow D3D11: `max(1, floor(prev / 2))`; ceil halving
 Tiled images use a floor-half Mitchell CPU pyramid with 256×256 tiles (2-texel border) over a resident
 overview ([04-image-pipeline.md](04-image-pipeline.md)).
 
-**Zoomed in** ([`src/gfx/blit.cpp`](../../src/gfx/blit.cpp)): Catmull-Rom between 100 % and 400 %,
+**Zoomed in** ([`src/gfx/blit.hlsl`](../../src/gfx/blit.hlsl)): Catmull-Rom between 100 % and 400 %,
 nearest-neighbour above 400 % (with an optional one-pixel grid). The Catmull-Rom result is saturated:
 unclamped overshoot encodes per channel on the sRGB target as coloured fringes along edges.
 
