@@ -35,8 +35,10 @@ struct shared_state {
 };
 
 shared_state& state() {
-  static shared_state s;  // never destroyed before workers stop: leaked deliberately
-  return s;
+  // Leaked deliberately: a function-local static would be destroyed at exit
+  // while a worker may still be inside shared() or holding a database.
+  static shared_state* s = new shared_state;
+  return *s;
 }
 
 }  // namespace
