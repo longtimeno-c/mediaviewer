@@ -322,7 +322,10 @@ MV_API mv_status MV_CALL mv_folder_selected(mv_session_t session, uint32_t* out_
  * the view generation like a selection and decodes that page, without the LRU
  * or prefetch (a page turn is one decode). MV_COMPLETION_IMAGE_OPENED follows;
  * mv_session_image_info then reports the page count. A page past the end
- * completes with MV_ERR_INVALID_ARG; page 0 is the same as mv_folder_select. */
+ * leaves the page on screen as it is and pushes no completion (a turn can race
+ * the file's own decode, which learns the count); MV_ERR_INVALID_ARG is
+ * returned only when nothing is selected or the stop is a clip. Page 0 is the
+ * same as mv_folder_select. */
 MV_API mv_status MV_CALL mv_folder_select_page(mv_session_t session, uint32_t page,
                                                uint64_t* out_job_id);
 

@@ -168,6 +168,41 @@ inline std::vector<std::uint8_t> tiff_write(const tiff_spec& s, const std::uint8
   return std::move(sink.data);
 }
 
+// A multi-page TIFF: one grey strip per directory, in order. A `reduced` entry
+// is a thumbnail IFD (FILETYPE_REDUCEDIMAGE), not a page. Pages may differ in
+// size, so a test can tell which page a decoder showed from its dimensions.
+struct tiff_page {
+  std::uint8_t grey = 0;
+  bool reduced = false;
+  std::uint32_t width = 8;
+  std::uint32_t height = 8;
+};
+
+inline std::vector<std::uint8_t> tiff_pages(const std::vector<tiff_page>& pages) {
+  tiff_sink sink;
+  TIFF* tif = TIFFClientOpen("fixture", "w", &sink, tiff_sink_read, tiff_sink_write, tiff_sink_seek,
+                             tiff_sink_close, tiff_sink_size, tiff_sink_map, tiff_sink_unmap);
+  if (!tif) return {};
+  bool ok = true;
+  for (const tiff_page& p : pages) {
+    ok &= TIFFSetField(tif, TIFFTAG_IMAGEWIDTH, p.width) == 1;
+    ok &= TIFFSetField(tif, TIFFTAG_IMAGELENGTH, p.height) == 1;
+    ok &= TIFFSetField(tif, TIFFTAG_BITSPERSAMPLE, 8) == 1;
+    ok &= TIFFSetField(tif, TIFFTAG_SAMPLESPERPIXEL, 1) == 1;
+    ok &= TIFFSetField(tif, TIFFTAG_PHOTOMETRIC, PHOTOMETRIC_MINISBLACK) == 1;
+    ok &= TIFFSetField(tif, TIFFTAG_ROWSPERSTRIP, p.height) == 1;
+    if (p.reduced) ok &= TIFFSetField(tif, TIFFTAG_SUBFILETYPE, FILETYPE_REDUCEDIMAGE) == 1;
+    std::vector<std::uint8_t> row(p.width, p.grey);
+    for (std::uint32_t y = 0; y < p.height && ok; ++y) {
+      ok &= TIFFWriteScanline(tif, row.data(), y, 0) == 1;
+    }
+    ok &= TIFFWriteDirectory(tif) == 1;
+  }
+  TIFFClose(tif);
+  if (!ok) return {};
+  return std::move(sink.data);
+}
+
 // A hand-built little-endian TIFF: one 8-bit grey strip that claims w x h
 // but carries 16 bytes of pixel data. For hostile-header tests.
 inline std::vector<std::uint8_t> tiff_header_only(std::uint32_t w, std::uint32_t h) {
