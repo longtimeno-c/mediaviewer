@@ -498,17 +498,23 @@ void publish_clip_placeholder(mv_session* session, const std::string& path, std:
                               std::int64_t mtime_unix, std::uint64_t size,
                               const mv::job_context& ctx) {
   if (!session->thumbs.is_open()) return;
-  std::string file;
-  if (auto mhit = session->thumbs.lookup(
-          mv::image::moment_thumb_key(path, moment_ms, mtime_unix, size));
-      mhit && !mhit.value().empty()) {
-    file = std::move(mhit).value();
-  } else if (auto phit = session->thumbs.lookup(mv::image::thumb_key{path, mtime_unix, size});
-             phit && !phit.value().empty()) {
-    file = std::move(phit).value();
+  // Foreground: no stat per candidate (issue #168). The read is the check, and
+  // a row whose file has gone is dropped and the next candidate tried.
+  std::optional<std::vector<std::uint8_t>> bytes;
+  for (const mv::image::thumb_key& key :
+       {mv::image::moment_thumb_key(path, moment_ms, mtime_unix, size),
+        mv::image::thumb_key{path, mtime_unix, size}}) {
+    if (ctx.cancelled()) return;
+    auto hit = session->thumbs.lookup_unverified(key);
+    if (!hit || hit.value().empty()) continue;
+    auto read = mv::io::read_all(hit.value());
+    if (!read) {
+      session->thumbs.forget(key);
+      continue;
+    }
+    bytes = std::move(read).value();
+    break;
   }
-  if (file.empty() || ctx.cancelled()) return;
-  auto bytes = mv::io::read_all(file);
   if (!bytes || ctx.cancelled()) return;
   auto decoded = mv::image::decode_bytes(bytes.value(), &ctx, 1);
   if (!decoded) return;
