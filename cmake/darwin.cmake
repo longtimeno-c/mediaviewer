@@ -333,6 +333,8 @@ find_package(exiv2 CONFIG REQUIRED)
 
 add_library(mv_meta STATIC
   src/meta/read.cpp
+  src/meta/location.cpp
+  src/meta/location.h
   src/meta/still.cpp
   src/meta/carried.cpp
   src/meta/clip.cpp
@@ -824,6 +826,7 @@ if(MV_BUILD_TESTS)
     tests/test_pdf_mac.mm
     # PR 9: the metadata read model. Fixtures are built in the test.
     tests/test_meta.cpp
+    tests/test_meta_location.cpp
     tests/test_meta_store.cpp
     # PR 12: the metadata writer, and the host-shared write queue.
     tests/test_meta_write.cpp

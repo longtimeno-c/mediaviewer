@@ -461,6 +461,8 @@ add_library(mv::player ALIAS mv_player)
 find_package(exiv2 CONFIG REQUIRED)
 add_library(mv_meta STATIC
   src/meta/read.cpp
+  src/meta/location.cpp
+  src/meta/location.h
   src/meta/still.cpp
   src/meta/carried.cpp
   src/meta/clip.cpp
@@ -966,6 +968,7 @@ if(MV_BUILD_TESTS)
     tests/test_docx.cpp
     # PR 9 (docs/design/12 2026-09-24)
     tests/test_meta.cpp
+    tests/test_meta_location.cpp
     tests/test_meta_store.cpp
     # PR 12: the metadata writer, and the host-shared write queue.
     tests/test_meta_write.cpp
