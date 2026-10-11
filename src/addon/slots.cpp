@@ -15,7 +15,6 @@
 namespace mv::addon {
 namespace {
 
-mv_status to_c(status s) noexcept { return static_cast<mv_status>(s); }
 
 const char* place_name(screen_place p) noexcept {
   switch (p) {
@@ -1071,8 +1070,8 @@ status slot_registry::post_search(const std::string& addon_id, const std::string
     if (p == s->providers.end()) return status::not_found;
     if (s->rows.size() + rows.size() > screen::kMaxItems) return status::invalid_arg;
     for (search_row& r : rows) {
-      if (r.path.empty() || r.path.size() > 4096 || !json::valid_utf8(r.path) || r.why.size() > 200 ||
-          !json::valid_utf8(r.why)) {
+      if (r.path.empty() || r.path.size() > 4096 || !json::detail::valid_utf8(r.path) || r.why.size() > 200 ||
+          !json::detail::valid_utf8(r.why)) {
         continue;
       }
       s->rows.emplace_back(std::move(r), std::make_pair(addon_id, provider_id));
@@ -1124,7 +1123,7 @@ status slot_registry::post_badges(const std::string& addon_id, const std::string
 
 status slot_registry::post_status(const std::string& addon_id, const std::string& item_id,
                                   std::string text) {
-  if (text.size() > 120 || !json::valid_utf8(text)) return status::invalid_arg;
+  if (text.size() > 120 || !json::detail::valid_utf8(text)) return status::invalid_arg;
   {
     std::lock_guard lock(m_);
     auto it = addons_.find(addon_id);

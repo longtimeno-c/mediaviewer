@@ -16,6 +16,8 @@
 #include <string_view>
 #include <vector>
 
+#include "addon/contrib.h"
+
 namespace mv::addon {
 
 inline constexpr int kManifestSchema = 1;
@@ -78,6 +80,10 @@ struct manifest {
   std::vector<manifest_command> commands;
   std::string hint_on;    // "card", or empty
   std::string hint_text;
+  // Screens and slots (docs/design/25 §7, PRs 58-59, 2026-10-11): under
+  // `contributes`, with the contribution API range they were written for in
+  // `contributes.api`. Empty for every add-on that contributes none.
+  contributions slots;
 };
 
 enum class rejection : std::uint8_t {

@@ -345,6 +345,12 @@ open_decision check_open_manifest(std::span<const std::uint8_t> bytes,
           }
           m.themes.push_back(theme_ref{*theme_id, *theme_name, *theme_path});
         }
+      } else if (contribution_api(key_name) >= 4 && contribution_api(key_name) <= api) {
+        // Screens and slots (PRs 58-59) are filled by code: a stranger's add-on
+        // gets them with PR 57's sandboxed scripts, not before. MediaViewer's
+        // own native add-ons fill them through the host table (manifest.cpp).
+        d.why = rejection::code_not_allowed;
+        return d;
       } else if (strict) {
         // A point this host has not built, in a manifest that claims no API
         // past this host's: unknown (contribution_api() == 0), or named under

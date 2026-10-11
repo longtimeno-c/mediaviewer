@@ -77,7 +77,7 @@ bool id_text(std::string_view s) noexcept {
 // Text a person reads: valid UTF-8, bounded, no control characters but a
 // newline or tab where a paragraph is allowed.
 bool plain(std::string_view s, std::size_t max, bool multiline = false) noexcept {
-  if (s.size() > max || !json::valid_utf8(s)) return false;
+  if (s.size() > max || !json::detail::valid_utf8(s)) return false;
   return std::all_of(s.begin(), s.end(), [multiline](char c) {
     const auto u = static_cast<unsigned char>(c);
     if (u == '\n' || u == '\t') return multiline;
@@ -134,7 +134,7 @@ bool package_image(const json::value& v) noexcept {
 // An absolute path to a user's file (a thumbnail's source). Never opened by
 // the core here: the host's thumbnail cache does that on its own workers.
 bool file_path(const json::value& v) noexcept {
-  return v.k == json::kind::string && !v.s.empty() && v.s.size() <= 4096 && json::valid_utf8(v.s) &&
+  return v.k == json::kind::string && !v.s.empty() && v.s.size() <= 4096 && json::detail::valid_utf8(v.s) &&
          std::none_of(v.s.begin(), v.s.end(), [](char c) { return static_cast<unsigned char>(c) < 0x20; });
 }
 

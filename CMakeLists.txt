@@ -1152,6 +1152,8 @@ if(MV_BUILD_TESTS)
     tests/test_verified_copy.cpp
     tests/test_addon_manifest.cpp
     tests/test_open_addons.cpp
+    tests/test_addon_screens.cpp
+    tests/test_addon_slots.cpp
     tests/test_import_naming.cpp
     tests/test_import_engine.cpp
     tests/test_json.cpp
@@ -1160,12 +1162,13 @@ if(MV_BUILD_TESTS)
     unofficial-sodium::sodium Catch2::Catch2WithMain)
   target_include_directories(mv_import_tests PRIVATE src tests)
   target_compile_definitions(mv_import_tests PRIVATE
-    MV_IMPORT_MODULE_PATH="$<TARGET_FILE:mv_import>")
+    MV_IMPORT_MODULE_PATH="$<TARGET_FILE:mv_import>"
+    MV_SLOTS_TEST_MODULE_PATH="$<TARGET_FILE:mv_slots_test_addon>")
   if(MV_ADDON_DEV_PUBLIC_KEY)
     # A developer build pins its own key (cmake/import.cmake); CI never sets it.
     target_compile_definitions(mv_import_tests PRIVATE MV_TEST_DEV_ADDON_KEY=1)
   endif()
-  add_dependencies(mv_import_tests mv_import)
+  add_dependencies(mv_import_tests mv_import mv_slots_test_addon)
   mv_asan_runtime_beside(mv_import_tests)
   catch_discover_tests(mv_import_tests TEST_PREFIX "import_"
     PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT ${MV_TEST_TIMEOUT}

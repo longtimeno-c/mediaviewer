@@ -22,6 +22,7 @@
 #include <mediaviewer/mediaviewer_addon.h>
 
 #include "addon/media.h"
+#include "addon/slots.h"
 #include "addon/store.h"
 #include "core/result.h"
 #include "io/volume.h"
@@ -64,6 +65,13 @@ struct host_services {
   // The verified folder of an installed piece of the add-on's family.
   // loaded_addon::load fills it from the store when left empty.
   std::function<result<std::string>(const std::string& piece_id)> piece_dir;
+  // v3 (docs/design/25 PRs 58-59): the screens and slots registry the add-on's
+  // contributions attach to and its v3 calls post into. nullptr = the
+  // process's (default_slots()); tests pass their own.
+  slot_registry* slots = nullptr;
+  // A file's coordinates from the host's metadata read (location_of /
+  // locations_in, cached by path + size + mtime). Empty: every file has none.
+  location_reader location;
   std::string data_dir;         // created by the table
   std::string default_library;  // Pictures\MediaViewer
   // Honour mv_addon_copy_request's fault injection (tests, the verify rig).
@@ -81,6 +89,12 @@ class host_table {
   [[nodiscard]] const host_services& services() const noexcept { return svc_; }
   // The table version the add-on was offered (manifest.h negotiated_host_api).
   void set_negotiated(std::uint32_t version) noexcept;
+  // The add-on this table serves (its v3 posts are filed under it).
+  void set_addon_id(std::string id) { addon_id_ = std::move(id); }
+  [[nodiscard]] const std::string& addon_id() const noexcept { return addon_id_; }
+  [[nodiscard]] slot_registry& slots() const noexcept {
+    return svc_.slots ? *svc_.slots : default_slots();
+  }
 
   // Used by the C thunks.
   struct watch_state {
@@ -99,6 +113,7 @@ class host_table {
  private:
   host_services svc_;
   mv_host_api api_{};
+  std::string addon_id_;
 };
 
 class shared_library {
@@ -131,6 +146,9 @@ class loaded_addon {
   [[nodiscard]] const mv_addon_api& api() const noexcept { return api_; }
   [[nodiscard]] const void* query(const char* interface_id) const noexcept;
   [[nodiscard]] const installed& info() const noexcept { return info_; }
+  // True when its screens and slots are in the registry (load attached them:
+  // the manifest contributes some and the add-on answers mv.slots.1).
+  [[nodiscard]] bool slots_attached() const noexcept { return slots_ != nullptr; }
 
   // Re-verifies `addon` (signature and every file), then loads its native
   // library and calls mv_addon_get with a fresh host table. A file changed
@@ -148,6 +166,7 @@ class loaded_addon {
  private:
   loaded_addon() = default;
   installed info_;
+  slot_registry* slots_ = nullptr;  // detached first in the destructor
   std::unique_ptr<host_table> table_;
   shared_library lib_;
   mv_addon_api api_{};

@@ -694,8 +694,9 @@ MV_API mv_status MV_CALL mv_addon_quit_wait(uint32_t timeout_ms);
  * ------------------------------------------------------------------------- */
 
 /* The contribution API this host serves (an add-on's manifest declares the
- * range it was written for).  1  themes. */
-#define MV_ADDON_CONTRIBUTION_API 1
+ * range it was written for).  1  themes; 4  screens; 5  chrome slots and
+ * search providers (docs/design/25 §7). */
+#define MV_ADDON_CONTRIBUTION_API 5
 
 /* What a package is, for the consent sheet; installs and creates nothing.
  * MV_OK whenever the JSON was written, whatever it says:

@@ -32,7 +32,10 @@ inline constexpr int kOpenManifestSchema = 2;
 
 // The contribution API this host serves (docs/design/25 "Contribution API").
 //   1  themes.
-inline constexpr std::uint32_t kContributionApi = 1;
+//   4  screens; 5  chrome slots and search providers (PRs 58-59, 2026-10-11).
+//      Settings pages, keymaps and theme shape (2) and script commands (3) are
+//      known by name (kContributionPoints) and built by PRs 56 and 57.
+inline constexpr std::uint32_t kContributionApi = 5;
 inline constexpr std::uint32_t kContributionApiOldest = 1;
 
 // Every contribution point docs/design/25 §7 names, with the API that

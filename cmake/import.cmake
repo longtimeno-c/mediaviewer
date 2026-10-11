@@ -54,6 +54,13 @@ add_library(mv_addon STATIC
   ${R}/src/addon/theme.h
   ${R}/src/addon/host.cpp
   ${R}/src/addon/host.h
+  # Screens and slots (docs/design/25 PRs 58-59): the view-tree vocabulary, the
+  # contribution tables and the registry both chromes read.
+  ${R}/src/addon/contrib.h
+  ${R}/src/addon/screen.cpp
+  ${R}/src/addon/screen.h
+  ${R}/src/addon/slots.cpp
+  ${R}/src/addon/slots.h
   ${MV_ADDON_LOADER}
   ${R}/src/abi/include/mediaviewer/mediaviewer_addon.h
 )
@@ -124,4 +131,21 @@ if(APPLE)
   set_target_properties(mv_import PROPERTIES PREFIX "lib" SUFFIX ".dylib")
 elseif(WIN32)
   set_target_properties(mv_import PROPERTIES PREFIX "")
+endif()
+
+# docs/design/25 PRs 58-59: a test add-on that fills every screen and slot point
+# through the v3 host table, loaded by mv_import_tests through the real loader on
+# all three builds. Never packed, never installed.
+add_library(mv_slots_test_addon MODULE "${R}/tests/addons/slots_test/slots_test_addon.cpp")
+target_include_directories(mv_slots_test_addon PRIVATE "${R}/src" "${R}/src/abi/include")
+target_link_libraries(mv_slots_test_addon PRIVATE mv_project_options Threads::Threads)
+set_target_properties(mv_slots_test_addon PROPERTIES
+  CXX_VISIBILITY_PRESET hidden
+  VISIBILITY_INLINES_HIDDEN ON
+  LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/addons/slots-test"
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/addons/slots-test")
+if(APPLE)
+  set_target_properties(mv_slots_test_addon PROPERTIES PREFIX "lib" SUFFIX ".dylib")
+elseif(WIN32)
+  set_target_properties(mv_slots_test_addon PROPERTIES PREFIX "")
 endif()

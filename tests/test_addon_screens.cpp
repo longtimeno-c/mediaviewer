@@ -1,0 +1,244 @@
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Screens (docs/design/25 §10, PR 58): the view-tree vocabulary both hosts render,
+// its checks, diffs and events (src/addon/screen.h).
+#include "catch_compat.h"
+
+#include <chrono>
+#include <string>
+
+#include "addon/screen.h"
+#include "core/json.h"
+
+using mv::addon::screen::error;
+using mv::addon::screen::tree;
+
+namespace {
+
+// One node of every type (§10), each with what it needs.
+const char* kEveryType = R"({"type":"split","id":"root","axis":"horizontal","fraction":0.3,"children":[
+ {"type":"scroll","id":"side","height":400,"children":[
+  {"type":"stack","id":"col","axis":"vertical","spacing":8,"align":"fill","children":[
+   {"type":"text","id":"t","text":"Hello","style":"heading","copyable":true,"lines":2},
+   {"type":"image","id":"img","src":"icons/logo.png","label":"Logo","width":32,"height":32},
+   {"type":"thumbnail","id":"th","path":"/photos/a.jpg","label":"A","size":96},
+   {"type":"list","id":"l","label":"Places","items":[{"id":"pt","text":"Portugal","detail":"3"},{"id":"es","text":"Spain"}]},
+   {"type":"table","id":"tb","label":"Files","columns":[{"id":"n","title":"Name"}],"rows":[{"id":"r1","cells":["a.jpg"]}]},
+   {"type":"button","id":"b","label":"Go","style":"primary","symbol":"map"},
+   {"type":"toggle","id":"tg","label":"On","value":false},
+   {"type":"choice","id":"ch","label":"Zoom","options":[{"id":"a","text":"A"},{"id":"b","text":"B"}],"value":"a"},
+   {"type":"slider","id":"sl","label":"Radius","min":1,"max":50,"step":1,"value":15},
+   {"type":"number","id":"nu","label":"Count","min":0,"max":9,"value":3},
+   {"type":"text_field","id":"tf","label":"Filter","placeholder":"Type","value":""},
+   {"type":"progress","id":"pr","label":"Reading","value":-1},
+   {"type":"separator","id":"sep"},
+   {"type":"grid","id":"g","columns":2,"children":[{"type":"text","id":"g1","text":"x"}]},
+   {"type":"surface","id":"sf","surface":"map","label":"Map","height":120,"pin":{"x":0.5,"y":0.25},"pin_label":"Sintra"}
+  ]}]},
+ {"type":"thumbnail_grid","id":"grid","label":"Photos","tile":128,"multi":true,"items":[{"path":"/photos/a.jpg"},{"path":"/photos/b.jpg","label":"B"}]}
+]})";
+
+}  // namespace
+
+TEST_CASE("every node type of the vocabulary parses and round-trips", "[addon][screens]") {
+  tree t;
+  REQUIRE(t.set(kEveryType) == error::none);
+  REQUIRE(t.revision() == 1);
+  // The canonical form reads back as the same tree, byte for byte.
+  const std::string once = t.json();
+  tree again;
+  REQUIRE(again.set(once) == error::none);
+  REQUIRE(again.json() == once);
+  REQUIRE(t.find("grid") != nullptr);
+  REQUIRE(t.surface_ids() == std::vector<std::string>{"map"});
+  // Every type is named.
+  for (const char* type : {"stack", "grid", "scroll", "split", "text", "image", "thumbnail", "thumbnail_grid",
+                           "list", "table", "button", "toggle", "choice", "slider", "number", "text_field",
+                           "progress", "separator", "surface"}) {
+    INFO(type);
+    REQUIRE(once.find(std::string("\"type\":\"") + type + "\"") != std::string::npos);
+  }
+}
+
+TEST_CASE("a control or picture without a label is refused (VoiceOver / Narrator)", "[addon][screens]") {
+  const char* unnamed[] = {
+      R"({"type":"button","id":"b"})",
+      R"({"type":"toggle","id":"t","value":true})",
+      R"({"type":"choice","id":"c","options":[{"id":"a","text":"A"}]})",
+      R"({"type":"slider","id":"s","min":0,"max":1})",
+      R"({"type":"number","id":"n"})",
+      R"({"type":"text_field","id":"f"})",
+      R"({"type":"progress","id":"p","value":0.5})",
+      R"({"type":"image","id":"i","src":"a.png"})",
+      R"({"type":"thumbnail","id":"t","path":"/a.jpg"})",
+      R"({"type":"thumbnail_grid","id":"g","items":[]})",
+      R"({"type":"list","id":"l","items":[]})",
+      R"({"type":"table","id":"t","columns":[{"id":"a","title":"A"}],"rows":[]})",
+      R"({"type":"surface","id":"s","surface":"m","height":40})",
+      R"({"type":"button","id":"b","label":"   "})",
+  };
+  for (const char* json : unnamed) {
+    INFO(json);
+    tree t;
+    REQUIRE(t.set(json) == error::missing_label);
+    REQUIRE(t.empty());
+  }
+  // Text and layout need none.
+  tree t;
+  REQUIRE(t.set(R"({"type":"stack","id":"s","children":[{"type":"text","id":"x","text":"hi"},{"type":"separator","id":"r"}]})") ==
+          error::none);
+}
+
+TEST_CASE("a tree that is not the vocabulary is refused whole", "[addon][screens]") {
+  struct bad {
+    const char* json;
+    error why;
+  };
+  const bad cases[] = {
+      {"not json", error::not_json},
+      {R"([])", error::bad_node},
+      {R"({"type":"webview","id":"w"})", error::bad_node},
+      {R"({"type":"text","text":"no id"})", error::bad_node},
+      {R"({"type":"text","id":"has space","text":"x"})", error::bad_node},
+      {R"({"type":"text","id":"t"})", error::bad_prop},  // no text
+      {R"({"type":"text","id":"t","text":"x","colour":"red"})", error::bad_prop},
+      {R"({"type":"text","id":"t","text":"x","style":"blink"})", error::bad_prop},
+      {R"({"type":"stack","id":"s","spacing":99})", error::bad_prop},
+      {R"({"type":"slider","id":"s","label":"S","min":5,"max":1})", error::bad_prop},
+      {R"({"type":"progress","id":"p","label":"P","value":2})", error::bad_prop},
+      {R"({"type":"image","id":"i","label":"I","src":"../../etc/passwd.png"})", error::bad_prop},
+      {R"({"type":"image","id":"i","label":"I","src":"/abs.png"})", error::bad_prop},
+      {R"({"type":"image","id":"i","label":"I","src":"logo.svg"})", error::bad_prop},
+      {R"({"type":"button","id":"b","label":"B","symbol":"rocket"})", error::bad_prop},
+      {R"({"type":"surface","id":"s","label":"S","surface":"m","height":40,"pin":{"x":2,"y":0}})", error::bad_prop},
+      {R"({"type":"list","id":"l","label":"L","items":[{"id":"a","text":"A"},{"id":"a","text":"B"}]})", error::bad_prop},
+      {R"({"type":"text","id":"t","text":"bad\u0007bell"})", error::bad_prop},
+      {R"({"type":"stack","id":"s","children":[{"type":"text","id":"s","text":"x"}]})", error::duplicate_id},
+      {R"({"type":"text","id":"t","text":"x","children":[{"type":"separator","id":"r"}]})", error::bad_children},
+      {R"({"type":"split","id":"s","children":[{"type":"separator","id":"r"}]})", error::bad_children},
+  };
+  for (const bad& b : cases) {
+    INFO(b.json);
+    tree t;
+    REQUIRE(t.set(b.json) == b.why);
+    REQUIRE(t.empty());
+  }
+  // A good tree stays when a bad one is posted after it.
+  tree t;
+  REQUIRE(t.set(R"({"type":"text","id":"t","text":"kept"})") == error::none);
+  REQUIRE(t.set(R"({"type":"text","id":"t"})") == error::bad_prop);
+  REQUIRE(t.json().find("kept") != std::string::npos);
+  REQUIRE(t.revision() == 1);
+}
+
+TEST_CASE("a tree past its bounds is refused", "[addon][screens]") {
+  // Too deep.
+  std::string deep;
+  for (int i = 0; i < 30; ++i) deep += R"({"type":"stack","id":"s)" + std::to_string(i) + R"(","children":[)";
+  deep += R"({"type":"separator","id":"end"})";
+  for (int i = 0; i < 30; ++i) deep += "]}";
+  tree t;
+  const error e = t.set(deep);
+  REQUIRE((e == error::too_large || e == error::not_json));
+  // Too many nodes.
+  std::string many = R"({"type":"stack","id":"root","children":[)";
+  for (std::size_t i = 0; i < mv::addon::screen::kMaxNodes + 1; ++i) {
+    many += (i ? "," : "") + std::string(R"({"type":"separator","id":"n)") + std::to_string(i) + "\"}";
+  }
+  many += "]}";
+  REQUIRE(t.set(many) == error::too_large);
+}
+
+TEST_CASE("diffs apply atomically", "[addon][screens]") {
+  tree t;
+  REQUIRE(t.set(kEveryType) == error::none);
+  const auto r0 = t.revision();
+  REQUIRE(t.apply(R"([{"op":"set","id":"t","props":{"text":"Changed","lines":null}}])") == error::none);
+  REQUIRE(t.revision() == r0 + 1);
+  REQUIRE(t.json().find("Changed") != std::string::npos);
+  REQUIRE(t.json().find("\"lines\"") == std::string::npos);
+  REQUIRE(t.apply(R"([{"op":"insert","parent":"col","index":0,"node":{"type":"text","id":"first","text":"1st"}}])") ==
+          error::none);
+  REQUIRE(t.find("col")->children.front().id == "first");
+  REQUIRE(t.apply(R"([{"op":"insert","parent":"col","index":-1,"node":{"type":"text","id":"last","text":"z"}}])") ==
+          error::none);
+  REQUIRE(t.find("col")->children.back().id == "last");
+  REQUIRE(t.apply(R"([{"op":"replace","id":"b","node":{"type":"button","id":"b2","label":"Stop"}}])") ==
+          error::none);
+  REQUIRE(t.find("b") == nullptr);
+  REQUIRE(t.find("b2") != nullptr);
+  REQUIRE(t.apply(R"([{"op":"remove","id":"sep"}])") == error::none);
+  REQUIRE(t.find("sep") == nullptr);
+
+  // Every entry or none: the second entry fails, the first is not kept.
+  const std::string before = t.json();
+  const auto r1 = t.revision();
+  REQUIRE(t.apply(R"([{"op":"set","id":"t","props":{"text":"lost"}},{"op":"remove","id":"nope"}])") ==
+          error::no_such_node);
+  REQUIRE(t.apply(R"([{"op":"set","id":"b2","props":{"label":""}}])") == error::missing_label);
+  REQUIRE(t.apply(R"([{"op":"insert","parent":"t","index":0,"node":{"type":"separator","id":"x"}}])") ==
+          error::bad_children);
+  REQUIRE(t.apply(R"([{"op":"insert","parent":"col","index":0,"node":{"type":"text","id":"t","text":"dup"}}])") ==
+          error::duplicate_id);
+  REQUIRE(t.apply(R"([{"op":"remove","id":"root"}])") == error::bad_op);
+  REQUIRE(t.apply(R"([{"op":"move","id":"t"}])") == error::bad_op);
+  REQUIRE(t.apply(R"([{"op":"set","id":"t","props":{"type":"button"}}])") == error::bad_prop);
+  REQUIRE(t.apply(R"({"op":"set"})") == error::bad_op);
+  REQUIRE(t.json() == before);
+  REQUIRE(t.revision() == r1);
+  // The root can be replaced whole.
+  REQUIRE(t.apply(R"([{"op":"replace","id":"root","node":{"type":"text","id":"only","text":"x"}}])") ==
+          error::none);
+  REQUIRE(t.root()->id == "only");
+}
+
+TEST_CASE("events are checked against the tree before an add-on hears them", "[addon][screens]") {
+  using namespace mv::addon::screen;
+  tree t;
+  REQUIRE(t.set(kEveryType) == error::none);
+  REQUIRE(t.check_event("b", ev_click, "") == error::none);
+  REQUIRE(t.check_event("b", ev_click, "1") == error::bad_value);
+  REQUIRE(t.check_event("tg", ev_change, "true") == error::none);
+  REQUIRE(t.find("tg")->props.boolean("value") == true);  // the tree keeps in step
+  REQUIRE(t.check_event("tg", ev_change, "\"yes\"") == error::bad_value);
+  REQUIRE(t.check_event("ch", ev_change, "\"b\"") == error::none);
+  REQUIRE(t.check_event("ch", ev_change, "\"z\"") == error::bad_value);
+  REQUIRE(t.check_event("sl", ev_change, "50") == error::none);
+  REQUIRE(t.check_event("sl", ev_change, "51") == error::bad_value);
+  REQUIRE(t.check_event("sl", ev_change, "0.5") == error::bad_value);
+  REQUIRE(t.check_event("nu", ev_change, "9") == error::none);
+  REQUIRE(t.check_event("tf", ev_change, "\"Sintra\"") == error::none);
+  REQUIRE(t.check_event("tf", ev_submit, "\"Sintra\"") == error::none);
+  REQUIRE(t.check_event("l", ev_select, R"(["pt"])") == error::none);
+  REQUIRE(t.check_event("l", ev_select, R"(["pt","es"])") == error::bad_value);  // not multi
+  REQUIRE(t.check_event("l", ev_select, R"(["xx"])") == error::bad_value);
+  REQUIRE(t.check_event("l", ev_activate, R"("es")") == error::none);
+  REQUIRE(t.check_event("tb", ev_select, R"(["r1"])") == error::none);
+  REQUIRE(t.check_event("grid", ev_select, R"(["/photos/a.jpg","/photos/b.jpg"])") == error::none);
+  REQUIRE(t.check_event("grid", ev_activate, R"("/photos/zzz.jpg")") == error::bad_value);
+  REQUIRE(t.check_event("t", ev_click, "") == error::not_interactive);
+  REQUIRE(t.check_event("sf", ev_click, "") == error::not_interactive);
+  REQUIRE(t.check_event("missing", ev_click, "") == error::no_such_node);
+  REQUIRE(t.apply(R"([{"op":"set","id":"b","props":{"disabled":true}}])") == error::none);
+  REQUIRE(t.check_event("b", ev_click, "") == error::not_interactive);
+}
+
+TEST_CASE("a 2,000-tile thumbnail grid is one cheap node", "[addon][screens]") {
+  std::string json = R"({"type":"thumbnail_grid","id":"g","label":"Photos","tile":128,"items":[)";
+  for (int i = 0; i < 2000; ++i) {
+    json += (i ? "," : "") + std::string(R"({"path":"/fixtures/tiles/IMG_)") + std::to_string(i) + R"(.JPG"})";
+  }
+  json += "]}";
+  tree t;
+  const auto start = std::chrono::steady_clock::now();
+  REQUIRE(t.set(json) == error::none);
+  const std::string out = t.json();
+  REQUIRE(t.apply(R"([{"op":"set","id":"g","props":{"selection":["/fixtures/tiles/IMG_7.JPG"]}}])") ==
+          error::none);
+  const auto ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+  REQUIRE(t.find("g")->props.find("items")->a.size() == 2000);
+  // Parse, check, write and one diff: the host does this once per post, on the
+  // add-on's thread, never per frame. Generous bound for a loaded CI runner.
+  CHECK(ms < 500);
+}
