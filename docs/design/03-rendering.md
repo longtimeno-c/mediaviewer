@@ -51,7 +51,12 @@ window; there is still one swapchain and one present path.
    thread or a worker, because `ID3D10Multithread` serializes worker creates with the immediate context.
    Tiled images create at most 4 tiles per 16 ms tick with at most 24 requests outstanding
    (`src/image/tiles.h`); the F3 overlay shows per-frame upload cost for animations. The target is
-   about 2 ms of creates per frame.
+   about 2 ms of creates per frame. An untiled still (up to the ~64 MP tile threshold) still goes
+   up as one `CreateTexture2D` with its whole mip chain and is not yet budgeted: its create time
+   is measured (`image::texture_upload_stats`, Windows), shown on the F3 overlay's `texture` line,
+   and written to the soak report as `texture_max_create_ms` / `texture_max_create_mb` /
+   `texture_creates_over_budget`, the evidence for splitting it or lowering the tile threshold
+   (issue #166).
 4. **Render on demand.** A still image that has been painted stops presenting entirely (0 presents,
    ~0 % GPU). The loop presents every vblank while anything is live: video, an animation, a moving
    spring, a fade, or the **500 ms tail after the last input** (so a flick does not stutter at its end).

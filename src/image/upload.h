@@ -24,6 +24,24 @@ namespace mv::image {
                                        const job_context* ctx = nullptr,
                                        std::uint32_t mip_limit = 0);
 
+// docs/design/03: worker uploads count against ~2 ms of upload per frame.
+inline constexpr std::uint32_t k_frame_upload_budget_us = 2000;
+
+// Issue #166: what the single-texture upload's CreateTexture2D costs (the CPU
+// mip chain before it is not counted). A still just under the tile threshold
+// goes up whole, ~320 MB with its mips, and ID3D10Multithread serialises that
+// create with the render thread's immediate context. Process-wide, any
+// thread, approximate by construction (relaxed atomics); the tile path has its
+// own (tile_stats::last_create_us).
+struct texture_upload_stats {
+  std::uint64_t creates = 0;
+  std::uint64_t over_budget = 0;      // creates longer than k_frame_upload_budget_us
+  std::uint32_t last_create_us = 0;
+  std::uint32_t max_create_us = 0;
+  std::uint64_t max_create_bytes = 0;  // the texture (all mips) behind max_create_us
+};
+[[nodiscard]] texture_upload_stats texture_upload_stats_now() noexcept;
+
 // One 2x decimation step of that chain: separable Mitchell (B = C = 1/3) in
 // linear light, sRGB-encoded result, floor-half extents (`max(1, floor(n/2))`,
 // the D3D11 mip pitch — docs/design/03). Shared by the single-texture upload and the

@@ -12,6 +12,7 @@
 #include "core/status.h"
 #include "image/gpu_image.h"
 #include "image/tiles.h"
+#include "image/upload.h"
 #include "player/video_source.h"
 #include "mediaviewer/mediaviewer.h"
 
@@ -40,6 +41,10 @@ MV_API void release_gpu_image(image::gpu_image* image);
 [[nodiscard]] MV_API std::span<const gfx::tile_quad> tiles_frame(const image::gpu_image& image,
                                                                  const image::tile_view& view) noexcept;
 [[nodiscard]] MV_API image::tile_stats tiles_stats(const image::gpu_image& image) noexcept;
+// Issue #166: CreateTexture2D time of the single-texture (untiled) uploads,
+// process-wide, from the DLL that runs them. For the F3 overlay and the soak
+// report.
+[[nodiscard]] MV_API image::texture_upload_stats texture_upload_stats() noexcept;
 
 // PR 6 animated GIF / APNG / WebP (docs/design/04). Native-only like poll_video: not
 // in the C ABI, not P/Invoked (docs/design/16: no new hot-path ABI). The render thread

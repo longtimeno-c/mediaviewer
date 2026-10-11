@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <vector>
 
@@ -11,6 +13,24 @@
 
 namespace mv::image {
 namespace {
+
+std::atomic<std::uint64_t> g_creates{0};
+std::atomic<std::uint64_t> g_over_budget{0};
+std::atomic<std::uint32_t> g_last_create_us{0};
+std::atomic<std::uint32_t> g_max_create_us{0};
+std::atomic<std::uint64_t> g_max_create_bytes{0};
+
+void note_create(std::uint32_t create_us, std::uint64_t bytes) noexcept {
+  g_creates.fetch_add(1, std::memory_order_relaxed);
+  if (create_us > k_frame_upload_budget_us) g_over_budget.fetch_add(1, std::memory_order_relaxed);
+  g_last_create_us.store(create_us, std::memory_order_relaxed);
+  // Two workers can race here; the bytes may pair with the other's time. A
+  // diagnostic, like tile_stats.
+  if (create_us > g_max_create_us.load(std::memory_order_relaxed)) {
+    g_max_create_us.store(create_us, std::memory_order_relaxed);
+    g_max_create_bytes.store(bytes, std::memory_order_relaxed);
+  }
+}
 
 float mitchell(float x) noexcept {
   x = std::fabs(x);
@@ -250,8 +270,17 @@ result<gpu_image> upload(ID3D11Device* device, const display_image& src, std::ui
   }
 
   gpu_image out;
+  const auto t0 = std::chrono::steady_clock::now();
   const status made = gfx::create_srgb_texture(device, views, out.texture, out.srv);
+  const auto create_us = std::chrono::duration_cast<std::chrono::microseconds>(
+      std::chrono::steady_clock::now() - t0);
   if (made != status::ok) return err(made);
+  std::uint64_t bytes = 0;
+  for (const gfx::rgba8_level& v : views) {
+    bytes += static_cast<std::uint64_t>(v.width) * v.height * 4;
+  }
+  note_create(static_cast<std::uint32_t>(std::min<long long>(create_us.count(), 0xFFFFFFFFLL)),
+              bytes);
 
   out.device = device;
   out.width = src.width;
@@ -264,6 +293,16 @@ result<gpu_image> upload(ID3D11Device* device, const display_image& src, std::ui
   out.icc_tagged = src.icc_tagged;
   out.mean_luma = mean_luma(src);
   return out;
+}
+
+texture_upload_stats texture_upload_stats_now() noexcept {
+  texture_upload_stats st;
+  st.creates = g_creates.load(std::memory_order_relaxed);
+  st.over_budget = g_over_budget.load(std::memory_order_relaxed);
+  st.last_create_us = g_last_create_us.load(std::memory_order_relaxed);
+  st.max_create_us = g_max_create_us.load(std::memory_order_relaxed);
+  st.max_create_bytes = g_max_create_bytes.load(std::memory_order_relaxed);
+  return st;
 }
 
 }  // namespace mv::image

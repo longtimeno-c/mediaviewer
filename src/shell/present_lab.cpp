@@ -1934,6 +1934,17 @@ void present_lab::draw_overlay(const input_snapshot& snapshot) noexcept {
                     t.max_create_us / 1000.0, t.last_build_us / 1000.0,
                     static_cast<unsigned long long>(t.incomplete_frames));
       }
+      {
+        // Issue #166: an untiled still's whole-texture create, which the
+        // device lock serialises with this thread's presents.
+        const auto u = mv::abi::texture_upload_stats();
+        ImGui::Text("texture  %llu creates  last %.2f ms  max %.2f ms (%.0f MB)  over %.1f ms %llu",
+                    static_cast<unsigned long long>(u.creates), u.last_create_us / 1000.0,
+                    u.max_create_us / 1000.0,
+                    static_cast<double>(u.max_create_bytes) / 1048576.0,
+                    image::k_frame_upload_budget_us / 1000.0,
+                    static_cast<unsigned long long>(u.over_budget));
+      }
       ImGui::Text("refine   %llu refinements  %llu stale previews dropped%s",
                   static_cast<unsigned long long>(refinements_),
                   static_cast<unsigned long long>(stale_drops_),
@@ -2005,6 +2016,7 @@ bool present_lab::write_json_report() const noexcept {
   const auto anim = mv::abi::animation_stats_now(session_);
   const image::tile_stats tile_stats =
       current_image_ ? mv::abi::tiles_stats(*current_image_) : image::tile_stats{};
+  const image::texture_upload_stats upload_stats = mv::abi::texture_upload_stats();
   const double mean_delay_ms =
       anim_frames_shown_ > 0
           ? static_cast<double>(anim_delay_sum_ms_) / static_cast<double>(anim_frames_shown_)
@@ -2059,6 +2071,10 @@ bool present_lab::write_json_report() const noexcept {
                "  \"tiles_vram_peak_mb\": %.1f,\n"
                "  \"tiles_max_create_ms\": %.3f,\n"
                "  \"tiles_incomplete_frames\": %llu,\n"
+               "  \"texture_creates\": %llu,\n"
+               "  \"texture_creates_over_budget\": %llu,\n"
+               "  \"texture_max_create_ms\": %.3f,\n"
+               "  \"texture_max_create_mb\": %.1f,\n"
                "  \"meets_pr1_gate\": %s\n"
                "}\n",
                kWarmupSeconds,
@@ -2097,6 +2113,10 @@ bool present_lab::write_json_report() const noexcept {
                static_cast<double>(tile_stats.vram_peak_bytes) / 1048576.0,
                static_cast<double>(tile_stats.max_create_us) / 1000.0,
                static_cast<unsigned long long>(tile_stats.incomplete_frames),
+               static_cast<unsigned long long>(upload_stats.creates),
+               static_cast<unsigned long long>(upload_stats.over_budget),
+               static_cast<double>(upload_stats.max_create_us) / 1000.0,
+               static_cast<double>(upload_stats.max_create_bytes) / 1048576.0,
                soak_complete_ && measurement_valid_ && exit_code_ == 0 &&
                    (options_.start_animating ? s.meets_pr1_gate() : idle_stats_.meets_pr1_gate())
                    ? "true" : "false");

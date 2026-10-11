@@ -2597,6 +2597,10 @@ image::tile_stats tiles_stats(const image::gpu_image& image) noexcept {
   return image.tiles ? image.tiles->stats() : image::tile_stats{};
 }
 
+image::texture_upload_stats texture_upload_stats() noexcept {
+  return image::texture_upload_stats_now();
+}
+
 bool take_animation_frame(mv_session_t session, std::uint32_t generation,
                           image::gpu_image*& texture, std::uint32_t& delay_ms,
                           std::uint32_t& index) noexcept {
