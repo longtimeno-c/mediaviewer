@@ -142,4 +142,19 @@ final class SearchModelTests: XCTestCase {
     m.queryChanged()
     XCTAssertFalse(m.completeName())
   }
+
+  func testTabWaitingOnOlderWordsIsDropped() async {
+    let m = model()
+    m.query = "Sar"
+    m.queryChanged()
+    XCTAssertTrue(m.completeName())
+    // Typed on before Sarah came, then back: no Tab for these words now.
+    m.query = "Sare"
+    m.queryChanged()
+    m.query = "Sar"
+    m.queryChanged()
+    await settle { !m.suggestions.isEmpty }
+    XCTAssertEqual(m.suggestions.map(\.name), ["Sarah"])
+    XCTAssertEqual(m.query, "Sar")
+  }
 }

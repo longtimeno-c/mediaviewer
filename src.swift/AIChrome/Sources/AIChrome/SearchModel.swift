@@ -389,6 +389,9 @@ final class SearchModel: ObservableObject {
     suggestTask?.cancel()
     suggestTask = nil
     let text = query  // untrimmed: a trailing space means the word is finished
+    // A Tab waiting on other words no longer applies (typing on, then back to
+    // the same words, must not complete them without a Tab).
+    if tabFor != text { tabFor = nil }
     guard looksUpNames(text) else {
       if offered.query != text || !offered.list.isEmpty { offered = Offered(query: text) }
       return
