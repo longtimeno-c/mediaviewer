@@ -15,6 +15,7 @@
 #include <string>
 
 #include "core/result.h"
+#include "meta/meta.h"
 #include "shell/adjust_pane.h"
 #include "shell/commands.h"
 #include "shell/key_router.h"
@@ -412,9 +413,22 @@ struct chrome_meta_args {
   std::int32_t properties_len;
   std::int32_t streams_len;
   std::int32_t loading;
+  // #290 (docs/design/06, 14): the record's provenance and position as numbers,
+  // for the map (#344) and the AI badge (#345). The summary table already
+  // carries the "Made with" row; these are the same facts, not re-derived.
+  double where_lat;           // valid when facts & kMetaFactWhere
+  double where_lon;
+  double where_altitude_m;    // valid when facts & kMetaFactAltitude
+  std::uint64_t made_with;    // UTF-8 summary.made_with, valid for the call only
+  std::int32_t made_with_len;
+  std::int32_t facts;         // kMetaFact*
 };
 
-static_assert(sizeof(chrome_meta_args) == 40, "keep in sync with ChromeMetaArgs");
+inline constexpr std::int32_t kMetaFactWhere = 1 << 0;
+inline constexpr std::int32_t kMetaFactAltitude = 1 << 1;
+inline constexpr std::int32_t kMetaFactAiGenerated = 1 << 2;
+
+static_assert(sizeof(chrome_meta_args) == 80, "keep in sync with ChromeMetaArgs");
 
 // PR 12: what the pane's rating, comment and Revert show. A change still in the
 // write queue already counts, so a key or a click shows at once.
@@ -720,8 +734,9 @@ class chrome_host {
   [[nodiscard]] bool meta_pane_visible() const noexcept { return panels_attached_ && meta_visible_; }
   [[nodiscard]] bool folder_tree_visible() const noexcept { return panels_attached_ && tree_visible_; }
   // The record's tables, formatted once by the host; the pane re-renders from them.
+  // #290: `facts` (null while loading) supplies made_with, ai_generated and where.
   void set_meta_data(bool loading, const std::string& summary, const std::string& properties,
-                     const std::string& streams) noexcept;
+                     const std::string& streams, const meta::summary* facts = nullptr) noexcept;
   void set_tree_root(const std::string& utf8_dir) noexcept;
   // The folder the user chose in the tree ("" if none pending).
   [[nodiscard]] std::string take_tree_path() noexcept;

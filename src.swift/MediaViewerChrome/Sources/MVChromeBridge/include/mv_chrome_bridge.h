@@ -262,14 +262,35 @@ bool mv_chrome_meta_loading(void);
 // most `size` bytes, NUL-terminated, like mv_chrome_command_table.
 //   summary:    "label\tvalue"                      every row for the kind, value may be empty
 //   properties: "space\tgroup\tlabel\tvalue\traw_tag\traw\taccess"
-//               space = exif|iptc|xmp|container|computed; raw = the value in the
-//               form an edit takes; access (PR 29, meta::access_of) = e editable
+//               space = exif|iptc|xmp|container|computed|c2pa|png_text|icc|xmp_raw
+//               (#290 added the last four, always read-only); raw = the value in the
+//               form an edit takes; access (PR 29, meta::row_access) = e editable
 //               (set, remove), s set only (into the XMP sidecar), r read-only
 //   streams:    "S\tindex\tkind\tcodec" starts a stream, "F\tlabel\tvalue" adds a field to
 //               it, "C\tstart_ms\ttitle" is a chapter; empty for a still
 int32_t mv_chrome_meta_summary(char* buf, int32_t size);
 int32_t mv_chrome_meta_properties(char* buf, int32_t size);
 int32_t mv_chrome_meta_streams(char* buf, int32_t size);
+
+// #290 (docs/design/06 "Made with and AI provenance", docs/design/14): the record's
+// position and provenance as numbers, for the map (#344) and the AI badge (#345).
+// POD; `struct_size` is set by the caller and only the fields it covers are
+// written, so an older caller keeps working when fields are appended.
+enum {
+  MV_META_FACT_WHERE = 1u << 0,         // lat / lon are set
+  MV_META_FACT_ALTITUDE = 1u << 1,      // altitude_m is set
+  MV_META_FACT_AI_GENERATED = 1u << 2,  // positive evidence only; clear = not stated
+};
+typedef struct mv_chrome_meta_facts {
+  uint32_t struct_size;  // sizeof(mv_chrome_meta_facts), in
+  uint32_t flags;        // MV_META_FACT_*
+  double lat, lon;       // WGS 84 degrees, north / east positive
+  double altitude_m;     // above sea level, negative below
+} mv_chrome_meta_facts;
+// False, with the covered fields zeroed, when there is no record.
+bool mv_chrome_meta_facts_get(mv_chrome_meta_facts* out);
+// summary.made_with ("ChatGPT", "Adobe Firefly", a C2PA claim generator); "" when none.
+int32_t mv_chrome_meta_made_with(char* buf, int32_t size);
 
 // ---- PR 12: rating, comment, revert (docs/design/06 "Writing", docs/design/16 Rate) ---------
 //

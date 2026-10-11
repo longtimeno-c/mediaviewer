@@ -30,8 +30,11 @@ namespace MediaViewer.Chrome;
 public static partial class IslandHost
 {
     internal const int PanelArgsSize = 24;
-    internal const int MetaDataArgsSize = 40;
+    internal const int MetaDataArgsSize = 80;
     internal const int MetaEditArgsSize = 24;
+    private const int MetaFactWhere = 1 << 0;
+    private const int MetaFactAltitude = 1 << 1;
+    private const int MetaFactAiGenerated = 1 << 2;
 
     private static DesktopWindowXamlSource? _metaPane;
     private static DesktopWindowXamlSource? _tree;
@@ -271,14 +274,24 @@ public static partial class IslandHost
         public bool Removable => Access == "e";
         public string LockReason => Space switch
         {
-            "container" => "Stored in the video container; container tags are read-only",
+            "container" => "Stored in the file's container; container tags are read-only",
             "computed" => "Worked out by the viewer, not stored in the file",
+            "c2pa" => "Content Credentials are signed by their maker; shown as stated, never changed",
+            "png_text" => "A PNG text chunk; shown, never rewritten",
+            "icc" => "Part of the embedded colour profile",
+            "xmp_raw" => "An XMP property read as written; it is shown, not edited here",
             _ => "Describes the file itself (size, layout, maker note); changing it would break the file",
         };
     }
 
     private static List<(string Label, string Value)> _metaSummary = new();
     private static List<TagRow> _metaTags = new();
+    // #290: the record's provenance and position as the core decided them. The
+    // summary's "Made with" row already shows the first two; these are for the
+    // map (#344) and the AI badge (#345).
+    private static string _metaMadeWith = "";
+    private static bool _metaAiGenerated;
+    private static (double Lat, double Lon, double? AltitudeM)? _metaWhere;
     private static List<string> _metaStreamLines = new();
     private static string _metaLast = "";
     private static FakeInput? _metaSearch;
@@ -678,10 +691,17 @@ public static partial class IslandHost
             host.Children.Add(form);
         }
 
-        // A plain scrolling stack, not a ListView: clearing and refilling a ListView of
-        // elements from a key event fail-fasts in these islands. A tag list is at most
-        // a few thousand rows, and the search narrows it, so the rows are capped.
-        var list = new StackPanel { Padding = new Thickness(10, 0, 10, 10) };
+        // #290: every row, virtualised. An ItemsRepeater realises only the rows near
+        // the viewport, so a 2 000-tag file opens and scrolls without building 2 000
+        // cells (the 400-row cap is gone). Not a ListView: clearing and refilling a
+        // ListView of elements from a key event fail-fasts in these islands; a search
+        // here replaces the repeater's ItemsSource with a new list instead.
+        var list = new ItemsRepeater
+        {
+            Layout = new StackLayout(),
+            ItemTemplate = new TagListFactory(),
+            Margin = new Thickness(10, 0, 10, 10),
+        };
         var scroll = new ScrollViewer
         {
             Content = list,
@@ -699,42 +719,32 @@ public static partial class IslandHost
             e.Handled = true;
         };
 
-        const int MaxRows = 400;
         void Fill()
         {
-            list.Children.Clear();
+            var items = new List<object>();
             if (_metaTags.Count == 0)
             {
-                list.Children.Add(Text(_metaLoading ? "Reading…" : "No metadata in this file", Body));
+                items.Add(new TagListNote(_metaLoading ? "Reading…" : "No metadata in this file"));
+                list.ItemsSource = items;
                 return;
             }
             string needle = _metaQuery.Trim();
             string? group = null;
-            int shown = 0;
-            int matched = 0;
             foreach (TagRow t in _metaTags)
             {
                 if (needle.Length > 0 &&
                     !t.Label.Contains(needle, StringComparison.OrdinalIgnoreCase) &&
                     !t.Value.Contains(needle, StringComparison.OrdinalIgnoreCase) &&
                     !t.Raw.Contains(needle, StringComparison.OrdinalIgnoreCase)) continue;
-                matched++;
-                if (shown >= MaxRows) continue;
                 if (t.Group != group)
                 {
                     group = t.Group;
-                    var header = Text(group, Body, UiFontSize, bold: true);
-                    header.Margin = new Thickness(0, 10, 0, 2);
-                    list.Children.Add(header);
+                    items.Add(new TagListHeader(group));
                 }
-                list.Children.Add(BuildTagCell(t));
-                shown++;
+                items.Add(t);
             }
-            if (matched == 0) list.Children.Add(Text("No tag matches", Body));
-            else if (matched > shown)
-            {
-                list.Children.Add(Text($"{matched - shown} more: type to narrow the search", Body));
-            }
+            if (items.Count == 0) items.Add(new TagListNote("No tag matches"));
+            list.ItemsSource = items;
         }
 
         search.Changed += () =>
@@ -744,6 +754,36 @@ public static partial class IslandHost
         };
         Fill();
         return host;
+    }
+
+    // #290: the All tags list's items besides TagRow, and the factory the
+    // ItemsRepeater asks for a cell when a row scrolls into view.
+    private sealed record TagListHeader(string Group);
+    private sealed record TagListNote(string Text);
+
+    private sealed partial class TagListFactory : IElementFactory
+    {
+        public UIElement GetElement(ElementFactoryGetArgs args)
+        {
+            switch (args.Data)
+            {
+                case TagRow t:
+                    return BuildTagCell(t);
+                case TagListHeader h:
+                {
+                    var header = Text(h.Group, Body, UiFontSize, bold: true);
+                    header.Margin = new Thickness(0, 10, 0, 2);
+                    return header;
+                }
+                case TagListNote n:
+                    return Text(n.Text, Body);
+                default:
+                    return new Grid();
+            }
+        }
+
+        // Cells carry per-row editing state, so they are rebuilt, not reused.
+        public void RecycleElement(ElementFactoryRecycleArgs args) { }
     }
 
     private static UIElement BuildTagCell(TagRow t)
@@ -953,6 +993,11 @@ public static partial class IslandHost
             string summary = Utf8(a.Summary, a.SummaryLen);
             string props = Utf8(a.Properties, a.PropertiesLen);
             string streams = Utf8(a.Streams, a.StreamsLen);
+            _metaMadeWith = Utf8(a.MadeWith, a.MadeWithLen);
+            _metaAiGenerated = (a.Facts & MetaFactAiGenerated) != 0;
+            _metaWhere = (a.Facts & MetaFactWhere) != 0
+                ? (a.WhereLat, a.WhereLon, (a.Facts & MetaFactAltitude) != 0 ? a.WhereAltitudeM : null)
+                : null;
 
             // Native re-pushes on every layout; identical data must not rebuild the
             // pane, which would drop the keyboard focus sitting on one of its rows.
@@ -1370,6 +1415,13 @@ internal struct ChromeMetaArgs
     public int PropertiesLen;
     public int StreamsLen;
     public int Loading;
+    // #290: provenance and position as numbers (chrome_host.h kMetaFact*).
+    public double WhereLat;
+    public double WhereLon;
+    public double WhereAltitudeM;
+    public ulong MadeWith;
+    public int MadeWithLen;
+    public int Facts;
 }
 
 [StructLayout(LayoutKind.Sequential)]

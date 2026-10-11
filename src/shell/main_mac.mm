@@ -76,6 +76,7 @@
 #include "edit/clip_strip.h"
 #include "shell/folder_model_mac.h"
 #include "meta/meta.h"
+#include "meta/tables.h"
 #include "shell/key_router.h"
 #include "shell/meta_store.h"
 #include "shell/os_integration.h"
@@ -1043,17 +1044,6 @@ int32_t MvCopyOut(const std::string& out, char* buf, int32_t size) {
   return static_cast<int32_t>(out.size());
 }
 
-const char* MvOriginName(mv::meta::origin o) {
-  switch (o) {
-    case mv::meta::origin::exif: return "exif";
-    case mv::meta::origin::iptc: return "iptc";
-    case mv::meta::origin::xmp: return "xmp";
-    case mv::meta::origin::container: return "container";
-    case mv::meta::origin::computed: return "computed";
-  }
-  return "exif";
-}
-
 const char* MvKindName(mv::meta::stream_kind k) {
   switch (k) {
     case mv::meta::stream_kind::video: return "video";
@@ -1101,20 +1091,39 @@ extern "C" int32_t mv_chrome_meta_summary(char* buf, int32_t size) {
 }
 extern "C" int32_t mv_chrome_meta_properties(char* buf, int32_t size) {
   std::string out;
+  // PR 29: the raw form an edit starts from, and what an edit may do. #290: the
+  // same table Windows gets (meta/tables.h), so the new read-only origins and
+  // their access column cannot drift between the hosts.
   if (const auto rec = g_chrome_app ? [g_chrome_app metaRecord] : nullptr) {
-    for (const auto& p : rec->properties) {
-      // PR 29: the raw form an edit starts from, and what an edit may do.
-      const mv::meta::tag_access a = mv::meta::access_of(
-          p.raw_tag, rec->writes_in_file ? mv::meta::write_target::in_file : mv::meta::write_target::sidecar);
-      const char* access = a == mv::meta::tag_access::editable      ? "e"
-                           : a == mv::meta::tag_access::via_sidecar ? "s"
-                                                                    : "r";
-      out += std::string(MvOriginName(p.space)) + "\t" + MvFlat(p.group) + "\t" + MvFlat(p.label) +
-             "\t" + MvFlat(p.value) + "\t" + MvFlat(p.raw_tag) + "\t" + MvFlat(p.raw) + "\t" + access +
-             "\n";
-    }
+    out = mv::meta::editable_properties_table(*rec);
   }
   return MvCopyOut(out, buf, size);
+}
+// #290: position and provenance as numbers (mv_chrome_bridge.h).
+extern "C" bool mv_chrome_meta_facts_get(mv_chrome_meta_facts* out) {
+  if (!out || out->struct_size < sizeof(uint32_t) * 2) return false;
+  const uint32_t size = std::min<uint32_t>(out->struct_size, sizeof(mv_chrome_meta_facts));
+  mv_chrome_meta_facts f{};
+  f.struct_size = size;
+  const auto rec = g_chrome_app ? [g_chrome_app metaRecord] : nullptr;
+  if (rec) {
+    if (rec->s.where) {
+      f.flags |= MV_META_FACT_WHERE;
+      f.lat = rec->s.where->lat;
+      f.lon = rec->s.where->lon;
+      if (rec->s.where->altitude) {
+        f.flags |= MV_META_FACT_ALTITUDE;
+        f.altitude_m = *rec->s.where->altitude;
+      }
+    }
+    if (rec->s.ai_generated) f.flags |= MV_META_FACT_AI_GENERATED;
+  }
+  std::memcpy(out, &f, size);
+  return rec != nullptr;
+}
+extern "C" int32_t mv_chrome_meta_made_with(char* buf, int32_t size) {
+  const auto rec = g_chrome_app ? [g_chrome_app metaRecord] : nullptr;
+  return MvCopyOut(rec ? MvFlat(rec->s.made_with) : std::string{}, buf, size);
 }
 extern "C" int32_t mv_chrome_meta_streams(char* buf, int32_t size) {
   std::string out;

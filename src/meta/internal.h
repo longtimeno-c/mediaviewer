@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "meta/meta.h"
+#include "meta/parse.h"
 
 namespace Exiv2 {
 class ExifData;
@@ -67,14 +68,18 @@ void ensure_exiv2();
 // on a file Exiv2 cannot parse. Never throws (Exiv2's exceptions stop here).
 // `is_raw` is the decoder's own answer (codec::looks_like_raw) so that
 // display_orientation matches what was actually drawn.
-void read_still(std::span<const std::uint8_t> bytes, bool decoder_orients, metadata& out) noexcept;
+// #290: `ev` (optional) collects EXIF Software and XMP CreatorTool / source type
+// for derive_provenance; XMP properties Exiv2 did not list and the ICC profile
+// are added as xmp_raw / icc rows.
+void read_still(std::span<const std::uint8_t> bytes, bool decoder_orients, metadata& out,
+                parse::evidence* ev = nullptr) noexcept;
 
 // Date-taken only, for sort (a prefix is enough). nullopt when absent.
 [[nodiscard]] std::optional<std::int64_t> still_date_key(std::span<const std::uint8_t> bytes) noexcept;
 
 // libavformat: container facts, per-stream inspector, chapters, tags.
 // Returns false when FFmpeg cannot open the file as a clip.
-[[nodiscard]] bool read_clip(std::string_view utf8_path, metadata& out) noexcept;
+[[nodiscard]] bool read_clip(std::string_view utf8_path, metadata& out, parse::evidence* ev = nullptr) noexcept;
 [[nodiscard]] std::optional<std::int64_t> clip_date_key(std::string_view utf8_path) noexcept;
 
 // Parses the XMP sidecar at `sidecar_utf8_path` into `xmp`. False when there is

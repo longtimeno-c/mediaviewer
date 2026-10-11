@@ -1268,7 +1268,7 @@ void push_meta_pane(app_state* app) noexcept {
   if (app->meta_record) {
     app->chrome.set_meta_data(false, mv::meta::summary_table(*app->meta_record),
                               mv::meta::editable_properties_table(*app->meta_record),
-                              mv::meta::streams_table(*app->meta_record));
+                              mv::meta::streams_table(*app->meta_record), &app->meta_record->s);
     return;
   }
   std::uint32_t count = 0;

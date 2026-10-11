@@ -77,7 +77,10 @@ Suites are registered with CTest and run by `ctest` on both platforms; see
 5. **Fuzzing.** One libFuzzer harness per decoder entry point (`tools/fuzz/fuzz_*.cpp`:
    JPEG, PNG, BMP, GIF, WebP, TIFF, ICO, HEIC, AVIF, RAW, RAW preview, animation, the
    generic decode, and the Explorer thumbnail handler), built with clang-cl + ASan
-   (`-DMV_FUZZ=ON`).
+   (`-DMV_FUZZ=ON`). #290 adds one per metadata reader beyond Exiv2 (`fuzz_meta_c2pa`,
+   `_jpeg`, `_png`, `_webp`, `_bmff`, `_xmp`, `_icc`; [06-metadata.md](06-metadata.md#beyond-exiv2-290)),
+   which link only `mv_meta_parse` and abort on a row past the cap or a string that is not
+   valid UTF-8. Their seeds are `tests/data/seeds/{c2pa,xmp,icc}` plus the image families.
 6. **Clean-VM gate** (`test_clean_vm_heic.cpp`, label `cleanvm`). A HEIC decodes with
    `MV_OS_CODEC=0`, and the process has loaded libheif + libde265 and no Media Foundation,
    WIC codec extension or `\WindowsApps\` module. It is its own executable because

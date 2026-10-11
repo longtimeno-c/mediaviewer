@@ -494,6 +494,44 @@ Windows shell turns into live command rows ([25 §7](25-open-addons.md#7-the-con
 `mv_addon_installed_json` and `mv_addon_check_manifest` gain `description`, `hint_on` and
 `hint_text`. The Mac host reads the same manifests directly.
 
+## Metadata pane facts — the chrome bridges (#290)
+
+The metadata pane's record never crosses `mediaviewer.h`: each host reads the `meta::metadata`
+it already holds and hands its chrome text tables (`meta/tables.h`). #290 adds the record's
+provenance and position as POD beside them, so the map (#344) and the AI badge (#345) read
+numbers the core decided, never parse the "Made with" or "Location" rows. `mediaviewer.h` and
+its version are unchanged.
+
+**Windows** — `chrome_meta_args` ([`src/shell/chrome_host.h`](../../src/shell/chrome_host.h),
+`SetMetaData`) grows from 40 to **80 bytes**; the managed `ChromeMetaArgs` and
+`MetaDataArgsSize` match it and the attach probe refuses a mismatch (`-11`):
+
+```c
+/* after summary, properties, streams, *_len, loading (40 bytes, unchanged) */
+double   where_lat, where_lon;   /* WGS 84 degrees; valid when facts & kMetaFactWhere */
+double   where_altitude_m;       /* metres, negative below sea level; facts & kMetaFactAltitude */
+uint64_t made_with;              /* UTF-8 summary.made_with, valid for the call only */
+int32_t  made_with_len;
+int32_t  facts;                  /* kMetaFactWhere 1, kMetaFactAltitude 2, kMetaFactAiGenerated 4 */
+```
+
+**Mac** — the chrome bridge (`mv_chrome_bridge.h`):
+
+```c
+typedef struct mv_chrome_meta_facts {
+  uint32_t struct_size;          /* in: sizeof as the caller knows it; only covered fields written */
+  uint32_t flags;                /* MV_META_FACT_WHERE 1, _ALTITUDE 2, _AI_GENERATED 4 */
+  double   lat, lon, altitude_m;
+} mv_chrome_meta_facts;
+bool    mv_chrome_meta_facts_get(mv_chrome_meta_facts* out);    /* false: no record */
+int32_t mv_chrome_meta_made_with(char* buf, int32_t size);      /* two-call, like the tables */
+```
+
+`ai_generated` is set on positive evidence only; a clear flag means "not stated", never "not
+AI" ([06-metadata.md](06-metadata.md#made-with-and-ai-provenance-290)). The properties table's
+`space` column gains `c2pa`, `png_text`, `icc` and `xmp_raw`, whose access column is always `r`;
+both hosts now write that table with the same `meta::editable_properties_table`.
+
 ## Version history
 
 | Minor | Change |

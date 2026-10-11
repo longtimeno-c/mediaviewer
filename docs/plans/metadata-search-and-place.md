@@ -16,8 +16,12 @@ into `docs/design/06-metadata.md` (pane, place, badge), `16-commands.md` (search
 
 ## Status (2026-10-11)
 
-Plan only; nothing built. #290 and #291 are open with no PR. Place and the map are #344 (slices
-2–3 and the place half of slice 4); the badge is #345 (slice 5).
+**Slice 1 (#290) is built** on branch `feature/issue-290-all-tags` and folded into
+`docs/design/06-metadata.md` ("Beyond Exiv2", "Made with and AI provenance", position as numbers)
+and `14-abi.md` (the chrome bridges' facts). Its Windows half (the native C++ and the running
+WinUI pane) is owed to Windows CI and a Windows run. #291 is open with no PR. Place and the map
+are #344 (slices 2–3 and the place half of slice 4); the badge is #345 (slice 5). Slices 2–5 can
+start from `summary::where`, `summary::made_with` and `summary::ai_generated`.
 
 ## 0. Rules this touches
 
@@ -54,7 +58,7 @@ Plan only; nothing built. #290 and #291 are open with no PR. Place and the map a
 
 Each slice is one PR, both platforms. Order matters: 1 → 2 → 3 → 4; 5 can follow 1 in parallel.
 
-### Slice 1 — All tags (#290)
+### ~~Slice 1 — All tags (#290)~~ — built; see doc 06. The text below is kept for the verify.
 
 As written in #290: C2PA/JUMBF (JPEG APP11, PNG `caBX`, ISO-BMFF `c2pa`/`uuid`), PNG
 `tEXt`/`zTXt`/`iTXt`, unregistered XMP namespaces listed raw, ICC description/copyright, JFIF,
