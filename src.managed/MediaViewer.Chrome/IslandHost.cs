@@ -179,6 +179,7 @@ public static partial class IslandHost
         public const int EditWorkspace = 150;
         public const int CropAspectSet = 155;      // arg: preset, + 16 portrait
         public const int CropStraightenSet = 156;  // arg: degrees
+        public const int KindFilterSet = 173;      // arg: 0 all, 1 photos, 2 videos, 3 RAW, 4 marked (issue #206)
 
         // Mirrors chrome_command_checksum() in chrome_host.h: same constants,
         // same order, same arithmetic. Probe hands it to native for the test.
@@ -258,6 +259,8 @@ public static partial class IslandHost
     // Packed sort order (key in bits 0-2: name, modified, size, type, date taken;
     // descending in bit 3). Native owns it; the menu and Settings are a view of it.
     private static int _sortPacked;
+    // Issue #206: the kind filter native applied (bits 8-10 of the pushed sort word).
+    private static int _kindFilter;
 
     private static int _settingFlags = SettingFlag.FilmstripForFolder | SettingFlag.Wrap | SettingFlag.UpdateAutoCheck;
 
@@ -567,7 +570,8 @@ public static partial class IslandHost
             if (arg == IntPtr.Zero || sizeBytes < FlagsArgsSize) return unchecked((int)0x80070057);
             ChromeFlagsArgs args = Marshal.PtrToStructure<ChromeFlagsArgs>(arg);
             _settingFlags = args.Flags;
-            _sortPacked = args.Sort;
+            _sortPacked = args.Sort & 0xFF;
+            _kindFilter = (args.Sort >> 8) & 7;
             UpdateChannelApplied();
             RefreshSettingsMenu();
             RefreshSettingsScreen();
@@ -1382,6 +1386,30 @@ public static partial class IslandHost
         return sub;
     }
 
+    private static readonly string[] KindFilterNames =
+        { "All", "Photos", "Videos", "RAW", "Marked" };
+
+    // View > Show (issue #206): a view of the folder, for this run only. Rebuilt
+    // on open so the marker is the filter native applied. "Marked" keeps the
+    // marks as they are when it is chosen.
+    private static MenuFlyoutSubItem KindFilterSubMenu(MenuFlyout owner)
+    {
+        var sub = new MenuFlyoutSubItem { Text = "Show" };
+        void Fill()
+        {
+            sub.Items.Clear();
+            for (int k = 0; k < KindFilterNames.Length; k++)
+            {
+                int filter = k;
+                sub.Items.Add(Item(KindFilterNames[k], _kindFilter == k ? "●" : null,
+                    () => Send(Command.KindFilterSet, filter)));
+            }
+        }
+        owner.Opening += (_, _) => Fill();
+        Fill();
+        return sub;
+    }
+
     private static UIElement BuildChrome()
     {
         var viewFlyout = new MenuFlyout
@@ -1404,6 +1432,7 @@ public static partial class IslandHost
         viewFlyout.Items.Add(Item("Metadata pane", "I", () => Send(Command.MetadataPane)));
         viewFlyout.Items.Add(Item("Folder tree", "Ctrl+Shift+E", () => Send(Command.FolderTree)));
         viewFlyout.Items.Add(SortSubMenu(viewFlyout));
+        viewFlyout.Items.Add(KindFilterSubMenu(viewFlyout));
         viewFlyout.Items.Add(Sep());
         viewFlyout.Items.Add(Item("Clipping warnings", "C", () => Send(Command.Clipping)));
         viewFlyout.Items.Add(Item("Frame-time overlay", "F3", () => Send(Command.Overlay)));

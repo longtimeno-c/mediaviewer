@@ -285,6 +285,10 @@ constexpr binding kBindings[] = {
     // PageDown inside one stop; plain PageUp / PageDown still skip ten stops.
     row(key::page_down, mod_ctrl, kBrowse | kIsland, repeat, next_page),
     row(key::page_up, mod_ctrl, kBrowse | kIsland, repeat, prev_page),
+    // Issue #206: View > Show, cycled. Appended. docs/design/16 names no key and
+    // every free letter is spoken for (X reject, U clear label), so it ships
+    // unbound, listed in Settings like Open RAW / Open JPEG.
+    row(key::none, mod_none, kViewing, edge, kind_filter_next),
 };
 
 // The router's index stores row + 1 in a byte.
@@ -462,6 +466,8 @@ constexpr command_info kCommands[] = {
     {addon_cmd_6, "Add-on command 7", true},
     {addon_cmd_7, "Add-on command 8", true},
     {new_window, "New window"},
+    {kind_filter_next, "Show next kind"},
+    {kind_filter_set, "Show kind", true},
 };
 
 const char* named_key(key k) noexcept {

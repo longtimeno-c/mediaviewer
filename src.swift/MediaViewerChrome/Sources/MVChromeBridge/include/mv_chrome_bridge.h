@@ -373,6 +373,12 @@ bool mv_chrome_photos_backup_last(mv_chrome_photos_backup* out);
 int32_t mv_chrome_sort_order(void);
 void mv_chrome_set_sort_order(int32_t packed);
 
+// Issue #206: View > Show, the kind filter (io::kind_filter): 0 all, 1 photos,
+// 2 videos, 3 RAW, 4 marked. For this run only. Setting "marked" with nothing
+// marked is refused (false, a notice). [main-thread]
+int32_t mv_chrome_kind_filter(void);
+bool mv_chrome_set_kind_filter(int32_t filter);
+
 // Update channel: -1 when the app was built without an updater (hide the
 // setting), 0 stable, 1 preview (signed prerelease builds as well). Setting it
 // checks for updates on the new channel. [main-thread]

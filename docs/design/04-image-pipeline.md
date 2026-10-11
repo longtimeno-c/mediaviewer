@@ -303,6 +303,16 @@ Mac: `-refreshFolderIfChanged` over the folder model's snapshot. The file a fold
 and the stop on screen, always stay, so Open With on a hidden kind still shows it. Folder-tile
 counts (`folder_summary`) are not filtered.
 
+**View ▸ Show** (issue #206, [16](16-commands.md) "Status, sort, filter, typeahead") narrows the same way and
+in the same place: more bits of the same word (`kHideStills`, `kHideClips`, `kHideRaw`,
+`kHideUnmarked`), each stop being exactly one of still, RAW, clip, audio or document
+(`io::is_hidden_stop`; a RAW+JPEG pair is RAW whichever half leads, a Live Photo is its still).
+`io::keeps_stop` is the one rule both hosts apply. Unlike Settings' kinds, the relist a new filter
+choice makes does not keep the stop on screen unless it passes, and a filter that leaves nothing
+keeps that stop. Windows: `mv_folder_set_kind_filter` (ABI 0.20) beside the Settings word, with the
+marked paths for `kHideUnmarked`. Mac: the host's `_kindFilter`; it does not pair, so each half of
+a RAW+JPEG is filtered as its own file. A mark on a file the listing hides is kept.
+
 ## Not built
 
 - Android / Samsung motion photos (JPEG with an appended MP4) are not detected or played; such

@@ -788,6 +788,7 @@ if(MV_BUILD_TESTS)
     tests/test_dir_mac.cpp
     tests/test_key_router.cpp
     tests/test_key_router_review.cpp
+    tests/test_kind_filter.cpp
     tests/test_write_guard.cpp
     tests/test_photos_backup.cpp
     # docs/design/26: virtual items in a result list (the Photos library as a folder).

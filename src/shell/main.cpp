@@ -397,6 +397,8 @@ struct app_state {
   // docs/design/16 marks, copy, move. Marks are UI-thread state keyed by path; the
   // file work runs on files' own I/O worker and reports back by message.
   mv::shell::mark_set marks;
+  // Issue #206: View > Show. For this run only; the core filters the listing.
+  mv::io::kind_filter kind_filter = mv::io::kind_filter::all;
   mv::shell::file_jobs files;
   std::vector<std::string> destinations;  // F7 / F8, most recent first
   // PR 15: the jump list's recent folders (settings.ini [recent]), most recent first.
@@ -1629,6 +1631,41 @@ void set_sort(app_state* app, std::int32_t packed) noexcept {
   app->settings.sort = packed;
   mv::shell::save_view_settings(app->settings);
   app->chrome.apply_settings(chrome_flags(app), packed);
+}
+
+// Issue #206: View > Show. The session filters (mv_folder_set_kind_filter), so the
+// filmstrip, the gallery and the arrow keys read one list; the stop on screen
+// moves to the nearest one shown. "Marked" keeps the marks as they are now, so
+// unmarking while culling does not pull a file out from under the user.
+// For this run only: a filter left on from yesterday would look like files gone.
+bool set_kind_filter(app_state* app, mv::io::kind_filter f) noexcept {
+  if (!app || !app->session) return false;
+  try {
+    std::vector<std::string> kept;
+    if (f == mv::io::kind_filter::marked) {
+      if (app->marks.empty()) {
+        notice_show(app, "Nothing is marked");
+        return false;
+      }
+      kept = app->marks.targets({});
+    }
+    std::vector<const char*> ptrs;
+    ptrs.reserve(kept.size());
+    for (const auto& k : kept) ptrs.push_back(k.c_str());
+    if (mv_folder_set_kind_filter(app->session, mv::io::kind_filter_mask(f), ptrs.data(),
+                                  static_cast<std::uint32_t>(ptrs.size())) != MV_OK) {
+      return false;
+    }
+    app->kind_filter = f;
+    app->chrome.set_kind_filter(static_cast<std::int32_t>(f));
+    app->chrome.apply_settings(chrome_flags(app), app->settings.sort);
+    notice_show(app, f == mv::io::kind_filter::all
+                         ? std::string("Showing all")
+                         : std::string("Showing ") + mv::io::kind_filter_name(f) + " only");
+    return true;
+  } catch (...) {
+    return false;
+  }
 }
 
 // Ctrl+C (docs/design/16): the eyedropper's readout when it is on and a pixel is under
@@ -4358,6 +4395,9 @@ void chrome_on_command(void* ctx, int command, float arg) {
     case static_cast<int>(mv::shell::command_id::crop_aspect_set):
       edit_set_aspect(app, static_cast<int>(arg));
       return;
+    case static_cast<int>(mv::shell::command_id::kind_filter_set):
+      (void)set_kind_filter(app, mv::io::kind_filter_from(static_cast<int>(arg)));
+      return;
     case static_cast<int>(mv::shell::command_id::crop_straighten_set):
       edit_set_straighten(app, arg);
       return;
@@ -6428,8 +6468,10 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       if (edit_subject_of(app) != mv::shell::edit_subject::still || !app->edits.has_item()) return false;
       set_show_original(app, command == show_original);
       return true;
-    case crop_aspect_set: case crop_straighten_set:
+    case crop_aspect_set: case crop_straighten_set: case kind_filter_set:
       return false;  // island-only: they carry a value (chrome_on_command)
+    case kind_filter_next:
+      return set_kind_filter(app, mv::io::next_kind_filter(app->kind_filter));
     // Marks (docs/design/16): a set separate from the selection, keyed by path.
     case toggle_mark: {
       const std::string current = current_item_path(app);

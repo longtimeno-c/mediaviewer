@@ -50,7 +50,7 @@ extern "C" {
  * wrong is a struct layout change nobody notices until a field reads garbage.
  * ------------------------------------------------------------------------- */
 #define MV_ABI_VERSION_MAJOR 0
-#define MV_ABI_VERSION_MINOR 19 /* 0.10: PR 13 / 14 clip jobs and keyframe index (mediaviewer_clip.h); 0.11: issue #44 mv_video_set_hold; 0.12: issue #42 mv_status eject error categories; 0.13: PR 30 keep_ranges; 0.14: Milestone H result listings (mv_folder_open_list); 0.15: mv_folder_item clip flag; 0.16: pages (mv_image_info.page_count, mv_folder_select_page); 0.17: docs/design/25 open add-ons (mv_open_addon_*); 0.18: docs/design/25 contributed commands (mv_addon_commands_json); 0.19: mv_folder_set_hidden_kinds */
+#define MV_ABI_VERSION_MINOR 20 /* 0.10: PR 13 / 14 clip jobs and keyframe index (mediaviewer_clip.h); 0.11: issue #44 mv_video_set_hold; 0.12: issue #42 mv_status eject error categories; 0.13: PR 30 keep_ranges; 0.14: Milestone H result listings (mv_folder_open_list); 0.15: mv_folder_item clip flag; 0.16: pages (mv_image_info.page_count, mv_folder_select_page); 0.17: docs/design/25 open add-ons (mv_open_addon_*); 0.18: docs/design/25 contributed commands (mv_addon_commands_json); 0.19: mv_folder_set_hidden_kinds; 0.20: mv_folder_set_kind_filter */
 
 /* Packed as (major << 16) | minor. [any-thread] */
 MV_API uint32_t MV_CALL mv_abi_version(void);
@@ -398,6 +398,25 @@ MV_API mv_status MV_CALL mv_folder_get_sort(mv_session_t session, int32_t* out_p
 #define MV_FOLDER_HIDE_AUDIO 0x1u
 #define MV_FOLDER_HIDE_DOCUMENTS 0x2u
 MV_API mv_status MV_CALL mv_folder_set_hidden_kinds(mv_session_t session, uint32_t mask);
+
+/* 0.20 (issue #206). The kind filter, View > Show: a view of the listing,
+ * set for as long as the user asks and never saved. `mask` is
+ * MV_FOLDER_HIDE_* bits: STILLS (JPEG, HEIC, PNG, GIF... not RAW), CLIPS,
+ * RAW (a RAW, or a RAW+JPEG pair whichever half leads), AUDIO, DOCUMENTS,
+ * and UNMARKED, which keeps only the `kept_count` UTF-8 paths in `kept`
+ * (the marks when "Marked" was chosen; copied, so the caller may free them).
+ * The file a folder was opened on, and the current stop, stay on a relist;
+ * the relist this call makes does not keep them unless they pass, so the
+ * current stop moves to the nearest one that does. A filter that leaves
+ * nothing keeps the current stop. Re-applies like mv_folder_set_hidden_kinds
+ * (FOLDER_CHANGED) and applies to every later open; 0 lists everything.
+ * Unknown bits are dropped. [any-thread][no-block] */
+#define MV_FOLDER_HIDE_STILLS 0x4u
+#define MV_FOLDER_HIDE_CLIPS 0x8u
+#define MV_FOLDER_HIDE_RAW 0x10u
+#define MV_FOLDER_HIDE_UNMARKED 0x20u
+MV_API mv_status MV_CALL mv_folder_set_kind_filter(mv_session_t session, uint32_t mask,
+                                                   const char* const* kept, uint32_t kept_count);
 
 /* 0.6 (PR 9). The immediate subdirectories of `utf8_dir` for the folder tree:
  * hidden, system and dot directories skipped, sorted case-insensitively. One
