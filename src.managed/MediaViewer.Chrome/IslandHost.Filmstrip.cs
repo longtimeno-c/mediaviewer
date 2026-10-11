@@ -446,16 +446,8 @@ public static partial class IslandHost
                 Child = col,
             };
 
-            void SetThumb()
-            {
-                if (string.IsNullOrEmpty(vm.ThumbPath)) return;
-                try
-                {
-                    // Enough for a 2x-DPI fill crop, not the full JPEG-512 disk thumb.
-                    image.Source = new BitmapImage(new Uri(vm.ThumbPath)) { DecodePixelWidth = FilmstripDecodeWidth };
-                }
-                catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
-            }
+            // Enough for a 2x-DPI fill crop, not the full JPEG-512 disk thumb.
+            void SetThumb() => ShowTileImage(image, vm.ThumbPath, FilmstripDecodeWidth);
             SetThumb();
 
             void OnChanged(object? _, System.ComponentModel.PropertyChangedEventArgs e)
@@ -464,24 +456,14 @@ public static partial class IslandHost
                 if (e.PropertyName is nameof(FolderItemVm.Selected) or null)
                     border.BorderThickness = new Thickness(vm.Selected ? 2 : 0);
             }
-            vm.PropertyChanged += OnChanged;
-            // Recycling without this leaks a handler per realisation (as the
-            // gallery's factory notes), keeping every tile arrowed past alive.
-            border.Tag = (Action)(() => vm.PropertyChanged -= OnChanged);
+            BindTile(border, vm, OnChanged);
 
             border.Tapped += (_, _) => Send(Command.SelectItem, vm.Index);
             WireFileDrag(border, vm);
             return border;
         }
 
-        public void RecycleElement(ElementFactoryRecycleArgs args)
-        {
-            if (args.Element is Border { Tag: Action unsubscribe })
-            {
-                unsubscribe();
-                ((Border)args.Element).Tag = null;
-            }
-        }
+        public void RecycleElement(ElementFactoryRecycleArgs args) => UnbindTile(args.Element);
     }
 }
 

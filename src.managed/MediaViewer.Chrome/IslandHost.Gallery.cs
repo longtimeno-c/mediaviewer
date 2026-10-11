@@ -933,16 +933,8 @@ public static partial class IslandHost
                 Child = col,
             };
 
-            void SetThumb()
-            {
-                if (string.IsNullOrEmpty(vm.ThumbPath)) { image.Source = null; return; }
-                try
-                {
-                    // Decode for the current tile size, bounded by the JPEG-512 cache.
-                    image.Source = new BitmapImage(new Uri(vm.ThumbPath)) { DecodePixelWidth = GalleryDecodeWidth };
-                }
-                catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
-            }
+            // Decode for the current tile size, bounded by the JPEG-512 cache.
+            void SetThumb() => ShowTileImage(image, vm.ThumbPath, GalleryDecodeWidth);
             SetThumb();
 
             void OnChanged(object? _, System.ComponentModel.PropertyChangedEventArgs e)
@@ -951,24 +943,14 @@ public static partial class IslandHost
                 if (e.PropertyName is nameof(FolderItemVm.Selected) or nameof(FolderItemVm.GalleryCurrent) or null)
                     border.BorderThickness = new Thickness(vm.Selected && _folderCursor < 0 ? 2 : 0);
             }
-            vm.PropertyChanged += OnChanged;
-            // Recycling without this leaks a handler per realisation, and every
-            // thumb completion then walks a growing list of dead elements.
-            border.Tag = (Action)(() => vm.PropertyChanged -= OnChanged);
+            BindTile(border, vm, OnChanged);
 
             border.Tapped += (_, _) => Send(Command.GalleryActivate, vm.Index);
             WireFileDrag(border, vm);
             return border;
         }
 
-        public void RecycleElement(ElementFactoryRecycleArgs args)
-        {
-            if (args.Element is Border { Tag: Action unsubscribe })
-            {
-                unsubscribe();
-                ((Border)args.Element).Tag = null;
-            }
-        }
+        public void RecycleElement(ElementFactoryRecycleArgs args) => UnbindTile(args.Element);
     }
 
     private sealed class FolderTileFactory : IElementFactory
@@ -1051,28 +1033,7 @@ public static partial class IslandHost
                 Child = col,
             };
 
-            void SetCover()
-            {
-                if (string.IsNullOrEmpty(vm.CoverPath))
-                {
-                    cover.Source = null;
-                    cover.Visibility = Visibility.Collapsed;
-                    placeholder.Visibility = Visibility.Visible;
-                    return;
-                }
-                try
-                {
-                    cover.Source = new BitmapImage(new Uri(vm.CoverPath)) { DecodePixelWidth = GalleryDecodeWidth };
-                    cover.Visibility = Visibility.Visible;
-                    placeholder.Visibility = Visibility.Collapsed;
-                }
-                catch (Exception ex)
-                {
-                    System.Diagnostics.Debug.WriteLine(ex);
-                    cover.Visibility = Visibility.Collapsed;
-                    placeholder.Visibility = Visibility.Visible;
-                }
-            }
+            void SetCover() => ShowTileImage(cover, vm.CoverPath, GalleryDecodeWidth, placeholder);
             void SetCount()
             {
                 count.Visibility = vm.Loaded ? Visibility.Visible : Visibility.Collapsed;
@@ -1091,8 +1052,7 @@ public static partial class IslandHost
                 if (e.PropertyName is nameof(FolderCardVm.Cursor) or null)
                     border.BorderThickness = new Thickness(vm.Cursor ? 2 : 0);
             }
-            vm.PropertyChanged += OnChanged;
-            border.Tag = (Action)(() => vm.PropertyChanged -= OnChanged);
+            BindTile(border, vm, OnChanged);
             border.Tapped += (_, _) => Send(Command.OpenSubfolder, vm.Index);
             if (!vm.Requested)
             {
@@ -1103,14 +1063,7 @@ public static partial class IslandHost
             return border;
         }
 
-        public void RecycleElement(ElementFactoryRecycleArgs args)
-        {
-            if (args.Element is Border { Tag: Action unsubscribe })
-            {
-                unsubscribe();
-                ((Border)args.Element).Tag = null;
-            }
-        }
+        public void RecycleElement(ElementFactoryRecycleArgs args) => UnbindTile(args.Element);
     }
 
     private sealed class FolderChipFactory : IElementFactory
@@ -1167,28 +1120,7 @@ public static partial class IslandHost
                 Child = row,
             };
 
-            void SetCover()
-            {
-                if (string.IsNullOrEmpty(vm.CoverPath))
-                {
-                    cover.Source = null;
-                    cover.Visibility = Visibility.Collapsed;
-                    placeholder.Visibility = Visibility.Visible;
-                    return;
-                }
-                try
-                {
-                    cover.Source = new BitmapImage(new Uri(vm.CoverPath)) { DecodePixelWidth = 72 };
-                    cover.Visibility = Visibility.Visible;
-                    placeholder.Visibility = Visibility.Collapsed;
-                }
-                catch (Exception ex)
-                {
-                    System.Diagnostics.Debug.WriteLine(ex);
-                    cover.Visibility = Visibility.Collapsed;
-                    placeholder.Visibility = Visibility.Visible;
-                }
-            }
+            void SetCover() => ShowTileImage(cover, vm.CoverPath, 72, placeholder);
             void SetText()
             {
                 name.Text = vm.Name;
@@ -1214,8 +1146,7 @@ public static partial class IslandHost
                     SetText();
                 if (e.PropertyName is nameof(FolderCardVm.Cursor) or null) SetCursor();
             }
-            vm.PropertyChanged += OnChanged;
-            border.Tag = (Action)(() => vm.PropertyChanged -= OnChanged);
+            BindTile(border, vm, OnChanged);
             border.Tapped += (_, _) => Send(Command.OpenSubfolder, vm.Index);
             if (!vm.Requested)
             {
@@ -1226,14 +1157,7 @@ public static partial class IslandHost
             return border;
         }
 
-        public void RecycleElement(ElementFactoryRecycleArgs args)
-        {
-            if (args.Element is Border { Tag: Action unsubscribe })
-            {
-                unsubscribe();
-                ((Border)args.Element).Tag = null;
-            }
-        }
+        public void RecycleElement(ElementFactoryRecycleArgs args) => UnbindTile(args.Element);
     }
 }
 
