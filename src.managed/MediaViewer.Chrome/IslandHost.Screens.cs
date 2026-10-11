@@ -63,24 +63,25 @@ public static partial class IslandHost
         "grid" => "",
         "share" => "",
         "warning" => "",
+        "minus" => "",
         _ => "",
     };
 
-    private static string Str(JsonElement n, string key) =>
+    private static string JStr(JsonElement n, string key) =>
         n.TryGetProperty(key, out JsonElement v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : "";
 
-    private static double Num(JsonElement n, string key, double fallback) =>
+    private static double JNum(JsonElement n, string key, double fallback) =>
         n.TryGetProperty(key, out JsonElement v) && v.ValueKind == JsonValueKind.Number ? v.GetDouble() : fallback;
 
-    private static bool Flag(JsonElement n, string key) =>
+    private static bool JFlag(JsonElement n, string key) =>
         n.TryGetProperty(key, out JsonElement v) && v.ValueKind == JsonValueKind.True;
 
-    private static IEnumerable<JsonElement> Arr(JsonElement n, string key) =>
+    private static IEnumerable<JsonElement> JArr(JsonElement n, string key) =>
         n.TryGetProperty(key, out JsonElement v) && v.ValueKind == JsonValueKind.Array
             ? v.EnumerateArray() : Enumerable.Empty<JsonElement>();
 
     private static HashSet<string> SelectedSet(JsonElement n) =>
-        new(Arr(n, "selection").Where(e => e.ValueKind == JsonValueKind.String).Select(e => e.GetString() ?? ""),
+        new(JArr(n, "selection").Where(e => e.ValueKind == JsonValueKind.String).Select(e => e.GetString() ?? ""),
             StringComparer.Ordinal);
 
     private static void SendScreenEvent(ScreenAt at, string node, uint kind, string valueJson) =>
@@ -95,33 +96,33 @@ public static partial class IslandHost
     private static UIElement BuildScreenNode(JsonElement n, ScreenAt at)
     {
         UIElement e = BuildScreenNodeInner(n, at);
-        string label = Str(n, "label");
+        string label = JStr(n, "label");
         if (label.Length > 0) AutomationProperties.SetName(e, label);
-        string help = Str(n, "help");
+        string help = JStr(n, "help");
         if (help.Length > 0) ToolTipService.SetToolTip(e, help);
-        if (Flag(n, "hidden")) e.Visibility = Visibility.Collapsed;
-        if (Flag(n, "disabled") && e is Control c) c.IsEnabled = false;
+        if (JFlag(n, "hidden")) e.Visibility = Visibility.Collapsed;
+        if (JFlag(n, "disabled") && e is Control c) c.IsEnabled = false;
         return e;
     }
 
     private static UIElement BuildScreenNodeInner(JsonElement n, ScreenAt at)
     {
-        string id = Str(n, "id");
-        switch (Str(n, "type"))
+        string id = JStr(n, "id");
+        switch (JStr(n, "type"))
         {
             case "stack":
             {
                 var panel = new StackPanel
                 {
-                    Orientation = Str(n, "axis") == "horizontal" ? Orientation.Horizontal : Orientation.Vertical,
-                    Spacing = Num(n, "spacing", 8),
+                    Orientation = JStr(n, "axis") == "horizontal" ? Orientation.Horizontal : Orientation.Vertical,
+                    Spacing = JNum(n, "spacing", 8),
                 };
-                foreach (JsonElement c in Arr(n, "children"))
+                foreach (JsonElement c in JArr(n, "children"))
                 {
                     UIElement child = BuildScreenNode(c, at);
                     if (child is FrameworkElement fe && panel.Orientation == Orientation.Vertical)
                     {
-                        fe.HorizontalAlignment = Str(n, "align") switch
+                        fe.HorizontalAlignment = JStr(n, "align") switch
                         {
                             "center" => HorizontalAlignment.Center,
                             "end" => HorizontalAlignment.Right,
@@ -135,12 +136,12 @@ public static partial class IslandHost
             }
             case "grid":
             {
-                int columns = Math.Max(1, (int)Num(n, "columns", 2));
-                double spacing = Num(n, "spacing", 8);
+                int columns = Math.Max(1, (int)JNum(n, "columns", 2));
+                double spacing = JNum(n, "spacing", 8);
                 var grid = new Grid { ColumnSpacing = spacing, RowSpacing = spacing };
                 for (int i = 0; i < columns; ++i) grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
                 int k = 0;
-                foreach (JsonElement c in Arr(n, "children"))
+                foreach (JsonElement c in JArr(n, "children"))
                 {
                     if (k % columns == 0) grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
                     var child = (FrameworkElement)BuildScreenNode(c, at);
@@ -154,8 +155,8 @@ public static partial class IslandHost
             case "scroll":
             {
                 var inner = new StackPanel { Spacing = 8 };
-                foreach (JsonElement c in Arr(n, "children")) inner.Children.Add(BuildScreenNode(c, at));
-                bool horizontal = Str(n, "axis") == "horizontal";
+                foreach (JsonElement c in JArr(n, "children")) inner.Children.Add(BuildScreenNode(c, at));
+                bool horizontal = JStr(n, "axis") == "horizontal";
                 if (horizontal) inner.Orientation = Orientation.Horizontal;
                 var scroll = new ScrollViewer
                 {
@@ -163,16 +164,16 @@ public static partial class IslandHost
                     HorizontalScrollBarVisibility = horizontal ? ScrollBarVisibility.Auto : ScrollBarVisibility.Disabled,
                     VerticalScrollBarVisibility = horizontal ? ScrollBarVisibility.Disabled : ScrollBarVisibility.Auto,
                 };
-                double h = Num(n, "height", 0);
+                double h = JNum(n, "height", 0);
                 if (h > 0) scroll.MaxHeight = h;
                 return scroll;
             }
             case "split":
             {
-                double f = Num(n, "fraction", 0.5);
-                bool vertical = Str(n, "axis") == "vertical";
+                double f = JNum(n, "fraction", 0.5);
+                bool vertical = JStr(n, "axis") == "vertical";
                 var grid = new Grid();
-                JsonElement[] parts = Arr(n, "children").ToArray();
+                JsonElement[] parts = JArr(n, "children").ToArray();
                 if (vertical)
                 {
                     grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(f, GridUnitType.Star) });
@@ -199,8 +200,8 @@ public static partial class IslandHost
             }
             case "text":
             {
-                string style = Str(n, "style");
-                TextBlock t = Text(Str(n, "text"),
+                string style = JStr(n, "style");
+                TextBlock t = Text(JStr(n, "text"),
                     style is "secondary" or "caption" ? Body : Title,
                     style switch
                     {
@@ -211,18 +212,18 @@ public static partial class IslandHost
                         _ => UiFontSize - 2,
                     },
                     bold: style is "title" or "heading",
-                    maxLines: (int)Num(n, "lines", 0));
+                    maxLines: (int)JNum(n, "lines", 0));
                 if (style == "mono") t.FontFamily = new FontFamily("Cascadia Mono,Consolas");
-                if (Flag(n, "copyable")) t.IsTextSelectionEnabled = true;
+                if (JFlag(n, "copyable")) t.IsTextSelectionEnabled = true;
                 return t;
             }
             case "image":
             {
                 var img = new Image { Stretch = Stretch.Uniform };
-                double w = Num(n, "width", 0), h = Num(n, "height", 0);
+                double w = JNum(n, "width", 0), h = JNum(n, "height", 0);
                 if (w > 0) img.Width = w;
                 if (h > 0) img.Height = h;
-                string? file = SlotImagePath(at.Addon, Str(n, "src"));
+                string? file = SlotImagePath(at.Addon, JStr(n, "src"));
                 if (file is not null)
                 {
                     try { img.Source = new BitmapImage(new Uri(file)); }
@@ -231,7 +232,7 @@ public static partial class IslandHost
                 return img;
             }
             case "thumbnail":
-                return SlotThumb(Str(n, "path"), Num(n, "size", 96), Str(n, "label"));
+                return SlotThumb(JStr(n, "path"), JNum(n, "size", 96), JStr(n, "label"));
             case "thumbnail_grid":
                 return BuildThumbnailGrid(n, at, id);
             case "list":
@@ -240,9 +241,9 @@ public static partial class IslandHost
                 return BuildRows(n, at, id, table: true);
             case "button":
             {
-                string label = Str(n, "label");
+                string label = JStr(n, "label");
                 Button b = EditButton(label, () => SendScreenEvent(at, id, SlotNative.EventClick, ""));
-                string symbol = Str(n, "symbol");
+                string symbol = JStr(n, "symbol");
                 if (symbol.Length > 0)
                 {
                     var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
@@ -250,7 +251,7 @@ public static partial class IslandHost
                     row.Children.Add(Text(label, Title, UiFontSize - 2));
                     b.Content = row;
                 }
-                if (Str(n, "style") == "primary") b.Background = Brush(Hairline);
+                if (JStr(n, "style") == "primary") b.Background = Brush(Hairline);
                 // Reached by Tab like every control here (EditButton's default keeps
                 // focus off the canvas; a screen is a window of its own).
                 b.AllowFocusOnInteraction = true;
@@ -261,8 +262,8 @@ public static partial class IslandHost
             {
                 var t = new ToggleSwitch
                 {
-                    Header = Text(Str(n, "label"), Title, UiFontSize - 2),
-                    IsOn = Flag(n, "value"),
+                    Header = Text(JStr(n, "label"), Title, UiFontSize - 2),
+                    IsOn = JFlag(n, "value"),
                     OnContent = "",
                     OffContent = "",
                 };
@@ -271,13 +272,13 @@ public static partial class IslandHost
             }
             case "choice":
             {
-                var box = new ComboBox { Header = Text(Str(n, "label"), Title, UiFontSize - 2), MinWidth = 160 };
-                string value = Str(n, "value");
+                var box = new ComboBox { Header = Text(JStr(n, "label"), Title, UiFontSize - 2), MinWidth = 160 };
+                string value = JStr(n, "value");
                 var ids = new List<string>();
-                foreach (JsonElement o in Arr(n, "options"))
+                foreach (JsonElement o in JArr(n, "options"))
                 {
-                    ids.Add(Str(o, "id"));
-                    box.Items.Add(new ComboBoxItem { Content = Str(o, "text") });
+                    ids.Add(JStr(o, "id"));
+                    box.Items.Add(new ComboBoxItem { Content = JStr(o, "text") });
                 }
                 box.SelectedIndex = ids.IndexOf(value);
                 box.SelectionChanged += (_, _) =>
@@ -289,14 +290,14 @@ public static partial class IslandHost
             }
             case "slider":
             {
-                double lo = Num(n, "min", 0), hi = Num(n, "max", 1);
+                double lo = JNum(n, "min", 0), hi = JNum(n, "max", 1);
                 var s = new Slider
                 {
-                    Header = Str(n, "label"),
+                    Header = JStr(n, "label"),
                     Minimum = lo,
                     Maximum = hi,
-                    StepFrequency = Num(n, "step", 0) > 0 ? Num(n, "step", 0) : (hi - lo) / 100,
-                    Value = Num(n, "value", lo),
+                    StepFrequency = JNum(n, "step", 0) > 0 ? JNum(n, "step", 0) : (hi - lo) / 100,
+                    Value = JNum(n, "value", lo),
                     MinWidth = 160,
                 };
                 // Reported when let go (pointer or key), not on every step of a drag.
@@ -314,9 +315,9 @@ public static partial class IslandHost
                 return BuildNumber(n, at, id);
             case "text_field":
             {
-                var field = new FakeInput(Str(n, "placeholder").Length > 0 ? Str(n, "placeholder") : Str(n, "label"), 220)
+                var field = new FakeInput(JStr(n, "placeholder").Length > 0 ? JStr(n, "placeholder") : JStr(n, "label"), 220)
                 {
-                    Text = Str(n, "value"),
+                    Text = JStr(n, "value"),
                 };
                 string last = field.Text;
                 field.Submitted += () =>
@@ -334,7 +335,7 @@ public static partial class IslandHost
             }
             case "progress":
             {
-                double v = Num(n, "value", -1);
+                double v = JNum(n, "value", -1);
                 var track = new Grid { Height = 6, MinWidth = 120, Background = Brush(Hairline), CornerRadius = new CornerRadius(3) };
                 var fill = new Border
                 {
@@ -364,9 +365,9 @@ public static partial class IslandHost
 
     private static UIElement BuildNumber(JsonElement n, ScreenAt at, string id)
     {
-        double lo = Num(n, "min", -1e12), hi = Num(n, "max", 1e12), step = Num(n, "step", 1);
-        double value = Num(n, "value", Math.Max(lo, 0));
-        string label = Str(n, "label");
+        double lo = JNum(n, "min", -1e12), hi = JNum(n, "max", 1e12), step = JNum(n, "step", 1);
+        double value = JNum(n, "value", Math.Max(lo, 0));
+        string label = JStr(n, "label");
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
         TextBlock shown = Text($"{label}: {NumberJson(value)}", Title, UiFontSize - 2);
         shown.VerticalAlignment = VerticalAlignment.Center;
@@ -402,32 +403,32 @@ public static partial class IslandHost
     private static UIElement BuildRows(JsonElement n, ScreenAt at, string id, bool table)
     {
         HashSet<string> selected = SelectedSet(n);
-        bool multi = Flag(n, "multi");
+        bool multi = JFlag(n, "multi");
         var rows = new StackPanel { Spacing = 0 };
         var buttons = new List<Button>();
-        JsonElement[] columns = table ? Arr(n, "columns").ToArray() : Array.Empty<JsonElement>();
+        JsonElement[] columns = table ? JArr(n, "columns").ToArray() : Array.Empty<JsonElement>();
         if (table)
         {
             var header = new Grid { Padding = new Thickness(8, 4, 8, 4) };
             for (int c = 0; c < columns.Length; ++c)
             {
                 header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-                TextBlock h = Text(Str(columns[c], "title"), Body, UiFontSize - 4, bold: true);
+                TextBlock h = Text(JStr(columns[c], "title"), Body, UiFontSize - 4, bold: true);
                 Grid.SetColumn(h, c);
                 header.Children.Add(h);
             }
             rows.Children.Add(header);
             rows.Children.Add(new Border { Height = 1, Background = Brush(Hairline) });
         }
-        foreach (JsonElement r in Arr(n, table ? "rows" : "items"))
+        foreach (JsonElement r in JArr(n, table ? "rows" : "items"))
         {
-            string rowId = Str(r, "id");
+            string rowId = JStr(r, "id");
             UIElement content;
             string name;
             if (table)
             {
                 var g = new Grid();
-                string[] cells = Arr(r, "cells").Select(c => c.GetString() ?? "").ToArray();
+                string[] cells = JArr(r, "cells").Select(c => c.GetString() ?? "").ToArray();
                 for (int c = 0; c < columns.Length; ++c)
                 {
                     g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -441,11 +442,11 @@ public static partial class IslandHost
             else
             {
                 var col = new StackPanel { Spacing = 1 };
-                col.Children.Add(Text(Str(r, "text"), Title, UiFontSize - 2));
-                string detail = Str(r, "detail");
+                col.Children.Add(Text(JStr(r, "text"), Title, UiFontSize - 2));
+                string detail = JStr(r, "detail");
                 if (detail.Length > 0) col.Children.Add(Text(detail, Body, UiFontSize - 4));
                 content = col;
-                name = detail.Length > 0 ? $"{Str(r, "text")}, {detail}" : Str(r, "text");
+                name = detail.Length > 0 ? $"{JStr(r, "text")}, {detail}" : JStr(r, "text");
             }
             Button b = EditButton("", () => { }, stretch: true);
             b.Content = content;
@@ -576,14 +577,14 @@ public static partial class IslandHost
 
     private static UIElement BuildThumbnailGrid(JsonElement n, ScreenAt at, string id)
     {
-        double tile = Num(n, "tile", 128);
-        bool multi = Flag(n, "multi");
+        double tile = JNum(n, "tile", 128);
+        bool multi = JFlag(n, "multi");
         HashSet<string> selected = SelectedSet(n);
         var vms = new List<SlotTileVm>();
-        foreach (JsonElement item in Arr(n, "items"))
+        foreach (JsonElement item in JArr(n, "items"))
         {
-            string path = Str(item, "path");
-            string label = Str(item, "label");
+            string path = JStr(item, "path");
+            string label = JStr(item, "label");
             vms.Add(new SlotTileVm(path, label.Length > 0 ? label : Path.GetFileName(path), vms.Count));
         }
         var realised = new Dictionary<int, Button>();
@@ -686,8 +687,8 @@ public static partial class IslandHost
     // Narrator, named by its label.
     private static UIElement BuildSurface(JsonElement n, ScreenAt at)
     {
-        double height = Num(n, "height", 120);
-        double width = Num(n, "width", 0);
+        double height = JNum(n, "height", 120);
+        double width = JNum(n, "width", 0);
         var grid = new Grid
         {
             Height = height,
@@ -697,7 +698,7 @@ public static partial class IslandHost
             Background = Brush(ChromeColour.Surface),
         };
         if (width > 0) grid.Width = width;
-        var px = SlotNative.Surface(at.Addon, at.Screen, Str(n, "surface"));
+        var px = SlotNative.Surface(at.Addon, at.Screen, JStr(n, "surface"));
         if (px is { } p && p.Width > 0 && p.Height > 0)
         {
             try
@@ -714,7 +715,7 @@ public static partial class IslandHost
         }
         if (n.TryGetProperty("pin", out JsonElement pin) && pin.ValueKind == JsonValueKind.Object)
         {
-            double x = Num(pin, "x", 0.5), y = Num(pin, "y", 0.5);
+            double x = JNum(pin, "x", 0.5), y = JNum(pin, "y", 0.5);
             var glyph = new FontIcon
             {
                 Glyph = "",  // MapPin
@@ -750,10 +751,10 @@ public static partial class IslandHost
         var wanted = new HashSet<ScreenAt>();
         foreach (JsonElement s in list.EnumerateArray())
         {
-            var at = new ScreenAt(Str(s, "addon"), Str(s, "id"));
+            var at = new ScreenAt(JStr(s, "addon"), JStr(s, "id"));
             wanted.Add(at);
-            long revision = (long)Num(s, "revision", 0);
-            string place = Str(s, "place");
+            long revision = (long)JNum(s, "revision", 0);
+            string place = JStr(s, "place");
             if (!ScreenWindows.TryGetValue(at, out var open))
             {
                 Window w = OpenScreenWindow(s, at, place);
@@ -786,7 +787,7 @@ public static partial class IslandHost
             var head = new Grid { Margin = new Thickness(0, 0, 0, 8) };
             head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            head.Children.Add(Text(Str(s, "title"), Title, UiFontSize, bold: true));
+            head.Children.Add(Text(JStr(s, "title"), Title, UiFontSize, bold: true));
             Button done = EditButton("Done", () => SlotNative.CloseScreen(at.Addon, at.Screen));
             done.AllowFocusOnInteraction = true;
             done.IsTabStop = true;
@@ -814,8 +815,8 @@ public static partial class IslandHost
 
     private static Window OpenScreenWindow(JsonElement s, ScreenAt at, string place)
     {
-        var w = new Window { Title = Str(s, "title") };
-        int width = (int)Num(s, "width", 0), height = (int)Num(s, "height", 0);
+        var w = new Window { Title = JStr(s, "title") };
+        int width = (int)JNum(s, "width", 0), height = (int)JNum(s, "height", 0);
         SlotRect main = default;
         bool haveMain = _themeWindow != IntPtr.Zero && SlotGetWindowRect(_themeWindow, out main);
         switch (place)

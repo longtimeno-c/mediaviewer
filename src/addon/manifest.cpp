@@ -593,9 +593,12 @@ decision check_manifest(std::span<const std::uint8_t> bytes, std::span<const std
       return f.path == p || f.path.rfind(p + "/", 0) == 0;
     });
   };
+  // An add-on that only fills screens and slots draws nothing of its own: the
+  // hosts render its trees (docs/design/25 PRs 58-59), so it may name no chrome.
+  const bool no_chrome = m.chrome.empty() && (!m.slots.empty() || m.slots.api_max != 0);
   if (m.part_of.empty()) {
-    if (!safe_relative_path(m.native) || !safe_relative_path(m.chrome) || !listed(m.native) ||
-        !listed(m.chrome)) {
+    if (!safe_relative_path(m.native) || !listed(m.native) ||
+        (!no_chrome && (!safe_relative_path(m.chrome) || !listed(m.chrome)))) {
       d.why = rejection::unsafe_path;
       return d;
     }

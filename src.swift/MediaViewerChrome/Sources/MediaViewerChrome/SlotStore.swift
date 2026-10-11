@@ -133,6 +133,7 @@ func slotSymbol(_ name: String) -> String {
   case "grid": return "square.grid.2x2"
   case "share": return "square.and.arrow.up"
   case "warning": return "exclamationmark.triangle"
+  case "minus": return "minus"
   default: return "puzzlepiece"
   }
 }

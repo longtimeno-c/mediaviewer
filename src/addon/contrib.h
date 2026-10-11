@@ -34,10 +34,10 @@ enum class screen_place : std::uint8_t { info_section, window, pane, sheet };
 // The glyphs a chrome item or badge may name: each host maps them to its own
 // symbol set (SF Symbols / Segoe Fluent Icons). An add-on ships no icon file
 // for a slot, so every item looks like the rest of the chrome.
-inline constexpr std::array<std::string_view, 24> kSymbols{
+inline constexpr std::array<std::string_view, 25> kSymbols{
     "map",   "pin",    "star",  "tag",    "search", "info",  "person", "camera",
     "folder", "sparkle", "check", "flag",  "heart",  "clock", "globe",  "photo",
-    "film",  "bolt",   "gear",  "plus",   "list",   "grid",  "share",  "warning"};
+    "film",  "bolt",   "gear",  "plus",   "list",   "grid",  "share",  "warning", "minus"};
 
 [[nodiscard]] constexpr bool known_symbol(std::string_view s) noexcept {
   for (std::string_view k : kSymbols) {

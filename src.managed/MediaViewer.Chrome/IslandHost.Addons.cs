@@ -286,6 +286,9 @@ public static partial class IslandHost
             Dictionary<string, AddonState> states = ReadAddonStates();
             try { AddonNative.WatchVolumes(session); }
             catch (MediaViewerException ex) { System.Diagnostics.Debug.WriteLine(ex.Message); }
+            // docs/design/25 PRs 58-59: the add-ons that fill screens and slots, on
+            // this worker, after the first-party ones are read.
+            StartSlotAddons(session);
             DispatcherQueueControllerTryEnqueue(() =>
             {
                 ApplyAddonStates(states);
@@ -591,7 +594,14 @@ public static partial class IslandHost
         // not a wrong-thread crash. On the UI thread (every caller today) they
         // still run inline, in order. The getters below are UI-thread only.
         public void OpenList(string title, IReadOnlyList<string> paths, IReadOnlyList<long>? momentsMs,
-                             int selectIndex, bool gallery) => OnUi(() => HostOpenList(title, paths, momentsMs, selectIndex, gallery));
+                             int selectIndex, bool gallery) => OnUi(() =>
+        {
+            HostOpenList(title, paths, momentsMs, selectIndex, gallery);
+            // docs/design/25 PR 59: the same query to the other Local search providers;
+            // their rows show in the path row when they arrive (IslandHost.Slots.cs).
+            _slotListTitle = title;
+            SlotNative.Search(SlotNative.ScopeLocal, title, "");
+        });
 
         public void SeekVideo(long ms, bool exact) => OnUi(() => HostSeekVideo(ms, exact));
         public void SetScrubMarkers(IReadOnlyList<long> ms, int currentIndex) => OnUi(() => HostSetScrubMarkers(ms, currentIndex));
@@ -916,6 +926,8 @@ public static partial class IslandHost
         // Milestone H: the Local search pill (IslandHost.LocalSearch.cs),
         // collapsed unless the AI pack is indexing.
         panel.Children.Add(BuildIndexingPill());
+        // docs/design/25 PR 59: the add-ons' command-bar buttons and status text.
+        panel.Children.Add(BuildSlotBarItems());
         return panel;
     }
 
@@ -950,6 +962,8 @@ public static partial class IslandHost
         view.Children.Add(_addonStatus);
         _importRestartButton = AddonRestartButton();
         view.Children.Add(_importRestartButton);
+        // docs/design/25 PRs 58-59: MediaViewer's own add-ons that fill screens and slots.
+        AddSlotAddonsSettingsRows(view);
         RefreshAddonRow();
         // Opening Settings asks the channel, whatever the automatic-check
         // switch says: the person is looking at what can be installed, or

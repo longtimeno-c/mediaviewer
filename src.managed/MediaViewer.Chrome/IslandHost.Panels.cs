@@ -143,11 +143,16 @@ public static partial class IslandHost
 
     public static int ShowMetaPane(IntPtr arg, int sizeBytes) => ShowPanel(
         arg, sizeBytes, _metaPane, BuildMetaPane,
-        onShown: () => _metaPaneVisible = true,
+        onShown: () =>
+        {
+            _metaPaneVisible = true;
+            AskSlotInfo();  // docs/design/25 PR 59: the add-ons' sections, only while it shows
+        },
         onHidden: () =>
         {
             _metaPaneVisible = false;
             DropMetaUi();
+            AskSlotInfo();  // closed: the sections go, nothing is asked
         });
 
     public static int ShowFolderTree(IntPtr arg, int sizeBytes) => ShowPanel(
@@ -532,6 +537,8 @@ public static partial class IslandHost
             }
             rows.Children.Add(row);
         }
+        // docs/design/25 PR 59: the add-ons' sections (Places' label, coordinates and map).
+        AddSlotSections(rows);
         rows.Children.Add(new Border { Height = 1, Background = Brush(Hairline), Margin = new Thickness(0, 4, 0, 4) });
         var foot = new Grid();
         foot.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -980,6 +987,7 @@ public static partial class IslandHost
             _metaStreamLines = streams.Split('\n', StringSplitOptions.RemoveEmptyEntries).ToList();
             _metaIsClip = _metaStreamLines.Count > 0;
             _metaLoading = a.Loading != 0;
+            AskSlotInfo();
             if (_metaPaneVisible && !OpenAskedComment()) RenderMeta();
             return 0;
         }
