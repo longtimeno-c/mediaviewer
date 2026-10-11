@@ -44,6 +44,8 @@ public static partial class IslandHost
         public const string FastForward = "\uEB9D";
         public const string More = "\uE712";
         public const string Close = "\uE711";
+        public const string Check = "\uE73E";
+        public const string Back = "\uE76B";
     }
 
     // An icon-only bar button in the flat style; the tooltip doubles as its

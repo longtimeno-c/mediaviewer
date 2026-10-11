@@ -846,6 +846,13 @@ class chrome_host {
   // Open > Recent folders: "label\tpath\n" lines, most recent first. Pushed
   // at attach and whenever the list changes.
   void set_recent_folders(const std::string& utf8_lines) noexcept;
+  // Issue #196 (the Mac's command bar). The notice line: `utf8` for `ms`
+  // milliseconds (empty clears it). False when the chrome has no notice line,
+  // so the caller keeps it in the window title. Optional entry point.
+  bool set_notice(const std::string& utf8, int ms) noexcept;
+  // The marked paths, one UTF-8 path per line, for "N marked" and the cells'
+  // mark badges; pushed when the marks change. Optional entry point.
+  void set_marks(const std::string& utf8_lines, std::int32_t count) noexcept;
 
   // Opens a flyout on the command bar, or closes any (chrome_popup::close).
   void show_popup(chrome_popup kind, std::int32_t mode_mask) noexcept;
@@ -924,6 +931,8 @@ class chrome_host {
   chrome_entry_fn run_addon_command_ = nullptr;  // docs/design/25, optional
   chrome_entry_fn set_drag_paths_ = nullptr;
   chrome_entry_fn set_recent_folders_ = nullptr;
+  chrome_entry_fn set_notice_ = nullptr;  // issue #196, optional
+  chrome_entry_fn set_marks_ = nullptr;   // issue #196, optional
   chrome_entry_fn show_popup_ = nullptr;
   chrome_entry_fn attach_panels_ = nullptr;
   chrome_entry_fn detach_panels_ = nullptr;

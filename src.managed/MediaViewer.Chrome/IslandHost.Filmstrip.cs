@@ -252,6 +252,7 @@ public static partial class IslandHost
                 ThumbPath = _folderSession.FolderItemThumbPath(i),
                 Selected = (rec.Flags & MvFolderItem.FlagSelected) != 0,
             });
+            if (MarkedPaths.Count > 0) Items[^1].Marked = MarkedPaths.Contains(Items[^1].Path);
         }
         int selected = -1;
         for (int i = 0; i < Items.Count; ++i)
@@ -294,6 +295,7 @@ public static partial class IslandHost
         }
         // File search: a new folder closes it, a new listing re-filters.
         OnGalleryListing(list, newFolder);
+        UpdateResultsBar();  // "N results" (issue #196)
     }
 
     // False on a core older than ABI 0.14, which has no result lists.
@@ -448,7 +450,7 @@ public static partial class IslandHost
                 MaxWidth = 88,
             };
             var col = new StackPanel { Spacing = 4 };
-            col.Children.Add(WithPlayBadge(WithBadge(image, vm.Badge), vm.IsClip, 28));
+            col.Children.Add(WithMarkBadge(WithPlayBadge(WithBadge(image, vm.Badge), vm.IsClip, 28), vm, out Border mark));
             col.Children.Add(name);
             var border = new Border
             {
@@ -469,6 +471,8 @@ public static partial class IslandHost
                 }
                 if (e.PropertyName is nameof(FolderItemVm.Selected) or null)
                     border.BorderThickness = new Thickness(vm.Selected ? 2 : 0);
+                if (e.PropertyName is nameof(FolderItemVm.Marked) or null)
+                    mark.Visibility = vm.Marked ? Visibility.Visible : Visibility.Collapsed;
             };
             border.Tapped += (_, _) => Send(Command.SelectItem, vm.Index);
             WireFileDrag(border, vm);
@@ -517,6 +521,18 @@ internal sealed class FolderItemVm : INotifyPropertyChanged
             if (_thumbPath == value) return;
             _thumbPath = value;
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ThumbPath)));
+        }
+    }
+    // Issue #196: in native's mark set (SetMarks), which is keyed by path.
+    private bool _marked;
+    public bool Marked
+    {
+        get => _marked;
+        set
+        {
+            if (_marked == value) return;
+            _marked = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Marked)));
         }
     }
     private bool _galleryCurrent;
