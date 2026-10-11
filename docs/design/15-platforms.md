@@ -111,6 +111,7 @@ Every feature exists on both platforms; this table records where the per-OS half
 
 | Feature | Shared | Windows half | macOS half |
 |---|---|---|---|
+| Worker pool | `core/job_system.cpp` (queues, lanes, cancellation) | `core/job_system_win.cpp`: thread name, `THREAD_PRIORITY_BELOW_NORMAL` | `core/job_system_posix.cpp`: thread name, QoS (UTILITY; USER_INITIATED while a view-tied job runs); an autorelease pool around each job and completion (`core/job_system_platform.h`) |
 | Present, idle-stop, pacing gate (PR 1) | `gfx/pacer` policy; one `gfx/frame_histogram` scores both pacers | DXGI lab | Metal lab |
 | Stills, colour, pan/zoom (PR 2, 7) | `codec/`, `image/`, `canvas/` | D3D11 upload + HLSL blit | Metal upload + MSL blit |
 | Chrome (PR 3) | ABI | WinUI islands | SwiftUI in AppKit |

@@ -40,11 +40,13 @@ target_compile_options(mv_project_options INTERFACE
 target_compile_definitions(mv_project_options INTERFACE MV_DARWIN=1)
 
 add_library(mv_core STATIC
-  src/core/job_system_posix.mm
+  src/core/job_system.cpp
+  src/core/job_system_posix.cpp
   src/core/trace_posix.cpp
   src/core/crash_context.cpp
   src/core/crash_context.h
   src/core/job_system.h
+  src/core/job_system_platform.h
   src/core/result.h
   src/core/spsc_ring.h
   src/core/status.h
@@ -52,9 +54,10 @@ add_library(mv_core STATIC
 )
 target_include_directories(mv_core PUBLIC src)
 target_link_libraries(mv_core PUBLIC mv_project_options)
-# job_system_posix.mm wraps each job body in @autoreleasepool (a job may call
-# Metal/AppKit APIs that autorelease temporaries) — needs the ObjC runtime.
-target_link_libraries(mv_core PRIVATE "-framework Foundation")
+# job_system.cpp wraps each job body and completion in an autorelease pool (a
+# job may call Metal/AppKit APIs that autorelease temporaries) through
+# objc_autoreleasePoolPush/Pop (core/job_system_platform.h): the ObjC runtime.
+target_link_libraries(mv_core PRIVATE objc)
 add_library(mv::core ALIAS mv_core)
 
 add_library(mv_gfx STATIC

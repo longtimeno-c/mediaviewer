@@ -176,11 +176,13 @@ endfunction()
 # tools/check-module-graph.ps1 enforces it in CI.
 # ---------------------------------------------------------------------------
 add_library(mv_core STATIC
+  src/core/job_system.cpp
   src/core/job_system_win.cpp
   src/core/trace_win.cpp
   src/core/crash_context.cpp
   src/core/crash_context.h
   src/core/job_system.h
+  src/core/job_system_platform.h
   src/core/result.h
   src/core/spsc_ring.h
   src/core/status.h

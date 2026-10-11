@@ -986,6 +986,8 @@ camera-sized HEIC run `python tools/testmedia/make-grid-heic.py` (after `fetch-h
 an ffmpeg with libx265 on `PATH`, a dev tool only): it writes `tools/testmedia/heif/grid-12mp.heic`,
 an iPhone's layout (4032x3024 as 8x6 tiles of 512, a 320x240 thumbnail item, Display P3 ICC).
 `MV_OS_CODEC=0` times the bundled libheif path, the one a PC without the HEVC extension takes.
+`mv_tests "job system per-job overhead"` (in the same tag) times the worker pool alone: 100,000
+empty jobs on four workers, foreground only and alternating lanes (on macOS, a QoS switch per job).
 
 The pacing soak cannot see a paused clip's cost (it presents nothing). `mv_tests "[idle]"`
 (macOS, headless, a synthetic clip) does: it prints the process's context switches and CPU
