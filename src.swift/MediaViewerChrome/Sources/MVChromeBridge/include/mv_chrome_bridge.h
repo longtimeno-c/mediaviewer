@@ -293,10 +293,12 @@ bool mv_chrome_meta_can_revert(void);
 void mv_chrome_meta_set_rating(int32_t stars);          // 0 clears
 void mv_chrome_meta_set_comment(const char* utf8);      // "" clears
 void mv_chrome_meta_revert(void);
-// Ctrl+I (edit_comment) shows the pane and asks for the comment field to take
-// keyboard focus; the sequence moves each time, so Swift focuses once per ask.
+// `I` (metadata_pane) shows the pane with the keyboard in it; Ctrl+I
+// (edit_comment) shows it and asks for the All tags search. The sequence moves
+// on each ask, so Swift focuses once per ask; `focus_tags` says which (issue #185).
 uint64_t mv_chrome_meta_focus_seq(void);
-// Hands the keyboard back to the canvas (Esc or Return in the comment field).
+bool mv_chrome_meta_focus_tags(void);
+// Hands the keyboard back to the canvas (Esc, or Return in an edit field).
 void mv_chrome_meta_blur(void);
 
 // PR 29 (owner, 2026-09-26): every tag editable. Queued like the PR 12
@@ -319,6 +321,9 @@ int32_t mv_chrome_notice_text(char* buf, int32_t size);
 // from a background task, never from the main actor. [any-thread] Writes
 // "name\tpath" lines; returns the length needed, or -1 if `dir` cannot be read.
 bool mv_chrome_tree_visible(void);
+// Esc, or Enter on a folder, in the tree: the keyboard back to the canvas (the
+// tree stays open). [main-thread]
+void mv_chrome_tree_blur(void);
 int32_t mv_chrome_list_subdirectories(const char* dir_utf8, char* buf, int32_t size);
 // The folder currently open in the viewer ("" when none). [main-thread]
 int32_t mv_chrome_current_folder(char* buf, int32_t size);
