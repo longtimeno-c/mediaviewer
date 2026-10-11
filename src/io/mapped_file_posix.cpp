@@ -40,6 +40,9 @@ result<mapped_file> mapped_file::open(std::string_view utf8_path) {
   void* p = ::mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0);
   ::close(fd);  // the mapping keeps the file referenced
   if (p == MAP_FAILED) return err(status::io);
+  // The callers read the whole mapping soon after (a checksum, then lookups);
+  // asking for it up front turns a thousand page faults into read-ahead.
+  (void)::madvise(p, size, MADV_WILLNEED);
   mapped_file f;
   f.data_ = p;
   f.size_ = size;

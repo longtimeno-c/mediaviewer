@@ -233,11 +233,15 @@ add_library(mv_io STATIC
   src/io/verified_copy.h
   src/io/volume.h
   src/io/volume_mac.cpp
+  # docs/design/06 "Place": the place database is read in place.
+  src/io/mapped_file.h
+  src/io/mapped_file_posix.cpp
 )
 find_package(blake3 CONFIG REQUIRED)
 target_link_libraries(mv_io PUBLIC mv_core PRIVATE "-framework CoreServices"
   "-framework CoreFoundation" "-framework DiskArbitration" BLAKE3::blake3)
 add_library(mv::io ALIAS mv_io)
+include("${CMAKE_CURRENT_LIST_DIR}/geo.cmake")
 
 # ---------------------------------------------------------------------------
 # mv_image — colour (LCMS) + PR 17's decode entrypoint + Metal upload +
@@ -860,6 +864,8 @@ if(MV_BUILD_TESTS)
     tests/test_playback_hold.cpp
     # Issue #236: a stale pending clip is retired, both hosts.
     tests/test_video_session.cpp
+    # Issue #344: the offline reverse geocoder (docs/design/06 "Place").
+    tests/test_geo.cpp
   )
   target_link_libraries(mv_tests PRIVATE
     mv_core
@@ -873,6 +879,7 @@ if(MV_BUILD_TESTS)
     mv_player
     mv_meta
     mv_clip
+    mv_geo_open
     JPEG::JPEG
     ${MV_SPNG_TARGET}
     GIF::GIF
@@ -887,6 +894,8 @@ if(MV_BUILD_TESTS)
     Catch2::Catch2WithMain
     "-framework Metal")
   target_include_directories(mv_tests PRIVATE src tools tests src/abi/include)
+  target_compile_definitions(mv_tests PRIVATE MV_GEO_FULL_BLOB="${MV_GEO_BLOB}"
+    MV_GEO_TEST_BLOB="${CMAKE_SOURCE_DIR}/tests/data/geo/places-test.mvgeo")
   # The clip helper with its test hooks (a crash, a hang, a software encoder).
   add_executable(mv_clipjob_test tools/clipjob/main.cpp)
   target_link_libraries(mv_clipjob_test PRIVATE mv_clip)

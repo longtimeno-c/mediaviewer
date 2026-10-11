@@ -99,8 +99,8 @@ NE_CODE_OVERRIDES = {
 }
 
 # GeoNames feature codes that are not a town a person would name: sections of
-# a city, historical, abandoned, destroyed, religious sites.
-SKIP_TOWN_CODES = {"PPLX", "PPLH", "PPLQ", "PPLW", "PPLCH"}
+# a city (PPLX, and PPLA5 such as the Paris arrondissements), historical, abandoned, destroyed, religious sites.
+SKIP_TOWN_CODES = {"PPLX", "PPLA5", "PPLH", "PPLQ", "PPLW", "PPLCH"}
 
 # --subset test: the CI test blob (tests/data/geo). Whole Natural Earth
 # features that touch these boxes, and the towns inside them.
@@ -124,6 +124,7 @@ LAYER_BASE = (16, 32)  # + POLYS, RINGS, POINTS, BANDS, EDGES, ROWS, CELLS, CAND
 L_POLYS, L_RINGS, L_POINTS, L_BANDS, L_EDGES, L_ROWS, L_CELLS, L_CANDS = range(8)
 FULL = 0x80000000
 NO_REGION = 0xFFFF
+REGION_COUNTRY = 1  # region flag: its country overrides the admin-0 polygon (Svalbard, Réunion)
 
 
 def log(*a):
@@ -590,9 +591,16 @@ def build(args):
     # GeoNames code most of the towns inside it carry (Natural Earth divides
     # some countries finer than GeoNames' first level: French departments map
     # to their region, UK councils to England/Scotland/Wales/Northern Ireland).
-    by_cc = {}
+    #
+    # Towns of any country vote, weighted by population, so a capital beats
+    # the suburbs that simplification lets in at the edge (Oslo, not Akershus),
+    # and a territory GeoNames files as its own country while Natural Earth
+    # draws it inside another (Svalbard in Norway, Réunion in France) takes
+    # the GeoNames country: the region record then carries REGION_COUNTRY and
+    # the lookup lets it override the admin-0 country.
+    town_cells = {}
     for t in towns:
-        by_cc.setdefault(t["cc"], []).append(t)
+        town_cells.setdefault((int(math.floor(t["lat"])), int(math.floor(t["lon"]))), []).append(t)
     region_keys = []
     region_info = {}  # key -> dict(country key, code, name, ascii, aliases, ne_count)
 
@@ -618,30 +626,54 @@ def build(args):
         cc = p.get("iso_a2") or ""
         if cc not in countries:
             cc = NE_CODE_OVERRIDES.get(p.get("adm0_a3"), cc)
-        votes = {}
+        polys = [tmp1.polys[pi] for pi in feat_polys[fi]]
+        cand = []
+        for pp in polys:
+            for r_ in range(pp["miny"] // Q, pp["maxy"] // Q + 1):
+                for c_ in range(pp["minx"] // Q, pp["maxx"] // Q + 1):
+                    cand.extend(town_cells.get((r_, c_), ()))
         lx, ly = p.get("longitude"), p.get("latitude")
-        cand = by_cc.get(cc, [])
-        if lx is not None and ly is not None and cand:
+        if lx is not None and ly is not None and len(cand) > 300:
             kx = math.cos(math.radians(ly))
-            near = sorted(cand, key=lambda t: ((t["lon"] - lx) * kx) ** 2 + (t["lat"] - ly) ** 2)[:60]
-            found = 0
-            for t in near:
-                x, y = qx(t["lon"]), qx(t["lat"])
-                if t["a1"] and t["a1"] != "00" and any(tmp1.contains(pi, x, y) for pi in feat_polys[fi]):
-                    code = f"{cc}.{t['a1']}"
-                    if code in a1:
-                        votes[code] = votes.get(code, 0) + 1
-                        found += 1
-                        if found >= 9:
-                            break
-        if votes:
+            cand = sorted(cand, key=lambda t: ((t["lon"] - lx) * kx) ** 2 + (t["lat"] - ly) ** 2)[:300]
+        country_votes = {}
+        code_votes = {}
+        inside = 0
+        for t in cand:
+            x, y = qx(t["lon"]), qx(t["lat"])
+            if not any(tmp1.contains(pi, x, y) for pi in feat_polys[fi]):
+                continue
+            w = max(t["pop"], 1000)
+            country_votes[t["cc"]] = country_votes.get(t["cc"], 0) + w
+            code = f"{t['cc']}.{t['a1']}"
+            if t["a1"] and t["a1"] != "00" and code in a1:
+                code_votes[code] = code_votes.get(code, 0) + w
+            inside += 1
+            if inside >= 40:
+                break
+        owner_cc = cc
+        override = False
+        if country_votes:
+            top = max(sorted(country_votes), key=lambda k: country_votes[k])
+            if top != cc and top in countries and country_votes[top] >= 0.8 * sum(country_votes.values()):
+                owner_cc, override = top, True
+        votes = {k: v for k, v in code_votes.items() if k.startswith(owner_cc + ".")}
+        gn = p.get("gn_a1_code") or ""
+        if not override and gn in a1 and (gn in votes or not votes):
+            # Natural Earth's own GeoNames code, confirmed by a town inside it:
+            # trusted over the vote (Vaduz's commune, not its bigger neighbour's
+            # town that simplification let in at the edge).
+            code = gn
+        elif votes and max(votes.values()) >= 0.5 * sum(votes.values()):
             code = max(sorted(votes), key=lambda k: votes[k])
-        elif (p.get("gn_a1_code") or "") in a1:
-            code = p["gn_a1_code"]
         else:
+            # No code, or a feature coarser than GeoNames' first level (all of
+            # Puerto Rico against its 78 municipalities): a Natural Earth-only
+            # region, so no town is filtered out by it.
             code = "ne:" + (p.get("adm1_code") or str(fi))
-        rk = region_key(code, cc if cc in countries else "")
+        rk = region_key(code, owner_cc if owner_cc in countries else "")
         r = region_info[rk]
+        r["override"] = r.get("override", False) or override
         if not r["name"]:
             r["name"] = p.get("name") or p.get("name_en") or ""
         r["ne"] += 1
@@ -716,7 +748,7 @@ def build(args):
         ck = r["country"]
         ci = c_new.get(cidx.get(ck, -1), 0xFFFF)
         aliases = sorted(a for a in r["aliases"] if a and a != r["name"])
-        region_recs.append(struct.pack("<HHIII", ci, 0, strings.add(r["code"]), strings.add(r["name"]),
+        region_recs.append(struct.pack("<HHIII", ci, REGION_COUNTRY if r.get("override") else 0, strings.add(r["code"]), strings.add(r["name"]),
                                        strings.add("\n".join(aliases))))
 
     # Towns, sorted by grid cell for nearest-neighbour lookup.

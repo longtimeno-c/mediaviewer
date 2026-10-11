@@ -137,7 +137,7 @@ bool valid_grid(std::span<const row> rows, std::span<const std::uint32_t> cells,
 
 // ---- open ---------------------------------------------------------------------------------
 
-result<database> database::from_bytes(std::span<const std::uint8_t> bytes) {
+result<database> database::from_bytes(std::span<const std::uint8_t> bytes, bool verify_checksum) {
   if (bytes.size() < sizeof(header) || reinterpret_cast<std::uintptr_t>(bytes.data()) % 8 != 0) {
     return err(status::corrupt);
   }
@@ -150,7 +150,7 @@ result<database> database::from_bytes(std::span<const std::uint8_t> bytes) {
       sizeof(header) + std::uint64_t{h.section_count} * sizeof(section) > bytes.size()) {
     return err(status::corrupt);
   }
-  if (checksum(bytes.data() + sizeof(header), bytes.size() - sizeof(header)) != h.checksum) {
+  if (verify_checksum && checksum(bytes.data() + sizeof(header), bytes.size() - sizeof(header)) != h.checksum) {
     return err(status::corrupt);
   }
   const std::span<const section> table{reinterpret_cast<const section*>(bytes.data() + sizeof(header)),
@@ -381,10 +381,13 @@ database::nearest_hit database::nearest(const poly_layer& l, std::int32_t x, std
   return best;
 }
 
-const town* database::nearest_town(std::int32_t x, std::int32_t y, double km, std::uint16_t country_index,
-                                   double& out_km) const noexcept {
-  const town* best = nullptr;
-  double best_km = km;
+const town* database::pick_town(std::int32_t x, std::int32_t y, double km, std::uint16_t country_index,
+                                std::uint16_t region_index, double& out_km) const noexcept {
+  const town* nearest_t = nullptr;
+  double nearest_km = km;
+  const town* urban_t = nullptr;
+  double urban_km = -1;
+  double urban_depth = 2;  // d / reach of urban_t: smaller is deeper inside
   const double lat = static_cast<double>(y) / k_q;
   const double kx = std::cos(lat * 3.14159265358979323846 / 180.0);
   const double ks = k_km_per_deg / k_q;
@@ -399,6 +402,7 @@ const town* database::nearest_town(std::int32_t x, std::int32_t y, double km, st
       ncols = std::min(360, c1 - c0 + 1);
     }
   }
+  constexpr double k_pi = 3.14159265358979323846;
   for (int r = r0; r <= r1; ++r) {
     for (int k = 0; k < ncols; ++k) {
       const int c = ((c0 + k) % 360 + 360) % 360;
@@ -406,22 +410,37 @@ const town* database::nearest_town(std::int32_t x, std::int32_t y, double km, st
       if (run.empty()) continue;
       for (std::uint32_t i = run[0]; i < run[1]; ++i) {
         const town& t = towns_[i];
-        if (t.country != country_index) continue;
+        if (country_index != k_no_country && t.country != country_index) continue;
+        if (region_index != k_no_region && t.region != k_no_region && t.region != region_index) continue;
         const double dyk = static_cast<double>(std::int64_t{t.y} - y) * ks;
-        if (dyk > best_km || dyk < -best_km) continue;
+        if (dyk > km || dyk < -km) continue;
         const double dxk = static_cast<double>(wrap_dx(std::int64_t{t.x} - x)) * ks * kx;
         const double d = std::sqrt(dxk * dxk + dyk * dyk);
+        if (d > km) continue;
         // Ties (twin entries for one place) go to the larger population, which
         // the writer sorts first within a cell.
-        if (d < best_km || (best == nullptr && d <= best_km)) {
-          best = &t;
-          best_km = d;
+        if (d < nearest_km || (nearest_t == nullptr && d <= nearest_km)) {
+          nearest_t = &t;
+          nearest_km = d;
+        }
+        const double reach = std::sqrt(static_cast<double>(t.population) / (k_pi * k_urban_people_per_km2));
+        // Inside several towns' reach (a metro area of adjacent cities): the
+        // one the point is deepest inside, so central Manila is Manila, not
+        // the larger Quezon City next door.
+        if (reach > 0 && d <= reach && d / reach < urban_depth) {
+          urban_t = &t;
+          urban_km = d;
+          urban_depth = d / reach;
         }
       }
     }
   }
-  out_km = best ? best_km : -1;
-  return best;
+  if (urban_t) {
+    out_km = urban_km;
+    return urban_t;
+  }
+  out_km = nearest_t ? nearest_km : -1;
+  return nearest_t;
 }
 
 // ---- lookup -------------------------------------------------------------------------------
@@ -438,6 +457,8 @@ place database::lookup(double lat, double lon, const lookup_options& opts) const
   const auto y = static_cast<std::int32_t>(std::clamp<long long>(std::llround(lat * k_q), -90LL * k_q,
                                                                  90LL * k_q));
 
+  // Country: the admin-0 polygon; else, just off it, the nearest one (a
+  // beach, a pier, an atoll); else at sea, off the nearest within 25 km.
   std::uint16_t ci = k_no_country;
   bool land = false;
   const std::uint32_t p0 = find(l0_, x, y);
@@ -449,6 +470,27 @@ place database::lookup(double lat, double lon, const lookup_options& opts) const
     if (hit.polygon != k_none) {
       ci = l0_.polys[hit.polygon].owner;
       land = hit.km <= k_coast_snap_km;
+    }
+    if (!land && hit.polygon != k_none) {
+      double km = -1;
+      if (const town* t = pick_town(x, y, k_town_land_km, k_no_country, k_no_region, km)) {
+        ci = t->country;
+        land = true;
+      }
+    }
+  }
+
+  // Region: the admin-1 polygon, or the nearest one just off it. A region
+  // flagged k_region_country names the country too (Svalbard, Réunion).
+  std::uint16_t ri = k_no_region;
+  if (land) {
+    std::uint32_t p1 = find(l1_, x, y);
+    if (p1 == k_none) p1 = nearest(l1_, x, y, k_coast_snap_km).polygon;
+    if (p1 != k_none) {
+      const std::uint16_t cand = l1_.polys[p1].owner;
+      const region& r = regions_[cand];
+      if ((r.flags & k_region_country) && r.country != k_no_country) ci = r.country;
+      if (r.country == ci) ri = cand;
     }
   }
 
@@ -465,33 +507,38 @@ place database::lookup(double lat, double lon, const lookup_options& opts) const
     return out;
   }
 
-  std::uint32_t p1 = find(l1_, x, y);
-  if (p1 == k_none) p1 = nearest(l1_, x, y, k_coast_snap_km).polygon;
-  if (p1 != k_none) {
-    const region& r = regions_[l1_.polys[p1].owner];
-    if (r.country == ci) {
-      out.region = std::string(str(r.name));
-      out.region_code = std::string(str(r.code));
-    }
+  if (ri != k_no_region) {
+    out.region = std::string(str(regions_[ri].name));
+    out.region_code = std::string(str(regions_[ri].code));
   }
 
   if (opts.town_radius_km > 0 && ci != k_no_country) {
+    // Towns of the point's own region only, where the region is a GeoNames
+    // one (a Natural Earth-only region has no towns filed under it).
+    const std::uint16_t town_region = ri != k_no_region && !out.region_code.empty() ? ri : k_no_region;
     double km = -1;
-    if (const town* t = nearest_town(x, y, opts.town_radius_km, ci, km)) {
+    if (const town* t = pick_town(x, y, opts.town_radius_km, ci, town_region, km)) {
       out.town = std::string(str(t->name));
       out.town_km = km;
+      // No region polygon (an atoll narrower than the data): the town's own.
+      if (ri == k_no_region && t->region != k_no_region && regions_[t->region].country == ci) {
+        out.region = std::string(str(regions_[t->region].name));
+        out.region_code = std::string(str(regions_[t->region].code));
+      }
     }
   }
 
   // "Town, Region, Country", skipping what is empty or repeats its neighbour
   // ("Madrid, Spain", not "Madrid, Madrid, Spain"; "Singapore", once).
   const std::string_view parts[3] = {out.town, out.region, out.country};
-  std::string_view last;
+  std::string last;
   for (std::string_view part : parts) {
-    if (part.empty() || key_of(part) == key_of(last)) continue;
+    if (part.empty()) continue;
+    std::string key = key_of(part);
+    if (key == last) continue;
     if (!out.label.empty()) out.label += ", ";
     out.label += part;
-    last = part;
+    last = std::move(key);
   }
   return out;
 }

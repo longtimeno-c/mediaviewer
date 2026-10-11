@@ -77,9 +77,14 @@ struct country {
 };
 static_assert(sizeof(country) == 16);
 
+// region::flags: the region's country wins over the admin-0 polygon. Set where
+// GeoNames files a territory as its own country but Natural Earth draws it
+// inside another (Svalbard inside Norway, Réunion inside France).
+inline constexpr std::uint16_t k_region_country = 1;
+
 struct region {
   std::uint16_t country;  // index, or k_no_country
-  std::uint16_t flags;
+  std::uint16_t flags;    // k_region_country
   std::uint32_t code;  // GeoNames admin-1 code ("PT.14"), "" for a Natural Earth-only region
   std::uint32_t name;
   std::uint32_t aliases;

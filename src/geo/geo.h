@@ -37,6 +37,16 @@ inline constexpr double k_off_coast_km = 25.0;    // "At sea, off <country>" wit
 // nearest one. The polygons are simplified (~1 km on coasts, ~250 m on
 // borders), so a beach, a harbour wall or a pier can fall just outside them.
 inline constexpr double k_coast_snap_km = 1.5;
+// Off every polygon but this close to a town: on land, in the town's country.
+// Atolls (Tarawa, the Maldives) are narrower than the simplification.
+inline constexpr double k_town_land_km = 2.0;
+// A town "contains" a point within sqrt(population / (pi * density)): a city of
+// 500 000 reaches ~5.6 km, of 8 million ~23 km. Within that, the town the
+// point is deepest inside (smallest distance / reach) names it, so the Eiffel
+// Tower is in Paris rather than its nearest district and Times Square in New
+// York City rather than across the river. Outside every town's reach, the
+// nearest town within the radius.
+inline constexpr double k_urban_people_per_km2 = 5000.0;
 
 struct lookup_options {
   double town_radius_km = k_town_radius_km;  // <= 0: never name a town
@@ -88,8 +98,11 @@ class database {
   // 8-byte aligned (a mapping always does). Every offset, count and index the
   // lookups use is bounds-checked here, once, and the checksum is verified;
   // a truncated, damaged or foreign file is status::corrupt (or
-  // unsupported_format for a newer version), never a crash.
-  [[nodiscard]] static result<database> from_bytes(std::span<const std::uint8_t> bytes);
+  // unsupported_format for a newer version), never a crash. The checksum
+  // catches damage; it is not what keeps the reader safe, so the fuzzer and
+  // the mutation test turn it off to reach the bounds checks behind it.
+  [[nodiscard]] static result<database> from_bytes(std::span<const std::uint8_t> bytes,
+                                                   bool verify_checksum = true);
 
   // The place at (lat, lon) in degrees (WGS 84). Longitude is wrapped,
   // latitude clamped to the poles. NaN or infinite input gives an empty place
@@ -151,8 +164,10 @@ class database {
   [[nodiscard]] bool contains(const poly_layer& l, std::uint32_t p, std::int32_t x, std::int32_t y) const noexcept;
   [[nodiscard]] std::uint32_t find(const poly_layer& l, std::int32_t x, std::int32_t y) const noexcept;
   [[nodiscard]] nearest_hit nearest(const poly_layer& l, std::int32_t x, std::int32_t y, double km) const;
-  [[nodiscard]] const blob::town* nearest_town(std::int32_t x, std::int32_t y, double km, std::uint16_t country,
-                                               double& out_km) const noexcept;
+  // The town that names (x, y): see k_urban_people_per_km2. `country` (or any
+  // country for k_no_country) and, unless k_no_region, `region` must match.
+  [[nodiscard]] const blob::town* pick_town(std::int32_t x, std::int32_t y, double km, std::uint16_t country,
+                                            std::uint16_t region, double& out_km) const noexcept;
   [[nodiscard]] std::string country_code(std::uint16_t c) const;
   [[nodiscard]] const poly_layer& layer_of(layer l) const noexcept { return l == layer::countries ? l0_ : l1_; }
 
