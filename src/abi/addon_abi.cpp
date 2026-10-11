@@ -15,6 +15,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 
 #include "abi/addon_bridge.h"
@@ -31,6 +32,7 @@
 #include "io/file_port.h"
 #include "io/paths.h"
 #include "io/volume.h"
+#include "meta/location.h"
 #include "meta/meta.h"
 
 namespace {
@@ -91,6 +93,9 @@ status write_out(const std::string& text, char* out, uint32_t cap, uint32_t* nee
 // docs/design/25: what a manifest contributes, as the chromes and the shell read it.
 void write_contributions(mv::json::writer& w, const mv::addon::manifest& m) {
   w.key("description").string(m.description);
+  // docs/design/25 PRs 58-59: it fills screens or slots (load it with
+  // MV_SLOTS_INTERFACE to attach them).
+  w.key("slots").boolean(!m.slots.empty());
   w.key("hint_on").string(m.hint_on);
   w.key("hint_text").string(m.hint_text);
   w.key("commands").begin_array();
@@ -151,6 +156,25 @@ mv::result<std::string> thumbnail(const std::string& path) {
 }  // namespace
 
 extern "C" {
+
+// docs/design/25 PR 58: a screen's thumbnail / thumbnail_grid tile, by path.
+// [worker-thread]. A clip has no poster here (the player makes those), and is
+// refused before anything is read.
+MV_API mv_status MV_CALL mv_slots_thumbnail_path(const char* path_utf8, char* out, uint32_t cap,
+                                                 uint32_t* needed) {
+  return static_cast<mv_status>(mv::abi::guard("mv_slots_thumbnail_path", [&] {
+    MV_REQUIRE(path_utf8, "path required");
+    std::string lower(path_utf8);
+    for (char& c : lower) c = static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
+    for (const char* ext : {".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi", ".ts", ".mts", ".m2ts"}) {
+      const std::size_t n = std::strlen(ext);
+      if (lower.size() >= n && lower.compare(lower.size() - n, n, ext) == 0) return status::unsupported_format;
+    }
+    auto made = thumbnail(path_utf8);
+    if (!made) return made.error();
+    return write_out(*made, out, cap, needed);
+  }));
+}
 
 MV_API void MV_CALL mv_present_set_busy(uint32_t busy) {
   g_present_busy.store(busy != 0, std::memory_order_relaxed);
@@ -468,6 +492,20 @@ mv::status load_addon(mv_session_t session, const char* id, const char* interfac
       c.generation = e.kind;
       c.payload = e.payload;
       mv::abi::push_addon_completion(session, c);
+    };
+    // Host table v3 (docs/design/25 PR 59): a file's coordinates, a bounded read.
+    svc.location = [](const std::string& path) -> std::optional<mv_addon_location> {
+      const auto fix = mv::meta::read_location(path);
+      if (!fix) return std::nullopt;
+      mv_addon_location l{};
+      l.has = 1;
+      l.lat = fix->lat;
+      l.lon = fix->lon;
+      if (fix->altitude) {
+        l.has_altitude = 1;
+        l.altitude_m = *fix->altitude;
+      }
+      return l;
     };
     if (auto lib = mv::io::default_library_dir()) svc.default_library = *lib;
     // Host table v2 (Milestone H): pixels from the viewer's own decoders.

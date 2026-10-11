@@ -107,7 +107,12 @@ final class MetadataStore: ObservableObject {
 
   private func poll() {
     let nowVisible = mv_chrome_meta_pane_visible()
-    if nowVisible != visible { visible = nowVisible }
+    if nowVisible != visible {
+      visible = nowVisible
+      // docs/design/25 PR 59: the add-ons' sections are asked for only while
+      // the pane shows, and go when it closes.
+      if nowVisible { askSlots() } else { SlotStore.shared.clearInfo() }
+    }
     guard nowVisible else { return }  // closed: no parsing, no work
     let isLoading = mv_chrome_meta_loading()
     if isLoading != loading { loading = isLoading }
@@ -180,5 +185,30 @@ final class MetadataStore: ObservableObject {
     }
     streams = parsed
     chapters = chaps
+    askSlots()
+  }
+
+  // MARK: add-on sections (docs/design/25 PR 59)
+
+  /// An add-on attached or detached: ask again for the file on screen.
+  func slotsChanged() { if visible { askSlots() } }
+
+  /// The file on screen and the pane's own location text, for the add-ons'
+  /// info sections. SlotStore asks once per file and only when one contributes
+  /// a section; a section that needs a location is not asked for a file
+  /// without one.
+  private func askSlots() {
+    guard visible, !summary.isEmpty else {
+      SlotStore.shared.clearInfo()
+      return
+    }
+    let index = mv_chrome_current_index()
+    guard index >= 0 else { return }
+    let need = Int(mv_chrome_item_path(index, nil, 0))
+    guard need > 0 else { return }
+    var buf = [CChar](repeating: 0, count: need + 1)
+    _ = buf.withUnsafeMutableBufferPointer { mv_chrome_item_path(index, $0.baseAddress, Int32($0.count)) }
+    let location = summary.first { $0.label == "Location" }?.value ?? ""
+    SlotStore.shared.requestInfo(path: String(cString: buf), locationText: location, width: 300)
   }
 }

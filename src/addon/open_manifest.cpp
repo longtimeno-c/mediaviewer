@@ -91,7 +91,6 @@ bool version_text(std::string_view v) noexcept {
 constexpr std::array<std::string_view, 12> kTopLevelKeys{
     "schema", "id", "name", "version", "description", "licence", "publisher",
     "update_url", "api", "installed_size", "files", "contributes"};
-constexpr std::array<std::string_view, 1> kContributesKeys{"themes"};
 // Code, by any name the plan gives it: never loaded from a schema 2 add-on by
 // a host that runs none (docs/design/25 "Code").
 constexpr std::array<std::string_view, 4> kCodeKeys{"native", "chrome", "scripts", "main"};
@@ -346,7 +345,18 @@ open_decision check_open_manifest(std::span<const std::uint8_t> bytes,
           }
           m.themes.push_back(theme_ref{*theme_id, *theme_name, *theme_path});
         }
-      } else if (strict && !known(kContributesKeys, key_name)) {
+      } else if (contribution_api(key_name) >= 4 && contribution_api(key_name) <= api) {
+        // Screens and slots (PRs 58-59) are filled by code: a stranger's add-on
+        // gets them with PR 57's sandboxed scripts, not before. MediaViewer's
+        // own native add-ons fill them through the host table (manifest.cpp).
+        d.why = rejection::code_not_allowed;
+        return d;
+      } else if (strict) {
+        // A point this host has not built, in a manifest that claims no API
+        // past this host's: unknown (contribution_api() == 0), or named under
+        // an API too old for it. Either is a mistake, not something a newer
+        // host would read. A manifest reaching past the host's API may carry
+        // points for a later host; this one leaves them alone.
         return d;
       }
     }

@@ -337,6 +337,8 @@ find_package(exiv2 CONFIG REQUIRED)
 
 add_library(mv_meta STATIC
   src/meta/read.cpp
+  src/meta/location.cpp
+  src/meta/location.h
   src/meta/still.cpp
   src/meta/carried.cpp
   src/meta/clip.cpp
@@ -610,6 +612,8 @@ set(MV_MAC_HOST_SOURCES
   # Milestone G: add-ons (Settings > Add-ons, the Import chrome's host side).
   src/shell/addons_mac.mm
   src/shell/addons_mac.h
+  # docs/design/25 PRs 58-59: screens and slots, the registry behind the bridge.
+  src/shell/slots_mac.mm
   # docs/design/23: Final Cut Pro on / off (the agent and extension in the bundle).
   src/shell/fcp_mac.mm
   src/shell/present_busy.h
@@ -619,6 +623,7 @@ set_source_files_properties(
   src/shell/crash_reporter_mac.mm
   src/shell/present_lab_mac.mm
   src/shell/addons_mac.mm
+  src/shell/slots_mac.mm
   src/shell/fcp_mac.mm
   src/shell/install_from_dmg_mac.mm
   PROPERTIES COMPILE_FLAGS "-fobjc-arc")
@@ -828,6 +833,7 @@ if(MV_BUILD_TESTS)
     tests/test_pdf_mac.mm
     # PR 9: the metadata read model. Fixtures are built in the test.
     tests/test_meta.cpp
+    tests/test_meta_location.cpp
     tests/test_meta_store.cpp
     # PR 12: the metadata writer, and the host-shared write queue.
     tests/test_meta_write.cpp
@@ -925,6 +931,8 @@ if(MV_BUILD_TESTS)
     tests/test_verified_copy.cpp
     tests/test_addon_manifest.cpp
     tests/test_open_addons.cpp
+    tests/test_addon_screens.cpp
+    tests/test_addon_slots.cpp
     tests/test_import_naming.cpp
     tests/test_import_engine.cpp
     tests/test_json.cpp
@@ -933,12 +941,13 @@ if(MV_BUILD_TESTS)
     unofficial-sodium::sodium Catch2::Catch2WithMain)
   target_include_directories(mv_import_tests PRIVATE src tests)
   target_compile_definitions(mv_import_tests PRIVATE
-    MV_IMPORT_MODULE_PATH="$<TARGET_FILE:mv_import>")
+    MV_IMPORT_MODULE_PATH="$<TARGET_FILE:mv_import>"
+    MV_SLOTS_TEST_MODULE_PATH="$<TARGET_FILE:mv_slots_test_addon>")
   if(MV_ADDON_DEV_PUBLIC_KEY)
     # A developer build pins its own key (cmake/import.cmake); CI never sets it.
     target_compile_definitions(mv_import_tests PRIVATE MV_TEST_DEV_ADDON_KEY=1)
   endif()
-  add_dependencies(mv_import_tests mv_import)
+  add_dependencies(mv_import_tests mv_import mv_slots_test_addon)
   catch_discover_tests(mv_import_tests TEST_PREFIX "import_" PROPERTIES ENVIRONMENT "TZ=UTC"
     SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT ${MV_TEST_TIMEOUT})
 

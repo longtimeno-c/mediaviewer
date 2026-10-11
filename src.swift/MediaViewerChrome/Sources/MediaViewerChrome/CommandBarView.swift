@@ -246,6 +246,8 @@ public struct CommandBarView: View {
         AddonBarItems()
         // Milestone H: the indexing pill, only while the AI pack is indexing.
         LocalSearchBarItem()
+        // docs/design/25 PR 59: the add-ons' command-bar buttons and status text.
+        SlotBarItems()
         Spacer()
         // PR 12: what a rating key or a metadata write just did.
         if !notice.text.isEmpty {
@@ -434,6 +436,8 @@ struct PathBar: View {
           .help(crumbs.last?.path ?? current.name)
       }
       PathSearchButton()
+      // docs/design/25 PR 59: the add-ons' path-bar icons.
+      SlotPathItems()
     }
     .font(MVTheme.font(14))
     .padding(.horizontal, 6)
@@ -490,6 +494,8 @@ private struct ListTitleBar: View {
         .font(MVTheme.font(13))
         .foregroundStyle(MVTheme.body)
         .contentTransition(.numericText())
+      // docs/design/25 PR 59: what the other Local search providers matched.
+      SlotLocalMore(title: title)
       Spacer(minLength: 0)
     }
     .font(MVTheme.font(14))
