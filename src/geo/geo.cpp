@@ -199,6 +199,11 @@ result<database> database::from_bytes(std::span<const std::uint8_t> bytes, bool 
         l.polys.size() >= k_full) {
       return err(status::corrupt);
     }
+    // Every point on the globe, so the exact 64-bit crossing test cannot
+    // overflow (differences stay within 360 degrees of microdegrees).
+    for (const point& pt : l.points) {
+      if (pt.x < -180 * k_q || pt.x > 180 * k_q || pt.y < -90 * k_q || pt.y > 90 * k_q) return err(status::corrupt);
+    }
     const std::size_t owners = li == 0 ? db.countries_.size() : db.regions_.size();
     for (const polygon& p : l.polys) {
       if (p.min_x > p.max_x || p.min_y > p.max_y || p.owner >= owners || p.ring_count == 0 ||
@@ -220,7 +225,7 @@ result<database> database::from_bytes(std::span<const std::uint8_t> bytes, bool 
       if (e1 > l.edges.size()) return err(status::corrupt);
       for (std::uint32_t e = e0; e < e1; ++e) {
         const std::uint32_t i = l.edges[e];
-        if (i < p.first_point || i + 1 >= p.point_end) return err(status::corrupt);
+        if (i < p.first_point || std::uint64_t{i} + 1 >= p.point_end) return err(status::corrupt);
       }
     }
     for (std::uint32_t c : l.cands) {

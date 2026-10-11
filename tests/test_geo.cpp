@@ -9,6 +9,7 @@
 //                              blob has been built (cmake --build build
 //                              --target mv_geo_data); MV_REQUIRE_GEO=1 makes
 //                              its absence a failure instead of a skip.
+//                              MV_GEO_BLOB=path names a blob built elsewhere.
 //   mv_tests "[.perf-bench]"   load and lookup timings on the full blob.
 #include <algorithm>
 #include <chrono>
@@ -113,6 +114,12 @@ struct aligned_copy {
   }
   std::uint8_t* data() { return reinterpret_cast<std::uint8_t*>(words.data()); }
 };
+
+// The full blob: MV_GEO_BLOB (CI restores it from its cache), else the build's.
+std::string full_blob() {
+  const char* env = std::getenv("MV_GEO_BLOB");
+  return env && *env ? env : MV_GEO_FULL_BLOB;
+}
 
 }  // namespace
 
@@ -285,12 +292,13 @@ TEST_CASE("geo: a missing blob means no places, quietly", "[geo]") {
 }
 
 TEST_CASE("geo: 300 hand-checked coordinates on the full blob", "[geo]") {
-  if (!std::filesystem::exists(MV_GEO_FULL_BLOB)) {
+  const std::string path = full_blob();
+  if (!std::filesystem::exists(path)) {
     const char* req = std::getenv("MV_REQUIRE_GEO");
-    if (req && *req == '1') FAIL("MV_REQUIRE_GEO=1 and " MV_GEO_FULL_BLOB " is missing; build target mv_geo_data");
+    if (req && *req == '1') FAIL("MV_REQUIRE_GEO=1 and " << path << " is missing; build target mv_geo_data");
     SKIP("full place database not built (cmake --build build --target mv_geo_data)");
   }
-  auto db = mv::geo::open_database(MV_GEO_FULL_BLOB);
+  auto db = mv::geo::open_database(path);
   REQUIRE(db.has_value());
   int bad = 0;
   for (const table_row& r : k_table) {
@@ -305,17 +313,18 @@ TEST_CASE("geo: 300 hand-checked coordinates on the full blob", "[geo]") {
 }
 
 TEST_CASE("geo: load and lookup timings", "[.perf-bench]") {
-  if (!std::filesystem::exists(MV_GEO_FULL_BLOB)) SKIP("full place database not built");
+  const std::string path = full_blob();
+  if (!std::filesystem::exists(path)) SKIP("full place database not built");
   using clock = std::chrono::steady_clock;
   std::vector<double> loads;
   for (int i = 0; i < 9; ++i) {
     const auto t0 = clock::now();
-    auto db = mv::geo::open_database(MV_GEO_FULL_BLOB);
+    auto db = mv::geo::open_database(path);
     loads.push_back(std::chrono::duration<double, std::milli>(clock::now() - t0).count());
     REQUIRE(db.has_value());
   }
   std::sort(loads.begin(), loads.end());
-  auto db = mv::geo::open_database(MV_GEO_FULL_BLOB);
+  auto db = mv::geo::open_database(path);
   REQUIRE(db.has_value());
   const mv::geo::database& d = (*db)->db();
 

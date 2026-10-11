@@ -55,6 +55,8 @@ $table = [ordered]@{
     animation   = @{ Seeds = @('gif', 'webp', 'png', 'heic', 'avif');   MaxLen = 131072 }
     pdf         = @{ Seeds = @('pdf');                                  MaxLen = 65536 }
     docx        = @{ Seeds = @('docx');                                 MaxLen = 65536 }
+    # The place database loader (docs/design/06 "Place"); its seed is the test blob.
+    geo         = @{ Seeds = @(); SeedDirs = @('tests\data\geo');     MaxLen = 131072 }
 }
 
 if ($Harness.Count -eq 1 -and $Harness[0] -match ',') { $Harness = $Harness[0] -split ',' }
@@ -81,6 +83,11 @@ foreach ($name in $Harness) {
     $seedDirs = @()
     foreach ($family in $table[$name].Seeds) {
         $d = Join-Path $seeds $family
+        if (Test-Path $d) { $seedDirs += $d }
+    }
+    foreach ($rel in @($table[$name].SeedDirs)) {
+        if (-not $rel) { continue }
+        $d = Join-Path $repo $rel
         if (Test-Path $d) { $seedDirs += $d }
     }
     if ($name -in @('decode', 'animation', 'png', 'gif', 'tiff', 'ico', 'bmp', 'jpeg', 'webp', 'heic', 'avif', 'raw')) {

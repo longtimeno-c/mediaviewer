@@ -118,7 +118,7 @@ if(NOT MV_FUZZ_MODE MATCHES "^static")
 endif()
 
 # Instrument everything that links mv_project_options.
-set(MV_FUZZ_INSTRUMENTED mv_core mv_codec mv_image mv_gfx mv_io)
+set(MV_FUZZ_INSTRUMENTED mv_core mv_codec mv_image mv_gfx mv_io mv_geo)
 set_target_properties(${MV_FUZZ_INSTRUMENTED} PROPERTIES
   MSVC_RUNTIME_LIBRARY "${MV_FUZZ_CRT}")
 target_compile_options(mv_project_options INTERFACE
@@ -134,7 +134,7 @@ target_compile_definitions(mv_project_options INTERFACE
   _DISABLE_OPTIONAL_ANNOTATION)
 
 set(MV_FUZZ_HARNESSES
-  jpeg png bmp gif webp tiff ico heic avif raw raw_preview decode animation thumbnail pdf docx)
+  jpeg png bmp gif webp tiff ico heic avif raw raw_preview decode animation thumbnail pdf docx geo)
 
 add_custom_target(mv_fuzzers)
 
@@ -142,7 +142,12 @@ foreach(name IN LISTS MV_FUZZ_HARNESSES)
   set(target fuzz_${name})
   add_executable(${target} fuzz_${name}.cpp fuzz_common.h)
   target_include_directories(${target} PRIVATE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}")
-  target_link_libraries(${target} PRIVATE mv_codec)
+  if(name STREQUAL "geo")
+    # docs/design/06 "Place": the place database loader, not a decoder.
+    target_link_libraries(${target} PRIVATE mv_geo)
+  else()
+    target_link_libraries(${target} PRIVATE mv_codec)
+  endif()
   if(name STREQUAL "decode")
     target_link_libraries(${target} PRIVATE mv_image)
   endif()
