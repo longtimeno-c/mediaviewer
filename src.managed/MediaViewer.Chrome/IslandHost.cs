@@ -914,39 +914,6 @@ public static partial class IslandHost
         return new FontFamily("Consolas");
     }
 
-    private static Button TextButton(string label, Action click)
-    {
-        var button = new Button
-        {
-            Content = new TextBlock
-            {
-                Text = label,
-                FontFamily = UiFont,
-                FontSize = UiFontSize,
-                FontWeight = Microsoft.UI.Text.FontWeights.Normal,
-                Foreground = Brush(Title),
-            },
-            Foreground = Brush(Title),
-            Background = new SolidColorBrush(Colors.Transparent),
-            BorderThickness = new Thickness(0),
-            Padding = new Thickness(14, 7, 14, 7),
-            FontFamily = UiFont,
-            FontSize = UiFontSize,
-            FontWeight = Microsoft.UI.Text.FontWeights.Normal,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center,
-            // Clicking Open / Play / More must not park keyboard focus on the
-            // island, or A/D/Q/E wait for the window to be deactivated.
-            AllowFocusOnInteraction = false,
-        };
-        // WinUI's own template, restyled through lightweight resources only:
-        // a custom ControlTemplate that loads in these islands fail-fasts
-        // (0xC000027B) once a bar flyout opens or closes (2026-09-27).
-        FlattenButton(button);
-        button.Click += (_, _) => Guarded(click);
-        return button;
-    }
-
     // Every chrome click runs through here. An exception escaping a XAML event
     // handler is a fail-fast (0xC000027B) with no managed report, so a bug in
     // one button must not take the viewer down with it.

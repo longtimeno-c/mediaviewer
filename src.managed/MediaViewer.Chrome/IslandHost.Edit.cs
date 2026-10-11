@@ -283,47 +283,6 @@ public static partial class IslandHost
         b.Loaded += (_, _) => Dim();
     }
 
-    private static Button EditButton(string label, Action click, bool compact = true, string? tip = null,
-                                     bool stretch = false)
-    {
-        double size = compact ? UiFontSize - 2 : UiFontSize;
-        var b = new Button
-        {
-            Content = new TextBlock
-            {
-                Text = label, FontFamily = UiFont, FontSize = size, Foreground = Brush(Title),
-                TextTrimming = TextTrimming.CharacterEllipsis,
-            },
-            Background = Brush(Colors.Transparent),
-            BorderThickness = new Thickness(0),
-            Padding = compact ? new Thickness(8, 5, 8, 5) : new Thickness(14, 7, 14, 7),
-            FontFamily = UiFont,
-            FontSize = size,
-            HorizontalAlignment = stretch ? HorizontalAlignment.Stretch : HorizontalAlignment.Left,
-            HorizontalContentAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center,
-            // A click must not park the keyboard on the island: the crop and
-            // trim keys belong to the canvas (the Mac host re-focuses its view).
-            AllowFocusOnInteraction = false,
-        };
-        FlattenButton(b);
-        b.Click += (_, _) =>
-        {
-            try
-            {
-                click();
-            }
-            catch (Exception ex)
-            {
-                // Never let an exception out of a XAML event: that is a fail-fast.
-                System.Diagnostics.Debug.WriteLine(ex);
-            }
-        };
-        AutomationProperties_SetName(b, label);
-        if (tip is not null) ToolTipService.SetToolTip(b, tip);
-        return b;
-    }
-
     private static void SetSelected(Button b, bool selected)
     {
         // FlatButtonStyle: selected wears the pressed wash.

@@ -1099,24 +1099,6 @@ public static partial class IslandHost
         e.Handled = true;
     }
 
-    private static Button FlatButton(UIElement content, Thickness padding, bool tabStop = true)
-    {
-        var b = new Button
-        {
-            Content = content,
-            Background = Brush(Colors.Transparent),
-            BorderThickness = new Thickness(0),
-            Padding = padding,
-            IsTabStop = tabStop,
-            AllowFocusOnInteraction = false,
-            HorizontalContentAlignment = HorizontalAlignment.Left,
-        };
-        // No grey disabled fill (a disabled clip tool read as selected) and
-        // the chrome's washes, not Windows' stock ones.
-        FlattenButton(b);
-        return b;
-    }
-
     private static void RebuildTreeRoot()
     {
         if (_treeList is null || _treeUp is null) return;
