@@ -470,7 +470,8 @@ std::string slots_manifest(const std::string& native, const std::vector<std::uin
   w.key("host_api").begin_object().key("min").integer(host_min).key("max").integer(host_max).end_object();
   w.key("installed_size").integer(static_cast<std::int64_t>(bytes.size()));
   w.key("native").string(native);
-  w.key("chrome").string(native);
+  // An add-on that only fills slots names no chrome (the hosts render its trees).
+  w.key("chrome").string(contributes.empty() ? native : std::string());
   w.key("archive").begin_object().key("path").string("slots-test.zip").key("sha256").string(std::string(64, 'a'))
       .key("size").integer(1).end_object();
   w.key("files").begin_array();

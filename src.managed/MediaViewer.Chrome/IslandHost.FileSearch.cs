@@ -503,9 +503,18 @@ public static partial class IslandHost
         });
     }
 
-    private static void ApplyNamesFilter()
+    private static void ApplyNamesFilter() => ApplyNamesFilter(fromProviders: false);
+
+    // `fromProviders`: the add-ons' search providers answered (IslandHost.Slots.cs);
+    // the same pass again with their rows, the query not sent a second time.
+    private static void ApplyNamesFilter(bool fromProviders)
     {
-        string q = _gsOpen ? FoldName(_gsText.Trim()) : "";
+        string typed = _gsOpen ? _gsText.Trim() : "";
+        string q = FoldName(typed);
+        // docs/design/25 PR 59: the providers hear the query on their own workers
+        // (Places: `portugal`); this returns at once and their rows join later.
+        if (!fromProviders) PostSlotFileSearch(typed);
+        bool prefixed = SlotPrefixed(typed);
         if (q.Length == 0)
         {
             EndNamesFilter();
@@ -527,7 +536,7 @@ public static partial class IslandHost
         {
             FolderItemVm vm = Items[i];
             string key = vm.Folded ??= FoldName(vm.Name);
-            if (key.Contains(q, StringComparison.Ordinal))
+            if ((!prefixed && key.Contains(q, StringComparison.Ordinal)) || _slotFileHits.Contains(vm.Path))
             {
                 pos[i] = items.Count;
                 items.Add(vm);
@@ -540,7 +549,7 @@ public static partial class IslandHost
         var folders = new List<FolderCardVm>();
         foreach (FolderCardVm card in Folders)
         {
-            if (card.FoldedName.Contains(q, StringComparison.Ordinal)) folders.Add(card);
+            if (!prefixed && card.FoldedName.Contains(q, StringComparison.Ordinal)) folders.Add(card);
         }
 
         bool first = !_gsFiltering;
@@ -554,10 +563,12 @@ public static partial class IslandHost
 
         if (items.Count == 0 && folders.Count == 0)
         {
-            ShowFileSearchNote($"No files named “{_gsText.Trim()}” in this folder.");
+            ShowFileSearchNote(_slotFileNote.StartsWith("Still", StringComparison.Ordinal) ? _slotFileNote
+                : $"No files named “{_gsText.Trim()}” in this folder.");
             return;
         }
-        ShowFileSearchNote(null);
+        // A provider's reason ("Portugal") or "Still reading tags", under the field.
+        ShowFileSearchNote(_slotFileNote.Length > 0 ? _slotFileNote : null);
         // The selection stays on a match: a hidden one hands over to the first.
         if (_folderCursor < 0 && items.Count > 0 && GalleryPos(_selectedIndex) < 0)
         {
@@ -647,6 +658,8 @@ public static partial class IslandHost
         if (newFolder) CloseFileSearch();
         else if (_gsFiltering && _galleryVisible) ApplyNamesFilter();
         UpdateFileSearchCount();
+        // docs/design/25 PR 59: badges for the folder the grid shows, once per folder.
+        if (_galleryVisible && !list) RequestSlotBadges(_openedFolder);
     }
 
     /// <summary>RealiseGallery: the repeaters are live; file search asked for
@@ -655,6 +668,7 @@ public static partial class IslandHost
     {
         _gsBound = true;
         BindGallerySources();
+        if (!_listOpen) RequestSlotBadges(_openedFolder);
         if (_gsOpenPending) ShowFileSearch();
     }
 }

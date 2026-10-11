@@ -49,6 +49,7 @@ public static partial class IslandHost
     private static string _slotFileNote = "";
     private static List<(string Path, string Why)> _slotLocalRows = new();
     private static List<(string Label, string Text)> _slotStatus = new();
+    private static string _slotListTitle = "";
     private static readonly List<SlotAddonRow> SlotAddonRows = new();
     private static readonly HashSet<string> SlotAddonsLoaded = new(StringComparer.Ordinal);
     private static StackPanel? _slotBarPanel;
@@ -76,10 +77,10 @@ public static partial class IslandHost
             using JsonDocument doc = JsonDocument.Parse(AddonNative.InstalledJson());
             foreach (JsonElement a in doc.RootElement.EnumerateArray())
             {
-                string id = Str(a, "id");
+                string id = JStr(a, "id");
                 bool slots = a.TryGetProperty("slots", out JsonElement s) && s.ValueKind == JsonValueKind.True;
-                if (!slots || id == "import" || id.StartsWith("ai", StringComparison.Ordinal) || Str(a, "part_of").Length > 0) continue;
-                found.Add(new SlotAddonRow(id, Str(a, "name"), Str(a, "version"), Str(a, "description"), Str(a, "state"), false));
+                if (!slots || id == "import" || id.StartsWith("ai", StringComparison.Ordinal) || JStr(a, "part_of").Length > 0) continue;
+                found.Add(new SlotAddonRow(id, JStr(a, "name"), JStr(a, "version"), JStr(a, "description"), JStr(a, "state"), false));
             }
         }
         catch (Exception ex) when (ex is MediaViewerException or JsonException)
@@ -151,13 +152,13 @@ public static partial class IslandHost
             {
                 using JsonDocument doc = JsonDocument.Parse(json);
                 JsonElement r = doc.RootElement;
-                foreach (JsonElement a in Arr(r, "addons")) SlotAddonDirs[Str(a, "id")] = Str(a, "dir");
-                foreach (JsonElement s in Arr(r, "sections"))
-                    _slotSections.Add(new SlotSectionDef(Str(s, "addon"), Str(s, "id"), Flag(s, "location")));
-                foreach (JsonElement i in Arr(r, "items"))
-                    _slotItems.Add(new SlotItem(Str(i, "addon"), Str(i, "id"), Str(i, "slot"), Str(i, "label"), Str(i, "symbol"), Str(i, "target")));
-                foreach (JsonElement b in Arr(r, "badges"))
-                    SlotBadgeDefs[Str(b, "key")] = new SlotBadge(Str(b, "key"), Str(b, "label"), Str(b, "symbol"));
+                foreach (JsonElement a in JArr(r, "addons")) SlotAddonDirs[JStr(a, "id")] = JStr(a, "dir");
+                foreach (JsonElement s in JArr(r, "sections"))
+                    _slotSections.Add(new SlotSectionDef(JStr(s, "addon"), JStr(s, "id"), JFlag(s, "location")));
+                foreach (JsonElement i in JArr(r, "items"))
+                    _slotItems.Add(new SlotItem(JStr(i, "addon"), JStr(i, "id"), JStr(i, "slot"), JStr(i, "label"), JStr(i, "symbol"), JStr(i, "target")));
+                foreach (JsonElement b in JArr(r, "badges"))
+                    SlotBadgeDefs[JStr(b, "key")] = new SlotBadge(JStr(b, "key"), JStr(b, "label"), JStr(b, "symbol"));
             }
             catch (JsonException ex) { System.Diagnostics.Debug.WriteLine(ex.Message); }
         }
@@ -223,14 +224,14 @@ public static partial class IslandHost
         try
         {
             using JsonDocument doc = JsonDocument.Parse(_slotInfoJson);
-            foreach (JsonElement s in Arr(doc.RootElement, "sections"))
+            foreach (JsonElement s in JArr(doc.RootElement, "sections"))
             {
                 if (!s.TryGetProperty("tree", out JsonElement tree) || tree.ValueKind != JsonValueKind.Object) continue;
                 rows.Children.Add(new Border { Height = 1, Background = Brush(Hairline), Margin = new Thickness(0, 4, 0, 4) });
-                TextBlock heading = Text(Str(s, "title"), Body, UiFontSize - 3);
+                TextBlock heading = Text(JStr(s, "title"), Body, UiFontSize - 3);
                 AutomationProperties.SetHeadingLevel(heading, Microsoft.UI.Xaml.Automation.Peers.AutomationHeadingLevel.Level2);
                 rows.Children.Add(heading);
-                rows.Children.Add(BuildScreenNode(tree, new ScreenAt(Str(s, "addon"), Str(s, "id"))));
+                rows.Children.Add(BuildScreenNode(tree, new ScreenAt(JStr(s, "addon"), JStr(s, "id"))));
             }
         }
         catch (JsonException ex) { System.Diagnostics.Debug.WriteLine(ex.Message); }
@@ -304,17 +305,17 @@ public static partial class IslandHost
             using JsonDocument doc = JsonDocument.Parse(json);
             JsonElement r = doc.RootElement;
             generation = r.TryGetProperty("generation", out JsonElement g) ? g.GetUInt64() : 0;
-            searching = Flag(r, "searching");
-            foreach (JsonElement p in Arr(r, "providers"))
+            searching = JFlag(r, "searching");
+            foreach (JsonElement p in JArr(r, "providers"))
             {
-                if (Str(p, "addon") == "ai") continue;
-                read += (int)Num(p, "read", 0);
-                total += (int)Num(p, "total", 0);
+                if (JStr(p, "addon") == "ai") continue;
+                read += (int)JNum(p, "read", 0);
+                total += (int)JNum(p, "total", 0);
             }
-            foreach (JsonElement row in Arr(r, "rows"))
+            foreach (JsonElement row in JArr(r, "rows"))
             {
-                if (Str(row, "addon") == "ai") continue;
-                rows.Add((Str(row, "path"), Str(row, "why")));
+                if (JStr(row, "addon") == "ai") continue;
+                rows.Add((JStr(row, "path"), JStr(row, "why")));
             }
         }
         catch (Exception ex) when (ex is JsonException or FormatException or InvalidOperationException)
@@ -440,7 +441,7 @@ public static partial class IslandHost
             }
             case "files":
             {
-                List<string> marked = MarkedPaths();
+                List<string> marked = _lastMarks.ToList();
                 FolderItemVm? at = tile ?? (_selectedIndex >= 0 && _selectedIndex < Items.Count ? Items[_selectedIndex] : null);
                 if (marked.Count > 0 && (at is null || marked.Contains(at.Path))) return marked;
                 return at is null ? new List<string>() : new List<string> { at.Path };
@@ -493,7 +494,7 @@ public static partial class IslandHost
             try
             {
                 using JsonDocument doc = JsonDocument.Parse(json);
-                foreach (JsonElement s in doc.RootElement.EnumerateArray()) _slotStatus.Add((Str(s, "label"), Str(s, "text")));
+                foreach (JsonElement s in doc.RootElement.EnumerateArray()) _slotStatus.Add((JStr(s, "label"), JStr(s, "text")));
             }
             catch (JsonException ex) { System.Diagnostics.Debug.WriteLine(ex.Message); }
         }
@@ -541,7 +542,7 @@ public static partial class IslandHost
         {
             if (seen.Add(path)) paths.Add(path);
         }
-        string title = _listTitle;
+        string title = _slotListTitle;
         _slotLocalRows = new List<(string, string)>();
         SlotNative.Search(SlotNative.ScopeLocal, "", "");
         HostOpenList(title, paths, null, 0, true);

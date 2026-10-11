@@ -651,6 +651,8 @@ public static partial class IslandHost
         row.Children.Add(scroller);
         row.Children.Add(_barPathCurrent);
         row.Children.Add(_barSearchButton);
+        // docs/design/25 PR 59: the add-ons' path-bar icons.
+        row.Children.Add(BuildSlotPathItems());
         row.Children.Add(new Border
         {
             Width = 1, Height = 18,
@@ -695,6 +697,8 @@ public static partial class IslandHost
     {
         if (_barSearchButton is null) return;
         bool loaded = SearchChrome is not null;
+        // docs/design/25 §7: while the pack is attached it is the local-scope provider.
+        SlotNative.LocalSearchProvider(loaded);
         bool pack = loaded || AiStarting();
         _barSearchButton.Visibility = Visibility.Visible;
         ToolTipService.SetToolTip(_barSearchButton, loaded ? "Search photos and videos (Ctrl+F)"
@@ -946,10 +950,13 @@ public static partial class IslandHost
                 Margin = new Thickness(0, 2, 0, 0),
             };
             var col = new StackPanel { Spacing = 4 };
+            // docs/design/25 PR 59: the add-ons' badges, from a table (no add-on call per tile).
+            UIElement badged = WithSlotBadges(WithPlayBadge(WithBadge(image, vm.Badge), vm.IsClip, 40), vm,
+                                              out Action unsubscribeBadges);
             var clipped = new Border
             {
                 CornerRadius = new CornerRadius(6),
-                Child = WithPlayBadge(WithBadge(image, vm.Badge), vm.IsClip, 40),
+                Child = badged,
                 Width = GalleryTile,
                 Height = GalleryTile,
             };
@@ -986,9 +993,15 @@ public static partial class IslandHost
             vm.PropertyChanged += OnChanged;
             // Recycling without this leaks a handler per realisation, and every
             // thumb completion then walks a growing list of dead elements.
-            border.Tag = (Action)(() => vm.PropertyChanged -= OnChanged);
+            border.Tag = (Action)(() =>
+            {
+                vm.PropertyChanged -= OnChanged;
+                unsubscribeBadges();
+            });
 
             border.Tapped += (_, _) => Send(Command.GalleryActivate, vm.Index);
+            // docs/design/25 PR 59: the add-ons' context-menu entries, when any.
+            AttachSlotContextMenu(border, vm);
             WireFileDrag(border, vm);
             return border;
         }

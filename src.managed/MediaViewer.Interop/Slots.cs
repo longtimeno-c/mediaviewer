@@ -211,7 +211,8 @@ public static unsafe partial class SlotNative
             fixed (byte* p = Z(path))
             fixed (byte* l = Z(locationText))
             {
-                _ = mv_slots_request_info(p, l, &theme, widthPt, scale, &g);
+                MvSlotTheme t = theme;
+                _ = mv_slots_request_info(p, l, &t, widthPt, scale, &g);
             }
             return g;
         }, 0UL);
@@ -245,7 +246,8 @@ public static unsafe partial class SlotNative
             fixed (byte* s = Z(screen))
             fixed (byte* p = Z(path))
             {
-                return mv_slots_open_screen(a, s, p, &theme, w, h, scale) == MvStatus.Ok;
+                MvSlotTheme t = theme;
+                return mv_slots_open_screen(a, s, p, &t, w, h, scale) == MvStatus.Ok;
             }
         }, false);
 
