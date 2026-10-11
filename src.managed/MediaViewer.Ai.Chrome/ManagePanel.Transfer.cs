@@ -68,9 +68,7 @@ internal sealed partial class ManagePanel
 
     private void AddTransferSection()
     {
-        Root.Children.Add(Heading("Import and export"));
-        _transfer = new StackPanel { Spacing = 8 };
-        Root.Children.Add(_transfer);
+        _transfer = Section("Import and export");
         ShowTransfer();
     }
 
@@ -134,9 +132,14 @@ internal sealed partial class ManagePanel
             });
             Grid.SetColumn(cancel, 1);
             row.Children.Add(cancel);
-            _transfer.Children.Add(_look.Card(row, 12));
+            _transfer.Children.Add(Pad(row));
         }
-        if (_transferNote.Length > 0) _transfer.Children.Add(_look.Text(_transferNote, 12));
+        if (_transferNote.Length > 0)
+        {
+            TextBlock note = _look.Text(_transferNote, 12);
+            note.Margin = new Thickness(12, 0, 12, 10);
+            _transfer.Children.Add(note);
+        }
     }
 
     private FrameworkElement ExportOptions()
@@ -176,7 +179,7 @@ internal sealed partial class ManagePanel
             ShowTransfer();
         }));
         box.Children.Add(buttons);
-        return _look.Card(box, 12);
+        return Pad(box);
     }
 
     private async Task Export(bool peopleOn)
@@ -362,7 +365,7 @@ internal sealed partial class ManagePanel
         }));
         box.Children.Add(buttons);
         UpdateGo();
-        return _look.Card(box, 12);
+        return Pad(box);
     }
 
     private async Task ChooseTarget(ImportRoot root)
