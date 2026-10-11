@@ -165,7 +165,10 @@ uint32_t mv_completion_drain(mv_session_t, mv_completion* out, uint32_t capacity
 
 Draining is non-blocking and batched (a folder's 400 thumbnails are one drain). `IMAGE_OPENED`
 means pixels may be ready on the native canvas; draining does not wake an idle render thread —
-the shell wakes the presenter ([03-rendering.md](03-rendering.md)).
+the shell wakes the presenter ([03-rendering.md](03-rendering.md)). The queue is capped at
+65,536 entries: a host that stops draining loses the oldest quarter at the cap, and every drop
+is counted and logged, never a `std::terminate` (issue #236). Both drain calls go through
+`mv_guard` like every other export.
 
 `mv_session_echo` is the minimal round trip (validate, copy, submit, return a job id, answer as
 `ECHO`), and `mv_session_job_stats` reports submitted / completed / cancelled / queue depth /
@@ -464,7 +467,10 @@ nothing of the core and reaches it only through the host function table.
   directly), worker-thread unless noted: `mv_addon_installed_json`, `mv_addon_check_manifest`
   (Ed25519 signature against the pinned key), `mv_addon_sha256_file`, `mv_addon_make_staging`,
   `mv_addon_install`, `mv_addon_family_usage`, `mv_addon_remove`, `mv_addon_load` (re-verifies,
-  loads, returns the interface and the chrome entry path), `mv_addon_unload`, `mv_addon_quit` /
+  loads, returns the interface and the chrome entry path; `MV_ERR_IO` when the OS would not load
+  a library that verified, with the reason in `mv_last_error_message`), `mv_addon_load_reader`
+  (the same through the AI pack's read-only door, for a window that does not host the add-ons;
+  `MV_ERR_NOT_FOUND` when nothing is indexed yet), `mv_addon_unload`, `mv_addon_quit` /
   `mv_addon_quit_wait(timeout_ms)` (`MV_ERR_TIMEOUT` → the host terminates without static
   destructors), `mv_volume_watch` (card-arrival hint), and `mv_present_set_busy` (the render
   loop's busy flag for `should_yield`).

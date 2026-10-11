@@ -76,6 +76,8 @@ when it closes. There is one canvas, one swapchain / `CAMetalLayer` and one pres
 `next_play_start` and jumps the player over each cut, pausing at the end.
 
 **Closing** with an edit not exported since it last changed asks first ("Discard this edit?").
+Closing the viewer window while the editor is open (Mac) closes the editor first, through that
+prompt; *Keep editing* leaves both windows open.
 
 ## Timeline UI
 

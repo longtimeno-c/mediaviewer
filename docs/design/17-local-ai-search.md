@@ -193,7 +193,9 @@ speech(id, asset_id, spec, start_ms, end_ms, text)                 -- Whisper tr
 ```
 
 `emb` is the int8 vector, `scale` its per-vector scale, `generic` its best cosine against the
-tower's generic prompts. People live in a separate `faces.db`; the label bars in `labels.f32`;
+tower's generic prompts. Each schema step (1 -> 2 `media`, 2 -> 3 `cloud`) is one transaction and
+skips a column already there, so a crash mid-migration never leaves an index that will not open.
+People live in a separate `faces.db`; the label bars in `labels.f32`;
 the CPU self-test reference in `selftest.txt` (keyed by runtime, provider, model and piece).
 
 - **Folder roots persist.** Indexing a folder (with its subfolders) writes a `roots` row.
@@ -229,7 +231,9 @@ with iCloud clips. It waits on battery, on a metered network (Network List Manag
 provider will not send is skipped until the next start. Row ids of files brought down are kept in
 `<data>/cache/cloud-fetched`, so a crash's leftovers are made online-only again at the next start.
 The port is `src/addons/ai/cloud_files.h` (`cloud_win.cpp`, `cloud_mac.mm`, `cloud_none.cpp`), in
-the pack, not the base app. Another sync client's files on the Mac (not ubiquitous items) stay
+the pack, not the base app. On Windows `cldapi.dll` is delay-loaded and probed: without it
+(before 10 1709) the pack still loads and searches, `settings_json` says `"cloud_supported":false`,
+and the option is shown greyed with the reason. The option is always listed on Windows. Another sync client's files on the Mac (not ubiquitous items) stay
 unindexed.
 - The index holds paths locally and is excluded from crash reporting and telemetry.
 

@@ -120,6 +120,8 @@ texture limit — a still is not one texture:
   through lock-free per-tile states; the session's `tile_service` thread builds and creates
   them — 4 per 16 ms tick, at most 24 in flight — and the render thread draws ready tiles coarse
   to fine over the overview. It never waits on the service and never creates a texture.
+  The service sleeps on an atomic poke count with no timeout (0 wakeups on a still); a tile
+  request, a new set, and dropping a set's last outside handle each poke it.
 - Resident tile VRAM is capped at **256 MB** (~750 tiles), LRU-evicted, separate from the
   viewer LRU.
 - A tiled image is not kept in the navigation LRU; a revisit decodes again. Its CPU pyramid
@@ -199,9 +201,11 @@ instead of refitting. Default off. Camera state only — prefetch and generation
 [`src/image/thumb.h`](../../src/image/thumb.h) (Windows), `thumb_mac.cpp` (macOS, same spec
 and schema).
 
-- **Spec `jpg512.3`:** a JPEG, long edge 512, never enlarged, ICC → sRGB, EXIF orientation
-  applied, and a clip's poster turned by its display matrix ([26](26-photos-library.md); `.2` rows
-  regenerate on view). Produced by the same first-pixel ladder (DCT scaling, RAW embedded preview, else a
+- **Spec `jpg512.4`:** a JPEG, long edge 512, never enlarged, ICC → sRGB, EXIF orientation
+  applied, and a clip's poster turned by its display matrix ([26](26-photos-library.md)). The
+  box-fit weights colour by alpha, and transparency is composited onto `kThumbMatte` (sRGB 36, the
+  viewer's dark alpha-case background) before the encode, since JPEG has no alpha; the Explorer
+  handler keeps the straight-alpha pixels. `.3` rows regenerate on view. Produced by the same first-pixel ladder (DCT scaling, RAW embedded preview, else a
   decode).
 - **Store:** SQLite (WAL) table `thumbs(path, mtime, size, spec, file)`, primary key
   `(path, mtime, size, spec)`, with the JPEG files beside the database in the per-user cache

@@ -62,6 +62,17 @@ not `image::gpu_image`. Time is `int64` **nanoseconds** everywhere in `player/` 
 so audio can account in whole samples. The container `start_time` is subtracted (MPEG-TS starts
 non-zero).
 
+A worker that cannot move **parks; it never sleep-polls** (issue #230). A clip opened paused on
+its poster frame is the normal state while arrowing through a folder, and there the queues and
+the ring stay full. The demux, video/still decode and audio decode threads wait on one
+`wake_signal` per clip ([`src/player/wake_signal.h`](../../src/player/wake_signal.h): a futex
+word, `std::atomic` wait/notify, so the render thread can notify without a lock). The packet
+queues, the ring's release, the audio pump taking a block, a seek, a generation bump and stop
+notify it. The audio pump parks the same way while paused or played out, until play, pause, a
+seek, a block or stop; a device change while paused is taken on resume. Measured on an M-series
+Mac (`mv_tests "[idle]"`): a paused clip went from ~1,750 wakes and ~15 ms CPU a second to
+single digits and ~0.03 ms.
+
 ### Surface ownership
 
 A hardware decoder's output surface belongs to its pool, sized from the stream's DPB; holding
@@ -132,8 +143,15 @@ surface format is unsupported. It is never silent: `mv_video_info.decoder` repor
 - **No audio** (silent clip, or the track played out) → a monotonic host clock
   (`std::chrono::steady_clock`) seeded at playback start; `mv_video_stats.audio_master` is 0 and
   `fallback_reason` says why.
+- **No device** (the endpoint will not open, or a rebuild found nothing): the clock stays on the
+  host master and retries the open after 1 s, doubling to 8 s between tries, never while paused.
+  A failed retry is not a rebuild: `device_rebuilds` counts devices lost, `fallback_reason`
+  stays `device_open_failed` until an open succeeds, and the failure is logged once.
 - **Device change** (`IMMNotificationClient` on Windows) rebuilds the audio client and re-seeds
-  the clock without interrupting video.
+  the clock without interrupting video. Device loss is the only rebuild: a seek, rate change,
+  track switch or A–B wrap **flushes** the endpoint (`audio_sink::flush`: WASAPI
+  `Stop`/`Reset`/`Start`, `AudioUnitReset` on the Mac) and keeps the device, falling back to a
+  rebuild only if the flush fails.
 - Stats are published wait-free (`core/spsc_ring.h`); `player/` makes no ImGui calls.
 
 ## Transport & seeking

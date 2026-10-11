@@ -84,6 +84,7 @@ class ffmpeg_media_source final : public media_source {
     pipe_->video_done.store(false);
     pipe_->eof.store(false);
     pipe_->seek_request_ns.store(target);
+    pipe_->wake.notify();  // the workers park until something like this happens
     shown_pts_ = target; preview_ = true; step_before_ = -1;
   }
   void step(int frames) noexcept override {
