@@ -285,6 +285,21 @@ constexpr binding kBindings[] = {
     // PageDown inside one stop; plain PageUp / PageDown still skip ten stops.
     row(key::page_down, mod_ctrl, kBrowse | kIsland, repeat, next_page),
     row(key::page_up, mod_ctrl, kBrowse | kIsland, repeat, prev_page),
+    // Issue #207 (docs/design/16 "Rate"). Appended. docs/design/16 names `X` reject and
+    // `U` clear label; the colour labels take Lightroom's 6-9 on the keypad and,
+    // as the ratings do for a laptop, Ctrl+Shift (Cmd+Shift) on the number row.
+    // X and U are letters, so browse and video only (the gallery and the strips
+    // type ahead); the keypad rows match the ratings' modes.
+    row(C('X'), mod_none, kBrowse | kVideo, edge, reject),
+    row(key::numpad6, mod_none, kViewing, edge, label_red),
+    row(key::numpad7, mod_none, kViewing, edge, label_yellow),
+    row(key::numpad8, mod_none, kViewing, edge, label_green),
+    row(key::numpad9, mod_none, kViewing, edge, label_blue),
+    row(C('6'), mod_ctrl | mod_shift, kViewing, edge, label_red),
+    row(C('7'), mod_ctrl | mod_shift, kViewing, edge, label_yellow),
+    row(C('8'), mod_ctrl | mod_shift, kViewing, edge, label_green),
+    row(C('9'), mod_ctrl | mod_shift, kViewing, edge, label_blue),
+    row(C('U'), mod_none, kBrowse | kVideo, edge, clear_label),
 };
 
 // The router's index stores row + 1 in a byte.
@@ -462,6 +477,12 @@ constexpr command_info kCommands[] = {
     {addon_cmd_6, "Add-on command 7", true},
     {addon_cmd_7, "Add-on command 8", true},
     {new_window, "New window"},
+    {reject, "Reject / unreject"},
+    {label_red, "Label red"},
+    {label_yellow, "Label yellow"},
+    {label_green, "Label green"},
+    {label_blue, "Label blue"},
+    {clear_label, "Clear label"},
 };
 
 const char* named_key(key k) noexcept {

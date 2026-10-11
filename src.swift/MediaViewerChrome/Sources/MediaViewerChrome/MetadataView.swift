@@ -92,6 +92,8 @@ struct MetadataView: View {
           ForEach(store.summary) { row in
             if row.label == "Date taken" {
               dateRow(row)
+            } else if row.label == "Label" {
+              labelRow(row)
             } else {
               HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Text(row.label).foregroundStyle(MVTheme.body).frame(width: 100, alignment: .leading)
@@ -122,6 +124,45 @@ struct MetadataView: View {
         .padding(14)
       }
     }
+  }
+
+  /// Issue #207: the colour label, XMP xmp:Label in Lightroom's words. A swatch
+  /// sets it (the same one again clears it, as the 6-9 keys do), through the same
+  /// checked tag write as any other tag.
+  private static let labelSwatches: [(name: String, colour: Color)] = [
+    ("Red", Color(red: 0.90, green: 0.28, blue: 0.30)),
+    ("Yellow", Color(red: 0.95, green: 0.76, blue: 0.18)),
+    ("Green", Color(red: 0.24, green: 0.70, blue: 0.44)),
+    ("Blue", Color(red: 0.23, green: 0.51, blue: 0.96)),
+    ("Purple", Color(red: 0.61, green: 0.36, blue: 0.90)),
+  ]
+
+  private func labelRow(_ row: MetaRow) -> some View {
+    HStack(alignment: .center, spacing: 10) {
+      Text(row.label).foregroundStyle(MVTheme.body).frame(width: 100, alignment: .leading)
+      Text(row.value.isEmpty ? "—" : row.value)
+        .foregroundStyle(row.value.isEmpty ? MVTheme.disabled : MVTheme.title)
+        .textSelection(.enabled)
+        .frame(maxWidth: .infinity, alignment: .leading)
+      HStack(spacing: 4) {
+        ForEach(Self.labelSwatches, id: \.name) { swatch in
+          let on = swatch.name.caseInsensitiveCompare(row.value) == .orderedSame
+          Button {
+            if on { store.removeTag("Xmp.xmp.Label") } else { store.setTag("Xmp.xmp.Label", swatch.name) }
+          } label: {
+            Circle()
+              .fill(swatch.colour)
+              .frame(width: 14, height: 14)
+              .overlay(Circle().stroke(on ? MVTheme.title : MVTheme.hairline, lineWidth: on ? 2 : 1))
+          }
+          .buttonStyle(.plain)
+          .disabled(!store.canEdit)
+          .help(on ? "Clear the \(swatch.name.lowercased()) label" : swatch.name)
+          .accessibilityLabel(on ? "Clear label" : "Label \(swatch.name.lowercased())")
+        }
+      }
+    }
+    .font(MVTheme.font(14))
   }
 
   private func dateRow(_ row: MetaRow) -> some View {

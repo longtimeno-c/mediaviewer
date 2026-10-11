@@ -261,11 +261,17 @@ Marks are a separate set from the selection, so arrow-key browsing never makes a
 |---|---|---|
 | Numpad `0`–`5`, or `Ctrl+Shift+0`–`5` | Viewing | Rating (0 clears) |
 | `Ctrl+I` | Viewing | Show the metadata pane (Windows: on *All tags* with its comment editor open on the file's comment and the keyboard in it; `Enter` saves, `Esc` drops; Mac: the pane's *All tags* editor) |
+| `X` | browse, video | Reject (rating −1, Lightroom's and Bridge's "Rejected"); `X` on a rejected file clears it to unrated |
+| Numpad `6`–`9`, or `Ctrl+Shift+6`–`9` | Viewing | Colour label Red / Yellow / Green / Blue (Lightroom's keys); the label the file already has clears it |
+| `U` | browse, video | Clear the colour label |
 
-A rating writes the item on screen only, on the I/O pool: a JPEG is rewritten in place, anything
-else gets an XMP sidecar. The command bar shows what landed ("★★★★☆", or "— IMG_1234.xmp" when a
+A rating, a reject or a label writes the item on screen only, on the I/O pool: a JPEG is
+rewritten in place, anything else gets an XMP sidecar. A label is XMP `xmp:Label` in the words
+Lightroom and Bridge write (Red, Yellow, Green, Blue, Purple), so each app shows the other's; the
+metadata pane's Label row has a swatch per colour (Purple has no key, as in Lightroom). `X` and `U`
+are letters, so they are browse and video only (the gallery and the strips type ahead). The command bar shows what landed ("★★★★☆", or "— IMG_1234.xmp" when a
 sidecar took it). Not in a slideshow or crop. On macOS `⌘⇧3`/`4`/`5` are the system screenshot
-shortcuts and do not reach the app unless turned off in System Settings; the keypad, or a remap,
+shortcuts (and `⌘⇧6` the Touch Bar one, on a Mac that has a Touch Bar) and do not reach the app unless turned off in System Settings; the keypad, or a remap,
 works regardless.
 
 ### Video and trim
@@ -448,7 +454,8 @@ No hot-path ABI for commands. Commands invoke existing session calls (`mv_folder
 - `Ctrl+Enter` open in an external editor; set as wallpaper.
 - `Ctrl+Tab` / tabs, and several windows inside one process.
 - `Ctrl+PageUp` / `Ctrl+PageDown` for ICO sizes and HEIC sequences (pages of TIFF, PDF and DOCX are built).
-- `U` clear label and `X` reject mark.
+- A filter on reject / colour label (issue #207): it needs each file's label read on a worker,
+  as date-taken sorting does.
 - A filter (all / photos / videos / RAW) on the listing.
 - Touch gestures (swipe, pinch).
 - Import / export of key maps and named alternate layouts.

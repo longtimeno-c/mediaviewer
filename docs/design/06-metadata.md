@@ -70,7 +70,11 @@ every tag that holds it (EXIF `DateTimeOriginal` always and `DateTimeDigitized`;
 `exif:DateTimeOriginal`, `xmp:CreateDate`, `photoshop:DateCreated`).
 
 Ratings are a keyboard cull: numpad `0`–`5` or `Ctrl+Shift+0`–`5`. The number row stays
-fit/100 % ([16-commands.md](16-commands.md)).
+fit/100 % ([16-commands.md](16-commands.md)). Issue #207 adds the rest of a cull on the same
+writer: `X` toggles reject (rating −1) and numpad / `Ctrl+Shift` `6`–`9` set the colour label
+(`U` clears it), which is the one tag XMP `xmp:Label` (a PR 29 tag edit, `shell::label_fields`)
+in Lightroom's words. The read model carries it as `summary::label` (the sidecar wins) and the
+summary card as a "Label" row.
 
 **Where a change lands** (`write_target_for`, decided by magic bytes and structure):
 
@@ -142,4 +146,4 @@ These read the already-parsed `metadata` — no file I/O on toggle
 - Batch metadata: date/time shift across a selection, copy metadata to many, filename
   templating, strip-on-share copies.
 - GPS map pin / writing coordinates.
-- Colour labels / keywords as a feature (`U` to clear a label is unbound).
+- Keywords as a feature. Colour labels are built (issue #207), but no filter on them yet.

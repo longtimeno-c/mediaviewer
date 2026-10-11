@@ -1039,3 +1039,47 @@ TEST_CASE("dates are validated and put in both forms", "[meta][write][pr29]") {
   CHECK_FALSE(mv::meta::exif_date_of("2024-05-01", e, x));
   CHECK_FALSE(mv::meta::exif_date_of("2024-05:01 14:03:22", e, x));
 }
+
+// Issue #207: culling. A reject is XMP's -1; a colour label is xmp:Label, in the
+// file for a plain JPEG and in the sidecar for everything else, and reads back
+// into the summary the panes show.
+TEST_CASE("reject and colour labels land where a rating does and read back", "[meta][write][cull]") {
+  scratch_dir d("cull");
+  d.write("a.jpg", jpeg_from(flat_jpeg(), true, false, true));
+  std::vector<std::uint8_t> rgba(16 * 16 * 4, 200);
+  const auto png = fixtures::png_rgba(16, 16, rgba.data());
+  d.write("b.png", png);
+  const auto label = [](const char* value) {
+    write_fields f;
+    f.tags.push_back(value[0] != '\0' ? set_tag("Xmp.xmp.Label", value) : remove_tag("Xmp.xmp.Label"));
+    return f;
+  };
+
+  REQUIRE(mv::meta::write(d.path("a.jpg"), rating(-1), d.snapshots()));
+  REQUIRE(mv::meta::write(d.path("a.jpg"), label("Red"), d.snapshots()));
+  auto m = mv::meta::read(d.path("a.jpg"));
+  REQUIRE(m);
+  CHECK(m->s.rating == -1);
+  CHECK(m->s.label == "Red");
+  CHECK_FALSE(fs::exists(mv::meta::sidecar_path_for(d.path("a.jpg"))));
+  bool row = false;
+  for (const auto& r : mv::meta::summary_rows(*m)) row |= r.label == "Label" && r.value == "Red";
+  CHECK(row);
+
+  auto r = mv::meta::write(d.path("b.png"), label("Green"), d.snapshots());
+  REQUIRE(r);
+  CHECK(r->target == write_target::sidecar);
+  CHECK(d.read("b.png") == png);  // the original is never opened for writing
+  m = mv::meta::read(d.path("b.png"));
+  REQUIRE(m);
+  CHECK(m->s.label == "Green");
+
+  // Clearing removes the tag (and the sidecar with its last field).
+  REQUIRE(mv::meta::write(d.path("a.jpg"), label(""), d.snapshots()));
+  m = mv::meta::read(d.path("a.jpg"));
+  REQUIRE(m);
+  CHECK(m->s.label.empty());
+  CHECK(m->s.rating == -1);  // the reject stays
+  REQUIRE(mv::meta::write(d.path("b.png"), label(""), d.snapshots()));
+  CHECK_FALSE(fs::exists(d.path("b.xmp")));
+}

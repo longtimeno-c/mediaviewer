@@ -77,6 +77,10 @@ struct summary {
   // flattens them for display; the edit field reads this one).
   int rating = 0;
   std::string comment;
+  // Issue #207: the colour label (XMP xmp:Label, the sidecar wins), as
+  // written: "Red", "Yellow", "Green", "Blue", "Purple", or another
+  // app's word. Empty = none.
+  std::string label;
 };
 
 // An AF area in the stored pixel grid, normalised to 0..1 with a top-left

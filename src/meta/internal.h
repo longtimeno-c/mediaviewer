@@ -46,6 +46,9 @@ struct field_state {
   std::optional<int> rating;  // -1 rejected, 0..5
   std::optional<int> orientation;
   std::optional<std::string> comment;
+  // Issue #207: XMP xmp:Label, the colour label Lightroom and Bridge write
+  // ("Red", "Yellow", ...). nullopt when absent or empty.
+  std::optional<std::string> label;
 };
 // XMP first for the rating (it is what this app and Lightroom write), then the
 // EXIF Rating / RatingPercent tags Windows uses; the EXIF UserComment first for

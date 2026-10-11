@@ -273,6 +273,7 @@ void fill_summary(const Exiv2::ExifData& e, const Exiv2::XmpData& x, Exiv2::Imag
   const field_state f = read_fields(e, x, comment_order_of(image));
   s.rating = f.rating.value_or(0);
   s.comment = f.comment.value_or(std::string{});
+  s.label = f.label.value_or(std::string{});
 }
 
 // SubjectArea is the one standard AF-ish tag (EXIF 2.3); vendor notes below are

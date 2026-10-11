@@ -482,6 +482,9 @@ copy, and check Finder's **Open With** and a Quick Look thumbnail.
 | `O` | info line: file name, position in the folder, size, zoom |
 | `Ctrl+Shift+A` | always on top |
 | `Insert` / `Shift+Space` | mark or unmark the current item. `Ctrl+A` marks all, `Ctrl+D` clears |
+| Keypad `0`–`5` / `Ctrl+Shift+0`–`5` | rate the item on screen (0 clears) |
+| `X` | reject the item on screen (rating −1, "Rejected" in Lightroom and Bridge); `X` again un-rejects |
+| Keypad `6`–`9` / `Ctrl+Shift+6`–`9` | colour label Red / Yellow / Green / Blue (Lightroom's keys; `⌘⇧` on the Mac); the same key again clears it. `U` clears the label. Written as XMP `xmp:Label`: in a plain JPEG, else in its `.xmp` sidecar. The metadata pane's Label row has a swatch per colour |
 | `F5` | slideshow (fullscreen). In it: `Space` pause, `+` / `-` interval, `.` blackout, `R` shuffle, `Esc` leave. A clip plays to its end before advancing |
 | `F7` / `F8` | copy / move the marked items (or the current one) to the last folder used. `Shift+F7` / `Shift+F8` pick a folder. Never overwrites: a taken name becomes `name (2).ext` |
 | `Delete` | move the marked items (or the current one) to the Recycle Bin, after asking. A drive with no Recycle Bin is refused, never deleted permanently |
@@ -1365,6 +1368,12 @@ pictures and breaks; not headers, footers, footnotes, text boxes or columns (doc
 Measured on the Mac (`mv_tests "[docx]"`; a `textutil`-written DOCX rendered by
 `MV_DOCX_DUMP=out.jpg MV_DOCX_FILE=x.docx mv_tests "[.docx-dump]"` and looked at). The Windows font
 lookup (`fonts_win.cpp`) and the DLLs' packaging are compiled and staged by CI only.
+
+**Culling (issue #207, part 1):** `X` reject, colour labels on keypad / `Ctrl+Shift` `6`–`9`, `U`
+to clear, and the pane's Label swatches, on both hosts through PR 12's writer and sidecar rule
+(`shell::reject_toggled`, `label_toggled`, `label_fields`; `meta::summary::label`). Tests:
+`mv_tests "[cull]"`. Not yet: a filter on reject / label (it needs each file's label read on a
+worker, as date-taken sorting does).
 
 **Settings → File types:** "Show audio files" and "Show documents" are off by default, which leaves
 MP3/M4A/M4P and PDF/DOCX out of folder listings; the file a folder was opened on, and the current

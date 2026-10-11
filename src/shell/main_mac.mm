@@ -173,6 +173,9 @@ static bool MvCommandSupported(mv::shell::command_id c) {
     // PR 12
     case set_rating_0: case set_rating_1: case set_rating_2: case set_rating_3:
     case set_rating_4: case set_rating_5: case edit_comment:
+    // Issue #207
+    case reject: case label_red: case label_yellow: case label_green: case label_blue:
+    case clear_label:
     // PR 13 / 14
     case trim_mode: case trim_in: case trim_out: case trim_clear: case trim_preview:
     case trim_keyframe: case trim_reencode: case trim_remove_middle: case keyframe_prev:
@@ -5850,6 +5853,11 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     case set_rating_0: case set_rating_1: case set_rating_2: case set_rating_3:
     case set_rating_4: case set_rating_5:
       return [self rateCurrentItem:mv::shell::rating_of_command(command)];
+    // Issue #207: culling, the same writer as the ratings.
+    case reject: return [self rejectCurrentItem];
+    case label_red: case label_yellow: case label_green: case label_blue: case clear_label:
+      return [self labelCurrentItem:static_cast<mv::shell::colour_label>(
+                                        mv::shell::label_of_command(command))];
     case edit_comment: return [self focusCommentField];
     // PR 11 (docs/design/16 Pane): ⇧A shows the adjust pane and focuses it.
     case adjust_pane: [self setAdjustVisible:!_adjust.visible()]; return YES;
@@ -7835,6 +7843,38 @@ static double mv_wall_seconds() {
   return YES;
 }
 
+// Issue #207: `X` toggles reject (rating -1), through the same queue as a rating.
+- (BOOL)rejectCurrentItem {
+  const mv::io::dir_entry* entry = [self currentEntry];
+  if (!entry) return NO;
+  if ([self refuseWriteTo:entry->path_utf8]) return YES;
+  const int next = mv::shell::reject_toggled([self metaRating]);
+  _metaWriter.submit(entry->path_utf8, mv::shell::rating_fields(next));
+  [self noticeShow:next == 0 ? std::string("Rating cleared") : mv::meta::format_rating(next)];
+  [self scheduleMetaWrite:0.25];
+  return YES;
+}
+
+// Issue #207: keypad / ⌘⇧ 6-9 set a colour label (the same one again clears
+// it), `U` clears it: XMP xmp:Label, in place on a plain JPEG, else the sidecar.
+- (BOOL)labelCurrentItem:(mv::shell::colour_label)pressed {
+  const mv::io::dir_entry* entry = [self currentEntry];
+  if (!entry) return NO;
+  if ([self refuseWriteTo:entry->path_utf8]) return YES;
+  std::string now;
+  if (auto pending = _metaWriter.pending_label(entry->path_utf8)) now = std::move(*pending);
+  else if (_metaRecord) now = _metaRecord->s.label;
+  const std::string next = mv::shell::label_toggled(pressed, now);
+  if (next.empty() && now.empty()) {
+    [self noticeShow:"No label"];
+    return YES;
+  }
+  _metaWriter.submit(entry->path_utf8, mv::shell::label_fields(next));
+  [self noticeShow:next.empty() ? std::string("Label cleared") : "Label: " + next];
+  [self scheduleMetaWrite:0.25];
+  return YES;
+}
+
 - (BOOL)focusCommentField {
   if (![self currentEntry]) return NO;
   if (_adjust.visible()) [self setAdjustVisible:NO];
@@ -8028,19 +8068,7 @@ static double mv_wall_seconds() {
   // Say where it went, unless another change to the same file is already queued
   // (its message is the one that matters).
   if (!_metaWriter.busy_for(out.path)) {
-    std::string text = job.revert ? std::string("Metadata reverted") : std::string();
-    if (!job.revert && job.fields.rating.touches()) {
-      const int stars = job.fields.rating.k == mv::meta::change<int>::kind::clear ? 0 : job.fields.rating.value;
-      text = stars == 0 ? std::string("Rating cleared") : mv::meta::format_rating(stars);
-    } else if (!job.revert && job.fields.comment.touches()) {
-      text = job.fields.comment.k == mv::meta::change<std::string>::kind::clear ? "Comment removed" : "Comment saved";
-    } else if (!job.revert && job.fields.date_taken.touches()) {
-      text = job.fields.date_taken.k == mv::meta::change<std::string>::kind::clear ? "Date taken removed"
-                                                                                  : "Date taken saved";
-    } else if (!job.revert && !job.fields.tags.empty()) {
-      text = job.fields.tags.size() == 1 ? "Metadata saved"
-                                         : std::to_string(job.fields.tags.size()) + " tags saved";
-    }
+    std::string text = job.revert ? std::string("Metadata reverted") : mv::shell::describe_write(job.fields);
     if (out.target == mv::meta::write_target::sidecar && out.sidecar_touched) {
       const std::size_t sep = out.sidecar_path.find_last_of('/');
       text += "  \xE2\x80\x94 " + out.sidecar_path.substr(sep == std::string::npos ? 0 : sep + 1);  // — IMG_1234.xmp
