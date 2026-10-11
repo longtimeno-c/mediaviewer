@@ -316,6 +316,11 @@ public static unsafe partial class AddonNative
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial MvStatus mv_addon_load_reader(IntPtr session, byte* id, byte* iface, IntPtr* outIface,
+        byte* chrome, uint chromeCap);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     private static partial MvStatus mv_addon_unload(byte* id);
 
     [LibraryImport(Library)]
@@ -514,7 +519,12 @@ public static unsafe partial class AddonNative
     }
 
     /// <summary>Loads (or returns the loaded) add-on; the interface table and the chrome path.</summary>
-    public static (IntPtr Interface, string ChromePath) Load(MediaViewerSession session, string id, string interfaceId)
+    /// <remarks><paramref name="reader"/>: through the add-on's read-only door, for a window whose
+    /// process does not host the add-ons (docs/design/18 "One host process", 2026-10-07).
+    /// <see cref="MvStatus.NotFound"/> then means nothing is indexed yet. <see cref="MvStatus.Io"/>:
+    /// the add-on verified but Windows would not load it; the exception's message says why.</remarks>
+    public static (IntPtr Interface, string ChromePath) Load(MediaViewerSession session, string id, string interfaceId,
+        bool reader = false)
     {
         byte[] chrome = new byte[32 * 1024];
         IntPtr iface = IntPtr.Zero;
@@ -526,8 +536,10 @@ public static unsafe partial class AddonNative
             fixed (byte* f = Z(interfaceId))
             fixed (byte* c = chrome)
             {
-                Check(mv_addon_load(session.Handle.DangerousGetHandle(), i, f, &iface, c, (uint)chrome.Length),
-                    "mv_addon_load");
+                Check(reader
+                    ? mv_addon_load_reader(session.Handle.DangerousGetHandle(), i, f, &iface, c, (uint)chrome.Length)
+                    : mv_addon_load(session.Handle.DangerousGetHandle(), i, f, &iface, c, (uint)chrome.Length),
+                    reader ? "mv_addon_load_reader" : "mv_addon_load");
             }
         }
         finally

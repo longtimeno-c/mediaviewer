@@ -55,6 +55,22 @@ struct test_device {
   }
   [[nodiscard]] bool valid() const noexcept { return device != nullptr; }
 
+  // Hosted CI runners have no GPU, only the Microsoft Basic Render Driver. It
+  // accepts VIDEO_SUPPORT, but it has no video decoder, so D3D11VA falls back
+  // to software there. The hardware-decoder assertions need a real adapter.
+  [[nodiscard]] bool hardware_adapter() const noexcept {
+    IDXGIDevice* dxgi = nullptr;
+    if (FAILED(device->QueryInterface(IID_PPV_ARGS(&dxgi)))) return false;
+    IDXGIAdapter* adapter = nullptr;
+    const HRESULT hr = dxgi->GetAdapter(&adapter);
+    dxgi->Release();
+    if (FAILED(hr)) return false;
+    DXGI_ADAPTER_DESC desc{};
+    const bool described = SUCCEEDED(adapter->GetDesc(&desc));
+    adapter->Release();
+    return described && desc.VendorId != 0x1414;  // 0x1414: Microsoft (Basic Render / WARP)
+  }
+
   // Every D3D11 resource holds a reference on its device, so a leaked ring
   // texture shows up here. AddRef/Release round trip is the only portable way
   // to read a COM refcount, and it is exact for this purpose.
@@ -107,6 +123,7 @@ TEST_CASE("4K 10-bit HEVC opens on the hardware decoder and produces P010 frames
   MV_REQUIRE_CLIP(path, "hevc_4k_10bit_bt709.mp4");
   test_device dev;
   if (!dev.valid()) SKIP("no D3D11 hardware device on this machine");
+  if (!dev.hardware_adapter()) SKIP("software adapter only (hosted CI): no hardware video decoder");
 
   auto opened_source = mv::player::open_media(path.c_str(), dev.device);
   REQUIRE(opened_source);
@@ -133,6 +150,7 @@ TEST_CASE("4K 10-bit AV1 opens on the hardware decoder", "[video][ring]") {
   MV_REQUIRE_CLIP(path, "av1_4k_10bit_bt709.mp4");
   test_device dev;
   if (!dev.valid()) SKIP("no D3D11 hardware device on this machine");
+  if (!dev.hardware_adapter()) SKIP("software adapter only (hosted CI): no hardware video decoder");
 
   auto opened_source = mv::player::open_media(path.c_str(), dev.device);
   REQUIRE(opened_source);
@@ -153,6 +171,9 @@ TEST_CASE("The decoder does not stall waiting for a presentation surface", "[vid
   MV_REQUIRE_CLIP(path, "hevc_4k_10bit_bt709.mp4");
   test_device dev;
   if (!dev.valid()) SKIP("no D3D11 hardware device on this machine");
+  // 4K 10-bit HEVC in software on a hosted runner cannot keep pace; this is a
+  // hardware-decode property.
+  if (!dev.hardware_adapter()) SKIP("software adapter only (hosted CI): no hardware video decoder");
 
   auto opened_source = mv::player::open_media(path.c_str(), dev.device);
   REQUIRE(opened_source);

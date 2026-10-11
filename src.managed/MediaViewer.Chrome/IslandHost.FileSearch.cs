@@ -140,6 +140,22 @@ public static partial class IslandHost
             _searchOpenPending = true;
             return FileSearchTook;
         }
+        // A later window's first search: Local search starts now, through the
+        // reader, and its panel opens once it attaches (IslandHost.Addons.cs).
+        if (_addonsElsewhere && !_readerStarted && _folderSession is not null)
+        {
+            _searchOpenPending = true;
+            EnsureReaderStarted();
+            return FileSearchTook;
+        }
+        // A later window whose reader found nothing indexed: try it again, and
+        // between tries say why this is a search by name.
+        if (RetryEmptyReader()) return FileSearchTook;
+        if (_addonsElsewhere && _aiReaderEmptyAt != 0 && AiSlot.Chrome is null)
+        {
+            ShowAddonAlert(AiSlot, "Nothing indexed for Local search yet", ReaderEmptyText, warn: false);
+        }
+
         if (Items.Count == 0 && Folders.Count == 0) return FileSearchDeclined;
         if (!_galleryVisible || _gsField is null)
         {

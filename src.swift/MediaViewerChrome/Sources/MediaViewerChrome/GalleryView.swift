@@ -91,7 +91,7 @@ struct GalleryView: View {
                       isCurrent: index == store.currentIndex && store.folderCursor < 0,
                       isMarked: store.markedNames.contains(store.names[index]),
                       isClip: store.isClip(at: index),
-                      slot: store.slot(for: store.names[index])
+                      thumbKey: store.thumbKey(at: index), slot: store.slot(at: index)
                     )
                     .id(index)
                     .onTapGesture { store.selectAndCloseGallery(index) }
@@ -288,6 +288,7 @@ private struct GalleryCell: View {
   let isCurrent: Bool
   let isMarked: Bool
   let isClip: Bool
+  let thumbKey: String
   @ObservedObject var slot: ThumbSlot
 
   var body: some View {
@@ -320,8 +321,9 @@ private struct GalleryCell: View {
     }
     .onAppear { FolderStore.shared.requestThumbnailIfNeeded(at: index) }
     // Cells are identified by index: a new listing (a result list replacing
-    // the folder) reuses them without a fresh onAppear, so ask again.
-    .onChange(of: name) { _, _ in FolderStore.shared.requestThumbnailIfNeeded(at: index) }
+    // the folder, another folder with the same names) or a rewritten file
+    // reuses them without a fresh onAppear, so ask again.
+    .onChange(of: thumbKey) { _, _ in FolderStore.shared.requestThumbnailIfNeeded(at: index) }
   }
 }
 

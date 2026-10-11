@@ -140,8 +140,9 @@ class index_db {
   // Another process's view of the app's index (the search agent, docs/design/23):
   // SQLITE_OPEN_READONLY, no schema created or migrated, so every write this
   // connection could try fails (SQLITE_READONLY). WAL gives it a consistent
-  // snapshot while the app goes on indexing. A missing file, or an index of
-  // another schema, is status::unsupported_format.
+  // snapshot while the app goes on indexing. A missing file (nothing indexed
+  // yet) is status::not_found; an index of another schema is
+  // status::unsupported_format.
   [[nodiscard]] static result<std::unique_ptr<index_db>> open_read_only(const std::string& path_utf8);
   // PRAGMA data_version: changes when another connection commits. A reader
   // polls it to learn the app has indexed more.
@@ -267,7 +268,6 @@ class index_db {
  private:
   index_db() = default;
   bool exec(const char* sql);
-  result<upsert> see_one(std::int64_t root, const seen_file& f, std::int64_t generation);
   std::vector<work_item> pending_where(const std::string& spec, std::size_t limit, std::int32_t max_tries,
                                        const track_filter& filter, const std::string& extra);
   std::mutex m_;

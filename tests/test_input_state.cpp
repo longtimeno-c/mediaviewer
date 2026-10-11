@@ -4,6 +4,7 @@
 
 #include "core/spsc_ring.h"
 #include "shell/input_state.h"
+#include "shell/loupe.h"
 
 TEST_CASE("coalesced wheel input is conserved and never replayed", "[shell][input]") {
   mv::publish_slot<mv::shell::input_snapshot> slot;
@@ -51,4 +52,53 @@ TEST_CASE("a parked cursor is not repeated activity", "[shell][input]") {
   ++s.activity_seq;
   REQUIRE(cursor.consume_activity(s));
   REQUIRE_FALSE(cursor.consume_activity(s));
+}
+
+TEST_CASE("the loupe sits at the cursor, or the centre, inside the canvas", "[shell][input][loupe]") {
+  mv::shell::input_snapshot s;
+  s.dpi_scale = 1.0f;
+  // No cursor: the canvas centre.
+  auto b = mv::shell::loupe_rect(s, 0.0f, 0.0f, 1000.0f, 800.0f);
+  REQUIRE(b.size == 240.0f);
+  REQUIRE(b.point_x == 500.0f);
+  REQUIRE(b.point_y == 400.0f);
+  REQUIRE(b.x == 380.0f);
+  REQUIRE(b.y == 280.0f);
+  // Arrows nudge by a twentieth of the shorter side.
+  s.loupe_steps_x = 2;
+  s.loupe_steps_y = -1;
+  b = mv::shell::loupe_rect(s, 0.0f, 0.0f, 1000.0f, 800.0f);
+  REQUIRE(b.point_x == 580.0f);
+  REQUIRE(b.point_y == 360.0f);
+  // A cursor above the canvas (over the command bar) is clamped into it, and
+  // the square never leaves it.
+  s.loupe_steps_x = 0;
+  s.loupe_steps_y = 0;
+  s.mouse_in_client = true;
+  s.mouse_x = 5.0f;
+  s.mouse_y = 5.0f;
+  b = mv::shell::loupe_rect(s, 0.0f, 100.0f, 1000.0f, 700.0f);
+  REQUIRE(b.point_x == 5.0f);
+  REQUIRE(b.point_y == 100.0f);
+  REQUIRE(b.x == 0.0f);
+  REQUIRE(b.y == 100.0f);
+  // Scaled by DPI, but never larger than the canvas.
+  s.dpi_scale = 2.0f;
+  b = mv::shell::loupe_rect(s, 0.0f, 0.0f, 1000.0f, 300.0f);
+  REQUIRE(b.size == 300.0f);
+}
+
+TEST_CASE("the loupe looks at its point at 100 %, or twice the zoom past it", "[shell][input][loupe]") {
+  mv::shell::loupe_box b;
+  b.point_x = 580.0f;
+  b.point_y = 400.0f;
+  auto c = mv::shell::loupe_view(b, 0.0f, 0.0f, 1000.0f, 800.0f, 100.0f, 50.0f, 0.5f);
+  REQUIRE(c.zoom == 1.0f);
+  REQUIRE(c.pan_x == 260.0f);  // 80 screen px at 0.5 is 160 image px
+  REQUIRE(c.pan_y == 50.0f);
+  c = mv::shell::loupe_view(b, 0.0f, 0.0f, 1000.0f, 800.0f, 100.0f, 50.0f, 2.0f);
+  REQUIRE(c.zoom == 4.0f);
+  REQUIRE(c.pan_x == 140.0f);
+  c = mv::shell::loupe_view(b, 0.0f, 0.0f, 1000.0f, 800.0f, 100.0f, 50.0f, 40.0f);
+  REQUIRE(c.zoom == 64.0f);
 }

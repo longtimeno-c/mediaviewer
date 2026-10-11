@@ -105,8 +105,9 @@ class library_index {
   [[nodiscard]] std::vector<seen_row> seen_under(const std::string& prefix);
   // Adds or refreshes `rows` in one transaction. With `replace_under` set,
   // rows under that prefix that are not in `rows` are dropped first, so a
-  // finished scan leaves no hash for a file that has gone.
-  void seen_store(const std::vector<seen_row>& rows, const std::string* replace_under);
+  // finished scan leaves no hash for a file that has gone. All or nothing:
+  // a failed step rolls the whole store back.
+  [[nodiscard]] expected seen_store(const std::vector<seen_row>& rows, const std::string* replace_under);
 
   // ---- the card memory ----
   [[nodiscard]] std::optional<card_row> card_lookup(const std::string& volume_id,
@@ -146,7 +147,9 @@ class library_index {
   [[nodiscard]] std::optional<job_row> job(std::uint64_t id);
   [[nodiscard]] std::vector<job_row> jobs(std::size_t limit);
   [[nodiscard]] std::vector<job_row> unfinished_jobs();
-  void journal_add(const std::vector<journal_row>& rows);
+  // All rows in one transaction, or none (rolled back): a job whose journal
+  // did not land must not start, or a resume would miss the absent rows.
+  [[nodiscard]] expected journal_add(const std::vector<journal_row>& rows);
   void journal_set(std::uint64_t job, std::uint32_t unit, std::uint32_t member, member_state state,
                    const digest* hash, const std::string& reason);
   [[nodiscard]] std::vector<journal_row> journal(std::uint64_t job);
@@ -154,6 +157,7 @@ class library_index {
  private:
   library_index() = default;
   [[nodiscard]] bool exec(const char* sql);
+  [[nodiscard]] expected finish(bool ok);
 
   std::mutex mutex_;
   sqlite3* db_ = nullptr;

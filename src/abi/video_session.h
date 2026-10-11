@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <mutex>
 #include <thread>
@@ -21,11 +22,23 @@ class video_session {
     player::media_source* old = nullptr;
     while (retired_.try_pop(old)) player::close_media(old);
   }
-  void publish(player::media_source* source, std::uint32_t generation) {
+  // Issue #236: a source older than the generation tick() last saw can never
+  // be adopted, so it is refused (closed here, on the loader) and the caller
+  // reports the open as cancelled. One that goes stale after this is retired
+  // by tick().
+  [[nodiscard]] bool publish(player::media_source* source, std::uint32_t generation) {
     player::media_source* old;
-    { std::lock_guard lock(mutex_); old = pending_; pending_ = source; pending_gen_ = generation; }
-    open_.store(source != nullptr, std::memory_order_release);
+    {
+      std::lock_guard lock(mutex_);
+      if (older(generation, seen_gen_)) {
+        old = source; source = nullptr;
+      } else {
+        old = pending_; pending_ = source; pending_gen_ = generation;
+        open_.store(current_ != nullptr || source != nullptr, std::memory_order_release);
+      }
+    }
     player::close_media(old);
+    return source != nullptr;
   }
   // [any-thread][wait-free] "A clip is on this session", from the moment the
   // loader publishes one until it is retired. The render thread needs this
@@ -54,6 +67,7 @@ class video_session {
   bool tick(std::uint32_t generation, player::time_ns vblank, player::video_frame& out, bool& active) {
     std::unique_lock lock(mutex_, std::try_to_lock);
     if (!lock.owns_lock()) { active = active_.load(); return false; }
+    seen_gen_ = generation;
     if (current_ && current_gen_ != generation) {
       if (!retired_.try_push(current_)) { active = true; return false; }
       current_ = nullptr; held_ = nullptr;
@@ -71,6 +85,15 @@ class video_session {
                                        : hold_.release(generation, clip, hold_resume_);
       if (action == player::hold_action::pause) current_->pause();
       if (action == player::hold_action::play) current_->play();
+    }
+    // Issue #236: the view moved on before this clip was adopted (cancelled
+    // after the loader's last check, or mv_video_close). It never will be, so
+    // it goes to the cleaner now rather than holding its decode threads and
+    // audio endpoint open until the next clip replaces it. Only an OLDER
+    // generation: a loader may publish at a bump this tick has not read yet.
+    if (pending_ && older(pending_gen_, generation) && retired_.try_push(pending_)) {
+      pending_ = nullptr;
+      signal_.fetch_add(1); signal_.notify_one();
     }
     if (!current_ && pending_ && pending_gen_ == generation) {
       current_ = pending_; pending_ = nullptr; current_gen_ = generation;
@@ -100,6 +123,10 @@ class video_session {
     std::lock_guard lock(mutex_); info = info_; stats = stats_; position = position_; state = state_;
   }
  private:
+  // Generations wrap, so "a is behind b" is the signed distance.
+  static constexpr bool older(std::uint32_t a, std::uint32_t b) noexcept {
+    return static_cast<std::int32_t>(a - b) < 0;
+  }
   void cleanup() {
     while (running_.load()) {
       const auto observed = signal_.load();
@@ -111,6 +138,7 @@ class video_session {
   std::mutex mutex_;
   player::media_source* pending_ = nullptr;
   std::uint32_t pending_gen_ = 0;
+  std::uint32_t seen_gen_ = 0;  // the generation of the last tick that ran
   std::vector<std::function<void(player::media_source&)>> commands_;
   player::playback_hold hold_;
   bool hold_wanted_ = false, hold_resume_ = true;

@@ -31,8 +31,8 @@ inline constexpr std::uint32_t kMaxThumbEdge = 1024;
 inline constexpr std::chrono::milliseconds kDeadline{4000};
 // Decode threads allowed at once, abandoned ones included. A decoder that
 // ignores cancellation keeps its thread and its copy of the bytes; past this
-// many, a new request is refused (status::cancelled) rather than piling up
-// another 512 MB in a surrogate other handlers share.
+// many, a new request is refused unstarted (status::busy) rather than piling
+// up another 512 MB in a surrogate other handlers share.
 inline constexpr std::uint32_t kMaxInFlight = 4;
 
 // Top-down BGRA, what a 32-bpp DIB section holds. Premultiplied when
@@ -52,7 +52,8 @@ struct bgra_thumb {
 
 // render_thumbnail on its own thread, waited for at most `deadline`. Late:
 // status::cancelled, and the decode is told to stop; the thread owns its
-// copy of the bytes and ends on its own. Any exception (out of memory in a
+// copy of the bytes and ends on its own. Refused at the kMaxInFlight cap:
+// status::busy, and no thread was started. Any exception (out of memory in a
 // decoder) is status::out_of_memory / internal, never a throw into COM.
 [[nodiscard]] result<bgra_thumb> render_thumbnail_by(std::vector<std::uint8_t> bytes,
                                                      std::uint32_t cx,

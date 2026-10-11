@@ -603,6 +603,7 @@ public static partial class IslandHost
         _localSearchStatus = Note("");
         view.Children.Add(_localSearchPanel);
         view.Children.Add(_localSearchStatus);
+        EnsureReaderStarted();  // a later window: what is installed, read now
         _localSearchRestartButton = AddonRestartButton();
         view.Children.Add(_localSearchRestartButton);
         RefreshLocalSearch();
@@ -668,6 +669,16 @@ public static partial class IslandHost
             // What is installed is still being read (it verifies every file):
             // quiet, and nothing offered for download until it is known.
             _localSearchPanel.Children.Add(Note("Checking installed add-ons…"));
+            return;
+        }
+        if (_addonsElsewhere)
+        {
+            // A later window (IslandHost.Addons.cs): it searches through the
+            // reader; the first window indexes, installs and removes.
+            _localSearchPanel.Children.Add(Note(!AiSlot.State.Installed
+                ? "Local search is not installed. " + AddonsElsewhereText
+                : AddonsElsewhereText));
+            AddAiSettingsPanel();  // the pack's own, in its read-only form
             return;
         }
 
@@ -797,7 +808,13 @@ public static partial class IslandHost
             _localSearchPanel.Children.Add(reinstall);
         }
 
-        // The add-on's own management panel, once it is loaded (docs/design/17 PR 23).
+        AddAiSettingsPanel();
+    }
+
+    // The add-on's own management panel, once it is loaded (docs/design/17 PR 23).
+    private static void AddAiSettingsPanel()
+    {
+        if (_localSearchPanel is null) return;
         if (SearchChrome is ISearchChrome search)
         {
             try { _aiSettingsPanel ??= search.BuildSettingsPanel() as UIElement; }

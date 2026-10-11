@@ -13,9 +13,10 @@
 // Nothing here runs on the canvas's render path.
 //
 // Keyboard-complete (docs/design/17 PR 22 verify: "the whole flow … works without the
-// mouse"): typing searches; Return or Down enters the grid (Return on words
-// still being searched, as while indexing, waits for their answer and enters
-// it then; nothing found stays in the field); arrows move; Return in the grid
+// mouse"): typing searches; Tab completes an offered name (waiting for the
+// names of the words as typed); Return or Down enters the grid (on words
+// still being searched, as while indexing, either waits for their answer and
+// enters it then; nothing found stays in the field); arrows move; Return in the grid
 // opens the results in the viewer on the chosen tile; Cmd+Return opens them as
 // the gallery grid; typing in the grid goes back to the field; Esc goes from
 // the grid back to the field, then closes. Down and Esc go
@@ -108,19 +109,17 @@ final class SearchPanelController: NSObject {
       state.escSeq += 1
       return true
     }
-    if code == 48 {  // kVK_Tab: a person's name for the word being typed
-      guard let editor, editor.isFieldEditor, !editor.hasMarkedText(), model.acceptSuggestion() else { return false }
-      DispatchQueue.main.async {
-        MainActor.assumeIsolated {
-          _ = NSApp.sendAction(#selector(NSResponder.moveToEndOfDocument(_:)), to: nil, from: nil)
-        }
-      }
+    if code == 48 {  // kVK_Tab: a person's name for the word being typed (the caret: completedSeq)
+      guard let editor, editor.isFieldEditor, !editor.hasMarkedText() else { return false }
+      return model.completeName()
+    }
+    // kVK_DownArrow: as Return, it waits for words still being searched.
+    guard code == 125, let editor, editor.isFieldEditor, !editor.hasMarkedText() else { return false }
+    if model.submitToResults() {
+      state.gridSeq += 1
       return true
     }
-    guard code == 125,  // kVK_DownArrow
-          let editor, editor.isFieldEditor, !model.results.isEmpty else { return false }
-    state.gridSeq += 1
-    return true
+    return model.awaitingResults
   }
 
   var isVisible: Bool { panel.isVisible && state.shown }
@@ -253,6 +252,9 @@ struct SearchRootView: View {
     }
     .onChange(of: panel.focusSeq) { _, _ in focusField() }
     .onChange(of: panel.gridSeq) { _, _ in if !model.results.isEmpty { focus = .grid } }
+    // A name completed the field (Tab, or a click): typing carries on after
+    // it, never over the whole query selected (issue #191).
+    .onChange(of: model.completedSeq) { _, _ in if model.reference == nil { focusFieldAtEnd() } }
     // Return in the field before its answer: the answer landed with results.
     // Only from the field (a click elsewhere since means the user moved on).
     .onChange(of: model.focusResultsSeq) { _, _ in
@@ -366,8 +368,7 @@ struct SearchRootView: View {
         .accessibilityHidden(true)
       ForEach(Array(model.suggestions.enumerated()), id: \.element.id) { i, s in
         Button {
-          model.acceptSuggestion(s)
-          focusField()
+          model.acceptSuggestion(s)  // the caret goes after the name (completedSeq)
         } label: {
           HStack(spacing: 5) {
             Text(s.name).font(AITheme.font(13)).foregroundStyle(AITheme.title)
@@ -432,7 +433,7 @@ struct SearchRootView: View {
         // folder-only scope: the open folder always takes in its subfolders.
         ForEach(SearchScope.allCases.filter { $0 != .folder && ($0 != .photos || model.photosIndexed) }) { s in
           let needsFolder = s == .tree && model.folder.isEmpty
-          FilterButton(label: s.panelLabel, on: model.scope == s, style: .segment,
+          FilterButton(label: s.panelLabel, on: model.shownScope == s, style: .segment,
                        available: !needsFolder,
                        help: needsFolder ? "Open a folder to search it and its subfolders." : s.help) {
             model.scope = s
@@ -515,20 +516,29 @@ struct SearchRootView: View {
         .padding(.top, 4)
       } else if model.coverage == 0 && model.scope != .all && !model.folder.isEmpty {
         Image(systemName: "rectangle.stack.badge.plus").font(.system(size: 34)).foregroundStyle(AITheme.body)
-        Text("“\(model.folderName)” is not indexed yet")
+        Text("“\(model.folderName)” is not indexed yet" + (model.readOnly ? "." : ""))
           .font(AITheme.font(17)).foregroundStyle(AITheme.title)
           .multilineTextAlignment(.center).frame(maxWidth: 480)
-        Text("Indexing runs in the background, on this Mac: you can close this panel and keep viewing. "
-             + "Results appear as it goes.")
-          .font(AITheme.font(13)).foregroundStyle(AITheme.body)
-          .multilineTextAlignment(.center).frame(maxWidth: 440)
-          .fixedSize(horizontal: false, vertical: true)
-        HStack(spacing: 10) {
-          Button("Index this folder and subfolders") { model.indexFolder() }
-            .keyboardShortcut(.defaultAction)
+        if model.readOnly {
+          // A later window: indexing is the first window's (no Index button here).
+          Text("Index it from the first MediaViewer window you opened. Results then appear here within a few seconds. "
+               + "Look in: Everywhere searches what is already indexed.")
+            .font(AITheme.font(13)).foregroundStyle(AITheme.body)
+            .multilineTextAlignment(.center).frame(maxWidth: 440)
+            .fixedSize(horizontal: false, vertical: true)
+        } else {
+          Text("Indexing runs in the background, on this Mac: you can close this panel and keep viewing. "
+               + "Results appear as it goes.")
+            .font(AITheme.font(13)).foregroundStyle(AITheme.body)
+            .multilineTextAlignment(.center).frame(maxWidth: 440)
+            .fixedSize(horizontal: false, vertical: true)
+          HStack(spacing: 10) {
+            Button("Index this folder and subfolders") { model.indexFolder() }
+              .keyboardShortcut(.defaultAction)
+          }
+          .controlSize(.large)
+          .padding(.top, 4)
         }
-        .controlSize(.large)
-        .padding(.top, 4)
       } else if model.searching {
         Text("Searching…").font(AITheme.font(14)).foregroundStyle(AITheme.body)
       } else if model.failed {
@@ -670,7 +680,9 @@ struct SearchRootView: View {
   private var footer: some View {
     HStack(spacing: 14) {
       // Its own view over the status: 4 Hz updates re-render the pill only.
-      SearchStatusPill(status: model.status, onIndexAnyway: { model.indexAnyway() }) { model.setPaused($0) }
+      // A later window's reader: the pill without Pause or Index anyway.
+      SearchStatusPill(status: model.status, onIndexAnyway: model.readOnly ? nil : { model.indexAnyway() },
+                       onPause: model.readOnly ? nil : { model.setPaused($0) })
         .frame(maxWidth: 520, alignment: .leading)
       Spacer(minLength: 0)
       if !model.results.isEmpty {
@@ -715,8 +727,8 @@ private struct KeyHint: View {
 
 private struct SearchStatusPill: View {
   @ObservedObject var status: SearchStatus
-  let onIndexAnyway: () -> Void
-  let onPause: (Bool) -> Void
+  let onIndexAnyway: (() -> Void)?
+  let onPause: ((Bool) -> Void)?
 
   var body: some View { StatusPill(line: status.line, onIndexAnyway: onIndexAnyway, onPause: onPause) }
 }
