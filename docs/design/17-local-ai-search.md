@@ -229,7 +229,9 @@ with iCloud clips. It waits on battery, on a metered network (Network List Manag
 provider will not send is skipped until the next start. Row ids of files brought down are kept in
 `<data>/cache/cloud-fetched`, so a crash's leftovers are made online-only again at the next start.
 The port is `src/addons/ai/cloud_files.h` (`cloud_win.cpp`, `cloud_mac.mm`, `cloud_none.cpp`), in
-the pack, not the base app. Another sync client's files on the Mac (not ubiquitous items) stay
+the pack, not the base app. On Windows `cldapi.dll` is delay-loaded and probed: without it
+(before 10 1709) the pack still loads and searches, `settings_json` says `"cloud_supported":false`,
+and the option is shown greyed with the reason. The option is always listed on Windows. Another sync client's files on the Mac (not ubiquitous items) stay
 unindexed.
 - The index holds paths locally and is excluded from crash reporting and telemetry.
 
