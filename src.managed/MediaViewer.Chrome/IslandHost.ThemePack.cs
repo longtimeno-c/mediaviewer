@@ -28,7 +28,26 @@ public static partial class IslandHost
     private sealed record ThemePalette(Color Canvas, Color Surface, Color Title, Color Body,
         Color Disabled, Color Hairline, Color Accent);
 
-    private sealed record ThemeTokens(string Json, string Font, ThemePalette? Dark, ThemePalette? Light);
+    /// <summary>Theme API 2: scales of the chrome's corner radii, spacing and type
+    /// (1 = today's literals), clamped to the ranges the core allows.</summary>
+    private sealed record ThemeShape(double Radius, double Density, double TypeScale)
+    {
+        public static readonly ThemeShape Default = new(1, 1, 1);
+    }
+
+    private sealed record ThemeTokens(string Json, string Font, ThemePalette? Dark, ThemePalette? Light,
+        ThemeShape Shape);
+
+    private static ThemeShape ParseShape(JsonElement theme)
+    {
+        if (!theme.TryGetProperty("shape", out JsonElement s) || s.ValueKind != JsonValueKind.Object)
+            return ThemeShape.Default;  // an API 1 theme, or one cached before PR 56
+        static double Scale(JsonElement shape, string name, double lo, double hi) =>
+            shape.TryGetProperty(name, out JsonElement v) && v.ValueKind == JsonValueKind.Number &&
+            v.TryGetDouble(out double d) && double.IsFinite(d) ? Math.Clamp(d, lo, hi) : 1;
+        return new ThemeShape(Scale(s, "radius", 0, 2), Scale(s, "density", 0.75, 1.25),
+            Scale(s, "type_scale", 0.85, 1.25));
+    }
 
     private static ThemeTokens? _theme;
     // "addon/theme" of the theme chosen; "" is the default.
@@ -82,7 +101,7 @@ public static partial class IslandHost
             ThemePalette? light = ParsePalette(theme, "light");
             if (dark is null && light is null) return null;
             string font = theme.TryGetProperty("font", out JsonElement f) ? f.GetString() ?? "" : "";
-            return new ThemeTokens(json, font, dark, light);
+            return new ThemeTokens(json, font, dark, light, ParseShape(theme));
         }
         catch (Exception ex) when (ex is JsonException or KeyNotFoundException or FormatException
                                        or InvalidOperationException or OverflowException)
@@ -155,6 +174,8 @@ public static partial class IslandHost
         _themeNote = "";
         if (key.Length == 0)
         {
+            if (ShapeInUse() != ThemeShape.Default)
+                _themeNote = "The default shape returns the next time MediaViewer starts.";
             SaveTheme("", null);
             if (_theme is not null)
             {
@@ -166,6 +187,9 @@ public static partial class IslandHost
         }
         VerifyTheme();
     }
+
+    // The shape this process was built with (resolved once at start).
+    private static ThemeShape ShapeInUse() => new(_radiusScale, _density, _typeScale);
 
     /// <summary>An add-on was installed, updated or removed.</summary>
     private static void ThemeAddonsChanged()
@@ -195,11 +219,15 @@ public static partial class IslandHost
                 if (_themeSelection != chosen) return;  // chosen again meanwhile
                 if (fresh is not null)
                 {
-                    // Every control holds the face it was built with, so a
-                    // typeface (unlike a colour) waits for the next start.
-                    _themeNote = fresh.Font.Length > 0 && _theme?.Font != fresh.Font &&
-                                 FontInstalled(fresh.Font)
-                        ? "The theme's typeface shows the next time MediaViewer starts."
+                    // Every control holds the face, radius, padding and size
+                    // it was built with, so a typeface or a shape (unlike a
+                    // colour) waits for the next start.
+                    bool face = fresh.Font.Length > 0 && _theme?.Font != fresh.Font &&
+                                FontInstalled(fresh.Font);
+                    bool shape = _accessibilitySettings?.HighContrast != true && fresh.Shape != ShapeInUse();
+                    _themeNote = face && shape ? "The theme's typeface and shape show the next time MediaViewer starts."
+                        : face ? "The theme's typeface shows the next time MediaViewer starts."
+                        : shape ? "The theme's shape shows the next time MediaViewer starts."
                         : "";
                     SaveTheme(chosen, fresh.Json);
                     if (_theme?.Json != fresh.Json)

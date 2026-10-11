@@ -226,12 +226,12 @@ public static partial class IslandHost
     // (0xC000027B).
     private static UIElement BuildHelp(int modeMask)
     {
-        var list = new StackPanel { Spacing = 2, Margin = new Thickness(12, 8, 12, 10) };
+        var list = new StackPanel { Spacing = Space(2), Margin = Pad(12, 8, 12, 10) };
         list.Children.Add(Label("Keyboard shortcuts", UiFontSize + 2));
         list.Children.Add(Label("Esc closes.", UiFontSize, mute: true));
         foreach (CommandEntry entry in Entries(modeMask))
         {
-            var row = new Grid { ColumnSpacing = 16 };
+            var row = new Grid { ColumnSpacing = Space(16) };
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(220) });
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             TextBlock keys = Label(entry.Keys, UiFontSize);
@@ -300,7 +300,7 @@ public static partial class IslandHost
         string query = "";
         string prompt = Items.Count > 0 ? $"Go to 1 – {Items.Count}" : "Nothing open";
         TextBlock label = QueryLabel(prompt);
-        var panel = new StackPanel { Spacing = 4, Margin = new Thickness(10), IsTabStop = true };
+        var panel = new StackPanel { Spacing = Space(4), Margin = Pad(10), IsTabStop = true };
         panel.Children.Add(label);
         panel.CharacterReceived += (_, e) =>
         {
@@ -349,7 +349,7 @@ public static partial class IslandHost
                        : query.Length > 0 ? "No match" : "";
         }
 
-        var panel = new StackPanel { Spacing = 6, Margin = new Thickness(10), IsTabStop = true };
+        var panel = new StackPanel { Spacing = Space(6), Margin = Pad(10), IsTabStop = true };
         panel.Children.Add(label);
         panel.Children.Add(match);
         panel.CharacterReceived += (_, e) =>
@@ -403,12 +403,12 @@ public static partial class IslandHost
         int row = 0;
         const int Rows = 4;
 
-        var panel = new StackPanel { Spacing = 6, Margin = new Thickness(12), IsTabStop = true, MinWidth = 320 };
+        var panel = new StackPanel { Spacing = Space(6), Margin = Pad(12), IsTabStop = true, MinWidth = 320 };
         panel.Children.Add(Label("Export a copy", UiFontSize + 2));
         panel.Children.Add(Label("Beside the original as name-edit; never overwrites.", UiFontSize, mute: true));
         var rowLabels = new TextBlock[Rows];
         string[] names = { "Format", "Quality", "Size", "Metadata" };
-        var grid = new Grid { ColumnSpacing = 16, RowSpacing = 4, Margin = new Thickness(0, 6, 0, 6) };
+        var grid = new Grid { ColumnSpacing = Space(16), RowSpacing = Space(4), Margin = Pad(0, 6, 0, 6) };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
@@ -453,7 +453,7 @@ public static partial class IslandHost
             grid.Children.Add(name);
             rowLabels[r] = Label("", UiFontSize);
             int captured = r;
-            var value = FlatButton(rowLabels[r], new Thickness(0));
+            var value = FlatButton(rowLabels[r], Pad(0));
             value.Click += (_, _) => { row = captured; Step(captured, 1); };
             Grid.SetRow(value, r);
             Grid.SetColumn(value, 1);
@@ -461,7 +461,7 @@ public static partial class IslandHost
         }
         panel.Children.Add(grid);
         panel.Children.Add(Label("\u2191 \u2193 choose   \u2190 \u2192 change   Enter export   Esc cancel", UiFontSize, mute: true));
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right };
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8), HorizontalAlignment = HorizontalAlignment.Right };
         var export = new Button { Content = "Export", IsTabStop = false };
         export.Click += (_, _) => Confirm();
         var cancel = new Button { Content = "Cancel", IsTabStop = false };

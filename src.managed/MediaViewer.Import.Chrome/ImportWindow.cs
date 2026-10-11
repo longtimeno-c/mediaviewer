@@ -85,6 +85,9 @@ public sealed class SourceVm
 /// </summary>
 internal sealed class ImportWindow : Window
 {
+    // The host's colours, face and shape (ImportLook.cs).
+    private static ImportLook Look => ImportLook.Current;
+
     private readonly ImportChrome _chrome;
     private readonly ImportApi _api;
 
@@ -96,24 +99,24 @@ internal sealed class ImportWindow : Window
     private readonly TextBlock _sourceTitle = Text("", 18);
     private readonly TextBlock _bottomText = Text("");
     /// <summary>The bottom bar's quieter line: what is skipped, how long it takes.</summary>
-    private readonly TextBlock _bottomDetail = new() { FontSize = 12, Opacity = 0.7, TextWrapping = TextWrapping.Wrap };
-    private readonly TextBlock _sourceCounts = new() { FontSize = 15, Opacity = 0.7, VerticalAlignment = VerticalAlignment.Center };
-    private readonly StackPanel _selectButtons = new() { Orientation = Orientation.Horizontal, Spacing = 6, Visibility = Visibility.Collapsed };
-    private readonly Border _allDoneStrip = new() { Padding = new Thickness(8), Margin = new Thickness(8, 0, 8, 4), CornerRadius = new CornerRadius(6), Visibility = Visibility.Collapsed };
-    private readonly StackPanel _emptyPanel = new() { Spacing = 10, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
-    private readonly TextBlock _noSources = new() { Text = "Insert a memory card or a drive, or add a folder.", FontSize = 13, Opacity = 0.7, TextWrapping = TextWrapping.Wrap };
+    private readonly TextBlock _bottomDetail = new() { FontSize = Look.TypeSize(12), Opacity = 0.7, TextWrapping = TextWrapping.Wrap };
+    private readonly TextBlock _sourceCounts = new() { FontSize = Look.TypeSize(15), Opacity = 0.7, VerticalAlignment = VerticalAlignment.Center };
+    private readonly StackPanel _selectButtons = new() { Orientation = Orientation.Horizontal, Spacing = Look.Space(6), Visibility = Visibility.Collapsed };
+    private readonly Border _allDoneStrip = new() { Padding = Look.Pad(8), Margin = Look.Pad(8, 0, 8, 4), CornerRadius = Look.Corner(6), Visibility = Visibility.Collapsed };
+    private readonly StackPanel _emptyPanel = new() { Spacing = Look.Space(10), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+    private readonly TextBlock _noSources = new() { Text = "Insert a memory card or a drive, or add a folder.", FontSize = Look.TypeSize(13), Opacity = 0.7, TextWrapping = TextWrapping.Wrap };
     private long _planUnits, _planNew;
     /// <summary>"reading", "failed" or "" (planned): what the empty grid says.</summary>
     private string _scanState = "";
     private bool _showMore;
     private readonly Button _importButton = new() { Content = "Import", Style = AccentStyle() };
-    private readonly StackPanel _presetPanel = new() { Spacing = 8, Padding = new Thickness(12) };
+    private readonly StackPanel _presetPanel = new() { Spacing = Look.Space(8), Padding = Look.Pad(12) };
     private readonly ListView _whereFilesGo = new() { SelectionMode = ListViewSelectionMode.None, MaxHeight = 220 };
-    private readonly StackPanel _progressPanel = new() { Spacing = 6, Visibility = Visibility.Collapsed };
-    private readonly StackPanel _summaryPanel = new() { Spacing = 6, Visibility = Visibility.Collapsed };
+    private readonly StackPanel _progressPanel = new() { Spacing = Look.Space(6), Visibility = Visibility.Collapsed };
+    private readonly StackPanel _summaryPanel = new() { Spacing = Look.Space(6), Visibility = Visibility.Collapsed };
     private readonly Banner _banner = new();
     private readonly SemaphoreSlim _thumbGate = new(2);
-    private readonly HyperlinkButton _whyLink = new() { Content = "Why?", FontSize = 12, Visibility = Visibility.Collapsed, Padding = new Thickness(0) };
+    private readonly HyperlinkButton _whyLink = new() { Content = "Why?", FontSize = Look.TypeSize(12), Visibility = Visibility.Collapsed, Padding = Look.Pad(0) };
 
     private IReadOnlyList<string> _marks = Array.Empty<string>();
     private string _root = "";
@@ -136,7 +139,8 @@ internal sealed class ImportWindow : Window
         Title = "Import";
         MediaViewer.Shared.AppIcon.Apply(this);
         AppWindow.Resize(new Windows.Graphics.SizeInt32(1280, 760));
-        Content = BuildLayout();
+        // Issue #204: in the host's colours, face and shape (ImportLook).
+        Content = ImportLook.Current.Root(BuildLayout(), this);
         _groups.Source = _days;
         _grid.ItemsSource = _groups.View;
         _sources.ItemsSource = _sourceItems;
@@ -145,7 +149,7 @@ internal sealed class ImportWindow : Window
     // ---- layout ------------------------------------------------------------------
 
     private static TextBlock Text(string s, double size = 14) =>
-        new() { Text = s, FontSize = size, TextWrapping = TextWrapping.Wrap };
+        new() { Text = s, FontSize = Look.TypeSize(size), TextWrapping = TextWrapping.Wrap };
 
     private static Style AccentStyle() =>
         (Style)Application.Current.Resources["AccentButtonStyle"];
@@ -153,10 +157,11 @@ internal sealed class ImportWindow : Window
     private static DataTemplate Template(string body) => (DataTemplate)XamlReader.Load(
         "<DataTemplate xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\">" + body + "</DataTemplate>");
 
-    private UIElement BuildLayout()
+    private Grid BuildLayout()
     {
         // Keep the ThemeResource expression on the live root so Windows updates
-        // it, along with the native controls, when appearance changes.
+        // it, along with the native controls, when appearance changes. With a
+        // host that lends its tokens, ImportLook.Root fills it with the canvas.
         var root = (Grid)XamlReader.Load(
             """
             <Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -173,8 +178,8 @@ internal sealed class ImportWindow : Window
         root.Children.Add(_banner.Root);
 
         // Sources.
-        var left = new StackPanel { Spacing = 8, Padding = new Thickness(12) };
-        left.Children.Add(new TextBlock { Text = "Import from", FontSize = 15, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
+        var left = new StackPanel { Spacing = Look.Space(8), Padding = Look.Pad(12) };
+        left.Children.Add(new TextBlock { Text = "Import from", FontSize = Look.TypeSize(15), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
         left.Children.Add(_noSources);
         _sources.ItemTemplate = Template(
             "<StackPanel Padding=\"4\"><TextBlock Text=\"{Binding Label}\" FontSize=\"15\"/>" +
@@ -217,7 +222,7 @@ internal sealed class ImportWindow : Window
         centre.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         centre.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         centre.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        var titleRow = new Grid { Margin = new Thickness(8), ColumnSpacing = 10 };
+        var titleRow = new Grid { Margin = Look.Pad(8), ColumnSpacing = Look.Space(10) };
         titleRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         titleRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         titleRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -271,11 +276,11 @@ internal sealed class ImportWindow : Window
         root.Children.Add(right);
 
         // Bottom bar.
-        var bottom = new Grid { Padding = new Thickness(12), ColumnSpacing = 12 };
+        var bottom = new Grid { Padding = Look.Pad(12), ColumnSpacing = Look.Space(12) };
         bottom.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         bottom.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var info = new StackPanel { Spacing = 6 };
-        var bottomRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        var info = new StackPanel { Spacing = Look.Space(6) };
+        var bottomRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Look.Space(8) };
         bottomRow.Children.Add(_bottomText);
         bottomRow.Children.Add(_whyLink);
         info.Children.Add(bottomRow);
@@ -346,7 +351,7 @@ internal sealed class ImportWindow : Window
 
     private UIElement HelpLine(string label, string section)
     {
-        var link = new HyperlinkButton { Content = Text(label, 11), Padding = new Thickness(0, 2, 0, 2) };
+        var link = new HyperlinkButton { Content = Text(label, 11), Padding = Look.Pad(0, 2, 0, 2) };
         link.Click += (_, _) => _ = ShowExplainer(section);
         return link;
     }
@@ -365,11 +370,11 @@ internal sealed class ImportWindow : Window
 
     private async Task ShowExplainer(string? scrollTo = null, bool firstUse = false)
     {
-        var body = new StackPanel { Spacing = 18, Padding = new Thickness(4) };
+        var body = new StackPanel { Spacing = Look.Space(18), Padding = Look.Pad(4) };
         var marks = new Dictionary<string, FrameworkElement>();
         foreach ((string key, string title, string text) in ExplainerSections)
         {
-            var section = new StackPanel { Spacing = 4 };
+            var section = new StackPanel { Spacing = Look.Space(4) };
             section.Children.Add(Text(title, 15));
             section.Children.Add(Text(text, 13));
             marks[key] = section;
@@ -743,7 +748,7 @@ internal sealed class ImportWindow : Window
         if (hasTiles) return;
         void Line(string text) => _emptyPanel.Children.Add(new TextBlock
         {
-            Text = text, FontSize = 15, TextWrapping = TextWrapping.Wrap,
+            Text = text, FontSize = Look.TypeSize(15), TextWrapping = TextWrapping.Wrap,
             HorizontalAlignment = HorizontalAlignment.Center, TextAlignment = TextAlignment.Center,
         });
         if (_root.Length == 0)
@@ -800,7 +805,7 @@ internal sealed class ImportWindow : Window
         bool was = _building;
         _building = true;
         _presetPanel.Children.Clear();
-        _presetPanel.Spacing = 12;
+        _presetPanel.Spacing = Look.Space(12);
 
         if (_presets.Count > 1)
         {
@@ -869,7 +874,7 @@ internal sealed class ImportWindow : Window
     }
 
     private static TextBlock Heading(string s) =>
-        new() { Text = s, FontSize = 15, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold };
+        new() { Text = s, FontSize = Look.TypeSize(15), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold };
 
     private UIElement DestinationRow()
     {
@@ -880,12 +885,12 @@ internal sealed class ImportWindow : Window
             choose.Click += async (_, _) => await ChooseDestination();
             return choose;
         }
-        var row = new Grid { ColumnSpacing = 8 };
+        var row = new Grid { ColumnSpacing = Look.Space(8) };
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         var names = new StackPanel();
-        names.Children.Add(new TextBlock { Text = System.IO.Path.GetFileName(dest.TrimEnd('\\', '/')) is { Length: > 0 } leaf ? leaf : dest, FontSize = 14 });
-        names.Children.Add(new TextBlock { Text = dest, FontSize = 11, Opacity = 0.7, TextTrimming = TextTrimming.CharacterEllipsis });
+        names.Children.Add(new TextBlock { Text = System.IO.Path.GetFileName(dest.TrimEnd('\\', '/')) is { Length: > 0 } leaf ? leaf : dest, FontSize = Look.TypeSize(14) });
+        names.Children.Add(new TextBlock { Text = dest, FontSize = Look.TypeSize(11), Opacity = 0.7, TextTrimming = TextTrimming.CharacterEllipsis });
         ToolTipService.SetToolTip(names, dest);
         row.Children.Add(names);
         var change = new Button { Content = "Change…" };
@@ -960,10 +965,10 @@ internal sealed class ImportWindow : Window
 
     private UIElement FolderRow(string label, string key, bool allowOff)
     {
-        var row = new StackPanel { Spacing = 2 };
+        var row = new StackPanel { Spacing = Look.Space(2) };
         string value = P(key);
         row.Children.Add(Text($"{label}: {(value.Length > 0 ? value : "Off")}", 13));
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Look.Space(6) };
         var choose = new Button { Content = "Choose…" };
         choose.Click += async (_, _) =>
         {
@@ -1018,7 +1023,7 @@ internal sealed class ImportWindow : Window
         box.SetText(P(key));
         box.LostFocus += (_, _) => { if (box.Text != P(key)) Set(key, box.Text); };
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(box, label);
-        var field = new StackPanel { Spacing = 4 };
+        var field = new StackPanel { Spacing = Look.Space(4) };
         field.Children.Add(new TextBlock { Text = label });
         field.Children.Add(box);
         return field;
@@ -1026,7 +1031,7 @@ internal sealed class ImportWindow : Window
 
     private UIElement TypeFilter()
     {
-        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Look.Space(4) };
         JsonArray types = _preset["types"] as JsonArray ?? new JsonArray("raw", "jpeg", "heic", "video", "other");
         foreach (string t in new[] { "raw", "jpeg", "heic", "video", "other" })
         {
@@ -1118,7 +1123,7 @@ internal sealed class ImportWindow : Window
         string state = p.State == MvImportJobState.Paused ? "Paused" : "Copying";
         _progressPanel.Children.Add(Text(
             $"{state} {p.CurrentNameText} · {p.UnitsDone} of {p.UnitsTotal} verified · {Format.Rate(p.BytesPerSecond)} {Format.Eta(p.EtaSeconds)}", 13));
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Look.Space(8) };
         var pause = new Button { Content = p.State == MvImportJobState.Paused ? "Resume (Space)" : "Pause (Space)" };
         pause.Click += (_, _) => PauseResume();
         var cancel = new Button { Content = "Cancel" };
@@ -1171,7 +1176,7 @@ internal sealed class ImportWindow : Window
             foreach (JsonElement f in failed) list.Items.Add($"Failed: {f.GetProperty("name").GetString()} — {f.GetProperty("reason").GetString()}");
             foreach (JsonElement k in skipped.Take(500)) list.Items.Add($"Skipped: {k.GetProperty("name").GetString()} — matches {k.GetProperty("matched").GetString()}");
             _summaryPanel.Children.Add(list);
-            var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+            var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Look.Space(8) };
             if (failed.Length > 0)
             {
                 var retry = new Button { Content = "Retry failed" };
@@ -1306,30 +1311,13 @@ internal sealed class ImportWindow : Window
     /// </summary>
     private sealed class Banner
     {
-        // Translucent, so they read on the light and the dark theme alike.
-        internal static readonly SolidColorBrush Neutral = new(ColorHelper.FromArgb(0x33, 0x80, 0x80, 0x80));
-        internal static readonly SolidColorBrush Accent = new(
-            new Windows.UI.ViewManagement.UISettings().GetColorValue(Windows.UI.ViewManagement.UIColorType.Accent));
-        private static readonly SolidColorBrush Ink = new(
-            new Windows.UI.ViewManagement.UISettings().GetColorValue(Windows.UI.ViewManagement.UIColorType.Foreground));
-        private static readonly SolidColorBrush Muted = new(ColorHelper.FromArgb(0x99, 0x80, 0x80, 0x80));
-        private static readonly SolidColorBrush Clear = new(Microsoft.UI.Colors.Transparent);
-        private static readonly SolidColorBrush Highlight = new(ColorHelper.FromArgb(0x60, Accent.Color.R, Accent.Color.G, Accent.Color.B));
-        private static readonly FontFamily InputFont = new("Segoe UI");
+        // The host's tokens (ImportLook), or translucent greys and the system
+        // accent with an older host, so it reads on the light and dark theme alike.
+        internal static SolidColorBrush Neutral => ImportLook.Current.Neutral;
+        internal static SolidColorBrush Accent => ImportLook.Current.Accent;
 
-        // The window's type-in fields (Shared\FakeInput.cs): system text and
-        // accent colours, as the rest of this window's default controls.
-        internal static readonly MediaViewer.Shared.FakeInputLook InputLook = new()
-        {
-            Font = () => InputFont,
-            FontSize = () => 14,
-            Title = () => Ink,
-            Body = () => Muted,
-            Canvas = () => Clear,
-            Hairline = () => Neutral,
-            Selection = () => Highlight,
-            SelectionInk = () => Ink,
-        };
+        // The window's type-in fields (Shared\FakeInput.cs).
+        internal static MediaViewer.Shared.FakeInputLook InputLook => ImportLook.Current.InputLook;
 
         public readonly Border Root;
         private readonly TextBlock _title = new() { FontWeight = Microsoft.UI.Text.FontWeights.SemiBold };
@@ -1338,13 +1326,13 @@ internal sealed class ImportWindow : Window
 
         public Banner()
         {
-            var text = new StackPanel { Spacing = 2 };
+            var text = new StackPanel { Spacing = Look.Space(2) };
             text.Children.Add(_title);
             text.Children.Add(_message);
-            var close = new Button { Content = "✕", Padding = new Thickness(8, 4, 8, 4), VerticalAlignment = VerticalAlignment.Center };
+            var close = new Button { Content = "✕", Padding = Look.Pad(8, 4, 8, 4), VerticalAlignment = VerticalAlignment.Center };
             Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(close, "Close");
             close.Click += (_, _) => IsOpen = false;
-            var row = new Grid { ColumnSpacing = 12 };
+            var row = new Grid { ColumnSpacing = Look.Space(12) };
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -1359,9 +1347,9 @@ internal sealed class ImportWindow : Window
                 Background = Neutral,
                 BorderBrush = Accent,
                 BorderThickness = new Thickness(0, 0, 0, 2),
-                CornerRadius = new CornerRadius(6),
-                Padding = new Thickness(14, 10, 10, 10),
-                Margin = new Thickness(0, 0, 0, 8),
+                CornerRadius = Look.Corner(6),
+                Padding = Look.Pad(14, 10, 10, 10),
+                Margin = Look.Pad(0, 0, 0, 8),
                 Visibility = Visibility.Collapsed,
             };
         }

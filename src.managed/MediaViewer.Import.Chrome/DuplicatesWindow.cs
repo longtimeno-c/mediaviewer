@@ -131,12 +131,15 @@ internal sealed class DuplicatesWindow : Window
 {
     private const string IconFont = "Segoe Fluent Icons,Segoe MDL2 Assets";
 
+    // The host's colours, face and shape (ImportLook.cs).
+    private static ImportLook Look => ImportLook.Current;
+
     private readonly ImportChrome _chrome;
     private readonly ImportApi _api;
     private readonly DuplicatesApi _dups;
 
     private readonly TextBlock _folder = Secondary("", 12);
-    private readonly TextBlock _headline = new() { FontSize = 16, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap };
+    private readonly TextBlock _headline = new() { FontSize = Look.TypeSize(16), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap };
     private readonly TextBlock _progressText = Secondary("", 12);
     private readonly TextBlock _selectionText = Secondary("", 12);
     private readonly MediaViewer.Shared.FlatBar _bar;
@@ -145,7 +148,7 @@ internal sealed class DuplicatesWindow : Window
         // Explorer's picking: click one, Ctrl+click to add, Shift+click for a run.
         SelectionMode = ListViewSelectionMode.Extended,
         IsDoubleTapEnabled = true,
-        Padding = new Thickness(0, 4, 0, 8),
+        Padding = Look.Pad(0, 4, 0, 8),
     };
     private readonly CollectionViewSource _view = new() { IsSourceGrouped = true };
     private readonly ObservableCollection<DupGroupVm> _groups = new();
@@ -172,14 +175,16 @@ internal sealed class DuplicatesWindow : Window
         _bar = new MediaViewer.Shared.FlatBar(Banner.Neutral, Banner.Accent);
         Title = "Find Duplicates";
         MediaViewer.Shared.AppIcon.Apply(this);
-        bool mica = MicaController.IsSupported();
+        // Issue #204: with the host's tokens the window is the host's canvas
+        // colour, not Mica; an older host keeps Mica where Windows has it.
+        bool mica = !ImportLook.Current.FromHost && MicaController.IsSupported();
         if (mica)
         {
             try { SystemBackdrop = new MicaBackdrop(); }
             catch (Exception ex) { Debug.WriteLine(ex.Message); mica = false; }
         }
         AppWindow.Resize(new Windows.Graphics.SizeInt32(1040, 740));
-        Content = BuildLayout(mica);
+        Content = ImportLook.Current.Root(BuildLayout(mica), this);
         _view.Source = _groups;
         _list.ItemsSource = _view.View;
         UpdateButtons();
@@ -194,7 +199,7 @@ internal sealed class DuplicatesWindow : Window
     /// which this island host does not have, and a XAML reference to one fails to load.
     /// </summary>
     private static TextBlock Secondary(string s, double size) =>
-        new() { Text = s, FontSize = size, Opacity = 0.7, TextWrapping = TextWrapping.Wrap };
+        new() { Text = s, FontSize = Look.TypeSize(size), Opacity = 0.7, TextWrapping = TextWrapping.Wrap };
 
     private static Button IconButton(string glyph, string label)
     {
@@ -205,12 +210,12 @@ internal sealed class DuplicatesWindow : Window
 
     private static void SetButton(Button b, string glyph, string label)
     {
-        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Look.Space(8) };
         row.Children.Add(new TextBlock
         {
             Text = glyph,
             FontFamily = new FontFamily(IconFont),
-            FontSize = 14,
+            FontSize = Look.TypeSize(14),
             VerticalAlignment = VerticalAlignment.Center,
         });
         row.Children.Add(new TextBlock { Text = label, VerticalAlignment = VerticalAlignment.Center });
@@ -228,12 +233,12 @@ internal sealed class DuplicatesWindow : Window
         Background = Banner.CardFill,
         BorderBrush = Banner.CardStroke,
         BorderThickness = new Thickness(1),
-        CornerRadius = new CornerRadius(8),
+        CornerRadius = Look.Corner(8),
         Padding = padding,
         Child = child,
     };
 
-    private UIElement BuildLayout(bool mica)
+    private Grid BuildLayout(bool mica)
     {
         // Keep the ThemeResource expression on the live root so Windows updates
         // it when appearance changes; transparent over Mica, which is the page.
@@ -243,6 +248,8 @@ internal sealed class DuplicatesWindow : Window
               <Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                     Background="{ThemeResource ApplicationPageBackgroundThemeBrush}" Padding="24,16,24,16" RowSpacing="12"/>
               """);
+        root.Padding = Look.Pad(24, 16, 24, 16);  // the theme's density (PR 56)
+        root.RowSpacing = Look.Space(12);
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });  // title
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });  // summary card
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });  // selection bar
@@ -250,7 +257,7 @@ internal sealed class DuplicatesWindow : Window
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });  // footnote
 
         // Title: the tool's mark, its name, the folder, and a new scan on the right.
-        var title = new Grid { ColumnSpacing = 12 };
+        var title = new Grid { ColumnSpacing = Look.Space(12) };
         title.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         title.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         title.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -258,25 +265,25 @@ internal sealed class DuplicatesWindow : Window
         {
             Width = 40,
             Height = 40,
-            CornerRadius = new CornerRadius(8),
+            CornerRadius = Look.Corner(8),
             Background = Banner.Accent,
             VerticalAlignment = VerticalAlignment.Center,
             Child = new TextBlock
             {
                 Text = "",  // Copy
                 FontFamily = new FontFamily(IconFont),
-                FontSize = 20,
+                FontSize = Look.TypeSize(20),
                 Foreground = new SolidColorBrush(Microsoft.UI.Colors.White),
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center,
             },
         };
         title.Children.Add(mark);
-        var names = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
+        var names = new StackPanel { Spacing = Look.Space(2), VerticalAlignment = VerticalAlignment.Center };
         names.Children.Add(new TextBlock
         {
             Text = "Find Duplicates",
-            FontSize = 24,
+            FontSize = Look.TypeSize(24),
             FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
         });
         _folder.TextWrapping = TextWrapping.NoWrap;
@@ -291,32 +298,32 @@ internal sealed class DuplicatesWindow : Window
         root.Children.Add(title);
 
         // Summary: what the scan found (or how far it is), with Stop / the report.
-        var summary = new Grid { ColumnSpacing = 12 };
+        var summary = new Grid { ColumnSpacing = Look.Space(12) };
         summary.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         summary.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var lines = new StackPanel { Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
+        var lines = new StackPanel { Spacing = Look.Space(6), VerticalAlignment = VerticalAlignment.Center };
         lines.Children.Add(_headline);
         lines.Children.Add(_bar.Root);
         lines.Children.Add(_progressText);
         summary.Children.Add(lines);
-        var side = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
+        var side = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Look.Space(8), VerticalAlignment = VerticalAlignment.Center };
         _stop.Click += (_, _) => { try { _api.Cancel(_job); } catch (MediaViewerException) { } };
         _report.Click += (_, _) => { if (_reportPath.Length > 0) _ = Launcher.LaunchUriAsync(new Uri(_reportPath)); };
         side.Children.Add(_stop);
         side.Children.Add(_report);
         Grid.SetColumn(side, 1);
         summary.Children.Add(side);
-        Border summaryCard = Card(summary, new Thickness(16, 14, 16, 14));
+        Border summaryCard = Card(summary, Look.Pad(16, 14, 16, 14));
         Grid.SetRow(summaryCard, 1);
         root.Children.Add(summaryCard);
 
         // Selection bar: how much is picked, and what to do with it.
-        var bar = new Grid { ColumnSpacing = 8 };
+        var bar = new Grid { ColumnSpacing = Look.Space(8) };
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         _selectionText.VerticalAlignment = VerticalAlignment.Center;
         bar.Children.Add(_selectionText);
-        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Look.Space(8) };
         _open.Click += (_, _) => OpenFocused();
         _reveal.Click += (_, _) => RevealFocused();
         _clear.Click += (_, _) => _list.SelectedItems.Clear();
@@ -373,7 +380,7 @@ internal sealed class DuplicatesWindow : Window
             OpenFocused();
         };
         _list.KeyDown += OnListKeyDown;
-        Border listCard = Card(_list, new Thickness(4, 0, 4, 0));
+        Border listCard = Card(_list, Look.Pad(4, 0, 4, 0));
         Grid.SetRow(listCard, 3);
         root.Children.Add(listCard);
 
@@ -667,16 +674,13 @@ internal sealed class DuplicatesWindow : Window
         }
     }
 
-    /// <summary>The Import window's translucent brushes, so both windows read alike.</summary>
+    /// <summary>The Import window's brushes (ImportLook: the host's tokens, or the
+    /// translucent greys with an older host), so both windows read alike.</summary>
     private static class Banner
     {
-        internal static readonly SolidColorBrush Neutral =
-            new(Microsoft.UI.ColorHelper.FromArgb(0x33, 0x80, 0x80, 0x80));
-        internal static readonly SolidColorBrush CardFill =
-            new(Microsoft.UI.ColorHelper.FromArgb(0x14, 0x80, 0x80, 0x80));
-        internal static readonly SolidColorBrush CardStroke =
-            new(Microsoft.UI.ColorHelper.FromArgb(0x29, 0x80, 0x80, 0x80));
-        internal static readonly SolidColorBrush Accent = new(
-            new Windows.UI.ViewManagement.UISettings().GetColorValue(Windows.UI.ViewManagement.UIColorType.Accent));
+        internal static SolidColorBrush Neutral => ImportLook.Current.Neutral;
+        internal static SolidColorBrush CardFill => ImportLook.Current.CardFill;
+        internal static SolidColorBrush CardStroke => ImportLook.Current.CardStroke;
+        internal static SolidColorBrush Accent => ImportLook.Current.Accent;
     }
 }

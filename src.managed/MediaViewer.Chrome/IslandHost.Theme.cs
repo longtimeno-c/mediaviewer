@@ -31,6 +31,46 @@ public static partial class IslandHost
 
     private static SolidColorBrush Brush(ChromeColour role) => ThemeBrushes[role];
 
+    // docs/design/25 PR 56 (theme API 2): the theme's shape, as scales of the
+    // literals below (1 = today's). Resolved once at chrome start from the
+    // cached theme (ResolveThemeShape), never per frame: every control holds
+    // the radius, padding and size it was built with, so like the typeface a
+    // new shape shows at the next start. 1 with no theme or in high contrast.
+    private static double _radiusScale = 1;
+    private static double _density = 1;
+    private static double _typeScale = 1;
+
+    private static double RadiusScale => _radiusScale;
+    private static double Density => _density;
+    private static double TypeScale => _typeScale;
+
+    /// <summary>A corner radius literal, in the theme's shape.</summary>
+    private static double Radius(double literal) => _radiusScale == 1 ? literal : literal * _radiusScale;
+
+    /// <summary>A padding or spacing literal, in the theme's density (whole DIPs).</summary>
+    private static double Space(double literal) => _density == 1 ? literal : Math.Round(literal * _density);
+
+    /// <summary>A font size literal, in the theme's type scale (whole DIPs: the
+    /// chrome's face is a bitmap design and blurs between sizes).</summary>
+    private static double TypeSize(double literal) => _typeScale == 1 ? literal : Math.Round(literal * _typeScale);
+
+    private static CornerRadius Corner(double literal) => new(Radius(literal));
+
+    private static Thickness Pad(double uniform) => new(Space(uniform));
+
+    private static Thickness Pad(double left, double top, double right, double bottom) =>
+        new(Space(left), Space(top), Space(right), Space(bottom));
+
+    // Chrome start, after LoadCachedTheme and before the first control.
+    private static void ResolveThemeShape()
+    {
+        ThemeShape shape = _accessibilitySettings?.HighContrast == true || _theme is null
+            ? ThemeShape.Default : _theme.Shape;
+        _radiusScale = shape.Radius;
+        _density = shape.Density;
+        _typeScale = shape.TypeScale;
+    }
+
     private static void InitialiseTheme()
     {
         _themeDispatcher = DispatcherQueue.GetForCurrentThread();
@@ -41,6 +81,7 @@ public static partial class IslandHost
         // docs/design/25: the theme in use, from its cached tokens, before the first
         // brush exists; its add-on is verified on a worker afterwards.
         LoadCachedTheme();
+        ResolveThemeShape();
         // Brushes first: every Brush(role) lookup depends on them, so a failed
         // change hook below must still leave a complete palette.
         RefreshTheme();

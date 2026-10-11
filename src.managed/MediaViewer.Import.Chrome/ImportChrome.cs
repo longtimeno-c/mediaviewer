@@ -29,6 +29,8 @@ public sealed class ImportChrome : IAddonChrome, IAddonCommands
     public void Attach(IAddonHost host, IntPtr interfaceTable)
     {
         _host = host;
+        // Issue #204: the host's tokens, face and shape when it lends them.
+        ImportLook.Attach(host);
         _api = new ImportApi(interfaceTable);
         _dups = new DuplicatesApi(interfaceTable);
         _timer = DispatcherQueue.GetForCurrentThread()?.CreateTimer();
@@ -253,6 +255,8 @@ public sealed class ImportChrome : IAddonChrome, IAddonCommands
         _api = null;
         _dups = null;
         _host?.SetStatus(null);
+        // The host's ThemeChanged outlives this chrome: let go of it.
+        ImportLook.Current.Detach();
         _host = null;
     }
 

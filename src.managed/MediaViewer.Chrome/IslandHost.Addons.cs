@@ -34,7 +34,7 @@ public static partial class IslandHost
     private const string UpdateReleaseBase = "https://github.com/longtimeno-c/mediaviewer/releases/latest/download/";
 
     private sealed record AddonState(bool Installed, string Version, string State, long Size, bool Loaded,
-        string Description = "", string HintText = "");
+        string Description = "", string HintText = "", bool Settings = false);
 
     // Whether the release channel has a piece this build can install. Only
     // a manifest that verifies counts: the button never offers a download that
@@ -137,9 +137,9 @@ public static partial class IslandHost
         {
             _bar = new JobBar();
             _text = Label("");
-            _text.FontSize = 12;
+            _text.FontSize = TypeSize(12);
             _percent = Label("");
-            _percent.FontSize = 12;
+            _percent.FontSize = TypeSize(12);
             _percent.HorizontalAlignment = HorizontalAlignment.Right;
             var lines = new Grid();
             lines.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -147,7 +147,7 @@ public static partial class IslandHost
             lines.Children.Add(_text);
             Grid.SetColumn(_percent, 1);
             lines.Children.Add(_percent);
-            Root = new StackPanel { Spacing = 4, Width = width, HorizontalAlignment = HorizontalAlignment.Left };
+            Root = new StackPanel { Spacing = Space(4), Width = width, HorizontalAlignment = HorizontalAlignment.Left };
             Root.Children.Add(_bar.Root);
             Root.Children.Add(lines);
         }
@@ -349,7 +349,9 @@ public static partial class IslandHost
                     a.GetProperty("loaded").GetBoolean(),
                     // docs/design/25: Settings' line and the card hint, from the manifest.
                     a.TryGetProperty("description", out JsonElement d) ? d.GetString() ?? "" : "",
-                    a.TryGetProperty("hint_text", out JsonElement h) ? h.GetString() ?? "" : "");
+                    a.TryGetProperty("hint_text", out JsonElement h) ? h.GetString() ?? "" : "",
+                    // PR 56: it has a settings page (IslandHost.AddonSettings.cs).
+                    a.TryGetProperty("settings", out JsonElement st) && st.ValueKind == JsonValueKind.True);
             }
         }
         catch (Exception ex) when (ex is MediaViewerException or JsonException or KeyNotFoundException)
@@ -368,6 +370,8 @@ public static partial class IslandHost
             slot.State = next with { Loaded = slot.Chrome is not null };
         }
         _addonStatesRead = true;
+        // PR 56: what is installed changed, so may the settings pages shown.
+        if (_settingsHost is not null) RefreshFirstPartyPages();
     }
 
     // ---- loading -------------------------------------------------------------
@@ -546,7 +550,7 @@ public static partial class IslandHost
     }
 
     /// <summary>The base chrome's services for an add-on (docs/design/18 IAddonHost; Milestone H IAddonHost2).</summary>
-    private sealed class AddonHost(AddonSlot slot) : IAddonHost2
+    private sealed class AddonHost(AddonSlot slot) : IAddonHost2, IAddonThemeShape
     {
         public void Post(Action action) => DispatcherQueueControllerTryEnqueue(action);
 
@@ -609,6 +613,11 @@ public static partial class IslandHost
         public string UiFontFamily => HostUiFontSource();
         public double UiFontSize => IslandHost.UiFontSize;
         public bool AnimationsEnabled => HostAnimationsEnabled();
+
+        // ---- IAddonThemeShape (PR 56): the shape this process was built with ----
+        public double RadiusScale => IslandHost.RadiusScale;
+        public double Density => IslandHost.Density;
+        public double TypeScale => IslandHost.TypeScale;
 
         public event Action? ThemeChanged
         {
@@ -876,7 +885,7 @@ public static partial class IslandHost
 
     private static StackPanel BuildImportHint()
     {
-        var panel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+        var panel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(4) };
         _importHint = TextButton("Card inserted — install Import?", () =>
         {
             ShowImportHint(false);
@@ -943,10 +952,11 @@ public static partial class IslandHost
     {
         EnsureReaderStarted();  // a later window: what is installed, read now
         view.Children.Add(Heading("Add-ons"));
-        _addonRow = new StackPanel { Spacing = 6 };
+        _addonRow = new StackPanel { Spacing = Space(6) };
         _addonStatus = Label("");
         _addonStatus.TextWrapping = TextWrapping.Wrap;
         view.Children.Add(_addonRow);
+        view.Children.Add(FirstPartyPageHost(ImportSlot));  // PR 56: its settings page
         view.Children.Add(_addonStatus);
         _importRestartButton = AddonRestartButton();
         view.Children.Add(_importRestartButton);
@@ -1032,7 +1042,7 @@ public static partial class IslandHost
             _ => "The installed copy did not pass verification and is not loaded. Reinstall it.",
         };
         _addonRow.Children.Add(Label(line));
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8) };
         if (UpdateVersion(ImportSlot) is string newer)
         {
             buttons.Children.Add(SettingsButton($"Update to {newer}, {DownloadSize(ImportSlot.Offer.ArchiveSize)}",
@@ -1051,7 +1061,7 @@ public static partial class IslandHost
         var q = Label("Remove Import? Its library index and import history (import.db) can stay, so a reinstall still knows what was imported.");
         q.TextWrapping = TextWrapping.Wrap;
         _addonRow.Children.Add(q);
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8) };
         buttons.Children.Add(SettingsButton("Remove, keep history", () => RemoveImport(keepData: true)));
         buttons.Children.Add(SettingsButton("Remove everything", () => RemoveImport(keepData: false)));
         buttons.Children.Add(SettingsButton("Cancel", RefreshAddonRow));
@@ -1070,6 +1080,12 @@ public static partial class IslandHost
             try
             {
                 AddonNative.Remove(ImportSlot.Id, keepData);
+                // PR 56: "Remove everything" forgets its settings page's values too.
+                if (!keepData)
+                {
+                    try { AddonNative.SettingsForget(ImportSlot.Id); }
+                    catch (MediaViewerException) { /* a file left behind; the add-on is gone */ }
+                }
                 done = "Import removed.";
             }
             catch (MediaViewerException)
