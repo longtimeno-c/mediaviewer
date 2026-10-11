@@ -333,6 +333,12 @@ enum class command_id : std::uint16_t {
   // Ctrl/Cmd+N: another window, its own process (docs/design/16 "Window").
   // Appended after the add-on slots so every earlier wire id stays put.
   new_window,
+  // Issue #206 (docs/design/16 "Status, sort, filter, typeahead"): View > Show. Appended.
+  // kind_filter_next cycles All / Photos / Videos / RAW / Marked and ships with
+  // no key (Settings can give it one); kind_filter_set is the menus' and
+  // carries the filter (io::kind_filter) as its argument.
+  kind_filter_next,
+  kind_filter_set,
   // Issue #207 (docs/design/16 "Rate", docs/design/06): culling. Appended. X toggles
   // reject (rating -1), numpad / Ctrl+Shift 6-9 set the colour label Lightroom
   // gives those keys (Red, Yellow, Green, Blue; the same key again clears),

@@ -193,6 +193,8 @@ static bool MvCommandSupported(mv::shell::command_id c) {
     // Issue #184: `/` (find by name in the gallery), the runner's `3`, and the
     // rows an add-on's manifest fills; runCommand: handles each.
     case typeahead: case game_toggle_3d:
+    // Issue #206: View > Show, cycled (unbound by default); the menus set it.
+    case kind_filter_next:
     case addon_cmd_0: case addon_cmd_1: case addon_cmd_2: case addon_cmd_3:
     case addon_cmd_4: case addon_cmd_5: case addon_cmd_6: case addon_cmd_7:
       return true;
@@ -627,6 +629,8 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)openFolderPath:(const char*)utf8_path;
 - (int32_t)sortOrder;
 - (void)setSortOrder:(int32_t)packed;
+- (int32_t)kindFilter;
+- (BOOL)setKindFilter:(mv::io::kind_filter)f;
 // Update channel (docs/design/12, 2026-09-26): -1 without an updater, 0 stable,
 // 1 preview (signed prereleases as well). Persisted in NSUserDefaults.
 - (int32_t)updateChannel;
@@ -1253,6 +1257,12 @@ extern "C" int32_t mv_chrome_sort_order(void) {
 }
 extern "C" void mv_chrome_set_sort_order(int32_t packed) {
   if (g_chrome_app) [g_chrome_app setSortOrder:packed];
+}
+extern "C" int32_t mv_chrome_kind_filter(void) {
+  return g_chrome_app ? [g_chrome_app kindFilter] : 0;
+}
+extern "C" bool mv_chrome_set_kind_filter(int32_t filter) {
+  return g_chrome_app && [g_chrome_app setKindFilter:mv::io::kind_filter_from(filter)] == YES;
 }
 extern "C" int32_t mv_chrome_update_channel(void) {
   return g_chrome_app ? [g_chrome_app updateChannel] : -1;
@@ -2239,6 +2249,12 @@ static void MvAdoptNewDefaultViewerTypes() {
   // that survives a relist meaning something else.
   std::set<std::string> _marks;
   NSURL* _lastDestination;
+  // Issue #206: View > Show, for this run only. "Marked" keeps the marks as
+  // they were when it was chosen (_kindKept). _kindFilterChanged makes the
+  // next relist the one that moves off a stop the filter no longer shows.
+  mv::io::kind_filter _kindFilter;
+  std::set<std::string> _kindKept;
+  BOOL _kindFilterChanged;
 
   // Slideshow (docs/design/16 "Slideshow", folded into PR 18 -- stills only, no
   // video on Mac yet, PR 19). _enteredFullscreenForSlideshow distinguishes
@@ -3270,22 +3286,54 @@ static void MvAdoptNewDefaultViewerTypes() {
   // replacing) is not what is on screen now.
   if (listing.is_list != static_cast<bool>(_listOpen)) return;
   _items = std::move(listing.items);
-  if (const std::uint32_t hide = mv::shell::view_settings::from_flags(_viewFlags).hidden_kinds();
-      hide != 0) {
-    // Settings left a kind out (same rule as abi.cpp's apply_folder_list): the
-    // file being opened or on screen stays, so an explicit open still shows.
-    // A result list keeps its moments aligned with its items.
+  // Every file in the folder, before any kind is left out: a mark on a file
+  // the listing merely hides (View > Show, Settings' kinds) is not a mark on
+  // a file that has gone.
+  std::set<std::string> livePaths;
+  if (!_marks.empty()) {
+    for (const auto& entry : _items) livePaths.insert(entry.path_utf8);
+  }
+  const std::uint32_t hide = mv::shell::view_settings::from_flags(_viewFlags).hidden_kinds();
+  const std::uint32_t filter = mv::io::kind_filter_mask(_kindFilter);
+  const bool filterChanged = _kindFilterChanged;
+  _kindFilterChanged = NO;
+  if (hide != 0 || filter != 0) {
+    // Settings left a kind out, or View > Show narrowed the listing: the rule
+    // abi.cpp's apply_folder_list applies (io::keeps_stop). The file being
+    // opened or on screen stays, so an explicit open still shows, except on
+    // the relist a new filter makes. A filter that leaves nothing keeps that
+    // stop, so the canvas never goes blank. A result list keeps its moments
+    // aligned with its items. This host does not pair, so each half of a
+    // RAW+JPEG is its own stop: the RAW under RAW, the JPEG under Photos.
     const bool aligned = _listOpen && listing.moments.size() == _items.size();
+    std::vector<mv::io::dir_entry> all;
+    std::vector<std::int64_t> allMoments;
+    if (filter != 0) {
+      all = _items;
+      if (aligned) allMoments = listing.moments;
+    }
     std::size_t out = 0;
     for (std::size_t i = 0; i < _items.size(); ++i) {
       const auto& e = _items[i];
-      if (mv::io::is_hidden_kind(e.name_utf8, hide) && e.path_utf8 != _wantSelectedPath) continue;
+      const bool stays = !_wantSelectedPath.empty() && e.path_utf8 == _wantSelectedPath;
+      if (!mv::io::keeps_stop(e.name_utf8, {}, _kindKept.count(e.path_utf8) != 0, stays, hide,
+                              filter, filterChanged)) {
+        continue;
+      }
       if (aligned) listing.moments[out] = listing.moments[i];
       if (out != i) _items[out] = std::move(_items[i]);
       ++out;
     }
     _items.resize(out);
     if (aligned) listing.moments.resize(out);
+    if (filter != 0 && _items.empty() && !_wantSelectedPath.empty()) {
+      for (std::size_t i = 0; i < all.size(); ++i) {
+        if (all[i].path_utf8 != _wantSelectedPath) continue;
+        _items.push_back(std::move(all[i]));
+        if (aligned) listing.moments.assign(1, i < allMoments.size() ? allMoments[i] : -1);
+        break;
+      }
+    }
   }
   _subdirs = std::move(listing.subdirs);
   if (_folderCursor >= static_cast<NSInteger>(_subdirs.size())) {
@@ -3309,10 +3357,8 @@ static void MvAdoptNewDefaultViewerTypes() {
   // Without this, a mark for a file that is simply gone would sit in
   // _marks forever, inflating _snap.marked_count.
   if (!_marks.empty()) {
-    std::set<std::string> live_paths;
-    for (const auto& entry : _items) live_paths.insert(entry.path_utf8);
-    std::erase_if(_marks, [&live_paths](const std::string& path) {
-      return !live_paths.count(path);
+    std::erase_if(_marks, [&livePaths](const std::string& path) {
+      return !livePaths.count(path);
     });
     ++_marksGeneration;
   }
@@ -4533,6 +4579,8 @@ enum MvMenuCmd : NSInteger {
   kMenuFlipH, kMenuFlipV, kMenuUndoEdit, kMenuResetEdits, kMenuSaveCopy, kMenuTrim,
   // docs/design/16 "Window"
   kMenuNewWindow,
+  // Issue #206: View > Show, in io::kind_filter order.
+  kMenuShowAll, kMenuShowPhotos, kMenuShowVideos, kMenuShowRaw, kMenuShowMarked,
 };
 
 // Issue #182: the table row behind a menu item, for its mode mask. None for
@@ -4770,6 +4818,10 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
       [self setSortOrder:mv::io::pack_sort(o)];
       break;
     }
+    case kMenuShowAll: case kMenuShowPhotos: case kMenuShowVideos: case kMenuShowRaw:
+    case kMenuShowMarked:
+      (void)[self setKindFilter:mv::io::kind_filter_from(static_cast<int>(cmd - kMenuShowAll))];
+      break;
   }
 }
 
@@ -4803,6 +4855,11 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
   if (tag == kMenuSortDescending) {
     item.state = _sort.descending ? NSControlStateValueOn : NSControlStateValueOff;
     return [self hasFolder];
+  }
+  if (tag >= kMenuShowAll && tag <= kMenuShowMarked) {
+    item.state = static_cast<NSInteger>(_kindFilter) == tag - kMenuShowAll ? NSControlStateValueOn
+                                                                         : NSControlStateValueOff;
+    return tag != kMenuShowMarked || !_marks.empty() || _kindFilter == mv::io::kind_filter::marked;
   }
   if (tag == kMenuMetadata) item.state = _metaPaneVisible ? NSControlStateValueOn : NSControlStateValueOff;
   if (tag >= kMenuEditWorkspace && tag <= kMenuTrim) {
@@ -4990,6 +5047,14 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
   [self addMenuItem:@"Date Taken" cmd:kMenuSortDateTaken key:@"" mods:0 toMenu:sortMenu];
   [sortMenu addItem:[NSMenuItem separatorItem]];
   [self addMenuItem:@"Descending" cmd:kMenuSortDescending key:@"" mods:0 toMenu:sortMenu];
+  NSMenuItem* showHolder = [view addItemWithTitle:@"Show" action:nil keyEquivalent:@""];
+  NSMenu* showMenu = [[NSMenu alloc] initWithTitle:@"Show"];
+  showHolder.submenu = showMenu;
+  [self addMenuItem:@"All" cmd:kMenuShowAll key:@"" mods:0 toMenu:showMenu];
+  [self addMenuItem:@"Photos" cmd:kMenuShowPhotos key:@"" mods:0 toMenu:showMenu];
+  [self addMenuItem:@"Videos" cmd:kMenuShowVideos key:@"" mods:0 toMenu:showMenu];
+  [self addMenuItem:@"RAW" cmd:kMenuShowRaw key:@"" mods:0 toMenu:showMenu];
+  [self addMenuItem:@"Marked" cmd:kMenuShowMarked key:@"" mods:0 toMenu:showMenu];
   [view addItem:[NSMenuItem separatorItem]];
   // The standard action (nil target -> the window via the responder chain):
   // AppKit titles it Enter/Exit Full Screen itself, and doesn't inject a
@@ -5623,6 +5688,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     case fullscreen: [self toggleFullscreen]; return YES;
     case close_window: [self.window performClose:nil]; return YES;
     case new_window: [self openNewWindow]; return YES;
+    case kind_filter_next: return [self setKindFilter:mv::io::next_kind_filter(_kindFilter)];
     case always_on_top:
       self.window.level = self.window.level == NSFloatingWindowLevel ? NSNormalWindowLevel
                                                                       : NSFloatingWindowLevel;
@@ -8732,6 +8798,30 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
     std::memcpy(out, _scrubMs.data(), sizeof(int64_t) * static_cast<std::size_t>(std::min(n, cap)));
   }
   return n;
+}
+
+// Issue #206: View > Show. A view of the folder for this run only: the same
+// relist path as Settings' kinds (-refreshFolderIfChanged), no rescan.
+- (int32_t)kindFilter { return static_cast<int32_t>(_kindFilter); }
+- (BOOL)setKindFilter:(mv::io::kind_filter)f {
+  std::set<std::string> kept;
+  if (f == mv::io::kind_filter::marked) {
+    if (_marks.empty()) {
+      [self noticeShow:"Nothing is marked"];
+      NSBeep();
+      return NO;
+    }
+    kept = _marks;
+  }
+  if (f == _kindFilter && kept == _kindKept) return YES;
+  _kindFilter = f;
+  _kindKept = std::move(kept);
+  _kindFilterChanged = YES;
+  _refilterListing = YES;  // picked up by the 0.2 s folder timer, like any relist
+  [self noticeShow:f == mv::io::kind_filter::all
+                       ? std::string("Showing all")
+                       : std::string("Showing ") + mv::io::kind_filter_name(f) + " only"];
+  return YES;
 }
 
 - (int32_t)sortOrder { return mv::io::pack_sort(_sort); }
