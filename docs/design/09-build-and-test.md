@@ -24,7 +24,9 @@ Linkage: on Windows the vcpkg triplet is `x64-windows`, so dependencies ship as 
 the exe (Crashpad's client and imgui are static). On macOS permissive libraries link
 statically and the LGPL codecs come from a separate manifest
 (`tools/mac/dependencies/vcpkg.json`, `arm64-osx-dynamic`) and install root, so they cannot
-leak into the static tree. Either way **FFmpeg, libheif, libde265, LibRaw and Exiv2 are always
+leak into the static tree. That manifest has its own `vcpkg-configuration.json` naming the
+repo's overlay ports (`tools/vcpkg/ports`), so the Mac's LibRaw is the same patched port as
+Windows' (#287). Either way **FFmpeg, libheif, libde265, LibRaw and Exiv2 are always
 DLLs / dylibs** ([licensing](11-licensing.md)). Shader bytecode is embedded as resources.
 
 ### Dependency set

@@ -201,6 +201,8 @@ python3 tools/mac/build_libomp.py --prefix "$PWD/build/libomp/arm64" --arch arm6
 export MV_LIBOMP_ROOT="$PWD/build/libomp/arm64"
 # Dynamic LGPL codecs use a separate manifest/tree; CMake installs the static
 # permissive dependencies from the root manifest. See RELEASING.md.
+# tools/mac/dependencies/vcpkg-configuration.json adds the repo's overlay ports
+# (LibRaw's OpenMP colour patch); re-running this on an older tree rebuilds LibRaw.
 "$VCPKG_ROOT/vcpkg" install --triplet arm64-osx-dynamic \
   --overlay-triplets="$PWD/tools/mac/triplets" \
   --x-manifest-root="$PWD/tools/mac/dependencies" \
