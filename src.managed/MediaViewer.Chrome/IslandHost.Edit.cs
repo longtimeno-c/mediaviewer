@@ -181,7 +181,7 @@ public static partial class IslandHost
         // Shown only over media: not on the empty start, not over the gallery.
         _editBarButton.Visibility = _editOpen || (_editSubject != SubjectNone && !_galleryVisible)
             ? Visibility.Visible : Visibility.Collapsed;
-        _editBarButton.Background = _editOpen ? Brush(Hairline) : Brush(Colors.Transparent);
+        _editBarButton.Background = _editOpen ? Brush(ChromeColour.PressedWash) : Brush(Colors.Transparent);
         string tip = _editOpen ? "Close the editor  Enter or Esc"
                      : EditIsClip ? "Edit video: trim, split, clip tools  Enter"
                                   : "Edit image: crop, rotate, colour, info  Enter";
@@ -253,7 +253,8 @@ public static partial class IslandHost
     // it). WinUI's own Button template is restyled through its lightweight
     // resources instead: no border, no fill at rest or disabled (a disabled
     // button dims rather than turning grey, so it never reads as "selected"),
-    // the system hover wash, and `Background` as the selected wash.
+    // the Mac's FlatButtonStyle washes on hover and press (the appearance's
+    // text colour, as docs/design/25 says), and `Background` as the selected wash.
     private static void FlattenButton(Button b)
     {
         SolidColorBrush clear = Brush(Colors.Transparent);
@@ -265,6 +266,14 @@ public static partial class IslandHost
         {
             b.Resources[key] = clear;
         }
+        b.Resources["ButtonBackgroundPointerOver"] = Brush(ChromeColour.HoverWash);
+        b.Resources["ButtonBackgroundPressed"] = Brush(ChromeColour.PressedWash);
+        // Icon content inherits the presenter's foreground: keep it the
+        // chrome's title colour in every state, not Windows' own text colour.
+        foreach (string key in new[] { "ButtonForegroundPointerOver", "ButtonForegroundPressed" })
+            b.Resources[key] = Brush(Title);
+        b.Resources["ButtonForegroundDisabled"] = Brush(ChromeColour.Disabled);
+        b.CornerRadius = new CornerRadius(RadiusButton);
         b.BorderThickness = new Thickness(0);
         // IsEnabledChanged is not raised for a button set disabled before it
         // is in the live tree, so Loaded applies the dim as well.
@@ -287,7 +296,7 @@ public static partial class IslandHost
             },
             Background = Brush(Colors.Transparent),
             BorderThickness = new Thickness(0),
-            Padding = compact ? new Thickness(8, 4, 8, 4) : new Thickness(14, 7, 14, 7),
+            Padding = compact ? new Thickness(8, 5, 8, 5) : new Thickness(14, 7, 14, 7),
             FontFamily = UiFont,
             FontSize = size,
             HorizontalAlignment = stretch ? HorizontalAlignment.Stretch : HorizontalAlignment.Left,
@@ -317,7 +326,8 @@ public static partial class IslandHost
 
     private static void SetSelected(Button b, bool selected)
     {
-        b.Background = selected ? Brush(Hairline) : Brush(Colors.Transparent);
+        // FlatButtonStyle: selected wears the pressed wash.
+        b.Background = selected ? Brush(ChromeColour.PressedWash) : Brush(Colors.Transparent);
     }
 
     private static TextBlock SectionTitle(string text)
@@ -601,7 +611,9 @@ public static partial class IslandHost
         pane.Children.Add(Hint("Space play · , . frame step · J K L shuttle · Q E skip"));
     }
 
-    private static bool HasOrientation(int aspect) => aspect >= 3;  // 4:3 and up; Free, Original, 1:1 have none
+    // Free has none and a square's is itself; Original swaps like the ratios
+    // (edit_session.cpp, EditStore.swift hasOrientation).
+    private static bool HasOrientation(int aspect) => aspect != 0 && aspect != 2;
 
     // Everything that moves without a rebuild: labels, washes, enabled states,
     // and the slider (guarded, so native's echo of a drag is not re-sent).

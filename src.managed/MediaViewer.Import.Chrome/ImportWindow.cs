@@ -147,8 +147,12 @@ internal sealed class ImportWindow : Window
     private static TextBlock Text(string s, double size = 14) =>
         new() { Text = s, FontSize = size, TextWrapping = TextWrapping.Wrap };
 
-    private static Style AccentStyle() =>
-        (Style)Application.Current.Resources["AccentButtonStyle"];
+    // AccentButtonStyle comes with XamlControlsResources, which the island
+    // host does not load: the indexer would throw KeyNotFoundException while
+    // the window is built. A plain button is the fallback (Ai.Chrome Look.cs).
+    internal static Style? AccentStyle() =>
+        Application.Current?.Resources.TryGetValue("AccentButtonStyle", out object? style) == true
+            ? style as Style : null;
 
     private static DataTemplate Template(string body) => (DataTemplate)XamlReader.Load(
         "<DataTemplate xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\">" + body + "</DataTemplate>");
