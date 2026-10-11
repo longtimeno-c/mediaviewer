@@ -463,6 +463,9 @@ public static partial class IslandHost
         _metaTabs!.Children.Add(b);
     }
 
+    // The summary's label column: the Mac's 100-wide labels (MetadataView.swift).
+    private const double MetaLabelWidth = 100;
+
     // A small flat button for the pane's editors (the Edit workspace's look).
     private static Button MetaButton(string label, Action click, string? tip = null, bool enabled = true)
     {
@@ -515,11 +518,11 @@ public static partial class IslandHost
                 continue;
             }
             var row = new Grid();
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(96) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(MetaLabelWidth) });
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            row.Children.Add(Text(label, Body));
-            TextBlock v = Text(value.Length == 0 ? "—" : value, value.Length == 0 ? Body : Title);
+            row.Children.Add(Text(label, Body, TypeBody));
+            TextBlock v = Text(value.Length == 0 ? "—" : value, value.Length == 0 ? ChromeColour.Disabled : Title, TypeBody);
             Grid.SetColumn(v, 1);
             row.Children.Add(v);
             if (label == "Location" && value.Length > 0)
@@ -558,10 +561,10 @@ public static partial class IslandHost
     {
         var col = new StackPanel { Spacing = 6 };
         var row = new Grid();
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(96) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(MetaLabelWidth) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        TextBlock label = Text("Date taken", Body);
+        TextBlock label = Text("Date taken", Body, TypeBody);
         label.VerticalAlignment = VerticalAlignment.Center;
         row.Children.Add(label);
         if (_metaEditingDate)
@@ -590,11 +593,11 @@ public static partial class IslandHost
                     CancelMetaEdits();
                     RenderMeta();
                 }, tip: "Esc"));
-            actions.Margin = new Thickness(96, 0, 0, 0);
+            actions.Margin = new Thickness(MetaLabelWidth, 0, 0, 0);
             col.Children.Add(actions);
             return col;
         }
-        TextBlock v = Text(value.Length == 0 ? "—" : value, value.Length == 0 ? Body : Title);
+        TextBlock v = Text(value.Length == 0 ? "—" : value, value.Length == 0 ? ChromeColour.Disabled : Title, TypeBody);
         v.VerticalAlignment = VerticalAlignment.Center;
         Grid.SetColumn(v, 1);
         row.Children.Add(v);
@@ -655,18 +658,23 @@ public static partial class IslandHost
             var form = new StackPanel { Spacing = 6, Padding = new Thickness(10, 0, 10, 10) };
             var key = new FakeInput("Key (Xmp.dc.subject)");
             key.SetText(_metaNewKey);
-            key.Changed += () => _metaNewKey = key.Text;
             AutomationProperties_SetName(key, "New tag key");
             var value = new FakeInput("Value");
             value.SetText(_metaNewValue);
-            value.Changed += () => _metaNewValue = value.Text;
+            // Add waits for a key and a value, as on the Mac (AddMetaTag
+            // refuses either empty, so an enabled button did nothing).
+            Button addButton = MetaButton("Add", AddMetaTag);
+            void UpdateAdd() => addButton.IsEnabled = _metaNewKey.Trim().Length > 0 && _metaNewValue.Length > 0;
+            key.Changed += () => { _metaNewKey = key.Text; UpdateAdd(); };
+            value.Changed += () => { _metaNewValue = value.Text; UpdateAdd(); };
+            UpdateAdd();
             AutomationProperties_SetName(value, "New tag value");
             key.Submitted += () => value.Focus(FocusState.Keyboard);
             key.MoveDown += () => value.Focus(FocusState.Keyboard);
             value.Submitted += AddMetaTag;
             form.Children.Add(key);
             form.Children.Add(value);
-            form.Children.Add(Row(MetaButton("Add", AddMetaTag), MetaButton("Cancel", () =>
+            form.Children.Add(Row(addButton, MetaButton("Cancel", () =>
             {
                 CancelMetaEdits();
                 RenderMeta();
@@ -727,7 +735,8 @@ public static partial class IslandHost
                 if (t.Group != group)
                 {
                     group = t.Group;
-                    var header = Text(group, Body, UiFontSize, bold: true);
+                    // The Mac's List section header: regular, not bold (issue #198).
+                    var header = Text(group, Body, TypeBody);
                     header.Margin = new Thickness(0, 10, 0, 2);
                     list.Children.Add(header);
                 }
@@ -752,11 +761,13 @@ public static partial class IslandHost
 
     private static UIElement BuildTagCell(TagRow t)
     {
-        var cell = new StackPanel { Margin = new Thickness(0, 2, 0, 2), Spacing = 2 };
+        // A background so the whole row, not only its label, takes the hover
+        // that shows the untranslated key (the Mac's .help on the row).
+        var cell = new StackPanel { Margin = new Thickness(0, 2, 0, 2), Spacing = 2, Background = Brush(Colors.Transparent) };
         var head = new Grid();
         head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        TextBlock label = Text(t.Label, Title);
+        TextBlock label = Text(t.Label, Title, TypeBody);
         label.VerticalAlignment = VerticalAlignment.Center;
         head.Children.Add(label);
         bool editing = _metaEditingKey == t.Raw;
@@ -822,7 +833,7 @@ public static partial class IslandHost
             cell.Children.Add(Text(t.Value.Length == 0 ? "—" : t.Value, Body, UiFontSize - 2, maxLines: 3));
         }
         // The untranslated origin is always one hover away (docs/design/06).
-        ToolTipService.SetToolTip(label, t.Raw);
+        ToolTipService.SetToolTip(cell, t.Raw);
         return cell;
     }
 
@@ -896,6 +907,7 @@ public static partial class IslandHost
         var col = new StackPanel { Spacing = 12, Padding = new Thickness(14, 10, 14, 14) };
         StackPanel? current = null;
         bool chapters = false;
+        int chapter = 0;
         foreach (string line in _metaStreamLines)
         {
             string[] f = line.Split('\t');
@@ -903,16 +915,16 @@ public static partial class IslandHost
             {
                 case "S" when f.Length >= 4:
                     current = new StackPanel { Spacing = 4 };
-                    current.Children.Add(Text($"#{f[1]}  {Capitalise(f[2])}  —  {f[3]}", Title, UiFontSize, bold: true));
+                    current.Children.Add(Text($"#{f[1]}  {Capitalise(f[2])}  —  {f[3]}", Title, TypeBody));
                     col.Children.Add(current);
                     break;
                 case "F" when f.Length >= 3 && current is not null:
                 {
                     var row = new Grid();
-                    row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(120) });
+                    row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(130) });
                     row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-                    row.Children.Add(Text(f[1], Body));
-                    TextBlock v = Text(f[2], Title);
+                    row.Children.Add(Text(f[1], Body, TypeSmall));
+                    TextBlock v = Text(f[2], Title, TypeSmall);
                     Grid.SetColumn(v, 1);
                     row.Children.Add(v);
                     current.Children.Add(row);
@@ -923,12 +935,14 @@ public static partial class IslandHost
                     if (!chapters)
                     {
                         chapters = true;
-                        col.Children.Add(Text("Chapters", Title, UiFontSize, bold: true));
+                        col.Children.Add(Text("Chapters", Title, TypeBody));
                     }
                     long.TryParse(f[1], out long ms);
                     var s = TimeSpan.FromMilliseconds(ms);
                     string stamp = $"{(int)s.TotalHours}:{s.Minutes:00}:{s.Seconds:00}";
-                    col.Children.Add(Text($"{stamp}   {(f[2].Length == 0 ? "Chapter" : f[2])}", Body));
+                    // An untitled chapter is numbered, as on the Mac ("Chapter 3").
+                    ++chapter;
+                    col.Children.Add(Text($"{stamp}   {(f[2].Length == 0 ? $"Chapter {chapter}" : f[2])}", Body));
                     break;
                 }
             }

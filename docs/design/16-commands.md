@@ -237,7 +237,7 @@ Marks are a separate set from the selection, so arrow-key browsing never makes a
 | `[` `]` | browse, crop | Rotate −90° / +90°. On a JPEG with nothing else in its stack, a lossless rewrite 0.4 s after the last key, atomically; the preview turns at once |
 | `H` / `V` | browse, crop | Flip horizontal / vertical (lossless on a JPEG, like rotate) |
 | `Shift+C` | browse | Crop / straighten mode |
-| `Shift+A` | browse | Adjust pane: show and focus its first slider; again hides it |
+| `Shift+A` | browse | Adjust pane: show and focus its first slider; again hides it. In it `↑` `↓` choose a slider, `←` `→` change it (`Shift` ×10), `0` zeroes it, `R` resets all (both hosts) |
 | `Ctrl+Z` / `Ctrl+R` | browse, crop | Undo the last edit / reset to the original |
 | `Ctrl+S` | browse | Export the edits to a new file beside the original (`<name>-edit.jpg`); never overwrites |
 | hold `Y` | browse | Show the original (edit stack untouched) |
