@@ -425,7 +425,7 @@ opened or probed to set it.
 ## Crash context
 
 `mediaviewer_crash.h`: `mv_crash_context(&info)` returns stable addresses — `slot_count`
-fixed-size NUL-padded ASCII slots (one per decode worker, `slot_bytes` each) and a pointer to the
+fixed-size NUL-padded ASCII slots (one per in-flight decode, claimed by `begin_decode`; `slot_bytes` each) and a pointer to the
 last ABI call's correlation id. The host registers them as annotations with its out-of-process
 crash reporter; the core links no reporter. Slots hold only format family, decoder name and
 version, dimensions, bit depth and correlation id — never a path, filename, bytes or EXIF
