@@ -1,0 +1,263 @@
+// Copyright (C) 2026 longtimeno-c
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Screens and slots: the host side (docs/design/25 §7, §10, §11; PRs 58-59).
+//
+// One registry per process holds what every loaded add-on contributes, as
+// tables built once at attach (on the loader's thread, never the UI thread),
+// and what each add-on has posted since: view trees, surface pixels, search
+// rows, badge sets, status texts. The chromes read snapshots (JSON) and are
+// told through one listener when something changed; they never wait on an
+// add-on.
+//
+// How it reaches an add-on's code is a slot_client: today MediaViewer's own
+// native add-ons through "mv.slots.1" (option B of §9, the host function table),
+// later a script add-on's worker (PR 57) through the same interface. Each
+// attached add-on gets ONE worker thread here; every call into its client
+// runs there, one at a time. Requests of one kind coalesce (a newer info,
+// search or badges request replaces the one still queued), so a slow
+// provider costs typing nothing: the chrome posts and returns, and an answer
+// for a generation that is no longer current is dropped.
+//
+// Performance rules (§11) as code:
+//   - nothing is asked of an add-on per frame, per tile or per key: badges
+//     are one request per folder and a table the gallery reads
+//     (`addon_calls` counts every call, for the PR 59 verify);
+//   - an info section that needs a location is not asked for a file
+//     without one;
+//   - an idle add-on costs nothing: its worker sleeps on a condition
+//     variable, no timer, no poll;
+//   - detach removes every item at once, with no restart.
+// Portable (D9).
+#pragma once
+
+#include <atomic>
+#include <cstdint>
+#include <functional>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <set>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include <mediaviewer/mediaviewer_addon.h>
+
+#include "addon/contrib.h"
+#include "addon/screen.h"
+#include "core/status.h"
+
+namespace mv::addon {
+
+// How the registry calls an add-on. Every method runs on the add-on's worker.
+class slot_client {
+ public:
+  virtual ~slot_client() = default;
+  virtual status info_section(const mv_slot_info_request& request) = 0;
+  virtual status search(const mv_slot_search_request& request) = 0;
+  virtual status screen_open(const mv_slot_screen_request& request) = 0;
+  virtual status badges(const mv_slot_badges_request& request) = 0;
+  virtual void event(const mv_slot_event& event) = 0;
+};
+
+// Over a native add-on's mv.slots.1 table (which lives until its shutdown).
+[[nodiscard]] std::unique_ptr<slot_client> native_slot_client(void* addon, const mv_addon_slots* table);
+
+// What changed, for the listener.
+enum slot_change : std::uint32_t {
+  slot_changed_contributions = 1u << 0,  // an add-on attached or detached
+  slot_changed_info = 1u << 1,           // an info section's tree or surface
+  slot_changed_screens = 1u << 2,        // a window / pane / sheet opened, closed or changed
+  slot_changed_search = 1u << 3,
+  slot_changed_badges = 1u << 4,
+  slot_changed_status = 1u << 5,
+};
+
+struct surface_pixels {
+  std::uint32_t width = 0;
+  std::uint32_t height = 0;
+  std::uint64_t revision = 0;
+  std::vector<std::uint8_t> bgra;  // width * 4 per row, premultiplied
+};
+
+// "48.85837° N, 2.29448° E" (meta::format_coordinate, both hosts' pane text)
+// back to degrees. nullopt when it is not that shape.
+[[nodiscard]] std::optional<mv_addon_location> parse_location_text(std::string_view text) noexcept;
+
+// What a query is compared as: lowercase, Latin diacritics dropped (the
+// hosts' FoldedNames / FoldName, for the letters a place or tag uses).
+[[nodiscard]] std::string fold_query(std::string_view text);
+
+class slot_registry {
+ public:
+  slot_registry();
+  ~slot_registry();
+  slot_registry(const slot_registry&) = delete;
+  slot_registry& operator=(const slot_registry&) = delete;
+
+  // ---- add-ons ---------------------------------------------------------------
+  // `package_dir`: the add-on's verified folder (an `image` node's src is
+  // resolved inside it). Refuses (invalid_arg) an add-on already attached or
+  // with nothing to contribute.
+  status attach(const std::string& addon_id, const std::string& addon_name, contributions c,
+                std::unique_ptr<slot_client> client, std::string package_dir = {});
+  // Removes every item the add-on contributed and stops its worker. On return
+  // no call into its client is running and none will run, so the library may
+  // be unloaded. Idempotent.
+  void detach(const std::string& addon_id);
+  [[nodiscard]] bool attached(const std::string& addon_id) const;
+  [[nodiscard]] std::vector<std::string> attached_ids() const;
+
+  // Called on any thread with slot_change bits; it must not block (a host
+  // marshals to its UI thread). One listener; empty clears it.
+  void set_listener(std::function<void(std::uint32_t)> listener);
+
+  // ---- the chrome asks (any thread, never blocks) ------------------------------
+  // The Metadata pane shows `path`. Returns the request's generation.
+  std::uint64_t request_info(const std::string& path, const std::string& location_text,
+                             const mv_slot_theme& theme, float width_pt, float scale);
+  // The pane closed or shows nothing: sections go, nothing is asked.
+  void clear_info();
+  // File search (MV_SLOT_SCOPE_FILES) or Local search (MV_SLOT_SCOPE_LOCAL).
+  // An empty query clears the results and asks nobody.
+  std::uint64_t search(std::uint32_t scope, const std::string& query, const std::string& folder);
+  // The gallery shows `folder`: one badges request per add-on with badges.
+  std::uint64_t request_badges(const std::string& folder);
+  status open_screen(const std::string& addon_id, const std::string& screen_id,
+                     const std::string& path, const mv_slot_theme& theme, float width_pt,
+                     float height_pt, float scale);
+  status close_screen(const std::string& addon_id, const std::string& screen_id);
+  // A control in a screen or info section changed. Checked against the tree
+  // (screen::tree::check_event) before the add-on hears of it.
+  status send_event(const std::string& addon_id, const std::string& screen_id,
+                    const std::string& node_id, std::uint32_t kind, const std::string& value_json);
+  // A bar / path / context / status item was chosen. `paths_json` is a JSON
+  // array of the files it targets ("[]" for none).
+  status invoke_item(const std::string& addon_id, const std::string& item_id,
+                     const std::string& paths_json);
+
+  // ---- the chrome reads (any thread; copies) -----------------------------------
+  // {"addons":[{"id","name","dir"}],"sections":[{"addon","id","title","location"}],
+  //  "screens":[{"addon","id","title","place","width","height"}],
+  //  "providers":[{"addon","id","name","prefixes":[],"files","local"}],
+  //  "items":[{"addon","id","slot":"bar|path|context|status","label","symbol","opens","target"}],
+  //  "badges":[{"addon","id","key","label","symbol"}],"local_search":bool}
+  [[nodiscard]] std::string contributions_json() const;
+  // {"generation","path","sections":[{"addon","id","title","revision","tree":{..}}]}
+  // -- only the sections that have answered for the current file, in order.
+  [[nodiscard]] std::string info_json() const;
+  // [{"addon","id","title","place","width","height","generation","revision","tree":{..}|null}]
+  [[nodiscard]] std::string screens_json() const;
+  [[nodiscard]] bool surface(const std::string& addon_id, const std::string& screen_id,
+                             const std::string& surface_id, surface_pixels& out) const;
+  // {"generation","scope","query","searching":bool,
+  //  "providers":[{"addon","id","name","done","read","total"}],
+  //  "rows":[{"path","why","addon","provider"}]}
+  [[nodiscard]] std::string search_json(std::uint32_t scope) const;
+  // {"generation","folder","defs":[{"key","label","symbol"}],"tiles":{"<path>":["addon/badge",...]}}
+  [[nodiscard]] std::string badges_json() const;
+  // The badge keys of one file, from the table (what a tile asks: never the add-on).
+  [[nodiscard]] std::vector<std::string> badges_for(const std::string& path) const;
+  // [{"addon","id","label","text"}] for the status items with text.
+  [[nodiscard]] std::string status_json() const;
+
+  // ---- the add-on answers (host table v3; any thread) ---------------------------
+  status post_screen(const std::string& addon_id, const std::string& screen_id,
+                     std::uint64_t generation, std::string_view tree_json);
+  status post_diff(const std::string& addon_id, const std::string& screen_id,
+                   std::uint64_t generation, std::string_view diff_json);
+  status post_surface(const std::string& addon_id, const std::string& screen_id,
+                      const std::string& surface_id, std::uint64_t generation,
+                      const std::uint8_t* bgra, std::uint32_t width, std::uint32_t height,
+                      std::uint32_t stride);
+  struct search_row {
+    std::string path;
+    std::string why;
+  };
+  status post_search(const std::string& addon_id, const std::string& provider_id,
+                     std::uint64_t generation, std::vector<search_row> rows, bool done);
+  void search_progress(const std::string& addon_id, const std::string& provider_id,
+                       std::uint64_t generation, std::uint32_t done, std::uint32_t total);
+  [[nodiscard]] bool is_stale(std::uint64_t generation) const;
+  status post_badges(const std::string& addon_id, const std::string& badge_id,
+                     std::uint64_t generation, std::vector<std::string> paths, bool replace);
+  status post_status(const std::string& addon_id, const std::string& item_id, std::string text);
+  status show_screen(const std::string& addon_id, const std::string& screen_id, bool show);
+
+  // ---- for tests and the PR 59 verify --------------------------------------
+  // Every call made into any add-on's client since construction.
+  [[nodiscard]] std::uint64_t addon_calls() const noexcept { return calls_.load(); }
+  // Blocks until every worker's queue is empty and idle (tests only).
+  void drain();
+
+ private:
+  struct worker;
+  struct screen_state {
+    std::string addon;
+    std::string id;
+    screen_place place = screen_place::window;
+    std::uint64_t generation = 0;
+    screen::tree tree;
+    std::map<std::string, surface_pixels> surfaces;
+  };
+  struct addon_entry;
+  struct provider_state {
+    std::string addon, id, name;
+    bool done = false;
+    std::uint32_t read = 0, total = 0;
+  };
+  struct search_state {
+    std::uint64_t generation = 0;
+    std::string query;
+    std::vector<provider_state> providers;
+    std::vector<std::pair<search_row, std::pair<std::string, std::string>>> rows;  // row, (addon, provider)
+  };
+
+  void notify(std::uint32_t bits);
+  std::uint64_t next_generation() noexcept { return ++generation_; }
+  // Under m_: the screen an add-on's post addresses (an info section of the
+  // current file, or an open window / pane / sheet), with its generation checked.
+  screen_state* addressed(const std::string& addon_id, const std::string& screen_id,
+                          std::uint64_t generation, status& why);
+  void enqueue(addon_entry& e, std::string key, std::function<void(slot_client&)> task);
+  status open_screen_locked(addon_entry& e, const screen_contrib& s, const std::string& path,
+                            const mv_slot_theme& theme, float width_pt, float height_pt,
+                            float scale);
+
+  mutable std::mutex m_;
+  std::map<std::string, std::unique_ptr<addon_entry>> addons_;
+  std::function<void(std::uint32_t)> listener_;
+  std::mutex listener_m_;
+
+  // Info sections of the file on screen.
+  std::uint64_t info_generation_ = 0;
+  std::string info_path_;
+  std::map<std::pair<std::string, std::string>, screen_state> info_;  // (addon, section)
+  // Windows, panes and sheets that are open.
+  std::map<std::pair<std::string, std::string>, screen_state> screens_;
+  search_state search_[2];  // [0] files, [1] local
+  std::uint64_t badges_generation_ = 0;
+  std::string badges_folder_;
+  std::map<std::string, std::set<std::string>> badge_sets_;  // "addon/badge" -> paths
+  std::map<std::pair<std::string, std::string>, std::string> status_;
+  mv_slot_theme last_theme_{};
+  float last_scale_ = 1.0f;
+
+  std::atomic<std::uint64_t> generation_{0};
+  std::atomic<std::uint64_t> calls_{0};
+};
+
+// The process's registry, which both hosts' chromes and loaders use.
+[[nodiscard]] slot_registry& default_slots();
+
+// A file's coordinates, cached by path + size + mtime for the process (the
+// host table's location_of / locations_in). `read` is the host's metadata
+// read, called on the caller's (worker) thread on a miss.
+using location_reader = std::function<std::optional<mv_addon_location>(const std::string& path)>;
+[[nodiscard]] mv_addon_location cached_location(const std::string& path, std::uint64_t size,
+                                                std::int64_t mtime, const location_reader& read);
+// Test hook: forget the cache.
+void clear_location_cache();
+
+}  // namespace mv::addon
