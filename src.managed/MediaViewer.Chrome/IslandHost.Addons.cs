@@ -825,10 +825,12 @@ public static partial class IslandHost
 
     private static void AddAddonsSettingsRow(StackPanel view)
     {
-        view.Children.Add(Heading("Add-ons"));
-        _addonRow = new StackPanel { Spacing = 6 };
-        _addonStatus = Label("");
-        _addonStatus.TextWrapping = TextWrapping.Wrap;
+        TextBlock heading = Heading("Add-ons");
+        heading.FontSize = TypeHeading;
+        AutomationProperties.SetHeadingLevel(heading, Microsoft.UI.Xaml.Automation.Peers.AutomationHeadingLevel.Level2);
+        view.Children.Add(heading);
+        _addonRow = new StackPanel { Spacing = 8 };
+        _addonStatus = Note("");
         view.Children.Add(_addonRow);
         view.Children.Add(_addonStatus);
         _importRestartButton = AddonRestartButton();
@@ -852,24 +854,44 @@ public static partial class IslandHost
         if (_addonStatus is not null) _addonStatus.Text = text;
     }
 
+    // "Remove Import?" is open (kept across a refresh of the row).
+    private static bool _importConfirming;
+
+    /// <summary>
+    /// Esc on an open "Remove …?" or install question in Settings → Add-ons:
+    /// it cancels that, as the Mac's .cancelAction, rather than closing
+    /// Settings. False when none is open.
+    /// </summary>
+    private static bool CancelSettingsConfirm()
+    {
+        if (CancelLocalSearchConfirm()) return true;
+        if (_importConfirming)
+        {
+            _importConfirming = false;
+            RefreshAddonRow();
+            return true;
+        }
+        return CancelOpenAddonConfirm();
+    }
+
     private static void RefreshAddonRow()
     {
         if (_addonRow is null) return;
         _addonRow.Children.Clear();
+        // The item's title in the title colour, its notes at 13 (the Mac's).
         var title = Label("Import");
+        title.Foreground = Brush(Title);
         _addonRow.Children.Add(title);
         // docs/design/25: the line is the manifest's (installed, else the channel's);
         // the built-in one serves a manifest from before it carried any.
         string description = ImportSlot.State.Description.Length > 0 ? ImportSlot.State.Description
             : ImportSlot.Offer.Description.Length > 0 ? ImportSlot.Offer.Description
             : "Copy a card or folder into your library: skips what is already there by content, verifies every copy, sorts by date. Never deletes from the card.";
-        var about = Label(description);
-        about.TextWrapping = TextWrapping.Wrap;
-        _addonRow.Children.Add(about);
+        _addonRow.Children.Add(Note(description));
         if (!_addonStatesRead)
         {
             // Quiet, and no button while what is installed is unknown.
-            _addonRow.Children.Add(WrappedLabel("Checking installed add-ons…"));
+            _addonRow.Children.Add(Note("Checking installed add-ons…"));
             return;
         }
         AddonState state = ImportSlot.State;
@@ -884,21 +906,26 @@ public static partial class IslandHost
             switch (ImportSlot.Offer.Kind)
             {
                 case OfferKind.Available:
-                    _addonRow.Children.Add(SettingsButton($"Install Import, {DownloadSize(ImportSlot.Offer.ArchiveSize)}",
-                        StartImportInstall));
+                    Button install = SettingsButton($"Install Import, {DownloadSize(ImportSlot.Offer.ArchiveSize)}",
+                        StartImportInstall);
+                    install.HorizontalAlignment = HorizontalAlignment.Left;
+                    install.IsEnabled = !ImportSlot.Busy;
+                    _addonRow.Children.Add(install);
                     break;
                 case OfferKind.NotPublished:
-                    _addonRow.Children.Add(WrappedLabel("Import is not published for download yet. It will be offered here once a release carries it."));
+                    _addonRow.Children.Add(Note("Import is not published for download yet. It will be offered here once a release carries it."));
                     break;
                 case OfferKind.NeedsNewerApp:
-                    _addonRow.Children.Add(WrappedLabel("The published Import needs a newer MediaViewer. Update MediaViewer, then install it."));
+                    _addonRow.Children.Add(Note("The published Import needs a newer MediaViewer. Update MediaViewer, then install it."));
                     break;
                 case OfferKind.Unreachable:
-                    _addonRow.Children.Add(WrappedLabel("Could not reach the download server."));
-                    _addonRow.Children.Add(SettingsButton("Try again", () => ProbeOffer(ImportSlot)));
+                    _addonRow.Children.Add(Note("Could not reach the download server."));
+                    Button retry = SettingsButton("Try again", () => ProbeOffer(ImportSlot));
+                    retry.HorizontalAlignment = HorizontalAlignment.Left;
+                    _addonRow.Children.Add(retry);
                     break;
                 default:
-                    _addonRow.Children.Add(WrappedLabel("Checking for Import…"));
+                    _addonRow.Children.Add(Note("Checking for Import…"));
                     break;
             }
             return;
@@ -909,7 +936,14 @@ public static partial class IslandHost
             "needs_update" => $"Version {state.Version} needs an update to work with this MediaViewer.",
             _ => "The installed copy did not pass verification and is not loaded. Reinstall it.",
         };
-        _addonRow.Children.Add(Label(line));
+        if (_importConfirming)
+        {
+            AddImportRemoveConfirm();
+            return;
+        }
+        _addonRow.Children.Add(Note(line));
+        // While Import is busy (removing, loading) its buttons stay, disabled,
+        // rather than vanishing (the Mac's .disabled(store.busy)).
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         if (UpdateVersion(ImportSlot) is string newer)
         {
@@ -919,25 +953,41 @@ public static partial class IslandHost
         if (state.State != "ok") buttons.Children.Add(SettingsButton("Reinstall", StartImportInstall));
         if (ImportSlot.Chrome is not null) buttons.Children.Add(SettingsButton("Open Import", () => ImportSlot.Chrome?.Open(null)));
         buttons.Children.Add(SettingsButton("Remove…", ConfirmImportRemove));
+        foreach (UIElement b in buttons.Children)
+        {
+            if (b is Button button) button.IsEnabled = !ImportSlot.Busy;
+        }
         _addonRow.Children.Add(buttons);
     }
 
     private static void ConfirmImportRemove()
     {
+        _importConfirming = true;
+        RefreshAddonRow();
+    }
+
+    private static void AddImportRemoveConfirm()
+    {
         if (_addonRow is null) return;
-        _addonRow.Children.Clear();
-        var q = Label("Remove Import? Its library index and import history (import.db) can stay, so a reinstall still knows what was imported.");
-        q.TextWrapping = TextWrapping.Wrap;
+        TextBlock q = Note("Remove Import? Its library index and import history (import.db) can stay, so a reinstall still knows what was imported.");
+        q.Foreground = Brush(Title);
         _addonRow.Children.Add(q);
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        buttons.Children.Add(SettingsButton("Remove, keep history", () => RemoveImport(keepData: true)));
+        Button keep = SettingsButton("Remove, keep history", () => RemoveImport(keepData: true));
+        buttons.Children.Add(keep);
         buttons.Children.Add(SettingsButton("Remove everything", () => RemoveImport(keepData: false)));
-        buttons.Children.Add(SettingsButton("Cancel", RefreshAddonRow));
+        buttons.Children.Add(SettingsButton("Cancel", () =>
+        {
+            _importConfirming = false;
+            RefreshAddonRow();
+        }));
         _addonRow.Children.Add(buttons);
+        _dispatcher?.DispatcherQueue.TryEnqueue(() => keep.Focus(FocusState.Keyboard));
     }
 
     private static void RemoveImport(bool keepData)
     {
+        _importConfirming = false;
         if (ImportSlot.Busy) return;
         ImportSlot.Busy = true;
         UnloadAddonChrome(ImportSlot);

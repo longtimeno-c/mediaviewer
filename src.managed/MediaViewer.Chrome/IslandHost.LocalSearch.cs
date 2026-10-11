@@ -39,6 +39,9 @@ public static partial class IslandHost
     private static bool? _nvidiaPresent;
     private static ulong _aiUsed, _aiCeiling;
     private static bool _confirmCoreRemove;
+    // People, Audio or NVIDIA acceleration whose "Remove…" was pressed: asked
+    // first, as the Mac does (LocalSearchView removeConfirm).
+    private static AddonSlot? _confirmPieceRemove;
     // Installs run one at a time (no fight over bandwidth, and each piece's
     // 3 GB check counts the one before it); more Install clicks queue here,
     // Core first (owner request, 2026-09-28: Install on all three at once).
@@ -83,6 +86,8 @@ public static partial class IslandHost
     {
         if (SearchChrome is null && !AiStarting()) _searchOpenPending = false;
         UpdatePathSearchButton();
+        // Settings says "Starting Local search…" while it does.
+        if (_settingsVisible) RefreshLocalSearch();
     }
 
     // ---- IAddonHost2 services ------------------------------------------------------
@@ -387,10 +392,11 @@ public static partial class IslandHost
     {
         // An item of Settings → Add-ons, titled like Import.
         TextBlock heading = Label("Local search");
+        heading.Foreground = Brush(Title);
         _localSearchHeading = heading;
         view.Children.Add(heading);
-        _localSearchPanel = new StackPanel { Spacing = 8 };
-        _localSearchStatus = WrappedLabel("");
+        _localSearchPanel = new StackPanel { Spacing = 10 };
+        _localSearchStatus = Note("");
         view.Children.Add(_localSearchPanel);
         view.Children.Add(_localSearchStatus);
         _localSearchRestartButton = AddonRestartButton();
@@ -453,26 +459,29 @@ public static partial class IslandHost
         if (_localSearchPanel is null) return;
         _localSearchPanel.Children.Clear();
 
-        var card = new StackPanel
-        {
-            Spacing = 6,
-            Padding = new Thickness(14),
-            Background = Brush(ChromeColour.Surface),
-            CornerRadius = new CornerRadius(8),
-        };
-        TextBlock what = WrappedLabel("Find photos and moments in videos by describing them: “dog on a beach”, “birthday cake”.");
-        what.Foreground = Brush(Title);
-        card.Children.Add(what);
-        card.Children.Add(WrappedLabel("It runs entirely on this computer. Nothing about your files, and no search, ever leaves it."));
-
         if (!_addonStatesRead)
         {
             // What is installed is still being read (it verifies every file):
             // quiet, and nothing offered for download until it is known.
-            card.Children.Add(WrappedLabel("Checking installed add-ons…"));
-            _localSearchPanel.Children.Add(card);
+            _localSearchPanel.Children.Add(Note("Checking installed add-ons…"));
             return;
         }
+
+        // The intro and its Install: only until Core is installed (the Mac's introCard).
+        var intro = new StackPanel { Spacing = 8 };
+        var card = new Border
+        {
+            Child = intro,
+            Padding = new Thickness(14),
+            Background = Brush(ChromeColour.Surface),
+            BorderBrush = Brush(Hairline),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(RadiusSheet),
+        };
+        TextBlock what = Note("Find photos and moments in videos by describing them: “dog on a beach”, “birthday cake”.");
+        what.Foreground = Brush(Title);
+        intro.Children.Add(what);
+        intro.Children.Add(Note("It runs entirely on this computer. Nothing about your files, and no search, ever leaves it."));
         if (!AiSlot.State.Installed)
         {
             AddonOffer offer = AiSlot.Offer;
@@ -485,7 +494,7 @@ public static partial class IslandHost
                     Button install = SettingsButton(label, () => StartPieceInstall(AiSlot));
                     install.IsEnabled = !AiQueuedOrInstalling(AiSlot);
                     install.HorizontalAlignment = HorizontalAlignment.Left;
-                    card.Children.Add(install);
+                    intro.Children.Add(install);
                     // Core, People and Audio in one click, one after another.
                     // Offered while none is installed; NVIDIA acceleration is
                     // never installed unasked (docs/design/17).
@@ -503,26 +512,28 @@ public static partial class IslandHost
                                 foreach (AddonSlot each in InstallAllSlots()) StartPieceInstall(each);
                             });
                         installAll.HorizontalAlignment = HorizontalAlignment.Left;
-                        card.Children.Add(installAll);
+                        intro.Children.Add(installAll);
                     }
-                    card.Children.Add(Small("Nothing downloads until you click Install. The download carries no identifier."));
+                    intro.Children.Add(Small("Nothing downloads until you click Install. The download carries no identifier."));
                     break;
                 case OfferKind.NotPublished:
-                    card.Children.Add(WrappedLabel("Local search is not published for download yet. It will be offered here once a release carries it."));
+                    intro.Children.Add(Note("Local search is not published for download yet. It will be offered here once a release carries it."));
                     break;
                 case OfferKind.NeedsNewerApp:
-                    card.Children.Add(WrappedLabel("The published local search needs a newer MediaViewer. Update MediaViewer, then install it."));
+                    intro.Children.Add(Note("The published local search needs a newer MediaViewer. Update MediaViewer, then install it."));
                     break;
                 case OfferKind.Unreachable:
-                    card.Children.Add(WrappedLabel("Could not reach the download server."));
-                    card.Children.Add(SettingsButton("Try again", () => ProbeOffer(AiSlot)));
+                    intro.Children.Add(Note("Could not reach the download server."));
+                    Button retry = SettingsButton("Try again", () => ProbeOffer(AiSlot));
+                    retry.HorizontalAlignment = HorizontalAlignment.Left;
+                    intro.Children.Add(retry);
                     break;
                 default:
-                    card.Children.Add(WrappedLabel("Checking for local search…"));
+                    intro.Children.Add(Note("Checking for local search…"));
                     break;
             }
+            _localSearchPanel.Children.Add(card);
         }
-        _localSearchPanel.Children.Add(card);
 
         // Every piece with a newer version, in one click, Core first.
         AddonSlot[] updates = UpdateAllSlots();
@@ -541,26 +552,45 @@ public static partial class IslandHost
             _localSearchPanel.Children.Add(updateAll);
         }
 
-        // The pieces, each with its size and its own Install / Remove.
-        var pieces = new StackPanel { Spacing = 4 };
-        pieces.Children.Add(PieceRow(AiSlot, "Core", "Search by description. Required."));
-        pieces.Children.Add(PieceRow(FacesSlot, "People", "Find people in your photos. Optional; off until you turn it on."));
-        pieces.Children.Add(PieceRow(AudioSlot, "Audio",
+        // The pieces, each with its size and its own Install / Remove, in one
+        // card with a hairline between them (the Mac's).
+        var pieces = new StackPanel();
+        void Piece(FrameworkElement row)
+        {
+            if (pieces.Children.Count > 0) pieces.Children.Add(new Border { Height = 1, Background = Brush(Hairline) });
+            pieces.Children.Add(row);
+        }
+        Piece(PieceRow(AiSlot, "Core", "Search by description. Required."));
+        Piece(PieceRow(FacesSlot, "People", "Find people in your photos. Optional; off until you turn it on."));
+        Piece(PieceRow(AudioSlot, "Audio",
             "Sounds and speech in videos — find “dog barking” or what someone said. Optional."));
         if (_nvidiaPresent == true || CudaSlot.State.Installed)
         {
-            pieces.Children.Add(PieceRow(CudaSlot, "NVIDIA acceleration", "Index faster on this computer's NVIDIA graphics. Needs NVIDIA's CUDA 13 and cuDNN 9, installed separately."));
+            Piece(PieceRow(CudaSlot, "NVIDIA acceleration", "Index faster on this computer's NVIDIA graphics. Needs NVIDIA's CUDA 13 and cuDNN 9, installed separately."));
         }
-        _localSearchPanel.Children.Add(pieces);
+        _localSearchPanel.Children.Add(new Border
+        {
+            Child = pieces,
+            Background = Brush(ChromeColour.Surface),
+            BorderBrush = Brush(Hairline),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(RadiusCard),
+        });
 
         if (_confirmCoreRemove) _localSearchPanel.Children.Add(BuildCoreRemoveConfirm());
+        else if (_confirmPieceRemove is AddonSlot asked && asked.State.Installed && !asked.Removing)
+            _localSearchPanel.Children.Add(BuildPieceRemoveConfirm(asked));
+        // Installed, verified and being loaded: say so (the Mac's).
+        if (AiStarting()) _localSearchPanel.Children.Add(Note("Starting Local search…"));
 
         if (AiSlot.State.Installed && AiSlot.State.State != "ok")
         {
-            _localSearchPanel.Children.Add(WrappedLabel(AiSlot.State.State == "needs_update"
+            _localSearchPanel.Children.Add(Note(AiSlot.State.State == "needs_update"
                 ? $"Local search {AiSlot.State.Version} needs an update to work with this MediaViewer."
                 : "The installed local search did not pass verification and is not loaded. Reinstall it."));
-            _localSearchPanel.Children.Add(SettingsButton("Reinstall", () => StartPieceInstall(AiSlot)));
+            Button reinstall = SettingsButton("Reinstall", () => StartPieceInstall(AiSlot));
+            reinstall.HorizontalAlignment = HorizontalAlignment.Left;
+            _localSearchPanel.Children.Add(reinstall);
         }
 
         // The add-on's own management panel, once it is loaded (docs/design/17 PR 23).
@@ -583,7 +613,15 @@ public static partial class IslandHost
     private static TextBlock Small(string text)
     {
         TextBlock t = WrappedLabel(text);
-        t.FontSize = 12;
+        t.FontSize = TypeCaption;
+        return t;
+    }
+
+    // A note or status line in Settings → Add-ons: 13 (the Mac's).
+    private static TextBlock Note(string text)
+    {
+        TextBlock t = WrappedLabel(text);
+        t.FontSize = TypeNote;
         return t;
     }
 
@@ -591,10 +629,8 @@ public static partial class IslandHost
     {
         var row = new Grid
         {
-            Padding = new Thickness(14, 10, 14, 10),
+            Padding = new Thickness(12),
             ColumnSpacing = 16,
-            Background = Brush(ChromeColour.Surface),
-            CornerRadius = new CornerRadius(8),
         };
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -641,17 +677,12 @@ public static partial class IslandHost
         }
         else if (slot.State.Installed)
         {
-            Button remove = SettingsButton("Remove", () =>
+            // Every piece asks first (the Mac's "Remove…").
+            Button remove = SettingsButton("Remove…", () =>
             {
-                if (slot == AiSlot)
-                {
-                    _confirmCoreRemove = true;
-                    RefreshLocalSearch();
-                }
-                else
-                {
-                    RemovePiece(slot, keepData: true);
-                }
+                _confirmCoreRemove = slot == AiSlot;
+                _confirmPieceRemove = slot == AiSlot ? null : slot;
+                RefreshLocalSearch();
             });
             // Only Remove waits for the queue and any load or removal to finish.
             remove.IsEnabled = !AnyAiPending();
@@ -775,28 +806,69 @@ public static partial class IslandHost
 
     private static FrameworkElement BuildCoreRemoveConfirm()
     {
-        var box = new StackPanel
-        {
-            Spacing = 8,
-            Padding = new Thickness(14),
-            Background = Brush(ChromeColour.Surface),
-            CornerRadius = new CornerRadius(8),
-        };
-        box.Children.Add(WrappedLabel("Remove local search? People, Audio and NVIDIA acceleration go with it."));
-        box.Children.Add(WrappedLabel("Also delete the search index? Keeping it means a reinstall searches at once, without indexing again."));
+        var box = ConfirmBox();
+        TextBlock ask = Note("Remove local search? People, Audio and NVIDIA acceleration go with it.");
+        ask.Foreground = Brush(Title);
+        box.Children.Add(ask);
+        box.Children.Add(Note("Also delete the search index? Keeping it means a reinstall searches at once, without indexing again."));
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        Button keep = SettingsButton("Remove, keep the index", () => RemoveCore(keepData: true));
+        // Keeping the index is the default (accent), and where Enter lands; Esc cancels.
+        Button keep = SettingsButton("Remove, keep the index", () => RemoveCore(keepData: true), accent: true);
         buttons.Children.Add(keep);
         buttons.Children.Add(SettingsButton("Remove and delete the index", () => RemoveCore(keepData: false)));
-        buttons.Children.Add(SettingsButton("Cancel", () =>
-        {
-            _confirmCoreRemove = false;
-            RefreshLocalSearch();
-        }));
+        buttons.Children.Add(SettingsButton("Cancel", () => CancelLocalSearchConfirm()));
         box.Children.Add(buttons);
-        // Keeping the index is the default, and where Enter lands.
         _dispatcher?.DispatcherQueue.TryEnqueue(() => keep.Focus(FocusState.Keyboard));
-        return box;
+        return ConfirmCard(box);
+    }
+
+    // "Remove People?" and the like (the Mac's removeConfirm): Remove is the
+    // default, Esc or Cancel keeps it.
+    private static FrameworkElement BuildPieceRemoveConfirm(AddonSlot slot)
+    {
+        var box = ConfirmBox();
+        TextBlock ask = Note(slot == AudioSlot
+            ? "Remove Audio? Searching videos by sound and speech stops until it is installed again."
+            : slot == FacesSlot
+                ? "Remove People? Face search stops until it is installed again."
+                : $"Remove {slot.Name}? Indexing runs on the CPU until it is installed again.");
+        ask.Foreground = Brush(Title);
+        box.Children.Add(ask);
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        Button remove = SettingsButton("Remove", () =>
+        {
+            _confirmPieceRemove = null;
+            RemovePiece(slot, keepData: true);
+        }, accent: true);
+        remove.IsEnabled = !AnyAiPending();
+        AutomationProperties.SetName(remove, "Remove " + slot.Name);
+        buttons.Children.Add(remove);
+        buttons.Children.Add(SettingsButton("Cancel", () => CancelLocalSearchConfirm()));
+        box.Children.Add(buttons);
+        _dispatcher?.DispatcherQueue.TryEnqueue(() => remove.Focus(FocusState.Keyboard));
+        return ConfirmCard(box);
+    }
+
+    private static StackPanel ConfirmBox() => new() { Spacing = 8 };
+
+    private static Border ConfirmCard(UIElement child) => new()
+    {
+        Child = child,
+        Padding = new Thickness(12),
+        Background = Brush(ChromeColour.Surface),
+        BorderBrush = Brush(Hairline),
+        BorderThickness = new Thickness(1),
+        CornerRadius = new CornerRadius(RadiusCard),
+    };
+
+    /// <summary>Esc or Cancel on a Local search "Remove …?": false when none is open.</summary>
+    private static bool CancelLocalSearchConfirm()
+    {
+        if (!_confirmCoreRemove && _confirmPieceRemove is null) return false;
+        _confirmCoreRemove = false;
+        _confirmPieceRemove = null;
+        RefreshLocalSearch();
+        return true;
     }
 
     private static void RemoveCore(bool keepData)

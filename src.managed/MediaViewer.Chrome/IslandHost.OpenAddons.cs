@@ -213,12 +213,29 @@ public static partial class IslandHost
     private static void AddOpenAddonsSettings(StackPanel view)
     {
         view.Children.Add(Label("From others").WithForeground(Brush(Title)));
-        view.Children.Add(WrappedLabel(
+        view.Children.Add(Note(
             "Add-ons made by other people, installed from a file or a link. MediaViewer does not check them or who made them. The ones it installs are data, such as themes: they cannot run code, read your files, or use the network."));
-        _openRow = new StackPanel { Spacing = 6 };
+        _openRow = new StackPanel { Spacing = 8 };
         view.Children.Add(_openRow);
         RefreshOpenAddonRow();
         RefreshOpenAddons();
+    }
+
+    /// <summary>Esc on an open "Remove …?" or install question: false when none is open.</summary>
+    private static bool CancelOpenAddonConfirm()
+    {
+        if (_openConfirmRemove is not null)
+        {
+            _openConfirmRemove = null;
+            RefreshOpenAddonRow();
+            return true;
+        }
+        if (_openOffer is not null && !_openBusy)
+        {
+            CancelOpenOffer();
+            return true;
+        }
+        return false;
     }
 
     private static TextBlock WithForeground(this TextBlock text, Microsoft.UI.Xaml.Media.Brush brush)
@@ -255,24 +272,28 @@ public static partial class IslandHost
                     RefreshOpenAddonRow();
                 }));
                 _openRow.Children.Add(line);
-                _openRow.Children.Add(WrappedLabel(
+                _openRow.Children.Add(Note(
                     "The server you name will see this computer's network address, as any download does. Nothing else is sent."));
             }
-            else if (!_openBusy)
+            else
             {
+                // Busy: shown, disabled (the Mac's .disabled(store.busy)), not hidden.
                 var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-                buttons.Children.Add(SettingsButton("Install from file…", ChooseOpenAddonFile));
-                buttons.Children.Add(SettingsButton("Install from link…", () =>
+                Button file = SettingsButton("Install from file…", ChooseOpenAddonFile);
+                Button link = SettingsButton("Install from link…", () =>
                 {
                     _openEnteringLink = true;
                     _openMessage = "";
                     RefreshOpenAddonRow();
-                }));
+                });
+                file.IsEnabled = link.IsEnabled = !_openBusy;
+                buttons.Children.Add(file);
+                buttons.Children.Add(link);
                 _openRow.Children.Add(buttons);
             }
         }
         string status = _openProgress.Length > 0 ? _openProgress : _openMessage;
-        if (status.Length > 0) _openRow.Children.Add(WrappedLabel(status));
+        if (status.Length > 0) _openRow.Children.Add(Note(status));
     }
 
     private static FrameworkElement BuildOpenAddonEntry(OpenAddon addon)
@@ -280,22 +301,25 @@ public static partial class IslandHost
         var entry = new StackPanel { Spacing = 4, Margin = new Thickness(0, 4, 0, 4) };
         entry.Children.Add(Label($"{addon.Name} {addon.Version}").WithForeground(Brush(Title)));
         if (addon.Publisher.Length > 0)
-            entry.Children.Add(WrappedLabel($"From {addon.Publisher} · key {addon.Fingerprint} · {addon.Adds}"));
+            entry.Children.Add(Note($"From {addon.Publisher} · key {addon.Fingerprint} · {addon.Adds}"));
         if (addon.State == "needs_update")
-            entry.Children.Add(WrappedLabel("Needs a newer MediaViewer, so it is not in use."));
+            entry.Children.Add(Note("Needs a newer MediaViewer, so it is not in use."));
         else if (addon.State != "ok")
-            entry.Children.Add(WrappedLabel("This copy did not pass verification, so it is not in use."));
+            entry.Children.Add(Note("This copy did not pass verification, so it is not in use."));
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         if (_openConfirmRemove == addon.Folder)
         {
-            buttons.Children.Add(SettingsButton($"Remove {addon.Name}", () => RemoveOpenAddon(addon)));
+            // Remove is the default (accent), Esc or Cancel keeps it.
+            Button remove = SettingsButton($"Remove {addon.Name}", () => RemoveOpenAddon(addon), accent: true);
+            remove.IsEnabled = !_openBusy;
+            buttons.Children.Add(remove);
             buttons.Children.Add(SettingsButton("Cancel", () =>
             {
                 _openConfirmRemove = null;
                 RefreshOpenAddonRow();
             }));
         }
-        else if (!_openBusy)
+        else
         {
             if (addon.UpdateUrl.Length > 0 && addon.State != "invalid")
             {
@@ -310,6 +334,10 @@ public static partial class IslandHost
                 _openConfirmRemove = addon.Folder;
                 RefreshOpenAddonRow();
             }));
+            foreach (UIElement b in buttons.Children)
+            {
+                if (b is Button button) button.IsEnabled = !_openBusy;
+            }
         }
         entry.Children.Add(buttons);
         return entry;
@@ -332,7 +360,7 @@ public static partial class IslandHost
         sheet.Children.Add(heading);
         if (a is not null)
         {
-            if (a.Description.Length > 0) sheet.Children.Add(WrappedLabel(a.Description));
+            if (a.Description.Length > 0) sheet.Children.Add(Note(a.Description));
             var lines = new Grid { ColumnSpacing = 16, RowSpacing = 4 };
             lines.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             lines.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -363,13 +391,13 @@ public static partial class IslandHost
         {
             sheet.Children.Add(WrappedLabel("MediaViewer has not checked this add-on or who made it.")
                 .WithForeground(Brush(Title)));
-            Button cancel = SettingsButton("Cancel", CancelOpenOffer);
+            // Cancel is the default (accent, the Mac's .defaultAction): Enter
+            // does not install. Install stays while busy, disabled.
+            Button cancel = SettingsButton("Cancel", CancelOpenOffer, accent: true);
             buttons.Children.Add(cancel);
-            if (!_openBusy)
-            {
-                buttons.Children.Add(SettingsButton(offer.Relation == "update" ? "Update" : "Install",
-                    ConfirmOpenOffer));
-            }
+            Button go = SettingsButton(offer.Relation == "update" ? "Update" : "Install", ConfirmOpenOffer);
+            go.IsEnabled = !_openBusy;
+            buttons.Children.Add(go);
             cancel.Loaded += (_, _) =>
             {
                 try { cancel.Focus(FocusState.Keyboard); }
@@ -379,7 +407,7 @@ public static partial class IslandHost
         else
         {
             sheet.Children.Add(WrappedLabel(offer.Message).WithForeground(Brush(Title)));
-            buttons.Children.Add(SettingsButton("Close", CancelOpenOffer));
+            buttons.Children.Add(SettingsButton("Close", CancelOpenOffer, accent: true));
         }
         sheet.Children.Add(buttons);
         var card = new Border
