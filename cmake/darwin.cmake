@@ -440,6 +440,9 @@ find_package(unofficial-sodium CONFIG REQUIRED)
 set(MV_SQLITE_TARGET unofficial::sqlite3::sqlite3)
 set(MV_SODIUM_TARGET unofficial-sodium::sodium)
 include("${CMAKE_CURRENT_LIST_DIR}/import.cmake")
+# The Places add-on (docs/design/27): libmv_places.dylib in build/addons/places,
+# packed and signed separately; never in the app bundle.
+include("${CMAKE_CURRENT_LIST_DIR}/places.cmake")
 
 # Milestone H: host table v2's pixels (src/abi/addon_media.h) over the still
 # pipeline, the clip sampler and the JPEG-512 cache. In the app; knows no
