@@ -2586,10 +2586,12 @@ TEST_CASE("online-only cloud files are counted, never read, and fetched in place
   CHECK(r.eng->roots_json().find("\"cloud_only\":1") != std::string::npos);
   CHECK(r.cloud->log.empty());
 
-  REQUIRE(r.eng->set_setting("cloud_files", "1"));
-  // On battery, then metered: it waits.
+  // On battery, then metered: it waits. Both before the opt-in, as the iCloud
+  // twin above: set after it, the fetcher could start on the defaults (mains,
+  // unmetered) first and hydrate (a flake seen on a Windows runner).
   r.cloud->unmetered = false;
   r.on_battery = true;
+  REQUIRE(r.eng->set_setting("cloud_files", "1"));
   REQUIRE(eventually([&] { return r.status().cloud_fetch == MV_AI_ICLOUD_WAIT_POWER; }));
   r.on_battery = false;
   REQUIRE(eventually([&] { return r.status().cloud_fetch == MV_AI_ICLOUD_WAIT_NETWORK; }));
