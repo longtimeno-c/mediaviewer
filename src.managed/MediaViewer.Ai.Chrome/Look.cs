@@ -241,6 +241,62 @@ internal sealed class Look
         return b;
     }
 
+    /// <summary>
+    /// A button with its own fill keeps it under the pointer: WinUI's template
+    /// otherwise swaps in its grey ButtonBackgroundPointerOver. Lightweight
+    /// resources only (a loaded template fail-fasts these islands). With
+    /// <paramref name="ink"/>, the label colour holds too.
+    /// </summary>
+    public static void KeepFill(Button b, Brush rest, Brush over, Brush pressed, Brush? ink = null)
+    {
+        b.Background = rest;
+        b.Resources["ButtonBackground"] = rest;
+        b.Resources["ButtonBackgroundPointerOver"] = over;
+        b.Resources["ButtonBackgroundPressed"] = pressed;
+        var clear = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+        b.Resources["ButtonBorderBrushPointerOver"] = clear;
+        b.Resources["ButtonBorderBrushPressed"] = clear;
+        if (ink is null) return;
+        b.Foreground = ink;
+        b.Resources["ButtonForeground"] = ink;
+        b.Resources["ButtonForegroundPointerOver"] = ink;
+        b.Resources["ButtonForegroundPressed"] = ink;
+    }
+
+    /// <summary>A tinted fill a step stronger (hover, pressed) than <paramref name="rest"/>.</summary>
+    public static SolidColorBrush Stronger(SolidColorBrush rest, int add)
+    {
+        Color c = rest.Color;
+        return new SolidColorBrush(Color.FromArgb((byte)Math.Min(255, c.A + add), c.R, c.G, c.B));
+    }
+
+    /// <summary>
+    /// "[Enter] Open": a keycap and what it does (the Mac's KeyHint), for a
+    /// footer. Read as one phrase by a screen reader.
+    /// </summary>
+    public StackPanel KeyHint(string key, string label, out TextBlock labelText)
+    {
+        var cap = new Border
+        {
+            Child = Text(key, 12, AddonColour.Title, wrap: false),
+            Padding = new Thickness(5, 0, 5, 1),
+            MinWidth = 20,
+            MinHeight = 18,
+            CornerRadius = new CornerRadius(4),
+            Background = LiveTint(AddonColour.Body, 18),
+            BorderBrush = this[AddonColour.Hairline],
+            BorderThickness = new Thickness(1),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        labelText = Text(label, 13, AddonColour.Body, wrap: false);
+        labelText.VerticalAlignment = VerticalAlignment.Center;
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 5, VerticalAlignment = VerticalAlignment.Center };
+        row.Children.Add(cap);
+        row.Children.Add(labelText);
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(row, $"{key}: {label}");
+        return row;
+    }
+
     /// <summary>ToggleButton lightweight styling: rest, pointer over, pressed, then the checked three.</summary>
     public static void ToggleBrushes(Microsoft.UI.Xaml.Controls.Primitives.ToggleButton b, string part, Brush rest, Brush over,
                                      Brush pressed, Brush on, Brush onOver, Brush onPressed)

@@ -426,13 +426,15 @@ internal sealed class PersonSheet : Window
                 FontSize = 11,
                 CornerRadius = new CornerRadius(11),
                 BorderThickness = new Thickness(0),
-                Background = new SolidColorBrush(Windows.UI.Color.FromArgb(166, 0, 0, 0)),
-                Foreground = new SolidColorBrush(Microsoft.UI.Colors.White),
                 HorizontalAlignment = HorizontalAlignment.Right,
                 VerticalAlignment = VerticalAlignment.Top,
                 Margin = new Thickness(0, 2, 4, 0),
                 Visibility = Visibility.Collapsed,
             };
+            // Its dark disc under the pointer too, not WinUI's grey.
+            var disc = new SolidColorBrush(Windows.UI.Color.FromArgb(166, 0, 0, 0));
+            Look.KeepFill(_reject, disc, Look.Stronger(disc, 34), Look.Stronger(disc, 64),
+                          new SolidColorBrush(Microsoft.UI.Colors.White));
             ToolTipService.SetToolTip(_reject, "Not this person");
             AutomationProperties.SetName(_reject, "Not this person");
             _reject.Click += (_, _) => sheet.Reject(new List<ulong> { face.Id });
