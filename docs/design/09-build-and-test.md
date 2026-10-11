@@ -132,7 +132,7 @@ it replaces.
 |---|---|---|
 | `policy` | windows-latest | The policy gates above |
 | `windows-deps` | windows-latest | Installs the vcpkg manifest once and caches it (≈45 min after a manifest/baseline change, mostly FFmpeg) |
-| `build` | windows-latest | MSVC Release, MSVC Debug, clang-cl, ASan; full `ctest`; uploads broken-corpus reproducers |
+| `build` | windows-latest | MSVC Release, MSVC Debug, clang-cl, ASan; full `ctest`; the hidden `[.recycle]` case on MSVC Release (a real file to the runner's Recycle Bin); uploads broken-corpus reproducers |
 | `abi-smoke` | windows-latest | The C# ABI smoke test |
 | `windows-chrome`, `mac-chrome` | windows-latest, macos-14 | WinUI and SwiftUI chrome compile |
 | `mac-packaging` | ubuntu-latest | Release tooling tests and macOS bundle policy (`tools/mac/*`) |

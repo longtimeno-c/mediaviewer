@@ -786,6 +786,11 @@ if(MV_BUILD_TESTS)
     tests/test_dir_tree.cpp
     # Issue #167: the folder listing reads size + mtime in bulk; links stat'ed.
     tests/test_dir_mac.cpp
+    # Issue #155: the FSEvents folder watcher, and the portable pairing and
+    # collision-name code the Mac host uses (main_mac.mm), same suites as Windows.
+    tests/test_dir_watcher.cpp
+    tests/test_pairing.cpp
+    tests/test_collision_name.cpp
     tests/test_key_router.cpp
     tests/test_key_router_review.cpp
     tests/test_write_guard.cpp

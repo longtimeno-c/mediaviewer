@@ -853,6 +853,9 @@ ctest --test-dir build -C Release --output-on-failure
 # if MV_REQUIRE_CORPUS is unset ('0' is an explicit opt-out, as release.yml uses).
 $env:MV_REQUIRE_CORPUS = "1"; ctest --test-dir build -C Release --output-on-failure
 
+# hidden from ctest: sends a scratch file to YOUR Recycle Bin (CI runs it on MSVC Release)
+build\bin\Release\mv_tests.exe "[.recycle]"
+
 # the ABI, end to end from C#: SafeHandle, struct layout, completion drain
 dotnet build src.managed\MediaViewer.AbiSmokeTest\MediaViewer.AbiSmokeTest.csproj -c Release
 dotnet src.managed\MediaViewer.AbiSmokeTest\bin\Release\net8.0-windows\MediaViewer.AbiSmokeTest.dll build\bin\Release
