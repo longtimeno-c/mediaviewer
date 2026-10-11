@@ -196,7 +196,9 @@ not build WinUI or the Windows lab.
 
 ```sh
 export VCPKG_ROOT=/path/to/vcpkg   # bootstrapped
-brew install libomp
+# LibRaw's OpenMP runtime, built for macOS 14 (Homebrew's targets the build Mac's OS).
+python3 tools/mac/build_libomp.py --prefix "$PWD/build/libomp/arm64" --arch arm64
+export MV_LIBOMP_ROOT="$PWD/build/libomp/arm64"
 # Dynamic LGPL codecs use a separate manifest/tree; CMake installs the static
 # permissive dependencies from the root manifest. See RELEASING.md.
 "$VCPKG_ROOT/vcpkg" install --triplet arm64-osx-dynamic \
@@ -316,7 +318,7 @@ Intel has been built but not measured for frame pacing (docs/design/12, 2026-09-
 | Full Xcode, macOS 14+ | Command Line Tools alone are not enough (Swift/SwiftUI, `xcrun metal`, `notarytool`) |
 | CMake ≥ 3.28 | `python3 -m pip install --user cmake` puts it in `~/Library/Python/3.x/bin` — add that to `PATH` |
 | Ninja | vcpkg downloads one under `$VCPKG_ROOT/downloads/tools`; or `brew install ninja` |
-| OpenMP runtime | `brew install libomp`; the dynamic codec triplets below enable bounded parallel RAW decoding. Packaging bundles the runtime. |
+| OpenMP runtime | `tools/mac/build_libomp.py` builds LLVM's libomp for the app's macOS 14.0 (hash-pinned sources); export `MV_LIBOMP_ROOT` to its prefix before the vcpkg install and configure. The dynamic codec triplets use it for bounded parallel RAW decoding, and packaging bundles it. Homebrew's `libomp` is only a fallback when `MV_LIBOMP_ROOT` is unset: its dylib declares the build Mac's macOS as its minimum, so `tools/mac/check_minos.py build-darwin/MediaViewer.app` (run by the release) fails such a bundle. |
 | vcpkg, bootstrapped | `export VCPKG_ROOT=…`. The baseline is pinned in `vcpkg.json`; do not float it |
 | Python 3.10+ | for `dmgbuild==1.6.7` (`pip install -r tools/mac/requirements.txt`). On 3.9, `dmgbuild==1.6.5` works for a local dry run only |
 | Apple Developer Program | needed for Developer ID signing and notarization; without it you can only build the ad-hoc bundle |
@@ -325,7 +327,8 @@ Intel has been built but not measured for frame pacing (docs/design/12, 2026-09-
 
 ```sh
 export VCPKG_ROOT=/path/to/vcpkg
-brew install libomp
+python3 tools/mac/build_libomp.py --prefix "$PWD/build-darwin/libomp/arm64" --arch arm64
+export MV_LIBOMP_ROOT="$PWD/build-darwin/libomp/arm64"
 "$VCPKG_ROOT/vcpkg" install --triplet arm64-osx-dynamic \
   --overlay-triplets="$PWD/tools/mac/triplets" \
   --x-manifest-root="$PWD/tools/mac/dependencies" \
@@ -343,8 +346,10 @@ open build-darwin/MediaViewer.app
 That is an ad-hoc-signed bundle: fine on this Mac, but **it will not launch once
 re-signed ad hoc with the hardened runtime** (dyld rejects the bundled dylibs with
 "different Team IDs"). Only a real Developer ID signature, which gives every binary in the
-bundle the same Team ID, satisfies that check. `python3 tools/mac/check_plists.py` and
-`python3 tools/mac/test_macpack.py` need no Mac and run anywhere.
+bundle the same Team ID, satisfies that check. `python3 tools/mac/check_plists.py`,
+`python3 tools/mac/test_macpack.py` and `python3 tools/mac/test_check_minos.py` need no Mac and
+run anywhere. `python3 tools/mac/check_minos.py build-darwin/MediaViewer.app` fails when any
+bundled binary declares a minimum macOS above the app's `LSMinimumSystemVersion`.
 
 **2. One-time signing and update setup**
 
