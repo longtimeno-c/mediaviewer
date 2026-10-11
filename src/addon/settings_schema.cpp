@@ -31,7 +31,7 @@ bool option_text(std::string_view v) noexcept {
 
 // A value a person types: any text but control characters, bounded.
 bool free_text(std::string_view s, std::size_t max_bytes) noexcept {
-  if (s.size() > max_bytes || !json::valid_utf8(s)) return false;
+  if (s.size() > max_bytes || !json::detail::valid_utf8(s)) return false;
   return std::none_of(s.begin(), s.end(), [](char ch) {
     const auto c = static_cast<unsigned char>(ch);
     return c < 0x20 || c == 0x7F;

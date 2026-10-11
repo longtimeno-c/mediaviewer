@@ -306,6 +306,55 @@ MV_API mv_status MV_CALL mv_open_addon_theme_json(const char* addon_id, const ch
   }));
 }
 
+// PR 56 (docs/design/25): settings pages and keymap packs.
+
+MV_API mv_status MV_CALL mv_addon_settings_json(const char* addon_id, char* out, uint32_t cap,
+                                                uint32_t* needed) {
+  return static_cast<mv_status>(mv::abi::guard("mv_addon_settings_json", [&] {
+    MV_REQUIRE(addon_id && *addon_id, "addon_id is empty");
+    auto s = mv::addon::default_open_store();
+    if (!s) return s.error();
+    auto first = open_store();
+    const std::string page =
+        mv::addon::addon_settings_page_json(*s, first ? &*first : nullptr, addon_id);
+    if (page.empty()) return status::not_found;
+    return write_out(page, out, cap, needed);
+  }));
+}
+
+MV_API mv_status MV_CALL mv_addon_setting_set(const char* addon_id, const char* key,
+                                              const char* value_json, char* out, uint32_t cap,
+                                              uint32_t* needed) {
+  return static_cast<mv_status>(mv::abi::guard("mv_addon_setting_set", [&] {
+    MV_REQUIRE(addon_id && key && value_json, "addon_id, key and value_json are required");
+    auto s = mv::addon::default_open_store();
+    if (!s) return s.error();
+    auto first = open_store();
+    return write_out(mv::addon::addon_setting_set_json(*s, first ? &*first : nullptr, addon_id,
+                                                       key, value_json),
+                     out, cap, needed);
+  }));
+}
+
+MV_API mv_status MV_CALL mv_addon_settings_forget(const char* addon_id) {
+  return static_cast<mv_status>(mv::abi::guard("mv_addon_settings_forget", [&] {
+    MV_REQUIRE(addon_id && *addon_id, "addon_id is empty");
+    return mv::addon::addon_settings_forget(addon_id) ? status::ok : status::io;
+  }));
+}
+
+MV_API mv_status MV_CALL mv_open_addon_keymap_json(const char* addon_id, const char* pack_id,
+                                                   char* out, uint32_t cap, uint32_t* needed) {
+  return static_cast<mv_status>(mv::abi::guard("mv_open_addon_keymap_json", [&] {
+    MV_REQUIRE(addon_id && pack_id, "addon_id and pack_id are required");
+    auto s = mv::addon::default_open_store();
+    if (!s) return s.error();
+    const std::string pack = mv::addon::open_keymap_json(*s, addon_id, pack_id);
+    if (pack.empty()) return status::not_found;
+    return write_out(pack, out, cap, needed);
+  }));
+}
+
 MV_API mv_status MV_CALL mv_addon_sha256_file(const char* path_utf8, char out[65]) {
   return static_cast<mv_status>(mv::abi::guard("mv_addon_sha256_file", [&] {
     MV_REQUIRE(path_utf8 && out, "path and out are required");

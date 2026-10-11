@@ -548,28 +548,12 @@ void append_addon_rows(std::vector<binding>& live) {
 
 std::span<const binding> live_bindings() noexcept { return live_store(); }
 
-void reset_live_bindings() noexcept {
-  live_store().assign(std::begin(kBindings), std::end(kBindings));
-  append_addon_rows(live_store());
-}
-
-void set_addon_commands(std::span<const addon_command_row> rows) {
-  addon_slots& s = addon_store();
-  s.rows.assign(rows.begin(), rows.begin() + std::min<std::size_t>(rows.size(), kAddonCommandSlots));
-  for (int i = 0; i < kAddonCommandSlots; ++i) {
-    const bool live = static_cast<std::size_t>(i) < s.rows.size();
-    s.names[i] = live ? s.rows[static_cast<std::size_t>(i)].name : std::string();
-    s.infos[i] = command_info{static_cast<command_id>(static_cast<int>(addon_cmd_0) + i),
-                              s.names[i].c_str(), !live};
-  }
-  // The built-in rows keep whatever remaps they carry; the contributed rows
-  // start from their manifest keys.
-  auto& table = live_store();
-  table.resize(std::size(kBindings));
-  // An add-on whose manifest contributes rows supersedes the rows the table
-  // has built in for it (Import's two, docs/design/18): those lose their key, so the
-  // router never answers them ahead of the contributed row on the same key,
-  // and get it back when the add-on's rows go. Their indices never move.
+// An add-on whose manifest contributes rows supersedes the rows the table
+// has built in for it (Import's two, docs/design/18): those lose their key, so the
+// router never answers them ahead of the contributed row on the same key,
+// and get it back when the add-on's rows go. Their indices never move.
+static void apply_superseded(std::vector<binding>& table) {
+  const addon_slots& s = addon_store();
   const auto superseded = [&s](addon_family family) {
     const char* id = family == addon_family::import ? "import" : family == addon_family::ai ? "ai" : "";
     return std::any_of(s.rows.begin(), s.rows.end(),
@@ -585,6 +569,41 @@ void set_addon_commands(std::span<const addon_command_row> rows) {
       table[i].mods = kBindings[i].mods;
     }
   }
+}
+
+void reset_live_bindings() noexcept {
+  live_store().assign(std::begin(kBindings), std::end(kBindings));
+  // Reset is the defaults as they stand with these add-ons loaded: a
+  // superseded built-in row stays without its key (PR 56 found it came back).
+  apply_superseded(live_store());
+  append_addon_rows(live_store());
+}
+
+bool set_live_key(int index, key k, std::uint8_t mods) noexcept {
+  auto& live = live_store();
+  if (index < 0 || static_cast<std::size_t>(index) >= live.size()) return false;
+  if (static_cast<int>(k) < 0 || static_cast<int>(k) >= kKeyCount) return false;
+  if (mods >= kModCombos) return false;
+  binding& target = live[static_cast<std::size_t>(index)];
+  target.k = k;
+  target.mods = k == key::none ? mod_none : mods;
+  return true;
+}
+
+void set_addon_commands(std::span<const addon_command_row> rows) {
+  addon_slots& s = addon_store();
+  s.rows.assign(rows.begin(), rows.begin() + std::min<std::size_t>(rows.size(), kAddonCommandSlots));
+  for (int i = 0; i < kAddonCommandSlots; ++i) {
+    const bool live = static_cast<std::size_t>(i) < s.rows.size();
+    s.names[i] = live ? s.rows[static_cast<std::size_t>(i)].name : std::string();
+    s.infos[i] = command_info{static_cast<command_id>(static_cast<int>(addon_cmd_0) + i),
+                              s.names[i].c_str(), !live};
+  }
+  // The built-in rows keep whatever remaps they carry; the contributed rows
+  // start from their manifest keys.
+  auto& table = live_store();
+  table.resize(std::size(kBindings));
+  apply_superseded(table);
   append_addon_rows(table);
 }
 

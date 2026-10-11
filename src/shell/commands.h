@@ -386,6 +386,10 @@ void reset_live_bindings() noexcept;
 // Change row `index` to (k, mods). A collision in overlapping modes swaps the
 // two rows so nothing is left unbound. False if index is out of range.
 [[nodiscard]] bool rebind_live(int index, key k, std::uint8_t mods) noexcept;
+// Set row `index` to (k, mods) exactly, `key::none` included, with no swap:
+// how a saved table is put back (each row's saved key is its final key) and
+// how a keymap pack (shell/keymap.h) writes the rows it names.
+[[nodiscard]] bool set_live_key(int index, key k, std::uint8_t mods) noexcept;
 [[nodiscard]] std::span<const command_info> command_infos() noexcept;
 [[nodiscard]] const command_info* find_command(command_id id) noexcept;
 // Bound commands whose effect has not landed yet. Empty before PR 6 ships.

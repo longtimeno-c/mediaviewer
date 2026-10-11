@@ -16,6 +16,8 @@
 #include <string_view>
 #include <vector>
 
+#include "addon/settings_schema.h"
+
 namespace mv::addon {
 
 inline constexpr int kManifestSchema = 1;
@@ -78,6 +80,10 @@ struct manifest {
   std::vector<manifest_command> commands;
   std::string hint_on;    // "card", or empty
   std::string hint_text;
+  // Optional (PR 56, docs/design/25 "Settings page"): a settings page the hosts
+  // render from this schema; the add-on reads the values through the host
+  // table's settings_get. Empty when the manifest has none.
+  settings_page settings;
 };
 
 enum class rejection : std::uint8_t {
