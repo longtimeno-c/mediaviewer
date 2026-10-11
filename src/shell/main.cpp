@@ -134,6 +134,9 @@ constexpr UINT kMsgOpenForwarded = WM_APP + 0x78;   // a second instance handed 
 constexpr UINT kMsgOwnDragEnded = WM_APP + 0x7A;
 // A document's "Open in <app>" list (shell/open_with_win.h) came back.
 constexpr UINT kMsgOpenWithReady = WM_APP + 0x7B;
+// docs/design/25 PR 57: the script add-ons have a notice (wparam 1) or started or
+// stopped (wparam 2). Posted by the core's listener, on any thread.
+constexpr UINT kMsgScripts = WM_APP + 0x7C;
 constexpr UINT kThumbPrev = 0x5101;                 // taskbar thumbnail toolbar button ids
 constexpr UINT kThumbPlay = 0x5102;
 constexpr UINT kThumbNext = 0x5103;
@@ -5174,7 +5177,44 @@ void refresh_contributed_commands(app_state* app) noexcept {
       }
     }
   }
+  // docs/design/25 PR 57: other makers' script commands, after ours. Their keys
+  // give way to the base app's (set_addon_commands), and Settings says so.
+  json.assign(16 * 1024, '\0');
+  needed = 0;
+  status = mv_script_commands_json(json.data(), static_cast<uint32_t>(json.size()), &needed);
+  if (status == MV_ERR_INVALID_ARG && needed > json.size()) {
+    json.assign(needed, '\0');
+    status = mv_script_commands_json(json.data(), static_cast<uint32_t>(json.size()), &needed);
+  }
+  if (status == MV_OK && needed > 0) {
+    json.resize(needed - 1);
+    if (const auto doc = mv::json::parse(json); doc && doc->k == mv::json::kind::array) {
+      for (const mv::json::value& c : doc->a) {
+        const std::string* addon = c.str("addon");
+        const std::string* id = c.str("id");
+        const std::string* name = c.str("name");
+        if (!addon || !id || !name) continue;
+        mv::shell::addon_command_row r;
+        r.addon = *addon;
+        r.id = *id;
+        r.name = *name;
+        r.script = true;
+        const std::string* label = c.str("key");
+        if (label && !label->empty() && !mv::shell::parse_key_label(*label, r.k, r.mods)) {
+          r.k = mv::shell::key::none;
+          r.mods = 0;
+          r.note = "\"" + *label + "\" is not a key MediaViewer knows, so this command has no key";
+        }
+        const std::string* modes = c.str("modes");
+        r.modes = mv::shell::parse_modes(modes ? *modes : "viewing");
+        const std::string* payload = c.str("payload");
+        r.payload = payload ? *payload : "none";
+        rows.push_back(std::move(r));
+      }
+    }
+  }
   mv::shell::set_addon_commands(rows);
+  (void)mv_script_set_key_notes(mv::shell::addon_command_notes_json().c_str());
   // rebuild forgets held keys; release them first (issue #186).
   mv::shell::command_id released[mv::shell::key_router::kHeldSlots]{};
   const std::size_t n = app->router.cancel_holds(released);
@@ -6111,6 +6151,9 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       } else {
         w.null();
       }
+      // docs/design/25 PR 57: another maker's row runs in its script, on its own
+      // worker; posting never blocks, and its answer comes back as a notice.
+      if (row->script) return mv_script_run_command(row->addon.c_str(), row->id.c_str(), w.str().c_str()) == MV_OK;
       return app->chrome.run_addon_command(row->addon, row->id, w.str());
     }
     case open_import: {
@@ -7072,6 +7115,46 @@ void layout_chrome(app_state* app) noexcept {
   layout_panels(app);
 }
 
+// docs/design/25 PR 57: the script add-ons' listener. Any thread; hops to the UI
+// thread, which then reads what changed.
+void MV_CALL scripts_listener(void* user, uint32_t what) {
+  if (HWND hwnd = static_cast<HWND>(user)) ::PostMessageW(hwnd, kMsgScripts, what, 0);
+}
+
+void on_scripts_message(app_state* app, std::uint32_t what) noexcept {
+  if (!app) return;
+  if (what == 1) {
+    std::string json(4096, '\0');
+    uint32_t needed = 0;
+    mv_status status = mv_script_take_notices_json(json.data(), static_cast<uint32_t>(json.size()), &needed);
+    if (status == MV_ERR_INVALID_ARG && needed > json.size()) {
+      json.assign(needed, '\0');
+      status = mv_script_take_notices_json(json.data(), static_cast<uint32_t>(json.size()), &needed);
+    }
+    if (status != MV_OK || needed == 0) return;
+    json.resize(needed - 1);
+    // The newest line is the one to show; the notice is one line on the title.
+    if (const auto doc = mv::json::parse(json); doc && doc->k == mv::json::kind::array && !doc->a.empty()) {
+      if (const std::string* text = doc->a.back().str("text")) notice_show(app, *text);
+    }
+    return;
+  }
+  // An add-on started or stopped: its rows come or go, and Settings re-reads.
+  refresh_contributed_commands(app);
+  app->chrome.set_command_table(mv::shell::describe_commands());
+}
+
+// Starts the script add-ons once the window and the chrome are up, never
+// before first pixel: listing and verifying the store reads files (a worker).
+void start_scripts(app_state* app) {
+  if (!app || !app->session || !app->window) return;
+  (void)mv_script_set_listener(&scripts_listener, app->window);
+  app->jobs.submit_at(mv::background_generation, [session = app->session](const mv::job_context&) {
+    (void)mv_script_reload(session);
+    return mv::status::ok;
+  });
+}
+
 bool attach_chrome(app_state* app) {
   if (!app || !app->chrome_enabled || !app->window) return false;
   if (auto loaded = app->chrome.load(); !loaded) return false;
@@ -7589,6 +7672,10 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       on_open_with_ready(app, std::unique_ptr<open_with_result>(reinterpret_cast<open_with_result*>(lparam)));
       return 0;
 
+    case kMsgScripts:
+      on_scripts_message(app, static_cast<std::uint32_t>(wparam));
+      return 0;
+
     case kMsgSiblingsReady:
       on_siblings_ready(app, std::unique_ptr<sibling_job_result>(
                                  reinterpret_cast<sibling_job_result*>(lparam)));
@@ -8056,6 +8143,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
     publish(&app);
   }
   if (!requested_paths.empty()) open_paths(&app, requested_paths);
+  start_scripts(&app);  // docs/design/25 PR 57: after the chrome, on a worker
   if (g_browse.enabled) ::SetTimer(hwnd, kBrowseTimerId, kBrowseTickMs, nullptr);
   // PR 29: MV_EDIT_SELFTEST=<folder> walks the Edit workspace (docs/design/20 verify).
   if (wchar_t dir[MAX_PATH]{}; ::GetEnvironmentVariableW(L"MV_EDIT_SELFTEST", dir, MAX_PATH) > 0) {
@@ -8104,6 +8192,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   // static destruction after main returned, joining a pack's model load or
   // inference batch (seconds), and could free it under a chrome read.
   (void)mv_addon_quit();
+  // Scripts stop at their next instruction check; their workers are joined here.
+  (void)mv_script_set_listener(nullptr, nullptr);
+  (void)mv_script_stop_all();
   const ULONGLONG addons_quit_at = ::GetTickCount64();
 
   // PR 12: writes the user asked for and has not seen land — a rating inside

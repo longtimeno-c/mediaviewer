@@ -490,8 +490,9 @@ MV_API mv_status MV_CALL mv_addon_quit_wait(uint32_t timeout_ms);
  * ------------------------------------------------------------------------- */
 
 /* The contribution API this host serves (an add-on's manifest declares the
- * range it was written for).  1  themes. */
-#define MV_ADDON_CONTRIBUTION_API 1
+ * range it was written for).  1  themes.  3  scripts, permissions, commands
+ * (PR 57). */
+#define MV_ADDON_CONTRIBUTION_API 3
 
 /* What a package is, for the consent sheet; installs and creates nothing.
  * MV_OK whenever the JSON was written, whatever it says:
@@ -532,6 +533,65 @@ MV_API mv_status MV_CALL mv_open_addon_remove(const char* folder);
  * longer verifies, and the chrome returns to its default. */
 MV_API mv_status MV_CALL mv_open_addon_theme_json(const char* addon_id, const char* theme_id,
                                                   char* out, uint32_t cap, uint32_t* needed);
+
+/* ---------------------------------------------------------------------------
+ * Script add-ons (docs/design/25 §9 A, PR 57, ABI 0.21): installed open add-ons
+ * whose manifest has `scripts` run in the core's Lua sandbox, each on a worker
+ * of its own, never on the caller's thread. Limits: 64 MB of memory, 100
+ * million instructions and 1 s per task; over one, the add-on stops and
+ * mv_script_status_json says which and why. No network, no file access
+ * beyond the permissions its manifest named (folder.read, thumbnails,
+ * selection), read through `session`'s folder model.
+ * ------------------------------------------------------------------------- */
+
+/* The shell's listener: called on ANY thread (a script's worker, the reload's)
+ * with `what` 1 when a notice is waiting (mv_script_take_notices_json) and 2
+ * when an add-on started or stopped (re-read mv_script_commands_json; Settings
+ * re-reads mv_script_status_json). It must not block or call back into the
+ * core: post to the UI thread and return. NULL stops it. [any-thread] */
+MV_API mv_status MV_CALL mv_script_set_listener(void(MV_CALL* listener)(void* user, uint32_t what),
+                                                void* user);
+
+/* Stops what runs and starts every installed script add-on that verifies.
+ * Reads and hashes files: [worker-thread]. The first call fixes the session
+ * whose folder model scripts read. Call it after the chrome is up, never
+ * before first pixel. An open add-on installed or removed through
+ * mv_open_addon_install / mv_open_addon_remove reloads them by itself. */
+MV_API mv_status MV_CALL mv_script_reload(mv_session_t session);
+
+/* Settings "Start again" for one add-on. [worker-thread] */
+MV_API mv_status MV_CALL mv_script_restart(const char* addon_id);
+
+/* Quit: every script stops at its next instruction check. [any-thread] */
+MV_API mv_status MV_CALL mv_script_stop_all(void);
+
+/* The commands of the add-ons running (or starting), for the command table:
+ *   [{"addon","id","name","key","modes","payload"}]
+ * "key" is a portable label ("Ctrl+Shift+K"). A key that clashes with the
+ * base app's is the shell's to drop (shell/commands.h). [any-thread][no-block] */
+MV_API mv_status MV_CALL mv_script_commands_json(char* out, uint32_t cap, uint32_t* needed);
+
+/* Runs a command: posts its function to the add-on's worker with
+ * `payload_json` (a JSON value; NULL for null) and returns. MV_ERR_BUSY when
+ * it could not be posted (stopped, unknown, or its queue full).
+ * [any-thread][no-block] */
+MV_API mv_status MV_CALL mv_script_run_command(const char* addon_id, const char* command_id,
+                                               const char* payload_json);
+
+/* What the shell's command table did with each row's key, for Settings:
+ * [{"addon","id","note"}] (shell/commands.h addon_command_notes_json).
+ * [any-thread][no-block] */
+MV_API mv_status MV_CALL mv_script_set_key_notes(const char* notes_json);
+
+/* For Settings: [{"id","state":"running|starting|stopped","stop":"none|memory|
+ * instructions|time|load_error|stopped","message","last_error","memory_peak",
+ * "tasks","commands":[{"id","name","key","note"}]}]. [any-thread][no-block] */
+MV_API mv_status MV_CALL mv_script_status_json(char* out, uint32_t cap, uint32_t* needed);
+
+/* The lines scripts asked to show (mv.notify), oldest first, each already
+ * prefixed with its add-on's name: [{"addon","text"}]. Taken: a second call
+ * returns "[]". A short buffer takes nothing. [any-thread][no-block] */
+MV_API mv_status MV_CALL mv_script_take_notices_json(char* out, uint32_t cap, uint32_t* needed);
 
 /* The base app's own card watch, for the one-time "Install Import?" hint
  * when a card appears and Import is not installed (docs/design/18). Posts

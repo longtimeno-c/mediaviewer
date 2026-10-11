@@ -33,6 +33,10 @@
 #include "io/volume.h"
 #include "meta/meta.h"
 
+namespace mv::abi {
+void scripts_store_changed() noexcept;  // script_abi.cpp (docs/design/25 PR 57)
+}  // namespace mv::abi
+
 namespace {
 
 using mv::status;
@@ -271,8 +275,10 @@ MV_API mv_status MV_CALL mv_open_addon_install(const char* package_utf8,
     MV_REQUIRE(out && cap >= 1024, "the result buffer is too small to say what happened");
     auto s = mv::addon::default_open_store();
     if (!s) return s.error();
-    return write_out(mv::addon::open_install_json(*s, package_utf8, approved_sha256), out, cap,
-                     needed);
+    const status written =
+        write_out(mv::addon::open_install_json(*s, package_utf8, approved_sha256), out, cap, needed);
+    mv::abi::scripts_store_changed();  // a script add-on starts, an update replaces the old one
+    return written;
   }));
 }
 
@@ -290,6 +296,7 @@ MV_API mv_status MV_CALL mv_open_addon_remove(const char* folder) {
     auto s = mv::addon::default_open_store();
     if (!s) return s.error();
     auto removed = s->remove(folder);
+    if (removed) mv::abi::scripts_store_changed();  // its script stops and its commands go
     return removed ? status::ok : removed.error();
   }));
 }

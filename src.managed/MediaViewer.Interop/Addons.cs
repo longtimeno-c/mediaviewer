@@ -406,6 +406,35 @@ public static unsafe partial class AddonNative
         }
     }
 
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial MvStatus mv_script_status_json(byte* output, uint cap, uint* needed);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial MvStatus mv_script_restart(byte* addonId);
+
+    /// <summary>docs/design/25 PR 57: the script add-ons the core runs, for Settings
+    /// (running, or stopped and why). Reads no file. "[]" on an older core.</summary>
+    public static string ScriptStatus()
+    {
+        try
+        {
+            return Json((b, c, n) => mv_script_status_json((byte*)b, c, (uint*)n), "mv_script_status_json");
+        }
+        catch (EntryPointNotFoundException)
+        {
+            return "[]";
+        }
+    }
+
+    /// <summary>Settings "Start again" for a stopped script add-on. Reads and
+    /// hashes its files: a worker.</summary>
+    public static void ScriptRestart(string addonId)
+    {
+        fixed (byte* p = Z(addonId)) Check(mv_script_restart(p), "mv_script_restart");
+    }
+
     /// <summary>Installed open add-ons, re-verified. "[]" when none.</summary>
     public static string OpenList() =>
         Json((b, c, n) => mv_open_addon_list_json((byte*)b, c, (uint*)n), "mv_open_addon_list_json");

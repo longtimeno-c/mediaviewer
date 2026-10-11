@@ -638,6 +638,7 @@ add_library(mv::canvas ALIAS mv_canvas)
 add_library(mediaviewer_core SHARED
   src/abi/abi.cpp
   src/abi/addon_abi.cpp
+  src/abi/script_abi.cpp
   src/abi/crash_export.cpp
   src/abi/include/mediaviewer/mediaviewer_crash.h
   src/abi/video_session.h
@@ -654,7 +655,7 @@ target_include_directories(mediaviewer_core
   PUBLIC  src/abi/include
   PRIVATE src)
 target_compile_definitions(mediaviewer_core PRIVATE MV_BUILDING_CORE)
-target_link_libraries(mediaviewer_core PRIVATE mv_core mv_image mv_canvas mv_io mv_player mv_meta mv_addon mv_addon_media mv_clip)
+target_link_libraries(mediaviewer_core PRIVATE mv_core mv_image mv_canvas mv_io mv_player mv_meta mv_addon mv_script mv_addon_media mv_clip)
 set_target_properties(mediaviewer_core PROPERTIES OUTPUT_NAME "mediaviewer_core")
 add_library(mv::abi ALIAS mediaviewer_core)
 
