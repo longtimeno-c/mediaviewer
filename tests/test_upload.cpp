@@ -55,3 +55,50 @@ TEST_CASE("single-texture uploads are timed", "[upload]") {
   CHECK(after.max_create_us >= after.last_create_us);
   CHECK(after.max_create_us >= before.max_create_us);
 }
+
+TEST_CASE("a create gate runs before the create and can abandon it", "[upload]") {
+  // Issue #166: a neighbour's over-budget create waits at its gate (abi.cpp)
+  // while the canvas moves. The gate sees the whole texture's bytes, after
+  // the CPU mip chain; refusing cancels the upload without a create.
+  mv::gfx::com_ptr<ID3D11Device> device;
+  D3D_FEATURE_LEVEL level{};
+  const HRESULT hr =
+      ::D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0,
+                          D3D11_SDK_VERSION, device.GetAddressOf(), &level, nullptr);
+  if (FAILED(hr)) SKIP("WARP is unavailable");
+
+  struct probe {
+    int calls = 0;
+    std::uint64_t bytes = 0;
+    bool allow = false;
+  };
+  probe p;
+  const mv::image::create_gate gate{
+      [](void* user, std::uint64_t bytes) {
+        auto& q = *static_cast<probe*>(user);
+        ++q.calls;
+        q.bytes = bytes;
+        return q.allow;
+      },
+      &p};
+
+  mv::image::display_image src;
+  src.width = 64;
+  src.height = 32;
+  src.rgba.assign(static_cast<std::size_t>(64) * 32 * 4, 90);
+
+  const auto before = mv::image::texture_upload_stats_now();
+  auto refused = mv::image::upload(device.Get(), src, 1, nullptr, 0, &gate);
+  REQUIRE_FALSE(refused);
+  CHECK(refused.error() == mv::status::cancelled);
+  CHECK(p.calls == 1);
+  // 64x32 down to 1x1: 2048 + 512 + 128 + 32 + 8 + 2 + 1 texels.
+  CHECK(p.bytes == 2731u * 4u);
+  CHECK(mv::image::texture_upload_stats_now().creates == before.creates);
+
+  p.allow = true;
+  auto made = mv::image::upload(device.Get(), src, 1, nullptr, 0, &gate);
+  REQUIRE(made);
+  CHECK(p.calls == 2);
+  CHECK(mv::image::texture_upload_stats_now().creates == before.creates + 1);
+}

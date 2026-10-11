@@ -592,7 +592,10 @@ Images above ~64 MP, or wider or taller than 16384 px, are shown as a tiled pyra
 ≤ 2048 px overview is always loaded, and 256 px tiles for the part on screen are
 created a few per refresh and drawn over it, so a fast zoom or pan is blurry for a
 moment, never blank. `F` / `F3` shows the tile LOD, resident tiles and VRAM, create
-times, and refinement counters. The command bar is also on the island: Open (**Media…** or **Folder…** — the picker
+times, and refinement counters. Its `texture` line times the whole-texture creates of
+untiled stills and counts the neighbour creates held back while the camera moved (issue
+#166). The soak JSON carries the same numbers: `texture_*` keys, including
+`texture_creates_deferred` and `texture_max_defer_ms`. The command bar is also on the island: Open (**Media…** or **Folder…** — the picker
 takes photos and clips), View (zoom in/out,
 fit, 50 / 100 / 200 / 400 %, gallery, filmstrip, overlay), a playback-speed dropdown,
 a `?` shortcuts button, Settings (`Ctrl+,`: view defaults and remappable keys), About.

@@ -11,6 +11,8 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstring>
 #include <memory>
@@ -186,6 +188,17 @@ struct mv_session {
   // for. Reset before `jobs` is destroyed (it reads the generation).
   std::mutex tile_service_mutex;
   std::unique_ptr<mv::image::tile_service> tile_service;
+
+  // Issue #166: a neighbour's single-texture create too big for one frame's
+  // upload budget waits while the render thread presents a moving canvas
+  // (set_canvas_moving). The render thread only stores and notifies; it never
+  // takes `upload_gate_mutex`. Waiters also wake on a selection
+  // (mv_folder_select), on `closing`, and every k_upload_gate_poll as a
+  // backstop (a cancelled one is noticed there).
+  std::atomic<bool> canvas_moving{false};
+  std::atomic<bool> closing{false};
+  std::mutex upload_gate_mutex;
+  std::condition_variable upload_gate_cv;
 
   // A navigation stop (PR 7). `path` is the primary — what thumbs, decode,
   // prefetch and video detection use; `secondary_path` is the other half of a
@@ -462,10 +475,13 @@ mv::image::tile_service& tile_service_for(mv_session* session) {
 // above ~64 MP or past the 16384 texture limit - a tiled pyramid with its
 // overview (docs/design/04). `mip_limit` 1 is the top-level-only staging upload of
 // the single-texture path; a tiled image has no such stage.
+// `gate` (issue #166) holds back an over-budget single-texture create; the
+// tiled path has its own budget (the tile service) and ignores it.
 status upload_still(mv_session* session, ID3D11Device* device,
                     const std::shared_ptr<mv::image::display_image>& cpu,
                     const mv::job_context& ctx, std::uint32_t mip_limit,
-                    std::unique_ptr<mv::image::gpu_image>& out) {
+                    std::unique_ptr<mv::image::gpu_image>& out,
+                    const mv::image::create_gate* gate = nullptr) {
   if (mv::image::needs_tiles(cpu->width, cpu->height)) {
     std::shared_ptr<const mv::image::tile_source> reuse;
     {
@@ -478,7 +494,7 @@ status upload_still(mv_session* session, ID3D11Device* device,
     out = std::make_unique<mv::image::gpu_image>(std::move(uploaded).value());
     return status::ok;
   }
-  auto uploaded = mv::image::upload(device, *cpu, ctx.gen(), &ctx, mip_limit);
+  auto uploaded = mv::image::upload(device, *cpu, ctx.gen(), &ctx, mip_limit, gate);
   if (!uploaded) return uploaded.error();
   out = std::make_unique<mv::image::gpu_image>(std::move(uploaded).value());
   out->quality = mip_limit == 1 ? mv::image::gpu_quality::full_top : mv::image::gpu_quality::full;
@@ -574,6 +590,41 @@ bool path_is_selected(mv_session* session, const std::string& path) {
   }
   if (session->folder_selected >= session->folder_items.size()) return false;
   return session->folder_items[session->folder_selected].path == path;
+}
+
+// Issue #166: wakes upload gates to re-check (the canvas stopped, a
+// selection, closing).
+void wake_upload_gates(mv_session* session) noexcept { session->upload_gate_cv.notify_all(); }
+
+// The backstop for a wake the render thread's lock-free notify can miss.
+constexpr auto k_upload_gate_poll = std::chrono::milliseconds(50);
+
+// [worker] Issue #166's budget for a full-resolution single texture. A
+// neighbour's create bigger than one frame's upload budget would hold the
+// device lock (ID3D10Multithread) across presents while the user pans or zooms
+// the current image, so it waits until the canvas stops moving. What is on
+// screen never waits: the selected path (including a neighbour the user has
+// just landed on, handed off mid-wait) goes at once, as does any create that
+// fits the budget. False when the job was cancelled or the session is closing.
+struct neighbour_create_gate {
+  mv_session* session = nullptr;
+  const std::string* path = nullptr;
+  const mv::job_context* ctx = nullptr;
+};
+
+bool wait_for_still_canvas(void* user, std::uint64_t texture_bytes) {
+  const auto& g = *static_cast<const neighbour_create_gate*>(user);
+  mv_session* session = g.session;
+  if (texture_bytes <= mv::image::k_frame_budget_create_bytes) return true;
+  for (;;) {
+    if (session->closing.load(std::memory_order_acquire) || g.ctx->cancelled()) return false;
+    if (!session->canvas_moving.load(std::memory_order_acquire)) return true;
+    if (path_is_selected(session, *g.path)) return true;
+    // Any wake (or the poll) goes round the checks above again.
+    std::unique_lock lock(session->upload_gate_mutex);
+    if (!session->canvas_moving.load(std::memory_order_acquire)) continue;
+    (void)session->upload_gate_cv.wait_for(lock, k_upload_gate_poll);
+  }
 }
 
 void push_folder_selected(mv_session* session, uint32_t index) {
@@ -1055,6 +1106,10 @@ void submit_decode_to_lru(mv_session* session, std::string path, mv::generation 
         // (lru_put) and its pyramid is the expensive part. Dropped here.
         if (tiled && !path_is_selected(session, path)) return status::ok;
 
+        // Issue #166: a neighbour's over-budget create waits out a pan or zoom
+        // of the image on screen; the selected path never waits.
+        neighbour_create_gate gate_state{session, &path, &ctx};
+        const mv::image::create_gate gate{&wait_for_still_canvas, &gate_state};
         auto upload_and_publish = [&](std::uint32_t mip_limit) -> status {
           auto dev = session->copy_device();
           if (!dev) {
@@ -1064,7 +1119,7 @@ void submit_decode_to_lru(mv_session* session, std::string path, mv::generation 
             return status::ok;
           }
           std::unique_ptr<mv::image::gpu_image> gpu;
-          const status up = upload_still(session, dev.Get(), cpu, ctx, mip_limit, gpu);
+          const status up = upload_still(session, dev.Get(), cpu, ctx, mip_limit, gpu, &gate);
           if (up != status::ok) return up;
           if (ctx.cancelled()) return status::cancelled;
           lru_put(session, path, *gpu, info);
@@ -1561,6 +1616,10 @@ mv_status MV_CALL mv_session_release(mv_session_t session) {
     // submits jobs), then the pool.
     session->clip.reset();
     session->watcher.stop();
+    // Issue #166: a neighbour held at its upload gate gives up before the
+    // pool joins it.
+    session->closing.store(true, std::memory_order_release);
+    wake_upload_gates(session);
     session->jobs.shutdown();
     session->thumbs.close();
     delete session->ready.exchange(nullptr, std::memory_order_acq_rel);
@@ -2155,6 +2214,10 @@ mv_status MV_CALL mv_folder_select(mv_session_t session, uint32_t index, uint64_
     }
     if (out_job_id) *out_job_id = 0;
     submit_decode_to_lru(session, std::move(path), gen);
+    // Issue #166: after the hand-off above, so a neighbour waiting at its
+    // upload gate wakes as the selected path (not as a cancelled job between
+    // the bump and the hand-off) and creates at once.
+    wake_upload_gates(session);
     submit_prefetch(session, index, gen);
     return status::ok;
   }));
@@ -2599,6 +2662,16 @@ image::tile_stats tiles_stats(const image::gpu_image& image) noexcept {
 
 image::texture_upload_stats texture_upload_stats() noexcept {
   return image::texture_upload_stats_now();
+}
+
+void set_canvas_moving(mv_session_t session, bool moving) noexcept {
+  if (!session) return;
+  // One exchange per frame. Stopping wakes the neighbours' gated creates
+  // (issue #166); the render thread never takes the gate's mutex, and a wake
+  // lost to that is caught by the gate's poll.
+  if (session->canvas_moving.exchange(moving, std::memory_order_acq_rel) && !moving) {
+    wake_upload_gates(session);
+  }
 }
 
 bool take_animation_frame(mv_session_t session, std::uint32_t generation,

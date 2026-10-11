@@ -45,6 +45,11 @@ MV_API void release_gpu_image(image::gpu_image* image);
 // process-wide, from the DLL that runs them. For the F3 overlay and the soak
 // report.
 [[nodiscard]] MV_API image::texture_upload_stats texture_upload_stats() noexcept;
+// Issue #166: [render thread, every loop iteration] whether this frame is
+// presenting a moving canvas (pan, zoom, drag). While it is, a neighbour's
+// single-texture create too big for one frame's upload budget waits on its
+// worker instead of holding the device lock across presents. Never blocks.
+MV_API void set_canvas_moving(mv_session_t session, bool moving) noexcept;
 
 // PR 6 animated GIF / APNG / WebP (docs/design/04). Native-only like poll_video: not
 // in the C ABI, not P/Invoked (docs/design/16: no new hot-path ABI). The render thread
