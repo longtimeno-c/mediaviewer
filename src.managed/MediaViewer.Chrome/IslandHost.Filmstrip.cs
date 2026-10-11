@@ -27,7 +27,11 @@ public static partial class IslandHost
     private static FrameworkElement? _filmstripRoot;
     private static int _selectedIndex = -1;
     private const int FilmstripDip = 112;
-    private const int FilmstripDecodeWidth = 160;
+    // The 80x80 tile is UniformToFill, so a landscape thumb is cropped by its
+    // height: at 2x DPI the short side must reach 160 px. 288 wide covers a
+    // 16:9 clip frame (288x162) and is still about a third of the 512 px
+    // disk thumb's pixels; 160 wide would leave a 3:2 photo at 107 px tall.
+    private const int FilmstripDecodeWidth = 288;
     private const double ItemStride = 102; // 96 width + 6 spacing
 
     public static int AttachFilmstrip(IntPtr arg, int sizeBytes)
@@ -432,7 +436,7 @@ public static partial class IslandHost
                 if (string.IsNullOrEmpty(vm.ThumbPath)) return;
                 try
                 {
-                    // 2x the 80-DIP tile, not the full JPEG-512 disk thumb.
+                    // Enough for a 2x-DPI fill crop, not the full JPEG-512 disk thumb.
                     image.Source = new BitmapImage(new Uri(vm.ThumbPath)) { DecodePixelWidth = FilmstripDecodeWidth };
                 }
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
