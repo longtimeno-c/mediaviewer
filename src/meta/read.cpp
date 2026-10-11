@@ -11,6 +11,7 @@
 #include "io/file_port.h"
 #include "meta/generators.h"
 #include "meta/internal.h"
+#include "meta/search.h"
 #include "meta/write.h"
 
 namespace mv::meta {
@@ -122,6 +123,37 @@ result<metadata> read(std::string_view utf8_path) {
     out.writes_in_file = target && *target == write_target::in_file;
   }
   return out;
+}
+
+// #291: the folder pass's read (search.h). The head of the file holds a
+// still's EXIF / IPTC / XMP / C2PA (JPEG APPn, PNG chunks, the HEIF meta box);
+// the scan data after it is never read. No write-target probe: nothing here
+// edits.
+result<search_facts> read_search_facts(std::string_view utf8_path) {
+  auto prefix = io::read_prefix(utf8_path, kSearchPrefixBytes);
+  if (!prefix && prefix.error() == status::corrupt) return search_facts{};  // empty file
+  if (!prefix) return err(prefix.error());
+  const std::span<const std::uint8_t> head(prefix->data(), std::min<std::size_t>(prefix->size(), 1024));
+  const codec::format_family family = codec::probe(head);
+  metadata out;
+  out.s.file_size = prefix->size() < kSearchPrefixBytes ? prefix->size() : file_size_of(utf8_path);
+  parse::evidence ev;
+  if (family == codec::format_family::unknown) {
+    (void)detail::read_clip(utf8_path, out, &ev);
+    read_beyond(utf8_path, *prefix, family, ev, out);
+    detail::overlay_sidecar(utf8_path, out);
+    return search_facts_of(out);
+  }
+  const bool raw = family == codec::format_family::raw || codec::looks_like_raw(*prefix);
+  detail::read_still(*prefix, raw || family == codec::format_family::jpeg, out, &ev);
+  if (out.properties.empty() && prefix->size() >= kSearchPrefixBytes &&
+      (raw || family == codec::format_family::tiff)) {
+    // TIFF-container RAW keeps IFDs past the head: the pane's 8 MB, once.
+    if (auto more = io::read_prefix(utf8_path, kPrefixBytes)) detail::read_still(*more, true, out, &ev);
+  }
+  read_beyond(utf8_path, *prefix, family, ev, out);
+  detail::overlay_sidecar(utf8_path, out);
+  return search_facts_of(out);
 }
 
 std::optional<std::int64_t> read_date_taken(std::string_view utf8_path) {
