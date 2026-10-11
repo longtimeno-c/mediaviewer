@@ -211,6 +211,12 @@ class tile_set {
     return {draws_.data(), draws_.size()};
   }
 
+  // [render thread] After frame(): every on-screen tile at the drawn LOD was
+  // ready, so this frame's draws (that level alone) cover every image pixel
+  // in the view and the overview under them would be overdrawn (issue #164).
+  // False when the zoom needs no tiles.
+  [[nodiscard]] bool covers_view() const noexcept { return covers_view_; }
+
   // [any thread] Bumped every time a tile lands; the render thread redraws
   // when it changes.
   [[nodiscard]] std::uint64_t ready_sequence() const noexcept {
@@ -262,6 +268,7 @@ class tile_set {
   std::vector<std::uint32_t> evict_scratch_;
   std::vector<gfx::tile_quad> draws_;
   bool new_requests_ = false;
+  bool covers_view_ = false;
 
   std::atomic<std::uint64_t> ready_seq_{0};
   std::atomic<std::int32_t> outstanding_{0};

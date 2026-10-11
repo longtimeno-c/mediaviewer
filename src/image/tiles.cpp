@@ -234,6 +234,7 @@ void tile_set::frame(const tile_view& view, std::vector<gfx::tile_quad>& draws) 
   ++frame_;
   draws.clear();
   new_requests_ = false;
+  covers_view_ = false;
   const tile_layout& L = layout();
   const std::uint32_t ov = L.overview_level();
   const std::uint32_t lod = L.lod_for_zoom(view.zoom);
@@ -261,7 +262,12 @@ void tile_set::frame(const tile_view& view, std::vector<gfx::tile_quad>& draws) 
     // included), so they are not drawn: two hidden full-view Catmull-Rom
     // passes per pan frame (issue #164). Their tiles stop being touched and
     // age like any other in the LRU.
-    const std::uint32_t coarsest = range_ready(lod, inner) ? lod : std::min(ov - 1, lod + 2);
+    // The same test tells the caller the overview pass under them is hidden
+    // too (covers_view). Tiles are evicted only here, on this thread, so the
+    // ready tiles stay ready for push_draws below.
+    const bool lod_ready = range_ready(lod, inner);
+    covers_view_ = lod_ready && !inner.empty();
+    const std::uint32_t coarsest = lod_ready ? lod : std::min(ov - 1, lod + 2);
     std::size_t before_finest = 0;
     for (std::uint32_t l = coarsest + 1; l-- > lod;) {
       if (l == lod) before_finest = draws.size();

@@ -312,10 +312,12 @@ TEST_CASE("a complete level is drawn alone: the coarser levels under it are skip
   bool coarse_shown = false;
   for (const auto& q : draws) coarse_shown = coarse_shown || q.scale_x > 1.5f;
   CHECK(coarse_shown);
+  CHECK_FALSE(set.covers_view());  // the overview has to show through the gaps
 
-  // ...and once it is, level 0 is all that is drawn.
+  // ...and once it is, level 0 is all that is drawn, over no overview.
   land(full);
   set.frame(full, draws);
+  CHECK(set.covers_view());
   const auto visible =
       set.layout().visible(0, full.pan_x, full.pan_y, full.zoom, full.view_w, full.view_h, 0);
   const std::size_t want =

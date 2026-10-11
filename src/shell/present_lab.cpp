@@ -1325,6 +1325,17 @@ void present_lab::render_thread_main() noexcept {
           blitter_.draw(device_.context(), working->srv.Get(), wp);
           return;  // the working image is the whole picture: no refine base, no tiles
         }
+        // Tiles join once the fade is over (80-250 ms); before that the
+        // overview is what fades in.
+        const bool tiles_on = with_tiles && tiled && !fade_now && !tile_draws_.empty();
+        if (tiles_on && shown->tiles->covers_view()) {
+          // Issue #164: the drawn level's tiles cover every image pixel in
+          // view, so the overview and any kept preview would be overdrawn.
+          // Only the background around (and under) the image is left.
+          blitter_.draw_background(device_.context(), cp);
+          blitter_.draw_tiles(device_.context(), tile_draws_, cp);
+          return;
+        }
         blitter_.draw(device_.context(), shown->srv.Get(), cp);
         if (is_current && refine_base_ && refine_base_->srv) {
           gfx::blit_params rp = cp;
@@ -1332,11 +1343,7 @@ void present_lab::render_thread_main() noexcept {
           rp.texture_h = static_cast<float>(refine_base_->texture_height);
           blitter_.draw(device_.context(), refine_base_->srv.Get(), rp);
         }
-        // Tiles join once the fade is over (80-250 ms); before that the
-        // overview is what fades in.
-        if (with_tiles && tiled && !fade_now && !tile_draws_.empty()) {
-          blitter_.draw_tiles(device_.context(), tile_draws_, cp);
-        }
+        if (tiles_on) blitter_.draw_tiles(device_.context(), tile_draws_, cp);
       };
       draw_still(bp, true);
 

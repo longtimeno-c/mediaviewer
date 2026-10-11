@@ -945,6 +945,7 @@ if(MV_BUILD_TESTS)
     tests/test_abi_image.cpp
     tests/test_upload.cpp
     tests/test_tiles.cpp
+    tests/test_blit.cpp
     tests/test_refinement.cpp
     tests/test_chrome_host.cpp
     tests/test_dir.cpp

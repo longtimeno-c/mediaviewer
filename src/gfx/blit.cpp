@@ -4,6 +4,8 @@
 
 #include <d3dcompiler.h>
 
+#include <algorithm>
+#include <cstddef>
 #include <cstring>
 #include <string>
 
@@ -46,14 +48,6 @@ cbuffer Camera : register(b0) {
 )";
 
 constexpr const char kHlsl[] = R"(
-cbuffer Tile : register(b1) {
-  float2 tile_origin;
-  float2 tile_scale;
-  float2 tile_content;
-  float tile_border;
-  float tile_tex;
-};
-
 Texture2D img : register(t0);
 SamplerState samp_aniso : register(s0);
 SamplerState samp_point : register(s1);
@@ -74,12 +68,27 @@ VSOut vs_main(uint id : SV_VertexID) {
 // the inverse edit map, so an edited (turned, cropped, straightened) tiled
 // image still draws its tiles. The map is affine, so the shared-edge rule
 // above survives it: both tiles map the same edge through the same matrix.
-VSOut vs_tile(uint id : SV_VertexID) {
+// Issue #164: a tile's record is per-instance vertex data, every tile's record
+// in one buffer written once per frame; instance i of DrawInstanced(6, 1, 0, i)
+// reads record i. rec0 = content origin (level px) and full-resolution px per
+// level px; rec1 = content size (level px), border and texture size (texels).
+struct TileOut {
+  float4 pos : SV_Position;
+  nointerpolation float4 rec0 : TEXCOORD0;
+  nointerpolation float2 rec1 : TEXCOORD1;  // border, texture size
+};
+
+TileOut vs_tile(uint id : SV_VertexID, float4 rec0 : TILE0, float4 rec1 : TILE1) {
   static const float2 corners[6] = {
     float2(0, 0), float2(1, 0), float2(0, 1),
     float2(0, 1), float2(1, 0), float2(1, 1)
   };
-  VSOut o;
+  TileOut o;
+  o.rec0 = rec0;
+  o.rec1 = rec1.zw;
+  float2 tile_origin = rec0.xy;
+  float2 tile_scale = rec0.zw;
+  float2 tile_content = rec1.xy;
   float2 source_px = min((tile_origin + corners[id] * tile_content) * tile_scale, source_size.xy);
   float3 s = float3(source_px / source_size.xy, 1.0);
   float2 image_px = float2(dot(inv0.xyz, s), dot(inv1.xyz, s)) * image_size;
@@ -184,7 +193,19 @@ float4 ps_main(VSOut vin) : SV_Target {
   return finish(sample_filtered(src, texture_size), vin.pos.xy, image_px);
 }
 
-float4 ps_tile(VSOut vin) : SV_Target {
+// Issue #164: the background alone, for a frame whose ready tiles at the drawn
+// level cover every image pixel in view. The overview under them would be
+// sampled (Catmull-Rom above 100 %) and then wholly overdrawn; outside the
+// image (and outside an edit's source) the background is all it shows anyway.
+float4 ps_background(VSOut vin) : SV_Target {
+  return float4(background_at(vin.pos.xy), opacity);
+}
+
+float4 ps_tile(TileOut vin) : SV_Target {
+  float2 tile_origin = vin.rec0.xy;
+  float2 tile_scale = vin.rec0.zw;
+  float tile_border = vin.rec1.x;
+  float tile_tex = vin.rec1.y;
   float2 image_px = image_px_at(vin.pos.xy);
   // Output pixel -> source pixel. A tile can reach past the edited output (the
   // cropped-away part of the source): those pixels are not the picture.
@@ -219,14 +240,20 @@ struct alignas(16) blit_cb {
 
 static_assert(sizeof(blit_cb) == 192, "keep in sync with cbuffer Camera");
 
-struct alignas(16) tile_cb {
+// One tile's per-instance record (vs_tile's TILE0 / TILE1).
+struct tile_instance {
   float origin_x, origin_y;
   float scale_x, scale_y;
   float content_w, content_h;
   float border, tex;
 };
 
-static_assert(sizeof(tile_cb) == 32, "keep in sync with cbuffer Tile");
+static_assert(sizeof(tile_instance) == 32, "keep in sync with vs_tile's TILE0 / TILE1");
+
+// Records per Map of the instance buffer (32 KB). A 4K view draws a few
+// hundred tiles; a frame with more maps again per batch (WRITE_DISCARD renames
+// the buffer) rather than growing it on the render thread.
+constexpr UINT k_tile_batch = 1024;
 
 const std::string& shader_source() {
   static const std::string source =
@@ -261,9 +288,10 @@ expected blitter::create(ID3D11Device* device) {
   destroy();
   if (!device) return err(status::invalid_arg);
 
-  com_ptr<ID3DBlob> vsb, psb, tvsb, tpsb;
+  com_ptr<ID3DBlob> vsb, psb, bpsb, tvsb, tpsb;
   if (auto r = compile("vs_main", "vs_5_0", vsb); !r) return r;
   if (auto r = compile("ps_main", "ps_5_0", psb); !r) return r;
+  if (auto r = compile("ps_background", "ps_5_0", bpsb); !r) return r;
   if (auto r = compile("vs_tile", "vs_5_0", tvsb); !r) return r;
   if (auto r = compile("ps_tile", "ps_5_0", tpsb); !r) return r;
 
@@ -273,8 +301,20 @@ expected blitter::create(ID3D11Device* device) {
   hr = device->CreatePixelShader(psb->GetBufferPointer(), psb->GetBufferSize(), nullptr,
                                  ps_.GetAddressOf());
   if (FAILED(hr)) return err(status::internal);
+  hr = device->CreatePixelShader(bpsb->GetBufferPointer(), bpsb->GetBufferSize(), nullptr,
+                                 background_ps_.GetAddressOf());
+  if (FAILED(hr)) return err(status::internal);
   hr = device->CreateVertexShader(tvsb->GetBufferPointer(), tvsb->GetBufferSize(), nullptr,
                                   tile_vs_.GetAddressOf());
+  if (FAILED(hr)) return err(status::internal);
+  // Per-instance, so DrawInstanced's StartInstanceLocation selects the record
+  // (SV_InstanceID would not include it).
+  const D3D11_INPUT_ELEMENT_DESC tile_elements[] = {
+      {"TILE", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 0, D3D11_INPUT_PER_INSTANCE_DATA, 1},
+      {"TILE", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 16, D3D11_INPUT_PER_INSTANCE_DATA, 1},
+  };
+  hr = device->CreateInputLayout(tile_elements, 2, tvsb->GetBufferPointer(),
+                                 tvsb->GetBufferSize(), tile_layout_.GetAddressOf());
   if (FAILED(hr)) return err(status::internal);
   hr = device->CreatePixelShader(tpsb->GetBufferPointer(), tpsb->GetBufferSize(), nullptr,
                                  tile_ps_.GetAddressOf());
@@ -287,8 +327,12 @@ expected blitter::create(ID3D11Device* device) {
   cbd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
   hr = device->CreateBuffer(&cbd, nullptr, cb_.GetAddressOf());
   if (FAILED(hr)) return err(status::internal);
-  cbd.ByteWidth = sizeof(tile_cb);
-  hr = device->CreateBuffer(&cbd, nullptr, tile_cb_.GetAddressOf());
+  D3D11_BUFFER_DESC ibd{};
+  ibd.ByteWidth = static_cast<UINT>(sizeof(tile_instance)) * k_tile_batch;
+  ibd.Usage = D3D11_USAGE_DYNAMIC;
+  ibd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+  ibd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+  hr = device->CreateBuffer(&ibd, nullptr, tile_instances_.GetAddressOf());
   if (FAILED(hr)) return err(status::internal);
 
   D3D11_SAMPLER_DESC sd{};
@@ -339,10 +383,12 @@ void blitter::destroy() noexcept {
   blend_.Reset();
   point_.Reset();
   aniso_.Reset();
-  tile_cb_.Reset();
+  tile_instances_.Reset();
   cb_.Reset();
+  tile_layout_.Reset();
   tile_ps_.Reset();
   tile_vs_.Reset();
+  background_ps_.Reset();
   ps_.Reset();
   vs_.Reset();
 }
@@ -391,9 +437,9 @@ void blitter::bind_camera(ID3D11DeviceContext* ctx, const blit_params& p, float 
 
   ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
   ctx->IASetInputLayout(nullptr);
-  ID3D11Buffer* cbs[] = {cb_.Get(), tile_cb_.Get()};
-  ctx->VSSetConstantBuffers(0, 2, cbs);
-  ctx->PSSetConstantBuffers(0, 2, cbs);
+  ID3D11Buffer* cbs[] = {cb_.Get()};
+  ctx->VSSetConstantBuffers(0, 1, cbs);
+  ctx->PSSetConstantBuffers(0, 1, cbs);
   ID3D11SamplerState* samps[] = {aniso_.Get(), point_.Get()};
   ctx->PSSetSamplers(0, 2, samps);
   ctx->OMSetBlendState(cb.opacity < 0.999f ? blend_alpha_.Get() : blend_.Get(), nullptr,
@@ -417,31 +463,57 @@ void blitter::draw(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* image,
   ctx->PSSetShaderResources(0, 1, none);
 }
 
+void blitter::draw_background(ID3D11DeviceContext* ctx, const blit_params& p) noexcept {
+  if (!ctx || !vs_ || !background_ps_ || !cb_) return;
+
+  bind_camera(ctx, p, p.image_w, p.image_h);
+  ctx->VSSetShader(vs_.Get(), nullptr, 0);
+  ctx->PSSetShader(background_ps_.Get(), nullptr, 0);
+  ctx->Draw(3, 0);
+}
+
 void blitter::draw_tiles(ID3D11DeviceContext* ctx, std::span<const tile_quad> tiles,
                          const blit_params& p) noexcept {
-  if (!ctx || tiles.empty() || !tile_vs_ || !tile_ps_ || !tile_cb_) return;
+  if (!ctx || tiles.empty() || !tile_vs_ || !tile_ps_ || !tile_layout_ || !tile_instances_) {
+    return;
+  }
 
   bind_camera(ctx, p, 260.0f, 260.0f);
+  ctx->IASetInputLayout(tile_layout_.Get());
+  ID3D11Buffer* vbs[] = {tile_instances_.Get()};
+  const UINT strides[] = {static_cast<UINT>(sizeof(tile_instance))};
+  const UINT offsets[] = {0};
+  ctx->IASetVertexBuffers(0, 1, vbs, strides, offsets);
   ctx->VSSetShader(tile_vs_.Get(), nullptr, 0);
   ctx->PSSetShader(tile_ps_.Get(), nullptr, 0);
-  for (const tile_quad& t : tiles) {
-    if (!t.srv) continue;
-    tile_cb cb{};
-    cb.origin_x = t.origin_x;
-    cb.origin_y = t.origin_y;
-    cb.scale_x = t.scale_x;
-    cb.scale_y = t.scale_y;
-    cb.content_w = t.content_w;
-    cb.content_h = t.content_h;
-    cb.border = 2.0f;
-    cb.tex = 260.0f;
-    if (!upload_cb(ctx, tile_cb_.Get(), &cb, sizeof(cb))) continue;
-    ID3D11ShaderResourceView* srvs[] = {t.srv};
-    ctx->PSSetShaderResources(0, 1, srvs);
-    ctx->Draw(6, 0);
+  // Issue #164: every record in one Map per batch (one per frame up to
+  // k_tile_batch tiles), then one draw per tile for its own texture.
+  for (std::size_t first = 0; first < tiles.size(); first += k_tile_batch) {
+    const std::size_t n = std::min<std::size_t>(k_tile_batch, tiles.size() - first);
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if (FAILED(ctx->Map(tile_instances_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) break;
+    auto* records = static_cast<tile_instance*>(mapped.pData);
+    for (std::size_t i = 0; i < n; ++i) {
+      const tile_quad& t = tiles[first + i];
+      records[i] = tile_instance{t.origin_x,  t.origin_y,  t.scale_x, t.scale_y,
+                                 t.content_w, t.content_h, 2.0f,      260.0f};
+    }
+    ctx->Unmap(tile_instances_.Get(), 0);
+    for (std::size_t i = 0; i < n; ++i) {
+      ID3D11ShaderResourceView* srv = tiles[first + i].srv;
+      if (!srv) continue;
+      ID3D11ShaderResourceView* srvs[] = {srv};
+      ctx->PSSetShaderResources(0, 1, srvs);
+      ctx->DrawInstanced(6, 1, 0, static_cast<UINT>(i));
+    }
   }
   ID3D11ShaderResourceView* none[] = {nullptr};
   ctx->PSSetShaderResources(0, 1, none);
+  // Every other pass draws without vertex input.
+  ID3D11Buffer* no_vbs[] = {nullptr};
+  const UINT zeros[] = {0};
+  ctx->IASetVertexBuffers(0, 1, no_vbs, zeros, zeros);
+  ctx->IASetInputLayout(nullptr);
 }
 
 }  // namespace mv::gfx
