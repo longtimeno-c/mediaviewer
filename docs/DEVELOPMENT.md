@@ -589,7 +589,7 @@ created a few per refresh and drawn over it, so a fast zoom or pan is blurry for
 moment, never blank. `F` / `F3` shows the tile LOD, resident tiles and VRAM, create
 times, and refinement counters. The command bar is also on the island: Open (**Media…** or **Folder…** — the picker
 takes photos and clips), View (zoom in/out,
-fit, 50 / 100 / 200 / 400 %, gallery, filmstrip, overlay), a playback-speed dropdown,
+fit, 50 / 100 / 200 / 400 %, gallery, filmstrip, overlay),
 a `?` shortcuts button, Settings (`Ctrl+,`: view defaults and remappable keys), About.
 The filmstrip along
 the bottom and the gallery grid are both `ItemsRepeater` islands over the same listing; the gallery also shows child-folder tiles (or a chip strip in a mixed folder) and a path bar (`Ctrl+Up` goes up, `Ctrl+Left`/`Ctrl+Right` the sibling). Thumbs are JPEG files from `%LocalAppData%\MediaViewer\thumbs`. Clips get a
@@ -602,7 +602,9 @@ soak (`--soak`) keeps the old sweep, which the present-loop gate measures. The g
 thumbnail or the fitted image out to Explorer.
 
 The playback transport is a **third island**: a centred bar floating over the bottom of the
-video, above the filmstrip, sized to its controls, that appears with a clip and goes away with it. It works the
+video, above the filmstrip, that appears with a clip and goes away with it. As on the Mac it is
+44 DIPs tall and up to 720 wide: back / play / forward, elapsed time, a scrubber that takes the
+spare width, duration, the speed menu (`1x`), mute and More. It works the
 same way on Windows and macOS (`src/shell/transport_autohide.h` holds the one rule both use):
 
 - While the clip **plays**, the bar hides after 2.5 s with no activity. Moving the pointer,

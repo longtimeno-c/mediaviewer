@@ -593,10 +593,12 @@ inline constexpr int kFilmstripDip = 112;
 // of the video, centred and above the filmstrip, like the Mac's, and leaves
 // after an idle interval while the clip plays (shell/transport_autohide.h). It
 // no longer reserves canvas, so showing or hiding it never refits the video.
-inline constexpr int kTransportDip = 52;
-// The bar hugs its controls (chrome_cmd_transport_width); this is only its width
-// before the island has reported one.
-inline constexpr int kTransportMaxWidthDip = 880;
+// 44 DIPs, the Mac's strip height (TransportView.swift, issue #195).
+inline constexpr int kTransportDip = 44;
+// The island reports the width it wants (chrome_cmd_transport_width): the Mac's
+// 720 bar, wider only while trim's controls need it, and the scrubber flexes
+// inside. This is only its width before the island has reported one.
+inline constexpr int kTransportMaxWidthDip = 720;
 inline constexpr int kTransportPadDip = 14;     // each side, between the bar's edge and its controls
 inline constexpr int kTransportMarginDip = 10;  // above the filmstrip / bottom edge
 inline constexpr int kTransportSideDip = 16;    // minimum gap to the window's sides
