@@ -158,6 +158,9 @@ holds on both platforms **and** both present-loop verifies (Windows PR 1, Mac PR
   platforms plus both present-loop gates (PR 1 on Windows, Mac PR 1 on Mac). A slice green on one
   platform only is not done, and PR N+1 does not merge until it is (a host half may start ahead
   on a branch).
+- **A PR that is not done opens as a draft** (`gh pr create --draft`): a partial slice
+  ("Part of #N"), a feature behind an off switch, an owed verify line or measurement, a host
+  half still missing, or CI not yet green. Mark it ready only when it could merge as it stands.
 - Do not add a format that is not in the D5 set (as amended).
 - Do not build a batch metadata engine before the read pane has been used. PR 12 wrote
   rating, orientation, and user comment only; from PR 29 (owner, 2026-09-26) the pane edits
