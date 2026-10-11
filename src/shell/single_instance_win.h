@@ -7,7 +7,10 @@
 // Multi-window (tabs) is its own later PR; this is the single instance.
 //
 // One pipe per user and session: \\.\pipe\MediaViewer.Viewer.<session>.<SID>.
-// Local clients only, created FIRST_PIPE_INSTANCE so nothing can squat it.
+// Local clients only, created FIRST_PIPE_INSTANCE with a DACL that admits
+// this user only. The name is computable by any account, so a second start
+// sends its paths only to a server process running as this user; anything
+// else holding the name gets nothing and this start runs alone.
 // Windows host only.
 #pragma once
 
@@ -22,8 +25,8 @@ namespace mv::shell {
 // The second instance: when a running MediaViewer accepted `paths` (made
 // absolute here, so a relative argument means the caller's folder, not the
 // running app's), it is allowed to take the foreground and true is returned:
-// exit now. False: none is running (or it did not answer in time); carry on
-// as the first instance.
+// exit now. False: none is running (or it did not answer in time, or the
+// pipe's server is not this user); carry on as the first instance.
 [[nodiscard]] bool forward_to_running_instance(const std::vector<std::wstring>& paths) noexcept;
 
 // The first instance claims the name as soon as it knows it is one, long

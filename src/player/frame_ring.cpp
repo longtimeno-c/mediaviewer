@@ -22,6 +22,7 @@ bool packet_queue::push(packet_ptr packet) noexcept {
   items_.push_back({std::move(packet), 0});
   lock.unlock();
   not_empty_.notify_one();
+  notify();
   return true;
 }
 
@@ -34,6 +35,7 @@ bool packet_queue::pop(packet_ptr& out) noexcept {
   items_.pop_front();
   lock.unlock();
   not_full_.notify_one();
+  notify();
   return true;
 }
 
@@ -42,10 +44,13 @@ bool packet_queue::try_pop(packet_ptr& out) noexcept {
 }
 
 bool packet_queue::try_push(packet_ptr& packet, std::uint32_t generation) noexcept {
-  std::lock_guard lock(mutex_);
-  if (stopped_.load(std::memory_order_acquire) || items_.size() >= packet_queue_capacity) return false;
-  items_.push_back({std::move(packet), generation});
+  {
+    std::lock_guard lock(mutex_);
+    if (stopped_.load(std::memory_order_acquire) || items_.size() >= packet_queue_capacity) return false;
+    items_.push_back({std::move(packet), generation});
+  }
   not_empty_.notify_one();
+  notify();
   return true;
 }
 
@@ -57,6 +62,7 @@ bool packet_queue::try_pop(packet_ptr& out, std::uint32_t* generation) noexcept 
   items_.pop_front();
   lock.unlock();
   not_full_.notify_one();
+  notify();
   return true;
 }
 
@@ -67,6 +73,7 @@ void packet_queue::stop() noexcept {
   }
   not_empty_.notify_all();
   not_full_.notify_all();
+  notify();
 }
 
 void packet_queue::clear() noexcept {
@@ -82,6 +89,7 @@ void packet_queue::flush() noexcept {
   // A demux thread blocked on a full queue has to be told the queue drained, or
   // a seek deadlocks against its own flush.
   not_full_.notify_all();
+  notify();
 }
 
 std::size_t packet_queue::size() const noexcept {
@@ -250,6 +258,7 @@ void frame_ring::release(video_frame* frame) noexcept {
   if (next == free_tail_.load(std::memory_order_acquire)) return;  // cannot happen
   free_slots_[head] = index;
   free_head_.store(next, std::memory_order_release);
+  if (released_) released_->notify();
 }
 
 bool frame_ring::peek_next_pts(time_ns* out_pts_ns, std::uint32_t offset) const noexcept {

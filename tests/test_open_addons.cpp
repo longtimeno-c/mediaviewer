@@ -193,7 +193,11 @@ TEST_CASE("only the strict ZIP is a package", "[open-addon][package]") {
     REQUIRE(mv::addon::read_package(make_zip(good, o)).why == rejection::bad_package);
   }
   SECTION("unsafe names") {
-    for (const char* bad : {"../evil", "/abs", "a\\b", "C:x", "a//b", "./a", "folder/", "a/../b"}) {
+    for (const char* bad : {"../evil", "/abs", "a\\b", "C:x", "a//b", "./a", "folder/", "a/../b",
+                            // Windows: devices, trailing dot or space, characters Win32 refuses.
+                            "themes/COM1", "nul.json", "themes/Con.txt/x", "lpt9", "aux .json",
+                            "com\xC2\xB9.json", "themes/dusk.", "themes /dusk.json", "a<b", "a>b",
+                            "a\"b", "a|b", "a?b", "a*b"}) {
       auto entries = good;
       entries.push_back(stored(bad, {1}));
       REQUIRE(mv::addon::read_package(make_zip(entries)).why == rejection::unsafe_path);

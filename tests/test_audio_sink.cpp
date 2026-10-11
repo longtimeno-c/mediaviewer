@@ -36,21 +36,32 @@ class fake_sink final : public audio_sink {
   std::atomic<bool> changed{false};
   std::atomic<std::int64_t> position_ns{0};
   std::atomic<std::uint64_t> discontinuities{0};
-  std::atomic<int> opens{0};
+  std::atomic<int> opens{0};          // successful
+  std::atomic<int> open_attempts{0};  // including failed
   std::atomic<int> closes{0};
   std::atomic<std::uint64_t> frames_taken{0};
   std::atomic<std::uint32_t> accept_limit{~0u};  // frames accepted per write()
 
   mv::expected open(std::uint32_t sample_rate, std::uint32_t channels) override {
+    ++open_attempts;
+    // Like both real sinks: an open, failed or not, consumes the notification.
+    changed.store(false);
     if (fail_open.load()) return mv::err(mv::status::io);
     ++opens;
     rate_ = sample_rate;
     channels_ = channels;
-    changed.store(false);
     return {};
   }
 
   void close() noexcept override { ++closes; }
+
+  std::atomic<bool> fail_flush{false};
+  std::atomic<int> flushes{0};
+  mv::expected flush() noexcept override {
+    ++flushes;
+    if (fail_flush.load()) return mv::err(mv::status::io);
+    return {};
+  }
 
   audio_endpoint_info info() const noexcept override {
     audio_endpoint_info out;
@@ -298,6 +309,47 @@ TEST_CASE("a device that stays gone keeps playing on the host clock", "[clock]")
   INFO("host-clock fallback advanced " << (second - first) << " ns");
   CHECK(second > first);
 
+  // One loss, one rebuild. The timed retries that follow are not more of them
+  // (issue #234): the counter and the reason describe what happened.
+  const int attempts = sink->open_attempts.load();
+  REQUIRE(wait_until([&] { return sink->open_attempts.load() > attempts; }));
+  const clock_stats stats = clock.stats();
+  CHECK(stats.counters.device_rebuilds == 1);
+  CHECK(stats.fallback == clock_fallback_reason::device_lost);
+
+  clock.stop();
+}
+
+TEST_CASE("an endpoint that never opens is retried with backoff, not rebuilt", "[clock]") {
+  // Issue #234: with no output device the pump retried once a second for the
+  // clip's whole life, counting each failure as a rebuild and turning
+  // device_open_failed into device_lost — a device-loss storm that never was.
+  auto* sink = new fake_sink();
+  sink->fail_open.store(true);
+  av_clock clock;
+  clock.set_sink_for_test(sink);
+  REQUIRE(clock.start(48000, 2).has_value());
+  REQUIRE(sink->open_attempts.load() == 1);
+
+  // First retry about a second in.
+  REQUIRE(wait_until([&] { return sink->open_attempts.load() == 2; }));
+  clock_stats stats = clock.stats();
+  CHECK(stats.counters.device_rebuilds == 0);
+  CHECK(stats.fallback == clock_fallback_reason::device_open_failed);
+  CHECK_FALSE(stats.audio_master);
+
+  // The next waits two seconds, not one.
+  std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+  CHECK(sink->open_attempts.load() == 2);
+
+  // A device appears: the next retry opens it and the endpoint is master again.
+  sink->fail_open.store(false);
+  REQUIRE(wait_until([&] { return sink->opens.load() == 1; }));
+  stats = clock.stats();
+  CHECK(stats.audio_master);
+  CHECK(stats.fallback == clock_fallback_reason::none);
+  CHECK(stats.counters.device_rebuilds == 0);
+
   clock.stop();
 }
 
@@ -320,6 +372,79 @@ TEST_CASE("blocks at a stale generation are never written to the endpoint", "[cl
   // A current-generation block does get through.
   REQUIRE(clock.submit(make_block(10 * ns_per_second, /*generation=*/7)));
   CHECK(wait_until([&] { return sink->frames_taken.load() > 0; }));
+
+  clock.stop();
+}
+
+TEST_CASE("a seek flushes the endpoint rather than rebuilding it", "[clock]") {
+  // Issue #229. Every seek, rate change, track switch and A-B wrap bumps the
+  // generation; each one used to close and reopen the device, an audible gap
+  // per loop wrap. Only device loss rebuilds.
+  auto* sink = new fake_sink();
+  av_clock clock;
+  clock.set_sink_for_test(sink);
+  REQUIRE(clock.start(48000, 2).has_value());
+  REQUIRE(sink->opens.load() == 1);
+
+  for (std::uint32_t generation = 1; generation <= 5; ++generation) {
+    clock.seeked(generation * ns_per_second, generation);
+    REQUIRE(wait_until([&] { return sink->flushes.load() == static_cast<int>(generation); }));
+  }
+  CHECK(sink->opens.load() == 1);
+  CHECK(sink->closes.load() == 0);
+  CHECK(clock.stats().counters.device_rebuilds == 0);
+
+  // Audio still flows on the flushed endpoint.
+  REQUIRE(clock.submit(make_block(5 * ns_per_second, /*generation=*/5)));
+  CHECK(wait_until([&] { return sink->frames_taken.load() > 0; }));
+  CHECK(clock.stats().audio_master);
+
+  clock.stop();
+}
+
+TEST_CASE("a flush that fails falls back to reopening the endpoint", "[clock]") {
+  auto* sink = new fake_sink();
+  av_clock clock;
+  clock.set_sink_for_test(sink);
+  REQUIRE(clock.start(48000, 2).has_value());
+
+  sink->fail_flush.store(true);
+  clock.seeked(ns_per_second, /*generation=*/1);
+  REQUIRE(wait_until([&] { return sink->opens.load() == 2; }));
+  CHECK(sink->closes.load() == 1);
+
+  REQUIRE(clock.submit(make_block(ns_per_second, /*generation=*/1)));
+  CHECK(wait_until([&] { return sink->frames_taken.load() > 0; }));
+  CHECK(clock.stats().audio_master);
+
+  clock.stop();
+}
+
+TEST_CASE("a seek whose reopen fails reports one device loss", "[clock]") {
+  // A failed flush() + reopen leaves the endpoint closed. The backoff retries
+  // that follow are not rebuilds (issue #234), so the loss is counted and named
+  // where it happened, not left as fallback none on the host clock.
+  auto* sink = new fake_sink();
+  av_clock clock;
+  clock.set_sink_for_test(sink);
+  REQUIRE(clock.start(48000, 2).has_value());
+
+  sink->fail_flush.store(true);
+  sink->fail_open.store(true);
+  clock.seeked(ns_per_second, /*generation=*/1);
+  REQUIRE(wait_until([&] { return sink->open_attempts.load() >= 3; }));
+  clock_stats stats = clock.stats();
+  CHECK_FALSE(stats.audio_master);
+  CHECK(stats.fallback == clock_fallback_reason::device_lost);
+  CHECK(stats.counters.device_rebuilds == 1);
+
+  // The device comes back: the next retry opens it.
+  sink->fail_open.store(false);
+  REQUIRE(wait_until([&] { return sink->opens.load() == 2; }));
+  stats = clock.stats();
+  CHECK(stats.audio_master);
+  CHECK(stats.fallback == clock_fallback_reason::none);
+  CHECK(stats.counters.device_rebuilds == 1);
 
   clock.stop();
 }

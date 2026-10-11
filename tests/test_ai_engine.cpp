@@ -13,6 +13,7 @@
 #include "catch_compat.h"
 
 #include <mediaviewer/mediaviewer_ai.h>
+#include <sqlite3.h>
 
 #include <algorithm>
 #include <atomic>
@@ -32,6 +33,7 @@
 
 #include "addon/host.h"
 #include "addons/ai/engine.h"
+#include "addons/ai/index_db.h"
 #include "nle/search_session.h"
 #include "core/json.h"
 #include "import_fixture.h"
@@ -1224,6 +1226,50 @@ TEST_CASE("clearing the index frees it and a size cap stops indexing", "[ai][eng
   CHECK(r.status().state == MV_AI_STATE_PAUSED);
 }
 
+TEST_CASE("an index migrates from schema 1, and again after a crash left a step half done", "[ai][engine]") {
+  scratch_dir dir{"ai-migrate"};
+  const std::string path = utf8(dir / "index.db");
+  {
+    // Schema 1 as it was: roots without `media`, assets without `cloud`.
+    sqlite3* db = nullptr;
+    REQUIRE(sqlite3_open(path.c_str(), &db) == SQLITE_OK);
+    REQUIRE(sqlite3_exec(db,
+                         "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);"
+                         "CREATE TABLE roots(id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE,"
+                         " recursive INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,"
+                         " last_scan_at INTEGER NOT NULL DEFAULT 0);"
+                         "CREATE TABLE assets(id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE,"
+                         " root_id INTEGER NOT NULL REFERENCES roots(id) ON DELETE CASCADE,"
+                         " mtime INTEGER NOT NULL, size INTEGER NOT NULL, kind INTEGER NOT NULL,"
+                         " duration_ms INTEGER NOT NULL DEFAULT 0, seen INTEGER NOT NULL DEFAULT 0);"
+                         "INSERT INTO meta VALUES('schema', '1');"
+                         "INSERT INTO roots(path, recursive) VALUES('/photos', 1);",
+                         nullptr, nullptr, nullptr) == SQLITE_OK);
+    sqlite3_close(db);
+  }
+  {
+    auto d = mv::ai::index_db::open(path);
+    REQUIRE(d);
+    CHECK((*d)->meta("schema") == "3");
+    const auto roots = (*d)->roots();
+    REQUIRE(roots.size() == 1);
+    CHECK(roots[0].media == 0);
+    // A crash between a step's ALTER and its schema bump, as earlier builds
+    // could leave it: the column is there, the schema still says the old one.
+    REQUIRE((*d)->set_meta("schema", "1"));
+  }
+  {
+    auto d = mv::ai::index_db::open(path);
+    REQUIRE(d);
+    CHECK((*d)->meta("schema") == "3");
+    REQUIRE((*d)->set_meta("schema", "2"));
+  }
+  auto d = mv::ai::index_db::open(path);
+  REQUIRE(d);
+  CHECK((*d)->meta("schema") == "3");
+  CHECK((*d)->roots().size() == 1);
+}
+
 TEST_CASE("find similar returns the other stills of the same look, not the query", "[ai][engine]") {
   rig r;
   r.file("red_a.jpg");
@@ -2051,6 +2097,32 @@ TEST_CASE("the reader answers exactly as the app's engine on the same index", "[
   CHECK(r.stills_decoded.load() == decoded);
 }
 
+TEST_CASE("a second window's reader: nothing indexed yet is not_found, and it says it is read-only",
+          "[ai][search-agent]") {
+  rig r;
+  // No app engine has run: there is no index.db. The window says "nothing
+  // indexed yet", not "needs an update" (2026-10-07).
+  {
+    engine rd(r.table->api(), r.reader_deps(), mv::ai::engine_options{.read_only = true});
+    auto started = rd.start();
+    REQUIRE_FALSE(started);
+    CHECK(started.error() == mv::status::not_found);
+  }
+  CHECK_FALSE(fs::exists(r.dir / "data" / "index.db"));  // and it created nothing
+
+  r.file("red_car.jpg");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle(30000));
+  auto app = mv::json::parse(r.eng->settings_json());
+  REQUIRE(app);
+  CHECK(app->boolean("read_only") == false);
+  auto rd = r.start_reader();
+  auto reader = mv::json::parse(rd->settings_json());
+  REQUIRE(reader);
+  CHECK(reader->boolean("read_only") == true);
+}
+
 TEST_CASE("the reader never writes: the index is byte-identical and every change is refused",
           "[ai][search-agent]") {
   rig r;
@@ -2577,10 +2649,12 @@ TEST_CASE("online-only cloud files are counted, never read, and fetched in place
   CHECK(r.eng->roots_json().find("\"cloud_only\":1") != std::string::npos);
   CHECK(r.cloud->log.empty());
 
-  REQUIRE(r.eng->set_setting("cloud_files", "1"));
-  // On battery, then metered: it waits.
+  // On battery, then metered: it waits. Both before the opt-in, as the iCloud
+  // twin above: set after it, the fetcher could start on the defaults (mains,
+  // unmetered) first and hydrate (a flake seen on a Windows runner).
   r.cloud->unmetered = false;
   r.on_battery = true;
+  REQUIRE(r.eng->set_setting("cloud_files", "1"));
   REQUIRE(eventually([&] { return r.status().cloud_fetch == MV_AI_ICLOUD_WAIT_POWER; }));
   r.on_battery = false;
   REQUIRE(eventually([&] { return r.status().cloud_fetch == MV_AI_ICLOUD_WAIT_NETWORK; }));

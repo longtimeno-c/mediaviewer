@@ -146,10 +146,15 @@ public sealed class MediaViewerException : Exception
     {
         Status = status;
         CorrelationId = correlationId;
+        Detail = message;
     }
 
     public MvStatus Status { get; }
     public ulong CorrelationId { get; }
+
+    /// <summary>The native side's own words (mv_last_error_message), or the
+    /// call's name when it gave none. Never holds a path (rule 6).</summary>
+    public string Detail { get; }
 }
 
 [StructLayout(LayoutKind.Sequential)]

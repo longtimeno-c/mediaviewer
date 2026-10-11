@@ -28,7 +28,6 @@
 #pragma once
 
 #include <atomic>
-#include <condition_variable>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -304,8 +303,9 @@ class tile_service {
   // gpu_image holding a set was released.
   void poke() noexcept;
 
-  // [any thread] Passes of the service loop completed (at least one every
-  // 100 ms while it runs). A test waits on it to know the service has looked.
+  // [any thread] Passes of the service loop completed (one per poke-driven wake,
+  // or per tick while it has more to create). A test pokes and waits on it to
+  // know the service has looked.
   [[nodiscard]] std::uint64_t ticks() const noexcept {
     return ticks_.load(std::memory_order_acquire);
   }
@@ -318,7 +318,6 @@ class tile_service {
   void* user_;
 
   std::mutex mutex_;  // never taken by the render thread
-  std::condition_variable cv_;
   std::vector<std::shared_ptr<tile_set>> sets_;
   std::atomic<std::uint32_t> pokes_{0};
   std::atomic<std::uint64_t> ticks_{0};

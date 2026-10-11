@@ -137,6 +137,13 @@ width on `chrome_cmd_transport_width` (1018); native sizes the bar to that plus
 `kTransportPadDip` (14) each side, bounded by the window's side gaps. 880 DIP is only the width
 before the first report.
 
+**Native owns the More flyout's audio and loop (2026-10-09).** Issue #214: the Windows flyout
+called `mv_video_set_volume` / `set_muted` / `select_audio_track` / `set_loop` itself, so native's
+volume and mute (what `↑` `↓` and `Shift+M` step from) drifted, and a flyout loop silently replaced
+trim's `P` preview. It now posts `chrome_cmd_video_volume` / `_muted` / `_track` / `_loop`
+(1031–1034); native applies them and pushes volume, mute and track back (`ApplyAudio`), the rate
+rule. A flyout loop ends the trim preview. The Mac already read both back from native.
+
 **The Video Editor moves the one canvas (2026-09-26, 2026-09-27).** While the editor is open the
 viewer's canvas moves into its window and back, so there is no second renderer. Mac: the one
 `CAMetalLayer` view moves and refuses first responder. Windows: `gfx::swapchain::retarget` moves
@@ -215,9 +222,12 @@ still zoom; with the filmstrip shown the wheel zooms as on any still. The Edit b
 **Open in <app>** (the default app, never MediaViewer) and a ▾ of the other apps, and `Enter` opens
 the default: there is nothing for the workspace to edit in a document.
 
-**Thumbnails are JPEG files on disk (2026-09-07).** Spec `jpg512.3` (was `.1`; bumped
-2026-09-24 when JPEG orientation was applied, and 2026-10-03 when clip posters began following
-the display matrix), keyed in SQLite by `(path, mtime, size, spec)`. The
+**Thumbnails are JPEG files on disk (2026-09-07).** Spec `jpg512.4` (was `.1`; bumped
+2026-09-24 when JPEG orientation was applied, 2026-10-03 when clip posters began following
+the display matrix, and 2026-10-10 when transparent images began to be alpha-weighted and
+composited onto a dark matte instead of showing the RGB under transparent pixels, issue #169;
+opaque thumbnails come out byte-identical, but the spec is one key, so every row regenerates once
+on view), keyed in SQLite by `(path, mtime, size, spec)`. The
 ABI returns a UTF-8 path; C# `BitmapImage` loads the file, so pixels never cross the ABI. On-disk
 BC7 is not used: a BC7 blob cannot be an `Image.Source`; it is the format to take if thumbs ever
 need to be GPU-resident. The Mac uses the same spec and schema (`image/thumb_mac.cpp`, 2026-09-17).
@@ -707,6 +717,29 @@ the user's install. CMake warns and refuses it under GitHub Actions.
 cost ~6 GB of reads per launch with the whole pack. The first check hashes; later checks stat every
 file (size and `io::file_stat::mtime_ns`) and re-walk for extra files.
 
+**Every window searches; one window indexes (2026-10-07, owner).** Reverses "later windows show
+no add-on features" ([18](18-import.md) "One host process"). The owner installed Local search on
+Windows and could not open it: any window after the first silently turned Ctrl+F into a file-name
+search. A window that does not own the host lock now loads the AI pack through its read-only door
+(`mv_ai_reader_get`, the Final Cut agent's reader: index.db read-only, text towers on CPU, catches
+up every 5 s) with `mv_addon_load_reader` on Windows and the same `loaded_addon::load` entry on
+the Mac. Search, Find similar and People's photos work there. Indexing, settings, People edits
+and add-on install / update / remove stay in the first window, and the later window says so. Two
+writers on one index are still never allowed, which is why this is not "load the pack twice".
+It starts at the window's first search or Settings, not at launch: reading what is installed
+hashes every file once per process (~1.2 GB with the pack), which must not compete with the new
+window's first pixel. Cost once started: that window holds the text tower (CLIP text ~130 MB
+fast, ~250 MB high) while open. A reader never sweeps the store's staging (the host may be installing into it). Nothing
+indexed yet is `not_found`, not "needs an update"; Ctrl+F retries at most every 10 s.
+
+**An add-on that will not start says why, in the window (2026-10-07, owner).** Load and start
+failures went only to Settings' status line, and a DLL Windows refused to load (a missing
+dependency) was reported as "did not pass verification", because `shared_library::open` returned
+`corrupt`. It now returns `io`, with a reason written for the person and no path (rule 6):
+LoadLibrary's error mapped to words on Windows, dlerror's kind on the Mac. The ABI passes it as
+`mv_last_error_message`. The window shows "⚠ Local search couldn't start" (or Import), with the
+reason and Open Settings, beside the indexing pill.
+
 ---
 
 ## Import add-on
@@ -865,6 +898,22 @@ power and an unmetered network, with 10 GB plus the file free, and never while p
 leaves row ids in `<data>/cache/cloud-fetched`, and those files are given back at the next start.
 Folder adds that fail now say why. A folder whose walk fails reads "Couldn't read this folder",
 and one with nothing to index reads "No photos or videos found here", rather than "Up to date".
+
+**The Windows welcome card: picked folders count, OneDrive leads (2026-10-07, owner).** A folder
+chosen in Open ▸ Folder (`Ctrl+Shift+O`) went straight to `open_folder` and never became a recent
+folder, so the Windows card stayed empty for anyone who opens folders that way; the Mac records
+every non-browsing open in one place. It is recorded now. With OneDrive set up (the client's
+`%OneDrive%`, read from the environment: no disk access before the first pixel), a OneDrive row
+leads the card above Recent folders, drawn like the Mac's iCloud Photos row with no × . It opens
+OneDrive's Pictures folder, where a phone's camera uploads land, or OneDrive itself, and is not
+itself added to Recent folders. Open ▸ Recent folders keeps indexing the folders alone.
+
+**OneDrive support is optional at load time (2026-10-07, owner).** 0.1.27 linked `cldapi.dll`
+straight into `mv_ai.dll`, so a Windows without the Cloud Files API (before 10 1709, Server 2016)
+could not load Local search at all. It is delay-loaded now, and `make_cloud_files()` probes for it
+first. Where it is missing the pack loads and searches, and Settings shows *Index online-only
+OneDrive files* greyed with the reason. The option is always shown on Windows. Turning it off
+skips online-only files and never makes search unavailable.
 
 **The Mac Photos library as a source (2026-09-28).** Read-only: no PhotoKit write API is called,
 and `shell/write_guard.h` refuses every write, move, bin, rotate, export and trim of a Photos file
