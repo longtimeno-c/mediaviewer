@@ -48,7 +48,13 @@ class listing_stamps {
     const auto it = by_path_.find(path);
     if (it == by_path_.end()) return listed;
     const auto& replaced = it->second.replaced;
-    if (std::find(replaced.begin(), replaced.end(), listed) != replaced.end()) return it->second.now;
+    // Not std::find: clang-cl's MSVC STL sees a 16-byte trivially comparable
+    // struct and routes it to a vectorised find that only takes 1/2/4/8-byte
+    // elements (static_assert "unexpected size").
+    if (std::any_of(replaced.begin(), replaced.end(),
+                    [&](const file_stamp& s) { return s == listed; })) {
+      return it->second.now;
+    }
     by_path_.erase(it);
     return listed;
   }
