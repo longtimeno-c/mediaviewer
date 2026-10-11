@@ -40,6 +40,11 @@ void mv_chrome_key_capture_cancel(void);
 int32_t mv_chrome_key_capture_row(void);
 void mv_chrome_keys_reset(void);
 uint64_t mv_chrome_keys_generation(void);
+// PR 56 (docs/design/16 "Keymap packs"): applies a pack (mv_open_addons_keymap's
+// JSON) to the live table once: the defaults with the pack's keys written in,
+// persisted like any remap. Writes {"changed","displaced","skipped":[...]}.
+// [main-thread]
+int32_t mv_chrome_apply_keymap(const char* pack_json, char* buf, int32_t size);
 
 // Bumps input_snapshot.one_to_one_seq and wakes the render thread. [any-thread]
 void mv_chrome_one_to_one(void);
@@ -424,6 +429,17 @@ bool mv_open_addons_remove(const char* folder);                                 
 // "" when the add-on or theme is gone or no longer verifies.
 int32_t mv_open_addons_theme(const char* addon_id, const char* theme_id,
                              char* buf, int32_t size);                          // [worker]
+// PR 56 (docs/design/25 "Settings page", "Keymap"): an add-on's settings page with
+// its values (the dotted id of an open add-on, or a first-party id), one value
+// stored ({"ok","message"}), and what was chosen forgotten (Remove without
+// "keep its settings"). One keymap pack of an installed open add-on, for
+// mv_chrome_apply_keymap. "" when gone. [worker]
+int32_t mv_addons_settings_page(const char* id, char* buf, int32_t size);       // [worker]
+int32_t mv_addons_setting_set(const char* id, const char* key, const char* value_json,
+                              char* buf, int32_t size);                         // [worker]
+bool mv_addons_settings_forget(const char* id);                                 // [worker]
+int32_t mv_open_addons_keymap(const char* addon_id, const char* pack_id,
+                              char* buf, int32_t size);                         // [worker]
 // The theme's canvas colours (0xRRGGBB), so the viewer's own "System"
 // background follows the theme; has_dark / has_light say which palettes the
 // theme gives. active = false returns it to the window's colour. [main-thread]

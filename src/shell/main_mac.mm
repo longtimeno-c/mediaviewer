@@ -77,6 +77,7 @@
 #include "shell/folder_model_mac.h"
 #include "meta/meta.h"
 #include "shell/key_router.h"
+#include "shell/keymap.h"
 #include "shell/meta_store.h"
 #include "shell/os_integration.h"
 #include "shell/meta_writer.h"
@@ -565,6 +566,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)cancelKeyCapture;
 - (int)captureRow;
 - (void)resetKeys;
+- (std::string)applyKeymap:(const char*)packJson;
 - (uint64_t)keysGeneration;
 - (void)setGalleryVisible:(BOOL)visible;
 - (void)toggleFilmstrip;
@@ -824,6 +826,15 @@ extern "C" int32_t mv_chrome_key_capture_row(void) {
 }
 extern "C" void mv_chrome_keys_reset(void) {
   if (g_chrome_app) [g_chrome_app resetKeys];
+}
+extern "C" int32_t mv_chrome_apply_keymap(const char* pack_json, char* buf, int32_t size) {
+  std::string out = g_chrome_app && pack_json ? [g_chrome_app applyKeymap:pack_json] : std::string();
+  if (buf && size > 0) {
+    const std::size_t n = std::min<std::size_t>(out.size(), static_cast<std::size_t>(size) - 1);
+    std::memcpy(buf, out.data(), n);
+    buf[n] = '\0';
+  }
+  return static_cast<int32_t>(out.size());
 }
 extern "C" uint64_t mv_chrome_keys_generation(void) {
   return g_chrome_app ? [g_chrome_app keysGeneration] : 0;
@@ -9162,6 +9173,32 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   [self rebuildKeys];
   [self persistKeys];
   ++_keysGeneration;
+}
+
+// docs/design/16 "Keymap packs": once, from Settings. The defaults with the pack's
+// keys written in; from then on the person's table, persisted like a remap.
+- (std::string)applyKeymap:(const char*)packJson {
+  std::vector<mv::addon::keymap_binding> bindings;
+  mv::json::writer w;
+  w.begin_object();
+  if (!mv::shell::keymap_bindings_from_json(packJson, bindings)) {
+    w.key("changed").integer(0).key("displaced").integer(0);
+    w.key("skipped").begin_array().string("not a key layout").end_array();
+    w.end_object();
+    return w.take();
+  }
+  [self cancelKeyCapture];
+  [self cancelKeyHolds];  // rebuild forgets held keys (issue #186)
+  const mv::shell::keymap_result r = mv::shell::apply_keymap(bindings);
+  [self rebuildKeys];
+  [self persistKeys];
+  ++_keysGeneration;
+  w.key("changed").integer(r.rows_changed).key("displaced").integer(r.displaced);
+  w.key("skipped").begin_array();
+  for (const std::string& line : r.skipped) w.string(line);
+  w.end_array();
+  w.end_object();
+  return w.take();
 }
 
 - (int)captureRow { return _captureRow; }

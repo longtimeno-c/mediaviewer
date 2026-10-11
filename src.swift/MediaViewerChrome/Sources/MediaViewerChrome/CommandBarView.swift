@@ -34,7 +34,7 @@ struct FlatButtonStyle: ButtonStyle {
         .foregroundStyle(enabled ? MVTheme.title : MVTheme.disabled)
         .padding(.horizontal, compact ? 8 : 14).padding(.vertical, compact ? 5 : 7)
         .background(
-          RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(
+          RoundedRectangle(cornerRadius: MVTheme.radius(4)).fill(Color.primary.opacity(
             configuration.isPressed || selected ? 0.11 : (hover && enabled ? 0.06 : 0))))
         .contentShape(Rectangle())
         .onHover { hover = $0 }
@@ -49,7 +49,7 @@ private struct FlyoutItem: View {
   let action: () -> Void
   var body: some View {
     Button(action: action) {
-      HStack(spacing: 24) {
+      HStack(spacing: MVTheme.space(24)) {
         Text(title)
         Spacer(minLength: 0)
         if let shortcut { Text(shortcut).foregroundStyle(MVTheme.body) }
@@ -63,7 +63,7 @@ private struct FlyoutItem: View {
 
 private struct FlyoutRule: View {
   var body: some View {
-    Rectangle().fill(MVTheme.hairline).frame(height: 1).padding(.vertical, 4)
+    Rectangle().fill(MVTheme.hairline).frame(height: 1).padding(.vertical, MVTheme.space(4))
   }
 }
 
@@ -98,7 +98,7 @@ private struct BarFlyout<Content: View>: View {
       .buttonStyle(FlatButtonStyle())
       .popover(isPresented: $shown, arrowEdge: .bottom) {
         VStack(alignment: .leading, spacing: 0) { content { shown = false } }
-          .padding(4)
+          .padding(MVTheme.space(4))
           .frame(minWidth: 240)
           .background(MVTheme.canvas)
       }
@@ -211,7 +211,7 @@ public struct CommandBarView: View {
               Text("Copyright (C) 2026 longtimeno-c")
                 .font(MVTheme.font())
                 .foregroundStyle(MVTheme.body)
-                .padding(.top, 6)
+                .padding(.top, MVTheme.space(6))
               Text("Licensed under GNU GPL v3 or later")
                 .font(MVTheme.font())
                 .foregroundStyle(MVTheme.body)
@@ -227,10 +227,10 @@ public struct CommandBarView: View {
               Text("Everything works from the keyboard. Press ? for the shortcuts of what you are doing.")
                 .font(MVTheme.font())
                 .foregroundStyle(MVTheme.title)
-                .padding(.top, 10)
+                .padding(.top, MVTheme.space(10))
                 .fixedSize(horizontal: false, vertical: true)
             }
-            .padding(12)
+            .padding(MVTheme.space(12))
             .frame(width: 300, alignment: .leading)
           }
         }
@@ -246,7 +246,7 @@ public struct CommandBarView: View {
           Text(notice.text)
             .font(MVTheme.font())
             .foregroundStyle(MVTheme.title)
-            .padding(.trailing, 10)
+            .padding(.trailing, MVTheme.space(10))
             .lineLimit(1)
             .accessibilityLabel(notice.text)
         }
@@ -256,19 +256,19 @@ public struct CommandBarView: View {
           Text("\(store.markedCount) marked")
             .font(MVTheme.font())
             .foregroundStyle(MVTheme.body)
-            .padding(.trailing, 6)
+            .padding(.trailing, MVTheme.space(6))
         }
         // The folder trail sits beside `?` rather than in a row of its own, so
         // opening a folder does not push the canvas down.
         if !store.crumbs.isEmpty || store.listTitle != nil {
           PathBar()
-          Rectangle().fill(MVTheme.hairline).frame(width: 1, height: 18).padding(.horizontal, 4)
+          Rectangle().fill(MVTheme.hairline).frame(width: 1, height: 18).padding(.horizontal, MVTheme.space(4))
         }
         Button("?") { mv_chrome_menu(16) }
           .buttonStyle(FlatButtonStyle())
           .help("Keyboard shortcuts  ?")
       }
-      .padding(.horizontal, 6)
+      .padding(.horizontal, MVTheme.space(6))
       .frame(maxHeight: .infinity)
       Rectangle().fill(MVTheme.hairline).frame(height: 1)
     }
@@ -305,7 +305,7 @@ private struct UpdateBarItem: View {
           .progressViewStyle(.linear)
           .controlSize(.small)
           .frame(width: 90)
-          .padding(.trailing, 10)
+          .padding(.trailing, MVTheme.space(10))
           .accessibilityLabel("Update download progress")
       }
     case 3:
@@ -324,7 +324,7 @@ private struct UpdateBarItem: View {
     Text(text)
       .font(MVTheme.font(12))
       .foregroundStyle(MVTheme.body)
-      .padding(.horizontal, 10)
+      .padding(.horizontal, MVTheme.space(10))
       .lineLimit(1)
       .fixedSize()
       .help(help)
@@ -356,7 +356,7 @@ struct PathBar: View {
   @ViewBuilder private var trail: some View {
     let crumbs = store.crumbs
     let shown = display(crumbs)
-    HStack(spacing: 2) {
+    HStack(spacing: MVTheme.space(2)) {
       PathIcon(symbol: "arrow.up", enabled: store.canGoUp) { store.navigateUp() }
         .help("Open the enclosing folder (⌘↑)")
         .accessibilityLabel("Up one folder")
@@ -365,7 +365,7 @@ struct PathBar: View {
         .accessibilityLabel("Return to browsing root")
 
       ScrollView(.horizontal, showsIndicators: false) {
-        HStack(spacing: 4) {
+        HStack(spacing: MVTheme.space(4)) {
           ForEach(shown.dropLast()) { crumb in
             if crumb.isEllipsis {
               Menu {
@@ -394,7 +394,7 @@ struct PathBar: View {
               .foregroundStyle(MVTheme.body)
           }
         }
-        .padding(.leading, 4)
+        .padding(.leading, MVTheme.space(4))
         .background(GeometryReader { geo in
           Color.clear.preference(key: TrailWidthKey.self, value: geo.size.width)
         })
@@ -430,7 +430,7 @@ struct PathBar: View {
       PathSearchButton()
     }
     .font(MVTheme.font(14))
-    .padding(.horizontal, 6)
+    .padding(.horizontal, MVTheme.space(6))
   }
 
   private func display(_ crumbs: [Crumb]) -> [PathPiece] {
@@ -457,7 +457,7 @@ private struct ListTitleBar: View {
   let title: String
 
   var body: some View {
-    HStack(spacing: 8) {
+    HStack(spacing: MVTheme.space(8)) {
       Button { store.closeList() } label: {
         Label("Back to folder", systemImage: "chevron.backward")
       }
@@ -465,7 +465,7 @@ private struct ListTitleBar: View {
       .fixedSize()
       .foregroundStyle(MVTheme.title)
       .help("Close the results and return to the folder (Esc)")
-      Rectangle().fill(MVTheme.hairline).frame(width: 1, height: 16).padding(.horizontal, 4)
+      Rectangle().fill(MVTheme.hairline).frame(width: 1, height: 16).padding(.horizontal, MVTheme.space(4))
       // The ⌘F panel again in one click (Local search loaded); else a plain glyph.
       if search.searchAvailable {
         PathSearchButton()
@@ -487,7 +487,7 @@ private struct ListTitleBar: View {
       Spacer(minLength: 0)
     }
     .font(MVTheme.font(14))
-    .padding(.horizontal, 10)
+    .padding(.horizontal, MVTheme.space(10))
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(MVTheme.canvas)
     .accessibilityElement(children: .contain)
@@ -547,7 +547,7 @@ private struct PathIcon: View {
       Image(systemName: symbol)
         .font(.system(size: 12, weight: .semibold))
         .frame(width: 26, height: 26)
-        .background(RoundedRectangle(cornerRadius: 4)
+        .background(RoundedRectangle(cornerRadius: MVTheme.radius(4))
           .fill(Color.primary.opacity(hover && enabled ? 0.06 : 0)))
         .contentShape(Rectangle())
     }

@@ -11,9 +11,10 @@
 import AppKit
 import SwiftUI
 
-private let canvas = Color(nsColor: .windowBackgroundColor)
-private let titleColor = Color(nsColor: .labelColor)
-private let bodyColor = Color(nsColor: .secondaryLabelColor)
+// The host's tokens (HostTheme.swift, issue #204): an add-on theme reaches this window.
+@MainActor private var canvas: Color { HostTheme.canvas }
+@MainActor private var titleColor: Color { HostTheme.title }
+@MainActor private var bodyColor: Color { HostTheme.body }
 
 struct ImportView: View {
   @ObservedObject var model: ImportModel
@@ -230,7 +231,7 @@ struct ImportView: View {
             Spacer()
           }
           .padding(8)
-          .background(RoundedRectangle(cornerRadius: 6).fill(Color.green.opacity(0.1)))
+          .background(RoundedRectangle(cornerRadius: HostTheme.radius(6)).fill(Color.green.opacity(0.1)))
           .padding(.horizontal, 8)
         }
         ScrollView {
@@ -292,7 +293,7 @@ struct ImportView: View {
       }
       Image(systemName: tile.selected ? "checkmark.circle.fill" : "circle")
         .font(.title3)
-        .foregroundStyle(tile.selected ? Color.accentColor : Color.white)
+        .foregroundStyle(tile.selected ? HostTheme.accent : Color.white)
         .shadow(radius: 1)
         .padding(5)
       VStack {
@@ -306,10 +307,10 @@ struct ImportView: View {
       }
     }
     .frame(width: 128, height: 128)
-    .clipShape(RoundedRectangle(cornerRadius: 4))
+    .clipShape(RoundedRectangle(cornerRadius: HostTheme.radius(4)))
     .opacity(tile.dimmed ? 0.45 : 1)
-    .overlay(RoundedRectangle(cornerRadius: 4)
-      .stroke(focusedTile == tile.index ? Color.accentColor : tile.selected ? Color.accentColor.opacity(0.6) : .clear,
+    .overlay(RoundedRectangle(cornerRadius: HostTheme.radius(4))
+      .stroke(focusedTile == tile.index ? HostTheme.accent : tile.selected ? HostTheme.accent.opacity(0.6) : .clear,
               lineWidth: 2))
     .focusable()
     .focused($focusedTile, equals: tile.index)
@@ -425,7 +426,7 @@ struct ImportView: View {
       .controlSize(.large)
     } else {
       HStack(spacing: 8) {
-        Image(systemName: "folder.fill").foregroundStyle(Color.accentColor)
+        Image(systemName: "folder.fill").foregroundStyle(HostTheme.accent)
         VStack(alignment: .leading, spacing: 0) {
           Text((dest as NSString).lastPathComponent).foregroundStyle(titleColor).lineLimit(1)
           Text((dest as NSString).abbreviatingWithTildeInPath).font(.caption).foregroundStyle(bodyColor)

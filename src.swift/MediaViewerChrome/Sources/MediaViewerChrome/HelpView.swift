@@ -61,7 +61,7 @@ struct HelpView: View {
   @ObservedObject private var store = HelpStore.shared
 
   var body: some View {
-    VStack(spacing: 16) {
+    VStack(spacing: MVTheme.space(16)) {
       Text("Keyboard shortcuts").font(.title2.bold())
       ScrollView {
         LazyVGrid(
@@ -78,13 +78,13 @@ struct HelpView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
           }
         }
-        .padding(.horizontal, 32)
+        .padding(.horizontal, MVTheme.space(32))
       }
       Text("Wheel zooms toward the cursor, drag pans. Keys change in Settings (⌘,). ? or Esc to close.")
         .font(.footnote).foregroundStyle(.secondary)
     }
-    .padding(.top, 56)
-    .padding(.bottom, 16)
+    .padding(.top, MVTheme.space(56))
+    .padding(.bottom, MVTheme.space(16))
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .background(.regularMaterial)
     .onAppear { store.reload() }

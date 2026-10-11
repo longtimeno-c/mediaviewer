@@ -43,17 +43,17 @@ struct MetadataView: View {
         Spacer()
         if store.loading { ProgressView().controlSize(.small) }
       }
-      .padding(.horizontal, 14)
-      .padding(.top, 12)
-      HStack(spacing: 4) {
+      .padding(.horizontal, MVTheme.space(14))
+      .padding(.top, MVTheme.space(12))
+      HStack(spacing: MVTheme.space(4)) {
         ForEach(tabs) { t in
           Button { tab = t } label: { Text(t.rawValue).frame(maxWidth: .infinity) }
             .buttonStyle(FlatButtonStyle(selected: tab == t, compact: true))
             .accessibilityAddTraits(tab == t ? [.isSelected] : [])
         }
       }
-      .padding(.horizontal, 10)
-      .padding(.vertical, 8)
+      .padding(.horizontal, MVTheme.space(10))
+      .padding(.vertical, MVTheme.space(8))
       Rectangle().fill(MVTheme.hairline).frame(height: 1)
       Group {
         switch tab {
@@ -86,14 +86,14 @@ struct MetadataView: View {
     ScrollView {
       if store.summary.isEmpty {
         Text(store.loading ? "Reading…" : "Nothing selected")
-          .font(MVTheme.font(14)).foregroundStyle(MVTheme.body).padding(20)
+          .font(MVTheme.font(14)).foregroundStyle(MVTheme.body).padding(MVTheme.space(20))
       } else {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: MVTheme.space(8)) {
           ForEach(store.summary) { row in
             if row.label == "Date taken" {
               dateRow(row)
             } else {
-              HStack(alignment: .firstTextBaseline, spacing: 10) {
+              HStack(alignment: .firstTextBaseline, spacing: MVTheme.space(10)) {
                 Text(row.label).foregroundStyle(MVTheme.body).frame(width: 100, alignment: .leading)
                 Text(row.value.isEmpty ? "—" : row.value)
                   .foregroundStyle(row.value.isEmpty ? MVTheme.disabled : MVTheme.title)
@@ -109,7 +109,7 @@ struct MetadataView: View {
               .font(MVTheme.font(14))
             }
           }
-          Rectangle().fill(MVTheme.hairline).frame(height: 1).padding(.vertical, 4)
+          Rectangle().fill(MVTheme.hairline).frame(height: 1).padding(.vertical, MVTheme.space(4))
           HStack {
             Text("Edit any tag under All tags.").font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
             Spacer(minLength: 0)
@@ -119,14 +119,14 @@ struct MetadataView: View {
               .help("Put every tag back to how this file was before this session's first change")
           }
         }
-        .padding(14)
+        .padding(MVTheme.space(14))
       }
     }
   }
 
   private func dateRow(_ row: MetaRow) -> some View {
-    VStack(alignment: .leading, spacing: 6) {
-      HStack(alignment: .firstTextBaseline, spacing: 10) {
+    VStack(alignment: .leading, spacing: MVTheme.space(6)) {
+      HStack(alignment: .firstTextBaseline, spacing: MVTheme.space(10)) {
         Text(row.label).foregroundStyle(MVTheme.body).frame(width: 100, alignment: .leading)
         if editingDate {
           TextField("YYYY-MM-DD HH:MM:SS", text: $dateDraft)
@@ -153,7 +153,7 @@ struct MetadataView: View {
         }
       }
       if editingDate {
-        HStack(spacing: 6) {
+        HStack(spacing: MVTheme.space(6)) {
           Spacer().frame(width: 100)
           Button("Save") { saveDate() }.buttonStyle(FlatButtonStyle(selected: true, compact: true))
           Button("Remove") {
@@ -197,7 +197,7 @@ struct MetadataView: View {
 
   private var tagTree: some View {
     VStack(spacing: 0) {
-      HStack(spacing: 6) {
+      HStack(spacing: MVTheme.space(6)) {
         TextField("Search tags and values", text: $query)
           .textFieldStyle(.roundedBorder)
           .font(MVTheme.font(14))
@@ -212,11 +212,11 @@ struct MetadataView: View {
         .disabled(!store.canEdit)
         .help("Add a tag by its key, e.g. Xmp.dc.subject or Exif.Image.Artist")
       }
-      .padding(10)
+      .padding(MVTheme.space(10))
       if addingTag { addTagForm }
       if store.properties.isEmpty && !addingTag {
         Text(store.loading ? "Reading…" : "No metadata in this file")
-          .font(MVTheme.font(14)).foregroundStyle(MVTheme.body).padding(20)
+          .font(MVTheme.font(14)).foregroundStyle(MVTheme.body).padding(MVTheme.space(20))
         Spacer()
       } else {
         List {
@@ -233,7 +233,7 @@ struct MetadataView: View {
   }
 
   private var addTagForm: some View {
-    VStack(alignment: .leading, spacing: 6) {
+    VStack(alignment: .leading, spacing: MVTheme.space(6)) {
       TextField("Key (Xmp.dc.subject)", text: $newKey)
         .textFieldStyle(.roundedBorder)
         .focused($fieldFocused)
@@ -242,7 +242,7 @@ struct MetadataView: View {
         .textFieldStyle(.roundedBorder)
         .onSubmit(addTag)
         .accessibilityLabel("New tag value")
-      HStack(spacing: 6) {
+      HStack(spacing: MVTheme.space(6)) {
         Button("Add") { addTag() }
           .buttonStyle(FlatButtonStyle(selected: true, compact: true))
           .disabled(newKey.isEmpty || newValue.isEmpty)
@@ -250,8 +250,8 @@ struct MetadataView: View {
       }
     }
     .font(MVTheme.font(14))
-    .padding(.horizontal, 10)
-    .padding(.bottom, 10)
+    .padding(.horizontal, MVTheme.space(10))
+    .padding(.bottom, MVTheme.space(10))
   }
 
   private func addTag() {
@@ -262,8 +262,8 @@ struct MetadataView: View {
   }
 
   private func tagRow(_ p: MetaProperty) -> some View {
-    VStack(alignment: .leading, spacing: 3) {
-      HStack(alignment: .firstTextBaseline, spacing: 6) {
+    VStack(alignment: .leading, spacing: MVTheme.space(3)) {
+      HStack(alignment: .firstTextBaseline, spacing: MVTheme.space(6)) {
         Text(p.label).font(MVTheme.font(14)).foregroundStyle(MVTheme.title)
         Spacer(minLength: 4)
         if p.editable && editing != p.rawTag {
@@ -316,13 +316,13 @@ struct MetadataView: View {
 
   private var streamInspector: some View {
     ScrollView {
-      VStack(alignment: .leading, spacing: 14) {
+      VStack(alignment: .leading, spacing: MVTheme.space(14)) {
         ForEach(store.streams) { stream in
-          VStack(alignment: .leading, spacing: 6) {
+          VStack(alignment: .leading, spacing: MVTheme.space(6)) {
             Text("#\(stream.id)  \(stream.kind.capitalized)  —  \(stream.codec)")
               .font(MVTheme.font(14)).foregroundStyle(MVTheme.title)
             ForEach(stream.fields) { f in
-              HStack(alignment: .firstTextBaseline, spacing: 10) {
+              HStack(alignment: .firstTextBaseline, spacing: MVTheme.space(10)) {
                 Text(f.label).foregroundStyle(MVTheme.body).frame(width: 130, alignment: .leading)
                 Text(f.value).foregroundStyle(MVTheme.title).textSelection(.enabled)
                   .frame(maxWidth: .infinity, alignment: .leading)
@@ -344,7 +344,7 @@ struct MetadataView: View {
           Text(store.loading ? "Reading…" : "No streams").foregroundStyle(MVTheme.body)
         }
       }
-      .padding(14)
+      .padding(MVTheme.space(14))
     }
   }
 

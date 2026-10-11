@@ -176,12 +176,12 @@ struct PhotosBackupSection: View {
 
   var body: some View {
     if store.available {
-      VStack(alignment: .leading, spacing: 8) {
+      VStack(alignment: .leading, spacing: MVTheme.space(8)) {
         Text("Photos Library").font(MVTheme.font(16)).fontWeight(.semibold)
-          .foregroundStyle(MVTheme.title).padding(.top, 12)
-        VStack(alignment: .leading, spacing: 10) {
-          HStack(alignment: .top, spacing: 24) {
-            VStack(alignment: .leading, spacing: 4) {
+          .foregroundStyle(MVTheme.title).padding(.top, MVTheme.space(12))
+        VStack(alignment: .leading, spacing: MVTheme.space(10)) {
+          HStack(alignment: .top, spacing: MVTheme.space(24)) {
+            VStack(alignment: .leading, spacing: MVTheme.space(4)) {
               Text("Back up originals to a folder").font(MVTheme.font()).foregroundStyle(MVTheme.title)
               Text("Copies every original in your Photos library — iCloud Photos and hidden items included, a Live Photo's video and a RAW+JPEG pair's RAW too — into year and day folders, and verifies each copy. "
                    + "Originals that are only in iCloud are downloaded for this. Run it again any time: only what is new or missing is copied. Your library is never changed.")
@@ -196,7 +196,7 @@ struct PhotosBackupSection: View {
                 .keyboardShortcut(.defaultAction)
             }
           }
-          HStack(spacing: 8) {
+          HStack(spacing: MVTheme.space(8)) {
             Image(systemName: "externaldrive").foregroundStyle(MVTheme.body)
             Text(destinationLabel).font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
               .lineLimit(1).truncationMode(.middle)
@@ -213,7 +213,7 @@ struct PhotosBackupSection: View {
             Text(progressLine).font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
               .lineLimit(1).truncationMode(.middle)
           } else if store.run.state >= 3 {
-            HStack(spacing: 8) {
+            HStack(spacing: MVTheme.space(8)) {
               Image(systemName: store.run.state == 3 && store.run.failed == 0 ? "checkmark.circle" : "exclamationmark.triangle")
                 .foregroundStyle(store.run.state == 3 && store.run.failed == 0 ? Color.green : Color.orange)
               Text(store.run.state == 5 ? cString(store.run.error) : summary(store.run, prefix: "This run"))
@@ -229,10 +229,10 @@ struct PhotosBackupSection: View {
               .font(MVTheme.font(12)).foregroundStyle(.orange)
           }
         }
-        .padding(14)
+        .padding(MVTheme.space(14))
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 8).fill(MVTheme.surface))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(MVTheme.hairline, lineWidth: 1))
+        .background(RoundedRectangle(cornerRadius: MVTheme.radius(8)).fill(MVTheme.surface))
+        .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(8)).stroke(MVTheme.hairline, lineWidth: 1))
       }
     }
   }

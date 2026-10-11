@@ -519,7 +519,7 @@ private struct TimelineArea: View {
   }
 
   private func drawPiece(_ ctx: GraphicsContext, index: Int, piece: (inNs: Int64, outNs: Int64), rect: CGRect) {
-    let shape = RoundedRectangle(cornerRadius: 5).path(in: rect)
+    let shape = RoundedRectangle(cornerRadius: MVTheme.radius(5)).path(in: rect)
     ctx.fill(shape, with: .color(Color.primary.opacity(0.08)))
     var inner = ctx
     inner.clip(to: shape)
@@ -543,7 +543,7 @@ private struct TimelineArea: View {
   }
 
   private func drawWave(_ ctx: GraphicsContext, piece: (inNs: Int64, outNs: Int64), rect: CGRect) {
-    let shape = RoundedRectangle(cornerRadius: 4).path(in: rect)
+    let shape = RoundedRectangle(cornerRadius: MVTheme.radius(4)).path(in: rect)
     ctx.fill(shape, with: .color(Color.primary.opacity(0.05)))
     guard !store.peaks.isEmpty, store.sourceNs > 0 else {
       ctx.draw(Text("No audio").font(MVTheme.font(11)).foregroundColor(MVTheme.body),

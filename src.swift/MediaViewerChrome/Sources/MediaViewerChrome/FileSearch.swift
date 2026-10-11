@@ -186,7 +186,7 @@ struct FileSearchBar: View {
   @FocusState private var focused: Bool
 
   var body: some View {
-    HStack(spacing: 8) {
+    HStack(spacing: MVTheme.space(8)) {
       Image(systemName: "magnifyingglass")
         .foregroundStyle(MVTheme.body)
       TextField("Find files by name in this folder", text: $store.text)
@@ -227,10 +227,10 @@ struct FileSearchBar: View {
       .help("Close file search (Esc)")
       .accessibilityLabel("Close file search")
     }
-    .padding(.horizontal, 10)
+    .padding(.horizontal, MVTheme.space(10))
     .frame(height: 30)
-    .background(RoundedRectangle(cornerRadius: 6).fill(MVTheme.surface))
-    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(focused ? MVTheme.accent : MVTheme.hairline,
+    .background(RoundedRectangle(cornerRadius: MVTheme.radius(6)).fill(MVTheme.surface))
+    .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(6)).strokeBorder(focused ? MVTheme.accent : MVTheme.hairline,
                                                              lineWidth: 1))
     .onAppear { takeFocus() }
     .onChange(of: store.focusRequest) { _, _ in takeFocus() }
@@ -255,6 +255,6 @@ struct FileSearchNotice: View {
       .foregroundStyle(MVTheme.body)
       .multilineTextAlignment(.center)
       .frame(maxWidth: .infinity)
-      .padding(.top, 60)
+      .padding(.top, MVTheme.space(60))
   }
 }

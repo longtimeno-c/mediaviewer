@@ -318,7 +318,7 @@ struct IndexTransferSection: View {
     }
     .font(AITheme.font(12))
     .padding(12)
-    .background(Color.accentColor.opacity(0.06))
+    .background(AITheme.accent.opacity(0.06))
   }
 
   private func importOptions(_ plan: ImportPlan) -> some View {
@@ -384,7 +384,7 @@ struct IndexTransferSection: View {
     }
     .font(AITheme.font(12))
     .padding(12)
-    .background(Color.accentColor.opacity(0.06))
+    .background(AITheme.accent.opacity(0.06))
   }
 
   private func summary(_ plan: ImportPlan) -> String {

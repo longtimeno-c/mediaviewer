@@ -739,8 +739,8 @@ struct ManagementView: View {
       }
       .padding(12)
       .frame(maxWidth: .infinity, alignment: .leading)
-      .background(RoundedRectangle(cornerRadius: 8).fill(AITheme.surface))
-      .overlay(RoundedRectangle(cornerRadius: 8).stroke(AITheme.hairline, lineWidth: 1))
+      .background(RoundedRectangle(cornerRadius: AITheme.radius(8)).fill(AITheme.surface))
+      .overlay(RoundedRectangle(cornerRadius: AITheme.radius(8)).stroke(AITheme.hairline, lineWidth: 1))
       if model.facesOn && model.facesReady {
         section("People") {
           PeopleGrid(model: model, open: { _ in }, limit: Self.peopleShown, showAll: { allPeople = true })
@@ -849,7 +849,7 @@ struct ManagementView: View {
         .padding(12)
         if !model.rootError.isEmpty {
           Text(model.rootError)
-            .font(AITheme.font(11)).foregroundStyle(Color.accentColor)
+            .font(AITheme.font(11)).foregroundStyle(AITheme.accent)
             .padding(.horizontal, 12).padding(.bottom, 8)
         }
         if model.cloudProvider == "icloud" && (model.cloudLeft > 0 || model.cloudFiles) {
@@ -1142,7 +1142,7 @@ struct ManagementView: View {
           .progressViewStyle(.linear)
           .tint(root.enabled ? .accentColor : .secondary)
         Text(rootState(root) + (root.enabled ? (root.scanning ? " · checking for changes…" : "") : " · paused"))
-          .font(AITheme.font(11)).foregroundStyle(root.unreadable ? Color.accentColor : AITheme.body)
+          .font(AITheme.font(11)).foregroundStyle(root.unreadable ? AITheme.accent : AITheme.body)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
       Button(root.enabled ? "Pause" : "Resume") { model.setRootEnabled(root.id, !root.enabled) }
@@ -1208,8 +1208,8 @@ struct ManagementView: View {
       Text(title).font(AITheme.font(15)).fontWeight(.semibold).foregroundStyle(AITheme.title)
         .padding(.top, 8).padding(.bottom, 6)
       VStack(alignment: .leading, spacing: 0) { content() }
-        .background(RoundedRectangle(cornerRadius: 8).fill(AITheme.surface))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(AITheme.hairline, lineWidth: 1))
+        .background(RoundedRectangle(cornerRadius: AITheme.radius(8)).fill(AITheme.surface))
+        .overlay(RoundedRectangle(cornerRadius: AITheme.radius(8)).stroke(AITheme.hairline, lineWidth: 1))
     }
   }
 
@@ -1237,7 +1237,7 @@ struct ManagementView: View {
       Button("Cancel") { model.confirming = nil }.keyboardShortcut(.cancelAction)
     }
     .padding(12)
-    .background(Color.accentColor.opacity(0.08))
+    .background(AITheme.accent.opacity(0.08))
     .transition(.opacity)
   }
 }

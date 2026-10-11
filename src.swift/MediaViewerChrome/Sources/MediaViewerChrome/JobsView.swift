@@ -18,7 +18,7 @@ struct JobsView: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
+    VStack(alignment: .leading, spacing: MVTheme.space(10)) {
       HStack {
         Text("Jobs").font(.headline)
         Spacer()
@@ -31,7 +31,7 @@ struct JobsView: View {
           .foregroundStyle(.secondary)
       }
       ScrollView {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: MVTheme.space(8)) {
           ForEach(Array(store.rows.enumerated()), id: \.element.id) { i, row in
             jobRow(row, selected: i == cursor && focused)
               .onTapGesture { cursor = i }
@@ -44,7 +44,7 @@ struct JobsView: View {
         .foregroundStyle(.secondary)
       Spacer(minLength: 0)
     }
-    .padding(14)
+    .padding(MVTheme.space(14))
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     .background(.regularMaterial)
     .overlay(alignment: .leading) { Rectangle().fill(Color.primary.opacity(0.15)).frame(width: 1) }
@@ -63,7 +63,7 @@ struct JobsView: View {
   }
 
   private func jobRow(_ row: ClipJobRow, selected: Bool) -> some View {
-    VStack(alignment: .leading, spacing: 4) {
+    VStack(alignment: .leading, spacing: MVTheme.space(4)) {
       Text("\(row.title) — \(row.source)").lineLimit(2)
       if row.running {
         if row.state == 2 && row.fraction <= 0 {
@@ -73,16 +73,16 @@ struct JobsView: View {
         }
       }
       Text(row.status).font(.caption).foregroundStyle(.secondary)
-      HStack(spacing: 8) {
+      HStack(spacing: MVTheme.space(8)) {
         if row.running { Button("Cancel") { store.cancel(row.id) } }
         if row.state == 4 || row.state == 5 { Button("Retry") { store.retry(row.id) } }
         if row.state == 3 { Button("Show in Finder") { store.reveal(row.id) } }
       }
       .controlSize(.small)
     }
-    .padding(8)
+    .padding(MVTheme.space(8))
     .frame(maxWidth: .infinity, alignment: .leading)
-    .background(RoundedRectangle(cornerRadius: 6).strokeBorder(
+    .background(RoundedRectangle(cornerRadius: MVTheme.radius(6)).strokeBorder(
       selected ? MVTheme.accent : Color.primary.opacity(0.15), lineWidth: 1))
   }
 }
