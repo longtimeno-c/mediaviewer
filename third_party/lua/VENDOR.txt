@@ -1,0 +1,32 @@
+Lua 5.4.8, vendored for the add-on script runtime (docs/design/25 §9 A, PR 57)
+==========================================================================
+
+Source   https://www.lua.org/ftp/lua-5.4.8.tar.gz
+SHA-512  875ad1f6df3ba63722b5069564c9d3a4057b4c3564c691061bb49cf6cdf5d2e303f05762bd46797b444aaf992c03021f423df142123eebf86751fd77edaf8060
+         (the hash vcpkg's lua 5.4.8 port pins)
+Licence  MIT (LICENSE, from the foot of lua.h). Linked statically; THIRD-PARTY.md.
+
+Why vendored and not vcpkg (docs/design/12, 2026-10-11): the pinned vcpkg baseline
+ships Lua 5.5, the Windows triplet links ports dynamically, and the sandbox wants
+the io / os / package / debug libraries absent from the binary, not merely
+unreachable. Built by CMake as C++ (a Lua error is a C++ exception, so the
+runtime's RAII holds across one), with the project's warnings off: it is not
+our code. No JIT exists in Lua, so the Mac's hardened runtime needs no exception.
+
+What is here: src/ of the release, minus
+  lua.c luac.c          the stand-alone interpreter and compiler
+  liolib.c loslib.c     io, os
+  loadlib.c ldblib.c    package / require, debug
+  linit.c               luaL_openlibs (the runtime opens its own subset)
+
+Local changes, all marked "MediaViewer" (diff against the tarball to see them):
+  src/mv_interrupt.h    new: mv_lua_check_interrupt(), the watchdog's flag
+  src/lstrlib.c         match() checks the flag on entry (pattern backtracking
+                        runs no VM instruction, so the count hook never fires);
+                        string.rep returns "" at once when the piece and the
+                        separator are both empty (it looped n times copying nothing)
+  src/ltablib.c         table.move and table.sort check the flag per step
+
+To update: replace src/ from a new 5.4.x tarball, drop the files above, re-apply
+the marked changes, update this file and the hash, then run mv_script_tests and
+the fuzz_script harness.
