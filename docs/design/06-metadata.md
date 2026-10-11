@@ -98,7 +98,10 @@ in-place rewrite.
 **Revert:** before the first write to a file in a session, its metadata is snapshotted to a
 host-owned local store — the three fields, a JPEG's metadata segments byte for byte, and the
 sidecar as it was. "Revert metadata" restores every tag. If a due snapshot cannot be written,
-nothing is written to the file. Nothing logs a path.
+nothing is written to the file. Each write also records the sidecar as it left it (absent, or
+the BLAKE3 of its bytes); revert refuses with `io`, replacing nothing, when the sidecar has
+changed since — `IMG_1234.HEIC`, `.MOV` and `.CR2` share `IMG_1234.xmp`, and Lightroom or
+darktable may have edited it. Nothing logs a path.
 
 Errors: `invalid_arg` (value out of range, non-UTF-8 comment, a field this file cannot hold),
 `io` (unreadable, not replaceable, changed under us), `corrupt` (a JPEG Exiv2 cannot parse),

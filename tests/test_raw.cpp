@@ -19,6 +19,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
@@ -34,6 +35,7 @@
 #include "corpus.h"
 #include "fixtures.h"
 #include "image/pipeline.h"
+#include "image/thumb.h"
 #include "io/file.h"
 
 using mv::codec::format_family;
@@ -226,6 +228,7 @@ struct dng_options {
   std::uint16_t orientation = 1;
   bool preview_prerotated = false;  // preview pixels already in display orientation (90° only)
   bool with_preview = true;
+  bool preview_flat = false;  // preview is flat grey, unlike the CFA: tells the two apart
 };
 
 std::vector<std::uint8_t> make_dng(const dng_options& opt = {}) {
@@ -249,7 +252,7 @@ std::vector<std::uint8_t> make_dng(const dng_options& opt = {}) {
       }
       for (int c = 0; c < 3; ++c) {
         rgb[(static_cast<std::size_t>(y) * pw + x) * 3 + static_cast<std::size_t>(c)] =
-            srgb8(scene(sx, sy, c));
+            opt.preview_flat ? std::uint8_t{200} : srgb8(scene(sx, sy, c));
       }
     }
   }
@@ -547,6 +550,24 @@ TEST_CASE("synthetic DNG: embedded preview and full decode agree", "[codec][raw]
   CHECK(pearson(gp, gf) > 0.9);
 }
 
+// Issue #159: a RAW's thumbnail is its embedded preview, never a demosaic per
+// file (docs/design/04 "Thumbs"). The preview here is flat grey and the CFA a
+// gradient, so the thumbnail's pixels say which one it came from.
+TEST_CASE("a RAW thumbnail comes from its embedded preview", "[codec][raw][image][thumb]") {
+  dng_options opt;
+  opt.preview_flat = true;
+  const auto dng = make_dng(opt);
+  auto t = mv::image::make_thumb_rgba(dng, 256);
+  REQUIRE(t);
+  CHECK(t->width == 256);
+  CHECK(t->height == 170);
+  int worst = 0;  // a demosaic would carry the scene's gradient, tens of levels off
+  for (std::size_t i = 0; i < t->rgba.size(); i += 4) {
+    for (std::size_t c = 0; c < 3; ++c) worst = std::max(worst, std::abs(t->rgba[i + c] - 200));
+  }
+  CHECK(worst <= 8);
+}
+
 TEST_CASE("synthetic DNG: the linear develop is the full decode before the sRGB curve",
           "[codec][raw][adjust]") {
   // PR 11 (docs/design/07): the adjust pane edits LibRaw's real linear data, and with
@@ -796,6 +817,18 @@ TEST_CASE("camera RAW: cancelling a full decode returns promptly", "[codec][raw]
   auto bytes = mv::io::read_all(path);
   REQUIRE(bytes);
 
+  // What "never cancels" would cost on THIS machine and build: an uncancelled
+  // decode. 1-1.7 s on a dev box in Release, several times that in a Debug build
+  // on a 4-vCPU hosted runner, where a fixed 1000 ms bound was one stage away
+  // from failing (CR2, 1023 ms) even though the cancel landed at a stage edge.
+  const auto full_start = std::chrono::steady_clock::now();
+  REQUIRE(mv::codec::decode_raw(bytes.value(), nullptr));
+  const double full_ms =
+      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - full_start)
+          .count();
+  const double bound_ms = std::max(1000.0, 0.6 * full_ms);
+  CAPTURE(full_ms);
+
   for (int delay_ms : {0, 40, 150}) {
     CAPTURE(delay_ms);
     std::atomic<mv::generation> current{1};
@@ -818,8 +851,8 @@ TEST_CASE("camera RAW: cancelling a full decode returns promptly", "[codec][raw]
     // LibRaw polls the progress callback between stages, not inside one, so
     // latency is one stage: a CR2 lossless-JPEG unpack is ~400 ms alone and
     // ~550 ms with the rest of the suite running. The bound catches "never
-    // cancels" (a full decode is 1-1.7 s), not stage granularity.
-    CHECK(latency < 1000.0);
+    // cancels" (a full decode, timed above), not stage granularity.
+    CHECK(latency < bound_ms);
   }
 }
 

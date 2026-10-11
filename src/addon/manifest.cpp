@@ -229,11 +229,40 @@ std::span<const std::uint8_t, 32> pinned_public_key() noexcept {
 }
 #endif
 
+namespace {
+char ascii_lower(char c) noexcept { return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c; }
+
+bool iequals(std::string_view a, std::string_view b) noexcept {
+  return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) {
+           return ascii_lower(x) == ascii_lower(y);
+         });
+}
+
+// A name Windows opens as a device in every folder: CON, PRN, AUX, NUL,
+// COM1-9, LPT1-9 (and COM¹²³, LPT¹²³), in any case, with or without an
+// extension and with spaces before it.
+bool windows_device(std::string_view part) noexcept {
+  std::string_view base = part.substr(0, part.find('.'));
+  while (!base.empty() && base.back() == ' ') base.remove_suffix(1);
+  for (std::string_view d : {"con", "prn", "aux", "nul"}) {
+    if (iequals(base, d)) return true;
+  }
+  if (base.size() < 4 || !(iequals(base.substr(0, 3), "com") || iequals(base.substr(0, 3), "lpt"))) {
+    return false;
+  }
+  const std::string_view n = base.substr(3);
+  return (n.size() == 1 && n[0] >= '0' && n[0] <= '9') || n == "\xC2\xB9" || n == "\xC2\xB2" ||
+         n == "\xC2\xB3";
+}
+}  // namespace
+
 bool safe_relative_path(std::string_view path) noexcept {
   if (path.empty() || path.size() > 512) return false;
   if (path.front() == '/' || path.front() == '\\') return false;
   if (path.find('\\') != std::string_view::npos) return false;  // '/' only, on every OS
   if (path.find(':') != std::string_view::npos) return false;   // drive letters, ADS
+  // Characters Win32 refuses in a name, or reads as wildcards.
+  if (path.find_first_of("<>\"|?*") != std::string_view::npos) return false;
   for (char c : path) {
     if (static_cast<unsigned char>(c) < 0x20) return false;
   }
@@ -242,6 +271,9 @@ bool safe_relative_path(std::string_view path) noexcept {
     const auto slash = rest.find('/');
     const std::string_view part = rest.substr(0, slash);
     if (part.empty() || part == "." || part == "..") return false;
+    // Win32 drops a trailing dot or space, so "a." is "a" there; and a device
+    // name is a device in every folder.
+    if (part.back() == '.' || part.back() == ' ' || windows_device(part)) return false;
     if (slash == std::string_view::npos) break;
     rest.remove_prefix(slash + 1);
   }
