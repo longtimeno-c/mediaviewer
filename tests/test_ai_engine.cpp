@@ -697,9 +697,9 @@ struct rig {
     return d;
   }
 
-  void start() {
+  void start(mv::ai::engine_options options = {}) {
     eng.reset();
-    eng = std::make_unique<engine>(&api, deps());
+    eng = std::make_unique<engine>(&api, deps(), options);
     REQUIRE(eng->start());
   }
 
@@ -884,6 +884,102 @@ TEST_CASE("an edited file is re-queued and a reopened tree queues only its delta
   REQUIRE(r.eng->root_rescan(1));
   REQUIRE(r.idle());
   CHECK(r.search("red").size() == 1);
+}
+
+// Issue #299: a root left part-way by a quit is held at the next start (when
+// the host asks first: engine_options::hold_unfinished) -- not walked, not
+// indexed, no files added meanwhile -- until Resume; a finished root carries
+// on as before. resume.json says which roots are unfinished, for the host's
+// launch notice.
+TEST_CASE("an index left unfinished waits for Resume after a restart", "[ai][engine]") {
+  rig r;
+  r.file("b/red_4.jpg");
+  r.file("a/red_1.jpg");
+  r.file("a/green_2.jpg");
+  r.file("a/blue_3.jpg");
+  const mv::ai::engine_options hold{.hold_unfinished = true};
+  r.start(hold);  // nothing unfinished yet: nothing held
+  REQUIRE(r.eng->index_folder(utf8(r.photos() / "b"), true));  // root 1, indexed in full
+  REQUIRE(r.idle());
+  REQUIRE(r.stills_decoded.load() == 1);
+
+  const auto row_of = [&](std::int64_t id) -> std::optional<mv::json::value> {
+    const auto roots = mv::json::parse(r.eng->roots_json());
+    if (!roots) return std::nullopt;
+    for (const auto& row : roots->a) {
+      if (row.integer("id").value_or(0) == id) return row;
+    }
+    return std::nullopt;
+  };
+  const auto resume_roots = [&]() -> std::vector<std::int64_t> {
+    std::ifstream in(r.dir / "data" / "resume.json", std::ios::binary);
+    std::stringstream text;
+    text << in.rdbuf();
+    std::vector<std::int64_t> out;
+    if (const auto doc = mv::json::parse(text.str())) {
+      if (const auto* roots = doc->find("roots")) {
+        for (const auto& row : roots->a) out.push_back(row.integer("id").value_or(0));
+      }
+    }
+    return out;
+  };
+  const auto eventually = [](const std::function<bool()>& ok) {
+    for (int i = 0; i < 500; ++i) {
+      if (ok()) return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    return ok();
+  };
+
+  // Root 2 is walked but none of it indexed: the app quits part-way.
+  r.eng->pause(true);
+  REQUIRE(r.eng->index_folder(utf8(r.photos() / "a"), true));
+  REQUIRE(eventually([&] {
+    const auto row = row_of(2);
+    return row && row->integer("assets").value_or(0) == 3;
+  }));
+  CHECK(eventually([&] { return resume_roots() == std::vector<std::int64_t>{2}; }));
+  CHECK(r.stills_decoded.load() == 1);
+
+  // Meanwhile a file lands in each root.
+  r.file("a/red_5.jpg");
+  r.file("b/green_6.jpg");
+  r.start(hold);
+  REQUIRE(r.idle());
+  CHECK(r.stills_decoded.load() == 2);  // the finished root's new file only
+  {
+    const auto held = row_of(2);
+    REQUIRE(held);
+    CHECK(held->boolean("held").value_or(false));
+    CHECK(held->integer("assets").value_or(0) == 3);  // not walked: red_5 waits too
+    CHECK(held->integer("done").value_or(-1) == 0);
+    const auto carried_on = row_of(1);
+    REQUIRE(carried_on);
+    CHECK_FALSE(carried_on->boolean("held").value_or(true));
+    CHECK(carried_on->integer("done").value_or(0) == 2);
+  }
+  CHECK(r.search("green").size() == 1);  // search answers from what was committed
+  CHECK(eventually([&] { return resume_roots() == std::vector<std::int64_t>{2}; }));
+
+  // Resume: walked, then indexed, the new file with it.
+  REQUIRE(r.eng->set_setting("resume_root", "2"));
+  REQUIRE(r.idle());
+  CHECK(r.stills_decoded.load() == 6);
+  {
+    const auto row = row_of(2);
+    REQUIRE(row);
+    CHECK_FALSE(row->boolean("held").value_or(true));
+    CHECK(row->integer("done").value_or(0) == 4);
+  }
+  CHECK(eventually([&] { return resume_roots().empty(); }));
+
+  // A finished index holds nothing at the next start.
+  r.start(hold);
+  REQUIRE(r.idle());
+  const auto row = row_of(2);
+  REQUIRE(row);
+  CHECK_FALSE(row->boolean("held").value_or(true));
+  CHECK(r.stills_decoded.load() == 6);
 }
 
 TEST_CASE("scope limits results to the folder or the folder and below", "[ai][engine]") {

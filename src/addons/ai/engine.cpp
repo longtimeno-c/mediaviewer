@@ -100,6 +100,9 @@ void copy_str(char* dst, std::size_t cap, const std::string& src) {
 constexpr std::size_t kPhotoBatch = 4;
 constexpr std::size_t kFrameBatch = 8;
 constexpr std::int32_t kMaxTries = 3;
+// resume.json (issue #299) is rewritten at most this often while nothing is
+// walked, and only when its text changes.
+constexpr double kResumeWriteSeconds = 5.0;
 // The iCloud fetch: clips on disk ahead of the workers, and the free space it
 // leaves alone (2026-10-05).
 constexpr std::size_t kFetchAhead = 2;
@@ -184,6 +187,18 @@ expected engine::start() {
   if (!options_.read_only) cloud_ = deps_.cloud ? deps_.cloud() : make_cloud_files();
   for (const root_row& r : roots_cache_) {
     if (is_photos_key(r.path)) photos_root_ = r.id;
+  }
+  if (options_.hold_unfinished && !options_.read_only) {
+    // Issue #299: what a quit or a kill left part-way waits for Resume. Read
+    // from the index alone, before any walk or model load.
+    const std::string spec = db_->meta("active_spec");
+    if (!spec.empty()) {
+      std::lock_guard lock(held_m_);
+      for (const root_row& r : roots_cache_) {
+        const track_filter pictures{true, MV_AI_MEDIA_PICTURES, default_media(), 0, {}};
+        if (r.enabled && db_->pending_in_root(r.id, spec, kMaxTries, pictures) > 0) held_roots_.insert(r.id);
+      }
+    }
   }
   if (options_.read_only) {
     control_ = std::thread([this] { reader_loop(); });
@@ -360,6 +375,12 @@ expected engine::set_setting(const std::string& key, const std::string& value_js
     post(MV_ADDON_EVENT_AI_STATUS);
     return {};
   }
+  if (key == "resume_root") {
+    // Issue #299: Resume on the launch notice or a root's row (0: all).
+    if (x < 0) return err(status::invalid_arg);
+    (void)unhold(static_cast<std::int64_t>(x));
+    return {};
+  }
   if (key == "battery_override") {
     // "Index anyway": for this spell on battery only, never written to
     // settings.json. The workers pick it up on their next turn (wait_turn).
@@ -429,6 +450,85 @@ void engine::pause(bool paused) {
   post(MV_ADDON_EVENT_AI_STATUS);
 }
 
+// ---- held roots (issue #299) ---------------------------------------------------------------
+
+std::vector<std::int64_t> engine::held_list() const {
+  std::lock_guard lock(held_m_);
+  return {held_roots_.begin(), held_roots_.end()};
+}
+
+bool engine::held(std::int64_t root) const {
+  std::lock_guard lock(held_m_);
+  return held_roots_.count(root) != 0;
+}
+
+bool engine::unhold(std::int64_t root) {
+  std::vector<std::int64_t> freed;
+  {
+    std::lock_guard lock(held_m_);
+    if (root == 0) {
+      freed.assign(held_roots_.begin(), held_roots_.end());
+      held_roots_.clear();
+    } else if (held_roots_.erase(root) != 0) {
+      freed.push_back(root);
+    }
+  }
+  if (freed.empty()) return false;
+  {
+    // Its startup walk was skipped: files added meanwhile are found first.
+    std::lock_guard lock(control_m_);
+    rescan_roots_.insert(freed.begin(), freed.end());
+  }
+  {
+    std::lock_guard lock(work_m_);
+    queue_.clear();
+    queue_exhausted_ = false;
+  }
+  control_cv_.notify_all();
+  work_cv_.notify_all();
+  post(MV_ADDON_EVENT_AI_ROOTS);
+  post(MV_ADDON_EVENT_AI_STATUS);
+  return true;
+}
+
+void engine::write_resume(const std::string& spec, const std::vector<root_row>& roots) {
+  if (!options_.hold_unfinished || options_.read_only || spec.empty()) return;
+  json::writer w;
+  w.begin_object();
+  w.key("version").integer(1);
+  w.key("roots");
+  w.begin_array();
+  const track_filter pictures{true, MV_AI_MEDIA_PICTURES, default_media(), 0, {}};
+  for (const root_row& r : roots) {
+    if (!r.enabled) continue;
+    const std::uint64_t left = db_->pending_in_root(r.id, spec, kMaxTries, pictures);
+    if (left == 0) continue;
+    const std::uint64_t total = db_->assets_in_root(r.id);
+    w.begin_object();
+    w.key("id").integer(r.id);
+    w.key("path").string(r.path);
+    w.key("kind").string(is_photos_key(r.path) ? "photos" : "folder");
+    w.key("done").integer(static_cast<std::int64_t>(db_->done_in_root(r.id, spec)));
+    w.key("total").integer(static_cast<std::int64_t>(total));
+    w.key("held").boolean(held(r.id));
+    w.end_object();
+  }
+  w.end_array();
+  w.end_object();
+  std::string text = w.take();
+  if (text == resume_written_) return;
+  const std::string tmp = join(data_dir_, "resume.json.tmp");
+  {
+    std::ofstream out(fs_path(tmp), std::ios::binary | std::ios::trunc);
+    if (!out) return;
+    out << text;
+    if (!out) return;
+  }
+  std::error_code ec;
+  std::filesystem::rename(fs_path(tmp), fs_path(join(data_dir_, "resume.json")), ec);
+  if (!ec) resume_written_ = std::move(text);
+}
+
 // ---- status ------------------------------------------------------------------------------
 
 void engine::status(mv_ai_status& out) const {
@@ -448,14 +548,16 @@ void engine::refresh_counts() {
   }
   const std::uint32_t media = default_media();
   const std::int64_t skip = skip_root();
-  const counts c = build_spec.empty() ? counts{} : db_->count(build_spec, track_filter{true, MV_AI_MEDIA_PICTURES, media, skip});
+  const std::vector<std::int64_t> held_now = held_list();
+  const counts c = build_spec.empty() ? counts{}
+                                      : db_->count(build_spec, track_filter{true, MV_AI_MEDIA_PICTURES, media, skip, held_now});
   std::string sound_spec, speech_spec;
   {
     std::lock_guard lock(models_m_);
     sound_spec = sound_.spec_key;
     speech_spec = speech_.spec_key;
   }
-  const track_filter audio{false, MV_AI_MEDIA_SOUND, media, skip};
+  const track_filter audio{false, MV_AI_MEDIA_SOUND, media, skip, held_now};
   const counts cs = sound_spec.empty() ? counts{} : db_->count(sound_spec, audio);
   const counts cp = speech_spec.empty() ? counts{} : db_->count(speech_spec, audio);
   std::map<std::int64_t, std::pair<std::uint64_t, std::uint64_t>> per_root;
@@ -1393,6 +1495,7 @@ void engine::control_loop() {
   double last_full_scan = 0;
   double last_photos_scan = 0;
   double last_consolidate = now_s();
+  double last_resume_write = 0;
   std::uint32_t last_state = 0xFFFF;
   while (!stopping_) {
     if (reload_models_.load()) {
@@ -1444,7 +1547,7 @@ void engine::control_loop() {
       last_full_scan = t;
     } else {
       for (const root_row& r : db_->roots()) {
-        if (some.count(r.id) && r.enabled) scan_root(r);
+        if (some.count(r.id) && r.enabled && !held(r.id)) scan_root(r);
       }
     }
     {
@@ -1455,6 +1558,12 @@ void engine::control_loop() {
     scanning_ = false;
     // The walk is over even when it found nothing new: the rows stop saying so.
     if (walked) post(MV_ADDON_EVENT_AI_ROOTS);
+    if (walked || t - last_resume_write >= kResumeWriteSeconds) {
+      // What a quit or a kill now would leave unfinished (issue #299): kept
+      // current so the next launch can ask without loading the pack.
+      write_resume(counting_spec(), db_->roots());
+      last_resume_write = t;
+    }
     {
       // Auto's large tower, still on CPU because the provider failed it in
       // the background (Core ML's upgrade): the small tower from here, and
@@ -1692,7 +1801,7 @@ void engine::catch_up_reader() {
 void engine::scan_all() {
   for (const root_row& r : db_->roots()) {
     if (stopping_) return;
-    if (r.enabled) scan_root(r);
+    if (r.enabled && !held(r.id)) scan_root(r);  // a held root waits for Resume (issue #299)
   }
 }
 
@@ -2045,9 +2154,9 @@ bool engine::fetch_wanted(std::int64_t asset) {
   };
   // No picture tower yet (a model load): keep the file for when it comes.
   if (spec.empty()) return true;
-  return wants(spec, track_filter{true, MV_AI_MEDIA_PICTURES, media, skip}) ||
-         wants(sound_spec, track_filter{false, MV_AI_MEDIA_SOUND, media, skip}) ||
-         wants(speech_spec, track_filter{false, MV_AI_MEDIA_SOUND, media, skip});
+  return wants(spec, track_filter{true, MV_AI_MEDIA_PICTURES, media, skip, {}}) ||
+         wants(sound_spec, track_filter{false, MV_AI_MEDIA_SOUND, media, skip, {}}) ||
+         wants(speech_spec, track_filter{false, MV_AI_MEDIA_SOUND, media, skip, {}});
 }
 
 void engine::fetch_reap(bool all) {
@@ -2166,7 +2275,7 @@ bool engine::fetch_cloud_one(std::vector<asset_row>& candidates, std::size_t& ne
   for (int pass = 0; pass < 2 && !pick; ++pass) {
     while (next < candidates.size()) {
       const asset_row& a = candidates[next++];
-      if (!cloud_skip_.count(a.id) && !fetched_already(a.id)) {
+      if (!cloud_skip_.count(a.id) && !fetched_already(a.id) && !held(a.root_id)) {
         pick = a;
         break;
       }
@@ -2264,7 +2373,7 @@ void engine::fetch_loop() {
         for (int pass = 0; pass < 2 && !pick; ++pass) {
           while (next < candidates.size()) {
             const asset_row& a = candidates[next++];
-            if (!fetch_skip_.count(a.id)) {
+            if (!fetch_skip_.count(a.id) && !held(a.root_id)) {
               pick = a;
               break;
             }
@@ -2451,6 +2560,7 @@ bool engine::claim(std::vector<work_item>& out, track& t) {
       }
     };
     const std::int64_t skip = skip_root();
+    const std::vector<std::int64_t> held_now = held_list();
     {
       // Clips the iCloud fetch downloaded go first: their files wait on disk
       // until every track is done with them (fetch_reap).
@@ -2462,15 +2572,16 @@ bool engine::claim(std::vector<work_item>& out, track& t) {
             if (!in_flight_.count(w.asset.id)) queue_.push_back(job{std::move(w), which});
           }
         };
-        among(spec, track::picture, track_filter{true, MV_AI_MEDIA_PICTURES, media, skip});
-        among(sound_spec, track::sound, track_filter{false, MV_AI_MEDIA_SOUND, media, skip});
-        among(speech_spec, track::speech, track_filter{false, MV_AI_MEDIA_SOUND, media, skip});
+        among(spec, track::picture, track_filter{true, MV_AI_MEDIA_PICTURES, media, skip, held_now});
+        among(sound_spec, track::sound, track_filter{false, MV_AI_MEDIA_SOUND, media, skip, held_now});
+        among(speech_spec, track::speech, track_filter{false, MV_AI_MEDIA_SOUND, media, skip, held_now});
         if (queue_.empty() && faces_on) {
           std::lock_guard ml(models_m_);
           std::lock_guard al(assets_m_);
           for (std::int64_t id : fetched) {
             const auto it = assets_.find(id);
             if (it == assets_.end() || faces_scanned_.count(id) || in_flight_.count(id)) continue;
+            if (std::find(held_now.begin(), held_now.end(), it->second.root) != held_now.end()) continue;
             work_item w;
             w.asset.id = id;
             w.asset.path = it->second.path;
@@ -2481,9 +2592,9 @@ bool engine::claim(std::vector<work_item>& out, track& t) {
         }
       }
     }
-    take(spec, track::picture, track_filter{true, MV_AI_MEDIA_PICTURES, media, skip});
-    take(sound_spec, track::sound, track_filter{false, MV_AI_MEDIA_SOUND, media, skip});
-    take(speech_spec, track::speech, track_filter{false, MV_AI_MEDIA_SOUND, media, skip});
+    take(spec, track::picture, track_filter{true, MV_AI_MEDIA_PICTURES, media, skip, held_now});
+    take(sound_spec, track::sound, track_filter{false, MV_AI_MEDIA_SOUND, media, skip, held_now});
+    take(speech_spec, track::speech, track_filter{false, MV_AI_MEDIA_SOUND, media, skip, held_now});
     if (queue_.empty() && faces_on) {
       std::lock_guard ml(models_m_);
       std::lock_guard al(assets_m_);
@@ -2491,6 +2602,7 @@ bool engine::claim(std::vector<work_item>& out, track& t) {
       for (const auto& [id, m] : assets_) {
         if (faces_scanned_.count(id) || in_flight_.count(id)) continue;
         if (skip_faces != 0 && m.root == skip_faces) continue;
+        if (std::find(held_now.begin(), held_now.end(), m.root) != held_now.end()) continue;
         if (m.cloud) continue;  // online-only: the fetch brings it down first
         work_item w;
         w.asset.id = id;
@@ -3147,6 +3259,7 @@ std::string engine::roots_json() {
                                                        static_cast<double>(total_frames);
     w.key("bytes").integer(static_cast<std::int64_t>(share * static_cast<double>(total_bytes)));
     w.key("scanning").boolean(r.enabled && (walking_all || walking.count(r.id) != 0));
+    w.key("held").boolean(held(r.id));  // waits for Resume (issue #299)
     w.key("last_scan").integer(r.last_scan_at);
     if (!photos) w.key("cloud_only").integer(static_cast<std::int64_t>(db_->cloud_in_root(r.id)));
     bool unreadable = false;
@@ -3171,6 +3284,7 @@ result<std::int64_t> engine::index_folder(const std::string& dir, bool recursive
     const std::string rk = path_key(r.path);
     if ((rk == key && (r.recursive || !recursive)) || (r.recursive && under(key, rk))) {
       if (!r.enabled) (void)db_->set_root_enabled(r.id, true);
+      (void)unhold(r.id);  // Index this folder again: it resumes (issue #299)
       return r.id;
     }
   }
@@ -3219,6 +3333,7 @@ expected engine::root_set_enabled(std::int64_t id, bool enabled) {
   if (options_.read_only) return err(status::unsupported_format);  // a reader changes nothing
   if (importing_elsewhere()) return err(status::busy);
   MV_TRY_VOID(db_->set_root_enabled(id, enabled));
+  if (enabled) (void)unhold(id);
   {
     std::lock_guard lock(work_m_);
     queue_.clear();
@@ -3252,6 +3367,7 @@ expected engine::root_set_media(std::int64_t id, std::uint32_t media) {
 
 expected engine::root_rescan(std::int64_t id) {
   if (options_.read_only) return err(status::unsupported_format);  // a reader changes nothing
+  (void)unhold(id);  // asking for a walk is asking for the work (issue #299)
   {
     std::lock_guard lock(control_m_);
     rescan_roots_.insert(id);
@@ -3285,6 +3401,10 @@ expected engine::root_remove(std::int64_t id) {
     queue_exhausted_ = false;
   }
   MV_TRY_VOID(db_->remove_root(id));
+  {
+    std::lock_guard lock(held_m_);
+    held_roots_.erase(id);
+  }
   if (photos_root_ == id) {
     photos_root_ = 0;
     photos_readable_ = false;

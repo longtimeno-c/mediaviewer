@@ -207,6 +207,17 @@ the CPU self-test reference in `selftest.txt` (keyed by runtime, provider, model
   `path#t=ms` rows through the host table. There is no second thumbnail path.
 - Resumable: state is per asset and spec; a kill mid-clip resumes at the last committed frame
   (`resume_ms`).
+- **Unfinished roots wait for Resume (issue #299; engine half built, off in the shipped pack).**
+  With `engine_options::hold_unfinished`, a root whose pictures were not all indexed when the
+  engine started (a quit or a kill part-way) is *held*: not walked, not queued, not fetched from
+  iCloud or a cloud drive, and left out of the status counts, until `set_setting("resume_root",
+  <id>)` (0: every root), a Rescan, re-enabling it or Index this folder on it. Search answers
+  from what it committed meanwhile; `roots_json` marks it `"held": true`. With the option on, the
+  control thread keeps `data/resume.json` current (at most every 5 s, and after each walk, only
+  when it changed): `{"version":1,"roots":[{"id","path","kind","done","total","held"}]}`, the
+  enabled roots with pictures still to index, so a host can ask at launch without loading the
+  pack. The hosts' halves (the launch notice and Settings' Resume) are not built, so the shipped
+  pack does not hold yet.
 - A folder whose walk fails (offline, moved, no access) keeps its rows; `roots_json` says
   `"error":"unreadable"` and Settings says "Couldn't read this folder" rather than "Up to date".
 
