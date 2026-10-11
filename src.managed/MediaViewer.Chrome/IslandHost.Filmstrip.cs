@@ -59,6 +59,7 @@ public static partial class IslandHost
             _filmstrip = new DesktopWindowXamlSource();
             EnsureFocusHook();
             _filmstrip.Initialize(Win32Interop.GetWindowIdFromWindow(parent));
+            _filmstrip.TakeFocusRequested += OnTakeFocusRequested;  // Tab on (issue #217)
             // Park with no content, same as the gallery. Building the repeater
             // here and then immediately hiding it left an ItemsRepeater bound
             // to `Items`; the first folder-open show bound a second one and
@@ -375,7 +376,12 @@ public static partial class IslandHost
             VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
             HorizontalScrollMode = ScrollMode.Enabled,
             VerticalScrollMode = ScrollMode.Disabled,
+            // Tab lands here (issue #217): ← → walk, typing is typeahead. A
+            // click still leaves the keys with the canvas, as before.
+            IsTabStop = true,
+            AllowFocusOnInteraction = false,
         };
+        AutomationProperties_SetName(_filmstripScroll, "Filmstrip");
         var scroll = _filmstripScroll;
         scroll.CharacterReceived += OnTypeahead;  // docs/design/16 typeahead
         scroll.KeyDown += (_, e) =>

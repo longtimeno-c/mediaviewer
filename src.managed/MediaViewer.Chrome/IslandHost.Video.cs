@@ -86,6 +86,7 @@ public static partial class IslandHost
             _transport = new DesktopWindowXamlSource();
             EnsureFocusHook();
             _transport.Initialize(Win32Interop.GetWindowIdFromWindow(parent));
+            _transport.TakeFocusRequested += OnTakeFocusRequested;  // Tab on (issue #217)
             // Parked, with no content: nothing is open, and a full-client
             // default island would flash over the canvas on startup.
             Move(_transport, 1, 1, args.ClientHeight);

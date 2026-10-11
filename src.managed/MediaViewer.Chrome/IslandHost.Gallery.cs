@@ -240,6 +240,7 @@ public static partial class IslandHost
             _gallery = new DesktopWindowXamlSource();
             EnsureFocusHook();
             _gallery.Initialize(Win32Interop.GetWindowIdFromWindow(parent));
+            _gallery.TakeFocusRequested += OnTakeFocusRequested;  // Tab on (issue #217)
             // Park it before content exists: a default full-client island would
             // flash over the canvas for a frame on startup.
             // No content until the first show: the island exists so native can
