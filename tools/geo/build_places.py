@@ -895,7 +895,7 @@ M64 = (1 << 64) - 1
 
 
 def checksum(data):
-    """The blob checksum (src/geo/blob.cpp checksum()): four lanes over
+    """The blob checksum (src/geo/geo.cpp checksum()): four lanes over
     little-endian u64 words, each h = (h ^ w) * K; h ^= h >> 29, folded at the end."""
     n = len(data) // 8
     words = struct.unpack(f"<{n}Q", data[:n * 8])
