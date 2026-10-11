@@ -888,7 +888,8 @@ ctest --test-dir build -C Release -R "clip|trim" --output-on-failure
 
 # policy gates (all run in CI on every push)
 .\tools\check-module-graph.ps1     # dependencies point downward only
-.\tools\check-hostable-core.ps1    # D9: no windows.h / d3d11.h above gfx/
+.\tools\check-hostable-core.ps1    # D9: no windows.h / d3d11.h, nor Cocoa / Metal, above gfx/ outside the ports
+.\tools\check-vcpkg-baseline.ps1   # the five vcpkg baseline pins agree
 .\tools\check-winui-controls.ps1   # no ProgressBar / ProgressRing / DropDownButton / InfoBar / TextBox...: they
                                    # fail-fast in the island host (use JobBar, Shared\FlatBar.cs, a Button + Flyout,
                                    # Shared\FakeInput.cs)

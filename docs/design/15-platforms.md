@@ -81,7 +81,10 @@ Checks: [`tools/check-module-graph.ps1`](../../tools/check-module-graph.ps1) for
 depending on `shell/`; [`tools/check-hostable-core.ps1`](../../tools/check-hostable-core.ps1) fails a
 direct include of `d3d11.h`, `dxgi.h`, `windows.h`, `atlbase.h`, the WASAPI/COM headers, `d3d12.h` or
 FFmpeg's D3D11VA/DXVA2 hwcontext headers from `core/`, `codec/`, `canvas/`, `image/`, `meta/`,
-`player/`, `edit/`, `addon/`, `addons/` and `io/*.h`.
+`player/`, `edit/`, `addon/`, `addons/`, `infer/` and `io/*.h` outside `*_win.cpp`, and the mirror on the
+Mac side: Foundation, AppKit, Metal, QuartzCore, CoreVideo, CoreMedia, VideoToolbox, AVFoundation and
+Core Audio headers (`#include` or `#import`) in the same places outside the `*_mac.*`, `*_metal.*` and
+`*_posix.*` port files.
 
 ## Shaders
 
