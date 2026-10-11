@@ -89,8 +89,9 @@ the swapchain is resized on the next frame and the image is resampled on the GPU
 The refresh rate is read per display path, because `IDXGISwapChain::GetContainingOutput` is invalid on
 composition swapchains: the host monitor is matched to an active `QueryDisplayConfig` path and that
 path's rational `refreshRate` is used. An unknown rate, or a cloned source whose targets disagree, is
-**zero** — the frame-time gate cannot pass on a guessed 60 Hz. It is re-read on display change and
-window move.
+**zero** — the frame-time gate cannot pass on a guessed 60 Hz. It is read when the swapchain is created
+or moved to another window, and re-read on display change and window move — never on a resize, which
+cannot change it and would otherwise query the display topology every frame of a drag-resize.
 
 ## Color management & HDR
 
