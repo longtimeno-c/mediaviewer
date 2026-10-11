@@ -670,6 +670,11 @@ public static partial class IslandHost
         _barNotice.Text = text;
         _barNotice.Visibility = text.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
         AutomationProperties.SetName(_barNotice, text);
+        if (text.Length > 0)
+        {
+            Microsoft.UI.Xaml.Automation.Peers.FrameworkElementAutomationPeer.FromElement(_barNotice)
+                ?.RaiseAutomationEvent(Microsoft.UI.Xaml.Automation.Peers.AutomationEvents.LiveRegionChanged);
+        }
         _noticeTimer?.Stop();
         if (text.Length == 0 || ms <= 0 || _dispatcher is null) return;
         if (_noticeTimer is null)
