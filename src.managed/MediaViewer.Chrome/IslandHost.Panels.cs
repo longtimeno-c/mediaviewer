@@ -217,6 +217,80 @@ public static partial class IslandHost
         return t;
     }
 
+    // Off for the rest of the session once making a value selectable throws, so
+    // one failure leaves plain text everywhere rather than a broken pane.
+    private static bool _selectableTextOff;
+
+    /// <summary>
+    /// A metadata value that can be selected and copied, as the Mac's
+    /// <c>.textSelection(.enabled)</c> (MetadataView.swift). A TextBlock with
+    /// <c>IsTextSelectionEnabled</c>, not a read-only TextBox: TextBox fail-fasts
+    /// in these islands (Shared\FakeInput.cs). What sank TextBox there is its
+    /// default context flyout, a TextCommandBarFlyout this host cannot create;
+    /// a selectable TextBlock's default context and selection flyouts are the
+    /// same type, so both are replaced with a plain MenuFlyout (which loads here,
+    /// MediaViewer.Ai.Chrome\PeopleGrid.cs) <em>before</em> selection is turned
+    /// on, and the default is never asked for. The add-on alert's body
+    /// (IslandHost.AddonAlert.cs) is the other selectable TextBlock in this host.
+    /// Needs a Windows island check (#198): a fail-fast cannot be caught here.
+    /// </summary>
+    private static TextBlock Selectable(TextBlock t)
+    {
+        if (_selectableTextOff) return t;
+        try
+        {
+            var menu = new MenuFlyout();
+            var copy = new MenuFlyoutItem { Text = "Copy" };
+            copy.Click += (_, _) => CopyTextBlock(t);
+            var all = new MenuFlyoutItem { Text = "Select all" };
+            all.Click += (_, _) =>
+            {
+                try { t.SelectAll(); }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
+            };
+            menu.Items.Add(copy);
+            menu.Items.Add(all);
+            t.ContextFlyout = menu;
+            t.SelectionFlyout = null;
+            t.IsTextSelectionEnabled = true;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+            _selectableTextOff = true;
+            try
+            {
+                t.IsTextSelectionEnabled = false;
+                t.ContextFlyout = null;
+            }
+            catch (Exception inner)
+            {
+                System.Diagnostics.Debug.WriteLine(inner);
+            }
+        }
+        return t;
+    }
+
+    // The selection, or the whole value when nothing is selected (the menu's
+    // Copy on an unselected value copies it, as the Mac's Copy does on a row).
+    private static void CopyTextBlock(TextBlock t)
+    {
+        try
+        {
+            string text = t.SelectedText;
+            if (string.IsNullOrEmpty(text)) text = t.Text;
+            if (string.IsNullOrEmpty(text)) return;
+            var package = new Windows.ApplicationModel.DataTransfer.DataPackage();
+            package.SetText(text);
+            Windows.ApplicationModel.DataTransfer.Clipboard.SetContent(package);
+        }
+        catch (Exception ex)
+        {
+            // Another process holding the clipboard: nothing is copied.
+            System.Diagnostics.Debug.WriteLine(ex);
+        }
+    }
+
     // The Mac's xmark with its .help: an icon, a tooltip and an accessible
     // name rather than a bare "×" a screen reader cannot name.
     private static Button CloseButton(int command, string title)
@@ -523,6 +597,7 @@ public static partial class IslandHost
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             row.Children.Add(Text(label, Body, TypeBody));
             TextBlock v = Text(value.Length == 0 ? "—" : value, value.Length == 0 ? ChromeColour.Disabled : Title, TypeBody);
+            if (value.Length > 0) Selectable(v);
             Grid.SetColumn(v, 1);
             row.Children.Add(v);
             if (label == "Location" && value.Length > 0)
@@ -598,6 +673,7 @@ public static partial class IslandHost
             return col;
         }
         TextBlock v = Text(value.Length == 0 ? "—" : value, value.Length == 0 ? ChromeColour.Disabled : Title, TypeBody);
+        if (value.Length > 0) Selectable(v);
         v.VerticalAlignment = VerticalAlignment.Center;
         Grid.SetColumn(v, 1);
         row.Children.Add(v);
@@ -830,7 +906,9 @@ public static partial class IslandHost
         }
         else
         {
-            cell.Children.Add(Text(t.Value.Length == 0 ? "—" : t.Value, Body, UiFontSize - 2, maxLines: 3));
+            TextBlock value = Text(t.Value.Length == 0 ? "—" : t.Value, Body, UiFontSize - 2, maxLines: 3);
+            if (t.Value.Length > 0) Selectable(value);
+            cell.Children.Add(value);
         }
         // The untranslated origin is always one hover away (docs/design/06).
         ToolTipService.SetToolTip(cell, t.Raw);
@@ -924,7 +1002,7 @@ public static partial class IslandHost
                     row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(130) });
                     row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
                     row.Children.Add(Text(f[1], Body, TypeSmall));
-                    TextBlock v = Text(f[2], Title, TypeSmall);
+                    TextBlock v = Selectable(Text(f[2], Title, TypeSmall));
                     Grid.SetColumn(v, 1);
                     row.Children.Add(v);
                     current.Children.Add(row);
