@@ -140,6 +140,10 @@ it replaces.
 | `fuzz` | windows-latest | 60 s per harness on PRs; 20 min per harness nightly. Uploads crash / timeout / OOM inputs |
 | `broken-corpus-full` | windows-latest | Nightly / dispatch: the exhaustive broken-corpus sweep |
 
+There is no macOS native job: CI on macOS compiles the SwiftUI chrome packages only. The Mac
+core, its `ctest` suites and the Metal present-loop gate run on a developer Mac
+([DEVELOPMENT](../DEVELOPMENT.md)).
+
 Release packaging is a separate manual workflow (`release.yml`; see
 [RELEASING.md](../../RELEASING.md)).
 
