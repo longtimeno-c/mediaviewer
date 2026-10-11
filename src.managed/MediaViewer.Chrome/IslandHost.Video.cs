@@ -336,6 +336,8 @@ public static partial class IslandHost
             Height = TransportDip,
             Child = row,
         };
+        // Issue #224: the island covers the canvas's WM_DROPFILES.
+        WireFileDrop(root);
         return root;
     }
 

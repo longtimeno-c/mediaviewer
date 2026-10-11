@@ -224,7 +224,9 @@ Marks are a separate set from the selection, so arrow-key browsing never makes a
   `CF_HDROP`, copy-only; a marked cell drags every marked item in listing order. The canvas drags
   too (at fit on Windows, `⌘`-drag on the Mac). A drag of ours dropped on our own window is
   refused.
-- **Opening** (argv, drop): the first entry that exists wins; a folder opens that folder, a file
+- **Opening** (argv, drop): a drop is taken anywhere on the window (on Windows: the canvas,
+  command bar, filmstrip, gallery, every pane, the Edit pane and the transport; a drag without
+  files is refused). The first entry that exists wins; a folder opens that folder, a file
   opens its folder with the file selected; several files from one folder open it on the first; a
   mixed drop opens the first file's folder. Nothing existing: nothing opens and the app beeps. A
   watcher refresh keeps the current item selected; if it was removed the next one takes its
