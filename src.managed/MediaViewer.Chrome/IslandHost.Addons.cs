@@ -154,21 +154,22 @@ public static partial class IslandHost
 
         public StackPanel Root { get; }
 
-        public void Show(AddonPhase p)
+        public void Show(AddonPhase p) => Show(p.Fraction, p.Text);
+
+        /// <summary>The bar at <paramref name="fraction"/> (null: indeterminate)
+        /// over <paramref name="text"/>; open add-on downloads use this with
+        /// their own sizes (IslandHost.OpenAddons.cs).</summary>
+        public void Show(double? f, string text)
         {
-            double? f = p.Fraction;
-            // Whatever the phase the bar shows activity: indeterminate (a
-            // fixed third) while no fraction is known, during checking and
+            // Whatever the phase the bar shows activity: indeterminate (the
+            // sweep) while no fraction is known, during checking and
             // installing too (owner report, 2026-09-28). With animations off
-            // in Windows it is a still, dimmed full bar instead.
-            bool still = f is null && !HostAnimationsEnabled();
-            _bar.IsIndeterminate = f is null && !still;
-            _bar.Root.Opacity = still ? 0.45 : 1;
+            // in Windows the JobBar is a still, dimmed full bar instead.
+            _bar.IsIndeterminate = f is null;
             if (f is double v) _bar.Value = v;
-            else if (still) _bar.Value = 1;
-            _text.Text = p.Text;
+            _text.Text = text;
             _percent.Text = f is double pct ? $"{Math.Floor(pct * 100):0} %" : "";
-            AutomationProperties.SetName(Root, f is double a ? $"{p.Text}, {Math.Floor(a * 100):0} percent" : p.Text);
+            AutomationProperties.SetName(Root, f is double a ? $"{text}, {Math.Floor(a * 100):0} percent" : text);
         }
     }
 
@@ -431,7 +432,7 @@ public static partial class IslandHost
     }
 
     /// <summary>The base chrome's services for an add-on (docs/design/18 IAddonHost; Milestone H IAddonHost2).</summary>
-    private sealed class AddonHost(AddonSlot slot) : IAddonHost2
+    private sealed class AddonHost(AddonSlot slot) : IAddonHost3
     {
         public void Post(Action action) => DispatcherQueueControllerTryEnqueue(action);
 
@@ -480,7 +481,9 @@ public static partial class IslandHost
 
         public void SeekVideo(long ms, bool exact) => OnUi(() => HostSeekVideo(ms, exact));
         public void SetScrubMarkers(IReadOnlyList<long> ms, int currentIndex) => OnUi(() => HostSetScrubMarkers(ms, currentIndex));
-        public void SetIndexingStatus(string? text, bool busy) => OnUi(() => HostSetIndexingPill(text, busy));
+        public void SetIndexingStatus(string? text, bool busy) => OnUi(() => HostSetIndexingPill(text, busy, -1, false));
+        public void SetIndexingPill(string? text, bool busy, double fraction, bool onBattery) =>
+            OnUi(() => HostSetIndexingPill(text, busy, fraction, onBattery));
         public void ShowSettings() => OnUi(HostShowLocalSearchSettings);
 
         private static void OnUi(Action action)

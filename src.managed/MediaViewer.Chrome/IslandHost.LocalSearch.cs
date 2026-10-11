@@ -219,7 +219,7 @@ public static partial class IslandHost
     private static void OnSearchChromeDetached()
     {
         _aiSettingsPanel = null;
-        HostSetIndexingPill(null, false);
+        HostSetIndexingPill(null, false, -1, false);
         HostSetScrubMarkers(Array.Empty<long>(), -1);
         _pendingListGallery = null;
         _searchOpenPending = false;
@@ -246,33 +246,26 @@ public static partial class IslandHost
     // ---- the command-bar pill ---------------------------------------------------------
 
     private static Button? _indexingPill;
-    // A still accent dot, not a ProgressRing: that control has no default style
-    // in this island host, and this one crashed the app the first time the
-    // pill showed (after a Local search install, when indexing started).
-    private static Microsoft.UI.Xaml.Shapes.Ellipse? _indexingDot;
+    private static IndexingRing? _indexingRing;
     private static TextBlock? _indexingText;
+    private static bool _indexingShown;
+    private static bool _indexingOnBattery;
+    private static Storyboard? _indexingFade;
 
     private static UIElement BuildIndexingPill()
     {
-        _indexingDot = new Microsoft.UI.Xaml.Shapes.Ellipse
-        {
-            Width = 8,
-            Height = 8,
-            Fill = Brush(ChromeColour.TrimAccent),
-            VerticalAlignment = VerticalAlignment.Center,
-            Visibility = Visibility.Collapsed,
-        };
+        _indexingRing = new IndexingRing(14, 2);
         _indexingText = new TextBlock
         {
             FontFamily = UiFont,
             FontSize = 13,
-            Foreground = Brush(Body),
+            Foreground = Brush(Title),
             VerticalAlignment = VerticalAlignment.Center,
             MaxWidth = 360,
             TextTrimming = TextTrimming.CharacterEllipsis,
         };
-        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        row.Children.Add(_indexingDot);
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 7 };
+        row.Children.Add(_indexingRing.Root);
         row.Children.Add(_indexingText);
         _indexingPill = TextButton("", () => SearchChrome?.RunCommand(SearchCommand.Open));
         _indexingPill.Content = new Border
@@ -286,26 +279,237 @@ public static partial class IslandHost
         };
         _indexingPill.Padding = new Thickness(4, 0, 4, 0);
         _indexingPill.Visibility = Visibility.Collapsed;
+        _indexingPill.Opacity = 0;
+        _indexingShown = false;
+        // The Mac's context menu: Open search, and Index anyway while it waits
+        // on battery. A plain MenuFlyout (it loads here; the bar's own menus
+        // are MenuFlyouts), filled as it opens so it says what is true now.
+        var menu = new MenuFlyout();
+        menu.Opening += (_, _) => Guarded(() => FillIndexingMenu(menu));
+        _indexingPill.ContextFlyout = menu;
         AutomationProperties.SetName(_indexingPill, "Local search indexing. Open search");
         ToolTipService.SetToolTip(_indexingPill, "Local search is indexing. Click to search (Ctrl+F)");
         return _indexingPill;
     }
 
-    private static void HostSetIndexingPill(string? text, bool busy)
+    private static void FillIndexingMenu(MenuFlyout menu)
     {
-        if (_indexingPill is null || _indexingText is null || _indexingDot is null) return;
-        _indexingPill.Visibility = text is null ? Visibility.Collapsed : Visibility.Visible;
-        if (text != _indexingText.Text)
+        menu.Items.Clear();
+        var open = new MenuFlyoutItem { Text = "Open search" };
+        open.Click += (_, _) => Guarded(() => SearchChrome?.RunCommand(SearchCommand.Open));
+        menu.Items.Add(open);
+        if (_indexingOnBattery)
+        {
+            var anyway = new MenuFlyoutItem { Text = "Index anyway, on battery" };
+            anyway.Click += (_, _) => Guarded(() => SearchChrome?.RunCommand(SearchCommand.IndexAnyway));
+            menu.Items.Add(anyway);
+        }
+    }
+
+    /// <param name="fraction">0…1 for the ring's arc; negative from a chrome
+    /// that sends none (IAddonHost2.SetIndexingStatus), which draws no arc.</param>
+    private static void HostSetIndexingPill(string? text, bool busy, double fraction, bool onBattery)
+    {
+        if (_indexingPill is null || _indexingText is null || _indexingRing is null) return;
+        _indexingOnBattery = text is not null && onBattery;
+        if (text is not null && text != _indexingText.Text)
         {
             // The pack's line ("Paused on battery", Look.StatusLine): say where the override is.
-            bool battery = text?.Contains("battery", StringComparison.OrdinalIgnoreCase) == true;
-            ToolTipService.SetToolTip(_indexingPill, battery
-                ? "Local search waits on battery. Click to search (Ctrl+F); Index anyway is in the panel's footer."
-                : "Local search is indexing in the background. Click to search (Ctrl+F)");
+            bool battery = onBattery || text.Contains("battery", StringComparison.OrdinalIgnoreCase);
+            ToolTipService.SetToolTip(_indexingPill, !battery
+                ? "Local search is indexing in the background. Click to search (Ctrl+F)"
+                : onBattery
+                    ? "Local search waits on battery. Click to search (Ctrl+F); right-click to index anyway."
+                    : "Local search waits on battery. Click to search (Ctrl+F); Index anyway is in the panel's footer.");
+            AutomationProperties.SetName(_indexingPill, text + ". Open search");
         }
-        _indexingText.Text = text ?? "";
-        // The dot shows only while indexing: a still app shows a still bar.
-        _indexingDot.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
+        if (text is not null) _indexingText.Text = text;
+        _indexingRing.Set(fraction, busy && HostAnimationsEnabled());
+        FadeIndexingPill(text is not null);
+    }
+
+    // The Mac fades the pill in and out (LocalSearchBarItem's transition): a
+    // short opacity storyboard, 150 ms with Windows' animations off as the
+    // Mac's Reduce Motion one. Hidden means collapsed, so a hidden pill's ring
+    // is unloaded and stops.
+    private static void FadeIndexingPill(bool show)
+    {
+        if (_indexingPill is not Button pill || show == _indexingShown) return;
+        _indexingShown = show;
+        _indexingFade?.Stop();
+        _indexingFade = null;
+        if (show) pill.Visibility = Visibility.Visible;
+        try
+        {
+            var fade = new DoubleAnimation
+            {
+                To = show ? 1 : 0,
+                Duration = new Duration(TimeSpan.FromMilliseconds(HostAnimationsEnabled() ? 220 : 150)),
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
+            };
+            Storyboard.SetTarget(fade, pill);
+            Storyboard.SetTargetProperty(fade, "Opacity");
+            var board = new Storyboard();
+            board.Children.Add(fade);
+            board.Completed += (_, _) =>
+            {
+                if (_indexingFade != board) return;
+                _indexingFade = null;
+                pill.Opacity = show ? 1 : 0;
+                if (!show) pill.Visibility = Visibility.Collapsed;
+            };
+            _indexingFade = board;
+            board.Begin();
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+            _indexingFade = null;
+            pill.Opacity = show ? 1 : 0;
+            pill.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        }
+    }
+
+    /// <summary>
+    /// The pill's ring (the Mac's ProgressRing, LocalSearchView.swift): a faint
+    /// track, the pass's progress as an accent arc from 12 o'clock and, while
+    /// work runs, a short dimmer arc that turns. Ellipse and Path arcs, not the
+    /// WinUI control: that one has no default style in this island host and
+    /// crashed the app the first time this pill showed. The turn is a
+    /// RotateTransform storyboard that runs only while busy and loaded, so a
+    /// paused or hidden pill costs nothing; with animations off it never turns.
+    /// </summary>
+    private sealed class IndexingRing
+    {
+        private readonly double _size;
+        private readonly double _line;
+        private readonly Microsoft.UI.Xaml.Shapes.Path _arc;
+        private readonly Microsoft.UI.Xaml.Shapes.Path _spinner;
+        private readonly RotateTransform _turn;
+        private Storyboard? _spin;
+        private double _fraction = -2;
+        private bool _spinning;
+
+        public Grid Root { get; }
+
+        public IndexingRing(double size, double line)
+        {
+            _size = size;
+            _line = line;
+            Root = new Grid { Width = size, Height = size, VerticalAlignment = VerticalAlignment.Center, IsHitTestVisible = false };
+            Root.Children.Add(new Ellipse
+            {
+                Width = size - line,
+                Height = size - line,
+                Margin = new Thickness(line / 2),
+                Stroke = Brush(Hairline),
+                StrokeThickness = line,
+            });
+            _arc = new Microsoft.UI.Xaml.Shapes.Path
+            {
+                Stroke = Brush(ChromeColour.TrimAccent),
+                StrokeThickness = line,
+                StrokeStartLineCap = PenLineCap.Round,
+                StrokeEndLineCap = PenLineCap.Round,
+            };
+            Root.Children.Add(_arc);
+            _turn = new RotateTransform { CenterX = size / 2, CenterY = size / 2 };
+            _spinner = new Microsoft.UI.Xaml.Shapes.Path
+            {
+                Data = Arc(0.18),
+                Stroke = Brush(ChromeColour.TrimAccent),
+                Opacity = 0.55,
+                StrokeThickness = line,
+                StrokeStartLineCap = PenLineCap.Round,
+                StrokeEndLineCap = PenLineCap.Round,
+                RenderTransform = _turn,
+                Visibility = Visibility.Collapsed,
+            };
+            Root.Children.Add(_spinner);
+            Root.Loaded += (_, _) => Apply();
+            Root.Unloaded += (_, _) => Stop();
+            AutomationProperties.SetAccessibilityView(Root, Microsoft.UI.Xaml.Automation.Peers.AccessibilityView.Raw);
+        }
+
+        public void Set(double fraction, bool spinning)
+        {
+            if (Math.Abs(fraction - _fraction) >= 0.001)
+            {
+                _fraction = fraction;
+                // Never empty while shown, as the Mac's trim(to: max(0.04, p)).
+                _arc.Data = fraction < 0 ? null : Arc(Math.Max(0.04, Math.Min(1, fraction)));
+            }
+            if (spinning == _spinning) return;
+            _spinning = spinning;
+            Apply();
+        }
+
+        private void Apply()
+        {
+            _spinner.Visibility = _spinning ? Visibility.Visible : Visibility.Collapsed;
+            if (_spinning && Root.IsLoaded) Start();
+            else Stop();
+        }
+
+        private void Start()
+        {
+            if (_spin is not null) return;
+            try
+            {
+                var turn = new DoubleAnimation
+                {
+                    From = 0,
+                    To = 360,
+                    Duration = new Duration(TimeSpan.FromMilliseconds(1100)),
+                    RepeatBehavior = RepeatBehavior.Forever,
+                };
+                Storyboard.SetTarget(turn, _turn);
+                Storyboard.SetTargetProperty(turn, "Angle");
+                _spin = new Storyboard();
+                _spin.Children.Add(turn);
+                _spin.Begin();
+            }
+            catch (Exception ex)
+            {
+                // A still ring is better than a broken bar.
+                System.Diagnostics.Debug.WriteLine(ex);
+                _spin = null;
+            }
+        }
+
+        private void Stop()
+        {
+            _spin?.Stop();
+            _spin = null;
+        }
+
+        /// <summary>An arc from 12 o'clock, clockwise, over <paramref name="fraction"/> of the circle.</summary>
+        private Geometry Arc(double fraction)
+        {
+            double r = (_size - _line) / 2;
+            double c = _size / 2;
+            if (fraction >= 0.999)
+            {
+                return new EllipseGeometry { Center = new Windows.Foundation.Point(c, c), RadiusX = r, RadiusY = r };
+            }
+            double angle = fraction * 2 * Math.PI;
+            var figure = new PathFigure
+            {
+                StartPoint = new Windows.Foundation.Point(c, c - r),
+                IsClosed = false,
+                IsFilled = false,
+            };
+            figure.Segments.Add(new ArcSegment
+            {
+                Point = new Windows.Foundation.Point(c + r * Math.Sin(angle), c - r * Math.Cos(angle)),
+                Size = new Windows.Foundation.Size(r, r),
+                IsLargeArc = fraction > 0.5,
+                SweepDirection = SweepDirection.Clockwise,
+            });
+            var geometry = new PathGeometry();
+            geometry.Figures.Add(figure);
+            return geometry;
+        }
     }
 
     // ---- matches over the scrub bar -----------------------------------------------------

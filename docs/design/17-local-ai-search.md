@@ -378,7 +378,10 @@ people.
 - **Indexing status:** a status pill (progress, pause/resume, "paused — playing video"), never a
   modal. It shows assets/frames completed, the active root, measured rate and an ETA range from
   completed work (`mv_ai_status`). The Windows pill does not appear for a load that is waiting
-  on the viewer.
+  on the viewer. On both hosts the command-bar pill has a ring (the pass's progress, with an arc
+  that turns while work runs), fades in and out, and has a menu: Open search, and Index anyway
+  while on battery. On Windows the pack reports these through `IAddonHost3.SetIndexingPill`;
+  an older pack's `SetIndexingStatus` still drives the line.
 - **Settings → Local search:** per-piece install, Compute, Quality, Precision, "Index videos
   for", battery threshold, index size and cap, remembered roots (with *Index Pictures* / *Videos*
   (*Movies*) offered while no root covers them, and the reason when an add fails), *Index
@@ -401,7 +404,7 @@ Indexing is a background load on the machine and GPU of a viewer whose point is 
   present loop is busy (`should_yield`: playback, panning, springs, a slideshow, a transition,
   and for 2 s after any dropped frame), while on battery below the threshold (default 30 %), and
   while the user has paused it. **Index anyway** wherever "Paused on battery" shows (search
-  footer, Settings, the Mac command-bar pill's menu) sets `battery_override` for that spell on
+  footer, Settings, the command-bar pill's menu) sets `battery_override` for that spell on
   battery; it is never saved, and going back to AC or restarting ends it. The viewer's own
   yields are not overridable.
 - **Loading:** opening the models (a GPU context, a gigabyte of weights, the self-test) waits for

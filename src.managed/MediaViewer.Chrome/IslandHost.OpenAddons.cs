@@ -52,6 +52,12 @@ public static partial class IslandHost
     private static string? _openConfirmRemove;
     private static string _openMessage = "";
     private static string _openProgress = "";
+    // The download's share once its size is known; null while connecting,
+    // checking, installing, or for a server that sends no length.
+    private static double? _openFraction;
+    // The bar in the row now, updated in place by download reports so its
+    // sweep is not restarted ten times a second.
+    private static AddonProgressView? _openProgressView;
     private static StackPanel? _openRow;
     private static FakeInput? _openLink;
     // What was typed into the link field, kept across the row's rebuilds (a
@@ -249,6 +255,7 @@ public static partial class IslandHost
         if (_openRow is null) return;
         _openRow.Children.Clear();
         _openLink = null;
+        _openProgressView = null;
         if (_openOffer is not null)
         {
             _openRow.Children.Add(BuildOpenSheet(_openOffer));
@@ -292,8 +299,18 @@ public static partial class IslandHost
                 _openRow.Children.Add(buttons);
             }
         }
-        string status = _openProgress.Length > 0 ? _openProgress : _openMessage;
-        if (status.Length > 0) _openRow.Children.Add(Note(status));
+        // While busy a bar, as the Mac's AddonProgressView (OpenAddons.swift),
+        // so a download never sits on frozen text; the last outcome otherwise.
+        if (_openProgress.Length > 0)
+        {
+            _openProgressView = new AddonProgressView(320);
+            _openProgressView.Show(_openFraction, _openProgress);
+            _openRow.Children.Add(_openProgressView.Root);
+        }
+        else if (_openMessage.Length > 0)
+        {
+            _openRow.Children.Add(Note(_openMessage));
+        }
     }
 
     private static FrameworkElement BuildOpenAddonEntry(OpenAddon addon)
@@ -519,13 +536,19 @@ public static partial class IslandHost
         _openEnteringLink = false;
         _openMessage = "";
         _openProgress = "Connecting…";
+        _openFraction = null;
         RefreshOpenAddonRow();
         string target = Path.Combine(Path.GetTempPath(), $"mediaviewer-addon-{Guid.NewGuid():N}.mvaddon");
-        var progress = new UiProgress<long>(done =>
+        var progress = new UiProgress<(long Done, long Total)>(p =>
         {
             if (!_openBusy) return;
-            _openProgress = $"Downloading… {OpenSizeText(done)}";
-            RefreshOpenAddonRow();
+            // "1.2 MB of 3.4 MB" with a bar once the server sent a length; the
+            // running size over a sweeping bar when it did not.
+            _openFraction = p.Total > 0 ? Math.Min(1.0, (double)p.Done / p.Total) : null;
+            _openProgress = p.Total > 0 ? $"{OpenSizeText(p.Done)} of {OpenSizeText(p.Total)}"
+                                        : $"Downloading… {OpenSizeText(p.Done)}";
+            if (_openProgressView is not null) _openProgressView.Show(_openFraction, _openProgress);
+            else RefreshOpenAddonRow();
         });
         _ = Task.Run(async () =>
         {
@@ -561,7 +584,7 @@ public static partial class IslandHost
     }
 
     // One GET, https at every hop, 64 MB at most. Worker.
-    private static async Task FetchOpenAddon(Uri uri, string target, IProgress<long> progress)
+    private static async Task FetchOpenAddon(Uri uri, string target, IProgress<(long Done, long Total)> progress)
     {
         for (int hop = 0; hop < 6; ++hop)
         {
@@ -587,6 +610,7 @@ public static partial class IslandHost
                 throw new OpenDownloadRefused(tooLarge);
             await using Stream input = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
             await using var output = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+            long total = response.Content.Headers.ContentLength ?? 0;
             byte[] buffer = new byte[64 * 1024];
             long done = 0;
             long reported = Environment.TickCount64;
@@ -600,7 +624,7 @@ public static partial class IslandHost
                 if (Environment.TickCount64 - reported >= 100)
                 {
                     reported = Environment.TickCount64;
-                    progress.Report(done);
+                    progress.Report((done, total));
                 }
             }
             return;
@@ -634,6 +658,7 @@ public static partial class IslandHost
         _openBusy = true;
         _openMessage = "";
         _openProgress = "Checking…";
+        _openFraction = null;
         DiscardOpenOffer();
         RefreshOpenAddonRow();
         _ = Task.Run(() =>
@@ -684,6 +709,7 @@ public static partial class IslandHost
         if (_openOffer is not { Ok: true } offer || _openBusy) return;
         _openBusy = true;
         _openProgress = "Installing…";
+        _openFraction = null;
         RefreshOpenAddonRow();
         _ = Task.Run(() =>
         {
