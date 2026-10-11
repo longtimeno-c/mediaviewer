@@ -404,7 +404,7 @@ typedef mv_status(MV_CALL* mv_addon_get_fn)(uint32_t host_api, const mv_host_api
  * ------------------------------------------------------------------------- */
 
 /* [{"id","name","version","dir","size","state":"ok|needs_update|invalid",
- *   "why","loaded","description","hint_on","hint_text","commands":[...]}] for
+ *   "why","loaded","description","hint_on","hint_text","settings","commands":[...]}] for
  * every add-on folder present (the last four from docs/design/25's contributions;
  * empty for an older manifest). Empty array when none. */
 MV_API mv_status MV_CALL mv_addon_installed_json(char* out, uint32_t cap, uint32_t* needed);

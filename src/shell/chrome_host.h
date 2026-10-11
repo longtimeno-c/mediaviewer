@@ -141,6 +141,11 @@ enum chrome_command : int {
   chrome_cmd_video_muted = 1032,
   chrome_cmd_video_track = 1033,
   chrome_cmd_video_loop = 1034,
+  // docs/design/25 PR 56: Settings applied a keymap pack. Native pulls the pack's
+  // JSON (mv_open_addon_keymap_json) with take_tree_path, applies it to the
+  // live table (shell/keymap.h), persists and republishes. 1050, not the next
+  // free number, so the add-on PRs beside it (57-59) keep theirs.
+  chrome_cmd_apply_keymap = 1050,
 };
 
 // chrome_cmd_video_loop's argument. The C# side mirrors it.

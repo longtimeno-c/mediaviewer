@@ -93,6 +93,8 @@ void write_contributions(mv::json::writer& w, const mv::addon::manifest& m) {
   w.key("description").string(m.description);
   w.key("hint_on").string(m.hint_on);
   w.key("hint_text").string(m.hint_text);
+  // PR 56: whether Settings has a page for it (mv_addon_settings_json).
+  w.key("settings").boolean(!m.settings.empty());
   w.key("commands").begin_array();
   for (const mv::addon::manifest_command& c : m.commands) {
     w.begin_object();

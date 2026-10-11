@@ -9130,7 +9130,7 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   for (NSString* row in [d arrayForKey:kDefaultsKeys]) {
     int idx = 0, k = 0, m = 0;
     if (sscanf(row.UTF8String, "%d,%d,%d", &idx, &k, &m) == 3) {
-      (void)mv::shell::rebind_live(idx, static_cast<mv::shell::key>(k), static_cast<std::uint8_t>(m));
+      (void)mv::shell::set_live_key(idx, static_cast<mv::shell::key>(k), static_cast<std::uint8_t>(m));
     }
   }
   [self rebuildKeys];
