@@ -65,6 +65,9 @@ uint64_t mv_chrome_keys_generation(void);
 
 // Bumps input_snapshot.one_to_one_seq and wakes the render thread. [any-thread]
 void mv_chrome_one_to_one(void);
+// Sets input_snapshot.zoom_preset to `factor` (0.5, 1, 2, 4: the View flyout's
+// rows), bumps zoom_preset_seq and wakes the render thread. [any-thread]
+void mv_chrome_zoom_preset(float factor);
 
 // The running version, from CMake project(VERSION) — the same string Windows
 // shows in About. Writes a NUL-terminated string into `buf`. Returns false
@@ -99,6 +102,13 @@ bool mv_chrome_item_name(int32_t index, char* out_buf, int32_t out_buf_size);
 // byte length needed, as the tables; 0 when `index` is out of range.
 int32_t mv_chrome_item_path(int32_t index, char* buf, int32_t size);
 
+// The thumbnail key of the item at `index`: an opaque UTF-8 string naming the
+// file and its bytes (path + size + mtime, and a result list's moment), the
+// key the thumb-ready callback below reports. Two folders' IMG_0001.JPG, or a
+// file before and after a rewrite, never share one (issue #177). Returns the
+// byte length needed, as mv_chrome_item_path; 0 when `index` is out of range.
+int32_t mv_chrome_item_thumb_key(int32_t index, char* buf, int32_t size);
+
 // Navigates to `index` the same way clicking a filmstrip/gallery cell does
 // (calls MvLabApp's existing -selectIndex:, the same path arrow keys use).
 // A no-op if `index` is out of range or no folder is open.
@@ -110,14 +120,16 @@ void mv_chrome_select_index(int32_t index);
 // after the host has already hopped back to the main thread — the callback
 // this registers is never invoked from a pool thread).
 //
-// `name_utf8` identifies which item this result is for — not the index it
-// was requested at. A directory can't have two entries with the same name,
-// so it is a stable key across a relist the way a raw index is not: if the
-// listing reorders (including from the app's own copy/move/Trash) between
-// the request and this callback firing, an index-keyed cache would attach
-// the result to whatever item now sits at that index instead of the one
-// that was actually asked for. Always non-NULL.
-typedef void (*mv_chrome_thumb_ready_fn)(const char* name_utf8, const char* thumb_path_utf8);
+// `key_utf8` identifies which item this result is for — the
+// mv_chrome_item_thumb_key it was requested under, not the index it was
+// requested at nor its name. It is a stable key across a relist the way a raw
+// index is not: if the listing reorders (including from the app's own
+// copy/move/Trash) between the request and this callback firing, an
+// index-keyed cache would attach the result to whatever item now sits at that
+// index. And unlike a name it is not repeated by a same-named file in another
+// folder, so a late result for the folder just left matches nothing on
+// screen (issue #177). Always non-NULL.
+typedef void (*mv_chrome_thumb_ready_fn)(const char* key_utf8, const char* thumb_path_utf8);
 void mv_chrome_set_thumb_ready_callback(mv_chrome_thumb_ready_fn callback);
 
 // Asynchronously requests (looks up, or decodes + caches) the JPEG-512
@@ -145,6 +157,12 @@ void mv_chrome_select_index_and_close_gallery(int32_t index);
 // stale even if the item count is unchanged (a rename, or one file added and
 // another removed). [main-thread]
 uint64_t mv_chrome_listing_generation(void);
+
+// Bumped when the host rewrites a listed file in place (a lossless rotate, a
+// metadata write) and updates its size / mtime without a relist, so Swift
+// re-reads mv_chrome_item_thumb_key and the cell asks for the new thumbnail.
+// [main-thread]
+uint64_t mv_chrome_thumb_generation(void);
 
 // Marks (docs/design/16 "Marks, copy, move"): bumped whenever the mark set changes,
 // so Swift can rebuild its marked-item cache only when it must.
@@ -445,8 +463,28 @@ bool mv_addon2_supported(const char* id);
 int32_t mv_addon2_state_json(const char* id, char* buf, int32_t size);   // [worker]
 bool mv_addon2_loaded(const char* id);                                     // [main-thread]
 bool mv_addon2_loading(const char* id);                                    // [main-thread]
-// "" or why the last load failed (a status name, "bundle", "chrome").
+// "" or why the last load failed (a status name, "bundle", "chrome"). "import" too.
 int32_t mv_addon2_load_error(const char* id, char* buf, int32_t size);     // [main-thread]
+// The same in words a person can act on, for Settings' status line; never a
+// path (rule 6). "ai" or "import". [main-thread]
+int32_t mv_addon2_load_reason(const char* id, char* buf, int32_t size);
+// 2026-10-07 (docs/design/18 "One host process"): true in a window whose
+// process does not host the add-ons. It searches through the AI pack's
+// read-only reader, loaded on demand; it installs, updates and removes nothing.
+bool mv_addon2_elsewhere(void);                                            // [main-thread]
+// Such a window: start the reader if it is due (Settings opened). [main-thread]
+bool mv_addon2_reader_start(void);
+// Such a window: what ⌘F does while Local search is not attached; false = file
+// search is the caller's to open. [main-thread]
+bool mv_addon2_reader_search(void);
+// Such a window: its last reader try found Local search not installed.
+bool mv_addon2_reader_absent(void);                                        // [main-thread]
+// The window's add-on alert (the command bar): an add-on that did not load or
+// start, and why. seq moves on every change; read the JSON only then:
+// {"seq","addon":"ai"|"import"|"" (none),"title","body","warn":bool,"open":bool}.
+uint64_t mv_addon2_alert_seq(void);                                        // [main-thread]
+int32_t mv_addon2_alert_json(char* buf, int32_t size);                     // [main-thread]
+void mv_addon2_alert_dismiss(uint64_t seq);                                // [main-thread]
 // Import loads at once; "ai" verifies and starts on a worker and attaches
 // later (poll mv_addon2_loaded / mv_addon2_loading). [main-thread]
 bool mv_addon2_load(const char* id);
