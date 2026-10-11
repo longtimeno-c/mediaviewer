@@ -71,8 +71,8 @@ std::string refusal_text(rejection why, const std::string& detail, const open_ma
     case rejection::unsafe_path:
       return "This add-on names a file outside its own folder.";
     case rejection::code_not_allowed:
-      return name + " contains code. MediaViewer installs add-ons from other makers only when "
-                    "they are data, such as themes.";
+      return name + " contains native code. MediaViewer runs code from other makers only as "
+                    "a script, inside its limits.";
     case rejection::needs_update:
       return name + " needs a newer MediaViewer.";
     case rejection::other_publisher:
@@ -102,13 +102,42 @@ std::string counted(std::size_t n, const char* one, const char* many) {
 // The sheet's "Adds / Can / Cannot" lines, from what the manifest holds and
 // never from what its maker wrote about it (docs/design/25 "Identity and trust").
 void write_abilities(json::writer& w, const open_manifest& m) {
-  w.key("adds").string(m.themes.empty() ? std::string("Nothing this MediaViewer uses")
-                                        : counted(m.themes.size(), "theme", "themes"));
+  std::string adds;
+  if (!m.themes.empty()) adds = counted(m.themes.size(), "theme", "themes");
+  if (!m.commands.empty()) {
+    if (!adds.empty()) adds += ", ";
+    adds += counted(m.commands.size(), "command", "commands");
+  }
+  if (adds.empty()) adds = m.runs_code() ? "A script" : "Nothing this MediaViewer uses";
+  w.key("adds").string(adds);
   w.key("can").begin_array();
   if (!m.themes.empty()) w.string("Change how MediaViewer's bars, panes and text look");
+  // One line per thing the script may reach, from the manifest (docs/design/25
+  // §5: computed, never the publisher's words).
+  if (m.runs_code()) {
+    w.string("Run its own script inside MediaViewer, stopped if it uses too much memory or time");
+  }
+  if (!m.commands.empty()) w.string("Add commands you can run from the keyboard");
+  if (m.permissions & perm_folder_read) w.string("See the names of the files in the open folder");
+  if (m.permissions & perm_selection) {
+    w.string("See which file is on screen, and the marked files when you run its command");
+  }
+  if (m.permissions & perm_thumbnails) w.string("Show thumbnails of your photos and videos");
   w.end_array();
-  // Contribution API 1 is data: true of every add-on this host installs.
-  w.key("cannot").string("Run code, read your files, or use the network");
+  // What it cannot do. Nothing grants the network or a change to a file under
+  // API 3, so those lines are always here.
+  std::vector<std::string> cannot;
+  if (!m.runs_code()) cannot.emplace_back("run code");
+  if (!(m.permissions & perm_folder_read)) cannot.emplace_back("read your files");
+  if (m.runs_code()) cannot.emplace_back("change your files");
+  cannot.emplace_back("use the network");
+  std::string line;
+  for (std::size_t i = 0; i < cannot.size(); ++i) {
+    if (i > 0) line += cannot.size() > 2 ? (i + 1 == cannot.size() ? ", or " : ", ") : " or ";
+    line += cannot[i];
+  }
+  line[0] = static_cast<char>(line[0] - 'a' + 'A');
+  w.key("cannot").string(line);
 }
 
 void write_addon(json::writer& w, const open_manifest& m) {
@@ -133,6 +162,19 @@ void write_addon(json::writer& w, const open_manifest& m) {
   w.key("themes").begin_array();
   for (const theme_ref& t : m.themes) {
     w.begin_object().key("id").string(t.id).key("name").string(t.name).end_object();
+  }
+  w.end_array();
+  // API 3: code.
+  w.key("script").boolean(m.runs_code());
+  w.key("permissions").begin_array();
+  for (std::uint32_t bit = 1; bit <= kPermissionsAll; bit <<= 1) {
+    if (m.permissions & bit) w.string(permission_name(bit));
+  }
+  w.end_array();
+  w.key("commands").begin_array();
+  for (const script_command& c : m.commands) {
+    w.begin_object().key("id").string(c.id).key("name").string(c.name).key("key").string(c.key)
+        .end_object();
   }
   w.end_array();
 }

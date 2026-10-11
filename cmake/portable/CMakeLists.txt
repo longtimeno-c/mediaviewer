@@ -93,6 +93,8 @@ set_target_properties(mv_io PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # ---- the add-on host and the Import add-on --------------------------------------
 set(MV_SOURCE_ROOT "${MV_ROOT}")
 include("${MV_ROOT}/cmake/import.cmake")
+# docs/design/25 §9 A (PR 57): Lua and the script runtime.
+include("${MV_ROOT}/cmake/script.cmake")
 # Milestone H: the AI pack (cmake/ai.cmake); its engine tests run here too.
 include("${MV_ROOT}/cmake/ai.cmake")
 
@@ -128,6 +130,16 @@ add_dependencies(mv_import_tests mv_import)
 add_test(NAME mv_import_tests COMMAND mv_import_tests)
 # The dateless-file fallback is local wall-clock time; pin the zone.
 set_tests_properties(mv_import_tests PROPERTIES ENVIRONMENT "TZ=UTC")
+
+# docs/design/25 §9 A (PR 57): the script sandbox and script add-ons.
+add_executable(mv_script_tests
+  "${MV_ROOT}/tests/test_script_runtime.cpp"
+  "${MV_ROOT}/tests/test_script_addons.cpp"
+)
+target_link_libraries(mv_script_tests PRIVATE mv_script mv_lua mv_addon mv_io
+  ${MV_SODIUM_TARGET} ${MV_CATCH2_TARGET})
+target_include_directories(mv_script_tests PRIVATE "${MV_ROOT}/src" "${MV_ROOT}/tests")
+add_test(NAME mv_script_tests COMMAND mv_script_tests)
 
 # The packing tool's cross-check (tools/package/test_addon_pack.py).
 add_executable(mv_addon_verify "${MV_ROOT}/tools/addon-verify/main.cpp")

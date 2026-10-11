@@ -298,8 +298,8 @@ TEST_CASE("manifest schema 2: ids, text, links, APIs", "[open-addon][manifest]")
   }
   {
     manifest_options o;
-    o.api_min = 2;
-    o.api_max = 3;
+    o.api_min = mv::addon::kContributionApi + 1;
+    o.api_max = mv::addon::kContributionApi + 2;
     const std::string m = open_manifest_json(k, theme_files(), o);
     const auto d = mv::addon::check_open_manifest(bytes_from(m), k.sign(m));
     REQUIRE(d.why == rejection::needs_update);
@@ -318,12 +318,12 @@ TEST_CASE("manifest schema 2: ids, text, links, APIs", "[open-addon][manifest]")
     manifest_options o;
     o.extra_key = "colour_scheme";
     REQUIRE(check(o) == rejection::malformed);
-    o.api_max = 2;
+    o.api_max = mv::addon::kContributionApi + 1;
     REQUIRE(check(o) == rejection::none);
     manifest_options c;
-    c.extra_contributes = "settings";
+    c.extra_contributes = "screens";
     REQUIRE(check(c) == rejection::malformed);
-    c.api_max = 2;
+    c.api_max = mv::addon::kContributionApi + 1;
     REQUIRE(check(c) == rejection::none);
   }
   {
@@ -341,10 +341,12 @@ TEST_CASE("manifest schema 2: ids, text, links, APIs", "[open-addon][manifest]")
   }
 }
 
-TEST_CASE("a package that names code is refused, whatever API it claims",
+TEST_CASE("a package that names native code is refused, whatever API it claims",
           "[open-addon][manifest]") {
   publisher_key k;
-  for (const char* key : {"native", "chrome", "scripts", "main"}) {
+  // Scripts are code a host from PR 57 on runs (test_script_addons.cpp);
+  // native code, by any name, is refused by every host.
+  for (const char* key : {"native", "chrome", "main"}) {
     for (const int api_max : {1, 9}) {
       INFO(key << " api.max " << api_max);
       manifest_options top;

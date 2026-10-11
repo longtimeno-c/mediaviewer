@@ -11,9 +11,11 @@
 // fingerprint and decides (open_store.h).
 //
 // What a schema 2 add-on may hold is set by the contribution API it declares
-// (`api`), not by what the package happens to carry. API 1 is data only:
-// themes. A manifest that names code (`native`, `chrome`, `scripts`) is
-// refused by a host that does not run third-party code, whatever its range.
+// (`api`), not by what the package happens to carry. API 1 and 2 are data
+// only. API 3 (PR 57) adds code: Lua text files (`scripts`), run by the
+// sandboxed runtime (script_runtime.h), the permissions they ask for, and the
+// commands they contribute. Native code (`native`, `chrome`, `main`) is
+// refused by name, whatever the range: other makers' code runs only as script.
 // Portable (D9).
 #pragma once
 
@@ -32,7 +34,10 @@ inline constexpr int kOpenManifestSchema = 2;
 
 // The contribution API this host serves (docs/design/25 "Contribution API").
 //   1  themes.
-inline constexpr std::uint32_t kContributionApi = 1;
+//   3  scripts, permissions, commands (PR 57).
+inline constexpr std::uint32_t kContributionApi = 3;
+// The API that introduced code (`scripts`, `permissions`, commands).
+inline constexpr std::uint32_t kScriptApi = 3;
 inline constexpr std::uint32_t kContributionApiOldest = 1;
 
 // Every contribution point docs/design/25 §7 names, with the API that
@@ -74,6 +79,32 @@ struct theme_ref {
   std::string path;  // one of `files`, a theme JSON (theme.h)
 };
 
+// What a script may reach, each a line in the consent sheet and none granted
+// by default (docs/design/25 §9). Without a permission its API is absent from
+// the script's environment, not merely refused. There is no network
+// permission, and no socket call exists to grant. `files.write` and
+// `metadata.write` are PR 60's: a manifest naming them needs a newer host.
+enum permission : std::uint32_t {
+  perm_folder_read = 1u << 0,  // "folder.read": the open folder's files, by name
+  perm_thumbnails = 1u << 1,   // "thumbnails": thumbnail nodes in screens (PR 58)
+  perm_selection = 1u << 2,    // "selection": the file on screen, and marks with a command
+};
+inline constexpr std::uint32_t kPermissionsAll = perm_folder_read | perm_thumbnails | perm_selection;
+// "folder.read" for perm_folder_read; null for anything else.
+[[nodiscard]] const char* permission_name(std::uint32_t bit) noexcept;
+// The bit for a name this host grants; 0 for anything else.
+[[nodiscard]] std::uint32_t permission_from_name(std::string_view name) noexcept;
+
+// A command a script contributes (contribution point "commands", API 3).
+struct script_command {
+  std::string id;       // unique in the add-on: [a-z0-9-]{1,32}
+  std::string name;     // the row's name in `?`, Settings and the menu
+  std::string key;      // "Ctrl+Shift+K" (Ctrl is Cmd on the Mac); empty: no key
+  std::string run;      // the script's global function it calls
+  std::string modes;    // "viewing" (default) | "video" | "browse" | "all"
+  std::string payload;  // "none" (default) | "marks" | "marked_or_current" | "screen"
+};
+
 struct open_manifest {
   std::string id;           // "acme.film-tones": publisher.name, dotted
   std::string name;
@@ -89,6 +120,11 @@ struct open_manifest {
   std::uint64_t installed_size = 0;  // the sum of `files`
   std::vector<manifest_file> files;
   std::vector<theme_ref> themes;
+  // API 3: code. Empty `scripts` is a data add-on.
+  std::vector<std::string> scripts;  // .lua paths of `files`, run in this order
+  std::uint32_t permissions = 0;     // permission bits
+  std::vector<script_command> commands;
+  [[nodiscard]] bool runs_code() const noexcept { return !scripts.empty(); }
 };
 
 struct open_decision {
