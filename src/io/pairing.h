@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "io/dir.h"
+#include "io/media_extensions.h"
 
 namespace mv::io {
 
@@ -47,11 +48,7 @@ inline void ascii_lower_inplace(std::string& s) noexcept {
   }
 }
 
-inline std::string_view extension(std::string_view name) noexcept {
-  const auto dot = name.find_last_of('.');
-  if (dot == std::string_view::npos || dot + 1 >= name.size()) return {};
-  return name.substr(dot);
-}
+inline std::string_view extension(std::string_view name) noexcept { return extension_of(name); }
 
 inline std::string_view stem(std::string_view name) noexcept {
   const auto slash = name.find_last_of("\\/");
@@ -83,14 +80,7 @@ inline bool is_heic(std::string_view ext) noexcept {
 inline bool is_still_pair(std::string_view ext) noexcept { return is_jpeg(ext) || is_heic(ext); }
 inline bool is_mov(std::string_view ext) noexcept { return eq_lower(ext, ".mov"); }
 inline bool is_raw(std::string_view ext) noexcept {
-  static constexpr const char* k[] = {
-      ".cr2", ".cr3", ".nef", ".nrw", ".arw", ".srf", ".sr2", ".orf", ".raf", ".rw2",
-      ".pef", ".ptx", ".srw", ".rwl", ".dng", ".3fr", ".fff", ".iiq", ".mef", ".mos", ".raw",
-  };
-  for (const char* e : k) {
-    if (eq_lower(ext, e)) return true;
-  }
-  return false;
+  return is_media_extension(ext, media_kind::raw);
 }
 
 inline std::string key_of(std::string_view name) {
@@ -105,23 +95,13 @@ inline std::string key_of(std::string_view name) {
 // player/ like a clip, with its cover art or a card as the picture
 // (docs/plans/audio-and-documents.md §2.2).
 [[nodiscard]] inline bool is_audio_name(std::string_view name) noexcept {
-  static constexpr const char* k[] = {".mp3", ".m4a", ".m4p"};
-  const std::string_view ext = pairing_detail::extension(name);
-  for (const char* e : k) {
-    if (pairing_detail::eq_lower(ext, e)) return true;
-  }
-  return false;
+  return is_media_extension(extension_of(name), media_kind::audio);
 }
 
 // A document (PDF, DOCX), by its extension. Decoded page by page as a still
 // (docs/design/04 "Pages").
 [[nodiscard]] inline bool is_document_name(std::string_view name) noexcept {
-  static constexpr const char* k[] = {".pdf", ".docx"};
-  const std::string_view ext = pairing_detail::extension(name);
-  for (const char* e : k) {
-    if (pairing_detail::eq_lower(ext, e)) return true;
-  }
-  return false;
+  return is_media_extension(extension_of(name), media_kind::document);
 }
 
 // Kinds a listing can leave out (Settings, "Show audio files" / "Show
@@ -137,17 +117,14 @@ inline constexpr std::uint32_t kHideDocuments = 1u << 1;
 }
 
 // Played through player/ rather than decoded as a still, by its extension: a
-// clip in the D5 video containers, or an audio file. Same set as dir_win.cpp /
-// dir_mac.cpp's; the player probes the real container when it opens the file.
+// clip in the D5 video containers, or an audio file (io/media_extensions.h, the
+// table the listings use); the player probes the real container when it opens
+// the file.
 // Drives the gallery's play badge and the hosts' clip-vs-still routing, never
 // a decode.
 [[nodiscard]] inline bool is_video_name(std::string_view name) noexcept {
-  static constexpr const char* k[] = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".ts", ".m4v"};
-  const std::string_view ext = pairing_detail::extension(name);
-  for (const char* e : k) {
-    if (pairing_detail::eq_lower(ext, e)) return true;
-  }
-  return is_audio_name(name);
+  const media_extension* e = find_media_extension(extension_of(name));
+  return e != nullptr && (e->kind == media_kind::video || e->kind == media_kind::audio);
 }
 
 // A RAW by its extension. The listing already filters by extension; this only

@@ -1,6 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "io/dir.h"
+#include "io/media_extensions.h"
 
 #include <CoreServices/CoreServices.h>
 #include <dispatch/dispatch.h>
@@ -21,30 +22,9 @@
 namespace mv::io {
 namespace {
 
-// Same decodable set as dir_win.cpp (D9 parity) — docs/design/04, folded-in PR 7
-// formats and PR 5 video containers included.
+// The D5 listing set, shared with dir_win.cpp (io/media_extensions.h).
 bool still_extension(std::string_view name) noexcept {
-  const auto dot = name.find_last_of('.');
-  if (dot == std::string_view::npos || dot + 1 >= name.size()) return false;
-  char ext[8]{};
-  const std::size_t n = name.size() - dot;
-  if (n >= sizeof(ext)) return false;
-  for (std::size_t i = 0; i < n; ++i) {
-    char c = name[dot + i];
-    if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-    ext[i] = c;
-  }
-  static constexpr const char* kExt[] = {
-      ".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp", ".tif", ".tiff", ".ico", ".heic",
-      ".heif", ".hif", ".avif", ".dng", ".cr2", ".cr3", ".nef", ".nrw", ".arw", ".srf",
-      ".sr2", ".orf", ".raf", ".rw2", ".pef", ".ptx", ".srw", ".rwl", ".3fr", ".fff",
-      ".iiq", ".mef", ".mos", ".raw", ".mp4", ".mov", ".mkv", ".webm", ".avi", ".ts", ".m4v",
-      ".mp3", ".m4a", ".m4p", ".pdf", ".docx",
-  };
-  for (const char* e : kExt) {
-    if (std::strcmp(ext, e) == 0) return true;
-  }
-  return false;
+  return is_listed_extension(extension_of(name));
 }
 
 bool iequals_ascii(std::string_view a, std::string_view b) noexcept {

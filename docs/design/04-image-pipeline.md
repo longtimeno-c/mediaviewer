@@ -178,8 +178,10 @@ Ambiguous groups degrade to separate stops.
 ## Companion files — hide, do not navigate
 
 The listing ([`src/io/dir_win.cpp`](../../src/io/dir_win.cpp),
-[`src/io/dir_mac.cpp`](../../src/io/dir_mac.cpp)) keeps only files with a decodable still or a
-video extension, so companions are never navigation stops:
+[`src/io/dir_mac.cpp`](../../src/io/dir_mac.cpp)) keeps only files whose extension is in the D5
+table, [`src/io/media_extensions.h`](../../src/io/media_extensions.h) (stills, RAW, video, audio,
+documents; written once for both platforms and for the pairing and badges in `io/pairing.h`), so
+companions are never navigation stops:
 
 | Companion | How it is dropped |
 |---|---|

@@ -15,6 +15,8 @@
 #include <cmath>
 #include <cstdint>
 
+#include "gfx/frame_histogram.h"
+
 namespace mv::gfx {
 
 enum class drop_source : std::uint8_t {
@@ -151,13 +153,10 @@ class pacer {
  private:
   void record_interval(double ms) noexcept;
 
-  // 0.05 ms buckets up to 60 ms, plus an overflow bucket. Fixed-size so the
-  // render thread never allocates.
-  static constexpr std::size_t bucket_count = 1201;
-  static constexpr double bucket_ms = 0.05;
-
-  std::array<std::uint32_t, bucket_count> buckets_{};
-  std::array<std::uint32_t, bucket_count> cpu_buckets_{};
+  // Present-to-present and CPU frame times (gfx/frame_histogram.h, shared with
+  // the other platform's pacer so the PR 1 gate maths cannot drift).
+  frame_histogram intervals_;
+  frame_histogram cpu_times_;
   std::array<float, history_size> history_{};
   std::size_t history_cursor_ = 0;
 

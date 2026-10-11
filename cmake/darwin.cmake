@@ -68,6 +68,7 @@ add_library(mv_gfx STATIC
   src/gfx/video_blit_metal.mm
   src/gfx/video_blit_metal.h
   src/gfx/metal_pacer.h
+  src/gfx/frame_histogram.h
   src/gfx/present_policy.h
   src/gfx/pace_json.h
   src/gfx/device_mac.h
@@ -218,6 +219,7 @@ add_library(mv_io STATIC
   src/io/replace.h
   src/io/paths_mac.cpp
   src/io/dir.h
+  src/io/media_extensions.h
   src/io/file.h
   src/io/paths.h
   # Milestone G (docs/design/18): verified copy (also F8 across volumes) and the file

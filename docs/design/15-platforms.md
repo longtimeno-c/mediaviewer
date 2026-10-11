@@ -111,7 +111,7 @@ Every feature exists on both platforms; this table records where the per-OS half
 
 | Feature | Shared | Windows half | macOS half |
 |---|---|---|---|
-| Present, idle-stop, pacing gate (PR 1) | `gfx/pacer` policy | DXGI lab | Metal lab |
+| Present, idle-stop, pacing gate (PR 1) | `gfx/pacer` policy; one `gfx/frame_histogram` scores both pacers | DXGI lab | Metal lab |
 | Stills, colour, pan/zoom (PR 2, 7) | `codec/`, `image/`, `canvas/` | D3D11 upload + HLSL blit | Metal upload + MSL blit |
 | Chrome (PR 3) | ABI | WinUI islands | SwiftUI in AppKit |
 | Folder, filmstrip, gallery, thumbs (PR 4) | folder ABI, SQLite thumb cache `jpg512.1` | `io/dir_win.cpp` | `io/dir_mac.cpp`, `shell/folder_model_mac.cpp` |

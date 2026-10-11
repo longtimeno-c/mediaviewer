@@ -211,6 +211,7 @@ add_library(mv_gfx STATIC
   src/gfx/colour_desc.h
   src/gfx/metal_pacer.cpp
   src/gfx/metal_pacer.h
+  src/gfx/frame_histogram.h
   src/gfx/present_policy.h
   src/gfx/pace_json.h
 )
@@ -236,6 +237,7 @@ add_library(mv_io STATIC
   src/io/file_ops.h
   src/io/file_ops_win.cpp
   src/io/pairing.h
+  src/io/media_extensions.h
   src/io/sort_order.cpp
   src/io/sort_order.h
   # Milestone G (docs/design/18): verified copy (also F8 across volumes), the file
