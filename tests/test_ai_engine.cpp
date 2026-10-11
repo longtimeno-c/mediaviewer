@@ -13,6 +13,7 @@
 #include "catch_compat.h"
 
 #include <mediaviewer/mediaviewer_ai.h>
+#include <sqlite3.h>
 
 #include <algorithm>
 #include <atomic>
@@ -32,6 +33,7 @@
 
 #include "addon/host.h"
 #include "addons/ai/engine.h"
+#include "addons/ai/index_db.h"
 #include "nle/search_session.h"
 #include "core/json.h"
 #include "import_fixture.h"
@@ -1161,6 +1163,50 @@ TEST_CASE("clearing the index frees it and a size cap stops indexing", "[ai][eng
   }
   CHECK((r.status().flags & MV_AI_STATUS_INDEX_FULL) != 0);
   CHECK(r.status().state == MV_AI_STATE_PAUSED);
+}
+
+TEST_CASE("an index migrates from schema 1, and again after a crash left a step half done", "[ai][engine]") {
+  scratch_dir dir{"ai-migrate"};
+  const std::string path = utf8(dir / "index.db");
+  {
+    // Schema 1 as it was: roots without `media`, assets without `cloud`.
+    sqlite3* db = nullptr;
+    REQUIRE(sqlite3_open(path.c_str(), &db) == SQLITE_OK);
+    REQUIRE(sqlite3_exec(db,
+                         "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);"
+                         "CREATE TABLE roots(id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE,"
+                         " recursive INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,"
+                         " last_scan_at INTEGER NOT NULL DEFAULT 0);"
+                         "CREATE TABLE assets(id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE,"
+                         " root_id INTEGER NOT NULL REFERENCES roots(id) ON DELETE CASCADE,"
+                         " mtime INTEGER NOT NULL, size INTEGER NOT NULL, kind INTEGER NOT NULL,"
+                         " duration_ms INTEGER NOT NULL DEFAULT 0, seen INTEGER NOT NULL DEFAULT 0);"
+                         "INSERT INTO meta VALUES('schema', '1');"
+                         "INSERT INTO roots(path, recursive) VALUES('/photos', 1);",
+                         nullptr, nullptr, nullptr) == SQLITE_OK);
+    sqlite3_close(db);
+  }
+  {
+    auto d = mv::ai::index_db::open(path);
+    REQUIRE(d);
+    CHECK((*d)->meta("schema") == "3");
+    const auto roots = (*d)->roots();
+    REQUIRE(roots.size() == 1);
+    CHECK(roots[0].media == 0);
+    // A crash between a step's ALTER and its schema bump, as earlier builds
+    // could leave it: the column is there, the schema still says the old one.
+    REQUIRE((*d)->set_meta("schema", "1"));
+  }
+  {
+    auto d = mv::ai::index_db::open(path);
+    REQUIRE(d);
+    CHECK((*d)->meta("schema") == "3");
+    REQUIRE((*d)->set_meta("schema", "2"));
+  }
+  auto d = mv::ai::index_db::open(path);
+  REQUIRE(d);
+  CHECK((*d)->meta("schema") == "3");
+  CHECK((*d)->roots().size() == 1);
 }
 
 TEST_CASE("find similar returns the other stills of the same look, not the query", "[ai][engine]") {
