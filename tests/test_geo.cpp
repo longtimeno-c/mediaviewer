@@ -190,6 +190,11 @@ TEST_CASE("geo: the test blob loads and answers", "[geo]") {
     CHECK(db->lookup(std::nan(""), 0).label.empty());
     CHECK(db->lookup(0, INFINITY).label.empty());
     CHECK_FALSE(db->lookup(1e6, -1e6).label.empty());  // clamped and wrapped
+    mv::geo::lookup_options huge;
+    huge.town_radius_km = INFINITY;  // capped, not converted out of range
+    CHECK(db->lookup(38.7967, -9.3903, huge).country_code == "PT");
+    huge.town_radius_km = std::nan("");
+    CHECK(db->lookup(38.7967, -9.3903, huge).label == "Lisbon, Portugal");
   }
 
   SECTION("names people type") {
@@ -227,6 +232,9 @@ TEST_CASE("geo: the test blob loads and answers", "[geo]") {
     CHECK(db->ring(mv::geo::layer::countries, 0xFFFFFF, 0).empty());
     // Across the antimeridian (min_lon > max_lon): Fiji's halves.
     CHECK_FALSE(db->polygons_in(mv::geo::layer::countries, {-17.5, 179.0, -16.0, -179.0}).empty());
+    // Out-of-range and non-finite boxes: clamped or empty, never undefined.
+    CHECK_FALSE(db->polygons_in(mv::geo::layer::countries, {-1e300, -1e300, 1e300, 1e300}).empty());
+    CHECK(db->polygons_in(mv::geo::layer::countries, {std::nan(""), 0, 1, 1}).empty());
   }
 }
 

@@ -521,8 +521,11 @@ place database::lookup(double lat, double lon, const lookup_options& opts) const
     // Towns of the point's own region only, where the region is a GeoNames
     // one (a Natural Earth-only region has no towns filed under it).
     const std::uint16_t town_region = ri != k_no_region && !out.region_code.empty() ? ri : k_no_region;
+    // Capped at half the globe: pick_town turns the radius into a grid span,
+    // and an infinite or huge setting must not overflow that conversion.
+    const double radius = std::min(opts.town_radius_km, 20'000.0);
     double km = -1;
-    if (const town* t = pick_town(x, y, opts.town_radius_km, ci, town_region, km)) {
+    if (const town* t = pick_town(x, y, radius, ci, town_region, km)) {
       out.town = std::string(str(t->name));
       out.town_km = km;
       // No region polygon (an atoll narrower than the data): the town's own.
@@ -596,10 +599,16 @@ std::vector<name_match> database::match(std::string_view text, bool prefix) cons
 std::vector<std::uint32_t> database::polygons_in(layer which, const box& b) const {
   std::vector<std::uint32_t> out;
   const poly_layer& l = layer_of(which);
-  const auto qy0 = static_cast<std::int64_t>(std::floor(b.min_lat * k_q));
-  const auto qy1 = static_cast<std::int64_t>(std::ceil(b.max_lat * k_q));
-  const auto qx0 = static_cast<std::int64_t>(std::floor(b.min_lon * k_q));
-  const auto qx1 = static_cast<std::int64_t>(std::ceil(b.max_lon * k_q));
+  if (!std::isfinite(b.min_lat) || !std::isfinite(b.max_lat) || !std::isfinite(b.min_lon) ||
+      !std::isfinite(b.max_lon)) {
+    return out;
+  }
+  // Clamped before the integer conversion, which is undefined out of range.
+  const auto q = [](double v, double lim) { return std::clamp(v, -lim, lim) * k_q; };
+  const auto qy0 = static_cast<std::int64_t>(std::floor(q(b.min_lat, 90)));
+  const auto qy1 = static_cast<std::int64_t>(std::ceil(q(b.max_lat, 90)));
+  const auto qx0 = static_cast<std::int64_t>(std::floor(q(b.min_lon, 180)));
+  const auto qx1 = static_cast<std::int64_t>(std::ceil(q(b.max_lon, 180)));
   const bool wraps = b.min_lon > b.max_lon;
   for (std::uint32_t i = 0; i < l.polys.size(); ++i) {
     const polygon& p = l.polys[i];
