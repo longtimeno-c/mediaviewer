@@ -94,14 +94,19 @@ step, not yet automated ([RELEASING.md](../../RELEASING.md)).
 
 ## Enforcement
 
-`tools/licence-check.ps1` runs in CI on every push (and in `build-release.ps1`) and fails on:
+`tools/licence-check.ps1` runs in CI on every push and pull request (and in `build-release.ps1`).
+The `policy` job checks the manifests; the binary checks (2 and 3) need an install tree, so CI's
+Windows dependencies job runs it over `build/vcpkg_installed` on every pull request, and both
+release jobs run it before packaging: Windows over `build/vcpkg_installed`, macOS over
+`build/vcpkg_installed` and `build/vcpkg_dynamic` (the LGPL dylibs the app bundles). Each install
+tree is judged on its own, and a tree that was named but is missing fails. It fails on:
 
 1. A forbidden port in either manifest (`vcpkg.json`, `tools/mac/dependencies/vcpkg.json`):
    `x264`, `x265`, `fdk-aac`, `libbluray`, a `libraw-demosaic-pack*`, or an FFmpeg `gpl` /
    `nonfree` feature.
-2. FFmpeg's configure string, read from the built avutil/avcodec binaries, containing
+2. FFmpeg's configure string, read from the built avutil/avcodec/avformat DLLs or dylibs, containing
    `--enable-gpl` or `--enable-nonfree`, or enabling a forbidden encoder.
-3. FFmpeg, libheif, libde265, LibRaw or Exiv2 present as a static library, or a forbidden
-   encoder DLL installed.
+3. FFmpeg, libheif, libde265, LibRaw or Exiv2 present as a static library (`.lib` / `.a`) with
+   no DLL or dylib beside it, or a forbidden encoder library (x264, x265, fdk-aac) installed.
 4. `LICENSE` missing or not GPL-3.0, `NOTICE` missing, `vcpkg.json` not declaring
    GPL-3.0-or-later, or `THIRD-PARTY.md` missing.

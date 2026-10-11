@@ -261,6 +261,22 @@ final class AddonStore: ObservableObject {
   @Published private(set) var status = ""
   @Published private(set) var hint = false
   @Published var confirmingRemove = false
+  /// Another window's process hosts the add-ons (LocalSearchStore.elsewhere):
+  /// Import is neither read, loaded nor managed here. Constant for a run.
+  let elsewhere: Bool = mv_addon2_elsewhere()
+  /// The window's add-on alert (addons_mac.mm raise_alert): an add-on that did
+  /// not load or start, and why. nil none.
+  @Published private(set) var alert: AddonAlert?
+  private var alertSeq: UInt64 = 0
+
+  struct AddonAlert: Equatable {
+    let seq: UInt64
+    let addon: String
+    let title: String
+    let body: String
+    let warn: Bool
+    let open: Bool
+  }
 
   /// Whether the release channel has an Import this build can install. Only a
   /// manifest that verifies counts: the button never offers a download that
@@ -287,10 +303,11 @@ final class AddonStore: ObservableObject {
     timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
       MainActor.assumeIsolated { self?.poll() }
     }
-    refresh()
+    if !elsewhere { refresh() }  // a later window hashes nothing at launch
   }
 
   private func poll() {
+    pollAlert()
     let s = Self.readString { mv_addons_status($0, $1) }
     if s != status { status = s }
     let pending = mv_addons_hint_pending() && stateKnown && !installed
@@ -332,6 +349,27 @@ final class AddonStore: ObservableObject {
 
   func dismissHint() { mv_addons_hint_done(true) }
 
+  /// The seq first: the JSON is read only when it moved.
+  private func pollAlert() {
+    let seq = mv_addon2_alert_seq()
+    guard seq != alertSeq else { return }
+    alertSeq = seq
+    let json = Self.readString { mv_addon2_alert_json($0, $1) }
+    let obj = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any] ?? [:]
+    let addon = obj["addon"] as? String ?? ""
+    let next: AddonAlert? = addon.isEmpty ? nil : AddonAlert(
+      seq: (obj["seq"] as? NSNumber)?.uint64Value ?? seq, addon: addon,
+      title: obj["title"] as? String ?? "", body: obj["body"] as? String ?? "",
+      warn: obj["warn"] as? Bool ?? true, open: obj["open"] as? Bool ?? false)
+    if next != alert { alert = next }
+  }
+
+  func dismissAlert() {
+    guard let alert else { return }
+    mv_addon2_alert_dismiss(alert.seq)
+    pollAlert()
+  }
+
   /// Checking the channel is a network call like the update check, so a card
   /// arriving waits on the same switch (Sparkle's, in the app menu). With it
   /// off, Import is offered from Settings only.
@@ -348,7 +386,7 @@ final class AddonStore: ObservableObject {
   /// (the same channel as updates), then the host verifies the manifest.
   func probe() {
     // Installed too: Settings offers a newer version (docs/design/18).
-    guard !probing else { return }
+    guard !probing, !elsewhere else { return }
     probing = true
     offer = .checking
     Task.detached {
@@ -437,7 +475,10 @@ struct AddonsSection: View {
            : store.description)
         .font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
         .fixedSize(horizontal: false, vertical: true)
-      if !store.stateKnown {
+      if store.elsewhere {
+        // A later window: the first one manages add-ons (docs/design/18 "One host process").
+        note(LocalSearchStore.elsewhereText)
+      } else if !store.stateKnown {
         // Never an Install button while what is installed is unknown.
         note("Checking installed add-ons…")
       } else if !store.installed {
@@ -518,6 +559,7 @@ struct AddonBarItems: View {
 
   var body: some View {
     HStack(spacing: 6) {
+      AddonAlertItem(store: store)
       if store.hint {
         Button(hintText) { store.install() }
           .help("Import copies a card into your library, skips what is already there, and verifies every copy. An optional add-on.")
@@ -526,6 +568,57 @@ struct AddonBarItems: View {
       if !store.status.isEmpty {
         Text(store.status).font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
       }
+    }
+  }
+}
+
+/// "⚠ Local search couldn't start" in the command bar (owner, 2026-10-07: "show a
+/// user facing alert on any failures and why"; the Windows twin is
+/// IslandHost.AddonAlert.cs). A click shows why, with Dismiss and Open
+/// Settings; it opens by itself when ⌘F asked for what failed. It goes when
+/// dismissed or when the add-on loads after all. Never a path (rule 6).
+struct AddonAlertItem: View {
+  @ObservedObject var store: AddonStore
+  @State private var shown = false
+
+  var body: some View {
+    if let alert = store.alert {
+      Button {
+        shown.toggle()
+      } label: {
+        Text(alert.warn ? "\u{26A0} \(alert.title)" : alert.title)
+          .font(MVTheme.font(13))
+          .foregroundStyle(alert.warn ? MVTheme.accent : MVTheme.body)
+          .lineLimit(1)
+      }
+      .buttonStyle(FlatButtonStyle())
+      .help(alert.body)
+      .accessibilityLabel("\(alert.title). \(alert.body)")
+      .popover(isPresented: $shown, arrowEdge: .bottom) {
+        VStack(alignment: .leading, spacing: 10) {
+          Text(alert.title).font(MVTheme.font(16)).foregroundStyle(MVTheme.title)
+          Text(alert.body).font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
+            .fixedSize(horizontal: false, vertical: true)
+            .textSelection(.enabled)  // to copy into a bug report
+          HStack {
+            Spacer()
+            Button("Dismiss") {
+              shown = false
+              store.dismissAlert()
+            }
+            Button("Open Settings") {
+              shown = false
+              if !SettingsStore.shared.visible { mv_chrome_menu(18) }
+            }
+            .keyboardShortcut(.defaultAction)
+          }
+        }
+        .padding(14)
+        .frame(width: 420)
+        .background(MVTheme.canvas)
+      }
+      .onAppear { if alert.open { shown = true } }
+      .onChange(of: alert.seq) { _, _ in if alert.open { shown = true } }
     }
   }
 }

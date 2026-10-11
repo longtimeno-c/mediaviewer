@@ -2020,6 +2020,32 @@ TEST_CASE("the reader answers exactly as the app's engine on the same index", "[
   CHECK(r.stills_decoded.load() == decoded);
 }
 
+TEST_CASE("a second window's reader: nothing indexed yet is not_found, and it says it is read-only",
+          "[ai][search-agent]") {
+  rig r;
+  // No app engine has run: there is no index.db. The window says "nothing
+  // indexed yet", not "needs an update" (2026-10-07).
+  {
+    engine rd(r.table->api(), r.reader_deps(), mv::ai::engine_options{.read_only = true});
+    auto started = rd.start();
+    REQUIRE_FALSE(started);
+    CHECK(started.error() == mv::status::not_found);
+  }
+  CHECK_FALSE(fs::exists(r.dir / "data" / "index.db"));  // and it created nothing
+
+  r.file("red_car.jpg");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle(30000));
+  auto app = mv::json::parse(r.eng->settings_json());
+  REQUIRE(app);
+  CHECK(app->boolean("read_only") == false);
+  auto rd = r.start_reader();
+  auto reader = mv::json::parse(rd->settings_json());
+  REQUIRE(reader);
+  CHECK(reader->boolean("read_only") == true);
+}
+
 TEST_CASE("the reader never writes: the index is byte-identical and every change is refused",
           "[ai][search-agent]") {
   rig r;
@@ -2560,10 +2586,12 @@ TEST_CASE("online-only cloud files are counted, never read, and fetched in place
   CHECK(r.eng->roots_json().find("\"cloud_only\":1") != std::string::npos);
   CHECK(r.cloud->log.empty());
 
-  REQUIRE(r.eng->set_setting("cloud_files", "1"));
-  // On battery, then metered: it waits.
+  // On battery, then metered: it waits. Both before the opt-in, as the iCloud
+  // twin above: set after it, the fetcher could start on the defaults (mains,
+  // unmetered) first and hydrate (a flake seen on a Windows runner).
   r.cloud->unmetered = false;
   r.on_battery = true;
+  REQUIRE(r.eng->set_setting("cloud_files", "1"));
   REQUIRE(eventually([&] { return r.status().cloud_fetch == MV_AI_ICLOUD_WAIT_POWER; }));
   r.on_battery = false;
   REQUIRE(eventually([&] { return r.status().cloud_fetch == MV_AI_ICLOUD_WAIT_NETWORK; }));

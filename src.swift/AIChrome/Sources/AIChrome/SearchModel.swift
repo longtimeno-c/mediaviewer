@@ -627,8 +627,11 @@ final class SearchModel: ObservableObject {
   }
 
   /// Always with its subfolders (owner 2026-10-03).
+  /// A later window's reader (AITable.readOnly): it searches, never indexes.
+  var readOnly: Bool { table.readOnly }
+
   func indexFolder() {
-    guard !folder.isEmpty else { return }
+    guard !folder.isEmpty, !readOnly else { return }
     var root: UInt64 = 0
     let st = table.a.index_folder?(table.ctx, folder, 1, &root)
     refreshCoverage()
@@ -640,6 +643,7 @@ final class SearchModel: ObservableObject {
 
   /// "Index anyway" while paused on battery: until the Mac is next on power.
   func indexAnyway() {
+    guard !readOnly else { return }
     table.indexAnyway()
     pollStatus()
   }

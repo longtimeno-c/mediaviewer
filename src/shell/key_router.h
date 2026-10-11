@@ -102,7 +102,9 @@ class key_router {
  public:
   key_router() noexcept;
 
-  // Rebuild the O(1) index from `rows` (the live table after a remap).
+  // Rebuild the O(1) index from `rows` (the live table after a remap). Forgets
+  // every held key without its release: call cancel_holds first and dispatch
+  // what it returns, or a held Y / Z stays on (issue #186).
   void rebuild(std::span<const binding> rows) noexcept;
 
   [[nodiscard]] route on_key(const key_event& e, const view_state& s) noexcept;
@@ -110,7 +112,8 @@ class key_router {
   // Row for (key, mods, mode), or null. O(1): an index built once.
   [[nodiscard]] const binding* lookup(key k, std::uint8_t mods, mode m) const noexcept;
 
-  // The window lost activation, so no key-up is coming. Forgets every held
+  // The window lost activation (or the canvas lost focus, or the table is
+  // about to be rebuilt), so no key-up is coming. Forgets every held
   // key and writes the releases they owe (loupe off, skim settle) into
   // `released`, for the caller to dispatch. Returns how many were written.
   [[nodiscard]] std::size_t cancel_holds(std::span<command_id> released) noexcept;
@@ -118,9 +121,14 @@ class key_router {
   static constexpr int kHeldSlots = 4;
 
  private:
+  // The release a hold owes is copied out of its row: a remap or an add-on's
+  // rows can rewrite the table (and move it) while the key is still down.
+  // `row` is compared, never read, once the hold is recorded.
   struct held {
     const binding* row = nullptr;
     key k = key::none;
+    command_id release = command_id::none;
+    bool momentary = false;
     bool repeated = false;
   };
 
