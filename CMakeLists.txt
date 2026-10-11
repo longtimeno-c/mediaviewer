@@ -382,6 +382,7 @@ add_library(mv_image STATIC
   src/image/upload.cpp
   src/image/tiles.cpp
   src/image/thumb.cpp
+  src/image/thumb_store.cpp
   src/image/thumb_pixels.cpp
   src/image/colour.h
   src/image/pipeline.h
@@ -1021,6 +1022,7 @@ if(MV_BUILD_TESTS)
     tests/test_open_request.cpp
     tests/test_os_integration.cpp
     tests/test_thumb_pixels.cpp
+    tests/test_thumb_store.cpp
     tests/test_thumb_request.cpp
     src/shellext/thumb_request.cpp
     tests/test_spotlight_fields.cpp
