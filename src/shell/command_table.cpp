@@ -731,6 +731,25 @@ bool palette_runnable(command_id id) noexcept {
   return true;
 }
 
+bool command_live_in(command_id id, mode_mask modes) noexcept {
+  for (const binding& b : live_bindings()) {
+    if (b.command == id && (b.modes & modes) != 0) return true;
+  }
+  return false;
+}
+
+const binding* menu_chord(command_id id) noexcept {
+  const auto rows = live_bindings();
+  for (const binding& b : rows) {
+    if (b.command != id || b.k == key::none || (b.mods & mod_ctrl) == 0) continue;
+    const bool shared = std::any_of(rows.begin(), rows.end(), [&](const binding& other) {
+      return other.command != id && other.k == b.k && other.mods == b.mods;
+    });
+    if (!shared) return &b;
+  }
+  return nullptr;
+}
+
 std::string describe_commands() {
   std::string out;
   out.reserve(4096);

@@ -1242,3 +1242,45 @@ TEST_CASE("an add-on's manifest contributes command rows (docs/design/25)", "[sh
   mv::shell::reset_live_bindings();
   REQUIRE(mv::shell::live_bindings()[0].k == mv::shell::default_bindings()[0].k);
 }
+
+TEST_CASE("issue #182: menu chords follow the live table and its crop mask", "[shell][commands]") {
+  mv::shell::reset_live_bindings();
+  const auto chord_of = [](command_id id) {
+    const binding* b = menu_chord(id);
+    return b ? key_label(b->k, b->mods) : std::string();
+  };
+  // The Mac menu's ⌘, ⌘N ⌘O ⇧⌘E ⌘W, read from the table.
+  REQUIRE(chord_of(command_id::open_settings) == "Ctrl+,");
+  REQUIRE(chord_of(command_id::new_window) == "Ctrl+N");
+  REQUIRE(chord_of(command_id::open) == "Ctrl+O");
+  REQUIRE(chord_of(command_id::folder_tree) == "Ctrl+Shift+E");
+  REQUIRE(chord_of(command_id::close_window) == "Ctrl+W");
+  // No Ctrl row: the router keeps the key. A chord two commands share by mode
+  // (Ctrl+S: Export on a still, clip tools on a clip) is never a menu's.
+  REQUIRE(menu_chord(command_id::next) == nullptr);
+  REQUIRE(menu_chord(command_id::export_image) == nullptr);
+
+  // Mark all onto Ctrl+O swaps Open onto Ctrl+A; the menu follows both.
+  const auto rows = live_bindings();
+  const auto it = std::find_if(rows.begin(), rows.end(),
+                               [](const binding& b) { return b.command == command_id::mark_all; });
+  REQUIRE(it != rows.end());
+  REQUIRE(rebind_live(static_cast<int>(it - rows.begin()), char_key('O'), mod_ctrl));
+  REQUIRE(chord_of(command_id::open) == "Ctrl+A");
+  REQUIRE(chord_of(command_id::mark_all) == "Ctrl+O");
+  mv::shell::reset_live_bindings();
+  REQUIRE(chord_of(command_id::open) == "Ctrl+O");
+
+  // Walking away mid-crop drops the draft: Open, Next, First, Settings and the
+  // folder tree have no crop row, so their menu items are off there.
+  for (const auto id : {command_id::open, command_id::open_folder, command_id::next, command_id::prev,
+                        command_id::first, command_id::last, command_id::open_settings,
+                        command_id::folder_tree}) {
+    INFO(static_cast<int>(id));
+    REQUIRE_FALSE(command_live_in(id, kCrop));
+    REQUIRE(command_live_in(id, kBrowse));
+  }
+  REQUIRE(command_live_in(command_id::rotate_cw, kCrop));
+  REQUIRE(command_live_in(command_id::help, kCrop));
+  REQUIRE(command_live_in(command_id::new_window, kCrop));
+}

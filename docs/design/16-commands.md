@@ -14,10 +14,18 @@ Both hosts use the same table and router; tests are `tests/test_key_router*.cpp`
 - `default_bindings()` is a static array of rows: `(key, mods, mode mask, repeat policy,
   command, hold, release)`. `live_bindings()` starts as a copy; the **Settings** screen remaps
   rows in place (`rebind_live`) and **Reset** restores the defaults. The router, `?` and
-  Settings all read the live table, so they cannot drift.
+  Settings all read the live table, so they cannot drift. Settings captures a key the way the
+  host edge translates it (symbols through the active layout, keypad digits as their own keys),
+  so any key that routes can be recorded.
 - A remap onto a key another row holds in an overlapping mode **swaps** the two rows, so nothing
   is silently left unbound. Remaps persist by row index (`settings.ini [keys]` on Windows,
   `NSUserDefaults` on macOS), which is why new rows are only ever **appended**.
+- **Mac menu bar** (issue #182). The items that show a chord (Settings `⌘,`, New Window, Open,
+  Folder Tree, Close Window) read it from the live table (`menu_chord`) after every remap, so a
+  remap moves the menu with the router; a chord another command also holds stays the router's.
+  Settings refuses a chord a fixed menu item owns (`⌘H`, `⌘Q`, `⌘M`, `⌘⌫`): the menu sees it
+  first. Mid-crop, a menu or command-bar item whose command has no crop row (Open, Go ▸ Next,
+  Settings, Folder Tree…) is off, as its key is (`command_live_in`).
 - Command ids are one wire space shared with the island's `chrome_command`: ids 1–19 predate the
   table, 15/16/18/19/20 are reserved island → native notifications, 76 (`palette`) is retired.
   Ids are never renumbered.

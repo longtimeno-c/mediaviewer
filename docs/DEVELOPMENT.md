@@ -824,7 +824,7 @@ File gains *Open Photos Library*: the host lists the library as **virtual items*
 needed: `mv_tests "[folder][photos]"` (virtual entries and tiles over a fake provider),
 `"[photos_backup]"` (the engine over a fake library: layout, verified copies, the manifest, a
 collision, a cancel), `"[write_guard]"` and `"[poster]"` (a clip's display matrix turns its
-poster; the thumbnail spec is `jpg512.3`). A dev build shows the row and the section only when
+poster; the thumbnail spec is `jpg512.4`). A dev build shows the row and the section only when
 its own bundle id has Photos access and the flag `mv.photosLibrary.added` is set in its
 defaults; the flag is set by the pack's Settings when the library is a root, so a dev build
 without the pack loaded can be pointed at it by hand (`defaults write
@@ -975,6 +975,11 @@ camera-sized HEIC run `python tools/testmedia/make-grid-heic.py` (after `fetch-h
 an ffmpeg with libx265 on `PATH`, a dev tool only): it writes `tools/testmedia/heif/grid-12mp.heic`,
 an iPhone's layout (4032x3024 as 8x6 tiles of 512, a 320x240 thumbnail item, Display P3 ICC).
 `MV_OS_CODEC=0` times the bundled libheif path, the one a PC without the HEVC extension takes.
+
+The pacing soak cannot see a paused clip's cost (it presents nothing). `mv_tests "[idle]"`
+(macOS, headless, a synthetic clip) does: it prints the process's context switches and CPU
+per second with a clip paused on its poster and with one played out, and fails above 200
+wakes a second (issue #230: the sleep-polling player measured ~1,750 paused, now single digits).
 
 ### Copy throughput: `copybench` (PR 49)
 
