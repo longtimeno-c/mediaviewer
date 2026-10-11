@@ -27,6 +27,11 @@ public static partial class IslandHost
     private static FrameworkElement? _filmstripRoot;
     private static int _selectedIndex = -1;
     private const int FilmstripDip = 112;
+    // The 80x80 tile is UniformToFill, so a landscape thumb is cropped by its
+    // height: at 2x DPI the short side must reach 160 px. 288 wide covers a
+    // 16:9 clip frame (288x162) and is still about a third of the 512 px
+    // disk thumb's pixels; 160 wide would leave a 3:2 photo at 107 px tall.
+    private const int FilmstripDecodeWidth = 288;
     private const double ItemStride = 102; // 96 width + 6 spacing
 
     public static int AttachFilmstrip(IntPtr arg, int sizeBytes)
@@ -419,11 +424,6 @@ public static partial class IslandHost
                 Height = 80,
                 Stretch = Stretch.UniformToFill,
             };
-            if (!string.IsNullOrEmpty(vm.ThumbPath))
-            {
-                try { image.Source = new BitmapImage(new Uri(vm.ThumbPath)); }
-                catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
-            }
             var name = new TextBlock
             {
                 Text = vm.Name,
@@ -445,17 +445,30 @@ public static partial class IslandHost
                 BorderBrush = Brush(ChromeColour.Accent),  // the Mac's accent outline
                 Child = col,
             };
-            vm.PropertyChanged += (_, e) =>
+
+            void SetThumb()
             {
-                if (e.PropertyName is nameof(FolderItemVm.ThumbPath) or null)
+                if (string.IsNullOrEmpty(vm.ThumbPath)) return;
+                try
                 {
-                    if (string.IsNullOrEmpty(vm.ThumbPath)) return;
-                    try { image.Source = new BitmapImage(new Uri(vm.ThumbPath)); }
-                    catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
+                    // Enough for a 2x-DPI fill crop, not the full JPEG-512 disk thumb.
+                    image.Source = new BitmapImage(new Uri(vm.ThumbPath)) { DecodePixelWidth = FilmstripDecodeWidth };
                 }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
+            }
+            SetThumb();
+
+            void OnChanged(object? _, System.ComponentModel.PropertyChangedEventArgs e)
+            {
+                if (e.PropertyName is nameof(FolderItemVm.ThumbPath) or null) SetThumb();
                 if (e.PropertyName is nameof(FolderItemVm.Selected) or null)
                     border.BorderThickness = new Thickness(vm.Selected ? 2 : 0);
-            };
+            }
+            vm.PropertyChanged += OnChanged;
+            // Recycling without this leaks a handler per realisation (as the
+            // gallery's factory notes), keeping every tile arrowed past alive.
+            border.Tag = (Action)(() => vm.PropertyChanged -= OnChanged);
+
             border.Tapped += (_, _) => Send(Command.SelectItem, vm.Index);
             WireFileDrag(border, vm);
             return border;
@@ -463,7 +476,11 @@ public static partial class IslandHost
 
         public void RecycleElement(ElementFactoryRecycleArgs args)
         {
-            _ = args;
+            if (args.Element is Border { Tag: Action unsubscribe })
+            {
+                unsubscribe();
+                ((Border)args.Element).Tag = null;
+            }
         }
     }
 }

@@ -19,8 +19,6 @@ struct ImportView: View {
   @ObservedObject var model: ImportModel
   @FocusState private var focusedTile: Int?
   @State private var presetName = ""
-  @State private var useForCard = false
-  @State private var autoImport = false
   @State private var showHistory = false
   @State private var showMore = false
 
@@ -29,7 +27,7 @@ struct ImportView: View {
       if !model.banner.isEmpty {
         HStack {
           Text(model.banner).foregroundStyle(titleColor)
-          Button("Resume") { model.resumeUnfinished() }
+          Button("Resume") { model.resumeUnfinished() }.disabled(model.copying)
           Button("Dismiss") { model.banner = "" }
         }
         .padding(8)
@@ -191,7 +189,7 @@ struct ImportView: View {
       Divider()
       Menu {
         Button("Past imports…") { showHistory = true }
-        Button("Check a folder for damaged files…") { model.verifyFolder() }
+        Button("Check a folder for damaged files…") { model.verifyFolder() }.disabled(model.copying)
         Button("Find duplicates…") { model.duplicates.choose() }
         Divider()
         Button("About Import") { model.showExplainer() }
@@ -460,13 +458,14 @@ struct ImportView: View {
       HStack {
         TextField("Name", text: $presetName)
         Button("Save") { model.savePreset(named: presetName) }
+          .disabled(presetName.trimmingCharacters(in: .whitespaces).isEmpty)
       }
       if model.hasCard {
-        Toggle("Always use these settings for this card", isOn: $useForCard)
-          .onChange(of: useForCard) { model.bindCard(use: useForCard, auto: autoImport) }
-        Toggle("Import this card as soon as it is inserted", isOn: $autoImport)
-          .onChange(of: autoImport) { model.bindCard(use: useForCard, auto: autoImport) }
-          .disabled(!useForCard)
+        Toggle("Always use these settings for this card", isOn: Binding(
+          get: { model.cardBound }, set: { model.bindCard(use: $0, auto: model.cardAutoImport) }))
+        Toggle("Import this card as soon as it is inserted", isOn: Binding(
+          get: { model.cardAutoImport }, set: { model.bindCard(use: model.cardBound, auto: $0) }))
+          .disabled(!model.cardBound)
       }
     }
   }
@@ -490,7 +489,7 @@ struct ImportView: View {
   }
 
   private func textField(_ label: String, _ key: String) -> some View {
-    TextField(label, text: Binding(get: { model.string(key) }, set: { model.preset[key] = $0 }))
+    TextField(label, text: Binding(get: { model.string(key) }, set: { model.edit(key, $0) }))
       .onSubmit { model.replan() }
   }
 
@@ -554,7 +553,7 @@ struct ImportView: View {
           .keyboardShortcut(.defaultAction)
           .buttonStyle(.borderedProminent)
           .controlSize(.large)
-          .disabled(model.importCount == 0 || model.copying)
+          .disabled(model.importCount == 0 || model.copying || !model.planIsReady)
       }
     }
     .padding(12)
