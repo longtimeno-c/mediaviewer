@@ -88,6 +88,11 @@ struct map_view {
 bool render_map(const geo::database& db, const map_view& v, const map_palette& p, std::string_view home_country,
                 std::span<std::uint8_t> out);
 
+// Where (lat, lon) falls on the picture `v` describes, in pixels from the
+// top-left (may be outside it). For tests and for a host that wants to place
+// something other than the centre pin.
+void map_pixel(const map_view& v, double lat, double lon, double& x, double& y) noexcept;
+
 // A finished picture, shared between the cache and whoever posts it.
 struct map_image {
   std::uint32_t width = 0;

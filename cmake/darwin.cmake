@@ -875,6 +875,8 @@ if(MV_BUILD_TESTS)
     tests/test_video_session.cpp
     # Issue #344: the offline reverse geocoder (docs/design/06 "Place").
     tests/test_geo.cpp
+    # Issue #344 slice 3: the Places add-on's map, Place section and search.
+    tests/test_places.cpp
   )
   target_link_libraries(mv_tests PRIVATE
     mv_core
@@ -889,6 +891,7 @@ if(MV_BUILD_TESTS)
     mv_meta
     mv_clip
     mv_geo_open
+    mv_places_engine
     JPEG::JPEG
     ${MV_SPNG_TARGET}
     GIF::GIF

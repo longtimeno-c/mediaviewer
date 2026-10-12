@@ -371,6 +371,12 @@ void fill(const geo::database& db, geo::layer layer, const std::vector<std::uint
 
 }  // namespace
 
+void map_pixel(const map_view& v, double lat, double lon, double& x, double& y) noexcept {
+  const projection pr(v);
+  x = pr.x(wrap180(lon - pr.lon0));
+  y = pr.y(lat);
+}
+
 map_palette palette_for(const theme_tokens& t) noexcept {
   const std::uint32_t surface = t.surface >> 8;
   const std::uint32_t canvas = t.canvas >> 8;

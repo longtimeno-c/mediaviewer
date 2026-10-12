@@ -980,6 +980,8 @@ if(MV_BUILD_TESTS)
     tests/test_meta_store.cpp
     # Issue #344: the offline reverse geocoder (docs/design/06 "Place").
     tests/test_geo.cpp
+    # Issue #344 slice 3: the Places add-on's map, Place section and search.
+    tests/test_places.cpp
     # PR 12: the metadata writer, and the host-shared write queue.
     tests/test_meta_write.cpp
     tests/test_meta_writer_queue.cpp
@@ -1100,7 +1102,8 @@ if(MV_BUILD_TESTS)
     ole32
     uuid
     mv_io
-    mv_geo_open)
+    mv_geo_open
+    mv_places_engine)
   target_include_directories(mv_tests PRIVATE src src/abi/include tools)
   target_compile_definitions(mv_tests PRIVATE MV_GEO_FULL_BLOB="${MV_GEO_BLOB}"
     MV_GEO_TEST_BLOB="${CMAKE_SOURCE_DIR}/tests/data/geo/places-test.mvgeo")
