@@ -16,6 +16,13 @@ public final class MVImportChrome: NSObject {
   private var window: NSWindow?
   private var timer: Timer?
   private var jobs: [UInt64: String] = [:]
+  /// Jobs whose preset turned "Notify me when done" off.
+  private var quiet = Set<UInt64>()
+  /// A failed or interrupted import, for the command bar until Import opens.
+  private var problem: String?
+  /// When the jobs were last read (systemUptime): events and the fallback
+  /// timer do not both read them (issue #194).
+  private var lastTick: TimeInterval = 0
 
   @objc public override init() { super.init() }
 
@@ -52,6 +59,10 @@ public final class MVImportChrome: NSObject {
         window = w
       }
       window?.makeKeyAndOrderFront(nil)
+      if problem != nil {
+        problem = nil  // the summary in the window says it now
+        if jobs.isEmpty { setStatus(nil) }
+      }
       model.refreshSources(select: source.isEmpty ? nil : source)
       model.checkUnfinished()
       model.showFirstUseExplainerIfNeeded()
@@ -157,17 +168,30 @@ public final class MVImportChrome: NSObject {
     host?.perform(NSSelectorFromString("setStatus:"), with: (text ?? "") as NSString)
   }
 
-  func track(_ job: UInt64, label: String) {
+  /// `notify`: the preset's "Notify me when done" for a job the window
+  /// started (issue #194); a card's auto-import and Import Now always say.
+  func track(_ job: UInt64, label: String, notify: Bool = true) {
     jobs[job] = label
+    if !notify { quiet.insert(job) }
     if timer == nil {
-      timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
-        MainActor.assumeIsolated { self?.tick() }
+      // A fallback only: progress arrives as JOB_PROGRESS events (at most
+      // 4 Hz while bytes move). This catches a copy that is paused or waiting,
+      // which posts none, and ticks only when no event has for a second.
+      timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        MainActor.assumeIsolated {
+          guard let self, ProcessInfo.processInfo.systemUptime - self.lastTick >= 0.9 else { return }
+          self.tick()
+        }
       }
     }
     tick()
   }
 
+  /// A change the engine posts no event for (Pause): read the jobs now.
+  func pollNow() { tick() }
+
   private func tick() {
+    lastTick = ProcessInfo.processInfo.systemUptime
     guard let table else { return }
     var line: String?
     for job in jobs.keys {
@@ -187,7 +211,7 @@ public final class MVImportChrome: NSObject {
         }
       }
     }
-    setStatus(line)
+    setStatus(line ?? problem)
     if jobs.isEmpty { timer?.invalidate(); timer = nil }
   }
 
@@ -205,12 +229,13 @@ public final class MVImportChrome: NSObject {
     }
     host?.perform(NSSelectorFromString("notifyTitle:body:"), with: "Find duplicates" as NSString,
                   with: text as NSString)
-    if jobs.isEmpty { setStatus(nil) }
+    if jobs.isEmpty { setStatus(problem) }
   }
 
   private func finished(_ job: UInt64, state: UInt32) {
     MainActor.assumeIsolated { model?.finished(job) }
     guard jobs.removeValue(forKey: job) != nil else { return }
+    let notify = quiet.remove(job) == nil
     let text: String
     switch state {
     case MV_IMPORT_JOB_DONE.rawValue: text = "Finished. Every copy verified."
@@ -218,7 +243,17 @@ public final class MVImportChrome: NSObject {
     case MV_IMPORT_JOB_INTERRUPTED.rawValue: text = "Interrupted. Reconnect and resume in Import."
     default: text = "Cancelled. Nothing partial was left behind."
     }
-    host?.perform(NSSelectorFromString("notifyTitle:body:"), with: "Import" as NSString, with: text as NSString)
-    if jobs.isEmpty { setStatus(nil) }
+    if notify {
+      host?.perform(NSSelectorFromString("notifyTitle:body:"), with: "Import" as NSString, with: text as NSString)
+    }
+    // A failure the window is not showing stays in the command bar until
+    // Import is opened again (issue #194), notification or not.
+    let failed = state == MV_IMPORT_JOB_FAILED.rawValue || state == MV_IMPORT_JOB_INTERRUPTED.rawValue
+    if failed && !MainActor.assumeIsolated({ window?.isVisible == true }) {
+      problem = state == MV_IMPORT_JOB_FAILED.rawValue
+        ? "Import finished with files not copied · open Import"
+        : "Import interrupted · open Import to resume"
+    }
+    if jobs.isEmpty { setStatus(problem) }
   }
 }

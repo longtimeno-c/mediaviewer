@@ -23,7 +23,35 @@ struct ImportDay: Identifiable, Equatable {
   let day: String
   var header: String
   var tiles: [ImportTile]
+  /// The header as VoiceOver reads it: words, not the ☐ / ☑ glyphs.
+  var spoken = ""
   var id: String { day }
+}
+
+/// What a copy moves several times a second (issue #194), apart from the
+/// model: only the progress rows observe it, so a tick does not re-render
+/// the grid, the sources or the settings column.
+@MainActor
+final class ImportProgress: ObservableObject {
+  @Published var fractions: [Double] = []
+  @Published var line = ""
+  @Published var paused = false
+}
+
+/// A plan as the window shows it, built off the main thread from plan_json.
+struct BuiltPlan: Sendable {
+  var label: String?
+  var removable: Bool?
+  var units = 0
+  var fresh = 0
+  var destination = ""
+  var days: [ImportDay] = []
+  var folders: [FolderCount] = []
+  var bottom = ""
+  var bottomDetail = ""
+  var selectedUnits = 0
+  var selectedFiles = 0
+  var selectedBytes: Int64 = 0
 }
 
 struct FolderCount: Identifiable, Equatable {
@@ -99,10 +127,13 @@ final class ImportTable: @unchecked Sendable {
     return inFlight == 0
   }
 
-  /// The buffer rule: retry with `needed`.
-  func json(_ call: (UnsafeMutablePointer<CChar>?, UInt32, UnsafeMutablePointer<UInt32>?) -> mv_status) -> String? {
+  /// The buffer rule: retry with `needed`. `cap` is the first try: a caller
+  /// that knows its answer is large (a plan) passes the size it saw last, so
+  /// the pack serialises it once, not twice (issue #194).
+  func json(cap start: UInt32 = 64 * 1024,
+            _ call: (UnsafeMutablePointer<CChar>?, UInt32, UnsafeMutablePointer<UInt32>?) -> mv_status) -> String? {
     guarded {
-      var cap: UInt32 = 64 * 1024
+      var cap = start
       for _ in 0..<4 {
         var buf = [CChar](repeating: 0, count: Int(cap))
         var needed: UInt32 = 0
@@ -158,9 +189,8 @@ final class ImportModel: ObservableObject {
   @Published var preset: [String: Any] = [:]
   @Published var presetNames: [String] = []
   @Published var copying = false
-  @Published var progressLine = ""
-  @Published var progress: [Double] = []
-  @Published var paused = false
+  /// The running copy's bars and line (issue #194).
+  let live = ImportProgress()
   @Published var summary: [String] = []
   @Published var summaryTitle = ""
   @Published var canRetry = false
@@ -193,6 +223,12 @@ final class ImportModel: ObservableObject {
   private var destination = ""
   private var requested = Set<Int>()
   private var editReplan: Task<Void, Never>?
+  /// plan_json read off the main thread (issue #194): one in flight, and at
+  /// most one more for the newest PLAN_READY that came while it ran.
+  private var planReading = false
+  private var planWanted: UInt64 = 0
+  /// The last plan's size, so the next read fits its buffer the first time.
+  private var planCap: UInt32 = 64 * 1024
   private(set) var confirmFiles = 0
   private(set) var confirmBytes: Int64 = 0
   var destinationPreview: String { destination }
@@ -340,24 +376,78 @@ final class ImportModel: ObservableObject {
     } ?? 0
   }
 
+  /// PLAN_READY: a new plan, or a click's selection with its names worked
+  /// out again. A 3,000-file card's plan is about 1.2 MB of JSON: it is read,
+  /// parsed and grouped on a worker, never on the main thread (issue #194).
   func planReady(_ id: UInt64, _ status: UInt32) {
     guard id == plan else { return }
     readyPlan = 0
-    guard status == MV_OK.rawValue,
-          let root = parse(table.json { api.plan_json!(table.ctx, id, $0, $1, $2) }) as? [String: Any],
-          let totals = root["totals"] as? [String: Any] else {
+    guard status == MV_OK.rawValue else {
       bottom = "Could not plan this import."
       return
     }
-    let source = root["source"] as? [String: Any] ?? [:]
-    let label = (source["label"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? selectedSource
-    if let sourceRemovable = source["removable"] as? Bool { removable = sourceRemovable }
-    let n = { (k: String) in totals[k] as? Int ?? 0 }
-    title = label
+    readPlan(id)
+  }
+
+  private func readPlan(_ id: UInt64) {
+    if planReading {
+      planWanted = id  // read once more when the one in flight lands
+      return
+    }
+    planReading = true
+    let t = table, cap = planCap
+    Task.detached(priority: .userInitiated) {
+      let text = t.json(cap: cap) { t.api.pointee.plan_json!(t.ctx, id, $0, $1, $2) }
+      let built = text.flatMap { ImportModel.buildPlan($0) }
+      let size = text?.utf8.count ?? 0
+      await MainActor.run { self.planRead(id, built, size: size) }
+    }
+  }
+
+  private func planRead(_ id: UInt64, _ built: BuiltPlan?, size: Int) {
+    planReading = false
+    // Room for the plan to grow a little (names, a few more units) before
+    // the next read has to ask twice.
+    if size > 0 { planCap = max(64 * 1024, UInt32(clamping: size + size / 8 + 4096)) }
+    let again = planWanted
+    planWanted = 0
+    if again != 0 && again == plan {
+      readPlan(again)  // a newer PLAN_READY came meanwhile: this answer is old
+      return
+    }
+    guard id == plan else { return }
+    guard let built else {
+      bottom = "Could not plan this import."
+      return
+    }
+    if let r = built.removable { removable = r }
+    title = built.label ?? selectedSource
     scanState = ""
-    planUnits = n("units")
-    planNew = n("new")
-    destination = root["destination"] as? String ?? ""
+    planUnits = built.units
+    planNew = built.fresh
+    destination = built.destination
+    if days != built.days { days = built.days }
+    if folders != built.folders { folders = built.folders }
+    bottom = built.bottom
+    bottomDetail = built.bottomDetail
+    importCount = built.selectedUnits
+    confirmFiles = built.selectedFiles
+    confirmBytes = built.selectedBytes
+    readyPlan = id
+  }
+
+  /// plan_json as the window shows it. [worker-thread]
+  nonisolated static func buildPlan(_ text: String) -> BuiltPlan? {
+    guard let root = parse(text) as? [String: Any],
+          let totals = root["totals"] as? [String: Any] else { return nil }
+    var out = BuiltPlan()
+    let source = root["source"] as? [String: Any] ?? [:]
+    out.label = (source["label"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+    out.removable = source["removable"] as? Bool
+    let n = { (k: String) in totals[k] as? Int ?? 0 }
+    out.units = n("units")
+    out.fresh = n("new")
+    out.destination = root["destination"] as? String ?? ""
 
     var byDay: [String: ImportDay] = [:]
     var order: [String] = []
@@ -382,41 +472,54 @@ final class ImportModel: ObservableObject {
       guard let day = d["day"] as? String, var g = byDay[day] else { continue }
       let units = d["units"] as? Int ?? 0, fresh = d["new"] as? Int ?? 0, sel = d["selected"] as? Int ?? 0
       let check = sel == 0 ? "☐" : sel == units ? "☑" : "◧"
-      g.header = "\(check) \(Self.dayLabel(day)) · \(units)" + (fresh == units ? " (all new)" : fresh == 0 ? " (already imported)" : " (\(fresh) new)")
+      let label = Self.dayLabel(day)
+      let newness = fresh == units ? "all new" : fresh == 0 ? "already imported" : "\(fresh) new"
+      g.header = "\(check) \(label) · \(units) (\(newness))"
+      let chosen = sel == 0 ? "none selected" : sel == units ? "all selected" : "\(sel) selected"
+      g.spoken = "\(label), \(units) \(units == 1 ? "item" : "items"), \(newness), \(chosen)"
       byDay[day] = g
     }
-    days = order.compactMap { byDay[$0] }
-    folders = (root["folders"] as? [[String: Any]] ?? []).map {
+    out.days = order.compactMap { byDay[$0] }
+    out.folders = (root["folders"] as? [[String: Any]] ?? []).map {
       let f = $0["folder"] as? String ?? ""
       return FolderCount(folder: f.isEmpty ? "(destination)" : f, units: $0["units"] as? Int ?? 0)
     }
     let eta = totals["eta_seconds"] as? Int ?? -1
     let rate = totals["bytes_per_second"] as? Double ?? 0
     let units = n("selected_units")
-    bottom = units == 0
+    out.bottom = units == 0
       ? "Nothing selected"
       : "\(units) \(units == 1 ? "item" : "items") selected · " +
         ByteCountFormatter.string(fromByteCount: Int64(n("selected_bytes")), countStyle: .file)
     var detail: [String] = []
     if n("duplicates") > 0 { detail.append("\(n("duplicates")) already in your library will be skipped") }
     if eta >= 0 && units > 0 { detail.append("about \(max(1, eta / 60)) min at \(Int(rate / 1_000_000)) MB/s") }
-    bottomDetail = detail.joined(separator: " · ")
-    importCount = n("selected_units")
-    confirmFiles = n("selected_files")
-    confirmBytes = Int64(n("selected_bytes"))
-    readyPlan = id
+    out.bottomDetail = detail.joined(separator: " · ")
+    out.selectedUnits = units
+    out.selectedFiles = n("selected_files")
+    out.selectedBytes = Int64(n("selected_bytes"))
+    return out
   }
+
+  /// Made once, not per day per plan (issue #194). Formatting with a
+  /// formatter that is not changed afterwards is safe from any thread.
+  nonisolated private static let dayParser: DateFormatter = {
+    let f = DateFormatter()
+    f.locale = Locale(identifier: "en_US_POSIX")
+    f.dateFormat = "yyyy-MM-dd"
+    return f
+  }()
+  nonisolated private static let dayShower: DateFormatter = {
+    let f = DateFormatter()
+    f.setLocalizedDateFormatFromTemplate("EEE d MMM yyyy")
+    return f
+  }()
 
   /// "2026-09-21" as the person reads a date ("Sun 21 Sep 2026"), as the
   /// Windows window's DayLabel; an unparsable day is shown as it is.
   nonisolated static func dayLabel(_ day: String) -> String {
-    let parse = DateFormatter()
-    parse.locale = Locale(identifier: "en_US_POSIX")
-    parse.dateFormat = "yyyy-MM-dd"
-    guard let date = parse.date(from: day) else { return day }
-    let show = DateFormatter()
-    show.setLocalizedDateFormatFromTemplate("EEE d MMM yyyy")
-    return show.string(from: date)
+    guard let date = dayParser.date(from: day) else { return day }
+    return dayShower.string(from: date)
   }
 
   func thumbnail(for tile: ImportTile) {
@@ -434,8 +537,17 @@ final class ImportModel: ObservableObject {
   }
 
   func toggle(_ tile: ImportTile) {
-    guard !copying else { return }
-    table.call { api.select!(table.ctx, plan, Int32(tile.index), nil, tile.selected ? 0 : 1) }
+    guard !copying,
+          table.call({ api.select!(table.ctx, plan, Int32(tile.index), nil, tile.selected ? 0 : 1) }) == MV_OK
+    else { return }
+    // The tile answers the click now; the totals, the day's header and any
+    // names that moved follow with the plan the engine posts (issue #194).
+    for d in days.indices {
+      if let t = days[d].tiles.firstIndex(where: { $0.index == tile.index }) {
+        days[d].tiles[t].selected.toggle()
+        break
+      }
+    }
   }
 
   /// Everything on (or off) at once: unit -1 with no day (mediaviewer_import.h).
@@ -539,7 +651,7 @@ final class ImportModel: ObservableObject {
     job = id
     copying = true
     summary = []
-    chrome?.track(id, label: title.isEmpty ? "Import" : title)
+    chrome?.track(id, label: title.isEmpty ? "Import" : title, notify: bool("notify", true))
   }
 
   func pauseResume() {
@@ -547,6 +659,7 @@ final class ImportModel: ObservableObject {
     var p = mv_import_progress()
     guard table.call({ api.progress!(table.ctx, job, &p) }) == MV_OK else { return }
     table.call { api.pause!(table.ctx, job, p.state == MV_IMPORT_JOB_PAUSED.rawValue ? 0 : 1) }
+    chrome?.pollNow()  // a paused copy posts no progress: show it now
   }
 
   func cancel() { table.call { api.cancel!(table.ctx, job) } }
@@ -555,21 +668,28 @@ final class ImportModel: ObservableObject {
     guard id == job, copying else { return }
     var verified = p.bytes_verified
     let total = Double(max(1, p.bytes_total))
-    progress = withUnsafeBytes(of: &verified) { raw in
+    let fractions = withUnsafeBytes(of: &verified) { raw in
       let v = raw.bindMemory(to: UInt64.self)
       return (0..<Int(min(2, p.destination_count))).map { Double(v[$0]) / total }
     }
-    paused = p.state == MV_IMPORT_JOB_PAUSED.rawValue
+    let paused = p.state == MV_IMPORT_JOB_PAUSED.rawValue
     var name = p.current_name_utf8
     let current = withUnsafeBytes(of: &name) { String(cString: $0.bindMemory(to: CChar.self).baseAddress!) }
     let rate = p.bytes_per_second > 0 ? " · \(Int(p.bytes_per_second / 1_000_000)) MB/s" : ""
     let eta = p.eta_seconds >= 0 ? " · ≈ \(max(1, p.eta_seconds / 60)) min" : ""
-    progressLine = "\(paused ? "Paused" : "Copying") \(current) · \(p.units_done) of \(p.units_total) verified\(rate)\(eta)"
+    let line = "\(paused ? "Paused" : "Copying") \(current) · \(p.units_done) of \(p.units_total) verified\(rate)\(eta)"
+    // Only what moved is published, and only the progress rows observe it.
+    if fractions != live.fractions { live.fractions = fractions }
+    if paused != live.paused { live.paused = paused }
+    if line != live.line { live.line = line }
   }
 
   func finished(_ id: UInt64) {
     guard id == job else { return }
     copying = false
+    live.fractions = []
+    live.line = ""
+    live.paused = false
     guard let s = parse(table.json { api.summary_json!(table.ctx, id, $0, $1, $2) }) as? [String: Any] else { return }
     if s["kind"] as? String == "verify" {
       let problems = s["problems"] as? [[String: Any]] ?? []
@@ -600,7 +720,7 @@ final class ImportModel: ObservableObject {
     guard !copying, let id = table.id({ api.retry_failed!(table.ctx, job, $0) }) else { return }
     job = id
     copying = true
-    chrome?.track(id, label: "retry")
+    chrome?.track(id, label: "retry", notify: bool("notify", true))
   }
 
   /// A short, specific reason for each eject failure category (issue #42),
@@ -665,7 +785,7 @@ final class ImportModel: ObservableObject {
     guard !copying, bannerJob != 0, table.call({ api.resume!(table.ctx, bannerJob) }) == MV_OK else { return }
     job = bannerJob
     copying = true
-    chrome?.track(bannerJob, label: "resume")
+    chrome?.track(bannerJob, label: "resume", notify: bool("notify", true))
     banner = ""
   }
 
@@ -678,7 +798,7 @@ final class ImportModel: ObservableObject {
           let id = table.id({ out in url.path.withCString { api.verify_folder!(table.ctx, $0, out) } }) else { return }
     job = id
     copying = true
-    chrome?.track(id, label: "verify")
+    chrome?.track(id, label: "verify", notify: bool("notify", true))
   }
 
   /// Reads import.db off the main thread (rule 1: history_json waits on the

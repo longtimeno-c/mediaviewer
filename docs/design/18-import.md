@@ -367,9 +367,15 @@ whatever they are called.
 
 - **Clip tiles show ▶ without a poster** in the Import grid unless the viewer's thumbnail cache
   already holds one: the host's thumbnail service makes stills only (a poster needs the player).
-- **The Mac finish notification is a beep** (`NSBeep` in `addons_mac.mm`); the window's
-  summary is the notification. Windows uses an app notification where the unpackaged app has an
-  AUMID, else the window's summary.
+- **Mac finish notification:** a `UNUserNotificationCenter` notification (`addons_mac.mm`),
+  shown while MediaViewer is frontmost too, and only when the job's preset has *Notify me when
+  done* (a card's auto-import and Import Now always notify). macOS asks once, the first time
+  one is sent. Until it is allowed, or in `mediaviewer_lab` (no app bundle), it is a beep. A
+  failed or interrupted import that finishes while the window is closed also leaves a line in
+  the command bar until Import is opened again. Windows uses an app notification where the
+  unpackaged app has an AUMID, else the window's summary.
+- **Superseded scans and plans stay in the engine** until the add-on unloads: `mv.import.1`
+  has no call to cancel or release one. That needs a table addition both hosts use (#194).
 
 ## Not in Import
 

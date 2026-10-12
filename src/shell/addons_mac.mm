@@ -27,6 +27,7 @@
 // pack's additions are new optional selectors and the mv_addon2_* functions.
 #import <AppKit/AppKit.h>
 #import <Foundation/Foundation.h>
+#import <UserNotifications/UserNotifications.h>
 
 #include "shell/addons_mac.h"
 
@@ -111,6 +112,21 @@
 @end
 
 @interface MvAddonHostMac : NSObject
+@end
+
+// Shows an add-on's finish notification while MediaViewer is frontmost (the
+// usual case): macOS otherwise files it in Notification Center unseen.
+@interface MVAddonNotificationDelegate : NSObject <UNUserNotificationCenterDelegate>
+@end
+
+@implementation MVAddonNotificationDelegate
+- (void)userNotificationCenter:(UNUserNotificationCenter*)center
+       willPresentNotification:(UNNotification*)notification
+         withCompletionHandler:(void (^)(UNNotificationPresentationOptions))completionHandler {
+  (void)center;
+  (void)notification;
+  completionHandler(UNNotificationPresentationOptionBanner | UNNotificationPresentationOptionSound);
+}
 @end
 
 // main_mac.mm: the command table changed; rebuild the router and let
@@ -710,12 +726,41 @@ std::string read_bridge(int32_t (*fn)(char*, int32_t)) {
 - (void)setStatus:(NSString*)text {
   state().status = text ? std::string(text.UTF8String ?: "") : std::string();
 }
+// A job the add-on finished (Import's "Notify me when done", issue #194): a
+// real notification. macOS asks once, the first time one is sent (the person
+// turned the option on); until they allow them, or where the process is not an
+// app bundle (mediaviewer_lab), it is a beep and the window's summary. Only
+// the add-on's own words are sent: no path or file name (rule 6).
 - (void)notifyTitle:(NSString*)title body:(NSString*)body {
-  // UNUserNotificationCenter needs an authorization prompt; the summary in the
-  // Import window is the notification until the user allows them.
-  (void)title;
-  (void)body;
-  NSBeep();
+  NSBundle* main = NSBundle.mainBundle;
+  if (main.bundleIdentifier.length == 0 || ![main.bundlePath.pathExtension isEqualToString:@"app"]) {
+    NSBeep();  // UNUserNotificationCenter throws for a process with no bundle
+    return;
+  }
+  NSString* heading = [title copy] ?: @"";
+  NSString* text = [body copy] ?: @"";
+  UNUserNotificationCenter* center = UNUserNotificationCenter.currentNotificationCenter;
+  // The viewer is usually the frontmost app when a copy ends: without a
+  // delegate, macOS files the notification away unshown.
+  static MVAddonNotificationDelegate* delegate = [MVAddonNotificationDelegate new];
+  if (center.delegate == nil) center.delegate = delegate;
+  [center requestAuthorizationWithOptions:UNAuthorizationOptionAlert | UNAuthorizationOptionSound
+                        completionHandler:^(BOOL granted, NSError* _Nullable error) {
+                          (void)error;
+                          if (!granted) {
+                            dispatch_async(dispatch_get_main_queue(), ^{ NSBeep(); });
+                            return;
+                          }
+                          UNMutableNotificationContent* content = [UNMutableNotificationContent new];
+                          content.title = heading;
+                          content.body = text;
+                          content.sound = UNNotificationSound.defaultSound;
+                          UNNotificationRequest* request =
+                              [UNNotificationRequest requestWithIdentifier:NSUUID.UUID.UUIDString
+                                                                   content:content
+                                                                   trigger:nil];
+                          [center addNotificationRequest:request withCompletionHandler:nil];
+                        }];
 }
 
 // ---- Milestone H: what the AI chrome asks of the viewer ----------------------
