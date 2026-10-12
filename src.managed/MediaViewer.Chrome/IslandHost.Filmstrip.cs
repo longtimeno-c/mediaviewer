@@ -27,6 +27,11 @@ public static partial class IslandHost
     private static FrameworkElement? _filmstripRoot;
     private static int _selectedIndex = -1;
     private const int FilmstripDip = 112;
+    // The 80x80 tile is UniformToFill, so a landscape thumb is cropped by its
+    // height: at 2x DPI the short side must reach 160 px. 288 wide covers a
+    // 16:9 clip frame (288x162) and is still about a third of the 512 px
+    // disk thumb's pixels; 160 wide would leave a 3:2 photo at 107 px tall.
+    private const int FilmstripDecodeWidth = 288;
     private const double ItemStride = 102; // 96 width + 6 spacing
 
     public static int AttachFilmstrip(IntPtr arg, int sizeBytes)
@@ -59,6 +64,7 @@ public static partial class IslandHost
             _filmstrip = new DesktopWindowXamlSource();
             EnsureFocusHook();
             _filmstrip.Initialize(Win32Interop.GetWindowIdFromWindow(parent));
+            _filmstrip.TakeFocusRequested += OnTakeFocusRequested;  // Tab on (issue #217)
             // Park with no content, same as the gallery. Building the repeater
             // here and then immediately hiding it left an ItemsRepeater bound
             // to `Items`; the first folder-open show bound a second one and
@@ -207,23 +213,27 @@ public static partial class IslandHost
         if (_folderSession is null) return;
         Items.Clear();
         _selectedIndex = -1;
-        uint count = _folderSession.FolderCount;
         // Milestone H: a result list (mv_folder_open_list) rather than a
         // directory. Its clips carry the moment they open on, shown as m:ss.
         bool list = IsResultList();
-        for (uint i = 0; i < count; ++i)
+        // Issue #226: the whole listing in one core call (one lock, reused
+        // buffers), not eight calls and four allocations per stop.
+        int count = _folderSession.ReadFolderEntries(out ReadOnlySpan<MvFolderEntry> entries,
+                                                     out ReadOnlySpan<byte> strings);
+        for (int i = 0; i < count; ++i)
         {
-            MvFolderItem rec = _folderSession.FolderItemAt(i);
-            long moment = list ? _folderSession.ItemMoment(i) : -1;
+            ref readonly MvFolderEntry e = ref entries[i];
+            MvFolderItem rec = e.Item;
+            long moment = list ? e.MomentMs : -1;
             Items.Add(new FolderItemVm
             {
-                Index = (int)i,
-                Name = _folderSession.FolderItemName(i),
-                Path = _folderSession.FolderItemPath(i),
-                PairPath = rec.PairKind == MvPairKind.None ? "" : _folderSession.FolderItemPairPath(i),
+                Index = i,
+                Name = MediaViewerSession.EntryString(strings, e.NameOffset),
+                Path = MediaViewerSession.EntryString(strings, e.PathOffset),
+                PairPath = rec.PairKind == MvPairKind.None ? "" : MediaViewerSession.EntryString(strings, e.PairOffset),
                 Badge = moment >= 0 ? MomentLabel(moment) : BadgeFor(rec),
                 IsClip = (rec.Flags & MvFolderItem.FlagClip) != 0,
-                ThumbPath = _folderSession.FolderItemThumbPath(i),
+                ThumbPath = MediaViewerSession.EntryString(strings, e.ThumbOffset),
                 Selected = (rec.Flags & MvFolderItem.FlagSelected) != 0,
             });
         }
@@ -330,6 +340,7 @@ public static partial class IslandHost
         _selectedIndex = index;
         ScrollTo(index);
         GalleryScrollTo(index);
+        AnnounceSelection(index);
     }
 
     private static void ScrollTo(int index)
@@ -376,7 +387,12 @@ public static partial class IslandHost
             VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
             HorizontalScrollMode = ScrollMode.Enabled,
             VerticalScrollMode = ScrollMode.Disabled,
+            // Tab lands here (issue #217): ← → walk, typing is typeahead. A
+            // click still leaves the keys with the canvas, as before.
+            IsTabStop = true,
+            AllowFocusOnInteraction = false,
         };
+        AutomationProperties_SetName(_filmstripScroll, "Filmstrip");
         var scroll = _filmstripScroll;
         scroll.CharacterReceived += OnTypeahead;  // docs/design/16 typeahead
         scroll.KeyDown += (_, e) =>
@@ -407,11 +423,6 @@ public static partial class IslandHost
                 Height = 80,
                 Stretch = Stretch.UniformToFill,
             };
-            if (!string.IsNullOrEmpty(vm.ThumbPath))
-            {
-                try { image.Source = new BitmapImage(new Uri(vm.ThumbPath)); }
-                catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
-            }
             var name = new TextBlock
             {
                 Text = vm.Name,
@@ -432,17 +443,30 @@ public static partial class IslandHost
                 BorderBrush = Brush(Title),
                 Child = col,
             };
-            vm.PropertyChanged += (_, e) =>
+
+            void SetThumb()
             {
-                if (e.PropertyName is nameof(FolderItemVm.ThumbPath) or null)
+                if (string.IsNullOrEmpty(vm.ThumbPath)) return;
+                try
                 {
-                    if (string.IsNullOrEmpty(vm.ThumbPath)) return;
-                    try { image.Source = new BitmapImage(new Uri(vm.ThumbPath)); }
-                    catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
+                    // Enough for a 2x-DPI fill crop, not the full JPEG-512 disk thumb.
+                    image.Source = new BitmapImage(new Uri(vm.ThumbPath)) { DecodePixelWidth = FilmstripDecodeWidth };
                 }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
+            }
+            SetThumb();
+
+            void OnChanged(object? _, System.ComponentModel.PropertyChangedEventArgs e)
+            {
+                if (e.PropertyName is nameof(FolderItemVm.ThumbPath) or null) SetThumb();
                 if (e.PropertyName is nameof(FolderItemVm.Selected) or null)
                     border.BorderThickness = new Thickness(vm.Selected ? 2 : 0);
-            };
+            }
+            vm.PropertyChanged += OnChanged;
+            // Recycling without this leaks a handler per realisation (as the
+            // gallery's factory notes), keeping every tile arrowed past alive.
+            border.Tag = (Action)(() => vm.PropertyChanged -= OnChanged);
+
             border.Tapped += (_, _) => Send(Command.SelectItem, vm.Index);
             WireFileDrag(border, vm);
             return border;
@@ -450,7 +474,11 @@ public static partial class IslandHost
 
         public void RecycleElement(ElementFactoryRecycleArgs args)
         {
-            _ = args;
+            if (args.Element is Border { Tag: Action unsubscribe })
+            {
+                unsubscribe();
+                ((Border)args.Element).Tag = null;
+            }
         }
     }
 }

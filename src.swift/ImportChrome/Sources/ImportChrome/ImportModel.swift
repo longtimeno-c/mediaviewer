@@ -40,40 +40,94 @@ struct ImportSource: Identifiable, Equatable {
   /// Whether this source can ever be ejected (issue #41/#42): a card or a
   /// USB/network drive, never an ordinary folder or a fixed disk.
   let removable: Bool
+  /// The preset this card is bound to ("" none) and whether it imports on
+  /// insert: what the card-binding switches show (issue #193).
+  var boundPreset = ""
+  var autoImport = false
   var id: String { root }
 }
 
-/// A thin, checked view of the C table.
+/// A thin, checked view of the C table. It lives until the chrome's
+/// -shutdown, which closes it before the host unloads the pack (issue #193):
+/// a call after that fails instead of reaching freed engine code, and
+/// -shutdown waits (bounded) for the calls already inside it, as AITable does.
+/// Every call goes through `guarded` (json, path, id and call do it themselves).
 final class ImportTable: @unchecked Sendable {
   let api: UnsafePointer<mv_import_api>
+  private let gate = NSCondition()
+  private var closed = false
+  private var inFlight = 0
 
   init(_ api: UnsafePointer<mv_import_api>) { self.api = api }
 
   var ctx: UnsafeMutableRawPointer? { api.pointee.ctx }
 
+  /// Runs `body` while the table is open, counted so -shutdown can wait for
+  /// it; nil once closed.
+  func guarded<R>(_ body: () -> R) -> R? {
+    gate.lock()
+    if closed {
+      gate.unlock()
+      return nil
+    }
+    inFlight += 1
+    gate.unlock()
+    defer {
+      gate.lock()
+      inFlight -= 1
+      if inFlight == 0 { gate.broadcast() }
+      gate.unlock()
+    }
+    return body()
+  }
+
+  /// A status call through the guard; a closed table fails.
+  @discardableResult
+  func call(_ body: () -> mv_status) -> mv_status {
+    guarded(body) ?? MV_ERR_INVALID_ARG
+  }
+
+  /// -shutdown: no new calls, and up to `timeout` for the ones in flight.
+  /// True when none is left inside the pack.
+  @discardableResult
+  func close(timeout: TimeInterval) -> Bool {
+    gate.lock()
+    defer { gate.unlock() }
+    closed = true
+    let deadline = Date(timeIntervalSinceNow: timeout)
+    while inFlight > 0 && gate.wait(until: deadline) {}
+    return inFlight == 0
+  }
+
   /// The buffer rule: retry with `needed`.
   func json(_ call: (UnsafeMutablePointer<CChar>?, UInt32, UnsafeMutablePointer<UInt32>?) -> mv_status) -> String? {
-    var cap: UInt32 = 64 * 1024
-    for _ in 0..<4 {
-      var buf = [CChar](repeating: 0, count: Int(cap))
-      var needed: UInt32 = 0
-      let s = buf.withUnsafeMutableBufferPointer { call($0.baseAddress, cap, &needed) }
-      if s == MV_OK { return String(cString: buf) }
-      if s != MV_ERR_INVALID_ARG || needed <= cap { return nil }
-      cap = needed + 1024
-    }
-    return nil
+    guarded {
+      var cap: UInt32 = 64 * 1024
+      for _ in 0..<4 {
+        var buf = [CChar](repeating: 0, count: Int(cap))
+        var needed: UInt32 = 0
+        let s = buf.withUnsafeMutableBufferPointer { call($0.baseAddress, cap, &needed) }
+        if s == MV_OK { return String(cString: buf) }
+        if s != MV_ERR_INVALID_ARG || needed <= cap { return nil }
+        cap = needed + 1024
+      }
+      return nil
+    } ?? nil
   }
 
   func path(_ call: (UnsafeMutablePointer<CChar>?, UInt32) -> mv_status) -> String? {
-    var buf = [CChar](repeating: 0, count: 32 * 1024)
-    let s = buf.withUnsafeMutableBufferPointer { call($0.baseAddress, UInt32($0.count)) }
-    return s == MV_OK ? String(cString: buf) : nil
+    guarded {
+      var buf = [CChar](repeating: 0, count: 32 * 1024)
+      let s = buf.withUnsafeMutableBufferPointer { call($0.baseAddress, UInt32($0.count)) }
+      return s == MV_OK ? String(cString: buf) : nil
+    } ?? nil
   }
 
   func id(_ call: (UnsafeMutablePointer<UInt64>) -> mv_status) -> UInt64? {
-    var out: UInt64 = 0
-    return call(&out) == MV_OK ? out : nil
+    guarded {
+      var out: UInt64 = 0
+      return call(&out) == MV_OK ? out : nil
+    } ?? nil
   }
 }
 
@@ -121,15 +175,24 @@ final class ImportModel: ObservableObject {
   @Published var removable = false
   @Published var explainerSection: String?
   @Published var confirmingImport = false
+  /// The current card's own binding (issue #193), not the window's last.
+  @Published private(set) var cardBound = false
+  @Published private(set) var cardAutoImport = false
+  /// The plan the grid and the totals show: Import waits while a rescan or a
+  /// replan is out, or a typed field has not been planned yet (issue #193).
+  @Published private var readyPlan: UInt64 = 0
+  @Published private var editPending = false
+  var planIsReady: Bool { plan != 0 && readyPlan == plan && !editPending }
 
   var marks: [String] = []
   private var presets: [[String: Any]] = []
   private var volumeID = ""
   private var scan: UInt64 = 0
-  private(set) var plan: UInt64 = 0
+  @Published private(set) var plan: UInt64 = 0
   private(set) var job: UInt64 = 0
   private var destination = ""
   private var requested = Set<Int>()
+  private var editReplan: Task<Void, Never>?
   private(set) var confirmFiles = 0
   private(set) var confirmBytes: Int64 = 0
   var destinationPreview: String { destination }
@@ -178,7 +241,8 @@ final class ImportModel: ObservableObject {
       detail += fresh >= 0 ? "\(fresh) new" : (kind == "network" ? "network (slower)" : "")
       let label = (s["label"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? root
       let removable = s["removable"] as? Bool ?? false
-      list.append(ImportSource(root: root, label: label, detail: detail, volumeID: s["volume_id"] as? String ?? "", removable: removable))
+      list.append(ImportSource(root: root, label: label, detail: detail, volumeID: s["volume_id"] as? String ?? "", removable: removable,
+                               boundPreset: s["preset"] as? String ?? "", autoImport: s["auto_import"] as? Bool ?? false))
     }
     var current = select ?? (selectedSource.isEmpty ? nil : selectedSource)
     // A one-off folder (opened from the viewer) stays listed while it exists; a
@@ -205,9 +269,22 @@ final class ImportModel: ObservableObject {
   }
 
   func load(_ source: ImportSource) {
+    if source.root != selectedSource {
+      // The last import's summary (and its Eject) belongs to the source it
+      // came from, not to the one just chosen (issue #193).
+      summaryTitle = ""
+      summary = []
+      canRetry = false
+      summaryOffersEject = false
+      reportPath = ""
+      ejectFailureSection = nil
+      bottom = ""
+    }
     selectedSource = source.root
     volumeID = source.volumeID
     removable = source.removable
+    cardBound = !source.boundPreset.isEmpty
+    cardAutoImport = cardBound && source.autoImport
     title = source.label
     scanState = "reading"
     planUnits = 0
@@ -233,7 +310,7 @@ final class ImportModel: ObservableObject {
     let t = table
     let path = url.path
     Task.detached {
-      _ = t.api.pointee.add_folder_source!(t.ctx, path)
+      t.call { t.api.pointee.add_folder_source!(t.ctx, path) }
       await MainActor.run { self.refreshSources(select: path) }
     }
   }
@@ -247,6 +324,9 @@ final class ImportModel: ObservableObject {
   }
 
   func replan() {
+    editReplan?.cancel()
+    editReplan = nil
+    editPending = false
     guard scan != 0, let data = try? JSONSerialization.data(withJSONObject: preset),
           let text = String(data: data, encoding: .utf8) else { return }
     let marked: String? = (preset["selection"] as? String) == "marked"
@@ -262,6 +342,7 @@ final class ImportModel: ObservableObject {
 
   func planReady(_ id: UInt64, _ status: UInt32) {
     guard id == plan else { return }
+    readyPlan = 0
     guard status == MV_OK.rawValue,
           let root = parse(table.json { api.plan_json!(table.ctx, id, $0, $1, $2) }) as? [String: Any],
           let totals = root["totals"] as? [String: Any] else {
@@ -323,6 +404,7 @@ final class ImportModel: ObservableObject {
     importCount = n("selected_units")
     confirmFiles = n("selected_files")
     confirmBytes = Int64(n("selected_bytes"))
+    readyPlan = id
   }
 
   /// "2026-09-21" as the person reads a date ("Sun 21 Sep 2026"), as the
@@ -340,29 +422,32 @@ final class ImportModel: ObservableObject {
   func thumbnail(for tile: ImportTile) {
     guard !requested.contains(tile.index), plan != 0 else { return }
     requested.insert(tile.index)
-    let t = table, p = plan, i = UInt32(tile.index)
+    let t = table, p = plan, s = scan, i = UInt32(tile.index)
     Task.detached(priority: .utility) {
       let path = t.path { t.api.pointee.thumbnail!(t.ctx, p, i, $0, $1) }
       let image = path.flatMap { NSImage(contentsOfFile: $0) }
-      await MainActor.run { if let image { self.thumbs[Int(i)] = image } }
+      // Still the source it was asked for: after ⌃Tab, another card's grid
+      // reuses the same unit indices (issue #193). A replan of the same scan
+      // keeps them, so the scan, not the plan, is the check.
+      await MainActor.run { if let image, self.scan == s { self.thumbs[Int(i)] = image } }
     }
   }
 
   func toggle(_ tile: ImportTile) {
     guard !copying else { return }
-    _ = api.select!(table.ctx, plan, Int32(tile.index), nil, tile.selected ? 0 : 1)
+    table.call { api.select!(table.ctx, plan, Int32(tile.index), nil, tile.selected ? 0 : 1) }
   }
 
   /// Everything on (or off) at once: unit -1 with no day (mediaviewer_import.h).
   func selectAll(_ on: Bool) {
     guard !copying, plan != 0 else { return }
-    _ = api.select!(table.ctx, plan, -1, nil, on ? 1 : 0)
+    table.call { api.select!(table.ctx, plan, -1, nil, on ? 1 : 0) }
   }
 
   func toggleDay(_ day: String) {
     guard !copying, let g = days.first(where: { $0.day == day }) else { return }
     let any = g.tiles.contains { $0.selected }
-    _ = day.withCString { api.select!(table.ctx, plan, -1, $0, any ? 0 : 1) }
+    table.call { day.withCString { api.select!(table.ctx, plan, -1, $0, any ? 0 : 1) } }
   }
 
   // MARK: presets
@@ -373,6 +458,21 @@ final class ImportModel: ObservableObject {
   func set(_ key: String, _ value: Any) {
     preset[key] = value
     replan()
+  }
+
+  /// A typed field (rename, a date): planned once typing pauses, or at once on
+  /// Return, and Import waits for that plan rather than starting the old one
+  /// (issue #193).
+  func edit(_ key: String, _ value: String) {
+    guard string(key) != value else { return }
+    preset[key] = value
+    editPending = true
+    editReplan?.cancel()
+    editReplan = Task { @MainActor [weak self] in
+      try? await Task.sleep(nanoseconds: 400_000_000)
+      guard !Task.isCancelled else { return }
+      self?.replan()
+    }
   }
 
   func choosePreset(_ name: String) {
@@ -390,21 +490,32 @@ final class ImportModel: ObservableObject {
     set(key, url.path)
   }
 
+  /// An empty name saves nothing: it would overwrite "Default" (issue #193).
   func savePreset(named name: String) {
-    preset["name"] = name.isEmpty ? "Default" : name
+    let name = name.trimmingCharacters(in: .whitespaces)
+    guard !name.isEmpty else { return }
+    preset["name"] = name
     guard let data = try? JSONSerialization.data(withJSONObject: preset),
           let text = String(data: data, encoding: .utf8) else { return }
     let t = table
     Task.detached {
-      _ = t.api.pointee.save_preset!(t.ctx, text)
+      t.call { t.api.pointee.save_preset!(t.ctx, text) }
       await MainActor.run { self.refreshSources(select: self.selectedSource) }
     }
   }
 
+  /// The current card's binding (issue #193): what the switches show is what
+  /// the card has, kept in its source row so ⌃Tab back shows it again.
   func bindCard(use: Bool, auto: Bool) {
     guard !volumeID.isEmpty else { return }
     let t = table, vol = volumeID, name = use ? string("name", "Default") : ""
-    Task.detached { _ = t.api.pointee.bind_card!(t.ctx, vol, name, (use && auto) ? 1 : 0) }
+    cardBound = use
+    cardAutoImport = use && auto
+    if let i = sources.firstIndex(where: { $0.root == selectedSource }) {
+      sources[i].boundPreset = name
+      sources[i].autoImport = use && auto
+    }
+    Task.detached { t.call { t.api.pointee.bind_card!(t.ctx, vol, name, (use && auto) ? 1 : 0) } }
   }
 
   var hasCard: Bool { !volumeID.isEmpty }
@@ -418,13 +529,13 @@ final class ImportModel: ObservableObject {
     // No destination yet: choosing one is the next step, not a confirmation
     // that says "(not set)".
     if string("destination").isEmpty { chooseFolder("destination"); return }
-    guard plan != 0 else { return }
+    guard planIsReady else { return }
     confirmingImport = true
   }
 
   func startConfirmed() {
     confirmingImport = false
-    guard !copying, plan != 0, let id = table.id({ api.start!(table.ctx, plan, $0) }) else { return }
+    guard !copying, planIsReady, let id = table.id({ api.start!(table.ctx, plan, $0) }) else { return }
     job = id
     copying = true
     summary = []
@@ -434,11 +545,11 @@ final class ImportModel: ObservableObject {
   func pauseResume() {
     guard copying else { return }
     var p = mv_import_progress()
-    guard api.progress!(table.ctx, job, &p) == MV_OK else { return }
-    _ = api.pause!(table.ctx, job, p.state == MV_IMPORT_JOB_PAUSED.rawValue ? 0 : 1)
+    guard table.call({ api.progress!(table.ctx, job, &p) }) == MV_OK else { return }
+    table.call { api.pause!(table.ctx, job, p.state == MV_IMPORT_JOB_PAUSED.rawValue ? 0 : 1) }
   }
 
-  func cancel() { _ = api.cancel!(table.ctx, job) }
+  func cancel() { table.call { api.cancel!(table.ctx, job) } }
 
   func progressed(_ id: UInt64, _ p: mv_import_progress) {
     guard id == job, copying else { return }
@@ -483,8 +594,10 @@ final class ImportModel: ObservableObject {
     if let root = sources.first(where: { $0.root == selectedSource }) { load(root) }  // what is new now
   }
 
+  /// Retry, Resume and the Tools menu's check each start a job of their own:
+  /// never over a running one, whose completion would then be lost (issue #193).
   func retryFailed() {
-    guard let id = table.id({ api.retry_failed!(table.ctx, job, $0) }) else { return }
+    guard !copying, let id = table.id({ api.retry_failed!(table.ctx, job, $0) }) else { return }
     job = id
     copying = true
     chrome?.track(id, label: "retry")
@@ -512,8 +625,9 @@ final class ImportModel: ObservableObject {
   func eject() {
     let t = table, root = selectedSource
     Task.detached {
-      let status = t.api.pointee.eject!(t.ctx, root)
+      let status = t.call { t.api.pointee.eject!(t.ctx, root) }
       await MainActor.run {
+        guard root == self.selectedSource else { return }
         if status == MV_OK {
           self.bottom = "Ejected. The card can be removed."
           self.ejectFailureSection = nil
@@ -548,7 +662,7 @@ final class ImportModel: ObservableObject {
   }
 
   func resumeUnfinished() {
-    guard bannerJob != 0, api.resume!(table.ctx, bannerJob) == MV_OK else { return }
+    guard !copying, bannerJob != 0, table.call({ api.resume!(table.ctx, bannerJob) }) == MV_OK else { return }
     job = bannerJob
     copying = true
     chrome?.track(bannerJob, label: "resume")
@@ -556,6 +670,7 @@ final class ImportModel: ObservableObject {
   }
 
   func verifyFolder() {
+    guard !copying else { return }
     let panel = NSOpenPanel()
     panel.canChooseDirectories = true
     panel.canChooseFiles = false

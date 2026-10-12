@@ -206,15 +206,25 @@ on the next launch, before any send could be offered:
   filter: it removes decoded image buffers without needing to find them);
 - paths, media filenames and the username / computer name are masked, same length;
 - annotations carry only format, decoder / version, correlation id and optional geometry, built
-  from literals and integers inside the core.
+  from literals, integers and the names FFmpeg keeps in static storage (demuxer, codec) inside the
+  core.
+- the slots cover still decodes and also the threads that run FFmpeg on a clip (#233): the
+  player's open (`role=open`), demux (`role=demux`), video decode (`role=video`) and audio decode
+  (`role=audio`) threads, and a clip job's source (`role=clip`: probe, filmstrip, waveform, and
+  the encode or copy in `MediaViewerClipJob`). They name the container (`fmt=mov,mp4,…`), the
+  codec and `Lavc`/`Lavf` version, and the coded size and bit depth. A long-lived thread holds a
+  slot only while it is inside FFmpeg and gives it back while it parks, so a paused clip holds
+  none. `MediaViewerClipJob` has no crash reporter of its own: its annotation reaches a dump only
+  if one is added there.
 
 ### Windows
 
 - **Capture.** `crashpad_handler.exe` beside the exe, started asynchronously (~3 ms on the UI
   thread). Database `%LocalAppData%\MediaViewer\Crashes`. No URL, indirect memory off, WER
   forwarding off.
-- **Annotations.** Eight `mv_decode_N` slots (`core/crash_context`, 128 bytes each, one per
-  decoding worker) plus `mv_last_call_cid`.
+- **Annotations.** Sixteen `mv_decode_N` slots (`core/crash_context`, 128 bytes each; each
+  decode claims a free one for its duration, so concurrent decodes never share) plus
+  `mv_last_call_cid`.
 - **Scrub.** In-app on start, or `tools/minidump-scrub`.
 - **Verify.** `tools/make-crash-raw.ps1` → `MV_CRASH_TEST=decode` → `tools/minidump-scan.ps1`
   ([DEVELOPMENT.md](../DEVELOPMENT.md#crash-reports-pr-7)).
@@ -226,7 +236,7 @@ on the next launch, before any send could be offered:
   `main()` (Crashpad has no asynchronous start on macOS), restartable. Database
   `~/Library/Application Support/MediaViewer/Crashes`. No URL, uploads disabled, indirect memory
   off, forwarding to ReportCrash off, so Apple keeps no unscrubbed copy.
-- **Annotations.** The same eight slots and `mv_last_call_cid`, read from `core/crash_context`.
+- **Annotations.** The same sixteen slots and `mv_last_call_cid`, read from `core/crash_context`.
   Every routed command and every mutating chrome bridge call stamps a fresh correlation id; a
   still's decode job carries the id of the call that opened it.
 - **Scrub.** The Windows scrub, plus POSIX paths under `/Users`, `/Volumes`, `/private`, `/var`,
@@ -241,8 +251,9 @@ on the next launch, before any send could be offered:
   `NSUncaughtExceptionHandler`; that method and the uncaught handler both write one scrubbed text
   report to `Crashes/chrome/<ms>-cid<id>-nsexception.txt` and set an `mv_exception` annotation
   before the trap. A Swift trap is a Mach exception (`EXC_BREAKPOINT`) that Crashpad records.
-- **Verify.** `tools/mac/crash_canary.py make` / `scan`; `MV_CRASH_TEST=decode | nsexception |
-  swift_trap`.
+- **Verify.** `tools/mac/crash_canary.py make` / `scan`; `MV_CRASH_TEST=decode | video |
+  nsexception | swift_trap`. `video` crashes the player's video decode thread on the first frame
+  of any clip it opens; the variable alone arms it (both hosts).
 
 ---
 

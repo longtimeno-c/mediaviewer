@@ -59,13 +59,38 @@ struct Face: Identifiable, Equatable {
   let box: [Double]
 }
 
+/// What the status poll moves while indexing runs (up to 4 Hz), apart from
+/// the model, as SearchStatus is (issue #192): only the rows that show it
+/// re-render, not the whole Settings page with its folders and People grid.
+@MainActor
+final class ManagementStatus: ObservableObject {
+  @Published fileprivate(set) var line = StatusLine()
+  @Published fileprivate(set) var indexBytes: UInt64 = 0
+  /// Evicted files in indexed folders not yet indexed, and the fetch's state.
+  @Published fileprivate(set) var cloudLeft: UInt64 = 0
+  @Published fileprivate(set) var cloudFetch: UInt32 = 0
+  /// "Re-analyse faces" (docs/design/17 "People model"): the face model in use, and
+  /// while a re-run goes, how far it is (assets analysed of all) and whether
+  /// it is filing the faces into people at the end.
+  @Published fileprivate(set) var peopleModel = ""
+  @Published fileprivate(set) var rerun: (done: UInt64, total: UInt64)?
+  @Published fileprivate(set) var settling = false
+}
+
+/// Re-renders `content` alone when the status moves.
+private struct LiveStatus<Content: View>: View {
+  @ObservedObject var live: ManagementStatus
+  @ViewBuilder let content: (ManagementStatus) -> Content
+  var body: some View { content(live) }
+}
+
 @MainActor
 final class ManagementModel: ObservableObject {
   let table: AITable
   weak var chrome: MVAIChrome?
 
-  @Published private(set) var status = StatusLine()
-  @Published private(set) var indexBytes: UInt64 = 0
+  /// The status line and the counters that move with it.
+  let live = ManagementStatus()
   @Published private(set) var flags: UInt32 = 0
   @Published private(set) var compute: Int = 0
   @Published private(set) var quality: Int = 0
@@ -80,9 +105,6 @@ final class ManagementModel: ObservableObject {
   @Published private(set) var cloudFiles = false
   /// "icloud" when the pack can fetch evicted iCloud Drive files here.
   @Published private(set) var cloudProvider = ""
-  /// Evicted files in indexed folders not yet indexed, and the fetch's state.
-  @Published private(set) var cloudLeft: UInt64 = 0
-  @Published private(set) var cloudFetch: UInt32 = 0
   /// Why the last folder action did nothing, said under the list.
   @Published private(set) var rootError = ""
   @Published private(set) var coreMLAvailable = true
@@ -114,12 +136,9 @@ final class ManagementModel: ObservableObject {
   /// What the last People action did ("Merged 2 people into Sam."), shown in
   /// the People section itself: the top line is out of sight down there.
   @Published private(set) var peopleNote = ""
-  /// "Re-analyse faces" (docs/design/17 "People model"): the face model in use, and
-  /// while a re-run goes, how far it is (assets analysed of all) and whether
-  /// it is filing the faces into people at the end.
-  @Published private(set) var peopleModel = ""
-  @Published private(set) var rerun: (done: UInt64, total: UInt64)?
-  @Published private(set) var settling = false
+  /// Pictures and Movies while no indexed folder covers them, worked out off
+  /// the main thread with the roots (never in a view body).
+  @Published private(set) var suggestedFolders: [SuggestedFolder] = []
 
   enum Confirm: Equatable {
     case clearIndex, removeRoot(UInt64), facesOff
@@ -135,6 +154,8 @@ final class ManagementModel: ObservableObject {
   /// the grid even if an AI_PEOPLE event was missed.
   private var faceCounts: (UInt64, UInt32) = (0, 0)
   private var noteGeneration = 0
+  /// The last rename's write, so the next one waits for it.
+  private var renames: Task<Void, Never>?
 
   /// Settings → Import and export (docs/design/17 "Sharing an index").
   let transfer: IndexTransferModel
@@ -198,7 +219,8 @@ final class ManagementModel: ObservableObject {
 
   private func pollStatus() {
     guard let s = table.status() else { return }
-    if s.index_bytes != indexBytes { indexBytes = s.index_bytes }
+    let live = self.live
+    if s.index_bytes != live.indexBytes { live.indexBytes = s.index_bytes }
     if s.flags != flags {
       let facesChanged = (s.flags ^ flags) & (MV_AI_STATUS_FACES_READY | MV_AI_STATUS_FACES_ON) != 0
       let audioChanged = (s.flags ^ flags) & MV_AI_STATUS_AUDIO_READY != 0
@@ -215,16 +237,16 @@ final class ManagementModel: ObservableObject {
     let model = withUnsafeBytes(of: s.people_model_utf8) { raw in
       String(decoding: raw.prefix(while: { $0 != 0 }), as: UTF8.self)
     }
-    if model != peopleModel { peopleModel = model }
+    if model != live.peopleModel { live.peopleModel = model }
     let running = s.flags & MV_AI_STATUS_PEOPLE_RERUN != 0
     let next = running ? (done: s.people_scan_done, total: s.people_scan_total) : nil
-    if next?.done != rerun?.done || next?.total != rerun?.total { rerun = next }
+    if next?.done != live.rerun?.done || next?.total != live.rerun?.total { live.rerun = next }
     let filing = s.flags & MV_AI_STATUS_PEOPLE_SETTLING != 0
-    if filing != settling { settling = filing }
+    if filing != live.settling { live.settling = filing }
     let line = StatusLine(s)
-    if line != status { status = line }
-    if s.cloud_files_left != cloudLeft { cloudLeft = s.cloud_files_left }
-    if s.cloud_fetch != cloudFetch { cloudFetch = s.cloud_fetch }
+    if line != live.line { live.line = line }
+    if s.cloud_files_left != live.cloudLeft { live.cloudLeft = s.cloud_files_left }
+    if s.cloud_fetch != live.cloudFetch { live.cloudFetch = s.cloud_fetch }
     transfer.poll()
   }
 
@@ -307,17 +329,24 @@ final class ManagementModel: ObservableObject {
                 unreadable: $0["error"] as? String == "unreadable", lastScan: int64($0["last_scan"]),
                 held: $0["held"] as? Bool ?? false)
       }
+      let suggested = Self.suggestions(t)
       await MainActor.run {
         if rows != self.roots { self.roots = rows }
+        if suggested != self.suggestedFolders { self.suggestedFolders = suggested }
         // docs/design/26: the library is "added" while it is a root of the index.
         PhotosLibrary.setAdded(rows.contains { $0.isPhotos })
       }
     }
   }
 
+  /// Pause / Resume. The write takes the engine's lock, which the indexer
+  /// may hold: on a worker, never the main thread (issue #192).
   func setRootEnabled(_ id: UInt64, _ on: Bool) {
-    _ = table.a.root_set_enabled?(table.ctx, id, on ? 1 : 0)
-    reloadRoots()
+    let t = table
+    Task.detached {
+      _ = t.a.root_set_enabled?(t.ctx, id, on ? 1 : 0)
+      await MainActor.run { self.reloadRoots() }
+    }
   }
 
   /// Per folder: Default / Pictures / Sound / Both (root_set_media).
@@ -382,13 +411,14 @@ final class ManagementModel: ObservableObject {
 
   /// Pictures and Movies in the home folder, while no indexed folder covers
   /// them: offered under the list, never added unasked (2026-10-05).
-  struct SuggestedFolder: Identifiable {
+  struct SuggestedFolder: Identifiable, Equatable, Sendable {
     let name: String
     let path: String
     var id: String { path }
   }
 
-  var suggestedFolders: [SuggestedFolder] {
+  /// [worker-thread]: a file-system check and a read of the index per folder.
+  nonisolated private static func suggestions(_ t: AITable) -> [SuggestedFolder] {
     let fm = FileManager.default
     var out: [SuggestedFolder] = []
     for (name, dir) in [("Pictures", FileManager.SearchPathDirectory.picturesDirectory),
@@ -396,7 +426,7 @@ final class ManagementModel: ObservableObject {
       guard let url = fm.urls(for: dir, in: .userDomainMask).first,
             fm.fileExists(atPath: url.path) else { continue }
       var state: UInt32 = 0
-      guard table.a.folder_coverage?(table.ctx, url.path, &state) == MV_OK, state == 0 else { continue }
+      guard t.a.folder_coverage?(t.ctx, url.path, &state) == MV_OK, state == 0 else { continue }
       out.append(SuggestedFolder(name: name, path: url.path))
     }
     return out
@@ -562,9 +592,23 @@ final class ManagementModel: ObservableObject {
     p.name.isEmpty ? "Unnamed (\(p.faces == 1 ? "1 photo" : "\(p.faces) photos"))" : p.name
   }
 
+  /// The card shows the name now; the row is written on a worker, as merge
+  /// and reject are (person_rename takes the engine's lock; issue #192).
   func rename(_ id: UInt64, _ name: String) {
-    _ = table.a.person_rename?(table.ctx, id, name)
     if let i = people.firstIndex(where: { $0.id == id }) { people[i].name = name }
+    let t = table
+    let previous = renames
+    // One after another: two quick renames land in the order they were typed.
+    renames = Task.detached {
+      await previous?.value
+      let ok = t.call { t.a.person_rename?(t.ctx, id, name) } == MV_OK
+      if !ok {
+        await MainActor.run {
+          self.note("The name could not be saved. Try again.")
+          self.reloadPeople()
+        }
+      }
+    }
   }
 
   func merge(into: UInt64, from: UInt64) { merge(into: into, from: [from]) }
@@ -769,13 +813,15 @@ struct ManagementView: View {
 
   private var fullBody: some View {
     VStack(alignment: .leading, spacing: 10) {
-      StatusPill(line: model.status, onIndexAnyway: { model.indexAnyway() }) { model.setPaused($0) }
-      if !model.status.sound.isEmpty && model.status.stages.isEmpty {
-        // "Sound: 12 of 40 clips · Speech: 8 of 40" once it is done; while a
-        // pass runs, the pill's stages say it.
-        Label(model.status.sound, systemImage: "speaker.wave.2")
-          .font(AITheme.font(12)).foregroundStyle(AITheme.body)
-          .contentTransition(.numericText())
+      LiveStatus(live: model.live) { live in
+        StatusPill(line: live.line, onIndexAnyway: { model.indexAnyway() }) { model.setPaused($0) }
+        if !live.line.sound.isEmpty && live.line.stages.isEmpty {
+          // "Sound: 12 of 40 clips · Speech: 8 of 40" once it is done; while a
+          // pass runs, the pill's stages say it.
+          Label(live.line.sound, systemImage: "speaker.wave.2")
+            .font(AITheme.font(12)).foregroundStyle(AITheme.body)
+            .contentTransition(.numericText())
+        }
       }
       if !model.message.isEmpty {
         Text(model.message).font(AITheme.font(12)).foregroundStyle(AITheme.body)
@@ -798,12 +844,14 @@ struct ManagementView: View {
         if model.flags & MV_AI_STATUS_SMALL_FALLBACK != 0 && model.quality == Int(MV_AI_QUALITY_AUTO.rawValue) {
           // Auto runs the small model where Core ML failed the large one here
           // (2026-10-05); trying again forgets that and re-indexes if it passes.
-          row("Search model",
-              detail: "Using the smaller model: the larger one failed on Core ML on this Mac"
-                + (model.status.help.isEmpty ? "." : " (\(model.status.help)).")
-                + " Trying again prepares it in the background, which can take several minutes, "
-                + "and re-indexes your library with it if it works.") {
-            Button("Try the larger model again") { model.set("retry_large", 1) }
+          LiveStatus(live: model.live) { live in
+            row("Search model",
+                detail: "Using the smaller model: the larger one failed on Core ML on this Mac"
+                  + (live.line.help.isEmpty ? "." : " (\(live.line.help)).")
+                  + " Trying again prepares it in the background, which can take several minutes, "
+                  + "and re-indexes your library with it if it works.") {
+              Button("Try the larger model again") { model.set("retry_large", 1) }
+            }
           }
         }
         if model.quality != Int(MV_AI_QUALITY_AUTO.rawValue) {
@@ -864,28 +912,34 @@ struct ManagementView: View {
             .font(AITheme.font(11)).foregroundStyle(Color.accentColor)
             .padding(.horizontal, 12).padding(.bottom, 8)
         }
-        if model.cloudProvider == "icloud" && (model.cloudLeft > 0 || model.cloudFiles) {
-          Divider().padding(.horizontal, 12)
-          row("Download iCloud Drive files to index them", detail: cloudDetail) {
-            Toggle("Download iCloud Drive files to index them",
-                   isOn: Binding(get: { model.cloudFiles }, set: { model.set("cloud_files", $0 ? 1 : 0) }))
-              .toggleStyle(.switch)
-              .labelsHidden()
+        if model.cloudProvider == "icloud" {
+          LiveStatus(live: model.live) { live in
+            if live.cloudLeft > 0 || model.cloudFiles {
+              Divider().padding(.horizontal, 12)
+              row("Download iCloud Drive files to index them", detail: cloudDetail(live)) {
+                Toggle("Download iCloud Drive files to index them",
+                       isOn: Binding(get: { model.cloudFiles }, set: { model.set("cloud_files", $0 ? 1 : 0) }))
+                  .toggleStyle(.switch)
+                  .labelsHidden()
+              }
+            }
           }
         }
       }
       section("Index") {
-        row("Search index",
-            detail: "\(bytesText(model.indexBytes)) on disk" +
-              (model.capBytes > 0 ? " of at most \(bytesText(UInt64(model.capBytes)))" : "") +
-              ". Your thumbnails are kept when it is cleared.") {
-          Picker("Index size limit", selection: Binding(get: { model.capBytes }, set: { model.set("index_cap_bytes", $0) })) {
-            ForEach([Int64(2), 5, 10, 20, 50], id: \.self) { gb in
-              Text("\(gb) GB").tag(gb * 1_000_000_000)
+        LiveStatus(live: model.live) { live in
+          row("Search index",
+              detail: "\(bytesText(live.indexBytes)) on disk" +
+                (model.capBytes > 0 ? " of at most \(bytesText(UInt64(model.capBytes)))" : "") +
+                ". Your thumbnails are kept when it is cleared.") {
+            Picker("Index size limit", selection: Binding(get: { model.capBytes }, set: { model.set("index_cap_bytes", $0) })) {
+              ForEach([Int64(2), 5, 10, 20, 50], id: \.self) { gb in
+                Text("\(gb) GB").tag(gb * 1_000_000_000)
+              }
             }
+            .pickerStyle(.menu).frame(width: 110)
+            Button("Clear index…") { model.confirming = .clearIndex }
           }
-          .pickerStyle(.menu).frame(width: 110)
-          Button("Clear index…") { model.confirming = .clearIndex }
         }
         if model.confirming == .clearIndex {
           confirmRow("Delete every indexed moment? Folders stay remembered and will be indexed again.",
@@ -927,7 +981,7 @@ struct ManagementView: View {
             .padding(.horizontal, 12).padding(.bottom, 10)
         }
         if model.facesOn && model.facesReady && model.canReanalyse {
-          reanalyseRow
+          LiveStatus(live: model.live) { reanalyseRow($0) }
         }
         if model.facesOn && model.facesReady {
           PeopleGrid(model: model, open: { openPerson = $0 }, limit: Self.peopleShown,
@@ -1089,7 +1143,7 @@ struct ManagementView: View {
         Button(root.scanning ? "Checking…" : "Rescan") { model.rescan(root.id) }.disabled(off || root.scanning)
         if model.confirming == .removeRoot(root.id) {
           Button("Remove from index", role: .destructive) { model.removeRoot(root.id) }
-          Button("Cancel") { model.confirming = nil }
+          Button("Cancel") { model.confirming = nil }.keyboardShortcut(.cancelAction)
         } else {
           Button("Remove…") { model.confirming = .removeRoot(root.id) }
             .help("Stop searching your Photos library and delete its rows from the index. Your library is not touched.")
@@ -1114,15 +1168,15 @@ struct ManagementView: View {
 
   /// The iCloud Drive row's words: how many wait, what the switch does, and
   /// why the fetch is waiting when it is.
-  private var cloudDetail: String {
-    let left = model.cloudLeft == 0 ? "Every iCloud Drive file in your folders is indexed."
-      : model.cloudLeft == 1 ? "1 file in your folders is only in iCloud Drive, so it is not searchable yet."
-      : "\(countText(model.cloudLeft)) files in your folders are only in iCloud Drive, so they are not searchable yet."
+  private func cloudDetail(_ live: ManagementStatus) -> String {
+    let left = live.cloudLeft == 0 ? "Every iCloud Drive file in your folders is indexed."
+      : live.cloudLeft == 1 ? "1 file in your folders is only in iCloud Drive, so it is not searchable yet."
+      : "\(countText(live.cloudLeft)) files in your folders are only in iCloud Drive, so they are not searchable yet."
     let how = " With this on, MediaViewer downloads a couple at a time, only on power and an unmetered network, "
       + "indexes them, then removes the download again. Off by default."
     guard model.cloudFiles else { return left + how }
     let wait: String
-    switch model.cloudFetch {
+    switch live.cloudFetch {
     case MV_AI_ICLOUD_WAIT_NETWORK.rawValue: wait = " Waiting for an unmetered network."
     case MV_AI_ICLOUD_WAIT_POWER.rawValue: wait = " Waiting for power."
     case MV_AI_ICLOUD_LOW_DISK.rawValue: wait = " Waiting: less than 10 GB free."
@@ -1189,7 +1243,7 @@ struct ManagementView: View {
         .disabled(!root.enabled || root.scanning)
       if model.confirming == .removeRoot(root.id) {
         Button("Remove from index", role: .destructive) { model.removeRoot(root.id) }
-        Button("Cancel") { model.confirming = nil }
+        Button("Cancel") { model.confirming = nil }.keyboardShortcut(.cancelAction)
       } else {
         Button("Remove…") { model.confirming = .removeRoot(root.id) }
           .help("Forget this folder and delete its rows from the index. Your files are not touched.")
@@ -1201,15 +1255,15 @@ struct ManagementView: View {
 
   /// "Re-analyse faces": the model in use, a button, and while it runs how
   /// far it is. The people named, merged and split carry over.
-  @ViewBuilder private var reanalyseRow: some View {
-    if model.settling {
+  @ViewBuilder private func reanalyseRow(_ live: ManagementStatus) -> some View {
+    if live.settling {
       progressRow("Filing faces into people…", fraction: nil)
-    } else if let r = model.rerun {
+    } else if let r = live.rerun {
       progressRow("Re-analysing faces… \(r.done.formatted()) of \(r.total.formatted())",
                   fraction: r.total > 0 ? Double(r.done) / Double(r.total) : nil)
     } else {
       row("Re-analyse faces",
-          detail: "Looks at every photo and video again\(model.peopleModel.isEmpty ? "" : " with \(model.peopleModel)"), then files the faces into the people you have. Names, merges and splits are kept.") {
+          detail: "Looks at every photo and video again\(live.peopleModel.isEmpty ? "" : " with \(live.peopleModel)"), then files the faces into the people you have. Names, merges and splits are kept.") {
         Button("Re-analyse") { model.reanalyse() }
       }
     }
