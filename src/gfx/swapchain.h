@@ -76,7 +76,8 @@ class swapchain {
   [[nodiscard]] bool tearing_supported() const noexcept { return tearing_supported_; }
 
   // The current output interval in seconds, or zero when unavailable.
-  // Re-queried on WM_DISPLAYCHANGE and on window move (docs/design/03).
+  // Read on create and retarget; re-queried on WM_DISPLAYCHANGE and on window
+  // move (docs/design/03). Not on resize: a resize cannot change it.
   [[nodiscard]] double refresh_interval_seconds() const noexcept { return refresh_seconds_; }
   void refresh_output_info() noexcept;
 
