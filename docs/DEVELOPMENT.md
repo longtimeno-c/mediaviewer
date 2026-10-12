@@ -1002,6 +1002,10 @@ an iPhone's layout (4032x3024 as 8x6 tiles of 512, a 320x240 thumbnail item, Dis
 `mv_tests "thumb store lookup throughput"` (also tagged `[.perf-bench]`, printed, not in the
 JSON) times 2,000 thumbnail-cache hits from four threads, the filmstrip sweep's lookups.
 
+`mv_tests "foreground start latency under a background sweep"` (also `[.perf-bench]`, printed)
+times how long a view-tied job waits for a worker while 60 ms background jobs fill a two-worker
+pool: the job system's reserved foreground worker (issue #160).
+
 The pacing soak cannot see a paused clip's cost (it presents nothing). `mv_tests "[idle]"`
 (macOS, headless, a synthetic clip) does: it prints the process's context switches and CPU
 per second with a clip paused on its poster and with one played out, and fails above 200

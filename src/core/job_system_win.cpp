@@ -46,16 +46,48 @@ struct job_system::impl {
   std::deque<job_record> background;
   std::vector<std::thread> workers;
   bool running = false;
+  // Issue #160: the lanes only ordered dequeues, so once every worker had
+  // started a thumbnail or a scan (generation 0, never cancelled mid-run) the
+  // photo the user just arrowed to waited for one of them to finish. At most
+  // `background_cap` workers run background jobs at once; with more than one
+  // worker that leaves one free for the foreground lane.
+  std::uint32_t background_running = 0;
+  std::uint32_t background_cap = 1;
 
   [[nodiscard]] bool empty() const noexcept {
     return foreground.empty() && background.empty();
   }
 
+  // What a worker may take now: any foreground job, or a background one while
+  // the background lane is under its cap.
+  [[nodiscard]] bool runnable() const noexcept {
+    return !foreground.empty() || (!background.empty() && background_running < background_cap);
+  }
+
   job_record pop() noexcept {
-    auto& q = foreground.empty() ? background : foreground;
-    job_record job = std::move(q.front());
-    q.pop_front();
+    if (!foreground.empty()) {
+      job_record job = std::move(foreground.front());
+      foreground.pop_front();
+      return job;
+    }
+    ++background_running;
+    job_record job = std::move(background.front());
+    background.pop_front();
     return job;
+  }
+
+  // A background job finished and its slot is free. One waiter is woken when
+  // background work is queued: the worker that ran this job may take a
+  // foreground job next, and a worker parked at the cap would otherwise
+  // sleep with the slot open.
+  void background_done() noexcept {
+    bool wake = false;
+    {
+      std::lock_guard lock(mutex);
+      --background_running;
+      wake = !background.empty();
+    }
+    if (wake) cv.notify_one();
   }
 };
 
@@ -77,6 +109,7 @@ status job_system::start(std::uint32_t worker_count) noexcept {
   worker_count_ = worker_count;
 
   impl_->running = true;
+  impl_->background_cap = worker_count > 1 ? worker_count - 1 : 1;
   impl_->workers.reserve(worker_count);
 
   for (std::uint32_t i = 0; i < worker_count; ++i) {
@@ -90,10 +123,11 @@ status job_system::start(std::uint32_t worker_count) noexcept {
         job_record job;
         {
           std::unique_lock lock(impl_->mutex);
-          impl_->cv.wait(lock, [this] { return !impl_->running || !impl_->empty(); });
+          impl_->cv.wait(lock, [this] { return !impl_->running || impl_->runnable(); });
           if (!impl_->running && impl_->empty()) return;
           job = impl_->pop();
         }
+        const bool is_background = job.gen == background_generation;
 
         // Cancellation check before doing any work: navigating away while a
         // hundred decodes are queued must cost approximately nothing.
@@ -116,6 +150,7 @@ status job_system::start(std::uint32_t worker_count) noexcept {
           result = status::internal;
         }
         trace::job_end(job.id, static_cast<std::int32_t>(result));
+        if (is_background) impl_->background_done();
 
         if (result == status::cancelled) {
           cancelled_.fetch_add(1, std::memory_order_relaxed);

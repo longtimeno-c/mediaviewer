@@ -92,7 +92,9 @@ The UI thread and the render thread never block on I/O, decode, or a lock held b
 
 The job system ([`src/core/job_system.h`](../../src/core/job_system.h)) is one MPMC queue with two
 lanes: **foreground** jobs carry the current view generation and are always taken first; **background**
-jobs (generation 0 — thumbnails, scans) run only when no foreground work is waiting. Everything else
+jobs (generation 0 — thumbnails, scans) run only when no foreground work is waiting, and on at most
+N − 1 workers at once (one worker when N = 1), so a worker is always free for the view instead of
+the photo just arrowed to waiting for a thumbnail to finish (issue #160). Everything else
 is single-producer/single-consumer rings of POD messages (`core/spsc_ring.h`) and a wait-free triple
 buffer. No mutex is held across a call the holder does not own.
 
