@@ -27,7 +27,9 @@ using generation = std::uint32_t;
 inline constexpr job_id invalid_job = 0;
 
 // Generation 0 is not a view intent: queued work is not abandoned when the
-// user arrows to the next photo. Thumb jobs use it (PR 4).
+// user arrows to the next photo. Thumb jobs use it (PR 4). Background jobs run
+// on at most worker_count - 1 workers at once (all of one), so the view's
+// next job never waits for a sweep job to finish (issue #160).
 inline constexpr generation background_generation = 0;
 
 // Handed to every running job. The job checks `cancelled()` at whatever

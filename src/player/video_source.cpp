@@ -175,9 +175,20 @@ class ffmpeg_video_source final : public video_source {
     pipe_.device_owner = pipe_.device;
 #endif
 
+    // Probing an untrusted container is the widest parse in the app; a crash
+    // in it names the stage, never the file (issue #233).
+    pipe_.crash.correlation_id = crash_context::thread_correlation();
+    crash_context::thread_slot open_slot = clip_crash_slot(pipe_, "open", "libavformat",
+                                                           LIBAVFORMAT_IDENT);
+    open_slot.busy();
     AVFormatContext* format = nullptr;
     if (avformat_open_input(&format, utf8_path, nullptr, nullptr) < 0) return err(status::io);
     pipe_.format.reset(format);
+    if (format->iformat != nullptr && format->iformat->name != nullptr) {
+      pipe_.crash.container = format->iformat->name;
+      open_slot = clip_crash_slot(pipe_, "open", "libavformat", LIBAVFORMAT_IDENT);
+      open_slot.busy();
+    }
     if (avformat_find_stream_info(pipe_.format.get(), nullptr) < 0) return err(status::corrupt);
 
     pipe_.video_stream = find_moving_video(pipe_.format.get());
@@ -204,10 +215,18 @@ class ffmpeg_video_source final : public video_source {
       pipe_.start_time_ns = av_rescale_q(stream->start_time, stream->time_base, ns);
     }
 
+    pipe_.crash.video_codec = avcodec_get_name(stream->codecpar->codec_id);
+    pipe_.crash.width = static_cast<std::uint32_t>(std::max(0, stream->codecpar->width));
+    pipe_.crash.height = static_cast<std::uint32_t>(std::max(0, stream->codecpar->height));
+    open_slot.describe({.family = pipe_.crash.container, .decoder = pipe_.crash.video_codec,
+                        .version = LIBAVCODEC_IDENT, .correlation_id = pipe_.crash.correlation_id,
+                        .role = "open"},
+                       pipe_.crash.width, pipe_.crash.height, 0);
     MV_TRY_VOID(open_video_codec(pipe_, stream));
 
     const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(pipe_.codec->pix_fmt);
     const int bit_depth = desc ? desc->comp[0].depth : 8;
+    pipe_.crash.bits = static_cast<std::uint32_t>(bit_depth);
 
     pipe_.colour = gfx::resolve_unspecified(
         colour_from_stream(pipe_.codec->colorspace, pipe_.codec->color_primaries,
@@ -307,6 +326,7 @@ class ffmpeg_video_source final : public video_source {
 
   void stop() noexcept {
     pipe_.stopping.store(true, std::memory_order_release);
+    pipe_.wake.notify();
     pipe_.video_packets.stop();
     pipe_.audio_packets.stop();
     if (pipe_.demux_thread.joinable()) pipe_.demux_thread.join();
@@ -339,7 +359,7 @@ class ffmpeg_video_source final : public video_source {
     // generation test at acquire. No cross-thread queue surgery, which is what
     // keeps both rings single-producer.
     pipe_.generation.store(generation, std::memory_order_release);
-
+    pipe_.wake.notify();  // a decode thread parked on the old generation
   }
 
   [[nodiscard]] video_pipeline& pipeline() noexcept { return pipe_; }

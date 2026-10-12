@@ -316,6 +316,11 @@ public static unsafe partial class AddonNative
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial MvStatus mv_addon_load_reader(IntPtr session, byte* id, byte* iface, IntPtr* outIface,
+        byte* chrome, uint chromeCap);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     private static partial MvStatus mv_addon_unload(byte* id);
 
     [LibraryImport(Library)]
@@ -514,7 +519,12 @@ public static unsafe partial class AddonNative
     }
 
     /// <summary>Loads (or returns the loaded) add-on; the interface table and the chrome path.</summary>
-    public static (IntPtr Interface, string ChromePath) Load(MediaViewerSession session, string id, string interfaceId)
+    /// <remarks><paramref name="reader"/>: through the add-on's read-only door, for a window whose
+    /// process does not host the add-ons (docs/design/18 "One host process", 2026-10-07).
+    /// <see cref="MvStatus.NotFound"/> then means nothing is indexed yet. <see cref="MvStatus.Io"/>:
+    /// the add-on verified but Windows would not load it; the exception's message says why.</remarks>
+    public static (IntPtr Interface, string ChromePath) Load(MediaViewerSession session, string id, string interfaceId,
+        bool reader = false)
     {
         byte[] chrome = new byte[32 * 1024];
         IntPtr iface = IntPtr.Zero;
@@ -526,8 +536,10 @@ public static unsafe partial class AddonNative
             fixed (byte* f = Z(interfaceId))
             fixed (byte* c = chrome)
             {
-                Check(mv_addon_load(session.Handle.DangerousGetHandle(), i, f, &iface, c, (uint)chrome.Length),
-                    "mv_addon_load");
+                Check(reader
+                    ? mv_addon_load_reader(session.Handle.DangerousGetHandle(), i, f, &iface, c, (uint)chrome.Length)
+                    : mv_addon_load(session.Handle.DangerousGetHandle(), i, f, &iface, c, (uint)chrome.Length),
+                    reader ? "mv_addon_load_reader" : "mv_addon_load");
             }
         }
         finally
@@ -659,6 +671,25 @@ public interface IAddonHost2 : IAddonHost
     event Action? ThemeChanged;
 }
 
+/// <summary>
+/// The command-bar pill's ring and menu (#200, the Mac's LocalSearchBarItem).
+/// A new interface, not new members on <see cref="IAddonHost2"/>: an installed
+/// pack's chrome was compiled against that as it is. A chrome that finds no
+/// IAddonHost3 keeps calling <see cref="IAddonHost2.SetIndexingStatus"/>, and
+/// one compiled against this must reach it only from a method that can fail
+/// to load on an older host (AiChrome.ReportPill).
+/// </summary>
+public interface IAddonHost3 : IAddonHost2
+{
+    /// <summary>
+    /// <see cref="IAddonHost2.SetIndexingStatus"/> with the ring's
+    /// <paramref name="fraction"/> (0…1 of the pass the text names; negative
+    /// for none) and whether indexing is waiting on battery, when the pill's
+    /// menu offers <see cref="SearchCommand.IndexAnyway"/>.
+    /// </summary>
+    void SetIndexingPill(string? text, bool busy, double fraction, bool onBattery);
+}
+
 /// <summary>The search commands the native router forwards (ShowAddon kinds).</summary>
 public static class SearchCommand
 {
@@ -666,6 +697,7 @@ public static class SearchCommand
     public const int Similar = 1;     // Ctrl+Shift+F
     public const int NextMatch = 2;   // N on a clip
     public const int PrevMatch = 3;   // Shift+N
+    public const int IndexAnyway = 4; // the pill's menu, on battery (#200); an older chrome returns false
 }
 
 /// <summary>

@@ -315,7 +315,7 @@ TEST_CASE("declared video completions are pushed, not just declared",
   MV_REQUIRE_CLIP(path, "av_transport.mp4");
 
   mv::gfx::device device;
-  REQUIRE(device.create(nullptr));
+  if (!device.create(nullptr)) SKIP("no D3D11 device on this machine (hosted CI has no GPU)");
   session_guard session(2);
   REQUIRE(mv::abi::attach_device(session.handle, device.d3d()) == mv::status::ok);
 

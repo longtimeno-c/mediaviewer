@@ -424,7 +424,9 @@ mv_status make(uint32_t host_api, const mv_host_api* host, mv_addon_api* out, bo
     if (!data) return to_mv(data.error());
     state->eng = std::make_unique<engine>(
         &state->host, mv::ai::pack_deps(*state->h, mv::ai::platform::self_dir(), *data),
-        mv::ai::engine_options{.read_only = read_only});
+        // Issue #299: an index left unfinished waits for Resume (both hosts' launch
+        // notice and the folder rows' Resume ask for it).
+        mv::ai::engine_options{.read_only = read_only, .hold_unfinished = true});
     if (auto started = state->eng->start(); !started) return to_mv(started.error());
 
     mv_ai_api& a = state->api;

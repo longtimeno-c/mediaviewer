@@ -676,7 +676,7 @@ void chrome_host::apply_settings(std::int32_t flags, std::int32_t sort) noexcept
   if (!attached_ || !apply_settings_) return;
   chrome_flags_args args{};
   args.flags = flags;
-  args.sort = sort;
+  args.sort = (sort & 0xFF) | (kind_filter_ << 8);
   (void)apply_settings_(&args, static_cast<std::int32_t>(sizeof(args)));
 }
 

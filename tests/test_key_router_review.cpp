@@ -29,10 +29,11 @@ TEST_CASE("table rows are well-formed", "[shell][commands][review]") {
   REQUIRE(rows.size() < 255);  // the router's index is uint8 row + 1
   for (const auto& b : rows) {
     INFO("key " << static_cast<int>(b.k) << " command " << static_cast<int>(b.command));
-    // PR 7: Open RAW / Open JPEG, and Copy Text in Image (keyless in Preview too),
-    // are the only rows that ship unbound.
+    // PR 7: Open RAW / Open JPEG, and issue #206's Show next kind, are the only
+    // rows that ship unbound.
     if (b.k == key::none) {
       REQUIRE((b.command == command_id::open_raw || b.command == command_id::open_jpeg ||
+               b.command == command_id::kind_filter_next ||
                b.command == command_id::copy_text_in_image));
       continue;
     }

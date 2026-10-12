@@ -10,6 +10,7 @@
 
 #include "fixtures.h"
 #include "meta/meta.h"
+#include "shell/commands.h"
 #include "shell/meta_writer.h"
 
 namespace {
@@ -205,4 +206,44 @@ TEST_CASE("tag and date edits for one file coalesce, the later value winning", "
   CHECK(job->fields.tags[0].value.value == "B");
   CHECK(job->fields.tags[1].key == "Xmp.dc.title");
   CHECK(job->fields.date_taken.value == "2020-01-01 00:00:00");
+}
+
+// Issue #207: the culling keys' state machine, shared by both hosts.
+TEST_CASE("X toggles reject; a label key toggles its label; U clears", "[meta][writer][cull]") {
+  using mv::shell::colour_label;
+  CHECK(mv::shell::reject_toggled(0) == -1);
+  CHECK(mv::shell::reject_toggled(4) == -1);
+  CHECK(mv::shell::reject_toggled(-1) == 0);
+
+  CHECK(mv::shell::label_toggled(colour_label::red, "") == "Red");
+  CHECK(mv::shell::label_toggled(colour_label::red, "Blue") == "Red");
+  CHECK(mv::shell::label_toggled(colour_label::red, "Red").empty());
+  CHECK(mv::shell::label_toggled(colour_label::red, "red").empty());  // another app's spelling
+  CHECK(mv::shell::label_toggled(colour_label::none, "Green").empty());
+
+  meta_writer w;
+  w.submit("/a.jpg", rating_fields(3));
+  w.submit("/a.jpg", mv::shell::label_fields("Yellow"));
+  CHECK(w.pending_label("/a.jpg") == std::optional<std::string>("Yellow"));
+  CHECK(w.pending_rating("/a.jpg") == 3);  // one write carries both
+  w.submit("/a.jpg", mv::shell::label_fields(""));
+  CHECK(w.pending_label("/a.jpg") == std::optional<std::string>(""));
+  CHECK_FALSE(w.pending_label("/b.jpg").has_value());
+  auto j = w.take_next();
+  REQUIRE(j);
+  REQUIRE(j->fields.tags.size() == 1);  // the later label replaced the earlier
+  CHECK(mv::shell::describe_write(j->fields) == mv::meta::format_rating(3));
+  CHECK(mv::shell::describe_write(mv::shell::label_fields("Blue")) == "Label: Blue");
+  CHECK(mv::shell::describe_write(mv::shell::label_fields("")) == "Label cleared");
+  CHECK(mv::shell::describe_write(rating_fields(-1)) == "Rejected");
+}
+
+TEST_CASE("the label keys map to Lightroom's colours", "[shell][commands][cull]") {
+  using mv::shell::command_id;
+  CHECK(mv::shell::label_of_command(command_id::label_red) == 1);
+  CHECK(mv::shell::label_of_command(command_id::label_blue) == 4);
+  CHECK(mv::shell::label_of_command(command_id::clear_label) == 0);
+  CHECK(mv::shell::label_of_command(command_id::reject) == -1);
+  CHECK(std::string(mv::shell::colour_label_name(static_cast<mv::shell::colour_label>(
+            mv::shell::label_of_command(command_id::label_green)))) == "Green");
 }

@@ -817,6 +817,18 @@ TEST_CASE("camera RAW: cancelling a full decode returns promptly", "[codec][raw]
   auto bytes = mv::io::read_all(path);
   REQUIRE(bytes);
 
+  // What "never cancels" would cost on THIS machine and build: an uncancelled
+  // decode. 1-1.7 s on a dev box in Release, several times that in a Debug build
+  // on a 4-vCPU hosted runner, where a fixed 1000 ms bound was one stage away
+  // from failing (CR2, 1023 ms) even though the cancel landed at a stage edge.
+  const auto full_start = std::chrono::steady_clock::now();
+  REQUIRE(mv::codec::decode_raw(bytes.value(), nullptr));
+  const double full_ms =
+      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - full_start)
+          .count();
+  const double bound_ms = std::max(1000.0, 0.6 * full_ms);
+  CAPTURE(full_ms);
+
   for (int delay_ms : {0, 40, 150}) {
     CAPTURE(delay_ms);
     std::atomic<mv::generation> current{1};
@@ -839,8 +851,8 @@ TEST_CASE("camera RAW: cancelling a full decode returns promptly", "[codec][raw]
     // LibRaw polls the progress callback between stages, not inside one, so
     // latency is one stage: a CR2 lossless-JPEG unpack is ~400 ms alone and
     // ~550 ms with the rest of the suite running. The bound catches "never
-    // cancels" (a full decode is 1-1.7 s), not stage granularity.
-    CHECK(latency < 1000.0);
+    // cancels" (a full decode, timed above), not stage granularity.
+    CHECK(latency < bound_ms);
   }
 }
 

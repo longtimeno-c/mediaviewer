@@ -41,7 +41,7 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
 endif()
 
 project(mediaviewer
-  VERSION 0.1.27
+  VERSION 0.1.28
   DESCRIPTION "Media viewer for a real camera dump"
   LANGUAGES CXX)
 
@@ -191,11 +191,93 @@ target_link_libraries(mv_core PUBLIC mv_project_options)
 add_library(mv::core ALIAS mv_core)
 
 # ---------------------------------------------------------------------------
+# HLSL, compiled at build time (issue #163). Device create (launch, device lost,
+# adapter change) used to D3DCompile six entry points at O3 before the workers
+# could upload; now it hands fxc's bytecode straight to Create*Shader. One
+# header per entry point, `const BYTE <name>[]`, in ${MV_SHADER_OUT_DIR}.
+# fxc ships with every Windows 10/11 SDK (SM 5.0 needs fxc, not dxc). The
+# Visual Studio generator does not put the SDK's bin on PATH, so look in the
+# SDK the build targets first, then the newest one installed.
+# ---------------------------------------------------------------------------
+set(_mv_fxc_hints "")
+get_filename_component(_mv_kits_root
+  "[HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows Kits\\Installed Roots;KitsRoot10]"
+  ABSOLUTE)
+if(NOT IS_DIRECTORY "${_mv_kits_root}")
+  set(_mv_kits_root "$ENV{ProgramFiles\(x86\)}/Windows Kits/10")
+endif()
+if(CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "ARM64|arm64")
+  set(_mv_fxc_arches arm64 x64 x86)
+else()
+  set(_mv_fxc_arches x64 x86)
+endif()
+set(_mv_sdk_versions "")
+if(CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION)
+  list(APPEND _mv_sdk_versions "${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}")
+endif()
+if(DEFINED ENV{WindowsSDKVersion})
+  # "10.0.22621.0\" in a VS developer shell: keep the version, drop the slash.
+  string(REGEX REPLACE "[^0-9.]" "" _mv_env_sdk "$ENV{WindowsSDKVersion}")
+  list(APPEND _mv_sdk_versions "${_mv_env_sdk}")
+endif()
+file(GLOB _mv_installed_sdks LIST_DIRECTORIES true RELATIVE "${_mv_kits_root}/bin"
+  "${_mv_kits_root}/bin/10.*")
+list(SORT _mv_installed_sdks COMPARE NATURAL ORDER DESCENDING)
+list(APPEND _mv_sdk_versions ${_mv_installed_sdks})
+list(REMOVE_DUPLICATES _mv_sdk_versions)
+foreach(_mv_ver IN LISTS _mv_sdk_versions)
+  foreach(_mv_arch IN LISTS _mv_fxc_arches)
+    list(APPEND _mv_fxc_hints "${_mv_kits_root}/bin/${_mv_ver}/${_mv_arch}")
+  endforeach()
+endforeach()
+find_program(MV_FXC fxc HINTS ${_mv_fxc_hints} REQUIRED
+  DOC "HLSL compiler for the build-time shader compile (Windows SDK fxc.exe)")
+message(STATUS "fxc: ${MV_FXC}")
+
+set(MV_SHADER_OUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")
+file(MAKE_DIRECTORY "${MV_SHADER_OUT_DIR}")
+
+# mv_fxc(<out_var> <hlsl> <entry> <profile> <name> [extra deps...])
+# Compiles one entry point of <hlsl> into ${MV_SHADER_OUT_DIR}/<stem>_<entry>.h
+# (blit.hlsl, ps_tile -> blit_ps_tile.h) holding
+# `const BYTE <name>[]`, and appends that header to <out_var>. /O3 is what the
+# runtime D3DCompile used (D3DCOMPILE_OPTIMIZATION_LEVEL3). Extra deps are the
+# files <hlsl> #includes; list them, the custom command cannot see includes.
+function(mv_fxc out_var hlsl entry profile name)
+  get_filename_component(_stem "${hlsl}" NAME_WE)
+  set(_out "${MV_SHADER_OUT_DIR}/${_stem}_${entry}.h")
+  get_filename_component(_hlsl_dir "${hlsl}" DIRECTORY)
+  file(TO_NATIVE_PATH "${_out}" _out_native)
+  file(TO_NATIVE_PATH "${hlsl}" _hlsl_native)
+  file(TO_NATIVE_PATH "${_hlsl_dir}" _inc_native)
+  add_custom_command(
+    OUTPUT "${_out}"
+    COMMAND "${MV_FXC}" /nologo /O3 /T ${profile} /E ${entry} /Vn ${name}
+            /I "${_inc_native}" /Fh "${_out_native}" "${_hlsl_native}"
+    DEPENDS "${hlsl}" ${ARGN}
+    COMMENT "fxc ${_stem}.hlsl ${entry} (${profile}) -> ${name}"
+    VERBATIM)
+  set(${out_var} ${${out_var}} "${_out}" PARENT_SCOPE)
+endfunction()
+
+set(MV_GFX_SHADERS "")
+set(_mv_blit_hlsl "${CMAKE_CURRENT_SOURCE_DIR}/src/gfx/blit.hlsl")
+set(_mv_kernel_tokens "${CMAKE_CURRENT_SOURCE_DIR}/src/gfx/adjust_kernel_tokens.h")
+mv_fxc(MV_GFX_SHADERS "${_mv_blit_hlsl}" vs_main vs_5_0 kBlitVsMain "${_mv_kernel_tokens}")
+mv_fxc(MV_GFX_SHADERS "${_mv_blit_hlsl}" ps_main ps_5_0 kBlitPsMain "${_mv_kernel_tokens}")
+mv_fxc(MV_GFX_SHADERS "${_mv_blit_hlsl}" vs_tile vs_5_0 kBlitVsTile "${_mv_kernel_tokens}")
+mv_fxc(MV_GFX_SHADERS "${_mv_blit_hlsl}" ps_tile ps_5_0 kBlitPsTile "${_mv_kernel_tokens}")
+set(_mv_video_blit_hlsl "${CMAKE_CURRENT_SOURCE_DIR}/src/gfx/video_blit.hlsl")
+mv_fxc(MV_GFX_SHADERS "${_mv_video_blit_hlsl}" vs_main vs_5_0 kVideoBlitVsMain)
+mv_fxc(MV_GFX_SHADERS "${_mv_video_blit_hlsl}" ps_main ps_5_0 kVideoBlitPsMain)
+
+# ---------------------------------------------------------------------------
 # mv_gfx — D3D11 device, swapchain, frame pacer
 # ---------------------------------------------------------------------------
 add_library(mv_gfx STATIC
   src/gfx/device.cpp
   src/gfx/adjust_kernel.h
+  src/gfx/adjust_kernel_tokens.h
   src/gfx/pacer.cpp
   src/gfx/swapchain.cpp
   src/gfx/blit.cpp
@@ -213,10 +295,17 @@ add_library(mv_gfx STATIC
   src/gfx/metal_pacer.h
   src/gfx/present_policy.h
   src/gfx/pace_json.h
+  # Not compiled by the target (the VS generator would FXCompile a listed .hlsl
+  # with its own defaults): mv_fxc above builds them into ${MV_GFX_SHADERS}.
+  ${MV_GFX_SHADERS}
 )
+target_include_directories(mv_gfx PRIVATE "${MV_SHADER_OUT_DIR}")
+# No d3dcompiler: the blits ship bytecode (issue #163). The ImGui DX11 backend
+# (present lab / F3 overlay) still compiles its own two tiny shaders on its
+# first frame and links d3dcompiler itself.
 target_link_libraries(mv_gfx
   PUBLIC mv_core
-  PRIVATE d3d11 dxgi dcomp d3dcompiler)
+  PRIVATE d3d11 dxgi dcomp)
 add_library(mv::gfx ALIAS mv_gfx)
 
 # ---------------------------------------------------------------------------
@@ -243,6 +332,8 @@ add_library(mv_io STATIC
   src/io/content_hash.cpp
   src/io/content_hash.h
   src/io/file_port.cpp
+  src/io/rename_stop.cpp
+  src/io/rename_stop.h
   src/io/file_port.h
   src/io/file_port_win.cpp
   src/io/child_process.h
@@ -356,9 +447,9 @@ target_link_libraries(mv_codec
           # Windows.Data.Pdf (codec/pdf_win.cpp): WinRT activation and the
           # IStream <-> IRandomAccessStream bridges.
           runtimeobject shcore shlwapi
-          # DOCX (codec/docx.cpp, text.cpp, zip.cpp; fonts_win.cpp finds files
-          # through DirectWrite and reads them through io/).
-          Freetype::Freetype harfbuzz::harfbuzz ZLIB::ZLIB dwrite mv_io)
+          # DOCX (codec/docx.cpp, text.cpp, zip.cpp). fonts_win.cpp finds the file
+          # through DirectWrite; image/pipeline.cpp reads the bytes.
+          Freetype::Freetype harfbuzz::harfbuzz ZLIB::ZLIB dwrite)
 add_library(mv::codec ALIAS mv_codec)
 target_link_libraries(mv_codec PRIVATE mv_raw_openmp)
 
@@ -378,6 +469,7 @@ add_library(mv_image STATIC
   src/image/upload.cpp
   src/image/tiles.cpp
   src/image/thumb.cpp
+  src/image/thumb_store.cpp
   src/image/thumb_pixels.cpp
   src/image/colour.h
   src/image/pipeline.h
@@ -418,6 +510,7 @@ add_library(mv_player STATIC
   src/player/audio_win.cpp         # D9: the only player/ file that may see WASAPI
   # 5c — transport
   src/player/transport.cpp
+  src/player/resume_store.cpp
   src/player/presenter.cpp
   src/player/container_probe.cpp
   src/player/poster.cpp
@@ -430,6 +523,7 @@ add_library(mv_player STATIC
   src/player/av_clock.h
   src/player/presenter.h
   src/player/transport.h
+  src/player/resume_store.h
   src/player/container_probe.h
   src/player/poster.h
   src/player/video_internal.h
@@ -1013,16 +1107,20 @@ if(MV_BUILD_TESTS)
     tests/test_key_router.cpp
     tests/test_key_router_review.cpp
     tests/test_collision_name.cpp
+    tests/test_rename_stop.cpp
     tests/test_file_ops.cpp
     tests/test_file_jobs.cpp
     tests/test_settings_store.cpp
     tests/test_update_guard.cpp
     tests/test_telemetry.cpp
     tests/test_folder_reselect.cpp
+    # Issue #231: the selection's stamp from the listing, not a UI-thread stat.
+    tests/test_listing_stamp.cpp
     tests/test_marks.cpp
     tests/test_open_request.cpp
     tests/test_os_integration.cpp
     tests/test_thumb_pixels.cpp
+    tests/test_thumb_store.cpp
     tests/test_thumb_request.cpp
     src/shellext/thumb_request.cpp
     tests/test_spotlight_fields.cpp
@@ -1031,6 +1129,7 @@ if(MV_BUILD_TESTS)
     tests/test_anim.cpp
     tests/test_gif_webp.cpp
     tests/test_pairing.cpp
+    tests/test_kind_filter.cpp
     tests/test_live_photo.cpp
     tests/test_raw.cpp
     tests/test_perf_bench.cpp
@@ -1158,6 +1257,7 @@ if(MV_BUILD_TESTS)
     tests/test_verified_copy.cpp
     tests/test_addon_manifest.cpp
     tests/test_open_addons.cpp
+    tests/test_ai_resume.cpp
     tests/test_import_naming.cpp
     tests/test_import_engine.cpp
     tests/test_json.cpp
