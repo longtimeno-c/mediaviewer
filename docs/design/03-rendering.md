@@ -51,7 +51,16 @@ window; there is still one swapchain and one present path.
    thread or a worker, because `ID3D10Multithread` serializes worker creates with the immediate context.
    Tiled images create at most 4 tiles per 16 ms tick with at most 24 requests outstanding
    (`src/image/tiles.h`); the F3 overlay shows per-frame upload cost for animations. The target is
-   about 2 ms of creates per frame.
+   about 2 ms of creates per frame. An untiled still (up to the ~64 MP tile threshold) goes up as
+   one `CreateTexture2D` with its whole mip chain, which cannot fit a frame. So a neighbour's
+   create over `image::k_frame_budget_create_bytes` (8 MiB) waits on its worker, after the CPU
+   mips, for as long as the loop presents a moving camera (pan, zoom, drag:
+   `abi::set_canvas_moving`); the image on screen never waits (issue #166,
+   [12-decision-log.md](12-decision-log.md)). The create time and the waits are measured
+   (`image::texture_upload_stats`, Windows), shown on the F3 overlay's `texture` line, and
+   written to the soak report as `texture_max_create_ms` / `texture_max_create_mb` /
+   `texture_creates_over_budget` / `texture_creates_deferred` / `texture_max_defer_ms`.
+   Windows only: the Mac's `replaceRegion` upload takes no device-wide lock.
 4. **Render on demand.** A still image that has been painted stops presenting entirely (0 presents,
    ~0 % GPU). The loop presents every vblank while anything is live: video, an animation, a moving
    spring, a fade, or the **500 ms tail after the last input** (so a flick does not stutter at its end).
@@ -90,8 +99,9 @@ the swapchain is resized on the next frame and the image is resampled on the GPU
 The refresh rate is read per display path, because `IDXGISwapChain::GetContainingOutput` is invalid on
 composition swapchains: the host monitor is matched to an active `QueryDisplayConfig` path and that
 path's rational `refreshRate` is used. An unknown rate, or a cloned source whose targets disagree, is
-**zero** — the frame-time gate cannot pass on a guessed 60 Hz. It is re-read on display change and
-window move.
+**zero** — the frame-time gate cannot pass on a guessed 60 Hz. It is read when the swapchain is created
+or moved to another window, and re-read on display change and window move — never on a resize, which
+cannot change it and would otherwise query the display topology every frame of a drag-resize.
 
 ## Color management & HDR
 
@@ -114,7 +124,7 @@ encodes on write.
   P3 above all) get a synthesised ICC v4 matrix/shaper profile for Little CMS; **PQ/HLG stills are
   tone-mapped to SDR at decode** with the same curves and constants as the video shader.
 - **HDR video → SDR is tone-mapped** in the same shader that does YUV → RGB
-  ([`src/gfx/video_blit.cpp`](../../src/gfx/video_blit.cpp), MSL twin `video_blit_metal.mm`), driven by
+  ([`src/gfx/video_blit.hlsl`](../../src/gfx/video_blit.hlsl), MSL twin `video_blit_metal.mm`), driven by
   the stream's real matrix, primaries and transfer: PQ through the ST 2084 EOTF normalised to 203-nit
   reference white; HLG through the inverse OETF plus OOTF; then Reinhard-extended on luminance with the
   ratio applied to RGB to keep hue. iPhone HLG HEVC therefore does not look washed out on an SDR
@@ -132,7 +142,7 @@ while panning. Level sizes follow D3D11: `max(1, floor(prev / 2))`; ceil halving
 Tiled images use a floor-half Mitchell CPU pyramid with 256×256 tiles (2-texel border) over a resident
 overview ([04-image-pipeline.md](04-image-pipeline.md)).
 
-**Zoomed in** ([`src/gfx/blit.cpp`](../../src/gfx/blit.cpp)): Catmull-Rom between 100 % and 400 %,
+**Zoomed in** ([`src/gfx/blit.hlsl`](../../src/gfx/blit.hlsl)): Catmull-Rom between 100 % and 400 %,
 nearest-neighbour above 400 % (with an optional one-pixel grid). The Catmull-Rom result is saturated:
 unclamped overshoot encodes per channel on the sRGB target as coloured fringes along edges.
 

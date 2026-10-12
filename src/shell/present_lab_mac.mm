@@ -13,6 +13,7 @@
 #include "shell/media_kind.h"
 #include "image/colour.h"
 #include "codec/decode.h"
+#include "player/transport.h"
 
 #import <AppKit/AppKit.h>
 #import <Metal/Metal.h>
@@ -829,8 +830,18 @@ bool present_lab_mac::apply_playback_input(const input_snapshot& s) noexcept {
     const player::time_ns duration = media_->info().duration_ns;
     player::time_ns target = s.video_seek_ns >= 0 ? s.video_seek_ns : s.video_seek_ms * 1'000'000;
     target = std::max<player::time_ns>(0, duration > 0 ? std::min(target, duration - 1) : target);
-    media_->seek(target, s.video_seek_exact);
-    changed = true;
+    // The transport strip seeks in milliseconds (video_seek_ns stays -1). A
+    // track click reports the minimum before the time under the pointer;
+    // seeking it shows the opening frame (issue #362). Editor and trim set
+    // video_seek_ns and are not part of that report.
+    // video_seek_seq is consumed above, so a dropped minimum is not applied
+    // again on the next tick.
+    const bool chrome_scrub = s.video_seek_ns < 0;
+    if (!chrome_scrub ||
+        !player::scrub_origin_is_spurious(media_->position_ns(), target, s.video_seek_exact)) {
+      media_->seek(target, s.video_seek_exact);
+      changed = true;
+    }
   }
   // PR 13: trim's A-B preview (b < 0 clears), the Windows mv_video_set_loop twin.
   if (s.video_loop_seq != seen_video_loop_) {

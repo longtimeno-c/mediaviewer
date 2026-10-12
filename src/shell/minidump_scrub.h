@@ -19,6 +19,15 @@
 //      and the module list survive; that is what symbolicated triage needs.
 //      Heap is never captured (indirect-memory gathering is off), so decoded
 //      image buffers are excluded structurally rather than by allocation tag.
+//      On Windows the environment, the command line and the current directory
+//      live in the PEB, so this step already drops them. On macOS they sit at
+//      the top of the main thread's stack (the kernel puts argv and the
+//      environment there), which this step keeps.
+//   1b. Environment block: inside each thread stack, a run of NUL-terminated
+//      KEY=value strings that includes a marker key (HOME, USER, PATH, …) is
+//      zeroed, along with the argv strings packed against it. Nothing in that
+//      slab is needed to symbolicate a stack, and an email or a token in it
+//      is not always a whole identity token the text pass would mask.
 //   2. Text, over the rest of the file (stacks included) in 8-bit and UTF-16LE
 //      at both byte parities:
 //        - a drive/UNC path (X:\..., \\server\..., \\?\...) or a POSIX path

@@ -39,9 +39,11 @@ TEST_CASE("no two bindings share a key, modifiers and mode", "[shell][commands]"
   for (const auto& b : default_bindings()) {
     REQUIRE(b.modes != 0);
     REQUIRE(b.command != command_id::none);
-    // PR 7: Open RAW / Open JPEG ship listed but unbound (docs/design/04, docs/design/16).
+    // PR 7: Open RAW / Open JPEG ship listed but unbound (docs/design/04, docs/design/16);
+    // so does issue #206's Show next kind.
     if (b.k == key::none) {
-      REQUIRE((b.command == command_id::open_raw || b.command == command_id::open_jpeg));
+      REQUIRE((b.command == command_id::open_raw || b.command == command_id::open_jpeg ||
+               b.command == command_id::kind_filter_next));
       continue;
     }
     for (int m = 0; m < kModeCount; ++m) {
@@ -1167,8 +1169,12 @@ TEST_CASE("PR 12: the keypad and Ctrl+Shift+digit rate; the number row still zoo
   REQUIRE(r.on_key(down(char_key('0')), s).command == command_id::fit);
   REQUIRE(r.on_key(down(char_key('1')), s).command == command_id::one_to_one);
   REQUIRE(r.on_key(down(char_key('0'), mod_ctrl), s).command == command_id::reset_view);
-  // A keypad 6-9 is not bound to anything.
-  REQUIRE_FALSE(r.on_key(down(key::numpad7), s).handled);
+  // Keypad 6-9 (and Ctrl+Shift+6-9) are issue #207's colour labels, not ratings.
+  REQUIRE(r.on_key(down(key::numpad7), s).command == command_id::label_yellow);
+  REQUIRE(r.on_key(down(char_key('9'), mod_ctrl | mod_shift), s).command == command_id::label_blue);
+  // X rejects and U clears the label on a still or a clip, never in crop or the gallery.
+  REQUIRE(r.on_key(down(char_key('X')), s).command == command_id::reject);
+  REQUIRE(r.on_key(down(char_key('U')), clip()).command == command_id::clear_label);
 
   // A clip rates too (its rating lives in a sidecar); a slideshow does not.
   REQUIRE(r.on_key(down(key::numpad3), clip()).command == command_id::set_rating_3);
@@ -1313,4 +1319,245 @@ TEST_CASE("issue #182: menu chords follow the live table and its crop mask", "[s
   REQUIRE(command_live_in(command_id::rotate_cw, kCrop));
   REQUIRE(command_live_in(command_id::help, kCrop));
   REQUIRE(command_live_in(command_id::new_window, kCrop));
+}
+
+// ---------------------------------------------------------------------------
+// Issue #152: key-to-command routing for the ids no case above named. Each case
+// asserts what a key does in the mode a user meets it in, and where it stops.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+command_id routed(key_router& r, key k, std::uint8_t mods, const view_state& s) {
+  return r.on_key(down(k, mods), s).command;
+}
+
+view_state trimming() {
+  view_state s = clip();
+  s.trim = true;
+  return s;
+}
+
+view_state cropping() {
+  view_state s = still();
+  s.crop = true;
+  return s;
+}
+
+view_state in_slideshow() {
+  view_state s = still();
+  s.slideshow = true;
+  return s;
+}
+
+view_state in_gallery() {
+  view_state s = still();
+  s.gallery_open = true;
+  return s;
+}
+
+}  // namespace
+
+TEST_CASE("up and down pan, left and right walk, Shift+arrows pan four ways",
+          "[shell][router][pan]") {
+  // The router has no zoom: at fit the host turns ↑ ↓ into no pan on a still
+  // and volume on a clip (docs/design/16). What it owns is that these are the pan
+  // rows, and that ← → stay navigation even when zoomed.
+  key_router r;
+  for (const view_state& s : {still(), clip()}) {
+    CHECK(routed(r, key::up, mod_none, s) == command_id::pan_up);
+    CHECK(routed(r, key::down, mod_none, s) == command_id::pan_down);
+    CHECK(routed(r, key::left, mod_none, s) == command_id::prev);
+    CHECK(routed(r, key::right, mod_none, s) == command_id::next);
+    CHECK(routed(r, key::up, mod_shift, s) == command_id::pan_up);
+    CHECK(routed(r, key::down, mod_shift, s) == command_id::pan_down);
+    CHECK(routed(r, key::left, mod_shift, s) == command_id::pan_left);
+    CHECK(routed(r, key::right, mod_shift, s) == command_id::pan_right);
+    // Panning is a walk key: a held arrow keeps panning.
+    CHECK(r.on_key(rep(key::up), s).command == command_id::pan_up);
+    CHECK(r.on_key(rep(key::right, mod_shift), s).command == command_id::pan_right);
+  }
+  // The arrows mean something else in the gallery, in crop and in a slideshow.
+  CHECK(routed(r, key::up, mod_none, in_gallery()) == command_id::gallery_up);
+  CHECK(routed(r, key::down, mod_none, in_gallery()) == command_id::gallery_down);
+  CHECK(routed(r, key::up, mod_none, cropping()) == command_id::crop_move_up);
+  CHECK(routed(r, key::left, mod_shift, cropping()) == command_id::crop_narrower);
+  CHECK_FALSE(r.on_key(down(key::up), in_slideshow()).handled);
+  CHECK(routed(r, key::right, mod_none, in_slideshow()) == command_id::next);
+}
+
+TEST_CASE("Ctrl+Shift+C is copy_path while Shift+C is crop_mode", "[shell][router][copy]") {
+  key_router r;
+  const key c = char_key('C');
+  const view_state s = still();
+  CHECK(routed(r, c, mod_none, s) == command_id::clipping);
+  CHECK(routed(r, c, mod_shift, s) == command_id::crop_mode);
+  CHECK(routed(r, c, mod_ctrl, s) == command_id::copy_clipboard);
+  CHECK(routed(r, c, mod_ctrl | mod_shift, s) == command_id::copy_path);
+  CHECK(routed(r, c, mod_ctrl | mod_alt, s) == command_id::copy_flattened);
+  CHECK(routed(r, char_key('S'), mod_ctrl | mod_shift, s) == command_id::share);
+  CHECK(routed(r, char_key('S'), mod_ctrl, s) == command_id::export_image);
+
+  // On a clip: no crop, no flattened copy (a clip's frame is the clip tools'),
+  // Ctrl+S is the clip tools; the path and Share are the same.
+  const view_state v = clip();
+  CHECK_FALSE(r.on_key(down(c, mod_shift), v).handled);
+  CHECK_FALSE(r.on_key(down(c, mod_ctrl | mod_alt), v).handled);
+  CHECK(routed(r, c, mod_ctrl | mod_shift, v) == command_id::copy_path);
+  CHECK(routed(r, char_key('S'), mod_ctrl | mod_shift, v) == command_id::share);
+  CHECK(routed(r, char_key('S'), mod_ctrl, v) == command_id::clip_tools);
+
+  // Edge keys: holding the chord copies once.
+  CHECK_FALSE(r.on_key(rep(c, mod_ctrl | mod_shift), s).handled);
+}
+
+TEST_CASE("F7 / F8 copy and move, Ctrl+D unmarks, Ctrl+Shift+F7 imports", "[shell][router][marks]") {
+  key_router r;
+  for (const view_state& s : {still(), clip(), in_gallery()}) {
+    CHECK(routed(r, key::f7, mod_none, s) == command_id::copy_to);
+    CHECK(routed(r, key::f7, mod_shift, s) == command_id::copy_to_pick);
+    CHECK(routed(r, key::f8, mod_none, s) == command_id::move_to);
+    CHECK(routed(r, key::f8, mod_shift, s) == command_id::move_to_pick);
+    CHECK(routed(r, char_key('A'), mod_ctrl, s) == command_id::mark_all);
+    CHECK(routed(r, char_key('D'), mod_ctrl, s) == command_id::unmark_all);
+    CHECK(routed(r, key::f7, mod_ctrl | mod_shift, s) == command_id::import_now);
+  }
+  // A held F8 moves one file, not one per typematic repeat.
+  CHECK_FALSE(r.on_key(rep(key::f8), still()).handled);
+  // Not in a slideshow: a file operation is not something to fire by accident there.
+  CHECK_FALSE(r.on_key(down(key::f8), in_slideshow()).handled);
+  CHECK_FALSE(r.on_key(down(char_key('D'), mod_ctrl), in_slideshow()).handled);
+  // Import's rows belong to the Import add-on's family.
+  CHECK(addon_family_of(command_id::import_now) == addon_family::import);
+}
+
+TEST_CASE("go-to, the folder tree and up one folder", "[shell][router][folders]") {
+  key_router r;
+  for (const view_state& s : {still(), clip(), in_gallery()}) {
+    CHECK(routed(r, char_key('G'), mod_ctrl, s) == command_id::go_to);
+    CHECK(routed(r, char_key('E'), mod_ctrl | mod_shift, s) == command_id::folder_tree);
+    CHECK(routed(r, key::up, mod_ctrl, s) == command_id::folder_up);
+  }
+  // Ctrl+Left / Right are the sibling folders outside trim (inside, keyframes).
+  CHECK(routed(r, key::left, mod_ctrl, clip()) == command_id::folder_prev);
+  CHECK(routed(r, key::right, mod_ctrl, clip()) == command_id::folder_next);
+  // Crop owns its keys: no tree mid-crop, which would throw the crop away.
+  CHECK_FALSE(r.on_key(down(char_key('E'), mod_ctrl | mod_shift), cropping()).handled);
+  CHECK_FALSE(r.on_key(down(char_key('G'), mod_ctrl), in_slideshow()).handled);
+  CHECK_FALSE(r.on_key(rep(key::up, mod_ctrl), still()).handled);  // edge: one level per press
+}
+
+TEST_CASE("`.` is blackout in a slideshow, a frame on a clip, straighten in crop",
+          "[shell][router][display]") {
+  key_router r;
+  const key dot = char_key('.');
+  CHECK(routed(r, dot, mod_none, in_slideshow()) == command_id::blackout);
+  CHECK(routed(r, dot, mod_none, clip()) == command_id::frame_forward);
+  CHECK(routed(r, dot, mod_none, cropping()) == command_id::straighten_cw);
+  CHECK_FALSE(r.on_key(down(dot), still()).handled);
+  CHECK_FALSE(r.on_key(rep(dot), in_slideshow()).handled);
+
+  // The Shift twins of O and I: AF points and the eyedropper.
+  const view_state s = still();
+  CHECK(routed(r, char_key('O'), mod_none, s) == command_id::info_overlay);
+  CHECK(routed(r, char_key('O'), mod_shift, s) == command_id::af_points);
+  CHECK(routed(r, char_key('I'), mod_none, s) == command_id::metadata_pane);
+  CHECK(routed(r, char_key('I'), mod_shift, s) == command_id::eyedropper);
+  CHECK(routed(r, char_key('I'), mod_shift, clip()) == command_id::eyedropper);
+  CHECK_FALSE(r.on_key(down(char_key('I'), mod_shift), in_slideshow()).handled);
+}
+
+TEST_CASE("trim-mode chords: Ctrl+arrows walk keyframes, Ctrl+X removes the middle",
+          "[shell][router][trim]") {
+  key_router r;
+  const view_state t = trimming();
+  CHECK(routed(r, key::right, mod_ctrl, t) == command_id::keyframe_next);
+  CHECK(routed(r, key::left, mod_ctrl, t) == command_id::keyframe_prev);
+  // A held Ctrl+→ walks keyframe after keyframe.
+  CHECK(r.on_key(rep(key::right, mod_ctrl), t).command == command_id::keyframe_next);
+  CHECK(routed(r, char_key('X'), mod_ctrl, t) == command_id::trim_remove_middle);
+  CHECK(routed(r, char_key('B'), mod_ctrl, t) == command_id::clip_split);
+  // Trim layers over video: the transport still drives the clip.
+  CHECK(routed(r, key::space, mod_none, t) == command_id::play_pause);
+
+  // Out of trim, the same chords are folder navigation, a split, or nothing.
+  const view_state v = clip();
+  CHECK(routed(r, key::right, mod_ctrl, v) == command_id::folder_next);
+  CHECK(routed(r, char_key('B'), mod_ctrl, v) == command_id::clip_split);
+  CHECK_FALSE(r.on_key(down(char_key('X'), mod_ctrl), v).handled);
+  CHECK_FALSE(r.on_key(down(char_key('B'), mod_ctrl), still()).handled);
+  // Trim needs a clip: on a still the flag is ignored and Ctrl+X does nothing.
+  view_state not_a_clip = still();
+  not_a_clip.trim = true;
+  CHECK_FALSE(r.on_key(down(char_key('X'), mod_ctrl), not_a_clip).handled);
+}
+
+TEST_CASE("Ctrl+I edits the comment wherever the pane can open", "[shell][router][metadata]") {
+  key_router r;
+  for (const view_state& s : {still(), clip(), in_gallery()}) {
+    CHECK(routed(r, char_key('I'), mod_ctrl, s) == command_id::edit_comment);
+  }
+  CHECK_FALSE(r.on_key(down(char_key('I'), mod_ctrl), in_slideshow()).handled);
+  // A focused text field (the comment box itself) owns Ctrl+I.
+  view_state typing = still();
+  typing.focus = focus_kind::text;
+  CHECK_FALSE(r.on_key(down(char_key('I'), mod_ctrl), typing).handled);
+}
+
+TEST_CASE("Find similar and N / Shift+N route on a clip; the host gates them on the AI pack",
+          "[shell][router][search]") {
+  key_router r;
+  CHECK(routed(r, char_key('F'), mod_ctrl | mod_shift, still()) == command_id::search_similar);
+  CHECK(routed(r, char_key('F'), mod_ctrl | mod_shift, clip()) == command_id::search_similar);
+  CHECK(routed(r, char_key('N'), mod_none, clip()) == command_id::search_next_match);
+  CHECK(routed(r, char_key('N'), mod_shift, clip()) == command_id::search_prev_match);
+  // N is free on a still (and in trim it falls through to the video row).
+  CHECK_FALSE(r.on_key(down(char_key('N')), still()).handled);
+  CHECK(routed(r, char_key('N'), mod_none, trimming()) == command_id::search_next_match);
+
+  // The router is the table; whether the command may run is the AI family's
+  // availability, which the hosts check before dispatch (shell/main.cpp,
+  // shell/main_mac.mm) and describe_commands applies to `?`.
+  for (const command_id id : {command_id::search_similar, command_id::search_next_match,
+                              command_id::search_prev_match}) {
+    CHECK(addon_family_of(id) == addon_family::ai);
+    set_addon_commands_available(addon_family::ai, false);
+    CHECK_FALSE(addon_command_available(id));
+    set_addon_commands_available(addon_family::ai, true);
+    CHECK(addon_command_available(id));
+  }
+  set_addon_commands_available(addon_family::ai, false);
+  CHECK(describe_commands().find("\tNext matching moment\t") == std::string::npos);
+  set_addon_commands_available(addon_family::ai, true);
+  CHECK(describe_commands().find("\tNext matching moment\tN\t") != std::string::npos);
+  CHECK(describe_commands().find("\tPrevious matching moment\tShift+N\t") != std::string::npos);
+  set_addon_commands_available(addon_family::ai, false);
+}
+
+TEST_CASE("the adjust sliders and crop presets are island-only: keyless, unbound, unlisted",
+          "[shell][commands][island]") {
+  const command_id island_only[] = {
+      command_id::adjust_exposure,    command_id::adjust_contrast, command_id::adjust_saturation,
+      command_id::adjust_temperature, command_id::adjust_tint,     command_id::adjust_reset,
+      command_id::crop_aspect_set,    command_id::crop_straighten_set,
+  };
+  const std::string listed = describe_commands();
+  for (const command_id id : island_only) {
+    const command_info* info = find_command(id);
+    REQUIRE(info != nullptr);
+    INFO(info->name);
+    CHECK(info->keyless);
+    for (const binding& b : default_bindings()) {
+      CHECK(b.command != id);
+      CHECK(b.hold != id);
+      CHECK(b.release != id);
+    }
+    // `?` lists keys; these have none, so the sheet never shows them.
+    CHECK(listed.find(std::string("\t") + info->name + "\t") == std::string::npos);
+  }
+  // Their pane-opening siblings are keyed: Shift+A on a still, A / X in crop.
+  key_router r;
+  CHECK(routed(r, char_key('A'), mod_shift, still()) == command_id::adjust_pane);
+  CHECK(routed(r, char_key('A'), mod_none, cropping()) == command_id::crop_aspect_cycle);
+  CHECK(routed(r, char_key('X'), mod_none, cropping()) == command_id::crop_aspect_swap);
 }
