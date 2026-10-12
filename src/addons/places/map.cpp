@@ -558,12 +558,22 @@ bool render_map(const geo::database& db, const map_view& v, const map_palette& p
     halo.assign(static_cast<std::size_t>(w) * h, 0.0f);
     dots.assign(static_cast<std::size_t>(w) * h, 0.0f);
     std::size_t drawn = 0;
+    std::vector<std::pair<double, double>> placed;
     for (const auto& t : db.towns_in(b, 512)) {
       if (t.population < min_people || drawn >= k_max_town_dots) break;  // most populous first
       double x = 0, y = 0;
       map_pixel(v, t.lat, t.lon, x, y);
       const double inset = 4.0 * scale;
       if (x < inset || y < inset || x > w - inset || y > h - inset) continue;
+      // A suburb crowding a bigger town is left out: a city reads as one dot,
+      // not a smear of its districts.
+      const double spacing = 14.0 * scale;
+      bool crowded = false;
+      for (const auto& d : placed) {
+        crowded = crowded || (d.first - x) * (d.first - x) + (d.second - y) * (d.second - y) < spacing * spacing;
+      }
+      if (crowded) continue;
+      placed.emplace_back(x, y);
       const double r = (t.population >= 100'000 ? 2.4 : t.population >= 20'000 ? 1.9 : 1.5) * scale;
       const double rh = r + 1.2 * scale;
       const int y0 = std::max(0, static_cast<int>(y - rh - 1));

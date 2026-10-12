@@ -19,6 +19,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -493,6 +494,7 @@ TEST_CASE("places: map render time at pane width x 160 pt", "[.perf-bench]") {
   const map_palette p = palette_for(light_theme());
   for (float scale : {1.0f, 2.0f}) {
     std::vector<double> ms;
+    std::vector<double> cpu;  // CPU time: robust to a busy machine, where wall time is not
     std::vector<double> framing_ms;
     for (const where& w : places) {
       const auto pl = db.lookup(w.lat, w.lon);
@@ -501,8 +503,11 @@ TEST_CASE("places: map render time at pane width x 160 pt", "[.perf-bench]") {
                    scale, k_zoom_span_deg[z]};
         std::vector<std::uint8_t> out(static_cast<std::size_t>(v.width) * v.height * 4);
         const auto t0 = std::chrono::steady_clock::now();
+        const std::clock_t c0 = std::clock();
         REQUIRE(render_map(db, v, p, pl.country_code, out));
+        cpu.push_back(1000.0 * static_cast<double>(std::clock() - c0) / CLOCKS_PER_SEC);
         ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+        if (cpu.back() > 15) std::printf("  slowest: %s span %.2f: %.1f ms CPU\n", w.name, k_zoom_span_deg[z], cpu.back());
       }
       const auto t0 = std::chrono::steady_clock::now();
       (void)framing_zoom(db, w.lat, w.lon, pl.country_code, pl.region_code, static_cast<std::uint32_t>(320 * scale),
@@ -510,11 +515,13 @@ TEST_CASE("places: map render time at pane width x 160 pt", "[.perf-bench]") {
       framing_ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
     }
     std::sort(ms.begin(), ms.end());
+    std::sort(cpu.begin(), cpu.end());
     std::sort(framing_ms.begin(), framing_ms.end());
-    std::printf("places map %gx (%ux%u px), %zu renders: median %.2f ms, p90 %.2f ms, max %.2f ms; "
-                "framing max %.3f ms\n",
+    std::printf("places map %gx (%ux%u px), %zu renders: wall median %.2f / p90 %.2f / max %.2f ms; "
+                "CPU median %.2f / p90 %.2f / max %.2f ms; framing max %.3f ms\n",
                 scale, static_cast<unsigned>(320 * scale), static_cast<unsigned>(160 * scale), ms.size(),
-                ms[ms.size() / 2], ms[ms.size() * 9 / 10], ms.back(), framing_ms.back());
+                ms[ms.size() / 2], ms[ms.size() * 9 / 10], ms.back(), cpu[cpu.size() / 2],
+                cpu[cpu.size() * 9 / 10], cpu.back(), framing_ms.back());
   }
   // A cache hit, for the arrow-back case.
   map_cache cache;

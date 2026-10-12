@@ -56,8 +56,8 @@ Views:
    metadata, rotation, channels, sample rate, language…), plus chapters.
 
 Below all three, at the very bottom of the pane whichever tab is open, an installed add-on may
-add a section for the file on screen (Places: the place, the coordinates and a map; owner,
-2026-10-12). It is asked for only while the pane shows, never for a file without coordinates when
+add a section for the file on screen (Places: the place, the coordinates and a map that zooms
+under the cursor; owner, 2026-10-12; how it is drawn: [27](27-places.md#the-map)). It is asked for only while the pane shows, never for a file without coordinates when
 it needs them, and runs on the add-on's worker; without the add-on the pane is as above
 ([25](25-open-addons.md#implementation-notes-prs-58-59-2026-10-11)). A file's coordinates alone
 come from a bounded read, `meta::read_location` (`src/meta/location.h`), for a search provider
@@ -149,6 +149,7 @@ These read the already-parsed `metadata` — no file I/O on toggle
 - Writing back to the Windows Property System.
 - Batch metadata: date/time shift across a selection, copy metadata to many, filename
   templating, strip-on-share copies.
-- GPS map pin / writing coordinates. Place names from GPS are the Places add-on's
-  ([27-places.md](27-places.md)); its core (`src/geo`) is built, the add-on and its pane section are not.
+- Writing coordinates from a map. (The GPS map pin itself is built, read-only, by the Places
+  add-on: place label, coordinates and an offline map at the foot of the pane,
+  [27-places.md](27-places.md); decision log 2026-10-11.)
 - Colour labels / keywords as a feature (`U` to clear a label is unbound).
