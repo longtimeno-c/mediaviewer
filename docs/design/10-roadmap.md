@@ -556,7 +556,7 @@ sheet and absent from the script's environment unless granted; no network permis
 socket call. Commands (contribution API 3) take the `addon_cmd_*` slots and give way to the base
 app's keys. Over a limit the add-on stops and Settings says which limit and why, with Start
 again. Code: `third_party/lua` (vendored, static), `src/addon/script_*`, `src/abi/script_abi.cpp`
-(ABI 0.21), `shell/addons_mac.mm`, `shell/main.cpp`, `OpenAddons.swift`,
+(ABI 0.24), `shell/addons_mac.mm`, `shell/main.cpp`, `OpenAddons.swift`,
 `IslandHost.OpenAddons.cs`; the SDK's `init --script` and `examples/addons/folder-count`.
 Design, limits and measurements: [25](25-open-addons.md#implementation-notes-pr-57-2026-10-11).
 

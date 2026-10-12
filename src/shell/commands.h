@@ -333,6 +333,25 @@ enum class command_id : std::uint16_t {
   // Ctrl/Cmd+N: another window, its own process (docs/design/16 "Window").
   // Appended after the add-on slots so every earlier wire id stays put.
   new_window,
+  // Issue #210 (docs/design/16 "Marks, copy, move"): F2 renames the file on screen,
+  // its pair and its sidecars with it. Appended.
+  rename_file,
+  // Issue #206 (docs/design/16 "Status, sort, filter, typeahead"): View > Show. Appended.
+  // kind_filter_next cycles All / Photos / Videos / RAW / Marked and ships with
+  // no key (Settings can give it one); kind_filter_set is the menus' and
+  // carries the filter (io::kind_filter) as its argument.
+  kind_filter_next,
+  kind_filter_set,
+  // Issue #207 (docs/design/16 "Rate", docs/design/06): culling. Appended. X toggles
+  // reject (rating -1), numpad / Ctrl+Shift 6-9 set the colour label Lightroom
+  // gives those keys (Red, Yellow, Green, Blue; the same key again clears),
+  // U clears it. One file, the one on screen, through PR 12's writer.
+  reject,
+  label_red,
+  label_yellow,
+  label_green,
+  label_blue,
+  clear_label,
   count
 };
 inline constexpr int kAddonCommandSlots = 8;
@@ -343,6 +362,13 @@ inline constexpr int kCommandCount = static_cast<int>(command_id::count);
 [[nodiscard]] constexpr int rating_of_command(command_id id) noexcept {
   const int v = static_cast<int>(id) - static_cast<int>(command_id::set_rating_0);
   return v >= 0 && v <= 5 ? v : -1;
+}
+
+// label_red..label_blue -> 1..4 (shell::colour_label), clear_label -> 0, else -1.
+[[nodiscard]] constexpr int label_of_command(command_id id) noexcept {
+  if (id == command_id::clear_label) return 0;
+  const int v = static_cast<int>(id) - static_cast<int>(command_id::label_red);
+  return v >= 0 && v <= 3 ? v + 1 : -1;
 }
 
 [[nodiscard]] constexpr bool is_reserved_notification(int id) noexcept {

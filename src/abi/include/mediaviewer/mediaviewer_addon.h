@@ -535,7 +535,7 @@ MV_API mv_status MV_CALL mv_open_addon_theme_json(const char* addon_id, const ch
                                                   char* out, uint32_t cap, uint32_t* needed);
 
 /* ---------------------------------------------------------------------------
- * Script add-ons (docs/design/25 §9 A, PR 57, ABI 0.21): installed open add-ons
+ * Script add-ons (docs/design/25 §9 A, PR 57, ABI 0.24): installed open add-ons
  * whose manifest has `scripts` run in the core's Lua sandbox, each on a worker
  * of its own, never on the caller's thread. Limits: 64 MB of memory, 100
  * million instructions and 1 s per task; over one, the add-on stops and

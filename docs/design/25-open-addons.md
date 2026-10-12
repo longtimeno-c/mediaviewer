@@ -429,7 +429,7 @@ Where it lives:
 | The store: inspect, install, list, remove, the publisher record | `src/addon/open_store.*`; the folder is `io::open_addons_dir()` (`src/io/paths*`), never created by a read |
 | One JSON and one wording for both hosts | `src/addon/open_json.*` |
 | C ABI 0.17 (Windows) and the chrome bridge (Mac) | `mv_open_addon_*` in `mediaviewer_addon.h` / `abi/addon_abi.cpp`; `mv_open_addons_*` in `mv_chrome_bridge.h` / `shell/addons_mac.mm` |
-| A package handed to the app | `shell/open_request.*` (`open_kind::addon_package`), `shell/main.cpp`, `chrome_host::offer_addon` → `IslandHost.OfferAddon`; `main_mac.mm -openEntryPath:` → `MVChromeHost.offerAddonPackage` |
+| A package handed to the app | `shell/open_request.*` (`open_kind::addon_package`), `shell/main.cpp`, `chrome_host::offer_addon` → `IslandHost.OfferAddon`; `main_mac.mm -openEntryPath:` (launch) and `-openEntryPaths:failed:` (a drop, Open, Finder) → `MVChromeHost.offerAddonPackage` |
 | Mac chrome | `Theme.swift` (`MVTheme`, `ThemeStore`, `ThemedRoot`), `OpenAddons.swift` (store, download, section, sheet), the Theme row in `SettingsView.swift` |
 | Windows chrome | `IslandHost.ThemePack.cs`, `IslandHost.OpenAddons.cs`, the hook in `IslandHost.Theme.cs` `RefreshTheme`, `AddonNative.Open*` in `MediaViewer.Interop/Addons.cs` |
 | The author's tool, guide and example | `tools/addon-sdk/mvaddon.py` (MIT), `docs/ADDONS.md`, `examples/addons/film-tones` |
@@ -571,7 +571,7 @@ The reasons for each call below are in [12](12-decision-log.md) ("Other makers' 
 | The host's set of script add-ons: load from the store (bytes re-hashed as they are read), commands, status, Start again, the spin rig | `src/addon/script_host.*`; `open_store::verified_file` |
 | Manifest: `scripts`, `permissions`, `contributes.commands` at API 3; the sheet's lines | `src/addon/open_manifest.*`, `src/addon/open_json.cpp` |
 | Key clashes give way to the base app; notes for Settings | `shell/command_table.cpp` (`addon_command_row.script`, `addon_command_notes_json`) |
-| Windows | ABI 0.21 `mv_script_*` (`abi/script_abi.cpp`); `shell/main.cpp` (start after the chrome, run rows, `kMsgScripts` notices); `IslandHost.OpenAddons.cs`, `AddonNative.ScriptStatus` / `ScriptRestart` |
+| Windows | ABI 0.24 `mv_script_*` (`abi/script_abi.cpp`); `shell/main.cpp` (start after the chrome, run rows, `kMsgScripts` notices); `IslandHost.OpenAddons.cs`, `AddonNative.ScriptStatus` / `ScriptRestart` |
 | Mac | `shell/addons_mac.mm` (the host, the folder model and item on screen as services, rows), `main_mac.mm` (`MvAppShowNotice`, the `MV_SCRIPT_SELFTEST` rig); `OpenAddons.swift` (`ScriptStatus`, Start again), bridge `mv_open_addons_scripts` / `_restart` / `_reload` |
 | SDK, guide, example | `tools/addon-sdk/mvaddon.py` (`init --script`, script rules, compiled Lua refused at pack), `docs/ADDONS.md` "Scripts", `examples/addons/folder-count` |
 | Tests | `tests/test_script_runtime.cpp`, `tests/test_script_addons.cpp` (`mv_script_tests`, also in cmake/portable), `tests/test_key_router.cpp` (key clash), `tools/addon-sdk/test_mvaddon.py` (cross-checked by `mv_addon_verify --open`), `tools/fuzz/fuzz_script.cpp` |
