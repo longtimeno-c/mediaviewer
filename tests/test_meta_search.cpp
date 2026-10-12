@@ -517,3 +517,65 @@ TEST_CASE("perf: one search read against a full read and a date read", "[.perf-s
   std::printf("[perf-search] camera JPEG 6 MP: meta::read %.1f us, read_search_facts %.1f us, read_date_taken %.1f us\n",
               full, search, date);
 }
+
+// ---- the Places provider's input ------------------------------------------------------
+
+TEST_CASE("a place provider answers `portugal` from the pass's locations, read once", "[search][places]") {
+  // The Places add-on (docs/design/27) answers place: / in: and plain words
+  // through PR 59's search-provider slot, from the host table's locations_in,
+  // which the hosts serve from this pass (no file read). This fake stands in
+  // for it: a country by bounding box, the why its label.
+  struct country {
+    const char* name;
+    double lat0, lat1, lon0, lon1;
+  };
+  static constexpr country kCountries[] = {
+      {"Portugal", 36.9, 42.2, -9.6, -6.2},    // the mainland
+      {"Portugal", 32.4, 33.2, -17.3, -16.2},  // Madeira
+      {"Portugal", 36.9, 39.8, -31.3, -24.9},  // the Azores
+      {"Spain", 36.0, 43.8, -9.3, 3.4},
+  };
+  const auto provider = [](const meta::tag_index& index, std::string_view typed) {
+    const std::string q = mv::text::fold(typed);
+    std::vector<std::pair<std::string, std::string>> rows;
+    index.each_location([&](const std::string& path, const meta::geo_point& w) {
+      for (const country& c : kCountries) {
+        if (w.lat >= c.lat0 && w.lat <= c.lat1 && w.lon >= c.lon0 && w.lon <= c.lon1) {
+          if (mv::text::fold(c.name) == q) rows.emplace_back(path, c.name);
+          break;  // the first box wins (Portugal before Spain)
+        }
+      }
+      return true;
+    });
+    return rows;
+  };
+  mv::job_system jobs;
+  REQUIRE(mv::ok(jobs.start(1)));
+  std::atomic<int> reads{0};
+  meta::tag_index index(nullptr, [&](std::string_view p) -> mv::result<meta::search_facts> {
+    ++reads;
+    meta::search_facts f;
+    if (p.find("sintra") != std::string_view::npos) f.where = meta::geo_point{38.7975, -9.3883, std::nullopt};
+    if (p.find("funchal") != std::string_view::npos) f.where = meta::geo_point{32.6669, -16.9241, std::nullopt};
+    if (p.find("madrid") != std::string_view::npos) f.where = meta::geo_point{40.4168, -3.7038, std::nullopt};
+    if (p.find("sea") != std::string_view::npos) f.where = meta::geo_point{45.0, -20.0, std::nullopt};
+    return f;
+  });
+  std::vector<io::dir_entry> files{entry("/trip", "sintra.jpg"), entry("/trip", "funchal.mov"),
+                                   entry("/trip", "madrid.heic"), entry("/trip", "sea.jpg"),
+                                   entry("/trip", "nogps.jpg")};
+  index.scan("/trip", files, jobs);
+  REQUIRE(wait_until([&] { return !index.progress().reading; }));
+  const int read_once = reads.load();
+  auto rows = provider(index, "PORTUGAL");
+  REQUIRE(rows.size() == 2);
+  CHECK(rows[0].first == "/trip/sintra.jpg");
+  CHECK(rows[1].first == "/trip/funchal.mov");
+  CHECK(rows[0].second == "Portugal");
+  CHECK(provider(index, "spain").size() == 1);
+  CHECK(provider(index, "atlantis").empty());
+  CHECK(reads.load() == read_once);  // the provider read nothing
+  // The app's own tag text has no place names (owner, 2026-10-11).
+  CHECK(index.match("portugal").empty());
+  jobs.shutdown();
+}
