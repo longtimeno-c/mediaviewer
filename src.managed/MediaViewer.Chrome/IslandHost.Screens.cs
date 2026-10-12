@@ -511,6 +511,8 @@ public static partial class IslandHost
 
     private static readonly SemaphoreSlim SlotThumbGate = new(2);
     private static readonly Dictionary<string, string?> SlotThumbCache = new(StringComparer.Ordinal);
+    // UI thread: paths whose job is in flight, with the other tiles waiting on it.
+    private static readonly Dictionary<string, List<(Image Img, double Size)>> SlotThumbPending = new(StringComparer.Ordinal);
 
     private static FrameworkElement SlotThumb(string path, double size, string label)
     {
@@ -538,6 +540,14 @@ public static partial class IslandHost
             SetSlotThumb(img, known, size);
             return;
         }
+        // One job per path in flight: a tile realised again (or the same file in two
+        // tiles) waits for that job rather than queueing another.
+        if (SlotThumbPending.TryGetValue(path, out var waiting))
+        {
+            waiting.Add((img, size));
+            return;
+        }
+        SlotThumbPending[path] = new List<(Image, double)>();
         _ = Task.Run(async () =>
         {
             await SlotThumbGate.WaitAsync().ConfigureAwait(false);
@@ -555,6 +565,13 @@ public static partial class IslandHost
                 if (SlotThumbCache.Count > 4000) SlotThumbCache.Clear();
                 SlotThumbCache[path] = jpeg;
                 if (img.Tag is string p && p == path) SetSlotThumb(img, jpeg, size);
+                if (SlotThumbPending.Remove(path, out var others))
+                {
+                    foreach ((Image other, double otherSize) in others)
+                    {
+                        if (other.Tag is string op && op == path) SetSlotThumb(other, jpeg, otherSize);
+                    }
+                }
             });
         });
     }
@@ -621,6 +638,34 @@ public static partial class IslandHost
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             MinHeight = tile + 16,
+            // Bounded, or a vertical stack / section / scroll measures it at infinite
+            // height and the repeater realises (and asks a thumbnail for) every tile.
+            // Never taller than the window it is in; a few rows until that is known.
+            MaxHeight = Math.Max(tile + 16, 4 * (tile + 8)),
+        };
+        ScrollViewer bounded = scroller;
+        void FitWindow()
+        {
+            if (bounded.XamlRoot is { } root && root.Size.Height > 0)
+            {
+                bounded.MaxHeight = Math.Max(tile + 16, root.Size.Height);
+            }
+        }
+        XamlRoot? watched = null;
+        void RootChanged(XamlRoot sender, XamlRootChangedEventArgs e) => FitWindow();
+        bounded.Loaded += (_, _) =>
+        {
+            FitWindow();
+            if (watched is null && bounded.XamlRoot is { } root)
+            {
+                watched = root;
+                root.Changed += RootChanged;
+            }
+        };
+        bounded.Unloaded += (_, _) =>
+        {
+            if (watched is not null) watched.Changed -= RootChanged;
+            watched = null;
         };
         return scroller;
     }
