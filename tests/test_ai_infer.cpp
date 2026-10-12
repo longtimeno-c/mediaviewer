@@ -185,10 +185,11 @@ TEST_CASE("remove_assets drops every row of a set in one pass and compacts once"
   CHECK(store.live_rows() == 3000);
 }
 
-TEST_CASE("a query scans 100 k ViT-L frames in under 100 ms", "[ai][infer][vectors][perf]") {
+TEST_CASE("perf: a query scans 100 k ViT-L frames in under 100 ms", "[.perf-bench][ai][infer][vectors]") {
   // docs/design/17 PR 22: "< 100 ms over 100 k frames". 2,000 clips of 50 frames,
   // pseudo-random unit vectors; the scan as search_text runs it (margin
-  // filter, top 5000, the per-asset stats).
+  // filter, top 5000, the per-asset stats). A perf run, not the unit suite
+  // (issue #154): `mv_ai_tests "[.perf-bench]"`.
   constexpr std::uint32_t dim = 768;
   mv::ai::vector_store store(dim);
   std::uint32_t seed = 12345;
