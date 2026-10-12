@@ -10,7 +10,7 @@ private struct VolumeSliderRow: View {
 
   var body: some View {
     HStack(spacing: 6) {
-      Image(systemName: "speaker.fill").font(.caption)
+      Image(systemName: "speaker.fill").font(MVTheme.font(12))
       Slider(
         value: Binding(
           get: { Double(store.draggingVolume ?? store.volume) },
@@ -21,7 +21,7 @@ private struct VolumeSliderRow: View {
       .frame(width: 120)
       .accessibilityLabel("Volume")
       .accessibilityValue("\(Int((store.draggingVolume ?? store.volume) * 100)) percent")
-      Image(systemName: "speaker.wave.3.fill").font(.caption)
+      Image(systemName: "speaker.wave.3.fill").font(MVTheme.font(12))
     }
     .padding(.horizontal, 10)
     .padding(.vertical, 4)
@@ -150,7 +150,7 @@ struct TransportView: View {
         .help(Self.hint("Forward 10 seconds", "Forward 10 s"))
         .accessibilityLabel("Forward 10 seconds")
 
-      Text(Self.clock(shown)).monospacedDigit().font(.caption).frame(minWidth: 40, alignment: .trailing)
+      Text(Self.clock(shown)).monospacedDigit().font(MVTheme.font(12)).frame(minWidth: 40, alignment: .trailing)
         .accessibilityHidden(true)  // the scrubber's value says it
       Slider(
         value: Binding(
@@ -166,19 +166,21 @@ struct TransportView: View {
         // Bound to milliseconds: without these VoiceOver reads "34,512".
         .accessibilityLabel("Position")
         .accessibilityValue("\(Self.clock(shown)) of \(Self.clock(store.durationMs))")
-      Text(Self.clock(store.durationMs)).monospacedDigit().font(.caption)
+      Text(Self.clock(store.durationMs)).monospacedDigit().font(MVTheme.font(12))
         .frame(minWidth: 40, alignment: .leading)
         .accessibilityHidden(true)
 
       if store.trimArmed {
         Text(store.trimPreviewing ? store.trimLabel + " · previewing" : store.trimLabel)
-          .font(.caption).monospacedDigit()
+          .font(MVTheme.font(12)).monospacedDigit()
           .foregroundStyle(MVTheme.title)
           .lineLimit(1)
         // The keyed commands for the mouse: Return / ⇧Return in trim mode.
         Button("Save") { store.run(TrimCommand.keyframe) }
+          .buttonStyle(FlatButtonStyle(compact: true))
           .help("Keyframe trim: instant, no re-encode (Return)")
         Button("Save exact") { store.run(TrimCommand.reencode) }
+          .buttonStyle(FlatButtonStyle(compact: true))
           .help("Frame-accurate re-encode on the hardware encoder; slower (⇧Return)")
       }
 
@@ -187,7 +189,7 @@ struct TransportView: View {
           Button(action: { store.setSpeed(x100: rate) }) { Text(Self.rateText(rate)) }
         }
       } label: {
-        Text(String(format: "%.2gx", Double(store.rateX100) / 100)).font(.caption).monospacedDigit()
+        Text(String(format: "%.2gx", Double(store.rateX100) / 100)).font(MVTheme.font(12)).monospacedDigit()
       }
       .menuStyle(.borderlessButton).fixedSize()
       .help(Self.speedHelp)

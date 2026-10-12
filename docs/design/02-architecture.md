@@ -38,7 +38,8 @@ tools/         frame-time harness, fuzzers, perf suite, packaging, policy checks
 ```
 
 Dependencies point **downward only**. The enforced map
-([`tools/check-module-graph.ps1`](../../tools/check-module-graph.ps1)):
+([`tools/check-module-graph.ps1`](../../tools/check-module-graph.ps1), which reads `#include` and
+`#import` in `.h`, `.hpp`, `.cpp`, `.mm` and `.m` files):
 
 | Module | May include |
 |---|---|
@@ -48,7 +49,8 @@ Dependencies point **downward only**. The enforced map
 | `image`, `meta`, `player` | `codec`, `gfx`, `io`, `core` |
 | `edit`, `canvas` | `image`, `codec`, `gfx`, `io`, `core` |
 | `addon` | `io`, `core` |
-| `addons` | `core` header-only pieces (`result.h`, `status.h`, `json.h`) |
+| `infer` | `core` (ONNX Runtime behind our interface; linked into the AI pack) |
+| `addons` | `core` header-only pieces (`result.h`, `status.h`, `json.h`); the AI pack also `infer` |
 | `abi` | everything below it |
 | `nle` | `addon`, `image`, `io`, `core` |
 | `shellext` | `image`, `codec`, `gfx`, `io`, `core` |
@@ -151,7 +153,7 @@ and the Windows backends (`gfx/`, `io/*_win.cpp`, `player/*_win.cpp`); Cocoa/Met
 and `*_mac.mm` backends. Headers used above `gfx/` do not include `d3d11.h`. Paths across the C ABI are
 UTF-8. Completions are a queue the host pumps — C++ never calls a WinUI dispatcher or
 `DispatchQueue.main`. [`tools/check-hostable-core.ps1`](../../tools/check-hostable-core.ps1) enforces
-the Windows side.
+both sides.
 
 ## Cancellation
 

@@ -5,8 +5,11 @@
 
 #include <algorithm>
 #include <cstring>
+#include <latch>
+#include <set>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include "codec/crash_test_hook.h"
@@ -222,6 +225,42 @@ TEST_CASE("scrub_text masks an unrooted path fragment and keeps a url and a rela
   CHECK(s.find("pad/canary") == std::string::npos);
   CHECK(s.find("https://example.com/a/b") != std::string::npos);
   CHECK(s.find("./rel/path/") != std::string::npos);
+}
+
+TEST_CASE("concurrent decodes never share a crash slot", "[crash]") {
+  // Slots used to be assigned by thread modulo eight, so two of a 14-thread
+  // pool's decoders could write the same slot and a dump lost one's format.
+  namespace cc = mv::crash_context;
+  constexpr std::size_t n = cc::kSlotCount;
+  std::vector<std::size_t> got(n + 1, 0);
+  std::latch claimed(static_cast<std::ptrdiff_t>(n + 1));
+  std::latch release(1);
+  std::vector<std::thread> threads;
+  for (std::size_t i = 0; i <= n; ++i) {
+    threads.emplace_back([&, i] {
+      got[i] = cc::begin_decode({"TIFF", "libtiff", "", 0});
+      claimed.count_down();
+      release.wait();
+      cc::end_decode();
+    });
+  }
+  claimed.wait();
+  std::set<std::size_t> distinct;
+  std::size_t unannotated = 0;
+  for (std::size_t slot : got) {
+    if (slot == n) ++unannotated;
+    else distinct.insert(slot);
+  }
+  CHECK(distinct.size() == n);  // every slot held by exactly one decode
+  CHECK(unannotated == 1);      // the one past the table writes nowhere
+  release.count_down();
+  for (auto& t : threads) t.join();
+
+  // All released: a fresh decode gets a slot again.
+  CHECK(cc::begin_decode({"PNG", "libspng", "", 0}) < n);
+  CHECK(std::string(cc::this_thread_slot()).find("fmt=PNG") != std::string::npos);
+  cc::end_decode();
+  CHECK(std::string(cc::this_thread_slot()).empty());
 }
 
 TEST_CASE("decode crash scope annotates without paths and is inert unarmed", "[crash]") {

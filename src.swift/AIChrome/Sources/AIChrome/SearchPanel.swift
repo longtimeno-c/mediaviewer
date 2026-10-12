@@ -122,8 +122,6 @@ final class SearchPanelController: NSObject {
     return model.awaitingResults
   }
 
-  var isVisible: Bool { panel.isVisible && state.shown }
-
   func show(over parent: NSWindow?) {
     hideSeq += 1  // a hide still fading out does not take the panel away
     let wanted = CGSize(width: 820 + 2 * Self.margin, height: 580 + 2 * Self.margin)

@@ -59,6 +59,7 @@ add_library(mv::core ALIAS mv_core)
 
 add_library(mv_gfx STATIC
   src/gfx/adjust_kernel.h
+  src/gfx/adjust_kernel_tokens.h
   src/gfx/colour_desc.cpp
   src/gfx/colour_desc.h
   src/gfx/metal_pacer.cpp
@@ -242,9 +243,10 @@ add_library(mv::io ALIAS mv_io)
 # ---------------------------------------------------------------------------
 # mv_image — colour (LCMS) + PR 17's decode entrypoint + Metal upload +
 # PR 18's JPEG-512 thumbnail cache (folded-in PR 4). image/pipeline.cpp/
-# upload.cpp/gpu_image.h/thumb.cpp stay Windows-only (D3D11 or the '\\'
-# path-join bug in thumb.cpp); PR 17/18 use the _mac twins instead
-# (docs/design/12 2026-09-17).
+# upload.cpp/gpu_image.h/thumb.cpp stay Windows-only (D3D11, or thumb
+# pixels through decode_bytes()); PR 17/18 use the _mac twins instead
+# (docs/design/12 2026-09-17). thumb_store.cpp, the cache's SQLite index, is
+# shared by both hosts (issue #168).
 # ---------------------------------------------------------------------------
 find_package(lcms2 CONFIG REQUIRED)
 find_package(unofficial-sqlite3 CONFIG REQUIRED)
@@ -258,6 +260,7 @@ add_library(mv_image STATIC
   src/image/pipeline_mac.cpp
   src/image/upload_mac.mm
   src/image/thumb_mac.cpp
+  src/image/thumb_store.cpp
   src/image/colour.h
   src/image/pipeline.h
   src/image/pipeline_mac.h
@@ -296,6 +299,7 @@ add_library(mv_player STATIC
   src/player/av_clock.cpp
   src/player/audio_mac.cpp         # D9: the only player/ file that names Core Audio
   src/player/transport.cpp
+  src/player/resume_store.cpp
   src/player/presenter.cpp
   src/player/container_probe.cpp
   src/player/poster.cpp
@@ -307,6 +311,7 @@ add_library(mv_player STATIC
   src/player/av_clock.h
   src/player/presenter.h
   src/player/transport.h
+  src/player/resume_store.h
   src/player/container_probe.h
   src/player/poster.h
   src/player/video_internal.h
@@ -848,6 +853,7 @@ if(MV_BUILD_TESTS)
     # PR 15: recent folders, copy path.
     tests/test_os_integration.cpp
     tests/test_thumb_pixels.cpp
+    tests/test_thumb_store.cpp
     # PR 15: the Explorer handler's portable half (the COM DLL is Windows-only).
     tests/test_thumb_request.cpp
     src/shellext/thumb_request.cpp
@@ -858,6 +864,8 @@ if(MV_BUILD_TESTS)
     tests/test_transport_autohide.cpp
     # Issue #44: no clip plays under the gallery, both hosts.
     tests/test_playback_hold.cpp
+    # Issue #231: the Windows host's selection stamp (the logic is portable).
+    tests/test_listing_stamp.cpp
     # Issue #236: a stale pending clip is retired, both hosts.
     tests/test_video_session.cpp
   )

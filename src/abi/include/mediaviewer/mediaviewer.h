@@ -50,7 +50,7 @@ extern "C" {
  * wrong is a struct layout change nobody notices until a field reads garbage.
  * ------------------------------------------------------------------------- */
 #define MV_ABI_VERSION_MAJOR 0
-#define MV_ABI_VERSION_MINOR 19 /* 0.10: PR 13 / 14 clip jobs and keyframe index (mediaviewer_clip.h); 0.11: issue #44 mv_video_set_hold; 0.12: issue #42 mv_status eject error categories; 0.13: PR 30 keep_ranges; 0.14: Milestone H result listings (mv_folder_open_list); 0.15: mv_folder_item clip flag; 0.16: pages (mv_image_info.page_count, mv_folder_select_page); 0.17: docs/design/25 open add-ons (mv_open_addon_*); 0.18: docs/design/25 contributed commands (mv_addon_commands_json); 0.19: mv_folder_set_hidden_kinds */
+#define MV_ABI_VERSION_MINOR 20 /* 0.10: PR 13 / 14 clip jobs and keyframe index (mediaviewer_clip.h); 0.11: issue #44 mv_video_set_hold; 0.12: issue #42 mv_status eject error categories; 0.13: PR 30 keep_ranges; 0.14: Milestone H result listings (mv_folder_open_list); 0.15: mv_folder_item clip flag; 0.16: pages (mv_image_info.page_count, mv_folder_select_page); 0.17: docs/design/25 open add-ons (mv_open_addon_*); 0.18: docs/design/25 contributed commands (mv_addon_commands_json); 0.19: mv_folder_set_hidden_kinds; 0.20: issue #226 mv_folder_entries */
 
 /* Packed as (major << 16) | minor. [any-thread] */
 MV_API uint32_t MV_CALL mv_abi_version(void);
@@ -437,6 +437,30 @@ MV_API mv_status MV_CALL mv_folder_list_title(mv_session_t session, char* utf8, 
 /* The moment an item opens on, -1 for none. [any-thread][no-block] */
 MV_API mv_status MV_CALL mv_folder_item_moment(mv_session_t session, uint32_t index,
                                                int64_t* out_ms);
+
+/* 0.20 (issue #226). The whole listing in one call under one lock, so a relist
+ * of N stops costs the host one call instead of ~8N (mv_folder_item_at, the
+ * four strings and the moment, each with a size query). One entry per stop, in
+ * order; each entry's four strings are NUL-terminated in `strings` at the byte
+ * offsets it names. Neither buffer is retained.
+ *
+ * `out_count` and `out_string_bytes` are required and always report what the
+ * whole listing needs. If `entry_cap` or `string_cap` is too small (including
+ * 0 with NULL buffers, the size query), nothing is written and the call returns
+ * MV_ERR_INVALID_ARG: grow both and call again. The listing can change between
+ * the two calls, so loop until MV_OK. [any-thread][no-block] */
+typedef struct mv_folder_entry {
+  mv_folder_item item;   /* as mv_folder_item_at */
+  int64_t moment_ms;     /* as mv_folder_item_moment: -1 for none */
+  uint32_t name_offset;  /* byte offsets into `strings` */
+  uint32_t path_offset;
+  uint32_t thumb_offset; /* "" until THUMB_READY for the stop */
+  uint32_t pair_offset;  /* "" when pair_kind is MV_PAIR_NONE */
+} mv_folder_entry;       /* 56 bytes */
+MV_API mv_status MV_CALL mv_folder_entries(mv_session_t session, mv_folder_entry* entries,
+                                           uint32_t entry_cap, char* strings,
+                                           uint32_t string_cap, uint32_t* out_count,
+                                           uint32_t* out_string_bytes);
 
 /* -------------------------------------------------------------------------
  * PR 5 — video. docs/design/05-video-pipeline.md, docs/design/14-abi.md.

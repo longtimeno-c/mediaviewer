@@ -29,4 +29,15 @@ inline bool spring_settled(float x, float v, float target, float pos_eps = 0.05f
   return std::fabs(x - target) < pos_eps && std::fabs(v) < vel_eps;
 }
 
+// Lands a settled spring exactly on its target. Without the snap the value
+// rests up to `pos_eps` short, and the next unrelated redraw (which steps the
+// spring again) visibly jumps it the rest of the way.
+inline bool spring_snap(float& x, float& v, float target, float pos_eps = 0.05f,
+                        float vel_eps = 0.5f) noexcept {
+  if (!spring_settled(x, v, target, pos_eps, vel_eps)) return false;
+  x = target;
+  v = 0.0f;
+  return true;
+}
+
 }  // namespace mv::canvas
