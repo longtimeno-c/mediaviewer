@@ -141,6 +141,9 @@ public struct CommandBarView: View {
   @ObservedObject private var store = FolderStore.shared
   @ObservedObject private var notice = NoticeStore.shared
   @ObservedObject private var edit = EditStore.shared
+  /// The store no longer publishes the selection (issue #179); the Open
+  /// flyout names the current file.
+  @ObservedObject private var selection = FolderStore.shared.current
 
   public init() {}
 
@@ -148,8 +151,8 @@ public struct CommandBarView: View {
 
   public var body: some View {
     let hasFolder = store.itemCount > 0
-    let current = (store.currentIndex >= 0 && store.currentIndex < store.names.count)
-      ? store.names[store.currentIndex] : nil
+    let current = (selection.index >= 0 && selection.index < store.names.count)
+      ? store.names[selection.index] : nil
     // No .keyboardShortcut here: the router (main_mac.mm) owns the keys; the
     // shortcut column is only a label, read from the live table so a remap shows.
     VStack(spacing: 0) {
@@ -161,8 +164,8 @@ public struct CommandBarView: View {
           BarFlyout(title: "Open") { close in
             FlyoutItem(title: "Media…", shortcut: key("Open media…")) { close(); mv_chrome_menu(kMenuOpen) }
             FlyoutItem(title: "Folder…", shortcut: key("Open folder…")) { close(); mv_chrome_menu(kMenuOpenFolder) }
-            FlyoutItem(title: current.map { "Open: " + $0 } ?? "Open: (nothing open)",
-                       shortcut: key("Show in Explorer"), enabled: current != nil) {
+            // kMenuReveal reveals the file in Finder; it does not open it (issue #187).
+            FlyoutItem(title: "Show in Finder", shortcut: key("Show in Explorer"), enabled: current != nil) {
               close(); mv_chrome_menu(kMenuReveal)
             }
           }

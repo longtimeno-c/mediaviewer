@@ -629,6 +629,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (uint64_t)metaGeneration;
 - (std::shared_ptr<const mv::meta::metadata>)metaRecord;
 - (BOOL)treeVisible;
+- (void)treeBlur;
 - (NSString*)currentFolder;
 - (void)openFolderPath:(const char*)utf8_path;
 - (int32_t)sortOrder;
@@ -668,6 +669,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)metaSetTag:(const char*)key value:(const char*)value;  // value NULL removes
 - (void)metaSetDate:(const char*)value;                        // NULL removes
 - (uint64_t)metaFocusSeq;
+- (BOOL)metaFocusTags;
 - (void)metaBlur;
 // File search (docs/design/16 "File search", 2026-09-28): shown over the gallery on
 // request; the field hands the keyboard back to the grid, and publishes what
@@ -1185,6 +1187,9 @@ extern "C" void mv_chrome_meta_revert(void) {
 extern "C" uint64_t mv_chrome_meta_focus_seq(void) {
   return g_chrome_app ? [g_chrome_app metaFocusSeq] : 0;
 }
+extern "C" bool mv_chrome_meta_focus_tags(void) {
+  return g_chrome_app ? [g_chrome_app metaFocusTags] == YES : false;
+}
 extern "C" void mv_chrome_meta_blur(void) {
   if (g_chrome_app) [g_chrome_app metaBlur];
 }
@@ -1223,6 +1228,9 @@ extern "C" int32_t mv_chrome_notice_text(char* buf, int32_t size) {
 
 extern "C" bool mv_chrome_tree_visible(void) {
   return g_chrome_app ? [g_chrome_app treeVisible] == YES : false;
+}
+extern "C" void mv_chrome_tree_blur(void) {
+  if (g_chrome_app) [g_chrome_app treeBlur];
 }
 // [any-thread]: a directory read, called from Swift's background task.
 extern "C" int32_t mv_chrome_list_subdirectories(const char* dir_utf8, char* buf, int32_t size) {
@@ -2336,7 +2344,10 @@ static void MvAdoptNewDefaultViewerTypes() {
   mv::shell::meta_writer _metaWriter;
   NSTimer* _metaWriteDebounce;
   std::set<std::string> _metaWritten;
+  // Issue #185: each ask for the pane's keyboard bumps the sequence; `I` asks
+  // for the pane (its tabs), ⌘I for the All tags search (_metaFocusTags).
   std::uint64_t _metaFocusSeq;
+  BOOL _metaFocusTags;
   std::string _noticeText;
   std::uint64_t _noticeGeneration;
   NSTimer* _noticeTimer;
@@ -6225,7 +6236,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     if (!info && _metaPaneVisible) [self setMetaPaneVisible:NO];
     if (!jobs && _jobsVisible) [self setJobsVisible:NO];
     if (colour) [self setAdjustVisible:YES];
-    if (info) [self setMetaPaneVisible:YES];
+    if (info) [self setMetaPaneVisible:YES focus:NO];
     if (jobs) [self setJobsVisible:YES focus:NO];
   }
   // Crop and Trim keys are the canvas's: keep the keyboard there.
@@ -8075,8 +8086,10 @@ static double mv_wall_seconds() {
 - (BOOL)focusCommentField {
   if (![self currentEntry]) return NO;
   if (_adjust.visible()) [self setAdjustVisible:NO];
-  if (!_metaPaneVisible) [self setMetaPaneVisible:YES];
-  ++_metaFocusSeq;  // Swift focuses the field once per ask
+  if (!_metaPaneVisible) [self setMetaPaneVisible:YES focus:NO];
+  // Swift opens All tags and focuses its search once per ask (issue #185).
+  _metaFocusTags = YES;
+  ++_metaFocusSeq;
   [self.window makeFirstResponder:self.metaHost];
   return YES;
 }
@@ -8172,6 +8185,7 @@ static double mv_wall_seconds() {
 }
 
 - (uint64_t)metaFocusSeq { return _metaFocusSeq; }
+- (BOOL)metaFocusTags { return _metaFocusTags; }
 - (void)metaBlur { [self.window makeFirstResponder:self.view]; }
 - (void)galleryBlur { [self.window makeFirstResponder:self.view]; }
 
@@ -8310,23 +8324,37 @@ static double mv_wall_seconds() {
 - (std::string)noticeText { return _noticeText; }
 
 - (void)setMetaPaneVisible:(BOOL)visible {
+  [self setMetaPaneVisible:visible focus:visible];
+}
+
+// docs/design/16 `I`: showing the pane focuses it (← → tabs, ↓ tag search, Esc
+// back to the canvas, issue #185). The Edit workspace's Info tab shows it
+// without the keyboard, as its Jobs tab does.
+- (void)setMetaPaneVisible:(BOOL)visible focus:(BOOL)focus {
   if (visible == _metaPaneVisible) return;
   _metaPaneVisible = visible;
   self.metaHost.hidden = !visible;
   ++_metaGeneration;
   if (!visible) [self workspacePaneClosed:mv::shell::edit_tab::info];
   if (visible) [self requestMetadataNow];
-  // Keys stay with the canvas: arrows still browse while the pane is up.
-  [self.window makeFirstResponder:self.view];
+  if (visible && focus) {
+    _metaFocusTags = NO;
+    ++_metaFocusSeq;
+    [self.window makeFirstResponder:self.metaHost];
+  } else {
+    [self.window makeFirstResponder:self.view];
+  }
 }
 
 - (BOOL)treeVisible { return _treeVisible; }
+// docs/design/16 "Folder tree": ⌘⇧E shows and focuses it (issue #185).
 - (void)setTreeVisible:(BOOL)visible {
   if (visible == _treeVisible) return;
   _treeVisible = visible;
   self.treeHost.hidden = !visible;
-  [self.window makeFirstResponder:self.view];
+  [self.window makeFirstResponder:visible ? self.treeHost : self.view];
 }
+- (void)treeBlur { [self.window makeFirstResponder:self.view]; }
 - (NSString*)currentFolder {
   return [NSString stringWithUTF8String:_currentDir.c_str()];
 }

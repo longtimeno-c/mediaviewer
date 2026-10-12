@@ -182,12 +182,14 @@ final class FolderTreeStore: ObservableObject {
 private struct TreeRow: View {
   @ObservedObject var node: TreeNode
   let current: String
+  /// The keyboard's row while the tree has focus (issue #185); nil otherwise.
+  let cursor: String?
   let depth: Int
 
   var body: some View {
     DisclosureGroup(isExpanded: $node.isExpanded) {
       if let kids = node.children {
-        ForEach(kids) { TreeRow(node: $0, current: current, depth: depth + 1) }
+        ForEach(kids) { TreeRow(node: $0, current: current, cursor: cursor, depth: depth + 1) }
       }
     } label: {
       Button {
@@ -203,6 +205,12 @@ private struct TreeRow: View {
       .buttonStyle(.plain)
       .fontWeight(node.path == current ? .semibold : .regular)
       .foregroundStyle(node.path == current ? MVTheme.accent : Color.primary)
+      .background(
+        RoundedRectangle(cornerRadius: 4)
+          .fill(node.path == cursor ? Color.primary.opacity(0.1) : .clear)
+          .padding(-2)
+      )
+      .accessibilityAddTraits(node.path == cursor ? [.isSelected] : [])
     }
     .id(node.path)
   }
@@ -210,6 +218,71 @@ private struct TreeRow: View {
 
 struct FolderTreeView: View {
   @ObservedObject private var store = FolderTreeStore.shared
+  // docs/design/16 "Folder tree" (issue #185): ⌘⇧E shows and focuses the tree.
+  // ↑ ↓ walk the shown rows, → ← open and close a folder, Enter opens it and
+  // returns to the canvas, Esc returns to the canvas (a second Esc closes it).
+  @FocusState private var focused: Bool
+  @State private var cursor: String?
+
+  /// The rows on screen, top to bottom: the root, then each expanded folder's
+  /// children. Walked on a key press only, never per render.
+  private func shownNodes() -> [TreeNode] {
+    guard let root = store.root else { return [] }
+    var out: [TreeNode] = []
+    var stack: [TreeNode] = [root]
+    while let node = stack.popLast() {
+      out.append(node)
+      if node.isExpanded, let kids = node.children { stack.append(contentsOf: kids.reversed()) }
+    }
+    return out
+  }
+
+  private func takeFocus() {
+    let shown = shownNodes()
+    if cursor == nil || !shown.contains(where: { $0.path == cursor }) {
+      cursor = shown.contains(where: { $0.path == store.currentPath }) ? store.currentPath : shown.first?.path
+    }
+    focused = true
+  }
+
+  private func move(_ by: Int) -> KeyPress.Result {
+    let shown = shownNodes()
+    guard !shown.isEmpty else { return .ignored }
+    let at = shown.firstIndex { $0.path == cursor } ?? 0
+    cursor = shown[min(max(at + by, 0), shown.count - 1)].path
+    return .handled
+  }
+
+  /// → opens a closed folder, else steps into its first child.
+  private func openOrEnter() -> KeyPress.Result {
+    let shown = shownNodes()
+    guard let node = shown.first(where: { $0.path == cursor }) else { return move(0) }
+    if !node.isExpanded {
+      node.isExpanded = true  // lists its children off the main actor
+    } else if let first = node.children?.first {
+      cursor = first.path
+    }
+    return .handled
+  }
+
+  /// ← closes an open folder, else steps out to its parent.
+  private func closeOrLeave() -> KeyPress.Result {
+    let shown = shownNodes()
+    guard let node = shown.first(where: { $0.path == cursor }) else { return move(0) }
+    if node.isExpanded && node.children?.isEmpty == false {
+      node.isExpanded = false
+    } else if let parent = shown.first(where: { $0.children?.contains { $0 === node } == true }) {
+      cursor = parent.path
+    }
+    return .handled
+  }
+
+  private func openCursor() -> KeyPress.Result {
+    guard let path = cursor else { return .ignored }
+    path.withCString { mv_chrome_open_folder($0) }
+    mv_chrome_tree_blur()
+    return .handled
+  }
 
   /// docs/design/26: the Photos library, a folder beside the folders, once it was
   /// added in Settings. Opening it lists the whole library.
@@ -256,7 +329,7 @@ struct FolderTreeView: View {
                 .buttonStyle(.plain)
                 .padding(.bottom, 6)
               }
-              TreeRow(node: root, current: store.currentPath, depth: 0)
+              TreeRow(node: root, current: store.currentPath, cursor: focused ? cursor : nil, depth: 0)
             }
             .padding(10)
           }
@@ -264,6 +337,9 @@ struct FolderTreeView: View {
             let path = store.currentPath
             guard !path.isEmpty else { return }
             proxy.scrollTo(path, anchor: .center)
+          }
+          .onChange(of: cursor) { _, path in
+            if let path, focused { proxy.scrollTo(path) }
           }
         }
       } else if !store.photosOpen {
@@ -277,5 +353,16 @@ struct FolderTreeView: View {
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     .background(.regularMaterial)
     .overlay(alignment: .trailing) { Rectangle().fill(Color.primary.opacity(0.15)).frame(width: 1) }
+    .focusable()
+    .focusEffectDisabled()
+    .focused($focused)
+    .onKeyPress(.upArrow) { move(-1) }
+    .onKeyPress(.downArrow) { move(1) }
+    .onKeyPress(.rightArrow) { openOrEnter() }
+    .onKeyPress(.leftArrow) { closeOrLeave() }
+    .onKeyPress(.return) { openCursor() }
+    .onKeyPress(.escape) { mv_chrome_tree_blur(); return .handled }
+    .onAppear { if store.visible { takeFocus() } }
+    .onChange(of: store.visible) { _, nowVisible in if nowVisible { takeFocus() } }
   }
 }

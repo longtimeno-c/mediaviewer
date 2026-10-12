@@ -14,6 +14,8 @@
 // visible cell, each of which also made a C call to fetch its name, and the
 // image was read and decoded on the main thread. Now:
 //   * each thumbnail lives in its own ThumbSlot -- an arrival re-renders one cell;
+//   * the selection lives outside the store (CurrentItem, CellHighlight), so an
+//     arrow key re-renders two cells, not the grid (issue #179);
 //   * names are cached, refreshed only when the host's listing generation moves;
 //   * slots are keyed by the host's thumbnail key (path + size + mtime), not by
 //     name: every camera card holds an IMG_0001.JPG (issue #177);
@@ -59,6 +61,22 @@ final class FolderCard: ObservableObject {
   }
 }
 
+/// The selection, apart from the listing (issue #179). Arrow keys move only
+/// this, so the grid and the strip, which observe the listing, are not rebuilt
+/// on every step; what follows the selection (the scroll position, the command
+/// bar's file name) observes this small object instead.
+@MainActor
+final class CurrentItem: ObservableObject {
+  @Published fileprivate(set) var index: Int = -1
+}
+
+/// One cell's highlight (issue #179). A cell observes its own, so a step of the
+/// selection redraws the cell it left and the cell it reached, nothing else.
+@MainActor
+final class CellHighlight: ObservableObject {
+  @Published fileprivate(set) var isCurrent = false
+}
+
 struct Crumb: Identifiable, Equatable {
   let index: Int
   let name: String
@@ -71,9 +89,15 @@ final class FolderStore: ObservableObject {
   static let shared = FolderStore()
 
   @Published private(set) var itemCount: Int = 0
-  @Published private(set) var currentIndex: Int = -1
+  /// Not published by this store: see CurrentItem.
+  let current = CurrentItem()
+  var currentIndex: Int { current.index }
   /// Item names by index; replaced wholesale when the host relists.
   @Published private(set) var names: [String] = []
+  /// `names.indices` and `folders.indices` as arrays, rebuilt when those
+  /// change rather than on every pass of the gallery's body.
+  private(set) var itemIndices: [Int] = []
+  private(set) var folderIndices: [Int] = []
   /// Parallel to `names`: each item's thumbnail key (mv_chrome_item_thumb_key),
   /// what slots are keyed by. Re-read with the names, and when the host
   /// rewrites a file in place (its thumb generation).
@@ -106,6 +130,8 @@ final class FolderStore: ObservableObject {
   @Published private(set) var listTitle: String?
 
   private var cards: [String: FolderCard] = [:]
+  /// By index, made as cells appear; at most one is current.
+  private var highlights: [Int: CellHighlight] = [:]
   private var requestedCards: Set<String> = []
   private var slots: [String: ThumbSlot] = [:]
   // Keys asked for and not yet failed/evicted, so scrolling back and forth
@@ -155,6 +181,12 @@ final class FolderStore: ObservableObject {
       let fresh = readListing()
       listing = fresh
       clips = fresh.clips
+      let listed = fresh.names.count
+      if itemIndices.count != listed { itemIndices = Array(0..<listed) }
+      // Highlights past the end belong to cells that are gone.
+      if highlights.keys.contains(where: { $0 >= listed }) {
+        highlights = highlights.filter { $0.key < listed }
+      }
       names = fresh.names
       reloadFolders()
       // File search closes on another folder and re-filters new names.
@@ -189,8 +221,10 @@ final class FolderStore: ObservableObject {
       }
       updateVersion = named ? String(cString: buf) : nil
     }
-    if index != currentIndex {
-      currentIndex = index
+    if index != current.index {
+      highlights[current.index]?.isCurrent = false
+      highlights[index]?.isCurrent = true
+      current.index = index
       prefetch(around: index)
     } else if listingChanged {
       // A new listing at the same index (a result list over a folder whose
@@ -287,6 +321,7 @@ final class FolderStore: ObservableObject {
       }
     }
     if freshFolders != folders {
+      if folderIndices.count != freshFolders.count { folderIndices = Array(freshFolders.indices) }
       folders = freshFolders
       // Cards for folders that are gone would only pin memory; a folder that is
       // still there keeps its cover.
@@ -390,6 +425,15 @@ final class FolderStore: ObservableObject {
   }
 
   func slot(at index: Int) -> ThumbSlot { slot(for: thumbKey(at: index)) }
+
+  /// The highlight the cell at `index` observes (the gallery and filmstrip share it).
+  func highlight(at index: Int) -> CellHighlight {
+    if let existing = highlights[index] { return existing }
+    let created = CellHighlight()
+    created.isCurrent = index == current.index
+    highlights[index] = created
+    return created
+  }
 
   private func slot(for key: String) -> ThumbSlot {
     if let existing = slots[key] { return existing }
