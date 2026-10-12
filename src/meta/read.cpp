@@ -11,6 +11,7 @@
 #include "io/file_port.h"
 #include "meta/generators.h"
 #include "meta/internal.h"
+#include "meta/probe.h"
 #include "meta/write.h"
 
 namespace mv::meta {
@@ -72,6 +73,22 @@ void read_beyond(std::string_view utf8_path, std::span<const std::uint8_t> prefi
     } else {
       file_source f;
       if (f.open(utf8_path)) parse::read_bmff(f, still_bmff, rows);
+    }
+  }
+  // #345: what the badge's probe reads that Exiv2 / libavformat do not surface
+  // here (a clip's XMP, a HEIF item Exiv2 skipped), so the pane and the badge
+  // always reach the same answer. Fields the readers above filled win.
+  {
+    parse::evidence probed;
+    file_source f;
+    if (f.open(utf8_path)) probe_evidence(f, probed);
+    if (ev.exif_software.empty()) ev.exif_software = probed.exif_software;
+    if (ev.xmp_creator_tool.empty()) ev.xmp_creator_tool = probed.xmp_creator_tool;
+    if (ev.xmp_source_type.empty() && !probed.xmp_source_type.empty()) {
+      ev.xmp_source_type = probed.xmp_source_type;
+      if (std::find(ev.source_types.begin(), ev.source_types.end(), probed.xmp_source_type) == ev.source_types.end()) {
+        ev.source_types.push_back(probed.xmp_source_type);
+      }
     }
   }
   const provenance p = derive_provenance(ev);
