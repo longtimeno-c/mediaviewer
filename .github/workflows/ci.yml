@@ -239,6 +239,7 @@ jobs:
     # same scripts gives a different key there and fail-on-cache-miss trips.
     outputs:
       key: ${{ steps.media.outputs.cache-primary-key }}
+      geo-key: ${{ steps.geo.outputs.cache-primary-key }}
     defaults:
       run:
         shell: bash
@@ -286,6 +287,36 @@ jobs:
             tools/testmedia/raw
             tools/testmedia/heif
           key: ${{ steps.media.outputs.cache-primary-key }}
+          enableCrossOsArchive: true
+
+      # The full place database (docs/design/06 "Place") for mv_tests "[geo]"'s
+      # 300-row table. Built once per build_places.py revision and cached; its
+      # own key, so it never invalidates the video corpus. GeoNames republishes
+      # daily under the same URL, so a cold build takes the current snapshot
+      # (--accept-upstream; the blob's META records the hashes it used).
+      - name: Restore place database
+        id: geo
+        uses: actions/cache/restore@v4
+        with:
+          path: tools/testmedia/geo/places.mvgeo
+          key: geo-v1-${{ hashFiles('tools/geo/build_places.py') }}
+          enableCrossOsArchive: true
+          lookup-only: true
+
+      # Never blocks the Windows legs: if geonames.org is down or the build
+      # fails, they run without the full table ("[geo]" then skips it).
+      - name: Build the place database
+        id: geo-build
+        if: steps.geo.outputs.cache-hit != 'true'
+        continue-on-error: true
+        run: python3 -I tools/geo/build_places.py --downloads "$RUNNER_TEMP/geo-downloads" --out tools/testmedia/geo/places.mvgeo --accept-upstream
+
+      - name: Save place database
+        if: steps.geo.outputs.cache-hit != 'true' && steps.geo-build.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: tools/testmedia/geo/places.mvgeo
+          key: ${{ steps.geo.outputs.cache-primary-key }}
           enableCrossOsArchive: true
 
   # ---------------------------------------------------------------------------
@@ -375,6 +406,14 @@ jobs:
           enableCrossOsArchive: true
           fail-on-cache-miss: true
 
+      - name: Restore place database
+        id: geo
+        uses: actions/cache/restore@v4
+        with:
+          path: tools/testmedia/geo/places.mvgeo
+          key: ${{ needs.test-media.outputs.geo-key }}
+          enableCrossOsArchive: true
+
       # Includes mv_broken_tests (PR 7 verify: "nothing in the broken corpus
       # crashes or hangs") in every matrix leg, ASan included. A failing input
       # is written to broken-dump/ and uploaded below.
@@ -388,6 +427,10 @@ jobs:
           # A missing clip or sample FAILS here instead of skipping
           # (tests/corpus.h); test_corpus.cpp fails if a CI run drops this.
           MV_REQUIRE_CORPUS: '1'
+          # mv_tests "[geo]": the full table runs when the blob was built, and is
+          # required only then, so a GeoNames outage skips the table, not the leg.
+          MV_GEO_BLOB: ${{ github.workspace }}/tools/testmedia/geo/places.mvgeo
+          MV_REQUIRE_GEO: ${{ steps.geo.outputs.cache-hit == 'true' && '1' || '0' }}
         run: ctest --test-dir build -C ${{ matrix.config }} --output-on-failure
 
       - name: Upload broken-corpus reproducers

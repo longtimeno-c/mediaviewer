@@ -337,5 +337,6 @@ These read the already-parsed `metadata` — no file I/O on toggle
 - Writing back to the Windows Property System.
 - Batch metadata: date/time shift across a selection, copy metadata to many, filename
   templating, strip-on-share copies.
-- GPS map pin.
+- GPS map pin. (Writing coordinates is the Location editor, #352.) Place names from GPS are the Places add-on's
+  ([27-places.md](27-places.md)); its core (`src/geo`) is built, the add-on and its pane section are not.
 - Keywords as a feature. (Colour labels and a filter on them are built, issue #207.)

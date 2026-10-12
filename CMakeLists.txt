@@ -342,6 +342,9 @@ add_library(mv_io STATIC
   src/io/verified_copy.h
   src/io/volume.h
   src/io/volume_win.cpp
+  # docs/design/06 "Place": the place database is read in place.
+  src/io/mapped_file.h
+  src/io/mapped_file_win.cpp
 )
 # ole32 + uuid: IFileOperation for the Recycle Bin (PR 6).
 # setupapi + cfgmgr32: the volume port's eject (docs/design/18).
@@ -350,6 +353,7 @@ find_package(blake3 CONFIG REQUIRED)
 target_link_libraries(mv_io PUBLIC mv_core
   PRIVATE shell32 ole32 uuid setupapi cfgmgr32 BLAKE3::blake3)
 add_library(mv::io ALIAS mv_io)
+include("${CMAKE_SOURCE_DIR}/cmake/geo.cmake")
 
 # ---------------------------------------------------------------------------
 # mv_codec — JPEG / PNG / BMP, magic-byte probe (docs/design/04)
@@ -1090,6 +1094,8 @@ if(MV_BUILD_TESTS)
     tests/test_meta_store.cpp
     # #345: the canvas's AI badge (setting, evidence text, the store's probe).
     tests/test_ai_badge.cpp
+    # Issue #344: the offline reverse geocoder (docs/design/06 "Place").
+    tests/test_geo.cpp
     # PR 12: the metadata writer, and the host-shared write queue.
     tests/test_meta_write.cpp
     tests/test_meta_location_edit.cpp
@@ -1217,8 +1223,11 @@ if(MV_BUILD_TESTS)
     Catch2::Catch2WithMain
     ole32
     uuid
-    mv_io)
+    mv_io
+    mv_geo_open)
   target_include_directories(mv_tests PRIVATE src src/abi/include tools)
+  target_compile_definitions(mv_tests PRIVATE MV_GEO_FULL_BLOB="${MV_GEO_BLOB}"
+    MV_GEO_TEST_BLOB="${CMAKE_SOURCE_DIR}/tests/data/geo/places-test.mvgeo")
   # The clip helper with its test hooks (a crash, a hang, a software encoder);
   # the product MediaViewerClipJob.exe is built without them.
   add_executable(mv_clipjob_test tools/clipjob/main.cpp)

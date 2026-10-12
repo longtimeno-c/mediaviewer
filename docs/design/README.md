@@ -35,3 +35,4 @@ built yet live in [../plans/](../plans/).
 | [24-transfer.md](24-transfer.md) | Network-speed verified copies |
 | [25-open-addons.md](25-open-addons.md) | Open add-ons: packages anyone can make and install from a file or a link, signed by their publisher; the contribution model (themes built; settings, keymaps, scripts, screens, slots planned) |
 | [26-photos-library.md](26-photos-library.md) | The Mac Photos library as a folder, its backup, and upright clips (display matrix) |
+| [27-places.md](27-places.md) | Places: the offline reverse geocoder (`src/geo`), its place database, the label rule, and the Places add-on that carries them |

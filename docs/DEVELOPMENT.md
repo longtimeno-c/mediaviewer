@@ -981,6 +981,38 @@ ctest --test-dir build -C Release -L cleanvm --output-on-failure
   tools\testmedia\soak_31min_1080p_hevc_aac.mp4
 ```
 
+### Place database (Places, docs/design/27)
+
+`src/geo` reads a place database built from pinned Natural Earth and GeoNames downloads by
+`tools/geo/build_places.py`. The script uses the Python standard library only and must be run
+with `-I`. The full blob is not in git (17 MB). A 111 KB test blob is:
+`tests/data/geo/places-test.mvgeo`.
+
+```sh
+# the full blob, through CMake: first run downloads ~66 MB into build/geo-downloads
+# (MV_GEO_DOWNLOADS to move it) and takes about a minute; later runs reuse the cache
+cmake --build build --target mv_geo_data          # -> build/geo/places.mvgeo
+# ...or by hand
+python3 -I tools/geo/build_places.py --downloads build/geo-downloads --out build/geo/places.mvgeo
+# GeoNames republishes daily under the same URL: a changed file fails the pin.
+# --accept-upstream takes it and prints the hash to pin.
+
+# the committed test blob, after changing the script or the format (src/geo/blob.h)
+python3 -I tools/geo/build_places.py --downloads build/geo-downloads \
+  --out tests/data/geo/places-test.mvgeo --subset test
+
+# the fold table, after changing the fold rule or for a newer Unicode
+python3 -I tools/geo/gen_fold_table.py > src/geo/fold_table.inc
+
+# tests: fold, the test blob, a damaged-blob sweep; the 300-row table when the
+# full blob exists (MV_GEO_BLOB=path for one built elsewhere; MV_REQUIRE_GEO=1
+# fails instead of skipping, as CI does)
+build/bin/mv_tests "[geo]"
+# load < 30 ms, one lookup < 50 us
+build/bin/mv_tests "geo: load and lookup timings"     # also part of "[.perf-bench]"
+# the loader fuzzer is fuzz_geo in mv_fuzzers (run.ps1 -Harness geo)
+```
+
 ### Performance suite: regenerating the README charts
 
 Every chart in the README's "Speed you can measure" is drawn from a report one of the
@@ -1469,6 +1501,22 @@ everything else an XMP sidecar; RAW originals are never touched
   `src/abi/meta_abi.cpp` (ABI 0.27) and `test_abi_roundtrip` are compiled only by CI and a
   Windows machine: not yet run, and neither is the in-pane confirmation's Esc (closes only the
   confirmation; the field keeps the keyboard).
+### Places: the offline reverse geocoder (issue #344, plan slice 2, 2026-10-11)
+
+The core is built:
+- `src/geo`, `tools/geo/build_places.py` and the place database format;
+- `mv_tests "[geo]"`, including 300 hand-checked coordinates when the full blob exists;
+- the `fuzz_geo` loader fuzzer, which ran 10 minutes clean after its first find was fixed;
+- the perf bench.
+
+Measured on this Mac (Release, warm): open in 11–12 ms; lookup p99 8.4 µs on land and 4 µs on
+a random sweep. The blob is 17.2 MB, or 5.4 MB xz-compressed.
+
+**Not built:** the Places add-on that links it, the Metadata-pane Place section, the map, and
+search by place. The app is unchanged and still shows coordinates. Windows builds `src/geo` in
+CI only; it has not been compiled locally. Not measured: a cold (uncached) open, Windows timings,
+and alternated first-pixel / arrow runs. Those belong to the add-on PR, the first change that
+runs this code in the app. See [docs/design/27-places.md](design/27-places.md).
 
 ### Local search: ask before resuming an interrupted index (issue #299, 2026-10-11)
 
@@ -1941,6 +1989,8 @@ src/image       LCMS colour (8-bit display LUT; sRGB copy-through), CPU mips,
                 immutable GPU upload, JPEG-512 thumbs
 src/meta        EXIF / IPTC / XMP (Exiv2) + container / stream (libavformat) read
                 model, summary rows, AF geometry (PR 9)
+src/geo         offline reverse geocoder over the place database (the Places
+                add-on links it; docs/design/27)
 src/edit        EditStack + geometry (the blit's output -> source map), lossless
                 JPEG rotate / flip / MCU crop, JPEG / PNG export with a metadata
                 policy (PR 10)
@@ -1959,7 +2009,8 @@ src.managed/    C# interop and WinUI chrome (hosted as an island, not the app):
 tests/          Catch2 suites for core, gfx, codec, colour, camera, ABI, folder,
                 key router, file ops, slideshow, animation
 tools/          frametime harness, module-graph, hostable-core, and licence gates;
-                addon-sdk (MIT): the tool people make add-ons with
+                addon-sdk (MIT): the tool people make add-ons with; geo/build_places.py
+                (the place database from pinned Natural Earth + GeoNames data)
 examples/       an add-on that packs and installs as it is (MIT)
 docs/design/    how each subsystem works (design reference)
 docs/plans/     forward plans not built yet

@@ -118,7 +118,7 @@ if(NOT MV_FUZZ_MODE MATCHES "^static")
 endif()
 
 # Instrument everything that links mv_project_options.
-set(MV_FUZZ_INSTRUMENTED mv_core mv_codec mv_image mv_gfx mv_io mv_meta_parse)
+set(MV_FUZZ_INSTRUMENTED mv_core mv_codec mv_image mv_gfx mv_io mv_meta_parse mv_geo)
 set_target_properties(${MV_FUZZ_INSTRUMENTED} PROPERTIES
   MSVC_RUNTIME_LIBRARY "${MV_FUZZ_CRT}")
 target_compile_options(mv_project_options INTERFACE
@@ -140,7 +140,9 @@ set(MV_FUZZ_HARNESSES
   # #352: the Location editor's parser (pure; built from its one source file).
   meta_location
   # #345: the AI badge's provenance probe, every container it seeks through.
-  meta_probe)
+  meta_probe
+  # #344: the place database loader.
+  geo)
 
 add_custom_target(mv_fuzzers)
 
@@ -148,7 +150,12 @@ foreach(name IN LISTS MV_FUZZ_HARNESSES)
   set(target fuzz_${name})
   add_executable(${target} fuzz_${name}.cpp fuzz_common.h)
   target_include_directories(${target} PRIVATE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}")
-  target_link_libraries(${target} PRIVATE mv_codec)
+  if(name STREQUAL "geo")
+    # docs/design/06 "Place": the place database loader, not a decoder.
+    target_link_libraries(${target} PRIVATE mv_geo)
+  else()
+    target_link_libraries(${target} PRIVATE mv_codec)
+  endif()
   if(name STREQUAL "decode")
     target_link_libraries(${target} PRIVATE mv_image)
   endif()
@@ -192,9 +199,13 @@ foreach(name IN LISTS MV_FUZZ_HARNESSES)
   # libFuzzer runs a unit, which is the shape of a dependency the loader could
   # not bring up. This is CMake's own answer to that question and it no-ops
   # for anything already deployed.
-  add_custom_command(TARGET ${target} POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_RUNTIME_DLLS:${target}>" "$<TARGET_FILE_DIR:${target}>"
-    COMMAND_EXPAND_LISTS)
+  # fuzz_geo imports no DLL of ours, and copy_if_different with an empty
+  # list is a usage error that fails the build.
+  if(NOT name STREQUAL "geo")
+    add_custom_command(TARGET ${target} POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "$<TARGET_RUNTIME_DLLS:${target}>" "$<TARGET_FILE_DIR:${target}>"
+      COMMAND_EXPAND_LISTS)
+  endif()
   add_dependencies(mv_fuzzers ${target})
 endforeach()

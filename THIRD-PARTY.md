@@ -69,6 +69,16 @@ This file and `LICENSE` are copied into `Contents/Resources`. Mac-only additions
 | [dmgbuild](https://github.com/dmgbuild/dmgbuild) | 1.6.7 | MIT | Build tool only | Builds the first-install disk image. Not in a shipped binary. |
 | [LLVM OpenMP runtime](https://openmp.llvm.org/) | LLVM 19.1.7 release sources, built by `tools/mac/build_libomp.py` for macOS 14.0 | Apache-2.0 WITH LLVM-exception; legacy notices included | Dynamic, macOS | Bounded parallel LibRaw processing. Bundled in Frameworks; full notices in `llvm-openmp.txt` in Resources (source: `assets/licenses/llvm-openmp.txt`). |
 
+## Data (the Places add-on)
+
+Not linked into the app. The Places add-on ([docs/design/27](docs/design/27-places.md))
+ships a place database built by `tools/geo/build_places.py` from:
+
+| Data | Version | Licence | Use |
+|---|---|---|---|
+| [GeoNames](https://www.geonames.org) `cities1000`, `countryInfo.txt`, `admin1CodesASCII.txt` | Snapshot 2026-10-11 (SHA-256 pinned in the script) | **CC BY 4.0** | Town, region and country names; populations. **Attribution: place names from GeoNames (geonames.org), licensed under CC BY 4.0** (https://creativecommons.org/licenses/by/4.0/). The names are filtered and repacked, not edited. |
+| [Natural Earth](https://www.naturalearthdata.com) 1:10m admin-0 countries and admin-1 states/provinces | v5.1.2 (`nvkelso/natural-earth-vector` commit `f1890d9f`) | Public domain | Country and region borders, simplified to ~1 km on coasts and ~250 m on borders. |
+
 ## Planned, with the PR that introduces each
 
 Nothing below is linked yet. The table exists so the licence position of a dependency
