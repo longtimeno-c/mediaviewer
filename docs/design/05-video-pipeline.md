@@ -162,6 +162,10 @@ the rules are unit-tested.
 - **Two seek modes** (`mv_video_seek(..., exact)`): scrubber drag → nearest keyframe
   (`AVSEEK_FLAG_BACKWARD`, no decode); release, frame step or a typed position → decode forward
   from the keyframe to the exact frame.
+- **A track click does not seek the slider's minimum.** SwiftUI and WinUI report 0 and then
+  the time under the pointer. Seeking that 0 while the playhead is already past half a second
+  presents the opening frame (`scrub_origin_is_spurious`, issue #362). The click's sample and
+  the exact release are the seek. Play and pause are unchanged.
 - Every seek flushes the decoders (`avcodec_flush_buffers`) and bumps the generation so
   pre-seek frames are discarded.
 - **Frame step** (paused): forward decodes the next frame; back is a seek to the prior keyframe
@@ -172,8 +176,11 @@ the rules are unit-tested.
   instance covers 0.5–2.0; 0.25× is `atempo=0.500,atempo=0.500`). Rate 1.0 has no filter.
 - **A–B loop** (`mv_video_set_loop`; B < 0 clears). A and B are normalised, so marking B first
   still loops.
-- **Per-file resume position**, stored in a `resume` folder beside the thumbnail cache. Only
-  stored past 15 s and more than 10 s before the end.
+- **Per-file resume position**, stored in a `resume` folder beside the thumbnail cache
+  ([`src/player/resume_store.h`](../../src/player/resume_store.h)). Only stored past 15 s and
+  more than 10 s before the end; closing a clip anywhere else removes its entry rather than
+  storing 0. An entry is keyed by path + size + mtime but holds only hashes of the path, never
+  the path itself. The folder is capped at 1,000 entries, oldest written first out (#235).
 - Volume, mute and audio-track selection are ABI calls (`mv_video_set_volume`,
   `mv_video_set_muted`, `mv_video_select_audio_track`).
 - **Playback hold** (`mv_video_set_hold`, [`src/player/playback_hold.h`](../../src/player/playback_hold.h)):

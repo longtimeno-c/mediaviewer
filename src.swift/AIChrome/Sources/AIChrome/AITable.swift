@@ -182,7 +182,6 @@ enum AITheme {
   static let body = Color(nsColor: .secondaryLabelColor)
   static let hairline = Color(nsColor: .separatorColor)
   static let surface = Color(nsColor: .controlBackgroundColor)
-  static let canvas = Color(nsColor: .windowBackgroundColor)
 
   private static let registered: Bool = {
     // The base app registers the face for the process; registering again
