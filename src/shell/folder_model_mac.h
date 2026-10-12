@@ -108,6 +108,11 @@ class folder_model {
   // of the filmstrip/gallery is due.
   [[nodiscard]] bool consume_changed() noexcept;
 
+  // Lists the open directory again now, as the watcher would (issue #210: the
+  // host renamed a file and need not wait for FSEvents). A list is not
+  // relisted. Any thread.
+  void relist() { relist_async(); }
+
   // Called on the pool thread each time a listing lands (just after
   // consume_changed() turns true), so the host can hop to its UI thread at
   // once instead of finding it on its next poll. Must not block. Set before

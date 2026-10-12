@@ -39,6 +39,14 @@ as photos. (The Final Cut Pro extension's preview uses `AVPlayerView`; that exte
 Mac-only surface, [23-nle-search.md](23-nle-search.md).) There is no Electron, Tauri, Node, D3D12,
 Vulkan, MoltenVK, wgpu or SPIR-V anywhere; each OS has one present path.
 
+The Mac chrome's stores mirror host state by reading the bridge (`mv_chrome_*`), and they read it when
+the main run loop has done work, not on timers (`ChromePulse.swift`, issue #178): a run-loop observer
+polls every store on the loop's way back to sleep, so an idle app on a still is not woken. One
+coalesced 0.1 s timer runs only while something moves off the main thread (a clip playing, a running
+job or backup on screen) and for a second after the last key or click. The host polls the render
+thread's video status only while a clip or a sound is the current item, and the Video Editor's
+cut-follow tick runs only while its clip plays. The Import and AI add-on stores still tick at 2 Hz.
+
 ## The call
 
 v1 shipped on Windows first; the core was kept hostable from PR 4 so the Mac app could be a host plus
@@ -81,17 +89,23 @@ Checks: [`tools/check-module-graph.ps1`](../../tools/check-module-graph.ps1) for
 depending on `shell/`; [`tools/check-hostable-core.ps1`](../../tools/check-hostable-core.ps1) fails a
 direct include of `d3d11.h`, `dxgi.h`, `windows.h`, `atlbase.h`, the WASAPI/COM headers, `d3d12.h` or
 FFmpeg's D3D11VA/DXVA2 hwcontext headers from `core/`, `codec/`, `canvas/`, `image/`, `meta/`,
-`player/`, `edit/`, `addon/`, `addons/` and `io/*.h`.
+`player/`, `edit/`, `addon/`, `addons/`, `infer/` and `io/*.h` outside `*_win.cpp`, and the mirror on the
+Mac side: Foundation, AppKit, Metal, QuartzCore, CoreVideo, CoreMedia, VideoToolbox, AVFoundation and
+Core Audio headers (`#include` or `#import`) in the same places outside the `*_mac.*`, `*_metal.*` and
+`*_posix.*` port files.
 
 ## Shaders
 
-Every GPU kernel has hand-written **HLSL and MSL twins**: the HLSL is embedded in the D3D11 backend
-(`gfx/blit.cpp`, `gfx/video_blit.cpp`, the edit kernels) and the MSL in the Metal backend
-(`gfx/blit_metal.mm`, `gfx/video_blit_metal.mm`), compiled from source at startup
-(`newLibraryWithSource`). Constant-buffer layouts are pinned with `static_assert`s on both sides. The
+Every GPU kernel has hand-written **HLSL and MSL twins**. The HLSL lives in the D3D11 backend as
+`gfx/blit.hlsl` and `gfx/video_blit.hlsl`, compiled at **build time** by the Windows SDK's `fxc`
+(SM 5.0, `/O3`) into one `const BYTE` header per entry point, so a device create (launch, device
+lost, adapter change) never runs `D3DCompile` (issue #163; CMake `mv_fxc`). The MSL is embedded in
+the Metal backend (`gfx/blit_metal.mm`, `gfx/video_blit_metal.mm`) and compiled from source at
+startup (`newLibraryWithSource`). Constant-buffer layouts are pinned with `static_assert`s on both sides. The
 colour-adjust kernel is written once ([`src/gfx/adjust_kernel.h`](../../src/gfx/adjust_kernel.h)) in
 the syntax subset HLSL, MSL and C++ share, and pasted into both shaders and the C++ export bake, so the
-twins are the same text by construction. There is no cross-compiler, no SPIR-V and no shared bytecode.
+twins are the same text by construction. The macro itself is in `gfx/adjust_kernel_tokens.h`, which
+holds no C++, so `blit.hlsl` takes it through fxc's preprocessor and the MSL takes its stringified text. There is no cross-compiler, no SPIR-V and no shared bytecode.
 
 ## Milestone F — the Mac host
 

@@ -333,6 +333,9 @@ enum class command_id : std::uint16_t {
   // Ctrl/Cmd+N: another window, its own process (docs/design/16 "Window").
   // Appended after the add-on slots so every earlier wire id stays put.
   new_window,
+  // Issue #210 (docs/design/16 "Marks, copy, move"): F2 renames the file on screen,
+  // its pair and its sidecars with it. Appended.
+  rename_file,
   count
 };
 inline constexpr int kAddonCommandSlots = 8;

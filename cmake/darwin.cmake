@@ -62,6 +62,7 @@ add_library(mv::core ALIAS mv_core)
 
 add_library(mv_gfx STATIC
   src/gfx/adjust_kernel.h
+  src/gfx/adjust_kernel_tokens.h
   src/gfx/colour_desc.cpp
   src/gfx/colour_desc.h
   src/gfx/metal_pacer.cpp
@@ -230,6 +231,8 @@ add_library(mv_io STATIC
   src/io/content_hash.cpp
   src/io/content_hash.h
   src/io/file_port.cpp
+  src/io/rename_stop.cpp
+  src/io/rename_stop.h
   src/io/file_port.h
   src/io/file_port_mac.cpp
   src/io/child_process.h
@@ -304,6 +307,7 @@ add_library(mv_player STATIC
   src/player/av_clock.cpp
   src/player/audio_mac.cpp         # D9: the only player/ file that names Core Audio
   src/player/transport.cpp
+  src/player/resume_store.cpp
   src/player/presenter.cpp
   src/player/container_probe.cpp
   src/player/poster.cpp
@@ -315,6 +319,7 @@ add_library(mv_player STATIC
   src/player/av_clock.h
   src/player/presenter.h
   src/player/transport.h
+  src/player/resume_store.h
   src/player/container_probe.h
   src/player/poster.h
   src/player/video_internal.h
@@ -796,6 +801,7 @@ if(MV_BUILD_TESTS)
     tests/test_dir_mac.cpp
     tests/test_key_router.cpp
     tests/test_key_router_review.cpp
+    tests/test_rename_stop.cpp
     tests/test_write_guard.cpp
     tests/test_photos_backup.cpp
     # docs/design/26: virtual items in a result list (the Photos library as a folder).
@@ -867,6 +873,8 @@ if(MV_BUILD_TESTS)
     tests/test_transport_autohide.cpp
     # Issue #44: no clip plays under the gallery, both hosts.
     tests/test_playback_hold.cpp
+    # Issue #231: the Windows host's selection stamp (the logic is portable).
+    tests/test_listing_stamp.cpp
     # Issue #236: a stale pending clip is retired, both hosts.
     tests/test_video_session.cpp
   )

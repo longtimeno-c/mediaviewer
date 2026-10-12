@@ -97,7 +97,11 @@ as a placeholder while the player seeks.
 
 Prefetched neighbours never take the preview step; they decode straight to full resolution.
 RAW decodes on the selected image use `raw_foreground_threads()` (leaving processors for the
-present loop, capped by `raw_thread_ceiling()`); prefetch uses one thread.
+present loop, capped by `raw_thread_ceiling()`); prefetch uses one thread. Both platforms build
+LibRaw from the overlay port in `tools/vcpkg/ports/libraw`, whose `openmp-color.patch` runs
+black scaling, colour conversion and the output copy in parallel (pixels unchanged). On the Mac
+the dynamic manifest reaches it through `tools/mac/dependencies/vcpkg-configuration.json`;
+before #287 it built the stock port and those loops ran single-threaded there.
 
 **Orientation is applied on the display path.** EXIF/container orientation is honoured; untagged
 is identity. RAW and JPEG are decoded already rotated; TIFF is not
@@ -136,6 +140,15 @@ open, then prefetches the neighbours **at full resolution** in the order `+1, âˆ
 (`submit_prefetch`, [`src/abi/abi.cpp`](../../src/abi/abi.cpp)), skipping any already in the
 LRU. Thumbnails are generated for every item separately (see Thumbnails). Navigation bumps the
 generation, so queued work for an old view is abandoned at its next check.
+
+A neighbour's single-texture create larger than one frame's upload budget waits, decoded and
+mipped, while the canvas is panning or zooming (Windows, issue #166;
+[03-rendering.md](03-rendering.md) rule 3). The worker:
+
+- creates as soon as the camera settles;
+- creates at once if the user lands on that neighbour, because the hand-off makes it the
+  selected path and `mv_folder_select` wakes it;
+- gives up if the view moves on.
 
 The navigation LRU is sized in bytes: **512 MB** budget, at least 3 and at most 12 entries,
 RGBA8 plus a third for mips. `mv_folder_forget` drops one path (used after a lossless rotate
