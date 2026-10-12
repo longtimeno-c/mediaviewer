@@ -301,7 +301,7 @@ public static partial class IslandHost
                     MinWidth = 160,
                 };
                 // Reported when let go (pointer or key), not on every step of a drag.
-                void Report() => SendScreenEvent(at, id, SlotNative.EventChange, NumberJson(s.Value));
+                void Report() => SendScreenEvent(at, id, SlotNative.EventChange, ScreenNumberJson(s.Value));
                 s.PointerCaptureLost += (_, _) => Report();
                 s.KeyUp += (_, e) =>
                 {
@@ -358,7 +358,7 @@ public static partial class IslandHost
         }
     }
 
-    private static string NumberJson(double v) =>
+    private static string ScreenNumberJson(double v) =>
         v == Math.Round(v) && Math.Abs(v) < 1e15
             ? ((long)v).ToString(System.Globalization.CultureInfo.InvariantCulture)
             : v.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
@@ -369,13 +369,13 @@ public static partial class IslandHost
         double value = JNum(n, "value", Math.Max(lo, 0));
         string label = JStr(n, "label");
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-        TextBlock shown = Text($"{label}: {NumberJson(value)}", Title, UiFontSize - 2);
+        TextBlock shown = Text($"{label}: {ScreenNumberJson(value)}", Title, UiFontSize - 2);
         shown.VerticalAlignment = VerticalAlignment.Center;
         void Step(double by)
         {
             value = Math.Clamp(value + by, lo, hi);
-            shown.Text = $"{label}: {NumberJson(value)}";
-            SendScreenEvent(at, id, SlotNative.EventChange, NumberJson(value));
+            shown.Text = $"{label}: {ScreenNumberJson(value)}";
+            SendScreenEvent(at, id, SlotNative.EventChange, ScreenNumberJson(value));
         }
         Button minus = EditButton("−", () => Step(-step));
         Button plus = EditButton("+", () => Step(step));
