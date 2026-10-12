@@ -115,6 +115,7 @@ add_executable(mv_import_tests
   "${MV_ROOT}/tests/test_verified_copy.cpp"
   "${MV_ROOT}/tests/test_addon_manifest.cpp"
   "${MV_ROOT}/tests/test_open_addons.cpp"
+  "${MV_ROOT}/tests/test_ai_resume.cpp"
   "${MV_ROOT}/tests/test_import_naming.cpp"
   "${MV_ROOT}/tests/test_import_engine.cpp"
   "${MV_ROOT}/tests/test_json.cpp"

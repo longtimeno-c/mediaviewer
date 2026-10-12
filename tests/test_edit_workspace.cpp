@@ -114,7 +114,8 @@ TEST_CASE("Enter opens the workspace; crop and trim keep their Enter", "[edit_wo
   CHECK(router.on_key({char_key('X'), mod_none}, s).command == command_id::crop_aspect_swap);
   s.crop = false;
   CHECK(router.on_key({char_key('A'), mod_none}, s).command == command_id::prev);
-  CHECK(router.on_key({char_key('X'), mod_none}, s).command == command_id::none);
+  // Outside crop, X is issue #207's reject.
+  CHECK(router.on_key({char_key('X'), mod_none}, s).command == command_id::reject);
   // Y held shows the original on a still, and lets go on release.
   const route y = router.on_key({char_key('Y'), mod_none}, s);
   CHECK(y.command == command_id::show_original);

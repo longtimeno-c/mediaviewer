@@ -50,7 +50,9 @@ public static partial class IslandHost
     private const ChromeColour KeyframeTick = ChromeColour.KeyframeTick;
 
     // The slider's track starts and ends about half a thumb in from its edges.
-    private const double SeekWidth = 320;
+    // The scrubber flexes with the strip (issue #195), so the overlays are
+    // placed against its laid-out width, kept here; 320 until the first layout.
+    private static double _seekWidth = 320;
     private const double SeekInset = 10;
 
     /// <summary>
@@ -98,15 +100,24 @@ public static partial class IslandHost
     }
 
     /// <summary>The scrubber with the trim overlay on top (BuildTransport).</summary>
-    private static UIElement WrapSeekForTrim(Slider seek)
+    private static FrameworkElement WrapSeekForTrim(Slider seek)
     {
         _trimMarks = new Microsoft.UI.Xaml.Controls.Canvas
         {
-            Width = SeekWidth,
             IsHitTestVisible = false,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Stretch,
         };
-        var grid = new Grid { Width = SeekWidth, VerticalAlignment = VerticalAlignment.Center };
+        var grid = new Grid { HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Center };
+        // The marks are absolute x positions: redraw them when the strip
+        // resizes the scrubber.
+        grid.SizeChanged += (_, e) =>
+        {
+            if (e.NewSize.Width <= 0 || e.NewSize.Width == _seekWidth) return;
+            _seekWidth = e.NewSize.Width;
+            RenderTrim();
+            RenderMatchMarks(false);
+        };
         grid.Children.Add(seek);
         grid.Children.Add(_trimMarks);
         // Milestone H: Local search's matching moments (IslandHost.LocalSearch.cs).
@@ -115,7 +126,7 @@ public static partial class IslandHost
     }
 
     /// <summary>The label and the two save buttons, shown while trim is armed.</summary>
-    private static UIElement BuildTrimBar()
+    private static FrameworkElement BuildTrimBar()
     {
         _trimLabel = new TextBlock
         {
@@ -150,7 +161,7 @@ public static partial class IslandHost
     {
         if (_trimDuration <= 0) return SeekInset;
         double f = Math.Clamp((double)t / _trimDuration, 0, 1);
-        return SeekInset + f * (SeekWidth - 2 * SeekInset);
+        return SeekInset + f * (_seekWidth - 2 * SeekInset);
     }
 
     private static void RenderTrim()
@@ -244,6 +255,7 @@ public static partial class IslandHost
             {
                 rows[i].Text = (i == row ? "▶ " : "  ") + ClipTools[i].Name;
                 rows[i].Foreground = Brush(!Enabled(i) ? Body : i == row ? Title : Body);
+                AutomationProperties_SetName(rows[i], ClipTools[i].Name + (Enabled(i) ? "" : ", unavailable"));
             }
         }
         void Move(int delta)
@@ -254,6 +266,7 @@ public static partial class IslandHost
                 if (Enabled(row)) break;
             }
             Refresh();
+            RaiseLive(rows[row]);  // the panel keeps focus: speak the row (issue #223)
         }
         void Run(int i)
         {
@@ -266,6 +279,7 @@ public static partial class IslandHost
         for (int i = 0; i < ClipTools.Length; ++i)
         {
             rows[i] = Label("", UiFontSize);
+            MarkLive(rows[i]);
             int captured = i;
             var b = FlatButton(rows[i], new Thickness(0, 1, 0, 1), tabStop: false);
             b.IsEnabled = Enabled(i);
@@ -273,6 +287,9 @@ public static partial class IslandHost
             panel.Children.Add(b);
         }
         panel.Children.Add(Label("↑ ↓ choose   Enter run   Esc cancel   ·   jobs: Ctrl+J", UiFontSize, mute: true));
+        AutomationProperties_SetName(panel, "Clip tools");
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetHelpText(
+            panel, "Up and Down choose a tool, Enter runs it, Escape cancels");
         Refresh();
         panel.KeyDown += (_, e) =>
         {

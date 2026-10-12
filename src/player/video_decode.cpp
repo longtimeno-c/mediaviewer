@@ -12,6 +12,7 @@ extern "C" {
 #include <libavutil/hwcontext.h>
 }
 
+#include "codec/crash_test_hook.h"
 #include "core/trace.h"
 #include "player/video_internal.h"
 
@@ -145,7 +146,10 @@ struct sw_convert {
 // already in hand with nowhere to go. It is also where a paused clip's decode
 // thread spends the pause, so it parks until the render thread releases a slot
 // rather than polling for one (issue #230).
-[[nodiscard]] video_frame* reserve_slot(video_pipeline& pipe, std::uint32_t generation) noexcept {
+// `crash`, when given, is released while parked: a paused clip's full ring
+// must not hold a crash slot (issue #233).
+[[nodiscard]] video_frame* reserve_slot(video_pipeline& pipe, std::uint32_t generation,
+                                        crash_context::thread_slot* crash = nullptr) noexcept {
   if (video_frame* slot = pipe.ring.begin_write()) return slot;
   pipe.ring_backpressure.fetch_add(1, std::memory_order_relaxed);
   for (;;) {
@@ -156,6 +160,7 @@ struct sw_convert {
     // thread that may never call again — the caller re-enters at the new
     // generation and flushes the codec.
     if (pipe.generation.load(std::memory_order_acquire) != generation) return nullptr;
+    if (crash != nullptr) crash->idle();
     pipe.wake.wait(seen);
   }
 }
@@ -332,6 +337,10 @@ void run_video_decode_thread(video_pipeline& pipe) noexcept {
   }
   sw_convert sw;
   std::uint32_t local_generation = pipe.generation.load(std::memory_order_acquire);
+  // Held while a packet is in libavcodec, given back while parked (issue #233).
+  auto crash = clip_crash_slot(pipe, "video", pipe.crash.video_codec, LIBAVCODEC_IDENT);
+  // MV_CRASH_TEST=video: the verify's deliberate crash, after the first frame.
+  const bool crash_test = codec::crash_test_video_armed();
 
   while (!pipe.stopping.load(std::memory_order_acquire)) {
     // A generation bump means a seek or a navigation happened. Flush the codec
@@ -350,11 +359,13 @@ void run_video_decode_thread(video_pipeline& pipe) noexcept {
       if (pipe.stopping.load(std::memory_order_acquire)) break;
       // Stopped-and-drained, or EOF with nothing queued. Park until the
       // demuxer queues a packet (a seek can still restart it) or stop.
+      crash.idle();
       pipe.wake.wait(seen);
       continue;
     }
 
     if (packet_generation != local_generation || pipe.generation.load() != local_generation) continue;
+    crash.busy();
     int rc = avcodec_send_packet(pipe.codec.get(), packet.get());
     if (rc < 0 && rc != AVERROR(EAGAIN)) {
       pipe.decode_errors.fetch_add(1, std::memory_order_relaxed);
@@ -362,8 +373,9 @@ void run_video_decode_thread(video_pipeline& pipe) noexcept {
     }
 
     for (;;) {
-      video_frame* slot = pipe.ring.valid() ? reserve_slot(pipe, local_generation) : nullptr;
+      video_frame* slot = pipe.ring.valid() ? reserve_slot(pipe, local_generation, &crash) : nullptr;
       if (pipe.stopping.load() || pipe.generation.load() != local_generation) break;
+      crash.busy();
       rc = avcodec_receive_frame(pipe.codec.get(), frame.get());
       if (rc == AVERROR_EOF) {
         // A seek bumps generation and flushes; do not stamp the new generation
@@ -376,6 +388,7 @@ void run_video_decode_thread(video_pipeline& pipe) noexcept {
         pipe.decode_errors.fetch_add(1, std::memory_order_relaxed);
         break;
       }
+      if (crash_test) codec::crash_test_crash();
       if (pipe.generation.load(std::memory_order_acquire) != local_generation) {
         // Seek landed while this frame was in flight. Discarding it here is
         // cheaper than presenting it and letting the presenter drop it.

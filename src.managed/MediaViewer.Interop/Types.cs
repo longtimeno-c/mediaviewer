@@ -135,6 +135,21 @@ public struct MvFolderItem
 }
 
 /// <summary>
+/// Mirrors <c>mv_folder_entry</c> (ABI 0.20, issue #226): one stop of the
+/// one-call listing. The offsets index the string block the same call filled.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct MvFolderEntry
+{
+    public MvFolderItem Item;
+    public long MomentMs;
+    public uint NameOffset;
+    public uint PathOffset;
+    public uint ThumbOffset;
+    public uint PairOffset;
+}
+
+/// <summary>
 /// Thrown when a core call fails. Carries the correlation id, which is what ties
 /// this exception to the native minidump that produced it
 /// (docs/design/13-updates-and-telemetry.md).

@@ -126,6 +126,11 @@ public static partial class IslandHost
             "List MP3, M4A and M4P files in folders. A file you open directly still opens.", _showAudio));
         view.Children.Add(SettingsRow("Show documents",
             "List PDF and Word (DOCX) files in folders. A file you open directly still opens.", _showDocuments));
+        // Issue #220: the installer's last page, again. Windows owns the choice
+        // (docs/design/13); this only opens its Default apps page on MediaViewer.
+        view.Children.Add(SettingsRow("Default app",
+            "Choose MediaViewer for photos and videos in Windows Settings.",
+            SettingsButton("Make default…", () => OpenUri("ms-settings:defaultapps?registeredAppUser=MediaViewer"))));
         view.Children.Add(SettingsSection("Appearance"));
         view.Children.Add(SettingsRow("Canvas background", "The area behind your photos and videos.", _background));
         // docs/design/25: the chrome's colours, from an installed add-on.

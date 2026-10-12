@@ -43,6 +43,8 @@ public static partial class IslandHost
         public const string Rewind = "\uEB9E";
         public const string FastForward = "\uEB9D";
         public const string More = "\uE712";
+        public const string Volume = "\uE767";
+        public const string Mute = "\uE74F";
         public const string Close = "\uE711";
         public const string Rotate = "\uE7AD";      // clockwise; mirrored for left
         public const string FlipArrows = "\uE8AB";  // Switch: left and right arrows
@@ -53,7 +55,7 @@ public static partial class IslandHost
     // A flat icon button for the panes (the Mac's iconButton in EditView.swift:
     // compact FlatButtonStyle, .help and an accessibility label). `transform`
     // turns or mirrors the glyph where Segoe has only one direction.
-    private static Button PaneIconButton(string glyph, string label, string key, Action click,
+    private static Button PaneIconButton(string glyph, string label, string? key, Action click,
                                          Transform? transform = null)
     {
         var icon = new FontIcon
@@ -72,9 +74,9 @@ public static partial class IslandHost
             AllowFocusOnInteraction = false,
         };
         FlattenButton(b);
-        ToolTipService.SetToolTip(b, $"{label}  {key}");
+        ToolTipService.SetToolTip(b, key is null ? label : $"{label}  {key}");
         AutomationProperties.SetName(b, label);
-        AutomationProperties.SetHelpText(b, "Key " + key);
+        if (key is not null) AutomationProperties.SetHelpText(b, "Key " + key);
         b.Click += (_, _) => Guarded(click);
         return b;
     }
