@@ -2,10 +2,33 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "image/pipeline.h"
 
+#include <vector>
+
 #include "codec/decode.h"
 #include "codec/orient.h"
+#include "codec/text.h"
+#include "io/file.h"
 
 namespace mv::image {
+namespace {
+
+// Document layout asks for font bytes lazily, per run, including fallbacks
+// the caller cannot know up front. codec/ finds the file (CoreText /
+// DirectWrite) and this reader, installed before main, does the read.
+// pipeline.cpp is in every binary that decodes, so a direct codec::decode_docx
+// in the same process still sees it (docs/design/12 2026-10-12).
+std::vector<std::uint8_t> read_font_file(std::string_view path) {
+  auto read = io::read_all(path);
+  if (!read) return {};
+  return std::move(read).value();
+}
+
+struct font_reader_install {
+  font_reader_install() noexcept { codec::text::set_font_reader(&read_font_file); }
+};
+const font_reader_install g_font_reader_install;
+
+}  // namespace
 
 result<display_image> decode_bytes(std::span<const std::uint8_t> bytes, const job_context* ctx,
                                     unsigned raw_thread_limit, std::uint32_t page) {

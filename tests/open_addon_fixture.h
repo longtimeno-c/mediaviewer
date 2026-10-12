@@ -8,6 +8,7 @@
 #include <sodium.h>
 
 #include <cstdint>
+#include <cstdlib>
 #include <string>
 #include <utility>
 #include <vector>
@@ -21,7 +22,7 @@ struct publisher_key {
   std::vector<std::uint8_t> pub = std::vector<std::uint8_t>(crypto_sign_PUBLICKEYBYTES);
   std::vector<std::uint8_t> sec = std::vector<std::uint8_t>(crypto_sign_SECRETKEYBYTES);
   publisher_key() {
-    (void)sodium_init();
+    if (sodium_init() < 0) std::abort();  // gcc: a (void) cast keeps warn_unused_result
     crypto_sign_keypair(pub.data(), sec.data());
   }
   [[nodiscard]] std::string hex() const {

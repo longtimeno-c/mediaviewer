@@ -676,3 +676,26 @@ TEST_CASE("the timeline strip: thumbnails from keyframes, peaks across the clip"
   REQUIRE(none);
   CHECK(none->empty());
 }
+
+TEST_CASE("a clip job's crash slot names the container and codec, never the path",
+          "[clip][crash]") {
+  // Issue #233: libavformat/libavcodec on an untrusted clip is the widest parse
+  // in the app; a crash there must say what was being read, not where from.
+  scratch_dir d("PRIVATE_FOLDER_canary");
+  const fs::path src = d / "SECRET_FILENAME_canary.mp4";
+  REQUIRE(fx::make(utf8(src), {}));
+  {
+    auto s = clip::detail::open_source(utf8(src), nullptr);
+    REQUIRE(s);
+    const std::string slot = mv::crash_context::this_thread_slot();
+    CHECK(slot.find("role=clip") != std::string::npos);
+    CHECK(slot.find("fmt=mov,mp4") != std::string::npos);
+    CHECK(slot.find("dec=mpeg4/Lavc") != std::string::npos);
+    CHECK(slot.find("320x") != std::string::npos);
+    CHECK(slot.find("SECRET") == std::string::npos);
+    CHECK(slot.find("PRIVATE") == std::string::npos);
+    CHECK(slot.find(".mp4") == std::string::npos);
+  }
+  // Closed: the slot is given back.
+  CHECK(std::string(mv::crash_context::this_thread_slot()).empty());
+}
