@@ -643,6 +643,57 @@ TEST_CASE("coordinates survive the EXIF and XMP encodings to within a few millim
   }
 }
 
+TEST_CASE("seconds that round up to 60 carry into the minute and the degree", "[meta][location][write]") {
+  // 38 deg 59' 59.99996" is 60.0000" at EXIF's 1/10000 s: it must be written as
+  // 39 0' 0", never 38 59' 60". XMP's minutes carry the same way.
+  scratch_dir d("carry");
+  mv::meta::reset_snapshot_session();
+  std::vector<std::uint8_t> rgba(16 * 16 * 4, 33);
+  d.write("a.jpg", camera_jpeg(false));
+  d.write("a.png", fixtures::png_rgba(16, 16, rgba.data()));
+  const double lat = 38.0 + 59.0 / 60.0 + 59.99996 / 3600.0;
+  const double lon = -(9.0 + 59.0 / 60.0 + 59.99996 / 3600.0);
+  REQUIRE(mv::meta::write(d.path("a.jpg"), set_location(lat, lon), d.snapshots()));
+  const auto e = exif_of(d.read("a.jpg"));
+  CHECK(exif_text(e, "Exif.GPSInfo.GPSLatitude") == "39/1 0/1 0/10000");
+  CHECK(exif_text(e, "Exif.GPSInfo.GPSLongitude") == "10/1 0/1 0/10000");
+  CHECK(exif_text(e, "Exif.GPSInfo.GPSLongitudeRef") == "W");
+
+  const double lat2 = 38.99999999999;
+  REQUIRE(mv::meta::write(d.path("a.png"), set_location(lat2, -lat2), d.snapshots()));
+  Exiv2::XmpData x;
+  const auto side = d.read("a.xmp");
+  REQUIRE(Exiv2::XmpParser::decode(x, std::string(side.begin(), side.end())) == 0);
+  CHECK(xmp_text(x, "Xmp.exif.GPSLatitude") == "39,0.000000N");
+  CHECK(xmp_text(x, "Xmp.exif.GPSLongitude") == "39,0.000000W");
+}
+
+TEST_CASE("a GPS tag the file holds with the wrong type is replaced, and checked", "[meta][location][write]") {
+  // A damaged camera file: GPSLatitude as ASCII. Re-parsing the new value into
+  // that type would write text no reader takes as a position.
+  scratch_dir d("retype");
+  mv::meta::reset_snapshot_session();
+  const auto base = camera_jpeg(false);
+  auto image = Exiv2::ImageFactory::open(base.data(), base.size());
+  REQUIRE(image);
+  image->readMetadata();
+  Exiv2::AsciiValue bad;
+  bad.read("38.5");
+  image->exifData().add(Exiv2::ExifKey("Exif.GPSInfo.GPSLatitude"), &bad);
+  image->writeMetadata();
+  d.write("a.jpg", bytes_of(*image));
+  auto r = mv::meta::write(d.path("a.jpg"), set_location(38.7979, -9.3907), d.snapshots());
+  REQUIRE(r);
+  CHECK(r->target == write_target::in_file);  // not a fallback to the sidecar
+  CHECK_FALSE(fs::exists(d.dir / "a.xmp"));
+  const auto e = exif_of(d.read("a.jpg"));
+  CHECK(exif_text(e, "Exif.GPSInfo.GPSLatitude") == "38/1 47/1 524400/10000");
+  const auto m = mv::meta::read(d.path("a.jpg"));
+  REQUIRE(m);
+  REQUIRE(m->s.where);
+  CHECK(near(m->s.where->lat, 38.7979));
+}
+
 TEST_CASE("real RAW files: the location goes to the sidecar, the original's hash never moves", "[meta][location][write][raw]") {
   std::vector<std::string> files;
   for (const char* name : {"canon_eos7dmk2.cr2", "nikon_d7500.nef", "sony_ilce7rm3.arw", "canon_eosr6.cr3",

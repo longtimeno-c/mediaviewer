@@ -237,6 +237,14 @@ std::optional<geo_point> where_of(const Exiv2::ExifData& e, const Exiv2::XmpData
 
 }  // namespace
 
+std::optional<geo_point> file_where(const Exiv2::ExifData& e, const Exiv2::XmpData& x) noexcept {
+  try {
+    return where_of(e, x);
+  } catch (...) {
+    return std::nullopt;
+  }
+}
+
 std::optional<geo_point> xmp_where(const Exiv2::XmpData& x) noexcept {
   try {
     const auto xla = parse_xmp_coordinate(xmp_text(x, "Xmp.exif.GPSLatitude"));

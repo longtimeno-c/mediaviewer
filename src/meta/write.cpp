@@ -599,8 +599,27 @@ std::string altitude_rational(double metres) {
   return buf;
 }
 
+// A GPS tag a damaged file holds with the wrong type (an ASCII latitude, a
+// short GPSVersionID) is replaced, not re-parsed into its old type, so it
+// reads back as the standard tag. The post-write check reads the point back.
 void exif_set(Exiv2::ExifData& e, const char* key, const std::string& value) {
+  const auto at = e.findKey(Exiv2::ExifKey(key));
+  if (at != e.end()) e.erase(at);
   if (e[key].setValue(value) != 0) throw bad_value{};
+}
+
+// The post-write check for a location: what was asked is what reads back.
+// EXIF seconds are kept to 1/10000 and XMP minutes to 1e-6, both well under
+// this (about 1 cm).
+bool location_reads_back(const change<geo_point>& c, const std::optional<geo_point>& got) {
+  if (!c.touches()) return true;
+  if (c.k == change<geo_point>::kind::clear) return !got.has_value();
+  constexpr double kTolerance = 1e-7;
+  if (!got || std::fabs(got->lat - c.value.lat) > kTolerance || std::fabs(got->lon - c.value.lon) > kTolerance) {
+    return false;
+  }
+  if (c.value.altitude && (!got->altitude || std::fabs(*got->altitude - *c.value.altitude) > 0.006)) return false;
+  return true;
 }
 
 void erase_gps(Exiv2::ExifData& e) {
@@ -1058,6 +1077,9 @@ result<std::vector<std::uint8_t>> rewrite_jpeg(std::span<const std::uint8_t> ori
       const bool want = f.comment.k == change<std::string>::kind::set && !f.comment.value.empty();
       if (want ? got.comment != f.comment.value : got.comment.has_value()) return err(status::internal);
     }
+    if (!location_reads_back(f.location, detail::file_where(check->exifData(), check->xmpData()))) {
+      return err(status::internal);
+    }
     return out;
   } catch (const bad_value&) {
     return err(status::invalid_arg);
@@ -1107,6 +1129,7 @@ result<sidecar_result> rewrite_sidecar(const std::string& path, const write_fiel
       const bool want = f.comment.k == change<std::string>::kind::set && !f.comment.value.empty();
       if (want ? got.comment != f.comment.value : got.comment.has_value()) return err(status::internal);
     }
+    if (!location_reads_back(f.location, detail::xmp_where(check))) return err(status::internal);
     return r;
   } catch (const bad_value&) {
     return err(status::invalid_arg);
