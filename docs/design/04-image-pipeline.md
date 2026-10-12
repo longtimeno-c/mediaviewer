@@ -137,6 +137,15 @@ open, then prefetches the neighbours **at full resolution** in the order `+1, âˆ
 LRU. Thumbnails are generated for every item separately (see Thumbnails). Navigation bumps the
 generation, so queued work for an old view is abandoned at its next check.
 
+A neighbour's single-texture create larger than one frame's upload budget waits, decoded and
+mipped, while the canvas is panning or zooming (Windows, issue #166;
+[03-rendering.md](03-rendering.md) rule 3). The worker:
+
+- creates as soon as the camera settles;
+- creates at once if the user lands on that neighbour, because the hand-off makes it the
+  selected path and `mv_folder_select` wakes it;
+- gives up if the view moves on.
+
 The navigation LRU is sized in bytes: **512 MB** budget, at least 3 and at most 12 entries,
 RGBA8 plus a third for mips. `mv_folder_forget` drops one path (used after a lossless rotate
 rewrites a file).
