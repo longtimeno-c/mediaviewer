@@ -1006,6 +1006,7 @@ if(MV_BUILD_TESTS)
     tests/test_corpus.cpp
     tests/test_key_router.cpp
     tests/test_key_router_review.cpp
+    tests/test_command_contract.cpp
     tests/test_collision_name.cpp
     tests/test_file_ops.cpp
     tests/test_file_jobs.cpp

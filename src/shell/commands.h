@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <span>
 #include <string>
+#include <vector>
 
 namespace mv::shell {
 
@@ -386,6 +387,20 @@ void reset_live_bindings() noexcept;
 // Change row `index` to (k, mods). A collision in overlapping modes swaps the
 // two rows so nothing is left unbound. False if index is out of range.
 [[nodiscard]] bool rebind_live(int index, key k, std::uint8_t mods) noexcept;
+// What Settings persists of the remaps, on both hosts (issue #153): one entry per
+// built-in row whose key or modifiers differ from the default, in row order. A row a
+// swap left unbound is carried as key::none, so a reload unbinds it instead of
+// handing its default key back (two rows on one key). apply_key_remaps resets the
+// live table and sets the listed rows as listed (not a rebind_live replay, whose
+// swaps would move rows the list does not name). Out-of-range entries are skipped.
+// Contributed add-on rows are never in the list.
+struct key_remap {
+  int row = 0;
+  key k = key::none;
+  std::uint8_t mods = mod_none;
+};
+[[nodiscard]] std::vector<key_remap> live_key_remaps();
+void apply_key_remaps(std::span<const key_remap> remaps) noexcept;
 [[nodiscard]] std::span<const command_info> command_infos() noexcept;
 [[nodiscard]] const command_info* find_command(command_id id) noexcept;
 // Bound commands whose effect has not landed yet. Empty before PR 6 ships.

@@ -58,6 +58,24 @@ Suites are registered with CTest and run by `ctest` on both platforms; see
    Mac-only.
 2. **ABI smoke test from C#** (`src.managed/MediaViewer.AbiSmokeTest`): `SafeHandle`
    lifetimes, struct layouts, completion drain against the built core.
+   **Chrome contract tests** (issue #153). Neither chrome is linked into a test: the WinUI
+   chrome is a class library the host loads through hostfxr, and the SwiftUI package calls
+   bridge functions that resolve only in the app's final link. So
+   `src.managed/MediaViewer.Chrome.Tests` (xUnit, plain net8.0) and the
+   `MediaViewerChromeTests` SwiftPM target read the chromes' sources as text against
+   `src/shell`: every command-id constant must name a `command_id` (or, C#, a
+   `chrome_command`) by the same value, the C# checksum list must follow
+   `chrome_command_checksum()`, Settings key capture must encode `commands.h`'s key codes
+   and the `chrome_cmd_rebind` packing native unpacks, and every shortcut a Windows menu
+   prints or a Mac menu looks up by name must be in the table. `mv_tests`
+   (`test_command_contract.cpp`) holds the native half: a remap survives persist and
+   reload exactly (`live_key_remaps` / `apply_key_remaps`, which both hosts persist with),
+   and `describe_commands()` by mode matches the committed
+   `tests/data/command_table.snapshot`, so a default-map change is a reviewed diff
+   (`MV_UPDATE_SNAPSHOTS=1` rewrites it). `ImportChromeTests` covers the Import model's
+   table-free pieces; AIChrome's `SearchModelTests` runs in CI, its `PeopleGridBench` is a
+   measurement and does not. Not built yet: a UI smoke test per platform (UIA, XCUITest)
+   opening `tests/data` and walking G → Enter → Esc.
 3. **Format corpus.** Not in git. `tools/testmedia/raw-manifest.json` and
    `heif-manifest.json` list each sample's URL, SHA-256, licence and source;
    `fetch-raw.ps1` / `fetch-heif.ps1` download and verify. The video corpus (~1.5 GB, incl. a
@@ -134,7 +152,7 @@ it replaces.
 | `windows-deps` | windows-latest | Installs the vcpkg manifest once and caches it (≈45 min after a manifest/baseline change, mostly FFmpeg) |
 | `build` | windows-latest | MSVC Release, MSVC Debug, clang-cl, ASan; full `ctest`; uploads broken-corpus reproducers |
 | `abi-smoke` | windows-latest | The C# ABI smoke test |
-| `windows-chrome`, `mac-chrome` | windows-latest, macos-14 | WinUI and SwiftUI chrome compile |
+| `windows-chrome`, `mac-chrome` | windows-latest, macos-14 | WinUI and SwiftUI chrome compile; the chrome contract tests (`dotnet test`, `swift test`) |
 | `mac-packaging` | ubuntu-latest | Release tooling tests and macOS bundle policy (`tools/mac/*`) |
 | `frametime` | self-hosted `[windows, gpu]` | Swapchain recovery, then the 60 s animated + idle gates against the rolling baseline (cached per runner; updated only on `main`). Runs only when `MV_GPU_RUNNER_ENABLED` is set and never for fork PRs; hosted runners have no usable GPU, so a skip is not a pass |
 | `fuzz` | windows-latest | 60 s per harness on PRs; 20 min per harness nightly. Uploads crash / timeout / OOM inputs |

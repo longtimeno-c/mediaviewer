@@ -9109,14 +9109,12 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
 }
 
 - (void)persistKeys {
-  const auto live = mv::shell::live_bindings();
-  const auto def = mv::shell::default_bindings();
+  // commands.h live_key_remaps: the same list Windows keeps in settings.ini, a
+  // row a swap left unbound included as key 0 (issue #153).
   NSMutableArray<NSString*>* rows = [NSMutableArray array];
-  for (std::size_t i = 0; i < live.size() && i < def.size(); ++i) {
-    if (live[i].k != def[i].k || live[i].mods != def[i].mods) {
-      [rows addObject:[NSString stringWithFormat:@"%zu,%d,%d", i, static_cast<int>(live[i].k),
-                                                  static_cast<int>(live[i].mods)]];
-    }
+  for (const mv::shell::key_remap& r : mv::shell::live_key_remaps()) {
+    [rows addObject:[NSString stringWithFormat:@"%d,%d,%d", r.row, static_cast<int>(r.k),
+                                                static_cast<int>(r.mods)]];
   }
   [[NSUserDefaults standardUserDefaults] setObject:rows forKey:kDefaultsKeys];
 }
@@ -9126,13 +9124,15 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   _viewFlags = [d objectForKey:kDefaultsViewFlags] != nil
                    ? static_cast<int32_t>([d integerForKey:kDefaultsViewFlags])
                    : mv::shell::view_settings{}.flags();
-  mv::shell::reset_live_bindings();
+  std::vector<mv::shell::key_remap> remaps;
   for (NSString* row in [d arrayForKey:kDefaultsKeys]) {
     int idx = 0, k = 0, m = 0;
-    if (sscanf(row.UTF8String, "%d,%d,%d", &idx, &k, &m) == 3) {
-      (void)mv::shell::rebind_live(idx, static_cast<mv::shell::key>(k), static_cast<std::uint8_t>(m));
+    if ([row isKindOfClass:[NSString class]] && sscanf(row.UTF8String, "%d,%d,%d", &idx, &k, &m) == 3 &&
+        k >= 0 && k < mv::shell::kKeyCount && m >= 0 && m < mv::shell::kModCombos) {
+      remaps.push_back(mv::shell::key_remap{idx, static_cast<mv::shell::key>(k), static_cast<std::uint8_t>(m)});
     }
   }
+  mv::shell::apply_key_remaps(remaps);  // resets the live table first
   [self rebuildKeys];
   _sort = mv::io::unpack_sort(static_cast<std::int32_t>([d integerForKey:@"mv.sort"]));
   _recentFolders.clear();
