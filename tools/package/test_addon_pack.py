@@ -341,6 +341,23 @@ class PlacesPackTest(unittest.TestCase):
             self.assertEqual(verdict, "ok")
         else:
             self.assertEqual(verdict, "malformed")
+            # Everything else in the package is what this host takes: the same
+            # package without the page verifies (host table 3, the data licences).
+            doc = json.loads((ROOT / addon_pack.ADDONS["places"]["manifest_json"]).read_text(encoding="utf-8"))
+            del doc["contributes"]["settings"]
+            bare = self.tmp / "manifest-no-settings.json"
+            bare.write_text(json.dumps(doc), encoding="utf-8")
+            saved = addon_pack.ADDONS["places"]["manifest_json"]
+            addon_pack.ADDONS["places"]["manifest_json"] = str(bare)  # absolute: ROOT / it is it
+            try:
+                shutil.rmtree(self.out, ignore_errors=True)
+                manifest = self.pack()
+            finally:
+                addon_pack.ADDONS["places"]["manifest_json"] = saved
+            shutil.copy(manifest, staged / "manifest.json")
+            shutil.copy(str(manifest) + ".sig", staged / "manifest.json.sig")
+            r = subprocess.run([tool, str(staged), raw_public(self.key), "win-x64"], capture_output=True, text=True)
+            self.assertEqual(r.stdout.strip().splitlines()[0] if r.stdout.strip() else r.stdout, "ok")
 
 
 if __name__ == "__main__":
