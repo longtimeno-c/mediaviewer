@@ -162,6 +162,10 @@ the rules are unit-tested.
 - **Two seek modes** (`mv_video_seek(..., exact)`): scrubber drag → nearest keyframe
   (`AVSEEK_FLAG_BACKWARD`, no decode); release, frame step or a typed position → decode forward
   from the keyframe to the exact frame.
+- **A track click does not seek the slider's minimum.** SwiftUI and WinUI report 0 and then
+  the time under the pointer. Seeking that 0 while the playhead is already past half a second
+  presents the opening frame (`scrub_origin_is_spurious`, issue #362). The click's sample and
+  the exact release are the seek. Play and pause are unchanged.
 - Every seek flushes the decoders (`avcodec_flush_buffers`) and bumps the generation so
   pre-seek frames are discarded.
 - **Frame step** (paused): forward decodes the next frame; back is a seek to the prior keyframe

@@ -31,6 +31,21 @@ TEST_CASE("the seek carries the generation that discards in-flight frames", "[tr
   REQUIRE(make_seek(sec(10), false, 42).generation == 42);
 }
 
+TEST_CASE("a scrub that reports the origin is not a seek", "[transport]") {
+  // Issue #362. The slider's minimum, sought nearest-keyframe, presents the
+  // opening frame on the way to the time under the pointer.
+  REQUIRE(scrub_origin_is_spurious(sec(30), /*target=*/0, /*exact=*/false));
+  REQUIRE(scrub_origin_is_spurious(sec(30), /*target=*/-1, /*exact=*/false));
+  REQUIRE_FALSE(scrub_origin_is_spurious(sec(30), sec(28), false));
+  // Release, a step and a typed position at the start are that time.
+  REQUIRE_FALSE(scrub_origin_is_spurious(sec(30), 0, true));
+  // Still at the start: the minimum is where the playhead already is.
+  REQUIRE_FALSE(scrub_origin_is_spurious(sec(0.2), 0, false));
+  REQUIRE_FALSE(scrub_origin_is_spurious(0, 0, false));
+  REQUIRE_FALSE(scrub_origin_is_spurious(scrub_origin_playhead_ns, 0, false));
+  REQUIRE(scrub_origin_is_spurious(scrub_origin_playhead_ns + 1, 0, false));
+}
+
 // --- speed ------------------------------------------------------------------
 
 TEST_CASE("rate 1.0 produces no filter at all", "[transport]") {
