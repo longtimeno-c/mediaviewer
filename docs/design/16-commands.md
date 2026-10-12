@@ -13,10 +13,12 @@ Both hosts use the same table and router; tests are `tests/test_key_router*.cpp`
 
 - `default_bindings()` is a static array of rows: `(key, mods, mode mask, repeat policy,
   command, hold, release)`. `live_bindings()` starts as a copy; the **Settings** screen remaps
-  rows in place (`rebind_live`) and **Reset** restores the defaults. The router, `?` and
-  Settings all read the live table, so they cannot drift. Settings captures a key the way the
-  host edge translates it (symbols through the active layout, keypad digits as their own keys),
-  so any key that routes can be recorded.
+  rows in place (`rebind_live`) and **Reset** restores the defaults. The router, `?`,
+  Settings, and the shortcut column of the bar's menus and tooltips all read the live table
+  (a command's first bound row: `KeyOf` on Windows, `SettingsStore.keyLabel` on the Mac), so
+  they cannot drift. Settings captures a key the way the host edge translates it (symbols
+  through the active layout, keypad digits as their own keys), so any key that routes can be
+  recorded.
 - A remap onto a key another row holds in an overlapping mode **swaps** the two rows, so nothing
   is silently left unbound. Remaps persist by row index (`settings.ini [keys]` on Windows,
   `NSUserDefaults` on macOS), which is why new rows are only ever **appended**.
@@ -110,6 +112,9 @@ With nothing to leave, the key is not handled.
 Rings, visible: **canvas** (default), **filmstrip**, **gallery**, **pane** (folder tree,
 metadata, adjust, Edit, jobs), plus the command bar and the transport. `Tab` / `Shift+Tab` cross the
 island boundary; `Esc` returns to the canvas. Fullscreen hides chrome.
+On Windows `Tab` from the canvas walks the visible rings in reading order — command bar, folder
+tree, gallery, Edit, metadata, adjust, jobs, transport, filmstrip — and then back to the canvas;
+`Shift+Tab` walks it backwards (`IslandHost.FocusOrder`, issue #217).
 
 No island grows over the canvas, except a clip's **transport bar**, which floats over the bottom of
 the video and auto-hides (`shell/transport_autohide.h`, shared by both hosts):
@@ -224,7 +229,9 @@ Marks are a separate set from the selection, so arrow-key browsing never makes a
   `CF_HDROP`, copy-only; a marked cell drags every marked item in listing order. The canvas drags
   too (at fit on Windows, `⌘`-drag on the Mac). A drag of ours dropped on our own window is
   refused.
-- **Opening** (argv, drop): the first entry that exists wins; a folder opens that folder, a file
+- **Opening** (argv, drop): a drop is taken anywhere on the window (on Windows: the canvas,
+  command bar, filmstrip, gallery, every pane, the Edit pane and the transport; a drag without
+  files is refused). The first entry that exists wins; a folder opens that folder, a file
   opens its folder with the file selected; several files from one folder open it on the first; a
   mixed drop opens the first file's folder. Nothing existing: nothing opens and the app beeps. A
   watcher refresh keeps the current item selected; if it was removed the next one takes its

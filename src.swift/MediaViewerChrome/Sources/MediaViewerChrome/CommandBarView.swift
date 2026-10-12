@@ -4,7 +4,7 @@
 // (IslandHost.cs): the canvas colour, CozetteVector 16 pt, flat text buttons
 // with a faint hover wash, system-themed flyouts with a hairline border, and a hairline
 // under the bar. The commands are the same ones the system menu bar runs
-// (mv_chrome_menu tags mirror MvMenuCmd in main_mac.mm).
+// (mv_chrome_menu takes the MvMenuCmd tags in mv_chrome_bridge.h).
 import AppKit
 import SwiftUI
 import MVChromeBridge
@@ -141,6 +141,9 @@ public struct CommandBarView: View {
   @ObservedObject private var store = FolderStore.shared
   @ObservedObject private var notice = NoticeStore.shared
   @ObservedObject private var edit = EditStore.shared
+  /// The store no longer publishes the selection (issue #179); the Open
+  /// flyout names the current file.
+  @ObservedObject private var selection = FolderStore.shared.current
 
   public init() {}
 
@@ -148,8 +151,8 @@ public struct CommandBarView: View {
 
   public var body: some View {
     let hasFolder = store.itemCount > 0
-    let current = (store.currentIndex >= 0 && store.currentIndex < store.names.count)
-      ? store.names[store.currentIndex] : nil
+    let current = (selection.index >= 0 && selection.index < store.names.count)
+      ? store.names[selection.index] : nil
     // No .keyboardShortcut here: the router (main_mac.mm) owns the keys; the
     // shortcut column is only a label, read from the live table so a remap shows.
     VStack(spacing: 0) {
@@ -159,11 +162,11 @@ public struct CommandBarView: View {
         // the far right.
         HStack(spacing: 0) {
           BarFlyout(title: "Open") { close in
-            FlyoutItem(title: "Media…", shortcut: key("Open media…")) { close(); mv_chrome_menu(1) }
-            FlyoutItem(title: "Folder…", shortcut: key("Open folder…")) { close(); mv_chrome_menu(17) }
+            FlyoutItem(title: "Media…", shortcut: key("Open media…")) { close(); mv_chrome_menu(kMenuOpen) }
+            FlyoutItem(title: "Folder…", shortcut: key("Open folder…")) { close(); mv_chrome_menu(kMenuOpenFolder) }
             FlyoutItem(title: current.map { "Open: " + $0 } ?? "Open: (nothing open)",
                        shortcut: key("Show in Explorer"), enabled: current != nil) {
-              close(); mv_chrome_menu(20)
+              close(); mv_chrome_menu(kMenuReveal)
             }
           }
           BarFlyout(title: "View") { close in
@@ -176,13 +179,13 @@ public struct CommandBarView: View {
             FlyoutItem(title: "200 %", shortcut: key("Zoom 200 %")) { close(); mv_chrome_run_command(ViewCommand.zoom200) }
             FlyoutItem(title: "400 %", shortcut: key("Zoom 400 %")) { close(); mv_chrome_run_command(ViewCommand.zoom400) }
             FlyoutRule()
-            FlyoutItem(title: "Gallery", shortcut: key("Gallery"), enabled: hasFolder) { close(); mv_chrome_menu(9) }
-            FlyoutItem(title: "Full screen", shortcut: key("Fullscreen")) { close(); mv_chrome_menu(10) }
-            FlyoutItem(title: "Filmstrip", shortcut: key("Filmstrip"), enabled: hasFolder) { close(); mv_chrome_menu(8) }
+            FlyoutItem(title: "Gallery", shortcut: key("Gallery"), enabled: hasFolder) { close(); mv_chrome_menu(kMenuGallery) }
+            FlyoutItem(title: "Full screen", shortcut: key("Fullscreen")) { close(); mv_chrome_menu(kMenuFullscreen) }
+            FlyoutItem(title: "Filmstrip", shortcut: key("Filmstrip"), enabled: hasFolder) { close(); mv_chrome_menu(kMenuFilmstrip) }
             FlyoutRule()
             FlyoutItem(title: "Clipping warnings", shortcut: key("Clipping")) { close(); mv_chrome_run_command(ViewCommand.clipping) }
-            FlyoutItem(title: "Frame-time overlay", shortcut: key("Frame-time overlay")) { close(); mv_chrome_menu(19) }
-            FlyoutItem(title: "Keyboard shortcuts", shortcut: key("Keyboard shortcuts")) { close(); mv_chrome_menu(16) }
+            FlyoutItem(title: "Frame-time overlay", shortcut: key("Frame-time overlay")) { close(); mv_chrome_menu(kMenuOverlay) }
+            FlyoutItem(title: "Keyboard shortcuts", shortcut: key("Keyboard shortcuts")) { close(); mv_chrome_menu(kMenuHelp) }
           }
           // PR 29 (docs/design/20): the visible way in to every edit, a bar button like
           // Settings. Return does the same. Shown only over media.
@@ -199,7 +202,7 @@ public struct CommandBarView: View {
           if edit.document && !edit.open && !edit.galleryVisible {
             OpenInBarItem()
           }
-          Button("Settings") { mv_chrome_menu(18) }.buttonStyle(FlatButtonStyle())
+          Button("Settings") { mv_chrome_menu(kMenuSettings) }.buttonStyle(FlatButtonStyle())
           BarFlyout(title: "About") { _ in
             VStack(alignment: .leading, spacing: 0) {
               Text("MediaViewer")
@@ -264,7 +267,7 @@ public struct CommandBarView: View {
           PathBar()
           Rectangle().fill(MVTheme.hairline).frame(width: 1, height: 18).padding(.horizontal, 4)
         }
-        Button("?") { mv_chrome_menu(16) }
+        Button("?") { mv_chrome_menu(kMenuHelp) }
           .buttonStyle(FlatButtonStyle())
           .help("Keyboard shortcuts  ?")
       }

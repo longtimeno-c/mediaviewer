@@ -1,7 +1,7 @@
 # 14 — The C ABI
 
 The flat C ABI between the hosts' chrome and the C++ core, as declared in
-[`src/abi/include/mediaviewer/`](../../src/abi/include/mediaviewer/) (current version **0.18**).
+[`src/abi/include/mediaviewer/`](../../src/abi/include/mediaviewer/) (current version **0.19**).
 
 The Windows host is C# WinUI over `mediaviewer_core.dll` and calls this ABI through P/Invoke
 ([`src.managed/MediaViewer.Interop`](../../src.managed/MediaViewer.Interop/)). The Mac host links
@@ -247,6 +247,11 @@ mv_status mv_folder_close(mv_session_t);
   and pushes `FOLDER_SELECTED` ([04-image-pipeline.md](04-image-pipeline.md)).
 - `mv_folder_thumbs_visible` makes on-screen thumbs first; skipping it still generates all.
 - The folder is watched; a change relists and pushes `FOLDER_CHANGED`.
+- `mv_folder_entries` (0.20, issue #226) returns the whole listing in one call under one lock:
+  an `mv_folder_entry` per stop (the `mv_folder_item`, the moment, and byte offsets of its
+  name, path, thumb path and pair path in one caller string block). Too small a buffer writes
+  nothing, reports both sizes and returns `MV_ERR_INVALID_ARG`; the host grows its kept buffers
+  and calls again. This is how the WinUI chrome reads a relist, rather than ~8 calls per stop.
 
 ## PR 7 — pairs are one stop (ABI 0.5)
 
@@ -428,7 +433,7 @@ opened or probed to set it.
 ## Crash context
 
 `mediaviewer_crash.h`: `mv_crash_context(&info)` returns stable addresses — `slot_count`
-fixed-size NUL-padded ASCII slots (one per decode worker, `slot_bytes` each) and a pointer to the
+fixed-size NUL-padded ASCII slots (one per in-flight decode, claimed by `begin_decode`; `slot_bytes` each) and a pointer to the
 last ABI call's correlation id. The host registers them as annotations with its out-of-process
 crash reporter; the core links no reporter. Slots hold only format family, decoder name and
 version, dimensions, bit depth and correlation id — never a path, filename, bytes or EXIF
@@ -512,6 +517,7 @@ Windows shell turns into live command rows ([25 §7](25-open-addons.md#7-the-con
 | 0.17 | Open add-ons: `mv_open_addon_inspect` / `_install` / `_list_json` / `_remove` / `_theme_json` |
 | 0.18 | Contributed commands: `mv_addon_commands_json`; `description`, `hint_on`, `hint_text` in the installed / check JSON |
 | 0.19 | `mv_folder_set_hidden_kinds` — Settings can leave audio and/or documents out of the listing |
+| 0.20 | `mv_folder_entries` — the whole listing in one call (issue #226) |
 
 ## Not built
 
