@@ -13,11 +13,21 @@ Both hosts use the same table and router; tests are `tests/test_key_router*.cpp`
 
 - `default_bindings()` is a static array of rows: `(key, mods, mode mask, repeat policy,
   command, hold, release)`. `live_bindings()` starts as a copy; the **Settings** screen remaps
-  rows in place (`rebind_live`) and **Reset** restores the defaults. The router, `?` and
-  Settings all read the live table, so they cannot drift.
+  rows in place (`rebind_live`) and **Reset** restores the defaults. The router, `?`,
+  Settings, and the shortcut column of the bar's menus and tooltips all read the live table
+  (a command's first bound row: `KeyOf` on Windows, `SettingsStore.keyLabel` on the Mac), so
+  they cannot drift. Settings captures a key the way the host edge translates it (symbols
+  through the active layout, keypad digits as their own keys), so any key that routes can be
+  recorded.
 - A remap onto a key another row holds in an overlapping mode **swaps** the two rows, so nothing
   is silently left unbound. Remaps persist by row index (`settings.ini [keys]` on Windows,
   `NSUserDefaults` on macOS), which is why new rows are only ever **appended**.
+- **Mac menu bar** (issue #182). The items that show a chord (Settings `⌘,`, New Window, Open,
+  Folder Tree, Close Window) read it from the live table (`menu_chord`) after every remap, so a
+  remap moves the menu with the router; a chord another command also holds stays the router's.
+  Settings refuses a chord a fixed menu item owns (`⌘H`, `⌘Q`, `⌘M`, `⌘⌫`): the menu sees it
+  first. Mid-crop, a menu or command-bar item whose command has no crop row (Open, Go ▸ Next,
+  Settings, Folder Tree…) is off, as its key is (`command_live_in`).
 - Command ids are one wire space shared with the island's `chrome_command`: ids 1–19 predate the
   table, 15/16/18/19/20 are reserved island → native notifications, 76 (`palette`) is retired.
   Ids are never renumbered.
@@ -102,6 +112,9 @@ With nothing to leave, the key is not handled.
 Rings, visible: **canvas** (default), **filmstrip**, **gallery**, **pane** (folder tree,
 metadata, adjust, Edit, jobs), plus the command bar and the transport. `Tab` / `Shift+Tab` cross the
 island boundary; `Esc` returns to the canvas. Fullscreen hides chrome.
+On Windows `Tab` from the canvas walks the visible rings in reading order — command bar, folder
+tree, gallery, Edit, metadata, adjust, jobs, transport, filmstrip — and then back to the canvas;
+`Shift+Tab` walks it backwards (`IslandHost.FocusOrder`, issue #217).
 
 No island grows over the canvas, except a clip's **transport bar**, which floats over the bottom of
 the video and auto-hides (`shell/transport_autohide.h`, shared by both hosts):
@@ -150,6 +163,7 @@ crop. Keys are shown Windows-style; on macOS read `⌘` for `Ctrl`.
 | `R` | Viewing | Reset frame-time stats |
 | `Esc` | all | Back (above) |
 | *(unbound)* | browse, video | **Open RAW of pair** / **Open JPEG of pair** — listed in Settings. **Mac: not built** (not listed) |
+| *(unbound)* | Viewing | **Show next kind**: cycle View ▸ Show (All → Photos → Videos → RAW → Marked → Picks → Not rejected → Red … Purple; Marked is passed over when nothing is marked), below. Listed in Settings |
 | *(menu)* | — | **Recent folders**: the jump-list folders; Windows: Open ▸ Recent folders on the command bar; Mac: File ▸ Open Recent. A folder that has gone beeps and leaves the list |
 
 ### View
@@ -199,15 +213,34 @@ Marks are a separate set from the selection, so arrow-key browsing never makes a
 | `F7` / `Shift+F7` | Viewing | Copy marked (else current) to the last destination / pick a folder |
 | `F8` / `Shift+F8` | Viewing | Move, same rule |
 | `Delete` | browse, video | Recycle Bin / Trash, with confirm. Marks if any, else current |
+| `F2` | Viewing | Rename the current file (the gallery's selected cell); also File ▸ Rename… on the Mac |
 | `Ctrl+Shift+C` | Viewing | Copy path(s) as text |
 | `Ctrl+Alt+C` | browse | Copy the current still with edits baked, as PNG (worker thread) |
 | `Ctrl+Shift+S` | Viewing | Share (Windows Share / macOS share sheet) |
 | `Ctrl+Shift+D` | Viewing | **Duplicate** the item on screen beside itself, then select the copy. Mac: File ▸ Duplicate; both: the command bar's Open menu |
 
+These are on the mouse too: the Mac's File menu, and on Windows the command bar's **Open** flyout
+(Mark / Unmark, Copy / Move Marked To…, Move to Recycle Bin, Share…, Copy Path, Copy Edited
+Image). **View** carries Start Slideshow and a **Go** submenu (Next, Previous, First, Last), as the
+Mac's View and Go menus do. Each item posts its command's id, so it acts as the key does.
+
 - **Move** on one volume is a rename (`MoveFileEx`); across volumes it is a **verified** copy
   (hashed while read, read back uncached, compared) and only then the delete. I/O thread.
 - Copy / move never overwrite: a collision becomes `name (2).ext`. The last five destinations are
   remembered.
+- **Rename** (`F2`, issue #210) is the item on screen only, never the marks: a field with the name
+  without its extension, selected (a WinUI flyout over the command bar on Windows, an alert on the
+  Mac); `Enter` renames, `Esc` does not. The extension stays. The pair's other half (RAW+JPEG, a
+  Live Photo's MOV) and each file's XMP sidecar move with it under one stem, so the pair stays a
+  pair and a rating stays with its file; the Mac, which lists both halves, finds the partner by the
+  scan-time pairing rule. Never overwrites: a taken name becomes `name (2)` for the whole group. It
+  runs on the I/O pool (`io::rename_stop`, [24](24-transfer.md) "Rename"); the stop stays selected
+  under its new name and what is on screen is not decoded again (Windows: `mv_folder_renamed`,
+  told before the file moves, so the watcher's relist follows it; Mac: the relist waits for the
+  rename). A mark moves with the file. Refused, with a notice, in a result list, for a Photos
+  library file, while the file has unsaved edits or a metadata write in flight, and for a name a
+  volume would refuse (a slash or backslash, `< > : " | ? *`, a trailing dot or space, Windows
+  device names).
 - **Duplicate** names the copy as the platform's file manager does: `NAME copy.ext`, then
   `NAME copy 2.ext` on the Mac; `NAME - Copy.ext`, then `NAME - Copy (2).ext` on Windows
   (`io/duplicate.h`). A RAW+JPEG or Live Photo stop and its XMP sidecar take one number together,
@@ -223,7 +256,9 @@ Marks are a separate set from the selection, so arrow-key browsing never makes a
   `CF_HDROP`, copy-only; a marked cell drags every marked item in listing order. The canvas drags
   too (at fit on Windows, `⌘`-drag on the Mac). A drag of ours dropped on our own window is
   refused.
-- **Opening** (argv, drop): the first entry that exists wins; a folder opens that folder, a file
+- **Opening** (argv, drop): a drop is taken anywhere on the window (on Windows: the canvas,
+  command bar, filmstrip, gallery, every pane, the Edit pane and the transport; a drag without
+  files is refused). The first entry that exists wins; a folder opens that folder, a file
   opens its folder with the file selected; several files from one folder open it on the first; a
   mixed drop opens the first file's folder. Nothing existing: nothing opens and the app beeps. A
   watcher refresh keeps the current item selected; if it was removed the next one takes its
@@ -236,7 +271,7 @@ Marks are a separate set from the selection, so arrow-key browsing never makes a
 | `[` `]` | browse, crop | Rotate −90° / +90°. On a JPEG with nothing else in its stack, a lossless rewrite 0.4 s after the last key, atomically; the preview turns at once |
 | `H` / `V` | browse, crop | Flip horizontal / vertical (lossless on a JPEG, like rotate) |
 | `Shift+C` | browse | Crop / straighten mode |
-| `Shift+A` | browse | Adjust pane: show and focus its first slider; again hides it |
+| `Shift+A` | browse | Adjust pane: show and focus its first slider; again hides it. In it `↑` `↓` choose a slider, `←` `→` change it (`Shift` ×10), `0` zeroes it, `R` resets all (both hosts) |
 | `Ctrl+Z` / `Ctrl+R` | browse, crop | Undo the last edit / reset to the original |
 | `Ctrl+S` | browse | Export the edits to a new file beside the original (`<name>-edit.jpg`); never overwrites |
 | hold `Y` | browse | Show the original (edit stack untouched) |
@@ -259,13 +294,20 @@ Marks are a separate set from the selection, so arrow-key browsing never makes a
 | Key | Modes | Command |
 |---|---|---|
 | Numpad `0`–`5`, or `Ctrl+Shift+0`–`5` | Viewing | Rating (0 clears) |
-| `Ctrl+I` | Viewing | Show the metadata pane (Windows: on *All tags* with its comment editor open on the file's comment and the keyboard in it; `Enter` saves, `Esc` drops; Mac: the pane's *All tags* editor) |
+| `Ctrl+I` | Viewing | Show the metadata pane (Windows: on *All tags* with its comment editor open on the file's comment and the keyboard in it; `Enter` saves, `Esc` drops; Mac: the pane's *All tags* tab with the keyboard in its search, where any tag, the comment included, is edited) |
+| `X` | browse, video | Reject (rating −1, Lightroom's and Bridge's "Rejected"); `X` on a rejected file clears it to unrated |
+| Numpad `6`–`9`, or `Ctrl+Shift+6`–`9` | Viewing | Colour label Red / Yellow / Green / Blue (Lightroom's keys); the label the file already has clears it |
+| `U` | browse, video | Clear the colour label |
 
-A rating writes the item on screen only, on the I/O pool: a JPEG is rewritten in place, anything
-else gets an XMP sidecar. The command bar shows what landed ("★★★★☆", or "— IMG_1234.xmp" when a
+A rating, a reject or a label writes the item on screen only, on the I/O pool: a JPEG is
+rewritten in place, anything else gets an XMP sidecar. A label is XMP `xmp:Label` in the words
+Lightroom and Bridge write (Red, Yellow, Green, Blue, Purple), so each app shows the other's; the
+metadata pane's Label row has a swatch per colour (Purple has no key, as in Lightroom). `X` and `U`
+are letters, so they are browse and video only (the gallery and the strips type ahead). The command bar shows what landed ("★★★★☆", or "— IMG_1234.xmp" when a
 sidecar took it). Not in a slideshow or crop. On macOS `⌘⇧3`/`4`/`5` are the system screenshot
-shortcuts and do not reach the app unless turned off in System Settings; the keypad, or a remap,
-works regardless.
+shortcuts (and `⌘⇧6` the Touch Bar one, on a Mac that has a Touch Bar) and do not reach the app unless turned off in System Settings; the keypad, or a remap,
+works regardless. To see only the keepers, or one colour, use View ▸ Show's cull filters (below,
+"Status, sort, filter, typeahead").
 
 ### Video and trim
 
@@ -274,10 +316,10 @@ works regardless.
 | `Space` | video | Play / pause |
 | tap `Q` / `E` | video | Skip −2 s / +2 s, exact, on the down edge |
 | hold `Q` / `E` | video | Skim ∓2 s per repeat with non-exact (keyframe) seeks; release settles exactly. Intent accumulates across the burst |
-| `Shift+Q` / `Shift+E` | video | Playback speed one rung down / up: 0.25 / 0.5 / 1 / 1.5 / 2 / 4. The command bar's speed dropdown is a view of this; native owns the rate |
+| `Shift+Q` / `Shift+E` | video | Playback speed one rung down / up: 0.25 / 0.5 / 1 / 1.5 / 2 / 4. The transport strip's speed menu (`1x`) is a view of this; native owns the rate |
 | `J` `K` `L` | video | −10 s / pause / +10 s |
 | `,` `.` | video | Frame step (also on animations) |
-| `Shift+M` | video | Mute (`M` is left free). The transport's More flyout (volume, mute, audio track, A–B loop) is a view of native's state, as the speed dropdown is; `↑` `↓` at fit are the volume |
+| `Shift+M` | video | Mute (`M` is left free). The transport's mute button and More flyout (volume, mute, audio track, A–B loop) are views of native's state, as the speed menu is; `↑` `↓` at fit are the volume |
 | `Ctrl+T` | video, trim | Arm / disarm trim |
 | `[` `]` | trim | In / out marker at the playhead |
 | `P` | trim | Preview the cut: A–B loop over exactly what the keyframe save writes. A loop set from the More flyout replaces it and ends the preview |
@@ -352,7 +394,9 @@ keystroke is one pass (≤ 2 ms for 10,000 items). No disk walk.
 `?` toggles a mode-sensitive cheat sheet generated from the live table
 (`describe_commands()`: id, modes, label, key label). On Windows it is a XAML flyout with
 `ShouldConstrainToRootBounds = false`, so a strip does not clip it; it does not composite onto the
-swapchain. There is no command palette; Settings search and `?` cover finding a command.
+swapchain. On the Mac it is a SwiftUI overlay over the canvas, filtered the same way. Both list
+the bindings live in the mode underneath, as if the canvas had focus. There is no command palette;
+Settings search and `?` cover finding a command.
 
 ### Empty window
 
@@ -383,7 +427,7 @@ presents ([rendering](03-rendering.md)). Toggles request one redraw.
 | Eyedropper (`Shift+I`) | One-pixel staging readback on demand, never a full-texture download |
 | Histogram | On the adjust pane, computed after the sliders settle |
 
-## Status, sort, typeahead
+## Status, sort, filter, typeahead
 
 Chrome, in memory, no decode.
 
@@ -393,6 +437,32 @@ Chrome, in memory, no decode.
   (`mv_folder_set_sort`, saved as `[view] sort` on Windows; View ▸ Sort By on both). Date-taken
   keys are read once per file by one background job and the listing re-sorts in place when they
   land; a file with no stamp sorts by mtime.
+- **Show** (issue #206): View ▸ Show on both hosts (the menu bar and the command bar's View on the
+  Mac, the command bar's View on Windows): **All**, **Photos** (every still, RAW included),
+  **Videos**, **RAW** (a RAW, or a RAW+JPEG pair) or **Marked** (the marks as they are when it is
+  chosen; refused with a notice when nothing is marked). A view of the listing, for this run only,
+  never saved: the filmstrip, gallery, arrow keys and slideshow walk what is shown; copy, move and
+  delete act on marks as always. Choosing one moves the stop on screen to the nearest one shown; a
+  filter that matches nothing keeps the stop on screen. A relist keeps the file a folder was
+  opened on, so an explicit open still shows. The notice line says what is shown. A scan-time
+  flag over the listing already in memory: no decode, no I/O, no rescan (`io::keeps_stop`;
+  Windows `mv_folder_set_kind_filter`, the Mac host over its folder model's snapshot).
+- **Show, on the cull** (issue #207): View ▸ Show's second group filters on what `X`, the rating
+  keys and the label keys wrote: **Picks** (rated one star or more; XMP has no pick flag, and
+  Lightroom keeps its own in the catalog), **Not rejected** (everything but rating −1, unrated
+  included), and **Red**, **Yellow**, **Green**, **Blue** or **Purple** (that `xmp:Label`, in any
+  case). These are not scan-time flags: each file's rating and label is read on a worker
+  (`meta::read_cull_marks`, a bounded head read plus the sidecar, as date-taken sorting does) and
+  cached by path + size + mtime; a write this app makes drops its file's entry (a sidecar write
+  leaves the file's own stamp). Nothing of it runs on the UI or render thread, and the first
+  pixel and navigation never wait for it: the folder opens and lists as always, and a filter
+  already on applies as the reads land (a file not read yet counts as unrated and unlabelled). A
+  newly chosen cull filter keeps the listing as it is until the reads it needs are done, then
+  moves the stop on screen once. Rating or labelling the stop on screen never pulls it out of the
+  listing (the relist keeps it, as Marked keeps an unmarked file); choosing the filter again
+  re-applies it. Windows filters in the core (`MV_FOLDER_HIDE_REJECTED` / `_UNPICKED` / the
+  label in bits 8–10, ABI 0.20, and `mv_folder_note_metadata_written` after a write); the Mac
+  host's `meta_store` keeps the cache (`cull_marks_of`, `resolve_cull_marks`).
 - **Typeahead:** with the filmstrip or gallery focused, typing jumps to the first name starting
   with what was typed (300 ms idle resets). On the canvas every letter is a command, so `/` opens
   a find box over the loaded listing. `Ctrl+G` goes to an index.
@@ -441,12 +511,9 @@ No hot-path ABI for commands. Commands invoke existing session calls (`mv_folder
 
 ## Not built
 
-- `F2` rename.
 - `Ctrl+Enter` open in an external editor; set as wallpaper.
 - `Ctrl+Tab` / tabs, and several windows inside one process.
 - `Ctrl+PageUp` / `Ctrl+PageDown` for ICO sizes and HEIC sequences (pages of TIFF, PDF and DOCX are built).
-- `U` clear label and `X` reject mark.
-- A filter (all / photos / videos / RAW) on the listing.
 - Touch gestures (swipe, pinch).
 - Import / export of key maps and named alternate layouts.
 - Voice add-on hold-to-talk (`Ctrl+Shift+Space`).

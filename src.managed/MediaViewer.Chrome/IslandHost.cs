@@ -74,7 +74,7 @@ public static partial class IslandHost
         public const int OpenCrumb = 1008;
         public const int GalleryColumns = 1009;
         public const int FolderUp = 115;  // mirrors command_id::folder_up
-        public const int Duplicate = 172;  // mirrors command_id::duplicate (issue #289)
+        public const int Duplicate = 181;  // mirrors command_id::duplicate (issue #289)
         // Milestone G: arg 1/0 = the Import add-on is loaded / absent (its
         // commands exist only while it is). OpenPath: native pulls the path
         // with TakeTreePath and opens it in the viewer.
@@ -102,6 +102,18 @@ public static partial class IslandHost
         public const int Help = 75;
         public const int RevealInExplorer = 80;
         public const int OpenSettings = 84;
+        // Issue #220: the file and Go commands the Open and View flyouts post
+        // (IslandHost.FileMenu.cs; chrome_host.h pins each).
+        public const int First = 22;
+        public const int Last = 23;
+        public const int ToggleMark = 61;
+        public const int CopyToPick = 65;
+        public const int MoveToPick = 67;
+        public const int DeleteToRecycleBin = 68;
+        public const int SlideshowStart = 69;
+        public const int CopyPath = 147;
+        public const int CopyFlattened = 148;
+        public const int Share = 149;
         // Keyed commands the View menu and the panes' close buttons also send
         // (mirrors command_id; chrome_host.h pins both with static_asserts).
         public const int FolderTree = 78;
@@ -162,6 +174,8 @@ public static partial class IslandHost
         public const int VideoMuted = 1032;
         public const int VideoTrack = 1033;
         public const int VideoLoop = 1034;
+        // Issue #210: the rename popup's Enter; native takes the parked name.
+        public const int Rename = 1035;
         public const int RotateCcw = 96;
         public const int RotateCw = 97;
         public const int FlipHorizontal = 98;
@@ -180,6 +194,17 @@ public static partial class IslandHost
         public const int EditWorkspace = 150;
         public const int CropAspectSet = 155;      // arg: preset, + 16 portrait
         public const int CropStraightenSet = 156;  // arg: degrees
+        // Keyed commands the island never sends, only names the key of (KeyOf).
+        public const int SkimBack = 34;
+        public const int SkimForward = 35;
+        public const int Zoom200 = 39;
+        public const int Zoom400 = 40;
+        public const int CropAspectCycle = 151;
+        public const int CropAspectSwap = 152;
+        public const int ShowOriginal = 153;
+        public const int SearchOpen = 157;
+        public const int KindFilterSet = 174;      // arg: 0 all, 1 photos, 2 videos, 3 RAW, 4 marked (issue #206);
+                                                   // 5 picks, 6 not rejected, 7 red .. 11 purple (issue #207)
 
         // Mirrors chrome_command_checksum() in chrome_host.h: same constants,
         // same order, same arithmetic. Probe hands it to native for the test.
@@ -198,6 +223,7 @@ public static partial class IslandHost
                 DragItems, DragEnded, OpenRecent,
                 EditorTrimGrab, EditorTrimTo, OpenInApp,
                 VideoVolume, VideoMuted, VideoTrack, VideoLoop,
+                Rename,
             };
             unchecked
             {
@@ -259,6 +285,8 @@ public static partial class IslandHost
     // Packed sort order (key in bits 0-2: name, modified, size, type, date taken;
     // descending in bit 3). Native owns it; the menu and Settings are a view of it.
     private static int _sortPacked;
+    // Issue #206: the kind filter native applied (bits 8-10 of the pushed sort word).
+    private static int _kindFilter;
 
     private static int _settingFlags = SettingFlag.FilmstripForFolder | SettingFlag.Wrap | SettingFlag.UpdateAutoCheck;
 
@@ -511,6 +539,8 @@ public static partial class IslandHost
             if (arg == IntPtr.Zero || sizeBytes < ResizeArgsSize) return unchecked((int)0x80070057);
             ChromeResizeArgs args = Marshal.PtrToStructure<ChromeResizeArgs>(arg);
             Move(_source, args.Width, args.Height, args.Y);
+            _barTop = Math.Max(0, args.Y);
+            PlaceResumeNotice();  // the bottom-right corner moved (issue #299)
             return 0;
         }
         catch (Exception ex)
@@ -527,11 +557,10 @@ public static partial class IslandHost
             if (_source is null) return 1;
             int reverse = 0;
             if (arg != IntPtr.Zero && sizeBytes >= 4) reverse = Marshal.ReadInt32(arg);
-            var reason = reverse != 0
-                ? XamlSourceFocusNavigationReason.Last
-                : XamlSourceFocusNavigationReason.First;
-            _source.NavigateFocus(new XamlSourceFocusNavigationRequest(reason));
-            return 0;
+            // Tab from the canvas enters the first visible ring, Shift+Tab the
+            // last (issue #217).
+            bool forward = reverse == 0;
+            return FocusRing(forward ? 0 : FocusOrder().Length - 1, forward) ? 0 : 1;
         }
         catch (Exception ex)
         {
@@ -568,7 +597,8 @@ public static partial class IslandHost
             if (arg == IntPtr.Zero || sizeBytes < FlagsArgsSize) return unchecked((int)0x80070057);
             ChromeFlagsArgs args = Marshal.PtrToStructure<ChromeFlagsArgs>(arg);
             _settingFlags = args.Flags;
-            _sortPacked = args.Sort;
+            _sortPacked = args.Sort & 0xFF;
+            _kindFilter = (args.Sort >> 8) & 15;
             UpdateChannelApplied();
             RefreshSettingsMenu();
             RefreshSettingsScreen();
@@ -587,8 +617,8 @@ public static partial class IslandHost
     }
 
     /// <summary>
-    /// Native pushing the current playback rate in. The dropdown is a view of
-    /// the rate, never a second place it is decided — the keyboard is the one
+    /// Native pushing the current playback rate in. The strip's speed menu is a
+    /// view of the rate, never a second place it is decided — the keyboard is the one
     /// router (docs/design/16), so Q/E and this menu cannot drift apart.
     /// </summary>
     public static int ApplyRate(IntPtr arg, int sizeBytes)
@@ -633,56 +663,57 @@ public static partial class IslandHost
     // The ladder the keyboard steps through, mirrored from main.cpp's
     // kRateLadder. Every value is exact in float, so no epsilon is needed.
     private static readonly double[] SpeedLadder = { 0.25, 0.5, 1, 1.5, 2, 4 };
-    private static ComboBox? _speed;
-    private static bool _updatingSpeed;
+    // The strip's borderless "1x" menu (TransportView.swift's speed Menu,
+    // issue #195); null while the strip is down. It used to be a ComboBox in
+    // the command bar, away from the clip it controls.
+    private static Button? _speed;
+    private static Button? _helpButton;  // `?` on the bar; its tooltip names the live key
 
     private static string SpeedLabel(double rate) =>
         rate == Math.Floor(rate) ? $"{rate:0}x" : $"{rate:0.##}x";
 
+    // A view of native's rate (ApplyRate), never a second place it is decided.
     private static void SetSpeedSelection(double rate)
     {
-        if (_speed is null) return;
-        int index = 0;
-        double best = double.MaxValue;
-        for (int i = 0; i < SpeedLadder.Length; ++i)
+        if (_speed?.Content is TextBlock label) label.Text = SpeedLabel(rate > 0 ? rate : 1);
+    }
+
+    private static Button BuildSpeed()
+    {
+        Button speed = TextButton(SpeedLabel(_videoRate), () => { });
+        if (speed.Content is TextBlock label) label.FontSize = TypeCaption;
+        speed.Padding = new Thickness(8, 7, 8, 7);
+        SetIconTip(speed, SpeedTip());
+        var menu = new MenuFlyout
         {
-            double delta = Math.Abs(SpeedLadder[i] - rate);
-            if (delta < best) { best = delta; index = i; }
+            Placement = FlyoutPlacementMode.Top,
+            MenuFlyoutPresenterStyle = MenuFlyoutPresenterStyle(),
+        };
+        foreach (double rate in SpeedLadder)
+        {
+            float r = (float)rate;
+            menu.Items.Add(Item(SpeedLabel(rate), null, () => Send(Command.SetRate, r)));
         }
-        _updatingSpeed = true;
-        _speed.SelectedIndex = index;
-        _updatingSpeed = false;
+        // Its own popup, like More: it holds the bar up while it is open.
+        menu.Opened += (_, _) => SetTransportHeld(true);
+        menu.Closed += (_, _) =>
+        {
+            SetTransportHeld(false);
+            RestoreCanvasFocus();
+        };
+        FlyoutBase.SetAttachedFlyout(speed, menu);
+        speed.Click += (_, _) => FlyoutBase.ShowAttachedFlyout(speed);
+        _speed = speed;
+        return speed;
     }
 
-    // The dropdown is dead weight with no clip open, and a speed control on a
-    // photo is a lie about what the key does.
-    private static void SetSpeedVisible(bool visible)
+    private static string SpeedTip()
     {
-        if (_speed is not null) _speed.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
-    }
-
-    private static ComboBox BuildSpeed()
-    {
-        _speed = new ComboBox
-        {
-            FontFamily = UiFont,
-            FontSize = UiFontSize,
-            Foreground = Brush(Title),
-            MinWidth = 88,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(0, 0, 8, 0),
-            Visibility = Visibility.Collapsed,
-        };
-        foreach (double rate in SpeedLadder) _speed.Items.Add(SpeedLabel(rate));
-        _speed.SelectedIndex = 2;  // 1x
-        _speed.SelectionChanged += (_, _) =>
-        {
-            if (_updatingSpeed || _speed.SelectedIndex < 0) return;
-            Send(Command.SetRate, (float)SpeedLadder[_speed.SelectedIndex]);
-        };
-        ToolTipService.SetToolTip(_speed, "Playback speed. Q / E skip ±2 s (hold to skim)");
-        _speed.DropDownClosed += (_, _) => RestoreCanvasFocus();
-        return _speed;
+        string? back = KeyOf(Command.SkimBack);
+        string? forward = KeyOf(Command.SkimForward);
+        return back is null || forward is null
+            ? "Playback speed"
+            : $"Playback speed. {back} / {forward} skip ±2 s (hold to skim)";
     }
 
     private static void EnsureApp()
@@ -772,9 +803,55 @@ public static partial class IslandHost
                 sender.NavigateFocus(new XamlSourceFocusNavigationRequest(reason));
                 return;
             }
+            // A ring with nothing to focus hands Tab on while FocusRing is
+            // walking; the walk itself moves on, so ignore the echo.
+            if (_focusWalking) return;
+            // Issue #217: on to the next visible ring in Tab order, and from
+            // the last one (or an island outside the order) back to the canvas.
+            bool forward = reason == XamlSourceFocusNavigationReason.First;
+            int at = Array.IndexOf(FocusOrder(), sender);
+            if (at >= 0 && FocusRing(forward ? at + 1 : at - 1, forward)) return;
             IntPtr hwnd = Win32Interop.GetWindowFromWindowId(sender.SiteBridge.WindowId);
             IntPtr root = GetAncestor(hwnd, GaRoot);
             if (root != IntPtr.Zero) SetFocus(root);
+        }
+    }
+
+    // docs/design/16 Focus: the rings Tab crosses, in screen reading order —
+    // command bar, folder tree, gallery, the right column (Edit, metadata,
+    // adjust, jobs), transport, filmstrip — and then the canvas. A ring is
+    // visible while its island has content (hidden ones are dropped and parked).
+    private static DesktopWindowXamlSource?[] FocusOrder() => new[]
+    {
+        _source, _tree, _gallery, _editPane, _metaPane, _adjustPane, _jobsPane, _transport, _filmstrip,
+    };
+
+    private static bool _focusWalking;
+
+    // Focuses the first (Tab) or last (Shift+Tab) element of the first visible
+    // ring from `start` in that direction. False when none took it.
+    private static bool FocusRing(int start, bool forward)
+    {
+        DesktopWindowXamlSource?[] order = FocusOrder();
+        var reason = forward ? XamlSourceFocusNavigationReason.First : XamlSourceFocusNavigationReason.Last;
+        _focusWalking = true;
+        try
+        {
+            for (int i = start; i >= 0 && i < order.Length; i += forward ? 1 : -1)
+            {
+                DesktopWindowXamlSource? ring = order[i];
+                if (ring?.Content is null) continue;
+                try
+                {
+                    if (ring.NavigateFocus(new XamlSourceFocusNavigationRequest(reason)).WasFocusMoved) return true;
+                }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
+            }
+            return false;
+        }
+        finally
+        {
+            _focusWalking = false;
         }
     }
 
@@ -916,61 +993,6 @@ public static partial class IslandHost
         return new FontFamily("Consolas");
     }
 
-    private static ControlTemplate? _flatButtonTemplate;
-
-    // This template does not load: its XAML uses x:Name without declaring the
-    // x namespace, so XamlReader.Load throws and every bar button falls back to
-    // WinUI's own template -- which is what has always shipped. Do not "fix" it
-    // by declaring x: tried 2026-09-27, and once a custom template actually
-    // loads in these islands, opening or closing a bar flyout fail-fasts in
-    // Microsoft.UI.Xaml (0xC000027B). IslandHost.Edit.cs FlattenButton is the
-    // safe way to restyle a button (lightweight resources, no template).
-    private static ControlTemplate? FlatButtonTemplate()
-    {
-        if (_flatButtonTemplate is not null) return _flatButtonTemplate;
-        const string xaml =
-            """
-            <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-                             TargetType="Button">
-              <Border x:Name="Root" Background="Transparent" Padding="14,7" CornerRadius="4">
-                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
-                                  Content="{TemplateBinding Content}"
-                                  ContentTemplate="{TemplateBinding ContentTemplate}"
-                                  FontFamily="{TemplateBinding FontFamily}"
-                                  FontSize="{TemplateBinding FontSize}"
-                                  FontWeight="{TemplateBinding FontWeight}"
-                                  Foreground="{TemplateBinding Foreground}"/>
-                <VisualStateManager.VisualStateGroups>
-                  <VisualStateGroup x:Name="CommonStates">
-                    <VisualState x:Name="Normal"/>
-                    <VisualState x:Name="PointerOver">
-                      <VisualState.Setters>
-                        <Setter Target="Root.Background" Value="{ThemeResource SubtleFillColorSecondaryBrush}"/>
-                      </VisualState.Setters>
-                    </VisualState>
-                    <VisualState x:Name="Pressed">
-                      <VisualState.Setters>
-                        <Setter Target="Root.Background" Value="{ThemeResource SubtleFillColorTertiaryBrush}"/>
-                      </VisualState.Setters>
-                    </VisualState>
-                    <VisualState x:Name="Disabled"/>
-                  </VisualStateGroup>
-                </VisualStateManager.VisualStateGroups>
-              </Border>
-            </ControlTemplate>
-            """;
-        try
-        {
-            _flatButtonTemplate = (ControlTemplate)XamlReader.Load(xaml);
-        }
-        catch (Exception ex)
-        {
-            System.Diagnostics.Debug.WriteLine(ex);
-            _flatButtonTemplate = null;
-        }
-        return _flatButtonTemplate;
-    }
-
     private static Button TextButton(string label, Action click)
     {
         var button = new Button
@@ -996,8 +1018,10 @@ public static partial class IslandHost
             // island, or A/D/Q/E wait for the window to be deactivated.
             AllowFocusOnInteraction = false,
         };
-        ControlTemplate? template = FlatButtonTemplate();
-        if (template is not null) button.Template = template;
+        // WinUI's own template, restyled through lightweight resources only:
+        // a custom ControlTemplate that loads in these islands fail-fasts
+        // (0xC000027B) once a bar flyout opens or closes (2026-09-27).
+        FlattenButton(button);
         button.Click += (_, _) => Guarded(click);
         return button;
     }
@@ -1017,7 +1041,7 @@ public static partial class IslandHost
         style.Setters.Add(new Setter(FlyoutPresenter.BackgroundProperty, Brush(Canvas)));
         style.Setters.Add(new Setter(FlyoutPresenter.BorderBrushProperty, Brush(Hairline)));
         style.Setters.Add(new Setter(FlyoutPresenter.BorderThicknessProperty, new Thickness(1)));
-        style.Setters.Add(new Setter(FlyoutPresenter.CornerRadiusProperty, new CornerRadius(6)));
+        style.Setters.Add(new Setter(FlyoutPresenter.CornerRadiusProperty, new CornerRadius(RadiusFlyout)));
         style.Setters.Add(new Setter(FlyoutPresenter.PaddingProperty, new Thickness(4)));
         style.Setters.Add(new Setter(FlyoutPresenter.FontFamilyProperty, UiFont));
         style.Setters.Add(new Setter(FlyoutPresenter.FontSizeProperty, UiFontSize));
@@ -1031,78 +1055,11 @@ public static partial class IslandHost
         style.Setters.Add(new Setter(MenuFlyoutPresenter.BackgroundProperty, Brush(Canvas)));
         style.Setters.Add(new Setter(MenuFlyoutPresenter.BorderBrushProperty, Brush(Hairline)));
         style.Setters.Add(new Setter(MenuFlyoutPresenter.BorderThicknessProperty, new Thickness(1)));
-        style.Setters.Add(new Setter(MenuFlyoutPresenter.CornerRadiusProperty, new CornerRadius(6)));
+        style.Setters.Add(new Setter(MenuFlyoutPresenter.CornerRadiusProperty, new CornerRadius(RadiusFlyout)));
         style.Setters.Add(new Setter(MenuFlyoutPresenter.PaddingProperty, new Thickness(4)));
         style.Setters.Add(new Setter(MenuFlyoutPresenter.FontFamilyProperty, UiFont));
         style.Setters.Add(new Setter(MenuFlyoutPresenter.FontSizeProperty, UiFontSize));
         return style;
-    }
-
-    private static ControlTemplate? _flatMenuItemTemplate;
-
-    // This template does not load: its XAML uses x:Name without declaring the
-    // x namespace, so XamlReader.Load throws and every menu item falls back to
-    // WinUI's own template -- which is what has always shipped. Do not "fix" it
-    // by declaring x: tried 2026-09-27, and once a custom template actually
-    // loads in these islands, opening or closing a bar flyout fail-fasts in
-    // Microsoft.UI.Xaml (0xC000027B). IslandHost.Edit.cs FlattenButton is the
-    // safe way to restyle a button (lightweight resources, no template).
-    private static ControlTemplate? FlatMenuItemTemplate()
-    {
-        if (_flatMenuItemTemplate is not null) return _flatMenuItemTemplate;
-        const string xaml =
-            """
-            <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-                             TargetType="MenuFlyoutItem">
-              <Border x:Name="Root" Background="Transparent" Padding="12,8" CornerRadius="4">
-                <Grid>
-                  <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="Auto"/>
-                  </Grid.ColumnDefinitions>
-                  <TextBlock Text="{TemplateBinding Text}"
-                             FontFamily="{TemplateBinding FontFamily}"
-                             FontSize="{TemplateBinding FontSize}"
-                             Foreground="{TemplateBinding Foreground}"
-                             VerticalAlignment="Center"/>
-                  <TextBlock Grid.Column="1"
-                             Text="{TemplateBinding KeyboardAcceleratorTextOverride}"
-                             FontFamily="{TemplateBinding FontFamily}"
-                             FontSize="{TemplateBinding FontSize}"
-                             Foreground="{TemplateBinding Foreground}"
-                             Margin="28,0,4,0"
-                             Opacity="0.5"
-                             VerticalAlignment="Center"/>
-                </Grid>
-                <VisualStateManager.VisualStateGroups>
-                  <VisualStateGroup x:Name="CommonStates">
-                    <VisualState x:Name="Normal"/>
-                    <VisualState x:Name="PointerOver">
-                      <VisualState.Setters>
-                        <Setter Target="Root.Background" Value="{ThemeResource SubtleFillColorSecondaryBrush}"/>
-                      </VisualState.Setters>
-                    </VisualState>
-                    <VisualState x:Name="Pressed">
-                      <VisualState.Setters>
-                        <Setter Target="Root.Background" Value="{ThemeResource SubtleFillColorTertiaryBrush}"/>
-                      </VisualState.Setters>
-                    </VisualState>
-                    <VisualState x:Name="Disabled"/>
-                  </VisualStateGroup>
-                </VisualStateManager.VisualStateGroups>
-              </Border>
-            </ControlTemplate>
-            """;
-        try
-        {
-            _flatMenuItemTemplate = (ControlTemplate)XamlReader.Load(xaml);
-        }
-        catch (Exception ex)
-        {
-            System.Diagnostics.Debug.WriteLine(ex);
-            _flatMenuItemTemplate = null;
-        }
-        return _flatMenuItemTemplate;
     }
 
     private static MenuFlyoutItem Item(string text, string? shortcut, Action action)
@@ -1116,8 +1073,15 @@ public static partial class IslandHost
             Background = new SolidColorBrush(Colors.Transparent),
             Padding = new Thickness(12, 8, 12, 8),
         };
-        ControlTemplate? template = FlatMenuItemTemplate();
-        if (template is not null) item.Template = template;
+        // Lightweight resources, never a template (see TextButton): the
+        // chrome's washes and colours in place of Windows' own.
+        item.Resources["MenuFlyoutItemBackgroundPointerOver"] = Brush(ChromeColour.HoverWash);
+        item.Resources["MenuFlyoutItemBackgroundPressed"] = Brush(ChromeColour.PressedWash);
+        foreach (string key in new[] { "MenuFlyoutItemForegroundPointerOver", "MenuFlyoutItemForegroundPressed" })
+            item.Resources[key] = Brush(Title);
+        item.Resources["MenuFlyoutItemForegroundDisabled"] = Brush(ChromeColour.Disabled);
+        item.Resources["MenuFlyoutItemKeyboardAcceleratorTextForeground"] = Brush(Body);
+        item.CornerRadius = new CornerRadius(RadiusButton);
         if (!string.IsNullOrEmpty(shortcut))
         {
             item.KeyboardAcceleratorTextOverride = shortcut;
@@ -1251,8 +1215,12 @@ public static partial class IslandHost
     private static void RefreshOpenMenu(MenuFlyout flyout)
     {
         flyout.Items.Clear();
-        flyout.Items.Add(Item("Media…", "Ctrl+O", () => { Send(Command.Open); RestoreCanvasFocus(); }));
-        flyout.Items.Add(Item("Folder…", "Ctrl+Shift+O", () => { Send(Command.OpenFolder); RestoreCanvasFocus(); }));
+        flyout.Items.Add(Item("Media…", KeyOf(Command.Open), () => { Send(Command.Open); RestoreCanvasFocus(); }));
+        flyout.Items.Add(Item("Folder…", KeyOf(Command.OpenFolder), () =>
+        {
+            Send(Command.OpenFolder);
+            RestoreCanvasFocus();
+        }));
         flyout.Items.Add(RecentFoldersSubMenu());
         flyout.Items.Add(Sep());
         string? name = _selectedIndex >= 0 && _selectedIndex < Items.Count
@@ -1260,13 +1228,14 @@ public static partial class IslandHost
             : null;
         if (string.IsNullOrEmpty(name))
         {
-            MenuFlyoutItem empty = Item("Open: (nothing open)", "Ctrl+E", () => { });
+            // RevealInExplorer reveals the file; it does not open it (issue #187).
+            MenuFlyoutItem empty = Item("Show in Explorer", KeyOf(Command.RevealInExplorer), () => { });
             empty.IsEnabled = false;
             flyout.Items.Add(empty);
         }
         else
         {
-            MenuFlyoutItem reveal = Item("Open: " + name, "Ctrl+E", () =>
+            MenuFlyoutItem reveal = Item("Show in Explorer", KeyOf(Command.RevealInExplorer), () =>
             {
                 Send(Command.RevealInExplorer);
                 RestoreCanvasFocus();
@@ -1275,16 +1244,7 @@ public static partial class IslandHost
             if (!string.IsNullOrEmpty(path)) ToolTipService.SetToolTip(reveal, path);
             flyout.Items.Add(reveal);
         }
-        // Issue #289: the Mac's File > Duplicate. Native refuses it where it
-        // cannot apply (slideshow, crop, trim); here it is off with nothing open.
-        flyout.Items.Add(Sep());
-        MenuFlyoutItem duplicate = Item("Duplicate", "Ctrl+Shift+D", () =>
-        {
-            Send(Command.Duplicate);
-            RestoreCanvasFocus();
-        });
-        duplicate.IsEnabled = !string.IsNullOrEmpty(name);
-        flyout.Items.Add(duplicate);
+        AddFileCommandItems(flyout);  // issue #220 (IslandHost.FileMenu.cs)
     }
 
     // Open > Recent folders: the Mac's File > Open Recent, so the keyboard
@@ -1393,6 +1353,62 @@ public static partial class IslandHost
         return sub;
     }
 
+    // io::kind_filter order. From FirstCullFilter (issue #207) they filter on
+    // each file's rating and colour label, which native reads on a worker.
+    private static readonly string[] KindFilterNames =
+        { "All", "Photos", "Videos", "RAW", "Marked",
+          "Picks", "Not rejected", "Red", "Yellow", "Green", "Blue", "Purple" };
+    private const int FirstCullFilter = 5;
+
+    // View > Show (issue #206): a view of the folder, for this run only. Rebuilt
+    // on open so the marker is the filter native applied. "Marked" keeps the
+    // marks as they are when it is chosen. Picks / Not rejected / a colour
+    // (issue #207) re-apply when chosen again.
+    private static MenuFlyoutSubItem KindFilterSubMenu(MenuFlyout owner)
+    {
+        var sub = new MenuFlyoutSubItem { Text = "Show" };
+        void Fill()
+        {
+            sub.Items.Clear();
+            for (int k = 0; k < KindFilterNames.Length; k++)
+            {
+                if (k == FirstCullFilter) sub.Items.Add(Sep());
+                int filter = k;
+                sub.Items.Add(Item(KindFilterNames[k], _kindFilter == k ? "●" : null,
+                    () => Send(Command.KindFilterSet, filter)));
+            }
+        }
+        owner.Opening += (_, _) => Fill();
+        Fill();
+        return sub;
+    }
+
+    private static void RefreshViewMenu(MenuFlyout flyout, MenuFlyoutSubItem sortMenu, MenuFlyoutSubItem kindMenu)
+    {
+        flyout.Items.Clear();
+        flyout.Items.Add(Item("Zoom in", KeyOf(Command.ZoomIn), () => Send(Command.ZoomIn)));
+        flyout.Items.Add(Item("Zoom out", KeyOf(Command.ZoomOut), () => Send(Command.ZoomOut)));
+        flyout.Items.Add(Sep());
+        flyout.Items.Add(Item("Fit to window", KeyOf(Command.Fit), () => Send(Command.Fit)));
+        flyout.Items.Add(Item("50 %", null, () => Send(Command.ZoomPreset, 0.5f)));
+        flyout.Items.Add(Item("100 %", KeyOf(Command.OneToOne), () => Send(Command.OneToOne)));
+        flyout.Items.Add(Item("200 %", KeyOf(Command.Zoom200), () => Send(Command.ZoomPreset, 2.0f)));
+        flyout.Items.Add(Item("400 %", KeyOf(Command.Zoom400), () => Send(Command.ZoomPreset, 4.0f)));
+        flyout.Items.Add(Sep());
+        flyout.Items.Add(Item("Gallery", KeyOf(Command.ToggleGallery), () => Send(Command.ToggleGallery)));
+        flyout.Items.Add(Item("Full screen", KeyOf(Command.Fullscreen), () => Send(Command.Fullscreen)));
+        flyout.Items.Add(Item("Filmstrip", KeyOf(Command.ToggleFilmstrip), () => Send(Command.ToggleFilmstrip)));
+        flyout.Items.Add(Item("Metadata pane", KeyOf(Command.MetadataPane), () => Send(Command.MetadataPane)));
+        flyout.Items.Add(Item("Folder tree", KeyOf(Command.FolderTree), () => Send(Command.FolderTree)));
+        flyout.Items.Add(sortMenu);
+        flyout.Items.Add(kindMenu);
+        AddGoItems(flyout);  // issue #220 (IslandHost.FileMenu.cs)
+        flyout.Items.Add(Sep());
+        flyout.Items.Add(Item("Clipping warnings", KeyOf(Command.Clipping), () => Send(Command.Clipping)));
+        flyout.Items.Add(Item("Frame-time overlay", KeyOf(Command.Overlay), () => Send(Command.Overlay)));
+        flyout.Items.Add(Item("Keyboard shortcuts", KeyOf(Command.Help), () => Send(Command.Help)));
+    }
+
     private static UIElement BuildChrome()
     {
         var viewFlyout = new MenuFlyout
@@ -1400,25 +1416,12 @@ public static partial class IslandHost
             ShouldConstrainToRootBounds = false,
             MenuFlyoutPresenterStyle = MenuFlyoutPresenterStyle(),
         };
-        viewFlyout.Items.Add(Item("Zoom in", "+", () => Send(Command.ZoomIn)));
-        viewFlyout.Items.Add(Item("Zoom out", "-", () => Send(Command.ZoomOut)));
-        viewFlyout.Items.Add(Sep());
-        viewFlyout.Items.Add(Item("Fit to window", "0", () => Send(Command.Fit)));
-        viewFlyout.Items.Add(Item("50 %", null, () => Send(Command.ZoomPreset, 0.5f)));
-        viewFlyout.Items.Add(Item("100 %", "1", () => Send(Command.OneToOne)));
-        viewFlyout.Items.Add(Item("200 %", null, () => Send(Command.ZoomPreset, 2.0f)));
-        viewFlyout.Items.Add(Item("400 %", null, () => Send(Command.ZoomPreset, 4.0f)));
-        viewFlyout.Items.Add(Sep());
-        viewFlyout.Items.Add(Item("Gallery", "G", () => Send(Command.ToggleGallery)));
-        viewFlyout.Items.Add(Item("Full screen", "F11", () => Send(Command.Fullscreen)));
-        viewFlyout.Items.Add(Item("Filmstrip", "T", () => Send(Command.ToggleFilmstrip)));
-        viewFlyout.Items.Add(Item("Metadata pane", "I", () => Send(Command.MetadataPane)));
-        viewFlyout.Items.Add(Item("Folder tree", "Ctrl+Shift+E", () => Send(Command.FolderTree)));
-        viewFlyout.Items.Add(SortSubMenu(viewFlyout));
-        viewFlyout.Items.Add(Sep());
-        viewFlyout.Items.Add(Item("Clipping warnings", "C", () => Send(Command.Clipping)));
-        viewFlyout.Items.Add(Item("Frame-time overlay", "F3", () => Send(Command.Overlay)));
-        viewFlyout.Items.Add(Item("Keyboard shortcuts", "?", () => Send(Command.Help)));
+        MenuFlyoutSubItem sortMenu = SortSubMenu(viewFlyout);
+        MenuFlyoutSubItem kindMenu = KindFilterSubMenu(viewFlyout);
+        // Rebuilt on open, like Open and Settings: the shortcut column is the
+        // live table's, so a key remapped in Settings shows here.
+        viewFlyout.Opening += (_, _) => RefreshViewMenu(viewFlyout, sortMenu, kindMenu);
+        RefreshViewMenu(viewFlyout, sortMenu, kindMenu);
 
         _settingsFlyout = new MenuFlyout
         {
@@ -1493,25 +1496,22 @@ public static partial class IslandHost
         row.Children.Add(BuildUpdateButton());
         row.Children.Add(BuildImportHint());  // Milestone G (IslandHost.Addons.cs)
 
-        var speed = BuildSpeed();
-        speed.HorizontalAlignment = HorizontalAlignment.Right;
         Button helpBtn = TextButton("?", () => Send(Command.Help));
-        ToolTipService.SetToolTip(helpBtn, "Keyboard shortcuts  ?");
+        ToolTipService.SetToolTip(helpBtn, WithKey("Keyboard shortcuts", Command.Help));
+        _helpButton = helpBtn;
 
-        // Menus left; speed, the folder trail, then `?` on the far right.
+        // Menus left; the folder trail, then `?` on the far right. Speed is in
+        // the transport strip (issue #195).
         FrameworkElement path = BuildBarPathRow();
         var bar = new Grid { VerticalAlignment = VerticalAlignment.Stretch };
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         Grid.SetColumn(row, 0);
         bar.Children.Add(row);
-        Grid.SetColumn(speed, 1);
-        bar.Children.Add(speed);
-        Grid.SetColumn(path, 2);
+        Grid.SetColumn(path, 1);
         bar.Children.Add(path);
-        Grid.SetColumn(helpBtn, 3);
+        Grid.SetColumn(helpBtn, 2);
         bar.Children.Add(helpBtn);
 
         var root = new Grid

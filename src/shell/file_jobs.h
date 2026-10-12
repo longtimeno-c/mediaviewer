@@ -19,13 +19,17 @@
 
 #include "core/job_system.h"
 #include "core/status.h"
+#include "io/rename_stop.h"
 
 namespace mv::shell {
 
+// rename (issue #210): one stop, F2. paths = {the file, its pair half if any},
+// dest_dir = the new name without extension (io/rename_stop.h). items[0].dest
+// (and items[1].dest) say where they went.
 // duplicate (issue #289): one stop beside itself, its paths the primary and
 // then the other half of a pair; io/duplicate.h adds the XMP sidecar. Only
 // the primary's item reports, its `dest` the copy to select.
-enum class file_job_kind : std::uint8_t { copy, move, recycle, duplicate };
+enum class file_job_kind : std::uint8_t { copy, move, recycle, rename, duplicate };
 
 struct file_job_item {
   std::string path;          // source, UTF-8
@@ -82,6 +86,10 @@ class file_jobs {
   // copy and move. False if nothing was queued.
   [[nodiscard]] bool submit(HWND notify, file_job_kind kind, std::vector<std::string> paths,
                             std::string dest_dir, std::uint64_t token) noexcept;
+  // rename only: `before` runs on the worker once the new name is chosen and
+  // before the file moves (io::rename_stop), any thread-safe call.
+  [[nodiscard]] bool submit_rename(HWND notify, std::vector<std::string> paths, std::string new_stem,
+                                   std::uint64_t token, io::rename_before_fn before) noexcept;
 
  private:
   mv::job_system pool_;

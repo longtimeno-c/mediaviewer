@@ -52,6 +52,17 @@ public sealed class AiChrome : IAddonChrome, ISearchChrome
     internal MvAiStatus Status => _status;
     internal bool StatusValid => _statusValid;
     internal string? Folder => _folder;
+
+    /// <summary>
+    /// Loaded through the pack's reader (a later window, 2026-10-07): it searches
+    /// the first window's index and changes nothing, so every control that would
+    /// index, pause, or change a setting or a person is hidden here.
+    /// </summary>
+    internal bool ReadOnly { get; private set; }
+
+    internal const string ReadOnlyNote =
+        "Indexing and Local search settings are in the first MediaViewer window you opened. " +
+        "Search works here too, and new results appear within a few seconds.";
     internal uint Coverage => _coverage;
 
     /// <summary>Raised on the UI thread after a status read.</summary>
@@ -66,6 +77,7 @@ public sealed class AiChrome : IAddonChrome, ISearchChrome
         _host = host as IAddonHost2 ?? throw new InvalidOperationException("this chrome needs IAddonHost2");
         _api = new AiApi(interfaceTable);
         _look = new Look(_host);
+        ReadOnly = ReadsOnly(_api);
         _host.ThemeChanged += OnThemeChanged;
         _queue = DispatcherQueue.GetForCurrentThread();
         _statusThrottle = _queue?.CreateTimer();
@@ -78,6 +90,21 @@ public sealed class AiChrome : IAddonChrome, ISearchChrome
         ReadStatus();
         string? folder = _host.CurrentFolder;
         if (folder is not null) OnFolderChanged(folder);
+    }
+
+    // settings_json's "read_only" ([no-block]); a pack from before it is the host's.
+    private static bool ReadsOnly(AiApi api)
+    {
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(api.SettingsJson());
+            return doc.RootElement.TryGetProperty("read_only", out System.Text.Json.JsonElement r) &&
+                   r.ValueKind == System.Text.Json.JsonValueKind.True;
+        }
+        catch (Exception ex) when (ex is MediaViewerException or System.Text.Json.JsonException)
+        {
+            return false;
+        }
     }
 
     /// <summary>The search panel (Settings' "Open search", the pill).</summary>
@@ -160,6 +187,12 @@ public sealed class AiChrome : IAddonChrome, ISearchChrome
                 return WalkMatch(+1);
             case SearchCommand.PrevMatch:
                 return WalkMatch(-1);
+            case SearchCommand.IndexAnyway:
+                // The command-bar pill's menu, while indexing waits on battery.
+                try { _api.IndexAnyway(); }
+                catch (MediaViewerException) { return false; }
+                ReadStatus();
+                return true;
             default:
                 return false;
         }
@@ -402,8 +435,30 @@ public sealed class AiChrome : IAddonChrome, ISearchChrome
             _host.SetIndexingStatus(null, false);
             return;
         }
-        _host.SetIndexingStatus(Look.PillVisible(_status) ? Look.StatusLine(_status) : null, Look.Busy(_status));
+        string? line = Look.PillVisible(_status) ? Look.StatusLine(_status) : null;
+        bool busy = Look.Busy(_status);
+        double fraction = _status.AssetsTotal == 0 ? 0 : Math.Min(1.0, (double)_status.AssetsDone / _status.AssetsTotal);
+        bool reported = false;
+        try
+        {
+            reported = ReportPill(line, busy, fraction, Look.OnBattery(_status));
+        }
+        catch (TypeLoadException)
+        {
+            // A host older than IAddonHost3: the line and the busy state only.
+        }
+        if (!reported) _host.SetIndexingStatus(line, busy);
         StatusChanged?.Invoke();
+    }
+
+    // Its own method so that on a host whose Interop has no IAddonHost3, only
+    // this call fails to load (caught above), not ReadStatus.
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private bool ReportPill(string? line, bool busy, double fraction, bool onBattery)
+    {
+        if (_host is not IAddonHost3 host) return false;
+        host.SetIndexingPill(line, busy, fraction, onBattery);
+        return true;
     }
 
     private void OnThemeChanged()

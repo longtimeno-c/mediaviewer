@@ -72,11 +72,13 @@
 #include "io/file.h"
 #include "io/file_port.h"
 #include "io/pairing.h"
+#include "io/rename_stop.h"
 #include "io/sort_order.h"
 #include "meta/meta.h"
 #include "meta/tables.h"
 #include "meta/write.h"
 #include "core/json.h"
+#include "shell/listing_stamp.h"
 #include "shell/marks.h"
 #include "shell/media_kind.h"
 #include "shell/meta_store.h"
@@ -292,6 +294,9 @@ struct app_state {
   // ones Revert has a snapshot for. The notice rides the title's status line.
   mv::shell::meta_writer meta_writer;
   std::set<std::string> meta_written;
+  // Issue #231: the selection's stamp is the listing's, corrected for this
+  // app's own writes until the watcher relists (shell/listing_stamp.h).
+  mv::shell::listing_stamps restamped;
   bool focus_comment_next = false;  // Ctrl+I: the next pane push focuses the comment
   std::wstring notice;
   ULONGLONG notice_until = 0;
@@ -397,14 +402,21 @@ struct app_state {
   // docs/design/16 marks, copy, move. Marks are UI-thread state keyed by path; the
   // file work runs on files' own I/O worker and reports back by message.
   mv::shell::mark_set marks;
+  // Issue #206: View > Show. For this run only; the core filters the listing.
+  mv::io::kind_filter kind_filter = mv::io::kind_filter::all;
   mv::shell::file_jobs files;
   // Issue #289: a duplicate just written, selected by the first listing that
   // holds it, in the folder it was made in (folder_token).
   std::string select_when_listed;
   std::uint64_t select_when_listed_token = 0;
+  bool rename_pending = false;  // issue #210: one F2 rename at a time
   std::vector<std::string> destinations;  // F7 / F8, most recent first
   // PR 15: the jump list's recent folders (settings.ini [recent]), most recent first.
   std::vector<std::string> recent_folders;
+  // The OneDrive folder this user has set up (the OneDrive client's %OneDrive%),
+  // "" for none: the welcome card's cloud row above the recent folders, as the
+  // Mac's iCloud Photos (2026-10-07). Read once from the environment, no I/O.
+  std::string onedrive_utf8;
   // The user's profile folder (FOLDERID_Profile) as UTF-8, read once: the
   // welcome card writes it as "~" (the Mac passes NSHomeDirectory()).
   std::string home_utf8;
@@ -569,10 +581,34 @@ void publish(app_state* app) noexcept {
   app->lab.wake();
 }
 
+// "~\OneDrive" for the card's second line, as the folder rows write their parents.
+std::string onedrive_where(const app_state* app) noexcept {
+  try {
+    const std::string& d = app->onedrive_utf8;
+    const std::string& home = app->home_utf8;
+    if (!home.empty() && d.size() > home.size() && d.compare(0, home.size(), home) == 0 &&
+        (d[home.size()] == '\\' || d[home.size()] == '/')) {
+      return "~" + d.substr(home.size());
+    }
+    return d;
+  } catch (...) {
+    return {};
+  }
+}
+
+// The card's rows: OneDrive first when it is set up, then the recent folders.
+void fill_welcome_card(const app_state* app, mv::shell::welcome_recents& out) noexcept {
+  if (app->onedrive_utf8.empty()) {
+    mv::shell::fill_welcome_recents(app->recent_folders, app->home_utf8, out);
+  } else {
+    mv::shell::fill_welcome_recents(app->recent_folders, app->home_utf8, out, "OneDrive", onedrive_where(app));
+  }
+}
+
 // The rows from app->recent_folders; one redraw when they change.
 void refresh_welcome_recents(app_state* app) noexcept {
   mv::shell::welcome_recents next;
-  if (welcome_lists_recents(app)) mv::shell::fill_welcome_recents(app->recent_folders, app->home_utf8, next);
+  if (welcome_lists_recents(app)) fill_welcome_card(app, next);
   if (std::memcmp(&next, &app->input.recents, sizeof(next)) == 0) return;
   app->input.recents = next;
   ++app->input.activity_seq;
@@ -591,9 +627,11 @@ int welcome_row_at_pointer(const app_state* app, bool* on_remove = nullptr) noex
   const float scale = in.dpi_scale > 0.0f ? in.dpi_scale : 1.0f;
   const mv::shell::welcome_geometry g =
       mv::shell::layout_welcome(static_cast<float>(in.width), static_cast<float>(in.height),
-                                static_cast<float>(in.chrome_height_px), scale, in.recents.count);
+                                static_cast<float>(in.chrome_height_px), scale, in.recents.count, 0.0f,
+                                in.recents.icloud);
   const int row = mv::shell::welcome_row_at(g, in.mouse_x, in.mouse_y);
-  if (row >= 0 && on_remove) *on_remove = mv::shell::welcome_on_remove(g, in.mouse_x);
+  // OneDrive's row has no remove button: it leaves when OneDrive does.
+  if (row >= 0 && on_remove && !(in.recents.icloud && row == 0)) *on_remove = mv::shell::welcome_on_remove(g, in.mouse_x);
   return row;
 }
 
@@ -655,11 +693,13 @@ void layout_chrome(app_state* app) noexcept;
 bool run_command(app_state* app, mv::shell::command_id command) noexcept;
 void note_recent_folder(app_state* app, const std::string& utf8_dir);
 void open_welcome_row(app_state* app, int row);
+void open_recent_folder(app_state* app, int index);
 void remove_welcome_row(app_state* app, int row);
 void push_recent_folders(app_state* app);
 void trim_item_opened(app_state* app) noexcept;
 void set_jobs_pane(app_state* app, bool on, bool focus = true) noexcept;
 void focus_canvas(app_state* app) noexcept;
+void commit_rename(app_state* app) noexcept;  // issue #210
 void reveal_current_in_explorer(app_state* app) noexcept;
 void begin_file_drag(app_state* app, HWND hwnd, const std::string& utf8) noexcept;
 void open_dropped_wide_list(app_state* app, std::wstring_view blob) noexcept;
@@ -893,6 +933,9 @@ void open_folder_dialog(app_state* app, HWND hwnd) {
   app->mode = open_mode::folder;
   app->gallery_visible = false;
   sync_video_hold(app, false);
+  // A folder the user chose is a recent folder, as from Explorer or a drop
+  // (it was missing here: the welcome card never listed a picked folder).
+  note_recent_folder(app, utf8_from_wide(folder));
   open_folder(app, folder, {});
   focus_canvas(app);
 }
@@ -1020,6 +1063,21 @@ void end_own_drag(app_state* app) noexcept {
   app->chrome.set_drag_paths({}, false);
 }
 
+// The OneDrive folder the OneDrive client set up for this user, from the
+// variables it sets (personal, else work or school), without touching the disk:
+// this runs before the first pixel. "" when OneDrive is not set up.
+std::string onedrive_folder_utf8() {
+  for (const wchar_t* name : {L"OneDrive", L"OneDriveConsumer", L"OneDriveCommercial"}) {
+    wchar_t buf[MAX_PATH * 2];
+    const DWORD n = ::GetEnvironmentVariableW(name, buf, static_cast<DWORD>(std::size(buf)));
+    if (n == 0 || n >= std::size(buf)) continue;
+    std::wstring dir(buf, n);
+    while (dir.size() > 3 && (dir.back() == L'\\' || dir.back() == L'/')) dir.pop_back();
+    return utf8_from_wide(dir);
+  }
+  return {};
+}
+
 // %USERPROFILE% as UTF-8, from the known folder rather than the environment.
 std::string profile_folder_utf8() {
   PWSTR path = nullptr;
@@ -1120,27 +1178,22 @@ bool metadata_wanted(const app_state* app) noexcept {
   return app->input.info_overlay || app->input.af_points || app->meta_pane_visible;
 }
 
-// The selected item as the store keys it: path + mtime + size, from one stat.
+// The selected item as the store keys it: path + mtime + size, from the
+// listing the core already holds, so an arrow press does no I/O here (issue
+// #231). A write this app made since the listing was taken overrides it.
 bool current_dir_entry(app_state* app, mv::io::dir_entry& out) {
-  const std::string utf8 = current_item_path(app);
+  std::uint32_t selected = 0;
+  if (!selected_index(app, selected)) return false;
+  mv_folder_item rec{};
+  if (mv_folder_item_at(app->session, selected, &rec) != MV_OK) return false;
+  std::string utf8 = item_path_at(app, selected);
   if (utf8.empty()) return false;
-  const int n = ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
-  if (n <= 1) return false;
-  std::wstring wide(static_cast<std::size_t>(n), L'\0');
-  ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, wide.data(), n);
-  WIN32_FILE_ATTRIBUTE_DATA fa{};
-  if (!::GetFileAttributesExW(wide.c_str(), GetFileExInfoStandard, &fa)) return false;
-  ULARGE_INTEGER size{};
-  size.LowPart = fa.nFileSizeLow;
-  size.HighPart = fa.nFileSizeHigh;
-  ULARGE_INTEGER ft{};
-  ft.LowPart = fa.ftLastWriteTime.dwLowDateTime;
-  ft.HighPart = fa.ftLastWriteTime.dwHighDateTime;
-  out.path_utf8 = utf8;
+  const mv::shell::file_stamp stamp = app->restamped.resolve(utf8, {rec.size_bytes, rec.mtime_unix});
+  out.size = stamp.size;
+  out.mtime_unix = stamp.mtime_unix;
   const std::size_t slash = utf8.find_last_of("\\/");
   out.name_utf8 = slash == std::string::npos ? utf8 : utf8.substr(slash + 1);
-  out.size = size.QuadPart;
-  out.mtime_unix = static_cast<std::int64_t>(ft.QuadPart / 10000000ULL) - 11644473600LL;
+  out.path_utf8 = std::move(utf8);
   return true;
 }
 
@@ -1340,6 +1393,48 @@ bool rate_current_item(app_state* app, int stars) noexcept {
   }
 }
 
+// Issue #207: `X` toggles reject (rating -1) on the item on screen, through the
+// same queue, debounce and writer as a rating.
+bool reject_current_item(app_state* app) noexcept {
+  try {
+    const std::string path = current_item_path(app);
+    if (path.empty()) return false;
+    const int next = mv::shell::reject_toggled(meta_rating_now(app, path));
+    app->meta_writer.submit(path, mv::shell::rating_fields(next));
+    notice_show(app, next == 0 ? std::string("Rating cleared") : mv::meta::format_rating(next));
+    push_meta_edit(app);
+    schedule_meta_write(app, kRatingDebounceMs);
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+// Issue #207: numpad / Ctrl+Shift 6-9 set a colour label (the same one again
+// clears it), `U` clears it. XMP xmp:Label: in place on a plain JPEG, else
+// the sidecar (docs/design/06). The label the file has now: a queued one
+// counts, then what was read; an unread file counts as unlabelled.
+bool label_current_item(app_state* app, mv::shell::colour_label pressed) noexcept {
+  try {
+    const std::string path = current_item_path(app);
+    if (path.empty()) return false;
+    std::string now;
+    if (auto pending = app->meta_writer.pending_label(path)) now = std::move(*pending);
+    else if (app->meta_record) now = app->meta_record->s.label;
+    const std::string next = mv::shell::label_toggled(pressed, now);
+    if (next.empty() && now.empty()) {
+      notice_show(app, "No label");
+      return true;
+    }
+    app->meta_writer.submit(path, mv::shell::label_fields(next));
+    notice_show(app, next.empty() ? std::string("Label cleared") : "Label: " + next);
+    schedule_meta_write(app, kRatingDebounceMs);
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
 // Ctrl+I: the pane comes up (it replaces the adjust pane, as `I` does) and the
 // keyboard goes to its comment field rather than the pane's first control.
 bool focus_comment_field(app_state* app) noexcept {
@@ -1530,10 +1625,13 @@ void on_meta_write_done(app_state* app, std::unique_ptr<meta_write_result> r) {
   // What the store cached for this file is out of date: a JPEG's stamp moved,
   // a sidecar's did not, so drop it by path either way.
   app->meta.invalidate(out.path);
+  // Issue #207: and the rating / label View > Show's cull filters cached.
+  (void)mv_folder_note_metadata_written(app->session, out.path.c_str());
   if (r->stamped) {
     // The bytes changed, the pixels did not: keep the item's edits, and let
     // the next listing see the same item rather than a new one.
     app->edits.metadata_rewritten(out.path, r->old_size, r->old_mtime, r->new_size, r->new_mtime);
+    app->restamped.rewritten(out.path, {r->old_size, r->old_mtime}, {r->new_size, r->new_mtime});
     if (app->edit_path == out.path && app->edit_size == r->old_size && app->edit_mtime == r->old_mtime) {
       app->edit_size = r->new_size;
       app->edit_mtime = r->new_mtime;
@@ -1551,21 +1649,7 @@ void on_meta_write_done(app_state* app, std::unique_ptr<meta_write_result> r) {
   // Say where it went, unless another change to the same file is already queued
   // (its message is the one that matters).
   if (!app->meta_writer.busy_for(out.path)) {
-    std::string text = job.revert ? std::string("Metadata reverted") : std::string();
-    if (!job.revert && job.fields.rating.touches()) {
-      const int stars =
-          job.fields.rating.k == mv::meta::change<int>::kind::clear ? 0 : job.fields.rating.value;
-      text = stars == 0 ? std::string("Rating cleared") : mv::meta::format_rating(stars);
-    } else if (!job.revert && job.fields.comment.touches()) {
-      text = job.fields.comment.k == mv::meta::change<std::string>::kind::clear ? "Comment removed"
-                                                                                : "Comment saved";
-    } else if (!job.revert && job.fields.date_taken.touches()) {
-      text = job.fields.date_taken.k == mv::meta::change<std::string>::kind::clear ? "Date taken removed"
-                                                                                   : "Date taken saved";
-    } else if (!job.revert && !job.fields.tags.empty()) {
-      text = job.fields.tags.size() == 1 ? std::string("Metadata saved")
-                                         : std::to_string(job.fields.tags.size()) + " tags saved";
-    }
+    std::string text = job.revert ? std::string("Metadata reverted") : mv::shell::describe_write(job.fields);
     if (out.target == mv::meta::write_target::sidecar && out.sidecar_touched) {
       const std::size_t sep = out.sidecar_path.find_last_of("\\/");
       text += "  \xE2\x80\x94 " + out.sidecar_path.substr(sep == std::string::npos ? 0 : sep + 1);  // — IMG_1234.xmp
@@ -1584,6 +1668,42 @@ void set_sort(app_state* app, std::int32_t packed) noexcept {
   app->settings.sort = packed;
   mv::shell::save_view_settings(app->settings);
   app->chrome.apply_settings(chrome_flags(app), packed);
+}
+
+// Issue #206: View > Show. The session filters (mv_folder_set_kind_filter), so the
+// filmstrip, the gallery and the arrow keys read one list; the stop on screen
+// moves to the nearest one shown. "Marked" keeps the marks as they are now, so
+// unmarking while culling does not pull a file out from under the user.
+// Issue #207: Picks / Not rejected / a colour filter on rating and label, which
+// the session reads on a worker (never here) before it relists.
+// For this run only: a filter left on from yesterday would look like files gone.
+static_assert(mv::io::kKindFilterCount <= 16, "the chrome's sort word carries it in bits 8-11");
+bool set_kind_filter(app_state* app, mv::io::kind_filter f) noexcept {
+  if (!app || !app->session) return false;
+  try {
+    std::vector<std::string> kept;
+    if (f == mv::io::kind_filter::marked) {
+      if (app->marks.empty()) {
+        notice_show(app, "Nothing is marked");
+        return false;
+      }
+      kept = app->marks.targets({});
+    }
+    std::vector<const char*> ptrs;
+    ptrs.reserve(kept.size());
+    for (const auto& k : kept) ptrs.push_back(k.c_str());
+    if (mv_folder_set_kind_filter(app->session, mv::io::kind_filter_mask(f), ptrs.data(),
+                                  static_cast<std::uint32_t>(ptrs.size())) != MV_OK) {
+      return false;
+    }
+    app->kind_filter = f;
+    app->chrome.set_kind_filter(static_cast<std::int32_t>(f));
+    app->chrome.apply_settings(chrome_flags(app), app->settings.sort);
+    notice_show(app, mv::io::kind_filter_notice(f));
+    return true;
+  } catch (...) {
+    return false;
+  }
 }
 
 // Ctrl+C (docs/design/16): the eyedropper's readout when it is on and a pixel is under
@@ -1697,6 +1817,12 @@ struct edit_job_result {
   bool export_job = false;  // else a lossless rotate write
   bool ok = false;
   std::string path;         // the file written (rotate) or the source (export)
+  // A rotate's stamp either side of the write, stat'ed on the worker (issue #231).
+  bool stamped = false;
+  std::uint64_t old_size = 0;
+  std::int64_t old_mtime = 0;
+  std::uint64_t new_size = 0;
+  std::int64_t new_mtime = 0;
 };
 
 struct sibling_job_result {
@@ -1796,8 +1922,22 @@ void start_rotation_write(app_state* app) {
   const HWND hwnd = app->window;
   app->jobs.submit_at(mv::background_generation,
                       [job = *w, hwnd](const mv::job_context&) -> mv::status {
+                        const auto before = mv::io::stat_path(job.path);
                         const mv::expected written = mv::shell::run_rotation_write(job);
-                        auto* r = new (std::nothrow) edit_job_result{false, static_cast<bool>(written), job.path};
+                        auto* r = new (std::nothrow) edit_job_result{};
+                        if (r) {
+                          r->ok = static_cast<bool>(written);
+                          r->path = job.path;
+                        }
+                        if (r && written) {
+                          if (const auto after = mv::io::stat_path(job.path); before && after) {
+                            r->stamped = true;
+                            r->old_size = before->size;
+                            r->old_mtime = before->mtime_unix;
+                            r->new_size = after->size;
+                            r->new_mtime = after->mtime_unix;
+                          }
+                        }
                         if (r && !::PostMessageW(hwnd, kMsgEditJobDone, 0, reinterpret_cast<LPARAM>(r))) delete r;
                         return written ? mv::status::ok : written.error();
                       });
@@ -1812,7 +1952,12 @@ void start_export(app_state* app, const mv::edit::export_options& opt) {
                       [path = app->edit_path, g = app->edits.export_geometry(), opt,
                        c = app->edits.colour(), hwnd](const mv::job_context&) -> mv::status {
                         const mv::result<std::string> out = mv::shell::run_export(path, g, opt, c);
-                        auto* r = new (std::nothrow) edit_job_result{true, static_cast<bool>(out), path};
+                        auto* r = new (std::nothrow) edit_job_result{};
+                        if (r) {
+                          r->export_job = true;
+                          r->ok = static_cast<bool>(out);
+                          r->path = path;
+                        }
                         if (r && !::PostMessageW(hwnd, kMsgEditJobDone, 0, reinterpret_cast<LPARAM>(r))) delete r;
                         return out ? mv::status::ok : out.error();
                       });
@@ -1840,6 +1985,7 @@ void on_edit_job_done(app_state* app, std::unique_ptr<edit_job_result> r) {
   // The navigation LRU still holds the old pixels under this path: drop them,
   // then reselect so the rewritten file decodes (ABI 0.7).
   (void)mv_folder_forget(app->session, r->path.c_str());
+  if (r->stamped) app->restamped.rewritten(r->path, {r->old_size, r->old_mtime}, {r->new_size, r->new_mtime});
   std::uint32_t selected = 0;
   if (selected_index(app, selected) && current_item_path(app) == r->path) {
     folder_select(app, selected);
@@ -4247,7 +4393,7 @@ void chrome_on_command(void* ctx, int command, float arg) {
       end_own_drag(app);
       return;
     case mv::shell::chrome_cmd_open_recent:
-      open_welcome_row(app, static_cast<int>(arg));
+      open_recent_folder(app, static_cast<int>(arg));
       return;
     case mv::shell::chrome_cmd_addon_state: {
       // The chrome installed, loaded, or removed an add-on: 0 / 1 Import
@@ -4314,6 +4460,9 @@ void chrome_on_command(void* ctx, int command, float arg) {
     case static_cast<int>(mv::shell::command_id::crop_aspect_set):
       edit_set_aspect(app, static_cast<int>(arg));
       return;
+    case static_cast<int>(mv::shell::command_id::kind_filter_set):
+      (void)set_kind_filter(app, mv::io::kind_filter_from(static_cast<int>(arg)));
+      return;
     case static_cast<int>(mv::shell::command_id::crop_straighten_set):
       edit_set_straighten(app, arg);
       return;
@@ -4348,6 +4497,10 @@ void chrome_on_command(void* ctx, int command, float arg) {
       return;
     case mv::shell::chrome_cmd_meta_revert:
       revert_current_metadata(app);
+      return;
+    case mv::shell::chrome_cmd_rename:
+      commit_rename(app);
+      if (app->window) focus_canvas(app);
       return;
     case mv::shell::chrome_cmd_folder_ready: {
       // The island owns the completion drain (docs/design/12 2026-09-07), so this is
@@ -5451,10 +5604,101 @@ void on_duplicate_done(app_state* app, const mv::shell::file_job_result& result)
 }
 
 // A copy / move / delete finished. Counts only in logs and dialogs (rule 6).
+// Issue #210: F2. The checks that make a rename safe, then the popup; the name
+// comes back as chrome_cmd_rename. Refused (with a notice) in a result list
+// (its items live in other folders), while the file has unsaved edits (they
+// are keyed by its path) or a metadata write in flight (it would land on the
+// old name).
+bool begin_rename(app_state* app) noexcept {
+  try {
+    if (!app || !app->chrome.attached()) return false;
+    std::uint32_t selected = 0;
+    if (!selected_index(app, selected)) return false;
+    const std::string path = item_path_at(app, selected);
+    if (path.empty()) return false;
+    if (!app->list_title.empty()) {
+      notice_show(app, "Rename it from its own folder");
+      return true;
+    }
+    if (app->edits.edit_count() > 0 || app->edits.crop_active() || app->edits.write_in_flight()) {
+      notice_show(app, "Save or reset the edits first");
+      return true;
+    }
+    if (app->meta_writer.busy_for(path) || app->rename_pending) {
+      notice_show(app, "Wait for the last change to finish");
+      return true;
+    }
+    app->popup_open = true;
+    if (app->fullscreen) layout_chrome(app);  // the flyouts hang off the bar
+    app->chrome.show_popup(mv::shell::chrome_popup::rename, static_cast<std::int32_t>(selected));
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+// The popup's Enter: the new name (no extension), checked here as well as in
+// the job, then one job on the file worker (never the UI thread, rule 1).
+void commit_rename(app_state* app) noexcept {
+  try {
+    std::string stem;
+    if (!app->chrome.take_parked_text(stem)) return;
+    while (!stem.empty() && stem.front() == ' ') stem.erase(stem.begin());
+    while (!stem.empty() && stem.back() == ' ') stem.pop_back();
+    std::uint32_t selected = 0;
+    if (!selected_index(app, selected)) return;
+    const std::string path = item_path_at(app, selected);
+    if (path.empty()) return;
+    if (const auto problem = mv::io::check_stem(stem); problem != mv::io::stem_problem::ok) {
+      ::MessageBeep(MB_ICONWARNING);
+      notice_show(app, mv::io::stem_problem_text(problem));
+      return;
+    }
+    if (stem == mv::io::stem_of(path)) return;  // unchanged: nothing to do
+    std::vector<std::string> paths{path};
+    if (std::string pair = item_pair_path_at(app, selected); !pair.empty()) paths.push_back(std::move(pair));
+    // Told before the file moves, so the relist the folder watcher makes of
+    // the rename keeps this stop under its new name (mv_folder_renamed).
+    mv_session_t session = app->session;
+    auto follow = [session](const std::string& from, const std::string& to) {
+      (void)mv_folder_renamed(session, from.c_str(), to.c_str());
+    };
+    if (!app->files.submit_rename(app->window, std::move(paths), stem, app->folder_token, follow)) {
+      ::MessageBeep(MB_ICONWARNING);
+      return;
+    }
+    app->rename_pending = true;
+  } catch (...) {
+  }
+}
+
+// The rename landed (or did not). The session follows the stop to its new
+// name (mv_folder_renamed), a mark moves with the file, and the notice says
+// what it is called now, `name (2)` included.
+void on_rename_done(app_state* app, const mv::shell::file_job_result& result) {
+  app->rename_pending = false;
+  const auto& file = result.items.front();
+  if (file.status != mv::status::ok || file.dest.empty()) {
+    ::MessageBeep(MB_ICONWARNING);
+    notice_show(app, file.status == mv::status::not_found ? "The file is gone" : "Could not rename the file");
+    return;
+  }
+  if (app->marks.contains(file.path)) {
+    app->marks.erase(file.path);
+    (void)app->marks.toggle(file.dest);
+    refresh_mark_state(app);
+  }
+  notice_show(app, "Renamed to " + std::string(mv::io::file_name_of(file.dest)));
+}
+
 void on_file_job_done(app_state* app, std::unique_ptr<mv::shell::file_job_result> result) {
   if (!app || !result || app->closing) return;
   if (result->kind == mv::shell::file_job_kind::duplicate) {
     on_duplicate_done(app, *result);
+    return;
+  }
+  if (result->kind == mv::shell::file_job_kind::rename) {
+    on_rename_done(app, *result);
     return;
   }
   // Marks clear only for what succeeded; a failure keeps its mark to retry.
@@ -5841,9 +6085,43 @@ void forget_recent_folder(app_state* app, const std::string& dir) {
   refresh_welcome_recents(app);
 }
 
-// A click on one of the welcome card's recent folders, or Open > Recent
-// folders: the jump list's route.
+// A card row is a recent folder's index, one down when OneDrive leads; -1 for OneDrive.
+int welcome_row_folder(const app_state* app, int row) noexcept {
+  return app->input.recents.icloud ? row - 1 : row;
+}
+
+// The card's OneDrive row: its Pictures folder, where a phone's camera uploads
+// land, else OneDrive itself. Not a recent folder: opening it does not list it.
+void open_onedrive(app_state* app) {
+  const std::string pictures = app->onedrive_utf8 + "\\Pictures";
+  const auto has_pictures = mv::io::is_directory(pictures);
+  const std::string dir = has_pictures && has_pictures.value() ? pictures : app->onedrive_utf8;
+  const auto is_dir = mv::io::is_directory(dir);
+  if (!is_dir || !is_dir.value()) {
+    ::MessageBeep(MB_ICONWARNING);
+    return;
+  }
+  app->mode = open_mode::folder;
+  app->gallery_visible = false;
+  sync_video_hold(app, false);
+  open_folder(app, wide_from_utf8(dir), {});
+  focus_canvas(app);
+}
+
+// A click on one of the welcome card's rows.
 void open_welcome_row(app_state* app, int row) {
+  if (!app || row < 0) return;
+  if (app->input.recents.icloud && row == 0) {
+    open_onedrive(app);
+    return;
+  }
+  open_recent_folder(app, welcome_row_folder(app, row));
+}
+
+// Recent folder `index` (most recent first): a card row, or Open > Recent
+// folders, the jump list's route.
+void open_recent_folder(app_state* app, int index) {
+  const int row = index;
   if (!app || row < 0 || static_cast<std::size_t>(row) >= app->recent_folders.size()) return;
   const std::string dir = app->recent_folders[static_cast<std::size_t>(row)];
   const auto is_dir = mv::io::is_directory(dir);
@@ -5859,8 +6137,10 @@ void open_welcome_row(app_state* app, int row) {
 
 // The x on a welcome card row: the folder leaves the card, the jump list and
 // Open > Recent folders. The folder itself is not touched.
-void remove_welcome_row(app_state* app, int row) {
-  if (!app || row < 0 || static_cast<std::size_t>(row) >= app->recent_folders.size()) return;
+void remove_welcome_row(app_state* app, int card_row) {
+  if (!app) return;
+  const int row = welcome_row_folder(app, card_row);  // OneDrive's row (-1) has no x
+  if (row < 0 || static_cast<std::size_t>(row) >= app->recent_folders.size()) return;
   forget_recent_folder(app, app->recent_folders[static_cast<std::size_t>(row)]);
   // The next folder slides up under the pointer: hover it without waiting for a move.
   update_welcome_hover(app);
@@ -6161,6 +6441,8 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     case close_window:
       if (app->window) ::PostMessageW(app->window, WM_CLOSE, 0, 0);
       return true;
+    case rename_file:
+      return begin_rename(app);
     case new_window:
       open_new_window();
       return true;
@@ -6410,8 +6692,10 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       if (edit_subject_of(app) != mv::shell::edit_subject::still || !app->edits.has_item()) return false;
       set_show_original(app, command == show_original);
       return true;
-    case crop_aspect_set: case crop_straighten_set:
+    case crop_aspect_set: case crop_straighten_set: case kind_filter_set:
       return false;  // island-only: they carry a value (chrome_on_command)
+    case kind_filter_next:
+      return set_kind_filter(app, mv::io::next_kind_filter(app->kind_filter, !app->marks.empty()));
     // Marks (docs/design/16): a set separate from the selection, keyed by path.
     case toggle_mark: {
       const std::string current = current_item_path(app);
@@ -6543,6 +6827,12 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     case set_rating_0: case set_rating_1: case set_rating_2: case set_rating_3:
     case set_rating_4: case set_rating_5:
       return rate_current_item(app, mv::shell::rating_of_command(command));
+    // Issue #207: culling, the same writer as the ratings.
+    case reject:
+      return reject_current_item(app);
+    case label_red: case label_yellow: case label_green: case label_blue: case clear_label:
+      return label_current_item(
+          app, static_cast<mv::shell::colour_label>(mv::shell::label_of_command(command)));
     case edit_comment:
       return focus_comment_field(app);
     // PR 13 / 14 (docs/design/08, docs/design/16 "Video and trim").
@@ -7924,11 +8214,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   app.destinations = mv::shell::load_destinations();
   app.recent_folders = mv::shell::load_recent_folders();
   app.home_utf8 = profile_folder_utf8();
+  app.onedrive_utf8 = onedrive_folder_utf8();
   app.record_recent = !harness_run;
   // Straight into the snapshot: the render thread is not up yet. A launch
   // with a path to open never shows the rows, not even for its first frame.
   if (requested_paths.empty() && welcome_lists_recents(&app)) {
-    mv::shell::fill_welcome_recents(app.recent_folders, app.home_utf8, app.input.recents);
+    fill_welcome_card(&app, app.input.recents);
   }
   // The toolbar is added when Explorer reports the button, not before.
   app.taskbar_created_msg = ::RegisterWindowMessageW(L"TaskbarButtonCreated");

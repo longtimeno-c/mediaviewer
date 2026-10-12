@@ -56,17 +56,31 @@ void run_audio_decode_thread(video_pipeline& pipe) noexcept {
   double rate = 1;
   time_ns next_pts = 0;
   bool seeded = false;
-  while (!pipe.stopping.load()) {
+  // Held while a packet is in libavcodec, given back while parked (issue #233).
+  // Described with the track's codec once one is opened.
+  auto crash = clip_crash_slot(pipe, "audio", "none", LIBAVCODEC_IDENT);
+  for (;;) {
+    // Parked, not polled, while there is nothing to decode (issue #230): a
+    // queued packet or stop wakes it.
+    const std::uint32_t seen = pipe.wake.epoch();
+    if (pipe.stopping.load()) break;
     packet_ptr packet;
     std::uint32_t packet_generation = 0;
     if (!pipe.audio_packets.try_pop(packet, &packet_generation)) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(2)); continue;
+      crash.idle();
+      pipe.wake.wait(seen); continue;
     }
     if (packet_generation != pipe.generation.load()) continue;
     const int selected = pipe.selected_audio.load();
     if (selected < 0) continue;
     AVStream* stream = pipe.format->streams[selected];
+    crash.busy();
     if (selected != stream_index) {
+      crash.describe({.family = pipe.crash.container,
+                      .decoder = avcodec_get_name(stream->codecpar->codec_id),
+                      .version = LIBAVCODEC_IDENT,
+                      .correlation_id = pipe.crash.correlation_id,
+                      .role = "audio"});
       const AVCodec* decoder = avcodec_find_decoder(stream->codecpar->codec_id);
       codec.reset(decoder ? avcodec_alloc_context3(decoder) : nullptr);
       if (!codec || avcodec_parameters_to_context(codec.get(), stream->codecpar) < 0 ||
@@ -121,8 +135,16 @@ void run_audio_decode_thread(video_pipeline& pipe) noexcept {
             block.frames -= trim; block.pts_ns = target;
             std::memmove(block.samples, block.samples + trim * 2, block.frames * 2 * sizeof(float));
           }
-          while (!pipe.clock.submit(block) && !pipe.stopping.load() && generation == pipe.generation.load())
-            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+          // The clock's ring stays full for the whole of a pause: park until the
+          // pump takes a block, a seek moves on, or stop.
+          for (;;) {
+            const std::uint32_t seen_space = pipe.wake.epoch();
+            if (pipe.stopping.load() || generation != pipe.generation.load()) break;
+            if (pipe.clock.submit(block)) break;
+            crash.idle();
+            pipe.wake.wait(seen_space);
+          }
+          crash.busy();
         }
         av_frame_unref(filtered.get());
       }

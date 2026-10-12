@@ -32,6 +32,13 @@ constexpr std::int64_t ns_per_second = 1'000'000'000;
 // refresh interval, so two seconds is ~120 missed frames.
 constexpr time_ns host_gap_threshold_ns = 2 * ns_per_second;
 
+// Retrying an endpoint that will not open. A closed sink registers no device
+// notification, so the timer is the only way back; it backs off so a machine
+// with no output device is not enumerated once a second for a clip's whole life
+// (issue #234). Eight seconds bounds the wait after a device is plugged in.
+constexpr time_ns endpoint_retry_first_ns = ns_per_second;
+constexpr time_ns endpoint_retry_max_ns = 8 * ns_per_second;
+
 // std::chrono::steady_clock is the D9-clean spelling of what docs/design/05 calls QPC:
 // QueryPerformanceCounter on MSVC, mach_absolute_time on macOS. Using it here
 // rather than <windows.h> is what lets a Core Audio host reuse this file
@@ -188,6 +195,9 @@ struct av_clock::impl {
   audio_sink* sink = nullptr;
   bool sink_open = false;
   time_ns retry_after_ns = 0;
+  time_ns retry_backoff_ns = endpoint_retry_first_ns;
+  // The open failure has been logged; retries that fail the same way are not.
+  bool open_failure_logged = false;
 
   // Decode -> pump handoff. docs/design/02: SPSC rings of POD, nothing else.
   spsc_ring<audio_block, audio_ring_slots> ring;
@@ -196,6 +206,13 @@ struct av_clock::impl {
   std::atomic<bool> running{false};
   std::mutex wake_mutex;
   std::condition_variable wake;
+  // Where the pump parks while paused or played out (issue #230): no timeout,
+  // so everything it waits for notifies it -- play, pause, a seek, a submitted
+  // block, the end of the track, stop. A futex word rather than `wake` because
+  // set_paused is called from the render thread, which must not take a lock.
+  wake_signal idle;
+  // The decoder's side: notified when the pump frees a ring slot.
+  wake_signal* space = nullptr;
 
   // Anchoring. The endpoint plays everything written to it in order and
   // contiguously, so the PTS of the sample at endpoint position P is
@@ -276,6 +293,11 @@ struct av_clock::impl {
   // av_clock because impl is private and a free function could not name it.
   void pump_loop() noexcept;
   void rebuild_endpoint() noexcept;
+  // Next try of a closed endpoint: after the current backoff, which then doubles.
+  void schedule_retry() noexcept {
+    retry_after_ns = host_now_ns() + retry_backoff_ns;
+    retry_backoff_ns = std::min(retry_backoff_ns * 2, endpoint_retry_max_ns);
+  }
   [[nodiscard]] time_ns master_now_ns() const noexcept;
 
   // Overlays the live atomic-backed state onto a stats block. Called by both
@@ -328,13 +350,17 @@ expected av_clock::start(std::uint32_t sample_rate, std::uint32_t channels) noex
     impl_->fallback.store(clock_fallback_reason::device_open_failed, std::memory_order_relaxed);
     MV_LOG_ERROR("av_clock: endpoint open failed (%s); host clock is master",
                  status_name(opened.error()));
-    impl_->retry_after_ns = host_now_ns() + ns_per_second;
+    impl_->open_failure_logged = true;
+    impl_->retry_backoff_ns = endpoint_retry_first_ns;
+    impl_->schedule_retry();
     impl_->running.store(true, std::memory_order_release);
     impl_->pump = std::thread([this] { impl_->pump_loop(); });
     return {};
   }
 
   impl_->sink_open = true;
+  impl_->open_failure_logged = false;
+  impl_->retry_backoff_ns = endpoint_retry_first_ns;
   impl_->audio_master.store(true, std::memory_order_relaxed);
   impl_->fallback.store(clock_fallback_reason::none, std::memory_order_relaxed);
   impl_->silence_baseline.store(0, std::memory_order_relaxed);
@@ -360,6 +386,7 @@ void av_clock::stop() noexcept {
   if (impl_ == nullptr) return;
   impl_->running.store(false, std::memory_order_release);
   impl_->wake.notify_all();
+  impl_->idle.notify();
   if (impl_->pump.joinable()) impl_->pump.join();
   if (impl_->sink != nullptr && impl_->sink_open) {
     impl_->sink->close();
@@ -376,8 +403,15 @@ bool av_clock::submit(const audio_block& block) noexcept {
   }
   if (!impl_->running.load()) return true; // No working endpoint: decode may drain.
   const bool pushed = impl_->ring.try_push(block);
-  if (pushed) impl_->wake.notify_one();
+  if (pushed) {
+    impl_->wake.notify_one();
+    impl_->idle.notify();
+  }
   return pushed;
+}
+
+void av_clock::notify_on_space(wake_signal* signal) noexcept {
+  if (impl_ != nullptr) impl_->space = signal;
 }
 
 void av_clock::audio_ended(std::uint32_t generation) noexcept {
@@ -385,6 +419,7 @@ void av_clock::audio_ended(std::uint32_t generation) noexcept {
   // Release: every submit() of this generation happens-before the pump sees it.
   impl_->ended_generation.store(generation, std::memory_order_release);
   impl_->wake.notify_one();
+  impl_->idle.notify();
 }
 
 void av_clock::impl::overlay_live_state(clock_stats& out) const noexcept {
@@ -488,6 +523,9 @@ void av_clock::set_paused(bool paused) noexcept {
     impl_->paused.store(false, std::memory_order_release);
     impl_->wake.notify_all();
   }
+  // Both ways: a pump parked at the end of the track must still hand the
+  // pause to the endpoint.
+  impl_->idle.notify();
 }
 
 void av_clock::set_volume(float volume) noexcept {
@@ -513,6 +551,7 @@ void av_clock::seeked(time_ns to_ns, std::uint32_t generation) noexcept {
   // discontinuity, not evidence of one. Restarting it keeps a scrub from
   // showing up as a drift ramp.
   impl_->drift.reset();
+  impl_->idle.notify();  // a parked pump still takes the new generation now
 }
 
 void av_clock::record_present(const present_decision& decision, bool showed) noexcept {
@@ -597,7 +636,18 @@ void av_clock::impl::pump_loop() noexcept {
           const auto endpoint = state.sink->info();
           state.sink->close();
           state.sink_open = false;
-          if (state.sink->open(endpoint.sample_rate, endpoint.channels)) state.sink_open = true;
+          if (state.sink->open(endpoint.sample_rate, endpoint.channels)) {
+            state.sink_open = true;
+          } else {
+            // The device went with the stream: a loss, counted once here. The
+            // retries that follow are open attempts on the backoff timer, which
+            // leave this reason and count alone (issue #234).
+            state.fallback.store(clock_fallback_reason::device_lost, std::memory_order_release);
+            state.device_rebuilds.fetch_add(1, std::memory_order_relaxed);
+            state.open_failure_logged = false;
+            state.retry_backoff_ns = endpoint_retry_first_ns;
+            state.retry_after_ns = 0;  // first retry now, as rebuild_endpoint's would be
+          }
         }
         state.audio_master.store(state.sink_open);
         // A seek after the track played out: the endpoint is master again.
@@ -609,15 +659,25 @@ void av_clock::impl::pump_loop() noexcept {
     // unplugged while the decoder happens to be starved must still be noticed —
     // the verify line is about recovery, and recovery that only fires when audio
     // is flowing is not recovery.
-    if (state.sink != nullptr && (state.sink->device_changed() ||
-        (!state.sink_open && host_now_ns() >= state.retry_after_ns))) {
-      state.rebuild_endpoint(); state.retry_after_ns = host_now_ns() + ns_per_second;
+    // A closed endpoint is retried on its backoff timer, and not while paused:
+    // nothing needs audio then, and the timer has fired by the time it resumes.
+    if (state.sink != nullptr &&
+        (state.sink->device_changed() ||
+         (!state.sink_open && !state.paused.load(std::memory_order_acquire) &&
+          host_now_ns() >= state.retry_after_ns))) {
+      state.rebuild_endpoint();
     }
 
     if (state.sink) state.sink->set_paused(state.paused.load());
     if (state.paused.load(std::memory_order_acquire)) {
-      std::unique_lock<std::mutex> lock(state.wake_mutex);
-      state.wake.wait_for(lock, std::chrono::milliseconds(5));
+      // Parked until play, a seek or stop (issue #230). A device change while
+      // paused is taken on the next wake, at the top of the loop: nothing is
+      // playing through the endpoint meanwhile.
+      state.idle.wait_until([&] {
+        return !state.paused.load(std::memory_order_acquire) ||
+               !state.running.load(std::memory_order_acquire) ||
+               state.generation.load(std::memory_order_acquire) != state.pump_generation;
+      });
       continue;
     }
 
@@ -640,9 +700,13 @@ void av_clock::impl::pump_loop() noexcept {
             state.anchor_pts_ns.store(position, std::memory_order_relaxed);
             state.host_start_ns.store(host_now_ns(), std::memory_order_relaxed);
           }
-          // Out of audio is not an underrun: nothing is counted.
-          std::unique_lock<std::mutex> lock(state.wake_mutex);
-          state.wake.wait_for(lock, std::chrono::milliseconds(5));
+          // Out of audio is not an underrun: nothing is counted. Parked until
+          // a seek, a pause (handed to the endpoint above), a block, or stop.
+          state.idle.wait_until([&] {
+            return !state.running.load(std::memory_order_acquire) ||
+                   state.paused.load(std::memory_order_acquire) || !state.ring.empty() ||
+                   state.generation.load(std::memory_order_acquire) != state.pump_generation;
+          });
           continue;
         }
         // The decoder is behind. Counted here because this is where the cause
@@ -657,6 +721,7 @@ void av_clock::impl::pump_loop() noexcept {
         state.wake.wait_for(lock, std::chrono::milliseconds(2));
         continue;
       }
+      if (state.space != nullptr) state.space->notify();  // room for the decoder
       state.pending_offset = 0;
       if (state.pending.generation != state.generation.load(std::memory_order_acquire)) {
         state.pending.frames = 0;  // stale: discard without writing it
@@ -697,39 +762,54 @@ void av_clock::impl::rebuild_endpoint() noexcept {
   if (state.sink == nullptr) return;
 
   const audio_endpoint_info previous = state.sink->info();
-  const time_ns position = master_now_ns();
 
-  // Fall back for the duration of the rebuild so now_ns() keeps advancing and
-  // video does not stall waiting for a clock.
-  state.audio_master.store(false, std::memory_order_release);
-  state.fallback.store(clock_fallback_reason::device_lost, std::memory_order_release);
-  state.anchor_pts_ns.store(position, std::memory_order_relaxed);
-  state.host_start_ns.store(host_now_ns(), std::memory_order_relaxed);
-  state.anchored.store(false, std::memory_order_release);
+  // Only an open endpoint is lost. A closed one (it never opened, or an earlier
+  // rebuild failed) is already on the host clock with its fallback reason set;
+  // retrying it is not a rebuild, and device_open_failed stays the reason until
+  // an open succeeds (issue #234).
+  if (state.sink_open) {
+    const time_ns position = master_now_ns();
 
-  // anchored is already false, so no new reader is admitted; wait for the ones
-  // already inside to leave before the COM objects go away. This is the pump
-  // thread waiting on the render thread, never the other way round.
-  while (state.sink_readers.load(std::memory_order_acquire) > 0) {
-    std::this_thread::yield();
+    // Fall back for the duration of the rebuild so now_ns() keeps advancing and
+    // video does not stall waiting for a clock.
+    state.audio_master.store(false, std::memory_order_release);
+    state.fallback.store(clock_fallback_reason::device_lost, std::memory_order_release);
+    state.anchor_pts_ns.store(position, std::memory_order_relaxed);
+    state.host_start_ns.store(host_now_ns(), std::memory_order_relaxed);
+    state.anchored.store(false, std::memory_order_release);
+
+    // anchored is already false, so no new reader is admitted; wait for the ones
+    // already inside to leave before the COM objects go away. This is the pump
+    // thread waiting on the render thread, never the other way round.
+    while (state.sink_readers.load(std::memory_order_acquire) > 0) {
+      std::this_thread::yield();
+    }
+
+    state.sink->close();
+    state.sink_open = false;
+    state.device_rebuilds.fetch_add(1, std::memory_order_relaxed);
+    state.open_failure_logged = false;
+    state.retry_backoff_ns = endpoint_retry_first_ns;
   }
-
-  state.sink->close();
-  state.sink_open = false;
-  state.device_rebuilds.fetch_add(1, std::memory_order_relaxed);
 
   const std::uint32_t endpoint_rate = previous.sample_rate != 0 ? previous.sample_rate : 48000;
   const std::uint32_t endpoint_channels = previous.channels != 0 ? previous.channels : 2;
 
   if (const auto opened = state.sink->open(endpoint_rate, endpoint_channels); !opened) {
     // Still gone — a genuinely unplugged device with nothing to fall back to.
-    // Stay on the host clock; the next device change will try again.
-    MV_LOG_ERROR("av_clock: endpoint rebuild failed (%s); staying on the host clock",
-                 status_name(opened.error()));
+    // Stay on the host clock and try again later, each wait twice the last.
+    if (!state.open_failure_logged) {
+      MV_LOG_ERROR("av_clock: endpoint rebuild failed (%s); staying on the host clock",
+                   status_name(opened.error()));
+      state.open_failure_logged = true;
+    }
+    state.schedule_retry();
     return;
   }
 
   state.sink_open = true;
+  state.open_failure_logged = false;
+  state.retry_backoff_ns = endpoint_retry_first_ns;
   state.silence_baseline.store(state.starved_feeds.load(std::memory_order_relaxed),
                                std::memory_order_relaxed);
   state.audio_master.store(true, std::memory_order_release);

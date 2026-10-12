@@ -331,6 +331,20 @@ TEST_CASE("with no add-on installed nothing is written and nothing loads", "[add
   REQUIRE_FALSE(mv::addon::loaded_addon::load(st, "import", {}));
 }
 
+TEST_CASE("a library that will not load is io with a reason and no path, not corrupt", "[addon][load]") {
+  scratch_dir s("addons_unloadable");
+  // Verified bytes the OS refuses: here, not a library at all.
+  const fs::path lib = s / "secret_folder_name" / "not_a_library.bin";
+  write_text(lib, "not a library");
+  auto opened = mv::addon::shared_library::open(utf8(lib));
+  REQUIRE_FALSE(opened);
+  CHECK(opened.error() == mv::status::io);
+  const std::string why = mv::addon::shared_library::last_error();
+  CHECK_FALSE(why.empty());
+  CHECK(why.find("secret_folder_name") == std::string::npos);  // rule 6
+  CHECK(why.find("not_a_library") == std::string::npos);
+}
+
 TEST_CASE("the real Import module installs, loads, answers, and shuts down", "[addon][load]") {
   keypair k;
   scratch_dir s("addons_real");

@@ -39,6 +39,9 @@ public static partial class IslandHost
     private static bool? _nvidiaPresent;
     private static ulong _aiUsed, _aiCeiling;
     private static bool _confirmCoreRemove;
+    // People, Audio or NVIDIA acceleration whose "Remove…" was pressed: asked
+    // first, as the Mac does (LocalSearchView removeConfirm).
+    private static AddonSlot? _confirmPieceRemove;
     // Installs run one at a time (no fight over bandwidth, and each piece's
     // 3 GB check counts the one before it); more Install clicks queue here,
     // Core first (owner request, 2026-09-28: Install on all three at once).
@@ -70,6 +73,26 @@ public static partial class IslandHost
     private static bool AiStarting() =>
         AiSlot.Chrome is null && AiSlot.Busy && !AiSlot.Removing && _aiInstalling != AiSlot && AiSlot.Usable;
 
+    // Installed and verified at launch, and waiting, unloaded, for the first
+    // search (issue #292, docs/design/17 "Starting on demand"). A later window
+    // has its own on-demand reader (EnsureReaderStarted).
+    private static bool AiOnDemand() =>
+        !_addonsElsewhere && AiSlot.Chrome is null && !AiSlot.Busy && !AiSlot.Removing && _aiInstalling != AiSlot
+        && AiSlot.Usable;
+
+    private const string AiStartingText = "Starting Local search…";
+
+    // The first search after launch, or Settings' Start now: the pack loads.
+    // `open`: its panel opens once it attaches. True when a load is on its way.
+    private static bool StartAiOnDemand(bool open)
+    {
+        if (!AiOnDemand()) return false;
+        LoadAddon(AiSlot);
+        if (!AiSlot.Busy) return false;
+        if (open) _searchOpenPending = true;
+        return true;
+    }
+
     // The path bar's search icon: the panel now, or once the pack attaches;
     // without Local search, file search (IslandHost.FileSearch.cs), the
     // gallery coming up first when it is hidden.
@@ -83,6 +106,8 @@ public static partial class IslandHost
     {
         if (SearchChrome is null && !AiStarting()) _searchOpenPending = false;
         UpdatePathSearchButton();
+        // Settings says "Starting Local search…" while it does.
+        if (_settingsVisible) RefreshLocalSearch();
     }
 
     // ---- IAddonHost2 services ------------------------------------------------------
@@ -214,7 +239,7 @@ public static partial class IslandHost
     private static void OnSearchChromeDetached()
     {
         _aiSettingsPanel = null;
-        HostSetIndexingPill(null, false);
+        HostSetIndexingPill(null, false, -1, false);
         HostSetScrubMarkers(Array.Empty<long>(), -1);
         _pendingListGallery = null;
         _searchOpenPending = false;
@@ -241,35 +266,29 @@ public static partial class IslandHost
     // ---- the command-bar pill ---------------------------------------------------------
 
     private static Button? _indexingPill;
-    // A still accent dot, not a ProgressRing: that control has no default style
-    // in this island host, and this one crashed the app the first time the
-    // pill showed (after a Local search install, when indexing started).
-    private static Microsoft.UI.Xaml.Shapes.Ellipse? _indexingDot;
+    private static IndexingRing? _indexingRing;
     private static TextBlock? _indexingText;
+    private static bool _indexingShown;
+    private static bool _indexingOnBattery;
+    private static Storyboard? _indexingFade;
 
     private static UIElement BuildIndexingPill()
     {
-        _indexingDot = new Microsoft.UI.Xaml.Shapes.Ellipse
-        {
-            Width = 8,
-            Height = 8,
-            Fill = Brush(ChromeColour.TrimAccent),
-            VerticalAlignment = VerticalAlignment.Center,
-            Visibility = Visibility.Collapsed,
-        };
+        _indexingRing = new IndexingRing(14, 2);
         _indexingText = new TextBlock
         {
             FontFamily = UiFont,
             FontSize = 13,
-            Foreground = Brush(Body),
+            Foreground = Brush(Title),
             VerticalAlignment = VerticalAlignment.Center,
             MaxWidth = 360,
             TextTrimming = TextTrimming.CharacterEllipsis,
         };
-        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        row.Children.Add(_indexingDot);
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 7 };
+        row.Children.Add(_indexingRing.Root);
         row.Children.Add(_indexingText);
-        _indexingPill = TextButton("", () => SearchChrome?.RunCommand(SearchCommand.Open));
+        // Starting (issue #292) or indexing: what Ctrl+F does.
+        _indexingPill = TextButton("", OpenSearchFromPath);
         _indexingPill.Content = new Border
         {
             Child = row,
@@ -281,26 +300,248 @@ public static partial class IslandHost
         };
         _indexingPill.Padding = new Thickness(4, 0, 4, 0);
         _indexingPill.Visibility = Visibility.Collapsed;
+        _indexingPill.Opacity = 0;
+        _indexingShown = false;
+        // The Mac's context menu: Open search, and Index anyway while it waits
+        // on battery. A plain MenuFlyout (it loads here; the bar's own menus
+        // are MenuFlyouts), filled as it opens so it says what is true now.
+        var menu = new MenuFlyout();
+        menu.Opening += (_, _) => Guarded(() => FillIndexingMenu(menu));
+        _indexingPill.ContextFlyout = menu;
         AutomationProperties.SetName(_indexingPill, "Local search indexing. Open search");
-        ToolTipService.SetToolTip(_indexingPill, "Local search is indexing. Click to search (Ctrl+F)");
+        RefreshIndexingTip();
         return _indexingPill;
     }
 
-    private static void HostSetIndexingPill(string? text, bool busy)
+    private static void FillIndexingMenu(MenuFlyout menu)
     {
-        if (_indexingPill is null || _indexingText is null || _indexingDot is null) return;
-        _indexingPill.Visibility = text is null ? Visibility.Collapsed : Visibility.Visible;
-        if (text != _indexingText.Text)
+        menu.Items.Clear();
+        var open = new MenuFlyoutItem { Text = "Open search" };
+        open.Click += (_, _) => Guarded(() => SearchChrome?.RunCommand(SearchCommand.Open));
+        menu.Items.Add(open);
+        if (_indexingOnBattery)
         {
-            // The pack's line ("Paused on battery", Look.StatusLine): say where the override is.
-            bool battery = text?.Contains("battery", StringComparison.OrdinalIgnoreCase) == true;
-            ToolTipService.SetToolTip(_indexingPill, battery
-                ? "Local search waits on battery. Click to search (Ctrl+F); Index anyway is in the panel's footer."
-                : "Local search is indexing in the background. Click to search (Ctrl+F)");
+            var anyway = new MenuFlyoutItem { Text = "Index anyway, on battery" };
+            anyway.Click += (_, _) => Guarded(() => SearchChrome?.RunCommand(SearchCommand.IndexAnyway));
+            menu.Items.Add(anyway);
         }
-        _indexingText.Text = text ?? "";
-        // The dot shows only while indexing: a still app shows a still bar.
-        _indexingDot.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    /// <param name="fraction">0…1 for the ring's arc; negative from a chrome
+    /// that sends none (IAddonHost2.SetIndexingStatus), which draws no arc.</param>
+    private static void HostSetIndexingPill(string? text, bool busy, double fraction, bool onBattery)
+    {
+        if (_indexingPill is null || _indexingText is null || _indexingRing is null) return;
+        _indexingOnBattery = text is not null && onBattery;
+        if (text is not null && text != _indexingText.Text)
+        {
+            _indexingText.Text = text;
+            RefreshIndexingTip();
+            AutomationProperties.SetName(_indexingPill, text + ". Open search");
+        }
+        if (text is not null) _indexingText.Text = text;
+        _indexingRing.Set(fraction, busy && HostAnimationsEnabled());
+        FadeIndexingPill(text is not null);
+    }
+
+    // The Mac fades the pill in and out (LocalSearchBarItem's transition): a
+    // short opacity storyboard, 150 ms with Windows' animations off as the
+    // Mac's Reduce Motion one. Hidden means collapsed, so a hidden pill's ring
+    // is unloaded and stops.
+    private static void FadeIndexingPill(bool show)
+    {
+        if (_indexingPill is not Button pill || show == _indexingShown) return;
+        _indexingShown = show;
+        _indexingFade?.Stop();
+        _indexingFade = null;
+        if (show) pill.Visibility = Visibility.Visible;
+        try
+        {
+            var fade = new DoubleAnimation
+            {
+                To = show ? 1 : 0,
+                Duration = new Duration(TimeSpan.FromMilliseconds(HostAnimationsEnabled() ? 220 : 150)),
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
+            };
+            Storyboard.SetTarget(fade, pill);
+            Storyboard.SetTargetProperty(fade, "Opacity");
+            var board = new Storyboard();
+            board.Children.Add(fade);
+            board.Completed += (_, _) =>
+            {
+                if (_indexingFade != board) return;
+                _indexingFade = null;
+                pill.Opacity = show ? 1 : 0;
+                if (!show) pill.Visibility = Visibility.Collapsed;
+            };
+            _indexingFade = board;
+            board.Begin();
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+            _indexingFade = null;
+            pill.Opacity = show ? 1 : 0;
+            pill.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        }
+    }
+
+    /// <summary>
+    /// The pill's ring (the Mac's ProgressRing, LocalSearchView.swift): a faint
+    /// track, the pass's progress as an accent arc from 12 o'clock and, while
+    /// work runs, a short dimmer arc that turns. Ellipse and Path arcs, not the
+    /// WinUI control: that one has no default style in this island host and
+    /// crashed the app the first time this pill showed. The turn is a
+    /// RotateTransform storyboard that runs only while busy and loaded, so a
+    /// paused or hidden pill costs nothing; with animations off it never turns.
+    /// </summary>
+    private sealed class IndexingRing
+    {
+        private readonly double _size;
+        private readonly double _line;
+        private readonly Microsoft.UI.Xaml.Shapes.Path _arc;
+        private readonly Microsoft.UI.Xaml.Shapes.Path _spinner;
+        private readonly RotateTransform _turn;
+        private Storyboard? _spin;
+        private double _fraction = -2;
+        private bool _spinning;
+
+        public Grid Root { get; }
+
+        public IndexingRing(double size, double line)
+        {
+            _size = size;
+            _line = line;
+            Root = new Grid { Width = size, Height = size, VerticalAlignment = VerticalAlignment.Center, IsHitTestVisible = false };
+            Root.Children.Add(new Ellipse
+            {
+                Width = size - line,
+                Height = size - line,
+                Margin = new Thickness(line / 2),
+                Stroke = Brush(Hairline),
+                StrokeThickness = line,
+            });
+            _arc = new Microsoft.UI.Xaml.Shapes.Path
+            {
+                Stroke = Brush(ChromeColour.TrimAccent),
+                StrokeThickness = line,
+                StrokeStartLineCap = PenLineCap.Round,
+                StrokeEndLineCap = PenLineCap.Round,
+            };
+            Root.Children.Add(_arc);
+            _turn = new RotateTransform { CenterX = size / 2, CenterY = size / 2 };
+            _spinner = new Microsoft.UI.Xaml.Shapes.Path
+            {
+                Data = Arc(0.18),
+                Stroke = Brush(ChromeColour.TrimAccent),
+                Opacity = 0.55,
+                StrokeThickness = line,
+                StrokeStartLineCap = PenLineCap.Round,
+                StrokeEndLineCap = PenLineCap.Round,
+                RenderTransform = _turn,
+                Visibility = Visibility.Collapsed,
+            };
+            Root.Children.Add(_spinner);
+            Root.Loaded += (_, _) => Apply();
+            Root.Unloaded += (_, _) => Stop();
+            AutomationProperties.SetAccessibilityView(Root, Microsoft.UI.Xaml.Automation.Peers.AccessibilityView.Raw);
+        }
+
+        public void Set(double fraction, bool spinning)
+        {
+            if (Math.Abs(fraction - _fraction) >= 0.001)
+            {
+                _fraction = fraction;
+                // Never empty while shown, as the Mac's trim(to: max(0.04, p)).
+                _arc.Data = fraction < 0 ? null : Arc(Math.Max(0.04, Math.Min(1, fraction)));
+            }
+            if (spinning == _spinning) return;
+            _spinning = spinning;
+            Apply();
+        }
+
+        private void Apply()
+        {
+            _spinner.Visibility = _spinning ? Visibility.Visible : Visibility.Collapsed;
+            if (_spinning && Root.IsLoaded) Start();
+            else Stop();
+        }
+
+        private void Start()
+        {
+            if (_spin is not null) return;
+            try
+            {
+                var turn = new DoubleAnimation
+                {
+                    From = 0,
+                    To = 360,
+                    Duration = new Duration(TimeSpan.FromMilliseconds(1100)),
+                    RepeatBehavior = RepeatBehavior.Forever,
+                };
+                Storyboard.SetTarget(turn, _turn);
+                Storyboard.SetTargetProperty(turn, "Angle");
+                _spin = new Storyboard();
+                _spin.Children.Add(turn);
+                _spin.Begin();
+            }
+            catch (Exception ex)
+            {
+                // A still ring is better than a broken bar.
+                System.Diagnostics.Debug.WriteLine(ex);
+                _spin = null;
+            }
+        }
+
+        private void Stop()
+        {
+            _spin?.Stop();
+            _spin = null;
+        }
+
+        /// <summary>An arc from 12 o'clock, clockwise, over <paramref name="fraction"/> of the circle.</summary>
+        private Geometry Arc(double fraction)
+        {
+            double r = (_size - _line) / 2;
+            double c = _size / 2;
+            if (fraction >= 0.999)
+            {
+                return new EllipseGeometry { Center = new Windows.Foundation.Point(c, c), RadiusX = r, RadiusY = r };
+            }
+            double angle = fraction * 2 * Math.PI;
+            var figure = new PathFigure
+            {
+                StartPoint = new Windows.Foundation.Point(c, c - r),
+                IsClosed = false,
+                IsFilled = false,
+            };
+            figure.Segments.Add(new ArcSegment
+            {
+                Point = new Windows.Foundation.Point(c + r * Math.Sin(angle), c - r * Math.Cos(angle)),
+                Size = new Windows.Foundation.Size(r, r),
+                IsLargeArc = fraction > 0.5,
+                SweepDirection = SweepDirection.Clockwise,
+            });
+            var geometry = new PathGeometry();
+            geometry.Figures.Add(figure);
+            return geometry;
+        }
+    }
+
+    // Names the live search key; RefreshKeyTips calls this again after a remap.
+    private static void RefreshIndexingTip()
+    {
+        if (_indexingPill is null || _indexingText is null) return;
+        // The pack's line ("Paused on battery", Look.StatusLine): say where the override is.
+        bool battery = _indexingOnBattery || _indexingText.Text.Contains("battery", StringComparison.OrdinalIgnoreCase);
+        string key = KeyNote(Command.SearchOpen);
+        ToolTipService.SetToolTip(_indexingPill, _indexingText.Text == AiStartingText
+            ? $"Local search is starting. Click to search{key}; the panel opens once it is ready."
+            : battery
+            ? (_indexingOnBattery
+                ? $"Local search waits on battery. Click to search{key}; right-click to index anyway."
+                : $"Local search waits on battery. Click to search{key}; Index anyway is in the panel's footer.")
+            : $"Local search is indexing in the background. Click to search{key}");
     }
 
     // ---- matches over the scrub bar -----------------------------------------------------
@@ -315,8 +556,8 @@ public static partial class IslandHost
     {
         _matchMarks = new Microsoft.UI.Xaml.Controls.Canvas
         {
-            Width = SeekWidth,
             IsHitTestVisible = false,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Stretch,
         };
         _matchDurationMs = 0;
@@ -350,7 +591,7 @@ public static partial class IslandHost
         {
             bool current = i == _matchCurrent;
             double f = Math.Clamp((double)_matchMs[i] / _matchDurationMs, 0, 1);
-            double x = SeekInset + f * (SeekWidth - 2 * SeekInset);
+            double x = SeekInset + f * (_seekWidth - 2 * SeekInset);
             if (!current && x - last < 3) continue;  // a dense clip: one dot per three pixels
             last = x;
             double d = current ? 8 : 5;
@@ -387,12 +628,14 @@ public static partial class IslandHost
     {
         // An item of Settings → Add-ons, titled like Import.
         TextBlock heading = Label("Local search");
+        heading.Foreground = Brush(Title);
         _localSearchHeading = heading;
         view.Children.Add(heading);
-        _localSearchPanel = new StackPanel { Spacing = 8 };
-        _localSearchStatus = WrappedLabel("");
+        _localSearchPanel = new StackPanel { Spacing = 10 };
+        _localSearchStatus = Note("");
         view.Children.Add(_localSearchPanel);
         view.Children.Add(_localSearchStatus);
+        EnsureReaderStarted();  // a later window: what is installed, read now
         _localSearchRestartButton = AddonRestartButton();
         view.Children.Add(_localSearchRestartButton);
         RefreshLocalSearch();
@@ -453,26 +696,39 @@ public static partial class IslandHost
         if (_localSearchPanel is null) return;
         _localSearchPanel.Children.Clear();
 
-        var card = new StackPanel
-        {
-            Spacing = 6,
-            Padding = new Thickness(14),
-            Background = Brush(ChromeColour.Surface),
-            CornerRadius = new CornerRadius(8),
-        };
-        TextBlock what = WrappedLabel("Find photos and moments in videos by describing them: “dog on a beach”, “birthday cake”.");
-        what.Foreground = Brush(Title);
-        card.Children.Add(what);
-        card.Children.Add(WrappedLabel("It runs entirely on this computer. Nothing about your files, and no search, ever leaves it."));
-
         if (!_addonStatesRead)
         {
             // What is installed is still being read (it verifies every file):
             // quiet, and nothing offered for download until it is known.
-            card.Children.Add(WrappedLabel("Checking installed add-ons…"));
-            _localSearchPanel.Children.Add(card);
+            _localSearchPanel.Children.Add(Note("Checking installed add-ons…"));
             return;
         }
+        if (_addonsElsewhere)
+        {
+            // A later window (IslandHost.Addons.cs): it searches through the
+            // reader; the first window indexes, installs and removes.
+            _localSearchPanel.Children.Add(Note(!AiSlot.State.Installed
+                ? "Local search is not installed. " + AddonsElsewhereText
+                : AddonsElsewhereText));
+            AddAiSettingsPanel();  // the pack's own, in its read-only form
+            return;
+        }
+
+        // The intro and its Install: only until Core is installed (the Mac's introCard).
+        var intro = new StackPanel { Spacing = 8 };
+        var card = new Border
+        {
+            Child = intro,
+            Padding = new Thickness(14),
+            Background = Brush(ChromeColour.Surface),
+            BorderBrush = Brush(Hairline),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(RadiusSheet),
+        };
+        TextBlock what = Note("Find photos and moments in videos by describing them: “dog on a beach”, “birthday cake”.");
+        what.Foreground = Brush(Title);
+        intro.Children.Add(what);
+        intro.Children.Add(Note("It runs entirely on this computer. Nothing about your files, and no search, ever leaves it."));
         if (!AiSlot.State.Installed)
         {
             AddonOffer offer = AiSlot.Offer;
@@ -485,7 +741,7 @@ public static partial class IslandHost
                     Button install = SettingsButton(label, () => StartPieceInstall(AiSlot));
                     install.IsEnabled = !AiQueuedOrInstalling(AiSlot);
                     install.HorizontalAlignment = HorizontalAlignment.Left;
-                    card.Children.Add(install);
+                    intro.Children.Add(install);
                     // Core, People and Audio in one click, one after another.
                     // Offered while none is installed; NVIDIA acceleration is
                     // never installed unasked (docs/design/17).
@@ -503,26 +759,28 @@ public static partial class IslandHost
                                 foreach (AddonSlot each in InstallAllSlots()) StartPieceInstall(each);
                             });
                         installAll.HorizontalAlignment = HorizontalAlignment.Left;
-                        card.Children.Add(installAll);
+                        intro.Children.Add(installAll);
                     }
-                    card.Children.Add(Small("Nothing downloads until you click Install. The download carries no identifier."));
+                    intro.Children.Add(Small("Nothing downloads until you click Install. The download carries no identifier."));
                     break;
                 case OfferKind.NotPublished:
-                    card.Children.Add(WrappedLabel("Local search is not published for download yet. It will be offered here once a release carries it."));
+                    intro.Children.Add(Note("Local search is not published for download yet. It will be offered here once a release carries it."));
                     break;
                 case OfferKind.NeedsNewerApp:
-                    card.Children.Add(WrappedLabel("The published local search needs a newer MediaViewer. Update MediaViewer, then install it."));
+                    intro.Children.Add(Note("The published local search needs a newer MediaViewer. Update MediaViewer, then install it."));
                     break;
                 case OfferKind.Unreachable:
-                    card.Children.Add(WrappedLabel("Could not reach the download server."));
-                    card.Children.Add(SettingsButton("Try again", () => ProbeOffer(AiSlot)));
+                    intro.Children.Add(Note("Could not reach the download server."));
+                    Button retry = SettingsButton("Try again", () => ProbeOffer(AiSlot));
+                    retry.HorizontalAlignment = HorizontalAlignment.Left;
+                    intro.Children.Add(retry);
                     break;
                 default:
-                    card.Children.Add(WrappedLabel("Checking for local search…"));
+                    intro.Children.Add(Note("Checking for local search…"));
                     break;
             }
+            _localSearchPanel.Children.Add(card);
         }
-        _localSearchPanel.Children.Add(card);
 
         // Every piece with a newer version, in one click, Core first.
         AddonSlot[] updates = UpdateAllSlots();
@@ -541,29 +799,71 @@ public static partial class IslandHost
             _localSearchPanel.Children.Add(updateAll);
         }
 
-        // The pieces, each with its size and its own Install / Remove.
-        var pieces = new StackPanel { Spacing = 4 };
-        pieces.Children.Add(PieceRow(AiSlot, "Core", "Search by description. Required."));
-        pieces.Children.Add(PieceRow(FacesSlot, "People", "Find people in your photos. Optional; off until you turn it on."));
-        pieces.Children.Add(PieceRow(AudioSlot, "Audio",
+        // The pieces, each with its size and its own Install / Remove, in one
+        // card with a hairline between them (the Mac's).
+        var pieces = new StackPanel();
+        void Piece(FrameworkElement row)
+        {
+            if (pieces.Children.Count > 0) pieces.Children.Add(new Border { Height = 1, Background = Brush(Hairline) });
+            pieces.Children.Add(row);
+        }
+        Piece(PieceRow(AiSlot, "Core", "Search by description. Required."));
+        Piece(PieceRow(FacesSlot, "People", "Find people in your photos. Optional; off until you turn it on."));
+        Piece(PieceRow(AudioSlot, "Audio",
             "Sounds and speech in videos — find “dog barking” or what someone said. Optional."));
         if (_nvidiaPresent == true || CudaSlot.State.Installed)
         {
-            pieces.Children.Add(PieceRow(CudaSlot, "NVIDIA acceleration", "Index faster on this computer's NVIDIA graphics. Needs NVIDIA's CUDA 13 and cuDNN 9, installed separately."));
+            Piece(PieceRow(CudaSlot, "NVIDIA acceleration", "Index faster on this computer's NVIDIA graphics. Needs NVIDIA's CUDA 13 and cuDNN 9, installed separately."));
         }
-        _localSearchPanel.Children.Add(pieces);
+        _localSearchPanel.Children.Add(new Border
+        {
+            Child = pieces,
+            Background = Brush(ChromeColour.Surface),
+            BorderBrush = Brush(Hairline),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(RadiusCard),
+        });
 
         if (_confirmCoreRemove) _localSearchPanel.Children.Add(BuildCoreRemoveConfirm());
+        else if (_confirmPieceRemove is AddonSlot asked && asked.State.Installed && !asked.Removing)
+            _localSearchPanel.Children.Add(BuildPieceRemoveConfirm(asked));
+        // Installed, verified and being loaded: say so (the Mac's).
+        if (AiStarting()) _localSearchPanel.Children.Add(Note("Starting Local search…"));
 
         if (AiSlot.State.Installed && AiSlot.State.State != "ok")
         {
-            _localSearchPanel.Children.Add(WrappedLabel(AiSlot.State.State == "needs_update"
+            _localSearchPanel.Children.Add(Note(AiSlot.State.State == "needs_update"
                 ? $"Local search {AiSlot.State.Version} needs an update to work with this MediaViewer."
                 : "The installed local search did not pass verification and is not loaded. Reinstall it."));
-            _localSearchPanel.Children.Add(SettingsButton("Reinstall", () => StartPieceInstall(AiSlot)));
+            Button reinstall = SettingsButton("Reinstall", () => StartPieceInstall(AiSlot));
+            reinstall.HorizontalAlignment = HorizontalAlignment.Left;
+            _localSearchPanel.Children.Add(reinstall);
         }
 
-        // The add-on's own management panel, once it is loaded (docs/design/17 PR 23).
+        AddAiSettingsPanel();
+    }
+
+    // The add-on's own management panel, once it is loaded (docs/design/17 PR 23).
+    // Before that (issue #292): "Starting Local search…" while it loads, or
+    // Start now while it waits for the first search. Opening Settings alone
+    // does not start it.
+    private static void AddAiSettingsPanel()
+    {
+        if (_localSearchPanel is null) return;
+        if (SearchChrome is null && AiStarting())
+        {
+            _localSearchPanel.Children.Add(WrappedLabel(AiStartingText));
+            return;
+        }
+        if (AiOnDemand())
+        {
+            _localSearchPanel.Children.Add(WrappedLabel(
+                "Local search starts the first time you search. Start it now to see its folders and settings."));
+            Button start = SettingsButton("Start now", () => StartAiOnDemand(open: false));
+            start.HorizontalAlignment = HorizontalAlignment.Left;
+            _localSearchPanel.Children.Add(start);
+            return;
+        }
         if (SearchChrome is ISearchChrome search)
         {
             try { _aiSettingsPanel ??= search.BuildSettingsPanel() as UIElement; }
@@ -583,7 +883,15 @@ public static partial class IslandHost
     private static TextBlock Small(string text)
     {
         TextBlock t = WrappedLabel(text);
-        t.FontSize = 12;
+        t.FontSize = TypeCaption;
+        return t;
+    }
+
+    // A note or status line in Settings → Add-ons: 13 (the Mac's).
+    private static TextBlock Note(string text)
+    {
+        TextBlock t = WrappedLabel(text);
+        t.FontSize = TypeNote;
         return t;
     }
 
@@ -591,10 +899,8 @@ public static partial class IslandHost
     {
         var row = new Grid
         {
-            Padding = new Thickness(14, 10, 14, 10),
+            Padding = new Thickness(12),
             ColumnSpacing = 16,
-            Background = Brush(ChromeColour.Surface),
-            CornerRadius = new CornerRadius(8),
         };
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -641,17 +947,12 @@ public static partial class IslandHost
         }
         else if (slot.State.Installed)
         {
-            Button remove = SettingsButton("Remove", () =>
+            // Every piece asks first (the Mac's "Remove…").
+            Button remove = SettingsButton("Remove…", () =>
             {
-                if (slot == AiSlot)
-                {
-                    _confirmCoreRemove = true;
-                    RefreshLocalSearch();
-                }
-                else
-                {
-                    RemovePiece(slot, keepData: true);
-                }
+                _confirmCoreRemove = slot == AiSlot;
+                _confirmPieceRemove = slot == AiSlot ? null : slot;
+                RefreshLocalSearch();
             });
             // Only Remove waits for the queue and any load or removal to finish.
             remove.IsEnabled = !AnyAiPending();
@@ -775,28 +1076,69 @@ public static partial class IslandHost
 
     private static FrameworkElement BuildCoreRemoveConfirm()
     {
-        var box = new StackPanel
-        {
-            Spacing = 8,
-            Padding = new Thickness(14),
-            Background = Brush(ChromeColour.Surface),
-            CornerRadius = new CornerRadius(8),
-        };
-        box.Children.Add(WrappedLabel("Remove local search? People, Audio and NVIDIA acceleration go with it."));
-        box.Children.Add(WrappedLabel("Also delete the search index? Keeping it means a reinstall searches at once, without indexing again."));
+        var box = ConfirmBox();
+        TextBlock ask = Note("Remove local search? People, Audio and NVIDIA acceleration go with it.");
+        ask.Foreground = Brush(Title);
+        box.Children.Add(ask);
+        box.Children.Add(Note("Also delete the search index? Keeping it means a reinstall searches at once, without indexing again."));
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        Button keep = SettingsButton("Remove, keep the index", () => RemoveCore(keepData: true));
+        // Keeping the index is the default (accent), and where Enter lands; Esc cancels.
+        Button keep = SettingsButton("Remove, keep the index", () => RemoveCore(keepData: true), accent: true);
         buttons.Children.Add(keep);
         buttons.Children.Add(SettingsButton("Remove and delete the index", () => RemoveCore(keepData: false)));
-        buttons.Children.Add(SettingsButton("Cancel", () =>
-        {
-            _confirmCoreRemove = false;
-            RefreshLocalSearch();
-        }));
+        buttons.Children.Add(SettingsButton("Cancel", () => CancelLocalSearchConfirm()));
         box.Children.Add(buttons);
-        // Keeping the index is the default, and where Enter lands.
         _dispatcher?.DispatcherQueue.TryEnqueue(() => keep.Focus(FocusState.Keyboard));
-        return box;
+        return ConfirmCard(box);
+    }
+
+    // "Remove People?" and the like (the Mac's removeConfirm): Remove is the
+    // default, Esc or Cancel keeps it.
+    private static FrameworkElement BuildPieceRemoveConfirm(AddonSlot slot)
+    {
+        var box = ConfirmBox();
+        TextBlock ask = Note(slot == AudioSlot
+            ? "Remove Audio? Searching videos by sound and speech stops until it is installed again."
+            : slot == FacesSlot
+                ? "Remove People? Face search stops until it is installed again."
+                : $"Remove {slot.Name}? Indexing runs on the CPU until it is installed again.");
+        ask.Foreground = Brush(Title);
+        box.Children.Add(ask);
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        Button remove = SettingsButton("Remove", () =>
+        {
+            _confirmPieceRemove = null;
+            RemovePiece(slot, keepData: true);
+        }, accent: true);
+        remove.IsEnabled = !AnyAiPending();
+        AutomationProperties.SetName(remove, "Remove " + slot.Name);
+        buttons.Children.Add(remove);
+        buttons.Children.Add(SettingsButton("Cancel", () => CancelLocalSearchConfirm()));
+        box.Children.Add(buttons);
+        _dispatcher?.DispatcherQueue.TryEnqueue(() => remove.Focus(FocusState.Keyboard));
+        return ConfirmCard(box);
+    }
+
+    private static StackPanel ConfirmBox() => new() { Spacing = 8 };
+
+    private static Border ConfirmCard(UIElement child) => new()
+    {
+        Child = child,
+        Padding = new Thickness(12),
+        Background = Brush(ChromeColour.Surface),
+        BorderBrush = Brush(Hairline),
+        BorderThickness = new Thickness(1),
+        CornerRadius = new CornerRadius(RadiusCard),
+    };
+
+    /// <summary>Esc or Cancel on a Local search "Remove …?": false when none is open.</summary>
+    private static bool CancelLocalSearchConfirm()
+    {
+        if (!_confirmCoreRemove && _confirmPieceRemove is null) return false;
+        _confirmCoreRemove = false;
+        _confirmPieceRemove = null;
+        RefreshLocalSearch();
+        return true;
     }
 
     private static void RemoveCore(bool keepData)

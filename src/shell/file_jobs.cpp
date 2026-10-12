@@ -101,4 +101,42 @@ bool file_jobs::submit(HWND notify, file_job_kind kind, std::vector<std::string>
   }
 }
 
+bool file_jobs::submit_rename(HWND notify, std::vector<std::string> paths, std::string new_stem,
+                              std::uint64_t token, io::rename_before_fn before) noexcept {
+  if (!started_ || !notify || paths.empty() || paths.size() > 2 || new_stem.empty()) return false;
+  try {
+    auto work = std::make_shared<file_job_result>();
+    work->kind = file_job_kind::rename;
+    work->token = token;
+    for (auto& p : paths) {
+      file_job_item item;
+      item.path = std::move(p);
+      work->items.push_back(std::move(item));
+    }
+    auto stem = std::make_shared<std::string>(std::move(new_stem));
+    auto hook = std::make_shared<io::rename_before_fn>(std::move(before));
+    const mv::job_id id = pool_.submit_at(
+        mv::background_generation, [work, stem, hook, notify](const mv::job_context&) -> mv::status {
+          auto& file = work->items.front();
+          const std::string pair = work->items.size() > 1 ? work->items[1].path : std::string();
+          auto r = io::rename_stop(file.path, pair, *stem, *hook);
+          if (!r) {
+            for (auto& item : work->items) item.status = r.error();
+          } else {
+            file.dest = r->primary;
+            if (work->items.size() > 1) work->items[1].dest = r->secondary;
+          }
+          auto* posted = new (std::nothrow) file_job_result(std::move(*work));
+          if (!posted) return mv::status::out_of_memory;
+          if (!::PostMessageW(notify, kFileJobDoneMessage, 0, reinterpret_cast<LPARAM>(posted))) {
+            delete posted;
+          }
+          return mv::status::ok;
+        });
+    return id != mv::invalid_job;
+  } catch (...) {
+    return false;
+  }
+}
+
 }  // namespace mv::shell

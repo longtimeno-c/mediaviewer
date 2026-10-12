@@ -52,8 +52,9 @@ public final class MVChromeHost: NSObject {
   }
 
   /// `?` opened: the sheet re-reads the live table (Settings may have remapped).
-  @MainActor @objc public static func reloadHelp() {
-    HelpStore.shared.reload()
+  /// `modes`: the mode_mask of the mode underneath; only its bindings are listed.
+  @MainActor @objc public static func reloadHelp(modes: Int32) {
+    HelpStore.shared.reload(modes: modes)
   }
 
   @objc public static func makeSettingsView() -> NSView {
@@ -143,6 +144,18 @@ public final class MVChromeHost: NSObject {
     host(VideoEditorView())
   }
 
+  /// Issue #299: the bottom-right "Resume indexing Photos?" notice. Unlike the
+  /// panes it sizes itself (a fixed-width card): main_mac.mm pins only its
+  /// bottom-right corner. Hidden until there is a question; the store shows it.
+  @MainActor @objc public static func makeResumeNoticeView() -> NSView {
+    let hosting = NSHostingView(rootView: ThemedRoot(content: ResumeNoticeView()))
+    hosting.sizingOptions = [.intrinsicContentSize]
+    hosting.translatesAutoresizingMaskIntoConstraints = false
+    hosting.isHidden = true
+    ResumeNoticeStore.shared.host = hosting
+    return hosting
+  }
+
   /// PR 11 verify only (MV_CRASH_TEST=nsexception, crash_reporter_mac.h): an
   /// NSException raised from the chrome, inside AppKit's event handling.
   @objc public static func crashTestException() {
@@ -169,16 +182,15 @@ public final class MVChromeHost: NSObject {
     MainActor.assumeIsolated { FileSearchStore.shared.close() }
   }
 
-  /// ⌘F while the Local search command is not there. True when the pack is
-  /// verifying and starting at launch: its panel opens once it attaches, as
-  /// the path icon's click does. False: nothing is on its way, so the host
-  /// opens file search instead.
+  /// ⌘F while the Local search command is not there and the host did not
+  /// start the pack itself (MvAddonsSearchOnDemand). True when something is on
+  /// its way: the panel opens once it attaches, as the path icon's click does.
+  /// False: nothing is, so the host opens file search instead.
   @objc public static func openLocalSearchWhenStarting() -> Bool {
     MainActor.assumeIsolated {
       let search = LocalSearchStore.shared
       guard search.searchAvailable else { return false }
-      search.openSearchWhenReady()
-      return true
+      return search.openSearchWhenReady()
     }
   }
 

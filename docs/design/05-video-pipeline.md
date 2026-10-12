@@ -62,6 +62,17 @@ not `image::gpu_image`. Time is `int64` **nanoseconds** everywhere in `player/` 
 so audio can account in whole samples. The container `start_time` is subtracted (MPEG-TS starts
 non-zero).
 
+A worker that cannot move **parks; it never sleep-polls** (issue #230). A clip opened paused on
+its poster frame is the normal state while arrowing through a folder, and there the queues and
+the ring stay full. The demux, video/still decode and audio decode threads wait on one
+`wake_signal` per clip ([`src/player/wake_signal.h`](../../src/player/wake_signal.h): a futex
+word, `std::atomic` wait/notify, so the render thread can notify without a lock). The packet
+queues, the ring's release, the audio pump taking a block, a seek, a generation bump and stop
+notify it. The audio pump parks the same way while paused or played out, until play, pause, a
+seek, a block or stop; a device change while paused is taken on resume. Measured on an M-series
+Mac (`mv_tests "[idle]"`): a paused clip went from ~1,750 wakes and ~15 ms CPU a second to
+single digits and ~0.03 ms.
+
 ### Surface ownership
 
 A hardware decoder's output surface belongs to its pool, sized from the stream's DPB; holding
@@ -132,6 +143,10 @@ surface format is unsupported. It is never silent: `mv_video_info.decoder` repor
 - **No audio** (silent clip, or the track played out) → a monotonic host clock
   (`std::chrono::steady_clock`) seeded at playback start; `mv_video_stats.audio_master` is 0 and
   `fallback_reason` says why.
+- **No device** (the endpoint will not open, or a rebuild found nothing): the clock stays on the
+  host master and retries the open after 1 s, doubling to 8 s between tries, never while paused.
+  A failed retry is not a rebuild: `device_rebuilds` counts devices lost, `fallback_reason`
+  stays `device_open_failed` until an open succeeds, and the failure is logged once.
 - **Device change** (`IMMNotificationClient` on Windows) rebuilds the audio client and re-seeds
   the clock without interrupting video. Device loss is the only rebuild: a seek, rate change,
   track switch or A–B wrap **flushes** the endpoint (`audio_sink::flush`: WASAPI
@@ -147,6 +162,10 @@ the rules are unit-tested.
 - **Two seek modes** (`mv_video_seek(..., exact)`): scrubber drag → nearest keyframe
   (`AVSEEK_FLAG_BACKWARD`, no decode); release, frame step or a typed position → decode forward
   from the keyframe to the exact frame.
+- **A track click does not seek the slider's minimum.** SwiftUI and WinUI report 0 and then
+  the time under the pointer. Seeking that 0 while the playhead is already past half a second
+  presents the opening frame (`scrub_origin_is_spurious`, issue #362). The click's sample and
+  the exact release are the seek. Play and pause are unchanged.
 - Every seek flushes the decoders (`avcodec_flush_buffers`) and bumps the generation so
   pre-seek frames are discarded.
 - **Frame step** (paused): forward decodes the next frame; back is a seek to the prior keyframe
@@ -157,8 +176,11 @@ the rules are unit-tested.
   instance covers 0.5–2.0; 0.25× is `atempo=0.500,atempo=0.500`). Rate 1.0 has no filter.
 - **A–B loop** (`mv_video_set_loop`; B < 0 clears). A and B are normalised, so marking B first
   still loops.
-- **Per-file resume position**, stored in a `resume` folder beside the thumbnail cache. Only
-  stored past 15 s and more than 10 s before the end.
+- **Per-file resume position**, stored in a `resume` folder beside the thumbnail cache
+  ([`src/player/resume_store.h`](../../src/player/resume_store.h)). Only stored past 15 s and
+  more than 10 s before the end; closing a clip anywhere else removes its entry rather than
+  storing 0. An entry is keyed by path + size + mtime but holds only hashes of the path, never
+  the path itself. The folder is capped at 1,000 entries, oldest written first out (#235).
 - Volume, mute and audio-track selection are ABI calls (`mv_video_set_volume`,
   `mv_video_set_muted`, `mv_video_select_audio_track`).
 - **Playback hold** (`mv_video_set_hold`, [`src/player/playback_hold.h`](../../src/player/playback_hold.h)):

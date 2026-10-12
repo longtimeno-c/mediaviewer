@@ -122,8 +122,9 @@ public static partial class IslandHost
     }
 
     /// <summary>
-    /// Ctrl+F or the path bar's icon. Local search loaded: its panel. Starting
-    /// at launch: its panel once it attaches (IslandHost.LocalSearch.cs).
+    /// Ctrl+F or the path bar's icon. Local search loaded: its panel. Starting,
+    /// or installed and waiting for the first search (issue #292): its panel
+    /// once it attaches (IslandHost.LocalSearch.cs).
     /// Otherwise file search: the field opens and takes the keyboard, or, with
     /// the gallery hidden, <see cref="FileSearchNeedsGallery"/> and it opens
     /// once the grid is shown. Nothing listed: declined.
@@ -140,6 +141,24 @@ public static partial class IslandHost
             _searchOpenPending = true;
             return FileSearchTook;
         }
+        // The first search since launch: the pack loads now (issue #292).
+        if (StartAiOnDemand(open: true)) return FileSearchTook;
+        // A later window's first search: Local search starts now, through the
+        // reader, and its panel opens once it attaches (IslandHost.Addons.cs).
+        if (_addonsElsewhere && !_readerStarted && _folderSession is not null)
+        {
+            _searchOpenPending = true;
+            EnsureReaderStarted();
+            return FileSearchTook;
+        }
+        // A later window whose reader found nothing indexed: try it again, and
+        // between tries say why this is a search by name.
+        if (RetryEmptyReader()) return FileSearchTook;
+        if (_addonsElsewhere && _aiReaderEmptyAt != 0 && AiSlot.Chrome is null)
+        {
+            ShowAddonAlert(AiSlot, "Nothing indexed for Local search yet", ReaderEmptyText, warn: false);
+        }
+
         if (Items.Count == 0 && Folders.Count == 0) return FileSearchDeclined;
         if (!_galleryVisible || _gsField is null)
         {

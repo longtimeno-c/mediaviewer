@@ -3,8 +3,6 @@
 // PR 5a - libavformat demux into bounded packet queues (~2 s).
 //
 // OWNER: mediaviewer-48 (5a).
-#include <chrono>
-
 #include "core/trace.h"
 #include "player/video_internal.h"
 
@@ -25,17 +23,24 @@ void run_demux_thread(video_pipeline& pipe) noexcept {
   if (!packet) return;
   std::uint32_t generation = pipe.generation.load();
   bool drained = false;
+  // Held while reading the container, given back while parked (issue #233).
+  auto crash = clip_crash_slot(pipe, "demux", "libavformat", LIBAVFORMAT_IDENT);
+  // A full queue parks the thread until its decoder takes a packet, a seek
+  // asks for a new position, or stop (issue #230: a paused clip's queues stay
+  // full, and this used to poll them every millisecond).
   auto enqueue = [&](packet_queue& queue, packet_ptr& item) {
-    while (!pipe.stopping.load()) {
-      if (pipe.seek_request_ns.load() >= 0) return false;
+    for (;;) {
+      const std::uint32_t seen = pipe.wake.epoch();
+      if (pipe.stopping.load() || pipe.seek_request_ns.load() >= 0) return false;
       if (queue.try_push(item, generation)) return true;
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      crash.idle();
+      pipe.wake.wait(seen);
     }
-    return false;
   };
   while (!pipe.stopping.load()) {
     const time_ns want = pipe.seek_request_ns.exchange(-1);
     if (want >= 0) {
+      crash.busy();
       const auto next_generation = pipe.generation.load();
       const auto target = av_rescale_q(want + pipe.start_time_ns,
                                       AVRational{1, 1'000'000'000}, pipe.time_base);
@@ -49,9 +54,13 @@ void run_demux_thread(video_pipeline& pipe) noexcept {
       drained = false;
     }
     if (drained) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      // Played out: nothing to read until a seek or stop.
+      crash.idle();
+      pipe.wake.wait_until(
+          [&] { return pipe.stopping.load() || pipe.seek_request_ns.load() >= 0; });
       continue;
     }
+    crash.busy();
     const int rc = av_read_frame(pipe.format.get(), packet.get());
     if (rc < 0) {
       if (rc == AVERROR(EAGAIN)) continue;

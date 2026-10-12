@@ -88,7 +88,8 @@ row, 16 MiB a reply. Every offset is checked before a byte is read. Only local X
 the agent accepts a peer only when it is signed by the agent's own team
 (`setCodeSigningRequirement`, from the agent's signature). Tiles cross as JPEG bytes: the
 extension's sandbox cannot read the viewer's cache, and the agent serves only files inside that
-cache (`thumb_reader`).
+cache (`thumb_reader`). An agent started before the viewer has made `thumbs.sqlite` serves
+placeholders and opens the cache as soon as the file appears.
 
 The agent exits `kIdleSeconds` (50 s) after its last client, or after launch if nobody
 connects; no process sits resident. It logs status names only, never a query, path or result,

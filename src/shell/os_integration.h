@@ -46,6 +46,11 @@ inline constexpr std::size_t kMaxRecentFolders = 10;
 // "iCloud Photos" row first and the folders after it, still kMax rows in all.
 void fill_welcome_recents(std::span<const std::string> utf8_dirs, std::string_view home,
                           welcome_recents& out, bool icloud = false) noexcept;
+// The same with any cloud place leading (Windows: "OneDrive", 2026-10-07);
+// an empty `cloud_label` is none.
+void fill_welcome_recents(std::span<const std::string> utf8_dirs, std::string_view home,
+                          welcome_recents& out, std::string_view cloud_label,
+                          std::string_view cloud_where) noexcept;
 
 // Ctrl+Shift+C / ⌘⇧C: the paths as text, one per line, in the order given,
 // separated by `newline` ("\r\n" on Windows, "\n" on macOS) with none after
