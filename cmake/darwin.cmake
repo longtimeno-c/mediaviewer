@@ -199,9 +199,9 @@ target_link_libraries(mv_codec
           TIFF::TIFF ${MV_HEIF_TARGET} ${MV_AVIF_TARGET} libraw::raw_r
           # PDF (codec/pdf_mac.cpp): the system renderer.
           "-framework CoreGraphics" "-framework CoreFoundation"
-          # DOCX (codec/docx.cpp, text.cpp, zip.cpp; fonts_mac.cpp finds files
-          # through CoreText and reads them through io/).
-          Freetype::Freetype harfbuzz::harfbuzz ZLIB::ZLIB "-framework CoreText" mv_io)
+          # DOCX (codec/docx.cpp, text.cpp, zip.cpp). fonts_mac.cpp finds the file
+          # through CoreText; image/pipeline.cpp reads the bytes.
+          Freetype::Freetype harfbuzz::harfbuzz ZLIB::ZLIB "-framework CoreText")
 add_library(mv::codec ALIAS mv_codec)
 target_link_libraries(mv_codec PRIVATE mv_raw_openmp)
 

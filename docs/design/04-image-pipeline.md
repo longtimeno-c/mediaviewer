@@ -45,7 +45,9 @@ floating placement, right-to-left reordering. Text is shaped by HarfBuzz in unhi
 layout is in points and the page count does not depend on the drawing size; FreeType draws it. Fonts
 are found by family through the OS (`codec/fonts.h`), with metric-compatible substitutes (Calibri →
 Carlito → Helvetica Neue / Arial …) and a per-platform fallback list for missing characters (CJK,
-Greek …). Every page before the one asked for is laid out; only that page is drawn. The zip reader
+Greek …). The file bytes are read by the reader `image/pipeline.cpp` installs before main
+(`text::set_font_reader`); `codec/` does not open the file. Every page before the one asked for is
+laid out; only that page is drawn. The zip reader
 caps every entry at 64 MiB and the XML reader refuses a DOCTYPE, so neither can be made to explode.
 TIFF-container RAWs probe as `tiff` and are reclassified by `looks_like_raw`.
 

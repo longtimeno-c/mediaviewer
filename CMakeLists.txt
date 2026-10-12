@@ -356,9 +356,9 @@ target_link_libraries(mv_codec
           # Windows.Data.Pdf (codec/pdf_win.cpp): WinRT activation and the
           # IStream <-> IRandomAccessStream bridges.
           runtimeobject shcore shlwapi
-          # DOCX (codec/docx.cpp, text.cpp, zip.cpp; fonts_win.cpp finds files
-          # through DirectWrite and reads them through io/).
-          Freetype::Freetype harfbuzz::harfbuzz ZLIB::ZLIB dwrite mv_io)
+          # DOCX (codec/docx.cpp, text.cpp, zip.cpp). fonts_win.cpp finds the file
+          # through DirectWrite; image/pipeline.cpp reads the bytes.
+          Freetype::Freetype harfbuzz::harfbuzz ZLIB::ZLIB dwrite)
 add_library(mv::codec ALIAS mv_codec)
 target_link_libraries(mv_codec PRIVATE mv_raw_openmp)
 
