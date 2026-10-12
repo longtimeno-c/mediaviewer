@@ -90,6 +90,8 @@ struct projection {
     lat = inv_merc(m0 - (y - cy) / k);
   }
   [[nodiscard]] double x(double dlon_deg) const noexcept { return cx + dlon_deg * kDeg * k; }
+  // The width of 360 degrees of longitude, in pixels.
+  [[nodiscard]] double world() const noexcept { return 2 * kPi * k; }
   [[nodiscard]] double y(double lat_deg) const noexcept { return cy - (merc(lat_deg) - m0) * k; }
 
   // The degrees the picture covers, with a margin for strokes, as a query box.
@@ -307,8 +309,22 @@ struct stroker {
 // points (docs/design/27 "Polygons"), so a border edge appears exactly twice
 // and a coast edge once. Exact, with no guess from the pixels: a narrow
 // estuary is still a coast.
+// The whole-world shifts (-1, 0, +1 worlds) at which [lo, hi] reaches the
+// picture [0, w]: a ring is unwrapped from its own first point, so the part on
+// screen can lie a world to either side of where it was projected.
+template <typename Fn>
+void for_each_copy(const projection& pr, double lo, double hi, double w, Fn&& fn) {
+  const double world = pr.world();
+  for (int c = -1; c <= 1; ++c) {
+    const double s = c * world;
+    if (hi + s < -2 || lo + s > w + 2) continue;
+    fn(c, s);
+  }
+}
+
 struct edge_rec {
   std::uint64_t k0, k1;  // the two end points, packed, in order
+  int copy;              // which whole-world copy (-1, 0, +1) of the edge
   double ax, ay, bx, by;
 };
 
@@ -330,29 +346,67 @@ void stroke_borders(const geo::database& db, geo::layer layer, const std::vector
       const std::size_t n = xy.size() / 2;
       for (std::size_t i = 0; i + 1 < n; ++i) {
         if (seam[i] && seam[i + 1]) continue;  // Natural Earth's cut at +/-180, not a border
-        const double ax = xy[2 * i], ay = xy[2 * i + 1];
-        const double bx = xy[2 * i + 2], by = xy[2 * i + 3];
-        if ((ax < -2 && bx < -2) || (ax > w + 2 && bx > w + 2) || (ay < -2 && by < -2) ||
-            (ay > h + 2 && by > h + 2)) {
-          continue;  // off the picture
-        }
+        const double ay = xy[2 * i + 1];
+        const double by = xy[2 * i + 3];
+        if ((ay < -2 && by < -2) || (ay > h + 2 && by > h + 2)) continue;  // off the picture
         std::uint64_t a = pack_point(pts[i]);
         std::uint64_t b = pack_point(pts[i + 1]);
         if (a == b) continue;
         if (a > b) std::swap(a, b);
-        edges.push_back({a, b, ax, ay, bx, by});
+        // Each ring is unwrapped from its own first point, so the two
+        // polygons sharing an edge can place it a world apart: put the edge
+        // within half a world of the centre first, then take the copies that
+        // reach the picture, so both neighbours agree on where it is.
+        const double world = pr.world();
+        const double mid = 0.5 * (xy[2 * i] + xy[2 * i + 2]);
+        const double base = -std::floor((mid - pr.cx) / world + 0.5) * world;
+        const double ax = xy[2 * i] + base;
+        const double bx = xy[2 * i + 2] + base;
+        for_each_copy(pr, std::min(ax, bx), std::max(ax, bx), w, [&](int c, double s) {
+          edges.push_back({a, b, c, ax + s, ay, bx + s, by});
+        });
       }
     }
   }
   std::sort(edges.begin(), edges.end(), [](const edge_rec& x, const edge_rec& y) {
-    return x.k0 != y.k0 ? x.k0 < y.k0 : x.k1 < y.k1;
+    if (x.k0 != y.k0) return x.k0 < y.k0;
+    if (x.k1 != y.k1) return x.k1 < y.k1;
+    return x.copy < y.copy;
   });
   for (std::size_t i = 0; i < edges.size();) {
     std::size_t j = i + 1;
-    while (j < edges.size() && edges[j].k0 == edges[i].k0 && edges[j].k1 == edges[i].k1) ++j;
+    while (j < edges.size() && edges[j].k0 == edges[i].k0 && edges[j].k1 == edges[i].k1 &&
+           edges[j].copy == edges[i].copy) {
+      ++j;
+    }
     if (j - i >= 2) s.segment(edges[i].ax, edges[i].ay, edges[i].bx, edges[i].by, half, alpha);
     i = j;
   }
+}
+
+// A ring that goes once round the globe (Antarctica: Natural Earth closes it
+// along the pole, from +180 back to -180) unwraps to a path whose ends are a
+// world apart. Close it the long way, through the pole, beyond the picture's
+// top or bottom edge, so it encloses the land and not a sliver.
+void close_round_the_world(const projection& pr, std::uint32_t h, std::span<const geo::point> pts,
+                           std::vector<double>& xy) {
+  const std::size_t n = xy.size() / 2;
+  if (n < 2 || pts.size() != n) return;
+  const double x0 = xy[0], y0 = xy[1], x1 = xy[2 * (n - 1)];
+  if (std::fabs(x1 - x0) < pr.world() / 2) return;
+  // The pole it goes round: the hemisphere the ring lies in (Antarctica's
+  // south). Not the picture's centre, which can sit on either side of it.
+  double lat_sum = 0;
+  for (const geo::point& q : pts) lat_sum += q.y;
+  const bool south = lat_sum < 0;  // y grows southward on the picture
+  const double pole = south ? std::max(xy[2 * (n - 1) + 1], static_cast<double>(h)) + h + 16
+                            : std::min(xy[2 * (n - 1) + 1], 0.0) - h - 16;
+  xy.push_back(x1);
+  xy.push_back(pole);
+  xy.push_back(x0);
+  xy.push_back(pole);
+  xy.push_back(x0);
+  xy.push_back(y0);
 }
 
 void fill(const geo::database& db, geo::layer layer, const std::vector<std::uint32_t>& polys,
@@ -363,12 +417,22 @@ void fill(const geo::database& db, geo::layer layer, const std::vector<std::uint
     const std::size_t rings = db.ring_count(layer, p);
     float sign = 1.0f;
     for (std::size_t r = 0; r < rings; ++r) {
-      project_ring(pr, db.ring(layer, p, r), xy, nullptr);
+      const auto pts = db.ring(layer, p, r);
+      project_ring(pr, pts, xy, nullptr);
+      close_round_the_world(pr, acc.h, pts, xy);
       if (r == 0) sign = signed_area(xy) < 0 ? -1.0f : 1.0f;
       const std::size_t n = xy.size() / 2;
-      for (std::size_t i = 0; i + 1 < n; ++i) {
-        acc.line(xy[2 * i], xy[2 * i + 1], xy[2 * i + 2], xy[2 * i + 3], sign);
+      if (n < 2) continue;
+      double lo = xy[0], hi = xy[0];
+      for (std::size_t i = 1; i < n; ++i) {
+        lo = std::min(lo, xy[2 * i]);
+        hi = std::max(hi, xy[2 * i]);
       }
+      for_each_copy(pr, lo, hi, acc.w, [&](int, double s) {
+        for (std::size_t i = 0; i + 1 < n; ++i) {
+          acc.line(xy[2 * i] + s, xy[2 * i + 1], xy[2 * i + 2] + s, xy[2 * i + 3], sign);
+        }
+      });
     }
   }
 }

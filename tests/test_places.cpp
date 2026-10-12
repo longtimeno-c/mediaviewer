@@ -410,6 +410,48 @@ TEST_CASE("places: a gesture keeps what was under the cursor under it, and the r
   }
 }
 
+TEST_CASE("places: Antarctica and rings across the antimeridian fill whole on the full blob", "[places]") {
+  // Natural Earth's Antarctica is one ring that goes once round the globe and
+  // closes along the pole; a ring unwrapped from its own first point can also
+  // sit a world away from the part on screen. The sampled pixels must agree
+  // with the database's own lookup: land where it finds a country, water where
+  // it finds sea (counted, so coasts and lookup snapping stay within 1 %).
+  const std::string path = full_blob();
+  if (!std::filesystem::exists(path)) {
+    const char* req = std::getenv("MV_REQUIRE_GEO");
+    if (req && *req == '1') FAIL("MV_REQUIRE_GEO=1 and " << path << " is missing; build target mv_geo_data");
+    SKIP("full place database not built (cmake --build build --target mv_geo_data)");
+  }
+  auto opened = mv::geo::open_database(path);
+  REQUIRE(opened);
+  const auto& db = (*opened)->db();
+  const map_palette p = palette_for(light_theme());
+  struct where {
+    double lat, lon, span;
+  };
+  for (const where& w : {where{-78.0, 166.0, 40.0}, where{-78.0, 166.0, 9.0}, where{-80.0, 0.0, 40.0},
+                         where{-80.0, -120.0, 9.0}, where{-64.0, -60.0, 40.0}, where{-60.0, 90.0, 40.0},
+                         where{-75.0, 179.5, 9.0}, where{64.0, -150.0, 40.0}, where{66.0, 178.0, 9.0}}) {
+    CAPTURE(w.lat, w.lon, w.span);
+    const map_view v{w.lat, w.lon, 560, 320, 2.0f, w.span};
+    const auto img = draw(db, v, p, "");
+    int samples = 0, wrong = 0;
+    for (int y = 8; y < 312; y += 8) {
+      for (int x = 8; x < 552; x += 8) {
+        double lat = 0, lon = 0;
+        map_point(v, x + 0.5, y + 0.5, lat, lon);
+        const auto pl = db.lookup(lat, lon);
+        const px q = pixel_at(img, v.width, x, y);
+        const bool water = distance(q, p.water) <= 3;
+        const bool land = distance(q, p.land) <= 3;
+        ++samples;
+        if ((!pl.at_sea && !pl.country_code.empty() && water) || (pl.at_sea && land)) ++wrong;
+      }
+    }
+    CHECK(wrong * 100 <= samples);
+  }
+}
+
 TEST_CASE("places: towns in a box, most populous first", "[places][geo]") {
   const auto& db = test_db();
   const auto lisbon = db.towns_in(mv::geo::box{38.55, -9.60, 39.05, -8.90}, 5);
