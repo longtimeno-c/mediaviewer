@@ -13,12 +13,12 @@
 namespace mv::addon::screen {
 namespace {
 
-struct type_info {
+struct node_type_info {
   node_type t;
   const char* name;
 };
 
-constexpr std::array<type_info, 19> kTypes{{
+constexpr std::array<node_type_info, 19> kTypes{{
     {node_type::stack, "stack"},
     {node_type::grid, "grid"},
     {node_type::scroll, "scroll"},
@@ -462,14 +462,14 @@ bool item_has(const json::value* items, std::string_view key, std::string_view v
 }  // namespace
 
 const char* type_name(node_type t) noexcept {
-  for (const type_info& i : kTypes) {
+  for (const node_type_info& i : kTypes) {
     if (i.t == t) return i.name;
   }
   return "stack";
 }
 
 std::optional<node_type> type_from(std::string_view name) noexcept {
-  for (const type_info& i : kTypes) {
+  for (const node_type_info& i : kTypes) {
     if (name == i.name) return i.t;
   }
   return std::nullopt;

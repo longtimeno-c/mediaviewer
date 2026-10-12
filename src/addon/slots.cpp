@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <condition_variable>
+#include <cstddef>
 #include <cstring>
 #include <deque>
 #include <thread>
