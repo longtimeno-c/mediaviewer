@@ -122,6 +122,12 @@ std::optional<std::vector<keymap_pack>> parse_keymaps(const json::value& v, std:
       }
       pack.bindings.push_back(std::move(kb));
     }
+    // What both hosts carry (issue #356): refused here, as the SDK refuses it,
+    // rather than by one host when the pack is applied.
+    if (keymap_pack_json_bytes(pack) > kKeymapMaxPackBytes) {
+      fail(detail, pack.id + ": too large");
+      return std::nullopt;
+    }
     out.push_back(std::move(pack));
   }
   return out;
@@ -138,24 +144,36 @@ std::optional<std::vector<keymap_pack>> parse_keymaps_text(std::string_view text
   return parse_keymaps(*doc, detail);
 }
 
+namespace {
+
+void write_pack(json::writer& w, const keymap_pack& p) {
+  w.begin_object();
+  w.key("id").string(p.id);
+  w.key("name").string(p.name);
+  w.key("bindings").begin_array();
+  for (const keymap_binding& b : p.bindings) {
+    w.begin_object().key("command").string(b.command).key("keys").begin_array();
+    for (const std::string& k : b.keys) w.string(k);
+    w.end_array().end_object();
+  }
+  w.end_array();
+  w.end_object();
+}
+
+}  // namespace
+
 std::string keymaps_to_json(const std::vector<keymap_pack>& packs) {
   json::writer w;
   w.begin_array();
-  for (const keymap_pack& p : packs) {
-    w.begin_object();
-    w.key("id").string(p.id);
-    w.key("name").string(p.name);
-    w.key("bindings").begin_array();
-    for (const keymap_binding& b : p.bindings) {
-      w.begin_object().key("command").string(b.command).key("keys").begin_array();
-      for (const std::string& k : b.keys) w.string(k);
-      w.end_array().end_object();
-    }
-    w.end_array();
-    w.end_object();
-  }
+  for (const keymap_pack& p : packs) write_pack(w, p);
   w.end_array();
   return w.take();
+}
+
+std::size_t keymap_pack_json_bytes(const keymap_pack& pack) {
+  json::writer w;
+  write_pack(w, pack);
+  return w.str().size();
 }
 
 }  // namespace mv::addon

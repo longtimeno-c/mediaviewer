@@ -112,7 +112,7 @@ TEST_CASE("a settings page that breaks a rule is refused", "[addon][settings]") 
       {R"("key": "show_map")", R"("key": "9lives")"},
       {R"("key": "show_town")", R"("key": "show_map")"},  // duplicate
       {R"("label": "Show the map", "default": true)", R"("label": "Show the map", "default": 1)"},
-      {R"("label": "Show the map")", R"("label": "Show‮the map")"},
+      {R"("label": "Show the map")", "\"label\": \"Show\\u202ethe map\""},  // RLO, a JSON escape (MSVC C5255)
       {R"("label": "Show the map")", R"("label": "")"},
       {R"("label": "Show the map")", R"("label": "Show\u0085the map")"},  // C1 next line
       {R"("label": "Show the map")", R"("label": "Show؜the map")"},  // Arabic letter mark
@@ -540,6 +540,81 @@ TEST_CASE("keymap packs: the shape is checked, names and labels as text", "[addo
         R"([{"id":"vim","name":"Vim","bindings":[{"command":"next","keys":)"
         R"(["A","B","C","D","E","F","G","H","I"]}]}])"));
   }
+}
+
+namespace {
+
+// A key label that writes as `bytes` bytes of JSON string body (0..64): '\'
+// escapes to two bytes, 'A' to one. At most 32 characters, as labels are.
+std::string label_of(std::size_t bytes) {
+  return std::string(bytes / 2, '\\') + (bytes % 2 ? "A" : "");
+}
+
+// A pack whose JSON is exactly `target` bytes: full bindings (eight 32-character
+// labels, each escaping to 64 bytes) while they fit, then one-key bindings
+// whose label takes up what is left.
+mv::addon::keymap_pack pack_of_bytes(std::size_t target) {
+  mv::addon::keymap_pack p{.id = "vim", .name = "Vim", .bindings = {}};
+  int n = 0;
+  const auto command = [&n] { return "c" + std::to_string(n++); };
+  const auto bytes = [&p] { return mv::addon::keymap_pack_json_bytes(p); };
+  for (;;) {
+    p.bindings.push_back({command(), std::vector<std::string>(8, label_of(64))});
+    if (bytes() > target - 400) {
+      p.bindings.pop_back();
+      break;
+    }
+  }
+  // One-key bindings take `overhead` .. `overhead + 64` bytes each.
+  p.bindings.push_back({command(), {""}});
+  const std::size_t overhead = bytes();
+  p.bindings.pop_back();
+  const std::size_t before = bytes();
+  const std::size_t one = overhead - before;
+  std::size_t left = target - before;
+  while (left > 2 * (one + 64)) {
+    p.bindings.push_back({command(), {label_of(64)}});
+    left -= one + 64;
+  }
+  const std::size_t a = left / 2;
+  p.bindings.push_back({command(), {label_of(a - one)}});
+  p.bindings.push_back({command(), {label_of(left - a - one)}});
+  return p;
+}
+
+}  // namespace
+
+TEST_CASE("keymap packs: one pack is capped at what both hosts carry (#356)", "[addon][keymap]") {
+  // The JSON a pack is measured as is the pack as keymaps_to_json writes it.
+  const mv::addon::keymap_pack at = pack_of_bytes(mv::addon::kKeymapMaxPackBytes);
+  REQUIRE(mv::addon::keymap_pack_json_bytes(at) == mv::addon::kKeymapMaxPackBytes);
+  REQUIRE(at.bindings.size() <= mv::addon::kKeymapMaxBindings);
+  const std::string text = mv::addon::keymaps_to_json({at});
+  REQUIRE(text.size() == mv::addon::kKeymapMaxPackBytes + 2);  // the array's brackets
+
+  // At the cap: accepted, and it round-trips.
+  const auto ok = mv::addon::parse_keymaps_text(text);
+  REQUIRE(ok);
+  REQUIRE(mv::addon::keymaps_to_json(*ok) == text);
+
+  // One byte over (a longer name): refused, and the detail says why.
+  mv::addon::keymap_pack over = at;
+  over.name = "Vim2";
+  REQUIRE(mv::addon::keymap_pack_json_bytes(over) == mv::addon::kKeymapMaxPackBytes + 1);
+  std::string detail;
+  REQUIRE_FALSE(mv::addon::parse_keymaps_text(mv::addon::keymaps_to_json({over}), &detail));
+  REQUIRE(detail == "vim: too large");
+
+  // Every count within its own limit, but escaped labels make it ~170 KB: the
+  // pack Windows refused and the Mac applied before the cap. Refused by both now.
+  mv::addon::keymap_pack worst{.id = "vim", .name = "Vim", .bindings = {}};
+  for (std::size_t i = 0; i < mv::addon::kKeymapMaxBindings; ++i) {
+    worst.bindings.push_back({"c" + std::to_string(i),
+                              std::vector<std::string>(mv::addon::kKeymapMaxKeys, label_of(64))});
+  }
+  REQUIRE(mv::addon::keymap_pack_json_bytes(worst) > (128u << 10));
+  REQUIRE_FALSE(mv::addon::parse_keymaps_text(mv::addon::keymaps_to_json({worst}), &detail));
+  REQUIRE(detail == "vim: too large");
 }
 
 TEST_CASE("theme shape: schema 2, bounded, defaults of 1", "[addon][theme]") {
