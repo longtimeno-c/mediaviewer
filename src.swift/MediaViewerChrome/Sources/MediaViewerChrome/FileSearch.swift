@@ -142,12 +142,21 @@ final class FileSearchStore: ObservableObject {
     var seen = Set(names)
     var out = names
     let prefix = searchFolder.hasSuffix("/") ? searchFolder : searchFolder + "/"
+    // Name -> index once per listing, not a scan of every name per row
+    // (2,000 rows x 10,000 names on the main actor).
+    let generation = folderStore.listingGeneration
+    if nameIndexGeneration != generation {
+      nameIndex = Dictionary(folderStore.names.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
+      nameIndexGeneration = generation
+    }
     for row in state.rows where row.path.hasPrefix(prefix) {
       let name = String(row.path.dropFirst(prefix.count))
-      if let i = folderStore.names.firstIndex(of: name), seen.insert(i).inserted { out.append(i) }
+      if let i = nameIndex[name], seen.insert(i).inserted { out.append(i) }
     }
     return out
   }
+  private var nameIndex: [String: Int] = [:]
+  private var nameIndexGeneration: UInt64 = .max
 
   private func providersAnswered(_ state: SlotSearchState) {
     guard isOpen, active, state.generation == providerGeneration else {
