@@ -43,6 +43,8 @@ public static partial class IslandHost
         public const string Rewind = "\uEB9E";
         public const string FastForward = "\uEB9D";
         public const string More = "\uE712";
+        public const string Volume = "\uE767";
+        public const string Mute = "\uE74F";
         public const string Close = "\uE711";
         public const string Check = "\uE73E";
         public const string Back = "\uE76B";
