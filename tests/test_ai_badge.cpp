@@ -175,6 +175,7 @@ TEST_CASE("provenance for the badge: one probe, cached, and a held record answer
         return m;
       },
       [](std::string_view) -> std::optional<std::int64_t> { return std::nullopt; },
+      {},
       [&](std::string_view path) {
         ++probes;
         mv::meta::provenance p;

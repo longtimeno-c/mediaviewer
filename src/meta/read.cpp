@@ -1,5 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include <exiv2/exiv2.hpp>
+
 #include <algorithm>
 #include <filesystem>
 #include <string>
@@ -179,6 +181,36 @@ std::optional<std::int64_t> read_date_taken(std::string_view utf8_path) {
     if (auto more = io::read_prefix(utf8_path, kPrefixBytes)) return detail::still_date_key(*more);
   }
   return std::nullopt;
+}
+
+io::cull_marks read_cull_marks(std::string_view utf8_path) {
+  io::cull_marks out;
+  detail::field_state f;
+  if (auto prefix = io::read_prefix(utf8_path, kDatePrefixBytes)) {
+    const std::span<const std::uint8_t> head(prefix->data(), std::min<std::size_t>(prefix->size(), 1024));
+    if (codec::probe(head) != codec::format_family::unknown) {
+      auto fields = detail::still_fields(*prefix);
+      if (!fields && prefix->size() >= kDatePrefixBytes) {
+        if (auto more = io::read_prefix(utf8_path, kPrefixBytes)) fields = detail::still_fields(*more);
+      }
+      if (fields) f = std::move(*fields);
+    }
+  }
+  // The sidecar wins, field by field, as overlay_sidecar does for `read`.
+  try {
+    Exiv2::XmpData xmp;
+    if (detail::load_sidecar(sidecar_path_for(utf8_path), xmp)) {
+      const Exiv2::ExifData none;
+      const detail::field_state side = detail::read_fields(none, xmp);
+      if (side.rating) f.rating = side.rating;
+      if (side.label) f.label = side.label;
+    }
+  } catch (...) {
+    // A damaged sidecar changes nothing.
+  }
+  if (f.rating) out.rating = static_cast<std::int8_t>(std::clamp(*f.rating, -1, 5));
+  if (f.label) out.label = io::cull_label_of(*f.label);
+  return out;
 }
 
 }  // namespace mv::meta

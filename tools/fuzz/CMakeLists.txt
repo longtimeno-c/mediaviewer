@@ -154,6 +154,10 @@ foreach(name IN LISTS MV_FUZZ_HARNESSES)
     target_sources(${target} PRIVATE fuzz_meta.h)
     target_link_libraries(${target} PRIVATE mv_meta_parse)
   endif()
+  # fuzz_docx links codec without image, so it reads font files itself.
+  if(name STREQUAL "docx")
+    target_link_libraries(${target} PRIVATE mv_io)
+  endif()
   # PR 15: the Explorer handler's request path, built from its source.
   if(name STREQUAL "thumbnail")
     target_sources(${target} PRIVATE "${CMAKE_SOURCE_DIR}/src/shellext/thumb_request.cpp")
