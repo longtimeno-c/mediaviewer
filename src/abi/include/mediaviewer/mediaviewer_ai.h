@@ -286,7 +286,11 @@ typedef struct mv_ai_api {
    * pause_on_battery_percent pause (yield_reason BATTERY) for this spell on
    * battery. It is never saved: the machine going back to AC ends it (the next
    * unplug pauses again), as does the app restarting; settings_json reports it
-   * as "battery_override":bool. The saved threshold is unchanged. [no-block] */
+   * as "battery_override":bool. The saved threshold is unchanged.
+   * "resume_root" (a root id; 0 = every one) resumes a root held since start because its
+   * indexing was left unfinished (issue #299, docs/design/17 "Unfinished roots wait for
+   * Resume"): walked first, then indexed from its last committed frame. A root not held is
+   * left alone. [no-block] */
   mv_status(MV_CALL* set_setting)(void* ctx, const char* key, const char* value_json);
   /* Pause / resume all indexing. [no-block] */
   mv_status(MV_CALL* pause)(void* ctx, uint32_t paused);
@@ -296,7 +300,9 @@ typedef struct mv_ai_api {
    *   "done":N,"frames":N,"bytes":N,"last_scan":unix,
    *   "cloud_only":N (online-only files not yet indexed, 2026-10-05),
    *   "error":"unreadable" (present when the last walk of the folder failed: offline,
-   *   moved, no access; the rows are kept)}] [worker-thread] */
+   *   moved, no access; the rows are kept),
+   *   "held":bool (left unfinished last session, it waits for set_setting "resume_root";
+   *   issue #299)}] [worker-thread] */
   mv_status(MV_CALL* roots_json)(void* ctx, char* out, uint32_t cap, uint32_t* needed);
   /* "Index this folder" / "... and subfolders": remembers a root and starts
    * work in the background; results become searchable as they commit. A

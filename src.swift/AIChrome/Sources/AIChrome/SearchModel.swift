@@ -874,11 +874,6 @@ final class SearchModel: ObservableObject {
     run(keepSelection: false)
   }
 
-  func showPerson(id: UInt64, name: String) {
-    reference = Reference(kind: .person(id: id), label: name.isEmpty ? "This person" : "Photos of \(name)")
-    run(keepSelection: false)
-  }
-
   enum PersonOpen { case opened, nothing, failed }
   /// Hears how openPerson ended, once.
   private var personDone: ((PersonOpen) -> Void)?

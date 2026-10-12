@@ -47,6 +47,7 @@
 #include <string>
 #include <vector>
 
+#include "addon/ai_resume.h"
 #include "addon/host.h"
 #include "addon/manifest.h"
 #include "addon/open_json.h"
@@ -80,6 +81,11 @@
 // Checked with -respondsToSelector:; an Import 1.0.0 bundle has only the two
 // selectors above and is driven through them.
 - (BOOL)runCommand:(NSString*)name payload:(NSString*)json;
+// Quit (issue #193): -shutdown without its bounded wait for table calls in
+// flight, as MVAIChrome's. YES when none was in flight, so the pack may stop;
+// NO leaves it running for the exit. An older chrome gets -shutdown, which
+// waits on nothing there.
+- (BOOL)shutdownForQuit;
 @end
 
 // Milestone H: what AI.bundle's principal class (MVAIChrome in
@@ -138,6 +144,19 @@ struct addon_slot {
   // ⌘F started this load: the panel opens once it attaches (or file search
   // and the reason, if it does not).
   bool open_when_attached = false;
+  // The first window's pack verified at launch and waits, unloaded, for the
+  // first search or Settings (issue #292, docs/design/17 "Starting on
+  // demand"): no runtime, no model sessions, no indexing threads until then.
+  bool on_demand = false;
+  // Issue #299 (docs/design/17 "Unfinished roots wait for Resume"): the roots
+  // the pack's resume.json listed at launch, read without loading the pack,
+  // for the bottom-right notice. Cleared when it is answered (Resume or
+  // Dismiss), for the session. `resume_known`: that launch read has run.
+  std::vector<mv::addon::unfinished_root> unfinished;
+  bool resume_known = false;
+  // The notice's Resume started (or joined) the load: resume every held root
+  // once the pack attaches.
+  bool resume_on_attach = false;
 };
 
 // An add-on that will not load or start, said in the window (the command bar's
@@ -390,12 +409,18 @@ bool import_installed_ok() {
   return found && found->state == mv::addon::install_state::ok;
 }
 
-bool ai_installed_ok() {
+// `data_dir`: the pack's data folder (index.db, resume.json), when it verifies.
+bool ai_installed_ok(std::string* data_dir = nullptr) {
   if (!ai_supported() || !ensure_store()) return false;
   auto found = state().store->find("ai");
-  return found && found->state == mv::addon::install_state::ok;
+  if (!found || found->state != mv::addon::install_state::ok) return false;
+  if (data_dir) *data_dir = found->data_dir;
+  return true;
 }
 
+// [main-thread] The chrome shuts down first: it closes the table and waits
+// (bounded) for the calls its detached tasks have inside the pack (a RAW
+// thumbnail, an eject), so nothing reaches the engine after the reset below.
 void unload_import() {
   mac_addons& s = state();
   if (s.chrome) {
@@ -588,9 +613,19 @@ void unload_ai() {
   retire(std::move(s.ai.addon));
   s.ai.bundle = nil;   // mapped until quit, inert (NSBundle -unload is unsafe for Swift)
   s.ai.loading = false;
+  s.ai.on_demand = false;  // removed or replaced: a later load is asked for anew
+  s.ai.resume_on_attach = false;
+  s.ai.unfinished.clear();  // nothing left to resume with: the notice goes
   mv::shell::set_addon_commands_available(mv::shell::addon_family::ai, false);
   // Nothing may point into the gone table's clip: drop the markers.
   mv_chrome_set_scrub_markers(nullptr, nullptr, 0, -1);
+}
+
+// [main-thread] Issue #299: the held roots go on indexing (mv.ai.1 set_setting
+// "resume_root", 0 = every held root). The pack is attached.
+void resume_held_roots() {
+  const auto* api = static_cast<const mv_ai_api*>(state().ai.table);
+  if (api && api->set_setting) (void)api->set_setting(api->ctx, "resume_root", "0");
 }
 
 // On the main thread, once the native side loaded on a worker: the bundle,
@@ -699,6 +734,10 @@ bool start_ai_load() {
       if (attach_ai(owned)) {
         sm.ai.reason.clear();
         clear_alert("ai");
+        if (sm.ai.resume_on_attach) {
+          sm.ai.resume_on_attach = false;
+          resume_held_roots();  // the launch notice's Resume (issue #299)
+        }
         if (asked) (void)MvAddonsRunCommand("search_open");
         return;
       }
@@ -853,13 +892,28 @@ void MvAddonsStart(MvAddonsOpenPathFn open_path, void* ctx) {
   mac_addons& s = state();
   s.open_path = open_path;
   s.open_path_ctx = ctx;
-  // Verifying hashes every file: not on the main thread (rule 1).
+  // Verifying hashes every file: not on the main thread (rule 1). The AI pack
+  // is only verified here, not loaded (issue #292, docs/design/17 "Starting on
+  // demand"): its runtime, models and indexer start the first time search is
+  // opened (MvAddonsSearchOnDemand) or Settings shows Local search
+  // (mv_addon2_ai_wake).
+  // Issue #299: an index left unfinished last session is not resumed by
+  // itself. The pack's resume.json (a few hundred bytes beside index.db) says
+  // which roots wait, so the window can ask without loading the pack.
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
     const bool ok = import_installed_ok();
-    const bool ai = ai_installed_ok();
+    std::string data_dir;
+    const bool ai = ai_installed_ok(&data_dir);
+    auto unfinished = std::make_shared<std::vector<mv::addon::unfinished_root>>(
+        ai ? mv::addon::read_ai_resume(data_dir) : std::vector<mv::addon::unfinished_root>{});
     dispatch_async(dispatch_get_main_queue(), ^{
       if (ok) (void)load_import();
-      if (ai) (void)start_ai_load();
+      mac_addons& sm = state();
+      if (ai) {
+        sm.ai.on_demand = true;
+        sm.ai.unfinished = std::move(*unfinished);
+      }
+      sm.ai.resume_known = true;
     });
   });
   // The one-time hint: a removable volume mounts while Import is absent.
@@ -885,13 +939,14 @@ void MvAddonsStart(MvAddonsOpenPathFn open_path, void* ctx) {
 void MvAddonsStartReader(MvAddonsOpenPathFn open_path, void* ctx) {
   mac_addons& s = state();
   s.reader = true;  // before anything makes the store: no startup_cleanup here
+  s.ai.resume_known = true;  // a reader resumes nothing: no launch notice (issue #299)
   s.open_path = open_path;
   s.open_path_ctx = ctx;
   // Nothing more at launch: reading the store hashes every installed file
   // (over a gigabyte with the AI pack) and the reader holds a text model, so
   // nothing may compete with this window's first pixel, and a window that
   // never searches costs nothing. The reader starts on the first ⌘F
-  // (MvAddonsReaderSearch) or when Settings opens (mv_addon2_reader_start).
+  // (MvAddonsSearchOnDemand) or when Settings opens (mv_addon2_ai_wake).
   // No card hint either: Import is not loaded or installed from this window.
 }
 
@@ -907,11 +962,25 @@ bool reader_begin() {
   s.ai.tried_at = std::chrono::steady_clock::now();
   return start_ai_load();
 }
+
+// The first window: start the pack that waited since launch, or join the load
+// already on its way. True when one is.
+bool ai_begin() {
+  mac_addons& s = state();
+  if (s.reader || s.ai.chrome) return false;
+  if (s.ai.loading) return true;
+  return s.ai.on_demand && start_ai_load();
+}
 }  // namespace
 
-bool MvAddonsReaderSearch() {
+bool MvAddonsSearchOnDemand() {
   mac_addons& s = state();
-  if (!s.reader || s.ai.chrome) return false;
+  if (s.ai.chrome) return false;
+  if (!s.reader) {
+    if (!ai_begin()) return false;
+    s.ai.open_when_attached = true;  // the panel once it attaches, else the reason
+    return true;
+  }
   if (reader_begin()) {
     s.ai.open_when_attached = true;  // the panel once it attaches, else file search
     return true;
@@ -977,14 +1046,24 @@ void MvAddonsQuit() {
   g_quit_at = std::chrono::steady_clock::now();
   static bool guarded = false;
   if (!guarded) guarded = std::atexit(&exit_guard) == 0;
+  bool import_idle = true;
   if (s.chrome) {
     @try {
-      [s.chrome shutdown];  // Import's chrome waits on nothing
+      if ([s.chrome respondsToSelector:@selector(shutdownForQuit)]) {
+        import_idle = [s.chrome shutdownForQuit] == YES;
+      } else {
+        [s.chrome shutdown];  // an older chrome waits on nothing
+      }
     } @catch (NSException*) {
+      import_idle = false;
     }
   }
   s.chrome = nil;
-  mv::addon::stop_for_exit(std::move(s.import));
+  if (import_idle) {
+    mv::addon::stop_for_exit(std::move(s.import));
+  } else {
+    mv::addon::abandon_for_exit(std::move(s.import));
+  }
 
   // The AI pack: its chrome closes the table first. A read still inside the
   // pack (Settings' roots or people, a result thumbnail) would be freed under
@@ -1315,12 +1394,44 @@ extern "C" int32_t mv_addon2_load_reason(const char* id, char* buf, int32_t size
 // Another window's process hosts the add-ons: this one searches only.
 extern "C" bool mv_addon2_elsewhere(void) { return state().reader; }
 
-// Settings opened in a later window: start its reader if it is due (see
-// reader_begin), so Local search's view can show. False when nothing started.
-extern "C" bool mv_addon2_reader_start(void) { return reader_begin(); }
+// Settings showed Local search: start the pack that waited since launch (issue
+// #292), or in a later window its reader if it is due (see reader_begin), so
+// Local search's own view can show. False when nothing is on its way.
+extern "C" bool mv_addon2_ai_wake(void) { return state().reader ? reader_begin() : ai_begin(); }
 
-// The path bar's search icon in a later window: what ⌘F does (MvAddonsReaderSearch).
-extern "C" bool mv_addon2_reader_search(void) { return MvAddonsReaderSearch(); }
+// Installed and verified, not loaded, nothing on its way: the first search
+// (or Settings) starts it. The search icon offers Local search meanwhile.
+extern "C" bool mv_addon2_ai_on_demand(void) {
+  const mac_addons& s = state();
+  return !s.reader && s.ai.on_demand && !s.ai.chrome && !s.ai.loading;
+}
+
+// Issue #299, the launch notice (mv_chrome_bridge.h).
+extern "C" bool mv_addon2_ai_resume_known(void) { return state().ai.resume_known; }
+
+extern "C" int32_t mv_addon2_ai_resume_question(char* buf, int32_t size) {
+  const mac_addons& s = state();
+  return copy_out(s.reader ? std::string() : mv::addon::resume_question(s.ai.unfinished), buf, size);
+}
+
+extern "C" bool mv_addon2_ai_resume(void) {
+  mac_addons& s = state();
+  s.ai.unfinished.clear();  // answered: not asked again this session
+  if (s.reader) return false;  // a later window indexes nothing
+  if (s.ai.chrome) {
+    resume_held_roots();
+    return true;
+  }
+  if (!ai_begin()) return false;  // the pack loads as at the first search
+  s.ai.resume_on_attach = true;
+  return true;
+}
+
+extern "C" void mv_addon2_ai_resume_dismiss(void) { state().ai.unfinished.clear(); }
+
+// The path bar's search icon while Local search is not attached: what ⌘F does
+// (MvAddonsSearchOnDemand), in the first window or a later one.
+extern "C" bool mv_addon2_reader_search(void) { return MvAddonsSearchOnDemand(); }
 
 // A later window's reader found Local search not installed at its last try.
 extern "C" bool mv_addon2_reader_absent(void) { return state().ai.absent; }

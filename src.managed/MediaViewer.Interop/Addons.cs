@@ -671,6 +671,25 @@ public interface IAddonHost2 : IAddonHost
     event Action? ThemeChanged;
 }
 
+/// <summary>
+/// The command-bar pill's ring and menu (#200, the Mac's LocalSearchBarItem).
+/// A new interface, not new members on <see cref="IAddonHost2"/>: an installed
+/// pack's chrome was compiled against that as it is. A chrome that finds no
+/// IAddonHost3 keeps calling <see cref="IAddonHost2.SetIndexingStatus"/>, and
+/// one compiled against this must reach it only from a method that can fail
+/// to load on an older host (AiChrome.ReportPill).
+/// </summary>
+public interface IAddonHost3 : IAddonHost2
+{
+    /// <summary>
+    /// <see cref="IAddonHost2.SetIndexingStatus"/> with the ring's
+    /// <paramref name="fraction"/> (0…1 of the pass the text names; negative
+    /// for none) and whether indexing is waiting on battery, when the pill's
+    /// menu offers <see cref="SearchCommand.IndexAnyway"/>.
+    /// </summary>
+    void SetIndexingPill(string? text, bool busy, double fraction, bool onBattery);
+}
+
 /// <summary>The search commands the native router forwards (ShowAddon kinds).</summary>
 public static class SearchCommand
 {
@@ -678,6 +697,7 @@ public static class SearchCommand
     public const int Similar = 1;     // Ctrl+Shift+F
     public const int NextMatch = 2;   // N on a clip
     public const int PrevMatch = 3;   // Shift+N
+    public const int IndexAnyway = 4; // the pill's menu, on battery (#200); an older chrome returns false
 }
 
 /// <summary>

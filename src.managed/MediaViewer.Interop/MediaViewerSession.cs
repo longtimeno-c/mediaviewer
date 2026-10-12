@@ -34,6 +34,9 @@ public sealed partial class MediaViewerSession : IDisposable
     private readonly MvSessionHandle _handle;
     internal MvSessionHandle Handle => _handle;
     private MvCompletion[] _drainBuffer = new MvCompletion[256];
+    // Issue #226: the listing's buffers, kept and reused across relists.
+    private MvFolderEntry[] _entries = new MvFolderEntry[256];
+    private byte[] _entryStrings = new byte[64 * 1024];
 
     private MediaViewerSession(MvSessionHandle handle)
     {
@@ -168,7 +171,7 @@ public sealed partial class MediaViewerSession : IDisposable
     public string FolderDirectory => ReadUtf8(NativeMethods.mv_folder_directory);
 
     /// <summary>
-    /// #291 (ABI 0.20): the folder's stops whose tags hold every word of
+    /// #291 (ABI 0.28): the folder's stops whose tags hold every word of
     /// <paramref name="query"/>, as JSON {"done","total","reading","hits":[[index,"why"],...]}.
     /// Empty on a core older than 0.20. Never reads a file.
     /// </summary>
@@ -295,6 +298,96 @@ public sealed partial class MediaViewerSession : IDisposable
     }
 
     /// <summary>
+    /// ABI 0.20 (issue #226): the whole listing in one call under one core lock,
+    /// instead of about eight calls per stop. Fills buffers this session keeps,
+    /// so a relist allocates nothing here once they have grown to the folder.
+    /// Both spans are valid until the next call; read a stop's strings with
+    /// <see cref="EntryString"/>.
+    /// </summary>
+    public unsafe int ReadFolderEntries(out ReadOnlySpan<MvFolderEntry> entries,
+                                        out ReadOnlySpan<byte> strings)
+    {
+        // The listing can change between a refused call and the retry; a few
+        // rounds always settle (a watcher relist is not a busy loop).
+        for (int attempt = 0; ; ++attempt)
+        {
+            MvStatus status;
+            uint count, bytes;
+            try
+            {
+                fixed (MvFolderEntry* e = _entries)
+                fixed (byte* b = _entryStrings)
+                {
+                    status = NativeMethods.mv_folder_entries(_handle, e, (uint)_entries.Length, b,
+                                                             (uint)_entryStrings.Length, out count,
+                                                             out bytes);
+                }
+            }
+            catch (EntryPointNotFoundException)
+            {
+                // A core older than ABI 0.20: the same snapshot, a stop at a time.
+                int n = ReadFolderEntriesPerItem();
+                entries = _entries.AsSpan(0, n);
+                strings = _entryStrings;
+                return n;
+            }
+            if (status == MvStatus.Ok)
+            {
+                entries = _entries.AsSpan(0, (int)count);
+                strings = _entryStrings.AsSpan(0, (int)bytes);
+                return (int)count;
+            }
+            bool grow = count > _entries.Length || bytes > _entryStrings.Length;
+            if (status != MvStatus.InvalidArg || !grow || attempt >= 8) ThrowIfFailed(status);
+            // Headroom, so a folder that gains a file does not reallocate again.
+            if (count > _entries.Length) _entries = new MvFolderEntry[count + count / 4 + 16];
+            if (bytes > _entryStrings.Length) _entryStrings = new byte[bytes + bytes / 4 + 4096];
+        }
+    }
+
+    /// <summary>The NUL-terminated string at <paramref name="offset"/> of a listing's string block.</summary>
+    public static string EntryString(ReadOnlySpan<byte> strings, uint offset)
+    {
+        ReadOnlySpan<byte> s = strings[(int)offset..];
+        int end = s.IndexOf((byte)0);
+        return end <= 0 ? string.Empty : System.Text.Encoding.UTF8.GetString(s[..end]);
+    }
+
+    private int ReadFolderEntriesPerItem()
+    {
+        uint count = FolderCount;
+        if (_entries.Length < count) _entries = new MvFolderEntry[count];
+        int at = 0;
+        uint Put(string value)
+        {
+            int need = System.Text.Encoding.UTF8.GetMaxByteCount(value.Length) + 1;
+            if (at + need > _entryStrings.Length)
+                Array.Resize(ref _entryStrings, Math.Max(_entryStrings.Length * 2, at + need));
+            int offset = at;
+            at += System.Text.Encoding.UTF8.GetBytes(value, 0, value.Length, _entryStrings, at);
+            _entryStrings[at++] = 0;
+            return (uint)offset;
+        }
+        bool list;
+        try { list = ListTitle.Length > 0; }
+        catch (EntryPointNotFoundException) { list = false; }
+        for (uint i = 0; i < count; ++i)
+        {
+            MvFolderItem item = FolderItemAt(i);
+            _entries[i] = new MvFolderEntry
+            {
+                Item = item,
+                MomentMs = list ? ItemMoment(i) : -1,
+                NameOffset = Put(FolderItemName(i)),
+                PathOffset = Put(FolderItemPath(i)),
+                ThumbOffset = Put(FolderItemThumbPath(i)),
+                PairOffset = Put(item.PairKind == MvPairKind.None ? "" : FolderItemPairPath(i)),
+            };
+        }
+        return (int)count;
+    }
+
+    /// <summary>
     /// The immediate subfolders of <paramref name="dir"/> for the folder tree (PR 9): hidden,
     /// system and dot directories skipped, sorted by name. One directory read, so call it off
     /// the UI thread. Returns an empty list when the directory cannot be read.
@@ -412,28 +505,25 @@ public sealed partial class MediaViewerSession : IDisposable
     /// The returned span is valid until the next drain on this instance.
     /// </para>
     /// </remarks>
-    public ReadOnlySpan<MvCompletion> Drain()
+    public unsafe ReadOnlySpan<MvCompletion> Drain()
     {
-        uint total = 0;
+        // Issue #226: straight into the kept buffer, so an empty queue costs one
+        // call and no allocation.
+        int total = 0;
         while (true)
         {
-            uint capacity = (uint)_drainBuffer.Length - total;
-            if (capacity == 0)
+            if (total == _drainBuffer.Length) Array.Resize(ref _drainBuffer, _drainBuffer.Length * 2);
+            uint capacity = (uint)(_drainBuffer.Length - total);
+            uint count;
+            fixed (MvCompletion* p = &_drainBuffer[total])
             {
-                Array.Resize(ref _drainBuffer, _drainBuffer.Length * 2);
-                continue;
+                count = NativeMethods.mv_completion_drain(_handle, p, capacity);
             }
-
-            var chunk = new MvCompletion[capacity];
-            uint count = NativeMethods.mv_completion_drain(_handle, chunk, capacity);
-            if (count == 0) break;
-
-            Array.Copy(chunk, 0, _drainBuffer, total, count);
-            total += count;
+            total += (int)count;
             if (count < capacity) break;
         }
 
-        return _drainBuffer.AsSpan(0, (int)total);
+        return _drainBuffer.AsSpan(0, total);
     }
 
     public void Dispose() => _handle.Dispose();

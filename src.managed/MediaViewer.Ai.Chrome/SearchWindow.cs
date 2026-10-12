@@ -503,15 +503,7 @@ internal sealed class SearchWindow : Window, IDisposable
 
     // ---- filter controls --------------------------------------------------------------------
 
-    private static bool HighContrast()
-    {
-        try { return new Windows.UI.ViewManagement.AccessibilitySettings().HighContrast; }
-        catch (Exception ex)
-        {
-            System.Diagnostics.Debug.WriteLine(ex.Message);
-            return false;
-        }
-    }
+    private static bool HighContrast() => Look.HighContrast();
 
     /// <summary>"Look in  [track]": a caption and its control on one line.</summary>
     private FrameworkElement Group(string caption, UIElement control)
@@ -525,51 +517,11 @@ internal sealed class SearchWindow : Window, IDisposable
         return row;
     }
 
-    /// <summary>The recessed track a single-choice group sits in (a segmented control).</summary>
-    private Border Track(UIElement segments, bool hc) => new()
-    {
-        Child = segments,
-        Padding = new Thickness(2),
-        CornerRadius = new CornerRadius(7),
-        Background = hc ? new SolidColorBrush(Microsoft.UI.Colors.Transparent) : _look.LiveTint(AddonColour.Body, 22),
-        BorderBrush = _look[AddonColour.Hairline],
-        BorderThickness = new Thickness(1),
-    };
+    /// <summary>The recessed track a single-choice group sits in (Look.Track; Settings uses it too).</summary>
+    private Border Track(UIElement segments, bool hc) => _look.Track(segments, hc);
 
-    /// <summary>
-    /// One segment of a track: quiet until chosen, then raised on the surface
-    /// colour with the title colour and a hairline. Lightweight styling (the
-    /// template's own resource keys), so pointer, pressed and the system focus
-    /// visual stay Fluent; high contrast keeps the system's toggle look.
-    /// </summary>
-    private ToggleButton Segment(string label, Action click, bool hc)
-    {
-        var b = new ToggleButton
-        {
-            Content = label,
-            FontFamily = _look.Font,
-            FontSize = 13,
-            Padding = new Thickness(10, 2, 10, 3),
-            MinHeight = 0,
-            MinWidth = 0,
-            Height = 24,
-            CornerRadius = new CornerRadius(5),
-            BorderThickness = new Thickness(1),
-        };
-        if (!hc)
-        {
-            var clear = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
-            Brushes(b, "Background", clear, _look.LiveTint(AddonColour.Body, 26), _look.LiveTint(AddonColour.Body, 40),
-                    _look[AddonColour.Surface], _look[AddonColour.Surface], _look.LiveTint(AddonColour.Surface, 210));
-            Brushes(b, "Foreground", _look[AddonColour.Body], _look[AddonColour.Title], _look[AddonColour.Title],
-                    _look[AddonColour.Title], _look[AddonColour.Title], _look[AddonColour.Title]);
-            Brushes(b, "BorderBrush", clear, clear, clear,
-                    _look[AddonColour.Hairline], _look[AddonColour.Hairline], _look[AddonColour.Hairline]);
-        }
-        AutomationProperties.SetName(b, label);
-        b.Click += (_, _) => click();
-        return b;
-    }
+    /// <summary>One segment of a track (Look.Segment; Settings uses it too).</summary>
+    private ToggleButton Segment(string label, Action click, bool hc) => _look.Segment(label, click, hc);
 
     /// <summary>
     /// A toggle token with its icon (Finder / Photos style): outlined when off,
@@ -621,15 +573,8 @@ internal sealed class SearchWindow : Window, IDisposable
 
     /// <summary>ToggleButton lightweight styling: rest, pointer over, pressed, then the checked three.</summary>
     private static void Brushes(ToggleButton b, string part, Brush rest, Brush over, Brush pressed,
-                                Brush on, Brush onOver, Brush onPressed)
-    {
-        b.Resources[$"ToggleButton{part}"] = rest;
-        b.Resources[$"ToggleButton{part}PointerOver"] = over;
-        b.Resources[$"ToggleButton{part}Pressed"] = pressed;
-        b.Resources[$"ToggleButton{part}Checked"] = on;
-        b.Resources[$"ToggleButton{part}CheckedPointerOver"] = onOver;
-        b.Resources[$"ToggleButton{part}CheckedPressed"] = onPressed;
-    }
+                                Brush on, Brush onOver, Brush onPressed) =>
+        Look.ToggleBrushes(b, part, rest, over, pressed, on, onOver, onPressed);
 
     /// <summary>Dimmed but still hoverable and focusable, so its tooltip can say why.</summary>
     private static void SetAvailable(ToggleButton b, bool available) => b.Opacity = available ? 1 : 0.4;
@@ -661,8 +606,7 @@ internal sealed class SearchWindow : Window, IDisposable
     private const string GlyphPicture = "";
     private const string GlyphSound = "";
     private const string GlyphSpeech = "";
-    private static FontFamily? _iconFont;
-    private static FontFamily IconFont => _iconFont ??= new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets");
+    private static FontFamily IconFont => Look.IconFont;
 
     private const MvAiKinds AllFinds = MvAiKinds.FindPictures | MvAiKinds.FindSounds | MvAiKinds.FindSpeech;
 

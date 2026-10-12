@@ -384,7 +384,9 @@ typedef struct mv_host_api {
   /* [worker-thread] A file's tag facts (mv_addon_tag_facts above), from the
    * host's meta_cache.db: a folder the viewer has shown costs no read.
    * MV_ERR_IO when the file cannot be read. Appended: read it only when
-   * `struct_size` covers it and the pointer is non-NULL. */
+   * `struct_size` covers it and the pointer is non-NULL. Landing order: this
+   * row stays LAST, after PR 56's settings_get and #348's v3 rows when
+   * those land first (docs/design/14). */
   mv_status(MV_CALL* tag_facts)(void* host, const char* path_utf8, mv_addon_tag_facts* out);
 } mv_host_api;
 

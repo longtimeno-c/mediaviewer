@@ -66,9 +66,9 @@ internal static partial class NativeMethods
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
-    internal static partial uint mv_completion_drain(MvSessionHandle session,
-                                                     [Out] MvCompletion[] completions,
-                                                     uint capacity);
+    internal static unsafe partial uint mv_completion_drain(MvSessionHandle session,
+                                                            MvCompletion* completions,
+                                                            uint capacity);
 
     // The string is UTF-8, owned by the caller, and copied by the core before it
     // returns. StringMarshalling.Utf8 pins a temporary for exactly the duration
@@ -143,7 +143,7 @@ internal static partial class NativeMethods
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial MvStatus mv_folder_close(MvSessionHandle session);
 
-    // 0.20 (#291): tag search over the open folder; a lookup in memory.
+    // 0.28 (#291): tag search over the open folder; a lookup in memory.
     [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial MvStatus mv_folder_tag_search(MvSessionHandle session, string query, IntPtr utf8,
@@ -207,6 +207,14 @@ internal static partial class NativeMethods
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial MvStatus mv_folder_item_moment(MvSessionHandle session, uint index,
                                                            out long ms);
+
+    // ABI 0.20 (issue #226): the whole listing in one call. [any-thread][no-block]
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static unsafe partial MvStatus mv_folder_entries(MvSessionHandle session,
+                                                              MvFolderEntry* entries, uint entryCap,
+                                                              byte* strings, uint stringCap,
+                                                              out uint count, out uint stringBytes);
 
     // ABI 0.6 (PR 9): the folder tree's one directory read. Worker threads only.
     [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]

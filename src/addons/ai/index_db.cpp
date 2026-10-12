@@ -413,6 +413,21 @@ constexpr const char* kTrackWhere =
     " AND ((a.kind = 1 AND ?4 != 0) OR (a.kind = 2 AND"
     " ((CASE r.media WHEN 0 THEN ?5 ELSE r.media END) & ?6) != 0)) AND a.root_id != ?7";
 
+// The filter's held roots, as SQL over `a` (integers only, so written in).
+static std::string held_where(const track_filter& filter) {
+  if (filter.held.empty()) return {};
+  std::string in = " AND a.root_id NOT IN (";
+  for (std::size_t i = 0; i < filter.held.size(); ++i) {
+    if (i) in += ",";
+    in += std::to_string(filter.held[i]);
+  }
+  return in + ")";
+}
+
+// pending()'s rule for "still to do", as SQL over `a` and `p`.
+constexpr const char* kPendingWhere =
+    " (p.state IS NULL OR p.state = 0 OR p.state = 1 OR (p.state = 3 AND p.tries < ?2)) AND a.cloud = 0";
+
 std::vector<work_item> index_db::pending(const std::string& spec, std::size_t limit,
                                          std::int32_t max_tries, const track_filter& filter) {
   return pending_where(spec, limit, max_tries, filter, "");
@@ -439,9 +454,8 @@ std::vector<work_item> index_db::pending_where(const std::string& spec, std::siz
       ", COALESCE(p.state, 0), COALESCE(p.resume_ms, 0), COALESCE(p.tries, 0)"
       " FROM assets a JOIN roots r ON r.id = a.root_id AND r.enabled = 1"
       " LEFT JOIN progress p ON p.asset_id = a.id AND p.spec = ?1"
-      " WHERE (p.state IS NULL OR p.state = 0 OR p.state = 1 OR (p.state = 3 AND p.tries < ?2))"
-      " AND a.cloud = 0" +
-      std::string(kTrackWhere) + extra +
+      " WHERE" + std::string(kPendingWhere) +
+      std::string(kTrackWhere) + held_where(filter) + extra +
       " ORDER BY COALESCE(p.state, 0) = 1 DESC, a.kind ASC, a.id ASC LIMIT ?3";
   stmt s(db_, sql.c_str());
   s.bind(1, spec).bind(2, std::int64_t{max_tries}).bind(3, static_cast<std::int64_t>(limit))
@@ -684,7 +698,8 @@ counts index_db::count(const std::string& spec, const track_filter& filter) {
       " SUM(CASE WHEN p.state = 4 THEN 1 ELSE 0 END),"
       " SUM(CASE WHEN a.cloud = 1 AND (p.state IS NULL OR p.state < 2) THEN 1 ELSE 0 END)"
       " FROM assets a JOIN roots r ON r.id = a.root_id AND r.enabled = 1"
-      " LEFT JOIN progress p ON p.asset_id = a.id AND p.spec = ?1 WHERE 1") + kTrackWhere;
+      " LEFT JOIN progress p ON p.asset_id = a.id AND p.spec = ?1 WHERE 1") + kTrackWhere +
+      held_where(filter);
   stmt a(db_, sql.c_str());
   a.bind(4, std::int64_t{filter.photos ? 1 : 0}).bind(5, std::int64_t{filter.default_media})
       .bind(6, std::int64_t{filter.media_bit}).bind(7, filter.skip_root);
@@ -720,6 +735,20 @@ std::uint64_t index_db::unavailable_in_root(std::int64_t root, const std::string
   stmt f(db_, "SELECT COUNT(*) FROM assets a JOIN progress p ON p.asset_id = a.id AND p.spec = ?2"
               " WHERE a.root_id = ?1 AND p.state = 4");
   return f.bind(1, root).bind(2, spec).step_row() ? static_cast<std::uint64_t>(f.i64(0)) : 0;
+}
+
+std::uint64_t index_db::pending_in_root(std::int64_t root, const std::string& spec, std::int32_t max_tries,
+                                        const track_filter& filter) {
+  std::lock_guard lock(m_);
+  const std::string sql = std::string(
+      "SELECT COUNT(*) FROM assets a JOIN roots r ON r.id = a.root_id AND r.enabled = 1"
+      " LEFT JOIN progress p ON p.asset_id = a.id AND p.spec = ?1"
+      " WHERE a.root_id = ?3 AND") + kPendingWhere + kTrackWhere;
+  stmt f(db_, sql.c_str());
+  f.bind(1, spec).bind(2, std::int64_t{max_tries}).bind(3, root)
+      .bind(4, std::int64_t{filter.photos ? 1 : 0}).bind(5, std::int64_t{filter.default_media})
+      .bind(6, std::int64_t{filter.media_bit}).bind(7, filter.skip_root);
+  return f.step_row() ? static_cast<std::uint64_t>(f.i64(0)) : 0;
 }
 
 std::uint64_t index_db::done_in_root(std::int64_t root, const std::string& spec) {
