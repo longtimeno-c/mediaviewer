@@ -48,21 +48,21 @@ final class VideoStore: ObservableObject {
   @Published private(set) var matchCurrent: Int = -1
   private var matchGeneration: UInt64 = .max
 
-  private var timer: Timer?
-
   private init() {
-    timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-      MainActor.assumeIsolated { self?.poll() }
-    }
+    // Issue #178: polled when the main run loop has run (ChromePulse). The
+    // render thread moves the position, so its timer runs while a clip plays;
+    // while one is the current item, the host's transport poll wakes the loop.
+    ChromePulse.shared.add { [weak self] in self?.poll() ?? false }
   }
 
-  private func poll() {
+  /// True while a clip plays: the position moves off the main thread.
+  private func poll() -> Bool {
     var pos: Int64 = 0, dur: Int64 = 0, rate: Int32 = 100
     var isPlaying = false, isMuted = false
     var vol: Float = 1.0
     let on = mv_chrome_video_status(&pos, &dur, &isPlaying, &rate, &isMuted, &vol)
     if on != active { active = on }
-    guard on else { return }
+    guard on else { return false }
     if scrubMs == nil, pos != positionMs { positionMs = pos }
     if dur != durationMs { durationMs = dur }
     if isPlaying != playing { playing = isPlaying }
@@ -71,6 +71,7 @@ final class VideoStore: ObservableObject {
     if draggingVolume == nil, vol != volume { volume = vol }
     pollTrim()
     pollMatches()
+    return isPlaying
   }
 
   private func pollMatches() {

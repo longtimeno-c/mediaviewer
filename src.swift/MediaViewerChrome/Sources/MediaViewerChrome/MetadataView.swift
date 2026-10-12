@@ -69,8 +69,9 @@ struct MetadataView: View {
     .onChange(of: store.isClip) { _, isClip in
       if !isClip && tab == .streams { tab = .summary }
     }
-    // Another item: drop any half-typed edit.
-    .onChange(of: store.summary.first?.value) { _, _ in cancelEdits() }
+    // Another item: drop any half-typed edit. Keyed on the item, not on a
+    // value two files can share (issue #190).
+    .onChange(of: store.itemPath) { _, _ in cancelEdits() }
   }
 
   private func cancelEdits() {

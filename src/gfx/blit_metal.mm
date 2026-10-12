@@ -12,7 +12,7 @@
 namespace mv::gfx {
 namespace {
 
-// Line-for-line twin of gfx/blit.cpp's kHlsl vs_main/catmull_rom_1d/texel/
+// Line-for-line twin of gfx/blit.hlsl's vs_main/catmull_rom_1d/texel/
 // sample_catmull/background_at/sample_filtered/image_px_at/finish/ps_main.
 // Buffer(0) here is the Camera cbuffer's register(b0) twin (docs/design/15 binding
 // note); no Tile buffer — the tiled path is not ported in PR 17.

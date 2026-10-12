@@ -19,7 +19,7 @@ extern "C" {
 #endif
 
 typedef struct mv_crash_context_info {
-  /* slot_count fixed-size, NUL-padded ASCII slots, one per decode worker. */
+  /* slot_count fixed-size, NUL-padded ASCII slots, one per in-flight decode. */
   const char* slots;
   uint32_t slot_count;
   uint32_t slot_bytes;

@@ -181,6 +181,15 @@ public static partial class IslandHost
         public const int EditWorkspace = 150;
         public const int CropAspectSet = 155;      // arg: preset, + 16 portrait
         public const int CropStraightenSet = 156;  // arg: degrees
+        // Keyed commands the island never sends, only names the key of (KeyOf).
+        public const int SkimBack = 34;
+        public const int SkimForward = 35;
+        public const int Zoom200 = 39;
+        public const int Zoom400 = 40;
+        public const int CropAspectCycle = 151;
+        public const int CropAspectSwap = 152;
+        public const int ShowOriginal = 153;
+        public const int SearchOpen = 157;
 
         // Mirrors chrome_command_checksum() in chrome_host.h: same constants,
         // same order, same arithmetic. Probe hands it to native for the test.
@@ -529,11 +538,10 @@ public static partial class IslandHost
             if (_source is null) return 1;
             int reverse = 0;
             if (arg != IntPtr.Zero && sizeBytes >= 4) reverse = Marshal.ReadInt32(arg);
-            var reason = reverse != 0
-                ? XamlSourceFocusNavigationReason.Last
-                : XamlSourceFocusNavigationReason.First;
-            _source.NavigateFocus(new XamlSourceFocusNavigationRequest(reason));
-            return 0;
+            // Tab from the canvas enters the first visible ring, Shift+Tab the
+            // last (issue #217).
+            bool forward = reverse == 0;
+            return FocusRing(forward ? 0 : FocusOrder().Length - 1, forward) ? 0 : 1;
         }
         catch (Exception ex)
         {
@@ -636,6 +644,7 @@ public static partial class IslandHost
     // kRateLadder. Every value is exact in float, so no epsilon is needed.
     private static readonly double[] SpeedLadder = { 0.25, 0.5, 1, 1.5, 2, 4 };
     private static ComboBox? _speed;
+    private static Button? _helpButton;  // `?` on the bar; its tooltip names the live key
     private static bool _updatingSpeed;
 
     private static string SpeedLabel(double rate) =>
@@ -675,6 +684,7 @@ public static partial class IslandHost
             Margin = new Thickness(0, 0, 8, 0),
             Visibility = Visibility.Collapsed,
         };
+        AutomationProperties_SetName(_speed, "Playback speed");
         foreach (double rate in SpeedLadder) _speed.Items.Add(SpeedLabel(rate));
         _speed.SelectedIndex = 2;  // 1x
         _speed.SelectionChanged += (_, _) =>
@@ -682,9 +692,18 @@ public static partial class IslandHost
             if (_updatingSpeed || _speed.SelectedIndex < 0) return;
             Send(Command.SetRate, (float)SpeedLadder[_speed.SelectedIndex]);
         };
-        ToolTipService.SetToolTip(_speed, "Playback speed. Q / E skip ±2 s (hold to skim)");
+        ToolTipService.SetToolTip(_speed, SpeedTip());
         _speed.DropDownClosed += (_, _) => RestoreCanvasFocus();
         return _speed;
+    }
+
+    private static string SpeedTip()
+    {
+        string? back = KeyOf(Command.SkimBack);
+        string? forward = KeyOf(Command.SkimForward);
+        return back is null || forward is null
+            ? "Playback speed"
+            : $"Playback speed. {back} / {forward} skip ±2 s (hold to skim)";
     }
 
     private static void EnsureApp()
@@ -774,9 +793,55 @@ public static partial class IslandHost
                 sender.NavigateFocus(new XamlSourceFocusNavigationRequest(reason));
                 return;
             }
+            // A ring with nothing to focus hands Tab on while FocusRing is
+            // walking; the walk itself moves on, so ignore the echo.
+            if (_focusWalking) return;
+            // Issue #217: on to the next visible ring in Tab order, and from
+            // the last one (or an island outside the order) back to the canvas.
+            bool forward = reason == XamlSourceFocusNavigationReason.First;
+            int at = Array.IndexOf(FocusOrder(), sender);
+            if (at >= 0 && FocusRing(forward ? at + 1 : at - 1, forward)) return;
             IntPtr hwnd = Win32Interop.GetWindowFromWindowId(sender.SiteBridge.WindowId);
             IntPtr root = GetAncestor(hwnd, GaRoot);
             if (root != IntPtr.Zero) SetFocus(root);
+        }
+    }
+
+    // docs/design/16 Focus: the rings Tab crosses, in screen reading order —
+    // command bar, folder tree, gallery, the right column (Edit, metadata,
+    // adjust, jobs), transport, filmstrip — and then the canvas. A ring is
+    // visible while its island has content (hidden ones are dropped and parked).
+    private static DesktopWindowXamlSource?[] FocusOrder() => new[]
+    {
+        _source, _tree, _gallery, _editPane, _metaPane, _adjustPane, _jobsPane, _transport, _filmstrip,
+    };
+
+    private static bool _focusWalking;
+
+    // Focuses the first (Tab) or last (Shift+Tab) element of the first visible
+    // ring from `start` in that direction. False when none took it.
+    private static bool FocusRing(int start, bool forward)
+    {
+        DesktopWindowXamlSource?[] order = FocusOrder();
+        var reason = forward ? XamlSourceFocusNavigationReason.First : XamlSourceFocusNavigationReason.Last;
+        _focusWalking = true;
+        try
+        {
+            for (int i = start; i >= 0 && i < order.Length; i += forward ? 1 : -1)
+            {
+                DesktopWindowXamlSource? ring = order[i];
+                if (ring?.Content is null) continue;
+                try
+                {
+                    if (ring.NavigateFocus(new XamlSourceFocusNavigationRequest(reason)).WasFocusMoved) return true;
+                }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
+            }
+            return false;
+        }
+        finally
+        {
+            _focusWalking = false;
         }
     }
 
@@ -1253,8 +1318,12 @@ public static partial class IslandHost
     private static void RefreshOpenMenu(MenuFlyout flyout)
     {
         flyout.Items.Clear();
-        flyout.Items.Add(Item("Media…", "Ctrl+O", () => { Send(Command.Open); RestoreCanvasFocus(); }));
-        flyout.Items.Add(Item("Folder…", "Ctrl+Shift+O", () => { Send(Command.OpenFolder); RestoreCanvasFocus(); }));
+        flyout.Items.Add(Item("Media…", KeyOf(Command.Open), () => { Send(Command.Open); RestoreCanvasFocus(); }));
+        flyout.Items.Add(Item("Folder…", KeyOf(Command.OpenFolder), () =>
+        {
+            Send(Command.OpenFolder);
+            RestoreCanvasFocus();
+        }));
         flyout.Items.Add(RecentFoldersSubMenu());
         flyout.Items.Add(Sep());
         string? name = _selectedIndex >= 0 && _selectedIndex < Items.Count
@@ -1262,13 +1331,13 @@ public static partial class IslandHost
             : null;
         if (string.IsNullOrEmpty(name))
         {
-            MenuFlyoutItem empty = Item("Open: (nothing open)", "Ctrl+E", () => { });
+            MenuFlyoutItem empty = Item("Open: (nothing open)", KeyOf(Command.RevealInExplorer), () => { });
             empty.IsEnabled = false;
             flyout.Items.Add(empty);
         }
         else
         {
-            MenuFlyoutItem reveal = Item("Open: " + name, "Ctrl+E", () =>
+            MenuFlyoutItem reveal = Item("Open: " + name, KeyOf(Command.RevealInExplorer), () =>
             {
                 Send(Command.RevealInExplorer);
                 RestoreCanvasFocus();
@@ -1385,6 +1454,30 @@ public static partial class IslandHost
         return sub;
     }
 
+    private static void RefreshViewMenu(MenuFlyout flyout, MenuFlyoutSubItem sortMenu)
+    {
+        flyout.Items.Clear();
+        flyout.Items.Add(Item("Zoom in", KeyOf(Command.ZoomIn), () => Send(Command.ZoomIn)));
+        flyout.Items.Add(Item("Zoom out", KeyOf(Command.ZoomOut), () => Send(Command.ZoomOut)));
+        flyout.Items.Add(Sep());
+        flyout.Items.Add(Item("Fit to window", KeyOf(Command.Fit), () => Send(Command.Fit)));
+        flyout.Items.Add(Item("50 %", null, () => Send(Command.ZoomPreset, 0.5f)));
+        flyout.Items.Add(Item("100 %", KeyOf(Command.OneToOne), () => Send(Command.OneToOne)));
+        flyout.Items.Add(Item("200 %", KeyOf(Command.Zoom200), () => Send(Command.ZoomPreset, 2.0f)));
+        flyout.Items.Add(Item("400 %", KeyOf(Command.Zoom400), () => Send(Command.ZoomPreset, 4.0f)));
+        flyout.Items.Add(Sep());
+        flyout.Items.Add(Item("Gallery", KeyOf(Command.ToggleGallery), () => Send(Command.ToggleGallery)));
+        flyout.Items.Add(Item("Full screen", KeyOf(Command.Fullscreen), () => Send(Command.Fullscreen)));
+        flyout.Items.Add(Item("Filmstrip", KeyOf(Command.ToggleFilmstrip), () => Send(Command.ToggleFilmstrip)));
+        flyout.Items.Add(Item("Metadata pane", KeyOf(Command.MetadataPane), () => Send(Command.MetadataPane)));
+        flyout.Items.Add(Item("Folder tree", KeyOf(Command.FolderTree), () => Send(Command.FolderTree)));
+        flyout.Items.Add(sortMenu);
+        flyout.Items.Add(Sep());
+        flyout.Items.Add(Item("Clipping warnings", KeyOf(Command.Clipping), () => Send(Command.Clipping)));
+        flyout.Items.Add(Item("Frame-time overlay", KeyOf(Command.Overlay), () => Send(Command.Overlay)));
+        flyout.Items.Add(Item("Keyboard shortcuts", KeyOf(Command.Help), () => Send(Command.Help)));
+    }
+
     private static UIElement BuildChrome()
     {
         var viewFlyout = new MenuFlyout
@@ -1392,25 +1485,11 @@ public static partial class IslandHost
             ShouldConstrainToRootBounds = false,
             MenuFlyoutPresenterStyle = MenuFlyoutPresenterStyle(),
         };
-        viewFlyout.Items.Add(Item("Zoom in", "+", () => Send(Command.ZoomIn)));
-        viewFlyout.Items.Add(Item("Zoom out", "-", () => Send(Command.ZoomOut)));
-        viewFlyout.Items.Add(Sep());
-        viewFlyout.Items.Add(Item("Fit to window", "0", () => Send(Command.Fit)));
-        viewFlyout.Items.Add(Item("50 %", null, () => Send(Command.ZoomPreset, 0.5f)));
-        viewFlyout.Items.Add(Item("100 %", "1", () => Send(Command.OneToOne)));
-        viewFlyout.Items.Add(Item("200 %", null, () => Send(Command.ZoomPreset, 2.0f)));
-        viewFlyout.Items.Add(Item("400 %", null, () => Send(Command.ZoomPreset, 4.0f)));
-        viewFlyout.Items.Add(Sep());
-        viewFlyout.Items.Add(Item("Gallery", "G", () => Send(Command.ToggleGallery)));
-        viewFlyout.Items.Add(Item("Full screen", "F11", () => Send(Command.Fullscreen)));
-        viewFlyout.Items.Add(Item("Filmstrip", "T", () => Send(Command.ToggleFilmstrip)));
-        viewFlyout.Items.Add(Item("Metadata pane", "I", () => Send(Command.MetadataPane)));
-        viewFlyout.Items.Add(Item("Folder tree", "Ctrl+Shift+E", () => Send(Command.FolderTree)));
-        viewFlyout.Items.Add(SortSubMenu(viewFlyout));
-        viewFlyout.Items.Add(Sep());
-        viewFlyout.Items.Add(Item("Clipping warnings", "C", () => Send(Command.Clipping)));
-        viewFlyout.Items.Add(Item("Frame-time overlay", "F3", () => Send(Command.Overlay)));
-        viewFlyout.Items.Add(Item("Keyboard shortcuts", "?", () => Send(Command.Help)));
+        MenuFlyoutSubItem sortMenu = SortSubMenu(viewFlyout);
+        // Rebuilt on open, like Open and Settings: the shortcut column is the
+        // live table's, so a key remapped in Settings shows here.
+        viewFlyout.Opening += (_, _) => RefreshViewMenu(viewFlyout, sortMenu);
+        RefreshViewMenu(viewFlyout, sortMenu);
 
         _settingsFlyout = new MenuFlyout
         {
@@ -1488,7 +1567,8 @@ public static partial class IslandHost
         var speed = BuildSpeed();
         speed.HorizontalAlignment = HorizontalAlignment.Right;
         Button helpBtn = TextButton("?", () => Send(Command.Help));
-        ToolTipService.SetToolTip(helpBtn, "Keyboard shortcuts  ?");
+        ToolTipService.SetToolTip(helpBtn, WithKey("Keyboard shortcuts", Command.Help));
+        _helpButton = helpBtn;
 
         // Menus left; speed, the folder trail, then `?` on the far right.
         FrameworkElement path = BuildBarPathRow();

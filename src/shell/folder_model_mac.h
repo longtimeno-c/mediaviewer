@@ -139,7 +139,9 @@ class folder_model {
 
   // [pool thread] The cached JPEG-512 for a clip about to open on `moment_ms`:
   // the moment's row, else the clip's poster; "" when neither is cached. A
-  // lookup only, never a decode (rule 3's "disk thumb" step for a clip).
+  // lookup only, never a decode or a stat (rule 3's "disk thumb" step for a
+  // clip; issue #168): the caller's read is the check, and a row whose file
+  // has gone is dropped by the sweep's next verified lookup.
   [[nodiscard]] std::string cached_clip_thumb(const std::string& path_utf8, std::int64_t mtime_unix,
                                               std::uint64_t size, std::int64_t moment_ms) const;
 

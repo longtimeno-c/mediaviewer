@@ -10,6 +10,7 @@
 #include <fstream>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <exiv2/exiv2.hpp>
 
@@ -288,6 +289,43 @@ TEST_CASE("a RAW+JPEG pair and a Live Photo are one stop each over the ABI",
   REQUIRE((item.flags & 4u) == 0u);  // a Live Photo stop is its still, not a clip
   REQUIRE(item_string(session.handle, 2, &mv_folder_item_name) == "IMG_0003.JPG");
   REQUIRE(base_name(item_string(session.handle, 2, &mv_folder_item_pair_path)) == "IMG_0003.MOV");
+
+  // Issue #226: the one-call listing carries exactly what the per-item calls do.
+  {
+    uint32_t n = 0;
+    uint32_t bytes = 0;
+    REQUIRE(mv_folder_entries(session.handle, nullptr, 0, nullptr, 0, &n, &bytes) ==
+            MV_ERR_INVALID_ARG);
+    REQUIRE(n == 4);
+    REQUIRE(bytes > 0);
+    std::vector<mv_folder_entry> entries(n);
+    std::vector<char> strings(bytes);
+    // One byte short is refused whole: nothing half-written.
+    REQUIRE(mv_folder_entries(session.handle, entries.data(), n, strings.data(), bytes - 1, &n,
+                              &bytes) == MV_ERR_INVALID_ARG);
+    REQUIRE(mv_folder_entries(session.handle, entries.data(), n, strings.data(), bytes, &n,
+                              &bytes) == MV_OK);
+    for (uint32_t i = 0; i < n; ++i) {
+      mv_folder_item one{};
+      REQUIRE(mv_folder_item_at(session.handle, i, &one) == MV_OK);
+      const mv_folder_entry& e = entries[i];
+      REQUIRE(e.item.index == one.index);
+      REQUIRE(e.item.flags == one.flags);
+      REQUIRE(e.item.size_bytes == one.size_bytes);
+      REQUIRE(e.item.mtime_unix == one.mtime_unix);
+      REQUIRE(e.item.pair_kind == one.pair_kind);
+      REQUIRE(e.moment_ms == -1);
+      REQUIRE(std::string(strings.data() + e.name_offset) ==
+              item_string(session.handle, i, &mv_folder_item_name));
+      REQUIRE(std::string(strings.data() + e.path_offset) ==
+              item_string(session.handle, i, &mv_folder_item_path));
+      // Thumbs land in the background: one may have arrived since the snapshot.
+      const std::string thumb(strings.data() + e.thumb_offset);
+      REQUIRE((thumb.empty() || thumb == item_string(session.handle, i, &mv_folder_item_thumb_path)));
+      REQUIRE(std::string(strings.data() + e.pair_offset) ==
+              item_string(session.handle, i, &mv_folder_item_pair_path));
+    }
+  }
 
   // Arrow onto the Live Photo, then a file lands in front of it: the watcher
   // refresh keeps the same stop, now one index later.

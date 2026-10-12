@@ -257,10 +257,11 @@ std::string folder_model::cached_clip_thumb(const std::string& path_utf8, std::i
                                             std::uint64_t size, std::int64_t moment_ms) const {
   image::thumb_store& thumbs = state_->thumbs;
   if (moment_ms >= 0) {
-    auto hit = thumbs.lookup(image::moment_thumb_key(path_utf8, moment_ms, mtime_unix, size));
+    auto hit =
+        thumbs.lookup_unverified(image::moment_thumb_key(path_utf8, moment_ms, mtime_unix, size));
     if (hit && !hit.value().empty()) return std::move(hit).value();
   }
-  auto poster = thumbs.lookup(image::thumb_key{path_utf8, mtime_unix, size});
+  auto poster = thumbs.lookup_unverified(image::thumb_key{path_utf8, mtime_unix, size});
   if (poster && !poster.value().empty()) return std::move(poster).value();
   return {};
 }
