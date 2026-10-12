@@ -24,7 +24,7 @@ mv::player::time_ns next_frame(mv::player::media_source& source) {
 }
 TEST_CASE("real clip seeks while paused and steps to adjacent frames", "[video][integration]") {
   MV_REQUIRE_CLIP(path, "av_transport.mp4");
-  mv::gfx::device device; REQUIRE(device.create(nullptr));
+  mv::gfx::device device; if (!device.create(nullptr)) SKIP("no D3D11 device on this machine (hosted CI has no GPU)");
   auto opened = mv::player::open_media(path.c_str(), device.d3d()); REQUIRE(opened);
   source_ptr source(opened.value(), mv::player::close_media); source->set_muted(true);
   source->seek(2'000'000'000, true);
@@ -44,7 +44,7 @@ TEST_CASE("real clip seeks while paused and steps to adjacent frames", "[video][
 }
 TEST_CASE("video ABI opens asynchronously and retires on navigation", "[abi][video][integration]") {
   MV_REQUIRE_CLIP(path, "av_transport.mp4");
-  mv::gfx::device device; REQUIRE(device.create(nullptr));
+  mv::gfx::device device; if (!device.create(nullptr)) SKIP("no D3D11 device on this machine (hosted CI has no GPU)");
   mv_session_t session = nullptr; REQUIRE(mv_session_create(nullptr, &session) == MV_OK);
   struct release_session { mv_session_t value; ~release_session() { (void)mv_session_release(value); } } cleanup{session};
   REQUIRE(mv::abi::attach_device(session, device.d3d()) == mv::status::ok);
@@ -66,7 +66,7 @@ TEST_CASE("video ABI opens asynchronously and retires on navigation", "[abi][vid
 TEST_CASE("a hold pauses the clip and keeps a new one on its poster", "[abi][video][integration]") {
   // Issue #44: the gallery covers the canvas (player/playback_hold.h).
   MV_REQUIRE_CLIP(path, "av_transport.mp4");
-  mv::gfx::device device; REQUIRE(device.create(nullptr));
+  mv::gfx::device device; if (!device.create(nullptr)) SKIP("no D3D11 device on this machine (hosted CI has no GPU)");
   mv_session_t session = nullptr; REQUIRE(mv_session_create(nullptr, &session) == MV_OK);
   struct release_session { mv_session_t value; ~release_session() { (void)mv_session_release(value); } } cleanup{session};
   REQUIRE(mv::abi::attach_device(session, device.d3d()) == mv::status::ok);

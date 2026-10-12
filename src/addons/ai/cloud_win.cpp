@@ -3,6 +3,11 @@
 // OneDrive (and any Cloud Files API provider) for cloud_files.h. In-box since
 // Windows 10 1709: cldapi for hydrate / dehydrate, the Network List Manager for
 // whether the connection is metered.
+//
+// cldapi.dll is delay-loaded (cmake/ai.cmake /DELAYLOAD): a Windows without
+// it (before 1709, Server 2016) must still load mv_ai.dll and search, only
+// without the OneDrive option. make_cloud_files() probes for it first and
+// returns nullptr there, so no Cf* call is ever reached without the DLL.
 #include <windows.h>
 // cfapi.h uses NTSTATUS, which windows.h leaves out.
 #include <winternl.h>
@@ -126,6 +131,14 @@ class onedrive final : public cloud_files {
 
 }  // namespace
 
-std::unique_ptr<cloud_files> make_cloud_files() { return std::make_unique<onedrive>(); }
+std::unique_ptr<cloud_files> make_cloud_files() {
+  // From System32 only, as the delay-load helper would; kept loaded, so the
+  // helper's own LoadLibrary later finds it.
+  HMODULE cld = ::LoadLibraryExW(L"cldapi.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+  if (!cld || !::GetProcAddress(cld, "CfHydratePlaceholder") || !::GetProcAddress(cld, "CfDehydratePlaceholder")) {
+    return nullptr;  // Settings: "needs Windows 10 version 1709 or later"
+  }
+  return std::make_unique<onedrive>();
+}
 
 }  // namespace mv::ai

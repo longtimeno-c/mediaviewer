@@ -771,7 +771,10 @@ namespace raw_detail {
 // Preview: DCT 1/2 while the long side stays >= 2048 px keeps first pixel
 // under docs/design/09's 60 ms; the full decode refines it (rule 3).
 // 2026-09-24: LibRaw OpenMP, team capped by raw_foreground_threads(). PPG and
-// the raw-to-image copy scale; unpack and the colour/gamma loops do not.
+// the raw-to-image copy scale; unpack does not. The colour/gamma loops are
+// parallel only through the overlay port's openmp-color.patch; the Mac build
+// skipped that overlay until #287 (2026-10-11), which is why they measured
+// serial there. Pixels are byte-identical with and without it.
 // Stage timings and byte-equivalence tests are in test_raw.cpp.
 raw_options default_options() noexcept {
   raw_options o;

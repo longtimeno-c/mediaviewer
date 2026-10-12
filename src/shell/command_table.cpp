@@ -285,6 +285,28 @@ constexpr binding kBindings[] = {
     // PageDown inside one stop; plain PageUp / PageDown still skip ten stops.
     row(key::page_down, mod_ctrl, kBrowse | kIsland, repeat, next_page),
     row(key::page_up, mod_ctrl, kBrowse | kIsland, repeat, prev_page),
+    // Issue #210: F2 renames, as in Explorer. Appended. Not in a slideshow or crop,
+    // like every other write; the gallery renames its selected cell.
+    row(key::f2, mod_none, kViewing, edge, rename_file),
+    // Issue #206: View > Show, cycled. Appended. docs/design/16 names no key and
+    // every free letter is spoken for (X reject, U clear label), so it ships
+    // unbound, listed in Settings like Open RAW / Open JPEG.
+    row(key::none, mod_none, kViewing, edge, kind_filter_next),
+    // Issue #207 (docs/design/16 "Rate"). Appended. docs/design/16 names `X` reject and
+    // `U` clear label; the colour labels take Lightroom's 6-9 on the keypad and,
+    // as the ratings do for a laptop, Ctrl+Shift (Cmd+Shift) on the number row.
+    // X and U are letters, so browse and video only (the gallery and the strips
+    // type ahead); the keypad rows match the ratings' modes.
+    row(C('X'), mod_none, kBrowse | kVideo, edge, reject),
+    row(key::numpad6, mod_none, kViewing, edge, label_red),
+    row(key::numpad7, mod_none, kViewing, edge, label_yellow),
+    row(key::numpad8, mod_none, kViewing, edge, label_green),
+    row(key::numpad9, mod_none, kViewing, edge, label_blue),
+    row(C('6'), mod_ctrl | mod_shift, kViewing, edge, label_red),
+    row(C('7'), mod_ctrl | mod_shift, kViewing, edge, label_yellow),
+    row(C('8'), mod_ctrl | mod_shift, kViewing, edge, label_green),
+    row(C('9'), mod_ctrl | mod_shift, kViewing, edge, label_blue),
+    row(C('U'), mod_none, kBrowse | kVideo, edge, clear_label),
     // Print… (docs/design/07 "Print"). Appended. Ctrl+P was free in every mode (P
     // alone is trim's preview). On a clip it is not bound, so it does nothing.
     row(C('P'), mod_ctrl, kBrowse | kIsland, edge, print),
@@ -465,6 +487,15 @@ constexpr command_info kCommands[] = {
     {addon_cmd_6, "Add-on command 7", true},
     {addon_cmd_7, "Add-on command 8", true},
     {new_window, "New window"},
+    {rename_file, "Rename…"},
+    {kind_filter_next, "Show next kind"},
+    {kind_filter_set, "Show kind", true},
+    {reject, "Reject / unreject"},
+    {label_red, "Label red"},
+    {label_yellow, "Label yellow"},
+    {label_green, "Label green"},
+    {label_blue, "Label blue"},
+    {clear_label, "Clear label"},
     {print, "Print…"},
 };
 
@@ -733,6 +764,25 @@ bool palette_runnable(command_id id) noexcept {
     if (b.policy == tap_hold && b.hold == id && b.command != id) return false;
   }
   return true;
+}
+
+bool command_live_in(command_id id, mode_mask modes) noexcept {
+  for (const binding& b : live_bindings()) {
+    if (b.command == id && (b.modes & modes) != 0) return true;
+  }
+  return false;
+}
+
+const binding* menu_chord(command_id id) noexcept {
+  const auto rows = live_bindings();
+  for (const binding& b : rows) {
+    if (b.command != id || b.k == key::none || (b.mods & mod_ctrl) == 0) continue;
+    const bool shared = std::any_of(rows.begin(), rows.end(), [&](const binding& other) {
+      return other.command != id && other.k == b.k && other.mods == b.mods;
+    });
+    if (!shared) return &b;
+  }
+  return nullptr;
 }
 
 std::string describe_commands() {

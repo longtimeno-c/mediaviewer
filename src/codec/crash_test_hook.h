@@ -32,6 +32,13 @@ inline constexpr std::size_t kCrashTestScanBytes = 64 * 1024;
 
 // True when MV_CRASH_TEST=decode is set (cached).
 [[nodiscard]] bool crash_test_armed() noexcept;
+// True when MV_CRASH_TEST=video is set (cached). The player's video decode
+// thread then crashes on its first decoded frame, with its slot annotated
+// (issue #233). No marker: the variable alone arms it, and nothing sets it but
+// the verify.
+[[nodiscard]] bool crash_test_video_armed() noexcept;
+// The deliberate crash: a null write on the calling thread.
+[[noreturn]] void crash_test_crash() noexcept;
 // Marker in the first kCrashTestScanBytes. Exposed for tests; no side effects.
 [[nodiscard]] bool crash_test_marker_present(std::span<const std::uint8_t> bytes) noexcept;
 

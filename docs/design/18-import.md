@@ -96,7 +96,9 @@ A separate window on both platforms (WinUI 3 `MediaViewer.Import.Chrome`; SwiftU
 - **Bottom bar:** what is selected and its size, then a quieter line with what will be skipped
   and an ETA from measured throughput per device. With no destination the button reads
   *Choose where to import…* (and Return opens the folder picker) instead of confirming an
-  import to nowhere.
+  import to nowhere. *Import N* waits for the plan on screen: it is off during a rescan or a
+  replan, and while a typed field (rename, dates) has not been planned yet (that happens when
+  typing pauses, or on Return).
 - **While copying:** the window becomes a progress view: per-destination bars, the current file,
   MB/s, verified so far, **Pause** and **Cancel**. Closing the window keeps the job running, with
   a progress indicator in the main command bar. A notification arrives when it finishes.
@@ -258,7 +260,10 @@ Import was the first add-on, and its mechanism is the one every add-on uses: the
     `abi/addon_abi.cpp`).
   - **Mac chrome:** `Import.bundle` loaded with `NSBundle`, whose principal class returns the
     SwiftUI root view for an `NSHostingView` window (`src/shell/addons_mac.mm`,
-    `AddonsView.swift`).
+    `AddonsView.swift`). Its `-shutdown` closes the table before the host unloads the pack:
+    later calls from its detached tasks fail, and it waits (at most 2 s) for those already
+    inside (a RAW thumbnail, an eject); at quit `-shutdownForQuit` does not wait, and a call
+    still inside leaves the pack running for the exit, as the AI chrome's does (issue #193).
   - **The Mac add-on is universal** (arm64 + x86_64, platform `macos`): both architectures'
     trees are joined with `tools/mac/lipo_merge.py` before signing and packing.
 - **Add-ons from other makers** are a second kind, with their own package, key, folder and
@@ -278,9 +283,24 @@ Each window is its own process (`Ctrl+N`, [16](16-commands.md) "Window"). The ad
 Import's volume watch, the AI pack and its indexer, Final Cut search on the Mac — load in
 the first window's process only: the one that owns `Add-ons/.host.lock` (an `flock` on the
 Mac) or the `Local\MediaViewer.AddonHost` mutex (Windows). Two indexers writing one index
-would fight over it. The lock is the process's until it exits, crash or not. Later windows
-view and browse but show no add-on features. Closing the first window does not hand the
-add-ons to a window that is already open; the next window to start takes them.
+would fight over it. The lock is the process's until it exits, crash or not. Closing the first
+window does not hand the add-ons to a window that is already open; the next window to start
+takes them.
+
+Later windows search too (2026-10-07). At their first search (Ctrl+F / ⌘F, the search icon)
+or when Settings opens, not at launch, they load the AI pack through its reader
+(`MV_AI_READER_ENTRY_SYMBOL`; `mv_addon_load_reader` on Windows). Reading what is installed
+hashes every file once per process (~1.2 GB with the AI pack), which must not compete with
+the window's first pixel or cost a window that never searches. The reader opens the index
+read-only, loads only the text towers on CPU, and catches up with the first window's commits
+every 5 s ([23](23-nle-search.md) "The reader"). Search, Find similar and People's photos work
+there. Indexing, Local search settings, People edits, Import, and installing, updating or
+removing an add-on stay in the first window, and Settings says so. A reader never sweeps the
+store. With nothing indexed yet the reader reports `not_found`: Ctrl+F searches by name, says
+why, and tries the reader again at most every 10 s. The first window treats the full pack the
+same way (2026-10-11, issue #292): it verifies it at launch but loads it only at the first search
+or Settings → Local search → Start now ([17](17-local-ai-search.md) "Starting on demand"); Import
+still loads at launch.
 
 ## Commands
 
