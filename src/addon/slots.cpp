@@ -221,6 +221,10 @@ struct slot_registry::addon_entry {
 slot_registry::slot_registry() = default;
 
 slot_registry::~slot_registry() {
+  // The process's registry dies at exit (a static), after the chromes: no
+  // host callback may run from here (on Windows that would be managed code
+  // under the loader lock).
+  set_listener({});
   for (const std::string& id : attached_ids()) detach(id);
 }
 
