@@ -25,11 +25,15 @@
 
 #include "addon/host.h"
 #include "addon/manifest.h"
+#include "addon/open_json.h"
 #include "addon/open_manifest.h"
+#include "addon/open_store.h"
+#include "addon/settings_values.h"
 #include "addon/slots.h"
 #include "addon/store.h"
 #include "core/json.h"
 #include "import_fixture.h"
+#include "io/paths.h"
 
 using namespace mv::test;
 using mv::addon::rejection;
@@ -470,7 +474,9 @@ const char* kContributes = R"({
   "path_items": [{"id": "find", "label": "Slots test path item", "symbol": "flag", "target": "folder"}],
   "context_menu": [{"id": "mark", "label": "Slots test entry"}],
   "status_items": [{"id": "count", "label": "Slots test"}],
-  "tile_badges": [{"id": "geotagged", "label": "Slots test badge", "symbol": "check"}]
+  "tile_badges": [{"id": "geotagged", "label": "Slots test badge", "symbol": "check"}],
+  "settings": {"title": "Slots test", "sections": [{"title": "Test", "items": [
+    {"type": "text", "key": "suffix", "label": "Label suffix", "max_length": 16, "default": ""}]}]}
 })";
 
 std::string slots_manifest(const std::string& native, const std::vector<std::uint8_t>& bytes,
@@ -574,6 +580,8 @@ TEST_CASE("an open add-on cannot fill screens or slots until scripts can (PR 57)
 TEST_CASE("a native add-on fills every slot and screen through the v3 host table", "[addon][slots][screens]") {
   keypair k;
   scratch_dir s("addons_slots");
+  mv::addon::reset_settings_cache_for_tests();
+  mv::io::set_addon_settings_dir_override(utf8(s / "Add-on Settings"));  // never the real profile
   mv::addon::store st(utf8(s.root() / "addons"), k.pub, MV_ADDON_HOST_API);
   fs::create_directories(s / "addons");
   const std::vector<std::uint8_t> module = read_bytes(MV_SLOTS_TEST_MODULE_PATH);
@@ -748,6 +756,125 @@ TEST_CASE("a native add-on fills every slot and screen through the v3 host table
   REQUIRE(reg.status_json() == "[]");
   REQUIRE(mv::json::parse(reg.search_json(MV_SLOT_SCOPE_FILES))->find("rows")->a.empty());
   REQUIRE(reg.badges_for(utf8(folder / "lisboa.jpg")).empty());
+  mv::io::set_addon_settings_dir_override("");
+  mv::addon::reset_settings_cache_for_tests();
+}
+
+TEST_CASE("a changed setting re-asks the add-on once, and settings_get serves the new value",
+          "[addon][slots][settings]") {
+  keypair k;
+  scratch_dir s("addons_slots_settings");
+  mv::addon::reset_settings_cache_for_tests();
+  mv::io::set_addon_settings_dir_override(utf8(s / "Add-on Settings"));  // never the real profile
+  mv::addon::store st(utf8(s.root() / "addons"), k.pub, MV_ADDON_HOST_API);
+  fs::create_directories(s / "addons");
+  const mv::addon::open_store open(utf8(s / "Open Add-ons"));
+  const std::vector<std::uint8_t> module = read_bytes(MV_SLOTS_TEST_MODULE_PATH);
+  const std::string native = utf8(fs::path(MV_SLOTS_TEST_MODULE_PATH).filename());
+  const std::string m = slots_manifest(native, module, kContributes);
+  auto staged = st.make_staging();
+  REQUIRE(staged);
+  write_bytes(fs::path(*staged) / fs::path(native), module);
+  write_text(fs::path(*staged) / "manifest.json", m);
+  write_bytes(fs::path(*staged) / "manifest.json.sig", k.sign(m));
+  REQUIRE(st.install(*staged));
+  const fs::path folder = s / "trip";
+  fs::create_directories(folder);
+  write_text(folder / "lisboa.jpg", "x");
+  mv::addon::clear_location_cache();
+
+  slot_registry reg;
+  mv::addon::host_services svc;
+  svc.slots = &reg;
+  svc.location = [](const std::string&) -> std::optional<mv_addon_location> {
+    mv_addon_location l{};
+    l.has = 1;
+    l.lat = 38.72;
+    l.lon = -9.14;
+    return l;
+  };
+  auto loaded = mv::addon::loaded_addon::load(st, "slots-test", svc);
+  REQUIRE(loaded);
+  struct test_api {
+    uint32_t struct_size;
+    uint32_t reserved;
+    void (*last_event)(char* out, uint32_t cap);
+    uint64_t (*calls)(uint32_t which);
+    mv_status (*setting)(const char* key, char* out, uint32_t cap);
+  };
+  const auto* probe = static_cast<const test_api*>((*loaded)->query("mv.slots_test.1"));
+  REQUIRE(probe);
+  const auto value = [&](const char* key) {
+    char buf[128] = {};
+    return probe->setting(key, buf, sizeof buf) == MV_OK ? std::string(buf) : std::string("<error>");
+  };
+  REQUIRE(value("suffix") == "\"\"");          // the page's default
+  REQUIRE(value("not_on_page") == "<error>");  // MV_ERR_IO: not this add-on's key
+
+  const auto theme = test_theme();
+  const std::string coords = "38.72000\xC2\xB0 N, 9.14000\xC2\xB0 W";
+  const auto first = reg.request_info(utf8(folder / "lisboa.jpg"), coords, theme, 300, 2);
+  reg.request_badges(utf8(folder));
+  reg.drain();
+  REQUIRE(reg.info_json().find("\"Portugal\"") != std::string::npos);
+  const auto info_calls = probe->calls(0);
+  const auto badge_calls = probe->calls(3);
+
+  // Through the same path the Settings pages use (mv_addon_setting_set).
+  const auto set = mv::json::parse(mv::addon::addon_setting_set_json(open, &st, "slots-test", "suffix", "\"North\""));
+  REQUIRE(set->find("ok")->b);
+  reg.drain();
+  CHECK(probe->calls(0) == info_calls + 1);  // exactly one new info request
+  CHECK(probe->calls(3) == badge_calls + 1);  // and one badges request: it has badges
+  CHECK(value("suffix") == "\"North\"");
+  const std::string info = reg.info_json();
+  CHECK(info.find("\"Portugal North\"") != std::string::npos);
+  // The file's request keeps its generation (the chromes see one file); the
+  // section's own moved, and a late answer for the old one is dropped.
+  CHECK(mv::json::parse(info)->integer("generation") == static_cast<std::int64_t>(first));
+  CHECK(reg.is_stale(first) == false);
+  CHECK(reg.badges_for(utf8(folder / "lisboa.jpg")).size() == 1);
+
+  // The same value again changes nothing and asks nobody.
+  REQUIRE(mv::json::parse(mv::addon::addon_setting_set_json(open, &st, "slots-test", "suffix", "\"North\""))
+              ->find("ok")
+              ->b);
+  reg.drain();
+  CHECK(probe->calls(0) == info_calls + 1);
+
+  // Values written for another publisher's add-on under this id are never
+  // served through the host table: the add-on reads its default.
+  const mv::addon::settings_values values(utf8(s / "Add-on Settings"));
+  const auto installed = st.find("slots-test");
+  REQUIRE(installed);
+  REQUIRE(values.set("slots-test", std::string(64, 'a'), installed->m.settings, "suffix", "\"Stranger\""));
+  reg.drain();
+  CHECK(value("suffix") == "\"\"");
+  CHECK(reg.info_json().find("Stranger") == std::string::npos);
+  CHECK(reg.info_json().find("\"Portugal\"") != std::string::npos);
+
+  // Forgetting (Remove without keeping) is a change too: back to defaults.
+  REQUIRE(mv::addon::addon_setting_set_json(open, &st, "slots-test", "suffix", "\"South\"").find("true") !=
+          std::string::npos);
+  reg.drain();
+  CHECK(reg.info_json().find("\"Portugal South\"") != std::string::npos);
+  const auto before_forget = probe->calls(0);
+  REQUIRE(mv::addon::addon_settings_forget("slots-test"));
+  reg.drain();
+  CHECK(probe->calls(0) == before_forget + 1);
+  CHECK(reg.info_json().find("\"Portugal\"") != std::string::npos);
+
+  // With nothing on screen, a change asks nothing.
+  reg.clear_info();
+  const auto idle = probe->calls(0);
+  REQUIRE(mv::addon::addon_setting_set_json(open, &st, "slots-test", "suffix", "\"East\"").find("true") !=
+          std::string::npos);
+  reg.drain();
+  CHECK(probe->calls(0) == idle);
+
+  loaded->reset();
+  mv::io::set_addon_settings_dir_override("");
+  mv::addon::reset_settings_cache_for_tests();
 }
 
 TEST_CASE("an add-on on an older host table gets no slots", "[addon][slots]") {

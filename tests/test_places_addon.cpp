@@ -23,11 +23,15 @@
 
 #include "addon/host.h"
 #include "addon/manifest.h"
+#include "addon/open_json.h"
+#include "addon/open_store.h"
 #include "addon/screen.h"
+#include "addon/settings_values.h"
 #include "addon/slots.h"
 #include "addon/store.h"
 #include "core/json.h"
 #include "import_fixture.h"
+#include "io/paths.h"
 
 using namespace mv::test;
 using mv::addon::rejection;
@@ -64,9 +68,8 @@ bool eventually(F f) {
   return f();
 }
 
-// The shipped manifest's description and contributions. Until PR 56's
-// settings pages are in this host (src/addon/settings_values.h), its
-// "settings" page is left out, as that host would not know it.
+// The shipped manifest's description and contributions, its settings page
+// (PR 56) included.
 std::string shipped_contributes(std::string* description) {
   const std::vector<std::uint8_t> raw = read_bytes(MV_PLACES_MANIFEST_JSON);
   const auto doc = mv::json::parse(std::string(raw.begin(), raw.end()));
@@ -77,9 +80,6 @@ std::string shipped_contributes(std::string* description) {
   mv::json::writer w;
   w.begin_object();
   for (const auto& [key, value] : c->o) {
-#if !__has_include("addon/settings_values.h")
-    if (key == "settings") continue;
-#endif
     w.key(key);
     mv::addon::screen::write_value(w, value);
   }
@@ -162,6 +162,10 @@ TEST_CASE("places: the shipped manifest declares the section, the search provide
   CHECK(c.badges.empty());
   CHECK(d.m.commands.empty());
   CHECK(d.m.chrome.empty());
+  // The settings page: four items, in the manifest's order.
+  REQUIRE(d.m.settings.sections.size() == 1);
+  REQUIRE(d.m.settings.sections[0].items.size() == 4);
+  CHECK(d.m.settings.find("town_radius_km"));
 }
 
 #if defined(MV_PLACES_MODULE_PATH)
@@ -169,6 +173,8 @@ TEST_CASE("places: the add-on answers the Place section and search through the v
           "[addon][places]") {
   keypair k;
   scratch_dir s("addons_places");
+  mv::addon::reset_settings_cache_for_tests();
+  mv::io::set_addon_settings_dir_override(utf8(s / "Add-on Settings"));  // never the real profile
   mv::addon::store st(utf8(s.root() / "addons"), k.pub, MV_ADDON_HOST_API);
   fs::create_directories(s / "addons");
   const std::string native = utf8(fs::path(MV_PLACES_MODULE_PATH).filename());
@@ -291,9 +297,51 @@ TEST_CASE("places: the add-on answers the Place section and search through the v
   reg.drain();
   CHECK(mv::json::parse(reg.search_json(MV_SLOT_SCOPE_FILES))->find("rows")->a.empty());
 
+  // Settings take effect at once (docs/design/27 "Settings"): a change re-asks
+  // the section for the file on screen, once, and Places reads the new value.
+  const mv::addon::open_store open(utf8(s / "Open Add-ons"));
+  reg.request_info(utf8(folder / "sintra.jpg"), "38.79670\xC2\xB0 N, 9.39030\xC2\xB0 W", light_theme(), 300, 2);
+  reg.drain();
+  REQUIRE(reg.info_json().find("\"Sintra, Lisbon, Portugal\"") != std::string::npos);
+  auto calls = reg.addon_calls();
+  REQUIRE(mv::json::parse(mv::addon::addon_setting_set_json(open, &st, "places", "show_town", "false"))
+              ->find("ok")
+              ->b);
+  reg.drain();
+  CHECK(reg.addon_calls() == calls + 1);  // one info request; Places has no badges
+  CHECK(reg.info_json().find("Sintra") == std::string::npos);
+  CHECK(reg.info_json().find("\"Lisbon, Portugal\"") != std::string::npos);
+  CHECK(reg.info_json().find("Map of") != std::string::npos);
+  calls = reg.addon_calls();
+  REQUIRE(mv::json::parse(mv::addon::addon_setting_set_json(open, &st, "places", "show_map", "false"))
+              ->find("ok")
+              ->b);
+  reg.drain();
+  CHECK(reg.addon_calls() == calls + 1);
+  CHECK(reg.info_json().find("Map of") == std::string::npos);
+  CHECK(reg.info_json().find("\"Lisbon, Portugal\"") != std::string::npos);
+  // A click meant for the map it no longer shows changes nothing.
+  calls = reg.addon_calls();
+  (void)reg.send_event("places", "place", "zoom_out", MV_SLOT_EVENT_CLICK, "");
+  reg.drain();
+  CHECK(reg.info_json().find("Map of") == std::string::npos);
+  // Search reads the radius fresh too: with towns off, "sintra" names nothing.
+  reg.search(MV_SLOT_SCOPE_FILES, "sintra", utf8(folder));
+  reg.drain();
+  CHECK(mv::json::parse(reg.search_json(MV_SLOT_SCOPE_FILES))->find("rows")->a.empty());
+  REQUIRE(mv::addon::addon_settings_forget("places"));
+  reg.drain();
+  CHECK(reg.info_json().find("\"Sintra, Lisbon, Portugal\"") != std::string::npos);
+  CHECK(reg.info_json().find("Map of") != std::string::npos);
+  reg.search(MV_SLOT_SCOPE_FILES, "sintra", utf8(folder));
+  reg.drain();
+  CHECK(mv::json::parse(reg.search_json(MV_SLOT_SCOPE_FILES))->find("rows")->a.size() == 1);
+
   // Removing the add-on removes its section and its answers, with no restart.
   loaded->reset();
   CHECK_FALSE(reg.attached("places"));
   CHECK(mv::json::parse(reg.info_json())->find("sections")->a.empty());
+  mv::io::set_addon_settings_dir_override("");
+  mv::addon::reset_settings_cache_for_tests();
 }
 #endif

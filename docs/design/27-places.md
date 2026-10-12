@@ -431,10 +431,18 @@ One page, "Place" (in `manifest.json`):
 - `town_radius_km`: number 1–50 km, default 15, `enabled_by: show_town`.
 - `label_names`: `english` | `local`.
 
-Read through the host table's `settings_get` on every request (a cached store), mapped onto
-`lookup_options` (`town_radius_km`, 0 when `show_town` is off; `native_names`) and the map's
-presence. A host without PR 56 refuses a manifest that names a settings page, so the add-on
-needs PR 56 and #348 both.
+Read through the host table's `settings_get` on every info request, search and map event (the
+store's cache answers, no disk read), mapped onto `lookup_options` (`town_radius_km`, 0 when
+`show_town` is off; `native_names`) and the map's presence. Nothing is kept across a change.
+
+**Settings take effect immediately.** Changing one in Settings re-asks the Place section for the
+file on screen, once, under a new generation (docs/design/25 "A changed setting re-asks"): the
+label, the town and the map follow the new value without moving to another file. A zoom or pan
+meant for the old answer is dropped. The map cache keys on point, size, theme, zoom and home
+country; no setting changes the pixels (`show_map` only decides whether there is a picture; town
+marks are GeoNames' names whatever `label_names` says). Results already listed by file search
+are not re-run; the next query uses the new radius. A host without PR 56 refuses a manifest that
+names a settings page, so the add-on needs PR 56 and #348 both.
 
 ## Known limits
 

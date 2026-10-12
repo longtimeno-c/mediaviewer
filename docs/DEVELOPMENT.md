@@ -1018,8 +1018,9 @@ To see it in the app on a developer build (`-DMV_ADDON_DEV_PUBLIC_KEY`): pack wi
 above, unzip it with `ditto -x -k` into `<scratch>/addons/Places/1.0.0/` beside the signed
 `manifest.json(.sig)`, and start a copy of the app with its own bundle id, `HOME`,
 `MV_DEV_ADDONS_DIR` and `MV_DEV_THUMBS_DIR` (as the slots test add-on, under "Where this actually
-is"). Until PR 56 is in the same build, pack without the manifest's `settings` page: that host
-refuses a page it does not know.
+is"). PR 56 is in the same build, so the manifest's `settings` page installs as it is; a change
+on Places' page in Settings redraws the Place section at once (`mv_import_tests "[settings]"`
+covers the re-ask, `"[places]"` Places' own settings).
 
 ### Performance suite: regenerating the README charts
 

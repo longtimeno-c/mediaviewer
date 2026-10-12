@@ -43,6 +43,8 @@ struct test_api {
   // The last event's "kind node value" line, and counts of each call.
   void (*last_event)(char* out, uint32_t cap);
   uint64_t (*calls)(uint32_t which);  // 0 info, 1 search, 2 screen, 3 badges, 4 event
+  // The host table's settings_get, as the add-on sees it (PR 56).
+  mv_status (*setting)(const char* key, char* out, uint32_t cap);
 };
 
 struct state {
@@ -58,11 +60,28 @@ state* g = nullptr;
 
 bool in_portugal(double lat, double lon) { return lat >= 36.9 && lat <= 42.2 && lon >= -9.6 && lon <= -6.1; }
 
+mv_status setting(const char* key, char* out, uint32_t cap) {
+  const mv_host_api* h = g->host;
+  if (!h->settings_get) return MV_ERR_UNSUPPORTED_FORMAT;
+  uint32_t size = 0;
+  return h->settings_get(h->host, key, out, cap, &size);
+}
+
+// The "suffix" setting (a text item on the test page), read fresh on every
+// request; "" without a page or a value.
+std::string suffix() {
+  char buf[128];
+  if (setting("suffix", buf, sizeof buf) != MV_OK) return {};
+  std::string s = buf;  // a JSON string: "\"...\""
+  return s.size() >= 2 && s.front() == '"' ? s.substr(1, s.size() - 2) : std::string();
+}
+
 mv_status MV_CALL info_section(void*, const mv_slot_info_request* r) {
   g->calls[0]++;
   if (!r || !r->location.has) return MV_OK;
   const bool pt = in_portugal(r->location.lat, r->location.lon);
-  const std::string label = pt ? "Portugal" : "Elsewhere";
+  const std::string extra = suffix();
+  const std::string label = std::string(pt ? "Portugal" : "Elsewhere") + (extra.empty() ? "" : " " + extra);
   mv::json::writer w;
   w.begin_object().key("type").string("stack").key("id").string("root").key("spacing").integer(4);
   w.key("children").begin_array();
@@ -277,7 +296,7 @@ uint64_t calls(uint32_t which) { return which < 5 ? g->calls[which].load() : 0; 
 
 const mv_addon_slots kSlots{sizeof(mv_addon_slots), 0, &info_section, &search, &screen_open, &badges,
                             &on_event};
-const test_api kTest{sizeof(test_api), 0, &last_event, &calls};
+const test_api kTest{sizeof(test_api), 0, &last_event, &calls, &setting};
 
 const void* MV_CALL query(void*, const char* id) {
   if (!id) return nullptr;

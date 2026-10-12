@@ -34,6 +34,8 @@
 // threads only (rule 1): a first read and every write touch the disk.
 #pragma once
 
+#include <cstdint>
+#include <functional>
 #include <string>
 #include <string_view>
 
@@ -107,6 +109,18 @@ class settings_values {
 [[nodiscard]] result<std::string> open_setting_value_json(const open_store& store,
                                                           std::string_view addon_id,
                                                           std::string_view key);
+
+// Told when a write changed what an add-on reads (docs/design/25 "Settings
+// page", "A changed setting re-asks"): set() stored a different value,
+// forget() removed a file, claim() deleted another publisher's values. Called
+// on the writing thread after the write is on disk and the store's lock is
+// released, with the add-on's id. A listener must not block and must not
+// write settings (the slot registry only queues requests). The listener list
+// is held while it runs, so remove_settings_listener waits for a call in
+// progress: a listener's owner may go away once remove returns.
+using settings_listener = std::function<void(std::string_view addon_id)>;
+[[nodiscard]] std::uint64_t add_settings_listener(settings_listener fn);
+void remove_settings_listener(std::uint64_t token);
 
 // Tests: forget what the process-wide cache holds.
 void reset_settings_cache_for_tests();

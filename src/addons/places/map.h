@@ -142,7 +142,11 @@ struct map_image {
   std::vector<map_mark> marks;
 };
 
-// Pictures by (point, size, theme, zoom). Small: the pane shows one file, and
+// Pictures by (point, size, theme, zoom, home country). No setting changes the
+// pixels: show_map only decides whether there is a picture, and the town names
+// it draws (marks) are GeoNames' names whatever label_names says, which names
+// countries in the label only. A setting that one day changes what is drawn
+// joins this key. Small: the pane shows one file, and
 // arrowing back and forth or zooming out and in again should not redraw.
 // A theme change is a new key, so the old pictures simply age out; `clear`
 // drops them at once when the host says the theme changed.

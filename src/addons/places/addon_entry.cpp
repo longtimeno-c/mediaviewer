@@ -172,6 +172,9 @@ void MV_CALL on_event(void*, const mv_slot_event* e) {
     const std::string node = e->node_id;
     std::lock_guard lock(g->section_m);
     if (g->section_id != e->screen_id || g->section_generation != e->generation) return MV_OK;
+    // Fresh on every request, never cached across a change (docs/design/27
+    // "Settings"): a change also re-asks the section, under a new generation.
+    g->section.prefs = read_settings();
     std::shared_ptr<const mv::places::map_image> map;
     std::string diff;
     if (e->kind == MV_SLOT_EVENT_CLICK) {
