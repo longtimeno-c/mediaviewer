@@ -180,9 +180,13 @@ foreach(name IN LISTS MV_FUZZ_HARNESSES)
   # libFuzzer runs a unit, which is the shape of a dependency the loader could
   # not bring up. This is CMake's own answer to that question and it no-ops
   # for anything already deployed.
-  add_custom_command(TARGET ${target} POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_RUNTIME_DLLS:${target}>" "$<TARGET_FILE_DIR:${target}>"
-    COMMAND_EXPAND_LISTS)
+  # fuzz_geo imports no DLL of ours, and copy_if_different with an empty
+  # list is a usage error that fails the build.
+  if(NOT name STREQUAL "geo")
+    add_custom_command(TARGET ${target} POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "$<TARGET_RUNTIME_DLLS:${target}>" "$<TARGET_FILE_DIR:${target}>"
+      COMMAND_EXPAND_LISTS)
+  endif()
   add_dependencies(mv_fuzzers ${target})
 endforeach()
