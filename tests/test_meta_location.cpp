@@ -643,6 +643,53 @@ TEST_CASE("coordinates survive the EXIF and XMP encodings to within a few millim
   }
 }
 
+TEST_CASE("a RAW by its magic bytes takes its location in the sidecar; the original never changes", "[meta][location][write][raw]") {
+  // Corpus-free twin of the test below: an Olympus ORF header ("IIRO") probes
+  // as RAW, so the write goes to IMG.xmp and the original is never opened for
+  // writing (rule 5). Runs everywhere, with or without tools/testmedia.
+  scratch_dir d("fakeraw");
+  mv::meta::reset_snapshot_session();
+  std::vector<std::uint8_t> raw(4096, 0x5A);
+  raw[0] = 'I';
+  raw[1] = 'I';
+  raw[2] = 'R';
+  raw[3] = 'O';
+  d.write("IMG_0001.ORF", raw);
+  const std::string before = hash_of(d.read("IMG_0001.ORF"));
+  REQUIRE(*mv::meta::write_target_for(d.path("IMG_0001.ORF")) == write_target::sidecar);
+
+  auto r = mv::meta::write(d.path("IMG_0001.ORF"), set_location(38.7979, -9.3907, 12.5), d.snapshots());
+  REQUIRE(r);
+  CHECK(r->target == write_target::sidecar);
+  CHECK(hash_of(d.read("IMG_0001.ORF")) == before);
+  const std::string packet = d.text("IMG_0001.xmp");
+  CHECK(packet.find("38,47.874000N") != std::string::npos);
+  CHECK(packet.find("9,23.442000W") != std::string::npos);
+
+  auto m = mv::meta::read(d.path("IMG_0001.ORF"));
+  REQUIRE(m);
+  REQUIRE(m->s.where);
+  CHECK(near(m->s.where->lat, 38.7979));
+  CHECK(near(m->s.where->lon, -9.3907));
+  REQUIRE(m->s.where->altitude);
+  CHECK(near(*m->s.where->altitude, 12.5));
+  CHECK(mv::meta::location_rights_of(*m).can_clear);  // only the sidecar holds it
+
+  // Lat / lon alone keep the altitude; a removal drops it with the rest.
+  REQUIRE(mv::meta::write(d.path("IMG_0001.ORF"), set_location(-33.86882, 151.209296), d.snapshots()));
+  m = mv::meta::read(d.path("IMG_0001.ORF"));
+  REQUIRE(m);
+  REQUIRE(m->s.where);
+  REQUIRE(m->s.where->altitude);
+  CHECK(near(*m->s.where->altitude, 12.5));
+  REQUIRE(mv::meta::write(d.path("IMG_0001.ORF"), clear_location(), d.snapshots()));
+  CHECK_FALSE(fs::exists(d.dir / "IMG_0001.xmp"));
+  m = mv::meta::read(d.path("IMG_0001.ORF"));
+  REQUIRE(m);
+  CHECK_FALSE(m->s.where);
+  CHECK(hash_of(d.read("IMG_0001.ORF")) == before);
+}
+
 TEST_CASE("real RAW files: the location goes to the sidecar, the original's hash never moves", "[meta][location][write][raw]") {
   std::vector<std::string> files;
   for (const char* name : {"canon_eos7dmk2.cr2", "nikon_d7500.nef", "sony_ilce7rm3.arw", "canon_eosr6.cr3",
