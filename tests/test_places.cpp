@@ -22,6 +22,7 @@
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -468,7 +469,8 @@ TEST_CASE("places: gesture and view maths stay bounded on any input", "[places]"
   std::vector<std::uint8_t> out(static_cast<std::size_t>(v.width) * v.height * 4);
   const map_palette p = palette_for(light_theme());
   CHECK_FALSE(render_map(db, map_view{std::nan(""), 0, 320, 160, 2.0f, 2.25}, p, "", out));
-  CHECK_FALSE(render_map(db, map_view{0, INFINITY, 320, 160, 2.0f, 2.25}, p, "", out));
+  const double inf = std::numeric_limits<double>::infinity();
+  CHECK_FALSE(render_map(db, map_view{0, inf, 320, 160, 2.0f, 2.25}, p, "", out));
   CHECK(render_map(db, map_view{38.7967, -9.3903, 320, 160, 1e30f, 0.3}, p, "PT", out));
 }
 
