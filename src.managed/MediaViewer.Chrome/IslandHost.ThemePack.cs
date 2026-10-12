@@ -11,9 +11,10 @@ using Windows.UI;
 namespace MediaViewer.Chrome;
 
 /// <summary>
-/// The theme an open add-on may put in place of the chrome's own colours
-/// (docs/design/25 "Themes"; the Mac twin is Theme.swift). IslandHost.Theme.cs owns
-/// the brushes; this owns which theme is chosen and its tokens.
+/// The theme an open add-on, or one of the five built-in palettes, may put in
+/// place of the chrome's own colours (docs/design/25 "Themes"; the Mac twin is
+/// Theme.swift). IslandHost.Theme.cs owns the brushes; this owns which theme is
+/// chosen and its tokens. The built-ins are BuiltinThemes.cs.
 ///
 /// The core reads and checks a theme (contrast included) and hands it over as
 /// JSON; nothing here reads an add-on. The tokens of the theme in use are kept
@@ -107,6 +108,17 @@ public static partial class IslandHost
             _themeSelection = doc.RootElement.TryGetProperty("selection", out JsonElement s)
                 ? s.GetString() ?? "" : "";
             if (_themeSelection.Length == 0) return;
+            // A built-in is in the binary. The file is only the cache of the
+            // choice, so a colour fix in the app replaces a stale copy.
+            if (BuiltinThemes.Find(_themeSelection) is { } builtin)
+            {
+                string cached = doc.RootElement.TryGetProperty("tokens", out JsonElement cachedTokens) &&
+                                cachedTokens.ValueKind == JsonValueKind.Object
+                    ? cachedTokens.GetRawText() : "";
+                _theme = ParseTheme(builtin.Json);
+                if (_theme is not null && cached != builtin.Json) SaveTheme(_themeSelection, builtin.Json);
+                return;
+            }
             if (doc.RootElement.TryGetProperty("tokens", out JsonElement t) && t.ValueKind == JsonValueKind.Object)
                 _theme = ParseTheme(t.GetRawText());
         }
@@ -164,7 +176,30 @@ public static partial class IslandHost
             RefreshThemeRow();
             return;
         }
+        if (BuiltinThemes.Find(key) is not null)
+        {
+            ApplyBuiltin(key, persist: true);
+            return;
+        }
         VerifyTheme();
+    }
+
+    // A built-in palette, from the binary. No add-on read. Choosing one passes
+    // persist so the token cache is written; an add-on install does not, because
+    // start-up already rewrote a stale cache.
+    private static void ApplyBuiltin(string key, bool persist)
+    {
+        if (BuiltinThemes.Find(key) is not { } item) return;
+        ThemeTokens? fresh = ParseTheme(item.Json);
+        if (fresh is null) return;
+        _themeNote = "";
+        if (persist) SaveTheme(key, fresh.Json);
+        if (_theme?.Json != fresh.Json)
+        {
+            _theme = fresh;
+            RefreshTheme();
+        }
+        RefreshThemeRow();
     }
 
     /// <summary>An add-on was installed, updated or removed.</summary>
@@ -174,9 +209,15 @@ public static partial class IslandHost
     }
 
     // Reads the theme from its add-on, which re-verifies the add-on: a worker.
+    // A built-in is already in the binary, so it never takes that path.
     private static void VerifyTheme()
     {
         string chosen = _themeSelection;
+        if (BuiltinThemes.Find(chosen) is not null)
+        {
+            ApplyBuiltin(chosen, persist: false);
+            return;
+        }
         int slash = chosen.IndexOf('/');
         if (slash <= 0) return;
         string addon = chosen[..slash];

@@ -128,7 +128,8 @@ public static partial class IslandHost
             "List PDF and Word (DOCX) files in folders. A file you open directly still opens.", _showDocuments));
         view.Children.Add(SettingsSection("Appearance"));
         view.Children.Add(SettingsRow("Canvas background", "The area behind your photos and videos.", _background));
-        // docs/design/25: the chrome's colours, from an installed add-on.
+        // docs/design/25: the chrome's colours. Default, the five built-in palettes,
+        // then every theme an installed add-on contributes.
         view.Children.Add(BuildThemeRow());
         view.Children.Add(SettingsSection("Updates and privacy"));
         AddUpdateSettingsRow(view);

@@ -1072,6 +1072,20 @@ built-in binding, superseding and restoring), the manifest cases, the packer's c
 the full suite and the add-on rig. Not verified: a signed Import carrying the new manifest in
 the app (a local build cannot load its own unsigned Import); Windows beyond compiling.
 
+**Built-in themes are host palettes in the Appearance picker (2026-10-12, issue #359).**
+Settings → Appearance → Theme lists Default, then Ember, Graphite, Harbour, Linen and Studio,
+then every theme of every installed open add-on. The five are one palette each, compiled into
+both chromes, with no `font`. A fresh profile shows them with nothing installed. They do not
+go through the open-add-on store, a publisher key or the install sheet; `mediaviewer.` stays
+reserved, so the selection key `mediaviewer.builtin/<id>` cannot be an add-on's. One palette
+keeps that appearance, including system-drawn controls, and applies at once on both hosts
+because there is no typeface to defer. Default still clears the override (`mv.theme.*`,
+`theme.json`) and follows the system. High contrast still wins. Contribution API 1 remains
+the path for a theme someone else ships. The photo, the video, the colour pipeline, the
+histogram's channel colours and the F3 overlay are not tokens. The palettes add no work to
+the present loop and no file read before first pixel beyond the token cache the chrome
+already kept.
+
 ---
 
 ## Not built

@@ -269,18 +269,21 @@ struct SettingsView: View {
           }
           .pickerStyle(.menu).frame(width: 180)
         }
-        // docs/design/25: the chrome's colours, from an installed add-on. The
+        // docs/design/25: the chrome's colours. Default, then the five built-in
+        // palettes, then every theme an installed add-on contributes. The
         // photo is never recoloured.
         SettingsRow(title: "Theme",
                     detail: theme.note.isEmpty
-                      ? "Colours of the bars, panes and text. Themes come from add-ons; your photos are never recoloured."
+                      ? "Colours of the bars, panes and text. Choose a built-in theme or one from an add-on. Your photos are never recoloured."
                       : theme.note) {
           Picker("Theme", selection: Binding(get: { theme.selection }, set: { theme.choose($0) })) {
             Text("Default").tag("")
+            ForEach(BuiltinThemes.all, id: \.key) { Text($0.name).tag($0.key) }
             ForEach(addons.themes, id: \.key) { Text($0.name).tag($0.key) }
             // A choice whose add-on is not installed now stays listed, so the
             // picker shows what is chosen.
-            if !theme.selection.isEmpty, !addons.themes.contains(where: { $0.key == theme.selection }) {
+            if !theme.selection.isEmpty, BuiltinThemes.item(selection: theme.selection) == nil,
+               !addons.themes.contains(where: { $0.key == theme.selection }) {
               // "Not available" when the add-on is there but refused (the
               // line beside says why), "Not installed" when it is gone.
               let addonID = String(theme.selection.prefix { $0 != "/" })

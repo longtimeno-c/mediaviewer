@@ -21,7 +21,7 @@ leaves your computer.
 | **People** | Faces grouped into people. Name someone once, then find every photo and clip they are in |
 | **Edit without fear** | Crop, straighten, colour, lossless rotate, edit any metadata tag, trim and cut video. Originals are never touched |
 | **Import and back up** | Verified copies from a card at network speed, sorted by date, duplicates skipped. Back up your whole Photos library to a NAS |
-| **Make it yours** | Every key remappable, light or dark, and themes from anyone, installed from a file or a link |
+| **Make it yours** | Every key remappable, with built-in themes and more from anyone, installed from a file or a link |
 | **Private by design** | No account, no cloud, no upload. Telemetry is off unless you turn it on |
 
 ## Download
@@ -220,7 +220,8 @@ The optional **Import** add-on copies a card or folder into your library.
 
 - **Anyone can make an add-on.** One `.mvaddon` file, signed by the person who made it. Drop it on MediaViewer, or use
   **Settings → Add-ons → From others** to install from a file or a link.
-- **Themes first.** Colours and a typeface for MediaViewer's bars, panes and text. A theme dresses the app and never touches your photos' colour.
+- **Five themes built in.** Ember, Graphite, Harbour, Linen and Studio are in Settings → Appearance with nothing else installed. Default still follows the system.
+- **Themes from anyone.** Colours and a typeface for MediaViewer's bars, panes and text. A theme dresses the app and never touches your photos' colour.
 - **Safe to try.** You see who signed it and what it is before it installs, only its original publisher can update it, and an add-on never gets network access.
 - **Make your own in five minutes** with a single-file Python tool and a guide: [docs/ADDONS.md](docs/ADDONS.md). Your add-on is yours to licence however you like.
 

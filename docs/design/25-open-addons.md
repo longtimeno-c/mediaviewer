@@ -216,11 +216,19 @@ A theme file, one per theme the add-on lists:
   a lab tool), the histogram's channel colours (they carry meaning), the hover washes (they
   follow the appearance, not a token), and the first-party add-ons' own windows until they read
   the host's tokens (PR 56).
-- **Choosing one:** Settings → Appearance → **Theme**: Default, then every theme of every
-  installed add-on. Installing does not switch.
+- **Choosing one:** Settings → Appearance → **Theme**: Default, then five host palettes
+  compiled into both chromes — Ember (warm dark), Graphite (neutral dark), Harbour (cool dark),
+  Linen (warm light), Studio (neutral light) — then every theme of every installed add-on.
+  Installing an add-on does not switch. The five are one palette each and set no `font`, so the
+  chrome keeps that appearance, system-drawn controls included, and a choice applies at once on
+  both hosts. They are not packages: no publisher key and no install sheet. A theme someone else
+  ships is still Contribution API 1, and still appears after the built-ins. Default clears the
+  override (`mv.theme.*` on the Mac, `theme.json` beside `settings.ini` on Windows).
 - **Start-up:** the chrome stores the resolved tokens of the theme in use in its own settings
   and paints with them at once. The add-on is verified on a worker afterwards; if it is gone,
-  changed or refused, the chrome returns to Default and says why in Settings.
+  changed or refused, the chrome returns to Default and says why in Settings. A built-in theme
+  is resolved from the palette compiled into the chrome. The cache records which one, and the
+  resolved tokens, and is rewritten when they differ. That adds no file read before first pixel.
 
 ## 9. Code: how a stranger's add-on runs
 

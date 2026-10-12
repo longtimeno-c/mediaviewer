@@ -4,6 +4,9 @@
 // and every way of getting it wrong is refused with its reason).
 #include "catch_compat.h"
 
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -534,6 +537,121 @@ TEST_CASE("a theme nobody could read is refused", "[open-addon][theme]") {
   REQUIRE(offer.why == rejection::invalid_theme);
   REQUIRE(offer.detail == "dusk: low_contrast");
   REQUIRE_FALSE(store.install(package, offer.sha256));
+}
+
+// The five Settings → Appearance palettes are compiled into both chromes
+// (BuiltinThemes.swift and BuiltinThemes.cs). One literal per theme, identical
+// in both files, so a contrast failure or a host that drifted fails here.
+namespace {
+
+std::filesystem::path builtin_theme_root() {
+  namespace fs = std::filesystem;
+  fs::path dir = fs::current_path();
+  for (int up = 0; up < 8 && !dir.empty(); ++up) {
+    if (fs::is_regular_file(dir / "src/addon/theme.h")) return dir;
+    dir = dir.parent_path();
+  }
+  return {};
+}
+
+std::string builtin_theme_text(const std::filesystem::path& path) {
+  std::ifstream in(path);
+  return std::string(std::istreambuf_iterator<char>(in), {});
+}
+
+std::vector<std::string> builtin_theme_rows(const std::string& text) {
+  std::vector<std::string> rows;
+  const std::string mark = "\"mvbuiltin ";
+  for (std::size_t at = 0; (at = text.find(mark, at)) != std::string::npos;) {
+    at += 1;  // keep "mvbuiltin ..." without the opening quote
+    const std::size_t end = text.find('"', at);
+    if (end == std::string::npos) break;
+    rows.push_back(text.substr(at, end - at));
+    at = end + 1;
+  }
+  return rows;
+}
+
+std::vector<std::string> split_ws(const std::string& text) {
+  std::vector<std::string> out;
+  std::string cur;
+  for (const char c : text) {
+    if (c == ' ') {
+      out.push_back(cur);
+      cur.clear();
+    } else {
+      cur.push_back(c);
+    }
+  }
+  if (!cur.empty()) out.push_back(cur);
+  return out;
+}
+
+bool hex6(const std::string& text) {
+  if (text.size() != 7 || text[0] != '#') return false;
+  for (std::size_t i = 1; i < text.size(); ++i) {
+    const char c = text[i];
+    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+  }
+  return true;
+}
+
+}  // namespace
+
+TEST_CASE("the five built-in themes pass the contrast floor on both hosts", "[open-addon][theme]") {
+  namespace fs = std::filesystem;
+  const fs::path root = builtin_theme_root();
+  INFO("cwd " << fs::current_path());
+  REQUIRE(fs::is_directory(root));
+  const fs::path swift =
+      root / "src.swift/MediaViewerChrome/Sources/MediaViewerChrome/BuiltinThemes.swift";
+  const fs::path csharp = root / "src.managed/MediaViewer.Chrome/BuiltinThemes.cs";
+  const std::string swift_text = builtin_theme_text(swift);
+  const std::string csharp_text = builtin_theme_text(csharp);
+  REQUIRE(swift_text.find("mediaviewer.builtin") != std::string::npos);
+  REQUIRE(csharp_text.find("mediaviewer.builtin") != std::string::npos);
+  // The prefix is reserved, so a built-in selection can never name an add-on.
+  REQUIRE_FALSE(mv::addon::valid_open_id("mediaviewer.builtin"));
+
+  const std::vector<std::string> mac = builtin_theme_rows(swift_text);
+  const std::vector<std::string> windows = builtin_theme_rows(csharp_text);
+  REQUIRE(mac == windows);
+  REQUIRE(mac.size() == 5);
+
+  const char* ids[] = {"ember", "graphite", "harbour", "linen", "studio"};
+  const char* names[] = {"Ember", "Graphite", "Harbour", "Linen", "Studio"};
+  const char* kinds[] = {"dark", "dark", "dark", "light", "light"};
+  const char* tokens[] = {"canvas", "surface", "title", "body", "disabled", "hairline", "accent"};
+  for (std::size_t i = 0; i < mac.size(); ++i) {
+    const std::vector<std::string> parts = split_ws(mac[i]);
+    REQUIRE(parts.size() == 11);
+    REQUIRE(parts[0] == "mvbuiltin");
+    REQUIRE(parts[1] == ids[i]);
+    REQUIRE(parts[2] == names[i]);
+    REQUIRE(parts[3] == kinds[i]);
+    std::string palette = "{";
+    for (int t = 0; t < 7; ++t) {
+      REQUIRE(hex6(parts[4 + t]));
+      if (t > 0) palette += ',';
+      palette += '"';
+      palette += tokens[t];
+      palette += "\":\"";
+      palette += parts[4 + t];
+      palette += "ff\"";
+    }
+    palette += '}';
+    const std::string doc = std::string("{\"schema\":1,\"") + parts[3] + "\":" + palette + "}";
+    const mv::addon::theme_result parsed = mv::addon::parse_theme(doc);
+    REQUIRE(parsed.ok());
+    REQUIRE(parsed.t.font.empty());
+    if (parts[3] == "dark") {
+      REQUIRE(parsed.t.dark.has_value());
+      REQUIRE_FALSE(parsed.t.light.has_value());
+    } else {
+      REQUIRE(parsed.t.light.has_value());
+      REQUIRE_FALSE(parsed.t.dark.has_value());
+    }
+  }
 }
 
 TEST_CASE("a theme's path must be one of the package's files", "[open-addon][manifest]") {
