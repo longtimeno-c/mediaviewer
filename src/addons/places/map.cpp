@@ -337,14 +337,19 @@ void stroke_borders(const geo::database& db, geo::layer layer, const std::vector
         const double vy = by - ay;
         const double len = std::sqrt(vx * vx + vy * vy);
         if (len < 1e-6) continue;
-        const double nx = -vy / len * probe;
-        const double ny = vx / len * probe;
+        const double ux = -vy / len;
+        const double uy = vx / len;
         const double mx = (ax + bx) / 2;
         const double my = (ay + by) / 2;
-        bool outside = false;
-        const float left = land_at(land, s.w, s.h, mx + nx, my + ny, outside);
-        const float right = land_at(land, s.w, s.h, mx - nx, my - ny, outside);
-        if (left < 0.5f || right < 0.5f) continue;  // a coast
+        // Near and far on both sides: the far probe clears the stroke's own
+        // soft edge, the near one catches an estuary narrower than that.
+        bool coast = false;
+        for (double dist : {1.25, probe}) {
+          bool outside = false;
+          coast = coast || land_at(land, s.w, s.h, mx + ux * dist, my + uy * dist, outside) < 0.5f ||
+                  land_at(land, s.w, s.h, mx - ux * dist, my - uy * dist, outside) < 0.5f;
+        }
+        if (coast) continue;
         s.segment(ax, ay, bx, by, half, alpha);
       }
     }
@@ -384,9 +389,9 @@ map_palette palette_for(const theme_tokens& t) noexcept {
   const std::uint32_t disabled = t.disabled >> 8;
   map_palette p;
   if (t.dark) {
-    p.land_home = mix(surface, 0xffffff, 0.11f);
-    p.land = mix(surface, 0xffffff, 0.05f);
-    p.water = mix(mix(canvas, surface, 0.5f), 0x123a66, 0.45f);
+    p.land_home = mix(surface, 0xffffff, 0.14f);
+    p.land = mix(surface, 0xffffff, 0.07f);
+    p.water = mix(mix(canvas, surface, 0.5f), 0x163452, 0.40f);
     p.border = mix(p.land_home, body, 0.50f);
     p.region = mix(p.land_home, body, 0.24f);
   } else {
@@ -484,7 +489,9 @@ bool render_map(const geo::database& db, const map_view& v, const map_palette& p
   border.reset(w, h);
   if (zoom >= k_region_borders_from && db.valid()) {
     const std::vector<std::uint32_t> regions = db.polygons_in(geo::layer::regions, b);
-    stroke_borders(db, geo::layer::regions, regions, pr, land, region, 0.35 * scale, 1.0f);
+    if (zoom > k_region_borders_from || regions.size() <= k_region_borders_max_early) {
+      stroke_borders(db, geo::layer::regions, regions, pr, land, region, 0.35 * scale, 1.0f);
+    }
   }
   stroke_borders(db, geo::layer::countries, countries, pr, land, border, 0.6 * scale, 1.0f);
 

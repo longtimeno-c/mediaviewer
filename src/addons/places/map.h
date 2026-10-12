@@ -65,8 +65,12 @@ struct map_palette {
 // is country scale, the last is region scale.
 inline constexpr double k_zoom_span_deg[] = {36.0, 18.0, 9.0, 4.5, 2.25, 1.2};
 inline constexpr int k_zoom_steps = static_cast<int>(sizeof k_zoom_span_deg / sizeof k_zoom_span_deg[0]);
-// Region borders are drawn from this step down (span <= 9 degrees).
+// Region borders are drawn from this step down (span <= 9 degrees) when the
+// picture holds few regions (US states, Portuguese districts), and from the
+// next step where it would hold many (French départements, Spanish provinces):
+// a map ruled into a hundred cells reads as noise, not as regions.
 inline constexpr int k_region_borders_from = 2;
+inline constexpr std::size_t k_region_borders_max_early = 48;
 
 struct map_view {
   double lat = 0;
