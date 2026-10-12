@@ -312,6 +312,13 @@ class tile_service {
   // gpu_image holding a set was released.
   void poke() noexcept;
 
+  // [any thread] Passes of the service loop completed (one per poke-driven wake,
+  // or per tick while it has more to create). A test pokes and waits on it to
+  // know the service has looked.
+  [[nodiscard]] std::uint64_t ticks() const noexcept {
+    return ticks_.load(std::memory_order_acquire);
+  }
+
  private:
   void run() noexcept;
 
@@ -322,6 +329,7 @@ class tile_service {
   std::mutex mutex_;  // never taken by the render thread
   std::vector<std::shared_ptr<tile_set>> sets_;
   std::atomic<std::uint32_t> pokes_{0};
+  std::atomic<std::uint64_t> ticks_{0};
   bool stop_ = false;
   std::thread thread_;
 };

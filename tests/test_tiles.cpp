@@ -24,13 +24,14 @@ using mv::image::tile_layout;
 
 namespace {
 
-// The WARP test below bounds how long a frame call and a tile create may take.
-// Those numbers describe optimised code: an unoptimised build on a software
-// rasteriser measures the debug CRT and iterator checking, not the tile
-// service, and CI has only just started running this suite in Debug. Scale
-// them by configuration rather than delete them — the same call
-// tests/test_broken_corpus.cpp makes for its per-call timeout. The real
-// pacing gate is tools/frametime on a GPU runner (D6), not this test.
+// The WARP test's timed run ("[.perf-bench]", issue #154: wall-clock bounds
+// on a shared runner are scheduling noise, not a verdict) bounds how long a
+// frame call and a tile create may take. Those numbers describe optimised
+// code: an unoptimised build on a software rasteriser measures the debug CRT
+// and iterator checking, not the tile service. Scale them by configuration
+// rather than delete them — the same call tests/test_broken_corpus.cpp makes
+// for its per-call timeout. The real pacing gate is tools/frametime on a GPU
+// runner (D6), not this test.
 #if defined(__SANITIZE_ADDRESS__)
 constexpr bool kAsan = true;
 #elif defined(__has_feature)
@@ -191,7 +192,11 @@ TEST_CASE("mean luma of a sparse sample", "[tiles]") {
   REQUIRE(mv::image::mean_luma(img) == 255);
 }
 
-TEST_CASE("tiled upload on WARP: overview, on-demand tiles, budget and cancel", "[tiles][gpu]") {
+namespace {
+
+// The WARP run both tests share. `timed` adds the wall-clock bounds; the unit
+// suite asserts only what counters and states prove.
+void tiled_upload_on_warp(bool timed) {
   mv::gfx::com_ptr<ID3D11Device> device;
   D3D_FEATURE_LEVEL level{};
   const HRESULT hr =
@@ -229,7 +234,7 @@ TEST_CASE("tiled upload on WARP: overview, on-demand tiles, budget and cancel", 
                             .count();
   REQUIRE(draws.empty());
   REQUIRE(set.pending());
-  CHECK(frame_us < kFrameBudgetUs);
+  if (timed) CHECK(frame_us < kFrameBudgetUs);
 
   // Keep "presenting" until the visible tiles landed.
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(kLandSeconds);
@@ -252,18 +257,44 @@ TEST_CASE("tiled upload on WARP: overview, on-demand tiles, budget and cancel", 
   REQUIRE(stats.created >= want);
   REQUIRE(stats.vram_bytes <= mv::image::k_tile_vram_budget);
   // Per refresh interval the service creates at most k_tiles_per_tick tiles.
-  CHECK(stats.last_create_us < kCreateBudgetUs);
+  if (timed) CHECK(stats.last_create_us < kCreateBudgetUs);
 
-  // A navigation bump stops the service creating for this set.
+  // A navigation bump stops the service creating for this set. Not a sleep
+  // (one too short passes without the service ever looking). The service sleeps
+  // until poked, so poke it and wait for the pass count to move. The first
+  // settle lets a pass that began before the bump finish; after the new request,
+  // two settles make sure a whole pass began after it and saw the bump.
+  const auto settle = [&] {
+    const auto before = service.ticks();
+    service.poke();
+    const auto by = std::chrono::steady_clock::now() + std::chrono::seconds(kLandSeconds);
+    while (service.ticks() == before && std::chrono::steady_clock::now() < by) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    REQUIRE(service.ticks() != before);
+  };
   jobs.bump_generation();
+  settle();
   const auto created_before = set.stats().created;
   view.pan_x = 2000.0f;
   set.frame(view, draws);
-  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  settle();
+  settle();
   REQUIRE(set.stats().created == created_before);
 
   gpu = mv::err(mv::status::cancelled);
   jobs.shutdown();
+}
+
+}  // namespace
+
+TEST_CASE("tiled upload on WARP: overview, on-demand tiles, budget and cancel", "[tiles][gpu]") {
+  tiled_upload_on_warp(false);
+}
+
+// The same run with its frame-call and tile-create bounds: `mv_tests "[.perf-bench]"`.
+TEST_CASE("perf: tiled upload on WARP within the frame and create budgets", "[.perf-bench][tiles][gpu]") {
+  tiled_upload_on_warp(true);
 }
 
 TEST_CASE("a complete level is drawn alone: the coarser levels under it are skipped",

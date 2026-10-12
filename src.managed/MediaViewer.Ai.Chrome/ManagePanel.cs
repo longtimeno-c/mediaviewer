@@ -50,7 +50,15 @@ internal sealed partial class ManagePanel
     private bool _cloudProvider;
     // This Windows has no Cloud Files API (before 10 1709): the option is shown, off and greyed.
     private bool _cloudUnsupported;
-    private readonly StackPanel _indexRow;
+    // "Search index": the size on disk, the size limit and Clear; the Clear
+    // confirmation under it while asked (the Mac's Index section).
+    private readonly TextBlock _indexSize;
+    private readonly ComboBox _capBox;
+    private readonly List<long> _capValues = new();
+    private long _capBytes;
+    private readonly StackPanel _indexConfirm;
+    // The folder whose "Remove…" was pressed: its row asks before the index forgets it.
+    private ulong? _confirmRemove;
     // People, as on the Mac: the notices (the off confirmation, "Install
     // People"), Re-analyse, then the grid itself (PeopleGrid.cs).
     private readonly StackPanel _people;
@@ -63,8 +71,6 @@ internal sealed partial class ManagePanel
     private readonly ToggleSwitch _faces;
     private bool _updating;
     private bool _confirmClear;
-    private bool? _indexRowConfirming;
-    private TextBlock? _indexSize;
     private bool _confirmFacesOff;
     private bool _cudaAvailable;
     private readonly ToggleButton[] _videoIndex = new ToggleButton[3];
@@ -98,7 +104,7 @@ internal sealed partial class ManagePanel
         _chrome = chrome;
         _api = chrome.Api;
         _look = chrome.Look;
-        Root = new StackPanel { Spacing = 8, Margin = new Thickness(0, 8, 0, 0) };
+        Root = new StackPanel { Spacing = 10, Margin = new Thickness(0, 8, 0, 0) };
 
         // Status, compute, Pause / Resume.
         _status = _look.Text("", null, AddonColour.Title);
@@ -124,10 +130,11 @@ internal sealed partial class ManagePanel
         statusActions.Children.Add(_pause);
         Grid.SetColumn(statusActions, 1);
         statusRow.Children.Add(statusActions);
-        Root.Children.Add(_look.Card(statusRow));
-        Root.Children.Add(Row("Search", "Open the search panel. Ctrl+F in the viewer; Ctrl+Shift+F finds similar.",
-            _look.Button("Open search", () => _chrome.RunCommand(SearchCommand.Open))));
+        Root.Children.Add(Stroked(_look.Card(statusRow, 12)));
 
+        // Sections as on the Mac (ManagementView.section): a 15 semibold title
+        // over one card with a hairline stroke, its rows inside.
+        StackPanel compute = Section("Compute");
         _computeBox = Combo();
         _computeBox.SelectionChanged += (_, _) =>
         {
@@ -136,11 +143,11 @@ internal sealed partial class ManagePanel
         };
         var computeDetail = new StackPanel { Spacing = 2 };
         computeDetail.Children.Add(_look.Text(
-            "Where indexing runs. CPU is always there underneath; changing it does not re-index.", 12));
+            "CPU is always there underneath; changing it does not re-index.", 12));
         _restart = _look.Text("Restart MediaViewer to use NVIDIA acceleration.", 12, AddonColour.Accent);
         _restart.Visibility = Visibility.Collapsed;
         computeDetail.Children.Add(_restart);
-        Root.Children.Add(Row("Compute", computeDetail, _computeBox));
+        compute.Children.Add(Row("Where indexing runs", computeDetail, _computeBox));
 
         // No "Search quality" picker (owner, 2026-09-28: one scale, not two):
         // the engine's Auto picks the larger model where CUDA runs it quickly,
@@ -151,7 +158,11 @@ internal sealed partial class ManagePanel
         _legacyQualityRow = Row("Search model", _legacyQualityLine,
             _look.Button("Use Auto", () => Set("quality", ((uint)MvAiQuality.Auto).ToString())));
         _legacyQualityRow.Visibility = Visibility.Collapsed;
-        Root.Children.Add(_legacyQualityRow);
+        compute.Children.Add(_legacyQualityRow);
+
+        StackPanel search = Section("Search");
+        search.Children.Add(Row("Search panel", "Open the search panel. Ctrl+F in the viewer; Ctrl+Shift+F finds similar.",
+            _look.Button("Open search", () => _chrome.RunCommand(SearchCommand.Open))));
 
         // Precision (docs/design/17 "Precision scale"): five steps, the middle the
         // calibrated rule. Each search reads it as it starts: no re-index.
@@ -184,27 +195,21 @@ internal sealed partial class ManagePanel
         precisionControl.Children.Add(broader);
         precisionControl.Children.Add(_precision);
         precisionControl.Children.Add(stricter);
-        Root.Children.Add(Row("Precision",
+        search.Children.Add(Row("Precision",
             "How closely a result must match what you type. Stricter shows only close matches and says “nothing found” rather than a near miss (a plane for “helicopter”); Broader shows more, including looser matches.",
             precisionControl));
 
         // Audio (2026-09-27): what videos are indexed for. Sound covers both
-        // sounds ("dog barking") and speech, and needs the Audio piece.
+        // sounds ("dog barking") and speech, and needs the Audio piece. The
+        // search panel's own segmented track (Look.Track / Look.Segment).
+        bool hc = Look.HighContrast();
         var segments = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2 };
         string[] names = { "Pictures", "Sound", "Both" };
         for (int i = 0; i < 3; ++i)
         {
             MvAiMedia media = (MvAiMedia)(i + 1);
-            var b = new ToggleButton
-            {
-                Content = names[i],
-                FontFamily = _look.Font,
-                FontSize = _look.FontSize - 2,
-                Padding = new Thickness(14, 5, 14, 6),
-                CornerRadius = i == 0 ? new CornerRadius(6, 0, 0, 6) : i == 2 ? new CornerRadius(0, 6, 6, 0) : new CornerRadius(0),
-            };
+            ToggleButton b = _look.Segment(names[i], () => SetVideoIndex(media), hc);
             AutomationProperties.SetName(b, "Index videos for " + names[i]);
-            b.Click += (_, _) => SetVideoIndex(media);
             int at = i;
             b.KeyDown += (_, e) =>
             {
@@ -228,12 +233,12 @@ internal sealed partial class ManagePanel
         videoDetail.Children.Add(_look.Text(
             "Pictures finds what a clip shows; Sound finds what it sounds like and what is said. Photos are always pictures.", 12));
         videoDetail.Children.Add(_videoIndexHint);
-        Root.Children.Add(Row("Index videos for", videoDetail, segments));
+        Section("Videos").Children.Add(Row("Index videos for", videoDetail, _look.Track(segments, hc)));
 
-        // Indexed folders.
-        Root.Children.Add(Heading("Indexed folders"));
-        _roots = new StackPanel { Spacing = 6 };
-        Root.Children.Add(_roots);
+        // Indexed folders: one row each with a hairline between, then Add.
+        StackPanel folders = Section("Indexed folders");
+        _roots = new StackPanel();
+        folders.Children.Add(_roots);
         var add = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         // A folder is always indexed with its subfolders (owner 2026-10-03).
         add.Children.Add(_look.Button("Add a folder…", () => _ = AddFolder()));
@@ -241,10 +246,11 @@ internal sealed partial class ManagePanel
         // not), offered while no folder covers them: never added unasked.
         _suggest = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
         add.Children.Add(_suggest);
-        Root.Children.Add(add);
+        folders.Children.Add(Pad(add));
         _rootError = _look.Text("", 12, AddonColour.Accent);
+        _rootError.Margin = new Thickness(12, 0, 12, 10);
         _rootError.Visibility = Visibility.Collapsed;
-        Root.Children.Add(_rootError);
+        folders.Children.Add(_rootError);
 
         _cloudSwitch = new ToggleSwitch { OnContent = "", OffContent = "", MinWidth = 0, Width = 48 };
         _cloudSwitch.Toggled += (_, _) =>
@@ -253,14 +259,38 @@ internal sealed partial class ManagePanel
             Set("cloud_files", _cloudSwitch.IsOn ? "1" : "0");
         };
         _cloudDetail = _look.Text("", 12);
-        _cloudRow = Row("Index online-only OneDrive files", _cloudDetail, _cloudSwitch);
+        var cloud = new StackPanel();
+        cloud.Children.Add(Divider(12));
+        cloud.Children.Add(Row("Index online-only OneDrive files", _cloudDetail, _cloudSwitch));
+        _cloudRow = cloud;
         _cloudRow.Visibility = Visibility.Collapsed;
-        Root.Children.Add(_cloudRow);
+        folders.Children.Add(_cloudRow);
 
-        _indexRow = new StackPanel { Spacing = 8 };
-        Root.Children.Add(_indexRow);
-        // Import and export (docs/design/17 "Sharing an index"; ManagePanel.Transfer.cs).
-        AddTransferSection();
+        // Index: its size against the limit (index_cap_bytes; over it indexing
+        // stops and the status says so, docs/design/17 "Disk"), Clear, battery.
+        StackPanel index = Section("Index");
+        _capBox = Combo();
+        _capBox.MinWidth = 110;
+        AutomationProperties.SetName(_capBox, "Index size limit");
+        ToolTipService.SetToolTip(_capBox, "Index size limit. Over it, indexing stops until you raise it or remove a folder.");
+        _capBox.SelectionChanged += (_, _) =>
+        {
+            if (_updating || _capBox.SelectedIndex < 0) return;
+            Set("index_cap_bytes", _capValues[_capBox.SelectedIndex].ToString(System.Globalization.CultureInfo.InvariantCulture));
+        };
+        Button clear = _look.Button("Clear index…", () =>
+        {
+            _confirmClear = true;
+            ShowIndexConfirm(focus: true);
+        });
+        var indexControls = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        indexControls.Children.Add(_capBox);
+        indexControls.Children.Add(clear);
+        _indexSize = _look.Text("", 12);
+        FrameworkElement indexRow = Row("Search index", _indexSize, indexControls);
+        index.Children.Add(indexRow);
+        _indexConfirm = new StackPanel();
+        index.Children.Add(_indexConfirm);
 
         _batteryBox = Combo();
         foreach (string b in BatteryNames) _batteryBox.Items.Add(b);
@@ -269,38 +299,41 @@ internal sealed partial class ManagePanel
             if (_updating || _batteryBox.SelectedIndex < 0) return;
             Set("pause_on_battery_percent", BatteryValues[_batteryBox.SelectedIndex].ToString());
         };
-        Root.Children.Add(Row("Pause on battery", "Indexing waits while the battery is below this. Index anyway, beside the status, carries on until you next plug in.", _batteryBox));
+        index.Children.Add(Row("Pause on battery", "Indexing waits while the battery is below this. Index anyway, beside the status, carries on until you next plug in.", _batteryBox));
+
+        // Import and export (docs/design/17 "Sharing an index"; ManagePanel.Transfer.cs).
+        AddTransferSection();
 
         // People: a separate opt-in (PR 24; biometric data, stricter than the frame index).
-        Root.Children.Add(Heading("People"));
+        StackPanel people = Section("People");
         _faces = new ToggleSwitch { OnContent = "", OffContent = "", MinWidth = 0, Width = 48 };
         AutomationProperties.SetName(_faces, "Find people in your photos");
         _faces.Toggled += (_, _) => OnFacesToggled();
         var facesDetail = new StackPanel { Spacing = 2 };
         facesDetail.Children.Add(_look.Text(
             "Face data stays on this computer unless you include People in an index export, and can be deleted at any time. Off by default.", 12));
-        Root.Children.Add(Row("Find people in your photos", facesDetail, _faces));
-        _people = new StackPanel { Spacing = 8 };
-        Root.Children.Add(_people);
+        people.Children.Add(Row("Find people in your photos", facesDetail, _faces));
+        _people = new StackPanel();
+        people.Children.Add(_people);
         // "Re-analyse faces" (docs/design/17 "People model"): every photo and clip
         // again with the pack's face model; the people carry over. While it runs,
         // how far it is (a FlatBar: ProgressBar fail-fasts in this island host).
         _reanalyseDetail = _look.Text("", 12);
         _reanalyseRow = Row("Re-analyse faces", _reanalyseDetail, _look.Button("Re-analyse", Reanalyse));
         _reanalyseRow.Visibility = Visibility.Collapsed;
-        Root.Children.Add(_reanalyseRow);
+        people.Children.Add(_reanalyseRow);
         _rerunText = _look.Text("", 12, AddonColour.Title);
         _rerunBar = new MediaViewer.Shared.FlatBar(_look[AddonColour.Hairline], _look[AddonColour.Accent]);
         var rerun = new StackPanel { Spacing = 6 };
         rerun.Children.Add(_rerunText);
         rerun.Children.Add(_rerunBar.Root);
-        _rerunRow = _look.Card(rerun);
+        _rerunRow = Pad(rerun);
         _rerunRow.Visibility = Visibility.Collapsed;
-        Root.Children.Add(_rerunRow);
+        people.Children.Add(_rerunRow);
         // The grid, inline as on the Mac (PeopleGrid.cs).
         _peopleGrid = new PeopleGrid(_chrome);
         _peopleGrid.Root.Visibility = Visibility.Collapsed;
-        Root.Children.Add(_peopleGrid.Root);
+        people.Children.Add(_peopleGrid.Root);
 
         _chrome.StatusChanged += OnStatus;
         RefreshSettings();
@@ -322,9 +355,9 @@ internal sealed partial class ManagePanel
         // land on nothing a person sees.
         if (_chrome.ReadOnly)
         {
-            Root = new StackPanel { Spacing = 8, Margin = new Thickness(0, 8, 0, 0) };
-            Root.Children.Add(_look.Card(_look.Text(AiChrome.ReadOnlyNote, 13)));
-            Root.Children.Add(Row("Search", "Open the search panel. Ctrl+F in the viewer; Ctrl+Shift+F finds similar.",
+            Root = new StackPanel { Spacing = 10, Margin = new Thickness(0, 8, 0, 0) };
+            Root.Children.Add(Stroked(_look.Card(_look.Text(AiChrome.ReadOnlyNote, 13), 12)));
+            Section("Search").Children.Add(Row("Search panel", "Open the search panel. Ctrl+F in the viewer; Ctrl+Shift+F finds similar.",
                 _look.Button("Open search", () => _chrome.RunCommand(SearchCommand.Open))));
         }
     }
@@ -333,30 +366,99 @@ internal sealed partial class ManagePanel
 
     private ComboBox Combo() => new() { FontFamily = _look.Font, FontSize = _look.FontSize - 1, MinWidth = 200 };
 
-    private TextBlock Heading(string text)
+    /// <summary>
+    /// A titled section (the Mac's ManagementView.section): a 15 semibold
+    /// title over one surface card with a hairline stroke. Added to the panel;
+    /// returns the card's body for its rows.
+    /// </summary>
+    private StackPanel Section(string title)
     {
-        TextBlock t = _look.Text(text, _look.FontSize + 1, AddonColour.Title);
-        t.Margin = new Thickness(0, 12, 0, 2);
-        return t;
+        var body = new StackPanel();
+        TextBlock heading = _look.Text(title, 15, AddonColour.Title);
+        heading.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
+        heading.Margin = new Thickness(0, 8, 0, 6);
+        AutomationProperties.SetHeadingLevel(heading, Microsoft.UI.Xaml.Automation.Peers.AutomationHeadingLevel.Level2);
+        var section = new StackPanel();
+        section.Children.Add(heading);
+        section.Children.Add(Stroked(new Border
+        {
+            Child = body,
+            CornerRadius = new CornerRadius(8),
+            Background = _look[AddonColour.Surface],
+        }));
+        Root.Children.Add(section);
+        return body;
     }
+
+    private Border Stroked(Border card)
+    {
+        card.BorderBrush = _look[AddonColour.Hairline];
+        card.BorderThickness = new Thickness(1);
+        return card;
+    }
+
+    /// <summary>A hairline between rows of a section, inset by <paramref name="inset"/>.</summary>
+    private Border Divider(double inset = 0) => new()
+    {
+        Height = 1,
+        Margin = new Thickness(inset, 0, inset, 0),
+        Background = _look[AddonColour.Hairline],
+    };
+
+    /// <summary>Content inside a section, with a row's padding.</summary>
+    private static Border Pad(UIElement child) => new() { Child = child, Padding = new Thickness(12) };
 
     private FrameworkElement Row(string title, string detail, FrameworkElement control) =>
         Row(title, _look.Text(detail, 12), control);
 
+    /// <summary>A row of a section (the Mac's row): a 14 title and its 12 detail, the control at the end.</summary>
     private FrameworkElement Row(string title, FrameworkElement detail, FrameworkElement control)
     {
-        var grid = new Grid { ColumnSpacing = 24 };
+        var grid = new Grid { ColumnSpacing = 20, Padding = new Thickness(12) };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var labels = new StackPanel { Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
-        labels.Children.Add(_look.Text(title, null, AddonColour.Title));
+        var labels = new StackPanel { Spacing = 3, VerticalAlignment = VerticalAlignment.Center };
+        labels.Children.Add(_look.Text(title, 14, AddonColour.Title));
         labels.Children.Add(detail);
         grid.Children.Add(labels);
         control.VerticalAlignment = VerticalAlignment.Center;
         AutomationProperties.SetName(control, title);
         Grid.SetColumn(control, 1);
         grid.Children.Add(control);
-        return _look.Card(grid);
+        return grid;
+    }
+
+    /// <summary>
+    /// "Delete …? [Delete] [Cancel]" under the row that asked (the Mac's
+    /// confirmRow): an accent wash, the action in the critical red when it
+    /// deletes, and Esc as Cancel so it does not close Settings.
+    /// </summary>
+    private Grid ConfirmRow(string text, string action, Action perform, Action cancel, bool focus)
+    {
+        var grid = new Grid { ColumnSpacing = 10, Padding = new Thickness(12), Background = _look.LiveTint(AddonColour.Accent, 20) };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        TextBlock label = _look.Text(text, 12, AddonColour.Title);
+        label.VerticalAlignment = VerticalAlignment.Center;
+        grid.Children.Add(label);
+        Button go = _look.DestructiveButton(action, perform);
+        go.VerticalAlignment = VerticalAlignment.Center;
+        Grid.SetColumn(go, 1);
+        grid.Children.Add(go);
+        Button no = _look.Button("Cancel", cancel);
+        no.VerticalAlignment = VerticalAlignment.Center;
+        Grid.SetColumn(no, 2);
+        grid.Children.Add(no);
+        grid.KeyDown += (_, e) =>
+        {
+            if (e.Key != Windows.System.VirtualKey.Escape) return;
+            e.Handled = true;
+            cancel();
+        };
+        // Keyboard focus follows the question, on the safe answer.
+        if (focus) no.Loaded += (_, _) => no.Focus(FocusState.Programmatic);
+        return grid;
     }
 
     private void Set(string key, string valueJson)
@@ -420,6 +522,8 @@ internal sealed partial class ManagePanel
             _cloudUnsupported = r.TryGetProperty("cloud_supported", out JsonElement cs) && cs.ValueKind == JsonValueKind.False;
             _cloudSwitch.IsEnabled = !_cloudUnsupported;
             _cloudSwitch.IsOn = r.TryGetProperty("cloud_files", out JsonElement cf) && cf.ValueKind == JsonValueKind.True;
+            ShowCap(r.TryGetProperty("index_cap_bytes", out JsonElement ic) && ic.TryGetInt64(out long cap)
+                ? Math.Max(0, cap) : 8_000_000_000);
         }
         catch (Exception ex) when (ex is JsonException or InvalidOperationException or FormatException) { }
         finally
@@ -561,49 +665,54 @@ internal sealed partial class ManagePanel
         _peopleGrid.Detach();
     }
 
-    // Rebuilt only when it changes shape: the status arrives at 4 Hz, and a
-    // rebuilt button would drop keyboard focus.
+    // The size line follows the status (4 Hz): only its words change, so the
+    // limit box and Clear keep keyboard focus.
     private void RefreshIndexRow(in MvAiStatus s)
     {
-        string size = $"{Look.Size((long)s.IndexBytes)} on disk. It is your data: it does not count toward the 3 GB.";
-        if (_indexRowConfirming == _confirmClear)
-        {
-            if (_indexSize is not null) _indexSize.Text = size;
-            return;
-        }
-        _indexRowConfirming = _confirmClear;
-        _indexRow.Children.Clear();
-        _indexSize = null;
-        if (_confirmClear)
-        {
-            var box = new StackPanel { Spacing = 8 };
-            box.Children.Add(_look.Text(
-                "Clear the whole index? Searching needs indexing again. Thumbnails, your files and your folders list stay.", null,
-                AddonColour.Title));
-            var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-            Button cancel = _look.Button("Cancel", () =>
+        _indexSize.Text = $"{Look.Size((long)s.IndexBytes)} on disk" +
+                          (_capBytes > 0 ? $" of at most {CapText(_capBytes)}" : "") +
+                          ". It is your data: it does not count toward the 3 GB.";
+    }
+
+    private void ShowIndexConfirm(bool focus = false)
+    {
+        _indexConfirm.Children.Clear();
+        if (!_confirmClear) return;
+        _indexConfirm.Children.Add(ConfirmRow(
+            "Clear the whole index? Searching needs indexing again. Thumbnails, your files and your folders list stay.",
+            "Clear the index", ClearIndex, () =>
             {
                 _confirmClear = false;
-                OnStatus();
-            });
-            buttons.Children.Add(_look.Button("Clear the index", ClearIndex));
-            buttons.Children.Add(cancel);
-            box.Children.Add(buttons);
-            _indexRow.Children.Add(_look.Card(box));
-            return;
-        }
-        Button clear = _look.Button("Clear index…", () =>
-        {
-            _confirmClear = true;
-            OnStatus();
-        });
-        _indexSize = _look.Text(size, 12);
-        _indexRow.Children.Add(Row("Index size", _indexSize, clear));
+                ShowIndexConfirm();
+            }, focus));
+    }
+
+    // The Mac's choices (ManagementView "Index size limit"), plus the stored
+    // value when it is none of them (the engine's 8 GB default, or no limit),
+    // so the box never reads blank.
+    private static readonly long[] CapChoices =
+        { 2_000_000_000, 5_000_000_000, 10_000_000_000, 20_000_000_000, 50_000_000_000 };
+
+    private static string CapText(long bytes) =>
+        bytes <= 0 ? "No limit" : $"{bytes / 1e9:0.#} GB";
+
+    private void ShowCap(long cap)
+    {
+        _capBytes = cap;
+        _capValues.Clear();
+        _capValues.AddRange(CapChoices);
+        if (!_capValues.Contains(cap)) _capValues.Add(cap);
+        // Smallest first, "No limit" last.
+        _capValues.Sort((x, y) => (x <= 0 ? long.MaxValue : x).CompareTo(y <= 0 ? long.MaxValue : y));
+        _capBox.Items.Clear();
+        foreach (long v in _capValues) _capBox.Items.Add(CapText(v));
+        _capBox.SelectedIndex = _capValues.IndexOf(cap);
     }
 
     private void ClearIndex()
     {
         _confirmClear = false;
+        ShowIndexConfirm();
         try { _api.ClearIndex(); }
         catch (MediaViewerException) { }
         _chrome.ReadStatus();
@@ -611,8 +720,10 @@ internal sealed partial class ManagePanel
 
     // ---- roots ----------------------------------------------------------------------
 
+    // Held (issue #299): left unfinished last session, it waits for Resume.
     private sealed record RootRow(ulong Id, string Path, bool Recursive, bool Enabled, long Assets, long Done, long Bytes,
-                                  MvAiMedia Media, bool Scanning, long CloudOnly, bool Unreadable, long LastScan);
+                                  MvAiMedia Media, bool Scanning, long CloudOnly, bool Unreadable, long LastScan,
+                                  bool Held);
 
     // The newest roots read: an older one finishing late never draws over it.
     private int _rootsRead;
@@ -645,7 +756,8 @@ internal sealed partial class ManagePanel
                         r.TryGetProperty("scanning", out JsonElement sc) && sc.ValueKind == JsonValueKind.True,
                         r.TryGetProperty("cloud_only", out JsonElement co) ? co.GetInt64() : 0,
                         r.TryGetProperty("error", out JsonElement er) && er.GetString() == "unreadable",
-                        r.TryGetProperty("last_scan", out JsonElement ls) ? ls.GetInt64() : 0));
+                        r.TryGetProperty("last_scan", out JsonElement ls) ? ls.GetInt64() : 0,
+                        r.TryGetProperty("held", out JsonElement hd) && hd.ValueKind == JsonValueKind.True));
                 }
             }
             catch (Exception ex) when (ex is MediaViewerException or JsonException or KeyNotFoundException
@@ -671,30 +783,49 @@ internal sealed partial class ManagePanel
         ShowSuggestions();
         if (rows.Count == 0)
         {
-            _roots.Children.Add(_look.Text(
-                "No folders yet. Open a folder and press Ctrl+F to index it, or add one here.", 13));
+            _confirmRemove = null;
+            _roots.Children.Add(Pad(_look.Text(
+                "No folders yet. Open a folder and press Ctrl+F to index it, or add one here.", 12)));
             return;
         }
+        if (_confirmRemove is ulong asked && !rows.Any(r => r.Id == asked)) _confirmRemove = null;
+        bool focusConfirm = _focusConfirm;
+        _focusConfirm = false;
         foreach (RootRow r in rows)
         {
-            var grid = new Grid { ColumnSpacing = 12, RowSpacing = 6 };
+            var grid = new Grid { ColumnSpacing = 12, RowSpacing = 6, Padding = new Thickness(12) };
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             var labels = new StackPanel { Spacing = 2 };
-            TextBlock path = _look.Text(r.Path, 14, AddonColour.Title, wrap: false);
+            // A folder icon before the path, as on the Mac.
+            var head = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+            head.Children.Add(new FontIcon
+            {
+                Glyph = GlyphFolder,
+                FontFamily = Look.IconFont,
+                FontSize = 13,
+                Foreground = _look[AddonColour.Body],
+                VerticalAlignment = VerticalAlignment.Center,
+            });
+            TextBlock path = _look.Text(r.Path, 13, AddonColour.Title, wrap: false);
+            path.VerticalAlignment = VerticalAlignment.Center;
             ToolTipService.SetToolTip(path, r.Path);
-            labels.Children.Add(path);
+            head.Children.Add(path);
+            labels.Children.Add(head);
             // Online-only files wait for the OneDrive fetch: the rest can be up to date.
             long local = Math.Max(0, r.Assets - r.CloudOnly);
             string state = !r.Enabled ? "Paused"
                 : r.Unreadable ? "Couldn't read this folder: it may be offline, moved or renamed. Its index is kept."
                 : r.Assets == 0 && r.LastScan != 0 && !r.Scanning ? "No photos or videos found here"
                 : r.Done >= local ? (r.Scanning ? "Checking for changes…" : "Up to date")
-                : $"{r.Done:N0} of {local:N0}" + (r.Scanning ? " · checking for changes…" : "");
+                : $"{r.Done:N0} of {local:N0}"
+                  + (r.Held ? " · paused since last time" : r.Scanning ? " · checking for changes…" : "");
             if (r.CloudOnly > 0 && !r.Unreadable) state += $" · {r.CloudOnly:N0} only in OneDrive";
             labels.Children.Add(_look.Text((r.Recursive ? "and subfolders · " : "") + state + " · " + Look.Size(r.Bytes), 12,
                 r.Unreadable ? AddonColour.Accent : AddonColour.Body));
-            var bar = new MediaViewer.Shared.FlatBar(_look[AddonColour.Hairline], _look[AddonColour.Accent])
+            // Paused folders' bars are quiet (the Mac tints them secondary).
+            var bar = new MediaViewer.Shared.FlatBar(_look[AddonColour.Hairline],
+                                                     _look[r.Enabled ? AddonColour.Accent : AddonColour.Body])
             {
                 Value = local <= 0 ? 0 : Math.Min(1, (double)r.Done / local),
             };
@@ -704,20 +835,64 @@ internal sealed partial class ManagePanel
             var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
             ulong id = r.Id;
             bool enabled = r.Enabled;
+            string name = System.IO.Path.GetFileName(r.Path);
             buttons.Children.Add(MediaMenu(id, r.Media));
-            buttons.Children.Add(RootButton(enabled ? "Pause" : "Resume", () => _api.RootSetEnabled(id, !enabled)));
+            if (enabled && r.Held)
+            {
+                // Issue #299: on from its last committed frame, as the launch notice's Resume.
+                Button resume = RootButton("Resume", () => _api.SetSetting("resume_root", id.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+                ToolTipService.SetToolTip(resume, "Indexing stopped part-way last time. Resume goes on from where it stopped.");
+                buttons.Children.Add(resume);
+            }
+            else
+            {
+                buttons.Children.Add(RootButton(enabled ? "Pause" : "Resume", () => _api.RootSetEnabled(id, !enabled)));
+            }
             Button rescan = RootButton(r.Scanning ? "Checking…" : "Rescan", () => _api.RootRescan(id));
             rescan.IsEnabled = !r.Scanning && enabled;
             buttons.Children.Add(rescan);
-            buttons.Children.Add(RootButton("Remove", () => _api.RootRemove(id)));
+            if (_confirmRemove != id)
+            {
+                // Removing forgets the folder and deletes its rows: ask first (the Mac's "Remove…").
+                Button remove = _look.Button("Remove…", () => AskRemove(id));
+                ToolTipService.SetToolTip(remove, "Forget this folder and delete its rows from the index. Your files are not touched.");
+                buttons.Children.Add(remove);
+            }
             foreach (UIElement b in buttons.Children)
             {
-                if (b is Button button) AutomationProperties.SetName(button, $"{button.Content} {System.IO.Path.GetFileName(r.Path)}");
+                if (b is Button button && button.Content is string label)
+                {
+                    AutomationProperties.SetName(button, $"{label.TrimEnd('…')} {name}");
+                }
             }
             Grid.SetColumn(buttons, 1);
             grid.Children.Add(buttons);
-            _roots.Children.Add(_look.Card(grid, 12));
+            _roots.Children.Add(grid);
+            if (_confirmRemove == id)
+            {
+                _roots.Children.Add(ConfirmRow($"Remove {name} from the index? Its rows are deleted; your files are not touched.",
+                    "Remove from index", () =>
+                    {
+                        _confirmRemove = null;
+                        RootCall(() => _api.RootRemove(id));
+                    }, () => AskRemove(null), focusConfirm));
+            }
+            _roots.Children.Add(Divider());
         }
+    }
+
+    // Segoe Fluent Icons "Folder".
+    private const string GlyphFolder = "\uE8B7";
+
+    // Set while a "Remove…" redraws the list: focus goes to the question.
+    private bool _focusConfirm;
+
+    private void AskRemove(ulong? id)
+    {
+        _confirmRemove = id;
+        _focusConfirm = id is not null;
+        _rootsPressed = true;
+        ShowRoots(_rootsShown);
     }
 
     private static readonly string[] MediaNames = { "Default", "Pictures", "Sound", "Both" };
@@ -910,46 +1085,32 @@ internal sealed partial class ManagePanel
         if (_confirmFacesOff)
         {
             // Off deletes every face vector, crop and name: confirm first (the Mac's row).
-            var box = new Grid { ColumnSpacing = 10 };
-            box.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            box.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            box.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            TextBlock text = _look.Text("Turn off people search? Every face, crop and name is deleted now.", 12, AddonColour.Title);
-            text.VerticalAlignment = VerticalAlignment.Center;
-            box.Children.Add(text);
-            Button delete = _look.Button("Delete face data", () =>
-            {
-                _confirmFacesOff = false;
-                try { _api.FacesEnable(false); }
-                catch (MediaViewerException) { }
-                RefreshSettings();
-                _chrome.ReadStatus();
-            });
-            delete.VerticalAlignment = VerticalAlignment.Center;
-            Grid.SetColumn(delete, 1);
-            box.Children.Add(delete);
-            Button cancel = _look.Button("Cancel", () =>
-            {
-                _confirmFacesOff = false;
-                _updating = true;
-                _faces.IsOn = true;
-                _updating = false;
-                RefreshPeople();
-            });
-            cancel.VerticalAlignment = VerticalAlignment.Center;
-            Grid.SetColumn(cancel, 2);
-            box.Children.Add(cancel);
-            Border card = _look.Card(box, 12);
-            card.Background = _look.Tint(AddonColour.Accent, 20);
-            _people.Children.Add(card);
+            _people.Children.Add(ConfirmRow("Turn off people search? Every face, crop and name is deleted now.",
+                "Delete face data", () =>
+                {
+                    _confirmFacesOff = false;
+                    try { _api.FacesEnable(false); }
+                    catch (MediaViewerException) { }
+                    RefreshSettings();
+                    _chrome.ReadStatus();
+                }, () =>
+                {
+                    _confirmFacesOff = false;
+                    _updating = true;
+                    _faces.IsOn = true;
+                    _updating = false;
+                    RefreshPeople();
+                }, focus: true));
             return;
         }
         if (!_faces.IsOn) return;
         if (!ready)
         {
-            _people.Children.Add(_look.Text(_chrome.Host.IsPieceInstalled("ai-faces")
+            TextBlock notice = _look.Text(_chrome.Host.IsPieceInstalled("ai-faces")
                 ? "People is loading. Faces are found once it is ready."
-                : "Install People above to find faces. Until then nothing about faces is computed.", 12));
+                : "Install People above to find faces. Until then nothing about faces is computed.", 12);
+            notice.Margin = new Thickness(12, 0, 12, 10);
+            _people.Children.Add(notice);
             return;
         }
         _peopleGrid.Refresh();

@@ -506,6 +506,7 @@ void tile_service::run() noexcept {
     more = made >= k_tiles_per_tick;
     if (!more) work.clear();  // hold no set while asleep
     if (made > 0 && on_ready_) on_ready_(user_);
+    ticks_.fetch_add(1, std::memory_order_release);
     if (more) {
       // docs/design/03 rule 3: a few tile creates per refresh, the rest waits. This
       // thread may wait; the render thread never waits on it.
