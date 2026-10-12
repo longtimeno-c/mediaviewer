@@ -637,3 +637,17 @@ TEST_CASE("a plain string.find stops on time", "[script][limits]") {
   const auto out = eval("mv.log(('hello world'):find('o w', 1, true), ('abc'):find('c'))");
   REQUIRE(out[0] == "5\t3\t3");  // the first call is cut to one value
 }
+
+TEST_CASE("mv.notify shows at most 200 bytes of a long line, cut on a character", "[script][runtime]") {
+  probe p;
+  auto a = start(p, R"lua(
+    function t()
+      mv.notify(string.rep("x", 199) .. "\u{e9}" .. string.rep("y", 1 << 22))
+    end
+  )lua", 0, script_limits{});
+  REQUIRE(a->wait_idle(5s));
+  run(*a, "t");
+  std::lock_guard<std::mutex> lock(p.m);
+  REQUIRE(p.notices.size() == 1);
+  REQUIRE(p.notices[0] == std::string(199, 'x'));  // the two-byte e-acute would cross 200
+}

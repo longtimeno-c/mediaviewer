@@ -317,6 +317,8 @@ int mv_log(lua_State* L) {
 // One line a person reads: control characters become spaces, at most 200
 // bytes, cut on a character boundary.
 std::string notice_text(std::string_view s) {
+  // Only the head can be shown: never copy a script's 60 MB string to cut it.
+  s = s.substr(0, 204);
   std::string out;
   for (const char ch : s) {
     const auto c = static_cast<unsigned char>(ch);
@@ -629,6 +631,9 @@ void script_addon::impl::run() {
   try {
     ok = build_state();
   } catch (...) {
+    // A host allocation threw between begin_task and end_task: the watchdog
+    // must not keep a pointer to this impl past its life.
+    watchdog::get().disarm(this);
     request_stop(script_stop::load_error, "Its script did not load.");
   }
   if (ok) {
