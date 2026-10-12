@@ -97,7 +97,11 @@ as a placeholder while the player seeks.
 
 Prefetched neighbours never take the preview step; they decode straight to full resolution.
 RAW decodes on the selected image use `raw_foreground_threads()` (leaving processors for the
-present loop, capped by `raw_thread_ceiling()`); prefetch uses one thread.
+present loop, capped by `raw_thread_ceiling()`); prefetch uses one thread. Both platforms build
+LibRaw from the overlay port in `tools/vcpkg/ports/libraw`, whose `openmp-color.patch` runs
+black scaling, colour conversion and the output copy in parallel (pixels unchanged). On the Mac
+the dynamic manifest reaches it through `tools/mac/dependencies/vcpkg-configuration.json`;
+before #287 it built the stock port and those loops ran single-threaded there.
 
 **Orientation is applied on the display path.** EXIF/container orientation is honoured; untagged
 is identity. RAW and JPEG are decoded already rotated; TIFF is not
