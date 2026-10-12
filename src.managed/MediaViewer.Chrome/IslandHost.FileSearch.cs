@@ -524,7 +524,7 @@ public static partial class IslandHost
         }
         if (_gsFolded != _gsListing)
         {
-            FoldThen(ApplyNamesFilter);
+            FoldThen(() => ApplyNamesFilter(fromProviders));
             return;
         }
 

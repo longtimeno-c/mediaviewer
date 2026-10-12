@@ -32,8 +32,21 @@ public static partial class IslandHost
     private sealed record SlotSectionDef(string Addon, string Id, bool Location);
     private sealed record SlotAddonRow(string Id, string Name, string Version, string Description, string State, bool Loaded);
 
+    // One UI-thread hop per burst, as the Mac host does: a provider posting
+    // progress 50 times re-reads (and re-filters the gallery) once, not 50 times.
+    private static int _slotPendingBits;
     private static readonly SlotNative.ChangedCallback SlotListener = (_, bits) =>
-        DispatcherQueueControllerTryEnqueue(() => OnSlotsChanged((SlotChange)bits));
+    {
+        if (Interlocked.Or(ref _slotPendingBits, (int)bits) != 0) return;
+        if (_dispatcher is null)
+        {
+            // No UI thread to hop to: drop the burst so a later one still wakes it.
+            Interlocked.Exchange(ref _slotPendingBits, 0);
+            return;
+        }
+        DispatcherQueueControllerTryEnqueue(() =>
+            OnSlotsChanged((SlotChange)Interlocked.Exchange(ref _slotPendingBits, 0)));
+    };
 
     private static bool _slotsListening;
     private static List<SlotItem> _slotItems = new();
