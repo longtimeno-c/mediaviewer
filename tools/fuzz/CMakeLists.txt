@@ -136,7 +136,9 @@ target_compile_definitions(mv_project_options INTERFACE
 set(MV_FUZZ_HARNESSES
   jpeg png bmp gif webp tiff ico heic avif raw raw_preview decode animation thumbnail pdf docx
   # #290: the metadata readers beyond Exiv2 (meta/parse.h), linked alone.
-  meta_c2pa meta_jpeg meta_png meta_webp meta_bmff meta_xmp meta_icc)
+  meta_c2pa meta_jpeg meta_png meta_webp meta_bmff meta_xmp meta_icc
+  # #291: the Local search query language (pure; compiled from its source).
+  ai_query)
 
 add_custom_target(mv_fuzzers)
 
@@ -151,6 +153,9 @@ foreach(name IN LISTS MV_FUZZ_HARNESSES)
   if(name MATCHES "^meta_")
     target_sources(${target} PRIVATE fuzz_meta.h)
     target_link_libraries(${target} PRIVATE mv_meta_parse)
+  endif()
+  if(name STREQUAL "ai_query")
+    target_sources(${target} PRIVATE "${CMAKE_SOURCE_DIR}/src/addons/ai/query.cpp")
   endif()
   # PR 15: the Explorer handler's request path, built from its source.
   if(name STREQUAL "thumbnail")
