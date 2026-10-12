@@ -333,6 +333,9 @@ enum class command_id : std::uint16_t {
   // Ctrl/Cmd+N: another window, its own process (docs/design/16 "Window").
   // Appended after the add-on slots so every earlier wire id stays put.
   new_window,
+  // Issue #209 (docs/design/16 View): Shift+Z springs to 100 % centred on the
+  // active AF point from the maker notes already read. Camera state only.
+  zoom_af_point,
   count
 };
 inline constexpr int kAddonCommandSlots = 8;

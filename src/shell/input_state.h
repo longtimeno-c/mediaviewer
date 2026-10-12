@@ -144,6 +144,10 @@ struct input_snapshot {
   // Bumped by the UI thread whenever `meta` is replaced, so an idle render
   // thread draws one frame for it (the struct is too big to compare).
   std::uint32_t meta_seq = 0;
+  // Issue #209 (Shift+Z): spring to 100 % on the AF point `af_focus.h` picks from
+  // `meta`. The host bumps it only once `meta` holds the item's record, so the
+  // render thread acts on the quads published with it.
+  std::uint32_t af_focus_seq = 0;
   // For the info overlay, filled by the UI thread when the selection changes.
   // The render thread never calls into the folder model.
   std::uint32_t item_index = 0;

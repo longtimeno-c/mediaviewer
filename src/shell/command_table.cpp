@@ -285,6 +285,11 @@ constexpr binding kBindings[] = {
     // PageDown inside one stop; plain PageUp / PageDown still skip ten stops.
     row(key::page_down, mod_ctrl, kBrowse | kIsland, repeat, next_page),
     row(key::page_up, mod_ctrl, kBrowse | kIsland, repeat, prev_page),
+    // Issue #209. Appended. The Shift twin of the loupe (hold `Z`, 100 % at the
+    // cursor): 100 % at the AF point, for a focus check in one key. Browse only:
+    // a clip has no AF points, and with the strip or gallery focused a shifted
+    // letter is typeahead. Held Z (loupe) falls back to browse, so it works there.
+    row(C('Z'), mod_shift, kBrowse, edge, zoom_af_point),
 };
 
 // The router's index stores row + 1 in a byte.
@@ -462,6 +467,7 @@ constexpr command_info kCommands[] = {
     {addon_cmd_6, "Add-on command 7", true},
     {addon_cmd_7, "Add-on command 8", true},
     {new_window, "New window"},
+    {zoom_af_point, "Zoom to AF point"},
 };
 
 const char* named_key(key k) noexcept {

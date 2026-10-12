@@ -55,6 +55,14 @@ class camera {
   void set_zoom(float zoom, float image_w, float image_h, float window_w,
                 float window_h) noexcept;
 
+  // Spring to `zoom` (clamped like set_zoom) with image pixel (centre_x,
+  // centre_y) at the window centre, as far as the pan clamp allows: a point
+  // near an edge lands as close to the centre as the image can go without
+  // showing background. Leaves fit / fill. Issue #209: Shift+Z, 100 % on the
+  // AF point.
+  void zoom_to(float zoom, float centre_x, float centre_y, float image_w, float image_h,
+               float window_w, float window_h) noexcept;
+
   // Wheel zoom toward the cursor. `notches` is the usual WHEEL_DELTA units
   // already divided to ±1 per detent. Zoom-out floors at 50 %, or at fit when
   // the media is large enough that fit is below 50 % — so the wheel can always

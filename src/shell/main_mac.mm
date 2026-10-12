@@ -162,6 +162,8 @@ static bool MvCommandSupported(mv::shell::command_id c) {
     case hold_previous_release: case blackout: case shuffle:
     // PR 9
     case info_overlay: case af_points: case eyedropper: case copy_clipboard: case metadata_pane: case folder_tree:
+    // Issue #209
+    case zoom_af_point:
     // PR 10
     case rotate_ccw: case rotate_cw: case flip_horizontal: case flip_vertical: case crop_mode:
     case crop_commit: case crop_move_left: case crop_move_right: case crop_move_up:
@@ -2286,6 +2288,8 @@ static void MvAdoptNewDefaultViewerTypes() {
   // showing it, and after a short pause so arrow-key scrubbing queues no reads.
   mv::shell::meta_store _meta;
   std::shared_ptr<const mv::meta::metadata> _metaRecord;
+  // Issue #209: Shift+Z waits for the record and fires when it is adopted.
+  BOOL _afFocusPending;
   std::uint64_t _metaGeneration;
   BOOL _metaPaneVisible;
   BOOL _treeVisible;
@@ -5804,6 +5808,16 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
       if (_snap.af_points) [self requestMetadataNow];
       [self pokeSnapshot];
       return YES;
+    // Issue #209: 100 % on the AF point, from the record already held (or one
+    // read on the pool); the render thread moves the camera.
+    case zoom_af_point:
+      if (_metaRecord) {
+        [self afFocusFire];
+      } else {
+        _afFocusPending = YES;
+        [self requestMetadataNow];
+      }
+      return YES;
     case eyedropper:
       _snap.eyedropper = !_snap.eyedropper;
       [self pokeSnapshot];
@@ -7725,7 +7739,20 @@ static double mv_wall_seconds() {
 // ---- PR 9: metadata, folder tree, sort ------------------------------------------
 
 - (BOOL)metadataWanted {
-  return _metaPaneVisible || _snap.info_overlay || _snap.af_points;
+  return _metaPaneVisible || _snap.info_overlay || _snap.af_points || _afFocusPending;
+}
+
+// Issue #209 (Shift+Z): the record is adopted, so the quads in _snap.meta are
+// this item's. Bump the edge, or say why there is nothing to zoom to.
+- (void)afFocusFire {
+  _afFocusPending = NO;
+  if (_snap.meta.af_count == 0) {
+    [self noticeShow:std::string("No AF point recorded in this file")];
+    return;
+  }
+  _zoomIntentAt = CACurrentMediaTime();
+  ++_snap.af_focus_seq;
+  [self pokeSnapshot];
 }
 
 // Selection moved: the old record is no longer the item on screen. The new one is
@@ -7734,6 +7761,7 @@ static double mv_wall_seconds() {
 - (void)metadataSelectionChanged {
   [_metaDebounce invalidate];
   _metaDebounce = nil;
+  _afFocusPending = NO;  // Shift+Z was for the item just left
   if (_metaRecord) _metaRecord.reset();
   ++_metaGeneration;
   _snap.meta = mv::shell::meta_overlay{};
@@ -7804,6 +7832,7 @@ static double mv_wall_seconds() {
   }
   _snap.meta = o;
   [self pokeSnapshot];
+  if (_afFocusPending) [self afFocusFire];
 }
 
 - (BOOL)metaPaneVisible { return _metaPaneVisible; }

@@ -179,6 +179,7 @@ crop. Keys are shown Windows-style; on macOS read `⌘` for `Ctrl`.
 | `C` | Viewing | Clipping blinkies |
 | `O` | Viewing | On-canvas info overlay (filename, index, exposure triangle) |
 | `Shift+O` | Viewing | AF-point quads from the maker notes already read |
+| `Shift+Z` | browse | Zoom to the AF point: springs to 100 % centred on the in-focus point (else the selected one; of several, the one nearest their middle), through any rotate / crop. Camera state only; the record is the one `Shift+O` reads (one read on the pool if nothing has asked yet). "No AF point recorded" when there is none; nothing when a crop has cut it away |
 | `I` | Viewing | Metadata pane: focuses it; `←` `→` change tab, `↓` reaches tag search; `Esc` returns to the canvas, a second `Esc` closes it |
 | `Shift+I` | Viewing | Eyedropper: one-pixel sRGB 8-bit + hex readout under the cursor (stills) |
 | `Ctrl+C` | Viewing | With the eyedropper on: copy `#RRGGBB  rgb(r, g, b)  x y`. Otherwise copy the marked (else current / gallery-selected) file(s) |
@@ -383,6 +384,7 @@ presents ([rendering](03-rendering.md)). Toggles request one redraw.
 | Canvas background / checkerboard (`B`) | Clear colour + optional shader |
 | On-canvas info (`O`) | Overlay text from the folder model and metadata already read |
 | AF-point quads (`Shift+O`) | A few quads from maker notes already in the property model |
+| Zoom to AF point (`Shift+Z`) | Camera target only (`shell/af_focus.h` → `camera::zoom_to`); the zoom's refinement is the usual one |
 | Eyedropper (`Shift+I`) | One-pixel staging readback on demand, never a full-texture download |
 | Histogram | On the adjust pane, computed after the sliders settle |
 
