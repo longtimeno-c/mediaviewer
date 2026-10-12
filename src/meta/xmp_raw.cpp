@@ -25,6 +25,11 @@ using codec::xml::token;
 constexpr std::size_t kMaxPacket = 4u << 20;
 constexpr int kMaxNest = 24;
 constexpr std::size_t kMaxRows = 2000;
+// Namespaces in scope at once (real packets declare a few dozen), and the total
+// prefix comparisons one packet may cost (~tens of ms), so a hostile packet of
+// thousands of declarations over every element is bounded (#290 review: 4 s).
+constexpr std::size_t kMaxScope = 256;
+constexpr std::size_t kMaxLookupWork = 32'000'000;
 
 constexpr std::string_view kRdf = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
 constexpr std::string_view kXmpNs = "http://ns.adobe.com/xap/1.0/";
@@ -59,7 +64,7 @@ class walker {
   void declare() {
     for (std::size_t i = 0; i < r_.attribute_count(); ++i) {
       const std::string_view n = r_.attribute_name(i);
-      if (n.rfind("xmlns:", 0) == 0 && scope_.size() < 4096) {
+      if (n.rfind("xmlns:", 0) == 0 && scope_.size() < kMaxScope) {
         scope_.push_back({std::string(n.substr(6)), std::string(r_.attribute_value(i)), r_.depth()});
       }
     }
@@ -71,6 +76,11 @@ class walker {
   [[nodiscard]] std::string_view uri_of(std::string_view qname) const {
     const auto colon = qname.find(':');
     const std::string_view prefix = colon == std::string_view::npos ? std::string_view{} : qname.substr(0, colon);
+    // Every element looks its prefix up; a packet that declares hundreds of
+    // namespaces over hundreds of thousands of elements stops resolving
+    // (and so stops yielding rows) once the budget is spent.
+    if (lookups_ > kMaxLookupWork) return {};
+    lookups_ += scope_.size() + 1;
     for (auto it = scope_.rbegin(); it != scope_.rend(); ++it) {
       if (it->prefix == prefix) return it->uri;
     }
@@ -87,6 +97,7 @@ class walker {
   // A leaf: `top` is the top-level property's qname, `tail` the Exiv2-style path.
   void leaf(std::string_view top_qname, const std::string& tail, const std::string& value) {
     const std::string_view uri = uri_of(top_qname);
+    if (lookups_ > kMaxLookupWork) return;  // unresolved names are not rows
     const std::string_view local = codec::xml::local_name(top_qname);
     if (uri == kXmpNs && local == "CreatorTool" && out_.ev.xmp_creator_tool.empty()) {
       out_.ev.xmp_creator_tool = value.substr(0, 256);
@@ -246,6 +257,7 @@ class walker {
   sink& out_;
   std::vector<ns> scope_;
   std::size_t rows_ = 0;
+  mutable std::size_t lookups_ = 0;
 };
 
 }  // namespace
