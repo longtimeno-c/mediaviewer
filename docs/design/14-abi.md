@@ -595,6 +595,23 @@ rows and the add-on's `mv.slots.1` interface; table versions still only append (
 `settings_get` sits after `walk_files2`, before v3). The Mac host has the same calls as
 `mv_chrome_slots_*` in its bridge.
 
+## PR 57 — script add-ons (ABI 0.26)
+
+Minor bump, additive, in `mediaviewer_addon.h` ([25 §9](25-open-addons.md#9-code-how-a-strangers-add-on-runs)):
+`mv_script_set_listener`, `mv_script_reload(session)`, `mv_script_restart`, `mv_script_stop_all`,
+`mv_script_commands_json`, `mv_script_run_command`, `mv_script_set_key_notes`,
+`mv_script_status_json`, `mv_script_take_notices_json`; contribution API 3 (`MV_ADDON_CONTRIBUTION_API` is 5 with PRs 58–59).
+`reload` / `restart` read and hash files (**[worker-thread]**); the rest are
+**[any-thread][no-block]**, so the shell's key handler can post a command from the UI thread.
+Scripts reach the viewer through the session's own folder model calls, and back through the
+**listener**, a documented any-thread callback the shell marshals (`PostMessageW` to its window):
+1 a notice is waiting, 2 an add-on started or stopped. Not the completion queue: the chrome
+drains that, and these are the shell's. `mv_open_addon_install` / `_remove` reload the scripts
+themselves. The verify rigs `MV_SCRIPT_STORE` and `MV_SCRIPT_SPIN` are read by `mv_script_reload`
+and inert unless set. The Mac host drives
+`src/addon/script_host.h` directly; Swift reads `mv_open_addons_scripts` and calls
+`mv_open_addons_restart` in the chrome bridge.
+
 ## Version history
 
 | Minor | Change |
@@ -619,7 +636,7 @@ rows and the add-on's `mv.slots.1` interface; table versions still only append (
 | 0.23 | The cull bits `MV_FOLDER_HIDE_REJECTED` / `_UNPICKED` / `MV_FOLDER_HIDE_OTHER_LABELS` (`MV_FOLDER_LABEL_SHIFT`) and `mv_folder_note_metadata_written` — View ▸ Show's cull filters (issue #207) |
 | 0.24 | Settings pages and keymap packs: `mv_addon_settings_json` / `_setting_set` / `_settings_forget`, `mv_open_addon_keymap_json`; host table `settings_get` |
 | 0.25 | Screens and slots: `mv_slots_*` (contributions, info sections, screens, search, badges, status, events, items, surfaces, the local-search provider, thumbnails by path); host table v3 (`MV_ADDON_HOST_API` 3) and `mv.slots.1`; `"slots"` in the installed JSON |
-| 0.26 | Reserved for docs/design/25 PR 57 (script add-ons) |
+| 0.26 | Script add-ons: `mv_script_*`; `MV_ADDON_CONTRIBUTION_API` 3 (5 once PRs 58–59 joined) |
 | 0.27 | `mv_meta_parse_location` / `mv_location_input` — the Metadata pane's Location editor (#352) |
 
 ## Not built

@@ -1266,6 +1266,63 @@ data an add-on's manifest carries; both hosts render them natively. None reverse
   `mv_addon_settings_forget`, `mv_open_addon_keymap_json`; the open list carries `settings` and
   `keymaps`, the installed list `settings`. The Windows chrome hands a pack to native through
   the parked-text channel, raised from 16 KB to 128 KB so a 256-binding pack fits.
+**Other makers' code runs as Lua 5.4, vendored, in a sandbox per add-on (PR 57, 2026-10-11).**
+§9 A of [25](25-open-addons.md) with Lua, as the owner decided; the first spike held every limit,
+so WebAssembly was not taken up. What was decided while building it:
+
+- **Lua kept over WASM.** The sandbox holds its limits in about 1,000 lines of runtime: the
+  allocator caps memory, a count hook every 10,000 instructions enforces the instruction budget
+  and the wall clock, and a stop raised at every instruction afterwards cannot be swallowed by
+  `pcall` (each instruction after a caught error raises again). The escape attempts people know
+  (`string.dump`, binary `load`, the shared string metatable, `collectgarbage("stop")`, deep and
+  C recursion, `string.rep` bombs, coroutine loops) are tested; 563,234 fuzzed inputs found
+  nothing. WASM would have meant a runtime many times larger and a toolchain an author must
+  install for a first command.
+- **Vendored, not vcpkg.** The pinned baseline ships Lua 5.5, and the Windows triplet links ports
+  as DLLs; vendoring 5.4.8 (hash from vcpkg's own port) keeps it static on both platforms and
+  lets the binary carry no `io`, `os`, `package` or `debug` code at all. Built as C++, so a Lua
+  error is an exception and the runtime's RAII holds across it.
+- **Local changes to Lua**, marked in `third_party/lua/VENDOR.txt`: pattern matching, a plain
+  `string.find`, `table.move`, `table.insert`, `table.remove` and `table.sort` (every
+  comparison) check the watchdog's flag (they can run for minutes without one VM instruction,
+  so the count hook alone never fires), and `string.rep` of nothing returns at once instead of
+  looping 10^15 times. **Added 2026-10-12 by the PR 57 security review:** no `__gc` finalizer
+  runs (Lua calls one with hooks off, so a looping finalizer held the worker for good and hung
+  the destructor's join at `lua_close`), and `__mode` is ignored, so every table is strong
+  (ephemeron convergence is quadratic inside one atomic GC step, where nothing can stop it:
+  a 200,000-link chain held the worker past 4 s). Both are in `lgc.c`; scripts lose finalizers
+  and weak tables, which glue does not need. The plain find and the `insert` / `remove` /
+  sort-comparison checks came from the same review (each held the worker for good).
+- **The limits:** 64 MB of memory per add-on, 100 million VM instructions and 1 s of wall clock
+  per task (each command call, and the scripts' first run), a 4 MB C stack per worker (macOS
+  gives a secondary thread 512 KB, which Lua's 200 C levels can exceed), 256 tasks queued.
+  Measured on the Mac (arm64, Release, a loaded machine): a spin stops by the instruction budget
+  after about 0.75 s; an allocation bomb at the ceiling within the same bound; a C-side loop by
+  the watchdog's 1 s. The numbers are generous for glue (a loop over 10,000 file names is
+  thousandths of the budget) and small enough that a stuck add-on costs one core for a second.
+- **Over a limit the add-on stops** until Start again or the next launch, rather than retrying:
+  a script that ran away once will again, and a stop the person can see beats a core lost
+  quietly. A Lua error is not a stop: the call ends, Settings shows the last error.
+- **One thread per add-on, one watchdog thread for all,** asleep unless a task runs, so an idle
+  add-on costs nothing (§11). Scripts run in every window's process (they never write the
+  store), so their keys answer in every window.
+- **Permissions are bindings that are not installed.** Without `folder.read`, `mv.folder` is
+  `nil`, not a function that refuses. `thumbnails` is accepted and shown but adds nothing until
+  PR 58's thumbnail nodes; `files.write` / `metadata.write` are "needs a newer MediaViewer"
+  until PR 60; `network` is malformed, always.
+- **A script's key gives way.** A clash with the base app's row, or an earlier add-on's, in a
+  shared mode drops the add-on's key and keeps the row (Settings says why). First-party rows are
+  not held to it: Import supersedes its own built-in rows.
+- **Notices name their add-on.** `mv.notify` shows "Folder Count: 4 files in this folder" in the
+  bar's notice (four a second at most, 200 bytes), so a person never mistakes a stranger's line
+  for MediaViewer's.
+- **Windows: the shell's listener, not the completion queue.** The chrome drains the session's
+  completions; script notices and start / stop are the shell's (title notice, command table), so
+  the core calls a documented any-thread listener and the shell posts to its window (ABI 0.26).
+- **Not yet:** slots and screens for scripts (PRs 58–59 built them for native add-ons; script
+  bindings register through `add_script_binding`). `mv.settings.get` landed when PR 56 and PR 57
+  were integrated (2026-10-12): a binding over the same `settings_values::value_json` the host
+  table's `settings_get` reads.
 
 ---
 
@@ -1277,7 +1334,7 @@ data an add-on's manifest carries; both hosts render them natively. None reverse
 - Explorer property handler: per-user installs cannot register one.
 - Staged rollout (5 % → 25 % → 100 %): one channel per release goes to everyone.
 - Keymap import/export by the person (named layouts ship as keymap packs, PR 56); a user font file.
-- Open add-ons PRs 57 and 60: the Lua sandbox, files (screens and slots: PRs 58–59, 2026-10-11).
+- Open add-ons PR 60 (files), and screens and slots for other makers' scripts (the Lua sandbox, PR 57, and native screens and slots, PRs 58–59, are built).
 - Live Photo ContentIdentifier check: pairing is by name only.
 - `F2` rename and an `X` reject mark.
 - Reverse playback in the Video Editor.

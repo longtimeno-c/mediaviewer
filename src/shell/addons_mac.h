@@ -68,6 +68,21 @@ void MvSlotAddonsQuit();
 // now on the calling thread), for a screen's thumbnail and thumbnail_grid nodes.
 // "" when it has none (a clip, an unreadable file).
 std::string MvAddonsThumbnailPath(const std::string& path);
+// docs/design/25 PR 57: script add-ons. The viewer's folder model, for scripts
+// with folder.read (read through its own lock, on their workers); set once,
+// before MvAddonsStart. The item on screen comes from MvAddonsItemChanged.
+namespace mv::shell {
+class folder_model;
+}
+void MvAddonsSetFolderModel(const mv::shell::folder_model* folder);
+void MvScriptsItemChanged(const std::string& path);
+// A script add-on's command (shell/commands.h addon_command_row.script):
+// posted to its worker; never blocks. False when it could not be posted.
+bool MvScriptsRunCommand(const std::string& addon, const std::string& command,
+                         const std::string& payload_json);
+void MvScriptsQuit();
+// Defined in main_mac.mm: the command bar's one-line notice, from any thread.
+void MvAppShowNotice(const std::string& text);
 
 // Defined in main_mac.mm: an exact seek on the clip on screen, only if the
 // render thread has adopted it -- while the selected clip is still opening the

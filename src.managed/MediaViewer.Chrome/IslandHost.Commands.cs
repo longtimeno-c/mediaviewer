@@ -90,6 +90,9 @@ public static partial class IslandHost
                 });
             }
             RefreshSettingsKeys();
+            // docs/design/25 PR 57: a script add-on that starts or stops changes the
+            // table; Settings' From others re-reads the scripts' state (no file read).
+            RefreshOpenScripts();
             RefreshKeyTips();
             return 0;
         }

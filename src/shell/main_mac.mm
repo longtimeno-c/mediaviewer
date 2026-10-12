@@ -704,6 +704,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
                    count:(int32_t)folderCount;
 - (uint64_t)noticeGeneration;
 - (std::string)noticeText;
+- (void)noticeShow:(const std::string&)text;
 // PR 29 (docs/design/20): the Edit workspace, read and driven by the bridge.
 - (uint64_t)editGeneration;
 // Points the Edit workspace docks on the right (0 when closed): the canvas
@@ -792,6 +793,12 @@ extern "C" void mv_chrome_request_thumb(int32_t index) {
 extern "C" void mv_chrome_menu(MvMenuCmd cmd) {
   (void)mv::shell::crash::note_native_call();
   if (g_chrome_app) [g_chrome_app runMenuCmd:cmd];
+}
+void MvAppShowNotice(const std::string& text) {
+  std::string copy = text;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (g_chrome_app) [g_chrome_app noticeShow:copy];
+  });
 }
 void MvAppCommandsChanged() {
   if (!g_chrome_app) return;
@@ -2577,6 +2584,13 @@ static void MvAdoptNewDefaultViewerTypes() {
   return self;
 }
 - (void)applicationDidFinishLaunching:(NSNotification*)notification {
+  // docs/design/25 PR 57 verify rigs: open add-ons from a scratch store, never the
+  // profile's. Before anything lists the store.
+  if (const char* dir = std::getenv("MV_SCRIPT_SELFTEST"); dir && *dir) {
+    mv::io::set_open_addons_dir_override((std::string(dir) + "/store").c_str());
+  } else if (const char* store = std::getenv("MV_SCRIPT_STORE"); store && *store) {
+    mv::io::set_open_addons_dir_override(store);
+  }
   _folderCursor = -1;
   _siblingIndex = -1;
   (void)notification;
@@ -2594,6 +2608,7 @@ static void MvAdoptNewDefaultViewerTypes() {
     if (app && entry) [app openEntryPaths:@[ entry ] failed:nil];
   };
   if (std::getenv("MV_EDIT_SELFTEST_SOAK") == nullptr) {
+    MvAddonsSetFolderModel(&_folder);  // docs/design/25 PR 57: scripts with folder.read
     if (MvClaimAddonHost()) {
       MvAddonsStart(open_from_addon, nullptr);
       // docs/design/23: Final Cut Pro search stays as Settings left it (background, later).
@@ -2971,6 +2986,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   [self scheduleChromeCrashTest];
   [self scheduleEditSelfTest];
   [self scheduleAddonSelfTest];
+  [self scheduleScriptSelfTest];
 
   _snap.window_visible = YES;
   _snap.window_active = YES;
@@ -7872,6 +7888,105 @@ static std::string MvSelfTestPageSummary(const char* addon) {
                  dispatch_get_main_queue(), ^{
                    [weakSelf addonSelfTestStep:step + 1 dir:dir];
                  });
+}
+
+// ---- docs/design/25 PR 57: the script add-ons' verify rig ----------------------------
+
+// MV_SCRIPT_SELFTEST=<folder>. Inert unless set. The runner installs two add-ons
+// into <folder>/store first (tools/addon-sdk, mv_addon_verify --open): the
+// example Folder Count (Count files on Cmd+Shift+K, with folder.read) and a
+// spinner whose Spin command (Cmd+Shift+J) never returns. The rig presses each
+// key as a person would -- a key event through the app's own event queue, so
+// the router, the command table and the script runtime all run -- and writes
+// the notice the first one shows, the scripts' state after the second, and
+// the window as PNGs into <folder>/state.txt, then quits.
+- (void)scheduleScriptSelfTest {
+  const char* dir = std::getenv("MV_SCRIPT_SELFTEST");
+  if (dir == nullptr || *dir == '\0') return;
+  NSString* out = [NSString stringWithUTF8String:dir];
+  [[NSFileManager defaultManager] removeItemAtPath:[out stringByAppendingPathComponent:@"state.txt"] error:nil];
+  MV_LOG_WARN("scripts: MV_SCRIPT_SELFTEST armed; the app will quit when it is done");
+  [self scriptSelfTestStep:0 dir:out];
+}
+
+- (void)scriptSelfTestKey:(unsigned short)keyCode chars:(NSString*)chars {
+  const NSEventModifierFlags mods = NSEventModifierFlagCommand | NSEventModifierFlagShift;
+  for (NSEventType type : {NSEventTypeKeyDown, NSEventTypeKeyUp}) {
+    NSEvent* e = [NSEvent keyEventWithType:type
+                                  location:NSZeroPoint
+                             modifierFlags:mods
+                                 timestamp:[NSProcessInfo processInfo].systemUptime
+                              windowNumber:self.window.windowNumber
+                                   context:nil
+                                characters:chars.uppercaseString
+               charactersIgnoringModifiers:chars
+                                 isARepeat:NO
+                                   keyCode:keyCode];
+    [NSApp postEvent:e atStart:NO];
+  }
+}
+
+- (void)scriptSelfTestStep:(int)step dir:(NSString*)dir {
+  BOOL done = NO;
+  double next = 1.5;
+  switch (step) {
+    case 0: {
+      // Wait for the scripts' rows to reach the live table (a worker lists and
+      // verifies the store after launch).
+      int rows = 0;
+      for (int i = 0; i < mv::shell::kAddonCommandSlots; ++i) {
+        const auto* row = mv::shell::addon_command(
+            static_cast<mv::shell::command_id>(static_cast<int>(mv::shell::command_id::addon_cmd_0) + i));
+        if (row && row->script) ++rows;
+      }
+      static int waited = 0;
+      // ...and for the folder handed on the command line to list.
+      if ((rows < 2 || _folder.item_count() == 0) && ++waited < 40) {
+        [self performSelector:@selector(scriptSelfTestRetry:) withObject:dir afterDelay:0.25];
+        return;
+      }
+      [self editSelfTestLine:[NSString stringWithFormat:@"s0 script_rows=%d folder_items=%zu\n", rows,
+                                                    _folder.item_count()]
+                     dir:dir];
+      [self addonSelfTestSnap:@"s0-loaded" dir:dir];
+      [self scriptSelfTestKey:40 chars:@"k"];  // Count files
+      next = 1.0;
+      break;
+    }
+    case 1: {
+      [self editSelfTestLine:[NSString stringWithFormat:@"s1 notice=%s\n", _noticeText.c_str()] dir:dir];
+      [self addonSelfTestSnap:@"s1-notice" dir:dir];
+      [self scriptSelfTestKey:38 chars:@"j"];  // Spin: never returns
+      next = 2.5;  // past the 1 s watchdog bound, and the viewer still answers
+      break;
+    }
+    case 2: {
+      char buf[16384] = {};
+      (void)mv_open_addons_scripts(buf, static_cast<int32_t>(sizeof(buf)));
+      [self editSelfTestLine:[NSString stringWithFormat:@"s2 scripts=%s\n", buf] dir:dir];
+      [self setSettingsVisible:YES];
+      [MVChromeHost revealOpenAddons];
+      next = 2.0;
+      break;
+    }
+    case 3: [self addonSelfTestSnap:@"s3-settings" dir:dir];
+      done = YES;
+      break;
+    default: done = YES; break;
+  }
+  if (done) {
+    [NSApp terminate:nil];
+    return;
+  }
+  __weak MvLabApp* weakSelf = self;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(next * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+                   [weakSelf scriptSelfTestStep:step + 1 dir:dir];
+                 });
+}
+
+- (void)scriptSelfTestRetry:(NSString*)dir {
+  [self scriptSelfTestStep:0 dir:dir];
 }
 
 // ---- PR 29: the Edit workspace's verify rig ------------------------------------

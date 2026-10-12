@@ -35,6 +35,7 @@ old PR 15 is PR 8; old AI-search PRs 21–25 are 20–24. PR 25 is unused.
 | 49 | Network-speed copy engine ([24](24-transfer.md)) | both |
 | 54 | Find duplicates in the Import add-on ([18](18-import.md#find-duplicates-pr-54)) | both |
 | 55 | Open add-ons: packages and themes ([25](25-open-addons.md)) | both |
+| 57 | Open add-ons: code, the Lua sandbox and commands ([25](25-open-addons.md)) | both (Windows half compiled by CI, not yet run) |
 
 Local search inside Final Cut Pro and FCPXML export (issue #71) has no PR number:
 [23](23-nle-search.md).
@@ -544,6 +545,25 @@ resolution within noise with the add-on installed and its theme on; 0 presents i
 present-loop gates; with none installed, no folder is created and nothing of an add-on is read
 at start. Where each part stands:
 [25 "Implementation notes"](25-open-addons.md#implementation-notes-pr-55-2026-09-29).
+
+## PR 57 — Open add-ons: code
+
+Other makers' add-ons run code as Lua 5.4 scripts in a sandbox (owner call 1, 2026-10-03): one
+state and one worker per add-on, never the UI, render or decode threads; 64 MB, 100 million
+instructions and 1 s per task, a count hook and a watchdog; no `io` / `os` / `package` / `debug`,
+no bytecode; permissions (`folder.read`, `thumbnails`, `selection`) each a line in the consent
+sheet and absent from the script's environment unless granted; no network permission and no
+socket call. Commands (contribution API 3) take the `addon_cmd_*` slots and give way to the base
+app's keys. Over a limit the add-on stops and Settings says which limit and why, with Start
+again. Code: `third_party/lua` (vendored, static), `src/addon/script_*`, `src/abi/script_abi.cpp`
+(ABI 0.26), `shell/addons_mac.mm`, `shell/main.cpp`, `OpenAddons.swift`,
+`IslandHost.OpenAddons.cs`; the SDK's `init --script` and `examples/addons/folder-count`.
+Design, limits and measurements: [25](25-open-addons.md#implementation-notes-pr-57-2026-10-11).
+
+**Verify (both platforms):** a script command runs from its key; a runaway loop and an
+allocation bomb each stop the add-on, not the viewer, within the watchdog's bound; without
+`folder.read` the folder API is absent; both present-loop gates hold while a script spins.
+Where each part stands: [25 "Implementation notes (PR 57)"](25-open-addons.md#implementation-notes-pr-57-2026-10-11).
 
 ## Not built
 

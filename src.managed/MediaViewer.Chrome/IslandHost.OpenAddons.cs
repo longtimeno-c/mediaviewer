@@ -42,6 +42,12 @@ public static partial class IslandHost
             Uri.TryCreate(PublisherUrl, UriKind.Absolute, out Uri? u) ? u.Host : "";
     }
 
+    /// <summary>docs/design/25 PR 57: a script add-on as the core runs it.</summary>
+    private sealed record ScriptCommand(string Id, string Name, string Key, string Note);
+
+    private sealed record ScriptState(string State, string Stop, string Message, string LastError,
+        IReadOnlyList<ScriptCommand> Commands);
+
     /// <summary>A package that has been looked at and is waiting for an answer.</summary>
     private sealed record OpenOffer(string Path, bool Temporary, bool Ok, string Message, string Sha256,
         string Relation, string InstalledVersion, OpenAddon? Addon);
@@ -49,6 +55,7 @@ public static partial class IslandHost
     private const long OpenAddonMaxBytes = 64L << 20;
 
     private static List<OpenAddon> _openAddons = new();
+    private static Dictionary<string, ScriptState> _openScripts = new();
     private static OpenOffer? _openOffer;
     private static bool _openBusy;
     private static bool _openEnteringLink;
@@ -159,13 +166,81 @@ public static partial class IslandHost
                 if (addon.Settings && addon.State == "ok" && ReadSettingsPage(addon.Id) is AddonSettingsPage page)
                     pages[addon.Id] = page;
             }
+            Dictionary<string, ScriptState> scripts = ReadScripts();
             DispatcherQueueControllerTryEnqueue(() =>
             {
                 _openAddons = list;
                 _openPages = pages;
+                _openScripts = scripts;
                 RefreshOpenAddonRow();
                 RefreshThemeRow();
                 RefreshKeymapRow();
+            });
+        });
+    }
+
+    /// <summary>The scripts' state only (no file is read): after a start or a stop
+    /// the core made on its own.</summary>
+    internal static void RefreshOpenScripts()
+    {
+        if (_openRow is null) return;
+        _ = Task.Run(() =>
+        {
+            Dictionary<string, ScriptState> scripts = ReadScripts();
+            DispatcherQueueControllerTryEnqueue(() =>
+            {
+                _openScripts = scripts;
+                RefreshOpenAddonRow();
+            });
+        });
+    }
+
+    private static Dictionary<string, ScriptState> ReadScripts()
+    {
+        var scripts = new Dictionary<string, ScriptState>();
+        try
+        {
+            using JsonDocument doc = JsonDocument.Parse(AddonNative.ScriptStatus());
+            foreach (JsonElement e in doc.RootElement.EnumerateArray())
+            {
+                var commands = new List<ScriptCommand>();
+                if (e.TryGetProperty("commands", out JsonElement cs) && cs.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (JsonElement c in cs.EnumerateArray())
+                        commands.Add(new ScriptCommand(Str(c, "id"), Str(c, "name"), Str(c, "key"), Str(c, "note")));
+                }
+                scripts[Str(e, "id")] = new ScriptState(Str(e, "state"), Str(e, "stop"), Str(e, "message"),
+                    Str(e, "last_error"), commands);
+            }
+        }
+        catch (Exception ex) when (ex is MediaViewerException or JsonException
+                                       or DllNotFoundException or EntryPointNotFoundException)
+        {
+            System.Diagnostics.Debug.WriteLine(ex.GetType().Name);
+        }
+        return scripts;
+    }
+
+    private static void RestartOpenScript(OpenAddon addon)
+    {
+        _openMessage = $"{addon.Name} is starting again.";
+        RefreshOpenAddonRow();
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                AddonNative.ScriptRestart(addon.Id);
+            }
+            catch (Exception ex) when (ex is MediaViewerException or DllNotFoundException
+                                           or EntryPointNotFoundException)
+            {
+                System.Diagnostics.Debug.WriteLine(ex.GetType().Name);
+            }
+            Dictionary<string, ScriptState> scripts = ReadScripts();
+            DispatcherQueueControllerTryEnqueue(() =>
+            {
+                _openScripts = scripts;
+                RefreshOpenAddonRow();
             });
         });
     }
@@ -249,7 +324,7 @@ public static partial class IslandHost
     {
         view.Children.Add(Label("From others").WithForeground(Brush(Title)));
         view.Children.Add(Note(
-            "Add-ons made by other people, installed from a file or a link. MediaViewer does not check them or who made them. The ones it installs are data, such as themes: they cannot run code, read your files, or use the network."));
+            "Add-ons made by other people, installed from a file or a link. MediaViewer does not check them or who made them. A theme is data. An add-on with a script runs it inside MediaViewer, stopped if it uses too much memory or time, with only the permissions it showed when you installed it. No add-on can use the network."));
         _openRow = new StackPanel { Spacing = Space(8) };
         view.Children.Add(_openRow);
         RefreshOpenAddonRow();
@@ -352,6 +427,27 @@ public static partial class IslandHost
             entry.Children.Add(Note("Needs a newer MediaViewer, so it is not in use."));
         else if (addon.State != "ok")
             entry.Children.Add(Note("This copy did not pass verification, so it is not in use."));
+        ScriptState? script = addon.State == "ok" && _openScripts.TryGetValue(addon.Id, out ScriptState? s)
+            ? s : null;
+        if (script is not null)
+        {
+            // docs/design/25 PR 57: running, or stopped with the limit and why.
+            entry.Children.Add(script.State switch
+            {
+                "running" => Note("Running."),
+                "starting" => Note("Starting…"),
+                _ => Note($"Stopped. {script.Message}").WithForeground(Brush(Title)),
+            });
+            if (script.LastError.Length > 0 && script.State != "stopped")
+                entry.Children.Add(Note($"Its last error: {script.LastError}"));
+            foreach (ScriptCommand c in script.Commands)
+            {
+                string keys = c.Key.Length == 0 ? "no key" : c.Key;
+                entry.Children.Add(Note(c.Note.Length == 0
+                    ? $"Command: {c.Name} ({keys})"
+                    : $"Command: {c.Name}. {c.Note}."));
+            }
+        }
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8) };
         if (_openConfirmRemove == addon.Folder)
         {
@@ -382,6 +478,12 @@ public static partial class IslandHost
         }
         else
         {
+            if (script is not null && script.State == "stopped")
+            {
+                Button again = SettingsButton("Start again", () => RestartOpenScript(addon));
+                ToolTipService.SetToolTip(again, $"Runs {addon.Name}'s script again from the start, with the same limits.");
+                buttons.Children.Add(again);
+            }
             if (addon.UpdateUrl.Length > 0 && addon.State != "invalid")
             {
                 Button check = SettingsButton("Check for update", () => CheckOpenAddonUpdate(addon));

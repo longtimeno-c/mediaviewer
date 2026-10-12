@@ -69,6 +69,7 @@ $table = [ordered]@{
     # The place database loader (docs/design/06 "Place"); its seed is the test blob.
     geo         = @{ Seeds = @(); SeedDirs = @('tests\data\geo');     MaxLen = 131072 }
     addon_contributions = @{ Seeds = @('addon');                        MaxLen = 16384 }
+    script      = @{ Seeds = @('script');                               MaxLen = 16384 }
 }
 
 if ($Harness.Count -eq 1 -and $Harness[0] -match ',') { $Harness = $Harness[0] -split ',' }

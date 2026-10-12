@@ -471,6 +471,8 @@ find_package(unofficial-sodium CONFIG REQUIRED)
 set(MV_SQLITE_TARGET unofficial::sqlite3::sqlite3)
 set(MV_SODIUM_TARGET unofficial-sodium::sodium)
 include("${CMAKE_CURRENT_LIST_DIR}/import.cmake")
+# docs/design/25 §9 A (PR 57): Lua and the script runtime.
+include("${CMAKE_CURRENT_LIST_DIR}/script.cmake")
 
 # Milestone H: host table v2's pixels (src/abi/addon_media.h) over the still
 # pipeline, the clip sampler and the JPEG-512 cache. In the app; knows no
@@ -560,7 +562,7 @@ add_library(mv_shell STATIC
   src/shell/os_integration.h
 )
 target_include_directories(mv_shell PUBLIC src/abi/include)
-target_link_libraries(mv_shell PUBLIC mv_core mv_io mv_meta mv_edit mv_addon mv_addon_media mv_clip
+target_link_libraries(mv_shell PUBLIC mv_core mv_io mv_meta mv_edit mv_addon mv_script mv_addon_media mv_clip
   PRIVATE ${MV_SQLITE_TARGET})
 add_library(mv::shell ALIAS mv_shell)
 
@@ -996,6 +998,18 @@ if(MV_BUILD_TESTS)
   add_dependencies(mv_import_tests mv_import mv_slots_test_addon)
   catch_discover_tests(mv_import_tests TEST_PREFIX "import_" PROPERTIES ENVIRONMENT "TZ=UTC"
     SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT ${MV_TEST_TIMEOUT})
+
+  # docs/design/25 §9 A (PR 57): the script sandbox, its limits, and script
+  # add-ons as packages. The same sources run on Linux CI and the Mac.
+  add_executable(mv_script_tests
+    tests/test_script_runtime.cpp
+    tests/test_script_addons.cpp
+  )
+  target_link_libraries(mv_script_tests PRIVATE mv_script mv_lua mv_addon mv_io
+    unofficial-sodium::sodium Catch2::Catch2WithMain)
+  target_include_directories(mv_script_tests PRIVATE src tests)
+  catch_discover_tests(mv_script_tests TEST_PREFIX "script_"
+    PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT ${MV_TEST_TIMEOUT})
 
   # docs/design/25: the add-on SDK (tools/addon-sdk) packs, and the app's own reader
   # says what it makes of each package, so the two cannot drift.

@@ -72,8 +72,8 @@ std::string refusal_text(rejection why, const std::string& detail, const open_ma
     case rejection::unsafe_path:
       return "This add-on names a file outside its own folder.";
     case rejection::code_not_allowed:
-      return name + " contains code. MediaViewer installs add-ons from other makers only when "
-                    "they are data, such as themes.";
+      return name + " contains native code. MediaViewer runs code from other makers only as "
+                    "a script, inside its limits.";
     case rejection::needs_update:
       return name + " needs a newer MediaViewer.";
     case rejection::other_publisher:
@@ -111,14 +111,39 @@ void write_abilities(json::writer& w, const open_manifest& m) {
   if (!m.themes.empty()) add(counted(m.themes.size(), "theme", "themes"));
   if (!m.settings.empty()) add("a settings page");
   if (!m.keymaps.empty()) add(counted(m.keymaps.size(), "key layout", "key layouts"));
-  w.key("adds").string(adds.empty() ? std::string("Nothing this MediaViewer uses") : adds);
+  if (!m.commands.empty()) add(counted(m.commands.size(), "command", "commands"));
+  if (adds.empty()) adds = m.runs_code() ? "A script" : "Nothing this MediaViewer uses";
+  w.key("adds").string(adds);
   w.key("can").begin_array();
   if (!m.themes.empty()) w.string("Change how MediaViewer's bars, panes and text look");
   if (!m.settings.empty()) w.string("Add a page of its own settings to Settings");
   if (!m.keymaps.empty()) w.string("Offer other keys for MediaViewer's commands, when you choose one");
+  // One line per thing the script may reach, from the manifest (docs/design/25
+  // §5: computed, never the publisher's words).
+  if (m.runs_code()) {
+    w.string("Run its own script inside MediaViewer, stopped if it uses too much memory or time");
+  }
+  if (!m.commands.empty()) w.string("Add commands you can run from the keyboard");
+  if (m.permissions & perm_folder_read) w.string("See the names of the files in the open folder");
+  if (m.permissions & perm_selection) {
+    w.string("See which file is on screen, and the marked files when you run its command");
+  }
+  if (m.permissions & perm_thumbnails) w.string("Show thumbnails of your photos and videos");
   w.end_array();
-  // Contribution API 1-2 is data: true of every add-on this host installs.
-  w.key("cannot").string("Run code, read your files, or use the network");
+  // What it cannot do. Nothing grants the network or a change to a file under
+  // API 3, so those lines are always here.
+  std::vector<std::string> cannot;
+  if (!m.runs_code()) cannot.emplace_back("run code");
+  if (!(m.permissions & perm_folder_read)) cannot.emplace_back("read your files");
+  if (m.runs_code()) cannot.emplace_back("change your files");
+  cannot.emplace_back("use the network");
+  std::string line;
+  for (std::size_t i = 0; i < cannot.size(); ++i) {
+    if (i > 0) line += cannot.size() > 2 ? (i + 1 == cannot.size() ? ", or " : ", ") : " or ";
+    line += cannot[i];
+  }
+  line[0] = static_cast<char>(line[0] - 'a' + 'A');
+  w.key("cannot").string(line);
 }
 
 void write_addon(json::writer& w, const open_manifest& m) {
@@ -150,6 +175,19 @@ void write_addon(json::writer& w, const open_manifest& m) {
   w.key("keymaps").begin_array();
   for (const keymap_pack& k : m.keymaps) {
     w.begin_object().key("id").string(k.id).key("name").string(k.name).end_object();
+  }
+  w.end_array();
+  // API 3: code.
+  w.key("script").boolean(m.runs_code());
+  w.key("permissions").begin_array();
+  for (std::uint32_t bit = 1; bit <= kPermissionsAll; bit <<= 1) {
+    if (m.permissions & bit) w.string(permission_name(bit));
+  }
+  w.end_array();
+  w.key("commands").begin_array();
+  for (const script_command& c : m.commands) {
+    w.begin_object().key("id").string(c.id).key("name").string(c.name).key("key").string(c.key)
+        .end_object();
   }
   w.end_array();
 }

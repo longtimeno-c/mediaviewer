@@ -347,10 +347,12 @@ TEST_CASE("manifest schema 2: ids, text, links, APIs", "[open-addon][manifest]")
   }
 }
 
-TEST_CASE("a package that names code is refused, whatever API it claims",
+TEST_CASE("a package that names native code is refused, whatever API it claims",
           "[open-addon][manifest]") {
   publisher_key k;
-  for (const char* key : {"native", "chrome", "scripts", "main"}) {
+  // Scripts are code a host from PR 57 on runs (test_script_addons.cpp);
+  // native code, by any name, is refused by every host.
+  for (const char* key : {"native", "chrome", "main"}) {
     for (const int api_max : {1, 9}) {
       INFO(key << " api.max " << api_max);
       manifest_options top;

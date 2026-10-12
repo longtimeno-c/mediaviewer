@@ -75,6 +75,11 @@ struct manifest_options {
   bool themes = true;             // list themes/dusk.json as a theme
   // PR 56: points written as raw JSON under "contributes" ({"settings", "{...}"}).
   std::vector<std::pair<std::string, std::string>> contributes_raw;
+  // API 3 (PR 57): raw JSON for "scripts", "permissions" and contributes.commands;
+  // empty leaves the key out.
+  std::string scripts_json;
+  std::string permissions_json;
+  std::string commands_json;
 };
 
 inline std::string open_manifest_json(const publisher_key& k, const std::vector<packed_file>& files,
@@ -116,8 +121,11 @@ inline std::string open_manifest_json(const publisher_key& k, const std::vector<
   }
   if (!o.extra_contributes.empty()) w.key(o.extra_contributes).boolean(true);
   for (const auto& [key, raw] : o.contributes_raw) w.key(key).raw(raw);
+  if (!o.commands_json.empty()) w.key("commands").raw(o.commands_json);
   w.end_object();
   if (!o.extra_key.empty()) w.key(o.extra_key).boolean(true);
+  if (!o.scripts_json.empty()) w.key("scripts").raw(o.scripts_json);
+  if (!o.permissions_json.empty()) w.key("permissions").raw(o.permissions_json);
   w.end_object();
   return w.take();
 }

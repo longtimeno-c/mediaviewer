@@ -546,7 +546,7 @@ struct AddonsSection: View {
       // slots (Places), each with Remove; absent when none is installed.
       SlotAddonsSection().padding(.top, MVTheme.space(16))
       // docs/design/25: add-ons from other makers, under their own heading.
-      OpenAddonsSection().padding(.top, MVTheme.space(16))
+      OpenAddonsSection().padding(.top, MVTheme.space(16)).id(OpenAddonStore.sectionAnchor)
     }
     // Opening Settings asks the channel, whatever the automatic-check switch
     // says: the person is looking at what can be installed.

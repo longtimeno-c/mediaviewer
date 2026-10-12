@@ -55,6 +55,7 @@ added by the PR that adds the dependency.
 | [BouncyCastle.Cryptography](https://github.com/bcgit/bc-csharp) | 2.7.0 | MIT (Bouncy Castle) | Managed assembly | Ed25519 verification of the signed update manifest (PR 8). The signature check runs before anything from the channel is trusted. |
 | [BLAKE3](https://github.com/BLAKE3-team/BLAKE3) | 1.8.7 | **CC0-1.0** (dual CC0-1.0 OR Apache-2.0; taken under CC0) | vcpkg (Windows DLL, macOS static) | Content hashes for verified copies: F8 across volumes and the Import add-on (Milestone G, docs/design/18). CC0 was chosen when the app was GPL-2.0-or-later, where Apache-2.0 alone does not combine; the choice stands. |
 | [libsodium](https://libsodium.org) | 1.0.22 | ISC | vcpkg (Windows DLL, macOS static) | Ed25519 check of signed add-on manifests and SHA-256 of add-on files (docs/design/18 "Signed, verified, then loaded"). |
+| [Lua](https://www.lua.org) | 5.4.8 | MIT | **Static**, vendored in `third_party/lua` (both platforms) | The sandboxed runtime for add-ons from other makers (docs/design/25 §9 A, PR 57). The interpreter only: no JIT exists in Lua, and the `io`, `os`, `package` and `debug` libraries and the stand-alone tools are not compiled in. Small local changes for the sandbox's limits (the watchdog's checks; no finalizers or weak tables) are listed in `third_party/lua/VENDOR.txt`. Licence: `third_party/lua/LICENSE`. |
 
 ## macOS (MediaViewer.app, PR 20)
 

@@ -383,6 +383,19 @@ expected open_store::remove(std::string_view id) const {
   return io::remove_tree(addon_dir);
 }
 
+result<std::string> open_store::verified_file(const open_installed& installed,
+                                              std::string_view path,
+                                              std::uint64_t max_bytes) const {
+  const auto f = std::find_if(installed.m.files.begin(), installed.m.files.end(),
+                              [&](const manifest_file& mf) { return mf.path == path; });
+  if (f == installed.m.files.end() || f->size > max_bytes || installed.dir.empty()) {
+    return err(status::invalid_arg);
+  }
+  MV_TRY(auto bytes, read_small(io::join_path(installed.dir, f->path), max_bytes));
+  if (bytes.size() != f->size || sha256_hex(bytes) != f->sha256) return err(status::corrupt);
+  return std::string(text_of(bytes));
+}
+
 result<std::string> open_store::theme_json(std::string_view addon_id,
                                            std::string_view theme_id) const {
   MV_TRY(const open_installed addon, find(addon_id));

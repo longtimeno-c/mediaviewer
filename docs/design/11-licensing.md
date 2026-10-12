@@ -71,6 +71,7 @@ Position: bundle decoders, never bundle a software HEVC or AAC encoder.
 | Crashpad (+ mini_chromium) | Apache-2.0 (BSD-3) | Client static; `crashpad_handler` a separate program |
 | BLAKE3 | CC0-1.0 (dual CC0 / Apache-2.0, taken under CC0) | DLL / static |
 | libsodium | ISC | DLL / static |
+| Lua 5.4.8 | MIT | **Static, vendored** in `third_party/lua` (both platforms): the add-on script runtime ([25 §9](25-open-addons.md#9-code-how-a-strangers-add-on-runs)). Interpreter only; no JIT exists in Lua, and `io` / `os` / `package` / `debug` are not compiled in. `tools/licence-check.ps1` fails if one of those files, or a `luajit` / `luasocket`-style port, appears |
 | Dear ImGui | MIT | Static; present lab and F3 overlay only |
 | Catch2 | BSL-1.0 | Tests only |
 | Velopack, BouncyCastle.Cryptography | MIT | Managed assemblies (Windows updater) |

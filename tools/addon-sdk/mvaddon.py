@@ -5,6 +5,7 @@
 
     mvaddon.py keygen --out publisher.key
     mvaddon.py init my-addon --id you.my-addon --name "My Add-on" --publisher "You"
+    mvaddon.py init my-tool --script --id you.my-tool --name "My Tool" --publisher "You"
     mvaddon.py pack my-addon --key publisher.key --out dist/
     mvaddon.py check dist/you.my-addon-1.0.0.mvaddon
 
@@ -34,7 +35,9 @@ import sys
 import zlib
 
 SCHEMA = 2
-API = 2  # the contribution API this SDK writes for: themes (1); settings, keymaps, shape (2)
+API = 3  # the contribution API this SDK knows: 1 themes; 2 settings, keymaps, shape; 3 scripts, permissions, commands
+THEME_API = 1  # what a theme-only add-on claims, so it installs on every MediaViewer with themes
+SCRIPT_API = 3  # the API that introduced code (PR 57)
 PACKAGE_MAX_BYTES = 64 << 20
 PACKAGE_MAX_ENTRIES = 2048
 MANIFEST_MAX_BYTES = 256 << 10
@@ -55,6 +58,20 @@ CONTRIBUTION_POINTS = {"themes": 1, "settings": 2, "keymaps": 2, "commands": 3, 
 THEME_SCHEMA = 2  # 2 adds "shape"
 SHAPE_RANGES = {"radius": (0.0, 2.0), "density": (0.75, 1.25), "type_scale": (0.85, 1.25)}
 CODE_KEYS = {"native", "chrome", "scripts", "main"}
+                  "update_url", "api", "installed_size", "files", "contributes",
+                  "scripts", "permissions"}
+# Native code, by any name: refused by every MediaViewer. Other makers' code
+# runs only as a Lua script (docs/design/25 §9).
+CODE_KEYS = {"native", "chrome", "main"}
+PERMISSIONS = ("folder.read", "thumbnails", "selection")  # what a script may ask for
+LATER_PERMISSIONS = {"files.write", "metadata.write"}       # a newer MediaViewer's (PR 60)
+MAX_SCRIPTS = 16
+MAX_SCRIPT_BYTES = 1 << 20
+MAX_SCRIPTS_TOTAL = 4 << 20
+MAX_COMMANDS = 32
+COMMAND_FIELDS = {"id", "name", "key", "run", "modes", "payload"}
+COMMAND_MODES = {"viewing", "video", "browse", "all"}
+COMMAND_PAYLOADS = {"none", "marks", "marked_or_current", "screen"}
 DEVICE_NAMES = {"con", "prn", "aux", "nul"}
 
 
@@ -588,6 +605,44 @@ def check_manifest(data: bytes, signature, api: int = API) -> dict:
     strict = high <= api
     if strict and any(k not in TOP_LEVEL_KEYS for k in doc):
         raise Refused("malformed", "unknown key")
+
+    # Code (API 3): Lua text files of the package, run in the order listed.
+    scripts = []
+    if "scripts" in doc:
+        if api < SCRIPT_API:
+            raise Refused("code_not_allowed")
+        value = doc["scripts"]
+        if high < SCRIPT_API or not isinstance(value, list) or not value or len(value) > MAX_SCRIPTS:
+            raise Refused("malformed", "scripts")
+        sizes = {f["path"]: f["size"] for f in files}
+        for path in value:
+            if not isinstance(path, str) or not path.endswith(".lua"):
+                raise Refused("malformed", "scripts")
+            if path not in sizes:
+                raise Refused("unsafe_path", path)
+            if sizes[path] > MAX_SCRIPT_BYTES or path in scripts:
+                raise Refused("malformed", "scripts")
+            scripts.append(path)
+        if sum(sizes[p] for p in scripts) > MAX_SCRIPTS_TOTAL:
+            raise Refused("malformed", "scripts")
+    granted = set()
+    if "permissions" in doc:
+        value = doc["permissions"]
+        if not scripts or not isinstance(value, list) or len(value) > 16:
+            raise Refused("malformed", "permissions")
+        for name in value:
+            if not isinstance(name, str):
+                raise Refused("malformed", "permissions")
+            if name not in PERMISSIONS:
+                if name == "network":  # there is no network permission, ever
+                    raise Refused("malformed", "permissions")
+                if name in LATER_PERMISSIONS or not strict:
+                    raise Refused("needs_update")
+                raise Refused("malformed", "permissions")
+            if name in granted:
+                raise Refused("malformed", "permissions")
+            granted.add(name)
+
     for name, value in (contributes or {}).items():
         if name == "themes":
             if not isinstance(value, list) or not value or len(value) > 32:
@@ -608,6 +663,31 @@ def check_manifest(data: bytes, signature, api: int = API) -> dict:
             if high < CONTRIBUTION_POINTS[name]:
                 raise Refused("malformed", f"{name} needs \"api\" max {CONTRIBUTION_POINTS[name]}")
             (check_settings if name == "settings" else check_keymaps)(value)
+        elif name == "commands" and api >= SCRIPT_API:
+            if not scripts or not isinstance(value, list) or not value or len(value) > MAX_COMMANDS:
+                raise Refused("malformed", "commands")
+            ids = set()
+            for c in value:
+                if not isinstance(c, dict):
+                    raise Refused("malformed", "commands")
+                cid, cname, run = c.get("id"), c.get("name"), c.get("run")
+                if (not isinstance(cid, str) or not isinstance(cname, str) or not isinstance(run, str)
+                        or len(cid) > 32 or not _id_part(cid) or not display_text(cname, 64)
+                        or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", run) or cid in ids):
+                    raise Refused("malformed", "commands")
+                if strict and any(k not in COMMAND_FIELDS for k in c):
+                    raise Refused("malformed", "commands")
+                key = c.get("key", "")
+                if not isinstance(key, str) or len(key) > 32 or any(not 0x20 < ord(ch) < 0x7F for ch in key):
+                    raise Refused("malformed", "commands")
+                if c.get("modes", "viewing") not in COMMAND_MODES:
+                    raise Refused("malformed", "commands")
+                payload = c.get("payload", "none")
+                if payload not in COMMAND_PAYLOADS:
+                    raise Refused("malformed", "commands")
+                if payload != "none" and "selection" not in granted:
+                    raise Refused("malformed", "commands: paths ride along only with selection")
+                ids.add(cid)
         elif strict:
             # A point this API does not serve, in a manifest that claims no later one.
             raise Refused("malformed", "unknown key")
@@ -774,6 +854,17 @@ STARTER_THEME = {
 }
 
 
+STARTER_SCRIPT = '''-- Runs inside MediaViewer's sandbox: Lua 5.4, no files or network beyond the
+-- permissions in addon.json, and stopped if one call uses too much memory or time.
+-- docs/ADDONS.md, "Scripts".
+
+function count_files()
+  local n = mv.folder.count()
+  mv.notify(n == 1 and "1 file in this folder" or (n .. " files in this folder"))
+end
+'''
+
+
 def cmd_init(args) -> int:
     root = Path(args.dir)
     if root.exists() and any(root.iterdir()):
@@ -783,13 +874,30 @@ def cmd_init(args) -> int:
         print("The id is publisher.name: lowercase letters, digits and hyphens, with a dot "
               "(you.my-addon).", file=sys.stderr)
         return 1
+    if args.script:
+        root.mkdir(parents=True, exist_ok=True)
+        source = {
+            "id": args.id, "name": args.name, "version": "1.0.0",
+            "description": "", "licence": "MIT",
+            "publisher": {"name": args.publisher, "url": ""},
+            "update_url": "",
+            "api": {"min": SCRIPT_API, "max": SCRIPT_API},
+            "scripts": ["main.lua"],
+            "permissions": ["folder.read"],
+            "contributes": {"commands": [{"id": "count-files", "name": "Count files",
+                                          "key": "Ctrl+Shift+K", "run": "count_files"}]},
+        }
+        (root / "addon.json").write_text(json.dumps(source, indent=2, ensure_ascii=False) + "\n")
+        (root / "main.lua").write_text(STARTER_SCRIPT)
+        print(f"Started {root}. Edit addon.json and main.lua, then pack.")
+        return 0
     (root / "themes").mkdir(parents=True)
     source = {
         "id": args.id, "name": args.name, "version": "1.0.0",
         "description": "", "licence": "MIT",
         "publisher": {"name": args.publisher, "url": ""},
         "update_url": "",
-        "api": {"min": API, "max": API},
+        "api": {"min": THEME_API, "max": THEME_API},
         "contributes": {"themes": [{"id": "example", "name": args.name,
                                     "path": "themes/example.json"}]},
     }
@@ -839,6 +947,19 @@ def build_package(root: Path, seed: bytes):
     manifest["files"] = [{"path": rel, "sha256": hashlib.sha256(data).hexdigest(),
                           "size": len(data), "licence": licences.get(rel, default_licence)}
                          for rel, data in files]
+    # A script is Lua source the app loads as text: a compiled chunk is refused
+    # when it runs ("attempt to load a binary chunk"), so refuse it here first.
+    data_of = dict(files)
+    for path in source.get("scripts", []) if isinstance(source.get("scripts"), list) else []:
+        data = data_of.get(path) if isinstance(path, str) else None
+        if data is None:
+            continue
+        if data.startswith(b"\x1bLua"):
+            raise Refused("malformed", f"{path} is compiled Lua; MediaViewer loads source text only")
+        try:
+            data.decode("utf-8")
+        except UnicodeDecodeError:
+            raise Refused("malformed", f"{path} is not UTF-8 text") from None
     text = json.dumps(manifest, indent=2, ensure_ascii=False).encode("utf-8")
     package = write_package([("manifest.json", text),
                              ("manifest.json.sig", ed25519_sign(seed, text))] + files)
@@ -862,6 +983,12 @@ def describe(result: dict) -> None:
                   ", ".join(f"{i['label']} ({i['type']})" for i in section["items"]))
     for pack in contributes.get("keymaps", []):
         print(f"  Key layout   {pack['name']}: {len(pack['bindings'])} command(s)")
+    if m.get("scripts"):
+        print(f"  Scripts      {', '.join(m['scripts'])}")
+        print(f"  Permissions  {', '.join(m.get('permissions', [])) or 'none'}")
+        for c in (m.get("contributes") or {}).get("commands", []):
+            key = c.get("key") or "no key"
+            print(f"  Command      {c['name']} ({key}) runs {c['run']}()")
     for theme_id, palettes in result["themes"].items():
         for palette, ratios in palettes.items():
             print(f"  Theme {theme_id}, {palette}:")
@@ -918,6 +1045,8 @@ def main(argv=None) -> int:
     i.add_argument("--id", required=True, help="publisher.name, e.g. you.my-addon")
     i.add_argument("--name", required=True)
     i.add_argument("--publisher", required=True)
+    i.add_argument("--script", action="store_true",
+                   help="a script add-on (a command that counts the open folder's files) instead of a theme")
     i.set_defaults(run=cmd_init)
     p = sub.add_parser("pack", help="sign and pack a folder into a .mvaddon")
     p.add_argument("dir")

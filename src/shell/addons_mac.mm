@@ -33,6 +33,7 @@
 #include <mediaviewer/mediaviewer_ai.h>
 #include <mediaviewer/mediaviewer_import.h>
 
+#include <os/log.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -54,6 +55,7 @@
 #include "addon/host.h"
 #include "addon/manifest.h"
 #include "addon/open_json.h"
+#include "addon/script_host.h"
 #include "abi/addon_media.h"
 #include "addon/store.h"
 #include "core/json.h"
@@ -65,6 +67,7 @@
 #include "meta/meta.h"
 #include "mv_chrome_bridge.h"
 #include "shell/commands.h"
+#include "shell/folder_model_mac.h"
 #include "shell/media_kind.h"
 #include "shell/present_busy.h"
 #include "shell/write_guard.h"
@@ -125,6 +128,10 @@ void MvAppCommandsChanged();
 namespace {
 
 void refresh_contributed_commands();
+// docs/design/25 PR 57: the script add-ons (defined with the open add-ons below).
+std::vector<mv::addon::script_command_row> script_rows();
+void scripts_set_key_notes(const std::string& notes_json);
+void scripts_reload_async();
 
 // One loaded add-on with a chrome.
 struct addon_slot {
@@ -439,7 +446,25 @@ void refresh_contributed_commands() {
   };
   const mac_addons& s = state();
   add(s.import.get());
+  // docs/design/25 PR 57: other makers' script commands, after ours. Their keys
+  // give way to the base app's (set_addon_commands), and Settings says so.
+  for (const mv::addon::script_command_row& c : script_rows()) {
+    mv::shell::addon_command_row r;
+    r.addon = c.addon;
+    r.id = c.id;
+    r.name = c.name;
+    r.script = true;
+    if (!c.key.empty() && !mv::shell::parse_key_label(c.key, r.k, r.mods)) {
+      r.k = mv::shell::key::none;
+      r.mods = 0;
+      r.note = "\"" + c.key + "\" is not a key MediaViewer knows, so this command has no key";
+    }
+    r.modes = mv::shell::parse_modes(c.modes);
+    r.payload = c.payload;
+    rows.push_back(std::move(r));
+  }
   mv::shell::set_addon_commands(rows);
+  scripts_set_key_notes(mv::shell::addon_command_notes_json());
   MvAppCommandsChanged();
 }
 
@@ -902,6 +927,9 @@ void MvAddonsStart(MvAddonsOpenPathFn open_path, void* ctx) {
     // these checks on the add-on queue (never the main thread).
     MvSlotAddonsStart();
   });
+  // docs/design/25 PR 57: other makers' scripts, each on a worker of its own,
+  // after the chrome is up (this call) and never before first pixel.
+  scripts_reload_async();
   // The one-time hint: a removable volume mounts while Import is absent.
   s.mount_observer = [[[NSWorkspace sharedWorkspace] notificationCenter]
       addObserverForName:NSWorkspaceDidMountNotification
@@ -934,6 +962,10 @@ void MvAddonsStartReader(MvAddonsOpenPathFn open_path, void* ctx) {
   // never searches costs nothing. The reader starts on the first ⌘F
   // (MvAddonsSearchOnDemand) or when Settings opens (mv_addon2_ai_wake).
   // No card hint either: Import is not loaded or installed from this window.
+  // docs/design/25 PR 57: script add-ons run in every window's process, so their
+  // keys answer in every window (each reads its own folder). Utility QoS,
+  // after the chrome; they never write the store.
+  scripts_reload_async();
 }
 
 namespace {
@@ -1004,6 +1036,7 @@ void MvAddonsFolderOpened(const std::string& dir) {
 }
 
 void MvAddonsItemChanged(const std::string& path) {
+  MvScriptsItemChanged(path);
   id<MVAIChrome> chrome = ai_chrome();
   if (chrome && [chrome respondsToSelector:@selector(itemChanged:)]) [chrome itemChanged:ns(path)];
 }
@@ -1030,6 +1063,7 @@ void MvAddonsQuit() {
   mac_addons& s = state();
   g_quitting.store(true, std::memory_order_relaxed);
   MvSlotAddonsQuit();
+  MvScriptsQuit();
   g_quit_at = std::chrono::steady_clock::now();
   static bool guarded = false;
   if (!guarded) guarded = std::atexit(&exit_guard) == 0;
@@ -1098,6 +1132,9 @@ void MvAddonsWaitStopped(double seconds) {
 
 bool MvAddonsRunContributedCommand(const std::string& addon, const std::string& command,
                                    const std::string& payload_json) {
+  // docs/design/25 PR 57: another maker's row runs in its script, on its worker.
+  // Posting never blocks; the answer (a notice) comes back on its own.
+  if (addon.find('.') != std::string::npos) return MvScriptsRunCommand(addon, command, payload_json);
   mac_addons& s = state();
   if (addon != "import" || !s.chrome) return false;
   NSString* name = [NSString stringWithUTF8String:command.c_str()];
@@ -1237,6 +1274,172 @@ mv::result<mv::addon::open_store> open_store_once() {
 }
 }  // namespace
 
+// ---- script add-ons (docs/design/25 §9 A, PR 57) -------------------------------------
+// Every installed open add-on with code runs in mv::addon::script_host, each on a
+// worker of its own. The viewer lends them read-only snapshots: the folder
+// model (internally locked; never destroyed before exit) and the item on screen.
+
+namespace {
+
+struct mac_scripts {
+  std::mutex m;  // host creation, reload, restart: the scripts' queue only
+  std::unique_ptr<mv::addon::script_host> host;
+  // Made once and never replaced: the main thread reads through this without
+  // waiting on a reload (rule 1); the host locks itself, briefly.
+  std::atomic<mv::addon::script_host*> live{nullptr};
+  std::atomic<const mv::shell::folder_model*> folder{nullptr};
+  std::mutex view_m;  // current, names
+  std::string current;
+  std::vector<std::string> names;
+  std::size_t names_for = static_cast<std::size_t>(-1);
+  std::chrono::steady_clock::time_point names_at{};
+  std::atomic<bool> quitting{false};
+};
+mac_scripts& scripts() {
+  static mac_scripts* const s = new mac_scripts;  // never destroyed: workers may outlive statics
+  return *s;
+}
+dispatch_queue_t script_queue() {
+  // Utility, like the theme check at launch: never ahead of the view (docs/design/25 §11).
+  static dispatch_queue_t q = dispatch_queue_create(
+      "io.mediaviewer.scripts",
+      dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0));
+  return q;
+}
+
+std::string folder_item_name(std::uint32_t index) {
+  mac_scripts& sc = scripts();
+  const mv::shell::folder_model* f = sc.folder.load();
+  if (!f) return {};
+  // One copy of the listing serves a script walking it name by name; it is
+  // taken again when the count changes or after half a second.
+  const std::size_t count = f->item_count();
+  std::lock_guard<std::mutex> lock(sc.view_m);
+  const auto now = std::chrono::steady_clock::now();
+  if (count != sc.names_for || now - sc.names_at > std::chrono::milliseconds(500)) {
+    sc.names.clear();
+    for (const mv::io::dir_entry& e : f->items()) sc.names.push_back(e.name_utf8);
+    sc.names_for = count;
+    sc.names_at = now;
+  }
+  return index < sc.names.size() ? sc.names[index] : std::string();
+}
+
+mv::addon::script_services mac_script_services() {
+  mv::addon::script_services s;
+  s.folder_count = [] {
+    const mv::shell::folder_model* f = scripts().folder.load();
+    return f ? static_cast<std::uint32_t>(std::min<std::size_t>(f->item_count(), 0xFFFFFFFFu)) : 0u;
+  };
+  s.folder_path = [] {
+    const mv::shell::folder_model* f = scripts().folder.load();
+    return f ? f->directory() : std::string();
+  };
+  s.folder_item_name = folder_item_name;
+  s.current_path = [] {
+    mac_scripts& sc = scripts();
+    std::lock_guard<std::mutex> lock(sc.view_m);
+    return sc.current;
+  };
+  s.notify = [](const std::string&, const std::string& text) { MvAppShowNotice(text); };
+  s.log = [](const std::string& id, int level, const std::string& text) {
+    // The add-on's own words stay on this machine (rule 6): the unified log,
+    // private by default, never a crash report.
+    os_log(OS_LOG_DEFAULT, "add-on %{public}s (%d): %{private}s", id.c_str(), level, text.c_str());
+  };
+  return s;
+}
+
+mv::addon::script_host& script_host_locked() {
+  mac_scripts& sc = scripts();
+  if (!sc.host) {
+    sc.host = std::make_unique<mv::addon::script_host>(mac_script_services());
+    sc.host->set_on_change([] {
+      dispatch_async(dispatch_get_main_queue(), ^{ refresh_contributed_commands(); });
+    });
+    sc.live.store(sc.host.get());
+  }
+  return *sc.host;
+}
+
+void scripts_reload_async() {
+  dispatch_async(script_queue(), ^{
+    mac_scripts& sc = scripts();
+    if (sc.quitting.load()) return;
+    // Not open_store_once: that one sweeps .staging, which a window that is
+    // not the add-on host must leave alone. Reading needs no sweep.
+    auto store = mv::addon::default_open_store();
+    if (!store) return;
+    std::lock_guard<std::mutex> lock(sc.m);
+    script_host_locked().reload(*store);
+    // The verify rig (docs/design/25 PR 57): MV_SCRIPT_SPIN=<addon>/<command> keeps
+    // that command running back to back, for the present-loop gates.
+    if (const char* spin = std::getenv("MV_SCRIPT_SPIN"); spin && std::strchr(spin, '/')) {
+      const std::string s = spin;
+      const auto slash = s.find('/');
+      script_host_locked().start_spin(s.substr(0, slash), s.substr(slash + 1));
+    }
+  });
+}
+
+std::vector<mv::addon::script_command_row> script_rows() {
+  mv::addon::script_host* host = scripts().live.load();
+  return host ? host->commands() : std::vector<mv::addon::script_command_row>{};
+}
+
+void scripts_set_key_notes(const std::string& notes_json) {
+  if (mv::addon::script_host* host = scripts().live.load()) host->set_key_notes(notes_json);
+}
+
+}  // namespace
+
+void MvAddonsSetFolderModel(const mv::shell::folder_model* folder) { scripts().folder.store(folder); }
+
+void MvScriptsItemChanged(const std::string& path) {
+  mac_scripts& sc = scripts();
+  std::lock_guard<std::mutex> lock(sc.view_m);
+  sc.current = path;
+}
+
+bool MvScriptsRunCommand(const std::string& addon, const std::string& command,
+                         const std::string& payload_json) {
+  mv::addon::script_host* host = scripts().live.load();
+  return host && host->run_command(addon, command, payload_json);
+}
+
+void MvScriptsQuit() {
+  mac_scripts& sc = scripts();
+  sc.quitting.store(true);
+  // Each stop takes effect at the script's next instruction check: no wait
+  // worth a thread. Off the main thread anyway, behind any reload in flight.
+  dispatch_async(script_queue(), ^{
+    std::lock_guard<std::mutex> lock(sc.m);
+    if (sc.host) sc.host->stop_all();
+  });
+}
+
+extern "C" int32_t mv_open_addons_scripts(char* buf, int32_t size) {
+  mv::addon::script_host* host = scripts().live.load();
+  return copy_out(host ? host->status_json() : std::string("[]"), buf, size);
+}
+
+extern "C" void mv_open_addons_restart(const char* addon_id) {
+  if (!addon_id) return;
+  const std::string id = addon_id;
+  dispatch_async(script_queue(), ^{
+    mac_scripts& sc = scripts();
+    if (sc.quitting.load()) return;
+    // Not open_store_once: that one sweeps .staging, which a window that is
+    // not the add-on host must leave alone. Reading needs no sweep.
+    auto store = mv::addon::default_open_store();
+    if (!store) return;
+    std::lock_guard<std::mutex> lock(sc.m);
+    script_host_locked().restart(*store, id);
+  });
+}
+
+extern "C" void mv_open_addons_reload(void) { scripts_reload_async(); }
+
 extern "C" int32_t mv_open_addons_inspect(const char* package, char* buf, int32_t size) {
   auto s = open_store_once();
   if (!package || !s) return copy_out({}, buf, size);
@@ -1251,7 +1454,9 @@ extern "C" int32_t mv_open_addons_install(const char* package, const char* appro
   // could not learn what happened.
   if (!buf || size < 1024) return 1024;
   std::lock_guard<std::mutex> lock(open_writes());
-  return copy_out(mv::addon::open_install_json(*s, package, approved_sha256), buf, size);
+  const int32_t n = copy_out(mv::addon::open_install_json(*s, package, approved_sha256), buf, size);
+  scripts_reload_async();  // a script add-on starts now, an update replaces the old one
+  return n;
 }
 
 extern "C" int32_t mv_open_addons_list(char* buf, int32_t size) {
@@ -1263,7 +1468,9 @@ extern "C" bool mv_open_addons_remove(const char* folder) {
   auto s = open_store_once();
   if (!folder || !s) return false;
   std::lock_guard<std::mutex> lock(open_writes());
-  return s->remove(folder).has_value();
+  const bool removed = s->remove(folder).has_value();
+  if (removed) scripts_reload_async();  // its script stops and its commands go
+  return removed;
 }
 
 extern "C" int32_t mv_open_addons_theme(const char* addon_id, const char* theme_id, char* buf,

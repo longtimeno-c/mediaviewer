@@ -10,7 +10,9 @@ Windows and macOS together (D9). Milestone L, PRs 55–60. Not a D-decision. PR 
 the file type and licensing were made on 2026-10-03 ([§17](#17-decisions-owner-2026-10-03)). PRs 58
 (screens) and 59 (slots) are built for MediaViewer's own native add-ons, ahead of PR 57's scripts
 ([Implementation notes](#implementation-notes-prs-58-59-2026-10-11)). Owner, 2026-10-11: an add-on
-carries its own code and its own data ([§1](#1-what-this-is)).**
+carries its own code and its own data ([§1](#1-what-this-is)). PR 57, code, is built on both hosts
+(2026-10-11, [Implementation notes](#implementation-notes-pr-57-2026-10-11); its Windows half is
+compiled by CI and not yet run).**
 
 ## 1. What this is
 
@@ -108,10 +110,14 @@ is refused with a reason that says so.
 - **Strictness:** a manifest that claims no API newer than the app's may hold no key the app
   does not know (a typo fails loudly instead of doing nothing). One that reaches past the app's
   API may, so one package can serve an older and a newer MediaViewer.
-- **Code is refused by name.** `native`, `chrome`, `scripts`, `main` at the top level or under
-  `contributes` refuse the add-on (`code_not_allowed`) until a PR that runs third-party code
-  lands ([§9](#9-code-how-a-strangers-add-on-runs)). No API range turns a data add-on into one
-  that runs.
+- **Native code is refused by name.** `native`, `chrome`, `main` at the top level or under
+  `contributes` refuse the add-on (`code_not_allowed`), whatever its range: other makers' code
+  runs only as a script ([§9](#9-code-how-a-strangers-add-on-runs)).
+- **Scripts (API 3, PR 57).** `scripts` lists the package's `.lua` files, run in order in one
+  sandbox; `permissions` names what they may reach; `contributes.commands` adds key-bound rows
+  that call a script function. A range that ends before API 3 cannot carry them (malformed),
+  and a host before PR 57 refuses them by name (`code_not_allowed`), so no API range turns a
+  data add-on into one that runs. The shape is in [Implementation notes (PR 57)](#implementation-notes-pr-57-2026-10-11).
 
 ## 5. Identity and trust
 
@@ -178,7 +184,7 @@ introduced it, exists on both hosts, and has a default the base app provides.
 | **Theme, shape** | 2 | 56 (built 2026-10-11) | Corner radius scale, density, type scale (theme file schema 2) | Today's literals | Same table, resolved once when the theme is painted |
 | **Settings page** | 2 | 56 (built 2026-10-11) | A schema: sections, toggles, choices, numbers, text, each with a key, default and help; `enabled_by` greys an item while a toggle is off | — | Rendered by the host when Settings opens; values in one file per add-on id the core keeps (not each host's own store: [12](12-decision-log.md)), kept on remove unless asked |
 | **Keymap** | 2 | 56 (built 2026-10-11) | Bindings for existing commands (the v1.1 "named layouts": FastStone, IrfanView, vim) | `default_bindings()` | Applied to the live table once; the router stays an array index ([16](16-commands.md#one-table-editable)) |
-| **Command** | 3 | 57 | A name, a default key, and the script function it runs | — | Rows appended to the table at load; a key clash is resolved for the base app, the add-on's key is dropped and Settings says so |
+| **Command** | 3 | 57 (built 2026-10-11) | A name, a default key, and the script function it runs | — | Rows appended to the table at load; a key clash is resolved for the base app, the add-on's key is dropped and Settings says so |
 | **Screen** | 4 | 58 (built 2026-10-11, first-party native) | A view tree ([§10](#10-screens)) in a window, a pane or a sheet | — | Built by the host from data; updates are diffs posted from the add-on's worker |
 | **Chrome slot** | 5 | 59 (built 2026-10-11, first-party native) | Command-bar and path-bar items, context-menu entries, info-pane sections, status items, gallery tile badges | — | Badges come from a table filled off-thread; **no add-on call per tile**, ever |
 | **Search provider** | 5 | 59 (built 2026-10-11, first-party native) | Answers a query with a list of files | File-name search (base app, 2026-09-28) | Runs on the add-on's worker with the query's generation; a stale answer is dropped |
@@ -347,7 +353,7 @@ installed.
 |---|---|---|
 | **55** | **Open packages and themes.** The `.mvaddon` reader, manifest schema 2, publisher keys, the consent sheet, install from file and from link, check for update, remove, Settings → Add-ons "From others", Settings → Appearance → Theme, the token table on both hosts, the SDK, the author's guide | A package made by the SDK with a fresh key installs from a file and from an `https` link, shows the publisher and fingerprint, and themes the chrome; choosing Default restores it exactly. **Refused, each with its reason:** one changed byte in any file or the manifest; an extra entry; a compressed, encrypted or ZIP64 package; a path with `..`; a package naming code; a second publisher's package under an installed id; an older version; a theme under the contrast floor; a package swapped after the sheet was shown. The link request carries no cookie, query or identifier of ours. With an add-on installed and a theme on: launch → first pixel and launch → full resolution within noise of none installed (alternated runs), 0 presents idle, **both present-loop gates**. With none installed: no folder created, no file read at start |
 | 56 | **Declarative contributions.** Settings pages from a schema, keymap packs, theme shape (radius, density, type scale), first-party chromes read the host's tokens | A settings page renders the same controls and order on both hosts from one schema; its values survive restart and removal-with-keep; a keymap pack rebinds and Reset restores; `?` lists what is bound |
-| 57 | **Code** (owner call 1, made). The runtime, one worker per add-on, limits and watchdog, permissions in the consent sheet, commands | A script command runs from its key on both hosts; a runaway loop and an allocation bomb each stop the add-on, not the viewer, within the watchdog's bound; without `folder.read` the folder API is absent; **both gates hold while a script spins** |
+| 57 | **Code** (owner call 1, made; **built 2026-10-11**). The runtime, one worker per add-on, limits and watchdog, permissions in the consent sheet, commands | A script command runs from its key on both hosts; a runaway loop and an allocation bomb each stop the add-on, not the viewer, within the watchdog's bound; without `folder.read` the folder API is absent; **both gates hold while a script spins** |
 | 58 | **Screens** (built 2026-10-11 for first-party native add-ons, [notes](#implementation-notes-prs-58-59-2026-10-11)). The view vocabulary, windows / panes / sheets, diffs, events | One add-on's screen renders natively on both hosts, keyboard-only, VoiceOver and Narrator name every control; a 2,000-tile thumbnail grid scrolls without a hitch |
 | 59 | **Slots and search providers** (built 2026-10-11 for first-party native add-ons). Bar items, context menus, info-pane sections, tile badges; file-name search and Local search as providers | Badges for a 10,000-file folder cost no add-on call per tile (counted); a slow provider never delays typing; removing the add-on removes every item |
 | 60 | **Files.** `files.write`, exports, `metadata.write`. No `network`, ever | An add-on export never overwrites and never touches an original (rule 5, tested by hash); no add-on can open a connection, shown by the host API's surface |
@@ -425,7 +431,8 @@ controls that pass `tools/check-winui-controls.ps1`.
 **Coordination (2026-10-11).** With PRs 58–59 (#348): the point table, API numbers 4–5 for theirs,
 and `settings_get` as the host-table row before their rows. With PR 57: API 3; contributed
 commands are named `<add-on id>/<command id>` in packs; `mv.settings.get` reads
-`settings_values::value_json` with the script's id and page, wired when both land. On merge,
+`settings_values::value_json` with the script's id, publisher and page (wired at integration,
+2026-10-12). On merge,
 `kContributionApi` / `MV_ADDON_CONTRIBUTION_API` and `MV_ABI_VERSION_MINOR` take the highest
 and join their comments.
 
@@ -481,6 +488,12 @@ Owed before this merges: the Windows half run in the app (settings page, keep-on
 layout and Reset, Import / Duplicates under a theme, shape at next start), VoiceOver / Narrator
 on the page, a layout checked against the Mac's fixed menu chords, and the Windows fuzz build of
 `fuzz_addon_contributions` (it ran 2.5 M inputs clean under libFuzzer + ASan + UBSan on the Mac).
+
+### PR 57: code (2026-10-11)
+
+Built on both hosts: Lua 5.4 in a sandbox per add-on, its limits and watchdog, permissions in
+the consent sheet, commands from a script. What it is, the API, the limits and where each part
+of the verify stands: [Implementation notes (PR 57)](#implementation-notes-pr-57-2026-10-11).
 
 ## 15. Not in this plan
 
@@ -746,3 +759,164 @@ BLAKE3 skip, verify, resume) stays native and only its window, today written twi
 (`MediaViewer.Import.Chrome.dll`, `Import.bundle`), becomes one view tree both hosts render, which
 would make it PR 58's first real screen. Possible now with no owner call: PR 56's "first-party
 chromes read the host's tokens", so Import's and Local search's windows follow the theme.
+
+## Implementation notes (PR 57, 2026-10-11)
+
+Other makers' code runs as Lua 5.4 in a sandbox per add-on ([§9](#9-code-how-a-strangers-add-on-runs) A).
+The reasons for each call below are in [12](12-decision-log.md) ("Other makers' code runs as Lua 5.4").
+
+| Piece | Code |
+|---|---|
+| Lua 5.4.8, vendored, static, MIT, without `io` / `os` / `package` / `debug` and the tools; marked changes for the watchdog, and no finalizers or weak tables | `third_party/lua` (`VENDOR.txt`), `cmake/script.cmake` (`mv_lua`, built as C++) |
+| The sandbox, its limits, the watchdog, the `mv` bindings, Lua ↔ JSON | `src/addon/script_runtime.*`, `src/addon/script_thread_{posix,win}.cpp` (a worker with a 4 MB stack) |
+| The host's set of script add-ons: load from the store (bytes re-hashed as they are read), commands, status, Start again, the spin rig | `src/addon/script_host.*`; `open_store::verified_file` |
+| Manifest: `scripts`, `permissions`, `contributes.commands` at API 3; the sheet's lines | `src/addon/open_manifest.*`, `src/addon/open_json.cpp` |
+| Key clashes give way to the base app; notes for Settings | `shell/command_table.cpp` (`addon_command_row.script`, `addon_command_notes_json`) |
+| Windows | ABI 0.26 `mv_script_*` (`abi/script_abi.cpp`); `shell/main.cpp` (start after the chrome, run rows, `kMsgScripts` notices); `IslandHost.OpenAddons.cs`, `AddonNative.ScriptStatus` / `ScriptRestart` |
+| Mac | `shell/addons_mac.mm` (the host, the folder model and item on screen as services, rows), `main_mac.mm` (`MvAppShowNotice`, the `MV_SCRIPT_SELFTEST` rig); `OpenAddons.swift` (`ScriptStatus`, Start again), bridge `mv_open_addons_scripts` / `_restart` / `_reload` |
+| SDK, guide, example | `tools/addon-sdk/mvaddon.py` (`init --script`, script rules, compiled Lua refused at pack), `docs/ADDONS.md` "Scripts", `examples/addons/folder-count` |
+| Tests | `tests/test_script_runtime.cpp`, `tests/test_script_addons.cpp` (`mv_script_tests`, also in cmake/portable), `tests/test_key_router.cpp` (key clash), `tools/addon-sdk/test_mvaddon.py` (cross-checked by `mv_addon_verify --open`), `tools/fuzz/fuzz_script.cpp` |
+
+### The manifest (schema 2, API 3)
+
+```json
+{
+  "api": { "min": 3, "max": 3 },
+  "scripts": ["main.lua"],
+  "permissions": ["folder.read"],
+  "contributes": {
+    "commands": [
+      { "id": "count-files", "name": "Count files", "key": "Ctrl+Shift+K", "run": "count_files",
+        "modes": "viewing", "payload": "none" }
+    ]
+  }
+}
+```
+
+- **`scripts`**: 1–16 listed `.lua` files, ≤ 1 MB each, ≤ 4 MB together, run in order in one
+  environment; loaded as text only (`mode "t"`). Under a range ending before 3: malformed; on a
+  host before 3: `code_not_allowed`.
+- **`permissions`**: each of `folder.read`, `thumbnails`, `selection` at most once, only with
+  scripts. `files.write` / `metadata.write` (PR 60): `needs_update`. `network`: malformed, always.
+- **`commands`**: 1–32 (eight slots in the table); `id` `[a-z0-9-]{1,32}`, `name` display text,
+  `key` a printable label (`Ctrl` is `Cmd` on the Mac), `run` a Lua name, `modes`
+  `viewing|video|browse|all`, `payload` `none|marks|marked_or_current|screen` (anything but
+  `none` needs `selection`). Only with scripts.
+- **Unchanged:** `native`, `chrome`, `main` refuse the add-on whatever its range, and every PR 55
+  refusal holds for a package with code (tested: a changed script byte, an unlisted `.lua`,
+  compression, `..`).
+
+### The script API
+
+Only this exists; a part whose permission was not granted is **absent** (`mv.folder == nil`):
+
+| Name | Permission | |
+|---|---|---|
+| `mv.id`, `mv.api`, `mv.permissions` | — | the add-on's id, 3, the granted set |
+| `mv.notify(text)` | — | one line in the host's notice (Windows: the title's; Mac: the command bar's), prefixed with the add-on's name; ≤ 200 bytes, ≤ 4 a second |
+| `mv.log(...)`, `print` | — | stays local: the macOS unified log (private); not kept on Windows yet |
+| `mv.on(event, fn)` | — | handlers for later points' events (`script_call::call_handlers`); none sent yet |
+| `mv.folder.count()`, `.name(i)`, `.path()` | `folder.read` | the viewer's listing: Mac `folder_model`, Windows the session's `mv_folder_*` |
+| `mv.selection.current()` | `selection` | the file on screen |
+
+Standard library: `string` without `dump` (its metatable locked: `getmetatable("")` is `false`),
+`table`, `math`, `utf8`, `coroutine`, the base functions without `dofile` / `loadfile` /
+`require` / `warn`; `load` text-only into the sandbox; `collectgarbage` with `count`, `collect`,
+`step`, `isrunning` only. A `__gc` metamethod never runs and `__mode` has no effect (every
+table is strong): both could hold a worker where no limit reaches ([12](12-decision-log.md)).
+A command's function is called with its payload as a Lua value.
+`thumbnails` puts nothing in the environment: it gates PR 58's thumbnail nodes.
+
+**For later points** (agreed with PRs 58–59): `add_script_binding({name, api, permission,
+install})` installs more `mv.*` tables per state; `script_addon::post(script_task)` runs work on
+the add-on's worker (dropped unrun when its generation is stale); `script_call::call_handlers`,
+`with_state`, `lua_to_json` / `push_json` carry screens, diffs, search answers and badges.
+`script_host::find(id)` hands the add-on to a slot registry; its stop callback is where items
+are detached.
+
+### Limits (as shipped)
+
+| Limit | Value | Enforced by |
+|---|---|---|
+| Memory | 64 MB per add-on | the `lua_Alloc`: refused growth stops the add-on, and stays refused |
+| Instructions | 100 M per task | a count hook every 10,000 instructions |
+| Wall clock | 1 s per task | the same hook, and one watchdog thread (asleep unless a task runs) for the loops that run no VM instruction (pattern matching, a plain `string.find`, `table.move`, `table.insert`, `table.remove`, `table.sort`) |
+| C stack | 4 MB worker | Lua's own 200-level C limit inside it |
+| Queue | 256 tasks | `post` returns false past it |
+
+A task is a command call, a handler call, or the scripts' first run. Once a limit is hit, every
+instruction raises, so `pcall` cannot keep the add-on alive; its state is closed on its worker.
+Settings → Add-ons → From others shows "Stopped." with the limit in words ("One of its tasks
+(command spin) ran for more than 100 million steps.") and **Start again**. A Lua error is not a
+stop: Settings shows the last error.
+
+### Verify, where each part stands
+
+| Verify (plan §14) | State |
+|---|---|
+| A script command runs from its key | **Mac: run in the app.** `MV_SCRIPT_SELFTEST` posts ⌘⇧K through the app's own event queue: the router, the live table and the runtime ran, and the bar showed "Folder Count: 4 files in this folder" (`tools/testmedia/raw`). **Windows: owed** (compiled by CI; the path is `run_command` → `mv_script_run_command` → `notice_show`) |
+| A runaway loop and an allocation bomb each stop the add-on, not the viewer, within the watchdog's bound | **Tested on the Mac** (`mv_script_tests`, both hosts' shared code): `while true`, a `pcall` loop, a coroutine loop, a tail-call loop, five allocation bombs and two C-side loops each stop within bound + 400 ms (300 ms test bound); with the shipped limits a spin stops after ~0.75 s. **In the Mac app:** ⌘⇧J on the spinner stopped it ("ran for more than 100 million steps") and the viewer kept answering; Settings showed it. **Windows: owed** (same code) |
+| Without `folder.read` the folder API is absent | **Tested** (`mv.folder`, `mv.selection`, `mv.thumbnails` are `nil` without their permission; present with it) |
+| Both present-loop gates hold while a script spins | **Mac:** **Not shown, as on the base: pacing holds alike with and without a script spinning, and
+the idle clause fails on both.** Measured below; the machine was loaded throughout (other
+builds; load average 18–50). **Windows: owed** (`MV_SCRIPT_SPIN` works there too; CI's self-hosted gate does not set it) |
+| Launch → first pixel within noise with a script add-on installed | **Mac:** **Measured; the ranges overlap in every row** (below). The machine was loaded, so these
+show no change that runs on it can see, and nothing finer. **Windows: owed** |
+
+Measured on the Mac (arm64, Release, 2026-10-12, the owner's machine with other agents'
+builds running: load average 18–50). Base is `8ef8679` (this branch's parent) built from its own
+source copy and build directory. "spin" is this build with two script add-ons installed in a
+scratch store (`MV_SCRIPT_STORE`) and `MV_SCRIPT_SPIN=rig.spinner/burn` keeping one add-on's
+worker busy throughout (a 40 M-instruction loop posted back to back; checked on its own: in a
+20 s static soak the lab process sat at 97–100 % of one core with the rig and ~0.5 % without, by
+`ps` every 2 s). Mac PR 1 gate, `frametime --seconds 60`,
+alternated:
+
+| Run | Build | Animated: frames · p99 ms · max ms | Idle: presents · CPU of one core | Notes |
+|---|---|---|---|---|
+| 1 | base | 3600 · 16.80 · 22.31 | 0 · 92.5 % | |
+| 2 | spin | 3598 · 16.85 · 42.30 | 0 · 200.2 % | void as a spin run: the rig's loop crossed its own 100 M budget, so the add-on stopped in its first second of each phase (the stop working as designed); shortened to 40 M after |
+| 3 | base | 3598 · 16.90 · 49.98 | 0 · 100.1 % | |
+| 4 | spin | 3600 · 16.95 · 19.12 | 2 · 47.9 % | void as a spin run, as 2 |
+| 5 | base | 3600 · 16.95 · 22.31 | 19 · 37.1 % | 19 input events: the machine was in use; another agent's lab soak overlapped |
+| 6 | spin | 3599 · 16.95 · 28.01 | 0 · 186.5 % | spinning throughout |
+| 7 | base | 3553 · 17.10 · 662.7 | 0 · 104.9 % | |
+| 8 | spin | 3598 · 16.90 · 22.06 | 0 · 100.1 % | spinning throughout |
+| 9 | base | 406 · 23.05 · 46,715 | 0 · 52.4 % | display link stalled 47 s: void |
+| 10 | spin | 3599 · 16.95 · 33.28 | 0 · 85.5 % | spinning throughout |
+
+Pacing with a script spinning is within the base's own spread (p99 16.85–16.95 ms against
+16.80–17.10 ms; the drops and long frames land on base runs as much as on spin runs). The idle
+CPU clause (≤ 1 %) fails on every base run, as it did in PR 55's measurements, so the gate as a
+whole is not shown on this machine; with a script spinning the lab's idle CPU is one core higher,
+which is the script's own work on its own thread (no present waited on it), and 0 presents idle
+hold on the spin runs. Launch → first pixel and → full resolution, `mediaviewer_lab --soak 6
+--static`, one untimed warm-up open per file, then base / new (no script add-on, an empty
+scratch store) / script (the two add-ons installed, idle) alternated, two sessions (3 and 5
+rounds):
+
+| File | Build | First pixel, s | Full resolution, s |
+|---|---|---|---|
+| `sony_ilce7rm3.arw` | base | 0.021 · 0.055 · 0.118 · 0.124 · 0.074 · 0.083 · 0.121 · 0.084 | 0.519 · 1.231 · 1.264 · 3.357 · 1.739 · 2.631 · 2.171 · 2.175 |
+| | new | 0.050 · 0.049 · 0.049 · 0.137 · 0.069 · 0.075 · 0.097 · 0.079 | 1.285 · 1.231 · 1.246 · 4.239 · 2.050 · 2.065 · 1.970 · 2.000 |
+| | script | 0.047 · 0.047 · 0.051 · 0.119 · 0.072 · 0.080 · 0.062 · 0.075 | 1.176 · 1.050 · 1.337 · 1.969 · 2.171 · 2.083 · 1.593 · 1.977 |
+| `canon_eosr6.cr3` | base | 0.051 · 0.048 · 0.043 · 0.114 · 0.094 · 0.133 · 0.079 · 0.071 | 0.685 · 0.694 · 0.564 · 0.977 · 2.353 · 3.218 · 1.658 · 1.462 |
+| | new | 0.048 · 0.045 · 0.043 · 0.069 · 0.097 · 0.126 · 0.081 · 0.065 | 0.774 · 0.784 · 0.653 · 1.178 · 2.715 · 3.471 · 1.905 · 1.877 |
+| | script | 0.047 · 0.048 · 0.043 · 0.116 · 0.079 · 0.059 · 0.068 · 0.067 | 0.822 · 0.764 · 0.656 · 2.214 · 4.234 · 1.287 · 1.118 · 1.601 |
+
+The ranges overlap in every row. On a quiet machine the full-resolution numbers are a third of
+these (PR 55's table above); a re-run there is owed, and is the run to quote. Nothing of a
+script add-on runs before first pixel by construction: the scripts are listed and started on a
+utility-QoS queue after the chrome is up (Windows: a background job after the chrome attaches).
+
+**Fuzzing.** `tools/fuzz/fuzz_script.cpp` (arbitrary text as a script, every permission, 8 MB /
+2 M instructions / 250 ms, then its `f`): 563,234 inputs, about 15 minutes of fuzzing on the Mac
+under ASan + UBSan with Homebrew's libFuzzer (the run's 1,587 s span includes the machine
+sleeping; the two "slow units" it saved run in 9 ms), 10,470 coverage edges; no crash, no
+sanitizer report, no hang. In CI it joins the non-gating harnesses until it has been seen to
+start on the runner. `mv_script_tests` also passes under ASan + UBSan (the runtime, Lua and the
+tests instrumented).
+
+Owed before this merges: the Windows key walk, the Windows gate with a script spinning, the
+Windows launch timings; VoiceOver / Narrator on the new Settings lines; a `files.write`-era
+review of the permission lines. (`mv.settings.get` landed with PR 56's store, 2026-10-12.)

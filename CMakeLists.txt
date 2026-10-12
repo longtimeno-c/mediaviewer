@@ -717,6 +717,8 @@ find_package(unofficial-sodium CONFIG REQUIRED)
 set(MV_SQLITE_TARGET unofficial::sqlite3::sqlite3)
 set(MV_SODIUM_TARGET unofficial-sodium::sodium)
 include("${CMAKE_SOURCE_DIR}/cmake/import.cmake")
+# docs/design/25 §9 A (PR 57): Lua and the script runtime.
+include("${CMAKE_SOURCE_DIR}/cmake/script.cmake")
 
 # Milestone H: host table v2's pixels (src/abi/addon_media.h) over the viewer's
 # still pipeline, the clip sampler and the JPEG-512 cache. In the base app;
@@ -761,6 +763,7 @@ add_library(mediaviewer_core SHARED
   src/abi/abi.cpp
   src/abi/addon_abi.cpp
   src/abi/slots_abi.cpp
+  src/abi/script_abi.cpp
   src/abi/crash_export.cpp
   src/abi/meta_abi.cpp
   src/abi/include/mediaviewer/mediaviewer_crash.h
@@ -778,7 +781,7 @@ target_include_directories(mediaviewer_core
   PUBLIC  src/abi/include
   PRIVATE src)
 target_compile_definitions(mediaviewer_core PRIVATE MV_BUILDING_CORE)
-target_link_libraries(mediaviewer_core PRIVATE mv_core mv_image mv_canvas mv_io mv_player mv_meta mv_addon mv_addon_media mv_clip)
+target_link_libraries(mediaviewer_core PRIVATE mv_core mv_image mv_canvas mv_io mv_player mv_meta mv_addon mv_script mv_addon_media mv_clip)
 set_target_properties(mediaviewer_core PROPERTIES OUTPUT_NAME "mediaviewer_core")
 add_library(mv::abi ALIAS mediaviewer_core)
 
@@ -1323,6 +1326,19 @@ if(MV_BUILD_TESTS)
   catch_discover_tests(mv_import_tests TEST_PREFIX "import_"
     PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT ${MV_TEST_TIMEOUT}
                ENVIRONMENT "TZ=UTC")
+
+  # docs/design/25 §9 A (PR 57): the script sandbox, its limits, and script
+  # add-ons as packages. The same sources run on Linux CI and the Mac.
+  add_executable(mv_script_tests
+    tests/test_script_runtime.cpp
+    tests/test_script_addons.cpp
+  )
+  target_link_libraries(mv_script_tests PRIVATE mv_script mv_lua mv_addon mv_io
+    unofficial-sodium::sodium Catch2::Catch2WithMain)
+  target_include_directories(mv_script_tests PRIVATE src tests)
+  mv_asan_runtime_beside(mv_script_tests)
+  catch_discover_tests(mv_script_tests TEST_PREFIX "script_"
+    PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT ${MV_TEST_TIMEOUT})
 
   # docs/design/25: the add-on SDK (tools/addon-sdk) packs, and the app's own reader
   # says what it makes of each package, so the two cannot drift.

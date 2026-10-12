@@ -78,6 +78,33 @@ struct OpenAddon: Identifiable, Equatable {
   var publisherHost: String { URL(string: publisherURL)?.host ?? "" }
 }
 
+/// A script add-on as the app runs it (docs/design/25 PR 57): running, or stopped
+/// and why. From mv_open_addons_scripts (src/addon/script_host.h).
+struct ScriptStatus: Equatable {
+  struct Command: Equatable {
+    let id: String
+    let name: String
+    let key: String
+    let note: String
+  }
+  let state: String  // running | starting | stopped
+  let stop: String   // none | memory | instructions | time | load_error | stopped
+  let message: String
+  let lastError: String
+  let commands: [Command]
+
+  init(_ obj: [String: Any]) {
+    state = obj["state"] as? String ?? ""
+    stop = obj["stop"] as? String ?? ""
+    message = obj["message"] as? String ?? ""
+    lastError = obj["last_error"] as? String ?? ""
+    commands = (obj["commands"] as? [[String: Any]] ?? []).map {
+      Command(id: $0["id"] as? String ?? "", name: $0["name"] as? String ?? "",
+              key: $0["key"] as? String ?? "", note: $0["note"] as? String ?? "")
+    }
+  }
+}
+
 /// A package that has been looked at and is waiting for an answer.
 struct OpenAddonOffer: Equatable {
   let path: String
@@ -96,6 +123,15 @@ final class OpenAddonStore: ObservableObject {
   static let shared = OpenAddonStore()
 
   @Published private(set) var installed: [OpenAddon] = []
+  /// Script add-ons by id: running, or stopped and why (PR 57).
+  @Published private(set) var scripts: [String: ScriptStatus] = [:]
+  /// Settings scrolls to From others when this moves (the PR 57 verify rig).
+  static let sectionAnchor = "open-addons-section"
+  @Published private(set) var revealRequests = 0
+  func reveal() {
+    revealRequests += 1
+    refresh()
+  }
   /// The first read of what is installed has landed.
   @Published private(set) var known = false
   @Published private(set) var offer: OpenAddonOffer?
@@ -127,10 +163,41 @@ final class OpenAddonStore: ObservableObject {
       let json = OpenAddonBridge.read { mv_open_addons_list($0, $1) }
       let rows = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [[String: Any]] ?? []
       let list = rows.map(OpenAddon.init)
+      let scripts = Self.readScripts()
       await MainActor.run {
         self.installed = list
+        self.scripts = scripts
         self.known = true
       }
+    }
+  }
+
+  nonisolated private static func readScripts() -> [String: ScriptStatus] {
+    let json = OpenAddonBridge.read { mv_open_addons_scripts($0, $1) }
+    let rows = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [[String: Any]] ?? []
+    var out: [String: ScriptStatus] = [:]
+    for row in rows {
+      if let id = row["id"] as? String { out[id] = ScriptStatus(row) }
+    }
+    return out
+  }
+
+  /// Re-reads only the scripts' state: cheap (no file is read), for after a
+  /// start or a stop the app made on its own.
+  func refreshScripts() {
+    Task.detached(priority: .utility) {
+      let scripts = Self.readScripts()
+      await MainActor.run { self.scripts = scripts }
+    }
+  }
+
+  /// Settings "Start again" for a script add-on that stopped.
+  func restart(_ addon: OpenAddon) {
+    mv_open_addons_restart(addon.addonID)
+    message = "\(addon.name) is starting again."
+    Task { @MainActor in
+      try? await Task.sleep(for: .milliseconds(600))
+      self.refreshScripts()
     }
   }
 
@@ -434,7 +501,7 @@ struct OpenAddonsSection: View {
   var body: some View {
     VStack(alignment: .leading, spacing: MVTheme.space(8)) {
       Text("From others").font(MVTheme.font()).foregroundStyle(MVTheme.title)
-      note("Add-ons made by other people, installed from a file or a link. MediaViewer does not check them or who made them. The ones it installs are data, such as themes: they cannot run code, read your files, or use the network.")
+      note("Add-ons made by other people, installed from a file or a link. MediaViewer does not check them or who made them. A theme is data. An add-on with a script runs it inside MediaViewer, stopped if it uses too much memory or time, with only the permissions it showed when you installed it. No add-on can use the network.")
 
       if let offer = store.offer {
         OpenAddonSheet(offer: offer)
@@ -467,6 +534,8 @@ struct OpenAddonsSection: View {
     }
     .onAppear { if settings.visible { store.refresh() } }
     .onChange(of: settings.visible) { _, visible in if visible { store.refresh() } }
+    // A script that stops on its own changes the command table: re-read its state.
+    .onReceive(settings.$rows) { _ in if settings.visible { store.refreshScripts() } }
   }
 
   @ViewBuilder private func row(_ addon: OpenAddon) -> some View {
@@ -479,6 +548,8 @@ struct OpenAddonsSection: View {
         note("Needs a newer MediaViewer, so it is not in use.")
       } else if addon.state != "ok" {
         note("This copy did not pass verification, so it is not in use.")
+      } else if let script = store.scripts[addon.addonID] {
+        scriptLines(addon, script)
       }
       if addon.settings && addon.state == "ok" && store.confirmingRemove != addon.folder {
         AddonSettingsPage(addonID: addon.addonID, fallbackTitle: addon.name)
@@ -505,6 +576,30 @@ struct OpenAddonsSection: View {
       }
     }
     .padding(.vertical, MVTheme.space(4))
+  }
+
+  /// A script add-on's state and its commands (docs/design/25 PR 57): a stopped one
+  /// says which limit and why, and can be started again.
+  @ViewBuilder private func scriptLines(_ addon: OpenAddon, _ script: ScriptStatus) -> some View {
+    switch script.state {
+    case "running": note("Running.")
+    case "starting": note("Starting…")
+    default:
+      Text("Stopped. \(script.message)").font(MVTheme.font(13)).foregroundStyle(MVTheme.title)
+        .fixedSize(horizontal: false, vertical: true)
+        .accessibilityLabel("Stopped: \(script.message)")
+    }
+    if !script.lastError.isEmpty, script.state != "stopped" {
+      note("Its last error: \(script.lastError)").textSelection(.enabled)
+    }
+    ForEach(script.commands, id: \.id) { c in
+      let keys = c.key.isEmpty ? "no key" : SettingsStore.macLabel(c.key)
+      note(c.note.isEmpty ? "Command: \(c.name) (\(keys))" : "Command: \(c.name). \(c.note).")
+    }
+    if script.state == "stopped" {
+      Button("Start again") { store.restart(addon) }.disabled(store.busy)
+        .help("Runs \(addon.name)'s script again from the start, with the same limits.")
+    }
   }
 
   private func note(_ text: String) -> some View {
