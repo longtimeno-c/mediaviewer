@@ -475,11 +475,16 @@ public static partial class IslandHost
 
     // ---- badges -------------------------------------------------------------------------
 
-    /// <summary>The gallery shows <paramref name="folder"/>: one request per folder.</summary>
+    /// <summary>The gallery shows <paramref name="folder"/>: one request per folder listing
+    /// (a relist, e.g. files copied in, asks again: the new files need their badges).</summary>
+    private static int _slotBadgeListing = -1;
+
     private static void RequestSlotBadges(string folder)
     {
-        if (SlotBadgeDefs.Count == 0 || folder.Length == 0 || folder == _slotBadgeFolder) return;
+        if (SlotBadgeDefs.Count == 0 || folder.Length == 0) return;
+        if (folder == _slotBadgeFolder && _gsListing == _slotBadgeListing) return;
         _slotBadgeFolder = folder;
+        _slotBadgeListing = _gsListing;
         SlotNative.RequestBadges(folder);
     }
 

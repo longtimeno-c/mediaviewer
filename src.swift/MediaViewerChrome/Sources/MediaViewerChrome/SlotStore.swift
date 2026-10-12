@@ -364,11 +364,16 @@ final class SlotStore: ObservableObject {
     query.withCString { q in folder.withCString { f in mv_chrome_slots_search(scope, q, f) } }
   }
 
+  /// One request per folder listing: a relist of the same folder (files copied in)
+  /// asks again, so the new files get their badges.
   func requestBadges(folder: String) {
-    guard !badgeDefs.isEmpty, folder != badgeFolder else { return }
+    let listing = FolderStore.shared.listingGeneration
+    guard !badgeDefs.isEmpty, folder != badgeFolder || listing != badgeListing else { return }
     badgeFolder = folder
+    badgeListing = listing
     _ = folder.withCString { mv_chrome_slots_request_badges($0) }
   }
+  private var badgeListing: UInt64 = .max
 
   func badges(forName name: String) -> [SlotBadge] { badgesByName[name] ?? [] }
 
