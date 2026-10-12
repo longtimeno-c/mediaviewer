@@ -587,8 +587,9 @@ public static partial class IslandHost
                     RefreshOpenAddons();
                     return;
                 }
-                // Native takes the parked text into 16 KB (chrome_host::take_parked_text).
-                if (System.Text.Encoding.UTF8.GetByteCount(json) >= 128 * 1024)  // chrome_host::take_parked_text
+                // Native takes the parked text into 128 KB, NUL included
+                // (chrome_host::take_parked_text; TakeTreePath refuses a longer one).
+                if (System.Text.Encoding.UTF8.GetByteCount(json) >= 128 * 1024)
                 {
                     _keymapNote.Text = $"{name} is too large to apply.";
                     return;
