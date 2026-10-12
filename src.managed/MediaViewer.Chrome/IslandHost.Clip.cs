@@ -322,6 +322,10 @@ public static partial class IslandHost
         public TextBlock Title = null!;
         public TextBlock Status = null!;
         public JobBar Bar = null!;
+        // Only the action for the job's state shows (JobsView.swift).
+        public Button Cancel = null!;
+        public Button Retry = null!;
+        public Button Reveal = null!;
     }
 
     // A job's progress as two plain borders. Not a ProgressBar: WinUI's has no
@@ -413,12 +417,12 @@ public static partial class IslandHost
         col.Children.Add(_jobsEmpty);
         _jobsList = new StackPanel { Spacing = 6 };
         col.Children.Add(_jobsList);
-        var clear = new Button { Content = Text("Clear finished", Title), IsTabStop = false };
-        clear.Click += (_, _) =>
+        Button clear = EditButton("Clear finished", () =>
         {
             _folderSession?.ClipClearFinished();
             RefreshJobs();
-        };
+        });
+        clear.IsTabStop = false;
         col.Children.Add(clear);
         col.Children.Add(Text("↑ ↓ choose · Delete cancel · R retry · Enter show in Explorer · Esc back",
                               Body, UiFontSize - 3));
@@ -552,6 +556,11 @@ public static partial class IslandHost
             row.Bar.Visibility = p.State is MvClipJobState.Running or MvClipJobState.Queued
                 ? Visibility.Visible : Visibility.Collapsed;
             row.Root.BorderBrush = Brush(i == _jobCursor ? TrimAccent : Hairline);
+            bool running = p.State is MvClipJobState.Running or MvClipJobState.Queued;
+            row.Cancel.Visibility = running ? Visibility.Visible : Visibility.Collapsed;
+            row.Retry.Visibility = p.State is MvClipJobState.Failed or MvClipJobState.Cancelled
+                ? Visibility.Visible : Visibility.Collapsed;
+            row.Reveal.Visibility = p.State == MvClipJobState.Done ? Visibility.Visible : Visibility.Collapsed;
         }
     }
 
@@ -562,9 +571,12 @@ public static partial class IslandHost
         row.Status = Text("", Body, UiFontSize - 3);
         row.Bar = new JobBar();
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-        buttons.Children.Add(TextButton("Cancel", () => { _folderSession?.ClipCancel(id); RefreshJobs(); }));
-        buttons.Children.Add(TextButton("Retry", () => { _folderSession?.ClipRetry(id); RefreshJobs(); }));
-        buttons.Children.Add(TextButton("Show in Explorer", () => RevealJob(id)));
+        row.Cancel = EditButton("Cancel", () => { _folderSession?.ClipCancel(id); RefreshJobs(); });
+        row.Retry = EditButton("Retry", () => { _folderSession?.ClipRetry(id); RefreshJobs(); });
+        row.Reveal = EditButton("Show in Explorer", () => RevealJob(id));
+        buttons.Children.Add(row.Cancel);
+        buttons.Children.Add(row.Retry);
+        buttons.Children.Add(row.Reveal);
         var inner = new StackPanel { Spacing = 3 };
         inner.Children.Add(row.Title);
         inner.Children.Add(row.Bar.Root);
@@ -576,7 +588,7 @@ public static partial class IslandHost
             BorderThickness = new Thickness(1),
             BorderBrush = Brush(Hairline),
             Padding = new Thickness(8, 6, 8, 6),
-            CornerRadius = new CornerRadius(4),
+            CornerRadius = new CornerRadius(6),
         };
         return row;
     }

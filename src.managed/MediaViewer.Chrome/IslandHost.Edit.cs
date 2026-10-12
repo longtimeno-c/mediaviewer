@@ -578,13 +578,16 @@ public static partial class IslandHost
         // Rotate and flip: the PR 10 keys.
         var turn = new StackPanel { Spacing = 6 };
         turn.Children.Add(SectionTitle("Rotate and flip"));
+        // Icons with their keys in the tooltip, as on the Mac (issue #198):
+        // "⟲" and "⟳" are not in CozetteVector.
         turn.Children.Add(Row(
-            EditButton("⟲ Left", () => Send(Command.RotateCcw), tip: WithKey("Rotate left", Command.RotateCcw)),
-            EditButton("⟳ Right", () => Send(Command.RotateCw), tip: WithKey("Rotate right", Command.RotateCw)),
-            EditButton("Flip H", () => Send(Command.FlipHorizontal),
-                       tip: WithKey("Flip horizontal", Command.FlipHorizontal)),
-            EditButton("Flip V", () => Send(Command.FlipVertical),
-                       tip: WithKey("Flip vertical", Command.FlipVertical))));
+            PaneIconButton(Glyph.Rotate, "Rotate left", KeyOf(Command.RotateCcw), () => Send(Command.RotateCcw),
+                           new ScaleTransform { ScaleX = -1 }),
+            PaneIconButton(Glyph.Rotate, "Rotate right", KeyOf(Command.RotateCw), () => Send(Command.RotateCw)),
+            PaneIconButton(Glyph.FlipArrows, "Flip horizontal", KeyOf(Command.FlipHorizontal),
+                           () => Send(Command.FlipHorizontal)),
+            PaneIconButton(Glyph.FlipArrows, "Flip vertical", KeyOf(Command.FlipVertical),
+                           () => Send(Command.FlipVertical), new RotateTransform { Angle = 90 })));
         turn.Children.Add(Hint("A JPEG with only turns is rewritten losslessly."));
         pane.Children.Add(turn);
 
