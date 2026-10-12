@@ -370,6 +370,13 @@ from any codec. Forced through it, ProRes 422 played at 55 frames/s.
 (non-exact, settle on release). Speed is on the command-bar dropdown and `Shift+Q` / `Shift+E`.
 `J` / `L` are ±10 s in the viewer.
 
+**A transport click does not seek 0 on the way (2026-10-12).** The system slider reports its
+minimum before the time under the pointer. `media_source::seek` publishes that target and arms
+preview before the frame is decoded, so the minimum presents the opening frame. A non-exact seek
+of the origin is dropped while the playhead is past half a second (`scrub_origin_is_spurious`);
+the click's real sample and the exact release are kept. An exact seek to the start — replay, a
+step, the thumb released there — still goes there. Play and pause are not changed.
+
 ---
 
 ## Metadata

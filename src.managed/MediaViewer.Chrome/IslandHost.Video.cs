@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 using System.Runtime.InteropServices;
 using Microsoft.UI;
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
@@ -52,6 +53,15 @@ public static partial class IslandHost
     private static SystemMediaTransportControls? _smtc;
     private static bool _updatingVideo, _draggingSeek;
     private static long _lastScrub;
+    // Issue #362. The slider raises ValueChanged from its own pointer handler
+    // before PointerPressed sets _draggingSeek, and the first sample is the
+    // range minimum. Seeking that exactly presents the opening frame.
+    // Half a second, player::scrub_origin_playhead_ns.
+    private static bool _deferredSeekQueued, _seekPlayheadCaptured;
+    private static long _deferredSeekNs = -1;
+    private static long _seekPlayheadNs;
+    private static int _originHoldEpoch;
+    private static DispatcherQueueTimer? _originHoldTimer;
     private static bool _videoActive;
     private static bool _videoPlaying;
     private static bool _transportHeld;
@@ -260,19 +270,30 @@ public static partial class IslandHost
         };
         AutomationProperties_SetName(_seek, "Seek");
         _seek.AddHandler(UIElement.PointerPressedEvent,
-                         new PointerEventHandler((_, _) => { _draggingSeek = true; SetTransportHeld(true); }), true);
+                         new PointerEventHandler((_, _) =>
+                         {
+                             _draggingSeek = true;
+                             SetTransportHeld(true);
+                             CaptureSeekPlayhead();
+                         }), true);
         _seek.AddHandler(UIElement.PointerReleasedEvent,
                          new PointerEventHandler((_, _) => { FinishSeek(); RestoreCanvasFocus(); }), true);
         _seek.PointerCaptureLost += (_, _) => FinishSeek();
         _seek.ValueChanged += (_, e) =>
         {
             if (_updatingVideo || _folderSession is null) return;
-            long now = Environment.TickCount64;
-            // A drag is a scrub: nearest keyframe, throttled. The release is the
-            // exact seek (docs/design/05's two modes).
-            if (_draggingSeek && now - _lastScrub < 75) return;
-            _lastScrub = now;
-            _folderSession.VideoSeek((long)(e.NewValue * 1e9), !_draggingSeek);
+            CaptureSeekPlayhead();
+            // A newer sample cancels an origin hold left by a click that
+            // released on the slider's minimum (issue #362).
+            CancelOriginHold();
+            // Coalesce. A click's minimum and its real time both land before
+            // the dispatcher runs, and PointerPressed has set _draggingSeek
+            // by then. FinishSeek is the exact seek (docs/design/05).
+            _deferredSeekNs = (long)(e.NewValue * 1e9);
+            if (_deferredSeekQueued) return;
+            _deferredSeekQueued = true;
+            if (_dispatcher?.DispatcherQueue.TryEnqueue(ApplyDeferredTransportSeek) != true)
+                ApplyDeferredTransportSeek();
         };
         // Elapsed left of the scrubber, duration right of it (TransportView.swift).
         _videoElapsed = ClockText(TextAlignment.Right);
@@ -422,12 +443,78 @@ public static partial class IslandHost
             Send(Command.TransportWidth, dip);
     }
 
+    private static void CancelOriginHold()
+    {
+        ++_originHoldEpoch;
+        _originHoldTimer?.Stop();
+        _originHoldTimer = null;
+    }
+
+    private static void CaptureSeekPlayhead()
+    {
+        if (_seekPlayheadCaptured || _folderSession is null) return;
+        _seekPlayheadNs = Math.Max(0, _folderSession.VideoPosition);
+        _seekPlayheadCaptured = true;
+    }
+
+    // The latest slider sample. A drag scrubs by keyframe; anything else (a
+    // keyboard change) seeks exactly. The minimum during a drag, while the
+    // playhead was already past the start, is not a seek.
+    private static void ApplyDeferredTransportSeek()
+    {
+        _deferredSeekQueued = false;
+        if (_folderSession is null || _deferredSeekNs < 0) return;
+        long ns = _deferredSeekNs;
+        _deferredSeekNs = -1;
+        if (_draggingSeek)
+        {
+            if (ns <= 0 && _seekPlayheadNs > 500_000_000) return;
+            long now = Environment.TickCount64;
+            if (now - _lastScrub < 75) return;
+            _lastScrub = now;
+            _folderSession.VideoSeek(ns, false);
+            return;
+        }
+        _seekPlayheadCaptured = false;
+        _folderSession.VideoSeek(ns, true);
+    }
+
     private static void FinishSeek()
     {
-        if (!_draggingSeek || _seek is null) return;
+        if (!_draggingSeek || _seek is null || _folderSession is null) return;
+        long ns = (long)(_seek.Value * 1e9);
+        // Clear the coalesced sample before dropping _draggingSeek, so an
+        // apply queued from this gesture cannot seek the minimum exactly.
+        _deferredSeekNs = -1;
         _draggingSeek = false;
         SetTransportHeld(false);
-        _folderSession?.VideoSeek((long)(_seek.Value * 1e9), true);
+        CancelOriginHold();
+        if (ns <= 0 && _seekPlayheadNs > 500_000_000)
+        {
+            // The real time may still be on its way. A sample cancels this.
+            int epoch = _originHoldEpoch;
+            var timer = _dispatcher?.DispatcherQueue.CreateTimer();
+            if (timer is null)
+            {
+                _seekPlayheadCaptured = false;
+                _folderSession.VideoSeek(0, true);
+                return;
+            }
+            _originHoldTimer = timer;
+            timer.Interval = TimeSpan.FromMilliseconds(80);
+            timer.IsRepeating = false;
+            timer.Tick += (_, _) =>
+            {
+                if (epoch != _originHoldEpoch || _folderSession is null || _seek is null) return;
+                _originHoldTimer = null;
+                _seekPlayheadCaptured = false;
+                _folderSession.VideoSeek((long)(_seek.Value * 1e9), true);
+            };
+            timer.Start();
+            return;
+        }
+        _seekPlayheadCaptured = false;
+        _folderSession.VideoSeek(ns, true);
     }
 
     private static void SkipVideo(long deltaNs)
