@@ -19,6 +19,10 @@
 
 #include "fixtures.h"
 #include "meta/meta.h"
+#if __has_include("meta/probe.h")
+#include "meta/probe.h"
+#define MV_HAVE_PROBE 1
+#endif
 
 namespace {
 
@@ -101,6 +105,17 @@ TEST_CASE("perf: one metadata read per format", "[.perf-meta]") {
   for (const auto& [label, path] : files) {
     (void)median_us(path, 3);  // warm the page cache, as the published runs are
     std::printf("[perf-meta] %-20s median %.1f us over %d reads\n", label.c_str(), median_us(path, rounds), rounds);
+#ifdef MV_HAVE_PROBE
+    // #345: the AI badge's provenance probe on the same file.
+    std::vector<double> t;
+    for (int i = 0; i < rounds; ++i) {
+      const auto a = std::chrono::steady_clock::now();
+      (void)mv::meta::probe_provenance(path);
+      t.push_back(std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - a).count());
+    }
+    std::sort(t.begin(), t.end());
+    std::printf("[perf-meta] %-20s probe median %.1f us\n", label.c_str(), t[t.size() / 2]);
+#endif
   }
   std::error_code ec;
   fs::remove_all(dir, ec);

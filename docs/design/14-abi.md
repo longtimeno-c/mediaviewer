@@ -532,6 +532,15 @@ AI" ([06-metadata.md](06-metadata.md#made-with-and-ai-provenance-290)). The prop
 `space` column gains `c2pa`, `png_text`, `icc` and `xmp_raw`, whose access column is always `r`;
 both hosts now write that table with the same `meta::editable_properties_table`.
 
+**The AI badge (#345).** Not part of the pane: the host pushes the badge's text, decided by
+`shell/ai_badge.h`, whenever the item or its answer changes. Windows: an optional chrome entry
+`ShowAiBadge` taking `chrome_ai_badge_args` (48 bytes: `visible, x, y, width, height,
+title_len`, then UTF-8 `title` and `evidence` pointers, `evidence_len`, reserved; managed
+`ChromeAiBadgeArgs`), sent only when something changed; an older chrome without it simply has no
+badge. Mac: `MVChromeHost.makeAIBadgeView()` and `setAIBadge(title:evidence:)` from
+`main_mac.mm`, which also shows, hides and places the hosting view. Neither crosses
+`mediaviewer.h`.
+
 ## Version history
 
 | Minor | Change |

@@ -122,6 +122,23 @@ the video and auto-hides (`shell/transport_autohide.h`, shared by both hosts):
 - Fullscreen: the pointer hides with it while over the video. Windowed: never.
 - Visual only: no refit, no second action on the wake, no repaint while idle.
 
+The **AI badge** (#345, [06](06-metadata.md#the-ai-badge-345)) is the other small chrome over the
+canvas: bottom-right, above the transport on a clip, hidden under the gallery, Settings and the
+Video Editor. It is in the focus order (Mac: the key-view loop; Windows: `Tab` off the end of the
+command bar visits it before the canvas, `Shift+Tab` from it returns to the bar). Focus there
+shows its tooltip; it binds no keys, so the router keeps running viewer commands, as with the
+command bar. Never a present.
+
+## Settings
+
+The Settings screen (`Ctrl+,`) holds the view preferences and the key table; both hosts lay it
+out the same way and store the view preferences as one flags word (`shell/settings.h`
+`view_settings`: Windows `settings.ini` `[view]`, Mac `mv.viewFlags`). Sections: Filmstrip,
+Browsing, **Viewer** (#345: "Show a badge on AI-generated images", on by default, owner
+2026-10-11, stored inverted as `kSettingHideAiBadge` so older settings read as on), File types,
+Appearance, then updates and add-ons. A change applies at once, without a relaunch; the AI badge
+switch pokes nothing the render thread reads.
+
 ## Default map
 
 FastStone / IrfanView muscle memory. Mode masks below: **Viewing** = browse, video, island,
