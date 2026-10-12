@@ -222,6 +222,7 @@ final class SlotStore: ObservableObject {
       badgeDefs[key] = SlotBadge(key: key, label: b["label"] as? String ?? "", symbol: b["symbol"] as? String ?? "")
     }
     localSearch = (doc["local_search"] as? Bool) ?? false
+    SlotTileFlags.shared.set(badges: !badgeDefs.isEmpty, context: items.contains { $0.slot == "context" })
     // A new add-on may want the file on screen and the folder: ask again.
     infoKey = ""
     MetadataStore.shared.slotsChanged()

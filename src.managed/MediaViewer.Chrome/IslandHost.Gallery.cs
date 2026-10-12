@@ -950,9 +950,16 @@ public static partial class IslandHost
                 Margin = new Thickness(0, 2, 0, 0),
             };
             var col = new StackPanel { Spacing = 4 };
-            // docs/design/25 PR 59: the add-ons' badges, from a table (no add-on call per tile).
-            UIElement badged = WithSlotBadges(WithPlayBadge(WithBadge(image, vm.Badge), vm.IsClip, 40), vm,
-                                              out Action unsubscribeBadges);
+            // docs/design/25 PR 59: the add-ons' badges, from a table (no add-on call per
+            // tile). With no add-on contributing badges the tile is exactly the plain one:
+            // no extra element, no subscription (the tiles are rebuilt when that changes).
+            UIElement badged = WithPlayBadge(WithBadge(image, vm.Badge), vm.IsClip, 40);
+            Action? unsubscribeBadges = null;
+            if (_slotTileBadges)
+            {
+                badged = WithSlotBadges(badged, vm, out Action unsubscribe);
+                unsubscribeBadges = unsubscribe;
+            }
             var clipped = new Border
             {
                 CornerRadius = new CornerRadius(6),
@@ -993,15 +1000,17 @@ public static partial class IslandHost
             vm.PropertyChanged += OnChanged;
             // Recycling without this leaks a handler per realisation, and every
             // thumb completion then walks a growing list of dead elements.
-            border.Tag = (Action)(() =>
-            {
-                vm.PropertyChanged -= OnChanged;
-                unsubscribeBadges();
-            });
+            border.Tag = unsubscribeBadges is null
+                ? (Action)(() => vm.PropertyChanged -= OnChanged)
+                : (Action)(() =>
+                {
+                    vm.PropertyChanged -= OnChanged;
+                    unsubscribeBadges();
+                });
 
             border.Tapped += (_, _) => Send(Command.GalleryActivate, vm.Index);
-            // docs/design/25 PR 59: the add-ons' context-menu entries, when any.
-            AttachSlotContextMenu(border, vm);
+            // docs/design/25 PR 59: the add-ons' context-menu entries, only when some exist.
+            if (_slotTileContext) AttachSlotContextMenu(border, vm);
             WireFileDrag(border, vm);
             return border;
         }

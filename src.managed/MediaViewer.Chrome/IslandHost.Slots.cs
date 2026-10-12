@@ -188,6 +188,31 @@ public static partial class IslandHost
         }
         RebuildSlotBar();
         RebuildSlotPathItems();
+        // Gallery tiles carry badge / context wrappers only while something fills
+        // them: when that changes, the realised tiles are made again.
+        bool badges = SlotBadgeDefs.Count > 0;
+        bool context = _slotItems.Any(i => i.Slot == "context");
+        if (badges != _slotTileBadges || context != _slotTileContext)
+        {
+            _slotTileBadges = badges;
+            _slotTileContext = context;
+            RemakeGalleryTiles();
+        }
+    }
+
+    private static bool _slotTileBadges;
+    private static bool _slotTileContext;
+
+    private static void RemakeGalleryTiles()
+    {
+        ItemsRepeater? repeater = _galleryRepeater;
+        if (repeater?.ItemsSource is not { } source) return;
+        try
+        {
+            repeater.ItemsSource = null;
+            repeater.ItemsSource = source;
+        }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
     }
 
     private static string? SlotImagePath(string addon, string src)

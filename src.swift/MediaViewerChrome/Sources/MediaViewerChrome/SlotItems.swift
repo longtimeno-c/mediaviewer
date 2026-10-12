@@ -111,6 +111,44 @@ struct SlotPathItems: View {
   }
 }
 
+/// Whether any add-on contributes tile badges or context-menu entries. Its own
+/// small store, set only when contributions change, so a gallery with no such
+/// add-on builds plain cells (no badge view observing SlotStore, no context menu).
+@MainActor
+final class SlotTileFlags: ObservableObject {
+  static let shared = SlotTileFlags()
+  @Published private(set) var badges = false
+  @Published private(set) var context = false
+  func set(badges: Bool, context: Bool) {
+    if badges != self.badges { self.badges = badges }
+    if context != self.context { self.context = context }
+  }
+}
+
+struct SlotBadgesOverlay: ViewModifier {
+  let on: Bool
+  let name: String
+  func body(content: Content) -> some View {
+    if on {
+      content.overlay(alignment: .bottomLeading) { SlotTileBadges(name: name) }
+    } else {
+      content
+    }
+  }
+}
+
+struct SlotContextMenu: ViewModifier {
+  let on: Bool
+  let tile: Int
+  func body(content: Content) -> some View {
+    if on {
+      content.contextMenu { SlotContextEntries(tile: tile) }
+    } else {
+      content
+    }
+  }
+}
+
 /// A gallery tile's badges: a table lookup by name (SlotStore.badgesByName),
 /// never an add-on call (PR 59 verify: counted).
 struct SlotTileBadges: View {
