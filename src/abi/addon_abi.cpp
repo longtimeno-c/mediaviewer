@@ -179,11 +179,13 @@ mv::result<std::string> thumbnail(const std::string& path) {
 
 }  // namespace
 
-extern "C" {
-
+// C++ linkage, as addon_bridge.h declares it: inside the extern "C" block
+// below it is "a different language linkage" (MSVC C2732, clang-cl error).
 namespace mv::abi {
 bool present_busy() noexcept { return g_present_busy.load(std::memory_order_relaxed); }
 }  // namespace mv::abi
+
+extern "C" {
 
 MV_API void MV_CALL mv_present_set_busy(uint32_t busy) {
   g_present_busy.store(busy != 0, std::memory_order_relaxed);
@@ -491,7 +493,7 @@ mv::status load_addon(mv_session_t session, const char* id, const char* interfac
     }
     mv::addon::host_services svc;
     svc.capture = &capture_info;
-  svc.tag_facts = &tag_facts;
+    svc.tag_facts = &tag_facts;
     svc.thumbnail = &thumbnail;
     svc.should_yield = [] { return g_present_busy.load(std::memory_order_relaxed); };
     svc.post = [session](const mv_addon_event& e) {
