@@ -106,6 +106,8 @@ final class AddonSettingsModel: ObservableObject {
   @Published private(set) var loaded = false
   /// Why the last change to an item was refused, by key.
   @Published private(set) var refusals: [String: String] = [:]
+  /// The last write handed to a worker; the next one waits for it.
+  private var writes: Task<Void, Never>?
 
   init(addonID: String) { self.addonID = addonID }
 
@@ -148,7 +150,11 @@ final class AddonSettingsModel: ObservableObject {
     let id = addonID
     let key = item.key
     let value = item.json
-    Task.detached(priority: .userInitiated) {
+    // One write at a time, in the order they were made: two quick stepper
+    // clicks must not land as the second, then the first.
+    let previous = writes
+    writes = Task.detached(priority: .userInitiated) {
+      await previous?.value
       let json = OpenAddonBridge.read(capacity: 4096) { mv_addons_setting_set(id, key, value, $0, $1) }
       let obj = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any] ?? [:]
       let ok = obj["ok"] as? Bool ?? false
@@ -310,7 +316,12 @@ private struct TextSettingField: View {
       .onSubmit { take() }
       .onChange(of: focused) { _, now in if !now { take() } }
       .onChange(of: typed) { _, now in
-        if now.utf8.count > item.maxLength { typed = String(now.prefix(item.maxLength)) }
+        // max_length counts UTF-8 bytes, as the core does: drop whole
+        // characters until the text fits (prefix(n) counts characters).
+        guard now.utf8.count > item.maxLength else { return }
+        var cut = now
+        while cut.utf8.count > item.maxLength { cut.removeLast() }
+        typed = cut
       }
       .onAppear { typed = item.text }
   }
