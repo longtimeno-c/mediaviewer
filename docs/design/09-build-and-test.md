@@ -8,7 +8,8 @@ Windows shell integration works, and how the app is distributed. Commands live i
 
 - **CMake ≥ 3.28** + **vcpkg manifest mode**. [`vcpkg.json`](../../vcpkg.json) pins a
   `builtin-baseline`; the baseline is the pin and `overrides` is empty. Moving it is a
-  deliberate commit followed by a frame-time re-run.
+  deliberate commit followed by a frame-time re-run, and moves all five copies (the three
+  manifests and `VCPKG_COMMIT` in `ci.yml` / `release.yml`; `tools/check-vcpkg-baseline.ps1`).
 - **Windows:** MSVC 2022 primary, clang-cl as the second compiler in CI, an ASan configuration
   (`-DMV_ASAN=ON`, which copies the ASan runtime DLL beside every executable).
   `/W4 /WX /permissive- /Zc:__cplusplus /GR- /utf-8`.
@@ -121,8 +122,9 @@ Run on every push by the `policy` CI job:
 
 | Script | Fails when |
 |---|---|
-| `tools/check-module-graph.ps1` | A dependency points upward or sideways in `shell → abi → {canvas, edit, player, image, meta, addon} → {codec, gfx, io} → core` |
-| `tools/check-hostable-core.ps1` | `windows.h` / `d3d11.h` appear above `gfx/` and the hosts ([platforms](15-platforms.md)) |
+| `tools/check-module-graph.ps1` | A dependency points upward or sideways in `shell → abi → {canvas, edit, player, image, meta, addon} → {codec, gfx, io} → core`, or `addons → infer → core` ([architecture](02-architecture.md)); `.mm` / `#import` included |
+| `tools/check-hostable-core.ps1` | `windows.h` / `d3d11.h` appear above `gfx/` and the hosts outside `*_win.cpp`, or Foundation / AppKit / Metal / CoreVideo / AVFoundation outside the `*_mac.*` ports ([platforms](15-platforms.md)) |
+| `tools/check-vcpkg-baseline.ps1` | The vcpkg baseline differs between `vcpkg.json`, `tools/mac/dependencies/vcpkg.json`, `tools/portable/vcpkg.json` and `VCPKG_COMMIT` in `ci.yml` / `release.yml` |
 | `tools/check-winui-controls.ps1` | The chrome uses a WinUI control that fail-fasts in the island host (`ProgressBar`, `ProgressRing`, `DropDownButton`, `InfoBar`, `TextBox`, …) |
 | `tools/licence-check.ps1` | FFmpeg was configured with `--enable-gpl` / `--enable-nonfree`, or a software HEVC/H.264/AAC encoder is present ([licensing](11-licensing.md)) |
 | `tools/telemetry-schema-check.ps1` | A telemetry event gains a free-text field ([13](13-updates-and-telemetry.md)) |
