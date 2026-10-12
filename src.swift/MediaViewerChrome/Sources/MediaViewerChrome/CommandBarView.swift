@@ -219,7 +219,7 @@ public struct CommandBarView: View {
           BarFlyout(title: "Tools") { close in
             FlyoutItem(title: "Copy text in image", shortcut: key("Copy text in image"),
                        enabled: edit.subject == 1 && !edit.galleryVisible) {
-              close(); mv_chrome_menu(45)  // kMenuCopyText
+              close(); mv_chrome_menu(kMenuCopyText)
             }
           }
           // PR 29 (docs/design/20): the visible way in to every edit, a bar button like
