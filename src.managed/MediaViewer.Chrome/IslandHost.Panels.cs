@@ -752,7 +752,10 @@ public static partial class IslandHost
             _metaQuery = search.Text;
             Fill();
         };
-        Fill();
+        // Bind once the repeater is in a XamlRoot: setting ItemsSource on an
+        // unparented repeater is the native AV in set_ItemsSource that the
+        // filmstrip and gallery hit (IslandHost.Filmstrip.cs BuildFilmstrip).
+        list.Loaded += (_, _) => Fill();
         return host;
     }
 
