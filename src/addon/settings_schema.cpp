@@ -178,6 +178,10 @@ bool valid_display_text(std::string_view s, std::size_t max_bytes, bool may_be_e
   for (std::size_t i = 0; i < s.size(); ++i) {
     const auto c = static_cast<unsigned char>(s[i]);
     if (c < 0x20 || c == 0x7F) return false;
+    // U+0080..U+009F, the C1 controls (U+0085 is a line break to some
+    // renderers); U+061C, the Arabic letter mark (a bidi control).
+    if (c == 0xC2 && i + 1 < s.size() && static_cast<unsigned char>(s[i + 1]) <= 0x9F) return false;
+    if (c == 0xD8 && i + 1 < s.size() && static_cast<unsigned char>(s[i + 1]) == 0x9C) return false;
     if (c == 0xE2 && i + 2 < s.size()) {
       const auto c1 = static_cast<unsigned char>(s[i + 1]);
       const auto c2 = static_cast<unsigned char>(s[i + 2]);

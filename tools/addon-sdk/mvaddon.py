@@ -213,7 +213,8 @@ def valid_https_url(url: str) -> bool:
     return bool(host) and re.fullmatch(r"[A-Za-z0-9.\-:\[\]]+", host) is not None
 
 
-_HIDDEN = [(0x200B, 0x200F), (0x2028, 0x202E), (0x2060, 0x206F), (0xFEFF, 0xFEFF)]
+_HIDDEN = [(0x80, 0x9F), (0x061C, 0x061C), (0x200B, 0x200F), (0x2028, 0x202E), (0x2060, 0x206F),
+           (0xFEFF, 0xFEFF)]
 
 
 def display_text(text: str, max_bytes: int, may_be_empty: bool = False) -> bool:

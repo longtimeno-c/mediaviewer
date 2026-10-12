@@ -219,6 +219,9 @@ class Pack(unittest.TestCase):
             ("settings", dict(page, sections=[])),
             ("settings", {"sections": [{"title": "A", "items": [
                 {"type": "number", "key": "n", "label": "N", "min": 1, "max": 5, "default": 9}]}]}),
+            # A C1 control in a label (U+0085 breaks the line in some renderers).
+            ("settings", {"sections": [{"title": "A", "items": [
+                {"type": "toggle", "key": "t", "label": "T\u0085x", "default": True}]}]}),
             # More than the three decimals the app stores.
             ("settings", {"sections": [{"title": "A", "items": [
                 {"type": "number", "key": "n", "label": "N", "min": 0.0004, "max": 0.0014,
