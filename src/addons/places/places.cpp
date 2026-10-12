@@ -74,10 +74,20 @@ std::size_t utf8_length(std::string_view s) noexcept {
 
 }  // namespace
 
-std::uint32_t engine::surface_width(float width_pt, float scale) noexcept {
-  const float pt = std::clamp(width_pt > 0 ? width_pt : 280.0f, 120.0f, 1600.0f);
+namespace {
+float pane_points(float width_pt) noexcept { return std::clamp(width_pt > 0 ? width_pt : 280.0f, 120.0f, 1600.0f); }
+}  // namespace
+
+float engine::surface_scale(float width_pt, float scale) noexcept {
   const float s = std::clamp(scale > 0 ? scale : 1.0f, 1.0f, 3.0f);
-  return static_cast<std::uint32_t>(std::lround(pt * s));
+  // The host takes a surface of 4096 pixels a side at most: a very wide pane
+  // on a 3x display gets the map at a lower backing scale, not no map at all.
+  return std::min(s, k_max_surface_px / pane_points(width_pt));
+}
+
+std::uint32_t engine::surface_width(float width_pt, float scale) noexcept {
+  const float px = pane_points(width_pt) * surface_scale(width_pt, scale);
+  return static_cast<std::uint32_t>(std::min(std::floor(px + 0.5f), k_max_surface_px));
 }
 
 std::uint32_t engine::surface_height(float scale) noexcept {
@@ -103,9 +113,10 @@ section_result engine::section(double lat, double lon, std::string_view location
   state.prefs = prefs;
   state.view.lat = lat;
   state.view.lon = lon;
+  const float backing = surface_scale(width_pt, scale);
   state.view.width = surface_width(width_pt, scale);
-  state.view.height = surface_height(scale);
-  state.view.scale = std::clamp(scale > 0 ? scale : 1.0f, 1.0f, 3.0f);
+  state.view.height = surface_height(backing);
+  state.view.scale = backing;
   state.view.span_deg = k_zoom_span_deg[k_region_zoom_step];
   const geo::database* db = db_();
   if (db) {

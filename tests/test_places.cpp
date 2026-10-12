@@ -472,6 +472,21 @@ TEST_CASE("places: gesture and view maths stay bounded on any input", "[places]"
   CHECK(render_map(db, map_view{38.7967, -9.3903, 320, 160, 1e30f, 0.3}, p, "PT", out));
 }
 
+TEST_CASE("places: a wide pane on a 3x display still gets its map, within the host's 4096 pixels", "[places]") {
+  const auto& db = test_db();
+  engine eng([&db] { return &db; });
+  section_state st;
+  const auto out = eng.section(38.7967, -9.3903, "", light_theme(), 1600, 3, settings{}, st);
+  REQUIRE(out.map);
+  CHECK(out.map->width <= 4096);
+  CHECK(out.map->height <= 4096);
+  // The same shape as the pane: the backing scale drops, the aspect does not.
+  CHECK(static_cast<double>(out.map->width) / out.map->height ==
+        Catch::Approx(1600.0 / k_map_height_pt).epsilon(0.01));
+  CHECK(engine::surface_width(320, 2) == 640);
+  CHECK(engine::surface_height(engine::surface_scale(320, 2)) == 320);
+}
+
 TEST_CASE("places: towns in a box, most populous first", "[places][geo]") {
   const auto& db = test_db();
   const auto lisbon = db.towns_in(mv::geo::box{38.55, -9.60, 39.05, -8.90}, 5);

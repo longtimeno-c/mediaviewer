@@ -38,6 +38,8 @@ struct settings {
 
 // The map's height in points (the slot contract: a 160 pt surface).
 inline constexpr float k_map_height_pt = 160.0f;
+// The host's largest surface side (mediaviewer_addon.h surface_post).
+inline constexpr float k_max_surface_px = 4096.0f;
 // What the map can and cannot show, said once under it.
 inline constexpr std::string_view k_map_caption = "No street detail \xE2\x80\x94 offline map";
 
@@ -80,7 +82,10 @@ class engine {
   bool gesture(section_state& state, double scale, double anchor_x, double anchor_y, double pan_x, double pan_y,
                std::shared_ptr<const map_image>& map, std::string& diff_json);
 
-  // The surface's pixel size for a pane width and backing scale.
+  // The surface's pixel size for a pane width and backing scale. The backing
+  // scale is the display's (1..3), lowered so the width stays within the
+  // host's 4096-pixel surface limit; surface_height takes that scale.
+  [[nodiscard]] static float surface_scale(float width_pt, float scale) noexcept;
   [[nodiscard]] static std::uint32_t surface_width(float width_pt, float scale) noexcept;
   [[nodiscard]] static std::uint32_t surface_height(float scale) noexcept;
 
