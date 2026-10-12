@@ -81,6 +81,8 @@ final class MetadataStore: ObservableObject {
   @Published private(set) var properties: [MetaProperty] = []
   @Published private(set) var streams: [MetaStream] = []
   @Published private(set) var chapters: [MetaChapter] = []
+  /// The item the record is for: a half-typed edit belongs to it (issue #190).
+  @Published private(set) var itemPath = ""
 
   // PR 12 (docs/design/06 "Writing"): what the pane edits. The host owns the truth; a
   // change is queued there and lands on its I/O pool. These mirror it, and a
@@ -154,6 +156,10 @@ final class MetadataStore: ObservableObject {
   func blur() { mv_chrome_meta_blur() }
 
   private func reload() {
+    // Read here, when the generation moved (a selection move bumps it), not per poll.
+    let index = mv_chrome_current_index()
+    let path = index < 0 ? "" : readText { mv_chrome_item_path(index, $0, $1) }
+    if path != itemPath { itemPath = path }
     summary = readTable { mv_chrome_meta_summary($0, $1) }.enumerated().map { i, f in
       MetaRow(id: i, label: String(f.first ?? ""), value: f.count > 1 ? String(f[1]) : "")
     }

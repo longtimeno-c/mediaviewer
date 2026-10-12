@@ -10,7 +10,7 @@ private struct VolumeSliderRow: View {
 
   var body: some View {
     HStack(spacing: 6) {
-      Image(systemName: "speaker.fill").font(.caption)
+      Image(systemName: "speaker.fill").font(MVTheme.font(12))
       Slider(
         value: Binding(
           get: { Double(store.draggingVolume ?? store.volume) },
@@ -19,7 +19,7 @@ private struct VolumeSliderRow: View {
         onEditingChanged: { editing in if !editing { store.endVolumeDrag() } }
       )
       .frame(width: 120)
-      Image(systemName: "speaker.wave.3.fill").font(.caption)
+      Image(systemName: "speaker.wave.3.fill").font(MVTheme.font(12))
     }
     .padding(.horizontal, 10)
     .padding(.vertical, 4)
@@ -123,7 +123,7 @@ struct TransportView: View {
       }
       Button(action: { store.skip(10_000) }) { Image(systemName: "goforward.10") }
 
-      Text(Self.clock(shown)).monospacedDigit().font(.caption).frame(minWidth: 40, alignment: .trailing)
+      Text(Self.clock(shown)).monospacedDigit().font(MVTheme.font(12)).frame(minWidth: 40, alignment: .trailing)
       Slider(
         value: Binding(
           get: { Double(shown) },
@@ -135,18 +135,20 @@ struct TransportView: View {
         .overlay { TrimMarks().allowsHitTesting(false) }
         // Milestone H: this clip's other matches in the active search.
         .overlay { MatchMarks().allowsHitTesting(false) }
-      Text(Self.clock(store.durationMs)).monospacedDigit().font(.caption)
+      Text(Self.clock(store.durationMs)).monospacedDigit().font(MVTheme.font(12))
         .frame(minWidth: 40, alignment: .leading)
 
       if store.trimArmed {
         Text(store.trimPreviewing ? store.trimLabel + " · previewing" : store.trimLabel)
-          .font(.caption).monospacedDigit()
+          .font(MVTheme.font(12)).monospacedDigit()
           .foregroundStyle(MVTheme.title)
           .lineLimit(1)
         // The keyed commands for the mouse: Return / ⇧Return in trim mode.
         Button("Save") { store.run(TrimCommand.keyframe) }
+          .buttonStyle(FlatButtonStyle(compact: true))
           .help("Keyframe trim: instant, no re-encode (Return)")
         Button("Save exact") { store.run(TrimCommand.reencode) }
+          .buttonStyle(FlatButtonStyle(compact: true))
           .help("Frame-accurate re-encode on the hardware encoder; slower (⇧Return)")
       }
 
@@ -157,7 +159,7 @@ struct TransportView: View {
           }
         }
       } label: {
-        Text(String(format: "%.2gx", Double(store.rateX100) / 100)).font(.caption).monospacedDigit()
+        Text(String(format: "%.2gx", Double(store.rateX100) / 100)).font(MVTheme.font(12)).monospacedDigit()
       }
       .menuStyle(.borderlessButton).fixedSize()
 

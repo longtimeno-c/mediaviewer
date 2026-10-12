@@ -192,7 +192,6 @@ final class VideoEditorStore: ObservableObject {
   func setMarkIn() { mv_chrome_editor_edit(14) }
   func setMarkOut() { mv_chrome_editor_edit(15) }
   func clearMarks() { mv_chrome_editor_edit(16) }
-  func select(_ i: Int) { mv_chrome_editor_select(Int32(i)) }
   func export(exact: Bool) { mv_chrome_editor_export(exact ? 1 : 0) }
   func close() { mv_chrome_editor_close() }
   func shuttle(_ key: Int32, _ phase: Int32) { mv_chrome_editor_shuttle(key, phase) }
