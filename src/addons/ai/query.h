@@ -17,6 +17,18 @@
 //   file:IMG_12  file:"my trip"  -file:copy
 //                          the file's name contains the text (case and accents
 //                          folded); the base app's file search, in the query
+//   camera:R5  lens:"24-70"  -camera:iphone
+//                          the file's camera / lens tag contains the text (#291)
+//   ai:yes  ai:no  made:chatgpt  ai:firefly
+//                          AI provenance (summary::ai_generated), or the
+//                          generator the file names ("made with")
+//   place:portugal  in:lisbon
+//                          where it was taken: answered by the Places add-on's
+//                          search provider; `in:` is a date when it reads as
+//                          one (in:2024), a place otherwise, never a folder
+//   R5  chatgpt            a plain word that matches a file's tags (camera,
+//                          lens, made-with, software, title, caption, keywords,
+//                          creator) puts those files first
 //
 // A lone word that starts a name ("Trist", or "Tristna" with a typo) shows
 // that person's photos first and what the word describes after them: results
@@ -56,6 +68,12 @@ struct parsed {
   std::int64_t to_unix = std::numeric_limits<std::int64_t>::max();    // exclusive
   std::vector<std::string> files;      // file:x, folded: the name must contain each
   std::vector<std::string> not_files;  // -file:x, folded: the name must contain none
+  // #291: tags. Folded; each must be contained in the tag (none, for not_).
+  std::vector<std::string> cameras, not_cameras;
+  std::vector<std::string> lenses, not_lenses;
+  std::vector<std::string> made, not_made;  // made:x / ai:x for x not yes/no
+  int ai = 0;                               // ai:yes 1, ai:no -1, not said 0
+  std::vector<std::string> places, not_places;  // place:x / in:x (not a date), as typed
   [[nodiscard]] bool has_dates() const noexcept {
     return from_unix != std::numeric_limits<std::int64_t>::min() ||
            to_unix != std::numeric_limits<std::int64_t>::max();
@@ -83,6 +101,15 @@ struct plan {
   std::int64_t to_unix = std::numeric_limits<std::int64_t>::max();
   std::vector<std::string> files;      // folded: the file's name contains each
   std::vector<std::string> not_files;  // folded: and none of these
+  // #291: tag terms, as parsed (folded).
+  std::vector<std::string> cameras, not_cameras, lenses, not_lenses, made, not_made;
+  int ai = 0;
+  // place: / in: (not a date). The engine keeps only geotagged assets; which
+  // place matches is the Places add-on's provider's answer (docs/design/17).
+  std::vector<std::string> places, not_places;
+  // The plain words, folded, for the tag-text match (search.h's rule: every
+  // word in the file's search fields). Empty when there are none.
+  std::vector<std::string> tag_words;
   // A lone word that only starts (or nearly spells) a name: those people
   // lead, and `text` answers after them (a union, not a filter).
   std::vector<std::int64_t> people_first;
@@ -94,7 +121,14 @@ struct plan {
            to_unix != std::numeric_limits<std::int64_t>::max();
   }
   // Anything that narrows the assets before ranking (not scope or kind).
-  [[nodiscard]] bool narrows() const noexcept { return !people.empty() || !phrases.empty() || !files.empty(); }
+  [[nodiscard]] bool narrows() const noexcept {
+    return !people.empty() || !phrases.empty() || !files.empty() || has_tags() || !places.empty();
+  }
+  // A camera / lens / made-with / AI term, kept or left out.
+  [[nodiscard]] bool has_tags() const noexcept {
+    return !cameras.empty() || !not_cameras.empty() || !lenses.empty() || !not_lenses.empty() || !made.empty() ||
+           !not_made.empty() || ai != 0;
+  }
   // A file name term, kept or left out.
   [[nodiscard]] bool has_files() const noexcept { return !files.empty() || !not_files.empty(); }
 };
@@ -114,8 +148,11 @@ struct suggestion {
 
 // ---- helpers (exposed for the engine and the tests) ---------------------------------
 
-// Lower-case, with common Latin accents folded ("José" -> "jose").
+// The shared fold (core/fold.h, #291): lower case, accents dropped, the
+// hosts' name rule ("José" -> "jose"; ß, æ, ø stay themselves).
 [[nodiscard]] std::string fold(std::string_view utf8);
+// `term` (folded) is contained in `value` (folded here).
+[[nodiscard]] bool tag_contains(std::string_view value, std::string_view folded_term);
 // file: / -file: against a path's last component (either separator).
 [[nodiscard]] bool name_matches(std::string_view path, std::span<const std::string> files,
                                 std::span<const std::string> not_files);

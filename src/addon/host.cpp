@@ -274,6 +274,17 @@ mv_status MV_CALL t_capture(void* host, const char* path, mv_addon_capture* out)
   });
 }
 
+mv_status MV_CALL t_tag_facts(void* host, const char* path, mv_addon_tag_facts* out) {
+  return guarded([&] {
+    if (!path || !out || out->struct_size < sizeof(mv_addon_tag_facts)) return MV_ERR_INVALID_ARG;
+    *out = mv_addon_tag_facts{};
+    out->struct_size = sizeof(mv_addon_tag_facts);
+    const auto& facts = self(host).services().tag_facts;
+    if (!facts) return MV_ERR_UNSUPPORTED_FORMAT;
+    return facts(path, *out) ? MV_OK : MV_ERR_IO;
+  });
+}
+
 mv_status MV_CALL t_pair(void*, const char* const* names, uint32_t count, uint32_t* partner,
                          uint32_t* kind) {
   return guarded([&] {
@@ -613,6 +624,7 @@ host_table::host_table(host_services services) : svc_(std::move(services)) {
   api_.thumbnail_store_jpeg = &t_thumbnail_store_jpeg;
   api_.recycle_file = svc_.recycle ? &t_recycle : nullptr;
   api_.walk_files2 = &t_walk2;
+  api_.tag_facts = svc_.tag_facts ? &t_tag_facts : nullptr;
 }
 
 void host_table::set_negotiated(std::uint32_t version) noexcept { api_.host_api = version; }

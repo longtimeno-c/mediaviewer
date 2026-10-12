@@ -269,6 +269,17 @@ meta_cache& default_meta_cache() {
   return cache;
 }
 
+std::string joined_fields(const std::vector<std::string>& fields, std::size_t cap) {
+  std::string out;
+  for (const std::string& f : fields) {
+    const std::size_t need = out.size() + (out.empty() ? 0 : 1) + f.size();
+    if (need + 1 > cap) break;
+    if (!out.empty()) out.push_back(kFieldSeparator);
+    out += f;
+  }
+  return out;
+}
+
 result<cached_facts> cached_or_read(meta_cache& cache, std::string_view path) {
   MV_TRY(io::file_stat st, io::stat_path(path));
   if (auto hit = cache.lookup(path, st.size, st.mtime_unix)) return std::move(*hit);

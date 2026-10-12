@@ -163,6 +163,26 @@ typedef struct mv_addon_capture {
   char camera_utf8[128];    /* "Canon EOS R5"; empty when absent */
 } mv_addon_capture;
 
+/* #291 (docs/design/06 "Search text", 17 "Schema 4"): what a file's tags say,
+ * from the host's meta_cache.db (read once per (path, size, mtime), a bounded
+ * head read on a miss). `fields_utf8` holds the search fields as shown
+ * (camera, lens, made-with, software, title, caption, keywords, creator),
+ * joined by U+001F, cut at a whole field to fit; the add-on folds them. */
+#define MV_ADDON_TAG_HAS_DATE 0x1u
+#define MV_ADDON_TAG_HAS_LOCATION 0x2u
+#define MV_ADDON_TAG_AI_GENERATED 0x4u
+typedef struct mv_addon_tag_facts {
+  uint32_t struct_size;     /* the caller's sizeof */
+  uint32_t flags;           /* MV_ADDON_TAG_* */
+  int64_t taken_unix;       /* date taken, local wall-clock read as UTC (mv_addon_capture) */
+  double lat;               /* WGS 84 degrees, north positive; HAS_LOCATION */
+  double lon;               /* east positive */
+  char camera_utf8[128];    /* "Canon EOS R5" */
+  char lens_utf8[128];
+  char made_with_utf8[128]; /* "ChatGPT", "Adobe Firefly" */
+  char fields_utf8[2048];
+} mv_addon_tag_facts;
+
 #define MV_ADDON_COPY_MAX_TARGETS 4
 
 typedef enum mv_addon_copy_outcome {
@@ -359,6 +379,13 @@ typedef struct mv_host_api {
    * `struct_size` covers it and the pointer is non-NULL. */
   mv_status(MV_CALL* walk_files2)(void* host, const char* root_utf8, int32_t max_depth,
                                   mv_addon_walk2_fn visit, void* user);
+
+  /* ---- tags (#291, docs/plans/metadata-search-and-place.md slice 4) ----------- */
+  /* [worker-thread] A file's tag facts (mv_addon_tag_facts above), from the
+   * host's meta_cache.db: a folder the viewer has shown costs no read.
+   * MV_ERR_IO when the file cannot be read. Appended: read it only when
+   * `struct_size` covers it and the pointer is non-NULL. */
+  mv_status(MV_CALL* tag_facts)(void* host, const char* path_utf8, mv_addon_tag_facts* out);
 } mv_host_api;
 
 typedef struct mv_addon_api {

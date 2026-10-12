@@ -32,6 +32,7 @@
 #include "io/paths.h"
 #include "io/volume.h"
 #include "meta/meta.h"
+#include "meta/meta_cache.h"
 
 namespace {
 
@@ -114,6 +115,34 @@ const char* state_name(mv::addon::install_state s) {
     case mv::addon::install_state::needs_update: return "needs_update";
     default: return "invalid";
   }
+}
+
+// #291: the host table's tag_facts, from meta_cache.db (a bounded read on a miss).
+bool tag_facts(const std::string& path, mv_addon_tag_facts& out) {
+  auto row = mv::meta::cached_or_read(mv::meta::default_meta_cache(), path);
+  if (!row) return false;
+  const mv::meta::search_facts& f = row->facts;
+  const auto put = [](char* dst, std::size_t cap, const std::string& src) {
+    std::size_t n = std::min(src.size(), cap - 1);
+    while (n > 0 && n < src.size() && (static_cast<unsigned char>(src[n]) & 0xC0) == 0x80) --n;
+    std::memcpy(dst, src.data(), n);
+    dst[n] = '\0';
+  };
+  if (f.date_taken_key != 0) {
+    out.flags |= MV_ADDON_TAG_HAS_DATE;
+    out.taken_unix = f.date_taken_key;
+  }
+  if (f.where) {
+    out.flags |= MV_ADDON_TAG_HAS_LOCATION;
+    out.lat = f.where->lat;
+    out.lon = f.where->lon;
+  }
+  if (f.ai_generated) out.flags |= MV_ADDON_TAG_AI_GENERATED;
+  put(out.camera_utf8, sizeof(out.camera_utf8), f.camera);
+  put(out.lens_utf8, sizeof(out.lens_utf8), f.lens);
+  put(out.made_with_utf8, sizeof(out.made_with_utf8), f.made_with);
+  put(out.fields_utf8, sizeof(out.fields_utf8), mv::meta::joined_fields(f.fields, sizeof(out.fields_utf8)));
+  return true;
 }
 
 // The viewer's capture date and camera for Import's layouts (mv_meta, PR 9).
@@ -462,6 +491,7 @@ mv::status load_addon(mv_session_t session, const char* id, const char* interfac
     }
     mv::addon::host_services svc;
     svc.capture = &capture_info;
+  svc.tag_facts = &tag_facts;
     svc.thumbnail = &thumbnail;
     svc.should_yield = [] { return g_present_busy.load(std::memory_order_relaxed); };
     svc.post = [session](const mv_addon_event& e) {

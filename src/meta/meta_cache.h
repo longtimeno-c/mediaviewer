@@ -88,4 +88,8 @@ class meta_cache {
 // location_of, which ask one file at a time.
 [[nodiscard]] result<cached_facts> cached_or_read(meta_cache& cache, std::string_view path);
 
+// The fields joined by kFieldSeparator, whole fields only, at most `cap - 1`
+// bytes (a C buffer with its NUL): the host table's tag_facts.
+[[nodiscard]] std::string joined_fields(const std::vector<std::string>& fields, std::size_t cap);
+
 }  // namespace mv::meta

@@ -11,7 +11,7 @@
 namespace mv::ai {
 namespace {
 
-constexpr int kSchemaVersion = 3;
+constexpr int kSchemaVersion = 4;
 
 // A prepared statement that finalizes itself; binds are 1-based.
 class stmt {
@@ -42,6 +42,7 @@ class stmt {
     sqlite3_clear_bindings(s_);
   }
   bool step_row() { return s_ && sqlite3_step(s_) == SQLITE_ROW; }
+  [[nodiscard]] bool is_null(int col) const { return sqlite3_column_type(s_, col) == SQLITE_NULL; }
   bool run() {
     if (!s_) return false;
     const int rc = sqlite3_step(s_);
@@ -152,6 +153,12 @@ result<std::unique_ptr<index_db>> index_db::open(const std::string& path) {
       "CREATE INDEX IF NOT EXISTS speech_asset ON speech(asset_id, spec);";
   if (!d->exec(schema)) return err(status::corrupt);
   std::string v = d->meta("schema");
+  // A new index is made as schema 3 above and takes the same 3 -> 4 step as an
+  // old one: one path, so a fresh index and a migrated one cannot differ.
+  if (v.empty()) {
+    MV_TRY_VOID(d->set_meta("schema", "3"));
+    v = "3";
+  }
   // Each step is one transaction, and a column already there is not added
   // again: an index a crash left between the ALTER and the schema bump (as
   // earlier builds could) migrates instead of failing every later open.
@@ -178,9 +185,51 @@ result<std::unique_ptr<index_db>> index_db::open(const std::string& path) {
       !add_column("assets", "cloud", "ALTER TABLE assets ADD COLUMN cloud INTEGER NOT NULL DEFAULT 0;", "3")) {
     return err(status::corrupt);
   }
-  if (v.empty()) {
-    MV_TRY_VOID(d->set_meta("schema", std::to_string(kSchemaVersion)));
-  } else if (v != std::to_string(kSchemaVersion)) {
+  // Schema 3 -> 4 (#291, docs/design/17 "Schema 4"): what each asset's tags say
+  // (date taken, position, camera, lens, made-with, the AI flag) and an FTS5
+  // `asset_text` of its folded search fields. `tags` = 0 until the backfill
+  // has read them (a changed file goes back to 0). place / country / region
+  // stay NULL: place names are the Places add-on's, answered at query time.
+  // One transaction: a kill anywhere in it leaves schema 3 as it was.
+  if (v == "3") {
+    if (!d->exec("BEGIN")) return err(status::corrupt);
+    bool ok = true;
+    static constexpr std::pair<const char*, const char*> kColumns[] = {
+        {"tags", "ALTER TABLE assets ADD COLUMN tags INTEGER NOT NULL DEFAULT 0;"},
+        {"taken_at", "ALTER TABLE assets ADD COLUMN taken_at INTEGER;"},
+        {"lat", "ALTER TABLE assets ADD COLUMN lat REAL;"},
+        {"lon", "ALTER TABLE assets ADD COLUMN lon REAL;"},
+        {"camera", "ALTER TABLE assets ADD COLUMN camera TEXT;"},
+        {"lens", "ALTER TABLE assets ADD COLUMN lens TEXT;"},
+        {"made_with", "ALTER TABLE assets ADD COLUMN made_with TEXT;"},
+        {"ai", "ALTER TABLE assets ADD COLUMN ai INTEGER NOT NULL DEFAULT 0;"},
+        {"place", "ALTER TABLE assets ADD COLUMN place TEXT;"},
+        {"country", "ALTER TABLE assets ADD COLUMN country TEXT;"},
+        {"region", "ALTER TABLE assets ADD COLUMN region TEXT;"},
+    };
+    for (const auto& [column, sql] : kColumns) {
+      if (ok && !has_column(d->db_, "assets", column)) ok = d->exec(sql);
+    }
+    if (ok) {
+      // FTS5 when this SQLite has it (the vcpkg port's fts5 feature); else a
+      // plain table of the same shape, matched by the engine in memory either
+      // way. meta('asset_text') says which.
+      const bool fts = d->exec("CREATE VIRTUAL TABLE IF NOT EXISTS asset_text USING fts5(text,"
+                               " tokenize = 'unicode61 remove_diacritics 2');");
+      ok = fts || d->exec("CREATE TABLE IF NOT EXISTS asset_text(rowid INTEGER PRIMARY KEY, text TEXT NOT NULL);");
+      ok = ok && static_cast<bool>(d->set_meta("asset_text", fts ? "fts5" : "plain"));
+    }
+    ok = ok && d->exec("CREATE INDEX IF NOT EXISTS assets_tags ON assets(tags);") &&
+         d->exec("CREATE TRIGGER IF NOT EXISTS assets_text_gone AFTER DELETE ON assets"
+                 " BEGIN DELETE FROM asset_text WHERE rowid = old.id; END;") &&
+         static_cast<bool>(d->set_meta("schema", "4"));
+    if (!ok || !d->exec("COMMIT")) {
+      d->exec("ROLLBACK");
+      return err(status::corrupt);
+    }
+    v = "4";
+  }
+  if (v != std::to_string(kSchemaVersion)) {
     return err(status::unsupported_format);  // a newer add-on's index
   }
   return d;
@@ -298,7 +347,8 @@ result<std::vector<index_db::upsert>> index_db::see_assets(std::int64_t root,
     stmt q(db_, "SELECT id, mtime, size FROM assets WHERE path = ?1");
     stmt f(db_, "DELETE FROM frames WHERE asset_id = ?1");
     stmt p(db_, "DELETE FROM progress WHERE asset_id = ?1");
-    stmt w(db_, "UPDATE assets SET mtime = ?2, size = ?3, kind = ?4, seen = ?5, cloud = ?6 WHERE id = ?1");
+    stmt w(db_, "UPDATE assets SET mtime = ?2, size = ?3, kind = ?4, seen = ?5, cloud = ?6,"
+                " tags = CASE WHEN mtime = ?2 AND size = ?3 THEN tags ELSE 0 END WHERE id = ?1");
     stmt ins(db_, "INSERT INTO assets(path, root_id, mtime, size, kind, seen, cloud)"
                   " VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)");
     for (const seen_file& file : files) {
@@ -766,7 +816,8 @@ expected index_db::set_meta(const std::string& key, const std::string& value) {
 
 expected index_db::clear() {
   std::lock_guard lock(m_);
-  if (!exec("DELETE FROM speech; DELETE FROM frames; DELETE FROM progress; DELETE FROM assets; DELETE FROM roots;")) {
+  if (!exec("DELETE FROM speech; DELETE FROM frames; DELETE FROM progress; DELETE FROM asset_text;"
+            " DELETE FROM assets; DELETE FROM roots;")) {
     return err(status::io);
   }
   // Give the space back (docs/design/17 PR 23 verify: "clearing the index frees the disk").
@@ -774,6 +825,107 @@ expected index_db::clear() {
   if (!exec("VACUUM;")) return err(status::io);
   exec("PRAGMA wal_checkpoint(TRUNCATE);");
   return {};
+}
+
+// ---- tags (#291, schema 4) -----------------------------------------------------------
+
+std::vector<asset_row> index_db::assets_needing_tags(std::size_t limit) {
+  std::lock_guard lock(m_);
+  std::vector<asset_row> out;
+  const std::string sql = std::string("SELECT ") + kAssetCols +
+                          " FROM assets a JOIN roots r ON r.id = a.root_id"
+                          " WHERE a.tags = 0 AND a.cloud = 0 AND r.enabled = 1 ORDER BY a.id LIMIT ?1";
+  stmt s(db_, sql.c_str());
+  s.bind(1, static_cast<std::int64_t>(limit));
+  while (s.step_row()) out.push_back(asset_from(s, 0));
+  return out;
+}
+
+std::uint64_t index_db::tags_pending() {
+  std::lock_guard lock(m_);
+  stmt s(db_, "SELECT COUNT(*) FROM assets a JOIN roots r ON r.id = a.root_id"
+              " WHERE a.tags = 0 AND a.cloud = 0 AND r.enabled = 1");
+  return s.step_row() ? static_cast<std::uint64_t>(s.i64(0)) : 0;
+}
+
+expected index_db::commit_tags(std::span<const asset_tags> rows) {
+  if (rows.empty()) return {};
+  std::lock_guard lock(m_);
+  if (!exec("BEGIN")) return err(status::io);
+  bool ok = true;
+  {
+    // Only while the asset is the file that was read: a rescan that moved
+    // its stamp meanwhile set tags back to 0, and this row is dropped.
+    stmt up(db_, "UPDATE assets SET tags = 1, taken_at = ?4, lat = ?5, lon = ?6, camera = ?7, lens = ?8,"
+                 " made_with = ?9, ai = ?10 WHERE id = ?1 AND mtime = ?2 AND size = ?3");
+    stmt del(db_, "DELETE FROM asset_text WHERE rowid = ?1");
+    stmt ins(db_, "INSERT INTO asset_text(rowid, text) VALUES(?1, ?2)");
+    for (const asset_tags& t : rows) {
+      up.reset();
+      up.bind(1, t.id).bind(2, t.mtime).bind(3, static_cast<std::int64_t>(t.size));
+      if (t.taken_at) up.bind(4, *t.taken_at);
+      if (t.has_where) up.bind_real(5, t.lat).bind_real(6, t.lon);
+      up.bind(7, t.camera).bind(8, t.lens).bind(9, t.made_with).bind(10, std::int64_t{t.ai ? 1 : 0});
+      if (!up.run()) {
+        ok = false;
+        break;
+      }
+      if (sqlite3_changes(db_) == 0) continue;
+      del.reset();
+      if (!del.bind(1, t.id).run()) {
+        ok = false;
+        break;
+      }
+      if (t.text.empty()) continue;
+      ins.reset();
+      if (!ins.bind(1, t.id).bind(2, t.text).run()) {
+        ok = false;
+        break;
+      }
+    }
+  }
+  if (!ok || !exec("COMMIT")) {
+    exec("ROLLBACK");
+    return err(status::io);
+  }
+  return {};
+}
+
+expected index_db::each_tags(const std::function<void(const asset_tags&)>& visit) {
+  std::lock_guard lock(m_);
+  stmt s(db_, "SELECT a.id, a.mtime, a.size, a.taken_at, a.lat, a.lon, a.camera, a.lens, a.made_with, a.ai,"
+              " t.text FROM assets a LEFT JOIN asset_text t ON t.rowid = a.id WHERE a.tags = 1");
+  if (!s.ok()) return err(status::io);
+  while (s.step_row()) {
+    asset_tags t;
+    t.id = s.i64(0);
+    t.mtime = s.i64(1);
+    t.size = static_cast<std::uint64_t>(s.i64(2));
+    if (!s.is_null(3)) t.taken_at = s.i64(3);
+    t.has_where = !s.is_null(4) && !s.is_null(5);
+    t.lat = s.real(4);
+    t.lon = s.real(5);
+    t.camera = s.text(6);
+    t.lens = s.text(7);
+    t.made_with = s.text(8);
+    t.ai = s.i64(9) != 0;
+    t.text = s.text(10);
+    visit(t);
+  }
+  return {};
+}
+
+std::vector<std::int64_t> index_db::match_text(const std::string& fts_query, std::size_t limit) {
+  std::lock_guard lock(m_);
+  std::vector<std::int64_t> out;
+  {
+    stmt k(db_, "SELECT value FROM meta WHERE key = 'asset_text'");
+    if (!k.step_row() || k.text(0) != "fts5") return out;
+  }
+  stmt s(db_, "SELECT rowid FROM asset_text WHERE asset_text MATCH ?1 LIMIT ?2");
+  s.bind(1, fts_query).bind(2, static_cast<std::int64_t>(limit));
+  while (s.step_row()) out.push_back(s.i64(0));
+  return out;
 }
 
 expected index_db::with_connection(const std::function<expected(sqlite3*)>& fn) {

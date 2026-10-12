@@ -19,6 +19,7 @@
 #include "addons/ai/query.h"
 #include "addons/ai/transfer.h"
 #include "addons/ai/vocabulary.h"
+#include "core/fold.h"
 #include "core/json.h"
 
 namespace mv::ai {
@@ -208,8 +209,115 @@ void engine::load_assets() {
     m.cloud = a.cloud;
     all.emplace(a.id, std::move(m));
   }
+  {
+    std::lock_guard lock(assets_m_);
+    assets_ = std::move(all);
+  }
+  (void)db_->each_tags([this](const asset_tags& t) { adopt_tags(t); });
+  tags_pending_ = true;
+}
+
+namespace {
+// The fields as asset_text holds them: as shown, U+001F between.
+std::vector<std::string> split_fields(const std::string& s) {
+  std::vector<std::string> out;
+  std::size_t b = 0;
+  while (b <= s.size() && !s.empty()) {
+    const std::size_t e = s.find('\x1f', b);
+    out.push_back(s.substr(b, e == std::string::npos ? std::string::npos : e - b));
+    if (e == std::string::npos) break;
+    b = e + 1;
+  }
+  return out;
+}
+std::string folded_fields(const std::vector<std::string>& fields) {
+  std::string out;
+  for (std::size_t i = 0; i < fields.size(); ++i) {
+    if (i) out.push_back('\x1f');
+    text::fold_into(out, fields[i]);
+  }
+  return out;
+}
+// search.h's match_fields: every word somewhere; the first word's field, or -1.
+int match_fields(const std::string& folded, const std::vector<std::string>& words) {
+  if (words.empty() || folded.empty()) return -1;
+  int first = -1;
+  for (std::size_t w = 0; w < words.size(); ++w) {
+    const std::size_t at = folded.find(words[w]);
+    if (at == std::string::npos) return -1;
+    if (w == 0) first = static_cast<int>(std::count(folded.begin(), folded.begin() + static_cast<std::ptrdiff_t>(at), '\x1f'));
+  }
+  return first;
+}
+}  // namespace
+
+void engine::adopt_tags(const asset_tags& t) {
   std::lock_guard lock(assets_m_);
-  assets_ = std::move(all);
+  auto it = assets_.find(t.id);
+  if (it == assets_.end()) return;
+  asset_meta& m = it->second;
+  m.tags = true;
+  m.camera = text::fold(t.camera);
+  m.lens = text::fold(t.lens);
+  m.made_with = text::fold(t.made_with);
+  m.ai = t.ai;
+  m.has_where = t.has_where;
+  m.fields = split_fields(t.text);
+  m.folded = folded_fields(m.fields);
+}
+
+bool engine::backfill_tags() {
+  if (!tags_pending_.load()) return false;
+  const bool facts = host_.has_tag_facts();
+  const auto started = std::chrono::steady_clock::now();
+  // A few seconds at most per control-loop turn: a scan or a model load waits
+  // no longer than that behind it.
+  while (!stopping_ && std::chrono::steady_clock::now() - started < std::chrono::seconds(2)) {
+    std::vector<asset_row> todo = db_->assets_needing_tags(128);
+    if (todo.empty()) {
+      tags_pending_ = false;
+      return false;
+    }
+    std::vector<asset_tags> rows;
+    rows.reserve(todo.size());
+    for (const asset_row& a : todo) {
+      if (stopping_) return true;
+      // The viewer is presenting (panning, playing, loading): it goes first.
+      while (host_.should_yield() && !stopping_) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      asset_tags t;
+      t.id = a.id;
+      t.mtime = a.mtime;
+      t.size = a.size;
+      if (is_photos_key(a.path)) {
+        std::lock_guard lock(photos_tags_m_);
+        if (auto p = photos_tags_.find(a.path); p != photos_tags_.end()) {
+          t.has_where = p->second.has_location;
+          t.lat = p->second.lat;
+          t.lon = p->second.lon;
+          if (p->second.created != 0) t.taken_at = p->second.created;
+        }
+      } else if (facts) {
+        if (auto f = host_.tag_facts(a.path)) {
+          if (f->flags & MV_ADDON_TAG_HAS_DATE) t.taken_at = f->taken_unix;
+          if (f->flags & MV_ADDON_TAG_HAS_LOCATION) {
+            t.has_where = true;
+            t.lat = f->lat;
+            t.lon = f->lon;
+          }
+          t.ai = (f->flags & MV_ADDON_TAG_AI_GENERATED) != 0;
+          t.camera = f->camera_utf8;
+          t.lens = f->lens_utf8;
+          t.made_with = f->made_with_utf8;
+          t.text = f->fields_utf8;
+        }
+        // else unreadable: an empty row stands, so it is not asked again.
+      }
+      rows.push_back(std::move(t));
+    }
+    if (!db_->commit_tags(rows)) return true;  // try again next turn
+    for (const asset_tags& t : rows) adopt_tags(t);
+  }
+  return true;
 }
 
 void engine::stop() noexcept {
@@ -1455,6 +1563,10 @@ void engine::control_loop() {
     scanning_ = false;
     // The walk is over even when it found nothing new: the rows stop saying so.
     if (walked) post(MV_ADDON_EVENT_AI_ROOTS);
+    // #291: what the walk found (and an index migrated from schema 3) gets
+    // its tags, a few seconds' worth per turn; the wait below is skipped
+    // while more remain.
+    const bool more_tags = backfill_tags();
     {
       // Auto's large tower, still on CPU because the provider failed it in
       // the background (Core ML's upgrade): the small tower from here, and
@@ -1512,7 +1624,7 @@ void engine::control_loop() {
     }
     if (people_changed_.exchange(false)) post(MV_ADDON_EVENT_AI_PEOPLE);
     std::unique_lock lock(control_m_);
-    control_cv_.wait_for(lock, std::chrono::milliseconds(1000), [this] {
+    control_cv_.wait_for(lock, std::chrono::milliseconds(more_tags ? 0 : 1000), [this] {
       if (stopping_.load() || reload_models_.load() || reload_pieces_.load() || rescan_all_ ||
           !rescan_roots_.empty()) {
         return true;
@@ -1709,6 +1821,10 @@ bool engine::see_batch(const root_row& root, std::vector<index_db::seen_file>& b
     const index_db::upsert& u = (*r)[i];
     if (u.changed) changed.push_back(u.id);
     asset_meta& m = assets_[u.id];
+    if (u.changed || u.added) {
+      m.tags = false;  // read again by the backfill (the index set tags = 0)
+      tags_pending_ = true;
+    }
     m.path = batch[i].path;
     m.key = path_key(m.path);
     m.dir_key = dir_of(m.key);
@@ -1853,6 +1969,10 @@ void engine::scan_photos(const root_row& root) {
   const expected walked = photos_->enumerate([&](const photos_item& it) {
     if (stopping_ || failed) return false;
     batch.push_back(index_db::seen_file{photos_key(it.id), it.mtime, it.size, it.kind});
+    {
+      std::lock_guard lock(photos_tags_m_);
+      photos_tags_[batch.back().path] = photos_tag{it.has_location, it.lat, it.lon, it.created};
+    }
     if (batch.size() >= 512 && !see_batch(root, batch, gen, changed)) failed = true;
     return !failed;
   });
@@ -3082,7 +3202,8 @@ bool engine::wait_idle(int ms) {
       const bool reloading = reload_models_.load() || loading_.load();
       if (models_ready_ && !reloading && queue_exhausted_ && busy_workers_ == 0 && in_flight_.empty()) {
         std::lock_guard cl(control_m_);
-        idle = !rescan_all_ && rescan_roots_.empty() && !scanning_;
+        idle = !rescan_all_ && rescan_roots_.empty() && !scanning_ &&
+               (options_.read_only || !tags_pending_.load());  // #291: the tag backfill too
       }
     }
     if (idle) {
@@ -4250,6 +4371,40 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
         it = keep ? std::next(it) : allowed->erase(it);
       }
     }
+    // #291: camera: / lens: / made: / ai: against the tags read so far (an
+    // asset whose tags are not read yet does not match a tag term), and
+    // place: / in: (not a date) to the geotagged ones: which place is the
+    // Places add-on's provider's answer, merged by the slot registry.
+    if (plan.has_tags() || !plan.places.empty()) {
+      const auto all_in = [](const std::string& value, const std::vector<std::string>& terms) {
+        for (const std::string& t : terms) {
+          if (value.find(t) == std::string::npos) return false;
+        }
+        return true;
+      };
+      const auto none_in = [](const std::string& value, const std::vector<std::string>& terms) {
+        for (const std::string& t : terms) {
+          if (value.find(t) != std::string::npos) return false;
+        }
+        return true;
+      };
+      std::lock_guard lock(assets_m_);
+      for (auto it = allowed->begin(); it != allowed->end();) {
+        const auto m = assets_.find(*it);
+        bool keep = m != assets_.end();
+        if (keep) {
+          const asset_meta& a = m->second;
+          if (plan.has_tags()) {
+            keep = a.tags && all_in(a.camera, plan.cameras) && none_in(a.camera, plan.not_cameras) &&
+                   all_in(a.lens, plan.lenses) && none_in(a.lens, plan.not_lenses) &&
+                   all_in(a.made_with, plan.made) && none_in(a.made_with, plan.not_made) &&
+                   (plan.ai == 0 || (plan.ai > 0) == a.ai);
+          }
+          if (keep && !plan.places.empty()) keep = a.has_where;
+        }
+        it = keep ? std::next(it) : allowed->erase(it);
+      }
+    }
     const auto keep_only = [&](const std::set<std::int64_t>& keep) {
       for (auto it = allowed->begin(); it != allowed->end();) {
         it = keep.count(*it) ? std::next(it) : allowed->erase(it);
@@ -4324,6 +4479,24 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
         add_row(st, h.asset, h.pts_ms, h.score, 100.0f + h.score, MV_AI_MATCH_PICTURE, {});
       }
     }
+    // #291: a plain word that matches a file's tags ("R5", "chatgpt"): those
+    // files first, the tag as the snippet, then what the picture search finds.
+    if (!plan.tag_words.empty() && plan.people.empty()) {
+      std::vector<std::pair<std::int64_t, std::string>> tagged;
+      {
+        std::lock_guard lock(assets_m_);
+        for (std::int64_t a : *allowed) {
+          const auto m = assets_.find(a);
+          if (m == assets_.end() || !m->second.tags) continue;
+          const int f = match_fields(m->second.folded, plan.tag_words);
+          if (f >= 0 && static_cast<std::size_t>(f) < m->second.fields.size()) {
+            tagged.emplace_back(a, m->second.fields[static_cast<std::size_t>(f)]);
+          }
+        }
+      }
+      std::sort(tagged.begin(), tagged.end());
+      for (auto& [a, why] : tagged) add_row(st, a, -1, 1.0f, 200.0f, MV_AI_MATCH_TAGS, std::move(why));
+    }
     std::uint32_t find = k & (MV_AI_FIND_PICTURES | MV_AI_FIND_SOUNDS | MV_AI_FIND_SPEECH);
     if (find == 0) find = MV_AI_FIND_PICTURES | MV_AI_FIND_SOUNDS | MV_AI_FIND_SPEECH;
     if (!plan.text.empty()) {
@@ -4346,7 +4519,8 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
       }
       said_rows.clear();
     } else if (plan.people_first.empty() &&
-               (plan.kinds != 0 || plan.has_dates() || plan.has_files() || !plan.not_people.empty() ||
+               (plan.kinds != 0 || plan.has_dates() || plan.has_files() || plan.has_tags() ||
+                !plan.places.empty() || !plan.not_people.empty() ||
                 !plan.not_text.empty() || !plan.not_phrases.empty())) {
       // Filters alone ("video in:2024", "file:IMG_12"): everything they allow,
       // newest first.
