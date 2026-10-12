@@ -285,6 +285,9 @@ constexpr binding kBindings[] = {
     // PageDown inside one stop; plain PageUp / PageDown still skip ten stops.
     row(key::page_down, mod_ctrl, kBrowse | kIsland, repeat, next_page),
     row(key::page_up, mod_ctrl, kBrowse | kIsland, repeat, prev_page),
+    // Issue #210: F2 renames, as in Explorer. Appended. Not in a slideshow or crop,
+    // like every other write; the gallery renames its selected cell.
+    row(key::f2, mod_none, kViewing, edge, rename_file),
 };
 
 // The router's index stores row + 1 in a byte.
@@ -462,6 +465,7 @@ constexpr command_info kCommands[] = {
     {addon_cmd_6, "Add-on command 7", true},
     {addon_cmd_7, "Add-on command 8", true},
     {new_window, "New window"},
+    {rename_file, "Rename…"},
 };
 
 const char* named_key(key k) noexcept {

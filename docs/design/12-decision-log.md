@@ -79,6 +79,15 @@ UI thread outside the exit scope, and tests assert it. The file is UTF-16LE with
 files still load and unknown keys survive. All access goes through `app_settings()`: direct
 `*PrivateProfile*` calls would be lost when the store rewrites the file.
 
+**Background jobs leave a worker free (2026-10-11, issue #160).** The two job lanes used to order
+dequeues only: once every worker had started a generation-0 job (thumbnails, posters, scans; never
+cancelled mid-run), the decode for the photo just arrowed to waited for one of them to finish.
+Background jobs now run on at most N − 1 workers at once (N = 1 keeps its one). Measured on an M-series
+Mac, `mv_tests "foreground start latency under a background sweep"` (2 workers, a sweep of 60 ms
+jobs, base/new alternated four times): the foreground job's start waited a median 43–56 ms
+(p90 83–104 ms) before, 0.02–0.18 ms (p90 0.1–3.1 ms) after. Cost: a sweep with no foreground work
+runs on one worker fewer: −50 % thumbnail throughput on a two-worker (four-core) pool, −17 % on six.
+
 ---
 
 ## Rendering and present loop
@@ -150,6 +159,25 @@ viewer's canvas moves into its window and back, so there is no second renderer. 
 the same DComp visual between frames, requested through the opaque
 `input_snapshot::canvas_window`; the editor window is destroyed only after the swapchain has left.
 
+**A neighbour's whole-texture create waits out a pan (2026-10-11, issue #166; Windows).** An
+untiled still up to the 64 MP tile threshold goes up as one `CreateTexture2D` with its mips (about
+320 MB at 60 MP), and `ID3D10Multithread` holds the device lock for all of it, so a ±2 prefetch
+landing mid-pan stalls the render thread's presents. The ~2 ms budget is unchanged. What changed is
+that it is now enforced for single textures. A create over `image::k_frame_budget_create_bytes`
+(8 MiB, an estimate of 2 ms of driver copy) for a path that is not on screen waits on its worker,
+after the CPU mip chain, while the render loop presents a moving camera
+(`abi::set_canvas_moving`).
+- *Rejected: lowering the tile threshold.* A tiled image is neither prefetched nor kept in the LRU,
+  so arrow → next would go cold for every 24–60 MP camera file.
+- *Rejected: splitting the texture into bands or top/mips.* The bands need a second draw path with
+  seams to manage, and a top-level-only create is still ~240 MB under one lock.
+- *What the gate leaves alone:* fades, video and the input tail, so navigation keeps its prefetch;
+  and the selected path, which goes at once.
+- *The Mac is not gated.* Its upload (`replaceRegion`) takes no device-wide lock.
+- *Numbers owed:* a Windows pan soak with 50–60 MP neighbours (`texture_creates_deferred`,
+  `texture_max_create_ms` and dropped frames, before and after). Until that run, 8 MiB is a
+  guess.
+
 ---
 
 ## Measurement and performance gates
@@ -174,6 +202,12 @@ counted, not smoothed over.
 **Frame-time CI skips without a GPU runner (2026-09-07).** The job runs only on
 `[self-hosted, windows, gpu]` when `MV_GPU_RUNNER_ENABLED=true`; otherwise it is skipped. A hosted
 runner failing without running `frametime.exe` proved nothing. A skip is not a pass.
+
+**Skipped present-loop gates are reported, not silent (2026-10-11, #149).** A `present-gates` job
+always runs after the Windows and Mac frame-time jobs: a failed or cancelled gate fails it, a
+skipped one is a warning (a failure once `MV_REQUIRE_PRESENT_GATES` is set). Skips stay
+non-failing by default for the 2026-09-07 reason: failing every PR on runners that do not exist
+proves nothing. The Mac PR 1 gate is its own opt-in self-hosted job (`MV_MAC_GPU_RUNNER_ENABLED`).
 
 **Video copy-out runs on the immediate context (2026-09-07).** The decode thread copies from the
 D3D11VA pool into our presentation ring with `CopySubresourceRegion` on the **immediate**
