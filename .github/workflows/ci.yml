@@ -477,7 +477,9 @@ jobs:
         continue-on-error: true
         # thumbnail (PR 15) links mv_image like decode, so it starts here and
         # moves to the gating list once it has been seen to start on the runner.
-        run: ./tools/fuzz/run.ps1 -BuildDir build -Seconds 30 -Harness 'decode','animation','thumbnail'
+        # pdf and docx (D5 amendment, 2026-10-03) follow the same path: built in
+        # every fuzz job, run here until they are seen starting, then gating.
+        run: ./tools/fuzz/run.ps1 -BuildDir build -Seconds 30 -Harness 'decode','animation','thumbnail','pdf','docx'
 
       - name: Upload fuzz artefacts
         if: failure()
