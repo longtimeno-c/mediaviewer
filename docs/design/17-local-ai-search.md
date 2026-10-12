@@ -244,14 +244,21 @@ unindexed.
   "mountain" and "mountains" are the same query.
 - **Scan** (`vectors.h`): brute-force int8 dot product over an in-memory matrix of every stored
   frame of the active model (loaded, not memory-mapped; ~77 MB at 100 k L/14 frames). 100,000
-  ViT-L rows scan in ~31 ms on one core. There is no ANN index.
+  ViT-L rows scan in ~31 ms on one core. There is no ANN index. Dropping assets (a root
+  removed, a scan's gone or changed list, a reader's refresh) tombstones their rows in one
+  pass with at most one compaction (`remove_assets`), and a path finds its asset through a
+  `path_key → id` map kept beside the asset table, not a walk of it (`clip_matches`,
+  `search_similar`; issue #174).
 - **Ranking:** top frames, then **grouped per clip** with the best moment first and "N more in
   this clip", so one long video cannot fill the page (`mv_ai_result`). `find_text` returns at
   most 5,000 rows.
 - **Scope:** the open folder and its subfolders (default) · all indexed folders
   (`MV_AI_SCOPE_TREE` / `MV_AI_SCOPE_ALL`; the panel offers no folder-only scope). Kind filter
   (photos / videos) and tower filter (pictures / sounds / speech). A nonsense query returns
-  "nothing found", not the least-bad ten (below).
+  "nothing found", not the least-bad ten (below). With no folder open the folder scope searches
+  everywhere, and the Mac panel shows *Everywhere* chosen; opening another folder asks a
+  folder-scoped search again (on the panel's next showing if it is closed), never leaving the
+  last folder's results under the new one (issue #191).
 - **Find similar:** the current still or the paused frame as the query. An indexed still or
   moment uses its stored vector; another paused frame is embedded on demand.
 
@@ -433,7 +440,8 @@ Indexing is a background load on the machine and GPU of a viewer whose point is 
 - **Memory:** decoded-frame and tensor memory are capped; the search matrix is ~77 MB at 100 k
   L/14 frames.
 - **Disk:** the index has a size cap (`index_cap_bytes`, default 8 GB; over it, indexing stops
-  with `MV_AI_STATUS_INDEX_FULL`) and per-folder delete; its size shows in Settings.
+  with `MV_AI_STATUS_INDEX_FULL`) and per-folder delete; its size shows in Settings, where both
+  hosts pick the cap (2, 5, 10, 20 or 50 GB) and removing a folder asks first.
 
 ## ABI
 
@@ -834,7 +842,7 @@ Ryzen 16-thread, RTX 4070, ORT 1.30.
   grouping, dedupe, yield, pause, migration never mixing specs, clear, size cap, find-similar,
   people corrections, face deletion leaving no faces.db.
 - Query scan: 100,000 ViT-L int8 rows (2,000 clips × 50, with per-asset stats) in **31 ms** on
-  one core (`mv_ai_tests "[perf]"`, which fails over 100 ms in optimised builds); with the ~30 ms
+  one core (`mv_ai_tests "[.perf-bench]"`, which fails over 100 ms in optimised builds); with the ~30 ms
   CUDA text tower a query is ~60 ms.
 - A 1-hour 4K HEVC clip (synthetic, with a soundtrack): pictures, sound and speech in **302 s**
   on CUDA with ViT-L and Whisper small — model load ~25 s, 255 picture moments ~190 s, sound

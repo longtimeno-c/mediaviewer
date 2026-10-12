@@ -26,6 +26,10 @@ struct MetadataView: View {
   @State private var newKey = ""
   @State private var newValue = ""
   @FocusState private var fieldFocused: Bool
+  // docs/design/16 `I` (issue #185): the pane holds the keyboard; ← → change tab,
+  // ↓ reaches tag search, Esc hands the keyboard back to the canvas.
+  @FocusState private var paneFocused: Bool
+  @FocusState private var searchFocused: Bool
 
   private enum Tab: String, CaseIterable, Identifiable {
     case summary = "Summary"
@@ -52,8 +56,14 @@ struct MetadataView: View {
             .accessibilityAddTraits(tab == t ? [.isSelected] : [])
         }
       }
-      .padding(.horizontal, 10)
-      .padding(.vertical, 8)
+      .padding(4)
+      // Where the keyboard is: the tab row is what ← → move.
+      .overlay(
+        RoundedRectangle(cornerRadius: 6)
+          .strokeBorder(paneFocused ? MVTheme.accent : .clear, lineWidth: 2)
+      )
+      .padding(.horizontal, 6)
+      .padding(.vertical, 4)
       Rectangle().fill(MVTheme.hairline).frame(height: 1)
       Group {
         switch tab {
@@ -66,11 +76,46 @@ struct MetadataView: View {
     }
     .background(MVTheme.canvas)
     .overlay(alignment: .leading) { Rectangle().fill(MVTheme.hairline).frame(width: 1) }
+    .focusable()
+    .focusEffectDisabled()
+    .focused($paneFocused)
+    // Only while the pane itself has the keyboard: a field keeps its own keys.
+    .onKeyPress(.leftArrow) { paneFocused ? stepTab(-1) : .ignored }
+    .onKeyPress(.rightArrow) { paneFocused ? stepTab(1) : .ignored }
+    .onKeyPress(.downArrow) {
+      guard paneFocused else { return .ignored }
+      openTagSearch()
+      return .handled
+    }
+    .onKeyPress(.escape) {
+      guard paneFocused else { return .ignored }
+      store.blur()
+      return .handled
+    }
+    // `I` focuses the pane; Ctrl+I opens All tags with the keyboard in its search.
+    .onChange(of: store.focusSeq) { _, _ in
+      if store.focusTags { openTagSearch() } else { paneFocused = true }
+    }
     .onChange(of: store.isClip) { _, isClip in
       if !isClip && tab == .streams { tab = .summary }
     }
-    // Another item: drop any half-typed edit.
-    .onChange(of: store.summary.first?.value) { _, _ in cancelEdits() }
+    // Another item: drop any half-typed edit. Keyed on the item, not on a
+    // value two files can share (issue #190).
+    .onChange(of: store.itemPath) { _, _ in cancelEdits() }
+  }
+
+  private func stepTab(_ by: Int) -> KeyPress.Result {
+    let all = tabs
+    guard let at = all.firstIndex(of: tab) else { return .ignored }
+    tab = all[min(max(at + by, 0), all.count - 1)]
+    return .handled
+  }
+
+  private func openTagSearch() {
+    cancelEdits()
+    tab = .tags
+    // The field exists only once the tab has switched: focus it on the next pass.
+    DispatchQueue.main.async { searchFocused = true }
   }
 
   private func cancelEdits() {
@@ -201,6 +246,9 @@ struct MetadataView: View {
         TextField("Search tags and values", text: $query)
           .textFieldStyle(.roundedBorder)
           .font(MVTheme.font(14))
+          .focused($searchFocused)
+          // Esc returns to the canvas (docs/design/16 `I`).
+          .onExitCommand { store.blur() }
         Button("Add tag") {
           cancelEdits()
           newKey = ""

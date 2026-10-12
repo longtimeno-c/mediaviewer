@@ -207,6 +207,11 @@ struct engine_deps {
 // every kReaderCatchUpSeconds, appending new frames rather than reloading.
 struct engine_options {
   bool read_only = false;
+  // Workers and the iCloud fetch run at the OS's background priority
+  // (platform::enter_background). The engine's tests turn it off: on a
+  // loaded machine a background thread can wait a minute for a core, and a
+  // test asserts what the engine does, not how the OS ranks it (issue #154).
+  bool background_threads = true;
 };
 inline constexpr double kReaderCatchUpSeconds = 5.0;
 
@@ -631,6 +636,12 @@ class engine {
   vector_store store_;
   mutable std::mutex assets_m_;
   std::unordered_map<std::int64_t, asset_meta> assets_;
+  // path_key -> id beside assets_ (issue #174): a path's asset without a walk
+  // of every indexed asset under assets_m_. Kept with assets_ under assets_m_.
+  std::unordered_map<std::string, std::int64_t> asset_by_key_;
+  void unindex_key_locked(std::int64_t id, const std::string& key);
+  void erase_asset_locked(std::int64_t id);
+  [[nodiscard]] std::int64_t asset_of_key_locked(const std::string& key) const;
 
   // work queue. Lock order: work_m_ -> models_m_ -> assets_m_ -> status_m_;
   // no path takes an earlier one while holding a later one.

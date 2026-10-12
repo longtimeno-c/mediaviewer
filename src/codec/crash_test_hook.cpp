@@ -97,27 +97,33 @@ decoder_label label_for(format_family f) noexcept {
   return {"none", ""};
 }
 
-std::atomic<int> g_armed{-1};
+std::atomic<int> g_armed{-1};  // -1 unread, 0 off, 1 decode, 2 video
 
-[[noreturn]] void deliberate_crash() noexcept {
-  // A real access violation on the decode worker, not a CRT abort: this is
+int armed_kind() noexcept {
+  int armed = g_armed.load(std::memory_order_relaxed);
+  if (armed < 0) {
+    const char* env = std::getenv("MV_CRASH_TEST");
+    armed = 0;
+    if (env && std::strcmp(env, "decode") == 0) armed = 1;
+    if (env && std::strcmp(env, "video") == 0) armed = 2;
+    g_armed.store(armed, std::memory_order_relaxed);
+  }
+  return armed;
+}
+
+}  // namespace
+
+[[noreturn]] void crash_test_crash() noexcept {
+  // A real access violation on the decode thread, not a CRT abort: this is
   // the failure mode a hostile file produces.
   volatile int* volatile target = nullptr;
   *target = 0x4D56;  // NOLINT
   std::abort();      // unreachable; keeps [[noreturn]] honest
 }
 
-}  // namespace
+bool crash_test_armed() noexcept { return armed_kind() == 1; }
 
-bool crash_test_armed() noexcept {
-  int armed = g_armed.load(std::memory_order_relaxed);
-  if (armed < 0) {
-    const char* env = std::getenv("MV_CRASH_TEST");
-    armed = (env && std::strcmp(env, "decode") == 0) ? 1 : 0;
-    g_armed.store(armed, std::memory_order_relaxed);
-  }
-  return armed == 1;
-}
+bool crash_test_video_armed() noexcept { return armed_kind() == 2; }
 
 bool crash_test_marker_present(std::span<const std::uint8_t> bytes) noexcept {
   const auto head = bytes.first(std::min(bytes.size(), kCrashTestScanBytes));
@@ -134,7 +140,7 @@ decode_crash_scope::decode_crash_scope(std::span<const std::uint8_t> bytes,
   const format_family family = probe(bytes);
   const decoder_label label = label_for(family);
   crash_context::begin_decode({format_name(family), label.name, label.version, 0});
-  if (crash_test_armed() && crash_test_marker_present(bytes)) deliberate_crash();
+  if (crash_test_armed() && crash_test_marker_present(bytes)) crash_test_crash();
 }
 
 decode_crash_scope::~decode_crash_scope() { crash_context::end_decode(); }

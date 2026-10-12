@@ -17,9 +17,33 @@ extern "C" {
 // Bumps input_snapshot.fit_seq and wakes the render thread. [any-thread]
 void mv_chrome_fit(void);
 
-// Runs a menu-bar command by tag (the MvMenuCmd enum in main_mac.mm; the
-// in-window menus and the system menu bar share one dispatcher). [main-thread]
-void mv_chrome_menu(int32_t cmd);
+// Menu commands: the tag of each menu-bar item main_mac.mm builds, and what the
+// in-window menus (CommandBarView.swift) pass to mv_chrome_menu. Numbers hold
+// within one build only; nothing stores them.
+enum MvMenuCmd : int32_t {
+  kMenuOpen = 1, kMenuTrash, kMenuCopyTo, kMenuMoveTo, kMenuMark,
+  kMenuFit, kMenuOneToOne, kMenuFilmstrip, kMenuGallery, kMenuFullscreen, kMenuSlideshow,
+  kMenuNext, kMenuPrev, kMenuFirst, kMenuLast, kMenuHelp, kMenuOpenFolder, kMenuSettings, kMenuOverlay, kMenuReveal,
+  // docs/design/26
+  kMenuOpenPhotos,
+  // PR 9
+  kMenuMetadata, kMenuFolderTree, kMenuSortName, kMenuSortModified, kMenuSortSize, kMenuSortType,
+  kMenuSortDateTaken, kMenuSortDescending,
+  // PR 15
+  kMenuShare, kMenuCopyPath, kMenuCopyEdited,
+  // PR 29 (docs/design/20): the Edit menu, a visible way in to every edit.
+  kMenuEditWorkspace, kMenuEditCrop, kMenuEditColour, kMenuRotateLeft, kMenuRotateRight,
+  kMenuFlipH, kMenuFlipV, kMenuUndoEdit, kMenuResetEdits, kMenuSaveCopy, kMenuTrim,
+  // docs/design/16 "Window"
+  kMenuNewWindow,
+  // Issue #210: File > Rename… (F2).
+  kMenuRename,
+};
+typedef enum MvMenuCmd MvMenuCmd;
+
+// Runs a menu command (the in-window menus and the system menu bar share one
+// dispatcher). [main-thread]
+void mv_chrome_menu(MvMenuCmd cmd);
 
 // Settings screen (docs/design/16 Settings). View flags use the bit layout of
 // view_settings::flags() (shell/settings.h): 1 filmstrip for a folder,
@@ -87,6 +111,15 @@ int32_t mv_chrome_item_path(int32_t index, char* buf, int32_t size);
 // byte length needed, as mv_chrome_item_path; 0 when `index` is out of range.
 int32_t mv_chrome_item_thumb_key(int32_t index, char* buf, int32_t size);
 
+// Issue #226: the whole listing in one call, so a relist costs one bridge call
+// rather than three per item. For each of the mv_chrome_item_count() items in
+// order: the name (as mv_chrome_item_name), NUL, '1' for a clip or '0' (as
+// mv_chrome_item_is_video), NUL, the thumb key (as mv_chrome_item_thumb_key),
+// NUL. Returns the byte length of the whole block; copies what fits into
+// `buf` (NUL-terminated, as the tables), so a caller whose `size` is greater
+// than the return has all of it. [main-thread]
+int32_t mv_chrome_listing(char* buf, int32_t size);
+
 // Navigates to `index` the same way clicking a filmstrip/gallery cell does
 // (calls MvLabApp's existing -selectIndex:, the same path arrow keys use).
 // A no-op if `index` is out of range or no folder is open.
@@ -118,10 +151,9 @@ void mv_chrome_set_thumb_ready_callback(mv_chrome_thumb_ready_fn callback);
 // A no-op if `index` is out of range.
 void mv_chrome_request_thumb(int32_t index);
 
-// T / G toggle these from keyDown: (main_mac.mm); Swift polls them (they are
-// plain bools, not worth a push channel the way thumbnails are) to decide
-// whether to show the filmstrip/gallery views it already hosts.
-bool mv_chrome_filmstrip_visible(void);
+// G toggles this from keyDown: (main_mac.mm); Swift polls it (a plain bool,
+// not worth a push channel the way thumbnails are) to decide whether to show
+// the gallery view it already hosts.
 bool mv_chrome_gallery_visible(void);
 
 // Called by the gallery view when a cell is clicked: selects `index` (same
@@ -293,10 +325,12 @@ bool mv_chrome_meta_can_revert(void);
 void mv_chrome_meta_set_rating(int32_t stars);          // 0 clears
 void mv_chrome_meta_set_comment(const char* utf8);      // "" clears
 void mv_chrome_meta_revert(void);
-// Ctrl+I (edit_comment) shows the pane and asks for the comment field to take
-// keyboard focus; the sequence moves each time, so Swift focuses once per ask.
+// `I` (metadata_pane) shows the pane with the keyboard in it; Ctrl+I
+// (edit_comment) shows it and asks for the All tags search. The sequence moves
+// on each ask, so Swift focuses once per ask; `focus_tags` says which (issue #185).
 uint64_t mv_chrome_meta_focus_seq(void);
-// Hands the keyboard back to the canvas (Esc or Return in the comment field).
+bool mv_chrome_meta_focus_tags(void);
+// Hands the keyboard back to the canvas (Esc, or Return in an edit field).
 void mv_chrome_meta_blur(void);
 
 // PR 29 (owner, 2026-09-26): every tag editable. Queued like the PR 12
@@ -319,6 +353,9 @@ int32_t mv_chrome_notice_text(char* buf, int32_t size);
 // from a background task, never from the main actor. [any-thread] Writes
 // "name\tpath" lines; returns the length needed, or -1 if `dir` cannot be read.
 bool mv_chrome_tree_visible(void);
+// Esc, or Enter on a folder, in the tree: the keyboard back to the canvas (the
+// tree stays open). [main-thread]
+void mv_chrome_tree_blur(void);
 int32_t mv_chrome_list_subdirectories(const char* dir_utf8, char* buf, int32_t size);
 // The folder currently open in the viewer ("" when none). [main-thread]
 int32_t mv_chrome_current_folder(char* buf, int32_t size);
@@ -622,7 +659,6 @@ int32_t mv_chrome_trim_label(char* buf, int32_t size);
 // The clip tools sheet (⌘S on a clip). `flags` as trim_state.h kClipFlag*:
 // 1 markers set, 2 has audio, 4 has video. The answer is pack_clip_choice
 // (op | option << 8), exactly as the Windows flyout packs it.
-bool mv_chrome_clip_tools_visible(void);
 int32_t mv_chrome_clip_tool_flags(void);
 void mv_chrome_clip_tool_confirm(int32_t packed);
 void mv_chrome_clip_tool_cancel(void);

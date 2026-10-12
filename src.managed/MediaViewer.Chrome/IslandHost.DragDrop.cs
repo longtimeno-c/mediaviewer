@@ -177,8 +177,15 @@ public static partial class IslandHost
         target.AllowDrop = true;
         target.DragOver += (sender, e) =>
         {
-            // Our own drag over our own strip or grid: nothing to take.
-            e.AcceptedOperation = _ownDrag ? DataPackageOperation.None : DataPackageOperation.Copy;
+            // Our own drag over our own strip or grid, or a drag that carries no
+            // files (text, a link): nothing to take.
+            bool files = !_ownDrag && e.DataView.Contains(StandardDataFormats.StorageItems);
+            e.AcceptedOperation = files ? DataPackageOperation.Copy : DataPackageOperation.None;
+            if (files)
+            {
+                e.DragUIOverride.Caption = "Open";
+                e.DragUIOverride.IsCaptionVisible = true;
+            }
             e.Handled = true;
         };
         target.Drop += (sender, e) =>

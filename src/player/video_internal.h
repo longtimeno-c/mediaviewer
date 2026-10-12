@@ -37,6 +37,7 @@ extern "C" {
 #include <libswscale/swscale.h>
 }
 
+#include "core/crash_context.h"
 #include "core/result.h"
 #include "core/status.h"
 #include "gfx/colour_desc.h"
@@ -421,7 +422,31 @@ struct video_pipeline {
   std::thread demux_thread;
   std::thread decode_thread;
   std::thread audio_thread;
+
+  // What this clip's threads put in their crash-report slots (issue #233,
+  // docs/design/13). Set by open before the threads start. Names here are
+  // libavformat / libavcodec static strings, never anything from the path or
+  // from the file's own tags.
+  struct crash_labels {
+    const char*   container = "unknown";  // AVInputFormat::name
+    const char*   video_codec = "none";   // avcodec_get_name
+    std::uint32_t width = 0, height = 0, bits = 0;
+    std::uint64_t correlation_id = 0;     // the ABI call that opened the clip
+  } crash;
 };
+
+// A crash slot for one of the clip's threads, described from `pipe.crash`.
+// The thread calls busy() before it enters FFmpeg and idle() before it parks.
+[[nodiscard]] inline crash_context::thread_slot clip_crash_slot(const video_pipeline& pipe,
+                                                                const char* role,
+                                                                const char* decoder,
+                                                                const char* version) noexcept {
+  crash_context::thread_slot slot;
+  slot.describe({.family = pipe.crash.container, .decoder = decoder, .version = version,
+                 .correlation_id = pipe.crash.correlation_id, .role = role},
+                pipe.crash.width, pipe.crash.height, pipe.crash.bits);
+  return slot;
+}
 
 void run_demux_thread(video_pipeline& pipe) noexcept;
 void run_video_decode_thread(video_pipeline& pipe) noexcept;
