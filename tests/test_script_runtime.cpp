@@ -574,3 +574,34 @@ TEST_CASE("weak tables are strong, so no collect runs unbounded", "[script][sand
   INFO(a->status().last_error << " / " << a->status().message);
   REQUIRE(p->log_lines() == std::vector<std::string>{"kept\ttrue"});
 }
+
+TEST_CASE("table.insert, table.remove and a sort with a C comparator stop on time", "[script][limits]") {
+  // __len says how far these loops go (up to 2^63), and on a plain table or
+  // with a C function as comparator they run no VM instruction: before the
+  // flag was checked in them, each held the worker for good.
+  for (const char* slow : {
+           "local t = setmetatable({}, {__len = function() return math.maxinteger - 1 end})\n"
+           "table.insert(t, 1, 0)",
+           "local t = setmetatable({}, {__len = function() return math.maxinteger - 1 end})\n"
+           "table.remove(t, 1)",
+           "local t = setmetatable({}, {__len = function() return 2^31 - 2 end})\n"
+           "table.sort(t, rawequal)",
+       }) {
+    INFO(slow);
+    auto p = std::make_unique<probe>();
+    auto a = start(*p, std::string("function slow()\n") + slow + "\nend");
+    REQUIRE(a->wait_idle(5s));
+    const auto t0 = clk::now();
+    REQUIRE(a->run_function("command slow", "slow", {}));
+    const bool stopped = p->wait_stopped(3s);
+    if (!stopped) {
+      (void)a.release();
+      (void)p.release();
+    }
+    REQUIRE(stopped);
+    const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(p->stopped_at - t0);
+    INFO(took.count() << " ms");
+    REQUIRE((p->why == script_stop::time || p->why == script_stop::instructions));
+    REQUIRE(took < fast_limits().wall + 400ms);
+  }
+}

@@ -75,6 +75,7 @@ static int tinsert (lua_State *L) {
       luaL_argcheck(L, (lua_Unsigned)pos - 1u < (lua_Unsigned)e, 2,
                        "position out of bounds");
       for (i = e; i > pos; i--) {  /* move up elements */
+        mv_lua_check_interrupt(L);  /* MediaViewer: e is __len's, up to 2^63 */
         lua_geti(L, 1, i - 1);
         lua_seti(L, 1, i);  /* t[i] = t[i - 1] */
       }
@@ -98,6 +99,7 @@ static int tremove (lua_State *L) {
                      "position out of bounds");
   lua_geti(L, 1, pos);  /* result = t[pos] */
   for ( ; pos < size; pos++) {
+    mv_lua_check_interrupt(L);  /* MediaViewer: size is __len's, up to 2^63 */
     lua_geti(L, 1, pos + 1);
     lua_seti(L, 1, pos);  /* t[pos] = t[pos + 1] */
   }
@@ -276,6 +278,7 @@ static void set2 (lua_State *L, IdxT i, IdxT j) {
 ** index 'b' (according to the order of the sort).
 */
 static int sort_comp (lua_State *L, int a, int b) {
+  mv_lua_check_interrupt(L);  /* MediaViewer: partition's loops run no VM code with a C comparator */
   if (lua_isnil(L, 2))  /* no function? */
     return lua_compare(L, a, b, LUA_OPLT);  /* a < b */
   else {  /* function */
