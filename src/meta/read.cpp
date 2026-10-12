@@ -85,10 +85,11 @@ void read_beyond(std::string_view utf8_path, std::span<const std::uint8_t> prefi
     if (ev.exif_software.empty()) ev.exif_software = probed.exif_software;
     if (ev.xmp_creator_tool.empty()) ev.xmp_creator_tool = probed.xmp_creator_tool;
     if (ev.xmp_source_type.empty() && !probed.xmp_source_type.empty()) {
+      // No XMP was read above, so this is XMP's own occurrence even when C2PA
+      // wrote the same term: always added, or derive_provenance would take the
+      // C2PA one for XMP's and name the wrong source.
       ev.xmp_source_type = probed.xmp_source_type;
-      if (std::find(ev.source_types.begin(), ev.source_types.end(), probed.xmp_source_type) == ev.source_types.end()) {
-        ev.source_types.push_back(probed.xmp_source_type);
-      }
+      ev.source_types.push_back(probed.xmp_source_type);
     }
   }
   const provenance p = derive_provenance(ev);

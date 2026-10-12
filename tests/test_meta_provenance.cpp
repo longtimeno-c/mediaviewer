@@ -1195,6 +1195,20 @@ TEST_CASE("the probe reads HEIF items, clip tags and RAW, and agrees with the fu
     p = same_answer("p_xmpuuid.mp4", file);
     CHECK(p.made_with == "Midjourney");
   }
+  // A clip whose C2PA and XMP say the same term: the signed claim is named, by
+  // the probe and by the full read's merge alike.
+  {
+    bytes c2pa{0xD8, 0xFE, 0xC3, 0xD6, 0x1B, 0x0E, 0x48, 0x3C, 0x92, 0x97, 0x58, 0x28, 0x87, 0x7E, 0xC4, 0x81};
+    be32(c2pa, 0);  // version, flags
+    append(c2pa, std::string_view("manifest\0", 9));
+    be32(c2pa, 0);
+    be32(c2pa, 0);  // merkle offset
+    append(c2pa, c2pa_store("Sora", kTrained, "Sora"));
+    bytes file = clip_with("qt  ", {box("udta", box("XMP_", bytes(iptc.begin(), iptc.end())))});
+    append(file, box("uuid", c2pa));
+    p = same_answer("p_c2pa_xmp.mov", file);
+    CHECK(p.evidence.rfind("Content Credentials (C2PA): ", 0) == 0);
+  }
   // A camera clip: nothing.
   CHECK_FALSE(same_answer("p_cam.mov", clip_with("qt  ", {box("udta", qt_string("\xA9swr", "17.1"))})).ai_generated);
 
