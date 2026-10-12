@@ -971,7 +971,25 @@ build/bin/mv_tests "[geo]"
 # load < 30 ms, one lookup < 50 us
 build/bin/mv_tests "geo: load and lookup timings"     # also part of "[.perf-bench]"
 # the loader fuzzer is fuzz_geo in mv_fuzzers (run.ps1 -Harness geo)
+
+# The Places add-on (docs/design/27): build/addons/places/(lib)mv_places.(dylib|dll)
+cmake --build build --target mv_places
+build/bin/mv_tests "[places]"                  # map pixels, cache, gestures, section, search
+build/bin/mv_import_tests "[places]"           # its manifest, then the add-on through a signed store
+build/bin/mv_tests "places: map render time at pane width x 160 pt"   # in "[.perf-bench]"
+MV_PLACES_MAP_DUMP=<dir> build/bin/mv_tests "[.places-map-dump]"      # BMPs of the map to look at
+# Package it (release: the workflow does this after signing the code)
+python3 tools/package/addon-pack.py stage-places --src build/addons/places --blob build/geo/places.mvgeo
+python3 tools/package/addon-pack.py pack --addon places --platform macos --src build/addons/places \
+  --version 1.0.0 --key <key file> --out dist/
 ```
+
+To see it in the app on a developer build (`-DMV_ADDON_DEV_PUBLIC_KEY`): pack with the dev key as
+above, unzip it with `ditto -x -k` into `<scratch>/addons/Places/1.0.0/` beside the signed
+`manifest.json(.sig)`, and start a copy of the app with its own bundle id, `HOME`,
+`MV_DEV_ADDONS_DIR` and `MV_DEV_THUMBS_DIR` (as the slots test add-on, under "Where this actually
+is"). Until PR 56 is in the same build, pack without the manifest's `settings` page: that host
+refuses a page it does not know.
 
 ### Performance suite: regenerating the README charts
 
@@ -1359,11 +1377,30 @@ The core is built:
 Measured on this Mac (Release, warm): open in 11–12 ms; lookup p99 8.4 µs on land and 4 µs on
 a random sweep. The blob is 17.2 MB, or 5.4 MB xz-compressed.
 
-**Not built:** the Places add-on that links it, the Metadata-pane Place section, the map, and
-search by place. The app is unchanged and still shows coordinates. Windows builds `src/geo` in
-CI only; it has not been compiled locally. Not measured: a cold (uncached) open, Windows timings,
-and alternated first-pixel / arrow runs. Those belong to the add-on PR, the first change that
-runs this code in the app. See [docs/design/27-places.md](design/27-places.md).
+### Places add-on and its map (issue #344, plan slice 3 + place search, 2026-10-12)
+
+Built on `feature/issue-344-places-addon` (merges #348's slots): `src/addons/places`, its
+manifest (the info section, the search provider, the settings page; nothing else), the map
+rasteriser with cursor zoom down to town scale, packaging (`addon-pack.py` entry, `stage-places`,
+the data licences) and both release workflows.
+
+- **Mac (M-series):** `mv_tests "[places]"` 9 cases / 261 assertions and `"[geo]"` pass;
+  `mv_import_tests` 94 cases pass, including `"[places]"` (2 cases, the add-on through a signed
+  store); `test_addon_pack.py` 22 tests pass with the C++ verifier. The map renders in 4.5–4.7 ms
+  CPU (median) at 640 × 320 px, max ~20 ms ([27](design/27-places.md#performance)). A dev copy of
+  the app with Places sideloaded showed, at the bottom of the pane opened with `I`, the label, the
+  coordinates and the map with the accent pin and town names; −, double-click and drag re-drew it
+  with the pin held on the photo's point. A 5-minute `fuzz_geo` run with `towns_in` was clean.
+- **Static soak, dev copy, alternated base (no add-on) / new (Places):** both present about once a
+  second with the pane closed and about twice a second with it open (30 s: base 54, new 61
+  presents with the pane open, one run each), on a machine at load average 50–85. Places did not
+  add a present pattern of its own, but the base was not at 0 idle presents in this setup either,
+  so **0 presents idle with the section shown is not established**; it is owed to a quiet-machine
+  run with the PR 1 gate.
+- **Not measured:** `--browse-soak` with the pane open (the harness cannot open the pane, and the
+  machine was loaded), launch → first pixel with the add-on installed (alternated), pinch and
+  mouse-wheel zoom by hand (computer use cannot send them; the gesture maths is unit-tested and
+  #348's chrome sends the events), Windows anything: the add-on compiles in CI only.
 
 ### Screens and slots (PRs 58-59, 2026-10-11)
 

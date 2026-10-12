@@ -58,6 +58,7 @@ class database {
   std::size_t ring_count(layer, std::uint32_t) const;
   std::span<const point> ring(layer, std::uint32_t polygon, std::size_t i) const;
   std::string_view polygon_country_code(layer, std::uint32_t) const;
+  std::vector<town_ref> towns_in(const box&, std::size_t limit) const; // map town dots, by population
   std::string_view meta() const;                                       // provenance JSON
 };
 result<std::unique_ptr<mapped_database>> open_database(std::string_view utf8_path);

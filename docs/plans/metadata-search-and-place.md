@@ -32,8 +32,16 @@ data (the place blob, ~5.4 MB compressed), not a core dependency of `meta`. With
 the pane shows coordinates. So the pane half of slice 2 below becomes the add-on's info-pane
 section (#348 slots / plan/25 PR 59), and search by place in slice 4 becomes its search provider.
 
-**Not built:** the Places add-on, the pane section, the `O` overlay line, the map (slice 3) and
-search by place. The town radius stays 15 km (reasoning in doc 27).
+**Slice 3 and the place half of slice 4: built (2026-10-12)** on `feature/issue-344-places-addon`,
+folded into [doc 27](../design/27-places.md): the Places add-on (`src/addons/places`) with the
+pane's Place section at the foot of the Metadata pane, the offline map (cursor zoom from country to
+town scale, town dots and names, no streets), search by place for a folder (`portugal`, `place:`,
+`in:` when not a date), its settings page, packaging and both release workflows. Owed: the Windows
+half is compiled in CI only; 0 idle presents with the section shown and alternated
+first-pixel / browse runs on a quiet machine; Local search over the whole index (needs the index's
+coordinates through the host, doc 17).
+
+**Not built:** the `O` overlay line. The town radius stays 15 km (reasoning in doc 27).
 
 ## 0. Rules this touches
 
