@@ -397,6 +397,10 @@ void probe_heif_meta(reader& r, const box& meta, parse::sink& out) {
   const std::uint8_t v = p[0];
   const unsigned off_size = p[4] >> 4, len_size = p[4] & 15, base_size = p[5] >> 4;
   const unsigned idx_size = v >= 1 ? (p[5] & 15) : 0;
+  // A zero length_size gives every extent "the rest of the file", which the
+  // probe never reads; it would also make each extent consume no bytes, so a
+  // hostile box could spin 4096 items x 65535 extents without progress.
+  if (len_size == 0) return;
   std::size_t at = 6;
   const auto take = [&](unsigned n, std::uint64_t& value) {
     if (n != 0 && n != 4 && n != 8) return false;
