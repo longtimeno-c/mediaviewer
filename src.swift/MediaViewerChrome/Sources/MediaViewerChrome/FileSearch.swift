@@ -134,8 +134,10 @@ final class FileSearchStore: ObservableObject {
   }
 
   /// Name hits, then the providers' rows for this query in this folder.
-  private func merge(_ names: [Int]) -> [Int] {
-    let state = SlotStore.shared.fileSearch
+  /// `state`: the providers' answer (a @Published sink sees the new value before
+  /// the store holds it, so it is passed in).
+  private func merge(_ names: [Int], _ given: SlotSearchState? = nil) -> [Int] {
+    let state = given ?? SlotStore.shared.fileSearch
     guard state.generation == providerGeneration, !state.rows.isEmpty else { return names }
     var seen = Set(names)
     var out = names
@@ -159,7 +161,7 @@ final class FileSearchStore: ObservableObject {
     } else {
       providerNote = ""
     }
-    let merged = merge(nameHits)
+    let merged = merge(nameHits, state)
     guard merged != items else { return }
     items = merged
     pushFilter(merged, folders ?? [])
