@@ -751,7 +751,9 @@ class chrome_host {
   // read, which is not the same as an empty string: "" clears a comment.
   [[nodiscard]] bool take_parked_text(std::string& out) noexcept;
   // PR 12: the pane's rating / comment / Revert state (chrome_meta_edit_args).
-  void set_meta_edit(std::int32_t rating, const std::string& comment, std::int32_t flags) noexcept;
+  // #352: true when a kMetaEditDropDraft only closed an in-pane confirmation
+  // (the Location remove): the pane keeps the keyboard, so Esc stops there.
+  bool set_meta_edit(std::int32_t rating, const std::string& comment, std::int32_t flags) noexcept;
 
   // PR 11: the adjust pane, a third panel island on the right (it and the
   // metadata pane share that edge; the host shows one at a time). Optional

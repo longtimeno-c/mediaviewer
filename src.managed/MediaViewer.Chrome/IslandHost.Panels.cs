@@ -626,7 +626,9 @@ public static partial class IslandHost
     // ContentDialog is a top-level-window control, and this pane is an island
     // (the Settings / Add-ons confirmations are in-pane for the same reason).
     // While the confirmation is up the pane reports text focus, so native hands
-    // it Enter, Space and Tab and turns Esc into DropDraft: Esc = Cancel.
+    // it Enter, Space and Tab and turns Esc into DropDraft: Esc = Cancel, which
+    // closes the confirmation only (SetMetaEdit returns S_FALSE and native keeps
+    // the keyboard in the pane); the next Esc leaves the field.
 
     private static bool LocationCanClear => (_metaLocationFacts & MetaFactLocationClear) != 0;
 
@@ -1271,10 +1273,20 @@ public static partial class IslandHost
             _metaCanRevert = canRevert;
             if (!_metaPaneVisible) return 0;
             if (_metaRevert is not null) _metaRevert.IsEnabled = canRevert;
+            // #352: Esc on the Location remove confirmation is its Cancel: it closes
+            // and the field, still holding the draft, takes the keyboard back (as the
+            // Mac's alert). S_FALSE tells native the pane kept the keyboard, so its
+            // walk-back stops here instead of returning to the canvas.
+            if ((a.Flags & MetaEditFlags.DropDraft) != 0 && _metaConfirmLocation)
+            {
+                _metaConfirmLocation = false;
+                RenderMeta();
+                return 1;
+            }
             // Esc in a field: forget what was typed, show the file's.
             bool drop = (a.Flags & MetaEditFlags.DropDraft) != 0 &&
                         (_metaEditingKey is not null || _metaEditingDate || _metaAddingTag ||
-                         _metaEditingComment || _metaEditingLocation || _metaConfirmLocation);
+                         _metaEditingComment || _metaEditingLocation);
             if (drop) CancelMetaEdits();
             if ((a.Flags & MetaEditFlags.DropDraft) != 0) _metaCommentAsked = false;
             // Ctrl+I: the comment editor opens once the item's record is in the

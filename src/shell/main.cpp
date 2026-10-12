@@ -1254,7 +1254,7 @@ void metadata_selection_changed(app_state* app) {
   push_meta_pane(app);
 }
 
-void push_meta_edit(app_state* app, bool drop_draft = false) noexcept;
+bool push_meta_edit(app_state* app, bool drop_draft = false) noexcept;
 void set_adjust_pane(app_state* app, bool on);
 
 // The pane shows the record already held: three text tables, formatted here once
@@ -1353,8 +1353,10 @@ std::string meta_comment_now(app_state* app, const std::string& path) {
   return app->meta_record ? app->meta_record->s.comment : std::string{};
 }
 
-void push_meta_edit(app_state* app, bool drop_draft) noexcept {
-  if (!app || !app->chrome.meta_pane_visible()) return;
+// True when the island took a drop (Esc) by closing an in-pane confirmation
+// only (#352): the field under it keeps the keyboard.
+bool push_meta_edit(app_state* app, bool drop_draft) noexcept {
+  if (!app || !app->chrome.meta_pane_visible()) return false;
   try {
     const std::string path = current_item_path(app);
     std::int32_t flags = 0;
@@ -1365,8 +1367,9 @@ void push_meta_edit(app_state* app, bool drop_draft) noexcept {
     app->focus_comment_next = false;
     const std::int32_t rating = path.empty() ? 0 : meta_rating_now(app, path);
     const std::string comment = path.empty() ? std::string{} : meta_comment_now(app, path);
-    app->chrome.set_meta_edit(rating, comment, flags);
+    return app->chrome.set_meta_edit(rating, comment, flags);
   } catch (...) {
+    return false;
   }
 }
 
@@ -5267,8 +5270,10 @@ void walk_back(app_state* app, mv::shell::back_target target) noexcept {
         return;
       }
       // PR 12: Esc in the comment field drops the edit. The pane forgets the
-      // draft before focus leaves, so leaving it does not commit.
-      push_meta_edit(app, true);
+      // draft before focus leaves, so leaving it does not commit. #352: Esc on
+      // the Location remove confirmation closes only that and the field keeps
+      // the keyboard, as the Mac's alert does; the next Esc leaves the field.
+      if (push_meta_edit(app, true)) return;
       focus_canvas(app);
       return;
     case back_target::canvas_focus:

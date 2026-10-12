@@ -874,15 +874,16 @@ bool chrome_host::take_parked_text(std::string& out) noexcept {
   }
 }
 
-void chrome_host::set_meta_edit(std::int32_t rating, const std::string& comment,
+bool chrome_host::set_meta_edit(std::int32_t rating, const std::string& comment,
                                 std::int32_t flags) noexcept {
-  if (!panels_attached_ || !set_meta_edit_) return;
+  if (!panels_attached_ || !set_meta_edit_) return false;
   chrome_meta_edit_args args{};
   args.comment = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(comment.data()));
   args.comment_len = static_cast<std::int32_t>(comment.size());
   args.rating = rating;
   args.flags = flags;
-  (void)set_meta_edit_(&args, static_cast<std::int32_t>(sizeof(args)));
+  // S_FALSE (1): Esc closed the pane's confirmation and nothing else.
+  return set_meta_edit_(&args, static_cast<std::int32_t>(sizeof(args))) == 1;
 }
 
 void chrome_host::apply_rate(float rate) noexcept {
