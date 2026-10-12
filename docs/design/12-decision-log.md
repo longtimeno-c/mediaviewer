@@ -68,6 +68,15 @@ normalises to name.
 `check-hostable-core.ps1` enforce both. `shellext/` is a host module beside `shell/`
 (2026-09-25), and `shell` may include `nle` (2026-09-28).
 
+**Document font bytes are read above codec (2026-10-12).** Laying out a page picks font files lazily,
+including per-character fallbacks, so the decode caller cannot pass the bytes in up front. `codec/`
+still names the file (`fonts::find`, CoreText / DirectWrite). The read used to be `io::read_all`
+inside `codec/text.cpp`, the only `codec → io` include and a sideways edge between peers. It is now
+`text::set_font_reader`, a function pointer `image/pipeline.cpp` installs before main, and
+`tools/check-module-graph.ps1` rejects `codec` including `io`. The docx fuzzer links `codec` without
+`image` and installs the same reader over `io::read_all`. With no reader the face slot stays -1 and
+layout continues. Issue #286.
+
 **Settings writes are off the UI thread (2026-09-14).** "Settings writes on the UI thread" is
 closed. `settings.ini` is read once into an in-memory document (`shell/settings_store`). Saves
 mutate it read-copy-update and hand the newest immutable snapshot to a one-thread persist worker,
@@ -360,6 +369,13 @@ from any codec. Forced through it, ProRes 422 played at 55 frames/s.
 **Tap `Q` / `E` skips (2026-09-13).** Tap skips ±2 s on the down edge (exact seek); hold skims
 (non-exact, settle on release). Speed is on the command-bar dropdown and `Shift+Q` / `Shift+E`.
 `J` / `L` are ±10 s in the viewer.
+
+**A transport click does not seek 0 on the way (2026-10-12).** The system slider reports its
+minimum before the time under the pointer. `media_source::seek` publishes that target and arms
+preview before the frame is decoded, so the minimum presents the opening frame. A non-exact seek
+of the origin is dropped while the playhead is past half a second (`scrub_origin_is_spurious`);
+the click's real sample and the exact release are kept. An exact seek to the start — replay, a
+step, the thumb released there — still goes there. Play and pause are not changed.
 
 ---
 
@@ -691,6 +707,20 @@ scrub, plus a Swift / AppKit record tied to the native report by correlation id;
 - **NSException:** AppKit routes event-handling exceptions to `-[NSApplication reportException:]`,
   not the uncaught handler, so the chrome record is written there too (one per crash).
 - **Report metadata:** the rewrite copies Crashpad's extended attributes onto the replacement.
+
+**The environment block is dropped, including on a stack (2026-10-12).** A Mac Crashpad dump
+kept the process environment because the kernel places argv and the environment at the high end
+of the main thread's stack, and the scrub zeros only what is *outside* a stack. A username inside
+an email local-part (`alice.jones@…`, or a longer token such as `alicejones@…`) is not a bounded
+identity, so it survived the text pass. The scrub now zeros a run of `KEY=value` strings on a
+stack when the run contains a marker key (`HOME`, `USER`, `PATH`, and the Windows names), and the
+argv strings packed against that run. Nothing in the slab is needed to symbolicate.
+
+Windows did not have this gap for the process block itself. The environment, the command line and
+the current directory live in the PEB (`RTL_USER_PROCESS_PARAMETERS`), which is not a thread stack
+and was already zeroed. A copy that landed on a Windows stack is covered by the same run detector.
+There is no separate cwd stream on either host. The Mac process cwd is not a Crashpad stream;
+`PWD`, when a shell put it in the environment, goes with the block.
 
 ---
 
