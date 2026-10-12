@@ -317,6 +317,15 @@ internal class FakeInput : ContentControl
         if (MaxUtf8Bytes > 0 && s.Length > 0)
         {
             int room = MaxUtf8Bytes - System.Text.Encoding.UTF8.GetByteCount(_text[..start] + _text[end..]);
+            // Every UTF-16 unit is at least one byte: cut a long paste to that
+            // first, so the loop below trims a few characters, not a megabyte
+            // one at a time on the UI thread.
+            if (s.Length > Math.Max(room, 0))
+            {
+                int keep = Math.Max(room, 0);
+                if (keep > 0 && char.IsHighSurrogate(s[keep - 1])) keep--;
+                s = s[..keep];
+            }
             // Whole characters only: never half a surrogate pair.
             while (s.Length > 0 && System.Text.Encoding.UTF8.GetByteCount(s) > room)
                 s = s[..(s.Length >= 2 && char.IsLowSurrogate(s[^1]) ? s.Length - 2 : s.Length - 1)];
