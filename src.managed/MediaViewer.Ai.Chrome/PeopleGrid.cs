@@ -113,25 +113,21 @@ internal sealed class PeopleGrid
         TextBlock scopeLabel = _look.Text("People in", 12, wrap: false);
         scopeLabel.VerticalAlignment = VerticalAlignment.Center;
         _scopeRow.Children.Add(scopeLabel);
+        // The search panel's segmented track (Look.Track / Look.Segment).
+        bool hc = Look.HighContrast();
         var segments = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2 };
         for (int i = 0; i < 2; ++i)
         {
             var scope = (MvAiScope)i;
-            var b = new ToggleButton
-            {
-                Content = ScopeNames[i],
-                FontFamily = _look.Font,
-                FontSize = 12,
-                Padding = new Thickness(12, 3, 12, 4),
-                CornerRadius = i == 0 ? new CornerRadius(6, 0, 0, 6) : new CornerRadius(0, 6, 6, 0),
-            };
+            ToggleButton b = _look.Segment(ScopeNames[i], () => SetScope(scope), hc, fontSize: 12);
             AutomationProperties.SetName(b, "People in " + ScopeNames[i]);
             ToolTipService.SetToolTip(b, ScopeHelp[i]);
-            b.Click += (_, _) => SetScope(scope);
             _scopeButtons[i] = b;
             segments.Children.Add(b);
         }
-        _scopeRow.Children.Add(segments);
+        Border track = _look.Track(segments, hc);
+        track.VerticalAlignment = VerticalAlignment.Center;
+        _scopeRow.Children.Add(track);
         _scopeFolder = _look.Text("", 12, AddonColour.Title, wrap: false);
         _scopeFolder.VerticalAlignment = VerticalAlignment.Center;
         _scopeFolder.TextTrimming = TextTrimming.CharacterEllipsis;

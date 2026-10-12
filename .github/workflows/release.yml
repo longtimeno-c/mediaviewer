@@ -384,7 +384,7 @@ jobs:
             build/vcpkg_installed
             build/vcpkg_dynamic
             build/libomp
-          key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'tools/mac/dependencies/vcpkg.json', 'tools/mac/triplets/*.cmake', 'tools/vcpkg/triplets/*-osx.cmake', 'tools/mac/build_libomp.py') }}-${{ matrix.triplet }}-mixed-v2
+          key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'tools/mac/dependencies/vcpkg.json', 'tools/mac/dependencies/vcpkg-configuration.json', 'tools/vcpkg/ports/**', 'tools/mac/triplets/*.cmake', 'tools/vcpkg/triplets/*-osx.cmake', 'tools/mac/build_libomp.py') }}-${{ matrix.triplet }}-mixed-v2
 
       # LibRaw's OpenMP runtime, built for the app's 14.0. Homebrew's libomp
       # declares the runner's macOS as its minimum and ships in Frameworks

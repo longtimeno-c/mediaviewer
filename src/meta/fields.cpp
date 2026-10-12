@@ -257,6 +257,11 @@ field_state read_fields(const Exiv2::ExifData& exif, const Exiv2::XmpData& xmp,
 
     f.comment = exif_comment(exif, order);
     if (!f.comment) f.comment = xmp_comment(xmp);
+
+    if (const auto* d = find(xmp, "Xmp.xmp.Label")) {
+      std::string v = d->toString();
+      if (!v.empty()) f.label = std::move(v);
+    }
   } catch (...) {
     // Whatever was read before the damaged tag stands.
   }
