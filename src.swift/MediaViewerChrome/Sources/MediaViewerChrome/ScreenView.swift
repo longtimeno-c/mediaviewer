@@ -104,7 +104,7 @@ struct ScreenNodeView: View {
     ScreenNodeView(node: n, address: address, revision: revision)
   }
 
-  @ViewBuilder private var content: some View {
+  @MainActor @ViewBuilder private var content: some View {
     switch node.type {
     case "stack":
       let spacing = CGFloat(node.int("spacing") ?? 8)
@@ -777,7 +777,7 @@ private struct ThumbnailGridNode: View {
     .onChange(of: revision) { _, _ in selection = Set(node.props["selection"] as? [String] ?? []) }
   }
 
-  private func select(_ path: String, items: [[String: Any]]) {
+  @MainActor private func select(_ path: String, items: [[String: Any]]) {
     if node.bool("multi") {
       if selection.contains(path) { selection.remove(path) } else { selection.insert(path) }
     } else {
