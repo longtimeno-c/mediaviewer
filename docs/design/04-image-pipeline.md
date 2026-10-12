@@ -199,7 +199,7 @@ instead of refitting. Default off. Camera state only — prefetch and generation
 ## Thumbnails / filmstrip
 
 [`src/image/thumb.h`](../../src/image/thumb.h) (Windows), `thumb_mac.cpp` (macOS, same spec
-and schema).
+and schema); the SQLite index is one file for both, `thumb_store.cpp`.
 
 - **Spec `jpg512.4`:** a JPEG, long edge 512, never enlarged, ICC → sRGB, EXIF orientation
   applied, and a clip's poster turned by its display matrix ([26](26-photos-library.md)). The
@@ -210,7 +210,12 @@ and schema).
 - **Store:** SQLite (WAL) table `thumbs(path, mtime, size, spec, file)`, primary key
   `(path, mtime, size, spec)`, with the JPEG files beside the database in the per-user cache
   folder (`%LocalAppData%\MediaViewer\thumbs` on Windows). A row whose file has gone is a miss
-  and is dropped. Bumping the spec regenerates old rows.
+  and is dropped. Bumping the spec regenerates old rows. Every pool thread shares one store, so
+  its lock covers one SQLite step on statements prepared once per connection, never a stat or
+  a file write. A lookup whose path goes to the chrome stats the file (unlocked); a caller that
+  reads the bytes itself (the clip placeholder, the add-on host's `thumbnail_jpeg`) skips the
+  stat, and its failed read is the miss (issue #168). Windows drops the row there; the Mac
+  placeholder leaves it to the sweep's next verified lookup.
 - mtime + size is the identity: a rewritten file of equal length at the same timestamp keeps
   its thumb.
 - **Video posters:** `player::poster` software-decodes one frame near the head of the clip
