@@ -481,6 +481,22 @@ the end of the folder path runs `Ctrl+F` / `⌘F`: with Local search loaded (or 
 search panel; without it, **file search**, a name filter over the listed folder with no index (the
 Windows chrome entry is still named `GallerySearch`). `/` in the gallery is the folder row's find.
 
+**Touch and trackpad are input, not a camera path (2026-10-12, issue #212).** A pinch becomes
+wheel units toward the fingers (`wheel_total`, so `camera::wheel_toward` and the ω=18, ζ=1
+springs zoom), a zoomed pan becomes screen pixels (`scroll_px`, `camera::pan_by_screen`), and a
+swipe is the folder step `A` / `D` take; `shell/gesture.h` is the shared maths (sub-unit pinch
+remainder, a once-per-gesture swipe latch). No snapshot field, ABI call or present path was added.
+On Windows the touchscreen uses **`WM_GESTURE`**, not `WM_POINTER` or DirectManipulation: the
+system recogniser hands over the pinch distance and centre and a pan while a tap still arrives as
+the promoted mouse click every existing path handles; raw pointers would mean re-deriving taps,
+and DirectManipulation brings its own viewport and inertia to fight the springs. Pan inertia and
+the gutter are configured off (`WM_GESTURENOTIFY`). A precision touchpad's pinch was already
+`Ctrl`+wheel; its two-finger sideways swipe (`WM_MOUSEHWHEEL`) and a mouse's tilt now step one item
+per swipe or click, latched until 250 ms of quiet so momentum does not run through the folder. A
+document keeps its sideways scroll. At fit a one-finger stroke is swipe-next because the opening
+view is locked (no drag at fit); zoomed, it pans. The Mac already zoomed on `magnifyWithEvent:`; it
+gained the same remainder and the sideways swipe (`scrollWheel:` and `swipeWithEvent:`).
+
 ---
 
 ## Windows chrome (XAML islands)

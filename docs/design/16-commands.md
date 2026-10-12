@@ -408,6 +408,23 @@ Chrome, in memory, no decode.
 - **On (`S`):** advancing keeps zoom and the pan centre as a fraction of the image; a different
   aspect keeps the centre. Camera state, not a decode; prefetch is unaffected.
 
+## Touch and trackpad
+
+Gestures are input to the commands above, never a camera path of their own (issue #212,
+[12](12-decision-log.md) 2026-10-12; maths in `shell/gesture.h`, shared by both hosts):
+
+| Gesture | Does |
+|---|---|
+| Pinch (touchscreen, precision touchpad, Mac trackpad) | Zooms toward the fingers like the wheel: wheel units in the input snapshot, the same springs, floor and rubber-band |
+| One-finger drag, zoomed (touchscreen) | Pans; the content follows the finger through `pan_by_screen`'s springs |
+| Sideways swipe at fit (touchscreen, one finger) | Next (swipe left) / previous (swipe right), once per touch |
+| Two-finger sideways swipe (touchpad, trackpad), mouse tilt | Next / previous, once per swipe or tilt click; momentum runs out in the latch. On a PDF or DOCX with the filmstrip hidden it scrolls the page instead |
+| Three-finger swipe (Mac, when System Settings sends it) | Next / previous |
+
+A swipe does nothing under the gallery or in crop. A tap is the system's promoted click. Windows
+reads the touchscreen through `WM_GESTURE` (pan inertia and gutter off); the touchpad's pinch is
+already `Ctrl`+wheel. The Mac reads `magnifyWithEvent:`, `scrollWheel:` and `swipeWithEvent:`.
+
 ## Animation
 
 GIF / APNG / WebP play on the render thread's frame clock ([image pipeline](04-image-pipeline.md)).
@@ -450,7 +467,6 @@ No hot-path ABI for commands. Commands invoke existing session calls (`mv_folder
 - `Ctrl+PageUp` / `Ctrl+PageDown` for ICO sizes and HEIC sequences (pages of TIFF, PDF and DOCX are built).
 - `U` clear label and `X` reject mark.
 - A filter (all / photos / videos / RAW) on the listing.
-- Touch gestures (swipe, pinch).
 - Import / export of key maps and named alternate layouts.
 - Voice add-on hold-to-talk (`Ctrl+Shift+Space`).
 - **On the Mac** (issue #183): `Ctrl+G` go to index, `;` Live Photo motion, and Open RAW /

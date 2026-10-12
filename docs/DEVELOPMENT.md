@@ -568,7 +568,12 @@ keyboard layout, not a US key position.
 
 Wheel zooms toward the cursor; drag pans. Zoom-out floors at 50 % (Fit can
 still go smaller on a huge image) and rubber-bands a little past that, then
-springs back to centre. Drop a file on the window.
+springs back to centre. Drop a file on the window. A pinch (touchscreen,
+touchpad, trackpad) zooms like the wheel; a sideways swipe or mouse tilt steps
+next / previous; a finger drag pans once zoomed
+([docs/design/16](design/16-commands.md) "Touch and trackpad"). The gesture
+maths has unit tests (`mv_tests "[gesture]"`); real touch hardware is not in
+any automated run.
 
 Command line: `--soak <seconds>`, `--json <path>`, `--gate` (non-zero exit if the verify
 line fails), `--no-overlay`, `--static`, `--no-chrome`, `--open <path>`,
