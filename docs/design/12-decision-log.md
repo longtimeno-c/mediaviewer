@@ -194,6 +194,12 @@ counted, not smoothed over.
 `[self-hosted, windows, gpu]` when `MV_GPU_RUNNER_ENABLED=true`; otherwise it is skipped. A hosted
 runner failing without running `frametime.exe` proved nothing. A skip is not a pass.
 
+**Skipped present-loop gates are reported, not silent (2026-10-11, #149).** A `present-gates` job
+always runs after the Windows and Mac frame-time jobs: a failed or cancelled gate fails it, a
+skipped one is a warning (a failure once `MV_REQUIRE_PRESENT_GATES` is set). Skips stay
+non-failing by default for the 2026-09-07 reason: failing every PR on runners that do not exist
+proves nothing. The Mac PR 1 gate is its own opt-in self-hosted job (`MV_MAC_GPU_RUNNER_ENABLED`).
+
 **Video copy-out runs on the immediate context (2026-09-07).** The decode thread copies from the
 D3D11VA pool into our presentation ring with `CopySubresourceRegion` on the **immediate**
 context, holding FFmpeg's `AVHWDeviceContext` lock for the submit only. A D3D11VA `AVFrame` is a

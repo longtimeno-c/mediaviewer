@@ -1472,9 +1472,17 @@ for a nonexistent runner and avoids failing every PR on a machine that does not 
 yet. An enabled runner that later goes offline is still subject to GitHub's queue
 timeout. Fork PRs skip this job; they do not execute on the persistent GPU runner.
 
-Once the runner exists, make **Frame-time gate (self-hosted GPU)** a required
-branch-protection check. Until then, requiring it does not protect anything: GitHub
-treats a skipped job as success for merge. Baseline cache entries use unique keys and
+The Mac PR 1 gate is the **Frame-time gate (self-hosted Mac)** job: an interactive
+Apple Silicon runner labelled `self-hosted`, `macOS`, `ARM64`, `gpu`, logged in with the
+display on and nothing else drawing (Homebrew at `/opt/homebrew`; the job installs the
+vcpkg trees itself). Set `MV_MAC_GPU_RUNNER_ENABLED` to `true` only after provisioning it.
+
+Requiring either gate job directly does not protect anything: GitHub treats a skipped
+job as success for merge. Require **Present-loop gates (Windows PR 1 + Mac PR 1)**
+instead. It always runs, fails when a gate failed or was cancelled, and puts a warning on
+the run when a gate was skipped. Once both runners exist, set repository variable
+`MV_REQUIRE_PRESENT_GATES` to `true` so a skip on this repository's own branches fails
+too (fork PRs still only warn; they never run on the persistent runners). Baseline cache entries use unique keys and
 only successful main pushes publish a new baseline; PR runs compare against the restored
 main baseline. The repository changes cannot provision a runner or configure branch
 protection by themselves.

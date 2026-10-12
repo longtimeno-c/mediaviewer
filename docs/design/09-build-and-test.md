@@ -146,6 +146,8 @@ it replaces.
 | `windows-chrome`, `mac-chrome` | windows-latest, macos-14 | WinUI and SwiftUI chrome compile |
 | `mac-packaging` | ubuntu-latest | Release tooling tests and macOS bundle policy (`tools/mac/*`) |
 | `frametime` | self-hosted `[windows, gpu]` | Swapchain recovery, then the 60 s animated + idle gates against the rolling baseline (cached per runner; updated only on `main`). Runs only when `MV_GPU_RUNNER_ENABLED` is set and never for fork PRs; hosted runners have no usable GPU, so a skip is not a pass |
+| `frametime-mac` | self-hosted `[macOS, ARM64, gpu]` | Mac PR 1: the 60 s animated + idle gates on Metal (`frametime --seconds 60`, under `caffeinate`). Runs only when `MV_MAC_GPU_RUNNER_ENABLED` is set and never for fork PRs |
+| `present-gates` | ubuntu-latest | Always runs. Fails if either frame-time gate failed or was cancelled; a skipped gate is a warning annotation and a line in the run summary, or a failure on this repository's own branches when `MV_REQUIRE_PRESENT_GATES` is set. This is the check to require in branch protection, since GitHub treats a skipped job as passing |
 | `fuzz` | windows-latest | 60 s per harness on PRs; 20 min per harness nightly. Uploads crash / timeout / OOM inputs |
 | `broken-corpus-full` | windows-latest | Nightly / dispatch: the exhaustive broken-corpus sweep |
 
