@@ -99,6 +99,7 @@ public static partial class IslandHost
             _transport = new DesktopWindowXamlSource();
             EnsureFocusHook();
             _transport.Initialize(Win32Interop.GetWindowIdFromWindow(parent));
+            _transport.TakeFocusRequested += OnTakeFocusRequested;  // Tab on (issue #217)
             // Parked, with no content: nothing is open, and a full-client
             // default island would flash over the canvas on startup.
             Move(_transport, 1, 1, args.ClientHeight);
@@ -257,6 +258,7 @@ public static partial class IslandHost
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Center,
         };
+        AutomationProperties_SetName(_seek, "Seek");
         _seek.AddHandler(UIElement.PointerPressedEvent,
                          new PointerEventHandler((_, _) => { _draggingSeek = true; SetTransportHeld(true); }), true);
         _seek.AddHandler(UIElement.PointerReleasedEvent,
@@ -374,6 +376,8 @@ public static partial class IslandHost
             Padding = new Thickness(TransportPad - 1, 0, TransportPad - 1, 0),
             Child = row,
         };
+        // Issue #224: the island covers the canvas's WM_DROPFILES.
+        WireFileDrop(root);
         return root;
     }
 
@@ -429,8 +433,10 @@ public static partial class IslandHost
     private static void SkipVideo(long deltaNs)
     {
         if (_folderSession is null) return;
-        long duration = Math.Max(0, _folderSession.VideoInfo.DurationNs);
-        long target = Math.Clamp(_folderSession.VideoPosition + deltaNs, 0, duration);
+        long duration = _folderSession.VideoInfo.DurationNs;
+        long target = Math.Max(0, _folderSession.VideoPosition + deltaNs);
+        // An unknown duration (0) must not clamp a forward skip back to the start.
+        if (duration > 0) target = Math.Min(target, duration);
         _folderSession.VideoSeek(target, true);
     }
 

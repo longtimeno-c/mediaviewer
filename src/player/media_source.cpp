@@ -4,11 +4,11 @@
 #include "player/media_source.h"
 #include "player/video_internal.h"
 #include "player/transport.h"
+#include "player/resume_store.h"
 #include <algorithm>
 #include <limits>
 #include <memory>
 #include <filesystem>
-#include <fstream>
 #include <string>
 #include "io/paths.h"
 namespace mv::player {
@@ -211,41 +211,33 @@ class ffmpeg_media_source final : public media_source {
     return out;
   }
  private:
-  std::filesystem::path resume_file() const {
+  // The resume folder sits beside the thumbnail cache (docs/design/05).
+  static std::filesystem::path resume_dir() {
     auto cache = io::thumb_cache_dir();
     if (!cache) return {};
-    auto dir = std::filesystem::path(std::u8string_view(reinterpret_cast<const char8_t*>(cache.value().data()), cache.value().size())).parent_path() / "resume";
-    std::error_code ec; std::filesystem::create_directories(dir, ec);
-    if (ec) return {};
-    std::uint64_t key = 14695981039346656037ull;
-    for (const unsigned char c : path_) { key ^= c; key *= 1099511628211ull; }
-    return dir / (std::to_string(key) + ".txt");
+    return std::filesystem::path(std::u8string_view(reinterpret_cast<const char8_t*>(cache.value().data()), cache.value().size())).parent_path() / "resume";
   }
+  resume_key key() const noexcept { return {.path = path_, .size = file_size_, .mtime = file_time_}; }
   void load_resume() {
     std::error_code ec;
     const auto path = std::filesystem::path(std::u8string_view(reinterpret_cast<const char8_t*>(path_.data()), path_.size()));
     file_size_ = std::filesystem::file_size(path, ec); if (ec) return;
     file_time_ = std::filesystem::last_write_time(path, ec).time_since_epoch().count(); if (ec) return;
-    std::ifstream input(resume_file());
-    std::string stored_path; std::getline(input, stored_path);
-    std::uint64_t size = 0; std::int64_t stamp = 0; time_ns position = 0;
-    if (input >> size >> stamp >> position && stored_path == path_ && size == file_size_ && stamp == file_time_) {
-      const auto resume = resume_start_position(position, info_.duration_ns);
-      if (resume > 0) seek(resume, true);
-    }
+    identity_ = true;
+    const auto resume = resume_load(resume_dir(), key(), info_.duration_ns);
+    if (resume > 0) seek(resume, true);
   }
   void save_resume() const {
-    if (path_.empty()) return;
-    const auto file = resume_file(); if (file.empty()) return;
+    if (!identity_) return;
     // Use the last displayed PTS: the worker may retire us after navigation, when
     // the wall clock has already advanced beyond the frame the user actually saw.
-    const auto position = should_store_resume(shown_pts_, info_.duration_ns) ? shown_pts_ : 0;
-    std::ofstream output(file, std::ios::trunc);
-    output << path_ << '\n' << file_size_ << ' ' << file_time_ << ' ' << position << '\n';
+    // A position not worth resuming removes the entry instead of storing 0 (#235).
+    resume_save(resume_dir(), key(), shown_pts_, info_.duration_ns);
   }
   std::string path_;
   std::uint64_t file_size_ = 0;
   std::int64_t file_time_ = 0;
+  bool identity_ = false;  // size + mtime read; nothing is saved without them
   video_source* video_ = nullptr;
   video_pipeline* pipe_ = nullptr;
   video_frame* candidate_ = nullptr;

@@ -81,25 +81,27 @@ final class MetadataStore: ObservableObject {
   @Published private(set) var properties: [MetaProperty] = []
   @Published private(set) var streams: [MetaStream] = []
   @Published private(set) var chapters: [MetaChapter] = []
+  /// The item the record is for: a half-typed edit belongs to it (issue #190).
+  @Published private(set) var itemPath = ""
 
   // PR 12 (docs/design/06 "Writing"): what the pane edits. The host owns the truth; a
-  // change is queued there and lands on its I/O pool. These mirror it, and a
-  // change still waiting to be written already counts.
-  @Published private(set) var rating = 0  // -1 rejected, 0 none, 1...5
-  @Published private(set) var comment = ""
+  // change is queued there and lands on its I/O pool. The rating and comment are
+  // edited as tags under All tags; the keys 0-5 and Ctrl+I go through the host.
   @Published private(set) var canEdit = false
   @Published private(set) var canRevert = false
-  /// Moves when Ctrl+I asks for the comment field; the view focuses it once per ask.
+  /// Moves on each ask for the pane's keyboard (`I`, Ctrl+I); the view focuses
+  /// once per ask: All tags' search when `focusTags`, else the pane (issue #185).
   @Published private(set) var focusSeq: UInt64 = 0
+  private(set) var focusTags = false
 
   private var generation: UInt64 = .max
-  private var timer: Timer?
 
   private init() {
-    timer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in
-      MainActor.assumeIsolated { self?.poll() }
+    // Issue #178: polled when the main run loop has run (ChromePulse), not on a timer.
+    ChromePulse.shared.add { [weak self] in
+      self?.poll()
+      return false
     }
-    poll()
   }
 
   /// A still has no streams; the Streams tab is for clips.
@@ -111,17 +113,16 @@ final class MetadataStore: ObservableObject {
     guard nowVisible else { return }  // closed: no parsing, no work
     let isLoading = mv_chrome_meta_loading()
     if isLoading != loading { loading = isLoading }
-    // Cheap host reads, every tick: a star clicked or a key pressed shows at once.
-    let stars = Int(mv_chrome_meta_rating())
-    if stars != rating { rating = stars }
+    // Cheap host reads, every tick.
     let editable = mv_chrome_meta_can_edit()
     if editable != canEdit { canEdit = editable }
     let revertible = mv_chrome_meta_can_revert()
     if revertible != canRevert { canRevert = revertible }
-    let text = readText { mv_chrome_meta_comment($0, $1) }
-    if text != comment { comment = text }
     let focus = mv_chrome_meta_focus_seq()
-    if focus != focusSeq { focusSeq = focus }
+    if focus != focusSeq {
+      focusTags = mv_chrome_meta_focus_tags()  // set before the view sees the seq move
+      focusSeq = focus
+    }
 
     let g = mv_chrome_meta_generation()
     guard g != generation else { return }
@@ -129,8 +130,6 @@ final class MetadataStore: ObservableObject {
     reload()
   }
 
-  func setRating(_ stars: Int) { mv_chrome_meta_set_rating(Int32(stars)) }
-  func setComment(_ text: String) { text.withCString { mv_chrome_meta_set_comment($0) } }
   func revert() { mv_chrome_meta_revert() }
 
   // PR 29: any tag, the date, and removing.
@@ -154,6 +153,10 @@ final class MetadataStore: ObservableObject {
   func blur() { mv_chrome_meta_blur() }
 
   private func reload() {
+    // Read here, when the generation moved (a selection move bumps it), not per poll.
+    let index = mv_chrome_current_index()
+    let path = index < 0 ? "" : readText { mv_chrome_item_path(index, $0, $1) }
+    if path != itemPath { itemPath = path }
     summary = readTable { mv_chrome_meta_summary($0, $1) }.enumerated().map { i, f in
       MetaRow(id: i, label: String(f.first ?? ""), value: f.count > 1 ? String(f[1]) : "")
     }

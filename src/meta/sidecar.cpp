@@ -45,6 +45,7 @@ void overlay_sidecar(std::string_view utf8_path, metadata& out) noexcept {
     const field_state f = read_fields(none, xmp);
     if (f.rating) out.s.rating = *f.rating;
     if (f.comment) out.s.comment = *f.comment;
+    if (f.label) out.s.label = *f.label;
 
     std::size_t rows = 0;
     for (const auto& d : xmp) {
