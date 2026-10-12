@@ -220,15 +220,22 @@ struct search_ctx {
   std::vector<std::string> paths;
   std::vector<std::string> whys;
   bool stale = false;
+  bool refused = false;  // the host took no more rows (its result cap): stop walking
 };
 
 void flush(search_ctx& c, bool done) {
   std::vector<mv_slot_search_row> rows;
   rows.reserve(c.paths.size());
   for (std::size_t i = 0; i < c.paths.size(); ++i) rows.push_back({c.paths[i].c_str(), c.whys[i].c_str()});
-  if (g->host->search_post(g->host->host, c.r->provider_id, c.r->generation, rows.data(),
-                           static_cast<uint32_t>(rows.size()), done ? 1 : 0) == MV_ERR_CANCELLED) {
+  const mv_status st = g->host->search_post(g->host->host, c.r->provider_id, c.r->generation, rows.data(),
+                                            static_cast<uint32_t>(rows.size()), done ? 1 : 0);
+  if (st == MV_ERR_CANCELLED) {
     c.stale = true;
+  } else if (st != MV_OK) {
+    c.refused = true;
+    // A refused batch drops its `done` too: say done without rows, or the
+    // chrome keeps saying "searching" for this provider.
+    if (done) (void)g->host->search_post(g->host->host, c.r->provider_id, c.r->generation, nullptr, 0, 1);
   }
   c.paths.clear();
   c.whys.clear();
@@ -249,7 +256,7 @@ int32_t MV_CALL visit_location(void* user, const mv_addon_location_entry* e) {
       g->host->search_progress(g->host->host, c.r->provider_id, c.r->generation, c.seen, 0);
       if (!c.paths.empty()) flush(c, false);
     }
-    return c.stale ? 0 : 1;
+    return c.stale || c.refused ? 0 : 1;
   } catch (...) {
     return 0;
   }
@@ -275,6 +282,10 @@ mv_status MV_CALL search(void*, const mv_slot_search_request* r) {
     const mv_status st = g->host->locations_in(g->host->host, folder, r->generation, &visit_location, &c);
     if (st == MV_ERR_CANCELLED || c.stale) return MV_ERR_CANCELLED;
     g->host->search_progress(g->host->host, r->provider_id, r->generation, c.seen, c.seen);
+    if (c.refused) {  // past the cap: post only `done`
+      c.paths.clear();
+      c.whys.clear();
+    }
     flush(c, true);
     return MV_OK;
   });
