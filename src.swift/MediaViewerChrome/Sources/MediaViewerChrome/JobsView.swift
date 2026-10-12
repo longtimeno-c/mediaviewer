@@ -20,7 +20,7 @@ struct JobsView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: MVTheme.space(10)) {
       HStack {
-        Text("Jobs").font(.headline)
+        Text("Jobs").font(MVTheme.font())
         Spacer()
         Button { store.close() } label: { Image(systemName: "xmark") }
           .buttonStyle(.plain)
@@ -40,11 +40,12 @@ struct JobsView: View {
       }
       Button("Clear finished") { store.clearFinished() }
       Text("↑ ↓ choose · Delete cancel · R retry · Return show in Finder · Esc photo")
-        .font(.caption)
+        .font(MVTheme.font(12))
         .foregroundStyle(.secondary)
       Spacer(minLength: 0)
     }
     .padding(MVTheme.space(14))
+    .font(MVTheme.font(14))  // the rows and buttons follow a theme's font
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     .background(.regularMaterial)
     .overlay(alignment: .leading) { Rectangle().fill(Color.primary.opacity(0.15)).frame(width: 1) }
@@ -72,7 +73,7 @@ struct JobsView: View {
           ProgressView(value: row.fraction).progressViewStyle(.linear)
         }
       }
-      Text(row.status).font(.caption).foregroundStyle(.secondary)
+      Text(row.status).font(MVTheme.font(12)).foregroundStyle(.secondary)
       HStack(spacing: MVTheme.space(8)) {
         if row.running { Button("Cancel") { store.cancel(row.id) } }
         if row.state == 4 || row.state == 5 { Button("Retry") { store.retry(row.id) } }

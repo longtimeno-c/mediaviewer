@@ -145,6 +145,7 @@ private struct CropPane: View {
               .help("Apply the crop (Return)")
               .accessibilityHint("Key Return")
             Button("Cancel") { store.cancelCrop() }
+              .buttonStyle(FlatButtonStyle(compact: true))
               .help("Drop this crop (Esc)")
               .accessibilityHint("Key Escape")
           }
@@ -249,6 +250,7 @@ private struct TrimPane: View {
               .help("Keyframe cut: instant, no re-encode (Return)")
               .accessibilityHint("Key Return. Fast, cuts on keyframes")
             Button("Save exact") { store.run(EditCommand.trimReencode) }
+              .buttonStyle(FlatButtonStyle(compact: true))
               .help("Frame-accurate re-encode, slower (⇧Return)")
               .accessibilityHint("Key Shift Return. Slower, frame accurate")
           }

@@ -112,10 +112,10 @@ TEST_CASE("a settings page that breaks a rule is refused", "[addon][settings]") 
       {R"("key": "show_map")", R"("key": "9lives")"},
       {R"("key": "show_town")", R"("key": "show_map")"},  // duplicate
       {R"("label": "Show the map", "default": true)", R"("label": "Show the map", "default": 1)"},
-      {R"("label": "Show the map")", R"("label": "Show‮the map")"},
+      {R"("label": "Show the map")", R"("label": "Show\u202ethe map")"},
       {R"("label": "Show the map")", R"("label": "")"},
       {R"("label": "Show the map")", R"("label": "Show\u0085the map")"},  // C1 next line
-      {R"("label": "Show the map")", R"("label": "Show؜the map")"},  // Arabic letter mark
+      {R"("label": "Show the map")", R"("label": "Show\u061cthe map")"},  // Arabic letter mark
       {R"("label": "Show the map", "default": true)", R"("label": "Show the map")"},
       {R"("label": "Show the map", "default": true)",
        R"("label": "Show the map", "default": true, "colour": "red")"},

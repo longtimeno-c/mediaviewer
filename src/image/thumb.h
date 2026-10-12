@@ -19,6 +19,7 @@
 #include "core/result.h"
 
 struct sqlite3;
+struct sqlite3_stmt;
 
 namespace mv::image {
 
@@ -65,16 +66,35 @@ class thumb_store {
   [[nodiscard]] bool is_open() const noexcept;
 
   // Hit is ok + the thumbnail's path; miss is ok + an empty string. A row
-  // whose file has since been deleted is a miss, and the row is dropped.
+  // whose file has since been deleted is a miss, and the row is dropped. For
+  // callers that hand the path on (the chrome loads it as a bitmap): the one
+  // stat that proves the file is there runs with the lock released.
   [[nodiscard]] result<std::string> lookup(const thumb_key& key);
+  // The row's path with no stat (issue #168), for a caller that reads the
+  // bytes itself: a failed read is the miss, and the caller drops the row with
+  // forget() so the next sweep regenerates it.
+  [[nodiscard]] result<std::string> lookup_unverified(const thumb_key& key);
+  void forget(const thumb_key& key) noexcept;
   [[nodiscard]] result<std::string> store(const thumb_key& key,
                                           std::span<const std::uint8_t> jpeg);
 
  private:
-  // sqlite3 is compiled serialized, so the handle itself is safe to share.
-  // This guards `db_` and `dir_` against open/close racing a lookup.
+  void finalize_locked() noexcept;
+  [[nodiscard]] result<std::string> select_locked(const thumb_key& key);
+  void delete_locked(const thumb_key& key) noexcept;
+
+  // Every use of `db_` and its statements is under this lock, so the handle
+  // is opened SQLITE_OPEN_NOMUTEX. Held for one primary-key step at a time:
+  // never across a stat, a file write or a decode (issue #168).
   mutable std::mutex mutex_;
   sqlite3* db_ = nullptr;
+  // Prepared once per connection, reset after each use, finalized on close.
+  sqlite3_stmt* select_ = nullptr;
+  sqlite3_stmt* insert_ = nullptr;
+  sqlite3_stmt* delete_ = nullptr;
+  // Bumped by open/close: a row found missing after the lock was released is
+  // only dropped from the connection it was read from.
+  std::uint64_t epoch_ = 0;
   std::string dir_;
 };
 
