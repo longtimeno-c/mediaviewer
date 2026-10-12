@@ -3,7 +3,9 @@
 #
 # Enforces the module dependency direction from docs/design/02-architecture.md:
 #
-#   shell -> abi -> {canvas, edit, player, image, meta} -> {codec, gfx, io} -> core
+#   shell -> abi -> {canvas, edit, player, image, meta, addon} -> {codec, gfx, io} -> core
+#   addons -> infer -> core   (the AI pack; add-ons reach the app only through
+#                             the host function table)
 #
 # "No back-edges, and no native module may depend on shell. Enforce with a CI
 # script that greps includes; it takes 20 lines and saves the project."
@@ -34,7 +36,9 @@ $allowed = [ordered]@{
     'core'   = @('core')
     'io'     = @('io', 'core')
     'gfx'    = @('gfx', 'core')
-    'codec'  = @('codec', 'gfx', 'io', 'core')
+    # codec does not include io. Document font bytes are a reader image/
+    # installs (text::set_font_reader); fonts_*.cpp only names the file.
+    'codec'  = @('codec', 'gfx', 'core')
     'image'  = @('image', 'codec', 'gfx', 'io', 'core')
     'meta'   = @('meta', 'codec', 'gfx', 'io', 'core')
     'player' = @('player', 'codec', 'gfx', 'io', 'core')
@@ -45,7 +49,11 @@ $allowed = [ordered]@{
     # through the host function table and may include only core's
     # header-only pieces (result.h, status.h, json.h) and themselves.
     'addon'  = @('addon', 'io', 'core')
-    'addons' = @('addons', 'core')
+    # docs/design/17: infer/ is ONNX Runtime behind our own interface, linked
+    # into the AI pack only. It needs nothing but core; the AI add-on
+    # (addons/ai) is its one consumer.
+    'infer'  = @('infer', 'core')
+    'addons' = @('addons', 'infer', 'core')
     'abi'    = @('abi', 'addon', 'canvas', 'edit', 'player', 'image', 'meta', 'codec', 'gfx', 'io', 'core')
     # docs/design/23: the Mac app's main() hands `--search-agent` to nle's agent.
     'shell'  = @('shell', 'abi', 'addon', 'nle', 'canvas', 'edit', 'player', 'image', 'meta', 'codec', 'gfx', 'io', 'core')
@@ -66,13 +74,15 @@ foreach ($module in $allowed.Keys) {
     $moduleDir = Join-Path $SourceRoot $module
     if (-not (Test-Path $moduleDir)) { continue }
 
-    $files = Get-ChildItem -Path $moduleDir -Recurse -Include *.h, *.hpp, *.cpp -File
+    # .mm / .m: the Objective-C++ ports (image/upload_mac.mm, player/*_mac.mm,
+    # nle/mac/*) include project headers too, often with #import.
+    $files = Get-ChildItem -Path $moduleDir -Recurse -Include *.h, *.hpp, *.cpp, *.mm, *.m -File
     foreach ($file in $files) {
         $lineNumber = 0
         foreach ($line in (Get-Content -LiteralPath $file.FullName)) {
             $lineNumber++
             # Only project includes; angle-bracket includes are system or vcpkg.
-            if ($line -notmatch '^\s*#\s*include\s+"([^"]+)"') { continue }
+            if ($line -notmatch '^\s*#\s*(?:include|import)\s+"([^"]+)"') { continue }
             $included = $matches[1]
             if ($included -notmatch '^([a-z]+)/') { continue }
 
