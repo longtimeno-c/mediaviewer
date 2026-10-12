@@ -26,6 +26,12 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
   for (const auto& p : k_points) (void)db->lookup(p[0], p[1]);
   (void)db->match("portugal", true);
   (void)db->match("lisboa");
+  // The map's town dots (Places add-on), a whole-world box and one across 180.
+  for (const auto& t : db->towns_in({}, 64)) {
+    volatile std::size_t n = t.name.size();
+    (void)n;
+  }
+  (void)db->towns_in(mv::geo::box{-18.5, 177.0, -16.0, -179.5}, 8);
   for (int l = 0; l < 2; ++l) {
     const auto layer = static_cast<mv::geo::layer>(l);
     for (std::uint32_t p : db->polygons_in(layer, {})) {

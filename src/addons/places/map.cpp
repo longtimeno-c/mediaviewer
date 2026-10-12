@@ -578,7 +578,9 @@ bool render_map(const geo::database& db, const map_view& v, const map_palette& p
           dots[i] = std::max(dots[i], static_cast<float>(std::clamp(r + 0.5 - d, 0.0, 1.0)));
         }
       }
-      if (marks && marks->size() < k_max_marks) marks->push_back({x / w, y / h, std::string(t.name)});
+      if (marks && marks->size() < k_max_marks && t.name.size() <= 64) {
+        marks->push_back({x / w, y / h, std::string(t.name)});  // the host takes names of 64 bytes at most
+      }
       ++drawn;
     }
   }

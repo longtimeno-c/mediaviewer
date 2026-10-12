@@ -44,13 +44,6 @@ constexpr uint32_t kHostApiMin = 3;
 constexpr uint32_t kHostApiMax = 3;
 // Search rows go out in batches so a long folder shows results as it reads.
 constexpr uint32_t kSearchBatch = 128;
-// A settled zoom / pan gesture on a surface (docs/design/25; the host's
-// generic surface event). Named by the header once it carries it.
-#if defined(MV_SLOT_EVENT_SURFACE)
-constexpr uint32_t kSurfaceEvent = MV_SLOT_EVENT_SURFACE;
-#else
-constexpr uint32_t kSurfaceEvent = 10;
-#endif
 
 struct addon_state {
   const mv_host_api* host = nullptr;
@@ -178,18 +171,28 @@ void MV_CALL on_event(void*, const mv_slot_event* e) {
       // The -/+ buttons (and the keyboard, which presses them).
       const int delta = node == "zoom_in" ? 1 : node == "zoom_out" ? -1 : 0;
       if (delta == 0 || !g->eng->zoom(g->section, delta, map, diff)) return MV_OK;
-    } else if (e->kind == kSurfaceEvent && node == "map") {
-      // A settled pinch, wheel, drag or double-click over the map. The chrome
-      // showed it live by scaling the last picture; this draws the new one.
+    } else if ((e->kind == MV_SLOT_EVENT_ZOOM || e->kind == MV_SLOT_EVENT_PAN || e->kind == MV_SLOT_EVENT_DOUBLE) &&
+               node == "map") {
+      // A settled pinch / wheel (zoom about the cursor), drag (pan) or
+      // double-click (one step in, about the click) over the map. The chrome
+      // showed pinch, wheel and drag live by moving the last picture; this
+      // draws the new one where that left it. Deltas from what is on screen.
       const auto v = mv::json::parse(e->value_json ? e->value_json : "");
       if (!v || v->k != mv::json::kind::object) return MV_OK;
-      const mv::json::value* anchor = v->find("anchor");
-      const mv::json::value* pan = v->find("pan");
-      if (!g->eng->gesture(g->section, num(v->find("scale"), 1.0), num(anchor ? anchor->find("x") : nullptr, 0.5),
-                           num(anchor ? anchor->find("y") : nullptr, 0.5), num(pan ? pan->find("x") : nullptr, 0),
-                           num(pan ? pan->find("y") : nullptr, 0), map, diff)) {
-        return MV_OK;
+      double scale = 1, ax = 0.5, ay = 0.5, px = 0, py = 0;
+      if (e->kind == MV_SLOT_EVENT_ZOOM) {
+        scale = num(v->find("scale"), 1.0);
+        ax = num(v->find("x"), 0.5);
+        ay = num(v->find("y"), 0.5);
+      } else if (e->kind == MV_SLOT_EVENT_PAN) {
+        px = num(v->find("dx"), 0);
+        py = num(v->find("dy"), 0);
+      } else {
+        scale = 2;
+        ax = num(v->find("x"), 0.5);
+        ay = num(v->find("y"), 0.5);
       }
+      if (!g->eng->gesture(g->section, scale, ax, ay, px, py, map, diff)) return MV_OK;
     } else {
       return MV_OK;
     }

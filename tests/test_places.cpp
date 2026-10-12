@@ -409,6 +409,25 @@ TEST_CASE("places: a gesture keeps what was under the cursor under it, and the r
   }
 }
 
+TEST_CASE("places: towns in a box, most populous first", "[places][geo]") {
+  const auto& db = test_db();
+  const auto lisbon = db.towns_in(mv::geo::box{38.55, -9.60, 39.05, -8.90}, 5);
+  REQUIRE(lisbon.size() == 5);
+  CHECK(lisbon[0].name == "Lisbon");
+  for (std::size_t i = 1; i < lisbon.size(); ++i) CHECK(lisbon[i - 1].population >= lisbon[i].population);
+  for (const auto& t : lisbon) {
+    CHECK(t.lat >= 38.55);
+    CHECK(t.lat <= 39.05);
+  }
+  // Across the antimeridian (min_lon > max_lon): Fiji's towns on both sides.
+  const auto fiji = db.towns_in(mv::geo::box{-18.5, 177.0, -16.0, -179.5}, 100);
+  REQUIRE_FALSE(fiji.empty());
+  CHECK(std::any_of(fiji.begin(), fiji.end(), [](const auto& t) { return t.name == "Suva"; }));
+  for (const auto& t : fiji) CHECK((t.lon >= 177.0 || t.lon <= -179.5));
+  CHECK(db.towns_in(mv::geo::box{10, 10, 11, 11}, 10).empty());  // nothing there in the test blob
+  CHECK(db.towns_in(mv::geo::box{38.55, -9.60, 39.05, -8.90}, 0).empty());
+}
+
 TEST_CASE("places: town scale shows town dots and names", "[places]") {
   const auto& db = test_db();
   std::vector<map_mark> marks;

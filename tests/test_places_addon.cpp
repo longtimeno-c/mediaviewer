@@ -243,6 +243,33 @@ TEST_CASE("places: the add-on answers the Place section and search through the v
     return reg.surface("places", "place", "map", now) && now.bgra != before;
   }));
 
+  // Cursor zoom, drag and double-click on the map (the chrome's settled
+  // gestures): each answered with a new picture and the pin moved to where
+  // the photo's point now is.
+  const auto pixels_now = [&] {
+    mv::addon::surface_pixels now;
+    REQUIRE(reg.surface("places", "place", "map", now));
+    return now.bgra;
+  };
+  CHECK(info.find("\"interactive\"") != std::string::npos);
+  CHECK(info.find("\"marks\"") != std::string::npos);
+  std::vector<std::uint8_t> last = pixels_now();
+  REQUIRE(reg.send_event("places", "place", "map", MV_SLOT_EVENT_ZOOM, R"({"scale":2,"x":0.4,"y":0.5})") ==
+          status::ok);
+  reg.drain();
+  REQUIRE(eventually([&] { return pixels_now() != last; }));
+  // About x = 0.4: the pin (at the centre before) is now at 0.4 + 0.1 * 2.
+  CHECK(reg.info_json().find("\"pin\":{\"x\":0.600") != std::string::npos);
+  last = pixels_now();
+  REQUIRE(reg.send_event("places", "place", "map", MV_SLOT_EVENT_PAN, R"({"dx":-0.1,"dy":0})") == status::ok);
+  reg.drain();
+  REQUIRE(eventually([&] { return pixels_now() != last; }));
+  CHECK(reg.info_json().find("\"pin\":{\"x\":0.500") != std::string::npos);
+  last = pixels_now();
+  REQUIRE(reg.send_event("places", "place", "map", MV_SLOT_EVENT_DOUBLE, R"({"x":0.5,"y":0.5})") == status::ok);
+  reg.drain();
+  REQUIRE(eventually([&] { return pixels_now() != last; }));
+
   // Search by place over the folder.
   reg.search(MV_SLOT_SCOPE_FILES, "portugal", utf8(folder));
   reg.drain();

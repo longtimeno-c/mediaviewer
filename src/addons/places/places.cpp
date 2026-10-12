@@ -51,10 +51,12 @@ void surface_props(json::writer& w, const section_state& s, const map_image* img
     }
   }
   w.end_array();
-  // Scaling the picture by s divides the span by s.
+  // Scaling the picture by s divides the span by s; the host bounds these to
+  // [0.01, 1] and [1, 1000].
   const double span = clamp_span(s.view.span_deg);
   w.key("interactive").begin_object();
-  w.key("min_scale").number(span / k_max_span_deg).key("max_scale").number(span / k_min_span_deg);
+  w.key("min_scale").number(std::clamp(span / k_max_span_deg, 0.01, 1.0));
+  w.key("max_scale").number(std::clamp(span / k_min_span_deg, 1.0, 1000.0));
   w.end_object();
 }
 
