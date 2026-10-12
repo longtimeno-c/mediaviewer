@@ -212,7 +212,7 @@ public static partial class IslandHost
     private static void ReadSlotInfo()
     {
         string json = SlotNative.InfoJson();
-        if (json == _slotInfoJson) return;
+        // No early return on equal text: new surface pixels arrive with the same tree.
         _slotInfoJson = json;
         if (_metaPaneVisible && _metaTab == MetaTab.Summary) RenderMeta();
     }
