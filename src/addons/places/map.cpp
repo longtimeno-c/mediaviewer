@@ -10,9 +10,10 @@
 // instead of leaving a hairline gap. Anti-aliased by construction.
 //
 // Borders: each edge is stroked by distance to the segment, with a one-pixel
-// soft edge, into an alpha buffer (max, so joints do not darken). An edge
-// with water on either side is a coast, not a border, and is skipped: the
-// land/water edge is already crisp, and a coast line would double it.
+// soft edge, into an alpha buffer (max, so joints do not darken). Only an
+// edge two polygons share is a border; an edge of one polygon alone is a
+// coast and is skipped: the land/water edge is already crisp, and a coast
+// line would double it.
 #include "addons/places/map.h"
 
 #include <algorithm>
@@ -297,62 +298,56 @@ struct stroker {
   }
 };
 
-// Land coverage at a point, 0 outside the picture (treated as unknown: a
-// border running off the edge is still a border).
-float land_at(const std::vector<float>& cov, std::uint32_t w, std::uint32_t h, double x, double y,
-              bool& outside) noexcept {
-  const int xi = static_cast<int>(std::floor(x));
-  const int yi = static_cast<int>(std::floor(y));
-  if (xi < 0 || yi < 0 || xi >= static_cast<int>(w) || yi >= static_cast<int>(h)) {
-    outside = true;
-    return 1.0f;
-  }
-  return cov[static_cast<std::size_t>(yi) * w + xi];
-}
+// Strokes the edges two polygons of `layer` share: the land borders. The
+// database simplifies each shared arc once and gives both neighbours the same
+// points (docs/design/27 "Polygons"), so a border edge appears exactly twice
+// and a coast edge once. Exact, with no guess from the pixels: a narrow
+// estuary is still a coast.
+struct edge_rec {
+  std::uint64_t k0, k1;  // the two end points, packed, in order
+  double ax, ay, bx, by;
+};
 
-// Strokes the edges of `layer`'s polygons that have land on both sides.
 void stroke_borders(const geo::database& db, geo::layer layer, const std::vector<std::uint32_t>& polys,
-                    const projection& pr, const std::vector<float>& land, stroker& s, double half,
-                    float alpha) {
+                    const projection& pr, stroker& s, double half, float alpha) {
   std::vector<double> xy;
   std::vector<std::uint8_t> seam;
-  const double probe = half + 1.75;
+  std::vector<edge_rec> edges;
   const double w = s.w;
   const double h = s.h;
+  const auto pack_point = [](const geo::point& q) {
+    return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(q.x)) << 32) | static_cast<std::uint32_t>(q.y);
+  };
   for (std::uint32_t p : polys) {
     const std::size_t rings = db.ring_count(layer, p);
     for (std::size_t r = 0; r < rings; ++r) {
-      project_ring(pr, db.ring(layer, p, r), xy, &seam);
+      const auto pts = db.ring(layer, p, r);
+      project_ring(pr, pts, xy, &seam);
       const std::size_t n = xy.size() / 2;
       for (std::size_t i = 0; i + 1 < n; ++i) {
-        if (seam[i] && seam[i + 1]) continue;
+        if (seam[i] && seam[i + 1]) continue;  // Natural Earth's cut at +/-180, not a border
         const double ax = xy[2 * i], ay = xy[2 * i + 1];
         const double bx = xy[2 * i + 2], by = xy[2 * i + 3];
-        // Off the picture: nothing to draw.
         if ((ax < -2 && bx < -2) || (ax > w + 2 && bx > w + 2) || (ay < -2 && by < -2) ||
             (ay > h + 2 && by > h + 2)) {
-          continue;
+          continue;  // off the picture
         }
-        const double vx = bx - ax;
-        const double vy = by - ay;
-        const double len = std::sqrt(vx * vx + vy * vy);
-        if (len < 1e-6) continue;
-        const double ux = -vy / len;
-        const double uy = vx / len;
-        const double mx = (ax + bx) / 2;
-        const double my = (ay + by) / 2;
-        // Near and far on both sides: the far probe clears the stroke's own
-        // soft edge, the near one catches an estuary narrower than that.
-        bool coast = false;
-        for (double dist : {1.25, probe}) {
-          bool outside = false;
-          coast = coast || land_at(land, s.w, s.h, mx + ux * dist, my + uy * dist, outside) < 0.5f ||
-                  land_at(land, s.w, s.h, mx - ux * dist, my - uy * dist, outside) < 0.5f;
-        }
-        if (coast) continue;
-        s.segment(ax, ay, bx, by, half, alpha);
+        std::uint64_t a = pack_point(pts[i]);
+        std::uint64_t b = pack_point(pts[i + 1]);
+        if (a == b) continue;
+        if (a > b) std::swap(a, b);
+        edges.push_back({a, b, ax, ay, bx, by});
       }
     }
+  }
+  std::sort(edges.begin(), edges.end(), [](const edge_rec& x, const edge_rec& y) {
+    return x.k0 != y.k0 ? x.k0 < y.k0 : x.k1 < y.k1;
+  });
+  for (std::size_t i = 0; i < edges.size();) {
+    std::size_t j = i + 1;
+    while (j < edges.size() && edges[j].k0 == edges[i].k0 && edges[j].k1 == edges[i].k1) ++j;
+    if (j - i >= 2) s.segment(edges[i].ax, edges[i].ay, edges[i].bx, edges[i].by, half, alpha);
+    i = j;
   }
 }
 
@@ -490,10 +485,10 @@ bool render_map(const geo::database& db, const map_view& v, const map_palette& p
   if (zoom >= k_region_borders_from && db.valid()) {
     const std::vector<std::uint32_t> regions = db.polygons_in(geo::layer::regions, b);
     if (zoom > k_region_borders_from || regions.size() <= k_region_borders_max_early) {
-      stroke_borders(db, geo::layer::regions, regions, pr, land, region, 0.35 * scale, 1.0f);
+      stroke_borders(db, geo::layer::regions, regions, pr, region, 0.35 * scale, 1.0f);
     }
   }
-  stroke_borders(db, geo::layer::countries, countries, pr, land, border, 0.6 * scale, 1.0f);
+  stroke_borders(db, geo::layer::countries, countries, pr, border, 0.6 * scale, 1.0f);
 
   const rgb water = unpack(p.water);
   const rgb land_c = unpack(p.land);
