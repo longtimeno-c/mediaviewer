@@ -334,6 +334,7 @@ public static partial class IslandHost
         _selectedIndex = index;
         ScrollTo(index);
         GalleryScrollTo(index);
+        AnnounceSelection(index);
     }
 
     private static void ScrollTo(int index)
