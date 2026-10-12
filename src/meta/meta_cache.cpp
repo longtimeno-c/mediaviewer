@@ -4,6 +4,9 @@
 
 #include <sqlite3.h>
 
+#include <atomic>
+#include <chrono>
+
 #include "io/file_port.h"
 #include "io/paths.h"
 
@@ -118,33 +121,51 @@ std::string meta_cache::dir_of(std::string_view path) {
   return slash == std::string_view::npos ? std::string() : std::string(path.substr(0, slash));
 }
 
-bool meta_cache::open_locked(const std::string& db_path) {
+meta_cache::open_result meta_cache::open_locked(const std::string& db_path) {
   sqlite3* db = nullptr;
   if (sqlite3_open_v2(db_path.c_str(), &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX,
                       nullptr) != SQLITE_OK) {
     if (db) sqlite3_close(db);
-    return false;
+    return open_result::failed;  // no access, no space: deleting would not help
   }
   sqlite3_busy_timeout(db, 2000);
   sqlite3_exec(db, "PRAGMA journal_mode=WAL;", nullptr, nullptr, nullptr);
   sqlite3_exec(db, "PRAGMA synchronous=NORMAL;", nullptr, nullptr, nullptr);
-  bool ok = sqlite3_exec(db, kCreate, nullptr, nullptr, nullptr) == SQLITE_OK;
-  if (ok) {
+  const int rc = sqlite3_exec(db, kCreate, nullptr, nullptr, nullptr);
+  open_result out = open_result::ok;
+  if (rc != SQLITE_OK) {
+    // Only a file that is not this cache is made again. Another process
+    // holding the lock (a second window) is busy, not damage: deleting the
+    // file under it would throw its rows away.
+    const int primary = rc & 0xFF;
+    out = (primary == SQLITE_CORRUPT || primary == SQLITE_NOTADB) ? open_result::damaged : open_result::failed;
+  } else {
     stmt q(db, "SELECT value FROM meta WHERE key='schema'");
     if (q.row()) {
-      ok = q.col_text(0) == kSchema;
+      if (q.col_text(0) != kSchema) out = open_result::damaged;  // another shape: a cache, so make it again
     } else {
-      stmt w(db, "INSERT INTO meta(key, value) VALUES('schema', ?1)");
+      stmt w(db, "INSERT OR IGNORE INTO meta(key, value) VALUES('schema', ?1)");
       w.text(1, kSchema);
-      ok = w.run();
+      if (!w.run()) out = open_result::failed;
     }
   }
-  if (!ok) {
+  if (out != open_result::ok) {
     sqlite3_close(db);
-    return false;
+    return out;
   }
   db_ = db;
-  return true;
+  return open_result::ok;
+}
+
+bool meta_cache::remake_locked(const std::string& db_path) {
+  if (db_) {
+    sqlite3_close(db_);
+    db_ = nullptr;
+  }
+  (void)io::remove_file(db_path);
+  (void)io::remove_file(db_path + "-wal");
+  (void)io::remove_file(db_path + "-shm");
+  return open_locked(db_path) == open_result::ok;
 }
 
 expected meta_cache::open(std::string_view dir_utf8) {
@@ -156,13 +177,9 @@ expected meta_cache::open(std::string_view dir_utf8) {
     db_ = nullptr;
   }
   const std::string path = join_dir(dir_utf8, "meta_cache.db");
-  if (!open_locked(path)) {
-    // A cache: a damaged or foreign file is made again, never a reason to fail.
-    (void)io::remove_file(path);
-    (void)io::remove_file(path + "-wal");
-    (void)io::remove_file(path + "-shm");
-    if (!open_locked(path)) return err(status::io);
-  }
+  const open_result r = open_locked(path);
+  // A cache: a damaged or foreign file is made again, never a reason to fail.
+  if (r == open_result::failed || (r == open_result::damaged && !remake_locked(path))) return err(status::io);
   dir_.assign(dir_utf8);
   return {};
 }
@@ -240,10 +257,32 @@ expected meta_cache::store(std::span<const cached_facts> rows) {
     }
   }
   if (!ok || sqlite3_exec(db_, "COMMIT", nullptr, nullptr, nullptr) != SQLITE_OK) {
+    const int primary = sqlite3_errcode(db_) & 0xFF;
     sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr);
+    // Damaged since it was opened (a disk error, a foreign write): make it
+    // again rather than fail every later batch. The rows are a cache.
+    if ((primary == SQLITE_CORRUPT || primary == SQLITE_NOTADB) && !dir_.empty()) {
+      (void)remake_locked(join_dir(dir_, "meta_cache.db"));
+    }
     return err(status::io);
   }
   return {};
+}
+
+void meta_cache::forget_many(std::span<const std::string> paths) {
+  if (paths.empty()) return;
+  std::lock_guard lock(m_);
+  if (!db_ || sqlite3_exec(db_, "BEGIN", nullptr, nullptr, nullptr) != SQLITE_OK) return;
+  {
+    stmt s(db_, "DELETE FROM files WHERE path = ?1");
+    for (const std::string& p : paths) {
+      s.text(1, p);
+      (void)s.run();
+    }
+  }
+  if (sqlite3_exec(db_, "COMMIT", nullptr, nullptr, nullptr) != SQLITE_OK) {
+    sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr);
+  }
 }
 
 void meta_cache::forget(std::string_view path) {
@@ -263,8 +302,17 @@ std::uint64_t meta_cache::rows() {
 
 meta_cache& default_meta_cache() {
   static meta_cache cache;
+  // A cache that cannot open (no space, no access) is tried again at most
+  // every 30 s, not on every file the pass or tag_facts asks about.
+  static std::atomic<std::int64_t> next_try{0};
   if (!cache.is_open()) {
-    if (auto dir = io::thumb_cache_dir()) (void)cache.open(*dir);
+    const std::int64_t now = std::chrono::duration_cast<std::chrono::seconds>(
+                                 std::chrono::steady_clock::now().time_since_epoch())
+                                 .count();
+    if (now >= next_try.load(std::memory_order_relaxed)) {
+      auto dir = io::thumb_cache_dir();
+      if (!dir || !cache.open(*dir)) next_try.store(now + 30, std::memory_order_relaxed);
+    }
   }
   return cache;
 }

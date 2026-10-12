@@ -9,6 +9,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <exiv2/exiv2.hpp>
+#include <sqlite3.h>
 
 #include <algorithm>
 #include <atomic>
@@ -268,6 +269,75 @@ TEST_CASE("meta_cache survives a reopen and remakes a damaged file", "[search][c
   CHECK(cache.rows() == 0);
 }
 
+// #291 review: a second process holding the file (a second window) is busy,
+// not damage. The open fails for now; the rows are not deleted under it.
+TEST_CASE("meta_cache never deletes a cache another connection has locked", "[search][cache]") {
+  temp_dir tmp("mv_meta_cache_busy");
+  {
+    meta::meta_cache cache;
+    REQUIRE(cache.open(tmp.str()));
+    meta::cached_facts r;
+    r.path = "/p/x.jpg";
+    r.size = 1;
+    r.mtime = 1;
+    REQUIRE(cache.store(std::span<const meta::cached_facts>(&r, 1)));
+  }
+  const std::string db = (tmp.path / "meta_cache.db").string();
+  sqlite3* other = nullptr;
+  REQUIRE(sqlite3_open(db.c_str(), &other) == SQLITE_OK);
+  // An exclusive-mode WAL connection with a write open: no one else gets in.
+  REQUIRE(sqlite3_exec(other, "PRAGMA locking_mode=EXCLUSIVE; BEGIN EXCLUSIVE;", nullptr, nullptr, nullptr) ==
+          SQLITE_OK);
+  {
+    meta::meta_cache cache;
+    CHECK_FALSE(cache.open(tmp.str()));
+  }
+  REQUIRE(sqlite3_exec(other, "COMMIT;", nullptr, nullptr, nullptr) == SQLITE_OK);
+  sqlite3_close(other);
+  meta::meta_cache cache;
+  REQUIRE(cache.open(tmp.str()));
+  CHECK(cache.lookup("/p/x.jpg", 1, 1));  // still there
+}
+
+// #291 review: files gone from a folder leave meta_cache.db when the folder is
+// seen again, so revisiting a folder does not grow it; a file only left out
+// of the listing (Settings hides its kind) keeps its row.
+TEST_CASE("the folder pass drops the rows of files that are gone", "[search][pass][cache]") {
+  temp_dir tmp("mv_tag_index_prune");
+  const fs::path shoot = tmp.path / "shoot";
+  fs::create_directories(shoot);
+  meta::meta_cache cache;
+  REQUIRE(cache.open(tmp.str()));
+  mv::job_system jobs;
+  REQUIRE(mv::ok(jobs.start(2)));
+  std::vector<io::dir_entry> files;
+  for (const char* name : {"a.jpg", "b.jpg", "c.mp3"}) {
+    std::ofstream(shoot / name) << "x";
+    files.push_back(entry(shoot.string(), name));
+  }
+  {
+    meta::tag_index index(&cache, fake_facts);
+    index.scan(shoot.string(), files, jobs);
+    REQUIRE(wait_until([&] { return !index.progress().reading; }));
+  }
+  CHECK(cache.folder(shoot.string()).size() == 3);
+  fs::remove(shoot / "b.jpg");
+  // b is deleted; c.mp3 is hidden by a setting but still on disk.
+  std::vector<io::dir_entry> now{files[0]};
+  meta::tag_index index(&cache, fake_facts);
+  index.scan(shoot.string(), now, jobs);
+  REQUIRE(wait_until([&] { return !index.progress().reading; }));
+  std::set<std::string> left;
+  for (const auto& r : cache.folder(shoot.string())) left.insert(r.path);
+  CHECK(left == std::set<std::string>{files[0].path_utf8, files[2].path_utf8});
+  CHECK(index.reads() == 0);
+  // c shown again: served from memory, not read.
+  index.scan(shoot.string(), {files[0], files[2]}, jobs);
+  CHECK_FALSE(index.progress().reading);
+  CHECK(index.reads() == 0);
+  jobs.shutdown();
+}
+
 TEST_CASE("cached_or_read reads a file once, then serves the cache until it changes", "[search][cache]") {
   temp_dir tmp("mv_meta_cache_cor");
   meta::meta_cache cache;
@@ -402,6 +472,68 @@ TEST_CASE("the folder pass waits while the viewer is busy and yields to a newer 
   jobs.shutdown();
 }
 
+// #291 review: the pass steps aside for view-tied jobs, not only for the
+// present loop: the photo's full decode and the +-2 prefetch run first.
+TEST_CASE("the folder pass waits for view jobs and gives a queued one its worker", "[search][pass]") {
+  mv::job_system jobs;
+  REQUIRE(mv::ok(jobs.start(1)));  // one worker: the pass must hand it over
+  std::atomic<int> reads{0};
+  meta::tag_index index(nullptr, [&](std::string_view p) {
+    ++reads;
+    std::this_thread::sleep_for(2ms);
+    return fake_facts(p);
+  });
+  std::vector<io::dir_entry> a;
+  for (int i = 0; i < 200; ++i) a.push_back(entry("/a", "f" + std::to_string(i) + ".jpg"));
+  index.scan("/a", a, jobs, {}, [] { return false; });
+  REQUIRE(wait_until([&] { return reads.load() > 0; }));
+  // A view job arrives while the pass holds the only worker: it runs within
+  // a file's read, not after the chunk or the folder.
+  std::atomic<bool> ran{false};
+  const auto t0 = std::chrono::steady_clock::now();
+  std::atomic<std::int64_t> waited_ms{-1};
+  (void)jobs.submit([&](const mv::job_context&) {
+    waited_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+    ran = true;
+    return mv::status::ok;
+  });
+  REQUIRE(wait_until([&] { return ran.load(); }));
+  CHECK(waited_ms.load() < 40);
+  CHECK(index.progress().reading);  // the pass is not done, it stepped aside
+  REQUIRE(wait_until([&] { return !index.progress().reading; }));
+  CHECK(reads.load() == 200);  // and resumed where it stopped: each file once
+  CHECK(jobs.foreground_queued() == 0);
+  CHECK(jobs.foreground_running() == 0);
+  jobs.shutdown();
+}
+
+TEST_CASE("the folder pass does not read while a view job runs on another worker", "[search][pass]") {
+  mv::job_system jobs;
+  REQUIRE(mv::ok(jobs.start(2)));
+  std::atomic<int> reads{0};
+  meta::tag_index index(nullptr, [&](std::string_view p) {
+    ++reads;
+    return fake_facts(p);
+  });
+  std::atomic<bool> release{false};
+  std::atomic<bool> started{false};
+  (void)jobs.submit([&](const mv::job_context&) {
+    started = true;
+    while (!release) std::this_thread::sleep_for(1ms);
+    return mv::status::ok;
+  });
+  REQUIRE(wait_until([&] { return started.load(); }));
+  std::vector<io::dir_entry> a;
+  for (int i = 0; i < 50; ++i) a.push_back(entry("/a", "f" + std::to_string(i) + ".jpg"));
+  index.scan("/a", a, jobs, {}, [] { return false; });
+  std::this_thread::sleep_for(80ms);
+  CHECK(reads.load() == 0);  // the second worker is free, but the view is decoding
+  release = true;
+  REQUIRE(wait_until([&] { return !index.progress().reading; }));
+  CHECK(reads.load() == 50);
+  jobs.shutdown();
+}
+
 TEST_CASE("the pass's date keys sort by date taken", "[search][pass][sort]") {
   mv::job_system jobs;
   REQUIRE(mv::ok(jobs.start(1)));
@@ -516,6 +648,105 @@ TEST_CASE("perf: one search read against a full read and a date read", "[.perf-s
   const double date = median([&] { (void)meta::read_date_taken(file); });
   std::printf("[perf-search] camera JPEG 6 MP: meta::read %.1f us, read_search_facts %.1f us, read_date_taken %.1f us\n",
               full, search, date);
+}
+
+// #291 review: what a whole folder costs to sort by date taken the first time.
+// MV_BENCH_DIR=<folder> mv_tests "[.perf-pass]": the old date scan (one
+// read_date_taken per file, one background job) against the tag pass (cold:
+// no meta_cache.db; warm: the second visit, one SELECT). Wall time to the last
+// key; run it twice so the page cache is warm for both.
+TEST_CASE("perf: a folder's date keys, the date scan against the tag pass", "[.perf-pass]") {
+  const char* dir = std::getenv("MV_BENCH_DIR");
+  REQUIRE(dir);
+  std::vector<io::dir_entry> files;
+  for (const auto& e : fs::directory_iterator(dir)) {
+    if (!e.is_regular_file()) continue;
+    io::dir_entry d;
+    d.name_utf8 = e.path().filename().string();
+    d.path_utf8 = e.path().string();
+    d.size = static_cast<std::uint64_t>(e.file_size());
+    d.mtime_unix = std::chrono::duration_cast<std::chrono::seconds>(e.last_write_time().time_since_epoch()).count();
+    files.push_back(std::move(d));
+  }
+  const auto secs = [](auto a) {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - a).count();
+  };
+  mv::job_system jobs;
+  REQUIRE(mv::ok(jobs.start(0)));
+  // The date scan ran as one background job (meta_store::resolve_date_keys),
+  // at the pool's background QoS, as the tag pass does.
+  auto t = std::chrono::steady_clock::now();
+  std::atomic<std::size_t> dated{0};
+  std::atomic<bool> done{false};
+  (void)jobs.submit_at(mv::background_generation, [&](const mv::job_context&) {
+    for (const auto& e : files) dated += meta::read_date_taken(e.path_utf8) ? 1 : 0;
+    done = true;
+    return mv::status::ok;
+  });
+  while (!done) std::this_thread::sleep_for(1ms);
+  const double date_scan = secs(t);
+  temp_dir tmp("mv_perf_pass");
+  meta::meta_cache cache;
+  REQUIRE(cache.open(tmp.str()));
+  double cold = 0, warm = 0;
+  std::size_t keyed = 0;
+  {
+    meta::tag_index index(&cache);
+    t = std::chrono::steady_clock::now();
+    index.scan(dir, files, jobs);
+    while (index.progress().reading) std::this_thread::sleep_for(1ms);
+    cold = secs(t);
+    for (const auto& e : files) keyed += index.date_key(e) ? 1 : 0;
+  }
+  {
+    meta::tag_index index(&cache);
+    t = std::chrono::steady_clock::now();
+    index.scan(dir, files, jobs);
+    while (index.progress().reading) std::this_thread::sleep_for(1ms);
+    warm = secs(t);
+    CHECK(index.reads() == 0);
+  }
+  jobs.shutdown();
+  std::printf("[perf-pass] %zu files: date scan %.2f s (%.3f ms/file, %zu dated); tag pass cold %.2f s "
+              "(%.3f ms/file, %zu dated), warm %.3f s\n",
+              files.size(), date_scan, date_scan * 1000 / files.size(), dated.load(), cold, cold * 1000 / files.size(),
+              keyed, warm);
+}
+
+// #291 review: the bounded search read must say what the full read says.
+// MV_SEARCH_AGREE_DIR=<folder> mv_tests "[.search-agree]" compares
+// read_search_facts with search_facts_of(meta::read) for every file in it and
+// prints each difference (the repo's RAW / HEIC samples are the useful input).
+TEST_CASE("the search read agrees with the full read", "[.search-agree]") {
+  const char* dir = std::getenv("MV_SEARCH_AGREE_DIR");
+  REQUIRE(dir);
+  int files = 0, differ = 0;
+  for (const auto& e : fs::directory_iterator(dir)) {
+    if (!e.is_regular_file()) continue;
+    const std::string p = e.path().string();
+    auto full = meta::read(p);
+    auto quick = meta::read_search_facts(p);
+    if (!full || !quick) continue;
+    ++files;
+    const meta::search_facts want = meta::search_facts_of(*full);
+    const bool same = want.fields == quick->fields && want.camera == quick->camera && want.lens == quick->lens &&
+                      want.made_with == quick->made_with && want.ai_generated == quick->ai_generated &&
+                      want.date_taken_key == quick->date_taken_key &&
+                      static_cast<bool>(want.where) == static_cast<bool>(quick->where);
+    if (same) continue;
+    ++differ;
+    const auto join = [](const std::vector<std::string>& v) {
+      std::string s;
+      for (const auto& f : v) s += (s.empty() ? "" : " | ") + f;
+      return s;
+    };
+    std::printf("[search-agree] %s (read_date_taken %lld)\n  full:  [%s] date %lld where %d\n  quick: [%s] date %lld where %d\n",
+                e.path().filename().string().c_str(), static_cast<long long>(meta::read_date_taken(p).value_or(0)), join(want.fields).c_str(),
+                static_cast<long long>(want.date_taken_key), want.where ? 1 : 0, join(quick->fields).c_str(),
+                static_cast<long long>(quick->date_taken_key), quick->where ? 1 : 0);
+  }
+  std::printf("[search-agree] %d files, %d differ\n", files, differ);
+  CHECK(differ == 0);
 }
 
 // ---- the Places provider's input ------------------------------------------------------

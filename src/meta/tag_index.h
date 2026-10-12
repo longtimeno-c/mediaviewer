@@ -15,8 +15,11 @@
 //   - it runs as chunks of kChunk files, each a background-queue job, so
 //     every foreground (view-tied) job and the ±2 prefetch are taken first,
 //     and each chunk goes behind the thumbnail sweep already queued;
-//   - between files it waits while `busy()` says the viewer is loading,
-//     panning or playing (the host's should_yield flag);
+//   - between files it steps aside for the view (#291 review): a view job
+//     waiting for a worker gets this one (the chunk re-queues itself), and
+//     while a view job runs (the photo's full decode, the prefetch) or
+//     `busy()` says the viewer is panning or playing (the host's
+//     should_yield flag), it waits;
 //   - a newer `scan` (another folder) supersedes it at the next file.
 // Portable (D9); no lock is held across a file read.
 #pragma once

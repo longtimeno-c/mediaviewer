@@ -412,7 +412,7 @@ Chrome, in memory, no decode.
 - **Sort:** name, modified, size, type, date taken; ascending or descending
   (`mv_folder_set_sort`, saved as `[view] sort` on Windows; View ▸ Sort By on both). Date-taken
   keys come from the folder's tag pass (one bounded read per file, once ever, kept in
-  meta_cache.db) and the listing re-sorts in place when they land; a file with no stamp sorts by
+  meta_cache.db) and the listing re-sorts in place once the pass ends; a file with no stamp sorts by
   mtime.
 - **Typeahead:** with the filmstrip or gallery focused, typing jumps to the first name starting
   with what was typed (300 ms idle resets). On the canvas every letter is a command, so `/` opens

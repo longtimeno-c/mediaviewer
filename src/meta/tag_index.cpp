@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "meta/tag_index.h"
 
+#include "io/file_port.h"
+
 #include <chrono>
 #include <mutex>
 #include <thread>
@@ -32,6 +34,7 @@ struct tag_index::state {
   std::uint32_t known = 0;  // listed files with facts for their current stamp
   bool reading = false;
   std::vector<std::string> forget;  // invalidated paths whose cache rows still stand
+  std::string selected_dir;  // the folder whose cache rows are in `files` (one SELECT per folder)
 
   std::atomic<std::uint64_t> scan{0};
   std::atomic<bool> changed{false};
@@ -44,13 +47,16 @@ struct tag_index::state {
     const auto f = files.find(path);
     return f != files.end() && f->second.size == l->second.size && f->second.mtime == l->second.mtime;
   }
-  // Under m: keeps `row` when it is for the listed stamp.
+  // Under m: keeps `row`. A row for a file not listed now (or listed with
+  // another stamp) is kept too, so a later relist of the folder finds it
+  // without another SELECT; only a listed, current row counts as known.
   void keep(cached_facts&& row) {
-    const auto l = listed.find(row.path);
-    if (l == listed.end() || l->second.size != row.size || l->second.mtime != row.mtime) return;
     const bool was = fresh(row.path);
-    files[row.path] = known_file{row.size, row.mtime, std::move(row.facts), std::move(row.folded)};
-    if (!was) ++known;
+    const auto f = files.find(row.path);
+    if (was && f->second.size == row.size && f->second.mtime == row.mtime) return;
+    std::string path = row.path;
+    files[path] = known_file{row.size, row.mtime, std::move(row.facts), std::move(row.folded)};
+    if (!was && fresh(path)) ++known;
   }
 };
 
@@ -76,41 +82,76 @@ status run_chunk(const std::shared_ptr<tag_index::state>& st, std::uint64_t scan
     for (const std::string& p : forget) cache->forget(p);
   }
   if (from == 0 && cache) {
-    // A folder seen before: one SELECT, no file reads.
+    // A folder seen before: one SELECT, no file reads. Once per folder: a
+    // relist of the same folder (a watcher event, a re-sort) already holds
+    // every row in memory, and this process wrote the rows it read since.
     std::string dir;
     {
       std::lock_guard lock(st->m);
-      dir = st->dir;
+      if (st->selected_dir != st->dir) dir = st->dir;
     }
-    std::vector<cached_facts> rows = cache->folder(dir);
-    bool any = false;
-    {
-      std::lock_guard lock(st->m);
-      if (!current()) return status::cancelled;
-      const std::uint32_t before = st->known;
-      for (cached_facts& r : rows) st->keep(std::move(r));
-      any = st->known != before;
-    }
-    if (any) {
-      st->changed.store(true, std::memory_order_release);
-      if (notify) notify();
+    if (!dir.empty()) {
+      std::vector<cached_facts> rows = cache->folder(dir);
+      bool any = false;
+      std::vector<std::string> unlisted;
+      {
+        std::lock_guard lock(st->m);
+        if (!current()) return status::cancelled;
+        const std::uint32_t before = st->known;
+        for (cached_facts& r : rows) {
+          if (!st->listed.count(r.path)) unlisted.push_back(r.path);
+          st->keep(std::move(r));
+        }
+        any = st->known != before;
+        st->selected_dir = dir;
+      }
+      if (any) {
+        st->changed.store(true, std::memory_order_release);
+        if (notify) notify();
+      }
+      // Rows of files that are gone (deleted, renamed) leave the cache, so a
+      // folder visited again does not grow it. A file only filtered out of
+      // the listing (Settings hides a kind) still exists and keeps its row.
+      std::vector<std::string> gone;
+      for (const std::string& p : unlisted) {
+        if (!io::stat_path(p)) gone.push_back(p);
+      }
+      if (!gone.empty()) {
+        cache->forget_many(gone);
+        std::lock_guard lock(st->m);
+        for (const std::string& p : gone) st->files.erase(p);
+      }
     }
   }
   const std::size_t to = std::min(entries->size(), from + tag_index::kChunk);
   std::vector<cached_facts> got;
   got.reserve(to - from);
+  std::size_t next = to;  // where the next chunk starts
   for (std::size_t i = from; i < to; ++i) {
     const io::dir_entry& e = (*entries)[i];
     {
       std::lock_guard lock(st->m);
       if (st->fresh(e.path_utf8)) continue;
     }
-    // The viewer is loading, panning or playing: it goes first.
-    while (busy && busy()) {
+    // The view goes first (CLAUDE.md "The view comes first"). A view job
+    // waiting for a worker (the photo's decode, the +-2 prefetch, a page)
+    // gets this one: the chunk re-queues itself from here, behind it. One
+    // already running, or the present loop panning or playing, is waited out
+    // here; sleeping costs no core and no view job is waiting for this one.
+    bool yielded = false;
+    for (;;) {
       if (!current()) return status::cancelled;
+      if (jobs.foreground_queued() != 0) {
+        yielded = true;
+        break;
+      }
+      if (jobs.foreground_running() == 0 && !(busy && busy())) break;
       std::this_thread::sleep_for(std::chrono::milliseconds(15));
     }
-    if (!current()) return status::cancelled;
+    if (yielded) {
+      next = i;
+      break;
+    }
     st->reads.fetch_add(1, std::memory_order_relaxed);
     cached_facts row;
     row.path = e.path_utf8;
@@ -122,7 +163,7 @@ status run_chunk(const std::shared_ptr<tag_index::state>& st, std::uint64_t scan
     got.push_back(std::move(row));
   }
   if (cache && !got.empty()) (void)cache->store(got);
-  bool last = to >= entries->size();
+  const bool last = next >= entries->size();
   {
     std::lock_guard lock(st->m);
     if (!current()) return status::cancelled;
@@ -133,7 +174,7 @@ status run_chunk(const std::shared_ptr<tag_index::state>& st, std::uint64_t scan
     st->changed.store(true, std::memory_order_release);
     if (notify) notify();
   }
-  if (!last) submit_chunk(st, scan, entries, to, jobs, notify, busy);
+  if (!last) submit_chunk(st, scan, entries, next, jobs, notify, busy);
   return status::ok;
 }
 
@@ -171,7 +212,10 @@ void tag_index::scan(std::string dir, std::vector<io::dir_entry> entries, job_sy
   {
     std::lock_guard lock(st->m);
     scan = st->scan.fetch_add(1, std::memory_order_acq_rel) + 1;
-    if (dir != st->dir) st->files.clear();
+    if (dir != st->dir) {
+      st->files.clear();
+      st->selected_dir.clear();
+    }
     st->dir = std::move(dir);
     st->order.clear();
     st->order.reserve(entries.size());
@@ -200,6 +244,7 @@ void tag_index::stop() {
   state_->order.clear();
   state_->listed.clear();
   state_->files.clear();
+  state_->selected_dir.clear();
   state_->known = 0;
   state_->reading = false;
 }

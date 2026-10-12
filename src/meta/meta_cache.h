@@ -67,13 +67,18 @@ class meta_cache {
   // Drops a file's row (a metadata write that landed in a sidecar leaves the
   // file's own size and mtime alone).
   void forget(std::string_view path);
+  // Drops several rows in one transaction (files gone from a folder).
+  void forget_many(std::span<const std::string> paths);
   [[nodiscard]] std::uint64_t rows();
 
   // The folder a path is in: everything before the last '/' (or '\\').
   [[nodiscard]] static std::string dir_of(std::string_view path);
 
  private:
-  bool open_locked(const std::string& db_path);
+  enum class open_result { ok, failed, damaged };
+  open_result open_locked(const std::string& db_path);
+  // Deletes the file (and its WAL) and opens a new one. Under m_.
+  bool remake_locked(const std::string& db_path);
   mutable std::mutex m_;
   sqlite3* db_ = nullptr;
   std::string dir_;

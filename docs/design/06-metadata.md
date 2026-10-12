@@ -163,18 +163,25 @@ Every tag searchable, without the AI pack ([16](16-commands.md) "File search"). 
   warm cache).
 - **`meta_cache.db`** (SQLite, WAL) next to the thumbnail cache: one row per file, valid while
   path, size, mtime and `kSearchFactsVersion` match. It holds the fields and their fold, date
-  taken, the position and the AI flag. A damaged or foreign file is deleted and made again (it is
-  a cache). A PR 12 write that lands in a sidecar drops the file's row (`tag_index::invalidate`
+  taken, the position and the AI flag. A damaged or foreign file (not a database, another schema,
+  or corruption found by a later write) is deleted and made again (it is a cache); a file another
+  process has locked (a second window) is busy, never deleted, and an open that fails is retried
+  at most every 30 s. Rows of files gone from a folder are dropped when the folder is seen again
+  (a file only hidden by a setting keeps its row); a folder never revisited keeps its rows, as the
+  thumbnail cache keeps its thumbs (about 0.5–0.9 KB a file, path included). A PR 12 write that lands in a sidecar drops the file's row (`tag_index::invalidate`
   on the Mac, `mv_folder_forget_tags` on Windows), since the file's own stamp cannot tell.
   Nothing in it leaves the machine (rule 6).
 - **The folder pass** (`tag_index`) keeps the facts of the folder on screen in memory. A folder
   seen before costs one `SELECT` and no file reads; otherwise each file is read once, ever. It
-  runs as background-queue chunks of 32 files, so every view job and the ±2 prefetch go first,
-  waits between files while the viewer is presenting (`g_present_busy` /
-  `mv_present_set_busy`), and starts only once the item on screen has its first image (Mac: the
+  runs as background-queue chunks of 32 files, so every view job and the ±2 prefetch go first.
+  Between files it steps aside for the view: a view-tied job waiting for a worker gets the pass's
+  worker (the chunk re-queues itself where it stopped), and while one runs (the photo's full
+  decode, the prefetch; `job_system::foreground_running`) or the viewer is presenting
+  (`g_present_busy` / `mv_present_set_busy`) it waits. A relist of the same folder reuses the rows
+  already in memory (one `SELECT` per folder). It starts only once the item on screen has its first image (Mac: the
   0.2 s folder timer sees `showing_still`, or a second has passed for a clip; Windows: the
   selected stop's `IMAGE_OPENED`, or the first tag search). Sorting by date taken starts it at
-  once, as the date scan did.
+  once, as the date scan did, and the listing re-sorts once, when the pass ends (both hosts).
 - **Date taken rides the same pass.** The sort keys come from the facts, so a folder costs one
   read per file, not a date read and a tag read, and a folder seen before sorts by date at once.
   On a folder never seen, each key costs the 0.19 ms search read instead of the 0.09 ms date
