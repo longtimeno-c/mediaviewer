@@ -21,6 +21,8 @@
 #include <span>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "abi/addon_bridge.h"
@@ -236,6 +238,13 @@ struct mv_session {
   // 0.19: io::kHideAudio / kHideDocuments. `folder_listing` stays unfiltered,
   // so turning a kind back on re-applies without another scan.
   std::atomic<std::uint32_t> hidden_kinds{0};
+  // 0.22 (issue #206): the kind filter, io::kHide* bits, and for
+  // kHideUnmarked the paths that stay (folder_mutex). `kind_filter_changed`
+  // is consumed by the relist mv_folder_set_kind_filter makes, the one that
+  // does not keep the stop on screen unless it passes.
+  std::atomic<std::uint32_t> kind_filter{0};
+  std::unordered_set<std::string> kind_kept;
+  bool kind_filter_changed = false;
   // 0.21 (issue #210): a rename the host made (folder_mutex). The next relist
   // follows the stop to its new name instead of letting the next one slide in.
   std::string renamed_from;
@@ -1432,24 +1441,53 @@ void apply_folder_list(mv_session* session, std::vector<mv::io::listed_item> lis
     std::lock_guard lock(session->folder_mutex);
     is_list = session->folder_is_list;
   }
-  if (const std::uint32_t hide = session->hidden_kinds.load(); hide != 0) {
-    // Settings left a kind out. The file the folder was opened on and the stop
-    // on screen stay: an explicit open still shows, and a relist never pulls
-    // the current item out from under the user.
+  const std::uint32_t hide = session->hidden_kinds.load();
+  const std::uint32_t filter = session->kind_filter.load();
+  if (hide != 0 || filter != 0) {
+    // Settings left a kind out, or View > Show narrowed the listing
+    // (io::keeps_stop, the rule the Mac host applies too). The file the
+    // folder was opened on and the stop on screen stay: an explicit open
+    // still shows, and a relist never pulls the current item out from under
+    // the user. The relist a new filter makes is the exception: it moves on.
     std::string keep_want;
     std::string keep_current;
+    bool filter_changed = false;
+    std::unordered_set<std::string> kept;
     {
       std::lock_guard lock(session->folder_mutex);
       keep_want = session->folder_select_path;
       if (session->folder_selected < session->folder_items.size()) {
         keep_current = session->folder_items[session->folder_selected].path;
       }
+      filter_changed = std::exchange(session->kind_filter_changed, false);
+      if ((filter & mv::io::kHideUnmarked) != 0) kept = session->kind_kept;
     }
+    auto stays = [&](const std::string& p) {
+      return (!keep_want.empty() && p == keep_want) || (!keep_current.empty() && p == keep_current);
+    };
+    std::vector<mv::io::listed_item> all;
+    if (filter != 0) all = listed;  // a filter that leaves nothing falls back to this
     std::erase_if(listed, [&](const mv::io::listed_item& e) {
-      if (!mv::io::is_hidden_kind(e.primary.name_utf8, hide)) return false;
       const std::string& p = e.primary.path_utf8;
-      return !((!keep_want.empty() && p == keep_want) || (!keep_current.empty() && p == keep_current));
+      return !mv::io::keeps_stop(e.primary.name_utf8, e.secondary.name_utf8, kept.contains(p),
+                                 stays(p), hide, filter, filter_changed);
     });
+    if (filter != 0 && listed.empty()) {
+      // Nothing of that kind here: the stop on screen stays, so the canvas
+      // never goes blank under a menu choice.
+      std::erase_if(all, [&](const mv::io::listed_item& e) { return !stays(e.primary.path_utf8); });
+      listed = std::move(all);
+    }
+    if (filter_changed && !keep_want.empty()) {
+      // The explicit open is spent once a filter has been chosen over it.
+      const bool still = std::any_of(listed.begin(), listed.end(), [&](const mv::io::listed_item& e) {
+        return e.primary.path_utf8 == keep_want || e.secondary.path_utf8 == keep_want;
+      });
+      if (!still) {
+        std::lock_guard lock(session->folder_mutex);
+        if (session->folder_select_path == keep_want) session->folder_select_path.clear();
+      }
+    }
   }
   if (!is_list) {
     refresh_subdirs(session);
@@ -2138,6 +2176,48 @@ mv_status MV_CALL mv_folder_set_hidden_kinds(mv_session_t session, uint32_t mask
     {
       std::lock_guard lock(session->folder_mutex);
       have = !session->folder_listing.empty();
+    }
+    if (!have) return status::ok;  // applies to the next open
+    const mv::job_id id = session->jobs.submit_at(
+        mv::background_generation, [session](const mv::job_context&) -> status {
+          std::vector<mv::io::listed_item> again;
+          {
+            std::lock_guard lock(session->folder_mutex);
+            again = session->folder_listing;
+          }
+          if (again.empty()) return status::ok;
+          apply_folder_list(session, std::move(again), true);
+          return status::ok;
+        });
+    return id == mv::invalid_job ? status::internal : status::ok;
+  }));
+}
+
+mv_status MV_CALL mv_folder_set_kind_filter(mv_session_t session, uint32_t mask,
+                                            const char* const* kept, uint32_t kept_count) {
+  return static_cast<mv_status>(guard("mv_folder_set_kind_filter", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    MV_REQUIRE(kept != nullptr || kept_count == 0, "kept must not be null when kept_count > 0");
+    static_assert(MV_FOLDER_HIDE_STILLS == mv::io::kHideStills);
+    static_assert(MV_FOLDER_HIDE_CLIPS == mv::io::kHideClips);
+    static_assert(MV_FOLDER_HIDE_RAW == mv::io::kHideRaw);
+    static_assert(MV_FOLDER_HIDE_UNMARKED == mv::io::kHideUnmarked);
+    const std::uint32_t next = mask & mv::io::kHideKnown;
+    std::unordered_set<std::string> paths;
+    if ((next & mv::io::kHideUnmarked) != 0) {
+      paths.reserve(kept_count);
+      for (uint32_t i = 0; i < kept_count; ++i) {
+        if (kept[i] != nullptr && kept[i][0] != '\0') paths.emplace(kept[i]);
+      }
+    }
+    bool have = false;
+    {
+      std::lock_guard lock(session->folder_mutex);
+      if (session->kind_filter.load() == next && session->kind_kept == paths) return status::ok;
+      session->kind_kept = std::move(paths);
+      session->kind_filter.store(next);
+      have = !session->folder_listing.empty();
+      session->kind_filter_changed = have;
     }
     if (!have) return status::ok;  // applies to the next open
     const mv::job_id id = session->jobs.submit_at(

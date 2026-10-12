@@ -128,6 +128,11 @@ private struct OpenInBarItem: View {
   }
 }
 
+/// View > Show (issue #206), in io::kind_filter order.
+enum KindFilter {
+  static let names = ["all", "photos", "videos", "RAW", "marked"]
+}
+
 /// commands.h ids the View flyout runs (as their keys would).
 enum ViewCommand {
   static let zoomIn: Int32 = 4
@@ -182,6 +187,16 @@ public struct CommandBarView: View {
             FlyoutItem(title: "Gallery", shortcut: key("Gallery"), enabled: hasFolder) { close(); mv_chrome_menu(kMenuGallery) }
             FlyoutItem(title: "Full screen", shortcut: key("Fullscreen")) { close(); mv_chrome_menu(kMenuFullscreen) }
             FlyoutItem(title: "Filmstrip", shortcut: key("Filmstrip"), enabled: hasFolder) { close(); mv_chrome_menu(kMenuFilmstrip) }
+            FlyoutRule()
+            // Issue #206: View > Show, as on the Windows bar. The dot is the
+            // filter native applied, read when the flyout opens.
+            let shown = mv_chrome_kind_filter()
+            ForEach(Array(KindFilter.names.enumerated()), id: \.offset) { item in
+              FlyoutItem(title: "Show " + item.element, shortcut: shown == Int32(item.offset) ? "●" : nil,
+                         enabled: hasFolder || item.offset == 0) {
+                close(); _ = mv_chrome_set_kind_filter(Int32(item.offset))
+              }
+            }
             FlyoutRule()
             FlyoutItem(title: "Clipping warnings", shortcut: key("Clipping")) { close(); mv_chrome_run_command(ViewCommand.clipping) }
             FlyoutItem(title: "Frame-time overlay", shortcut: key("Frame-time overlay")) { close(); mv_chrome_menu(kMenuOverlay) }

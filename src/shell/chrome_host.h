@@ -299,6 +299,8 @@ static_assert(static_cast<int>(command_id::crop_aspect_cycle) == 151 &&
               static_cast<int>(command_id::crop_aspect_swap) == 152);
 static_assert(static_cast<int>(command_id::show_original) == 153);
 static_assert(static_cast<int>(command_id::search_open) == 157);
+// Issue #206: View > Show's items (arg = io::kind_filter).
+static_assert(static_cast<int>(command_id::kind_filter_set) == 174);
 static_assert(chrome_cmd_edit_tab >= kCommandCount && chrome_cmd_edit_action >= kCommandCount);
 static_assert(chrome_cmd_meta_tags >= kCommandCount && chrome_cmd_meta_date >= kCommandCount);
 static_assert(chrome_cmd_editor_seek >= kCommandCount && chrome_cmd_editor_action >= kCommandCount);
@@ -562,7 +564,10 @@ inline constexpr std::int32_t kMetaEditDropDraft = 8;  // Esc: forget what was t
 
 struct chrome_flags_args {
   std::int32_t flags;
-  std::int32_t sort;  // PR 9: packed sort order, so Settings and View > Sort by show the truth
+  // PR 9: packed sort order, so Settings and View > Sort by show the truth.
+  // Issue #206: bits 8-10 are the kind filter View > Show applied
+  // (io::kind_filter), so its marker is native's choice too.
+  std::int32_t sort;
 };
 
 static_assert(sizeof(chrome_flags_args) == 8, "keep in sync with ChromeFlagsArgs");
@@ -828,6 +833,9 @@ class chrome_host {
   // Push the persisted toggles into the settings menu so the menu and the
   // keyboard cannot disagree about what is on.
   void apply_settings(std::int32_t flags, std::int32_t sort = 0) noexcept;
+  // Issue #206: the kind filter every later apply_settings carries (bits 8-10
+  // of its sort word). Set once the core has applied it; not saved.
+  void set_kind_filter(std::int32_t filter) noexcept { kind_filter_ = filter & 7; }
 
   // Push the current playback rate into the command bar's speed dropdown.
   void apply_rate(float rate) noexcept;
@@ -937,6 +945,7 @@ class chrome_host {
   chrome_entry_fn show_transport_ = nullptr;
   chrome_entry_fn detach_transport_ = nullptr;
   chrome_entry_fn apply_settings_ = nullptr;
+  std::int32_t kind_filter_ = 0;
   chrome_entry_fn apply_rate_ = nullptr;
   chrome_entry_fn apply_audio_ = nullptr;
   chrome_entry_fn set_command_table_ = nullptr;

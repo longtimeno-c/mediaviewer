@@ -1123,6 +1123,7 @@ if(MV_BUILD_TESTS)
     tests/test_anim.cpp
     tests/test_gif_webp.cpp
     tests/test_pairing.cpp
+    tests/test_kind_filter.cpp
     tests/test_live_photo.cpp
     tests/test_raw.cpp
     tests/test_perf_bench.cpp

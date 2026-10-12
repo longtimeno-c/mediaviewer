@@ -550,6 +550,82 @@ TEST_CASE("mv_folder_set_hidden_kinds leaves audio and documents out", "[abi][fo
   mv::io::set_thumb_cache_dir_override({});
 }
 
+// 0.20 (issue #206): View > Show. A filter's own relist moves off a stop it
+// no longer shows; a RAW+JPEG pair is RAW; "Marked" keeps the paths given; a
+// filter that leaves nothing keeps the stop on screen.
+TEST_CASE("mv_folder_set_kind_filter shows one kind at a time", "[abi][folder][filter]") {
+  const auto dir = temp_dir();
+  write_bmp(dir, L"a.bmp");
+  for (const wchar_t* name : {L"p.jpg", L"p.cr2", L"r.dng", L"v.mp4"}) {
+    std::ofstream f(dir + L"\\" + name, std::ios::binary);
+    f << "not really";
+  }
+  mv::io::set_thumb_cache_dir_override(utf8(dir + L"\\thumbs"));
+  REQUIRE(::CreateDirectoryW((dir + L"\\thumbs").c_str(), nullptr));
+
+  const auto names = [](mv_session_t s) {
+    std::string out;
+    uint32_t n = 0;
+    REQUIRE(mv_folder_count(s, &n) == MV_OK);
+    for (uint32_t i = 0; i < n; ++i) out += item_string(s, i, mv_folder_item_name) + " ";
+    return out;
+  };
+  const auto current = [](mv_session_t s) {
+    uint32_t selected = 0;
+    REQUIRE(mv_folder_selected(s, &selected) == MV_OK);
+    return item_string(s, selected, mv_folder_item_name);
+  };
+  constexpr uint32_t kOnly = MV_FOLDER_HIDE_AUDIO | MV_FOLDER_HIDE_DOCUMENTS;
+  mv_completion c{};
+  uint64_t job = 0;
+  session_guard session;
+  REQUIRE(mv_folder_open(session.handle, utf8(dir).c_str(), utf8(dir + L"\\a.bmp").c_str(), &job) ==
+          MV_OK);
+  REQUIRE(wait_kind(session.handle, MV_COMPLETION_FOLDER_READY, &c));
+  CHECK(names(session.handle) == "a.bmp p.jpg r.dng v.mp4 ");
+
+  // Videos: the photo on screen goes, even though the folder was opened on it.
+  REQUIRE(mv_folder_set_kind_filter(session.handle,
+                                    MV_FOLDER_HIDE_STILLS | MV_FOLDER_HIDE_RAW | kOnly, nullptr, 0) ==
+          MV_OK);
+  REQUIRE(wait_kind(session.handle, MV_COMPLETION_FOLDER_CHANGED, &c));
+  CHECK(names(session.handle) == "v.mp4 ");
+  CHECK(current(session.handle) == "v.mp4");
+
+  // RAW: the pair (JPEG primary) and the lone DNG.
+  REQUIRE(mv_folder_set_kind_filter(session.handle,
+                                    MV_FOLDER_HIDE_STILLS | MV_FOLDER_HIDE_CLIPS | kOnly, nullptr, 0) ==
+          MV_OK);
+  REQUIRE(wait_kind(session.handle, MV_COMPLETION_FOLDER_CHANGED, &c));
+  CHECK(names(session.handle) == "p.jpg r.dng ");
+
+  // Photos: every still, RAW included.
+  REQUIRE(mv_folder_set_kind_filter(session.handle, MV_FOLDER_HIDE_CLIPS | kOnly, nullptr, 0) == MV_OK);
+  REQUIRE(wait_kind(session.handle, MV_COMPLETION_FOLDER_CHANGED, &c));
+  CHECK(names(session.handle) == "a.bmp p.jpg r.dng ");
+
+  // Marked: only the paths given.
+  const std::string kept = utf8(dir + L"\\r.dng");
+  const char* kept_paths[] = {kept.c_str()};
+  REQUIRE(mv_folder_set_kind_filter(session.handle, MV_FOLDER_HIDE_UNMARKED, kept_paths, 1) == MV_OK);
+  REQUIRE(wait_kind(session.handle, MV_COMPLETION_FOLDER_CHANGED, &c));
+  CHECK(names(session.handle) == "r.dng ");
+
+  // Nothing passes: the stop on screen stays rather than an empty listing.
+  REQUIRE(mv_folder_set_kind_filter(session.handle,
+                                    MV_FOLDER_HIDE_STILLS | MV_FOLDER_HIDE_RAW | MV_FOLDER_HIDE_CLIPS,
+                                    nullptr, 0) == MV_OK);
+  REQUIRE(wait_kind(session.handle, MV_COMPLETION_FOLDER_CHANGED, &c));
+  CHECK(names(session.handle) == "r.dng ");
+
+  REQUIRE(mv_folder_set_kind_filter(session.handle, 0, nullptr, 0) == MV_OK);
+  REQUIRE(wait_kind(session.handle, MV_COMPLETION_FOLDER_CHANGED, &c));
+  CHECK(names(session.handle) == "a.bmp p.jpg r.dng v.mp4 ");
+  CHECK(current(session.handle) == "r.dng");
+  REQUIRE(mv_folder_close(session.handle) == MV_OK);
+  mv::io::set_thumb_cache_dir_override({});
+}
+
 TEST_CASE("mv_list_subdirectories lists visible folders only, sorted", "[abi][folder][tree]") {
   const auto dir = temp_dir();
   REQUIRE(::CreateDirectoryW((dir + L"\\beta").c_str(), nullptr));

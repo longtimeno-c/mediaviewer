@@ -484,6 +484,7 @@ copy, and check Finder's **Open With** and a Quick Look thumbnail.
 | `O` | info line: file name, position in the folder, size, zoom |
 | `Ctrl+Shift+A` | always on top |
 | `Insert` / `Shift+Space` | mark or unmark the current item. `Ctrl+A` marks all, `Ctrl+D` clears |
+| View ▸ **Show** | All / Photos / Videos / RAW / Marked: only that kind in the filmstrip, gallery and arrow keys, for this run (not saved). RAW is a RAW or a RAW+JPEG pair; Marked is the marks when you chose it. The stop on screen moves to the nearest one shown. Also in the command bar's View menu on the Mac. **Show next kind** cycles them; it has no key until you give it one in Settings |
 | `F5` | slideshow (fullscreen). In it: `Space` pause, `+` / `-` interval, `.` blackout, `R` shuffle, `Esc` leave. A clip plays to its end before advancing |
 | `F7` / `F8` | copy / move the marked items (or the current one) to the last folder used. `Shift+F7` / `Shift+F8` pick a folder. Never overwrites: a taken name becomes `name (2).ext` |
 | `Delete` | move the marked items (or the current one) to the Recycle Bin, after asking. A drive with no Recycle Bin is refused, never deleted permanently |
@@ -1437,6 +1438,12 @@ MP3/M4A/M4P and PDF/DOCX out of folder listings; the file a folder was opened on
 stop, stay, so Open With still shows one. Windows filters in the core (`mv_folder_set_hidden_kinds`,
 ABI 0.19, `[view] show_audio` / `show_documents` in settings.ini); the Mac host filters its folder
 model's listing (`mv.viewFlags` bits 12–13). Test: `mv_tests "[settings]"`. Gallery folder-tile counts still include hidden kinds.
+
+**View ▸ Show (issue #206):** the kind filter, Windows and macOS. Windows filters in the core
+(`mv_folder_set_kind_filter`, ABI 0.20, the marks passed in for Marked); the Mac host filters its
+folder model's listing with the same rule (`io::keeps_stop`). The Mac does not pair RAW+JPEG, so
+there the RAW half shows under RAW and the JPEG half under Photos. Tests: `mv_tests "[filter]"`
+(both platforms; the ABI case is Windows-only).
 
 ### Performance pass (2026-09-26)
 

@@ -39,9 +39,11 @@ TEST_CASE("no two bindings share a key, modifiers and mode", "[shell][commands]"
   for (const auto& b : default_bindings()) {
     REQUIRE(b.modes != 0);
     REQUIRE(b.command != command_id::none);
-    // PR 7: Open RAW / Open JPEG ship listed but unbound (docs/design/04, docs/design/16).
+    // PR 7: Open RAW / Open JPEG ship listed but unbound (docs/design/04, docs/design/16);
+    // so does issue #206's Show next kind.
     if (b.k == key::none) {
-      REQUIRE((b.command == command_id::open_raw || b.command == command_id::open_jpeg));
+      REQUIRE((b.command == command_id::open_raw || b.command == command_id::open_jpeg ||
+               b.command == command_id::kind_filter_next));
       continue;
     }
     for (int m = 0; m < kModeCount; ++m) {

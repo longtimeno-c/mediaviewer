@@ -163,6 +163,7 @@ crop. Keys are shown Windows-style; on macOS read `⌘` for `Ctrl`.
 | `R` | Viewing | Reset frame-time stats |
 | `Esc` | all | Back (above) |
 | *(unbound)* | browse, video | **Open RAW of pair** / **Open JPEG of pair** — listed in Settings. **Mac: not built** (not listed) |
+| *(unbound)* | Viewing | **Show next kind**: cycle View ▸ Show (All → Photos → Videos → RAW → Marked), below. Listed in Settings |
 | *(menu)* | — | **Recent folders**: the jump-list folders; Windows: Open ▸ Recent folders on the command bar; Mac: File ▸ Open Recent. A folder that has gone beeps and leaves the list |
 
 ### View
@@ -412,7 +413,7 @@ presents ([rendering](03-rendering.md)). Toggles request one redraw.
 | Eyedropper (`Shift+I`) | One-pixel staging readback on demand, never a full-texture download |
 | Histogram | On the adjust pane, computed after the sliders settle |
 
-## Status, sort, typeahead
+## Status, sort, filter, typeahead
 
 Chrome, in memory, no decode.
 
@@ -422,6 +423,16 @@ Chrome, in memory, no decode.
   (`mv_folder_set_sort`, saved as `[view] sort` on Windows; View ▸ Sort By on both). Date-taken
   keys are read once per file by one background job and the listing re-sorts in place when they
   land; a file with no stamp sorts by mtime.
+- **Show** (issue #206): View ▸ Show on both hosts (the menu bar and the command bar's View on the
+  Mac, the command bar's View on Windows): **All**, **Photos** (every still, RAW included),
+  **Videos**, **RAW** (a RAW, or a RAW+JPEG pair) or **Marked** (the marks as they are when it is
+  chosen; refused with a notice when nothing is marked). A view of the listing, for this run only,
+  never saved: the filmstrip, gallery, arrow keys and slideshow walk what is shown; copy, move and
+  delete act on marks as always. Choosing one moves the stop on screen to the nearest one shown; a
+  filter that matches nothing keeps the stop on screen. A relist keeps the file a folder was
+  opened on, so an explicit open still shows. The notice line says what is shown. A scan-time
+  flag over the listing already in memory: no decode, no I/O, no rescan (`io::keeps_stop`;
+  Windows `mv_folder_set_kind_filter`, the Mac host over its folder model's snapshot).
 - **Typeahead:** with the filmstrip or gallery focused, typing jumps to the first name starting
   with what was typed (300 ms idle resets). On the canvas every letter is a command, so `/` opens
   a find box over the loaded listing. `Ctrl+G` goes to an index.
@@ -474,7 +485,6 @@ No hot-path ABI for commands. Commands invoke existing session calls (`mv_folder
 - `Ctrl+Tab` / tabs, and several windows inside one process.
 - `Ctrl+PageUp` / `Ctrl+PageDown` for ICO sizes and HEIC sequences (pages of TIFF, PDF and DOCX are built).
 - `U` clear label and `X` reject mark.
-- A filter (all / photos / videos / RAW) on the listing.
 - Touch gestures (swipe, pinch).
 - Import / export of key maps and named alternate layouts.
 - Voice add-on hold-to-talk (`Ctrl+Shift+Space`).

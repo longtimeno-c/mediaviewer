@@ -280,6 +280,10 @@ mv_status mv_folder_set_hidden_kinds(mv_session_t, uint32_t mask);
 /* 0.20: F2 is about to rename old to new (call before the file moves); the watcher's relist that
    shows it keeps the stop selected under the new name, with no decode */
 mv_status mv_folder_renamed(mv_session_t, const char* old_utf8, const char* new_utf8);
+/* 0.22: View > Show. MV_FOLDER_HIDE_STILLS | _CLIPS | _RAW | _AUDIO | _DOCUMENTS | _UNMARKED;
+   `kept` (copied) is what _UNMARKED keeps. Its own relist moves off a stop that does not pass */
+mv_status mv_folder_set_kind_filter(mv_session_t, uint32_t mask, const char* const* kept,
+                                    uint32_t kept_count);
 mv_status mv_list_subdirectories(const char* utf8_dir, char* utf8, uint32_t cap, uint32_t* out_bytes);
 ```
 
@@ -522,6 +526,7 @@ Windows shell turns into live command rows ([25 §7](25-open-addons.md#7-the-con
 | 0.19 | `mv_folder_set_hidden_kinds` — Settings can leave audio and/or documents out of the listing |
 | 0.20 | `mv_folder_entries` — the whole listing in one call (issue #226) |
 | 0.21 | `mv_folder_renamed` — an F2 rename keeps its stop (issue #210) |
+| 0.22 | `mv_folder_set_kind_filter`, `MV_FOLDER_HIDE_STILLS` / `_CLIPS` / `_RAW` / `_UNMARKED` — View ▸ Show (issue #206) |
 
 ## Not built
 

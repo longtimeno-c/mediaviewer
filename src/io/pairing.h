@@ -156,6 +156,95 @@ inline constexpr std::uint32_t kHideDocuments = 1u << 1;
   return pairing_detail::is_raw(pairing_detail::extension(name));
 }
 
+// Issue #206, the kind filter (View > Show): more bits of the same word, set
+// for as long as the user asks, never saved. Each stop is exactly one of
+// audio, document, RAW, clip or still, so a filter is the bits of every kind
+// it does not show. kHideUnmarked is the caller's: it holds the set of paths
+// that stay (the marks when "Marked" was chosen); it is not a kind of name.
+inline constexpr std::uint32_t kHideStills = 1u << 2;    // JPEG, HEIC, PNG, GIF... (not RAW)
+inline constexpr std::uint32_t kHideClips = 1u << 3;     // MP4, MOV... (audio is its own kind)
+inline constexpr std::uint32_t kHideRaw = 1u << 4;       // a RAW, or a RAW+JPEG pair
+inline constexpr std::uint32_t kHideUnmarked = 1u << 5;  // all but a kept set of paths
+inline constexpr std::uint32_t kHideKnown =
+    kHideAudio | kHideDocuments | kHideStills | kHideClips | kHideRaw | kHideUnmarked;
+inline constexpr std::uint32_t kHideFilterBits = kHideStills | kHideClips | kHideRaw | kHideUnmarked;
+
+// True when the stop `name` (with `secondary`, its pair's other half, empty
+// when unpaired) is of a kind `hide` leaves out. A RAW+JPEG pair is RAW
+// whichever half leads; a Live Photo is its still. Kind bits only: the
+// unmarked bit is the caller's.
+[[nodiscard]] inline bool is_hidden_stop(std::string_view name, std::string_view secondary,
+                                         std::uint32_t hide) noexcept {
+  if ((hide & ~kHideUnmarked) == 0) return false;
+  if (is_audio_name(name)) return (hide & kHideAudio) != 0;
+  if (is_document_name(name)) return (hide & kHideDocuments) != 0;
+  if (is_raw_name(name) || (!secondary.empty() && is_raw_name(secondary))) {
+    return (hide & kHideRaw) != 0;
+  }
+  if (is_video_name(name)) return (hide & kHideClips) != 0;
+  return (hide & kHideStills) != 0;
+}
+
+// Whether a listing keeps one stop. `settings_hide` is Settings' audio /
+// documents word: the stop that `stays` (the file the folder was opened on,
+// the stop on screen) is never dropped by it. `filter_hide` is a kind
+// filter's (kind_filter_mask): a relist keeps the staying stop too, so an
+// explicit open still shows, but the relist a new filter choice makes
+// (`filter_changed`) does not, so choosing Videos on a photo moves to a
+// video. `marked` is whether the stop is in the kept set (kHideUnmarked).
+// Both hosts call this; a filter that leaves nothing is the caller's (it
+// keeps the staying stop, so the screen never goes blank).
+[[nodiscard]] inline bool keeps_stop(std::string_view name, std::string_view secondary,
+                                     bool marked, bool stays, std::uint32_t settings_hide,
+                                     std::uint32_t filter_hide, bool filter_changed) noexcept {
+  if (!stays && is_hidden_stop(name, secondary, settings_hide & (kHideAudio | kHideDocuments))) {
+    return false;
+  }
+  if (filter_hide == 0) return true;
+  if (stays && !filter_changed) return true;
+  if ((filter_hide & kHideUnmarked) != 0 && !marked) return false;
+  return !is_hidden_stop(name, secondary, filter_hide);
+}
+
+// View > Show. Order is the menu's and the wire's (chrome arg, bridge int).
+enum class kind_filter : std::uint8_t { all = 0, photos = 1, videos = 2, raw = 3, marked = 4 };
+inline constexpr int kKindFilterCount = 5;
+
+[[nodiscard]] constexpr kind_filter kind_filter_from(int v) noexcept {
+  return v >= 0 && v < kKindFilterCount ? static_cast<kind_filter>(v) : kind_filter::all;
+}
+
+// The hide bits a filter adds to Settings' own. Photos are every still,
+// RAW included; Videos are clips; RAW is RAWs and RAW+JPEG pairs. A filter
+// shows only its kind, so audio and documents go too.
+[[nodiscard]] constexpr std::uint32_t kind_filter_mask(kind_filter f) noexcept {
+  switch (f) {
+    case kind_filter::all: return 0;
+    case kind_filter::photos: return kHideClips | kHideAudio | kHideDocuments;
+    case kind_filter::videos: return kHideStills | kHideRaw | kHideAudio | kHideDocuments;
+    case kind_filter::raw: return kHideStills | kHideClips | kHideAudio | kHideDocuments;
+    case kind_filter::marked: return kHideUnmarked;
+  }
+  return 0;
+}
+
+// "Photos", for the notice line and menus; the hosts' own menus spell the same.
+[[nodiscard]] constexpr const char* kind_filter_name(kind_filter f) noexcept {
+  switch (f) {
+    case kind_filter::all: return "All";
+    case kind_filter::photos: return "Photos";
+    case kind_filter::videos: return "Videos";
+    case kind_filter::raw: return "RAW";
+    case kind_filter::marked: return "Marked";
+  }
+  return "All";
+}
+
+// The filter after `f` in menu order, wrapping: the keyed command cycles.
+[[nodiscard]] constexpr kind_filter next_kind_filter(kind_filter f) noexcept {
+  return static_cast<kind_filter>((static_cast<int>(f) + 1) % kKindFilterCount);
+}
+
 // Collapse a directory listing into navigation stops. Input is the extension-
 // filtered scan (hidden/system already dropped), in the user's sort order.
 // A pair sits where the first of its two files sat, so pairing never reorders

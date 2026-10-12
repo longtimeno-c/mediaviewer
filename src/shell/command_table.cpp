@@ -288,6 +288,10 @@ constexpr binding kBindings[] = {
     // Issue #210: F2 renames, as in Explorer. Appended. Not in a slideshow or crop,
     // like every other write; the gallery renames its selected cell.
     row(key::f2, mod_none, kViewing, edge, rename_file),
+    // Issue #206: View > Show, cycled. Appended. docs/design/16 names no key and
+    // every free letter is spoken for (X reject, U clear label), so it ships
+    // unbound, listed in Settings like Open RAW / Open JPEG.
+    row(key::none, mod_none, kViewing, edge, kind_filter_next),
 };
 
 // The router's index stores row + 1 in a byte.
@@ -466,6 +470,8 @@ constexpr command_info kCommands[] = {
     {addon_cmd_7, "Add-on command 8", true},
     {new_window, "New window"},
     {rename_file, "Rename…"},
+    {kind_filter_next, "Show next kind"},
+    {kind_filter_set, "Show kind", true},
 };
 
 const char* named_key(key k) noexcept {

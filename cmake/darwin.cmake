@@ -795,6 +795,7 @@ if(MV_BUILD_TESTS)
     tests/test_dir_mac.cpp
     tests/test_key_router.cpp
     tests/test_key_router_review.cpp
+    tests/test_kind_filter.cpp
     tests/test_rename_stop.cpp
     tests/test_write_guard.cpp
     tests/test_photos_backup.cpp

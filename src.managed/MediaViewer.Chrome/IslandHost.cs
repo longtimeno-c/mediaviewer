@@ -202,6 +202,7 @@ public static partial class IslandHost
         public const int CropAspectSwap = 152;
         public const int ShowOriginal = 153;
         public const int SearchOpen = 157;
+        public const int KindFilterSet = 174;      // arg: 0 all, 1 photos, 2 videos, 3 RAW, 4 marked (issue #206)
 
         // Mirrors chrome_command_checksum() in chrome_host.h: same constants,
         // same order, same arithmetic. Probe hands it to native for the test.
@@ -282,6 +283,8 @@ public static partial class IslandHost
     // Packed sort order (key in bits 0-2: name, modified, size, type, date taken;
     // descending in bit 3). Native owns it; the menu and Settings are a view of it.
     private static int _sortPacked;
+    // Issue #206: the kind filter native applied (bits 8-10 of the pushed sort word).
+    private static int _kindFilter;
 
     private static int _settingFlags = SettingFlag.FilmstripForFolder | SettingFlag.Wrap | SettingFlag.UpdateAutoCheck;
 
@@ -592,7 +595,8 @@ public static partial class IslandHost
             if (arg == IntPtr.Zero || sizeBytes < FlagsArgsSize) return unchecked((int)0x80070057);
             ChromeFlagsArgs args = Marshal.PtrToStructure<ChromeFlagsArgs>(arg);
             _settingFlags = args.Flags;
-            _sortPacked = args.Sort;
+            _sortPacked = args.Sort & 0xFF;
+            _kindFilter = (args.Sort >> 8) & 7;
             UpdateChannelApplied();
             RefreshSettingsMenu();
             RefreshSettingsScreen();
@@ -1470,7 +1474,31 @@ public static partial class IslandHost
         return sub;
     }
 
-    private static void RefreshViewMenu(MenuFlyout flyout, MenuFlyoutSubItem sortMenu)
+    private static readonly string[] KindFilterNames =
+        { "All", "Photos", "Videos", "RAW", "Marked" };
+
+    // View > Show (issue #206): a view of the folder, for this run only. Rebuilt
+    // on open so the marker is the filter native applied. "Marked" keeps the
+    // marks as they are when it is chosen.
+    private static MenuFlyoutSubItem KindFilterSubMenu(MenuFlyout owner)
+    {
+        var sub = new MenuFlyoutSubItem { Text = "Show" };
+        void Fill()
+        {
+            sub.Items.Clear();
+            for (int k = 0; k < KindFilterNames.Length; k++)
+            {
+                int filter = k;
+                sub.Items.Add(Item(KindFilterNames[k], _kindFilter == k ? "●" : null,
+                    () => Send(Command.KindFilterSet, filter)));
+            }
+        }
+        owner.Opening += (_, _) => Fill();
+        Fill();
+        return sub;
+    }
+
+    private static void RefreshViewMenu(MenuFlyout flyout, MenuFlyoutSubItem sortMenu, MenuFlyoutSubItem kindMenu)
     {
         flyout.Items.Clear();
         flyout.Items.Add(Item("Zoom in", KeyOf(Command.ZoomIn), () => Send(Command.ZoomIn)));
@@ -1488,6 +1516,7 @@ public static partial class IslandHost
         flyout.Items.Add(Item("Metadata pane", KeyOf(Command.MetadataPane), () => Send(Command.MetadataPane)));
         flyout.Items.Add(Item("Folder tree", KeyOf(Command.FolderTree), () => Send(Command.FolderTree)));
         flyout.Items.Add(sortMenu);
+        flyout.Items.Add(kindMenu);
         AddGoItems(flyout);  // issue #220 (IslandHost.FileMenu.cs)
         flyout.Items.Add(Sep());
         flyout.Items.Add(Item("Clipping warnings", KeyOf(Command.Clipping), () => Send(Command.Clipping)));
@@ -1503,10 +1532,11 @@ public static partial class IslandHost
             MenuFlyoutPresenterStyle = MenuFlyoutPresenterStyle(),
         };
         MenuFlyoutSubItem sortMenu = SortSubMenu(viewFlyout);
+        MenuFlyoutSubItem kindMenu = KindFilterSubMenu(viewFlyout);
         // Rebuilt on open, like Open and Settings: the shortcut column is the
         // live table's, so a key remapped in Settings shows here.
-        viewFlyout.Opening += (_, _) => RefreshViewMenu(viewFlyout, sortMenu);
-        RefreshViewMenu(viewFlyout, sortMenu);
+        viewFlyout.Opening += (_, _) => RefreshViewMenu(viewFlyout, sortMenu, kindMenu);
+        RefreshViewMenu(viewFlyout, sortMenu, kindMenu);
 
         _settingsFlyout = new MenuFlyout
         {
