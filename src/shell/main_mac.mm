@@ -3303,10 +3303,14 @@ static void MvAdoptNewDefaultViewerTypes() {
     }
   }
   // Date-taken keys arriving on the pool re-sort the listing in place: the same
-  // items, the current one still selected, no image reload.
+  // items, the current one still selected, no image reload. Once, when the pass
+  // ends (as Windows and the date scan before it): a re-sort per chunk re-sorted
+  // and republished a 20 k listing five times a second while the pass ran.
   if (_tags && _tags->consume_changed()) {
     ++_tagGeneration;  // an open file search re-runs its tag half
-    if (_sort.key == mv::io::sort_key::date_taken && !_listOpen) [self resortKeepingSelection];
+    if (_sort.key == mv::io::sort_key::date_taken && !_listOpen && !_tags->progress().reading) {
+      [self resortKeepingSelection];
+    }
   }
   [self startTagScanIfDue];
   if (!_folder.consume_changed() && !_refilterListing) return;
@@ -3346,8 +3350,14 @@ static void MvAdoptNewDefaultViewerTypes() {
     [self makeListNames];
   } else {
     [self sortItems];
-    _tagScanPending = YES;
     _tagScanListedAt = CFAbsoluteTimeGetCurrent();
+    // Sorting by date is asked for, so its keys start now, as the date scan
+    // always did; otherwise the pass waits for the item's first pixel.
+    if (_sort.key == mv::io::sort_key::date_taken) {
+      [self startTagScan];
+    } else {
+      _tagScanPending = YES;
+    }
   }
   ++_listingGeneration;
 
@@ -8165,12 +8175,10 @@ static double mv_wall_seconds() {
   mv::io::sort_entries(_items, _sort, [tags](const mv::io::dir_entry& e) {
     return tags ? tags->date_key(e) : std::optional<std::int64_t>{};
   });
-  if (_sort.key == mv::io::sort_key::date_taken && !_items.empty()) {
-    // The tag pass fills the keys (one read per file, or none from
-    // meta_cache.db); the listing re-sorts as they land. Sorting by date is
-    // asked for, so it starts now, as the date scan always did.
-    [self startTagScan];
-  }
+  // Sorting never starts the tag pass: resortKeepingSelection runs when the
+  // pass ends, and restarting it there would re-read the cache and re-list
+  // the folder on every tick. A fresh listing and a change to date-taken
+  // order start it (refreshFolderIfChanged, setSortOrder:).
 }
 
 // #291: the folder's tag pass starts once the item on screen has its first
@@ -8829,6 +8837,8 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
   _sort = next;
   [[NSUserDefaults standardUserDefaults] setInteger:packed forKey:@"mv.sort"];
   [self resortKeepingSelection];
+  // The tag pass gives the date keys; it reads nothing it already has.
+  if (_sort.key == mv::io::sort_key::date_taken && !_listOpen) [self startTagScan];
 }
 
 // ---- PR 15: OS integration (docs/design/10 "OS integration", docs/design/16 View) ------------
