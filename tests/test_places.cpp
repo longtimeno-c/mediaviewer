@@ -452,6 +452,26 @@ TEST_CASE("places: Antarctica and rings across the antimeridian fill whole on th
   }
 }
 
+TEST_CASE("places: gesture and view maths stay bounded on any input", "[places]") {
+  const auto& db = test_db();
+  const map_view v{38.7967, -9.3903, 320, 160, 2.0f, 2.25};
+  // A pan of 1e300 used to spin wrap180's +/-360 loop forever.
+  const map_view n = apply_gesture(v, 1.0, 0.5, 0.5, 1e300, -1e300, v.lat, v.lon);
+  CHECK(std::isfinite(n.lat));
+  CHECK(std::isfinite(n.lon));
+  CHECK(n.lon >= -180);
+  CHECK(n.lon < 180);
+  double lat = 0, lon = 0;
+  map_point(v, 1e18, 0, lat, lon);
+  CHECK(std::isfinite(lon));
+  // A centre that is not a number draws nothing; a huge backing scale draws.
+  std::vector<std::uint8_t> out(static_cast<std::size_t>(v.width) * v.height * 4);
+  const map_palette p = palette_for(light_theme());
+  CHECK_FALSE(render_map(db, map_view{std::nan(""), 0, 320, 160, 2.0f, 2.25}, p, "", out));
+  CHECK_FALSE(render_map(db, map_view{0, INFINITY, 320, 160, 2.0f, 2.25}, p, "", out));
+  CHECK(render_map(db, map_view{38.7967, -9.3903, 320, 160, 1e30f, 0.3}, p, "PT", out));
+}
+
 TEST_CASE("places: towns in a box, most populous first", "[places][geo]") {
   const auto& db = test_db();
   const auto lisbon = db.towns_in(mv::geo::box{38.55, -9.60, 39.05, -8.90}, 5);

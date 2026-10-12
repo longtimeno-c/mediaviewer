@@ -16,6 +16,7 @@
 #include <mediaviewer/mediaviewer_addon.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <memory>
@@ -139,8 +140,14 @@ mv_status MV_CALL info_section(void*, const mv_slot_info_request* r) {
   return guard([&] {
     if (!r || !r->section_id || std::strcmp(r->section_id, "place") != 0) return MV_ERR_INVALID_ARG;
     if (!r->location.has) return MV_OK;  // asked only for geotagged files ("when": "location")
+    // The host parses the coordinates in range; the boundary checks anyway, as
+    // the map's pixel maths converts them to integers.
+    const double lat = r->location.lat, lon = r->location.lon;
+    if (!std::isfinite(lat) || !std::isfinite(lon) || std::fabs(lat) > 90 || std::fabs(lon) > 180) {
+      return MV_ERR_INVALID_ARG;
+    }
     mv::places::section_state state;
-    const auto out = g->eng->section(r->location.lat, r->location.lon, r->location_text ? r->location_text : "",
+    const auto out = g->eng->section(lat, lon, r->location_text ? r->location_text : "",
                                      tokens(r->theme), r->width_pt, r->scale, read_settings(), state);
     if (g->host->screen_post(g->host->host, r->section_id, r->generation, out.tree_json.c_str()) != MV_OK) {
       return MV_OK;  // stale: another file is on screen now

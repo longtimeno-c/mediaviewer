@@ -63,9 +63,12 @@ double merc(double lat_deg) noexcept {
 double inv_merc(double m) noexcept { return std::atan(std::sinh(m)) / kDeg; }
 
 double wrap180(double d) noexcept {
-  while (d >= 180) d -= 360;
-  while (d < -180) d += 360;
-  return d;
+  if (d >= -180 && d < 180) return d;
+  if (!std::isfinite(d)) return 0;
+  // Constant time: a loop of +/-360 never ends for a large d (1e300 - 360 == 1e300).
+  d = std::fmod(d + 180, 360);
+  if (d < 0) d += 360;
+  return d - 180;
 }
 
 struct projection {
@@ -581,7 +584,10 @@ bool render_map(const geo::database& db, const map_view& v, const map_palette& p
   const std::uint32_t w = v.width;
   const std::uint32_t h = v.height;
   if (w == 0 || h == 0 || w > 4096 || h > 4096 || out.size() < static_cast<std::size_t>(w) * h * 4) return false;
-  const float scale = v.scale > 0 ? v.scale : 1.0f;
+  // Every pixel coordinate below is converted to int: a non-finite centre or a
+  // huge backing scale (line widths, dot radii) would overflow it.
+  if (!std::isfinite(v.lat) || !std::isfinite(v.lon)) return false;
+  const float scale = v.scale > 0 ? std::min(v.scale, 8.0f) : 1.0f;
   const projection pr(v);
   const geo::box b = pr.bounds(v);
   const double span = clamp_span(v.span_deg);
