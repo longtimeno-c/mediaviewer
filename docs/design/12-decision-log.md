@@ -360,6 +360,16 @@ identical, image data unchanged) and sidecar rule: a RAW, HEIC, PNG or clip is n
 writing. Layout, maker-note and orientation tags are read-only. The snapshot covers every tag, so
 Revert restores the file's bytes exactly. One file, one change set; not a batch engine.
 
+**Location is editable; blank removes, with a confirmation (owner, 2026-10-12, #352).** Summary's
+Location row has Edit instead of Remove: coordinates typed in, read by one core parser
+(`meta::parse_location`) on both hosts, and a blank save removes the location only after a native
+confirmation (Remove destructive, Cancel default). This reverses "writing or editing coordinates:
+out of scope" (`docs/plans/metadata-search-and-place.md` §4, doc 06 *Not built*). The write is
+`write_fields::location` through PR 12's checked writer and sidecar rule: EXIF GPS in a plain JPEG,
+XMP `exif:GPS*` in a sidecar otherwise, the original never touched (rule 5); the sidecar's position
+now wins on read, as its rating does. Altitude is kept unless given. Remove is offered only when it
+reaches every copy the viewer reads, so a RAW's or HEIC's own fix can be overridden, not removed.
+
 ---
 
 ## Photo editing

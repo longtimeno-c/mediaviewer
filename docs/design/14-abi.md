@@ -273,6 +273,9 @@ mv_status mv_folder_get_sort(mv_session_t, int32_t* out_packed);
 /* 0.19: MV_FOLDER_HIDE_AUDIO | MV_FOLDER_HIDE_DOCUMENTS; the opened file and current stop stay */
 mv_status mv_folder_set_hidden_kinds(mv_session_t, uint32_t mask);
 mv_status mv_list_subdirectories(const char* utf8_dir, char* utf8, uint32_t cap, uint32_t* out_bytes);
+/* 0.20 (#352): the Location editor's text -> MV_LOCATION_POINT (lat / lon, text = preview),
+ * _BLANK (remove) or _INVALID (text = why). Pure, no session; mv_location_input is 152 bytes. */
+mv_status mv_meta_parse_location(const char* utf8, mv_location_input* out);
 ```
 
 - The session owns the sort order, so filmstrip, gallery and arrow keys read one list. `set`
@@ -512,8 +515,12 @@ double   where_lat, where_lon;   /* WGS 84 degrees; valid when facts & kMetaFact
 double   where_altitude_m;       /* metres, negative below sea level; facts & kMetaFactAltitude */
 uint64_t made_with;              /* UTF-8 summary.made_with, valid for the call only */
 int32_t  made_with_len;
-int32_t  facts;                  /* kMetaFactWhere 1, kMetaFactAltitude 2, kMetaFactAiGenerated 4 */
+int32_t  facts;                  /* kMetaFactWhere 1, kMetaFactAltitude 2, kMetaFactAiGenerated 4,
+                                    #352: kMetaFactLocationSet 8, _Clear 16, _InOriginal 32 */
 ```
+
+#352: the Location editor parks `"L\ttext"` on `chrome_cmd_meta_tags` (native reads it again
+with `meta::parse_location`; blank removes); its live preview calls `mv_meta_parse_location`.
 
 **Mac** — the chrome bridge (`mv_chrome_bridge.h`):
 
@@ -525,6 +532,10 @@ typedef struct mv_chrome_meta_facts {
 } mv_chrome_meta_facts;
 bool    mv_chrome_meta_facts_get(mv_chrome_meta_facts* out);    /* false: no record */
 int32_t mv_chrome_meta_made_with(char* buf, int32_t size);      /* two-call, like the tables */
+/* #352: flags also MV_META_FACT_LOCATION_SET 8, _CLEAR 16, _IN_ORIGINAL 32 */
+bool    mv_chrome_meta_parse_location(const char* utf8, mv_chrome_location_input* out);
+int32_t mv_chrome_meta_location_text(char* buf, int32_t size);  /* "38.7979, -9.3907" */
+void    mv_chrome_meta_set_location(const char* utf8);          /* blank removes */
 ```
 
 `ai_generated` is set on positive evidence only; a clear flag means "not stated", never "not
@@ -550,6 +561,7 @@ both hosts now write that table with the same `meta::editable_properties_table`.
 | 0.17 | Open add-ons: `mv_open_addon_inspect` / `_install` / `_list_json` / `_remove` / `_theme_json` |
 | 0.18 | Contributed commands: `mv_addon_commands_json`; `description`, `hint_on`, `hint_text` in the installed / check JSON |
 | 0.19 | `mv_folder_set_hidden_kinds` — Settings can leave audio and/or documents out of the listing |
+| 0.20 | `mv_meta_parse_location` / `mv_location_input` — the Metadata pane's Location editor (#352) |
 
 ## Not built
 

@@ -29,8 +29,8 @@ start from `summary::where`, `summary::made_with` and `summary::ai_generated`.
   in the app. No `CLGeocoder`, no MapKit tiles, no Bing/OSM/Google tiles, no web geocoder: each of
   those sends the photo's coordinates to a server. This is the reason for the bundled data and the
   self-drawn map, not a preference.
-- **Rule 5 (never modify an original).** Everything here is read-only. The existing Location
-  "Remove" button and PR 12's writer are unchanged.
+- **Rule 5 (never modify an original).** Everything here is read-only. PR 12's writer is
+  unchanged by these slices; the Location row's Edit (#352, 2026-10-12) writes through it.
 - **Rule 1 / performance.** Tag reading, place lookup and map drawing run on workers. The badge and
   the map never cause a present on a still (idle stays 0 presents). The folder-wide tag read for
   search never runs ahead of first pixel or the ±2 prefetch window.
@@ -38,7 +38,7 @@ start from `summary::where`, `summary::made_with` and `summary::ai_generated`.
   WinUI half per slice, a verify line on each platform, plus both PR 1 present-loop gates.
 - **Decision log.** `06-metadata.md` lists "GPS map pin" under *Not built*; slice 3 builds it, so add
   a dated row to `12-decision-log.md` (owner, 2026-10-11, read-only pin, offline map). Writing
-  coordinates stays not built.
+  coordinates was out of scope here; #352 (owner, 2026-10-12) built it separately.
 - **Licensing.** GeoNames data is CC-BY 4.0: an attribution line in the third-party notices and the
   About box. Natural Earth is public domain. Both are data, not linked code.
 
@@ -200,7 +200,9 @@ hold.
 
 ## 4. Out of scope
 
-- Writing or editing coordinates.
+- ~~Writing or editing coordinates.~~ Reversed by the owner, 2026-10-12 (#352): the Location row
+  is editable and a blank save removes it after a confirmation ([06](../design/06-metadata.md)
+  "The Location row", [12](../design/12-decision-log.md)).
 - Street-level maps.
 - Online geocoding of any kind.
 - A batch metadata engine.

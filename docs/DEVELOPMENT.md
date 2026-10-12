@@ -1349,6 +1349,20 @@ XMP or ISO 6709) and `made_with` / `ai_generated` for the map and badge slices.
   (`ItemsRepeater`, no 400-row cap) and the clang-cl fuzz build are compiled and run only by CI
   and a Windows machine: not yet.
 
+### Location editing in the Metadata pane (#352, owner 2026-10-12)
+
+Summary's Location row has **Edit** instead of Remove: type decimal or degrees-minutes-seconds
+coordinates, see the parsed point (or the error) under the field, Return saves, Esc cancels. A
+blank save removes the location after a confirmation. Plain JPEGs get EXIF GPS in place;
+everything else an XMP sidecar; RAW originals are never touched
+([06-metadata.md](design/06-metadata.md#the-location-row-352-owner-2026-10-12)). Tests:
+`mv_tests "[location]"` (link or fetch `tools/testmedia/raw` for the RAW case).
+
+- **Mac (M-series, 2026-10-12):** core, bridge, SwiftUI half and `mv_tests` built and run.
+- **Windows:** the C# chrome compiles on the Mac. `main.cpp`, `chrome_host.*`,
+  `src/abi/meta_abi.cpp` (ABI 0.20) and `test_abi_roundtrip` are compiled only by CI and a
+  Windows machine: not yet run.
+
 ### Local search: cloud folders and folder adds (docs/plans/document-search.md slice 0, 2026-10-05)
 
 A folder moved to OneDrive now indexes. The folder walk steps into OneDrive's reparse points but
