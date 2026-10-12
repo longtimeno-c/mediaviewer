@@ -73,10 +73,14 @@ public static partial class IslandHost
                 ptr == 0 || len <= 0 ? "" : Marshal.PtrToStringUTF8(checked((IntPtr)ptr), len) ?? "";
             if (a.Visible == 0)
             {
+                // A hidden island must not keep keyboard focus: hiding the badge
+                // while it is focused (D to a camera file) hands it back to the canvas.
+                bool hadFocus = _aiBadgeButton is not null && _aiBadgeButton.FocusState != FocusState.Unfocused;
                 DropAiBadgeUi();
                 _aiBadge.Content = null;
                 MoveAt(_aiBadge, a.X, a.Y, a.Width, a.Height);
                 _aiBadgeShown = false;
+                if (hadFocus) RestoreCanvasFocus();
                 return 0;
             }
             MoveAt(_aiBadge, a.X, a.Y, a.Width, a.Height);
