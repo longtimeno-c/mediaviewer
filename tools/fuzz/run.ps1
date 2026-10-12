@@ -63,6 +63,7 @@ $table = [ordered]@{
     meta_bmff   = @{ Seeds = @('heic', 'avif', 'c2pa');                 MaxLen = 131072 }
     meta_xmp    = @{ Seeds = @('xmp');                                  MaxLen = 65536 }
     meta_icc    = @{ Seeds = @('icc');                                  MaxLen = 65536 }
+    meta_probe  = @{ Seeds = @('jpeg', 'png', 'webp', 'heic', 'avif', 'c2pa', 'probe'); MaxLen = 131072 }
 }
 
 if ($Harness.Count -eq 1 -and $Harness[0] -match ',') { $Harness = $Harness[0] -split ',' }

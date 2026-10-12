@@ -36,6 +36,7 @@
 // cannot read has no provenance, which is not "not AI".
 #pragma once
 
+#include <cstdint>
 #include <string_view>
 
 #include "meta/generators.h"
@@ -43,6 +44,13 @@
 
 namespace mv::meta {
 
+// Every byte one probe reads from a file, all containers together: one largest
+// C2PA box (containers.cpp, 32 MB) plus 1 MB. A file that asks for more stops
+// being read; what was already found still counts.
+inline constexpr std::uint64_t kProbeMaxFileBytes = (32u << 20) + (1u << 20);
+
+// Opens the file (probe_file.cpp, mv_meta: io/); the rest is mv_meta_parse, so
+// the libFuzzer harness links it alone.
 [[nodiscard]] provenance probe_provenance(std::string_view utf8_path) noexcept;
 // The same over any source (the fuzz harness and tests).
 [[nodiscard]] provenance probe_provenance(parse::byte_source& src) noexcept;

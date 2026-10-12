@@ -8,7 +8,6 @@
 #include <vector>
 
 #include "codec/format.h"
-#include "io/file_port.h"
 #include "meta/parse.h"
 #include "meta/parse_util.h"
 
@@ -31,10 +30,7 @@ constexpr std::size_t kMaxExifBytes = 256u * 1024;       // one EXIF block (IFD0
 constexpr std::size_t kMaxMetaBoxBytes = 1u << 20;       // a HEIF `meta` box, read whole
 constexpr std::size_t kMaxUdtaBytes = 1u << 20;          // `udta` / `meta` of a larger `moov`
 constexpr std::size_t kMaxCanonBoxBytes = 1u << 20;      // CR3's Canon uuid box
-// Every byte one probe reads from the file, all containers together: one
-// largest C2PA box (containers.cpp, 32 MB) plus 1 MB. A file that asks for more
-// stops being read; what was already found still counts.
-constexpr std::uint64_t kMaxFileBytes = (32u << 20) + (1u << 20);
+constexpr std::uint64_t kMaxFileBytes = kProbeMaxFileBytes;
 constexpr int kMaxSegments = 1024;
 constexpr int kMaxChunks = 4096;
 constexpr int kMaxBoxes = 4096;
@@ -44,22 +40,6 @@ constexpr std::uint8_t kXmpUuid[16] = {0xBE, 0x7A, 0xCF, 0xCB, 0x97, 0xA9, 0x42,
                                        0x9C, 0x71, 0x99, 0x94, 0x91, 0xE3, 0xAF, 0xAC};
 constexpr std::uint8_t kCanonUuid[16] = {0x85, 0xC0, 0xB6, 0x87, 0x82, 0x0F, 0x11, 0xE0,
                                          0x81, 0x11, 0xF4, 0xCE, 0x46, 0x2B, 0x6A, 0x48};
-
-class file_source final : public parse::byte_source {
- public:
-  bool open(std::string_view utf8_path) { return f_.open(utf8_path, io::read_mode::sequential).has_value(); }
-  [[nodiscard]] std::uint64_t size() const noexcept override { return f_.size(); }
-  [[nodiscard]] std::size_t read_at(std::uint64_t offset, std::span<std::uint8_t> into) noexcept override {
-    if (into.size() > kMaxFileBytes - spent_) return 0;
-    spent_ += into.size();
-    auto n = f_.read_at(offset, into);
-    return n ? *n : 0;
-  }
-
- private:
-  io::file_reader f_;
-  std::uint64_t spent_ = 0;
-};
 
 // Every probe read goes through here: the first 64 KB are read once and served
 // from memory, and the bytes read in total are capped (kMaxFileBytes, on top of
@@ -680,16 +660,6 @@ provenance probe_provenance(parse::byte_source& src) noexcept {
     parse::evidence ev;
     probe_evidence(src, ev);
     return derive_provenance(ev);
-  } catch (...) {
-    return {};
-  }
-}
-
-provenance probe_provenance(std::string_view utf8_path) noexcept {
-  try {
-    file_source src;
-    if (!src.open(utf8_path)) return {};
-    return probe_provenance(src);
   } catch (...) {
     return {};
   }

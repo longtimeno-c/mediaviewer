@@ -152,20 +152,37 @@ mark.** The text is decided once in `shell/ai_badge.h`, shared by both hosts.
   up idles at 0 presents. Switching the setting skips the snapshot poke the other view settings
   make. Hidden under the gallery, Settings and the Video Editor (and, on Windows, with fullscreen
   chrome hidden).
-- **Where the answer comes from, pane closed.** The full read is 7–20 ms of Exiv2 per photo and
+- **Where the answer comes from, pane closed.** The full read is 7–40 ms of Exiv2 or libavformat per file and
   only runs when something shows metadata. The badge asks `meta_store::provenance` instead: a full
   record already held answers it; otherwise `meta::probe_provenance`
   ([`src/meta/probe.h`](../../src/meta/probe.h)) runs once on the pool, after the same 90 ms
   pause as a metadata read, so held arrows probe nothing and nothing sits ahead of the picture.
-  The probe reads only where provenance lives — a JPEG's header segments by marker walk (APP11
-  C2PA, APP1 XMP and EXIF IFD0 `Software`), a PNG's chunks with the image data skipped by seeking,
-  a WebP's `EXIF` / `XMP ` chunks, a TIFF's IFD0, an ISO-BMFF file's top-level C2PA box — and
-  feeds the same readers and `derive_provenance`. 22 µs for a 6 MP camera JPEG, against 7.4 ms
-  for the full read (`mv_tests "[.perf-meta]"`). Answers are kept in their own 1 024-entry LRU
-  keyed by path + mtime + size; a cached answer shows at once on the Mac. Tests hold the probe to
-  the full read's answer fixture by fixture (`[probe]`). What it does not read — a HEIF's XMP or
-  EXIF item, a clip's QuickTime software tag, RAW — the full record still supplies once the pane
-  or overlay has read it.
+  The probe reads only where provenance lives, by seeking, and feeds the same readers and
+  `derive_provenance`:
+
+  | File | What the probe reads |
+  |---|---|
+  | JPEG | APP11 (C2PA), the first APP1 XMP and APP1 EXIF IFD0 `Software`; other segments stepped over unread |
+  | PNG | `caBX`, text chunks (the first XMP `iTXt` included), `eXIf`; image data skipped by seeking |
+  | WebP | the first `EXIF` and `XMP ` chunks |
+  | TIFF and TIFF-based RAW | IFD0 `Software` and XMP (tag 700): TIFF, DNG, CR2, NEF, ARW, PEF, ORF (`IIRO` / `IIRS` / `MMOR`), RW2 (`IIU\0`) |
+  | RAF | the embedded JPEG's header segments, through the offset and length at bytes 84 / 88 |
+  | CR3 | `moov`'s Canon box (`CMT1` is an IFD0) and the top-level XMP `uuid` |
+  | HEIF, AVIF | the top-level C2PA box; the `meta` box's first `Exif` item and first `application/rdf+xml` mime item, through `iinf` / `iloc` (file offsets or `idat`) |
+  | MP4, MOV | the top-level C2PA box and XMP `uuid`; `moov` found wherever it sits, its children's headers walked to `udta` / `meta` alone: `©swr`, `©too` (QuickTime strings or iTunes `data`), the `com.apple.quicktime.software` key, `udta/XMP_` |
+
+  Each extent is capped (1 MB XMP, 256 KB EXIF, 1 MB for a HEIF `meta`, a clip's `udta` / `meta`
+  or CR3's Canon box); the first instance of each kind is kept, as the full read keeps; every byte
+  read from the file counts against one budget (a largest C2PA box plus 1 MB). A file that would
+  need more is "unknown": no badge, never a longer read. An XMP sidecar is not read: sidecars are
+  the full read's, and MediaViewer writes only ratings and edits there. The full read merges the
+  probe's evidence for the fields its own readers miss (a clip's XMP), so the pane and the badge
+  always agree; tests hold the two to each other fixture by fixture (`[probe]`), and
+  `fuzz_meta_probe` fuzzes the whole walk. Cost (`mv_tests "[.perf-meta]"`, warm, median): 38 µs
+  for a 6 MP camera JPEG against 15 ms for the full read, 49 µs for a 60 s 1080p MOV (moov at the
+  end) against 12 ms, 32–93 µs for DNG / NEF / ARW, 307 µs for a CR3, 54 µs for a HEIC. Answers are
+  kept in their own 1 024-entry LRU keyed by path + mtime + size; a cached answer shows at once on
+  the Mac.
 - **Setting.** *Settings → Viewer → "Show a badge on AI-generated images"*, on by default (owner,
   2026-10-11). Stored inverted as `kSettingHideAiBadge` (bit 14 of the view flags; `[view]
   ai_badge` in the Windows ini, `mv.viewFlags` on the Mac), so settings saved before it read as on.

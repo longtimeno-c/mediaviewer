@@ -461,6 +461,8 @@ add_library(mv_meta_parse STATIC
   src/meta/containers.cpp
   src/meta/xmp_raw.cpp
   src/meta/generators.cpp
+  src/meta/probe.cpp
+  src/meta/probe.h
   src/meta/parse.h
   src/meta/parse_util.h
   src/meta/generators.h
@@ -481,8 +483,7 @@ target_link_libraries(mv_meta_parse
 find_package(exiv2 CONFIG REQUIRED)
 add_library(mv_meta STATIC
   src/meta/read.cpp
-  src/meta/probe.cpp
-  src/meta/probe.h
+  src/meta/probe_file.cpp
   src/meta/still.cpp
   src/meta/carried.cpp
   src/meta/clip.cpp

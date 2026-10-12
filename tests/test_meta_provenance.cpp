@@ -1243,3 +1243,27 @@ TEST_CASE("the probe reads HEIF items, clip tags and RAW, and agrees with the fu
     CHECK(same_answer("p.raf", raf).made_with == "Adobe Firefly");
   }
 }
+
+TEST_CASE("write the provenance probe fuzz seeds", "[.write-seeds]") {
+  const char* dir = std::getenv("MV_SEED_DIR");
+  if (!dir) SKIP("set MV_SEED_DIR");
+  const fs::path d = fs::path(dir) / "probe";
+  fs::create_directories(d);
+  const auto put = [&](const std::string& file, const bytes& b) {
+    std::ofstream f(d / file, std::ios::binary);
+    f.write(reinterpret_cast<const char*>(b.data()), static_cast<std::streamsize>(b.size()));
+  };
+  const std::string mj = xmp_packet("xmp:CreatorTool=\"Midjourney\"");
+  put("heif_items.heic", heif_with_items(mj, "Firmware 1.0", false));
+  put("heif_idat.heic", heif_with_items(mj, "Adobe Firefly", true));
+  put("swr.mov", clip_with("qt  ", {box("udta", qt_string("\xA9swr", "Runway Gen-3"))}, 256));
+  put("xmp.mov", clip_with("qt  ", {box("udta", box("XMP_", bytes(mj.begin(), mj.end())))}, 256));
+  put("dng_xmp.dng", tiff_file("Adobe DNG Converter", mj));
+  put("orf.orf", tiff_file("Adobe Firefly", "", {'I', 'I', 'R', 'O'}));
+  bytes canon = box("CMT1", tiff_software("Adobe Firefly 2"));
+  bytes moov = mvhd();
+  append(moov, uuid_box(kCanonUuidT, canon));
+  bytes cr3 = box("ftyp", bytes{'c', 'r', 'x', ' ', 0, 0, 0, 1, 'c', 'r', 'x', ' '});
+  append(cr3, box("moov", moov));
+  put("cmt1.cr3", cr3);
+}

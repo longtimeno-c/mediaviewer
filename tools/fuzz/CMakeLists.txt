@@ -136,7 +136,9 @@ target_compile_definitions(mv_project_options INTERFACE
 set(MV_FUZZ_HARNESSES
   jpeg png bmp gif webp tiff ico heic avif raw raw_preview decode animation thumbnail pdf docx
   # #290: the metadata readers beyond Exiv2 (meta/parse.h), linked alone.
-  meta_c2pa meta_jpeg meta_png meta_webp meta_bmff meta_xmp meta_icc)
+  meta_c2pa meta_jpeg meta_png meta_webp meta_bmff meta_xmp meta_icc
+  # #345: the AI badge's provenance probe, every container it seeks through.
+  meta_probe)
 
 add_custom_target(mv_fuzzers)
 
