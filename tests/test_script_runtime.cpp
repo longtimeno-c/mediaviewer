@@ -100,6 +100,30 @@ std::unique_ptr<script_addon> start(probe& p, const std::string& source,
   return a;
 }
 
+// Destroys `a` on another thread and says whether that returned within
+// `bound`. A worker that never stops is leaked rather than hanging the run.
+bool destroys_within(std::unique_ptr<script_addon>& a, std::chrono::milliseconds bound) {
+  auto done = std::make_shared<std::atomic<bool>>(false);
+  script_addon* raw = a.release();
+  std::thread([raw, done] {
+    delete raw;
+    done->store(true);
+  }).detach();
+  const auto until = clk::now() + bound;
+  while (!done->load() && clk::now() < until) std::this_thread::sleep_for(5ms);
+  return done->load();
+}
+
+// Runs the global `fn` and says whether the task ended within `bound` (by
+// returning, raising or stopping). On a hang the add-on is leaked.
+bool task_ends_within(std::unique_ptr<script_addon>& a, const std::string& fn,
+                      std::chrono::milliseconds bound) {
+  REQUIRE(a->run_function("test", fn, mv::json::value{}));
+  if (a->wait_idle(bound)) return true;
+  (void)a.release();
+  return false;
+}
+
 void run(script_addon& a, const std::string& fn) {
   REQUIRE(a.run_function("test", fn, mv::json::value{}));
   REQUIRE(a.wait_idle(5s));
@@ -466,4 +490,54 @@ TEST_CASE("the default limits as shipped stop a spin within a second", "[script]
   WARN("default limits: stopped by " << mv::addon::script_stop_name(p.why) << " after "
                                      << took.count() << " ms");
   REQUIRE(took < script_limits{}.wall + 400ms);
+}
+
+TEST_CASE("a __gc metamethod never runs: not during a task, a stop or teardown", "[script][sandbox]") {
+  // Lua runs a finalizer with hooks off (GCTM), so the count hook and the
+  // watchdog could not stop one that loops: during a collect it held the
+  // worker for good, and at lua_close it hung the destructor's join.
+  {
+    auto p = std::make_unique<probe>();
+    auto a = start(*p, R"lua(
+      function t()
+        setmetatable({}, {__gc = function() while true do end end})
+        collectgarbage()
+        collectgarbage()
+        mv.log("collected")
+      end
+    )lua");
+    REQUIRE(a->wait_idle(5s));
+    const bool ended = task_ends_within(a, "t", 3s);
+    if (!ended) (void)p.release();
+    REQUIRE(ended);
+    REQUIRE(p->log_lines() == std::vector<std::string>{"collected"});
+    REQUIRE(destroys_within(a, 3s));
+  }
+  {
+    // Left for lua_close: the host's stop must still return.
+    auto p = std::make_unique<probe>();
+    auto a = start(*p, "keep = setmetatable({}, {__gc = function() while true do end end})");
+    REQUIRE(a->wait_idle(5s));
+    const bool destroyed = destroys_within(a, 3s);
+    if (!destroyed) (void)p.release();
+    REQUIRE(destroyed);
+  }
+  {
+    // A stopped add-on says nothing more, from a finalizer or anywhere.
+    auto p = std::make_unique<probe>();
+    auto a = start(*p, R"lua(
+      function t()
+        for i = 1, 100 do setmetatable({}, {__gc = function() mv.notify("after") end}) end
+        while true do end
+      end
+    )lua");
+    REQUIRE(a->wait_idle(5s));
+    REQUIRE(a->run_function("spin", "t", {}));
+    REQUIRE(p->wait_stopped(5s));
+    const bool destroyed = destroys_within(a, 3s);
+    if (!destroyed) (void)p.release();
+    REQUIRE(destroyed);
+    std::lock_guard<std::mutex> lock(p->m);
+    REQUIRE(p->notices.empty());
+  }
 }

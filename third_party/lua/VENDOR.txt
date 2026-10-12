@@ -26,6 +26,9 @@ Local changes, all marked "MediaViewer" (diff against the tarball to see them):
                         string.rep returns "" at once when the piece and the
                         separator are both empty (it looped n times copying nothing)
   src/ltablib.c         table.move and table.sort check the flag per step
+  src/lgc.c             luaC_checkfinalizer marks nothing: no __gc ever runs (GCTM
+                        runs a finalizer with hooks off, so a looping one could
+                        not be stopped, during a task or at lua_close)
 
 To update: replace src/ from a new 5.4.x tarball, drop the files above, re-apply
 the marked changes, update this file and the hash, then run mv_script_tests and

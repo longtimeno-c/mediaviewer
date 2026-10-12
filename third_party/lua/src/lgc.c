@@ -1018,6 +1018,9 @@ static void correctpointers (global_State *g, GCObject *o) {
 */
 void luaC_checkfinalizer (lua_State *L, GCObject *o, Table *mt) {
   global_State *g = G(L);
+  /* MediaViewer: no finalizers in the add-on sandbox. GCTM runs a __gc with
+     hooks off, so nothing could stop one that loops, not even lua_close. */
+  if (1) return;
   if (tofinalize(o) ||                 /* obj. is already marked... */
       gfasttm(g, mt, TM_GC) == NULL ||    /* or has no finalizer... */
       (g->gcstp & GCSTPCLS))                   /* or closing state? */
