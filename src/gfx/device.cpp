@@ -29,13 +29,14 @@ status from_hresult(HRESULT hr) noexcept {
 
 device::~device() { destroy(); }
 
-result<com_ptr<IDXGIAdapter4>> device::adapter_for_window(HWND window) const noexcept {
+result<com_ptr<IDXGIAdapter4>> device::adapter_for_window(IDXGIFactory6* factory,
+                                                          HWND window) noexcept {
   // The monitor the window is (mostly) on. DXGI reports the one it overlaps
   // most, which is also what MonitorFromWindow gives us.
   HMONITOR monitor = ::MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
 
   com_ptr<IDXGIAdapter1> candidate;
-  for (UINT i = 0; factory_->EnumAdapters1(i, candidate.ReleaseAndGetAddressOf()) !=
+  for (UINT i = 0; factory->EnumAdapters1(i, candidate.ReleaseAndGetAddressOf()) !=
                    DXGI_ERROR_NOT_FOUND;
        ++i) {
     DXGI_ADAPTER_DESC1 desc{};
@@ -60,7 +61,7 @@ result<com_ptr<IDXGIAdapter4>> device::adapter_for_window(HWND window) const noe
   // panel through the dGPU, or a remote session. Fall back to the adapter DXGI
   // prefers for performance rather than guessing adapter 0.
   com_ptr<IDXGIAdapter4> preferred;
-  const HRESULT hr = factory_->EnumAdapterByGpuPreference(
+  const HRESULT hr = factory->EnumAdapterByGpuPreference(
       0, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IID_PPV_ARGS(preferred.GetAddressOf()));
   if (FAILED(hr)) return err(from_hresult(hr));
   MV_LOG_WARN("gfx: no adapter enumerates this monitor; using DXGI's preferred adapter");
@@ -77,7 +78,7 @@ expected device::create(HWND window) noexcept {
   HRESULT hr = ::CreateDXGIFactory2(factory_flags, IID_PPV_ARGS(factory_.GetAddressOf()));
   if (FAILED(hr)) return err(from_hresult(hr));
 
-  auto picked = adapter_for_window(window);
+  auto picked = adapter_for_window(factory_.Get(), window);
   if (!picked) return err(picked.error());
   adapter_ = std::move(picked).value();
 
@@ -144,12 +145,19 @@ void device::destroy() noexcept {
   d3d_.Reset();
   adapter_.Reset();
   factory_.Reset();
+  probe_factory_.Reset();
   info_ = {};
 }
 
 bool device::adapter_changed_for(HWND window) const noexcept {
   if (!factory_ || !adapter_) return false;
-  auto now = adapter_for_window(window);
+  if (!probe_factory_) probe_factory_ = factory_;
+  if (!probe_factory_->IsCurrent()) {
+    com_ptr<IDXGIFactory6> fresh;
+    if (FAILED(::CreateDXGIFactory2(0, IID_PPV_ARGS(fresh.GetAddressOf())))) return false;
+    probe_factory_ = std::move(fresh);
+  }
+  auto now = adapter_for_window(probe_factory_.Get(), window);
   if (!now) return false;  // transient enumeration failure is not a rebuild signal
 
   DXGI_ADAPTER_DESC3 desc{};

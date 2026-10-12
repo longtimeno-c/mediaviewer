@@ -72,11 +72,13 @@
 #include "io/file.h"
 #include "io/file_port.h"
 #include "io/pairing.h"
+#include "io/rename_stop.h"
 #include "io/sort_order.h"
 #include "meta/meta.h"
 #include "meta/tables.h"
 #include "meta/write.h"
 #include "core/json.h"
+#include "shell/listing_stamp.h"
 #include "shell/marks.h"
 #include "shell/media_kind.h"
 #include "shell/meta_store.h"
@@ -292,6 +294,9 @@ struct app_state {
   // ones Revert has a snapshot for. The notice rides the title's status line.
   mv::shell::meta_writer meta_writer;
   std::set<std::string> meta_written;
+  // Issue #231: the selection's stamp is the listing's, corrected for this
+  // app's own writes until the watcher relists (shell/listing_stamp.h).
+  mv::shell::listing_stamps restamped;
   bool focus_comment_next = false;  // Ctrl+I: the next pane push focuses the comment
   std::wstring notice;
   ULONGLONG notice_until = 0;
@@ -400,6 +405,7 @@ struct app_state {
   // Issue #206: View > Show. For this run only; the core filters the listing.
   mv::io::kind_filter kind_filter = mv::io::kind_filter::all;
   mv::shell::file_jobs files;
+  bool rename_pending = false;  // issue #210: one F2 rename at a time
   std::vector<std::string> destinations;  // F7 / F8, most recent first
   // PR 15: the jump list's recent folders (settings.ini [recent]), most recent first.
   std::vector<std::string> recent_folders;
@@ -689,6 +695,7 @@ void push_recent_folders(app_state* app);
 void trim_item_opened(app_state* app) noexcept;
 void set_jobs_pane(app_state* app, bool on, bool focus = true) noexcept;
 void focus_canvas(app_state* app) noexcept;
+void commit_rename(app_state* app) noexcept;  // issue #210
 void reveal_current_in_explorer(app_state* app) noexcept;
 void begin_file_drag(app_state* app, HWND hwnd, const std::string& utf8) noexcept;
 void open_dropped_wide_list(app_state* app, std::wstring_view blob) noexcept;
@@ -1167,27 +1174,22 @@ bool metadata_wanted(const app_state* app) noexcept {
   return app->input.info_overlay || app->input.af_points || app->meta_pane_visible;
 }
 
-// The selected item as the store keys it: path + mtime + size, from one stat.
+// The selected item as the store keys it: path + mtime + size, from the
+// listing the core already holds, so an arrow press does no I/O here (issue
+// #231). A write this app made since the listing was taken overrides it.
 bool current_dir_entry(app_state* app, mv::io::dir_entry& out) {
-  const std::string utf8 = current_item_path(app);
+  std::uint32_t selected = 0;
+  if (!selected_index(app, selected)) return false;
+  mv_folder_item rec{};
+  if (mv_folder_item_at(app->session, selected, &rec) != MV_OK) return false;
+  std::string utf8 = item_path_at(app, selected);
   if (utf8.empty()) return false;
-  const int n = ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
-  if (n <= 1) return false;
-  std::wstring wide(static_cast<std::size_t>(n), L'\0');
-  ::MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, wide.data(), n);
-  WIN32_FILE_ATTRIBUTE_DATA fa{};
-  if (!::GetFileAttributesExW(wide.c_str(), GetFileExInfoStandard, &fa)) return false;
-  ULARGE_INTEGER size{};
-  size.LowPart = fa.nFileSizeLow;
-  size.HighPart = fa.nFileSizeHigh;
-  ULARGE_INTEGER ft{};
-  ft.LowPart = fa.ftLastWriteTime.dwLowDateTime;
-  ft.HighPart = fa.ftLastWriteTime.dwHighDateTime;
-  out.path_utf8 = utf8;
+  const mv::shell::file_stamp stamp = app->restamped.resolve(utf8, {rec.size_bytes, rec.mtime_unix});
+  out.size = stamp.size;
+  out.mtime_unix = stamp.mtime_unix;
   const std::size_t slash = utf8.find_last_of("\\/");
   out.name_utf8 = slash == std::string::npos ? utf8 : utf8.substr(slash + 1);
-  out.size = size.QuadPart;
-  out.mtime_unix = static_cast<std::int64_t>(ft.QuadPart / 10000000ULL) - 11644473600LL;
+  out.path_utf8 = std::move(utf8);
   return true;
 }
 
@@ -1581,6 +1583,7 @@ void on_meta_write_done(app_state* app, std::unique_ptr<meta_write_result> r) {
     // The bytes changed, the pixels did not: keep the item's edits, and let
     // the next listing see the same item rather than a new one.
     app->edits.metadata_rewritten(out.path, r->old_size, r->old_mtime, r->new_size, r->new_mtime);
+    app->restamped.rewritten(out.path, {r->old_size, r->old_mtime}, {r->new_size, r->new_mtime});
     if (app->edit_path == out.path && app->edit_size == r->old_size && app->edit_mtime == r->old_mtime) {
       app->edit_size = r->new_size;
       app->edit_mtime = r->new_mtime;
@@ -1779,6 +1782,12 @@ struct edit_job_result {
   bool export_job = false;  // else a lossless rotate write
   bool ok = false;
   std::string path;         // the file written (rotate) or the source (export)
+  // A rotate's stamp either side of the write, stat'ed on the worker (issue #231).
+  bool stamped = false;
+  std::uint64_t old_size = 0;
+  std::int64_t old_mtime = 0;
+  std::uint64_t new_size = 0;
+  std::int64_t new_mtime = 0;
 };
 
 struct sibling_job_result {
@@ -1878,8 +1887,22 @@ void start_rotation_write(app_state* app) {
   const HWND hwnd = app->window;
   app->jobs.submit_at(mv::background_generation,
                       [job = *w, hwnd](const mv::job_context&) -> mv::status {
+                        const auto before = mv::io::stat_path(job.path);
                         const mv::expected written = mv::shell::run_rotation_write(job);
-                        auto* r = new (std::nothrow) edit_job_result{false, static_cast<bool>(written), job.path};
+                        auto* r = new (std::nothrow) edit_job_result{};
+                        if (r) {
+                          r->ok = static_cast<bool>(written);
+                          r->path = job.path;
+                        }
+                        if (r && written) {
+                          if (const auto after = mv::io::stat_path(job.path); before && after) {
+                            r->stamped = true;
+                            r->old_size = before->size;
+                            r->old_mtime = before->mtime_unix;
+                            r->new_size = after->size;
+                            r->new_mtime = after->mtime_unix;
+                          }
+                        }
                         if (r && !::PostMessageW(hwnd, kMsgEditJobDone, 0, reinterpret_cast<LPARAM>(r))) delete r;
                         return written ? mv::status::ok : written.error();
                       });
@@ -1894,7 +1917,12 @@ void start_export(app_state* app, const mv::edit::export_options& opt) {
                       [path = app->edit_path, g = app->edits.export_geometry(), opt,
                        c = app->edits.colour(), hwnd](const mv::job_context&) -> mv::status {
                         const mv::result<std::string> out = mv::shell::run_export(path, g, opt, c);
-                        auto* r = new (std::nothrow) edit_job_result{true, static_cast<bool>(out), path};
+                        auto* r = new (std::nothrow) edit_job_result{};
+                        if (r) {
+                          r->export_job = true;
+                          r->ok = static_cast<bool>(out);
+                          r->path = path;
+                        }
                         if (r && !::PostMessageW(hwnd, kMsgEditJobDone, 0, reinterpret_cast<LPARAM>(r))) delete r;
                         return out ? mv::status::ok : out.error();
                       });
@@ -1921,6 +1949,7 @@ void on_edit_job_done(app_state* app, std::unique_ptr<edit_job_result> r) {
   // The navigation LRU still holds the old pixels under this path: drop them,
   // then reselect so the rewritten file decodes (ABI 0.7).
   (void)mv_folder_forget(app->session, r->path.c_str());
+  if (r->stamped) app->restamped.rewritten(r->path, {r->old_size, r->old_mtime}, {r->new_size, r->new_mtime});
   std::uint32_t selected = 0;
   if (selected_index(app, selected) && current_item_path(app) == r->path) {
     folder_select(app, selected);
@@ -4433,6 +4462,10 @@ void chrome_on_command(void* ctx, int command, float arg) {
     case mv::shell::chrome_cmd_meta_revert:
       revert_current_metadata(app);
       return;
+    case mv::shell::chrome_cmd_rename:
+      commit_rename(app);
+      if (app->window) focus_canvas(app);
+      return;
     case mv::shell::chrome_cmd_folder_ready: {
       // The island owns the completion drain (docs/design/12 2026-09-07), so this is
       // how the native side learns that a listing landed.
@@ -5477,8 +5510,99 @@ bool start_recycle(app_state* app) {
 }
 
 // A copy / move / delete finished. Counts only in logs and dialogs (rule 6).
+// Issue #210: F2. The checks that make a rename safe, then the popup; the name
+// comes back as chrome_cmd_rename. Refused (with a notice) in a result list
+// (its items live in other folders), while the file has unsaved edits (they
+// are keyed by its path) or a metadata write in flight (it would land on the
+// old name).
+bool begin_rename(app_state* app) noexcept {
+  try {
+    if (!app || !app->chrome.attached()) return false;
+    std::uint32_t selected = 0;
+    if (!selected_index(app, selected)) return false;
+    const std::string path = item_path_at(app, selected);
+    if (path.empty()) return false;
+    if (!app->list_title.empty()) {
+      notice_show(app, "Rename it from its own folder");
+      return true;
+    }
+    if (app->edits.edit_count() > 0 || app->edits.crop_active() || app->edits.write_in_flight()) {
+      notice_show(app, "Save or reset the edits first");
+      return true;
+    }
+    if (app->meta_writer.busy_for(path) || app->rename_pending) {
+      notice_show(app, "Wait for the last change to finish");
+      return true;
+    }
+    app->popup_open = true;
+    if (app->fullscreen) layout_chrome(app);  // the flyouts hang off the bar
+    app->chrome.show_popup(mv::shell::chrome_popup::rename, static_cast<std::int32_t>(selected));
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+// The popup's Enter: the new name (no extension), checked here as well as in
+// the job, then one job on the file worker (never the UI thread, rule 1).
+void commit_rename(app_state* app) noexcept {
+  try {
+    std::string stem;
+    if (!app->chrome.take_parked_text(stem)) return;
+    while (!stem.empty() && stem.front() == ' ') stem.erase(stem.begin());
+    while (!stem.empty() && stem.back() == ' ') stem.pop_back();
+    std::uint32_t selected = 0;
+    if (!selected_index(app, selected)) return;
+    const std::string path = item_path_at(app, selected);
+    if (path.empty()) return;
+    if (const auto problem = mv::io::check_stem(stem); problem != mv::io::stem_problem::ok) {
+      ::MessageBeep(MB_ICONWARNING);
+      notice_show(app, mv::io::stem_problem_text(problem));
+      return;
+    }
+    if (stem == mv::io::stem_of(path)) return;  // unchanged: nothing to do
+    std::vector<std::string> paths{path};
+    if (std::string pair = item_pair_path_at(app, selected); !pair.empty()) paths.push_back(std::move(pair));
+    // Told before the file moves, so the relist the folder watcher makes of
+    // the rename keeps this stop under its new name (mv_folder_renamed).
+    mv_session_t session = app->session;
+    auto follow = [session](const std::string& from, const std::string& to) {
+      (void)mv_folder_renamed(session, from.c_str(), to.c_str());
+    };
+    if (!app->files.submit_rename(app->window, std::move(paths), stem, app->folder_token, follow)) {
+      ::MessageBeep(MB_ICONWARNING);
+      return;
+    }
+    app->rename_pending = true;
+  } catch (...) {
+  }
+}
+
+// The rename landed (or did not). The session follows the stop to its new
+// name (mv_folder_renamed), a mark moves with the file, and the notice says
+// what it is called now, `name (2)` included.
+void on_rename_done(app_state* app, const mv::shell::file_job_result& result) {
+  app->rename_pending = false;
+  const auto& file = result.items.front();
+  if (file.status != mv::status::ok || file.dest.empty()) {
+    ::MessageBeep(MB_ICONWARNING);
+    notice_show(app, file.status == mv::status::not_found ? "The file is gone" : "Could not rename the file");
+    return;
+  }
+  if (app->marks.contains(file.path)) {
+    app->marks.erase(file.path);
+    (void)app->marks.toggle(file.dest);
+    refresh_mark_state(app);
+  }
+  notice_show(app, "Renamed to " + std::string(mv::io::file_name_of(file.dest)));
+}
+
 void on_file_job_done(app_state* app, std::unique_ptr<mv::shell::file_job_result> result) {
   if (!app || !result || app->closing) return;
+  if (result->kind == mv::shell::file_job_kind::rename) {
+    on_rename_done(app, *result);
+    return;
+  }
   // Marks clear only for what succeeded; a failure keeps its mark to retry.
   for (const auto& item : result->items) {
     if (item.status == mv::status::ok && !item.refused) app->marks.erase(item.path);
@@ -6219,6 +6343,8 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     case close_window:
       if (app->window) ::PostMessageW(app->window, WM_CLOSE, 0, 0);
       return true;
+    case rename_file:
+      return begin_rename(app);
     case new_window:
       open_new_window();
       return true;

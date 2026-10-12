@@ -244,6 +244,7 @@ public static partial class IslandHost
             {
                 rows[i].Text = (i == row ? "▶ " : "  ") + ClipTools[i].Name;
                 rows[i].Foreground = Brush(!Enabled(i) ? Body : i == row ? Title : Body);
+                AutomationProperties_SetName(rows[i], ClipTools[i].Name + (Enabled(i) ? "" : ", unavailable"));
             }
         }
         void Move(int delta)
@@ -254,6 +255,7 @@ public static partial class IslandHost
                 if (Enabled(row)) break;
             }
             Refresh();
+            RaiseLive(rows[row]);  // the panel keeps focus: speak the row (issue #223)
         }
         void Run(int i)
         {
@@ -266,6 +268,7 @@ public static partial class IslandHost
         for (int i = 0; i < ClipTools.Length; ++i)
         {
             rows[i] = Label("", UiFontSize);
+            MarkLive(rows[i]);
             int captured = i;
             var b = FlatButton(rows[i], new Thickness(0, 1, 0, 1), tabStop: false);
             b.IsEnabled = Enabled(i);
@@ -273,6 +276,9 @@ public static partial class IslandHost
             panel.Children.Add(b);
         }
         panel.Children.Add(Label("↑ ↓ choose   Enter run   Esc cancel   ·   jobs: Ctrl+J", UiFontSize, mute: true));
+        AutomationProperties_SetName(panel, "Clip tools");
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetHelpText(
+            panel, "Up and Down choose a tool, Enter runs it, Escape cancels");
         Refresh();
         panel.KeyDown += (_, e) =>
         {
