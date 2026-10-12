@@ -5,7 +5,10 @@ made and installed by anyone, not just our repo… if people have a compatible f
 install their add-on… add-ons can do a wide range of things like add new screens"). Post-v1,
 Windows and macOS together (D9). Milestone L, PRs 55–60. Not a D-decision. PR 55 is built
 ([Implementation notes](#implementation-notes-pr-55-2026-09-29)); the owner's calls on code, network,
-the file type and licensing were made on 2026-10-03 ([§17](#17-decisions-owner-2026-10-03)).**
+the file type and licensing were made on 2026-10-03 ([§17](#17-decisions-owner-2026-10-03)). PRs 58
+(screens) and 59 (slots) are built for MediaViewer's own native add-ons, ahead of PR 57's scripts
+([Implementation notes](#implementation-notes-prs-58-59-2026-10-11)). Owner, 2026-10-11: an add-on
+carries its own code and its own data ([§1](#1-what-this-is)).**
 
 ## 1. What this is
 
@@ -19,6 +22,13 @@ Two things, which today are one closed thing:
    twice, once per host (the path-bar search icon, the Settings page it owns). This plan adds a
    **contribution model**: named points an add-on fills in — themes, settings pages, commands and
    keys, chrome slots, search providers, whole screens — that both hosts read from one table.
+
+**An add-on carries its own code and its own data (owner, 2026-10-11).** A feature delivered as an
+add-on lives in its package: its library, any chrome, and its data, signed together and installed
+and removed together. It is not shipped dormant inside the app with only the bulk downloaded (the
+2026-09-28 call made for Final Cut Pro search, which this replaces as the rule; [12](12-decision-log.md)).
+There is still never a second *app* to install or open. Places (#344) is the first: `src/geo` and
+its place data ship in the Places package, and fill the screens and slots below.
 
 **What does not change:** Import, Local search and Voice ([18](18-import.md),
 [17](17-local-ai-search.md), [19](19-voice.md)) keep their channel, their key, their native code
@@ -167,13 +177,16 @@ introduced it, exists on both hosts, and has a default the base app provides.
 | **Settings page** | 2 | 56 | A schema: sections, toggles, choices, numbers, text, each with a key, default and help | — | Rendered by the host when Settings opens; values live in the host's store, namespaced by add-on id |
 | **Keymap** | 2 | 56 | Bindings for existing commands (the v1.1 "named layouts": FastStone, IrfanView, vim) | `default_bindings()` | Applied to the live table once; the router stays an array index ([16](16-commands.md)) |
 | **Command** | 3 | 57 | A name, a default key, and the script function it runs | — | Rows appended to the table at load; a key clash is resolved for the base app, the add-on's key is dropped and Settings says so |
-| **Screen** | 4 | 58 | A view tree ([§10](#10-screens)) in a window, a pane or a sheet | — | Built by the host from data; updates are diffs posted from the add-on's worker |
-| **Chrome slot** | 5 | 59 | Command-bar and path-bar items, context-menu entries, info-pane sections, status items, gallery tile badges | — | Badges come from a table filled off-thread; **no add-on call per tile**, ever |
-| **Search provider** | 5 | 59 | Answers a query with a list of files | File-name search (base app, 2026-09-28) | Runs on the add-on's worker with the query's generation; a stale answer is dropped |
+| **Screen** | 4 | 58 (built 2026-10-11, first-party native) | A view tree ([§10](#10-screens)) in a window, a pane or a sheet | — | Built by the host from data; updates are diffs posted from the add-on's worker |
+| **Chrome slot** | 5 | 59 (built 2026-10-11, first-party native) | Command-bar and path-bar items, context-menu entries, info-pane sections, status items, gallery tile badges | — | Badges come from a table filled off-thread; **no add-on call per tile**, ever |
+| **Search provider** | 5 | 59 (built 2026-10-11, first-party native) | Answers a query with a list of files | File-name search (base app, 2026-09-28) | Runs on the add-on's worker with the query's generation; a stale answer is dropped |
 | **Export / files** | 6 | 60 | Writes new files into a folder the user chose; metadata through PR 12's writer | — | Jobs on the job system, generation-tagged |
 
 Local search becomes a search provider in PR 59 instead of owning the path-bar button (#76); it
-keeps its native pack and its own channel.
+keeps its native pack and its own channel. As built (2026-10-11): while the pack is attached the
+host lists it in the registry as the local-scope provider, a Local search query goes to every
+other local-scope provider too, and the result list's path row offers their rows ("+ 3 in
+Portugal"); the pack's own rich results stay in its panel.
 
 ## 8. Themes (API 1)
 

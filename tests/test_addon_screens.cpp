@@ -22,9 +22,9 @@ const char* kEveryType = R"({"type":"split","id":"root","axis":"horizontal","fra
    {"type":"text","id":"t","text":"Hello","style":"heading","copyable":true,"lines":2},
    {"type":"image","id":"img","src":"icons/logo.png","label":"Logo","width":32,"height":32},
    {"type":"thumbnail","id":"th","path":"/photos/a.jpg","label":"A","size":96},
-   {"type":"list","id":"l","label":"Places","items":[{"id":"pt","text":"Portugal","detail":"3"},{"id":"es","text":"Spain"}]},
+   {"type":"list","id":"l","label":"Test list","items":[{"id":"pt","text":"Portugal","detail":"3"},{"id":"es","text":"Spain"}]},
    {"type":"table","id":"tb","label":"Files","columns":[{"id":"n","title":"Name"}],"rows":[{"id":"r1","cells":["a.jpg"]}]},
-   {"type":"button","id":"b","label":"Go","style":"primary","symbol":"map"},
+   {"type":"button","id":"b","label":"Go","style":"primary","symbol":"star"},
    {"type":"toggle","id":"tg","label":"On","value":false},
    {"type":"choice","id":"ch","label":"Zoom","options":[{"id":"a","text":"A"},{"id":"b","text":"B"}],"value":"a"},
    {"type":"slider","id":"sl","label":"Radius","min":1,"max":50,"step":1,"value":15},
@@ -33,7 +33,7 @@ const char* kEveryType = R"({"type":"split","id":"root","axis":"horizontal","fra
    {"type":"progress","id":"pr","label":"Reading","value":-1},
    {"type":"separator","id":"sep"},
    {"type":"grid","id":"g","columns":2,"children":[{"type":"text","id":"g1","text":"x"}]},
-   {"type":"surface","id":"sf","surface":"map","label":"Map","height":120,"pin":{"x":0.5,"y":0.25},"pin_label":"Sintra"}
+   {"type":"surface","id":"sf","surface":"pixels","label":"Test surface","height":120,"pin":{"x":0.5,"y":0.25},"pin_label":"Sintra"}
   ]}]},
  {"type":"thumbnail_grid","id":"grid","label":"Photos","tile":128,"multi":true,"items":[{"path":"/photos/a.jpg"},{"path":"/photos/b.jpg","label":"B"}]}
 ]})";
@@ -50,7 +50,7 @@ TEST_CASE("every node type of the vocabulary parses and round-trips", "[addon][s
   REQUIRE(again.set(once) == error::none);
   REQUIRE(again.json() == once);
   REQUIRE(t.find("grid") != nullptr);
-  REQUIRE(t.surface_ids() == std::vector<std::string>{"map"});
+  REQUIRE(t.surface_ids() == std::vector<std::string>{"pixels"});
   // Every type is named.
   for (const char* type : {"stack", "grid", "scroll", "split", "text", "image", "thumbnail", "thumbnail_grid",
                            "list", "table", "button", "toggle", "choice", "slider", "number", "text_field",

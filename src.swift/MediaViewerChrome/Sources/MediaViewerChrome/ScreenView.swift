@@ -628,14 +628,20 @@ struct AddonInfoSections: View {
   @ObservedObject private var slots = SlotStore.shared
 
   var body: some View {
-    ForEach(slots.sections) { section in
-      VStack(alignment: .leading, spacing: 6) {
-        Rectangle().fill(MVTheme.hairline).frame(height: 1).padding(.vertical, 4)
-        Text(section.title).font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
-          .accessibilityAddTraits(.isHeader)
-        ScreenNodeView(node: section.tree, address: ScreenAddress(addon: section.addon, screen: section.section),
-                       revision: section.revision)
+    if !slots.sections.isEmpty {
+      VStack(alignment: .leading, spacing: 0) {
+        ForEach(slots.sections) { section in
+          Rectangle().fill(MVTheme.hairline).frame(height: 1)
+          VStack(alignment: .leading, spacing: 6) {
+            Text(section.title).font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
+              .accessibilityAddTraits(.isHeader)
+            ScreenNodeView(node: section.tree, address: ScreenAddress(addon: section.addon, screen: section.section),
+                           revision: section.revision)
+          }
+          .padding(14)
+        }
       }
+      .frame(maxWidth: .infinity, alignment: .leading)
     }
   }
 }

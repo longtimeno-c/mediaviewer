@@ -313,7 +313,7 @@ final class SlotStore: ObservableObject {
   /// only when something contributes a section, and once per file.
   func requestInfo(path: String, locationText: String, width: CGFloat) {
     guard !sectionDefs.isEmpty else { return }
-    let key = path + "\n" + locationText
+    let key = path + "\n" + locationText + "\n" + String(Int(width))
     guard key != infoKey else { return }
     infoKey = key
     var theme = Self.theme()

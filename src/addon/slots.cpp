@@ -453,7 +453,13 @@ std::uint64_t slot_registry::search(std::uint32_t scope, const std::string& quer
       for (auto& [id, e] : addons_) {
         for (const search_provider_contrib& p : e->c.search_providers) {
           for (const std::string& pre : p.prefixes) {
-            if (folded.rfind(pre, 0) == 0 && pre.size() > routed_prefix.size()) routed_prefix = pre;
+            if (folded.rfind(pre, 0) != 0 || pre.size() <= routed_prefix.size()) continue;
+            // A digit after the prefix is a date term, not a place: Local search's own
+            // `in:2024` (docs/design/17) stays the AI parser's, and goes to everyone.
+            std::size_t after = pre.size();
+            while (after < folded.size() && folded[after] == ' ') ++after;
+            if (after < folded.size() && folded[after] >= '0' && folded[after] <= '9') continue;
+            routed_prefix = pre;
           }
         }
       }

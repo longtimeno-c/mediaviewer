@@ -9,11 +9,11 @@
 // the header-only JSON writer.
 //
 // What it answers, deterministically:
-//   info section "place" (needs a location): a label ("Portugal" inside a
+//   an info section (needs a location): a label ("Portugal" inside a
 //     rough box around mainland Portugal, else "Elsewhere"), the host's own
-//     coordinate text, and a 120 pt map `surface` filled with the theme's
+//     coordinate text, and a 120 pt `surface` filled with the theme's
 //     surface colour and a pin at its centre;
-//   search provider "place" (files + local, prefix "place:"): files of the
+//   a search provider (files + local): files of the
 //     folder inside that box when the query is part of "portugal"; a query
 //     starting "slow" waits up to 2 s first (stopping early when stale);
 //   badge "geotagged": every file of the folder with coordinates;
@@ -70,8 +70,8 @@ mv_status MV_CALL info_section(void*, const mv_slot_info_request* r) {
       .key("style").string("title").end_object();
   w.begin_object().key("type").string("text").key("id").string("coords").key("text").string(r->location_text)
       .key("style").string("secondary").key("copyable").boolean(true).end_object();
-  w.begin_object().key("type").string("surface").key("id").string("map").key("surface").string("map")
-      .key("height").integer(120).key("label").string("Map of " + label);
+  w.begin_object().key("type").string("surface").key("id").string("pixels").key("surface").string("pixels")
+      .key("height").integer(120).key("label").string("Test surface for " + label);
   w.key("pin").begin_object().key("x").number(0.5).key("y").number(0.5).end_object();
   w.key("pin_label").string(label).end_object();
   w.end_array().end_object();
@@ -89,7 +89,7 @@ mv_status MV_CALL info_section(void*, const mv_slot_info_request* r) {
     px[i + 2] = static_cast<uint8_t>(c >> 24);  // R
     px[i + 3] = 0xFF;
   }
-  (void)g->host->surface_post(g->host->host, r->section_id, "map", r->generation, px.data(), width, height,
+  (void)g->host->surface_post(g->host->host, r->section_id, "pixels", r->generation, px.data(), width, height,
                               width * 4);
   return MV_OK;
 }
@@ -163,7 +163,7 @@ std::string explorer_tree(const mv_slot_screen_request* r) {
     leaf("text", "state");
     w.key("text").string("Off").end_object();
     leaf("toggle", "switch");
-    w.key("label").string("Show places").key("value").boolean(false).end_object();
+    w.key("label").string("Show test rows").key("value").boolean(false).end_object();
     leaf("choice", "zoom");
     w.key("label").string("Zoom").key("value").string("region");
     w.key("options").begin_array();
@@ -199,8 +199,8 @@ std::string explorer_tree(const mv_slot_screen_request* r) {
     leaf("text", "v1");
     w.key("text").string("2000").end_object();
     w.end_array().end_object();
-    leaf("list", "places");
-    w.key("label").string("Places").key("items").begin_array();
+    leaf("list", "rows");
+    w.key("label").string("Test list").key("items").begin_array();
     w.begin_object().key("id").string("pt").key("text").string("Portugal").key("detail").string("12 files")
         .end_object();
     w.begin_object().key("id").string("es").key("text").string("Spain").end_object();

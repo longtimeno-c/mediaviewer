@@ -129,14 +129,14 @@ mv::addon::contributions every_point() {
   c.api_min = 4;
   c.api_max = 5;
   c.screens.push_back({"explorer", "Explorer", screen_place::window, 640, 480});
-  c.info_sections.push_back({"place", "Place", true, 10});
+  c.info_sections.push_back({"spot", "Spot", true, 10});
   c.info_sections.push_back({"always", "Always", false, -5});
-  c.search_providers.push_back({"place", "Places", {"place:"}, true, true});
-  c.items.push_back({item_slot::bar, "open", "Places", "map", "explorer", item_target::none});
-  c.items.push_back({item_slot::path, "find", "Find places", "globe", "", item_target::folder});
-  c.items.push_back({item_slot::context, "mark", "Mark place", "", "", item_target::files});
-  c.items.push_back({item_slot::status, "count", "Places", "", "", item_target::none});
-  c.badges.push_back({"geo", "Has a place", "pin"});
+  c.search_providers.push_back({"spot", "Slots test", {"test:"}, true, true});
+  c.items.push_back({item_slot::bar, "open", "Slots test", "star", "explorer", item_target::none});
+  c.items.push_back({item_slot::path, "find", "Slots test path item", "flag", "", item_target::folder});
+  c.items.push_back({item_slot::context, "mark", "Slots test entry", "", "", item_target::files});
+  c.items.push_back({item_slot::status, "count", "Slots test", "", "", item_target::none});
+  c.badges.push_back({"geo", "Slots test badge", "check"});
   return c;
 }
 
@@ -182,13 +182,13 @@ TEST_CASE("contributions are tables resolved once at attach; detach removes ever
   slot_registry r;
   std::atomic<std::uint32_t> changes{0};
   r.set_listener([&](std::uint32_t bits) { changes |= bits; });
-  auto client = std::make_unique<fake_client>(r, "places");
+  auto client = std::make_unique<fake_client>(r, "slotstest");
   fake_client* fc = client.get();
-  REQUIRE(r.attach("places", "Places", every_point(), std::move(client), "/addons/places/1.0.0") == status::ok);
+  REQUIRE(r.attach("slotstest", "Slots test", every_point(), std::move(client), "/addons/slotstest/1.0.0") == status::ok);
   REQUIRE((changes & mv::addon::slot_changed_contributions) != 0);
   // Nothing is asked of the add-on at attach.
   REQUIRE(r.addon_calls() == 0);
-  REQUIRE(r.attach("places", "Places", every_point(), std::make_unique<fake_client>(r, "places")) ==
+  REQUIRE(r.attach("slotstest", "Slots test", every_point(), std::make_unique<fake_client>(r, "slotstest")) ==
           status::invalid_arg);
   REQUIRE(r.attach("empty", "Empty", {}, std::make_unique<fake_client>(r, "empty")) == status::invalid_arg);
 
@@ -201,16 +201,16 @@ TEST_CASE("contributions are tables resolved once at attach; detach removes ever
   REQUIRE(doc->find("items")->a.size() == 4);
   REQUIRE(doc->find("badges")->a.size() == 1);
   REQUIRE(doc->boolean("local_search") == true);
-  REQUIRE(*doc->find("addons")->a[0].str("dir") == "/addons/places/1.0.0");
+  REQUIRE(*doc->find("addons")->a[0].str("dir") == "/addons/slotstest/1.0.0");
 
   // Something of everything posted, then removed.
   const auto theme = test_theme();
   r.request_info("/f/a.jpg", "38.79810\xC2\xB0 N, 9.39020\xC2\xB0 W", theme, 280, 2);
   r.search(MV_SLOT_SCOPE_FILES, "portugal", "/f");
   r.request_badges("/f");
-  REQUIRE(r.open_screen("places", "explorer", "/f/a.jpg", theme, 0, 0, 2) == status::ok);
+  REQUIRE(r.open_screen("slotstest", "explorer", "/f/a.jpg", theme, 0, 0, 2) == status::ok);
   r.drain();
-  REQUIRE(r.post_status("places", "count", "3 chosen") == status::ok);
+  REQUIRE(r.post_status("slotstest", "count", "3 chosen") == status::ok);
   REQUIRE(fc->opens == 1);
   REQUIRE(mv::json::parse(r.info_json())->find("sections")->a.size() == 2);
   REQUIRE(mv::json::parse(r.screens_json())->a.size() == 1);
@@ -219,11 +219,11 @@ TEST_CASE("contributions are tables resolved once at attach; detach removes ever
   REQUIRE(mv::json::parse(r.status_json())->a.size() == 1);
 
   changes = 0;
-  r.detach("places");
+  r.detach("slotstest");
   REQUIRE(changes == (mv::addon::slot_changed_contributions | mv::addon::slot_changed_info |
                       mv::addon::slot_changed_screens | mv::addon::slot_changed_search |
                       mv::addon::slot_changed_badges | mv::addon::slot_changed_status));
-  REQUIRE_FALSE(r.attached("places"));
+  REQUIRE_FALSE(r.attached("slotstest"));
   const auto after = mv::json::parse(r.contributions_json());
   REQUIRE(after->find("sections")->a.empty());
   REQUIRE(after->find("items")->a.empty());
@@ -233,15 +233,15 @@ TEST_CASE("contributions are tables resolved once at attach; detach removes ever
   REQUIRE(mv::json::parse(r.search_json(MV_SLOT_SCOPE_FILES))->find("rows")->a.empty());
   REQUIRE(r.badges_for("/f/IMG_0.JPG").empty());
   REQUIRE(mv::json::parse(r.status_json())->a.empty());
-  r.detach("places");  // idempotent
+  r.detach("slotstest");  // idempotent
 }
 
 TEST_CASE("an info section that needs a location is never asked for a file without one",
           "[addon][slots]") {
   slot_registry r;
-  auto client = std::make_unique<fake_client>(r, "places");
+  auto client = std::make_unique<fake_client>(r, "slotstest");
   fake_client* fc = client.get();
-  REQUIRE(r.attach("places", "Places", every_point(), std::move(client)) == status::ok);
+  REQUIRE(r.attach("slotstest", "Slots test", every_point(), std::move(client)) == status::ok);
   const auto theme = test_theme();
   r.request_info("/f/nowhere.jpg", "", theme, 280, 2);
   r.drain();
@@ -277,9 +277,9 @@ TEST_CASE("an info section that needs a location is never asked for a file witho
 
 TEST_CASE("a slow provider never delays typing; a stale answer is dropped", "[addon][slots]") {
   slot_registry r;
-  auto client = std::make_unique<fake_client>(r, "places");
+  auto client = std::make_unique<fake_client>(r, "slotstest");
   fake_client* fc = client.get();
-  REQUIRE(r.attach("places", "Places", every_point(), std::move(client)) == status::ok);
+  REQUIRE(r.attach("slotstest", "Slots test", every_point(), std::move(client)) == status::ok);
 
   // The provider is busy for 300 ms on "slow"; then the person types five more
   // keys. Every call returns at once, and the queued ones coalesce to the last.
@@ -302,12 +302,17 @@ TEST_CASE("a slow provider never delays typing; a stale answer is dropped", "[ad
   REQUIRE(res->boolean("searching") == false);
   REQUIRE(r.is_stale(last) == false);
   REQUIRE(r.is_stale(last - 1) == true);
-  REQUIRE(r.post_search("places", "place", last - 1, {{"/late.jpg", ""}}, true) == status::cancelled);
+  REQUIRE(r.post_search("slotstest", "spot", last - 1, {{"/late.jpg", ""}}, true) == status::cancelled);
 
   // A prefix routes the query, without the prefix.
-  r.search(MV_SLOT_SCOPE_LOCAL, "place: Lisboa", "");
+  r.search(MV_SLOT_SCOPE_LOCAL, "test: Lisboa", "");
   r.drain();
   REQUIRE(fc->queries.back() == "Lisboa");
+  // ...but a digit after it is a date term (Local search's `in:2024`): not routed,
+  // the whole query goes to every provider of the scope.
+  r.search(MV_SLOT_SCOPE_LOCAL, "test:2024", "");
+  r.drain();
+  REQUIRE(fc->queries.back() == "test:2024");
   // An empty query asks nobody.
   const int before = fc->searches;
   r.search(MV_SLOT_SCOPE_FILES, "   ", "/f");
@@ -318,9 +323,9 @@ TEST_CASE("a slow provider never delays typing; a stale answer is dropped", "[ad
 
 TEST_CASE("badges for a 10,000-file folder cost no add-on call per tile", "[addon][slots]") {
   slot_registry r;
-  auto client = std::make_unique<fake_client>(r, "places");
+  auto client = std::make_unique<fake_client>(r, "slotstest");
   fake_client* fc = client.get();
-  REQUIRE(r.attach("places", "Places", every_point(), std::move(client)) == status::ok);
+  REQUIRE(r.attach("slotstest", "Slots test", every_point(), std::move(client)) == status::ok);
   r.request_badges("/big");
   r.drain();
   REQUIRE(fc->badge_requests == 1);
@@ -331,22 +336,22 @@ TEST_CASE("badges for a 10,000-file folder cost no add-on call per tile", "[addo
   const auto table = mv::json::parse(r.badges_json());
   REQUIRE(badged == 5'000);
   REQUIRE(table->find("tiles")->o.size() == 5'000);
-  REQUIRE(*table->find("defs")->a[0].str("key") == "places/geo");
+  REQUIRE(*table->find("defs")->a[0].str("key") == "slotstest/geo");
   REQUIRE(r.addon_calls() == calls);  // counted: no add-on call per tile
   REQUIRE(fc->badge_requests == 1);
   // A post for a folder the gallery has left is dropped.
   const auto g = r.request_badges("/other");
-  REQUIRE(r.post_badges("places", "geo", g - 1, {"/big/IMG_1.JPG"}, true) == status::cancelled);
-  REQUIRE(r.post_badges("places", "nope", g, {"/x"}, true) == status::not_found);
+  REQUIRE(r.post_badges("slotstest", "geo", g - 1, {"/big/IMG_1.JPG"}, true) == status::cancelled);
+  REQUIRE(r.post_badges("slotstest", "nope", g, {"/x"}, true) == status::not_found);
 }
 
 TEST_CASE("screens open from items, take checked events, and close", "[addon][slots][screens]") {
   slot_registry r;
-  auto client = std::make_unique<fake_client>(r, "places");
+  auto client = std::make_unique<fake_client>(r, "slotstest");
   fake_client* fc = client.get();
-  REQUIRE(r.attach("places", "Places", every_point(), std::move(client)) == status::ok);
+  REQUIRE(r.attach("slotstest", "Slots test", every_point(), std::move(client)) == status::ok);
   // A bar item that opens a screen opens it with no event to the add-on.
-  REQUIRE(r.invoke_item("places", "open", "[]") == status::ok);
+  REQUIRE(r.invoke_item("slotstest", "open", "[]") == status::ok);
   r.drain();
   REQUIRE(fc->opens == 1);
   auto screens = mv::json::parse(r.screens_json());
@@ -354,19 +359,19 @@ TEST_CASE("screens open from items, take checked events, and close", "[addon][sl
   REQUIRE(*screens->a[0].str("place") == "window");
   REQUIRE(screens->a[0].find("tree")->str("type"));
   // Opening again brings it forward: no second open.
-  REQUIRE(r.invoke_item("places", "open", "[]") == status::ok);
+  REQUIRE(r.invoke_item("slotstest", "open", "[]") == status::ok);
   r.drain();
   REQUIRE(fc->opens == 1);
 
-  REQUIRE(r.send_event("places", "explorer", "sw", MV_SLOT_EVENT_CHANGE, "true") == status::ok);
-  REQUIRE(r.send_event("places", "explorer", "sw", MV_SLOT_EVENT_CHANGE, "\"no\"") == status::invalid_arg);
-  REQUIRE(r.send_event("places", "explorer", "root", MV_SLOT_EVENT_CLICK, "") == status::invalid_arg);
-  REQUIRE(r.send_event("places", "nowhere", "sw", MV_SLOT_EVENT_CHANGE, "true") == status::not_found);
+  REQUIRE(r.send_event("slotstest", "explorer", "sw", MV_SLOT_EVENT_CHANGE, "true") == status::ok);
+  REQUIRE(r.send_event("slotstest", "explorer", "sw", MV_SLOT_EVENT_CHANGE, "\"no\"") == status::invalid_arg);
+  REQUIRE(r.send_event("slotstest", "explorer", "root", MV_SLOT_EVENT_CLICK, "") == status::invalid_arg);
+  REQUIRE(r.send_event("slotstest", "nowhere", "sw", MV_SLOT_EVENT_CHANGE, "true") == status::not_found);
   // A context entry and a path item reach the add-on with their paths.
-  REQUIRE(r.invoke_item("places", "mark", R"(["/f/a.jpg","/f/b.jpg"])") == status::ok);
-  REQUIRE(r.invoke_item("places", "find", R"(["/f"])") == status::ok);
-  REQUIRE(r.invoke_item("places", "mark", R"({"no":1})") == status::invalid_arg);
-  REQUIRE(r.invoke_item("places", "ghost", "[]") == status::not_found);
+  REQUIRE(r.invoke_item("slotstest", "mark", R"(["/f/a.jpg","/f/b.jpg"])") == status::ok);
+  REQUIRE(r.invoke_item("slotstest", "find", R"(["/f"])") == status::ok);
+  REQUIRE(r.invoke_item("slotstest", "mark", R"({"no":1})") == status::invalid_arg);
+  REQUIRE(r.invoke_item("slotstest", "ghost", "[]") == status::not_found);
   r.drain();
   {
     std::lock_guard lock(fc->m);
@@ -380,46 +385,46 @@ TEST_CASE("screens open from items, take checked events, and close", "[addon][sl
 
   // Closing tells the add-on; a post for the closed screen is dropped.
   const auto g = mv::json::parse(r.screens_json())->a[0].integer("generation");
-  REQUIRE(r.close_screen("places", "explorer") == status::ok);
+  REQUIRE(r.close_screen("slotstest", "explorer") == status::ok);
   r.drain();
-  REQUIRE(r.post_screen("places", "explorer", static_cast<std::uint64_t>(*g), R"({"type":"separator","id":"x"})") ==
+  REQUIRE(r.post_screen("slotstest", "explorer", static_cast<std::uint64_t>(*g), R"({"type":"separator","id":"x"})") ==
           status::cancelled);
   {
     std::lock_guard lock(fc->m);
     REQUIRE(fc->events.back().rfind("8:", 0) == 0);
   }
   // The add-on may open its own screen (screen_show), with the last theme.
-  REQUIRE(r.show_screen("places", "explorer", true) == status::ok);
+  REQUIRE(r.show_screen("slotstest", "explorer", true) == status::ok);
   r.drain();
   REQUIRE(fc->opens == 2);
-  REQUIRE(r.show_screen("places", "explorer", false) == status::ok);
+  REQUIRE(r.show_screen("slotstest", "explorer", false) == status::ok);
   REQUIRE(r.status_json() == "[]");
-  REQUIRE(r.post_status("places", "open", "x") == status::not_found);  // not a status item
-  REQUIRE(r.post_status("places", "count", std::string(200, 'x')) == status::invalid_arg);
+  REQUIRE(r.post_status("slotstest", "open", "x") == status::not_found);  // not a status item
+  REQUIRE(r.post_status("slotstest", "count", std::string(200, 'x')) == status::invalid_arg);
 }
 
 TEST_CASE("surfaces are copied, bounded, and go with their tree", "[addon][slots][screens]") {
   slot_registry r;
-  auto client = std::make_unique<fake_client>(r, "places");
-  REQUIRE(r.attach("places", "Places", every_point(), std::move(client)) == status::ok);
+  auto client = std::make_unique<fake_client>(r, "slotstest");
+  REQUIRE(r.attach("slotstest", "Slots test", every_point(), std::move(client)) == status::ok);
   const auto theme = test_theme();
   const auto g = r.request_info("/f/a.jpg", "1.00000\xC2\xB0 N, 1.00000\xC2\xB0 E", theme, 280, 1);
   r.drain();
-  REQUIRE(r.post_screen("places", "place", g,
-                        R"({"type":"surface","id":"m","surface":"map","label":"Map","height":40})") == status::ok);
+  REQUIRE(r.post_screen("slotstest", "spot", g,
+                        R"({"type":"surface","id":"m","surface":"pixels","label":"Test surface","height":40})") == status::ok);
   std::vector<std::uint8_t> px(8 * 4 * 2 + 16, 0x7f);  // stride 48 > width 32 bytes
-  REQUIRE(r.post_surface("places", "place", "map", g, px.data(), 8, 2, 48) == status::ok);
+  REQUIRE(r.post_surface("slotstest", "spot", "pixels", g, px.data(), 8, 2, 48) == status::ok);
   mv::addon::surface_pixels out;
-  REQUIRE(r.surface("places", "place", "map", out));
+  REQUIRE(r.surface("slotstest", "spot", "pixels", out));
   REQUIRE(out.width == 8);
   REQUIRE(out.bgra.size() == 8 * 2 * 4);
   REQUIRE(out.revision == 1);
-  REQUIRE(r.post_surface("places", "place", "map", g, px.data(), 8, 2, 16) == status::invalid_arg);
-  REQUIRE(r.post_surface("places", "place", "map", g, px.data(), 5000, 1, 20000) == status::invalid_arg);
-  REQUIRE(r.post_surface("places", "place", "map", g + 99, px.data(), 8, 2, 48) == status::cancelled);
+  REQUIRE(r.post_surface("slotstest", "spot", "pixels", g, px.data(), 8, 2, 16) == status::invalid_arg);
+  REQUIRE(r.post_surface("slotstest", "spot", "pixels", g, px.data(), 5000, 1, 20000) == status::invalid_arg);
+  REQUIRE(r.post_surface("slotstest", "spot", "pixels", g + 99, px.data(), 8, 2, 48) == status::cancelled);
   // A new tree without that surface drops its pixels.
-  REQUIRE(r.post_screen("places", "place", g, R"({"type":"text","id":"t","text":"x"})") == status::ok);
-  REQUIRE_FALSE(r.surface("places", "place", "map", out));
+  REQUIRE(r.post_screen("slotstest", "spot", g, R"({"type":"text","id":"t","text":"x"})") == status::ok);
+  REQUIRE_FALSE(r.surface("slotstest", "spot", "pixels", out));
 }
 
 // ---- manifests ----------------------------------------------------------------
@@ -448,13 +453,13 @@ std::span<const std::uint8_t> bytes_of(const std::string& s) {
 const char* kContributes = R"({
   "api": {"min": 4, "max": 5},
   "screens": [{"id": "explorer", "title": "Explorer", "place": "window", "width": 640, "height": 480}],
-  "info_sections": [{"id": "place", "title": "Place", "when": "location", "order": 10}],
-  "search_providers": [{"id": "place", "name": "Places", "prefixes": ["place:"], "scope": ["files", "local"]}],
-  "bar_items": [{"id": "open", "label": "Places", "symbol": "map", "opens": "explorer"}],
-  "path_items": [{"id": "find", "label": "Find places", "symbol": "globe", "target": "folder"}],
-  "context_menu": [{"id": "mark", "label": "Mark place"}],
-  "status_items": [{"id": "count", "label": "Places"}],
-  "tile_badges": [{"id": "geotagged", "label": "Has a place", "symbol": "pin"}]
+  "info_sections": [{"id": "spot", "title": "Spot", "when": "location", "order": 10}],
+  "search_providers": [{"id": "spot", "name": "Slots test", "prefixes": ["test:"], "scope": ["files", "local"]}],
+  "bar_items": [{"id": "open", "label": "Slots test", "symbol": "star", "opens": "explorer"}],
+  "path_items": [{"id": "find", "label": "Slots test path item", "symbol": "flag", "target": "folder"}],
+  "context_menu": [{"id": "mark", "label": "Slots test entry"}],
+  "status_items": [{"id": "count", "label": "Slots test"}],
+  "tile_badges": [{"id": "geotagged", "label": "Slots test badge", "symbol": "check"}]
 })";
 
 std::string slots_manifest(const std::string& native, const std::vector<std::uint8_t>& bytes,
@@ -512,12 +517,12 @@ TEST_CASE("a first-party manifest names its screens and slots under a contributi
   REQUIRE(c.screens.size() == 1);
   REQUIRE(c.screens[0].place == mv::addon::screen_place::window);
   REQUIRE(c.info_sections[0].needs_location);
-  REQUIRE(c.search_providers[0].prefixes == std::vector<std::string>{"place:"});
+  REQUIRE(c.search_providers[0].prefixes == std::vector<std::string>{"test:"});
   REQUIRE(c.search_providers[0].files);
   REQUIRE(c.search_providers[0].local);
   REQUIRE(c.items.size() == 4);
   REQUIRE(c.items[2].target == mv::addon::item_target::files);  // a context entry's default
-  REQUIRE(c.badges[0].symbol == "pin");
+  REQUIRE(c.badges[0].symbol == "check");
 
   // Outside the range: "needs a newer MediaViewer", never half-loaded.
   REQUIRE(check(k, with(R"("min": 4, "max": 5)", R"("min": 6, "max": 7)")) == rejection::needs_update);
@@ -526,14 +531,14 @@ TEST_CASE("a first-party manifest names its screens and slots under a contributi
   REQUIRE(check(k, with(R"("min": 4, "max": 5)", R"("min": 4, "max": 4)")) == rejection::malformed);  // slots are 5
   REQUIRE(check(k, with(R"("api": {"min": 4, "max": 5},)", "")) == rejection::malformed);   // no range
   REQUIRE(check(k, with(R"("opens": "explorer")", R"("opens": "nothing")")) == rejection::malformed);
-  REQUIRE(check(k, with(R"("symbol": "pin")", R"("symbol": "rocket")")) == rejection::malformed);
+  REQUIRE(check(k, with(R"("symbol": "check")", R"("symbol": "rocket")")) == rejection::malformed);
   REQUIRE(check(k, with(R"("place": "window")", R"("place": "popup")")) == rejection::malformed);
-  REQUIRE(check(k, with(R"("prefixes": ["place:"])", R"("prefixes": ["Place"])")) == rejection::malformed);
+  REQUIRE(check(k, with(R"("prefixes": ["test:"])", R"("prefixes": ["Test"])")) == rejection::malformed);
   REQUIRE(check(k, with(R"("scope": ["files", "local"])", R"("scope": ["web"])")) == rejection::malformed);
   REQUIRE(check(k, with(R"("when": "location")", R"("when": "sometimes")")) == rejection::malformed);
-  REQUIRE(check(k, with(R"("id": "place", "title": "Place")", R"("id": "explorer", "title": "Place")")) ==
+  REQUIRE(check(k, with(R"("id": "spot", "title": "Spot")", R"("id": "explorer", "title": "Spot")")) ==
           rejection::malformed);  // a section and a screen share one id space
-  REQUIRE(check(k, with(R"("label": "Places", "symbol": "map")", R"("label": "Places")")) ==
+  REQUIRE(check(k, with(R"("label": "Slots test", "symbol": "star")", R"("label": "Slots test")")) ==
           rejection::malformed);  // a bar button needs its icon
   REQUIRE(check(k, R"({"api": {"min": 5, "max": 5}})") == rejection::malformed);  // a range over nothing
   REQUIRE(check(k, with(R"("tile_badges")", R"("tile_badgez")")) == rejection::malformed);
@@ -625,7 +630,7 @@ TEST_CASE("a native add-on fills every slot and screen through the v3 host table
   REQUIRE(tree.find("38.72000") != std::string::npos);
   REQUIRE(tree.find("\"pin\":{\"x\":0.500,\"y\":0.500}") != std::string::npos);
   mv::addon::surface_pixels px;
-  REQUIRE(reg.surface("slots-test", "place", "map", px));
+  REQUIRE(reg.surface("slots-test", "spot", "pixels", px));
   REQUIRE(px.width == 600);   // width_pt * scale
   REQUIRE(px.height == 240);
   REQUIRE(px.bgra[2] == 0x26);  // the theme's surface colour, R
@@ -636,7 +641,7 @@ TEST_CASE("a native add-on fills every slot and screen through the v3 host table
   REQUIRE(probe->calls(0) == info_calls);
   REQUIRE(mv::json::parse(reg.info_json())->find("sections")->a.empty());
 
-  // Search: "portugal" (and "place:portu") finds exactly the Portuguese files.
+  // Search: "portugal" (and "test:portu") finds exactly the Portuguese files.
   reg.search(MV_SLOT_SCOPE_FILES, "Portugal", utf8(folder));
   reg.drain();
   auto res = mv::json::parse(reg.search_json(MV_SLOT_SCOPE_FILES));
@@ -648,11 +653,11 @@ TEST_CASE("a native add-on fills every slot and screen through the v3 host table
   REQUIRE(res->find("providers")->a[0].integer("total") == 4);
   const int reads_after_first = reads;
   REQUIRE(reads_after_first == 4);  // each file read once; none.jpg is cached as "none"
-  reg.search(MV_SLOT_SCOPE_LOCAL, "place: portu", "");
+  reg.search(MV_SLOT_SCOPE_LOCAL, "test: portu", "");
   reg.drain();
   res = mv::json::parse(reg.search_json(MV_SLOT_SCOPE_LOCAL));
   REQUIRE(res->find("rows")->a.empty());  // Local search over the index: no folder given
-  reg.search(MV_SLOT_SCOPE_FILES, "place:portu", utf8(folder));
+  reg.search(MV_SLOT_SCOPE_FILES, "test:portu", utf8(folder));
   reg.drain();
   REQUIRE(mv::json::parse(reg.search_json(MV_SLOT_SCOPE_FILES))->find("rows")->a.size() == 2);
   REQUIRE(reads == reads_after_first);  // the second pass read nothing (cached)
