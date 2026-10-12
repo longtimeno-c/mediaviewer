@@ -101,6 +101,18 @@ public static partial class IslandHost
         public const int Help = 75;
         public const int RevealInExplorer = 80;
         public const int OpenSettings = 84;
+        // Issue #220: the file and Go commands the Open and View flyouts post
+        // (IslandHost.FileMenu.cs; chrome_host.h pins each).
+        public const int First = 22;
+        public const int Last = 23;
+        public const int ToggleMark = 61;
+        public const int CopyToPick = 65;
+        public const int MoveToPick = 67;
+        public const int DeleteToRecycleBin = 68;
+        public const int SlideshowStart = 69;
+        public const int CopyPath = 147;
+        public const int CopyFlattened = 148;
+        public const int Share = 149;
         // Keyed commands the View menu and the panes' close buttons also send
         // (mirrors command_id; chrome_host.h pins both with static_asserts).
         public const int FolderTree = 78;
@@ -1349,6 +1361,7 @@ public static partial class IslandHost
             if (!string.IsNullOrEmpty(path)) ToolTipService.SetToolTip(reveal, path);
             flyout.Items.Add(reveal);
         }
+        AddFileCommandItems(flyout);  // issue #220 (IslandHost.FileMenu.cs)
     }
 
     // Open > Recent folders: the Mac's File > Open Recent, so the keyboard
@@ -1475,6 +1488,7 @@ public static partial class IslandHost
         flyout.Items.Add(Item("Metadata pane", KeyOf(Command.MetadataPane), () => Send(Command.MetadataPane)));
         flyout.Items.Add(Item("Folder tree", KeyOf(Command.FolderTree), () => Send(Command.FolderTree)));
         flyout.Items.Add(sortMenu);
+        AddGoItems(flyout);  // issue #220 (IslandHost.FileMenu.cs)
         flyout.Items.Add(Sep());
         flyout.Items.Add(Item("Clipping warnings", KeyOf(Command.Clipping), () => Send(Command.Clipping)));
         flyout.Items.Add(Item("Frame-time overlay", KeyOf(Command.Overlay), () => Send(Command.Overlay)));
