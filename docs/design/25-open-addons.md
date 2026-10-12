@@ -571,7 +571,7 @@ The reasons for each call below are in [12](12-decision-log.md) ("Other makers' 
 | The host's set of script add-ons: load from the store (bytes re-hashed as they are read), commands, status, Start again, the spin rig | `src/addon/script_host.*`; `open_store::verified_file` |
 | Manifest: `scripts`, `permissions`, `contributes.commands` at API 3; the sheet's lines | `src/addon/open_manifest.*`, `src/addon/open_json.cpp` |
 | Key clashes give way to the base app; notes for Settings | `shell/command_table.cpp` (`addon_command_row.script`, `addon_command_notes_json`) |
-| Windows | ABI 0.24 `mv_script_*` (`abi/script_abi.cpp`); `shell/main.cpp` (start after the chrome, run rows, `kMsgScripts` notices); `IslandHost.OpenAddons.cs`, `AddonNative.ScriptStatus` / `ScriptRestart` |
+| Windows | ABI 0.26 `mv_script_*` (`abi/script_abi.cpp`); `shell/main.cpp` (start after the chrome, run rows, `kMsgScripts` notices); `IslandHost.OpenAddons.cs`, `AddonNative.ScriptStatus` / `ScriptRestart` |
 | Mac | `shell/addons_mac.mm` (the host, the folder model and item on screen as services, rows), `main_mac.mm` (`MvAppShowNotice`, the `MV_SCRIPT_SELFTEST` rig); `OpenAddons.swift` (`ScriptStatus`, Start again), bridge `mv_open_addons_scripts` / `_restart` / `_reload` |
 | SDK, guide, example | `tools/addon-sdk/mvaddon.py` (`init --script`, script rules, compiled Lua refused at pack), `docs/ADDONS.md` "Scripts", `examples/addons/folder-count` |
 | Tests | `tests/test_script_runtime.cpp`, `tests/test_script_addons.cpp` (`mv_script_tests`, also in cmake/portable), `tests/test_key_router.cpp` (key clash), `tools/addon-sdk/test_mvaddon.py` (cross-checked by `mv_addon_verify --open`), `tools/fuzz/fuzz_script.cpp` |

@@ -1,7 +1,7 @@
 # 14 — The C ABI
 
 The flat C ABI between the hosts' chrome and the C++ core, as declared in
-[`src/abi/include/mediaviewer/`](../../src/abi/include/mediaviewer/) (current version **0.19**).
+[`src/abi/include/mediaviewer/`](../../src/abi/include/mediaviewer/) (current version **0.26**).
 
 The Windows host is C# WinUI over `mediaviewer_core.dll` and calls this ABI through P/Invoke
 ([`src.managed/MediaViewer.Interop`](../../src.managed/MediaViewer.Interop/)). The Mac host links
@@ -511,7 +511,7 @@ Windows shell turns into live command rows ([25 §7](25-open-addons.md#7-the-con
 `mv_addon_installed_json` and `mv_addon_check_manifest` gain `description`, `hint_on` and
 `hint_text`. The Mac host reads the same manifests directly.
 
-## PR 57 — script add-ons (ABI 0.24)
+## PR 57 — script add-ons (ABI 0.26)
 
 Minor bump, additive, in `mediaviewer_addon.h` ([25 §9](25-open-addons.md#9-code-how-a-strangers-add-on-runs)):
 `mv_script_set_listener`, `mv_script_reload(session)`, `mv_script_restart`, `mv_script_stop_all`,
@@ -550,7 +550,9 @@ and inert unless set. 0.20 is PR 56's (settings values). The Mac host drives
 | 0.21 | `mv_folder_renamed` — an F2 rename keeps its stop (issue #210) |
 | 0.22 | `mv_folder_set_kind_filter`, `MV_FOLDER_HIDE_STILLS` / `_CLIPS` / `_RAW` / `_UNMARKED` — View ▸ Show (issue #206) |
 | 0.23 | The cull bits `MV_FOLDER_HIDE_REJECTED` / `_UNPICKED` / `MV_FOLDER_HIDE_OTHER_LABELS` (`MV_FOLDER_LABEL_SHIFT`) and `mv_folder_note_metadata_written` — View ▸ Show's cull filters (issue #207) |
-| 0.24 | Script add-ons: `mv_script_*`; `MV_ADDON_CONTRIBUTION_API` 3 (PR 57; 0.20 as first written, renumbered after main took 0.20–0.23) |
+| 0.24 | Reserved for docs/design/25 PR 56 (settings pages, keymap packs) |
+| 0.25 | Reserved for docs/design/25 PRs 58-59 (screens and slots, #348) |
+| 0.26 | Script add-ons: `mv_script_*`; `MV_ADDON_CONTRIBUTION_API` 3 |
 
 ## Not built
 
