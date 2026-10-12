@@ -63,9 +63,19 @@ struct MetadataView: View {
         }
       }
       .frame(maxWidth: .infinity, maxHeight: .infinity)
+      // docs/design/25 PR 59 (owner, 2026-10-12): the add-ons' sections (Places' label,
+      // coordinates and map) at the very bottom of the pane, after all the built-in
+      // metadata, whichever tab is open; shown, never collapsed. Nothing when none answered.
+      AddonInfoSections()
     }
     .background(MVTheme.canvas)
     .overlay(alignment: .leading) { Rectangle().fill(MVTheme.hairline).frame(width: 1) }
+    // The pane's width, for the add-ons' surfaces (docs/design/25 PR 59).
+    .background(GeometryReader { geo in
+      Color.clear
+        .onAppear { store.setPaneWidth(geo.size.width) }
+        .onChange(of: geo.size.width) { _, w in store.setPaneWidth(w) }
+    })
     .onChange(of: store.isClip) { _, isClip in
       if !isClip && tab == .streams { tab = .summary }
     }
@@ -109,9 +119,6 @@ struct MetadataView: View {
               .font(MVTheme.font(14))
             }
           }
-          // docs/design/25 PR 59: the add-ons' sections (Places' label, coordinates
-          // and map), each under its heading; nothing when none answered.
-          AddonInfoSections()
           Rectangle().fill(MVTheme.hairline).frame(height: 1).padding(.vertical, 4)
           HStack {
             Text("Edit any tag under All tags.").font(MVTheme.font(12)).foregroundStyle(MVTheme.body)

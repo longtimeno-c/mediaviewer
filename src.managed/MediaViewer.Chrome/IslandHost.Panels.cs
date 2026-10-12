@@ -315,6 +315,7 @@ public static partial class IslandHost
     {
         _metaLast = "";
         _metaContent = null;
+        _metaSlots = null;
         _metaLoadingText = null;
         _metaTabs = null;
         _metaRevert = null;
@@ -353,6 +354,16 @@ public static partial class IslandHost
         _metaContent = new Border { BorderBrush = Brush(Hairline), BorderThickness = new Thickness(0, 1, 0, 0) };
         Grid.SetRow(_metaContent, 1);
         body.Children.Add(_metaContent);
+        // docs/design/25 PR 59 (owner, 2026-10-12): the add-ons' sections (Places' label,
+        // coordinates and map) at the very bottom of the pane, after all the built-in
+        // metadata, whichever tab is open; shown, never collapsed.
+        body.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        _metaSlots = new StackPanel();
+        // A wider or narrower pane: the sections are asked again at the new width.
+        _metaSlots.SizeChanged += (_, _) => AskSlotInfo();
+        Grid.SetRow(_metaSlots, 2);
+        body.Children.Add(_metaSlots);
+        FillSlotSections();
 
         RenderMeta();
         return root;
@@ -537,8 +548,6 @@ public static partial class IslandHost
             }
             rows.Children.Add(row);
         }
-        // docs/design/25 PR 59: the add-ons' sections (Places' label, coordinates and map).
-        AddSlotSections(rows);
         rows.Children.Add(new Border { Height = 1, Background = Brush(Hairline), Margin = new Thickness(0, 4, 0, 4) });
         var foot = new Grid();
         foot.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });

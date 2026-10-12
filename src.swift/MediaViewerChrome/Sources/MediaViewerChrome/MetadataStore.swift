@@ -193,6 +193,15 @@ final class MetadataStore: ObservableObject {
   /// An add-on attached or detached: ask again for the file on screen.
   func slotsChanged() { if visible { askSlots() } }
 
+  /// The pane's width (MetadataView), so an add-on's surface is drawn pixel-exact.
+  private var paneWidth: CGFloat = 320
+  func setPaneWidth(_ width: CGFloat) {
+    let rounded = (width / 8).rounded() * 8
+    guard rounded != paneWidth, rounded > 0 else { return }
+    paneWidth = rounded
+    askSlots()
+  }
+
   /// The file on screen and the pane's own location text, for the add-ons'
   /// info sections. SlotStore asks once per file and only when one contributes
   /// a section; a section that needs a location is not asked for a file
@@ -209,6 +218,7 @@ final class MetadataStore: ObservableObject {
     var buf = [CChar](repeating: 0, count: need + 1)
     _ = buf.withUnsafeMutableBufferPointer { mv_chrome_item_path(index, $0.baseAddress, Int32($0.count)) }
     let location = summary.first { $0.label == "Location" }?.value ?? ""
-    SlotStore.shared.requestInfo(path: String(cString: buf), locationText: location, width: 300)
+    // The sections' content width: the pane less its 14 pt insets.
+    SlotStore.shared.requestInfo(path: String(cString: buf), locationText: location, width: max(64, paneWidth - 28))
   }
 }

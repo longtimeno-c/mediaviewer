@@ -203,10 +203,13 @@ public static partial class IslandHost
         string path = _selectedIndex >= 0 && _selectedIndex < Items.Count ? Items[_selectedIndex].Path : "";
         if (path.Length == 0) return;
         string location = _metaSummary.FirstOrDefault(r => r.Label == "Location").Value ?? "";
-        string key = path + "\n" + location;
+        // The sections' content width: the pane less its 14 px insets, so a surface is pixel-exact.
+        double pane = (_metaPane?.Content as FrameworkElement)?.ActualWidth ?? 0;
+        double width = Math.Max(64, Math.Round((pane > 0 ? pane : 320) / 8) * 8 - 28);
+        string key = path + "\n" + location + "\n" + width.ToString(System.Globalization.CultureInfo.InvariantCulture);
         if (key == _slotInfoKey) return;
         _slotInfoKey = key;
-        SlotNative.RequestInfo(path, location, SlotTheme(), 300, (float)SlotScale());
+        SlotNative.RequestInfo(path, location, SlotTheme(), (float)width, (float)SlotScale());
     }
 
     private static void ReadSlotInfo()
@@ -214,12 +217,18 @@ public static partial class IslandHost
         string json = SlotNative.InfoJson();
         // No early return on equal text: new surface pixels arrive with the same tree.
         _slotInfoJson = json;
-        if (_metaPaneVisible && _metaTab == MetaTab.Summary) RenderMeta();
+        FillSlotSections();
     }
 
-    // The add-ons' sections at the foot of the summary, each under its heading.
-    private static void AddSlotSections(StackPanel rows)
+    // The pane's bottom area (BuildMetaPane): the add-ons' sections after all the
+    // built-in metadata, each under its heading; empty when none answered.
+    private static StackPanel? _metaSlots;
+
+    private static void FillSlotSections()
     {
+        StackPanel? rows = _metaSlots;
+        if (rows is null) return;
+        rows.Children.Clear();
         if (_slotInfoJson.Length == 0) return;
         try
         {
@@ -227,11 +236,13 @@ public static partial class IslandHost
             foreach (JsonElement s in JArr(doc.RootElement, "sections"))
             {
                 if (!s.TryGetProperty("tree", out JsonElement tree) || tree.ValueKind != JsonValueKind.Object) continue;
-                rows.Children.Add(new Border { Height = 1, Background = Brush(Hairline), Margin = new Thickness(0, 4, 0, 4) });
+                rows.Children.Add(new Border { Height = 1, Background = Brush(Hairline) });
+                var section = new StackPanel { Spacing = 6, Padding = new Thickness(14, 10, 14, 14) };
                 TextBlock heading = Text(JStr(s, "title"), Body, UiFontSize - 3);
                 AutomationProperties.SetHeadingLevel(heading, Microsoft.UI.Xaml.Automation.Peers.AutomationHeadingLevel.Level2);
-                rows.Children.Add(heading);
-                rows.Children.Add(BuildScreenNode(tree, new ScreenAt(JStr(s, "addon"), JStr(s, "id"))));
+                section.Children.Add(heading);
+                section.Children.Add(BuildScreenNode(tree, new ScreenAt(JStr(s, "addon"), JStr(s, "id"))));
+                rows.Children.Add(section);
             }
         }
         catch (JsonException ex) { System.Diagnostics.Debug.WriteLine(ex.Message); }
