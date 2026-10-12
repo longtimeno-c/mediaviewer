@@ -1227,13 +1227,15 @@ internal sealed class SearchWindow : Window, IDisposable
             // The query language in one line (docs/design/17 "Query syntax"); the pack
             // parses it, so the Mac panel shows the same examples.
             TextBlock examples = Centre(_look.Text(
-                "Sam beach   ·   Sam “happy birthday”   ·   Sam or Alex   ·   -video   ·   in:2024", 12, AddonColour.Title));
+                "Sam beach   ·   Sam “happy birthday”   ·   -video   ·   in:2024   ·   camera:R5   ·   ai:yes   ·   place:Portugal", 12, AddonColour.Title));
             examples.FontFamily = new FontFamily("Cascadia Mono, Consolas");
             examples.Margin = new Thickness(0, 10, 0, 0);
             _empty.Children.Add(examples);
             _empty.Children.Add(Centre(_look.Text(
                 "A name finds that person; “quotes” find words said in videos; - leaves something out; " +
-                "video or photo picks a kind; in:, before: and after: use the file's date; file: matches its name.", 12)));
+                "video or photo picks a kind; in:, before: and after: use the file's date; file: matches its name; " +
+                "camera:, lens: and made: match its tags, ai:yes its AI provenance; place: or in:<place> where it was " +
+                "taken (with the Places add-on); a plain word also matches tags.", 12)));
         }
         _empty.Visibility = Visibility.Visible;
         FadeIn(_empty);
@@ -1725,7 +1727,7 @@ internal sealed class SearchWindow : Window, IDisposable
     // file name (which stays in the tooltip). [worker-thread] in the pack.
     private void RequestSnippet(ResultTile tile)
     {
-        if (tile.SnippetRequested || (tile.Match & MvAiMatch.Speech) == 0) return;
+        if (tile.SnippetRequested || (tile.Match & (MvAiMatch.Speech | MvAiMatch.Tags)) == 0) return;
         tile.SnippetRequested = true;
         ulong search = _search;
         AiApi api = _api;
@@ -1750,6 +1752,14 @@ internal sealed class SearchWindow : Window, IDisposable
     {
         if (tile.Caption is not TextBlock caption || snippet.Length == 0) return;
         caption.Inlines.Clear();
+        if ((tile.Match & MvAiMatch.Speech) == 0)
+        {
+            // #291: the tag that matched ("Canon EOS R5"), as it is.
+            caption.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run { Text = snippet });
+            caption.FontStyle = Windows.UI.Text.FontStyle.Normal;
+            ToolTipService.SetToolTip(caption, $"{tile.Name}: matched tag “{snippet}”");
+            return;
+        }
         caption.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run { Text = "“" });
         // The query's words, emphasised where they appear (whole-word, any case).
         var words = new HashSet<string>(
