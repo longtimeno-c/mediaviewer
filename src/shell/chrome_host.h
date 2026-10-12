@@ -141,6 +141,9 @@ enum chrome_command : int {
   chrome_cmd_video_muted = 1032,
   chrome_cmd_video_track = 1033,
   chrome_cmd_video_loop = 1034,
+  // Issue #210: the rename popup was confirmed (Enter); native pulls the new
+  // name (no extension) with take_parked_text. Esc sends nothing.
+  chrome_cmd_rename = 1035,
 };
 
 // chrome_cmd_video_loop's argument. The C# side mirrors it.
@@ -191,6 +194,7 @@ enum class chrome_popup : std::int32_t {
   settings = 5,
   export_image = 6,  // PR 10; mode_mask carries the last packed choice to preselect
   clip_tools = 7,    // PR 14; mode_mask carries clip flags (trim_state.h kClipFlag*)
+  rename = 8,        // issue #210; mode_mask carries the folder index of the stop to rename
 };
 
 struct chrome_popup_args {
@@ -287,6 +291,14 @@ static_assert(static_cast<int>(command_id::clip_split) == 145 &&
               static_cast<int>(command_id::trim_remove_middle) == 146);
 static_assert(static_cast<int>(command_id::crop_aspect_set) == 155);
 static_assert(static_cast<int>(command_id::crop_straighten_set) == 156);
+// Keyed commands whose live key the island's menus and tooltips name (KeyOf).
+static_assert(static_cast<int>(command_id::skim_back) == 34 &&
+              static_cast<int>(command_id::skim_forward) == 35);
+static_assert(static_cast<int>(command_id::zoom_200) == 39 && static_cast<int>(command_id::zoom_400) == 40);
+static_assert(static_cast<int>(command_id::crop_aspect_cycle) == 151 &&
+              static_cast<int>(command_id::crop_aspect_swap) == 152);
+static_assert(static_cast<int>(command_id::show_original) == 153);
+static_assert(static_cast<int>(command_id::search_open) == 157);
 static_assert(chrome_cmd_edit_tab >= kCommandCount && chrome_cmd_edit_action >= kCommandCount);
 static_assert(chrome_cmd_meta_tags >= kCommandCount && chrome_cmd_meta_date >= kCommandCount);
 static_assert(chrome_cmd_editor_seek >= kCommandCount && chrome_cmd_editor_action >= kCommandCount);
@@ -295,6 +307,7 @@ static_assert(chrome_cmd_open_recent >= kCommandCount);
 static_assert(chrome_cmd_editor_trim_grab >= kCommandCount && chrome_cmd_editor_trim_to >= kCommandCount);
 static_assert(chrome_cmd_open_in_app >= kCommandCount);
 static_assert(chrome_cmd_video_volume >= kCommandCount && chrome_cmd_video_loop >= kCommandCount);
+static_assert(chrome_cmd_rename >= kCommandCount);
 static_assert(is_reserved_notification(chrome_cmd_set_settings));
 static_assert(is_reserved_notification(chrome_cmd_folder_ready));
 static_assert(is_reserved_notification(chrome_cmd_video_active));
@@ -322,7 +335,7 @@ static_assert(is_reserved_notification(chrome_cmd_focus_changed));
       chrome_cmd_drag_items, chrome_cmd_drag_ended, chrome_cmd_open_recent,
       chrome_cmd_editor_trim_grab, chrome_cmd_editor_trim_to, chrome_cmd_open_in_app,
       chrome_cmd_video_volume, chrome_cmd_video_muted, chrome_cmd_video_track,
-      chrome_cmd_video_loop};
+      chrome_cmd_video_loop, chrome_cmd_rename};
   std::uint32_t h = 17;
   for (const int id : ids) h = h * 31u + static_cast<std::uint32_t>(id);
   return static_cast<std::int32_t>(h);

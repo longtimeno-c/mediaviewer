@@ -15,8 +15,9 @@
 // C++ compiles it against the small float3 / float4 below (mv::gfx::kernel).
 // It lives in gfx/ because both blits include it and gfx/ sits below edit/;
 // it is platform-neutral and names no GPU API (D9).
-// gfx/blit.cpp and gfx/blit_metal.mm paste kAdjustKernelText — the same
-// tokens, stringified by the preprocessor — into their shader source. The
+// gfx/blit_metal.mm pastes kAdjustKernelText — the same tokens, stringified by
+// the preprocessor — into its shader source; gfx/blit.hlsl expands the macro
+// itself through fxc's preprocessor when the build compiles it (issue #163). The
 // twins are therefore the same text by construction; tests/test_adjust.cpp
 // pins that text and checks it contains no construct outside the subset.
 //
@@ -31,6 +32,8 @@
 #pragma once
 
 #include <cmath>
+
+#include "gfx/adjust_kernel_tokens.h"
 
 namespace mv::gfx::kernel {
 
@@ -59,18 +62,8 @@ inline float3 pow(float3 a, float3 b) {
 }
 constexpr float dot(float3 a, float3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
 
-// clang-format off
-#define MV_ADJUST_KERNEL                                                        \
-  float3 mv_adjust(float3 c, float4 a0, float4 a1) {                            \
-    float3 zero = float3(0.0f, 0.0f, 0.0f);                                     \
-    c = max(c * float3(a0.x, a0.y, a0.z), zero);                                \
-    float3 pivot = float3(a1.y, a1.y, a1.y);                                    \
-    c = pivot * pow(c / pivot, float3(a0.w, a0.w, a0.w));                       \
-    float luma = dot(c, float3(0.2126f, 0.7152f, 0.0722f));                     \
-    float3 grey = float3(luma, luma, luma);                                     \
-    return max(grey + (c - grey) * a1.x, zero);                                 \
-  }
-// clang-format on
+// MV_ADJUST_KERNEL itself is in gfx/adjust_kernel_tokens.h (included above),
+// which has no C++ in it so the build-time HLSL compile can include it too.
 
 // `inline` is C++'s, outside the shared tokens: HLSL and MSL do not need it.
 inline MV_ADJUST_KERNEL

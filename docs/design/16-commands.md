@@ -13,10 +13,12 @@ Both hosts use the same table and router; tests are `tests/test_key_router*.cpp`
 
 - `default_bindings()` is a static array of rows: `(key, mods, mode mask, repeat policy,
   command, hold, release)`. `live_bindings()` starts as a copy; the **Settings** screen remaps
-  rows in place (`rebind_live`) and **Reset** restores the defaults. The router, `?` and
-  Settings all read the live table, so they cannot drift. Settings captures a key the way the
-  host edge translates it (symbols through the active layout, keypad digits as their own keys),
-  so any key that routes can be recorded.
+  rows in place (`rebind_live`) and **Reset** restores the defaults. The router, `?`,
+  Settings, and the shortcut column of the bar's menus and tooltips all read the live table
+  (a command's first bound row: `KeyOf` on Windows, `SettingsStore.keyLabel` on the Mac), so
+  they cannot drift. Settings captures a key the way the host edge translates it (symbols
+  through the active layout, keypad digits as their own keys), so any key that routes can be
+  recorded.
 - A remap onto a key another row holds in an overlapping mode **swaps** the two rows, so nothing
   is silently left unbound. Remaps persist by row index (`settings.ini [keys]` on Windows,
   `NSUserDefaults` on macOS), which is why new rows are only ever **appended**.
@@ -110,6 +112,9 @@ With nothing to leave, the key is not handled.
 Rings, visible: **canvas** (default), **filmstrip**, **gallery**, **pane** (folder tree,
 metadata, adjust, Edit, jobs), plus the command bar and the transport. `Tab` / `Shift+Tab` cross the
 island boundary; `Esc` returns to the canvas. Fullscreen hides chrome.
+On Windows `Tab` from the canvas walks the visible rings in reading order — command bar, folder
+tree, gallery, Edit, metadata, adjust, jobs, transport, filmstrip — and then back to the canvas;
+`Shift+Tab` walks it backwards (`IslandHost.FocusOrder`, issue #217).
 
 No island grows over the canvas, except a clip's **transport bar**, which floats over the bottom of
 the video and auto-hides (`shell/transport_autohide.h`, shared by both hosts):
@@ -207,6 +212,7 @@ Marks are a separate set from the selection, so arrow-key browsing never makes a
 | `F7` / `Shift+F7` | Viewing | Copy marked (else current) to the last destination / pick a folder |
 | `F8` / `Shift+F8` | Viewing | Move, same rule |
 | `Delete` | browse, video | Recycle Bin / Trash, with confirm. Marks if any, else current |
+| `F2` | Viewing | Rename the current file (the gallery's selected cell); also File ▸ Rename… on the Mac |
 | `Ctrl+Shift+C` | Viewing | Copy path(s) as text |
 | `Ctrl+Alt+C` | browse | Copy the current still with edits baked, as PNG (worker thread) |
 | `Ctrl+Shift+S` | Viewing | Share (Windows Share / macOS share sheet) |
@@ -220,6 +226,19 @@ Mac's View and Go menus do. Each item posts its command's id, so it acts as the 
   (hashed while read, read back uncached, compared) and only then the delete. I/O thread.
 - Copy / move never overwrite: a collision becomes `name (2).ext`. The last five destinations are
   remembered.
+- **Rename** (`F2`, issue #210) is the item on screen only, never the marks: a field with the name
+  without its extension, selected (a WinUI flyout over the command bar on Windows, an alert on the
+  Mac); `Enter` renames, `Esc` does not. The extension stays. The pair's other half (RAW+JPEG, a
+  Live Photo's MOV) and each file's XMP sidecar move with it under one stem, so the pair stays a
+  pair and a rating stays with its file; the Mac, which lists both halves, finds the partner by the
+  scan-time pairing rule. Never overwrites: a taken name becomes `name (2)` for the whole group. It
+  runs on the I/O pool (`io::rename_stop`, [24](24-transfer.md) "Rename"); the stop stays selected
+  under its new name and what is on screen is not decoded again (Windows: `mv_folder_renamed`,
+  told before the file moves, so the watcher's relist follows it; Mac: the relist waits for the
+  rename). A mark moves with the file. Refused, with a notice, in a result list, for a Photos
+  library file, while the file has unsaved edits or a metadata write in flight, and for a name a
+  volume would refuse (a slash or backslash, `< > : " | ? *`, a trailing dot or space, Windows
+  device names).
 - **Delete** only uses the Recycle Bin / Trash. Where there is none (a share, some removable
   drives, bin off) the item is refused, not deleted, and the user is told how many. Marks clear
   only for items that succeeded. On the Mac, File ▸ Move to Trash (`⌘⌫`) is off while a text
@@ -229,7 +248,9 @@ Mac's View and Go menus do. Each item posts its command's id, so it acts as the 
   `CF_HDROP`, copy-only; a marked cell drags every marked item in listing order. The canvas drags
   too (at fit on Windows, `⌘`-drag on the Mac). A drag of ours dropped on our own window is
   refused.
-- **Opening** (argv, drop): the first entry that exists wins; a folder opens that folder, a file
+- **Opening** (argv, drop): a drop is taken anywhere on the window (on Windows: the canvas,
+  command bar, filmstrip, gallery, every pane, the Edit pane and the transport; a drag without
+  files is refused). The first entry that exists wins; a folder opens that folder, a file
   opens its folder with the file selected; several files from one folder open it on the first; a
   mixed drop opens the first file's folder. Nothing existing: nothing opens and the app beeps. A
   watcher refresh keeps the current item selected; if it was removed the next one takes its
@@ -265,7 +286,7 @@ Mac's View and Go menus do. Each item posts its command's id, so it acts as the 
 | Key | Modes | Command |
 |---|---|---|
 | Numpad `0`–`5`, or `Ctrl+Shift+0`–`5` | Viewing | Rating (0 clears) |
-| `Ctrl+I` | Viewing | Show the metadata pane (Windows: on *All tags* with its comment editor open on the file's comment and the keyboard in it; `Enter` saves, `Esc` drops; Mac: the pane's *All tags* editor) |
+| `Ctrl+I` | Viewing | Show the metadata pane (Windows: on *All tags* with its comment editor open on the file's comment and the keyboard in it; `Enter` saves, `Esc` drops; Mac: the pane's *All tags* tab with the keyboard in its search, where any tag, the comment included, is edited) |
 
 A rating writes the item on screen only, on the I/O pool: a JPEG is rewritten in place, anything
 else gets an XMP sidecar. The command bar shows what landed ("★★★★☆", or "— IMG_1234.xmp" when a
@@ -449,7 +470,6 @@ No hot-path ABI for commands. Commands invoke existing session calls (`mv_folder
 
 ## Not built
 
-- `F2` rename.
 - `Ctrl+Enter` open in an external editor; set as wallpaper.
 - `Ctrl+Tab` / tabs, and several windows inside one process.
 - `Ctrl+PageUp` / `Ctrl+PageDown` for ICO sizes and HEIC sequences (pages of TIFF, PDF and DOCX are built).

@@ -17,31 +17,32 @@ public static partial class IslandHost
     {
         bool any = _selectedIndex >= 0 && _selectedIndex < Items.Count;
         flyout.Items.Add(Sep());
-        flyout.Items.Add(FileItem("Mark / Unmark", "Insert", Command.ToggleMark, any));
-        flyout.Items.Add(FileItem("Copy Marked To…", "Shift+F7", Command.CopyToPick, any));
-        flyout.Items.Add(FileItem("Move Marked To…", "Shift+F8", Command.MoveToPick, any));
-        flyout.Items.Add(FileItem("Move to Recycle Bin", "Delete", Command.DeleteToRecycleBin, any));
+        flyout.Items.Add(FileItem("Mark / Unmark", Command.ToggleMark, any));
+        flyout.Items.Add(FileItem("Copy Marked To…", Command.CopyToPick, any));
+        flyout.Items.Add(FileItem("Move Marked To…", Command.MoveToPick, any));
+        flyout.Items.Add(FileItem("Move to Recycle Bin", Command.DeleteToRecycleBin, any));
         flyout.Items.Add(Sep());
-        flyout.Items.Add(FileItem("Share…", "Ctrl+Shift+S", Command.Share, any));
-        flyout.Items.Add(FileItem("Copy Path", "Ctrl+Shift+C", Command.CopyPath, any));
-        flyout.Items.Add(FileItem("Copy Edited Image", "Ctrl+Alt+C", Command.CopyFlattened, any));
+        flyout.Items.Add(FileItem("Share…", Command.Share, any));
+        flyout.Items.Add(FileItem("Copy Path", Command.CopyPath, any));
+        flyout.Items.Add(FileItem("Copy Edited Image", Command.CopyFlattened, any));
     }
 
     /// <summary>View: Start Slideshow and a Go submenu (Next, Previous, First, Last).</summary>
     private static void AddGoItems(MenuFlyout flyout)
     {
-        flyout.Items.Add(Item("Start Slideshow", "F5", () => SendFromMenu(Command.SlideshowStart)));
+        flyout.Items.Add(Item("Start Slideshow", KeyOf(Command.SlideshowStart), () => SendFromMenu(Command.SlideshowStart)));
         var go = new MenuFlyoutSubItem { Text = "Go" };
-        go.Items.Add(Item("Next", "→", () => SendFromMenu(Command.Next)));
-        go.Items.Add(Item("Previous", "←", () => SendFromMenu(Command.Prev)));
-        go.Items.Add(Item("First", "Home", () => SendFromMenu(Command.First)));
-        go.Items.Add(Item("Last", "End", () => SendFromMenu(Command.Last)));
+        go.Items.Add(Item("Next", KeyOf(Command.Next), () => SendFromMenu(Command.Next)));
+        go.Items.Add(Item("Previous", KeyOf(Command.Prev), () => SendFromMenu(Command.Prev)));
+        go.Items.Add(Item("First", KeyOf(Command.First), () => SendFromMenu(Command.First)));
+        go.Items.Add(Item("Last", KeyOf(Command.Last), () => SendFromMenu(Command.Last)));
         flyout.Items.Add(go);
     }
 
-    private static MenuFlyoutItem FileItem(string text, string shortcut, int command, bool enabled)
+    private static MenuFlyoutItem FileItem(string text, int command, bool enabled)
     {
-        MenuFlyoutItem item = Item(text, shortcut, () => SendFromMenu(command));
+        // The shortcut column is the live table's (issue #197), like the rest of the bar.
+        MenuFlyoutItem item = Item(text, KeyOf(command), () => SendFromMenu(command));
         item.IsEnabled = enabled;
         return item;
     }

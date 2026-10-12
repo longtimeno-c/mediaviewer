@@ -220,9 +220,13 @@ result<std::string> moment_thumbnail(const std::string& path, std::int64_t pts_m
 result<std::vector<std::uint8_t>> thumbnail_jpeg(const std::string& path, std::int64_t pts_ms) {
   MV_TRY(image::thumb_store* store, thumbs());
   MV_TRY(image::thumb_key key, cache_key(path, pts_ms));
-  MV_TRY(std::string hit, store->lookup(key));
+  // The read is the existence check (issue #168): a row whose file has gone
+  // is dropped here, the same miss lookup() would have reported.
+  MV_TRY(std::string hit, store->lookup_unverified(key));
   if (hit.empty()) return err(status::io);
-  return io::read_all(hit);
+  auto bytes = io::read_all(hit);
+  if (!bytes) store->forget(key);
+  return bytes;
 }
 
 expected store_thumbnail_jpeg(const std::string& path, std::int64_t pts_ms,
