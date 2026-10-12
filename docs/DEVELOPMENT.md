@@ -978,6 +978,7 @@ build/bin/mv_tests "[places]"                  # map pixels, cache, gestures, se
 build/bin/mv_import_tests "[places]"           # its manifest, then the add-on through a signed store
 build/bin/mv_tests "places: map render time at pane width x 160 pt"   # in "[.perf-bench]"
 MV_PLACES_MAP_DUMP=<dir> build/bin/mv_tests "[.places-map-dump]"      # BMPs of the map to look at
+# the map's fuzzer is fuzz_places_map in mv_fuzzers (run.ps1 -Harness places_map)
 # Package it (release: the workflow does this after signing the code)
 python3 tools/package/addon-pack.py stage-places --src build/addons/places --blob build/geo/places.mvgeo
 python3 tools/package/addon-pack.py pack --addon places --platform macos --src build/addons/places \
@@ -1391,6 +1392,15 @@ the data licences) and both release workflows.
   the app with Places sideloaded showed, at the bottom of the pane opened with `I`, the label, the
   coordinates and the map with the accent pin and town names; −, double-click and drag re-drew it
   with the pin held on the photo's point. A 5-minute `fuzz_geo` run with `towns_in` was clean.
+- **Review pass (2026-10-12):** fixed Antarctica drawn as water (a ring round the globe), rings
+  a world away from the view, `wrap180` looping on a huge longitude, a 1600 pt pane at 3× getting
+  no map, search never saying done past the host's 100 000-row cap, `mv_geo` symbols exported from
+  the module, and `mv_addon_verify` checking against host table 1. Now `mv_tests "[places]"`
+  12 cases / 296 assertions (ASan + UBSan clean), the full `mv_tests` 682 cases (8 skipped),
+  `mv_import_tests` 94 cases, `test_addon_pack.py` 22 tests with the verifier; a 5-minute
+  `fuzz_places_map` run (71.8 k executions, ASan + UBSan) was clean. Map CPU time not worse
+  (240 renders, base/new alternated ×3, medians: 1× 0.58/0.58, 0.69/0.69, 0.66/0.64 ms; 2×
+  1.70/1.63, 1.80/1.76, 1.88/1.74 ms).
 - **Static soak, dev copy, alternated base (no add-on) / new (Places):** both present about once a
   second with the pane closed and about twice a second with it open (30 s: base 54, new 61
   presents with the pane open, one run each), on a machine at load average 50–85. Places did not

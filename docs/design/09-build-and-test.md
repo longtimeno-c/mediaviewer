@@ -78,8 +78,9 @@ Suites are registered with CTest and run by `ctest` on both platforms; see
    exhaustive nightly sweep; `MV_BROKEN_DUMP` writes failing inputs.
 5. **Fuzzing.** One libFuzzer harness per decoder entry point (`tools/fuzz/fuzz_*.cpp`:
    JPEG, PNG, BMP, GIF, WebP, TIFF, ICO, HEIC, AVIF, RAW, RAW preview, animation, the
-   generic decode, the Explorer thumbnail handler, and the place database loader
-   `fuzz_geo`, [27](27-places.md)), built with clang-cl + ASan (`-DMV_FUZZ=ON`).
+   generic decode, the Explorer thumbnail handler, the place database loader `fuzz_geo` and
+   the Places map `fuzz_places_map`, [27](27-places.md)), built with clang-cl + ASan
+   (`-DMV_FUZZ=ON`).
 6. **Clean-VM gate** (`test_clean_vm_heic.cpp`, label `cleanvm`). A HEIC decodes with
    `MV_OS_CODEC=0`, and the process has loaded libheif + libde265 and no Media Foundation,
    WIC codec extension or `\WindowsApps\` module. It is its own executable because

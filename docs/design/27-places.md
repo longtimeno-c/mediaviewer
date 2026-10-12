@@ -271,12 +271,21 @@ under 0.2 ms. During a gesture nothing is drawn: the chrome moves the last bitma
   run found an unsigned wrap in the edge check, now fixed. After that, a 10-minute run (604 k
   executions, ASan + UBSan) was clean. `towns_in` (the map's town dots) was added to it on
   2026-10-12; a 5-minute run (324 k executions, ASan + UBSan, Homebrew clang on the Mac) was clean.
+- `tools/fuzz/fuzz_places_map.cpp` drives the map with numbers, not a file: views, sizes (some past
+  the 4096 cap or with a short buffer), scales and gestures, raw doubles included, through
+  `render_map`, the view maths and the engine's section and zoom steps, over the test blob. Over
+  the map code as first written it times out within two minutes in `wrap180`, which looped
+  forever on a huge longitude (now constant time); over the fixed code a 5-minute run (71.8 k
+  executions, ASan + UBSan, Homebrew clang on the Mac) was clean.
 - `mv_tests "[places]"` (`tests/test_places.cpp`, on the test blob): the map's colours at known
   points (land, water, the Tagus, the Portugal/Spain border pixel, a town dot, Fiji either side of
   180°), the rounded transparent corners, the cache (hit, theme change, zoom, size, capacity), the
   framing, the section's tree and settings, the −/+ range, gesture anchor maths and clamping, the
   pin kept in view, `towns_in`, town marks, and search by place ("portugal" → the six Portuguese
   fixtures; "portu", "lisbon", "sintra", "spain", "fiji"; "po", "2024" and a point at sea find nothing).
+  Also non-finite and huge inputs to the view maths and `render_map`, a 1600 pt pane at 3× within
+  4096 px, and, on the full blob, nine views at the poles and across 180° whose sampled pixels must
+  agree with `lookup` (land or sea) to within 1 %.
 - `mv_import_tests "[places]"` (`tests/test_places_addon.cpp`): the shipped `manifest.json`
   accepted, declaring only the section, the provider and settings; then `mv_places` installed in a
   signed store with the test blob as `data/places.mvgeo`, loaded through host table v3, answering
@@ -354,10 +363,14 @@ request, so the label and the map follow it; only pictures are cached, by point.
 ### The map
 
 Drawn by the add-on on its worker into 8-bit BGRA, premultiplied, at the pane's width × 160 pt
-times the backing scale (`map.cpp`):
+times the backing scale (`map.cpp`). The host takes 4096 px a side at most, so a very wide pane on
+a 3× display gets a lower backing scale (1600 pt → 2.56×), never a missing map.
 
 - **Projection.** Web Mercator, centred on the view's centre, with the view's `span_deg` as the
-  picture's height in degrees of latitude there.
+  picture's height in degrees of latitude there. Each ring is unwrapped from its own first point
+  and drawn at every whole-world shift that reaches the picture, so a ring near the antimeridian
+  is whole whichever side of 180° the view is on. Antarctica, one ring that goes once round the
+  globe, is closed through the South Pole beyond the picture's edge.
 - **Fill.** Land is a signed-area accumulation (the font-rs method), each polygon oriented so its
   outer ring is positive and folded even-odd so lakes and enclaves stay open. Anti-aliased, and two
   countries sharing a border add up to full coverage with no hairline between them. The photo's
