@@ -162,6 +162,43 @@ class Pack(unittest.TestCase):
         if said is not None:
             self.assertTrue(said[0]["ok"], said[0])
 
+    def test_the_script_example_packs_and_the_app_agrees(self):
+        # docs/design/25 PR 57: a command that, with folder.read, says how many
+        # files the open folder holds.
+        name, package = mvaddon.build_package(ROOT / "examples/addons/folder-count", SEED)
+        self.assertEqual(name, "example.folder-count-1.0.0.mvaddon")
+        m = mvaddon.check_package(package)["manifest"]
+        self.assertEqual(m["scripts"], ["main.lua"])
+        self.assertEqual(m["permissions"], ["folder.read"])
+        with tempfile.TemporaryDirectory() as tmp:
+            said = AppSays.about(package, Path(tmp) / "store")
+            if said is not None:
+                self.assertTrue(said[0]["ok"], said[0])
+                self.assertTrue(said[0]["script"])
+                self.assertEqual(said[0]["permissions"], ["folder.read"])
+                self.assertEqual(said[0]["commands"][0]["key"], "Ctrl+Shift+K")
+                self.assertIn("See the names of the files in the open folder", said[0]["can"])
+                self.assertEqual(said[0]["cannot"], "Change your files or use the network")
+                self.assertTrue(said[1]["ok"], said[1])
+
+    def test_init_script_starts_a_folder_that_packs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "tool"
+            self.assertEqual(mvaddon.main(["init", str(root), "--script", "--id", "you.tool",
+                                           "--name", "Tool", "--publisher", "You"]), 0)
+            _, package = mvaddon.build_package(root, SEED)
+            self.assertEqual(mvaddon.check_package(package)["manifest"]["api"], {"min": 3, "max": 3})
+
+    def test_pack_refuses_compiled_lua(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "tool"
+            mvaddon.main(["init", str(root), "--script", "--id", "you.tool", "--name", "Tool",
+                          "--publisher", "You"])
+            (root / "main.lua").write_bytes(b"\x1bLuaT\x00\x19\x93")
+            with self.assertRaises(mvaddon.Refused) as refused:
+                mvaddon.build_package(root, SEED)
+            self.assertIn("compiled", refused.exception.detail)
+
     def test_hidden_files_and_the_source_manifest_stay_out(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = folder(Path(tmp), files={"themes/dusk.json": THEME, ".DS_Store": b"x",
@@ -177,9 +214,10 @@ class Pack(unittest.TestCase):
             (source(version="1.2"), "malformed"),
             (source(name="Film‮Tones"), "malformed"),
             (source(update_url="http://acme.example/a.mvaddon"), "malformed"),
-            (source(scripts=["main.lua"]), "code_not_allowed"),
+            (source(native=["x.dll"]), "code_not_allowed"),
+            (source(scripts=["main.lua"]), "malformed"),  # code under API 1
             (source(colour_scheme=True), "malformed"),
-            (source(api={"min": 2, "max": 2}), "needs_update"),
+            (source(api={"min": 4, "max": 4}), "needs_update"),
             (source(schema=2), "malformed"),
         ]
         for doc, why in cases:
@@ -285,9 +323,44 @@ class Refusals(unittest.TestCase):
 
     def test_code(self):
         files = {"themes/dusk.json": THEME}
-        for key in ("native", "chrome", "scripts", "main"):
+        for key in ("native", "chrome", "main"):
             with self.subTest(key=key):
                 self.refused(signed(manifest_for(files, **{key: "x"}), files), "code_not_allowed")
+
+    def test_scripts(self):
+        # docs/design/25 PR 57, each case also read by the app's own C++.
+        lua = b"function f() mv.notify('hi') end\n"
+        files = {"main.lua": lua}
+        base = dict(api={"min": 3, "max": 3}, scripts=["main.lua"], contributes={})
+
+        def doc(**changes):
+            d = manifest_for(files, **base)
+            d.update(changes)
+            return d
+
+        ok = signed(doc(permissions=["folder.read"],
+                        contributes={"commands": [{"id": "hi", "name": "Hi", "run": "f"}]}), files)
+        self.assertEqual(mvaddon.check_package(ok)["manifest"]["permissions"], ["folder.read"])
+        said = AppSays.about(ok)
+        if said is not None:
+            self.assertTrue(said[0]["ok"], said[0])
+        cases = [
+            (doc(api={"min": 1, "max": 2}), "malformed"),
+            (doc(scripts="main.lua"), "malformed"),
+            (doc(scripts=["other.lua"]), "unsafe_path"),
+            (doc(permissions=["network"]), "malformed"),
+            (doc(permissions=["files.write"]), "needs_update"),
+            (doc(permissions=["metadata.write"]), "needs_update"),
+            (doc(permissions=["folder.read", "folder.read"]), "malformed"),
+            (doc(contributes={"commands": [{"id": "hi", "name": "Hi", "run": "f",
+                                            "payload": "marks"}]}), "malformed"),
+            (doc(contributes={"commands": [{"id": "hi", "name": "Hi", "run": "f.g"}]}), "malformed"),
+            (doc(native="x"), "code_not_allowed"),
+        ]
+        for manifest, why in cases:
+            with self.subTest(manifest={k: manifest.get(k) for k in ("api", "scripts", "permissions",
+                                                                       "contributes", "native")}):
+                self.refused(signed(manifest, files), why)
 
     def test_a_theme_nobody_could_read(self):
         theme = json.loads(THEME)

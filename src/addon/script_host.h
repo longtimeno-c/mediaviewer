@@ -13,8 +13,10 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <atomic>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <string_view>
 #include <vector>
 
@@ -48,8 +50,8 @@ class script_host {
   void restart(const open_store& store, std::string_view addon_id);
   void stop_all();
 
-  // The rows for the command table, from every add-on that is running, in
-  // install-list order. Any thread.
+  // The rows for the command table, from every add-on that is running or
+  // starting, in install-list order. Any thread.
   [[nodiscard]] std::vector<script_command_row> commands() const;
   // Runs a command: posts its function to the add-on's worker with the
   // payload (a JSON value, "null" for none). Any thread, never blocks. False
@@ -73,6 +75,14 @@ class script_host {
   // rebuild its command table and refresh Settings. Set before reload().
   void set_on_change(std::function<void()> cb);
 
+  // The verify rig (MV_SCRIPT_SPIN, docs/design/25 PR 57 "both gates hold while a
+  // script spins"): keeps `command` of `addon` running back to back, posting
+  // it again each time the add-on's queue empties, until stop_all, reload or
+  // restart. Each run
+  // stays inside the limits, so the add-on is busy, not stopped. Never used by
+  // the app unless the variable is set.
+  void start_spin(std::string addon_id, std::string command_id);
+
   // A running add-on, for later contribution points to post to (PRs 58-59).
   // Valid until the next reload / restart / stop_all.
   [[nodiscard]] script_addon* find(std::string_view addon_id) const;
@@ -87,8 +97,12 @@ class script_host {
   entry make_entry(const open_store& store, const open_installed& installed);
   void changed() const;
 
+  void stop_spin();
+
   script_services services_;
   script_limits limits_;
+  std::thread spin_;
+  std::atomic<bool> spin_stop_{false};
   mutable std::mutex m_;
   std::vector<entry> entries_;
   std::vector<std::pair<std::string, std::string>> key_notes_;  // "addon/id" -> note

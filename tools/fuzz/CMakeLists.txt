@@ -134,7 +134,14 @@ target_compile_definitions(mv_project_options INTERFACE
   _DISABLE_OPTIONAL_ANNOTATION)
 
 set(MV_FUZZ_HARNESSES
-  jpeg png bmp gif webp tiff ico heic avif raw raw_preview decode animation thumbnail pdf docx)
+  jpeg png bmp gif webp tiff ico heic avif raw raw_preview decode animation thumbnail pdf docx
+  script)
+
+# docs/design/25 PR 57: the script sandbox. Lua is not linked to
+# mv_project_options (it is not our code, and builds without our warnings), so
+# it gets the instrumentation here, and the add-on libraries the same CRT.
+set_target_properties(mv_lua mv_script mv_addon PROPERTIES MSVC_RUNTIME_LIBRARY "${MV_FUZZ_CRT}")
+target_compile_options(mv_lua PRIVATE -fsanitize=fuzzer-no-link /fsanitize=address)
 
 add_custom_target(mv_fuzzers)
 
@@ -142,7 +149,11 @@ foreach(name IN LISTS MV_FUZZ_HARNESSES)
   set(target fuzz_${name})
   add_executable(${target} fuzz_${name}.cpp fuzz_common.h)
   target_include_directories(${target} PRIVATE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}")
-  target_link_libraries(${target} PRIVATE mv_codec)
+  if(name STREQUAL "script")
+    target_link_libraries(${target} PRIVATE mv_script)
+  else()
+    target_link_libraries(${target} PRIVATE mv_codec)
+  endif()
   if(name STREQUAL "decode")
     target_link_libraries(${target} PRIVATE mv_image)
   endif()

@@ -1267,6 +1267,13 @@ void scripts_reload_async() {
     if (!store) return;
     std::lock_guard<std::mutex> lock(sc.m);
     script_host_locked().reload(*store);
+    // The verify rig (docs/design/25 PR 57): MV_SCRIPT_SPIN=<addon>/<command> keeps
+    // that command running back to back, for the present-loop gates.
+    if (const char* spin = std::getenv("MV_SCRIPT_SPIN"); spin && std::strchr(spin, '/')) {
+      const std::string s = spin;
+      const auto slash = s.find('/');
+      script_host_locked().start_spin(s.substr(0, slash), s.substr(slash + 1));
+    }
   });
 }
 

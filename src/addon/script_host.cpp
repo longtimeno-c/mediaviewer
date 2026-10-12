@@ -3,6 +3,7 @@
 #include "addon/script_host.h"
 
 #include <algorithm>
+#include <chrono>
 #include <utility>
 
 #include "core/json.h"
@@ -74,6 +75,7 @@ void script_host::reload(const open_store& store) {
 }
 
 void script_host::restart(const open_store& store, std::string_view addon_id) {
+  stop_spin();  // the rig holds an add-on pointer; a restart ends it
   std::unique_ptr<script_addon> old;
   {
     std::lock_guard<std::mutex> lock(m_);
@@ -102,7 +104,28 @@ void script_host::restart(const open_store& store, std::string_view addon_id) {
   changed();
 }
 
+void script_host::start_spin(std::string addon_id, std::string command_id) {
+  stop_spin();
+  spin_stop_.store(false);
+  spin_ = std::thread([this, addon = std::move(addon_id), command = std::move(command_id)] {
+    while (!spin_stop_.load()) {
+      script_addon* a = find(addon);
+      if (a && a->wait_idle(std::chrono::milliseconds(200)) && !spin_stop_.load() &&
+          a->status().running) {
+        (void)run_command(addon, command, "null");
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(a ? 1 : 100));
+    }
+  });
+}
+
+void script_host::stop_spin() {
+  spin_stop_.store(true);
+  if (spin_.joinable()) spin_.join();
+}
+
 void script_host::stop_all() {
+  stop_spin();
   std::vector<entry> old;
   {
     std::lock_guard<std::mutex> lock(m_);

@@ -16,6 +16,7 @@
 #include <mediaviewer/mediaviewer_addon.h>
 
 #include <atomic>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <memory>
@@ -27,6 +28,7 @@
 #include "addon/open_json.h"
 #include "addon/script_host.h"
 #include "core/json.h"
+#include "io/paths.h"
 
 namespace {
 
@@ -129,6 +131,21 @@ mv::addon::script_host& host_locked(mv_session_t session) {
   return *st.host;
 }
 
+// A verify rig's environment variable (docs/design/25 PR 57); "" when unset.
+std::string rig_env(const char* name) {
+#if defined(_WIN32)
+  char* value = nullptr;
+  std::size_t length = 0;
+  if (_dupenv_s(&value, &length, name) != 0 || value == nullptr) return {};
+  std::string out(value);
+  std::free(value);
+  return out;
+#else
+  const char* value = std::getenv(name);
+  return value ? std::string(value) : std::string();
+#endif
+}
+
 }  // namespace
 
 namespace mv::abi {
@@ -166,9 +183,18 @@ MV_API mv_status MV_CALL mv_script_reload(mv_session_t session) {
     script_state& st = state();
     std::lock_guard<std::mutex> lock(st.m);
     MV_REQUIRE(!st.host || st.session == session, "scripts run against one session");
+    // The verify rigs: a scratch store (MV_SCRIPT_STORE) instead of the
+    // profile's, and MV_SCRIPT_SPIN=<addon>/<command> kept running back to back
+    // for the present-loop gates. Inert unless set.
+    if (const std::string dir = rig_env("MV_SCRIPT_STORE"); !dir.empty()) {
+      mv::io::set_open_addons_dir_override(dir);
+    }
     auto store = mv::addon::default_open_store();
     if (!store) return store.error();
     host_locked(session).reload(*store);
+    if (const std::string spin = rig_env("MV_SCRIPT_SPIN"); spin.find('/') != std::string::npos) {
+      host_locked(session).start_spin(spin.substr(0, spin.find('/')), spin.substr(spin.find('/') + 1));
+    }
     return status::ok;
   }));
 }

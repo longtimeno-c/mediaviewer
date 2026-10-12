@@ -5,7 +5,9 @@ made and installed by anyone, not just our repo… if people have a compatible f
 install their add-on… add-ons can do a wide range of things like add new screens"). Post-v1,
 Windows and macOS together (D9). Milestone L, PRs 55–60. Not a D-decision. PR 55 is built
 ([Implementation notes](#implementation-notes-pr-55-2026-09-29)); the owner's calls on code, network,
-the file type and licensing were made on 2026-10-03 ([§17](#17-decisions-owner-2026-10-03)).**
+the file type and licensing were made on 2026-10-03 ([§17](#17-decisions-owner-2026-10-03)). PR 57,
+code, is built on both hosts (2026-10-11, [Implementation notes](#implementation-notes-pr-57-2026-10-11);
+its Windows half is compiled by CI and not yet run).**
 
 ## 1. What this is
 
@@ -96,10 +98,14 @@ is refused with a reason that says so.
 - **Strictness:** a manifest that claims no API newer than the app's may hold no key the app
   does not know (a typo fails loudly instead of doing nothing). One that reaches past the app's
   API may, so one package can serve an older and a newer MediaViewer.
-- **Code is refused by name.** `native`, `chrome`, `scripts`, `main` at the top level or under
-  `contributes` refuse the add-on (`code_not_allowed`) until a PR that runs third-party code
-  lands ([§9](#9-code-how-a-strangers-add-on-runs)). No API range turns a data add-on into one
-  that runs.
+- **Native code is refused by name.** `native`, `chrome`, `main` at the top level or under
+  `contributes` refuse the add-on (`code_not_allowed`), whatever its range: other makers' code
+  runs only as a script ([§9](#9-code-how-a-strangers-add-on-runs)).
+- **Scripts (API 3, PR 57).** `scripts` lists the package's `.lua` files, run in order in one
+  sandbox; `permissions` names what they may reach; `contributes.commands` adds key-bound rows
+  that call a script function. A range that ends before API 3 cannot carry them (malformed),
+  and a host before PR 57 refuses them by name (`code_not_allowed`), so no API range turns a
+  data add-on into one that runs. The shape is in [Implementation notes (PR 57)](#implementation-notes-pr-57-2026-10-11).
 
 ## 5. Identity and trust
 
@@ -166,7 +172,7 @@ introduced it, exists on both hosts, and has a default the base app provides.
 | **Theme, shape** | 2 | 56 | Corner radius scale, density, type scale | Today's literals | Same table |
 | **Settings page** | 2 | 56 | A schema: sections, toggles, choices, numbers, text, each with a key, default and help | — | Rendered by the host when Settings opens; values live in the host's store, namespaced by add-on id |
 | **Keymap** | 2 | 56 | Bindings for existing commands (the v1.1 "named layouts": FastStone, IrfanView, vim) | `default_bindings()` | Applied to the live table once; the router stays an array index ([16](16-commands.md)) |
-| **Command** | 3 | 57 | A name, a default key, and the script function it runs | — | Rows appended to the table at load; a key clash is resolved for the base app, the add-on's key is dropped and Settings says so |
+| **Command** | 3 | 57 (built 2026-10-11) | A name, a default key, and the script function it runs | — | Rows appended to the table at load; a key clash is resolved for the base app, the add-on's key is dropped and Settings says so |
 | **Screen** | 4 | 58 | A view tree ([§10](#10-screens)) in a window, a pane or a sheet | — | Built by the host from data; updates are diffs posted from the add-on's worker |
 | **Chrome slot** | 5 | 59 | Command-bar and path-bar items, context-menu entries, info-pane sections, status items, gallery tile badges | — | Badges come from a table filled off-thread; **no add-on call per tile**, ever |
 | **Search provider** | 5 | 59 | Answers a query with a list of files | File-name search (base app, 2026-09-28) | Runs on the add-on's worker with the query's generation; a stale answer is dropped |
@@ -331,7 +337,7 @@ installed.
 |---|---|---|
 | **55** | **Open packages and themes.** The `.mvaddon` reader, manifest schema 2, publisher keys, the consent sheet, install from file and from link, check for update, remove, Settings → Add-ons "From others", Settings → Appearance → Theme, the token table on both hosts, the SDK, the author's guide | A package made by the SDK with a fresh key installs from a file and from an `https` link, shows the publisher and fingerprint, and themes the chrome; choosing Default restores it exactly. **Refused, each with its reason:** one changed byte in any file or the manifest; an extra entry; a compressed, encrypted or ZIP64 package; a path with `..`; a package naming code; a second publisher's package under an installed id; an older version; a theme under the contrast floor; a package swapped after the sheet was shown. The link request carries no cookie, query or identifier of ours. With an add-on installed and a theme on: launch → first pixel and launch → full resolution within noise of none installed (alternated runs), 0 presents idle, **both present-loop gates**. With none installed: no folder created, no file read at start |
 | 56 | **Declarative contributions.** Settings pages from a schema, keymap packs, theme shape (radius, density, type scale), first-party chromes read the host's tokens | A settings page renders the same controls and order on both hosts from one schema; its values survive restart and removal-with-keep; a keymap pack rebinds and Reset restores; `?` lists what is bound |
-| 57 | **Code** (owner call 1, made). The runtime, one worker per add-on, limits and watchdog, permissions in the consent sheet, commands | A script command runs from its key on both hosts; a runaway loop and an allocation bomb each stop the add-on, not the viewer, within the watchdog's bound; without `folder.read` the folder API is absent; **both gates hold while a script spins** |
+| 57 | **Code** (owner call 1, made; **built 2026-10-11**). The runtime, one worker per add-on, limits and watchdog, permissions in the consent sheet, commands | A script command runs from its key on both hosts; a runaway loop and an allocation bomb each stop the add-on, not the viewer, within the watchdog's bound; without `folder.read` the folder API is absent; **both gates hold while a script spins** |
 | 58 | **Screens.** The view vocabulary, windows / panes / sheets, diffs, events | One add-on's screen renders natively on both hosts, keyboard-only, VoiceOver and Narrator name every control; a 2,000-tile thumbnail grid scrolls without a hitch |
 | 59 | **Slots and search providers.** Bar items, context menus, info-pane sections, tile badges; file-name search and Local search as providers | Badges for a 10,000-file folder cost no add-on call per tile (counted); a slow provider never delays typing; removing the add-on removes every item |
 | 60 | **Files.** `files.write`, exports, `metadata.write`. No `network`, ever | An add-on export never overwrites and never touches an original (rule 5, tested by hash); no add-on can open a connection, shown by the host API's surface |
@@ -370,6 +376,12 @@ add-on whose manifest says what it contributes" rather than a special case in bo
 - **Not moved:** the AI pack's four commands (Ctrl+F's file-search fallback is the app's own
   behaviour, not the pack's), and the hard-coded list of first-party channels, which the app must
   know to offer a download at all.
+
+### PR 57: code (2026-10-11)
+
+Built on both hosts: Lua 5.4 in a sandbox per add-on, its limits and watchdog, permissions in
+the consent sheet, commands from a script. What it is, the API, the limits and where each part
+of the verify stands: [Implementation notes (PR 57)](#implementation-notes-pr-57-2026-10-11).
 
 ## 15. Not in this plan
 
