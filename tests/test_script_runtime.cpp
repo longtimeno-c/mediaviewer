@@ -541,3 +541,36 @@ TEST_CASE("a __gc metamethod never runs: not during a task, a stop or teardown",
     REQUIRE(p->notices.empty());
   }
 }
+
+TEST_CASE("weak tables are strong, so no collect runs unbounded", "[script][sandbox]") {
+  // A chain of ephemerons (weak keys, each value the next key) inserted in a
+  // shuffled order made one atomic GC step converge in O(n^2), where neither
+  // the count hook nor the watchdog's flag is looked at: > 4 s at n = 200,000
+  // under the shipped 64 MB.
+  auto p = std::make_unique<probe>();
+  auto a = start(*p, R"lua(
+    function t()
+      local n = 200000
+      local keys = {}
+      for i = 1, n do keys[i] = {} end
+      local idx = {}
+      for i = 1, n do idx[i] = i end
+      for i = n, 2, -1 do local j = math.random(i) idx[i], idx[j] = idx[j], idx[i] end
+      local w = setmetatable({}, {__mode = "k"})
+      for _, i in ipairs(idx) do if i < n then w[keys[i]] = keys[i + 1] end end
+      root = keys[1]
+      keys, idx = nil, nil
+      collectgarbage()
+      local v = setmetatable({}, {__mode = "v"})
+      v[1] = {}
+      collectgarbage()
+      mv.log("kept", v[1] ~= nil)
+    end
+  )lua", 0, script_limits{});
+  REQUIRE(a->wait_idle(5s));
+  const bool ended = task_ends_within(a, "t", 3s);
+  if (!ended) (void)p.release();
+  REQUIRE(ended);
+  INFO(a->status().last_error << " / " << a->status().message);
+  REQUIRE(p->log_lines() == std::vector<std::string>{"kept\ttrue"});
+}

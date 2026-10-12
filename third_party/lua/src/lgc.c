@@ -541,7 +541,9 @@ static void traversestrongtable (global_State *g, Table *h) {
 
 static lu_mem traversetable (global_State *g, Table *h) {
   const char *weakkey, *weakvalue;
-  const TValue *mode = gfasttm(g, h->metatable, TM_MODE);
+  /* MediaViewer: no weak tables in the add-on sandbox. Ephemeron convergence
+     is quadratic inside one atomic GC step, where no flag can stop it. */
+  const TValue *mode = NULL;
   TString *smode;
   markobjectN(g, h->metatable);
   if (mode && ttisshrstring(mode) &&  /* is there a weak mode? */
