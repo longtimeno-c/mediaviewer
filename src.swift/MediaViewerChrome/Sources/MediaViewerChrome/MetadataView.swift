@@ -64,7 +64,7 @@ struct MetadataView: View {
       }
       .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
-    .background(MVTheme.canvas)
+    .background(ThemeField())
     .overlay(alignment: .leading) { Rectangle().fill(MVTheme.hairline).frame(width: 1) }
     .onChange(of: store.isClip) { _, isClip in
       if !isClip && tab == .streams { tab = .summary }

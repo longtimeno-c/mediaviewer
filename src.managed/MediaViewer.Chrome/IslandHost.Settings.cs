@@ -284,6 +284,7 @@ public static partial class IslandHost
         root.Children.Add(footer);
         root.IsTabStop = true;
         SelectCategory(_settingsKeyboard, false);
+        ThemeField.Lay(root);
         return root;
     }
 

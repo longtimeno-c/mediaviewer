@@ -254,6 +254,7 @@ public static partial class IslandHost
         body = new Grid();
         Grid.SetRow(body, 1);
         root.Children.Add(body);
+        ThemeField.Lay(root);
         return root;
     }
 

@@ -274,7 +274,7 @@ struct SettingsView: View {
         // photo is never recoloured.
         SettingsRow(title: "Theme",
                     detail: theme.note.isEmpty
-                      ? "Colours of the bars, panes and text. Choose a built-in theme or one from an add-on. Your photos are never recoloured."
+                      ? "Colours and a quiet ground for the bars and panes. Your photos are never recoloured."
                       : theme.note) {
           Picker("Theme", selection: Binding(get: { theme.selection }, set: { theme.choose($0) })) {
             Text("Default").tag("")
@@ -423,7 +423,7 @@ struct SettingsView: View {
       .padding(.horizontal, 24).padding(.vertical, 12)
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .background(MVTheme.canvas)
+    .background(ThemeField())
     .onChange(of: keyboard) { _, _ in store.cancelCapture() }
   }
 }

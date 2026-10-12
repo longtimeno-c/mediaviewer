@@ -220,7 +220,7 @@ The optional **Import** add-on copies a card or folder into your library.
 
 - **Anyone can make an add-on.** One `.mvaddon` file, signed by the person who made it. Drop it on MediaViewer, or use
   **Settings → Add-ons → From others** to install from a file or a link.
-- **Five themes built in.** Ember, Graphite, Harbour, Linen and Studio are in Settings → Appearance with nothing else installed. Default still follows the system.
+- **Five themes built in.** Midnight, Starfield, Terminal, Ume and Porcelain are in Settings → Appearance with nothing else installed. Each lays a quiet ground in the chrome — rain, stars, fireflies, petals or dots. Default still follows the system, and a photo's colour is never changed.
 - **Themes from anyone.** Colours and a typeface for MediaViewer's bars, panes and text. A theme dresses the app and never touches your photos' colour.
 - **Safe to try.** You see who signed it and what it is before it installs, only its original publisher can update it, and an add-on never gets network access.
 - **Make your own in five minutes** with a single-file Python tool and a guide: [docs/ADDONS.md](docs/ADDONS.md). Your add-on is yours to licence however you like.

@@ -368,6 +368,7 @@ public static partial class IslandHost
         }
         AutomationProperties_SetName(root, EditTitle);
         RenderEditInPlace();
+        ThemeField.Lay(root);
         return root;
     }
 

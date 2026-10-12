@@ -1086,6 +1086,18 @@ histogram's channel colours and the F3 overlay are not tokens. The palettes add 
 the present loop and no file read before first pixel beyond the token cache the chrome
 already kept.
 
+**The five built-ins are Midnight, Starfield, Terminal, Ume and Porcelain, each with one
+ground effect (2026-10-12, same issue).** The first cut's Ember, Graphite, Harbour, Linen
+and Studio were flat palettes. A built-in theme is one palette and one quiet ground, drawn
+behind the chrome only: rain, a starfield, fireflies, petals, dots. The effect is not a
+token, not in the theme JSON, and not in Contribution API 1, so an add-on still cannot set
+one and the photo canvas still receives only the flat canvas colour it already did. The
+effect ticks at 10 Hz on the UI thread while the app is in front and input is recent, and
+it stops when the app is inactive, when the pointer and keyboard have been still for five
+seconds, under Reduce Motion, or when Windows animations are off. High contrast still wins.
+Dots do not tick. Mac panes that are a system material stay a system material. Nothing was
+added to the present loop.
+
 ---
 
 ## Not built

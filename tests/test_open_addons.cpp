@@ -618,17 +618,24 @@ TEST_CASE("the five built-in themes pass the contrast floor on both hosts", "[op
   REQUIRE(mac == windows);
   REQUIRE(mac.size() == 5);
 
-  const char* ids[] = {"ember", "graphite", "harbour", "linen", "studio"};
-  const char* names[] = {"Ember", "Graphite", "Harbour", "Linen", "Studio"};
-  const char* kinds[] = {"dark", "dark", "dark", "light", "light"};
+  const char* ids[] = {"midnight", "starfield", "terminal", "ume", "porcelain"};
+  const char* names[] = {"Midnight", "Starfield", "Terminal", "Ume", "Porcelain"};
+  const char* kinds[] = {"dark", "dark", "dark", "dark", "light"};
+  const char* effects[] = {"rain", "starfield", "fireflies", "petals", "dots"};
   const char* tokens[] = {"canvas", "surface", "title", "body", "disabled", "hairline", "accent"};
   for (std::size_t i = 0; i < mac.size(); ++i) {
     const std::vector<std::string> parts = split_ws(mac[i]);
-    REQUIRE(parts.size() == 11);
+    // Colours, then a host-only ground effect. The effect is not a token:
+    // parse_theme below sees the seven colours and nothing else.
+    REQUIRE(parts.size() == 14);
     REQUIRE(parts[0] == "mvbuiltin");
     REQUIRE(parts[1] == ids[i]);
     REQUIRE(parts[2] == names[i]);
     REQUIRE(parts[3] == kinds[i]);
+    REQUIRE(parts[11] == effects[i]);
+    REQUIRE(hex6(parts[12]));
+    REQUIRE(parts[13].size() == 4);
+    REQUIRE(parts[13][1] == '.');
     std::string palette = "{";
     for (int t = 0; t < 7; ++t) {
       REQUIRE(hex6(parts[4 + t]));

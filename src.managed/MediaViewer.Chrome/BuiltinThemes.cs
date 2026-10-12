@@ -7,26 +7,37 @@
 // and refuses a palette below the contrast floor.
 //
 // One palette, no font, so a choice applies at once (a typeface would wait
-// for the next start). mediaviewer. is reserved, so this selection key
-// cannot be an add-on's.
+// for the next start). Each palette also names one ground effect
+// (ThemeField.cs). That effect is not a token: it is drawn in the chrome
+// only, and the photo canvas never sees it. mediaviewer. is reserved, so
+// this selection key cannot be an add-on's.
 
 namespace MediaViewer.Chrome;
 
 internal static class BuiltinThemes
 {
-    internal readonly record struct Item(string Id, string Name, string Json, string Key);
+    internal readonly record struct Item(
+        string Id, string Name, string Json, string Key,
+        string Effect, uint EffectRgb, double Intensity);
+
+    internal static bool Moves(string effect) => effect != "dots";
 
     private static readonly string[] Tokens =
         { "canvas", "surface", "title", "body", "disabled", "hairline", "accent" };
 
-    // id, name, dark|light, then the seven tokens as #rrggbb. Opaque; the hosts append ff.
+    private static readonly string[] Effects = { "rain", "starfield", "fireflies", "petals", "dots" };
+
+    // id, name, dark|light, seven #rrggbb tokens, then the ground effect, its
+    // #rrggbb and an intensity 0.01–1.00. The effect stays in the chrome. The
+    // JSON the token cache stores is the seven colours only. Opaque; the hosts
+    // append ff. The Mac twin's rows are these exact literals.
     private static readonly string[] Rows =
     {
-        "mvbuiltin ember Ember dark #1c1814 #2b241e #f6f1e8 #cbbba8 #7e7468 #433b33 #e39a45",
-        "mvbuiltin graphite Graphite dark #1b1c20 #27292f #f3f4f6 #b7bcc6 #6e7480 #3a3d46 #8eb6ea",
-        "mvbuiltin harbour Harbour dark #12161c #1c2530 #e7eef6 #a9b8c9 #647484 #2e3b4c #6ec8e6",
-        "mvbuiltin linen Linen light #f6f1e7 #fffdf8 #2a2218 #5c5348 #8f867a #e0d5c4 #a34724",
-        "mvbuiltin studio Studio light #f2f3f5 #ffffff #1a1c20 #4c525a #8a9098 #d4d7de #1d5cba",
+        "mvbuiltin midnight Midnight dark #0d1117 #161b22 #c9d1d9 #8b949e #6e7681 #30363d #f85149 rain #ffffff 0.50",
+        "mvbuiltin starfield Starfield dark #0b1a2c #091422 #64d2ff #6aa3b6 #5e8090 #1e5074 #4facfe starfield #64d2ff 1.00",
+        "mvbuiltin terminal Terminal dark #0b1110 #080d0c #b8e6c1 #5d8f6e #3f6a4c #28553a #6bd38b fireflies #b8e6c1 0.80",
+        "mvbuiltin ume Ume dark #271d2b #1d1721 #f1d8e9 #b894a8 #7d6472 #66475f #d98bb7 petals #f5a0c0 1.00",
+        "mvbuiltin porcelain Porcelain light #edf0f2 #ffffff #252a30 #5c6770 #8b939c #c7cdd2 #3478c9 dots #252a30 1.00",
     };
 
     private static readonly Item[] Parsed = Parse();
@@ -48,9 +59,13 @@ internal static class BuiltinThemes
         for (int i = 0; i < Rows.Length; i++)
         {
             string[] parts = Rows[i].Split(' ');
-            if (parts.Length != 11 || parts[0] != "mvbuiltin" || (parts[3] != "dark" && parts[3] != "light"))
+            if (parts.Length != 14 || parts[0] != "mvbuiltin" || (parts[3] != "dark" && parts[3] != "light"))
                 throw new InvalidOperationException(Rows[i]);
             bool dark = parts[3] == "dark";
+            string effect = parts[11];
+            if (Array.IndexOf(Effects, effect) < 0) throw new InvalidOperationException(effect);
+            uint effectRgb = Rgb(parts[12]);
+            double intensity = Unit(parts[13]);
             var palette = new System.Text.StringBuilder("{");
             for (int t = 0; t < Tokens.Length; t++)
             {
@@ -66,8 +81,27 @@ internal static class BuiltinThemes
             string json = "{\"addon\":\"mediaviewer.builtin\",\"id\":\"" + id + "\",\"name\":\"" + name
                           + "\",\"theme\":{\"font\":\"\",\"dark\":" + (dark ? body : "null")
                           + ",\"light\":" + (dark ? "null" : body) + "}}";
-            items[i] = new Item(id, name, json, "mediaviewer.builtin/" + id);
+            items[i] = new Item(id, name, json, "mediaviewer.builtin/" + id, effect, effectRgb, intensity);
         }
         return items;
+    }
+
+    private static uint Rgb(string text)
+    {
+        if (text.Length != 7 || text[0] != '#') throw new InvalidOperationException(text);
+        return Convert.ToUInt32(text.Substring(1), 16);
+    }
+
+    // "0.50" / "1.00". The dot is the separator on every machine.
+    private static double Unit(string text)
+    {
+        string[] parts = text.Split('.');
+        if (parts.Length != 2 || parts[1].Length != 2) throw new InvalidOperationException(text);
+        if (!int.TryParse(parts[0], out int whole) || !int.TryParse(parts[1], out int frac)
+            || whole < 0 || whole > 1 || frac < 0 || frac > 99)
+            throw new InvalidOperationException(text);
+        double value = whole + frac / 100.0;
+        if (value <= 0 || value > 1) throw new InvalidOperationException(text);
+        return value;
     }
 }

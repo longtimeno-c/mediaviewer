@@ -217,13 +217,22 @@ A theme file, one per theme the add-on lists:
   follow the appearance, not a token), and the first-party add-ons' own windows until they read
   the host's tokens (PR 56).
 - **Choosing one:** Settings → Appearance → **Theme**: Default, then five host palettes
-  compiled into both chromes — Ember (warm dark), Graphite (neutral dark), Harbour (cool dark),
-  Linen (warm light), Studio (neutral light) — then every theme of every installed add-on.
-  Installing an add-on does not switch. The five are one palette each and set no `font`, so the
-  chrome keeps that appearance, system-drawn controls included, and a choice applies at once on
-  both hosts. They are not packages: no publisher key and no install sheet. A theme someone else
-  ships is still Contribution API 1, and still appears after the built-ins. Default clears the
-  override (`mv.theme.*` on the Mac, `theme.json` beside `settings.ini` on Windows).
+  compiled into both chromes — Midnight (rain), Starfield, Terminal (fireflies), Ume (petals)
+  and Porcelain (dots, light) — then every theme of every installed add-on. Installing an
+  add-on does not switch. The five are one palette each and set no `font`, so the chrome keeps
+  that appearance, system-drawn controls included, and a choice applies at once on both hosts.
+  They are not packages: no publisher key and no install sheet. A theme someone else ships is
+  still Contribution API 1, and still appears after the built-ins. Default clears the override
+  (`mv.theme.*` on the Mac, `theme.json` beside `settings.ini` on Windows).
+- **Ground effect:** each built-in also draws one effect behind the chrome — falling rain,
+  a starfield, fireflies, petals, or a still dot grid. It is not a token and not part of the
+  theme JSON, so API 1 is unchanged and an add-on cannot set one. It is drawn by the host in
+  its own panes. It is not drawn on a photo, a video, the swapchain, or the present loop.
+  It ticks at 10 Hz only while the app is in front and someone has moved the pointer or a key
+  in the last five seconds, and it stops under Reduce Motion (Mac) or when Windows animations
+  are off. High contrast still hides the theme, effect included. Dots do not move. A pane that
+  uses the system material (the Mac filmstrip, folder tree, help and transport) keeps that
+  material, so the picture can show through it.
 - **Start-up:** the chrome stores the resolved tokens of the theme in use in its own settings
   and paints with them at once. The add-on is verified on a worker afterwards; if it is gone,
   changed or refused, the chrome returns to Default and says why in Settings. A built-in theme

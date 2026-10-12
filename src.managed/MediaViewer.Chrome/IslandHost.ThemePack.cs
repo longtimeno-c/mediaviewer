@@ -41,6 +41,12 @@ public static partial class IslandHost
     /// <summary>What a new island root asks of Windows' own controls.</summary>
     private static ElementTheme IslandTheme => _islandTheme;
 
+    /// <summary>A built-in ground effect may draw. High contrast and the default may not.</summary>
+    internal static bool ChromeEffectVisible =>
+        _theme is not null && (_accessibilitySettings is null || !_accessibilitySettings.HighContrast);
+
+    internal static string ChromeThemeSelection => _themeSelection;
+
     private static string ThemeFile => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MediaViewer", "theme.json");
 

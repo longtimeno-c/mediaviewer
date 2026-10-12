@@ -327,6 +327,9 @@ public static partial class IslandHost
 
         // A floating bar over the video (issue #38): hairline all round, the
         // controls centred. The island window is rectangular, so no rounding.
+        var ground = new Grid();
+        ThemeField.Lay(ground);
+        ground.Children.Add(row);
         var root = new Border
         {
             RequestedTheme = IslandTheme,
@@ -334,7 +337,7 @@ public static partial class IslandHost
             BorderBrush = Brush(Hairline),
             BorderThickness = new Thickness(1),
             Height = TransportDip,
-            Child = row,
+            Child = ground,
         };
         return root;
     }

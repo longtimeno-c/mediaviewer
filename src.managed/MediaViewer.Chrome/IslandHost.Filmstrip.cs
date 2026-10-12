@@ -397,6 +397,7 @@ public static partial class IslandHost
         };
         _filmstripRoot = root;
         WireFileDrop(root);
+        ThemeField.Lay(root);
         return root;
     }
 

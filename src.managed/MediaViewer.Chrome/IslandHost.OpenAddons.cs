@@ -161,7 +161,7 @@ public static partial class IslandHost
 
     private static string ThemeDetail() => _themeNote.Length > 0
         ? _themeNote
-        : "Colours of the bars, panes and text. Choose a built-in theme or one from an add-on. Your photos are never recoloured.";
+        : "Colours and a quiet ground for the bars and panes. Your photos are never recoloured.";
 
     // SettingsRow's second label, so the row can say why a theme is not showing.
     private static TextBlock? FindDetail(FrameworkElement row) =>
