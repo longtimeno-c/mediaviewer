@@ -22,10 +22,10 @@ struct FilmstripView: View {
             // the folder): skip it, never index past the end.
             if store.names.indices.contains(index) {
               FilmstripCell(
-                index: index, name: store.names[index], isCurrent: index == store.currentIndex,
+                index: index, name: store.names[index], highlight: store.highlight(at: index),
                 isMarked: store.markedNames.contains(store.names[index]),
                 isClip: store.isClip(at: index),
-                slot: store.slot(for: store.names[index])
+                thumbKey: store.thumbKey(at: index), slot: store.slot(at: index)
               )
               .id(index)
               .onTapGesture { store.select(index) }
@@ -37,14 +37,11 @@ struct FilmstripView: View {
         .frame(height: 88)
       }
       .frame(maxWidth: .infinity, maxHeight: .infinity)
-      .background(.regularMaterial)
       // Keeps the current selection in view across arrow-key navigation, not
-      // just mouse clicks inside the strip. Deliberately not animated: an
-      // animation per key-repeat queued up behind each other and read as lag.
-      .onChange(of: store.currentIndex) { _, newIndex in
-        guard newIndex >= 0 else { return }
-        proxy.scrollTo(newIndex, anchor: .center)
-      }
+      // just mouse clicks inside the strip. A child observing only the
+      // selection, so a step does not rebuild the strip (issue #179).
+      .background { FollowSelection(proxy: proxy, anchor: .center) }
+      .background(.regularMaterial)
     }
   }
 }
@@ -52,9 +49,12 @@ struct FilmstripView: View {
 private struct FilmstripCell: View {
   let index: Int
   let name: String
-  let isCurrent: Bool
+  // Observed per cell, like the slot: a step of the selection re-renders the
+  // cell it left and the one it reached.
+  @ObservedObject var highlight: CellHighlight
   let isMarked: Bool
   let isClip: Bool
+  let thumbKey: String
   // Observed per cell: a thumbnail arriving re-renders this cell only.
   @ObservedObject var slot: ThumbSlot
 
@@ -72,13 +72,14 @@ private struct FilmstripCell: View {
     .clipShape(RoundedRectangle(cornerRadius: 4))
     .overlay(
       RoundedRectangle(cornerRadius: 4)
-        .strokeBorder(isCurrent ? MVTheme.accent : .clear, lineWidth: 2)
+        .strokeBorder(highlight.isCurrent ? MVTheme.accent : .clear, lineWidth: 2)
     )
     .overlay { if isClip { PlayBadge(diameter: 28) } }
     .overlay(alignment: .topTrailing) { if isMarked { MarkBadge() } }
     .onAppear { FolderStore.shared.requestThumbnailIfNeeded(at: index) }
     // Cells are identified by index: a new listing (a result list replacing
-    // the folder) reuses them without a fresh onAppear, so ask again.
-    .onChange(of: name) { _, _ in FolderStore.shared.requestThumbnailIfNeeded(at: index) }
+    // the folder, another folder with the same names) or a rewritten file
+    // reuses them without a fresh onAppear, so ask again.
+    .onChange(of: thumbKey) { _, _ in FolderStore.shared.requestThumbnailIfNeeded(at: index) }
   }
 }

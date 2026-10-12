@@ -11,6 +11,8 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstring>
 #include <memory>
@@ -19,6 +21,8 @@
 #include <span>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "abi/addon_bridge.h"
@@ -79,6 +83,8 @@ static_assert(alignof(mv_completion) == 8, "mv_completion layout is part of the 
 static_assert(sizeof(mv_image_info) == 24, "mv_image_info layout is part of the ABI");
 static_assert(sizeof(mv_folder_item) == 32, "mv_folder_item layout is part of the ABI");
 static_assert(offsetof(mv_folder_item, pair_kind) == 24, "mv_folder_item layout is part of the ABI");
+static_assert(sizeof(mv_folder_entry) == 56, "mv_folder_entry layout is part of the ABI");
+static_assert(offsetof(mv_folder_entry, moment_ms) == 32, "mv_folder_entry layout is part of the ABI");
 static_assert(sizeof(mv_folder_summary) == 16, "mv_folder_summary layout is part of the ABI");
 // ABI 0.13 appended ranges_ns / range_count (PR 30); a 0.10 caller's struct is
 // the first 40 bytes and is still accepted (clip_session::to_request).
@@ -157,6 +163,7 @@ struct mv_session {
   // and never touched by the render thread except in the drain.
   std::mutex completion_mutex;
   std::vector<mv_completion> completions;
+  std::atomic<std::uint64_t> completions_dropped{0};  // over the cap, or out of memory
   HANDLE completion_event = nullptr;
   // PR 13 / 14: the clip job queue and keyframe index (mediaviewer_clip.h).
   // Created in mv_session_create once the completion event exists; reset
@@ -185,6 +192,17 @@ struct mv_session {
   // for. Reset before `jobs` is destroyed (it reads the generation).
   std::mutex tile_service_mutex;
   std::unique_ptr<mv::image::tile_service> tile_service;
+
+  // Issue #166: a neighbour's single-texture create too big for one frame's
+  // upload budget waits while the render thread presents a moving canvas
+  // (set_canvas_moving). The render thread only stores and notifies; it never
+  // takes `upload_gate_mutex`. Waiters also wake on a selection
+  // (mv_folder_select), on `closing`, and every k_upload_gate_poll as a
+  // backstop (a cancelled one is noticed there).
+  std::atomic<bool> canvas_moving{false};
+  std::atomic<bool> closing{false};
+  std::mutex upload_gate_mutex;
+  std::condition_variable upload_gate_cv;
 
   // A navigation stop (PR 7). `path` is the primary — what thumbs, decode,
   // prefetch and video detection use; `secondary_path` is the other half of a
@@ -220,8 +238,36 @@ struct mv_session {
   // 0.19: io::kHideAudio / kHideDocuments. `folder_listing` stays unfiltered,
   // so turning a kind back on re-applies without another scan.
   std::atomic<std::uint32_t> hidden_kinds{0};
+  // 0.22 (issue #206): the kind filter, io::kHide* bits, and for
+  // kHideUnmarked the paths that stay (folder_mutex). `kind_filter_changed`
+  // is consumed by the relist mv_folder_set_kind_filter makes, the one that
+  // does not keep the stop on screen unless it passes.
+  std::atomic<std::uint32_t> kind_filter{0};
+  std::unordered_set<std::string> kind_kept;
+  bool kind_filter_changed = false;
+  // 0.21 (issue #210): a rename the host made (folder_mutex). The next relist
+  // follows the stop to its new name instead of letting the next one slide in.
+  std::string renamed_from;
+  std::string renamed_to;
   std::vector<mv::io::listed_item> folder_listing;
   std::unordered_map<std::string, date_stamp> date_stamps;
+  // Issue #207: each file's rating and colour label for View > Show's cull
+  // filters (io::needs_cull_marks), checked per (mtime, size) like the date
+  // stamps and read on a worker, never at scan. A sidecar write leaves the
+  // file's own stamp alone, so the host names a file it rewrote
+  // (mv_folder_note_metadata_written) and its entry is dropped. One resolve
+  // job at a time (`cull_resolving`); its relist picks up what is left.
+  struct cull_stamp {
+    std::int64_t mtime_unix = 0;
+    std::uint64_t size = 0;
+    mv::io::cull_marks marks;
+  };
+  std::unordered_map<std::string, cull_stamp> cull_stamps;
+  bool cull_resolving = false;
+  // A read that began before the host named the file (cull_forgotten[path] >
+  // the epoch the read started at) is not kept.
+  std::uint64_t cull_epoch = 0;
+  std::unordered_map<std::string, std::uint64_t> cull_forgotten;
 
   std::mutex folder_mutex;
   std::vector<folder_item> folder_items;
@@ -340,10 +386,29 @@ struct mv_session {
         return std::make_unique<mv::image::gpu_image>(std::move(uploaded).value());
       }};
 
+  // Issue #236: a host that stops draining must not grow the queue without
+  // bound, and this is noexcept, so a bad_alloc or a mutex failure here would
+  // be std::terminate. At the cap the oldest quarter goes in one move (not one
+  // memmove per push); anything dropped is counted.
+  static constexpr std::size_t kCompletionCap = 65536;
   void push_completion(const mv_completion& c) noexcept {
-    {
+    std::size_t dropped = 0;
+    try {
       std::lock_guard lock(completion_mutex);
+      if (completions.size() >= kCompletionCap) {
+        dropped = kCompletionCap / 4;
+        completions.erase(completions.begin(),
+                          completions.begin() + static_cast<std::ptrdiff_t>(dropped));
+      }
       completions.push_back(c);
+    } catch (...) {
+      dropped += 1;
+    }
+    if (dropped != 0) {
+      const auto total =
+          completions_dropped.fetch_add(dropped, std::memory_order_relaxed) + dropped;
+      ::mv::log::write(::mv::log::level::warn, "completion queue: dropped %zu (total %llu)",
+                       dropped, static_cast<unsigned long long>(total));
     }
     if (completion_event) ::SetEvent(completion_event);
   }
@@ -442,10 +507,13 @@ mv::image::tile_service& tile_service_for(mv_session* session) {
 // above ~64 MP or past the 16384 texture limit - a tiled pyramid with its
 // overview (docs/design/04). `mip_limit` 1 is the top-level-only staging upload of
 // the single-texture path; a tiled image has no such stage.
+// `gate` (issue #166) holds back an over-budget single-texture create; the
+// tiled path has its own budget (the tile service) and ignores it.
 status upload_still(mv_session* session, ID3D11Device* device,
                     const std::shared_ptr<mv::image::display_image>& cpu,
                     const mv::job_context& ctx, std::uint32_t mip_limit,
-                    std::unique_ptr<mv::image::gpu_image>& out) {
+                    std::unique_ptr<mv::image::gpu_image>& out,
+                    const mv::image::create_gate* gate = nullptr) {
   if (mv::image::needs_tiles(cpu->width, cpu->height)) {
     std::shared_ptr<const mv::image::tile_source> reuse;
     {
@@ -458,7 +526,7 @@ status upload_still(mv_session* session, ID3D11Device* device,
     out = std::make_unique<mv::image::gpu_image>(std::move(uploaded).value());
     return status::ok;
   }
-  auto uploaded = mv::image::upload(device, *cpu, ctx.gen(), &ctx, mip_limit);
+  auto uploaded = mv::image::upload(device, *cpu, ctx.gen(), &ctx, mip_limit, gate);
   if (!uploaded) return uploaded.error();
   out = std::make_unique<mv::image::gpu_image>(std::move(uploaded).value());
   out->quality = mip_limit == 1 ? mv::image::gpu_quality::full_top : mv::image::gpu_quality::full;
@@ -478,17 +546,23 @@ void publish_clip_placeholder(mv_session* session, const std::string& path, std:
                               std::int64_t mtime_unix, std::uint64_t size,
                               const mv::job_context& ctx) {
   if (!session->thumbs.is_open()) return;
-  std::string file;
-  if (auto mhit = session->thumbs.lookup(
-          mv::image::moment_thumb_key(path, moment_ms, mtime_unix, size));
-      mhit && !mhit.value().empty()) {
-    file = std::move(mhit).value();
-  } else if (auto phit = session->thumbs.lookup(mv::image::thumb_key{path, mtime_unix, size});
-             phit && !phit.value().empty()) {
-    file = std::move(phit).value();
+  // Foreground: no stat per candidate (issue #168). The read is the check, and
+  // a row whose file has gone is dropped and the next candidate tried.
+  std::optional<std::vector<std::uint8_t>> bytes;
+  for (const mv::image::thumb_key& key :
+       {mv::image::moment_thumb_key(path, moment_ms, mtime_unix, size),
+        mv::image::thumb_key{path, mtime_unix, size}}) {
+    if (ctx.cancelled()) return;
+    auto hit = session->thumbs.lookup_unverified(key);
+    if (!hit || hit.value().empty()) continue;
+    auto read = mv::io::read_all(hit.value());
+    if (!read) {
+      session->thumbs.forget(key);
+      continue;
+    }
+    bytes = std::move(read).value();
+    break;
   }
-  if (file.empty() || ctx.cancelled()) return;
-  auto bytes = mv::io::read_all(file);
   if (!bytes || ctx.cancelled()) return;
   auto decoded = mv::image::decode_bytes(bytes.value(), &ctx, 1);
   if (!decoded) return;
@@ -528,7 +602,8 @@ status open_video_worker(mv_session* session, const std::string& path, const mv:
   auto* source = result.value();
   if (ctx.cancelled()) { mv::player::close_media(source); return status::cancelled; }
   const auto info = source->info();
-  session->video.publish(source, ctx.gen());
+  // Refused (and closed) when the view has already moved past this generation.
+  if (!session->video.publish(source, ctx.gen())) return status::cancelled;
   if (moment_ms >= 0) {
     const std::int64_t at_ns = moment_ms * 1'000'000;
     session->video.command([at_ns](mv::player::media_source& s) {
@@ -553,6 +628,41 @@ bool path_is_selected(mv_session* session, const std::string& path) {
   }
   if (session->folder_selected >= session->folder_items.size()) return false;
   return session->folder_items[session->folder_selected].path == path;
+}
+
+// Issue #166: wakes upload gates to re-check (the canvas stopped, a
+// selection, closing).
+void wake_upload_gates(mv_session* session) noexcept { session->upload_gate_cv.notify_all(); }
+
+// The backstop for a wake the render thread's lock-free notify can miss.
+constexpr auto k_upload_gate_poll = std::chrono::milliseconds(50);
+
+// [worker] Issue #166's budget for a full-resolution single texture. A
+// neighbour's create bigger than one frame's upload budget would hold the
+// device lock (ID3D10Multithread) across presents while the user pans or zooms
+// the current image, so it waits until the canvas stops moving. What is on
+// screen never waits: the selected path (including a neighbour the user has
+// just landed on, handed off mid-wait) goes at once, as does any create that
+// fits the budget. False when the job was cancelled or the session is closing.
+struct neighbour_create_gate {
+  mv_session* session = nullptr;
+  const std::string* path = nullptr;
+  const mv::job_context* ctx = nullptr;
+};
+
+bool wait_for_still_canvas(void* user, std::uint64_t texture_bytes) {
+  const auto& g = *static_cast<const neighbour_create_gate*>(user);
+  mv_session* session = g.session;
+  if (texture_bytes <= mv::image::k_frame_budget_create_bytes) return true;
+  for (;;) {
+    if (session->closing.load(std::memory_order_acquire) || g.ctx->cancelled()) return false;
+    if (!session->canvas_moving.load(std::memory_order_acquire)) return true;
+    if (path_is_selected(session, *g.path)) return true;
+    // Any wake (or the poll) goes round the checks above again.
+    std::unique_lock lock(session->upload_gate_mutex);
+    if (!session->canvas_moving.load(std::memory_order_acquire)) continue;
+    (void)session->upload_gate_cv.wait_for(lock, k_upload_gate_poll);
+  }
 }
 
 void push_folder_selected(mv_session* session, uint32_t index) {
@@ -1034,6 +1144,10 @@ void submit_decode_to_lru(mv_session* session, std::string path, mv::generation 
         // (lru_put) and its pyramid is the expensive part. Dropped here.
         if (tiled && !path_is_selected(session, path)) return status::ok;
 
+        // Issue #166: a neighbour's over-budget create waits out a pan or zoom
+        // of the image on screen; the selected path never waits.
+        neighbour_create_gate gate_state{session, &path, &ctx};
+        const mv::image::create_gate gate{&wait_for_still_canvas, &gate_state};
         auto upload_and_publish = [&](std::uint32_t mip_limit) -> status {
           auto dev = session->copy_device();
           if (!dev) {
@@ -1043,7 +1157,7 @@ void submit_decode_to_lru(mv_session* session, std::string path, mv::generation 
             return status::ok;
           }
           std::unique_ptr<mv::image::gpu_image> gpu;
-          const status up = upload_still(session, dev.Get(), cpu, ctx, mip_limit, gpu);
+          const status up = upload_still(session, dev.Get(), cpu, ctx, mip_limit, gpu, &gate);
           if (up != status::ok) return up;
           if (ctx.cancelled()) return status::cancelled;
           lru_put(session, path, *gpu, info);
@@ -1330,6 +1444,86 @@ void resolve_date_stamps(mv_session* session) {
       });
 }
 
+// Issue #207: the rating and label of `e` when its stamp is current, else null.
+// folder_mutex held.
+const mv::io::cull_marks* cull_stamp_of_locked(const mv_session* session,
+                                               const mv::io::dir_entry& e) {
+  const auto it = session->cull_stamps.find(e.path_utf8);
+  if (it == session->cull_stamps.end() || it->second.mtime_unix != e.mtime_unix ||
+      it->second.size != e.size) {
+    return nullptr;
+  }
+  return &it->second.marks;
+}
+
+// The stops of the current listing with no current cull stamp. folder_mutex held.
+std::vector<mv::io::dir_entry> missing_cull_stamps_locked(const mv_session* session) {
+  std::vector<mv::io::dir_entry> missing;
+  for (const auto& l : session->folder_listing) {
+    if (cull_stamp_of_locked(session, l.primary) == nullptr) missing.push_back(l.primary);
+  }
+  return missing;
+}
+
+// Reads the rating and label of each of `missing` (a worker: a bounded head
+// read plus the sidecar each). False when the user moved to another folder
+// meanwhile. A file the host rewrote while it was read is left unread.
+bool read_cull_stamps(mv_session* session, const std::string& dir,
+                      const std::vector<mv::io::dir_entry>& missing) {
+  for (const auto& e : missing) {
+    std::uint64_t started = 0;
+    {
+      std::lock_guard lock(session->folder_mutex);
+      if (session->folder_dir != dir) return false;
+      started = session->cull_epoch;
+    }
+    const mv::io::cull_marks marks = mv::meta::read_cull_marks(e.path_utf8);
+    std::lock_guard lock(session->folder_mutex);
+    if (session->folder_dir != dir) return false;
+    const auto forgot = session->cull_forgotten.find(e.path_utf8);
+    if (forgot != session->cull_forgotten.end() && forgot->second > started) continue;
+    session->cull_stamps[e.path_utf8] = {e.mtime_unix, e.size, marks};
+  }
+  return true;
+}
+
+// A cull filter on a listing with stamps still missing: one background job
+// reads them, then re-applies the listing (the stop on screen stays). One at
+// a time; a relist while it runs leaves the rest to the relist it makes, so
+// this cannot loop: that relist finds nothing missing.
+void resolve_cull_stamps(mv_session* session) {
+  std::vector<mv::io::dir_entry> missing;
+  std::string dir;
+  {
+    std::lock_guard lock(session->folder_mutex);
+    if (session->cull_resolving) return;
+    missing = missing_cull_stamps_locked(session);
+    if (missing.empty()) return;
+    dir = session->folder_dir;
+    session->cull_resolving = true;
+  }
+  const mv::job_id id = session->jobs.submit_at(
+      mv::background_generation,
+      [session, dir, missing = std::move(missing)](const mv::job_context&) -> status {
+        const bool same = read_cull_stamps(session, dir, missing);
+        std::vector<mv::io::listed_item> again;
+        {
+          std::lock_guard lock(session->folder_mutex);
+          session->cull_resolving = false;
+          if (!same || session->folder_dir != dir) return status::ok;
+          again = session->folder_listing;
+        }
+        if (!again.empty() && mv::io::needs_cull_marks(session->kind_filter.load())) {
+          apply_folder_list(session, std::move(again), true);
+        }
+        return status::ok;
+      });
+  if (id == mv::invalid_job) {
+    std::lock_guard lock(session->folder_mutex);
+    session->cull_resolving = false;
+  }
+}
+
 // `listed` is already paired (docs/design/16 speed rule 4: pairing happens at scan,
 // never per next), so every folder_items entry is one arrow-key stop. It arrives
 // in scan order; this puts it in the session's sort order.
@@ -1344,24 +1538,80 @@ void apply_folder_list(mv_session* session, std::vector<mv::io::listed_item> lis
     std::lock_guard lock(session->folder_mutex);
     is_list = session->folder_is_list;
   }
-  if (const std::uint32_t hide = session->hidden_kinds.load(); hide != 0) {
-    // Settings left a kind out. The file the folder was opened on and the stop
-    // on screen stay: an explicit open still shows, and a relist never pulls
-    // the current item out from under the user.
+  const std::uint32_t hide = session->hidden_kinds.load();
+  const std::uint32_t filter = session->kind_filter.load();
+  if (hide != 0 || filter != 0) {
+    // Settings left a kind out, or View > Show narrowed the listing
+    // (io::keeps_stop, the rule the Mac host applies too). The file the
+    // folder was opened on and the stop on screen stay: an explicit open
+    // still shows, and a relist never pulls the current item out from under
+    // the user. The relist a new filter makes is the exception: it moves on.
     std::string keep_want;
     std::string keep_current;
+    bool filter_changed = false;
+    std::unordered_set<std::string> kept;
     {
       std::lock_guard lock(session->folder_mutex);
       keep_want = session->folder_select_path;
       if (session->folder_selected < session->folder_items.size()) {
         keep_current = session->folder_items[session->folder_selected].path;
       }
+      filter_changed = std::exchange(session->kind_filter_changed, false);
+      if ((filter & mv::io::kHideUnmarked) != 0) kept = session->kind_kept;
     }
-    std::erase_if(listed, [&](const mv::io::listed_item& e) {
-      if (!mv::io::is_hidden_kind(e.primary.name_utf8, hide)) return false;
+    auto stays = [&](const std::string& p) {
+      return (!keep_want.empty() && p == keep_want) || (!keep_current.empty() && p == keep_current);
+    };
+    // Issue #207: a cull filter looks up each stop's rating and label (one
+    // lock, no file read). A stop not read yet counts as unrated and
+    // unlabelled until resolve_cull_stamps' relist; mv_folder_set_kind_filter
+    // reads them before the relist that moves the stop on screen.
+    const bool cull = mv::io::needs_cull_marks(filter);
+    std::vector<mv::io::cull_marks> marks;
+    bool marks_missing = false;
+    if (cull) {
+      marks.resize(listed.size());
+      std::lock_guard lock(session->folder_mutex);
+      for (std::size_t i = 0; i < listed.size(); ++i) {
+        if (const auto* m = cull_stamp_of_locked(session, listed[i].primary)) {
+          marks[i] = *m;
+        } else {
+          marks_missing = true;
+        }
+      }
+    }
+    std::vector<mv::io::listed_item> all;
+    if (filter != 0) all = listed;  // a filter that leaves nothing falls back to this
+    std::size_t out = 0;
+    for (std::size_t i = 0; i < listed.size(); ++i) {
+      const mv::io::listed_item& e = listed[i];
       const std::string& p = e.primary.path_utf8;
-      return !((!keep_want.empty() && p == keep_want) || (!keep_current.empty() && p == keep_current));
-    });
+      if (!mv::io::keeps_stop(e.primary.name_utf8, e.secondary.name_utf8, kept.contains(p),
+                              stays(p), hide, filter, filter_changed,
+                              cull ? marks[i] : mv::io::cull_marks{})) {
+        continue;
+      }
+      if (out != i) listed[out] = std::move(listed[i]);
+      ++out;
+    }
+    listed.resize(out);
+    if (marks_missing) resolve_cull_stamps(session);
+    if (filter != 0 && listed.empty()) {
+      // Nothing of that kind here: the stop on screen stays, so the canvas
+      // never goes blank under a menu choice.
+      std::erase_if(all, [&](const mv::io::listed_item& e) { return !stays(e.primary.path_utf8); });
+      listed = std::move(all);
+    }
+    if (filter_changed && !keep_want.empty()) {
+      // The explicit open is spent once a filter has been chosen over it.
+      const bool still = std::any_of(listed.begin(), listed.end(), [&](const mv::io::listed_item& e) {
+        return e.primary.path_utf8 == keep_want || e.secondary.path_utf8 == keep_want;
+      });
+      if (!still) {
+        std::lock_guard lock(session->folder_mutex);
+        if (session->folder_select_path == keep_want) session->folder_select_path.clear();
+      }
+    }
   }
   if (!is_list) {
     refresh_subdirs(session);
@@ -1381,6 +1631,25 @@ void apply_folder_list(mv_session* session, std::vector<mv::io::listed_item> lis
     if (changed && previous_index < session->folder_items.size()) {
       previous_path = session->folder_items[previous_index].path;
       previous_secondary = session->folder_items[previous_index].secondary_path;
+    }
+    if (!session->renamed_from.empty()) {
+      // F2 (0.21): once the listing shows the rename, the stop on screen is
+      // the file it was, under its new name.
+      bool from_listed = false;
+      bool to_listed = false;
+      for (const auto& e : listed) {
+        from_listed |= e.primary.path_utf8 == session->renamed_from;
+        to_listed |= e.primary.path_utf8 == session->renamed_to;
+      }
+      if (!from_listed && to_listed) {
+        if (previous_path == session->renamed_from) {
+          previous_path = session->renamed_to;
+          previous_secondary.clear();
+        }
+        if (want == session->renamed_from) want = session->folder_select_path = session->renamed_to;
+        session->renamed_from.clear();
+        session->renamed_to.clear();
+      }
     }
     session->folder_items.clear();
     session->folder_items.reserve(listed.size());
@@ -1540,6 +1809,10 @@ mv_status MV_CALL mv_session_release(mv_session_t session) {
     // submits jobs), then the pool.
     session->clip.reset();
     session->watcher.stop();
+    // Issue #166: a neighbour held at its upload gate gives up before the
+    // pool joins it.
+    session->closing.store(true, std::memory_order_release);
+    wake_upload_gates(session);
     session->jobs.shutdown();
     session->thumbs.close();
     delete session->ready.exchange(nullptr, std::memory_order_acq_rel);
@@ -1569,28 +1842,41 @@ mv_status MV_CALL mv_session_current_generation(mv_session_t session, uint32_t* 
   }));
 }
 
+// These two return a handle and a count, not a status, but are guarded all the
+// same (issue #236): a failure gets a correlation id and a last-error, and
+// nothing escapes into P/Invoke.
 void* MV_CALL mv_completion_wait_handle(mv_session_t session) {
-  if (!valid(session)) return nullptr;
-  return session->completion_event;
+  void* handle = nullptr;
+  (void)guard("mv_completion_wait_handle", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    handle = session->completion_event;
+    return status::ok;
+  });
+  return handle;
 }
 
 uint32_t MV_CALL mv_completion_drain(mv_session_t session, mv_completion* out, uint32_t capacity) {
-  if (!valid(session) || out == nullptr || capacity == 0) return 0;
+  uint32_t count = 0;
+  (void)guard("mv_completion_drain", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    MV_REQUIRE(out != nullptr && capacity != 0, "out must hold at least one completion");
 
-  std::lock_guard lock(session->completion_mutex);
-  const auto available = static_cast<uint32_t>(session->completions.size());
-  const uint32_t count = available < capacity ? available : capacity;
-  if (count == 0) {
-    ::ResetEvent(session->completion_event);
-    return 0;
-  }
+    std::lock_guard lock(session->completion_mutex);
+    const auto available = static_cast<uint32_t>(session->completions.size());
+    count = available < capacity ? available : capacity;
+    if (count == 0) {
+      ::ResetEvent(session->completion_event);
+      return status::ok;
+    }
 
-  std::memcpy(out, session->completions.data(), count * sizeof(mv_completion));
-  session->completions.erase(session->completions.begin(),
-                             session->completions.begin() + static_cast<std::ptrdiff_t>(count));
-  // Reset only when the queue is genuinely empty, so a partial drain leaves the
-  // caller a reason to come back.
-  if (session->completions.empty()) ::ResetEvent(session->completion_event);
+    std::memcpy(out, session->completions.data(), count * sizeof(mv_completion));
+    session->completions.erase(session->completions.begin(),
+                               session->completions.begin() + static_cast<std::ptrdiff_t>(count));
+    // Reset only when the queue is genuinely empty, so a partial drain leaves the
+    // caller a reason to come back.
+    if (session->completions.empty()) ::ResetEvent(session->completion_event);
+    return status::ok;
+  });
   return count;
 }
 
@@ -1779,6 +2065,8 @@ mv_status MV_CALL mv_folder_open(mv_session_t session, const char* utf8_dir,
       session->folder_list_title.clear();
       session->folder_list_moments.clear();
       session->folder_select_path = select;
+      session->renamed_from.clear();  // 0.21: a rename follows within one folder
+      session->renamed_to.clear();
       session->folder_listing.clear();
       session->folder_items.clear();
       session->folder_subdirs.clear();
@@ -1860,6 +2148,8 @@ mv_status MV_CALL mv_folder_open_list(mv_session_t session, const char* title_ut
       session->folder_list_title = title_utf8 ? title_utf8 : "";
       session->folder_list_moments = std::move(moments);
       session->folder_select_path = select;
+      session->renamed_from.clear();  // 0.21: a rename follows within one folder
+      session->renamed_to.clear();
       session->folder_listing.clear();
       session->folder_items.clear();
       session->folder_subdirs.clear();
@@ -1926,6 +2216,51 @@ mv_status MV_CALL mv_folder_item_moment(mv_session_t session, uint32_t index, in
   }));
 }
 
+mv_status MV_CALL mv_folder_entries(mv_session_t session, mv_folder_entry* entries,
+                                    uint32_t entry_cap, char* strings, uint32_t string_cap,
+                                    uint32_t* out_count, uint32_t* out_string_bytes) {
+  return static_cast<mv_status>(guard("mv_folder_entries", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    MV_REQUIRE(out_count != nullptr, "out_count must not be null");
+    MV_REQUIRE(out_string_bytes != nullptr, "out_string_bytes must not be null");
+    std::lock_guard lock(session->folder_mutex);
+    const auto& items = session->folder_items;
+    std::uint64_t bytes = 0;
+    for (const auto& it : items) {
+      bytes += it.name.size() + it.path.size() + it.thumb_path.size() + it.secondary_path.size() + 4;
+    }
+    MV_REQUIRE(bytes <= UINT32_MAX && items.size() <= UINT32_MAX, "listing too large");
+    *out_count = static_cast<uint32_t>(items.size());
+    *out_string_bytes = static_cast<uint32_t>(bytes);
+    if (items.size() > entry_cap || bytes > string_cap) return status::invalid_arg;
+    if (!items.empty() && (entries == nullptr || strings == nullptr)) return status::invalid_arg;
+    uint32_t at = 0;
+    const auto put = [&](const std::string& s) {
+      const uint32_t offset = at;
+      std::memcpy(strings + at, s.c_str(), s.size() + 1);
+      at += static_cast<uint32_t>(s.size() + 1);
+      return offset;
+    };
+    for (std::size_t i = 0; i < items.size(); ++i) {
+      const auto& it = items[i];
+      mv_folder_entry e{};
+      e.item.index = static_cast<uint32_t>(i);
+      e.item.flags = (i == session->folder_selected ? 1u : 0u) | (it.primary_raw ? 2u : 0u) |
+                     (it.clip ? 4u : 0u);
+      e.item.size_bytes = it.size;
+      e.item.mtime_unix = it.mtime_unix;
+      e.item.pair_kind = static_cast<uint32_t>(it.pair);
+      e.moment_ms = it.moment_ms;
+      e.name_offset = put(it.name);
+      e.path_offset = put(it.path);
+      e.thumb_offset = put(it.thumb_path);
+      e.pair_offset = put(it.secondary_path);
+      entries[i] = e;
+    }
+    return status::ok;
+  }));
+}
+
 mv_status MV_CALL mv_folder_set_sort(mv_session_t session, int32_t packed) {
   return static_cast<mv_status>(guard("mv_folder_set_sort", [&]() -> status {
     MV_REQUIRE(valid(session), "session must not be null");
@@ -1979,6 +2314,102 @@ mv_status MV_CALL mv_folder_set_hidden_kinds(mv_session_t session, uint32_t mask
           return status::ok;
         });
     return id == mv::invalid_job ? status::internal : status::ok;
+  }));
+}
+
+mv_status MV_CALL mv_folder_set_kind_filter(mv_session_t session, uint32_t mask,
+                                            const char* const* kept, uint32_t kept_count) {
+  return static_cast<mv_status>(guard("mv_folder_set_kind_filter", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    MV_REQUIRE(kept != nullptr || kept_count == 0, "kept must not be null when kept_count > 0");
+    static_assert(MV_FOLDER_HIDE_STILLS == mv::io::kHideStills);
+    static_assert(MV_FOLDER_HIDE_CLIPS == mv::io::kHideClips);
+    static_assert(MV_FOLDER_HIDE_RAW == mv::io::kHideRaw);
+    static_assert(MV_FOLDER_HIDE_UNMARKED == mv::io::kHideUnmarked);
+    static_assert(MV_FOLDER_HIDE_REJECTED == mv::io::kHideRejected);
+    static_assert(MV_FOLDER_HIDE_UNPICKED == mv::io::kHideUnpicked);
+    static_assert(MV_FOLDER_LABEL_SHIFT == mv::io::kHideLabelShift);
+    static_assert(MV_FOLDER_HIDE_OTHER_LABELS == mv::io::kHideOtherLabels);
+    const std::uint32_t next = mask & mv::io::kHideKnown;
+    // Issue #207: a cull filter (rating, label) is chosen again to re-apply it,
+    // and it takes effect once the job below has read the ratings and labels
+    // still missing, so the relist that moves off the stop on screen sees them
+    // all: until then the listing stays as it was.
+    const bool cull = mv::io::needs_cull_marks(next);
+    std::unordered_set<std::string> paths;
+    if ((next & mv::io::kHideUnmarked) != 0) {
+      paths.reserve(kept_count);
+      for (uint32_t i = 0; i < kept_count; ++i) {
+        if (kept[i] != nullptr && kept[i][0] != '\0') paths.emplace(kept[i]);
+      }
+    }
+    bool have = false;
+    std::string dir;
+    {
+      std::lock_guard lock(session->folder_mutex);
+      if (!cull && session->kind_filter.load() == next && session->kind_kept == paths) return status::ok;
+      have = !session->folder_listing.empty();
+      dir = session->folder_dir;
+      if (!cull || !have) {
+        session->kind_kept = std::move(paths);
+        session->kind_filter.store(next);
+        session->kind_filter_changed = have;
+      }
+    }
+    if (!have) return status::ok;  // applies to the next open
+    const mv::job_id id = session->jobs.submit_at(
+        mv::background_generation,
+        [session, cull, next, dir, paths = std::move(paths)](const mv::job_context&) mutable -> status {
+          if (cull) {
+            std::vector<mv::io::dir_entry> missing;
+            {
+              std::lock_guard lock(session->folder_mutex);
+              missing = missing_cull_stamps_locked(session);
+            }
+            const bool same = missing.empty() || read_cull_stamps(session, dir, missing);
+            std::lock_guard lock(session->folder_mutex);
+            session->kind_kept = std::move(paths);
+            session->kind_filter.store(next);
+            // Another folder opened meanwhile: its own listing applies it.
+            session->kind_filter_changed = same && !session->folder_listing.empty();
+          }
+          std::vector<mv::io::listed_item> again;
+          {
+            std::lock_guard lock(session->folder_mutex);
+            again = session->folder_listing;
+          }
+          if (again.empty()) return status::ok;
+          apply_folder_list(session, std::move(again), true);
+          return status::ok;
+        });
+    return id == mv::invalid_job ? status::internal : status::ok;
+  }));
+}
+
+mv_status MV_CALL mv_folder_note_metadata_written(mv_session_t session, const char* utf8_path) {
+  return static_cast<mv_status>(guard("mv_folder_note_metadata_written", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    MV_REQUIRE(utf8_path != nullptr && utf8_path[0] != '\0', "utf8_path must not be empty");
+    const std::string path(utf8_path);
+    std::lock_guard lock(session->folder_mutex);
+    session->cull_stamps.erase(path);
+    if (session->cull_forgotten.size() > 256) session->cull_forgotten.clear();
+    session->cull_forgotten[path] = ++session->cull_epoch;
+    return status::ok;
+  }));
+}
+
+mv_status MV_CALL mv_folder_renamed(mv_session_t session, const char* old_utf8,
+                                    const char* new_utf8) {
+  return static_cast<mv_status>(guard("mv_folder_renamed", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    MV_REQUIRE(old_utf8 != nullptr && new_utf8 != nullptr, "paths must not be null");
+    std::lock_guard lock(session->folder_mutex);
+    if (session->folder_dir.empty() || session->folder_is_list) return status::ok;
+    // The folder watcher's relist of the rename applies it (apply_folder_list).
+    session->renamed_from = old_utf8;
+    session->renamed_to = new_utf8;
+    return status::ok;
   }));
 }
 
@@ -2121,6 +2552,10 @@ mv_status MV_CALL mv_folder_select(mv_session_t session, uint32_t index, uint64_
     }
     if (out_job_id) *out_job_id = 0;
     submit_decode_to_lru(session, std::move(path), gen);
+    // Issue #166: after the hand-off above, so a neighbour waiting at its
+    // upload gate wakes as the selected path (not as a cancelled job between
+    // the bump and the hand-off) and creates at once.
+    wake_upload_gates(session);
     submit_prefetch(session, index, gen);
     return status::ok;
   }));
@@ -2316,18 +2751,23 @@ mv_status MV_CALL mv_folder_request_summary(mv_session_t session, uint32_t index
 }
 
 mv_status MV_CALL mv_video_open(mv_session_t session, const char* path, uint64_t* job) {
-  // Unlike mv_image_open, the legacy video entry point owns the view-intent
-  // bump (its public contract promises that it does).
-  if (!valid(session) || !path || path[0] == '\0') return MV_ERR_INVALID_ARG;
-  const mv_status bumped = mv_session_bump_generation(session, nullptr);
-  if (bumped != MV_OK) return bumped;
-  return mv_image_open(session, path, job);
+  return static_cast<mv_status>(guard("mv_video_open", [&]() -> status {
+    // Unlike mv_image_open, the legacy video entry point owns the view-intent
+    // bump (its public contract promises that it does).
+    MV_REQUIRE(valid(session), "session must not be null");
+    MV_REQUIRE(path != nullptr && path[0] != '\0', "path must not be empty");
+    const mv_status bumped = mv_session_bump_generation(session, nullptr);
+    if (bumped != MV_OK) return static_cast<status>(bumped);
+    return static_cast<status>(mv_image_open(session, path, job));
+  }));
 }
 mv_status MV_CALL mv_video_close(mv_session_t session) {
-  if (!session) return MV_ERR_INVALID_ARG;
-  session->jobs.bump_generation();
-  if (session->image_ready_event) ::SetEvent(session->image_ready_event);
-  return MV_OK;
+  return static_cast<mv_status>(guard("mv_video_close", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    session->jobs.bump_generation();
+    if (session->image_ready_event) ::SetEvent(session->image_ready_event);
+    return status::ok;
+  }));
 }
 mv_status MV_CALL mv_video_play(mv_session_t session) {
   return static_cast<mv_status>(guard("mv_video_play", [&]() -> status {
@@ -2412,40 +2852,49 @@ mv_status MV_CALL mv_video_set_loop(mv_session_t session, int64_t a, int64_t b) 
   }));
 }
 mv_status MV_CALL mv_video_position(mv_session_t session, int64_t* out) {
-  if (!session || !out) return MV_ERR_INVALID_ARG;
-  mv::player::media_info info; mv::player::clock_stats stats; mv::player::play_state state;
-  session->video.snapshot(info, stats, *out, state); return MV_OK;
+  return static_cast<mv_status>(guard("mv_video_position", [&]() -> status {
+    MV_REQUIRE(valid(session) && out != nullptr, "session and out must not be null");
+    mv::player::media_info info; mv::player::clock_stats stats; mv::player::play_state state;
+    session->video.snapshot(info, stats, *out, state); return status::ok;
+  }));
 }
 mv_status MV_CALL mv_video_state(mv_session_t session, uint32_t* out) {
-  if (!session || !out) return MV_ERR_INVALID_ARG;
-  mv::player::media_info info; mv::player::clock_stats stats;
-  mv::player::play_state state; mv::player::time_ns position;
-  session->video.snapshot(info, stats, position, state); *out = static_cast<uint32_t>(state); return MV_OK;
+  return static_cast<mv_status>(guard("mv_video_state", [&]() -> status {
+    MV_REQUIRE(valid(session) && out != nullptr, "session and out must not be null");
+    mv::player::media_info info; mv::player::clock_stats stats;
+    mv::player::play_state state; mv::player::time_ns position;
+    session->video.snapshot(info, stats, position, state); *out = static_cast<uint32_t>(state);
+    return status::ok;
+  }));
 }
 mv_status MV_CALL mv_video_get_info(mv_session_t session, mv_video_info* out) {
-  if (!session || !out) return MV_ERR_INVALID_ARG;
-  mv::player::media_info info; mv::player::clock_stats stats;
-  mv::player::play_state state; mv::player::time_ns position;
-  session->video.snapshot(info, stats, position, state);
-  *out = {}; out->duration_ns = info.duration_ns; out->width = info.video.width; out->height = info.video.height;
-  out->frame_rate = info.video.frame_rate; out->audio_tracks = info.audio_tracks; out->video_tracks = info.video_tracks;
-  out->decoder = static_cast<uint32_t>(info.video.decoder);
-  out->flags = (info.has_audio ? 1u : 0u) | (info.video.ten_bit ? 2u : 0u);
-  std::memcpy(out->codec_name, info.video.codec_name, sizeof(out->codec_name)); return MV_OK;
+  return static_cast<mv_status>(guard("mv_video_get_info", [&]() -> status {
+    MV_REQUIRE(valid(session) && out != nullptr, "session and out must not be null");
+    mv::player::media_info info; mv::player::clock_stats stats;
+    mv::player::play_state state; mv::player::time_ns position;
+    session->video.snapshot(info, stats, position, state);
+    *out = {}; out->duration_ns = info.duration_ns; out->width = info.video.width; out->height = info.video.height;
+    out->frame_rate = info.video.frame_rate; out->audio_tracks = info.audio_tracks; out->video_tracks = info.video_tracks;
+    out->decoder = static_cast<uint32_t>(info.video.decoder);
+    out->flags = (info.has_audio ? 1u : 0u) | (info.video.ten_bit ? 2u : 0u);
+    std::memcpy(out->codec_name, info.video.codec_name, sizeof(out->codec_name)); return status::ok;
+  }));
 }
 mv_status MV_CALL mv_video_get_stats(mv_session_t session, mv_video_stats* out) {
-  if (!session || !out) return MV_ERR_INVALID_ARG;
-  mv::player::media_info info; mv::player::clock_stats stats;
-  mv::player::play_state state; mv::player::time_ns position;
-  session->video.snapshot(info, stats, position, state);
-  *out = {}; out->position_ns = position; out->audio_clock_ns = stats.audio_clock_ns;
-  out->err_ms_p50 = stats.err_ms_p50; out->err_ms_p99 = stats.err_ms_p99;
-  out->drift_slope_ms_per_min = stats.drift_slope_ms_per_min; out->playback_rate = stats.playback_rate;
-  out->frames_presented = stats.counters.presented; out->frames_dropped_late = stats.counters.dropped_late;
-  out->holds_cadence = stats.counters.held_cadence; out->holds_starved = stats.counters.held_starved;
-  out->device_rebuilds = stats.counters.device_rebuilds; out->position_discontinuities = stats.position_discontinuities;
-  out->audio_master = stats.audio_master ? 1u : 0u; out->fallback_reason = static_cast<uint32_t>(stats.fallback);
-  return MV_OK;
+  return static_cast<mv_status>(guard("mv_video_get_stats", [&]() -> status {
+    MV_REQUIRE(valid(session) && out != nullptr, "session and out must not be null");
+    mv::player::media_info info; mv::player::clock_stats stats;
+    mv::player::play_state state; mv::player::time_ns position;
+    session->video.snapshot(info, stats, position, state);
+    *out = {}; out->position_ns = position; out->audio_clock_ns = stats.audio_clock_ns;
+    out->err_ms_p50 = stats.err_ms_p50; out->err_ms_p99 = stats.err_ms_p99;
+    out->drift_slope_ms_per_min = stats.drift_slope_ms_per_min; out->playback_rate = stats.playback_rate;
+    out->frames_presented = stats.counters.presented; out->frames_dropped_late = stats.counters.dropped_late;
+    out->holds_cadence = stats.counters.held_cadence; out->holds_starved = stats.counters.held_starved;
+    out->device_rebuilds = stats.counters.device_rebuilds; out->position_discontinuities = stats.position_discontinuities;
+    out->audio_master = stats.audio_master ? 1u : 0u; out->fallback_reason = static_cast<uint32_t>(stats.fallback);
+    return status::ok;
+  }));
 }
 mv_status MV_CALL mv_probe_is_video(mv_session_t session, const char* path, int32_t* out) {
   return static_cast<mv_status>(guard("mv_probe_is_video", [&]() -> status {
@@ -2534,11 +2983,9 @@ void* image_ready_wait_handle(mv_session_t session) {
 }
 
 void release_gpu_image(image::gpu_image* image) {
-  // A tiled image's set is freed by its service thread, not here: poke it so
-  // a retired pyramid does not wait for the next tile request.
-  image::tile_service* service = image && image->tiles ? image->tiles->service() : nullptr;
+  // A tiled image's set is freed by its service thread, not here. Dropping the
+  // last outside handle pokes the service (image/tiles.cpp upload_tiled).
   delete image;
-  if (service) service->poke();
 }
 
 std::span<const gfx::tile_quad> tiles_frame(const image::gpu_image& image,
@@ -2549,6 +2996,20 @@ std::span<const gfx::tile_quad> tiles_frame(const image::gpu_image& image,
 
 image::tile_stats tiles_stats(const image::gpu_image& image) noexcept {
   return image.tiles ? image.tiles->stats() : image::tile_stats{};
+}
+
+image::texture_upload_stats texture_upload_stats() noexcept {
+  return image::texture_upload_stats_now();
+}
+
+void set_canvas_moving(mv_session_t session, bool moving) noexcept {
+  if (!session) return;
+  // One exchange per frame. Stopping wakes the neighbours' gated creates
+  // (issue #166); the render thread never takes the gate's mutex, and a wake
+  // lost to that is caught by the gate's poll.
+  if (session->canvas_moving.exchange(moving, std::memory_order_acq_rel) && !moving) {
+    wake_upload_gates(session);
+  }
 }
 
 bool take_animation_frame(mv_session_t session, std::uint32_t generation,

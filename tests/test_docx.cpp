@@ -49,6 +49,17 @@ bool have_fonts() {
 
 }  // namespace
 
+TEST_CASE("Image installs the document font reader", "[docx][text]") {
+  // Referencing the pipeline keeps image/pipeline.cpp, and its font-reader
+  // installer, in this binary.
+  (void)mv::image::decode_bytes({});
+  REQUIRE(mv::codec::text::font_reader_installed());
+  if (!have_fonts()) SKIP("no readable system font");
+  mv::codec::text::engine e;
+  const auto word = e.shape("Hi", {});
+  CHECK(word.font >= 0);
+}
+
 TEST_CASE("The zip reader reads stored and deflated parts, and refuses bad ones", "[docx][zip]") {
   const auto bytes = fx::zip({{"a.txt", "hello"}, {"b.txt", std::string(5000, 'x'), true}});
   auto zip = mv::codec::zip::archive::open(bytes);

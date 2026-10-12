@@ -37,11 +37,13 @@ extern "C" {
 #include <libswscale/swscale.h>
 }
 
+#include "core/crash_context.h"
 #include "core/result.h"
 #include "core/status.h"
 #include "gfx/colour_desc.h"
 #include "player/video_source.h"
 #include "player/av_clock.h"
+#include "player/wake_signal.h"
 
 namespace mv::player {
 
@@ -137,13 +139,20 @@ class packet_queue {
   [[nodiscard]] std::size_t size() const noexcept;
   [[nodiscard]] bool stopped() const noexcept { return stopped_.load(std::memory_order_acquire); }
 
+  // [setup] Notified after every push, pop, flush and stop, so a worker parked
+  // on the pipeline's signal sees the queue change (issue #230).
+  void notify_on_change(wake_signal* signal) noexcept { signal_ = signal; }
+
  private:
+  void notify() noexcept { if (signal_) signal_->notify(); }
+
   mutable std::mutex      mutex_;
   std::condition_variable not_empty_;
   std::condition_variable not_full_;
   struct item { packet_ptr packet; std::uint32_t generation = 0; };
   std::deque<item> items_;
   std::atomic<bool>       stopped_{false};
+  wake_signal*            signal_ = nullptr;
 };
 
 // ---------------------------------------------------------------------------
@@ -221,6 +230,11 @@ class frame_ring {
 
   [[nodiscard]] std::uint32_t queued() const noexcept;
 
+  // [setup] Notified whenever a slot goes back to the free list, so a decode
+  // thread parked in reserve_slot wakes for it (issue #230). Lock-free: the
+  // notifier is the render thread.
+  void notify_on_release(wake_signal* signal) noexcept { released_ = signal; }
+
  private:
   [[nodiscard]] expected create_slot(video_frame& slot);
 #if defined(MV_DARWIN)
@@ -249,6 +263,8 @@ class frame_ring {
   // committed. Keeping it here rather than pushing it back to free_ is what
   // keeps free_ single-producer.
   std::uint32_t pending_index_ = index_capacity;
+
+  wake_signal* released_ = nullptr;
 };
 
 // ---------------------------------------------------------------------------
@@ -326,6 +342,19 @@ void hold_playback_timer(bool raised) noexcept;
 // ---------------------------------------------------------------------------
 
 struct video_pipeline {
+  video_pipeline() noexcept {
+    video_packets.notify_on_change(&wake);
+    audio_packets.notify_on_change(&wake);
+    ring.notify_on_release(&wake);
+    clock.notify_on_space(&wake);
+  }
+
+  // Where the demux, decode and still threads park when they cannot move
+  // (issue #230). Whatever changes what they wait for notifies it: the queues,
+  // the ring and the clock do so themselves; a seek, a generation bump and
+  // stop do so where they are made.
+  wake_signal wake;
+
   // Set up by video_source.cpp before the threads start.
   format_ctx_ptr  format;
   codec_ctx_ptr   codec;
@@ -403,7 +432,31 @@ struct video_pipeline {
   std::thread demux_thread;
   std::thread decode_thread;
   std::thread audio_thread;
+
+  // What this clip's threads put in their crash-report slots (issue #233,
+  // docs/design/13). Set by open before the threads start. Names here are
+  // libavformat / libavcodec static strings, never anything from the path or
+  // from the file's own tags.
+  struct crash_labels {
+    const char*   container = "unknown";  // AVInputFormat::name
+    const char*   video_codec = "none";   // avcodec_get_name
+    std::uint32_t width = 0, height = 0, bits = 0;
+    std::uint64_t correlation_id = 0;     // the ABI call that opened the clip
+  } crash;
 };
+
+// A crash slot for one of the clip's threads, described from `pipe.crash`.
+// The thread calls busy() before it enters FFmpeg and idle() before it parks.
+[[nodiscard]] inline crash_context::thread_slot clip_crash_slot(const video_pipeline& pipe,
+                                                                const char* role,
+                                                                const char* decoder,
+                                                                const char* version) noexcept {
+  crash_context::thread_slot slot;
+  slot.describe({.family = pipe.crash.container, .decoder = decoder, .version = version,
+                 .correlation_id = pipe.crash.correlation_id, .role = role},
+                pipe.crash.width, pipe.crash.height, pipe.crash.bits);
+  return slot;
+}
 
 void run_demux_thread(video_pipeline& pipe) noexcept;
 void run_video_decode_thread(video_pipeline& pipe) noexcept;

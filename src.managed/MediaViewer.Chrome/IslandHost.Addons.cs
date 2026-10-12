@@ -33,8 +33,9 @@ public static partial class IslandHost
 {
     private const string UpdateReleaseBase = "https://github.com/longtimeno-c/mediaviewer/releases/latest/download/";
 
+    // Dir: the installed version's folder (its sibling "data" holds the add-on's own files).
     private sealed record AddonState(bool Installed, string Version, string State, long Size, bool Loaded,
-        string Description = "", string HintText = "");
+        string Description = "", string HintText = "", string Dir = "");
 
     // Whether the release channel has a piece this build can install. Only
     // a manifest that verifies counts: the button never offers a download that
@@ -154,21 +155,22 @@ public static partial class IslandHost
 
         public StackPanel Root { get; }
 
-        public void Show(AddonPhase p)
+        public void Show(AddonPhase p) => Show(p.Fraction, p.Text);
+
+        /// <summary>The bar at <paramref name="fraction"/> (null: indeterminate)
+        /// over <paramref name="text"/>; open add-on downloads use this with
+        /// their own sizes (IslandHost.OpenAddons.cs).</summary>
+        public void Show(double? f, string text)
         {
-            double? f = p.Fraction;
-            // Whatever the phase the bar shows activity: indeterminate (a
-            // fixed third) while no fraction is known, during checking and
+            // Whatever the phase the bar shows activity: indeterminate (the
+            // sweep) while no fraction is known, during checking and
             // installing too (owner report, 2026-09-28). With animations off
-            // in Windows it is a still, dimmed full bar instead.
-            bool still = f is null && !HostAnimationsEnabled();
-            _bar.IsIndeterminate = f is null && !still;
-            _bar.Root.Opacity = still ? 0.45 : 1;
+            // in Windows the JobBar is a still, dimmed full bar instead.
+            _bar.IsIndeterminate = f is null;
             if (f is double v) _bar.Value = v;
-            else if (still) _bar.Value = 1;
-            _text.Text = p.Text;
+            _text.Text = text;
             _percent.Text = f is double pct ? $"{Math.Floor(pct * 100):0} %" : "";
-            AutomationProperties.SetName(Root, f is double a ? $"{p.Text}, {Math.Floor(a * 100):0} percent" : p.Text);
+            AutomationProperties.SetName(Root, f is double a ? $"{text}, {Math.Floor(a * 100):0} percent" : text);
         }
     }
 
@@ -253,23 +255,92 @@ public static partial class IslandHost
         }
     }
 
+    // Another window's process hosts the add-ons (ClaimAddonHost lost): this
+    // window searches through the AI pack's read-only reader (2026-10-07,
+    // owner: "make the AI available in more than one instance"). It indexes
+    // nothing, loads no Import, and installs or removes nothing: the store is
+    // the host window's.
+    private static bool _addonsElsewhere;
+
+    // The reader found nothing indexed yet (MvStatus.NotFound): Ctrl+F tries
+    // again, at most this often, once the host window has indexed a folder.
+    private static long _aiReaderEmptyAt;
+    private const long ReaderRetryMs = 10_000;
+
     /// <summary>Once a session is borrowed: load installed add-ons, watch for cards.</summary>
     private static void StartAddons()
     {
         if (_addonsStarted || _folderSession is null) return;
         _addonsStarted = true;
-        if (!ClaimAddonHost()) return;  // another window's process hosts them
+        if (!ClaimAddonHost())
+        {
+            // Nothing yet: the reader starts when this window first searches
+            // (EnsureReaderStarted). Reading the add-on states hashes every
+            // installed file (~1.2 GB with the AI pack, once per process) and the
+            // reader holds a text model: neither may compete with this window's
+            // first pixel, nor cost a window that never searches.
+            _addonsElsewhere = true;
+            return;
+        }
         MediaViewerSession session = _folderSession;
         _ = Task.Run(() =>
         {
             Dictionary<string, AddonState> states = ReadAddonStates();
             try { AddonNative.WatchVolumes(session); }
             catch (MediaViewerException ex) { System.Diagnostics.Debug.WriteLine(ex.Message); }
+            // Issue #299: an index left unfinished last session is not resumed by
+            // itself. The pack's resume.json (beside index.db) says which roots
+            // wait, so the window can ask without loading the pack.
+            AddonState? ai = states.GetValueOrDefault(AiSlot.Id);
+            List<UnfinishedRoot> unfinished = ai is { State: "ok" } && ai.Dir.Length > 0
+                ? ReadUnfinishedRoots(ai.Dir) : new List<UnfinishedRoot>();
             DispatcherQueueControllerTryEnqueue(() =>
             {
                 ApplyAddonStates(states);
                 if (ImportSlot.Usable) LoadAddon(ImportSlot);
-                if (AiSlot.Usable) LoadAddon(AiSlot);
+                // The AI pack is verified here, not loaded (issue #292,
+                // docs/design/17 "Starting on demand"): no runtime, no model
+                // sessions, no indexing threads until the first search
+                // (OpenFileSearch) or Settings' Start now. The search icon
+                // offers it meanwhile (AiOnDemand).
+                UpdatePathSearchButton();
+                AlertIfUnusable(ImportSlot);
+                AlertIfUnusable(AiSlot);
+                RefreshAddonRow();
+                RefreshLocalSearch();
+                MaybeShowResumeNotice(unfinished);
+            });
+        });
+    }
+
+    private static bool _readerStarted;
+
+    /// <summary>
+    /// A later window, at its first Ctrl+F, search icon or Settings: read what is
+    /// installed and load Local search through the reader, nothing else. A search
+    /// asked for meanwhile (<see cref="_searchOpenPending"/>) opens once it attaches,
+    /// or as a file search when Local search is not installed.
+    /// </summary>
+    private static void EnsureReaderStarted()
+    {
+        if (!_addonsElsewhere || _readerStarted || _folderSession is null) return;
+        _readerStarted = true;
+        _ = Task.Run(() =>
+        {
+            Dictionary<string, AddonState> states = ReadAddonStates();
+            DispatcherQueueControllerTryEnqueue(() =>
+            {
+                ApplyAddonStates(states);
+                AlertIfUnusable(AiSlot);
+                if (AiSlot.Usable)
+                {
+                    LoadAddon(AiSlot);
+                }
+                else if (_searchOpenPending)
+                {
+                    _searchOpenPending = false;
+                    OpenSearchFromPath();
+                }
                 RefreshAddonRow();
                 RefreshLocalSearch();
             });
@@ -292,7 +363,8 @@ public static partial class IslandHost
                     a.GetProperty("loaded").GetBoolean(),
                     // docs/design/25: Settings' line and the card hint, from the manifest.
                     a.TryGetProperty("description", out JsonElement d) ? d.GetString() ?? "" : "",
-                    a.TryGetProperty("hint_text", out JsonElement h) ? h.GetString() ?? "" : "");
+                    a.TryGetProperty("hint_text", out JsonElement h) ? h.GetString() ?? "" : "",
+                    a.TryGetProperty("dir", out JsonElement dir) ? dir.GetString() ?? "" : "");
             }
         }
         catch (Exception ex) when (ex is MediaViewerException or JsonException or KeyNotFoundException)
@@ -349,31 +421,93 @@ public static partial class IslandHost
     private static void LoadAddon(AddonSlot slot)
     {
         if (slot.Interface is null || slot.Chrome is not null || _folderSession is null || slot.Busy) return;
+        // A later window loads Local search only, and only as a reader.
+        bool reader = _addonsElsewhere;
+        if (reader && slot != AiSlot) return;
         MediaViewerSession session = _folderSession;
         slot.Busy = true;
-        // The path bar's search icon shows while the pack starts.
-        if (slot == AiSlot) OnSearchLoadChanged();
+        // The path bar's search icon shows while the pack starts, and the
+        // command-bar pill says so: the panel is the pack's, so it cannot.
+        if (slot == AiSlot)
+        {
+            HostSetIndexingPill(AiStartingText, true, -1, false);
+            OnSearchLoadChanged();
+            RefreshLocalSearch();
+        }
         _ = Task.Run(() =>
         {
             try
             {
                 // Native load re-verifies the signature and every file first.
-                (IntPtr table, string chromePath) = AddonNative.Load(session, slot.Id, slot.Interface);
+                (IntPtr table, string chromePath) = AddonNative.Load(session, slot.Id, slot.Interface, reader);
                 DispatcherQueueControllerTryEnqueue(() => AttachAddonChrome(slot, table, chromePath));
             }
             catch (MediaViewerException ex)
             {
-                string why = ex.Status == MvStatus.UnsupportedFormat
-                    ? $"{slot.Name} needs an update."
-                    : $"{slot.Name} did not pass verification and was not loaded.";
                 DispatcherQueueControllerTryEnqueue(() =>
                 {
                     slot.Busy = false;
-                    if (slot == AiSlot) OnSearchLoadChanged();
-                    SetSlotStatus(slot, why);
+                    bool asked = slot == AiSlot && _searchOpenPending;
+                    if (reader && ex.Status == MvStatus.NotFound)
+                    {
+                        // Not a failure: the first window has indexed nothing yet.
+                        _aiReaderEmptyAt = Environment.TickCount64;
+                        _searchOpenPending = false;
+                        SetSlotStatus(slot, ReaderEmptyText);
+                        if (asked) OpenSearchAfterReaderEmpty();
+                    }
+                    else
+                    {
+                        string why = AddonLoadReason(slot, ex);
+                        SetSlotStatus(slot, $"{AddonFailTitle(slot)}. {why}");
+                        ShowAddonAlert(slot, AddonFailTitle(slot), why, open: asked);
+                    }
+                    if (slot == AiSlot)
+                    {
+                        HostSetIndexingPill(null, false, -1, false);
+                        OnSearchLoadChanged();
+                    }
                 });
             }
         });
+    }
+
+    // Installed but refused before any load (the store's own check at start):
+    // the same alert as a failed load, or nothing ever says why.
+    private static void AlertIfUnusable(AddonSlot slot)
+    {
+        if (!slot.State.Installed || slot.Usable) return;
+        string why = slot.State.State == "needs_update"
+            ? $"Version {slot.State.Version} needs an update to work with this MediaViewer. Update it in Settings → {SettingsSection(slot)}."
+            : $"Its files changed since it was installed, so it was not loaded. Remove it and install it again in Settings → {SettingsSection(slot)}.";
+        ShowAddonAlert(slot, AddonFailTitle(slot), why);
+    }
+
+    private const string AddonsElsewhereText =
+        "Add-ons are installed, updated and removed in the first MediaViewer window you opened. " +
+        "To manage them here, close every MediaViewer window, then open this one again.";
+
+    private const string ReaderEmptyText =
+        "Local search has nothing indexed yet. Index a folder from the first MediaViewer window you opened; search then works here too.";
+
+    /// <summary>Ctrl+F in a later window whose reader found nothing indexed: try
+    /// again (the first window may have indexed since), at most every 10 s.
+    /// True when a load started and the panel opens once it attaches.</summary>
+    private static bool RetryEmptyReader()
+    {
+        if (!_addonsElsewhere || _aiReaderEmptyAt == 0 || AiSlot.Chrome is not null || AiSlot.Busy || !AiSlot.Usable) return false;
+        if (Environment.TickCount64 - _aiReaderEmptyAt < ReaderRetryMs) return false;
+        LoadAddon(AiSlot);
+        if (!AiSlot.Busy) return false;
+        _searchOpenPending = true;
+        return true;
+    }
+
+    // The retry found nothing either: file search, as without Local search, and why.
+    private static void OpenSearchAfterReaderEmpty()
+    {
+        OpenSearchFromPath();
+        ShowAddonAlert(AiSlot, "Nothing indexed for Local search yet", ReaderEmptyText, warn: false);
     }
 
     private static void AttachAddonChrome(AddonSlot slot, IntPtr table, string chromePath)
@@ -387,17 +521,29 @@ public static partial class IslandHost
             {
                 throw new InvalidOperationException("no IAddonChrome in the add-on");
             }
+            // "Starting Local search…" goes; the pack posts its own line.
+            if (slot == AiSlot) HostSetIndexingPill(null, false, -1, false);
             chrome.Attach(new AddonHost(slot), table);
             slot.Chrome = chrome;
             slot.State = slot.State with { Loaded = true };
+            if (slot == AiSlot) _aiReaderEmptyAt = 0;
+            ClearAddonAlert(slot);
             // Import is 0 / 1 on the wire (Milestone G), the AI pack 2 / 3.
             Send(Command.AddonState, slot == ImportSlot ? 1 : 3);
-            if (slot == AiSlot) OnSearchChromeAttached();
+            if (slot == AiSlot)
+            {
+                OnSearchChromeAttached();
+                OnAiAttachedForResume(table);  // the launch notice's Resume (issue #299)
+            }
         }
         catch (Exception ex)
         {
             System.Diagnostics.Debug.WriteLine(ex);
-            SetSlotStatus(slot, $"{slot.Name} could not start.");
+            // The kind of failure, not its message: a .NET message can carry a path (rule 6).
+            string why = $"Its window could not start ({ex.GetType().Name}). Restart MediaViewer; if it happens again, remove it and install it again in Settings → {SettingsSection(slot)}.";
+            SetSlotStatus(slot, $"{AddonFailTitle(slot)}. {why}");
+            ShowAddonAlert(slot, AddonFailTitle(slot), why, open: slot == AiSlot && _searchOpenPending);
+            if (slot == AiSlot) _searchOpenPending = false;
             UnloadAddonChrome(slot);
             try { AddonNative.Unload(slot.Id); } catch (MediaViewerException) { }
         }
@@ -421,6 +567,7 @@ public static partial class IslandHost
         slot.Alc = null;
         slot.State = slot.State with { Loaded = false };
         if (slot == AiSlot && had) OnSearchChromeDetached();
+        if (slot == AiSlot) OnAiDetachedForResume();
         Send(Command.AddonState, slot == ImportSlot ? 0 : 2);
     }
 
@@ -431,7 +578,7 @@ public static partial class IslandHost
     }
 
     /// <summary>The base chrome's services for an add-on (docs/design/18 IAddonHost; Milestone H IAddonHost2).</summary>
-    private sealed class AddonHost(AddonSlot slot) : IAddonHost2
+    private sealed class AddonHost(AddonSlot slot) : IAddonHost3
     {
         public void Post(Action action) => DispatcherQueueControllerTryEnqueue(action);
 
@@ -480,7 +627,9 @@ public static partial class IslandHost
 
         public void SeekVideo(long ms, bool exact) => OnUi(() => HostSeekVideo(ms, exact));
         public void SetScrubMarkers(IReadOnlyList<long> ms, int currentIndex) => OnUi(() => HostSetScrubMarkers(ms, currentIndex));
-        public void SetIndexingStatus(string? text, bool busy) => OnUi(() => HostSetIndexingPill(text, busy));
+        public void SetIndexingStatus(string? text, bool busy) => OnUi(() => HostSetIndexingPill(text, busy, -1, false));
+        public void SetIndexingPill(string? text, bool busy, double fraction, bool onBattery) =>
+            OnUi(() => HostSetIndexingPill(text, busy, fraction, onBattery));
         public void ShowSettings() => OnUi(HostShowLocalSearchSettings);
 
         private static void OnUi(Action action)
@@ -794,6 +943,7 @@ public static partial class IslandHost
             VerticalAlignment = VerticalAlignment.Center,
             Visibility = Visibility.Collapsed,
         };
+        panel.Children.Add(BuildAddonAlert());  // IslandHost.AddonAlert.cs
         panel.Children.Add(_importHint);
         panel.Children.Add(_importHintDismiss);
         panel.Children.Add(_importProgressLabel);
@@ -825,10 +975,13 @@ public static partial class IslandHost
 
     private static void AddAddonsSettingsRow(StackPanel view)
     {
-        view.Children.Add(Heading("Add-ons"));
-        _addonRow = new StackPanel { Spacing = 6 };
-        _addonStatus = Label("");
-        _addonStatus.TextWrapping = TextWrapping.Wrap;
+        EnsureReaderStarted();  // a later window: what is installed, read now
+        TextBlock heading = Heading("Add-ons");
+        heading.FontSize = TypeHeading;
+        AutomationProperties.SetHeadingLevel(heading, Microsoft.UI.Xaml.Automation.Peers.AutomationHeadingLevel.Level2);
+        view.Children.Add(heading);
+        _addonRow = new StackPanel { Spacing = 8 };
+        _addonStatus = Note("");
         view.Children.Add(_addonRow);
         view.Children.Add(_addonStatus);
         _importRestartButton = AddonRestartButton();
@@ -852,24 +1005,49 @@ public static partial class IslandHost
         if (_addonStatus is not null) _addonStatus.Text = text;
     }
 
+    // "Remove Import?" is open (kept across a refresh of the row).
+    private static bool _importConfirming;
+
+    /// <summary>
+    /// Esc on an open "Remove …?" or install question in Settings → Add-ons:
+    /// it cancels that, as the Mac's .cancelAction, rather than closing
+    /// Settings. False when none is open.
+    /// </summary>
+    private static bool CancelSettingsConfirm()
+    {
+        if (CancelLocalSearchConfirm()) return true;
+        if (_importConfirming)
+        {
+            _importConfirming = false;
+            RefreshAddonRow();
+            return true;
+        }
+        return CancelOpenAddonConfirm();
+    }
+
     private static void RefreshAddonRow()
     {
         if (_addonRow is null) return;
         _addonRow.Children.Clear();
+        // The item's title in the title colour, its notes at 13 (the Mac's).
         var title = Label("Import");
+        title.Foreground = Brush(Title);
         _addonRow.Children.Add(title);
         // docs/design/25: the line is the manifest's (installed, else the channel's);
         // the built-in one serves a manifest from before it carried any.
         string description = ImportSlot.State.Description.Length > 0 ? ImportSlot.State.Description
             : ImportSlot.Offer.Description.Length > 0 ? ImportSlot.Offer.Description
             : "Copy a card or folder into your library: skips what is already there by content, verifies every copy, sorts by date. Never deletes from the card.";
-        var about = Label(description);
-        about.TextWrapping = TextWrapping.Wrap;
-        _addonRow.Children.Add(about);
+        _addonRow.Children.Add(Note(description));
         if (!_addonStatesRead)
         {
             // Quiet, and no button while what is installed is unknown.
-            _addonRow.Children.Add(WrappedLabel("Checking installed add-ons…"));
+            _addonRow.Children.Add(Note("Checking installed add-ons…"));
+            return;
+        }
+        if (_addonsElsewhere)
+        {
+            _addonRow.Children.Add(WrappedLabel(AddonsElsewhereText));
             return;
         }
         AddonState state = ImportSlot.State;
@@ -884,21 +1062,26 @@ public static partial class IslandHost
             switch (ImportSlot.Offer.Kind)
             {
                 case OfferKind.Available:
-                    _addonRow.Children.Add(SettingsButton($"Install Import, {DownloadSize(ImportSlot.Offer.ArchiveSize)}",
-                        StartImportInstall));
+                    Button install = SettingsButton($"Install Import, {DownloadSize(ImportSlot.Offer.ArchiveSize)}",
+                        StartImportInstall);
+                    install.HorizontalAlignment = HorizontalAlignment.Left;
+                    install.IsEnabled = !ImportSlot.Busy;
+                    _addonRow.Children.Add(install);
                     break;
                 case OfferKind.NotPublished:
-                    _addonRow.Children.Add(WrappedLabel("Import is not published for download yet. It will be offered here once a release carries it."));
+                    _addonRow.Children.Add(Note("Import is not published for download yet. It will be offered here once a release carries it."));
                     break;
                 case OfferKind.NeedsNewerApp:
-                    _addonRow.Children.Add(WrappedLabel("The published Import needs a newer MediaViewer. Update MediaViewer, then install it."));
+                    _addonRow.Children.Add(Note("The published Import needs a newer MediaViewer. Update MediaViewer, then install it."));
                     break;
                 case OfferKind.Unreachable:
-                    _addonRow.Children.Add(WrappedLabel("Could not reach the download server."));
-                    _addonRow.Children.Add(SettingsButton("Try again", () => ProbeOffer(ImportSlot)));
+                    _addonRow.Children.Add(Note("Could not reach the download server."));
+                    Button retry = SettingsButton("Try again", () => ProbeOffer(ImportSlot));
+                    retry.HorizontalAlignment = HorizontalAlignment.Left;
+                    _addonRow.Children.Add(retry);
                     break;
                 default:
-                    _addonRow.Children.Add(WrappedLabel("Checking for Import…"));
+                    _addonRow.Children.Add(Note("Checking for Import…"));
                     break;
             }
             return;
@@ -909,7 +1092,14 @@ public static partial class IslandHost
             "needs_update" => $"Version {state.Version} needs an update to work with this MediaViewer.",
             _ => "The installed copy did not pass verification and is not loaded. Reinstall it.",
         };
-        _addonRow.Children.Add(Label(line));
+        if (_importConfirming)
+        {
+            AddImportRemoveConfirm();
+            return;
+        }
+        _addonRow.Children.Add(Note(line));
+        // While Import is busy (removing, loading) its buttons stay, disabled,
+        // rather than vanishing (the Mac's .disabled(store.busy)).
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         if (UpdateVersion(ImportSlot) is string newer)
         {
@@ -919,25 +1109,41 @@ public static partial class IslandHost
         if (state.State != "ok") buttons.Children.Add(SettingsButton("Reinstall", StartImportInstall));
         if (ImportSlot.Chrome is not null) buttons.Children.Add(SettingsButton("Open Import", () => ImportSlot.Chrome?.Open(null)));
         buttons.Children.Add(SettingsButton("Remove…", ConfirmImportRemove));
+        foreach (UIElement b in buttons.Children)
+        {
+            if (b is Button button) button.IsEnabled = !ImportSlot.Busy;
+        }
         _addonRow.Children.Add(buttons);
     }
 
     private static void ConfirmImportRemove()
     {
+        _importConfirming = true;
+        RefreshAddonRow();
+    }
+
+    private static void AddImportRemoveConfirm()
+    {
         if (_addonRow is null) return;
-        _addonRow.Children.Clear();
-        var q = Label("Remove Import? Its library index and import history (import.db) can stay, so a reinstall still knows what was imported.");
-        q.TextWrapping = TextWrapping.Wrap;
+        TextBlock q = Note("Remove Import? Its library index and import history (import.db) can stay, so a reinstall still knows what was imported.");
+        q.Foreground = Brush(Title);
         _addonRow.Children.Add(q);
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        buttons.Children.Add(SettingsButton("Remove, keep history", () => RemoveImport(keepData: true)));
+        Button keep = SettingsButton("Remove, keep history", () => RemoveImport(keepData: true));
+        buttons.Children.Add(keep);
         buttons.Children.Add(SettingsButton("Remove everything", () => RemoveImport(keepData: false)));
-        buttons.Children.Add(SettingsButton("Cancel", RefreshAddonRow));
+        buttons.Children.Add(SettingsButton("Cancel", () =>
+        {
+            _importConfirming = false;
+            RefreshAddonRow();
+        }));
         _addonRow.Children.Add(buttons);
+        _dispatcher?.DispatcherQueue.TryEnqueue(() => keep.Focus(FocusState.Keyboard));
     }
 
     private static void RemoveImport(bool keepData)
     {
+        _importConfirming = false;
         if (ImportSlot.Busy) return;
         ImportSlot.Busy = true;
         UnloadAddonChrome(ImportSlot);

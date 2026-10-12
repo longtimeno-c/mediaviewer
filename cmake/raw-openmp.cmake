@@ -51,8 +51,17 @@ if(WIN32)
   endif()
 else()
   if(APPLE AND CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
-    execute_process(COMMAND brew --prefix libomp OUTPUT_VARIABLE MV_LIBOMP_ROOT
-                    OUTPUT_STRIP_TRAILING_WHITESPACE COMMAND_ERROR_IS_FATAL ANY)
+    # The libomp LibRaw was built against (tools/mac/build_libomp.py, the
+    # same MV_LIBOMP_ROOT the dynamic triplet reads). Homebrew's is only a
+    # fallback: it declares the build machine's macOS as its minimum (#158).
+    set(MV_LIBOMP_ROOT "$ENV{MV_LIBOMP_ROOT}" CACHE PATH
+        "libomp prefix from tools/mac/build_libomp.py (empty: Homebrew's)")
+    if(NOT MV_LIBOMP_ROOT)
+      execute_process(COMMAND brew --prefix libomp OUTPUT_VARIABLE MV_LIBOMP_ROOT
+                      OUTPUT_STRIP_TRAILING_WHITESPACE COMMAND_ERROR_IS_FATAL ANY)
+      message(STATUS "libomp: Homebrew's (${MV_LIBOMP_ROOT}); its minos may exceed 14.0, "
+                     "see tools/mac/build_libomp.py")
+    endif()
     set(OpenMP_CXX_FLAGS "-Xpreprocessor -fopenmp")
     set(OpenMP_CXX_LIB_NAMES omp)
     set(OpenMP_CXX_INCLUDE_DIR "${MV_LIBOMP_ROOT}/include")

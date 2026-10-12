@@ -14,7 +14,11 @@
 // visible cell, each of which also made a C call to fetch its name, and the
 // image was read and decoded on the main thread. Now:
 //   * each thumbnail lives in its own ThumbSlot -- an arrival re-renders one cell;
+//   * the selection lives outside the store (CurrentItem, CellHighlight), so an
+//     arrow key re-renders two cells, not the grid (issue #179);
 //   * names are cached, refreshed only when the host's listing generation moves;
+//   * slots are keyed by the host's thumbnail key (path + size + mtime), not by
+//     name: every camera card holds an IMG_0001.JPG (issue #177);
 //   * the JPEG is decoded off the main thread (ImageIO) before it reaches a slot;
 //   * decoded images are bounded (LRU), and thumbnails around the selection are
 //     requested ahead of the scroll so cells are already filled when they appear.
@@ -57,6 +61,22 @@ final class FolderCard: ObservableObject {
   }
 }
 
+/// The selection, apart from the listing (issue #179). Arrow keys move only
+/// this, so the grid and the strip, which observe the listing, are not rebuilt
+/// on every step; what follows the selection (the scroll position, the command
+/// bar's file name) observes this small object instead.
+@MainActor
+final class CurrentItem: ObservableObject {
+  @Published fileprivate(set) var index: Int = -1
+}
+
+/// One cell's highlight (issue #179). A cell observes its own, so a step of the
+/// selection redraws the cell it left and the cell it reached, nothing else.
+@MainActor
+final class CellHighlight: ObservableObject {
+  @Published fileprivate(set) var isCurrent = false
+}
+
 struct Crumb: Identifiable, Equatable {
   let index: Int
   let name: String
@@ -69,9 +89,19 @@ final class FolderStore: ObservableObject {
   static let shared = FolderStore()
 
   @Published private(set) var itemCount: Int = 0
-  @Published private(set) var currentIndex: Int = -1
+  /// Not published by this store: see CurrentItem.
+  let current = CurrentItem()
+  var currentIndex: Int { current.index }
   /// Item names by index; replaced wholesale when the host relists.
   @Published private(set) var names: [String] = []
+  /// `names.indices` and `folders.indices` as arrays, rebuilt when those
+  /// change rather than on every pass of the gallery's body.
+  private(set) var itemIndices: [Int] = []
+  private(set) var folderIndices: [Int] = []
+  /// Parallel to `names`: each item's thumbnail key (mv_chrome_item_thumb_key),
+  /// what slots are keyed by. Re-read with the names, and when the host
+  /// rewrites a file in place (its thumb generation).
+  @Published private(set) var thumbKeys: [String] = []
   /// Parallel to `names`: which items are clips, for the gallery's play badge.
   @Published private(set) var clips: [Bool] = []
   /// Names of marked items (docs/design/16 marks), rebuilt only when the host's marks
@@ -100,13 +130,17 @@ final class FolderStore: ObservableObject {
   @Published private(set) var listTitle: String?
 
   private var cards: [String: FolderCard] = [:]
+  /// By index, made as cells appear; at most one is current.
+  private var highlights: [Int: CellHighlight] = [:]
   private var requestedCards: Set<String> = []
   private var slots: [String: ThumbSlot] = [:]
-  // Names asked for and not yet failed/evicted, so scrolling back and forth
+  // Keys asked for and not yet failed/evicted, so scrolling back and forth
   // doesn't re-request a thumbnail that is in flight or already decoded.
-  // Keyed by name, not index: a relist can shift which item sits at an index
-  // (mv_chrome_bridge.h's thumb-ready callback is keyed by name for the same
-  // reason).
+  // Keyed by thumbnail key, not index: a relist can shift which item sits at
+  // an index; and not by name, which another folder repeats
+  // (mv_chrome_bridge.h's thumb-ready callback is keyed the same way). Only
+  // keys of the listing on screen stay in here, so a late result for a folder
+  // just left finds nothing to fill.
   private var requested: Set<String> = []
   // Decode order, oldest first, for eviction.
   private var decoded: [String] = []
@@ -115,7 +149,7 @@ final class FolderStore: ObservableObject {
   /// tags its filter with it).
   private(set) var listingGeneration: UInt64 = .max
   private var marksGeneration: UInt64 = .max
-  private var pollTimer: Timer?
+  private var thumbGeneration: UInt64 = .max
 
   private static let decodeQueue = DispatchQueue(
     label: "mediaviewer.thumb-decode", qos: .userInitiated, attributes: .concurrent)
@@ -125,14 +159,13 @@ final class FolderStore: ObservableObject {
     // thread (mv_chrome_bridge.h's contract).
     mv_chrome_set_thumb_ready_callback(thumbReadyTrampoline)
     mv_chrome_set_folder_summary_callback(folderSummaryTrampoline)
-    // itemCount/currentIndex are plain integer reads (mv_chrome_bridge.h) --
-    // the same 0.15 s cadence MvLabApp's own -refreshFolderIfChanged uses.
-    pollTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in
-      // scheduledTimer fires on the run loop it was scheduled from (main,
-      // since init runs on the main actor).
-      MainActor.assumeIsolated { self?.poll() }
+    // itemCount/currentIndex are plain integer reads (mv_chrome_bridge.h). The
+    // listing, cursor and marks all move on the main thread, so this polls
+    // when the main run loop has run (issue #178, ChromePulse), not on a timer.
+    ChromePulse.shared.add { [weak self] in
+      self?.poll()
+      return false
     }
-    poll()
   }
 
   private func poll() {
@@ -141,22 +174,36 @@ final class FolderStore: ObservableObject {
     let generation = mv_chrome_listing_generation()
 
     let listingChanged = generation != listingGeneration || count != names.count
+    var listing: Listing?
     if listingChanged {
       listingGeneration = generation
       reloadListTitle()
-      reloadNames(count: count)
+      let fresh = readListing()
+      listing = fresh
+      clips = fresh.clips
+      let listed = fresh.names.count
+      if itemIndices.count != listed { itemIndices = Array(0..<listed) }
+      // Highlights past the end belong to cells that are gone.
+      if highlights.keys.contains(where: { $0 >= listed }) {
+        highlights = highlights.filter { $0.key < listed }
+      }
+      names = fresh.names
       reloadFolders()
       // File search closes on another folder and re-filters new names.
       FileSearchStore.shared.listingChanged(self)
     }
+    let thumbs = mv_chrome_thumb_generation()
+    if listingChanged || thumbs != thumbGeneration {
+      thumbGeneration = thumbs
+      reloadThumbKeys((listing ?? readListing()).keys)
+    }
     let cursor = Int(mv_chrome_folder_cursor())
     if cursor != folderCursor { folderCursor = cursor }
-    var queryBuf = [CChar](repeating: 0, count: 512)
-    let querying = queryBuf.withUnsafeMutableBufferPointer { ptr -> Bool in
-      guard let base = ptr.baseAddress else { return false }
-      return mv_chrome_folder_query(base, Int32(ptr.count))
+    // On the stack: this runs on every pass of the main run loop.
+    let query: String? = withUnsafeTemporaryAllocation(of: CChar.self, capacity: 512) { ptr in
+      guard let base = ptr.baseAddress, mv_chrome_folder_query(base, Int32(ptr.count)) else { return nil }
+      return String(cString: base)
     }
-    let query: String? = querying ? String(cString: queryBuf) : nil
     if query != folderQuery { folderQuery = query }
     let marks = mv_chrome_marks_generation()
     if listingChanged || marks != marksGeneration {
@@ -174,8 +221,10 @@ final class FolderStore: ObservableObject {
       }
       updateVersion = named ? String(cString: buf) : nil
     }
-    if index != currentIndex {
-      currentIndex = index
+    if index != current.index {
+      highlights[current.index]?.isCurrent = false
+      highlights[index]?.isCurrent = true
+      current.index = index
       prefetch(around: index)
     } else if listingChanged {
       // A new listing at the same index (a result list over a folder whose
@@ -184,15 +233,22 @@ final class FolderStore: ObservableObject {
     }
   }
 
-  /// A result list and a folder (or two lists) can hold different files under
-  /// one name, and slots are keyed by name: moving between them starts clean.
   private func reloadListTitle() {
     let title: String? = mv_chrome_list_open() ? Self.bridgeString { mv_chrome_list_title($0, $1) } : nil
     guard title != listTitle else { return }
     listTitle = title
-    slots.removeAll()
-    requested.removeAll()
-    decoded.removeAll()
+  }
+
+  /// Keys are content identity, so a relist of the same folder keeps every
+  /// thumbnail it already has, while another folder, a result list or a file
+  /// rewritten in place gets fresh slots. Thumbnails of keys no longer listed
+  /// are dropped, along with their pending requests.
+  private func reloadThumbKeys(_ fresh: [String]) {
+    if fresh != thumbKeys { thumbKeys = fresh }
+    let keep = Set(fresh)
+    slots = slots.filter { keep.contains($0.key) }
+    requested.formIntersection(keep)
+    decoded.removeAll { !keep.contains($0) }
   }
 
   nonisolated private static func bridgeString(_ call: (UnsafeMutablePointer<CChar>?, Int32) -> Int32) -> String {
@@ -205,24 +261,45 @@ final class FolderStore: ObservableObject {
 
   func closeList() { mv_chrome_close_list() }
 
-  private func reloadNames(count: Int) {
-    var fresh: [String] = []
-    fresh.reserveCapacity(count)
-    var buf = [CChar](repeating: 0, count: 1024)
-    for i in 0..<count {
-      let ok = buf.withUnsafeMutableBufferPointer { ptr -> Bool in
-        guard let base = ptr.baseAddress else { return false }
-        return mv_chrome_item_name(Int32(i), base, Int32(ptr.count))
+  private struct Listing {
+    var names: [String] = []
+    var clips: [Bool] = []
+    var keys: [String] = []
+  }
+
+  // Kept across relists: it only grows to the largest listing seen.
+  private var listingBuffer = [UInt8](repeating: 0, count: 64 * 1024)
+
+  /// Issue #226: names, clip flags and thumbnail keys of the whole listing in
+  /// one bridge call (mv_chrome_listing) into a reused buffer, rather than
+  /// three calls and a buffer per item.
+  private func readListing() -> Listing {
+    var need = 0
+    for _ in 0..<2 {
+      need = Int(listingBuffer.withUnsafeMutableBytes { raw in
+        mv_chrome_listing(raw.baseAddress?.assumingMemoryBound(to: CChar.self), Int32(raw.count))
+      })
+      if need < listingBuffer.count { break }
+      listingBuffer = [UInt8](repeating: 0, count: need + need / 4 + 4096)
+    }
+    var listing = Listing()
+    guard need > 0, need < listingBuffer.count else { return listing }
+    listingBuffer.withUnsafeBufferPointer { all in
+      var fields: [String] = []
+      fields.reserveCapacity(3)
+      var start = 0
+      for i in 0..<need where all[i] == 0 {
+        fields.append(String(decoding: UnsafeBufferPointer(rebasing: all[start..<i]), as: UTF8.self))
+        start = i + 1
+        if fields.count == 3 {
+          listing.names.append(fields[0])
+          listing.clips.append(fields[1] == "1")
+          listing.keys.append(fields[2])
+          fields.removeAll(keepingCapacity: true)
+        }
       }
-      fresh.append(ok ? String(cString: buf) : "")
     }
-    clips = (0..<count).map { mv_chrome_item_is_video(Int32($0)) }
-    names = fresh
-    if count == 0 {
-      slots.removeAll()
-      requested.removeAll()
-      decoded.removeAll()
-    }
+    return listing
   }
 
   private static func string(_ fill: (UnsafeMutablePointer<CChar>, Int32) -> Bool) -> String? {
@@ -244,6 +321,7 @@ final class FolderStore: ObservableObject {
       }
     }
     if freshFolders != folders {
+      if folderIndices.count != freshFolders.count { folderIndices = Array(freshFolders.indices) }
       folders = freshFolders
       // Cards for folders that are gone would only pin memory; a folder that is
       // still there keeps its cover.
@@ -342,10 +420,25 @@ final class FolderStore: ObservableObject {
     names.indices.contains(index) ? names[index] : ""
   }
 
-  func slot(for name: String) -> ThumbSlot {
-    if let existing = slots[name] { return existing }
+  func thumbKey(at index: Int) -> String {
+    thumbKeys.indices.contains(index) ? thumbKeys[index] : ""
+  }
+
+  func slot(at index: Int) -> ThumbSlot { slot(for: thumbKey(at: index)) }
+
+  /// The highlight the cell at `index` observes (the gallery and filmstrip share it).
+  func highlight(at index: Int) -> CellHighlight {
+    if let existing = highlights[index] { return existing }
+    let created = CellHighlight()
+    created.isCurrent = index == current.index
+    highlights[index] = created
+    return created
+  }
+
+  private func slot(for key: String) -> ThumbSlot {
+    if let existing = slots[key] { return existing }
     let created = ThumbSlot()
-    slots[name] = created
+    slots[key] = created
     return created
   }
 
@@ -365,7 +458,7 @@ final class FolderStore: ObservableObject {
     return indices.compactMap { i in
       let path = Self.bridgeString { mv_chrome_item_path(Int32(i), $0, $1) }
       guard !path.isEmpty else { return nil }
-      return (path, slots[names[i]]?.image)
+      return (path, slots[thumbKey(at: i)]?.image)
     }
   }
 
@@ -380,9 +473,9 @@ final class FolderStore: ObservableObject {
   // Called from a cell's .onAppear -- requests are lazy, matching PR 18's
   // own verify line ("2000 mixed JPEGs... filmstrip scrolls without a hitch").
   func requestThumbnailIfNeeded(at index: Int) {
-    let itemName = name(at: index)
-    guard !itemName.isEmpty, !requested.contains(itemName) else { return }
-    requested.insert(itemName)
+    let key = thumbKey(at: index)
+    guard !key.isEmpty, !requested.contains(key) else { return }
+    requested.insert(key)
     mv_chrome_request_thumb(Int32(index))
   }
 
@@ -391,7 +484,7 @@ final class FolderStore: ObservableObject {
   private func prefetch(around index: Int) {
     guard index >= 0 else { return }
     let lo = max(0, index - 12)
-    let hi = min(names.count - 1, index + 12)
+    let hi = min(thumbKeys.count - 1, index + 12)
     guard lo <= hi else { return }
     // Nearest-first, so the cell about to be selected is decoded first.
     for distance in 0...(hi - lo) {
@@ -401,10 +494,13 @@ final class FolderStore: ObservableObject {
     }
   }
 
-  fileprivate func thumbnailReady(name: String, path: String?) {
+  fileprivate func thumbnailReady(key: String, path: String?) {
+    // A result for a key no longer listed (another folder opened, the file
+    // rewritten) has no cell to fill.
+    guard requested.contains(key) else { return }
     guard let path else {
       // Failed: allow a later re-request rather than pinning a placeholder.
-      requested.remove(name)
+      requested.remove(key)
       return
     }
     // Read + decode off the main thread (CLAUDE.md rule 1 applies to chrome
@@ -413,18 +509,20 @@ final class FolderStore: ObservableObject {
     Self.decodeQueue.async {
       let image = Self.decodeThumbnail(atPath: path)
       DispatchQueue.main.async {
-        MainActor.assumeIsolated { FolderStore.shared.thumbnailDecoded(name: name, image: image) }
+        MainActor.assumeIsolated { FolderStore.shared.thumbnailDecoded(key: key, image: image) }
       }
     }
   }
 
-  private func thumbnailDecoded(name: String, image: CGImage?) {
+  private func thumbnailDecoded(key: String, image: CGImage?) {
+    // Left the listing while decoding: drop it rather than pin a slot.
+    guard requested.contains(key) else { return }
     guard let image else {
-      requested.remove(name)
+      requested.remove(key)
       return
     }
-    slot(for: name).image = image
-    decoded.append(name)
+    slot(for: key).image = image
+    decoded.append(key)
     while decoded.count > maxDecoded {
       let evicted = decoded.removeFirst()
       // Not the selected item, whose cell is always on screen.
@@ -442,13 +540,13 @@ final class FolderStore: ObservableObject {
 // main_mac.mm always hops to dispatch_get_main_queue() before calling this
 // (mv_chrome_bridge.h's documented contract).
 private func thumbReadyTrampoline(
-  _ nameUTF8: UnsafePointer<CChar>?, _ pathUTF8: UnsafePointer<CChar>?
+  _ keyUTF8: UnsafePointer<CChar>?, _ pathUTF8: UnsafePointer<CChar>?
 ) {
-  guard let nameUTF8 else { return }
-  let name = String(cString: nameUTF8)
+  guard let keyUTF8 else { return }
+  let key = String(cString: keyUTF8)
   let path = pathUTF8.map { String(cString: $0) }
   MainActor.assumeIsolated {
-    FolderStore.shared.thumbnailReady(name: name, path: path)
+    FolderStore.shared.thumbnailReady(key: key, path: path)
   }
 }
 

@@ -17,9 +17,38 @@ extern "C" {
 // Bumps input_snapshot.fit_seq and wakes the render thread. [any-thread]
 void mv_chrome_fit(void);
 
-// Runs a menu-bar command by tag (the MvMenuCmd enum in main_mac.mm; the
-// in-window menus and the system menu bar share one dispatcher). [main-thread]
-void mv_chrome_menu(int32_t cmd);
+// Menu commands: the tag of each menu-bar item main_mac.mm builds, and what the
+// in-window menus (CommandBarView.swift) pass to mv_chrome_menu. Numbers hold
+// within one build only; nothing stores them.
+enum MvMenuCmd : int32_t {
+  kMenuOpen = 1, kMenuTrash, kMenuCopyTo, kMenuMoveTo, kMenuMark,
+  kMenuFit, kMenuOneToOne, kMenuFilmstrip, kMenuGallery, kMenuFullscreen, kMenuSlideshow,
+  kMenuNext, kMenuPrev, kMenuFirst, kMenuLast, kMenuHelp, kMenuOpenFolder, kMenuSettings, kMenuOverlay, kMenuReveal,
+  // docs/design/26
+  kMenuOpenPhotos,
+  // PR 9
+  kMenuMetadata, kMenuFolderTree, kMenuSortName, kMenuSortModified, kMenuSortSize, kMenuSortType,
+  kMenuSortDateTaken, kMenuSortDescending,
+  // PR 15
+  kMenuShare, kMenuCopyPath, kMenuCopyEdited,
+  // PR 29 (docs/design/20): the Edit menu, a visible way in to every edit.
+  kMenuEditWorkspace, kMenuEditCrop, kMenuEditColour, kMenuRotateLeft, kMenuRotateRight,
+  kMenuFlipH, kMenuFlipV, kMenuUndoEdit, kMenuResetEdits, kMenuSaveCopy, kMenuTrim,
+  // docs/design/16 "Window"
+  kMenuNewWindow,
+  // Issue #206: View > Show, in io::kind_filter order.
+  kMenuShowAll, kMenuShowPhotos, kMenuShowVideos, kMenuShowRaw, kMenuShowMarked,
+  // Issue #207: View > Show's cull filters, continuing io::kind_filter order.
+  kMenuShowPicks, kMenuShowNotRejected, kMenuShowRed, kMenuShowYellow, kMenuShowGreen,
+  kMenuShowBlue, kMenuShowPurple,
+  // Issue #210: File > Rename… (F2).
+  kMenuRename,
+};
+typedef enum MvMenuCmd MvMenuCmd;
+
+// Runs a menu command (the in-window menus and the system menu bar share one
+// dispatcher). [main-thread]
+void mv_chrome_menu(MvMenuCmd cmd);
 
 // Settings screen (docs/design/16 Settings). View flags use the bit layout of
 // view_settings::flags() (shell/settings.h): 1 filmstrip for a folder,
@@ -43,6 +72,9 @@ uint64_t mv_chrome_keys_generation(void);
 
 // Bumps input_snapshot.one_to_one_seq and wakes the render thread. [any-thread]
 void mv_chrome_one_to_one(void);
+// Sets input_snapshot.zoom_preset to `factor` (0.5, 1, 2, 4: the View flyout's
+// rows), bumps zoom_preset_seq and wakes the render thread. [any-thread]
+void mv_chrome_zoom_preset(float factor);
 
 // The running version, from CMake project(VERSION) — the same string Windows
 // shows in About. Writes a NUL-terminated string into `buf`. Returns false
@@ -77,6 +109,22 @@ bool mv_chrome_item_name(int32_t index, char* out_buf, int32_t out_buf_size);
 // byte length needed, as the tables; 0 when `index` is out of range.
 int32_t mv_chrome_item_path(int32_t index, char* buf, int32_t size);
 
+// The thumbnail key of the item at `index`: an opaque UTF-8 string naming the
+// file and its bytes (path + size + mtime, and a result list's moment), the
+// key the thumb-ready callback below reports. Two folders' IMG_0001.JPG, or a
+// file before and after a rewrite, never share one (issue #177). Returns the
+// byte length needed, as mv_chrome_item_path; 0 when `index` is out of range.
+int32_t mv_chrome_item_thumb_key(int32_t index, char* buf, int32_t size);
+
+// Issue #226: the whole listing in one call, so a relist costs one bridge call
+// rather than three per item. For each of the mv_chrome_item_count() items in
+// order: the name (as mv_chrome_item_name), NUL, '1' for a clip or '0' (as
+// mv_chrome_item_is_video), NUL, the thumb key (as mv_chrome_item_thumb_key),
+// NUL. Returns the byte length of the whole block; copies what fits into
+// `buf` (NUL-terminated, as the tables), so a caller whose `size` is greater
+// than the return has all of it. [main-thread]
+int32_t mv_chrome_listing(char* buf, int32_t size);
+
 // Navigates to `index` the same way clicking a filmstrip/gallery cell does
 // (calls MvLabApp's existing -selectIndex:, the same path arrow keys use).
 // A no-op if `index` is out of range or no folder is open.
@@ -88,14 +136,16 @@ void mv_chrome_select_index(int32_t index);
 // after the host has already hopped back to the main thread — the callback
 // this registers is never invoked from a pool thread).
 //
-// `name_utf8` identifies which item this result is for — not the index it
-// was requested at. A directory can't have two entries with the same name,
-// so it is a stable key across a relist the way a raw index is not: if the
-// listing reorders (including from the app's own copy/move/Trash) between
-// the request and this callback firing, an index-keyed cache would attach
-// the result to whatever item now sits at that index instead of the one
-// that was actually asked for. Always non-NULL.
-typedef void (*mv_chrome_thumb_ready_fn)(const char* name_utf8, const char* thumb_path_utf8);
+// `key_utf8` identifies which item this result is for — the
+// mv_chrome_item_thumb_key it was requested under, not the index it was
+// requested at nor its name. It is a stable key across a relist the way a raw
+// index is not: if the listing reorders (including from the app's own
+// copy/move/Trash) between the request and this callback firing, an
+// index-keyed cache would attach the result to whatever item now sits at that
+// index. And unlike a name it is not repeated by a same-named file in another
+// folder, so a late result for the folder just left matches nothing on
+// screen (issue #177). Always non-NULL.
+typedef void (*mv_chrome_thumb_ready_fn)(const char* key_utf8, const char* thumb_path_utf8);
 void mv_chrome_set_thumb_ready_callback(mv_chrome_thumb_ready_fn callback);
 
 // Asynchronously requests (looks up, or decodes + caches) the JPEG-512
@@ -106,10 +156,9 @@ void mv_chrome_set_thumb_ready_callback(mv_chrome_thumb_ready_fn callback);
 // A no-op if `index` is out of range.
 void mv_chrome_request_thumb(int32_t index);
 
-// T / G toggle these from keyDown: (main_mac.mm); Swift polls them (they are
-// plain bools, not worth a push channel the way thumbnails are) to decide
-// whether to show the filmstrip/gallery views it already hosts.
-bool mv_chrome_filmstrip_visible(void);
+// G toggles this from keyDown: (main_mac.mm); Swift polls it (a plain bool,
+// not worth a push channel the way thumbnails are) to decide whether to show
+// the gallery view it already hosts.
 bool mv_chrome_gallery_visible(void);
 
 // Called by the gallery view when a cell is clicked: selects `index` (same
@@ -124,6 +173,12 @@ void mv_chrome_select_index_and_close_gallery(int32_t index);
 // stale even if the item count is unchanged (a rename, or one file added and
 // another removed). [main-thread]
 uint64_t mv_chrome_listing_generation(void);
+
+// Bumped when the host rewrites a listed file in place (a lossless rotate, a
+// metadata write) and updates its size / mtime without a relist, so Swift
+// re-reads mv_chrome_item_thumb_key and the cell asks for the new thumbnail.
+// [main-thread]
+uint64_t mv_chrome_thumb_generation(void);
 
 // Marks (docs/design/16 "Marks, copy, move"): bumped whenever the mark set changes,
 // so Swift can rebuild its marked-item cache only when it must.
@@ -275,10 +330,12 @@ bool mv_chrome_meta_can_revert(void);
 void mv_chrome_meta_set_rating(int32_t stars);          // 0 clears
 void mv_chrome_meta_set_comment(const char* utf8);      // "" clears
 void mv_chrome_meta_revert(void);
-// Ctrl+I (edit_comment) shows the pane and asks for the comment field to take
-// keyboard focus; the sequence moves each time, so Swift focuses once per ask.
+// `I` (metadata_pane) shows the pane with the keyboard in it; Ctrl+I
+// (edit_comment) shows it and asks for the All tags search. The sequence moves
+// on each ask, so Swift focuses once per ask; `focus_tags` says which (issue #185).
 uint64_t mv_chrome_meta_focus_seq(void);
-// Hands the keyboard back to the canvas (Esc or Return in the comment field).
+bool mv_chrome_meta_focus_tags(void);
+// Hands the keyboard back to the canvas (Esc, or Return in an edit field).
 void mv_chrome_meta_blur(void);
 
 // PR 29 (owner, 2026-09-26): every tag editable. Queued like the PR 12
@@ -301,6 +358,9 @@ int32_t mv_chrome_notice_text(char* buf, int32_t size);
 // from a background task, never from the main actor. [any-thread] Writes
 // "name\tpath" lines; returns the length needed, or -1 if `dir` cannot be read.
 bool mv_chrome_tree_visible(void);
+// Esc, or Enter on a folder, in the tree: the keyboard back to the canvas (the
+// tree stays open). [main-thread]
+void mv_chrome_tree_blur(void);
 int32_t mv_chrome_list_subdirectories(const char* dir_utf8, char* buf, int32_t size);
 // The folder currently open in the viewer ("" when none). [main-thread]
 int32_t mv_chrome_current_folder(char* buf, int32_t size);
@@ -354,6 +414,13 @@ bool mv_chrome_photos_backup_last(mv_chrome_photos_backup* out);
 // re-sorts the listing and keeps the current item selected. [main-thread]
 int32_t mv_chrome_sort_order(void);
 void mv_chrome_set_sort_order(int32_t packed);
+
+// Issue #206: View > Show, the kind filter (io::kind_filter): 0 all, 1 photos,
+// 2 videos, 3 RAW, 4 marked; issue #207's cull filters 5 picks, 6 not
+// rejected, 7 red, 8 yellow, 9 green, 10 blue, 11 purple. For this run only.
+// Setting "marked" with nothing marked is refused (false, a notice). [main-thread]
+int32_t mv_chrome_kind_filter(void);
+bool mv_chrome_set_kind_filter(int32_t filter);
 
 // Update channel: -1 when the app was built without an updater (hide the
 // setting), 0 stable, 1 preview (signed prerelease builds as well). Setting it
@@ -424,8 +491,49 @@ bool mv_addon2_supported(const char* id);
 int32_t mv_addon2_state_json(const char* id, char* buf, int32_t size);   // [worker]
 bool mv_addon2_loaded(const char* id);                                     // [main-thread]
 bool mv_addon2_loading(const char* id);                                    // [main-thread]
-// "" or why the last load failed (a status name, "bundle", "chrome").
+// "" or why the last load failed (a status name, "bundle", "chrome"). "import" too.
 int32_t mv_addon2_load_error(const char* id, char* buf, int32_t size);     // [main-thread]
+// The same in words a person can act on, for Settings' status line; never a
+// path (rule 6). "ai" or "import". [main-thread]
+int32_t mv_addon2_load_reason(const char* id, char* buf, int32_t size);
+// 2026-10-07 (docs/design/18 "One host process"): true in a window whose
+// process does not host the add-ons. It searches through the AI pack's
+// read-only reader, loaded on demand; it installs, updates and removes nothing.
+bool mv_addon2_elsewhere(void);                                            // [main-thread]
+// Settings showed Local search (issue #292): start the pack that waited,
+// unloaded, since launch -- or in such a window its reader, if it is due.
+// False when nothing is on its way. [main-thread]
+bool mv_addon2_ai_wake(void);
+// Installed and verified at launch, not loaded, nothing on its way (issue
+// #292): the first search starts it, so the search icon offers it. [main-thread]
+bool mv_addon2_ai_on_demand(void);
+// Issue #299, the launch notice. True once the launch check of the AI pack's
+// resume.json has run (it waits for the pack's verify; the pack itself is not
+// loaded). [main-thread]
+bool mv_addon2_ai_resume_known(void);
+// "Resume indexing Photos?" while an index left unfinished last session waits
+// to be resumed and the notice was not answered this session; "" otherwise.
+// [main-thread]
+int32_t mv_addon2_ai_resume_question(char* buf, int32_t size);
+// The notice's Resume: loads the pack (as the first search does) and resumes
+// every held root once it attaches, or at once when it is attached. The
+// question goes for the session. False when the pack cannot start. [main-thread]
+bool mv_addon2_ai_resume(void);
+// The notice's Dismiss: the roots stay paused, and the question goes for this
+// session (the next launch asks again). Nothing loads. [main-thread]
+void mv_addon2_ai_resume_dismiss(void);
+// What ⌘F does while Local search is not attached, in the first window (the
+// pack starts, issue #292) or such a window (its reader); the panel opens once
+// it attaches. False = file search is the caller's to open. [main-thread]
+bool mv_addon2_reader_search(void);
+// Such a window: its last reader try found Local search not installed.
+bool mv_addon2_reader_absent(void);                                        // [main-thread]
+// The window's add-on alert (the command bar): an add-on that did not load or
+// start, and why. seq moves on every change; read the JSON only then:
+// {"seq","addon":"ai"|"import"|"" (none),"title","body","warn":bool,"open":bool}.
+uint64_t mv_addon2_alert_seq(void);                                        // [main-thread]
+int32_t mv_addon2_alert_json(char* buf, int32_t size);                     // [main-thread]
+void mv_addon2_alert_dismiss(uint64_t seq);                                // [main-thread]
 // Import loads at once; "ai" verifies and starts on a worker and attaches
 // later (poll mv_addon2_loaded / mv_addon2_loading). [main-thread]
 bool mv_addon2_load(const char* id);
@@ -578,7 +686,6 @@ int32_t mv_chrome_trim_label(char* buf, int32_t size);
 // The clip tools sheet (⌘S on a clip). `flags` as trim_state.h kClipFlag*:
 // 1 markers set, 2 has audio, 4 has video. The answer is pack_clip_choice
 // (op | option << 8), exactly as the Windows flyout packs it.
-bool mv_chrome_clip_tools_visible(void);
 int32_t mv_chrome_clip_tool_flags(void);
 void mv_chrome_clip_tool_confirm(int32_t packed);
 void mv_chrome_clip_tool_cancel(void);

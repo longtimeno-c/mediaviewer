@@ -19,8 +19,15 @@ final class HelpStore: ObservableObject {
   }
 
   @Published private(set) var entries: [Entry] = []
+  /// The mode_mask `?` was opened over (commands.h); 0 lists every mode.
+  private var modes: Int32 = 0
 
   /// Re-read on every open: Settings may have remapped a key since.
+  func reload(modes: Int32) {
+    self.modes = modes
+    reload()
+  }
+
   func reload() {
     let need = Int(mv_chrome_command_table(nil, 0))
     guard need > 0 else { entries = []; return }
@@ -30,10 +37,12 @@ final class HelpStore: ObservableObject {
     var index: [Int32: Int] = [:]
     // "id\tmodes\tname\tkeys\trunnable\trow", one line per binding, in table
     // order. Bindings of one command are joined, as the Windows `?` does; an
-    // unbound row (Settings can give it a key) is not listed.
+    // unbound row (Settings can give it a key) is not listed, nor is one that
+    // is not live in the mode underneath (docs/design/16 "`?`").
     for line in String(cString: buf).split(separator: "\n") {
       let f = line.split(separator: "\t", omittingEmptySubsequences: false)
       guard f.count >= 4, let id = Int32(f[0]), !f[3].isEmpty else { continue }
+      if modes != 0, let m = Int32(f[1]), m & modes == 0 { continue }
       let keys = SettingsStore.macLabel(String(f[3]))
       if let at = index[id] {
         if !out[at].keys.components(separatedBy: "  /  ").contains(keys) {
@@ -53,7 +62,7 @@ struct HelpView: View {
 
   var body: some View {
     VStack(spacing: 16) {
-      Text("Keyboard shortcuts").font(.title2.bold())
+      Text("Keyboard shortcuts").font(MVTheme.font(20))
       ScrollView {
         LazyVGrid(
           columns: [GridItem(.adaptive(minimum: 340), spacing: 24, alignment: .top)],
@@ -62,7 +71,7 @@ struct HelpView: View {
           ForEach(store.entries) { entry in
             HStack(alignment: .firstTextBaseline) {
               Text(entry.keys)
-                .font(.system(.body, design: .monospaced))
+                .font(MVTheme.font(14))
                 .frame(width: 150, alignment: .leading)
               Text(entry.name).foregroundStyle(.secondary)
             }
@@ -72,8 +81,9 @@ struct HelpView: View {
         .padding(.horizontal, 32)
       }
       Text("Wheel zooms toward the cursor, drag pans. Keys change in Settings (⌘,). ? or Esc to close.")
-        .font(.footnote).foregroundStyle(.secondary)
+        .font(MVTheme.font(12)).foregroundStyle(.secondary)
     }
+    .font(MVTheme.font(14))  // the entries follow a theme's font
     .padding(.top, 56)
     .padding(.bottom, 16)
     .frame(maxWidth: .infinity, maxHeight: .infinity)

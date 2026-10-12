@@ -89,7 +89,7 @@ inline constexpr std::uint32_t kPdfPreviewEdge = 1024;
 
 // DOCX (docs/plans/audio-and-documents.md §2.5): laid out and drawn by codec/
 // itself (docx.cpp over codec/text: HarfBuzz + FreeType, fonts found by the
-// OS), so it is the same everywhere. A page is `long_edge` px on its long edge
+// OS, bytes read by the reader image installs), so it is the same everywhere. A page is `long_edge` px on its long edge
 // in sRGB on white; the raster carries page and page_count, which do not
 // depend on the size. Readable pages, not Word's: see docx.cpp for what is drawn.
 inline constexpr std::uint32_t kDocxLongEdge = 3200;
@@ -156,7 +156,8 @@ inline constexpr std::uint32_t kDocxPreviewEdge = 1024;
     std::size_t max_bytes = kAnimationByteBudget);
 
 // RGBA8 in, JPEG bytes out. `quality` is 1–100. Used for the filmstrip cache
-// (docs/design/04 spec jpg512.3); not an export path.
+// (docs/design/04 spec jpg512.4); alpha is dropped, so thumbnails
+// composite first (image::composite_thumb_matte). Not an export path.
 [[nodiscard]] result<std::vector<std::uint8_t>> encode_jpeg_rgba(
     std::span<const std::uint8_t> rgba, std::uint32_t width, std::uint32_t height, int quality);
 

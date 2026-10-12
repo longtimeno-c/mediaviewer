@@ -88,11 +88,13 @@ struct PeopleGrid: View {
             .transition(.opacity.combined(with: .move(edge: .top)))
         } else {
           HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Text("Click a person to see their photos. The same person twice? Drag one onto the other, or ⌘-click several and merge them.")
+            Text(model.readOnly
+                 ? "Click a person to see their photos. People are named and merged in the first MediaViewer window you opened."
+                 : "Click a person to see their photos. The same person twice? Drag one onto the other, or ⌘-click several and merge them.")
               .font(AITheme.font(12)).foregroundStyle(AITheme.body)
               .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
-            if model.canDedupe {
+            if model.canDedupe && !model.readOnly {
               if deduping {
                 ProgressView().controlSize(.small)
               }
@@ -112,7 +114,7 @@ struct PeopleGrid: View {
         }
         if let showAll, shown.count < model.people.count {
           Button("Show all \(model.people.count) people…", action: showAll)
-            .help("Every person found, to name, merge and correct")
+            .help(model.readOnly ? "Every person found" : "Every person found, to name, merge and correct")
         }
       }
       if !model.peopleNote.isEmpty {
@@ -177,7 +179,9 @@ struct PeopleGrid: View {
 
   private func tap(_ person: Person) {
     let flags = NSEvent.modifierFlags
-    if flags.contains(.command) || flags.contains(.shift) {
+    if model.readOnly {
+      model.showPhotos(of: person)  // nothing to select for: merging is the first window's
+    } else if flags.contains(.command) || flags.contains(.shift) {
       if !selection.insert(person.id).inserted { selection.remove(person.id) }
     } else if !selection.isEmpty {
       selection = []
@@ -267,10 +271,12 @@ private struct PersonCard: View, Equatable {
     .frame(maxWidth: .infinity)
     .contextMenu {
       Button("Show photos") { model.showPhotos(of: person) }
-      Button("Faces…") { open() }
-      Menu("Merge into…") {
-        ForEach(model.mergeTargets(for: person)) { other in
-          Button(model.displayName(other)) { model.merge(into: other.id, from: person.id) }
+      if !model.readOnly {  // a later window changes no person
+        Button("Faces…") { open() }
+        Menu("Merge into…") {
+          ForEach(model.mergeTargets(for: person)) { other in
+            Button(model.displayName(other)) { model.merge(into: other.id, from: person.id) }
+          }
         }
       }
     }
@@ -315,7 +321,7 @@ private struct PersonCover: View, Equatable {
       }
       .overlay(alignment: .topTrailing) {
         // Correcting a person's faces: here on hover, and in the context menu.
-        if hover && !selected {
+        if hover && !selected && !model.readOnly {
           Button(action: open) {
             Image(systemName: "ellipsis.circle.fill")
               .symbolRenderingMode(.palette)
@@ -352,15 +358,16 @@ private struct PersonCover: View, Equatable {
           guard item.hasPrefix(Self.dragPrefix) else { return nil }
           return UInt64(item.dropFirst(Self.dragPrefix.count))
         }.filter { $0 != person.id }
-        guard !ids.isEmpty else { return false }
+        guard !ids.isEmpty, !model.readOnly else { return false }
         model.merge(into: person.id, from: ids)
         return true
       } isTargeted: { dropTarget = $0 }
-      .help("Click to see this person's photos. Drag onto another person to merge them.")
+      .help(model.readOnly ? "Click to see this person's photos."
+            : "Click to see this person's photos. Drag onto another person to merge them.")
       .accessibilityLabel(person.name.isEmpty ? "Unnamed person" : person.name)
       .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
       .accessibilityHint("Shows their photos in the gallery")
-      .accessibilityAction(named: "Faces") { open() }
+      .accessibilityAction(named: "Faces") { if !model.readOnly { open() } }
   }
 
   private var ring: Color {
@@ -394,19 +401,19 @@ private struct PersonName: View, Equatable {
         .onChange(of: editing) { _, now in if !now { commit() } }
         .onAppear { editing = true }
     } else {
-      Text(person.name.isEmpty ? "Add a name" : person.name)
+      Text(person.name.isEmpty ? (model.readOnly ? "Unnamed" : "Add a name") : person.name)
         .font(AITheme.font(12))
         .foregroundStyle(person.name.isEmpty ? AITheme.body : AITheme.title)
         .lineLimit(1).truncationMode(.tail)
         .frame(maxWidth: .infinity)
         .contentShape(Rectangle())
         .onTapGesture { beginEditing() }
-        .focusable()
+        .focusable(!model.readOnly)
         .onKeyPress(.return) {
           beginEditing()
           return .handled
         }
-        .help(person.name.isEmpty ? "Click to name this person" : "Click to rename")
+        .help(model.readOnly ? "" : person.name.isEmpty ? "Click to name this person" : "Click to rename")
         .accessibilityAddTraits(.isButton)
         .accessibilityLabel(person.name.isEmpty ? "Add a name" : "Name, \(person.name)")
         .accessibilityHint("Edits the name")
@@ -414,6 +421,7 @@ private struct PersonName: View, Equatable {
   }
 
   private func beginEditing() {
+    guard !model.readOnly else { return }  // named in the first window
     name = person.name
     editingName = true
   }
@@ -450,6 +458,7 @@ struct AllPeopleSheet: View {
     }
     .padding(20)
     .frame(minWidth: 640, idealWidth: 820, minHeight: 420, idealHeight: 640)
+    .onExitCommand(perform: done)  // Esc closes, as Done does (issue #192)
     // Their photos open in the gallery, as from Settings: the sheet steps aside.
     .onChange(of: model.opening) { _, id in
       if id != nil { done() }
@@ -469,7 +478,14 @@ struct PersonSheet: View {
   @State private var loading = true
   @State private var refining = false
   @State private var refineNote = ""
+  /// The face the arrow keys move from (the last one clicked or reached).
+  @State private var cursor: Int?
   @FocusState private var focused: Bool
+
+  private func toggle(_ id: UInt64, at index: Int) {
+    if !selection.insert(id).inserted { selection.remove(id) }
+    cursor = index
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
@@ -488,35 +504,52 @@ struct PersonSheet: View {
         }
         .fixedSize()
       }
-      Text("Select faces that are someone else. ⌘-click selects several; Delete removes them from this person.")
+      Text("Select faces that are someone else. ⌘-click selects several, ← → move, ⇧ adds; Delete removes them from this person.")
         .font(AITheme.font(12)).foregroundStyle(AITheme.body)
-      ScrollView {
-        if loading {
-          ProgressView().frame(maxWidth: .infinity).padding(40)
-        }
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 76, maximum: 92), spacing: 10)], spacing: 10) {
-          ForEach(faces) { face in
-            FaceCell(table: model.table, face: face, selected: selection.contains(face.id),
-                     reject: { reject([face.id]) })
-              .onTapGesture {
-                if NSEvent.modifierFlags.contains(.command) || NSEvent.modifierFlags.contains(.shift) {
-                  if !selection.insert(face.id).inserted { selection.remove(face.id) }
-                } else {
-                  selection = [face.id]
-                }
-              }
+      ScrollViewReader { proxy in
+        ScrollView {
+          if loading {
+            ProgressView().frame(maxWidth: .infinity).padding(40)
           }
+          LazyVGrid(columns: [GridItem(.adaptive(minimum: 76, maximum: 92), spacing: 10)], spacing: 10) {
+            ForEach(Array(faces.enumerated()), id: \.element.id) { i, face in
+              FaceCell(table: model.table, face: face, selected: selection.contains(face.id),
+                       toggle: { toggle(face.id, at: i) },
+                       reject: { reject([face.id]) })
+                .id(face.id)
+                .onTapGesture {
+                  if NSEvent.modifierFlags.contains(.command) || NSEvent.modifierFlags.contains(.shift) {
+                    toggle(face.id, at: i)
+                  } else {
+                    selection = [face.id]
+                    cursor = i
+                  }
+                }
+            }
+          }
+          .padding(4)
         }
-        .padding(4)
-      }
-      .frame(minHeight: 280)
-      .focusable()
-      .focused($focused)
-      .focusEffectDisabled()
-      .onKeyPress(keys: [.delete, .deleteForward]) { _ in
-        guard !selection.isEmpty else { return .ignored }
-        reject(Array(selection))
-        return .handled
+        .frame(minHeight: 280)
+        .focusable()
+        .focused($focused)
+        .focusEffectDisabled()
+        .onKeyPress(keys: [.delete, .deleteForward]) { _ in
+          guard !selection.isEmpty else { return .ignored }
+          reject(Array(selection))
+          return .handled
+        }
+        // Selection from the keyboard (issue #192): "Not this person" and
+        // Split were mouse-only. ← → move it, ⇧ adds to it.
+        .onKeyPress(keys: [.leftArrow, .rightArrow]) { press in
+          guard !faces.isEmpty else { return .ignored }
+          let step = press.key == .leftArrow ? -1 : 1
+          let next = cursor.map { min(max($0 + step, 0), faces.count - 1) } ?? (step < 0 ? faces.count - 1 : 0)
+          cursor = next
+          let id = faces[next].id
+          if press.modifiers.contains(.shift) { selection.insert(id) } else { selection = [id] }
+          proxy.scrollTo(id)
+          return .handled
+        }
       }
       HStack {
         Button("Not this person") { reject(Array(selection)) }
@@ -543,6 +576,7 @@ struct PersonSheet: View {
     }
     .padding(20)
     .frame(width: 620, height: 520)
+    .onExitCommand(perform: done)  // Esc closes, as Done does (issue #192)
     .task {
       faces = await model.faces(of: person.id)
       loading = false
@@ -581,8 +615,19 @@ private struct FaceCell: View {
   let table: AITable
   let face: Face
   let selected: Bool
+  let toggle: () -> Void
   let reject: () -> Void
   @State private var hover = false
+
+  /// What VoiceOver reads: the file the face is in, and the moment for a clip.
+  private var label: String {
+    let name = (face.path as NSString).lastPathComponent
+    guard face.ptsMs >= 0 else { return name.isEmpty ? "Face" : "Face in \(name)" }
+    let s = face.ptsMs / 1000
+    let at = s >= 3600 ? String(format: "%d:%02d:%02d", s / 3600, s / 60 % 60, s % 60)
+                       : String(format: "%d:%02d", s / 60, s % 60)
+    return "Face in \(name) at \(at)"
+  }
 
   var body: some View {
     FaceImage(table: table, faceID: face.id, box: face.box, monogram: "")
@@ -603,6 +648,11 @@ private struct FaceCell: View {
         }
       }
       .onHover { h in withAnimation(.easeOut(duration: 0.12)) { hover = h } }
-      .accessibilityAddTraits(selected ? .isSelected : [])
+      .accessibilityElement(children: .ignore)
+      .accessibilityLabel(label)
+      .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+      .accessibilityHint("Selects or deselects this face")
+      .accessibilityAction { toggle() }
+      .accessibilityAction(named: "Not this person") { reject() }
   }
 }

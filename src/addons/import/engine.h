@@ -110,8 +110,9 @@ class engine {
   // In memory only: safe on the UI thread. persist() writes its row.
   std::shared_ptr<job> make_job(std::uint32_t kind, const preset& settings);
   void persist(const std::shared_ptr<job>& j);
-  void fill_job_from_plan(const std::shared_ptr<job>& j, const scan_result& scan,
-                          const plan_result& plan);
+  // Fails when the journal could not be written; the job must not start.
+  [[nodiscard]] expected fill_job_from_plan(const std::shared_ptr<job>& j,
+                                            const scan_result& scan, const plan_result& plan);
   void launch(const std::shared_ptr<job>& j);
   void run_job(const std::shared_ptr<job>& j);
   void run_verify(const std::shared_ptr<job>& j, const std::string& dir);
