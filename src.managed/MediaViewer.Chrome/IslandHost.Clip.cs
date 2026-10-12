@@ -242,7 +242,7 @@ public static partial class IslandHost
 
     private static UIElement BuildClipTools(int flags, out UIElement focusTarget)
     {
-        var panel = new StackPanel { Spacing = 2, Margin = new Thickness(12), IsTabStop = true, MinWidth = 380 };
+        var panel = new StackPanel { Spacing = 2, IsTabStop = true, Width = 400 };
         panel.Children.Add(Label("Clip tools", UiFontSize + 2));
         panel.Children.Add(Label("New files beside the clip; the original is never changed.", UiFontSize, mute: true));
         var rows = new TextBlock[ClipTools.Length];
@@ -255,7 +255,9 @@ public static partial class IslandHost
             for (int i = 0; i < rows.Length; ++i)
             {
                 rows[i].Text = (i == row ? "▶ " : "  ") + ClipTools[i].Name;
-                rows[i].Foreground = Brush(!Enabled(i) ? Body : i == row ? Title : Body);
+                // A tool the clip cannot use is the Disabled colour, not a
+                // dimmer copy of an enabled row (the Mac's .tertiary).
+                rows[i].Foreground = Brush(!Enabled(i) ? ChromeColour.Disabled : i == row ? Title : Body);
                 AutomationProperties_SetName(rows[i], ClipTools[i].Name + (Enabled(i) ? "" : ", unavailable"));
             }
         }
@@ -288,6 +290,15 @@ public static partial class IslandHost
             panel.Children.Add(b);
         }
         panel.Children.Add(Label("↑ ↓ choose   Enter run   Esc cancel   ·   jobs: Ctrl+J", UiFontSize, mute: true));
+        // Cancel (Esc) and Run (Enter) for the mouse (ClipToolsView.swift).
+        Button cancel = TextButton("Cancel", ClosePopup);
+        cancel.IsTabStop = false;
+        ToolTipService.SetToolTip(cancel, "Esc");
+        Button run = AccentButton("Run", () => Run(row));
+        run.IsTabStop = false;
+        run.IsEnabled = row < ClipTools.Length;  // a clip no tool can use
+        ToolTipService.SetToolTip(run, "Enter");
+        panel.Children.Add(SheetButtons(cancel, run));
         AutomationProperties_SetName(panel, "Clip tools");
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetHelpText(
             panel, "Up and Down choose a tool, Enter runs it, Escape cancels");

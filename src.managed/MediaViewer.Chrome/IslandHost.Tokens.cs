@@ -183,6 +183,43 @@ public static partial class IslandHost
         AutomationProperties.SetName(b, tip);
     }
 
+    // A sheet's default button (the Mac's .keyboardShortcut(.defaultAction)):
+    // filled with the accent. AccentButtonStyle comes with XamlControlsResources,
+    // which these islands do not have, so the fill is per-element lightweight
+    // resources over WinUI's own template, never a ControlTemplate.
+    private static Button AccentButton(string label, Action click)
+    {
+        SolidColorBrush fill = Brush(ChromeColour.ControlAccent);
+        SolidColorBrush ink = Brush(ChromeColour.OnAccent);
+        var b = new Button
+        {
+            Content = new TextBlock { Text = label, FontFamily = UiFont, FontSize = UiFontSize, Foreground = ink },
+            Background = fill,
+            Foreground = ink,
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(16, 7, 16, 7),
+            CornerRadius = new CornerRadius(RadiusButton),
+            VerticalAlignment = VerticalAlignment.Center,
+            AllowFocusOnInteraction = false,
+        };
+        b.Resources["ButtonBackground"] = fill;
+        b.Resources["ButtonBackgroundPointerOver"] = new SolidColorBrush(fill.Color) { Opacity = 0.88 };
+        b.Resources["ButtonBackgroundPressed"] = new SolidColorBrush(fill.Color) { Opacity = 0.76 };
+        b.Resources["ButtonBackgroundDisabled"] = Brush(ChromeColour.PressedWash);
+        foreach (string key in new[] { "ButtonForeground", "ButtonForegroundPointerOver", "ButtonForegroundPressed" })
+            b.Resources[key] = ink;
+        b.Resources["ButtonForegroundDisabled"] = Brush(ChromeColour.Disabled);
+        foreach (string key in new[] { "ButtonBorderBrush", "ButtonBorderBrushPointerOver",
+                                       "ButtonBorderBrushPressed", "ButtonBorderBrushDisabled" })
+            b.Resources[key] = Brush(Microsoft.UI.Colors.Transparent);
+        b.IsEnabledChanged += (_, _) =>
+        {
+            if (b.Content is TextBlock t) t.Foreground = b.IsEnabled ? ink : Brush(ChromeColour.Disabled);
+        };
+        b.Click += (_, _) => Guarded(click);
+        return b;
+    }
+
     // m:ss, or h:mm:ss from an hour (TransportView.swift clock).
     private static string Clock(long ns)
     {

@@ -32,6 +32,8 @@ public static partial class IslandHost
         // What Windows' own controls (slider, toggle, check box) fill with: a
         // theme's accent, the system accent, or the contrast theme's highlight.
         ControlAccent,
+        // Text on a ControlAccent fill (the default button of a sheet).
+        OnAccent,
     }
 
     private static readonly Dictionary<ChromeColour, SolidColorBrush> ThemeBrushes = new();
@@ -174,6 +176,11 @@ public static partial class IslandHost
             : ColorHelper.FromArgb(SettingsFillPressedAlpha, washInk.R, washInk.G, washInk.B));
         Set(ChromeColour.AccentInk, contrast ? SystemColour(14) : Rgb(255, 255, 255));  // COLOR_HIGHLIGHTTEXT
         Set(ChromeColour.ControlAccent, controlAccent);
+        // White on a dark accent, black on a light one; the contrast theme's
+        // highlight text on its highlight.
+        double accentLuma = 0.2126 * controlAccent.R + 0.7152 * controlAccent.G + 0.0722 * controlAccent.B;
+        Set(ChromeColour.OnAccent, contrast ? SystemColour(14)                 // COLOR_HIGHLIGHTTEXT
+            : accentLuma > 160 ? Rgb(0, 0, 0) : Rgb(255, 255, 255));
         PublishControlAccent();
 
         // The native welcome/game is outside the XAML tree. Ship the current
