@@ -343,7 +343,8 @@ struct IndexTransferSection: View {
       Text("Where are these folders on this Mac?").font(AITheme.font(12)).foregroundStyle(AITheme.body)
       ForEach(plan.roots) { root in
         HStack(spacing: 8) {
-          Toggle("", isOn: Binding(get: { model.plan?.roots.first(where: { $0.id == root.id })?.include ?? false },
+          // Labelled for VoiceOver (issue #192); the row's text shows it.
+          Toggle("Import \(root.name)", isOn: Binding(get: { model.plan?.roots.first(where: { $0.id == root.id })?.include ?? false },
                                    set: { on in
                                      if let i = model.plan?.roots.firstIndex(where: { $0.id == root.id }) {
                                        model.plan?.roots[i].include = on

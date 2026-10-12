@@ -22,7 +22,7 @@ struct FilmstripView: View {
             // the folder): skip it, never index past the end.
             if store.names.indices.contains(index) {
               FilmstripCell(
-                index: index, name: store.names[index], isCurrent: index == store.currentIndex,
+                index: index, name: store.names[index], highlight: store.highlight(at: index),
                 isMarked: store.markedNames.contains(store.names[index]),
                 isClip: store.isClip(at: index),
                 thumbKey: store.thumbKey(at: index), slot: store.slot(at: index)
@@ -37,14 +37,11 @@ struct FilmstripView: View {
         .frame(height: 88)
       }
       .frame(maxWidth: .infinity, maxHeight: .infinity)
-      .background(.regularMaterial)
       // Keeps the current selection in view across arrow-key navigation, not
-      // just mouse clicks inside the strip. Deliberately not animated: an
-      // animation per key-repeat queued up behind each other and read as lag.
-      .onChange(of: store.currentIndex) { _, newIndex in
-        guard newIndex >= 0 else { return }
-        proxy.scrollTo(newIndex, anchor: .center)
-      }
+      // just mouse clicks inside the strip. A child observing only the
+      // selection, so a step does not rebuild the strip (issue #179).
+      .background { FollowSelection(proxy: proxy, anchor: .center) }
+      .background(.regularMaterial)
     }
   }
 }
@@ -52,7 +49,9 @@ struct FilmstripView: View {
 private struct FilmstripCell: View {
   let index: Int
   let name: String
-  let isCurrent: Bool
+  // Observed per cell, like the slot: a step of the selection re-renders the
+  // cell it left and the one it reached.
+  @ObservedObject var highlight: CellHighlight
   let isMarked: Bool
   let isClip: Bool
   let thumbKey: String
@@ -73,7 +72,7 @@ private struct FilmstripCell: View {
     .clipShape(RoundedRectangle(cornerRadius: MVTheme.radius(4)))
     .overlay(
       RoundedRectangle(cornerRadius: MVTheme.radius(4))
-        .strokeBorder(isCurrent ? MVTheme.accent : .clear, lineWidth: 2)
+        .strokeBorder(highlight.isCurrent ? MVTheme.accent : .clear, lineWidth: 2)
     )
     .overlay { if isClip { PlayBadge(diameter: 28) } }
     .overlay(alignment: .topTrailing) { if isMarked { MarkBadge() } }

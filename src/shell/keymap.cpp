@@ -178,6 +178,16 @@ constexpr slug_row kSlugs[] = {
     {next_page, "next_page"},
     {prev_page, "prev_page"},
     {new_window, "new_window"},
+    // Commands main added beside PR 56 (#210 rename, #206 kind filter, #207 cull).
+    {rename_file, "rename_file"},
+    {kind_filter_next, "kind_filter_next"},
+    {kind_filter_set, "kind_filter_set"},
+    {reject, "reject"},
+    {label_red, "label_red"},
+    {label_yellow, "label_yellow"},
+    {label_green, "label_green"},
+    {label_blue, "label_blue"},
+    {clear_label, "clear_label"},
 };
 
 struct claim {

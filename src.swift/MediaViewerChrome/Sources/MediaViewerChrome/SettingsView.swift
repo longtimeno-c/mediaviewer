@@ -40,12 +40,13 @@ final class SettingsStore: ObservableObject {
   /// -1 without an updater (unsigned build), 0 stable, 1 preview.
   @Published private(set) var updateChannel: Int32 = -1
 
-  private var timer: Timer?
   private var generation: UInt64 = .max
 
   private init() {
-    timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-      MainActor.assumeIsolated { self?.poll() }
+    // Issue #178: polled when the main run loop has run (ChromePulse), not on a timer.
+    ChromePulse.shared.add { [weak self] in
+      self?.poll()
+      return false
     }
   }
 
@@ -75,10 +76,24 @@ final class SettingsStore: ObservableObject {
   }
 
   /// The shortcut currently bound to the command called `name`, for menu labels.
+  /// The bar asks for about 20 labels each time it renders, so the table is
+  /// parsed once per keys generation, not once per label (issue #179).
   static func keyLabel(_ name: String) -> String? {
-    guard let row = readTable().first(where: { $0.name == name }), !row.keys.isEmpty else { return nil }
-    return macLabel(row.keys)
+    let g = mv_chrome_keys_generation()
+    if g != labelsGeneration {
+      var fresh: [String: String] = [:]
+      // The first row of a name wins, as first(where:) did.
+      for row in readTable() where fresh[row.name] == nil {
+        fresh[row.name] = row.keys.isEmpty ? "" : macLabel(row.keys)
+      }
+      labels = fresh
+      labelsGeneration = g
+    }
+    guard let label = labels[name], !label.isEmpty else { return nil }
+    return label
   }
+  private static var labels: [String: String] = [:]
+  private static var labelsGeneration: UInt64 = .max
 
   private static func readTable() -> [KeyRow] {
     let need = Int(mv_chrome_command_table(nil, 0))
@@ -131,7 +146,7 @@ final class SettingsStore: ObservableObject {
   func resetKeys() { mv_chrome_keys_reset(); generation = .max; poll() }
   /// A key layout was applied (KeyLayoutRow): re-read the table now.
   func keysChanged() { generation = .max; poll() }
-  func close() { mv_chrome_menu(18) }
+  func close() { mv_chrome_menu(kMenuSettings) }
 }
 
 // A separate label column keeps every switch on the same trailing edge,

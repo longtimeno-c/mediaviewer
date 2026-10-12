@@ -122,8 +122,6 @@ final class SearchPanelController: NSObject {
     return model.awaitingResults
   }
 
-  var isVisible: Bool { panel.isVisible && state.shown }
-
   func show(over parent: NSWindow?) {
     hideSeq += 1  // a hide still fading out does not take the panel away
     let wanted = CGSize(width: 820 + 2 * Self.margin, height: 580 + 2 * Self.margin)
@@ -866,7 +864,7 @@ private struct FilterButton: View {
     .accessibilityAction { if available { action() } }
   }
 
-  private var foreground: Color {
+  @MainActor private var foreground: Color {
     switch style {
     case .segment: return on || hover ? AITheme.title : AITheme.body
     case .token:
@@ -875,7 +873,7 @@ private struct FilterButton: View {
     }
   }
 
-  private var fill: Color {
+  @MainActor private var fill: Color {
     switch style {
     case .segment:
       if on { return scheme == .dark ? Color.white.opacity(0.16) : Color.white }
@@ -886,7 +884,7 @@ private struct FilterButton: View {
     }
   }
 
-  private var stroke: Color {
+  @MainActor private var stroke: Color {
     switch style {
     case .segment:
       return on && increased ? AITheme.title.opacity(0.7) : .clear

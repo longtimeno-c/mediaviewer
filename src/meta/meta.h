@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "core/result.h"
+#include "io/pairing.h"
 
 namespace mv::meta {
 
@@ -77,6 +78,10 @@ struct summary {
   // flattens them for display; the edit field reads this one).
   int rating = 0;
   std::string comment;
+  // Issue #207: the colour label (XMP xmp:Label, the sidecar wins), as
+  // written: "Red", "Yellow", "Green", "Blue", "Purple", or another
+  // app's word. Empty = none.
+  std::string label;
 };
 
 // An AF area in the stored pixel grid, normalised to 0..1 with a top-left
@@ -133,6 +138,13 @@ struct metadata {
 // Cheap enough to run for every file in a folder on a worker (sort by date
 // taken). Never throws, never reads the whole file.
 [[nodiscard]] std::optional<std::int64_t> read_date_taken(std::string_view utf8_path);
+
+// Issue #207: the rating and colour label alone, for the cull filter (View >
+// Show: Picks, Not rejected, a colour). The same bounded head read as
+// read_date_taken (the whole 8 MB prefix only when the head does not parse),
+// then the XMP sidecar, which wins, as in `read`. A clip or an unreadable file
+// is its sidecar, or unrated and unlabelled. Worker only; never throws.
+[[nodiscard]] io::cull_marks read_cull_marks(std::string_view utf8_path);
 
 // Pure helpers, exposed so the tests can pin them without a fixture file.
 // "2024:05:01 14:03:22" (EXIF) or "2024-05-01T14:03:22[.fff][Z|+hh:mm]" (XMP,

@@ -272,3 +272,59 @@ TEST_CASE("a read that began before a write landed does not cache the old record
   REQUIRE(done.wait_for(2));
   CHECK(store.peek(a));
 }
+
+// Issue #207: View > Show's cull filters read each file's rating and label on
+// the pool, once per (path, mtime, size); the relist only looks them up.
+TEST_CASE("cull marks are read once per file and dropped by invalidate", "[meta][store][cull]") {
+  mv::job_system jobs;
+  REQUIRE(mv::ok(jobs.start(2)));
+  std::atomic<int> reads{0};
+  gate g;
+  mv::shell::meta_store store(
+      fake_read, [](std::string_view) { return std::optional<std::int64_t>{}; },
+      [&](std::string_view p) {
+        ++reads;
+        io::cull_marks m;
+        if (p.find("rej") != std::string_view::npos) m.rating = -1;
+        if (p.find("red") != std::string_view::npos) m.label = io::cull_label::red;
+        return m;
+      });
+  std::vector<io::dir_entry> files{entry("rej.jpg"), entry("red.jpg"), entry("plain.jpg")};
+  // Nothing cached yet: a lookup, never a read.
+  auto marks = store.cull_marks_of(files);
+  REQUIRE(marks.size() == 3);
+  CHECK_FALSE(marks[0].has_value());
+  CHECK(reads == 0);
+
+  store.resolve_cull_marks(files, jobs, [&] { g.open(); });
+  REQUIRE(g.wait_for(1));
+  CHECK(reads == 3);
+  CHECK(store.consume_cull_changed());
+  CHECK_FALSE(store.consume_cull_changed());
+  marks = store.cull_marks_of(files);
+  REQUIRE(marks[0]);
+  CHECK(marks[0]->rating == -1);
+  REQUIRE(marks[1]);
+  CHECK(marks[1]->label == io::cull_label::red);
+  REQUIRE(marks[2]);
+  CHECK(*marks[2] == io::cull_marks{});
+
+  // Another relist: nothing to read.
+  store.resolve_cull_marks(files, jobs, [&] { g.open(); });
+  REQUIRE(g.wait_for(2));
+  CHECK(reads == 3);
+  CHECK(store.cull_reads() == 3);
+
+  // A JPEG rewritten in place has a new stamp: read again.
+  std::vector<io::dir_entry> moved{entry("rej.jpg", 2, 11)};
+  CHECK_FALSE(store.cull_marks_of(moved)[0].has_value());
+
+  // A sidecar write leaves the stamp: invalidate drops it by path.
+  store.invalidate("/dir/red.jpg");
+  marks = store.cull_marks_of(files);
+  CHECK_FALSE(marks[1].has_value());
+  CHECK(marks[0].has_value());
+  store.resolve_cull_marks(files, jobs, [&] { g.open(); });
+  REQUIRE(g.wait_for(3));
+  CHECK(reads == 4);
+}

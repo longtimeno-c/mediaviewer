@@ -399,7 +399,7 @@ never half-loaded. Every PR 55 refusal stands (code keys still refuse by name). 
 | Theme shape | `src/addon/theme.*` (`theme_shape`) |
 | One JSON for both hosts | `src/addon/open_json.*` (`addon_settings_page_json`, `addon_setting_set_json`, `addon_settings_forget`, `open_keymap_json`; `settings` / `keymaps` in the list and the sheet's lines) |
 | Host table | `settings_get`, the last row of `mv_host_api` (`host.cpp`); host API not bumped |
-| C ABI 0.20 (Windows), chrome bridge (Mac) | `mv_addon_settings_json` / `_setting_set` / `_settings_forget`, `mv_open_addon_keymap_json`; `mv_addons_settings_*`, `mv_open_addons_keymap`, `mv_chrome_apply_keymap` |
+| C ABI 0.24 (Windows), chrome bridge (Mac) | `mv_addon_settings_json` / `_setting_set` / `_settings_forget`, `mv_open_addon_keymap_json`; `mv_addons_settings_*`, `mv_open_addons_keymap`, `mv_chrome_apply_keymap` |
 | Mac chrome | `AddonSettingsPage.swift` (page, Key layout row), `OpenAddons.swift` (page under each add-on, Keep its settings), `AddonsView.swift` (Import's page), `Theme.swift` (`MVTheme.radius` / `space` / type scale; `MVChromeTheme` for the add-on bundles); `HostTheme.swift` (Import), `AITheme` (Local search) |
 | Windows chrome | `IslandHost.AddonSettings.cs`, `IslandHost.OpenAddons.cs`, `IslandHost.Settings.cs` (Key layout), `IslandHost.Theme.cs` / `ThemePack.cs` (shape), `ImportLook.cs` (Import, Duplicates), `IAddonThemeShape` in `MediaViewer.Interop/Addons.cs`; native `chrome_cmd_apply_keymap` (1050) in `main.cpp` |
 | SDK, examples, guide | `tools/addon-sdk/mvaddon.py` (checks pages, layouts, shape; API 2), `examples/addons/settings-demo`, `examples/addons/vim-keys`, `docs/ADDONS.md` |
@@ -517,7 +517,7 @@ Where it lives:
 | The store: inspect, install, list, remove, the publisher record | `src/addon/open_store.*`; the folder is `io::open_addons_dir()` (`src/io/paths*`), never created by a read |
 | One JSON and one wording for both hosts | `src/addon/open_json.*` |
 | C ABI 0.17 (Windows) and the chrome bridge (Mac) | `mv_open_addon_*` in `mediaviewer_addon.h` / `abi/addon_abi.cpp`; `mv_open_addons_*` in `mv_chrome_bridge.h` / `shell/addons_mac.mm` |
-| A package handed to the app | `shell/open_request.*` (`open_kind::addon_package`), `shell/main.cpp`, `chrome_host::offer_addon` → `IslandHost.OfferAddon`; `main_mac.mm -openEntryPath:` → `MVChromeHost.offerAddonPackage` |
+| A package handed to the app | `shell/open_request.*` (`open_kind::addon_package`), `shell/main.cpp`, `chrome_host::offer_addon` → `IslandHost.OfferAddon`; `main_mac.mm -openEntryPath:` (launch) and `-openEntryPaths:failed:` (a drop, Open, Finder) → `MVChromeHost.offerAddonPackage` |
 | Mac chrome | `Theme.swift` (`MVTheme`, `ThemeStore`, `ThemedRoot`), `OpenAddons.swift` (store, download, section, sheet), the Theme row in `SettingsView.swift` |
 | Windows chrome | `IslandHost.ThemePack.cs`, `IslandHost.OpenAddons.cs`, the hook in `IslandHost.Theme.cs` `RefreshTheme`, `AddonNative.Open*` in `MediaViewer.Interop/Addons.cs` |
 | The author's tool, guide and example | `tools/addon-sdk/mvaddon.py` (MIT), `docs/ADDONS.md`, `examples/addons/film-tones` |

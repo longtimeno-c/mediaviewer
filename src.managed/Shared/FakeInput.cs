@@ -22,6 +22,8 @@ internal sealed class FakeInputLook
     public required Func<Brush> Hairline { get; init; }    // the unfocused border
     public required Func<Brush> Selection { get; init; }   // selected text's highlight
     public required Func<Brush> SelectionInk { get; init; }
+    // The focused border (the Mac's 1 px accent); Title when a look sets none.
+    public Func<Brush>? Accent { get; init; }
 }
 
 /// <summary>
@@ -115,7 +117,10 @@ internal class FakeInput : ContentControl
         else HorizontalAlignment = HorizontalAlignment.Stretch;
         IsTabStop = true;
         AllowFocusOnInteraction = true;
-        UseSystemFocusVisuals = true;
+        // A boxed field shows focus with its own accent border (the Mac's), not
+        // that plus the system focus rect: two rings. A bare field's container
+        // draws no focus, so it keeps the system's.
+        UseSystemFocusVisuals = bare;
         _before = MakeRun();
         _selected = MakeRun();
         _after = MakeRun();
@@ -150,6 +155,7 @@ internal class FakeInput : ContentControl
             Background = look.Canvas(),
             BorderBrush = look.Hairline(),
             BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(bare ? 0 : 6),
             Padding = new Thickness(10, 6, 10, 6),
             MinHeight = 32,
             HorizontalAlignment = HorizontalAlignment.Stretch,
@@ -519,8 +525,8 @@ internal class FakeInput : ContentControl
             return;
         }
         _inner.Background = _look.Canvas();
-        _inner.BorderBrush = focused ? _look.Title() : _look.Hairline();
-        _inner.BorderThickness = new Thickness(focused ? 2 : 1);
+        _inner.BorderBrush = focused ? (_look.Accent?.Invoke() ?? _look.Title()) : _look.Hairline();
+        _inner.BorderThickness = new Thickness(1);
     }
 
     private void StartCaret()

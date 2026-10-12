@@ -557,7 +557,7 @@ at start. Where each part stands:
   ([25 §17](25-open-addons.md#17-decisions-owner-2026-10-03)). PR 56's first half is built
   (2026-10-04): Import's commands, keys, Settings line and card hint come from its manifest
   (`contributes`, eight `addon_cmd_*` slots, ABI 0.18), with an older Import kept working
-  through the built-in rows. Its second half is built (2026-10-11; contribution API 2, ABI 0.20):
+  through the built-in rows. Its second half is built (2026-10-11; contribution API 2, ABI 0.24):
   settings pages from a schema on both hosts with values kept per add-on, keymap packs, theme
   shape, and MediaViewer's own add-on windows on the host's tokens. Verify on the Mac in the
   app; the Windows half compiles and is owed a run

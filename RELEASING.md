@@ -173,10 +173,9 @@ one set per platform, signed with the **same** Ed25519 key as the update manifes
 
 `<platform>` is `win-x64` or `macos` (one universal add-on, like the app).
 
-> **Owner step, once:** the workflow half of this ships as `tools/package/release-addon.patch`
-> (the change was made from a session without the GitHub `workflow` scope). Apply it with
-> `git apply tools/package/release-addon.patch`, commit `.github/workflows/release.yml`, and delete
-> the patch. Until then releases carry no add-on and Settings says Import is not published yet.
+The release workflow builds, signs and packs these on every stable run
+(`.github/workflows/release.yml`: "Pack the Import add-on" on Windows, "Import add-on (join,
+sign, notarize, pack)" on the Mac).
 
 **Local search (the AI pack, docs/design/17)** ships the same way on every stable release, as three
 signed downloads per platform: `mediaviewer-addon-ai-*` (the Core pack: the native add-on, ONNX
