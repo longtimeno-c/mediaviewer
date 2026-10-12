@@ -26,7 +26,10 @@ param(
     # Resolved in the body, not in the default: Windows PowerShell 5.1 does not
     # reliably populate $PSScriptRoot while binding parameter defaults.
     [string]$RepoRoot,
-    [string]$VcpkgInstalledRoot = ''
+    # One or more install trees. Windows has one (build/vcpkg_installed); the
+    # Mac keeps its LGPL dylibs in a second (build/vcpkg_dynamic) beside the
+    # static, permissive one, so both are passed.
+    [string[]]$VcpkgInstalledRoot = @()
 )
 
 $ErrorActionPreference = 'Stop'
@@ -94,22 +97,41 @@ foreach ($manifestName in @('vcpkg.json', 'tools/mac/dependencies/vcpkg.json')) 
 # repo links, never at whatever ffmpeg happens to be on PATH -- a developer with
 # a GPL ffmpeg in PATH (a normal thing to have) must not fail an unrelated
 # build, and a GPL ffmpeg in a classic vcpkg root must not be mistaken for ours.
-# So: the explicit parameter, else the repo's own manifest-mode install tree.
-# Never $env:VCPKG_ROOT/installed, never PATH.
+# So: the explicit parameter, else the repo's own manifest-mode install trees
+# in the first build* directory that has one (vcpkg_installed, and on the Mac
+# vcpkg_dynamic). Never $env:VCPKG_ROOT/installed, never PATH.
+$VcpkgInstalledRoot = @($VcpkgInstalledRoot | Where-Object { $_ })
 if (-not $VcpkgInstalledRoot) {
-    $candidates = Get-ChildItem -Path $RepoRoot -Directory -Filter 'build*' -ErrorAction SilentlyContinue |
-        ForEach-Object { Join-Path $_.FullName 'vcpkg_installed' } |
-        Where-Object { Test-Path $_ }
-    if ($candidates) { $VcpkgInstalledRoot = @($candidates)[0] }
+    foreach ($buildDir in Get-ChildItem -Path $RepoRoot -Directory -Filter 'build*' -ErrorAction SilentlyContinue) {
+        $candidates = @('vcpkg_installed', 'vcpkg_dynamic') |
+            ForEach-Object { Join-Path $buildDir.FullName $_ } |
+            Where-Object { Test-Path $_ }
+        if ($candidates) { $VcpkgInstalledRoot = @($candidates); break }
+    }
 }
 
-if ($VcpkgInstalledRoot -and (Test-Path $VcpkgInstalledRoot)) {
+# A root that was asked for and is not there is a gate that checked nothing.
+foreach ($root in $VcpkgInstalledRoot) {
+    if (-not (Test-Path $root)) {
+        Add-Violation 'vcpkg install tree missing' `
+            "$root does not exist; the built FFmpeg and the LGPL linkage could not be checked."
+    }
+}
+
+foreach ($root in $VcpkgInstalledRoot | Where-Object { Test-Path $_ }) {
+    Write-Host "licence check: scanning $root"
     # FFmpeg embeds its full configure string in the built libraries, so the
     # binary we actually link is its own evidence. This survives vcpkg cleaning
     # buildtrees, which the old log-file check did not -- that check passed
     # vacuously because nothing it looked for is ever installed.
-    $ffmpegBinaries = Get-ChildItem -Path $VcpkgInstalledRoot -Recurse -File `
-        -Include 'avutil*.dll', 'avcodec*.dll', 'avformat*.dll' -ErrorAction SilentlyContinue
+    #
+    # Windows DLLs and macOS dylibs. A dylib is installed as the real file plus
+    # two version symlinks; only the real file is read.
+    $ffmpegBinaries = Get-ChildItem -Path $root -Recurse -File `
+        -Include 'avutil*.dll', 'avcodec*.dll', 'avformat*.dll',
+                 'libavutil*.dylib', 'libavcodec*.dylib', 'libavformat*.dylib' `
+        -ErrorAction SilentlyContinue |
+        Where-Object { -not ($_.Attributes -band [System.IO.FileAttributes]::ReparsePoint) }
 
     $sawConfigureLine = $false
     foreach ($binary in $ffmpegBinaries) {
@@ -142,7 +164,7 @@ if ($VcpkgInstalledRoot -and (Test-Path $VcpkgInstalledRoot)) {
     }
 
     # Also honour any text form, if a future port installs one.
-    $configFiles = Get-ChildItem -Path $VcpkgInstalledRoot -Recurse -File `
+    $configFiles = Get-ChildItem -Path $root -Recurse -File `
         -Include 'FFMPEG_CONFIGURE*', 'ffmpeg-config*' -ErrorAction SilentlyContinue |
         Where-Object { $_.FullName -match 'ffmpeg' }
     foreach ($file in $configFiles) {
@@ -155,28 +177,34 @@ if ($VcpkgInstalledRoot -and (Test-Path $VcpkgInstalledRoot)) {
         }
     }
 
-    # --- 3. LGPL components must be DLLs, not static libs ------------------
+    # --- 3. LGPL components must be DLLs / dylibs, not static libs ---------
+    # Judged per root: the Mac's static tree (vcpkg_installed) must not hold a
+    # static FFmpeg just because the dynamic tree holds a dylib of it.
     foreach ($lgpl in @('avcodec', 'avformat', 'avutil', 'swscale', 'swresample',
                         'heif', 'de265', 'raw', 'exiv2')) {
         # An import library beside a DLL is normal and correct; what docs/design/11
-        # forbids is a .lib with NO .dll, which means the component was linked
-        # statically and the user cannot substitute their own build.
-        $staticLibs = Get-ChildItem -Path $VcpkgInstalledRoot -Recurse -File -Filter "*$lgpl*.lib" `
-            -ErrorAction SilentlyContinue
-        $dlls = Get-ChildItem -Path $VcpkgInstalledRoot -Recurse -File -Filter "*$lgpl*.dll" `
-            -ErrorAction SilentlyContinue
+        # forbids is a .lib (or a Mac .a) with NO shared library, which means the
+        # component was linked statically and the user cannot substitute their own build.
+        $staticLibs = @('lib', 'a') | ForEach-Object {
+            Get-ChildItem -Path $root -Recurse -File -Filter "*$lgpl*.$_" -ErrorAction SilentlyContinue
+        }
+        $sharedLibs = @('dll', 'dylib') | ForEach-Object {
+            Get-ChildItem -Path $root -Recurse -Filter "*$lgpl*.$_" -ErrorAction SilentlyContinue
+        }
 
-        if ($staticLibs -and -not $dlls) {
+        if ($staticLibs -and -not $sharedLibs) {
             Add-Violation 'LGPL component linked statically' `
-                "$lgpl appears as a static library with no DLL. docs/design/11: LGPL requires the user be able to replace it."
+                "$lgpl appears as a static library with no DLL or dylib in $root. docs/design/11: LGPL requires the user be able to replace it."
         }
     }
 
     # Transitive: libheif's default `hevc` feature is x265 encode. We disable
     # default-features; this is the belt if a future port change sneaks it in.
     foreach ($encoderDll in @('x265*.dll', 'libx265*.dll', 'x264*.dll', 'libx264*.dll',
-                              'fdk-aac*.dll', 'libfdk-aac*.dll')) {
-        $hits = Get-ChildItem -Path $VcpkgInstalledRoot -Recurse -File -Filter $encoderDll `
+                              'fdk-aac*.dll', 'libfdk-aac*.dll',
+                              'libx265*.dylib', 'libx264*.dylib', 'libfdk-aac*.dylib',
+                              'libx265*.a', 'libx264*.a', 'libfdk-aac*.a')) {
+        $hits = Get-ChildItem -Path $root -Recurse -File -Filter $encoderDll `
             -ErrorAction SilentlyContinue
         foreach ($hit in $hits) {
             Add-Violation 'forbidden encoder DLL installed' `

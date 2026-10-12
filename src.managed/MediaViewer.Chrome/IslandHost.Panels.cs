@@ -258,6 +258,9 @@ public static partial class IslandHost
         body = new Grid();
         Grid.SetRow(body, 1);
         root.Children.Add(body);
+        // Issue #224: every pane (metadata, folder tree, adjust, jobs) is an
+        // island over the canvas's WM_DROPFILES, so it takes a file drop too.
+        WireFileDrop(root);
         return root;
     }
 
@@ -303,6 +306,9 @@ public static partial class IslandHost
     private static string _metaDraft = "";
     private static bool _metaEditingDate;
     private static bool _metaAddingTag;
+    private static bool _metaEditingComment;  // Ctrl+I: the user comment, through PR 12's writer
+    private static bool _metaCommentAsked;    // Ctrl+I came before the record it edits
+    private static string _metaComment = "";  // native's comment for the item, pending write included
     private static string _metaNewKey = "";
     private static string _metaNewValue = "";
     private static FakeInput? _metaFocusField;  // the field to focus once built
@@ -315,6 +321,7 @@ public static partial class IslandHost
         _metaTabs = null;
         _metaRevert = null;
         _metaFocusField = null;
+        _metaCommentAsked = false;
         CancelMetaEdits();
     }
 
@@ -323,6 +330,7 @@ public static partial class IslandHost
         _metaEditingKey = null;
         _metaEditingDate = false;
         _metaAddingTag = false;
+        _metaEditingComment = false;
         _metaDraft = "";
         _metaNewKey = "";
         _metaNewValue = "";
@@ -509,6 +517,11 @@ public static partial class IslandHost
                 rows.Children.Add(BuildDateRow(value));
                 continue;
             }
+            if (label == "Label")
+            {
+                rows.Children.Add(BuildLabelRow(value));
+                continue;
+            }
             var row = new Grid();
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(96) });
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -545,6 +558,60 @@ public static partial class IslandHost
         foot.Children.Add(_metaRevert);
         rows.Children.Add(foot);
         return new ScrollViewer { Content = rows, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+    }
+
+    // Issue #207: the colour label, XMP xmp:Label, in Lightroom's words. A swatch
+    // per label sets it (the same one again clears it, as the 6-9 keys do);
+    // Clear removes it. One tag edit, through the same checked writer.
+    private static readonly (string Name, Color Colour)[] LabelSwatches =
+    {
+        ("Red", Color.FromArgb(255, 0xE5, 0x48, 0x4D)),
+        ("Yellow", Color.FromArgb(255, 0xF2, 0xC1, 0x2E)),
+        ("Green", Color.FromArgb(255, 0x3C, 0xB3, 0x71)),
+        ("Blue", Color.FromArgb(255, 0x3B, 0x82, 0xF6)),
+        ("Purple", Color.FromArgb(255, 0x9B, 0x5D, 0xE5)),
+    };
+    private const string LabelTag = "Xmp.xmp.Label";
+
+    private static UIElement BuildLabelRow(string value)
+    {
+        var row = new Grid();
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(96) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        TextBlock name = Text("Label", Body);
+        name.VerticalAlignment = VerticalAlignment.Center;
+        row.Children.Add(name);
+        TextBlock v = Text(value.Length == 0 ? "—" : value, value.Length == 0 ? Body : Title);
+        v.VerticalAlignment = VerticalAlignment.Center;
+        Grid.SetColumn(v, 1);
+        row.Children.Add(v);
+        var swatches = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+        foreach ((string label, Color colour) in LabelSwatches)
+        {
+            bool on = string.Equals(label, value, StringComparison.OrdinalIgnoreCase);
+            var dot = new Button
+            {
+                Width = 18,
+                Height = 18,
+                Padding = new Thickness(0),
+                MinWidth = 0,
+                MinHeight = 0,
+                CornerRadius = new CornerRadius(9),
+                Background = Brush(colour),
+                BorderBrush = Brush(on ? ChromeColour.Title : ChromeColour.Hairline),
+                BorderThickness = new Thickness(on ? 2 : 1),
+                IsEnabled = _metaCanEdit,
+            };
+            string target = label;
+            dot.Click += (_, _) => SendTagEdits(new[] { (LabelTag, on ? (string?)null : target) });
+            ToolTipService.SetToolTip(dot, on ? "Clear the " + label.ToLowerInvariant() + " label" : label);
+            AutomationProperties_SetName(dot, on ? "Clear label" : "Label " + label.ToLowerInvariant());
+            swatches.Children.Add(dot);
+        }
+        Grid.SetColumn(swatches, 2);
+        row.Children.Add(swatches);
+        return row;
     }
 
     // PR 29: the date taken moves every capture-time tag together (native's
@@ -670,6 +737,12 @@ public static partial class IslandHost
             host.Children.Add(form);
             _metaFocusField = key;
         }
+        else if (_metaEditingComment)
+        {
+            StackPanel form = BuildCommentForm();
+            Grid.SetRow(form, 1);
+            host.Children.Add(form);
+        }
 
         // A plain scrolling stack, not a ListView: clearing and refilling a ListView of
         // elements from a key event fail-fasts in these islands. A tag list is at most
@@ -692,6 +765,11 @@ public static partial class IslandHost
             e.Handled = true;
         };
 
+        // Cells are built once per tree and re-added as the search narrows or widens
+        // (issue #219): a keystroke then costs a filter pass and Children.Add, not
+        // 400 freshly built rows. A rebuild (a record landing, an edit) starts a new
+        // cache with the new tree.
+        var cells = new Dictionary<TagRow, UIElement>(ReferenceEqualityComparer.Instance);
         const int MaxRows = 400;
         void Fill()
         {
@@ -720,7 +798,12 @@ public static partial class IslandHost
                     header.Margin = new Thickness(0, 10, 0, 2);
                     list.Children.Add(header);
                 }
-                list.Children.Add(BuildTagCell(t));
+                if (!cells.TryGetValue(t, out UIElement? cell))
+                {
+                    cell = BuildTagCell(t);
+                    cells[t] = cell;
+                }
+                list.Children.Add(cell);
                 shown++;
             }
             if (matched == 0) list.Children.Add(Text("No tag matches", Body));
@@ -730,13 +813,41 @@ public static partial class IslandHost
             }
         }
 
+        // Debounced like file search (~70 ms) so a typed word filters once, not once
+        // per letter. Clearing the box is immediate.
+        _metaSearchDebounce?.Stop();
+        _metaFill = Fill;
         search.Changed += () =>
         {
             _metaQuery = search.Text;
-            Fill();
+            _metaSearchDebounce ??= CreateMetaSearchDebounce();
+            _metaSearchDebounce?.Stop();
+            if (_metaQuery.Trim().Length == 0 || _metaSearchDebounce is null)
+            {
+                Fill();
+                return;
+            }
+            _metaSearchDebounce.Start();
         };
         Fill();
         return host;
+    }
+
+    private static Action? _metaFill;
+    private static Microsoft.UI.Dispatching.DispatcherQueueTimer? _metaSearchDebounce;
+
+    private static Microsoft.UI.Dispatching.DispatcherQueueTimer? CreateMetaSearchDebounce()
+    {
+        Microsoft.UI.Dispatching.DispatcherQueueTimer? timer = _dispatcher?.DispatcherQueue.CreateTimer();
+        if (timer is null) return null;
+        timer.IsRepeating = false;
+        timer.Interval = TimeSpan.FromMilliseconds(70);
+        timer.Tick += (_, _) =>
+        {
+            try { _metaFill?.Invoke(); }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
+        };
+        return timer;
     }
 
     private static UIElement BuildTagCell(TagRow t)
@@ -813,6 +924,61 @@ public static partial class IslandHost
         // The untranslated origin is always one hover away (docs/design/06).
         ToolTipService.SetToolTip(label, t.Raw);
         return cell;
+    }
+
+    // Ctrl+I's comment editor (docs/design/16). The comment is one field over
+    // several tags (EXIF UserComment, XMP exif:UserComment, a RAW's sidecar), so
+    // it goes through native's comment write rather than as one tag, and it is
+    // there whether or not the file has a comment yet.
+    private static StackPanel BuildCommentForm()
+    {
+        var form = new StackPanel { Spacing = 6, Padding = new Thickness(10, 0, 10, 10) };
+        form.Children.Add(Text("Comment", Title));
+        var box = new FakeInput("Comment");
+        box.SetText(_metaDraft);
+        box.Changed += () => _metaDraft = box.Text;
+        box.Submitted += () => SaveMetaComment(box.Text);
+        AutomationProperties_SetName(box, "Comment");
+        form.Children.Add(box);
+        form.Children.Add(Row(MetaButton("Save", () => SaveMetaComment(_metaDraft), tip: "Enter"),
+                              MetaButton("Cancel", () =>
+                              {
+                                  CancelMetaEdits();
+                                  RenderMeta();
+                              }, tip: "Esc")));
+        _metaFocusField = box;
+        return form;
+    }
+
+    // Ctrl+I's ask, once there is a record to edit: All tags with the comment
+    // editor open on the file's comment. The island's window takes the keyboard
+    // now; the field takes it once it is in the tree (FocusMetaFieldSoon).
+    private static bool OpenAskedComment()
+    {
+        if (!_metaCommentAsked || !_metaPaneVisible || !_metaCanEdit || _metaLoading ||
+            _metaSummary.Count == 0) return false;
+        _metaCommentAsked = false;
+        CancelMetaEdits();
+        _metaTab = MetaTab.Tags;
+        _metaEditingComment = true;
+        _metaDraft = _metaComment;
+        bool tabHadKeyboard = MetaTabButtons.Any(b => b.FocusState != FocusState.Unfocused);
+        RenderMeta();
+        _metaPane?.NavigateFocus(new XamlSourceFocusNavigationRequest(
+            XamlSourceFocusNavigationReason.First));
+        // RenderMeta keeps the keyboard on the tab bar when it was there (`I`
+        // then Ctrl+I); Ctrl+I wants it in the field regardless.
+        if (tabHadKeyboard) FocusMetaFieldSoon();
+        return true;
+    }
+
+    private static void SaveMetaComment(string text)
+    {
+        CancelMetaEdits();
+        // Native leaves an unchanged comment alone; "" removes it.
+        _treePending = text;
+        Send(Command.MetaComment);
+        RenderMeta();
     }
 
     private static void AddMetaTag()
@@ -895,7 +1061,11 @@ public static partial class IslandHost
             // Native re-pushes on every layout; identical data must not rebuild the
             // pane, which would drop the keyboard focus sitting on one of its rows.
             string fingerprint = string.Concat(a.Loading.ToString(), "\u0001", summary, "\u0001", props, "\u0001", streams);
-            if (fingerprint == _metaLast) return 0;
+            if (fingerprint == _metaLast)
+            {
+                OpenAskedComment();
+                return 0;
+            }
             _metaLast = fingerprint;
             // Another item (or a write landing, which re-reads): an editor open
             // on the old record would write the wrong file's value.
@@ -914,7 +1084,7 @@ public static partial class IslandHost
             _metaStreamLines = streams.Split('\n', StringSplitOptions.RemoveEmptyEntries).ToList();
             _metaIsClip = _metaStreamLines.Count > 0;
             _metaLoading = a.Loading != 0;
-            if (_metaPaneVisible) RenderMeta();
+            if (_metaPaneVisible && !OpenAskedComment()) RenderMeta();
             return 0;
         }
         catch (Exception ex)
@@ -948,6 +1118,9 @@ public static partial class IslandHost
         {
             if (arg == IntPtr.Zero || sizeBytes < MetaEditArgsSize) return unchecked((int)0x80070057);
             ChromeMetaEditArgs a = Marshal.PtrToStructure<ChromeMetaEditArgs>(arg);
+            _metaComment = a.Comment == 0 || a.CommentLen <= 0
+                ? ""
+                : Marshal.PtrToStringUTF8(checked((IntPtr)a.Comment), a.CommentLen) ?? "";
             bool canEdit = (a.Flags & MetaEditFlags.CanEdit) != 0;
             bool canRevert = (a.Flags & MetaEditFlags.CanRevert) != 0;
             bool changed = canEdit != _metaCanEdit;
@@ -957,15 +1130,15 @@ public static partial class IslandHost
             if (_metaRevert is not null) _metaRevert.IsEnabled = canRevert;
             // Esc in a field: forget what was typed, show the file's.
             bool drop = (a.Flags & MetaEditFlags.DropDraft) != 0 &&
-                        (_metaEditingKey is not null || _metaEditingDate || _metaAddingTag);
+                        (_metaEditingKey is not null || _metaEditingDate || _metaAddingTag ||
+                         _metaEditingComment);
             if (drop) CancelMetaEdits();
+            if ((a.Flags & MetaEditFlags.DropDraft) != 0) _metaCommentAsked = false;
+            // Ctrl+I: the comment editor opens once the item's record is in the
+            // pane (SetMetaData follows every push of this), so its draft starts
+            // from the file's comment, never from an empty "not read yet".
+            if ((a.Flags & MetaEditFlags.Focus) != 0) _metaCommentAsked = _metaCanEdit;
             if (drop || changed) RenderMeta();
-            if ((a.Flags & MetaEditFlags.Focus) != 0 && _metaCanEdit)
-            {
-                // Ctrl+I: the pane takes the keyboard.
-                _metaPane?.NavigateFocus(new XamlSourceFocusNavigationRequest(
-                    XamlSourceFocusNavigationReason.First));
-            }
             return 0;
         }
         catch (Exception ex)

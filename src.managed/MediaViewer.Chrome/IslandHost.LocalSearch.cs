@@ -70,6 +70,26 @@ public static partial class IslandHost
     private static bool AiStarting() =>
         AiSlot.Chrome is null && AiSlot.Busy && !AiSlot.Removing && _aiInstalling != AiSlot && AiSlot.Usable;
 
+    // Installed and verified at launch, and waiting, unloaded, for the first
+    // search (issue #292, docs/design/17 "Starting on demand"). A later window
+    // has its own on-demand reader (EnsureReaderStarted).
+    private static bool AiOnDemand() =>
+        !_addonsElsewhere && AiSlot.Chrome is null && !AiSlot.Busy && !AiSlot.Removing && _aiInstalling != AiSlot
+        && AiSlot.Usable;
+
+    private const string AiStartingText = "Starting Local search…";
+
+    // The first search after launch, or Settings' Start now: the pack loads.
+    // `open`: its panel opens once it attaches. True when a load is on its way.
+    private static bool StartAiOnDemand(bool open)
+    {
+        if (!AiOnDemand()) return false;
+        LoadAddon(AiSlot);
+        if (!AiSlot.Busy) return false;
+        if (open) _searchOpenPending = true;
+        return true;
+    }
+
     // The path bar's search icon: the panel now, or once the pack attaches;
     // without Local search, file search (IslandHost.FileSearch.cs), the
     // gallery coming up first when it is hidden.
@@ -269,7 +289,8 @@ public static partial class IslandHost
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         row.Children.Add(_indexingDot);
         row.Children.Add(_indexingText);
-        _indexingPill = TextButton("", () => SearchChrome?.RunCommand(SearchCommand.Open));
+        // Starting (issue #292) or indexing: what Ctrl+F does.
+        _indexingPill = TextButton("", OpenSearchFromPath);
         _indexingPill.Content = new Border
         {
             Child = row,
@@ -282,7 +303,7 @@ public static partial class IslandHost
         _indexingPill.Padding = new Thickness(4, 0, 4, 0);
         _indexingPill.Visibility = Visibility.Collapsed;
         AutomationProperties.SetName(_indexingPill, "Local search indexing. Open search");
-        ToolTipService.SetToolTip(_indexingPill, "Local search is indexing. Click to search (Ctrl+F)");
+        RefreshIndexingTip();
         return _indexingPill;
     }
 
@@ -290,17 +311,25 @@ public static partial class IslandHost
     {
         if (_indexingPill is null || _indexingText is null || _indexingDot is null) return;
         _indexingPill.Visibility = text is null ? Visibility.Collapsed : Visibility.Visible;
-        if (text != _indexingText.Text)
-        {
-            // The pack's line ("Paused on battery", Look.StatusLine): say where the override is.
-            bool battery = text?.Contains("battery", StringComparison.OrdinalIgnoreCase) == true;
-            ToolTipService.SetToolTip(_indexingPill, battery
-                ? "Local search waits on battery. Click to search (Ctrl+F); Index anyway is in the panel's footer."
-                : "Local search is indexing in the background. Click to search (Ctrl+F)");
-        }
+        bool changed = (text ?? "") != _indexingText.Text;
         _indexingText.Text = text ?? "";
+        if (changed) RefreshIndexingTip();
         // The dot shows only while indexing: a still app shows a still bar.
         _indexingDot.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    // Names the live search key; RefreshKeyTips calls this again after a remap.
+    private static void RefreshIndexingTip()
+    {
+        if (_indexingPill is null || _indexingText is null) return;
+        // The pack's line ("Paused on battery", Look.StatusLine): say where the override is.
+        bool battery = _indexingText.Text.Contains("battery", StringComparison.OrdinalIgnoreCase);
+        string key = KeyNote(Command.SearchOpen);
+        ToolTipService.SetToolTip(_indexingPill, _indexingText.Text == AiStartingText
+            ? $"Local search is starting. Click to search{key}; the panel opens once it is ready."
+            : battery
+            ? $"Local search waits on battery. Click to search{key}; Index anyway is in the panel's footer."
+            : $"Local search is indexing in the background. Click to search{key}");
     }
 
     // ---- matches over the scrub bar -----------------------------------------------------
@@ -393,6 +422,7 @@ public static partial class IslandHost
         _localSearchStatus = WrappedLabel("");
         view.Children.Add(_localSearchPanel);
         view.Children.Add(_localSearchStatus);
+        EnsureReaderStarted();  // a later window: what is installed, read now
         _localSearchRestartButton = AddonRestartButton();
         view.Children.Add(_localSearchRestartButton);
         RefreshLocalSearch();
@@ -471,6 +501,17 @@ public static partial class IslandHost
             // quiet, and nothing offered for download until it is known.
             card.Children.Add(WrappedLabel("Checking installed add-ons…"));
             _localSearchPanel.Children.Add(card);
+            return;
+        }
+        if (_addonsElsewhere)
+        {
+            // A later window (IslandHost.Addons.cs): it searches through the
+            // reader; the first window indexes, installs and removes.
+            card.Children.Add(WrappedLabel(!AiSlot.State.Installed
+                ? "Local search is not installed. " + AddonsElsewhereText
+                : AddonsElsewhereText));
+            _localSearchPanel.Children.Add(card);
+            AddAiSettingsPanel();  // the pack's own, in its read-only form
             return;
         }
         if (!AiSlot.State.Installed)
@@ -563,7 +604,30 @@ public static partial class IslandHost
             _localSearchPanel.Children.Add(SettingsButton("Reinstall", () => StartPieceInstall(AiSlot)));
         }
 
-        // The add-on's own management panel, once it is loaded (docs/design/17 PR 23).
+        AddAiSettingsPanel();
+    }
+
+    // The add-on's own management panel, once it is loaded (docs/design/17 PR 23).
+    // Before that (issue #292): "Starting Local search…" while it loads, or
+    // Start now while it waits for the first search. Opening Settings alone
+    // does not start it.
+    private static void AddAiSettingsPanel()
+    {
+        if (_localSearchPanel is null) return;
+        if (SearchChrome is null && AiStarting())
+        {
+            _localSearchPanel.Children.Add(WrappedLabel(AiStartingText));
+            return;
+        }
+        if (AiOnDemand())
+        {
+            _localSearchPanel.Children.Add(WrappedLabel(
+                "Local search starts the first time you search. Start it now to see its folders and settings."));
+            Button start = SettingsButton("Start now", () => StartAiOnDemand(open: false));
+            start.HorizontalAlignment = HorizontalAlignment.Left;
+            _localSearchPanel.Children.Add(start);
+            return;
+        }
         if (SearchChrome is ISearchChrome search)
         {
             try { _aiSettingsPanel ??= search.BuildSettingsPanel() as UIElement; }

@@ -77,6 +77,15 @@ asset_row asset_from(const stmt& s, int c0) {
   return a;
 }
 
+// Whether `table` already has `column` (PRAGMA table_info).
+bool has_column(sqlite3* db, const char* table, const char* column) {
+  stmt s(db, (std::string("PRAGMA table_info(") + table + ")").c_str());
+  while (s.step_row()) {
+    if (s.text(1) == column) return true;
+  }
+  return false;
+}
+
 constexpr const char* kAssetCols = "a.id, a.path, a.root_id, a.mtime, a.size, a.kind, a.duration_ms, a.cloud";
 
 }  // namespace
@@ -143,20 +152,31 @@ result<std::unique_ptr<index_db>> index_db::open(const std::string& path) {
       "CREATE INDEX IF NOT EXISTS speech_asset ON speech(asset_id, spec);";
   if (!d->exec(schema)) return err(status::corrupt);
   std::string v = d->meta("schema");
-  if (v == "1") {
-    // Schema 1 -> 2 (audio): the roots gain their media choice; `speech` was
-    // created above.
-    if (!d->exec("ALTER TABLE roots ADD COLUMN media INTEGER NOT NULL DEFAULT 0;")) return err(status::corrupt);
-    MV_TRY_VOID(d->set_meta("schema", "2"));
-    v = "2";
+  // Each step is one transaction, and a column already there is not added
+  // again: an index a crash left between the ALTER and the schema bump (as
+  // earlier builds could) migrates instead of failing every later open.
+  const auto add_column = [&](const char* table, const char* column, const char* sql, const char* to) {
+    if (!d->exec("BEGIN")) return false;
+    const bool ok = (has_column(d->db_, table, column) || d->exec(sql)) && d->set_meta("schema", to);
+    if (!ok || !d->exec("COMMIT")) {
+      d->exec("ROLLBACK");
+      return false;
+    }
+    v = to;
+    return true;
+  };
+  // Schema 1 -> 2 (audio): the roots gain their media choice; `speech` was
+  // created above.
+  if (v == "1" &&
+      !add_column("roots", "media", "ALTER TABLE roots ADD COLUMN media INTEGER NOT NULL DEFAULT 0;", "2")) {
+    return err(status::corrupt);
   }
-  if (v == "2") {
-    // Schema 2 -> 3 (2026-10-05, cloud files): an asset only a cloud provider
-    // has (OneDrive online-only, evicted iCloud Drive) is listed but never read
-    // until the opt-in fetch brings it down. The next scan sets the mark.
-    if (!d->exec("ALTER TABLE assets ADD COLUMN cloud INTEGER NOT NULL DEFAULT 0;")) return err(status::corrupt);
-    MV_TRY_VOID(d->set_meta("schema", "3"));
-    v = "3";
+  // Schema 2 -> 3 (2026-10-05, cloud files): an asset only a cloud provider
+  // has (OneDrive online-only, evicted iCloud Drive) is listed but never read
+  // until the opt-in fetch brings it down. The next scan sets the mark.
+  if (v == "2" &&
+      !add_column("assets", "cloud", "ALTER TABLE assets ADD COLUMN cloud INTEGER NOT NULL DEFAULT 0;", "3")) {
+    return err(status::corrupt);
   }
   if (v.empty()) {
     MV_TRY_VOID(d->set_meta("schema", std::to_string(kSchemaVersion)));
@@ -169,10 +189,11 @@ result<std::unique_ptr<index_db>> index_db::open(const std::string& path) {
 result<std::unique_ptr<index_db>> index_db::open_read_only(const std::string& path) {
   std::unique_ptr<index_db> d(new index_db());
   d->path_ = path;
-  if (sqlite3_open_v2(path.c_str(), &d->db_, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nullptr) !=
-      SQLITE_OK) {
-    return err(status::unsupported_format);
-  }
+  const int rc = sqlite3_open_v2(path.c_str(), &d->db_, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nullptr);
+  // No index yet (the app has not indexed anything): not_found, so a second
+  // window says "nothing indexed yet" rather than "needs an update".
+  if (rc == SQLITE_CANTOPEN) return err(status::not_found);
+  if (rc != SQLITE_OK) return err(status::unsupported_format);
   sqlite3_busy_timeout(d->db_, 5000);
   // An index this build cannot read as it is (older or newer): the app
   // migrates it, never a reader.
@@ -264,40 +285,6 @@ std::int64_t index_db::next_generation() {
   return next;
 }
 
-result<index_db::upsert> index_db::see_one(std::int64_t root, const seen_file& file,
-                                            std::int64_t generation) {
-  upsert u;
-  stmt q(db_, "SELECT id, mtime, size FROM assets WHERE path = ?1");
-  if (q.bind(1, file.path).step_row()) {
-    u.id = q.i64(0);
-    const bool same = q.i64(1) == file.mtime && static_cast<std::uint64_t>(q.i64(2)) == file.size;
-    if (!same) {
-      // Stale: edited or replaced. Its vectors describe other pixels.
-      stmt f(db_, "DELETE FROM frames WHERE asset_id = ?1");
-      stmt p(db_, "DELETE FROM progress WHERE asset_id = ?1");
-      if (!f.bind(1, u.id).run() || !p.bind(1, u.id).run()) return err(status::io);
-      u.changed = true;
-    }
-    stmt w(db_, "UPDATE assets SET mtime = ?2, size = ?3, kind = ?4, seen = ?5, cloud = ?6 WHERE id = ?1");
-    if (!w.bind(1, u.id).bind(2, file.mtime).bind(3, static_cast<std::int64_t>(file.size))
-             .bind(4, std::int64_t{static_cast<int>(file.kind)}).bind(5, generation)
-             .bind(6, std::int64_t{file.cloud ? 1 : 0}).run()) {
-      return err(status::io);
-    }
-    return u;
-  }
-  stmt ins(db_, "INSERT INTO assets(path, root_id, mtime, size, kind, seen, cloud) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)");
-  if (!ins.bind(1, file.path).bind(2, root).bind(3, file.mtime)
-           .bind(4, static_cast<std::int64_t>(file.size))
-           .bind(5, std::int64_t{static_cast<int>(file.kind)}).bind(6, generation)
-           .bind(7, std::int64_t{file.cloud ? 1 : 0}).run()) {
-    return err(status::io);
-  }
-  u.id = sqlite3_last_insert_rowid(db_);
-  u.added = true;
-  return u;
-}
-
 result<std::vector<index_db::upsert>> index_db::see_assets(std::int64_t root,
                                                            std::span<const seen_file> files,
                                                            std::int64_t generation) {
@@ -305,13 +292,56 @@ result<std::vector<index_db::upsert>> index_db::see_assets(std::int64_t root,
   if (!exec("BEGIN")) return err(status::io);
   std::vector<upsert> out;
   out.reserve(files.size());
-  for (const seen_file& f : files) {
-    auto u = see_one(root, f, generation);
-    if (!u) {
-      exec("ROLLBACK");
-      return err(u.error());
+  bool ok = true;
+  {
+    // Prepared once per batch and reset per file, not prepared per file.
+    stmt q(db_, "SELECT id, mtime, size FROM assets WHERE path = ?1");
+    stmt f(db_, "DELETE FROM frames WHERE asset_id = ?1");
+    stmt p(db_, "DELETE FROM progress WHERE asset_id = ?1");
+    stmt w(db_, "UPDATE assets SET mtime = ?2, size = ?3, kind = ?4, seen = ?5, cloud = ?6 WHERE id = ?1");
+    stmt ins(db_, "INSERT INTO assets(path, root_id, mtime, size, kind, seen, cloud)"
+                  " VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)");
+    for (const seen_file& file : files) {
+      upsert u;
+      q.reset();
+      if (q.bind(1, file.path).step_row()) {
+        u.id = q.i64(0);
+        const bool same = q.i64(1) == file.mtime && static_cast<std::uint64_t>(q.i64(2)) == file.size;
+        if (!same) {
+          // Stale: edited or replaced. Its vectors describe other pixels.
+          f.reset();
+          p.reset();
+          if (!f.bind(1, u.id).run() || !p.bind(1, u.id).run()) {
+            ok = false;
+            break;
+          }
+          u.changed = true;
+        }
+        w.reset();
+        if (!w.bind(1, u.id).bind(2, file.mtime).bind(3, static_cast<std::int64_t>(file.size))
+                 .bind(4, std::int64_t{static_cast<int>(file.kind)}).bind(5, generation)
+                 .bind(6, std::int64_t{file.cloud ? 1 : 0}).run()) {
+          ok = false;
+          break;
+        }
+      } else {
+        ins.reset();
+        if (!ins.bind(1, file.path).bind(2, root).bind(3, file.mtime)
+                 .bind(4, static_cast<std::int64_t>(file.size))
+                 .bind(5, std::int64_t{static_cast<int>(file.kind)}).bind(6, generation)
+                 .bind(7, std::int64_t{file.cloud ? 1 : 0}).run()) {
+          ok = false;
+          break;
+        }
+        u.id = sqlite3_last_insert_rowid(db_);
+        u.added = true;
+      }
+      out.push_back(u);
     }
-    out.push_back(*u);
+  }
+  if (!ok) {
+    exec("ROLLBACK");
+    return err(status::io);
   }
   if (!exec("COMMIT")) return err(status::io);
   return out;
@@ -332,6 +362,21 @@ result<std::vector<std::int64_t>> index_db::end_scan(std::int64_t root, std::int
 constexpr const char* kTrackWhere =
     " AND ((a.kind = 1 AND ?4 != 0) OR (a.kind = 2 AND"
     " ((CASE r.media WHEN 0 THEN ?5 ELSE r.media END) & ?6) != 0)) AND a.root_id != ?7";
+
+// The filter's held roots, as SQL over `a` (integers only, so written in).
+static std::string held_where(const track_filter& filter) {
+  if (filter.held.empty()) return {};
+  std::string in = " AND a.root_id NOT IN (";
+  for (std::size_t i = 0; i < filter.held.size(); ++i) {
+    if (i) in += ",";
+    in += std::to_string(filter.held[i]);
+  }
+  return in + ")";
+}
+
+// pending()'s rule for "still to do", as SQL over `a` and `p`.
+constexpr const char* kPendingWhere =
+    " (p.state IS NULL OR p.state = 0 OR p.state = 1 OR (p.state = 3 AND p.tries < ?2)) AND a.cloud = 0";
 
 std::vector<work_item> index_db::pending(const std::string& spec, std::size_t limit,
                                          std::int32_t max_tries, const track_filter& filter) {
@@ -359,9 +404,8 @@ std::vector<work_item> index_db::pending_where(const std::string& spec, std::siz
       ", COALESCE(p.state, 0), COALESCE(p.resume_ms, 0), COALESCE(p.tries, 0)"
       " FROM assets a JOIN roots r ON r.id = a.root_id AND r.enabled = 1"
       " LEFT JOIN progress p ON p.asset_id = a.id AND p.spec = ?1"
-      " WHERE (p.state IS NULL OR p.state = 0 OR p.state = 1 OR (p.state = 3 AND p.tries < ?2))"
-      " AND a.cloud = 0" +
-      std::string(kTrackWhere) + extra +
+      " WHERE" + std::string(kPendingWhere) +
+      std::string(kTrackWhere) + held_where(filter) + extra +
       " ORDER BY COALESCE(p.state, 0) = 1 DESC, a.kind ASC, a.id ASC LIMIT ?3";
   stmt s(db_, sql.c_str());
   s.bind(1, spec).bind(2, std::int64_t{max_tries}).bind(3, static_cast<std::int64_t>(limit))
@@ -604,7 +648,8 @@ counts index_db::count(const std::string& spec, const track_filter& filter) {
       " SUM(CASE WHEN p.state = 4 THEN 1 ELSE 0 END),"
       " SUM(CASE WHEN a.cloud = 1 AND (p.state IS NULL OR p.state < 2) THEN 1 ELSE 0 END)"
       " FROM assets a JOIN roots r ON r.id = a.root_id AND r.enabled = 1"
-      " LEFT JOIN progress p ON p.asset_id = a.id AND p.spec = ?1 WHERE 1") + kTrackWhere;
+      " LEFT JOIN progress p ON p.asset_id = a.id AND p.spec = ?1 WHERE 1") + kTrackWhere +
+      held_where(filter);
   stmt a(db_, sql.c_str());
   a.bind(4, std::int64_t{filter.photos ? 1 : 0}).bind(5, std::int64_t{filter.default_media})
       .bind(6, std::int64_t{filter.media_bit}).bind(7, filter.skip_root);
@@ -640,6 +685,20 @@ std::uint64_t index_db::unavailable_in_root(std::int64_t root, const std::string
   stmt f(db_, "SELECT COUNT(*) FROM assets a JOIN progress p ON p.asset_id = a.id AND p.spec = ?2"
               " WHERE a.root_id = ?1 AND p.state = 4");
   return f.bind(1, root).bind(2, spec).step_row() ? static_cast<std::uint64_t>(f.i64(0)) : 0;
+}
+
+std::uint64_t index_db::pending_in_root(std::int64_t root, const std::string& spec, std::int32_t max_tries,
+                                        const track_filter& filter) {
+  std::lock_guard lock(m_);
+  const std::string sql = std::string(
+      "SELECT COUNT(*) FROM assets a JOIN roots r ON r.id = a.root_id AND r.enabled = 1"
+      " LEFT JOIN progress p ON p.asset_id = a.id AND p.spec = ?1"
+      " WHERE a.root_id = ?3 AND") + kPendingWhere + kTrackWhere;
+  stmt f(db_, sql.c_str());
+  f.bind(1, spec).bind(2, std::int64_t{max_tries}).bind(3, root)
+      .bind(4, std::int64_t{filter.photos ? 1 : 0}).bind(5, std::int64_t{filter.default_media})
+      .bind(6, std::int64_t{filter.media_bit}).bind(7, filter.skip_root);
+  return f.step_row() ? static_cast<std::uint64_t>(f.i64(0)) : 0;
 }
 
 std::uint64_t index_db::done_in_root(std::int64_t root, const std::string& spec) {

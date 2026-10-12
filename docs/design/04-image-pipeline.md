@@ -97,7 +97,11 @@ as a placeholder while the player seeks.
 
 Prefetched neighbours never take the preview step; they decode straight to full resolution.
 RAW decodes on the selected image use `raw_foreground_threads()` (leaving processors for the
-present loop, capped by `raw_thread_ceiling()`); prefetch uses one thread.
+present loop, capped by `raw_thread_ceiling()`); prefetch uses one thread. Both platforms build
+LibRaw from the overlay port in `tools/vcpkg/ports/libraw`, whose `openmp-color.patch` runs
+black scaling, colour conversion and the output copy in parallel (pixels unchanged). On the Mac
+the dynamic manifest reaches it through `tools/mac/dependencies/vcpkg-configuration.json`;
+before #287 it built the stock port and those loops ran single-threaded there.
 
 **Orientation is applied on the display path.** EXIF/container orientation is honoured; untagged
 is identity. RAW and JPEG are decoded already rotated; TIFF is not
@@ -120,6 +124,8 @@ texture limit — a still is not one texture:
   through lock-free per-tile states; the session's `tile_service` thread builds and creates
   them — 4 per 16 ms tick, at most 24 in flight — and the render thread draws ready tiles coarse
   to fine over the overview. It never waits on the service and never creates a texture.
+  The service sleeps on an atomic poke count with no timeout (0 wakeups on a still); a tile
+  request, a new set, and dropping a set's last outside handle each poke it.
 - Resident tile VRAM is capped at **256 MB** (~750 tiles), LRU-evicted, separate from the
   viewer LRU.
 - A tiled image is not kept in the navigation LRU; a revisit decodes again. Its CPU pyramid
@@ -134,6 +140,15 @@ open, then prefetches the neighbours **at full resolution** in the order `+1, �
 (`submit_prefetch`, [`src/abi/abi.cpp`](../../src/abi/abi.cpp)), skipping any already in the
 LRU. Thumbnails are generated for every item separately (see Thumbnails). Navigation bumps the
 generation, so queued work for an old view is abandoned at its next check.
+
+A neighbour's single-texture create larger than one frame's upload budget waits, decoded and
+mipped, while the canvas is panning or zooming (Windows, issue #166;
+[03-rendering.md](03-rendering.md) rule 3). The worker:
+
+- creates as soon as the camera settles;
+- creates at once if the user lands on that neighbour, because the hand-off makes it the
+  selected path and `mv_folder_select` wakes it;
+- gives up if the view moves on.
 
 The navigation LRU is sized in bytes: **512 MB** budget, at least 3 and at most 12 entries,
 RGBA8 plus a third for mips. `mv_folder_forget` drops one path (used after a lossless rotate
@@ -197,16 +212,23 @@ instead of refitting. Default off. Camera state only — prefetch and generation
 ## Thumbnails / filmstrip
 
 [`src/image/thumb.h`](../../src/image/thumb.h) (Windows), `thumb_mac.cpp` (macOS, same spec
-and schema).
+and schema); the SQLite index is one file for both, `thumb_store.cpp`.
 
-- **Spec `jpg512.3`:** a JPEG, long edge 512, never enlarged, ICC → sRGB, EXIF orientation
-  applied, and a clip's poster turned by its display matrix ([26](26-photos-library.md); `.2` rows
-  regenerate on view). Produced by the same first-pixel ladder (DCT scaling, RAW embedded preview, else a
+- **Spec `jpg512.4`:** a JPEG, long edge 512, never enlarged, ICC → sRGB, EXIF orientation
+  applied, and a clip's poster turned by its display matrix ([26](26-photos-library.md)). The
+  box-fit weights colour by alpha, and transparency is composited onto `kThumbMatte` (sRGB 36, the
+  viewer's dark alpha-case background) before the encode, since JPEG has no alpha; the Explorer
+  handler keeps the straight-alpha pixels. `.3` rows regenerate on view. Produced by the same first-pixel ladder (DCT scaling, RAW embedded preview, else a
   decode).
 - **Store:** SQLite (WAL) table `thumbs(path, mtime, size, spec, file)`, primary key
   `(path, mtime, size, spec)`, with the JPEG files beside the database in the per-user cache
   folder (`%LocalAppData%\MediaViewer\thumbs` on Windows). A row whose file has gone is a miss
-  and is dropped. Bumping the spec regenerates old rows.
+  and is dropped. Bumping the spec regenerates old rows. Every pool thread shares one store, so
+  its lock covers one SQLite step on statements prepared once per connection, never a stat or
+  a file write. A lookup whose path goes to the chrome stats the file (unlocked); a caller that
+  reads the bytes itself (the clip placeholder, the add-on host's `thumbnail_jpeg`) skips the
+  stat, and its failed read is the miss (issue #168). Windows drops the row there; the Mac
+  placeholder leaves it to the sweep's next verified lookup.
 - mtime + size is the identity: a rewritten file of equal length at the same timestamp keeps
   its thumb.
 - **Video posters:** `player::poster` software-decodes one frame near the head of the clip
@@ -298,6 +320,21 @@ rescan. Windows: `apply_folder_list` in the core, set by `mv_folder_set_hidden_k
 Mac: `-refreshFolderIfChanged` over the folder model's snapshot. The file a folder was opened on,
 and the stop on screen, always stay, so Open With on a hidden kind still shows it. Folder-tile
 counts (`folder_summary`) are not filtered.
+
+**View ▸ Show** (issue #206, [16](16-commands.md) "Status, sort, filter, typeahead") narrows the same way and
+in the same place: more bits of the same word (`kHideStills`, `kHideClips`, `kHideRaw`,
+`kHideUnmarked`), each stop being exactly one of still, RAW, clip, audio or document
+(`io::is_hidden_stop`; a RAW+JPEG pair is RAW whichever half leads, a Live Photo is its still).
+`io::keeps_stop` is the one rule both hosts apply. Unlike Settings' kinds, the relist a new filter
+choice makes does not keep the stop on screen unless it passes, and a filter that leaves nothing
+keeps that stop. Windows: `mv_folder_set_kind_filter` (ABI 0.20) beside the Settings word, with the
+marked paths for `kHideUnmarked`. Mac: the host's `_kindFilter`; it does not pair, so each half of
+a RAW+JPEG is filtered as its own file. A mark on a file the listing hides is kept.
+Issue #207 adds the cull bits (`kHideRejected`, `kHideUnpicked`, a label in bits 8–10), which are
+not names: each stop's rating and label (`io::cull_marks`, the primary's, sidecar first) is read on
+a worker and cached by path + size + mtime ([06](06-metadata.md) "Rating and label for the cull
+filter"), and the relist only looks them up. Missing ones are read by one background job that
+relists when done; nothing waits for them on the open or the first pixel.
 
 ## Not built
 

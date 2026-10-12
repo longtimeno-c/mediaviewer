@@ -49,8 +49,10 @@ only the narrowest ZIP there is, because it comes from a stranger:
 - no ZIP64, encryption, data descriptors, extra fields, comments, or folder entries;
 - entries laid end to end from byte 0 to the central directory, which ends where the end record
   begins, which is the last 22 bytes. No gap to hide anything in;
-- every name a safe relative path (`/`-separated, no `..`, no drive, no control character), no
-  two names equal when case is folded;
+- every name a safe relative path (`/`-separated, no `..`, no drive, no control character, none
+  of `<>"|?*`, no part ending in a dot or space, no part a Windows device name such as `con`,
+  `nul.json` or `com1`, so nothing written on install lands on a device), no two names equal when
+  case is folded;
 - **64 MB and 2,048 entries at most.** A package is themes, settings and scripts, not models.
 
 It holds `manifest.json`, `manifest.json.sig` (64-byte raw Ed25519, detached, over the exact
@@ -415,7 +417,7 @@ Where it lives:
 | The store: inspect, install, list, remove, the publisher record | `src/addon/open_store.*`; the folder is `io::open_addons_dir()` (`src/io/paths*`), never created by a read |
 | One JSON and one wording for both hosts | `src/addon/open_json.*` |
 | C ABI 0.17 (Windows) and the chrome bridge (Mac) | `mv_open_addon_*` in `mediaviewer_addon.h` / `abi/addon_abi.cpp`; `mv_open_addons_*` in `mv_chrome_bridge.h` / `shell/addons_mac.mm` |
-| A package handed to the app | `shell/open_request.*` (`open_kind::addon_package`), `shell/main.cpp`, `chrome_host::offer_addon` → `IslandHost.OfferAddon`; `main_mac.mm -openEntryPath:` → `MVChromeHost.offerAddonPackage` |
+| A package handed to the app | `shell/open_request.*` (`open_kind::addon_package`), `shell/main.cpp`, `chrome_host::offer_addon` → `IslandHost.OfferAddon`; `main_mac.mm -openEntryPath:` (launch) and `-openEntryPaths:failed:` (a drop, Open, Finder) → `MVChromeHost.offerAddonPackage` |
 | Mac chrome | `Theme.swift` (`MVTheme`, `ThemeStore`, `ThemedRoot`), `OpenAddons.swift` (store, download, section, sheet), the Theme row in `SettingsView.swift` |
 | Windows chrome | `IslandHost.ThemePack.cs`, `IslandHost.OpenAddons.cs`, the hook in `IslandHost.Theme.cs` `RefreshTheme`, `AddonNative.Open*` in `MediaViewer.Interop/Addons.cs` |
 | The author's tool, guide and example | `tools/addon-sdk/mvaddon.py` (MIT), `docs/ADDONS.md`, `examples/addons/film-tones` |

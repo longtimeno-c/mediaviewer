@@ -149,6 +149,16 @@ TEST_CASE("manifest policy: platform, host API range, unsafe paths", "[addon][ma
             rejection::none);
   }
   REQUIRE(mv::addon::safe_relative_path("Import.bundle/Contents/MacOS/Import"));
+  // A name Windows would open as a device, or write somewhere else, is refused on every OS.
+  for (const char* bad : {"CON", "prn.json", "themes/Aux", "NUL.tar.gz", "com1", "LPT9.txt", "Com0",
+                          "nul /x", "com\xC2\xB2", "a.", "a ", "dir./x", "dir /x", "a<b", "a>b",
+                          "a\"b", "a|b", "a?b", "a*b"}) {
+    REQUIRE_FALSE(mv::addon::safe_relative_path(bad));
+  }
+  for (const char* good : {"console.json", "nul_theme.json", "com10", "lpt", "comx.json", "a.b/c d.json",
+                           ".hidden", "themes/aux-dark.json"}) {
+    REQUIRE(mv::addon::safe_relative_path(good));
+  }
   // The name is the add-on's folder on the Mac: never a way out of Add-ons/.
   for (const char* bad : {"..", ".", ".hidden", "a/b", "a\\b", "C:"}) {
     std::string m = manifest_json(files, "lib/mv_import.bin");
@@ -319,6 +329,20 @@ TEST_CASE("with no add-on installed nothing is written and nothing loads", "[add
   st.startup_cleanup();
   REQUIRE(list_tree(s.root()).empty());
   REQUIRE_FALSE(mv::addon::loaded_addon::load(st, "import", {}));
+}
+
+TEST_CASE("a library that will not load is io with a reason and no path, not corrupt", "[addon][load]") {
+  scratch_dir s("addons_unloadable");
+  // Verified bytes the OS refuses: here, not a library at all.
+  const fs::path lib = s / "secret_folder_name" / "not_a_library.bin";
+  write_text(lib, "not a library");
+  auto opened = mv::addon::shared_library::open(utf8(lib));
+  REQUIRE_FALSE(opened);
+  CHECK(opened.error() == mv::status::io);
+  const std::string why = mv::addon::shared_library::last_error();
+  CHECK_FALSE(why.empty());
+  CHECK(why.find("secret_folder_name") == std::string::npos);  // rule 6
+  CHECK(why.find("not_a_library") == std::string::npos);
 }
 
 TEST_CASE("the real Import module installs, loads, answers, and shuts down", "[addon][load]") {

@@ -43,6 +43,7 @@
 
 #include "codec/decode.h"
 #include "codec/os_decode.h"
+#include "corpus.h"
 
 using namespace mv::codec;
 
@@ -182,7 +183,7 @@ TEST_CASE("the fetched real-world HEIC decodes the same way", "[codec][heif][cle
   const std::filesystem::path path =
       std::filesystem::path(MV_TESTMEDIA_DIR) / "heif" / "libheif-example.heic";
   if (!std::filesystem::exists(path)) {
-    if (std::getenv("MV_REQUIRE_CORPUS")) {
+    if (corpus::corpus_required()) {
       FAIL("MV_REQUIRE_CORPUS=1 and " << path.string()
                                       << " is missing — run tools/testmedia/fetch-heif.ps1");
     }

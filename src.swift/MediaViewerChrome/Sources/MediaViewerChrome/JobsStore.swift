@@ -60,24 +60,24 @@ final class JobsStore: ObservableObject {
   @Published private(set) var rows: [ClipJobRow] = []
 
   private var generation: UInt64 = .max
-  private var timer: Timer?
 
   private init() {
-    timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
-      MainActor.assumeIsolated { self?.poll() }
-    }
-    poll()
+    // Issue #178: polled when the main run loop has run (ChromePulse); its
+    // timer runs only while the pane shows a running job's progress.
+    ChromePulse.shared.add { [weak self] in self?.poll() ?? false }
   }
 
-  private func poll() {
+  /// True while the pane is up with a job running: progress moves off the main thread.
+  private func poll() -> Bool {
     let nowVisible = mv_chrome_jobs_visible()
     if nowVisible != visible { visible = nowVisible }
-    guard nowVisible else { return }
+    guard nowVisible else { return false }
     let g = mv_chrome_jobs_generation()
     if g != generation || rows.contains(where: { $0.running }) {
       generation = g
       reload()
     }
+    return rows.contains(where: { $0.running })
   }
 
   private static func text(_ id: UInt64, _ which: Int32) -> String {
