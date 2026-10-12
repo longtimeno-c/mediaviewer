@@ -6,6 +6,7 @@
 // tests/test_keymap.cpp (mv_tests, beside the router).
 #include "catch_compat.h"
 
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -260,6 +261,31 @@ TEST_CASE("settings values: namespaced, persistent, kept or forgotten", "[addon]
   REQUIRE(*again.value_json("acme.places", page, "town_radius_km") == "15");
   REQUIRE(again.forget("acme.places"));  // nothing there: fine
   REQUIRE(again.has_values("places"));   // the other id is untouched
+  mv::addon::reset_settings_cache_for_tests();
+}
+
+TEST_CASE("settings values: a write keeps what another window wrote", "[addon][settings]") {
+  // Another window is another process with its own cache. Its write must not
+  // be undone by this process's next write, and Settings opening here shows it.
+  scratch_dir scratch("addon_settings_two");
+  mv::addon::reset_settings_cache_for_tests();
+  const std::string root = utf8(scratch / "Add-on Settings");
+  const mv::addon::settings_values values(root);
+  const auto page = places();
+  REQUIRE(values.set("acme.places", page, "town_radius_km", "30"));
+  // The other process: town 30 (as it read it) and the map turned off.
+  {
+    std::ofstream other(scratch / "Add-on Settings" / "acme.places.json", std::ios::binary | std::ios::trunc);
+    other << R"({"schema":1,"values":{"town_radius_km":30,"show_map":false}})";
+  }
+  const auto doc = mv::json::parse(values.page_json("acme.places", page, "Places"));
+  REQUIRE(doc);
+  REQUIRE(doc->find("sections")->a[0].find("items")->a[0].find("value")->b == false);
+  REQUIRE(values.set("acme.places", page, "home", "\"Porto\""));
+  mv::addon::reset_settings_cache_for_tests();
+  REQUIRE(*values.value_json("acme.places", page, "show_map") == "false");
+  REQUIRE(*values.value_json("acme.places", page, "home") == "\"Porto\"");
+  REQUIRE(*values.value_json("acme.places", page, "town_radius_km") == "30");
   mv::addon::reset_settings_cache_for_tests();
 }
 

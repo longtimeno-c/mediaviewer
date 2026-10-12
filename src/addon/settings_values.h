@@ -19,7 +19,9 @@
 // add-on a value its new page does not allow: it gets the default.
 //
 // Thread-safe. Reads are served from a process-wide cache after the first;
-// writes go to disk atomically before they return. Worker threads only
+// writes go to disk atomically before they return. A write, and the page
+// Settings draws, start from the file as it is now: another window is another
+// process, and must not have its change undone by this one's cache. Worker threads only
 // (rule 1): a first read and every write touch the disk.
 #pragma once
 

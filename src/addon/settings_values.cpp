@@ -61,6 +61,15 @@ json::value& values_of(const std::string& path) {
   return it->second;
 }
 
+// Under cache().m. What the file holds now, into the cache: another window is
+// another process with its own cache, and may have written since (Settings
+// opening, and every write, start from the disk so neither undoes the other).
+json::value& fresh_values_of(const std::string& path) {
+  json::value& v = cache().by_path[path];
+  v = read_values(path);
+  return v;
+}
+
 const json::value* stored(const json::value& values, std::string_view key) {
   return values.find(key);
 }
@@ -132,7 +141,7 @@ std::string settings_values::page_json(std::string_view id, const settings_page&
   json::value values;
   if (valid_settings_owner(id)) {
     std::lock_guard lock(cache().m);
-    values = values_of(path_of(id));
+    values = fresh_values_of(path_of(id));
   }
   json::writer w;
   w.begin_object();
@@ -173,7 +182,7 @@ expected settings_values::set(std::string_view id, const settings_page& page, st
 
   const std::string path = path_of(id);
   std::lock_guard lock(cache().m);
-  json::value next = values_of(path);
+  json::value next = fresh_values_of(path);
   // Keys the page no longer has stay: an older version of the add-on, put
   // back, finds what was chosen for it.
   bool replaced = false;
