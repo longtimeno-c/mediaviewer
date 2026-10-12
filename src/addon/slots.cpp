@@ -11,6 +11,7 @@
 #include <unordered_map>
 #include <utility>
 
+#include "addon/settings_values.h"
 #include "core/json.h"
 
 namespace mv::addon {
@@ -220,9 +221,17 @@ struct slot_registry::addon_entry {
   std::unique_ptr<worker> w;
 };
 
-slot_registry::slot_registry() = default;
+slot_registry::slot_registry() {
+  // A changed setting re-asks the add-on it belongs to (docs/design/25 "A
+  // changed setting re-asks"). Generic: whichever add-on's page it was.
+  settings_listener_ = add_settings_listener(
+      [this](std::string_view addon_id) { settings_changed(std::string(addon_id)); });
+}
 
 slot_registry::~slot_registry() {
+  // First: on return no settings write is inside settings_changed, and none
+  // will reach this registry again.
+  remove_settings_listener(settings_listener_);
   // The process's registry dies at exit (a static), after the chromes: no
   // host callback may run from here (on Windows that would be managed code
   // under the loader lock).
@@ -391,37 +400,76 @@ std::uint64_t slot_registry::request_info(const std::string& path, const std::st
     info_.clear();
     info_generation_ = g;
     info_path_ = path;
+    info_location_text_ = location_text;
+    info_theme_ = theme;
+    info_width_pt_ = width_pt;
+    info_scale_ = scale;
     last_theme_ = theme;
     last_scale_ = scale;
-    for (auto& [id, e] : addons_) {
-      for (const info_section_contrib& s : e->c.info_sections) {
-        if (s.needs_location && !loc) continue;  // never asked for a file without one
-        screen_state st;
-        st.addon = id;
-        st.id = s.id;
-        st.place = screen_place::info_section;
-        st.generation = g;
-        info_.emplace(std::make_pair(id, s.id), std::move(st));
-        const std::string section = s.id;
-        enqueue(*e, "info:" + section,
-                [g, section, path, location_text, loc, theme, width_pt, scale](slot_client& c) {
-                  mv_slot_info_request r{};
-                  r.struct_size = sizeof r;
-                  r.generation = g;
-                  r.section_id = section.c_str();
-                  r.path_utf8 = path.c_str();
-                  if (loc) r.location = *loc;
-                  r.location_text = location_text.c_str();
-                  r.theme = theme;
-                  r.width_pt = width_pt;
-                  r.scale = scale;
-                  (void)c.info_section(r);
-                });
-      }
-    }
+    for (auto& [id, e] : addons_) ask_info_locked(*e, g, loc);
   }
   if (had) notify(slot_changed_info);
   return g;
+}
+
+void slot_registry::ask_info_locked(addon_entry& e, std::uint64_t g,
+                                    const std::optional<mv_addon_location>& loc) {
+  for (const info_section_contrib& s : e.c.info_sections) {
+    if (s.needs_location && !loc) continue;  // never asked for a file without one
+    // A section asked again (settings_changed) keeps the tree it showed until
+    // the answer replaces it; only its generation moves, so a late answer to
+    // the old request is dropped.
+    screen_state& st = info_[std::make_pair(e.id, s.id)];
+    st.addon = e.id;
+    st.id = s.id;
+    st.place = screen_place::info_section;
+    st.generation = g;
+    const std::string section = s.id;
+    enqueue(e, "info:" + section,
+            [g, section, path = info_path_, location_text = info_location_text_, loc, theme = info_theme_,
+             width_pt = info_width_pt_, scale = info_scale_](slot_client& c) {
+              mv_slot_info_request r{};
+              r.struct_size = sizeof r;
+              r.generation = g;
+              r.section_id = section.c_str();
+              r.path_utf8 = path.c_str();
+              if (loc) r.location = *loc;
+              r.location_text = location_text.c_str();
+              r.theme = theme;
+              r.width_pt = width_pt;
+              r.scale = scale;
+              (void)c.info_section(r);
+            });
+  }
+}
+
+void slot_registry::settings_changed(const std::string& addon_id) {
+  bool badges_dropped = false;
+  {
+    std::lock_guard lock(m_);
+    const auto it = addons_.find(addon_id);
+    if (it == addons_.end()) return;
+    addon_entry& e = *it->second;
+    // The file on screen: this add-on's sections, under a generation of their own.
+    if (info_generation_ != 0 && !e.c.info_sections.empty()) {
+      ask_info_locked(e, next_generation(), parse_location_text(info_location_text_));
+    }
+    // The folder shown: this add-on's badge sets go (a setting may change which
+    // files carry them) and it is asked again under the folder's generation.
+    if (badges_generation_ != 0 && !e.c.badges.empty()) {
+      const std::string prefix = addon_id + "/";
+      badges_dropped =
+          std::erase_if(badge_sets_, [&](const auto& b) { return b.first.rfind(prefix, 0) == 0; }) > 0;
+      enqueue(e, "badges", [g = badges_generation_, folder = badges_folder_](slot_client& c) {
+        mv_slot_badges_request r{};
+        r.struct_size = sizeof r;
+        r.generation = g;
+        r.folder_utf8 = folder.c_str();
+        (void)c.badges(r);
+      });
+    }
+  }
+  if (badges_dropped) notify(slot_changed_badges);
 }
 
 void slot_registry::clear_info() {
@@ -432,6 +480,7 @@ void slot_registry::clear_info() {
     info_.clear();
     info_generation_ = 0;
     info_path_.clear();
+    info_location_text_.clear();
   }
   if (had) notify(slot_changed_info);
 }
@@ -1008,8 +1057,9 @@ bool slot_registry::is_stale(std::uint64_t g) const {
       g == search_[1].generation) {
     return false;
   }
-  return std::none_of(screens_.begin(), screens_.end(),
-                      [g](const auto& s) { return s.second.generation == g; });
+  // A section asked again after a settings change has a generation of its own.
+  const auto has = [g](const auto& s) { return s.second.generation == g; };
+  return std::none_of(screens_.begin(), screens_.end(), has) && std::none_of(info_.begin(), info_.end(), has);
 }
 
 bool slot_registry::is_stale(const std::string& addon_id, std::uint64_t g) const {

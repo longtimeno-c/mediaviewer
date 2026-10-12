@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <map>
 #include <mutex>
+#include <utility>
 #include <vector>
 
 #include "addon/open_manifest.h"
@@ -91,6 +92,33 @@ const json::value* values_for(const values_file& f, std::string_view publisher) 
 
 const json::value* stored(const json::value* values, std::string_view key) {
   return values ? values->find(key) : nullptr;
+}
+
+// The settings listeners (add_settings_listener). Heap-held and never freed:
+// a registry may unregister from a static destructor.
+struct listener_list {
+  std::mutex m;
+  std::uint64_t next = 0;
+  std::vector<std::pair<std::uint64_t, settings_listener>> fns;
+};
+listener_list& listeners() {
+  static listener_list* const l = new listener_list;
+  return *l;
+}
+
+// After a write, outside cache().m: everyone that serves `id` hears of it.
+void changed(std::string_view id) noexcept {
+  listener_list& l = listeners();
+  std::lock_guard lock(l.m);
+  for (const auto& [token, fn] : l.fns) {
+    (void)token;
+    try {
+      fn(id);
+    } catch (...) {
+      // A listener that failed to queue its refresh leaves the old answer on
+      // screen until the next request; the write itself stands.
+    }
+  }
 }
 
 void write_values_file(json::writer& w, std::string_view publisher, const json::value& values) {
@@ -218,48 +246,57 @@ expected settings_values::set(std::string_view id, std::string_view publisher,
   if (!value || !setting_value_fits(*it, *value)) return err(status::invalid_arg);
 
   const std::string path = path_of(id);
-  std::lock_guard lock(cache().m);
-  values_file next = fresh_file_of(path);
-  if (next.publisher != publisher) {
-    // Chosen for another publisher's add-on under this id: not merged into,
-    // replaced.
-    next.publisher = std::string(publisher);
-    next.values = json::value{};
-    next.values.k = json::kind::object;
-  }
-  // Keys the page no longer has stay: an older version of the add-on, put
-  // back, finds what was chosen for it.
-  bool replaced = false;
-  for (auto& [name, v] : next.values.o) {
-    if (name == key) {
-      v = *value;
-      replaced = true;
+  bool same = false;  // the file already held exactly this value for this publisher
+  {
+    std::lock_guard lock(cache().m);
+    values_file next = fresh_file_of(path);
+    if (next.publisher != publisher) {
+      // Chosen for another publisher's add-on under this id: not merged into,
+      // replaced.
+      next.publisher = std::string(publisher);
+      next.values = json::value{};
+      next.values.k = json::kind::object;
     }
-  }
-  if (!replaced) next.values.o.emplace_back(std::string(key), *value);
+    // Keys the page no longer has stay: an older version of the add-on, put
+    // back, finds what was chosen for it.
+    bool replaced = false;
+    for (auto& [name, v] : next.values.o) {
+      if (name == key) {
+        same = setting_value_json(v) == setting_value_json(*value);
+        v = *value;
+        replaced = true;
+      }
+    }
+    if (!replaced) next.values.o.emplace_back(std::string(key), *value);
 
-  json::writer w;
-  write_values_file(w, next.publisher, next.values);
-  const std::string& text = w.str();
-  const std::span<const std::uint8_t> bytes(reinterpret_cast<const std::uint8_t*>(text.data()),
-                                            text.size());
-  MV_TRY_VOID(io::make_directories(root_));
-  if (io::stat_path(path)) {
-    MV_TRY_VOID(io::replace_atomic(path, bytes));
-  } else {
-    MV_TRY_VOID(io::write_new_atomic(path, bytes));
+    json::writer w;
+    write_values_file(w, next.publisher, next.values);
+    const std::string& text = w.str();
+    const std::span<const std::uint8_t> bytes(reinterpret_cast<const std::uint8_t*>(text.data()),
+                                              text.size());
+    MV_TRY_VOID(io::make_directories(root_));
+    if (io::stat_path(path)) {
+      MV_TRY_VOID(io::replace_atomic(path, bytes));
+    } else {
+      MV_TRY_VOID(io::write_new_atomic(path, bytes));
+    }
+    cache().by_path[path] = std::move(next);
   }
-  cache().by_path[path] = std::move(next);
+  if (!same) changed(id);
   return {};
 }
 
 expected settings_values::forget(std::string_view id) const {
   if (!valid_settings_owner(id)) return err(status::invalid_arg);
   const std::string path = path_of(id);
-  std::lock_guard lock(cache().m);
-  cache().by_path.erase(path);
-  if (!io::stat_path(path)) return {};
-  return io::remove_file(path);
+  {
+    std::lock_guard lock(cache().m);
+    cache().by_path.erase(path);
+    if (!io::stat_path(path)) return {};
+    MV_TRY_VOID(io::remove_file(path));
+  }
+  changed(id);  // back to the page's defaults
+  return {};
 }
 
 bool settings_values::has_values(std::string_view id) const {
@@ -271,12 +308,16 @@ bool settings_values::has_values(std::string_view id) const {
 expected settings_values::claim(std::string_view id, std::string_view publisher) const {
   if (!valid_settings_owner(id)) return err(status::invalid_arg);
   const std::string path = path_of(id);
-  std::lock_guard lock(cache().m);
-  const values_file& f = fresh_file_of(path);
-  if (f.values.o.empty() || f.publisher == publisher) return {};
-  cache().by_path.erase(path);
-  if (!io::stat_path(path)) return {};
-  return io::remove_file(path);
+  {
+    std::lock_guard lock(cache().m);
+    const values_file& f = fresh_file_of(path);
+    if (f.values.o.empty() || f.publisher == publisher) return {};
+    cache().by_path.erase(path);
+    if (!io::stat_path(path)) return {};
+    MV_TRY_VOID(io::remove_file(path));
+  }
+  changed(id);
+  return {};
 }
 
 result<settings_values> default_settings_values() {
@@ -290,6 +331,20 @@ result<std::string> open_setting_value_json(const open_store& store, std::string
   if (!installed || installed->state != install_state::ok) return err(status::invalid_arg);
   MV_TRY(settings_values values, default_settings_values());
   return values.value_json(addon_id, installed->m.publisher_key, installed->m.settings, key);
+}
+
+std::uint64_t add_settings_listener(settings_listener fn) {
+  listener_list& l = listeners();
+  std::lock_guard lock(l.m);
+  const std::uint64_t token = ++l.next;
+  l.fns.emplace_back(token, std::move(fn));
+  return token;
+}
+
+void remove_settings_listener(std::uint64_t token) {
+  listener_list& l = listeners();
+  std::lock_guard lock(l.m);
+  std::erase_if(l.fns, [token](const auto& e) { return e.first == token; });
 }
 
 void reset_settings_cache_for_tests() {

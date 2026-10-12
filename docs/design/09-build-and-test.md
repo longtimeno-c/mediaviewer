@@ -83,9 +83,9 @@ Suites are registered with CTest and run by `ctest` on both platforms; see
    exhaustive nightly sweep; `MV_BROKEN_DUMP` writes failing inputs.
 5. **Fuzzing.** One libFuzzer harness per decoder entry point (`tools/fuzz/fuzz_*.cpp`:
    JPEG, PNG, BMP, GIF, WebP, TIFF, ICO, HEIC, AVIF, RAW, RAW preview, animation, the
-   generic decode, the Explorer thumbnail handler, the PDF and DOCX readers, and the place
-   database loader `fuzz_geo`, [27](27-places.md)), built with clang-cl + ASan
-   (`-DMV_FUZZ=ON`). CI gates on the eleven single-format image harnesses;
+   generic decode, the Explorer thumbnail handler, the PDF and DOCX readers, the place
+   database loader `fuzz_geo` and the Places map `fuzz_places_map`, [27](27-places.md)), built
+   with clang-cl + ASan (`-DMV_FUZZ=ON`). CI gates on the eleven single-format image harnesses;
    `decode`, `animation`, `thumbnail`, `pdf` and `docx` run in a quarantined, non-gating step
    (30 s each) until they are seen starting on the runner (`docs/design/12-decision-log.md`).
    #290 adds one per metadata reader beyond Exiv2 (`fuzz_meta_c2pa`, `_jpeg`, `_png`, `_webp`,

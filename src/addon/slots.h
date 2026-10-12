@@ -119,6 +119,12 @@ class slot_registry {
                              const mv_slot_theme& theme, float width_pt, float scale);
   // The pane closed or shows nothing: sections go, nothing is asked.
   void clear_info();
+  // `addon_id`'s settings changed (docs/design/25 "A changed setting re-asks";
+  // the registry hears it from settings_values' listener, any thread): its
+  // info sections for the file on screen are asked again under a new
+  // generation, and its badges for the folder shown, if it has any. What it
+  // showed stays until it answers; other add-ons are not asked. Never blocks.
+  void settings_changed(const std::string& addon_id);
   // File search (MV_SLOT_SCOPE_FILES) or Local search (MV_SLOT_SCOPE_LOCAL).
   // An empty query clears the results and asks nobody.
   std::uint64_t search(std::uint32_t scope, const std::string& query, const std::string& folder);
@@ -230,6 +236,9 @@ class slot_registry {
   screen_state* addressed(const std::string& addon_id, const std::string& screen_id,
                           std::uint64_t generation, status& why);
   void enqueue(addon_entry& e, std::string key, std::function<void(slot_client&)> task);
+  // Under m_: asks `e`'s info sections for the file on screen (info_path_ and
+  // the inputs request_info stored) under generation `g`.
+  void ask_info_locked(addon_entry& e, std::uint64_t g, const std::optional<mv_addon_location>& loc);
   status open_screen_locked(addon_entry& e, const screen_contrib& s, const std::string& path,
                             const mv_slot_theme& theme, float width_pt, float height_pt,
                             float scale);
@@ -239,9 +248,14 @@ class slot_registry {
   std::function<void(std::uint32_t)> listener_;
   std::mutex listener_m_;
 
-  // Info sections of the file on screen.
+  // Info sections of the file on screen, and the request that asked for them
+  // (settings_changed asks again with the same inputs).
   std::uint64_t info_generation_ = 0;
   std::string info_path_;
+  std::string info_location_text_;
+  mv_slot_theme info_theme_{};
+  float info_width_pt_ = 0;
+  float info_scale_ = 1.0f;
   std::map<std::pair<std::string, std::string>, screen_state> info_;  // (addon, section)
   // Windows, panes and sheets that are open.
   std::map<std::pair<std::string, std::string>, screen_state> screens_;
@@ -256,6 +270,7 @@ class slot_registry {
 
   std::atomic<std::uint64_t> generation_{0};
   std::atomic<std::uint64_t> calls_{0};
+  std::uint64_t settings_listener_ = 0;  // add_settings_listener's token
 };
 
 // The process's registry, which both hosts' chromes and loaders use.

@@ -479,6 +479,9 @@ set(MV_SODIUM_TARGET unofficial-sodium::sodium)
 include("${CMAKE_CURRENT_LIST_DIR}/import.cmake")
 # docs/design/25 §9 A (PR 57): Lua and the script runtime.
 include("${CMAKE_CURRENT_LIST_DIR}/script.cmake")
+# The Places add-on (docs/design/27): libmv_places.dylib in build/addons/places,
+# packed and signed separately; never in the app bundle.
+include("${CMAKE_CURRENT_LIST_DIR}/places.cmake")
 
 # Milestone H: host table v2's pixels (src/abi/addon_media.h) over the still
 # pipeline, the clip sampler and the JPEG-512 cache. In the app; knows no
@@ -925,6 +928,8 @@ if(MV_BUILD_TESTS)
     tests/test_video_session.cpp
     # Issue #344: the offline reverse geocoder (docs/design/06 "Place").
     tests/test_geo.cpp
+    # Issue #344 slice 3: the Places add-on's map, Place section and search.
+    tests/test_places.cpp
   )
   target_link_libraries(mv_tests PRIVATE
     mv_core
@@ -939,6 +944,7 @@ if(MV_BUILD_TESTS)
     mv_meta
     mv_clip
     mv_geo_open
+    mv_places_engine
     JPEG::JPEG
     ${MV_SPNG_TARGET}
     GIF::GIF
@@ -1003,6 +1009,7 @@ if(MV_BUILD_TESTS)
     target_compile_definitions(mv_import_tests PRIVATE MV_TEST_DEV_ADDON_KEY=1)
   endif()
   add_dependencies(mv_import_tests mv_import mv_slots_test_addon)
+  mv_places_addon_tests(mv_import_tests)
   catch_discover_tests(mv_import_tests TEST_PREFIX "import_" PROPERTIES ENVIRONMENT "TZ=UTC"
     SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT ${MV_TEST_TIMEOUT})
 

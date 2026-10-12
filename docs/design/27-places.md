@@ -5,10 +5,16 @@ How a photo's GPS coordinates become "Sintra, Lisbon, Portugal" with no network:
 and how all of it reaches the app as the **Places add-on**. Plan:
 [metadata-search-and-place.md](../plans/metadata-search-and-place.md), slice 2 (issue #344).
 
-**Status (2026-10-11).** The core is built and tested: `src/geo`, `tools/geo/build_places.py`,
-the database format, `mv_tests "[geo]"`, the fuzzer and the perf bench. The Places add-on that
-links it is **not built**. Neither are the Metadata-pane section, the map (slice 3) or search
-by place (slice 4). Until the add-on exists the app shows coordinates, as it always has.
+**Status (2026-10-12).** Built: the core (`src/geo`, `tools/geo/build_places.py`, the database
+format, `mv_tests "[geo]"`, the fuzzer, the perf bench) and the **Places add-on** that links it
+(`src/addons/places`): the Metadata pane's Place section with a label, the coordinates and an
+offline map that zooms under the cursor down to town scale, search by place for a folder, its
+settings page and its packaging. It fills #348's slots (info section, search provider) through
+host table v3 and needs PR 56 for its settings page. Without the add-on the app shows
+coordinates, as it always has. Owed: the Windows half is compiled only in CI; Local search over the
+whole index needs the index's coordinates (doc 17). Plan:
+[metadata-search-and-place.md](../plans/metadata-search-and-place.md), slices 2-3 and the place
+half of slice 4.
 
 ## Rule 6 is why this exists
 
@@ -52,6 +58,7 @@ class database {
   std::size_t ring_count(layer, std::uint32_t) const;
   std::span<const point> ring(layer, std::uint32_t polygon, std::size_t i) const;
   std::string_view polygon_country_code(layer, std::uint32_t) const;
+  std::vector<town_ref> towns_in(const box&, std::size_t limit) const; // map town dots, by population
   std::string_view meta() const;                                       // provenance JSON
 };
 result<std::unique_ptr<mapped_database>> open_database(std::string_view utf8_path);
@@ -223,8 +230,20 @@ There is no allocation on the lookup path beyond the returned strings. A cold op
 file not in the page cache, is not measured. `MADV_WILLNEED` turns the first touch into
 read-ahead (17 MB). Windows is not measured; it builds in CI only from this machine. Nothing
 here runs on the viewer's paths, so first pixel and arrow → next photo cannot change.
-Alternated runs belong to the add-on PR, which is the first change that executes this code in
-the app.
+
+**The map** (2026-10-12, `mv_tests "places: map render time at pane width x 160 pt"`, in
+`[.perf-bench]`): 8 places (Sintra, Paris, Denver, Moscow, Tokyo, Suva, Cape Town, mid-Atlantic)
+× the 8 zoom steps, one render each on one thread, three runs. The machine was shared with other
+builds (load average 50–85), so CPU time is the number; wall time is shown for honesty.
+
+| Picture | CPU median | CPU p90 | CPU max | Wall median / max |
+|---|---|---|---|---|
+| 320 × 160 px (1×) | 1.5–1.7 ms | 4.8–5.5 ms | 13.6–14.7 ms | 2.0–2.3 / 18–21 ms |
+| 640 × 320 px (2×, the Retina pane) | 4.5–4.7 ms | 8.2–8.8 ms | 19.6–20.5 ms | 5.9–7.6 / 28–113 ms |
+
+The slowest are country scale over Russia and region scale in dense Europe. It runs on the
+add-on's worker, once per file or settled gesture; a cache hit is ~0.03 µs and the framing step
+under 0.2 ms. During a gesture nothing is drawn: the chrome moves the last bitmap.
 
 ## Tests and the fuzzer
 
@@ -250,53 +269,180 @@ the app.
   The Windows `build` legs restore it and set `MV_GEO_BLOB` and `MV_REQUIRE_GEO=1`.
 - `tools/fuzz/fuzz_geo.cpp` runs the loader with the checksum off, then every reader. Its first
   run found an unsigned wrap in the edge check, now fixed. After that, a 10-minute run (604 k
-  executions, ASan + UBSan) was clean.
+  executions, ASan + UBSan) was clean. `towns_in` (the map's town dots) was added to it on
+  2026-10-12; a 5-minute run (324 k executions, ASan + UBSan, Homebrew clang on the Mac) was clean.
+- `tools/fuzz/fuzz_places_map.cpp` drives the map with numbers, not a file: views, sizes (some past
+  the 4096 cap or with a short buffer), scales and gestures, raw doubles included, through
+  `render_map`, the view maths and the engine's section and zoom steps, over the test blob. Over
+  the map code as first written it times out within two minutes in `wrap180`, which looped
+  forever on a huge longitude (now constant time); over the fixed code a 5-minute run (71.8 k
+  executions, ASan + UBSan, Homebrew clang on the Mac) was clean.
+- `mv_tests "[places]"` (`tests/test_places.cpp`, on the test blob): the map's colours at known
+  points (land, water, the Tagus, the Portugal/Spain border pixel, a town dot, Fiji either side of
+  180°), the rounded transparent corners, the cache (hit, theme change, zoom, size, capacity), the
+  framing, the section's tree and settings, the −/+ range, gesture anchor maths and clamping, the
+  pin kept in view, `towns_in`, town marks, and search by place ("portugal" → the six Portuguese
+  fixtures; "portu", "lisbon", "sintra", "spain", "fiji"; "po", "2024" and a point at sea find nothing).
+  Also non-finite and huge inputs to the view maths and `render_map`, a 1600 pt pane at 3× within
+  4096 px, and, on the full blob, nine views at the poles and across 180° whose sampled pixels must
+  agree with `lookup` (land or sea) to within 1 %.
+- `mv_import_tests "[places]"` (`tests/test_places_addon.cpp`): the shipped `manifest.json`
+  accepted, declaring only the section, the provider and settings; then `mv_places` installed in a
+  signed store with the test blob as `data/places.mvgeo`, loaded through host table v3, answering
+  the section (label, coordinates, 600 × 320 surface, pin, marks), a −, a zoom, a pan and a
+  double-click, `portugal` / `place:spain` / `in:2024` over a fake `locations_in`, and removal.
+  Until PR 56 lands in the same host, the test leaves the settings page out of the manifest (the
+  host would refuse it).
+- `tools/package/test_addon_pack.py` `PlacesPackTest`: the package's files, licences, notice and
+  contributions, the staging step, and the C++ verifier's verdict.
 
 ## Delivery: the Places add-on
 
 Owner, 2026-10-11: Places is an add-on that carries its own code and its own data. Without it
-the pane shows coordinates. The add-on (`src/addons/places`, not built) links `mv_geo`. It
-ships `data/places.mvgeo` inside its signed package, built at package time by
-`build_places.py`, and opens it from its install directory. It can map the file itself or read
-it through the host table's file port.
+the pane shows coordinates, as it always has. Built (2026-10-12):
 
-Bundling the data in the app instead would be a packaging change, not a code change. The loader
-takes whatever path the host resolves.
+| File | What |
+|---|---|
+| `src/addons/places/addon_entry.cpp` | `mv_addon_get` and `mv.slots.1`: the info section, the search provider, the map's events |
+| `src/addons/places/places.h/.cpp` | The engine, ABI-free: the section's view tree, the zoom and pan state, `place_query` |
+| `src/addons/places/map.h/.cpp` | The map rasteriser, the gesture maths and the picture cache |
+| `src/addons/places/self_dir_*.cpp` | The add-on's own install folder (`dladdr` / `GetModuleHandleExW`), as the AI pack finds its models |
+| `src/addons/places/manifest.json` | Description and contributions; `tools/package/addon-pack.py` packs it and the tests read it |
+| `cmake/places.cmake` | `mv_places_engine` (tests link it) and the `mv_places` module in `build/addons/places` |
+
+`mv_places` links `mv_geo` and nothing of the core: the core reaches it only through host table
+v3. It maps its data itself: `src/geo/open.cpp` and `io/mapped_file_<os>.cpp` are compiled into
+the module (the `addons` rule in `check-module-graph.ps1` is `{addons, geo, core}`, and the module
+includes only `geo/open.h`). The blob is opened on the first request that needs it, on the
+add-on's worker, from `<install folder>/data/places.mvgeo`; a missing or damaged file is logged
+once (no path) and the section says "Place names are unavailable" beside the coordinates.
+
+**What the manifest declares** (owner, 2026-10-12: nothing else; no bar, path or status item,
+no window, no badge):
+
+```json
+"host_api": {"min": 3, "max": 3}, "chrome": "",
+"contributes": {
+  "api": {"min": 5, "max": 5},
+  "info_sections": [{"id": "place", "title": "Place", "when": "location", "order": 0}],
+  "search_providers": [{"id": "place", "name": "Places", "prefixes": ["place:", "in:"], "scope": ["files", "local"]}],
+  "settings": {"title": "Places", "sections": [{"title": "Place", "items": [...]}]}
+}
+```
 
 | | How the blob is made |
 |---|---|
 | Local dev / tests | `cmake --build build --target mv_geo_data` (or `-DMV_GEO_DATA=ON`) writes `build/geo/places.mvgeo`. Downloads are cached in `build/geo-downloads` (`MV_GEO_DOWNLOADS`). |
 | CI | The `test-media` job builds it, caches it, and restores it into `tools/testmedia/geo/`. |
-| Packaging (both platforms) | The Places add-on's staging step runs `build_places.py --downloads <cache> --out <stage>/data/places.mvgeo`, and `addon-pack.py` signs it like any add-on file. Not built yet. |
+| Packaging (both platforms) | `addon-pack.py stage-places --src build/addons/places --downloads <cache> [--blob <built>]` puts it at `data/places.mvgeo` (it checks the magic and nothing else goes into `data/`), then `addon-pack.py pack --addon places` signs it like any add-on file. The release workflow does this on each platform after signing (and, on the Mac, notarizing) the code. |
 
-### The pane section, and the PR 59 slot
+The data file is licensed `CC-BY-4.0 AND LicenseRef-PublicDomain` in the signed file list: the
+packer's allow-list takes those two data licences (an SPDX `AND` of allowed parts), and the
+package's `LICENSES/NOTICE.txt` carries the GeoNames attribution and the Natural Earth line. The
+zip is about 10 MB (deflate; xz would be 5.4 MB), 17 MB installed.
 
-The pane integration is one self-contained **Place** section fed from one POD: label, country,
-region, the host's coordinate string, `has_map`, and later the map surface. It does not edit the
-existing Location row. It sits beside that row, and with no Places add-on it is simply absent.
+### The pane section
 
-This is the shape of PR 59's info-pane section ([25-open-addons.md](25-open-addons.md) §7) and
-of #348's native slots. The manifest declares
-`contributes.info_sections: [{id: "place", title: "Place", when: "location"}]`. The host calls
-the add-on's `info_section` on its worker with the file's location and theme tokens. Places
-answers with a small tree: a title text (the label), a secondary copyable text (the
-coordinates), and a 160 pt map surface with a normalised pin. The chrome draws the pin in the
-accent colour. The section needs no Places-specific code in either host. The host only renders
-the tree and the BGRA surface, and drops a stale generation.
+The section is the pane's last thing, below the footer, on every tab, whenever the file has
+coordinates (#348, owner 2026-10-12). The host asks `info_section` on the add-on's worker with
+the file's location, its own coordinate text, the theme tokens, the pane's content width and the
+backing scale; Places answers with one view tree and one surface:
 
-Search by place is the same add-on's search provider: prefixes `place:` and `in:`. It answers
-from `match()` against the host's batched, cached folder locations (`locations_in`).
+1. a title text: the place label ("Sintra, Lisbon, Portugal"), copyable;
+2. a secondary text: the host's coordinates, copyable;
+3. a 160 pt `surface` "map": the picture, a `pin` at the photo's point (the chrome draws it in the
+   accent colour with a soft shadow and a drop-in Reduced Motion turns off), `marks` (town names)
+   and `interactive` bounds. It is one accessibility element labelled "Map of <place>";
+4. a row: the caption "No street detail — offline map", and Zoom out / Zoom in buttons
+   (`minus` / `plus`), each disabled at its end of the range.
+
+Neither host has Places-specific code: they render the tree, the BGRA surface, the pin and the
+marks, and drop a stale generation. A file whose location changes (#352's editor) is a new info
+request, so the label and the map follow it; only pictures are cached, by point.
+
+### The map
+
+Drawn by the add-on on its worker into 8-bit BGRA, premultiplied, at the pane's width × 160 pt
+times the backing scale (`map.cpp`). The host takes 4096 px a side at most, so a very wide pane on
+a 3× display gets a lower backing scale (1600 pt → 2.56×), never a missing map.
+
+- **Projection.** Web Mercator, centred on the view's centre, with the view's `span_deg` as the
+  picture's height in degrees of latitude there. Each ring is unwrapped from its own first point
+  and drawn at every whole-world shift that reaches the picture, so a ring near the antimeridian
+  is whole whichever side of 180° the view is on. Antarctica, one ring that goes once round the
+  globe, is closed through the South Pole beyond the picture's edge.
+- **Fill.** Land is a signed-area accumulation (the font-rs method), each polygon oriented so its
+  outer ring is positive and folded even-odd so lakes and enclaves stay open. Anti-aliased, and two
+  countries sharing a border add up to full coverage with no hairline between them. The photo's
+  country is drawn in `land_home`, the rest in `land`.
+- **Borders.** An edge is a land border exactly when two polygons share it: the database
+  simplifies each shared arc once for both neighbours, so a border edge appears twice and a coast
+  edge once. Coasts are never stroked (a narrow estuary stays a coast). Country borders 0.6 pt,
+  admin-1 borders 0.35 pt at a span of 9° or less where the picture holds at most 48 regions
+  (US states) and from 4.5° where it holds more (French départements). Natural Earth's cut at
+  ±180° is not a border.
+- **Towns.** From a span of 9° down, cities1000 towns over `1000 · (span / 0.2°)^1.5` people
+  (about 300 000 at 9°, every town at 0.2°), most populous first, at most 48, none within 14 pt of
+  a bigger one. Each is a dot with a land-coloured halo; the first 16 names go out as `marks` for
+  the chrome to set in its own caption font.
+- **Frame.** 8 pt rounded corners (transparent) and a hairline in the theme's hairline colour.
+- **Colours** come from the host's tokens, light and dark: `land_home` lifts the pane's surface
+  toward white, `land` is a little greyer, water is a quiet blue mixed into the surface, borders
+  and town dots are the body / title text at low weight. A theme change is a new picture.
+- **Cache.** The last 12 pictures by (centre, span, size, scale, palette, country), so arrowing
+  back or zooming out and in again does not redraw. A hit costs ~0.03 µs.
+
+**Zooming the map** (owner, 2026-10-12). Over the map a trackpad pinch or a mouse wheel zooms
+about the cursor, a drag pans, a double-click zooms one step in about the click, and −/+ (and the
+keyboard, which presses them) step about the centre. A trackpad two-finger scroll is not taken:
+it keeps scrolling the pane. The chrome shows pinch, wheel and drag live by moving the last
+picture (bitmap, pin and marks together, chrome only: no present), and sends one event when the
+gesture settles (`MV_SLOT_EVENT_ZOOM {scale, x, y}`, `PAN {dx, dy}`, `DOUBLE {x, y}`). Places
+turns that into a view with `apply_gesture`: a point at normalised p now shows at
+`anchor + (p − anchor) · scale + pan`, at exactly the pixel scale the gesture showed (so the new
+picture lands where the transform left it), then clamped:
+
+- the span to [0.2°, 40°], town scale to the whole of a large country, and the live transform to
+  the same range (`interactive.min_scale` / `max_scale`);
+- the centre so the photo's point stays inside the picture with an 8 % margin: the pin never
+  leaves it.
+
+It re-draws, posts the surface, then a diff moving the pin and marks and the buttons' state (the
+chrome drops its transform when the surface's revision moves). A newer gesture arrives as a newer
+delta on the state it left.
+
+### Search by place
+
+The same add-on's search provider, `place:` and `in:` (#348 routes `in:` followed by a digit to
+everyone, so `in:2024` stays Local search's date term; #291's parser reads `in:<word>` as a date
+when it parses as one). For a folder it walks the host's cached `locations_in`, looks each file
+up and posts rows in batches of 128 with the file's place label as the `why`. The rule
+(`place_query`): the folded query equals a country's or region's name in any of the database's
+languages, or starts one at 4 letters or more ("portu" finds Portugal while typing, "po" does
+not); or it equals the file's own town (starts it, at 4 letters). A point at sea is in no country.
+A query starting with a digit is never a place. Local search over the whole index (folder "")
+gets no rows until the index's coordinates can be enumerated through the host (owed, doc 17).
 
 ### Settings (PR 56 schema)
 
-One page, "Place":
+One page, "Place" (in `manifest.json`):
 - `show_map`: toggle, default on.
 - `show_town`: toggle, default on.
 - `town_radius_km`: number 1–50 km, default 15, `enabled_by: show_town`.
 - `label_names`: `english` | `local`.
 
-These map onto `lookup_options` (`town_radius_km`, 0 when `show_town` is off, and
-`native_names`) and `has_map`.
+Read through the host table's `settings_get` on every info request, search and map event (the
+store's cache answers, no disk read), mapped onto `lookup_options` (`town_radius_km`, 0 when
+`show_town` is off; `native_names`) and the map's presence. Nothing is kept across a change.
+
+**Settings take effect immediately.** Changing one in Settings re-asks the Place section for the
+file on screen, once, under a new generation (docs/design/25 "A changed setting re-asks"): the
+label, the town and the map follow the new value without moving to another file. A zoom or pan
+meant for the old answer is dropped. The map cache keys on point, size, theme, zoom and home
+country; no setting changes the pixels (`show_map` only decides whether there is a picture; town
+marks are GeoNames' names whatever `label_names` says). Results already listed by file search
+are not re-run; the next query uses the new radius. A host without PR 56 refuses a manifest that
+names a settings page, so the add-on needs PR 56 and #348 both.
 
 ## Known limits
 
@@ -307,13 +453,15 @@ These map onto `lookup_options` (`town_radius_km`, 0 when `show_town` is off, an
   Berlin". Country names are English, or native with `native_names`.
 - Towns are populated places of 1 000 people or more. A hamlet reads as its nearest town or
   as "Region, Country".
+- The map has no streets, rivers, roads or terrain, and no labels but town names; at town scale
+  the coast shows its ~1 km simplification. Inland at region scale (Colorado) it can be nearly
+  blank but for borders and dots.
 
 ## Open owner calls
 
 - **Pinning GeoNames.** Mirror the pinned snapshot (three files, about 11 MB) as an asset on a
-  repo release and point `build_places.py` at it. Until then a cold package build needs
-  `--accept-upstream` once the upstream files change.
-- **About 5.4 MB** added to the Places add-on package (17 MB installed). This is the plan's
-  ~6 MB.
-- `addon-pack.py` allows code licences only. The Places package needs `CC-BY-4.0` (GeoNames
-  data) and a public-domain marker for Natural Earth added to its allowed set.
+  repo release and point `build_places.py` at it. Until then the release workflow passes
+  `--accept-upstream` (GeoNames changes daily under one URL), and the two platforms' packages,
+  built in separate jobs, can carry a day's difference in town data. The blob's META records the
+  hashes either way.
+- **About 10 MB** download (deflate zip) / 17 MB installed for the Places add-on.

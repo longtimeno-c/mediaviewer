@@ -118,7 +118,7 @@ if(NOT MV_FUZZ_MODE MATCHES "^static")
 endif()
 
 # Instrument everything that links mv_project_options.
-set(MV_FUZZ_INSTRUMENTED mv_core mv_codec mv_image mv_gfx mv_io mv_meta_parse mv_geo)
+set(MV_FUZZ_INSTRUMENTED mv_core mv_codec mv_image mv_gfx mv_io mv_meta_parse mv_geo mv_places_engine)
 set_target_properties(${MV_FUZZ_INSTRUMENTED} PROPERTIES
   MSVC_RUNTIME_LIBRARY "${MV_FUZZ_CRT}")
 target_compile_options(mv_project_options INTERFACE
@@ -141,8 +141,8 @@ set(MV_FUZZ_HARNESSES
   meta_location
   # #345: the AI badge's provenance probe, every container it seeks through.
   meta_probe
-  # #344: the place database loader.
-  geo
+  # #344: the place database loader, and the Places add-on's map.
+  geo places_map
   # docs/design/25 PR 56: settings pages, keymap packs and themes.
   addon_contributions
   # docs/design/25 PR 57: the script sandbox.
@@ -167,6 +167,12 @@ foreach(name IN LISTS MV_FUZZ_HARNESSES)
     target_link_libraries(${target} PRIVATE mv_geo)
   elseif(name STREQUAL "script")
     target_link_libraries(${target} PRIVATE mv_script)
+  elseif(name STREQUAL "places_map")
+    # docs/design/27 "The map": the Places add-on's rasteriser and view maths,
+    # driven by numbers over the committed test blob.
+    target_link_libraries(${target} PRIVATE mv_places_engine)
+    target_compile_definitions(${target} PRIVATE
+      MV_FUZZ_GEO_BLOB="${CMAKE_SOURCE_DIR}/tests/data/geo/places-test.mvgeo")
   else()
     target_link_libraries(${target} PRIVATE mv_codec)
   endif()
@@ -224,9 +230,9 @@ foreach(name IN LISTS MV_FUZZ_HARNESSES)
   # libFuzzer runs a unit, which is the shape of a dependency the loader could
   # not bring up. This is CMake's own answer to that question and it no-ops
   # for anything already deployed.
-  # fuzz_geo imports no DLL of ours, and copy_if_different with an empty
-  # list is a usage error that fails the build.
-  if(NOT name STREQUAL "geo")
+  # fuzz_geo and fuzz_places_map import no DLL of ours, and copy_if_different
+  # with an empty list is a usage error that fails the build.
+  if(NOT name MATCHES "^(geo|places_map)$")
     add_custom_command(TARGET ${target} POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E copy_if_different
               "$<TARGET_RUNTIME_DLLS:${target}>" "$<TARGET_FILE_DIR:${target}>"

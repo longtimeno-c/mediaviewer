@@ -410,6 +410,26 @@ identical, image data unchanged) and sidecar rule: a RAW, HEIC, PNG or clip is n
 writing. Layout, maker-note and orientation tags are read-only. The snapshot covers every tag, so
 Revert restores the file's bytes exactly. One file, one change set; not a batch engine.
 
+**The GPS map pin is built: read-only, on an offline map (2026-10-11, owner; #344).** 06 listed
+"GPS map pin" under Not built. The Places add-on now shows a geotagged file's place label, its
+coordinates and a small map with the pin at the foot of the Metadata pane. It is read-only: the
+map does not edit coordinates (writing them is #352's own change), and clicking it opens nothing
+(rule 6). The map is drawn by the add-on from the Natural Earth polygons and GeoNames towns it
+ships, on a worker, into a bitmap the chrome shows: no tiles, no MapKit, no network, because every
+tile or geocoder service would receive the photo's coordinates. Places is an add-on carrying its
+own code and data (the row "An add-on carries its own code and its own data", under Add-on
+mechanism). Without it the pane shows coordinates as before.
+
+**The map is the pane's last section and zooms under the cursor (2026-10-12, owner; #344).**
+Places contributes the info-pane section, the search provider and its settings page only: no bar,
+path or status item and no window. The section sits at the very bottom of the pane, below the
+footer, whenever the file has coordinates. A pinch or mouse wheel over the map zooms about the
+cursor, a drag pans, a double-click zooms one step; a trackpad two-finger scroll keeps scrolling the
+pane. The chrome moves the last bitmap during the gesture and the add-on re-draws once it settles
+(#348's generic surface events); no present. The range runs from country scale (40° tall) to town
+scale (0.2°) with cities1000 town dots and names, never streets, and says so under the map. The pin
+never leaves the picture: a pan is clamped to keep the photo's point inside it.
+
 **Location is editable; blank removes, with a confirmation (owner, 2026-10-12, #352).** Summary's
 Location row has Edit instead of Remove: coordinates typed in, read by one core parser
 (`meta::parse_location`) on both hosts, and a blank save removes the location only after a
@@ -421,6 +441,7 @@ out of scope" (`docs/plans/metadata-search-and-place.md` §4, doc 06 *Not built*
 XMP `exif:GPS*` in a sidecar otherwise, the original never touched (rule 5); the sidecar's position
 now wins on read, as its rating does. Altitude is kept unless given. Remove is offered only when it
 reaches every copy the viewer reads, so a RAW's or HEIC's own fix can be overridden, not removed.
+
 **Every tag searchable (2026-10-12, #291).** File search and `/` match tags after names, from a
 per-folder background pass (`meta::tag_index`) over a bounded 512 KB head read, kept in
 `meta_cache.db` beside the thumbnail cache. The pass starts after the item's first image, runs as

@@ -725,6 +725,9 @@ set(MV_SODIUM_TARGET unofficial-sodium::sodium)
 include("${CMAKE_SOURCE_DIR}/cmake/import.cmake")
 # docs/design/25 §9 A (PR 57): Lua and the script runtime.
 include("${CMAKE_SOURCE_DIR}/cmake/script.cmake")
+# The Places add-on (docs/design/27): mv_places.dll in build/addons/places,
+# packed and signed separately; never installed with the app.
+include("${CMAKE_SOURCE_DIR}/cmake/places.cmake")
 
 # Milestone H: host table v2's pixels (src/abi/addon_media.h) over the viewer's
 # still pipeline, the clip sampler and the JPEG-512 cache. In the base app;
@@ -1112,6 +1115,8 @@ if(MV_BUILD_TESTS)
     # Issue #344: the offline reverse geocoder (docs/design/06 "Place").
     tests/test_geo.cpp
     tests/test_meta_search.cpp
+    # Issue #344 slice 3: the Places add-on's map, Place section and search.
+    tests/test_places.cpp
     # PR 12: the metadata writer, and the host-shared write queue.
     tests/test_meta_write.cpp
     tests/test_meta_location_edit.cpp
@@ -1242,7 +1247,8 @@ if(MV_BUILD_TESTS)
     ole32
     uuid
     mv_io
-    mv_geo_open)
+    mv_geo_open
+    mv_places_engine)
   target_include_directories(mv_tests PRIVATE src src/abi/include tools)
   target_compile_definitions(mv_tests PRIVATE MV_GEO_FULL_BLOB="${MV_GEO_BLOB}"
     MV_GEO_TEST_BLOB="${CMAKE_SOURCE_DIR}/tests/data/geo/places-test.mvgeo")
@@ -1329,6 +1335,7 @@ if(MV_BUILD_TESTS)
     target_compile_definitions(mv_import_tests PRIVATE MV_TEST_DEV_ADDON_KEY=1)
   endif()
   add_dependencies(mv_import_tests mv_import mv_slots_test_addon)
+  mv_places_addon_tests(mv_import_tests)
   mv_asan_runtime_beside(mv_import_tests)
   catch_discover_tests(mv_import_tests TEST_PREFIX "import_"
     PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT ${MV_TEST_TIMEOUT}

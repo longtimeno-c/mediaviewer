@@ -583,8 +583,8 @@ Minor bump, additive, in `mediaviewer_addon.h` ([25](25-open-addons.md), contrib
 `mv_addon_settings_forget` (Remove without "keep its settings") and `mv_open_addon_keymap_json`
 (one keymap pack, which the Windows chrome parks for native to apply). The open list gains
 `settings` and `keymaps`, the installed list `settings`. The host function table gains
-`settings_get` as its last row (appended under `struct_size`, host API not bumped): a native
-add-on reads its own page's values. The Mac host reaches the same `open_json.h` calls through
+`settings_get` after `walk_files2` (appended under `struct_size`, host API not bumped; the v3
+rows of 0.25 follow it): a native add-on reads its own page's values, fresh on every call. The Mac host reaches the same `open_json.h` calls through
 `mv_addons_settings_*` and `mv_open_addons_keymap` in the chrome bridge, and applies a pack with
 `mv_chrome_apply_keymap`.
 

@@ -406,6 +406,8 @@ PRs 56–59. Under API 2 a manifest whose `api.max` is 1 may not name them (malf
 host leaves them to a later one; `api.min` above the host's is "needs a newer MediaViewer",
 never half-loaded. Every PR 55 refusal stands (code keys still refuse by name). A schema 1
 (first-party) manifest may carry `contributes.settings` too: Places (#344) is its first user.
+A change takes effect at once in an add-on that fills slots: see "A changed setting re-asks"
+under PRs 58–59.
 
 | Piece | Code |
 |---|---|
@@ -415,7 +417,7 @@ never half-loaded. Every PR 55 refusal stands (code keys still refuse by name). 
 | Applying a pack to the live table; stable command names | `src/shell/keymap.*` (`apply_keymap`, `command_slug`); `set_live_key` and Reset's superseded rows in `src/shell/command_table.cpp` |
 | Theme shape | `src/addon/theme.*` (`theme_shape`) |
 | One JSON for both hosts | `src/addon/open_json.*` (`addon_settings_page_json`, `addon_setting_set_json`, `addon_settings_forget`, `open_keymap_json`; `settings` / `keymaps` in the list and the sheet's lines) |
-| Host table | `settings_get`, the last row of `mv_host_api` (`host.cpp`); host API not bumped |
+| Host table | `settings_get`, the row after `walk_files2` in `mv_host_api` (`host.cpp`), before the v3 rows of PRs 58–59; host API not bumped |
 | C ABI 0.24 (Windows), chrome bridge (Mac) | `mv_addon_settings_json` / `_setting_set` / `_settings_forget`, `mv_open_addon_keymap_json`; `mv_addons_settings_*`, `mv_open_addons_keymap`, `mv_chrome_apply_keymap` |
 | Mac chrome | `AddonSettingsPage.swift` (page, Key layout row), `OpenAddons.swift` (page under each add-on, Keep its settings), `AddonsView.swift` (Import's page), `Theme.swift` (`MVTheme.radius` / `space` / type scale; `MVChromeTheme` for the add-on bundles); `HostTheme.swift` (Import), `AITheme` (Local search) |
 | Windows chrome | `IslandHost.AddonSettings.cs`, `IslandHost.OpenAddons.cs`, `IslandHost.Settings.cs` (Key layout), `IslandHost.Theme.cs` / `ThemePack.cs` (shape), `ImportLook.cs` (Import, Duplicates), `IAddonThemeShape` in `MediaViewer.Interop/Addons.cs`; native `chrome_cmd_apply_keymap` (1050) in `main.cpp` |
@@ -573,6 +575,22 @@ How it works:
   width × backing scale; the chrome draws the pin over it in the accent colour, with a drop-in
   that Reduce Motion turns off, and the surface's `marks` (up to 64 names, priority order, a
   name skipped where it would overlap one drawn or the pin) as native text.
+- **A changed setting re-asks (2026-10-12).** When a write changes what an add-on reads from its
+  settings page (`mv_addon_setting_set` / the Mac bridge's `mv_addons_setting_set` storing a
+  different value, Remove without keep forgetting the file, an install by another publisher
+  deleting kept values), `settings_values` tells its listeners with the add-on's id, after the
+  write is on disk and outside the store's lock. Every slot registry listens
+  (`slot_registry::settings_changed`): that add-on's info sections for the file on screen are
+  asked again under a new generation of their own (the file's request keeps its generation; a
+  late answer to the old one is dropped; what the section showed stays until the answer
+  replaces it), and, if it has badges, its badge sets for the folder shown go and it is asked
+  again. Other add-ons are not asked; nothing is asked when nothing is on screen; the same value
+  written again asks nobody. Generic, not per add-on. The requests coalesce like any other, so a
+  run of changes costs one answer. The chromes refresh through the listener they already have
+  (a section whose tree revision moved is redrawn): no new work on the UI thread, and the write
+  itself is unchanged. An add-on reads its values through `settings_get` on every request and
+  event and caches none across a change; a picture cache keys on anything a setting changes in
+  the pixels. Search results already shown are not re-run: the next query reads the new values.
 - **Interactive surfaces (owner, 2026-10-12).** A surface with `"interactive": true` (or
   `{"min_scale", "max_scale"}`) takes the pointer: a mouse wheel or a trackpad pinch (on Windows a
   precision touchpad's pinch arrives as Ctrl + wheel) zooms about the pointer, a drag pans, a

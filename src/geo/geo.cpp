@@ -621,6 +621,49 @@ std::vector<std::uint32_t> database::polygons_in(layer which, const box& b) cons
   return out;
 }
 
+std::vector<database::town_ref> database::towns_in(const box& b, std::size_t limit) const {
+  std::vector<town_ref> out;
+  if (limit == 0 || towns_.empty()) return out;
+  if (!std::isfinite(b.min_lat) || !std::isfinite(b.max_lat) || !std::isfinite(b.min_lon) ||
+      !std::isfinite(b.max_lon)) {
+    return out;
+  }
+  // Clamped before the integer conversions, as polygons_in does.
+  const double min_lon = std::clamp(b.min_lon, -180.0, 180.0);
+  const double max_lon = std::clamp(b.max_lon, -180.0, 180.0);
+  const auto qy0 = static_cast<std::int64_t>(std::floor(std::clamp(b.min_lat, -90.0, 90.0) * k_q));
+  const auto qy1 = static_cast<std::int64_t>(std::ceil(std::clamp(b.max_lat, -90.0, 90.0) * k_q));
+  const auto qx0 = static_cast<std::int64_t>(std::floor(min_lon * k_q));
+  const auto qx1 = static_cast<std::int64_t>(std::ceil(max_lon * k_q));
+  const bool wraps = min_lon > max_lon;
+  // Grid columns: [c0, c1], wrapping through 359 -> 0 when the box does.
+  const int c0 = std::clamp(static_cast<int>(std::floor(min_lon + 180.0)), 0, 359);
+  const int c1 = std::clamp(static_cast<int>(std::floor(max_lon + 180.0)), 0, 359);
+  const int ncols = wraps ? (360 - c0) + c1 + 1 : c1 - c0 + 1;
+  std::vector<const town*> hits;
+  for (int r = band_of(qy0); r <= band_of(qy1); ++r) {
+    for (int k = 0; k < ncols; ++k) {
+      const auto run = cell(town_grid_, r, (c0 + k) % 360);
+      if (run.empty()) continue;
+      for (std::uint32_t i = run[0]; i < run[1]; ++i) {
+        const town& t = towns_[i];
+        if (t.y < qy0 || t.y > qy1) continue;
+        const bool in_x = wraps ? (t.x >= qx0 || t.x <= qx1) : (t.x >= qx0 && t.x <= qx1);
+        if (in_x) hits.push_back(&t);
+      }
+    }
+  }
+  const std::size_t n = std::min(limit, hits.size());
+  std::partial_sort(hits.begin(), hits.begin() + static_cast<std::ptrdiff_t>(n), hits.end(),
+                    [](const town* a, const town* c) { return a->population > c->population; });
+  out.reserve(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    out.push_back({static_cast<double>(hits[i]->y) / k_q, static_cast<double>(hits[i]->x) / k_q,
+                   hits[i]->population, str(hits[i]->name)});
+  }
+  return out;
+}
+
 std::size_t database::polygon_count(layer which) const noexcept { return layer_of(which).polys.size(); }
 
 std::size_t database::ring_count(layer which, std::uint32_t pi) const noexcept {

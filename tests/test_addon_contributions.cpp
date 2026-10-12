@@ -467,8 +467,8 @@ TEST_CASE("API 2 points need API 2, and are refused when malformed", "[addon][ma
     REQUIRE(old.m.settings.empty());
     REQUIRE(old.m.keymaps.empty());
     // Needs a newer MediaViewer, never half-loaded.
-    o.api_min = 3;
-    o.api_max = 3;
+    o.api_min = static_cast<int>(mv::addon::kContributionApi) + 1;
+    o.api_max = o.api_min;
     REQUIRE(check(o) == rejection::needs_update);
   }
   {

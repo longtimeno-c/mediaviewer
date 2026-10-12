@@ -31,7 +31,9 @@ add_library(mv_geo STATIC
 )
 target_include_directories(mv_geo PUBLIC "${MV_SOURCE_ROOT}/src")
 target_link_libraries(mv_geo PUBLIC mv_project_options)
-set_target_properties(mv_geo PROPERTIES POSITION_INDEPENDENT_CODE ON)
+# Hidden: linked into the Places module, whose only export is mv_addon_get.
+set_target_properties(mv_geo PROPERTIES POSITION_INDEPENDENT_CODE ON
+  CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
 add_library(mv::geo ALIAS mv_geo)
 
 add_library(mv_geo_open STATIC

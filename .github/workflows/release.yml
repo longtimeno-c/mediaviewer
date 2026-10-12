@@ -239,6 +239,51 @@ jobs:
             --version $env:VERSION --key $env:MANIFEST_KEY --out dist/addon --require-pinned-key
           if ($LASTEXITCODE) { throw 'add-on packing failed' }
 
+      # Places (docs/design/27): an add-on with its own code and its own data. The
+      # DLL is signed like Import's; the place database is built by
+      # tools/geo/build_places.py from its pinned downloads into the add-on's
+      # data/ folder, then packed. --accept-upstream: GeoNames republishes its
+      # dump daily under the same URL, so the pins go stale (owner call open in
+      # docs/design/27: mirror the snapshot); the blob's META records every
+      # input's hash either way.
+      - name: Find the Places add-on build
+        id: places
+        if: inputs.mode == 'stable'
+        run: |
+          $dll = Get-ChildItem build/addons/places -Recurse -Filter mv_places.dll | Select-Object -First 1
+          if (-not $dll) { throw 'mv_places.dll was not built' }
+          "dir=$($dll.DirectoryName)" >> $env:GITHUB_OUTPUT
+
+      - name: Sign the Places add-on's binary
+        if: inputs.mode == 'stable' && steps.sign.outputs.meta != ''
+        uses: azure/artifact-signing-action@v1
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.TRUSTED_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.TRUSTED_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.TRUSTED_SIGNING_PROFILE }}
+          files-folder: ${{ steps.places.outputs.dir }}
+          files-folder-filter: dll
+          files-folder-recurse: false
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Stage the place database and pack the Places add-on
+        if: inputs.mode == 'stable'
+        env:
+          MANIFEST_KEY: ${{ steps.sign.outputs.key }}
+          PLACES_DIR: ${{ steps.places.outputs.dir }}
+        run: |
+          python tools/package/addon-pack.py stage-places --src $env:PLACES_DIR `
+            --downloads (Join-Path $env:RUNNER_TEMP 'geo-downloads') --accept-upstream
+          if ($LASTEXITCODE) { throw 'staging the place database failed' }
+          python tools/package/addon-pack.py pack --addon places --platform win-x64 --src $env:PLACES_DIR `
+            --version $env:VERSION --key $env:MANIFEST_KEY --out dist/addon --require-pinned-key
+          if ($LASTEXITCODE) { throw 'packing places failed' }
+
       # Local search (docs/design/17): the Core pack and its Sound and People pieces,
       # each its own signed download on the same release, like Import. Only our
       # own two DLLs are signed; ONNX Runtime's carry Microsoft's signature.
@@ -315,7 +360,7 @@ jobs:
           }
           # Add-ons stay on the stable feed (docs/design/18): previews carry none.
           if ($env:MODE -eq 'stable') {
-            foreach ($addon in 'import', 'ai', 'ai-audio', 'ai-faces', 'ai-cuda') {
+            foreach ($addon in 'import', 'places', 'ai', 'ai-audio', 'ai-faces', 'ai-cuda') {
               Copy-Item "dist/addon/mediaviewer-addon-$addon-win-x64.zip", "dist/addon/mediaviewer-addon-$addon-win-x64.json", "dist/addon/mediaviewer-addon-$addon-win-x64.json.sig" upload
             }
           }
@@ -471,7 +516,7 @@ jobs:
           python3 tools/mac/test_macpack.py -v
           python3 tools/mac/test_check_minos.py -v
           # Nothing shipped may need a newer macOS than LSMinimumSystemVersion.
-          python3 tools/mac/check_minos.py build/MediaViewer.app build/addons/import \
+          python3 tools/mac/check_minos.py build/MediaViewer.app build/addons/import build/addons/places \
             $([[ -d build/addons/ai ]] && echo build/addons/ai)
 
       # upload-artifact zips drop symlinks and modes; Sparkle.framework needs both.
@@ -481,6 +526,8 @@ jobs:
           tar -C build -cf "upload/MediaViewer-${{ matrix.arch }}.tar" MediaViewer.app
           # The Import add-on, joined and signed in `macos` like the app.
           tar -C build/addons/import -cf "upload/ImportAddon-${{ matrix.arch }}.tar" libmv_import.dylib Import.bundle
+          # Places: the dylib only; its place database is staged once, in `macos`.
+          tar -C build/addons/places -cf "upload/PlacesAddon-${{ matrix.arch }}.tar" libmv_places.dylib
           # Local search is arm64 only (ORT ships no x86_64 macOS build).
           if [[ -d build/addons/ai ]]; then
             cp build/_ort/*/ThirdPartyNotices.txt build/addons/ai/
@@ -639,6 +686,33 @@ jobs:
           cp build/release/addon/mediaviewer-addon-import-macos.zip \
              build/release/addon/mediaviewer-addon-import-macos.json \
              build/release/addon/mediaviewer-addon-import-macos.json.sig upload/
+
+      # Places (docs/design/27): joined and signed like Import; the code is
+      # notarized first, then the place database goes into data/ and the
+      # folder is packed (the data carries no code; ditto keeps the signature).
+      - name: Places add-on (join, sign, notarize, stage the place database, pack)
+        if: inputs.mode == 'stable'
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          mkdir -p places/arm64 build/addons
+          tar -xf apps/PlacesAddon-arm64.tar -C places/arm64
+          if [[ -f apps/PlacesAddon-x64.tar ]]; then
+            mkdir -p places/x86_64
+            tar -xf apps/PlacesAddon-x64.tar -C places/x86_64
+            python3 tools/mac/lipo_merge.py --arm64 places/arm64 --x86_64 places/x86_64 --out build/addons/places
+          else
+            cp -R places/arm64 build/addons/places
+          fi
+          python3 tools/mac/macpack.py addon --dir build/addons/places \
+            --identity "$MV_MAC_SIGN_IDENTITY" --notary-profile mediaviewer-notary
+          python3 tools/package/addon-pack.py stage-places --src build/addons/places \
+            --downloads "$RUNNER_TEMP/geo-downloads" --accept-upstream
+          python3 tools/package/addon-pack.py pack --addon places --platform macos --src build/addons/places \
+            --version "$VERSION" --key "$RUNNER_TEMP/release.key" --out build/release/addon --require-pinned-key
+          cp build/release/addon/mediaviewer-addon-places-macos.zip \
+             build/release/addon/mediaviewer-addon-places-macos.json \
+             build/release/addon/mediaviewer-addon-places-macos.json.sig upload/
 
       - name: Local search pack (sign, notarize, stage models, pack)
         if: inputs.mode == 'stable'
