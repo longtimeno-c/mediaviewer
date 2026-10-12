@@ -483,7 +483,7 @@ copy, and check Finder's **Open With** and a Quick Look thumbnail.
 | `C` | clipping blinkies (red highlights, blue shadows). The canvas keeps presenting while on |
 | `O` | info line: file name, position in the folder, size, zoom |
 | `Ctrl+Shift+A` | always on top |
-| `Insert` / `Shift+Space` | mark or unmark the current item. `Ctrl+A` marks all, `Ctrl+D` clears |
+| `Insert` / `Shift+Space` | mark or unmark the current item. `Ctrl+A` marks all, `Ctrl+D` clears. Marked cells carry an accent check and the command bar counts them ("3 marked"), on both platforms |
 | Keypad `0`–`5` / `Ctrl+Shift+0`–`5` | rate the item on screen (0 clears) |
 | `X` | reject the item on screen (rating −1, "Rejected" in Lightroom and Bridge); `X` again un-rejects |
 | Keypad `6`–`9` / `Ctrl+Shift+6`–`9` | colour label Red / Yellow / Green / Blue (Lightroom's keys; `⌘⇧` on the Mac); the same key again clears it. `U` clears the label. Written as XMP `xmp:Label`: in a plain JPEG, else in its `.xmp` sidecar. The metadata pane's Label row has a swatch per colour |

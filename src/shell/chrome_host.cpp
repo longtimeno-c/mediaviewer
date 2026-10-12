@@ -294,6 +294,10 @@ expected chrome_host::load() noexcept {
   // Optional: without them a drag carries one cell and Open lists no recents.
   set_drag_paths_ = get_entry(L"SetDragPaths");
   set_recent_folders_ = get_entry(L"SetRecentFolders");
+  // Optional (issue #196): without them the notice stays in the window title
+  // and the cells carry no mark badge.
+  set_notice_ = get_entry(L"SetNotice");
+  set_marks_ = get_entry(L"SetMarks");
   // Optional the same way (issue #214): without it the More flyout's audio
   // controls do not follow the keys.
   apply_audio_ = get_entry(L"ApplyAudio");
@@ -900,6 +904,24 @@ void chrome_host::set_drag_paths(const std::string& utf8_lines, bool own_drag) n
   args.length = static_cast<std::int32_t>(utf8_lines.size());
   args.reserved = own_drag ? 1 : 0;
   (void)set_drag_paths_(&args, static_cast<std::int32_t>(sizeof(args)));
+}
+
+bool chrome_host::set_notice(const std::string& utf8, int ms) noexcept {
+  if (!attached_ || !set_notice_) return false;
+  chrome_table_args args{};
+  args.utf8 = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(utf8.data()));
+  args.length = static_cast<std::int32_t>(utf8.size());
+  args.reserved = ms;
+  return set_notice_(&args, static_cast<std::int32_t>(sizeof(args))) == 0;
+}
+
+void chrome_host::set_marks(const std::string& utf8_lines, std::int32_t count) noexcept {
+  if (!attached_ || !set_marks_) return;
+  chrome_table_args args{};
+  args.utf8 = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(utf8_lines.data()));
+  args.length = static_cast<std::int32_t>(utf8_lines.size());
+  args.reserved = count;
+  (void)set_marks_(&args, static_cast<std::int32_t>(sizeof(args)));
 }
 
 void chrome_host::set_recent_folders(const std::string& utf8_lines) noexcept {

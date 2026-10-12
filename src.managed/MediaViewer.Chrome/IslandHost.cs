@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using Microsoft.UI;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Hosting;
@@ -657,6 +658,137 @@ public static partial class IslandHost
             System.Diagnostics.Debug.WriteLine(ex);
             return unchecked((int)0x80004005);
         }
+    }
+
+    // ---- issue #196: the notice line and the marks (CommandBarView.swift) ----
+
+    private static TextBlock? _barNotice;
+    private static TextBlock? _barMarked;
+    private static DispatcherQueueTimer? _noticeTimer;
+    // Native's mark set (SetMarks), by path as native keys it, so a re-sort
+    // or a new listing needs no push: DrainFolder looks each item up here.
+    private static readonly HashSet<string> MarkedPaths = new(StringComparer.Ordinal);
+    private static int _markedCount;
+
+    /// <summary>
+    /// Native's one-line notice ("★★★★☆", "Could not save the rating"):
+    /// shown in the command bar, then cleared after the time native gives
+    /// (reserved, ms). The Mac's NoticeStore. Empty text clears it now.
+    /// </summary>
+    public static int SetNotice(IntPtr arg, int sizeBytes)
+    {
+        try
+        {
+            if (arg == IntPtr.Zero || sizeBytes < TableArgsSize) return unchecked((int)0x80070057);
+            ChromeTableArgs a = Marshal.PtrToStructure<ChromeTableArgs>(arg);
+            string text = a.Utf8 == 0 || a.Length <= 0
+                ? ""
+                : Marshal.PtrToStringUTF8(checked((IntPtr)a.Utf8), a.Length) ?? "";
+            ShowNotice(text, a.Reserved);
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+            return unchecked((int)0x80004005);
+        }
+    }
+
+    private static void ShowNotice(string text, int ms)
+    {
+        if (_barNotice is null) return;
+        _barNotice.Text = text;
+        _barNotice.Visibility = text.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
+        AutomationProperties.SetName(_barNotice, text);
+        if (text.Length > 0)
+        {
+            Microsoft.UI.Xaml.Automation.Peers.FrameworkElementAutomationPeer.FromElement(_barNotice)
+                ?.RaiseAutomationEvent(Microsoft.UI.Xaml.Automation.Peers.AutomationEvents.LiveRegionChanged);
+        }
+        _noticeTimer?.Stop();
+        if (text.Length == 0 || ms <= 0 || _dispatcher is null) return;
+        if (_noticeTimer is null)
+        {
+            _noticeTimer = _dispatcher.DispatcherQueue.CreateTimer();
+            _noticeTimer.IsRepeating = false;
+            _noticeTimer.Tick += (_, _) => ShowNotice("", 0);
+        }
+        _noticeTimer.Interval = TimeSpan.FromMilliseconds(ms);
+        _noticeTimer.Start();
+    }
+
+    /// <summary>
+    /// Native's marks (docs/design/16 "Marks, copy, move"): the marked paths,
+    /// one per line, pushed when they change. Drives the "N marked" count in
+    /// the command bar and the check badge on filmstrip and gallery cells.
+    /// </summary>
+    public static int SetMarks(IntPtr arg, int sizeBytes)
+    {
+        try
+        {
+            if (arg == IntPtr.Zero || sizeBytes < TableArgsSize) return unchecked((int)0x80070057);
+            ChromeTableArgs a = Marshal.PtrToStructure<ChromeTableArgs>(arg);
+            string blob = a.Utf8 == 0 || a.Length <= 0
+                ? ""
+                : Marshal.PtrToStringUTF8(checked((IntPtr)a.Utf8), a.Length) ?? "";
+            MarkedPaths.Clear();
+            foreach (string line in blob.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+                MarkedPaths.Add(line);
+            _markedCount = Math.Max(MarkedPaths.Count, a.Reserved);
+            foreach (FolderItemVm item in Items)
+                item.Marked = MarkedPaths.Count > 0 && MarkedPaths.Contains(item.Path);
+            UpdateMarkedCount();
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+            return unchecked((int)0x80004005);
+        }
+    }
+
+    // What F7 / F8 / Delete will act on: the marks if any (docs/design/16).
+    private static void UpdateMarkedCount()
+    {
+        if (_barMarked is null) return;
+        _barMarked.Text = $"{_markedCount} marked";
+        _barMarked.Visibility = _markedCount > 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private static FrameworkElement BuildBarStatus()
+    {
+        _barNotice = new TextBlock
+        {
+            FontFamily = UiFont,
+            FontSize = UiFontSize,
+            Foreground = Brush(Title),
+            VerticalAlignment = VerticalAlignment.Center,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            MaxLines = 1,
+            Margin = new Thickness(0, 0, 10, 0),
+            Visibility = Visibility.Collapsed,
+        };
+        // A screen reader hears the notice when it changes, as VoiceOver does.
+        AutomationProperties.SetLiveSetting(_barNotice, Microsoft.UI.Xaml.Automation.Peers.AutomationLiveSetting.Polite);
+        _barMarked = new TextBlock
+        {
+            FontFamily = UiFont,
+            FontSize = UiFontSize,
+            Foreground = Brush(Body),
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 6, 0),
+            Visibility = Visibility.Collapsed,
+        };
+        UpdateMarkedCount();
+        var status = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        status.Children.Add(_barNotice);
+        status.Children.Add(_barMarked);
+        return status;
     }
 
     // The ladder the keyboard steps through, mirrored from main.cpp's
@@ -1499,18 +1631,22 @@ public static partial class IslandHost
         ToolTipService.SetToolTip(helpBtn, WithKey("Keyboard shortcuts", Command.Help));
         _helpButton = helpBtn;
 
-        // Menus left; the folder trail, then `?` on the far right. Speed is in
-        // the transport strip (issue #195).
+        // Menus left; then the notice and "N marked" (issue #196), the
+        // folder trail, and `?` on the far right.
+        FrameworkElement status = BuildBarStatus();
         FrameworkElement path = BuildBarPathRow();
         var bar = new Grid { VerticalAlignment = VerticalAlignment.Stretch };
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         Grid.SetColumn(row, 0);
         bar.Children.Add(row);
-        Grid.SetColumn(path, 1);
+        Grid.SetColumn(status, 1);
+        bar.Children.Add(status);
+        Grid.SetColumn(path, 2);
         bar.Children.Add(path);
-        Grid.SetColumn(helpBtn, 2);
+        Grid.SetColumn(helpBtn, 3);
         bar.Children.Add(helpBtn);
 
         var root = new Grid

@@ -48,6 +48,12 @@ public static partial class IslandHost
     private static Button? _barRootButton;
     private static TextBlock? _barPathCurrent;
     private static StackPanel? _barCrumbTrail;
+    // Issue #196: the results title bar (CommandBarView.swift ListTitleBar):
+    // "Back to folder", a hairline, the search icon, "Search: q", "N results".
+    private static Button? _barBackButton;
+    private static FrameworkElement? _barBackSep;
+    private static FrameworkElement? _barCrumbScroller;
+    private static TextBlock? _barResultCount;
     // The trail's search icon (owner, 2026-09-28; it replaced the gallery
     // search bar): Ctrl+F's panel with Local search, file search without it.
     private static Button? _barSearchButton;
@@ -631,6 +637,7 @@ public static partial class IslandHost
         };
         // Only as wide as the trail, up to a cap; past that it scrolls.
         ScrollViewer scroller = PathScroller(_barCrumbTrail);
+        _barCrumbScroller = scroller;
         scroller.MaxWidth = 300;
         scroller.VerticalAlignment = VerticalAlignment.Center;
         _barPathCurrent = new TextBlock
@@ -647,6 +654,41 @@ public static partial class IslandHost
         _barSearchButton = PathIconButton("\uE721", OpenSearchFromPath);
         AutomationProperties.SetName(_barSearchButton, "Search");
         _barSearchButton.Margin = new Thickness(4, 0, 0, 0);
+        // Over a result list Up is "Back to folder" (navigate_folder_up leaves
+        // the list first), so the button is that command, labelled.
+        _barBackButton = TextButton("Back to folder", () => Send(Command.FolderUp));
+        var backLabel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        backLabel.Children.Add(new FontIcon
+        {
+            Glyph = Glyph.Back, FontFamily = IconFont, FontSize = TypeCaption,
+            Foreground = Brush(Title), VerticalAlignment = VerticalAlignment.Center,
+        });
+        backLabel.Children.Add(new TextBlock
+        {
+            Text = "Back to folder", FontFamily = UiFont, FontSize = TypeBody,
+            Foreground = Brush(Title), VerticalAlignment = VerticalAlignment.Center,
+        });
+        _barBackButton.Content = backLabel;
+        _barBackButton.Padding = new Thickness(8, 5, 8, 5);
+        _barBackButton.MinHeight = 26;
+        _barBackButton.Visibility = Visibility.Collapsed;
+        AutomationProperties.SetName(_barBackButton, "Back to folder");
+        ToolTipService.SetToolTip(_barBackButton, "Close the results and return to the folder (Esc)");
+        _barBackSep = new Border
+        {
+            Width = 1, Height = 16,
+            Background = Brush(Hairline),
+            Margin = new Thickness(4, 0, 4, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+            Visibility = Visibility.Collapsed,
+        };
+        _barResultCount = new TextBlock
+        {
+            FontFamily = UiFont, FontSize = TypeSmall,
+            Foreground = Brush(Body), VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(8, 0, 0, 0),
+            Visibility = Visibility.Collapsed,
+        };
         var row = new StackPanel
         {
             Orientation = Orientation.Horizontal,
@@ -655,11 +697,14 @@ public static partial class IslandHost
             Margin = new Thickness(0, 0, 4, 0),
             Visibility = Visibility.Collapsed,
         };
+        row.Children.Add(_barBackButton);
+        row.Children.Add(_barBackSep);
         row.Children.Add(_barUpButton);
         row.Children.Add(_barRootButton);
         row.Children.Add(scroller);
         row.Children.Add(_barPathCurrent);
         row.Children.Add(_barSearchButton);
+        row.Children.Add(_barResultCount);
         row.Children.Add(new Border
         {
             Width = 1, Height = 18,
@@ -694,6 +739,43 @@ public static partial class IslandHost
     {
         FillPathTrail(_barCrumbTrail, _barUpButton, _barRootButton, _barPathCurrent, _barPathRow);
         UpdatePathSearchButton();
+        UpdateResultsBar();
+    }
+
+    // A result list's crumb is the one with no path (push_browse_state).
+    private static bool ShowingResults() => Crumbs.Count > 0 && Crumbs[^1].Path.Length == 0;
+
+    // Over a result list the folder trail becomes its title bar: the way back,
+    // what was searched and how many results (the Mac's ListTitleBar). Called
+    // on a browse push and when a listing lands, for the count.
+    private static void UpdateResultsBar()
+    {
+        if (_barPathRow is not StackPanel row || _barBackButton is null || _barBackSep is null
+            || _barCrumbScroller is null || _barResultCount is null || _barPathCurrent is null
+            || _barSearchButton is null || _barUpButton is null || _barRootButton is null) return;
+        bool list = ShowingResults();
+        Visibility results = list ? Visibility.Visible : Visibility.Collapsed;
+        Visibility folder = list ? Visibility.Collapsed : Visibility.Visible;
+        _barBackButton.Visibility = results;
+        _barBackSep.Visibility = results;
+        _barResultCount.Visibility = results;
+        _barUpButton.Visibility = folder;
+        _barRootButton.Visibility = folder;
+        _barCrumbScroller.Visibility = folder;
+        // The Mac puts the search icon before the title over results, after
+        // the folder name otherwise.
+        int search = row.Children.IndexOf(_barSearchButton);
+        int title = row.Children.IndexOf(_barPathCurrent);
+        if (list ? search > title : search < title)
+        {
+            row.Children.RemoveAt(search);
+            row.Children.Insert(row.Children.IndexOf(_barPathCurrent) + (list ? 0 : 1), _barSearchButton);
+        }
+        _barPathCurrent.FontSize = list ? TypeBody : TypeSmall;
+        if (!list) return;
+        _barPathCurrent.Text = Crumbs[^1].Name.Length > 0 ? Crumbs[^1].Name : "Search results";
+        ToolTipService.SetToolTip(_barPathCurrent, _barPathCurrent.Text);
+        _barResultCount.Text = Items.Count == 1 ? "1 result" : $"{Items.Count} results";
     }
 
     // Always there (owner, 2026-09-28): it does what Ctrl+F does. With Local
@@ -940,6 +1022,41 @@ public static partial class IslandHost
         return grid;
     }
 
+    // Issue #196 (MarkBadge.swift): an accent check in the top-right corner of
+    // a marked cell, so what F7 / F8 / Delete will act on is visible. Always
+    // built and collapsed when unmarked, so a mark is a visibility flip, not a
+    // new element. Not hit-test visible, like the other badges. A Border, not
+    // InfoBadge, which cannot load in these islands.
+    private static UIElement WithMarkBadge(UIElement thumb, FolderItemVm vm, out Border badge)
+    {
+        badge = new Border
+        {
+            Width = 20,
+            Height = 20,
+            CornerRadius = new CornerRadius(10),
+            Background = Brush(ChromeColour.Accent),
+            BorderBrush = new SolidColorBrush(Colors.White),
+            BorderThickness = new Thickness(1.5),
+            Margin = new Thickness(3),
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Top,
+            IsHitTestVisible = false,
+            Visibility = vm.Marked ? Visibility.Visible : Visibility.Collapsed,
+            Child = new FontIcon
+            {
+                Glyph = Glyph.Check,
+                FontFamily = IconFont,
+                FontSize = 11,
+                Foreground = new SolidColorBrush(Colors.White),
+            },
+        };
+        AutomationProperties.SetName(badge, "Marked");
+        var grid = new Grid();
+        grid.Children.Add(thumb);
+        grid.Children.Add(badge);
+        return grid;
+    }
+
     private sealed class GalleryFactory : IElementFactory
     {
         public UIElement GetElement(ElementFactoryGetArgs args)
@@ -965,7 +1082,7 @@ public static partial class IslandHost
             var clipped = new Border
             {
                 CornerRadius = new CornerRadius(6),
-                Child = WithPlayBadge(WithBadge(image, vm.Badge), vm.IsClip, 40),
+                Child = WithMarkBadge(WithPlayBadge(WithBadge(image, vm.Badge), vm.IsClip, 40), vm, out Border mark),
                 Width = GalleryTile,
                 Height = GalleryTile,
             };
@@ -998,6 +1115,8 @@ public static partial class IslandHost
                 if (e.PropertyName is nameof(FolderItemVm.ThumbPath) or null) SetThumb();
                 if (e.PropertyName is nameof(FolderItemVm.Selected) or nameof(FolderItemVm.GalleryCurrent) or null)
                     border.BorderThickness = new Thickness(vm.Selected && _folderCursor < 0 ? 2 : 0);
+                if (e.PropertyName is nameof(FolderItemVm.Marked) or null)
+                    mark.Visibility = vm.Marked ? Visibility.Visible : Visibility.Collapsed;
             }
             vm.PropertyChanged += OnChanged;
             // Recycling without this leaks a handler per realisation, and every

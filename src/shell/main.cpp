@@ -300,6 +300,7 @@ struct app_state {
   bool focus_comment_next = false;  // Ctrl+I: the next pane push focuses the comment
   std::wstring notice;
   ULONGLONG notice_until = 0;
+  bool notice_in_bar = false;  // issue #196: the chrome's command bar shows it, not the title
   // Pages of the selected stop (docs/plans/audio-and-documents.md §2.3): the page
   // on screen, the folder index it belongs to (another stop starts at page 0)
   // and the last page count the core reported for it (0 unknown).
@@ -402,6 +403,7 @@ struct app_state {
   // docs/design/16 marks, copy, move. Marks are UI-thread state keyed by path; the
   // file work runs on files' own I/O worker and reports back by message.
   mv::shell::mark_set marks;
+  bool marks_pushed = false;  // the chrome was last told of a non-empty set (push_marks)
   // Issue #206: View > Show. For this run only; the core filters the listing.
   mv::io::kind_filter kind_filter = mv::io::kind_filter::all;
   mv::shell::file_jobs files;
@@ -1132,6 +1134,26 @@ void open_dropped_wide_list(app_state* app, std::wstring_view blob) noexcept {
   if (!paths.empty()) open_paths(app, paths);
 }
 
+// Issue #196: the marked paths to the chrome, for "N marked" in the command bar
+// and the cells' badges. Only when the marks change, never per navigation, and
+// free when nothing is or was marked. Keyed by path, as the set is, so a
+// re-sort or a new listing needs no push.
+void push_marks(app_state* app) noexcept {
+  if (!app || !app->chrome.attached()) return;
+  if (app->marks.empty() && !app->marks_pushed) return;
+  try {
+    std::string lines;
+    for (const std::string& path : app->marks.targets({})) {
+      lines += path;
+      lines += '\n';
+    }
+    app->chrome.set_marks(lines, static_cast<std::int32_t>(app->marks.size()));
+    app->marks_pushed = !app->marks.empty();
+  } catch (...) {
+    return;  // out of memory: the badges lag, the marks themselves are intact
+  }
+}
+
 // The marked badge. Free when nothing is marked, so key-repeat navigation with
 // no marks does not look anything up.
 void refresh_mark_state(app_state* app) {
@@ -1337,6 +1359,9 @@ void notice_show(app_state* app, const std::string& utf8) noexcept {
     return;
   }
   app->notice_until = ::GetTickCount64() + kNoticeMs;
+  // Issue #196: the command bar's notice line, as on the Mac; the title only
+  // when the chrome has none.
+  app->notice_in_bar = app->chrome.set_notice(utf8, static_cast<int>(kNoticeMs));
   update_title(app);
 }
 
@@ -5439,8 +5464,8 @@ void update_title(app_state* app) noexcept {
     }
     // PR 12: what a rating key or a metadata write just did, for a few seconds.
     if (!app->notice.empty()) {
-      if (::GetTickCount64() < app->notice_until) title += L" \u2014 " + app->notice;
-      else app->notice.clear();
+      if (::GetTickCount64() >= app->notice_until) app->notice.clear();
+      else if (!app->notice_in_bar) title += L" \u2014 " + app->notice;
     }
   } catch (...) {
     return;
@@ -5639,6 +5664,7 @@ void on_file_job_done(app_state* app, std::unique_ptr<mv::shell::file_job_result
     if (item.status == mv::status::ok && !item.refused) app->marks.erase(item.path);
   }
   refresh_mark_state(app);
+  push_marks(app);
   refresh_item_info(app);
   ++app->input.activity_seq;
   publish(app);
@@ -6635,6 +6661,7 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       if (current.empty()) return false;
       (void)app->marks.toggle(current);
       refresh_mark_state(app);
+      push_marks(app);
       return set_level(app);
     }
     case mark_all: {
@@ -6645,11 +6672,13 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       for (std::uint32_t i = 0; i < count; ++i) paths.push_back(item_path_at(app, i));
       app->marks.mark_all(paths);
       refresh_mark_state(app);
+      push_marks(app);
       return set_level(app);
     }
     case unmark_all:
       app->marks.clear();
       refresh_mark_state(app);
+      push_marks(app);
       return set_level(app);
     case copy_to:
     case copy_to_pick:
