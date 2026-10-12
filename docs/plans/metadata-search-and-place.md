@@ -23,6 +23,13 @@ WinUI pane) is owed to Windows CI and a Windows run. #291 is open with no PR. Pl
 are #344 (slices 2–3 and the place half of slice 4); the badge is #345 (slice 5). Slices 2–5 can
 start from `summary::where`, `summary::made_with` and `summary::ai_generated`.
 
+**Slice 4 (#291) is built** on branch `feature/issue-291-metadata-search`, without place names in
+the app (owner, 2026-10-11: places come from the Places add-on's search provider). It is folded
+into `06-metadata.md` ("Search text"), `16-commands.md` ("File search") and `17-local-ai-search.md`
+("Schema 4", "Query syntax"). Its Windows half (the native C++ in `abi.cpp` and the running WinUI
+search) is owed to Windows CI and a Windows run. The provider merge in the chromes is #348's.
+`place:` over the whole index waits for a host call that enumerates the index's coordinates.
+
 ## 0. Rules this touches
 
 - **Rule 6 (nothing leaves the machine).** Place names and the map are computed from data bundled
@@ -133,7 +140,7 @@ coordinates. It is drawn from the same Natural Earth polygons as slice 2. No til
 pane on a geotagged still causes no present beyond the pane's own (idle 0 presents after);
 arrow-held browsing with the pane open shows no regression (`--browse-soak`, alternated).
 
-### Slice 4 — Every tag searchable, place included (#291)
+### ~~Slice 4 — Every tag searchable, place included (#291)~~ — built without place names in the app; see the Status above and docs 06 / 16 / 17. The text below is kept for the verify.
 
 **Plain search (no AI pack), both platforms.**
 - **The tag text:** a per-file search string is built once in the core from the slice 1 read: make,

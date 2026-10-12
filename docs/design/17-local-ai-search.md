@@ -186,15 +186,49 @@ the index cannot touch thumbnails. Schema (`index_db.cpp`):
 ```
 meta(key, value)
 roots(id, path, recursive, enabled, last_scan_at, media)          -- remembered index locations
-assets(id, path, root_id, mtime, size, kind, duration_ms, seen, cloud)   -- cloud: schema 3
+assets(id, path, root_id, mtime, size, kind, duration_ms, seen, cloud,  -- cloud: schema 3
+       tags, taken_at, lat, lon, camera, lens, made_with, ai,         -- schema 4 (#291)
+       place, country, region)                                        -- schema 4, always NULL
+asset_text(rowid = asset id, text)                                  -- FTS5, schema 4
 progress(asset_id, spec, state, resume_ms, tries, indexed_at)     -- per asset and model spec
 frames(id, asset_id, spec, pts_ms, pts_tb, tb_num, tb_den, flags, generic, scale, emb)
 speech(id, asset_id, spec, start_ms, end_ms, text)                 -- Whisper transcript lines
 ```
 
 `emb` is the int8 vector, `scale` its per-vector scale, `generic` its best cosine against the
-tower's generic prompts. Each schema step (1 -> 2 `media`, 2 -> 3 `cloud`) is one transaction and
-skips a column already there, so a crash mid-migration never leaves an index that will not open.
+tower's generic prompts. Each schema step (1 -> 2 `media`, 2 -> 3 `cloud`, 3 -> 4 tags) is one
+transaction and skips a column already there, so a crash mid-migration never leaves an index that
+will not open. A new index is made as schema 3 and takes the same 3 -> 4 step, so a fresh index and
+a migrated one cannot differ.
+
+### Schema 4 (#291, 2026-10-12)
+
+What each asset's tags say, so Local search can filter on them:
+
+- **Columns:** `tags` (0 until read; a changed file goes back to 0), `taken_at` (date taken, the
+  camera's wall clock read as UTC; for a Photos item its `creationDate`), `lat` / `lon` (WGS 84,
+  from EXIF / XMP GPS, a clip's ISO 6709 or `PHAsset.location`), `camera`, `lens`, `made_with`
+  and `ai` (summary::ai_generated: positive evidence only).
+- **`asset_text`:** an FTS5 table (`unicode61 remove_diacritics 2`), rowid = asset id. `text` is
+  the search fields as shown (camera, lens, made-with, software, title, caption, keywords,
+  creator; [06](06-metadata.md) "Search text"), U+001F between fields. The engine matches the
+  same fields in memory, folded with the hosts' rule, so a result can say which field matched;
+  `index_db::match_text` is the SQL path for a reader. A trigger drops a row with its asset.
+  SQLite without FTS5 gets a plain table of the same shape (`meta('asset_text')` says which). The
+  vcpkg `sqlite3[fts5]` feature is on for both platforms.
+- **`place` / `country` / `region` stay NULL.** Place names are the Places add-on's
+  ([27](27-places.md)); the app links no geocoder (owner, 2026-10-11). The columns are there so a
+  later step can fill them from the provider without another migration. Today `place:` is
+  answered at query time (below).
+- **Filling it:** the host table's `tag_facts` (appended after `walk_files2`, read only when
+  `struct_size` covers it) serves each file from the host's `meta_cache.db`, a bounded head read
+  on a miss ([06](06-metadata.md) "Search text"). The control thread backfills assets with
+  `tags = 0` after each walk, 128 per transaction, up to two seconds a turn, waiting while
+  `should_yield` says the viewer is busy. The `tags` column is the bookmark, so a kill, a
+  restart or an index migrated from schema 3 resumes where it stopped and reads nothing twice.
+  Photos library items take `PHAsset.location` and `creationDate` from the last enumeration.
+  An exported index (Sharing an index) carries no tags; the receiver reads them itself.
+- `wait_idle` waits for the backfill too.
 People live in a separate `faces.db`; the label bars in `labels.f32`;
 the CPU self-test reference in `selftest.txt` (keyed by runtime, provider, model and piece).
 
@@ -350,14 +384,29 @@ same thing by the same words. Terms narrow each other (AND).
 | `in:2024`, `in:2024-06`, `before:2025`, `after:2023-05`, `since:2024-03-01`, `until:2024` | the **file's** date (modification time, UTC). Capture dates (EXIF) are not in the index |
 | `file:IMG_12`, `file:"trip 2024"`, `-file:copy` | the file's **name** (not its folder) contains the text, case and accents folded. Indexed files only |
 | `video in:2024`, `file:IMG_12` | filters alone: everything they allow, newest first |
+| `camera:R5`, `camera:canon`, `-camera:iphone` | the file's camera tag (make and model) contains the text, folded (#291) |
+| `lens:24-70`, `lens:"RF 50"` | the lens tag contains the text |
+| `ai:yes`, `ai:no`, `made:yes` | AI provenance (positive evidence: C2PA / IPTC trained-algorithmic source, or a known generator); `ai:no` is every file without that evidence |
+| `made:chatgpt`, `ai:firefly`, `-made:midjourney` | the generator the file names ("made with") contains the text |
+| `place:portugal`, `in:lisbon`, `-place:spain` | where it was taken. `in:` is a date when it reads as one (`in:2024`) and a place otherwise; a word that starts with a digit is never a place; `in:` never names a folder (the scope does). The engine keeps the geotagged assets; which place matches is the Places add-on's search provider's answer, merged by the slot registry ([25](25-open-addons.md) §7) |
+| `R5`, `chatgpt`, `holiday` (plain words) | besides the picture / sound / speech search, files whose tags hold every word come first, with the tag as the snippet (`MV_AI_MATCH_TAGS`, shown unquoted under the tile) |
 
 Lead-ins ("pull up all the …", "show me …", "find …") are trimmed. Typing a name: the panel
 names people for the word being typed (`suggest_json`; prefix first, then a near spelling of one
 letter, two from eight letters); **Tab** or a click completes the word. A word that is not a
 name, a kind or an operator stays in the description; an unfinished `in:20` is ignored. Not in
-the index, so not in the syntax: OCR (quoted words search speech only), places, EXIF capture
-dates, camera. Per keystroke the parse is linear in the query plus one `SELECT` of the named
-people.
+the index, so not in the syntax: OCR (quoted words search speech only). Date terms still use the
+file's modification time; `taken_at` makes date taken possible, a change of its own (plan "Out of
+scope"). Per keystroke the parse is linear in the query plus one `SELECT` of the named people.
+
+Words fold with the shared rule (`core/fold.h`, the hosts' name fold): decompose, drop marks,
+lowercase; ß, æ, ø and ł stay themselves. Before #291 the pack's own Latin-1 fold turned ß into
+"ss" and æ into "ae"; "strasse" no longer finds "Straße", exactly as in file search.
+
+**Owed:** `place:` in Local search narrows to geotagged assets and relies on the Places
+provider's rows for the place itself. Over the whole index (folder "") the provider gets no
+rows until the host table can enumerate the index's coordinates (a `locations_of_index`
+call, not built); a combined query (`beach place:portugal`) is the geotagged beaches until then.
 
 ## UI and commands
 

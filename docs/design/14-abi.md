@@ -272,6 +272,12 @@ mv_status mv_folder_set_sort(mv_session_t, int32_t packed);
 mv_status mv_folder_get_sort(mv_session_t, int32_t* out_packed);
 /* 0.19: MV_FOLDER_HIDE_AUDIO | MV_FOLDER_HIDE_DOCUMENTS; the opened file and current stop stay */
 mv_status mv_folder_set_hidden_kinds(mv_session_t, uint32_t mask);
+/* 0.20 (#291): tag search over the open folder, from its tag pass; JSON
+ * {"done","total","reading","hits":[[index,"why"],...]}. Never a read. */
+mv_status mv_folder_tag_search(mv_session_t, const char* query_utf8, char* utf8, uint32_t cap, uint32_t* out_bytes);
+mv_status mv_folder_tag_generation(mv_session_t, uint64_t* out_generation);
+/* 0.20: a PR 12 write landed (maybe only in the sidecar): read its tags again */
+mv_status mv_folder_forget_tags(mv_session_t, const char* utf8_path);
 mv_status mv_list_subdirectories(const char* utf8_dir, char* utf8, uint32_t cap, uint32_t* out_bytes);
 ```
 
@@ -550,6 +556,7 @@ both hosts now write that table with the same `meta::editable_properties_table`.
 | 0.17 | Open add-ons: `mv_open_addon_inspect` / `_install` / `_list_json` / `_remove` / `_theme_json` |
 | 0.18 | Contributed commands: `mv_addon_commands_json`; `description`, `hint_on`, `hint_text` in the installed / check JSON |
 | 0.19 | `mv_folder_set_hidden_kinds` — Settings can leave audio and/or documents out of the listing |
+| 0.20 | `mv_folder_tag_search`, `mv_folder_tag_generation`, `mv_folder_forget_tags` (#291 file search by tag). Add-on host table: `tag_facts` appended after `walk_files2` (no version bump; read when `struct_size` covers it). `mediaviewer_ai.h`: `MV_AI_MATCH_TAGS`. Mac bridge: `mv_chrome_tag_search`, `mv_chrome_tag_generation` |
 
 ## Not built
 
