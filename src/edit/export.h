@@ -68,6 +68,15 @@ struct export_result {
                                                  const job_context* ctx = nullptr,
                                                  const metadata_blobs* carried = nullptr);
 
+// The pixels the re-encode / bake paths above would encode: the source
+// decoded (or, with a colour adjust, developed into the FP16 working space),
+// the stack applied at full resolution, `long_edge` ignored. Print
+// (docs/design/07 "Print") draws these; nothing is written. `icc` and
+// `tagged_srgb` say what space they are in, as on any decoded raster.
+[[nodiscard]] result<codec::raster> render_baked(std::span<const std::uint8_t> source,
+                                                 const geometry& g, const colour& c,
+                                                 const job_context* ctx = nullptr);
+
 // The metadata an export carries for `source` under `policy`, before the
 // orientation / dimension patch. JPEG (APP1) and PNG (eXIf, iTXt XMP) are read
 // here; any other source uses `carried` when given. The policy applies to

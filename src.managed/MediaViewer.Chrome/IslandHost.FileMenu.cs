@@ -25,6 +25,12 @@ public static partial class IslandHost
         flyout.Items.Add(FileItem("Share…", Command.Share, any));
         flyout.Items.Add(FileItem("Copy Path", Command.CopyPath, any));
         flyout.Items.Add(FileItem("Copy Edited Image", Command.CopyFlattened, any));
+        // docs/design/07 "Print": the Mac's File > Print…. Greyed, never hidden, off a
+        // still (a clip, audio, a document) and mid-crop; native checks again.
+        flyout.Items.Add(Sep());
+        MenuFlyoutItem print = FileItem("Print…", Command.Print, any);
+        print.IsEnabled = _editSubject == SubjectStill && !_editCropActive;
+        flyout.Items.Add(print);
     }
 
     /// <summary>View: Start Slideshow and a Go submenu (Next, Previous, First, Last).</summary>

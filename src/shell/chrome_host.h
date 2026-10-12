@@ -301,6 +301,8 @@ static_assert(static_cast<int>(command_id::show_original) == 153);
 static_assert(static_cast<int>(command_id::search_open) == 157);
 // Issue #206: View > Show's items (arg = io::kind_filter).
 static_assert(static_cast<int>(command_id::kind_filter_set) == 174);
+// docs/design/07 "Print": the Open flyout's Print… (IslandHost.cs Command.Print).
+static_assert(static_cast<int>(command_id::print) == 181);
 static_assert(chrome_cmd_edit_tab >= kCommandCount && chrome_cmd_edit_action >= kCommandCount);
 static_assert(chrome_cmd_meta_tags >= kCommandCount && chrome_cmd_meta_date >= kCommandCount);
 static_assert(chrome_cmd_editor_seek >= kCommandCount && chrome_cmd_editor_action >= kCommandCount);

@@ -307,6 +307,9 @@ constexpr binding kBindings[] = {
     row(C('8'), mod_ctrl | mod_shift, kViewing, edge, label_green),
     row(C('9'), mod_ctrl | mod_shift, kViewing, edge, label_blue),
     row(C('U'), mod_none, kBrowse | kVideo, edge, clear_label),
+    // Print… (docs/design/07 "Print"). Appended. Ctrl+P was free in every mode (P
+    // alone is trim's preview). On a clip it is not bound, so it does nothing.
+    row(C('P'), mod_ctrl, kBrowse | kIsland, edge, print),
 };
 
 // The router's index stores row + 1 in a byte.
@@ -493,6 +496,7 @@ constexpr command_info kCommands[] = {
     {label_green, "Label green"},
     {label_blue, "Label blue"},
     {clear_label, "Clear label"},
+    {print, "Print…"},
 };
 
 const char* named_key(key k) noexcept {

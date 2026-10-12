@@ -43,6 +43,8 @@ enum MvMenuCmd : int32_t {
   kMenuShowBlue, kMenuShowPurple,
   // Issue #210: File > Rename… (F2).
   kMenuRename,
+  // docs/design/07 "Print": File > Print…, and the command bar's Open flyout.
+  kMenuPrint,
 };
 typedef enum MvMenuCmd MvMenuCmd;
 

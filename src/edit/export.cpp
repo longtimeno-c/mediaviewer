@@ -113,11 +113,7 @@ result<export_result> export_image(std::span<const std::uint8_t> source, const g
 
   // PR 11 bake: colour changes every pixel, so there is no lossless path.
   if (!c.identity()) {
-    MV_TRY(image::linear_image working, image::decode_linear(source, ctx));
-    if (ctx && ctx->cancelled()) return err(status::cancelled);
-    const placement p = place(g, size2{working.width, working.height});
-    MV_TRY(codec::raster out, bake(working, p, uniforms_of(c), ctx));
-    working = image::linear_image{};  // release the full frame before encoding
+    MV_TRY(codec::raster out, render_baked(source, g, c, ctx));
     metadata_blobs meta = source_metadata(source, opt.policy, carried);
     patch_for_output(meta, out.width, out.height, true);
     MV_TRY(std::vector<std::uint8_t> bytes, encode(out, opt.encode, meta));
@@ -157,14 +153,8 @@ result<export_result> export_image(std::span<const std::uint8_t> source, const g
     }
   }
 
-  // Re-encode. The decoded raster is what the viewer shows (already
-  // oriented), so the geometry applies with no base rotation.
-  MV_TRY(codec::raster decoded, codec::decode(source, ctx));
-  if (ctx && ctx->cancelled()) return err(status::cancelled);
-  const placement p = place(g, size2{decoded.width, decoded.height});
-  MV_TRY(codec::raster out, render(decoded, p, ctx));
-  decoded = codec::raster{};  // release the full frame before encoding
-
+  // Re-encode.
+  MV_TRY(codec::raster out, render_baked(source, g, c, ctx));
   metadata_blobs meta = source_metadata(source, opt.policy, carried);
   patch_for_output(meta, out.width, out.height, !g.identity());
   MV_TRY(std::vector<std::uint8_t> bytes, encode(out, opt.encode, meta));
@@ -174,6 +164,22 @@ result<export_result> export_image(std::span<const std::uint8_t> source, const g
   r.width = out.width;
   r.height = out.height;
   return r;
+}
+
+result<codec::raster> render_baked(std::span<const std::uint8_t> source, const geometry& g,
+                                   const colour& c, const job_context* ctx) {
+  if (!c.identity()) {
+    MV_TRY(image::linear_image working, image::decode_linear(source, ctx));
+    if (ctx && ctx->cancelled()) return err(status::cancelled);
+    const placement p = place(g, size2{working.width, working.height});
+    return bake(working, p, uniforms_of(c), ctx);  // the full frame is released on return
+  }
+  // The decoded raster is what the viewer shows (already oriented), so the
+  // geometry applies with no base rotation.
+  MV_TRY(codec::raster decoded, codec::decode(source, ctx));
+  if (ctx && ctx->cancelled()) return err(status::cancelled);
+  const placement p = place(g, size2{decoded.width, decoded.height});
+  return render(decoded, p, ctx);
 }
 
 std::string export_file_name(std::string_view source_name, image_format format) {

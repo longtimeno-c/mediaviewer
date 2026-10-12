@@ -193,6 +193,8 @@ public static partial class IslandHost
         public const int EditWorkspace = 150;
         public const int CropAspectSet = 155;      // arg: preset, + 16 portrait
         public const int CropStraightenSet = 156;  // arg: degrees
+        // docs/design/07 "Print": the Open flyout's Print… (Ctrl+P).
+        public const int Print = 181;
         // Keyed commands the island never sends, only names the key of (KeyOf).
         public const int SkimBack = 34;
         public const int SkimForward = 35;

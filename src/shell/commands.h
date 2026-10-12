@@ -352,6 +352,9 @@ enum class command_id : std::uint16_t {
   label_green,
   label_blue,
   clear_label,
+  // Ctrl/Cmd+P: Print… the still on screen, edits baked (docs/design/07 "Print").
+  // Appended; every id above keeps its value.
+  print,
   count
 };
 inline constexpr int kAddonCommandSlots = 8;

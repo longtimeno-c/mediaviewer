@@ -115,6 +115,32 @@ Output is always upright: EXIF Orientation 1, EXIF pixel dimensions patched, `ti
 `Ctrl+Alt+C` / `Cmd+Opt+C` (`copy_flattened`) copies the current still with its edits baked, as
 a PNG.
 
+### Print
+
+`Ctrl+P` / `Cmd+P` (`print`; the bar's Open ▸ Print…, File ▸ Print… on the Mac) prints the
+current still as the canvas shows it. `edit::render_baked` is the export's own bake (the
+re-encode / bake paths of `export_image` call it), run on the pool by
+`shell::render_print_raster`, which also composites transparency over white and, for Windows,
+writes BGRA. Nothing is written to disk. Then the OS dialog:
+
+- **Mac:** `NSPrintOperation` as a sheet, with a one-page view that draws the still where
+  `place_print` puts it in the panel's printable area, and a Scale to Fit / Actual Size accessory.
+  The page starts in the still's orientation (`print_landscape`); paper, orientation, copies and
+  the preview are the panel's. The spool runs on the operation's own thread. The pixels go in as
+  a `CGImage` in the raster's ICC space (sRGB when untagged, D6).
+- **Windows:** Win32 `PrintDlgEx` with a Scale tab built in memory, its `DEVMODE` pre-set to the
+  still's orientation; the spool is GDI on the pool (`StretchDIBits` of a `BITMAPV5HEADER` that
+  embeds the ICC profile, `ICM_ON`). `Windows.Graphics.Printing.PrintManager` was not used: it
+  needs a XAML `PrintDocument` (no working path in an unpackaged island app) or a Direct2D
+  print-preview source, both far more than one page of one image.
+
+**Scale to Fit** (the default) is the whole still as large as the printable area allows, centred;
+**Actual Size** is one pixel per point (1/72 in, Preview's 100 %), centred and cut at the page edge
+(one page, no tiling). `place_print` keeps the still's shape on a device with unequal x / y
+resolution. Only stills print: a clip, an animation, audio and a PDF or DOCX (which "Open in
+<app>" prints) leave the command greyed, and so do crop mode and a lossless turn still on its way
+back to the canvas (`edit_session::can_bake`, export's own rule).
+
 ### Lossless JPEG
 
 `lossless_jpeg.h` is jpegtran's transform on the plain libjpeg coefficient API. Only perfect
