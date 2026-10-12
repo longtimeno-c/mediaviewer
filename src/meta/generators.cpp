@@ -39,9 +39,10 @@ constexpr std::array kTable{
     entry{"Stability AI", {"Stability AI"}},
     entry{"Bing Image Creator", {"Bing Image Creator"}},
     entry{"Microsoft Designer", {"Microsoft Designer"}},
+    // Not bare "Meta AI": that is also the Ray-Ban Meta glasses' companion app,
+    // which carries real camera photos. Not bare "Imagen": Spanish for "image".
     entry{"Imagine with Meta", {"Meta AI"}},
-    entry{"Meta AI", {"Meta AI"}},
-    entry{"Imagen", {"Google Imagen"}},
+    entry{"Google Imagen", {"Google Imagen"}},
     entry{"Gemini", {"Google Gemini"}},
     entry{"Leonardo.Ai", {"Leonardo.Ai"}},
     entry{"Leonardo AI", {"Leonardo.Ai"}},

@@ -344,6 +344,8 @@ TEST_CASE("generator table: whole words, specific spellings first, positive only
   CHECK_FALSE(match_generator("Ver.1.00"));
   CHECK_FALSE(match_generator("Canon EOS R5 Firmware 1.8.1"));
   CHECK_FALSE(match_generator("Imagenet"));
+  CHECK_FALSE(match_generator("Editor de imagen 2.1"));  // Spanish "image"
+  CHECK_FALSE(match_generator("Meta AI"));               // the glasses' camera app
   CHECK_FALSE(match_generator("Fireflyer"));
   CHECK_FALSE(match_generator(""));
 }
