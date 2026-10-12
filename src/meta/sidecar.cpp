@@ -45,6 +45,14 @@ void overlay_sidecar(std::string_view utf8_path, metadata& out) noexcept {
     const field_state f = read_fields(none, xmp);
     if (f.rating) out.s.rating = *f.rating;
     if (f.comment) out.s.comment = *f.comment;
+    // #352: a position the sidecar states wins, as its rating does. Its
+    // altitude goes with it; with none, the file's own altitude stays (an edit
+    // of latitude / longitude alone keeps it).
+    if (auto where = xmp_where(xmp)) {
+      if (!where->altitude && out.s.where) where->altitude = out.s.where->altitude;
+      out.s.where = *where;
+      out.s.gps = format_point(*where);
+    }
 
     std::size_t rows = 0;
     for (const auto& d : xmp) {

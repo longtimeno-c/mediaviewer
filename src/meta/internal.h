@@ -55,6 +55,10 @@ struct field_state {
 [[nodiscard]] field_state read_fields(const Exiv2::ExifData& exif, const Exiv2::XmpData& xmp,
                                       comment_order order = comment_order::unknown) noexcept;
 
+// #290 / #352: XMP exif:GPSLatitude / GPSLongitude (and GPSAltitude + Ref) as
+// a point; nullopt when the packet has no valid pair. Never throws.
+[[nodiscard]] std::optional<geo_point> xmp_where(const Exiv2::XmpData& xmp) noexcept;
+
 // Initialises Exiv2's XMP parser once (not safe to race) and mutes its log.
 // Idempotent; every entry point that touches Exiv2 calls it first.
 void ensure_exiv2();

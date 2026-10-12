@@ -232,17 +232,29 @@ std::optional<geo_point> where_of(const Exiv2::ExifData& e, const Exiv2::XmpData
     } catch (...) {
     }
   }
-  const auto xla = parse_xmp_coordinate(xmp_text(x, "Xmp.exif.GPSLatitude"));
-  const auto xlo = parse_xmp_coordinate(xmp_text(x, "Xmp.exif.GPSLongitude"));
-  if (!xla || !xlo || std::fabs(*xla) > 90.0 || std::fabs(*xlo) > 180.0) return std::nullopt;
-  geo_point p;
-  p.lat = *xla;
-  p.lon = *xlo;
-  if (const auto a = xmp_rational(xmp_text(x, "Xmp.exif.GPSAltitude"))) {
-    p.altitude = xmp_text(x, "Xmp.exif.GPSAltitudeRef") == "1" ? -*a : *a;
-  }
-  return p;
+  return xmp_where(x);
 }
+
+}  // namespace
+
+std::optional<geo_point> xmp_where(const Exiv2::XmpData& x) noexcept {
+  try {
+    const auto xla = parse_xmp_coordinate(xmp_text(x, "Xmp.exif.GPSLatitude"));
+    const auto xlo = parse_xmp_coordinate(xmp_text(x, "Xmp.exif.GPSLongitude"));
+    if (!xla || !xlo || std::fabs(*xla) > 90.0 || std::fabs(*xlo) > 180.0) return std::nullopt;
+    geo_point p;
+    p.lat = *xla;
+    p.lon = *xlo;
+    if (const auto a = xmp_rational(xmp_text(x, "Xmp.exif.GPSAltitude"))) {
+      p.altitude = xmp_text(x, "Xmp.exif.GPSAltitudeRef") == "1" ? -*a : *a;
+    }
+    return p;
+  } catch (...) {
+    return std::nullopt;
+  }
+}
+
+namespace {
 
 // The listed_fn for parse::read_xmp: did Exiv2 already list this property?
 struct listed_ctx {

@@ -26,6 +26,7 @@ void merge(meta::write_fields& into, const meta::write_fields& from) {
     if (!replaced) into.tags.push_back(t);
   }
   if (from.date_taken.touches()) into.date_taken = from.date_taken;
+  if (from.location.touches()) into.location = from.location;  // #352
 }
 
 }  // namespace
