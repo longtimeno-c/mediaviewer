@@ -658,6 +658,20 @@ scrub, plus a Swift / AppKit record tied to the native report by correlation id;
   not the uncaught handler, so the chrome record is written there too (one per crash).
 - **Report metadata:** the rewrite copies Crashpad's extended attributes onto the replacement.
 
+**The environment block is dropped, including on a stack (2026-10-12).** A Mac Crashpad dump
+kept the process environment because the kernel places argv and the environment at the high end
+of the main thread's stack, and the scrub zeros only what is *outside* a stack. A username inside
+an email local-part (`alice.jones@…`, or a longer token such as `alicejones@…`) is not a bounded
+identity, so it survived the text pass. The scrub now zeros a run of `KEY=value` strings on a
+stack when the run contains a marker key (`HOME`, `USER`, `PATH`, and the Windows names), and the
+argv strings packed against that run. Nothing in the slab is needed to symbolicate.
+
+Windows did not have this gap for the process block itself. The environment, the command line and
+the current directory live in the PEB (`RTL_USER_PROCESS_PARAMETERS`), which is not a thread stack
+and was already zeroed. A copy that landed on a Windows stack is covered by the same run detector.
+There is no separate cwd stream on either host. The Mac process cwd is not a Crashpad stream;
+`PWD`, when a shell put it in the environment, goes with the block.
+
 ---
 
 ## Licensing
