@@ -177,17 +177,25 @@ public sealed partial class MediaViewerSession : IDisposable
         try
         {
             NativeMethods.mv_folder_tag_search(_handle, query, IntPtr.Zero, 0, out uint need);
-            if (need <= 1) return string.Empty;
-            IntPtr buf = Marshal.AllocHGlobal((int)need);
-            try
+            // The pass runs on a worker: the answer can grow between the size
+            // call and the copy, and a cut copy is JSON that does not parse
+            // (the search would then miss its hits and stop polling). Ask
+            // again with the bigger size; slack covers most growth at once.
+            for (int attempt = 0; attempt < 4 && need > 1; ++attempt)
             {
-                ThrowIfFailed(NativeMethods.mv_folder_tag_search(_handle, query, buf, need, out _));
-                return Marshal.PtrToStringUTF8(buf) ?? string.Empty;
+                uint cap = need + 4096;
+                IntPtr buf = Marshal.AllocHGlobal((int)cap);
+                try
+                {
+                    ThrowIfFailed(NativeMethods.mv_folder_tag_search(_handle, query, buf, cap, out need));
+                    if (need <= cap) return Marshal.PtrToStringUTF8(buf) ?? string.Empty;
+                }
+                finally
+                {
+                    Marshal.FreeHGlobal(buf);
+                }
             }
-            finally
-            {
-                Marshal.FreeHGlobal(buf);
-            }
+            return string.Empty;
         }
         catch (EntryPointNotFoundException)
         {

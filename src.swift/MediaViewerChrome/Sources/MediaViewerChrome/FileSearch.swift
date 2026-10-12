@@ -145,14 +145,24 @@ final class FileSearchStore: ObservableObject {
   /// Name hits first, then the files only their tags matched, in listing order.
   private func withTags(_ nameHits: [Int], typed: String) -> [Int] {
     tagGeneration = mv_chrome_tag_generation()
-    let need = Int(typed.withCString { mv_chrome_tag_search($0, nil, 0) })
+    var need = Int(typed.withCString { mv_chrome_tag_search($0, nil, 0) })
     var answer: TagAnswer?
-    if need > 0 {
-      var buf = [CChar](repeating: 0, count: need + 1)
-      _ = buf.withUnsafeMutableBufferPointer { b in
-        typed.withCString { mv_chrome_tag_search($0, b.baseAddress, Int32(b.count)) }
+    // The pass runs on a worker: the answer can grow between the size call and
+    // the copy, and a cut copy is JSON that does not decode (no hits, and no
+    // more polling). Ask again with the bigger size.
+    var attempt = 0
+    while need > 0 && attempt < 4 {
+      attempt += 1
+      var buf = [CChar](repeating: 0, count: need + 4097)
+      let got = buf.withUnsafeMutableBufferPointer { b in
+        Int(typed.withCString { mv_chrome_tag_search($0, b.baseAddress, Int32(b.count)) })
+      }
+      if got >= buf.count {
+        need = got
+        continue
       }
       answer = try? JSONDecoder().decode(TagAnswer.self, from: Data(String(cString: buf).utf8))
+      break
     }
     var out = nameHits
     var reasons: [Int: String] = [:]
