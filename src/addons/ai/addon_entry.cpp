@@ -26,6 +26,13 @@ namespace {
 
 using mv::ai::engine;
 
+// The managed chrome pins these sizes (MediaViewer.Interop/Ai.cs, AiApi) and
+// refuses to attach on a mismatch. Appending a field to either struct must
+// change both numbers in one commit; this fails the pack build if only the
+// header moved (issue #388: the chrome's 1336 outlived three appended fields).
+static_assert(sizeof(mv_ai_status) == 1640, "update AiApi's check in Interop/Ai.cs too");
+static_assert(sizeof(mv_ai_result) == 32, "update AiApi's check in Interop/Ai.cs too");
+
 // Host table 2 carries the pixels (mediaviewer_addon.h "Negotiation").
 constexpr uint32_t kHostApiMin = 2;
 constexpr uint32_t kHostApiMax = 2;
