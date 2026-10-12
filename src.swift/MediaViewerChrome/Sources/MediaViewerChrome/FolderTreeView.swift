@@ -8,12 +8,18 @@ import AppKit
 import MVChromeBridge
 import SwiftUI
 
+// `fetch` is a directory read: one call into a buffer that usually fits, not a
+// size call and then a fill (two reads, and a folder made between them would
+// cut the last row short). Only a listing longer than the buffer reads again,
+// into one sized from that same read, until a whole listing fits.
 private func readLines(_ fetch: (UnsafeMutablePointer<CChar>?, Int32) -> Int32) -> [(String, String)]? {
-  let needed = Int(fetch(nil, 0))
-  if needed < 0 { return nil }
-  if needed == 0 { return [] }
-  var buf = [CChar](repeating: 0, count: needed + 1)
-  _ = buf.withUnsafeMutableBufferPointer { fetch($0.baseAddress, Int32($0.count)) }
+  var buf = [CChar](repeating: 0, count: 16 * 1024)
+  while true {
+    let needed = Int(buf.withUnsafeMutableBufferPointer { fetch($0.baseAddress, Int32($0.count)) })
+    if needed < 0 { return nil }
+    if needed < buf.count { break }
+    buf = [CChar](repeating: 0, count: needed + 1)
+  }
   return String(cString: buf).split(separator: "\n").compactMap { line in
     let f = line.split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: false)
     return f.count == 2 ? (String(f[0]), String(f[1])) : nil

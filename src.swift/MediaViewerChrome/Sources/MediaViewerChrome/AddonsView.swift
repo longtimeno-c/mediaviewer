@@ -611,7 +611,7 @@ struct AddonAlertItem: View {
             }
             Button("Open Settings") {
               shown = false
-              if !SettingsStore.shared.visible { mv_chrome_menu(18) }
+              if !SettingsStore.shared.visible { mv_chrome_menu(kMenuSettings) }
             }
             .keyboardShortcut(.defaultAction)
           }
