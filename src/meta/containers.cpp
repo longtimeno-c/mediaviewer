@@ -445,7 +445,11 @@ void read_bmff(byte_source& file, bool stills, sink& out) {
       } else if (type == "meta" && stills && body <= kMaxMetaBox) {
         if (read_exact(file, at + header, payload, static_cast<std::size_t>(body))) read_heif_meta(payload, out);
       } else if ((type == "uuid" || type == "c2pa") && !c2pa_done && body <= kMaxC2paBox) {
-        if (read_exact(file, at + header, payload, static_cast<std::size_t>(body))) {
+        // A uuid box is read whole only when it is C2PA's: clips carry other
+        // top-level uuid boxes (XMP, maker data) that can run to megabytes.
+        const bool other_uuid = type == "uuid" && (!read_exact(file, at + header, payload, 16) ||
+                                                   std::memcmp(payload.data(), kC2paUuid, 16) != 0);
+        if (!other_uuid && read_exact(file, at + header, payload, static_cast<std::size_t>(body))) {
           bytes p(payload);
           if (type == "uuid" && p.size() >= 20 && std::memcmp(p.data(), kC2paUuid, 16) == 0) {
             // FullBox (4), box_purpose (NUL-terminated), then for "manifest" an
