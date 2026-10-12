@@ -462,6 +462,7 @@ target_include_directories(playprobe PRIVATE src)
 # ---------------------------------------------------------------------------
 add_library(mv_canvas STATIC
   src/canvas/camera.cpp
+  src/canvas/document_scroll.cpp
   src/canvas/camera.h
   src/canvas/spring.h
 )
@@ -777,6 +778,7 @@ if(MV_BUILD_TESTS)
     tests/test_job_system.cpp
     tests/test_input_state.cpp
     tests/test_camera.cpp
+    tests/test_document_scroll.cpp
     tests/test_present_policy.cpp
     tests/test_metal_pacer.cpp
     tests/test_frametime_report.cpp

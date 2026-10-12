@@ -187,6 +187,15 @@ crop. Keys are shown Windows-style; on macOS read `⌘` for `Ctrl`.
 | `;` | browse, video | Play a Live Photo's motion once, with audio, and return to the still. `;` again, `Esc` or navigation return early. **Mac: not built** |
 | `Ctrl+Shift+A` | all | Always on top (`HWND_TOPMOST`) |
 
+**Filmstrip hint.** Some input means something else while the filmstrip is up, and the hint says
+so in the notice line (`shell/filmstrip_hint.h`, shared): over a PDF or DOCX with the strip showing
+it reads "Press T to hide the filmstrip and scroll" (the wheel zooms until the strip is hidden). It
+shows when such a document comes on screen, when the wheel zooms one, and after "Page n of m" on a
+page turn; like any notice it fades after three seconds. Once `T` has hidden the strip over a
+document it never shows again (Windows `settings.ini` `[hints] filmstrip_t`, Mac
+`mv.hint.filmstripT`). There is one hint: another subject (a paused clip, issue #361) is a
+`strip_hint_subject` value and a string beside it, sharing the learned flag.
+
 **Gallery.** Full-client grid of the folder. `A` `D` / `←` `→` move by item, `W` `S` / `↑` `↓`
 by row; a click opens in the viewer. Child folders are big tiles when the folder holds only
 folders, one row above the photos when it holds both; up from the first photo row reaches that

@@ -110,6 +110,10 @@ struct input_snapshot {
   // per event whether a delta zooms (wheel_total) or scrolls (these).
   std::int64_t scroll_px_x = 0;
   std::int64_t scroll_px_y = 0;
+  // The same from a trackpad (canvas/document_scroll.h): the view follows at
+  // once instead of on the spring, so the page stays under the fingers.
+  std::int64_t scroll_direct_px_x = 0;
+  std::int64_t scroll_direct_px_y = 0;
   // A page turned by scrolling past an edge: the next still that lands (not a
   // refinement) keeps the zoom and lands at the top (+1) or bottom (-1)
   // instead of fitting. Latched by page_land_seq.
@@ -238,6 +242,17 @@ struct input_cursor {
     dy = static_cast<float>(s.scroll_px_y - scroll_px_y);
     scroll_px_x = s.scroll_px_x;
     scroll_px_y = s.scroll_px_y;
+    return dx != 0.0f || dy != 0.0f;
+  }
+  std::int64_t scroll_direct_px_x = 0;
+  std::int64_t scroll_direct_px_y = 0;
+
+  // Trackpad document scroll since the last call, in screen pixels.
+  bool consume_scroll_direct(const input_snapshot& s, float& dx, float& dy) noexcept {
+    dx = static_cast<float>(s.scroll_direct_px_x - scroll_direct_px_x);
+    dy = static_cast<float>(s.scroll_direct_px_y - scroll_direct_px_y);
+    scroll_direct_px_x = s.scroll_direct_px_x;
+    scroll_direct_px_y = s.scroll_direct_px_y;
     return dx != 0.0f || dy != 0.0f;
   }
   bool consume_activity(const input_snapshot& s) noexcept {

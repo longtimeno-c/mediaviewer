@@ -217,10 +217,20 @@ make-default and adopt-new-types paths — the owner asked that they never be ma
 filmstrip hidden, the wheel and trackpad scroll the page instead of zooming (this replaces "no
 scrolling between pages" from the same day): held against the top or bottom edge they turn the page,
 which keeps its zoom and lands at the far edge (`camera::turn_page`). One trackpad gesture or one
-wheel burst turns one page, so momentum cannot run through a document. `⌘`/`Ctrl`+wheel and a pinch
+wheel burst turns one page, so momentum cannot run through a document. *(Reversed 2026-10-12, below.)* `⌘`/`Ctrl`+wheel and a pinch
 still zoom; with the filmstrip shown the wheel zooms as on any still. The Edit button gives way to
 **Open in <app>** (the default app, never MediaViewer) and a ▾ of the other apps, and `Enter` opens
 the default: there is nothing for the workspace to edit in a document.
+
+**Document scrolling glides and runs through pages (2026-10-12, issue #353).** Reverses "one
+gesture turns at most one page" and the 60 px hold at the edge (2026-10-05): reading a long
+document was scroll, stop, push, jump. A push past the top or bottom edge now turns the page at
+once and trackpad momentum carries into the next page; a wheel notch glides on the canvas spring and
+a trackpad pans directly. What stops a fling from skipping to the end is the render thread's land
+acknowledgement (one turn per landed page) and, at fit, one page per third of the canvas of travel.
+The rule is shared (`canvas/document_scroll.h`) instead of written twice in the hosts. Pages stay
+separate stops rather than one continuous strip, which would need two pages on the canvas at once.
+With the filmstrip up the wheel still zooms; a "Press T" hint now says so (docs/design/16).
 
 **Thumbnails are JPEG files on disk (2026-09-07).** Spec `jpg512.4` (was `.1`; bumped
 2026-09-24 when JPEG orientation was applied, 2026-10-03 when clip posters began following

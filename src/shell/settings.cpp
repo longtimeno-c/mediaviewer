@@ -20,6 +20,7 @@ constexpr char kDestinations[] = "destinations";
 constexpr char kRecent[] = "recent";
 constexpr char kKeys[] = "keys";
 constexpr char kCrash[] = "crash";
+constexpr char kHints[] = "hints";
 
 std::string_view trim_separator(std::string_view p) noexcept {
   while (p.size() > 3 && (p.back() == '\\' || p.back() == '/')) p.remove_suffix(1);
@@ -87,6 +88,15 @@ void save_view_settings(settings_store& store, const view_settings& s) noexcept 
     d.set(kView, "background", std::to_string(static_cast<unsigned>(s.background <= 4 ? s.background : 0)));
     d.set(kView, "sort", std::to_string(s.sort));
   });
+}
+
+bool load_strip_hint_learned(const settings_store& store) noexcept {
+  const auto doc = store.snapshot();
+  return doc && doc->get_int(kHints, "filmstrip_t", 0) != 0;
+}
+
+void save_strip_hint_learned(settings_store& store) noexcept {
+  store.update([](settings_doc& d) { d.set(kHints, "filmstrip_t", "1"); });
 }
 
 std::vector<std::string> load_destinations(const settings_store& store) noexcept {
@@ -193,6 +203,8 @@ std::vector<key_override> load_key_overrides() noexcept { return load_key_overri
 void save_key_overrides(std::span<const key_override> list) noexcept { save_key_overrides(app_settings(), list); }
 view_settings load_view_settings() noexcept { return load_view_settings(app_settings()); }
 void save_view_settings(const view_settings& s) noexcept { save_view_settings(app_settings(), s); }
+bool load_strip_hint_learned() noexcept { return load_strip_hint_learned(app_settings()); }
+void save_strip_hint_learned() noexcept { save_strip_hint_learned(app_settings()); }
 std::vector<std::string> load_destinations() noexcept { return load_destinations(app_settings()); }
 void save_destinations(const std::vector<std::string>& list) noexcept { save_destinations(app_settings(), list); }
 std::vector<std::string> load_recent_folders() noexcept { return load_recent_folders(app_settings()); }

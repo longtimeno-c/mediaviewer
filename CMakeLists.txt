@@ -620,6 +620,7 @@ target_include_directories(ai-bench PRIVATE src src/abi/include)
 # ---------------------------------------------------------------------------
 add_library(mv_canvas STATIC
   src/canvas/camera.cpp
+  src/canvas/document_scroll.cpp
   src/canvas/camera.h
   src/canvas/spring.h
   src/canvas/refinement.h
@@ -942,6 +943,7 @@ if(MV_BUILD_TESTS)
     tests/test_decode.cpp
     tests/test_colour.cpp
     tests/test_camera.cpp
+    tests/test_document_scroll.cpp
     tests/test_abi_image.cpp
     tests/test_upload.cpp
     tests/test_tiles.cpp

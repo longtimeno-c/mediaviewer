@@ -105,6 +105,14 @@ void save_view_settings(settings_store& store, const view_settings& settings) no
 [[nodiscard]] view_settings load_view_settings() noexcept;
 void save_view_settings(const view_settings& settings) noexcept;
 
+// The "Press T" filmstrip hint (shell/filmstrip_hint.h) has been learned: the
+// user hid the strip over its subject, so it never shows again. Kept apart from
+// view_settings, which the chrome's Settings page round-trips as flags.
+[[nodiscard]] bool load_strip_hint_learned(const settings_store& store) noexcept;
+void save_strip_hint_learned(settings_store& store) noexcept;
+[[nodiscard]] bool load_strip_hint_learned() noexcept;
+void save_strip_hint_learned() noexcept;
+
 // F7 / F8 destinations, most recent first, at most five (docs/design/16). UTF-8
 // folder paths the user picked; they stay in the local settings file.
 inline constexpr std::size_t kMaxDestinations = 5;

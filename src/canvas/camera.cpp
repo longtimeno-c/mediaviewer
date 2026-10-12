@@ -235,6 +235,15 @@ void camera::pan_by_screen(float dx_screen, float dy_screen, float image_w, floa
                                target_zoom_);
 }
 
+void camera::scroll_direct(float dx_screen, float dy_screen, float image_w, float image_h,
+                           float window_w, float window_h) noexcept {
+  const float old_x = target_pan_x_;
+  const float old_y = target_pan_y_;
+  pan_by_screen(dx_screen, dy_screen, image_w, image_h, window_w, window_h);
+  pan_x_ += target_pan_x_ - old_x;
+  pan_y_ += target_pan_y_ - old_y;
+}
+
 void camera::wheel_toward(float mouse_x, float mouse_y, float notches, float window_w,
                           float window_h, float image_w, float image_h) noexcept {
   if (notches == 0.0f) return;
