@@ -28,18 +28,25 @@ constexpr std::size_t kMaxPngKeptBytes = 16u << 20;      // all of them
 constexpr std::size_t kMaxXmpBytes = 4u << 20;
 constexpr int kMaxSegments = 1024;
 constexpr int kMaxChunks = 4096;
+// Every byte the probe reads from the file, all containers together: one
+// largest C2PA box (containers.cpp, 32 MB) plus the head. A file that asks for
+// more stops being read; what was already found still counts.
+constexpr std::uint64_t kMaxFileBytes = (32u << 20) + (1u << 20);
 
 class file_source final : public parse::byte_source {
  public:
   bool open(std::string_view utf8_path) { return f_.open(utf8_path, io::read_mode::sequential).has_value(); }
   [[nodiscard]] std::uint64_t size() const noexcept override { return f_.size(); }
   [[nodiscard]] std::size_t read_at(std::uint64_t offset, std::span<std::uint8_t> into) noexcept override {
+    if (into.size() > kMaxFileBytes - spent_) return 0;
+    spent_ += into.size();
     auto n = f_.read_at(offset, into);
     return n ? *n : 0;
   }
 
  private:
   io::file_reader f_;
+  std::uint64_t spent_ = 0;
 };
 
 // `n` bytes at `offset`, from the head already in memory when they lie inside it.
@@ -84,14 +91,19 @@ void read_ifd0(parse::byte_source& src, bytes head, parse::sink& out) {
   const std::size_t n = std::min<std::size_t>(u16(cnt, 0), 512);
   std::vector<std::uint8_t> entries;
   if (!fetch(src, head, ifd + 2, n * 12, entries)) return;
+  bool software_done = false;
+  bool xmp_done = false;
   for (std::size_t i = 0; i < n; ++i) {
     const std::size_t e = i * 12;
     const std::uint16_t tag = u16(entries, e);
     const std::uint16_t type = u16(entries, e + 2);
     const std::uint32_t count = u32(entries, e + 4);
-    const bool software = tag == 0x0131 && type == 2;
-    const bool xmp = tag == 700 && (type == 1 || type == 7);
+    // The first of each only, as Exiv2 keeps: a hostile IFD can repeat tag 700
+    // in all 512 entries, each pointing at the same 4 MB.
+    const bool software = tag == 0x0131 && type == 2 && !software_done;
+    const bool xmp = tag == 700 && (type == 1 || type == 7) && !xmp_done;
     if (!software && !xmp) continue;
+    (software ? software_done : xmp_done) = true;
     const std::size_t cap = software ? 256 : kMaxXmpBytes;
     if (count == 0 || count > cap) continue;
     std::vector<std::uint8_t> v;
@@ -136,8 +148,11 @@ void probe_jpeg(parse::byte_source& src, bytes head, parse::sink& out) {
     }
     const std::size_t len = util::be16(marker, 2);
     if (len < 2 || len > kMaxSegmentBytes || header.size() + len + 2 > kMaxJpegHeaderBytes) break;
-    if (!fetch(src, head, at + 4, len - 2, seg)) break;
+    const std::uint64_t body_at = at + 4;
     at += 2 + len;
+    // Only APP1 and APP11 are fetched; DQT, ICC, MPF and the rest are stepped over.
+    if (m != 0xEB && !(m == 0xE1 && !(exif_done && xmp_done))) continue;
+    if (!fetch(src, head, body_at, len - 2, seg)) break;
     // Only the segments that can hold provenance; a camera's maker-note-heavy
     // APP1 is read once, for IFD0.
     if (m == 0xEB) {
@@ -167,6 +182,7 @@ void probe_png(parse::byte_source& src, bytes head, parse::sink& out) {
   const std::uint64_t size = src.size();
   std::vector<std::uint8_t> h;
   std::vector<std::uint8_t> data;
+  bool xmp_done = false;
   for (int i = 0; i < kMaxChunks && at + 12 <= size; ++i) {
     if (!fetch(src, head, at, 8, h)) break;
     const std::uint32_t len = util::be32(h, 0);
@@ -184,8 +200,10 @@ void probe_png(parse::byte_source& src, bytes head, parse::sink& out) {
         read_exif_block(data, out);
       } else {
         // The XMP packet rides in an iTXt that read_png leaves to Exiv2.
-        if (util::fourcc_is(h, 4, "iTXt") && len > 18 &&
+        // The first packet only: each can inflate to 4 MB from a few kilobytes.
+        if (!xmp_done && util::fourcc_is(h, 4, "iTXt") && len > 18 &&
             std::memcmp(data.data(), "XML:com.adobe.xmp\0", 18) == 0 && len >= 22) {
+          xmp_done = true;
           std::size_t p = 18;
           const bool compressed = data[p] != 0;
           p += 2;
@@ -218,11 +236,17 @@ void probe_webp(parse::byte_source& src, bytes head, parse::sink& out) {
   const std::uint64_t size = src.size();
   std::vector<std::uint8_t> h;
   std::vector<std::uint8_t> data;
-  for (int i = 0; i < kMaxChunks && at + 8 <= size; ++i) {
+  bool exif_done = false;
+  bool xmp_done = false;
+  for (int i = 0; i < kMaxChunks && at + 8 <= size && !(exif_done && xmp_done); ++i) {
     if (!fetch(src, head, at, 8, h)) break;
     const std::uint32_t len = util::le32(h, 4);
-    const bool exif = util::fourcc_is(h, 0, "EXIF");
-    const bool xmp = util::fourcc_is(h, 0, "XMP ");
+    // The first of each, as the full read keeps: 4096 repeated 4 MB chunks
+    // would otherwise be 16 GB of reads.
+    const bool exif = util::fourcc_is(h, 0, "EXIF") && !exif_done;
+    const bool xmp = util::fourcc_is(h, 0, "XMP ") && !xmp_done;
+    if (exif) exif_done = true;
+    if (xmp) xmp_done = true;
     if ((exif || xmp) && len <= kMaxXmpBytes && fetch(src, head, at + 8, len, data)) {
       if (exif) {
         // Some writers keep JPEG's "Exif\0\0" in front of the TIFF header.
