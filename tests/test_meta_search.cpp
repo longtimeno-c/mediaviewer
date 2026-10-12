@@ -579,3 +579,44 @@ TEST_CASE("a place provider answers `portugal` from the pass's locations, read o
   CHECK(index.match("portugal").empty());
   jobs.shutdown();
 }
+
+// ---- fixtures for the verify runs (not a test) ------------------------------------------
+
+// MV_SEARCH_FIXTURE_DIR=<dir> [MV_SEARCH_FIXTURE_COPIES=20000] mv_tests "[.make-search-fixture]"
+// writes camera_r5.jpg (Canon EOS R5, Sintra GPS), chatgpt.jpg (ChatGPT, AI),
+// plain.jpg (no tags) and nikon.jpg (another camera), then COPIES numbered
+// copies cycling through the four: the 20 k-file folder the soak runs on.
+TEST_CASE("make the search verify fixture", "[.make-search-fixture]") {
+  const char* out = std::getenv("MV_SEARCH_FIXTURE_DIR");
+  REQUIRE(out);
+  const fs::path dir(out);
+  fs::create_directories(dir);
+  std::vector<std::vector<std::uint8_t>> kinds;
+  kinds.push_back(tagged_jpeg(1200, 800, false));
+  kinds.push_back(tagged_jpeg(1200, 800, true));
+  {
+    std::vector<std::uint8_t> rgb(1200u * 800u * 3u, 90);
+    kinds.push_back(fixtures::jpeg_rgb(1200, 800, rgb.data()));
+  }
+  {
+    auto jpeg = kinds[2];
+    auto image = Exiv2::ImageFactory::open(jpeg.data(), jpeg.size());
+    Exiv2::ExifData exif;
+    exif["Exif.Image.Make"] = "NIKON CORPORATION";
+    exif["Exif.Image.Model"] = "NIKON Z 6";
+    image->setExifData(exif);
+    image->writeMetadata();
+    Exiv2::BasicIo& bio = image->io();
+    bio.open();
+    Exiv2::DataBuf buf = bio.read(bio.size());
+    kinds.emplace_back(buf.c_data(), buf.c_data() + buf.size());
+  }
+  const char* names[] = {"camera_r5.jpg", "chatgpt.jpg", "plain.jpg", "nikon.jpg"};
+  for (int i = 0; i < 4; ++i) (void)write_file(dir / names[i], kinds[static_cast<std::size_t>(i)]);
+  const int copies = std::getenv("MV_SEARCH_FIXTURE_COPIES") ? std::atoi(std::getenv("MV_SEARCH_FIXTURE_COPIES")) : 0;
+  char name[64];
+  for (int i = 0; i < copies; ++i) {
+    std::snprintf(name, sizeof(name), "IMG_%05d.jpg", i);
+    (void)write_file(dir / name, kinds[static_cast<std::size_t>(i % 4)]);
+  }
+}
