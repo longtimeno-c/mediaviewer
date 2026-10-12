@@ -1188,6 +1188,7 @@ if(MV_BUILD_TESTS)
     target_compile_definitions(mv_import_tests PRIVATE MV_TEST_DEV_ADDON_KEY=1)
   endif()
   add_dependencies(mv_import_tests mv_import mv_slots_test_addon)
+  mv_places_addon_tests(mv_import_tests)
   mv_asan_runtime_beside(mv_import_tests)
   catch_discover_tests(mv_import_tests TEST_PREFIX "import_"
     PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT ${MV_TEST_TIMEOUT}

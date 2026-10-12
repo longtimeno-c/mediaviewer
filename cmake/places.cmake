@@ -65,3 +65,16 @@ if(APPLE)
 elseif(WIN32)
   set_target_properties(mv_places PROPERTIES PREFIX "")
 endif()
+
+# The add-on itself through the real loader (tests/test_places_addon.cpp):
+# its manifest accepted, then loaded from a signed store with the committed
+# test blob as its data, the Place section and search answered through the
+# v3 host table. Called by each build's mv_import_tests block.
+function(mv_places_addon_tests target)
+  target_sources(${target} PRIVATE "${MV_SOURCE_ROOT}/tests/test_places_addon.cpp")
+  target_compile_definitions(${target} PRIVATE
+    MV_PLACES_MODULE_PATH="$<TARGET_FILE:mv_places>"
+    MV_PLACES_MANIFEST_JSON="${MV_SOURCE_ROOT}/src/addons/places/manifest.json"
+    MV_PLACES_TEST_BLOB="${MV_SOURCE_ROOT}/tests/data/geo/places-test.mvgeo")
+  add_dependencies(${target} mv_places)
+endfunction()
