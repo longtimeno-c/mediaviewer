@@ -69,6 +69,16 @@ One change in the shared core (`src/io`), used by both hosts.
 - **Tests:** the deep cases live in the `[io]` tests of the Import suite (`mv_import_tests`),
   including under ThreadSanitizer.
 
+## Rename (F2)
+
+Issue #210, [16](16-commands.md) "Marks, copy, move". Not a transfer, but the same port and the
+same rule: `io/rename_stop` renames one stop with `rename_no_replace` (never over a file),
+carrying its pair half and each file's XMP sidecars (`IMG_1234.xmp`, darktable's
+`IMG_1234.CR2.xmp`) under one stem; a taken name moves the whole group to `name (2)` (the
+`collision_name` rule), and a race mid-way puts back what had moved. It runs on the file worker
+(Windows `file_jobs::submit_rename`, Mac the job pool), never the UI thread. Tests:
+`mv_tests "[rename]"`.
+
 ## Not built
 
 - **Transfer (PR 50)**, the general copier: an `io/transfer_job` over this engine (files and

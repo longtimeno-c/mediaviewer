@@ -34,6 +34,7 @@ public static partial class IslandHost
         public const int Settings = 5;
         public const int Export = 6;  // PR 10; ModeMask carries the last packed choice
         public const int ClipTools = 7;  // PR 14; ModeMask carries trim_state.h kClipFlag*
+        public const int Rename = 8;     // issue #210; ModeMask carries the folder index
     }
 
     private sealed class CommandRow
@@ -89,12 +90,53 @@ public static partial class IslandHost
                 });
             }
             RefreshSettingsKeys();
+            RefreshKeyTips();
             return 0;
         }
         catch (Exception ex)
         {
             System.Diagnostics.Debug.WriteLine(ex);
             return unchecked((int)0x80004005);
+        }
+    }
+
+    // The key bound to `commandId` now: its first row in the live table, as the
+    // Mac reads it (SettingsStore.keyLabel). Null while it has none. Menus and
+    // tooltips name keys through this, never a literal, so a remap shows.
+    private static string? KeyOf(int commandId)
+    {
+        foreach (CommandRow row in CommandRows)
+        {
+            if (row.Id == commandId && row.Keys.Length > 0) return row.Keys;
+        }
+        return null;
+    }
+
+    // A tooltip's "text  key", or the text alone while the command is unbound.
+    private static string WithKey(string text, int commandId) =>
+        KeyOf(commandId) is string key ? $"{text}  {key}" : text;
+
+    // " (key)" to follow a sentence, or nothing while the command is unbound.
+    private static string KeyNote(int commandId) =>
+        KeyOf(commandId) is string key ? $" ({key})" : "";
+
+    // Native pushes the table after the bar is built and again on every remap:
+    // tooltips that name a key read it again (the menus rebuild on Opening).
+    private static void RefreshKeyTips()
+    {
+        RenderEditBarButton();  // and the Open in button beside it
+        UpdatePathSearchButton();
+        RefreshIndexingTip();
+        if (_speed is not null) ToolTipService.SetToolTip(_speed, SpeedTip());
+        if (_helpButton is not null)
+        {
+            ToolTipService.SetToolTip(_helpButton, WithKey("Keyboard shortcuts", Command.Help));
+        }
+        // The Edit pane names its keys as it is built: rebuild a visible one.
+        if (_editPaneVisible)
+        {
+            _editShape = "";
+            RenderEdit();
         }
     }
 
@@ -130,6 +172,7 @@ public static partial class IslandHost
                 PopupKind.Find => BuildFind(out focusTarget),
                 PopupKind.Export => BuildExport(args.ModeMask, out focusTarget),
                 PopupKind.ClipTools => BuildClipTools(args.ModeMask, out focusTarget),
+                PopupKind.Rename => BuildRename(args.ModeMask, out focusTarget),
                 _ => null,
             };
             if (content is null)
@@ -141,11 +184,11 @@ public static partial class IslandHost
             // The export dialog takes the arrows and Enter itself, like go-to's
             // digits, so it reports text focus and the router yields.
             _popupTakesText = args.Kind is PopupKind.GoTo or PopupKind.Find or PopupKind.Export
-                or PopupKind.ClipTools;
+                or PopupKind.ClipTools or PopupKind.Rename;
             // Export and clip tools are sheets (issue #199): a centred card,
             // radius 12, padding 20 (ExportView.swift, ClipToolsView.swift),
             // not a menu hanging off the bar's corner.
-            bool sheet = args.Kind is PopupKind.Export or PopupKind.ClipTools;
+            bool sheet = args.Kind is PopupKind.Export or PopupKind.ClipTools or PopupKind.Rename;
             var flyout = new Flyout
             {
                 ShouldConstrainToRootBounds = false,
@@ -321,10 +364,12 @@ public static partial class IslandHost
         FontSize = () => UiFontSize,
         Title = () => Brush(Title),
         Body = () => Brush(Body),
-        Canvas = () => Brush(Canvas),
+        // The Mac's field: a surface fill, radius 6, a 1 px accent border when focused.
+        Canvas = () => Brush(ChromeColour.Surface),
         Hairline = () => Brush(Hairline),
         Selection = () => Brush(TextSelection),
         SelectionInk = () => Brush(TextSelectionInk),
+        Accent = () => Brush(ChromeColour.Accent),
     };
 
     private sealed class FakeInput : MediaViewer.Shared.FakeInput
@@ -363,12 +408,18 @@ public static partial class IslandHost
         TextBlock label = QueryLabel(prompt);
         var panel = new StackPanel { Spacing = 4, Margin = new Thickness(10), IsTabStop = true };
         panel.Children.Add(label);
+        // Typing lands on a label, not a field: name the panel and speak the
+        // number as it is typed (issue #223).
+        AutomationProperties_SetName(panel, "Go to item");
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetHelpText(panel, prompt + ". Type a number, Enter to go");
+        MarkLive(label);
         panel.CharacterReceived += (_, e) =>
         {
             char c = e.Character;
             if (char.IsControl(c)) return;
             query += c;
             SetQuery(label, prompt, query);
+            RaiseLive(label);
             e.Handled = true;
         };
         panel.KeyDown += (_, e) =>
@@ -386,10 +437,48 @@ public static partial class IslandHost
             {
                 query = query[..^1];
                 SetQuery(label, prompt, query);
+                RaiseLive(label);
                 e.Handled = true;
             }
         };
         focusTarget = panel;
+        return panel;
+    }
+
+    // F2 (issue #210): rename the stop at `index`. The field holds the name without
+    // its extension, selected, as Explorer does; Enter parks it for native, which
+    // checks it and renames the file, its pair and its sidecars on the file
+    // worker. Esc closes and renames nothing.
+    private static UIElement? BuildRename(int index, out UIElement focusTarget)
+    {
+        focusTarget = null!;
+        if (index < 0 || index >= Items.Count) return null;
+        FolderItemVm item = Items[index];
+        string name = item.Name;
+        int dot = name.LastIndexOf('.');
+        string stem = dot > 0 ? name[..dot] : name;
+        string ext = dot > 0 ? name[dot..] : "";
+
+        var panel = new StackPanel { Spacing = 6, Margin = new Thickness(12), MinWidth = 340 };
+        panel.Children.Add(Label("Rename", UiFontSize + 2));
+        string carried = item.PairPath.Length > 0
+            ? $"Keeps {ext} and its pair; any .xmp sidecar follows. Never overwrites."
+            : $"Keeps {ext}; any .xmp sidecar follows. Never overwrites.";
+        panel.Children.Add(Label(carried, UiFontSize, mute: true));
+        var field = new FakeInput("New name", 316);
+        field.SetText(stem);
+        field.SelectAll();
+        field.Submitted += () =>
+        {
+            string typed = field.Text.Trim();
+            ClosePopup();
+            if (typed.Length == 0 || typed == stem) return;
+            _treePending = typed;
+            Send(Command.Rename);
+        };
+        AutomationProperties_SetName(field, "New name for " + name);
+        panel.Children.Add(field);
+        focusTarget = field;
         return panel;
     }
 
@@ -408,11 +497,18 @@ public static partial class IslandHost
             found = FindByName(query.Trim(), prefixOnly: false);
             match.Text = found >= 0 ? $"{Items[found].Name}   ({found + 1} / {Items.Count})"
                        : query.Length > 0 ? "No match" : "";
+            AutomationProperties_SetName(match, found >= 0 ? $"{Items[found].Name}, {found + 1} of {Items.Count}"
+                                                : match.Text);
+            RaiseLive(match);
         }
 
         var panel = new StackPanel { Spacing = 6, Margin = new Thickness(10), IsTabStop = true };
         panel.Children.Add(label);
         panel.Children.Add(match);
+        // The result line is what Narrator reads as the name is typed (issue #223).
+        AutomationProperties_SetName(panel, prompt);
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetHelpText(panel, "Type part of a name, Enter to go");
+        MarkLive(match);
         panel.CharacterReceived += (_, e) =>
         {
             char c = e.Character;
@@ -486,7 +582,15 @@ public static partial class IslandHost
             {
                 rowLabels[r].Text = (r == row ? "\u25C0  " : "    ") + ValueOf(r) + (r == row ? "  \u25B6" : "");
                 rowLabels[r].Foreground = Brush(r == row ? Title : Body);
+                AutomationProperties_SetName(rowLabels[r], $"{names[r]}: {ValueOf(r)}");
             }
+        }
+        // Rows are labels on a focused panel: speak the current one as ↑ ↓ ← →
+        // move it (issue #223).
+        void Speak()
+        {
+            Refresh();
+            RaiseLive(rowLabels[row]);
         }
         void Step(int r, int delta)
         {
@@ -497,7 +601,7 @@ public static partial class IslandHost
                 case 2: size = (size + delta + ExportSizes.Length) % ExportSizes.Length; break;
                 default: policy = (policy + delta + ExportPolicies.Length) % ExportPolicies.Length; break;
             }
-            Refresh();
+            Speak();
         }
         void Confirm()
         {
@@ -513,6 +617,7 @@ public static partial class IslandHost
             Grid.SetRow(name, r);
             grid.Children.Add(name);
             rowLabels[r] = Label("", UiFontSize);
+            MarkLive(rowLabels[r]);
             int captured = r;
             var value = FlatButton(rowLabels[r], new Thickness(0));
             value.Click += (_, _) => { row = captured; Step(captured, 1); };
@@ -530,14 +635,17 @@ public static partial class IslandHost
         export.IsTabStop = false;
         ToolTipService.SetToolTip(export, "Enter");
         panel.Children.Add(SheetButtons(cancel, export));
+        AutomationProperties_SetName(panel, "Export a copy");
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetHelpText(
+            panel, "Up and Down choose a setting, Left and Right change it, Enter exports, Escape cancels");
         Refresh();
 
         panel.KeyDown += (_, e) =>
         {
             switch (e.Key)
             {
-                case Windows.System.VirtualKey.Up: row = (row + Rows - 1) % Rows; Refresh(); e.Handled = true; break;
-                case Windows.System.VirtualKey.Down: row = (row + 1) % Rows; Refresh(); e.Handled = true; break;
+                case Windows.System.VirtualKey.Up: row = (row + Rows - 1) % Rows; Speak(); e.Handled = true; break;
+                case Windows.System.VirtualKey.Down: row = (row + 1) % Rows; Speak(); e.Handled = true; break;
                 case Windows.System.VirtualKey.Left: Step(row, -1); e.Handled = true; break;
                 case Windows.System.VirtualKey.Right: Step(row, 1); e.Handled = true; break;
                 case Windows.System.VirtualKey.Enter: Confirm(); e.Handled = true; break;
