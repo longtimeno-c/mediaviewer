@@ -62,6 +62,15 @@ private func readTable(_ fetch: (UnsafeMutablePointer<CChar>?, Int32) -> Int32) 
     .map { $0.split(separator: "\t", omittingEmptySubsequences: false) }
 }
 
+/// Reads one of the host's plain strings (two calls, like `readTable`).
+private func readText(_ fetch: (UnsafeMutablePointer<CChar>?, Int32) -> Int32) -> String {
+  let needed = Int(fetch(nil, 0))
+  guard needed > 0 else { return "" }
+  var buf = [CChar](repeating: 0, count: needed + 1)
+  _ = buf.withUnsafeMutableBufferPointer { fetch($0.baseAddress, Int32($0.count)) }
+  return String(cString: buf)
+}
+
 @MainActor
 final class MetadataStore: ObservableObject {
   static let shared = MetadataStore()
