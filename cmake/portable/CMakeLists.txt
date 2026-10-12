@@ -117,6 +117,8 @@ add_executable(mv_import_tests
   "${MV_ROOT}/tests/test_addon_manifest.cpp"
   "${MV_ROOT}/tests/test_open_addons.cpp"
   "${MV_ROOT}/tests/test_addon_contributions.cpp"
+  "${MV_ROOT}/tests/test_addon_screens.cpp"
+  "${MV_ROOT}/tests/test_addon_slots.cpp"
   "${MV_ROOT}/tests/test_ai_resume.cpp"
   "${MV_ROOT}/tests/test_import_naming.cpp"
   "${MV_ROOT}/tests/test_import_engine.cpp"
@@ -126,8 +128,9 @@ target_link_libraries(mv_import_tests PRIVATE mv_io mv_addon mv_import_engine
   ${MV_SODIUM_TARGET} ${MV_CATCH2_TARGET})
 target_include_directories(mv_import_tests PRIVATE "${MV_ROOT}/src" "${MV_ROOT}/tests")
 target_compile_definitions(mv_import_tests PRIVATE
-  MV_IMPORT_MODULE_PATH="$<TARGET_FILE:mv_import>")
-add_dependencies(mv_import_tests mv_import)
+  MV_IMPORT_MODULE_PATH="$<TARGET_FILE:mv_import>"
+  MV_SLOTS_TEST_MODULE_PATH="$<TARGET_FILE:mv_slots_test_addon>")
+add_dependencies(mv_import_tests mv_import mv_slots_test_addon)
 add_test(NAME mv_import_tests COMMAND mv_import_tests)
 # The dateless-file fallback is local wall-clock time; pin the zone.
 set_tests_properties(mv_import_tests PROPERTIES ENVIRONMENT "TZ=UTC")

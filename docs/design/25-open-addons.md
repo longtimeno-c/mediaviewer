@@ -7,7 +7,10 @@ Windows and macOS together (D9). Milestone L, PRs 55–60. Not a D-decision. PR 
 ([Implementation notes](#implementation-notes-pr-55-2026-09-29)); PR 56 is built, both halves
 ([first](#pr-56-first-half-import-described-by-its-manifest-2026-10-04),
 [second](#pr-56-second-half-declarative-contributions-2026-10-11)); the owner's calls on code, network,
-the file type and licensing were made on 2026-10-03 ([§17](#17-decisions-owner-2026-10-03)).**
+the file type and licensing were made on 2026-10-03 ([§17](#17-decisions-owner-2026-10-03)). PRs 58
+(screens) and 59 (slots) are built for MediaViewer's own native add-ons, ahead of PR 57's scripts
+([Implementation notes](#implementation-notes-prs-58-59-2026-10-11)). Owner, 2026-10-11: an add-on
+carries its own code and its own data ([§1](#1-what-this-is)).**
 
 ## 1. What this is
 
@@ -21,6 +24,13 @@ Two things, which today are one closed thing:
    twice, once per host (the path-bar search icon, the Settings page it owns). This plan adds a
    **contribution model**: named points an add-on fills in — themes, settings pages, commands and
    keys, chrome slots, search providers, whole screens — that both hosts read from one table.
+
+**An add-on carries its own code and its own data (owner, 2026-10-11).** A feature delivered as an
+add-on lives in its package: its library, any chrome, and its data, signed together and installed
+and removed together. It is not shipped dormant inside the app with only the bulk downloaded (the
+2026-09-28 call made for Final Cut Pro search, which this replaces as the rule; [12](12-decision-log.md)).
+There is still never a second *app* to install or open. Places (#344) is the first: `src/geo` and
+its place data ship in the Places package, and fill the screens and slots below.
 
 **What does not change:** Import, Local search and Voice ([18](18-import.md),
 [17](17-local-ai-search.md), [19](19-voice.md)) keep their channel, their key, their native code
@@ -169,13 +179,16 @@ introduced it, exists on both hosts, and has a default the base app provides.
 | **Settings page** | 2 | 56 (built 2026-10-11) | A schema: sections, toggles, choices, numbers, text, each with a key, default and help; `enabled_by` greys an item while a toggle is off | — | Rendered by the host when Settings opens; values in one file per add-on id the core keeps (not each host's own store: [12](12-decision-log.md)), kept on remove unless asked |
 | **Keymap** | 2 | 56 (built 2026-10-11) | Bindings for existing commands (the v1.1 "named layouts": FastStone, IrfanView, vim) | `default_bindings()` | Applied to the live table once; the router stays an array index ([16](16-commands.md#one-table-editable)) |
 | **Command** | 3 | 57 | A name, a default key, and the script function it runs | — | Rows appended to the table at load; a key clash is resolved for the base app, the add-on's key is dropped and Settings says so |
-| **Screen** | 4 | 58 | A view tree ([§10](#10-screens)) in a window, a pane or a sheet | — | Built by the host from data; updates are diffs posted from the add-on's worker |
-| **Chrome slot** | 5 | 59 | Command-bar and path-bar items, context-menu entries, info-pane sections, status items, gallery tile badges | — | Badges come from a table filled off-thread; **no add-on call per tile**, ever |
-| **Search provider** | 5 | 59 | Answers a query with a list of files | File-name search (base app, 2026-09-28) | Runs on the add-on's worker with the query's generation; a stale answer is dropped |
+| **Screen** | 4 | 58 (built 2026-10-11, first-party native) | A view tree ([§10](#10-screens)) in a window, a pane or a sheet | — | Built by the host from data; updates are diffs posted from the add-on's worker |
+| **Chrome slot** | 5 | 59 (built 2026-10-11, first-party native) | Command-bar and path-bar items, context-menu entries, info-pane sections, status items, gallery tile badges | — | Badges come from a table filled off-thread; **no add-on call per tile**, ever |
+| **Search provider** | 5 | 59 (built 2026-10-11, first-party native) | Answers a query with a list of files | File-name search (base app, 2026-09-28) | Runs on the add-on's worker with the query's generation; a stale answer is dropped |
 | **Export / files** | 6 | 60 | Writes new files into a folder the user chose; metadata through PR 12's writer | — | Jobs on the job system, generation-tagged |
 
 Local search becomes a search provider in PR 59 instead of owning the path-bar button (#76); it
-keeps its native pack and its own channel.
+keeps its native pack and its own channel. As built (2026-10-11): while the pack is attached the
+host lists it in the registry as the local-scope provider, a Local search query goes to every
+other local-scope provider too, and the result list's path row offers their rows ("+ 3 in
+Portugal"); the pack's own rich results stay in its panel.
 
 ## 8. Themes (API 1)
 
@@ -335,8 +348,8 @@ installed.
 | **55** | **Open packages and themes.** The `.mvaddon` reader, manifest schema 2, publisher keys, the consent sheet, install from file and from link, check for update, remove, Settings → Add-ons "From others", Settings → Appearance → Theme, the token table on both hosts, the SDK, the author's guide | A package made by the SDK with a fresh key installs from a file and from an `https` link, shows the publisher and fingerprint, and themes the chrome; choosing Default restores it exactly. **Refused, each with its reason:** one changed byte in any file or the manifest; an extra entry; a compressed, encrypted or ZIP64 package; a path with `..`; a package naming code; a second publisher's package under an installed id; an older version; a theme under the contrast floor; a package swapped after the sheet was shown. The link request carries no cookie, query or identifier of ours. With an add-on installed and a theme on: launch → first pixel and launch → full resolution within noise of none installed (alternated runs), 0 presents idle, **both present-loop gates**. With none installed: no folder created, no file read at start |
 | 56 | **Declarative contributions.** Settings pages from a schema, keymap packs, theme shape (radius, density, type scale), first-party chromes read the host's tokens | A settings page renders the same controls and order on both hosts from one schema; its values survive restart and removal-with-keep; a keymap pack rebinds and Reset restores; `?` lists what is bound |
 | 57 | **Code** (owner call 1, made). The runtime, one worker per add-on, limits and watchdog, permissions in the consent sheet, commands | A script command runs from its key on both hosts; a runaway loop and an allocation bomb each stop the add-on, not the viewer, within the watchdog's bound; without `folder.read` the folder API is absent; **both gates hold while a script spins** |
-| 58 | **Screens.** The view vocabulary, windows / panes / sheets, diffs, events | One add-on's screen renders natively on both hosts, keyboard-only, VoiceOver and Narrator name every control; a 2,000-tile thumbnail grid scrolls without a hitch |
-| 59 | **Slots and search providers.** Bar items, context menus, info-pane sections, tile badges; file-name search and Local search as providers | Badges for a 10,000-file folder cost no add-on call per tile (counted); a slow provider never delays typing; removing the add-on removes every item |
+| 58 | **Screens** (built 2026-10-11 for first-party native add-ons, [notes](#implementation-notes-prs-58-59-2026-10-11)). The view vocabulary, windows / panes / sheets, diffs, events | One add-on's screen renders natively on both hosts, keyboard-only, VoiceOver and Narrator name every control; a 2,000-tile thumbnail grid scrolls without a hitch |
+| 59 | **Slots and search providers** (built 2026-10-11 for first-party native add-ons). Bar items, context menus, info-pane sections, tile badges; file-name search and Local search as providers | Badges for a 10,000-file folder cost no add-on call per tile (counted); a slow provider never delays typing; removing the add-on removes every item |
 | 60 | **Files.** `files.write`, exports, `metadata.write`. No `network`, ever | An add-on export never overwrites and never touches an original (rule 5, tested by hash); no add-on can open a connection, shown by the host API's surface |
 
 **Sequencing:** 55 is useful alone and decides nothing about code. 57 → 58 → 59 → 60 are the
@@ -502,6 +515,95 @@ Asked as open calls on 2026-09-29; answered on the pull request on 2026-10-03.
 4. **Licence of add-ons:** delegated; decided as the GPL section 7 additional permission in
    [§12](#12-licensing), with the SDK staying MIT.
 5. **"From others"** stays the wording.
+
+## Implementation notes (PRs 58-59, 2026-10-11)
+
+Built for MediaViewer's own native add-ons (§9 option B), ahead of PR 57's scripts, issue #348.
+The first consumer is Places (#344): an info-pane section (place, coordinates, a map surface with
+a chrome-drawn pin) and a search provider (`portugal`, `place:`, `in:`).
+
+| Piece | Code |
+|---|---|
+| The view-tree vocabulary (all 19 node types), its checks, diffs and events | `src/addon/screen.*` |
+| What a manifest contributes (screens, info sections, providers, items, badges; the symbol set) | `src/addon/contrib.h`; parsed for schema 1 in `src/addon/manifest.cpp` |
+| The registry: tables built at attach, one worker per add-on, coalesced generation-tagged requests, trees, surfaces, rows, badge sets, status | `src/addon/slots.*` |
+| Host table v3 (`screen_post` … `locations_in`) and the add-on side `mv.slots.1` | `mediaviewer_addon.h`, thunks in `src/addon/host.cpp`; `loaded_addon::load` attaches, its destructor detaches first |
+| A file's coordinates, a bounded read | `src/meta/location.*` (becomes `geo_point` when #290 lands) |
+| C ABI 0.25 for the Windows chrome | `mv_slots_*` in `src/abi/slots_abi.cpp`, `mv_slots_thumbnail_path` in `abi/addon_abi.cpp`; `SlotNative` in `MediaViewer.Interop/Slots.cs` |
+| Mac bridge and chrome | `mv_chrome_slots_*` in `src/shell/slots_mac.mm`; slot add-ons loaded in `addons_mac.mm` (`MvSlotAddonsStart`); `SlotStore.swift`, `ScreenView.swift`, `SlotItems.swift`, hooks in `MetadataView/Store`, `FileSearch`, `CommandBarView`, `GalleryView`, `AddonsView` |
+| Windows chrome | `IslandHost.Slots.cs`, `IslandHost.Screens.cs`, hooks in `IslandHost.Panels.cs`, `.FileSearch.cs`, `.Gallery.cs`, `.Addons.cs` |
+| Tests | `tests/test_addon_screens.cpp`, `tests/test_addon_slots.cpp` (in `mv_import_tests`, all three builds) over a real native test add-on, `tests/addons/slots_test` (`mv_slots_test_addon`), loaded through a signed store; `tests/test_meta_location.cpp` in `mv_tests` |
+
+How it works:
+
+- **Manifest (schema 1).** `contributes.api {min, max}` names the contribution API range; then
+  `screens`, `info_sections`, `search_providers`, `bar_items`, `path_items`, `context_menu`,
+  `status_items`, `tile_badges`, each an array of at most 16. A point outside the range is
+  malformed; a range starting past this host (5) is "needs a newer MediaViewer". Naming any of
+  them needs `host_api.min` 3, and an add-on that only fills slots may name no `chrome`. A
+  stranger's schema 2 add-on naming one is `code_not_allowed` until PR 57.
+- **One worker per add-on.** Every call into an add-on (`info_section`, `search`, `screen_open`,
+  `badges`, `event`) runs there. A newer request of the same kind replaces the queued one; events
+  queue in order. Generations are global: a post for a stale one is `MV_ERR_CANCELLED` and
+  changes nothing, and `is_stale` lets a provider stop early. An idle add-on's worker sleeps on a
+  condition variable.
+- **Trees.** The core keeps each screen's tree, checks every tree and diff whole, and hands the
+  chromes one canonical JSON. Every control, picture and surface must carry a `label` (its
+  VoiceOver / Narrator name), or the tree is refused. Events from the chrome are checked against
+  the tree (node exists, is interactive and enabled, value of the right kind and range) and the
+  tree keeps the new value; the add-on answers with a diff. Text fields report on Return and on
+  losing focus, sliders when let go: never an add-on call per key.
+- **Info sections** are asked for when the Metadata pane shows a file, once per file and width,
+  and never for a file without coordinates when the section says `"when": "location"`. Both hosts
+  draw them at the very bottom of the pane opened with `I`, after all built-in metadata, on every
+  tab, never collapsed (owner, 2026-10-12). A `surface` is BGRA the add-on drew at the pane's
+  width × backing scale; the chrome draws the pin over it in the accent colour, with a drop-in
+  that Reduce Motion turns off, and the surface's `marks` (up to 64 names, priority order, a
+  name skipped where it would overlap one drawn or the pin) as native text.
+- **Interactive surfaces (owner, 2026-10-12).** A surface with `"interactive": true` (or
+  `{"min_scale", "max_scale"}`) takes the pointer: a mouse wheel or a trackpad pinch (on Windows a
+  precision touchpad's pinch arrives as Ctrl + wheel) zooms about the pointer, a drag pans, a
+  double-click is reported; a trackpad two-finger scroll is left to the pane. During a gesture
+  the chrome scales / moves the current pixels itself, within the bounds, and when it settles
+  sends one event (`zoom` {scale, x, y}, `pan` {dx, dy}, `double` {x, y}; surface coordinates,
+  0..1); the add-on's next pixels replace the provisional transform. Nothing presents the canvas.
+- **Search providers.** File search posts the typed text on every debounced change and returns;
+  name hits show at once and a provider's rows join when they arrive, with its reason
+  ("Portugal") or "Still reading tags — N of M" under the field. A query starting with a
+  provider's prefix (`place:`) goes to that provider alone, prefix removed, unless a digit follows
+  (Local search's `in:2024` stays a date term). `locations_in` walks the folder at background
+  priority (it waits while the viewer presents) and caches coordinates by path + size + mtime, so
+  a second query reads nothing.
+- **Badges** are asked once per folder the gallery shows, posted as sets, inverted once into a
+  path → badges table; a tile is a dictionary lookup (the verify counts add-on calls).
+- **Items.** A bar or path item with `opens` opens that screen with no add-on call; otherwise the
+  add-on gets a `command` event with the paths its `target` names (the marks, else the current
+  file; the folder). Context-menu entries are on gallery tiles. Status items are text in the
+  command bar.
+- **Screens** open as a window, a docked pane or a sheet, each with Done and Esc. The docked pane
+  is not an island in the viewer's layout ([12](12-decision-log.md)): it lies **over** the right
+  side of the canvas, which does not reflow around it. On the Mac it is a child panel held to the
+  right edge of the viewer window's content: it follows the viewer's moves, resizes and full
+  screen (in and out), and moves to whichever viewer window becomes main. On Windows it is a
+  separate window placed at the viewer's right edge when it opens and **not held after that**:
+  moving, resizing or maximising the viewer leaves it where it was, and it is not owned by the
+  viewer window (it does not minimise with it). Holding it needs the viewer's move/size events in
+  the C# host (a WinEvent hook or the host's window procedure), not done yet. A thumbnail grid is
+  virtualised (LazyVGrid / ItemsRepeater) and each tile asks the viewer's JPEG-512 cache as it
+  appears, cancelled as it leaves.
+- **Removal** (Settings → Add-ons lists every installed slot add-on with Remove): the add-on is
+  detached first, which removes every item and waits for a call it is in, then shut down and
+  unloaded; off the UI thread on both hosts. No restart.
+- **Local search** is listed as the local-scope provider while the AI pack is attached
+  ([12](12-decision-log.md)).
+- **Launch.** Slot add-ons load on the add-on queue / a worker after Import's and the AI pack's
+  checks, never on the UI thread; nothing is asked of one until something is shown.
+
+For a script add-on (PR 57): the registry reaches code through `slot_client`; a script runtime
+implements it on its own worker and calls the same `post_*` functions the v3 rows wrap.
+
+PRs 58 and 59 are one branch: the registry carries both and the Metadata pane's sections are a
+screen in a slot, so the two halves share every file.
 
 ## Implementation notes (PR 55, 2026-09-29)
 

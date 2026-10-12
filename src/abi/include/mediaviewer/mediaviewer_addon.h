@@ -48,8 +48,10 @@ extern "C" {
  *
  *   1  Milestone G: io, folder model, pairing, thumbnails, scheduling.
  *   2  Milestone H: stills and video frames as pixels, moment thumbnails,
- *      family pieces (docs/design/17 "The AI pack"). */
-#define MV_ADDON_HOST_API 2
+ *      family pieces (docs/design/17 "The AI pack").
+ *   3  2026-10-11, docs/design/25 PRs 58-59: screens and slots (screen_post ...
+ *      locations_in), and the add-on side's "mv.slots.1" interface. */
+#define MV_ADDON_HOST_API 3
 #define MV_ADDON_HOST_API_OLDEST 1
 
 /* Add-on completion kinds, posted through the host's completion queue with
@@ -214,6 +216,158 @@ typedef struct mv_addon_event {
   int64_t payload;   /* kind-specific scalar. Never a pointer. */
 } mv_addon_event;
 
+/* ---- v3: screens and slots (2026-10-11, docs/design/25 §7, §10; PRs 58-59) ------
+ *
+ * An add-on adds to pages the app already has (an info-pane section, a search
+ * provider, command-bar / path-bar / context-menu / status items, gallery tile
+ * badges) and opens screens of its own (a window, a docked pane, a sheet).
+ * What it contributes is in its manifest and is resolved ONCE, at load, off
+ * the UI thread, into tables the chromes read. The host asks the add-on for
+ * content through the "mv.slots.1" interface below, always on ONE worker
+ * thread the host keeps for that add-on (never the UI, render or decode
+ * threads); the add-on answers through the v3 rows of mv_host_api, from any
+ * thread. Every request carries a generation: a newer request of the same
+ * kind supersedes a queued one, and an answer for a generation that is no
+ * longer current is dropped by the host (is_stale lets the add-on stop early).
+ *
+ * A screen is a VIEW TREE in JSON (docs/design/25 §10): node types stack, grid,
+ * scroll, split, text, image, thumbnail, thumbnail_grid, list, table, button,
+ * toggle, choice, slider, number, text_field, progress, separator, surface.
+ * The host checks every tree and diff whole (src/addon/screen.h) and refuses
+ * one that is not valid; every control and picture must carry a "label"
+ * (VoiceOver / Narrator). A script add-on (PR 57) fills the same slots
+ * through the same calls. */
+
+/* Colours are 0xRRGGBBAA, from the host's theme (docs/design/25 §8 tokens). */
+typedef struct mv_slot_theme {
+  uint32_t canvas;
+  uint32_t surface;
+  uint32_t title;
+  uint32_t body;
+  uint32_t disabled;
+  uint32_t hairline;
+  uint32_t accent;
+  uint32_t dark;            /* 1 when the chrome is dark */
+} mv_slot_theme;
+
+typedef struct mv_addon_location {
+  uint32_t has;             /* 0: the file carries no coordinates */
+  uint32_t has_altitude;
+  double lat;               /* degrees, north positive */
+  double lon;               /* degrees, east positive */
+  double altitude_m;
+} mv_addon_location;
+
+typedef struct mv_addon_location_entry {
+  const char* path_utf8;
+  mv_addon_location location;
+} mv_addon_location_entry;
+/* Return non-zero to continue, zero to stop. */
+typedef int32_t(MV_CALL* mv_addon_location_fn)(void* user, const mv_addon_location_entry* entry);
+
+/* Asks for an info-pane section's tree for the file on screen. */
+typedef struct mv_slot_info_request {
+  uint32_t struct_size;
+  uint32_t reserved;
+  uint64_t generation;
+  const char* section_id;       /* the manifest's info_sections[].id */
+  const char* path_utf8;        /* the file on screen */
+  mv_addon_location location;   /* parsed from location_text; has = 0 when none */
+  const char* location_text;    /* the host's own "48.85837° N, 2.29448° E", or "" */
+  mv_slot_theme theme;
+  float width_pt;               /* the pane's content width */
+  float scale;                  /* backing scale: a surface is width_pt * scale pixels wide */
+} mv_slot_info_request;
+
+#define MV_SLOT_SCOPE_FILES 1u  /* file search (Ctrl/Cmd+F, the base app) */
+#define MV_SLOT_SCOPE_LOCAL 2u  /* Local search (the AI panel) */
+
+typedef struct mv_slot_search_request {
+  uint32_t struct_size;
+  uint32_t scope;               /* MV_SLOT_SCOPE_* */
+  uint64_t generation;
+  const char* provider_id;
+  const char* query_utf8;       /* as typed, minus a matched prefix ("place:") */
+  const char* folded_utf8;      /* lowercase, diacritics dropped */
+  const char* folder_utf8;      /* the folder on screen ("" for Local search over the index) */
+} mv_slot_search_request;
+
+typedef struct mv_slot_search_row {
+  const char* path_utf8;        /* absolute */
+  const char* why_utf8;         /* "Portugal": shown with the result; may be "" */
+} mv_slot_search_row;
+
+#define MV_SLOT_PLACE_INFO 0u
+#define MV_SLOT_PLACE_WINDOW 1u
+#define MV_SLOT_PLACE_PANE 2u
+#define MV_SLOT_PLACE_SHEET 3u
+
+/* A window, pane or sheet of the add-on's opened (manifest screens[]). */
+typedef struct mv_slot_screen_request {
+  uint32_t struct_size;
+  uint32_t place;               /* MV_SLOT_PLACE_* */
+  uint64_t generation;
+  const char* screen_id;
+  const char* path_utf8;        /* the file on screen when it opened, or "" */
+  mv_slot_theme theme;
+  float width_pt;
+  float height_pt;
+  float scale;
+  uint32_t reserved;
+} mv_slot_screen_request;
+
+/* Badges for a folder the gallery shows: the add-on posts badges_post once per
+ * badge for the whole folder. Never asked per tile. */
+typedef struct mv_slot_badges_request {
+  uint32_t struct_size;
+  uint32_t reserved;
+  uint64_t generation;
+  const char* folder_utf8;
+} mv_slot_badges_request;
+
+#define MV_SLOT_EVENT_CLICK 1u     /* button */
+#define MV_SLOT_EVENT_CHANGE 2u    /* toggle, choice, slider, number, text_field: value */
+#define MV_SLOT_EVENT_SUBMIT 3u    /* text_field Return: value */
+#define MV_SLOT_EVENT_SELECT 4u    /* list, table, thumbnail_grid: a JSON array of ids / paths */
+#define MV_SLOT_EVENT_ACTIVATE 5u  /* Return / double-click on one row: a JSON string */
+#define MV_SLOT_EVENT_OPEN 7u      /* reserved: opening is screen_open */
+#define MV_SLOT_EVENT_CLOSE 8u     /* the person closed the window / pane / sheet */
+#define MV_SLOT_EVENT_COMMAND 9u   /* a bar / path / context / status item: node_id = item id,
+                                    * value = a JSON array of the paths it targets */
+/* A `surface` with "interactive": true (2026-10-12): the pointer over it. A
+ * trackpad pinch or a mouse wheel zooms; a trackpad two-finger scroll is left
+ * to the pane. The chrome may scale / move the current pixels until new ones
+ * arrive; none of it presents the canvas. Coordinates are in the surface,
+ * 0..1 from its top-left. */
+#define MV_SLOT_EVENT_ZOOM 10u     /* {"scale": factor (0.05..20, >1 in), "x", "y": the anchor} */
+#define MV_SLOT_EVENT_PAN 11u      /* {"dx", "dy"}: the drag, in surface widths / heights (-10..10) */
+#define MV_SLOT_EVENT_DOUBLE 12u   /* {"x", "y"}: a double-click */
+
+typedef struct mv_slot_event {
+  uint32_t struct_size;
+  uint32_t kind;                /* MV_SLOT_EVENT_* */
+  uint64_t generation;          /* the screen's (0 for an item) */
+  const char* screen_id;        /* "" for an item */
+  const char* node_id;
+  const char* value_json;       /* checked against the tree; "" for a click */
+} mv_slot_event;
+
+/* The add-on side: query(addon, MV_SLOTS_INTERFACE) returns this when the
+ * manifest contributes screens or slots. Every call runs on the host's worker
+ * for this add-on, one at a time; it may take as long as it needs (a slow
+ * provider never delays typing: the chrome does not wait for it). NULL entries
+ * mean "nothing of that kind". */
+#define MV_SLOTS_INTERFACE "mv.slots.1"
+typedef struct mv_addon_slots {
+  uint32_t struct_size;
+  uint32_t reserved;
+  mv_status(MV_CALL* info_section)(void* addon, const mv_slot_info_request* request);
+  mv_status(MV_CALL* search)(void* addon, const mv_slot_search_request* request);
+  mv_status(MV_CALL* screen_open)(void* addon, const mv_slot_screen_request* request);
+  mv_status(MV_CALL* badges)(void* addon, const mv_slot_badges_request* request);
+  void(MV_CALL* event)(void* addon, const mv_slot_event* event);
+} mv_addon_slots;
+
 typedef struct mv_host_api {
   uint32_t struct_size;
   uint32_t host_api;          /* MV_ADDON_HOST_API of the host */
@@ -366,9 +520,57 @@ typedef struct mv_host_api {
    * when the person has not changed it. MV_ERR_IO when the add-on's page has
    * no such key. A short buffer returns MV_ERR_INVALID_ARG with *out_size
    * (bytes including the NUL) set. Appended: read it only when `struct_size`
-   * covers it and the pointer is non-NULL. */
+   * covers it and the pointer is non-NULL. (PR 56.) */
   mv_status(MV_CALL* settings_get)(void* host, const char* key_utf8, char* out_utf8,
                                    uint32_t capacity, uint32_t* out_size);
+
+  /* ---- v3: screens and slots (2026-10-11, docs/design/25 PRs 58-59) -------
+   * [any-thread][no-block] unless noted. A call for a generation that is no
+   * longer current returns MV_ERR_CANCELLED and changes nothing. A tree or
+   * diff the vocabulary refuses returns MV_ERR_INVALID_ARG and the screen
+   * keeps what it had; the host logs why (never a path). Read these only when
+   * the table's host_api is 3 or more. */
+
+  /* A whole view tree for one of the add-on's screens or info sections. */
+  mv_status(MV_CALL* screen_post)(void* host, const char* screen_id, uint64_t generation,
+                                  const char* tree_json);
+  /* A diff against the tree last posted for `screen_id` (screen.h). */
+  mv_status(MV_CALL* screen_diff)(void* host, const char* screen_id, uint64_t generation,
+                                  const char* diff_json);
+  /* Pixels for a `surface` node: 8-bit BGRA, premultiplied, sRGB. Copied. At
+   * most 4096 x 4096. */
+  mv_status(MV_CALL* surface_post)(void* host, const char* screen_id, const char* surface_id,
+                                   uint64_t generation, const uint8_t* bgra, uint32_t width,
+                                   uint32_t height, uint32_t stride);
+  /* Rows for a search request; `done` = 1 on the last batch (the chrome stops
+   * saying "searching"). Rows of a stale generation are dropped. */
+  mv_status(MV_CALL* search_post)(void* host, const char* provider_id, uint64_t generation,
+                                  const mv_slot_search_row* rows, uint32_t count, uint32_t done);
+  /* "Still reading tags: done of total", while a provider works. */
+  void(MV_CALL* search_progress)(void* host, const char* provider_id, uint64_t generation,
+                                 uint32_t done, uint32_t total);
+  /* Non-zero when no request of that generation is current any more. */
+  int32_t(MV_CALL* is_stale)(void* host, uint64_t generation);
+  /* The files in the folder of `generation` (a badges request) that carry
+   * `badge_id`. replace = 1 replaces the badge's set, 0 adds to it. A table
+   * the gallery reads: the add-on is never asked per tile. */
+  mv_status(MV_CALL* badges_post)(void* host, const char* badge_id, uint64_t generation,
+                                  const char* const* paths_utf8, uint32_t count, uint32_t replace);
+  /* A status item's text ("" hides it until the next post). */
+  mv_status(MV_CALL* status_post)(void* host, const char* item_id, const char* text_utf8);
+  /* Opens (show = 1) or closes (0) one of the add-on's window / pane / sheet
+   * screens, as the person could from an item. Opening calls screen_open. */
+  mv_status(MV_CALL* screen_show)(void* host, const char* screen_id, uint32_t show);
+  /* [worker-thread] A file's coordinates, from the host's metadata read
+   * (cached by path + size + mtime). MV_OK with has = 0 when it has none. */
+  mv_status(MV_CALL* location_of)(void* host, const char* path_utf8, mv_addon_location* out);
+  /* [worker-thread] Every file in `folder_utf8` (not recursive) with its
+   * coordinates, read at background priority (it waits while the viewer
+   * presents) and cached as location_of, so a second pass reads nothing.
+   * `generation` is the search or badges request it serves: when it goes
+   * stale the walk stops with MV_ERR_CANCELLED. */
+  mv_status(MV_CALL* locations_in)(void* host, const char* folder_utf8, uint64_t generation,
+                                   mv_addon_location_fn visit, void* user);
 } mv_host_api;
 
 typedef struct mv_addon_api {
@@ -488,6 +690,73 @@ MV_API mv_status MV_CALL mv_addon_quit(void);
 MV_API mv_status MV_CALL mv_addon_quit_wait(uint32_t timeout_ms);
 
 /* ---------------------------------------------------------------------------
+ * Screens and slots, the chrome's side (docs/design/25 PRs 58-59; ABI 0.25,
+ * additive). The Windows chrome reads the core's registry (src/addon/slots.h)
+ * through these; the Mac chrome has the same calls as mv_chrome_slots_* in its
+ * bridge. Add-ons that fill slots are loaded with mv_addon_load(session, id,
+ * MV_SLOTS_INTERFACE, ...), which attaches what their manifest contributes;
+ * mv_addon_unload / mv_addon_remove detach every item at once (call them off
+ * the UI thread: detaching waits for a call the add-on is in).
+ *
+ * [any-thread][no-block] for every call: reads copy a table, requests post to
+ * an add-on's worker and return. JSON out follows the buffer rule above. The
+ * shapes are slot_registry's (contributions_json, info_json, screens_json,
+ * search_json, badges_json, status_json in src/addon/slots.h).
+ * ------------------------------------------------------------------------- */
+
+/* What changed (bits): 1 contributions, 2 info, 4 screens, 8 search, 16
+ * badges, 32 status. Called on any thread; must not block (the chrome hops to
+ * its dispatcher). NULL clears it. */
+typedef void(MV_CALL* mv_slots_changed_fn)(void* user, uint32_t bits);
+MV_API mv_status MV_CALL mv_slots_set_listener(mv_slots_changed_fn fn, void* user);
+
+MV_API mv_status MV_CALL mv_slots_contributions_json(char* out, uint32_t cap, uint32_t* needed);
+MV_API mv_status MV_CALL mv_slots_info_json(char* out, uint32_t cap, uint32_t* needed);
+MV_API mv_status MV_CALL mv_slots_screens_json(char* out, uint32_t cap, uint32_t* needed);
+MV_API mv_status MV_CALL mv_slots_search_json(uint32_t scope, char* out, uint32_t cap, uint32_t* needed);
+MV_API mv_status MV_CALL mv_slots_badges_json(char* out, uint32_t cap, uint32_t* needed);
+MV_API mv_status MV_CALL mv_slots_status_json(char* out, uint32_t cap, uint32_t* needed);
+
+/* The Metadata pane shows `path_utf8`; `location_text` is the pane's own
+ * "Location" value ("" none). Sections that need a location are not asked
+ * for a file without one. */
+MV_API mv_status MV_CALL mv_slots_request_info(const char* path_utf8, const char* location_text,
+                                               const mv_slot_theme* theme, float width_pt, float scale,
+                                               uint64_t* out_generation);
+MV_API mv_status MV_CALL mv_slots_clear_info(void);
+/* MV_SLOT_SCOPE_FILES (file search, the folder `folder_utf8`) or
+ * MV_SLOT_SCOPE_LOCAL (Local search). An empty query clears and asks nobody. */
+MV_API mv_status MV_CALL mv_slots_search(uint32_t scope, const char* query_utf8, const char* folder_utf8,
+                                         uint64_t* out_generation);
+/* The gallery shows `folder_utf8`: one badges request per add-on with badges. */
+MV_API mv_status MV_CALL mv_slots_request_badges(const char* folder_utf8, uint64_t* out_generation);
+MV_API mv_status MV_CALL mv_slots_open_screen(const char* addon, const char* screen, const char* path_utf8,
+                                              const mv_slot_theme* theme, float width_pt, float height_pt,
+                                              float scale);
+MV_API mv_status MV_CALL mv_slots_close_screen(const char* addon, const char* screen);
+/* A control changed (MV_SLOT_EVENT_CLICK .. ACTIVATE). MV_ERR_INVALID_ARG when
+ * the tree refuses it (not that node, not that kind, out of range). */
+MV_API mv_status MV_CALL mv_slots_event(const char* addon, const char* screen, const char* node,
+                                        uint32_t kind, const char* value_json);
+/* A bar / path / context / status item; `paths_json` a JSON array of paths. */
+MV_API mv_status MV_CALL mv_slots_invoke(const char* addon, const char* item, const char* paths_json);
+/* A surface's BGRA (premultiplied). *out_needed = bytes; MV_ERR_INVALID_ARG
+ * when `cap` is short, MV_ERR_NOT_FOUND when there is none. */
+MV_API mv_status MV_CALL mv_slots_surface(const char* addon, const char* screen, const char* surface,
+                                          uint8_t* out, uint64_t cap, uint32_t* out_width,
+                                          uint32_t* out_height, uint64_t* out_revision,
+                                          uint64_t* out_needed);
+/* docs/design/25 §7: Local search is a provider. The chrome says when the AI
+ * pack attached (1) or went (0); the registry then lists it as the
+ * local-scope provider. Its own results stay in its panel. */
+MV_API mv_status MV_CALL mv_slots_local_search_provider(uint32_t on);
+/* [worker-thread] The viewer's JPEG-512 of a still, by path (a cache hit or
+ * made now on the calling thread), for a screen's thumbnail / thumbnail_grid
+ * tile. MV_ERR_UNSUPPORTED_FORMAT for a clip. */
+MV_API mv_status MV_CALL mv_slots_thumbnail_path(const char* path_utf8, char* out, uint32_t cap,
+                                                 uint32_t* needed);
+
+/* ---------------------------------------------------------------------------
  * Open add-ons (docs/design/25): add-ons from other makers, one `.mvaddon` file
  * each, signed by its publisher. Data only under contribution API 1-2 (themes,
  * settings pages, keymap packs, theme shape):
@@ -502,8 +771,9 @@ MV_API mv_status MV_CALL mv_addon_quit_wait(uint32_t timeout_ms);
 
 /* The contribution API this host serves (an add-on's manifest declares the
  * range it was written for).  1  themes.  2  settings pages, keymap packs,
- * theme shape (PR 56). */
-#define MV_ADDON_CONTRIBUTION_API 2
+ * theme shape (PR 56).  4  screens; 5  chrome slots and search providers
+ * (docs/design/25 §7). */
+#define MV_ADDON_CONTRIBUTION_API 5
 
 /* What a package is, for the consent sheet; installs and creates nothing.
  * MV_OK whenever the JSON was written, whatever it says:

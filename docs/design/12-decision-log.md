@@ -816,6 +816,44 @@ LoadLibrary's error mapped to words on Windows, dlerror's kind on the Mac. The A
 `mv_last_error_message`. The window shows "⚠ Local search couldn't start" (or Import), with the
 reason and Open Settings, beside the indexing pill.
 
+**An add-on carries its own code and its own data (2026-10-11, owner, #348).** A feature delivered
+as an add-on lives in its package: its native library, its chrome (if any) and its data, signed
+and verified together, installed and removed together. It is not shipped dormant inside the app
+with only the bulk downloaded. This replaces the 2026-09-28 call made for Final Cut Pro search
+("Shipped inside MediaViewer.app, off until turned on", below under Final Cut Pro search) as the
+rule for add-ons. Still true: there is never a second *app* to install or open; an add-on is a
+package the one app loads. The first to follow it is Places (#344): `src/geo` and its GeoNames /
+Natural Earth data ship in the Places package, not in the base install. What was built under the
+old call (the Final Cut extension and agent) is not moved by this change; moving it is its own
+work and its own row.
+
+**Screens and slots are filled through the host table first (2026-10-11, #348).** PRs 58–59 landed
+before PR 57's script runtime, so MediaViewer's own native add-ons fill them through host table v3
+(`screen_post` … `locations_in`) and the add-on side's `mv.slots.1` (§9 option B), and the
+registry reaches an add-on's code through a `slot_client` so a script add-on fills the same points
+later. A stranger's (schema 2) add-on that names a screen or slot point is refused
+`code_not_allowed` until then. Every request runs on one worker per add-on, coalesced by kind,
+generation-tagged; the chromes read tables and never wait (rule 1). Contribution API numbers keep
+§7's: screens are 4 and slots 5 although 2 and 3 (PRs 56 and 57) are built separately; a manifest
+naming a point by an API it does not reach is malformed, one whose range starts past the host's is
+"needs a newer MediaViewer".
+
+**Local search is a search provider (2026-10-11, #348).** While the AI pack is attached the host
+lists it in the registry as the local-scope provider; the path bar's search icon stays the base
+app's own (file search or Local search, as before), and a Local search query also goes to every
+other local-scope provider, whose rows the result list's path row offers to add ("+ 3 in
+Portugal"). The pack's own results keep their rich list (moments, faces, scrub markers) in its
+panel; it answers the registry with no extra rows. Moving those results into the registry would
+mean rebuilding the AI chrome on the screen vocabulary, which is not this change.
+
+**A docked pane is a window held to the viewer's right edge (2026-10-11, #348).** Neither host has
+a slot for a third docked island beside the Metadata pane and the folder tree without a layout
+change in the native hosts (`main_mac.mm`, `chrome_host.cpp`). An add-on's `pane` screen is a
+child panel on the Mac and a window placed at the right edge on Windows, with Done and Esc to
+close. A true docked island is a follow-up if an add-on needs one. It overlaps the canvas's right
+side (no reflow). Held on the Mac (moves, resizes, full screen, a new main viewer window: 2026-10-12);
+on Windows only placed at open, see [25](25-open-addons.md) "Screens".
+
 ---
 
 ## Import add-on
@@ -1032,7 +1070,7 @@ no Windows twin. Shared on both platforms: the pack's read-only reader (`mv_ai_r
 engine in read-only mode, so results match the app by construction), the wire format, the
 thumbnail lookup and the FCPXML writer (`src/nle`, `mv-nle-export`).
 
-**Shipped inside MediaViewer.app, off until turned on (2026-09-28).** arm64 only: the `.appex`
+**Shipped inside MediaViewer.app, off until turned on (2026-09-28).** (No longer the rule for add-ons: 2026-10-11, "An add-on carries its own code and its own data", under Add-on mechanism.) arm64 only: the `.appex`
 (~180 KB) and a launchd job running `MediaViewer --search-agent`, handed over in `main()` before
 anything of the viewer starts. A separate agent binary carried ~1.8 MB of copies of code the app
 already links; measured cold and warm query times were within noise of it. **Turn on** registers
@@ -1239,7 +1277,7 @@ data an add-on's manifest carries; both hosts render them natively. None reverse
 - Explorer property handler: per-user installs cannot register one.
 - Staged rollout (5 % → 25 % → 100 %): one channel per release goes to everyone.
 - Keymap import/export by the person (named layouts ship as keymap packs, PR 56); a user font file.
-- Open add-ons PRs 57–60: the Lua sandbox, screens, slots, files.
+- Open add-ons PRs 57 and 60: the Lua sandbox, files (screens and slots: PRs 58–59, 2026-10-11).
 - Live Photo ContentIdentifier check: pairing is by name only.
 - `F2` rename and an `X` reject mark.
 - Reverse playback in the Video Editor.

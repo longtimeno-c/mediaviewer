@@ -322,17 +322,15 @@ TEST_CASE("manifest schema 2: ids, text, links, APIs", "[open-addon][manifest]")
     REQUIRE(check(o) == rejection::malformed);
     o.api_max = mv::addon::kContributionApi + 1;
     REQUIRE(check(o) == rejection::none);
-    // A point §7 names for a later API (screens, PR 58), and one it does not.
-    for (const char* point : {"screens", "colour_scheme"}) {
-      INFO(point);
-      manifest_options c;
-      c.extra_contributes = point;
-      REQUIRE(check(c) == rejection::malformed);
-      c.api_max = mv::addon::kContributionApi;
-      REQUIRE(check(c) == rejection::malformed);
-      c.api_max = mv::addon::kContributionApi + 1;
-      REQUIRE(check(c) == rejection::none);
-    }
+    // A point §7 does not name. (Every point it names is now served: settings
+    // and keymaps by PR 56, screens and slots by #348.)
+    manifest_options c;
+    c.extra_contributes = "colour_scheme";
+    REQUIRE(check(c) == rejection::malformed);
+    c.api_max = mv::addon::kContributionApi;
+    REQUIRE(check(c) == rejection::malformed);
+    c.api_max = mv::addon::kContributionApi + 1;
+    REQUIRE(check(c) == rejection::none);
   }
   {
     // MediaViewer's own key signs no schema 2 add-on.

@@ -88,6 +88,176 @@ bool one_of(std::string_view s, std::initializer_list<std::string_view> allowed)
   return std::find(allowed.begin(), allowed.end(), s) != allowed.end();
 }
 
+bool slot_id_text(std::string_view s) noexcept {
+  if (s.empty() || s.size() > 32) return false;
+  return std::all_of(s.begin(), s.end(), [](char c) {
+    return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-';
+  });
+}
+
+// Every key of `o` is one of `allowed`.
+bool only_keys(const json::value& o, std::initializer_list<std::string_view> allowed) {
+  return std::all_of(o.o.begin(), o.o.end(), [&](const auto& m) {
+    return std::find(allowed.begin(), allowed.end(), m.first) != allowed.end();
+  });
+}
+
+// A required one-line text field, or nullptr.
+const std::string* required_text(const json::value& o, std::string_view key, std::size_t max) {
+  const json::value* v = o.find(key);
+  if (!v || v->k != json::kind::string || !plain_text(v->s, max, false)) return nullptr;
+  return &v->s;
+}
+
+// The contribution API that introduces a schema 1 `contributes` key
+// (docs/design/25 §7), 0 for a key that is not a screen or slot point.
+std::uint32_t slot_point_api(std::string_view key) noexcept {
+  if (key == "screens") return kScreensApi;
+  if (key == "info_sections" || key == "search_providers" || key == "bar_items" ||
+      key == "path_items" || key == "context_menu" || key == "status_items" ||
+      key == "tile_badges") {
+    return kSlotsApi;
+  }
+  return 0;
+}
+
+bool small_uint(const json::value& o, std::string_view key, std::int64_t lo, std::int64_t hi,
+                std::int64_t& out) {
+  const json::value* v = o.find(key);
+  if (!v) return true;
+  if (v->k != json::kind::number || !v->is_integer || v->i < lo || v->i > hi) return false;
+  out = v->i;
+  return true;
+}
+
+// One screen or slot point's array into `c`. Screens' and info sections' ids
+// are unique together (they share the posts' screen_id space); items' ids
+// are unique among items.
+bool read_slot_point(std::string_view key, const json::value& value, contributions& c,
+                     std::set<std::string>& screen_ids, std::set<std::string>& item_ids) {
+  if (value.k != json::kind::array || value.a.empty() || value.a.size() > 16) return false;
+  for (const json::value& e : value.a) {
+    if (e.k != json::kind::object) return false;
+    const std::string* id = e.str("id");
+    if (!id || !slot_id_text(*id)) return false;
+    if (key == "screens") {
+      if (!only_keys(e, {"id", "title", "place", "width", "height"})) return false;
+      const std::string* title = required_text(e, "title", 48);
+      const std::string* place = e.str("place");
+      if (!title || !place || !one_of(*place, {"window", "pane", "sheet"})) return false;
+      screen_contrib s;
+      s.id = *id;
+      s.title = *title;
+      s.place = *place == "window" ? screen_place::window
+                : *place == "pane" ? screen_place::pane
+                                   : screen_place::sheet;
+      std::int64_t w = 0;
+      std::int64_t h = 0;
+      if (!small_uint(e, "width", 0, 4096, w) || !small_uint(e, "height", 0, 4096, h)) return false;
+      s.width = static_cast<std::uint32_t>(w);
+      s.height = static_cast<std::uint32_t>(h);
+      if (!screen_ids.insert(s.id).second) return false;
+      c.screens.push_back(std::move(s));
+    } else if (key == "info_sections") {
+      if (!only_keys(e, {"id", "title", "when", "order"})) return false;
+      const std::string* title = required_text(e, "title", 48);
+      if (!title) return false;
+      info_section_contrib s;
+      s.id = *id;
+      s.title = *title;
+      if (const json::value* when = e.find("when")) {
+        if (when->k != json::kind::string || !one_of(when->s, {"location", "always"})) return false;
+        s.needs_location = when->s == "location";
+      }
+      std::int64_t order = 0;
+      if (!small_uint(e, "order", -1000, 1000, order)) return false;
+      s.order = static_cast<std::int32_t>(order);
+      if (!screen_ids.insert(s.id).second) return false;
+      c.info_sections.push_back(std::move(s));
+    } else if (key == "search_providers") {
+      if (!only_keys(e, {"id", "name", "prefixes", "scope"})) return false;
+      const std::string* name = required_text(e, "name", 48);
+      const json::value* scope = e.find("scope");
+      if (!name || !scope || scope->k != json::kind::array || scope->a.empty() || scope->a.size() > 2) {
+        return false;
+      }
+      search_provider_contrib p;
+      p.id = *id;
+      p.name = *name;
+      for (const json::value& sc : scope->a) {
+        if (sc.k != json::kind::string || !one_of(sc.s, {"files", "local"})) return false;
+        (sc.s == "files" ? p.files : p.local) = true;
+      }
+      if (const json::value* pre = e.find("prefixes")) {
+        if (pre->k != json::kind::array || pre->a.size() > 4) return false;
+        for (const json::value& x : pre->a) {
+          // "place:": a lowercase ASCII word and a colon, so routing is a byte compare.
+          if (x.k != json::kind::string || x.s.size() < 2 || x.s.size() > 16 || x.s.back() != ':' ||
+              !std::all_of(x.s.begin(), x.s.end() - 1, [](char ch) { return ch >= 'a' && ch <= 'z'; })) {
+            return false;
+          }
+          p.prefixes.push_back(x.s);
+        }
+      }
+      if (std::any_of(c.search_providers.begin(), c.search_providers.end(),
+                      [&](const search_provider_contrib& q) { return q.id == p.id; })) {
+        return false;
+      }
+      c.search_providers.push_back(std::move(p));
+    } else if (key == "tile_badges") {
+      if (!only_keys(e, {"id", "label", "symbol"})) return false;
+      const std::string* label = required_text(e, "label", 48);
+      const std::string* symbol = e.str("symbol");
+      if (!label || !symbol || !known_symbol(*symbol)) return false;
+      if (std::any_of(c.badges.begin(), c.badges.end(), [&](const badge_contrib& b) { return b.id == *id; })) {
+        return false;
+      }
+      c.badges.push_back(badge_contrib{*id, *label, *symbol});
+    } else {
+      // bar_items, path_items, context_menu, status_items
+      item_contrib item;
+      item.slot = key == "bar_items"      ? item_slot::bar
+                  : key == "path_items"   ? item_slot::path
+                  : key == "context_menu" ? item_slot::context
+                                          : item_slot::status;
+      if (!only_keys(e, {"id", "label", "symbol", "opens", "target"})) return false;
+      const std::string* label = required_text(e, "label", 48);
+      if (!label) return false;
+      item.id = *id;
+      item.label = *label;
+      if (const json::value* sym = e.find("symbol")) {
+        if (sym->k != json::kind::string || !known_symbol(sym->s) || item.slot == item_slot::context ||
+            item.slot == item_slot::status) {
+          return false;
+        }
+        item.symbol = sym->s;
+      } else if (item.slot == item_slot::bar || item.slot == item_slot::path) {
+        return false;  // a bar button is an icon with a name
+      }
+      if (const json::value* opens = e.find("opens")) {
+        if (opens->k != json::kind::string || !slot_id_text(opens->s) || item.slot == item_slot::status) {
+          return false;
+        }
+        item.opens = opens->s;
+      }
+      if (const json::value* target = e.find("target")) {
+        if (target->k != json::kind::string || !one_of(target->s, {"none", "file", "files", "folder"})) {
+          return false;
+        }
+        item.target = target->s == "file"     ? item_target::file
+                      : target->s == "files"  ? item_target::files
+                      : target->s == "folder" ? item_target::folder
+                                              : item_target::none;
+      } else if (item.slot == item_slot::context) {
+        item.target = item_target::files;
+      }
+      if (!item_ids.insert(item.id).second) return false;
+      c.items.push_back(std::move(item));
+    }
+  }
+  return true;
+}
+
 // `description`, `contributes.commands` and `contributes.hint`, all optional
 // (2026-10-03). A present field that is not as described is malformed: a
 // typo in a key fails loudly instead of doing nothing.
@@ -147,7 +317,39 @@ bool read_contributions(const json::value& doc, manifest& m) {
       auto page = parse_settings_page(value);
       if (!page) return false;
       m.settings = std::move(*page);
+    } else if (key == "api") {
+      // Screens and slots (docs/design/25 §7): the contribution API range.
+      if (value.k != json::kind::object || !only_keys(value, {"min", "max"})) return false;
+      const auto lo = value.integer("min");
+      const auto hi = value.integer("max");
+      if (!lo || !hi || *lo < 1 || *hi < *lo || *hi > 1'000'000) return false;
+      m.slots.api_min = static_cast<std::uint32_t>(*lo);
+      m.slots.api_max = static_cast<std::uint32_t>(*hi);
+    } else if (slot_point_api(key) != 0) {
+      continue;  // read against the range below
     } else {
+      return false;
+    }
+  }
+  // Screen and slot points need the range, and each must belong to an API
+  // inside it. A range that starts past this host is policy (needs_update in
+  // check_manifest), not shape: its points are then not read at all.
+  std::set<std::string> screen_ids;
+  std::set<std::string> item_ids;
+  bool any = false;
+  for (const auto& [key, value] : contributes->o) {
+    const std::uint32_t api = slot_point_api(key);
+    if (api == 0) continue;
+    any = true;
+    if (m.slots.api_max == 0 || api > m.slots.api_max) return false;
+    if (m.slots.api_min > kSlotsContributionApi) continue;
+    if (!read_slot_point(key, value, m.slots, screen_ids, item_ids)) return false;
+  }
+  if (m.slots.api_max != 0 && !any) return false;  // a range with nothing under it is a typo
+  // An item that opens a screen names one of this add-on's own.
+  for (const item_contrib& i : m.slots.items) {
+    if (!i.opens.empty() && std::none_of(m.slots.screens.begin(), m.slots.screens.end(),
+                                         [&](const screen_contrib& s) { return s.id == i.opens; })) {
       return false;
     }
   }
@@ -395,9 +597,12 @@ decision check_manifest(std::span<const std::uint8_t> bytes, std::span<const std
       return f.path == p || f.path.rfind(p + "/", 0) == 0;
     });
   };
+  // An add-on that only fills screens and slots draws nothing of its own: the
+  // hosts render its trees (docs/design/25 PRs 58-59), so it may name no chrome.
+  const bool no_chrome = m.chrome.empty() && (!m.slots.empty() || m.slots.api_max != 0);
   if (m.part_of.empty()) {
-    if (!safe_relative_path(m.native) || !safe_relative_path(m.chrome) || !listed(m.native) ||
-        !listed(m.chrome)) {
+    if (!safe_relative_path(m.native) || !listed(m.native) ||
+        (!no_chrome && (!safe_relative_path(m.chrome) || !listed(m.chrome)))) {
       d.why = rejection::unsafe_path;
       return d;
     }
@@ -425,6 +630,17 @@ decision check_manifest(std::span<const std::uint8_t> bytes, std::span<const std
   if (m.host_api_min > host_api || m.host_api_max < host_api_oldest) {
     d.why = rejection::needs_update;
     return d;
+  }
+  // Screens and slots (docs/design/25 §7): a range that starts past this
+  // host's contribution API is "needs a newer MediaViewer", never a
+  // half-loaded add-on. They are answered through table v3, so a manifest
+  // naming them asks for it.
+  if (m.slots.api_max != 0) {
+    if (m.slots.api_min > kSlotsContributionApi) {
+      d.why = rejection::needs_update;
+      return d;
+    }
+    if (m.host_api_min < kSlotsHostApi) return d;  // malformed
   }
   d.why = rejection::none;
   return d;

@@ -14,6 +14,7 @@
 // thread: names are folded off it, once per listing, and a keystroke runs one
 // memmem pass.
 import AppKit
+import Combine
 import MVChromeBridge
 import SwiftUI
 
@@ -41,8 +42,20 @@ final class FileSearchStore: ObservableObject {
   private var debounce: Task<Void, Never>?
   /// The folder the field belongs to: another folder closes it.
   private var searchFolder = ""
+  /// docs/design/25 PR 59: what the add-ons' search providers matched (Places:
+  /// `portugal`), by the generation of the query they answer. Name hits show
+  /// at once; a provider's rows join them when they arrive, and a stale
+  /// answer (an older query) is never shown.
+  private var nameHits: [Int] = []
+  private var providerGeneration: UInt64 = 0
+  @Published private(set) var providerNote = ""
+  private var slotWatch: AnyCancellable?
 
-  private init() {}
+  private init() {
+    slotWatch = SlotStore.shared.$fileSearch.sink { [weak self] state in
+      MainActor.assumeIsolated { self?.providersAnswered(state) }
+    }
+  }
 
   var active: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
   var shownCount: Int { (items?.count ?? 0) + (folders?.count ?? 0) }
@@ -91,6 +104,12 @@ final class FileSearchStore: ObservableObject {
         items = nil
         folders = nil
       }
+      if providerGeneration != 0 {
+        // The providers' last answer goes with the text (an empty query asks nobody).
+        providerGeneration = 0
+        SlotStore.shared.search(scope: 1, query: "", folder: "")
+        providerNote = ""
+      }
       pushFilter(nil, nil)
       return
     }
@@ -99,12 +118,63 @@ final class FileSearchStore: ObservableObject {
       foldNames(generation)
       return
     }
-    let query = FoldedNames.fold(text.trimmingCharacters(in: .whitespacesAndNewlines))
-    let names = folded.matching(query)
-    let folderHits = foldedFolders.matching(query)
-    if names != items { items = names }
+    let typed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    let query = FoldedNames.fold(typed)
+    // A prefix a provider declares ("place:") is the provider's alone: no name has
+    // it. Unclaimed ("place:" with Places not installed), it is an ordinary name query.
+    let prefixed = SlotStore.shared.claimsFilePrefix(query)
+    let names = prefixed ? [] : folded.matching(query)
+    let folderHits = prefixed ? [] : foldedFolders.matching(query)
+    nameHits = names
+    // The providers hear the query on their own workers; this returns at once.
+    providerGeneration = SlotStore.shared.search(scope: 1, query: typed, folder: searchFolder)
+    let merged = merge(names)
+    if merged != items { items = merged }
     if folderHits != folders { folders = folderHits }
-    pushFilter(names, folderHits)
+    pushFilter(merged, folderHits)
+  }
+
+  /// Name hits, then the providers' rows for this query in this folder.
+  /// `state`: the providers' answer (a @Published sink sees the new value before
+  /// the store holds it, so it is passed in).
+  private func merge(_ names: [Int], _ given: SlotSearchState? = nil) -> [Int] {
+    let state = given ?? SlotStore.shared.fileSearch
+    guard state.generation == providerGeneration, !state.rows.isEmpty else { return names }
+    var seen = Set(names)
+    var out = names
+    let prefix = searchFolder.hasSuffix("/") ? searchFolder : searchFolder + "/"
+    // Name -> index once per listing, not a scan of every name per row
+    // (2,000 rows x 10,000 names on the main actor).
+    let generation = folderStore.listingGeneration
+    if nameIndexGeneration != generation {
+      nameIndex = Dictionary(folderStore.names.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
+      nameIndexGeneration = generation
+    }
+    for row in state.rows where row.path.hasPrefix(prefix) {
+      let name = String(row.path.dropFirst(prefix.count))
+      if let i = nameIndex[name], seen.insert(i).inserted { out.append(i) }
+    }
+    return out
+  }
+  private var nameIndex: [String: Int] = [:]
+  private var nameIndexGeneration: UInt64 = .max
+
+  private func providersAnswered(_ state: SlotSearchState) {
+    guard isOpen, active, state.generation == providerGeneration else {
+      if !providerNote.isEmpty { providerNote = "" }
+      return
+    }
+    if state.searching && state.total > 0 {
+      providerNote = "Still reading tags — \(state.read) of \(state.total)"
+    } else if let why = state.rows.first?.why, !why.isEmpty {
+      providerNote = why
+    } else {
+      providerNote = ""
+    }
+    let merged = merge(nameHits, state)
+    guard merged != items else { return }
+    items = merged
+    pushFilter(merged, folders ?? [])
   }
 
   /// Folding thousands of names is Foundation work (~11 ms for 10,000): off the
@@ -209,6 +279,13 @@ struct FileSearchBar: View {
           }
         }
         .accessibilityLabel("Find files by name")
+      if store.active && !store.providerNote.isEmpty {
+        Text(store.providerNote)
+          .font(MVTheme.font(12))
+          .foregroundStyle(MVTheme.body)
+          .lineLimit(1)
+          .accessibilityLabel("Matched by an add-on: \(store.providerNote)")
+      }
       if store.active {
         Text("\(store.shownCount) of \(store.totalCount)")
           .font(MVTheme.font(12))

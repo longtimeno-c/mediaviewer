@@ -568,6 +568,7 @@ title_len`, then UTF-8 `title` and `evidence` pointers, `evidence_len`, reserved
 badge. Mac: `MVChromeHost.makeAIBadgeView()` and `setAIBadge(title:evidence:)` from
 `main_mac.mm`, which also shows, hides and places the hosting view. Neither crosses
 `mediaviewer.h`.
+
 ## PR 56 — settings pages and keymap packs (ABI 0.24)
 
 Minor bump, additive, in `mediaviewer_addon.h` ([25](25-open-addons.md), contribution API 2):
@@ -580,6 +581,19 @@ Minor bump, additive, in `mediaviewer_addon.h` ([25](25-open-addons.md), contrib
 add-on reads its own page's values. The Mac host reaches the same `open_json.h` calls through
 `mv_addons_settings_*` and `mv_open_addons_keymap` in the chrome bridge, and applies a pack with
 `mv_chrome_apply_keymap`.
+
+## PRs 58–59 — screens and slots (ABI 0.25)
+
+Minor bump, additive, in `mediaviewer_addon.h` ([25](25-open-addons.md#implementation-notes-prs-58-59-2026-10-11)).
+The chrome side, `mv_slots_*`, is **[any-thread][no-block]**: every call copies one of the
+registry's tables (JSON, the `cap` / `needed` rule) or posts a request to an add-on's worker and
+returns its generation; `mv_slots_set_listener` registers one any-thread callback with what
+changed, which the chrome marshals to its dispatcher (the core never calls a dispatcher).
+`mv_slots_event` refuses a value the screen's tree could not produce (`MV_ERR_INVALID_ARG`).
+`mv_slots_thumbnail_path` is **[worker-thread]**. The add-on side is the host function table's v3
+rows and the add-on's `mv.slots.1` interface; table versions still only append (PR 56's
+`settings_get` sits after `walk_files2`, before v3). The Mac host has the same calls as
+`mv_chrome_slots_*` in its bridge.
 
 ## Version history
 
@@ -604,7 +618,7 @@ add-on reads its own page's values. The Mac host reaches the same `open_json.h` 
 | 0.22 | `mv_folder_set_kind_filter`, `MV_FOLDER_HIDE_STILLS` / `_CLIPS` / `_RAW` / `_UNMARKED` — View ▸ Show (issue #206) |
 | 0.23 | The cull bits `MV_FOLDER_HIDE_REJECTED` / `_UNPICKED` / `MV_FOLDER_HIDE_OTHER_LABELS` (`MV_FOLDER_LABEL_SHIFT`) and `mv_folder_note_metadata_written` — View ▸ Show's cull filters (issue #207) |
 | 0.24 | Settings pages and keymap packs: `mv_addon_settings_json` / `_setting_set` / `_settings_forget`, `mv_open_addon_keymap_json`; host table `settings_get` |
-| 0.25 | Reserved for docs/design/25 PRs 58-59 (screens and slots, #348) |
+| 0.25 | Screens and slots: `mv_slots_*` (contributions, info sections, screens, search, badges, status, events, items, surfaces, the local-search provider, thumbnails by path); host table v3 (`MV_ADDON_HOST_API` 3) and `mv.slots.1`; `"slots"` in the installed JSON |
 | 0.26 | Reserved for docs/design/25 PR 57 (script add-ons) |
 | 0.27 | `mv_meta_parse_location` / `mv_location_input` — the Metadata pane's Location editor (#352) |
 

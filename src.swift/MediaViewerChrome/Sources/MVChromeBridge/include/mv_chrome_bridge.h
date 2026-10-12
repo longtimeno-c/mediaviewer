@@ -495,6 +495,70 @@ int32_t mv_chrome_export_last_choice(void);
 void mv_chrome_export_confirm(int32_t packed);
 void mv_chrome_export_cancel(void);
 
+// ---- Screens and slots (docs/design/25 §7, §10; PRs 58-59), src/shell/slots_mac.mm ------
+//
+// What MediaViewer's own add-ons add to existing pages (an info-pane section, a
+// search provider, command-bar / path-bar / context-menu / status items, tile
+// badges) and the windows, panes and sheets they open, as JSON snapshots of the
+// core's registry (src/addon/slots.h documents each shape). None of these waits
+// on an add-on: requests post to its worker and return; answers arrive through
+// the callback, which runs on the main thread with the OR of what changed
+// (1 contributions, 2 info, 4 screens, 8 search, 16 badges, 32 status).
+// Strings follow mv_chrome_command_table's rule. [main-thread] unless noted.
+typedef struct mv_chrome_slot_theme {
+  uint32_t canvas;    // 0xRRGGBBAA, the chrome's theme tokens (docs/design/25 §8)
+  uint32_t surface;
+  uint32_t title;
+  uint32_t body;
+  uint32_t disabled;
+  uint32_t hairline;
+  uint32_t accent;
+  uint32_t dark;      // 1 when the chrome is dark
+} mv_chrome_slot_theme;
+typedef void (*mv_chrome_slots_changed_fn)(uint32_t bits);
+void mv_chrome_slots_set_callback(mv_chrome_slots_changed_fn fn);
+int32_t mv_chrome_slots_contributions(char* buf, int32_t size);
+int32_t mv_chrome_slots_info(char* buf, int32_t size);
+int32_t mv_chrome_slots_screens(char* buf, int32_t size);
+int32_t mv_chrome_slots_search_results(uint32_t scope, char* buf, int32_t size);  // 1 files, 2 local
+int32_t mv_chrome_slots_badges(char* buf, int32_t size);
+int32_t mv_chrome_slots_status(char* buf, int32_t size);
+uint64_t mv_chrome_slots_request_info(const char* path, const char* location_text,
+                                      const mv_chrome_slot_theme* theme, float width, float scale);
+void mv_chrome_slots_clear_info(void);
+uint64_t mv_chrome_slots_search(uint32_t scope, const char* query, const char* folder);
+uint64_t mv_chrome_slots_request_badges(const char* folder);
+bool mv_chrome_slots_open_screen(const char* addon, const char* screen, const char* path,
+                                 const mv_chrome_slot_theme* theme, float width, float height,
+                                 float scale);
+bool mv_chrome_slots_close_screen(const char* addon, const char* screen);
+// A control changed (kind: 1 click, 2 change, 3 submit, 4 select, 5 activate);
+// value_json is checked against the tree before the add-on hears of it.
+bool mv_chrome_slots_event(const char* addon, const char* screen, const char* node, uint32_t kind,
+                           const char* value_json);
+// An item was chosen; paths_json is a JSON array of the files it targets.
+bool mv_chrome_slots_invoke(const char* addon, const char* item, const char* paths_json);
+// A surface's BGRA pixels (premultiplied). Returns the bytes needed (0: none);
+// copies when `cap` is enough. [any-thread]
+int64_t mv_chrome_slots_surface(const char* addon, const char* screen, const char* surface,
+                                uint8_t* out, int64_t cap, uint32_t* width, uint32_t* height,
+                                uint64_t* revision);
+// A screen's thumbnail / thumbnail_grid tile: the viewer's JPEG-512 of any
+// still, by path, made on a utility queue. The callback (main thread) gets the
+// JPEG's path, or NULL when there is none. A tile that leaves the screen
+// cancels its request.
+typedef void (*mv_chrome_slots_thumb_fn)(const char* path, const char* jpeg_path);
+void mv_chrome_slots_set_thumb_callback(mv_chrome_slots_thumb_fn fn);
+void mv_chrome_slots_request_thumbnail(const char* path);
+void mv_chrome_slots_cancel_thumbnail(const char* path);
+// Settings -> Add-ons: the installed first-party add-ons that fill screens or
+// slots, [{"id","name","version","description","state","why","loaded"}].
+// [worker] (reads the store). Refresh loads one just installed; Remove takes
+// every item away at once, no restart. Implemented in src/shell/addons_mac.mm.
+int32_t mv_chrome_slot_addons(char* buf, int32_t size);
+void mv_chrome_slot_addons_refresh(void);
+bool mv_chrome_slot_addon_remove(const char* id, bool keep_data);
+
 // Milestone G add-ons (docs/design/18 "Add-ons"), implemented in src/shell/addons_mac.mm.
 // Strings follow mv_chrome_command_table's rule: returns the length needed,
 // writes at most `size` bytes NUL-terminated. [worker-thread] where noted:

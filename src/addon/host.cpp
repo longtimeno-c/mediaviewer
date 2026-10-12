@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstring>
 #include <string_view>
@@ -584,6 +585,152 @@ mv_status MV_CALL t_settings_get(void* host, const char* key, char* out, uint32_
   });
 }
 
+// ---- v3: screens and slots (docs/design/25 PRs 58-59) ------------------------------
+
+std::string str_of(const char* s) { return s ? std::string(s) : std::string(); }
+
+mv_status MV_CALL t_screen_post(void* host, const char* screen, uint64_t g, const char* tree) {
+  return guarded([&] {
+    if (!screen || !tree) return MV_ERR_INVALID_ARG;
+    host_table& t = self(host);
+    return to_mv(t.slots().post_screen(t.addon_id(), screen, g, tree));
+  });
+}
+
+mv_status MV_CALL t_screen_diff(void* host, const char* screen, uint64_t g, const char* diff) {
+  return guarded([&] {
+    if (!screen || !diff) return MV_ERR_INVALID_ARG;
+    host_table& t = self(host);
+    return to_mv(t.slots().post_diff(t.addon_id(), screen, g, diff));
+  });
+}
+
+mv_status MV_CALL t_surface_post(void* host, const char* screen, const char* surface, uint64_t g,
+                                 const uint8_t* bgra, uint32_t w, uint32_t h, uint32_t stride) {
+  return guarded([&] {
+    if (!screen || !surface) return MV_ERR_INVALID_ARG;
+    host_table& t = self(host);
+    return to_mv(t.slots().post_surface(t.addon_id(), screen, surface, g, bgra, w, h, stride));
+  });
+}
+
+mv_status MV_CALL t_search_post(void* host, const char* provider, uint64_t g,
+                                const mv_slot_search_row* rows, uint32_t count, uint32_t done) {
+  return guarded([&] {
+    if (!provider || (count && !rows)) return MV_ERR_INVALID_ARG;
+    std::vector<slot_registry::search_row> out;
+    out.reserve(count);
+    for (uint32_t i = 0; i < count; ++i) {
+      if (!rows[i].path_utf8) continue;
+      out.push_back({rows[i].path_utf8, str_of(rows[i].why_utf8)});
+    }
+    host_table& t = self(host);
+    return to_mv(t.slots().post_search(t.addon_id(), provider, g, std::move(out), done != 0));
+  });
+}
+
+void MV_CALL t_search_progress(void* host, const char* provider, uint64_t g, uint32_t done,
+                               uint32_t total) {
+  (void)guarded([&] {
+    if (!provider) return MV_ERR_INVALID_ARG;
+    host_table& t = self(host);
+    t.slots().search_progress(t.addon_id(), provider, g, done, total);
+    return MV_OK;
+  });
+}
+
+int32_t MV_CALL t_is_stale(void* host, uint64_t g) {
+  try {
+    host_table& t = self(host);
+    return t.slots().is_stale(t.addon_id(), g) ? 1 : 0;
+  } catch (...) {
+    return 1;
+  }
+}
+
+mv_status MV_CALL t_badges_post(void* host, const char* badge, uint64_t g, const char* const* paths,
+                                uint32_t count, uint32_t replace) {
+  return guarded([&] {
+    if (!badge || (count && !paths)) return MV_ERR_INVALID_ARG;
+    std::vector<std::string> out;
+    out.reserve(count);
+    for (uint32_t i = 0; i < count; ++i) {
+      if (paths[i]) out.emplace_back(paths[i]);
+    }
+    host_table& t = self(host);
+    return to_mv(t.slots().post_badges(t.addon_id(), badge, g, std::move(out), replace != 0));
+  });
+}
+
+mv_status MV_CALL t_status_post(void* host, const char* item, const char* text) {
+  return guarded([&] {
+    if (!item) return MV_ERR_INVALID_ARG;
+    host_table& t = self(host);
+    return to_mv(t.slots().post_status(t.addon_id(), item, str_of(text)));
+  });
+}
+
+mv_status MV_CALL t_screen_show(void* host, const char* screen, uint32_t show) {
+  return guarded([&] {
+    if (!screen) return MV_ERR_INVALID_ARG;
+    host_table& t = self(host);
+    return to_mv(t.slots().show_screen(t.addon_id(), screen, show != 0));
+  });
+}
+
+mv_status MV_CALL t_location_of(void* host, const char* path, mv_addon_location* out) {
+  return guarded([&] {
+    if (!path || !out) return MV_ERR_INVALID_ARG;
+    *out = mv_addon_location{};
+    auto st = io::stat_path(path);
+    if (!st || st->is_directory) return MV_ERR_IO;
+    *out = cached_location(path, st->size, st->mtime_unix, self(host).services().location);
+    return MV_OK;
+  });
+}
+
+mv_status MV_CALL t_locations_in(void* host, const char* folder, uint64_t g, mv_addon_location_fn visit,
+                                 void* user) {
+  return guarded([&] {
+    if (!folder || !visit) return MV_ERR_INVALID_ARG;
+    host_table& t = self(host);
+    mv_status result = MV_OK;
+    // Not recursive (depth 0): the folder the person is looking at. Files only
+    // a cloud provider holds are skipped: reading them would download them.
+    auto walked = io::walk_files(folder, 0, [&](const io::tree_entry& e) {
+      if (e.cloud_only) return true;
+      // Stale also once the add-on is being removed: detach joins this worker,
+      // so the walk must notice and stop rather than finish the folder.
+      const auto stale = [&] { return t.slots().is_stale(t.addon_id(), g); };
+      if (stale()) {
+        result = MV_ERR_CANCELLED;
+        return false;
+      }
+      mv_addon_location_entry entry{};
+      entry.path_utf8 = e.path_utf8.c_str();
+      // A cache hit costs no read, so it does not wait.
+      if (!peek_cached_location(e.path_utf8, e.size, e.mtime_unix, entry.location)) {
+        // Background priority: a metadata read waits while the viewer presents
+        // (docs/design/18 "Priority"), bounded, and still hears a cancel.
+        if (t.services().should_yield) {
+          for (int spins = 0; spins < 200 && t.services().should_yield(); ++spins) {
+            if (stale()) {
+              result = MV_ERR_CANCELLED;
+              return false;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+          }
+        }
+        entry.location = cached_location(e.path_utf8, e.size, e.mtime_unix, t.services().location);
+      }
+      return visit(user, &entry) != 0;
+    });
+    if (result != MV_OK) return result;
+    if (!walked && walked.error() != status::cancelled) return to_mv(walked.error());
+    return MV_OK;
+  });
+}
+
 void MV_CALL t_log(void*, int32_t, const char*) {
   // Deliberately nowhere yet: an add-on's messages are for a developer's
   // debugger, and the app has no log file that could leak a name (rule 6).
@@ -630,6 +777,17 @@ host_table::host_table(host_services services) : svc_(std::move(services)) {
   api_.recycle_file = svc_.recycle ? &t_recycle : nullptr;
   api_.walk_files2 = &t_walk2;
   api_.settings_get = &t_settings_get;
+  api_.screen_post = &t_screen_post;
+  api_.screen_diff = &t_screen_diff;
+  api_.surface_post = &t_surface_post;
+  api_.search_post = &t_search_post;
+  api_.search_progress = &t_search_progress;
+  api_.is_stale = &t_is_stale;
+  api_.badges_post = &t_badges_post;
+  api_.status_post = &t_status_post;
+  api_.screen_show = &t_screen_show;
+  api_.location_of = &t_location_of;
+  api_.locations_in = &t_locations_in;
 }
 
 void host_table::set_negotiated(std::uint32_t version) noexcept { api_.host_api = version; }
@@ -667,6 +825,10 @@ shared_library& shared_library::operator=(shared_library&& other) noexcept {
 }
 
 loaded_addon::~loaded_addon() {
+  // Its screens and slots go first: on return the registry's worker is not
+  // inside the add-on and never will be again (docs/design/25: removing an
+  // add-on removes every item, no restart).
+  if (slots_) slots_->detach(info_.id);
   // The add-on stops its threads before its code goes away, and the host
   // table (whose thunks it calls) outlives both.
   if (api_.shutdown && api_.addon) api_.shutdown(api_.addon);
@@ -708,6 +870,7 @@ result<std::unique_ptr<loaded_addon>> loaded_addon::load(const store& s, const s
   std::unique_ptr<loaded_addon> out(new loaded_addon());
   out->info_ = info;
   out->table_ = std::make_unique<host_table>(std::move(services));
+  out->table_->set_addon_id(info.id);
   // The newest table both sides know (mediaviewer_addon.h "Negotiation").
   const std::uint32_t version = negotiated_host_api(info.m, MV_ADDON_HOST_API);
   out->table_->set_negotiated(version);
@@ -729,6 +892,17 @@ result<std::unique_ptr<loaded_addon>> loaded_addon::load(const store& s, const s
     return err(status::corrupt);
   }
   out->api_ = api;
+  // Screens and slots (docs/design/25 §7): resolved once, here, on the loader's
+  // thread. Only for a table that carries the v3 calls the add-on answers with.
+  if (!info.m.slots.empty() && version >= kSlotsHostApi) {
+    if (const auto* table = static_cast<const mv_addon_slots*>(out->query(MV_SLOTS_INTERFACE))) {
+      slot_registry& reg = out->table_->slots();
+      if (reg.attach(info.id, info.m.name, info.m.slots, native_slot_client(api.addon, table), info.dir) ==
+          status::ok) {
+        out->slots_ = &reg;
+      }
+    }
+  }
   return out;
 }
 

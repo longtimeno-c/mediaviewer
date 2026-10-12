@@ -64,6 +64,14 @@ Views:
    (profile/level, resolution, pixel format, bit depth, frame rate, colour, HDR mastering
    metadata, rotation, channels, sample rate, language…), plus chapters.
 
+Below all three, at the very bottom of the pane whichever tab is open, an installed add-on may
+add a section for the file on screen (Places: the place, the coordinates and a map; owner,
+2026-10-12). It is asked for only while the pane shows, never for a file without coordinates when
+it needs them, and runs on the add-on's worker; without the add-on the pane is as above
+([25](25-open-addons.md#implementation-notes-prs-58-59-2026-10-11)). A file's coordinates alone
+come from a bounded read, `meta::read_location` (`src/meta/location.h`), for a search provider
+walking a folder.
+
 `summary` also carries numeric clip facts (audio channels, sample rate, every codec) for
 non-human consumers such as the Spotlight importer, and the date-taken sort key.
 

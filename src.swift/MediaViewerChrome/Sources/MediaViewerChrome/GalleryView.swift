@@ -20,11 +20,21 @@ import SwiftUI
 struct GalleryView: View {
   @ObservedObject private var store = FolderStore.shared
   @ObservedObject private var search = FileSearchStore.shared
+  // Whether any add-on fills tile badges / context entries (changes only when one
+  // attaches or goes): the cells carry those wrappers only then.
+  @ObservedObject private var tileFlags = SlotTileFlags.shared
   private let spacing: CGFloat = 8
   private let inset: CGFloat = 12
 
   var body: some View {
     grid
+      // docs/design/25 PR 59: badges for the folder the grid shows, one request per
+      // folder (and only while the grid is open: no add-on work for a viewer
+      // that never opens it).
+      .onAppear { SlotStore.shared.requestBadges(folder: SlotTargets.folder()) }
+      .onChange(of: store.listingGeneration) { _, _ in
+        SlotStore.shared.requestBadges(folder: SlotTargets.folder())
+      }
       // A folder of folders has no image to show through the material, and the
       // canvas behind may still hold the previous folder's last photo.
       .background(store.names.isEmpty ? AnyShapeStyle(Color(nsColor: .windowBackgroundColor))
@@ -94,10 +104,13 @@ struct GalleryView: View {
                       highlight: store.highlight(at: index),
                       isMarked: store.markedNames.contains(store.names[index]),
                       isClip: store.isClip(at: index),
-                      thumbKey: store.thumbKey(at: index), slot: store.slot(at: index)
+                      thumbKey: store.thumbKey(at: index), slot: store.slot(at: index),
+                      slotBadges: tileFlags.badges
                     )
                     .id(index)
                     .onTapGesture { store.selectAndCloseGallery(index) }
+                    // docs/design/25 PR 59: the add-ons' context-menu entries, only when some exist.
+                    .modifier(SlotContextMenu(on: tileFlags.context, tile: index))
                     // Drag out the original (the marks, when this cell is one).
                     .fileDrag { store.dragFiles(from: index) }
                   }
@@ -318,6 +331,7 @@ private struct GalleryCell: View {
   let isClip: Bool
   let thumbKey: String
   @ObservedObject var slot: ThumbSlot
+  var slotBadges = false
 
   var body: some View {
     VStack(spacing: 4) {
@@ -341,6 +355,9 @@ private struct GalleryCell: View {
         )
         .overlay { if isClip { PlayBadge(diameter: 40) } }
         .overlay(alignment: .topTrailing) { if isMarked { MarkBadge() } }
+        // docs/design/25 PR 59: the add-ons' badges, from a table (no add-on call per
+        // tile); with no add-on contributing badges the cell is exactly the plain one.
+        .modifier(SlotBadgesOverlay(on: slotBadges, name: name))
       Text(name)
         .font(MVTheme.font(12))
         .lineLimit(1)
