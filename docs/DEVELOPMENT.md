@@ -904,8 +904,8 @@ build/bin/mv_import_tests "[.perf-bench]"
 ctest --test-dir build -C Release -R addon_sdk --output-on-failure
 python tools/addon-sdk/test_mvaddon.py        # the tool alone, no build needed
 
-# ...and the same engine headless on Linux or any POSIX machine (the
-# portable-core CI job in tools/portable/ci-portable-core.patch; SQLite, libsodium, BLAKE3 and Catch2 from vcpkg via
+# ...and the same engine headless on Linux or any POSIX machine (CI's
+# portable-core job, Ubuntu under ASan + UBSan; SQLite, libsodium, BLAKE3 and Catch2 from vcpkg via
 # tools/portable/vcpkg.json, or the system). With FFmpeg, libspng and libjpeg
 # installed (pkg-config) it also builds the PR 13 / 14 clip suites,
 # mv_clip_tests and mv_trim_tests:
