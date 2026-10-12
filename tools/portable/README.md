@@ -25,12 +25,8 @@ work, with `-DMV_BLAKE3_SOURCE_DIR=<BLAKE3>/c` and
 
 ## The CI job
 
-`ci-portable-core.patch` adds the `portable-core` job to
-`.github/workflows/ci.yml` (Ubuntu, the pinned vcpkg baseline, ASan + UBSan):
-the Import suite, the add-on packer's cross-check against the C++ verifier,
-and (Milestone E) the clip core and trim-mode suites, with the distro's FFmpeg,
-libspng and libjpeg as test-only dependencies. It is a patch rather than a
-change to the workflow because the sessions that wrote Milestone G and E could
-not push workflow files. Apply it with
-`git apply tools/portable/ci-portable-core.patch`, then delete this section and
-the patch.
+The `portable-core` job in `.github/workflows/ci.yml` runs this build on every
+pull request (Ubuntu, the pinned vcpkg baseline, `-DMV_ASAN=ON`): the Import
+suite, the add-on packer's and the add-on SDK's cross-checks against the C++
+verifier, and (Milestone E) the clip core and trim-mode suites, with the
+distro's FFmpeg, libspng and libjpeg as test-only dependencies.

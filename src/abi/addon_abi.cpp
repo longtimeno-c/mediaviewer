@@ -7,6 +7,7 @@
 // here whether it is signed, fetches and hashes the archive, extracts it into
 // a staging folder, and asks here to verify and install. Loading re-verifies.
 #include <mediaviewer/mediaviewer_addon.h>
+#include <mediaviewer/mediaviewer_ai.h>
 
 #include <atomic>
 #include <chrono>
@@ -41,6 +42,7 @@ std::atomic<bool> g_present_busy{false};
 struct loaded_entry {
   std::unique_ptr<mv::addon::loaded_addon> addon;
   mv_session_t session = nullptr;
+  bool reader = false;  // through MV_AI_READER_ENTRY_SYMBOL (mv_addon_load_reader)
 };
 
 std::mutex g_mutex;
@@ -429,68 +431,103 @@ MV_API mv_status MV_CALL mv_addon_remove(const char* id, uint32_t keep_data) {
   }));
 }
 
+}  // extern "C"
+
+namespace {
+
+// mv_addon_load and mv_addon_load_reader. `reader`: through the add-on's
+// reader door (docs/design/18 "One host process"): a window whose process
+// does not host the add-ons searches through it, and leaves the store alone.
+mv::status load_addon(mv_session_t session, const char* id, const char* interface_id,
+                      const void** out_interface, char* out_chrome_utf8, uint32_t chrome_cap, bool reader) {
+  MV_REQUIRE(session && id && interface_id && out_interface, "bad arguments");
+  std::lock_guard lock(g_mutex);
+  auto it = g_loaded.find(id);
+  // A process loads an add-on one way: the host's writer or a reader.
+  MV_REQUIRE(it == g_loaded.end() || it->second.reader == reader, "loaded the other way in this process");
+  if (it == g_loaded.end()) {
+    auto s = open_store();
+    if (!s) return s.error();
+    // Once per process, at the first load: a later load (after an install)
+    // must not sweep .staging while the chrome is downloading into it. A
+    // reader never sweeps: the host window may be installing into it.
+    static bool cleaned = false;  // guarded by g_mutex
+    if (!cleaned && !reader) {
+      s->startup_cleanup();
+      cleaned = true;
+    }
+    mv::addon::host_services svc;
+    svc.capture = &capture_info;
+    svc.thumbnail = &thumbnail;
+    svc.should_yield = [] { return g_present_busy.load(std::memory_order_relaxed); };
+    svc.post = [session](const mv_addon_event& e) {
+      mv_completion c{};
+      c.kind = MV_COMPLETION_ADDON;
+      c.status = e.status;
+      c.job_id = e.id;
+      c.generation = e.kind;
+      c.payload = e.payload;
+      mv::abi::push_addon_completion(session, c);
+    };
+    if (auto lib = mv::io::default_library_dir()) svc.default_library = *lib;
+    // Host table v2 (Milestone H): pixels from the viewer's own decoders.
+    svc.still_rgb = &mv::addon::media::decode_still;
+    svc.open_sampler = &mv::addon::media::open_sampler;
+    svc.video_frame = &mv::addon::media::video_frame;
+    svc.moment_thumbnail = &mv::addon::media::moment_thumbnail;
+    svc.open_audio = &mv::addon::media::open_audio;
+    svc.thumbnail_jpeg = &mv::addon::media::thumbnail_jpeg;
+    svc.store_thumbnail_jpeg = &mv::addon::media::store_thumbnail_jpeg;
+    // Find duplicates (PR 54): the Recycle Bin, refused where there is none.
+    svc.recycle = [](const std::string& path) -> mv::result<bool> {
+      auto r = mv::io::recycle_file(path);
+      if (!r) return mv::err(r.error());
+      return *r == mv::io::recycle_outcome::recycled;
+    };
+    auto loaded = mv::addon::loaded_addon::load(*s, id, std::move(svc),
+                                                reader ? MV_AI_READER_ENTRY_SYMBOL : MV_ADDON_ENTRY_SYMBOL);
+    if (!loaded) {
+      // Why a library that verified would not load, for the person (no path).
+      const std::string& why = mv::addon::shared_library::last_error();
+      if (loaded.error() == mv::status::io && !why.empty()) {
+        mv::abi::set_last_error(mv::abi::current_correlation_id(), why.c_str());
+      }
+      return loaded.error();
+    }
+    (void)mv_session_retain(session);
+    it = g_loaded.emplace(id, loaded_entry{std::move(*loaded), session, reader}).first;
+  }
+  const void* iface = it->second.addon->query(interface_id);
+  if (!iface) return status::unsupported_format;
+  *out_interface = iface;
+  if (out_chrome_utf8 && chrome_cap > 0) {
+    const auto& info = it->second.addon->info();
+    const std::string chrome =
+        mv::io::join_path(info.dir, mv::io::native_relative(info.m.chrome));
+    if (write_out(chrome, out_chrome_utf8, chrome_cap, nullptr) != status::ok) {
+      return status::invalid_arg;
+    }
+  }
+  return status::ok;
+}
+
+}  // namespace
+
+extern "C" {
+
 MV_API mv_status MV_CALL mv_addon_load(mv_session_t session, const char* id,
                                        const char* interface_id, const void** out_interface,
                                        char* out_chrome_utf8, uint32_t chrome_cap) {
   return static_cast<mv_status>(mv::abi::guard("mv_addon_load", [&] {
-    MV_REQUIRE(session && id && interface_id && out_interface, "bad arguments");
-    std::lock_guard lock(g_mutex);
-    auto it = g_loaded.find(id);
-    if (it == g_loaded.end()) {
-      auto s = open_store();
-      if (!s) return s.error();
-      // Once per process, at the first load: a later load (after an install)
-      // must not sweep .staging while the chrome is downloading into it.
-      static bool cleaned = false;  // guarded by g_mutex
-      if (!cleaned) {
-        s->startup_cleanup();
-        cleaned = true;
-      }
-      mv::addon::host_services svc;
-      svc.capture = &capture_info;
-      svc.thumbnail = &thumbnail;
-      svc.should_yield = [] { return g_present_busy.load(std::memory_order_relaxed); };
-      svc.post = [session](const mv_addon_event& e) {
-        mv_completion c{};
-        c.kind = MV_COMPLETION_ADDON;
-        c.status = e.status;
-        c.job_id = e.id;
-        c.generation = e.kind;
-        c.payload = e.payload;
-        mv::abi::push_addon_completion(session, c);
-      };
-      if (auto lib = mv::io::default_library_dir()) svc.default_library = *lib;
-      // Host table v2 (Milestone H): pixels from the viewer's own decoders.
-      svc.still_rgb = &mv::addon::media::decode_still;
-      svc.open_sampler = &mv::addon::media::open_sampler;
-      svc.video_frame = &mv::addon::media::video_frame;
-      svc.moment_thumbnail = &mv::addon::media::moment_thumbnail;
-      svc.open_audio = &mv::addon::media::open_audio;
-      svc.thumbnail_jpeg = &mv::addon::media::thumbnail_jpeg;
-      svc.store_thumbnail_jpeg = &mv::addon::media::store_thumbnail_jpeg;
-      // Find duplicates (PR 54): the Recycle Bin, refused where there is none.
-      svc.recycle = [](const std::string& path) -> mv::result<bool> {
-        auto r = mv::io::recycle_file(path);
-        if (!r) return mv::err(r.error());
-        return *r == mv::io::recycle_outcome::recycled;
-      };
-      auto loaded = mv::addon::loaded_addon::load(*s, id, std::move(svc));
-      if (!loaded) return loaded.error();
-      (void)mv_session_retain(session);
-      it = g_loaded.emplace(id, loaded_entry{std::move(*loaded), session}).first;
-    }
-    const void* iface = it->second.addon->query(interface_id);
-    if (!iface) return status::unsupported_format;
-    *out_interface = iface;
-    if (out_chrome_utf8 && chrome_cap > 0) {
-      const auto& info = it->second.addon->info();
-      const std::string chrome =
-          mv::io::join_path(info.dir, mv::io::native_relative(info.m.chrome));
-      if (write_out(chrome, out_chrome_utf8, chrome_cap, nullptr) != status::ok) {
-        return status::invalid_arg;
-      }
-    }
-    return status::ok;
+    return load_addon(session, id, interface_id, out_interface, out_chrome_utf8, chrome_cap, false);
+  }));
+}
+
+MV_API mv_status MV_CALL mv_addon_load_reader(mv_session_t session, const char* id,
+                                              const char* interface_id, const void** out_interface,
+                                              char* out_chrome_utf8, uint32_t chrome_cap) {
+  return static_cast<mv_status>(mv::abi::guard("mv_addon_load_reader", [&] {
+    return load_addon(session, id, interface_id, out_interface, out_chrome_utf8, chrome_cap, true);
   }));
 }
 

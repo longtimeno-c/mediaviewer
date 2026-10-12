@@ -78,6 +78,7 @@ endif()
 # ---- io: the POSIX halves of the new ports -------------------------------------
 add_library(mv_io STATIC
   "${MV_ROOT}/src/io/content_hash.cpp"
+  "${MV_ROOT}/src/io/file_mac.cpp"
   "${MV_ROOT}/src/io/file_port.cpp"
   "${MV_ROOT}/src/io/file_port_mac.cpp"
   "${MV_ROOT}/src/io/memory_file.cpp"
@@ -116,6 +117,7 @@ add_executable(mv_import_tests
   "${MV_ROOT}/tests/test_verified_copy.cpp"
   "${MV_ROOT}/tests/test_addon_manifest.cpp"
   "${MV_ROOT}/tests/test_open_addons.cpp"
+  "${MV_ROOT}/tests/test_ai_resume.cpp"
   "${MV_ROOT}/tests/test_import_naming.cpp"
   "${MV_ROOT}/tests/test_import_engine.cpp"
   "${MV_ROOT}/tests/test_json.cpp"

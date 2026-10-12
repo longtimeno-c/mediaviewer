@@ -49,6 +49,12 @@ final class LocalSearchStore: ObservableObject {
 
   /// Whether this Mac can run the pack at all (arm64). Constant for a run.
   let supported: Bool = mv_addon2_supported("ai")
+  /// Another window's process hosts the add-ons (2026-10-07, docs/design/18 "One
+  /// host process"): this one searches through the pack's read-only reader,
+  /// started on the first ⌘F or when Settings opens, and installs, updates
+  /// and removes nothing. Nothing is read at launch: reading what is
+  /// installed hashes over a gigabyte. Constant for a run.
+  let elsewhere: Bool = mv_addon2_elsewhere()
 
   @Published private(set) var pieces: [Piece] = [
     Piece(id: "ai", title: "Core",
@@ -70,7 +76,12 @@ final class LocalSearchStore: ObservableObject {
   @Published private(set) var ceiling: UInt64 = 3_000_000_000
   @Published private(set) var loaded = false
   @Published private(set) var loading = false
+  /// Installed and verified, waiting unloaded for the first search (issue
+  /// #292, docs/design/17 "Starting on demand"): nothing of the pack runs yet.
+  @Published private(set) var onDemand = false
   @Published private(set) var loadError = ""
+  /// The same, in words (mv_addon2_load_reason): Settings' status line.
+  @Published private(set) var loadReason = ""
   /// The piece downloading or installing now. Installs run one at a time (no
   /// fight over bandwidth, and each piece's 3 GB check sees the one before it
   /// landed); more clicks queue behind it in `queued`.
@@ -112,8 +123,6 @@ final class LocalSearchStore: ObservableObject {
   private var ticks = 0
   private var probed = false
   private var checkingRemovals = false
-  /// The search icon was clicked while the pack was still starting.
-  private var openWhenLoaded = false
   /// What to say once each queued removal has landed.
   private var removedText: [String: String] = [:]
 
@@ -122,7 +131,10 @@ final class LocalSearchStore: ObservableObject {
     timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
       MainActor.assumeIsolated { self?.poll() }
     }
-    refresh()
+    // Issue #178: the pack's load and indexing move off the main thread, so
+    // this one still ticks; the tolerance lets the system coalesce it.
+    timer?.tolerance = 0.1
+    if !elsewhere { refresh() }  // a later window reads it when Settings opens
   }
 
   var core: Piece { pieces[0] }
@@ -138,23 +150,31 @@ final class LocalSearchStore: ObservableObject {
     if !loaded, !loading, busyPiece == nil, !SettingsStore.shared.visible, ticks % 4 != 0 { return }
     let l = mv_addon2_loaded("ai")
     let busy = mv_addon2_loading("ai")
+    let waiting = mv_addon2_ai_on_demand()
     if l != loaded {
       loaded = l
       chromeGeneration += 1
     }
     if busy != loading { loading = busy }
-    if openWhenLoaded, loaded || !loading {
-      // Attached: open as the click asked. The load failed: drop it.
-      openWhenLoaded = false
-      if loaded { openSearch() }
-    }
+    if waiting != onDemand { onDemand = waiting }
     let err = AddonStore.readString { mv_addon2_load_error("ai", $0, $1) }
     if err != loadError { loadError = err }
-    // The pill: at most 2 Hz, and only while the pack is loaded.
-    guard loaded, ticks % 2 == 0 else {
-      if !loaded && pillVisible { pillVisible = false }
+    let why = AddonStore.readString { mv_addon2_load_reason("ai", $0, $1) }
+    if why != loadReason { loadReason = why }
+    // While the pack starts (the first search after launch, issue #292): the
+    // pill says so, as the search panel cannot until it is attached.
+    if !loaded {
+      if loading {
+        if pillText != Self.startingText { pillText = Self.startingText }
+        if pillProgress != 0 { pillProgress = 0 }
+        if !pillSpinning { pillSpinning = true }
+        if pillOnBattery { pillOnBattery = false }
+      }
+      if loading != pillVisible { pillVisible = loading }
       return
     }
+    // The pill: at most 2 Hz, and only while the pack is loaded.
+    guard ticks % 2 == 0 else { return }
     var s = mv_chrome_ai_status()
     guard mv_addon2_ai_status(&s) else {
       if pillVisible { pillVisible = false }
@@ -179,6 +199,8 @@ final class LocalSearchStore: ObservableObject {
     let battery = s.state == 3 && s.yield_reason == 2
     if battery != pillOnBattery { pillOnBattery = battery }
   }
+
+  nonisolated static let startingText = "Starting Local search…"
 
   nonisolated static func count(_ n: UInt64) -> String {
     let f = NumberFormatter()
@@ -272,7 +294,8 @@ final class LocalSearchStore: ObservableObject {
   /// Settings opening asks the channel for each piece (two small GETs each).
   /// Nothing is downloaded until a button is clicked.
   func probe(force: Bool = false) {
-    guard supported, force || !probed else { return }
+    // A later window offers nothing to install: no channel request either.
+    guard supported, !elsewhere, force || !probed else { return }
     probed = true
     for piece in pieces { probe(piece: piece.id) }
   }
@@ -381,6 +404,34 @@ final class LocalSearchStore: ObservableObject {
   /// Queues the piece and returns at once; the queue runs one install at a
   /// time, Core first. A piece clicked before Core is installed waits for
   /// Core, and is dropped with a note if Core does not install.
+  /// Settings opened: what is installed, and in a later window its reader
+  /// (mv_addon2_ai_wake; at most every 10 s), so the pack's view shows. The
+  /// first window's pack is not started by Settings opening (issue #292): its
+  /// row offers Start now (wake()) until the first search.
+  func settingsShown() {
+    refresh()
+    probe()
+    if elsewhere { _ = mv_addon2_ai_wake() }
+  }
+
+  /// Settings' Start now: the pack that waited since launch loads, and its own
+  /// view (compute, folders, People) follows once it attaches.
+  func wake() {
+    if mv_addon2_ai_wake() {
+      loading = true
+      onDemand = false
+    }
+  }
+
+  /// The launch notice's Resume (issue #299) started the pack: the pill and
+  /// Settings say it is starting, as for Start now.
+  func resumeStarted() {
+    if mv_addon2_loading("ai") {
+      loading = true
+      onDemand = false
+    }
+  }
+
   func install(_ id: String) {
     guard stateKnown, !removing.contains(id), !isPending(id),
           let piece = pieces.first(where: { $0.id == id }) else { return }
@@ -513,7 +564,7 @@ final class LocalSearchStore: ObservableObject {
   func remove(_ id: String, keepData: Bool) {
     confirmingRemove = nil
     let title = pieces.first(where: { $0.id == id })?.title ?? id
-    if id == "ai" { openWhenLoaded = false }
+    if id == "ai" { onDemand = false }  // the host's unload drops a pending open too
     // Final Cut Pro search hosts Core: without it, the agent and panel go too.
     if id == "ai", finalCut == 2 || finalCut == 3 { setFinalCut(false) }
     if id == "ai" && loaded {
@@ -543,22 +594,36 @@ final class LocalSearchStore: ObservableObject {
 
   func openSearch() { _ = mv_addon2_run_command("search_open") }
 
-  /// The path bar's search icon shows whenever Local search is on its way to
-  /// being usable: loaded, or verifying and starting at launch (seconds for
-  /// the 2.3 GB pack). It replaced the gallery search bar, so it must not be
-  /// missing just because the pack is still starting (owner, 2026-09-28).
-  var searchAvailable: Bool { loaded || loading }
+  /// The path bar's search icon offers Local search whenever it is usable or
+  /// on its way: loaded, starting, or installed and waiting for the first
+  /// search (issue #292). It replaced the gallery search bar, so it must not be
+  /// missing just because the pack is not running yet (owner, 2026-09-28).
+  var searchAvailable: Bool { loaded || loading || onDemand }
 
-  /// The icon's click: the panel now, or the moment the pack attaches.
-  func openSearchWhenReady() {
+  /// The icon's click (and ⌘F through the host): the panel now, or the pack
+  /// starts and its panel opens the moment it attaches (the host's
+  /// open_when_attached). False: nothing is on its way, so the caller opens
+  /// file search.
+  @discardableResult
+  func openSearchWhenReady() -> Bool {
     if loaded {
       openSearch()
-    } else if loading {
-      openWhenLoaded = true
+      return true
     }
+    guard mv_addon2_reader_search() else { return false }
+    if !elsewhere {
+      loading = true
+      onDemand = false
+    }
+    return true
   }
   /// Ignore the battery pause until the Mac is next on power (not saved).
   func indexAnyway() { _ = mv_addon2_run_command("index_anyway") }
+
+  /// Settings in a later window, for both add-on sections (the Windows wording).
+  nonisolated static let elsewhereText =
+    "Add-ons are installed, updated and removed in the first MediaViewer window you opened. "
+    + "To manage them here, close every MediaViewer window, then open this one again."
 }
 
 /// Settings → Local search.
@@ -570,9 +635,9 @@ struct LocalSearchSection: View {
   var body: some View {
     if store.supported {
       content
-        .onAppear { if settings.visible { store.refresh(); store.probe() } }
+        .onAppear { if settings.visible { store.settingsShown() } }
         .onChange(of: settings.visible) { _, visible in
-          if visible { store.refresh(); store.probe() }
+          if visible { store.settingsShown() }
         }
     }
   }
@@ -585,6 +650,8 @@ struct LocalSearchSection: View {
         // Quiet, and no button: nothing is offered for download while what
         // is installed is still being read.
         note("Checking installed add-ons…")
+      } else if store.elsewhere {
+        elsewhereView
       } else {
         installed
       }
@@ -638,14 +705,25 @@ struct LocalSearchSection: View {
     if store.loading {
       HStack(spacing: 8) {
         ProgressView().controlSize(.small)
-        Text("Starting Local search…").font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
+        Text(LocalSearchStore.startingText).font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
+      }
+    } else if store.onDemand {
+      // Issue #292: nothing of the pack runs until the first search; its own
+      // settings (compute, folders, People) need it running.
+      HStack(alignment: .firstTextBaseline, spacing: 12) {
+        Text("Local search starts the first time you search. Start it now to see its folders and settings.")
+          .font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
+          .fixedSize(horizontal: false, vertical: true)
+        Spacer(minLength: 0)
+        Button("Start now") { store.wake() }
       }
     } else if store.coreInstalled && !store.loaded && !store.loadError.isEmpty {
-      Text(store.loadError == "UNSUPPORTED_FORMAT"
-           ? "This Local search needs a newer MediaViewer. Update MediaViewer, then reinstall it."
-           : "The installed Local search did not pass verification, so it was not started. Reinstall Core.")
+      // The reason, as the command bar's alert says it (addons_mac.mm load_reason).
+      Text("Local search couldn't start. "
+           + (store.loadReason.isEmpty ? "Something went wrong (\(store.loadError))." : store.loadReason))
         .font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
         .fixedSize(horizontal: false, vertical: true)
+        .textSelection(.enabled)
     }
     // The pack's own management view: compute, precision, folders, index,
     // People. Owned by AI.bundle; rebuilt when the chrome is re-attached.
@@ -654,6 +732,31 @@ struct LocalSearchSection: View {
         .id(store.chromeGeneration)
         .frame(maxWidth: .infinity, alignment: .leading)
         .transition(.opacity)
+    }
+  }
+
+  /// A later window (docs/design/18 "One host process"): no Install, Update or
+  /// Remove; it searches through the reader, whose own view (the pack's, in its
+  /// read-only form) follows once it is loaded.
+  @ViewBuilder
+  private var elsewhereView: some View {
+    note(store.coreInstalled ? LocalSearchStore.elsewhereText
+         : "Local search is not installed. " + LocalSearchStore.elsewhereText)
+    if store.coreInstalled {
+      if store.loading {
+        HStack(spacing: 8) {
+          ProgressView().controlSize(.small)
+          Text("Starting Local search…").font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
+        }
+      } else if !store.loaded && !store.loadReason.isEmpty {
+        note(store.loadError == "NOT_FOUND" ? store.loadReason : "Local search couldn't start. " + store.loadReason)
+      }
+      if store.loaded {
+        AddonSettingsEmbed(addonID: "ai")
+          .id(store.chromeGeneration)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .transition(.opacity)
+      }
     }
   }
 
@@ -925,7 +1028,7 @@ struct LocalSearchBarItem: View {
 
   var body: some View {
     if store.pillVisible {
-      Button { store.openSearch() } label: {
+      Button { store.openSearchWhenReady() } label: {
         HStack(spacing: 7) {
           ProgressRing(progress: store.pillProgress, spinning: store.pillSpinning && !reduceMotion)
             .frame(width: 14, height: 14)
@@ -942,12 +1045,13 @@ struct LocalSearchBarItem: View {
       .buttonStyle(.plain)
       .onHover { hover = $0 }
       .contextMenu {
-        Button("Open search") { store.openSearch() }
-        if store.pillOnBattery {
+        Button("Open search") { store.openSearchWhenReady() }
+        if store.pillOnBattery && !store.elsewhere {
           Button("Index anyway, on battery") { store.indexAnyway() }
         }
       }
-      .help(store.pillOnBattery
+      .help(!store.loaded ? "Local search is starting. Click to search; the panel opens once it is ready."
+            : store.pillOnBattery
             ? "Indexing waits on battery. Click to search; Control-click to index anyway until the Mac is next on power."
             : "Local search is indexing in the background. Click to search.")
       .accessibilityLabel(store.pillText)

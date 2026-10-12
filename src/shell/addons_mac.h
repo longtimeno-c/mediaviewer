@@ -10,10 +10,23 @@
 
 using MvAddonsOpenPathFn = void (*)(void* ctx, const char* utf8_path);
 
-// Once at launch: verify and load the installed add-ons (Import; on Apple
-// silicon the AI pack) off the main thread, and watch for cards to offer the
-// one-time Import hint when it is absent.
+// Once at launch: verify and load Import, and verify the AI pack (Apple
+// silicon) without loading it (issue #292: it starts at the first search or
+// when Settings shows it), off the main thread; watch for cards to offer the
+// one-time Import hint when Import is absent.
 void MvAddonsStart(MvAddonsOpenPathFn open_path, void* ctx);
+// Instead of MvAddonsStart, in a window whose process did not get the
+// add-on host lock (main_mac.mm MvClaimAddonHost): Local search through the AI
+// pack's read-only reader, nothing else. Loads nothing at launch: the reader
+// starts on the first ⌘F (MvAddonsSearchOnDemand) or when Settings opens.
+void MvAddonsStartReader(MvAddonsOpenPathFn open_path, void* ctx);
+// ⌘F while Local search is not attached. True when it took the key: the pack
+// (the first window, issue #292) or the reader (a later window) is starting
+// and the panel opens once it attaches. In a later window, if nothing is
+// indexed yet or it is not installed, file search opens instead, with a note
+// for the former. False: do what ⌘F does without Local search (not
+// installed; or a reader tried less than 10 s ago, the note then in the bar).
+bool MvAddonsSearchOnDemand();
 // Ctrl+Shift+I / ⌘⇧I: the Import window, with the viewer's marks.
 void MvAddonsOpenImport(const std::vector<std::string>& marks);
 // ⌘⇧F7: import these now with the last preset.

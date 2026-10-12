@@ -45,6 +45,8 @@ enum class key : std::uint16_t {
 };
 
 inline constexpr int kKeyCount = static_cast<int>(key::count);
+// Settings key capture (IslandHost.Settings.cs) encodes these numbers by hand.
+static_assert(static_cast<int>(key::f12) == 0x11A && static_cast<int>(key::numpad0) == 0x11B);
 
 [[nodiscard]] constexpr key char_key(char c) noexcept {
   if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
@@ -331,6 +333,25 @@ enum class command_id : std::uint16_t {
   // Ctrl/Cmd+N: another window, its own process (docs/design/16 "Window").
   // Appended after the add-on slots so every earlier wire id stays put.
   new_window,
+  // Issue #210 (docs/design/16 "Marks, copy, move"): F2 renames the file on screen,
+  // its pair and its sidecars with it. Appended.
+  rename_file,
+  // Issue #206 (docs/design/16 "Status, sort, filter, typeahead"): View > Show. Appended.
+  // kind_filter_next cycles All / Photos / Videos / RAW / Marked and ships with
+  // no key (Settings can give it one); kind_filter_set is the menus' and
+  // carries the filter (io::kind_filter) as its argument.
+  kind_filter_next,
+  kind_filter_set,
+  // Issue #207 (docs/design/16 "Rate", docs/design/06): culling. Appended. X toggles
+  // reject (rating -1), numpad / Ctrl+Shift 6-9 set the colour label Lightroom
+  // gives those keys (Red, Yellow, Green, Blue; the same key again clears),
+  // U clears it. One file, the one on screen, through PR 12's writer.
+  reject,
+  label_red,
+  label_yellow,
+  label_green,
+  label_blue,
+  clear_label,
   // Ctrl/Cmd+Shift+V: the clipboard's image as an unsaved item (docs/design/16
   // "New from Clipboard", Preview's File > New from Clipboard). Appended.
   new_from_clipboard,
@@ -344,6 +365,13 @@ inline constexpr int kCommandCount = static_cast<int>(command_id::count);
 [[nodiscard]] constexpr int rating_of_command(command_id id) noexcept {
   const int v = static_cast<int>(id) - static_cast<int>(command_id::set_rating_0);
   return v >= 0 && v <= 5 ? v : -1;
+}
+
+// label_red..label_blue -> 1..4 (shell::colour_label), clear_label -> 0, else -1.
+[[nodiscard]] constexpr int label_of_command(command_id id) noexcept {
+  if (id == command_id::clear_label) return 0;
+  const int v = static_cast<int>(id) - static_cast<int>(command_id::label_red);
+  return v >= 0 && v <= 3 ? v + 1 : -1;
 }
 
 [[nodiscard]] constexpr bool is_reserved_notification(int id) noexcept {
@@ -450,5 +478,16 @@ void set_addon_commands(std::span<const addon_command_row> rows);
 // in `?` but not offered to run (review note 39). The fifth column of
 // describe_commands() is this, as 1 or 0.
 [[nodiscard]] bool palette_runnable(command_id id) noexcept;
+
+// Host menu items that stand for a command (issue #182). Whether any live row
+// runs `id` in a mode in `modes`: the Mac greys Open, Next and the rest where
+// the table does not run them (mid-crop, walking away drops the draft).
+[[nodiscard]] bool command_live_in(command_id id, mode_mask modes) noexcept;
+// The chord a menu item for `id` shows and answers: the first live row of
+// `id` with Ctrl (Cmd on the Mac) whose key and modifiers no row of another
+// command holds, in any mode; null when there is none. A menu key equivalent
+// fires in every mode, so a chord shared with another command stays the
+// router's, which tells the modes apart.
+[[nodiscard]] const binding* menu_chord(command_id id) noexcept;
 
 }  // namespace mv::shell
