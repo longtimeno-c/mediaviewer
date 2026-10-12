@@ -149,6 +149,20 @@ final class SlotStore: ObservableObject {
   @Published private(set) var status: [(id: String, label: String, text: String)] = []
   /// True while an add-on answers Local search (the path bar's button opens it).
   @Published private(set) var localSearch = false
+  /// The prefixes file-search providers declare ("place:"), folded as the core folds.
+  private(set) var filePrefixes: [String] = []
+
+  /// The query starts with a prefix a file-search provider claims (and no digit
+  /// follows it: a date term, as slot_registry::search routes): names are not
+  /// matched. Any other "word:" query is an ordinary name query.
+  func claimsFilePrefix(_ folded: String) -> Bool {
+    for pre in filePrefixes where !pre.isEmpty && folded.hasPrefix(pre) {
+      let rest = folded.dropFirst(pre.count).drop { $0 == " " }
+      if let c = rest.first, c.isASCII, c.isNumber { continue }
+      return true
+    }
+    return false
+  }
   @Published private(set) var fileSearch = SlotSearchState()
   @Published private(set) var localResults = SlotSearchState()
   /// Badges by file name in the folder the gallery shows: a tile's lookup.
@@ -222,6 +236,9 @@ final class SlotStore: ObservableObject {
       badgeDefs[key] = SlotBadge(key: key, label: b["label"] as? String ?? "", symbol: b["symbol"] as? String ?? "")
     }
     localSearch = (doc["local_search"] as? Bool) ?? false
+    filePrefixes = (doc["providers"] as? [[String: Any]] ?? []).flatMap { p -> [String] in
+      (p["files"] as? Bool) == true ? (p["prefixes"] as? [String] ?? []) : []
+    }
     SlotTileFlags.shared.set(badges: !badgeDefs.isEmpty, context: items.contains { $0.slot == "context" })
     // A new add-on may want the file on screen and the folder: ask again.
     infoKey = ""

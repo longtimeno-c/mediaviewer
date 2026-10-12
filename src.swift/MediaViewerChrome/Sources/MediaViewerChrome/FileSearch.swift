@@ -120,8 +120,9 @@ final class FileSearchStore: ObservableObject {
     }
     let typed = text.trimmingCharacters(in: .whitespacesAndNewlines)
     let query = FoldedNames.fold(typed)
-    // A provider prefix ("place:") is the provider's alone: no name has it.
-    let prefixed = typed.range(of: #"^[a-z]+:"#, options: .regularExpression) != nil
+    // A prefix a provider declares ("place:") is the provider's alone: no name has
+    // it. Unclaimed ("place:" with Places not installed), it is an ordinary name query.
+    let prefixed = SlotStore.shared.claimsFilePrefix(query)
     let names = prefixed ? [] : folded.matching(query)
     let folderHits = prefixed ? [] : foldedFolders.matching(query)
     nameHits = names

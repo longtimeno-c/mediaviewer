@@ -159,6 +159,7 @@ public static partial class IslandHost
         _slotSections = new List<SlotSectionDef>();
         SlotBadgeDefs.Clear();
         SlotAddonDirs.Clear();
+        SlotFilePrefixes.Clear();
         if (json.Length > 0)
         {
             try
@@ -170,6 +171,14 @@ public static partial class IslandHost
                     _slotSections.Add(new SlotSectionDef(JStr(s, "addon"), JStr(s, "id"), JFlag(s, "location")));
                 foreach (JsonElement i in JArr(r, "items"))
                     _slotItems.Add(new SlotItem(JStr(i, "addon"), JStr(i, "id"), JStr(i, "slot"), JStr(i, "label"), JStr(i, "symbol"), JStr(i, "target")));
+                foreach (JsonElement p in JArr(r, "providers"))
+                {
+                    if (!JFlag(p, "files")) continue;
+                    foreach (JsonElement pre in JArr(p, "prefixes"))
+                    {
+                        if (pre.ValueKind == JsonValueKind.String) SlotFilePrefixes.Add(pre.GetString() ?? "");
+                    }
+                }
                 foreach (JsonElement b in JArr(r, "badges"))
                     SlotBadgeDefs[JStr(b, "key")] = new SlotBadge(JStr(b, "key"), JStr(b, "label"), JStr(b, "symbol"));
             }
@@ -442,9 +451,27 @@ public static partial class IslandHost
         _slotFileGeneration = SlotNative.Search(SlotNative.ScopeFiles, typed, _openedFolder);
     }
 
-    // A provider prefix ("place:") is the provider's alone: no name has it.
-    private static bool SlotPrefixed(string typed) =>
-        System.Text.RegularExpressions.Regex.IsMatch(typed, "^[a-z]+:");
+    // A prefix a file-search provider declares ("place:") is that provider's alone:
+    // names are not matched. Any other "word:" query is an ordinary name query
+    // (with Places not installed, "place:lisbon" still searches names). The core
+    // routes the same way (slot_registry::search): a digit after the prefix is a
+    // date term and is not routed.
+    private static readonly List<string> SlotFilePrefixes = new();
+
+    private static bool SlotPrefixed(string typed)
+    {
+        if (SlotFilePrefixes.Count == 0) return false;
+        string f = FoldName(typed.Trim());
+        foreach (string pre in SlotFilePrefixes)
+        {
+            if (pre.Length == 0 || !f.StartsWith(pre, StringComparison.Ordinal)) continue;
+            int after = pre.Length;
+            while (after < f.Length && f[after] == ' ') ++after;
+            if (after < f.Length && char.IsAsciiDigit(f[after])) continue;
+            return true;
+        }
+        return false;
+    }
 
     // ---- badges -------------------------------------------------------------------------
 
