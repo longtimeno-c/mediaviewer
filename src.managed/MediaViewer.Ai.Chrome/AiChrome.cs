@@ -187,6 +187,12 @@ public sealed class AiChrome : IAddonChrome, ISearchChrome
                 return WalkMatch(+1);
             case SearchCommand.PrevMatch:
                 return WalkMatch(-1);
+            case SearchCommand.IndexAnyway:
+                // The command-bar pill's menu, while indexing waits on battery.
+                try { _api.IndexAnyway(); }
+                catch (MediaViewerException) { return false; }
+                ReadStatus();
+                return true;
             default:
                 return false;
         }
@@ -429,8 +435,30 @@ public sealed class AiChrome : IAddonChrome, ISearchChrome
             _host.SetIndexingStatus(null, false);
             return;
         }
-        _host.SetIndexingStatus(Look.PillVisible(_status) ? Look.StatusLine(_status) : null, Look.Busy(_status));
+        string? line = Look.PillVisible(_status) ? Look.StatusLine(_status) : null;
+        bool busy = Look.Busy(_status);
+        double fraction = _status.AssetsTotal == 0 ? 0 : Math.Min(1.0, (double)_status.AssetsDone / _status.AssetsTotal);
+        bool reported = false;
+        try
+        {
+            reported = ReportPill(line, busy, fraction, Look.OnBattery(_status));
+        }
+        catch (TypeLoadException)
+        {
+            // A host older than IAddonHost3: the line and the busy state only.
+        }
+        if (!reported) _host.SetIndexingStatus(line, busy);
         StatusChanged?.Invoke();
+    }
+
+    // Its own method so that on a host whose Interop has no IAddonHost3, only
+    // this call fails to load (caught above), not ReadStatus.
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private bool ReportPill(string? line, bool busy, double fraction, bool onBattery)
+    {
+        if (_host is not IAddonHost3 host) return false;
+        host.SetIndexingPill(line, busy, fraction, onBattery);
+        return true;
     }
 
     private void OnThemeChanged()

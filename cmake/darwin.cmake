@@ -59,6 +59,7 @@ add_library(mv::core ALIAS mv_core)
 
 add_library(mv_gfx STATIC
   src/gfx/adjust_kernel.h
+  src/gfx/adjust_kernel_tokens.h
   src/gfx/colour_desc.cpp
   src/gfx/colour_desc.h
   src/gfx/metal_pacer.cpp
@@ -199,9 +200,9 @@ target_link_libraries(mv_codec
           TIFF::TIFF ${MV_HEIF_TARGET} ${MV_AVIF_TARGET} libraw::raw_r
           # PDF (codec/pdf_mac.cpp): the system renderer.
           "-framework CoreGraphics" "-framework CoreFoundation"
-          # DOCX (codec/docx.cpp, text.cpp, zip.cpp; fonts_mac.cpp finds files
-          # through CoreText and reads them through io/).
-          Freetype::Freetype harfbuzz::harfbuzz ZLIB::ZLIB "-framework CoreText" mv_io)
+          # DOCX (codec/docx.cpp, text.cpp, zip.cpp). fonts_mac.cpp finds the file
+          # through CoreText; image/pipeline.cpp reads the bytes.
+          Freetype::Freetype harfbuzz::harfbuzz ZLIB::ZLIB "-framework CoreText")
 add_library(mv::codec ALIAS mv_codec)
 target_link_libraries(mv_codec PRIVATE mv_raw_openmp)
 
@@ -225,6 +226,8 @@ add_library(mv_io STATIC
   src/io/content_hash.cpp
   src/io/content_hash.h
   src/io/file_port.cpp
+  src/io/rename_stop.cpp
+  src/io/rename_stop.h
   src/io/file_port.h
   src/io/file_port_mac.cpp
   src/io/child_process.h
@@ -242,9 +245,10 @@ add_library(mv::io ALIAS mv_io)
 # ---------------------------------------------------------------------------
 # mv_image — colour (LCMS) + PR 17's decode entrypoint + Metal upload +
 # PR 18's JPEG-512 thumbnail cache (folded-in PR 4). image/pipeline.cpp/
-# upload.cpp/gpu_image.h/thumb.cpp stay Windows-only (D3D11 or the '\\'
-# path-join bug in thumb.cpp); PR 17/18 use the _mac twins instead
-# (docs/design/12 2026-09-17).
+# upload.cpp/gpu_image.h/thumb.cpp stay Windows-only (D3D11, or thumb
+# pixels through decode_bytes()); PR 17/18 use the _mac twins instead
+# (docs/design/12 2026-09-17). thumb_store.cpp, the cache's SQLite index, is
+# shared by both hosts (issue #168).
 # ---------------------------------------------------------------------------
 find_package(lcms2 CONFIG REQUIRED)
 find_package(unofficial-sqlite3 CONFIG REQUIRED)
@@ -258,6 +262,7 @@ add_library(mv_image STATIC
   src/image/pipeline_mac.cpp
   src/image/upload_mac.mm
   src/image/thumb_mac.cpp
+  src/image/thumb_store.cpp
   src/image/colour.h
   src/image/pipeline.h
   src/image/pipeline_mac.h
@@ -296,6 +301,7 @@ add_library(mv_player STATIC
   src/player/av_clock.cpp
   src/player/audio_mac.cpp         # D9: the only player/ file that names Core Audio
   src/player/transport.cpp
+  src/player/resume_store.cpp
   src/player/presenter.cpp
   src/player/container_probe.cpp
   src/player/poster.cpp
@@ -307,6 +313,7 @@ add_library(mv_player STATIC
   src/player/av_clock.h
   src/player/presenter.h
   src/player/transport.h
+  src/player/resume_store.h
   src/player/container_probe.h
   src/player/poster.h
   src/player/video_internal.h
@@ -790,6 +797,8 @@ if(MV_BUILD_TESTS)
     # Issue #239: every command id is handled or explicitly excluded, per host.
     tests/test_command_coverage.cpp
     tests/test_key_router_review.cpp
+    tests/test_kind_filter.cpp
+    tests/test_rename_stop.cpp
     tests/test_write_guard.cpp
     tests/test_photos_backup.cpp
     # docs/design/26: virtual items in a result list (the Photos library as a folder).
@@ -850,6 +859,7 @@ if(MV_BUILD_TESTS)
     # PR 15: recent folders, copy path.
     tests/test_os_integration.cpp
     tests/test_thumb_pixels.cpp
+    tests/test_thumb_store.cpp
     # PR 15: the Explorer handler's portable half (the COM DLL is Windows-only).
     tests/test_thumb_request.cpp
     src/shellext/thumb_request.cpp
@@ -860,6 +870,8 @@ if(MV_BUILD_TESTS)
     tests/test_transport_autohide.cpp
     # Issue #44: no clip plays under the gallery, both hosts.
     tests/test_playback_hold.cpp
+    # Issue #231: the Windows host's selection stamp (the logic is portable).
+    tests/test_listing_stamp.cpp
     # Issue #236: a stale pending clip is retired, both hosts.
     tests/test_video_session.cpp
   )
@@ -918,6 +930,7 @@ if(MV_BUILD_TESTS)
     tests/test_verified_copy.cpp
     tests/test_addon_manifest.cpp
     tests/test_open_addons.cpp
+    tests/test_ai_resume.cpp
     tests/test_import_naming.cpp
     tests/test_import_engine.cpp
     tests/test_json.cpp

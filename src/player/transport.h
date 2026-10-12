@@ -36,6 +36,16 @@ struct seek_request {
 [[nodiscard]] seek_request make_seek(time_ns target_ns, bool dragging,
                                      std::uint32_t generation) noexcept;
 
+// Issue #362. A track click on the system slider reports the range minimum
+// and then the time under the pointer. A non-exact seek of that minimum,
+// while the playhead is already past this, is the report rather than a
+// request to show the opening frame. An exact seek is never spurious:
+// release, a step and a typed position mean that time.
+inline constexpr time_ns scrub_origin_playhead_ns = 500'000'000;  // 0.5 s
+
+[[nodiscard]] bool scrub_origin_is_spurious(time_ns playhead_ns, time_ns target_ns,
+                                            bool exact) noexcept;
+
 // ---------------------------------------------------------------------------
 // Speed
 // ---------------------------------------------------------------------------
