@@ -372,6 +372,8 @@ public static partial class IslandHost
             root.Children.Add(scroll);
         }
         AutomationProperties_SetName(root, EditTitle);
+        // Issue #224: the island covers the canvas's WM_DROPFILES.
+        WireFileDrop(root);
         RenderEditInPlace();
         return root;
     }
