@@ -699,6 +699,11 @@ public static partial class IslandHost
             e.Handled = true;
         };
 
+        // Cells are built once per tree and re-added as the search narrows or widens
+        // (issue #219): a keystroke then costs a filter pass and Children.Add, not
+        // 400 freshly built rows. A rebuild (a record landing, an edit) starts a new
+        // cache with the new tree.
+        var cells = new Dictionary<TagRow, UIElement>(ReferenceEqualityComparer.Instance);
         const int MaxRows = 400;
         void Fill()
         {
@@ -727,7 +732,12 @@ public static partial class IslandHost
                     header.Margin = new Thickness(0, 10, 0, 2);
                     list.Children.Add(header);
                 }
-                list.Children.Add(BuildTagCell(t));
+                if (!cells.TryGetValue(t, out UIElement? cell))
+                {
+                    cell = BuildTagCell(t);
+                    cells[t] = cell;
+                }
+                list.Children.Add(cell);
                 shown++;
             }
             if (matched == 0) list.Children.Add(Text("No tag matches", Body));
@@ -737,13 +747,41 @@ public static partial class IslandHost
             }
         }
 
+        // Debounced like file search (~70 ms) so a typed word filters once, not once
+        // per letter. Clearing the box is immediate.
+        _metaSearchDebounce?.Stop();
+        _metaFill = Fill;
         search.Changed += () =>
         {
             _metaQuery = search.Text;
-            Fill();
+            _metaSearchDebounce ??= CreateMetaSearchDebounce();
+            _metaSearchDebounce?.Stop();
+            if (_metaQuery.Trim().Length == 0 || _metaSearchDebounce is null)
+            {
+                Fill();
+                return;
+            }
+            _metaSearchDebounce.Start();
         };
         Fill();
         return host;
+    }
+
+    private static Action? _metaFill;
+    private static Microsoft.UI.Dispatching.DispatcherQueueTimer? _metaSearchDebounce;
+
+    private static Microsoft.UI.Dispatching.DispatcherQueueTimer? CreateMetaSearchDebounce()
+    {
+        Microsoft.UI.Dispatching.DispatcherQueueTimer? timer = _dispatcher?.DispatcherQueue.CreateTimer();
+        if (timer is null) return null;
+        timer.IsRepeating = false;
+        timer.Interval = TimeSpan.FromMilliseconds(70);
+        timer.Tick += (_, _) =>
+        {
+            try { _metaFill?.Invoke(); }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
+        };
+        return timer;
     }
 
     private static UIElement BuildTagCell(TagRow t)
