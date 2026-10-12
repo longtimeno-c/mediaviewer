@@ -1074,8 +1074,9 @@ the app (a local build cannot load its own unsigned Import); Windows beyond comp
 
 **Declarative contributions: contribution API 2 (2026-10-11; PR 56's second half,
 [25](25-open-addons.md#pr-56-second-half-declarative-contributions-2026-10-11)).** Owner, the
-same day: finish the open add-on spine; "an add-on carries its own code and data; there is
-still never a second app to install or open". Settings pages, keymap packs and theme shape are
+same day: finish the open add-on spine (the rule change made with it, "an add-on carries its own
+code and its own data", is its own row under Add-on mechanism, from #348's branch). Settings
+pages, keymap packs and theme shape are
 data an add-on's manifest carries; both hosts render them natively. None reverses a D-decision.
 
 - **One table of contribution points** (`kContributionPoints`, `open_manifest.h`): every §7
