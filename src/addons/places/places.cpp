@@ -24,7 +24,7 @@ bool at_closest(const map_view& v) noexcept { return v.span_deg <= k_min_span_de
 void zoom_buttons(json::writer& w, const map_view& v) {
   w.begin_object().key("type").string("button").key("id").string("zoom_out");
   w.key("label").string("Zoom out");
-  if (!kZoomOutSymbol.empty()) w.key("symbol").string(kZoomOutSymbol);
+  w.key("symbol").string(kZoomOutSymbol);
   w.key("disabled").boolean(at_widest(v)).end_object();
   w.begin_object().key("type").string("button").key("id").string("zoom_in");
   w.key("label").string("Zoom in").key("symbol").string("plus");
