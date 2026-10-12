@@ -1324,6 +1324,43 @@ There is no upload endpoint yet, exactly as there is none for crash reports.
 
 ## Where this actually is
 
+### The AI badge on the canvas (#345, docs/plans/metadata-search-and-place.md slice 5, 2026-10-12)
+
+A file that says it was AI-made gets a small "AI" badge in the bottom-right of the canvas, with
+"Made with …" and the evidence on hover or focus; *Settings → Viewer* switches it off
+([06-metadata.md](design/06-metadata.md#the-ai-badge-345)). The answer comes from a bounded
+provenance probe (`meta/probe.h`) on the pool, after the metadata pause, so the pane need not be
+open. Tests: `mv_tests "[ai-badge]"` (the setting's default, the evidence lines, the badge text,
+the store's probe cache) and `"[probe]"` (the probe gives the full read's answer, fixture by
+fixture, plus WebP, truncated and mutated files). `mv_tests "[.perf-meta]"` prints the probe's
+cost beside each full read.
+
+- **Mac (M-series, 2026-10-12):** compiles clean, app and SwiftUI chrome included. `mv_tests` 681
+  cases (673 passed, 8 skipped). Probe vs full read, median of 40: camera JPEG 6 MP 22 µs vs
+  7.4 ms, PNG 2.2 MP 421 µs vs 1.16 ms, HEIC 14 vs 43 µs, WebP 11 vs 39 µs. In a copy of the app
+  under its own bundle id: the badge shows on a ChatGPT-style C2PA JPEG and not on a camera JPEG,
+  is named "AI-generated" in the accessibility tree, and switching the setting off and on hides
+  and restores it with no relaunch. The hover / focus popover and VoiceOver reading it were not
+  checked by hand.
+  `--browse-soak` on a 14-file folder (12 camera JPEGs from the RAW samples, 2 with a C2PA store),
+  base and new alternated, three runs each: cold jumps median 60.1 / 53.6 / 59.6 ms base vs
+  39.6 / 63.6 / 64.7 ms new (the last new run voided: window covered 0.7 s); cached arrows
+  0.38 / 0.41 / 0.48 vs 0.44 / 0.47 / 0.46 ms. First pixel (`--soak 6 --static`, three
+  alternated runs): AI JPEG 61 / 79 / 63 ms base vs 48 / 124 / 57 new, camera JPEG 31 / 39 / 38
+  vs 34 / 40 / 26; full resolution overlaps the same way. Held arrows were not measured: the Mac
+  `--browse-soak` has no held phase (the probe is never submitted while keys repeat; the 90 ms
+  pause restarts on each arrow). Idle with the badge up: on this in-use machine every 20 s
+  static soak presented, base included (badge on 58 / 19 / 14, badge off 27 / 27 / 27, base 53 /
+  13 / 28): the badge's own zero is not established by measurement. PR 1 gate: the animated soak
+  passed once (3 600 frames, p99 16.95 ms, max 22.9 ms) and the idle soak had 0 presents but
+  failed the CPU line (1.9 %), as the base did (1.75 %); a second new run stalled 22 s with the
+  window covered. Owed to a quiet run.
+- **Windows:** the C# chrome compiles on the Mac and passes the WinUI control check by script.
+  The native half (`main.cpp`, `chrome_host.*`, `chrome_ai_badge_args`, the geometry test in
+  `test_chrome_host.cpp`) and the running island are compiled and run only by CI and a Windows
+  machine: not yet. The island's corners are filled with the chrome's canvas colour, not see-
+  through: an island cannot blur the swapchain under it.
+
 ### Every tag and AI provenance in the Metadata pane (#290, docs/plans/metadata-search-and-place.md slice 1, 2026-10-11)
 
 All tags now lists C2PA / Content Credentials (JPEG APP11, PNG `caBX`, ISO-BMFF `uuid`), every
