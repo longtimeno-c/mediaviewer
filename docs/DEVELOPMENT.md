@@ -30,6 +30,7 @@ and a verify line on each platform (D9, amended). The order is:
 | 50 | **Transfer**: a general copier (copy/move any files and folders, verified, resumable) and an SMB link check | Planned |
 | 55 | **Open add-ons**: add-ons anyone can make, one `.mvaddon` file signed by its publisher, installed from a file or a link with a sheet that says what it is; themes as the first thing one can contribute; the author's tool and guide ([docs/design/25-open-addons.md](design/25-open-addons.md), [ADDONS.md](ADDONS.md)); ABI 0.17 | Shared core and SDK tested on the Mac (ASan / UBSan) and cross-checked against each other; both halves run in the app (Mac: `MV_ADDON_SELFTEST`; Windows: by hand, 2026-10-03), launch and pacing measured against the base on both; install from a link, `.mvaddon` double-click on a rebuilt installer, VoiceOver / Narrator and the idle clause of both gates (which fails on the base too) owed. PRs 56–60 are planned; the owner's calls for 57–60 were made 2026-10-03 (docs/design/25 §17) |
 | 56 | **Import described by its manifest** (the first half of [docs/design/25](design/25-open-addons.md)'s declarative contributions): its commands, keys, Settings line and card hint come from `manifest.json`; both chromes drive it through one generic run-command call; an older installed Import keeps working through the built-in rows; ABI 0.18 | Mac: shell and manifest suites, the packer cross-check, the full suite and the rig pass; a signed Import with the new manifest has not been loaded in the app. Windows: both C# projects compile; the native side is CI's |
+| 58–59 | **Screens and slots**: MediaViewer's own native add-ons add to pages that exist (an info-pane section at the very bottom of the Metadata pane, file search and Local search providers, command-bar / path-bar / status items, gallery tile badges, context-menu entries) and open windows, docked panes and sheets from a view tree both chromes render ([docs/design/25](design/25-open-addons.md#implementation-notes-prs-58-59-2026-10-11)); host table v3; ABI 0.20 | Mac: the shared suite passes (with a real test add-on through a signed store; also under ASan / UBSan and TSan); the app built and, with the test add-on sideloaded, drew its section at the bottom of the pane and its items. Windows: both C# projects compile; the native side is CI's. Measurements and the keyboard / VoiceOver / Narrator passes are owed ([Where this actually is](#screens-and-slots-prs-58-59-2026-10-11)). Script add-ons wait for PR 57; Places is #344 |
 
 See [docs/design/10-roadmap.md](design/10-roadmap.md). Old Mac numbers in the history below map as
 PR 16 → Mac PR 1, 17 → Mac PR 2/7, 18 → Mac PR 3/4/6, 19 → Mac PR 5, 20 → Mac PR 8.
@@ -1314,6 +1315,42 @@ integers. There is no free-text field to put a filename in.
 There is no upload endpoint yet, exactly as there is none for crash reports.
 
 ## Where this actually is
+
+### Screens and slots (PRs 58-59, 2026-10-11)
+
+What is built is in [docs/design/25](design/25-open-addons.md#implementation-notes-prs-58-59-2026-10-11).
+
+- **Mac (M-series, 2026-10-12):** `mv_import_tests` 91 cases pass, including 18 new ones
+  (`"[screens]"`, `"[slots]"`; the last loads `mv_slots_test_addon` through a signed store and the
+  v3 table). The same suite passes under ASan / UBSan and `"[slots]"` under TSan (the portable
+  build, with `-DCMAKE_EXE_LINKER_FLAGS="-framework CoreFoundation -framework DiskArbitration
+  -framework IOKit"` on a Mac). `mv_tests "[location]"` passes. The app builds; with the test
+  add-on sideloaded (below) into a dev copy, the Metadata pane showed its section last, under
+  the footer, with the coordinates and a surface carrying the accent pin, and the command bar and
+  path bar showed its items.
+- **Windows:** both C# projects compile (warnings are errors); no `check-winui-controls` word in
+  the new files. `slots_abi.cpp` and `addon_abi.cpp` were syntax-checked with clang on the Mac;
+  MSVC builds them in CI.
+- **Owed, both hosts:** launch → first pixel with a slot add-on installed (alternated runs), 0
+  presents idle with a section shown, both PR 1 gates, the 2,000-tile grid scrolling, file search
+  finding the fixtures in the running app, a screen driven by keyboard alone, VoiceOver and
+  Narrator naming every control, removal from Settings in the running app, Windows' docked pane
+  placement.
+
+**Running the test add-on (developer builds only).** Configure with
+`-DMV_ADDON_DEV_PUBLIC_KEY=<your key's public half>`, build `mediaviewer_app` (Mac) or the core
+and chrome (Windows) and `mv_slots_test_addon`, then:
+
+```sh
+python3 tools/package/slots-test-sideload.py --module build/addons/slots-test/libmv_slots_test_addon.dylib \
+  --key <dev key file> --addons <scratch>/addons --fixtures <scratch>/fixtures    # --platform win-x64 on Windows
+# Mac: a copy with its own bundle id, HOME, add-ons and thumbnails; never the real profile
+open -n --env HOME=<scratch>/home --env MV_DEV_ADDONS_DIR=<scratch>/addons \
+  --env MV_DEV_THUMBS_DIR=<scratch>/thumbs <copy of MediaViewer.app> --args <scratch>/fixtures/inside_a.jpg
+```
+
+Every name in the test add-on is "Slots test"; nothing in it looks like Places. Quit the dev
+copy when done.
 
 ### Local search: cloud folders and folder adds (docs/plans/document-search.md slice 0, 2026-10-05)
 
