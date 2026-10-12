@@ -1132,6 +1132,14 @@ Remove-Item Env:MV_CRASH_TEST
 # pixel data: run make-crash-raw.ps1 with no -Source. It writes a pattern BMP pair and
 # prints the byte patterns. Open SECRET_COMPANION_canary.bmp instead; neighbour prefetch
 # crashes on the canary. Pass the printed patterns to the scan as -PixelHex.
+
+# video threads (#233): MV_CRASH_TEST=video crashes the video decode thread on the
+# first frame of any clip. Copy a corpus clip into the canary folder and open that.
+$env:MV_CRASH_TEST = 'video'
+.\build\bin\Release\mediaviewer_lab.exe --open "<canary folder>\SECRET_FILENAME_canary_7Q3.mp4"
+Remove-Item Env:MV_CRASH_TEST
+# scrub and scan as above; the dump's mv_decode_N slots read
+# "role=video fmt=mov,mp4,... dec=<codec>/Lavc... <w>x<h> <bits>bit" and name no path.
 ```
 
 `--av-soak` exits 0 only on a run of 1800 s or more whose drift slope stays
@@ -1174,6 +1182,13 @@ python3 tools/mac/crash_canary.py scan ~/Library/Application\ Support/MediaViewe
 # the chrome path: an NSException raised in AppKit event handling, or a Swift trap
 MV_CRASH_TEST=nsexception build/MediaViewer.app/Contents/MacOS/MediaViewer
 MV_CRASH_TEST=swift_trap  build/MediaViewer.app/Contents/MacOS/MediaViewer
+
+# the video threads (#233): the video decode thread crashes on the first frame of any clip;
+# the dump's mv_decode_N slots read "role=video fmt=mov,mp4,... dec=<codec>/Lavc... WxH Nbit"
+mkdir -p /tmp/mv-crash-canary/PRIVATE_FOLDER_canary
+cp tools/testmedia/av_transport.mp4 /tmp/mv-crash-canary/PRIVATE_FOLDER_canary/SECRET_FILENAME_canary_7Q3.mp4
+MV_CRASH_TEST=video build/MediaViewer.app/Contents/MacOS/MediaViewer \
+    /tmp/mv-crash-canary/PRIVATE_FOLDER_canary/SECRET_FILENAME_canary_7Q3.mp4
 ```
 
 `--av-soak` exits 0 only on a run of 1800 s or more whose drift slope stays

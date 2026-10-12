@@ -206,7 +206,16 @@ on the next launch, before any send could be offered:
   filter: it removes decoded image buffers without needing to find them);
 - paths, media filenames and the username / computer name are masked, same length;
 - annotations carry only format, decoder / version, correlation id and optional geometry, built
-  from literals and integers inside the core.
+  from literals, integers and the names FFmpeg keeps in static storage (demuxer, codec) inside the
+  core.
+- the slots cover still decodes and also the threads that run FFmpeg on a clip (#233): the
+  player's open (`role=open`), demux (`role=demux`), video decode (`role=video`) and audio decode
+  (`role=audio`) threads, and a clip job's source (`role=clip`: probe, filmstrip, waveform, and
+  the encode or copy in `MediaViewerClipJob`). They name the container (`fmt=mov,mp4,…`), the
+  codec and `Lavc`/`Lavf` version, and the coded size and bit depth. A long-lived thread holds a
+  slot only while it is inside FFmpeg and gives it back while it parks, so a paused clip holds
+  none. `MediaViewerClipJob` has no crash reporter of its own: its annotation reaches a dump only
+  if one is added there.
 
 ### Windows
 
@@ -242,8 +251,9 @@ on the next launch, before any send could be offered:
   `NSUncaughtExceptionHandler`; that method and the uncaught handler both write one scrubbed text
   report to `Crashes/chrome/<ms>-cid<id>-nsexception.txt` and set an `mv_exception` annotation
   before the trap. A Swift trap is a Mach exception (`EXC_BREAKPOINT`) that Crashpad records.
-- **Verify.** `tools/mac/crash_canary.py make` / `scan`; `MV_CRASH_TEST=decode | nsexception |
-  swift_trap`.
+- **Verify.** `tools/mac/crash_canary.py make` / `scan`; `MV_CRASH_TEST=decode | video |
+  nsexception | swift_trap`. `video` crashes the player's video decode thread on the first frame
+  of any clip it opens; the variable alone arms it (both hosts).
 
 ---
 

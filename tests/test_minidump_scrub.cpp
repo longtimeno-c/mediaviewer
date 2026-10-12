@@ -263,6 +263,46 @@ TEST_CASE("concurrent decodes never share a crash slot", "[crash]") {
   CHECK(std::string(cc::this_thread_slot()).empty());
 }
 
+TEST_CASE("a long-lived thread's slot is held while busy and given back while idle", "[crash]") {
+  // Issue #233: the player's demux / decode threads and clip jobs.
+  namespace cc = mv::crash_context;
+  {
+    cc::thread_slot slot;
+    slot.describe({.family = "mov,mp4,m4a,3gp,3g2,mj2", .decoder = "hevc", .version = "Lavc61",
+                   .correlation_id = 7, .role = "video"},
+                  3840, 2160, 10);
+    CHECK(std::string(cc::this_thread_slot()).empty());  // described, not yet busy
+    slot.busy();
+    REQUIRE(slot.held());
+    const std::string text = cc::this_thread_slot();
+    CHECK(text.rfind("role=video fmt=mov,mp4", 0) == 0);
+    CHECK(text.find("dec=hevc/Lavc61 cid=7 3840x2160 10bit") != std::string::npos);
+    slot.busy();  // already held: nothing changes
+    CHECK(std::string(cc::this_thread_slot()) == text);
+    slot.describe({.family = "mov,mp4,m4a,3gp,3g2,mj2", .decoder = "aac", .version = "Lavc61",
+                   .correlation_id = 7, .role = "audio"});
+    CHECK(std::string(cc::this_thread_slot()).find("role=audio") == 0);
+    slot.idle();  // parked
+    CHECK_FALSE(slot.held());
+    CHECK(std::string(cc::this_thread_slot()).empty());
+    slot.busy();
+    CHECK(slot.held());
+  }  // destroyed while held: released
+  CHECK(std::string(cc::this_thread_slot()).empty());
+
+  // Inside an outer decode the thread slot leaves the outer annotation alone.
+  REQUIRE(cc::begin_decode({"TIFF", "libtiff", "", 0}) < cc::kSlotCount);
+  {
+    cc::thread_slot inner({.family = "mp4", .decoder = "h264", .version = "", .role = "clip"});
+    inner.busy();
+    CHECK_FALSE(inner.held());
+    CHECK(std::string(cc::this_thread_slot()).find("fmt=TIFF") != std::string::npos);
+  }
+  CHECK(std::string(cc::this_thread_slot()).find("fmt=TIFF") != std::string::npos);
+  cc::end_decode();
+  CHECK_FALSE(mv::codec::crash_test_video_armed());  // MV_CRASH_TEST must not be set for tests
+}
+
 TEST_CASE("decode crash scope annotates without paths and is inert unarmed", "[crash]") {
   std::vector<std::uint8_t> tiff = {'I', 'I', 42, 0, 8, 0, 0, 0};
   const std::string_view marker = mv::codec::kCrashTestMarker;
