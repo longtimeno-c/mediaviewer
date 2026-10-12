@@ -1,8 +1,9 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The document text engine (docs/plans/audio-and-documents.md §2.5): HarfBuzz
-// shapes, FreeType draws, codec/fonts.h finds the files. One code path on both
-// platforms, so a DOCX lays out and looks the same everywhere.
+// shapes, FreeType draws, codec/fonts.h finds the files. The bytes of a chosen
+// file come from a reader installed above codec/ (image/pipeline.cpp). One code
+// path on both platforms, so a DOCX lays out and looks the same everywhere.
 //
 // Layout is in points from unhinted font units, so where a line or a page
 // breaks does not depend on the size it is drawn at: a 1024 px preview and the
@@ -81,5 +82,18 @@ class engine {
 // Fills a rectangle (points) with a colour — rules, underlines, table borders.
 void fill_rect(raster& page, double x_pt, double y_pt, double w_pt, double h_pt, double scale,
                std::uint32_t rgb);
+
+// Whole file at `utf8_path`, or empty when it cannot be read. codec/ does not
+// open font files itself (docs/design/02, 12 2026-10-12). image/ installs one
+// before main; a fuzzer that links codec without image installs its own.
+// Called on a decode worker, once per uncached file. Empty leaves that face
+// unloaded and layout continues with another family.
+using font_reader = std::vector<std::uint8_t> (*)(std::string_view utf8_path);
+
+// Replaces the reader. Null uninstalls it. Call before any engine lays out;
+// not while a document is shaping.
+void set_font_reader(font_reader reader) noexcept;
+
+[[nodiscard]] bool font_reader_installed() noexcept;
 
 }  // namespace mv::codec::text

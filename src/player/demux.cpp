@@ -23,6 +23,8 @@ void run_demux_thread(video_pipeline& pipe) noexcept {
   if (!packet) return;
   std::uint32_t generation = pipe.generation.load();
   bool drained = false;
+  // Held while reading the container, given back while parked (issue #233).
+  auto crash = clip_crash_slot(pipe, "demux", "libavformat", LIBAVFORMAT_IDENT);
   // A full queue parks the thread until its decoder takes a packet, a seek
   // asks for a new position, or stop (issue #230: a paused clip's queues stay
   // full, and this used to poll them every millisecond).
@@ -31,12 +33,14 @@ void run_demux_thread(video_pipeline& pipe) noexcept {
       const std::uint32_t seen = pipe.wake.epoch();
       if (pipe.stopping.load() || pipe.seek_request_ns.load() >= 0) return false;
       if (queue.try_push(item, generation)) return true;
+      crash.idle();
       pipe.wake.wait(seen);
     }
   };
   while (!pipe.stopping.load()) {
     const time_ns want = pipe.seek_request_ns.exchange(-1);
     if (want >= 0) {
+      crash.busy();
       const auto next_generation = pipe.generation.load();
       const auto target = av_rescale_q(want + pipe.start_time_ns,
                                       AVRational{1, 1'000'000'000}, pipe.time_base);
@@ -51,10 +55,12 @@ void run_demux_thread(video_pipeline& pipe) noexcept {
     }
     if (drained) {
       // Played out: nothing to read until a seek or stop.
+      crash.idle();
       pipe.wake.wait_until(
           [&] { return pipe.stopping.load() || pipe.seek_request_ns.load() >= 0; });
       continue;
     }
+    crash.busy();
     const int rc = av_read_frame(pipe.format.get(), packet.get());
     if (rc < 0) {
       if (rc == AVERROR(EAGAIN)) continue;

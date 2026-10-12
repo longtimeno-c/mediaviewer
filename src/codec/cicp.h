@@ -10,7 +10,7 @@
 //     modern phone): a synthesised ICC v4 matrix/shaper profile, so LittleCMS
 //     converts it. Treating P3 as sRGB is the D6 bug.
 //   * PQ / HLG (HDR stills): tone-mapped to SDR sRGB here, with the same curves
-//     and constants as the video shader (gfx/video_blit.cpp), because the
+//     and constants as the video shader (gfx/video_blit.hlsl), because the
 //     colour stage has no scene-referred path in v1 (image/colour.cpp refuses
 //     `scene_referred`). HDR *output* is v1.1.
 //
@@ -316,7 +316,7 @@ struct sdr_tag {
 
 // --- HDR (PQ / HLG) → SDR sRGB -----------------------------------------------
 
-// The HLG and PQ branches of gfx/video_blit.cpp's pixel shader, on the CPU:
+// The HLG and PQ branches of gfx/video_blit.hlsl's pixel shader, on the CPU:
 // EOTF (PQ) or inverse OETF + OOTF (HLG), reference white 203 nits (BT.2408),
 // source primaries → BT.709, Reinhard-extended on luminance, clip, sRGB
 // encode. The output is display-referred 8-bit sRGB — an HDR still is shown

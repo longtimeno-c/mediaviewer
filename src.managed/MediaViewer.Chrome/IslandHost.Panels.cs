@@ -217,18 +217,96 @@ public static partial class IslandHost
         return t;
     }
 
-    private static Button CloseButton(int command)
+    // Off for the rest of the session once making a value selectable throws, so
+    // one failure leaves plain text everywhere rather than a broken pane.
+    private static bool _selectableTextOff;
+
+    /// <summary>
+    /// A metadata value that can be selected and copied, as the Mac's
+    /// <c>.textSelection(.enabled)</c> (MetadataView.swift). A TextBlock with
+    /// <c>IsTextSelectionEnabled</c>, not a read-only TextBox: TextBox fail-fasts
+    /// in these islands (Shared\FakeInput.cs). What sank TextBox there is its
+    /// default context flyout, a TextCommandBarFlyout this host cannot create;
+    /// a selectable TextBlock's default context and selection flyouts are the
+    /// same type, so both are replaced with a plain MenuFlyout (which loads here,
+    /// MediaViewer.Ai.Chrome\PeopleGrid.cs) <em>before</em> selection is turned
+    /// on, and the default is never asked for. The add-on alert's body
+    /// (IslandHost.AddonAlert.cs) is the other selectable TextBlock in this host.
+    /// Needs a Windows island check (#198): a fail-fast cannot be caught here.
+    /// </summary>
+    private static TextBlock Selectable(TextBlock t)
+    {
+        if (_selectableTextOff) return t;
+        try
+        {
+            var menu = new MenuFlyout();
+            var copy = new MenuFlyoutItem { Text = "Copy" };
+            copy.Click += (_, _) => CopyTextBlock(t);
+            var all = new MenuFlyoutItem { Text = "Select all" };
+            all.Click += (_, _) =>
+            {
+                try { t.SelectAll(); }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
+            };
+            menu.Items.Add(copy);
+            menu.Items.Add(all);
+            t.ContextFlyout = menu;
+            t.SelectionFlyout = null;
+            t.IsTextSelectionEnabled = true;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+            _selectableTextOff = true;
+            try
+            {
+                t.IsTextSelectionEnabled = false;
+                t.ContextFlyout = null;
+            }
+            catch (Exception inner)
+            {
+                System.Diagnostics.Debug.WriteLine(inner);
+            }
+        }
+        return t;
+    }
+
+    // The selection, or the whole value when nothing is selected (the menu's
+    // Copy on an unselected value copies it, as the Mac's Copy does on a row).
+    private static void CopyTextBlock(TextBlock t)
+    {
+        try
+        {
+            string text = t.SelectedText;
+            if (string.IsNullOrEmpty(text)) text = t.Text;
+            if (string.IsNullOrEmpty(text)) return;
+            var package = new Windows.ApplicationModel.DataTransfer.DataPackage();
+            package.SetText(text);
+            Windows.ApplicationModel.DataTransfer.Clipboard.SetContent(package);
+        }
+        catch (Exception ex)
+        {
+            // Another process holding the clipboard: nothing is copied.
+            System.Diagnostics.Debug.WriteLine(ex);
+        }
+    }
+
+    // The Mac's xmark with its .help: an icon, a tooltip and an accessible
+    // name rather than a bare "×" a screen reader cannot name.
+    private static Button CloseButton(int command, string title)
     {
         var b = new Button
         {
-            Content = new TextBlock { Text = "×", FontSize = 18, Foreground = Brush(Body) },
+            Content = new FontIcon { Glyph = Glyph.Close, FontFamily = IconFont, FontSize = TypeCaption, Foreground = Brush(Body) },
             Background = Brush(Colors.Transparent),
             BorderThickness = new Thickness(0),
-            Padding = new Thickness(8, 0, 8, 2),
+            Padding = new Thickness(8, 6, 8, 6),
             IsTabStop = false,
             AllowFocusOnInteraction = false,
         };
-        b.Click += (_, _) => Send(command);
+        FlattenButton(b);
+        SetIconTip(b, $"Close {title}");
+        b.Click += (_, _) => Guarded(() => Send(command));
         return b;
     }
 
@@ -247,13 +325,16 @@ public static partial class IslandHost
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         header.Children.Add(Text(title, Title, UiFontSize, bold: true));
-        Button close = CloseButton(closeCommand);
+        Button close = CloseButton(closeCommand, title);
         Grid.SetColumn(close, 1);
         header.Children.Add(close);
         root.Children.Add(header);
         body = new Grid();
         Grid.SetRow(body, 1);
         root.Children.Add(body);
+        // Issue #224: every pane (metadata, folder tree, adjust, jobs) is an
+        // island over the canvas's WM_DROPFILES, so it takes a file drop too.
+        WireFileDrop(root);
         return root;
     }
 
@@ -423,7 +504,7 @@ public static partial class IslandHost
                 Text = label, FontFamily = UiFont, FontSize = UiFontSize,
                 Foreground = Brush(on ? Title : Body),
             },
-            Background = on ? Brush(Hairline) : Brush(Colors.Transparent),
+            Background = on ? Brush(ChromeColour.PressedWash) : Brush(Colors.Transparent),
             BorderThickness = new Thickness(0),
             Padding = new Thickness(10, 3, 10, 3),
             AllowFocusOnInteraction = false,
@@ -458,6 +539,9 @@ public static partial class IslandHost
         MetaTabButtons.Add(b);
         _metaTabs!.Children.Add(b);
     }
+
+    // The summary's label column: the Mac's 100-wide labels (MetadataView.swift).
+    private const double MetaLabelWidth = 100;
 
     // A small flat button for the pane's editors (the Edit workspace's look).
     private static Button MetaButton(string label, Action click, string? tip = null, bool enabled = true)
@@ -510,12 +594,18 @@ public static partial class IslandHost
                 rows.Children.Add(BuildDateRow(value));
                 continue;
             }
+            if (label == "Label")
+            {
+                rows.Children.Add(BuildLabelRow(value));
+                continue;
+            }
             var row = new Grid();
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(96) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(MetaLabelWidth) });
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            row.Children.Add(Text(label, Body));
-            TextBlock v = Text(value.Length == 0 ? "—" : value, value.Length == 0 ? Body : Title);
+            row.Children.Add(Text(label, Body, TypeBody));
+            TextBlock v = Text(value.Length == 0 ? "—" : value, value.Length == 0 ? ChromeColour.Disabled : Title, TypeBody);
+            if (value.Length > 0) Selectable(v);
             Grid.SetColumn(v, 1);
             row.Children.Add(v);
             if (label == "Location" && value.Length > 0)
@@ -548,16 +638,70 @@ public static partial class IslandHost
         return new ScrollViewer { Content = rows, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
     }
 
+    // Issue #207: the colour label, XMP xmp:Label, in Lightroom's words. A swatch
+    // per label sets it (the same one again clears it, as the 6-9 keys do);
+    // Clear removes it. One tag edit, through the same checked writer.
+    private static readonly (string Name, Color Colour)[] LabelSwatches =
+    {
+        ("Red", Color.FromArgb(255, 0xE5, 0x48, 0x4D)),
+        ("Yellow", Color.FromArgb(255, 0xF2, 0xC1, 0x2E)),
+        ("Green", Color.FromArgb(255, 0x3C, 0xB3, 0x71)),
+        ("Blue", Color.FromArgb(255, 0x3B, 0x82, 0xF6)),
+        ("Purple", Color.FromArgb(255, 0x9B, 0x5D, 0xE5)),
+    };
+    private const string LabelTag = "Xmp.xmp.Label";
+
+    private static UIElement BuildLabelRow(string value)
+    {
+        var row = new Grid();
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(96) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        TextBlock name = Text("Label", Body);
+        name.VerticalAlignment = VerticalAlignment.Center;
+        row.Children.Add(name);
+        TextBlock v = Text(value.Length == 0 ? "—" : value, value.Length == 0 ? Body : Title);
+        v.VerticalAlignment = VerticalAlignment.Center;
+        Grid.SetColumn(v, 1);
+        row.Children.Add(v);
+        var swatches = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+        foreach ((string label, Color colour) in LabelSwatches)
+        {
+            bool on = string.Equals(label, value, StringComparison.OrdinalIgnoreCase);
+            var dot = new Button
+            {
+                Width = 18,
+                Height = 18,
+                Padding = new Thickness(0),
+                MinWidth = 0,
+                MinHeight = 0,
+                CornerRadius = new CornerRadius(9),
+                Background = Brush(colour),
+                BorderBrush = Brush(on ? ChromeColour.Title : ChromeColour.Hairline),
+                BorderThickness = new Thickness(on ? 2 : 1),
+                IsEnabled = _metaCanEdit,
+            };
+            string target = label;
+            dot.Click += (_, _) => SendTagEdits(new[] { (LabelTag, on ? (string?)null : target) });
+            ToolTipService.SetToolTip(dot, on ? "Clear the " + label.ToLowerInvariant() + " label" : label);
+            AutomationProperties_SetName(dot, on ? "Clear label" : "Label " + label.ToLowerInvariant());
+            swatches.Children.Add(dot);
+        }
+        Grid.SetColumn(swatches, 2);
+        row.Children.Add(swatches);
+        return row;
+    }
+
     // PR 29: the date taken moves every capture-time tag together (native's
     // write_fields::date_taken), so no reader sees two dates.
     private static UIElement BuildDateRow(string value)
     {
         var col = new StackPanel { Spacing = 6 };
         var row = new Grid();
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(96) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(MetaLabelWidth) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        TextBlock label = Text("Date taken", Body);
+        TextBlock label = Text("Date taken", Body, TypeBody);
         label.VerticalAlignment = VerticalAlignment.Center;
         row.Children.Add(label);
         if (_metaEditingDate)
@@ -586,11 +730,12 @@ public static partial class IslandHost
                     CancelMetaEdits();
                     RenderMeta();
                 }, tip: "Esc"));
-            actions.Margin = new Thickness(96, 0, 0, 0);
+            actions.Margin = new Thickness(MetaLabelWidth, 0, 0, 0);
             col.Children.Add(actions);
             return col;
         }
-        TextBlock v = Text(value.Length == 0 ? "—" : value, value.Length == 0 ? Body : Title);
+        TextBlock v = Text(value.Length == 0 ? "—" : value, value.Length == 0 ? ChromeColour.Disabled : Title, TypeBody);
+        if (value.Length > 0) Selectable(v);
         v.VerticalAlignment = VerticalAlignment.Center;
         Grid.SetColumn(v, 1);
         row.Children.Add(v);
@@ -651,18 +796,23 @@ public static partial class IslandHost
             var form = new StackPanel { Spacing = 6, Padding = new Thickness(10, 0, 10, 10) };
             var key = new FakeInput("Key (Xmp.dc.subject)");
             key.SetText(_metaNewKey);
-            key.Changed += () => _metaNewKey = key.Text;
             AutomationProperties_SetName(key, "New tag key");
             var value = new FakeInput("Value");
             value.SetText(_metaNewValue);
-            value.Changed += () => _metaNewValue = value.Text;
+            // Add waits for a key and a value, as on the Mac (AddMetaTag
+            // refuses either empty, so an enabled button did nothing).
+            Button addButton = MetaButton("Add", AddMetaTag);
+            void UpdateAdd() => addButton.IsEnabled = _metaNewKey.Trim().Length > 0 && _metaNewValue.Length > 0;
+            key.Changed += () => { _metaNewKey = key.Text; UpdateAdd(); };
+            value.Changed += () => { _metaNewValue = value.Text; UpdateAdd(); };
+            UpdateAdd();
             AutomationProperties_SetName(value, "New tag value");
             key.Submitted += () => value.Focus(FocusState.Keyboard);
             key.MoveDown += () => value.Focus(FocusState.Keyboard);
             value.Submitted += AddMetaTag;
             form.Children.Add(key);
             form.Children.Add(value);
-            form.Children.Add(Row(MetaButton("Add", AddMetaTag), MetaButton("Cancel", () =>
+            form.Children.Add(Row(addButton, MetaButton("Cancel", () =>
             {
                 CancelMetaEdits();
                 RenderMeta();
@@ -699,6 +849,11 @@ public static partial class IslandHost
             e.Handled = true;
         };
 
+        // Cells are built once per tree and re-added as the search narrows or widens
+        // (issue #219): a keystroke then costs a filter pass and Children.Add, not
+        // 400 freshly built rows. A rebuild (a record landing, an edit) starts a new
+        // cache with the new tree.
+        var cells = new Dictionary<TagRow, UIElement>(ReferenceEqualityComparer.Instance);
         const int MaxRows = 400;
         void Fill()
         {
@@ -723,11 +878,17 @@ public static partial class IslandHost
                 if (t.Group != group)
                 {
                     group = t.Group;
-                    var header = Text(group, Body, UiFontSize, bold: true);
+                    // The Mac's List section header: regular, not bold (issue #198).
+                    var header = Text(group, Body, TypeBody);
                     header.Margin = new Thickness(0, 10, 0, 2);
                     list.Children.Add(header);
                 }
-                list.Children.Add(BuildTagCell(t));
+                if (!cells.TryGetValue(t, out UIElement? cell))
+                {
+                    cell = BuildTagCell(t);
+                    cells[t] = cell;
+                }
+                list.Children.Add(cell);
                 shown++;
             }
             if (matched == 0) list.Children.Add(Text("No tag matches", Body));
@@ -737,22 +898,52 @@ public static partial class IslandHost
             }
         }
 
+        // Debounced like file search (~70 ms) so a typed word filters once, not once
+        // per letter. Clearing the box is immediate.
+        _metaSearchDebounce?.Stop();
+        _metaFill = Fill;
         search.Changed += () =>
         {
             _metaQuery = search.Text;
-            Fill();
+            _metaSearchDebounce ??= CreateMetaSearchDebounce();
+            _metaSearchDebounce?.Stop();
+            if (_metaQuery.Trim().Length == 0 || _metaSearchDebounce is null)
+            {
+                Fill();
+                return;
+            }
+            _metaSearchDebounce.Start();
         };
         Fill();
         return host;
     }
 
+    private static Action? _metaFill;
+    private static Microsoft.UI.Dispatching.DispatcherQueueTimer? _metaSearchDebounce;
+
+    private static Microsoft.UI.Dispatching.DispatcherQueueTimer? CreateMetaSearchDebounce()
+    {
+        Microsoft.UI.Dispatching.DispatcherQueueTimer? timer = _dispatcher?.DispatcherQueue.CreateTimer();
+        if (timer is null) return null;
+        timer.IsRepeating = false;
+        timer.Interval = TimeSpan.FromMilliseconds(70);
+        timer.Tick += (_, _) =>
+        {
+            try { _metaFill?.Invoke(); }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
+        };
+        return timer;
+    }
+
     private static UIElement BuildTagCell(TagRow t)
     {
-        var cell = new StackPanel { Margin = new Thickness(0, 2, 0, 2), Spacing = 2 };
+        // A background so the whole row, not only its label, takes the hover
+        // that shows the untranslated key (the Mac's .help on the row).
+        var cell = new StackPanel { Margin = new Thickness(0, 2, 0, 2), Spacing = 2, Background = Brush(Colors.Transparent) };
         var head = new Grid();
         head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        TextBlock label = Text(t.Label, Title);
+        TextBlock label = Text(t.Label, Title, TypeBody);
         label.VerticalAlignment = VerticalAlignment.Center;
         head.Children.Add(label);
         bool editing = _metaEditingKey == t.Raw;
@@ -815,10 +1006,12 @@ public static partial class IslandHost
         }
         else
         {
-            cell.Children.Add(Text(t.Value.Length == 0 ? "—" : t.Value, Body, UiFontSize - 2, maxLines: 3));
+            TextBlock value = Text(t.Value.Length == 0 ? "—" : t.Value, Body, UiFontSize - 2, maxLines: 3);
+            if (t.Value.Length > 0) Selectable(value);
+            cell.Children.Add(value);
         }
         // The untranslated origin is always one hover away (docs/design/06).
-        ToolTipService.SetToolTip(label, t.Raw);
+        ToolTipService.SetToolTip(cell, t.Raw);
         return cell;
     }
 
@@ -892,6 +1085,7 @@ public static partial class IslandHost
         var col = new StackPanel { Spacing = 12, Padding = new Thickness(14, 10, 14, 14) };
         StackPanel? current = null;
         bool chapters = false;
+        int chapter = 0;
         foreach (string line in _metaStreamLines)
         {
             string[] f = line.Split('\t');
@@ -899,16 +1093,16 @@ public static partial class IslandHost
             {
                 case "S" when f.Length >= 4:
                     current = new StackPanel { Spacing = 4 };
-                    current.Children.Add(Text($"#{f[1]}  {Capitalise(f[2])}  —  {f[3]}", Title, UiFontSize, bold: true));
+                    current.Children.Add(Text($"#{f[1]}  {Capitalise(f[2])}  —  {f[3]}", Title, TypeBody));
                     col.Children.Add(current);
                     break;
                 case "F" when f.Length >= 3 && current is not null:
                 {
                     var row = new Grid();
-                    row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(120) });
+                    row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(130) });
                     row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-                    row.Children.Add(Text(f[1], Body));
-                    TextBlock v = Text(f[2], Title);
+                    row.Children.Add(Text(f[1], Body, TypeSmall));
+                    TextBlock v = Selectable(Text(f[2], Title, TypeSmall));
                     Grid.SetColumn(v, 1);
                     row.Children.Add(v);
                     current.Children.Add(row);
@@ -919,12 +1113,14 @@ public static partial class IslandHost
                     if (!chapters)
                     {
                         chapters = true;
-                        col.Children.Add(Text("Chapters", Title, UiFontSize, bold: true));
+                        col.Children.Add(Text("Chapters", Title, TypeBody));
                     }
                     long.TryParse(f[1], out long ms);
                     var s = TimeSpan.FromMilliseconds(ms);
                     string stamp = $"{(int)s.TotalHours}:{s.Minutes:00}:{s.Seconds:00}";
-                    col.Children.Add(Text($"{stamp}   {(f[2].Length == 0 ? "Chapter" : f[2])}", Body));
+                    // An untitled chapter is numbered, as on the Mac ("Chapter 3").
+                    ++chapter;
+                    col.Children.Add(Text($"{stamp}   {(f[2].Length == 0 ? $"Chapter {chapter}" : f[2])}", Body));
                     break;
                 }
             }
@@ -1139,7 +1335,7 @@ public static partial class IslandHost
 
     private static Button FlatButton(UIElement content, Thickness padding, bool tabStop = true)
     {
-        return new Button
+        var b = new Button
         {
             Content = content,
             Background = Brush(Colors.Transparent),
@@ -1149,6 +1345,10 @@ public static partial class IslandHost
             AllowFocusOnInteraction = false,
             HorizontalContentAlignment = HorizontalAlignment.Left,
         };
+        // No grey disabled fill (a disabled clip tool read as selected) and
+        // the chrome's washes, not Windows' stock ones.
+        FlattenButton(b);
+        return b;
     }
 
     private static void RebuildTreeRoot()

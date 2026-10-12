@@ -82,12 +82,31 @@ void vector_store::add(std::int64_t asset, std::int64_t pts_ms, float generic, f
   bar_.push_back(label_bar_locked(asset_.size() - 1));
 }
 
-void vector_store::remove_asset(std::int64_t asset) {
+void vector_store::remove_asset(std::int64_t asset) { remove_assets(std::span<const std::int64_t>(&asset, 1)); }
+
+void vector_store::remove_assets(std::span<const std::int64_t> assets) {
+  if (assets.empty()) return;
+  // One pass over the rows and at most one compaction for the whole set
+  // (issue #174): a root removed or a scan's gone list used to cost a full
+  // scan under the exclusive lock per asset. The set is built before the lock.
+  std::vector<std::int64_t> drop(assets.begin(), assets.end());
+  std::sort(drop.begin(), drop.end());
+  drop.erase(std::unique(drop.begin(), drop.end()), drop.end());
   std::unique_lock lock(m_);
-  for (std::size_t r = 0; r < asset_.size(); ++r) {
-    if (asset_[r] == asset && alive_[r]) {
-      alive_[r] = 0;
-      ++dead_;
+  if (drop.size() == 1) {
+    const std::int64_t a = drop.front();
+    for (std::size_t r = 0; r < asset_.size(); ++r) {
+      if (asset_[r] == a && alive_[r]) {
+        alive_[r] = 0;
+        ++dead_;
+      }
+    }
+  } else {
+    for (std::size_t r = 0; r < asset_.size(); ++r) {
+      if (alive_[r] && std::binary_search(drop.begin(), drop.end(), asset_[r])) {
+        alive_[r] = 0;
+        ++dead_;
+      }
     }
   }
   if (dead_ > 1024 && dead_ * 4 > asset_.size()) compact_locked();
