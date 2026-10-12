@@ -49,7 +49,8 @@ TITLE_CONTRAST = 4.5
 BODY_CONTRAST = 3.0
 
 TOP_LEVEL_KEYS = {"schema", "id", "name", "version", "description", "licence", "publisher",
-                  "update_url", "api", "installed_size", "files", "contributes"}
+                  "update_url", "api", "installed_size", "files", "contributes",
+                  "scripts", "permissions"}
 # Every contribution point docs/design/25 §7 names, and the API that introduces it
 # (src/addon/open_manifest.h kContributionPoints).
 CONTRIBUTION_POINTS = {"themes": 1, "settings": 2, "keymaps": 2, "commands": 3, "screens": 4,
@@ -57,9 +58,6 @@ CONTRIBUTION_POINTS = {"themes": 1, "settings": 2, "keymaps": 2, "commands": 3, 
                        "path_items": 5, "context_menu": 5, "status_items": 5, "tile_badges": 5}
 THEME_SCHEMA = 2  # 2 adds "shape"
 SHAPE_RANGES = {"radius": (0.0, 2.0), "density": (0.75, 1.25), "type_scale": (0.85, 1.25)}
-CODE_KEYS = {"native", "chrome", "scripts", "main"}
-                  "update_url", "api", "installed_size", "files", "contributes",
-                  "scripts", "permissions"}
 # Native code, by any name: refused by every MediaViewer. Other makers' code
 # runs only as a Lua script (docs/design/25 §9).
 CODE_KEYS = {"native", "chrome", "main"}

@@ -246,7 +246,8 @@ TEST_CASE("without a permission its API is absent and not merely refused", "[scr
     mv.log(type(mv.log), type(mv.notify), type(mv.on), mv.id, mv.api)
   )lua");
   REQUIRE(none[0] == "nil\tnil\tnil\tnil");
-  REQUIRE(none[1] == "function\tfunction\tfunction\tacme.test\t3");
+  // mv.api is this host's contribution API (5 with PRs 58-59).
+  REQUIRE(none[1] == "function\tfunction\tfunction\tacme.test\t" + std::to_string(mv::addon::kContributionApi));
 
   const auto folder = eval(R"lua(
     mv.log(type(mv.folder), type(mv.selection), mv.permissions["folder.read"])
