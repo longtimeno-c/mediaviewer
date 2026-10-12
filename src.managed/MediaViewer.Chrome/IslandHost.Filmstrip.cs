@@ -212,23 +212,27 @@ public static partial class IslandHost
         if (_folderSession is null) return;
         Items.Clear();
         _selectedIndex = -1;
-        uint count = _folderSession.FolderCount;
         // Milestone H: a result list (mv_folder_open_list) rather than a
         // directory. Its clips carry the moment they open on, shown as m:ss.
         bool list = IsResultList();
-        for (uint i = 0; i < count; ++i)
+        // Issue #226: the whole listing in one core call (one lock, reused
+        // buffers), not eight calls and four allocations per stop.
+        int count = _folderSession.ReadFolderEntries(out ReadOnlySpan<MvFolderEntry> entries,
+                                                     out ReadOnlySpan<byte> strings);
+        for (int i = 0; i < count; ++i)
         {
-            MvFolderItem rec = _folderSession.FolderItemAt(i);
-            long moment = list ? _folderSession.ItemMoment(i) : -1;
+            ref readonly MvFolderEntry e = ref entries[i];
+            MvFolderItem rec = e.Item;
+            long moment = list ? e.MomentMs : -1;
             Items.Add(new FolderItemVm
             {
-                Index = (int)i,
-                Name = _folderSession.FolderItemName(i),
-                Path = _folderSession.FolderItemPath(i),
-                PairPath = rec.PairKind == MvPairKind.None ? "" : _folderSession.FolderItemPairPath(i),
+                Index = i,
+                Name = MediaViewerSession.EntryString(strings, e.NameOffset),
+                Path = MediaViewerSession.EntryString(strings, e.PathOffset),
+                PairPath = rec.PairKind == MvPairKind.None ? "" : MediaViewerSession.EntryString(strings, e.PairOffset),
                 Badge = moment >= 0 ? MomentLabel(moment) : BadgeFor(rec),
                 IsClip = (rec.Flags & MvFolderItem.FlagClip) != 0,
-                ThumbPath = _folderSession.FolderItemThumbPath(i),
+                ThumbPath = MediaViewerSession.EntryString(strings, e.ThumbOffset),
                 Selected = (rec.Flags & MvFolderItem.FlagSelected) != 0,
             });
         }

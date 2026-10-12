@@ -606,6 +606,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (uint64_t)marksGeneration;
 - (uint64_t)thumbGeneration;
 - (std::string)thumbKeyAtIndex:(NSInteger)index;
+- (std::string)listingSnapshot;
 - (BOOL)isIndexMarked:(NSInteger)index;
 - (NSInteger)markedCount;
 
@@ -1101,6 +1102,10 @@ extern "C" int32_t mv_chrome_item_path(int32_t index, char* buf, int32_t size) {
 }
 extern "C" int32_t mv_chrome_item_thumb_key(int32_t index, char* buf, int32_t size) {
   return MvCopyOut(g_chrome_app ? [g_chrome_app thumbKeyAtIndex:index] : std::string{}, buf, size);
+}
+// Issue #226: name, clip flag and thumb key of every item in one call.
+extern "C" int32_t mv_chrome_listing(char* buf, int32_t size) {
+  return MvCopyOut(g_chrome_app ? [g_chrome_app listingSnapshot] : std::string{}, buf, size);
 }
 
 extern "C" uint64_t mv_chrome_meta_generation(void) {
@@ -8799,6 +8804,22 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
     key += std::to_string(_moments[at]);
   }
   return key;
+}
+// mv_chrome_listing (issue #226): per item, name NUL clip ('0'/'1') NUL thumb
+// key NUL -- what itemNameAtIndex, itemIsVideoAtIndex and thumbKeyAtIndex
+// give one at a time, for the whole listing in one bridge call.
+- (std::string)listingSnapshot {
+  std::string out;
+  out.reserve(_items.size() * 128);
+  for (std::size_t i = 0; i < _items.size(); ++i) {
+    out += [self displayNameAt:i];
+    out += '\0';
+    out += mv::shell::is_video_name(_items[i].name_utf8) ? '1' : '0';
+    out += '\0';
+    out += [self thumbKeyAtIndex:static_cast<NSInteger>(i)];
+    out += '\0';
+  }
+  return out;
 }
 
 - (void)setScrubMarkers:(std::vector<std::int64_t>)ms

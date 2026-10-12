@@ -79,6 +79,8 @@ static_assert(alignof(mv_completion) == 8, "mv_completion layout is part of the 
 static_assert(sizeof(mv_image_info) == 24, "mv_image_info layout is part of the ABI");
 static_assert(sizeof(mv_folder_item) == 32, "mv_folder_item layout is part of the ABI");
 static_assert(offsetof(mv_folder_item, pair_kind) == 24, "mv_folder_item layout is part of the ABI");
+static_assert(sizeof(mv_folder_entry) == 56, "mv_folder_entry layout is part of the ABI");
+static_assert(offsetof(mv_folder_entry, moment_ms) == 32, "mv_folder_entry layout is part of the ABI");
 static_assert(sizeof(mv_folder_summary) == 16, "mv_folder_summary layout is part of the ABI");
 // ABI 0.13 appended ranges_ns / range_count (PR 30); a 0.10 caller's struct is
 // the first 40 bytes and is still accepted (clip_session::to_request).
@@ -1962,6 +1964,51 @@ mv_status MV_CALL mv_folder_item_moment(mv_session_t session, uint32_t index, in
     std::lock_guard lock(session->folder_mutex);
     if (index >= session->folder_items.size()) return status::invalid_arg;
     *out_ms = session->folder_items[index].moment_ms;
+    return status::ok;
+  }));
+}
+
+mv_status MV_CALL mv_folder_entries(mv_session_t session, mv_folder_entry* entries,
+                                    uint32_t entry_cap, char* strings, uint32_t string_cap,
+                                    uint32_t* out_count, uint32_t* out_string_bytes) {
+  return static_cast<mv_status>(guard("mv_folder_entries", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    MV_REQUIRE(out_count != nullptr, "out_count must not be null");
+    MV_REQUIRE(out_string_bytes != nullptr, "out_string_bytes must not be null");
+    std::lock_guard lock(session->folder_mutex);
+    const auto& items = session->folder_items;
+    std::uint64_t bytes = 0;
+    for (const auto& it : items) {
+      bytes += it.name.size() + it.path.size() + it.thumb_path.size() + it.secondary_path.size() + 4;
+    }
+    MV_REQUIRE(bytes <= UINT32_MAX && items.size() <= UINT32_MAX, "listing too large");
+    *out_count = static_cast<uint32_t>(items.size());
+    *out_string_bytes = static_cast<uint32_t>(bytes);
+    if (items.size() > entry_cap || bytes > string_cap) return status::invalid_arg;
+    if (!items.empty() && (entries == nullptr || strings == nullptr)) return status::invalid_arg;
+    uint32_t at = 0;
+    const auto put = [&](const std::string& s) {
+      const uint32_t offset = at;
+      std::memcpy(strings + at, s.c_str(), s.size() + 1);
+      at += static_cast<uint32_t>(s.size() + 1);
+      return offset;
+    };
+    for (std::size_t i = 0; i < items.size(); ++i) {
+      const auto& it = items[i];
+      mv_folder_entry e{};
+      e.item.index = static_cast<uint32_t>(i);
+      e.item.flags = (i == session->folder_selected ? 1u : 0u) | (it.primary_raw ? 2u : 0u) |
+                     (it.clip ? 4u : 0u);
+      e.item.size_bytes = it.size;
+      e.item.mtime_unix = it.mtime_unix;
+      e.item.pair_kind = static_cast<uint32_t>(it.pair);
+      e.moment_ms = it.moment_ms;
+      e.name_offset = put(it.name);
+      e.path_offset = put(it.path);
+      e.thumb_offset = put(it.thumb_path);
+      e.pair_offset = put(it.secondary_path);
+      entries[i] = e;
+    }
     return status::ok;
   }));
 }
