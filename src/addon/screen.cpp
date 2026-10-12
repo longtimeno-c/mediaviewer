@@ -749,8 +749,16 @@ error tree::check_event(std::string_view node_id, std::uint32_t kind, std::strin
       if (kind != ev_select || !v || v->k != json::kind::array) return error::bad_value;
       const auto multi = n->props.boolean("multi");
       if (v->a.size() > 1 && !(multi && *multi)) return error::bad_value;
+      // One set of the node's keys, not a scan per selected item: Select All in a
+      // 100,000-item grid is checked on the UI thread, under the registry lock.
+      std::set<std::string_view> known;
+      if (items && items->k == json::kind::array) {
+        for (const json::value& r : items->a) {
+          if (const std::string* s = r.str(key)) known.insert(*s);
+        }
+      }
       for (const json::value& e : v->a) {
-        if (e.k != json::kind::string || !item_has(items, key, e.s)) return error::bad_value;
+        if (e.k != json::kind::string || known.count(e.s) == 0) return error::bad_value;
       }
       set_prop(n->props, "selection", *v);
       return error::none;
