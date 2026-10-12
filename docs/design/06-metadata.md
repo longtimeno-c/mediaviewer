@@ -186,6 +186,47 @@ Errors: `invalid_arg` (value out of range, non-UTF-8 comment, a field this file 
 `io` (unreadable, not replaceable, changed under us), `corrupt` (a JPEG Exiv2 cannot parse),
 `internal` (the post-write check failed; the original is intact).
 
+### The Location row (#352, owner 2026-10-12)
+
+Summary's **Location** has **Edit** (it was *Remove*). The field starts with the coordinates
+(`format_location_input`, "38.7979, -9.3907") and takes what `meta::parse_location` reads, the
+same on both hosts (Mac bridge `mv_chrome_meta_parse_location`; Windows chrome through
+`mv_meta_parse_location`, [14-abi.md](14-abi.md)): decimal degrees with signs or N/S/E/W on
+either side, in either order when lettered; degrees-minutes[-seconds] with `°′″`, `º’”`, ASCII
+`'` `"` `''`, or spaces. Minutes and seconds under 60, latitude within ±90, longitude within
+±180; a sign and S/W together are refused. A line under the field shows the point Save will
+write, or why not. Return saves, Esc cancels; the field owns its keys (a text focus, as every
+pane field). **A blank save removes the location**, after a confirmation — "Remove location
+from this file?" / "Revert all can bring it back until you quit MediaViewer. It also undoes
+your other changes to this file.", Remove (destructive) and Cancel (default, Esc): a native
+alert on the Mac, an in-pane box on Windows (a `ContentDialog` needs a top-level window; the
+pane is an island, as Settings' confirmations are). The second line is what *Revert* (above)
+does: the session's snapshot puts every tag back as it was before the first write, and the
+button lasts until the app quits (or a revert is used; it refuses if another app has since
+changed the sidecar). Esc on the confirmation closes it and leaves the field open with its
+text, on both hosts. Saving the starting text untouched writes nothing: that text is rounded
+to 6 decimals, so comparing the parsed point with the file's would count it as an edit.
+
+The write is `write_fields::location`, through the same checked writer and sidecar rule:
+
+- **Plain JPEG, in place:** EXIF `GPSLatitude` / `GPSLongitude` (+`Ref`) as degree / minute /
+  second rationals (seconds to 1/10000), `GPSVersionID` 2.3.0.0 when absent; the JPEG's own XMP
+  `exif:GPS*` copies follow where it has them. An existing sidecar is kept in step.
+- **Everything else, sidecar:** XMP `exif:GPSLatitude` / `GPSLongitude` in XMP's `DDD,MM.mmmmmmk`
+  form, `exif:GPSVersionID`. The original — RAW, HEIC, a clip, an MPF JPEG — is never opened for
+  writing; the read model puts the sidecar's position over the file's (`overlay_sidecar`).
+- **Altitude** is written only when given (the editor never gives one), so changing latitude /
+  longitude keeps the file's altitude, EXIF or sidecar.
+- **Remove** drops every EXIF `GPSInfo` tag and every XMP `exif:GPS*` property the write reaches.
+  A sidecar cannot take a fix out of an original, so `location_rights_of` offers no remove when
+  the position is the original's own and the file is written through a sidecar; the row says so,
+  and its Edit still overrides the position in the sidecar.
+
+After a write the host re-reads the record as for any tag: the Summary row, All tags,
+`summary::where` and anything drawn from it (the place label and map) update together.
+Tested in `mv_tests "[location]"` (the parser; JPEG, sidecar and MPF round trips; the RAW corpus
+with each original's hash unchanged).
+
 **Lossless rotate** writes orientation (or a lossless JPEG transform) and then calls
 `mv_folder_forget` so the navigation LRU does not republish the old pixels
 ([14-abi.md](14-abi.md)).
@@ -233,5 +274,5 @@ These read the already-parsed `metadata` — no file I/O on toggle
 - Writing back to the Windows Property System.
 - Batch metadata: date/time shift across a selection, copy metadata to many, filename
   templating, strip-on-share copies.
-- GPS map pin / writing coordinates.
+- GPS map pin.
 - Keywords as a feature. (Colour labels and a filter on them are built, issue #207.)

@@ -157,6 +157,10 @@ struct metadata {
   // itself (a plain JPEG), false = its XMP sidecar. The pane's editability
   // column (access_of) is decided from this without another read.
   bool writes_in_file = false;
+  // #352: the file itself (not its XMP sidecar) holds a position. A sidecar
+  // cannot remove that one (rule 5), so the Location row's remove needs it
+  // (write.h location_rights_of).
+  bool where_in_file = false;
 };
 
 // Full read. Worker thread only. `status::io` when the file cannot be read;
@@ -189,6 +193,29 @@ struct metadata {
 [[nodiscard]] std::optional<geo_point> parse_iso6709(std::string_view text) noexcept;
 // "48.85837° N, 2.29448° E" for a point.
 [[nodiscard]] std::string format_point(const geo_point& p);
+
+// #352 (owner, 2026-10-12): what a person typed in the Location editor. Both
+// hosts call this (Mac bridge, Windows through the C ABI), so a position reads
+// the same on each. Accepted, latitude first unless letters say otherwise:
+//   decimal               "38.7979, -9.3907"   "38.7979 -9.3907"   "38.7979 N, 9.3907 W"
+//                         "N 38.7979, W 9.3907"  "9.3907 W, 38.7979 N"
+//   degrees, minutes[, s] "38°47′52″ N, 9°23′27″ W"   "38 47 52 N 9 23 27 W"
+//                         "38°47.874' N, 9°23.45' W"  ASCII ' and " (or '') for ′ and ″
+// A comma or semicolon separates the two; without one, N/S/E/W letters or a
+// single space between two plain decimals do. Only the last number of a
+// coordinate may have a fraction; minutes and seconds are under 60; latitude
+// within ±90, longitude within ±180; a sign and S / W together are refused.
+// Whitespace only is `blank` (the editor's "remove the location").
+struct location_input {
+  enum class kind : std::uint8_t { point, blank, invalid };
+  kind k = kind::invalid;
+  geo_point point;         // kind::point: lat / lon; altitude is never set
+  const char* error = "";  // kind::invalid: one line for the field (static, UTF-8)
+};
+[[nodiscard]] location_input parse_location(std::string_view utf8) noexcept;
+// The editor's starting text for a point: "38.7979, -9.3907" (6 decimals at
+// most, trailing zeros dropped). parse_location reads it back to the same point.
+[[nodiscard]] std::string format_location_input(const geo_point& p);
 // ---- PR 10: metadata an export carries ----------------------------------------
 
 // EXIF as a TIFF block (what follows "Exif\0\0" in a JPEG APP1) and the XMP

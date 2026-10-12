@@ -105,6 +105,12 @@ a search result list is a place, not an overlay). A list opened from the empty w
 from the welcome) goes back to the empty window: the welcome card with its recent folders, the
 canvas cleared (2026-10-05; it used to leave the last result up, and on Windows did nothing).
 With nothing to leave, the key is not handled.
+A confirmation inside a pane field is part of that field's step (#352, the Location editor's
+"Remove location from this file?"): the first `Esc` is its Cancel and the field keeps the
+keyboard with its text, the next leaves the field. On the Mac that is the native alert; on
+Windows the router still resolves `blur_text`, and the host stops when the island answers that
+the drop only closed its confirmation (`SetMetaEdit` returns `S_FALSE`), as file search's field
+answers for its first `Esc`.
 `Ctrl+W` / `Alt+F4` close the window.
 
 ## Focus

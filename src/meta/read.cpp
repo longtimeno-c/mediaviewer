@@ -105,6 +105,7 @@ result<metadata> read(std::string_view utf8_path) {
     // the answer is a (possibly empty) metadata, not an error.
     (void)detail::read_clip(utf8_path, out, &ev);  // false = nothing to say
     read_beyond(utf8_path, *prefix, family, ev, out);
+    out.where_in_file = out.s.where.has_value();  // #352: before the sidecar's goes over it
     detail::overlay_sidecar(utf8_path, out);
     return out;
   }
@@ -118,6 +119,7 @@ result<metadata> read(std::string_view utf8_path) {
     if (auto whole = io::read_prefix(utf8_path, kWholeFileCap)) detail::read_still(*whole, oriented, out, &ev);
   }
   read_beyond(utf8_path, *prefix, family, ev, out);
+  out.where_in_file = out.s.where.has_value();  // #352: before the sidecar's goes over it
   detail::overlay_sidecar(utf8_path, out);
   if (family == codec::format_family::jpeg) {
     auto target = write_target_for(utf8_path);

@@ -951,6 +951,11 @@ cmake --build build-fuzz --config Release --target mv_fuzzers
 #   ASAN_OPTIONS=detect_leaks=0 ./fuzz_meta_png -max_total_time=600 corpus tests/data/seeds/png tests/data/seeds/c2pa
 # Their seeds (tests/data/seeds/{c2pa,xmp,icc}) come from the test builders:
 #   MV_SEED_DIR=tests/data/seeds mv_tests "[.write-seeds]"
+# #352: fuzz_meta_location (meta::parse_location, the Location editor) is pure and builds
+# from one file:
+#   /opt/homebrew/opt/llvm/bin/clang++ -std=c++20 -fsanitize=fuzzer,address,undefined -fno-rtti -Isrc \
+#     -Itools/fuzz tools/fuzz/fuzz_meta_location.cpp src/meta/location_edit.cpp -o fuzz_meta_location
+#   ASAN_OPTIONS=detect_leaks=0 ./fuzz_meta_location -max_total_time=600 -max_len=512 corpus tests/data/seeds/location
 
 # PR 7 clean-VM gate: a HEIC decodes with MV_OS_CODEC=0, and the process has
 # loaded libheif + libde265 and NO Media Foundation, WIC codec extension, or
@@ -1400,6 +1405,23 @@ XMP or ISO 6709) and `made_with` / `ai_generated` for the map and badge slices.
   (`chrome_host.*`, `main.cpp`, the 80-byte `chrome_meta_args`), the virtualised All tags list
   (`ItemsRepeater`, no 400-row cap) and the clang-cl fuzz build are compiled and run only by CI
   and a Windows machine: not yet.
+
+### Location editing in the Metadata pane (#352, owner 2026-10-12)
+
+Summary's Location row has **Edit** instead of Remove: type decimal or degrees-minutes-seconds
+coordinates, see the parsed point (or the error) under the field, Return saves, Esc cancels. A
+blank save removes the location after a confirmation. Plain JPEGs get EXIF GPS in place;
+everything else an XMP sidecar; RAW originals are never touched
+([06-metadata.md](design/06-metadata.md#the-location-row-352-owner-2026-10-12)). Tests:
+`mv_tests "[location]"` (link or fetch `tools/testmedia/raw` for the RAW case).
+
+- **Mac (M-series, 2026-10-12):** core, bridge, SwiftUI half and `mv_tests` built and run;
+  `fuzz_meta_location` ran 600 s under ASan + UBSan with no finding. The Mac alert's Esc and
+  focus were not driven in the app.
+- **Windows:** the C# chrome compiles on the Mac. `main.cpp`, `chrome_host.*`,
+  `src/abi/meta_abi.cpp` (ABI 0.27) and `test_abi_roundtrip` are compiled only by CI and a
+  Windows machine: not yet run, and neither is the in-pane confirmation's Esc (closes only the
+  confirmation; the field keeps the keyboard).
 
 ### Local search: ask before resuming an interrupted index (issue #299, 2026-10-11)
 
