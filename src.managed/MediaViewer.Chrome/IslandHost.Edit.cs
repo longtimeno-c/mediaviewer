@@ -90,6 +90,8 @@ public static partial class IslandHost
     private static Button? _editOrient;
     private static Slider? _editStraightenSlider;
     private static TextBlock? _editStraightenText;
+    private static TextBlock? _editTrimLabelText;
+    private static readonly List<Button> EditTrimSaveButtons = new();
     private static readonly List<(Button Button, int Tab)> EditTabButtons = new();
     private static readonly List<Button> EditAspectButtons = new();
 
@@ -105,6 +107,8 @@ public static partial class IslandHost
         _editOrient = null;
         _editStraightenSlider = null;
         _editStraightenText = null;
+        _editTrimLabelText = null;
+        EditTrimSaveButtons.Clear();
         EditTabButtons.Clear();
         EditAspectButtons.Clear();
     }
@@ -374,8 +378,10 @@ public static partial class IslandHost
 
     // What forces a rebuild: the tab, the subject, the crop draft starting or
     // ending, trim arming or previewing (their panes list different buttons).
+    // The in/out label and whether a marker exists are updated in place, so
+    // Set in / Set out keep keyboard focus on the button pressed (issue #222).
     private static string EditShape() =>
-        $"{_editTab}|{_editSubject}|{_editCropActive}|{_editTrimFlags}|{_editTrimLabel}";
+        $"{_editTab}|{_editSubject}|{_editCropActive}|{_editTrimFlags & ~TrimHasMarkerFlag}";
 
     private static void RenderEdit()
     {
@@ -582,7 +588,8 @@ public static partial class IslandHost
         trim.Children.Add(SectionTitle("Trim"));
         if (armed)
         {
-            if (_editTrimLabel.Length > 0) trim.Children.Add(Text(_editTrimLabel, Title, UiFontSize - 2));
+            _editTrimLabelText = Text("", Title, UiFontSize - 2);
+            trim.Children.Add(_editTrimLabelText);
             trim.Children.Add(Row(
                 EditButton("Set in", () => Send(Command.TrimIn), tip: WithKey("Set in", Command.TrimIn)),
                 EditButton("Set out", () => Send(Command.TrimOut), tip: WithKey("Set out", Command.TrimOut)),
@@ -595,6 +602,9 @@ public static partial class IslandHost
             Button without = EditButton("Copy without in–out", () => Send(Command.TrimRemoveMiddle),
                                         tip: WithKey("A copy without the marked range", Command.TrimRemoveMiddle));
             save.IsEnabled = exact.IsEnabled = without.IsEnabled = marked;
+            EditTrimSaveButtons.Add(save);
+            EditTrimSaveButtons.Add(exact);
+            EditTrimSaveButtons.Add(without);
             trim.Children.Add(Row(save, exact));
             trim.Children.Add(Row(without, EditButton("Clear", () => Send(Command.TrimClear),
                                                       tip: WithKey("Clear in and out", Command.TrimClear))));
@@ -661,6 +671,13 @@ public static partial class IslandHost
             SetButtonText(_editOrient, _editPortrait ? "Portrait" : "Landscape");
             _editOrient.IsEnabled = HasOrientation(_editAspect);
         }
+        if (_editTrimLabelText is not null)
+        {
+            _editTrimLabelText.Text = _editTrimLabel;
+            _editTrimLabelText.Visibility = _editTrimLabel.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+        }
+        bool trimMarked = (_editTrimFlags & TrimHasMarkerFlag) != 0;
+        foreach (Button b in EditTrimSaveButtons) b.IsEnabled = trimMarked;
         if (_editStraightenText is not null) _editStraightenText.Text = $"{_editStraighten:+0.0;-0.0;0.0}°";
         if (_editStraightenSlider is not null && Math.Abs(_editStraightenSlider.Value - _editStraighten) > 1e-3)
         {
