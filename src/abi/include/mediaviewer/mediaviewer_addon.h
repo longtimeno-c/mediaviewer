@@ -334,6 +334,14 @@ typedef struct mv_slot_badges_request {
 #define MV_SLOT_EVENT_CLOSE 8u     /* the person closed the window / pane / sheet */
 #define MV_SLOT_EVENT_COMMAND 9u   /* a bar / path / context / status item: node_id = item id,
                                     * value = a JSON array of the paths it targets */
+/* A `surface` with "interactive": true (2026-10-12): the pointer over it. A
+ * trackpad pinch or a mouse wheel zooms; a trackpad two-finger scroll is left
+ * to the pane. The chrome may scale / move the current pixels until new ones
+ * arrive; none of it presents the canvas. Coordinates are in the surface,
+ * 0..1 from its top-left. */
+#define MV_SLOT_EVENT_ZOOM 10u     /* {"scale": factor (0.05..20, >1 in), "x", "y": the anchor} */
+#define MV_SLOT_EVENT_PAN 11u      /* {"dx", "dy"}: the drag, in surface widths / heights (-10..10) */
+#define MV_SLOT_EVENT_DOUBLE 12u   /* {"x", "y"}: a double-click */
 
 typedef struct mv_slot_event {
   uint32_t struct_size;

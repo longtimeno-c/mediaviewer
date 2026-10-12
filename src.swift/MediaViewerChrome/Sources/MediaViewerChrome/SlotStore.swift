@@ -377,6 +377,11 @@ final class SlotStore: ObservableObject {
 
   /// A surface's pixels as an image (premultiplied BGRA), or nil.
   nonisolated static func surfaceImage(_ at: ScreenAddress, surface: String) -> CGImage? {
+    surfacePixels(at, surface: surface)?.image
+  }
+
+  /// The image and its revision (a new post moves it: a provisional zoom then resets).
+  nonisolated static func surfacePixels(_ at: ScreenAddress, surface: String) -> (image: CGImage, revision: UInt64)? {
     var w: UInt32 = 0
     var h: UInt32 = 0
     var rev: UInt64 = 0
@@ -393,11 +398,12 @@ final class SlotStore: ObservableObject {
       }
     }
     guard got == need, let provider = CGDataProvider(data: Data(bytes) as CFData) else { return nil }
-    return CGImage(width: Int(w), height: Int(h), bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: Int(w) * 4,
+    let made = CGImage(width: Int(w), height: Int(h), bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: Int(w) * 4,
                    space: CGColorSpace(name: CGColorSpace.sRGB)!,
                    bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue
                      | CGBitmapInfo.byteOrder32Little.rawValue),
                    provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
+    return made.map { ($0, rev) }
   }
 
   func items(in slot: String) -> [SlotItem] { items.filter { $0.slot == slot } }

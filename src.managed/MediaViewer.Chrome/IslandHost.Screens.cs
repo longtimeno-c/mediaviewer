@@ -682,14 +682,23 @@ public static partial class IslandHost
         }
     }
 
-    // The add-on's pixels with the chrome's pin over them, in the accent colour
-    // (docs/plans/metadata-search-and-place.md slice 3). One element for
-    // Narrator, named by its label.
+    // The add-on's pixels with the chrome's pin and names over them, the pin in
+    // the accent colour (docs/plans/metadata-search-and-place.md slice 3). One
+    // element for Narrator, named by its label.
+    //
+    // An "interactive" surface (owner, 2026-10-12: zoom the map with the trackpad
+    // or the mouse): a mouse wheel, or a precision touchpad pinch (which arrives
+    // as Ctrl + wheel), zooms about the pointer; a touchpad two-finger scroll
+    // without Ctrl is left to the pane's ScrollViewer. A drag pans, a double-click
+    // is reported. While a gesture runs the current pixels are scaled / moved at
+    // once (a RenderTransform, no present), and each gesture is reported to the
+    // add-on's worker once it settles; the add-on's next pixels rebuild the node.
     private static UIElement BuildSurface(JsonElement n, ScreenAt at)
     {
         double height = JNum(n, "height", 120);
         double width = JNum(n, "width", 0);
-        var grid = new Grid
+        string id = JStr(n, "id");
+        var frame = new Grid
         {
             Height = height,
             CornerRadius = new CornerRadius(6),
@@ -697,7 +706,14 @@ public static partial class IslandHost
             BorderThickness = new Thickness(1),
             Background = Brush(ChromeColour.Surface),
         };
-        if (width > 0) grid.Width = width;
+        if (width > 0) frame.Width = width;
+        var content = new Grid();
+        var transform = new CompositeTransform();
+        content.RenderTransform = transform;
+        frame.Children.Add(content);
+        frame.SizeChanged += (_, _) =>
+            frame.Clip = new RectangleGeometry { Rect = new Windows.Foundation.Rect(0, 0, frame.ActualWidth, frame.ActualHeight) };
+
         var px = SlotNative.Surface(at.Addon, at.Screen, JStr(n, "surface"));
         if (px is { } p && p.Width > 0 && p.Height > 0)
         {
@@ -709,28 +725,155 @@ public static partial class IslandHost
                     s.Write(p.Pixels, 0, Math.Min(p.Pixels.Length, p.Width * p.Height * 4));
                 }
                 bmp.Invalidate();
-                grid.Children.Add(new Image { Source = bmp, Stretch = Stretch.UniformToFill });
+                content.Children.Add(new Image { Source = bmp, Stretch = Stretch.UniformToFill });
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex.Message); }
         }
+
+        (double X, double Y)? pinAt = null;
         if (n.TryGetProperty("pin", out JsonElement pin) && pin.ValueKind == JsonValueKind.Object)
         {
-            double x = JNum(pin, "x", 0.5), y = JNum(pin, "y", 0.5);
-            var glyph = new FontIcon
-            {
-                Glyph = "",  // MapPin
-                FontFamily = SymbolFont,
-                FontSize = 22,
-                Foreground = Brush(TrimAccent),
-                HorizontalAlignment = HorizontalAlignment.Left,
-                VerticalAlignment = VerticalAlignment.Top,
-                IsHitTestVisible = false,
-            };
-            grid.Children.Add(glyph);
-            grid.SizeChanged += (_, _) => glyph.Margin = new Thickness(grid.ActualWidth * x - 11, grid.ActualHeight * y - 22, 0, 0);
+            pinAt = (JNum(pin, "x", 0.5), JNum(pin, "y", 0.5));
         }
-        return grid;
+        // The add-on's names, drawn here so the text is native (priority order,
+        // skipping any that would overlap one already drawn or the pin).
+        var marks = new Microsoft.UI.Xaml.Controls.Canvas { IsHitTestVisible = false };
+        content.Children.Add(marks);
+        var glyph = new FontIcon
+        {
+            Glyph = "",  // MapPin
+            FontFamily = SymbolFont,
+            FontSize = 22,
+            Foreground = Brush(TrimAccent),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Top,
+            IsHitTestVisible = false,
+            Visibility = pinAt is null ? Visibility.Collapsed : Visibility.Visible,
+        };
+        content.Children.Add(glyph);
+        JsonElement[] markRows = JArr(n, "marks").ToArray();
+        frame.SizeChanged += (_, _) =>
+        {
+            double w = frame.ActualWidth, h = frame.ActualHeight;
+            if (pinAt is { } pa) glyph.Margin = new Thickness(w * pa.X - 11, h * pa.Y - 22, 0, 0);
+            marks.Children.Clear();
+            var taken = new List<Windows.Foundation.Rect>();
+            if (pinAt is { } pp) taken.Add(new Windows.Foundation.Rect(w * pp.X - 12, h * pp.Y - 24, 24, 26));
+            foreach (JsonElement m in markRows)
+            {
+                string text = JStr(m, "text");
+                if (text.Length == 0) continue;
+                var r = new Windows.Foundation.Rect(JNum(m, "x", 0) * w + 6, JNum(m, "y", 0) * h - 8, text.Length * 6.6 + 4, 16);
+                if (r.Right > w + 1 || r.Top < -1 || r.Bottom > h + 1) continue;
+                if (taken.Any(t => RectsOverlap(t, r))) continue;
+                taken.Add(r);
+                var label = new TextBlock
+                {
+                    Text = text,
+                    FontFamily = UiFont,
+                    FontSize = 11,
+                    Foreground = Brush(Body),
+                };
+                Microsoft.UI.Xaml.Controls.Canvas.SetLeft(label, r.X);
+                Microsoft.UI.Xaml.Controls.Canvas.SetTop(label, r.Y);
+                marks.Children.Add(label);
+            }
+        };
+
+        bool live = !JFlag(n, "disabled") && n.TryGetProperty("interactive", out JsonElement inter) &&
+                    (inter.ValueKind == JsonValueKind.True || inter.ValueKind == JsonValueKind.Object);
+        if (!live) return frame;
+        double lo = 0.05, hi = 20;
+        if (n.TryGetProperty("interactive", out JsonElement b) && b.ValueKind == JsonValueKind.Object)
+        {
+            lo = JNum(b, "min_scale", lo);
+            hi = Math.Max(lo, JNum(b, "max_scale", hi));
+        }
+        double committed = 1;
+        (double X, double Y) wheelAnchor = (0.5, 0.5);
+        var settle = _dispatcher?.DispatcherQueue.CreateTimer();
+        if (settle is not null)
+        {
+            settle.Interval = TimeSpan.FromMilliseconds(150);
+            settle.IsRepeating = false;
+            settle.Tick += (_, _) =>
+            {
+                double step = transform.ScaleX / committed;
+                committed = transform.ScaleX;
+                SendScreenEvent(at, id, 10, JsonSerializer.Serialize(new
+                {
+                    scale = Math.Clamp(step, 0.05, 20),
+                    x = Math.Clamp(wheelAnchor.X, 0, 1),
+                    y = Math.Clamp(wheelAnchor.Y, 0, 1),
+                }));
+            };
+        }
+        frame.PointerWheelChanged += (_, e) =>
+        {
+            bool ctrl = (e.KeyModifiers & Windows.System.VirtualKeyModifiers.Control) != 0;
+            // A touchpad's two-finger scroll is the pane's; its pinch arrives with Ctrl.
+            if (e.Pointer.PointerDeviceType == Microsoft.UI.Input.PointerDeviceType.Touchpad && !ctrl) return;
+            var point = e.GetCurrentPoint(frame);
+            double w = Math.Max(1, frame.ActualWidth), h = Math.Max(1, frame.ActualHeight);
+            wheelAnchor = (point.Position.X / w, point.Position.Y / h);
+            double factor = Math.Pow(1.1, point.Properties.MouseWheelDelta / 120.0);
+            double next = Math.Clamp(transform.ScaleX * factor, lo, hi);
+            transform.CenterX = point.Position.X;
+            transform.CenterY = point.Position.Y;
+            transform.ScaleX = next;
+            transform.ScaleY = next;
+            settle?.Stop();
+            settle?.Start();
+            e.Handled = true;
+        };
+        Windows.Foundation.Point? dragFrom = null;
+        double baseX = 0, baseY = 0;
+        frame.PointerPressed += (_, e) =>
+        {
+            var point = e.GetCurrentPoint(frame);
+            if (!point.Properties.IsLeftButtonPressed) return;
+            dragFrom = point.Position;
+            baseX = transform.TranslateX;
+            baseY = transform.TranslateY;
+            frame.CapturePointer(e.Pointer);
+        };
+        frame.PointerMoved += (_, e) =>
+        {
+            if (dragFrom is not { } from) return;
+            var now = e.GetCurrentPoint(frame).Position;
+            transform.TranslateX = baseX + now.X - from.X;
+            transform.TranslateY = baseY + now.Y - from.Y;
+        };
+        frame.PointerReleased += (_, e) =>
+        {
+            if (dragFrom is not { } from) return;
+            dragFrom = null;
+            frame.ReleasePointerCapture(e.Pointer);
+            var now = e.GetCurrentPoint(frame).Position;
+            double w = Math.Max(1, frame.ActualWidth), h = Math.Max(1, frame.ActualHeight);
+            double dx = (now.X - from.X) / w, dy = (now.Y - from.Y) / h;
+            if (Math.Abs(dx) < 0.005 && Math.Abs(dy) < 0.005) return;  // a click, not a drag
+            SendScreenEvent(at, id, 11, JsonSerializer.Serialize(new
+            {
+                dx = Math.Clamp(dx, -10, 10),
+                dy = Math.Clamp(dy, -10, 10),
+            }));
+        };
+        frame.DoubleTapped += (_, e) =>
+        {
+            var pos = e.GetPosition(frame);
+            double w = Math.Max(1, frame.ActualWidth), h = Math.Max(1, frame.ActualHeight);
+            SendScreenEvent(at, id, 12, JsonSerializer.Serialize(new
+            {
+                x = Math.Clamp(pos.X / w, 0, 1),
+                y = Math.Clamp(pos.Y / h, 0, 1),
+            }));
+        };
+        return frame;
     }
+
+    private static bool RectsOverlap(Windows.Foundation.Rect a, Windows.Foundation.Rect b) =>
+        a.X < b.X + b.Width && b.X < a.X + a.Width && a.Y < b.Y + b.Height && b.Y < a.Y + a.Height;
 
     // ---- windows, docked panes, sheets ---------------------------------------------
 

@@ -460,7 +460,15 @@ How it works:
   draw them at the very bottom of the pane opened with `I`, after all built-in metadata, on every
   tab, never collapsed (owner, 2026-10-12). A `surface` is BGRA the add-on drew at the pane's
   width × backing scale; the chrome draws the pin over it in the accent colour, with a drop-in
-  that Reduce Motion turns off.
+  that Reduce Motion turns off, and the surface's `marks` (up to 64 names, priority order, a
+  name skipped where it would overlap one drawn or the pin) as native text.
+- **Interactive surfaces (owner, 2026-10-12).** A surface with `"interactive": true` (or
+  `{"min_scale", "max_scale"}`) takes the pointer: a mouse wheel or a trackpad pinch (on Windows a
+  precision touchpad's pinch arrives as Ctrl + wheel) zooms about the pointer, a drag pans, a
+  double-click is reported; a trackpad two-finger scroll is left to the pane. During a gesture
+  the chrome scales / moves the current pixels itself, within the bounds, and when it settles
+  sends one event (`zoom` {scale, x, y}, `pan` {dx, dy}, `double` {x, y}; surface coordinates,
+  0..1); the add-on's next pixels replace the provisional transform. Nothing presents the canvas.
 - **Search providers.** File search posts the typed text on every debounced change and returns;
   name hits show at once and a provider's rows join when they arrive, with its reason
   ("Portugal") or "Still reading tags — N of M" under the field. A query starting with a

@@ -136,6 +136,10 @@ enum event_kind : std::uint32_t {
   ev_open = 7,      // a window, pane or sheet opened (host-generated)
   ev_close = 8,     // it closed (host-generated)
   ev_command = 9,   // a bar / path / context / status item (host-generated)
+  // An "interactive" surface (owner, 2026-10-12: zoom the map from the trackpad or mouse):
+  ev_zoom = 10,     // {"scale": factor 0.05..20, "x": 0..1, "y": 0..1} -- the anchor, in the surface
+  ev_pan = 11,      // {"dx": -10..10, "dy": -10..10} -- the drag, in surface widths / heights
+  ev_double = 12,   // {"x": 0..1, "y": 0..1} -- a double-click
 };
 
 // One node, checked: used by `tree` and exposed for tests.

@@ -223,6 +223,37 @@ TEST_CASE("events are checked against the tree before an add-on hears them", "[a
   REQUIRE(t.check_event("b", ev_click, "") == error::not_interactive);
 }
 
+TEST_CASE("an interactive surface takes zoom, pan and double-click", "[addon][screens]") {
+  using namespace mv::addon::screen;
+  tree t;
+  REQUIRE(t.set(R"({"type":"surface","id":"s","surface":"px","label":"Test surface","height":120})") == error::none);
+  REQUIRE(t.check_event("s", ev_zoom, R"({"scale":1.2,"x":0.5,"y":0.5})") == error::not_interactive);
+  REQUIRE(t.apply(R"([{"op":"set","id":"s","props":{"interactive":true}}])") == error::none);
+  REQUIRE(t.check_event("s", ev_zoom, R"({"scale":1.2,"x":0.5,"y":0.25})") == error::none);
+  REQUIRE(t.check_event("s", ev_zoom, R"({"scale":0.8,"x":0,"y":1})") == error::none);
+  REQUIRE(t.check_event("s", ev_zoom, R"({"scale":0,"x":0.5,"y":0.5})") == error::bad_value);
+  REQUIRE(t.check_event("s", ev_zoom, R"({"scale":1.2,"x":1.5,"y":0.5})") == error::bad_value);
+  REQUIRE(t.check_event("s", ev_zoom, R"({"scale":1.2,"x":0.5})") == error::bad_value);
+  REQUIRE(t.check_event("s", ev_pan, R"({"dx":-0.1,"dy":0.05})") == error::none);
+  REQUIRE(t.check_event("s", ev_pan, R"({"dx":"left","dy":0})") == error::bad_value);
+  REQUIRE(t.check_event("s", ev_double, R"({"x":0.3,"y":0.7})") == error::none);
+  REQUIRE(t.check_event("s", ev_click, "") == error::bad_value);
+  REQUIRE(t.set(R"({"type":"surface","id":"s","surface":"px","label":"L","height":40,"interactive":"yes"})") ==
+          error::bad_prop);
+  // Bounds for the live zoom, and names the chrome draws over the pixels.
+  REQUIRE(t.set(R"({"type":"surface","id":"s","surface":"px","label":"L","height":40,
+                    "interactive":{"min_scale":0.25,"max_scale":8},
+                    "marks":[{"x":0.4,"y":0.5,"text":"One"},{"x":0.9,"y":0.1,"text":"Two"}]})") == error::none);
+  REQUIRE(t.check_event("s", ev_pan, R"({"dx":0.1,"dy":0})") == error::none);
+  REQUIRE(t.set(R"({"type":"surface","id":"s","surface":"px","label":"L","height":40,
+                    "interactive":{"max_scale":0.5}})") == error::bad_prop);
+  REQUIRE(t.set(R"({"type":"surface","id":"s","surface":"px","label":"L","height":40,
+                    "marks":[{"x":1.5,"y":0.5,"text":"Off"}]})") == error::bad_prop);
+  REQUIRE(t.set(R"({"type":"surface","id":"s","surface":"px","label":"L","height":40,"interactive":false})") ==
+          error::none);
+  REQUIRE(t.check_event("s", ev_pan, R"({"dx":0.1,"dy":0})") == error::not_interactive);
+}
+
 TEST_CASE("a 2,000-tile thumbnail grid is one cheap node", "[addon][screens]") {
   std::string json = R"({"type":"thumbnail_grid","id":"g","label":"Photos","tile":128,"items":[)";
   for (int i = 0; i < 2000; ++i) {
