@@ -427,6 +427,9 @@ TEST_CASE("places: towns in a box, most populous first", "[places][geo]") {
   for (const auto& t : fiji) CHECK((t.lon >= 177.0 || t.lon <= -179.5));
   CHECK(db.towns_in(mv::geo::box{10, 10, 11, 11}, 10).empty());  // nothing there in the test blob
   CHECK(db.towns_in(mv::geo::box{38.55, -9.60, 39.05, -8.90}, 0).empty());
+  // A box from a careless host: non-finite gives nothing, out of range is clamped.
+  CHECK(db.towns_in(mv::geo::box{std::nan(""), 0, 1, 1}, 10).empty());
+  CHECK_FALSE(db.towns_in(mv::geo::box{-1e300, -1e300, 1e300, 1e300}, 10).empty());
 }
 
 TEST_CASE("places: town scale shows town dots and names", "[places]") {
