@@ -285,6 +285,22 @@ public static unsafe partial class SlotNative
             }
         }, false);
 
+    /// <summary>A surface's revision without its pixels (the size call copies none), or 0 when absent.</summary>
+    public static ulong SurfaceRevision(string addon, string screen, string surface) =>
+        Try(() =>
+        {
+            byte[] a = Z(addon), s = Z(screen), f = Z(surface);
+            uint w = 0, h = 0;
+            ulong rev = 0, need = 0;
+            fixed (byte* pa = a)
+            fixed (byte* ps = s)
+            fixed (byte* pf = f)
+            {
+                MvStatus st = mv_slots_surface(pa, ps, pf, null, 0, &w, &h, &rev, &need);
+                return st == MvStatus.InvalidArg ? rev : 0UL;
+            }
+        }, 0UL);
+
     /// <summary>A surface's premultiplied BGRA, or null.</summary>
     public static (byte[] Pixels, int Width, int Height, ulong Revision)? Surface(string addon, string screen, string surface) =>
         Try<(byte[], int, int, ulong)?>(() =>

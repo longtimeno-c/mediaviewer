@@ -237,28 +237,81 @@ public static partial class IslandHost
     // built-in metadata, each under its heading; empty when none answered.
     private static StackPanel? _metaSlots;
 
+    // What the panel shows: the info generation (a new file), then each section's
+    // address and tree revision, in order. Two children per section (rule, section).
+    private static ulong _slotShownGeneration;
+    private static readonly List<(ScreenAt At, long Revision)> SlotShownSections = new();
+    private static StackPanel? _slotShownPanel;
+
+    // Only what changed: a new file or a different set of sections rebuilds the
+    // panel; a section whose tree moved is rebuilt alone, in place; a section whose
+    // pixels alone moved keeps its elements and swaps the pixels (RefreshSurfaces),
+    // so a pinch or drag on the map is not reset mid-gesture.
     private static void FillSlotSections()
     {
         StackPanel? rows = _metaSlots;
         if (rows is null) return;
-        rows.Children.Clear();
-        if (_slotInfoJson.Length == 0) return;
+        var sections = new List<(ScreenAt At, long Revision, string Title, JsonElement Tree)>();
+        ulong generation = 0;
+        JsonDocument? doc = null;
         try
         {
-            using JsonDocument doc = JsonDocument.Parse(_slotInfoJson);
-            foreach (JsonElement s in JArr(doc.RootElement, "sections"))
+            if (_slotInfoJson.Length > 0)
             {
-                if (!s.TryGetProperty("tree", out JsonElement tree) || tree.ValueKind != JsonValueKind.Object) continue;
-                rows.Children.Add(new Border { Height = 1, Background = Brush(Hairline) });
-                var section = new StackPanel { Spacing = 6, Padding = new Thickness(14, 10, 14, 14) };
-                TextBlock heading = Text(JStr(s, "title"), Body, UiFontSize - 3);
-                AutomationProperties.SetHeadingLevel(heading, Microsoft.UI.Xaml.Automation.Peers.AutomationHeadingLevel.Level2);
-                section.Children.Add(heading);
-                section.Children.Add(BuildScreenNode(tree, new ScreenAt(JStr(s, "addon"), JStr(s, "id"))));
-                rows.Children.Add(section);
+                doc = JsonDocument.Parse(_slotInfoJson);
+                generation = (ulong)JNum(doc.RootElement, "generation", 0);
+                foreach (JsonElement s in JArr(doc.RootElement, "sections"))
+                {
+                    if (!s.TryGetProperty("tree", out JsonElement tree) || tree.ValueKind != JsonValueKind.Object) continue;
+                    sections.Add((new ScreenAt(JStr(s, "addon"), JStr(s, "id")), (long)JNum(s, "revision", 0),
+                                  JStr(s, "title"), tree));
+                }
+            }
+            bool sameSet = ReferenceEquals(rows, _slotShownPanel) && generation == _slotShownGeneration &&
+                           sections.Count == SlotShownSections.Count &&
+                           rows.Children.Count == sections.Count * 2 &&
+                           sections.Select(x => x.At).SequenceEqual(SlotShownSections.Select(x => x.At));
+            if (!sameSet)
+            {
+                foreach ((ScreenAt at, _) in SlotShownSections) ForgetSurfaces(at);
+                rows.Children.Clear();
+                SlotShownSections.Clear();
+                foreach (var s in sections)
+                {
+                    rows.Children.Add(new Border { Height = 1, Background = Brush(Hairline) });
+                    rows.Children.Add(BuildSlotSection(s.At, s.Title, s.Tree));
+                    SlotShownSections.Add((s.At, s.Revision));
+                }
+                _slotShownPanel = rows;
+                _slotShownGeneration = generation;
+                return;
+            }
+            for (int i = 0; i < sections.Count; ++i)
+            {
+                var s = sections[i];
+                if (s.Revision != SlotShownSections[i].Revision)
+                {
+                    rows.Children[i * 2 + 1] = BuildSlotSection(s.At, s.Title, s.Tree);
+                    SlotShownSections[i] = (s.At, s.Revision);
+                }
+                else
+                {
+                    RefreshSurfaces(s.At);
+                }
             }
         }
         catch (JsonException ex) { System.Diagnostics.Debug.WriteLine(ex.Message); }
+        finally { doc?.Dispose(); }
+    }
+
+    private static UIElement BuildSlotSection(ScreenAt at, string title, JsonElement tree)
+    {
+        var section = new StackPanel { Spacing = 6, Padding = new Thickness(14, 10, 14, 14) };
+        TextBlock heading = Text(title, Body, UiFontSize - 3);
+        AutomationProperties.SetHeadingLevel(heading, Microsoft.UI.Xaml.Automation.Peers.AutomationHeadingLevel.Level2);
+        section.Children.Add(heading);
+        section.Children.Add(BuildScreenNode(tree, at));
+        return section;
     }
 
     private static uint Rgba(ChromeColour role)
