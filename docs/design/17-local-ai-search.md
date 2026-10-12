@@ -244,7 +244,11 @@ unindexed.
   "mountain" and "mountains" are the same query.
 - **Scan** (`vectors.h`): brute-force int8 dot product over an in-memory matrix of every stored
   frame of the active model (loaded, not memory-mapped; ~77 MB at 100 k L/14 frames). 100,000
-  ViT-L rows scan in ~31 ms on one core. There is no ANN index.
+  ViT-L rows scan in ~31 ms on one core. There is no ANN index. Dropping assets (a root
+  removed, a scan's gone or changed list, a reader's refresh) tombstones their rows in one
+  pass with at most one compaction (`remove_assets`), and a path finds its asset through a
+  `path_key → id` map kept beside the asset table, not a walk of it (`clip_matches`,
+  `search_similar`; issue #174).
 - **Ranking:** top frames, then **grouped per clip** with the best moment first and "N more in
   this clip", so one long video cannot fill the page (`mv_ai_result`). `find_text` returns at
   most 5,000 rows.

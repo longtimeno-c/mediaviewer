@@ -197,6 +197,7 @@ expected engine::start() {
 
 void engine::load_assets() {
   std::unordered_map<std::int64_t, asset_meta> all;
+  std::unordered_map<std::string, std::int64_t> by_key;
   for (asset_row& a : db_->all_assets()) {
     asset_meta m;
     m.key = path_key(a.path);
@@ -206,10 +207,28 @@ void engine::load_assets() {
     m.root = a.root_id;
     m.mtime = a.mtime;
     m.cloud = a.cloud;
+    by_key[m.key] = a.id;
     all.emplace(a.id, std::move(m));
   }
   std::lock_guard lock(assets_m_);
   assets_ = std::move(all);
+  asset_by_key_ = std::move(by_key);
+}
+
+void engine::unindex_key_locked(std::int64_t id, const std::string& key) {
+  if (auto k = asset_by_key_.find(key); k != asset_by_key_.end() && k->second == id) asset_by_key_.erase(k);
+}
+
+void engine::erase_asset_locked(std::int64_t id) {
+  auto it = assets_.find(id);
+  if (it == assets_.end()) return;
+  unindex_key_locked(id, it->second.key);
+  assets_.erase(it);
+}
+
+std::int64_t engine::asset_of_key_locked(const std::string& key) const {
+  const auto it = asset_by_key_.find(key);
+  return it == asset_by_key_.end() ? 0 : it->second;
 }
 
 void engine::stop() noexcept {
@@ -1671,10 +1690,8 @@ void engine::catch_up_reader() {
     }
   }
   begin_answer_swap();
-  for (std::int64_t a : gone) {
-    store_.remove_asset(a);
-    sounds_.remove_asset(a);
-  }
+  store_.remove_assets(gone);
+  sounds_.remove_assets(gone);
   (void)db_->each_frame(active, [&](const frame_out& f) {
     store_.add(f.asset_id, f.pts_ms, f.generic, f.scale, f.emb);
     reader_frame_ = f.id;
@@ -1710,7 +1727,12 @@ bool engine::see_batch(const root_row& root, std::vector<index_db::seen_file>& b
     if (u.changed) changed.push_back(u.id);
     asset_meta& m = assets_[u.id];
     m.path = batch[i].path;
-    m.key = path_key(m.path);
+    std::string key = path_key(m.path);
+    if (key != m.key) {
+      if (!m.key.empty()) unindex_key_locked(u.id, m.key);
+      asset_by_key_[key] = u.id;
+      m.key = std::move(key);
+    }
     m.dir_key = dir_of(m.key);
     m.kind = batch[i].kind;
     m.root = root.id;
@@ -1870,10 +1892,8 @@ bool engine::photos_local(const asset_row& a) const {
 
 void engine::forget_vectors(const std::vector<std::int64_t>& ids) {
   if (ids.empty()) return;
-  for (std::int64_t id : ids) {
-    store_.remove_asset(id);
-    sounds_.remove_asset(id);
-  }
+  store_.remove_assets(ids);
+  sounds_.remove_assets(ids);
   {
     // Their People pass too: an unavailable asset was marked scanned so the
     // faces track would not ask for it again, and now there is something to scan.
@@ -1904,11 +1924,9 @@ void engine::end_root_scan(const root_row& root, std::int64_t gen, const std::ve
   auto gone = db_->end_scan(root.id, gen);
   if (gone) {
     std::lock_guard lock(assets_m_);
-    for (std::int64_t id : *gone) {
-      assets_.erase(id);
-      store_.remove_asset(id);
-      sounds_.remove_asset(id);
-    }
+    for (std::int64_t id : *gone) erase_asset_locked(id);
+    store_.remove_assets(*gone);
+    sounds_.remove_assets(*gone);
   }
   if (gone) {
     std::lock_guard lock(models_m_);
@@ -1927,9 +1945,9 @@ void engine::end_root_scan(const root_row& root, std::int64_t gen, const std::ve
                                       [&](const speech_row& r) { return drop.count(r.asset) != 0; }),
                        speech_rows_.end());
   }
+  store_.remove_assets(changed);
+  sounds_.remove_assets(changed);
   for (std::int64_t id : changed) {
-    store_.remove_asset(id);
-    sounds_.remove_asset(id);
     std::lock_guard lock(models_m_);
     if (faces_) {
       (void)faces_->forget_asset(id);
@@ -3273,6 +3291,7 @@ expected engine::root_remove(std::int64_t id) {
     for (auto it = assets_.begin(); it != assets_.end();) {
       if (it->second.root == id) {
         gone.push_back(it->first);
+        unindex_key_locked(it->first, it->second.key);
         it = assets_.erase(it);
       } else {
         ++it;
@@ -3290,10 +3309,8 @@ expected engine::root_remove(std::int64_t id) {
     photos_readable_ = false;
     if (photos_) photos_->observe(nullptr);
   }
-  for (std::int64_t a : gone) {
-    store_.remove_asset(a);
-    sounds_.remove_asset(a);
-  }
+  store_.remove_assets(gone);
+  sounds_.remove_assets(gone);
   {
     const std::set<std::int64_t> drop(gone.begin(), gone.end());
     std::lock_guard lock(speech_m_);
@@ -3377,6 +3394,7 @@ expected engine::clear_index() {
   {
     std::lock_guard lock(assets_m_);
     assets_.clear();
+    asset_by_key_.clear();
   }
   store_.clear();
   sounds_.reset(sounds_.dim());
@@ -3870,6 +3888,7 @@ void engine::reload_from_db() {
   {
     std::lock_guard lock(assets_m_);
     assets_.clear();
+    asset_by_key_.clear();
     for (asset_row& a : db_->all_assets()) {
       asset_meta m;
       m.key = path_key(a.path);
@@ -3878,6 +3897,7 @@ void engine::reload_from_db() {
       m.kind = a.kind;
       m.root = a.root_id;
       m.mtime = a.mtime;
+      asset_by_key_[m.key] = a.id;
       assets_.emplace(a.id, std::move(m));
     }
   }
@@ -4406,14 +4426,9 @@ std::uint64_t engine::search_similar(const std::string& path, std::int64_t pts_m
     std::vector<float> q;
     std::int64_t self = 0;
     {
-      std::lock_guard lock(assets_m_);
       const std::string key = path_key(path);
-      for (const auto& [id, m] : assets_) {
-        if (m.key == key) {
-          self = id;
-          break;
-        }
-      }
+      std::lock_guard lock(assets_m_);
+      self = asset_of_key_locked(key);
     }
     // An indexed still or sampled moment is its own query; a paused frame
     // that was never sampled is embedded now (docs/design/17 "Find similar"). The
@@ -4596,14 +4611,9 @@ result<std::vector<std::pair<std::int64_t, float>>> engine::clip_matches(std::ui
                                                                          const std::string& path) const {
   std::int64_t asset = 0;
   {
-    std::lock_guard lock(assets_m_);
     const std::string key = path_key(path);
-    for (const auto& [aid, m] : assets_) {
-      if (m.key == key) {
-        asset = aid;
-        break;
-      }
-    }
+    std::lock_guard lock(assets_m_);
+    asset = asset_of_key_locked(key);
   }
   std::lock_guard lock(search_m_);
   auto it = searches_.find(id);
