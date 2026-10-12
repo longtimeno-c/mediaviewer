@@ -76,14 +76,18 @@ struct projection {
 
   projection(const map_view& v) {
     const double lat0 = std::clamp(v.lat, -kMaxMercLat, kMaxMercLat);
-    const int z = std::clamp(v.zoom, 0, k_zoom_steps - 1);
     cx = v.width / 2.0;
     cy = v.height / 2.0;
     lon0 = wrap180(v.lon);
     m0 = merc(lat0);
-    // The map's height covers the step's span in latitude at its centre:
+    // The map's height covers the span in latitude at its centre:
     // d(merc)/d(lat) = 1 / cos(lat).
-    k = v.height * std::cos(lat0 * kDeg) / (k_zoom_span_deg[z] * kDeg);
+    k = v.height * std::cos(lat0 * kDeg) / (clamp_span(v.span_deg) * kDeg);
+  }
+  // The point under pixel (x, y).
+  void inverse(double x, double y, double& lat, double& lon) const noexcept {
+    lon = wrap180(lon0 + (x - cx) / k / kDeg);
+    lat = inv_merc(m0 - (y - cy) / k);
   }
   [[nodiscard]] double x(double dlon_deg) const noexcept { return cx + dlon_deg * kDeg * k; }
   [[nodiscard]] double y(double lat_deg) const noexcept { return cy - (merc(lat_deg) - m0) * k; }
@@ -397,6 +401,7 @@ map_palette palette_for(const theme_tokens& t) noexcept {
     p.region = mix(p.land_home, body, 0.20f);
   }
   p.frame = t.hairline >> 8;
+  p.town = mix(p.land_home, t.title >> 8, t.dark ? 0.70f : 0.62f);
   return p;
 }
 
@@ -447,21 +452,75 @@ int framing_zoom(const geo::database& db, double lat, double lon, std::string_vi
   // with a margin: longitude spans are narrower on the map by cos(lat).
   const double aspect = static_cast<double>(width) / height;
   const double need = 1.3 * std::max(lat_span, lon_span * std::cos(y0 * kDeg) / aspect);
-  for (int z = k_zoom_steps - 1; z >= 0; --z) {
+  for (int z = k_region_zoom_step; z >= 0; --z) {
     if (k_zoom_span_deg[z] >= need) return z;
   }
   return 0;
 }
 
+double clamp_span(double span_deg) noexcept {
+  if (!std::isfinite(span_deg)) return k_zoom_span_deg[k_region_zoom_step];
+  return std::clamp(span_deg, k_min_span_deg, k_max_span_deg);
+}
+
+void map_point(const map_view& v, double x, double y, double& lat, double& lon) noexcept {
+  projection(v).inverse(x, y, lat, lon);
+}
+
+map_view keep_pin_in_view(const map_view& v, double pin_lat, double pin_lon, double margin) noexcept {
+  map_view out = v;
+  out.span_deg = clamp_span(out.span_deg);
+  out.lat = std::clamp(out.lat, -80.0, 80.0);
+  if (v.width == 0 || v.height == 0) return out;
+  double x = 0, y = 0;
+  map_pixel(out, pin_lat, pin_lon, x, y);
+  const double lo_x = margin * v.width, hi_x = (1 - margin) * v.width;
+  const double lo_y = margin * v.height, hi_y = (1 - margin) * v.height;
+  const double dx = x < lo_x ? x - lo_x : x > hi_x ? x - hi_x : 0;
+  const double dy = y < lo_y ? y - lo_y : y > hi_y ? y - hi_y : 0;
+  if (dx == 0 && dy == 0) return out;
+  // Move the centre by the overshoot, at the same pixel scale.
+  const projection pr(out);
+  double lat = 0, lon = 0;
+  pr.inverse(out.width / 2.0 + dx, out.height / 2.0 + dy, lat, lon);
+  const double k_before = std::cos(out.lat * kDeg) / out.span_deg;
+  out.lat = std::clamp(lat, -80.0, 80.0);
+  out.lon = lon;
+  out.span_deg = clamp_span(std::cos(out.lat * kDeg) / k_before);
+  return out;
+}
+
+map_view apply_gesture(const map_view& v, double scale, double anchor_x, double anchor_y, double pan_x, double pan_y,
+                       double pin_lat, double pin_lon) noexcept {
+  map_view out = v;
+  if (!(scale > 0) || !std::isfinite(scale) || !std::isfinite(anchor_x) || !std::isfinite(anchor_y) ||
+      !std::isfinite(pan_x) || !std::isfinite(pan_y) || v.width == 0 || v.height == 0) {
+    return keep_pin_in_view(out, pin_lat, pin_lon);
+  }
+  // The old picture's point that now shows at the centre:
+  // centre = a + (p - a) * s + pan  =>  p = a + (centre - pan - a) / s.
+  const double px = anchor_x + (0.5 - pan_x - anchor_x) / scale;
+  const double py = anchor_y + (0.5 - pan_y - anchor_y) / scale;
+  double lat = 0, lon = 0;
+  map_point(v, px * v.width, py * v.height, lat, lon);
+  // Same pixels per Mercator unit as the gesture showed: k = H cos(lat) / span.
+  const double lat_old = std::clamp(v.lat, -kMaxMercLat, kMaxMercLat);
+  const double lat_new = std::clamp(lat, -80.0, 80.0);
+  out.lat = lat_new;
+  out.lon = lon;
+  out.span_deg = clamp_span(clamp_span(v.span_deg) * std::cos(lat_new * kDeg) / std::cos(lat_old * kDeg) / scale);
+  return keep_pin_in_view(out, pin_lat, pin_lon);
+}
+
 bool render_map(const geo::database& db, const map_view& v, const map_palette& p, std::string_view home_country,
-                std::span<std::uint8_t> out) {
+                std::span<std::uint8_t> out, std::vector<map_mark>* marks) {
   const std::uint32_t w = v.width;
   const std::uint32_t h = v.height;
   if (w == 0 || h == 0 || w > 4096 || h > 4096 || out.size() < static_cast<std::size_t>(w) * h * 4) return false;
   const float scale = v.scale > 0 ? v.scale : 1.0f;
   const projection pr(v);
   const geo::box b = pr.bounds(v);
-  const int zoom = std::clamp(v.zoom, 0, k_zoom_steps - 1);
+  const double span = clamp_span(v.span_deg);
 
   std::vector<std::uint32_t> countries;
   if (db.valid()) countries = db.polygons_in(geo::layer::countries, b);
@@ -482,13 +541,47 @@ bool render_map(const geo::database& db, const map_view& v, const map_palette& p
   stroker border;
   region.reset(w, h);
   border.reset(w, h);
-  if (zoom >= k_region_borders_from && db.valid()) {
+  if (span <= k_region_borders_span && db.valid()) {
     const std::vector<std::uint32_t> regions = db.polygons_in(geo::layer::regions, b);
-    if (zoom > k_region_borders_from || regions.size() <= k_region_borders_max_early) {
+    if (span <= k_region_borders_span / 2 || regions.size() <= k_region_borders_max_early) {
       stroke_borders(db, geo::layer::regions, regions, pr, region, 0.35 * scale, 1.0f);
     }
   }
   stroke_borders(db, geo::layer::countries, countries, pr, border, 0.6 * scale, 1.0f);
+
+  // Town dots, with a halo in the land colour so they read on any border.
+  std::vector<float> halo;
+  std::vector<float> dots;
+  if (marks) marks->clear();
+  if (span <= k_towns_span && db.valid()) {
+    const double min_people = 1000.0 * std::pow(span / k_min_span_deg, 1.5);
+    halo.assign(static_cast<std::size_t>(w) * h, 0.0f);
+    dots.assign(static_cast<std::size_t>(w) * h, 0.0f);
+    std::size_t drawn = 0;
+    for (const auto& t : db.towns_in(b, 512)) {
+      if (t.population < min_people || drawn >= k_max_town_dots) break;  // most populous first
+      double x = 0, y = 0;
+      map_pixel(v, t.lat, t.lon, x, y);
+      const double inset = 4.0 * scale;
+      if (x < inset || y < inset || x > w - inset || y > h - inset) continue;
+      const double r = (t.population >= 100'000 ? 2.4 : t.population >= 20'000 ? 1.9 : 1.5) * scale;
+      const double rh = r + 1.2 * scale;
+      const int y0 = std::max(0, static_cast<int>(y - rh - 1));
+      const int y1 = std::min(static_cast<int>(h) - 1, static_cast<int>(y + rh + 1));
+      const int x0 = std::max(0, static_cast<int>(x - rh - 1));
+      const int x1 = std::min(static_cast<int>(w) - 1, static_cast<int>(x + rh + 1));
+      for (int py = y0; py <= y1; ++py) {
+        for (int px = x0; px <= x1; ++px) {
+          const double d = std::hypot(px + 0.5 - x, py + 0.5 - y);
+          const std::size_t i = static_cast<std::size_t>(py) * w + static_cast<std::size_t>(px);
+          halo[i] = std::max(halo[i], static_cast<float>(std::clamp(rh + 0.5 - d, 0.0, 1.0)));
+          dots[i] = std::max(dots[i], static_cast<float>(std::clamp(r + 0.5 - d, 0.0, 1.0)));
+        }
+      }
+      if (marks && marks->size() < k_max_marks) marks->push_back({x / w, y / h, std::string(t.name)});
+      ++drawn;
+    }
+  }
 
   const rgb water = unpack(p.water);
   const rgb land_c = unpack(p.land);
@@ -496,6 +589,7 @@ bool render_map(const geo::database& db, const map_view& v, const map_palette& p
   const rgb region_c = unpack(p.region);
   const rgb border_c = unpack(p.border);
   const rgb frame_c = unpack(p.frame);
+  const rgb town_c = unpack(p.town);
   // The rounded corners and a hairline frame, as the pane's other cards.
   const double radius = 8.0 * scale;
   const double frame_w = std::max(1.0, 0.5 * scale);
@@ -511,6 +605,10 @@ bool render_map(const geo::database& db, const map_view& v, const map_palette& p
       if (!home.empty()) c = lerp(c, home_c, home[i]);
       c = lerp(c, region_c, region.a[i]);
       c = lerp(c, border_c, border.a[i]);
+      if (!dots.empty()) {
+        c = lerp(c, home_c, halo[i] * 0.85f);
+        c = lerp(c, town_c, dots[i]);
+      }
       // Signed distance to the rounded rectangle (negative inside).
       const double px = x + 0.5;
       const double qx = std::fabs(px - hw) - (hw - radius);
@@ -542,7 +640,7 @@ std::shared_ptr<const map_image> map_cache::get(const geo::database& db, const m
   k.width = v.width;
   k.height = v.height;
   k.scale_x100 = static_cast<std::int32_t>(std::lround(v.scale * 100));
-  k.zoom = std::clamp(v.zoom, 0, k_zoom_steps - 1);
+  k.span_e6 = std::llround(clamp_span(v.span_deg) * 1e6);
   k.palette = p;
   k.home = std::string(home_country);
   {
@@ -563,7 +661,7 @@ std::shared_ptr<const map_image> map_cache::get(const geo::database& db, const m
   img->width = v.width;
   img->height = v.height;
   img->bgra.resize(static_cast<std::size_t>(v.width) * v.height * 4);
-  if (!render_map(db, v, p, home_country, img->bgra)) return nullptr;
+  if (!render_map(db, v, p, home_country, img->bgra, &img->marks)) return nullptr;
   std::lock_guard lock(m_);
   lru_.push_front(entry{std::move(k), img});
   while (lru_.size() > capacity_) lru_.pop_back();

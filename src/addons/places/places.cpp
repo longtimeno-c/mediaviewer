@@ -15,16 +15,47 @@ namespace {
 // The zoom glyphs, from the host's symbol table (src/addon/contrib.h kSymbols;
 // a tree naming an unknown symbol is refused whole).
 constexpr std::string_view kZoomOutSymbol = "minus";
+constexpr double kEps = 1e-9;
 
-// The buttons' state at a zoom step, as screen.h props.
-void zoom_buttons(json::writer& w, int zoom) {
+bool at_widest(const map_view& v) noexcept { return v.span_deg >= k_max_span_deg - kEps; }
+bool at_closest(const map_view& v) noexcept { return v.span_deg <= k_min_span_deg + kEps; }
+
+// The buttons, as screen.h nodes.
+void zoom_buttons(json::writer& w, const map_view& v) {
   w.begin_object().key("type").string("button").key("id").string("zoom_out");
   w.key("label").string("Zoom out");
   if (!kZoomOutSymbol.empty()) w.key("symbol").string(kZoomOutSymbol);
-  w.key("disabled").boolean(zoom <= 0).end_object();
+  w.key("disabled").boolean(at_widest(v)).end_object();
   w.begin_object().key("type").string("button").key("id").string("zoom_in");
   w.key("label").string("Zoom in").key("symbol").string("plus");
-  w.key("disabled").boolean(zoom >= k_zoom_steps - 1).end_object();
+  w.key("disabled").boolean(at_closest(v)).end_object();
+}
+
+// The pin (the photo's point) on the picture, 0..1.
+void pin_of(const section_state& s, double& x, double& y) {
+  map_pixel(s.view, s.lat, s.lon, x, y);
+  x = std::clamp(s.view.width ? x / s.view.width : 0.5, 0.0, 1.0);
+  y = std::clamp(s.view.height ? y / s.view.height : 0.5, 0.0, 1.0);
+}
+
+// The surface node's moving props: the pin, the town names, and how far the
+// chrome may scale the picture live before it must ask for a new one.
+void surface_props(json::writer& w, const section_state& s, const map_image* img) {
+  double px = 0.5, py = 0.5;
+  pin_of(s, px, py);
+  w.key("pin").begin_object().key("x").number(px).key("y").number(py).end_object();
+  w.key("marks").begin_array();
+  if (img) {
+    for (const map_mark& m : img->marks) {
+      w.begin_object().key("x").number(m.x).key("y").number(m.y).key("text").string(m.text).end_object();
+    }
+  }
+  w.end_array();
+  // Scaling the picture by s divides the span by s.
+  const double span = clamp_span(s.view.span_deg);
+  w.key("interactive").begin_object();
+  w.key("min_scale").number(span / k_max_span_deg).key("max_scale").number(span / k_min_span_deg);
+  w.end_object();
 }
 
 std::string trimmed(std::string_view s) {
@@ -55,14 +86,7 @@ std::uint32_t engine::surface_height(float scale) noexcept {
 std::shared_ptr<const map_image> engine::picture(const section_state& s) {
   const geo::database* db = db_();
   if (!db || !s.prefs.show_map) return nullptr;
-  map_view v;
-  v.lat = s.lat;
-  v.lon = s.lon;
-  v.width = surface_width(s.width_pt, s.scale);
-  v.height = surface_height(s.scale);
-  v.scale = std::clamp(s.scale > 0 ? s.scale : 1.0f, 1.0f, 3.0f);
-  v.zoom = s.zoom;
-  return cache_.get(*db, v, palette_for(s.theme), s.place.at_sea ? std::string_view{} : s.place.country_code);
+  return cache_.get(*db, s.view, palette_for(s.theme), s.place.at_sea ? std::string_view{} : s.place.country_code);
 }
 
 section_result engine::section(double lat, double lon, std::string_view location_text, const theme_tokens& theme,
@@ -75,12 +99,20 @@ section_result engine::section(double lat, double lon, std::string_view location
   state.width_pt = width_pt;
   state.scale = scale;
   state.prefs = prefs;
+  state.view.lat = lat;
+  state.view.lon = lon;
+  state.view.width = surface_width(width_pt, scale);
+  state.view.height = surface_height(scale);
+  state.view.scale = std::clamp(scale > 0 ? scale : 1.0f, 1.0f, 3.0f);
+  state.view.span_deg = k_zoom_span_deg[k_region_zoom_step];
   const geo::database* db = db_();
   if (db) {
     state.place = db->lookup(lat, lon, prefs.lookup());
-    state.zoom = framing_zoom(*db, lat, lon, state.place.at_sea ? std::string_view{} : state.place.country_code,
-                              state.place.region_code, surface_width(width_pt, scale), surface_height(scale));
+    const int z = framing_zoom(*db, lat, lon, state.place.at_sea ? std::string_view{} : state.place.country_code,
+                               state.place.region_code, state.view.width, state.view.height);
+    state.view.span_deg = k_zoom_span_deg[std::clamp(z, 0, k_zoom_steps - 1)];
   }
+  state.view = keep_pin_in_view(state.view, lat, lon);
   const std::string& label = state.place.label;
 
   section_result out;
@@ -107,13 +139,13 @@ section_result engine::section(double lat, double lon, std::string_view location
     w.begin_object().key("type").string("surface").key("id").string("map").key("surface").string("map");
     w.key("height").integer(static_cast<std::int64_t>(k_map_height_pt));
     w.key("label").string("Map of " + label);
-    w.key("pin").begin_object().key("x").number(0.5).key("y").number(0.5).end_object();
+    surface_props(w, state, out.map.get());
     w.key("pin_label").string(pin).end_object();
     w.begin_object().key("type").string("stack").key("id").string("zoom").key("axis").string("horizontal");
     w.key("spacing").integer(4).key("align").string("center").key("children").begin_array();
     w.begin_object().key("type").string("text").key("id").string("caption").key("text").string(k_map_caption);
     w.key("style").string("caption").end_object();
-    zoom_buttons(w, state.zoom);
+    zoom_buttons(w, state.view);
     w.end_array().end_object();
   }
   w.end_array().end_object();
@@ -121,20 +153,41 @@ section_result engine::section(double lat, double lon, std::string_view location
   return out;
 }
 
-bool engine::zoom(section_state& state, int delta, std::shared_ptr<const map_image>& map, std::string& diff_json) {
-  const int next = std::clamp(state.zoom + delta, 0, k_zoom_steps - 1);
-  if (next == state.zoom || !state.prefs.show_map) return false;
-  state.zoom = next;
+bool engine::move_to(section_state& state, const map_view& next, std::shared_ptr<const map_image>& map,
+                     std::string& diff_json) {
+  if (!state.prefs.show_map) return false;
+  const map_view& cur = state.view;
+  if (std::fabs(next.span_deg - cur.span_deg) < 1e-9 && std::fabs(next.lat - cur.lat) < 1e-9 &&
+      std::fabs(next.lon - cur.lon) < 1e-9) {
+    return false;
+  }
+  state.view = next;
   map = picture(state);
+  if (!map) return false;
   json::writer w;
   w.begin_array();
+  w.begin_object().key("op").string("set").key("id").string("map").key("props").begin_object();
+  surface_props(w, state, map.get());
+  w.end_object().end_object();
   w.begin_object().key("op").string("set").key("id").string("zoom_out").key("props").begin_object();
-  w.key("disabled").boolean(next <= 0).end_object().end_object();
+  w.key("disabled").boolean(at_widest(state.view)).end_object().end_object();
   w.begin_object().key("op").string("set").key("id").string("zoom_in").key("props").begin_object();
-  w.key("disabled").boolean(next >= k_zoom_steps - 1).end_object().end_object();
+  w.key("disabled").boolean(at_closest(state.view)).end_object().end_object();
   w.end_array();
   diff_json = w.take();
-  return map != nullptr;
+  return true;
+}
+
+bool engine::zoom(section_state& state, int delta, std::shared_ptr<const map_image>& map, std::string& diff_json) {
+  if (delta == 0) return false;
+  // About the picture's centre, as a map app's buttons do.
+  return gesture(state, std::pow(2.0, delta), 0.5, 0.5, 0, 0, map, diff_json);
+}
+
+bool engine::gesture(section_state& state, double scale, double anchor_x, double anchor_y, double pan_x,
+                     double pan_y, std::shared_ptr<const map_image>& map, std::string& diff_json) {
+  const map_view next = apply_gesture(state.view, scale, anchor_x, anchor_y, pan_x, pan_y, state.lat, state.lon);
+  return move_to(state, next, map, diff_json);
 }
 
 // ---- search -------------------------------------------------------------------------

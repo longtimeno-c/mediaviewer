@@ -24,6 +24,8 @@
 #include <string>
 #include <vector>
 
+#include <catch2/catch_approx.hpp>
+
 #include "catch_compat.h"
 
 #include "addons/places/map.h"
@@ -185,19 +187,23 @@ TEST_CASE("places: the map draws land, water and the border at known points", "[
   const map_palette p = palette_for(light_theme());
 
   SECTION("Sintra: land in Portugal, the Atlantic to the west") {
-    map_view v{38.7967, -9.3903, 320, 160, 1.0f, k_zoom_steps - 1};
+    map_view v{38.7967, -9.3903, 320, 160, 1.0f, 1.2};
     const auto img = draw(db, v, p, "PT");
-    CHECK(distance(pixel_of(img, v, 38.7967, -9.3903), p.land_home) <= 2);
+    // Land a few km north of Sintra (clear of the town dots this scale draws).
+    CHECK(distance(pixel_of(img, v, 38.86, -9.38), p.land_home) <= 2);
     CHECK(distance(pixel_of(img, v, 38.80, -9.65), p.water) <= 2);
     // The Tagus estuary, south of Lisbon's waterfront.
     CHECK(distance(pixel_of(img, v, 38.66, -9.30), p.water) <= 2);
   }
 
   SECTION("Elvas and Badajoz: Portugal, the border, then Spain") {
-    map_view v{38.88, -7.07, 320, 160, 1.0f, k_zoom_steps - 1};
+    map_view v{38.88, -7.07, 320, 160, 1.0f, 1.2};
     const auto img = draw(db, v, p, "PT");
-    CHECK(distance(pixel_of(img, v, 38.8800, -7.1630), p.land_home) <= 2);  // Elvas
-    CHECK(distance(pixel_of(img, v, 38.8786, -6.9703), p.land) <= 2);       // Badajoz, Spain
+    // South of each town, clear of its dot.
+    CHECK(distance(pixel_of(img, v, 38.84, -7.16), p.land_home) <= 2);  // Elvas, Portugal
+    CHECK(distance(pixel_of(img, v, 38.83, -6.97), p.land) <= 2);       // Badajoz, Spain
+    // Badajoz's town dot is drawn in the town colour.
+    CHECK(distance(pixel_of(img, v, 38.8786, -6.9703), p.town) <= 40);
     // Somewhere on the row between them, a border pixel.
     double x0 = 0, x1 = 0, y = 0;
     map_pixel(v, 38.88, -7.16, x0, y);
@@ -210,7 +216,7 @@ TEST_CASE("places: the map draws land, water and the border at known points", "[
   }
 
   SECTION("the corners are rounded and transparent, the middle opaque") {
-    map_view v{38.7967, -9.3903, 320, 160, 2.0f, 3};
+    map_view v{38.7967, -9.3903, 320, 160, 2.0f, 4.5};
     const auto img = draw(db, v, p, "PT");
     CHECK(pixel_at(img, v.width, 0, 0).a == 0);
     CHECK(pixel_at(img, v.width, 319, 159).a == 0);
@@ -220,7 +226,7 @@ TEST_CASE("places: the map draws land, water and the border at known points", "[
   }
 
   SECTION("Fiji either side of the antimeridian draws whole") {
-    map_view v{-16.75, 179.8, 320, 160, 1.0f, k_zoom_steps - 1};
+    map_view v{-16.75, 179.8, 320, 160, 1.0f, 1.2};
     const auto img = draw(db, v, p, "FJ");
     CHECK(distance(pixel_of(img, v, -16.55, 179.20), p.land_home) <= 2);   // Vanua Levu, west of 180
     CHECK(distance(pixel_of(img, v, -16.83, -179.98), p.land_home) <= 2);  // Taveuni, east of it
@@ -229,15 +235,15 @@ TEST_CASE("places: the map draws land, water and the border at known points", "[
 
   SECTION("a bad size draws nothing") {
     std::vector<std::uint8_t> out(16);
-    CHECK_FALSE(render_map(db, map_view{0, 0, 0, 0, 1, 0}, p, "", out));
-    CHECK_FALSE(render_map(db, map_view{0, 0, 32, 32, 1, 0}, p, "", out));  // buffer too small
+    CHECK_FALSE(render_map(db, map_view{0, 0, 0, 0, 1, 1.2}, p, "", out));
+    CHECK_FALSE(render_map(db, map_view{0, 0, 32, 32, 1, 1.2}, p, "", out));  // buffer too small
   }
 }
 
 TEST_CASE("places: pictures are cached by point, size, theme and zoom", "[places]") {
   const auto& db = test_db();
   map_cache cache(4);
-  map_view v{38.7967, -9.3903, 300, 160, 1.0f, 4};
+  map_view v{38.7967, -9.3903, 300, 160, 1.0f, 2.25};
   const auto a = cache.get(db, v, palette_for(light_theme()), "PT");
   REQUIRE(a);
   CHECK(cache.misses() == 1);
@@ -252,7 +258,7 @@ TEST_CASE("places: pictures are cached by point, size, theme and zoom", "[places
   CHECK(c->bgra != a->bgra);
 
   // So is a zoom step, and a different size.
-  v.zoom = 3;
+  v.span_deg = 4.5;
   (void)cache.get(db, v, palette_for(light_theme()), "PT");
   v.width = 320;
   (void)cache.get(db, v, palette_for(light_theme()), "PT");
@@ -302,19 +308,21 @@ TEST_CASE("places: the Place section is a label, the coordinates, the map and it
   CHECK(out.map->width == 600);   // width_pt x scale
   CHECK(out.map->height == 320);  // 160 pt x scale
 
-  // Zoom in to the region step, then out to the country step; no further.
-  const int start = st.zoom;
+  // The -/+ buttons: in to town scale, out to country scale, and no further.
   std::shared_ptr<const map_image> map;
   std::string diff;
-  int steps_in = 0;
-  while (eng.zoom(st, +1, map, diff)) ++steps_in;
-  CHECK(st.zoom == k_zoom_steps - 1);
-  CHECK(steps_in == k_zoom_steps - 1 - start);
-  if (steps_in > 0) CHECK(diff.find(R"("id":"zoom_in","props":{"disabled":true})") != std::string::npos);
+  CHECK(kids[2].find("marks"));
+  CHECK(kids[2].find("interactive"));
+  while (eng.zoom(st, +1, map, diff)) {
+  }
+  CHECK(st.view.span_deg == Catch::Approx(k_min_span_deg));
+  CHECK(diff.find(R"("id":"zoom_in","props":{"disabled":true})") != std::string::npos);
+  CHECK(diff.find(R"("marks":[{)") != std::string::npos);  // town names at town scale
   while (eng.zoom(st, -1, map, diff)) {
   }
-  CHECK(st.zoom == 0);
+  CHECK(st.view.span_deg == Catch::Approx(k_max_span_deg));
   CHECK(diff.find(R"("id":"zoom_out","props":{"disabled":true})") != std::string::npos);
+  CHECK(diff.find(R"("marks":[])") != std::string::npos);  // no town dots at country scale
   CHECK_FALSE(eng.zoom(st, -1, map, diff));
 
   // Settings: no town, no map.
@@ -333,6 +341,96 @@ TEST_CASE("places: the Place section is a label, the coordinates, the map and it
   CHECK_FALSE(out.map);
   CHECK(out.tree_json.find("Place names are unavailable") != std::string::npos);
   CHECK(out.tree_json.find("38.79670") != std::string::npos);
+}
+
+TEST_CASE("places: a gesture keeps what was under the cursor under it, and the range clamps", "[places]") {
+  const double lat = 38.7967, lon = -9.3903;  // Sintra: the photo's point and the first centre
+  map_view v{lat, lon, 640, 320, 2.0f, 2.25};
+  const auto under = [](const map_view& view, double nx, double ny) {
+    double a = 0, b = 0;
+    map_point(view, nx * view.width, ny * view.height, a, b);
+    return std::pair{a, b};
+  };
+
+  SECTION("nothing moves for an empty gesture") {
+    const map_view n = apply_gesture(v, 1.0, 0.3, 0.7, 0, 0, lat, lon);
+    CHECK(n.lat == Catch::Approx(v.lat).margin(1e-9));
+    CHECK(n.lon == Catch::Approx(v.lon).margin(1e-9));
+    CHECK(n.span_deg == Catch::Approx(v.span_deg));
+  }
+  SECTION("a pinch or wheel zooms about the cursor") {
+    const auto before = under(v, 0.4, 0.55);
+    const map_view n = apply_gesture(v, 2.0, 0.4, 0.55, 0, 0, lat, lon);
+    CHECK(n.span_deg == Catch::Approx(v.span_deg / 2).epsilon(1e-3));
+    const auto after = under(n, 0.4, 0.55);
+    CHECK(after.first == Catch::Approx(before.first).margin(1e-6));
+    CHECK(after.second == Catch::Approx(before.second).margin(1e-6));
+    // ...and the photo's point lands where the live transform drew the pin.
+    double x = 0, y = 0;
+    map_pixel(n, lat, lon, x, y);
+    CHECK(x / n.width == Catch::Approx(0.4 + (0.5 - 0.4) * 2).margin(1e-4));
+    CHECK(y / n.height == Catch::Approx(0.55 + (0.5 - 0.55) * 2).margin(1e-4));
+  }
+  SECTION("a drag pans, at exactly the pixel scale it showed") {
+    double x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    map_view wide{lat, lon, 640, 320, 2.0f, 36.0};
+    map_pixel(wide, lat, lon - 5, x0, y0);
+    map_pixel(wide, lat, lon + 5, x1, y1);
+    const double px_per_10deg = x1 - x0;
+    const map_view n = apply_gesture(wide, 1.0, 0.5, 0.5, 0.1, 0.3, lat, lon);
+    double x = 0, y = 0;
+    map_pixel(n, lat, lon, x, y);
+    CHECK(x / n.width == Catch::Approx(0.6).margin(1e-4));
+    CHECK(y / n.height == Catch::Approx(0.8).margin(1e-4));
+    map_pixel(n, lat, lon - 5, x0, y0);
+    map_pixel(n, lat, lon + 5, x1, y1);
+    CHECK(x1 - x0 == Catch::Approx(px_per_10deg).epsilon(1e-9));  // no jump in scale when it re-renders
+  }
+  SECTION("the range clamps: town scale at most, country scale at least") {
+    CHECK(apply_gesture(v, 1e6, 0.5, 0.5, 0, 0, lat, lon).span_deg == Catch::Approx(k_min_span_deg));
+    CHECK(apply_gesture(v, 1e-6, 0.5, 0.5, 0, 0, lat, lon).span_deg == Catch::Approx(k_max_span_deg));
+    CHECK(clamp_span(1000) == k_max_span_deg);
+    CHECK(clamp_span(0.0001) == k_min_span_deg);
+    CHECK(clamp_span(std::nan("")) == k_zoom_span_deg[k_region_zoom_step]);
+    // Nonsense from a chrome changes nothing.
+    const map_view bad = apply_gesture(v, -2, std::nan(""), 0.5, 0, 0, lat, lon);
+    CHECK(bad.span_deg == v.span_deg);
+  }
+  SECTION("the pin never leaves the picture") {
+    for (double pan : {2.0, -2.0, 0.49, -0.49}) {
+      const map_view n = apply_gesture(v, 1.0, 0.5, 0.5, pan, pan, lat, lon);
+      double x = 0, y = 0;
+      map_pixel(n, lat, lon, x, y);
+      CHECK(x / n.width >= 0.08 - 1e-6);
+      CHECK(x / n.width <= 0.92 + 1e-6);
+      CHECK(y / n.height >= 0.08 - 1e-6);
+      CHECK(y / n.height <= 0.92 + 1e-6);
+    }
+  }
+}
+
+TEST_CASE("places: town scale shows town dots and names", "[places]") {
+  const auto& db = test_db();
+  std::vector<map_mark> marks;
+  map_view v{38.75, -9.25, 640, 320, 2.0f, 0.6};
+  std::vector<std::uint8_t> out(static_cast<std::size_t>(v.width) * v.height * 4);
+  REQUIRE(render_map(db, v, palette_for(light_theme()), "PT", out, &marks));
+  REQUIRE_FALSE(marks.empty());
+  CHECK(marks.size() <= k_max_marks);
+  bool lisbon = false;
+  for (const auto& m : marks) {
+    CHECK(m.x >= 0);
+    CHECK(m.x <= 1);
+    CHECK(m.y >= 0);
+    CHECK(m.y <= 1);
+    lisbon = lisbon || m.text == "Lisbon";
+  }
+  CHECK(lisbon);
+  CHECK(marks.front().text == "Lisbon");  // most populous first
+  // Country scale: no dots, no names.
+  v.span_deg = 36;
+  REQUIRE(render_map(db, v, palette_for(light_theme()), "PT", out, &marks));
+  CHECK(marks.empty());
 }
 
 TEST_CASE("places: search by place finds the files taken there", "[places]") {
@@ -381,7 +479,7 @@ TEST_CASE("places: map render time at pane width x 160 pt", "[.perf-bench]") {
       const auto pl = db.lookup(w.lat, w.lon);
       for (int z = 0; z < k_zoom_steps; ++z) {
         map_view v{w.lat, w.lon, static_cast<std::uint32_t>(320 * scale), static_cast<std::uint32_t>(160 * scale),
-                   scale, z};
+                   scale, k_zoom_span_deg[z]};
         std::vector<std::uint8_t> out(static_cast<std::size_t>(v.width) * v.height * 4);
         const auto t0 = std::chrono::steady_clock::now();
         REQUIRE(render_map(db, v, p, pl.country_code, out));
@@ -401,7 +499,7 @@ TEST_CASE("places: map render time at pane width x 160 pt", "[.perf-bench]") {
   }
   // A cache hit, for the arrow-back case.
   map_cache cache;
-  map_view v{38.7967, -9.3903, 640, 320, 2.0f, 4};
+  map_view v{38.7967, -9.3903, 640, 320, 2.0f, 2.25};
   (void)cache.get(db, v, p, "PT");
   const auto t0 = std::chrono::steady_clock::now();
   for (int i = 0; i < 1000; ++i) (void)cache.get(db, v, p, "PT");
@@ -430,16 +528,15 @@ TEST_CASE("places: dump the map for a person to look at", "[.places-map-dump]") 
       auto out = eng.section(w.lat, w.lon, "", dark ? dark_theme() : light_theme(), 320, 2, settings{}, st);
       REQUIRE(out.map);
       char name[128];
-      std::snprintf(name, sizeof name, "%s-%s-open%d.bmp", w.name, dark ? "dark" : "light", st.zoom);
+      std::snprintf(name, sizeof name, "%s-%s-open%05.2f.bmp", w.name, dark ? "dark" : "light", st.view.span_deg);
       write_bmp(std::filesystem::path(dir) / name, *out.map);
       std::shared_ptr<const map_image> map;
       std::string diff;
       while (eng.zoom(st, -1, map, diff)) {
       }
       for (;;) {
-        std::snprintf(name, sizeof name, "%s-%s-z%d.bmp", w.name, dark ? "dark" : "light", st.zoom);
-        const auto img = eng.cache().get(db, map_view{w.lat, w.lon, 640, 320, 2.0f, st.zoom},
-                                         palette_for(dark ? dark_theme() : light_theme()),
+        std::snprintf(name, sizeof name, "%s-%s-z%05.2f.bmp", w.name, dark ? "dark" : "light", 40 - st.view.span_deg);
+        const auto img = eng.cache().get(db, st.view, palette_for(dark ? dark_theme() : light_theme()),
                                          st.place.at_sea ? "" : st.place.country_code);
         write_bmp(std::filesystem::path(dir) / name, *img);
         if (!eng.zoom(st, +1, map, diff)) break;

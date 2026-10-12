@@ -51,7 +51,7 @@ struct section_state {
   float scale = 1;
   settings prefs;
   geo::place place;           // label "" when the place database is missing
-  int zoom = 0;               // the step the map is at now
+  map_view view;              // what the map shows now: centre and span (the pin is at lat/lon)
 };
 
 struct section_result {
@@ -70,9 +70,15 @@ class engine {
                                        const theme_tokens& theme, float width_pt, float scale,
                                        const settings& prefs, section_state& state);
 
-  // One zoom step in (+1) or out (-1). Returns false at the end of the range
-  // (nothing changes). `diff_json` updates the buttons' enabled state.
+  // One zoom step in (+1) or out (-1) about the picture's centre: the -/+
+  // buttons and the keyboard. Returns false at the end of the range (nothing
+  // changes). `diff_json` moves the pin, the town names and the buttons.
   bool zoom(section_state& state, int delta, std::shared_ptr<const map_image>& map, std::string& diff_json);
+
+  // A settled chrome gesture on the map (pinch, wheel, drag, double-click):
+  // see apply_gesture. Returns false when the view does not change.
+  bool gesture(section_state& state, double scale, double anchor_x, double anchor_y, double pan_x, double pan_y,
+               std::shared_ptr<const map_image>& map, std::string& diff_json);
 
   // The surface's pixel size for a pane width and backing scale.
   [[nodiscard]] static std::uint32_t surface_width(float width_pt, float scale) noexcept;
@@ -83,6 +89,9 @@ class engine {
 
  private:
   [[nodiscard]] std::shared_ptr<const map_image> picture(const section_state& s);
+  // Moves to `next` and describes the change for the chrome.
+  bool move_to(section_state& state, const map_view& next, std::shared_ptr<const map_image>& map,
+               std::string& diff_json);
 
   std::function<const geo::database*()> db_;
   map_cache cache_;

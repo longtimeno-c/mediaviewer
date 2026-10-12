@@ -44,6 +44,13 @@ constexpr uint32_t kHostApiMin = 3;
 constexpr uint32_t kHostApiMax = 3;
 // Search rows go out in batches so a long folder shows results as it reads.
 constexpr uint32_t kSearchBatch = 128;
+// A settled zoom / pan gesture on a surface (docs/design/25; the host's
+// generic surface event). Named by the header once it carries it.
+#if defined(MV_SLOT_EVENT_SURFACE)
+constexpr uint32_t kSurfaceEvent = MV_SLOT_EVENT_SURFACE;
+#else
+constexpr uint32_t kSurfaceEvent = 10;
+#endif
 
 struct addon_state {
   const mv_host_api* host = nullptr;
@@ -154,17 +161,38 @@ mv_status MV_CALL info_section(void*, const mv_slot_info_request* r) {
   });
 }
 
+double num(const mv::json::value* v, double fallback) {
+  if (!v || v->k != mv::json::kind::number) return fallback;
+  return v->is_integer ? static_cast<double>(v->i) : v->d;
+}
+
 void MV_CALL on_event(void*, const mv_slot_event* e) {
   (void)guard([&] {
-    if (!e || e->kind != MV_SLOT_EVENT_CLICK || !e->node_id || !e->screen_id) return MV_OK;
+    if (!e || !e->node_id || !e->screen_id) return MV_OK;
     const std::string node = e->node_id;
-    const int delta = node == "zoom_in" ? 1 : node == "zoom_out" ? -1 : 0;
-    if (delta == 0) return MV_OK;
     std::lock_guard lock(g->section_m);
     if (g->section_id != e->screen_id || g->section_generation != e->generation) return MV_OK;
     std::shared_ptr<const mv::places::map_image> map;
     std::string diff;
-    if (!g->eng->zoom(g->section, delta, map, diff)) return MV_OK;
+    if (e->kind == MV_SLOT_EVENT_CLICK) {
+      // The -/+ buttons (and the keyboard, which presses them).
+      const int delta = node == "zoom_in" ? 1 : node == "zoom_out" ? -1 : 0;
+      if (delta == 0 || !g->eng->zoom(g->section, delta, map, diff)) return MV_OK;
+    } else if (e->kind == kSurfaceEvent && node == "map") {
+      // A settled pinch, wheel, drag or double-click over the map. The chrome
+      // showed it live by scaling the last picture; this draws the new one.
+      const auto v = mv::json::parse(e->value_json ? e->value_json : "");
+      if (!v || v->k != mv::json::kind::object) return MV_OK;
+      const mv::json::value* anchor = v->find("anchor");
+      const mv::json::value* pan = v->find("pan");
+      if (!g->eng->gesture(g->section, num(v->find("scale"), 1.0), num(anchor ? anchor->find("x") : nullptr, 0.5),
+                           num(anchor ? anchor->find("y") : nullptr, 0.5), num(pan ? pan->find("x") : nullptr, 0),
+                           num(pan ? pan->find("y") : nullptr, 0), map, diff)) {
+        return MV_OK;
+      }
+    } else {
+      return MV_OK;
+    }
     // Pixels first, then the diff: the chrome re-reads the surface when the
     // tree's revision moves.
     post_map(e->screen_id, e->generation, *map);

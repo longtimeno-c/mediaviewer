@@ -126,6 +126,15 @@ class database {
   // The ISO code ("PT") of the country that owns a polygon (a region's country).
   [[nodiscard]] std::string_view polygon_country_code(layer l, std::uint32_t polygon) const noexcept;
 
+  // Towns inside `b`, most populous first, at most `limit` (the map's town
+  // dots and names at town zoom, 2026-10-12). Names point into the database.
+  struct town_ref {
+    double lat = 0, lon = 0;
+    std::uint32_t population = 0;
+    std::string_view name;
+  };
+  [[nodiscard]] std::vector<town_ref> towns_in(const box& b, std::size_t limit) const;
+
   // Counts, for tests and the About line.
   [[nodiscard]] std::size_t country_count() const noexcept { return countries_.size(); }
   [[nodiscard]] std::size_t region_count() const noexcept { return regions_.size(); }
