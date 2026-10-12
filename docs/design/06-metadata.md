@@ -176,8 +176,9 @@ mark.** The text is decided once in `shell/ai_badge.h`, shared by both hosts.
   read from the file counts against one budget (a largest C2PA box plus 1 MB). A file that would
   need more is "unknown": no badge, never a longer read. An XMP sidecar is not read: sidecars are
   the full read's, and MediaViewer writes only ratings and edits there. The full read merges the
-  probe's evidence for the fields its own readers miss (a clip's XMP), so the pane and the badge
-  always agree; tests hold the two to each other fixture by fixture (`[probe]`), and
+  probe's evidence for the fields its own readers miss (a clip's XMP; PNG text or a C2PA store
+  past its 8 MB prefix — C2PA only when the prefix held no store, so a store is never parsed
+  twice), so the pane and the badge always agree; tests hold the two to each other fixture by fixture (`[probe]`), and
   `fuzz_meta_probe` fuzzes the whole walk. Cost (`mv_tests "[.perf-meta]"`, warm, median): 38 µs
   for a 6 MP camera JPEG against 15 ms for the full read, 49 µs for a 60 s 1080p MOV (moov at the
   end) against 12 ms, 32–93 µs for DNG / NEF / ARW, 307 µs for a CR3, 54 µs for a HEIC. Answers are

@@ -79,11 +79,36 @@ void read_beyond(std::string_view utf8_path, std::span<const std::uint8_t> prefi
   // here (a clip's XMP, a HEIF item Exiv2 skipped), so the pane and the badge
   // always reach the same answer. Fields the readers above filled win.
   {
-    // Capped like the badge's probe, and without the C2PA stores read above.
+    // Capped like the badge's probe. C2PA is left out when the readers above
+    // already found a store (no second parse); it is read when they found none
+    // and the prefix stopped short of the file, where the store may lie past it.
+    const bool truncated = out.s.file_size != 0 && prefix.size() < out.s.file_size;
+    const bool have_c2pa = !ev.c2pa_generator.empty() || !ev.c2pa_agents.empty() || !ev.c2pa_signer.empty();
+    const bool want_c2pa = truncated && !have_c2pa;
     parse::evidence probed;
-    probe_evidence(utf8_path, probed, false);
+    probe_evidence(utf8_path, probed, want_c2pa);
     if (ev.exif_software.empty()) ev.exif_software = probed.exif_software;
     if (ev.xmp_creator_tool.empty()) ev.xmp_creator_tool = probed.xmp_creator_tool;
+    // PNG text past the prefix (a `parameters` chunk after the image data).
+    ev.png_parameters = ev.png_parameters || probed.png_parameters;
+    ev.png_comfyui = ev.png_comfyui || probed.png_comfyui;
+    if (ev.png_software.empty()) ev.png_software = probed.png_software;
+    if (ev.png_generator_text.empty()) ev.png_generator_text = probed.png_generator_text;
+    if (want_c2pa) {
+      // A store only the probe reached: its claim, agents, signer and source
+      // types (all but XMP's own term, which is handled below).
+      ev.c2pa_generator = probed.c2pa_generator;
+      ev.c2pa_agents = probed.c2pa_agents;
+      ev.c2pa_signer = probed.c2pa_signer;
+      bool xmp_skipped = probed.xmp_source_type.empty();
+      for (const std::string& t : probed.source_types) {
+        if (!xmp_skipped && t == probed.xmp_source_type) {
+          xmp_skipped = true;
+          continue;
+        }
+        ev.source_types.push_back(t);
+      }
+    }
     if (ev.xmp_source_type.empty() && !probed.xmp_source_type.empty()) {
       // No XMP was read above, so this is XMP's own occurrence even when C2PA
       // wrote the same term: always added, or derive_provenance would take the

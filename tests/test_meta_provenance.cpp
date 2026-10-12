@@ -1281,3 +1281,27 @@ TEST_CASE("write the provenance probe fuzz seeds", "[.write-seeds]") {
   append(cr3, box("moov", moov));
   put("cmt1.cr3", cr3);
 }
+
+TEST_CASE("provenance past the full read's 8 MB prefix: the full read agrees with the probe",
+          "[meta][provenance][probe]") {
+  // PNG: 9 MB of IDAT, then the Stable Diffusion `parameters` chunk.
+  {
+    bytes png = small_png();
+    bytes tail = png_chunk("IDAT", bytes(9u << 20, 0));
+    append(tail, text_chunk("parameters", "a fox\nSteps: 20, Version: v1.10.1"));
+    png.insert(png.end() - 12, tail.begin(), tail.end());  // before IEND
+    const auto p = same_answer("p_big.png", png);
+    CHECK(p.ai_generated);
+    CHECK(p.made_with == "Stable Diffusion");
+  }
+  // JPEG: 9 MB of APP2 segments before the APP11 C2PA store.
+  {
+    std::vector<bytes> segs;
+    for (int i = 0; i < 145; ++i) segs.push_back(segment(0xE2, bytes(65000, 0x20)));
+    for (auto& s : app11(c2pa_store("ChatGPT", kTrained, "GPT-4o"), 4000)) segs.push_back(s);
+    const auto p = same_answer("p_big.jpg", jpeg_with_segments(grey_jpeg(), segs));
+    CHECK(p.ai_generated);
+    CHECK(p.made_with == "ChatGPT");
+    CHECK(p.evidence == "Content Credentials (C2PA): AI-generated (trainedAlgorithmicMedia)");
+  }
+}
