@@ -150,7 +150,6 @@ final class FolderStore: ObservableObject {
   private(set) var listingGeneration: UInt64 = .max
   private var marksGeneration: UInt64 = .max
   private var thumbGeneration: UInt64 = .max
-  private var pollTimer: Timer?
 
   private static let decodeQueue = DispatchQueue(
     label: "mediaviewer.thumb-decode", qos: .userInitiated, attributes: .concurrent)
@@ -160,14 +159,13 @@ final class FolderStore: ObservableObject {
     // thread (mv_chrome_bridge.h's contract).
     mv_chrome_set_thumb_ready_callback(thumbReadyTrampoline)
     mv_chrome_set_folder_summary_callback(folderSummaryTrampoline)
-    // itemCount/currentIndex are plain integer reads (mv_chrome_bridge.h) --
-    // the same 0.15 s cadence MvLabApp's own -refreshFolderIfChanged uses.
-    pollTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in
-      // scheduledTimer fires on the run loop it was scheduled from (main,
-      // since init runs on the main actor).
-      MainActor.assumeIsolated { self?.poll() }
+    // itemCount/currentIndex are plain integer reads (mv_chrome_bridge.h). The
+    // listing, cursor and marks all move on the main thread, so this polls
+    // when the main run loop has run (issue #178, ChromePulse), not on a timer.
+    ChromePulse.shared.add { [weak self] in
+      self?.poll()
+      return false
     }
-    poll()
   }
 
   private func poll() {
@@ -176,10 +174,20 @@ final class FolderStore: ObservableObject {
     let generation = mv_chrome_listing_generation()
 
     let listingChanged = generation != listingGeneration || count != names.count
+    var listing: Listing?
     if listingChanged {
       listingGeneration = generation
       reloadListTitle()
-      reloadNames(count: count)
+      let fresh = readListing()
+      listing = fresh
+      clips = fresh.clips
+      let listed = fresh.names.count
+      if itemIndices.count != listed { itemIndices = Array(0..<listed) }
+      // Highlights past the end belong to cells that are gone.
+      if highlights.keys.contains(where: { $0 >= listed }) {
+        highlights = highlights.filter { $0.key < listed }
+      }
+      names = fresh.names
       reloadFolders()
       // File search closes on another folder and re-filters new names.
       FileSearchStore.shared.listingChanged(self)
@@ -187,16 +195,15 @@ final class FolderStore: ObservableObject {
     let thumbs = mv_chrome_thumb_generation()
     if listingChanged || thumbs != thumbGeneration {
       thumbGeneration = thumbs
-      reloadThumbKeys(count: count)
+      reloadThumbKeys((listing ?? readListing()).keys)
     }
     let cursor = Int(mv_chrome_folder_cursor())
     if cursor != folderCursor { folderCursor = cursor }
-    var queryBuf = [CChar](repeating: 0, count: 512)
-    let querying = queryBuf.withUnsafeMutableBufferPointer { ptr -> Bool in
-      guard let base = ptr.baseAddress else { return false }
-      return mv_chrome_folder_query(base, Int32(ptr.count))
+    // On the stack: this runs on every pass of the main run loop.
+    let query: String? = withUnsafeTemporaryAllocation(of: CChar.self, capacity: 512) { ptr in
+      guard let base = ptr.baseAddress, mv_chrome_folder_query(base, Int32(ptr.count)) else { return nil }
+      return String(cString: base)
     }
-    let query: String? = querying ? String(cString: queryBuf) : nil
     if query != folderQuery { folderQuery = query }
     let marks = mv_chrome_marks_generation()
     if listingChanged || marks != marksGeneration {
@@ -236,8 +243,7 @@ final class FolderStore: ObservableObject {
   /// thumbnail it already has, while another folder, a result list or a file
   /// rewritten in place gets fresh slots. Thumbnails of keys no longer listed
   /// are dropped, along with their pending requests.
-  private func reloadThumbKeys(count: Int) {
-    let fresh = (0..<count).map { i in Self.bridgeString { mv_chrome_item_thumb_key(Int32(i), $0, $1) } }
+  private func reloadThumbKeys(_ fresh: [String]) {
     if fresh != thumbKeys { thumbKeys = fresh }
     let keep = Set(fresh)
     slots = slots.filter { keep.contains($0.key) }
@@ -255,24 +261,45 @@ final class FolderStore: ObservableObject {
 
   func closeList() { mv_chrome_close_list() }
 
-  private func reloadNames(count: Int) {
-    var fresh: [String] = []
-    fresh.reserveCapacity(count)
-    var buf = [CChar](repeating: 0, count: 1024)
-    for i in 0..<count {
-      let ok = buf.withUnsafeMutableBufferPointer { ptr -> Bool in
-        guard let base = ptr.baseAddress else { return false }
-        return mv_chrome_item_name(Int32(i), base, Int32(ptr.count))
+  private struct Listing {
+    var names: [String] = []
+    var clips: [Bool] = []
+    var keys: [String] = []
+  }
+
+  // Kept across relists: it only grows to the largest listing seen.
+  private var listingBuffer = [UInt8](repeating: 0, count: 64 * 1024)
+
+  /// Issue #226: names, clip flags and thumbnail keys of the whole listing in
+  /// one bridge call (mv_chrome_listing) into a reused buffer, rather than
+  /// three calls and a buffer per item.
+  private func readListing() -> Listing {
+    var need = 0
+    for _ in 0..<2 {
+      need = Int(listingBuffer.withUnsafeMutableBytes { raw in
+        mv_chrome_listing(raw.baseAddress?.assumingMemoryBound(to: CChar.self), Int32(raw.count))
+      })
+      if need < listingBuffer.count { break }
+      listingBuffer = [UInt8](repeating: 0, count: need + need / 4 + 4096)
+    }
+    var listing = Listing()
+    guard need > 0, need < listingBuffer.count else { return listing }
+    listingBuffer.withUnsafeBufferPointer { all in
+      var fields: [String] = []
+      fields.reserveCapacity(3)
+      var start = 0
+      for i in 0..<need where all[i] == 0 {
+        fields.append(String(decoding: UnsafeBufferPointer(rebasing: all[start..<i]), as: UTF8.self))
+        start = i + 1
+        if fields.count == 3 {
+          listing.names.append(fields[0])
+          listing.clips.append(fields[1] == "1")
+          listing.keys.append(fields[2])
+          fields.removeAll(keepingCapacity: true)
+        }
       }
-      fresh.append(ok ? String(cString: buf) : "")
     }
-    clips = (0..<count).map { mv_chrome_item_is_video(Int32($0)) }
-    if itemIndices.count != count { itemIndices = Array(0..<count) }
-    // Highlights past the end belong to cells that are gone.
-    if highlights.keys.contains(where: { $0 >= count }) {
-      highlights = highlights.filter { $0.key < count }
-    }
-    names = fresh
+    return listing
   }
 
   private static func string(_ fill: (UnsafeMutablePointer<CChar>, Int32) -> Bool) -> String? {

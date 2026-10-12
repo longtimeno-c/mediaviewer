@@ -12,23 +12,28 @@ namespace {
 
 std::array<char, kSlotCount * kSlotBytes> g_slots{};
 std::uint64_t g_last_call = 0;
+std::array<std::atomic<bool>, kSlotCount> g_claimed{};
 std::atomic<std::size_t> g_next_slot{0};
 
-thread_local std::size_t t_slot = static_cast<std::size_t>(-1);
+thread_local std::size_t t_slot = kSlotCount;  // kSlotCount = none held
 thread_local std::uint64_t t_correlation = 0;
 thread_local decode_info t_info{};
 
-std::size_t my_slot() noexcept {
-  if (t_slot == static_cast<std::size_t>(-1)) {
-    t_slot = g_next_slot.fetch_add(1, std::memory_order_relaxed) % kSlotCount;
+// First free slot from a rotating start, so one slot is not always the hot one.
+std::size_t claim_slot() noexcept {
+  const std::size_t start = g_next_slot.fetch_add(1, std::memory_order_relaxed);
+  for (std::size_t i = 0; i < kSlotCount; ++i) {
+    const std::size_t slot = (start + i) % kSlotCount;
+    if (!g_claimed[slot].exchange(true, std::memory_order_acquire)) return slot;
   }
-  return t_slot;
+  return kSlotCount;
 }
 
 char* slot_ptr(std::size_t i) noexcept { return g_slots.data() + i * kSlotBytes; }
 
 void write_slot(std::uint32_t w, std::uint32_t h, std::uint32_t bits) noexcept {
-  char* s = slot_ptr(my_slot());
+  if (t_slot >= kSlotCount) return;
+  char* s = slot_ptr(t_slot);
   char tmp[kSlotBytes]{};
   // Whitelisted fields only (docs/design/13). Literals and integers.
   if (w != 0 || h != 0) {
@@ -48,15 +53,21 @@ void write_slot(std::uint32_t w, std::uint32_t h, std::uint32_t bits) noexcept {
 std::size_t begin_decode(const decode_info& info) noexcept {
   t_info = info;
   if (t_info.correlation_id == 0) t_info.correlation_id = t_correlation;
+  if (t_slot >= kSlotCount) t_slot = claim_slot();
   write_slot(0, 0, 0);
-  return my_slot();
+  return t_slot;
 }
 
 void note_geometry(std::uint32_t width, std::uint32_t height, std::uint32_t bit_depth) noexcept {
   write_slot(width, height, bit_depth);
 }
 
-void end_decode() noexcept { std::memset(slot_ptr(my_slot()), 0, kSlotBytes); }
+void end_decode() noexcept {
+  if (t_slot >= kSlotCount) return;
+  std::memset(slot_ptr(t_slot), 0, kSlotBytes);
+  g_claimed[t_slot].store(false, std::memory_order_release);
+  t_slot = kSlotCount;
+}
 
 void note_call(std::uint64_t correlation_id) noexcept { g_last_call = correlation_id; }
 
@@ -70,6 +81,6 @@ std::span<char, kSlotCount * kSlotBytes> slots() noexcept {
 }
 const std::uint64_t* last_call_address() noexcept { return &g_last_call; }
 
-const char* this_thread_slot() noexcept { return slot_ptr(my_slot()); }
+const char* this_thread_slot() noexcept { return t_slot < kSlotCount ? slot_ptr(t_slot) : ""; }
 
 }  // namespace mv::crash_context

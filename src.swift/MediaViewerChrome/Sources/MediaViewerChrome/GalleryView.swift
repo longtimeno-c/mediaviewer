@@ -55,7 +55,7 @@ struct GalleryView: View {
         }
         if (mixed || foldersOnly), let query = store.folderQuery {
           Text(query.isEmpty ? "Find folder" : "Find folder: \(query)")
-            .font(.callout.weight(.medium))
+            .font(MVTheme.font(14))
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, inset)
             .padding(.top, 8)
@@ -215,7 +215,7 @@ private struct FolderTile: View {
         .overlay(alignment: .bottomLeading) {
           if card.loaded {
             Text(card.status)
-              .font(.caption2.weight(.medium))
+              .font(MVTheme.font(11))
               .padding(.horizontal, 6)
               .padding(.vertical, 2)
               .background(.ultraThinMaterial, in: Capsule())
@@ -227,9 +227,9 @@ private struct FolderTile: View {
             .strokeBorder(isCursor ? MVTheme.accent : .clear, lineWidth: 2)
         )
       HStack(spacing: 4) {
-        Image(systemName: "folder").font(.caption).foregroundStyle(.secondary)
+        Image(systemName: "folder").font(MVTheme.font(12)).foregroundStyle(.secondary)
         Text(FolderStore.shared.folderName(path))
-          .font(.caption)
+          .font(MVTheme.font(12))
           .lineLimit(1)
           .truncationMode(.middle)
       }
@@ -261,11 +261,11 @@ private struct FolderChip: View {
         .clipShape(RoundedRectangle(cornerRadius: 4))
       VStack(alignment: .leading, spacing: 1) {
         Text(FolderStore.shared.folderName(path))
-          .font(.caption)
+          .font(MVTheme.font(12))
           .lineLimit(1)
         if card.loaded {
           Text(card.status)
-            .font(.caption2)
+            .font(MVTheme.font(11))
             .foregroundStyle(.secondary)
             .lineLimit(1)
         }
@@ -342,7 +342,7 @@ private struct GalleryCell: View {
         .overlay { if isClip { PlayBadge(diameter: 40) } }
         .overlay(alignment: .topTrailing) { if isMarked { MarkBadge() } }
       Text(name)
-        .font(.caption)
+        .font(MVTheme.font(12))
         .lineLimit(1)
         .truncationMode(.middle)
         .frame(width: size)
