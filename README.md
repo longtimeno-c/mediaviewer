@@ -221,6 +221,7 @@ The optional **Import** add-on copies a card or folder into your library.
 - **Anyone can make an add-on.** One `.mvaddon` file, signed by the person who made it. Drop it on MediaViewer, or use
   **Settings → Add-ons → From others** to install from a file or a link.
 - **Themes first.** Colours and a typeface for MediaViewer's bars, panes and text. A theme dresses the app and never touches your photos' colour.
+- **Commands from a script.** An add-on can bring its own keyboard commands, written in Lua and run in a sandbox on a thread of its own, so a slow or broken one is stopped and the viewer carries on. It reaches only what it asked for when you installed it.
 - **Safe to try.** You see who signed it and what it is before it installs, only its original publisher can update it, and an add-on never gets network access.
 - **Make your own in five minutes** with a single-file Python tool and a guide: [docs/ADDONS.md](docs/ADDONS.md). Your add-on is yours to licence however you like.
 

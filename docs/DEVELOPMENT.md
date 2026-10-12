@@ -29,6 +29,7 @@ and a verify line on each platform (D9, amended). The order is:
 | 49 | **Fast network copies**: F8 and Import to or from a share keep several requests and files in flight, still verified; `copybench` measures it ([docs/design/24-transfer.md](design/24-transfer.md)) | Engine and Mac F8 built; `mv_import_tests "[io]"` passes, TSan-clean; Windows half compiled by CI only; the 10 GbE share run and the present-loop gates owed |
 | 50 | **Transfer**: a general copier (copy/move any files and folders, verified, resumable) and an SMB link check | Planned |
 | 55 | **Open add-ons**: add-ons anyone can make, one `.mvaddon` file signed by its publisher, installed from a file or a link with a sheet that says what it is; themes as the first thing one can contribute; the author's tool and guide ([docs/design/25-open-addons.md](design/25-open-addons.md), [ADDONS.md](ADDONS.md)); ABI 0.17 | Shared core and SDK tested on the Mac (ASan / UBSan) and cross-checked against each other; both halves run in the app (Mac: `MV_ADDON_SELFTEST`; Windows: by hand, 2026-10-03), launch and pacing measured against the base on both; install from a link, `.mvaddon` double-click on a rebuilt installer, VoiceOver / Narrator and the idle clause of both gates (which fails on the base too) owed. PRs 56–60 are planned; the owner's calls for 57–60 were made 2026-10-03 (docs/design/25 §17) |
+| 57 | **Add-on scripts**: other makers' add-ons run Lua 5.4 (vendored, static) in a sandbox per add-on on its own worker, with commands on keys, permissions in the consent sheet (`folder.read`, `thumbnails`, `selection`; no network) and limits (64 MB, 100 M instructions and 1 s per task, a watchdog) that stop the add-on and say why in Settings ([docs/design/25-open-addons.md](design/25-open-addons.md#implementation-notes-pr-57-2026-10-11), [ADDONS.md](ADDONS.md#scripts)); ABI 0.21 | Mac: built, `mv_script_tests` and the SDK cross-check pass, the key walk runs in the app (`MV_SCRIPT_SELFTEST`), the fuzz harness ran ~15 min clean, Mac PR 1 gate and launch timings measured with a script spinning / installed. Windows: compiled in CI only (shell, ABI, chrome); the Windows key walk, the Windows gate with a script spinning and Narrator / VoiceOver on the new Settings lines owed |
 | 56 | **Import described by its manifest** (the first half of [docs/design/25](design/25-open-addons.md)'s declarative contributions): its commands, keys, Settings line and card hint come from `manifest.json`; both chromes drive it through one generic run-command call; an older installed Import keeps working through the built-in rows; ABI 0.18 | Mac: shell and manifest suites, the packer cross-check, the full suite and the rig pass; a signed Import with the new manifest has not been loaded in the app. Windows: both C# projects compile; the native side is CI's |
 
 See [docs/design/10-roadmap.md](design/10-roadmap.md). Old Mac numbers in the history below map as
@@ -880,6 +881,11 @@ build/bin/mv_import_tests "[.perf-bench]"
 ctest --test-dir build -C Release -R addon_sdk --output-on-failure
 python tools/addon-sdk/test_mvaddon.py        # the tool alone, no build needed
 
+# docs/design/25 PR 57, the script sandbox: escapes, limits, permissions absent
+# from the environment, script manifests and packages, the host's set of
+# script add-ons (also in cmake/portable)
+ctest --test-dir build -C Release -R script_ --output-on-failure
+
 # ...and the same engine headless on Linux or any POSIX machine (the
 # portable-core CI job in tools/portable/ci-portable-core.patch; SQLite, libsodium, BLAKE3 and Catch2 from vcpkg via
 # tools/portable/vcpkg.json, or the system). With FFmpeg, libspng and libjpeg
@@ -913,10 +919,17 @@ $env:MV_BROKEN_DUMP = "broken-dump" # write each failing input here
 # seeds are synthetic and committed; regenerate with (needs Pillow, pillow-heif):
 python tools\testmedia\make-seeds.py
 
-# libFuzzer harnesses, one per decoder entry point (clang-cl + ASan)
+# libFuzzer harnesses, one per decoder entry point (clang-cl + ASan), and
+# fuzz_script: arbitrary text as an add-on script under tight limits (PR 57;
+# non-gating in CI until its first runs there, seeds in tests/data/seeds/script)
 cmake -S . -B build-fuzz -A x64 -T ClangCL -DMV_FUZZ=ON -DMV_BUILD_TESTS=OFF
 cmake --build build-fuzz --config Release --target mv_fuzzers
 .\tools\fuzz\run.ps1 -BuildDir build-fuzz -Seconds 60      # -Harness png,gif to pick
+# On a Mac, Homebrew's LLVM has libFuzzer (Apple clang does not): build
+# tools/fuzz/fuzz_script.cpp, third_party/lua/src/*.c (as C++),
+# src/addon/script_runtime.cpp, script_thread_posix.cpp, open_manifest.cpp and
+# manifest.cpp with -fsanitize=fuzzer-no-link,address,undefined, then link with
+# -fsanitize=fuzzer,address,undefined, libsodium.a and build/libmv_io.a.
 
 # PR 7 clean-VM gate: a HEIC decodes with MV_OS_CODEC=0, and the process has
 # loaded libheif + libde265 and NO Media Foundation, WIC codec extension, or
@@ -1013,6 +1026,40 @@ a substitute for one: PR 49's verify line wants a real 10 GbE share). The fixtur
 incompressible, so a share that compresses on the wire shows no flattering number. On
 Windows the reference is `robocopy <src> <dst> /E /MT:16 /J`; on the Mac,
 `ditto <src> <dst>`. Delete the fixtures from the share afterwards.
+### Script add-ons self-test (PR 57, macOS)
+
+`MV_SCRIPT_SELFTEST=<folder>` presses an add-on's keys as a person would (key events through the
+app's own queue: router, command table, runtime) and photographs the result. Put two add-ons in
+`<folder>/store` first: the example Folder Count (Count files, `⌘⇧K`, with `folder.read`) and a
+spinner whose Spin command (`⌘⇧J`) never returns:
+
+```bash
+python3 tools/addon-sdk/mvaddon.py pack examples/addons/folder-count --key /tmp/mv-addon.key --out /tmp/mv-script
+```
+
+```bash
+build/bin/mv_addon_verify --open /tmp/mv-script/example.folder-count-1.0.0.mvaddon /tmp/mv-script/rig/store
+```
+
+Pack and install the spinner the same way (`"scripts": ["main.lua"]`, `function spin() while
+true do end end`, a command `spin` on `Ctrl+Shift+J`), then:
+
+```bash
+MV_SCRIPT_SELFTEST=/tmp/mv-script/rig caffeinate -d -i build/bin/MediaViewer tools/testmedia/raw
+```
+
+`rig/state.txt` gets the notice Count files showed ("Folder Count: 4 files in this folder"), the
+scripts' state after Spin (stopped, "ran for more than 100 million steps"), and `s0` … `s3` PNGs,
+the last of Settings → From others. Two more variables serve the measurements and are inert
+unless set (both hosts): `MV_SCRIPT_STORE=<folder>` reads open add-ons from that folder instead
+of the profile's, and `MV_SCRIPT_SPIN=<addon>/<command>` keeps that command running back to back
+(for the present-loop gate with a script busy; a command that stays inside the limits, such as a
+half-second loop, keeps the add-on's worker at one core without stopping it):
+
+```bash
+MV_SCRIPT_STORE=/tmp/mv-script/rig/store MV_SCRIPT_SPIN=rig.spinner/burn caffeinate -d -i build/bin/frametime --seconds 60 --lab build/bin/mediaviewer_lab
+```
+
 ### Open add-ons self-test (PR 55, macOS)
 
 The Mac app can walk the whole add-on flow by itself and photograph each step: the sheet for a
@@ -1752,7 +1799,10 @@ src/canvas      pan/zoom springs, fit / fill / 100 %, sticky zoom
 src/gfx         D3D11 device, flip-model swapchain, frame pacer, blit
 src/addon       the add-on host: MediaViewer's own add-ons (signed manifests, store,
                 loader, host function table) and open add-ons from other makers
-                (package reader, manifest schema 2, publisher keys, themes; docs/design/25)
+                (package reader, manifest schema 2, publisher keys, themes; the Lua
+                script sandbox, its limits and commands, script_*; docs/design/25)
+third_party/lua Lua 5.4.8, vendored, static (MIT); without io/os/package/debug
+                (third_party/lua/VENDOR.txt)
 src/abi         the flat C ABI — the top of the native graph; animation session
 src/shell       Win32 window, render thread, present lab, hostfxr island host,
                 key router and live command table, marks, slideshow, file jobs,

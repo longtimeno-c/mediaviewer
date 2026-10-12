@@ -272,6 +272,8 @@ Import was the first add-on, and its mechanism is the one every add-on uses: the
   (`--require-pinned-key`; Mac via `macpack.py addon`, Developer ID + notarization), and
   `publish` refuses a stable release without it (`MV_RELEASE_ADDONS=1`).
 
+**Other makers' code (PR 57, 2026-10-11)** never sees the host function table. A script add-on runs in the Lua sandbox of [25 §9](25-open-addons.md#9-code-how-a-strangers-add-on-runs) and reaches the viewer only through the `mv.*` calls its permissions put in its environment; `MV_ADDON_HOST_API` is unchanged by it. Scripts run in every window's process (they never write the store), so their keys answer in every window.
+
 ### One host process
 
 Each window is its own process (`Ctrl+N`, [16](16-commands.md) "Window"). The add-ons —

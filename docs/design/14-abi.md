@@ -494,6 +494,23 @@ Windows shell turns into live command rows ([25 §7](25-open-addons.md#7-the-con
 `mv_addon_installed_json` and `mv_addon_check_manifest` gain `description`, `hint_on` and
 `hint_text`. The Mac host reads the same manifests directly.
 
+## PR 57 — script add-ons (ABI 0.21)
+
+Minor bump, additive, in `mediaviewer_addon.h` ([25 §9](25-open-addons.md#9-code-how-a-strangers-add-on-runs)):
+`mv_script_set_listener`, `mv_script_reload(session)`, `mv_script_restart`, `mv_script_stop_all`,
+`mv_script_commands_json`, `mv_script_run_command`, `mv_script_set_key_notes`,
+`mv_script_status_json`, `mv_script_take_notices_json`; `MV_ADDON_CONTRIBUTION_API` is 3.
+`reload` / `restart` read and hash files (**[worker-thread]**); the rest are
+**[any-thread][no-block]**, so the shell's key handler can post a command from the UI thread.
+Scripts reach the viewer through the session's own folder model calls, and back through the
+**listener**, a documented any-thread callback the shell marshals (`PostMessageW` to its window):
+1 a notice is waiting, 2 an add-on started or stopped. Not the completion queue: the chrome
+drains that, and these are the shell's. `mv_open_addon_install` / `_remove` reload the scripts
+themselves. The verify rigs `MV_SCRIPT_STORE` and `MV_SCRIPT_SPIN` are read by `mv_script_reload`
+and inert unless set. 0.20 is PR 56's (settings values). The Mac host drives
+`src/addon/script_host.h` directly; Swift reads `mv_open_addons_scripts` and calls
+`mv_open_addons_restart` in the chrome bridge.
+
 ## Version history
 
 | Minor | Change |
@@ -512,6 +529,8 @@ Windows shell turns into live command rows ([25 §7](25-open-addons.md#7-the-con
 | 0.17 | Open add-ons: `mv_open_addon_inspect` / `_install` / `_list_json` / `_remove` / `_theme_json` |
 | 0.18 | Contributed commands: `mv_addon_commands_json`; `description`, `hint_on`, `hint_text` in the installed / check JSON |
 | 0.19 | `mv_folder_set_hidden_kinds` — Settings can leave audio and/or documents out of the listing |
+| 0.20 | Reserved for PR 56 (settings values) |
+| 0.21 | Script add-ons: `mv_script_*`; `MV_ADDON_CONTRIBUTION_API` 3 |
 
 ## Not built
 

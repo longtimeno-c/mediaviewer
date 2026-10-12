@@ -325,6 +325,18 @@ pauses / resumes while copying, `Shift+Space` toggles its day, `Ctrl+Tab` / `Ctr
 next / previous source, `Ctrl+J` ejects, `Esc` closes the window and the import carries on
 ([import](18-import.md)).
 
+### Add-on commands (PR 57, from scripts)
+
+An open add-on with a script ([25](25-open-addons.md)) contributes rows: a name, a default key
+and the script function it calls. They take the eight `addon_cmd_*` slots after any first-party
+add-on's rows, are listed in `?` and Settings, and are rebindable like any row. **Another
+maker's key never displaces the base app's:** when it clashes with a built-in row as bound now
+(remaps included), or with an earlier contributed row, in a mode they share, the key is dropped,
+the row stays listed without one, and Settings → Add-ons → From others says "Ctrl+O is already
+Open, so this command has no key" (`set_addon_commands`, `addon_command_notes_json`). Running one
+posts the call to the add-on's own worker and returns: the key never waits on a script. Keymap
+packs name these rows `<addon-id>/<command-id>`.
+
 ### Search
 
 | Key | Modes | Command |

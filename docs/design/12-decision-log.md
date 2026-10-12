@@ -1072,6 +1072,56 @@ built-in binding, superseding and restoring), the manifest cases, the packer's c
 the full suite and the add-on rig. Not verified: a signed Import carrying the new manifest in
 the app (a local build cannot load its own unsigned Import); Windows beyond compiling.
 
+**Other makers' code runs as Lua 5.4, vendored, in a sandbox per add-on (PR 57, 2026-10-11).**
+§9 A of [25](25-open-addons.md) with Lua, as the owner decided; the first spike held every limit,
+so WebAssembly was not taken up. What was decided while building it:
+
+- **Lua kept over WASM.** The sandbox holds its limits in about 1,000 lines of runtime: the
+  allocator caps memory, a count hook every 10,000 instructions enforces the instruction budget
+  and the wall clock, and a stop raised at every instruction afterwards cannot be swallowed by
+  `pcall` (each instruction after a caught error raises again). The escape attempts people know
+  (`string.dump`, binary `load`, the shared string metatable, `collectgarbage("stop")`, deep and
+  C recursion, `string.rep` bombs, coroutine loops) are tested; 563,234 fuzzed inputs found
+  nothing. WASM would have meant a runtime many times larger and a toolchain an author must
+  install for a first command.
+- **Vendored, not vcpkg.** The pinned baseline ships Lua 5.5, and the Windows triplet links ports
+  as DLLs; vendoring 5.4.8 (hash from vcpkg's own port) keeps it static on both platforms and
+  lets the binary carry no `io`, `os`, `package` or `debug` code at all. Built as C++, so a Lua
+  error is an exception and the runtime's RAII holds across it.
+- **Three local changes to Lua**, marked in `third_party/lua/VENDOR.txt`: pattern matching,
+  `table.move` and `table.sort` check the watchdog's flag (they can run for minutes without one
+  VM instruction, so the count hook alone never fires), and `string.rep` of nothing returns at
+  once instead of looping 10^15 times.
+- **The limits:** 64 MB of memory per add-on, 100 million VM instructions and 1 s of wall clock
+  per task (each command call, and the scripts' first run), a 4 MB C stack per worker (macOS
+  gives a secondary thread 512 KB, which Lua's 200 C levels can exceed), 256 tasks queued.
+  Measured on the Mac (arm64, Release, a loaded machine): a spin stops by the instruction budget
+  after about 0.75 s; an allocation bomb at the ceiling within the same bound; a C-side loop by
+  the watchdog's 1 s. The numbers are generous for glue (a loop over 10,000 file names is
+  thousandths of the budget) and small enough that a stuck add-on costs one core for a second.
+- **Over a limit the add-on stops** until Start again or the next launch, rather than retrying:
+  a script that ran away once will again, and a stop the person can see beats a core lost
+  quietly. A Lua error is not a stop: the call ends, Settings shows the last error.
+- **One thread per add-on, one watchdog thread for all,** asleep unless a task runs, so an idle
+  add-on costs nothing (§11). Scripts run in every window's process (they never write the
+  store), so their keys answer in every window.
+- **Permissions are bindings that are not installed.** Without `folder.read`, `mv.folder` is
+  `nil`, not a function that refuses. `thumbnails` is accepted and shown but adds nothing until
+  PR 58's thumbnail nodes; `files.write` / `metadata.write` are "needs a newer MediaViewer"
+  until PR 60; `network` is malformed, always.
+- **A script's key gives way.** A clash with the base app's row, or an earlier add-on's, in a
+  shared mode drops the add-on's key and keeps the row (Settings says why). First-party rows are
+  not held to it: Import supersedes its own built-in rows.
+- **Notices name their add-on.** `mv.notify` shows "Folder Count: 4 files in this folder" in the
+  bar's notice (four a second at most, 200 bytes), so a person never mistakes a stranger's line
+  for MediaViewer's.
+- **Windows: the shell's listener, not the completion queue.** The chrome drains the session's
+  completions; script notices and start / stop are the shell's (title notice, command table), so
+  the core calls a documented any-thread listener and the shell posts to its window (ABI 0.21).
+- **Not yet:** `mv.settings.get` (PR 56's settings store is on its own branch; a binding of a few
+  lines once both land), slots and screens (PRs 58–59 register their bindings through
+  `add_script_binding`).
+
 ---
 
 ## Not built
@@ -1082,7 +1132,8 @@ the app (a local build cannot load its own unsigned Import); Windows beyond comp
 - Explorer property handler: per-user installs cannot register one.
 - Staged rollout (5 % → 25 % → 100 %): one channel per release goes to everyone.
 - Keymap import/export and named layouts (planned as keymap packs, PR 56); a user font file.
-- Open add-ons PRs 56–60: settings pages, keymap packs, the Lua sandbox, screens, slots, files.
+- Open add-ons PRs 56, 58–60: settings pages, keymap packs, screens, slots, files (the Lua sandbox,
+  PR 57, is built).
 - Live Photo ContentIdentifier check: pairing is by name only.
 - `F2` rename and an `X` reject mark.
 - Reverse playback in the Video Editor.

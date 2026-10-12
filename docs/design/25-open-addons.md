@@ -558,3 +558,162 @@ BLAKE3 skip, verify, resume) stays native and only its window, today written twi
 (`MediaViewer.Import.Chrome.dll`, `Import.bundle`), becomes one view tree both hosts render, which
 would make it PR 58's first real screen. Possible now with no owner call: PR 56's "first-party
 chromes read the host's tokens", so Import's and Local search's windows follow the theme.
+
+## Implementation notes (PR 57, 2026-10-11)
+
+Other makers' code runs as Lua 5.4 in a sandbox per add-on ([§9](#9-code-how-a-strangers-add-on-runs) A).
+The reasons for each call below are in [12](12-decision-log.md) ("Other makers' code runs as Lua 5.4").
+
+| Piece | Code |
+|---|---|
+| Lua 5.4.8, vendored, static, MIT, without `io` / `os` / `package` / `debug` and the tools; three marked changes for the watchdog | `third_party/lua` (`VENDOR.txt`), `cmake/script.cmake` (`mv_lua`, built as C++) |
+| The sandbox, its limits, the watchdog, the `mv` bindings, Lua ↔ JSON | `src/addon/script_runtime.*`, `src/addon/script_thread_{posix,win}.cpp` (a worker with a 4 MB stack) |
+| The host's set of script add-ons: load from the store (bytes re-hashed as they are read), commands, status, Start again, the spin rig | `src/addon/script_host.*`; `open_store::verified_file` |
+| Manifest: `scripts`, `permissions`, `contributes.commands` at API 3; the sheet's lines | `src/addon/open_manifest.*`, `src/addon/open_json.cpp` |
+| Key clashes give way to the base app; notes for Settings | `shell/command_table.cpp` (`addon_command_row.script`, `addon_command_notes_json`) |
+| Windows | ABI 0.21 `mv_script_*` (`abi/script_abi.cpp`); `shell/main.cpp` (start after the chrome, run rows, `kMsgScripts` notices); `IslandHost.OpenAddons.cs`, `AddonNative.ScriptStatus` / `ScriptRestart` |
+| Mac | `shell/addons_mac.mm` (the host, the folder model and item on screen as services, rows), `main_mac.mm` (`MvAppShowNotice`, the `MV_SCRIPT_SELFTEST` rig); `OpenAddons.swift` (`ScriptStatus`, Start again), bridge `mv_open_addons_scripts` / `_restart` / `_reload` |
+| SDK, guide, example | `tools/addon-sdk/mvaddon.py` (`init --script`, script rules, compiled Lua refused at pack), `docs/ADDONS.md` "Scripts", `examples/addons/folder-count` |
+| Tests | `tests/test_script_runtime.cpp`, `tests/test_script_addons.cpp` (`mv_script_tests`, also in cmake/portable), `tests/test_key_router.cpp` (key clash), `tools/addon-sdk/test_mvaddon.py` (cross-checked by `mv_addon_verify --open`), `tools/fuzz/fuzz_script.cpp` |
+
+### The manifest (schema 2, API 3)
+
+```json
+{
+  "api": { "min": 3, "max": 3 },
+  "scripts": ["main.lua"],
+  "permissions": ["folder.read"],
+  "contributes": {
+    "commands": [
+      { "id": "count-files", "name": "Count files", "key": "Ctrl+Shift+K", "run": "count_files",
+        "modes": "viewing", "payload": "none" }
+    ]
+  }
+}
+```
+
+- **`scripts`**: 1–16 listed `.lua` files, ≤ 1 MB each, ≤ 4 MB together, run in order in one
+  environment; loaded as text only (`mode "t"`). Under a range ending before 3: malformed; on a
+  host before 3: `code_not_allowed`.
+- **`permissions`**: each of `folder.read`, `thumbnails`, `selection` at most once, only with
+  scripts. `files.write` / `metadata.write` (PR 60): `needs_update`. `network`: malformed, always.
+- **`commands`**: 1–32 (eight slots in the table); `id` `[a-z0-9-]{1,32}`, `name` display text,
+  `key` a printable label (`Ctrl` is `Cmd` on the Mac), `run` a Lua name, `modes`
+  `viewing|video|browse|all`, `payload` `none|marks|marked_or_current|screen` (anything but
+  `none` needs `selection`). Only with scripts.
+- **Unchanged:** `native`, `chrome`, `main` refuse the add-on whatever its range, and every PR 55
+  refusal holds for a package with code (tested: a changed script byte, an unlisted `.lua`,
+  compression, `..`).
+
+### The script API
+
+Only this exists; a part whose permission was not granted is **absent** (`mv.folder == nil`):
+
+| Name | Permission | |
+|---|---|---|
+| `mv.id`, `mv.api`, `mv.permissions` | — | the add-on's id, 3, the granted set |
+| `mv.notify(text)` | — | one line in the host's notice (Windows: the title's; Mac: the command bar's), prefixed with the add-on's name; ≤ 200 bytes, ≤ 4 a second |
+| `mv.log(...)`, `print` | — | stays local: the macOS unified log (private); not kept on Windows yet |
+| `mv.on(event, fn)` | — | handlers for later points' events (`script_call::call_handlers`); none sent yet |
+| `mv.folder.count()`, `.name(i)`, `.path()` | `folder.read` | the viewer's listing: Mac `folder_model`, Windows the session's `mv_folder_*` |
+| `mv.selection.current()` | `selection` | the file on screen |
+
+Standard library: `string` without `dump` (its metatable locked: `getmetatable("")` is `false`),
+`table`, `math`, `utf8`, `coroutine`, the base functions without `dofile` / `loadfile` /
+`require` / `warn`; `load` text-only into the sandbox; `collectgarbage` with `count`, `collect`,
+`step`, `isrunning` only. A command's function is called with its payload as a Lua value.
+`thumbnails` puts nothing in the environment: it gates PR 58's thumbnail nodes.
+
+**For later points** (agreed with PRs 58–59): `add_script_binding({name, api, permission,
+install})` installs more `mv.*` tables per state; `script_addon::post(script_task)` runs work on
+the add-on's worker (dropped unrun when its generation is stale); `script_call::call_handlers`,
+`with_state`, `lua_to_json` / `push_json` carry screens, diffs, search answers and badges.
+`script_host::find(id)` hands the add-on to a slot registry; its stop callback is where items
+are detached.
+
+### Limits (as shipped)
+
+| Limit | Value | Enforced by |
+|---|---|---|
+| Memory | 64 MB per add-on | the `lua_Alloc`: refused growth stops the add-on, and stays refused |
+| Instructions | 100 M per task | a count hook every 10,000 instructions |
+| Wall clock | 1 s per task | the same hook, and one watchdog thread (asleep unless a task runs) for the loops that run no VM instruction (pattern matching, `table.move`, `table.sort`) |
+| C stack | 4 MB worker | Lua's own 200-level C limit inside it |
+| Queue | 256 tasks | `post` returns false past it |
+
+A task is a command call, a handler call, or the scripts' first run. Once a limit is hit, every
+instruction raises, so `pcall` cannot keep the add-on alive; its state is closed on its worker.
+Settings → Add-ons → From others shows "Stopped." with the limit in words ("One of its tasks
+(command spin) ran for more than 100 million steps.") and **Start again**. A Lua error is not a
+stop: Settings shows the last error.
+
+### Verify, where each part stands
+
+| Verify (plan §14) | State |
+|---|---|
+| A script command runs from its key | **Mac: run in the app.** `MV_SCRIPT_SELFTEST` posts ⌘⇧K through the app's own event queue: the router, the live table and the runtime ran, and the bar showed "Folder Count: 4 files in this folder" (`tools/testmedia/raw`). **Windows: owed** (compiled by CI; the path is `run_command` → `mv_script_run_command` → `notice_show`) |
+| A runaway loop and an allocation bomb each stop the add-on, not the viewer, within the watchdog's bound | **Tested on the Mac** (`mv_script_tests`, both hosts' shared code): `while true`, a `pcall` loop, a coroutine loop, a tail-call loop, five allocation bombs and two C-side loops each stop within bound + 400 ms (300 ms test bound); with the shipped limits a spin stops after ~0.75 s. **In the Mac app:** ⌘⇧J on the spinner stopped it ("ran for more than 100 million steps") and the viewer kept answering; Settings showed it. **Windows: owed** (same code) |
+| Without `folder.read` the folder API is absent | **Tested** (`mv.folder`, `mv.selection`, `mv.thumbnails` are `nil` without their permission; present with it) |
+| Both present-loop gates hold while a script spins | **Mac:** **Not shown, as on the base: pacing holds alike with and without a script spinning, and
+the idle clause fails on both.** Measured below; the machine was loaded throughout (other
+builds; load average 18–50). **Windows: owed** (`MV_SCRIPT_SPIN` works there too; CI's self-hosted gate does not set it) |
+| Launch → first pixel within noise with a script add-on installed | **Mac:** **Measured; the ranges overlap in every row** (below). The machine was loaded, so these
+show no change that runs on it can see, and nothing finer. **Windows: owed** |
+
+Measured on the Mac (arm64, Release, 2026-10-12, the owner's machine with other agents'
+builds running: load average 18–50). Base is `8ef8679` (this branch's parent) built from its own
+source copy and build directory. "spin" is this build with two script add-ons installed in a
+scratch store (`MV_SCRIPT_STORE`) and `MV_SCRIPT_SPIN=rig.spinner/burn` keeping one add-on's
+worker busy throughout (a 40 M-instruction loop posted back to back; checked on its own: in a
+20 s static soak the lab process sat at 97–100 % of one core with the rig and ~0.5 % without, by
+`ps` every 2 s). Mac PR 1 gate, `frametime --seconds 60`,
+alternated:
+
+| Run | Build | Animated: frames · p99 ms · max ms | Idle: presents · CPU of one core | Notes |
+|---|---|---|---|---|
+| 1 | base | 3600 · 16.80 · 22.31 | 0 · 92.5 % | |
+| 2 | spin | 3598 · 16.85 · 42.30 | 0 · 200.2 % | void as a spin run: the rig's loop crossed its own 100 M budget, so the add-on stopped in its first second of each phase (the stop working as designed); shortened to 40 M after |
+| 3 | base | 3598 · 16.90 · 49.98 | 0 · 100.1 % | |
+| 4 | spin | 3600 · 16.95 · 19.12 | 2 · 47.9 % | void as a spin run, as 2 |
+| 5 | base | 3600 · 16.95 · 22.31 | 19 · 37.1 % | 19 input events: the machine was in use; another agent's lab soak overlapped |
+| 6 | spin | 3599 · 16.95 · 28.01 | 0 · 186.5 % | spinning throughout |
+| 7 | base | 3553 · 17.10 · 662.7 | 0 · 104.9 % | |
+| 8 | spin | 3598 · 16.90 · 22.06 | 0 · 100.1 % | spinning throughout |
+| 9 | base | 406 · 23.05 · 46,715 | 0 · 52.4 % | display link stalled 47 s: void |
+| 10 | spin | 3599 · 16.95 · 33.28 | 0 · 85.5 % | spinning throughout |
+
+Pacing with a script spinning is within the base's own spread (p99 16.85–16.95 ms against
+16.80–17.10 ms; the drops and long frames land on base runs as much as on spin runs). The idle
+CPU clause (≤ 1 %) fails on every base run, as it did in PR 55's measurements, so the gate as a
+whole is not shown on this machine; with a script spinning the lab's idle CPU is one core higher,
+which is the script's own work on its own thread (no present waited on it), and 0 presents idle
+hold on the spin runs. Launch → first pixel and → full resolution, `mediaviewer_lab --soak 6
+--static`, one untimed warm-up open per file, then base / new (no script add-on, an empty
+scratch store) / script (the two add-ons installed, idle) alternated, two sessions (3 and 5
+rounds):
+
+| File | Build | First pixel, s | Full resolution, s |
+|---|---|---|---|
+| `sony_ilce7rm3.arw` | base | 0.021 · 0.055 · 0.118 · 0.124 · 0.074 · 0.083 · 0.121 · 0.084 | 0.519 · 1.231 · 1.264 · 3.357 · 1.739 · 2.631 · 2.171 · 2.175 |
+| | new | 0.050 · 0.049 · 0.049 · 0.137 · 0.069 · 0.075 · 0.097 · 0.079 | 1.285 · 1.231 · 1.246 · 4.239 · 2.050 · 2.065 · 1.970 · 2.000 |
+| | script | 0.047 · 0.047 · 0.051 · 0.119 · 0.072 · 0.080 · 0.062 · 0.075 | 1.176 · 1.050 · 1.337 · 1.969 · 2.171 · 2.083 · 1.593 · 1.977 |
+| `canon_eosr6.cr3` | base | 0.051 · 0.048 · 0.043 · 0.114 · 0.094 · 0.133 · 0.079 · 0.071 | 0.685 · 0.694 · 0.564 · 0.977 · 2.353 · 3.218 · 1.658 · 1.462 |
+| | new | 0.048 · 0.045 · 0.043 · 0.069 · 0.097 · 0.126 · 0.081 · 0.065 | 0.774 · 0.784 · 0.653 · 1.178 · 2.715 · 3.471 · 1.905 · 1.877 |
+| | script | 0.047 · 0.048 · 0.043 · 0.116 · 0.079 · 0.059 · 0.068 · 0.067 | 0.822 · 0.764 · 0.656 · 2.214 · 4.234 · 1.287 · 1.118 · 1.601 |
+
+The ranges overlap in every row. On a quiet machine the full-resolution numbers are a third of
+these (PR 55's table above); a re-run there is owed, and is the run to quote. Nothing of a
+script add-on runs before first pixel by construction: the scripts are listed and started on a
+utility-QoS queue after the chrome is up (Windows: a background job after the chrome attaches).
+
+**Fuzzing.** `tools/fuzz/fuzz_script.cpp` (arbitrary text as a script, every permission, 8 MB /
+2 M instructions / 250 ms, then its `f`): 563,234 inputs, about 15 minutes of fuzzing on the Mac
+under ASan + UBSan with Homebrew's libFuzzer (the run's 1,587 s span includes the machine
+sleeping; the two "slow units" it saved run in 9 ms), 10,470 coverage edges; no crash, no
+sanitizer report, no hang. In CI it joins the non-gating harnesses until it has been seen to
+start on the runner. `mv_script_tests` also passes under ASan + UBSan (the runtime, Lua and the
+tests instrumented).
+
+Owed before this merges: the Windows key walk, the Windows gate with a script spinning, the
+Windows launch timings; VoiceOver / Narrator on the new Settings lines; `mv.settings.get` once
+PR 56's settings store lands (one binding); a `files.write`-era review of the permission lines.
