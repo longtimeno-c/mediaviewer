@@ -34,7 +34,7 @@ public enum SlotChange : uint
 }
 
 /// <summary>
-/// Screens and slots (docs/design/25 PRs 58-59; ABI 0.20, mediaviewer_addon.h
+/// Screens and slots (docs/design/25 PRs 58-59; ABI 0.25, mediaviewer_addon.h
 /// <c>mv_slots_*</c>): what MediaViewer's own add-ons add to the chrome, read
 /// from the core's registry. Every call copies a table or posts to an add-on's
 /// worker; none waits on an add-on, so all are safe on the UI thread.
@@ -153,7 +153,7 @@ public static unsafe partial class SlotNative
 
     private delegate MvStatus JsonCall(byte* output, uint cap, uint* needed);
 
-    // "" on an older core (no 0.20 entry points) or on any failure: the slots
+    // "" on an older core (no 0.25 entry points) or on any failure: the slots
     // then simply stay empty.
     private static string Json(JsonCall call)
     {

@@ -690,7 +690,7 @@ MV_API mv_status MV_CALL mv_addon_quit(void);
 MV_API mv_status MV_CALL mv_addon_quit_wait(uint32_t timeout_ms);
 
 /* ---------------------------------------------------------------------------
- * Screens and slots, the chrome's side (docs/design/25 PRs 58-59; ABI 0.20,
+ * Screens and slots, the chrome's side (docs/design/25 PRs 58-59; ABI 0.25,
  * additive). The Windows chrome reads the core's registry (src/addon/slots.h)
  * through these; the Mac chrome has the same calls as mv_chrome_slots_* in its
  * bridge. Add-ons that fill slots are loaded with mv_addon_load(session, id,

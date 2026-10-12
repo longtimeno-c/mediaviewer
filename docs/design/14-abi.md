@@ -546,6 +546,7 @@ rows and the add-on's `mv.slots.1` interface; table versions still only append (
 | 0.21 | `mv_folder_renamed` — an F2 rename keeps its stop (issue #210) |
 | 0.22 | `mv_folder_set_kind_filter`, `MV_FOLDER_HIDE_STILLS` / `_CLIPS` / `_RAW` / `_UNMARKED` — View ▸ Show (issue #206) |
 | 0.23 | The cull bits `MV_FOLDER_HIDE_REJECTED` / `_UNPICKED` / `MV_FOLDER_HIDE_OTHER_LABELS` (`MV_FOLDER_LABEL_SHIFT`) and `mv_folder_note_metadata_written` — View ▸ Show's cull filters (issue #207) |
+| 0.24 | Reserved for docs/design/25 PR 56 (settings pages, keymap packs) |
 | 0.25 | Screens and slots: `mv_slots_*` (contributions, info sections, screens, search, badges, status, events, items, surfaces, the local-search provider, thumbnails by path); host table v3 (`MV_ADDON_HOST_API` 3) and `mv.slots.1`; `"slots"` in the installed JSON |
 
 ## Not built
