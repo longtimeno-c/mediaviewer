@@ -79,9 +79,9 @@ void read_beyond(std::string_view utf8_path, std::span<const std::uint8_t> prefi
   // here (a clip's XMP, a HEIF item Exiv2 skipped), so the pane and the badge
   // always reach the same answer. Fields the readers above filled win.
   {
+    // Capped like the badge's probe, and without the C2PA stores read above.
     parse::evidence probed;
-    file_source f;
-    if (f.open(utf8_path)) probe_evidence(f, probed);
+    probe_evidence(utf8_path, probed, false);
     if (ev.exif_software.empty()) ev.exif_software = probed.exif_software;
     if (ev.xmp_creator_tool.empty()) ev.xmp_creator_tool = probed.xmp_creator_tool;
     if (ev.xmp_source_type.empty() && !probed.xmp_source_type.empty()) {

@@ -169,7 +169,7 @@ void read_exif_block(bytes block, parse::sink& out) {
 }
 
 // ---- JPEG: the segments before the first scan ------------------------------------
-void probe_jpeg(reader& r, parse::sink& out) {
+void probe_jpeg(reader& r, parse::sink& out, bool c2pa) {
   // APP11 segments are kept as SOI + segments + EOI, so read_jpeg reassembles
   // the C2PA store exactly as the full read does, without the image data.
   buffer header{0xFF, 0xD8};
@@ -192,7 +192,7 @@ void probe_jpeg(reader& r, parse::sink& out) {
     }
     const std::size_t len = util::be16(marker, 2);
     if (len < 2 || len > kMaxSegmentBytes) break;
-    const bool app11 = m == 0xEB;
+    const bool app11 = c2pa && m == 0xEB;
     const bool app1 = m == 0xE1 && (!exif_done || !xmp_done);
     if (app11 || app1) {
       if (!r.read(at + 4, len - 2, seg)) break;
@@ -216,7 +216,7 @@ void probe_jpeg(reader& r, parse::sink& out) {
 }
 
 // ---- PNG: every chunk but the image data ------------------------------------------
-void probe_png(reader& r, parse::sink& out) {
+void probe_png(reader& r, parse::sink& out, bool c2pa) {
   static constexpr std::uint8_t kSig[8] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
   buffer kept(kSig, kSig + 8);
   std::uint64_t at = 8;
@@ -230,7 +230,7 @@ void probe_png(reader& r, parse::sink& out) {
     if (util::fourcc_is(h, 4, "IEND")) break;
     const bool text = util::fourcc_is(h, 4, "tEXt") || util::fourcc_is(h, 4, "zTXt") ||
                       util::fourcc_is(h, 4, "iTXt");
-    const bool cabx = util::fourcc_is(h, 4, "caBX");
+    const bool cabx = c2pa && util::fourcc_is(h, 4, "caBX");
     const bool exif = util::fourcc_is(h, 4, "eXIf");
     if ((text || cabx || exif) && len <= kMaxPngChunkBytes && kept.size() + len + 12 <= kMaxPngKeptBytes) {
       if (!r.read(at + 8, len, data)) break;
@@ -580,8 +580,8 @@ void probe_moov(reader& r, const box& moov, parse::sink& out) {
 
 // Top level of any ISO-BMFF file: C2PA (read_bmff), an XMP uuid, the HEIF
 // `meta` box (stills), `moov` (clips, CR3) wherever it sits.
-void probe_bmff(reader& r, parse::byte_source& src, bool stills, parse::sink& out) {
-  parse::read_bmff(src, false, out);  // the top-level C2PA box, as the full read finds it
+void probe_bmff(reader& r, parse::byte_source& src, bool stills, parse::sink& out, bool c2pa) {
+  if (c2pa) parse::read_bmff(src, false, out);  // the top-level C2PA box, as the full read finds it
   bool xmp_done = false;
   bool moov_done = false;
   bool meta_done = false;
@@ -604,7 +604,7 @@ void probe_bmff(reader& r, parse::byte_source& src, bool stills, parse::sink& ou
 
 // Fujifilm RAF: the embedded JPEG (offset and length at 84 / 88, big-endian)
 // carries the EXIF; only its header segments are read.
-void probe_raf(reader& r, parse::sink& out) {
+void probe_raf(reader& r, parse::sink& out, bool c2pa) {
   buffer h;
   if (!r.read(84, 8, h)) return;
   const std::uint64_t off = util::be32(h, 0);
@@ -612,7 +612,7 @@ void probe_raf(reader& r, parse::sink& out) {
   if (off < 92 || len < 4 || off > r.size() || len > r.size() - off) return;
   window_source w(r, off, len);
   reader jr(w);
-  if (jr.head().size() >= 2 && jr.head()[0] == 0xFF && jr.head()[1] == 0xD8) probe_jpeg(jr, out);
+  if (jr.head().size() >= 2 && jr.head()[0] == 0xFF && jr.head()[1] == 0xD8) probe_jpeg(jr, out, c2pa);
 }
 
 bool is_bmff(bytes head) noexcept {
@@ -630,7 +630,7 @@ bool is_tiff_like(bytes head) noexcept {
 
 }  // namespace
 
-void probe_evidence(parse::byte_source& src, parse::evidence& ev) noexcept {
+void probe_evidence(parse::byte_source& src, parse::evidence& ev, bool c2pa) noexcept {
   try {
     reader r(src);
     const bytes head = r.head();
@@ -639,19 +639,19 @@ void probe_evidence(parse::byte_source& src, parse::evidence& ev) noexcept {
     parse::sink out{rows, ev, 4000};
     const auto family = codec::probe(head.first(std::min<std::size_t>(head.size(), 1024)));
     switch (family) {
-      case codec::format_family::jpeg: probe_jpeg(r, out); break;
-      case codec::format_family::png: probe_png(r, out); break;
+      case codec::format_family::jpeg: probe_jpeg(r, out, c2pa); break;
+      case codec::format_family::png: probe_png(r, out, c2pa); break;
       case codec::format_family::webp: probe_webp(r, out); break;
       case codec::format_family::tiff: read_ifd0(r, 0, out); break;
       case codec::format_family::heic:
-      case codec::format_family::avif: probe_bmff(r, src, true, out); break;
+      case codec::format_family::avif: probe_bmff(r, src, true, out, c2pa); break;
       case codec::format_family::raw:
-        if (is_bmff(head)) probe_bmff(r, src, false, out);  // CR3
+        if (is_bmff(head)) probe_bmff(r, src, false, out, c2pa);  // CR3
         else if (is_tiff_like(head)) read_ifd0(r, 0, out);  // DNG, CR2, NEF, ARW, ORF, RW2, PEF...
-        else if (head.size() >= 16 && std::memcmp(head.data(), "FUJIFILMCCD-RAW ", 16) == 0) probe_raf(r, out);
+        else if (head.size() >= 16 && std::memcmp(head.data(), "FUJIFILMCCD-RAW ", 16) == 0) probe_raf(r, out, c2pa);
         break;
       case codec::format_family::unknown:
-        if (is_bmff(head)) probe_bmff(r, src, false, out);  // a clip
+        if (is_bmff(head)) probe_bmff(r, src, false, out, c2pa);  // a clip
         break;
       default: break;  // GIF, BMP, ICO, documents: nothing a generator writes
     }

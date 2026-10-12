@@ -56,6 +56,11 @@ inline constexpr std::uint64_t kProbeMaxFileBytes = (32u << 20) + (1u << 20);
 [[nodiscard]] provenance probe_provenance(parse::byte_source& src) noexcept;
 // What the probe collects, before the rule: the full read merges it for the
 // fields its own readers do not reach (a clip's XMP), so the two agree.
-void probe_evidence(parse::byte_source& src, parse::evidence& ev) noexcept;
+// `c2pa` = false skips the C2PA stores (JPEG APP11, PNG caBX, the BMFF box):
+// the full read has already parsed them, and they are the probe's largest reads.
+void probe_evidence(parse::byte_source& src, parse::evidence& ev, bool c2pa = true) noexcept;
+// The same over a file, through the capped source probe_provenance uses, so the
+// full read's merge is held to kProbeMaxFileBytes too (probe_file.cpp).
+void probe_evidence(std::string_view utf8_path, parse::evidence& ev, bool c2pa) noexcept;
 
 }  // namespace mv::meta
