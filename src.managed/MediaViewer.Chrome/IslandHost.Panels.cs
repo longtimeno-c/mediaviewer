@@ -854,7 +854,10 @@ public static partial class IslandHost
             AutomationProperties_SetName(box, "New value for " + t.Label);
             cell.Children.Add(box);
             cell.Children.Add(Text("Enter saves · Esc cancels", Body, UiFontSize - 4));
+            // The repeater builds this cell during layout, after RenderMeta's
+            // FocusMetaFieldSoon has run, so the cell asks for focus itself.
             _metaFocusField = box;
+            FocusMetaFieldSoon();
         }
         else
         {
