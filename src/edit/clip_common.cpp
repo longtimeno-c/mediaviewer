@@ -37,6 +37,11 @@ int interrupt_cb(void* opaque) noexcept {
 
 result<source> open_source(std::string_view utf8_path, const std::atomic<bool>* cancel) {
   const std::string path(utf8_path);
+  source s;
+  const std::uint64_t cid = crash_context::thread_correlation();
+  s.crash.describe({.family = "unknown", .decoder = "libavformat", .version = LIBAVFORMAT_IDENT,
+                    .correlation_id = cid, .role = "clip"});
+  s.crash.busy();
   AVFormatContext* raw = avformat_alloc_context();
   if (raw == nullptr) return err(status::out_of_memory);
   raw->interrupt_callback.callback = interrupt_cb;
@@ -45,8 +50,11 @@ result<source> open_source(std::string_view utf8_path, const std::atomic<bool>* 
   if (avformat_open_input(&raw, path.c_str(), nullptr, nullptr) < 0) {
     return err(cancelled(cancel) ? status::cancelled : status::io);
   }
-  source s;
   s.format.reset(raw);
+  const char* container =
+      raw->iformat != nullptr && raw->iformat->name != nullptr ? raw->iformat->name : "unknown";
+  s.crash.describe({.family = container, .decoder = "libavformat", .version = LIBAVFORMAT_IDENT,
+                    .correlation_id = cid, .role = "clip"});
   if (avformat_find_stream_info(raw, nullptr) < 0) {
     return err(cancelled(cancel) ? status::cancelled : status::corrupt);
   }
@@ -56,6 +64,20 @@ result<source> open_source(std::string_view utf8_path, const std::atomic<bool>* 
     s.video = -1;  // cover art in an audio file is not a clip
   }
   if (s.video < 0 && s.audio < 0) return err(status::unsupported_format);
+  // From here the job decodes: name the stream it reads, and its geometry.
+  {
+    const AVCodecParameters* p = raw->streams[s.video >= 0 ? s.video : s.audio]->codecpar;
+    std::uint32_t w = 0, h = 0, bits = 0;
+    if (s.video >= 0) {
+      w = static_cast<std::uint32_t>(std::max(0, p->width));
+      h = static_cast<std::uint32_t>(std::max(0, p->height));
+      const AVPixFmtDescriptor* d = av_pix_fmt_desc_get(static_cast<AVPixelFormat>(p->format));
+      bits = d != nullptr ? static_cast<std::uint32_t>(d->comp[0].depth) : 0;
+    }
+    s.crash.describe({.family = container, .decoder = avcodec_get_name(p->codec_id),
+                      .version = LIBAVCODEC_IDENT, .correlation_id = cid, .role = "clip"},
+                     w, h, bits);
+  }
 
   // The player's origin (player/video_source.cpp): container start_time,
   // else the stream's.

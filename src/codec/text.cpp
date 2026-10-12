@@ -9,6 +9,7 @@
 #include <hb-ot.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <list>
 #include <memory>
@@ -17,14 +18,27 @@
 #include <utility>
 
 #include "codec/fonts.h"
-#include "io/file.h"
 
 namespace mv::codec::text {
+
+namespace {
+std::atomic<font_reader> g_font_reader{nullptr};
+}
+
+void set_font_reader(font_reader reader) noexcept {
+  g_font_reader.store(reader, std::memory_order_release);
+}
+
+bool font_reader_installed() noexcept {
+  return g_font_reader.load(std::memory_order_acquire) != nullptr;
+}
+
 namespace {
 
-// Font files are read through io/ (UTF-8 paths on every platform) and kept for
-// a while: every page turn of a document opens the same few. Eight files is
-// a document's body, heading and fallback faces with room to spare.
+// Font files are read by the reader image/ installed (UTF-8 paths on every
+// platform) and kept for a while: every page turn of a document opens the
+// same few. Eight files is a document's body, heading and fallback faces
+// with room to spare.
 constexpr std::size_t kFontCacheFiles = 8;
 
 std::shared_ptr<const std::vector<std::uint8_t>> font_bytes(const std::string& path) {
@@ -39,9 +53,12 @@ std::shared_ptr<const std::vector<std::uint8_t>> font_bytes(const std::string& p
       }
     }
   }
-  auto read = io::read_all(path);  // outside the lock: this is the I/O
+  // Outside the lock: this is the I/O, and it lives above codec/.
+  const font_reader read = g_font_reader.load(std::memory_order_acquire);
   if (!read) return nullptr;
-  auto bytes = std::make_shared<const std::vector<std::uint8_t>>(std::move(read).value());
+  std::vector<std::uint8_t> got = read(path);
+  if (got.empty()) return nullptr;
+  auto bytes = std::make_shared<const std::vector<std::uint8_t>>(std::move(got));
   std::lock_guard lock(mutex);
   cache.emplace_front(path, bytes);
   while (cache.size() > kFontCacheFiles) cache.pop_back();

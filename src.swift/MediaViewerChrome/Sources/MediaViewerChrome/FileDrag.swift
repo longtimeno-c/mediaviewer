@@ -1,7 +1,14 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Dragging the originals out of the gallery and the filmstrip, as Finder does:
-// one NSDraggingItem per file whose pasteboard writer is the file's NSURL
+// Dragging originals out, as Finder does: the gallery and the filmstrip here,
+// and the AI search panel's results (src.swift/AIChrome/Sources/AIChrome/
+// FileDrag.swift is a symlink to this file, issue #190). One source compiled
+// into each module rather than a shared SwiftPM target: AI.bundle ships in the
+// AI pack, apart from the app, and one module linked into both images would
+// register the same Objective-C class (FileDragSource) twice in the process,
+// from two different builds. Compiled per module, each has its own class name.
+//
+// One NSDraggingItem per file whose pasteboard writer is the file's NSURL
 // (public.file-url), so Final Cut Pro, Finder, Mail and the rest read the
 // original in place. No promise, no copy, no decode: the drag image is the
 // thumbnail already on screen, else the type's icon (no file I/O).
@@ -11,7 +18,9 @@
 // untouched, and a click that does not move past the threshold is still a tap.
 // Copy-only, like the canvas's ⌘-drag (main_mac.mm): dropping in Finder on the
 // same volume copies, never moves, an original. Refused inside the app, so a
-// slip onto our own window does not reopen the folder.
+// slip onto our own window does not reopen the folder. Only files on disk are
+// dragged: a Photos library item ("photos:<id>", docs/design/26) is a key, not
+// a path, and would leave as a bogus file URL.
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
@@ -31,7 +40,7 @@ final class FileDragSource: NSObject, NSDraggingSource {
           let event = NSApp.currentEvent,
           event.type == .leftMouseDragged || event.type == .leftMouseDown,
           let view = event.window?.contentView else { return }
-    let files = list()
+    let files = list().filter { $0.path.hasPrefix("/") }
     guard !files.isEmpty else { return }
     let p = view.convert(event.locationInWindow, from: nil)
     var items: [NSDraggingItem] = []

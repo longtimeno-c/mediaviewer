@@ -24,7 +24,7 @@ static_assert(static_cast<int>(colour_primaries::bt601_525) == 2);
 static_assert(static_cast<int>(colour_primaries::bt601_625) == 3);
 static_assert(static_cast<int>(colour_primaries::bt2020) == 4);
 
-// Line-for-line twin of gfx/video_blit.cpp's kHlsl. Binding: buffer(0) is the
+// Line-for-line twin of gfx/video_blit.hlsl. Binding: buffer(0) is the
 // cbuffer register(b0); texture(0)/texture(1) are t0/t1; sampler(0) is s0.
 // Output is LINEAR light: the drawable is _sRGB, so the hardware encodes on
 // write (writing an encoded value would double-encode it).

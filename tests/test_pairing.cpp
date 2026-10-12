@@ -127,11 +127,15 @@ TEST_CASE("clips by extension: the gallery's play badge", "[io][pairing]") {
   REQUIRE_FALSE(is_video_name("clip.mpeg4"));
 }
 
-TEST_CASE("pairing a 4000-file dump is scan-fast and exact", "[io][pairing][perf]") {
+namespace {
+
+constexpr int k_dump_stems = 2000;
+
+// DSC_0000.JPG + DSC_0000.NEF ... : a 4000-file camera dump, every JPEG paired.
+std::vector<dir_entry> camera_dump() {
   std::vector<dir_entry> entries;
-  constexpr int stems = 2000;
-  entries.reserve(stems * 2);
-  for (int i = 0; i < stems; ++i) {
+  entries.reserve(k_dump_stems * 2);
+  for (int i = 0; i < k_dump_stems; ++i) {
     char jpg[32];
     char raw[32];
     std::snprintf(jpg, sizeof(jpg), "DSC_%04d.JPG", i);
@@ -139,6 +143,19 @@ TEST_CASE("pairing a 4000-file dump is scan-fast and exact", "[io][pairing][perf
     entries.push_back(e(jpg));
     entries.push_back(e(raw));
   }
+  return entries;
+}
+
+}  // namespace
+
+TEST_CASE("pairing a 4000-file dump is exact", "[io][pairing]") {
+  REQUIRE(pair_listing(camera_dump()).size() == k_dump_stems);
+}
+
+// Timed: a perf run, not the unit suite (issue #154): `mv_tests "[.perf-bench]"`.
+TEST_CASE("perf: pairing a 4000-file dump is scan-fast", "[.perf-bench][io][pairing]") {
+  const auto entries = camera_dump();
+  constexpr int stems = k_dump_stems;
   const auto t0 = std::chrono::steady_clock::now();
   constexpr int runs = 10;
   std::size_t stops = 0;

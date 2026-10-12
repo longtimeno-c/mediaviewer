@@ -31,6 +31,11 @@ public static partial class IslandHost
     // buttons. "Update ready — restart" keeps the bar's size.
     private const double UpdateStatusFontSize = 12;
     private static ToggleSwitch? _autoUpdate;
+    // Issue #220: Settings' "Check now" and what the check it asked for found.
+    // 0 none, 1 asked, 2 that check is running.
+    private static Button? _checkNow;
+    private static TextBlock? _checkNowNote;
+    private static int _manualCheck;
     private static ComboBox? _updateChannel;
     // Set when Settings sends a channel change; the check runs once native has
     // stored it and pushed the flags back (ApplySettings), not before.
@@ -85,6 +90,12 @@ public static partial class IslandHost
         _updateButton = TextButton("Update ready — restart",
             () => Send(Command.UpdateRestart, _updateButton?.Tag is int arg ? arg : 0));
         _updateButton.Visibility = Visibility.Collapsed;
+        // Not clickable, it is a status line (the Mac's plain Body text), not a
+        // dimmed button: undo FlattenButton's disabled dim, which runs first.
+        Button status = _updateButton;
+        void Undim() { if (!status.IsEnabled) status.Opacity = 1; }
+        status.IsEnabledChanged += (_, _) => Undim();
+        status.Loaded += (_, _) => Undim();
         ToolTipService.SetToolTip(_updateButton,
             "A new version is downloaded. Restart to use it, or it installs when you close MediaViewer.");
         _updateProgress = new JobBar { Visibility = Visibility.Collapsed };
@@ -136,9 +147,36 @@ public static partial class IslandHost
                          ?? new UpdateStatus(UpdatePhase.Inert, null, UpdateUrgency.Normal, null));
     }
 
+    private static void ShowCheckNowNote(UpdateStatus s)
+    {
+        if (_checkNow is null || _checkNowNote is null) return;
+        if (_manualCheck == 1 && s.Phase == UpdatePhase.Checking) _manualCheck = 2;
+        bool busy = _manualCheck == 1 || s.Phase is UpdatePhase.Checking or UpdatePhase.Downloading;
+        _checkNow.IsEnabled = s.Phase != UpdatePhase.Inert && !busy;
+        string? note = s.Phase switch
+        {
+            UpdatePhase.Inert => "Updates come with the installed app",
+            UpdatePhase.Checking => "Checking…",
+            UpdatePhase.Downloading => "Downloading…",
+            UpdatePhase.Ready => "Update ready — restart from the bar",
+            _ when _manualCheck == 1 => "Checking…",
+            // The answer to the check Settings asked for; any other change
+            // leaves the last answer up.
+            UpdatePhase.Failed when _manualCheck == 2 => "The update could not be downloaded",
+            _ when _manualCheck == 2 => _updater?.LastCheckFailed == true
+                ? "Could not reach GitHub"
+                : "MediaViewer is up to date",
+            _ => null,
+        };
+        if (note is not null) _checkNowNote.Text = note;
+        if (_manualCheck == 2 && s.Phase is not (UpdatePhase.Checking or UpdatePhase.Downloading))
+            _manualCheck = 0;
+    }
+
     private static void ShowUpdateStatus(UpdateStatus s)
     {
         _lastUpdateStatus = s;
+        ShowCheckNowNote(s);
         if (_updateButton is null) return;
         try
         {
@@ -206,7 +244,10 @@ public static partial class IslandHost
             }
             SetButtonText(_updateButton, text);
             if (_updateButton.Content is TextBlock label)
+            {
                 label.FontSize = clickable ? UiFontSize : UpdateStatusFontSize;
+                label.Foreground = Brush(clickable ? Title : Body);
+            }
             ToolTipService.SetToolTip(_updateButton, tip);
             _updateButton.IsEnabled = clickable;
             _updateButton.Tag = restartArg;
@@ -228,6 +269,27 @@ public static partial class IslandHost
         ToolTipService.SetToolTip(_autoUpdate,
             "Asks GitHub for a newer version at launch and every 6 hours. The request reveals your IP address and app version, nothing about your files.");
         view.Children.Add(SettingsRow("Automatic update checks", "Ask GitHub for new versions at launch and every six hours.", _autoUpdate));
+
+        // Issue #220: the Mac's "Check for Updates…". One check, now, whether
+        // or not automatic checks are on; the bar shows it as any check.
+        _checkNow = SettingsButton("Check now", () =>
+        {
+            if (_updater is null) return;
+            _manualCheck = 1;
+            _updater.CheckNow();
+            ShowCheckNowNote(_lastUpdateStatus ?? _updater.Status);
+        });
+        ToolTipService.SetToolTip(_checkNow,
+            "Asks GitHub for a newer version now. The request reveals your IP address and app version, nothing about your files.");
+        _checkNowNote = Label("");
+        _checkNowNote.FontSize = 12;
+        _checkNowNote.VerticalAlignment = VerticalAlignment.Center;
+        var checkNow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
+        checkNow.Children.Add(_checkNowNote);
+        checkNow.Children.Add(_checkNow);
+        ShowCheckNowNote(_lastUpdateStatus ?? _updater?.Status
+                         ?? new UpdateStatus(UpdatePhase.Inert, null, UpdateUrgency.Normal, null));
+        view.Children.Add(SettingsRow("Check for updates", "Ask GitHub for a new version now.", checkNow));
 
         _updateChannel = new ComboBox
         {

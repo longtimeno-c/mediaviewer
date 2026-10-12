@@ -17,6 +17,10 @@ seek_request make_seek(time_ns target_ns, bool dragging,
   return r;
 }
 
+bool scrub_origin_is_spurious(time_ns playhead_ns, time_ns target_ns, bool exact) noexcept {
+  return !exact && target_ns <= 0 && playhead_ns > scrub_origin_playhead_ns;
+}
+
 double clamp_rate(double rate) noexcept {
   // The !(rate > 0.0) form also catches NaN, which std::clamp would propagate.
   if (!(rate > 0.0)) return 1.0;
