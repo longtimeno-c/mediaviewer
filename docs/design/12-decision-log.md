@@ -774,7 +774,9 @@ mean rebuilding the AI chrome on the screen vocabulary, which is not this change
 a slot for a third docked island beside the Metadata pane and the folder tree without a layout
 change in the native hosts (`main_mac.mm`, `chrome_host.cpp`). An add-on's `pane` screen is a
 child panel on the Mac and a window placed at the right edge on Windows, with Done and Esc to
-close. A true docked island is a follow-up if an add-on needs one.
+close. A true docked island is a follow-up if an add-on needs one. It overlaps the canvas's right
+side (no reflow). Held on the Mac (moves, resizes, full screen, a new main viewer window: 2026-10-12);
+on Windows only placed at open, see [25](25-open-addons.md) "Screens".
 
 ---
 

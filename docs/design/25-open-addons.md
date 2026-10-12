@@ -482,8 +482,15 @@ How it works:
   add-on gets a `command` event with the paths its `target` names (the marks, else the current
   file; the folder). Context-menu entries are on gallery tiles. Status items are text in the
   command bar.
-- **Screens** open as a window, a docked pane (a window held to the viewer's right edge on both
-  hosts; [12](12-decision-log.md)) or a sheet, each with Done and Esc. A thumbnail grid is
+- **Screens** open as a window, a docked pane or a sheet, each with Done and Esc. The docked pane
+  is not an island in the viewer's layout ([12](12-decision-log.md)): it lies **over** the right
+  side of the canvas, which does not reflow around it. On the Mac it is a child panel held to the
+  right edge of the viewer window's content: it follows the viewer's moves, resizes and full
+  screen (in and out), and moves to whichever viewer window becomes main. On Windows it is a
+  separate window placed at the viewer's right edge when it opens and **not held after that**:
+  moving, resizing or maximising the viewer leaves it where it was, and it is not owned by the
+  viewer window (it does not minimise with it). Holding it needs the viewer's move/size events in
+  the C# host (a WinEvent hook or the host's window procedure), not done yet. A thumbnail grid is
   virtualised (LazyVGrid / ItemsRepeater) and each tile asks the viewer's JPEG-512 cache as it
   appears, cancelled as it leaves.
 - **Removal** (Settings → Add-ons lists every installed slot add-on with Remove): the add-on is

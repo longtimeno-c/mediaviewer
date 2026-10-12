@@ -862,22 +862,25 @@ final class SlotWindows: NSObject, NSWindowDelegate {
         w.makeKeyAndOrderFront(nil)
       }
     case "pane":
-      // Docked to the right edge of the viewer window: a child panel that
-      // moves with it.
+      // Held to the right edge of the viewer window's content (docs/design/25 §10,
+      // decision log 2026-10-11): a child panel over the canvas's right side (the
+      // canvas does not reflow), kept there as the viewer moves, resizes, enters or
+      // leaves full screen, and moved to whichever viewer window becomes main.
       let width = s.width > 0 ? s.width : 320
-      let frame = main.map { NSRect(x: $0.frame.maxX - width, y: $0.frame.minY, width: width,
-                                    height: $0.contentLayoutRect.height) }
-        ?? NSRect(x: 0, y: 0, width: width, height: 600)
-      let p = NSPanel(contentRect: frame, styleMask: [.titled, .closable, .utilityWindow, .resizable],
+      let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: width, height: 600),
+                      styleMask: [.titled, .closable, .utilityWindow, .resizable],
                       backing: .buffered, defer: false)
       p.title = s.title
       p.contentView = host
       p.isReleasedWhenClosed = false
       p.isFloatingPanel = false
       p.becomesKeyOnlyIfNeeded = false
+      // Follows its viewer into a full-screen Space.
+      p.collectionBehavior.insert(.fullScreenAuxiliary)
       p.delegate = self
       windows[address] = p
-      main?.addChildWindow(p, ordered: .above)
+      if let viewer = Self.viewerWindow(preferring: main) { dock(p, to: viewer) }
+      hold(p)
       p.makeKeyAndOrderFront(nil)
     default:
       let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: s.width > 0 ? s.width : 720,
@@ -893,12 +896,72 @@ final class SlotWindows: NSObject, NSWindowDelegate {
     }
   }
 
+  // MARK: the docked pane
+
+  private var paneWatch: [ObjectIdentifier: [NSObjectProtocol]] = [:]
+
+  /// A viewer window (the one AppKit made full-screen-primary), not Settings, an
+  /// add-on window or a panel: `preferring` if it is one, else the main or first visible one.
+  private static func viewerWindow(preferring w: NSWindow?) -> NSWindow? {
+    func isViewer(_ w: NSWindow) -> Bool {
+      !(w is NSPanel) && w.isVisible && w.sheetParent == nil &&
+        w.collectionBehavior.contains(.fullScreenPrimary)
+    }
+    if let w, isViewer(w) { return w }
+    if let m = NSApp.mainWindow, isViewer(m) { return m }
+    return NSApp.windows.first(where: isViewer)
+  }
+
+  /// The pane against the right edge of `viewer`'s content, full content height,
+  /// at the width the person left it.
+  private func dock(_ p: NSPanel, to viewer: NSWindow) {
+    if p.parent !== viewer {
+      p.parent?.removeChildWindow(p)
+      viewer.addChildWindow(p, ordered: .above)
+    }
+    let content = viewer.convertToScreen(viewer.contentLayoutRect)
+    let width = min(p.frame.width, content.width)
+    let frame = NSRect(x: content.maxX - width, y: content.minY, width: width, height: content.height)
+    if frame != p.frame { p.setFrame(frame, display: true) }
+  }
+
+  private func hold(_ p: NSPanel) {
+    let nc = NotificationCenter.default
+    var tokens: [NSObjectProtocol] = []
+    // The viewer it is docked to resized or changed full-screen state: re-dock.
+    for name in [NSWindow.didResizeNotification, NSWindow.didEnterFullScreenNotification,
+                 NSWindow.didExitFullScreenNotification] {
+      tokens.append(nc.addObserver(forName: name, object: nil, queue: .main) { [weak self, weak p] note in
+        MainActor.assumeIsolated {
+          guard let self, let p, let viewer = note.object as? NSWindow, viewer === p.parent else { return }
+          self.dock(p, to: viewer)
+        }
+      })
+    }
+    // Another viewer window became main: the pane goes with it.
+    tokens.append(nc.addObserver(forName: NSWindow.didBecomeMainNotification, object: nil, queue: .main) {
+      [weak self, weak p] note in
+      MainActor.assumeIsolated {
+        guard let self, let p, let w = note.object as? NSWindow, w !== p.parent,
+              let viewer = Self.viewerWindow(preferring: w), viewer === w else { return }
+        self.dock(p, to: viewer)
+      }
+    })
+    paneWatch[ObjectIdentifier(p)] = tokens
+  }
+
+  private func release(_ window: NSWindow) {
+    guard let tokens = paneWatch.removeValue(forKey: ObjectIdentifier(window)) else { return }
+    tokens.forEach { NotificationCenter.default.removeObserver($0) }
+  }
+
   func bringForward(_ address: ScreenAddress) {
     guard let w = windows[address], w.sheetParent == nil else { return }
     w.makeKeyAndOrderFront(nil)
   }
 
   private func close(_ window: NSWindow) {
+    release(window)
     if let parent = window.sheetParent {
       parent.endSheet(window)
     } else {
@@ -910,8 +973,9 @@ final class SlotWindows: NSObject, NSWindowDelegate {
   /// The person closed it (the close button, ⌘W): tell the core, which tells
   /// the add-on.
   func windowWillClose(_ notification: Notification) {
-    guard let window = notification.object as? NSWindow,
-          let address = windows.first(where: { $0.value === window })?.key,
+    guard let window = notification.object as? NSWindow else { return }
+    release(window)
+    guard let address = windows.first(where: { $0.value === window })?.key,
           !closingFromCore.contains(address)
     else { return }
     windows[address] = nil
