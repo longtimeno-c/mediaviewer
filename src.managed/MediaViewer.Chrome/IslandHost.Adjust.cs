@@ -67,6 +67,9 @@ public static partial class IslandHost
     private static TextBlock? _adjustClip;
     private static Canvas? _histCanvas;
     private static Button? _adjustResetButton;
+    private static JobBar? _adjustPreparing;
+    private static Border[]? _adjustRows;
+    private static TextBlock[]? _adjustNames;
     private static bool _updatingAdjust;
 
     private static void DropAdjustUi()
@@ -77,6 +80,9 @@ public static partial class IslandHost
         _adjustClip = null;
         _histCanvas = null;
         _adjustResetButton = null;
+        _adjustPreparing = null;
+        _adjustRows = null;
+        _adjustNames = null;
     }
 
     public static int ShowAdjustPane(IntPtr arg, int sizeBytes) => ShowPanel(
@@ -125,26 +131,38 @@ public static partial class IslandHost
         var col = new StackPanel { Spacing = 10, Padding = new Thickness(14, 4, 14, 14) };
 
         _histCanvas = new Canvas { Height = 96, Background = Brush(ChromeColour.Surface) };
-        col.Children.Add(_histCanvas);
+        // Clipped to radius 4, as the Mac's clipShape (issue #198).
+        col.Children.Add(new Border { CornerRadius = new CornerRadius(RadiusButton), Child = _histCanvas });
         _adjustClip = Text("", Body, UiFontSize - 2);
         col.Children.Add(_adjustClip);
         _adjustStatus = Text("", Body);
         col.Children.Add(_adjustStatus);
+        // "Preparing" has no fraction: an indeterminate bar (the Mac's
+        // ProgressView; ProgressRing cannot load in these islands).
+        _adjustPreparing = new JobBar { IsIndeterminate = true };
+        _adjustPreparing.Root.Visibility = Visibility.Collapsed;
+        col.Children.Add(_adjustPreparing.Root);
 
         _adjustSliders = new Slider[AdjustSpecs.Length];
         _adjustReadouts = new TextBlock[AdjustSpecs.Length];
+        _adjustRows = new Border[AdjustSpecs.Length];
+        _adjustNames = new TextBlock[AdjustSpecs.Length];
         for (int i = 0; i < AdjustSpecs.Length; i++)
         {
             AdjustSpec spec = AdjustSpecs[i];
+            var rowStack = new StackPanel { Spacing = 2 };
             var head = new Grid();
             head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            head.Children.Add(Text(spec.Name, Title));
+            // The focused row's name is Title, the others Body (AdjustView.swift).
+            TextBlock name = Text(spec.Name, Body);
+            head.Children.Add(name);
+            _adjustNames[i] = name;
             TextBlock readout = Text(spec.Format(0), Body);
             Grid.SetColumn(readout, 1);
             head.Children.Add(readout);
             _adjustReadouts[i] = readout;
-            col.Children.Add(head);
+            rowStack.Children.Add(head);
 
             var slider = new Slider
             {
@@ -168,17 +186,81 @@ public static partial class IslandHost
             // Double-click a slider: that parameter back to 0.
             slider.DoubleTapped += (_, _) => slider.Value = 0;
             _adjustSliders[i] = slider;
-            col.Children.Add(slider);
+            rowStack.Children.Add(slider);
+            // The focused row carries a wash (the Mac's primary at 0.08,
+            // radius 6), so the keys below have a visible target.
+            var row = new Border
+            {
+                Child = rowStack,
+                Padding = new Thickness(4, 2, 4, 2),
+                CornerRadius = new CornerRadius(6),
+                Background = Brush(Colors.Transparent),
+            };
+            slider.GotFocus += (_, _) => FocusAdjustRow(index, true);
+            slider.LostFocus += (_, _) => FocusAdjustRow(index, false);
+            _adjustRows[i] = row;
+            col.Children.Add(row);
         }
 
-        _adjustResetButton = new Button { Content = Text("Reset colour", Title), TabIndex = AdjustSpecs.Length };
-        _adjustResetButton.Click += (_, _) => Send(Command.AdjustReset);
+        _adjustResetButton = EditButton("Reset colour", () => Send(Command.AdjustReset), compact: false);
+        _adjustResetButton.TabIndex = AdjustSpecs.Length;
         col.Children.Add(_adjustResetButton);
-        col.Children.Add(Text("Shift+A closes · Esc returns to the photo · Ctrl+S exports", Body, UiFontSize - 3));
+        col.Children.Add(Text("↑ ↓ choose · ← → change (Shift ×10) · 0 zero · R reset · Esc photo · Shift+A closes · Ctrl+S exports",
+                              Body, UiFontSize - 3));
+        // The Mac's keys (AdjustView.swift), on a focused slider: ↑ ↓ choose
+        // a row rather than nudge it, Shift+← → step ten, 0 zeroes the row
+        // and R resets every slider. A focused pane owns its keys
+        // (key_router: focus_kind::pane), so these reach XAML.
+        col.PreviewKeyDown += OnAdjustKey;
 
         body.Children.Add(new ScrollViewer { Content = col, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
         RenderAdjust();
         return root;
+    }
+
+    private static void FocusAdjustRow(int index, bool focused)
+    {
+        if (_adjustRows is null || _adjustNames is null || index >= _adjustRows.Length) return;
+        _adjustRows[index].Background = focused ? Brush(ChromeColour.HoverWash) : Brush(Colors.Transparent);
+        _adjustNames[index].Foreground = Brush(focused ? Title : Body);
+    }
+
+    private static void OnAdjustKey(object sender, Microsoft.UI.Xaml.Input.KeyRoutedEventArgs e)
+    {
+        if (_adjustSliders is null) return;
+        int row = Array.FindIndex(_adjustSliders, s => s.FocusState != FocusState.Unfocused);
+        if (row < 0) return;
+        Slider slider = _adjustSliders[row];
+        bool shift = Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(Windows.System.VirtualKey.Shift)
+            .HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down);
+        switch (e.Key)
+        {
+            case Windows.System.VirtualKey.Up:
+            case Windows.System.VirtualKey.Down:
+            {
+                int n = _adjustSliders.Length;
+                int next = (row + (e.Key == Windows.System.VirtualKey.Up ? n - 1 : 1)) % n;
+                _adjustSliders[next].Focus(FocusState.Keyboard);
+                e.Handled = true;
+                break;
+            }
+            case Windows.System.VirtualKey.Left when shift:
+            case Windows.System.VirtualKey.Right when shift:
+                if (!slider.IsEnabled) return;
+                slider.Value += (e.Key == Windows.System.VirtualKey.Left ? -10 : 10) * AdjustSpecs[row].Step;
+                e.Handled = true;
+                break;
+            case Windows.System.VirtualKey.Number0:
+            case Windows.System.VirtualKey.NumberPad0:
+                if (!slider.IsEnabled) return;
+                slider.Value = 0;
+                e.Handled = true;
+                break;
+            case Windows.System.VirtualKey.R:
+                if (_adjustReadiness == 2) Send(Command.AdjustReset);
+                e.Handled = true;
+                break;
+        }
     }
 
     // Accessibility name without pulling another using into every partial.
@@ -214,6 +296,8 @@ public static partial class IslandHost
             _updatingAdjust = false;
         }
         if (_adjustResetButton is not null) _adjustResetButton.IsEnabled = ready;
+        if (_adjustPreparing is not null)
+            _adjustPreparing.Root.Visibility = _adjustReadiness == 1 ? Visibility.Visible : Visibility.Collapsed;
         RenderHistogram();
     }
 
