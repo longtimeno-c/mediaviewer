@@ -486,7 +486,7 @@ add_library(mv_meta STATIC
   src/meta/clip.cpp
   src/meta/af.cpp
   src/meta/format.cpp
-  src/meta/location.cpp
+  src/meta/location_edit.cpp
   src/meta/tables.cpp
   src/meta/fields.cpp
   src/meta/sidecar.cpp
@@ -993,7 +993,7 @@ if(MV_BUILD_TESTS)
     tests/test_meta_store.cpp
     # PR 12: the metadata writer, and the host-shared write queue.
     tests/test_meta_write.cpp
-    tests/test_meta_location.cpp
+    tests/test_meta_location_edit.cpp
     tests/test_meta_writer_queue.cpp
     src/shell/meta_store.cpp
     src/shell/meta_writer.cpp
