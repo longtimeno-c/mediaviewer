@@ -332,6 +332,8 @@ add_library(mv_io STATIC
   src/io/content_hash.cpp
   src/io/content_hash.h
   src/io/file_port.cpp
+  src/io/rename_stop.cpp
+  src/io/rename_stop.h
   src/io/file_port.h
   src/io/file_port_win.cpp
   src/io/child_process.h
@@ -1099,6 +1101,7 @@ if(MV_BUILD_TESTS)
     tests/test_key_router.cpp
     tests/test_key_router_review.cpp
     tests/test_collision_name.cpp
+    tests/test_rename_stop.cpp
     tests/test_file_ops.cpp
     tests/test_file_jobs.cpp
     tests/test_settings_store.cpp

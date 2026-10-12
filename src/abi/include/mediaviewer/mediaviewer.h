@@ -50,7 +50,7 @@ extern "C" {
  * wrong is a struct layout change nobody notices until a field reads garbage.
  * ------------------------------------------------------------------------- */
 #define MV_ABI_VERSION_MAJOR 0
-#define MV_ABI_VERSION_MINOR 20 /* 0.10: PR 13 / 14 clip jobs and keyframe index (mediaviewer_clip.h); 0.11: issue #44 mv_video_set_hold; 0.12: issue #42 mv_status eject error categories; 0.13: PR 30 keep_ranges; 0.14: Milestone H result listings (mv_folder_open_list); 0.15: mv_folder_item clip flag; 0.16: pages (mv_image_info.page_count, mv_folder_select_page); 0.17: docs/design/25 open add-ons (mv_open_addon_*); 0.18: docs/design/25 contributed commands (mv_addon_commands_json); 0.19: mv_folder_set_hidden_kinds; 0.20: issue #226 mv_folder_entries */
+#define MV_ABI_VERSION_MINOR 21 /* 0.10: PR 13 / 14 clip jobs and keyframe index (mediaviewer_clip.h); 0.11: issue #44 mv_video_set_hold; 0.12: issue #42 mv_status eject error categories; 0.13: PR 30 keep_ranges; 0.14: Milestone H result listings (mv_folder_open_list); 0.15: mv_folder_item clip flag; 0.16: pages (mv_image_info.page_count, mv_folder_select_page); 0.17: docs/design/25 open add-ons (mv_open_addon_*); 0.18: docs/design/25 contributed commands (mv_addon_commands_json); 0.19: mv_folder_set_hidden_kinds; 0.20: issue #226 mv_folder_entries; 0.21: mv_folder_renamed */
 
 /* Packed as (major << 16) | minor. [any-thread] */
 MV_API uint32_t MV_CALL mv_abi_version(void);
@@ -398,6 +398,18 @@ MV_API mv_status MV_CALL mv_folder_get_sort(mv_session_t session, int32_t* out_p
 #define MV_FOLDER_HIDE_AUDIO 0x1u
 #define MV_FOLDER_HIDE_DOCUMENTS 0x2u
 MV_API mv_status MV_CALL mv_folder_set_hidden_kinds(mv_session_t session, uint32_t mask);
+
+/* 0.20 (issue #210). The host is renaming the stop at `old_utf8` to
+ * `new_utf8` (F2, in the open folder); call it from the job once the new
+ * name is chosen and before the file moves. The first relist that finds
+ * `new_utf8` and not `old_utf8` (the folder watcher's) keeps the stop
+ * selected under its new name, where it would otherwise let the next one
+ * slide into its place, and what is on screen stays (no decode; the
+ * navigation cache is keyed by path, so leaving and coming back decodes it
+ * again). A rename that never lands leaves nothing to follow. Opening
+ * another folder forgets it. [any-thread][no-block] */
+MV_API mv_status MV_CALL mv_folder_renamed(mv_session_t session, const char* old_utf8,
+                                           const char* new_utf8);
 
 /* 0.6 (PR 9). The immediate subdirectories of `utf8_dir` for the folder tree:
  * hidden, system and dot directories skipped, sorted case-insensitively. One

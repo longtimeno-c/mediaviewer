@@ -161,6 +161,8 @@ public static partial class IslandHost
         public const int VideoMuted = 1032;
         public const int VideoTrack = 1033;
         public const int VideoLoop = 1034;
+        // Issue #210: the rename popup's Enter; native takes the parked name.
+        public const int Rename = 1035;
         public const int RotateCcw = 96;
         public const int RotateCw = 97;
         public const int FlipHorizontal = 98;
@@ -206,6 +208,7 @@ public static partial class IslandHost
                 DragItems, DragEnded, OpenRecent,
                 EditorTrimGrab, EditorTrimTo, OpenInApp,
                 VideoVolume, VideoMuted, VideoTrack, VideoLoop,
+                Rename,
             };
             unchecked
             {

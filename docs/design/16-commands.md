@@ -212,6 +212,7 @@ Marks are a separate set from the selection, so arrow-key browsing never makes a
 | `F7` / `Shift+F7` | Viewing | Copy marked (else current) to the last destination / pick a folder |
 | `F8` / `Shift+F8` | Viewing | Move, same rule |
 | `Delete` | browse, video | Recycle Bin / Trash, with confirm. Marks if any, else current |
+| `F2` | Viewing | Rename the current file (the gallery's selected cell); also File ▸ Rename… on the Mac |
 | `Ctrl+Shift+C` | Viewing | Copy path(s) as text |
 | `Ctrl+Alt+C` | browse | Copy the current still with edits baked, as PNG (worker thread) |
 | `Ctrl+Shift+S` | Viewing | Share (Windows Share / macOS share sheet) |
@@ -220,6 +221,19 @@ Marks are a separate set from the selection, so arrow-key browsing never makes a
   (hashed while read, read back uncached, compared) and only then the delete. I/O thread.
 - Copy / move never overwrite: a collision becomes `name (2).ext`. The last five destinations are
   remembered.
+- **Rename** (`F2`, issue #210) is the item on screen only, never the marks: a field with the name
+  without its extension, selected (a WinUI flyout over the command bar on Windows, an alert on the
+  Mac); `Enter` renames, `Esc` does not. The extension stays. The pair's other half (RAW+JPEG, a
+  Live Photo's MOV) and each file's XMP sidecar move with it under one stem, so the pair stays a
+  pair and a rating stays with its file; the Mac, which lists both halves, finds the partner by the
+  scan-time pairing rule. Never overwrites: a taken name becomes `name (2)` for the whole group. It
+  runs on the I/O pool (`io::rename_stop`, [24](24-transfer.md) "Rename"); the stop stays selected
+  under its new name and what is on screen is not decoded again (Windows: `mv_folder_renamed`,
+  told before the file moves, so the watcher's relist follows it; Mac: the relist waits for the
+  rename). A mark moves with the file. Refused, with a notice, in a result list, for a Photos
+  library file, while the file has unsaved edits or a metadata write in flight, and for a name a
+  volume would refuse (a slash or backslash, `< > : " | ? *`, a trailing dot or space, Windows
+  device names).
 - **Delete** only uses the Recycle Bin / Trash. Where there is none (a share, some removable
   drives, bin off) the item is refused, not deleted, and the user is told how many. Marks clear
   only for items that succeeded. On the Mac, File ▸ Move to Trash (`⌘⌫`) is off while a text
@@ -451,7 +465,6 @@ No hot-path ABI for commands. Commands invoke existing session calls (`mv_folder
 
 ## Not built
 
-- `F2` rename.
 - `Ctrl+Enter` open in an external editor; set as wallpaper.
 - `Ctrl+Tab` / tabs, and several windows inside one process.
 - `Ctrl+PageUp` / `Ctrl+PageDown` for ICO sizes and HEIC sequences (pages of TIFF, PDF and DOCX are built).

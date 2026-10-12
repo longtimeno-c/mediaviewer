@@ -487,6 +487,7 @@ copy, and check Finder's **Open With** and a Quick Look thumbnail.
 | `F5` | slideshow (fullscreen). In it: `Space` pause, `+` / `-` interval, `.` blackout, `R` shuffle, `Esc` leave. A clip plays to its end before advancing |
 | `F7` / `F8` | copy / move the marked items (or the current one) to the last folder used. `Shift+F7` / `Shift+F8` pick a folder. Never overwrites: a taken name becomes `name (2).ext` |
 | `Delete` | move the marked items (or the current one) to the Recycle Bin, after asking. A drive with no Recycle Bin is refused, never deleted permanently |
+| `F2` | rename the current file (File ▸ Rename… on the Mac). Type the name without its extension; `Enter` renames. Its RAW+JPEG or Live Photo partner and its `.xmp` sidecars are renamed with it. A taken name becomes `name (2)`; nothing is overwritten |
 
 Drop files or a folder on the window, the gallery, or the filmstrip. Drag a
 thumbnail (gallery, filmstrip, or a Local search result) or the current image

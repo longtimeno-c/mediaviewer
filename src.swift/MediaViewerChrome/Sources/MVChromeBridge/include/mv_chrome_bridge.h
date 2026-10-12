@@ -36,6 +36,8 @@ enum MvMenuCmd : int32_t {
   kMenuFlipH, kMenuFlipV, kMenuUndoEdit, kMenuResetEdits, kMenuSaveCopy, kMenuTrim,
   // docs/design/16 "Window"
   kMenuNewWindow,
+  // Issue #210: File > Rename… (F2).
+  kMenuRename,
 };
 typedef enum MvMenuCmd MvMenuCmd;
 

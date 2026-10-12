@@ -226,6 +226,8 @@ add_library(mv_io STATIC
   src/io/content_hash.cpp
   src/io/content_hash.h
   src/io/file_port.cpp
+  src/io/rename_stop.cpp
+  src/io/rename_stop.h
   src/io/file_port.h
   src/io/file_port_mac.cpp
   src/io/child_process.h
@@ -793,6 +795,7 @@ if(MV_BUILD_TESTS)
     tests/test_dir_mac.cpp
     tests/test_key_router.cpp
     tests/test_key_router_review.cpp
+    tests/test_rename_stop.cpp
     tests/test_write_guard.cpp
     tests/test_photos_backup.cpp
     # docs/design/26: virtual items in a result list (the Photos library as a folder).
