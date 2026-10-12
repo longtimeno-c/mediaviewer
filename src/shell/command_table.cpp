@@ -285,11 +285,6 @@ constexpr binding kBindings[] = {
     // PageDown inside one stop; plain PageUp / PageDown still skip ten stops.
     row(key::page_down, mod_ctrl, kBrowse | kIsland, repeat, next_page),
     row(key::page_up, mod_ctrl, kBrowse | kIsland, repeat, prev_page),
-    // Issue #209. Appended. The Shift twin of the loupe (hold `Z`, 100 % at the
-    // cursor): 100 % at the AF point, for a focus check in one key. Browse only:
-    // a clip has no AF points, and with the strip or gallery focused a shifted
-    // letter is typeahead. Held Z (loupe) falls back to browse, so it works there.
-    row(C('Z'), mod_shift, kBrowse, edge, zoom_af_point),
     // Issue #210: F2 renames, as in Explorer. Appended. Not in a slideshow or crop,
     // like every other write; the gallery renames its selected cell.
     row(key::f2, mod_none, kViewing, edge, rename_file),
@@ -312,6 +307,11 @@ constexpr binding kBindings[] = {
     row(C('8'), mod_ctrl | mod_shift, kViewing, edge, label_green),
     row(C('9'), mod_ctrl | mod_shift, kViewing, edge, label_blue),
     row(C('U'), mod_none, kBrowse | kVideo, edge, clear_label),
+    // Issue #209. Appended. The Shift twin of the loupe (hold `Z`, 100 % at the
+    // cursor): 100 % at the AF point, for a focus check in one key. Browse only:
+    // a clip has no AF points, and with the strip or gallery focused a shifted
+    // letter is typeahead. Held Z (loupe) falls back to browse, so it works there.
+    row(C('Z'), mod_shift, kBrowse, edge, zoom_af_point),
 };
 
 // The router's index stores row + 1 in a byte.
@@ -489,7 +489,6 @@ constexpr command_info kCommands[] = {
     {addon_cmd_6, "Add-on command 7", true},
     {addon_cmd_7, "Add-on command 8", true},
     {new_window, "New window"},
-    {zoom_af_point, "Zoom to AF point"},
     {rename_file, "Rename…"},
     {kind_filter_next, "Show next kind"},
     {kind_filter_set, "Show kind", true},
@@ -499,6 +498,7 @@ constexpr command_info kCommands[] = {
     {label_green, "Label green"},
     {label_blue, "Label blue"},
     {clear_label, "Clear label"},
+    {zoom_af_point, "Zoom to AF point"},
 };
 
 const char* named_key(key k) noexcept {
