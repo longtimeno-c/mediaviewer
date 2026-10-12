@@ -15,6 +15,7 @@ TEST_CASE("chrome attach args stay 40 bytes") {
   REQUIRE(sizeof(mv::shell::chrome_show_args) == 16);
   REQUIRE(sizeof(mv::shell::chrome_flags_args) == 8);
   REQUIRE(sizeof(mv::shell::chrome_browse_args) == 32);
+  REQUIRE(sizeof(mv::shell::chrome_meta_args) == 80);  // #290: provenance and position
 }
 
 TEST_CASE("view settings round-trip through the flag word") {

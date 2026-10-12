@@ -544,6 +544,26 @@ target_link_libraries(mv_player
 add_library(mv::player ALIAS mv_player)
 
 # ---------------------------------------------------------------------------
+# mv_meta_parse -- #290 (docs/design/06 "Beyond Exiv2"): the portable, bounds-checked
+# readers for C2PA / JUMBF, PNG text chunks, raw XMP, ICC and container items, and the
+# generator table. Bytes in, rows out: no Exiv2, no FFmpeg, no platform header (D9),
+# so the libFuzzer harnesses (tools/fuzz/fuzz_meta_*.cpp) link it alone.
+# ---------------------------------------------------------------------------
+add_library(mv_meta_parse STATIC
+  src/meta/parse_common.cpp
+  src/meta/c2pa.cpp
+  src/meta/containers.cpp
+  src/meta/xmp_raw.cpp
+  src/meta/generators.cpp
+  src/meta/parse.h
+  src/meta/parse_util.h
+  src/meta/generators.h
+)
+target_link_libraries(mv_meta_parse
+  PUBLIC mv_core
+  PRIVATE mv_codec ZLIB::ZLIB)
+
+# ---------------------------------------------------------------------------
 # mv_meta -- PR 9 metadata read model (docs/design/06). Exiv2 (GPL-2.0, DLL only) for
 # EXIF / IPTC / XMP and maker notes, libavformat for container and per-stream
 # facts. Depends downward only: meta -> {codec, io, core}.
@@ -574,7 +594,7 @@ target_include_directories(mv_meta SYSTEM PRIVATE ${FFMPEG_INCLUDE_DIRS})
 target_link_directories(mv_meta PRIVATE ${FFMPEG_LIBRARY_DIRS})
 target_link_libraries(mv_meta
   PUBLIC mv_core
-  PRIVATE mv_codec mv_io Exiv2::exiv2lib ${FFMPEG_LIBRARIES})
+  PRIVATE mv_meta_parse mv_codec mv_io Exiv2::exiv2lib ${FFMPEG_LIBRARIES})
 add_library(mv::meta ALIAS mv_meta)
 
 # ---------------------------------------------------------------------------
@@ -1060,6 +1080,8 @@ if(MV_BUILD_TESTS)
     tests/test_docx.cpp
     # PR 9 (docs/design/12 2026-09-24)
     tests/test_meta.cpp
+    tests/test_meta_provenance.cpp
+    tests/test_meta_bench.cpp
     tests/test_meta_store.cpp
     # PR 12: the metadata writer, and the host-shared write queue.
     tests/test_meta_write.cpp
@@ -1169,6 +1191,8 @@ if(MV_BUILD_TESTS)
     mv_image
     mv_canvas
     mv_meta
+    mv_meta_parse
+    ZLIB::ZLIB
     mv_edit
     mv_clip
     Exiv2::exiv2lib

@@ -85,6 +85,10 @@ Suites are registered with CTest and run by `ctest` on both platforms; see
    clang-cl + ASan (`-DMV_FUZZ=ON`). CI gates on the eleven single-format image harnesses;
    `decode`, `animation`, `thumbnail`, `pdf` and `docx` run in a quarantined, non-gating step
    (30 s each) until they are seen starting on the runner (`docs/design/12-decision-log.md`).
+   #290 adds one per metadata reader beyond Exiv2 (`fuzz_meta_c2pa`, `_jpeg`, `_png`, `_webp`,
+   `_bmff`, `_xmp`, `_icc`; [06-metadata.md](06-metadata.md#beyond-exiv2-290)), which link only
+   `mv_meta_parse` and abort on a row past the cap or a string that is not valid UTF-8. Their
+   seeds are `tests/data/seeds/{c2pa,xmp,icc}` plus the image families.
 6. **Clean-VM gate** (`test_clean_vm_heic.cpp`, label `cleanvm`). A HEIC decodes with
    `MV_OS_CODEC=0`, and the process has loaded libheif + libde265 and no Media Foundation,
    WIC codec extension or `\WindowsApps\` module. It is its own executable because
