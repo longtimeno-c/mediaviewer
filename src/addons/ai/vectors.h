@@ -38,6 +38,8 @@ class vector_store {
   void add(std::int64_t asset, std::int64_t pts_ms, float generic, float scale,
            std::span<const std::int8_t> q);
   void remove_asset(std::int64_t asset);
+  // Every row of these assets in one pass, with at most one compaction.
+  void remove_assets(std::span<const std::int64_t> assets);
 
   struct hit {
     std::int64_t asset = 0;

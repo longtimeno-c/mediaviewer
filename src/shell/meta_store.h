@@ -12,6 +12,9 @@
 //   * the date-taken sort key for every file in a folder, filled by one
 //     background job, so "sort by date taken" parses each file once per
 //     (path, mtime, size) and never on the UI thread.
+//   * issue #207: the rating and colour label of every file in a folder, for
+//     View > Show's cull filters (Picks, Not rejected, a colour), filled the
+//     same way and dropped by `invalidate` (a sidecar write leaves the key).
 //
 // Thread model: `get` / `peek` / `date_key` are UI-thread calls that only take
 // a short mutex; loads and key scans run on the job system. `on_ready` fires on
@@ -31,6 +34,7 @@
 
 #include "core/job_system.h"
 #include "io/dir.h"
+#include "io/pairing.h"
 #include "meta/meta.h"
 
 namespace mv::shell {
@@ -39,12 +43,14 @@ class meta_store {
  public:
   using loader_fn = std::function<result<meta::metadata>(std::string_view utf8_path)>;
   using date_reader_fn = std::function<std::optional<std::int64_t>(std::string_view utf8_path)>;
+  using cull_reader_fn = std::function<io::cull_marks(std::string_view utf8_path)>;
   // Runs on the pool thread. `path` is the item the record is for.
   using ready_fn = std::function<void(std::string path)>;
 
-  // Defaults read through meta::read / meta::read_date_taken.
+  // Defaults read through meta::read / meta::read_date_taken /
+  // meta::read_cull_marks (also when `culls` is empty).
   meta_store();
-  meta_store(loader_fn loader, date_reader_fn dates);
+  meta_store(loader_fn loader, date_reader_fn dates, cull_reader_fn culls = {});
   ~meta_store();
 
   meta_store(const meta_store&) = delete;
@@ -68,8 +74,22 @@ class meta_store {
   // True once since the last call if keys arrived (the host re-sorts on it).
   [[nodiscard]] bool consume_dates_changed() noexcept;
 
+  // Issue #207: rating + label, as date keys are. `cull_marks_of` answers a
+  // whole listing under one lock (nullopt = not read yet); it is a cache read,
+  // never a file read, so the UI thread's relist can call it. `resolve_cull_marks`
+  // reads the missing ones on one background job (a newer call supersedes it)
+  // and `consume_cull_changed` is true once after any arrived.
+  [[nodiscard]] std::vector<std::optional<io::cull_marks>> cull_marks_of(
+      std::span<const io::dir_entry> entries) const;
+  void resolve_cull_marks(std::vector<io::dir_entry> entries, job_system& jobs,
+                          std::function<void()> on_done);
+  [[nodiscard]] bool consume_cull_changed() noexcept;
+  // Cull reads performed (tests: a second relist must not read again).
+  [[nodiscard]] std::uint64_t cull_reads() const noexcept;
+
   // PR 12: drops every cached record for `utf8_path` (whatever its mtime and
-  // size), so the next `get` reads it again. A write that landed in a sidecar
+  // size), and its rating + label (issue #207), so the next `get` or cull
+  // relist reads it again. A write that landed in a sidecar
   // leaves the file's own mtime and size alone, so the key cannot tell.
   void invalidate(std::string_view utf8_path);
 

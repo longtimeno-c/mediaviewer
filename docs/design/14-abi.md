@@ -1,7 +1,7 @@
 # 14 — The C ABI
 
 The flat C ABI between the hosts' chrome and the C++ core, as declared in
-[`src/abi/include/mediaviewer/`](../../src/abi/include/mediaviewer/) (current version **0.20**).
+[`src/abi/include/mediaviewer/`](../../src/abi/include/mediaviewer/) (current version **0.25**).
 
 The Windows host is C# WinUI over `mediaviewer_core.dll` and calls this ABI through P/Invoke
 ([`src.managed/MediaViewer.Interop`](../../src.managed/MediaViewer.Interop/)). The Mac host links
@@ -247,6 +247,11 @@ mv_status mv_folder_close(mv_session_t);
   and pushes `FOLDER_SELECTED` ([04-image-pipeline.md](04-image-pipeline.md)).
 - `mv_folder_thumbs_visible` makes on-screen thumbs first; skipping it still generates all.
 - The folder is watched; a change relists and pushes `FOLDER_CHANGED`.
+- `mv_folder_entries` (0.20, issue #226) returns the whole listing in one call under one lock:
+  an `mv_folder_entry` per stop (the `mv_folder_item`, the moment, and byte offsets of its
+  name, path, thumb path and pair path in one caller string block). Too small a buffer writes
+  nothing, reports both sizes and returns `MV_ERR_INVALID_ARG`; the host grows its kept buffers
+  and calls again. This is how the WinUI chrome reads a relist, rather than ~8 calls per stop.
 
 ## PR 7 — pairs are one stop (ABI 0.5)
 
@@ -272,6 +277,18 @@ mv_status mv_folder_set_sort(mv_session_t, int32_t packed);
 mv_status mv_folder_get_sort(mv_session_t, int32_t* out_packed);
 /* 0.19: MV_FOLDER_HIDE_AUDIO | MV_FOLDER_HIDE_DOCUMENTS; the opened file and current stop stay */
 mv_status mv_folder_set_hidden_kinds(mv_session_t, uint32_t mask);
+/* 0.20: F2 is about to rename old to new (call before the file moves); the watcher's relist that
+   shows it keeps the stop selected under the new name, with no decode */
+mv_status mv_folder_renamed(mv_session_t, const char* old_utf8, const char* new_utf8);
+/* 0.22: View > Show. MV_FOLDER_HIDE_STILLS | _CLIPS | _RAW | _AUDIO | _DOCUMENTS | _UNMARKED;
+   `kept` (copied) is what _UNMARKED keeps. Its own relist moves off a stop that does not pass.
+   Also 0.23 (issue #207): MV_FOLDER_HIDE_REJECTED | _UNPICKED, and a colour label (1 Red ..
+   5 Purple) << MV_FOLDER_LABEL_SHIFT in MV_FOLDER_HIDE_OTHER_LABELS. Ratings and labels are
+   read on a worker before that relist; choosing one again re-applies it */
+mv_status mv_folder_set_kind_filter(mv_session_t, uint32_t mask, const char* const* kept,
+                                    uint32_t kept_count);
+/* 0.23 (issue #207): the host rewrote this file's rating / label; drop what the filter cached */
+mv_status mv_folder_note_metadata_written(mv_session_t, const char* utf8_path);
 mv_status mv_list_subdirectories(const char* utf8_dir, char* utf8, uint32_t cap, uint32_t* out_bytes);
 ```
 
@@ -428,7 +445,7 @@ opened or probed to set it.
 ## Crash context
 
 `mediaviewer_crash.h`: `mv_crash_context(&info)` returns stable addresses — `slot_count`
-fixed-size NUL-padded ASCII slots (one per decode worker, `slot_bytes` each) and a pointer to the
+fixed-size NUL-padded ASCII slots (one per in-flight decode, claimed by `begin_decode`; `slot_bytes` each) and a pointer to the
 last ABI call's correlation id. The host registers them as annotations with its out-of-process
 crash reporter; the core links no reporter. Slots hold only format family, decoder name and
 version, dimensions, bit depth and correlation id — never a path, filename, bytes or EXIF
@@ -494,7 +511,7 @@ Windows shell turns into live command rows ([25 §7](25-open-addons.md#7-the-con
 `mv_addon_installed_json` and `mv_addon_check_manifest` gain `description`, `hint_on` and
 `hint_text`. The Mac host reads the same manifests directly.
 
-## PRs 58–59 — screens and slots (ABI 0.20)
+## PRs 58–59 — screens and slots (ABI 0.25)
 
 Minor bump, additive, in `mediaviewer_addon.h` ([25](25-open-addons.md#implementation-notes-prs-58-59-2026-10-11)).
 The chrome side, `mv_slots_*`, is **[any-thread][no-block]**: every call copies one of the
@@ -525,7 +542,11 @@ rows and the add-on's `mv.slots.1` interface; table versions still only append (
 | 0.17 | Open add-ons: `mv_open_addon_inspect` / `_install` / `_list_json` / `_remove` / `_theme_json` |
 | 0.18 | Contributed commands: `mv_addon_commands_json`; `description`, `hint_on`, `hint_text` in the installed / check JSON |
 | 0.19 | `mv_folder_set_hidden_kinds` — Settings can leave audio and/or documents out of the listing |
-| 0.20 | Screens and slots: `mv_slots_*` (contributions, info sections, screens, search, badges, status, events, items, surfaces, the local-search provider, thumbnails by path); host table v3 (`MV_ADDON_HOST_API` 3) and `mv.slots.1`; `"slots"` in the installed JSON |
+| 0.20 | `mv_folder_entries` — the whole listing in one call (issue #226) |
+| 0.21 | `mv_folder_renamed` — an F2 rename keeps its stop (issue #210) |
+| 0.22 | `mv_folder_set_kind_filter`, `MV_FOLDER_HIDE_STILLS` / `_CLIPS` / `_RAW` / `_UNMARKED` — View ▸ Show (issue #206) |
+| 0.23 | The cull bits `MV_FOLDER_HIDE_REJECTED` / `_UNPICKED` / `MV_FOLDER_HIDE_OTHER_LABELS` (`MV_FOLDER_LABEL_SHIFT`) and `mv_folder_note_metadata_written` — View ▸ Show's cull filters (issue #207) |
+| 0.25 | Screens and slots: `mv_slots_*` (contributions, info sections, screens, search, badges, status, events, items, surfaces, the local-search provider, thumbnails by path); host table v3 (`MV_ADDON_HOST_API` 3) and `mv.slots.1`; `"slots"` in the installed JSON |
 
 ## Not built
 

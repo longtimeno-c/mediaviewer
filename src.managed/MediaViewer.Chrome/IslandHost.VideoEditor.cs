@@ -109,6 +109,8 @@ public static partial class IslandHost
     private static Canvas? _editorPlayheadMark;
     private static TextBlock? _editorTimecode;
     private static TextBlock? _editorStatus;
+    private static StackPanel? _editorReading;
+    private static Spinner? _editorSpinner;
     private static Button? _editorPlay;
     private static Button? _editorDelete;
     private static Button? _editorUndo;
@@ -326,6 +328,8 @@ public static partial class IslandHost
         _editorPlayheadMark = null;
         _editorTimecode = null;
         _editorStatus = null;
+        _editorReading = null;
+        _editorSpinner = null;
         _editorPlay = _editorDelete = _editorUndo = _editorRedo = _editorExport = _editorExportExact = null;
         _editorAwayName = null;
         _editorAwayVisible = false;
@@ -403,7 +407,7 @@ public static partial class IslandHost
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        _editorPlay = EditButton("Play", () => SendEditor(EditorActions.TogglePlay), tip: "Play / pause  Space");
+        _editorPlay = PaneIconButton(Glyph.Play, "Play", "Space", () => SendEditor(EditorActions.TogglePlay));
         _editorTimecode = Text("", Title, UiFontSize - 2);
         _editorTimecode.VerticalAlignment = VerticalAlignment.Center;
         _editorTimecode.Margin = new Thickness(10, 0, 10, 0);
@@ -412,9 +416,9 @@ public static partial class IslandHost
         _editorUndo = EditButton("Undo", () => SendEditor(EditorActions.Undo), tip: "Undo  Ctrl+Z");
         _editorRedo = EditButton("Redo", () => SendEditor(EditorActions.Redo), tip: "Redo  Ctrl+Shift+Z");
         var left = Row(
-            EditButton("< Frame", () => SendEditor(EditorActions.StepBack), tip: "Previous frame  Left"),
+            PaneIconButton(Glyph.Previous, "Previous frame", "Left", () => SendEditor(EditorActions.StepBack)),
             _editorPlay,
-            EditButton("Frame >", () => SendEditor(EditorActions.StepForward), tip: "Next frame  Right"),
+            PaneIconButton(Glyph.Next, "Next frame", "Right", () => SendEditor(EditorActions.StepForward)),
             _editorTimecode,
             EditorDivider(),
             EditButton("Split", () => SendEditor(EditorActions.Split), tip: "Split at the playhead  Ctrl+B"),
@@ -445,10 +449,20 @@ public static partial class IslandHost
         root.Children.Add(rule);
 
         var area = new Grid { Padding = new Thickness(12, 10, 12, 10) };
+        // The Mac's ProgressView beside the text while the clip is read.
         _editorStatus = Text("Reading the clip…", Body, UiFontSize - 2);
-        _editorStatus.HorizontalAlignment = HorizontalAlignment.Center;
         _editorStatus.VerticalAlignment = VerticalAlignment.Center;
-        area.Children.Add(_editorStatus);
+        _editorSpinner = new Spinner(16);
+        _editorReading = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        _editorReading.Children.Add(_editorSpinner.Root);
+        _editorReading.Children.Add(_editorStatus);
+        area.Children.Add(_editorReading);
         _editorTrack = new EditorTrackCanvas
         {
             Height = RulerH + TrackGap + VideoH + TrackGap + AudioH + 4,
@@ -608,7 +622,12 @@ public static partial class IslandHost
             AutomationProperties_SetName(_editorTimecode,
                 $"Playhead {EditorTimecode(EditorShownPlayhead)} of {EditorTimecode(_editorLengthNs)}");
         }
-        if (_editorPlay is not null) SetButtonText(_editorPlay, _editorPlaying ? "Pause" : "Play");
+        if (_editorPlay is not null)
+        {
+            if (_editorPlay.Content is FontIcon icon) icon.Glyph = _editorPlaying ? Glyph.Pause : Glyph.Play;
+            ToolTipService.SetToolTip(_editorPlay, _editorPlaying ? "Pause  Space" : "Play  Space");
+            AutomationProperties_SetName(_editorPlay, _editorPlaying ? "Pause" : "Play");
+        }
         if (!full)
         {
             MoveEditorPlayhead();
@@ -619,7 +638,8 @@ public static partial class IslandHost
         if (_editorRedo is not null) _editorRedo.IsEnabled = _editorCanRedo;
         if (_editorExport is not null) _editorExport.IsEnabled = _editorEdited;
         if (_editorExportExact is not null) _editorExportExact.IsEnabled = _editorEdited;
-        if (_editorStatus is not null) _editorStatus.Visibility = _editorReady ? Visibility.Collapsed : Visibility.Visible;
+        if (_editorReading is not null) _editorReading.Visibility = _editorReady ? Visibility.Collapsed : Visibility.Visible;
+        if (_editorSpinner is not null) _editorSpinner.Active = !_editorReady;
         if (_editorAwayName is not null) _editorAwayName.Text = _editorName;
         DrawEditorTrack();
     }
