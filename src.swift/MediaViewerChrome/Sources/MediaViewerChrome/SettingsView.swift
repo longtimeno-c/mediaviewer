@@ -30,6 +30,9 @@ final class SettingsStore: ObservableObject {
   /// Set = folders list the kind (settings.h kSettingShow*). Off by default.
   static let showAudio: Int32 = 1 << 12
   static let showDocuments: Int32 = 1 << 13
+  /// #345: set = the AI badge is hidden (settings.h kSettingHideAiBadge), so the
+  /// badge is on by default and in every word saved before the bit existed.
+  static let hideAiBadge: Int32 = 1 << 14
 
   @Published private(set) var visible = false
   @Published private(set) var flags: Int32 = 0
@@ -177,12 +180,14 @@ private struct SettingsToggle: View {
   let title: String
   let detail: String
   let bit: Int32
+  /// The bit means "off" (a setting that is on by default).
+  var inverted = false
   @ObservedObject var store: SettingsStore
   var body: some View {
     SettingsRow(title: title, detail: detail) {
       Toggle(title, isOn: Binding(
-        get: { store.flags & bit != 0 },
-        set: { store.setFlag(bit, $0) }))
+        get: { (store.flags & bit != 0) != inverted },
+        set: { store.setFlag(bit, $0 != inverted) }))
         .toggleStyle(.switch)
         .fixedSize()
     }
@@ -266,6 +271,11 @@ struct SettingsView: View {
           Toggle("Descending order", isOn: Binding(get: { store.sortDescending }, set: { store.sortDescending = $0 }))
             .toggleStyle(.switch).fixedSize()
         }
+        // #345 (docs/design/06 "The AI badge"): on by default (owner, 2026-10-11).
+        section("Viewer")
+        SettingsToggle(title: "Show a badge on AI-generated images",
+                       detail: "When a file says it was made by an AI tool, mark it in the corner. Files that say nothing get no mark.",
+                       bit: SettingsStore.hideAiBadge, inverted: true, store: store)
         section("File types")
         SettingsToggle(title: "Show audio files",
                        detail: "List MP3, M4A and M4P files in folders. A file you open directly still opens.",

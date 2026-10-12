@@ -12,6 +12,7 @@
 
 #include <cstdint>
 #include <iterator>
+#include <algorithm>
 #include <string>
 
 #include "core/result.h"
@@ -460,6 +461,25 @@ inline constexpr std::int32_t kMetaFactLocationInOriginal = 1 << 5;  // the orig
 
 static_assert(sizeof(chrome_meta_args) == 80, "keep in sync with ChromeMetaArgs");
 
+// #345 (docs/design/06 "The AI badge"): the canvas's AI-generated badge, a small
+// island of its own in the bottom-right (shell/ai_badge.h decides the text).
+// Strings are UTF-8, valid for the call only. Hidden: the island is parked at
+// x, y with no content.
+struct chrome_ai_badge_args {
+  std::int32_t visible;
+  std::int32_t x;
+  std::int32_t y;
+  std::int32_t width;
+  std::int32_t height;
+  std::int32_t title_len;
+  std::uint64_t title;     // "Made with ChatGPT"
+  std::uint64_t evidence;  // "Content Credentials (C2PA): AI-generated (trainedAlgorithmicMedia)"
+  std::int32_t evidence_len;
+  std::int32_t reserved;
+};
+
+static_assert(sizeof(chrome_ai_badge_args) == 48, "keep in sync with ChromeAiBadgeArgs");
+
 // PR 12: what the pane's rating, comment and Revert show. A change still in the
 // write queue already counts, so a key or a click shows at once.
 struct chrome_meta_edit_args {
@@ -665,6 +685,37 @@ inline constexpr int kTransportSideDip = 16;    // minimum gap to the window's s
   return static_cast<int>((kTransportDip * static_cast<int>(dpi) + 48) / 96);
 }
 
+// #345: the AI badge, the Mac's size (AIBadgeView.swift): a 44 x 20 DIP capsule,
+// 16 DIP in from the right (or from a right-hand pane), 10 DIP above the
+// filmstrip or the bottom edge, and above a clip's transport bar.
+inline constexpr int kAiBadgeWidthDip = 44;
+inline constexpr int kAiBadgeHeightDip = 20;
+inline constexpr int kAiBadgeSideDip = 16;
+inline constexpr int kAiBadgeGapDip = 8;  // above the transport bar
+
+struct chrome_rect {
+  int x = 0;
+  int y = 0;
+  int width = 0;
+  int height = 0;
+};
+
+// Pure, for the host test. `bottom_px`: the filmstrip's height or 0; `right_px`:
+// a right-hand pane's width or 0; `clip`: the transport bar is up.
+[[nodiscard]] inline chrome_rect ai_badge_rect(int width, int height, int bottom_px, int right_px, bool clip,
+                                               std::uint32_t dpi) noexcept {
+  if (dpi == 0) dpi = 96;
+  const auto px = [dpi](int dip) { return static_cast<int>((dip * static_cast<int>(dpi) + 48) / 96); };
+  chrome_rect r;
+  r.width = px(kAiBadgeWidthDip);
+  r.height = px(kAiBadgeHeightDip);
+  int above = bottom_px + px(kTransportMarginDip);
+  if (clip) above += chrome_transport_height_px(dpi) + px(kAiBadgeGapDip);
+  r.x = std::max(width - right_px - px(kAiBadgeSideDip) - r.width, 0);
+  r.y = std::max(height - above - r.height, 0);
+  return r;
+}
+
 // IslandWindow ids of the islands that classify as focus_kind::pane, past the
 // focus kinds: metadata, folder tree (PR 9), adjust (PR 11), Edit workspace
 // (PR 29), Jobs (PR 13). The C# side numbers them the same (IslandHost.cs).
@@ -784,6 +835,11 @@ class chrome_host {
   // #352: true when a kMetaEditDropDraft only closed an in-pane confirmation
   // (the Location remove): the pane keeps the keyboard, so Esc stops there.
   bool set_meta_edit(std::int32_t rating, const std::string& comment, std::int32_t flags) noexcept;
+  // #345: the AI badge (chrome_ai_badge_args). Optional like the panes; a call
+  // that changes nothing is not sent. Never touches the canvas or a present.
+  void show_ai_badge(bool visible, const chrome_rect& at, const std::string& title,
+                     const std::string& evidence) noexcept;
+  [[nodiscard]] bool ai_badge_visible() const noexcept { return panels_attached_ && ai_badge_visible_; }
 
   // PR 11: the adjust pane, a third panel island on the right (it and the
   // metadata pane share that edge; the host shows one at a time). Optional
@@ -992,6 +1048,12 @@ class chrome_host {
   chrome_entry_fn show_adjust_pane_ = nullptr;
   chrome_entry_fn set_adjust_view_ = nullptr;
   chrome_entry_fn set_meta_edit_ = nullptr;
+  chrome_entry_fn show_ai_badge_ = nullptr;  // #345, optional
+  bool ai_badge_visible_ = false;
+  bool ai_badge_sent_ = false;
+  chrome_rect ai_badge_at_{};
+  std::string ai_badge_title_;
+  std::string ai_badge_evidence_;
   chrome_entry_fn show_jobs_pane_ = nullptr;  // PR 13 / 14
   chrome_entry_fn set_trim_ = nullptr;        // PR 13
   chrome_entry_fn show_edit_pane_ = nullptr;  // PR 29

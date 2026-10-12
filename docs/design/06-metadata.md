@@ -130,6 +130,69 @@ The hosts get these as POD next to the tables: `chrome_meta_args` (Windows, 80 b
 `mv_chrome_meta_facts_get` / `mv_chrome_meta_made_with` (Mac bridge); see
 [14-abi.md](14-abi.md).
 
+`summary::ai_evidence` (#345) is the deciding fact as one line for a person, most authoritative
+first: an AI source type ("Content Credentials (C2PA): AI-generated (trainedAlgorithmicMedia)",
+or "Includes AI-generated elements (compositeWithTrainedAlgorithmicMedia)" for a composite; the
+XMP term reads "IPTC digital source type (XMP): …"), else the field whose generator matched
+("XMP CreatorTool: Midjourney", value capped at 80 bytes), else the PNG generator chunks. It is
+empty whenever `ai_generated` is false.
+
+## The AI badge (#345)
+
+When the item on screen says it was AI-made, a small badge — a sparkle and "AI", 44 × 20 pt — sits
+in the bottom-right of the canvas: 16 pt in from the right (or from a right-hand pane), 10 pt above
+the filmstrip or the bottom edge, and above a clip's transport bar. Hover or keyboard focus shows
+"Made with <generator>" (or "AI-generated" when nothing names the tool) and the evidence line.
+**Positive evidence only: a file that says nothing gets no badge, and there is never a "not AI"
+mark.** The text is decided once in `shell/ai_badge.h`, shared by both hosts.
+
+- **Chrome, not canvas.** SwiftUI (`AIBadgeView.swift`, an `NSHostingView` over the
+  `CAMetalLayer`) and WinUI (`IslandHost.AiBadge.cs`, its own island, like the transport) draw
+  it. Showing, hiding or hovering it never touches the input snapshot, so a still with the badge
+  up idles at 0 presents. Switching the setting skips the snapshot poke the other view settings
+  make. Hidden under the gallery, Settings and the Video Editor (and, on Windows, with fullscreen
+  chrome hidden).
+- **Where the answer comes from, pane closed.** The full read is 7–40 ms of Exiv2 or libavformat per file and
+  only runs when something shows metadata. The badge asks `meta_store::provenance` instead: a full
+  record already held answers it; otherwise `meta::probe_provenance`
+  ([`src/meta/probe.h`](../../src/meta/probe.h)) runs once on the pool, after the same 90 ms
+  pause as a metadata read, so held arrows probe nothing and nothing sits ahead of the picture.
+  The probe reads only where provenance lives, by seeking, and feeds the same readers and
+  `derive_provenance`:
+
+  | File | What the probe reads |
+  |---|---|
+  | JPEG | APP11 (C2PA), the first APP1 XMP and APP1 EXIF IFD0 `Software`; other segments stepped over unread |
+  | PNG | `caBX`, text chunks (the first XMP `iTXt` included), `eXIf`; image data skipped by seeking |
+  | WebP | the first `EXIF` and `XMP ` chunks |
+  | TIFF and TIFF-based RAW | IFD0 `Software` and XMP (tag 700): TIFF, DNG, CR2, NEF, ARW, PEF, ORF (`IIRO` / `IIRS` / `MMOR`), RW2 (`IIU\0`) |
+  | RAF | the embedded JPEG's header segments, through the offset and length at bytes 84 / 88 |
+  | CR3 | `moov`'s Canon box (`CMT1` is an IFD0) and the top-level XMP `uuid` |
+  | HEIF, AVIF | the top-level C2PA box; the `meta` box's first `Exif` item and first `application/rdf+xml` mime item, through `iinf` / `iloc` (file offsets or `idat`) |
+  | MP4, MOV | the top-level C2PA box and XMP `uuid`; `moov` found wherever it sits, its children's headers walked to `udta` / `meta` alone: `©swr`, `©too` (QuickTime strings or iTunes `data`), the `com.apple.quicktime.software` key, `udta/XMP_` |
+
+  Each extent is capped (1 MB XMP, 256 KB EXIF, 1 MB for a HEIF `meta`, a clip's `udta` / `meta`
+  or CR3's Canon box); the first instance of each kind is kept, as the full read keeps; every byte
+  read from the file counts against one budget (a largest C2PA box plus 1 MB). A file that would
+  need more is "unknown": no badge, never a longer read. An XMP sidecar is not read: sidecars are
+  the full read's, and MediaViewer writes only ratings and edits there. The full read merges the
+  probe's evidence for the fields its own readers miss (a clip's XMP; PNG text or a C2PA store
+  past its 8 MB prefix — C2PA only when the prefix held no store, so a store is never parsed
+  twice), so the pane and the badge always agree; tests hold the two to each other fixture by fixture (`[probe]`), and
+  `fuzz_meta_probe` fuzzes the whole walk. Cost (`mv_tests "[.perf-meta]"`, warm, median): 38 µs
+  for a 6 MP camera JPEG against 15 ms for the full read, 49 µs for a 60 s 1080p MOV (moov at the
+  end) against 12 ms, 32–93 µs for DNG / NEF / ARW, 307 µs for a CR3, 54 µs for a HEIC. Answers are
+  kept in their own 1 024-entry LRU keyed by path + mtime + size; a cached answer shows at once on
+  the Mac.
+- **Setting.** *Settings → Viewer → "Show a badge on AI-generated images"*, on by default (owner,
+  2026-10-11). Stored inverted as `kSettingHideAiBadge` (bit 14 of the view flags; `[view]
+  ai_badge` in the Windows ini, `mv.viewFlags` on the Mac), so settings saved before it read as on.
+  Off hides the badge at once and stops the probes; no relaunch.
+- **Accessibility.** Named "AI-generated" for VoiceOver and Narrator, with the title and evidence
+  as its value / help text. Reached by keyboard focus in the chrome's order (Mac: the key-view
+  loop; Windows: `Tab` off the end of the command bar, before the canvas). It takes no keys of its
+  own: with it focused the router still runs the viewer's commands, as with the command bar.
+
 ## Writing
 
 [`src/meta/write.h`](../../src/meta/write.h). Single file, one change set at a time; worker

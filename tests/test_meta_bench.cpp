@@ -3,7 +3,8 @@
 // #290: what one meta::read costs, for the before / after numbers CLAUDE.md asks of
 // a change on a worker path (docs/DEVELOPMENT.md "Performance suite"). Hidden; uses
 // only the public read API so the same file builds against a base checkout:
-//   mv_tests "[.perf-meta]"     (MV_BENCH_ROUNDS, default 40; MV_BENCH_CLIP=a.mp4 adds a clip)
+//   mv_tests "[.perf-meta]"     (MV_BENCH_ROUNDS, default 40; MV_BENCH_CLIP=a.mp4 adds a clip;
+//                                MV_BENCH_DIR=folder adds every file in it)
 #include <catch2/catch_test_macros.hpp>
 
 #include <exiv2/exiv2.hpp>
@@ -19,6 +20,10 @@
 
 #include "fixtures.h"
 #include "meta/meta.h"
+#if __has_include("meta/probe.h")
+#include "meta/probe.h"
+#define MV_HAVE_PROBE 1
+#endif
 
 namespace {
 
@@ -98,9 +103,33 @@ TEST_CASE("perf: one metadata read per format", "[.perf-meta]") {
   }
   // A real clip, when given (the read model's clip path is libavformat's).
   if (const char* clip = std::getenv("MV_BENCH_CLIP"); clip && fs::exists(clip)) files.emplace_back("clip", clip);
+  // #345: every file of a folder (RAW, HEIC, clips) for the probe's per-type cost.
+  if (const char* more = std::getenv("MV_BENCH_DIR"); more && fs::is_directory(more)) {
+    std::vector<fs::path> extra;
+    for (const auto& e : fs::directory_iterator(more)) {
+      if (e.is_regular_file()) extra.push_back(e.path());
+    }
+    std::sort(extra.begin(), extra.end());
+    for (const auto& p : extra) files.emplace_back(p.filename().string(), p.string());
+  }
   for (const auto& [label, path] : files) {
     (void)median_us(path, 3);  // warm the page cache, as the published runs are
     std::printf("[perf-meta] %-20s median %.1f us over %d reads\n", label.c_str(), median_us(path, rounds), rounds);
+#ifdef MV_HAVE_PROBE
+    // #345: the AI badge's provenance probe on the same file.
+    std::vector<double> t;
+    for (int i = 0; i < rounds; ++i) {
+      const auto a = std::chrono::steady_clock::now();
+      (void)mv::meta::probe_provenance(path);
+      t.push_back(std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - a).count());
+    }
+    std::sort(t.begin(), t.end());
+    const auto said = mv::meta::probe_provenance(path);
+    const auto full = mv::meta::read(path);
+    std::printf("[perf-meta] %-20s probe median %.1f us (made with \"%s\"%s; full read \"%s\")\n", label.c_str(),
+                t[t.size() / 2], said.made_with.c_str(), said.ai_generated ? ", AI" : "",
+                full ? full->s.made_with.c_str() : "?");
+#endif
   }
   std::error_code ec;
   fs::remove_all(dir, ec);

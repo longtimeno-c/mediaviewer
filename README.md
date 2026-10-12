@@ -142,7 +142,8 @@ The transport floats over the video and gets out of the way after a moment of pl
 
 `I` opens a metadata pane: a summary card, a searchable tree of every EXIF, IPTC and XMP tag, and a per-stream inspector
 for clips. `O` overlays camera, exposure and date on the image, `Shift+O` draws autofocus points, and `Shift+I` is a
-one-pixel colour eyedropper (`Ctrl+C` copies the value).
+one-pixel colour eyedropper (`Ctrl+C` copies the value). A file that says it was made by an AI tool gets a small
+**AI** badge in the corner (hover to see which tool and why); switch it off in **Settings → Viewer**.
 
 ## Colour done right
 

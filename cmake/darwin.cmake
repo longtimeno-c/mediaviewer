@@ -341,6 +341,8 @@ add_library(mv_meta_parse STATIC
   src/meta/containers.cpp
   src/meta/xmp_raw.cpp
   src/meta/generators.cpp
+  src/meta/probe.cpp
+  src/meta/probe.h
   src/meta/parse.h
   src/meta/parse_util.h
   src/meta/generators.h
@@ -360,6 +362,7 @@ find_package(exiv2 CONFIG REQUIRED)
 
 add_library(mv_meta STATIC
   src/meta/read.cpp
+  src/meta/probe_file.cpp
   src/meta/still.cpp
   src/meta/carried.cpp
   src/meta/clip.cpp
@@ -857,6 +860,8 @@ if(MV_BUILD_TESTS)
     tests/test_meta_provenance.cpp
     tests/test_meta_bench.cpp
     tests/test_meta_store.cpp
+    # #345: the canvas's AI badge (setting, evidence text, the store's probe).
+    tests/test_ai_badge.cpp
     # PR 12: the metadata writer, and the host-shared write queue.
     tests/test_meta_write.cpp
     tests/test_meta_location_edit.cpp

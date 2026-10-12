@@ -277,6 +277,9 @@ public static partial class IslandHost
         // Set = folders list the kind (settings.h kSettingShow*). Off by default.
         public const int ShowAudio = 1 << 12;
         public const int ShowDocuments = 1 << 13;
+        // #345: set = the AI badge is hidden (settings.h kSettingHideAiBadge), so
+        // it is on by default and in every word saved before the bit existed.
+        public const int HideAiBadge = 1 << 14;
     }
 
     // Telemetry is absent from this initial word on purpose: until native
@@ -822,11 +825,14 @@ public static partial class IslandHost
 
     // docs/design/16 Focus: the rings Tab crosses, in screen reading order —
     // command bar, folder tree, gallery, the right column (Edit, metadata,
-    // adjust, jobs), transport, filmstrip — and then the canvas. A ring is
-    // visible while its island has content (hidden ones are dropped and parked).
+    // adjust, jobs), transport, filmstrip, the AI badge while it is up (#345:
+    // it sits on the canvas, so it is the last ring before it) — and then the
+    // canvas. A ring is visible while its island has content (hidden ones are
+    // dropped and parked).
     private static DesktopWindowXamlSource?[] FocusOrder() => new[]
     {
         _source, _tree, _gallery, _editPane, _metaPane, _adjustPane, _jobsPane, _transport, _filmstrip,
+        _aiBadgeShown ? _aiBadge : null,
     };
 
     private static bool _focusWalking;

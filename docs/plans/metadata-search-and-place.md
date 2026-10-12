@@ -20,8 +20,14 @@ into `docs/design/06-metadata.md` (pane, place, badge), `16-commands.md` (search
 `docs/design/06-metadata.md` ("Beyond Exiv2", "Made with and AI provenance", position as numbers)
 and `14-abi.md` (the chrome bridges' facts). Its Windows half (the native C++ and the running
 WinUI pane) is owed to Windows CI and a Windows run. #291 is open with no PR. Place and the map
-are #344 (slices 2–3 and the place half of slice 4); the badge is #345 (slice 5). Slices 2–5 can
-start from `summary::where`, `summary::made_with` and `summary::ai_generated`.
+are #344 (slices 2–3 and the place half of slice 4). Slices 2–4 can start from `summary::where`
+and `summary::made_with`.
+
+**Slice 5 (#345) is built** on branch `feature/issue-345-ai-badge` (on top of #290) and folded
+into `docs/design/06-metadata.md` ("The AI badge"), `16-commands.md` (Focus, Settings) and
+`14-abi.md`. The badge gets its answer with the pane closed from a bounded provenance probe
+(`meta/probe.h`) on the pool, after the metadata pause. Its Windows half (native C++, the island,
+the running chrome) is owed to Windows CI and a Windows run.
 
 ## 0. Rules this touches
 
@@ -169,7 +175,7 @@ arrow-held browsing with the pane open shows no regression (`--browse-soak`, alt
   noise (alternated runs, `--browse-soak --json`).
 - The 3 → 4 migration survives a kill mid-step (the #176 test pattern).
 
-### Slice 5 — AI-generated badge on the canvas
+### ~~Slice 5 — AI-generated badge on the canvas (#345)~~ — built; see doc 06 "The AI badge". The text below is kept for the verify.
 
 - **Badge:** when `summary.ai_generated` is true, a small badge (a sparkle glyph plus "AI", about
   20 pt) sits in the bottom-right of the canvas, above the transport strip on clips. It has a

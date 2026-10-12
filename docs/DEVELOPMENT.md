@@ -943,7 +943,9 @@ cmake -S . -B build-fuzz -A x64 -T ClangCL -DMV_FUZZ=ON -DMV_BUILD_TESTS=OFF
 cmake --build build-fuzz --config Release --target mv_fuzzers
 .\tools\fuzz\run.ps1 -BuildDir build-fuzz -Seconds 60      # -Harness png,gif to pick
 # #290: the metadata readers (meta/parse.h) have harnesses too: meta_c2pa, meta_jpeg,
-# meta_png, meta_webp, meta_bmff, meta_xmp, meta_icc. They link mv_meta_parse alone, so on
+# meta_png, meta_webp, meta_bmff, meta_xmp, meta_icc, and (#345) meta_probe, the AI badge's
+# provenance probe (add src/meta/probe.cpp src/codec/probe.cpp to the line below, seeds
+# tests/data/seeds/probe). They link mv_meta_parse alone, so on
 # a Mac they build with Homebrew LLVM (Apple clang ships no libFuzzer), e.g.:
 #   /opt/homebrew/opt/llvm/bin/clang++ -std=c++20 -fsanitize=fuzzer,address,undefined -fno-rtti -Isrc \
 #     -Itools/fuzz tools/fuzz/fuzz_meta_png.cpp src/meta/{parse_common,c2pa,containers,xmp_raw,generators}.cpp \
@@ -1380,6 +1382,51 @@ integers. There is no free-text field to put a filename in.
 There is no upload endpoint yet, exactly as there is none for crash reports.
 
 ## Where this actually is
+
+### The AI badge on the canvas (#345, docs/plans/metadata-search-and-place.md slice 5, 2026-10-12)
+
+A file that says it was AI-made gets a small "AI" badge in the bottom-right of the canvas, with
+"Made with …" and the evidence on hover or focus; *Settings → Viewer* switches it off
+([06-metadata.md](design/06-metadata.md#the-ai-badge-345)). The answer comes from a bounded
+provenance probe (`meta/probe.h`) on the pool, after the metadata pause, so the pane need not be
+open. The probe covers JPEG, PNG, WebP, TIFF, TIFF-based RAW (DNG, CR2, NEF, ARW, PEF, ORF, RW2),
+RAF, CR3, HEIF / AVIF items (Exif, XMP) and clips (moov udta / meta: (C)swr, (C)too, the
+QuickTime software key, XMP), by seeking, under one byte budget. Tests: `mv_tests "[ai-badge]"`
+(the setting's default, the evidence lines, the badge text, the store's probe cache) and
+`"[probe]"` (the probe gives the full read's answer, fixture by fixture — HEIF items in mdat and
+idat, MOV (C)swr, MP4 (C)too, QuickTime keys, clip XMP, DNG / ORF / RW2, CR3 CMT1, RAF — plus
+WebP, truncated and mutated files). `mv_tests "[.perf-meta]"` prints the probe's cost and answer
+beside each full read (`MV_BENCH_DIR=folder` adds every file in it).
+
+- **Mac (M-series, 2026-10-12):** compiles clean, app and SwiftUI chrome included. `mv_tests` 681
+  cases (674 passed, 8 skipped). Probe vs full read, warm, median of 40 (one fuzzer running on
+  another core): camera JPEG 6 MP 38 µs vs 15.0 ms, PNG 2.2 MP 685 µs vs 3.4 ms, HEIC seed 23 vs
+  92 µs, libheif example HEIC 54 vs 691 µs, WebP 23 vs 97 µs, CR3 (Canon EOS R6) 307 µs vs 18.2 ms,
+  NEF 93 µs vs 38.6 ms, DNG 32 µs vs 21.7 ms, ARW 48 µs vs 19.8 ms, 60 s 1080p MP4 / MOV (moov at
+  the end) 42–49 µs vs 12.7–13.1 ms; the MOV with `com.apple.quicktime.software=Sora` reads "Sora,
+  AI" from both. `fuzz_meta_probe` (Homebrew LLVM, ASan + UBSan): 661 s, 8.2 M executions, coverage 4 856, no finding. In a copy of the app
+  under its own bundle id: the badge shows on a ChatGPT-style C2PA JPEG and not on a camera JPEG,
+  is named "AI-generated" in the accessibility tree, and switching the setting off and on hides
+  and restores it with no relaunch. The hover / focus popover and VoiceOver reading it were not
+  checked by hand.
+  `--browse-soak` on a 14-file folder (12 camera JPEGs from the RAW samples, 2 with a C2PA store),
+  base and new alternated, three runs each: cold jumps median 60.1 / 53.6 / 59.6 ms base vs
+  39.6 / 63.6 / 64.7 ms new (the last new run voided: window covered 0.7 s); cached arrows
+  0.38 / 0.41 / 0.48 vs 0.44 / 0.47 / 0.46 ms. First pixel (`--soak 6 --static`, three
+  alternated runs): AI JPEG 61 / 79 / 63 ms base vs 48 / 124 / 57 new, camera JPEG 31 / 39 / 38
+  vs 34 / 40 / 26; full resolution overlaps the same way. Held arrows were not measured: the Mac
+  `--browse-soak` has no held phase (the probe is never submitted while keys repeat; the 90 ms
+  pause restarts on each arrow). Idle with the badge up: on this in-use machine every 20 s
+  static soak presented, base included (badge on 58 / 19 / 14, badge off 27 / 27 / 27, base 53 /
+  13 / 28): the badge's own zero is not established by measurement. PR 1 gate: the animated soak
+  passed once (3 600 frames, p99 16.95 ms, max 22.9 ms) and the idle soak had 0 presents but
+  failed the CPU line (1.9 %), as the base did (1.75 %); a second new run stalled 22 s with the
+  window covered. Owed to a quiet run.
+- **Windows:** the C# chrome compiles on the Mac and passes the WinUI control check by script.
+  The native half (`main.cpp`, `chrome_host.*`, `chrome_ai_badge_args`, the geometry test in
+  `test_chrome_host.cpp`) and the running island are compiled and run only by CI and a Windows
+  machine: not yet. The island's corners are filled with the chrome's canvas colour, not see-
+  through: an island cannot blur the swapchain under it.
 
 ### Every tag and AI provenance in the Metadata pane (#290, docs/plans/metadata-search-and-place.md slice 1, 2026-10-11)
 
