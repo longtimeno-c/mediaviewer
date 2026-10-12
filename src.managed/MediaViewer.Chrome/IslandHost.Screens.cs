@@ -1032,6 +1032,23 @@ public static partial class IslandHost
         }
     }
 
+    // UI thread, at XAML shutdown: every screen window closes while its runtime is
+    // still alive. Closing from here is not the person closing it, so the core is
+    // not told (the add-ons are stopping too).
+    private static void CloseScreenWindowsForShutdown()
+    {
+        foreach (ScreenAt at in ScreenWindows.Keys.ToList())
+        {
+            ClosingFromCore.Add(at);
+            try { ScreenWindows[at].Window.Close(); }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex.Message); }
+            ForgetSurfaces(at);
+        }
+        ScreenWindows.Clear();
+        ClosingFromCore.Clear();
+        LiveSurfaces.Clear();
+    }
+
     private static UIElement BuildScreenRoot(JsonElement s, ScreenAt at, string place)
     {
         var root = new Grid { Background = Brush(Canvas), RequestedTheme = IslandTheme, Padding = new Thickness(12) };

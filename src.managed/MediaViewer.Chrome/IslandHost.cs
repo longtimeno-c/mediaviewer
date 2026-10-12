@@ -737,6 +737,9 @@ public static partial class IslandHost
         }
         _busyDelay?.Stop();
         _busyDelay = null;
+        // docs/design/25 PR 58: add-on screen windows are WinUI Windows on this
+        // thread's XAML runtime; they close before it goes.
+        CloseScreenWindowsForShutdown();
         ShutdownTheme();
         _xaml?.Dispose();
         _xaml = null;
