@@ -1,0 +1,9 @@
+{
+  "$comment": "The repo's overlay ports, as the root vcpkg-configuration.json uses them: without this the Mac dynamic manifest builds the stock LibRaw and its OpenMP colour-loop patch never applies (issue #287). Paths are relative to this file. The Mac triplets are also passed with --overlay-triplets; naming them here keeps a bare install working.",
+  "overlay-ports": [
+    "../../vcpkg/ports"
+  ],
+  "overlay-triplets": [
+    "../triplets"
+  ]
+}

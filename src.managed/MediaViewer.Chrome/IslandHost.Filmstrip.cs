@@ -64,6 +64,7 @@ public static partial class IslandHost
             _filmstrip = new DesktopWindowXamlSource();
             EnsureFocusHook();
             _filmstrip.Initialize(Win32Interop.GetWindowIdFromWindow(parent));
+            _filmstrip.TakeFocusRequested += OnTakeFocusRequested;  // Tab on (issue #217)
             // Park with no content, same as the gallery. Building the repeater
             // here and then immediately hiding it left an ItemsRepeater bound
             // to `Items`; the first folder-open show bound a second one and
@@ -85,6 +86,7 @@ public static partial class IslandHost
             if (arg == IntPtr.Zero || sizeBytes < ResizeArgsSize) return unchecked((int)0x80070057);
             ChromeResizeArgs args = Marshal.PtrToStructure<ChromeResizeArgs>(arg);
             Move(_filmstrip, args.Width, args.Height, args.Y);
+            NoteFilmstripTop(args.Height > 1, args.Y);
             return 0;
         }
         catch (Exception ex)
@@ -124,8 +126,23 @@ public static partial class IslandHost
     private static void StartDrain()
     {
         _completionWait?.Unregister(null);
+        _completionWait = null;
         if (_folderSession is null) return;
         StartAddons();  // Milestone G: needs the session (IslandHost.Addons.cs)
+        ArmCompletionWait();
+    }
+
+    // The core's completion event is manual-reset: it stays signalled until a
+    // drain empties the queue. A repeating wait on it re-fired back to back on
+    // a pool thread, queueing a DrainFolder each time, for as long as the UI
+    // thread was busy. One shot per drain instead: the drain re-arms it, and a
+    // completion that lands after the drain leaves the event set, so the new
+    // wait fires at once and nothing is lost.
+    private static void ArmCompletionWait()
+    {
+        _completionWait?.Unregister(null);
+        _completionWait = null;
+        if (_folderSession is null) return;
         _completionWait = ThreadPool.RegisterWaitForSingleObject(
             _folderSession.CompletionSignal,
             (_, _) =>
@@ -134,10 +151,22 @@ public static partial class IslandHost
             },
             null,
             -1,
-            false);
+            true);
     }
 
     private static void DrainFolder()
+    {
+        try
+        {
+            DrainFolderOnce();
+        }
+        finally
+        {
+            ArmCompletionWait();
+        }
+    }
+
+    private static void DrainFolderOnce()
     {
         if (_folderSession is null) return;
 
@@ -211,23 +240,27 @@ public static partial class IslandHost
         if (_folderSession is null) return;
         Items.Clear();
         _selectedIndex = -1;
-        uint count = _folderSession.FolderCount;
         // Milestone H: a result list (mv_folder_open_list) rather than a
         // directory. Its clips carry the moment they open on, shown as m:ss.
         bool list = IsResultList();
-        for (uint i = 0; i < count; ++i)
+        // Issue #226: the whole listing in one core call (one lock, reused
+        // buffers), not eight calls and four allocations per stop.
+        int count = _folderSession.ReadFolderEntries(out ReadOnlySpan<MvFolderEntry> entries,
+                                                     out ReadOnlySpan<byte> strings);
+        for (int i = 0; i < count; ++i)
         {
-            MvFolderItem rec = _folderSession.FolderItemAt(i);
-            long moment = list ? _folderSession.ItemMoment(i) : -1;
+            ref readonly MvFolderEntry e = ref entries[i];
+            MvFolderItem rec = e.Item;
+            long moment = list ? e.MomentMs : -1;
             Items.Add(new FolderItemVm
             {
-                Index = (int)i,
-                Name = _folderSession.FolderItemName(i),
-                Path = _folderSession.FolderItemPath(i),
-                PairPath = rec.PairKind == MvPairKind.None ? "" : _folderSession.FolderItemPairPath(i),
+                Index = i,
+                Name = MediaViewerSession.EntryString(strings, e.NameOffset),
+                Path = MediaViewerSession.EntryString(strings, e.PathOffset),
+                PairPath = rec.PairKind == MvPairKind.None ? "" : MediaViewerSession.EntryString(strings, e.PairOffset),
                 Badge = moment >= 0 ? MomentLabel(moment) : BadgeFor(rec),
                 IsClip = (rec.Flags & MvFolderItem.FlagClip) != 0,
-                ThumbPath = _folderSession.FolderItemThumbPath(i),
+                ThumbPath = MediaViewerSession.EntryString(strings, e.ThumbOffset),
                 Selected = (rec.Flags & MvFolderItem.FlagSelected) != 0,
             });
         }
@@ -334,6 +367,7 @@ public static partial class IslandHost
         _selectedIndex = index;
         ScrollTo(index);
         GalleryScrollTo(index);
+        AnnounceSelection(index);
     }
 
     private static void ScrollTo(int index)
@@ -380,7 +414,12 @@ public static partial class IslandHost
             VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
             HorizontalScrollMode = ScrollMode.Enabled,
             VerticalScrollMode = ScrollMode.Disabled,
+            // Tab lands here (issue #217): ← → walk, typing is typeahead. A
+            // click still leaves the keys with the canvas, as before.
+            IsTabStop = true,
+            AllowFocusOnInteraction = false,
         };
+        AutomationProperties_SetName(_filmstripScroll, "Filmstrip");
         var scroll = _filmstripScroll;
         scroll.CharacterReceived += OnTypeahead;  // docs/design/16 typeahead
         scroll.KeyDown += (_, e) =>
@@ -428,8 +467,9 @@ public static partial class IslandHost
             {
                 Width = 96,
                 Padding = new Thickness(4),
+                CornerRadius = new CornerRadius(RadiusButton),
                 BorderThickness = new Thickness(vm.Selected ? 2 : 0),
-                BorderBrush = Brush(Title),
+                BorderBrush = Brush(ChromeColour.Accent),  // the Mac's accent outline
                 Child = col,
             };
 

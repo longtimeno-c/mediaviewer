@@ -49,11 +49,36 @@ public static partial class IslandHost
     private const string CaptureInstructions = "Choose a shortcut, then press its replacement. Esc cancels. Conflicts swap shortcuts.";
     private const string FilterPrompt = "Search commands or keys";
 
-    private static Button SettingsButton(string text, Action action)
+    // Settings, Add-ons, Open add-ons and Local search buttons are filled, as
+    // the Mac's SettingsButtonStyle (radius 6, the text colour at 0.08, 0.16
+    // pressed), so they read as buttons, not links. `accent` is the Mac's
+    // default action (.keyboardShortcut(.defaultAction)): the accent fill.
+    private static Button SettingsButton(string text, Action action, bool accent = false)
     {
         Button button = TextButton(text, action);
         button.AllowFocusOnInteraction = true;
+        FillSettingsButton(button, accent);
         return button;
+    }
+
+    // Lightweight resources over FlattenButton's, never a template (a loaded
+    // template fail-fasts these islands; IslandHost.Edit.cs FlattenButton).
+    // Disabled keeps the fill and dims through FlattenButton's opacity.
+    private static void FillSettingsButton(Button b, bool accent)
+    {
+        SolidColorBrush rest = Brush(accent ? ChromeColour.ControlAccent : ChromeColour.SettingsFill);
+        b.Background = rest;
+        b.Resources["ButtonBackgroundPointerOver"] = accent ? rest : Brush(ChromeColour.SettingsFillHover);
+        b.Resources["ButtonBackgroundPressed"] = accent ? rest : Brush(ChromeColour.SettingsFillPressed);
+        b.Resources["ButtonBackgroundDisabled"] = rest;
+        b.CornerRadius = new CornerRadius(RadiusSettingsButton);
+        b.Padding = new Thickness(12, 7, 12, 7);
+        if (!accent) return;
+        SolidColorBrush ink = Brush(ChromeColour.AccentInk);
+        b.Foreground = ink;
+        if (b.Content is TextBlock label) label.Foreground = ink;
+        foreach (string key in new[] { "ButtonForeground", "ButtonForegroundPointerOver", "ButtonForegroundPressed" })
+            b.Resources[key] = ink;
     }
 
     private static Grid BuildSettingsScreen()
@@ -126,6 +151,11 @@ public static partial class IslandHost
             "List MP3, M4A and M4P files in folders. A file you open directly still opens.", _showAudio));
         view.Children.Add(SettingsRow("Show documents",
             "List PDF and Word (DOCX) files in folders. A file you open directly still opens.", _showDocuments));
+        // Issue #220: the installer's last page, again. Windows owns the choice
+        // (docs/design/13); this only opens its Default apps page on MediaViewer.
+        view.Children.Add(SettingsRow("Default app",
+            "Choose MediaViewer for photos and videos in Windows Settings.",
+            SettingsButton("Make default…", () => OpenUri("ms-settings:defaultapps?registeredAppUser=MediaViewer"))));
         view.Children.Add(SettingsSection("Appearance"));
         view.Children.Add(SettingsRow("Canvas background", "The area behind your photos and videos.", _background));
         // docs/design/25: the chrome's colours. Default, the built-in palettes,
@@ -212,7 +242,7 @@ public static partial class IslandHost
         content.Children.Add(viewScroll);
         content.Children.Add(keysCol);
 
-        var header = new Grid { Padding = new Thickness(24, 16, 24, 16), ColumnSpacing = 24 };
+        var header = new Grid { Padding = new Thickness(24, 18, 24, 18), ColumnSpacing = 24 };
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         var title = Heading("Settings");
@@ -240,30 +270,33 @@ public static partial class IslandHost
         generalTab.Click += (_, _) => SelectCategory(false, true);
         keysTab.Click += (_, _) => SelectCategory(true, true);
 
+        // The Mac's footer: the hint on the left, then Cancel change (while a
+        // shortcut is being changed), then Done.
         var footer = new Grid
         {
             ColumnSpacing = 12,
-            Padding = new Thickness(20, 8, 20, 12),
+            Padding = new Thickness(24, 12, 24, 12),
         };
-        footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         footer.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        footer.Children.Add(SettingsButton("Done", () => Send(Command.OpenSettings)));
+        footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         _captureHint = new TextBlock
         {
             Text = CaptureInstructions,
             Foreground = Brush(Body),
             FontFamily = UiFont,
-            FontSize = UiFontSize,
+            FontSize = TypeCaption,
             VerticalAlignment = VerticalAlignment.Center,
             TextWrapping = TextWrapping.Wrap,
         };
-        Grid.SetColumn(_captureHint, 1);
         footer.Children.Add(_captureHint);
         _cancelCapture = SettingsButton("Cancel change", () => CancelKeyCapture());
         _cancelCapture.Visibility = Visibility.Collapsed;
-        Grid.SetColumn(_cancelCapture, 2);
+        Grid.SetColumn(_cancelCapture, 1);
         footer.Children.Add(_cancelCapture);
+        Button done = SettingsButton("Done", () => Send(Command.OpenSettings));
+        Grid.SetColumn(done, 2);
+        footer.Children.Add(done);
 
         var root = new Grid
         {
@@ -275,6 +308,9 @@ public static partial class IslandHost
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.Children.Add(header);
+        // A rule under the header, as over the footer (the Mac's).
+        var headRule = new Border { Background = Brush(Hairline), Height = 1, VerticalAlignment = VerticalAlignment.Bottom };
+        root.Children.Add(headRule);
         Grid.SetRow(content, 1);
         root.Children.Add(content);
         var footRule = new Border { Background = Brush(Hairline), Height = 1, VerticalAlignment = VerticalAlignment.Top };
@@ -305,17 +341,22 @@ public static partial class IslandHost
         FontSize = UiFontSize,
     };
 
+    // A group title: 16 semibold (SettingsView.swift section).
     private static TextBlock SettingsSection(string title)
     {
         var heading = Heading(title);
-        heading.Margin = new Thickness(0, 16, 0, 4);
+        heading.FontSize = TypeSection;
+        heading.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
+        heading.Margin = new Thickness(0, 12, 0, 0);
+        AutomationProperties.SetHeadingLevel(heading, Microsoft.UI.Xaml.Automation.Peers.AutomationHeadingLevel.Level2);
         return heading;
     }
 
     private static FrameworkElement SettingsRow(string title, string detail, FrameworkElement control)
     {
         var row = new Grid { Padding = new Thickness(14), ColumnSpacing = 24,
-            Background = Brush(ChromeColour.Surface), CornerRadius = new CornerRadius(8) };
+            Background = Brush(ChromeColour.Surface), CornerRadius = new CornerRadius(RadiusCard),
+            BorderBrush = Brush(Hairline), BorderThickness = new Thickness(1) };
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         var labels = new StackPanel { Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
@@ -447,6 +488,13 @@ public static partial class IslandHost
         if (_capturingRow >= 0) return;
         if (e.Key == VirtualKey.Escape)
         {
+            // An open "Remove …?" question takes Esc as its Cancel (the Mac's
+            // .cancelAction), rather than Settings closing under it.
+            if (!_settingsKeyboard && CancelSettingsConfirm())
+            {
+                e.Handled = true;
+                return;
+            }
             if (_settingsKeyboard && _keyFilter.Length > 0)
             {
                 SetKeyFilter("");
@@ -506,7 +554,14 @@ public static partial class IslandHost
                 continue;
             }
             int captured = row.Row;
-            var line = new Grid { Margin = new Thickness(0, 4, 0, 4), ColumnSpacing = 16 };
+            // A hairline under each row (the Mac's shortcut list).
+            var line = new Grid
+            {
+                Padding = new Thickness(0, 6, 0, 6),
+                ColumnSpacing = 16,
+                BorderBrush = Brush(Hairline),
+                BorderThickness = new Thickness(0, 0, 0, 1),
+            };
             line.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             line.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(180) });
             var name = new TextBlock
@@ -532,8 +587,6 @@ public static partial class IslandHost
             });
             AutomationProperties.SetName(bind, "Change shortcut for " + row.Name);
             bind.HorizontalAlignment = HorizontalAlignment.Stretch;
-            bind.BorderThickness = new Thickness(1);
-            bind.BorderBrush = Brush(Hairline);
             bind.LostFocus += (_, _) =>
             {
                 if (_capturingRow == captured) CancelKeyCapture(restoreFocus: false);
