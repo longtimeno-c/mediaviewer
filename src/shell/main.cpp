@@ -1575,6 +1575,7 @@ void on_meta_write_done(app_state* app, std::unique_ptr<meta_write_result> r) {
   // What the store cached for this file is out of date: a JPEG's stamp moved,
   // a sidecar's did not, so drop it by path either way.
   app->meta.invalidate(out.path);
+  (void)mv_folder_forget_tags(app->session, out.path.c_str());  // #291: search reads its tags again
   if (r->stamped) {
     // The bytes changed, the pixels did not: keep the item's edits, and let
     // the next listing see the same item rather than a new one.

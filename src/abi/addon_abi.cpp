@@ -152,6 +152,10 @@ mv::result<std::string> thumbnail(const std::string& path) {
 
 extern "C" {
 
+namespace mv::abi {
+bool present_busy() noexcept { return g_present_busy.load(std::memory_order_relaxed); }
+}  // namespace mv::abi
+
 MV_API void MV_CALL mv_present_set_busy(uint32_t busy) {
   g_present_busy.store(busy != 0, std::memory_order_relaxed);
 }

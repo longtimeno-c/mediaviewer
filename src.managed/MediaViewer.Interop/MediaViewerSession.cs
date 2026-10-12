@@ -167,6 +167,50 @@ public sealed partial class MediaViewerSession : IDisposable
 
     public string FolderDirectory => ReadUtf8(NativeMethods.mv_folder_directory);
 
+    /// <summary>
+    /// #291 (ABI 0.20): the folder's stops whose tags hold every word of
+    /// <paramref name="query"/>, as JSON {"done","total","reading","hits":[[index,"why"],...]}.
+    /// Empty on a core older than 0.20. Never reads a file.
+    /// </summary>
+    public string FolderTagSearch(string query)
+    {
+        try
+        {
+            NativeMethods.mv_folder_tag_search(_handle, query, IntPtr.Zero, 0, out uint need);
+            if (need <= 1) return string.Empty;
+            IntPtr buf = Marshal.AllocHGlobal((int)need);
+            try
+            {
+                ThrowIfFailed(NativeMethods.mv_folder_tag_search(_handle, query, buf, need, out _));
+                return Marshal.PtrToStringUTF8(buf) ?? string.Empty;
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buf);
+            }
+        }
+        catch (EntryPointNotFoundException)
+        {
+            return string.Empty;
+        }
+    }
+
+    /// <summary>#291: moves when the tag pass learns more (0 on an older core).</summary>
+    public ulong FolderTagGeneration
+    {
+        get
+        {
+            try
+            {
+                return NativeMethods.mv_folder_tag_generation(_handle, out ulong g) == MvStatus.Ok ? g : 0;
+            }
+            catch (EntryPointNotFoundException)
+            {
+                return 0;
+            }
+        }
+    }
+
     public uint FolderSubfolderCount
     {
         get

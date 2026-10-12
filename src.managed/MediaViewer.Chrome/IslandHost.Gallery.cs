@@ -955,6 +955,18 @@ public static partial class IslandHost
             };
             col.Children.Add(clipped);
             col.Children.Add(name);
+            // #291: why a file search showed this tile when its name did not match.
+            var why = new TextBlock
+            {
+                Text = vm.Why,
+                FontFamily = UiFont,
+                FontSize = 11,
+                Foreground = Brush(Body),
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxWidth = GalleryTile,
+                Visibility = vm.Why.Length > 0 ? Visibility.Visible : Visibility.Collapsed,
+            };
+            col.Children.Add(why);
             var border = new Border
             {
                 Width = GalleryTile,
@@ -980,6 +992,11 @@ public static partial class IslandHost
             void OnChanged(object? _, System.ComponentModel.PropertyChangedEventArgs e)
             {
                 if (e.PropertyName is nameof(FolderItemVm.ThumbPath) or null) SetThumb();
+                if (e.PropertyName is nameof(FolderItemVm.Why) or null)
+                {
+                    why.Text = vm.Why;
+                    why.Visibility = vm.Why.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+                }
                 if (e.PropertyName is nameof(FolderItemVm.Selected) or nameof(FolderItemVm.GalleryCurrent) or null)
                     border.BorderThickness = new Thickness(vm.Selected && _folderCursor < 0 ? 2 : 0);
             }
