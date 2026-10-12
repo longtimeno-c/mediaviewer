@@ -55,6 +55,10 @@ using host_owns_key = bool (*)(key k, std::uint8_t mods, void* context);
 keymap_result apply_keymap(std::span<const addon::keymap_binding> bindings,
                            host_owns_key host_owns = nullptr, void* context = nullptr);
 
+// What applying did, for Settings on both hosts to say:
+// {"changed": n, "displaced": n, "skipped": ["...", ...]}.
+[[nodiscard]] std::string keymap_report_json(const keymap_result& r);
+
 // {"addon", "id", "name", "bindings": [...]} (addon/open_json.h
 // open_keymap_json) to its bindings; false when it is not that shape.
 [[nodiscard]] bool keymap_bindings_from_json(std::string_view json_text,

@@ -851,6 +851,10 @@ class chrome_host {
   // Open > Recent folders: "label\tpath\n" lines, most recent first. Pushed
   // at attach and whenever the list changes.
   void set_recent_folders(const std::string& utf8_lines) noexcept;
+  // docs/design/25 PR 56: what applying a key layout did, for Settings to say
+  // (shell/keymap.h keymap_report_json: {"changed","displaced","skipped"}).
+  // Answered inside chrome_cmd_apply_keymap. Optional: an older chrome lacks it.
+  void set_keymap_report(const std::string& json) noexcept;
 
   // Opens a flyout on the command bar, or closes any (chrome_popup::close).
   void show_popup(chrome_popup kind, std::int32_t mode_mask) noexcept;
@@ -929,6 +933,7 @@ class chrome_host {
   chrome_entry_fn run_addon_command_ = nullptr;  // docs/design/25, optional
   chrome_entry_fn set_drag_paths_ = nullptr;
   chrome_entry_fn set_recent_folders_ = nullptr;
+  chrome_entry_fn set_keymap_report_ = nullptr;  // PR 56, optional
   chrome_entry_fn show_popup_ = nullptr;
   chrome_entry_fn attach_panels_ = nullptr;
   chrome_entry_fn detach_panels_ = nullptr;

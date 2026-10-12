@@ -1,6 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 using System.Globalization;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using MediaViewer.Interop;
 using Microsoft.UI.Xaml;
@@ -595,11 +596,63 @@ public static partial class IslandHost
                     return;
                 }
                 // Native applies it to the live table, saves it, and republishes the
-                // table: the list below and ? update the way a remap does.
+                // table: the list below and ? update the way a remap does. Inside
+                // the call it says what it skipped (SetKeymapReport), which
+                // replaces this line; a native without that keeps it.
+                _keymapApplying = name;
+                _keymapNote.Text = $"Applied {name}. Reset puts back the default keys.";
                 _treePending = json;
                 Send(Command.ApplyKeymap);
-                _keymapNote.Text = $"Applied {name}. Reset puts back the default keys.";
+                _keymapApplying = "";
             });
         });
+    }
+
+    // The layout being applied, while native answers inside ApplyKeymap.
+    private static string _keymapApplying = "";
+
+    /// <summary>Native says what applying a key layout did (shell/keymap.h
+    /// keymap_report_json). In: ChromeTableArgs, UTF-8
+    /// {"changed","displaced","skipped":[...]}. Answered inside
+    /// Command.ApplyKeymap; the note says it as the Mac's does.</summary>
+    public static int SetKeymapReport(IntPtr arg, int sizeBytes)
+    {
+        try
+        {
+            if (arg == IntPtr.Zero || sizeBytes < TableArgsSize) return unchecked((int)0x80070057);
+            ChromeTableArgs a = Marshal.PtrToStructure<ChromeTableArgs>(arg);
+            string json = a.Utf8 == 0 || a.Length <= 0
+                ? ""
+                : Marshal.PtrToStringUTF8(checked((IntPtr)a.Utf8), a.Length) ?? "";
+            if (_keymapNote is null || json.Length == 0) return 0;
+            using JsonDocument doc = JsonDocument.Parse(json);
+            JsonElement root = doc.RootElement;
+            int displaced = root.TryGetProperty("displaced", out JsonElement d) &&
+                            d.ValueKind == JsonValueKind.Number && d.TryGetInt32(out int n) ? n : 0;
+            var skipped = new List<string>();
+            if (root.TryGetProperty("skipped", out JsonElement s) && s.ValueKind == JsonValueKind.Array)
+            {
+                foreach (JsonElement line in s.EnumerateArray())
+                {
+                    if (line.ValueKind == JsonValueKind.String) skipped.Add(line.GetString() ?? "");
+                }
+            }
+            string name = _keymapApplying.Length > 0 ? _keymapApplying : "The key layout";
+            string text = $"Applied {name}. Reset puts back the default keys.";
+            if (displaced > 0)
+            {
+                text += displaced == 1
+                    ? " 1 shortcut is now unbound: the layout took its key."
+                    : $" {displaced} shortcuts are now unbound: the layout took their keys.";
+            }
+            if (skipped.Count > 0) text += " Not applied: " + string.Join("; ", skipped) + ".";
+            _keymapNote.Text = text;
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+            return unchecked((int)0x80004005);
+        }
     }
 }

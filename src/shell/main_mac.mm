@@ -9374,13 +9374,10 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
 // keys written in; from then on the person's table, persisted like a remap.
 - (std::string)applyKeymap:(const char*)packJson {
   std::vector<mv::addon::keymap_binding> bindings;
-  mv::json::writer w;
-  w.begin_object();
   if (!mv::shell::keymap_bindings_from_json(packJson, bindings)) {
-    w.key("changed").integer(0).key("displaced").integer(0);
-    w.key("skipped").begin_array().string("not a key layout").end_array();
-    w.end_object();
-    return w.take();
+    mv::shell::keymap_result refused;
+    refused.skipped.push_back("not a key layout");
+    return mv::shell::keymap_report_json(refused);
   }
   [self cancelKeyCapture];
   [self cancelKeyHolds];  // rebuild forgets held keys (issue #186)
@@ -9393,12 +9390,7 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   [self rebuildKeys];
   [self persistKeys];
   ++_keysGeneration;
-  w.key("changed").integer(r.rows_changed).key("displaced").integer(r.displaced);
-  w.key("skipped").begin_array();
-  for (const std::string& line : r.skipped) w.string(line);
-  w.end_array();
-  w.end_object();
-  return w.take();
+  return mv::shell::keymap_report_json(r);
 }
 
 - (int)captureRow { return _captureRow; }

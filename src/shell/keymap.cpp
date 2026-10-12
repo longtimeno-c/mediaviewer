@@ -304,6 +304,17 @@ keymap_result apply_keymap(std::span<const addon::keymap_binding> bindings,
   return out;
 }
 
+std::string keymap_report_json(const keymap_result& r) {
+  json::writer w;
+  w.begin_object();
+  w.key("changed").integer(r.rows_changed).key("displaced").integer(r.displaced);
+  w.key("skipped").begin_array();
+  for (const std::string& line : r.skipped) w.string(line);
+  w.end_array();
+  w.end_object();
+  return w.take();
+}
+
 bool keymap_bindings_from_json(std::string_view text, std::vector<addon::keymap_binding>& out) {
   // The pack was held to the manifest's rules (addon/keymap.cpp) when its
   // add-on was checked; this only reads it back, still bounded. The shell

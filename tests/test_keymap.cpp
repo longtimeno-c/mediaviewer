@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "core/json.h"
 #include "shell/commands.h"
 #include "shell/key_router.h"
 #include "shell/keymap.h"
@@ -285,6 +286,22 @@ TEST_CASE("a pack cannot bind a built-in row its add-on's own rows supersede", "
   // Without the add-on's rows the built-in row is the command's, and binds.
   set_addon_commands({});
   REQUIRE(apply_keymap(pack).skipped.empty());
+}
+
+TEST_CASE("what applying did reads back as the report both hosts show", "[keys][keymap]") {
+  restore_table restore;
+  const std::vector<keymap_binding> pack{
+      {"next", {key_label(key::insert, mod_none)}}, {"no_such_command", {"Q"}}, {"prev", {"Hyper+X"}}};
+  const keymap_result r = apply_keymap(pack);
+  const auto doc = mv::json::parse(keymap_report_json(r));
+  REQUIRE(doc);
+  REQUIRE(doc->find("changed")->i == r.rows_changed);
+  REQUIRE(doc->find("displaced")->i == r.displaced);
+  REQUIRE(r.displaced >= 1);  // Insert was toggle_mark's
+  const auto& skipped = doc->find("skipped")->a;
+  REQUIRE(skipped.size() == 2);
+  REQUIRE(skipped[0].s == "unknown command: no_such_command");
+  REQUIRE(skipped[1].s == "not a key: Hyper+X");
 }
 
 TEST_CASE("a saved table puts back unbound rows exactly", "[keys][keymap]") {

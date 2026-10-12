@@ -4220,7 +4220,12 @@ void chrome_on_command(void* ctx, int command, float arg) {
       // Applied once (docs/design/16 "Keymap packs"): the table is the defaults
       // with the pack's keys written in, then it is the person's like any remap.
       std::vector<mv::addon::keymap_binding> bindings;
-      if (!mv::shell::keymap_bindings_from_json(app->chrome.take_tree_path(), bindings)) return;
+      if (!mv::shell::keymap_bindings_from_json(app->chrome.take_tree_path(), bindings)) {
+        mv::shell::keymap_result refused;
+        refused.skipped.push_back("not a key layout");
+        app->chrome.set_keymap_report(mv::shell::keymap_report_json(refused));
+        return;
+      }
       mv::shell::command_id released[mv::shell::key_router::kHeldSlots]{};
       const std::size_t n = app->router.cancel_holds(released);
       for (std::size_t i = 0; i < n; ++i) (void)run_command(app, released[i]);
@@ -4232,6 +4237,8 @@ void chrome_on_command(void* ctx, int command, float arg) {
       persist_live_keys();
       app->router.rebuild(mv::shell::live_bindings());
       publish_command_table(app);
+      // Settings lists what was skipped or left unbound, as the Mac does.
+      app->chrome.set_keymap_report(mv::shell::keymap_report_json(r));
       return;
     }
     case mv::shell::chrome_cmd_set_rate:
