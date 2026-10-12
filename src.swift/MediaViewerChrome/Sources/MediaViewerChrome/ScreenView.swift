@@ -273,28 +273,64 @@ private struct ImageNode: View {
 }
 
 /// The chrome draws the pin, in the accent colour, over the add-on's pixels
-/// (docs/plans/metadata-search-and-place.md slice 3). The whole map is one
+/// (docs/plans/metadata-search-and-place.md slice 3). The whole surface is one
 /// element, named by its label.
+///
+/// An "interactive" surface (owner, 2026-10-12: zoom the map with the trackpad
+/// or the mouse) reports a pinch or a mouse wheel as a zoom (scale and anchor),
+/// a drag as a pan and a double-click, each to the add-on's worker once the
+/// gesture ends. A trackpad two-finger scroll is not taken: the pane scrolls.
+/// While a gesture runs the current pixels are scaled / moved at once, until
+/// the add-on posts new ones. None of this presents the canvas.
 private struct SurfaceNode: View {
   let node: ScreenNode
   let address: ScreenAddress
   let revision: Int
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var dropped = false
+  // The provisional transform, reset when the add-on's next pixels arrive.
+  @State private var scale: CGFloat = 1
+  @State private var committedScale: CGFloat = 1
+  @State private var committedOffset: CGSize = .zero
+  @State private var anchor: UnitPoint = .center
+  @State private var offset: CGSize = .zero
+  @State private var shownRevision: UInt64 = 0
+  @State private var hover: CGPoint?
+  @State private var wheelMonitor: Any?
+  @State private var wheelFlush: DispatchWorkItem?
+
+  private var live: Bool {
+    (node.props["interactive"] is [String: Any] || node.bool("interactive")) && !node.disabled
+  }
+  // The live zoom stays within these, relative to the posted pixels.
+  private var bounds: ClosedRange<CGFloat> {
+    let b = node.props["interactive"] as? [String: Any]
+    let lo = (b?["min_scale"] as? NSNumber)?.doubleValue ?? 0.05
+    let hi = (b?["max_scale"] as? NSNumber)?.doubleValue ?? 20
+    return CGFloat(lo)...CGFloat(max(lo, hi))
+  }
+  private func bounded(_ s: CGFloat) -> CGFloat { min(bounds.upperBound, max(bounds.lowerBound, s)) }
+  private var pinPoint: CGPoint? {
+    guard let pin = node.props["pin"] as? [String: Any], let x = (pin["x"] as? NSNumber)?.doubleValue,
+          let y = (pin["y"] as? NSNumber)?.doubleValue else { return nil }
+    return CGPoint(x: x, y: y)
+  }
 
   var body: some View {
     let height = CGFloat(node.int("height") ?? 120)
     let width = CGFloat(node.int("width") ?? 0)
-    let image = SlotStore.surfaceImage(address, surface: node.string("surface") ?? "")
-    ZStack(alignment: .topLeading) {
-      if let image {
-        Image(decorative: image, scale: CGFloat(SlotStore.scale)).resizable()
-      } else {
-        Rectangle().fill(MVTheme.surface)
-      }
-      if let pin = node.props["pin"] as? [String: Any], let x = (pin["x"] as? NSNumber)?.doubleValue,
-         let y = (pin["y"] as? NSNumber)?.doubleValue {
-        GeometryReader { geo in
+    let pixels = SlotStore.surfacePixels(address, surface: node.string("surface") ?? "")
+    GeometryReader { geo in
+      ZStack(alignment: .topLeading) {
+        if let pixels {
+          Image(decorative: pixels.image, scale: CGFloat(SlotStore.scale)).resizable()
+        } else {
+          Rectangle().fill(MVTheme.surface)
+        }
+        // The add-on's names, drawn by the chrome so the text is native.
+        SurfaceMarks(marks: node.rows("marks"), pin: pinPoint, size: geo.size)
+        if let pin = node.props["pin"] as? [String: Any], let x = (pin["x"] as? NSNumber)?.doubleValue,
+           let y = (pin["y"] as? NSNumber)?.doubleValue {
           Image(systemName: "mappin.circle.fill")
             .font(.system(size: 22))
             .foregroundStyle(.white, MVTheme.accent)
@@ -302,6 +338,35 @@ private struct SurfaceNode: View {
             .position(x: geo.size.width * x, y: geo.size.height * y - (dropped || reduceMotion ? 11 : 30))
             .opacity(dropped || reduceMotion ? 1 : 0)
         }
+      }
+      .scaleEffect(scale, anchor: anchor)
+      .offset(offset)
+      .contentShape(Rectangle())
+      .gesture(live ? magnify(geo.size) : nil)
+      .simultaneousGesture(live ? drag(geo.size) : nil)
+      .onTapGesture(count: 2, coordinateSpace: .local) { at in
+        guard live, geo.size.width > 0, geo.size.height > 0 else { return }
+        send(12, ["x": clamp(at.x / geo.size.width), "y": clamp(at.y / geo.size.height)])
+      }
+      .onContinuousHover { phase in
+        guard live else { return }
+        switch phase {
+        case .active(let at):
+          hover = CGPoint(x: at.x / max(1, geo.size.width), y: at.y / max(1, geo.size.height))
+          installWheel()
+        case .ended:
+          hover = nil
+          removeWheel()
+        }
+      }
+      .onChange(of: pixels?.revision ?? 0) { _, now in
+        // The add-on's answer: its pixels replace the provisional transform.
+        guard now != shownRevision else { return }
+        shownRevision = now
+        scale = 1
+        offset = .zero
+        committedScale = 1
+        committedOffset = .zero
       }
     }
     .frame(width: width > 0 ? width : nil, height: height)
@@ -319,6 +384,78 @@ private struct SurfaceNode: View {
         withAnimation(.spring(response: 0.35, dampingFraction: 0.6)) { dropped = true }
       }
     }
+    .onDisappear { removeWheel() }
+  }
+
+  private func clamp(_ v: CGFloat) -> Double { Double(min(1, max(0, v))) }
+
+  private func send(_ kind: UInt32, _ value: [String: Double]) {
+    guard let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]),
+          let text = String(data: data, encoding: .utf8) else { return }
+    _ = address.addon.withCString { a in
+      address.screen.withCString { s in node.id.withCString { n in text.withCString { mv_chrome_slots_event(a, s, n, kind, $0) } } }
+    }
+  }
+
+  // A trackpad pinch: shown at once, reported when it ends.
+  private func magnify(_ size: CGSize) -> some Gesture {
+    MagnifyGesture()
+      .onChanged { v in
+        anchor = v.startAnchor
+        scale = bounded(committedScale * v.magnification)
+      }
+      .onEnded { v in
+        let step = bounded(committedScale * v.magnification) / committedScale
+        committedScale = scale
+        send(10, ["scale": Double(max(0.05, min(20, step))), "x": clamp(v.startAnchor.x),
+                  "y": clamp(v.startAnchor.y)])
+      }
+  }
+
+  // A drag: the pixels follow, the move is reported in surface widths / heights.
+  private func drag(_ size: CGSize) -> some Gesture {
+    DragGesture(minimumDistance: 3)
+      .onChanged { v in
+        offset = CGSize(width: committedOffset.width + v.translation.width,
+                        height: committedOffset.height + v.translation.height)
+      }
+      .onEnded { v in
+        committedOffset = offset
+        guard size.width > 0, size.height > 0 else { return }
+        send(11, ["dx": Double(max(-10, min(10, v.translation.width / size.width))),
+                  "dy": Double(max(-10, min(10, v.translation.height / size.height)))])
+      }
+  }
+
+  // A mouse wheel (no precise deltas) zooms about the pointer; a trackpad's
+  // two-finger scroll (precise deltas) is left for the pane. Steps arriving
+  // together are one zoom, reported 150 ms after the last.
+  private func installWheel() {
+    guard wheelMonitor == nil else { return }
+    wheelMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
+      guard !event.hasPreciseScrollingDeltas, let at = hover else { return event }
+      MainActor.assumeIsolated {
+        anchor = UnitPoint(x: at.x, y: at.y)
+        let before = committedScale
+        scale = bounded(scale * pow(1.1, event.scrollingDeltaY))
+        wheelFlush?.cancel()
+        let work = DispatchWorkItem { [at] in
+          MainActor.assumeIsolated {
+            let step = scale / before
+            committedScale = scale
+            send(10, ["scale": Double(max(0.05, min(20, step))), "x": clamp(at.x), "y": clamp(at.y)])
+          }
+        }
+        wheelFlush = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+      }
+      return nil
+    }
+  }
+
+  private func removeWheel() {
+    if let m = wheelMonitor { NSEvent.removeMonitor(m) }
+    wheelMonitor = nil
   }
 }
 

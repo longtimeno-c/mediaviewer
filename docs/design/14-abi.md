@@ -1,7 +1,7 @@
 # 14 — The C ABI
 
 The flat C ABI between the hosts' chrome and the C++ core, as declared in
-[`src/abi/include/mediaviewer/`](../../src/abi/include/mediaviewer/) (current version **0.18**).
+[`src/abi/include/mediaviewer/`](../../src/abi/include/mediaviewer/) (current version **0.20**).
 
 The Windows host is C# WinUI over `mediaviewer_core.dll` and calls this ABI through P/Invoke
 ([`src.managed/MediaViewer.Interop`](../../src.managed/MediaViewer.Interop/)). The Mac host links
@@ -494,6 +494,19 @@ Windows shell turns into live command rows ([25 §7](25-open-addons.md#7-the-con
 `mv_addon_installed_json` and `mv_addon_check_manifest` gain `description`, `hint_on` and
 `hint_text`. The Mac host reads the same manifests directly.
 
+## PRs 58–59 — screens and slots (ABI 0.20)
+
+Minor bump, additive, in `mediaviewer_addon.h` ([25](25-open-addons.md#implementation-notes-prs-58-59-2026-10-11)).
+The chrome side, `mv_slots_*`, is **[any-thread][no-block]**: every call copies one of the
+registry's tables (JSON, the `cap` / `needed` rule) or posts a request to an add-on's worker and
+returns its generation; `mv_slots_set_listener` registers one any-thread callback with what
+changed, which the chrome marshals to its dispatcher (the core never calls a dispatcher).
+`mv_slots_event` refuses a value the screen's tree could not produce (`MV_ERR_INVALID_ARG`).
+`mv_slots_thumbnail_path` is **[worker-thread]**. The add-on side is the host function table's v3
+rows and the add-on's `mv.slots.1` interface; table versions still only append (PR 56's
+`settings_get` sits after `walk_files2`, before v3). The Mac host has the same calls as
+`mv_chrome_slots_*` in its bridge.
+
 ## Version history
 
 | Minor | Change |
@@ -512,6 +525,7 @@ Windows shell turns into live command rows ([25 §7](25-open-addons.md#7-the-con
 | 0.17 | Open add-ons: `mv_open_addon_inspect` / `_install` / `_list_json` / `_remove` / `_theme_json` |
 | 0.18 | Contributed commands: `mv_addon_commands_json`; `description`, `hint_on`, `hint_text` in the installed / check JSON |
 | 0.19 | `mv_folder_set_hidden_kinds` — Settings can leave audio and/or documents out of the listing |
+| 0.20 | Screens and slots: `mv_slots_*` (contributions, info sections, screens, search, badges, status, events, items, surfaces, the local-search provider, thumbnails by path); host table v3 (`MV_ADDON_HOST_API` 3) and `mv.slots.1`; `"slots"` in the installed JSON |
 
 ## Not built
 

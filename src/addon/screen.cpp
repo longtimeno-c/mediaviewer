@@ -13,12 +13,12 @@
 namespace mv::addon::screen {
 namespace {
 
-struct type_info {
+struct node_type_info {
   node_type t;
   const char* name;
 };
 
-constexpr std::array<type_info, 19> kTypes{{
+constexpr std::array<node_type_info, 19> kTypes{{
     {node_type::stack, "stack"},
     {node_type::grid, "grid"},
     {node_type::scroll, "scroll"},
@@ -288,6 +288,27 @@ error check_props(node& n, std::size_t& items) {
           if (key == "pin") {
             ok = v.k == json::kind::object && v.o.size() == 2 && v.find("x") && v.find("y") &&
                  num_in(*v.find("x"), 0.0, 1.0) && num_in(*v.find("y"), 0.0, 1.0);
+          } else if (key == "interactive") {
+            // true, or the bounds of a live zoom relative to the posted pixels.
+            ok = v.k == json::kind::boolean;
+            if (v.k == json::kind::object) {
+              ok = v.o.size() <= 2;
+              for (const auto& [bk, bv] : v.o) {
+                ok = ok && ((bk == "min_scale" && num_in(bv, 0.01, 1.0)) ||
+                            (bk == "max_scale" && num_in(bv, 1.0, 1000.0)));
+              }
+            }
+          } else if (key == "marks") {
+            // Names the chrome draws over the pixels, in priority order.
+            ok = v.k == json::kind::array && v.a.size() <= 64;
+            for (const json::value& m : v.a) {
+              if (!ok) break;
+              const json::value* x = m.find("x");
+              const json::value* y = m.find("y");
+              const std::string* text = m.str("text");
+              ok = m.k == json::kind::object && m.o.size() == 3 && x && y && text && num_in(*x, 0.0, 1.0) &&
+                   num_in(*y, 0.0, 1.0) && plain(*text, 64);
+            }
           } else {
             ok = (key == "surface" && v.k == json::kind::string && id_text(v.s)) ||
                  (key == "width" && int_in(v, 0, 4096)) || (key == "height" && int_in(v, 16, 1024)) ||
@@ -462,14 +483,14 @@ bool item_has(const json::value* items, std::string_view key, std::string_view v
 }  // namespace
 
 const char* type_name(node_type t) noexcept {
-  for (const type_info& i : kTypes) {
+  for (const node_type_info& i : kTypes) {
     if (i.t == t) return i.name;
   }
   return "stack";
 }
 
 std::optional<node_type> type_from(std::string_view name) noexcept {
-  for (const type_info& i : kTypes) {
+  for (const node_type_info& i : kTypes) {
     if (name == i.name) return i.t;
   }
   return std::nullopt;
@@ -652,12 +673,37 @@ error tree::check_event(std::string_view node_id, std::uint32_t kind, std::strin
   if (!root_) return error::no_such_node;
   node* n = find_mut(*root_, node_id);
   if (!n) return error::no_such_node;
-  if (!interactive(n->type)) return error::not_interactive;
+  // A surface takes zoom, pan and double-click only when its tree says so.
+  const bool live_surface =
+      n->type == node_type::surface && n->props.find("interactive") &&
+      (n->props.find("interactive")->k == json::kind::object || n->props.boolean("interactive").value_or(false));
+  if (!interactive(n->type) && !live_surface) return error::not_interactive;
   if (const auto d = n->props.boolean("disabled"); d && *d) return error::not_interactive;
   std::optional<json::value> v;
   if (!value.empty()) {
     v = json::parse(value, 4);
     if (!v) return error::bad_value;
+  }
+  if (live_surface) {
+    if (!v || v->k != json::kind::object) return error::bad_value;
+    const auto field = [&v](std::string_view key, double lo, double hi) {
+      const json::value* f = v->find(key);
+      return f && num_in(*f, lo, hi);
+    };
+    switch (kind) {
+      case ev_zoom:
+        return v->o.size() == 3 && field("scale", 0.05, 20.0) && field("x", 0.0, 1.0) && field("y", 0.0, 1.0)
+                   ? error::none
+                   : error::bad_value;
+      case ev_pan:
+        return v->o.size() == 2 && field("dx", -10.0, 10.0) && field("dy", -10.0, 10.0) ? error::none
+                                                                                       : error::bad_value;
+      case ev_double:
+        return v->o.size() == 2 && field("x", 0.0, 1.0) && field("y", 0.0, 1.0) ? error::none
+                                                                               : error::bad_value;
+      default:
+        return error::bad_value;
+    }
   }
   switch (n->type) {
     case node_type::button:
