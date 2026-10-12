@@ -251,6 +251,9 @@ public static partial class IslandHost
         // Set = folders list the kind (settings.h kSettingShow*). Off by default.
         public const int ShowAudio = 1 << 12;
         public const int ShowDocuments = 1 << 13;
+        // #345: set = the AI badge is hidden (settings.h kSettingHideAiBadge), so
+        // it is on by default and in every word saved before the bit existed.
+        public const int HideAiBadge = 1 << 14;
     }
 
     // Telemetry is absent from this initial word on purpose: until native
@@ -770,6 +773,21 @@ public static partial class IslandHost
                 // Tab stays in Settings instead of stranding focus on the canvas.
                 sender.NavigateFocus(new XamlSourceFocusNavigationRequest(reason));
                 return;
+            }
+            // #345: Tab off the end of the command bar visits the AI badge, when it
+            // is up, before the canvas; Shift+Tab off the badge goes back to the bar.
+            if (_aiBadgeShown && _aiBadge is not null)
+            {
+                if (sender == _source && reason == XamlSourceFocusNavigationReason.First)
+                {
+                    _aiBadge.NavigateFocus(new XamlSourceFocusNavigationRequest(reason));
+                    return;
+                }
+                if (sender == _aiBadge && reason == XamlSourceFocusNavigationReason.Last && _source is not null)
+                {
+                    _source.NavigateFocus(new XamlSourceFocusNavigationRequest(reason));
+                    return;
+                }
             }
             IntPtr hwnd = Win32Interop.GetWindowFromWindowId(sender.SiteBridge.WindowId);
             IntPtr root = GetAncestor(hwnd, GaRoot);

@@ -100,6 +100,8 @@ public static partial class IslandHost
             MoveAt(_adjustPane, 0, args.ClientHeight, 1, 1);
             MoveAt(_jobsPane, 0, args.ClientHeight, 1, 1);
             MoveAt(_editPane, 0, args.ClientHeight, 1, 1);
+            // #345: the AI badge, a small island of its own (IslandHost.AiBadge.cs).
+            AttachAiBadge(parent, args.ClientHeight);
             _metaPaneVisible = false;
             _editPaneVisible = false;
             _treeVisible = false;
@@ -130,6 +132,7 @@ public static partial class IslandHost
             DropTreeUi();
             DropAdjustUi();
             DropEditUi();
+            DetachAiBadge();
             DisposeSource(ref _metaPane);
             DisposeSource(ref _tree);
             DisposeSource(ref _adjustPane);

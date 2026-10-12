@@ -32,6 +32,7 @@ public static partial class IslandHost
     private static ToggleSwitch? _sticky;
     private static ToggleSwitch? _showAudio;
     private static ToggleSwitch? _showDocuments;
+    private static ToggleSwitch? _aiBadgeToggle;  // #345
     private static ComboBox? _background;
     private static ComboBox? _sortKey;
     private static ToggleSwitch? _sortDescending;
@@ -119,6 +120,26 @@ public static partial class IslandHost
             Send(Command.SetSort, _sortDescending.IsOn ? _sortPacked | 8 : _sortPacked & ~8);
         };
         view.Children.Add(SettingsRow("Descending order", "Reverse the selected sort order.", _sortDescending));
+        // #345 (docs/design/06 "The AI badge"): on by default (owner, 2026-10-11);
+        // the flag is stored inverted (SettingFlag.HideAiBadge).
+        view.Children.Add(SettingsSection("Viewer"));
+        _aiBadgeToggle = new ToggleSwitch
+        {
+            FontFamily = UiFont,
+            FontSize = UiFontSize,
+            IsOn = !HasFlag(SettingFlag.HideAiBadge),
+        };
+        AutomationProperties.SetName(_aiBadgeToggle, "Show a badge on AI-generated images");
+        _aiBadgeToggle.Toggled += (_, _) =>
+        {
+            if (_updatingSettingsUi) return;
+            Send(Command.SetSettings, _aiBadgeToggle.IsOn
+                ? _settingFlags & ~SettingFlag.HideAiBadge
+                : _settingFlags | SettingFlag.HideAiBadge);
+        };
+        view.Children.Add(SettingsRow("Show a badge on AI-generated images",
+            "When a file says it was made by an AI tool, mark it in the corner. Files that say nothing get no mark.",
+            _aiBadgeToggle));
         view.Children.Add(SettingsSection("File types"));
         _showAudio = SettingsToggle("Show audio files", SettingFlag.ShowAudio);
         _showDocuments = SettingsToggle("Show documents", SettingFlag.ShowDocuments);
@@ -473,6 +494,7 @@ public static partial class IslandHost
             if (_sticky is not null) _sticky.IsOn = HasFlag(SettingFlag.StickyZoom);
             if (_showAudio is not null) _showAudio.IsOn = HasFlag(SettingFlag.ShowAudio);
             if (_showDocuments is not null) _showDocuments.IsOn = HasFlag(SettingFlag.ShowDocuments);
+            if (_aiBadgeToggle is not null) _aiBadgeToggle.IsOn = !HasFlag(SettingFlag.HideAiBadge);
             RefreshUpdateSettingsRow();
             RefreshTelemetrySettingsRow();
             if (_background is not null)
