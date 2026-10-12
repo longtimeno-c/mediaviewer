@@ -121,6 +121,10 @@ TEST_CASE("a settings page that breaks a rule is refused", "[addon][settings]") 
       {R"("default": 15)", R"("default": 51)"},
       {R"("step": 1,)", R"("step": 0,)"},
       {R"("step": 1,)", R"("step": 100,)"},
+      // More than the three decimals the store writes back.
+      {R"("step": 1,)", R"("step": 0.0015,)"},
+      {R"("min": 1,)", R"("min": 1.0004,)"},
+      {R"("default": 15)", R"("default": 15.0004)"},
       {R"("enabled_by": "show_town")", R"("enabled_by": "label_names")"},  // not a toggle
       {R"("enabled_by": "show_town")", R"("enabled_by": "home")"},         // not earlier
       {R"("default": "english")", R"("default": "french")"},
@@ -173,6 +177,8 @@ TEST_CASE("a value fits its item or is refused", "[addon][settings]") {
   REQUIRE(fits("town_radius_km", "1"));
   REQUIRE(fits("town_radius_km", "50"));
   REQUIRE(fits("town_radius_km", "2.5"));
+  REQUIRE(fits("town_radius_km", "2.125"));
+  REQUIRE_FALSE(fits("town_radius_km", "2.0004"));  // would be stored as 2.000
   REQUIRE_FALSE(fits("town_radius_km", "0"));
   REQUIRE_FALSE(fits("town_radius_km", "51"));
   REQUIRE_FALSE(fits("town_radius_km", "true"));

@@ -188,7 +188,7 @@ own controls on both Windows and the Mac, in the order you wrote:
 |---|---|---|
 | `toggle` | A switch | `default`: `true` or `false` |
 | `choice` | A menu of the labels | `options`: 2 to 32 `{ "value", "label" }`; `default` is one of the values |
-| `number` | A field with − / + (a stepper on the Mac) and the unit | `min`, `max`, `step` (default 1, at least 0.001), `unit` (16 bytes); `default` in range |
+| `number` | A field with − / + (a stepper on the Mac) and the unit | `min`, `max`, `step` (default 1, at least 0.001), `unit` (16 bytes); `default` in range; every number to at most three decimals |
 | `text` | A field | `max_length` (1 – 1024 bytes, default 256), `placeholder` |
 
 - Every item has a `key` (`a`–`z` first, then lowercase letters, digits and `_`, 40 at most,

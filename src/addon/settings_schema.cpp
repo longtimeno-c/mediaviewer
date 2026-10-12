@@ -38,10 +38,15 @@ bool free_text(std::string_view s, std::size_t max_bytes) noexcept {
   });
 }
 
+// At most three decimals: what the store and the hosts write (json::writer::
+// number), so a bound, a step, a default or a value never reads back as
+// another number, outside its own range.
 bool number_of(const json::value& v, double& out) noexcept {
   if (v.k != json::kind::number) return false;
   out = v.is_integer ? static_cast<double>(v.i) : v.d;
-  return std::isfinite(out) && std::fabs(out) <= kSettingsNumberLimit;
+  if (!std::isfinite(out) || std::fabs(out) > kSettingsNumberLimit) return false;
+  const double milli = out * 1000.0;
+  return std::fabs(milli - std::round(milli)) <= 1e-3;
 }
 
 template <std::size_t N>

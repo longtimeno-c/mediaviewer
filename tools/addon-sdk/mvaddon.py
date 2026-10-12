@@ -344,8 +344,10 @@ SETTINGS_MAX_TEXT, NUMBER_LIMIT = 1024, 1e9
 
 
 def _number(value):
+    # At most three decimals: what the app stores and reads back.
     return (isinstance(value, (int, float)) and not isinstance(value, bool)
-            and abs(value) <= NUMBER_LIMIT and value == value)
+            and value == value and abs(value) <= NUMBER_LIMIT
+            and abs(value * 1000 - round(value * 1000)) <= 1e-3)
 
 
 def check_settings(page) -> int:

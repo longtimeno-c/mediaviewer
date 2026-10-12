@@ -219,6 +219,10 @@ class Pack(unittest.TestCase):
             ("settings", dict(page, sections=[])),
             ("settings", {"sections": [{"title": "A", "items": [
                 {"type": "number", "key": "n", "label": "N", "min": 1, "max": 5, "default": 9}]}]}),
+            # More than the three decimals the app stores.
+            ("settings", {"sections": [{"title": "A", "items": [
+                {"type": "number", "key": "n", "label": "N", "min": 0.0004, "max": 0.0014,
+                 "default": 0.0004}]}]}),
             ("settings", {"sections": [{"title": "A", "items": [
                 {"type": "toggle", "key": "t", "label": "T", "default": True, "colour": 1}]}]}),
             ("keymaps", [{"id": "Vim", "name": "Vim", "bindings": [{"command": "next", "keys": ["L"]}]}]),
