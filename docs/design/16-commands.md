@@ -48,6 +48,9 @@ Both hosts use the same table and router; tests are `tests/test_key_router*.cpp`
   rather than swapped. Unknown commands and keys are skipped and listed, not refused. The Mac
   also refuses a chord a fixed menu item owns at capture; a layout is not checked against the
   menu (owed). A saved table is put back exactly (`set_live_key`), unbound rows included.
+  What is saved is `live_key_saved`'s rows: built-in rows off their default, never a
+  contributed row and never a row its add-on supersedes, whose missing key exists only while
+  that add-on is loaded; it is saved as its default (issue #357).
 - **Add-on commands** (Import: `open_import`, `import_now`; Local search: `search_*`) are listed,
   routed and shown only while their add-on is loaded (`set_addon_commands_available` per
   family); otherwise the key falls through as if unbound. The exception is `Ctrl+F`, which runs

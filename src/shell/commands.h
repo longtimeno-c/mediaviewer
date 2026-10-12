@@ -390,6 +390,12 @@ void reset_live_bindings() noexcept;
 // how a saved table is put back (each row's saved key is its final key) and
 // how a keymap pack (shell/keymap.h) writes the rows it names.
 [[nodiscard]] bool set_live_key(int index, key k, std::uint8_t mods) noexcept;
+// Whether live row `index` belongs in the saved key table: a built-in row whose
+// key is not its default. A row an add-on contributes is never saved, nor is a
+// built-in row its add-on's own rows supersede (command_superseded): its
+// missing key exists only while that add-on is loaded, so it is saved as its
+// default and comes back with its key once the add-on is gone (issue #357).
+[[nodiscard]] bool live_key_saved(int index) noexcept;
 [[nodiscard]] std::span<const command_info> command_infos() noexcept;
 [[nodiscard]] const command_info* find_command(command_id id) noexcept;
 // Bound commands whose effect has not landed yet. Empty before PR 6 ships.

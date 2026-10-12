@@ -5148,10 +5148,8 @@ void browse_tick(app_state* app) noexcept {
 void persist_live_keys() noexcept {
   std::vector<mv::shell::key_override> out;
   const auto live = mv::shell::live_bindings();
-  const auto def = mv::shell::default_bindings();
-  const std::size_t n = live.size() < def.size() ? live.size() : def.size();
-  for (std::size_t i = 0; i < n; ++i) {
-    if (live[i].k == def[i].k && live[i].mods == def[i].mods) continue;
+  for (std::size_t i = 0; i < live.size(); ++i) {
+    if (!mv::shell::live_key_saved(static_cast<int>(i))) continue;
     out.push_back(mv::shell::key_override{static_cast<int>(i),
                                           static_cast<std::uint16_t>(live[i].k), live[i].mods});
   }

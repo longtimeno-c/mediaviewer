@@ -596,6 +596,16 @@ bool set_live_key(int index, key k, std::uint8_t mods) noexcept {
   return true;
 }
 
+bool live_key_saved(int index) noexcept {
+  const auto& live = live_store();
+  if (index < 0 || static_cast<std::size_t>(index) >= std::size(kBindings)) return false;
+  if (static_cast<std::size_t>(index) >= live.size()) return false;
+  const binding& b = live[static_cast<std::size_t>(index)];
+  const binding& d = kBindings[static_cast<std::size_t>(index)];
+  if (b.k == d.k && b.mods == d.mods) return false;
+  return !command_superseded(d.command);
+}
+
 void set_addon_commands(std::span<const addon_command_row> rows) {
   addon_slots& s = addon_store();
   s.rows.assign(rows.begin(), rows.begin() + std::min<std::size_t>(rows.size(), kAddonCommandSlots));

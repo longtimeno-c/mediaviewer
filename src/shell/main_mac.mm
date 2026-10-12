@@ -9316,10 +9316,9 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   // The verify rig changes keys (PR 56's key layout leg); the person's stay theirs.
   if (std::getenv("MV_ADDON_SELFTEST") != nullptr) return;
   const auto live = mv::shell::live_bindings();
-  const auto def = mv::shell::default_bindings();
   NSMutableArray<NSString*>* rows = [NSMutableArray array];
-  for (std::size_t i = 0; i < live.size() && i < def.size(); ++i) {
-    if (live[i].k != def[i].k || live[i].mods != def[i].mods) {
+  for (std::size_t i = 0; i < live.size(); ++i) {
+    if (mv::shell::live_key_saved(static_cast<int>(i))) {
       [rows addObject:[NSString stringWithFormat:@"%zu,%d,%d", i, static_cast<int>(live[i].k),
                                                   static_cast<int>(live[i].mods)]];
     }

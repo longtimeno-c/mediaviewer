@@ -341,3 +341,68 @@ TEST_CASE("a pack read back from the core's JSON", "[keys][keymap]") {
   REQUIRE_FALSE(keymap_bindings_from_json(R"({"bindings":[{"command":"next","keys":[1]}]})", out));
   REQUIRE_FALSE(keymap_bindings_from_json(R"({"bindings":[{"keys":["L"]}]})", out));
 }
+
+// Issue #357: a saved key table is put back exactly (set_live_key), so it must
+// not record the missing key of a built-in row an add-on supersedes; that state
+// exists only while the add-on is loaded.
+TEST_CASE("a saved key table keeps superseded built-in rows at their defaults", "[keys][keymap]") {
+  restore_table restore;
+  struct saved_row {
+    int row;
+    key k;
+    std::uint8_t mods;
+  };
+  // What both hosts' persist paths write (persist_live_keys / persistKeys).
+  const auto save = [] {
+    std::vector<saved_row> out;
+    const auto live = live_bindings();
+    for (std::size_t i = 0; i < live.size(); ++i) {
+      if (live_key_saved(static_cast<int>(i))) out.push_back({static_cast<int>(i), live[i].k, live[i].mods});
+    }
+    return out;
+  };
+
+  // Load the Import add-on with rows of its own, and remap one ordinary row.
+  addon_command_row row;
+  row.addon = "import";
+  row.id = "open";
+  row.name = "Import…";
+  REQUIRE(parse_key_label("Ctrl+Shift+I", row.k, row.mods));
+  row.modes = parse_modes("viewing");
+  set_addon_commands(std::span<const addon_command_row>(&row, 1));
+  const auto def = default_bindings();
+  int remapped = -1;
+  for (std::size_t i = 0; i < def.size(); ++i) {
+    if (def[i].command == command_id::next) {
+      remapped = static_cast<int>(i);
+      break;
+    }
+  }
+  REQUIRE(remapped >= 0);
+  REQUIRE(set_live_key(remapped, char_key('L'), mod_none));
+  bool any_superseded = false;
+  for (const binding& b : live_bindings()) {
+    if (addon_family_of(b.command) == addon_family::import) {
+      REQUIRE(b.k == key::none);
+      any_superseded = true;
+    }
+  }
+  REQUIRE(any_superseded);
+
+  // Save, then remove the add-on and restart: a fresh table, the saved rows
+  // put back before any add-on's rows are known (both hosts' launch order).
+  const std::vector<saved_row> saved = save();
+  REQUIRE(saved.size() == 1);
+  REQUIRE(saved[0].row == remapped);
+  set_addon_commands({});
+  reset_live_bindings();
+  for (const saved_row& s : saved) REQUIRE(set_live_key(s.row, s.k, s.mods));
+
+  const auto live = live_bindings();
+  for (std::size_t i = 0; i < def.size(); ++i) {
+    if (addon_family_of(def[i].command) == addon_family::none) continue;
+    REQUIRE(live[i].k == def[i].k);
+    REQUIRE(live[i].mods == def[i].mods);
+  }
+  REQUIRE(live[static_cast<std::size_t>(remapped)].k == char_key('L'));
+}
