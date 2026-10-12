@@ -420,7 +420,8 @@ Indexing is a background load on the machine and GPU of a viewer whose point is 
 - **Memory:** decoded-frame and tensor memory are capped; the search matrix is ~77 MB at 100 k
   L/14 frames.
 - **Disk:** the index has a size cap (`index_cap_bytes`, default 8 GB; over it, indexing stops
-  with `MV_AI_STATUS_INDEX_FULL`) and per-folder delete; its size shows in Settings.
+  with `MV_AI_STATUS_INDEX_FULL`) and per-folder delete; its size shows in Settings, where both
+  hosts pick the cap (2, 5, 10, 20 or 50 GB) and removing a folder asks first.
 
 ## ABI
 
