@@ -143,7 +143,7 @@ and should not expect to.
 
 ### A theme's shape (API 2)
 
-A theme file with `"schema": 2` may also say how the chrome is drawn. Each is a scale on
+A theme file with `"schema": 2` may also say how the chrome is drawn (your manifest's `api.max` must then be at least 2). Each is a scale on
 MediaViewer's own sizes, so `1` is what it looks like today:
 
 ```json

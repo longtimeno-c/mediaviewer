@@ -248,6 +248,12 @@ class Pack(unittest.TestCase):
             files = {"themes/dusk.json": json.dumps(bad_theme).encode()}
             self.refused(signed(manifest_for(files, api={"min": 2, "max": 2}), files),
                          "invalid_theme", detail)
+        # A schema 2 theme (shape) from an add-on that claims API 1 only: a
+        # mistake, for both, as settings and keymaps under API 1 are.
+        for schema2 in (theme, dict(json.loads(THEME), schema=2)):
+            files = {"themes/dusk.json": json.dumps(schema2).encode()}
+            self.refused(signed(manifest_for(files, api={"min": 1, "max": 1}), files),
+                         "malformed", "dusk: a schema 2 theme needs api.max 2")
 
     def test_the_settings_and_keymap_examples_pack(self):
         for name in ("vim-keys", "settings-demo"):

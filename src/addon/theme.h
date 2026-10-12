@@ -95,9 +95,14 @@ enum class theme_fault : std::uint8_t {
 
 [[nodiscard]] const char* theme_fault_name(theme_fault f) noexcept;
 
+// The contribution API that introduced theme schema 2 (shape): an add-on
+// whose manifest claims an older api.max may not ship one (open_store.cpp).
+inline constexpr std::uint32_t kThemeSchema2Api = 2;
+
 struct theme_result {
   theme_fault fault = theme_fault::malformed;
   theme t;
+  int schema = 0;  // the file's, once it was read as a theme; 0 before
   [[nodiscard]] bool ok() const noexcept { return fault == theme_fault::none; }
 };
 

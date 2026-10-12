@@ -584,3 +584,28 @@ TEST_CASE("theme shape: schema 2, bounded, defaults of 1", "[addon][theme]") {
           mv::addon::theme_fault::unknown_token);
   REQUIRE_FALSE(mv::addon::parse_theme(R"({"schema":3,)" + palette + "}").ok());
 }
+
+TEST_CASE("a schema 2 theme needs an add-on that claims API 2", "[addon][theme][open-addon]") {
+  // Shape is an API 2 point, as settings and keymaps are: a manifest whose
+  // api.max is 1 may not ship a schema 2 theme (an API 1 host refuses it).
+  scratch_dir scratch("addon_theme_api");
+  const mv::addon::open_store store(utf8(scratch / "Open Add-ons"));
+  std::string schema2 = good_theme();
+  schema2.replace(schema2.find(R"("schema":1)"), 10, R"("schema":2)");
+  const std::vector<packed_file> files{{"themes/dusk.json", schema2}};
+  publisher_key k;
+  manifest_options o;
+  o.api_max = 1;
+  const auto refused = store.inspect(make_package(k, files, o));
+  REQUIRE_FALSE(refused.ok());
+  REQUIRE(refused.why == rejection::malformed);
+  o.api_max = 2;
+  const auto package = make_package(k, files, o);
+  const auto offer = store.inspect(package);
+  REQUIRE(offer.ok());
+  REQUIRE(store.install(package, offer.sha256));
+  // A schema 1 theme stays fine under API 1.
+  o.api_max = 1;
+  o.id = "acme.plain-tones";
+  REQUIRE(store.inspect(make_package(k, theme_files(), o)).ok());
+}

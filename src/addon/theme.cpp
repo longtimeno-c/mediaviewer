@@ -162,6 +162,7 @@ theme_result parse_theme(std::string_view text) {
   if (!doc || doc->k != json::kind::object) return r;
   const auto schema = doc->integer("schema");
   if (!schema || *schema < 1 || *schema > kThemeSchema) return r;
+  r.schema = static_cast<int>(*schema);
   for (const auto& [key, value] : doc->o) {
     if (key == "schema") continue;
     if (key == "dark" || key == "light") {

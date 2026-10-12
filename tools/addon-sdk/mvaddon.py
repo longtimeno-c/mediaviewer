@@ -731,6 +731,9 @@ def check_package(package: bytes) -> dict:
             error = Refused("invalid_theme", f"{t['id']}: {e.detail}")
             error.report = getattr(e, "report", None)
             raise error from None
+        # Theme schema 2 (shape) is an API 2 point, as settings and keymaps are.
+        if parse_json(entries[t["path"]]).get("schema", 1) >= 2 and manifest["api"]["max"] < 2:
+            raise Refused("malformed", f"{t['id']}: a schema 2 theme needs api.max 2")
     return {"manifest": manifest, "themes": themes,
             "sha256": hashlib.sha256(package).hexdigest()}
 
