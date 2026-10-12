@@ -2830,7 +2830,23 @@ static void MvAdoptNewDefaultViewerTypes() {
   }
   _options.jobs = &_jobs;
   _tags = std::make_unique<mv::meta::tag_index>(
-      mv::meta::tag_index::cache_fn([] { return &mv::meta::default_meta_cache(); }));
+      mv::meta::tag_index::cache_fn([] { return &mv::meta::default_meta_cache(); }),
+      [](std::string_view path) -> mv::result<mv::meta::search_facts> {
+        // docs/design/26: a Photos item is a key; its position and date come
+        // from PHAsset (location, creationDate), read locally.
+        if (mv::shell::photos::is_key(path)) {
+          const std::string key(path);
+          MV_TRY(auto described, mv::shell::photos::describe(std::span<const std::string>(&key, 1)));
+          mv::meta::search_facts f;
+          if (!described.empty() && described[0]) {
+            const auto& it = *described[0];
+            if (it.has_location) f.where = mv::meta::geo_point{it.lat, it.lon, std::nullopt};
+            f.date_taken_key = it.created;
+          }
+          return f;
+        }
+        return mv::meta::read_search_facts(path);
+      });
   // Milestone H: a clip opened on its moment shows its cached thumbnail first.
   // _folder lives as long as the process (MvLabApp is never destroyed).
   {
@@ -8172,10 +8188,7 @@ static double mv_wall_seconds() {
   if (!_tags || _listOpen || _items.empty() || _currentDir.empty()) return;
   std::vector<mv::io::dir_entry> files;
   files.reserve(_items.size());
-  for (const auto& e : _items) {
-    // docs/design/26: a Photos item is a key, not a file.
-    if (!mv::shell::photos::is_key(e.path_utf8)) files.push_back(e);
-  }
+  for (const auto& e : _items) files.push_back(e);  // Photos keys too (PHAsset.location)
   _tags->scan(_currentDir, std::move(files), _jobs, {},
               [] { return mv::shell::g_present_busy.load(std::memory_order_relaxed); });
 }
