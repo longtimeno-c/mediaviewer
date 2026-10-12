@@ -480,8 +480,16 @@ std::uint64_t slot_registry::search(std::uint32_t scope, const std::string& quer
           std::string q = trimmed;
           std::string f = folded;
           if (!routed_prefix.empty()) {
-            // The prefix is ASCII, so its length is the same folded or not.
-            q = q.substr(std::min(q.size(), routed_prefix.size()));
+            // The typed prefix can be longer than its fold ("PLÀCE:" -> "place:",
+            // a decomposed accent): cut where the typed text folds to it.
+            std::size_t cut = std::min(q.size(), routed_prefix.size());
+            for (std::size_t i = routed_prefix.size(); i <= q.size() && i <= routed_prefix.size() * 4; ++i) {
+              if (fold_query(std::string_view(q).substr(0, i)) == routed_prefix) {
+                cut = i;
+                break;
+              }
+            }
+            q = q.substr(cut);
             f = f.substr(routed_prefix.size());
             while (!q.empty() && q.front() == ' ') q.erase(0, 1);
             while (!f.empty() && f.front() == ' ') f.erase(0, 1);

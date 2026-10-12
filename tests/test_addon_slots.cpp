@@ -308,6 +308,10 @@ TEST_CASE("a slow provider never delays typing; a stale answer is dropped", "[ad
   r.search(MV_SLOT_SCOPE_LOCAL, "test: Lisboa", "");
   r.drain();
   REQUIRE(fc->queries.back() == "Lisboa");
+  // An accented prefix folds to it, and is cut whole (2-byte "\xC3\x89" folds to 1).
+  r.search(MV_SLOT_SCOPE_LOCAL, "T\xC3\x89ST: Lisboa", "");
+  r.drain();
+  REQUIRE(fc->queries.back() == "Lisboa");
   // ...but a digit after it is a date term (Local search's `in:2024`): not routed,
   // the whole query goes to every provider of the scope.
   r.search(MV_SLOT_SCOPE_LOCAL, "test:2024", "");
