@@ -118,7 +118,7 @@ if(NOT MV_FUZZ_MODE MATCHES "^static")
 endif()
 
 # Instrument everything that links mv_project_options.
-set(MV_FUZZ_INSTRUMENTED mv_core mv_codec mv_image mv_gfx mv_io mv_geo)
+set(MV_FUZZ_INSTRUMENTED mv_core mv_codec mv_image mv_gfx mv_io mv_geo mv_places_engine)
 set_target_properties(${MV_FUZZ_INSTRUMENTED} PROPERTIES
   MSVC_RUNTIME_LIBRARY "${MV_FUZZ_CRT}")
 target_compile_options(mv_project_options INTERFACE
@@ -134,7 +134,7 @@ target_compile_definitions(mv_project_options INTERFACE
   _DISABLE_OPTIONAL_ANNOTATION)
 
 set(MV_FUZZ_HARNESSES
-  jpeg png bmp gif webp tiff ico heic avif raw raw_preview decode animation thumbnail pdf docx geo)
+  jpeg png bmp gif webp tiff ico heic avif raw raw_preview decode animation thumbnail pdf docx geo places_map)
 
 add_custom_target(mv_fuzzers)
 
@@ -145,6 +145,12 @@ foreach(name IN LISTS MV_FUZZ_HARNESSES)
   if(name STREQUAL "geo")
     # docs/design/06 "Place": the place database loader, not a decoder.
     target_link_libraries(${target} PRIVATE mv_geo)
+  elseif(name STREQUAL "places_map")
+    # docs/design/27 "The map": the Places add-on's rasteriser and view maths,
+    # driven by numbers over the committed test blob.
+    target_link_libraries(${target} PRIVATE mv_places_engine)
+    target_compile_definitions(${target} PRIVATE
+      MV_FUZZ_GEO_BLOB="${CMAKE_SOURCE_DIR}/tests/data/geo/places-test.mvgeo")
   else()
     target_link_libraries(${target} PRIVATE mv_codec)
   endif()
@@ -180,9 +186,9 @@ foreach(name IN LISTS MV_FUZZ_HARNESSES)
   # libFuzzer runs a unit, which is the shape of a dependency the loader could
   # not bring up. This is CMake's own answer to that question and it no-ops
   # for anything already deployed.
-  # fuzz_geo imports no DLL of ours, and copy_if_different with an empty
-  # list is a usage error that fails the build.
-  if(NOT name STREQUAL "geo")
+  # fuzz_geo and fuzz_places_map import no DLL of ours, and copy_if_different
+  # with an empty list is a usage error that fails the build.
+  if(NOT name MATCHES "^(geo|places_map)$")
     add_custom_command(TARGET ${target} POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E copy_if_different
               "$<TARGET_RUNTIME_DLLS:${target}>" "$<TARGET_FILE_DIR:${target}>"
