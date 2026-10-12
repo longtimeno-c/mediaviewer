@@ -738,11 +738,13 @@ private struct SearchStatusPill: View {
 private struct SyntaxHint: View {
   var body: some View {
     VStack(spacing: 4) {
-      Text("Sam beach   ·   Sam “happy birthday”   ·   Sam or Alex   ·   -video   ·   in:2024")
+      Text("Sam beach   ·   Sam “happy birthday”   ·   -video   ·   in:2024   ·   camera:R5   ·   ai:yes   ·   place:Portugal")
         .font(.system(size: 12, design: .monospaced))
         .foregroundStyle(AITheme.title.opacity(0.8))
       Text("A name finds that person; “quotes” find words said in videos; - leaves something out; "
-           + "video or photo picks a kind; in:, before: and after: use the file's date; file: matches its name.")
+           + "video or photo picks a kind; in:, before: and after: use the file's date; file: matches its name; "
+           + "camera:, lens: and made: match its tags, ai:yes its AI provenance; place: or in:<place> where it was "
+           + "taken (with the Places add-on); a plain word also matches tags.")
         .font(AITheme.font(12))
         .foregroundStyle(AITheme.body)
         .multilineTextAlignment(.center)
@@ -1015,8 +1017,9 @@ private struct ResultTile: View {
     VStack(alignment: .leading, spacing: 4) {
       picture
       if !slot.snippet.isEmpty {
-        // The words that matched, quoted, under the frame they were said over.
-        Text("“\(slot.snippet)”")
+        // The words that matched, quoted, under the frame they were said over;
+        // #291: or the tag that matched ("Canon EOS R5"), as it is.
+        Text(result.matchedSpeech ? "“\(slot.snippet)”" : slot.snippet)
           .font(AITheme.font(12))
           .foregroundStyle(AITheme.body)
           .lineLimit(2)
@@ -1049,6 +1052,9 @@ private struct ResultTile: View {
     var text = result.isClip ? "\(result.name), at \(momentText(result.ptsMs))" : result.name
     if result.matchedSound { text += ", matched by sound" }
     if result.matchedSpeech { text += ", matched by speech" + (slot.snippet.isEmpty ? "" : ": \(slot.snippet)") }
+    if result.matchedTags && !result.matchedSpeech {
+      text += ", matched by tag" + (slot.snippet.isEmpty ? "" : ": \(slot.snippet)")
+    }
     return text
   }
 }

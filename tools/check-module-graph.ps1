@@ -49,7 +49,7 @@ $allowed = [ordered]@{
     # through the host function table and may include only core's
     # header-only pieces (result.h, status.h, json.h) and themselves.
     'addon'  = @('addon', 'io', 'core')
-    # docs/design/06 "Place": the offline reverse geocoder. geo.cpp/fold.cpp use
+    # docs/design/06 "Place": the offline reverse geocoder. geo.cpp/fold.h use
     # only core's header-only pieces so the Places add-on can link them; open.cpp
     # maps a file through io/. Nothing in the app's own graph (meta, abi, shell)
     # may include it: places arrive through the Places add-on, never hard-wired.

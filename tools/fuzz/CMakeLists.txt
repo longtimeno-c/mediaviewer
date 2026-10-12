@@ -146,7 +146,9 @@ set(MV_FUZZ_HARNESSES
   # docs/design/25 PR 56: settings pages, keymap packs and themes.
   addon_contributions
   # docs/design/25 PR 57: the script sandbox.
-  script)
+  script
+  # #291: the Local search query language (pure; compiled from its source).
+  ai_query)
 
 # docs/design/25 PR 57: the script sandbox. Lua is not linked to
 # mv_project_options (it is not our code, and builds without our warnings), so
@@ -185,6 +187,9 @@ foreach(name IN LISTS MV_FUZZ_HARNESSES)
       "${CMAKE_SOURCE_DIR}/src/addon/settings_schema.cpp"
       "${CMAKE_SOURCE_DIR}/src/addon/keymap.cpp"
       "${CMAKE_SOURCE_DIR}/src/addon/theme.cpp")
+  endif()
+  if(name STREQUAL "ai_query")
+    target_sources(${target} PRIVATE "${CMAKE_SOURCE_DIR}/src/addons/ai/query.cpp")
   endif()
   # fuzz_docx links codec without image, so it reads font files itself.
   if(name STREQUAL "docx")

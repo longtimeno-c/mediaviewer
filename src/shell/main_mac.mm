@@ -81,6 +81,8 @@
 #include "shell/key_router.h"
 #include "shell/keymap.h"
 #include "shell/meta_store.h"
+#include "meta/tag_index.h"
+#include "shell/present_busy.h"
 #include "shell/os_integration.h"
 #include "shell/meta_writer.h"
 #include "io/sort_order.h"
@@ -222,6 +224,8 @@ mv::shell::present_lab_mac* g_chrome_lab = nullptr;
 // private MvLabApp ivars only MvLabApp's own methods can reach — the bridge
 // functions below call through this pointer rather than duplicating state.
 MvLabApp* g_chrome_app = nullptr;
+// #291: one main-queue refresh in flight for the tag pass at a time.
+static std::atomic<bool> g_tag_refresh_posted{false};
 
 // docs/design/16 "Window": a new window (Cmd+N) is a new MediaViewer process on the
 // empty window; the viewer's state is one per process. Set from --new-window:
@@ -620,6 +624,9 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)setHelpVisible:(BOOL)visible;
 - (void)toggleHelp;
 - (uint64_t)listingGeneration;
+// #291: tag search over the folder on screen (docs/design/16 "File search").
+- (std::string)tagSearchJSON:(const char*)query;
+- (uint64_t)tagGeneration;
 - (BOOL)currentItemIsVideo;
 - (BOOL)currentItemIsAudio;
 - (BOOL)itemIsVideoAtIndex:(NSInteger)index;
@@ -1325,6 +1332,13 @@ extern "C" int32_t mv_chrome_list_subdirectories(const char* dir_utf8, char* buf
   std::string out;
   for (const auto& d : dirs.value()) out += MvFlat(d.name_utf8) + "\t" + d.path_utf8 + "\n";
   return MvCopyOut(out, buf, size);
+}
+extern "C" int32_t mv_chrome_tag_search(const char* query_utf8, char* buf, int32_t size) {
+  if (!g_chrome_app || !query_utf8) return MvCopyOut("", buf, size);
+  return MvCopyOut([g_chrome_app tagSearchJSON:query_utf8], buf, size);
+}
+extern "C" uint64_t mv_chrome_tag_generation(void) {
+  return g_chrome_app ? [g_chrome_app tagGeneration] : 0;
 }
 extern "C" int32_t mv_chrome_current_folder(char* buf, int32_t size) {
   if (!g_chrome_app) return MvCopyOut("", buf, size);
@@ -2429,6 +2443,16 @@ static void MvAdoptNewDefaultViewerTypes() {
   // lookup and never a file read. A record is asked for only while something is
   // showing it, and after a short pause so arrow-key scrubbing queues no reads.
   mv::shell::meta_store _meta;
+  // #291: every file's tags and date taken, read once per folder in the
+  // background (meta/tag_index.h), behind the view; meta_cache.db keeps them.
+  std::unique_ptr<mv::meta::tag_index> _tags;
+  // The listing changed and its tag pass waits for the item's first pixel.
+  BOOL _tagScanPending;
+  CFAbsoluteTime _tagScanListedAt;
+  NSTimer* _tagScanTimer;  // #291 + #178: armed per listing until the pass starts
+  std::uint64_t _tagGeneration;
+  std::uint64_t _tagMapGeneration;
+  std::unordered_map<std::string, std::size_t> _tagIndexOf;
   std::shared_ptr<const mv::meta::metadata> _metaRecord;
   std::uint64_t _metaGeneration;
   BOOL _metaPaneVisible;
@@ -2998,6 +3022,24 @@ static void MvAdoptNewDefaultViewerTypes() {
     return;
   }
   _options.jobs = &_jobs;
+  _tags = std::make_unique<mv::meta::tag_index>(
+      mv::meta::tag_index::cache_fn([] { return &mv::meta::default_meta_cache(); }),
+      [](std::string_view path) -> mv::result<mv::meta::search_facts> {
+        // docs/design/26: a Photos item is a key; its position and date come
+        // from PHAsset (location, creationDate), read locally.
+        if (mv::shell::photos::is_key(path)) {
+          const std::string key(path);
+          MV_TRY(auto described, mv::shell::photos::describe(std::span<const std::string>(&key, 1)));
+          mv::meta::search_facts f;
+          if (!described.empty() && described[0]) {
+            const auto& it = *described[0];
+            if (it.has_location) f.where = mv::meta::geo_point{it.lat, it.lon, std::nullopt};
+            f.date_taken_key = it.created;
+          }
+          return f;
+        }
+        return mv::meta::read_search_facts(path);
+      });
   // Milestone H: a clip opened on its moment shows its cached thumbnail first.
   // _folder lives as long as the process (MvLabApp is never destroyed).
   {
@@ -3527,10 +3569,16 @@ static void MvAdoptNewDefaultViewerTypes() {
   // -layoutAIBadge too; here it catches an item list that emptied or filled.
   [self layoutAIBadge];
   // Date-taken keys arriving on the pool re-sort the listing in place: the same
-  // items, the current one still selected, no image reload.
-  if (_meta.consume_dates_changed() && _sort.key == mv::io::sort_key::date_taken && !_listOpen) {
-    [self resortKeepingSelection];
+  // items, the current one still selected, no image reload. Once, when the pass
+  // ends (as Windows and the date scan before it): a re-sort per chunk re-sorted
+  // and republished a 20 k listing five times a second while the pass ran.
+  if (_tags && _tags->consume_changed()) {
+    ++_tagGeneration;  // an open file search re-runs its tag half
+    if (_sort.key == mv::io::sort_key::date_taken && !_listOpen && !_tags->progress().reading) {
+      [self resortKeepingSelection];
+    }
   }
+  [self startTagScanIfDue];
   // Issue #207: ratings and labels arriving on the pool re-apply a cull filter.
   if (_meta.consume_cull_changed() && mv::io::needs_cull_marks(mv::io::kind_filter_mask(_kindFilter))) {
     _refilterListing = YES;
@@ -3626,6 +3674,14 @@ static void MvAdoptNewDefaultViewerTypes() {
     [self makeListNames];
   } else {
     [self sortItems];
+    _tagScanListedAt = CFAbsoluteTimeGetCurrent();
+    // Sorting by date is asked for, so its keys start now, as the date scan
+    // always did; otherwise the pass waits for the item's first pixel.
+    if (_sort.key == mv::io::sort_key::date_taken) {
+      [self startTagScan];
+    } else {
+      [self armTagScan];
+    }
   }
   ++_listingGeneration;
 
@@ -6084,7 +6140,9 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     case typeahead: {
       const bool on_folders = _galleryVisible && !_subdirs.empty() &&
                               (_folderCursor >= 0 || _items.empty());
-      if (!on_folders) return NO;
+      // #291: over files, `/` is file search (names, then tags), as ⌘F is
+      // without Local search (docs/design/16 "File search").
+      if (!on_folders) return _items.empty() || _listOpen ? NO : [self openFileSearch];
       _folderQuery.clear();
       [self touchFolderFind];
       if (_folderCursor < 0 && !_subdirs.empty()) _folderCursor = 0;
@@ -8979,6 +9037,10 @@ static std::string MvBadgeKey(const mv::io::dir_entry& e) {
   // What the store cached for this file is out of date: a JPEG's stamp moved,
   // a sidecar's did not, so drop it by path either way.
   _meta.invalidate(out.path);
+  if (_tags) {
+    _tags->invalidate(out.path);
+    [self armTagScan];  // read it again shortly
+  }
   struct stat st{};
   if (::stat(out.path.c_str(), &st) == 0) {
     const auto new_size = static_cast<std::uint64_t>(st.st_size);
@@ -9083,17 +9145,103 @@ static std::string MvBadgeKey(const mv::io::dir_entry& e) {
 // re-orders the same listing when the order (or the date keys) change, keeping the
 // current item current without reloading its image.
 - (void)sortItems {
-  mv::shell::meta_store* store = &_meta;
-  mv::io::sort_entries(_items, _sort, [store](const mv::io::dir_entry& e) {
-    return store->date_key(e);
+  const mv::meta::tag_index* tags = _tags.get();
+  mv::io::sort_entries(_items, _sort, [tags](const mv::io::dir_entry& e) {
+    return tags ? tags->date_key(e) : std::optional<std::int64_t>{};
   });
-  if (_sort.key == mv::io::sort_key::date_taken && !_items.empty()) {
-    // One background scan fills the keys; the listing re-sorts when it lands.
-    // Issue #178: the scan posts when it lands (no timer polls for it).
-    _meta.resolve_date_keys(_items, _jobs, [] {
-      dispatch_async(dispatch_get_main_queue(), ^{ [g_chrome_app refreshFolderIfChanged]; });
-    });
+  // Sorting never starts the tag pass: resortKeepingSelection runs when the
+  // pass ends, and restarting it there would re-read the cache and re-list
+  // the folder on every tick. A fresh listing and a change to date-taken
+  // order start it (refreshFolderIfChanged, setSortOrder:).
+}
+
+// #291: the folder's tag pass starts once the item on screen has its first
+// pixel (or after a second, for a clip or a slow file), so it never runs ahead
+// of the view or the +-2 prefetch (CLAUDE.md "The view comes first"). No timer
+// polls the folder any more (issue #178), so a fresh listing arms a short one
+// (-armTagScan) that checks every 0.2 s and stops as soon as the pass starts:
+// within about a second, then nothing ticks.
+- (void)armTagScan {
+  _tagScanPending = YES;
+  if (_tagScanTimer) return;
+  __weak MvLabApp* weakSelf = self;
+  _tagScanTimer = [NSTimer scheduledTimerWithTimeInterval:0.2
+                                                  repeats:YES
+                                                    block:^(NSTimer* timer) {
+                                                      (void)timer;
+                                                      [weakSelf tagScanTick];
+                                                    }];
+  _tagScanTimer.tolerance = 0.04;
+}
+
+- (void)tagScanTick {
+  [self startTagScanIfDue];
+  if (_tagScanPending && !_listOpen && !_items.empty()) return;
+  [_tagScanTimer invalidate];
+  _tagScanTimer = nil;
+}
+
+- (void)startTagScanIfDue {
+  if (!_tagScanPending || _listOpen || _items.empty()) return;
+  if (!_lab.showing_still() && CFAbsoluteTimeGetCurrent() - _tagScanListedAt < 1.0) return;
+  [self startTagScan];
+}
+
+- (void)startTagScan {
+  _tagScanPending = NO;
+  if (!_tags || _listOpen || _items.empty() || _currentDir.empty()) return;
+  std::vector<mv::io::dir_entry> files;
+  files.reserve(_items.size());
+  for (const auto& e : _items) files.push_back(e);  // Photos keys too (PHAsset.location)
+  // Each chunk and the end post one refresh (coalesced): it bumps the tag
+  // generation for an open file search and re-sorts by date once the pass
+  // ends. Issue #178: nothing polls for it.
+  _tags->scan(
+      _currentDir, std::move(files), _jobs,
+      [] {
+        if (g_tag_refresh_posted.exchange(true, std::memory_order_acq_rel)) return;
+        dispatch_async(dispatch_get_main_queue(), ^{
+          g_tag_refresh_posted.store(false, std::memory_order_release);
+          [g_chrome_app refreshFolderIfChanged];
+        });
+      },
+      [] { return mv::shell::g_present_busy.load(std::memory_order_relaxed); });
+}
+
+- (uint64_t)tagGeneration {
+  return _tagGeneration;
+}
+
+// {"done":n,"total":m,"reading":b,"hits":[[index,"why"],...]}: the files of
+// the listing whose tags hold every word, in listing order (names are the
+// chrome's own half).
+- (std::string)tagSearchJSON:(const char*)query {
+  mv::json::writer w;
+  w.begin_object();
+  const auto p = _tags ? _tags->progress() : mv::meta::tag_index::progress_info{};
+  w.key("done").integer(p.done);
+  w.key("total").integer(p.total);
+  w.key("reading").boolean(p.reading || _tagScanPending);
+  w.key("hits").begin_array();
+  if (_tags && !_listOpen) {
+    if (_tagMapGeneration != _listingGeneration) {
+      _tagIndexOf.clear();
+      _tagIndexOf.reserve(_items.size());
+      for (std::size_t i = 0; i < _items.size(); ++i) _tagIndexOf.emplace(_items[i].path_utf8, i);
+      _tagMapGeneration = _listingGeneration;
+    }
+    for (const auto& h : _tags->match(query)) {
+      const auto it = _tagIndexOf.find(h.path);
+      if (it == _tagIndexOf.end()) continue;
+      w.begin_array();
+      w.integer(static_cast<std::int64_t>(it->second));
+      w.string(h.why);
+      w.end_array();
+    }
   }
+  w.end_array();
+  w.end_object();
+  return w.take();
 }
 
 - (void)resortKeepingSelection {
@@ -9742,6 +9890,8 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
   _sort = next;
   [[NSUserDefaults standardUserDefaults] setInteger:packed forKey:@"mv.sort"];
   [self resortKeepingSelection];
+  // The tag pass gives the date keys; it reads nothing it already has.
+  if (_sort.key == mv::io::sort_key::date_taken && !_listOpen) [self startTagScan];
 }
 
 // ---- PR 15: OS integration (docs/design/10 "OS integration", docs/design/16 View) ------------

@@ -31,6 +31,8 @@ namespace mv::addon {
 
 struct host_services {
   std::function<bool(const std::string& path, mv_addon_capture& out)> capture;
+  // #291: the host table's tag_facts (meta_cache.db). Empty: not served.
+  std::function<bool(const std::string& path, mv_addon_tag_facts& out)> tag_facts;
   std::function<result<std::string>(const std::string& path)> thumbnail;
   std::function<void(const mv_addon_event& event)> post;
   std::function<bool()> should_yield;

@@ -174,7 +174,6 @@ TEST_CASE("provenance for the badge: one probe, cached, and a held record answer
         m.s.ai_evidence = "EXIF Software: Adobe Firefly";
         return m;
       },
-      [](std::string_view) -> std::optional<std::int64_t> { return std::nullopt; },
       {},  // culls: the default reader, unused here
       [&](std::string_view path) {
         ++probes;

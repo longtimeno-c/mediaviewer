@@ -13,6 +13,12 @@
 // the viewer still walks the whole folder. Nothing here blocks the main
 // thread: names are folded off it, once per listing, and a keystroke runs one
 // memmem pass.
+//
+// #291: then tags. After the name hits come the files whose tags (camera, lens,
+// made-with, software, title, caption, keywords, creator) hold every word,
+// from the core's folder tag pass (mv_chrome_tag_search: memory, no file
+// read), each with the tag it matched on under its tile. While that pass is
+// still reading the folder the bar says "Still reading tags — 340 of 2,000".
 import AppKit
 import Combine
 import MVChromeBridge
@@ -32,6 +38,10 @@ final class FileSearchStore: ObservableObject {
   @Published private(set) var folders: [Int]?
   /// The field takes the keyboard, text selected.
   @Published private(set) var focusRequest = 0
+  /// #291: why a tile matched when its name did not ("Canon EOS R5"), by index.
+  @Published private(set) var why: [Int: String] = [:]
+  /// "Still reading tags — 340 of 2,000" while the folder's tag pass runs.
+  @Published private(set) var tagNote = ""
 
   // Computed, not stored: FolderStore's own init reaches listingChanged(_:).
   private var folderStore: FolderStore { FolderStore.shared }
@@ -50,6 +60,9 @@ final class FileSearchStore: ObservableObject {
   private var providerGeneration: UInt64 = 0
   @Published private(set) var providerNote = ""
   private var slotWatch: AnyCancellable?
+  /// Re-runs the tag half while the folder's tag pass is still reading.
+  private var tagWatch: Task<Void, Never>?
+  private var tagGeneration: UInt64 = 0
 
   private init() {
     slotWatch = SlotStore.shared.$fileSearch.sink { [weak self] state in
@@ -110,6 +123,10 @@ final class FileSearchStore: ObservableObject {
         SlotStore.shared.search(scope: 1, query: "", folder: "")
         providerNote = ""
       }
+      if !why.isEmpty { why = [:] }
+      if !tagNote.isEmpty { tagNote = "" }
+      tagWatch?.cancel()
+      tagWatch = nil
       pushFilter(nil, nil)
       return
     }
@@ -125,10 +142,18 @@ final class FileSearchStore: ObservableObject {
     let prefixed = SlotStore.shared.claimsFilePrefix(query)
     let names = prefixed ? [] : folded.matching(query)
     let folderHits = prefixed ? [] : foldedFolders.matching(query)
-    nameHits = names
+    // #291: then the files only their tags matched (a prefix a provider claims
+    // is the provider's alone), then the providers' rows.
+    if prefixed {
+      nameHits = names
+      if !why.isEmpty { why = [:] }
+      if !tagNote.isEmpty { tagNote = "" }
+    } else {
+      nameHits = withTags(names, typed: typed)
+    }
     // The providers hear the query on their own workers; this returns at once.
     providerGeneration = SlotStore.shared.search(scope: 1, query: typed, folder: searchFolder)
-    let merged = merge(names)
+    let merged = merge(nameHits)
     if merged != items { items = merged }
     if folderHits != folders { folders = folderHits }
     pushFilter(merged, folderHits)
@@ -175,6 +200,86 @@ final class FileSearchStore: ObservableObject {
     guard merged != items else { return }
     items = merged
     pushFilter(merged, folders ?? [])
+  }
+
+  // MARK: Tags (#291)
+
+  private struct TagAnswer: Decodable {
+    let done: Int
+    let total: Int
+    let reading: Bool
+    let hits: [[TagHitPart]]
+  }
+  private enum TagHitPart: Decodable {
+    case index(Int)
+    case text(String)
+    init(from decoder: Decoder) throws {
+      let c = try decoder.singleValueContainer()
+      if let i = try? c.decode(Int.self) { self = .index(i) } else { self = .text(try c.decode(String.self)) }
+    }
+  }
+
+  /// Name hits first, then the files only their tags matched, in listing order.
+  private func withTags(_ nameHits: [Int], typed: String) -> [Int] {
+    tagGeneration = mv_chrome_tag_generation()
+    var need = Int(typed.withCString { mv_chrome_tag_search($0, nil, 0) })
+    var answer: TagAnswer?
+    // The pass runs on a worker: the answer can grow between the size call and
+    // the copy, and a cut copy is JSON that does not decode (no hits, and no
+    // more polling). Ask again with the bigger size.
+    var attempt = 0
+    while need > 0 && attempt < 4 {
+      attempt += 1
+      var buf = [CChar](repeating: 0, count: need + 4097)
+      let got = buf.withUnsafeMutableBufferPointer { b in
+        Int(typed.withCString { mv_chrome_tag_search($0, b.baseAddress, Int32(b.count)) })
+      }
+      if got >= buf.count {
+        need = got
+        continue
+      }
+      answer = try? JSONDecoder().decode(TagAnswer.self, from: Data(String(cString: buf).utf8))
+      break
+    }
+    var out = nameHits
+    var reasons: [Int: String] = [:]
+    if let answer {
+      let named = Set(nameHits)
+      for hit in answer.hits {
+        guard hit.count == 2, case .index(let i) = hit[0], case .text(let w) = hit[1], !named.contains(i)
+        else { continue }
+        out.append(i)
+        reasons[i] = w
+      }
+      let note = answer.reading && answer.total > 0
+        ? "Still reading tags — \(answer.done.formatted()) of \(answer.total.formatted())" : ""
+      if note != tagNote { tagNote = note }
+      watchTags(answer.reading)
+    }
+    if reasons != why { why = reasons }
+    return out
+  }
+
+  /// While the tag pass reads the folder, re-run the search as it learns more
+  /// (a poll that exists only while a search is typed and tags are coming).
+  private func watchTags(_ reading: Bool) {
+    guard reading else {
+      tagWatch?.cancel()
+      tagWatch = nil
+      return
+    }
+    guard tagWatch == nil else { return }
+    tagWatch = Task { [weak self] in
+      while !Task.isCancelled {
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        guard let self, !Task.isCancelled else { return }
+        if mv_chrome_tag_generation() != self.tagGeneration {
+          self.tagWatch = nil
+          self.applyNames()
+          return
+        }
+      }
+    }
   }
 
   /// Folding thousands of names is Foundation work (~11 ms for 10,000): off the
@@ -259,7 +364,7 @@ struct FileSearchBar: View {
     HStack(spacing: MVTheme.space(8)) {
       Image(systemName: "magnifyingglass")
         .foregroundStyle(MVTheme.body)
-      TextField("Find files by name in this folder", text: $store.text)
+      TextField("Find files by name or tag in this folder", text: $store.text)
         .textFieldStyle(.plain)
         .font(MVTheme.font(14))
         .foregroundStyle(MVTheme.title)
@@ -278,8 +383,15 @@ struct FileSearchBar: View {
             store.text = ""
           }
         }
-        .accessibilityLabel("Find files by name")
-      if store.active && !store.providerNote.isEmpty {
+        .accessibilityLabel("Find files by name or tag")
+      if store.active && !store.tagNote.isEmpty {
+        // #291: the folder's tag pass is still reading.
+        Text(store.tagNote)
+          .font(MVTheme.font(12))
+          .foregroundStyle(MVTheme.body)
+          .lineLimit(1)
+          .fixedSize()
+      } else if store.active && !store.providerNote.isEmpty {
         Text(store.providerNote)
           .font(MVTheme.font(12))
           .foregroundStyle(MVTheme.body)
@@ -327,7 +439,9 @@ struct FileSearchNotice: View {
   @ObservedObject private var store = FileSearchStore.shared
 
   var body: some View {
-    Text("No files named “\(store.text.trimmingCharacters(in: .whitespacesAndNewlines))” in this folder.")
+    Text(store.tagNote.isEmpty
+      ? "No files named or tagged “\(store.text.trimmingCharacters(in: .whitespacesAndNewlines))” in this folder."
+      : "No match yet. \(store.tagNote)")
       .font(MVTheme.font(14))
       .foregroundStyle(MVTheme.body)
       .multilineTextAlignment(.center)

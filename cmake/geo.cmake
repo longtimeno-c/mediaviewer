@@ -27,9 +27,7 @@ add_library(mv_geo STATIC
   ${MV_SOURCE_ROOT}/src/geo/geo.cpp
   ${MV_SOURCE_ROOT}/src/geo/geo.h
   ${MV_SOURCE_ROOT}/src/geo/blob.h
-  ${MV_SOURCE_ROOT}/src/geo/fold.cpp
   ${MV_SOURCE_ROOT}/src/geo/fold.h
-  ${MV_SOURCE_ROOT}/src/geo/fold_table.inc
 )
 target_include_directories(mv_geo PUBLIC "${MV_SOURCE_ROOT}/src")
 target_link_libraries(mv_geo PUBLIC mv_project_options)

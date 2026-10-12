@@ -45,6 +45,13 @@ section (#348 slots / plan/25 PR 59), and search by place in slice 4 becomes its
 **Not built:** the Places add-on, the pane section, the `O` overlay line, the map (slice 3) and
 search by place. The town radius stays 15 km (reasoning in doc 27).
 
+**Slice 4 (#291) is built** on branch `feature/issue-291-metadata-search`, without place names in
+the app (owner, 2026-10-11: places come from the Places add-on's search provider). It is folded
+into `06-metadata.md` ("Search text"), `16-commands.md` ("File search") and `17-local-ai-search.md`
+("Schema 4", "Query syntax"). Its Windows half (the native C++ in `abi.cpp` and the running WinUI
+search) is owed to Windows CI and a Windows run. The provider merge in the chromes is #348's.
+`place:` over the whole index waits for a host call that enumerates the index's coordinates.
+
 ## 0. Rules this touches
 
 - **Rule 6 (nothing leaves the machine).** Place names and the map are computed from data bundled
@@ -155,7 +162,7 @@ coordinates. It is drawn from the same Natural Earth polygons as slice 2. No til
 pane on a geotagged still causes no present beyond the pane's own (idle 0 presents after);
 arrow-held browsing with the pane open shows no regression (`--browse-soak`, alternated).
 
-### Slice 4 — Every tag searchable, place included (#291)
+### ~~Slice 4 — Every tag searchable, place included (#291)~~ — built without place names in the app; see the Status above and docs 06 / 16 / 17. The text below is kept for the verify.
 
 **Plain search (no AI pack), both platforms.**
 - **The tag text:** a per-file search string is built once in the core from the slice 1 read: make,

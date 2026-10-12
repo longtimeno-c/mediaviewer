@@ -421,6 +421,18 @@ out of scope" (`docs/plans/metadata-search-and-place.md` §4, doc 06 *Not built*
 XMP `exif:GPS*` in a sidecar otherwise, the original never touched (rule 5); the sidecar's position
 now wins on read, as its rating does. Altitude is kept unless given. Remove is offered only when it
 reaches every copy the viewer reads, so a RAW's or HEIC's own fix can be overridden, not removed.
+**Every tag searchable (2026-10-12, #291).** File search and `/` match tags after names, from a
+per-folder background pass (`meta::tag_index`) over a bounded 512 KB head read, kept in
+`meta_cache.db` beside the thumbnail cache. The pass starts after the item's first image, runs as
+background-queue chunks behind every view job and waits while the viewer presents. Date-taken sort
+keys moved onto the same pass, one read per file instead of two. On a folder never seen, each key
+costs the search read (0.19 ms on a 6 MP JPEG) instead of the date read (0.09 ms); a folder seen
+before sorts at once. The app's search text has no place names: owner, 2026-10-11, places come
+from the Places add-on's search provider. The AI pack's query fold moved onto the hosts' rule
+(`core/fold.h`): ß, æ and ø are no longer expanded to ss, ae and o, so a word means the same in
+file search and Local search. AI index schema 4 adds the tag columns and an FTS5 `asset_text`
+(`sqlite3[fts5]` in vcpkg). Its place / country / region columns stay NULL, and `place:` is
+answered at query time by the provider.
 
 ---
 

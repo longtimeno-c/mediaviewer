@@ -485,11 +485,12 @@ public static partial class IslandHost
         return panel;
     }
 
-    // `/` from the canvas: find by name in the already-loaded listing.
+    // `/` from the canvas: find by name in the already-loaded listing, then
+    // (#291) by tag, from the core's folder tag pass (memory, never a read).
     private static UIElement BuildFind(out UIElement focusTarget)
     {
         string query = "";
-        const string prompt = "Find by name";
+        const string prompt = "Find by name or tag";
         TextBlock label = QueryLabel(prompt);
         TextBlock match = Label("", UiFontSize, mute: true);
         int found = -1;
@@ -498,7 +499,11 @@ public static partial class IslandHost
         {
             SetQuery(label, prompt, query);
             found = FindByName(query.Trim(), prefixOnly: false);
-            match.Text = found >= 0 ? $"{Items[found].Name}   ({found + 1} / {Items.Count})"
+            string why = "";
+            string reading = "";
+            if (found < 0 && query.Trim().Length > 0) (found, why, reading) = FindByTag(query.Trim());
+            match.Text = found >= 0 ? $"{Items[found].Name}   ({found + 1} / {Items.Count})" + (why.Length > 0 ? $"   · {why}" : "")
+                       : reading.Length > 0 ? reading
                        : query.Length > 0 ? "No match" : "";
             AutomationProperties_SetName(match, found >= 0 ? $"{Items[found].Name}, {found + 1} of {Items.Count}"
                                                 : match.Text);
@@ -540,6 +545,34 @@ public static partial class IslandHost
         };
         focusTarget = panel;
         return panel;
+    }
+
+    // #291: the first stop whose tags hold every word, its why, and the
+    // "still reading" note while the tag pass runs.
+    private static (int Index, string Why, string Reading) FindByTag(string query)
+    {
+        string json = _folderSession?.FolderTagSearch(query) ?? "";
+        if (json.Length == 0) return (-1, "", "");
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            int total = root.GetProperty("total").GetInt32();
+            string reading = root.GetProperty("reading").GetBoolean() && total > 0
+                ? $"Still reading tags — {root.GetProperty("done").GetInt32():N0} of {total:N0}"
+                : "";
+            foreach (var hit in root.GetProperty("hits").EnumerateArray())
+            {
+                int index = hit[0].GetInt32();
+                if ((uint)index < (uint)Items.Count) return (index, hit[1].GetString() ?? "", reading);
+            }
+            return (-1, "", reading);
+        }
+        catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException
+                                       or KeyNotFoundException or IndexOutOfRangeException)
+        {
+            return (-1, "", "");
+        }
     }
 
     // PR 10 export dialog (docs/design/10: "export dialog in WinUI"). Keyboard-complete

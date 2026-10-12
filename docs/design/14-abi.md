@@ -1,7 +1,7 @@
 # 14 — The C ABI
 
 The flat C ABI between the hosts' chrome and the C++ core, as declared in
-[`src/abi/include/mediaviewer/`](../../src/abi/include/mediaviewer/) (current version **0.27**).
+[`src/abi/include/mediaviewer/`](../../src/abi/include/mediaviewer/) (current version **0.28**).
 
 The Windows host is C# WinUI over `mediaviewer_core.dll` and calls this ABI through P/Invoke
 ([`src.managed/MediaViewer.Interop`](../../src.managed/MediaViewer.Interop/)). The Mac host links
@@ -289,6 +289,12 @@ mv_status mv_folder_set_kind_filter(mv_session_t, uint32_t mask, const char* con
                                     uint32_t kept_count);
 /* 0.23 (issue #207): the host rewrote this file's rating / label; drop what the filter cached */
 mv_status mv_folder_note_metadata_written(mv_session_t, const char* utf8_path);
+/* 0.28 (#291): tag search over the open folder, from its tag pass; JSON
+ * {"done","total","reading","hits":[[index,"why"],...]}. Never a read. */
+mv_status mv_folder_tag_search(mv_session_t, const char* query_utf8, char* utf8, uint32_t cap, uint32_t* out_bytes);
+mv_status mv_folder_tag_generation(mv_session_t, uint64_t* out_generation);
+/* 0.28: a PR 12 write landed (maybe only in the sidecar): read its tags again */
+mv_status mv_folder_forget_tags(mv_session_t, const char* utf8_path);
 mv_status mv_list_subdirectories(const char* utf8_dir, char* utf8, uint32_t cap, uint32_t* out_bytes);
 /* 0.27 (#352): the Location editor's text -> MV_LOCATION_POINT (lat / lon, text = preview),
  * _BLANK (remove) or _INVALID (text = why). Pure, no session; mv_location_input is 152 bytes. */
@@ -638,6 +644,7 @@ and inert unless set. The Mac host drives
 | 0.25 | Screens and slots: `mv_slots_*` (contributions, info sections, screens, search, badges, status, events, items, surfaces, the local-search provider, thumbnails by path); host table v3 (`MV_ADDON_HOST_API` 3) and `mv.slots.1`; `"slots"` in the installed JSON |
 | 0.26 | Script add-ons: `mv_script_*`; `MV_ADDON_CONTRIBUTION_API` 3 (5 once PRs 58–59 joined) |
 | 0.27 | `mv_meta_parse_location` / `mv_location_input` — the Metadata pane's Location editor (#352) |
+| 0.28 | `mv_folder_tag_search`, `mv_folder_tag_generation`, `mv_folder_forget_tags` (#291 file search by tag). Add-on host table: `tag_facts` appended last, after PR 56's `settings_get` and #348's v3 rows (no version bump; read when `struct_size` covers it). `mediaviewer_ai.h`: `MV_AI_MATCH_TAGS`. Mac bridge: `mv_chrome_tag_search`, `mv_chrome_tag_generation` |
 
 ## Not built
 

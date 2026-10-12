@@ -379,7 +379,13 @@ add_library(mv_meta STATIC
   src/meta/fields.cpp
   src/meta/sidecar.cpp
   src/meta/write.cpp
+  src/meta/search.cpp
+  src/meta/meta_cache.cpp
+  src/meta/tag_index.cpp
   src/meta/write.h
+  src/meta/search.h
+  src/meta/meta_cache.h
+  src/meta/tag_index.h
   src/meta/tables.h
   src/meta/meta.h
   src/meta/af.h
@@ -389,7 +395,7 @@ target_include_directories(mv_meta SYSTEM PRIVATE ${FFMPEG_INCLUDE_DIRS})
 target_link_directories(mv_meta PRIVATE ${FFMPEG_LIBRARY_DIRS})
 target_link_libraries(mv_meta
   PUBLIC mv_core
-  PRIVATE mv_meta_parse mv_codec mv_io Exiv2::exiv2lib ${FFMPEG_LIBRARIES})
+  PRIVATE mv_meta_parse mv_codec mv_io Exiv2::exiv2lib unofficial::sqlite3::sqlite3 ${FFMPEG_LIBRARIES})
 add_library(mv::meta ALIAS mv_meta)
 
 # ---------------------------------------------------------------------------
@@ -877,6 +883,7 @@ if(MV_BUILD_TESTS)
     tests/test_meta_store.cpp
     # #345: the canvas's AI badge (setting, evidence text, the store's probe).
     tests/test_ai_badge.cpp
+    tests/test_meta_search.cpp
     # PR 12: the metadata writer, and the host-shared write queue.
     tests/test_meta_write.cpp
     tests/test_meta_location_edit.cpp

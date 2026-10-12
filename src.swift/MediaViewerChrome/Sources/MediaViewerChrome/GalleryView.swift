@@ -105,7 +105,8 @@ struct GalleryView: View {
                       isMarked: store.markedNames.contains(store.names[index]),
                       isClip: store.isClip(at: index),
                       thumbKey: store.thumbKey(at: index), slot: store.slot(at: index),
-                      slotBadges: tileFlags.badges
+                      slotBadges: tileFlags.badges,
+                      why: search.why[index]
                     )
                     .id(index)
                     .onTapGesture { store.selectAndCloseGallery(index) }
@@ -332,6 +333,8 @@ private struct GalleryCell: View {
   let thumbKey: String
   @ObservedObject var slot: ThumbSlot
   var slotBadges = false
+  /// #291: the tag a file search matched on ("Canon EOS R5"), under the name.
+  var why: String? = nil
 
   var body: some View {
     VStack(spacing: 4) {
@@ -363,6 +366,15 @@ private struct GalleryCell: View {
         .lineLimit(1)
         .truncationMode(.middle)
         .frame(width: size)
+      if let why {
+        Text(why)
+          .font(.caption2)
+          .foregroundStyle(.secondary)
+          .lineLimit(1)
+          .truncationMode(.tail)
+          .frame(width: size)
+          .accessibilityLabel("Matched tag: \(why)")
+      }
     }
     .onAppear { FolderStore.shared.requestThumbnailIfNeeded(at: index) }
     // Cells are identified by index: a new listing (a result list replacing

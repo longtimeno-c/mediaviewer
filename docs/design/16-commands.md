@@ -192,7 +192,7 @@ crop. Keys are shown Windows-style; on macOS read `⌘` for `Ctrl`.
 | `Ctrl+N` | all | New window (⌘N; also File ▸ New Window and the Dock menu on the Mac) |
 | `Ctrl+,` | All but crop | Settings |
 | `Ctrl+G` | Viewing | Go to index. **Mac: not built** (no go-to popup yet; `⌘G` falls through) |
-| `/` | browse, video, gallery | Find by name in the loaded listing (gallery folder row: find a folder tile) |
+| `/` | browse, video, gallery | Find by name, then by tag, in the loaded listing (gallery folder row: find a folder tile) |
 | `Ctrl+Shift+E` | All but crop | Folder tree: show and focus |
 | `Ctrl+↑` | Viewing | Up one folder, selecting the folder just left |
 | `Ctrl+←` / `Ctrl+→` | browse, video | Previous / next sibling folder |
@@ -426,12 +426,29 @@ the results in the viewer on that tile, `Ctrl+Enter` opens them all as the galle
 character returns to the field; `Esc` returns to the field, then closes.
 
 **File search** (base app, no index): shows the gallery if hidden and opens "Find files by name
-in this folder" over the grid. Typing filters the grid, folder tiles too, by a case- and
+or tag in this folder" over the grid. Typing filters the grid, folder tiles too, by a case- and
 accent-insensitive substring, ~70 ms after the last key, with an "N of M" count. A view over the
 gallery only: arrows move among matches; the viewer and filmstrip still walk the whole folder.
 `Enter` / `↓` go to the grid on the first match; `Esc` clears, then closes; closing the gallery
 or opening another folder closes it. Names are folded once per listing off the UI thread; a
 keystroke is one pass (≤ 2 ms for 10,000 items). No disk walk.
+
+**Tags (#291).** After the name matches come the files whose tags hold every typed word:
+camera, lens, made-with, software, title, caption, keywords, creator
+([06](06-metadata.md) "Search text"). `R5` finds the Canon EOS R5 shots, `ChatGPT` the images it
+made. A tag match shows *why* under its tile ("Canon EOS R5"). The tags come from the folder's
+background tag pass, never from a read on a keystroke (`mv_chrome_tag_search` on the Mac,
+`mv_folder_tag_search` on Windows: a lookup in memory, ~1 ms at 20,000 files). The pass starts
+after the item on screen has its first image and yields to the viewer. While it is still reading,
+the bar says "Still reading tags — 340 of 2,000" and the results grow as it learns more (the
+chrome re-runs the search on `tag_generation`, polling only while a search is typed and tags
+are coming). A folder seen before answers at once (meta_cache.db). Place names (`portugal`)
+come from the Places add-on's search provider, whose rows join after these ([25](25-open-addons.md)
+§7, #348); the app's own tag text has none. Order: names, tags, providers.
+
+`/` over files opens the same search on the Mac. On Windows it is the find box over the
+listing, which jumps to the first name match, else the first tag match with its tag shown
+("IMG_0412.JPG · Canon EOS R5").
 
 ### `?`
 
@@ -479,8 +496,9 @@ Chrome, in memory, no decode.
   folder model.
 - **Sort:** name, modified, size, type, date taken; ascending or descending
   (`mv_folder_set_sort`, saved as `[view] sort` on Windows; View ▸ Sort By on both). Date-taken
-  keys are read once per file by one background job and the listing re-sorts in place when they
-  land; a file with no stamp sorts by mtime.
+  keys come from the folder's tag pass (one bounded read per file, once ever, kept in
+  meta_cache.db) and the listing re-sorts in place once the pass ends; a file with no stamp sorts by
+  mtime.
 - **Show** (issue #206): View ▸ Show on both hosts (the menu bar and the command bar's View on the
   Mac, the command bar's View on Windows): **All**, **Photos** (every still, RAW included),
   **Videos**, **RAW** (a RAW, or a RAW+JPEG pair) or **Marked** (the marks as they are when it is
@@ -509,7 +527,7 @@ Chrome, in memory, no decode.
   host's `meta_store` keeps the cache (`cull_marks_of`, `resolve_cull_marks`).
 - **Typeahead:** with the filmstrip or gallery focused, typing jumps to the first name starting
   with what was typed (300 ms idle resets). On the canvas every letter is a command, so `/` opens
-  a find box over the loaded listing. `Ctrl+G` goes to an index.
+  a find box over the loaded listing (names, then tags; above). `Ctrl+G` goes to an index.
 - **Wrap** at folder ends: on by default, a setting.
 - **Session:** window placement, last folder, zoom mode, wrap, background. Not a catalog.
 

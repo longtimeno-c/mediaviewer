@@ -34,6 +34,7 @@
 #include "io/volume.h"
 #include "meta/location.h"
 #include "meta/meta.h"
+#include "meta/meta_cache.h"
 
 namespace mv::abi {
 void scripts_store_changed() noexcept;  // script_abi.cpp (docs/design/25 PR 57)
@@ -127,6 +128,34 @@ const char* state_name(mv::addon::install_state s) {
   }
 }
 
+// #291: the host table's tag_facts, from meta_cache.db (a bounded read on a miss).
+bool tag_facts(const std::string& path, mv_addon_tag_facts& out) {
+  auto row = mv::meta::cached_or_read(mv::meta::default_meta_cache(), path);
+  if (!row) return false;
+  const mv::meta::search_facts& f = row->facts;
+  const auto put = [](char* dst, std::size_t cap, const std::string& src) {
+    std::size_t n = std::min(src.size(), cap - 1);
+    while (n > 0 && n < src.size() && (static_cast<unsigned char>(src[n]) & 0xC0) == 0x80) --n;
+    std::memcpy(dst, src.data(), n);
+    dst[n] = '\0';
+  };
+  if (f.date_taken_key != 0) {
+    out.flags |= MV_ADDON_TAG_HAS_DATE;
+    out.taken_unix = f.date_taken_key;
+  }
+  if (f.where) {
+    out.flags |= MV_ADDON_TAG_HAS_LOCATION;
+    out.lat = f.where->lat;
+    out.lon = f.where->lon;
+  }
+  if (f.ai_generated) out.flags |= MV_ADDON_TAG_AI_GENERATED;
+  put(out.camera_utf8, sizeof(out.camera_utf8), f.camera);
+  put(out.lens_utf8, sizeof(out.lens_utf8), f.lens);
+  put(out.made_with_utf8, sizeof(out.made_with_utf8), f.made_with);
+  put(out.fields_utf8, sizeof(out.fields_utf8), mv::meta::joined_fields(f.fields, sizeof(out.fields_utf8)));
+  return true;
+}
+
 // The viewer's capture date and camera for Import's layouts (mv_meta, PR 9).
 bool capture_info(const std::string& path, mv_addon_capture& out) {
   auto m = mv::meta::read(path);
@@ -160,6 +189,12 @@ mv::result<std::string> thumbnail(const std::string& path) {
 }
 
 }  // namespace
+
+// C++ linkage, as addon_bridge.h declares it: inside the extern "C" block
+// below it is "a different language linkage" (MSVC C2732, clang-cl error).
+namespace mv::abi {
+bool present_busy() noexcept { return g_present_busy.load(std::memory_order_relaxed); }
+}  // namespace mv::abi
 
 extern "C" {
 
@@ -540,6 +575,7 @@ mv::status load_addon(mv_session_t session, const char* id, const char* interfac
     }
     mv::addon::host_services svc;
     svc.capture = &capture_info;
+    svc.tag_facts = &tag_facts;
     svc.thumbnail = &thumbnail;
     svc.should_yield = [] { return g_present_busy.load(std::memory_order_relaxed); };
     svc.post = [session](const mv_addon_event& e) {
@@ -551,10 +587,13 @@ mv::status load_addon(mv_session_t session, const char* id, const char* interfac
       c.payload = e.payload;
       mv::abi::push_addon_completion(session, c);
     };
-    // Host table v3 (docs/design/25 PR 59): a file's coordinates, a bounded read.
+    // Host table v3 (docs/design/25 PR 59): a file's coordinates, from #291's
+    // meta_cache.db (the folder's tag pass may have read it already; a miss is
+    // one bounded read, stored for next time).
     svc.location = [](const std::string& path) -> std::optional<mv_addon_location> {
-      const auto fix = mv::meta::read_location(path);
-      if (!fix) return std::nullopt;
+      auto row = mv::meta::cached_or_read(mv::meta::default_meta_cache(), path);
+      if (!row || !row->facts.where) return std::nullopt;
+      const mv::meta::geo_point* fix = &*row->facts.where;
       mv_addon_location l{};
       l.has = 1;
       l.lat = fix->lat;

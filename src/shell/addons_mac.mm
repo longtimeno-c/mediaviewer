@@ -65,6 +65,7 @@
 #include "io/paths.h"
 #include "meta/location.h"
 #include "meta/meta.h"
+#include "meta/meta_cache.h"
 #include "mv_chrome_bridge.h"
 #include "shell/commands.h"
 #include "shell/folder_model_mac.h"
@@ -349,6 +350,34 @@ void retire(std::unique_ptr<mv::addon::loaded_addon> addon) {
   });
 }
 
+// #291: the host table's tag_facts, from meta_cache.db (a bounded read on a miss).
+bool tag_facts(const std::string& path, mv_addon_tag_facts& out) {
+  auto row = mv::meta::cached_or_read(mv::meta::default_meta_cache(), path);
+  if (!row) return false;
+  const mv::meta::search_facts& f = row->facts;
+  const auto put = [](char* dst, std::size_t cap, const std::string& src) {
+    std::size_t n = std::min(src.size(), cap - 1);
+    while (n > 0 && n < src.size() && (static_cast<unsigned char>(src[n]) & 0xC0) == 0x80) --n;
+    std::memcpy(dst, src.data(), n);
+    dst[n] = '\0';
+  };
+  if (f.date_taken_key != 0) {
+    out.flags |= MV_ADDON_TAG_HAS_DATE;
+    out.taken_unix = f.date_taken_key;
+  }
+  if (f.where) {
+    out.flags |= MV_ADDON_TAG_HAS_LOCATION;
+    out.lat = f.where->lat;
+    out.lon = f.where->lon;
+  }
+  if (f.ai_generated) out.flags |= MV_ADDON_TAG_AI_GENERATED;
+  put(out.camera_utf8, sizeof(out.camera_utf8), f.camera);
+  put(out.lens_utf8, sizeof(out.lens_utf8), f.lens);
+  put(out.made_with_utf8, sizeof(out.made_with_utf8), f.made_with);
+  put(out.fields_utf8, sizeof(out.fields_utf8), mv::meta::joined_fields(f.fields, sizeof(out.fields_utf8)));
+  return true;
+}
+
 bool capture_info(const std::string& path, mv_addon_capture& out) {
   auto m = mv::meta::read(path);
   if (!m) return false;
@@ -498,6 +527,7 @@ bool load_import_attempt() {
   };
   mv::addon::host_services svc;
   svc.capture = &capture_info;
+  svc.tag_facts = &tag_facts;
   svc.thumbnail = &thumbnail;
   svc.should_yield = [] { return mv::shell::g_present_busy.load(std::memory_order_relaxed); };
   svc.post = [](const mv_addon_event& e) {
@@ -569,6 +599,7 @@ void register_local_search_provider(bool on) { mv::addon::set_local_search_provi
 mv::addon::host_services ai_services() {
   mv::addon::host_services svc;
   svc.capture = &capture_info;
+  svc.tag_facts = &tag_facts;
   svc.thumbnail = &thumbnail;
   // Indexing waits while the present loop is busy (docs/design/17 "Yield policy":
   // playback, panning, a slideshow, a transition).
@@ -1840,11 +1871,13 @@ bool fills_slots(const mv::addon::installed& i) {
   return !i.m.slots.empty() && i.m.part_of.empty() && i.id != "import" && !is_ai_family(i.id);
 }
 
-// A file's coordinates for the host table (location_of / locations_in): a
-// bounded read, never the full metadata read (meta/location.h).
+// A file's coordinates for the host table (location_of / locations_in), from
+// #291's meta_cache.db: the folder's tag pass may have read it already, and a
+// miss is one bounded read (never the full metadata read), stored for next time.
 std::optional<mv_addon_location> read_location(const std::string& path) {
-  const auto fix = mv::meta::read_location(path);
-  if (!fix) return std::nullopt;
+  auto row = mv::meta::cached_or_read(mv::meta::default_meta_cache(), path);
+  if (!row || !row->facts.where) return std::nullopt;
+  const mv::meta::geo_point* fix = &*row->facts.where;
   mv_addon_location l{};
   l.has = 1;
   l.lat = fix->lat;

@@ -65,6 +65,9 @@ struct item {
   std::uint64_t size = 0; // pixelWidth * pixelHeight (the pack's stamp; no byte size without a read)
   std::int64_t created = 0;
   bool video = false;
+  // #291: PHAsset.location, read locally (the Places add-on names the place).
+  bool has_location = false;
+  double lat = 0, lon = 0;
 };
 
 // [worker] The user's own library: iCloud Photos and imports, not shared

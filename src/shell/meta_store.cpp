@@ -27,7 +27,6 @@ std::string key_of(const io::dir_entry& e) {
 
 struct meta_store::state {
   loader_fn loader;
-  date_reader_fn dates;
   cull_reader_fn culls;
 
   std::mutex mutex;
@@ -43,12 +42,6 @@ struct meta_store::state {
   // before a write landed cannot cache the pre-write record afterwards.
   std::uint64_t gen = 0;
   std::unordered_map<std::string, std::uint64_t> invalidated;
-
-  // std::nullopt inside the map = "read it, it has no date" (cached so a
-  // dateless file is not re-read on every re-sort).
-  std::unordered_map<std::string, std::optional<std::int64_t>> date_keys;
-  std::atomic<std::uint64_t> dates_scan{0};
-  std::atomic<bool> dates_changed{false};
 
   // Issue #207: rating + label by the same key (nothing cached = not read).
   std::unordered_map<std::string, io::cull_marks> cull_keys;
@@ -83,14 +76,11 @@ struct meta_store::state {
   }
 };
 
-meta_store::meta_store() : meta_store(
-    [](std::string_view p) { return meta::read(p); },
-    [](std::string_view p) { return meta::read_date_taken(p); }) {}
+meta_store::meta_store() : meta_store([](std::string_view p) { return meta::read(p); }) {}
 
-meta_store::meta_store(loader_fn loader, date_reader_fn dates, cull_reader_fn culls, probe_fn probe)
+meta_store::meta_store(loader_fn loader, cull_reader_fn culls, probe_fn probe)
     : state_(std::make_shared<state>()) {
   state_->loader = std::move(loader);
-  state_->dates = std::move(dates);
   state_->culls = culls ? std::move(culls)
                         : cull_reader_fn([](std::string_view p) { return meta::read_cull_marks(p); });
   state_->probe = probe ? std::move(probe) : probe_fn([](std::string_view p) { return meta::probe_provenance(p); });
@@ -203,48 +193,6 @@ std::uint64_t meta_store::probes() const noexcept {
   return state_->probes.load(std::memory_order_relaxed);
 }
 
-std::optional<std::int64_t> meta_store::date_key(const io::dir_entry& e) const {
-  std::lock_guard<std::mutex> lock(state_->mutex);
-  const auto it = state_->date_keys.find(key_of(e));
-  return it == state_->date_keys.end() ? std::nullopt : it->second;
-}
-
-void meta_store::resolve_date_keys(std::vector<io::dir_entry> entries, job_system& jobs,
-                                   std::function<void()> on_done) {
-  std::shared_ptr<state> st = state_;
-  const std::uint64_t scan = st->dates_scan.fetch_add(1, std::memory_order_acq_rel) + 1;
-  jobs.submit_at(
-      background_generation,
-      [st, scan, entries = std::move(entries), done = std::move(on_done)](const job_context&) -> status {
-        bool any = false;
-        for (const auto& e : entries) {
-          // A newer scan (another folder, another sort) owns the store now.
-          if (st->dates_scan.load(std::memory_order_acquire) != scan) {
-            if (any) st->dates_changed.store(true, std::memory_order_release);
-            return status::cancelled;
-          }
-          const std::string key = key_of(e);
-          {
-            std::lock_guard<std::mutex> lock(st->mutex);
-            if (st->date_keys.count(key)) continue;
-          }
-          const std::optional<std::int64_t> k = st->dates(e.path_utf8);
-          {
-            std::lock_guard<std::mutex> lock(st->mutex);
-            st->date_keys[key] = k;
-          }
-          any = true;
-        }
-        if (any) st->dates_changed.store(true, std::memory_order_release);
-        if (done) done();
-        return status::ok;
-      });
-}
-
-bool meta_store::consume_dates_changed() noexcept {
-  return state_->dates_changed.exchange(false, std::memory_order_acq_rel);
-}
-
 std::vector<std::optional<io::cull_marks>> meta_store::cull_marks_of(
     std::span<const io::dir_entry> entries) const {
   std::vector<std::optional<io::cull_marks>> out(entries.size());
@@ -338,7 +286,6 @@ void meta_store::clear() {
   std::lock_guard<std::mutex> lock(state_->mutex);
   state_->cache.clear();
   state_->lru.clear();
-  state_->date_keys.clear();
   state_->prov.clear();
   state_->prov_lru.clear();
   state_->cull_keys.clear();

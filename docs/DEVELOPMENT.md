@@ -1019,8 +1019,9 @@ python3 -I tools/geo/build_places.py --downloads build/geo-downloads --out build
 python3 -I tools/geo/build_places.py --downloads build/geo-downloads \
   --out tests/data/geo/places-test.mvgeo --subset test
 
-# the fold table, after changing the fold rule or for a newer Unicode
-python3 -I tools/geo/gen_fold_table.py > src/geo/fold_table.inc
+# the fold table (shared with file search and Local search, core/fold.h), after
+# changing the fold rule or for a newer Unicode
+python3 -I tools/fold/gen_fold_table.py > src/core/fold_table.inc
 
 # tests: fold, the test blob, a damaged-blob sweep; the 300-row table when the
 # full blob exists (MV_GEO_BLOB=path for one built elsewhere; MV_REQUIRE_GEO=1
@@ -1538,6 +1539,57 @@ beside each full read (`MV_BENCH_DIR=folder` adds every file in it).
   `test_chrome_host.cpp`) and the running island are compiled and run only by CI and a Windows
   machine: not yet. The island's corners are filled with the chrome's canvas colour, not see-
   through: an island cannot blur the swapchain under it.
+
+### Every tag searchable (#291, docs/plans/metadata-search-and-place.md slice 4, 2026-10-12)
+
+File search (Ctrl/⌘+F, and `/`) matches names, then tags: camera, lens, made-with, software,
+title, caption, keywords, creator ([06](design/06-metadata.md#search-text-291),
+[16](design/16-commands.md)). A folder's tags are read once, in the background, after the first
+image, into `meta_cache.db` next to the thumbnail cache. Date-taken sort rides the same pass. Local
+search gains `camera:`, `lens:`, `ai:` / `made:`, `place:` / `in:` and the AI index schema 4
+([17](design/17-local-ai-search.md)). Place names are the Places add-on's (owner, 2026-10-11).
+The app's search text has none.
+
+- **Tests:** `mv_tests "[search]"` (fold, builder, match / why, cache keying and invalidation,
+  the folder pass, a fake Places provider), `mv_ai_tests "[schema4],[tags]"` (3 → 4 migration,
+  a real kill mid-step via `fork` + `SIGKILL`, the backfill and its resume, the terms) and
+  `"[query]"`. `mv_tests "[.perf-search]"` times one search read against `meta::read` and
+  `read_date_taken`.
+- **Verify fixture:** `MV_SEARCH_FIXTURE_DIR=<dir> [MV_SEARCH_FIXTURE_COPIES=n] mv_tests
+  "[.make-search-fixture]"` writes `camera_r5.jpg`, `chatgpt.jpg`, `plain.jpg` and `nikon.jpg`.
+  For the 20 k folder, hard-link them 20,000 times (no disk cost).
+- **Dependency:** `sqlite3[fts5]` in `vcpkg.json` (both platforms). The first configure
+  rebuilds sqlite3.
+- **Mac (M-series, 2026-10-12):** compiles clean, app and both SwiftUI chromes included. `mv_tests` 688 cases (680
+  passed, 8 skipped); `mv_ai_tests` 114 (106 passed, 8 skipped). Two of four full AI runs had one
+  different engine test time out (`an empty index adopts the file's Quality`, another), and each
+  passed alone. The `[tags]` and `[schema4]` cases passed 5 of 5 runs.
+  - Bridge check: the dev app was driven through lldb on the four-file fixture, with no AI pack.
+    `mv_chrome_tag_search` gave `R5` → camera_r5.jpg ("Canon EOS R5"), `ChatGPT` → chatgpt.jpg,
+    `nikon` → nikon.jpg, `holiday` / `pena` → camera_r5.jpg, and `portugal` → nothing (no
+    place names in the app).
+  - Perf, base (`feature/issue-290-all-tags` eab9f08b, own worktree) vs new, alternated, Release,
+    20,000 hard-linked JPEGs, meta_cache.db deleted before each new run so the pass read all
+    20,000 during it:
+    - First pixel (`--soak 6 --static`, 3 runs each): base 9 / 14 / 10 ms, new 18 / 12 / 0 ms.
+      Full resolution: base 20–26 ms, new 12–21 ms.
+    - `--browse-soak --json` (2 runs each): arrow → next, warm, ready median 0.02 ms in all four
+      runs. The max was 0.03 / 0.10 ms base and 0.06 / 0.02 ms new; warm present median was
+      0.23 / 0.18 ms base and 0.22 / 0.20 ms new. Cold jumps: median 0.02 ms everywhere; max
+      86 / 23 ms base and 24 / 14 ms new.
+    - Limits of this run: the hard-linked fixture is four images, so decode work is light, and
+      first pixel was measured 3 times only. Not measured: a 20 k folder of distinct camera
+      files, the Windows `quick` / `held` steps.
+  - PR 1 gate: the animated soak passes (3,600 frames, p99 16.75 ms, max 16.86 ms). The idle
+    soak's CPU line fails on this machine for new (76.8 %) and base (84.6 %) alike, both with
+    0 presents. That is environmental, as in #290.
+  - Not clicked through the SwiftUI search bar by hand.
+- **Windows:** the C# chromes (Chrome, Ai.Chrome, Interop) compile on the Mac with
+  `dotnet msbuild -t:Compile`. The native half is compiled and run only by CI and a Windows
+  machine, so none of it has run yet: `abi.cpp` (the session's tag pass, `mv_folder_tag_search`,
+  `mv_folder_forget_tags`, date sort from the pass), `addon_abi.cpp` (`tag_facts`),
+  `main.cpp`, and the running WinUI search and `/` find box. Also owed there: the verify line
+  and the PR 1 gate.
 
 ### Every tag and AI provenance in the Metadata pane (#290, docs/plans/metadata-search-and-place.md slice 1, 2026-10-11)
 

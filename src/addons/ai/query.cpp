@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "addons/ai/query.h"
 
+#include "core/fold.h"
+
 #include <algorithm>
 #include <array>
 #include <utility>
@@ -140,7 +142,7 @@ std::vector<token> tokens_of(std::string_view s) {
       if (j > i && j < s.size() && s[j] == ':') {
         const std::string op = lower_ascii(s.substr(i, j - i));
         if (is_one_of(op, {"in", "before", "after", "since", "until", "is", "type", "kind", "person", "said",
-                          "file"})) {
+                          "file", "camera", "lens", "ai", "made", "place"})) {
           t.op = op;
           i = j + 1;
         } else {
@@ -260,59 +262,19 @@ std::string strip_lead_in(std::string_view q) {
 
 // ---- helpers --------------------------------------------------------------------------
 
-std::string fold(std::string_view s) {
-  std::string out;
-  out.reserve(s.size());
-  for (std::size_t i = 0; i < s.size(); ++i) {
-    const unsigned char c = static_cast<unsigned char>(s[i]);
-    if (c >= 'A' && c <= 'Z') {
-      out.push_back(static_cast<char>(c - 'A' + 'a'));
-    } else if (c == 0xC3 && i + 1 < s.size()) {
-      // Latin-1 letters (U+00C0-U+00FF): their base letter.
-      static constexpr char kBase[] = "aaaaaaaceeeeiiiidnooooo/ouuuuyts" "aaaaaaaceeeeiiiidnooooo/ouuuuyty";
-      const unsigned char n = static_cast<unsigned char>(s[i + 1]);
-      if (n >= 0x80 && n <= 0xBF) {
-        const char base = kBase[n - 0x80];
-        if (base == '/') {
-          out.append(s.substr(i, 2));  // x and ÷ are not letters
-        } else if (n == 0x9F) {
-          out.append("ss");
-        } else if (n == 0x86 || n == 0xA6) {
-          out.append("ae");
-        } else {
-          out.push_back(base);
-        }
-        ++i;
-        continue;
-      }
-      out.push_back(static_cast<char>(c));
-    } else {
-      out.push_back(static_cast<char>(c));
-    }
-  }
-  return out;
+std::string fold(std::string_view s) { return text::fold(s); }
+
+bool tag_contains(std::string_view value, std::string_view folded_term) {
+  return !folded_term.empty() && text::fold(value).find(folded_term) != std::string::npos;
 }
 
 bool name_matches(std::string_view path, std::span<const std::string> files,
                   std::span<const std::string> not_files) {
   if (files.empty() && not_files.empty()) return true;
   const std::size_t slash = path.find_last_of("/\\");
-  std::string name = fold(slash == std::string_view::npos ? path : path.substr(slash + 1));
-  // A Mac file name is often decomposed (e + U+0301): drop the combining
-  // marks (U+0300-U+036F) so it folds like a typed "é".
-  std::size_t w = 0;
-  for (std::size_t r = 0; r < name.size(); ++r) {
-    const auto c = static_cast<unsigned char>(name[r]);
-    if (r + 1 < name.size()) {
-      const auto n = static_cast<unsigned char>(name[r + 1]);
-      if ((c == 0xCC && n >= 0x80 && n <= 0xBF) || (c == 0xCD && n >= 0x80 && n <= 0xAF)) {
-        ++r;
-        continue;
-      }
-    }
-    name[w++] = name[r];
-  }
-  name.resize(w);
+  // The shared fold drops combining marks, so a decomposed Mac file name
+  // (e + U+0301) folds like a typed "é".
+  const std::string name = fold(slash == std::string_view::npos ? path : path.substr(slash + 1));
   for (const std::string& f : files) {
     if (name.find(f) == std::string::npos) return false;
   }
@@ -526,6 +488,40 @@ parsed parse(std::string_view utf8) {
       or_pending = false;
       continue;
     }
+    // #291: tag terms. One still being typed ("camera:") is dropped.
+    if (t.op == "camera" || t.op == "lens") {
+      std::string f = fold(t.text);
+      if (!f.empty()) {
+        auto& keep = t.op == "camera" ? p.cameras : p.lenses;
+        auto& drop = t.op == "camera" ? p.not_cameras : p.not_lenses;
+        (t.negated ? drop : keep).push_back(std::move(f));
+      }
+      or_pending = false;
+      continue;
+    }
+    if (t.op == "ai" || t.op == "made") {
+      const std::string f = fold(t.text);
+      if (is_one_of(f, {"yes", "y", "true", "1", "ai"})) {
+        p.ai = t.negated ? -1 : 1;
+      } else if (is_one_of(f, {"no", "n", "false", "0"})) {
+        p.ai = t.negated ? 1 : -1;
+      } else if (!f.empty()) {
+        (t.negated ? p.not_made : p.made).push_back(f);
+      }
+      or_pending = false;
+      continue;
+    }
+    if (t.op == "place" || t.op == "in") {
+      // in: is a date when it reads as one (in:2024, in:2024-06); a word
+      // starting with a digit never names a place. Anything else is a place.
+      std::int64_t start = 0, end = 0;
+      const bool digit = !t.text.empty() && t.text[0] >= '0' && t.text[0] <= '9';
+      if (t.op == "place" || (!digit && !date_range(t.text, start, end))) {
+        if (!fold(t.text).empty()) (t.negated ? p.not_places : p.places).push_back(t.text);
+        or_pending = false;
+        continue;
+      }
+    }
     if (t.op == "is" || t.op == "type" || t.op == "kind") {
       const std::uint32_t k = kind_word(fold(t.text));
       (t.negated ? p.not_kinds : p.kinds) |= k;
@@ -599,6 +595,15 @@ plan resolve(const parsed& p, std::span<const person_name> people) {
   out.to_unix = p.to_unix;
   out.files = p.files;
   out.not_files = p.not_files;
+  out.cameras = p.cameras;
+  out.not_cameras = p.not_cameras;
+  out.lenses = p.lenses;
+  out.not_lenses = p.not_lenses;
+  out.made = p.made;
+  out.not_made = p.not_made;
+  out.ai = p.ai;
+  out.places = p.places;
+  out.not_places = p.not_places;
   if (out.from_unix >= out.to_unix) out.impossible = true;
   for (const parsed::phrase& ph : p.phrases) {
     if (ph.negated) {
@@ -700,6 +705,11 @@ plan resolve(const parsed& p, std::span<const person_name> people) {
   while (!text.empty() && joins(text.back())) text.pop_back();
   if (std::all_of(text.begin(), text.end(), [](const std::string& s) { return connector(fold(s)); })) text.clear();
   for (const std::string& s : text) out.text += (out.text.empty() ? "" : " ") + s;
+  // #291: the same words against the files' tags (connectors dropped).
+  for (const std::string& s : text) {
+    const std::string f = fold(s);
+    if (!f.empty() && !connector(f) && f != "or") out.tag_words.push_back(f);
+  }
 
   // A lone word that starts a name, or nearly spells one: those people lead
   // and the word still describes (a union). Not for a stop word, and not
