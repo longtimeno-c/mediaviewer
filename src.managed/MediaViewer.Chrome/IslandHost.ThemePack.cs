@@ -11,7 +11,7 @@ using Windows.UI;
 namespace MediaViewer.Chrome;
 
 /// <summary>
-/// The theme an open add-on, or one of the five built-in palettes, may put in
+/// The theme an open add-on, or one of the built-in palettes, may put in
 /// place of the chrome's own colours (docs/design/25 "Themes"; the Mac twin is
 /// Theme.swift). IslandHost.Theme.cs owns the brushes; this owns which theme is
 /// chosen and its tokens. The built-ins are BuiltinThemes.cs.

@@ -539,7 +539,7 @@ TEST_CASE("a theme nobody could read is refused", "[open-addon][theme]") {
   REQUIRE_FALSE(store.install(package, offer.sha256));
 }
 
-// The five Settings → Appearance palettes are compiled into both chromes
+// The Settings → Appearance palettes are compiled into both chromes
 // (BuiltinThemes.swift and BuiltinThemes.cs). One literal per theme, identical
 // in both files, so a contrast failure or a host that drifted fails here.
 namespace {
@@ -598,7 +598,7 @@ bool hex6(const std::string& text) {
 
 }  // namespace
 
-TEST_CASE("the five built-in themes pass the contrast floor on both hosts", "[open-addon][theme]") {
+TEST_CASE("the built-in themes pass the contrast floor on both hosts", "[open-addon][theme]") {
   namespace fs = std::filesystem;
   const fs::path root = builtin_theme_root();
   INFO("cwd " << fs::current_path());
@@ -616,26 +616,44 @@ TEST_CASE("the five built-in themes pass the contrast floor on both hosts", "[op
   const std::vector<std::string> mac = builtin_theme_rows(swift_text);
   const std::vector<std::string> windows = builtin_theme_rows(csharp_text);
   REQUIRE(mac == windows);
-  REQUIRE(mac.size() == 5);
-
-  const char* ids[] = {"midnight", "starfield", "terminal", "ume", "porcelain"};
-  const char* names[] = {"Midnight", "Starfield", "Terminal", "Ume", "Porcelain"};
-  const char* kinds[] = {"dark", "dark", "dark", "dark", "light"};
-  const char* effects[] = {"rain", "starfield", "fireflies", "petals", "dots"};
+  const char* ids[] = {
+      "dark", "light", "midnight", "cyberpunk", "retrowave", "forest", "starfield",
+      "terminal", "organs", "ume", "gpt", "claude", "cute", "eclipse", "porcelain",
+      "arcade", "blueprint", "monolith", "yoyo"};
+  const char* names[] = {
+      "Dark", "Light", "Midnight", "Cyberpunk", "Retrowave", "Forest", "Starfield",
+      "Terminal", "Organs", "Ume", "GPT", "Claude", "Cute", "Eclipse", "Porcelain",
+      "Arcade", "Blueprint", "Monolith", "Yoyo"};
+  const char* kinds[] = {
+      "dark", "light", "dark", "dark", "dark", "dark", "dark",
+      "dark", "dark", "dark", "dark", "dark", "light", "dark", "light",
+      "dark", "dark", "dark", "dark"};
+  const char* effects[] = {
+      "none", "dots", "rain", "synapse", "embers", "petals", "starfield",
+      "fireflies", "rain", "petals", "none", "none", "sparkles", "starfield", "dots",
+      "synapse", "dots", "perlin-flow", "fireflies"};
+  REQUIRE(mac.size() == 19);
+  REQUIRE(mac.size() == sizeof ids / sizeof ids[0]);
+  REQUIRE(mac.size() == sizeof names / sizeof names[0]);
+  REQUIRE(mac.size() == sizeof kinds / sizeof kinds[0]);
+  REQUIRE(mac.size() == sizeof effects / sizeof effects[0]);
   const char* tokens[] = {"canvas", "surface", "title", "body", "disabled", "hairline", "accent"};
   for (std::size_t i = 0; i < mac.size(); ++i) {
     const std::vector<std::string> parts = split_ws(mac[i]);
-    // Colours, then a host-only ground effect. The effect is not a token:
-    // parse_theme below sees the seven colours and nothing else.
-    REQUIRE(parts.size() == 14);
+    // Colours, then a host-only ground effect, its intensity, speed and size.
+    // The effect is not a token: parse_theme below sees the seven colours and
+    // nothing else.
+    REQUIRE(parts.size() == 16);
     REQUIRE(parts[0] == "mvbuiltin");
     REQUIRE(parts[1] == ids[i]);
     REQUIRE(parts[2] == names[i]);
     REQUIRE(parts[3] == kinds[i]);
     REQUIRE(parts[11] == effects[i]);
     REQUIRE(hex6(parts[12]));
-    REQUIRE(parts[13].size() == 4);
-    REQUIRE(parts[13][1] == '.');
+    for (int tail = 13; tail <= 15; ++tail) {
+      REQUIRE(parts[tail].size() == 4);
+      REQUIRE(parts[tail][1] == '.');
+    }
     std::string palette = "{";
     for (int t = 0; t < 7; ++t) {
       REQUIRE(hex6(parts[4 + t]));

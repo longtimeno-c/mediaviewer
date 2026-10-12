@@ -1098,6 +1098,19 @@ seconds, under Reduce Motion, or when Windows animations are off. High contrast 
 Dots do not tick. Mac panes that are a system material stay a system material. Nothing was
 added to the present loop.
 
+**Nineteen built-ins, and four more grounds (2026-10-12, same issue).** The picker is Dark,
+Light, Midnight, Cyberpunk, Retrowave, Forest, Starfield, Terminal, Organs, Ume, GPT, Claude,
+Cute, Eclipse, Porcelain, Arcade, Blueprint, Monolith and Yoyo, in that order. The new grounds
+are a circuit (a faint grid and a few pulses along it), embers, sparkles and a slow drift.
+Dark, GPT and Claude have no ground, so they do not tick. Organs is the same rain at a crawl:
+speed 0.05, size 0.75, colour #451616. Speed and size are host fields on the row, not tokens;
+every other theme leaves them at 1, so Midnight, Starfield, Terminal, Ume and Porcelain look
+the same as they did. Retrowave's title is #ed5e76, the same hue as #e94560 lifted so it
+clears 4.5 : 1 on both its canvas and its surface; the accent stays #e94560. A ground is
+still not a token, still not in Contribution API 1, and still absent from the present loop.
+The palettes follow the Odysseus set. The photo canvas still receives only the flat canvas
+colour.
+
 ---
 
 ## Not built

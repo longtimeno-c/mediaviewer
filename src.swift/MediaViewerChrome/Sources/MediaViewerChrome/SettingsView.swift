@@ -269,7 +269,7 @@ struct SettingsView: View {
           }
           .pickerStyle(.menu).frame(width: 180)
         }
-        // docs/design/25: the chrome's colours. Default, then the five built-in
+        // docs/design/25: the chrome's colours. Default, then the built-in
         // palettes, then every theme an installed add-on contributes. The
         // photo is never recoloured.
         SettingsRow(title: "Theme",

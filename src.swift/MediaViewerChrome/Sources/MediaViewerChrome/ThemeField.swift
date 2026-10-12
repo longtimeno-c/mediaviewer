@@ -11,8 +11,10 @@
 //
 // Motion rests. Ten frames a second, and only while this app is in front,
 // Reduce Motion is off, and a pointer or a key moved in the last five
-// seconds. Dots do not move. A still photo still presents nothing: this
-// timer is the chrome's, and it stops.
+// seconds. Dots do not move, and a theme with no ground does not either.
+// A still photo still presents nothing: this timer is the chrome's, and it
+// stops. Speed scales velocities and size scales radii; 1 leaves a mark as
+// written. Every position is a function of the clock, not of the last frame.
 import AppKit
 import QuartzCore
 import SwiftUI
@@ -167,7 +169,11 @@ private enum ThemeGround {
     let area = w * h
     let ink = item.effectRGB
     let gain = item.intensity
+    let pace = item.speed
+    let scale = item.size
     switch item.effect {
+    case "none":
+      break
     case "dots":
       let spacing = max(28, (area / 72).squareRoot())
       let alpha = 0.16 * gain
@@ -175,7 +181,7 @@ private enum ThemeGround {
       while y < h {
         var x = spacing * 0.5
         while x < w {
-          dot(context, x, y, 1.2, ink, alpha)
+          dot(context, x, y, 1.2 * scale, ink, alpha)
           x += spacing
         }
         y += spacing
@@ -184,8 +190,8 @@ private enum ThemeGround {
       let n = count(area, per: 9000, cap: 64, min: 8)
       for i in 0..<n {
         var rng = Rng(seed: item.id, effect: item.effect, i: i)
-        let len = 14 + rng.next() * 18
-        let speed = 32 + rng.next() * 56
+        let len = (14 + rng.next() * 18) * scale
+        let speed = (32 + rng.next() * 56) * pace
         let alpha = (0.14 + rng.next() * 0.14) * gain
         let x = rng.next() * w
         let y0 = rng.next() * (h + len)
@@ -200,8 +206,8 @@ private enum ThemeGround {
         let x = rng.next() * w
         let y0 = rng.next() * h
         let z = 0.18 + rng.next() * 0.82
-        let speed = 12 + z * 48
-        let radius = 0.45 + z * 1.15
+        let speed = (12 + z * 48) * pace
+        let radius = (0.45 + z * 1.15) * scale
         let alpha = (0.10 + z * 0.38) * gain
         let y = wrap(y0 + time * speed, h)
         dot(context, x, y, radius, ink, alpha)
@@ -212,12 +218,12 @@ private enum ThemeGround {
         var rng = Rng(seed: item.id, effect: item.effect, i: i)
         let x0 = rng.next() * w
         let y0 = rng.next() * (h + 16)
-        let petal = 3 + rng.next() * 4
-        let vy = 16 + rng.next() * 22
-        let amp = 10 + rng.next() * 16
-        let spin = -0.5 + rng.next()
+        let petal = (3 + rng.next() * 4) * scale
+        let vy = (16 + rng.next() * 22) * pace
+        let amp = (10 + rng.next() * 16) * scale
+        let spin = (-0.5 + rng.next()) * pace
         let phase = rng.next() * .pi * 2
-        let x = x0 + sin(phase + time * 0.7) * amp
+        let x = x0 + sin(phase + time * 0.7 * pace) * amp
         let y = wrap(y0 + time * vy, h + 16) - 8
         let rot = phase + time * spin
         petalMark(context, x, y, petal, rot, ink, 0.20 * gain, 0.13 * gain)
@@ -230,13 +236,101 @@ private enum ThemeGround {
         let y0 = rng.next() * h
         let depth = rng.next()
         let phase = rng.next() * .pi * 2
-        let freq = 0.6 + depth * 0.9
-        let x = wrap(x0 + sin(time * freq + phase) * (18 + depth * 36), w)
-        let y = wrap(y0 + cos(time * freq * 0.72 + phase) * (10 + depth * 22), h)
-        let pulse = max(0, sin(time * (1.1 + depth) + phase))
+        let freq = (0.6 + depth * 0.9) * pace
+        let x = wrap(x0 + sin(time * freq + phase) * (18 + depth * 36) * scale, w)
+        let y = wrap(y0 + cos(time * freq * 0.72 + phase) * (10 + depth * 22) * scale, h)
+        let pulse = max(0, sin(time * (1.1 + depth) * pace + phase))
         let alpha = pulse * (0.16 + depth * 0.34) * gain
         if alpha > 0.02 {
-          dot(context, x, y, 1.1 + depth * 1.5, ink, alpha)
+          dot(context, x, y, (1.1 + depth * 1.5) * scale, ink, alpha)
+        }
+      }
+    case "synapse":
+      let spacing = max(24, (w + h) / 120)
+      let line = 0.035 * gain
+      var row = 0
+      while Double(row) * spacing < h {
+        context.fill(Path(CGRect(x: 0, y: Double(row) * spacing, width: w, height: 1)),
+                     with: .color(color(ink, line)))
+        row += 1
+      }
+      var col = 0
+      while Double(col) * spacing < w {
+        context.fill(Path(CGRect(x: Double(col) * spacing, y: 0, width: 1, height: h)),
+                     with: .color(color(ink, line)))
+        col += 1
+      }
+      let n = count(area, per: 28000, cap: 14, min: 4)
+      for i in 0..<n {
+        var rng = Rng(seed: item.id, effect: item.effect, i: i)
+        let vertical = rng.next() >= 0.5
+        let speed = (36 + rng.next() * 74) * pace
+        let trail = 14 * scale
+        let head = 1.3 * scale
+        let phase = rng.next()
+        let lanes = max(1, Int((vertical ? w : h) / spacing))
+        let lane = Double(Int(rng.next() * Double(lanes))) * spacing
+        let span = (vertical ? h : w) + trail
+        let pos = wrap(phase * span + time * speed, span) - trail
+        if vertical {
+          context.fill(Path(CGRect(x: lane, y: pos, width: 1, height: trail)),
+                       with: .color(color(ink, 0.30 * gain)))
+          dot(context, lane + 0.5, pos + trail, head, ink, 0.55 * gain)
+        } else {
+          context.fill(Path(CGRect(x: pos, y: lane, width: trail, height: 1)),
+                       with: .color(color(ink, 0.30 * gain)))
+          dot(context, pos + trail, lane + 0.5, head, ink, 0.55 * gain)
+        }
+      }
+    case "embers":
+      let n = count(area, per: 14000, cap: 36, min: 8)
+      for i in 0..<n {
+        var rng = Rng(seed: item.id, effect: item.effect, i: i)
+        let x0 = rng.next() * w
+        let y0 = rng.next() * (h + 24)
+        let phase = rng.next() * .pi * 2
+        let vy = (18 + rng.next() * 36) * pace
+        let amp = (6 + rng.next() * 14) * scale
+        let radius = (1.1 + rng.next() * 1.6) * scale
+        let rate = (0.18 + rng.next() * 0.28) * pace
+        let life = wrap(time * rate + phase / (.pi * 2), 1)
+        let fade = sin(life * .pi)
+        if fade * gain <= 0.02 { continue }
+        let x = wrap(x0 + sin(phase + time * 0.8 * pace) * amp, w)
+        let y = wrap(y0 - time * vy, h + 24)
+        dot(context, x, y, radius * 3.2, ink, 0.14 * fade * gain)
+        dot(context, x, y, radius * 0.65, ink, 0.62 * fade * gain)
+      }
+    case "sparkles":
+      let n = count(area, per: 16000, cap: 28, min: 6)
+      for i in 0..<n {
+        var rng = Rng(seed: item.id, effect: item.effect, i: i)
+        let x = rng.next() * w
+        let y = rng.next() * h
+        let radius = (2.4 + rng.next() * 3.4) * scale
+        let phase = rng.next() * .pi * 2
+        let freq = (0.9 + rng.next() * 1.8) * pace
+        let twinkle = max(0, sin(time * freq + phase))
+        let alpha = twinkle * 0.42 * gain
+        if alpha > 0.02 {
+          star(context, x, y, radius * (0.45 + twinkle * 0.55), ink, alpha)
+        }
+      }
+    case "perlin-flow":
+      let n = count(area, per: 18000, cap: 28, min: 6)
+      let lags = [0.0, 0.16, 0.32]
+      let alphas = [0.22, 0.11, 0.05]
+      let radii = [1.15, 0.85, 0.60]
+      for i in 0..<n {
+        var rng = Rng(seed: item.id, effect: item.effect, i: i)
+        let x0 = rng.next() * w
+        let y0 = rng.next() * h
+        let phase = rng.next() * .pi * 2
+        let freq = (0.12 + smoothNoise(x0 * 0.01, y0 * 0.01) * 0.22) * pace
+        let amp = (26 + smoothNoise(x0 * 0.008 + 3, y0 * 0.008) * 46) * scale
+        for sample in 0..<3 {
+          let at = flow(x0, y0, phase, freq, amp, time - lags[sample], pace, w, h)
+          dot(context, at.x, at.y, radii[sample] * scale, ink, alphas[sample] * gain)
         }
       }
     default:
@@ -268,6 +362,49 @@ private enum ThemeGround {
     let d = radius * 2
     context.fill(Path(ellipseIn: CGRect(x: x - radius, y: y - radius, width: d, height: d)),
                  with: .color(color(rgb, alpha)))
+  }
+
+  private static func noise2d(_ x: Double, _ y: Double) -> Double {
+    let n = sin(x * 12.9898 + y * 78.233) * 43758.5453
+    return n - floor(n)
+  }
+
+  private static func smoothNoise(_ x: Double, _ y: Double) -> Double {
+    let ix = floor(x)
+    let iy = floor(y)
+    let fx = x - ix
+    let fy = y - iy
+    let a = noise2d(ix, iy)
+    let b = noise2d(ix + 1, iy)
+    let c = noise2d(ix, iy + 1)
+    let d = noise2d(ix + 1, iy + 1)
+    let ux = fx * fx * (3 - 2 * fx)
+    let uy = fy * fy * (3 - 2 * fy)
+    return a + (b - a) * ux + (c - a) * uy + (a - b - c + d) * ux * uy
+  }
+
+  /// A closed orbit whose angle comes from the noise at the seed, plus a short wake.
+  private static func flow(_ x0: Double, _ y0: Double, _ phase: Double, _ freq: Double,
+                           _ amp: Double, _ t: Double, _ pace: Double,
+                           _ w: Double, _ h: Double) -> (x: Double, y: Double) {
+    let angle = smoothNoise(x0 * 0.004 + t * 0.05 * pace, y0 * 0.004) * .pi * 6
+    let x = wrap(x0 + cos(angle) * amp * 0.35 + sin(t * freq + phase) * amp, w)
+    let y = wrap(y0 + sin(angle) * amp * 0.35 + cos(t * freq * 0.72 + phase) * amp * 0.62, h)
+    return (x, y)
+  }
+
+  private static func star(_ context: GraphicsContext, _ x: Double, _ y: Double,
+                           _ radius: Double, _ rgb: UInt32, _ alpha: Double) {
+    var mark = context
+    mark.translateBy(x: x, y: y)
+    let r = radius
+    var path = Path()
+    path.move(to: CGPoint(x: 0, y: -r))
+    path.addQuadCurve(to: CGPoint(x: r, y: 0), control: CGPoint(x: r * 0.15, y: -r * 0.15))
+    path.addQuadCurve(to: CGPoint(x: 0, y: r), control: CGPoint(x: r * 0.15, y: r * 0.15))
+    path.addQuadCurve(to: CGPoint(x: -r, y: 0), control: CGPoint(x: -r * 0.15, y: r * 0.15))
+    path.addQuadCurve(to: CGPoint(x: 0, y: -r), control: CGPoint(x: -r * 0.15, y: -r * 0.15))
+    mark.fill(path, with: .color(color(rgb, alpha)))
   }
 
   private static func petalMark(_ context: GraphicsContext, _ x: Double, _ y: Double,
