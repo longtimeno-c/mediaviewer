@@ -220,7 +220,7 @@ The optional **Import** add-on copies a card or folder into your library.
 
 - **Anyone can make an add-on.** One `.mvaddon` file, signed by the person who made it. Drop it on MediaViewer, or use
   **Settings → Add-ons → From others** to install from a file or a link.
-- **Themes, key layouts and settings.** Colours, a typeface and how round and roomy the bars and panes are; a key layout for the hands you already have (Vim, FastStone…), with one click back to the defaults; and an add-on's own page in Settings. A theme dresses the app and never touches your photos' colour.
+- **Themes, key layouts and settings.** Colours, a typeface and how round and roomy the bars and panes are; a key layout for the hands you already have (a Vim layout ships as an example), with one click back to the defaults; and an add-on's own page in Settings. A theme dresses the app and never touches your photos' colour.
 - **Safe to try.** You see who signed it and what it is before it installs, only its original publisher can update it, and an add-on never gets network access.
 - **Make your own in five minutes** with a single-file Python tool and a guide: [docs/ADDONS.md](docs/ADDONS.md). Your add-on is yours to licence however you like.
 
