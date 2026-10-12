@@ -522,6 +522,8 @@ public static partial class IslandHost
             if (arg == IntPtr.Zero || sizeBytes < ResizeArgsSize) return unchecked((int)0x80070057);
             ChromeResizeArgs args = Marshal.PtrToStructure<ChromeResizeArgs>(arg);
             Move(_source, args.Width, args.Height, args.Y);
+            _barTop = Math.Max(0, args.Y);
+            PlaceResumeNotice();  // the bottom-right corner moved (issue #299)
             return 0;
         }
         catch (Exception ex)

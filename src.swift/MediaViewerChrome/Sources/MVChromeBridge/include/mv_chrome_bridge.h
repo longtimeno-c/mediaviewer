@@ -495,6 +495,21 @@ bool mv_addon2_ai_wake(void);
 // Installed and verified at launch, not loaded, nothing on its way (issue
 // #292): the first search starts it, so the search icon offers it. [main-thread]
 bool mv_addon2_ai_on_demand(void);
+// Issue #299, the launch notice. True once the launch check of the AI pack's
+// resume.json has run (it waits for the pack's verify; the pack itself is not
+// loaded). [main-thread]
+bool mv_addon2_ai_resume_known(void);
+// "Resume indexing Photos?" while an index left unfinished last session waits
+// to be resumed and the notice was not answered this session; "" otherwise.
+// [main-thread]
+int32_t mv_addon2_ai_resume_question(char* buf, int32_t size);
+// The notice's Resume: loads the pack (as the first search does) and resumes
+// every held root once it attaches, or at once when it is attached. The
+// question goes for the session. False when the pack cannot start. [main-thread]
+bool mv_addon2_ai_resume(void);
+// The notice's Dismiss: the roots stay paused, and the question goes for this
+// session (the next launch asks again). Nothing loads. [main-thread]
+void mv_addon2_ai_resume_dismiss(void);
 // What ⌘F does while Local search is not attached, in the first window (the
 // pack starts, issue #292) or such a window (its reader); the panel opens once
 // it attaches. False = file search is the caller's to open. [main-thread]

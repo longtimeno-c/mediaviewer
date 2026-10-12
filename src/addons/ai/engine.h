@@ -207,6 +207,14 @@ struct engine_deps {
 // every kReaderCatchUpSeconds, appending new frames rather than reloading.
 struct engine_options {
   bool read_only = false;
+  // Issue #299: a root whose picture indexing was unfinished when the engine
+  // started (a quit or a kill part-way) is held, neither walked nor indexed,
+  // until resume_root (set_setting "resume_root") or an explicit Rescan /
+  // re-enable / Index this folder. Search answers from what it committed.
+  // On in the shipped pack (addon_entry.cpp), whose hosts ask first: the
+  // launch notice reads resume.json, and Settings' folder rows offer Resume.
+  // Off (the default) for tests and tools; resume.json is written only with it.
+  bool hold_unfinished = false;
   // Workers and the iCloud fetch run at the OS's background priority
   // (platform::enter_background). The engine's tests turn it off: on a
   // loaded machine a background thread can wait a minute for a core, and a
@@ -673,6 +681,20 @@ class engine {
   // again) or by a restart.
   mutable std::atomic<bool> battery_override_{false};
   std::atomic<bool> clearing_{false};
+  // Issue #299: the roots held since start (engine_options::hold_unfinished).
+  // A leaf lock; held_list() copies the set out for a filter.
+  mutable std::mutex held_m_;
+  std::set<std::int64_t> held_roots_;
+  [[nodiscard]] std::vector<std::int64_t> held_list() const;
+  [[nodiscard]] bool held(std::int64_t root) const;
+  // Lets `root` (0: every root) index again: walked first, then queued.
+  // True when one was held.
+  bool unhold(std::int64_t root);
+  // data/resume.json, the roots whose pictures are not all indexed, for the
+  // host to read at launch without loading the pack (issue #299). Written by
+  // refresh_counts when that set changes. The last text written, control thread.
+  std::string resume_written_;
+  void write_resume(const std::string& spec, const std::vector<root_row>& roots);
   std::mutex control_m_;
   std::condition_variable control_cv_;
   std::set<std::int64_t> rescan_roots_;

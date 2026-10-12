@@ -961,6 +961,18 @@ is first opened that session, so the first search after launch may say "Indexing
 a while. Launch → first pixel and idle memory / CPU with the pack installed, before and after, are
 owed on both platforms (the measurement needs a release-signed pack).
 
+**An unfinished index waits for Resume (2026-10-11, owner; issue #299, amending the entry
+above).** Reopening the app after a quit or a kill part-way through a large root (the Photos
+library) used to carry on by itself, which loads ONNX Runtime and the model sessions even for an
+app opened for a few seconds. Now such a root is held until Resume (`hold_unfinished`, on in the
+shipped pack), and `data/resume.json` names the unfinished roots, which both hosts read at launch
+without loading the pack to show a bottom-right notice (Resume / Dismiss); Settings' folder rows
+offer Resume too (docs/design/17 "Unfinished roots wait for Resume"). Opening search loads the
+pack but does not resume a held root. **Cost:** an index left unfinished stays unfinished across
+launches until Resume, and files added to that root meanwhile wait too; search answers from what
+was already committed. Launch → first pixel and idle CPU with a root left mid-index, before and
+after, are owed on both platforms with an installed pack (the measurement #292 owes too).
+
 **The Mac Photos library as a source (2026-09-28).** Read-only: no PhotoKit write API is called,
 and `shell/write_guard.h` refuses every write, move, bin, rotate, export and trim of a Photos file
 or listed preview. Indexing never downloads (amended 2026-10-05: iCloud-only clips, opt-in, above);

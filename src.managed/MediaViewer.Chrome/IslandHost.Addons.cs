@@ -33,8 +33,9 @@ public static partial class IslandHost
 {
     private const string UpdateReleaseBase = "https://github.com/longtimeno-c/mediaviewer/releases/latest/download/";
 
+    // Dir: the installed version's folder (its sibling "data" holds the add-on's own files).
     private sealed record AddonState(bool Installed, string Version, string State, long Size, bool Loaded,
-        string Description = "", string HintText = "");
+        string Description = "", string HintText = "", string Dir = "");
 
     // Whether the release channel has a piece this build can install. Only
     // a manifest that verifies counts: the button never offers a download that
@@ -286,6 +287,12 @@ public static partial class IslandHost
             Dictionary<string, AddonState> states = ReadAddonStates();
             try { AddonNative.WatchVolumes(session); }
             catch (MediaViewerException ex) { System.Diagnostics.Debug.WriteLine(ex.Message); }
+            // Issue #299: an index left unfinished last session is not resumed by
+            // itself. The pack's resume.json (beside index.db) says which roots
+            // wait, so the window can ask without loading the pack.
+            AddonState? ai = states.GetValueOrDefault(AiSlot.Id);
+            List<UnfinishedRoot> unfinished = ai is { State: "ok" } && ai.Dir.Length > 0
+                ? ReadUnfinishedRoots(ai.Dir) : new List<UnfinishedRoot>();
             DispatcherQueueControllerTryEnqueue(() =>
             {
                 ApplyAddonStates(states);
@@ -300,6 +307,7 @@ public static partial class IslandHost
                 AlertIfUnusable(AiSlot);
                 RefreshAddonRow();
                 RefreshLocalSearch();
+                MaybeShowResumeNotice(unfinished);
             });
         });
     }
@@ -354,7 +362,8 @@ public static partial class IslandHost
                     a.GetProperty("loaded").GetBoolean(),
                     // docs/design/25: Settings' line and the card hint, from the manifest.
                     a.TryGetProperty("description", out JsonElement d) ? d.GetString() ?? "" : "",
-                    a.TryGetProperty("hint_text", out JsonElement h) ? h.GetString() ?? "" : "");
+                    a.TryGetProperty("hint_text", out JsonElement h) ? h.GetString() ?? "" : "",
+                    a.TryGetProperty("dir", out JsonElement dir) ? dir.GetString() ?? "" : "");
             }
         }
         catch (Exception ex) when (ex is MediaViewerException or JsonException or KeyNotFoundException)
@@ -520,7 +529,11 @@ public static partial class IslandHost
             ClearAddonAlert(slot);
             // Import is 0 / 1 on the wire (Milestone G), the AI pack 2 / 3.
             Send(Command.AddonState, slot == ImportSlot ? 1 : 3);
-            if (slot == AiSlot) OnSearchChromeAttached();
+            if (slot == AiSlot)
+            {
+                OnSearchChromeAttached();
+                OnAiAttachedForResume(table);  // the launch notice's Resume (issue #299)
+            }
         }
         catch (Exception ex)
         {
@@ -553,6 +566,7 @@ public static partial class IslandHost
         slot.Alc = null;
         slot.State = slot.State with { Loaded = false };
         if (slot == AiSlot && had) OnSearchChromeDetached();
+        if (slot == AiSlot) OnAiDetachedForResume();
         Send(Command.AddonState, slot == ImportSlot ? 0 : 2);
     }
 
