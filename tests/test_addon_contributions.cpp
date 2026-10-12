@@ -199,43 +199,43 @@ TEST_CASE("settings values: namespaced, persistent, kept or forgotten", "[addon]
   const auto page = places();
 
   // Nothing is created by a read.
-  REQUIRE(*values.value_json("acme.places", page, "town_radius_km") == "15");
+  REQUIRE(*values.value_json("acme.places", "", page, "town_radius_km") == "15");
   REQUIRE_FALSE(values.has_values("acme.places"));
   REQUIRE_FALSE(fs::exists(scratch / "Add-on Settings"));
-  REQUIRE_FALSE(values.value_json("acme.places", page, "nope"));
+  REQUIRE_FALSE(values.value_json("acme.places", "", page, "nope"));
 
-  REQUIRE(values.set("acme.places", page, "town_radius_km", "30"));
-  REQUIRE(values.set("acme.places", page, "show_map", "false"));
-  REQUIRE(values.set("acme.places", page, "label_names", "\"local\""));
-  REQUIRE(values.set("acme.places", page, "home", "\"Porto\""));
-  REQUIRE(values.set("acme.places", page, "town_radius_km", "2.5"));
+  REQUIRE(values.set("acme.places", "", page, "town_radius_km", "30"));
+  REQUIRE(values.set("acme.places", "", page, "show_map", "false"));
+  REQUIRE(values.set("acme.places", "", page, "label_names", "\"local\""));
+  REQUIRE(values.set("acme.places", "", page, "home", "\"Porto\""));
+  REQUIRE(values.set("acme.places", "", page, "town_radius_km", "2.5"));
   REQUIRE(fs::exists(scratch / "Add-on Settings" / "acme.places.json"));
   // Refused: the wrong kind, out of range, an unknown key, a bad owner.
-  REQUIRE_FALSE(values.set("acme.places", page, "town_radius_km", "99"));
-  REQUIRE_FALSE(values.set("acme.places", page, "show_map", "\"no\""));
-  REQUIRE_FALSE(values.set("acme.places", page, "nope", "true"));
-  REQUIRE_FALSE(values.set("../escape", page, "show_map", "true"));
-  REQUIRE_FALSE(values.set("acme.places/x", page, "show_map", "true"));
-  REQUIRE_FALSE(values.set("con", page, "show_map", "true"));
-  REQUIRE_FALSE(values.set("acme.places", page, "show_map", "tru"));
+  REQUIRE_FALSE(values.set("acme.places", "", page, "town_radius_km", "99"));
+  REQUIRE_FALSE(values.set("acme.places", "", page, "show_map", "\"no\""));
+  REQUIRE_FALSE(values.set("acme.places", "", page, "nope", "true"));
+  REQUIRE_FALSE(values.set("../escape", "", page, "show_map", "true"));
+  REQUIRE_FALSE(values.set("acme.places/x", "", page, "show_map", "true"));
+  REQUIRE_FALSE(values.set("con", "", page, "show_map", "true"));
+  REQUIRE_FALSE(values.set("acme.places", "", page, "show_map", "tru"));
 
   // Namespaced by id: another add-on with the same keys sees its defaults,
   // and a first-party id is its own file.
-  REQUIRE(*values.value_json("other.places", page, "town_radius_km") == "15");
-  REQUIRE(values.set("places", page, "show_map", "false"));
+  REQUIRE(*values.value_json("other.places", "", page, "town_radius_km") == "15");
+  REQUIRE(values.set("places", "", page, "show_map", "false"));
   REQUIRE(fs::exists(scratch / "Add-on Settings" / "places.json"));
-  REQUIRE(*values.value_json("acme.places", page, "show_town") == "true");
+  REQUIRE(*values.value_json("acme.places", "", page, "show_town") == "true");
 
   // Survives a restart: a fresh cache reads what the file holds.
   mv::addon::reset_settings_cache_for_tests();
   const mv::addon::settings_values again(root);
-  REQUIRE(*again.value_json("acme.places", page, "town_radius_km") == "2.500");
-  REQUIRE(*again.value_json("acme.places", page, "show_map") == "false");
-  REQUIRE(*again.value_json("acme.places", page, "label_names") == "\"local\"");
-  REQUIRE(*again.value_json("acme.places", page, "home") == "\"Porto\"");
+  REQUIRE(*again.value_json("acme.places", "", page, "town_radius_km") == "2.500");
+  REQUIRE(*again.value_json("acme.places", "", page, "show_map") == "false");
+  REQUIRE(*again.value_json("acme.places", "", page, "label_names") == "\"local\"");
+  REQUIRE(*again.value_json("acme.places", "", page, "home") == "\"Porto\"");
 
   // The page as the hosts render it: order, defaults and values folded in.
-  const auto doc = mv::json::parse(again.page_json("acme.places", page, "Ignored"));
+  const auto doc = mv::json::parse(again.page_json("acme.places", "", page, "Ignored"));
   REQUIRE(doc);
   REQUIRE(*doc->str("title") == "Places");
   const auto& sections = doc->find("sections")->a;
@@ -258,15 +258,15 @@ TEST_CASE("settings values: namespaced, persistent, kept or forgotten", "[addon]
       places_with(R"("max": 50, "step": 1, "unit": "km", "default": 15)",
                   R"("max": 2, "step": 1, "unit": "km", "default": 1)"));
   REQUIRE(narrower);
-  REQUIRE(*again.value_json("acme.places", *narrower, "town_radius_km") == "1");
-  REQUIRE(*again.value_json("acme.places", page, "town_radius_km") == "2.500");
+  REQUIRE(*again.value_json("acme.places", "", *narrower, "town_radius_km") == "1");
+  REQUIRE(*again.value_json("acme.places", "", page, "town_radius_km") == "2.500");
 
   // Remove with "keep its settings": nothing is touched. Without: forgotten.
   REQUIRE(again.has_values("acme.places"));
   REQUIRE(again.forget("acme.places"));
   REQUIRE_FALSE(fs::exists(scratch / "Add-on Settings" / "acme.places.json"));
   REQUIRE_FALSE(again.has_values("acme.places"));
-  REQUIRE(*again.value_json("acme.places", page, "town_radius_km") == "15");
+  REQUIRE(*again.value_json("acme.places", "", page, "town_radius_km") == "15");
   REQUIRE(again.forget("acme.places"));  // nothing there: fine
   REQUIRE(again.has_values("places"));   // the other id is untouched
   mv::addon::reset_settings_cache_for_tests();
@@ -280,20 +280,20 @@ TEST_CASE("settings values: a write keeps what another window wrote", "[addon][s
   const std::string root = utf8(scratch / "Add-on Settings");
   const mv::addon::settings_values values(root);
   const auto page = places();
-  REQUIRE(values.set("acme.places", page, "town_radius_km", "30"));
+  REQUIRE(values.set("acme.places", "", page, "town_radius_km", "30"));
   // The other process: town 30 (as it read it) and the map turned off.
   {
     std::ofstream other(scratch / "Add-on Settings" / "acme.places.json", std::ios::binary | std::ios::trunc);
     other << R"({"schema":1,"values":{"town_radius_km":30,"show_map":false}})";
   }
-  const auto doc = mv::json::parse(values.page_json("acme.places", page, "Places"));
+  const auto doc = mv::json::parse(values.page_json("acme.places", "", page, "Places"));
   REQUIRE(doc);
   REQUIRE(doc->find("sections")->a[0].find("items")->a[0].find("value")->b == false);
-  REQUIRE(values.set("acme.places", page, "home", "\"Porto\""));
+  REQUIRE(values.set("acme.places", "", page, "home", "\"Porto\""));
   mv::addon::reset_settings_cache_for_tests();
-  REQUIRE(*values.value_json("acme.places", page, "show_map") == "false");
-  REQUIRE(*values.value_json("acme.places", page, "home") == "\"Porto\"");
-  REQUIRE(*values.value_json("acme.places", page, "town_radius_km") == "30");
+  REQUIRE(*values.value_json("acme.places", "", page, "show_map") == "false");
+  REQUIRE(*values.value_json("acme.places", "", page, "home") == "\"Porto\"");
+  REQUIRE(*values.value_json("acme.places", "", page, "town_radius_km") == "30");
   mv::addon::reset_settings_cache_for_tests();
 }
 
@@ -357,6 +357,91 @@ TEST_CASE("an open add-on with a settings page and keymaps installs, and its pag
   REQUIRE(store.install(package, offer.sha256));
   REQUIRE(*mv::addon::open_setting_value_json(store, "acme.film-tones", "town_radius_km") == "15");
 
+  mv::io::set_addon_settings_dir_override("");
+  mv::addon::reset_settings_cache_for_tests();
+}
+
+TEST_CASE("settings kept for one publisher are never read for another", "[addon][settings]") {
+  // The store alone: a file written for one publisher's add-on.
+  scratch_dir scratch("addon_settings_publisher");
+  mv::addon::reset_settings_cache_for_tests();
+  const std::string root = utf8(scratch / "Add-on Settings");
+  const mv::addon::settings_values values(root);
+  const auto page = places();
+  REQUIRE(values.set("acme.places", "aaaa", page, "home", "\"Porto\""));
+  REQUIRE(values.set("acme.places", "aaaa", page, "show_map", "false"));
+  REQUIRE(*values.value_json("acme.places", "aaaa", page, "home") == "\"Porto\"");
+  REQUIRE(*values.value_json("acme.places", "bbbb", page, "home") == "\"\"");
+  const auto doc = mv::json::parse(values.page_json("acme.places", "bbbb", page, "Places"));
+  REQUIRE(doc);
+  REQUIRE(*doc->find("sections")->a[1].find("items")->a[0].str("value") == "");
+  // A write for the other publisher replaces, never merges.
+  REQUIRE(values.set("acme.places", "bbbb", page, "town_radius_km", "20"));
+  mv::addon::reset_settings_cache_for_tests();
+  REQUIRE(*values.value_json("acme.places", "bbbb", page, "show_map") == "true");
+  REQUIRE(*values.value_json("acme.places", "bbbb", page, "town_radius_km") == "20");
+  REQUIRE(*values.value_json("acme.places", "aaaa", page, "home") == "\"\"");
+  // claim: the same publisher keeps; another deletes.
+  REQUIRE(values.claim("acme.places", "bbbb"));
+  REQUIRE(fs::exists(scratch / "Add-on Settings" / "acme.places.json"));
+  REQUIRE(values.claim("acme.places", "cccc"));
+  REQUIRE_FALSE(fs::exists(scratch / "Add-on Settings" / "acme.places.json"));
+  REQUIRE(values.claim("acme.places", "cccc"));  // nothing there: fine
+  mv::addon::reset_settings_cache_for_tests();
+}
+
+TEST_CASE("installing another publisher's add-on under a kept id deletes its settings",
+          "[addon][settings][open-addon]") {
+  scratch_dir scratch("addon_settings_claim");
+  mv::addon::reset_settings_cache_for_tests();
+  mv::io::set_addon_settings_dir_override(utf8(scratch / "Add-on Settings"));
+  const mv::addon::open_store store(utf8(scratch / "Open Add-ons"));
+  manifest_options o;
+  o.api_max = 2;
+  o.contributes_raw = {{"settings", kPlacesPage}};
+  const auto install = [&](const publisher_key& k) {
+    const auto package = make_package(k, theme_files(), o);
+    const fs::path file = scratch / ("p-" + k.hex().substr(0, 8) + ".mvaddon");
+    write_bytes(file, package);
+    const auto offer = store.inspect(package);
+    REQUIRE(offer.ok());
+    const auto done = mv::json::parse(mv::addon::open_install_json(store, utf8(file), offer.sha256));
+    REQUIRE(done);
+    REQUIRE(done->find("ok")->b);
+  };
+  const auto value = [&] {
+    return *mv::addon::open_setting_value_json(store, "acme.film-tones", "home");
+  };
+  publisher_key first, second;
+  install(first);
+  REQUIRE(mv::json::parse(mv::addon::addon_setting_set_json(store, nullptr, "acme.film-tones", "home",
+                                                            "\"Porto\""))
+              ->find("ok")
+              ->b);
+  // Removed keeping its settings; the same publisher's again: they are back.
+  REQUIRE(store.remove("acme.film-tones"));
+  install(first);
+  REQUIRE(value() == "\"Porto\"");
+  // Removed keeping; a stranger's package under the same id: deleted, never read.
+  REQUIRE(store.remove("acme.film-tones"));
+  install(second);
+  REQUIRE_FALSE(fs::exists(scratch / "Add-on Settings" / "acme.film-tones.json"));
+  REQUIRE(value() == "\"\"");
+  // Even without the install's claim (a file left another way), the reader
+  // does not hand them over.
+  REQUIRE(store.remove("acme.film-tones"));
+  install(first);
+  REQUIRE(mv::json::parse(mv::addon::addon_setting_set_json(store, nullptr, "acme.film-tones", "home",
+                                                            "\"Faro\""))
+              ->find("ok")
+              ->b);
+  REQUIRE(store.remove("acme.film-tones"));
+  const auto package = make_package(second, theme_files(), o);
+  REQUIRE(store.install(package, store.inspect(package).sha256));  // no claim
+  mv::addon::reset_settings_cache_for_tests();
+  REQUIRE(value() == "\"\"");
+  REQUIRE(mv::addon::addon_settings_page_json(store, nullptr, "acme.film-tones").find("Faro") ==
+          std::string::npos);
   mv::io::set_addon_settings_dir_override("");
   mv::addon::reset_settings_cache_for_tests();
 }

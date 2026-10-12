@@ -702,7 +702,7 @@ result<std::unique_ptr<loaded_addon>> loaded_addon::load(const store& s, const s
     services.setting = [id = info.m.id, page = info.m.settings](const std::string& key)
         -> result<std::string> {
       MV_TRY(settings_values values, default_settings_values());
-      return values.value_json(id, page, key);
+      return values.value_json(id, /*publisher: the app's own*/ "", page, key);
     };
   }
   std::unique_ptr<loaded_addon> out(new loaded_addon());

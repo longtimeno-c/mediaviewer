@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // What people chose on add-ons' settings pages (docs/design/25 "Settings page").
 //
-//   <root>/<add-on id>.json   {"schema": 1, "values": {"show_map": false, ...}}
+//   <root>/<add-on id>.json   {"schema": 1, "publisher": "<key hex>",
+//                              "values": {"show_map": false, ...}}
 //
 // <root> is io::addon_settings_dir(), beside the add-on folders and never in
 // one, so removing an add-on can keep its settings (the default) or forget
@@ -10,6 +11,14 @@
 // file name is the id, which is a folder-safe name for both kinds (an open
 // add-on's dotted id, a first-party one's plain id). Nothing is created until
 // a value is written.
+//
+// Kept for the same publisher only. An id is unique only among installed
+// add-ons, so after a remove that keeps its settings another publisher may
+// install a package under the same id. Each file records the key of the
+// publisher it was written for (an open add-on's Ed25519 key; "" for a
+// first-party add-on, the app's own): values chosen for one publisher are
+// never read for another, a write for another replaces them, and installing
+// another publisher's add-on under the id deletes them (claim).
 //
 // One store for both hosts and for add-on code: the SwiftUI and WinUI
 // Settings pages write here through the bridge / ABI, a first-party add-on
@@ -21,8 +30,8 @@
 // Thread-safe. Reads are served from a process-wide cache after the first;
 // writes go to disk atomically before they return. A write, and the page
 // Settings draws, start from the file as it is now: another window is another
-// process, and must not have its change undone by this one's cache. Worker threads only
-// (rule 1): a first read and every write touch the disk.
+// process, and must not have its change undone by this one's cache. Worker
+// threads only (rule 1): a first read and every write touch the disk.
 #pragma once
 
 #include <string>
@@ -49,24 +58,34 @@ class settings_values {
   //    "label", "help", "enabled_by", "default", "value", ...type fields}]}]}
   // Type fields: number "min", "max", "step", "unit"; choice "options":
   // [{"value", "label"}]; text "max_length", "placeholder". `title` is the
-  // page's own, else `fallback_title`.
-  [[nodiscard]] std::string page_json(std::string_view id, const settings_page& page,
+  // page's own, else `fallback_title`. `publisher` everywhere below is the
+  // key of the add-on's publisher ("" first-party): values stored for
+  // another publisher are not shown (defaults are).
+  [[nodiscard]] std::string page_json(std::string_view id, std::string_view publisher,
+                                      const settings_page& page,
                                       std::string_view fallback_title) const;
 
   // The value of `key` as JSON text (true, 15, "english"): what was chosen if
   // it still fits the item, else the item's default. invalid_arg when the
   // page has no such key.
-  [[nodiscard]] result<std::string> value_json(std::string_view id, const settings_page& page,
+  [[nodiscard]] result<std::string> value_json(std::string_view id, std::string_view publisher,
+                                               const settings_page& page,
                                                std::string_view key) const;
 
   // Stores `value_json` for `key` once it fits the item. invalid_arg for an
-  // unknown key, a value of the wrong kind or outside the item's rule.
-  [[nodiscard]] expected set(std::string_view id, const settings_page& page, std::string_view key,
+  // unknown key, a value of the wrong kind or outside the item's rule. What
+  // another publisher's add-on stored under `id` is replaced, not merged.
+  [[nodiscard]] expected set(std::string_view id, std::string_view publisher,
+                             const settings_page& page, std::string_view key,
                              std::string_view value_json) const;
 
   // Removes everything chosen for `id` (remove without keep). OK when there
   // was nothing.
   [[nodiscard]] expected forget(std::string_view id) const;
+
+  // `publisher`'s add-on was installed under `id`: values kept for another
+  // publisher's add-on under that id are deleted. OK when there were none.
+  [[nodiscard]] expected claim(std::string_view id, std::string_view publisher) const;
 
   // Whether anything is stored for `id`.
   [[nodiscard]] bool has_values(std::string_view id) const;

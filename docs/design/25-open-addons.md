@@ -391,7 +391,7 @@ never half-loaded. Every PR 55 refusal stands (code keys still refuse by name). 
 | Piece | Code |
 |---|---|
 | The page schema and its rules (sections, toggle / choice / number / text, `enabled_by`, bounds) | `src/addon/settings_schema.*` |
-| The values: one JSON per add-on id, checked in and out, cached, keep or forget | `src/addon/settings_values.*`; the folder is `io::addon_settings_dir()` (`src/io/paths*`), never created by a read |
+| The values: one JSON per add-on id, checked in and out, cached, keep or forget; each file names the publisher key it was written for, and values kept for one publisher are never read for another (installing another publisher's add-on under the id deletes them) | `src/addon/settings_values.*`; the folder is `io::addon_settings_dir()` (`src/io/paths*`), never created by a read |
 | Keymap pack shape | `src/addon/keymap.*` |
 | Applying a pack to the live table; stable command names | `src/shell/keymap.*` (`apply_keymap`, `command_slug`); `set_live_key` and Reset's superseded rows in `src/shell/command_table.cpp` |
 | Theme shape | `src/addon/theme.*` (`theme_shape`) |

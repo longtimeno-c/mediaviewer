@@ -18,21 +18,29 @@ namespace {
 
 constexpr std::uint64_t kValuesMaxBytes = 256u << 10;
 
-// The values each file holds, as last read or written: one entry per file
-// path. A settings file is small and written only from Settings, so it is
-// cheap to keep, and an add-on reading on every request never touches disk.
+// One settings file: whose add-on the values were chosen for, and the values.
+struct values_file {
+  // The publisher's key: an open add-on's Ed25519 key (64 hex), "" for a
+  // first-party add-on (the app's own).
+  std::string publisher;
+  json::value values;  // an object
+};
+
+// The files, as last read or written: one entry per file path. A settings
+// file is small and written only from Settings, so it is cheap to keep, and
+// an add-on reading on every request never touches disk.
 struct values_cache {
   std::mutex m;
-  std::map<std::string, json::value> by_path;  // each an object
+  std::map<std::string, values_file> by_path;
 };
 values_cache& cache() {
   static values_cache* const c = new values_cache;  // never freed: workers may outlive statics
   return *c;
 }
 
-json::value read_values(const std::string& path) {
-  json::value out;
-  out.k = json::kind::object;
+values_file read_file(const std::string& path) {
+  values_file out;
+  out.values.k = json::kind::object;
   auto st = io::stat_path(path);
   if (!st || st->is_directory || st->size == 0 || st->size > kValuesMaxBytes) return out;
   io::file_reader in;
@@ -50,31 +58,52 @@ json::value read_values(const std::string& path) {
   if (!doc || doc->k != json::kind::object) return out;
   const json::value* values = doc->find("values");
   if (!values || values->k != json::kind::object) return out;
-  return *values;
+  if (const std::string* publisher = doc->str("publisher")) out.publisher = *publisher;
+  out.values = *values;
+  return out;
 }
 
 // Under cache().m.
-json::value& values_of(const std::string& path) {
+values_file& file_of(const std::string& path) {
   auto& by = cache().by_path;
   auto it = by.find(path);
-  if (it == by.end()) it = by.emplace(path, read_values(path)).first;
+  if (it == by.end()) it = by.emplace(path, read_file(path)).first;
   return it->second;
 }
 
 // Under cache().m. What the file holds now, into the cache: another window is
 // another process with its own cache, and may have written since (Settings
 // opening, and every write, start from the disk so neither undoes the other).
-json::value& fresh_values_of(const std::string& path) {
-  json::value& v = cache().by_path[path];
-  v = read_values(path);
-  return v;
+values_file& fresh_file_of(const std::string& path) {
+  values_file& f = cache().by_path[path];
+  f = read_file(path);
+  return f;
 }
 
-const json::value* stored(const json::value& values, std::string_view key) {
-  return values.find(key);
+// The values `publisher`'s add-on may see: none when they were chosen for
+// another publisher's add-on under the same id (one removed keeping its
+// settings, then a stranger's package installed under that id). What a
+// person chose for one publisher is never handed to another.
+// nullptr: nothing to see.
+const json::value* values_for(const values_file& f, std::string_view publisher) {
+  return f.publisher == publisher ? &f.values : nullptr;
 }
 
-void write_item(json::writer& w, const setting_item& it, const json::value& values) {
+const json::value* stored(const json::value* values, std::string_view key) {
+  return values ? values->find(key) : nullptr;
+}
+
+void write_values_file(json::writer& w, std::string_view publisher, const json::value& values) {
+  w.begin_object();
+  w.key("schema").integer(1);
+  w.key("publisher").string(publisher);
+  w.key("values").begin_object();
+  for (const auto& [name, v] : values.o) w.key(name).raw(setting_value_json(v));
+  w.end_object();
+  w.end_object();
+}
+
+void write_item(json::writer& w, const setting_item& it, const json::value* values) {
   w.begin_object();
   w.key("type").string(setting_kind_name(it.kind));
   w.key("key").string(it.key);
@@ -136,13 +165,19 @@ std::string settings_values::path_of(std::string_view id) const {
   return io::join_path(root_, std::string(id) + ".json");
 }
 
-std::string settings_values::page_json(std::string_view id, const settings_page& page,
+std::string settings_values::page_json(std::string_view id, std::string_view publisher,
+                                       const settings_page& page,
                                        std::string_view fallback_title) const {
   json::value values;
+  bool have = false;
   if (valid_settings_owner(id)) {
     std::lock_guard lock(cache().m);
-    values = fresh_values_of(path_of(id));
+    if (const json::value* v = values_for(fresh_file_of(path_of(id)), publisher)) {
+      values = *v;
+      have = true;
+    }
   }
+  const json::value* shown = have ? &values : nullptr;
   json::writer w;
   w.begin_object();
   w.key("id").string(id);
@@ -153,7 +188,7 @@ std::string settings_values::page_json(std::string_view id, const settings_page&
     w.key("title").string(s.title);
     w.key("help").string(s.help);
     w.key("items").begin_array();
-    for (const setting_item& it : s.items) write_item(w, it, values);
+    for (const setting_item& it : s.items) write_item(w, it, shown);
     w.end_array();
     w.end_object();
   }
@@ -162,16 +197,18 @@ std::string settings_values::page_json(std::string_view id, const settings_page&
   return w.take();
 }
 
-result<std::string> settings_values::value_json(std::string_view id, const settings_page& page,
+result<std::string> settings_values::value_json(std::string_view id, std::string_view publisher,
+                                                const settings_page& page,
                                                 std::string_view key) const {
   const setting_item* it = page.find(key);
   if (!it || !valid_settings_owner(id)) return err(status::invalid_arg);
   std::lock_guard lock(cache().m);
-  const json::value* v = stored(values_of(path_of(id)), key);
+  const json::value* v = stored(values_for(file_of(path_of(id)), publisher), key);
   return v && setting_value_fits(*it, *v) ? setting_value_json(*v) : setting_default_json(*it);
 }
 
-expected settings_values::set(std::string_view id, const settings_page& page, std::string_view key,
+expected settings_values::set(std::string_view id, std::string_view publisher,
+                              const settings_page& page, std::string_view key,
                               std::string_view value_text) const {
   const setting_item* it = page.find(key);
   if (!it || !valid_settings_owner(id) || value_text.size() > 4 * kSettingsMaxText) {
@@ -182,25 +219,27 @@ expected settings_values::set(std::string_view id, const settings_page& page, st
 
   const std::string path = path_of(id);
   std::lock_guard lock(cache().m);
-  json::value next = fresh_values_of(path);
+  values_file next = fresh_file_of(path);
+  if (next.publisher != publisher) {
+    // Chosen for another publisher's add-on under this id: not merged into,
+    // replaced.
+    next.publisher = std::string(publisher);
+    next.values = json::value{};
+    next.values.k = json::kind::object;
+  }
   // Keys the page no longer has stay: an older version of the add-on, put
   // back, finds what was chosen for it.
   bool replaced = false;
-  for (auto& [name, v] : next.o) {
+  for (auto& [name, v] : next.values.o) {
     if (name == key) {
       v = *value;
       replaced = true;
     }
   }
-  if (!replaced) next.o.emplace_back(std::string(key), *value);
+  if (!replaced) next.values.o.emplace_back(std::string(key), *value);
 
   json::writer w;
-  w.begin_object();
-  w.key("schema").integer(1);
-  w.key("values").begin_object();
-  for (const auto& [name, v] : next.o) w.key(name).raw(setting_value_json(v));
-  w.end_object();
-  w.end_object();
+  write_values_file(w, next.publisher, next.values);
   const std::string& text = w.str();
   const std::span<const std::uint8_t> bytes(reinterpret_cast<const std::uint8_t*>(text.data()),
                                             text.size());
@@ -226,7 +265,18 @@ expected settings_values::forget(std::string_view id) const {
 bool settings_values::has_values(std::string_view id) const {
   if (!valid_settings_owner(id)) return false;
   std::lock_guard lock(cache().m);
-  return !values_of(path_of(id)).o.empty();
+  return !file_of(path_of(id)).values.o.empty();
+}
+
+expected settings_values::claim(std::string_view id, std::string_view publisher) const {
+  if (!valid_settings_owner(id)) return err(status::invalid_arg);
+  const std::string path = path_of(id);
+  std::lock_guard lock(cache().m);
+  const values_file& f = fresh_file_of(path);
+  if (f.values.o.empty() || f.publisher == publisher) return {};
+  cache().by_path.erase(path);
+  if (!io::stat_path(path)) return {};
+  return io::remove_file(path);
 }
 
 result<settings_values> default_settings_values() {
@@ -239,7 +289,7 @@ result<std::string> open_setting_value_json(const open_store& store, std::string
   auto installed = store.find(addon_id);
   if (!installed || installed->state != install_state::ok) return err(status::invalid_arg);
   MV_TRY(settings_values values, default_settings_values());
-  return values.value_json(addon_id, installed->m.settings, key);
+  return values.value_json(addon_id, installed->m.publisher_key, installed->m.settings, key);
 }
 
 void reset_settings_cache_for_tests() {

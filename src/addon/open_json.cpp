@@ -159,15 +159,18 @@ void write_addon(json::writer& w, const open_manifest& m) {
 namespace {
 
 // The page of add-on `id`, open or first-party; empty when it is not
-// installed and verified. `name` gets the add-on's name.
+// installed and verified. `name` gets the add-on's name, `publisher` its
+// publisher's key ("" for a first-party add-on: the app's own).
 settings_page page_of(const open_store& open, const store* first_party, std::string_view id,
-                      std::string* name, bool* found) {
+                      std::string* name, std::string* publisher, bool* found) {
   *found = false;
+  publisher->clear();
   if (valid_open_id(id)) {
     auto installed = open.find(id);
     if (!installed || installed->state != install_state::ok) return {};
     *found = true;
     if (name) *name = installed->m.name;
+    *publisher = installed->m.publisher_key;
     return installed->m.settings;
   }
   if (!first_party) return {};
@@ -184,11 +187,11 @@ std::string addon_settings_page_json(const open_store& open, const store* first_
                                      std::string_view id) {
   auto values = default_settings_values();
   if (!values || !valid_settings_owner(id)) return {};
-  std::string name;
+  std::string name, publisher;
   bool found = false;
-  const settings_page page = page_of(open, first_party, id, &name, &found);
+  const settings_page page = page_of(open, first_party, id, &name, &publisher, &found);
   if (!found || page.empty()) return {};
-  return values->page_json(id, page, name);
+  return values->page_json(id, publisher, page, name);
 }
 
 std::string addon_setting_set_json(const open_store& open, const store* first_party,
@@ -201,12 +204,14 @@ std::string addon_setting_set_json(const open_store& open, const store* first_pa
   };
   auto values = default_settings_values();
   bool found = false;
+  std::string publisher;
   const settings_page page =
-      values && valid_settings_owner(id) ? page_of(open, first_party, id, nullptr, &found)
-                                         : settings_page{};
+      values && valid_settings_owner(id)
+          ? page_of(open, first_party, id, nullptr, &publisher, &found)
+          : settings_page{};
   if (!found) return answer(false, "That add-on is not installed.");
   if (!page.find(key)) return answer(false, "That setting is no longer on the add-on's page.");
-  if (auto set = values->set(id, page, key, value_json); !set) {
+  if (auto set = values->set(id, publisher, page, key, value_json); !set) {
     return answer(false, set.error() == status::invalid_arg
                              ? "That value is not one this setting takes."
                              : "MediaViewer could not save the setting.");
@@ -301,6 +306,11 @@ std::string open_install_json(const open_store& store, std::string_view package_
   if (installed) {
     w.key("id").string(installed->id);
     w.key("version").string(installed->version);
+    // Settings kept from another publisher's add-on under this id are not
+    // this one's to read (settings_values.h). A failure leaves them unread.
+    if (auto values = default_settings_values()) {
+      (void)values->claim(installed->id, installed->m.publisher_key);
+    }
   }
   w.end_object();
   return w.take();
