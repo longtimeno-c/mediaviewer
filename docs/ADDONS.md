@@ -240,7 +240,10 @@ and clicks **Apply**:
   if your add-on is removed, and **Reset to default** puts MediaViewer's defaults back.
 - A command or key this MediaViewer does not know is skipped and listed when the layout is
   applied, so one layout can serve an older and a newer version.
-- Up to 8 layouts of 256 commands each. `examples/addons/vim-keys` is one.
+- Up to 8 layouts of 256 commands each, up to 8 keys a command, and each layout at most 64 KB
+  as compact JSON (`pack` and MediaViewer both check it; a real layout is a few KB).
+  `examples/addons/vim-keys` is one.
+
 ## Scripts
 
 A script add-on carries Lua 5.4 source and the commands it adds. MediaViewer runs it on a thread

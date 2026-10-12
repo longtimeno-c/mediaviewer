@@ -42,6 +42,9 @@ PACKAGE_MAX_BYTES = 64 << 20
 PACKAGE_MAX_ENTRIES = 2048
 MANIFEST_MAX_BYTES = 256 << 10
 THEME_MAX_BYTES = 64 << 10
+# One key layout as compact JSON {"id","name","bindings"} (src/addon/keymap.h
+# kKeymapMaxPackBytes): what both hosts carry when it is applied (issue #356).
+KEYMAP_MAX_PACK_BYTES = 64 << 10
 EXTENSION = ".mvaddon"
 
 THEME_TOKENS = ("canvas", "surface", "title", "body", "disabled", "hairline", "accent")
@@ -506,7 +509,17 @@ def check_keymaps(packs) -> int:
                 if (not isinstance(k, str) or len(k) > 32 or k != k.strip()
                         or any(not 0x20 <= ord(c) <= 0x7E for c in k)):
                     bad(f"{command}: key")
+        if keymap_pack_bytes(pack) > KEYMAP_MAX_PACK_BYTES:
+            bad(f"{pid}: too large")
     return len(packs)
+
+
+def keymap_pack_bytes(pack: dict) -> int:
+    """The layout's size as the app writes it (src/addon/keymap.cpp
+    keymap_pack_json_bytes): compact, keys in this order, UTF-8 unescaped."""
+    out = {"id": pack["id"], "name": pack["name"],
+           "bindings": [{"command": b["command"], "keys": b["keys"]} for b in pack["bindings"]]}
+    return len(json.dumps(out, separators=(",", ":"), ensure_ascii=False).encode())
 
 
 # ---- the manifest ---------------------------------------------------------------

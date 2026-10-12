@@ -400,7 +400,9 @@ tokens: contribution API 2. Manifest schema stays 2. Calls made are in
 [12](12-decision-log.md) ("Declarative contributions").
 
 **The manifest.** `contributes.settings` (one page) and `contributes.keymaps` (up to eight
-layouts) are API 2 points; a theme file with `"schema": 2` may carry `shape`. Every §7 point and
+layouts, each at most `kKeymapMaxPackBytes` = 64 KB as compact JSON, so the one pack carries on
+both hosts: Windows moves it through the chrome's 128 KB parked text, the Mac by pointer;
+#356) are API 2 points; a theme file with `"schema": 2` may carry `shape`. Every §7 point and
 its API is one table, `kContributionPoints` (`open_manifest.h`), the same on the branches of
 PRs 56–59. Under API 2 a manifest whose `api.max` is 1 may not name them (malformed); an API 1
 host leaves them to a later one; `api.min` above the host's is "needs a newer MediaViewer",
