@@ -128,6 +128,14 @@ private struct OpenInBarItem: View {
   }
 }
 
+/// View > Show (issue #206), in io::kind_filter order; the cull filters
+/// (issue #207: rating and colour label) continue it from `firstCull`.
+enum KindFilter {
+  static let names = ["all", "photos", "videos", "RAW", "marked"]
+  static let firstCull = 5
+  static let cullNames = ["picks", "not rejected", "Red", "Yellow", "Green", "Blue", "Purple"]
+}
+
 /// commands.h ids the View flyout runs (as their keys would).
 enum ViewCommand {
   static let zoomIn: Int32 = 4
@@ -182,6 +190,25 @@ public struct CommandBarView: View {
             FlyoutItem(title: "Gallery", shortcut: key("Gallery"), enabled: hasFolder) { close(); mv_chrome_menu(kMenuGallery) }
             FlyoutItem(title: "Full screen", shortcut: key("Fullscreen")) { close(); mv_chrome_menu(kMenuFullscreen) }
             FlyoutItem(title: "Filmstrip", shortcut: key("Filmstrip"), enabled: hasFolder) { close(); mv_chrome_menu(kMenuFilmstrip) }
+            FlyoutRule()
+            // Issue #206: View > Show, as on the Windows bar. The dot is the
+            // filter native applied, read when the flyout opens.
+            let shown = mv_chrome_kind_filter()
+            ForEach(Array(KindFilter.names.enumerated()), id: \.offset) { item in
+              FlyoutItem(title: "Show " + item.element, shortcut: shown == Int32(item.offset) ? "●" : nil,
+                         enabled: hasFolder || item.offset == 0) {
+                close(); _ = mv_chrome_set_kind_filter(Int32(item.offset))
+              }
+            }
+            FlyoutRule()
+            // Issue #207: on rating and colour label.
+            ForEach(Array(KindFilter.cullNames.enumerated()), id: \.offset) { item in
+              let filter = Int32(KindFilter.firstCull + item.offset)
+              FlyoutItem(title: "Show " + item.element, shortcut: shown == filter ? "●" : nil,
+                         enabled: hasFolder) {
+                close(); _ = mv_chrome_set_kind_filter(filter)
+              }
+            }
             FlyoutRule()
             FlyoutItem(title: "Clipping warnings", shortcut: key("Clipping")) { close(); mv_chrome_run_command(ViewCommand.clipping) }
             FlyoutItem(title: "Frame-time overlay", shortcut: key("Frame-time overlay")) { close(); mv_chrome_menu(kMenuOverlay) }
@@ -516,23 +543,20 @@ private struct TrailWidthKey: PreferenceKey {
 }
 
 /// The path group's search icon (owner, 2026-09-28; it replaced the gallery
-/// search bar). Always there: it does what ⌘F does. With Local search loaded
-/// or still starting at launch it opens that panel (a click while it starts
-/// opens it once it attaches); without it, file search, which needs no add-on
-/// and no index (docs/design/16 "File search").
+/// search bar). Always there: it does what ⌘F does. With Local search
+/// installed it opens that panel: at once when loaded, else the pack starts
+/// (issue #292) and the panel opens once it attaches; without it, file
+/// search, which needs no add-on and no index (docs/design/16 "File search").
 private struct PathSearchButton: View {
   @ObservedObject private var search = LocalSearchStore.shared
 
   var body: some View {
     PathIcon(symbol: "magnifyingglass", enabled: true) {
-      if search.searchAvailable {
-        search.openSearchWhenReady()
-      } else if !mv_addon2_reader_search() {
-        // A later window starts its reader on this click (as on ⌘F); otherwise file search.
-        mv_chrome_file_search()
-      }
+      // The pack (or a later window's reader) starts on this click, as on ⌘F;
+      // with nothing on its way, file search.
+      if !search.openSearchWhenReady() { mv_chrome_file_search() }
     }
-    .help(search.loaded ? "Search photos and videos (⌘F)"
+    .help(search.loaded || search.onDemand ? "Search photos and videos (⌘F)"
           : search.searchAvailable ? "Search photos and videos (⌘F). Local search is starting…"
           : "Find files by name in this folder (⌘F)")
     .accessibilityLabel(search.searchAvailable ? "Search" : "Find files by name")

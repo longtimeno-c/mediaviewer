@@ -35,14 +35,18 @@ void write_slot(std::uint32_t w, std::uint32_t h, std::uint32_t bits) noexcept {
   if (t_slot >= kSlotCount) return;
   char* s = slot_ptr(t_slot);
   char tmp[kSlotBytes]{};
-  // Whitelisted fields only (docs/design/13). Literals and integers.
+  // Whitelisted fields only (docs/design/13). Literals, library-static names
+  // and integers.
+  const char* role_key = t_info.role != nullptr ? "role=" : "";
+  const char* role = t_info.role != nullptr ? t_info.role : "";
+  const char* role_gap = t_info.role != nullptr ? " " : "";
   if (w != 0 || h != 0) {
-    (void)std::snprintf(tmp, sizeof(tmp), "fmt=%s dec=%s/%s cid=%llu %ux%u %ubit", t_info.family,
-                        t_info.decoder, t_info.version,
+    (void)std::snprintf(tmp, sizeof(tmp), "%s%s%sfmt=%s dec=%s/%s cid=%llu %ux%u %ubit", role_key,
+                        role, role_gap, t_info.family, t_info.decoder, t_info.version,
                         static_cast<unsigned long long>(t_info.correlation_id), w, h, bits);
   } else {
-    (void)std::snprintf(tmp, sizeof(tmp), "fmt=%s dec=%s/%s cid=%llu", t_info.family,
-                        t_info.decoder, t_info.version,
+    (void)std::snprintf(tmp, sizeof(tmp), "%s%s%sfmt=%s dec=%s/%s cid=%llu", role_key, role,
+                        role_gap, t_info.family, t_info.decoder, t_info.version,
                         static_cast<unsigned long long>(t_info.correlation_id));
   }
   std::memcpy(s, tmp, kSlotBytes);
@@ -82,5 +86,29 @@ std::span<char, kSlotCount * kSlotBytes> slots() noexcept {
 const std::uint64_t* last_call_address() noexcept { return &g_last_call; }
 
 const char* this_thread_slot() noexcept { return t_slot < kSlotCount ? slot_ptr(t_slot) : ""; }
+
+void thread_slot::describe(const decode_info& info, std::uint32_t width, std::uint32_t height,
+                           std::uint32_t bit_depth) noexcept {
+  info_ = info;
+  width_ = width;
+  height_ = height;
+  bits_ = bit_depth;
+  if (!held_) return;
+  (void)begin_decode(info_);  // rewrites the slot this thread already holds
+  if (width_ != 0 || height_ != 0) note_geometry(width_, height_, bits_);
+}
+
+void thread_slot::claim() noexcept {
+  if (t_slot < kSlotCount) return;                // an outer decode owns this thread's slot
+  if (begin_decode(info_) >= kSlotCount) return;  // every slot busy: unannotated
+  held_ = true;
+  if (width_ != 0 || height_ != 0) note_geometry(width_, height_, bits_);
+}
+
+void thread_slot::idle() noexcept {
+  if (!held_) return;
+  end_decode();
+  held_ = false;
+}
 
 }  // namespace mv::crash_context

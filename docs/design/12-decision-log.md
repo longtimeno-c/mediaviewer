@@ -68,6 +68,15 @@ normalises to name.
 `check-hostable-core.ps1` enforce both. `shellext/` is a host module beside `shell/`
 (2026-09-25), and `shell` may include `nle` (2026-09-28).
 
+**Document font bytes are read above codec (2026-10-12).** Laying out a page picks font files lazily,
+including per-character fallbacks, so the decode caller cannot pass the bytes in up front. `codec/`
+still names the file (`fonts::find`, CoreText / DirectWrite). The read used to be `io::read_all`
+inside `codec/text.cpp`, the only `codec → io` include and a sideways edge between peers. It is now
+`text::set_font_reader`, a function pointer `image/pipeline.cpp` installs before main, and
+`tools/check-module-graph.ps1` rejects `codec` including `io`. The docx fuzzer links `codec` without
+`image` and installs the same reader over `io::read_all`. With no reader the face slot stays -1 and
+layout continues. Issue #286.
+
 **Settings writes are off the UI thread (2026-09-14).** "Settings writes on the UI thread" is
 closed. `settings.ini` is read once into an in-memory document (`shell/settings_store`). Saves
 mutate it read-copy-update and hand the newest immutable snapshot to a one-thread persist worker,
@@ -361,6 +370,13 @@ from any codec. Forced through it, ProRes 422 played at 55 frames/s.
 (non-exact, settle on release). Speed is on the command-bar dropdown and `Shift+Q` / `Shift+E`.
 `J` / `L` are ±10 s in the viewer.
 
+**A transport click does not seek 0 on the way (2026-10-12).** The system slider reports its
+minimum before the time under the pointer. `media_source::seek` publishes that target and arms
+preview before the frame is decoded, so the minimum presents the opening frame. A non-exact seek
+of the origin is dropped while the playhead is past half a second (`scrub_origin_is_spurious`);
+the click's real sample and the exact release are kept. An exact seek to the start — replay, a
+step, the thumb released there — still goes there. Play and pause are not changed.
+
 ---
 
 ## Metadata
@@ -511,8 +527,8 @@ focus. The tree follows the directory watcher and diffs rows in place.
 (`set_addon_commands_available`); hidden from `?`, Settings and the router while absent.
 
 **File search and the path-bar icon (2026-09-28).** The gallery search bar is gone. A magnifier at
-the end of the folder path runs `Ctrl+F` / `⌘F`: with Local search loaded (or starting) it opens the
-search panel; without it, **file search**, a name filter over the listed folder with no index (the
+the end of the folder path runs `Ctrl+F` / `⌘F`: with Local search loaded, starting, or installed
+and waiting for the first search (2026-10-11) it opens the search panel; without it, **file search**, a name filter over the listed folder with no index (the
 Windows chrome entry is still named `GallerySearch`). `/` in the gallery is the folder row's find.
 
 ---
@@ -691,6 +707,20 @@ scrub, plus a Swift / AppKit record tied to the native report by correlation id;
 - **NSException:** AppKit routes event-handling exceptions to `-[NSApplication reportException:]`,
   not the uncaught handler, so the chrome record is written there too (one per crash).
 - **Report metadata:** the rewrite copies Crashpad's extended attributes onto the replacement.
+
+**The environment block is dropped, including on a stack (2026-10-12).** A Mac Crashpad dump
+kept the process environment because the kernel places argv and the environment at the high end
+of the main thread's stack, and the scrub zeros only what is *outside* a stack. A username inside
+an email local-part (`alice.jones@…`, or a longer token such as `alicejones@…`) is not a bounded
+identity, so it survived the text pass. The scrub now zeros a run of `KEY=value` strings on a
+stack when the run contains a marker key (`HOME`, `USER`, `PATH`, and the Windows names), and the
+argv strings packed against that run. Nothing in the slab is needed to symbolicate.
+
+Windows did not have this gap for the process block itself. The environment, the command line and
+the current directory live in the PEB (`RTL_USER_PROCESS_PARAMETERS`), which is not a thread stack
+and was already zeroed. A copy that landed on a Windows stack is covered by the same run detector.
+There is no separate cwd stream on either host. The Mac process cwd is not a Crashpad stream;
+`PWD`, when a shell put it in the environment, goes with the block.
 
 ---
 
@@ -948,6 +978,30 @@ could not load Local search at all. It is delay-loaded now, and `make_cloud_file
 first. Where it is missing the pack loads and searches, and Settings shows *Index online-only
 OneDrive files* greyed with the reason. The option is always shown on Windows. Turning it off
 skips online-only files and never makes search unavailable.
+
+**Local search loads nothing at launch (2026-10-11, owner; issue #292).** With the pack installed,
+ONNX Runtime, the model sessions (tokenizer vocab parsing alone was ~1.2 s a model before #251)
+and the indexing threads all started with the app, costing memory, CPU and launch time in every
+session, including those that never searched. Now the host only verifies the pack at launch; the
+first search (the icon, `Ctrl+F` / `⌘F`, the pill) or Settings → Local search → **Start now**
+loads it, and it then indexes for the rest of the session. Opening Settings alone does not load
+it, because both hosts' Settings is one page and a visit to change a key would otherwise start
+the whole pack. **Cost:** files added while search was never opened are indexed only after search
+is first opened that session, so the first search after launch may say "Indexing new files…" for
+a while. Launch → first pixel and idle memory / CPU with the pack installed, before and after, are
+owed on both platforms (the measurement needs a release-signed pack).
+
+**An unfinished index waits for Resume (2026-10-11, owner; issue #299, amending the entry
+above).** Reopening the app after a quit or a kill part-way through a large root (the Photos
+library) used to carry on by itself, which loads ONNX Runtime and the model sessions even for an
+app opened for a few seconds. Now such a root is held until Resume (`hold_unfinished`, on in the
+shipped pack), and `data/resume.json` names the unfinished roots, which both hosts read at launch
+without loading the pack to show a bottom-right notice (Resume / Dismiss); Settings' folder rows
+offer Resume too (docs/design/17 "Unfinished roots wait for Resume"). Opening search loads the
+pack but does not resume a held root. **Cost:** an index left unfinished stays unfinished across
+launches until Resume, and files added to that root meanwhile wait too; search answers from what
+was already committed. Launch → first pixel and idle CPU with a root left mid-index, before and
+after, are owed on both platforms with an installed pack (the measurement #292 owes too).
 
 **The Mac Photos library as a source (2026-09-28).** Read-only: no PhotoKit write API is called,
 and `shell/write_guard.h` refuses every write, move, bin, rotate, export and trim of a Photos file

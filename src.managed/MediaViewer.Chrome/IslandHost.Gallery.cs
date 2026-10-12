@@ -306,15 +306,25 @@ public static partial class IslandHost
             _folderStrip = null;
         });
 
-    public static int ShowFilmstrip(IntPtr arg, int sizeBytes) => ShowIsland(
-        arg, sizeBytes, _filmstrip, BuildFilmstrip,
-        onShown: () => _dispatcher?.DispatcherQueue.TryEnqueue(RealiseFilmstrip),
-        onHidden: () =>
+    public static int ShowFilmstrip(IntPtr arg, int sizeBytes)
+    {
+        int status = ShowIsland(
+            arg, sizeBytes, _filmstrip, BuildFilmstrip,
+            onShown: () => _dispatcher?.DispatcherQueue.TryEnqueue(RealiseFilmstrip),
+            onHidden: () =>
+            {
+                ReleaseRepeater(ref _repeater);
+                _filmstripRoot = null;
+                _filmstripScroll = null;
+            });
+        if (status == 0)
         {
-            ReleaseRepeater(ref _repeater);
-            _filmstripRoot = null;
-            _filmstripScroll = null;
-        });
+            // The resume notice (issue #299) sits above the strip while it is up.
+            ChromeShowArgs args = Marshal.PtrToStructure<ChromeShowArgs>(arg);
+            NoteFilmstripTop(args.Visible != 0, args.Y);
+        }
+        return status;
+    }
 
     public static int DetachGallery(IntPtr arg, int sizeBytes)
     {
@@ -687,7 +697,8 @@ public static partial class IslandHost
     }
 
     // Always there (owner, 2026-09-28): it does what Ctrl+F does. With Local
-    // search loaded, or verified and starting at launch, that is its panel;
+    // search loaded, starting, or installed and waiting for the first search
+    // (issue #292), that is its panel;
     // without it, file search, which needs no add-on and no index (docs/design/16
     // "File search"). Only the tip and the name follow the pack. The tips here
     // and on Up name the live keys (KeyOf); RefreshKeyTips calls this again.
@@ -699,10 +710,11 @@ public static partial class IslandHost
         }
         if (_barSearchButton is null) return;
         bool loaded = SearchChrome is not null;
-        bool pack = loaded || AiStarting();
+        bool waiting = AiOnDemand();
+        bool pack = loaded || waiting || AiStarting();
         _barSearchButton.Visibility = Visibility.Visible;
         string key = KeyNote(Command.SearchOpen);
-        ToolTipService.SetToolTip(_barSearchButton, loaded ? $"Search photos and videos{key}"
+        ToolTipService.SetToolTip(_barSearchButton, loaded || waiting ? $"Search photos and videos{key}"
             : pack ? $"Search photos and videos{key}. Local search is starting…"
             : $"Find files by name in this folder{key}");
         AutomationProperties.SetName(_barSearchButton, pack ? "Search" : "Find files by name");
@@ -711,11 +723,10 @@ public static partial class IslandHost
     private static void FillPathTrail(StackPanel? trail, Button? up, Button? root, TextBlock? current, FrameworkElement? row)
     {
         if (trail is null || up is null || root is null || current is null || row is null) return;
+        // TextButton's FlattenButton dims a disabled button.
         up.IsEnabled = _canGoUp;
-        up.Opacity = _canGoUp ? 1 : 0.4;
         row.Visibility = Crumbs.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
         root.IsEnabled = Crumbs.Count > 1;
-        root.Opacity = root.IsEnabled ? 1 : 0.4;
         ToolTipService.SetToolTip(root, Crumbs.Count > 0 ? "Return to browsing root: " + Crumbs[0].Path : "No folder open");
         current.Text = Crumbs.Count > 0 ? (Crumbs.Count > 1 ? "›  " : "") + Crumbs[^1].Name : "";
         ToolTipService.SetToolTip(current, Crumbs.Count > 0 ? Crumbs[^1].Path : "");
@@ -966,7 +977,7 @@ public static partial class IslandHost
                 Padding = new Thickness(0),
                 CornerRadius = new CornerRadius(6),
                 BorderThickness = new Thickness(vm.Selected && _folderCursor < 0 ? 2 : 0),
-                BorderBrush = Brush(Title),
+                BorderBrush = Brush(ChromeColour.Accent),  // the Mac's accent outline
                 Child = col,
             };
 
@@ -1084,7 +1095,7 @@ public static partial class IslandHost
                 Padding = new Thickness(0),
                 CornerRadius = new CornerRadius(6),
                 BorderThickness = new Thickness(vm.Cursor ? 2 : 0),
-                BorderBrush = Brush(Title),
+                BorderBrush = Brush(ChromeColour.Accent),  // the Mac's accent outline
                 Child = col,
             };
 
@@ -1199,7 +1210,7 @@ public static partial class IslandHost
                 Padding = new Thickness(4),
                 CornerRadius = new CornerRadius(6),
                 BorderThickness = new Thickness(vm.Cursor ? 2 : 0),
-                BorderBrush = Brush(Title),
+                BorderBrush = Brush(ChromeColour.Accent),  // the Mac's accent outline
                 Background = Brush(vm.Cursor ? ChromeColour.Selection : ChromeColour.Surface),
                 Child = row,
             };

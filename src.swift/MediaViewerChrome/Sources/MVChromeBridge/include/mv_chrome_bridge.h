@@ -36,6 +36,11 @@ enum MvMenuCmd : int32_t {
   kMenuFlipH, kMenuFlipV, kMenuUndoEdit, kMenuResetEdits, kMenuSaveCopy, kMenuTrim,
   // docs/design/16 "Window"
   kMenuNewWindow,
+  // Issue #206: View > Show, in io::kind_filter order.
+  kMenuShowAll, kMenuShowPhotos, kMenuShowVideos, kMenuShowRaw, kMenuShowMarked,
+  // Issue #207: View > Show's cull filters, continuing io::kind_filter order.
+  kMenuShowPicks, kMenuShowNotRejected, kMenuShowRed, kMenuShowYellow, kMenuShowGreen,
+  kMenuShowBlue, kMenuShowPurple,
   // Issue #210: File > Rename… (F2).
   kMenuRename,
 };
@@ -410,6 +415,13 @@ bool mv_chrome_photos_backup_last(mv_chrome_photos_backup* out);
 int32_t mv_chrome_sort_order(void);
 void mv_chrome_set_sort_order(int32_t packed);
 
+// Issue #206: View > Show, the kind filter (io::kind_filter): 0 all, 1 photos,
+// 2 videos, 3 RAW, 4 marked; issue #207's cull filters 5 picks, 6 not
+// rejected, 7 red, 8 yellow, 9 green, 10 blue, 11 purple. For this run only.
+// Setting "marked" with nothing marked is refused (false, a notice). [main-thread]
+int32_t mv_chrome_kind_filter(void);
+bool mv_chrome_set_kind_filter(int32_t filter);
+
 // Update channel: -1 when the app was built without an updater (hide the
 // setting), 0 stable, 1 preview (signed prerelease builds as well). Setting it
 // checks for updates on the new channel. [main-thread]
@@ -488,10 +500,31 @@ int32_t mv_addon2_load_reason(const char* id, char* buf, int32_t size);
 // process does not host the add-ons. It searches through the AI pack's
 // read-only reader, loaded on demand; it installs, updates and removes nothing.
 bool mv_addon2_elsewhere(void);                                            // [main-thread]
-// Such a window: start the reader if it is due (Settings opened). [main-thread]
-bool mv_addon2_reader_start(void);
-// Such a window: what ⌘F does while Local search is not attached; false = file
-// search is the caller's to open. [main-thread]
+// Settings showed Local search (issue #292): start the pack that waited,
+// unloaded, since launch -- or in such a window its reader, if it is due.
+// False when nothing is on its way. [main-thread]
+bool mv_addon2_ai_wake(void);
+// Installed and verified at launch, not loaded, nothing on its way (issue
+// #292): the first search starts it, so the search icon offers it. [main-thread]
+bool mv_addon2_ai_on_demand(void);
+// Issue #299, the launch notice. True once the launch check of the AI pack's
+// resume.json has run (it waits for the pack's verify; the pack itself is not
+// loaded). [main-thread]
+bool mv_addon2_ai_resume_known(void);
+// "Resume indexing Photos?" while an index left unfinished last session waits
+// to be resumed and the notice was not answered this session; "" otherwise.
+// [main-thread]
+int32_t mv_addon2_ai_resume_question(char* buf, int32_t size);
+// The notice's Resume: loads the pack (as the first search does) and resumes
+// every held root once it attaches, or at once when it is attached. The
+// question goes for the session. False when the pack cannot start. [main-thread]
+bool mv_addon2_ai_resume(void);
+// The notice's Dismiss: the roots stay paused, and the question goes for this
+// session (the next launch asks again). Nothing loads. [main-thread]
+void mv_addon2_ai_resume_dismiss(void);
+// What ⌘F does while Local search is not attached, in the first window (the
+// pack starts, issue #292) or such a window (its reader); the panel opens once
+// it attaches. False = file search is the caller's to open. [main-thread]
 bool mv_addon2_reader_search(void);
 // Such a window: its last reader try found Local search not installed.
 bool mv_addon2_reader_absent(void);                                        // [main-thread]

@@ -45,7 +45,9 @@ floating placement, right-to-left reordering. Text is shaped by HarfBuzz in unhi
 layout is in points and the page count does not depend on the drawing size; FreeType draws it. Fonts
 are found by family through the OS (`codec/fonts.h`), with metric-compatible substitutes (Calibri →
 Carlito → Helvetica Neue / Arial …) and a per-platform fallback list for missing characters (CJK,
-Greek …). Every page before the one asked for is laid out; only that page is drawn. The zip reader
+Greek …). The file bytes are read by the reader `image/pipeline.cpp` installs before main
+(`text::set_font_reader`); `codec/` does not open the file. Every page before the one asked for is
+laid out; only that page is drawn. The zip reader
 caps every entry at 64 MiB and the XML reader refuses a DOCTYPE, so neither can be made to explode.
 TIFF-container RAWs probe as `tiff` and are reclassified by `looks_like_raw`.
 
@@ -323,6 +325,21 @@ rescan. Windows: `apply_folder_list` in the core, set by `mv_folder_set_hidden_k
 Mac: `-refreshFolderIfChanged` over the folder model's snapshot. The file a folder was opened on,
 and the stop on screen, always stay, so Open With on a hidden kind still shows it. Folder-tile
 counts (`folder_summary`) are not filtered.
+
+**View ▸ Show** (issue #206, [16](16-commands.md) "Status, sort, filter, typeahead") narrows the same way and
+in the same place: more bits of the same word (`kHideStills`, `kHideClips`, `kHideRaw`,
+`kHideUnmarked`), each stop being exactly one of still, RAW, clip, audio or document
+(`io::is_hidden_stop`; a RAW+JPEG pair is RAW whichever half leads, a Live Photo is its still).
+`io::keeps_stop` is the one rule both hosts apply. Unlike Settings' kinds, the relist a new filter
+choice makes does not keep the stop on screen unless it passes, and a filter that leaves nothing
+keeps that stop. Windows: `mv_folder_set_kind_filter` (ABI 0.20) beside the Settings word, with the
+marked paths for `kHideUnmarked`. Mac: the host's `_kindFilter`; it does not pair, so each half of
+a RAW+JPEG is filtered as its own file. A mark on a file the listing hides is kept.
+Issue #207 adds the cull bits (`kHideRejected`, `kHideUnpicked`, a label in bits 8–10), which are
+not names: each stop's rating and label (`io::cull_marks`, the primary's, sidecar first) is read on
+a worker and cached by path + size + mtime ([06](06-metadata.md) "Rating and label for the cull
+filter"), and the relist only looks them up. Missing ones are read by one background job that
+relists when done; nothing waits for them on the open or the first pixel.
 
 ## Not built
 

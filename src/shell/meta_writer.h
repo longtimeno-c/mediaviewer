@@ -18,6 +18,7 @@
 // the completion back to the UI thread (docs/design/14: no dispatcher in here).
 #pragma once
 
+#include <cstdint>
 #include <deque>
 #include <optional>
 #include <string>
@@ -71,6 +72,8 @@ class meta_writer {
   // 0 means "cleared".
   [[nodiscard]] std::optional<int> pending_rating(std::string_view path) const;
   [[nodiscard]] std::optional<std::string> pending_comment(std::string_view path) const;
+  // Issue #207: the colour label asked for and not yet on disk ("" = cleared).
+  [[nodiscard]] std::optional<std::string> pending_label(std::string_view path) const;
 
   // The last failure, once (for a beep and a toast).
   [[nodiscard]] std::optional<meta_outcome> take_failure();
@@ -103,8 +106,42 @@ class meta_writer {
 // cannot be opened nothing is written: a write with no way back is not made.
 [[nodiscard]] meta_outcome run_meta_job(const meta_job& job, std::string_view snapshot_dir = {});
 
-// The rating asked for by a command: 0 clears.
+// The rating asked for by a command: 0 clears, -1 rejects.
 [[nodiscard]] meta::write_fields rating_fields(int stars);
 [[nodiscard]] meta::write_fields comment_fields(std::string_view utf8);
+
+// ---- Issue #207: culling -- reject and colour labels ----------------------
+
+// `X`: the rating a reject toggle asks for, given the rating now (pending
+// counts). A rejected file goes back to unrated; anything else is rejected
+// (XMP's -1, which Lightroom and Bridge read as "Rejected").
+[[nodiscard]] constexpr int reject_toggled(int rating_now) noexcept {
+  return rating_now == -1 ? 0 : -1;
+}
+
+// The XMP tag a colour label lives in, the one Lightroom and Bridge use.
+inline constexpr const char* kLabelTag = "Xmp.xmp.Label";
+
+// The labels the keys give, in key order (6 Red .. 9 Blue, Lightroom's), plus
+// Purple, which has no key there either. The words are what those apps
+// write and match, so a label set here shows in them and theirs here.
+enum class colour_label : std::uint8_t { none = 0, red, yellow, green, blue, purple };
+[[nodiscard]] const char* colour_label_name(colour_label l) noexcept;  // "" for none
+
+// The label a key press asks for: `pressed` on a file labelled `now` (pending
+// counts). Pressing the label the file already has clears it, as Lightroom
+// does; `none` (`U`) always clears. Returns the word to write, "" = remove.
+[[nodiscard]] std::string label_toggled(colour_label pressed, std::string_view now);
+
+// A write of xmp:Label alone: "" removes it. Through PR 29's tag path, so the
+// same checked rewrite (a plain JPEG) or XMP sidecar (everything else).
+[[nodiscard]] meta::write_fields label_fields(std::string_view label);
+
+// The label the queue will leave on `path` (in `fields`), when it changes one.
+[[nodiscard]] std::optional<std::string> label_of(const meta::write_fields& fields);
+
+// What the notice line says when a write of `fields` landed, or "" when it
+// says nothing about it (the hosts' toast, both platforms).
+[[nodiscard]] std::string describe_write(const meta::write_fields& fields);
 
 }  // namespace mv::shell

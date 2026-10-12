@@ -484,6 +484,10 @@ copy, and check Finder's **Open With** and a Quick Look thumbnail.
 | `O` | info line: file name, position in the folder, size, zoom |
 | `Ctrl+Shift+A` | always on top |
 | `Insert` / `Shift+Space` | mark or unmark the current item. `Ctrl+A` marks all, `Ctrl+D` clears |
+| Keypad `0`–`5` / `Ctrl+Shift+0`–`5` | rate the item on screen (0 clears) |
+| `X` | reject the item on screen (rating −1, "Rejected" in Lightroom and Bridge); `X` again un-rejects |
+| Keypad `6`–`9` / `Ctrl+Shift+6`–`9` | colour label Red / Yellow / Green / Blue (Lightroom's keys; `⌘⇧` on the Mac); the same key again clears it. `U` clears the label. Written as XMP `xmp:Label`: in a plain JPEG, else in its `.xmp` sidecar. The metadata pane's Label row has a swatch per colour |
+| View ▸ **Show** | All / Photos / Videos / RAW / Marked: only that kind in the filmstrip, gallery and arrow keys, for this run (not saved). RAW is a RAW or a RAW+JPEG pair; Marked is the marks when you chose it. The stop on screen moves to the nearest one shown. Also in the command bar's View menu on the Mac. Below them, **Picks** (1★ or more) / **Not rejected** / **Red** … **Purple** filter on what `X` and the rating and label keys wrote (read on a worker; the stop on screen stays when you rate it; choose the filter again to re-apply). **Show next kind** cycles them all; it has no key until you give it one in Settings |
 | `F5` | slideshow (fullscreen). In it: `Space` pause, `+` / `-` interval, `.` blackout, `R` shuffle, `Esc` leave. A clip plays to its end before advancing |
 | `F7` / `F8` | copy / move the marked items (or the current one) to the last folder used. `Shift+F7` / `Shift+F8` pick a folder. Never overwrites: a taken name becomes `name (2).ext` |
 | `Delete` | move the marked items (or the current one) to the Recycle Bin, after asking. A drive with no Recycle Bin is refused, never deleted permanently |
@@ -523,7 +527,7 @@ the zoom. Arrow keys, `Space` and the slideshow wrap from the last item to the
 first; turn that off under Settings.
 | `Ctrl+Shift+O` | open a folder |
 | `Left` / `Right` | previous / next in the folder |
-| `G` | gallery: thumbnail grid of the folder. A folder of only folders uses big tiles; a mixed folder keeps a short chip row above the photos. Covers and counts show on the tiles; the folder path sits in the command bar just left of `?`. **Up** (↑) and **Root** (house) buttons stay outside the scrolling trail: Up opens the enclosing folder; Root returns to the highest folder reached in this browsing session (the first breadcrumb). The `…` menu opens hidden parent folders directly. Full paths are available on hover. These controls remain available, including while a photo is open. `Ctrl+Up` goes up and selects the folder you left; `Ctrl+Left` / `Ctrl+Right` open the sibling beside it. A search icon at the right end of the path (and beside "Search: …" on a result list) does what `Ctrl+F` / `⌘F` does: with Local search installed (loaded, or still starting at launch) it opens the search panel (where `file:name` searches file names); without it, **file search**, a field over the grid that filters this folder's tiles by name as you type (no index; `Esc` clears, then closes); the command bar stays above the gallery on both hosts, so the path and the icon are there over the grid too. `/` on the folder row finds a tile by name. `W` / `S` or Up / Down move between rows and cross from folders to images; `A` / `D` or Left / Right move between items. `+` / `-` enlarge / shrink thumbnails (`=` also enlarges). `Enter` opens a folder or the selected image. A click does the same; `Esc` leaves |
+| `G` | gallery: thumbnail grid of the folder. A folder of only folders uses big tiles; a mixed folder keeps a short chip row above the photos. Covers and counts show on the tiles; the folder path sits in the command bar just left of `?`. **Up** (↑) and **Root** (house) buttons stay outside the scrolling trail: Up opens the enclosing folder; Root returns to the highest folder reached in this browsing session (the first breadcrumb). The `…` menu opens hidden parent folders directly. Full paths are available on hover. These controls remain available, including while a photo is open. `Ctrl+Up` goes up and selects the folder you left; `Ctrl+Left` / `Ctrl+Right` open the sibling beside it. A search icon at the right end of the path (and beside "Search: …" on a result list) does what `Ctrl+F` / `⌘F` does: with Local search installed it opens the search panel (the first search of a session starts the pack, which loads nothing at launch) (where `file:name` searches file names); without it, **file search**, a field over the grid that filters this folder's tiles by name as you type (no index; `Esc` clears, then closes); the command bar stays above the gallery on both hosts, so the path and the icon are there over the grid too. `/` on the folder row finds a tile by name. `W` / `S` or Up / Down move between rows and cross from folders to images; `A` / `D` or Left / Right move between items. `+` / `-` enlarge / shrink thumbnails (`=` also enlarges). `Enter` opens a folder or the selected image. A click does the same; `Esc` leaves |
 | `T` | filmstrip show/hide, for the mode you are in (folder open or single image) |
 | `Tab` | focus the command bar island |
 | `Esc` | walks out one level: gallery, fullscreen, then island focus back to the canvas, and last, in a search result list, **Back to folder**. It never quits |
@@ -600,7 +604,7 @@ untiled stills and counts the neighbour creates held back while the camera moved
 #166). The soak JSON carries the same numbers: `texture_*` keys, including
 `texture_creates_deferred` and `texture_max_defer_ms`. The command bar is also on the island: Open (**Media…** or **Folder…** — the picker
 takes photos and clips), View (zoom in/out,
-fit, 50 / 100 / 200 / 400 %, gallery, filmstrip, overlay), a playback-speed dropdown,
+fit, 50 / 100 / 200 / 400 %, gallery, filmstrip, overlay),
 a `?` shortcuts button, Settings (`Ctrl+,`: view defaults and remappable keys), About.
 The filmstrip along
 the bottom and the gallery grid are both `ItemsRepeater` islands over the same listing; the gallery also shows child-folder tiles (or a chip strip in a mixed folder) and a path bar (`Ctrl+Up` goes up, `Ctrl+Left`/`Ctrl+Right` the sibling). Thumbs are JPEG files from `%LocalAppData%\MediaViewer\thumbs`. Clips get a
@@ -613,7 +617,9 @@ soak (`--soak`) keeps the old sweep, which the present-loop gate measures. The g
 thumbnail or the fitted image out to Explorer.
 
 The playback transport is a **third island**: a centred bar floating over the bottom of the
-video, above the filmstrip, sized to its controls, that appears with a clip and goes away with it. It works the
+video, above the filmstrip, that appears with a clip and goes away with it. As on the Mac it is
+44 DIPs tall and up to 720 wide: back / play / forward, elapsed time, a scrubber that takes the
+spare width, duration, the speed menu (`1x`), mute and More. It works the
 same way on Windows and macOS (`src/shell/transport_autohide.h` holds the one rule both use):
 
 - While the clip **plays**, the bar hides after 2.5 s with no activity. Moving the pointer,
@@ -674,6 +680,18 @@ owed: [docs/design/17](design/17-local-ai-search.md); the Mac checklist is
    destructors; `src/addon/host.h`, "Quit") and prints the time it took; `--quit-legacy` is the
    old wait of up to 5 s, `--quit-hash` re-verifies the pack meanwhile as Settings does, and a
    larger `--quit-after` quits once the pack is idle.
+
+**An unfinished index waits for Resume** (issue #299; docs/design/17 "Unfinished roots wait for
+Resume"). A root left mid-index is held at the next start, and the window asks "Resume indexing
+…?" in a bottom-right notice without loading the pack. Tests, no pack needed:
+`mv_ai_tests "an index left unfinished waits for Resume after a restart"` (the engine: held,
+`resume.json`, `resume_root`) and `mv_import_tests "[ai-resume]"` (the host's read of
+`resume.json` and the question's wording). To see the notice in the app, use a sideloaded pack
+(above): index a large folder, quit part-way, start again. The notice should appear once the pack
+has verified, with nothing of it loaded (no ONNX Runtime in the process) until **Resume**. Or,
+with the pack installed, drop a `resume.json` by hand into its data folder (the one that holds
+`index.db`, `data` beside the pack's version folder):
+`{"version":1,"roots":[{"id":1,"path":"/some/folder","kind":"folder","done":1,"total":2,"held":true}]}`.
 
 `mv_ai_tests "[refine]"` runs the People refinement (docs/design/17 "People refinement") on synthetic
 face vectors and a temporary faces.db; it needs no pack. In the app it runs only from
@@ -886,8 +904,8 @@ build/bin/mv_import_tests "[.perf-bench]"
 ctest --test-dir build -C Release -R addon_sdk --output-on-failure
 python tools/addon-sdk/test_mvaddon.py        # the tool alone, no build needed
 
-# ...and the same engine headless on Linux or any POSIX machine (the
-# portable-core CI job in tools/portable/ci-portable-core.patch; SQLite, libsodium, BLAKE3 and Catch2 from vcpkg via
+# ...and the same engine headless on Linux or any POSIX machine (CI's
+# portable-core job, Ubuntu under ASan + UBSan; SQLite, libsodium, BLAKE3 and Catch2 from vcpkg via
 # tools/portable/vcpkg.json, or the system). With FFmpeg, libspng and libjpeg
 # installed (pkg-config) it also builds the PR 13 / 14 clip suites,
 # mv_clip_tests and mv_trim_tests:
@@ -1135,6 +1153,14 @@ Remove-Item Env:MV_CRASH_TEST
 # pixel data: run make-crash-raw.ps1 with no -Source. It writes a pattern BMP pair and
 # prints the byte patterns. Open SECRET_COMPANION_canary.bmp instead; neighbour prefetch
 # crashes on the canary. Pass the printed patterns to the scan as -PixelHex.
+
+# video threads (#233): MV_CRASH_TEST=video crashes the video decode thread on the
+# first frame of any clip. Copy a corpus clip into the canary folder and open that.
+$env:MV_CRASH_TEST = 'video'
+.\build\bin\Release\mediaviewer_lab.exe --open "<canary folder>\SECRET_FILENAME_canary_7Q3.mp4"
+Remove-Item Env:MV_CRASH_TEST
+# scrub and scan as above; the dump's mv_decode_N slots read
+# "role=video fmt=mov,mp4,... dec=<codec>/Lavc... <w>x<h> <bits>bit" and name no path.
 ```
 
 `--av-soak` exits 0 only on a run of 1800 s or more whose drift slope stays
@@ -1177,6 +1203,13 @@ python3 tools/mac/crash_canary.py scan ~/Library/Application\ Support/MediaViewe
 # the chrome path: an NSException raised in AppKit event handling, or a Swift trap
 MV_CRASH_TEST=nsexception build/MediaViewer.app/Contents/MacOS/MediaViewer
 MV_CRASH_TEST=swift_trap  build/MediaViewer.app/Contents/MacOS/MediaViewer
+
+# the video threads (#233): the video decode thread crashes on the first frame of any clip;
+# the dump's mv_decode_N slots read "role=video fmt=mov,mp4,... dec=<codec>/Lavc... WxH Nbit"
+mkdir -p /tmp/mv-crash-canary/PRIVATE_FOLDER_canary
+cp tools/testmedia/av_transport.mp4 /tmp/mv-crash-canary/PRIVATE_FOLDER_canary/SECRET_FILENAME_canary_7Q3.mp4
+MV_CRASH_TEST=video build/MediaViewer.app/Contents/MacOS/MediaViewer \
+    /tmp/mv-crash-canary/PRIVATE_FOLDER_canary/SECRET_FILENAME_canary_7Q3.mp4
 ```
 
 `--av-soak` exits 0 only on a run of 1800 s or more whose drift slope stays
@@ -1337,6 +1370,23 @@ There is no upload endpoint yet, exactly as there is none for crash reports.
 
 ## Where this actually is
 
+### Local search: ask before resuming an interrupted index (issue #299, 2026-10-11)
+
+A quit or a kill part-way through indexing no longer carries on, or loads the pack, at the next
+launch. The window asks in a bottom-right notice (Resume / Dismiss), and Settings' folder rows
+offer Resume. Built on both hosts; the shipped pack holds unfinished roots.
+
+- **Mac (M-series):** `MediaViewer`, the Swift chromes and `mv_ai` build clean. `mv_ai_tests`
+  (`[engine]`, `[nle]`, `[search-agent]`, `[infer]`, `[photos]`, `[cloud]`, `[query]`: 77
+  passed, 7 skipped for no pack), `mv_import_tests` (75 cases, `"[ai-resume]"` new) and the
+  AIChrome Swift tests pass. Not run in the app: the dev build loads no AI pack, so the notice,
+  its Resume and the rows' Resume are unexercised with a real pack.
+- **Windows:** both C# chromes compile (warnings as errors). The notice is a windowed `Popup` of
+  the command-bar island; its placement (window corner, above the filmstrip, after a resize or a
+  window move, at 100 % and 200 % scaling) is unchecked on Windows.
+- **Owed on both:** launch → first pixel and idle CPU with a root left mid-index, against no pack
+  work, with an installed pack (the same measurement #292 owes).
+
 ### Local search: cloud folders and folder adds (docs/plans/document-search.md slice 0, 2026-10-05)
 
 A folder moved to OneDrive now indexes. The folder walk steps into OneDrive's reparse points but
@@ -1391,11 +1441,26 @@ Measured on the Mac (`mv_tests "[docx]"`; a `textutil`-written DOCX rendered by
 `MV_DOCX_DUMP=out.jpg MV_DOCX_FILE=x.docx mv_tests "[.docx-dump]"` and looked at). The Windows font
 lookup (`fonts_win.cpp`) and the DLLs' packaging are compiled and staged by CI only.
 
+**Culling (issue #207):** `X` reject, colour labels on keypad / `Ctrl+Shift` `6`–`9`, `U`
+to clear, and the pane's Label swatches, on both hosts through PR 12's writer and sidecar rule
+(`shell::reject_toggled`, `label_toggled`, `label_fields`; `meta::summary::label`). View ▸ Show
+filters on them (Picks, Not rejected, a colour), stacked on #206's kind filter: each file's rating
+and label is read on a worker (`meta::read_cull_marks`) and cached by path + size + mtime, in the
+core on Windows (ABI 0.20 cull bits, `mv_folder_note_metadata_written` after a write) and in
+`shell::meta_store` on the Mac. Tests: `mv_tests "[cull]"` (both platforms; the ABI case in
+`test_folder.cpp` is Windows-only). Not driven interactively in the app on either platform yet.
+
 **Settings → File types:** "Show audio files" and "Show documents" are off by default, which leaves
 MP3/M4A/M4P and PDF/DOCX out of folder listings; the file a folder was opened on, and the current
 stop, stay, so Open With still shows one. Windows filters in the core (`mv_folder_set_hidden_kinds`,
 ABI 0.19, `[view] show_audio` / `show_documents` in settings.ini); the Mac host filters its folder
 model's listing (`mv.viewFlags` bits 12–13). Test: `mv_tests "[settings]"`. Gallery folder-tile counts still include hidden kinds.
+
+**View ▸ Show (issue #206):** the kind filter, Windows and macOS. Windows filters in the core
+(`mv_folder_set_kind_filter`, ABI 0.20, the marks passed in for Marked); the Mac host filters its
+folder model's listing with the same rule (`io::keeps_stop`). The Mac does not pair RAW+JPEG, so
+there the RAW half shows under RAW and the JPEG half under Photos. Tests: `mv_tests "[filter]"`
+(both platforms; the ABI case is Windows-only).
 
 ### Performance pass (2026-09-26)
 

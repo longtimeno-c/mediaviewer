@@ -174,6 +174,9 @@ static bool MvCommandSupported(mv::shell::command_id c) {
     // PR 12
     case set_rating_0: case set_rating_1: case set_rating_2: case set_rating_3:
     case set_rating_4: case set_rating_5: case edit_comment:
+    // Issue #207
+    case reject: case label_red: case label_yellow: case label_green: case label_blue:
+    case clear_label:
     // PR 13 / 14
     case trim_mode: case trim_in: case trim_out: case trim_clear: case trim_preview:
     case trim_keyframe: case trim_reencode: case trim_remove_middle: case keyframe_prev:
@@ -191,6 +194,8 @@ static bool MvCommandSupported(mv::shell::command_id c) {
     // Issue #184: `/` (find by name in the gallery), the runner's `3`, and the
     // rows an add-on's manifest fills; runCommand: handles each.
     case typeahead: case game_toggle_3d:
+    // Issue #206: View > Show, cycled (unbound by default); the menus set it.
+    case kind_filter_next:
     // Issue #210: F2.
     case rename_file:
     case addon_cmd_0: case addon_cmd_1: case addon_cmd_2: case addon_cmd_3:
@@ -415,6 +420,10 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 // tools sheet (built fresh per open, like the export sheet).
 @property(nonatomic, strong) NSView* jobsHost;
 @property(nonatomic, strong) NSLayoutConstraint* jobsBottom;
+// Issue #299: the bottom-right "Resume indexing Photos?" notice (Swift shows
+// and hides it), above the filmstrip when that is up.
+@property(nonatomic, strong) NSView* resumeHost;
+@property(nonatomic, strong) NSLayoutConstraint* resumeBottom;
 @property(nonatomic, strong) NSView* clipToolsHost;
 // PR 29 (docs/design/20): the Edit workspace's strip and its Crop / Trim pane. The
 // right-edge panes' tops follow the strip while it is open.
@@ -634,6 +643,8 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)openFolderPath:(const char*)utf8_path;
 - (int32_t)sortOrder;
 - (void)setSortOrder:(int32_t)packed;
+- (int32_t)kindFilter;
+- (BOOL)setKindFilter:(mv::io::kind_filter)f;
 // Update channel (docs/design/12, 2026-09-26): -1 without an updater, 0 stable,
 // 1 preview (signed prereleases as well). Persisted in NSUserDefaults.
 - (int32_t)updateChannel;
@@ -1288,6 +1299,12 @@ extern "C" int32_t mv_chrome_sort_order(void) {
 }
 extern "C" void mv_chrome_set_sort_order(int32_t packed) {
   if (g_chrome_app) [g_chrome_app setSortOrder:packed];
+}
+extern "C" int32_t mv_chrome_kind_filter(void) {
+  return g_chrome_app ? [g_chrome_app kindFilter] : 0;
+}
+extern "C" bool mv_chrome_set_kind_filter(int32_t filter) {
+  return g_chrome_app && [g_chrome_app setKindFilter:mv::io::kind_filter_from(filter)] == YES;
 }
 extern "C" int32_t mv_chrome_update_channel(void) {
   return g_chrome_app ? [g_chrome_app updateChannel] : -1;
@@ -2282,6 +2299,12 @@ static void MvAdoptNewDefaultViewerTypes() {
   // that survives a relist meaning something else.
   std::set<std::string> _marks;
   NSURL* _lastDestination;
+  // Issue #206: View > Show, for this run only. "Marked" keeps the marks as
+  // they were when it was chosen (_kindKept). _kindFilterChanged makes the
+  // next relist the one that moves off a stop the filter no longer shows.
+  mv::io::kind_filter _kindFilter;
+  std::set<std::string> _kindKept;
+  BOOL _kindFilterChanged;
   BOOL _renamePending;  // issue #210: one F2 rename at a time
 
   // Slideshow (docs/design/16 "Slideshow", folded into PR 18 -- stills only, no
@@ -2832,6 +2855,20 @@ static void MvAdoptNewDefaultViewerTypes() {
     [self.settingsHost.bottomAnchor constraintEqualToAnchor:container.bottomAnchor],
   ]];
 
+  // Issue #299 (docs/design/17 "Unfinished roots wait for Resume"): a small
+  // notice in the bottom-right corner, not a modal, when an index was left
+  // unfinished last session. Last in, so it is above the panes and Settings.
+  // It sizes itself (a fixed-width card) and stays hidden, taking no clicks,
+  // until there is a question (ResumeNoticeView.swift).
+  self.resumeHost = [MVChromeHost makeResumeNoticeView];
+  [container addSubview:self.resumeHost];
+  self.resumeBottom = [self.resumeHost.bottomAnchor constraintEqualToAnchor:container.bottomAnchor
+                                                                   constant:-8.0];
+  [NSLayoutConstraint activateConstraints:@[
+    [self.resumeHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-8.0],
+    self.resumeBottom,
+  ]];
+
   [self installMainMenu];
   [self installTextEditKeys];
 
@@ -3380,6 +3417,10 @@ static void MvAdoptNewDefaultViewerTypes() {
   if (_meta.consume_dates_changed() && _sort.key == mv::io::sort_key::date_taken && !_listOpen) {
     [self resortKeepingSelection];
   }
+  // Issue #207: ratings and labels arriving on the pool re-apply a cull filter.
+  if (_meta.consume_cull_changed() && mv::io::needs_cull_marks(mv::io::kind_filter_mask(_kindFilter))) {
+    _refilterListing = YES;
+  }
   // Issue #210: an F2 rename is on its way; its relist waits for it, so the
   // stop is found under its new name instead of the next one sliding in.
   if (_renamePending) return;
@@ -3390,23 +3431,74 @@ static void MvAdoptNewDefaultViewerTypes() {
   // firing just as a result list opens, or the list a folder open is
   // replacing) is not what is on screen now.
   if (listing.is_list != static_cast<bool>(_listOpen)) return;
+  const std::uint32_t filter = mv::io::kind_filter_mask(_kindFilter);
+  // Issue #207: a cull filter (Picks, Not rejected, a colour) needs every
+  // file's rating and label. Here they are only looked up (one lock, no file
+  // read); the missing ones are read on a worker (meta_store, keyed by path +
+  // size + mtime) and their arrival relists again. A stop not read yet counts
+  // as unrated and unlabelled. A newly chosen filter waits for them instead,
+  // keeping what is shown, so it moves off the stop on screen only once.
+  std::vector<std::optional<mv::io::cull_marks>> cull;
+  if (mv::io::needs_cull_marks(filter)) {
+    cull = _meta.cull_marks_of(listing.items);
+    std::vector<mv::io::dir_entry> missing;
+    for (std::size_t i = 0; i < cull.size(); ++i) {
+      if (!cull[i]) missing.push_back(listing.items[i]);
+    }
+    if (!missing.empty()) {
+      _meta.resolve_cull_marks(std::move(missing), _jobs, {});
+      if (_kindFilterChanged && !_items.empty()) return;
+    }
+  }
   _items = std::move(listing.items);
-  if (const std::uint32_t hide = mv::shell::view_settings::from_flags(_viewFlags).hidden_kinds();
-      hide != 0) {
-    // Settings left a kind out (same rule as abi.cpp's apply_folder_list): the
-    // file being opened or on screen stays, so an explicit open still shows.
-    // A result list keeps its moments aligned with its items.
+  // Every file in the folder, before any kind is left out: a mark on a file
+  // the listing merely hides (View > Show, Settings' kinds) is not a mark on
+  // a file that has gone.
+  std::set<std::string> livePaths;
+  if (!_marks.empty()) {
+    for (const auto& entry : _items) livePaths.insert(entry.path_utf8);
+  }
+  const std::uint32_t hide = mv::shell::view_settings::from_flags(_viewFlags).hidden_kinds();
+  const bool filterChanged = _kindFilterChanged;
+  _kindFilterChanged = NO;
+  if (hide != 0 || filter != 0) {
+    // Settings left a kind out, or View > Show narrowed the listing: the rule
+    // abi.cpp's apply_folder_list applies (io::keeps_stop). The file being
+    // opened or on screen stays, so an explicit open still shows, except on
+    // the relist a new filter makes. A filter that leaves nothing keeps that
+    // stop, so the canvas never goes blank. A result list keeps its moments
+    // aligned with its items. This host does not pair, so each half of a
+    // RAW+JPEG is its own stop: the RAW under RAW, the JPEG under Photos.
     const bool aligned = _listOpen && listing.moments.size() == _items.size();
+    std::vector<mv::io::dir_entry> all;
+    std::vector<std::int64_t> allMoments;
+    if (filter != 0) {
+      all = _items;
+      if (aligned) allMoments = listing.moments;
+    }
     std::size_t out = 0;
     for (std::size_t i = 0; i < _items.size(); ++i) {
       const auto& e = _items[i];
-      if (mv::io::is_hidden_kind(e.name_utf8, hide) && e.path_utf8 != _wantSelectedPath) continue;
+      const bool stays = !_wantSelectedPath.empty() && e.path_utf8 == _wantSelectedPath;
+      const mv::io::cull_marks marks = i < cull.size() && cull[i] ? *cull[i] : mv::io::cull_marks{};
+      if (!mv::io::keeps_stop(e.name_utf8, {}, _kindKept.count(e.path_utf8) != 0, stays, hide,
+                              filter, filterChanged, marks)) {
+        continue;
+      }
       if (aligned) listing.moments[out] = listing.moments[i];
       if (out != i) _items[out] = std::move(_items[i]);
       ++out;
     }
     _items.resize(out);
     if (aligned) listing.moments.resize(out);
+    if (filter != 0 && _items.empty() && !_wantSelectedPath.empty()) {
+      for (std::size_t i = 0; i < all.size(); ++i) {
+        if (all[i].path_utf8 != _wantSelectedPath) continue;
+        _items.push_back(std::move(all[i]));
+        if (aligned) listing.moments.assign(1, i < allMoments.size() ? allMoments[i] : -1);
+        break;
+      }
+    }
   }
   _subdirs = std::move(listing.subdirs);
   if (_folderCursor >= static_cast<NSInteger>(_subdirs.size())) {
@@ -3430,10 +3522,8 @@ static void MvAdoptNewDefaultViewerTypes() {
   // Without this, a mark for a file that is simply gone would sit in
   // _marks forever, inflating _snap.marked_count.
   if (!_marks.empty()) {
-    std::set<std::string> live_paths;
-    for (const auto& entry : _items) live_paths.insert(entry.path_utf8);
-    std::erase_if(_marks, [&live_paths](const std::string& path) {
-      return !live_paths.count(path);
+    std::erase_if(_marks, [&livePaths](const std::string& path) {
+      return !livePaths.count(path);
     });
     ++_marksGeneration;
   }
@@ -4199,6 +4289,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   self.treeBottom.constant = pane_bottom;
   self.adjustBottom.constant = pane_bottom;
   self.jobsBottom.constant = pane_bottom;
+  self.resumeBottom.constant = pane_bottom - 8.0;
   // chrome_bottom_px must reflect the toggle immediately (canvas fit/pan
   // math reads it via present_lab_mac.mm's usable_window_h()) -- -syncSize
   // already recomputes it from -filmstripVisible and republishes, the same
@@ -4752,6 +4843,8 @@ static BOOL MvCopyUtf8(const std::string& text, char* buf, int32_t size) {
 // key equivalents (a bare letter there would run twice), and `?` lists the rest.
 // The item tags (MvMenuCmd) are in mv_chrome_bridge.h, shared with the
 // command bar's buttons (CommandBarView.swift).
+static_assert(kMenuShowPurple - kMenuShowAll + 1 == mv::io::kKindFilterCount);
+static_assert(kMenuShowPicks - kMenuShowAll == mv::io::kFirstCullFilter);
 
 // Issue #182: the table row behind a menu item, for its mode mask. None for
 // the Sort items (no row) and the Edit menu, which validateMenuItem: gates by
@@ -4990,6 +5083,11 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
       [self setSortOrder:mv::io::pack_sort(o)];
       break;
     }
+    case kMenuShowAll: case kMenuShowPhotos: case kMenuShowVideos: case kMenuShowRaw:
+    case kMenuShowMarked: case kMenuShowPicks: case kMenuShowNotRejected: case kMenuShowRed:
+    case kMenuShowYellow: case kMenuShowGreen: case kMenuShowBlue: case kMenuShowPurple:
+      (void)[self setKindFilter:mv::io::kind_filter_from(static_cast<int>(cmd - kMenuShowAll))];
+      break;
   }
 }
 
@@ -5023,6 +5121,11 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
   if (tag == kMenuSortDescending) {
     item.state = _sort.descending ? NSControlStateValueOn : NSControlStateValueOff;
     return [self hasFolder];
+  }
+  if (tag >= kMenuShowAll && tag <= kMenuShowPurple) {
+    item.state = static_cast<NSInteger>(_kindFilter) == tag - kMenuShowAll ? NSControlStateValueOn
+                                                                         : NSControlStateValueOff;
+    return tag != kMenuShowMarked || !_marks.empty() || _kindFilter == mv::io::kind_filter::marked;
   }
   if (tag == kMenuMetadata) item.state = _metaPaneVisible ? NSControlStateValueOn : NSControlStateValueOff;
   if (tag >= kMenuEditWorkspace && tag <= kMenuTrim) {
@@ -5224,6 +5327,23 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
   [self addMenuItem:@"Date Taken" cmd:kMenuSortDateTaken key:@"" mods:0 toMenu:sortMenu];
   [sortMenu addItem:[NSMenuItem separatorItem]];
   [self addMenuItem:@"Descending" cmd:kMenuSortDescending key:@"" mods:0 toMenu:sortMenu];
+  NSMenuItem* showHolder = [view addItemWithTitle:@"Show" action:nil keyEquivalent:@""];
+  NSMenu* showMenu = [[NSMenu alloc] initWithTitle:@"Show"];
+  showHolder.submenu = showMenu;
+  [self addMenuItem:@"All" cmd:kMenuShowAll key:@"" mods:0 toMenu:showMenu];
+  [self addMenuItem:@"Photos" cmd:kMenuShowPhotos key:@"" mods:0 toMenu:showMenu];
+  [self addMenuItem:@"Videos" cmd:kMenuShowVideos key:@"" mods:0 toMenu:showMenu];
+  [self addMenuItem:@"RAW" cmd:kMenuShowRaw key:@"" mods:0 toMenu:showMenu];
+  [self addMenuItem:@"Marked" cmd:kMenuShowMarked key:@"" mods:0 toMenu:showMenu];
+  // Issue #207: on rating and colour label (read on a worker, not at scan).
+  [showMenu addItem:[NSMenuItem separatorItem]];
+  [self addMenuItem:@"Picks" cmd:kMenuShowPicks key:@"" mods:0 toMenu:showMenu];
+  [self addMenuItem:@"Not Rejected" cmd:kMenuShowNotRejected key:@"" mods:0 toMenu:showMenu];
+  [self addMenuItem:@"Red" cmd:kMenuShowRed key:@"" mods:0 toMenu:showMenu];
+  [self addMenuItem:@"Yellow" cmd:kMenuShowYellow key:@"" mods:0 toMenu:showMenu];
+  [self addMenuItem:@"Green" cmd:kMenuShowGreen key:@"" mods:0 toMenu:showMenu];
+  [self addMenuItem:@"Blue" cmd:kMenuShowBlue key:@"" mods:0 toMenu:showMenu];
+  [self addMenuItem:@"Purple" cmd:kMenuShowPurple key:@"" mods:0 toMenu:showMenu];
   [view addItem:[NSMenuItem separatorItem]];
   // The standard action (nil target -> the window via the responder chain):
   // AppKit titles it Enter/Exit Full Screen itself, and doesn't inject a
@@ -5858,6 +5978,8 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     case fullscreen: [self toggleFullscreen]; return YES;
     case close_window: [self.window performClose:nil]; return YES;
     case new_window: [self openNewWindow]; return YES;
+    case kind_filter_next:
+      return [self setKindFilter:mv::io::next_kind_filter(_kindFilter, !_marks.empty())];
     case rename_file: return [self renameCurrentItem];
     case always_on_top:
       self.window.level = self.window.level == NSFloatingWindowLevel ? NSNormalWindowLevel
@@ -5914,8 +6036,9 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     case search_prev_match: {
       if (!mv::shell::addon_command_available(command)) {
         if (command != search_open) return NO;
-        // A later window: its reader starts now (docs/design/18 "One host process").
-        if (MvAddonsReaderSearch()) return YES;
+        // The pack waiting since launch (issue #292), or a later window's
+        // reader (docs/design/18 "One host process"), starts now.
+        if (MvAddonsSearchOnDemand()) return YES;
         if ([MVChromeHost openLocalSearchWhenStarting]) return YES;
         return [self openFileSearch];
       }
@@ -6089,6 +6212,11 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     case set_rating_0: case set_rating_1: case set_rating_2: case set_rating_3:
     case set_rating_4: case set_rating_5:
       return [self rateCurrentItem:mv::shell::rating_of_command(command)];
+    // Issue #207: culling, the same writer as the ratings.
+    case reject: return [self rejectCurrentItem];
+    case label_red: case label_yellow: case label_green: case label_blue: case clear_label:
+      return [self labelCurrentItem:static_cast<mv::shell::colour_label>(
+                                        mv::shell::label_of_command(command))];
     case edit_comment: return [self focusCommentField];
     // PR 11 (docs/design/16 Pane): ⇧A shows the adjust pane and focuses it.
     case adjust_pane: [self setAdjustVisible:!_adjust.visible()]; return YES;
@@ -8083,6 +8211,38 @@ static double mv_wall_seconds() {
   return YES;
 }
 
+// Issue #207: `X` toggles reject (rating -1), through the same queue as a rating.
+- (BOOL)rejectCurrentItem {
+  const mv::io::dir_entry* entry = [self currentEntry];
+  if (!entry) return NO;
+  if ([self refuseWriteTo:entry->path_utf8]) return YES;
+  const int next = mv::shell::reject_toggled([self metaRating]);
+  _metaWriter.submit(entry->path_utf8, mv::shell::rating_fields(next));
+  [self noticeShow:next == 0 ? std::string("Rating cleared") : mv::meta::format_rating(next)];
+  [self scheduleMetaWrite:0.25];
+  return YES;
+}
+
+// Issue #207: keypad / ⌘⇧ 6-9 set a colour label (the same one again clears
+// it), `U` clears it: XMP xmp:Label, in place on a plain JPEG, else the sidecar.
+- (BOOL)labelCurrentItem:(mv::shell::colour_label)pressed {
+  const mv::io::dir_entry* entry = [self currentEntry];
+  if (!entry) return NO;
+  if ([self refuseWriteTo:entry->path_utf8]) return YES;
+  std::string now;
+  if (auto pending = _metaWriter.pending_label(entry->path_utf8)) now = std::move(*pending);
+  else if (_metaRecord) now = _metaRecord->s.label;
+  const std::string next = mv::shell::label_toggled(pressed, now);
+  if (next.empty() && now.empty()) {
+    [self noticeShow:"No label"];
+    return YES;
+  }
+  _metaWriter.submit(entry->path_utf8, mv::shell::label_fields(next));
+  [self noticeShow:next.empty() ? std::string("Label cleared") : "Label: " + next];
+  [self scheduleMetaWrite:0.25];
+  return YES;
+}
+
 - (BOOL)focusCommentField {
   if (![self currentEntry]) return NO;
   if (_adjust.visible()) [self setAdjustVisible:NO];
@@ -8279,19 +8439,7 @@ static double mv_wall_seconds() {
   // Say where it went, unless another change to the same file is already queued
   // (its message is the one that matters).
   if (!_metaWriter.busy_for(out.path)) {
-    std::string text = job.revert ? std::string("Metadata reverted") : std::string();
-    if (!job.revert && job.fields.rating.touches()) {
-      const int stars = job.fields.rating.k == mv::meta::change<int>::kind::clear ? 0 : job.fields.rating.value;
-      text = stars == 0 ? std::string("Rating cleared") : mv::meta::format_rating(stars);
-    } else if (!job.revert && job.fields.comment.touches()) {
-      text = job.fields.comment.k == mv::meta::change<std::string>::kind::clear ? "Comment removed" : "Comment saved";
-    } else if (!job.revert && job.fields.date_taken.touches()) {
-      text = job.fields.date_taken.k == mv::meta::change<std::string>::kind::clear ? "Date taken removed"
-                                                                                  : "Date taken saved";
-    } else if (!job.revert && !job.fields.tags.empty()) {
-      text = job.fields.tags.size() == 1 ? "Metadata saved"
-                                         : std::to_string(job.fields.tags.size()) + " tags saved";
-    }
+    std::string text = job.revert ? std::string("Metadata reverted") : mv::shell::describe_write(job.fields);
     if (out.target == mv::meta::write_target::sidecar && out.sidecar_touched) {
       const std::size_t sep = out.sidecar_path.find_last_of('/');
       text += "  \xE2\x80\x94 " + out.sidecar_path.substr(sep == std::string::npos ? 0 : sep + 1);  // — IMG_1234.xmp
@@ -8992,6 +9140,31 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
     std::memcpy(out, _scrubMs.data(), sizeof(int64_t) * static_cast<std::size_t>(std::min(n, cap)));
   }
   return n;
+}
+
+// Issue #206: View > Show. A view of the folder for this run only: the same
+// relist path as Settings' kinds (-refreshFolderIfChanged), no rescan.
+- (int32_t)kindFilter { return static_cast<int32_t>(_kindFilter); }
+- (BOOL)setKindFilter:(mv::io::kind_filter)f {
+  std::set<std::string> kept;
+  if (f == mv::io::kind_filter::marked) {
+    if (_marks.empty()) {
+      [self noticeShow:"Nothing is marked"];
+      NSBeep();
+      return NO;
+    }
+    kept = _marks;
+  }
+  // Choosing a cull filter again re-applies it: ratings and labels set since
+  // (the stop on screen stays under a relist) are what it shows now.
+  const bool cull = mv::io::needs_cull_marks(mv::io::kind_filter_mask(f));
+  if (f == _kindFilter && kept == _kindKept && !cull) return YES;
+  _kindFilter = f;
+  _kindKept = std::move(kept);
+  _kindFilterChanged = YES;
+  _refilterListing = YES;  // picked up by the 0.2 s folder timer, like any relist
+  [self noticeShow:mv::io::kind_filter_notice(f)];
+  return YES;
 }
 
 - (int32_t)sortOrder { return mv::io::pack_sort(_sort); }
