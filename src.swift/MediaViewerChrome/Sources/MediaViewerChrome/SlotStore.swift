@@ -81,6 +81,7 @@ struct SlotItem: Identifiable {
   let label: String
   let symbol: String
   let target: String  // none | file | files | folder
+  var opens = ""      // the screen it opens, if any
 }
 
 struct SlotBadge {
@@ -163,17 +164,28 @@ final class SlotStore: ObservableObject {
     mv_chrome_slots_set_callback { bits in
       MainActor.assumeIsolated { SlotStore.shared.changed(bits) }
     }
-    changed(0x3F)
+    // A hop later, not inside init: reading the contributions reaches
+    // MetadataStore.shared, whose askSlots asks SlotStore.shared, and
+    // re-entering a `static let` initialiser traps (swift_once).
+    DispatchQueue.main.async { SlotStore.shared.changed(0x3F) }
   }
 
   // MARK: reading
 
+  /// nil when the table could not be read (never an empty table: a reader
+  /// that took nil for "nothing" would close every screen window).
   private static func read(_ fetch: (UnsafeMutablePointer<CChar>?, Int32) -> Int32) -> Any? {
-    let need = Int(fetch(nil, 0))
-    guard need > 0 else { return nil }
-    var buf = [CChar](repeating: 0, count: need + 1)
-    _ = buf.withUnsafeMutableBufferPointer { fetch($0.baseAddress, Int32($0.count)) }
-    return try? JSONSerialization.jsonObject(with: Data(String(cString: buf).utf8))
+    var need = Int(fetch(nil, 0))
+    // An add-on's worker can grow the table between the size and the copy; the
+    // copy then writes nothing and says the new size: ask again with that.
+    for _ in 0..<4 {
+      guard need > 0 else { return nil }
+      var buf = [CChar](repeating: 0, count: need + 1)
+      let got = Int(buf.withUnsafeMutableBufferPointer { fetch($0.baseAddress, Int32($0.count)) })
+      if got <= need { return try? JSONSerialization.jsonObject(with: Data(String(cString: buf).utf8)) }
+      need = got
+    }
+    return nil
   }
 
   private func changed(_ bits: UInt32) {
@@ -189,7 +201,7 @@ final class SlotStore: ObservableObject {
   }
 
   private func readContributions() {
-    let doc = Self.read { mv_chrome_slots_contributions($0, $1) } as? [String: Any] ?? [:]
+    guard let doc = Self.read({ mv_chrome_slots_contributions($0, $1) }) as? [String: Any] else { return }
     addonDirs = [:]
     for a in doc["addons"] as? [[String: Any]] ?? [] {
       if let id = a["id"] as? String { addonDirs[id] = a["dir"] as? String ?? "" }
@@ -201,7 +213,8 @@ final class SlotStore: ObservableObject {
     items = (doc["items"] as? [[String: Any]] ?? []).compactMap {
       guard let a = $0["addon"] as? String, let id = $0["id"] as? String else { return nil }
       return SlotItem(addon: a, item: id, slot: $0["slot"] as? String ?? "bar", label: $0["label"] as? String ?? id,
-                      symbol: $0["symbol"] as? String ?? "", target: $0["target"] as? String ?? "none")
+                      symbol: $0["symbol"] as? String ?? "", target: $0["target"] as? String ?? "none",
+                      opens: $0["opens"] as? String ?? "")
     }
     badgeDefs = [:]
     for b in doc["badges"] as? [[String: Any]] ?? [] {
@@ -222,7 +235,7 @@ final class SlotStore: ObservableObject {
   }
 
   private func readInfo() {
-    let doc = Self.read { mv_chrome_slots_info($0, $1) } as? [String: Any] ?? [:]
+    guard let doc = Self.read({ mv_chrome_slots_info($0, $1) }) as? [String: Any] else { return }
     sections = (doc["sections"] as? [[String: Any]] ?? []).compactMap {
       guard let a = $0["addon"] as? String, let id = $0["id"] as? String, let tree = ScreenNode($0["tree"])
       else { return nil }
@@ -232,7 +245,7 @@ final class SlotStore: ObservableObject {
   }
 
   private func readScreens() {
-    let list = Self.read { mv_chrome_slots_screens($0, $1) } as? [[String: Any]] ?? []
+    guard let list = Self.read({ mv_chrome_slots_screens($0, $1) }) as? [[String: Any]] else { return }
     screens = list.compactMap {
       guard let a = $0["addon"] as? String, let id = $0["id"] as? String else { return nil }
       return SlotScreen(addon: a, screen: id, title: $0["title"] as? String ?? id, place: $0["place"] as? String ?? "window",
@@ -344,6 +357,9 @@ final class SlotStore: ObservableObject {
   func invoke(_ item: SlotItem, paths: [String]) {
     let json = (try? JSONSerialization.data(withJSONObject: paths)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
     _ = item.addon.withCString { a in item.item.withCString { i in json.withCString { mv_chrome_slots_invoke(a, i, $0) } } }
+    // Choosing it again while its screen is open brings that screen forward
+    // (the core keeps the one already open); updates never do.
+    if !item.opens.isEmpty { SlotWindows.shared.bringForward(ScreenAddress(addon: item.addon, screen: item.opens)) }
   }
 
   func send(_ at: ScreenAddress, node: String, kind: UInt32, value: Any?) {
@@ -389,6 +405,13 @@ final class SlotStore: ObservableObject {
       at.screen.withCString { s in surface.withCString { mv_chrome_slots_surface(a, s, $0, nil, 0, &w, &h, &rev) } }
     }
     guard need > 0, w > 0, h > 0 else { return nil }
+    // SwiftUI asks on every body pass (hover, pinch, any publish): a revision
+    // already made into an image is drawn as is, never copied again (up to 64 MB).
+    let key = "\(at.addon)\u{1}\(at.screen)\u{1}\(surface)"
+    surfaceCacheLock.lock()
+    let hit = surfaceCache[key]
+    surfaceCacheLock.unlock()
+    if let hit, hit.revision == rev { return hit }
     var bytes = [UInt8](repeating: 0, count: Int(need))
     let got = bytes.withUnsafeMutableBufferPointer { buf in
       at.addon.withCString { a in
@@ -403,8 +426,15 @@ final class SlotStore: ObservableObject {
                    bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue
                      | CGBitmapInfo.byteOrder32Little.rawValue),
                    provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
-    return made.map { ($0, rev) }
+    guard let made else { return nil }
+    surfaceCacheLock.lock()
+    if surfaceCache.count >= 16 { surfaceCache.removeAll() }  // a few live surfaces at most
+    surfaceCache[key] = (made, rev)
+    surfaceCacheLock.unlock()
+    return (made, rev)
   }
+  private nonisolated(unsafe) static var surfaceCache: [String: (image: CGImage, revision: UInt64)] = [:]
+  private nonisolated static let surfaceCacheLock = NSLock()
 
   func items(in slot: String) -> [SlotItem] { items.filter { $0.slot == slot } }
 }

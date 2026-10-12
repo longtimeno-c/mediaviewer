@@ -836,10 +836,9 @@ final class SlotWindows: NSObject, NSWindowDelegate {
     }
     for s in screens {
       let address = ScreenAddress(addon: s.addon, screen: s.screen)
-      if let w = windows[address] {
-        if s.place == "window" { w.makeKeyAndOrderFront(nil) }
-        continue
-      }
+      // An open one stays where the person left it: a diff or a surface post
+      // (a progress bar, a map redrawing) never takes focus from the viewer.
+      if windows[address] != nil { continue }
       open(s, address)
     }
   }
@@ -854,6 +853,7 @@ final class SlotWindows: NSObject, NSWindowDelegate {
                        styleMask: [.titled, .resizable], backing: .buffered, defer: false)
       w.contentView = host
       w.title = s.title
+      w.isReleasedWhenClosed = false  // held in `windows`; close() must not free it
       windows[address] = w
       if let main {
         main.beginSheet(w) { _ in }
@@ -872,6 +872,7 @@ final class SlotWindows: NSObject, NSWindowDelegate {
                       backing: .buffered, defer: false)
       p.title = s.title
       p.contentView = host
+      p.isReleasedWhenClosed = false
       p.isFloatingPanel = false
       p.becomesKeyOnlyIfNeeded = false
       p.delegate = self
@@ -890,6 +891,11 @@ final class SlotWindows: NSObject, NSWindowDelegate {
       windows[address] = w
       w.makeKeyAndOrderFront(nil)
     }
+  }
+
+  func bringForward(_ address: ScreenAddress) {
+    guard let w = windows[address], w.sheetParent == nil else { return }
+    w.makeKeyAndOrderFront(nil)
   }
 
   private func close(_ window: NSWindow) {
