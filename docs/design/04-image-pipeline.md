@@ -330,6 +330,11 @@ choice makes does not keep the stop on screen unless it passes, and a filter tha
 keeps that stop. Windows: `mv_folder_set_kind_filter` (ABI 0.20) beside the Settings word, with the
 marked paths for `kHideUnmarked`. Mac: the host's `_kindFilter`; it does not pair, so each half of
 a RAW+JPEG is filtered as its own file. A mark on a file the listing hides is kept.
+Issue #207 adds the cull bits (`kHideRejected`, `kHideUnpicked`, a label in bits 8–10), which are
+not names: each stop's rating and label (`io::cull_marks`, the primary's, sidecar first) is read on
+a worker and cached by path + size + mtime ([06](06-metadata.md) "Rating and label for the cull
+filter"), and the relist only looks them up. Missing ones are read by one background job that
+relists when done; nothing waits for them on the open or the first pixel.
 
 ## Not built
 

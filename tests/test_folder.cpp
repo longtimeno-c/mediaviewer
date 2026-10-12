@@ -626,6 +626,74 @@ TEST_CASE("mv_folder_set_kind_filter shows one kind at a time", "[abi][folder][f
   mv::io::set_thumb_cache_dir_override({});
 }
 
+// 0.20, stacked on #206 (issue #207): the cull filters. Ratings and labels come
+// from the files' XMP sidecars, read on a worker; a filter's own relist waits
+// for them, so it lands once, on the right stops. Choosing one again
+// re-applies it, after the host names a file it rewrote.
+TEST_CASE("mv_folder_set_kind_filter filters on rating and colour label", "[abi][folder][filter][cull]") {
+  const auto dir = temp_dir();
+  for (const wchar_t* name : {L"a.bmp", L"b.bmp", L"c.bmp"}) write_bmp(dir, name);
+  const auto sidecar = [&](const wchar_t* name, const char* attrs) {
+    std::ofstream f(dir + L"\\" + name, std::ios::binary | std::ios::trunc);
+    REQUIRE(f.good());
+    f << "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF "
+         "xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description rdf:about=\"\" "
+         "xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\" "
+      << attrs << "/></rdf:RDF></x:xmpmeta>";
+  };
+  sidecar(L"b.xmp", "xmp:Rating=\"2\" xmp:Label=\"Red\"");
+  sidecar(L"c.xmp", "xmp:Rating=\"-1\"");
+  mv::io::set_thumb_cache_dir_override(utf8(dir + L"\\thumbs"));
+  REQUIRE(::CreateDirectoryW((dir + L"\\thumbs").c_str(), nullptr));
+
+  const auto names = [](mv_session_t s) {
+    std::string out;
+    uint32_t n = 0;
+    REQUIRE(mv_folder_count(s, &n) == MV_OK);
+    for (uint32_t i = 0; i < n; ++i) out += item_string(s, i, mv_folder_item_name) + " ";
+    return out;
+  };
+  // A sidecar written into the watched folder relists too: wait for the
+  // listing rather than for one completion.
+  const auto settle = [&](mv_session_t s, const std::string& want) {
+    mv_completion c{};
+    for (int i = 0; i < 6 && names(s) != want; ++i) (void)wait_kind(s, MV_COMPLETION_FOLDER_CHANGED, &c);
+    return names(s);
+  };
+  mv_completion c{};
+  uint64_t job = 0;
+  session_guard session;
+  REQUIRE(mv_folder_open(session.handle, utf8(dir).c_str(), utf8(dir + L"\\a.bmp").c_str(), &job) ==
+          MV_OK);
+  REQUIRE(wait_kind(session.handle, MV_COMPLETION_FOLDER_READY, &c));
+  CHECK(names(session.handle) == "a.bmp b.bmp c.bmp ");
+
+  const uint32_t red = 1u << MV_FOLDER_LABEL_SHIFT;
+  REQUIRE(mv_folder_set_kind_filter(session.handle, red, nullptr, 0) == MV_OK);
+  CHECK(settle(session.handle, "b.bmp ") == "b.bmp ");
+  uint32_t selected = 0;
+  REQUIRE(mv_folder_selected(session.handle, &selected) == MV_OK);
+  CHECK(item_string(session.handle, selected, mv_folder_item_name) == "b.bmp");
+
+  REQUIRE(mv_folder_set_kind_filter(session.handle, MV_FOLDER_HIDE_REJECTED, nullptr, 0) == MV_OK);
+  CHECK(settle(session.handle, "a.bmp b.bmp ") == "a.bmp b.bmp ");
+
+  REQUIRE(mv_folder_set_kind_filter(session.handle, MV_FOLDER_HIDE_UNPICKED, nullptr, 0) == MV_OK);
+  CHECK(settle(session.handle, "b.bmp ") == "b.bmp ");
+
+  // c.bmp is relabelled (as the writer would, in its sidecar): the host names
+  // it, and Red chosen again shows it.
+  sidecar(L"c.xmp", "xmp:Rating=\"-1\" xmp:Label=\"red\"");
+  REQUIRE(mv_folder_note_metadata_written(session.handle, utf8(dir + L"\\c.bmp").c_str()) == MV_OK);
+  REQUIRE(mv_folder_set_kind_filter(session.handle, red, nullptr, 0) == MV_OK);
+  CHECK(settle(session.handle, "b.bmp c.bmp ") == "b.bmp c.bmp ");
+
+  REQUIRE(mv_folder_set_kind_filter(session.handle, 0, nullptr, 0) == MV_OK);
+  CHECK(settle(session.handle, "a.bmp b.bmp c.bmp ") == "a.bmp b.bmp c.bmp ");
+  REQUIRE(mv_folder_close(session.handle) == MV_OK);
+  mv::io::set_thumb_cache_dir_override({});
+}
+
 TEST_CASE("mv_list_subdirectories lists visible folders only, sorted", "[abi][folder][tree]") {
   const auto dir = temp_dir();
   REQUIRE(::CreateDirectoryW((dir + L"\\beta").c_str(), nullptr));

@@ -128,9 +128,12 @@ private struct OpenInBarItem: View {
   }
 }
 
-/// View > Show (issue #206), in io::kind_filter order.
+/// View > Show (issue #206), in io::kind_filter order; the cull filters
+/// (issue #207: rating and colour label) continue it from `firstCull`.
 enum KindFilter {
   static let names = ["all", "photos", "videos", "RAW", "marked"]
+  static let firstCull = 5
+  static let cullNames = ["picks", "not rejected", "Red", "Yellow", "Green", "Blue", "Purple"]
 }
 
 /// commands.h ids the View flyout runs (as their keys would).
@@ -195,6 +198,15 @@ public struct CommandBarView: View {
               FlyoutItem(title: "Show " + item.element, shortcut: shown == Int32(item.offset) ? "●" : nil,
                          enabled: hasFolder || item.offset == 0) {
                 close(); _ = mv_chrome_set_kind_filter(Int32(item.offset))
+              }
+            }
+            FlyoutRule()
+            // Issue #207: on rating and colour label.
+            ForEach(Array(KindFilter.cullNames.enumerated()), id: \.offset) { item in
+              let filter = Int32(KindFilter.firstCull + item.offset)
+              FlyoutItem(title: "Show " + item.element, shortcut: shown == filter ? "●" : nil,
+                         enabled: hasFolder) {
+                close(); _ = mv_chrome_set_kind_filter(filter)
               }
             }
             FlyoutRule()

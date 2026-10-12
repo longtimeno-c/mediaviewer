@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <iterator>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -165,17 +166,74 @@ inline constexpr std::uint32_t kHideStills = 1u << 2;    // JPEG, HEIC, PNG, GIF
 inline constexpr std::uint32_t kHideClips = 1u << 3;     // MP4, MOV... (audio is its own kind)
 inline constexpr std::uint32_t kHideRaw = 1u << 4;       // a RAW, or a RAW+JPEG pair
 inline constexpr std::uint32_t kHideUnmarked = 1u << 5;  // all but a kept set of paths
-inline constexpr std::uint32_t kHideKnown =
-    kHideAudio | kHideDocuments | kHideStills | kHideClips | kHideRaw | kHideUnmarked;
-inline constexpr std::uint32_t kHideFilterBits = kHideStills | kHideClips | kHideRaw | kHideUnmarked;
+// Issue #207, the cull filter (View > Show's second group): bits that need
+// each stop's rating and colour label (cull_marks), which a worker reads
+// (meta::read_cull_marks) and the caller caches by path + size + mtime.
+inline constexpr std::uint32_t kHideRejected = 1u << 6;  // rating -1 ("Rejected")
+inline constexpr std::uint32_t kHideUnpicked = 1u << 7;  // rated below one star (or rejected)
+// Bits 8-10: a colour label (cull_label 1..5); every stop without it is hidden.
+inline constexpr unsigned kHideLabelShift = 8;
+inline constexpr std::uint32_t kHideOtherLabels = 7u << kHideLabelShift;
+inline constexpr std::uint32_t kHideCullBits = kHideRejected | kHideUnpicked | kHideOtherLabels;
+inline constexpr std::uint32_t kHideKnown = kHideAudio | kHideDocuments | kHideStills | kHideClips |
+                                            kHideRaw | kHideUnmarked | kHideCullBits;
+inline constexpr std::uint32_t kHideFilterBits =
+    kHideStills | kHideClips | kHideRaw | kHideUnmarked | kHideCullBits;
+
+// The colour labels Lightroom and Bridge write in xmp:Label, in their key
+// order (6 Red .. 9 Blue, Purple with no key). `other` is a word this app does
+// not know (another app's label set): it is a label, just none of these.
+enum class cull_label : std::uint8_t { none = 0, red, yellow, green, blue, purple, other };
+
+// What a cull filter needs to know of one stop. The default is an unrated,
+// unlabelled file, which is also what a stop not read yet counts as.
+struct cull_marks {
+  std::int8_t rating = 0;  // -1 rejected, 0 unrated, 1..5 stars
+  cull_label label = cull_label::none;
+  friend constexpr bool operator==(const cull_marks&, const cull_marks&) = default;
+};
+
+// "Red", "red", " RED " -> red; "" -> none; any other word -> other.
+[[nodiscard]] constexpr cull_label cull_label_of(std::string_view word) noexcept {
+  while (!word.empty() && (word.front() == ' ' || word.front() == '\t')) word.remove_prefix(1);
+  while (!word.empty() && (word.back() == ' ' || word.back() == '\t')) word.remove_suffix(1);
+  if (word.empty()) return cull_label::none;
+  constexpr std::string_view names[] = {"red", "yellow", "green", "blue", "purple"};
+  for (std::size_t i = 0; i < std::size(names); ++i) {
+    const std::string_view n = names[i];
+    if (n.size() != word.size()) continue;
+    bool same = true;
+    for (std::size_t c = 0; c < n.size() && same; ++c) {
+      char w = word[c];
+      if (w >= 'A' && w <= 'Z') w = static_cast<char>(w - 'A' + 'a');
+      same = w == n[c];
+    }
+    if (same) return static_cast<cull_label>(i + 1);
+  }
+  return cull_label::other;
+}
+
+// True when `hide` has a bit that needs the stop's cull_marks.
+[[nodiscard]] constexpr bool needs_cull_marks(std::uint32_t hide) noexcept {
+  return (hide & kHideCullBits) != 0;
+}
+
+// True when the cull bits of `hide` leave out a stop with `m`.
+[[nodiscard]] constexpr bool is_culled_out(const cull_marks& m, std::uint32_t hide) noexcept {
+  if ((hide & kHideRejected) != 0 && m.rating < 0) return true;
+  if ((hide & kHideUnpicked) != 0 && m.rating < 1) return true;
+  const std::uint32_t want = (hide & kHideOtherLabels) >> kHideLabelShift;
+  if (want != 0 && static_cast<std::uint32_t>(m.label) != want) return true;
+  return false;
+}
 
 // True when the stop `name` (with `secondary`, its pair's other half, empty
 // when unpaired) is of a kind `hide` leaves out. A RAW+JPEG pair is RAW
 // whichever half leads; a Live Photo is its still. Kind bits only: the
-// unmarked bit is the caller's.
+// unmarked and cull bits are the caller's.
 [[nodiscard]] inline bool is_hidden_stop(std::string_view name, std::string_view secondary,
                                          std::uint32_t hide) noexcept {
-  if ((hide & ~kHideUnmarked) == 0) return false;
+  if ((hide & ~(kHideUnmarked | kHideCullBits)) == 0) return false;
   if (is_audio_name(name)) return (hide & kHideAudio) != 0;
   if (is_document_name(name)) return (hide & kHideDocuments) != 0;
   if (is_raw_name(name) || (!secondary.empty() && is_raw_name(secondary))) {
@@ -192,31 +250,48 @@ inline constexpr std::uint32_t kHideFilterBits = kHideStills | kHideClips | kHid
 // explicit open still shows, but the relist a new filter choice makes
 // (`filter_changed`) does not, so choosing Videos on a photo moves to a
 // video. `marked` is whether the stop is in the kept set (kHideUnmarked).
+// `marks` are its rating and label (issue #207), only read when the filter
+// has cull bits; the default is an unrated, unlabelled stop.
 // Both hosts call this; a filter that leaves nothing is the caller's (it
 // keeps the staying stop, so the screen never goes blank).
 [[nodiscard]] inline bool keeps_stop(std::string_view name, std::string_view secondary,
                                      bool marked, bool stays, std::uint32_t settings_hide,
-                                     std::uint32_t filter_hide, bool filter_changed) noexcept {
+                                     std::uint32_t filter_hide, bool filter_changed,
+                                     const cull_marks& marks = {}) noexcept {
   if (!stays && is_hidden_stop(name, secondary, settings_hide & (kHideAudio | kHideDocuments))) {
     return false;
   }
   if (filter_hide == 0) return true;
   if (stays && !filter_changed) return true;
   if ((filter_hide & kHideUnmarked) != 0 && !marked) return false;
+  if (is_culled_out(marks, filter_hide)) return false;
   return !is_hidden_stop(name, secondary, filter_hide);
 }
 
-// View > Show. Order is the menu's and the wire's (chrome arg, bridge int).
-enum class kind_filter : std::uint8_t { all = 0, photos = 1, videos = 2, raw = 3, marked = 4 };
-inline constexpr int kKindFilterCount = 5;
+// View > Show. Order is the menu's and the wire's (chrome arg, bridge int,
+// the 4-bit field of the Windows chrome's sort word). 0-4 are kinds (issue
+// #206); 5-11 are the cull filters (issue #207), on rating and label.
+enum class kind_filter : std::uint8_t {
+  all = 0, photos = 1, videos = 2, raw = 3, marked = 4,
+  picks = 5, not_rejected = 6, red = 7, yellow = 8, green = 9, blue = 10, purple = 11,
+};
+inline constexpr int kKindFilterCount = 12;
+inline constexpr int kFirstCullFilter = 5;  // the menus put a separator before it
 
 [[nodiscard]] constexpr kind_filter kind_filter_from(int v) noexcept {
   return v >= 0 && v < kKindFilterCount ? static_cast<kind_filter>(v) : kind_filter::all;
 }
 
+[[nodiscard]] constexpr std::uint32_t label_filter_bits(cull_label l) noexcept {
+  return (static_cast<std::uint32_t>(l) << kHideLabelShift) & kHideOtherLabels;
+}
+
 // The hide bits a filter adds to Settings' own. Photos are every still,
 // RAW included; Videos are clips; RAW is RAWs and RAW+JPEG pairs. A filter
-// shows only its kind, so audio and documents go too.
+// shows only its kind, so audio and documents go too. Picks are stops rated
+// one star or more (XMP has no pick flag; Lightroom keeps its in the catalog);
+// Not rejected hides rating -1; a colour shows that xmp:Label only. The cull
+// filters leave audio and documents to Settings: a rated clip is a rated file.
 [[nodiscard]] constexpr std::uint32_t kind_filter_mask(kind_filter f) noexcept {
   switch (f) {
     case kind_filter::all: return 0;
@@ -224,11 +299,18 @@ inline constexpr int kKindFilterCount = 5;
     case kind_filter::videos: return kHideStills | kHideRaw | kHideAudio | kHideDocuments;
     case kind_filter::raw: return kHideStills | kHideClips | kHideAudio | kHideDocuments;
     case kind_filter::marked: return kHideUnmarked;
+    case kind_filter::picks: return kHideUnpicked;
+    case kind_filter::not_rejected: return kHideRejected;
+    case kind_filter::red: return label_filter_bits(cull_label::red);
+    case kind_filter::yellow: return label_filter_bits(cull_label::yellow);
+    case kind_filter::green: return label_filter_bits(cull_label::green);
+    case kind_filter::blue: return label_filter_bits(cull_label::blue);
+    case kind_filter::purple: return label_filter_bits(cull_label::purple);
   }
   return 0;
 }
 
-// "Photos", for the notice line and menus; the hosts' own menus spell the same.
+// "Photos", for the menus; the hosts' own menus spell the same.
 [[nodiscard]] constexpr const char* kind_filter_name(kind_filter f) noexcept {
   switch (f) {
     case kind_filter::all: return "All";
@@ -236,13 +318,45 @@ inline constexpr int kKindFilterCount = 5;
     case kind_filter::videos: return "Videos";
     case kind_filter::raw: return "RAW";
     case kind_filter::marked: return "Marked";
+    case kind_filter::picks: return "Picks";
+    case kind_filter::not_rejected: return "Not rejected";
+    case kind_filter::red: return "Red";
+    case kind_filter::yellow: return "Yellow";
+    case kind_filter::green: return "Green";
+    case kind_filter::blue: return "Blue";
+    case kind_filter::purple: return "Purple";
   }
   return "All";
+}
+
+// What the notice line says when `f` is chosen (both hosts).
+[[nodiscard]] constexpr const char* kind_filter_notice(kind_filter f) noexcept {
+  switch (f) {
+    case kind_filter::all: return "Showing all";
+    case kind_filter::photos: return "Showing Photos only";
+    case kind_filter::videos: return "Showing Videos only";
+    case kind_filter::raw: return "Showing RAW only";
+    case kind_filter::marked: return "Showing Marked only";
+    case kind_filter::picks: return "Showing picks (1 star or more) only";
+    case kind_filter::not_rejected: return "Hiding rejected";
+    case kind_filter::red: return "Showing Red label only";
+    case kind_filter::yellow: return "Showing Yellow label only";
+    case kind_filter::green: return "Showing Green label only";
+    case kind_filter::blue: return "Showing Blue label only";
+    case kind_filter::purple: return "Showing Purple label only";
+  }
+  return "Showing all";
 }
 
 // The filter after `f` in menu order, wrapping: the keyed command cycles.
 [[nodiscard]] constexpr kind_filter next_kind_filter(kind_filter f) noexcept {
   return static_cast<kind_filter>((static_cast<int>(f) + 1) % kKindFilterCount);
+}
+// The same, passing over Marked when nothing is marked (it would be refused,
+// and the cycle would never reach the cull filters after it).
+[[nodiscard]] constexpr kind_filter next_kind_filter(kind_filter f, bool have_marks) noexcept {
+  const kind_filter n = next_kind_filter(f);
+  return n == kind_filter::marked && !have_marks ? next_kind_filter(n) : n;
 }
 
 // Collapse a directory listing into navigation stops. Input is the extension-

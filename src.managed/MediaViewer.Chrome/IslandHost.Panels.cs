@@ -513,6 +513,11 @@ public static partial class IslandHost
                 rows.Children.Add(BuildDateRow(value));
                 continue;
             }
+            if (label == "Label")
+            {
+                rows.Children.Add(BuildLabelRow(value));
+                continue;
+            }
             var row = new Grid();
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(96) });
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -549,6 +554,60 @@ public static partial class IslandHost
         foot.Children.Add(_metaRevert);
         rows.Children.Add(foot);
         return new ScrollViewer { Content = rows, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+    }
+
+    // Issue #207: the colour label, XMP xmp:Label, in Lightroom's words. A swatch
+    // per label sets it (the same one again clears it, as the 6-9 keys do);
+    // Clear removes it. One tag edit, through the same checked writer.
+    private static readonly (string Name, Color Colour)[] LabelSwatches =
+    {
+        ("Red", Color.FromArgb(255, 0xE5, 0x48, 0x4D)),
+        ("Yellow", Color.FromArgb(255, 0xF2, 0xC1, 0x2E)),
+        ("Green", Color.FromArgb(255, 0x3C, 0xB3, 0x71)),
+        ("Blue", Color.FromArgb(255, 0x3B, 0x82, 0xF6)),
+        ("Purple", Color.FromArgb(255, 0x9B, 0x5D, 0xE5)),
+    };
+    private const string LabelTag = "Xmp.xmp.Label";
+
+    private static UIElement BuildLabelRow(string value)
+    {
+        var row = new Grid();
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(96) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        TextBlock name = Text("Label", Body);
+        name.VerticalAlignment = VerticalAlignment.Center;
+        row.Children.Add(name);
+        TextBlock v = Text(value.Length == 0 ? "—" : value, value.Length == 0 ? Body : Title);
+        v.VerticalAlignment = VerticalAlignment.Center;
+        Grid.SetColumn(v, 1);
+        row.Children.Add(v);
+        var swatches = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+        foreach ((string label, Color colour) in LabelSwatches)
+        {
+            bool on = string.Equals(label, value, StringComparison.OrdinalIgnoreCase);
+            var dot = new Button
+            {
+                Width = 18,
+                Height = 18,
+                Padding = new Thickness(0),
+                MinWidth = 0,
+                MinHeight = 0,
+                CornerRadius = new CornerRadius(9),
+                Background = Brush(colour),
+                BorderBrush = Brush(on ? ChromeColour.Title : ChromeColour.Hairline),
+                BorderThickness = new Thickness(on ? 2 : 1),
+                IsEnabled = _metaCanEdit,
+            };
+            string target = label;
+            dot.Click += (_, _) => SendTagEdits(new[] { (LabelTag, on ? (string?)null : target) });
+            ToolTipService.SetToolTip(dot, on ? "Clear the " + label.ToLowerInvariant() + " label" : label);
+            AutomationProperties_SetName(dot, on ? "Clear label" : "Label " + label.ToLowerInvariant());
+            swatches.Children.Add(dot);
+        }
+        Grid.SetColumn(swatches, 2);
+        row.Children.Add(swatches);
+        return row;
     }
 
     // PR 29: the date taken moves every capture-time tag together (native's

@@ -50,7 +50,7 @@ extern "C" {
  * wrong is a struct layout change nobody notices until a field reads garbage.
  * ------------------------------------------------------------------------- */
 #define MV_ABI_VERSION_MAJOR 0
-#define MV_ABI_VERSION_MINOR 22 /* 0.10: PR 13 / 14 clip jobs and keyframe index (mediaviewer_clip.h); 0.11: issue #44 mv_video_set_hold; 0.12: issue #42 mv_status eject error categories; 0.13: PR 30 keep_ranges; 0.14: Milestone H result listings (mv_folder_open_list); 0.15: mv_folder_item clip flag; 0.16: pages (mv_image_info.page_count, mv_folder_select_page); 0.17: docs/design/25 open add-ons (mv_open_addon_*); 0.18: docs/design/25 contributed commands (mv_addon_commands_json); 0.19: mv_folder_set_hidden_kinds; 0.20: issue #226 mv_folder_entries; 0.21: mv_folder_renamed; 0.22: mv_folder_set_kind_filter */
+#define MV_ABI_VERSION_MINOR 23 /* 0.10: PR 13 / 14 clip jobs and keyframe index (mediaviewer_clip.h); 0.11: issue #44 mv_video_set_hold; 0.12: issue #42 mv_status eject error categories; 0.13: PR 30 keep_ranges; 0.14: Milestone H result listings (mv_folder_open_list); 0.15: mv_folder_item clip flag; 0.16: pages (mv_image_info.page_count, mv_folder_select_page); 0.17: docs/design/25 open add-ons (mv_open_addon_*); 0.18: docs/design/25 contributed commands (mv_addon_commands_json); 0.19: mv_folder_set_hidden_kinds; 0.20: issue #226 mv_folder_entries; 0.21: mv_folder_renamed; 0.22: mv_folder_set_kind_filter; 0.23: cull bits and mv_folder_note_metadata_written */
 
 /* Packed as (major << 16) | minor. [any-thread] */
 MV_API uint32_t MV_CALL mv_abi_version(void);
@@ -427,8 +427,28 @@ MV_API mv_status MV_CALL mv_folder_renamed(mv_session_t session, const char* old
 #define MV_FOLDER_HIDE_CLIPS 0x8u
 #define MV_FOLDER_HIDE_RAW 0x10u
 #define MV_FOLDER_HIDE_UNMARKED 0x20u
+/* Still 0.20, stacked on #206 (issue #207): the cull filter, on each file's
+ * rating and colour label (XMP xmp:Rating / xmp:Label, the sidecar wins),
+ * read on a worker and cached by path + size + mtime, never at scan.
+ * REJECTED hides rating -1; UNPICKED hides everything rated below one star;
+ * a label in bits 8-10 (1 Red, 2 Yellow, 3 Green, 4 Blue, 5 Purple, shifted
+ * by MV_FOLDER_LABEL_SHIFT) hides every file without that label. A mask with
+ * any of these reads the ratings still missing before the relist this call
+ * makes (the listing stays as it was until then), and choosing it again
+ * re-applies it. A file not read yet counts as unrated and unlabelled until
+ * the worker's own relist. */
+#define MV_FOLDER_HIDE_REJECTED 0x40u
+#define MV_FOLDER_HIDE_UNPICKED 0x80u
+#define MV_FOLDER_LABEL_SHIFT 8u
+#define MV_FOLDER_HIDE_OTHER_LABELS 0x700u
 MV_API mv_status MV_CALL mv_folder_set_kind_filter(mv_session_t session, uint32_t mask,
                                                    const char* const* kept, uint32_t kept_count);
+
+/* 0.20 (issue #207). The host rewrote `utf8_path`'s rating or label (PR 12's
+ * writer): drops the rating and label the cull filter cached for it, which a
+ * sidecar write cannot change the key of, so the next relist reads it again.
+ * A read already running for it is not kept. [any-thread][no-block] */
+MV_API mv_status MV_CALL mv_folder_note_metadata_written(mv_session_t session, const char* utf8_path);
 
 /* 0.6 (PR 9). The immediate subdirectories of `utf8_dir` for the folder tree:
  * hidden, system and dot directories skipped, sorted case-insensitively. One

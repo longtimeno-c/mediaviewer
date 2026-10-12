@@ -251,6 +251,23 @@ struct mv_session {
   std::string renamed_to;
   std::vector<mv::io::listed_item> folder_listing;
   std::unordered_map<std::string, date_stamp> date_stamps;
+  // Issue #207: each file's rating and colour label for View > Show's cull
+  // filters (io::needs_cull_marks), checked per (mtime, size) like the date
+  // stamps and read on a worker, never at scan. A sidecar write leaves the
+  // file's own stamp alone, so the host names a file it rewrote
+  // (mv_folder_note_metadata_written) and its entry is dropped. One resolve
+  // job at a time (`cull_resolving`); its relist picks up what is left.
+  struct cull_stamp {
+    std::int64_t mtime_unix = 0;
+    std::uint64_t size = 0;
+    mv::io::cull_marks marks;
+  };
+  std::unordered_map<std::string, cull_stamp> cull_stamps;
+  bool cull_resolving = false;
+  // A read that began before the host named the file (cull_forgotten[path] >
+  // the epoch the read started at) is not kept.
+  std::uint64_t cull_epoch = 0;
+  std::unordered_map<std::string, std::uint64_t> cull_forgotten;
 
   std::mutex folder_mutex;
   std::vector<folder_item> folder_items;
@@ -1427,6 +1444,86 @@ void resolve_date_stamps(mv_session* session) {
       });
 }
 
+// Issue #207: the rating and label of `e` when its stamp is current, else null.
+// folder_mutex held.
+const mv::io::cull_marks* cull_stamp_of_locked(const mv_session* session,
+                                               const mv::io::dir_entry& e) {
+  const auto it = session->cull_stamps.find(e.path_utf8);
+  if (it == session->cull_stamps.end() || it->second.mtime_unix != e.mtime_unix ||
+      it->second.size != e.size) {
+    return nullptr;
+  }
+  return &it->second.marks;
+}
+
+// The stops of the current listing with no current cull stamp. folder_mutex held.
+std::vector<mv::io::dir_entry> missing_cull_stamps_locked(const mv_session* session) {
+  std::vector<mv::io::dir_entry> missing;
+  for (const auto& l : session->folder_listing) {
+    if (cull_stamp_of_locked(session, l.primary) == nullptr) missing.push_back(l.primary);
+  }
+  return missing;
+}
+
+// Reads the rating and label of each of `missing` (a worker: a bounded head
+// read plus the sidecar each). False when the user moved to another folder
+// meanwhile. A file the host rewrote while it was read is left unread.
+bool read_cull_stamps(mv_session* session, const std::string& dir,
+                      const std::vector<mv::io::dir_entry>& missing) {
+  for (const auto& e : missing) {
+    std::uint64_t started = 0;
+    {
+      std::lock_guard lock(session->folder_mutex);
+      if (session->folder_dir != dir) return false;
+      started = session->cull_epoch;
+    }
+    const mv::io::cull_marks marks = mv::meta::read_cull_marks(e.path_utf8);
+    std::lock_guard lock(session->folder_mutex);
+    if (session->folder_dir != dir) return false;
+    const auto forgot = session->cull_forgotten.find(e.path_utf8);
+    if (forgot != session->cull_forgotten.end() && forgot->second > started) continue;
+    session->cull_stamps[e.path_utf8] = {e.mtime_unix, e.size, marks};
+  }
+  return true;
+}
+
+// A cull filter on a listing with stamps still missing: one background job
+// reads them, then re-applies the listing (the stop on screen stays). One at
+// a time; a relist while it runs leaves the rest to the relist it makes, so
+// this cannot loop: that relist finds nothing missing.
+void resolve_cull_stamps(mv_session* session) {
+  std::vector<mv::io::dir_entry> missing;
+  std::string dir;
+  {
+    std::lock_guard lock(session->folder_mutex);
+    if (session->cull_resolving) return;
+    missing = missing_cull_stamps_locked(session);
+    if (missing.empty()) return;
+    dir = session->folder_dir;
+    session->cull_resolving = true;
+  }
+  const mv::job_id id = session->jobs.submit_at(
+      mv::background_generation,
+      [session, dir, missing = std::move(missing)](const mv::job_context&) -> status {
+        const bool same = read_cull_stamps(session, dir, missing);
+        std::vector<mv::io::listed_item> again;
+        {
+          std::lock_guard lock(session->folder_mutex);
+          session->cull_resolving = false;
+          if (!same || session->folder_dir != dir) return status::ok;
+          again = session->folder_listing;
+        }
+        if (!again.empty() && mv::io::needs_cull_marks(session->kind_filter.load())) {
+          apply_folder_list(session, std::move(again), true);
+        }
+        return status::ok;
+      });
+  if (id == mv::invalid_job) {
+    std::lock_guard lock(session->folder_mutex);
+    session->cull_resolving = false;
+  }
+}
+
 // `listed` is already paired (docs/design/16 speed rule 4: pairing happens at scan,
 // never per next), so every folder_items entry is one arrow-key stop. It arrives
 // in scan order; this puts it in the session's sort order.
@@ -1465,13 +1562,40 @@ void apply_folder_list(mv_session* session, std::vector<mv::io::listed_item> lis
     auto stays = [&](const std::string& p) {
       return (!keep_want.empty() && p == keep_want) || (!keep_current.empty() && p == keep_current);
     };
+    // Issue #207: a cull filter looks up each stop's rating and label (one
+    // lock, no file read). A stop not read yet counts as unrated and
+    // unlabelled until resolve_cull_stamps' relist; mv_folder_set_kind_filter
+    // reads them before the relist that moves the stop on screen.
+    const bool cull = mv::io::needs_cull_marks(filter);
+    std::vector<mv::io::cull_marks> marks;
+    bool marks_missing = false;
+    if (cull) {
+      marks.resize(listed.size());
+      std::lock_guard lock(session->folder_mutex);
+      for (std::size_t i = 0; i < listed.size(); ++i) {
+        if (const auto* m = cull_stamp_of_locked(session, listed[i].primary)) {
+          marks[i] = *m;
+        } else {
+          marks_missing = true;
+        }
+      }
+    }
     std::vector<mv::io::listed_item> all;
     if (filter != 0) all = listed;  // a filter that leaves nothing falls back to this
-    std::erase_if(listed, [&](const mv::io::listed_item& e) {
+    std::size_t out = 0;
+    for (std::size_t i = 0; i < listed.size(); ++i) {
+      const mv::io::listed_item& e = listed[i];
       const std::string& p = e.primary.path_utf8;
-      return !mv::io::keeps_stop(e.primary.name_utf8, e.secondary.name_utf8, kept.contains(p),
-                                 stays(p), hide, filter, filter_changed);
-    });
+      if (!mv::io::keeps_stop(e.primary.name_utf8, e.secondary.name_utf8, kept.contains(p),
+                              stays(p), hide, filter, filter_changed,
+                              cull ? marks[i] : mv::io::cull_marks{})) {
+        continue;
+      }
+      if (out != i) listed[out] = std::move(listed[i]);
+      ++out;
+    }
+    listed.resize(out);
+    if (marks_missing) resolve_cull_stamps(session);
     if (filter != 0 && listed.empty()) {
       // Nothing of that kind here: the stop on screen stays, so the canvas
       // never goes blank under a menu choice.
@@ -2202,7 +2326,16 @@ mv_status MV_CALL mv_folder_set_kind_filter(mv_session_t session, uint32_t mask,
     static_assert(MV_FOLDER_HIDE_CLIPS == mv::io::kHideClips);
     static_assert(MV_FOLDER_HIDE_RAW == mv::io::kHideRaw);
     static_assert(MV_FOLDER_HIDE_UNMARKED == mv::io::kHideUnmarked);
+    static_assert(MV_FOLDER_HIDE_REJECTED == mv::io::kHideRejected);
+    static_assert(MV_FOLDER_HIDE_UNPICKED == mv::io::kHideUnpicked);
+    static_assert(MV_FOLDER_LABEL_SHIFT == mv::io::kHideLabelShift);
+    static_assert(MV_FOLDER_HIDE_OTHER_LABELS == mv::io::kHideOtherLabels);
     const std::uint32_t next = mask & mv::io::kHideKnown;
+    // Issue #207: a cull filter (rating, label) is chosen again to re-apply it,
+    // and it takes effect once the job below has read the ratings and labels
+    // still missing, so the relist that moves off the stop on screen sees them
+    // all: until then the listing stays as it was.
+    const bool cull = mv::io::needs_cull_marks(next);
     std::unordered_set<std::string> paths;
     if ((next & mv::io::kHideUnmarked) != 0) {
       paths.reserve(kept_count);
@@ -2211,17 +2344,35 @@ mv_status MV_CALL mv_folder_set_kind_filter(mv_session_t session, uint32_t mask,
       }
     }
     bool have = false;
+    std::string dir;
     {
       std::lock_guard lock(session->folder_mutex);
-      if (session->kind_filter.load() == next && session->kind_kept == paths) return status::ok;
-      session->kind_kept = std::move(paths);
-      session->kind_filter.store(next);
+      if (!cull && session->kind_filter.load() == next && session->kind_kept == paths) return status::ok;
       have = !session->folder_listing.empty();
-      session->kind_filter_changed = have;
+      dir = session->folder_dir;
+      if (!cull || !have) {
+        session->kind_kept = std::move(paths);
+        session->kind_filter.store(next);
+        session->kind_filter_changed = have;
+      }
     }
     if (!have) return status::ok;  // applies to the next open
     const mv::job_id id = session->jobs.submit_at(
-        mv::background_generation, [session](const mv::job_context&) -> status {
+        mv::background_generation,
+        [session, cull, next, dir, paths = std::move(paths)](const mv::job_context&) mutable -> status {
+          if (cull) {
+            std::vector<mv::io::dir_entry> missing;
+            {
+              std::lock_guard lock(session->folder_mutex);
+              missing = missing_cull_stamps_locked(session);
+            }
+            const bool same = missing.empty() || read_cull_stamps(session, dir, missing);
+            std::lock_guard lock(session->folder_mutex);
+            session->kind_kept = std::move(paths);
+            session->kind_filter.store(next);
+            // Another folder opened meanwhile: its own listing applies it.
+            session->kind_filter_changed = same && !session->folder_listing.empty();
+          }
           std::vector<mv::io::listed_item> again;
           {
             std::lock_guard lock(session->folder_mutex);
@@ -2232,6 +2383,19 @@ mv_status MV_CALL mv_folder_set_kind_filter(mv_session_t session, uint32_t mask,
           return status::ok;
         });
     return id == mv::invalid_job ? status::internal : status::ok;
+  }));
+}
+
+mv_status MV_CALL mv_folder_note_metadata_written(mv_session_t session, const char* utf8_path) {
+  return static_cast<mv_status>(guard("mv_folder_note_metadata_written", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    MV_REQUIRE(utf8_path != nullptr && utf8_path[0] != '\0', "utf8_path must not be empty");
+    const std::string path(utf8_path);
+    std::lock_guard lock(session->folder_mutex);
+    session->cull_stamps.erase(path);
+    if (session->cull_forgotten.size() > 256) session->cull_forgotten.clear();
+    session->cull_forgotten[path] = ++session->cull_epoch;
+    return status::ok;
   }));
 }
 

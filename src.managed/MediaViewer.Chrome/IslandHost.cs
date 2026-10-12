@@ -202,7 +202,8 @@ public static partial class IslandHost
         public const int CropAspectSwap = 152;
         public const int ShowOriginal = 153;
         public const int SearchOpen = 157;
-        public const int KindFilterSet = 174;      // arg: 0 all, 1 photos, 2 videos, 3 RAW, 4 marked (issue #206)
+        public const int KindFilterSet = 174;      // arg: 0 all, 1 photos, 2 videos, 3 RAW, 4 marked (issue #206);
+                                                   // 5 picks, 6 not rejected, 7 red .. 11 purple (issue #207)
 
         // Mirrors chrome_command_checksum() in chrome_host.h: same constants,
         // same order, same arithmetic. Probe hands it to native for the test.
@@ -596,7 +597,7 @@ public static partial class IslandHost
             ChromeFlagsArgs args = Marshal.PtrToStructure<ChromeFlagsArgs>(arg);
             _settingFlags = args.Flags;
             _sortPacked = args.Sort & 0xFF;
-            _kindFilter = (args.Sort >> 8) & 7;
+            _kindFilter = (args.Sort >> 8) & 15;
             UpdateChannelApplied();
             RefreshSettingsMenu();
             RefreshSettingsScreen();
@@ -1474,12 +1475,17 @@ public static partial class IslandHost
         return sub;
     }
 
+    // io::kind_filter order. From FirstCullFilter (issue #207) they filter on
+    // each file's rating and colour label, which native reads on a worker.
     private static readonly string[] KindFilterNames =
-        { "All", "Photos", "Videos", "RAW", "Marked" };
+        { "All", "Photos", "Videos", "RAW", "Marked",
+          "Picks", "Not rejected", "Red", "Yellow", "Green", "Blue", "Purple" };
+    private const int FirstCullFilter = 5;
 
     // View > Show (issue #206): a view of the folder, for this run only. Rebuilt
     // on open so the marker is the filter native applied. "Marked" keeps the
-    // marks as they are when it is chosen.
+    // marks as they are when it is chosen. Picks / Not rejected / a colour
+    // (issue #207) re-apply when chosen again.
     private static MenuFlyoutSubItem KindFilterSubMenu(MenuFlyout owner)
     {
         var sub = new MenuFlyoutSubItem { Text = "Show" };
@@ -1488,6 +1494,7 @@ public static partial class IslandHost
             sub.Items.Clear();
             for (int k = 0; k < KindFilterNames.Length; k++)
             {
+                if (k == FirstCullFilter) sub.Items.Add(Sep());
                 int filter = k;
                 sub.Items.Add(Item(KindFilterNames[k], _kindFilter == k ? "●" : null,
                     () => Send(Command.KindFilterSet, filter)));

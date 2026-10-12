@@ -1139,8 +1139,12 @@ TEST_CASE("PR 12: the keypad and Ctrl+Shift+digit rate; the number row still zoo
   REQUIRE(r.on_key(down(char_key('0')), s).command == command_id::fit);
   REQUIRE(r.on_key(down(char_key('1')), s).command == command_id::one_to_one);
   REQUIRE(r.on_key(down(char_key('0'), mod_ctrl), s).command == command_id::reset_view);
-  // A keypad 6-9 is not bound to anything.
-  REQUIRE_FALSE(r.on_key(down(key::numpad7), s).handled);
+  // Keypad 6-9 (and Ctrl+Shift+6-9) are issue #207's colour labels, not ratings.
+  REQUIRE(r.on_key(down(key::numpad7), s).command == command_id::label_yellow);
+  REQUIRE(r.on_key(down(char_key('9'), mod_ctrl | mod_shift), s).command == command_id::label_blue);
+  // X rejects and U clears the label on a still or a clip, never in crop or the gallery.
+  REQUIRE(r.on_key(down(char_key('X')), s).command == command_id::reject);
+  REQUIRE(r.on_key(down(char_key('U')), clip()).command == command_id::clear_label);
 
   // A clip rates too (its rating lives in a sidecar); a slideshow does not.
   REQUIRE(r.on_key(down(key::numpad3), clip()).command == command_id::set_rating_3);

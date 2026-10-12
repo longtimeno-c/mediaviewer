@@ -119,7 +119,8 @@ Every chart is re-measured and redrawn by one command, `python tools/perf/regene
 
 Every action has a key, and `?` shows the full list, generated from the same command table the app runs.
 Arrow keys or `A`/`D` browse, `Space` advances, `Insert` marks, `F7`/`F8` copy or move marked files to a folder,
-`Delete` sends to the Recycle Bin, `F11` goes fullscreen, `F5` starts a slideshow. Every key can be remapped in Settings (`Ctrl+,`).
+`Delete` sends to the Recycle Bin, `F11` goes fullscreen, `F5` starts a slideshow. Cull a card on the keypad: `0`–`5` rate,
+`6`–`9` colour-label and `X` rejects, in the XMP that Lightroom and Bridge read, then View ▸ Show just the picks or one colour. Every key can be remapped in Settings (`Ctrl+,`).
 
 ## Video that lives with your photos
 

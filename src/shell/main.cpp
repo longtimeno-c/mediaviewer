@@ -1389,6 +1389,48 @@ bool rate_current_item(app_state* app, int stars) noexcept {
   }
 }
 
+// Issue #207: `X` toggles reject (rating -1) on the item on screen, through the
+// same queue, debounce and writer as a rating.
+bool reject_current_item(app_state* app) noexcept {
+  try {
+    const std::string path = current_item_path(app);
+    if (path.empty()) return false;
+    const int next = mv::shell::reject_toggled(meta_rating_now(app, path));
+    app->meta_writer.submit(path, mv::shell::rating_fields(next));
+    notice_show(app, next == 0 ? std::string("Rating cleared") : mv::meta::format_rating(next));
+    push_meta_edit(app);
+    schedule_meta_write(app, kRatingDebounceMs);
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+// Issue #207: numpad / Ctrl+Shift 6-9 set a colour label (the same one again
+// clears it), `U` clears it. XMP xmp:Label: in place on a plain JPEG, else
+// the sidecar (docs/design/06). The label the file has now: a queued one
+// counts, then what was read; an unread file counts as unlabelled.
+bool label_current_item(app_state* app, mv::shell::colour_label pressed) noexcept {
+  try {
+    const std::string path = current_item_path(app);
+    if (path.empty()) return false;
+    std::string now;
+    if (auto pending = app->meta_writer.pending_label(path)) now = std::move(*pending);
+    else if (app->meta_record) now = app->meta_record->s.label;
+    const std::string next = mv::shell::label_toggled(pressed, now);
+    if (next.empty() && now.empty()) {
+      notice_show(app, "No label");
+      return true;
+    }
+    app->meta_writer.submit(path, mv::shell::label_fields(next));
+    notice_show(app, next.empty() ? std::string("Label cleared") : "Label: " + next);
+    schedule_meta_write(app, kRatingDebounceMs);
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
 // Ctrl+I: the pane comes up (it replaces the adjust pane, as `I` does) and the
 // keyboard goes to its comment field rather than the pane's first control.
 bool focus_comment_field(app_state* app) noexcept {
@@ -1579,6 +1621,8 @@ void on_meta_write_done(app_state* app, std::unique_ptr<meta_write_result> r) {
   // What the store cached for this file is out of date: a JPEG's stamp moved,
   // a sidecar's did not, so drop it by path either way.
   app->meta.invalidate(out.path);
+  // Issue #207: and the rating / label View > Show's cull filters cached.
+  (void)mv_folder_note_metadata_written(app->session, out.path.c_str());
   if (r->stamped) {
     // The bytes changed, the pixels did not: keep the item's edits, and let
     // the next listing see the same item rather than a new one.
@@ -1601,21 +1645,7 @@ void on_meta_write_done(app_state* app, std::unique_ptr<meta_write_result> r) {
   // Say where it went, unless another change to the same file is already queued
   // (its message is the one that matters).
   if (!app->meta_writer.busy_for(out.path)) {
-    std::string text = job.revert ? std::string("Metadata reverted") : std::string();
-    if (!job.revert && job.fields.rating.touches()) {
-      const int stars =
-          job.fields.rating.k == mv::meta::change<int>::kind::clear ? 0 : job.fields.rating.value;
-      text = stars == 0 ? std::string("Rating cleared") : mv::meta::format_rating(stars);
-    } else if (!job.revert && job.fields.comment.touches()) {
-      text = job.fields.comment.k == mv::meta::change<std::string>::kind::clear ? "Comment removed"
-                                                                                : "Comment saved";
-    } else if (!job.revert && job.fields.date_taken.touches()) {
-      text = job.fields.date_taken.k == mv::meta::change<std::string>::kind::clear ? "Date taken removed"
-                                                                                   : "Date taken saved";
-    } else if (!job.revert && !job.fields.tags.empty()) {
-      text = job.fields.tags.size() == 1 ? std::string("Metadata saved")
-                                         : std::to_string(job.fields.tags.size()) + " tags saved";
-    }
+    std::string text = job.revert ? std::string("Metadata reverted") : mv::shell::describe_write(job.fields);
     if (out.target == mv::meta::write_target::sidecar && out.sidecar_touched) {
       const std::size_t sep = out.sidecar_path.find_last_of("\\/");
       text += "  \xE2\x80\x94 " + out.sidecar_path.substr(sep == std::string::npos ? 0 : sep + 1);  // — IMG_1234.xmp
@@ -1640,7 +1670,10 @@ void set_sort(app_state* app, std::int32_t packed) noexcept {
 // filmstrip, the gallery and the arrow keys read one list; the stop on screen
 // moves to the nearest one shown. "Marked" keeps the marks as they are now, so
 // unmarking while culling does not pull a file out from under the user.
+// Issue #207: Picks / Not rejected / a colour filter on rating and label, which
+// the session reads on a worker (never here) before it relists.
 // For this run only: a filter left on from yesterday would look like files gone.
+static_assert(mv::io::kKindFilterCount <= 16, "the chrome's sort word carries it in bits 8-11");
 bool set_kind_filter(app_state* app, mv::io::kind_filter f) noexcept {
   if (!app || !app->session) return false;
   try {
@@ -1662,9 +1695,7 @@ bool set_kind_filter(app_state* app, mv::io::kind_filter f) noexcept {
     app->kind_filter = f;
     app->chrome.set_kind_filter(static_cast<std::int32_t>(f));
     app->chrome.apply_settings(chrome_flags(app), app->settings.sort);
-    notice_show(app, f == mv::io::kind_filter::all
-                         ? std::string("Showing all")
-                         : std::string("Showing ") + mv::io::kind_filter_name(f) + " only");
+    notice_show(app, mv::io::kind_filter_notice(f));
     return true;
   } catch (...) {
     return false;
@@ -6597,7 +6628,7 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     case crop_aspect_set: case crop_straighten_set: case kind_filter_set:
       return false;  // island-only: they carry a value (chrome_on_command)
     case kind_filter_next:
-      return set_kind_filter(app, mv::io::next_kind_filter(app->kind_filter));
+      return set_kind_filter(app, mv::io::next_kind_filter(app->kind_filter, !app->marks.empty()));
     // Marks (docs/design/16): a set separate from the selection, keyed by path.
     case toggle_mark: {
       const std::string current = current_item_path(app);
@@ -6727,6 +6758,12 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     case set_rating_0: case set_rating_1: case set_rating_2: case set_rating_3:
     case set_rating_4: case set_rating_5:
       return rate_current_item(app, mv::shell::rating_of_command(command));
+    // Issue #207: culling, the same writer as the ratings.
+    case reject:
+      return reject_current_item(app);
+    case label_red: case label_yellow: case label_green: case label_blue: case clear_label:
+      return label_current_item(
+          app, static_cast<mv::shell::colour_label>(mv::shell::label_of_command(command)));
     case edit_comment:
       return focus_comment_field(app);
     // PR 13 / 14 (docs/design/08, docs/design/16 "Video and trim").
