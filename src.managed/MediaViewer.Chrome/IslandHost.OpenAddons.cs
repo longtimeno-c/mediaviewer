@@ -30,10 +30,13 @@ public static partial class IslandHost
 {
     private sealed record OpenTheme(string Id, string Name);
 
+    // PR 56: a keymap pack an add-on carries (Settings → Keyboard shortcuts → Key layout).
+    private sealed record OpenKeymap(string Id, string Name);
+
     private sealed record OpenAddon(string Folder, string Id, string Name, string Version, string State,
         string Description, string Licence, long Size, string UpdateUrl, string Publisher, string PublisherUrl,
         string Fingerprint, string Adds, IReadOnlyList<string> Can, string Cannot,
-        IReadOnlyList<OpenTheme> Themes)
+        IReadOnlyList<OpenTheme> Themes, bool Settings, IReadOnlyList<OpenKeymap> Keymaps)
     {
         public string PublisherHost =>
             Uri.TryCreate(PublisherUrl, UriKind.Absolute, out Uri? u) ? u.Host : "";
@@ -50,6 +53,10 @@ public static partial class IslandHost
     private static bool _openBusy;
     private static bool _openEnteringLink;
     private static string? _openConfirmRemove;
+    // The Remove question's "Keep its settings" (PR 56), on until turned off.
+    private static bool _openKeepSettings = true;
+    // Installed open add-ons' settings pages by add-on id (PR 56).
+    private static Dictionary<string, AddonSettingsPage> _openPages = new(StringComparer.Ordinal);
     private static string _openMessage = "";
     private static string _openProgress = "";
     // The download's share once its size is known; null while connecting,
@@ -103,6 +110,17 @@ public static partial class IslandHost
                 themes.Add(new OpenTheme(id, name.Length == 0 ? id : name));
             }
         }
+        var keymaps = new List<OpenKeymap>();
+        if (e.TryGetProperty("keymaps", out JsonElement k) && k.ValueKind == JsonValueKind.Array)
+        {
+            foreach (JsonElement pack in k.EnumerateArray())
+            {
+                string id = Str(pack, "id");
+                if (id.Length == 0) continue;
+                string name = Str(pack, "name");
+                keymaps.Add(new OpenKeymap(id, name.Length == 0 ? id : name));
+            }
+        }
         string addonId = Str(e, "id");
         string folder = Str(e, "folder");
         string addonName = Str(e, "name");
@@ -112,7 +130,8 @@ public static partial class IslandHost
             addonName.Length == 0 ? addonId : addonName, Str(e, "version"), Str(e, "state"),
             Str(e, "description"), Str(e, "licence"), size, Str(e, "update_url"), Str(publisher, "name"),
             Str(publisher, "url"), Str(publisher, "fingerprint"), Str(e, "adds"), can, Str(e, "cannot"),
-            themes);
+            themes, e.TryGetProperty("settings", out JsonElement st) && st.ValueKind == JsonValueKind.True,
+            keymaps);
     }
 
     /// <summary>Settings opened, or something changed: what is installed. Verifies
@@ -132,11 +151,21 @@ public static partial class IslandHost
             {
                 System.Diagnostics.Debug.WriteLine(ex.GetType().Name);
             }
+            // PR 56: the settings pages, with their values, read here too (each
+            // re-verifies its add-on).
+            var pages = new Dictionary<string, AddonSettingsPage>(StringComparer.Ordinal);
+            foreach (OpenAddon addon in list)
+            {
+                if (addon.Settings && addon.State == "ok" && ReadSettingsPage(addon.Id) is AddonSettingsPage page)
+                    pages[addon.Id] = page;
+            }
             DispatcherQueueControllerTryEnqueue(() =>
             {
                 _openAddons = list;
+                _openPages = pages;
                 RefreshOpenAddonRow();
                 RefreshThemeRow();
+                RefreshKeymapRow();
             });
         });
     }
@@ -221,7 +250,7 @@ public static partial class IslandHost
         view.Children.Add(Label("From others").WithForeground(Brush(Title)));
         view.Children.Add(Note(
             "Add-ons made by other people, installed from a file or a link. MediaViewer does not check them or who made them. The ones it installs are data, such as themes: they cannot run code, read your files, or use the network."));
-        _openRow = new StackPanel { Spacing = 8 };
+        _openRow = new StackPanel { Spacing = Space(8) };
         view.Children.Add(_openRow);
         RefreshOpenAddonRow();
         RefreshOpenAddons();
@@ -265,7 +294,7 @@ public static partial class IslandHost
             foreach (OpenAddon addon in _openAddons) _openRow.Children.Add(BuildOpenAddonEntry(addon));
             if (_openEnteringLink)
             {
-                var line = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+                var line = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8) };
                 _openLink = new FakeInput("https://…/name.mvaddon", 420);
                 AutomationProperties.SetName(_openLink, "Link to an add-on");
                 if (_openLinkText.Length > 0) _openLink.SetText(_openLinkText);
@@ -285,7 +314,7 @@ public static partial class IslandHost
             else
             {
                 // Busy: shown, disabled (the Mac's .disabled(store.busy)), not hidden.
-                var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+                var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8) };
                 Button file = SettingsButton("Install from file…", ChooseOpenAddonFile);
                 Button link = SettingsButton("Install from link…", () =>
                 {
@@ -315,7 +344,7 @@ public static partial class IslandHost
 
     private static FrameworkElement BuildOpenAddonEntry(OpenAddon addon)
     {
-        var entry = new StackPanel { Spacing = 4, Margin = new Thickness(0, 4, 0, 4) };
+        var entry = new StackPanel { Spacing = Space(4), Margin = Pad(0, 4, 0, 4) };
         entry.Children.Add(Label($"{addon.Name} {addon.Version}").WithForeground(Brush(Title)));
         if (addon.Publisher.Length > 0)
             entry.Children.Add(Note($"From {addon.Publisher} · key {addon.Fingerprint} · {addon.Adds}"));
@@ -323,9 +352,24 @@ public static partial class IslandHost
             entry.Children.Add(Note("Needs a newer MediaViewer, so it is not in use."));
         else if (addon.State != "ok")
             entry.Children.Add(Note("This copy did not pass verification, so it is not in use."));
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8) };
         if (_openConfirmRemove == addon.Folder)
         {
+            // PR 56: what was chosen on its page can outlive it, so installing
+            // it again finds the same values (docs/design/25 "Settings page").
+            if (addon.Settings)
+            {
+                var keep = new ToggleSwitch
+                {
+                    IsOn = _openKeepSettings,
+                    FontFamily = UiFont,
+                    FontSize = UiFontSize,
+                    Foreground = Brush(Title),
+                };
+                keep.Toggled += (_, _) => _openKeepSettings = keep.IsOn;
+                entry.Children.Add(SettingsRow("Keep its settings",
+                    "Installing it again brings back what you chose on its page.", keep));
+            }
             // Remove is the default (accent), Esc or Cancel keeps it.
             Button remove = SettingsButton($"Remove {addon.Name}", () => RemoveOpenAddon(addon), accent: true);
             remove.IsEnabled = !_openBusy;
@@ -349,6 +393,7 @@ public static partial class IslandHost
             buttons.Children.Add(SettingsButton("Remove…", () =>
             {
                 _openConfirmRemove = addon.Folder;
+                _openKeepSettings = true;
                 RefreshOpenAddonRow();
             }));
             foreach (UIElement b in buttons.Children)
@@ -357,6 +402,9 @@ public static partial class IslandHost
             }
         }
         entry.Children.Add(buttons);
+        // PR 56: its settings page, under its row.
+        if (addon.State == "ok" && _openPages.TryGetValue(addon.Id, out AddonSettingsPage? page))
+            entry.Children.Add(BuildSettingsPage(page));
         return entry;
     }
 
@@ -371,14 +419,14 @@ public static partial class IslandHost
             : offer.Relation == "update" ? $"Update “{a.Name}” from {offer.InstalledVersion} to {a.Version}?"
             : offer.Relation == "repair" ? $"Install “{a.Name}” {a.Version} again?"
             : $"Install “{a.Name}” {a.Version}?";
-        var sheet = new StackPanel { Spacing = 8 };
+        var sheet = new StackPanel { Spacing = Space(8) };
         TextBlock heading = WrappedLabel(title).WithForeground(Brush(Title));
         heading.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
         sheet.Children.Add(heading);
         if (a is not null)
         {
             if (a.Description.Length > 0) sheet.Children.Add(Note(a.Description));
-            var lines = new Grid { ColumnSpacing = 16, RowSpacing = 4 };
+            var lines = new Grid { ColumnSpacing = Space(16), RowSpacing = Space(4) };
             lines.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             lines.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             void Line(string label, string value)
@@ -403,7 +451,7 @@ public static partial class IslandHost
             Line("Size", $"{OpenSizeText(a.Size)} · {a.Licence}");
             sheet.Children.Add(lines);
         }
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8) };
         if (offer.Ok)
         {
             sheet.Children.Add(WrappedLabel("MediaViewer has not checked this add-on or who made it.")
@@ -430,11 +478,11 @@ public static partial class IslandHost
         var card = new Border
         {
             Child = sheet,
-            Padding = new Thickness(14),
+            Padding = Pad(14),
             Background = Brush(ChromeColour.Surface),
             BorderBrush = Brush(Hairline),
             BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(8),
+            CornerRadius = Corner(8),
         };
         AutomationProperties.SetName(card, title);
         // The question is at the foot of Settings: bring it into view.
@@ -763,6 +811,7 @@ public static partial class IslandHost
         _openConfirmRemove = null;
         if (_openBusy) return;
         _openBusy = true;
+        bool forget = addon.Settings && !_openKeepSettings;
         RefreshOpenAddonRow();
         _ = Task.Run(() =>
         {
@@ -776,6 +825,14 @@ public static partial class IslandHost
                                            or EntryPointNotFoundException)
             {
                 System.Diagnostics.Debug.WriteLine(ex.GetType().Name);
+            }
+            if (removed && forget)
+            {
+                try { AddonNative.SettingsForget(addon.Id); }
+                catch (Exception ex) when (ex is MediaViewerException or EntryPointNotFoundException)
+                {
+                    System.Diagnostics.Debug.WriteLine(ex.GetType().Name);
+                }
             }
             DispatcherQueueControllerTryEnqueue(() =>
             {

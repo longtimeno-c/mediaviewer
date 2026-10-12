@@ -79,7 +79,7 @@ public static partial class IslandHost
 
     private static FrameworkElement BuildConsentContent()
     {
-        var root = new StackPanel { Spacing = 10, Width = 420, Padding = new Thickness(4) };
+        var root = new StackPanel { Spacing = Space(10), Width = 420, Padding = Pad(4) };
         root.Children.Add(new TextBlock
         {
             Text = "Help improve MediaViewer?",
@@ -101,7 +101,7 @@ public static partial class IslandHost
         var buttons = new StackPanel
         {
             Orientation = Orientation.Horizontal,
-            Spacing = 8,
+            Spacing = Space(8),
             HorizontalAlignment = HorizontalAlignment.Right,
         };
         Button no = TextButton("No thanks", () => AnswerConsent(false));

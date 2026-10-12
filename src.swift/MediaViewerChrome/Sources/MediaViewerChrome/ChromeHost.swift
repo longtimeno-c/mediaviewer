@@ -114,6 +114,46 @@ public final class MVChromeHost: NSObject {
       + "themed=\(MVTheme.themed != nil) note=\"\(theme.note)\" message=\"\(addons.message)\""
   }
 
+  /// PR 56's leg of the same rig: an add-on's settings page drawn by the real
+  /// view, alone in an off-screen window, written as a PNG once it has read
+  /// its page; and the Remove panel's "Keep its settings". Inert otherwise.
+  @MainActor private static var pageSnapshots: [NSWindow] = []
+  @MainActor @objc public static func addonSelfTestPage(_ addonID: String, path: String) {
+    guard ProcessInfo.processInfo.environment["MV_ADDON_SELFTEST"] != nil else { return }
+    let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 600, height: 760),
+                          styleMask: [.borderless], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    let root = AddonSettingsPage(addonID: addonID, fallbackTitle: addonID)
+      .frame(width: 560).padding(20).frame(maxHeight: .infinity, alignment: .top)
+      .background(MVTheme.canvas)
+    window.contentView = NSHostingView(rootView: ThemedRoot(content: root))
+    window.orderFrontRegardless()
+    pageSnapshots.append(window)
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+      guard let v = window.contentView else { return }
+      v.layoutSubtreeIfNeeded()
+      if let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) {
+        v.cacheDisplay(in: v.bounds, to: rep)
+        try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+      }
+      window.orderOut(nil)
+      pageSnapshots.removeAll { $0 === window }
+    }
+  }
+
+  @MainActor @objc public static func addonSelfTestRemove(_ folder: String, keepSettings: Bool) {
+    guard ProcessInfo.processInfo.environment["MV_ADDON_SELFTEST"] != nil else { return }
+    let addons = OpenAddonStore.shared
+    guard let addon = addons.installed.first(where: { $0.folder == folder }) else { return }
+    addons.keepSettings = keepSettings
+    addons.remove(addon)
+  }
+
+  @MainActor @objc public static func addonSelfTestOffer(_ path: String) {
+    guard ProcessInfo.processInfo.environment["MV_ADDON_SELFTEST"] != nil else { return }
+    OpenAddonStore.shared.offer(file: path)
+  }
+
   /// PR 9: the metadata pane and folder tree, floating over the canvas.
   @objc public static func makeMetadataView() -> NSView {
     host(MetadataView())

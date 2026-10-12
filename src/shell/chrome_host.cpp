@@ -296,6 +296,9 @@ expected chrome_host::load() noexcept {
   // Optional: without them a drag carries one cell and Open lists no recents.
   set_drag_paths_ = get_entry(L"SetDragPaths");
   set_recent_folders_ = get_entry(L"SetRecentFolders");
+  // Optional (docs/design/25 PR 56): without it Settings cannot list what a
+  // key layout skipped.
+  set_keymap_report_ = get_entry(L"SetKeymapReport");
   // Optional the same way (issue #214): without it the More flyout's audio
   // controls do not follow the keys.
   apply_audio_ = get_entry(L"ApplyAudio");
@@ -889,7 +892,7 @@ bool chrome_host::take_parked_text(std::string& out) noexcept {
   // A path, or a comment of at most meta::kMaxCommentBytes; a longer one does
   // not fit and is refused (-1) rather than cut.
   try {
-    std::string buf(16384, '\0');
+    std::string buf(128u << 10, '\0');  // PR 56: a keymap pack fits (256 bindings)
     chrome_table_args args{};
     args.utf8 = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(buf.data()));
     args.length = static_cast<std::int32_t>(buf.size());
@@ -954,6 +957,14 @@ void chrome_host::set_recent_folders(const std::string& utf8_lines) noexcept {
   args.utf8 = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(utf8_lines.data()));
   args.length = static_cast<std::int32_t>(utf8_lines.size());
   (void)set_recent_folders_(&args, static_cast<std::int32_t>(sizeof(args)));
+}
+
+void chrome_host::set_keymap_report(const std::string& json) noexcept {
+  if (!attached_ || !set_keymap_report_) return;
+  chrome_table_args args{};
+  args.utf8 = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(json.data()));
+  args.length = static_cast<std::int32_t>(json.size());
+  (void)set_keymap_report_(&args, static_cast<std::int32_t>(sizeof(args)));
 }
 
 void chrome_host::show_popup(chrome_popup kind, std::int32_t mode_mask) noexcept {

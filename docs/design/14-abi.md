@@ -568,6 +568,18 @@ title_len`, then UTF-8 `title` and `evidence` pointers, `evidence_len`, reserved
 badge. Mac: `MVChromeHost.makeAIBadgeView()` and `setAIBadge(title:evidence:)` from
 `main_mac.mm`, which also shows, hides and places the hosting view. Neither crosses
 `mediaviewer.h`.
+## PR 56 — settings pages and keymap packs (ABI 0.24)
+
+Minor bump, additive, in `mediaviewer_addon.h` ([25](25-open-addons.md), contribution API 2):
+`mv_addon_settings_json` (an add-on's settings page with its values, open or first-party id),
+`mv_addon_setting_set` (one value, checked against the page: `{"ok","message"}`),
+`mv_addon_settings_forget` (Remove without "keep its settings") and `mv_open_addon_keymap_json`
+(one keymap pack, which the Windows chrome parks for native to apply). The open list gains
+`settings` and `keymaps`, the installed list `settings`. The host function table gains
+`settings_get` as its last row (appended under `struct_size`, host API not bumped): a native
+add-on reads its own page's values. The Mac host reaches the same `open_json.h` calls through
+`mv_addons_settings_*` and `mv_open_addons_keymap` in the chrome bridge, and applies a pack with
+`mv_chrome_apply_keymap`.
 
 ## Version history
 
@@ -591,7 +603,7 @@ badge. Mac: `MVChromeHost.makeAIBadgeView()` and `setAIBadge(title:evidence:)` f
 | 0.21 | `mv_folder_renamed` — an F2 rename keeps its stop (issue #210) |
 | 0.22 | `mv_folder_set_kind_filter`, `MV_FOLDER_HIDE_STILLS` / `_CLIPS` / `_RAW` / `_UNMARKED` — View ▸ Show (issue #206) |
 | 0.23 | The cull bits `MV_FOLDER_HIDE_REJECTED` / `_UNPICKED` / `MV_FOLDER_HIDE_OTHER_LABELS` (`MV_FOLDER_LABEL_SHIFT`) and `mv_folder_note_metadata_written` — View ▸ Show's cull filters (issue #207) |
-| 0.24 | Reserved for docs/design/25 PR 56 (settings pages, keymap packs) |
+| 0.24 | Settings pages and keymap packs: `mv_addon_settings_json` / `_setting_set` / `_settings_forget`, `mv_open_addon_keymap_json`; host table `settings_get` |
 | 0.25 | Reserved for docs/design/25 PRs 58-59 (screens and slots, #348) |
 | 0.26 | Reserved for docs/design/25 PR 57 (script add-ons) |
 | 0.27 | `mv_meta_parse_location` / `mv_location_input` — the Metadata pane's Location editor (#352) |

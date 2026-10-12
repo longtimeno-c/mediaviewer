@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "addon/package.h"
+#include "addon/settings_values.h"
 #include "core/json.h"
 #include "io/file_port.h"
 #include "io/paths.h"
@@ -102,12 +103,21 @@ std::string counted(std::size_t n, const char* one, const char* many) {
 // The sheet's "Adds / Can / Cannot" lines, from what the manifest holds and
 // never from what its maker wrote about it (docs/design/25 "Identity and trust").
 void write_abilities(json::writer& w, const open_manifest& m) {
-  w.key("adds").string(m.themes.empty() ? std::string("Nothing this MediaViewer uses")
-                                        : counted(m.themes.size(), "theme", "themes"));
+  std::string adds;
+  const auto add = [&adds](const std::string& part) {
+    if (!adds.empty()) adds += ", ";
+    adds += part;
+  };
+  if (!m.themes.empty()) add(counted(m.themes.size(), "theme", "themes"));
+  if (!m.settings.empty()) add("a settings page");
+  if (!m.keymaps.empty()) add(counted(m.keymaps.size(), "key layout", "key layouts"));
+  w.key("adds").string(adds.empty() ? std::string("Nothing this MediaViewer uses") : adds);
   w.key("can").begin_array();
   if (!m.themes.empty()) w.string("Change how MediaViewer's bars, panes and text look");
+  if (!m.settings.empty()) w.string("Add a page of its own settings to Settings");
+  if (!m.keymaps.empty()) w.string("Offer other keys for MediaViewer's commands, when you choose one");
   w.end_array();
-  // Contribution API 1 is data: true of every add-on this host installs.
+  // Contribution API 1-2 is data: true of every add-on this host installs.
   w.key("cannot").string("Run code, read your files, or use the network");
 }
 
@@ -135,9 +145,108 @@ void write_addon(json::writer& w, const open_manifest& m) {
     w.begin_object().key("id").string(t.id).key("name").string(t.name).end_object();
   }
   w.end_array();
+  // API 2 (PR 56): whether Settings has a page for it, and its key layouts.
+  w.key("settings").boolean(!m.settings.empty());
+  w.key("keymaps").begin_array();
+  for (const keymap_pack& k : m.keymaps) {
+    w.begin_object().key("id").string(k.id).key("name").string(k.name).end_object();
+  }
+  w.end_array();
 }
 
 }  // namespace
+
+namespace {
+
+// The page of add-on `id`, open or first-party; empty when it is not
+// installed and verified. `name` gets the add-on's name, `publisher` its
+// publisher's key ("" for a first-party add-on: the app's own).
+settings_page page_of(const open_store& open, const store* first_party, std::string_view id,
+                      std::string* name, std::string* publisher, bool* found) {
+  *found = false;
+  publisher->clear();
+  if (valid_open_id(id)) {
+    auto installed = open.find(id);
+    if (!installed || installed->state != install_state::ok) return {};
+    *found = true;
+    if (name) *name = installed->m.name;
+    *publisher = installed->m.publisher_key;
+    return installed->m.settings;
+  }
+  if (!first_party) return {};
+  auto installed = first_party->find(std::string(id));
+  if (!installed || installed->state != install_state::ok) return {};
+  *found = true;
+  if (name) *name = installed->m.name;
+  return installed->m.settings;
+}
+
+}  // namespace
+
+std::string addon_settings_page_json(const open_store& open, const store* first_party,
+                                     std::string_view id) {
+  auto values = default_settings_values();
+  if (!values || !valid_settings_owner(id)) return {};
+  std::string name, publisher;
+  bool found = false;
+  const settings_page page = page_of(open, first_party, id, &name, &publisher, &found);
+  if (!found || page.empty()) return {};
+  return values->page_json(id, publisher, page, name);
+}
+
+std::string addon_setting_set_json(const open_store& open, const store* first_party,
+                                   std::string_view id, std::string_view key,
+                                   std::string_view value_json) {
+  const auto answer = [](bool ok, std::string_view message) {
+    json::writer w;
+    w.begin_object().key("ok").boolean(ok).key("message").string(message).end_object();
+    return w.take();
+  };
+  auto values = default_settings_values();
+  bool found = false;
+  std::string publisher;
+  const settings_page page =
+      values && valid_settings_owner(id)
+          ? page_of(open, first_party, id, nullptr, &publisher, &found)
+          : settings_page{};
+  if (!found) return answer(false, "That add-on is not installed.");
+  if (!page.find(key)) return answer(false, "That setting is no longer on the add-on's page.");
+  if (auto set = values->set(id, publisher, page, key, value_json); !set) {
+    return answer(false, set.error() == status::invalid_arg
+                             ? "That value is not one this setting takes."
+                             : "MediaViewer could not save the setting.");
+  }
+  return answer(true, "");
+}
+
+bool addon_settings_forget(std::string_view id) {
+  auto values = default_settings_values();
+  return values && values->forget(id).has_value();
+}
+
+std::string open_keymap_json(const open_store& open, std::string_view addon_id,
+                             std::string_view pack_id) {
+  auto installed = open.find(addon_id);
+  if (!installed || installed->state != install_state::ok) return {};
+  for (const keymap_pack& p : installed->m.keymaps) {
+    if (p.id != pack_id) continue;
+    json::writer w;
+    w.begin_object();
+    w.key("addon").string(installed->m.id);
+    w.key("id").string(p.id);
+    w.key("name").string(p.name);
+    w.key("bindings").begin_array();
+    for (const keymap_binding& b : p.bindings) {
+      w.begin_object().key("command").string(b.command).key("keys").begin_array();
+      for (const std::string& k : b.keys) w.string(k);
+      w.end_array().end_object();
+    }
+    w.end_array();
+    w.end_object();
+    return w.take();
+  }
+  return {};
+}
 
 result<open_store> default_open_store() {
   MV_TRY(std::string root, io::open_addons_dir());
@@ -197,6 +306,11 @@ std::string open_install_json(const open_store& store, std::string_view package_
   if (installed) {
     w.key("id").string(installed->id);
     w.key("version").string(installed->version);
+    // Settings kept from another publisher's add-on under this id are not
+    // this one's to read (settings_values.h). A failure leaves them unread.
+    if (auto values = default_settings_values()) {
+      (void)values->claim(installed->id, installed->m.publisher_key);
+    }
   }
   w.end_object();
   return w.take();

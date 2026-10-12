@@ -47,25 +47,7 @@ bool id_part(std::string_view part) noexcept {
 // nothing that reorders or hides what is beside it (bidi controls, zero
 // width), bounded. UTF-8 validity is the parser's.
 bool display_text(std::string_view s, std::size_t max_bytes, bool may_be_empty) noexcept {
-  if (s.empty()) return may_be_empty;
-  if (s.size() > max_bytes || s.front() == ' ' || s.back() == ' ') return false;
-  for (std::size_t i = 0; i < s.size(); ++i) {
-    const auto c = static_cast<unsigned char>(s[i]);
-    if (c < 0x20 || c == 0x7F) return false;
-    if (c == 0xE2 && i + 2 < s.size()) {
-      const auto c1 = static_cast<unsigned char>(s[i + 1]);
-      const auto c2 = static_cast<unsigned char>(s[i + 2]);
-      // U+200B..U+200F, U+2028..U+202E, U+2060..U+206F.
-      if (c1 == 0x80 && ((c2 >= 0x8B && c2 <= 0x8F) || (c2 >= 0xA8 && c2 <= 0xAE))) return false;
-      if (c1 == 0x81 && c2 >= 0xA0 && c2 <= 0xAF) return false;
-    }
-    // U+FEFF, a zero-width no-break space.
-    if (c == 0xEF && i + 2 < s.size() && static_cast<unsigned char>(s[i + 1]) == 0xBB &&
-        static_cast<unsigned char>(s[i + 2]) == 0xBF) {
-      return false;
-    }
-  }
-  return true;
+  return valid_display_text(s, max_bytes, may_be_empty);
 }
 
 bool version_text(std::string_view v) noexcept {
@@ -91,7 +73,6 @@ bool version_text(std::string_view v) noexcept {
 constexpr std::array<std::string_view, 12> kTopLevelKeys{
     "schema", "id", "name", "version", "description", "licence", "publisher",
     "update_url", "api", "installed_size", "files", "contributes"};
-constexpr std::array<std::string_view, 1> kContributesKeys{"themes"};
 // Code, by any name the plan gives it: never loaded from a schema 2 add-on by
 // a host that runs none (docs/design/25 "Code").
 constexpr std::array<std::string_view, 4> kCodeKeys{"native", "chrome", "scripts", "main"};
@@ -346,7 +327,27 @@ open_decision check_open_manifest(std::span<const std::uint8_t> bytes,
           }
           m.themes.push_back(theme_ref{*theme_id, *theme_name, *theme_path});
         }
-      } else if (strict && !known(kContributesKeys, key_name)) {
+      } else if ((key_name == "settings" || key_name == "keymaps") &&
+                 contribution_api(key_name) <= api) {
+        // API 2 (PR 56). Named by a manifest that claims an older API, the
+        // point is a mistake, not something this host should guess at.
+        if (m.api_max < contribution_api(key_name)) return d;
+        std::string detail;
+        if (key_name == "settings") {
+          auto page = parse_settings_page(value, &detail);
+          if (!page) return d;
+          m.settings = std::move(*page);
+        } else {
+          auto packs = parse_keymaps(value, &detail);
+          if (!packs) return d;
+          m.keymaps = std::move(*packs);
+        }
+      } else if (strict) {
+        // A point this host has not built, in a manifest that claims no API
+        // past this host's: unknown (contribution_api() == 0), or named under
+        // an API too old for it. Either is a mistake, not something a newer
+        // host would read. A manifest reaching past the host's API may carry
+        // points for a later host; this one leaves them alone.
         return d;
       }
     }

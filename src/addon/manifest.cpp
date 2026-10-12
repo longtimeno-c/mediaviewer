@@ -143,6 +143,10 @@ bool read_contributions(const json::value& doc, manifest& m) {
       if (!on || !text || !one_of(*on, {"card"}) || !plain_text(*text, 120, false)) return false;
       m.hint_on = *on;
       m.hint_text = *text;
+    } else if (key == "settings") {
+      auto page = parse_settings_page(value);
+      if (!page) return false;
+      m.settings = std::move(*page);
     } else {
       return false;
     }

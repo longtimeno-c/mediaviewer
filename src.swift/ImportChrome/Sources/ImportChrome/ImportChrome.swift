@@ -47,7 +47,7 @@ public final class MVImportChrome: NSObject {
                          backing: .buffered, defer: false)
         w.title = "Import"
         w.isReleasedWhenClosed = false
-        w.contentView = NSHostingView(rootView: ImportView(model: model))
+        w.contentView = NSHostingView(rootView: HostThemeRoot { ImportView(model: model) })
         w.center()
         window = w
       }

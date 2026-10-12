@@ -64,6 +64,10 @@ struct host_services {
   // The verified folder of an installed piece of the add-on's family.
   // loaded_addon::load fills it from the store when left empty.
   std::function<result<std::string>(const std::string& piece_id)> piece_dir;
+  // This add-on's value for a key on its own settings page, as JSON text
+  // (docs/design/25 "Settings page", PR 56). loaded_addon::load fills it from
+  // the add-on's manifest and the settings store when left empty.
+  std::function<result<std::string>(const std::string& key)> setting;
   std::string data_dir;         // created by the table
   std::string default_library;  // Pictures\MediaViewer
   // Honour mv_addon_copy_request's fault injection (tests, the verify rig).

@@ -35,6 +35,21 @@ Both hosts use the same table and router; tests are `tests/test_key_router*.cpp`
   shown in `?` — Open RAW / Open JPEG of a pair.
 - Island-only commands (`zoom_preset`, `select_item`, `gallery_activate`, the adjust sliders,
   crop preset buttons…) carry an argument and have no key.
+- **Keymap packs** (PR 56, [25 "Keymap"](25-open-addons.md#7-the-contribution-model)): the
+  v1.1 "named layouts" come as add-ons. Settings → Keyboard shortcuts → **Key layout** lists every
+  layout of every installed add-on; **Apply** resets the table to `default_bindings()` and writes
+  the layout's keys into the rows it names (`shell/keymap.h` `apply_keymap`), once. From then it
+  is the person's table: persisted like a remap, kept when the add-on goes, and **Reset**
+  restores the defaults. `?` and Settings read the same live table, so they list what the layout
+  bound. A layout names commands by their enumerator (`next`, `toggle_mark`, `zoom_in`;
+  `command_slug`, stable, every command a row runs has one) or `<add-on id>/<command id>` for a
+  contributed row. **Its keys go to that command's rows in table order** (`"prev": ["Left", "H"]`
+  keeps Left and puts H where A was; `""` leaves a row without a key; rows past the list keep
+  theirs): a layout cannot add a row, because remaps persist by row index. A key it gives out is
+  taken from any other row holding it in an overlapping mode, which is left unbound (shown so),
+  rather than swapped. Unknown commands and keys are skipped and listed, not refused. The Mac
+  also refuses a chord a fixed menu item owns at capture; a layout is not checked against the
+  menu (owed). A saved table is put back exactly (`set_live_key`), unbound rows included.
 - **Add-on commands** (Import: `open_import`, `import_now`; Local search: `search_*`) are listed,
   routed and shown only while their add-on is loaded (`set_addon_commands_available` per
   family); otherwise the key falls through as if unbound. The exception is `Ctrl+F`, which runs
@@ -532,7 +547,7 @@ No hot-path ABI for commands. Commands invoke existing session calls (`mv_folder
 - `Ctrl+Tab` / tabs, and several windows inside one process.
 - `Ctrl+PageUp` / `Ctrl+PageDown` for ICO sizes and HEIC sequences (pages of TIFF, PDF and DOCX are built).
 - Touch gestures (swipe, pinch).
-- Import / export of key maps and named alternate layouts.
+- Import / export of a person's own key map (named layouts ship as keymap packs, above).
 - Voice add-on hold-to-talk (`Ctrl+Shift+Space`).
 - **On the Mac** (issue #183): `Ctrl+G` go to index, `;` Live Photo motion, and Open RAW /
   Open JPEG of a pair. `MvCommandSupported` leaves them out, so `?` and Settings do not list

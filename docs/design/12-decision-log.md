@@ -1172,6 +1172,63 @@ built-in binding, superseding and restoring), the manifest cases, the packer's c
 the full suite and the add-on rig. Not verified: a signed Import carrying the new manifest in
 the app (a local build cannot load its own unsigned Import); Windows beyond compiling.
 
+**Declarative contributions: contribution API 2 (2026-10-11; PR 56's second half,
+[25](25-open-addons.md#pr-56-second-half-declarative-contributions-2026-10-11)).** Owner, the
+same day: finish the open add-on spine (the rule change made with it, "an add-on carries its own
+code and its own data", is its own row under Add-on mechanism, from #348's branch). Settings
+pages, keymap packs and theme shape are
+data an add-on's manifest carries; both hosts render them natively. None reverses a D-decision.
+
+- **One table of contribution points** (`kContributionPoints`, `open_manifest.h`): every §7
+  point with the API that introduces it (settings and keymaps 2, commands 3, screens 4, slots
+  and providers 5), the same rows on every branch so PRs 56–59 merge without touching each
+  other's lines. A strict manifest (no API past the host's) that names a point the host has not
+  built is malformed; one reaching past the host's API keeps it for a later host. Manifest
+  schema stays 2.
+- **Settings values live in one JSON file per add-on id, written by the core**
+  (`io::addon_settings_dir()`: `addon-settings` / `Add-on Settings`, beside the add-on folders),
+  not in each host's own store (§7 had "the host's store"). Both hosts, a first-party add-on
+  (host table `settings_get`) and a script (PR 57) must read the same values, the core is the
+  only thing all four share, and it makes namespacing, persistence and keep-on-remove one
+  Catch2-tested store. Values are checked against the page on the way in and again on the way
+  out, so a page narrowed by an update hands the add-on its default, not an old value. Nothing
+  is created until a value is written.
+- **Remove keeps an add-on's settings unless asked** ("Keep its settings", on by default, in the
+  Remove panel; Import's "Remove everything" forgets them). Installing again finds them.
+- **A first-party (schema 1) manifest may carry a page too**, read by native code through the
+  host table's new last row `settings_get` (appended under `struct_size`; `MV_ADDON_HOST_API`
+  not bumped). The Places add-on (#344) is its first user.
+- **A keymap pack is applied once, then it is the person's table.** Picking a layout resets to
+  `default_bindings()` and writes the pack's keys in; from then it persists like any remap,
+  survives the add-on's removal, and Reset restores the defaults. Nothing is resolved per key;
+  the router stays an array index. Commands are named by their enumerator (`next`,
+  `toggle_mark`; `shell/keymap.h`, stable), or `<add-on id>/<command id>` for a contributed row
+  (agreed with PR 57). **A binding's keys go to the command's rows in table order**: a pack
+  cannot add a row (persisted remaps are by row index), only re-key or clear one. A key the
+  pack gives out is taken from any other row holding it in an overlapping mode (left unbound,
+  shown so) rather than swapped, so the result does not depend on the order of the pack.
+  Unknown commands and keys are skipped and said, not refused: a pack for a newer MediaViewer
+  applies what this one knows.
+- **A saved key table is put back exactly** (`set_live_key`, no swap), unbound rows included;
+  it used to be replayed through `rebind_live`, which swaps and could not express "no key".
+  **Reset keeps an add-on's superseded built-in rows without their key** (found here: they got
+  it back).
+- **Theme shape is three bounded scales on today's literals** (theme file schema 2:
+  `radius` 0–2, `density` 0.75–1.25, `type_scale` 0.85–1.25), resolved once when the theme is
+  painted. Geometry that native layout or measured gates depend on (gallery tiles, filmstrip,
+  transport, the Video Editor's timeline) keeps its literals. On Windows, as for the typeface,
+  a new shape shows at the next start.
+- **MediaViewer's own add-on windows read the host's tokens** (issue #204). Mac: the app
+  publishes them as the class method `+[MVChromeTheme tokens]` and posts
+  `MVChromeThemeDidChange`; Import and Local search look the class up by name, so an older app
+  leaves them on the system colours and neither bundle links the app. Windows: Import and
+  Duplicates use `IAddonHost2` colours, face and `ThemeChanged` (as the AI chrome already did)
+  and a new, separate `IAddonThemeShape` interface (no members added to the frozen ones).
+- **ABI 0.24**, additive: `mv_addon_settings_json`, `mv_addon_setting_set`,
+  `mv_addon_settings_forget`, `mv_open_addon_keymap_json`; the open list carries `settings` and
+  `keymaps`, the installed list `settings`. The Windows chrome hands a pack to native through
+  the parked-text channel, raised from 16 KB to 128 KB so a 256-binding pack fits.
+
 ---
 
 ## Not built
@@ -1181,8 +1238,8 @@ the app (a local build cannot load its own unsigned Import); Windows beyond comp
 - Multi-window viewers grouped as OS tabs with `Ctrl+Tab`: Mac windows disallow tabbing; one window.
 - Explorer property handler: per-user installs cannot register one.
 - Staged rollout (5 % → 25 % → 100 %): one channel per release goes to everyone.
-- Keymap import/export and named layouts (planned as keymap packs, PR 56); a user font file.
-- Open add-ons PRs 56–60: settings pages, keymap packs, the Lua sandbox, screens, slots, files.
+- Keymap import/export by the person (named layouts ship as keymap packs, PR 56); a user font file.
+- Open add-ons PRs 57–60: the Lua sandbox, screens, slots, files.
 - Live Photo ContentIdentifier check: pairing is by name only.
 - `F2` rename and an `X` reject mark.
 - Reverse playback in the Video Editor.

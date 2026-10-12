@@ -211,7 +211,7 @@ private struct FolderTile: View {
             }
           }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .clipShape(RoundedRectangle(cornerRadius: MVTheme.radius(6)))
         .overlay(alignment: .bottomLeading) {
           if card.loaded {
             Text(card.status)
@@ -223,7 +223,7 @@ private struct FolderTile: View {
           }
         }
         .overlay(
-          RoundedRectangle(cornerRadius: 6)
+          RoundedRectangle(cornerRadius: MVTheme.radius(6))
             .strokeBorder(isCursor ? MVTheme.accent : .clear, lineWidth: 2)
         )
       HStack(spacing: 4) {
@@ -258,7 +258,7 @@ private struct FolderChip: View {
             Image(systemName: "folder.fill").foregroundStyle(.secondary)
           }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 4))
+        .clipShape(RoundedRectangle(cornerRadius: MVTheme.radius(4)))
       VStack(alignment: .leading, spacing: 1) {
         Text(FolderStore.shared.folderName(path))
           .font(MVTheme.font(12))
@@ -274,11 +274,11 @@ private struct FolderChip: View {
     }
     .padding(4)
     .background(
-      RoundedRectangle(cornerRadius: 6)
+      RoundedRectangle(cornerRadius: MVTheme.radius(6))
         .fill(isCursor ? MVTheme.accent.opacity(0.18) : Color.primary.opacity(0.04))
     )
     .overlay(
-      RoundedRectangle(cornerRadius: 6)
+      RoundedRectangle(cornerRadius: MVTheme.radius(6))
         .strokeBorder(isCursor ? MVTheme.accent : .clear, lineWidth: 2)
     )
     .onAppear { FolderStore.shared.requestFolderSummaryIfNeeded(at: index) }
@@ -334,9 +334,9 @@ private struct GalleryCell: View {
             Rectangle().fill(.quaternary)
           }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .clipShape(RoundedRectangle(cornerRadius: MVTheme.radius(6)))
         .overlay(
-          RoundedRectangle(cornerRadius: 6)
+          RoundedRectangle(cornerRadius: MVTheme.radius(6))
             .strokeBorder(highlight.isCurrent && !onFolders ? MVTheme.accent : .clear, lineWidth: 2)
         )
         .overlay { if isClip { PlayBadge(diameter: 40) } }

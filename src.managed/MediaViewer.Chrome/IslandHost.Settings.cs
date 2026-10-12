@@ -85,7 +85,7 @@ public static partial class IslandHost
     private static Grid BuildSettingsScreen()
     {
         KeyButtons.Clear();
-        var view = new StackPanel { Spacing = 8, Padding = new Thickness(24, 12, 24, 24), MaxWidth = 800,
+        var view = new StackPanel { Spacing = Space(8), Padding = Pad(24, 12, 24, 24), MaxWidth = 800,
             HorizontalAlignment = HorizontalAlignment.Stretch };
         view.Children.Add(SettingsSection("Filmstrip"));
         _stripFolder = SettingsToggle("When opening a folder", SettingFlag.FilmstripForFolder);
@@ -184,21 +184,21 @@ public static partial class IslandHost
         view.Children.Add(SettingsSection("Updates and privacy"));
         AddUpdateSettingsRow(view);
         AddTelemetrySettingsRow(view);
-        var addons = new StackPanel { Spacing = 8, Margin = new Thickness(0, 20, 0, 0) };
+        var addons = new StackPanel { Spacing = Space(8), Margin = Pad(0, 20, 0, 0) };
         AddAddonsSettingsRow(addons);
         // Milestone H (IslandHost.LocalSearch.cs): Local search is the second
         // item of Add-ons, and the one surface the AI pack has while it is not
         // installed.
-        var localSearch = new StackPanel { Spacing = 8, Margin = new Thickness(0, 16, 0, 0) };
+        var localSearch = new StackPanel { Spacing = Space(8), Margin = Pad(0, 16, 0, 0) };
         AddLocalSearchSettings(localSearch);
         addons.Children.Add(localSearch);
         // docs/design/25: add-ons from other makers, under their own heading.
-        var fromOthers = new StackPanel { Spacing = 8, Margin = new Thickness(0, 16, 0, 0) };
+        var fromOthers = new StackPanel { Spacing = Space(8), Margin = Pad(0, 16, 0, 0) };
         AddOpenAddonsSettings(fromOthers);
         addons.Children.Add(fromOthers);
         view.Children.Add(addons);
 
-        var keysHeader = new Grid { Margin = new Thickness(0, 0, 0, 8) };
+        var keysHeader = new Grid { Margin = Pad(0, 0, 0, 8) };
         keysHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         keysHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         var keysTitle = Heading("Keyboard shortcuts");
@@ -216,19 +216,19 @@ public static partial class IslandHost
         // No TextBox: that control fail-fasts in this island (0xC000027B).
         FakeInput filter = new FakeInput(FilterPrompt)
         {
-            Margin = new Thickness(0, 0, 0, 8),
+            Margin = Pad(0, 0, 0, 8),
         };
         filter.Changed += () => SetKeyFilter(filter.Text);
         filter.MoveDown += FocusFirstVisibleKey;
         _keyFilterInput = filter;
-        _keyList = new StackPanel { Spacing = 2 };
+        _keyList = new StackPanel { Spacing = Space(2) };
         _keyEmpty = new TextBlock
         {
             Text = "No matching shortcuts",
             Foreground = Brush(Body),
             FontFamily = UiFont,
             FontSize = UiFontSize,
-            Margin = new Thickness(12, 8, 20, 8),
+            Margin = Pad(12, 8, 20, 8),
             Visibility = Visibility.Collapsed,
         };
         var keyStack = new StackPanel();
@@ -240,15 +240,20 @@ public static partial class IslandHost
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
         };
-        var keysCol = new Grid { Padding = new Thickness(24), MaxWidth = 900 };
+        var keysCol = new Grid { Padding = Pad(24), MaxWidth = 900 };
+        keysCol.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         keysCol.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         keysCol.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         keysCol.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         Grid.SetRow(keysHeader, 0);
         keysCol.Children.Add(keysHeader);
-        Grid.SetRow(_keyFilterInput, 1);
+        // PR 56: a whole layout from an add-on, beside Reset (IslandHost.AddonSettings.cs).
+        FrameworkElement keyLayout = BuildKeymapRow();
+        Grid.SetRow(keyLayout, 1);
+        keysCol.Children.Add(keyLayout);
+        Grid.SetRow(_keyFilterInput, 2);
         keysCol.Children.Add(_keyFilterInput);
-        Grid.SetRow(keyScroll, 2);
+        Grid.SetRow(keyScroll, 3);
         keysCol.Children.Add(keyScroll);
 
         var viewScroll = new ScrollViewer
@@ -262,13 +267,13 @@ public static partial class IslandHost
         content.Children.Add(viewScroll);
         content.Children.Add(keysCol);
 
-        var header = new Grid { Padding = new Thickness(24, 18, 24, 18), ColumnSpacing = 24 };
+        var header = new Grid { Padding = Pad(24, 18, 24, 18), ColumnSpacing = Space(24) };
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         var title = Heading("Settings");
-        title.FontSize = 24;
+        title.FontSize = TypeSize(24);
         header.Children.Add(title);
-        var tabs = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        var tabs = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8) };
         var generalTab = new ToggleButton { Content = "General", FontFamily = UiFont, FontSize = UiFontSize };
         var keysTab = new ToggleButton { Content = "Keyboard shortcuts", FontFamily = UiFont, FontSize = UiFontSize };
         tabs.Children.Add(generalTab);
@@ -294,8 +299,8 @@ public static partial class IslandHost
         // shortcut is being changed), then Done.
         var footer = new Grid
         {
-            ColumnSpacing = 12,
-            Padding = new Thickness(24, 12, 24, 12),
+            ColumnSpacing = Space(12),
+            Padding = Pad(24, 12, 24, 12),
         };
         footer.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -349,7 +354,7 @@ public static partial class IslandHost
         Foreground = Brush(Title),
         FontFamily = UiFont,
         FontSize = UiFontSize + 2,
-        Margin = new Thickness(0, 0, 0, 4),
+        Margin = Pad(0, 0, 0, 4),
     };
 
     private static TextBlock Label(string text) => new()
@@ -366,24 +371,24 @@ public static partial class IslandHost
         var heading = Heading(title);
         heading.FontSize = TypeSection;
         heading.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
-        heading.Margin = new Thickness(0, 12, 0, 0);
+        heading.Margin = Pad(0, 12, 0, 0);
         AutomationProperties.SetHeadingLevel(heading, Microsoft.UI.Xaml.Automation.Peers.AutomationHeadingLevel.Level2);
         return heading;
     }
 
     private static FrameworkElement SettingsRow(string title, string detail, FrameworkElement control)
     {
-        var row = new Grid { Padding = new Thickness(14), ColumnSpacing = 24,
-            Background = Brush(ChromeColour.Surface), CornerRadius = new CornerRadius(RadiusCard),
+        var row = new Grid { Padding = Pad(14), ColumnSpacing = Space(24),
+            Background = Brush(ChromeColour.Surface), CornerRadius = Corner(RadiusCard),
             BorderBrush = Brush(Hairline), BorderThickness = new Thickness(1) };
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var labels = new StackPanel { Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
+        var labels = new StackPanel { Spacing = Space(4), VerticalAlignment = VerticalAlignment.Center };
         var name = Label(title);
         name.Foreground = Brush(Title);
         name.TextWrapping = TextWrapping.Wrap;
         var description = Label(detail);
-        description.FontSize = 12;
+        description.FontSize = TypeSize(12);
         description.TextWrapping = TextWrapping.Wrap;
         labels.Children.Add(name);
         labels.Children.Add(description);
@@ -453,6 +458,8 @@ public static partial class IslandHost
             RefreshSettingsScreen();
             // docs/design/25: what is installed from others may have changed on disk.
             RefreshOpenAddons();
+            // PR 56: the first-party add-ons' settings pages, values re-read.
+            RefreshFirstPartyPages();
             _settingsHost.Visibility = Visibility.Visible;
             _chromeRoot.UpdateLayout();
             FocusSettings();
@@ -577,8 +584,8 @@ public static partial class IslandHost
             // A hairline under each row (the Mac's shortcut list).
             var line = new Grid
             {
-                Padding = new Thickness(0, 6, 0, 6),
-                ColumnSpacing = 16,
+                Padding = Pad(0, 6, 0, 6),
+                ColumnSpacing = Space(16),
                 BorderBrush = Brush(Hairline),
                 BorderThickness = new Thickness(0, 0, 0, 1),
             };

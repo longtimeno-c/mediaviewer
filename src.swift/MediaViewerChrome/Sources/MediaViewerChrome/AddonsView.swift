@@ -252,6 +252,8 @@ final class AddonStore: ObservableObject {
   /// docs/design/25: Settings' line and the card hint, from the installed manifest
   /// or the channel's; empty for one from before it said any.
   @Published private(set) var description = ""
+  /// PR 56: the installed manifest carries a settings page.
+  @Published private(set) var hasSettings = false
   @Published private(set) var hintText = ""
   @Published private(set) var loaded = false
   @Published private(set) var busy = false
@@ -344,6 +346,7 @@ final class AddonStore: ObservableObject {
         self.state = obj["state"] as? String ?? ""
         if let text = obj["description"] as? String, !text.isEmpty { self.description = text }
         if let text = obj["hint_text"] as? String, !text.isEmpty { self.hintText = text }
+        self.hasSettings = obj["settings"] as? Bool ?? false
         self.loaded = mv_addons_loaded()
         self.stateKnown = true
       }
@@ -458,6 +461,9 @@ final class AddonStore: ObservableObject {
     message = mv_addons_remove(keepData)
       ? "Import removed."
       : "Import will finish uninstalling the next time MediaViewer starts."
+    // PR 56: "Remove everything" forgets its settings page's values too; on a
+    // worker, it is a file.
+    if !keepData { Task.detached(priority: .utility) { _ = mv_addons_settings_forget("import") } }
     refresh()
   }
 }
@@ -468,7 +474,7 @@ struct AddonsSection: View {
   @ObservedObject var settings = SettingsStore.shared
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
+    VStack(alignment: .leading, spacing: MVTheme.space(8)) {
       Text("Add-ons").font(MVTheme.font(20)).foregroundStyle(MVTheme.title)
       Text("Import").font(MVTheme.font()).foregroundStyle(MVTheme.title)
       // docs/design/25: the manifest's line; the built-in one for a manifest from
@@ -521,6 +527,11 @@ struct AddonsSection: View {
           if store.loaded { Button("Open Import") { mv_addons_open_import() } }
           Button("Remove…") { store.confirmingRemove = true }
         }
+        // PR 56: a first-party manifest's settings page, the same view as an
+        // open add-on's. "Remove, keep history" keeps it too.
+        if store.hasSettings && store.state == "ok" {
+          AddonSettingsPage(addonID: "import", fallbackTitle: "Import").id("import@" + store.version)
+        }
       }
       if let phase = store.phase {
         AddonProgressView(phase: phase)
@@ -530,9 +541,9 @@ struct AddonsSection: View {
       AddonRestartButton()
       // The second add-on: install-only until Core is loaded, then the pack's
       // own management view (LocalSearchView.swift).
-      LocalSearchSection().padding(.top, 16)
+      LocalSearchSection().padding(.top, MVTheme.space(16))
       // docs/design/25: add-ons from other makers, under their own heading.
-      OpenAddonsSection().padding(.top, 16)
+      OpenAddonsSection().padding(.top, MVTheme.space(16))
     }
     // Opening Settings asks the channel, whatever the automatic-check switch
     // says: the person is looking at what can be installed.
@@ -561,7 +572,7 @@ struct AddonBarItems: View {
   }
 
   var body: some View {
-    HStack(spacing: 6) {
+    HStack(spacing: MVTheme.space(6)) {
       AddonAlertItem(store: store)
       if store.hint {
         Button(hintText) { store.install() }
@@ -598,7 +609,7 @@ struct AddonAlertItem: View {
       .help(alert.body)
       .accessibilityLabel("\(alert.title). \(alert.body)")
       .popover(isPresented: $shown, arrowEdge: .bottom) {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: MVTheme.space(10)) {
           Text(alert.title).font(MVTheme.font(16)).foregroundStyle(MVTheme.title)
           Text(alert.body).font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
             .fixedSize(horizontal: false, vertical: true)
@@ -616,7 +627,7 @@ struct AddonAlertItem: View {
             .keyboardShortcut(.defaultAction)
           }
         }
-        .padding(14)
+        .padding(MVTheme.space(14))
         .frame(width: 420)
         .background(MVTheme.canvas)
       }
@@ -637,7 +648,7 @@ struct AddonProgressView: View {
   var width: CGFloat? = 320
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 4) {
+    VStack(alignment: .leading, spacing: MVTheme.space(4)) {
       ActivityBar(fraction: phase.fraction)
       HStack {
         Text(phase.text)

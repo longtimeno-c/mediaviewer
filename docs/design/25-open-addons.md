@@ -4,7 +4,9 @@
 made and installed by anyone, not just our repo… if people have a compatible file / URL they can
 install their add-on… add-ons can do a wide range of things like add new screens"). Post-v1,
 Windows and macOS together (D9). Milestone L, PRs 55–60. Not a D-decision. PR 55 is built
-([Implementation notes](#implementation-notes-pr-55-2026-09-29)); the owner's calls on code, network,
+([Implementation notes](#implementation-notes-pr-55-2026-09-29)); PR 56 is built, both halves
+([first](#pr-56-first-half-import-described-by-its-manifest-2026-10-04),
+[second](#pr-56-second-half-declarative-contributions-2026-10-11)); the owner's calls on code, network,
 the file type and licensing were made on 2026-10-03 ([§17](#17-decisions-owner-2026-10-03)).**
 
 ## 1. What this is
@@ -163,9 +165,9 @@ introduced it, exists on both hosts, and has a default the base app provides.
 |---|---|---|---|---|---|
 | **Built-in add-ons by manifest** | — | 56 (first half, built 2026-10-04) | A first-party manifest (schema 1) says its one-line description, its commands with their default keys and modes, and the hint it asks for; the app reads them instead of naming the add-on | Import's two built-in rows and its hard-coded Settings text, for a manifest from before it said any | Rows are resolved once at load into eight reserved command slots (`addon_cmd_0..7`), appended to the live table; dispatch is still an array index |
 | **Theme** | 1 | 55 | Colour tokens (dark and / or light), a font family | The system-following palette, CozetteVector | Tokens cached by the chrome; read before the add-on is verified, corrected after |
-| **Theme, shape** | 2 | 56 | Corner radius scale, density, type scale | Today's literals | Same table |
-| **Settings page** | 2 | 56 | A schema: sections, toggles, choices, numbers, text, each with a key, default and help | — | Rendered by the host when Settings opens; values live in the host's store, namespaced by add-on id |
-| **Keymap** | 2 | 56 | Bindings for existing commands (the v1.1 "named layouts": FastStone, IrfanView, vim) | `default_bindings()` | Applied to the live table once; the router stays an array index ([16](16-commands.md)) |
+| **Theme, shape** | 2 | 56 (built 2026-10-11) | Corner radius scale, density, type scale (theme file schema 2) | Today's literals | Same table, resolved once when the theme is painted |
+| **Settings page** | 2 | 56 (built 2026-10-11) | A schema: sections, toggles, choices, numbers, text, each with a key, default and help; `enabled_by` greys an item while a toggle is off | — | Rendered by the host when Settings opens; values in one file per add-on id the core keeps (not each host's own store: [12](12-decision-log.md)), kept on remove unless asked |
+| **Keymap** | 2 | 56 (built 2026-10-11) | Bindings for existing commands (the v1.1 "named layouts": FastStone, IrfanView, vim) | `default_bindings()` | Applied to the live table once; the router stays an array index ([16](16-commands.md#one-table-editable)) |
 | **Command** | 3 | 57 | A name, a default key, and the script function it runs | — | Rows appended to the table at load; a key clash is resolved for the base app, the add-on's key is dropped and Settings says so |
 | **Screen** | 4 | 58 | A view tree ([§10](#10-screens)) in a window, a pane or a sheet | — | Built by the host from data; updates are diffs posted from the add-on's worker |
 | **Chrome slot** | 5 | 59 | Command-bar and path-bar items, context-menu entries, info-pane sections, status items, gallery tile badges | — | Badges come from a table filled off-thread; **no add-on call per tile**, ever |
@@ -214,8 +216,9 @@ A theme file, one per theme the add-on lists:
   typeface shows at the next start and Settings says so.
 - **Not themed:** photo and video pixels, the canvas's colour pipeline, the F3 overlay (ImGui,
   a lab tool), the histogram's channel colours (they carry meaning), the hover washes (they
-  follow the appearance, not a token), and the first-party add-ons' own windows until they read
-  the host's tokens (PR 56).
+  follow the appearance, not a token). The first-party add-ons' own windows read the host's
+  tokens since PR 56 (Import and Duplicates on both hosts, Local search on the Mac; the Windows
+  AI chrome already did).
 - **Choosing one:** Settings → Appearance → **Theme**: Default, then every theme of every
   installed add-on. Installing does not switch.
 - **Start-up:** the chrome stores the resolved tokens of the theme in use in its own settings
@@ -370,6 +373,101 @@ add-on whose manifest says what it contributes" rather than a special case in bo
 - **Not moved:** the AI pack's four commands (Ctrl+F's file-search fallback is the app's own
   behaviour, not the pack's), and the hard-coded list of first-party channels, which the app must
   know to offer a download at all.
+
+### PR 56, second half: declarative contributions (2026-10-11)
+
+Settings pages from a schema, keymap packs, theme shape, and first-party chromes on the host's
+tokens: contribution API 2. Manifest schema stays 2. Calls made are in
+[12](12-decision-log.md) ("Declarative contributions").
+
+**The manifest.** `contributes.settings` (one page) and `contributes.keymaps` (up to eight
+layouts) are API 2 points; a theme file with `"schema": 2` may carry `shape`. Every §7 point and
+its API is one table, `kContributionPoints` (`open_manifest.h`), the same on the branches of
+PRs 56–59. Under API 2 a manifest whose `api.max` is 1 may not name them (malformed); an API 1
+host leaves them to a later one; `api.min` above the host's is "needs a newer MediaViewer",
+never half-loaded. Every PR 55 refusal stands (code keys still refuse by name). A schema 1
+(first-party) manifest may carry `contributes.settings` too: Places (#344) is its first user.
+
+| Piece | Code |
+|---|---|
+| The page schema and its rules (sections, toggle / choice / number / text, `enabled_by`, bounds) | `src/addon/settings_schema.*` |
+| The values: one JSON per add-on id, checked in and out, cached, keep or forget; each file names the publisher key it was written for, and values kept for one publisher are never read for another (installing another publisher's add-on under the id deletes them) | `src/addon/settings_values.*`; the folder is `io::addon_settings_dir()` (`src/io/paths*`), never created by a read |
+| Keymap pack shape | `src/addon/keymap.*` |
+| Applying a pack to the live table; stable command names | `src/shell/keymap.*` (`apply_keymap`, `command_slug`); `set_live_key` and Reset's superseded rows in `src/shell/command_table.cpp` |
+| Theme shape | `src/addon/theme.*` (`theme_shape`) |
+| One JSON for both hosts | `src/addon/open_json.*` (`addon_settings_page_json`, `addon_setting_set_json`, `addon_settings_forget`, `open_keymap_json`; `settings` / `keymaps` in the list and the sheet's lines) |
+| Host table | `settings_get`, the last row of `mv_host_api` (`host.cpp`); host API not bumped |
+| C ABI 0.24 (Windows), chrome bridge (Mac) | `mv_addon_settings_json` / `_setting_set` / `_settings_forget`, `mv_open_addon_keymap_json`; `mv_addons_settings_*`, `mv_open_addons_keymap`, `mv_chrome_apply_keymap` |
+| Mac chrome | `AddonSettingsPage.swift` (page, Key layout row), `OpenAddons.swift` (page under each add-on, Keep its settings), `AddonsView.swift` (Import's page), `Theme.swift` (`MVTheme.radius` / `space` / type scale; `MVChromeTheme` for the add-on bundles); `HostTheme.swift` (Import), `AITheme` (Local search) |
+| Windows chrome | `IslandHost.AddonSettings.cs`, `IslandHost.OpenAddons.cs`, `IslandHost.Settings.cs` (Key layout), `IslandHost.Theme.cs` / `ThemePack.cs` (shape), `ImportLook.cs` (Import, Duplicates), `IAddonThemeShape` in `MediaViewer.Interop/Addons.cs`; native `chrome_cmd_apply_keymap` (1050) in `main.cpp` |
+| SDK, examples, guide | `tools/addon-sdk/mvaddon.py` (checks pages, layouts, shape; API 2), `examples/addons/settings-demo`, `examples/addons/vim-keys`, `docs/ADDONS.md` |
+| Tests | `tests/test_addon_contributions.cpp` (`mv_import_tests`), `tests/test_keymap.cpp` (`mv_tests`), `tools/addon-sdk/test_mvaddon.py` (cross-checked by `mv_addon_verify --open`), `tools/fuzz/fuzz_addon_contributions.cpp`, the Mac rig's PR 56 leg (`MV_ADDON_SELFTEST_PR56`) |
+
+**Same controls, same order.** toggle → a switch (`ToggleSwitch`); choice → a menu of the labels
+(`ComboBox`); number → a field with − / + (Windows: `FakeInput` and two buttons; Mac: a field and
+a stepper) and the unit; text → a field (`FakeInput` / `TextField`). The page title, then each
+section's title and help, then each item with its help beneath, in the manifest's order. Only
+controls that pass `tools/check-winui-controls.ps1`.
+
+**Coordination (2026-10-11).** With PRs 58–59 (#348): the point table, API numbers 4–5 for theirs,
+and `settings_get` as the host-table row before their rows. With PR 57: API 3; contributed
+commands are named `<add-on id>/<command id>` in packs; `mv.settings.get` reads
+`settings_values::value_json` with the script's id and page, wired when both land. On merge,
+`kContributionApi` / `MV_ADDON_CONTRIBUTION_API` and `MV_ABI_VERSION_MINOR` take the highest
+and join their comments.
+
+**Measured on the Mac** (arm64, Release, 2026-10-11/12, the owner's machine while other agents
+built beside it: load average 8–49 through the runs). Base is `8ef8679`
+(`plan/metadata-search-and-place`) in its own source copy and build directory; "add-ons" is the
+new build with `example.settings-demo` and `example.vim-keys` installed in the profile and
+Compact Dusk (a schema 2 theme with shape) on. Runs alternated base, new, add-ons; one untimed
+warm-up open per file and build; `mediaviewer_lab --soak 6 --static`:
+
+| File | Build | First pixel, s (5 runs) | Full resolution, s (5 runs) | Dropped |
+|---|---|---|---|---|
+| `sony_ilce7rm3.arw` | base | 0.061 · 0.060 · 0.145 · 0.054 · 0.040 | 1.451 · 1.489 · 1.477 · 1.433 · 1.172 | 1 · 1 · 2 · 1 · 0 |
+| | new | 0.056 · 0.055 · 0.058 · 0.040 · 0.044 | 1.538 · 1.642 · 1.445 · 0.955 · 1.201 | 1 · 1 · 1 · 0 · 1 |
+| | add-ons | 0.057 · 0.053 · 0.062 · 0.041 · 0.041 | 1.415 · 1.375 · 1.388 · 0.995 · 1.166 | 1 · 2 · 1 · 0 · 1 |
+| `canon_eosr6.cr3` | base | 0.045 · 0.103 · 0.050 · 0.082 · 0.044 | 0.544 · 0.823 · 0.706 · 0.786 · 0.684 | 0 |
+| | new | 0.033 · 0.060 · 0.044 · 0.096 · 0.046 | 0.474 · 0.838 · 0.704 · 0.837 · 0.678 | 0 |
+| | add-ons | 0.099 · 0.048 · 0.048 · 0.049 · 0.040 | 0.796 · 0.737 · 0.752 · 0.610 · 0.509 | 0 |
+
+The ranges overlap in every row. The absolute numbers are 2–3× PR 55's on this machine (full
+resolution 1.2–1.6 s against 0.47 s): the machine was loaded, so these runs can show "no
+difference between the builds", not the product's speed. The `--static` report's idle presents
+were 0–42 on every build alike (base included). Mac PR 1's gate (`frametime --seconds 60`),
+alternated:
+
+| Run | Build | Animated: frames · p99 ms · max ms | Idle: presents · CPU of one core |
+|---|---|---|---|
+| 1 | base | 3600 · 16.85 · 16.94 | 0 · **64 %** |
+| 2 | add-ons | 3600 · 16.75 · 16.89 | 0 · **42 %** |
+| 3 | base | 3600 · 16.85 · 16.95 | 0 · **80 %** |
+| 4 | add-ons | 3568 · 16.85 · 538 | 0 · **83 %** |
+| 5 | base | 3537 · 16.90 · 1068 | 0 · **3.1 %** |
+| 6 | add-ons | 3600 · 16.85 · 22.2 | 0 · **1.5 %** |
+
+Pacing is the same on both builds; the long frames land on base and add-ons alike, under the
+load. **0 presents idle on every run.** The idle CPU clause (≤ 1 %) fails on every run, base
+included, as in PR 55, so "both present-loop gates hold" is not shown on this machine for this
+PR either. Windows: not measured.
+
+PR 56's verify line, where each part stands:
+
+| Verify | State |
+|---|---|
+| A settings page renders the same controls and order on both hosts from one schema | **Mac: run in the app** (rig, `p2-page.png` / `p4-page.png`: title, sections, switch, switch, field + stepper + "km" greyed by `enabled_by`, menu, field, in the manifest's order). **Windows: built and compiled only** (same order and mapping in code); owed in the app |
+| Its values survive restart and removal-with-keep | **Mac: run in the app** across two launches (40 / false / "local" / "Porto" read back after the restart; an out-of-range 400 refused with its message; removed keeping: file kept, page gone; installed again: the values back; removed without: file gone). Core: Catch2. **Windows: owed** |
+| A keymap pack rebinds and Reset restores | **Mac: run in the app** (Vim: Previous A→H, Next D→L, Toggle mark Shift+Space→X; Flip horizontal and Forward 10 s left unbound and reported; Reset: every row back). Core: every built-in command rebound and reset in `tests/test_keymap.cpp`. **Windows: owed** (native apply compiled only in CI) |
+| `?` lists what is bound | **Mac**: the rig reads the table `?` and Settings read; Catch2 checks each rebound row's `?` line. **Windows: owed** |
+| Launch → first pixel within noise with these add-ons installed | **Mac: measured** (above, loaded machine). **Windows: owed** |
+| 0 presents idle | **Mac: 0 on every gate run.** Windows: owed |
+| Both present-loop gates | **Not shown**: Mac pacing holds, the idle CPU clause fails on base and new alike; Windows not run |
+
+Owed before this merges: the Windows half run in the app (settings page, keep-on-remove, Key
+layout and Reset, Import / Duplicates under a theme, shape at next start), VoiceOver / Narrator
+on the page, a layout checked against the Mac's fixed menu chords, and the Windows fuzz build of
+`fuzz_addon_contributions` (it ran 2.5 M inputs clean under libFuzzer + ASan + UBSan on the Mac).
 
 ## 15. Not in this plan
 

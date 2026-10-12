@@ -142,7 +142,9 @@ set(MV_FUZZ_HARNESSES
   # #345: the AI badge's provenance probe, every container it seeks through.
   meta_probe
   # #344: the place database loader.
-  geo)
+  geo
+  # docs/design/25 PR 56: settings pages, keymap packs and themes.
+  addon_contributions)
 
 add_custom_target(mv_fuzzers)
 
@@ -165,6 +167,14 @@ foreach(name IN LISTS MV_FUZZ_HARNESSES)
   endif()
   if(name STREQUAL "meta_location")
     target_sources(${target} PRIVATE "${CMAKE_SOURCE_DIR}/src/meta/location_edit.cpp")
+  endif()
+  # docs/design/25 PR 56: an open add-on's settings page, keymap packs and theme,
+  # from their sources (not mv_addon, which would pull libsodium in).
+  if(name STREQUAL "addon_contributions")
+    target_sources(${target} PRIVATE
+      "${CMAKE_SOURCE_DIR}/src/addon/settings_schema.cpp"
+      "${CMAKE_SOURCE_DIR}/src/addon/keymap.cpp"
+      "${CMAKE_SOURCE_DIR}/src/addon/theme.cpp")
   endif()
   # fuzz_docx links codec without image, so it reads font files itself.
   if(name STREQUAL "docx")

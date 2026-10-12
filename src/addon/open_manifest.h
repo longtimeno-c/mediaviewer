@@ -17,13 +17,16 @@
 // Portable (D9).
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <span>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "addon/keymap.h"
 #include "addon/manifest.h"
+#include "addon/settings_schema.h"
 
 namespace mv::addon {
 
@@ -31,8 +34,42 @@ inline constexpr int kOpenManifestSchema = 2;
 
 // The contribution API this host serves (docs/design/25 "Contribution API").
 //   1  themes.
-inline constexpr std::uint32_t kContributionApi = 1;
+//   2  settings pages, keymap packs, theme shape (PR 56).
+inline constexpr std::uint32_t kContributionApi = 2;
 inline constexpr std::uint32_t kContributionApiOldest = 1;
+
+// Every contribution point docs/design/25 §7 names, with the API that
+// introduces it. One table, the same on every branch: a host parses the points
+// it has built (open_manifest.cpp) and holds the rest to the strictness rule
+// (a manifest that claims no API newer than the host may not name a point the
+// host does not serve). Add a row here when §7 gains a point.
+struct contribution_point {
+  std::string_view key;  // the key under `contributes`
+  std::uint32_t api;     // the contribution API that introduces it
+};
+inline constexpr std::array<contribution_point, 12> kContributionPoints{{
+    {"themes", 1},
+    {"settings", 2},
+    {"keymaps", 2},
+    {"commands", 3},
+    {"screens", 4},
+    {"info_sections", 5},
+    {"search_providers", 5},
+    {"bar_items", 5},
+    {"path_items", 5},
+    {"context_menu", 5},
+    {"status_items", 5},
+    {"tile_badges", 5},
+}};
+
+// The API that introduces `key` under `contributes`, or 0 if §7 names no
+// such point.
+[[nodiscard]] constexpr std::uint32_t contribution_api(std::string_view key) noexcept {
+  for (const contribution_point& p : kContributionPoints) {
+    if (p.key == key) return p.api;
+  }
+  return 0;
+}
 
 struct theme_ref {
   std::string id;    // unique in the add-on: [a-z0-9-]{1,32}
@@ -55,6 +92,8 @@ struct open_manifest {
   std::uint64_t installed_size = 0;  // the sum of `files`
   std::vector<manifest_file> files;
   std::vector<theme_ref> themes;
+  settings_page settings;            // API 2; empty when the add-on has no page
+  std::vector<keymap_pack> keymaps;  // API 2
 };
 
 struct open_decision {

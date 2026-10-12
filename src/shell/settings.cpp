@@ -150,7 +150,7 @@ std::vector<key_override> load_key_overrides(const settings_store& store) noexce
       if (!v || v->empty()) continue;
       int row = 0, k = 0, mods = 0;
       if (std::sscanf(v->c_str(), "%d,%d,%d", &row, &k, &mods) != 3) continue;
-      if (row < 0 || k <= 0 || k > 0xFFFF || mods < 0 || mods >= 8) continue;
+      if (row < 0 || k < 0 || k > 0xFFFF || mods < 0 || mods >= 8) continue;
       out.push_back(key_override{row, static_cast<std::uint16_t>(k), static_cast<std::uint8_t>(mods)});
     }
     return out;

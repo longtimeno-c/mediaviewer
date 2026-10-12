@@ -35,7 +35,7 @@ final class SettingsHostView: NSView {
     // unwrapped ideal size.
     controller.sizingOptions = []
     controller.rootView = AnyView(
-      content
+      AIThemeRoot { content }
         .fixedSize(horizontal: false, vertical: true)
         .background(GeometryReader { g in Color.clear.preference(key: ContentHeightKey.self, value: g.size.height) })
         .onPreferenceChange(ContentHeightKey.self) { [weak self] h in

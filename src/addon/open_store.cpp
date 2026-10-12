@@ -90,6 +90,13 @@ rejection check_themes(const open_manifest& m, std::string& detail, Read&& read)
       detail = t.id + ": " + theme_fault_name(r.fault);
       return rejection::invalid_theme;
     }
+    // Theme schema 2 (shape) is an API 2 point: a manifest that claims an
+    // older API may not ship one, as it may not name settings or keymaps
+    // (open_manifest.cpp). An API 1 host refuses the file outright.
+    if (r.schema >= 2 && m.api_max < kThemeSchema2Api) {
+      detail = t.id + ": a schema 2 theme needs api.max 2";
+      return rejection::malformed;
+    }
   }
   return rejection::none;
 }

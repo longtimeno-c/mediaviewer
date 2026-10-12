@@ -67,6 +67,7 @@
 #include "shell/transport_autohide.h"
 #include "shell/file_jobs.h"
 #include "shell/key_router.h"
+#include "shell/keymap.h"
 #include "core/job_system.h"
 #include "edit/histogram.h"
 #include "image/linear.h"
@@ -4445,6 +4446,31 @@ void chrome_on_command(void* ctx, int command, float arg) {
       app->router.rebuild(mv::shell::live_bindings());
       publish_command_table(app);
       return;
+    case mv::shell::chrome_cmd_apply_keymap: {
+      // Applied once (docs/design/16 "Keymap packs"): the table is the defaults
+      // with the pack's keys written in, then it is the person's like any remap.
+      std::vector<mv::addon::keymap_binding> bindings;
+      if (!mv::shell::keymap_bindings_from_json(app->chrome.take_tree_path(), bindings)) {
+        mv::shell::keymap_result refused;
+        refused.skipped.push_back("not a key layout");
+        app->chrome.set_keymap_report(mv::shell::keymap_report_json(refused));
+        return;
+      }
+      mv::shell::command_id released[mv::shell::key_router::kHeldSlots]{};
+      const std::size_t n = app->router.cancel_holds(released);
+      for (std::size_t i = 0; i < n; ++i) (void)run_command(app, released[i]);
+      const mv::shell::keymap_result r = mv::shell::apply_keymap(bindings);
+      if (!r.skipped.empty()) {
+        MV_LOG_INFO("keymap: %d rows set, %d unbound, %zu skipped", r.rows_changed, r.displaced,
+                    r.skipped.size());
+      }
+      persist_live_keys();
+      app->router.rebuild(mv::shell::live_bindings());
+      publish_command_table(app);
+      // Settings lists what was skipped or left unbound, as the Mac does.
+      app->chrome.set_keymap_report(mv::shell::keymap_report_json(r));
+      return;
+    }
     case mv::shell::chrome_cmd_set_rate:
       apply_rate(app, rate_index_for(static_cast<double>(arg)));
       return;
@@ -8299,7 +8325,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   // The toolbar is added when Explorer reports the button, not before.
   app.taskbar_created_msg = ::RegisterWindowMessageW(L"TaskbarButtonCreated");
   for (const auto& o : mv::shell::load_key_overrides()) {
-    (void)mv::shell::rebind_live(o.row, static_cast<mv::shell::key>(o.k), o.mods);
+    (void)mv::shell::set_live_key(o.row, static_cast<mv::shell::key>(o.k), o.mods);
   }
   app.router.rebuild(mv::shell::live_bindings());
   if (!app.files.start()) MV_LOG_WARN("files: I/O worker did not start; F7 / F8 / Delete disabled");

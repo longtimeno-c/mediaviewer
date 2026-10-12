@@ -518,6 +518,8 @@ add_library(mv_shell STATIC
   # translates virtual keys. Pure C++, no platform header.
   src/shell/command_table.cpp
   src/shell/commands.h
+  src/shell/keymap.cpp
+  src/shell/keymap.h
   src/shell/key_router.cpp
   src/shell/key_router.h
   # PR 9: date-taken sort and the metadata cache (both portable).
@@ -823,6 +825,7 @@ if(MV_BUILD_TESTS)
     tests/test_dir_mac.cpp
     tests/test_key_router.cpp
     tests/test_key_router_review.cpp
+    tests/test_keymap.cpp
     tests/test_kind_filter.cpp
     tests/test_rename_stop.cpp
     tests/test_write_guard.cpp
@@ -966,6 +969,7 @@ if(MV_BUILD_TESTS)
     tests/test_verified_copy.cpp
     tests/test_addon_manifest.cpp
     tests/test_open_addons.cpp
+    tests/test_addon_contributions.cpp
     tests/test_ai_resume.cpp
     tests/test_import_naming.cpp
     tests/test_import_engine.cpp
