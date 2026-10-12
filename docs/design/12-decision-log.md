@@ -362,8 +362,10 @@ Revert restores the file's bytes exactly. One file, one change set; not a batch 
 
 **Location is editable; blank removes, with a confirmation (owner, 2026-10-12, #352).** Summary's
 Location row has Edit instead of Remove: coordinates typed in, read by one core parser
-(`meta::parse_location`) on both hosts, and a blank save removes the location only after a native
-confirmation (Remove destructive, Cancel default). This reverses "writing or editing coordinates:
+(`meta::parse_location`) on both hosts, and a blank save removes the location only after a
+confirmation (a native alert on the Mac, an in-pane box on Windows; Remove destructive, Cancel
+default and Esc). It says Revert all can bring the location back until the app quits, which is
+what the session snapshot does. This reverses "writing or editing coordinates:
 out of scope" (`docs/plans/metadata-search-and-place.md` §4, doc 06 *Not built*). The write is
 `write_fields::location` through PR 12's checked writer and sidecar rule: EXIF GPS in a plain JPEG,
 XMP `exif:GPS*` in a sidecar otherwise, the original never touched (rule 5); the sidecar's position

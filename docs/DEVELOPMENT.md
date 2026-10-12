@@ -1363,10 +1363,13 @@ everything else an XMP sidecar; RAW originals are never touched
 ([06-metadata.md](design/06-metadata.md#the-location-row-352-owner-2026-10-12)). Tests:
 `mv_tests "[location]"` (link or fetch `tools/testmedia/raw` for the RAW case).
 
-- **Mac (M-series, 2026-10-12):** core, bridge, SwiftUI half and `mv_tests` built and run.
+- **Mac (M-series, 2026-10-12):** core, bridge, SwiftUI half and `mv_tests` built and run;
+  `fuzz_meta_location` ran 600 s under ASan + UBSan with no finding. The Mac alert's Esc and
+  focus were not driven in the app.
 - **Windows:** the C# chrome compiles on the Mac. `main.cpp`, `chrome_host.*`,
   `src/abi/meta_abi.cpp` (ABI 0.20) and `test_abi_roundtrip` are compiled only by CI and a
-  Windows machine: not yet run.
+  Windows machine: not yet run, and neither is the in-pane confirmation's Esc (closes only the
+  confirmation; the field keeps the keyboard).
 
 ### Local search: cloud folders and folder adds (docs/plans/document-search.md slice 0, 2026-10-05)
 
