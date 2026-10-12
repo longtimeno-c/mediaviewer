@@ -430,7 +430,7 @@ public static partial class IslandHost
         // command-bar pill says so: the panel is the pack's, so it cannot.
         if (slot == AiSlot)
         {
-            HostSetIndexingPill(AiStartingText, true);
+            HostSetIndexingPill(AiStartingText, true, -1, false);
             OnSearchLoadChanged();
             RefreshLocalSearch();
         }
@@ -464,7 +464,7 @@ public static partial class IslandHost
                     }
                     if (slot == AiSlot)
                     {
-                        HostSetIndexingPill(null, false);
+                        HostSetIndexingPill(null, false, -1, false);
                         OnSearchLoadChanged();
                     }
                 });
@@ -522,7 +522,7 @@ public static partial class IslandHost
                 throw new InvalidOperationException("no IAddonChrome in the add-on");
             }
             // "Starting Local search…" goes; the pack posts its own line.
-            if (slot == AiSlot) HostSetIndexingPill(null, false);
+            if (slot == AiSlot) HostSetIndexingPill(null, false, -1, false);
             chrome.Attach(new AddonHost(slot), table);
             slot.Chrome = chrome;
             slot.State = slot.State with { Loaded = true };
