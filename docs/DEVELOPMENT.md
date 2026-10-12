@@ -1320,11 +1320,11 @@ There is no upload endpoint yet, exactly as there is none for crash reports.
 
 What is built is in [docs/design/25](design/25-open-addons.md#implementation-notes-prs-58-59-2026-10-11).
 
-- **Mac (M-series, 2026-10-12):** `mv_import_tests` 91 cases pass, including 18 new ones
+- **Mac (M-series, 2026-10-12):** `mv_import_tests` 92 cases pass, including 19 new ones
   (`"[screens]"`, `"[slots]"`; the last loads `mv_slots_test_addon` through a signed store and the
   v3 table). The same suite passes under ASan / UBSan and `"[slots]"` under TSan (the portable
   build, with `-DCMAKE_EXE_LINKER_FLAGS="-framework CoreFoundation -framework DiskArbitration
-  -framework IOKit"` on a Mac). `mv_tests "[location]"` passes. The app builds; with the test
+  -framework IOKit"` on a Mac). `mv_tests` 665 cases (657 passed, 8 skipped), the 2 new `"[location]"` among them. The app builds; with the test
   add-on sideloaded (below) into a dev copy, the Metadata pane showed its section last, under
   the footer, with the coordinates and a surface carrying the accent pin, and the command bar and
   path bar showed its items.
