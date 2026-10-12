@@ -35,6 +35,10 @@ constexpr std::size_t kMaxCborItems = 20000;
 constexpr std::size_t kMaxManifests = 64;
 constexpr std::size_t kMaxBoxes = 512;
 constexpr std::size_t kMaxRawRows = 1500;
+// A key or label as part of a flattened path. Each leaf copies its whole path, so
+// an uncapped multi-megabyte key over 1 500 leaves cost seconds; nothing real is
+// near this.
+constexpr std::size_t kMaxKeyChars = 128;
 constexpr const char* kGroup = "Content Credentials (C2PA)";
 constexpr const char* kRawGroup = "C2PA assertions";
 
@@ -227,7 +231,8 @@ void flatten(const cbor& c, const std::string& path, const std::string& tag_pref
   if (v.t == cbor::type::map) {
     for (std::size_t i = 0; i + 1 < v.items.size() && budget > 0; i += 2) {
       const cbor& k = v.items[i].untagged();
-      const std::string key = k.t == cbor::type::text ? std::string(k.s) : scalar_text(k);
+      std::string key = k.t == cbor::type::text ? std::string(k.s.substr(0, kMaxKeyChars)) : scalar_text(k);
+      if (key.size() > kMaxKeyChars) key.resize(kMaxKeyChars);
       flatten(v.items[i + 1], path.empty() ? key : path + "." + key, tag_prefix, out, budget, depth + 1);
     }
     return;
@@ -249,7 +254,8 @@ void flatten_json(const json::value& v, const std::string& path, const std::stri
     case json::kind::object:
       for (const auto& [k, child] : v.o) {
         if (budget == 0) return;
-        flatten_json(child, path.empty() ? k : path + "." + k, tag_prefix, out, budget, depth + 1);
+        const std::string key = k.substr(0, kMaxKeyChars);
+        flatten_json(child, path.empty() ? key : path + "." + key, tag_prefix, out, budget, depth + 1);
       }
       return;
     case json::kind::array:
@@ -316,7 +322,7 @@ bool read_superbox(bytes payload, superbox& out) {
   const std::uint8_t toggles = d.payload[16];
   if (toggles & 0x02) {
     std::size_t next = 0;
-    out.label = std::string(util::cstr(d.payload, 17, next));
+    out.label = std::string(util::cstr(d.payload, 17, next).substr(0, kMaxKeyChars));
   }
   box b;
   while (out.content.size() < kMaxBoxes && next_box(payload, at, b)) out.content.push_back(b);
