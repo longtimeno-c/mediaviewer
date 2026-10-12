@@ -1,7 +1,7 @@
 # 14 — The C ABI
 
 The flat C ABI between the hosts' chrome and the C++ core, as declared in
-[`src/abi/include/mediaviewer/`](../../src/abi/include/mediaviewer/) (current version **0.18**).
+[`src/abi/include/mediaviewer/`](../../src/abi/include/mediaviewer/) (current version **0.20**).
 
 The Windows host is C# WinUI over `mediaviewer_core.dll` and calls this ABI through P/Invoke
 ([`src.managed/MediaViewer.Interop`](../../src.managed/MediaViewer.Interop/)). The Mac host links
@@ -494,6 +494,19 @@ Windows shell turns into live command rows ([25 §7](25-open-addons.md#7-the-con
 `mv_addon_installed_json` and `mv_addon_check_manifest` gain `description`, `hint_on` and
 `hint_text`. The Mac host reads the same manifests directly.
 
+## PR 56 — settings pages and keymap packs (ABI 0.20)
+
+Minor bump, additive, in `mediaviewer_addon.h` ([25](25-open-addons.md), contribution API 2):
+`mv_addon_settings_json` (an add-on's settings page with its values, open or first-party id),
+`mv_addon_setting_set` (one value, checked against the page: `{"ok","message"}`),
+`mv_addon_settings_forget` (Remove without "keep its settings") and `mv_open_addon_keymap_json`
+(one keymap pack, which the Windows chrome parks for native to apply). The open list gains
+`settings` and `keymaps`, the installed list `settings`. The host function table gains
+`settings_get` as its last row (appended under `struct_size`, host API not bumped): a native
+add-on reads its own page's values. The Mac host reaches the same `open_json.h` calls through
+`mv_addons_settings_*` and `mv_open_addons_keymap` in the chrome bridge, and applies a pack with
+`mv_chrome_apply_keymap`.
+
 ## Version history
 
 | Minor | Change |
@@ -512,6 +525,7 @@ Windows shell turns into live command rows ([25 §7](25-open-addons.md#7-the-con
 | 0.17 | Open add-ons: `mv_open_addon_inspect` / `_install` / `_list_json` / `_remove` / `_theme_json` |
 | 0.18 | Contributed commands: `mv_addon_commands_json`; `description`, `hint_on`, `hint_text` in the installed / check JSON |
 | 0.19 | `mv_folder_set_hidden_kinds` — Settings can leave audio and/or documents out of the listing |
+| 0.20 | Settings pages and keymap packs: `mv_addon_settings_json` / `_setting_set` / `_settings_forget`, `mv_open_addon_keymap_json`; host table `settings_get` |
 
 ## Not built
 
