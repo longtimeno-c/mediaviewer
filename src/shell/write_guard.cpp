@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "shell/write_guard.h"
 
+#include "io/memory_file.h"
+#include "shell/clipboard_image.h"
+
 #include <mutex>
 #include <unordered_set>
 
@@ -38,6 +41,8 @@ bool write_protected(std::string_view path) {
   if (inside_photos_library(path)) return true;
   // A Photos library item itself (docs/design/26): no file, and never a write.
   if (path.size() > kPhotosKey.size() && path.substr(0, kPhotosKey.size()) == kPhotosKey) return true;
+  // An unsaved item (New from Clipboard): no file until Save Copy writes one.
+  if (io::is_memory_path(path)) return true;
   std::lock_guard lock(g_m);
   if (!g_prefix.empty() && path.size() > g_prefix.size() && path.substr(0, g_prefix.size()) == g_prefix) {
     return true;
@@ -50,6 +55,10 @@ bool any_write_protected(std::span<const std::string> paths) {
     if (write_protected(p)) return true;
   }
   return false;
+}
+
+const char* write_protected_notice(std::string_view path) noexcept {
+  return io::is_memory_path(path) ? kUnsavedItemNotice : kWriteProtectedNotice;
 }
 
 void set_read_only_paths(std::span<const std::string> paths) {

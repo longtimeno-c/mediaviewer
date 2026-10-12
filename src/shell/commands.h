@@ -352,6 +352,9 @@ enum class command_id : std::uint16_t {
   label_green,
   label_blue,
   clear_label,
+  // Ctrl/Cmd+Shift+V: the clipboard's image as an unsaved item (docs/design/16
+  // "New from Clipboard", Preview's File > New from Clipboard). Appended.
+  new_from_clipboard,
   count
 };
 inline constexpr int kAddonCommandSlots = 8;

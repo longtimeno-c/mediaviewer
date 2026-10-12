@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Windows half of the file port (io/file_port.h). I/O workers only.
 #include "io/file_port.h"
+#include "io/memory_file.h"
 
 #include <windows.h>
 
@@ -87,6 +88,15 @@ result<DWORD> positional(HANDLE h, bool overlapped, bool write, std::uint64_t of
 
 result<file_stat> stat_path(std::string_view utf8_path) {
   detail::simulated_round_trip();
+  if (is_memory_path(utf8_path)) {
+    memory_file_stamp stamp;
+    if (!memory_file_stat(utf8_path, stamp)) return err(status::io);
+    file_stat out;
+    out.size = stamp.size;
+    out.mtime_ns = stamp.mtime_ns;
+    out.mtime_unix = stamp.mtime_ns / 1000000000LL;
+    return out;
+  }
   const std::wstring path = wide(utf8_path);
   if (path.empty()) return err(status::invalid_arg);
   WIN32_FILE_ATTRIBUTE_DATA data{};

@@ -68,6 +68,8 @@ constexpr binding kBindings[] = {
     row(C('E'), mod_ctrl, kAllModes, edge, reveal_in_explorer),
     row(C('W'), mod_ctrl, kAllModes, edge, close_window),
     row(C('N'), mod_ctrl, kAllModes, edge, new_window),
+    // Preview's ⌘N is New Window here; ⇧ + Paste's key is free in every mode.
+    row(C('V'), mod_ctrl | mod_shift, kNotCrop, edge, new_from_clipboard),
 
     // View. Number row is zoom; ratings never take these keys.
     row(C('0'), mod_none, kViewing, edge, fit),
@@ -493,6 +495,7 @@ constexpr command_info kCommands[] = {
     {label_green, "Label green"},
     {label_blue, "Label blue"},
     {clear_label, "Clear label"},
+    {new_from_clipboard, "New from Clipboard"},
 };
 
 const char* named_key(key k) noexcept {

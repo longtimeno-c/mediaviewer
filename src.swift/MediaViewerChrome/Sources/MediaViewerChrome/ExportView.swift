@@ -60,7 +60,7 @@ struct ExportView: View {
         .onTapGesture { mv_chrome_export_cancel() }
       VStack(alignment: .leading, spacing: 10) {
         Text("Export a copy").font(.title3.bold())
-        Text("Beside the original as name-edit; never overwrites.")
+        Text("Beside the original as name-edit; a pasted image asks for a folder. Never overwrites.")
           .foregroundStyle(.secondary)
         Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
           ForEach(0..<4, id: \.self) { r in

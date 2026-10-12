@@ -13,6 +13,7 @@
 
 #include <cstdint>
 #include <span>
+#include <vector>
 
 #include "codec/decode.h"
 
@@ -62,5 +63,14 @@ struct header {
 [[nodiscard]] status pixels(const header& h, std::span<const std::uint8_t> dib,
                             std::span<const std::uint8_t> bits, std::uint8_t* rgba,
                             const job_context* ctx, bool& alpha_seen);
+
+// docs/design/16 "New from Clipboard": a packed DIB as the Windows clipboard
+// holds it (CF_DIB / CF_DIBV5: info header, masks, palette and bits, with no
+// BITMAPFILEHEADER) as a BMP file, so codec::decode takes it by its magic
+// bytes like any other. The bytes are copied behind a 14-byte file header
+// whose pixel offset is where parse() says the tables end. A V5 header with
+// BI_BITFIELDS whose writer also appended a BITMAPINFOHEADER's three masks
+// after it is told apart by the size the bits must have. Bytes in, bytes out.
+[[nodiscard]] result<std::vector<std::uint8_t>> bmp_from_packed(std::span<const std::uint8_t> dib);
 
 }  // namespace mv::codec::dib

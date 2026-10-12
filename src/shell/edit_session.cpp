@@ -14,9 +14,11 @@
 #include "io/dir.h"
 #include "io/file.h"
 #include "io/file_port.h"
+#include "io/memory_file.h"
 #include "io/paths.h"
 #include "io/replace.h"
 #include "meta/meta.h"
+#include "shell/clipboard_image.h"
 
 namespace mv::shell {
 namespace {
@@ -152,6 +154,9 @@ bool edit_session::set_item(const edit_item& item) {
   if (!same_path) write_failed_ = false;
   const std::uint32_t keep_w = item_.width, keep_h = item_.height;
   item_ = item;
+  // An unsaved item (New from Clipboard) has no file to turn in place: its
+  // turns stay on the stack, and Save Copy bakes them.
+  if (io::is_memory_path(item_.path)) item_.jpeg = false;
   if (same_file && item_.width == 0) {  // the host may not know the size yet
     item_.width = keep_w;
     item_.height = keep_h;
@@ -604,6 +609,14 @@ expected run_rotation_write(const rotation_write& w) {
 
 result<std::string> run_export(std::string_view source_path, const edit::geometry& g,
                                const edit::export_options& opt, const edit::colour& c) {
+  // An unsaved item has no folder beside it: its Save Copy picks one.
+  if (io::is_memory_path(source_path)) return err(status::permission_denied);
+  return run_export_to(source_path, io::parent_of(source_path), g, opt, c);
+}
+
+result<std::string> run_export_to(std::string_view source_path, std::string_view dir,
+                                  const edit::geometry& g, const edit::export_options& opt,
+                                  const edit::colour& c) {
   MV_TRY(std::vector<std::uint8_t> bytes, io::read_all(source_path));
   // HEIC, TIFF, RAW, WebP: the metadata comes from Exiv2 (meta/), which edit/
   // cannot call; JPEG and PNG are read by edit/ itself.
@@ -617,18 +630,18 @@ result<std::string> run_export(std::string_view source_path, const edit::geometr
   }
   MV_TRY(edit::export_result r, edit::export_image(bytes, g, c, opt, nullptr, &carried));
 
-  const std::size_t sep = source_path.find_last_of("/\\");
-  const std::string dir = sep == std::string_view::npos ? std::string() : std::string(source_path.substr(0, sep + 1));
-  const std::string_view name = sep == std::string_view::npos ? source_path : source_path.substr(sep + 1);
-  const std::string wanted = edit::export_file_name(name, opt.encode.format);
+  const std::string_view name = io::file_name_of(source_path);
+  const bool png = opt.encode.format == edit::image_format::png;
+  const std::string wanted = io::is_memory_path(source_path) ? unsaved_copy_name(source_path, png)
+                                                             : edit::export_file_name(name, opt.encode.format);
   // write_new refuses an existing name, so a race between the check and the
   // write moves on to the next number instead of overwriting.
   for (int attempt = 0; attempt < 8; ++attempt) {
     const std::string file = io::unique_name(wanted, [&](std::string_view candidate) {
-      return io::file_exists(dir + std::string(candidate));
+      return io::file_exists(io::join_path(dir, candidate));
     });
     if (file.empty()) return err(status::io);
-    const std::string out = dir + file;
+    const std::string out = io::join_path(dir, file);
     if (io::write_new(out, r.bytes)) return out;
     if (!io::file_exists(out)) return err(status::io);
   }

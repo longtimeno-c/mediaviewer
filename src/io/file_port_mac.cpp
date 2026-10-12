@@ -8,6 +8,7 @@
 #endif
 
 #include "io/file_port.h"
+#include "io/memory_file.h"
 
 #include <dirent.h>
 #include <fcntl.h>
@@ -77,6 +78,15 @@ bool is_package(std::string_view name) noexcept {
 result<file_stat> stat_path(std::string_view utf8_path) {
   detail::simulated_round_trip();
   if (utf8_path.empty()) return err(status::invalid_arg);
+  if (is_memory_path(utf8_path)) {
+    memory_file_stamp stamp;
+    if (!memory_file_stat(utf8_path, stamp)) return err(status::io);
+    file_stat out;
+    out.size = stamp.size;
+    out.mtime_ns = stamp.mtime_ns;
+    out.mtime_unix = stamp.mtime_ns / 1000000000LL;
+    return out;
+  }
   const std::string path(utf8_path);
   struct stat st{};
   if (::stat(path.c_str(), &st) != 0) return err(status::io);

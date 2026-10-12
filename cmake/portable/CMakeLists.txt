@@ -81,6 +81,7 @@ add_library(mv_io STATIC
   "${MV_ROOT}/src/io/file_mac.cpp"
   "${MV_ROOT}/src/io/file_port.cpp"
   "${MV_ROOT}/src/io/file_port_mac.cpp"
+  "${MV_ROOT}/src/io/memory_file.cpp"
   "${MV_ROOT}/src/io/verified_copy.cpp"
   "${MV_ROOT}/src/io/volume_mac.cpp"
   "${MV_ROOT}/src/io/paths_mac.cpp"

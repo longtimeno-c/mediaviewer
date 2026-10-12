@@ -225,10 +225,19 @@ inline constexpr int kExportLongEdgeCount =
 [[nodiscard]] expected run_rotation_write(const rotation_write& w);
 
 // Exports next to the original as "<name>-edit.jpg" (or " (2)", …: never an
-// overwrite). Returns the path written. `c` is the PR 11 colour state.
+// overwrite). Returns the path written. `c` is the PR 11 colour state. An
+// unsaved item (New from Clipboard, io::is_memory_path) has nothing beside it:
+// permission_denied, and the host asks for a folder for run_export_to.
 [[nodiscard]] result<std::string> run_export(std::string_view source_path, const edit::geometry& g,
                                              const edit::export_options& opt,
                                              const edit::colour& c = {});
+// The same export into `dir`. An unsaved item is written as "Untitled.jpg"
+// (shell/clipboard_image.h unsaved_copy_name), a file as "<name>-edit.jpg";
+// io::unique_name either way, so nothing is overwritten.
+[[nodiscard]] result<std::string> run_export_to(std::string_view source_path, std::string_view dir,
+                                                const edit::geometry& g,
+                                                const edit::export_options& opt,
+                                                const edit::colour& c = {});
 
 // PR 15, Ctrl+Alt+C / ⌘⌥C (docs/design/16 View): the still with its stack baked, as a
 // PNG, for the clipboard. Written to a folder of its own under

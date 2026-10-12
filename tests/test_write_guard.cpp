@@ -46,3 +46,14 @@ TEST_CASE("a list opener's read-only files are protected until replaced", "[shel
   CHECK_FALSE(write_protected(previews[0]));
   CHECK_FALSE(mv::shell::any_write_protected(mixed));
 }
+
+TEST_CASE("an unsaved item is write-protected, with its own notice", "[shell][write_guard]") {
+  // docs/design/16 "New from Clipboard": no file until Save Copy writes one.
+  CHECK(write_protected("clipboard:3/Untitled"));
+  CHECK_FALSE(write_protected("clipboard:"));
+  CHECK_FALSE(write_protected("/Users/a/clipboard:3/Untitled"));
+  CHECK(std::string(mv::shell::write_protected_notice("clipboard:3/Untitled")) ==
+        "Not saved yet: Save Copy\xE2\x80\xA6 writes it to a folder.");
+  CHECK(std::string(mv::shell::write_protected_notice("photos:0A1B/L0/001")) ==
+        mv::shell::kWriteProtectedNotice);
+}

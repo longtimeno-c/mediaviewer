@@ -280,6 +280,8 @@ static_assert(static_cast<int>(command_id::copy_path) == 147 &&
               static_cast<int>(command_id::share) == 149);
 // PR 29: the Edit workspace's buttons send these (the Mac bridge pins 150 too; PR 15 took 147-149).
 static_assert(static_cast<int>(command_id::edit_workspace) == 150);
+// docs/design/16 "New from Clipboard": the Open flyout's row (IslandHost.cs).
+static_assert(static_cast<int>(command_id::new_from_clipboard) == 181);
 static_assert(static_cast<int>(command_id::rotate_ccw) == 96 && static_cast<int>(command_id::rotate_cw) == 97);
 static_assert(static_cast<int>(command_id::flip_horizontal) == 98 &&
               static_cast<int>(command_id::flip_vertical) == 99);

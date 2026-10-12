@@ -103,6 +103,8 @@
 #include "mv_chrome_bridge.h"
 #include "shell/media_kind.h"
 #include "shell/write_guard.h"
+#include "shell/clipboard_image.h"
+#include "io/memory_file.h"
 #include "shell/photos_items_mac.h"
 #include "shell/photos_backup.h"
 #include "shell/photos_backup_mac.h"
@@ -153,7 +155,8 @@ static bool MvCommandSupported(mv::shell::command_id c) {
     case move_to: case move_to_pick: case delete_to_recycle_bin: case slideshow_start:
     case slideshow_pause: case slideshow_faster: case slideshow_slower: case help:
     case reveal_in_explorer: case open_settings: case cycle_background: case sticky_zoom:
-    case reset_stats: case always_on_top: case close_window: case new_window: case pan_up: case pan_down:
+    case reset_stats: case always_on_top: case close_window: case new_window: case new_from_clipboard:
+    case pan_up: case pan_down:
     case folder_up: case folder_prev: case folder_next:
     // Issue #183: the View keys, the loupe, hold-previous and the slideshow's
     // blackout and shuffle, ported from the Windows host.
@@ -465,6 +468,8 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 // into PR 18 from Windows PR 6, docs/design/12 2026-09-17).
 - (void)toggleMarkCurrent;
 - (BOOL)refuseWriteTo:(const std::string&)path;  // issue #72: a Photos library file
+// docs/design/16 "New from Clipboard": the pasteboard's image as an unsaved item.
+- (void)newFromClipboard;
 - (void)markAll;
 - (void)unmarkAll;
 - (void)copyMarkedPickDestination:(BOOL)pick;
@@ -3765,7 +3770,7 @@ static void MvAdoptNewDefaultViewerTypes() {
 - (BOOL)refuseWriteTo:(const std::string&)path {
   if (!mv::shell::write_protected(path)) return NO;
   NSBeep();
-  [self noticeShow:std::string(mv::shell::kWriteProtectedNotice)];
+  [self noticeShow:std::string(mv::shell::write_protected_notice(path))];
   return YES;
 }
 
@@ -5031,6 +5036,7 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
   switch (static_cast<MvMenuCmd>(cmd)) {
     case kMenuOpen: [self openFolderPanel:NO]; break;
     case kMenuNewWindow: [self openNewWindow]; break;
+    case kMenuNewFromClipboard: [self newFromClipboard]; break;
     case kMenuOpenFolder: [self openFolderPanel:YES]; break;
     case kMenuOpenPhotos: [self openPhotosLibrary]; break;
     case kMenuTrash: [self deleteMarkedToTrash]; break;
@@ -5150,6 +5156,11 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
     case kMenuOpen: case kMenuOpenFolder: case kMenuFit: case kMenuOneToOne: case kMenuFullscreen: case kMenuHelp: case kMenuSettings: case kMenuOverlay:
     case kMenuNewWindow:
       return YES;
+    case kMenuNewFromClipboard:
+      // Preview's rule: dimmed while the pasteboard holds no image. Its types
+      // only; the bytes are read when the item is chosen, off this thread.
+      return [NSPasteboard.generalPasteboard
+          canReadItemWithDataConformingToTypes:@[ NSPasteboardTypePNG, NSPasteboardTypeTIFF ]];
     case kMenuOpenPhotos:
       item.hidden = ![self photosLibraryAvailable];
       return !item.hidden;
@@ -5265,6 +5276,9 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
 
   NSMenu* file = submenu(@"File");
   [self addMenuItem:@"New Window" cmd:kMenuNewWindow key:@"" mods:0 toMenu:file];
+  // Preview's File > New from Clipboard. ⌘⇧V is a row in the remappable table,
+  // so no key equivalent here (it would run twice).
+  [self addMenuItem:@"New from Clipboard" cmd:kMenuNewFromClipboard key:@"" mods:0 toMenu:file];
   [self addMenuItem:@"Open…" cmd:kMenuOpen key:@"" mods:0 toMenu:file];
   // docs/design/26: shown once the library was added in Settings (validateMenuItem:).
   [self addMenuItem:@"Open Photos Library" cmd:kMenuOpenPhotos key:@"" mods:0 toMenu:file];
@@ -6887,6 +6901,10 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
 - (void)exportCurrentItem:(const mv::edit::export_options&)options {
   if (_items.empty() || _index.current() >= _items.size()) return;
   const std::string path = _items[_index.current()].path_utf8;
+  if (mv::io::is_memory_path(path)) {
+    [self exportUnsavedItem:path options:options];
+    return;
+  }
   if ([self refuseWriteTo:path]) return;  // it would save beside a Photos library file
   const mv::edit::geometry g = _edits.export_geometry();
   const mv::edit::colour c = _edits.colour();
@@ -6898,6 +6916,76 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
       if (!ok) NSBeep();
     });
     return ok ? mv::status::ok : out.error();
+  });
+}
+
+// docs/design/16 "New from Clipboard": an unsaved item has no folder to save beside,
+// so Save Copy asks for one (Preview's Save asks where too), then writes
+// "Untitled.jpg" there through the same export -- never over a file.
+- (void)exportUnsavedItem:(const std::string&)path options:(const mv::edit::export_options&)options {
+  NSOpenPanel* panel = [NSOpenPanel openPanel];
+  panel.canChooseDirectories = YES;
+  panel.canChooseFiles = NO;
+  panel.canCreateDirectories = YES;
+  panel.allowsMultipleSelection = NO;
+  panel.prompt = @"Save";
+  panel.message = @"Choose a folder for the copy.";
+  if ([panel runModal] != NSModalResponseOK || panel.URL == nil) return;
+  const std::string dir = panel.URL.fileSystemRepresentation;
+  const mv::edit::geometry g = _edits.export_geometry();
+  const mv::edit::colour c = _edits.colour();
+  const mv::edit::export_options opt = options;
+  __weak MvLabApp* weakSelf = self;
+  _jobs.submit_at(mv::background_generation, [path, dir, g, c, opt, weakSelf](const mv::job_context&) -> mv::status {
+    const mv::result<std::string> out = mv::shell::run_export_to(path, dir, g, opt, c);
+    const std::string saved = out ? std::string(mv::io::file_name_of(out.value())) : std::string();
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (saved.empty()) {
+        NSBeep();
+        return;
+      }
+      [weakSelf noticeShow:"Saved " + saved];
+    });
+    return out ? mv::status::ok : out.error();
+  });
+}
+
+// The pasteboard is read on a global queue, not the main thread: an app that
+// promised its image renders it only when asked, and a 5K screenshot as TIFF
+// is tens of MB. Its bytes become the one unsaved item (shell/clipboard_image.h),
+// listed alone as "Clipboard" -- the list search results use -- and shown at
+// once. Nothing is written to disk.
+- (void)newFromClipboard {
+  __weak MvLabApp* weakSelf = self;
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    std::string key;
+    @autoreleasepool {
+      NSPasteboard* pb = NSPasteboard.generalPasteboard;
+      NSData* data = [pb dataForType:NSPasteboardTypePNG];
+      if (data.length == 0) data = [pb dataForType:NSPasteboardTypeTIFF];
+      if (data.length > 0) {
+        const auto* bytes = static_cast<const std::uint8_t*>(data.bytes);
+        mv::result<std::string> adopted = mv::shell::adopt_clipboard_image(
+            std::vector<std::uint8_t>(bytes, bytes + data.length), mv::shell::clipboard_flavor::file);
+        if (adopted) key = std::move(adopted).value();
+      }
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+      MvLabApp* strongSelf = weakSelf;
+      if (!strongSelf) return;
+      if (key.empty()) {
+        NSBeep();
+        [strongSelf noticeShow:std::string(mv::shell::kNoClipboardImageNotice)];
+        return;
+      }
+      if (![strongSelf openListTitled:std::string(mv::shell::kClipboardListTitle)
+                                 paths:std::vector<std::string>{key}
+                               moments:std::vector<std::int64_t>{}
+                                select:0
+                               gallery:NO]) {
+        NSBeep();
+      }
+    });
   });
 }
 

@@ -16,7 +16,8 @@
 namespace mv::shell {
 
 // Inside a Photos library bundle, a Photos item key ("photos:<id>",
-// docs/design/26), under the registered prefix, or registered read-only. Any thread.
+// docs/design/26), an unsaved item (New from Clipboard, io/memory_file.h),
+// under the registered prefix, or registered read-only. Any thread.
 [[nodiscard]] bool write_protected(std::string_view path);
 // Any of these.
 [[nodiscard]] bool any_write_protected(std::span<const std::string> paths);
@@ -30,5 +31,8 @@ void set_read_only_prefix(std::string_view dir);
 // What a refused action says.
 inline constexpr const char* kWriteProtectedNotice =
     "From your Photos library: read-only here. Open it in Photos to change it.";
+// What a refused action on `path` says: kWriteProtectedNotice, or for an
+// unsaved item shell/clipboard_image.h's kUnsavedItemNotice.
+[[nodiscard]] const char* write_protected_notice(std::string_view path) noexcept;
 
 }  // namespace mv::shell

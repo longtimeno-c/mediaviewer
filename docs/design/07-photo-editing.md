@@ -88,7 +88,9 @@ Demosaic, the camera matrix and as-shot white balance are LibRaw's (CPU).
 `edit/export.h` bakes the stack into a **new** file; the original is never the target. The
 host reads the source bytes and writes the result through `io::write_new`, with the name from
 `export_file_name` (`IMG_0001.HEIC` → `IMG_0001-edit.jpg`) run through `io::unique_name`, so an
-existing file is never overwritten either. Worker thread only.
+existing file is never overwritten either. Worker thread only. An unsaved item from New from
+Clipboard ([16](16-commands.md)) has no folder: Save Copy asks for one and writes
+`Untitled.jpg` there (`shell::run_export_to`).
 
 Three paths, reported back so the chrome can say which ran:
 

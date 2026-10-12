@@ -172,6 +172,12 @@ public struct CommandBarView: View {
           BarFlyout(title: "Open") { close in
             FlyoutItem(title: "Media…", shortcut: key("Open media…")) { close(); mv_chrome_menu(kMenuOpen) }
             FlyoutItem(title: "Folder…", shortcut: key("Open folder…")) { close(); mv_chrome_menu(kMenuOpenFolder) }
+            // Preview's File > New from Clipboard (docs/design/16): dimmed with no image
+            // on the pasteboard (its types only, no bytes read here).
+            FlyoutItem(title: "New from Clipboard", shortcut: key("New from Clipboard"),
+                       enabled: NSPasteboard.general.canReadItem(withDataConformingToTypes: [
+                         NSPasteboard.PasteboardType.png.rawValue, NSPasteboard.PasteboardType.tiff.rawValue,
+                       ])) { close(); mv_chrome_menu(kMenuNewFromClipboard) }
             // kMenuReveal reveals the file in Finder; it does not open it (issue #187).
             FlyoutItem(title: "Show in Finder", shortcut: key("Show in Explorer"), enabled: current != nil) {
               close(); mv_chrome_menu(kMenuReveal)
@@ -486,6 +492,8 @@ private struct ListTitleBar: View {
   @ObservedObject private var search = LocalSearchStore.shared
   let title: String
 
+  private var isClipboard: Bool { title == "Clipboard" }
+
   var body: some View {
     HStack(spacing: 8) {
       Button { store.closeList() } label: {
@@ -502,15 +510,17 @@ private struct ListTitleBar: View {
       } else {
         Image(systemName: "magnifyingglass").foregroundStyle(MVTheme.body)
       }
-      // "Search: <query>", the Windows breadcrumb's wording.
-      Text(title.isEmpty ? "Search results" : "Search: " + title)
+      // "Search: <query>", the Windows breadcrumb's wording. New from Clipboard's
+      // list (shell/clipboard_image.h kClipboardListTitle) is not a search:
+      // it reads "Clipboard · Not saved".
+      Text(isClipboard ? title : title.isEmpty ? "Search results" : "Search: " + title)
         .font(MVTheme.font(14))
         .fontWeight(.semibold)
         .foregroundStyle(MVTheme.title)
         .lineLimit(1)
         .truncationMode(.tail)
         .layoutPriority(1)
-      Text(store.itemCount == 1 ? "1 result" : "\(store.itemCount) results")
+      Text(isClipboard ? "Not saved" : store.itemCount == 1 ? "1 result" : "\(store.itemCount) results")
         .font(MVTheme.font(13))
         .foregroundStyle(MVTheme.body)
         .contentTransition(.numericText())
@@ -521,7 +531,7 @@ private struct ListTitleBar: View {
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(MVTheme.canvas)
     .accessibilityElement(children: .contain)
-    .accessibilityLabel("Search results for \(title)")
+    .accessibilityLabel(isClipboard ? "Clipboard image, not saved" : "Search results for \(title)")
   }
 }
 
