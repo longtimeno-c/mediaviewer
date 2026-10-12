@@ -535,11 +535,10 @@ public static partial class IslandHost
             if (_source is null) return 1;
             int reverse = 0;
             if (arg != IntPtr.Zero && sizeBytes >= 4) reverse = Marshal.ReadInt32(arg);
-            var reason = reverse != 0
-                ? XamlSourceFocusNavigationReason.Last
-                : XamlSourceFocusNavigationReason.First;
-            _source.NavigateFocus(new XamlSourceFocusNavigationRequest(reason));
-            return 0;
+            // Tab from the canvas enters the first visible ring, Shift+Tab the
+            // last (issue #217).
+            bool forward = reverse == 0;
+            return FocusRing(forward ? 0 : FocusOrder().Length - 1, forward) ? 0 : 1;
         }
         catch (Exception ex)
         {
@@ -791,9 +790,55 @@ public static partial class IslandHost
                 sender.NavigateFocus(new XamlSourceFocusNavigationRequest(reason));
                 return;
             }
+            // A ring with nothing to focus hands Tab on while FocusRing is
+            // walking; the walk itself moves on, so ignore the echo.
+            if (_focusWalking) return;
+            // Issue #217: on to the next visible ring in Tab order, and from
+            // the last one (or an island outside the order) back to the canvas.
+            bool forward = reason == XamlSourceFocusNavigationReason.First;
+            int at = Array.IndexOf(FocusOrder(), sender);
+            if (at >= 0 && FocusRing(forward ? at + 1 : at - 1, forward)) return;
             IntPtr hwnd = Win32Interop.GetWindowFromWindowId(sender.SiteBridge.WindowId);
             IntPtr root = GetAncestor(hwnd, GaRoot);
             if (root != IntPtr.Zero) SetFocus(root);
+        }
+    }
+
+    // docs/design/16 Focus: the rings Tab crosses, in screen reading order —
+    // command bar, folder tree, gallery, the right column (Edit, metadata,
+    // adjust, jobs), transport, filmstrip — and then the canvas. A ring is
+    // visible while its island has content (hidden ones are dropped and parked).
+    private static DesktopWindowXamlSource?[] FocusOrder() => new[]
+    {
+        _source, _tree, _gallery, _editPane, _metaPane, _adjustPane, _jobsPane, _transport, _filmstrip,
+    };
+
+    private static bool _focusWalking;
+
+    // Focuses the first (Tab) or last (Shift+Tab) element of the first visible
+    // ring from `start` in that direction. False when none took it.
+    private static bool FocusRing(int start, bool forward)
+    {
+        DesktopWindowXamlSource?[] order = FocusOrder();
+        var reason = forward ? XamlSourceFocusNavigationReason.First : XamlSourceFocusNavigationReason.Last;
+        _focusWalking = true;
+        try
+        {
+            for (int i = start; i >= 0 && i < order.Length; i += forward ? 1 : -1)
+            {
+                DesktopWindowXamlSource? ring = order[i];
+                if (ring?.Content is null) continue;
+                try
+                {
+                    if (ring.NavigateFocus(new XamlSourceFocusNavigationRequest(reason)).WasFocusMoved) return true;
+                }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
+            }
+            return false;
+        }
+        finally
+        {
+            _focusWalking = false;
         }
     }
 

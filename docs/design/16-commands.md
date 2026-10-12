@@ -112,6 +112,9 @@ With nothing to leave, the key is not handled.
 Rings, visible: **canvas** (default), **filmstrip**, **gallery**, **pane** (folder tree,
 metadata, adjust, Edit, jobs), plus the command bar and the transport. `Tab` / `Shift+Tab` cross the
 island boundary; `Esc` returns to the canvas. Fullscreen hides chrome.
+On Windows `Tab` from the canvas walks the visible rings in reading order — command bar, folder
+tree, gallery, Edit, metadata, adjust, jobs, transport, filmstrip — and then back to the canvas;
+`Shift+Tab` walks it backwards (`IslandHost.FocusOrder`, issue #217).
 
 No island grows over the canvas, except a clip's **transport bar**, which floats over the bottom of
 the video and auto-hides (`shell/transport_autohide.h`, shared by both hosts):
