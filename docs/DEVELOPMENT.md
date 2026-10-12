@@ -10,17 +10,16 @@ kept hostable; macOS is Milestone F (the Mac halves of PRs 1–8), a host of the
 port — see [docs/design/15-platforms.md](design/15-platforms.md).
 
 **One PR number per feature, on both platforms (2026-09-24).** The Mac host, first built as
-PRs 16–20, is now filed as the Mac halves of PRs 1–8, so **Windows and Mac are both at PR 9**.
-From here every PR lands on both, with one shared core change, a WinUI half and a SwiftUI half,
+PRs 16–20, is now filed as the Mac halves of PRs 1–8, and from PR 9 every PR lands on both, with one shared core change, a WinUI half and a SwiftUI half,
 and a verify line on each platform (D9, amended). The order is:
 
 | PR | What | State |
 |---|---|---|
-| 9 | Metadata read: pane, overlays, AF points, eyedropper, folder tree, date-taken sort | **In progress** (Mac ahead; Windows owes the XAML pane, tree island, sort menu) |
-| 10 | Geometry edits + export, lossless JPEG rotate | Mac half started on a branch |
-| 11 | Colour adjusts, plus Mac crash reporting (Crashpad + the same scrub as Windows) | Planned |
-| 12–15 | Metadata write · two-path trim · extract & remux · OS integration | Planned |
-| 16–19 | **Import add-on**: copy cards with content-hash duplicate skip, verify, date folders, backup, resume ([docs/design/18-import.md](design/18-import.md)) | In main, optional download; release packing is `tools/package/release-addon.patch`, to apply; hardware verify owed |
+| 9 | Metadata read: pane, overlays, AF points, eyedropper, folder tree, date-taken sort | In main, both platforms ([docs/design/10](design/10-roadmap.md#pr-9--metadata-read)) |
+| 10 | Geometry edits + export, lossless JPEG rotate | In main, both platforms |
+| 11 | Colour adjusts, plus Mac crash reporting (Crashpad + the same scrub as Windows) | In main, both platforms |
+| 12–15 | Metadata write · two-path trim · extract & remux · OS integration | In main, both platforms; built and tested in CI (Windows) and on the Mac. Their hands-on verify lines are not recorded as run on either platform |
+| 16–19 | **Import add-on**: copy cards with content-hash duplicate skip, verify, date folders, backup, resume ([docs/design/18-import.md](design/18-import.md)) | In main, optional download, packed and signed by the release workflow; hardware verify owed |
 | 54 | **Find duplicates** in the Import add-on: a folder tree compared by content, one copy at a time to the Recycle Bin / Trash, never the last ([docs/design/18](design/18-import.md#find-duplicates-pr-54)) | Engine tested on the Mac (Release, TSan); Swift and C# compile; Windows native build, both live windows and both gates while scanning owed |
 | 20–24 | Local AI search add-on, both platforms (Core ML on Mac) ([docs/design/17-local-ai-search.md](design/17-local-ai-search.md)) | Built and tested on both with the real pack (PR #59); quiet-machine gates and the Mac in-app walk-through owed. Mac Photos library as a source (issue #72): in main (PR #86). [docs/design/26](design/26-photos-library.md) (2026-10-03): the library as a folder (virtual list items), its backup to a folder or NAS, and the display-matrix fix for clips on both platforms; engine tests pass, the in-app Photos walk-through needs a build with Photos access |
 | 27–28 | **Voice query add-on**: speak a Local search query, on-device, as its own download ([docs/design/19-voice.md](design/19-voice.md)) | Proposed |
@@ -99,13 +98,13 @@ scroll. Real folder navigation (argv, drag-and-drop-in, arrow keys and the rest 
 docs/design/16-commands.md's Browse table), marks, copy/move-to, Trash delete, fullscreen,
 a stills-only slideshow, and drag-out round out the folded-in Windows PR 4/PR 6 scope.
 It also carries the **PR 9 metadata read** (macOS and Windows): `I` opens a pane with a summary card, a searchable tree of every EXIF/IPTC/XMP tag and, for clips, a per-stream inspector; `O` adds camera, exposure and date lines to the on-canvas info; `Shift+O` draws AF points; `Shift+I` is a one-pixel eyedropper; `⌘⇧E` shows a folder tree; View ▸ Sort By adds date taken. It does **not** yet handle rating/metadata *writes* (PR 12) or RAW-pairing UI. On Windows the same features are in: `I` (or View ▸ Metadata pane) opens the pane on the right, `Ctrl+Shift+E` (or View ▸ Folder tree) the folder tree on the left rooted at the open folder, `O` adds the camera/exposure/date lines, `Shift+O` draws AF points, `Shift+I` is the eyedropper, and `Ctrl+C` copies the eyedropper colour (or, with it off, the marked/current file(s) as a file drop). View ▸ Sort by and Settings offer name, date modified, size, type and EXIF date taken, ascending or descending; the choice is saved. Both panes float over the photo, so opening one never refits it.
-On top of that, the **PR 10 geometry edits** (Windows and macOS, same core): `[` `]` rotate and `H` `V` flip a still — on a JPEG the file itself is rewritten *losslessly* (DCT coefficients rearranged, never re-encoded; atomic swap) — `Shift+C` crops and straightens, `Ctrl+Z` / `Ctrl+R` (`⌘` on Mac) undo / reset, and `Ctrl+S` opens an export dialog (format, quality, size, metadata) that writes `<name>-edit.jpg` beside the original with its metadata carried over (orientation and dimensions corrected). JPEGs are now displayed through their EXIF orientation, so thumbnails regenerate once. Neither host half has been compiled yet — see [docs/design/12](design/12-decision-log.md) 2026-09-24.
-Then the **PR 11 colour adjusts** (Windows and macOS, same core): `Shift+A` (`⇧A` on Mac) opens an adjust pane with exposure, contrast, saturation, temperature and tint, a histogram and a clipped-highlights / crushed-shadows readout. Slider drags only change shader uniforms — nothing is re-decoded — and the colour is worked in linear light from an FP16 working image; for a RAW the sliders stay disabled ("Preparing…") until LibRaw's full linear develop is ready, never the embedded preview. Export (`Ctrl+S`) bakes the same maths at full resolution. The Mac half also brings **crash reporting**: Crashpad out of process, the Windows privacy scrub (now aware of `/Users/…`-style paths), and uncaught `NSException`s recorded with the id of the native call they happened in. PR 11's host halves are not verified on hardware yet — see [docs/design/12](design/12-decision-log.md) 2026-09-24 (PR 11).
-Then the **PR 12 metadata writes** (shared core and the **macOS half**; the Windows half is written but not yet compiled or run): keypad `0`–`5` (or `⌘⇧0`–`5`, `Ctrl+Shift+0`–`5` on Windows once built) rate the photo on screen, and `⌘I` puts the keyboard in the metadata pane's comment field. A plain JPEG is rewritten in place, checked against the original before it replaces anything; every other format (RAW, HEIC, PNG, video, …) gets an `IMG_1234.xmp` sidecar beside it and the original is never opened for writing. The pane has clickable stars, the comment and a "Revert metadata" button. **On a Mac, `⌘⇧3`/`4`/`5` are the system's screenshot shortcuts and never reach the app; use the keypad or turn those shortcuts off.** See [docs/design/12](design/12-decision-log.md) 2026-09-25.
+On top of that, the **PR 10 geometry edits** (Windows and macOS, same core): `[` `]` rotate and `H` `V` flip a still — on a JPEG the file itself is rewritten *losslessly* (DCT coefficients rearranged, never re-encoded; atomic swap) — `Shift+C` crops and straightens, `Ctrl+Z` / `Ctrl+R` (`⌘` on Mac) undo / reset, and `Ctrl+S` opens an export dialog (format, quality, size, metadata) that writes `<name>-edit.jpg` beside the original with its metadata carried over (orientation and dimensions corrected). JPEGs are now displayed through their EXIF orientation, so thumbnails regenerate once.
+Then the **PR 11 colour adjusts** (Windows and macOS, same core): `Shift+A` (`⇧A` on Mac) opens an adjust pane with exposure, contrast, saturation, temperature and tint, a histogram and a clipped-highlights / crushed-shadows readout. Slider drags only change shader uniforms — nothing is re-decoded — and the colour is worked in linear light from an FP16 working image; for a RAW the sliders stay disabled ("Preparing…") until LibRaw's full linear develop is ready, never the embedded preview. Export (`Ctrl+S`) bakes the same maths at full resolution. The Mac half also brings **crash reporting**: Crashpad out of process, the Windows privacy scrub (now aware of `/Users/…`-style paths), and uncaught `NSException`s recorded with the id of the native call they happened in.
+Then the **PR 12 metadata writes** (Windows and macOS, same core): keypad `0`–`5` (or `⌘⇧0`–`5`, `Ctrl+Shift+0`–`5` on Windows) rate the photo on screen, and `⌘I` puts the keyboard in the metadata pane's comment field. A plain JPEG is rewritten in place, checked against the original before it replaces anything; every other format (RAW, HEIC, PNG, video, …) gets an `IMG_1234.xmp` sidecar beside it and the original is never opened for writing. The pane has clickable stars, the comment and a "Revert metadata" button. **On a Mac, `⌘⇧3`/`4`/`5` are the system's screenshot shortcuts and never reach the app; use the keypad or turn those shortcuts off.** See [docs/design/12](design/12-decision-log.md) 2026-09-25.
 
-And **PR 13 / 14 clip editing** (Windows and macOS, same core), not yet built on either platform: on a clip, `Ctrl+T` (`⌘T`) arms trim — `[` `]` set in and out, the scrub bar shows the keyframe grid and what will be kept, `P` previews the cut as a loop, `Enter` saves an instant keyframe cut (stream copy, no quality loss) and `Shift+Enter` a frame-accurate re-encode on the GPU's hardware encoder (NVENC / Quick Sync / AMF / Media Foundation, VideoToolbox on Mac; labelled slower). `Ctrl+S` on a clip opens the clip tools: lossless rotate, split, remove in–out, MP4 ↔ MKV remux, save the frame as PNG / JPEG, extract the audio (copy, WAV or FLAC), and GIF / WebP. Every result is a new file beside the clip (`<name>_trimmed.mp4`, …); the original is never touched, and jobs run in a Jobs pane (`Ctrl+J`) where they can be cancelled without leaving a partial file. Anything that decodes or encodes runs in a separate helper process (`MediaViewerClipJob`), so a crash in a GPU driver fails that one job and never the viewer. The shared core is tested on Linux ([tools/portable](../tools/portable/README.md)); what is owed on each platform is in [docs/design/12](design/12-decision-log.md) 2026-09-25.
+And **PR 13 / 14 clip editing** (Windows and macOS, same core): on a clip, `Ctrl+T` (`⌘T`) arms trim — `[` `]` set in and out, the scrub bar shows the keyframe grid and what will be kept, `P` previews the cut as a loop, `Enter` saves an instant keyframe cut (stream copy, no quality loss) and `Shift+Enter` a frame-accurate re-encode on the GPU's hardware encoder (NVENC / Quick Sync / AMF / Media Foundation, VideoToolbox on Mac; labelled slower). `Ctrl+S` on a clip opens the clip tools: lossless rotate, split, remove in–out, MP4 ↔ MKV remux, save the frame as PNG / JPEG, extract the audio (copy, WAV or FLAC), and GIF / WebP. Every result is a new file beside the clip (`<name>_trimmed.mp4`, …); the original is never touched, and jobs run in a Jobs pane (`Ctrl+J`) where they can be cancelled without leaving a partial file. Anything that decodes or encodes runs in a separate helper process (`MediaViewerClipJob`), so a crash in a GPU driver fails that one job and never the viewer. The shared core is also tested headless on Linux ([tools/portable](../tools/portable/README.md)).
 
-**PR 15 OS integration** is written on a branch (Windows and macOS, same command rows): `Ctrl+Shift+C` (`⌘⇧C`) copies the marked or current file's path as text; `Ctrl+Alt+C` (`⌘⌥C`) copies the photo as you see it, edits applied, as a PNG (both a file and an image, so it pastes into Explorer / Finder and into Word, Keynote or a chat; no EXIF rides along); `Ctrl+Shift+S` (`⌘⇧S`) opens the system Share sheet. The folders you open show up as **Recent folders** in the taskbar jump list and in the Dock icon's menu, in File ▸ Open Recent on the Mac, and as clickable rows on the empty window's welcome card (up to six, as many as the window has room for; a folder that has gone is dropped when clicked, and the × on a hovered row removes a folder from every recent list without touching it on disk). The card and the host share one layout (`src/shell/welcome_layout.h`), so the row drawn and the row hit are the same. The taskbar thumbnail gains previous / play-pause / next buttons, and on the Mac, Control Centre, the media keys and AirPods drive a clip through Now Playing. Explorer gets MediaViewer's thumbnails (HEIC, AVIF, RAW and the rest) for the file types you make MediaViewer the default for; the handler runs outside Explorer, so a damaged file can't take Explorer down. Explorer's Details-pane properties need a machine-wide install and are deferred. On the Mac, Spotlight learns the length, size and codecs of MKV, WebM, AVI and TS clips (macOS already indexes photos and MP4/MOV itself). `Ctrl+Alt`-drag (`⌘⌥`-drag) drags out the edited copy, and opening a file while MediaViewer is running opens it in the running window instead of starting a second one (`--new-instance` overrides). `Ctrl+N` (`⌘N`, File ▸ New Window) opens another window as its own process. Several windows grouped as tabs come in a later update ([docs/design/10](design/10-roadmap.md) PR 15). The macOS half is built, its tests pass and the Metal present-loop gate holds; the Windows half builds in CI. Neither platform's hands-on verify (Explorer / Finder, installed builds) has been run yet.
+**PR 15 OS integration** (Windows and macOS, same command rows): `Ctrl+Shift+C` (`⌘⇧C`) copies the marked or current file's path as text; `Ctrl+Alt+C` (`⌘⌥C`) copies the photo as you see it, edits applied, as a PNG (both a file and an image, so it pastes into Explorer / Finder and into Word, Keynote or a chat; no EXIF rides along); `Ctrl+Shift+S` (`⌘⇧S`) opens the system Share sheet. The folders you open show up as **Recent folders** in the taskbar jump list and in the Dock icon's menu, in File ▸ Open Recent on the Mac, and as clickable rows on the empty window's welcome card (up to six, as many as the window has room for; a folder that has gone is dropped when clicked, and the × on a hovered row removes a folder from every recent list without touching it on disk). The card and the host share one layout (`src/shell/welcome_layout.h`), so the row drawn and the row hit are the same. The taskbar thumbnail gains previous / play-pause / next buttons, and on the Mac, Control Centre, the media keys and AirPods drive a clip through Now Playing. Explorer gets MediaViewer's thumbnails (HEIC, AVIF, RAW and the rest) for the file types you make MediaViewer the default for; the handler runs outside Explorer, so a damaged file can't take Explorer down. Explorer's Details-pane properties need a machine-wide install and are deferred. On the Mac, Spotlight learns the length, size and codecs of MKV, WebM, AVI and TS clips (macOS already indexes photos and MP4/MOV itself). `Ctrl+Alt`-drag (`⌘⌥`-drag) drags out the edited copy, and opening a file while MediaViewer is running opens it in the running window instead of starting a second one (`--new-instance` overrides). `Ctrl+N` (`⌘N`, File ▸ New Window) opens another window as its own process. Several windows grouped as tabs come in a later update ([docs/design/10](design/10-roadmap.md) PR 15). The macOS half is built, its tests pass and the Metal present-loop gate holds; the Windows half builds in CI. Neither platform's hands-on verify (Explorer / Finder, installed builds) has been run yet.
 Windows DXGI soak is not that verify.
 
 PR 1's present-loop verify and PR 3's island-on-screen verify are inherited and
@@ -138,7 +137,7 @@ interactive checks are documented in [System appearance verification](system-the
 | **`frametime.exe`** | The frame-time regression harness. Runs a soak, writes a JSON report, compares against a rolling baseline, and fails on a dropped frame. |
 | **`mediaviewer_lab` (Darwin)** | Mac PRs 1–6 Metal present lab. AppKit window, `CAMetalLayer` (max drawable 2 — Metal's minimum, see docs/design/12 — 8-bit sRGB), `CAMetalDisplayLink` wait-before-encode, idle → stop presenting, F3 overlay. Decodes a JPEG/PNG/BMP (plus the rest of the D5 stills) onto an immutable Metal texture; wheel-zoom-toward-cursor, drag-pan, `0`–`4` zoom presets, `+`/`-`, keyboard pan when zoomed, hold `Z` loupe, hold `\` previous, `C` clipping blinkies. Real folder browsing: argv/drag-drop opens a folder or a file (selecting it), `←`/`→`/`A`/`D`/`Space`/`Home`/`End`/`PageUp`/`PageDown` navigate it (every key goes through the same command table and key router as Windows, with `⌘` standing for `Ctrl` and the Mac Delete key for `Delete`), an FSEvents watch keeps the listing live. SwiftUI chrome hosted in the same window via a C bridge into the render thread's `input_snapshot`: a Windows-style command bar (Open / View / Settings / About, `?` at the right), a Settings screen (`⌘,`: filmstrip/wrap/sticky-zoom/background preferences and remappable keys, persisted in `NSUserDefaults`), a bottom filmstrip (`T` toggles) and a full-grid gallery overlay (`G` toggles), both lazy-loading JPEG-512 thumbnails from a shared SQLite cache. **Nested folders (PR 26):** child folders show as tiles. A folder of only folders uses big tiles; one that also holds photos keeps a short folder row above them. A tile says when photos were found further down, when it is only more folders, and when that look stopped early. The path stays on screen while a photo is open. `⌘↑` goes up and returns to the folder you left; `⌘←` / `⌘→` open the folder beside it; `/` on the folder row finds a tile by name. The Windows host matches that chrome. Marks (`Insert`/`Shift+Space`/`Ctrl+A`/`Ctrl+D`), copy/move to a chosen folder (`F7`/`F8`, collision-safe), Trash delete with confirm (`Delete`), fullscreen (`F11`/`F`), a stills-only slideshow (`F5`; `.` blackout, `R` shuffle), and drag-out (`⌘`+drag on the canvas; a plain drag from a gallery, filmstrip or search-result cell, the marks when that cell is marked, as the original files). **Video (Mac PR 5):** FFmpeg + VideoToolbox decode, copied out of the decoder pool into a presentation ring of our own Metal textures, an MSL twin of the video shader (NV12/P010, the stream's matrix/range/transfer, HLG/PQ tone-mapped to SDR), Core Audio as the master A/V clock (no `AVPlayer`), a SwiftUI transport strip and the docs/design/16 video keys, and poster thumbnails for clips. Metadata read (PR 9, see above); no rating/metadata writes or RAW-pairing UI yet. Not on the Mac yet: `⌘G` go to, `;` Live Photo motion, Open RAW / Open JPEG of a pair ([docs/design/16](design/16-commands.md) "Not built"). Builds on Apple Silicon and Intel, macOS 14+ (Intel: unverified for frame pacing). |
 | **`MediaViewer.Interop`** | The C# side of the ABI — `SafeHandle`, struct layouts, completion drain. The filmstrip island borrows the session and drains folder/thumb completions. |
-| **Import add-on** (Milestone G) | An optional add-on installed from Settings → Add-ons ([docs/design/18](design/18-import.md)): copy a card or folder into a library, skip what is already there by content (size, then BLAKE3), verify every copy by reading it back, sort into dated folders with RAW+JPEG / Live Photo pairs and camera sidecars kept together, resume after an unplug, back up to a second drive from one read, verify an old folder for silent corruption, and **find duplicates** in a folder tree (every file, grouped by identical bytes; PR 54), where one copy at a time can be moved to the Recycle Bin / Trash, never the last. Apart from that, never deletes from, formats or overwrites anything. `mv_import.dll` / `libmv_import.dylib` plus its chrome (`MediaViewer.Import.Chrome.dll` / `Import.bundle`) are built beside the app in `build/addons/import` and shipped as a separate signed download that a stable run of the release workflow packs beside the app once `tools/package/release-addon.patch` is applied (RELEASING.md); the base install does not contain them. Settings → Add-ons offers Install only when that download exists and verifies for the running app. With it absent, `Ctrl+Shift+I` / `Ctrl+Shift+F7` do not exist. The shared engine is tested; the Windows and Mac hosts are written but their first platform builds and every hardware verify line are owed (docs/design/10). Also from this work, in the base app: `F8` across drives now deletes the source only after a verified copy. |
+| **Import add-on** (Milestone G) | An optional add-on installed from Settings → Add-ons ([docs/design/18](design/18-import.md)): copy a card or folder into a library, skip what is already there by content (size, then BLAKE3), verify every copy by reading it back, sort into dated folders with RAW+JPEG / Live Photo pairs and camera sidecars kept together, resume after an unplug, back up to a second drive from one read, verify an old folder for silent corruption, and **find duplicates** in a folder tree (every file, grouped by identical bytes; PR 54), where one copy at a time can be moved to the Recycle Bin / Trash, never the last. Apart from that, never deletes from, formats or overwrites anything. `mv_import.dll` / `libmv_import.dylib` plus its chrome (`MediaViewer.Import.Chrome.dll` / `Import.bundle`) are built beside the app in `build/addons/import` and shipped as a separate signed download that a stable run of the release workflow packs beside the app (RELEASING.md); the base install does not contain them. Settings → Add-ons offers Install only when that download exists and verifies for the running app. With it absent, `Ctrl+Shift+I` / `Ctrl+Shift+F7` do not exist. The shared engine is tested; the Windows and Mac hosts are written but their first platform builds and every hardware verify line are owed (docs/design/10). Also from this work, in the base app: `F8` across drives now deletes the source only after a verified copy. |
 
 ## Build
 
@@ -146,7 +145,8 @@ You need **Visual Studio 2022** (or Build Tools) with the C++ workload, the **Wi
 SDK**, **CMake ≥ 3.28**, **vcpkg**, the **.NET 8 SDK**, and the **Windows App SDK 2.4
 runtime** (the command-bar island is unpackaged). The native core still builds and tests
 with no .NET present; without `dotnet` on `PATH` the lab runs as it did in PR 2
-(`--no-chrome`).
+(`--no-chrome`). The build compiles the blit shaders (`src/gfx/*.hlsl`) with the SDK's `fxc.exe`,
+found in the targeted SDK's `bin` without a developer shell; pass `-DMV_FXC=<path>` to override.
 
 ```powershell
 # once
@@ -541,7 +541,7 @@ original is only ever rewritten by a lossless JPEG rotate / flip.
 | `Ctrl+S` | export dialog: JPEG / PNG, quality, long edge, metadata (all / no GPS / none). `↑` `↓` choose, `←` `→` change, `Enter` exports to `<name>-edit.jpg` beside the original; never overwrites |
 | `Shift+A` | adjust pane (PR 11): exposure, contrast, saturation, temperature, tint, histogram and clipping. It takes the keyboard: on Windows `Tab` walks the sliders and the arrows step them; on Mac `↑` `↓` pick a slider, `←` `→` step it (`⇧` ×10), `0` zeroes it, `R` resets. `Esc` hands the keyboard back to the photo; `Shift+A` again closes the pane. A slider drag is one `Ctrl+Z`. Colour never rewrites the file: a JPEG with a colour edit keeps `[` `]` in the stack for export |
 
-**Clips (PR 13 / 14, Windows and macOS; not yet built on either).** Nothing here changes the
+**Clips (PR 13 / 14, Windows and macOS).** Nothing here changes the
 clip: every result is a new file beside it, and a cancelled job leaves nothing behind.
 
 | Key | Does |
@@ -594,7 +594,10 @@ Images above ~64 MP, or wider or taller than 16384 px, are shown as a tiled pyra
 ≤ 2048 px overview is always loaded, and 256 px tiles for the part on screen are
 created a few per refresh and drawn over it, so a fast zoom or pan is blurry for a
 moment, never blank. `F` / `F3` shows the tile LOD, resident tiles and VRAM, create
-times, and refinement counters. The command bar is also on the island: Open (**Media…** or **Folder…** — the picker
+times, and refinement counters. Its `texture` line times the whole-texture creates of
+untiled stills and counts the neighbour creates held back while the camera moved (issue
+#166). The soak JSON carries the same numbers: `texture_*` keys, including
+`texture_creates_deferred` and `texture_max_defer_ms`. The command bar is also on the island: Open (**Media…** or **Folder…** — the picker
 takes photos and clips), View (zoom in/out,
 fit, 50 / 100 / 200 / 400 %, gallery, filmstrip, overlay), a playback-speed dropdown,
 a `?` shortcuts button, Settings (`Ctrl+,`: view defaults and remappable keys), About.
@@ -756,6 +759,9 @@ and reports CPU time for the grid at rest, one layout pass, a status-line publis
 update with and without a re-sort. Compare runs of the same build alternated with the base;
 the 2026-10-03 numbers are in the PR that added it (a publish 51 → 8 ms, a people update
 500 → 46 ms of CPU).
+`--filter SearchModelTests` checks the search panel's model against a fake table (issue #191):
+a search re-asks when another folder opens under "Folder & subfolders", and Tab only takes a
+name looked up for the words as typed.
 
 **The Photos library source (Mac, issue #72; docs/design/17 "Photos library source").** Engine
 behaviour is tested with a fake PhotoKit: `mv_ai_tests "[photos]"`. On a real library, two
@@ -895,7 +901,8 @@ ctest --test-dir build -C Release -R "clip|trim" --output-on-failure
 
 # policy gates (all run in CI on every push)
 .\tools\check-module-graph.ps1     # dependencies point downward only
-.\tools\check-hostable-core.ps1    # D9: no windows.h / d3d11.h above gfx/
+.\tools\check-hostable-core.ps1    # D9: no windows.h / d3d11.h, nor Cocoa / Metal, above gfx/ outside the ports
+.\tools\check-vcpkg-baseline.ps1   # the five vcpkg baseline pins agree
 .\tools\check-winui-controls.ps1   # no ProgressBar / ProgressRing / DropDownButton / InfoBar / TextBox...: they
                                    # fail-fast in the island host (use JobBar, Shared\FlatBar.cs, a Button + Flyout,
                                    # Shared\FakeInput.cs)
@@ -978,6 +985,12 @@ also writes `machine.json` (OS, CPU, commit). `tools/perf/test_perf_tools.py` ch
 suite itself (every chart reproduces byte-for-byte from the committed reports) and runs
 under `ctest -R perf_tools`.
 
+Timing asserts are not in the unit suite (it runs under `ctest -j` and on shared runners):
+they are hidden `[.perf-bench]` tests beside the bench, run on a quiet machine in an optimised
+build. `mv_tests "[.perf-bench]"` holds the colour-stage starvation bound, pairing a 4000-file
+dump and, on Windows, the WARP tile frame and create budgets; `mv_ai_tests "[.perf-bench]"`
+holds the 100 k-row search scan.
+
 `mv_tests "[.perf-bench]"` is the quick loop for decode work: `MV_BENCH_JSON=path` writes
 its medians, `MV_BENCH_DIR=folder` adds your own files to the decode rows. Its `preview` row is
 the canvas's first pixel (`decode_first_pixel`). libheif's example is one small image, so for
@@ -985,6 +998,8 @@ camera-sized HEIC run `python tools/testmedia/make-grid-heic.py` (after `fetch-h
 an ffmpeg with libx265 on `PATH`, a dev tool only): it writes `tools/testmedia/heif/grid-12mp.heic`,
 an iPhone's layout (4032x3024 as 8x6 tiles of 512, a 320x240 thumbnail item, Display P3 ICC).
 `MV_OS_CODEC=0` times the bundled libheif path, the one a PC without the HEVC extension takes.
+`mv_tests "thumb store lookup throughput"` (also tagged `[.perf-bench]`, printed, not in the
+JSON) times 2,000 thumbnail-cache hits from four threads, the filmstrip sweep's lookups.
 
 The pacing soak cannot see a paused clip's cost (it presents nothing). `mv_tests "[idle]"`
 (macOS, headless, a synthetic clip) does: it prints the process's context switches and CPU
@@ -1459,9 +1474,17 @@ for a nonexistent runner and avoids failing every PR on a machine that does not 
 yet. An enabled runner that later goes offline is still subject to GitHub's queue
 timeout. Fork PRs skip this job; they do not execute on the persistent GPU runner.
 
-Once the runner exists, make **Frame-time gate (self-hosted GPU)** a required
-branch-protection check. Until then, requiring it does not protect anything: GitHub
-treats a skipped job as success for merge. Baseline cache entries use unique keys and
+The Mac PR 1 gate is the **Frame-time gate (self-hosted Mac)** job: an interactive
+Apple Silicon runner labelled `self-hosted`, `macOS`, `ARM64`, `gpu`, logged in with the
+display on and nothing else drawing (Homebrew at `/opt/homebrew`; the job installs the
+vcpkg trees itself). Set `MV_MAC_GPU_RUNNER_ENABLED` to `true` only after provisioning it.
+
+Requiring either gate job directly does not protect anything: GitHub treats a skipped
+job as success for merge. Require **Present-loop gates (Windows PR 1 + Mac PR 1)**
+instead. It always runs, fails when a gate failed or was cancelled, and puts a warning on
+the run when a gate was skipped. Once both runners exist, set repository variable
+`MV_REQUIRE_PRESENT_GATES` to `true` so a skip on this repository's own branches fails
+too (fork PRs still only warn; they never run on the persistent runners). Baseline cache entries use unique keys and
 only successful main pushes publish a new baseline; PR runs compare against the restored
 main baseline. The repository changes cannot provision a runner or configure branch
 protection by themselves.
@@ -1640,6 +1663,7 @@ What is **not** demonstrated, and should not be claimed:
   about the audio master. Note the caveat: a synthetic sine against synthetic
   video exercises the drift-slope gate, not endpoint-crystal versus
   container-timebase mismatch. A real 30-minute phone clip is worth more.
+  The README's playback numbers come from runs of one to two minutes.
 - The 10-minute no-stall soak. The `ctest` case is a 5-second smoke test of the
   same design and says so.
 - HLG "looks correct rather than washed out". The transfer, OOTF, BT.2408 white

@@ -80,7 +80,7 @@ public final class MVImportChrome: NSObject {
   public func importNow(_ pathsJSON: String) {
     guard let table else { return }
     var id: UInt64 = 0
-    if table.api.pointee.import_now!(table.ctx, pathsJSON, &id) == MV_OK { track(id, label: "marked files") }
+    if table.call({ table.api.pointee.import_now!(table.ctx, pathsJSON, &id) }) == MV_OK { track(id, label: "marked files") }
   }
 
   @objc(deliverEvent:status:identifier:payload:)
@@ -118,7 +118,22 @@ public final class MVImportChrome: NSObject {
     }
   }
 
+  /// Before the host unloads the pack. Closes the table: a detached call
+  /// still running (a RAW thumbnail, an eject, a sources read) fails instead
+  /// of calling into an unloaded library, and this waits (at most 2 s) for the
+  /// calls already inside the pack (issue #193).
   @objc public func shutdown() {
+    _ = close(wait: 2)
+  }
+
+  /// Quit: the same, without waiting. True when no call was in flight; false
+  /// tells the host to leave the pack running for the process exit rather
+  /// than free it under that call.
+  @objc public func shutdownForQuit() -> Bool {
+    close(wait: 0)
+  }
+
+  private func close(wait: TimeInterval) -> Bool {
     MainActor.assumeIsolated {
       timer?.invalidate()
       timer = nil
@@ -126,7 +141,9 @@ public final class MVImportChrome: NSObject {
       window = nil
       model = nil
       setStatus(nil)
+      let idle = table?.close(timeout: wait) ?? true
       table = nil
+      return idle
     }
   }
 
@@ -155,7 +172,7 @@ public final class MVImportChrome: NSObject {
     var line: String?
     for job in jobs.keys {
       var p = mv_import_progress()
-      guard table.api.pointee.progress!(table.ctx, job, &p) == MV_OK else { jobs[job] = nil; continue }
+      guard table.call({ table.api.pointee.progress!(table.ctx, job, &p) }) == MV_OK else { jobs[job] = nil; continue }
       MainActor.assumeIsolated {
         model?.progressed(job, p)
         model?.duplicates.progressed(job, p)

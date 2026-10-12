@@ -8,7 +8,8 @@ Windows shell integration works, and how the app is distributed. Commands live i
 
 - **CMake ≥ 3.28** + **vcpkg manifest mode**. [`vcpkg.json`](../../vcpkg.json) pins a
   `builtin-baseline`; the baseline is the pin and `overrides` is empty. Moving it is a
-  deliberate commit followed by a frame-time re-run.
+  deliberate commit followed by a frame-time re-run, and moves all five copies (the three
+  manifests and `VCPKG_COMMIT` in `ci.yml` / `release.yml`; `tools/check-vcpkg-baseline.ps1`).
 - **Windows:** MSVC 2022 primary, clang-cl as the second compiler in CI, an ASan configuration
   (`-DMV_ASAN=ON`, which copies the ASan runtime DLL beside every executable).
   `/W4 /WX /permissive- /Zc:__cplusplus /GR- /utf-8`.
@@ -27,7 +28,9 @@ statically and the LGPL codecs come from a separate manifest
 leak into the static tree. That manifest has its own `vcpkg-configuration.json` naming the
 repo's overlay ports (`tools/vcpkg/ports`), so the Mac's LibRaw is the same patched port as
 Windows' (#287). Either way **FFmpeg, libheif, libde265, LibRaw and Exiv2 are always
-DLLs / dylibs** ([licensing](11-licensing.md)). Shader bytecode is embedded as resources.
+DLLs / dylibs** ([licensing](11-licensing.md)). Shader bytecode is embedded at build time: on Windows `fxc` compiles `src/gfx/*.hlsl` into
+`const BYTE` headers (CMake `mv_fxc`), so no `D3DCompile` runs at device create; the Mac's MSL is
+still compiled from source at startup.
 
 ### Dependency set
 
@@ -78,8 +81,10 @@ Suites are registered with CTest and run by `ctest` on both platforms; see
    exhaustive nightly sweep; `MV_BROKEN_DUMP` writes failing inputs.
 5. **Fuzzing.** One libFuzzer harness per decoder entry point (`tools/fuzz/fuzz_*.cpp`:
    JPEG, PNG, BMP, GIF, WebP, TIFF, ICO, HEIC, AVIF, RAW, RAW preview, animation, the
-   generic decode, and the Explorer thumbnail handler), built with clang-cl + ASan
-   (`-DMV_FUZZ=ON`).
+   generic decode, the Explorer thumbnail handler, and the PDF and DOCX readers), built with
+   clang-cl + ASan (`-DMV_FUZZ=ON`). CI gates on the eleven single-format image harnesses;
+   `decode`, `animation`, `thumbnail`, `pdf` and `docx` run in a quarantined, non-gating step
+   (30 s each) until they are seen starting on the runner (`docs/design/12-decision-log.md`).
 6. **Clean-VM gate** (`test_clean_vm_heic.cpp`, label `cleanvm`). A HEIC decodes with
    `MV_OS_CODEC=0`, and the process has loaded libheif + libde265 and no Media Foundation,
    WIC codec extension or `\WindowsApps\` module. It is its own executable because
@@ -108,6 +113,9 @@ Suites are registered with CTest and run by `ctest` on both platforms; see
    reports to `docs/perf/` and redraws the README charts from them.
    `tools/perf/test_perf_tools.py` (`ctest -R perf_tools`) checks that every chart reproduces
    byte-for-byte from the committed reports.
+   Wall-clock bounds live only in hidden `[.perf-bench]` tests (issue #154): the unit suite
+   runs on shared runners and under `ctest -j`, so it asserts counters and states and waits
+   on conditions, never on a sleep or a time budget.
 10. **Other harnesses:** `copybench` (copy-engine throughput), `clipjob`, `encprobe`,
     `playprobe`, `ai-bench`, the Edit workspace self-test, and the crash-report canary
     ([13](13-updates-and-telemetry.md)).
@@ -118,8 +126,9 @@ Run on every push by the `policy` CI job:
 
 | Script | Fails when |
 |---|---|
-| `tools/check-module-graph.ps1` | A dependency points upward or sideways in `shell → abi → {canvas, edit, player, image, meta, addon} → {codec, gfx, io} → core` |
-| `tools/check-hostable-core.ps1` | `windows.h` / `d3d11.h` appear above `gfx/` and the hosts ([platforms](15-platforms.md)) |
+| `tools/check-module-graph.ps1` | A dependency points upward or sideways in `shell → abi → {canvas, edit, player, image, meta, addon} → {codec, gfx, io} → core`, or `addons → infer → core` ([architecture](02-architecture.md)); `.mm` / `#import` included |
+| `tools/check-hostable-core.ps1` | `windows.h` / `d3d11.h` appear above `gfx/` and the hosts outside `*_win.cpp`, or Foundation / AppKit / Metal / CoreVideo / AVFoundation outside the `*_mac.*` ports ([platforms](15-platforms.md)) |
+| `tools/check-vcpkg-baseline.ps1` | The vcpkg baseline differs between `vcpkg.json`, `tools/mac/dependencies/vcpkg.json`, `tools/portable/vcpkg.json` and `VCPKG_COMMIT` in `ci.yml` / `release.yml` |
 | `tools/check-winui-controls.ps1` | The chrome uses a WinUI control that fail-fasts in the island host (`ProgressBar`, `ProgressRing`, `DropDownButton`, `InfoBar`, `TextBox`, …) |
 | `tools/licence-check.ps1` | FFmpeg was configured with `--enable-gpl` / `--enable-nonfree`, or a software HEVC/H.264/AAC encoder is present ([licensing](11-licensing.md)) |
 | `tools/telemetry-schema-check.ps1` | A telemetry event gains a free-text field ([13](13-updates-and-telemetry.md)) |
@@ -139,8 +148,14 @@ it replaces.
 | `windows-chrome`, `mac-chrome` | windows-latest, macos-14 | WinUI and SwiftUI chrome compile |
 | `mac-packaging` | ubuntu-latest | Release tooling tests and macOS bundle policy (`tools/mac/*`) |
 | `frametime` | self-hosted `[windows, gpu]` | Swapchain recovery, then the 60 s animated + idle gates against the rolling baseline (cached per runner; updated only on `main`). Runs only when `MV_GPU_RUNNER_ENABLED` is set and never for fork PRs; hosted runners have no usable GPU, so a skip is not a pass |
+| `frametime-mac` | self-hosted `[macOS, ARM64, gpu]` | Mac PR 1: the 60 s animated + idle gates on Metal (`frametime --seconds 60`, under `caffeinate`). Runs only when `MV_MAC_GPU_RUNNER_ENABLED` is set and never for fork PRs |
+| `present-gates` | ubuntu-latest | Always runs. Fails if either frame-time gate failed or was cancelled; a skipped gate is a warning annotation and a line in the run summary, or a failure on this repository's own branches when `MV_REQUIRE_PRESENT_GATES` is set. This is the check to require in branch protection, since GitHub treats a skipped job as passing |
 | `fuzz` | windows-latest | 60 s per harness on PRs; 20 min per harness nightly. Uploads crash / timeout / OOM inputs |
 | `broken-corpus-full` | windows-latest | Nightly / dispatch: the exhaustive broken-corpus sweep |
+
+There is no macOS native job: CI on macOS compiles the SwiftUI chrome packages only. The Mac
+core, its `ctest` suites and the Metal present-loop gate run on a developer Mac
+([DEVELOPMENT](../DEVELOPMENT.md)).
 
 Release packaging is a separate manual workflow (`release.yml`; see
 [RELEASING.md](../../RELEASING.md)).

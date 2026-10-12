@@ -1107,6 +1107,12 @@ void present_lab::render_thread_main() noexcept {
     // a busy left up here stuck — and video_active_ is only refreshed by a
     // presented frame, so an inactive window kept "a video plays" forever.
     mv_present_set_busy(gfx::present_busy({.wants_frame = wants_frame, .live = live}, frame_pressure) ? 1u : 0u);
+    // Issue #166: a neighbour's whole-texture create waits while this loop
+    // presents a moving canvas; down whenever the loop stops presenting, for
+    // the same reason as the busy signal above. Fades, video and the input
+    // tail do not hold it: navigation (arrow -> next, cached) keeps its
+    // prefetch.
+    mv::abi::set_canvas_moving(session_, wants_frame && camera_.moving());
 
     if (!wants_frame) {
       if (was_presenting_ && options_.soak_seconds == 0.0) pacer_.reset_window();
@@ -1934,6 +1940,19 @@ void present_lab::draw_overlay(const input_snapshot& snapshot) noexcept {
                     t.max_create_us / 1000.0, t.last_build_us / 1000.0,
                     static_cast<unsigned long long>(t.incomplete_frames));
       }
+      {
+        // Issue #166: an untiled still's whole-texture create, which the
+        // device lock serialises with this thread's presents.
+        const auto u = mv::abi::texture_upload_stats();
+        ImGui::Text("texture  %llu creates  last %.2f ms  max %.2f ms (%.0f MB)  over %.1f ms %llu"
+                    "  deferred %llu (max %.0f ms)",
+                    static_cast<unsigned long long>(u.creates), u.last_create_us / 1000.0,
+                    u.max_create_us / 1000.0,
+                    static_cast<double>(u.max_create_bytes) / 1048576.0,
+                    image::k_frame_upload_budget_us / 1000.0,
+                    static_cast<unsigned long long>(u.over_budget),
+                    static_cast<unsigned long long>(u.deferred), u.max_defer_us / 1000.0);
+      }
       ImGui::Text("refine   %llu refinements  %llu stale previews dropped%s",
                   static_cast<unsigned long long>(refinements_),
                   static_cast<unsigned long long>(stale_drops_),
@@ -2005,6 +2024,7 @@ bool present_lab::write_json_report() const noexcept {
   const auto anim = mv::abi::animation_stats_now(session_);
   const image::tile_stats tile_stats =
       current_image_ ? mv::abi::tiles_stats(*current_image_) : image::tile_stats{};
+  const image::texture_upload_stats upload_stats = mv::abi::texture_upload_stats();
   const double mean_delay_ms =
       anim_frames_shown_ > 0
           ? static_cast<double>(anim_delay_sum_ms_) / static_cast<double>(anim_frames_shown_)
@@ -2059,6 +2079,12 @@ bool present_lab::write_json_report() const noexcept {
                "  \"tiles_vram_peak_mb\": %.1f,\n"
                "  \"tiles_max_create_ms\": %.3f,\n"
                "  \"tiles_incomplete_frames\": %llu,\n"
+               "  \"texture_creates\": %llu,\n"
+               "  \"texture_creates_over_budget\": %llu,\n"
+               "  \"texture_max_create_ms\": %.3f,\n"
+               "  \"texture_max_create_mb\": %.1f,\n"
+               "  \"texture_creates_deferred\": %llu,\n"
+               "  \"texture_max_defer_ms\": %.1f,\n"
                "  \"meets_pr1_gate\": %s\n"
                "}\n",
                kWarmupSeconds,
@@ -2097,6 +2123,12 @@ bool present_lab::write_json_report() const noexcept {
                static_cast<double>(tile_stats.vram_peak_bytes) / 1048576.0,
                static_cast<double>(tile_stats.max_create_us) / 1000.0,
                static_cast<unsigned long long>(tile_stats.incomplete_frames),
+               static_cast<unsigned long long>(upload_stats.creates),
+               static_cast<unsigned long long>(upload_stats.over_budget),
+               static_cast<double>(upload_stats.max_create_us) / 1000.0,
+               static_cast<double>(upload_stats.max_create_bytes) / 1048576.0,
+               static_cast<unsigned long long>(upload_stats.deferred),
+               static_cast<double>(upload_stats.max_defer_us) / 1000.0,
                soak_complete_ && measurement_valid_ && exit_code_ == 0 &&
                    (options_.start_animating ? s.meets_pr1_gate() : idle_stats_.meets_pr1_gate())
                    ? "true" : "false");

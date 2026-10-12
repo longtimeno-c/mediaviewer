@@ -40,12 +40,13 @@ final class SettingsStore: ObservableObject {
   /// -1 without an updater (unsigned build), 0 stable, 1 preview.
   @Published private(set) var updateChannel: Int32 = -1
 
-  private var timer: Timer?
   private var generation: UInt64 = .max
 
   private init() {
-    timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-      MainActor.assumeIsolated { self?.poll() }
+    // Issue #178: polled when the main run loop has run (ChromePulse), not on a timer.
+    ChromePulse.shared.add { [weak self] in
+      self?.poll()
+      return false
     }
   }
 
@@ -129,7 +130,7 @@ final class SettingsStore: ObservableObject {
   func beginCapture(_ row: Int32) { mv_chrome_key_capture_begin(row); generation = .max; poll() }
   func cancelCapture() { mv_chrome_key_capture_cancel(); generation = .max; poll() }
   func resetKeys() { mv_chrome_keys_reset(); generation = .max; poll() }
-  func close() { mv_chrome_menu(18) }
+  func close() { mv_chrome_menu(kMenuSettings) }
 }
 
 // A separate label column keeps every switch on the same trailing edge,
