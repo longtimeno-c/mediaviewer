@@ -44,9 +44,16 @@ public static unsafe partial class MetaNative
         byte[] z = Encoding.UTF8.GetBytes(text + "\0");
         var input = new MvLocationInput { StructSize = (uint)sizeof(MvLocationInput) };
         MvStatus status;
-        fixed (byte* p = z)
+        try
         {
-            status = mv_meta_parse_location(p, &input);
+            fixed (byte* p = z)
+            {
+                status = mv_meta_parse_location(p, &input);
+            }
+        }
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException)
+        {
+            return (LocationInvalid, 0, 0, "Could not read the position");  // an older core
         }
         if (status != MvStatus.Ok) return (LocationInvalid, 0, 0, "Could not read the position");
         string message = Marshal.PtrToStringUTF8((IntPtr)input.Text) ?? "";

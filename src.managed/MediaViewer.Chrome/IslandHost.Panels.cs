@@ -35,6 +35,10 @@ public static partial class IslandHost
     private const int MetaFactWhere = 1 << 0;
     private const int MetaFactAltitude = 1 << 1;
     private const int MetaFactAiGenerated = 1 << 2;
+    // #352: what the Summary's Location row may do (kMetaFactLocation* in chrome_host.h).
+    private const int MetaFactLocationSet = 1 << 3;
+    private const int MetaFactLocationClear = 1 << 4;
+    private const int MetaFactLocationInOriginal = 1 << 5;
 
     private static DesktopWindowXamlSource? _metaPane;
     private static DesktopWindowXamlSource? _tree;
@@ -292,6 +296,7 @@ public static partial class IslandHost
     private static string _metaMadeWith = "";
     private static bool _metaAiGenerated;
     private static (double Lat, double Lon, double? AltitudeM)? _metaWhere;
+    private static int _metaLocationFacts;  // #352: MetaFactLocation*
     private static List<string> _metaStreamLines = new();
     private static string _metaLast = "";
     private static FakeInput? _metaSearch;
@@ -311,6 +316,10 @@ public static partial class IslandHost
     private static string? _metaEditingKey;  // a tag row's raw key
     private static string _metaDraft = "";
     private static bool _metaEditingDate;
+    // #352: the Location editor (its text is _metaDraft), and the in-pane
+    // confirmation before a blank save removes the location.
+    private static bool _metaEditingLocation;
+    private static bool _metaConfirmLocation;
     private static bool _metaAddingTag;
     private static bool _metaEditingComment;  // Ctrl+I: the user comment, through PR 12's writer
     private static bool _metaCommentAsked;    // Ctrl+I came before the record it edits
@@ -335,6 +344,8 @@ public static partial class IslandHost
     {
         _metaEditingKey = null;
         _metaEditingDate = false;
+        _metaEditingLocation = false;
+        _metaConfirmLocation = false;
         _metaAddingTag = false;
         _metaEditingComment = false;
         _metaDraft = "";
@@ -496,14 +507,6 @@ public static partial class IslandHost
         Send(Command.MetaTags);
     }
 
-    // GPS rows the file lets us remove (EXIF GPSInfo, XMP exif:GPS*).
-    private static List<string> LocationKeys() => _metaTags
-        .Where(t => t.Removable && (t.Raw.StartsWith("Exif.GPSInfo.", StringComparison.Ordinal) ||
-                                    t.Raw.StartsWith("Xmp.exif.GPS", StringComparison.Ordinal)))
-        .Select(t => t.Raw)
-        .Distinct()
-        .ToList();
-
     // A field the file does not have shows as a dash; nothing here is an error.
     private static UIElement BuildSummary()
     {
@@ -523,6 +526,11 @@ public static partial class IslandHost
                 rows.Children.Add(BuildDateRow(value));
                 continue;
             }
+            if (label == "Location")
+            {
+                rows.Children.Add(BuildLocationRow(value));
+                continue;
+            }
             var row = new Grid();
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(96) });
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -531,18 +539,6 @@ public static partial class IslandHost
             TextBlock v = Text(value.Length == 0 ? "—" : value, value.Length == 0 ? Body : Title);
             Grid.SetColumn(v, 1);
             row.Children.Add(v);
-            if (label == "Location" && value.Length > 0)
-            {
-                List<string> keys = LocationKeys();
-                if (keys.Count > 0)
-                {
-                    Button remove = MetaButton("Remove", () => SendTagEdits(keys.Select(k => (k, (string?)null))),
-                                               tip: "Remove every GPS tag from this file");
-                    AutomationProperties_SetName(remove, "Remove location");
-                    Grid.SetColumn(remove, 2);
-                    row.Children.Add(remove);
-                }
-            }
             rows.Children.Add(row);
         }
         rows.Children.Add(new Border { Height = 1, Background = Brush(Hairline), Margin = new Thickness(0, 4, 0, 4) });
@@ -619,6 +615,195 @@ public static partial class IslandHost
         row.Children.Add(edit);
         col.Children.Add(row);
         return col;
+    }
+
+    // ==== #352 (owner, 2026-10-12): the Location editor ========================
+    //
+    // Edit opens a field with the coordinates; the core reads the text on every
+    // keystroke (MetaNative.ParseLocation, ABI mv_meta_parse_location) for the
+    // preview line, and again natively when it is sent ("L\ttext" on MetaTags).
+    // A blank save removes the location, after an in-pane confirmation: a
+    // ContentDialog is a top-level-window control, and this pane is an island
+    // (the Settings / Add-ons confirmations are in-pane for the same reason).
+    // While the confirmation is up the pane reports text focus, so native hands
+    // it Enter, Space and Tab and turns Esc into DropDraft: Esc = Cancel.
+
+    private static bool LocationCanClear => (_metaLocationFacts & MetaFactLocationClear) != 0;
+
+    private static string LocationStartText() => _metaWhere is { } w
+        ? w.Lat.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture) + ", " +
+          w.Lon.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture)
+        : "";
+
+    // One line under the field: the point Save writes, or why it will not.
+    private static (string Text, bool Error) LocationNote(string draft)
+    {
+        (uint kind, _, _, string message) = MetaNative.ParseLocation(draft);
+        if (kind == MetaNative.LocationPoint) return ("→ " + message, false);
+        if (kind == MetaNative.LocationInvalid) return (message, true);
+        if (LocationCanClear) return ("Saving an empty field removes the location", false);
+        if ((_metaLocationFacts & MetaFactLocationInOriginal) != 0)
+        {
+            return ("This file's own location is in the original, which is never rewritten: change it, not remove it",
+                    true);
+        }
+        return ("Enter latitude and longitude, e.g. 38.7979, -9.3907", false);
+    }
+
+    private static UIElement BuildLocationRow(string value)
+    {
+        var col = new StackPanel { Spacing = 6 };
+        var row = new Grid();
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(96) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        TextBlock label = Text("Location", Body);
+        label.VerticalAlignment = VerticalAlignment.Center;
+        row.Children.Add(label);
+        if (_metaEditingLocation)
+        {
+            // Not a TextBox: that control fail-fasts in these islands (see FakeInput).
+            var box = new FakeInput("38.7979, -9.3907");
+            box.SetText(_metaDraft);
+            AutomationProperties_SetName(box, "Location, latitude and longitude");
+            Grid.SetColumn(box, 1);
+            Grid.SetColumnSpan(box, 2);
+            row.Children.Add(box);
+            col.Children.Add(row);
+
+            TextBlock note = Text("", Body, UiFontSize - 3);
+            note.Margin = new Thickness(96, 0, 0, 0);
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetLiveSetting(
+                note, Microsoft.UI.Xaml.Automation.Peers.AutomationLiveSetting.Polite);
+            void Refresh()
+            {
+                (string text, bool error) = LocationNote(_metaDraft);
+                note.Text = error ? "⚠ " + text : text;
+                AutomationProperties_SetName(note, error ? "Error: " + text : text);
+            }
+            Refresh();
+            box.Changed += () =>
+            {
+                try
+                {
+                    _metaDraft = box.Text;
+                    Refresh();
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine(ex);  // never out of a XAML event
+                }
+            };
+            col.Children.Add(note);
+
+            if (_metaConfirmLocation)
+            {
+                col.Children.Add(BuildLocationConfirm());
+                return col;
+            }
+            box.Submitted += () => SaveMetaLocation(_metaDraft);
+            var actions = Row(
+                MetaButton("Save", () => SaveMetaLocation(_metaDraft), tip: "Enter"),
+                MetaButton("Cancel", () =>
+                {
+                    CancelMetaEdits();
+                    RenderMeta();
+                }, tip: "Esc"));
+            actions.Margin = new Thickness(96, 0, 0, 0);
+            col.Children.Add(actions);
+            _metaFocusField = box;
+            return col;
+        }
+        TextBlock v = Text(value.Length == 0 ? "—" : value, value.Length == 0 ? Body : Title);
+        v.VerticalAlignment = VerticalAlignment.Center;
+        Grid.SetColumn(v, 1);
+        row.Children.Add(v);
+        bool canSet = _metaCanEdit && (_metaLocationFacts & MetaFactLocationSet) != 0;
+        string tip = !canSet
+            ? "This item cannot be written"
+            : (_metaLocationFacts & MetaFactLocationInOriginal) != 0
+                ? "Change where this was taken. The original keeps its own; the new one goes in the XMP sidecar, which wins"
+                : "Change or remove where this was taken (decimal or degrees, minutes, seconds)";
+        Button edit = MetaButton("Edit", () =>
+        {
+            CancelMetaEdits();
+            _metaEditingLocation = true;
+            _metaDraft = LocationStartText();
+            RenderMeta();
+        }, tip: tip, enabled: canSet);
+        AutomationProperties_SetName(edit, "Edit location");
+        Grid.SetColumn(edit, 2);
+        row.Children.Add(edit);
+        col.Children.Add(row);
+        return col;
+    }
+
+    // "Remove location from this file?" in the pane. Cancel is first and takes
+    // the keyboard: Enter on it cancels, and Remove must be chosen.
+    private static FrameworkElement BuildLocationConfirm()
+    {
+        var box = new StackPanel
+        {
+            Spacing = 8,
+            Padding = new Thickness(12),
+            Margin = new Thickness(96, 0, 0, 0),
+            Background = Brush(ChromeColour.Surface),
+            CornerRadius = new CornerRadius(8),
+        };
+        box.Children.Add(Text("Remove location from this file?", Title, bold: true));
+        box.Children.Add(Text("This can't be undone from MediaViewer.", Body, UiFontSize - 2));
+        AutomationProperties_SetName(box, "Remove location from this file? This can't be undone from MediaViewer.");
+        Button cancel = MetaButton("Cancel", () =>
+        {
+            _metaConfirmLocation = false;
+            RenderMeta();
+        }, tip: "Esc");
+        AutomationProperties_SetName(cancel, "Cancel, keep the location");
+        Button remove = MetaButton("Remove", () =>
+        {
+            CancelMetaEdits();
+            SendLocation("");
+            RenderMeta();
+        }, tip: "Remove every GPS tag from this file");
+        AutomationProperties_SetName(remove, "Remove location");
+        box.Children.Add(Row(cancel, remove));
+        cancel.Loaded += (_, _) =>
+        {
+            try
+            {
+                cancel.Focus(FocusState.Keyboard);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine(ex);
+            }
+        };
+        return box;
+    }
+
+    private static void SaveMetaLocation(string text)
+    {
+        (uint kind, double lat, double lon, _) = MetaNative.ParseLocation(text);
+        if (kind == MetaNative.LocationInvalid) return;  // the note already says why
+        if (kind == MetaNative.LocationBlank)
+        {
+            if (!LocationCanClear) return;
+            _metaConfirmLocation = true;
+            RenderMeta();
+            return;
+        }
+        // Unchanged: no write, as an unchanged comment makes none.
+        bool same = _metaWhere is { } w && Math.Abs(w.Lat - lat) < 1e-9 && Math.Abs(w.Lon - lon) < 1e-9;
+        CancelMetaEdits();
+        if (!same) SendLocation(text);
+        RenderMeta();
+    }
+
+    // Native reads the text again (main.cpp location_change); blank removes.
+    private static void SendLocation(string text)
+    {
+        _treePending = "L\t" + text.Replace('\t', ' ').Replace('\r', ' ').Replace('\n', ' ') + "\n";
+        Send(Command.MetaTags);
     }
 
     private static void SaveMetaDate(string text)
@@ -1004,6 +1189,7 @@ public static partial class IslandHost
             _metaWhere = (a.Facts & MetaFactWhere) != 0
                 ? (a.WhereLat, a.WhereLon, (a.Facts & MetaFactAltitude) != 0 ? a.WhereAltitudeM : null)
                 : null;
+            _metaLocationFacts = a.Facts & (MetaFactLocationSet | MetaFactLocationClear | MetaFactLocationInOriginal);
 
             // Native re-pushes on every layout; identical data must not rebuild the
             // pane, which would drop the keyboard focus sitting on one of its rows.
@@ -1078,7 +1264,7 @@ public static partial class IslandHost
             // Esc in a field: forget what was typed, show the file's.
             bool drop = (a.Flags & MetaEditFlags.DropDraft) != 0 &&
                         (_metaEditingKey is not null || _metaEditingDate || _metaAddingTag ||
-                         _metaEditingComment);
+                         _metaEditingComment || _metaEditingLocation || _metaConfirmLocation);
             if (drop) CancelMetaEdits();
             if ((a.Flags & MetaEditFlags.DropDraft) != 0) _metaCommentAsked = false;
             // Ctrl+I: the comment editor opens once the item's record is in the

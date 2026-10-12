@@ -1443,13 +1443,6 @@ void revert_current_metadata(app_state* app) noexcept {
   }
 }
 
-// PR 29 (owner, 2026-09-26): any tag, from the pane's tag tree and its Add tag
-// form. The island parks one edit per line ("S\tkey\tvalue" sets, "R\tkey"
-// removes); they go as one queued write. #352: "L\ttext" is Summary's Location
-// editor, the text as typed: read again here by meta::parse_location (the
-// island's preview is only a preview), blank removes every GPS row, after the
-// island's confirmation. The Mac host's twins are main_mac.mm metaSetTag and
-// metaSetLocation.
 // #352: the Location editor's text as a write, or false with why not.
 bool location_change(app_state* app, const std::string& text, mv::meta::change<mv::meta::geo_point>& out,
                      std::string& why) {
@@ -1473,6 +1466,13 @@ bool location_change(app_state* app, const std::string& text, mv::meta::change<m
   return true;
 }
 
+// PR 29 (owner, 2026-09-26): any tag, from the pane's tag tree and its Add tag
+// form. The island parks one edit per line ("S\tkey\tvalue" sets, "R\tkey"
+// removes); they go as one queued write. #352: "L\ttext" is Summary's Location
+// editor, the text as typed: read again here by meta::parse_location (the
+// island's preview is only a preview), blank removes every GPS row, after the
+// island's confirmation. The Mac host's twins are main_mac.mm metaSetTag and
+// metaSetLocation.
 void set_tags_from_pane(app_state* app) noexcept {
   try {
     std::string parked;
