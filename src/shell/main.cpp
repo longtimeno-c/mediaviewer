@@ -1266,9 +1266,14 @@ void push_meta_pane(app_state* app) noexcept {
   if (!app || !app->chrome.meta_pane_visible()) return;
   push_meta_edit(app);
   if (app->meta_record) {
+    // #352: what the Location row may do, beside the position itself.
+    const mv::meta::location_rights rights = mv::meta::location_rights_of(*app->meta_record);
+    const std::int32_t location = (rights.can_set ? mv::shell::kMetaFactLocationSet : 0) |
+                                  (rights.can_clear ? mv::shell::kMetaFactLocationClear : 0) |
+                                  (rights.in_original ? mv::shell::kMetaFactLocationInOriginal : 0);
     app->chrome.set_meta_data(false, mv::meta::summary_table(*app->meta_record),
                               mv::meta::editable_properties_table(*app->meta_record),
-                              mv::meta::streams_table(*app->meta_record), &app->meta_record->s);
+                              mv::meta::streams_table(*app->meta_record), &app->meta_record->s, location);
     return;
   }
   std::uint32_t count = 0;
@@ -1438,11 +1443,36 @@ void revert_current_metadata(app_state* app) noexcept {
   }
 }
 
-// PR 29 (owner, 2026-09-26): any tag, from the pane's tag tree, its Add tag
-// form and Summary's Remove location. The island parks one edit per line
-// ("S\tkey\tvalue" sets, "R\tkey" removes); they go as one queued write, so
-// removing a location is one checked rewrite, not one per GPS tag. The Mac
-// host's twin is main_mac.mm metaSetTag.
+// PR 29 (owner, 2026-09-26): any tag, from the pane's tag tree and its Add tag
+// form. The island parks one edit per line ("S\tkey\tvalue" sets, "R\tkey"
+// removes); they go as one queued write. #352: "L\ttext" is Summary's Location
+// editor, the text as typed: read again here by meta::parse_location (the
+// island's preview is only a preview), blank removes every GPS row, after the
+// island's confirmation. The Mac host's twins are main_mac.mm metaSetTag and
+// metaSetLocation.
+// #352: the Location editor's text as a write, or false with why not.
+bool location_change(app_state* app, const std::string& text, mv::meta::change<mv::meta::geo_point>& out,
+                     std::string& why) {
+  const mv::meta::location_input in = mv::meta::parse_location(text);
+  if (in.k == mv::meta::location_input::kind::invalid) {
+    why = in.error;
+    return false;
+  }
+  if (in.k == mv::meta::location_input::kind::point) {
+    out = mv::meta::change<mv::meta::geo_point>::to(in.point);
+    return true;
+  }
+  const mv::meta::location_rights rights =
+      app->meta_record ? mv::meta::location_rights_of(*app->meta_record) : mv::meta::location_rights{};
+  if (!rights.can_clear) {
+    why = rights.in_original ? "This file's own location is in the original, which is never rewritten"
+                             : "There is no location to remove";
+    return false;
+  }
+  out = mv::meta::change<mv::meta::geo_point>::remove();
+  return true;
+}
+
 void set_tags_from_pane(app_state* app) noexcept {
   try {
     std::string parked;
@@ -1460,6 +1490,11 @@ void set_tags_from_pane(app_state* app) noexcept {
       if (end == std::string::npos) end = parked.size();
       const std::string line = parked.substr(at, end - at);
       at = end + 1;
+      if (line.size() >= 2 && line[0] == 'L' && line[1] == '\t') {
+        std::string why;
+        if (!location_change(app, line.substr(2), f.location, why)) refused = why;
+        continue;
+      }
       if (line.size() < 3 || line[1] != '\t' || (line[0] != 'S' && line[0] != 'R')) continue;
       const bool remove = line[0] == 'R';
       const std::size_t tab = remove ? std::string::npos : line.find('\t', 2);
@@ -1480,7 +1515,7 @@ void set_tags_from_pane(app_state* app) noexcept {
       ::MessageBeep(MB_ICONWARNING);
       notice_show(app, refused);
     }
-    if (f.tags.empty()) return;
+    if (f.empty()) return;
     app->meta_writer.submit(path, f);
     schedule_meta_write(app, kCommentDebounceMs);
   } catch (...) {
@@ -1564,6 +1599,7 @@ void on_meta_write_done(app_state* app, std::unique_ptr<meta_write_result> r) {
     notice_show(app, job.revert                     ? "Could not revert the metadata"
                      : job.fields.rating.touches()  ? "Could not save the rating"
                      : job.fields.comment.touches() ? "Could not save the comment"
+                     : job.fields.location.touches() ? "Could not save the location; nothing was changed"
                      : out.error == mv::status::invalid_arg
                          ? "That value does not fit the tag; nothing was changed"
                          : "Could not save the metadata; nothing was changed");
@@ -1607,6 +1643,9 @@ void on_meta_write_done(app_state* app, std::unique_ptr<meta_write_result> r) {
     } else if (!job.revert && job.fields.date_taken.touches()) {
       text = job.fields.date_taken.k == mv::meta::change<std::string>::kind::clear ? "Date taken removed"
                                                                                    : "Date taken saved";
+    } else if (!job.revert && job.fields.location.touches()) {
+      text = job.fields.location.k == mv::meta::change<mv::meta::geo_point>::kind::clear ? "Location removed"
+                                                                                         : "Location saved";
     } else if (!job.revert && !job.fields.tags.empty()) {
       text = job.fields.tags.size() == 1 ? std::string("Metadata saved")
                                          : std::to_string(job.fields.tags.size()) + " tags saved";

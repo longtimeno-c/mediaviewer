@@ -50,7 +50,7 @@ extern "C" {
  * wrong is a struct layout change nobody notices until a field reads garbage.
  * ------------------------------------------------------------------------- */
 #define MV_ABI_VERSION_MAJOR 0
-#define MV_ABI_VERSION_MINOR 19 /* 0.10: PR 13 / 14 clip jobs and keyframe index (mediaviewer_clip.h); 0.11: issue #44 mv_video_set_hold; 0.12: issue #42 mv_status eject error categories; 0.13: PR 30 keep_ranges; 0.14: Milestone H result listings (mv_folder_open_list); 0.15: mv_folder_item clip flag; 0.16: pages (mv_image_info.page_count, mv_folder_select_page); 0.17: docs/design/25 open add-ons (mv_open_addon_*); 0.18: docs/design/25 contributed commands (mv_addon_commands_json); 0.19: mv_folder_set_hidden_kinds */
+#define MV_ABI_VERSION_MINOR 20 /* 0.10: PR 13 / 14 clip jobs and keyframe index (mediaviewer_clip.h); 0.11: issue #44 mv_video_set_hold; 0.12: issue #42 mv_status eject error categories; 0.13: PR 30 keep_ranges; 0.14: Milestone H result listings (mv_folder_open_list); 0.15: mv_folder_item clip flag; 0.16: pages (mv_image_info.page_count, mv_folder_select_page); 0.17: docs/design/25 open add-ons (mv_open_addon_*); 0.18: docs/design/25 contributed commands (mv_addon_commands_json); 0.19: mv_folder_set_hidden_kinds; 0.20: #352 mv_meta_parse_location */
 
 /* Packed as (major << 16) | minor. [any-thread] */
 MV_API uint32_t MV_CALL mv_abi_version(void);
@@ -398,6 +398,28 @@ MV_API mv_status MV_CALL mv_folder_get_sort(mv_session_t session, int32_t* out_p
 #define MV_FOLDER_HIDE_AUDIO 0x1u
 #define MV_FOLDER_HIDE_DOCUMENTS 0x2u
 MV_API mv_status MV_CALL mv_folder_set_hidden_kinds(mv_session_t session, uint32_t mask);
+
+/* 0.20 (#352). The Metadata pane's Location editor: what a person typed, read
+ * by the core so both hosts accept the same forms (meta::parse_location in
+ * src/meta/meta.h: decimal "38.7979, -9.3907", N/S/E/W on either side,
+ * degrees-minutes-seconds "38°47′52″ N, 9°23′27″ W" or "38 47 52 N 9 23 27 W").
+ * Pure: no session, no file, no I/O. MV_OK for every answer, an unreadable
+ * one included (kind INVALID); MV_ERR_INVALID_ARG only for a null pointer or a
+ * struct_size below the fields through `text`.
+ *   POINT    lat / lon set; text = "38.79790° N, 9.39070° W" (the preview)
+ *   BLANK    whitespace only: the editor's "remove the location"; text empty
+ *   INVALID  text = one line saying why, for under the field
+ * [any-thread][no-block] */
+#define MV_LOCATION_POINT 0u
+#define MV_LOCATION_BLANK 1u
+#define MV_LOCATION_INVALID 2u
+typedef struct mv_location_input {
+  uint32_t struct_size; /* sizeof(mv_location_input), set by the caller */
+  uint32_t kind;        /* MV_LOCATION_* */
+  double lat, lon;      /* POINT: WGS 84 degrees, north / east positive */
+  char text[128];       /* UTF-8, NUL-terminated (see above) */
+} mv_location_input;
+MV_API mv_status MV_CALL mv_meta_parse_location(const char* utf8, mv_location_input* out);
 
 /* 0.6 (PR 9). The immediate subdirectories of `utf8_dir` for the folder tree:
  * hidden, system and dot directories skipped, sorted case-insensitively. One

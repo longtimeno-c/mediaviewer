@@ -812,7 +812,8 @@ void chrome_host::set_adjust_view(const adjust_view& view) noexcept {
 
 void chrome_host::set_meta_data(bool loading, const std::string& summary,
                                 const std::string& properties,
-                                const std::string& streams, const meta::summary* facts) noexcept {
+                                const std::string& streams, const meta::summary* facts,
+                                std::int32_t extra_facts) noexcept {
   if (!panels_attached_ || !set_meta_data_) return;
   chrome_meta_args args{};
   args.summary = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(summary.data()));
@@ -822,6 +823,7 @@ void chrome_host::set_meta_data(bool loading, const std::string& summary,
   args.properties_len = static_cast<std::int32_t>(properties.size());
   args.streams_len = static_cast<std::int32_t>(streams.size());
   args.loading = loading ? 1 : 0;
+  args.facts = extra_facts;
   if (facts) {
     if (facts->where) {
       args.facts |= kMetaFactWhere;

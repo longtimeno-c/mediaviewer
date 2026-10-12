@@ -660,6 +660,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)metaRevert;
 - (void)metaSetTag:(const char*)key value:(const char*)value;  // value NULL removes
 - (void)metaSetDate:(const char*)value;                        // NULL removes
+- (void)metaSetLocation:(const char*)text;                     // #352: as typed; blank removes
 - (uint64_t)metaFocusSeq;
 - (void)metaBlur;
 // File search (docs/design/16 "File search", 2026-09-28): shown over the gallery on
@@ -1117,6 +1118,11 @@ extern "C" bool mv_chrome_meta_facts_get(mv_chrome_meta_facts* out) {
       }
     }
     if (rec->s.ai_generated) f.flags |= MV_META_FACT_AI_GENERATED;
+    // #352: what the Summary's Location row may do.
+    const mv::meta::location_rights rights = mv::meta::location_rights_of(*rec);
+    if (rights.can_set) f.flags |= MV_META_FACT_LOCATION_SET;
+    if (rights.can_clear) f.flags |= MV_META_FACT_LOCATION_CLEAR;
+    if (rights.in_original) f.flags |= MV_META_FACT_LOCATION_IN_ORIGINAL;
   }
   std::memcpy(out, &f, size);
   return rec != nullptr;
@@ -1188,6 +1194,42 @@ extern "C" void mv_chrome_set_gallery_filter(uint64_t listing_generation, bool a
 extern "C" void mv_chrome_meta_set_tag(const char* key, const char* value) {
   (void)mv::shell::crash::note_native_call();
   if (g_chrome_app && key) [g_chrome_app metaSetTag:key value:value];
+}
+// #352: the Location editor. Parsing is pure and cheap, so the field's preview
+// calls it on every keystroke; the write goes through the PR 12 queue.
+extern "C" bool mv_chrome_meta_parse_location(const char* utf8, mv_chrome_location_input* out) {
+  if (!utf8 || !out || out->struct_size < sizeof(mv_chrome_location_input)) return false;
+  const mv::meta::location_input r = mv::meta::parse_location(utf8);
+  out->lat = out->lon = 0;
+  std::string text;
+  switch (r.k) {
+    case mv::meta::location_input::kind::point:
+      out->kind = MV_LOCATION_INPUT_POINT;
+      out->lat = r.point.lat;
+      out->lon = r.point.lon;
+      text = mv::meta::format_point(r.point);
+      break;
+    case mv::meta::location_input::kind::blank:
+      out->kind = MV_LOCATION_INPUT_BLANK;
+      break;
+    case mv::meta::location_input::kind::invalid:
+      out->kind = MV_LOCATION_INPUT_INVALID;
+      text = r.error;
+      break;
+  }
+  std::size_t n = std::min(text.size(), sizeof(out->text) - 1);
+  while (n > 0 && n < text.size() && (static_cast<unsigned char>(text[n]) & 0xC0) == 0x80) --n;
+  std::memcpy(out->text, text.data(), n);
+  out->text[n] = '\0';
+  return true;
+}
+extern "C" int32_t mv_chrome_meta_location_text(char* buf, int32_t size) {
+  const auto rec = g_chrome_app ? [g_chrome_app metaRecord] : nullptr;
+  return MvCopyOut(rec && rec->s.where ? mv::meta::format_location_input(*rec->s.where) : std::string{}, buf, size);
+}
+extern "C" void mv_chrome_meta_set_location(const char* utf8) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) [g_chrome_app metaSetLocation:utf8 ? utf8 : ""];
 }
 extern "C" void mv_chrome_meta_set_date(const char* value) {
   (void)mv::shell::crash::note_native_call();
@@ -7935,6 +7977,37 @@ static double mv_wall_seconds() {
   [self scheduleMetaWrite:0.05];
 }
 
+// #352: the Summary's Location editor. The text is read again here (the
+// field's preview is only a preview); blank removes every GPS row, which the
+// pane asks to confirm first. Windows' twin is main.cpp location_change.
+- (void)metaSetLocation:(const char*)text {
+  const mv::io::dir_entry* entry = [self currentEntry];
+  const auto rec = [self metaRecord];
+  if (!entry || !rec || [self refuseWriteTo:entry->path_utf8]) return;
+  const mv::meta::location_input in = mv::meta::parse_location(text);
+  mv::meta::write_fields f;
+  if (in.k == mv::meta::location_input::kind::invalid) {
+    NSBeep();
+    [self noticeShow:std::string(in.error)];
+    return;
+  }
+  if (in.k == mv::meta::location_input::kind::point) {
+    f.location = mv::meta::change<mv::meta::geo_point>::to(in.point);
+  } else {
+    const mv::meta::location_rights rights = mv::meta::location_rights_of(*rec);
+    if (!rights.can_clear) {
+      NSBeep();
+      [self noticeShow:rights.in_original
+                           ? std::string("This file's own location is in the original, which is never rewritten")
+                           : std::string("There is no location to remove")];
+      return;
+    }
+    f.location = mv::meta::change<mv::meta::geo_point>::remove();
+  }
+  _metaWriter.submit(entry->path_utf8, f);
+  [self scheduleMetaWrite:0.05];
+}
+
 - (void)metaRevert {
   const mv::io::dir_entry* entry = [self currentEntry];
   if (!entry || _metaWritten.count(entry->path_utf8) == 0 || [self refuseWriteTo:entry->path_utf8]) return;
@@ -8001,6 +8074,7 @@ static double mv_wall_seconds() {
     [self noticeShow:job.revert                  ? std::string("Could not revert the metadata")
                      : job.fields.rating.touches() ? std::string("Could not save the rating")
                      : job.fields.comment.touches() ? std::string("Could not save the comment")
+                     : job.fields.location.touches() ? std::string("Could not save the location; nothing was changed")
                      : out.error == mv::status::invalid_arg
                          ? std::string("That value does not fit the tag; nothing was changed")
                          : std::string("Could not save the metadata; nothing was changed")];
@@ -8046,6 +8120,9 @@ static double mv_wall_seconds() {
     } else if (!job.revert && job.fields.date_taken.touches()) {
       text = job.fields.date_taken.k == mv::meta::change<std::string>::kind::clear ? "Date taken removed"
                                                                                   : "Date taken saved";
+    } else if (!job.revert && job.fields.location.touches()) {
+      text = job.fields.location.k == mv::meta::change<mv::meta::geo_point>::kind::clear ? "Location removed"
+                                                                                        : "Location saved";
     } else if (!job.revert && !job.fields.tags.empty()) {
       text = job.fields.tags.size() == 1 ? "Metadata saved"
                                          : std::to_string(job.fields.tags.size()) + " tags saved";

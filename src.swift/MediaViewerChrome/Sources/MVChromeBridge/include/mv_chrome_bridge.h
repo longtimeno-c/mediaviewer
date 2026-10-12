@@ -280,6 +280,10 @@ enum {
   MV_META_FACT_WHERE = 1u << 0,         // lat / lon are set
   MV_META_FACT_ALTITUDE = 1u << 1,      // altitude_m is set
   MV_META_FACT_AI_GENERATED = 1u << 2,  // positive evidence only; clear = not stated
+  // #352 (meta::location_rights_of): what the Summary's Location row may do.
+  MV_META_FACT_LOCATION_SET = 1u << 3,          // Edit can save a position
+  MV_META_FACT_LOCATION_CLEAR = 1u << 4,        // a blank save can remove it
+  MV_META_FACT_LOCATION_IN_ORIGINAL = 1u << 5,  // the original's own fix: never removed
 };
 typedef struct mv_chrome_meta_facts {
   uint32_t struct_size;  // sizeof(mv_chrome_meta_facts), in
@@ -329,6 +333,30 @@ void mv_chrome_meta_set_tag(const char* key, const char* value);
 // "YYYY-MM-DD HH:MM:SS" into every capture-time tag the file carries; NULL
 // removes them all.
 void mv_chrome_meta_set_date(const char* value);
+
+// #352 (owner, 2026-10-12): the Summary's Location editor. parse_location reads
+// what was typed exactly as the write will (meta::parse_location: decimal, N/S/E/W,
+// degrees-minutes-seconds); pure and cheap, for the field's live preview. False
+// only for a null pointer or a short struct_size. [any-thread]
+enum {
+  MV_LOCATION_INPUT_POINT = 0,    // lat / lon set; text = "38.79790° N, 9.39070° W"
+  MV_LOCATION_INPUT_BLANK = 1,    // whitespace only: remove the location; text empty
+  MV_LOCATION_INPUT_INVALID = 2,  // text = why, one line
+};
+typedef struct mv_chrome_location_input {
+  uint32_t struct_size;  // sizeof(mv_chrome_location_input), in
+  uint32_t kind;         // MV_LOCATION_INPUT_*
+  double lat, lon;
+  char text[128];        // UTF-8, NUL-terminated
+} mv_chrome_location_input;
+bool mv_chrome_meta_parse_location(const char* utf8, mv_chrome_location_input* out);
+// The editor's starting text for the record's position ("38.7979, -9.3907"); ""
+// when it has none. Returns the length needed, like the tables.
+int32_t mv_chrome_meta_location_text(char* buf, int32_t size);
+// Queues the position as typed (read again by the core); blank removes every
+// GPS row -- the pane confirms that first. Refused with a beep and a notice
+// when the text does not read or the row cannot remove (MV_META_FACT_LOCATION_*).
+void mv_chrome_meta_set_location(const char* utf8);
 
 // One line for the command bar: what a key or a click just did ("★★★★☆  saved",
 // "Could not save the rating"). The generation moves when the text changes; the
