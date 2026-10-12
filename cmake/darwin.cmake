@@ -787,6 +787,8 @@ if(MV_BUILD_TESTS)
     # Issue #167: the folder listing reads size + mtime in bulk; links stat'ed.
     tests/test_dir_mac.cpp
     tests/test_key_router.cpp
+    # Issue #239: every command id is handled or explicitly excluded, per host.
+    tests/test_command_coverage.cpp
     tests/test_key_router_review.cpp
     tests/test_write_guard.cpp
     tests/test_photos_backup.cpp
