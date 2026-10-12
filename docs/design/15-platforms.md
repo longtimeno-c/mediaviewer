@@ -96,13 +96,16 @@ Core Audio headers (`#include` or `#import`) in the same places outside the `*_m
 
 ## Shaders
 
-Every GPU kernel has hand-written **HLSL and MSL twins**: the HLSL is embedded in the D3D11 backend
-(`gfx/blit.cpp`, `gfx/video_blit.cpp`, the edit kernels) and the MSL in the Metal backend
-(`gfx/blit_metal.mm`, `gfx/video_blit_metal.mm`), compiled from source at startup
-(`newLibraryWithSource`). Constant-buffer layouts are pinned with `static_assert`s on both sides. The
+Every GPU kernel has hand-written **HLSL and MSL twins**. The HLSL lives in the D3D11 backend as
+`gfx/blit.hlsl` and `gfx/video_blit.hlsl`, compiled at **build time** by the Windows SDK's `fxc`
+(SM 5.0, `/O3`) into one `const BYTE` header per entry point, so a device create (launch, device
+lost, adapter change) never runs `D3DCompile` (issue #163; CMake `mv_fxc`). The MSL is embedded in
+the Metal backend (`gfx/blit_metal.mm`, `gfx/video_blit_metal.mm`) and compiled from source at
+startup (`newLibraryWithSource`). Constant-buffer layouts are pinned with `static_assert`s on both sides. The
 colour-adjust kernel is written once ([`src/gfx/adjust_kernel.h`](../../src/gfx/adjust_kernel.h)) in
 the syntax subset HLSL, MSL and C++ share, and pasted into both shaders and the C++ export bake, so the
-twins are the same text by construction. There is no cross-compiler, no SPIR-V and no shared bytecode.
+twins are the same text by construction. The macro itself is in `gfx/adjust_kernel_tokens.h`, which
+holds no C++, so `blit.hlsl` takes it through fxc's preprocessor and the MSL takes its stringified text. There is no cross-compiler, no SPIR-V and no shared bytecode.
 
 ## Milestone F — the Mac host
 

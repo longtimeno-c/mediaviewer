@@ -59,6 +59,7 @@ add_library(mv::core ALIAS mv_core)
 
 add_library(mv_gfx STATIC
   src/gfx/adjust_kernel.h
+  src/gfx/adjust_kernel_tokens.h
   src/gfx/colour_desc.cpp
   src/gfx/colour_desc.h
   src/gfx/metal_pacer.cpp
