@@ -37,6 +37,12 @@ struct interval {
   std::uint64_t end;  // exclusive
 };
 
+struct mem_range {
+  std::uint64_t va;
+  std::uint64_t size;
+  std::uint64_t rva;
+};
+
 class byte_guard {
  public:
   explicit byte_guard(std::size_t n) : protected_(n, 0) {}
@@ -429,6 +435,135 @@ void scrub_all_encodings(std::span<std::uint8_t> bytes, const byte_guard* guard,
   }
 }
 
+// macOS lays argv and the environment at the high end of the main stack, so
+// step 1 keeps them. A username buried in an email local-part
+// ("alice.jones@…", or "alicejones@…") is not a bounded identity token.
+// Zero the slab. Windows keeps the same bytes in the PEB, which step 1
+// already zeros; a copy that did land on a stack is caught here too.
+constexpr std::uint64_t kEnvScanBytes = 256ull * 1024ull;
+constexpr int kMinEnvEntries = 4;
+constexpr int kMaxArgvStrings = 64;
+constexpr std::size_t kMaxEnvString = 8192;
+constexpr std::size_t kMaxEnvKey = 64;
+
+bool env_key_start(unsigned char c) noexcept {
+  return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_';
+}
+bool env_key_cont(unsigned char c) noexcept {
+  return env_key_start(c) || (c >= '0' && c <= '9');
+}
+bool env_value_byte(unsigned char c) noexcept { return c >= 0x20 && c != 0x7F; }
+
+bool known_env_key(const std::uint8_t* p, std::size_t n) noexcept {
+  auto is = [&](std::string_view lit) {
+    if (n != lit.size()) return false;
+    for (std::size_t i = 0; i < n; ++i) {
+      if (p[i] != static_cast<unsigned char>(lit[i])) return false;
+    }
+    return true;
+  };
+  return is("PATH") || is("HOME") || is("USER") || is("LOGNAME") || is("SHELL") ||
+         is("TMPDIR") || is("USERNAME") || is("USERPROFILE") || is("TMP") || is("TEMP") ||
+         is("PWD") || is("SystemRoot");
+}
+
+// Length of a NUL-terminated KEY=value at `i`, including the NUL, or 0.
+// `marker` is set when the key is one an environment block actually carries.
+std::size_t env_string_at(std::span<const std::uint8_t> bytes, std::size_t i, bool* marker) noexcept {
+  if (i >= bytes.size() || !env_key_start(bytes[i])) return 0;
+  std::size_t k = i + 1;
+  while (k < bytes.size() && (k - i) < kMaxEnvKey && env_key_cont(bytes[k])) ++k;
+  if (k == i || k >= bytes.size() || bytes[k] != '=') return 0;
+  if (known_env_key(bytes.data() + i, k - i)) *marker = true;
+  ++k;
+  const std::size_t value = k;
+  while (k < bytes.size() && (k - value) < kMaxEnvString && bytes[k] != 0) {
+    if (!env_value_byte(bytes[k])) return 0;
+    ++k;
+  }
+  if (k >= bytes.size() || bytes[k] != 0) return 0;
+  return (k + 1) - i;
+}
+
+// Argv strings are packed immediately below the environment, one NUL apart.
+// Stop at a double NUL or a non-text byte (the pointer vector under the slab).
+std::size_t extend_argv_slab(std::span<const std::uint8_t> bytes, std::size_t region_begin,
+                             std::size_t env_begin) noexcept {
+  std::size_t b = env_begin;
+  for (int n = 0; n < kMaxArgvStrings && b > region_begin; ++n) {
+    if (bytes[b - 1] != 0) break;
+    const std::size_t nul = b - 1;
+    if (nul == region_begin) break;
+    std::size_t q = nul;
+    bool ok = true;
+    while (q > region_begin && bytes[q - 1] != 0) {
+      if (!env_value_byte(bytes[q - 1]) || (nul - (q - 1)) > kMaxEnvString) {
+        ok = false;
+        break;
+      }
+      --q;
+    }
+    if (!ok || q == nul) break;
+    b = q;
+  }
+  return b;
+}
+
+void zero_span(std::span<std::uint8_t> dump, std::size_t begin, std::size_t end, byte_guard& guard,
+               scrub_report& report) noexcept {
+  if (begin >= end || begin >= dump.size()) return;
+  end = std::min(end, dump.size());
+  for (std::size_t i = begin; i < end; ++i) {
+    if (dump[i] != 0 && guard.writable(i)) {
+      dump[i] = 0;
+      ++report.zeroed_bytes;
+    }
+  }
+}
+
+void zero_environment_on_stacks(std::span<std::uint8_t> dump, const std::vector<mem_range>& ranges,
+                                const std::vector<interval>& stacks, byte_guard& guard,
+                                scrub_report& report) noexcept {
+  for (const auto& r : ranges) {
+    if (r.rva >= dump.size() || r.size == 0) continue;
+    const std::uint64_t size = std::min<std::uint64_t>(r.size, dump.size() - r.rva);
+    for (const auto& st : stacks) {
+      const std::uint64_t begin = std::max(r.va, st.begin);
+      const std::uint64_t end = std::min(r.va + size, st.end);
+      if (begin >= end) continue;
+      const std::uint64_t scan_va = end > kEnvScanBytes ? std::max(begin, end - kEnvScanBytes) : begin;
+      const std::size_t file_begin = static_cast<std::size_t>(r.rva + (scan_va - r.va));
+      const std::size_t file_end = static_cast<std::size_t>(r.rva + (end - r.va));
+      if (file_begin >= dump.size() || file_end > dump.size() || file_begin >= file_end) continue;
+      const std::span<const std::uint8_t> window(dump.data() + file_begin, file_end - file_begin);
+      for (std::size_t i = 0; i < window.size();) {
+        if (i > 0 && window[i - 1] != 0) {
+          ++i;
+          continue;
+        }
+        bool marker = false;
+        int count = 0;
+        std::size_t p = i;
+        for (;;) {
+          bool one = false;
+          const std::size_t n = env_string_at(window, p, &one);
+          if (n == 0) break;
+          marker = marker || one;
+          p += n;
+          ++count;
+        }
+        if (count >= kMinEnvEntries && marker) {
+          const std::size_t slab = extend_argv_slab(window, 0, i);
+          zero_span(dump, file_begin + slab, file_begin + p, guard, report);
+          i = p;
+          continue;
+        }
+        ++i;
+      }
+    }
+  }
+}
+
 }  // namespace
 
 bool minidump_is_scrubbed(std::span<const std::uint8_t> dump) noexcept {
@@ -454,11 +589,6 @@ scrub_report scrub_minidump(std::span<std::uint8_t> dump, const scrub_options& o
   guard.protect(dir, static_cast<std::uint64_t>(streams) * kDirEntryBytes);
 
   std::vector<interval> stacks;
-  struct mem_range {
-    std::uint64_t va;
-    std::uint64_t size;
-    std::uint64_t rva;
-  };
   std::vector<mem_range> ranges;
 
   for (std::uint32_t s = 0; s < streams; ++s) {
@@ -555,6 +685,9 @@ scrub_report scrub_minidump(std::span<std::uint8_t> dump, const scrub_options& o
       stack_files.push_back({file, file + (end - begin)});
     }
   }
+
+  // 1b. The environment (and the argv strings against it) on a thread stack.
+  zero_environment_on_stacks(dump, ranges, stacks, guard, report);
 
   // 2. Text everywhere else.
   const auto ids = prepare_identities(options);
