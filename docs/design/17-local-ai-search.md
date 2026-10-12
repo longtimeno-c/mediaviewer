@@ -213,7 +213,7 @@ What each asset's tags say, so Local search can filter on them:
   the search fields as shown (camera, lens, made-with, software, title, caption, keywords,
   creator; [06](06-metadata.md) "Search text"), U+001F between fields. The engine matches the
   same fields in memory, folded with the hosts' rule, so a result can say which field matched;
-  `index_db::match_text` is the SQL path for a reader. A trigger drops a row with its asset.
+  `index_db::match_text` is the SQL path for a reader; it quotes every typed word (`fts_phrases`), so typed text is never FTS5 syntax. A trigger drops a row with its asset.
   SQLite without FTS5 gets a plain table of the same shape (`meta('asset_text')` says which). The
   vcpkg `sqlite3[fts5]` feature is on for both platforms.
 - **`place` / `country` / `region` stay NULL.** Place names are the Places add-on's
@@ -226,7 +226,7 @@ What each asset's tags say, so Local search can filter on them:
   `tags = 0` after each walk, 128 per transaction, up to two seconds a turn, waiting while
   `should_yield` says the viewer is busy. The `tags` column is the bookmark, so a kill, a
   restart or an index migrated from schema 3 resumes where it stopped and reads nothing twice.
-  Photos library items take `PHAsset.location` and `creationDate` from the last enumeration.
+  Photos library items take `PHAsset.location` and `creationDate` from the last enumeration. A host without `tag_facts` (the pack updated before the app) backfills nothing and leaves `tags = 0`, so the first host that has it fills them; a failed commit waits the loop's usual second before trying again.
   An exported index (Sharing an index) carries no tags; the receiver reads them itself.
 - `wait_idle` waits for the backfill too.
 People live in a separate `faces.db`; the label bars in `labels.f32`;
@@ -389,7 +389,7 @@ same thing by the same words. Terms narrow each other (AND).
 | `ai:yes`, `ai:no`, `made:yes` | AI provenance (positive evidence: C2PA / IPTC trained-algorithmic source, or a known generator); `ai:no` is every file without that evidence |
 | `made:chatgpt`, `ai:firefly`, `-made:midjourney` | the generator the file names ("made with") contains the text |
 | `place:portugal`, `in:lisbon`, `-place:spain` | where it was taken. `in:` is a date when it reads as one (`in:2024`) and a place otherwise; a word that starts with a digit is never a place; `in:` never names a folder (the scope does). The engine keeps the geotagged assets; which place matches is the Places add-on's search provider's answer, merged by the slot registry ([25](25-open-addons.md) §7) |
-| `R5`, `chatgpt`, `holiday` (plain words) | besides the picture / sound / speech search, files whose tags hold every word come first, with the tag as the snippet (`MV_AI_MATCH_TAGS`, shown unquoted under the tile) |
+| `R5`, `chatgpt`, `holiday` (plain words) | besides the picture / sound / speech search, files whose tags hold every word at the start of a word ("r5" in "Canon EOS R5", "70mm" in "RF24-70mm"; not "cat" inside "location") come first, with the tag as the snippet (`MV_AI_MATCH_TAGS`, shown unquoted under the tile) |
 
 Lead-ins ("pull up all the …", "show me …", "find …") are trimmed. Typing a name: the panel
 names people for the word being typed (`suggest_json`; prefix first, then a near spelling of one
@@ -401,7 +401,7 @@ scope"). Per keystroke the parse is linear in the query plus one `SELECT` of the
 
 Words fold with the shared rule (`core/fold.h`, the hosts' name fold): decompose, drop marks,
 lowercase; ß, æ, ø and ł stay themselves. Before #291 the pack's own Latin-1 fold turned ß into
-"ss" and æ into "ae"; "strasse" no longer finds "Straße", exactly as in file search.
+"ss" and æ into "ae"; "strasse" no longer finds "Straße", as in file search on Windows and its tag half on the Mac (the Mac chrome's name half uses Swift's full case folding, which does turn ß into "ss"; see `core/fold.h`).
 
 **Owed:** `place:` in Local search narrows to geotagged assets and relies on the Places
 provider's rows for the place itself. Over the whole index (folder "") the provider gets no

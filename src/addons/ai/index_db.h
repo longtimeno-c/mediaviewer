@@ -48,6 +48,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "core/result.h"
@@ -286,8 +287,12 @@ class index_db {
   // Every asset with tags read, for the engine's memory at start.
   [[nodiscard]] expected each_tags(const std::function<void(const asset_tags&)>& visit);
   // An FTS5 MATCH over asset_text (empty when the index has no FTS5). For a
-  // reader that does not keep the text in memory.
-  [[nodiscard]] std::vector<std::int64_t> match_text(const std::string& fts_query, std::size_t limit);
+  // reader that does not keep the text in memory. `words` is what was typed:
+  // each word is matched as a quoted string (fts_phrases), never parsed as
+  // FTS5 query syntax.
+  [[nodiscard]] std::vector<std::int64_t> match_text(const std::string& words, std::size_t limit);
+  // `typed` as an FTS5 query of quoted strings, one per word, ANDed.
+  [[nodiscard]] static std::string fts_phrases(std::string_view typed);
 
   // Specs that have rows (a half-migrated index has two).
   [[nodiscard]] std::vector<std::string> specs();

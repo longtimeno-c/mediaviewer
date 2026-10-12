@@ -1322,7 +1322,19 @@ TEST_CASE("schema 3 migrates to 4: the tag columns and asset_text, keeping the a
     CHECK(seen == 1);
     if ((*d)->meta("asset_text") == "fts5") {
       CHECK((*d)->match_text("r5", 10) == std::vector<std::int64_t>{all[0].id});
+      CHECK((*d)->match_text("canon r5", 10) == std::vector<std::int64_t>{all[0].id});
+      // Typed text is never FTS5 syntax: operators, quotes, column filters
+      // and a lone star are words (no match, and never an SQL error).
+      for (const char* hostile : {"r5 OR", "\"", "canon\" OR \"x", "NEAR(canon r5)", "text:canon", "*", "-r5",
+                                  "^canon", "r5 AND NOT canon"}) {
+        CAPTURE(hostile);
+        const auto hits = (*d)->match_text(hostile, 10);
+        CHECK(hits.size() <= 1);
+      }
+      CHECK((*d)->match_text("nikon OR canon", 10).empty());  // OR is a word, not an operator
     }
+    CHECK(mv::ai::index_db::fts_phrases(" a  \"b\" ") == "\"a\" \"\"\"b\"\"\"");
+    CHECK(mv::ai::index_db::fts_phrases("").empty());
     // A changed file reads its tags again.
     const mv::ai::index_db::seen_file f{"/photos/r5.jpg", 6, 11, mv::ai::asset_kind::photo};
     REQUIRE((*d)->see_assets(1, std::span<const mv::ai::index_db::seen_file>(&f, 1), (*d)->next_generation()));
@@ -1436,6 +1448,21 @@ TEST_CASE("camera:, ai:, made:, place: and a plain tag word in Local search", "[
   const auto gpt_rows = r.rows(gpt);
   REQUIRE_FALSE(gpt_rows.empty());
   CHECK(gpt_rows.front().first == "green_gpt.jpg");
+  // #291 review: a tag word matches where a word starts ("r5", "24-70"), not
+  // anywhere inside one: "anon" is in "Canon" but is no tag hit.
+  const std::uint64_t mid = r.eng->search_text("anon", "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+  REQUIRE(r.eng->wait_search(mid, 5000));
+  const auto mid_rows = r.rows(mid);
+  for (std::size_t i = 0; i < mid_rows.size(); ++i) {
+    auto res = r.eng->result_at(mid, static_cast<std::uint32_t>(i));
+    REQUIRE(res);
+    CHECK((res->match & MV_AI_MATCH_TAGS) == 0);
+  }
+  const std::uint64_t lens = r.eng->search_text("70mm", "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+  REQUIRE(r.eng->wait_search(lens, 5000));
+  const auto lens_rows = r.rows(lens);
+  REQUIRE_FALSE(lens_rows.empty());
+  CHECK(lens_rows.front().first == "red_r5.jpg");
 }
 
 TEST_CASE("the tag backfill resumes after a restart and reads nothing twice", "[ai][engine][tags]") {

@@ -915,9 +915,32 @@ expected index_db::each_tags(const std::function<void(const asset_tags&)>& visit
   return {};
 }
 
-std::vector<std::int64_t> index_db::match_text(const std::string& fts_query, std::size_t limit) {
+std::string index_db::fts_phrases(std::string_view typed) {
+  // Every word a quoted FTS5 string (a quote inside doubled), joined by
+  // spaces (AND): the user's text is never FTS5 syntax, so NEAR, OR, -, *,
+  // column filters and an unbalanced quote are words like any other.
+  std::string out;
+  std::size_t i = 0;
+  const auto space = [](char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\x1f'; };
+  while (i < typed.size()) {
+    while (i < typed.size() && space(typed[i])) ++i;
+    if (i >= typed.size()) break;
+    if (!out.empty()) out.push_back(' ');
+    out.push_back('"');
+    while (i < typed.size() && !space(typed[i])) {
+      if (typed[i] == '"') out.push_back('"');
+      out.push_back(typed[i++]);
+    }
+    out.push_back('"');
+  }
+  return out;
+}
+
+std::vector<std::int64_t> index_db::match_text(const std::string& words, std::size_t limit) {
   std::lock_guard lock(m_);
   std::vector<std::int64_t> out;
+  const std::string fts_query = fts_phrases(words);
+  if (fts_query.empty()) return out;
   {
     stmt k(db_, "SELECT value FROM meta WHERE key = 'asset_text'");
     if (!k.step_row() || k.text(0) != "fts5") return out;

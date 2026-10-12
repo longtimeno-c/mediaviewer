@@ -238,12 +238,26 @@ std::string folded_fields(const std::vector<std::string>& fields) {
   }
   return out;
 }
-// search.h's match_fields: every word somewhere; the first word's field, or -1.
+// Where `word` starts a word of `folded` (at its start, or after a byte that
+// is not a letter or digit: "r5" in "canon eos r5", "70" in "rf24-70mm"), or
+// npos. A bare substring would rank "cat" in "location" or "dedicated" above
+// every picture of a cat.
+std::size_t find_word_start(const std::string& folded, const std::string& word) {
+  const auto letter = [](unsigned char c) {
+    return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c >= 0x80;
+  };
+  for (std::size_t at = folded.find(word); at != std::string::npos; at = folded.find(word, at + 1)) {
+    if (at == 0 || !letter(static_cast<unsigned char>(folded[at - 1]))) return at;
+  }
+  return std::string::npos;
+}
+// search.h's match_fields, at word starts (Local search ranks these first):
+// every word somewhere; the first word's field, or -1.
 int match_fields(const std::string& folded, const std::vector<std::string>& words) {
   if (words.empty() || folded.empty()) return -1;
   int first = -1;
   for (std::size_t w = 0; w < words.size(); ++w) {
-    const std::size_t at = folded.find(words[w]);
+    const std::size_t at = find_word_start(folded, words[w]);
     if (at == std::string::npos) return -1;
     if (w == 0) first = static_cast<int>(std::count(folded.begin(), folded.begin() + static_cast<std::ptrdiff_t>(at), '\x1f'));
   }
@@ -269,6 +283,13 @@ void engine::adopt_tags(const asset_tags& t) {
 bool engine::backfill_tags() {
   if (!tags_pending_.load()) return false;
   const bool facts = host_.has_tag_facts();
+  if (!facts) {
+    // A host older than tag_facts (the pack updated first): leave every row
+    // at tags = 0, so the first host that serves them fills them, rather
+    // than marking them read with nothing in them.
+    tags_pending_ = false;
+    return false;
+  }
   const auto started = std::chrono::steady_clock::now();
   // A few seconds at most per control-loop turn: a scan or a model load waits
   // no longer than that behind it.
@@ -296,7 +317,7 @@ bool engine::backfill_tags() {
           t.lon = p->second.lon;
           if (p->second.created != 0) t.taken_at = p->second.created;
         }
-      } else if (facts) {
+      } else {
         if (auto f = host_.tag_facts(a.path)) {
           if (f->flags & MV_ADDON_TAG_HAS_DATE) t.taken_at = f->taken_unix;
           if (f->flags & MV_ADDON_TAG_HAS_LOCATION) {
@@ -314,7 +335,10 @@ bool engine::backfill_tags() {
       }
       rows.push_back(std::move(t));
     }
-    if (!db_->commit_tags(rows)) return true;  // try again next turn
+    // Try again next turn, after the loop's usual wait: "more" here would
+    // skip that wait, and an index that cannot take the write (a full disk)
+    // would spin the control thread re-reading the same 128 files.
+    if (!db_->commit_tags(rows)) return false;
     for (const asset_tags& t : rows) adopt_tags(t);
   }
   return true;
