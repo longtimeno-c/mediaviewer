@@ -68,6 +68,15 @@ normalises to name.
 `check-hostable-core.ps1` enforce both. `shellext/` is a host module beside `shell/`
 (2026-09-25), and `shell` may include `nle` (2026-09-28).
 
+**Document font bytes are read above codec (2026-10-12).** Laying out a page picks font files lazily,
+including per-character fallbacks, so the decode caller cannot pass the bytes in up front. `codec/`
+still names the file (`fonts::find`, CoreText / DirectWrite). The read used to be `io::read_all`
+inside `codec/text.cpp`, the only `codec → io` include and a sideways edge between peers. It is now
+`text::set_font_reader`, a function pointer `image/pipeline.cpp` installs before main, and
+`tools/check-module-graph.ps1` rejects `codec` including `io`. The docx fuzzer links `codec` without
+`image` and installs the same reader over `io::read_all`. With no reader the face slot stays -1 and
+layout continues. Issue #286.
+
 **Settings writes are off the UI thread (2026-09-14).** "Settings writes on the UI thread" is
 closed. `settings.ini` is read once into an in-memory document (`shell/settings_store`). Saves
 mutate it read-copy-update and hand the newest immutable snapshot to a one-thread persist worker,

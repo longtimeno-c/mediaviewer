@@ -36,7 +36,9 @@ $allowed = [ordered]@{
     'core'   = @('core')
     'io'     = @('io', 'core')
     'gfx'    = @('gfx', 'core')
-    'codec'  = @('codec', 'gfx', 'io', 'core')
+    # codec does not include io. Document font bytes are a reader image/
+    # installs (text::set_font_reader); fonts_*.cpp only names the file.
+    'codec'  = @('codec', 'gfx', 'core')
     'image'  = @('image', 'codec', 'gfx', 'io', 'core')
     'meta'   = @('meta', 'codec', 'gfx', 'io', 'core')
     'player' = @('player', 'codec', 'gfx', 'io', 'core')
