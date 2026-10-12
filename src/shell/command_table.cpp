@@ -285,6 +285,12 @@ constexpr binding kBindings[] = {
     // PageDown inside one stop; plain PageUp / PageDown still skip ten stops.
     row(key::page_down, mod_ctrl, kBrowse | kIsland, repeat, next_page),
     row(key::page_up, mod_ctrl, kBrowse | kIsland, repeat, prev_page),
+    // Issue #361. Appended so every row above keeps its Settings index. On a
+    // clip that is playing, or with the filmstrip hidden, ← → are Q / E
+    // (mode::skim layers over video). Paused with the strip up they walk the
+    // folder (kWalk, first rows); A / D walk it in every case.
+    row(key::left, mod_none, kSkim, tap_hold, skim_back, skim_back, skim_settle),
+    row(key::right, mod_none, kSkim, tap_hold, skim_forward, skim_forward, skim_settle),
 };
 
 // The router's index stores row + 1 in a byte.

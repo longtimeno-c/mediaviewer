@@ -4499,8 +4499,10 @@ static BOOL MvCopyUtf8(const std::string& text, char* buf, int32_t size) {
     under.popup_open = false;
     const mv::shell::mode under_mode = mv::shell::resolve_mode(under);
     auto modes = static_cast<std::int32_t>(mv::shell::mask_of(under_mode));
-    // Trim layers over video (key_router.cpp), so `?` lists both, as on Windows.
-    if (under_mode == mv::shell::mode::trim) modes |= mv::shell::kVideo;
+    // Trim and skim layer over video (key_router.cpp), so `?` lists both, as on Windows.
+    if (under_mode == mv::shell::mode::trim || under_mode == mv::shell::mode::skim) {
+      modes |= mv::shell::kVideo;
+    }
     [MVChromeHost reloadHelpWithModes:modes];
   }
   self.helpHost.hidden = !visible;
@@ -5412,6 +5414,12 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   s.pane_open = _metaPaneVisible || _treeVisible || _adjust.visible() || _jobsVisible || _ws.open;
   s.crop = _edits.crop_active();
   s.trim = _trim.armed() && s.item == mv::shell::item_kind::clip;
+  // Issue #361: on a clip, ← → skip ±2 s while it plays or with the strip hidden.
+  s.filmstrip_visible = [self filmstripVisible];
+  if (s.item == mv::shell::item_kind::clip) {
+    const auto st = _lab.video_status_snapshot();
+    s.clip_playing = st.active && st.playing;
+  }
   // Milestone H: Esc from a result list is the path bar's "Back to folder".
   s.list_open = _listOpen;
   return s;
