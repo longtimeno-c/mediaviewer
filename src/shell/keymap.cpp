@@ -244,6 +244,13 @@ keymap_result apply_keymap(std::span<const addon::keymap_binding> bindings,
       out.skipped.push_back("unknown command: " + b.command);
       continue;
     }
+    // A built-in row its add-on's own rows supersede keeps no key: binding
+    // it would put the old row back ahead of the add-on's (the pack can name
+    // the add-on's row as "<add-on id>/<command id>").
+    if (command_superseded(live[static_cast<std::size_t>(rows.front())].command)) {
+      out.skipped.push_back("superseded by its add-on's own command: " + b.command);
+      continue;
+    }
     for (std::size_t j = 0; j < b.keys.size(); ++j) {
       if (j >= rows.size()) {
         out.skipped.push_back(b.command + " has " + std::to_string(rows.size()) +

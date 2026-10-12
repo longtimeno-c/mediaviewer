@@ -552,17 +552,23 @@ std::span<const binding> live_bindings() noexcept { return live_store(); }
 // has built in for it (Import's two, docs/design/18): those lose their key, so the
 // router never answers them ahead of the contributed row on the same key,
 // and get it back when the add-on's rows go. Their indices never move.
-static void apply_superseded(std::vector<binding>& table) {
+static bool family_superseded(addon_family family) {
+  if (family == addon_family::none) return false;
   const addon_slots& s = addon_store();
-  const auto superseded = [&s](addon_family family) {
-    const char* id = family == addon_family::import ? "import" : family == addon_family::ai ? "ai" : "";
-    return std::any_of(s.rows.begin(), s.rows.end(),
-                       [id](const addon_command_row& r) { return r.addon == id; });
-  };
+  const char* id = family == addon_family::import ? "import" : family == addon_family::ai ? "ai" : "";
+  return std::any_of(s.rows.begin(), s.rows.end(),
+                     [id](const addon_command_row& r) { return r.addon == id; });
+}
+
+bool command_superseded(command_id id) noexcept {
+  return family_superseded(addon_family_of(id));
+}
+
+static void apply_superseded(std::vector<binding>& table) {
   for (std::size_t i = 0; i < std::size(kBindings); ++i) {
     const addon_family family = addon_family_of(kBindings[i].command);
     if (family == addon_family::none) continue;
-    if (superseded(family)) {
+    if (family_superseded(family)) {
       table[i].k = key::none;
     } else if (table[i].k == key::none) {
       table[i].k = kBindings[i].k;

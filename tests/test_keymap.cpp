@@ -258,6 +258,35 @@ TEST_CASE("Reset keeps an add-on's superseded built-in rows without their key", 
   }
 }
 
+TEST_CASE("a pack cannot bind a built-in row its add-on's own rows supersede", "[keys][keymap]") {
+  restore_table restore;
+  addon_command_row row;
+  row.addon = "import";
+  row.id = "open";
+  row.name = "Import…";
+  REQUIRE(parse_key_label("Ctrl+Shift+I", row.k, row.mods));
+  row.modes = parse_modes("viewing");
+  set_addon_commands(std::span<const addon_command_row>(&row, 1));
+  const std::vector<keymap_binding> pack{{"open_import", {"Ctrl+Shift+I"}}, {"next", {"L"}}};
+  const keymap_result r = apply_keymap(pack);
+  REQUIRE(r.skipped.size() == 1);
+  REQUIRE(r.skipped[0].find("superseded") != std::string::npos);
+  REQUIRE(r.skipped[0].find("open_import") != std::string::npos);
+  key_router router;
+  router.rebuild(live_bindings());
+  // The add-on's own row still answers its key; the old row has none.
+  REQUIRE(router.on_key({char_key('I'), static_cast<std::uint8_t>(mod_ctrl | mod_shift), false, false},
+                        still())
+              .command == command_id::addon_cmd_0);
+  for (const binding& b : live_bindings()) {
+    if (b.command == command_id::open_import) REQUIRE(b.k == key::none);
+  }
+  REQUIRE(router.on_key({char_key('L'), mod_none, false, false}, still()).command == command_id::next);
+  // Without the add-on's rows the built-in row is the command's, and binds.
+  set_addon_commands({});
+  REQUIRE(apply_keymap(pack).skipped.empty());
+}
+
 TEST_CASE("a saved table puts back unbound rows exactly", "[keys][keymap]") {
   restore_table restore;
   const std::vector<keymap_binding> pack{{"next", {"L", ""}}, {"toggle_mark", {""}}};

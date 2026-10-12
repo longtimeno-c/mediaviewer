@@ -407,6 +407,10 @@ void set_addon_commands_available(addon_family family, bool available) noexcept;
 [[nodiscard]] bool addon_commands_available(addon_family family) noexcept;
 // Whether this add-on command may run now (always true for a base command).
 [[nodiscard]] bool addon_command_available(command_id id) noexcept;
+// Whether `id` is a built-in row of an add-on whose loaded manifest
+// contributes rows of its own (set_addon_commands): such a row stays without
+// a key, so the router never answers it ahead of the contributed one.
+[[nodiscard]] bool command_superseded(command_id id) noexcept;
 void set_addon_commands_available(bool available) noexcept;
 [[nodiscard]] bool addon_commands_available() noexcept;
 
