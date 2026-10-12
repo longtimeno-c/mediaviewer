@@ -174,6 +174,18 @@ MV_API mv_status MV_CALL mv_slots_surface(const char* addon, const char* screen,
                                           uint64_t* out_needed) {
   return static_cast<mv_status>(mv::abi::guard("mv_slots_surface", [&] {
     MV_REQUIRE(addon && screen && surface, "addon, screen and surface required");
+    if (!out) {
+      // The size call copies no pixels (a surface is up to 64 MB).
+      uint32_t w = 0;
+      uint32_t h = 0;
+      uint64_t rev = 0;
+      if (!mv::addon::default_slots().surface_size(addon, screen, surface, w, h, rev)) return status::not_found;
+      if (out_width) *out_width = w;
+      if (out_height) *out_height = h;
+      if (out_revision) *out_revision = rev;
+      if (out_needed) *out_needed = static_cast<uint64_t>(w) * h * 4;
+      return status::invalid_arg;
+    }
     mv::addon::surface_pixels px;
     if (!mv::addon::default_slots().surface(addon, screen, surface, px)) return status::not_found;
     if (out_width) *out_width = px.width;

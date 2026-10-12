@@ -511,6 +511,8 @@ public static partial class IslandHost
 
     private static readonly SemaphoreSlim SlotThumbGate = new(2);
     private static readonly Dictionary<string, string?> SlotThumbCache = new(StringComparer.Ordinal);
+    // UI thread: paths whose job is in flight, with the other tiles waiting on it.
+    private static readonly Dictionary<string, List<(Image Img, double Size)>> SlotThumbPending = new(StringComparer.Ordinal);
 
     private static FrameworkElement SlotThumb(string path, double size, string label)
     {
@@ -538,6 +540,14 @@ public static partial class IslandHost
             SetSlotThumb(img, known, size);
             return;
         }
+        // One job per path in flight: a tile realised again (or the same file in two
+        // tiles) waits for that job rather than queueing another.
+        if (SlotThumbPending.TryGetValue(path, out var waiting))
+        {
+            waiting.Add((img, size));
+            return;
+        }
+        SlotThumbPending[path] = new List<(Image, double)>();
         _ = Task.Run(async () =>
         {
             await SlotThumbGate.WaitAsync().ConfigureAwait(false);
@@ -555,6 +565,13 @@ public static partial class IslandHost
                 if (SlotThumbCache.Count > 4000) SlotThumbCache.Clear();
                 SlotThumbCache[path] = jpeg;
                 if (img.Tag is string p && p == path) SetSlotThumb(img, jpeg, size);
+                if (SlotThumbPending.Remove(path, out var others))
+                {
+                    foreach ((Image other, double otherSize) in others)
+                    {
+                        if (other.Tag is string op && op == path) SetSlotThumb(other, jpeg, otherSize);
+                    }
+                }
             });
         });
     }
@@ -621,6 +638,34 @@ public static partial class IslandHost
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             MinHeight = tile + 16,
+            // Bounded, or a vertical stack / section / scroll measures it at infinite
+            // height and the repeater realises (and asks a thumbnail for) every tile.
+            // Never taller than the window it is in; a few rows until that is known.
+            MaxHeight = Math.Max(tile + 16, 4 * (tile + 8)),
+        };
+        ScrollViewer bounded = scroller;
+        void FitWindow()
+        {
+            if (bounded.XamlRoot is { } root && root.Size.Height > 0)
+            {
+                bounded.MaxHeight = Math.Max(tile + 16, root.Size.Height);
+            }
+        }
+        XamlRoot? watched = null;
+        void RootChanged(XamlRoot sender, XamlRootChangedEventArgs e) => FitWindow();
+        bounded.Loaded += (_, _) =>
+        {
+            FitWindow();
+            if (watched is null && bounded.XamlRoot is { } root)
+            {
+                watched = root;
+                root.Changed += RootChanged;
+            }
+        };
+        bounded.Unloaded += (_, _) =>
+        {
+            if (watched is not null) watched.Changed -= RootChanged;
+            watched = null;
         };
         return scroller;
     }
@@ -714,21 +759,13 @@ public static partial class IslandHost
         frame.SizeChanged += (_, _) =>
             frame.Clip = new RectangleGeometry { Rect = new Windows.Foundation.Rect(0, 0, frame.ActualWidth, frame.ActualHeight) };
 
-        var px = SlotNative.Surface(at.Addon, at.Screen, JStr(n, "surface"));
-        if (px is { } p && p.Width > 0 && p.Height > 0)
-        {
-            try
-            {
-                var bmp = new WriteableBitmap(p.Width, p.Height);
-                using (Stream s = System.Runtime.InteropServices.WindowsRuntime.WindowsRuntimeBufferExtensions.AsStream(bmp.PixelBuffer))
-                {
-                    s.Write(p.Pixels, 0, Math.Min(p.Pixels.Length, p.Width * p.Height * 4));
-                }
-                bmp.Invalidate();
-                content.Children.Add(new Image { Source = bmp, Stretch = Stretch.UniformToFill });
-            }
-            catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex.Message); }
-        }
+        string surfaceId = JStr(n, "surface");
+        var image = new Image { Stretch = Stretch.UniformToFill };
+        content.Children.Add(image);
+        // Registered so new pixels swap into this Image (RefreshSurfaces) without
+        // rebuilding the node: a pinch or drag in progress keeps its transform.
+        var liveEntry = new LiveSurface(image) { Revision = SetSurfacePixels(image, at, surfaceId) };
+        LiveSurfaces[(at, surfaceId)] = liveEntry;
 
         (double X, double Y)? pinAt = null;
         if (n.TryGetProperty("pin", out JsonElement pin) && pin.ValueKind == JsonValueKind.Object)
@@ -869,7 +906,75 @@ public static partial class IslandHost
                 y = Math.Clamp(pos.Y / h, 0, 1),
             }));
         };
+        // The add-on's new pixels already show what was reported: keep only the part of
+        // the gesture not reported yet (a pinch still settling, a drag still held).
+        liveEntry.AfterSwap = () =>
+        {
+            double rest = transform.ScaleX / committed;
+            committed = 1;
+            transform.ScaleX = rest;
+            transform.ScaleY = rest;
+            if (dragFrom is null)
+            {
+                transform.TranslateX = 0;
+                transform.TranslateY = 0;
+            }
+        };
         return frame;
+    }
+
+    private sealed class LiveSurface(Image image)
+    {
+        public Image Image { get; } = image;
+        public ulong Revision { get; set; }
+        public Action? AfterSwap { get; set; }
+    }
+
+    // UI thread: every surface element on screen, by (screen or section, surface id).
+    private static readonly Dictionary<(ScreenAt At, string Surface), LiveSurface> LiveSurfaces = new();
+
+    // Fills `image` with the surface's current pixels; its revision (0: none yet).
+    private static ulong SetSurfacePixels(Image image, ScreenAt at, string surface)
+    {
+        var px = SlotNative.Surface(at.Addon, at.Screen, surface);
+        if (px is not { } p || p.Width <= 0 || p.Height <= 0) return 0;
+        try
+        {
+            var bmp = new WriteableBitmap(p.Width, p.Height);
+            using (Stream s = System.Runtime.InteropServices.WindowsRuntime.WindowsRuntimeBufferExtensions.AsStream(bmp.PixelBuffer))
+            {
+                s.Write(p.Pixels, 0, Math.Min(p.Pixels.Length, p.Width * p.Height * 4));
+            }
+            bmp.Invalidate();
+            image.Source = bmp;
+            return p.Revision;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex.Message);
+            return 0;
+        }
+    }
+
+    // Only pixels moved: swap them into the surfaces of `at` whose revision changed
+    // (a copy-free revision check first), nothing rebuilt.
+    private static void RefreshSurfaces(ScreenAt at)
+    {
+        foreach (var entry in LiveSurfaces.Where(e => e.Key.At == at).ToList())
+        {
+            ulong rev = SlotNative.SurfaceRevision(at.Addon, at.Screen, entry.Key.Surface);
+            if (rev == 0 || rev == entry.Value.Revision) continue;
+            ulong shown = SetSurfacePixels(entry.Value.Image, at, entry.Key.Surface);
+            if (shown == 0) continue;
+            entry.Value.Revision = shown;
+            entry.Value.AfterSwap?.Invoke();
+        }
+    }
+
+    // A screen or section rebuilt or gone: its old elements are not refreshed any more.
+    private static void ForgetSurfaces(ScreenAt at)
+    {
+        foreach (var key in LiveSurfaces.Keys.Where(k => k.At == at).ToList()) LiveSurfaces.Remove(key);
     }
 
     private static bool RectsOverlap(Windows.Foundation.Rect a, Windows.Foundation.Rect b) =>
@@ -909,15 +1014,39 @@ public static partial class IslandHost
                 open.Window.Content = BuildScreenRoot(s, at, place);
                 ScreenWindows[at] = (open.Window, revision);
             }
+            else
+            {
+                // Same tree: only pixels can have moved (a post_surface moves the
+                // list's "pixels", never the tree's revision). Swap them in place.
+                RefreshSurfaces(at);
+            }
         }
         foreach (ScreenAt gone in ScreenWindows.Keys.Where(k => !wanted.Contains(k)).ToList())
         {
+            ForgetSurfaces(gone);
             ClosingFromCore.Add(gone);
             try { ScreenWindows[gone].Window.Close(); }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex.Message); }
             ScreenWindows.Remove(gone);
             ClosingFromCore.Remove(gone);
         }
+    }
+
+    // UI thread, at XAML shutdown: every screen window closes while its runtime is
+    // still alive. Closing from here is not the person closing it, so the core is
+    // not told (the add-ons are stopping too).
+    private static void CloseScreenWindowsForShutdown()
+    {
+        foreach (ScreenAt at in ScreenWindows.Keys.ToList())
+        {
+            ClosingFromCore.Add(at);
+            try { ScreenWindows[at].Window.Close(); }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex.Message); }
+            ForgetSurfaces(at);
+        }
+        ScreenWindows.Clear();
+        ClosingFromCore.Clear();
+        LiveSurfaces.Clear();
     }
 
     private static UIElement BuildScreenRoot(JsonElement s, ScreenAt at, string place)
@@ -992,6 +1121,7 @@ public static partial class IslandHost
         {
             if (ClosingFromCore.Contains(at)) return;
             ScreenWindows.Remove(at);
+            ForgetSurfaces(at);
             SlotNative.CloseScreen(at.Addon, at.Screen);
         };
         w.Activate();

@@ -17,6 +17,8 @@ namespace mv::addon {
 namespace {
 
 
+constexpr std::size_t kMaxSurfacesPerScreen = 16;
+
 const char* place_name(screen_place p) noexcept {
   switch (p) {
     case screen_place::info_section: return "info";
@@ -221,6 +223,10 @@ struct slot_registry::addon_entry {
 slot_registry::slot_registry() = default;
 
 slot_registry::~slot_registry() {
+  // The process's registry dies at exit (a static), after the chromes: no
+  // host callback may run from here (on Windows that would be managed code
+  // under the loader lock).
+  set_listener({});
   for (const std::string& id : attached_ids()) detach(id);
 }
 
@@ -474,8 +480,16 @@ std::uint64_t slot_registry::search(std::uint32_t scope, const std::string& quer
           std::string q = trimmed;
           std::string f = folded;
           if (!routed_prefix.empty()) {
-            // The prefix is ASCII, so its length is the same folded or not.
-            q = q.substr(std::min(q.size(), routed_prefix.size()));
+            // The typed prefix can be longer than its fold ("PLÀCE:" -> "place:",
+            // a decomposed accent): cut where the typed text folds to it.
+            std::size_t cut = std::min(q.size(), routed_prefix.size());
+            for (std::size_t i = routed_prefix.size(); i <= q.size() && i <= routed_prefix.size() * 4; ++i) {
+              if (fold_query(std::string_view(q).substr(0, i)) == routed_prefix) {
+                cut = i;
+                break;
+              }
+            }
+            q = q.substr(cut);
             f = f.substr(routed_prefix.size());
             while (!q.empty() && q.front() == ' ') q.erase(0, 1);
             while (!f.empty() && f.front() == ' ') f.erase(0, 1);
@@ -825,6 +839,11 @@ std::string slot_registry::screens_json() const {
       if (s.id == key.second) def = &s;
     }
     if (!def) continue;
+    // The newest surface revision (registry-unique): a post_surface moves this,
+    // not the tree's revision, so a chrome that rebuilds on revision alone
+    // would never show new pixels.
+    std::uint64_t pixels = 0;
+    for (const auto& [sid, px] : st.surfaces) pixels = std::max(pixels, px.revision);
     w.begin_object()
         .key("addon").string(st.addon)
         .key("id").string(st.id)
@@ -834,6 +853,7 @@ std::string slot_registry::screens_json() const {
         .key("height").integer(def->height)
         .key("generation").integer(static_cast<std::int64_t>(st.generation))
         .key("revision").integer(static_cast<std::int64_t>(st.tree.revision()))
+        .key("pixels").integer(static_cast<std::int64_t>(pixels))
         .key("tree").raw(st.tree.json())
         .end_object();
   }
@@ -854,6 +874,25 @@ bool slot_registry::surface(const std::string& addon_id, const std::string& scre
   auto it = st->surfaces.find(surface_id);
   if (it == st->surfaces.end()) return false;
   out = it->second;
+  return true;
+}
+
+bool slot_registry::surface_size(const std::string& addon_id, const std::string& screen_id,
+                                 const std::string& surface_id, std::uint32_t& width, std::uint32_t& height,
+                                 std::uint64_t& revision) const {
+  std::lock_guard lock(m_);
+  const screen_state* st = nullptr;
+  if (auto s = screens_.find(std::make_pair(addon_id, screen_id)); s != screens_.end()) {
+    st = &s->second;
+  } else if (auto i = info_.find(std::make_pair(addon_id, screen_id)); i != info_.end()) {
+    st = &i->second;
+  }
+  if (!st) return false;
+  auto it = st->surfaces.find(surface_id);
+  if (it == st->surfaces.end()) return false;
+  width = it->second.width;
+  height = it->second.height;
+  revision = it->second.revision;
   return true;
 }
 
@@ -973,6 +1012,15 @@ bool slot_registry::is_stale(std::uint64_t g) const {
                       [g](const auto& s) { return s.second.generation == g; });
 }
 
+bool slot_registry::is_stale(const std::string& addon_id, std::uint64_t g) const {
+  {
+    std::lock_guard lock(m_);
+    // detach erases the entry under m_ before it joins the worker.
+    if (addons_.count(addon_id) == 0) return true;
+  }
+  return is_stale(g);
+}
+
 slot_registry::screen_state* slot_registry::addressed(const std::string& addon_id,
                                                       const std::string& screen_id,
                                                       std::uint64_t generation, status& why) {
@@ -1053,8 +1101,16 @@ status slot_registry::post_surface(const std::string& addon_id, const std::strin
     status why = status::ok;
     screen_state* st = addressed(addon_id, screen_id, generation, why);
     if (!st) return why;
+    // Bounded by count as well as size: an id no node names is kept (pixels
+    // may come before their tree), but not without limit (16 x 64 MB at most).
+    if (st->surfaces.size() >= kMaxSurfacesPerScreen && st->surfaces.count(surface_id) == 0) {
+      return status::invalid_arg;
+    }
     auto& slot = st->surfaces[surface_id];
-    px.revision = slot.revision + 1;
+    // Unique across the registry, not per slot: a section for the next file
+    // starts a new slot, and a chrome caching by revision must not take its
+    // first pixels for the previous file's.
+    px.revision = ++surface_revision_;
     slot = std::move(px);
     bits = st->place == screen_place::info_section ? slot_changed_info : slot_changed_screens;
   }
@@ -1236,6 +1292,15 @@ mv_addon_location cached_location(const std::string& path, std::uint64_t size, s
   if (cache().size() > 500'000) cache().clear();
   cache()[path] = cached{size, mtime, loc};
   return loc;
+}
+
+bool peek_cached_location(const std::string& path, std::uint64_t size, std::int64_t mtime,
+                          mv_addon_location& out) {
+  std::lock_guard lock(cache_m());
+  auto it = cache().find(path);
+  if (it == cache().end() || it->second.size != size || it->second.mtime != mtime) return false;
+  out = it->second.loc;
+  return true;
 }
 
 void clear_location_cache() {

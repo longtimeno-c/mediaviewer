@@ -124,6 +124,17 @@ extern "C" bool mv_chrome_slots_invoke(const char* addon, const char* item, cons
 extern "C" int64_t mv_chrome_slots_surface(const char* addon, const char* screen, const char* surface,
                                            uint8_t* out, int64_t cap, uint32_t* width, uint32_t* height,
                                            uint64_t* revision) {
+  if (!out) {
+    // The size call: no pixel copy (the chrome skips the fetch when it already
+    // holds this revision).
+    uint32_t w = 0, h = 0;
+    uint64_t rev = 0;
+    if (!mv::addon::default_slots().surface_size(str(addon), str(screen), str(surface), w, h, rev)) return 0;
+    if (width) *width = w;
+    if (height) *height = h;
+    if (revision) *revision = rev;
+    return static_cast<int64_t>(w) * h * 4;
+  }
   mv::addon::surface_pixels px;
   if (!mv::addon::default_slots().surface(str(addon), str(screen), str(surface), px)) return 0;
   if (width) *width = px.width;

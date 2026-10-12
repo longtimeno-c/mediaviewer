@@ -26,6 +26,10 @@ struct MetadataView: View {
   @State private var newKey = ""
   @State private var newValue = ""
   @FocusState private var fieldFocused: Bool
+  // docs/design/16 `I` (issue #185): the pane holds the keyboard; ← → change tab,
+  // ↓ reaches tag search, Esc hands the keyboard back to the canvas.
+  @FocusState private var paneFocused: Bool
+  @FocusState private var searchFocused: Bool
 
   private enum Tab: String, CaseIterable, Identifiable {
     case summary = "Summary"
@@ -52,8 +56,14 @@ struct MetadataView: View {
             .accessibilityAddTraits(tab == t ? [.isSelected] : [])
         }
       }
-      .padding(.horizontal, 10)
-      .padding(.vertical, 8)
+      .padding(4)
+      // Where the keyboard is: the tab row is what ← → move.
+      .overlay(
+        RoundedRectangle(cornerRadius: 6)
+          .strokeBorder(paneFocused ? MVTheme.accent : .clear, lineWidth: 2)
+      )
+      .padding(.horizontal, 6)
+      .padding(.vertical, 4)
       Rectangle().fill(MVTheme.hairline).frame(height: 1)
       Group {
         switch tab {
@@ -64,9 +74,8 @@ struct MetadataView: View {
       }
       .frame(maxWidth: .infinity, maxHeight: .infinity)
       // docs/design/25 PR 59 (owner, 2026-10-12): the add-ons' sections (Places' label,
-      // coordinates and map) at the very bottom of the pane, after all the built-in
-      // metadata, whichever tab is open; shown, never collapsed. Nothing when none answered.
-      AddonInfoSections()
+      // coordinates and map) are the last items of whichever tab is open, inside its
+      // scrolling content: they scroll with the list and never squeeze it.
     }
     .background(MVTheme.canvas)
     .overlay(alignment: .leading) { Rectangle().fill(MVTheme.hairline).frame(width: 1) }
@@ -76,11 +85,46 @@ struct MetadataView: View {
         .onAppear { store.setPaneWidth(geo.size.width) }
         .onChange(of: geo.size.width) { _, w in store.setPaneWidth(w) }
     })
+    .focusable()
+    .focusEffectDisabled()
+    .focused($paneFocused)
+    // Only while the pane itself has the keyboard: a field keeps its own keys.
+    .onKeyPress(.leftArrow) { paneFocused ? stepTab(-1) : .ignored }
+    .onKeyPress(.rightArrow) { paneFocused ? stepTab(1) : .ignored }
+    .onKeyPress(.downArrow) {
+      guard paneFocused else { return .ignored }
+      openTagSearch()
+      return .handled
+    }
+    .onKeyPress(.escape) {
+      guard paneFocused else { return .ignored }
+      store.blur()
+      return .handled
+    }
+    // `I` focuses the pane; Ctrl+I opens All tags with the keyboard in its search.
+    .onChange(of: store.focusSeq) { _, _ in
+      if store.focusTags { openTagSearch() } else { paneFocused = true }
+    }
     .onChange(of: store.isClip) { _, isClip in
       if !isClip && tab == .streams { tab = .summary }
     }
-    // Another item: drop any half-typed edit.
-    .onChange(of: store.summary.first?.value) { _, _ in cancelEdits() }
+    // Another item: drop any half-typed edit. Keyed on the item, not on a
+    // value two files can share (issue #190).
+    .onChange(of: store.itemPath) { _, _ in cancelEdits() }
+  }
+
+  private func stepTab(_ by: Int) -> KeyPress.Result {
+    let all = tabs
+    guard let at = all.firstIndex(of: tab) else { return .ignored }
+    tab = all[min(max(at + by, 0), all.count - 1)]
+    return .handled
+  }
+
+  private func openTagSearch() {
+    cancelEdits()
+    tab = .tags
+    // The field exists only once the tab has switched: focus it on the next pass.
+    DispatchQueue.main.async { searchFocused = true }
   }
 
   private func cancelEdits() {
@@ -94,6 +138,7 @@ struct MetadataView: View {
 
   private var summaryCard: some View {
     ScrollView {
+      VStack(alignment: .leading, spacing: 0) {
       if store.summary.isEmpty {
         Text(store.loading ? "Reading…" : "Nothing selected")
           .font(MVTheme.font(14)).foregroundStyle(MVTheme.body).padding(20)
@@ -102,6 +147,8 @@ struct MetadataView: View {
           ForEach(store.summary) { row in
             if row.label == "Date taken" {
               dateRow(row)
+            } else if row.label == "Label" {
+              labelRow(row)
             } else {
               HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Text(row.label).foregroundStyle(MVTheme.body).frame(width: 100, alignment: .leading)
@@ -131,7 +178,48 @@ struct MetadataView: View {
         }
         .padding(14)
       }
+      AddonInfoSections()  // the last items, after the summary
+      }
     }
+  }
+
+  /// Issue #207: the colour label, XMP xmp:Label in Lightroom's words. A swatch
+  /// sets it (the same one again clears it, as the 6-9 keys do), through the same
+  /// checked tag write as any other tag.
+  private static let labelSwatches: [(name: String, colour: Color)] = [
+    ("Red", Color(red: 0.90, green: 0.28, blue: 0.30)),
+    ("Yellow", Color(red: 0.95, green: 0.76, blue: 0.18)),
+    ("Green", Color(red: 0.24, green: 0.70, blue: 0.44)),
+    ("Blue", Color(red: 0.23, green: 0.51, blue: 0.96)),
+    ("Purple", Color(red: 0.61, green: 0.36, blue: 0.90)),
+  ]
+
+  private func labelRow(_ row: MetaRow) -> some View {
+    HStack(alignment: .center, spacing: 10) {
+      Text(row.label).foregroundStyle(MVTheme.body).frame(width: 100, alignment: .leading)
+      Text(row.value.isEmpty ? "—" : row.value)
+        .foregroundStyle(row.value.isEmpty ? MVTheme.disabled : MVTheme.title)
+        .textSelection(.enabled)
+        .frame(maxWidth: .infinity, alignment: .leading)
+      HStack(spacing: 4) {
+        ForEach(Self.labelSwatches, id: \.name) { swatch in
+          let on = swatch.name.caseInsensitiveCompare(row.value) == .orderedSame
+          Button {
+            if on { store.removeTag("Xmp.xmp.Label") } else { store.setTag("Xmp.xmp.Label", swatch.name) }
+          } label: {
+            Circle()
+              .fill(swatch.colour)
+              .frame(width: 14, height: 14)
+              .overlay(Circle().stroke(on ? MVTheme.title : MVTheme.hairline, lineWidth: on ? 2 : 1))
+          }
+          .buttonStyle(.plain)
+          .disabled(!store.canEdit)
+          .help(on ? "Clear the \(swatch.name.lowercased()) label" : swatch.name)
+          .accessibilityLabel(on ? "Clear label" : "Label \(swatch.name.lowercased())")
+        }
+      }
+    }
+    .font(MVTheme.font(14))
   }
 
   private func dateRow(_ row: MetaRow) -> some View {
@@ -211,6 +299,9 @@ struct MetadataView: View {
         TextField("Search tags and values", text: $query)
           .textFieldStyle(.roundedBorder)
           .font(MVTheme.font(14))
+          .focused($searchFocused)
+          // Esc returns to the canvas (docs/design/16 `I`).
+          .onExitCommand { store.blur() }
         Button("Add tag") {
           cancelEdits()
           newKey = ""
@@ -225,9 +316,14 @@ struct MetadataView: View {
       .padding(10)
       if addingTag { addTagForm }
       if store.properties.isEmpty && !addingTag {
-        Text(store.loading ? "Reading…" : "No metadata in this file")
-          .font(MVTheme.font(14)).foregroundStyle(MVTheme.body).padding(20)
-        Spacer()
+        ScrollView {
+          VStack(alignment: .leading, spacing: 0) {
+            Text(store.loading ? "Reading…" : "No metadata in this file")
+              .font(MVTheme.font(14)).foregroundStyle(MVTheme.body).padding(20)
+            AddonInfoSections()
+          }
+          .frame(maxWidth: .infinity, alignment: .leading)
+        }
       } else {
         List {
           ForEach(groups, id: \.name) { group in
@@ -235,6 +331,10 @@ struct MetadataView: View {
               ForEach(group.rows) { p in tagRow(p) }
             }
           }
+          // The add-ons' sections: the last rows, after every tag.
+          AddonInfoSections()
+            .listRowInsets(EdgeInsets())
+            .listRowSeparator(.hidden)
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
@@ -355,6 +455,7 @@ struct MetadataView: View {
         }
       }
       .padding(14)
+      AddonInfoSections()  // the last items, after the streams
     }
   }
 

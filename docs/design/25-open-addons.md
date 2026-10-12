@@ -431,7 +431,7 @@ a chrome-drawn pin) and a search provider (`portugal`, `place:`, `in:`).
 | The registry: tables built at attach, one worker per add-on, coalesced generation-tagged requests, trees, surfaces, rows, badge sets, status | `src/addon/slots.*` |
 | Host table v3 (`screen_post` … `locations_in`) and the add-on side `mv.slots.1` | `mediaviewer_addon.h`, thunks in `src/addon/host.cpp`; `loaded_addon::load` attaches, its destructor detaches first |
 | A file's coordinates, a bounded read | `src/meta/location.*` (becomes `geo_point` when #290 lands) |
-| C ABI 0.20 for the Windows chrome | `mv_slots_*` in `src/abi/slots_abi.cpp`, `mv_slots_thumbnail_path` in `abi/addon_abi.cpp`; `SlotNative` in `MediaViewer.Interop/Slots.cs` |
+| C ABI 0.25 for the Windows chrome | `mv_slots_*` in `src/abi/slots_abi.cpp`, `mv_slots_thumbnail_path` in `abi/addon_abi.cpp`; `SlotNative` in `MediaViewer.Interop/Slots.cs` |
 | Mac bridge and chrome | `mv_chrome_slots_*` in `src/shell/slots_mac.mm`; slot add-ons loaded in `addons_mac.mm` (`MvSlotAddonsStart`); `SlotStore.swift`, `ScreenView.swift`, `SlotItems.swift`, hooks in `MetadataView/Store`, `FileSearch`, `CommandBarView`, `GalleryView`, `AddonsView` |
 | Windows chrome | `IslandHost.Slots.cs`, `IslandHost.Screens.cs`, hooks in `IslandHost.Panels.cs`, `.FileSearch.cs`, `.Gallery.cs`, `.Addons.cs` |
 | Tests | `tests/test_addon_screens.cpp`, `tests/test_addon_slots.cpp` (in `mv_import_tests`, all three builds) over a real native test add-on, `tests/addons/slots_test` (`mv_slots_test_addon`), loaded through a signed store; `tests/test_meta_location.cpp` in `mv_tests` |
@@ -482,8 +482,15 @@ How it works:
   add-on gets a `command` event with the paths its `target` names (the marks, else the current
   file; the folder). Context-menu entries are on gallery tiles. Status items are text in the
   command bar.
-- **Screens** open as a window, a docked pane (a window held to the viewer's right edge on both
-  hosts; [12](12-decision-log.md)) or a sheet, each with Done and Esc. A thumbnail grid is
+- **Screens** open as a window, a docked pane or a sheet, each with Done and Esc. The docked pane
+  is not an island in the viewer's layout ([12](12-decision-log.md)): it lies **over** the right
+  side of the canvas, which does not reflow around it. On the Mac it is a child panel held to the
+  right edge of the viewer window's content: it follows the viewer's moves, resizes and full
+  screen (in and out), and moves to whichever viewer window becomes main. On Windows it is a
+  separate window placed at the viewer's right edge when it opens and **not held after that**:
+  moving, resizing or maximising the viewer leaves it where it was, and it is not owned by the
+  viewer window (it does not minimise with it). Holding it needs the viewer's move/size events in
+  the C# host (a WinEvent hook or the host's window procedure), not done yet. A thumbnail grid is
   virtualised (LazyVGrid / ItemsRepeater) and each tile asks the viewer's JPEG-512 cache as it
   appears, cancelled as it leaves.
 - **Removal** (Settings → Add-ons lists every installed slot add-on with Remove): the add-on is
@@ -512,7 +519,7 @@ Where it lives:
 | The store: inspect, install, list, remove, the publisher record | `src/addon/open_store.*`; the folder is `io::open_addons_dir()` (`src/io/paths*`), never created by a read |
 | One JSON and one wording for both hosts | `src/addon/open_json.*` |
 | C ABI 0.17 (Windows) and the chrome bridge (Mac) | `mv_open_addon_*` in `mediaviewer_addon.h` / `abi/addon_abi.cpp`; `mv_open_addons_*` in `mv_chrome_bridge.h` / `shell/addons_mac.mm` |
-| A package handed to the app | `shell/open_request.*` (`open_kind::addon_package`), `shell/main.cpp`, `chrome_host::offer_addon` → `IslandHost.OfferAddon`; `main_mac.mm -openEntryPath:` → `MVChromeHost.offerAddonPackage` |
+| A package handed to the app | `shell/open_request.*` (`open_kind::addon_package`), `shell/main.cpp`, `chrome_host::offer_addon` → `IslandHost.OfferAddon`; `main_mac.mm -openEntryPath:` (launch) and `-openEntryPaths:failed:` (a drop, Open, Finder) → `MVChromeHost.offerAddonPackage` |
 | Mac chrome | `Theme.swift` (`MVTheme`, `ThemeStore`, `ThemedRoot`), `OpenAddons.swift` (store, download, section, sheet), the Theme row in `SettingsView.swift` |
 | Windows chrome | `IslandHost.ThemePack.cs`, `IslandHost.OpenAddons.cs`, the hook in `IslandHost.Theme.cs` `RefreshTheme`, `AddonNative.Open*` in `MediaViewer.Interop/Addons.cs` |
 | The author's tool, guide and example | `tools/addon-sdk/mvaddon.py` (MIT), `docs/ADDONS.md`, `examples/addons/film-tones` |

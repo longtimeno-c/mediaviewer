@@ -40,22 +40,30 @@ tools/         frame-time harness, fuzzers, perf suite, packaging, policy checks
 ```
 
 Dependencies point **downward only**. The enforced map
-([`tools/check-module-graph.ps1`](../../tools/check-module-graph.ps1)):
+([`tools/check-module-graph.ps1`](../../tools/check-module-graph.ps1), which reads `#include` and
+`#import` in `.h`, `.hpp`, `.cpp`, `.mm` and `.m` files):
 
 | Module | May include |
 |---|---|
 | `core` | — |
 | `io`, `gfx` | `core` |
-| `codec` | `gfx`, `io`, `core` |
+| `codec` | `gfx`, `core` |
 | `image`, `meta`, `player` | `codec`, `gfx`, `io`, `core` |
 | `edit`, `canvas` | `image`, `codec`, `gfx`, `io`, `core` |
 | `addon` | `io`, `core` |
 | `geo` | `io`, `core` (`geo.cpp` / `fold.cpp`: core's header-only pieces only, so an add-on can link them). Not included by `meta`, `abi` or `shell` |
-| `addons` | `core` header-only pieces (`result.h`, `status.h`, `json.h`), `geo` |
+| `infer` | `core` (ONNX Runtime behind our interface; linked into the AI pack) |
+| `addons` | `core` header-only pieces (`result.h`, `status.h`, `json.h`), `geo`; the AI pack also `infer` |
 | `abi` | everything below it |
 | `nle` | `addon`, `image`, `io`, `core` |
 | `shellext` | `image`, `codec`, `gfx`, `io`, `core` |
 | `shell` | everything, including `abi` and `nle` |
+
+`codec` does not include `io`. A document page still picks font files lazily, including per-character
+fallbacks, so the caller cannot pass the bytes in at `codec::decode`. `codec/fonts.h` only names the
+file (CoreText / DirectWrite). The read is `text::set_font_reader`, installed by `image/pipeline.cpp`
+before main. A binary that links `codec` without `image` (the docx fuzzer) installs the same reader
+itself; with none installed the face stays unloaded and layout continues.
 
 No native module depends on `shell`, which keeps the core testable headlessly and hostable on both
 OSes. The C# and Swift chrome depend on the C ABI alone. An add-on links nothing of the core and
@@ -93,7 +101,9 @@ The UI thread and the render thread never block on I/O, decode, or a lock held b
 
 The job system ([`src/core/job_system.h`](../../src/core/job_system.h)) is one MPMC queue with two
 lanes: **foreground** jobs carry the current view generation and are always taken first; **background**
-jobs (generation 0 — thumbnails, scans) run only when no foreground work is waiting. Everything else
+jobs (generation 0 — thumbnails, scans) run only when no foreground work is waiting, and on at most
+N − 1 workers at once (one worker when N = 1), so a worker is always free for the view instead of
+the photo just arrowed to waiting for a thumbnail to finish (issue #160). Everything else
 is single-producer/single-consumer rings of POD messages (`core/spsc_ring.h`) and a wait-free triple
 buffer. No mutex is held across a call the holder does not own.
 
@@ -154,7 +164,7 @@ and the Windows backends (`gfx/`, `io/*_win.cpp`, `player/*_win.cpp`); Cocoa/Met
 and `*_mac.mm` backends. Headers used above `gfx/` do not include `d3d11.h`. Paths across the C ABI are
 UTF-8. Completions are a queue the host pumps — C++ never calls a WinUI dispatcher or
 `DispatchQueue.main`. [`tools/check-hostable-core.ps1`](../../tools/check-hostable-core.ps1) enforces
-the Windows side.
+both sides.
 
 ## Cancellation
 

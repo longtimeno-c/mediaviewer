@@ -122,8 +122,9 @@ public static partial class IslandHost
     }
 
     /// <summary>
-    /// Ctrl+F or the path bar's icon. Local search loaded: its panel. Starting
-    /// at launch: its panel once it attaches (IslandHost.LocalSearch.cs).
+    /// Ctrl+F or the path bar's icon. Local search loaded: its panel. Starting,
+    /// or installed and waiting for the first search (issue #292): its panel
+    /// once it attaches (IslandHost.LocalSearch.cs).
     /// Otherwise file search: the field opens and takes the keyboard, or, with
     /// the gallery hidden, <see cref="FileSearchNeedsGallery"/> and it opens
     /// once the grid is shown. Nothing listed: declined.
@@ -140,6 +141,8 @@ public static partial class IslandHost
             _searchOpenPending = true;
             return FileSearchTook;
         }
+        // The first search since launch: the pack loads now (issue #292).
+        if (StartAiOnDemand(open: true)) return FileSearchTook;
         // A later window's first search: Local search starts now, through the
         // reader, and its panel opens once it attaches (IslandHost.Addons.cs).
         if (_addonsElsewhere && !_readerStarted && _folderSession is not null)
@@ -524,7 +527,7 @@ public static partial class IslandHost
         }
         if (_gsFolded != _gsListing)
         {
-            FoldThen(ApplyNamesFilter);
+            FoldThen(() => ApplyNamesFilter(fromProviders));
             return;
         }
 

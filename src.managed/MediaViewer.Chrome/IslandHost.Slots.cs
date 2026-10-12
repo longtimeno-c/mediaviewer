@@ -32,8 +32,21 @@ public static partial class IslandHost
     private sealed record SlotSectionDef(string Addon, string Id, bool Location);
     private sealed record SlotAddonRow(string Id, string Name, string Version, string Description, string State, bool Loaded);
 
+    // One UI-thread hop per burst, as the Mac host does: a provider posting
+    // progress 50 times re-reads (and re-filters the gallery) once, not 50 times.
+    private static int _slotPendingBits;
     private static readonly SlotNative.ChangedCallback SlotListener = (_, bits) =>
-        DispatcherQueueControllerTryEnqueue(() => OnSlotsChanged((SlotChange)bits));
+    {
+        if (Interlocked.Or(ref _slotPendingBits, (int)bits) != 0) return;
+        if (_dispatcher is null)
+        {
+            // No UI thread to hop to: drop the burst so a later one still wakes it.
+            Interlocked.Exchange(ref _slotPendingBits, 0);
+            return;
+        }
+        DispatcherQueueControllerTryEnqueue(() =>
+            OnSlotsChanged((SlotChange)Interlocked.Exchange(ref _slotPendingBits, 0)));
+    };
 
     private static bool _slotsListening;
     private static List<SlotItem> _slotItems = new();
@@ -146,6 +159,7 @@ public static partial class IslandHost
         _slotSections = new List<SlotSectionDef>();
         SlotBadgeDefs.Clear();
         SlotAddonDirs.Clear();
+        SlotFilePrefixes.Clear();
         if (json.Length > 0)
         {
             try
@@ -157,6 +171,14 @@ public static partial class IslandHost
                     _slotSections.Add(new SlotSectionDef(JStr(s, "addon"), JStr(s, "id"), JFlag(s, "location")));
                 foreach (JsonElement i in JArr(r, "items"))
                     _slotItems.Add(new SlotItem(JStr(i, "addon"), JStr(i, "id"), JStr(i, "slot"), JStr(i, "label"), JStr(i, "symbol"), JStr(i, "target")));
+                foreach (JsonElement p in JArr(r, "providers"))
+                {
+                    if (!JFlag(p, "files")) continue;
+                    foreach (JsonElement pre in JArr(p, "prefixes"))
+                    {
+                        if (pre.ValueKind == JsonValueKind.String) SlotFilePrefixes.Add(pre.GetString() ?? "");
+                    }
+                }
                 foreach (JsonElement b in JArr(r, "badges"))
                     SlotBadgeDefs[JStr(b, "key")] = new SlotBadge(JStr(b, "key"), JStr(b, "label"), JStr(b, "symbol"));
             }
@@ -175,6 +197,31 @@ public static partial class IslandHost
         }
         RebuildSlotBar();
         RebuildSlotPathItems();
+        // Gallery tiles carry badge / context wrappers only while something fills
+        // them: when that changes, the realised tiles are made again.
+        bool badges = SlotBadgeDefs.Count > 0;
+        bool context = _slotItems.Any(i => i.Slot == "context");
+        if (badges != _slotTileBadges || context != _slotTileContext)
+        {
+            _slotTileBadges = badges;
+            _slotTileContext = context;
+            RemakeGalleryTiles();
+        }
+    }
+
+    private static bool _slotTileBadges;
+    private static bool _slotTileContext;
+
+    private static void RemakeGalleryTiles()
+    {
+        ItemsRepeater? repeater = _galleryRepeater;
+        if (repeater?.ItemsSource is not { } source) return;
+        try
+        {
+            repeater.ItemsSource = null;
+            repeater.ItemsSource = source;
+        }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
     }
 
     private static string? SlotImagePath(string addon, string src)
@@ -224,28 +271,81 @@ public static partial class IslandHost
     // built-in metadata, each under its heading; empty when none answered.
     private static StackPanel? _metaSlots;
 
+    // What the panel shows: the info generation (a new file), then each section's
+    // address and tree revision, in order. Two children per section (rule, section).
+    private static ulong _slotShownGeneration;
+    private static readonly List<(ScreenAt At, long Revision)> SlotShownSections = new();
+    private static StackPanel? _slotShownPanel;
+
+    // Only what changed: a new file or a different set of sections rebuilds the
+    // panel; a section whose tree moved is rebuilt alone, in place; a section whose
+    // pixels alone moved keeps its elements and swaps the pixels (RefreshSurfaces),
+    // so a pinch or drag on the map is not reset mid-gesture.
     private static void FillSlotSections()
     {
         StackPanel? rows = _metaSlots;
         if (rows is null) return;
-        rows.Children.Clear();
-        if (_slotInfoJson.Length == 0) return;
+        var sections = new List<(ScreenAt At, long Revision, string Title, JsonElement Tree)>();
+        ulong generation = 0;
+        JsonDocument? doc = null;
         try
         {
-            using JsonDocument doc = JsonDocument.Parse(_slotInfoJson);
-            foreach (JsonElement s in JArr(doc.RootElement, "sections"))
+            if (_slotInfoJson.Length > 0)
             {
-                if (!s.TryGetProperty("tree", out JsonElement tree) || tree.ValueKind != JsonValueKind.Object) continue;
-                rows.Children.Add(new Border { Height = 1, Background = Brush(Hairline) });
-                var section = new StackPanel { Spacing = 6, Padding = new Thickness(14, 10, 14, 14) };
-                TextBlock heading = Text(JStr(s, "title"), Body, UiFontSize - 3);
-                AutomationProperties.SetHeadingLevel(heading, Microsoft.UI.Xaml.Automation.Peers.AutomationHeadingLevel.Level2);
-                section.Children.Add(heading);
-                section.Children.Add(BuildScreenNode(tree, new ScreenAt(JStr(s, "addon"), JStr(s, "id"))));
-                rows.Children.Add(section);
+                doc = JsonDocument.Parse(_slotInfoJson);
+                generation = (ulong)JNum(doc.RootElement, "generation", 0);
+                foreach (JsonElement s in JArr(doc.RootElement, "sections"))
+                {
+                    if (!s.TryGetProperty("tree", out JsonElement tree) || tree.ValueKind != JsonValueKind.Object) continue;
+                    sections.Add((new ScreenAt(JStr(s, "addon"), JStr(s, "id")), (long)JNum(s, "revision", 0),
+                                  JStr(s, "title"), tree));
+                }
+            }
+            bool sameSet = ReferenceEquals(rows, _slotShownPanel) && generation == _slotShownGeneration &&
+                           sections.Count == SlotShownSections.Count &&
+                           rows.Children.Count == sections.Count * 2 &&
+                           sections.Select(x => x.At).SequenceEqual(SlotShownSections.Select(x => x.At));
+            if (!sameSet)
+            {
+                foreach ((ScreenAt at, _) in SlotShownSections) ForgetSurfaces(at);
+                rows.Children.Clear();
+                SlotShownSections.Clear();
+                foreach (var s in sections)
+                {
+                    rows.Children.Add(new Border { Height = 1, Background = Brush(Hairline) });
+                    rows.Children.Add(BuildSlotSection(s.At, s.Title, s.Tree));
+                    SlotShownSections.Add((s.At, s.Revision));
+                }
+                _slotShownPanel = rows;
+                _slotShownGeneration = generation;
+                return;
+            }
+            for (int i = 0; i < sections.Count; ++i)
+            {
+                var s = sections[i];
+                if (s.Revision != SlotShownSections[i].Revision)
+                {
+                    rows.Children[i * 2 + 1] = BuildSlotSection(s.At, s.Title, s.Tree);
+                    SlotShownSections[i] = (s.At, s.Revision);
+                }
+                else
+                {
+                    RefreshSurfaces(s.At);
+                }
             }
         }
         catch (JsonException ex) { System.Diagnostics.Debug.WriteLine(ex.Message); }
+        finally { doc?.Dispose(); }
+    }
+
+    private static UIElement BuildSlotSection(ScreenAt at, string title, JsonElement tree)
+    {
+        var section = new StackPanel { Spacing = 6, Padding = new Thickness(14, 10, 14, 14) };
+        TextBlock heading = Text(title, Body, UiFontSize - 3);
+        AutomationProperties.SetHeadingLevel(heading, Microsoft.UI.Xaml.Automation.Peers.AutomationHeadingLevel.Level2);
+        section.Children.Add(heading);
+        section.Children.Add(BuildScreenNode(tree, at));
+        return section;
     }
 
     private static uint Rgba(ChromeColour role)
@@ -351,17 +451,40 @@ public static partial class IslandHost
         _slotFileGeneration = SlotNative.Search(SlotNative.ScopeFiles, typed, _openedFolder);
     }
 
-    // A provider prefix ("place:") is the provider's alone: no name has it.
-    private static bool SlotPrefixed(string typed) =>
-        System.Text.RegularExpressions.Regex.IsMatch(typed, "^[a-z]+:");
+    // A prefix a file-search provider declares ("place:") is that provider's alone:
+    // names are not matched. Any other "word:" query is an ordinary name query
+    // (with Places not installed, "place:lisbon" still searches names). The core
+    // routes the same way (slot_registry::search): a digit after the prefix is a
+    // date term and is not routed.
+    private static readonly List<string> SlotFilePrefixes = new();
+
+    private static bool SlotPrefixed(string typed)
+    {
+        if (SlotFilePrefixes.Count == 0) return false;
+        string f = FoldName(typed.Trim());
+        foreach (string pre in SlotFilePrefixes)
+        {
+            if (pre.Length == 0 || !f.StartsWith(pre, StringComparison.Ordinal)) continue;
+            int after = pre.Length;
+            while (after < f.Length && f[after] == ' ') ++after;
+            if (after < f.Length && char.IsAsciiDigit(f[after])) continue;
+            return true;
+        }
+        return false;
+    }
 
     // ---- badges -------------------------------------------------------------------------
 
-    /// <summary>The gallery shows <paramref name="folder"/>: one request per folder.</summary>
+    /// <summary>The gallery shows <paramref name="folder"/>: one request per folder listing
+    /// (a relist, e.g. files copied in, asks again: the new files need their badges).</summary>
+    private static int _slotBadgeListing = -1;
+
     private static void RequestSlotBadges(string folder)
     {
-        if (SlotBadgeDefs.Count == 0 || folder.Length == 0 || folder == _slotBadgeFolder) return;
+        if (SlotBadgeDefs.Count == 0 || folder.Length == 0) return;
+        if (folder == _slotBadgeFolder && _gsListing == _slotBadgeListing) return;
         _slotBadgeFolder = folder;
+        _slotBadgeListing = _gsListing;
         SlotNative.RequestBadges(folder);
     }
 

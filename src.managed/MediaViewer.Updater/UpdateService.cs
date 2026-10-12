@@ -47,6 +47,7 @@ public sealed class UpdateService
     private ReleaseVersion _running;
     private string? _root;
     private bool _applyLaunched;
+    private volatile bool _manualCheck;
 
     /// <param name="preview">The preview update channel: prerelease builds as well as stable ones.</param>
     public UpdateService(Func<bool> autoCheck, Func<bool> preview, Action<string> log)
@@ -79,6 +80,19 @@ public sealed class UpdateService
     /// <summary>Settings turned auto-check on or changed the channel: check soon rather than in 6 h.</summary>
     public void Poke() => _wake.Set();
 
+    /// <summary>
+    /// Issue #220: Settings' "Check now". One check even while automatic checks
+    /// are off; the result arrives as status, as for any check.
+    /// </summary>
+    public void CheckNow()
+    {
+        _manualCheck = true;
+        _wake.Set();
+    }
+
+    /// <summary>The last check could not reach or read the feed.</summary>
+    public bool LastCheckFailed { get; private set; }
+
     public void Stop()
     {
         _stopping = true;
@@ -107,7 +121,9 @@ public sealed class UpdateService
                 _wake.WaitOne(wait);
                 if (_stopping) break;
                 wait = CheckInterval;
-                if (!_autoCheck()) continue;
+                bool manual = _manualCheck;
+                _manualCheck = false;
+                if (!manual && !_autoCheck()) continue;
                 CheckAndStage();
             }
         }
@@ -179,6 +195,7 @@ public sealed class UpdateService
     private void CheckAndStage()
     {
         UpdateManager mgr = _manager!;
+        LastCheckFailed = false;
         SetStatus(Status with { Phase = UpdatePhase.Checking });
         UpdateInfo? info;
         try
@@ -188,6 +205,7 @@ public sealed class UpdateService
         catch (Exception ex)
         {
             _log("updater: check failed " + ex.GetType().Name);
+            LastCheckFailed = true;
             SetStatus(Status with { Phase = _staged is null ? UpdatePhase.Idle : UpdatePhase.Ready });
             return;
         }

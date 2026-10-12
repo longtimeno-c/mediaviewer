@@ -288,16 +288,23 @@ private struct SurfaceNode: View {
   let revision: Int
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var dropped = false
-  // The provisional transform, reset when the add-on's next pixels arrive.
-  @State private var scale: CGFloat = 1
-  @State private var committedScale: CGFloat = 1
-  @State private var committedOffset: CGSize = .zero
-  @State private var anchor: UnitPoint = .center
-  @State private var offset: CGSize = .zero
+  // The provisional transform, in surface points. `committed` holds every
+  // gesture already reported and not yet answered with pixels, each composed
+  // about its own anchor (a second pinch before the first one's pixels arrive
+  // zooms about where it started, not where the first did); `liveZoom` and
+  // `livePan` are the gesture still under the fingers. New pixels (a newer
+  // revision) answer what was reported, so `committed` resets then.
+  @State private var committed: CGAffineTransform = .identity
+  @State private var liveZoom: CGAffineTransform = .identity
+  @State private var livePan: CGSize = .zero
   @State private var shownRevision: UInt64 = 0
+  @State private var size: CGSize = .zero
   @State private var hover: CGPoint?
   @State private var wheelMonitor: Any?
   @State private var wheelFlush: DispatchWorkItem?
+  // Wheel steps shown but not reported yet: one zoom about one anchor.
+  @State private var wheelStep: CGFloat = 1
+  @State private var wheelAnchor: CGPoint = .zero
 
   private var live: Bool {
     (node.props["interactive"] is [String: Any] || node.bool("interactive")) && !node.disabled
@@ -310,6 +317,19 @@ private struct SurfaceNode: View {
     return CGFloat(lo)...CGFloat(max(lo, hi))
   }
   private func bounded(_ s: CGFloat) -> CGFloat { min(bounds.upperBound, max(bounds.lowerBound, s)) }
+  // A zoom step that keeps the provisional total scale within `bounds`.
+  private func step(_ factor: CGFloat) -> CGFloat {
+    let base = max(committed.a, 0.0001)  // uniform scale: a == d, no rotation
+    return bounded(base * factor) / base
+  }
+  // Scale by `s` about `p` (surface points): p stays where it is.
+  private static func zoom(_ s: CGFloat, about p: CGPoint) -> CGAffineTransform {
+    CGAffineTransform(a: s, b: 0, c: 0, d: s, tx: p.x * (1 - s), ty: p.y * (1 - s))
+  }
+  private func point(_ unit: CGPoint) -> CGPoint { CGPoint(x: unit.x * size.width, y: unit.y * size.height) }
+  private var shown: CGAffineTransform {
+    committed.concatenating(liveZoom).concatenating(CGAffineTransform(translationX: livePan.width, y: livePan.height))
+  }
   private var pinPoint: CGPoint? {
     guard let pin = node.props["pin"] as? [String: Any], let x = (pin["x"] as? NSNumber)?.doubleValue,
           let y = (pin["y"] as? NSNumber)?.doubleValue else { return nil }
@@ -339,8 +359,7 @@ private struct SurfaceNode: View {
             .opacity(dropped || reduceMotion ? 1 : 0)
         }
       }
-      .scaleEffect(scale, anchor: anchor)
-      .offset(offset)
+      .transformEffect(shown)
       .contentShape(Rectangle())
       .gesture(live ? magnify(geo.size) : nil)
       .simultaneousGesture(live ? drag(geo.size) : nil)
@@ -360,14 +379,16 @@ private struct SurfaceNode: View {
         }
       }
       .onChange(of: pixels?.revision ?? 0) { _, now in
-        // The add-on's answer: its pixels replace the provisional transform.
-        guard now != shownRevision else { return }
+        // The add-on's answer: its pixels replace what was reported. Revisions
+        // only grow (registry-wide), so an older one never resets. A gesture
+        // still under the fingers keeps going; wheel steps not reported yet
+        // are not in these pixels, so they stay shown.
+        guard now > shownRevision else { return }
         shownRevision = now
-        scale = 1
-        offset = .zero
-        committedScale = 1
-        committedOffset = .zero
+        committed = wheelStep != 1 ? Self.zoom(wheelStep, about: point(wheelAnchor)) : .identity
       }
+      .onAppear { size = geo.size }
+      .onChange(of: geo.size) { _, now in size = now }
     }
     .frame(width: width > 0 ? width : nil, height: height)
     .frame(maxWidth: width > 0 ? nil : .infinity)
@@ -397,30 +418,32 @@ private struct SurfaceNode: View {
     }
   }
 
-  // A trackpad pinch: shown at once, reported when it ends.
+  // A trackpad pinch: shown at once about where it started, reported when it
+  // ends. The anchor is in the surface as it looks now, which is how the
+  // add-on applies its events: in order, each on top of the last.
   private func magnify(_ size: CGSize) -> some Gesture {
     MagnifyGesture()
       .onChanged { v in
-        anchor = v.startAnchor
-        scale = bounded(committedScale * v.magnification)
+        let at = CGPoint(x: v.startAnchor.x, y: v.startAnchor.y)
+        liveZoom = Self.zoom(step(v.magnification), about: point(at))
       }
       .onEnded { v in
-        let step = bounded(committedScale * v.magnification) / committedScale
-        committedScale = scale
-        send(10, ["scale": Double(max(0.05, min(20, step))), "x": clamp(v.startAnchor.x),
-                  "y": clamp(v.startAnchor.y)])
+        let at = CGPoint(x: v.startAnchor.x, y: v.startAnchor.y)
+        let s = step(v.magnification)
+        committed = committed.concatenating(Self.zoom(s, about: point(at)))
+        liveZoom = .identity
+        send(10, ["scale": Double(max(0.05, min(20, s))), "x": clamp(at.x), "y": clamp(at.y)])
       }
   }
 
   // A drag: the pixels follow, the move is reported in surface widths / heights.
   private func drag(_ size: CGSize) -> some Gesture {
     DragGesture(minimumDistance: 3)
-      .onChanged { v in
-        offset = CGSize(width: committedOffset.width + v.translation.width,
-                        height: committedOffset.height + v.translation.height)
-      }
+      .onChanged { v in livePan = v.translation }
       .onEnded { v in
-        committedOffset = offset
+        committed = committed.concatenating(CGAffineTransform(translationX: v.translation.width,
+                                                              y: v.translation.height))
+        livePan = .zero
         guard size.width > 0, size.height > 0 else { return }
         send(11, ["dx": Double(max(-10, min(10, v.translation.width / size.width))),
                   "dy": Double(max(-10, min(10, v.translation.height / size.height)))])
@@ -429,28 +452,35 @@ private struct SurfaceNode: View {
 
   // A mouse wheel (no precise deltas) zooms about the pointer; a trackpad's
   // two-finger scroll (precise deltas) is left for the pane. Steps arriving
-  // together are one zoom, reported 150 ms after the last.
+  // together about one point are one zoom, reported 150 ms after the last; a
+  // step about another point reports the steps before it first, so every
+  // report is exactly what was shown.
   private func installWheel() {
     guard wheelMonitor == nil else { return }
     wheelMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
       guard !event.hasPreciseScrollingDeltas, let at = hover else { return event }
       MainActor.assumeIsolated {
-        anchor = UnitPoint(x: at.x, y: at.y)
-        let before = committedScale
-        scale = bounded(scale * pow(1.1, event.scrollingDeltaY))
+        if wheelStep != 1 && at != wheelAnchor { flushWheel() }
+        let s = step(pow(1.1, event.scrollingDeltaY))
+        committed = committed.concatenating(Self.zoom(s, about: point(at)))
+        wheelStep *= s
+        wheelAnchor = at
         wheelFlush?.cancel()
-        let work = DispatchWorkItem { [at] in
-          MainActor.assumeIsolated {
-            let step = scale / before
-            committedScale = scale
-            send(10, ["scale": Double(max(0.05, min(20, step))), "x": clamp(at.x), "y": clamp(at.y)])
-          }
-        }
+        let work = DispatchWorkItem { MainActor.assumeIsolated { flushWheel() } }
         wheelFlush = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
       }
       return nil
     }
+  }
+
+  private func flushWheel() {
+    wheelFlush?.cancel()
+    wheelFlush = nil
+    guard wheelStep != 1 else { return }
+    send(10, ["scale": Double(max(0.05, min(20, wheelStep))), "x": clamp(wheelAnchor.x),
+              "y": clamp(wheelAnchor.y)])
+    wheelStep = 1
   }
 
   private func removeWheel() {
@@ -836,10 +866,9 @@ final class SlotWindows: NSObject, NSWindowDelegate {
     }
     for s in screens {
       let address = ScreenAddress(addon: s.addon, screen: s.screen)
-      if let w = windows[address] {
-        if s.place == "window" { w.makeKeyAndOrderFront(nil) }
-        continue
-      }
+      // An open one stays where the person left it: a diff or a surface post
+      // (a progress bar, a map redrawing) never takes focus from the viewer.
+      if windows[address] != nil { continue }
       open(s, address)
     }
   }
@@ -854,6 +883,7 @@ final class SlotWindows: NSObject, NSWindowDelegate {
                        styleMask: [.titled, .resizable], backing: .buffered, defer: false)
       w.contentView = host
       w.title = s.title
+      w.isReleasedWhenClosed = false  // held in `windows`; close() must not free it
       windows[address] = w
       if let main {
         main.beginSheet(w) { _ in }
@@ -862,21 +892,25 @@ final class SlotWindows: NSObject, NSWindowDelegate {
         w.makeKeyAndOrderFront(nil)
       }
     case "pane":
-      // Docked to the right edge of the viewer window: a child panel that
-      // moves with it.
+      // Held to the right edge of the viewer window's content (docs/design/25 §10,
+      // decision log 2026-10-11): a child panel over the canvas's right side (the
+      // canvas does not reflow), kept there as the viewer moves, resizes, enters or
+      // leaves full screen, and moved to whichever viewer window becomes main.
       let width = s.width > 0 ? s.width : 320
-      let frame = main.map { NSRect(x: $0.frame.maxX - width, y: $0.frame.minY, width: width,
-                                    height: $0.contentLayoutRect.height) }
-        ?? NSRect(x: 0, y: 0, width: width, height: 600)
-      let p = NSPanel(contentRect: frame, styleMask: [.titled, .closable, .utilityWindow, .resizable],
+      let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: width, height: 600),
+                      styleMask: [.titled, .closable, .utilityWindow, .resizable],
                       backing: .buffered, defer: false)
       p.title = s.title
       p.contentView = host
+      p.isReleasedWhenClosed = false
       p.isFloatingPanel = false
       p.becomesKeyOnlyIfNeeded = false
+      // Follows its viewer into a full-screen Space.
+      p.collectionBehavior.insert(.fullScreenAuxiliary)
       p.delegate = self
       windows[address] = p
-      main?.addChildWindow(p, ordered: .above)
+      if let viewer = Self.viewerWindow(preferring: main) { dock(p, to: viewer) }
+      hold(p)
       p.makeKeyAndOrderFront(nil)
     default:
       let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: s.width > 0 ? s.width : 720,
@@ -892,7 +926,72 @@ final class SlotWindows: NSObject, NSWindowDelegate {
     }
   }
 
+  // MARK: the docked pane
+
+  private var paneWatch: [ObjectIdentifier: [NSObjectProtocol]] = [:]
+
+  /// A viewer window (the one AppKit made full-screen-primary), not Settings, an
+  /// add-on window or a panel: `preferring` if it is one, else the main or first visible one.
+  private static func viewerWindow(preferring w: NSWindow?) -> NSWindow? {
+    func isViewer(_ w: NSWindow) -> Bool {
+      !(w is NSPanel) && w.isVisible && w.sheetParent == nil &&
+        w.collectionBehavior.contains(.fullScreenPrimary)
+    }
+    if let w, isViewer(w) { return w }
+    if let m = NSApp.mainWindow, isViewer(m) { return m }
+    return NSApp.windows.first(where: isViewer)
+  }
+
+  /// The pane against the right edge of `viewer`'s content, full content height,
+  /// at the width the person left it.
+  private func dock(_ p: NSPanel, to viewer: NSWindow) {
+    if p.parent !== viewer {
+      p.parent?.removeChildWindow(p)
+      viewer.addChildWindow(p, ordered: .above)
+    }
+    let content = viewer.convertToScreen(viewer.contentLayoutRect)
+    let width = min(p.frame.width, content.width)
+    let frame = NSRect(x: content.maxX - width, y: content.minY, width: width, height: content.height)
+    if frame != p.frame { p.setFrame(frame, display: true) }
+  }
+
+  private func hold(_ p: NSPanel) {
+    let nc = NotificationCenter.default
+    var tokens: [NSObjectProtocol] = []
+    // The viewer it is docked to resized or changed full-screen state: re-dock.
+    for name in [NSWindow.didResizeNotification, NSWindow.didEnterFullScreenNotification,
+                 NSWindow.didExitFullScreenNotification] {
+      tokens.append(nc.addObserver(forName: name, object: nil, queue: .main) { [weak self, weak p] note in
+        MainActor.assumeIsolated {
+          guard let self, let p, let viewer = note.object as? NSWindow, viewer === p.parent else { return }
+          self.dock(p, to: viewer)
+        }
+      })
+    }
+    // Another viewer window became main: the pane goes with it.
+    tokens.append(nc.addObserver(forName: NSWindow.didBecomeMainNotification, object: nil, queue: .main) {
+      [weak self, weak p] note in
+      MainActor.assumeIsolated {
+        guard let self, let p, let w = note.object as? NSWindow, w !== p.parent,
+              let viewer = Self.viewerWindow(preferring: w), viewer === w else { return }
+        self.dock(p, to: viewer)
+      }
+    })
+    paneWatch[ObjectIdentifier(p)] = tokens
+  }
+
+  private func release(_ window: NSWindow) {
+    guard let tokens = paneWatch.removeValue(forKey: ObjectIdentifier(window)) else { return }
+    tokens.forEach { NotificationCenter.default.removeObserver($0) }
+  }
+
+  func bringForward(_ address: ScreenAddress) {
+    guard let w = windows[address], w.sheetParent == nil else { return }
+    w.makeKeyAndOrderFront(nil)
+  }
+
   private func close(_ window: NSWindow) {
+    release(window)
     if let parent = window.sheetParent {
       parent.endSheet(window)
     } else {
@@ -904,8 +1003,9 @@ final class SlotWindows: NSObject, NSWindowDelegate {
   /// The person closed it (the close button, ⌘W): tell the core, which tells
   /// the add-on.
   func windowWillClose(_ notification: Notification) {
-    guard let window = notification.object as? NSWindow,
-          let address = windows.first(where: { $0.value === window })?.key,
+    guard let window = notification.object as? NSWindow else { return }
+    release(window)
+    guard let address = windows.first(where: { $0.value === window })?.key,
           !closingFromCore.contains(address)
     else { return }
     windows[address] = nil

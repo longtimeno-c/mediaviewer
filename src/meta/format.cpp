@@ -144,6 +144,7 @@ std::vector<field> summary_rows(const metadata& m) {
   add("Date taken", s.date_taken);
   add("Location", s.gps);
   add("Rating", format_rating(s.rating));
+  add("Label", s.label);
   add("Comment", s.comment);
   return rows;
 }

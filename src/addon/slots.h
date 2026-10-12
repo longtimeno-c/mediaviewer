@@ -77,7 +77,7 @@ enum slot_change : std::uint32_t {
 struct surface_pixels {
   std::uint32_t width = 0;
   std::uint32_t height = 0;
-  std::uint64_t revision = 0;
+  std::uint64_t revision = 0;  // unique across the registry's surfaces
   std::vector<std::uint8_t> bgra;  // width * 4 per row, premultiplied
 };
 
@@ -147,10 +147,15 @@ class slot_registry {
   // {"generation","path","sections":[{"addon","id","title","revision","tree":{..}}]}
   // -- only the sections that have answered for the current file, in order.
   [[nodiscard]] std::string info_json() const;
-  // [{"addon","id","title","place","width","height","generation","revision","tree":{..}|null}]
+  // [{"addon","id","title","place","width","height","generation","revision","pixels","tree":{..}|null}]
   [[nodiscard]] std::string screens_json() const;
   [[nodiscard]] bool surface(const std::string& addon_id, const std::string& screen_id,
                              const std::string& surface_id, surface_pixels& out) const;
+  // The same surface's size and revision without copying its pixels (a chrome
+  // that already holds that revision draws what it has).
+  [[nodiscard]] bool surface_size(const std::string& addon_id, const std::string& screen_id,
+                                  const std::string& surface_id, std::uint32_t& width, std::uint32_t& height,
+                                  std::uint64_t& revision) const;
   // {"generation","scope","query","searching":bool,
   //  "providers":[{"addon","id","name","done","read","total"}],
   //  "rows":[{"path","why","addon","provider"}]}
@@ -180,6 +185,10 @@ class slot_registry {
   void search_progress(const std::string& addon_id, const std::string& provider_id,
                        std::uint64_t generation, std::uint32_t done, std::uint32_t total);
   [[nodiscard]] bool is_stale(std::uint64_t generation) const;
+  // As above, and also true once `addon_id` is detached (or detaching): the
+  // host table's is_stale / locations_in ask this, so a long call notices its
+  // add-on is being removed and returns, and detach does not wait it out.
+  [[nodiscard]] bool is_stale(const std::string& addon_id, std::uint64_t generation) const;
   status post_badges(const std::string& addon_id, const std::string& badge_id,
                      std::uint64_t generation, std::vector<std::string> paths, bool replace);
   status post_status(const std::string& addon_id, const std::string& item_id, std::string text);
@@ -243,6 +252,7 @@ class slot_registry {
   std::map<std::pair<std::string, std::string>, std::string> status_;
   mv_slot_theme last_theme_{};
   float last_scale_ = 1.0f;
+  std::uint64_t surface_revision_ = 0;  // under m_
 
   std::atomic<std::uint64_t> generation_{0};
   std::atomic<std::uint64_t> calls_{0};
@@ -266,6 +276,10 @@ void set_local_search_provider(slot_registry& registry, bool on);
 using location_reader = std::function<std::optional<mv_addon_location>(const std::string& path)>;
 [[nodiscard]] mv_addon_location cached_location(const std::string& path, std::uint64_t size,
                                                 std::int64_t mtime, const location_reader& read);
+// A cache hit only (no read): true and `out` filled when `path` is cached at
+// this size and mtime.
+[[nodiscard]] bool peek_cached_location(const std::string& path, std::uint64_t size, std::int64_t mtime,
+                                        mv_addon_location& out);
 // Test hook: forget the cache.
 void clear_location_cache();
 

@@ -308,6 +308,10 @@ TEST_CASE("a slow provider never delays typing; a stale answer is dropped", "[ad
   r.search(MV_SLOT_SCOPE_LOCAL, "test: Lisboa", "");
   r.drain();
   REQUIRE(fc->queries.back() == "Lisboa");
+  // An accented prefix folds to it, and is cut whole (2-byte "\xC3\x89" folds to 1).
+  r.search(MV_SLOT_SCOPE_LOCAL, "T\xC3\x89ST: Lisboa", "");
+  r.drain();
+  REQUIRE(fc->queries.back() == "Lisboa");
   // ...but a digit after it is a date term (Local search's `in:2024`): not routed,
   // the whole query goes to every provider of the scope.
   r.search(MV_SLOT_SCOPE_LOCAL, "test:2024", "");
@@ -422,6 +426,13 @@ TEST_CASE("surfaces are copied, bounded, and go with their tree", "[addon][slots
   REQUIRE(r.post_surface("slotstest", "spot", "pixels", g, px.data(), 8, 2, 16) == status::invalid_arg);
   REQUIRE(r.post_surface("slotstest", "spot", "pixels", g, px.data(), 5000, 1, 20000) == status::invalid_arg);
   REQUIRE(r.post_surface("slotstest", "spot", "pixels", g + 99, px.data(), 8, 2, 48) == status::cancelled);
+  // Ids no node names are kept (pixels may come first), but not without limit.
+  int kept = 0;
+  for (int i = 0; i < 40; ++i) {
+    if (r.post_surface("slotstest", "spot", "extra" + std::to_string(i), g, px.data(), 8, 2, 48) == status::ok) ++kept;
+  }
+  REQUIRE(kept == 15);  // 16 per screen, "pixels" included
+  REQUIRE(r.post_surface("slotstest", "spot", "pixels", g, px.data(), 8, 2, 48) == status::ok);  // a known id still updates
   // A new tree without that surface drops its pixels.
   REQUIRE(r.post_screen("slotstest", "spot", g, R"({"type":"text","id":"t","text":"x"})") == status::ok);
   REQUIRE_FALSE(r.surface("slotstest", "spot", "pixels", out));
@@ -604,6 +615,8 @@ TEST_CASE("a native add-on fills every slot and screen through the v3 host table
     }
     return l;
   };
+  std::atomic<bool> yield_now{false};  // "the viewer is presenting"
+  svc.should_yield = [&yield_now] { return yield_now.load(); };
   auto loaded = mv::addon::loaded_addon::load(st, "slots-test", svc);
   REQUIRE(loaded);
   REQUIRE((*loaded)->slots_attached());
@@ -709,8 +722,27 @@ TEST_CASE("a native add-on fills every slot and screen through the v3 host table
   reg.drain();
   REQUIRE(eventually([&] { return reg.status_json().find("2 chosen") != std::string::npos; }));
 
+  // A cached walk does not wait while the viewer presents: a cache hit reads nothing.
+  yield_now = true;
+  const auto cached_start = std::chrono::steady_clock::now();
+  reg.search(MV_SLOT_SCOPE_FILES, "portugal", utf8(folder));
+  reg.drain();
+  CHECK(std::chrono::steady_clock::now() - cached_start < std::chrono::milliseconds(500));
+  REQUIRE(mv::json::parse(reg.search_json(MV_SLOT_SCOPE_FILES))->find("rows")->a.size() == 2);
+
+  // Removed while its worker is inside a walk that waits out the viewer's
+  // presents (uncached files): the walk sees its add-on going and stops, so
+  // the remove does not wait for the folder (4 files x 2 s here).
+  mv::addon::clear_location_cache();
+  const auto searches_before = probe->calls(1);
+  reg.search(MV_SLOT_SCOPE_FILES, "portugal", utf8(folder));
+  REQUIRE(eventually([&] { return probe->calls(1) > searches_before; }));
+  const auto remove_start = std::chrono::steady_clock::now();
+
   // Removing the add-on removes every item, with no restart.
   loaded->reset();
+  CHECK(std::chrono::steady_clock::now() - remove_start < std::chrono::milliseconds(500));
+  yield_now = false;
   REQUIRE_FALSE(reg.attached("slots-test"));
   REQUIRE(mv::json::parse(reg.contributions_json())->find("items")->a.empty());
   REQUIRE(reg.status_json() == "[]");

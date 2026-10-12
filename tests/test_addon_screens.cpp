@@ -273,3 +273,28 @@ TEST_CASE("a 2,000-tile thumbnail grid is one cheap node", "[addon][screens]") {
   // add-on's thread, never per frame. Generous bound for a loaded CI runner.
   CHECK(ms < 500);
 }
+
+TEST_CASE("selecting every tile of a large grid is checked in one pass", "[addon][screens]") {
+  // Select All in a 20,000-tile multi-select grid: the event is checked on the
+  // chrome's thread under the registry lock, so it must not scan the items once
+  // per selected tile (20,000 x 20,000 compares).
+  using namespace mv::addon::screen;
+  constexpr int kTiles = 20'000;
+  std::string json = R"({"type":"thumbnail_grid","id":"g","label":"Photos","multi":true,"items":[)";
+  std::string all = "[";
+  for (int i = 0; i < kTiles; ++i) {
+    const std::string path = "/fixtures/tiles/IMG_" + std::to_string(i) + ".JPG";
+    json += (i ? "," : "") + std::string(R"({"path":")") + path + "\"}";
+    all += (i ? ",\"" : "\"") + path + "\"";
+  }
+  json += "]}";
+  all += "]";
+  tree t;
+  REQUIRE(t.set(json) == error::none);
+  const auto start = std::chrono::steady_clock::now();
+  REQUIRE(t.check_event("g", ev_select, all) == error::none);
+  const auto ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+  CHECK(ms < 200);
+  REQUIRE(t.check_event("g", ev_select, R"(["/fixtures/tiles/nope.JPG"])") == error::bad_value);
+}
