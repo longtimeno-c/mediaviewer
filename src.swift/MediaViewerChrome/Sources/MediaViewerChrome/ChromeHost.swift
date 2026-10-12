@@ -47,6 +47,19 @@ public final class MVChromeHost: NSObject {
     host(TransportView())
   }
 
+  /// #345: the AI-generated badge, bottom-right of the canvas. main_mac.mm shows,
+  /// hides and places it; `setAIBadge` gives it its text.
+  @objc public static func makeAIBadgeView() -> NSView {
+    host(AIBadgeView())
+  }
+
+  @objc public static var aiBadgeWidth: CGFloat { AIBadgeView.width }
+  @objc public static var aiBadgeHeight: CGFloat { AIBadgeView.height }
+
+  @MainActor @objc public static func setAIBadge(title: String, evidence: String) {
+    AIBadgeStore.shared.set(title: title, evidence: evidence)
+  }
+
   @objc public static func makeHelpView() -> NSView {
     host(HelpView())
   }

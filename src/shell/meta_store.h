@@ -12,6 +12,10 @@
 //   * the date-taken sort key for every file in a folder, filled by one
 //     background job, so "sort by date taken" parses each file once per
 //     (path, mtime, size) and never on the UI thread.
+//   * #345: the provenance of the item on screen, for the canvas's AI badge,
+//     pane open or not. A held full record answers it; otherwise one bounded
+//     probe (meta/probe.h, a few kilobytes) runs on a worker, and its answer is
+//     kept in its own, larger LRU of a few strings per file.
 //
 // Thread model: `get` / `peek` / `date_key` are UI-thread calls that only take
 // a short mutex; loads and key scans run on the job system. `on_ready` fires on
@@ -31,6 +35,7 @@
 
 #include "core/job_system.h"
 #include "io/dir.h"
+#include "meta/generators.h"
 #include "meta/meta.h"
 
 namespace mv::shell {
@@ -39,12 +44,13 @@ class meta_store {
  public:
   using loader_fn = std::function<result<meta::metadata>(std::string_view utf8_path)>;
   using date_reader_fn = std::function<std::optional<std::int64_t>(std::string_view utf8_path)>;
+  using probe_fn = std::function<meta::provenance(std::string_view utf8_path)>;
   // Runs on the pool thread. `path` is the item the record is for.
   using ready_fn = std::function<void(std::string path)>;
 
-  // Defaults read through meta::read / meta::read_date_taken.
+  // Defaults read through meta::read / meta::read_date_taken / meta::probe_provenance.
   meta_store();
-  meta_store(loader_fn loader, date_reader_fn dates);
+  meta_store(loader_fn loader, date_reader_fn dates, probe_fn probe = {});
   ~meta_store();
 
   meta_store(const meta_store&) = delete;
@@ -68,6 +74,19 @@ class meta_store {
   // True once since the last call if keys arrived (the host re-sorts on it).
   [[nodiscard]] bool consume_dates_changed() noexcept;
 
+  // #345: what the file says about how it was made, for the AI badge. A full
+  // record already held for `e` answers at once (no probe); so does an earlier
+  // probe. Otherwise one probe is submitted (none while one for the key is in
+  // flight), `on_ready` fires on the pool thread when it lands, and this returns
+  // nullopt. The probe is meta::probe_provenance: bounded reads of the header
+  // bytes, never the full read.
+  [[nodiscard]] std::optional<meta::provenance> provenance(const io::dir_entry& e, job_system& jobs,
+                                                           ready_fn on_ready);
+  // Cache only (a held record, or a probe that landed) -- never submits.
+  [[nodiscard]] std::optional<meta::provenance> peek_provenance(const io::dir_entry& e) const;
+  // How many probes have run: a test holds held-arrow and cache hits to zero.
+  [[nodiscard]] std::uint64_t probes() const noexcept;
+
   // PR 12: drops every cached record for `utf8_path` (whatever its mtime and
   // size), so the next `get` reads it again. A write that landed in a sidecar
   // leaves the file's own mtime and size alone, so the key cannot tell.
@@ -79,6 +98,8 @@ class meta_store {
   void clear();
 
   static constexpr std::size_t kCapacity = 48;
+  // Provenance answers are a few short strings each; a whole folder's worth fits.
+  static constexpr std::size_t kProvenanceCapacity = 1024;
 
  private:
   struct state;

@@ -24,6 +24,7 @@
 #include "meta/generators.h"
 #include "meta/meta.h"
 #include "meta/parse.h"
+#include "meta/probe.h"
 #include "meta/tables.h"
 #include "meta/write.h"
 
@@ -826,4 +827,183 @@ TEST_CASE("write the metadata fuzz seeds", "[.write-seeds]") {
       "<xmpMM:History><rdf:Seq><rdf:li stEvt:action=\"saved\"/><rdf:li><rdf:Description stEvt:action=\"x\"/>"
       "</rdf:li></rdf:Seq></xmpMM:History></rdf:Description></rdf:RDF></x:xmpmeta>";
   put("xmp", "midjourney_like.xmp", bytes(xmp.begin(), xmp.end()));
+}
+
+// ---- #345: the badge's probe gives the full read's answer ------------------------
+namespace {
+
+void le16(bytes& out, std::uint32_t v) {
+  out.push_back(static_cast<std::uint8_t>(v));
+  out.push_back(static_cast<std::uint8_t>(v >> 8));
+}
+void le32(bytes& out, std::uint32_t v) {
+  le16(out, v & 0xFFFF);
+  le16(out, v >> 16);
+}
+
+// A little-endian TIFF block whose IFD0 holds only Software.
+bytes tiff_software(std::string_view software) {
+  bytes t{'I', 'I', 42, 0};
+  le32(t, 8);
+  le16(t, 1);
+  le16(t, 0x0131);
+  le16(t, 2);
+  le32(t, static_cast<std::uint32_t>(software.size() + 1));
+  le32(t, 8 + 2 + 12 + 4);
+  le32(t, 0);  // no next IFD
+  append(t, software);
+  t.push_back(0);
+  return t;
+}
+bytes exif_app1(std::string_view software) {
+  bytes p;
+  append(p, std::string_view("Exif\0\0", 6));
+  append(p, tiff_software(software));
+  return segment(0xE1, p);
+}
+bytes xmp_app1(const std::string& packet) {
+  bytes p;
+  append(p, std::string_view("http://ns.adobe.com/xap/1.0/\0", 29));
+  append(p, packet);
+  return segment(0xE1, p);
+}
+std::string xmp_packet(std::string_view attrs) {
+  return "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">"
+         "<rdf:Description rdf:about=\"\" xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\""
+         " xmlns:Iptc4xmpExt=\"http://iptc.org/std/Iptc4xmpExt/2008-02-29/\" " +
+         std::string(attrs) + "/></rdf:RDF></x:xmpmeta>";
+}
+
+// The probe and meta::read agree on all three facts; returns the probe's answer.
+mv::meta::provenance same_answer(const std::string& name, const bytes& b) {
+  temp_file f(name);
+  f.write(b);
+  const auto m = mv::meta::read(f.utf8());
+  REQUIRE(m);
+  const mv::meta::provenance p = mv::meta::probe_provenance(f.utf8());
+  INFO(name);
+  CHECK(p.made_with == m->s.made_with);
+  CHECK(p.ai_generated == m->s.ai_generated);
+  CHECK(p.evidence == m->s.ai_evidence);
+  return p;
+}
+
+}  // namespace
+
+TEST_CASE("the provenance probe agrees with the full read, fixture by fixture", "[meta][provenance][probe]") {
+  const std::string params = "a fox\nSteps: 20, Seed: 1, Model: sdxl, Version: v1.10.1";
+  // ChatGPT: C2PA in APP11 segments, behind a camera-style EXIF and before the scan.
+  std::vector<bytes> segs{exif_app1("Firmware 1.0")};
+  for (auto& s : app11(c2pa_store("ChatGPT", kTrained, "GPT-4o"), 120)) segs.push_back(s);
+  auto p = same_answer("p_chatgpt.jpg", jpeg_with_segments(grey_jpeg(), segs));
+  CHECK(p.ai_generated);
+  CHECK(p.made_with == "ChatGPT");
+  CHECK(p.evidence == "Content Credentials (C2PA): AI-generated (trainedAlgorithmicMedia)");
+
+  // Firefly: segments out of order.
+  segs = app11(c2pa_store("Adobe Firefly", kTrained, "Adobe Firefly"), 64, 7);
+  std::reverse(segs.begin(), segs.end());
+  p = same_answer("p_firefly.jpg", jpeg_with_segments(grey_jpeg(), segs));
+  CHECK(p.made_with == "Adobe Firefly");
+
+  // Midjourney-style XMP CreatorTool; an IPTC source type in XMP.
+  p = same_answer("p_mj.jpg", jpeg_with_segments(grey_jpeg(), {xmp_app1(xmp_packet("xmp:CreatorTool=\"Midjourney 6\""))}));
+  CHECK(p.evidence == "XMP CreatorTool: Midjourney 6");
+  p = same_answer("p_iptc.jpg", jpeg_with_segments(grey_jpeg(), {xmp_app1(xmp_packet(
+                                    "Iptc4xmpExt:DigitalSourceType=\"" + std::string(kTrained) + "\""))}));
+  CHECK(p.ai_generated);
+  CHECK(p.evidence.rfind("IPTC digital source type (XMP): ", 0) == 0);
+  // A generator in EXIF Software.
+  p = same_answer("p_exif.jpg", jpeg_with_segments(grey_jpeg(), {exif_app1("Adobe Firefly 2.1")}));
+  CHECK(p.evidence == "EXIF Software: Adobe Firefly 2.1");
+  // A camera JPEG with an editor's XMP, and a bare JPEG: nothing.
+  p = same_answer("p_camera.jpg",
+                  jpeg_with_segments(grey_jpeg(), {exif_app1("Firmware Version 1.8.1"),
+                                                   xmp_app1(xmp_packet("xmp:CreatorTool=\"Adobe Lightroom\""))}));
+  CHECK_FALSE(p.ai_generated);
+  CHECK(p.made_with.empty());
+  CHECK_FALSE(same_answer("p_plain.jpg", grey_jpeg()).ai_generated);
+
+  // PNG: caBX plus generator chunks; the chunks alone; ComfyUI; the XMP packet; plain.
+  p = same_answer("p_sd.png", png_with(small_png(), {png_chunk("caBX", c2pa_store("Microsoft Designer", kTrained, "DALL-E 3")),
+                                                    text_chunk("parameters", params)}));
+  CHECK(p.made_with == "Microsoft Designer");
+  p = same_answer("p_sd2.png", png_with(small_png(), {text_chunk("parameters", params)}));
+  CHECK(p.ai_generated);
+  p = same_answer("p_comfy.png", png_with(small_png(), {itxt_chunk("prompt", "{\"3\": {}}", false),
+                                                       ztxt_chunk("workflow", "{\"nodes\": []}")}));
+  CHECK(p.made_with == "ComfyUI");
+  p = same_answer("p_xmp.png", png_with(small_png(), {itxt_chunk("XML:com.adobe.xmp",
+                                                                 xmp_packet("xmp:CreatorTool=\"Midjourney\""), false)}));
+  CHECK(p.made_with == "Midjourney");
+  CHECK_FALSE(same_answer("p_plain.png", png_with(small_png(), {text_chunk("Author", "Me")})).ai_generated);
+  // Text after the image data counts too (the probe seeks past IDAT).
+  bytes late = small_png();
+  const bytes tail = text_chunk("parameters", params);
+  late.insert(late.end() - 12, tail.begin(), tail.end());  // just before IEND
+  p = same_answer("p_late.png", late);
+  CHECK(p.ai_generated);
+
+  // A clip with its C2PA box after a large mdat (Sora / Veo layout).
+  bytes uuid{0xD8, 0xFE, 0xC3, 0xD6, 0x1B, 0x0E, 0x48, 0x3C, 0x92, 0x97, 0x58, 0x28, 0x87, 0x7E, 0xC4, 0x81, 0, 0, 0, 0};
+  append(uuid, std::string_view("manifest\0\0\0\0\0\0\0\0\0", 17));
+  append(uuid, c2pa_store("Sora", kTrained, "Sora"));
+  bytes file = box("ftyp", bytes{'i', 's', 'o', 'm', 0, 0, 0, 0, 'i', 's', 'o', 'm'});
+  append(file, box("mdat", bytes(1 << 20, 0)));
+  append(file, box("uuid", uuid));
+  p = same_answer("p_sora.mp4", file);
+  CHECK(p.made_with == "Sora");
+  CHECK(p.ai_generated);
+}
+
+TEST_CASE("the provenance probe: WebP chunks, damage, and files it cannot read", "[meta][provenance][probe]") {
+  // WebP: an XMP chunk after the bitstream (an odd-sized one, padded).
+  bytes riff;
+  append(riff, std::string_view("WEBP"));
+  bytes chunk;
+  append(chunk, std::string_view("VP8X"));
+  le32(chunk, 10);
+  bytes vp8x(10, 0);
+  vp8x[0] = 0x0C;  // EXIF + XMP
+  append(chunk, vp8x);
+  append(chunk, std::string_view("VP8 "));
+  le32(chunk, 3);
+  append(chunk, bytes{1, 2, 3, 0});
+  const std::string packet = xmp_packet("xmp:CreatorTool=\"Ideogram 2.0\"");
+  append(chunk, std::string_view("XMP "));
+  le32(chunk, static_cast<std::uint32_t>(packet.size()));
+  append(chunk, packet);
+  if (packet.size() & 1) chunk.push_back(0);
+  append(riff, chunk);
+  bytes webp;
+  append(webp, std::string_view("RIFF"));
+  le32(webp, static_cast<std::uint32_t>(riff.size()));
+  append(webp, riff);
+  {
+    temp_file f("p.webp");
+    f.write(webp);
+    const auto p = mv::meta::probe_provenance(f.utf8());
+    CHECK(p.made_with == "Ideogram");
+    CHECK(p.evidence == "XMP CreatorTool: Ideogram 2.0");
+  }
+
+  // Truncated and mutated: never a crash.
+  const bytes jpeg = jpeg_with_segments(grey_jpeg(), app11(c2pa_store("ChatGPT", kTrained, "GPT-4o"), 120));
+  for (std::size_t cut : {std::size_t{3}, std::size_t{40}, std::size_t{200}, jpeg.size() / 2}) {
+    temp_file f("p_cut.jpg");
+    f.write(bytes(jpeg.begin(), jpeg.begin() + static_cast<std::ptrdiff_t>(cut)));
+    (void)mv::meta::probe_provenance(f.utf8());
+  }
+  bytes bad = jpeg;
+  for (std::size_t i = 4; i < bad.size(); i += 37) bad[i] ^= 0x5A;
+  {
+    temp_file f("p_bad.jpg");
+    f.write(bad);
+    (void)mv::meta::probe_provenance(f.utf8());
+  }
+  // Missing and empty files have no provenance.
+  CHECK_FALSE(mv::meta::probe_provenance((fs::temp_directory_path() / "mv_prov_absent.jpg").string()).ai_generated);
+  temp_file empty("p_empty.jpg");
+  empty.write({});
+  CHECK(mv::meta::probe_provenance(empty.utf8()) == mv::meta::provenance{});
 }

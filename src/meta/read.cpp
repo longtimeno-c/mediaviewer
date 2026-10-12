@@ -77,6 +77,7 @@ void read_beyond(std::string_view utf8_path, std::span<const std::uint8_t> prefi
   const provenance p = derive_provenance(ev);
   out.s.made_with = p.made_with;
   out.s.ai_generated = p.ai_generated;
+  out.s.ai_evidence = p.evidence;
 }
 
 }  // namespace

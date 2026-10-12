@@ -62,6 +62,7 @@
 #include "nle/mac/agent_mac.h"
 #endif
 #include "shell/adjust_pane.h"
+#include "shell/ai_badge.h"
 #include "abi/clip_session.h"
 #include "shell/trim_state.h"
 #include "shell/transport_autohide.h"
@@ -400,6 +401,10 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 @property(nonatomic, strong) NSView* exportHost;
 @property(nonatomic, strong) NSView* transportHost;
 @property(nonatomic, strong) NSLayoutConstraint* transportBottom;
+// #345: the AI-generated badge, bottom-right of the canvas (shell/ai_badge.h).
+@property(nonatomic, strong) NSView* aiBadgeHost;
+@property(nonatomic, strong) NSLayoutConstraint* aiBadgeBottom;
+@property(nonatomic, strong) NSLayoutConstraint* aiBadgeTrailing;
 // PR 9: the metadata pane (right) and folder tree (left) float over the canvas like the
 // gallery does. Mac has no horizontal canvas inset yet (docs/design/12 2026-09-24).
 @property(nonatomic, strong) NSView* metaHost;
@@ -2299,6 +2304,13 @@ static void MvAdoptNewDefaultViewerTypes() {
   BOOL _metaPaneVisible;
   BOOL _treeVisible;
   NSTimer* _metaDebounce;
+  // #345: the AI badge. Its answer comes from `_meta.provenance` -- the held
+  // record, or a bounded probe on the pool after the same pause as above -- so
+  // it needs no pane open and never sits ahead of the picture. `_aiBadgeKey` is
+  // the item it was asked for (path, mtime, size), so a relist keeps it.
+  mv::shell::ai_badge _aiBadge;
+  NSTimer* _aiBadgeDebounce;
+  std::string _aiBadgeKey;
   // PR 12 (docs/design/06 "Writing", docs/design/16 Rate). Rating, comment and revert are
   // queued here and written on the pool: a plain JPEG in place, everything else
   // in an XMP sidecar. `_metaWritten` is the paths written this session, the
@@ -2623,6 +2635,25 @@ static void MvAdoptNewDefaultViewerTypes() {
     [self.transportHost.heightAnchor constraintEqualToConstant:44.0],
     self.transportBottom,
     preferredWidth,
+  ]];
+
+  // #345: the AI-generated badge. Chrome over the canvas like the transport, so
+  // it never presents; hidden until the item on screen says it was AI-made.
+  // -layoutAIBadge keeps it clear of the filmstrip, a clip's transport and the
+  // right-hand panes.
+  self.aiBadgeHost = [MVChromeHost makeAIBadgeView];
+  self.aiBadgeHost.hidden = YES;
+  self.aiBadgeHost.translatesAutoresizingMaskIntoConstraints = NO;
+  [container addSubview:self.aiBadgeHost];
+  self.aiBadgeBottom = [self.aiBadgeHost.bottomAnchor constraintEqualToAnchor:container.bottomAnchor
+                                                                     constant:-10.0];
+  self.aiBadgeTrailing = [self.aiBadgeHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor
+                                                                         constant:-16.0];
+  [NSLayoutConstraint activateConstraints:@[
+    [self.aiBadgeHost.widthAnchor constraintEqualToConstant:MVChromeHost.aiBadgeWidth],
+    [self.aiBadgeHost.heightAnchor constraintEqualToConstant:MVChromeHost.aiBadgeHeight],
+    self.aiBadgeBottom,
+    self.aiBadgeTrailing,
   ]];
 
   // Gallery: an overlay over the canvas below the command bar (docs/design/16:
@@ -3263,6 +3294,9 @@ static void MvAdoptNewDefaultViewerTypes() {
       [self applyTransportAutohide];
     }
   }
+  // #345: the badge follows the transport, the filmstrip and the panes; a few
+  // compares on this existing timer, a constraint change only when one moved.
+  [self layoutAIBadge];
   // Date-taken keys arriving on the pool re-sort the listing in place: the same
   // items, the current one still selected, no image reload.
   if (_meta.consume_dates_changed() && _sort.key == mv::io::sort_key::date_taken && !_listOpen) {
@@ -3446,6 +3480,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   }
   [self updateMarkSnapshot];
   [self metadataSelectionChanged];
+  [self aiBadgeSelectionChanged];
   [self publish];
 }
 
@@ -7813,6 +7848,9 @@ static double mv_wall_seconds() {
   }
   _snap.meta = o;
   [self pokeSnapshot];
+  // #345: the full record is the badge's best answer (it reads what the probe
+  // leaves out: a clip's software tag, a HEIF's XMP).
+  [self aiBadgeRefresh];
 }
 
 - (BOOL)metaPaneVisible { return _metaPaneVisible; }
@@ -7821,6 +7859,123 @@ static double mv_wall_seconds() {
 }
 - (uint64_t)metaGeneration { return _metaGeneration; }
 - (std::shared_ptr<const mv::meta::metadata>)metaRecord { return _metaRecord; }
+
+// ---- #345: the AI-generated badge --------------------------------------------------
+//
+// shell/ai_badge.h decides the text; meta_store::provenance supplies the answer
+// (a held record, an earlier probe, or one bounded probe on the pool). A cached
+// answer shows at once; a miss waits the metadata pause first, so holding an
+// arrow probes none of the items flashing past. Nothing here touches `_snap`:
+// the badge is an NSHostingView over the canvas, never a present.
+
+- (BOOL)aiBadgeEnabled {
+  return mv::shell::view_settings::from_flags(_viewFlags).ai_badge ? YES : NO;
+}
+
+// The current item as the store keys it; a Photos item through its resolved file.
+- (BOOL)aiBadgeEntry:(mv::io::dir_entry&)entry {
+  if (_items.empty() || _index.current() >= _items.size()) return NO;
+  entry = _items[_index.current()];
+  if (mv::shell::photos::is_key(entry.path_utf8)) {
+    const auto hit = _photosResolved.find(entry.path_utf8);
+    if (hit == _photosResolved.end()) return NO;
+    entry.path_utf8 = hit->second.path;
+  }
+  return YES;
+}
+
+static std::string MvBadgeKey(const mv::io::dir_entry& e) {
+  return e.path_utf8 + '\0' + std::to_string(e.mtime_unix) + '\0' + std::to_string(e.size);
+}
+
+- (void)setAIBadgeTo:(const mv::shell::ai_badge&)badge {
+  if (badge == _aiBadge) return;
+  _aiBadge = badge;
+  if (badge.shown) {
+    [MVChromeHost setAIBadgeWithTitle:[NSString stringWithUTF8String:badge.title.c_str()] ?: @""
+                             evidence:[NSString stringWithUTF8String:badge.evidence.c_str()] ?: @""];
+  }
+  [self layoutAIBadge];
+}
+
+- (void)aiBadgeSelectionChanged {
+  mv::io::dir_entry entry;
+  const BOOL have = [self aiBadgeEntry:entry];
+  const std::string key = have ? MvBadgeKey(entry) : std::string();
+  if (key == _aiBadgeKey) return;  // a relist, the same file: keep what is shown
+  _aiBadgeKey = key;
+  [_aiBadgeDebounce invalidate];
+  _aiBadgeDebounce = nil;
+  if (!have || ![self aiBadgeEnabled]) {
+    [self setAIBadgeTo:mv::shell::ai_badge{}];
+    return;
+  }
+  if (auto hit = _meta.peek_provenance(entry)) {
+    [self setAIBadgeTo:mv::shell::make_ai_badge(*hit, true)];
+    return;
+  }
+  [self setAIBadgeTo:mv::shell::ai_badge{}];
+  _aiBadgeDebounce = [NSTimer scheduledTimerWithTimeInterval:0.09
+                                                      target:self
+                                                    selector:@selector(aiBadgeRequestNow)
+                                                    userInfo:nil
+                                                     repeats:NO];
+}
+
+- (void)aiBadgeRequestNow {
+  [_aiBadgeDebounce invalidate];
+  _aiBadgeDebounce = nil;
+  mv::io::dir_entry entry;
+  if (![self aiBadgeEnabled] || ![self aiBadgeEntry:entry]) return;
+  MvLabApp* app = self;
+  const auto answer = _meta.provenance(entry, _jobs, [app](std::string) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [app aiBadgeRefresh];
+    });
+  });
+  if (answer) [self setAIBadgeTo:mv::shell::make_ai_badge(*answer, true)];
+}
+
+// An answer landed (a probe, or a full record): show it if it is still the
+// item on screen. Never submits.
+- (void)aiBadgeRefresh {
+  mv::io::dir_entry entry;
+  if (![self aiBadgeEntry:entry] || MvBadgeKey(entry) != _aiBadgeKey) return;
+  if (auto hit = _meta.peek_provenance(entry)) {
+    [self setAIBadgeTo:mv::shell::make_ai_badge(*hit, [self aiBadgeEnabled] == YES)];
+  }
+}
+
+// Settings -> Viewer: off hides it at once; on asks again for what is on screen.
+- (void)aiBadgeSettingChanged {
+  _aiBadgeKey.clear();
+  [self aiBadgeSelectionChanged];
+}
+
+// Bottom-right of the canvas: above the filmstrip, above a clip's transport,
+// left of a right-hand pane; gone under the gallery, Settings or the Video Editor.
+- (void)layoutAIBadge {
+  NSView* host = self.aiBadgeHost;
+  if (!host) return;
+  const BOOL covered = _galleryVisible || _settingsVisible || _editorOpen;
+  const BOOL want = _aiBadge.shown && !covered && !_items.empty();
+  if (want) {
+    const BOOL rightPane = !self.metaHost.hidden || !self.adjustHost.hidden || !self.jobsHost.hidden ||
+                           !self.editPaneHost.hidden || !self.editStripHost.hidden;
+    const CGFloat trailing = -(16.0 + (rightPane ? kMetaPaneWidthPoints : 0.0));
+    CGFloat bottom = -(([self filmstripVisible] ? kFilmstripHeightPoints : 0.0) + 10.0);
+    if (_transportClip) bottom -= 44.0 + 8.0;  // the strip's height and a gap
+    if (self.aiBadgeTrailing.constant != trailing) self.aiBadgeTrailing.constant = trailing;
+    if (self.aiBadgeBottom.constant != bottom) self.aiBadgeBottom.constant = bottom;
+  }
+  if (host.hidden == !want) return;
+  host.hidden = !want;
+  if (!want && self.window.firstResponder &&
+      [self.window.firstResponder isKindOfClass:[NSView class]] &&
+      [(NSView*)self.window.firstResponder isDescendantOf:host]) {
+    [self.window makeFirstResponder:self.view];  // focus never stays on a hidden badge
+  }
+}
 
 // ---- PR 12: rating, comment, revert ----------------------------------------------
 //
@@ -8535,6 +8690,7 @@ static double mv_wall_seconds() {
                               resolved.size, moment);
   [self editItemOpened:entry item:_shownItem];
   [self metadataSelectionChanged];
+  [self aiBadgeSelectionChanged];
   [_photosFetchTimer invalidate];
   _photosFetchTimer = nil;
   if (!resolved.preview) return;
@@ -9109,11 +9265,15 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
 }
 - (void)setViewFlags:(int32_t)flags {
   const auto before = mv::shell::view_settings::from_flags(_viewFlags).hidden_kinds();
+  const int32_t changed = flags ^ _viewFlags;
   _viewFlags = flags;
   // Picked up by the 0.2 s folder timer, like any relist.
   if (mv::shell::view_settings::from_flags(flags).hidden_kinds() != before) _refilterListing = YES;
   [[NSUserDefaults standardUserDefaults] setInteger:flags forKey:kDefaultsViewFlags];
-  [self applyViewFlags];
+  // #345: the AI badge is chrome only; switching it pokes nothing the render
+  // thread reads, so it never costs a present.
+  if (changed & ~mv::shell::kSettingHideAiBadge) [self applyViewFlags];
+  if (changed & mv::shell::kSettingHideAiBadge) [self aiBadgeSettingChanged];
   ++_keysGeneration;  // the Settings screen re-reads flags and keys on this
 }
 
