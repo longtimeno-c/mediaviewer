@@ -182,9 +182,10 @@ public static partial class IslandHost
         _editBarButton.Visibility = _editOpen || (_editSubject != SubjectNone && !_galleryVisible)
             ? Visibility.Visible : Visibility.Collapsed;
         _editBarButton.Background = _editOpen ? Brush(Hairline) : Brush(Colors.Transparent);
-        string tip = _editOpen ? "Close the editor  Enter or Esc"
-                     : EditIsClip ? "Edit video: trim, split, clip tools  Enter"
-                                  : "Edit image: crop, rotate, colour, info  Enter";
+        string? enter = KeyOf(Command.EditWorkspace);
+        string tip = _editOpen ? (enter is null ? "Close the editor  Esc" : $"Close the editor  {enter} or Esc")
+                     : WithKey(EditIsClip ? "Edit video: trim, split, clip tools"
+                                          : "Edit image: crop, rotate, colour, info", Command.EditWorkspace);
         ToolTipService.SetToolTip(_editBarButton, tip);
         AutomationProperties_SetName(_editBarButton, _editOpen ? "Done editing" : EditTitle);
         RenderOpenInBar();
@@ -239,7 +240,7 @@ public static partial class IslandHost
         string label = _openApps.Length > 0 ? "Open in " + _openApps[0] : "Open in…";
         SetButtonText(_openInButton, label);
         string app = _openApps.Length > 0 ? _openApps[0] : "its app";
-        ToolTipService.SetToolTip(_openInButton, $"Open this document in {app}  Enter");
+        ToolTipService.SetToolTip(_openInButton, WithKey($"Open this document in {app}", Command.EditWorkspace));
         AutomationProperties_SetName(_openInButton, label);
         _openInMore.Visibility = _openApps.Length > 1 ? Visibility.Visible : Visibility.Collapsed;
     }
@@ -404,22 +405,24 @@ public static partial class IslandHost
         _editNameText.Margin = new Thickness(8, 0, 4, 0);
         Grid.SetColumn(_editNameText, 1);
         head.Children.Add(_editNameText);
+        string? enter = KeyOf(Command.EditWorkspace);
         Button done = EditButton("Done", () => Send(Command.EditWorkspace),
-                                 tip: "Close the editor  Esc, or Enter again");
+                                 tip: enter is null ? "Close the editor  Esc" : $"Close the editor  Esc, or {enter} again");
         Grid.SetColumn(done, 2);
         head.Children.Add(done);
         col.Children.Add(head);
 
         // Tabs: a row of plain buttons so each can carry its key.
         var tabs = new Grid { ColumnSpacing = 4 };
-        (int Tab, string Label, string Key)[] list = EditIsClip
-            ? new[] { (TabTrim, "Trim", "Ctrl+T"), (TabJobs, "Jobs", "Ctrl+J") }
-            : new[] { (TabCrop, "Crop", "Shift+C"), (TabColour, "Colour", "Shift+A"), (TabInfo, "Info", "I") };
+        (int Tab, string Label, int KeyedBy)[] list = EditIsClip
+            ? new[] { (TabTrim, "Trim", Command.TrimMode), (TabJobs, "Jobs", Command.JobsPane) }
+            : new[] { (TabCrop, "Crop", Command.CropMode), (TabColour, "Colour", Command.AdjustPane),
+                      (TabInfo, "Info", Command.MetadataPane) };
         for (int i = 0; i < list.Length; i++)
         {
-            (int tab, string label, string key) = list[i];
+            (int tab, string label, int keyedBy) = list[i];
             tabs.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            Button b = EditButton(label, () => Send(Command.EditTab, tab), tip: $"{label}  {key}", stretch: true);
+            Button b = EditButton(label, () => Send(Command.EditTab, tab), tip: WithKey(label, keyedBy), stretch: true);
             Grid.SetColumn(b, i);
             tabs.Children.Add(b);
             EditTabButtons.Add((b, tab));
@@ -429,18 +432,24 @@ public static partial class IslandHost
         if (EditIsClip)
         {
             col.Children.Add(Row(EditButton("Clip tools…", () => Send(Command.ClipToolsFlyout),
-                                            tip: "Rotate, split, remux, save a frame, audio, GIF  Ctrl+S")));
+                                            tip: WithKey("Rotate, split, remux, save a frame, audio, GIF",
+                                                         Command.ClipToolsFlyout))));
         }
         else
         {
-            _editUndo = EditButton("Undo", () => Send(Command.UndoEdit), tip: "Undo the last edit  Ctrl+Z");
+            _editUndo = EditButton("Undo", () => Send(Command.UndoEdit),
+                                   tip: WithKey("Undo the last edit", Command.UndoEdit));
             _editReset = EditButton("Reset", () => Send(Command.ResetEdits),
-                                    tip: "Reset to the original, exactly  Ctrl+R");
+                                    tip: WithKey("Reset to the original, exactly", Command.ResetEdits));
+            // The Y row is momentary, so its label already reads "hold Y".
+            string? hold = KeyOf(Command.ShowOriginal);
             _editOriginalButton = EditButton("Original",
                 () => Send(Command.EditAction, _editOriginal ? EditActions.OriginalOff : EditActions.OriginalOn),
-                tip: "Show the original while on (or hold Y); nothing is changed");
+                tip: hold is null ? "Show the original while on; nothing is changed"
+                                  : $"Show the original while on (or {hold}); nothing is changed");
             Button save = EditButton("Save copy…", () => Send(Command.EditAction, EditActions.SaveCopy),
-                                     tip: "Write a new file with these edits; the original is never changed  Ctrl+S");
+                                     tip: WithKey("Write a new file with these edits; the original is never changed",
+                                                  Command.ExportImage));
             var actions = new Grid();
             actions.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             actions.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -464,14 +473,14 @@ public static partial class IslandHost
             _editCropSize = Text("", Title, UiFontSize - 2);
             crop.Children.Add(_editCropSize);
             crop.Children.Add(Row(
-                EditButton("Apply", () => Send(Command.CropCommit), tip: "Apply the crop  Enter"),
+                EditButton("Apply", () => Send(Command.CropCommit), tip: WithKey("Apply the crop", Command.CropCommit)),
                 EditButton("Cancel", () => Send(Command.EditAction, EditActions.CancelCrop),
                            tip: "Drop this crop  Esc")));
         }
         else
         {
             crop.Children.Add(Row(EditButton("Crop and straighten", () => Send(Command.CropMode),
-                                             tip: "Start cropping  Shift+C")));
+                                             tip: WithKey("Start cropping", Command.CropMode))));
         }
         pane.Children.Add(crop);
 
@@ -485,12 +494,15 @@ public static partial class IslandHost
         }
         grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        string? cycle = KeyOf(Command.CropAspectCycle);
+        string? swap = KeyOf(Command.CropAspectSwap);
         for (int a = 0; a < AspectLabels.Length; a++)
         {
             int preset = a;
             Button b = EditButton(AspectLabels[a],
                 () => Send(Command.CropAspectSet, preset + (_editPortrait && HasOrientation(preset) ? 16 : 0)),
-                tip: $"Aspect {AspectLabels[a]}  A cycles while cropping", stretch: true);
+                tip: cycle is null ? $"Aspect {AspectLabels[a]}" : $"Aspect {AspectLabels[a]}  {cycle} cycles while cropping",
+                stretch: true);
             AutomationProperties_SetName(b, $"Aspect {AspectLabels[a]}");
             Grid.SetRow(b, a / 4);
             Grid.SetColumn(b, a % 4);
@@ -500,7 +512,7 @@ public static partial class IslandHost
         aspect.Children.Add(grid);
         _editOrient = EditButton("Landscape",
             () => Send(Command.CropAspectSet, _editAspect + (_editPortrait ? 0 : 16)),
-            tip: "Swap portrait / landscape  X while cropping");
+            tip: swap is null ? "Swap portrait / landscape" : $"Swap portrait / landscape  {swap} while cropping");
         aspect.Children.Add(_editOrient);
         aspect.Children.Add(Hint("A next ratio · X swap, while cropping"));
         pane.Children.Add(aspect);
@@ -549,10 +561,12 @@ public static partial class IslandHost
         var turn = new StackPanel { Spacing = 6 };
         turn.Children.Add(SectionTitle("Rotate and flip"));
         turn.Children.Add(Row(
-            EditButton("⟲ Left", () => Send(Command.RotateCcw), tip: "Rotate left  ["),
-            EditButton("⟳ Right", () => Send(Command.RotateCw), tip: "Rotate right  ]"),
-            EditButton("Flip H", () => Send(Command.FlipHorizontal), tip: "Flip horizontal  H"),
-            EditButton("Flip V", () => Send(Command.FlipVertical), tip: "Flip vertical  V")));
+            EditButton("⟲ Left", () => Send(Command.RotateCcw), tip: WithKey("Rotate left", Command.RotateCcw)),
+            EditButton("⟳ Right", () => Send(Command.RotateCw), tip: WithKey("Rotate right", Command.RotateCw)),
+            EditButton("Flip H", () => Send(Command.FlipHorizontal),
+                       tip: WithKey("Flip horizontal", Command.FlipHorizontal)),
+            EditButton("Flip V", () => Send(Command.FlipVertical),
+                       tip: WithKey("Flip vertical", Command.FlipVertical))));
         turn.Children.Add(Hint("A JPEG with only turns is rewritten losslessly."));
         pane.Children.Add(turn);
 
@@ -570,33 +584,36 @@ public static partial class IslandHost
         {
             if (_editTrimLabel.Length > 0) trim.Children.Add(Text(_editTrimLabel, Title, UiFontSize - 2));
             trim.Children.Add(Row(
-                EditButton("Set in", () => Send(Command.TrimIn), tip: "Set in  ["),
-                EditButton("Set out", () => Send(Command.TrimOut), tip: "Set out  ]"),
+                EditButton("Set in", () => Send(Command.TrimIn), tip: WithKey("Set in", Command.TrimIn)),
+                EditButton("Set out", () => Send(Command.TrimOut), tip: WithKey("Set out", Command.TrimOut)),
                 EditButton(previewing ? "Stop preview" : "Preview", () => Send(Command.TrimPreview),
-                           tip: "Loop the cut  P")));
+                           tip: WithKey("Loop the cut", Command.TrimPreview))));
             Button save = EditButton("Save", () => Send(Command.TrimKeyframe),
-                                     tip: "Keyframe cut: instant, no re-encode  Enter");
+                                     tip: WithKey("Keyframe cut: instant, no re-encode", Command.TrimKeyframe));
             Button exact = EditButton("Save exact", () => Send(Command.TrimReencode),
-                                      tip: "Frame-accurate re-encode, slower  Shift+Enter");
+                                      tip: WithKey("Frame-accurate re-encode, slower", Command.TrimReencode));
             Button without = EditButton("Copy without in–out", () => Send(Command.TrimRemoveMiddle),
-                                        tip: "A copy without the marked range  Ctrl+X");
+                                        tip: WithKey("A copy without the marked range", Command.TrimRemoveMiddle));
             save.IsEnabled = exact.IsEnabled = without.IsEnabled = marked;
             trim.Children.Add(Row(save, exact));
             trim.Children.Add(Row(without, EditButton("Clear", () => Send(Command.TrimClear),
-                                                      tip: "Clear in and out  Backspace")));
-            trim.Children.Add(Row(EditButton("Stop trimming", () => Send(Command.TrimMode), tip: "Ctrl+T")));
+                                                      tip: WithKey("Clear in and out", Command.TrimClear))));
+            trim.Children.Add(Row(EditButton("Stop trimming", () => Send(Command.TrimMode),
+                                             tip: KeyOf(Command.TrimMode))));
         }
         else
         {
             trim.Children.Add(Row(EditButton("Start trimming", () => Send(Command.TrimMode),
-                                             tip: "Set in and out points on the scrub bar  Ctrl+T")));
+                                             tip: WithKey("Set in and out points on the scrub bar", Command.TrimMode))));
         }
         pane.Children.Add(trim);
 
         var tools = new StackPanel { Spacing = 6 };
         tools.Children.Add(SectionTitle("Tools"));
-        tools.Children.Add(Row(EditButton("Split at playhead", () => Send(Command.ClipSplit), tip: "Ctrl+B")));
-        tools.Children.Add(Row(EditButton("More clip tools…", () => Send(Command.ClipToolsFlyout), tip: "Ctrl+S")));
+        tools.Children.Add(Row(EditButton("Split at playhead", () => Send(Command.ClipSplit),
+                                          tip: KeyOf(Command.ClipSplit))));
+        tools.Children.Add(Row(EditButton("More clip tools…", () => Send(Command.ClipToolsFlyout),
+                                          tip: KeyOf(Command.ClipToolsFlyout))));
         pane.Children.Add(tools);
         pane.Children.Add(Hint("Space play · , . frame step · J K L shuttle · Q E skip"));
     }
