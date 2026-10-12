@@ -1088,10 +1088,17 @@ so WebAssembly was not taken up. What was decided while building it:
   as DLLs; vendoring 5.4.8 (hash from vcpkg's own port) keeps it static on both platforms and
   lets the binary carry no `io`, `os`, `package` or `debug` code at all. Built as C++, so a Lua
   error is an exception and the runtime's RAII holds across it.
-- **Three local changes to Lua**, marked in `third_party/lua/VENDOR.txt`: pattern matching,
-  `table.move` and `table.sort` check the watchdog's flag (they can run for minutes without one
-  VM instruction, so the count hook alone never fires), and `string.rep` of nothing returns at
-  once instead of looping 10^15 times.
+- **Local changes to Lua**, marked in `third_party/lua/VENDOR.txt`: pattern matching, a plain
+  `string.find`, `table.move`, `table.insert`, `table.remove` and `table.sort` (every
+  comparison) check the watchdog's flag (they can run for minutes without one VM instruction,
+  so the count hook alone never fires), and `string.rep` of nothing returns at once instead of
+  looping 10^15 times. **Added 2026-10-12 by the PR 57 security review:** no `__gc` finalizer
+  runs (Lua calls one with hooks off, so a looping finalizer held the worker for good and hung
+  the destructor's join at `lua_close`), and `__mode` is ignored, so every table is strong
+  (ephemeron convergence is quadratic inside one atomic GC step, where nothing can stop it:
+  a 200,000-link chain held the worker past 4 s). Both are in `lgc.c`; scripts lose finalizers
+  and weak tables, which glue does not need. The plain find and the `insert` / `remove` /
+  sort-comparison checks came from the same review (each held the worker for good).
 - **The limits:** 64 MB of memory per add-on, 100 million VM instructions and 1 s of wall clock
   per task (each command call, and the scripts' first run), a 4 MB C stack per worker (macOS
   gives a secondary thread 512 KB, which Lua's 200 C levels can exceed), 256 tasks queued.

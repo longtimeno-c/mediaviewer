@@ -566,7 +566,7 @@ The reasons for each call below are in [12](12-decision-log.md) ("Other makers' 
 
 | Piece | Code |
 |---|---|
-| Lua 5.4.8, vendored, static, MIT, without `io` / `os` / `package` / `debug` and the tools; three marked changes for the watchdog | `third_party/lua` (`VENDOR.txt`), `cmake/script.cmake` (`mv_lua`, built as C++) |
+| Lua 5.4.8, vendored, static, MIT, without `io` / `os` / `package` / `debug` and the tools; marked changes for the watchdog, and no finalizers or weak tables | `third_party/lua` (`VENDOR.txt`), `cmake/script.cmake` (`mv_lua`, built as C++) |
 | The sandbox, its limits, the watchdog, the `mv` bindings, Lua ↔ JSON | `src/addon/script_runtime.*`, `src/addon/script_thread_{posix,win}.cpp` (a worker with a 4 MB stack) |
 | The host's set of script add-ons: load from the store (bytes re-hashed as they are read), commands, status, Start again, the spin rig | `src/addon/script_host.*`; `open_store::verified_file` |
 | Manifest: `scripts`, `permissions`, `contributes.commands` at API 3; the sheet's lines | `src/addon/open_manifest.*`, `src/addon/open_json.cpp` |
@@ -621,7 +621,9 @@ Only this exists; a part whose permission was not granted is **absent** (`mv.fol
 Standard library: `string` without `dump` (its metatable locked: `getmetatable("")` is `false`),
 `table`, `math`, `utf8`, `coroutine`, the base functions without `dofile` / `loadfile` /
 `require` / `warn`; `load` text-only into the sandbox; `collectgarbage` with `count`, `collect`,
-`step`, `isrunning` only. A command's function is called with its payload as a Lua value.
+`step`, `isrunning` only. A `__gc` metamethod never runs and `__mode` has no effect (every
+table is strong): both could hold a worker where no limit reaches ([12](12-decision-log.md)).
+A command's function is called with its payload as a Lua value.
 `thumbnails` puts nothing in the environment: it gates PR 58's thumbnail nodes.
 
 **For later points** (agreed with PRs 58–59): `add_script_binding({name, api, permission,
@@ -637,7 +639,7 @@ are detached.
 |---|---|---|
 | Memory | 64 MB per add-on | the `lua_Alloc`: refused growth stops the add-on, and stays refused |
 | Instructions | 100 M per task | a count hook every 10,000 instructions |
-| Wall clock | 1 s per task | the same hook, and one watchdog thread (asleep unless a task runs) for the loops that run no VM instruction (pattern matching, `table.move`, `table.sort`) |
+| Wall clock | 1 s per task | the same hook, and one watchdog thread (asleep unless a task runs) for the loops that run no VM instruction (pattern matching, a plain `string.find`, `table.move`, `table.insert`, `table.remove`, `table.sort`) |
 | C stack | 4 MB worker | Lua's own 200-level C limit inside it |
 | Queue | 256 tasks | `post` returns false past it |
 

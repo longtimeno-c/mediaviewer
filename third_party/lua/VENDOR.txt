@@ -14,6 +14,7 @@ runtime's RAII holds across one), with the project's warnings off: it is not
 our code. No JIT exists in Lua, so the Mac's hardened runtime needs no exception.
 
 What is here: src/ of the release, minus
+  Makefile lua.hpp      the release's build file and C++ wrapper header (unused)
   lua.c luac.c          the stand-alone interpreter and compiler
   liolib.c loslib.c     io, os
   loadlib.c ldblib.c    package / require, debug

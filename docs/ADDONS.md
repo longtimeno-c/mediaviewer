@@ -224,7 +224,8 @@ Only what is listed here exists. The parts that need a permission are **absent**
 The Lua standard library is there in part: `string` (without `string.dump`), `table`, `math`,
 `utf8`, `coroutine`, and the basics (`pairs`, `pcall`, `setmetatable`, `tostring` and the rest).
 `load` takes text only. `collectgarbage` answers `"count"`, `"collect"`, `"step"` and
-`"isrunning"`. There is no `io`, `os`, `package`, `require`, `dofile`, `loadfile` or `debug`, no
+`"isrunning"`. A `__gc` metamethod never runs, and `__mode` does nothing: every table keeps
+what it holds. There is no `io`, `os`, `package`, `require`, `dofile`, `loadfile` or `debug`, no
 socket and no file call, and there never will be a network one.
 
 ### The limits
