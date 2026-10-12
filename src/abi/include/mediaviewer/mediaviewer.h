@@ -50,7 +50,7 @@ extern "C" {
  * wrong is a struct layout change nobody notices until a field reads garbage.
  * ------------------------------------------------------------------------- */
 #define MV_ABI_VERSION_MAJOR 0
-#define MV_ABI_VERSION_MINOR 19 /* 0.10: PR 13 / 14 clip jobs and keyframe index (mediaviewer_clip.h); 0.11: issue #44 mv_video_set_hold; 0.12: issue #42 mv_status eject error categories; 0.13: PR 30 keep_ranges; 0.14: Milestone H result listings (mv_folder_open_list); 0.15: mv_folder_item clip flag; 0.16: pages (mv_image_info.page_count, mv_folder_select_page); 0.17: docs/design/25 open add-ons (mv_open_addon_*); 0.18: docs/design/25 contributed commands (mv_addon_commands_json); 0.19: mv_folder_set_hidden_kinds */
+#define MV_ABI_VERSION_MINOR 23 /* 0.10: PR 13 / 14 clip jobs and keyframe index (mediaviewer_clip.h); 0.11: issue #44 mv_video_set_hold; 0.12: issue #42 mv_status eject error categories; 0.13: PR 30 keep_ranges; 0.14: Milestone H result listings (mv_folder_open_list); 0.15: mv_folder_item clip flag; 0.16: pages (mv_image_info.page_count, mv_folder_select_page); 0.17: docs/design/25 open add-ons (mv_open_addon_*); 0.18: docs/design/25 contributed commands (mv_addon_commands_json); 0.19: mv_folder_set_hidden_kinds; 0.20: issue #226 mv_folder_entries; 0.21: mv_folder_renamed; 0.22: mv_folder_set_kind_filter; 0.23: cull bits and mv_folder_note_metadata_written */
 
 /* Packed as (major << 16) | minor. [any-thread] */
 MV_API uint32_t MV_CALL mv_abi_version(void);
@@ -400,6 +400,57 @@ MV_API mv_status MV_CALL mv_folder_get_sort(mv_session_t session, int32_t* out_p
 #define MV_FOLDER_HIDE_DOCUMENTS 0x2u
 MV_API mv_status MV_CALL mv_folder_set_hidden_kinds(mv_session_t session, uint32_t mask);
 
+/* 0.20 (issue #210). The host is renaming the stop at `old_utf8` to
+ * `new_utf8` (F2, in the open folder); call it from the job once the new
+ * name is chosen and before the file moves. The first relist that finds
+ * `new_utf8` and not `old_utf8` (the folder watcher's) keeps the stop
+ * selected under its new name, where it would otherwise let the next one
+ * slide into its place, and what is on screen stays (no decode; the
+ * navigation cache is keyed by path, so leaving and coming back decodes it
+ * again). A rename that never lands leaves nothing to follow. Opening
+ * another folder forgets it. [any-thread][no-block] */
+MV_API mv_status MV_CALL mv_folder_renamed(mv_session_t session, const char* old_utf8,
+                                           const char* new_utf8);
+
+/* 0.22 (issue #206). The kind filter, View > Show: a view of the listing,
+ * set for as long as the user asks and never saved. `mask` is
+ * MV_FOLDER_HIDE_* bits: STILLS (JPEG, HEIC, PNG, GIF... not RAW), CLIPS,
+ * RAW (a RAW, or a RAW+JPEG pair whichever half leads), AUDIO, DOCUMENTS,
+ * and UNMARKED, which keeps only the `kept_count` UTF-8 paths in `kept`
+ * (the marks when "Marked" was chosen; copied, so the caller may free them).
+ * The file a folder was opened on, and the current stop, stay on a relist;
+ * the relist this call makes does not keep them unless they pass, so the
+ * current stop moves to the nearest one that does. A filter that leaves
+ * nothing keeps the current stop. Re-applies like mv_folder_set_hidden_kinds
+ * (FOLDER_CHANGED) and applies to every later open; 0 lists everything.
+ * Unknown bits are dropped. [any-thread][no-block] */
+#define MV_FOLDER_HIDE_STILLS 0x4u
+#define MV_FOLDER_HIDE_CLIPS 0x8u
+#define MV_FOLDER_HIDE_RAW 0x10u
+#define MV_FOLDER_HIDE_UNMARKED 0x20u
+/* Still 0.20, stacked on #206 (issue #207): the cull filter, on each file's
+ * rating and colour label (XMP xmp:Rating / xmp:Label, the sidecar wins),
+ * read on a worker and cached by path + size + mtime, never at scan.
+ * REJECTED hides rating -1; UNPICKED hides everything rated below one star;
+ * a label in bits 8-10 (1 Red, 2 Yellow, 3 Green, 4 Blue, 5 Purple, shifted
+ * by MV_FOLDER_LABEL_SHIFT) hides every file without that label. A mask with
+ * any of these reads the ratings still missing before the relist this call
+ * makes (the listing stays as it was until then), and choosing it again
+ * re-applies it. A file not read yet counts as unrated and unlabelled until
+ * the worker's own relist. */
+#define MV_FOLDER_HIDE_REJECTED 0x40u
+#define MV_FOLDER_HIDE_UNPICKED 0x80u
+#define MV_FOLDER_LABEL_SHIFT 8u
+#define MV_FOLDER_HIDE_OTHER_LABELS 0x700u
+MV_API mv_status MV_CALL mv_folder_set_kind_filter(mv_session_t session, uint32_t mask,
+                                                   const char* const* kept, uint32_t kept_count);
+
+/* 0.20 (issue #207). The host rewrote `utf8_path`'s rating or label (PR 12's
+ * writer): drops the rating and label the cull filter cached for it, which a
+ * sidecar write cannot change the key of, so the next relist reads it again.
+ * A read already running for it is not kept. [any-thread][no-block] */
+MV_API mv_status MV_CALL mv_folder_note_metadata_written(mv_session_t session, const char* utf8_path);
+
 /* 0.6 (PR 9). The immediate subdirectories of `utf8_dir` for the folder tree:
  * hidden, system and dot directories skipped, sorted case-insensitively. One
  * directory read, so call it from a worker, never the UI thread. Writes
@@ -438,6 +489,30 @@ MV_API mv_status MV_CALL mv_folder_list_title(mv_session_t session, char* utf8, 
 /* The moment an item opens on, -1 for none. [any-thread][no-block] */
 MV_API mv_status MV_CALL mv_folder_item_moment(mv_session_t session, uint32_t index,
                                                int64_t* out_ms);
+
+/* 0.20 (issue #226). The whole listing in one call under one lock, so a relist
+ * of N stops costs the host one call instead of ~8N (mv_folder_item_at, the
+ * four strings and the moment, each with a size query). One entry per stop, in
+ * order; each entry's four strings are NUL-terminated in `strings` at the byte
+ * offsets it names. Neither buffer is retained.
+ *
+ * `out_count` and `out_string_bytes` are required and always report what the
+ * whole listing needs. If `entry_cap` or `string_cap` is too small (including
+ * 0 with NULL buffers, the size query), nothing is written and the call returns
+ * MV_ERR_INVALID_ARG: grow both and call again. The listing can change between
+ * the two calls, so loop until MV_OK. [any-thread][no-block] */
+typedef struct mv_folder_entry {
+  mv_folder_item item;   /* as mv_folder_item_at */
+  int64_t moment_ms;     /* as mv_folder_item_moment: -1 for none */
+  uint32_t name_offset;  /* byte offsets into `strings` */
+  uint32_t path_offset;
+  uint32_t thumb_offset; /* "" until THUMB_READY for the stop */
+  uint32_t pair_offset;  /* "" when pair_kind is MV_PAIR_NONE */
+} mv_folder_entry;       /* 56 bytes */
+MV_API mv_status MV_CALL mv_folder_entries(mv_session_t session, mv_folder_entry* entries,
+                                           uint32_t entry_cap, char* strings,
+                                           uint32_t string_cap, uint32_t* out_count,
+                                           uint32_t* out_string_bytes);
 
 /* -------------------------------------------------------------------------
  * PR 5 — video. docs/design/05-video-pipeline.md, docs/design/14-abi.md.

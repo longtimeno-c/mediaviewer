@@ -10,11 +10,13 @@
 #include <fstream>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <exiv2/exiv2.hpp>
 
 #include "fixtures.h"
 #include "io/paths.h"
+#include "io/rename_stop.h"
 #include "mediaviewer/mediaviewer.h"
 
 using namespace std::chrono_literals;
@@ -288,6 +290,43 @@ TEST_CASE("a RAW+JPEG pair and a Live Photo are one stop each over the ABI",
   REQUIRE(item_string(session.handle, 2, &mv_folder_item_name) == "IMG_0003.JPG");
   REQUIRE(base_name(item_string(session.handle, 2, &mv_folder_item_pair_path)) == "IMG_0003.MOV");
 
+  // Issue #226: the one-call listing carries exactly what the per-item calls do.
+  {
+    uint32_t n = 0;
+    uint32_t bytes = 0;
+    REQUIRE(mv_folder_entries(session.handle, nullptr, 0, nullptr, 0, &n, &bytes) ==
+            MV_ERR_INVALID_ARG);
+    REQUIRE(n == 4);
+    REQUIRE(bytes > 0);
+    std::vector<mv_folder_entry> entries(n);
+    std::vector<char> strings(bytes);
+    // One byte short is refused whole: nothing half-written.
+    REQUIRE(mv_folder_entries(session.handle, entries.data(), n, strings.data(), bytes - 1, &n,
+                              &bytes) == MV_ERR_INVALID_ARG);
+    REQUIRE(mv_folder_entries(session.handle, entries.data(), n, strings.data(), bytes, &n,
+                              &bytes) == MV_OK);
+    for (uint32_t i = 0; i < n; ++i) {
+      mv_folder_item one{};
+      REQUIRE(mv_folder_item_at(session.handle, i, &one) == MV_OK);
+      const mv_folder_entry& e = entries[i];
+      REQUIRE(e.item.index == one.index);
+      REQUIRE(e.item.flags == one.flags);
+      REQUIRE(e.item.size_bytes == one.size_bytes);
+      REQUIRE(e.item.mtime_unix == one.mtime_unix);
+      REQUIRE(e.item.pair_kind == one.pair_kind);
+      REQUIRE(e.moment_ms == -1);
+      REQUIRE(std::string(strings.data() + e.name_offset) ==
+              item_string(session.handle, i, &mv_folder_item_name));
+      REQUIRE(std::string(strings.data() + e.path_offset) ==
+              item_string(session.handle, i, &mv_folder_item_path));
+      // Thumbs land in the background: one may have arrived since the snapshot.
+      const std::string thumb(strings.data() + e.thumb_offset);
+      REQUIRE((thumb.empty() || thumb == item_string(session.handle, i, &mv_folder_item_thumb_path)));
+      REQUIRE(std::string(strings.data() + e.pair_offset) ==
+              item_string(session.handle, i, &mv_folder_item_pair_path));
+    }
+  }
+
   // Arrow onto the Live Photo, then a file lands in front of it: the watcher
   // refresh keeps the same stop, now one index later.
   REQUIRE(mv_folder_select(session.handle, 2, &job) == MV_OK);
@@ -305,6 +344,45 @@ TEST_CASE("a RAW+JPEG pair and a Live Photo are one stop each over the ABI",
   REQUIRE(selected == 3);
   REQUIRE(item_string(session.handle, selected, &mv_folder_item_name) == "IMG_0003.JPG");
 
+  REQUIRE(mv_folder_close(session.handle) == MV_OK);
+  mv::io::set_thumb_cache_dir_override({});
+}
+
+// 0.20 (issue #210): F2. Told before the file moves, the watcher's relist keeps
+// the stop under its new name; without it the next one would slide in.
+TEST_CASE("mv_folder_renamed keeps the renamed stop selected", "[abi][folder][rename]") {
+  const auto dir = temp_dir();
+  write_bmp(dir, L"a.bmp");
+  write_bmp(dir, L"b.bmp");
+  write_bmp(dir, L"c.bmp");
+  mv::io::set_thumb_cache_dir_override(utf8(dir + L"\\thumbs"));
+  REQUIRE(::CreateDirectoryW((dir + L"\\thumbs").c_str(), nullptr));
+
+  session_guard session;
+  uint64_t job = 0;
+  mv_completion c{};
+  REQUIRE(mv_folder_open(session.handle, utf8(dir).c_str(), utf8(dir + L"\\b.bmp").c_str(), &job) ==
+          MV_OK);
+  REQUIRE(wait_kind(session.handle, MV_COMPLETION_FOLDER_READY, &c));
+
+  // b.bmp becomes z.bmp: it sorts last now, and the stop goes with it.
+  auto r = mv::io::rename_stop(utf8(dir + L"\\b.bmp"), {}, "z",
+                               [&](const std::string& from, const std::string& to) {
+                                 REQUIRE(mv_folder_renamed(session.handle, from.c_str(), to.c_str()) ==
+                                         MV_OK);
+                               });
+  REQUIRE(r);
+  const auto deadline = std::chrono::steady_clock::now() + 8s;
+  std::string name;
+  while (std::chrono::steady_clock::now() < deadline) {
+    uint32_t selected = 0;
+    if (mv_folder_selected(session.handle, &selected) == MV_OK) {
+      name = item_string(session.handle, selected, &mv_folder_item_name);
+      if (name == "z.bmp") break;
+    }
+    std::this_thread::sleep_for(20ms);
+  }
+  CHECK(name == "z.bmp");
   REQUIRE(mv_folder_close(session.handle) == MV_OK);
   mv::io::set_thumb_cache_dir_override({});
 }
@@ -469,6 +547,150 @@ TEST_CASE("mv_folder_set_hidden_kinds leaves audio and documents out", "[abi][fo
     CHECK(selected == 2);
     REQUIRE(mv_folder_close(session.handle) == MV_OK);
   }
+  mv::io::set_thumb_cache_dir_override({});
+}
+
+// 0.20 (issue #206): View > Show. A filter's own relist moves off a stop it
+// no longer shows; a RAW+JPEG pair is RAW; "Marked" keeps the paths given; a
+// filter that leaves nothing keeps the stop on screen.
+TEST_CASE("mv_folder_set_kind_filter shows one kind at a time", "[abi][folder][filter]") {
+  const auto dir = temp_dir();
+  write_bmp(dir, L"a.bmp");
+  for (const wchar_t* name : {L"p.jpg", L"p.cr2", L"r.dng", L"v.mp4"}) {
+    std::ofstream f(dir + L"\\" + name, std::ios::binary);
+    f << "not really";
+  }
+  mv::io::set_thumb_cache_dir_override(utf8(dir + L"\\thumbs"));
+  REQUIRE(::CreateDirectoryW((dir + L"\\thumbs").c_str(), nullptr));
+
+  const auto names = [](mv_session_t s) {
+    std::string out;
+    uint32_t n = 0;
+    REQUIRE(mv_folder_count(s, &n) == MV_OK);
+    for (uint32_t i = 0; i < n; ++i) out += item_string(s, i, mv_folder_item_name) + " ";
+    return out;
+  };
+  const auto current = [](mv_session_t s) {
+    uint32_t selected = 0;
+    REQUIRE(mv_folder_selected(s, &selected) == MV_OK);
+    return item_string(s, selected, mv_folder_item_name);
+  };
+  constexpr uint32_t kOnly = MV_FOLDER_HIDE_AUDIO | MV_FOLDER_HIDE_DOCUMENTS;
+  mv_completion c{};
+  uint64_t job = 0;
+  session_guard session;
+  REQUIRE(mv_folder_open(session.handle, utf8(dir).c_str(), utf8(dir + L"\\a.bmp").c_str(), &job) ==
+          MV_OK);
+  REQUIRE(wait_kind(session.handle, MV_COMPLETION_FOLDER_READY, &c));
+  CHECK(names(session.handle) == "a.bmp p.jpg r.dng v.mp4 ");
+
+  // Videos: the photo on screen goes, even though the folder was opened on it.
+  REQUIRE(mv_folder_set_kind_filter(session.handle,
+                                    MV_FOLDER_HIDE_STILLS | MV_FOLDER_HIDE_RAW | kOnly, nullptr, 0) ==
+          MV_OK);
+  REQUIRE(wait_kind(session.handle, MV_COMPLETION_FOLDER_CHANGED, &c));
+  CHECK(names(session.handle) == "v.mp4 ");
+  CHECK(current(session.handle) == "v.mp4");
+
+  // RAW: the pair (JPEG primary) and the lone DNG.
+  REQUIRE(mv_folder_set_kind_filter(session.handle,
+                                    MV_FOLDER_HIDE_STILLS | MV_FOLDER_HIDE_CLIPS | kOnly, nullptr, 0) ==
+          MV_OK);
+  REQUIRE(wait_kind(session.handle, MV_COMPLETION_FOLDER_CHANGED, &c));
+  CHECK(names(session.handle) == "p.jpg r.dng ");
+
+  // Photos: every still, RAW included.
+  REQUIRE(mv_folder_set_kind_filter(session.handle, MV_FOLDER_HIDE_CLIPS | kOnly, nullptr, 0) == MV_OK);
+  REQUIRE(wait_kind(session.handle, MV_COMPLETION_FOLDER_CHANGED, &c));
+  CHECK(names(session.handle) == "a.bmp p.jpg r.dng ");
+
+  // Marked: only the paths given.
+  const std::string kept = utf8(dir + L"\\r.dng");
+  const char* kept_paths[] = {kept.c_str()};
+  REQUIRE(mv_folder_set_kind_filter(session.handle, MV_FOLDER_HIDE_UNMARKED, kept_paths, 1) == MV_OK);
+  REQUIRE(wait_kind(session.handle, MV_COMPLETION_FOLDER_CHANGED, &c));
+  CHECK(names(session.handle) == "r.dng ");
+
+  // Nothing passes: the stop on screen stays rather than an empty listing.
+  REQUIRE(mv_folder_set_kind_filter(session.handle,
+                                    MV_FOLDER_HIDE_STILLS | MV_FOLDER_HIDE_RAW | MV_FOLDER_HIDE_CLIPS,
+                                    nullptr, 0) == MV_OK);
+  REQUIRE(wait_kind(session.handle, MV_COMPLETION_FOLDER_CHANGED, &c));
+  CHECK(names(session.handle) == "r.dng ");
+
+  REQUIRE(mv_folder_set_kind_filter(session.handle, 0, nullptr, 0) == MV_OK);
+  REQUIRE(wait_kind(session.handle, MV_COMPLETION_FOLDER_CHANGED, &c));
+  CHECK(names(session.handle) == "a.bmp p.jpg r.dng v.mp4 ");
+  CHECK(current(session.handle) == "r.dng");
+  REQUIRE(mv_folder_close(session.handle) == MV_OK);
+  mv::io::set_thumb_cache_dir_override({});
+}
+
+// 0.20, stacked on #206 (issue #207): the cull filters. Ratings and labels come
+// from the files' XMP sidecars, read on a worker; a filter's own relist waits
+// for them, so it lands once, on the right stops. Choosing one again
+// re-applies it, after the host names a file it rewrote.
+TEST_CASE("mv_folder_set_kind_filter filters on rating and colour label", "[abi][folder][filter][cull]") {
+  const auto dir = temp_dir();
+  for (const wchar_t* name : {L"a.bmp", L"b.bmp", L"c.bmp"}) write_bmp(dir, name);
+  const auto sidecar = [&](const wchar_t* name, const char* attrs) {
+    std::ofstream f(dir + L"\\" + name, std::ios::binary | std::ios::trunc);
+    REQUIRE(f.good());
+    f << "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF "
+         "xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description rdf:about=\"\" "
+         "xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\" "
+      << attrs << "/></rdf:RDF></x:xmpmeta>";
+  };
+  sidecar(L"b.xmp", "xmp:Rating=\"2\" xmp:Label=\"Red\"");
+  sidecar(L"c.xmp", "xmp:Rating=\"-1\"");
+  mv::io::set_thumb_cache_dir_override(utf8(dir + L"\\thumbs"));
+  REQUIRE(::CreateDirectoryW((dir + L"\\thumbs").c_str(), nullptr));
+
+  const auto names = [](mv_session_t s) {
+    std::string out;
+    uint32_t n = 0;
+    REQUIRE(mv_folder_count(s, &n) == MV_OK);
+    for (uint32_t i = 0; i < n; ++i) out += item_string(s, i, mv_folder_item_name) + " ";
+    return out;
+  };
+  // A sidecar written into the watched folder relists too: wait for the
+  // listing rather than for one completion.
+  const auto settle = [&](mv_session_t s, const std::string& want) {
+    mv_completion c{};
+    for (int i = 0; i < 6 && names(s) != want; ++i) (void)wait_kind(s, MV_COMPLETION_FOLDER_CHANGED, &c);
+    return names(s);
+  };
+  mv_completion c{};
+  uint64_t job = 0;
+  session_guard session;
+  REQUIRE(mv_folder_open(session.handle, utf8(dir).c_str(), utf8(dir + L"\\a.bmp").c_str(), &job) ==
+          MV_OK);
+  REQUIRE(wait_kind(session.handle, MV_COMPLETION_FOLDER_READY, &c));
+  CHECK(names(session.handle) == "a.bmp b.bmp c.bmp ");
+
+  const uint32_t red = 1u << MV_FOLDER_LABEL_SHIFT;
+  REQUIRE(mv_folder_set_kind_filter(session.handle, red, nullptr, 0) == MV_OK);
+  CHECK(settle(session.handle, "b.bmp ") == "b.bmp ");
+  uint32_t selected = 0;
+  REQUIRE(mv_folder_selected(session.handle, &selected) == MV_OK);
+  CHECK(item_string(session.handle, selected, mv_folder_item_name) == "b.bmp");
+
+  REQUIRE(mv_folder_set_kind_filter(session.handle, MV_FOLDER_HIDE_REJECTED, nullptr, 0) == MV_OK);
+  CHECK(settle(session.handle, "a.bmp b.bmp ") == "a.bmp b.bmp ");
+
+  REQUIRE(mv_folder_set_kind_filter(session.handle, MV_FOLDER_HIDE_UNPICKED, nullptr, 0) == MV_OK);
+  CHECK(settle(session.handle, "b.bmp ") == "b.bmp ");
+
+  // c.bmp is relabelled (as the writer would, in its sidecar): the host names
+  // it, and Red chosen again shows it.
+  sidecar(L"c.xmp", "xmp:Rating=\"-1\" xmp:Label=\"red\"");
+  REQUIRE(mv_folder_note_metadata_written(session.handle, utf8(dir + L"\\c.bmp").c_str()) == MV_OK);
+  REQUIRE(mv_folder_set_kind_filter(session.handle, red, nullptr, 0) == MV_OK);
+  CHECK(settle(session.handle, "b.bmp c.bmp ") == "b.bmp c.bmp ");
+
+  REQUIRE(mv_folder_set_kind_filter(session.handle, 0, nullptr, 0) == MV_OK);
+  CHECK(settle(session.handle, "a.bmp b.bmp c.bmp ") == "a.bmp b.bmp c.bmp ");
+  REQUIRE(mv_folder_close(session.handle) == MV_OK);
   mv::io::set_thumb_cache_dir_override({});
 }
 
