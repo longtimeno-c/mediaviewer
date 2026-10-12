@@ -42,8 +42,10 @@ struct GalleryView: View {
       // Clamped to the listing on screen: the filter's indices are one render
       // behind when the listing is swapped (a result list opening in place of
       // the folder has no folders), and a stale index traps in folders[index].
-      let shownItems = (search.items ?? Array(store.names.indices)).filter { $0 < store.names.count }
-      let shownFolders = (search.folders ?? Array(store.folders.indices)).filter { $0 < store.folders.count }
+      // With no filter the store's own index arrays are used as they are: they
+      // match the listing, and copying N of them per pass is what issue #179 cut.
+      let shownItems = search.items.map { $0.filter { $0 < store.names.count } } ?? store.itemIndices
+      let shownFolders = search.folders.map { $0.filter { $0 < store.folders.count } } ?? store.folderIndices
       let filteredEmpty = search.items != nil && shownItems.isEmpty && shownFolders.isEmpty
       VStack(spacing: 0) {
         if search.isOpen {
@@ -88,7 +90,8 @@ struct GalleryView: View {
                   if store.names.indices.contains(index) {
                     GalleryCell(
                       index: index, name: store.names[index], size: cell,
-                      isCurrent: index == store.currentIndex && store.folderCursor < 0,
+                      onFolders: store.folderCursor >= 0,
+                      highlight: store.highlight(at: index),
                       isMarked: store.markedNames.contains(store.names[index]),
                       isClip: store.isClip(at: index),
                       thumbKey: store.thumbKey(at: index), slot: store.slot(at: index)
@@ -113,9 +116,10 @@ struct GalleryView: View {
                 .padding(.top, 60)
             }
           }
-          .onChange(of: store.currentIndex) { _, newIndex in
-            guard newIndex >= 0, store.folderCursor < 0 else { return }
-            proxy.scrollTo(newIndex)
+          // In a child that observes only the selection: an arrow key re-runs
+          // it, not this body (issue #179).
+          .background {
+            FollowSelection(proxy: proxy, anchor: nil, onFolders: store.folderCursor >= 0)
           }
           .onChange(of: store.folderCursor) { _, cursor in
             if foldersOnly && cursor >= 0 {
@@ -281,11 +285,35 @@ private struct FolderChip: View {
   }
 }
 
+/// Scrolls the selection into view as it moves. Observes only the selection,
+/// so the grid or strip around it is not rebuilt on each arrow key (issue #179).
+/// Deliberately not animated: an animation per key-repeat queued up behind
+/// each other and read as lag.
+struct FollowSelection: View {
+  @ObservedObject private var current = FolderStore.shared.current
+  let proxy: ScrollViewProxy
+  let anchor: UnitPoint?
+  /// The gallery's keyboard is on a folder tile: the images do not scroll.
+  var onFolders = false
+
+  var body: some View {
+    Color.clear
+      .frame(width: 0, height: 0)
+      .accessibilityHidden(true)
+      .onChange(of: current.index) { _, newIndex in
+        guard newIndex >= 0, !onFolders else { return }
+        proxy.scrollTo(newIndex, anchor: anchor)
+      }
+  }
+}
+
 private struct GalleryCell: View {
   let index: Int
   let name: String
   let size: CGFloat
-  let isCurrent: Bool
+  /// The keyboard is on a folder tile, so no image is current.
+  let onFolders: Bool
+  @ObservedObject var highlight: CellHighlight
   let isMarked: Bool
   let isClip: Bool
   let thumbKey: String
@@ -309,7 +337,7 @@ private struct GalleryCell: View {
         .clipShape(RoundedRectangle(cornerRadius: 6))
         .overlay(
           RoundedRectangle(cornerRadius: 6)
-            .strokeBorder(isCurrent ? MVTheme.accent : .clear, lineWidth: 2)
+            .strokeBorder(highlight.isCurrent && !onFolders ? MVTheme.accent : .clear, lineWidth: 2)
         )
         .overlay { if isClip { PlayBadge(diameter: 40) } }
         .overlay(alignment: .topTrailing) { if isMarked { MarkBadge() } }
