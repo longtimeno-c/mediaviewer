@@ -355,14 +355,12 @@ public static partial class IslandHost
         Grid.SetRow(_metaContent, 1);
         body.Children.Add(_metaContent);
         // docs/design/25 PR 59 (owner, 2026-10-12): the add-ons' sections (Places' label,
-        // coordinates and map) at the very bottom of the pane, after all the built-in
-        // metadata, whichever tab is open; shown, never collapsed.
-        body.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        // coordinates and map), placed by each tab's builder as the last items of its
+        // scrolling content (WithSlotSections); shown, never collapsed.
         _metaSlots = new StackPanel();
-        // A wider or narrower pane: the sections are asked again at the new width.
+        // A wider or narrower pane: the sections are asked again at the new width
+        // (AskSlotInfo keys on width, so a height change asks nothing).
         _metaSlots.SizeChanged += (_, _) => AskSlotInfo();
-        Grid.SetRow(_metaSlots, 2);
-        body.Children.Add(_metaSlots);
         FillSlotSections();
 
         RenderMeta();
@@ -512,11 +510,12 @@ public static partial class IslandHost
     {
         if (_metaSummary.Count == 0)
         {
-            return new Border
+            var empty = new Border
             {
                 Padding = new Thickness(14),
                 Child = Text(_metaLoading ? "Reading…" : "Nothing selected", Body),
             };
+            return new ScrollViewer { Content = WithSlotSections(empty), VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
         }
         var rows = new StackPanel { Spacing = 6, Padding = new Thickness(14, 10, 14, 14) };
         foreach ((string label, string value) in _metaSummary)
@@ -561,7 +560,7 @@ public static partial class IslandHost
         Grid.SetColumn(_metaRevert, 1);
         foot.Children.Add(_metaRevert);
         rows.Children.Add(foot);
-        return new ScrollViewer { Content = rows, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        return new ScrollViewer { Content = WithSlotSections(rows), VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
     }
 
     // PR 29: the date taken moves every capture-time tag together (native's
@@ -700,7 +699,7 @@ public static partial class IslandHost
         var list = new StackPanel { Padding = new Thickness(10, 0, 10, 10) };
         var scroll = new ScrollViewer
         {
-            Content = list,
+            Content = WithSlotSections(list),  // Fill() clears `list` only
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
         };
         Grid.SetRow(scroll, 2);
@@ -949,7 +948,23 @@ public static partial class IslandHost
         {
             col.Children.Add(Text(_metaLoading ? "Reading…" : "No streams", Body));
         }
-        return new ScrollViewer { Content = col, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        return new ScrollViewer { Content = WithSlotSections(col), VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+    }
+
+    // docs/design/25 PR 59 (owner, 2026-10-12): the add-ons' sections are the last
+    // items of the tab's scrolling content, after all the built-in metadata: they
+    // scroll with it and never squeeze it. One panel, moved into whichever tab is built.
+    private static StackPanel WithSlotSections(UIElement content)
+    {
+        var outer = new StackPanel();
+        outer.Children.Add(content);
+        StackPanel? slots = _metaSlots;
+        if (slots is not null)
+        {
+            if (slots.Parent is Panel old) old.Children.Remove(slots);
+            outer.Children.Add(slots);
+        }
+        return outer;
     }
 
     private static string Capitalise(string s) => s.Length == 0 ? s : char.ToUpperInvariant(s[0]) + s[1..];

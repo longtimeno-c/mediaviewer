@@ -64,9 +64,8 @@ struct MetadataView: View {
       }
       .frame(maxWidth: .infinity, maxHeight: .infinity)
       // docs/design/25 PR 59 (owner, 2026-10-12): the add-ons' sections (Places' label,
-      // coordinates and map) at the very bottom of the pane, after all the built-in
-      // metadata, whichever tab is open; shown, never collapsed. Nothing when none answered.
-      AddonInfoSections()
+      // coordinates and map) are the last items of whichever tab is open, inside its
+      // scrolling content: they scroll with the list and never squeeze it.
     }
     .background(MVTheme.canvas)
     .overlay(alignment: .leading) { Rectangle().fill(MVTheme.hairline).frame(width: 1) }
@@ -94,6 +93,7 @@ struct MetadataView: View {
 
   private var summaryCard: some View {
     ScrollView {
+      VStack(alignment: .leading, spacing: 0) {
       if store.summary.isEmpty {
         Text(store.loading ? "Reading…" : "Nothing selected")
           .font(MVTheme.font(14)).foregroundStyle(MVTheme.body).padding(20)
@@ -130,6 +130,8 @@ struct MetadataView: View {
           }
         }
         .padding(14)
+      }
+      AddonInfoSections()  // the last items, after the summary
       }
     }
   }
@@ -225,9 +227,14 @@ struct MetadataView: View {
       .padding(10)
       if addingTag { addTagForm }
       if store.properties.isEmpty && !addingTag {
-        Text(store.loading ? "Reading…" : "No metadata in this file")
-          .font(MVTheme.font(14)).foregroundStyle(MVTheme.body).padding(20)
-        Spacer()
+        ScrollView {
+          VStack(alignment: .leading, spacing: 0) {
+            Text(store.loading ? "Reading…" : "No metadata in this file")
+              .font(MVTheme.font(14)).foregroundStyle(MVTheme.body).padding(20)
+            AddonInfoSections()
+          }
+          .frame(maxWidth: .infinity, alignment: .leading)
+        }
       } else {
         List {
           ForEach(groups, id: \.name) { group in
@@ -235,6 +242,10 @@ struct MetadataView: View {
               ForEach(group.rows) { p in tagRow(p) }
             }
           }
+          // The add-ons' sections: the last rows, after every tag.
+          AddonInfoSections()
+            .listRowInsets(EdgeInsets())
+            .listRowSeparator(.hidden)
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
@@ -355,6 +366,7 @@ struct MetadataView: View {
         }
       }
       .padding(14)
+      AddonInfoSections()  // the last items, after the streams
     }
   }
 
