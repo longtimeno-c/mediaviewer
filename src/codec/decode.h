@@ -18,7 +18,8 @@ namespace mv::codec {
 // `ctx` may be null (tests). When present, cancelled() is checked between
 // scanline blocks so a generation bump abandons a large decode.
 // `raw_thread_limit` also caps a HEIC grid's tile threads (the bundled path).
-// `page` picks a page of a multi-page file (TIFF, PDF, DOCX); the raster says
+// `page` picks a page of a multi-page file (TIFF, PDF, DOCX, an ICO's sizes, a
+// HEIC's top-level images); the raster says
 // which page it is and how many there are. `invalid_arg` for a page past the
 // end, or any page but 0 of a single-page format
 // (docs/plans/audio-and-documents.md §2.3).
@@ -59,13 +60,27 @@ struct jpeg_size {
 [[nodiscard]] result<raster> decode_tiff_page(std::span<const std::uint8_t> bytes,
                                               std::uint32_t page,
                                               const job_context* ctx = nullptr);
+// The still is the largest entry (then the deepest); page_count is how many
+// entries the directory describes.
 [[nodiscard]] result<raster> decode_ico(std::span<const std::uint8_t> bytes,
                                         const job_context* ctx = nullptr);
+// One size of an ICO (issue #211). Pages are the entries in the still's rank
+// order: page 0 is decode_ico(), then smaller sizes, largest first.
+[[nodiscard]] result<raster> decode_ico_page(std::span<const std::uint8_t> bytes,
+                                             std::uint32_t page,
+                                             const job_context* ctx = nullptr);
 // `thread_limit` > 1 decodes a grid's tiles in parallel (an iPhone still is
 // 48 tiles); pixels do not depend on it.
+// A file with several top-level images (a burst or image collection, issue
+// #211) is paged: page 0 is the primary, then the other top-level images in
+// file order. Not pages: thumbnails, auxiliary images (alpha, depth, gain
+// maps), a derived image's inputs, the primary's alternatives (`altr`, e.g. a
+// `tmap`), and an `msf1` sequence (played as an animation). The raster carries
+// page and page_count; `invalid_arg` for a page past the end.
 [[nodiscard]] result<raster> decode_heic(std::span<const std::uint8_t> bytes,
                                          const job_context* ctx = nullptr,
-                                         unsigned thread_limit = 1);
+                                         unsigned thread_limit = 1,
+                                         std::uint32_t page = 0);
 // The primary image's largest thumbnail item (an iPhone writes 320x240), with
 // the primary's colour when it carries none. First pixel for HEIC (docs/design/04).
 // `unsupported_format` when there is none, or it is not smaller than the image

@@ -325,6 +325,89 @@ TEST_CASE("a HEIC without a thumbnail item has no first pixel of its own", "[cod
 
 // --- AVIF -------------------------------------------------------------------
 
+TEST_CASE("a HEIC with several top-level images pages them, primary first",
+          "[codec][heif][pages]") {
+  // red 32x16, green 32x16 (primary), blue 16x32, in file order, lossy 4:2:0
+  // (gen_heif.py, 8).
+  const auto bytes = fixture("heif/multi_image.heic");
+  env_override off("MV_OS_CODEC", "0");
+  auto first = decode(bytes);
+  REQUIRE(first);
+  CHECK(first->page == 0);
+  CHECK(first->page_count == 3);
+  REQUIRE(first->width == 32);
+  REQUIRE(first->height == 16);
+  CHECK(near(px(*first, 8, 8), kGreen, 8));
+
+  auto second = decode(bytes, nullptr, 4, 1);
+  REQUIRE(second);
+  CHECK(second->page == 1);
+  CHECK(second->page_count == 3);
+  CHECK(second->format == format_family::heic);
+  REQUIRE(second->width == 32);
+  CHECK(near(px(*second, 8, 8), kRed, 8));
+
+  auto third = decode(bytes, nullptr, 4, 2);
+  REQUIRE(third);
+  REQUIRE(third->width == 16);
+  REQUIRE(third->height == 32);
+  CHECK(near(px(*third, 8, 8), kBlue, 8));
+
+  auto past = decode(bytes, nullptr, 4, 3);
+  REQUIRE_FALSE(past);
+  CHECK(past.error() == mv::status::invalid_arg);
+
+  auto shown = mv::image::decode_bytes(bytes, nullptr, 4, 2);
+  REQUIRE(shown);
+  CHECK(shown->page == 2);
+  CHECK(shown->page_count == 3);
+
+  auto info = inspect_heic(bytes);
+  REQUIRE(info);
+  CHECK(info->pages == 3);
+}
+
+TEST_CASE("the OS codec's page 0 of a multi-image HEIC is the primary, with the count",
+          "[codec][heif][pages][os]") {
+  const auto bytes = fixture("heif/multi_image.heic");
+  auto os = try_os_decode(bytes);
+  if (!os) {
+    WARN("OS HEIF/HEVC path not available on this machine — the OS page-0 check proved "
+         "NOTHING here.");
+    return;
+  }
+  REQUIRE(os->width == 32);
+  REQUIRE(os->height == 16);
+  // The primary (second in file order), not the first. Hue only: WIC's
+  // conversion of a saturated flat 4:2:0 colour lands tens of levels off.
+  const rgb c = px(*os, 8, 8);
+  INFO("WIC page 0 at (8,8): " << c.r << "," << c.g << "," << c.b);
+  CHECK((c.g > c.r + 100 && c.g > c.b + 100));
+  CHECK(os->page == 0);
+  CHECK(os->page_count == 3);
+  // decode() takes the same path for page 0 and the bundled one for the rest.
+  auto first = decode(bytes);
+  REQUIRE(first);
+  CHECK(first->page_count == 3);
+}
+
+TEST_CASE("a single-image HEIC, grid or not, is one page", "[codec][heif][pages]") {
+  env_override off("MV_OS_CODEC", "0");
+  for (const char* name : {"heif/srgb_8bit.heic", "heif/grid_thumb.heic", "heif/iphone_like.heic"}) {
+    INFO(name);
+    const auto bytes = fixture(name);
+    auto r = decode(bytes);
+    REQUIRE(r);
+    CHECK(r->page_count == 1);  // a grid's tiles and a thumbnail item are not pages
+    auto none = decode(bytes, nullptr, 4, 1);
+    REQUIRE_FALSE(none);
+    CHECK(none.error() == mv::status::invalid_arg);
+    auto info = inspect_heic(bytes);
+    REQUIRE(info);
+    CHECK(info->pages == 1);
+  }
+}
+
 TEST_CASE("AVIF 8-bit sRGB still decodes", "[codec][avif]") {
   const auto bytes = fixture("avif/srgb_8bit.avif");
   REQUIRE(probe(bytes) == format_family::avif);
