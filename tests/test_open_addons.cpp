@@ -318,13 +318,22 @@ TEST_CASE("manifest schema 2: ids, text, links, APIs", "[open-addon][manifest]")
     manifest_options o;
     o.extra_key = "colour_scheme";
     REQUIRE(check(o) == rejection::malformed);
+    o.api_max = mv::addon::kContributionApi;
+    REQUIRE(check(o) == rejection::malformed);
     o.api_max = mv::addon::kContributionApi + 1;
     REQUIRE(check(o) == rejection::none);
-    manifest_options c;
-    c.extra_contributes = "settings";
-    REQUIRE(check(c) == rejection::malformed);
-    c.api_max = mv::addon::kContributionApi + 1;
-    REQUIRE(check(c) == rejection::none);
+    // A point §7 names that this host has not built (script commands, PR 57),
+    // and one it does not name.
+    for (const char* point : {"commands", "colour_scheme"}) {
+      INFO(point);
+      manifest_options c;
+      c.extra_contributes = point;
+      REQUIRE(check(c) == rejection::malformed);
+      c.api_max = mv::addon::kContributionApi;
+      REQUIRE(check(c) == rejection::malformed);
+      c.api_max = mv::addon::kContributionApi + 1;
+      REQUIRE(check(c) == rejection::none);
+    }
   }
   {
     // MediaViewer's own key signs no schema 2 add-on.
@@ -516,7 +525,7 @@ TEST_CASE("a theme nobody could read is refused", "[open-addon][theme]") {
   REQUIRE(parse_theme(R"({"schema":1,"dark":{"canvas":"#000000","glow":"#ffffff"}})").fault ==
           theme_fault::unknown_token);
   REQUIRE(parse_theme(R"({"schema":1})").fault == theme_fault::malformed);
-  REQUIRE(parse_theme(R"({"schema":2,"dark":{}})").fault == theme_fault::malformed);
+  REQUIRE(parse_theme(R"({"schema":3,"dark":{}})").fault == theme_fault::malformed);
   REQUIRE(parse_theme("").fault == theme_fault::malformed);
   REQUIRE(parse_theme(std::string(mv::addon::kThemeMaxBytes + 1, ' ')).fault ==
           theme_fault::malformed);

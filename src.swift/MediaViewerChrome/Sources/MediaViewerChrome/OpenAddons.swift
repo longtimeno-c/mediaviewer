@@ -40,6 +40,9 @@ struct OpenAddon: Identifiable, Equatable {
   let can: [String]
   let cannot: String
   let themes: [Theme]
+  /// API 2 (PR 56): whether Settings has a page for it, and its key layouts.
+  let settings: Bool
+  let keymaps: [Theme]
 
   var id: String { folder }
 
@@ -61,6 +64,11 @@ struct OpenAddon: Identifiable, Equatable {
     can = obj["can"] as? [String] ?? []
     cannot = obj["cannot"] as? String ?? ""
     themes = (obj["themes"] as? [[String: Any]] ?? []).compactMap {
+      guard let id = $0["id"] as? String else { return nil }
+      return Theme(id: id, name: $0["name"] as? String ?? id)
+    }
+    settings = obj["settings"] as? Bool ?? false
+    keymaps = (obj["keymaps"] as? [[String: Any]] ?? []).compactMap {
       guard let id = $0["id"] as? String else { return nil }
       return Theme(id: id, name: $0["name"] as? String ?? id)
     }
@@ -97,6 +105,9 @@ final class OpenAddonStore: ObservableObject {
   @Published var enteringLink = false
   @Published var link = ""
   @Published var confirmingRemove: String?
+  /// The Remove panel's "Keep its settings" (docs/design/25 "Settings page"): on
+  /// unless the person turns it off.
+  @Published var keepSettings = true
 
   private init() {}
 
@@ -292,8 +303,13 @@ final class OpenAddonStore: ObservableObject {
     busy = true
     let folder = addon.folder
     let name = addon.name
+    let forget = addon.settings && !keepSettings
+    let id = addon.addonID
+    keepSettings = true
     Task.detached(priority: .userInitiated) {
       let removed = mv_open_addons_remove(folder)
+      // Kept unless asked: installing it again finds what was chosen.
+      if removed && forget { _ = mv_addons_settings_forget(id) }
       await MainActor.run {
         self.busy = false
         self.message = removed ? "\(name) removed." : "\(name) could not be removed."
@@ -416,7 +432,7 @@ struct OpenAddonsSection: View {
   @ObservedObject var settings = SettingsStore.shared
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
+    VStack(alignment: .leading, spacing: MVTheme.space(8)) {
       Text("From others").font(MVTheme.font()).foregroundStyle(MVTheme.title)
       note("Add-ons made by other people, installed from a file or a link. MediaViewer does not check them or who made them. The ones it installs are data, such as themes: they cannot run code, read your files, or use the network.")
 
@@ -454,7 +470,7 @@ struct OpenAddonsSection: View {
   }
 
   @ViewBuilder private func row(_ addon: OpenAddon) -> some View {
-    VStack(alignment: .leading, spacing: 4) {
+    VStack(alignment: .leading, spacing: MVTheme.space(4)) {
       Text("\(addon.name) \(addon.version)").font(MVTheme.font(14)).foregroundStyle(MVTheme.title)
       if !addon.publisher.isEmpty {
         note("From \(addon.publisher) · key \(addon.fingerprint) · \(addon.adds)")
@@ -464,10 +480,19 @@ struct OpenAddonsSection: View {
       } else if addon.state != "ok" {
         note("This copy did not pass verification, so it is not in use.")
       }
+      if addon.settings && addon.state == "ok" && store.confirmingRemove != addon.folder {
+        AddonSettingsPage(addonID: addon.addonID, fallbackTitle: addon.name)
+          .id(addon.addonID + "@" + addon.version)
+      }
       if store.confirmingRemove == addon.folder {
+        if addon.settings {
+          Toggle("Keep its settings", isOn: $store.keepSettings)
+            .toggleStyle(.checkbox).font(MVTheme.font(13))
+            .help("Kept, installing \(addon.name) again brings back what you chose on its settings page.")
+        }
         HStack {
           Button("Remove \(addon.name)") { store.remove(addon) }
-          Button("Cancel") { store.confirmingRemove = nil }
+          Button("Cancel") { store.confirmingRemove = nil; store.keepSettings = true }
         }
       } else {
         HStack {
@@ -479,7 +504,7 @@ struct OpenAddonsSection: View {
         }
       }
     }
-    .padding(.vertical, 4)
+    .padding(.vertical, MVTheme.space(4))
   }
 
   private func note(_ text: String) -> some View {
@@ -508,7 +533,7 @@ struct OpenAddonSheet: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
+    VStack(alignment: .leading, spacing: MVTheme.space(8)) {
       Text(title).font(MVTheme.font(16)).fontWeight(.semibold).foregroundStyle(MVTheme.title)
         .fixedSize(horizontal: false, vertical: true)
       if let a = offer.addon {
@@ -540,10 +565,10 @@ struct OpenAddonSheet: View {
         Button("Close") { store.cancel() }.keyboardShortcut(.defaultAction)
       }
     }
-    .padding(14)
+    .padding(MVTheme.space(14))
     .frame(maxWidth: .infinity, alignment: .leading)
-    .background(RoundedRectangle(cornerRadius: 8).fill(MVTheme.surface))
-    .overlay(RoundedRectangle(cornerRadius: 8).stroke(MVTheme.hairline, lineWidth: 1))
+    .background(RoundedRectangle(cornerRadius: MVTheme.radius(8)).fill(MVTheme.surface))
+    .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(8)).stroke(MVTheme.hairline, lineWidth: 1))
     .accessibilityElement(children: .contain)
     .accessibilityLabel(title)
     .id(Self.anchor)

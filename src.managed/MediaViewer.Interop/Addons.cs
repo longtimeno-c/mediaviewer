@@ -355,6 +355,93 @@ public static unsafe partial class AddonNative
     private static partial MvStatus mv_open_addon_theme_json(byte* addon, byte* theme, byte* output, uint cap,
         uint* needed);
 
+    // ---- PR 56: declarative contributions (docs/design/25 "Settings page", "Keymap") ----
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial MvStatus mv_addon_settings_json(byte* addon, byte* output, uint cap, uint* needed);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial MvStatus mv_addon_setting_set(byte* addon, byte* key, byte* valueJson, byte* output,
+        uint cap, uint* needed);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial MvStatus mv_addon_settings_forget(byte* addon);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial MvStatus mv_open_addon_keymap_json(byte* addon, byte* pack, byte* output, uint cap,
+        uint* needed);
+
+    /// <summary>The settings page of an open add-on (dotted id) or a first-party one
+    /// ("import"), values folded in; null when it has none, is not installed, or the
+    /// core predates PR 56.</summary>
+    public static string? SettingsJson(string addonId)
+    {
+        byte[] addon = Z(addonId);
+        try
+        {
+            return Json((b, c, n) =>
+            {
+                fixed (byte* a = addon) return mv_addon_settings_json(a, (byte*)b, c, (uint*)n);
+            }, "mv_addon_settings_json");
+        }
+        catch (Exception ex) when (ex is MediaViewerException or EntryPointNotFoundException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Stores one value of that page (JSON text: true, 15, "english"):
+    /// {"ok","message"}. Throws <see cref="MediaViewerException"/> when the core
+    /// cannot answer at all.</summary>
+    public static string SettingSet(string addonId, string key, string valueJson)
+    {
+        byte[] addon = Z(addonId);
+        byte[] k = Z(key);
+        byte[] v = Z(valueJson);
+        return Json((b, c, n) =>
+        {
+            fixed (byte* a = addon)
+            fixed (byte* pk = k)
+            fixed (byte* pv = v)
+            {
+                return mv_addon_setting_set(a, pk, pv, (byte*)b, c, (uint*)n);
+            }
+        }, "mv_addon_setting_set");
+    }
+
+    /// <summary>Forgets what was chosen on the add-on's page (Remove without "Keep its settings").</summary>
+    public static void SettingsForget(string addonId)
+    {
+        fixed (byte* p = Z(addonId)) Check(mv_addon_settings_forget(p), "mv_addon_settings_forget");
+    }
+
+    /// <summary>One keymap pack of an installed open add-on, for the shell to apply;
+    /// null when the add-on or pack is gone.</summary>
+    public static string? OpenKeymapJson(string addonId, string packId)
+    {
+        byte[] addon = Z(addonId);
+        byte[] pack = Z(packId);
+        try
+        {
+            return Json((b, c, n) =>
+            {
+                fixed (byte* a = addon)
+                fixed (byte* k = pack)
+                {
+                    return mv_open_addon_keymap_json(a, k, (byte*)b, c, (uint*)n);
+                }
+            }, "mv_open_addon_keymap_json");
+        }
+        catch (Exception ex) when (ex is MediaViewerException or EntryPointNotFoundException)
+        {
+            return null;
+        }
+    }
+
     private static byte[] Z(string s) => Encoding.UTF8.GetBytes(s + "\0");
 
     /// <summary>What a package is, for the consent sheet (mediaviewer_addon.h). Installs nothing.</summary>
@@ -688,6 +775,22 @@ public interface IAddonHost3 : IAddonHost2
     /// menu offers <see cref="SearchCommand.IndexAnyway"/>.
     /// </summary>
     void SetIndexingPill(string? text, bool busy, double fraction, bool onBattery);
+}
+
+/// <summary>
+/// docs/design/25 PR 56 (theme API 2): the shape of the theme in use, as scales of
+/// the chrome's own literals (1 = unchanged). A separate interface, never new
+/// members on <see cref="IAddonHost2"/>: an installed add-on was compiled
+/// against it as it is. UI thread; resolved once when the theme is applied.
+/// </summary>
+public interface IAddonThemeShape
+{
+    /// <summary>Corner radii, 0..2.</summary>
+    double RadiusScale { get; }
+    /// <summary>Padding and spacing, 0.75..1.25.</summary>
+    double Density { get; }
+    /// <summary>Font sizes, 0.85..1.25.</summary>
+    double TypeScale { get; }
 }
 
 /// <summary>The search commands the native router forwards (ShowAddon kinds).</summary>

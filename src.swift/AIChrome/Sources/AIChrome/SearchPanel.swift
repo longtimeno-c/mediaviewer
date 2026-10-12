@@ -78,7 +78,7 @@ final class SearchPanelController: NSObject {
     panel.animationBehavior = .none  // SwiftUI animates the card
     panel.setAccessibilityTitle("Search photos and videos")
     let root = SearchRootView(model: model, panel: state, close: { [weak self] in self?.hide() })
-    let hosting = NSHostingView(rootView: root)
+    let hosting = NSHostingView(rootView: AIThemeRoot { root })
     hosting.sizingOptions = []
     panel.contentView = hosting
     keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
@@ -320,7 +320,7 @@ struct SearchRootView: View {
           .accessibilityLabel("Remove \(reference.label)")
         }
         .padding(.horizontal, 10).padding(.vertical, 5)
-        .background(Capsule().fill(Color.accentColor.opacity(0.18)))
+        .background(Capsule().fill(AITheme.accent.opacity(0.18)))
         .transition(.opacity.combined(with: .scale(scale: 0.94)))
         Spacer(minLength: 0)
       }
@@ -373,11 +373,11 @@ struct SearchRootView: View {
             if i == 0 {
               Text("Tab").font(AITheme.font(11)).foregroundStyle(AITheme.body)
                 .padding(.horizontal, 4).padding(.vertical, 1)
-                .overlay(RoundedRectangle(cornerRadius: 3).stroke(AITheme.hairline, lineWidth: 1))
+                .overlay(RoundedRectangle(cornerRadius: AITheme.radius(3)).stroke(AITheme.hairline, lineWidth: 1))
             }
           }
           .padding(.horizontal, 9).padding(.vertical, 4)
-          .background(Capsule().fill(Color.accentColor.opacity(i == 0 ? 0.18 : 0.08)))
+          .background(Capsule().fill(AITheme.accent.opacity(i == 0 ? 0.18 : 0.08)))
         }
         .buttonStyle(.plain)
         .help("Search for \(s.name)")
@@ -864,32 +864,32 @@ private struct FilterButton: View {
     .accessibilityAction { if available { action() } }
   }
 
-  private var foreground: Color {
+  @MainActor private var foreground: Color {
     switch style {
     case .segment: return on || hover ? AITheme.title : AITheme.body
     case .token:
       if !on { return hover && available ? AITheme.title : AITheme.body }
-      return increased ? AITheme.title : Color.accentColor
+      return increased ? AITheme.title : AITheme.accent
     }
   }
 
-  private var fill: Color {
+  @MainActor private var fill: Color {
     switch style {
     case .segment:
       if on { return scheme == .dark ? Color.white.opacity(0.16) : Color.white }
       return hover ? Color.primary.opacity(0.05) : .clear
     case .token:
-      if on { return Color.accentColor.opacity(scheme == .dark ? 0.24 : 0.14) }
+      if on { return AITheme.accent.opacity(scheme == .dark ? 0.24 : 0.14) }
       return hover && available ? Color.primary.opacity(0.06) : .clear
     }
   }
 
-  private var stroke: Color {
+  @MainActor private var stroke: Color {
     switch style {
     case .segment:
       return on && increased ? AITheme.title.opacity(0.7) : .clear
     case .token:
-      if on { return increased ? AITheme.title : Color.accentColor.opacity(0.55) }
+      if on { return increased ? AITheme.title : AITheme.accent.opacity(0.55) }
       return increased ? AITheme.title.opacity(0.6) : AITheme.hairline
     }
   }
@@ -1000,12 +1000,12 @@ private struct ResultTile: View {
     .overlay {
       if selected {
         RoundedRectangle(cornerRadius: 10, style: .continuous)
-          .stroke(Color.accentColor, lineWidth: 2.5)
+          .stroke(AITheme.accent, lineWidth: 2.5)
           .padding(-3)
           .matchedGeometryEffect(id: "selection", in: ring)
       } else if hinted {
         RoundedRectangle(cornerRadius: 10, style: .continuous)
-          .stroke(Color.accentColor.opacity(0.45), lineWidth: 1.5)
+          .stroke(AITheme.accent.opacity(0.45), lineWidth: 1.5)
           .padding(-3)
       }
     }

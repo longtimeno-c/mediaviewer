@@ -118,6 +118,7 @@ add_executable(mv_import_tests
   "${MV_ROOT}/tests/test_open_addons.cpp"
   "${MV_ROOT}/tests/test_addon_screens.cpp"
   "${MV_ROOT}/tests/test_addon_slots.cpp"
+  "${MV_ROOT}/tests/test_addon_contributions.cpp"
   "${MV_ROOT}/tests/test_ai_resume.cpp"
   "${MV_ROOT}/tests/test_import_naming.cpp"
   "${MV_ROOT}/tests/test_import_engine.cpp"

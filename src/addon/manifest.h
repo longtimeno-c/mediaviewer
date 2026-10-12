@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "addon/contrib.h"
+#include "addon/settings_schema.h"
 
 namespace mv::addon {
 
@@ -84,6 +85,10 @@ struct manifest {
   // `contributes`, with the contribution API range they were written for in
   // `contributes.api`. Empty for every add-on that contributes none.
   contributions slots;
+  // Optional (PR 56, docs/design/25 "Settings page"): a settings page the hosts
+  // render from this schema; the add-on reads the values through the host
+  // table's settings_get. Empty when the manifest has none.
+  settings_page settings;
 };
 
 enum class rejection : std::uint8_t {

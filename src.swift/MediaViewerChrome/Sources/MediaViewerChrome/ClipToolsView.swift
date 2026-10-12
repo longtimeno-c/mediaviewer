@@ -60,11 +60,11 @@ struct ClipToolsView: View {
       Color.black.opacity(0.35)
         .ignoresSafeArea()
         .onTapGesture { mv_chrome_clip_tool_cancel() }
-      VStack(alignment: .leading, spacing: 4) {
+      VStack(alignment: .leading, spacing: MVTheme.space(4)) {
         Text("Clip tools").font(.title3.bold())
         Text("New files beside the clip; the original is never changed.")
           .foregroundStyle(.secondary)
-          .padding(.bottom, 6)
+          .padding(.bottom, MVTheme.space(6))
         ForEach(0..<Self.tools.count, id: \.self) { i in
           Button { run(i) } label: {
             Text((i == row ? "▶ " : "   ") + Self.tools[i].name)
@@ -76,7 +76,7 @@ struct ClipToolsView: View {
         Text("↑ ↓ choose   Return run   Esc cancel   ·   jobs: ⌘J")
           .font(.caption)
           .foregroundStyle(.secondary)
-          .padding(.top, 6)
+          .padding(.top, MVTheme.space(6))
         HStack {
           Spacer()
           Button("Cancel") { mv_chrome_clip_tool_cancel() }
@@ -85,9 +85,9 @@ struct ClipToolsView: View {
             .keyboardShortcut(.defaultAction)
         }
       }
-      .padding(20)
+      .padding(MVTheme.space(20))
       .frame(width: 440)
-      .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+      .background(.regularMaterial, in: RoundedRectangle(cornerRadius: MVTheme.radius(12)))
       .focusable()
       .focused($focused)
       .onKeyPress(.upArrow) { move(-1); return .handled }

@@ -323,6 +323,10 @@ bool read_contributions(const json::value& doc, manifest& m) {
       m.slots.api_max = static_cast<std::uint32_t>(*hi);
     } else if (slot_point_api(key) != 0) {
       continue;  // read against the range below
+    } else if (key == "settings") {
+      auto page = parse_settings_page(value);
+      if (!page) return false;
+      m.settings = std::move(*page);
     } else {
       return false;
     }

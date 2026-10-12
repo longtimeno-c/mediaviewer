@@ -72,6 +72,10 @@ struct host_services {
   // A file's coordinates from the host's metadata read (location_of /
   // locations_in, cached by path + size + mtime). Empty: every file has none.
   location_reader location;
+  // This add-on's value for a key on its own settings page, as JSON text
+  // (docs/design/25 "Settings page", PR 56). loaded_addon::load fills it from
+  // the add-on's manifest and the settings store when left empty.
+  std::function<result<std::string>(const std::string& key)> setting;
   std::string data_dir;         // created by the table
   std::string default_library;  // Pictures\MediaViewer
   // Honour mv_addon_copy_request's fault injection (tests, the verify rig).

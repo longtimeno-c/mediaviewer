@@ -73,6 +73,8 @@ struct manifest_options {
   std::string extra_key;          // a top-level key this host does not know, with value true
   std::string extra_contributes;  // the same, under "contributes"
   bool themes = true;             // list themes/dusk.json as a theme
+  // PR 56: points written as raw JSON under "contributes" ({"settings", "{...}"}).
+  std::vector<std::pair<std::string, std::string>> contributes_raw;
 };
 
 inline std::string open_manifest_json(const publisher_key& k, const std::vector<packed_file>& files,
@@ -113,6 +115,7 @@ inline std::string open_manifest_json(const publisher_key& k, const std::vector<
     w.end_array();
   }
   if (!o.extra_contributes.empty()) w.key(o.extra_contributes).boolean(true);
+  for (const auto& [key, raw] : o.contributes_raw) w.key(key).raw(raw);
   w.end_object();
   if (!o.extra_key.empty()) w.key(o.extra_key).boolean(true);
   w.end_object();

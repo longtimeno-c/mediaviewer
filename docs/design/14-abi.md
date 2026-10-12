@@ -511,6 +511,19 @@ Windows shell turns into live command rows ([25 §7](25-open-addons.md#7-the-con
 `mv_addon_installed_json` and `mv_addon_check_manifest` gain `description`, `hint_on` and
 `hint_text`. The Mac host reads the same manifests directly.
 
+## PR 56 — settings pages and keymap packs (ABI 0.24)
+
+Minor bump, additive, in `mediaviewer_addon.h` ([25](25-open-addons.md), contribution API 2):
+`mv_addon_settings_json` (an add-on's settings page with its values, open or first-party id),
+`mv_addon_setting_set` (one value, checked against the page: `{"ok","message"}`),
+`mv_addon_settings_forget` (Remove without "keep its settings") and `mv_open_addon_keymap_json`
+(one keymap pack, which the Windows chrome parks for native to apply). The open list gains
+`settings` and `keymaps`, the installed list `settings`. The host function table gains
+`settings_get` after `walk_files2` (appended under `struct_size`, host API not bumped; the v3
+rows of 0.25 follow it): a native add-on reads its own page's values, fresh on every call. The Mac host reaches the same `open_json.h` calls through
+`mv_addons_settings_*` and `mv_open_addons_keymap` in the chrome bridge, and applies a pack with
+`mv_chrome_apply_keymap`.
+
 ## PRs 58–59 — screens and slots (ABI 0.25)
 
 Minor bump, additive, in `mediaviewer_addon.h` ([25](25-open-addons.md#implementation-notes-prs-58-59-2026-10-11)).
@@ -546,7 +559,7 @@ rows and the add-on's `mv.slots.1` interface; table versions still only append (
 | 0.21 | `mv_folder_renamed` — an F2 rename keeps its stop (issue #210) |
 | 0.22 | `mv_folder_set_kind_filter`, `MV_FOLDER_HIDE_STILLS` / `_CLIPS` / `_RAW` / `_UNMARKED` — View ▸ Show (issue #206) |
 | 0.23 | The cull bits `MV_FOLDER_HIDE_REJECTED` / `_UNPICKED` / `MV_FOLDER_HIDE_OTHER_LABELS` (`MV_FOLDER_LABEL_SHIFT`) and `mv_folder_note_metadata_written` — View ▸ Show's cull filters (issue #207) |
-| 0.24 | Reserved for docs/design/25 PR 56 (settings pages, keymap packs) |
+| 0.24 | Settings pages and keymap packs: `mv_addon_settings_json` / `_setting_set` / `_settings_forget`, `mv_open_addon_keymap_json`; host table `settings_get` |
 | 0.25 | Screens and slots: `mv_slots_*` (contributions, info sections, screens, search, badges, status, events, items, surfaces, the local-search provider, thumbnails by path); host table v3 (`MV_ADDON_HOST_API` 3) and `mv.slots.1`; `"slots"` in the installed JSON |
 
 ## Not built

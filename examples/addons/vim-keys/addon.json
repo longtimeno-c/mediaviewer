@@ -1,0 +1,23 @@
+{
+  "id": "example.vim-keys",
+  "name": "Vim Keys",
+  "version": "1.0.0",
+  "description": "A key layout for Vim hands: H and L walk the folder, X marks.",
+  "licence": "MIT",
+  "publisher": { "name": "Example Publisher", "url": "" },
+  "update_url": "",
+  "api": { "min": 2, "max": 2 },
+  "contributes": {
+    "keymaps": [
+      {
+        "id": "vim",
+        "name": "Vim",
+        "bindings": [
+          { "command": "prev", "keys": ["Left", "H"] },
+          { "command": "next", "keys": ["Right", "L"] },
+          { "command": "toggle_mark", "keys": ["Insert", "X"] }
+        ]
+      }
+    ]
+  }
+}

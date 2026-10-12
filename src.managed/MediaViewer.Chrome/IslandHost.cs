@@ -173,6 +173,10 @@ public static partial class IslandHost
         public const int VideoMuted = 1032;
         public const int VideoTrack = 1033;
         public const int VideoLoop = 1034;
+        // docs/design/25 PR 56: Settings applied a keymap pack; native pulls the
+        // pack's JSON with TakeTreePath (chrome_cmd_apply_keymap). Not in
+        // Checksum: chrome_command_checksum() does not list it either.
+        public const int ApplyKeymap = 1050;
         // Issue #210: the rename popup's Enter; native takes the parked name.
         public const int Rename = 1035;
         public const int RotateCcw = 96;
@@ -873,7 +877,8 @@ public static partial class IslandHost
     // after WindowsXamlManager; a static FontFamily ctor runs too early.
     private const string UiFontFile = "CozetteVector.ttf";
     private const string UiFontFamilyName = "CozetteVector";
-    private const double UiFontSize = 16;
+    // In the theme's type scale (IslandHost.Theme.cs TypeSize), 16 without one.
+    private static double UiFontSize => TypeSize(16);
     private static FontFamily? _uiFont;
     private static FontFamily UiFont => _uiFont ??= LoadUiFont();
     private static string? _gdiFontPath;
@@ -1010,7 +1015,7 @@ public static partial class IslandHost
             Foreground = Brush(Title),
             Background = new SolidColorBrush(Colors.Transparent),
             BorderThickness = new Thickness(0),
-            Padding = new Thickness(14, 7, 14, 7),
+            Padding = Pad(14, 7, 14, 7),
             FontFamily = UiFont,
             FontSize = UiFontSize,
             FontWeight = Microsoft.UI.Text.FontWeights.Normal,
@@ -1043,8 +1048,8 @@ public static partial class IslandHost
         style.Setters.Add(new Setter(FlyoutPresenter.BackgroundProperty, Brush(Canvas)));
         style.Setters.Add(new Setter(FlyoutPresenter.BorderBrushProperty, Brush(Hairline)));
         style.Setters.Add(new Setter(FlyoutPresenter.BorderThicknessProperty, new Thickness(1)));
-        style.Setters.Add(new Setter(FlyoutPresenter.CornerRadiusProperty, new CornerRadius(RadiusFlyout)));
-        style.Setters.Add(new Setter(FlyoutPresenter.PaddingProperty, new Thickness(4)));
+        style.Setters.Add(new Setter(FlyoutPresenter.CornerRadiusProperty, Corner(RadiusFlyout)));
+        style.Setters.Add(new Setter(FlyoutPresenter.PaddingProperty, Pad(4)));
         style.Setters.Add(new Setter(FlyoutPresenter.FontFamilyProperty, UiFont));
         style.Setters.Add(new Setter(FlyoutPresenter.FontSizeProperty, UiFontSize));
         style.Setters.Add(new Setter(Control.AllowFocusOnInteractionProperty, true));
@@ -1057,8 +1062,8 @@ public static partial class IslandHost
         style.Setters.Add(new Setter(MenuFlyoutPresenter.BackgroundProperty, Brush(Canvas)));
         style.Setters.Add(new Setter(MenuFlyoutPresenter.BorderBrushProperty, Brush(Hairline)));
         style.Setters.Add(new Setter(MenuFlyoutPresenter.BorderThicknessProperty, new Thickness(1)));
-        style.Setters.Add(new Setter(MenuFlyoutPresenter.CornerRadiusProperty, new CornerRadius(RadiusFlyout)));
-        style.Setters.Add(new Setter(MenuFlyoutPresenter.PaddingProperty, new Thickness(4)));
+        style.Setters.Add(new Setter(MenuFlyoutPresenter.CornerRadiusProperty, Corner(RadiusFlyout)));
+        style.Setters.Add(new Setter(MenuFlyoutPresenter.PaddingProperty, Pad(4)));
         style.Setters.Add(new Setter(MenuFlyoutPresenter.FontFamilyProperty, UiFont));
         style.Setters.Add(new Setter(MenuFlyoutPresenter.FontSizeProperty, UiFontSize));
         return style;
@@ -1073,7 +1078,7 @@ public static partial class IslandHost
             FontFamily = UiFont,
             FontSize = UiFontSize,
             Background = new SolidColorBrush(Colors.Transparent),
-            Padding = new Thickness(12, 8, 12, 8),
+            Padding = Pad(12, 8, 12, 8),
         };
         // Lightweight resources, never a template (see TextButton): the
         // chrome's washes and colours in place of Windows' own.
@@ -1484,10 +1489,10 @@ public static partial class IslandHost
         var row = new StackPanel
         {
             Orientation = Orientation.Horizontal,
-            Spacing = 2,
+            Spacing = Space(2),
             HorizontalAlignment = HorizontalAlignment.Left,
             VerticalAlignment = VerticalAlignment.Center,
-            Padding = new Thickness(8, 0, 8, 0),
+            Padding = Pad(8, 0, 8, 0),
         };
         row.Children.Add(openBtn);
         row.Children.Add(viewBtn);

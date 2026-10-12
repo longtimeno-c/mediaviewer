@@ -58,7 +58,7 @@ struct ExportView: View {
       Color.black.opacity(0.35)
         .ignoresSafeArea()
         .onTapGesture { mv_chrome_export_cancel() }
-      VStack(alignment: .leading, spacing: 10) {
+      VStack(alignment: .leading, spacing: MVTheme.space(10)) {
         Text("Export a copy").font(.title3.bold())
         Text("Beside the original as name-edit; never overwrites.")
           .foregroundStyle(.secondary)
@@ -88,9 +88,9 @@ struct ExportView: View {
             .keyboardShortcut(.defaultAction)
         }
       }
-      .padding(20)
+      .padding(MVTheme.space(20))
       .frame(width: 380)
-      .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+      .background(.regularMaterial, in: RoundedRectangle(cornerRadius: MVTheme.radius(12)))
       .focusable()
       .focused($focused)
       .onKeyPress(.upArrow) { row = (row + 3) % 4; return .handled }

@@ -29,6 +29,7 @@ and a verify line on each platform (D9, amended). The order is:
 | 50 | **Transfer**: a general copier (copy/move any files and folders, verified, resumable) and an SMB link check | Planned |
 | 55 | **Open add-ons**: add-ons anyone can make, one `.mvaddon` file signed by its publisher, installed from a file or a link with a sheet that says what it is; themes as the first thing one can contribute; the author's tool and guide ([docs/design/25-open-addons.md](design/25-open-addons.md), [ADDONS.md](ADDONS.md)); ABI 0.17 | Shared core and SDK tested on the Mac (ASan / UBSan) and cross-checked against each other; both halves run in the app (Mac: `MV_ADDON_SELFTEST`; Windows: by hand, 2026-10-03), launch and pacing measured against the base on both; install from a link, `.mvaddon` double-click on a rebuilt installer, VoiceOver / Narrator and the idle clause of both gates (which fails on the base too) owed. PRs 56–60 are planned; the owner's calls for 57–60 were made 2026-10-03 (docs/design/25 §17) |
 | 56 | **Import described by its manifest** (the first half of [docs/design/25](design/25-open-addons.md)'s declarative contributions): its commands, keys, Settings line and card hint come from `manifest.json`; both chromes drive it through one generic run-command call; an older installed Import keeps working through the built-in rows; ABI 0.18 | Mac: shell and manifest suites, the packer cross-check, the full suite and the rig pass; a signed Import with the new manifest has not been loaded in the app. Windows: both C# projects compile; the native side is CI's |
+| 56 | **Declarative contributions** (the second half; contribution API 2): an add-on's settings page drawn from its manifest on both hosts, its values kept per add-on (and on remove unless asked), key layouts (keymap packs) applied once with Reset back to the defaults, theme shape (radius, density, type scale), and Import / Duplicates / Local search on the host's theme tokens ([docs/design/25](design/25-open-addons.md#pr-56-second-half-declarative-contributions-2026-10-11), [ADDONS.md](ADDONS.md)); ABI 0.24 | Mac: Catch2 (schema, values, keymaps over every built-in command, shape), the SDK cross-check, 2.5 M fuzz inputs, the full suite and the rig's PR 56 leg pass in the app; launch and pacing measured against the base on a loaded machine (no difference; the idle CPU clause fails on base too). Windows: every C# project compiles clean; the native half is CI's; nothing run in the app yet |
 | 58–59 | **Screens and slots**: MediaViewer's own native add-ons add to pages that exist (an info-pane section at the very bottom of the Metadata pane, file search and Local search providers, command-bar / path-bar / status items, gallery tile badges, context-menu entries) and open windows, docked panes and sheets from a view tree both chromes render ([docs/design/25](design/25-open-addons.md#implementation-notes-prs-58-59-2026-10-11)); host table v3; ABI 0.25 | Mac: the shared suite passes (with a real test add-on through a signed store; also under ASan / UBSan and TSan); the app built and, with the test add-on sideloaded, drew its section at the bottom of the pane and its items. Windows: both C# projects compile; the native side is CI's. Measurements and the keyboard / VoiceOver / Narrator passes are owed ([Where this actually is](#screens-and-slots-prs-58-59-2026-10-11)). Script add-ons wait for PR 57; Places is #344 |
 
 See [docs/design/10-roadmap.md](design/10-roadmap.md). Old Mac numbers in the history below map as
@@ -904,6 +905,9 @@ build/bin/mv_import_tests "[.perf-bench]"
 # asks the app's own reader (mv_addon_verify --open) about every package
 ctest --test-dir build -C Release -R addon_sdk --output-on-failure
 python tools/addon-sdk/test_mvaddon.py        # the tool alone, no build needed
+# PR 56: settings pages, keymap packs and theme shape, and keymaps on the live table
+build/bin/mv_import_tests "[addon]"
+build/bin/mv_tests "[keymap]"
 
 # ...and the same engine headless on Linux or any POSIX machine (CI's
 # portable-core job, Ubuntu under ASan + UBSan; SQLite, libsodium, BLAKE3 and Catch2 from vcpkg via
@@ -1102,6 +1106,32 @@ a substitute for one: PR 49's verify line wants a real 10 GbE share). The fixtur
 incompressible, so a share that compresses on the wire shows no flattering number. On
 Windows the reference is `robocopy <src> <dst> /E /MT:16 /J`; on the Mac,
 `ditto <src> <dst>`. Delete the fixtures from the share afterwards.
+### Open add-ons self-test, PR 56 leg (macOS)
+
+The same rig walks settings pages and key layouts across a restart: install
+`example.settings-demo`, photograph its page (`p2-page.png`, `p4-page.png`), change four values;
+then a second launch over the same folder installs `example.vim-keys`, reads the values back,
+applies the Vim layout, Reset, removes settings-demo keeping its settings, installs it again and
+removes it without. Keys are not written to your preferences while it runs:
+
+```bash
+python3 tools/addon-sdk/mvaddon.py pack examples/addons/settings-demo --key /tmp/mv-addon.key --out /tmp/mv-addon
+python3 tools/addon-sdk/mvaddon.py pack examples/addons/vim-keys --key /tmp/mv-addon.key --out /tmp/mv-addon
+```
+
+```bash
+MV_ADDON_SELFTEST=/tmp/mv-addon/rig56 MV_ADDON_SELFTEST_PR56=a caffeinate -d -i build/bin/MediaViewer /tmp/mv-addon/example.settings-demo-1.0.0.mvaddon
+MV_ADDON_SELFTEST=/tmp/mv-addon/rig56 MV_ADDON_SELFTEST_PR56=b MV_ADDON_SELFTEST_REINSTALL=/tmp/mv-addon/example.settings-demo-1.0.0.mvaddon caffeinate -d -i build/bin/MediaViewer /tmp/mv-addon/example.vim-keys-1.0.0.mvaddon
+```
+
+`rig56/state.txt` has a line per step: the page's values, the keys of Previous / Next / Toggle
+mark / Flip horizontal / Forward 10 s before and after the layout and after Reset, and whether
+the settings file was kept.
+
+The settings / keymap / theme parsers have a libFuzzer harness, `tools/fuzz/fuzz_addon_contributions.cpp`,
+in the Windows clang-cl fuzz build (`mv_fuzzers`, seeds in `tests/data/seeds/addon`); its header
+has the one-line Homebrew LLVM build for a quick run on a Mac.
+
 ### Open add-ons self-test (PR 55, macOS)
 
 The Mac app can walk the whole add-on flow by itself and photograph each step: the sheet for a

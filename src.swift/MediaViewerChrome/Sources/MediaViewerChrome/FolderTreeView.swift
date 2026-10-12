@@ -195,7 +195,7 @@ private struct TreeRow: View {
       Button {
         node.path.withCString { mv_chrome_open_folder($0) }
       } label: {
-        HStack(spacing: 6) {
+        HStack(spacing: MVTheme.space(6)) {
           Image(systemName: node.path == current ? "folder.fill" : "folder")
           Text(node.name).lineLimit(1).truncationMode(.middle)
           Spacer(minLength: 0)
@@ -290,7 +290,7 @@ struct FolderTreeView: View {
     Button {
       mv_chrome_open_photos_library()
     } label: {
-      HStack(spacing: 6) {
+      HStack(spacing: MVTheme.space(6)) {
         Image(systemName: store.photosOpen ? "photo.on.rectangle.angled.fill" : "photo.on.rectangle.angled")
         Text("Photos Library").lineLimit(1)
         Spacer(minLength: 0)
@@ -301,13 +301,13 @@ struct FolderTreeView: View {
     .fontWeight(store.photosOpen ? .semibold : .regular)
     .foregroundStyle(store.photosOpen ? Color.accentColor : Color.primary)
     .help("Your Photos library, iCloud Photos included, as a folder. Read-only: nothing in it is changed.")
-    .padding(.horizontal, 10)
-    .padding(.vertical, 8)
+    .padding(.horizontal, MVTheme.space(10))
+    .padding(.vertical, MVTheme.space(8))
   }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      Text("Folders").font(MVTheme.font()).padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 8)
+      Text("Folders").font(MVTheme.font()).padding(.horizontal, MVTheme.space(14)).padding(.top, MVTheme.space(12)).padding(.bottom, MVTheme.space(8))
       Divider()
       if store.photosAvailable {
         photosRow
@@ -316,7 +316,7 @@ struct FolderTreeView: View {
       if let root = store.root {
         ScrollViewReader { proxy in
           ScrollView {
-            LazyVStack(alignment: .leading, spacing: 2) {
+            LazyVStack(alignment: .leading, spacing: MVTheme.space(2)) {
               if let parent = store.parentPath {
                 Button {
                   parent.withCString { mv_chrome_open_folder($0) }
@@ -327,11 +327,11 @@ struct FolderTreeView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .padding(.bottom, 6)
+                .padding(.bottom, MVTheme.space(6))
               }
               TreeRow(node: root, current: store.currentPath, cursor: focused ? cursor : nil, depth: 0)
             }
-            .padding(10)
+            .padding(MVTheme.space(10))
           }
           .onChange(of: store.scrollTick) { _, _ in
             let path = store.currentPath
@@ -343,7 +343,7 @@ struct FolderTreeView: View {
           }
         }
       } else if !store.photosOpen {
-        Text("No folder open").foregroundStyle(.secondary).padding(14)
+        Text("No folder open").foregroundStyle(.secondary).padding(MVTheme.space(14))
         Spacer()
       } else {
         Spacer()

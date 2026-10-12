@@ -52,6 +52,13 @@ add_library(mv_addon STATIC
   ${R}/src/addon/open_json.h
   ${R}/src/addon/theme.cpp
   ${R}/src/addon/theme.h
+  # Declarative contributions (docs/design/25 PR 56, contribution API 2).
+  ${R}/src/addon/settings_schema.cpp
+  ${R}/src/addon/settings_schema.h
+  ${R}/src/addon/settings_values.cpp
+  ${R}/src/addon/settings_values.h
+  ${R}/src/addon/keymap.cpp
+  ${R}/src/addon/keymap.h
   ${R}/src/addon/host.cpp
   ${R}/src/addon/host.h
   # Screens and slots (docs/design/25 PRs 58-59): the view-tree vocabulary, the

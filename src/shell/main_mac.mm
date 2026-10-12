@@ -77,6 +77,7 @@
 #include "shell/folder_model_mac.h"
 #include "meta/meta.h"
 #include "shell/key_router.h"
+#include "shell/keymap.h"
 #include "shell/meta_store.h"
 #include "shell/os_integration.h"
 #include "shell/meta_writer.h"
@@ -582,6 +583,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)cancelKeyCapture;
 - (int)captureRow;
 - (void)resetKeys;
+- (std::string)applyKeymap:(const char*)packJson;
 - (uint64_t)keysGeneration;
 - (void)setGalleryVisible:(BOOL)visible;
 - (void)toggleFilmstrip;
@@ -845,6 +847,15 @@ extern "C" int32_t mv_chrome_key_capture_row(void) {
 }
 extern "C" void mv_chrome_keys_reset(void) {
   if (g_chrome_app) [g_chrome_app resetKeys];
+}
+extern "C" int32_t mv_chrome_apply_keymap(const char* pack_json, char* buf, int32_t size) {
+  std::string out = g_chrome_app && pack_json ? [g_chrome_app applyKeymap:pack_json] : std::string();
+  if (buf && size > 0) {
+    const std::size_t n = std::min<std::size_t>(out.size(), static_cast<std::size_t>(size) - 1);
+    std::memcpy(buf, out.data(), n);
+    buf[n] = '\0';
+  }
+  return static_cast<int32_t>(out.size());
 }
 extern "C" uint64_t mv_chrome_keys_generation(void) {
   return g_chrome_app ? [g_chrome_app keysGeneration] : 0;
@@ -7492,12 +7503,205 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
   if (dir == nullptr || *dir == '\0') return;
   NSString* out = [NSString stringWithUTF8String:dir];
   NSString* store = [out stringByAppendingPathComponent:@"store"];
-  [[NSFileManager defaultManager] removeItemAtPath:store error:nil];
+  // PR 56's leg runs twice over one store (a restart in between), so its
+  // second launch keeps what the first installed and chose.
+  const char* pr56 = std::getenv("MV_ADDON_SELFTEST_PR56");
+  const bool second = pr56 != nullptr && std::string_view(pr56) == "b";
+  if (!second) {
+    [[NSFileManager defaultManager] removeItemAtPath:store error:nil];
+    [[NSFileManager defaultManager] removeItemAtPath:[out stringByAppendingPathComponent:@"settings"] error:nil];
+    [[NSFileManager defaultManager] removeItemAtPath:[out stringByAppendingPathComponent:@"state.txt"] error:nil];
+  }
   [[NSFileManager defaultManager] createDirectoryAtPath:out withIntermediateDirectories:YES attributes:nil error:nil];
-  [[NSFileManager defaultManager] removeItemAtPath:[out stringByAppendingPathComponent:@"state.txt"] error:nil];
   mv::io::set_open_addons_dir_override(store.UTF8String);
+  mv::io::set_addon_settings_dir_override([out stringByAppendingPathComponent:@"settings"].UTF8String);
   MV_LOG_WARN("addons: MV_ADDON_SELFTEST armed; the app will quit when it is done");
+  if (pr56 != nullptr) {
+    [self addon56SelfTestStep:0 dir:out second:second];
+    return;
+  }
   [self addonSelfTestStep:0 dir:out];
+}
+
+// ---- PR 56: settings pages, keep-on-remove, key layouts (the same rig) -------------
+// MV_ADDON_SELFTEST_PR56=a, launched with example.settings-demo: install, the
+// page drawn and read, four values changed, read again; quit. Then =b, launched
+// with example.vim-keys, over the same <folder>: the values after the restart,
+// the Vim layout applied and Reset, settings-demo removed keeping its settings,
+// installed again (MV_ADDON_SELFTEST_REINSTALL=<its .mvaddon>), removed without.
+// Keys are never written to the person's defaults while the rig runs.
+
+- (void)addon56Line:(NSString*)line dir:(NSString*)dir {
+  [self editSelfTestLine:[line stringByAppendingString:@"\n"] dir:dir];
+}
+
+// "key=value ..." of a page as the core hands it to the hosts. [worker]
+static std::string MvSelfTestPageSummary(const char* addon) {
+  char buf[16384];
+  const int32_t n = mv_addons_settings_page(addon, buf, sizeof buf);
+  if (n <= 0) return "(no page)";
+  const auto doc = mv::json::parse(std::string_view(buf, std::min<std::size_t>(n, sizeof buf - 1)));
+  if (!doc) return "(unreadable)";
+  std::string out;
+  const mv::json::value* sections = doc->find("sections");
+  for (const mv::json::value& s : sections ? sections->a : std::vector<mv::json::value>{}) {
+    const mv::json::value* items = s.find("items");
+    for (const mv::json::value& it : items ? items->a : std::vector<mv::json::value>{}) {
+      const std::string* key = it.str("key");
+      const std::string* type = it.str("type");
+      const mv::json::value* v = it.find("value");
+      if (!key || !type || !v) continue;
+      std::string value = v->k == mv::json::kind::boolean ? (v->b ? "true" : "false")
+                          : v->k == mv::json::kind::string ? "\"" + v->s + "\""
+                          : v->is_integer ? std::to_string(v->i) : std::to_string(v->d);
+      out += *key + "(" + *type + ")=" + value + " ";
+    }
+  }
+  return out;
+}
+
+// The labels the live table (the one `?` and Settings read) gives a few
+// commands a layout touches.
+- (NSString*)addon56Keys {
+  std::string table(1 << 17, '\0');
+  const int32_t need = mv_chrome_command_table(table.data(), static_cast<int32_t>(table.size()));
+  table.resize(std::min<std::size_t>(need > 0 ? static_cast<std::size_t>(need) : 0, table.size() - 1));
+  std::string out;
+  std::size_t at = 0;
+  while (at < table.size()) {
+    const std::size_t end = table.find('\n', at);
+    const std::string line = table.substr(at, end == std::string::npos ? std::string::npos : end - at);
+    at = end == std::string::npos ? table.size() : end + 1;
+    std::vector<std::string> f;
+    std::size_t p = 0;
+    for (;;) {
+      const std::size_t tab = line.find('\t', p);
+      f.push_back(line.substr(p, tab == std::string::npos ? std::string::npos : tab - p));
+      if (tab == std::string::npos) break;
+      p = tab + 1;
+    }
+    if (f.size() < 4) continue;
+    if (f[2] == "Previous" || f[2] == "Next" || f[2] == "Toggle mark" || f[2] == "Flip horizontal" ||
+        f[2] == "Forward 10 s") {
+      out += f[2] + "=" + (f[3].empty() ? std::string("(none)") : f[3]) + "; ";
+    }
+  }
+  return [NSString stringWithUTF8String:out.c_str()];
+}
+
+- (void)addon56SelfTestStep:(int)step dir:(NSString*)dir second:(bool)second {
+  BOOL done = NO;
+  NSString* page = [dir stringByAppendingPathComponent:@"settings"];
+  NSString* file = [page stringByAppendingPathComponent:@"example.settings-demo.json"];
+  __weak MvLabApp* weakSelf = self;
+  const auto pageLine = [weakSelf, dir](NSString* name) {
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+      const std::string summary = MvSelfTestPageSummary("example.settings-demo");
+      dispatch_async(dispatch_get_main_queue(), ^{
+        [weakSelf addon56Line:[NSString stringWithFormat:@"%@ page: %s", name, summary.c_str()] dir:dir];
+      });
+    });
+  };
+  if (!second) {
+    switch (step) {
+      case 0: break;
+      case 1: [self addonSelfTestSnap:@"p1-sheet" dir:dir];
+        (void)[MVChromeHost addonSelfTest:@"confirm" argument:@""];
+        break;
+      case 2: [self addonSelfTestSnap:@"p2-installed" dir:dir];
+        [MVChromeHost addonSelfTestPage:@"example.settings-demo"
+                                   path:[dir stringByAppendingPathComponent:@"p2-page.png"]];
+        pageLine(@"p2-defaults");
+        break;
+      case 3: {
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+          std::string said;
+          for (const auto& [key, value] : std::initializer_list<std::pair<const char*, const char*>>{
+                   {"town_radius_km", "40"}, {"show_town", "false"}, {"label_names", "\"local\""},
+                   {"home", "\"Porto\""}, {"town_radius_km", "400"}}) {
+            char buf[1024];
+            (void)mv_addons_setting_set("example.settings-demo", key, value, buf, sizeof buf);
+            said += std::string(key) + "=" + value + " -> " + buf + " ";
+          }
+          dispatch_async(dispatch_get_main_queue(), ^{
+            [weakSelf addon56Line:[NSString stringWithFormat:@"p3-set: %s", said.c_str()] dir:dir];
+          });
+        });
+        break;
+      }
+      case 4:
+        pageLine(@"p4-after-set");
+        [MVChromeHost addonSelfTestPage:@"example.settings-demo"
+                                   path:[dir stringByAppendingPathComponent:@"p4-page.png"]];
+        break;
+      default: done = YES; break;
+    }
+  } else {
+    switch (step) {
+      case 0: break;
+      case 1: (void)[MVChromeHost addonSelfTest:@"confirm" argument:@""];
+        break;
+      case 2: {
+        pageLine(@"q2-after-restart");
+        [self addon56Line:[NSString stringWithFormat:@"q2-keys-before: %@", [self addon56Keys]] dir:dir];
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+          char pack[16384];
+          const int32_t n = mv_open_addons_keymap("example.vim-keys", "vim", pack, sizeof pack);
+          const std::string json(pack, n > 0 ? std::min<std::size_t>(n, sizeof pack - 1) : 0);
+          dispatch_async(dispatch_get_main_queue(), ^{
+            MvLabApp* strong = weakSelf;
+            if (!strong) return;
+            const std::string report = [strong applyKeymap:json.c_str()];
+            [strong addon56Line:[NSString stringWithFormat:@"q2-apply: %s", report.c_str()] dir:dir];
+          });
+        });
+        break;
+      }
+      case 3:
+        [self addon56Line:[NSString stringWithFormat:@"q3-keys-after-apply: %@", [self addon56Keys]] dir:dir];
+        [self resetKeys];
+        break;
+      case 4:
+        [self addon56Line:[NSString stringWithFormat:@"q4-keys-after-reset: %@", [self addon56Keys]] dir:dir];
+        [MVChromeHost addonSelfTestRemove:@"example.settings-demo" keepSettings:YES];
+        break;
+      case 5:
+        pageLine(@"q5-removed-kept");
+        [self addon56Line:[NSString stringWithFormat:@"q5-file-kept=%d",
+                                                     [[NSFileManager defaultManager] fileExistsAtPath:file] ? 1 : 0]
+                      dir:dir];
+        if (const char* again = std::getenv("MV_ADDON_SELFTEST_REINSTALL")) {
+          [MVChromeHost addonSelfTestOffer:[NSString stringWithUTF8String:again]];
+        }
+        break;
+      case 6:
+        [self addon56Line:[NSString stringWithFormat:@"q6 %@", [MVChromeHost addonSelfTest:@"confirm" argument:@""]]
+                      dir:dir];
+        break;
+      case 7:
+        [self addon56Line:[NSString stringWithFormat:@"q7 %@", [MVChromeHost addonSelfTest:@"state" argument:@""]]
+                      dir:dir];
+        pageLine(@"q7-installed-again");
+        [MVChromeHost addonSelfTestRemove:@"example.settings-demo" keepSettings:NO];
+        break;
+      case 8:
+        pageLine(@"q8-removed-forgotten");
+        [self addon56Line:[NSString stringWithFormat:@"q8-file-kept=%d",
+                                                     [[NSFileManager defaultManager] fileExistsAtPath:file] ? 1 : 0]
+                      dir:dir];
+        [MVChromeHost addonSelfTestRemove:@"example.vim-keys" keepSettings:NO];
+        break;
+      default: done = YES; break;
+    }
+  }
+  if (done) {
+    [NSApp terminate:nil];
+    return;
+  }
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(1.5 * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+                   [weakSelf addon56SelfTestStep:step + 1 dir:dir second:second];
+                 });
 }
 
 - (void)addonSelfTestSnap:(NSString*)name dir:(NSString*)dir {
@@ -9578,6 +9782,8 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
 }
 
 - (void)persistKeys {
+  // The verify rig changes keys (PR 56's key layout leg); the person's stay theirs.
+  if (std::getenv("MV_ADDON_SELFTEST") != nullptr) return;
   const auto live = mv::shell::live_bindings();
   const auto def = mv::shell::default_bindings();
   NSMutableArray<NSString*>* rows = [NSMutableArray array];
@@ -9599,7 +9805,7 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   for (NSString* row in [d arrayForKey:kDefaultsKeys]) {
     int idx = 0, k = 0, m = 0;
     if (sscanf(row.UTF8String, "%d,%d,%d", &idx, &k, &m) == 3) {
-      (void)mv::shell::rebind_live(idx, static_cast<mv::shell::key>(k), static_cast<std::uint8_t>(m));
+      (void)mv::shell::set_live_key(idx, static_cast<mv::shell::key>(k), static_cast<std::uint8_t>(m));
     }
   }
   [self rebuildKeys];
@@ -9631,6 +9837,29 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   [self rebuildKeys];
   [self persistKeys];
   ++_keysGeneration;
+}
+
+// docs/design/16 "Keymap packs": once, from Settings. The defaults with the pack's
+// keys written in; from then on the person's table, persisted like a remap.
+- (std::string)applyKeymap:(const char*)packJson {
+  std::vector<mv::addon::keymap_binding> bindings;
+  if (!mv::shell::keymap_bindings_from_json(packJson, bindings)) {
+    mv::shell::keymap_result refused;
+    refused.skipped.push_back("not a key layout");
+    return mv::shell::keymap_report_json(refused);
+  }
+  [self cancelKeyCapture];
+  [self cancelKeyHolds];  // rebuild forgets held keys (issue #186)
+  // ⌘H, ⌘Q, ⌘M, ⌘⌫ are the fixed menu items', which see them first: a pack
+  // row given one would never run, as Settings' capture refuses (issue #182).
+  const mv::shell::keymap_result r = mv::shell::apply_keymap(
+      bindings, [](mv::shell::key k, std::uint8_t mods, void*) -> bool {
+        return MvMenuOwnsChord(NSApp.mainMenu, k, mods);
+      });
+  [self rebuildKeys];
+  [self persistKeys];
+  ++_keysGeneration;
+  return mv::shell::keymap_report_json(r);
 }
 
 - (int)captureRow { return _captureRow; }

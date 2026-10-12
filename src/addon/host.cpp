@@ -12,6 +12,7 @@
 #include <thread>
 #include <vector>
 
+#include "addon/settings_values.h"
 #include "io/content_hash.h"
 #include "io/file_port.h"
 #include "io/pairing.h"
@@ -569,6 +570,20 @@ mv_status MV_CALL t_recycle(void* host, const char* path, uint32_t* out_refused)
   });
 }
 
+mv_status MV_CALL t_settings_get(void* host, const char* key, char* out, uint32_t cap,
+                                 uint32_t* out_size) {
+  return guarded([&] {
+    if (!key || !out_size) return MV_ERR_INVALID_ARG;
+    const auto& fn = self(host).services().setting;
+    if (!fn) return MV_ERR_IO;
+    auto r = fn(key);
+    if (!r) return r.error() == status::invalid_arg ? MV_ERR_IO : to_mv(r.error());
+    *out_size = static_cast<uint32_t>(r->size() + 1);
+    if (!out || cap < r->size() + 1) return MV_ERR_INVALID_ARG;
+    std::memcpy(out, r->c_str(), r->size() + 1);
+    return MV_OK;
+  });
+}
 
 // ---- v3: screens and slots (docs/design/25 PRs 58-59) ------------------------------
 
@@ -761,7 +776,7 @@ host_table::host_table(host_services services) : svc_(std::move(services)) {
   api_.thumbnail_store_jpeg = &t_thumbnail_store_jpeg;
   api_.recycle_file = svc_.recycle ? &t_recycle : nullptr;
   api_.walk_files2 = &t_walk2;
-  api_.settings_get = nullptr;  // PR 56 (docs/design/25 "Settings page")
+  api_.settings_get = &t_settings_get;
   api_.screen_post = &t_screen_post;
   api_.screen_diff = &t_screen_diff;
   api_.surface_post = &t_surface_post;
@@ -842,6 +857,14 @@ result<std::unique_ptr<loaded_addon>> loaded_addon::load(const store& s, const s
       if (p.m.part_of != parent) return err(status::invalid_arg);
       if (p.state != install_state::ok) return err(status::corrupt);
       return p.dir;
+    };
+  }
+  if (!services.setting) {
+    // Its own page only: the id and the page are the verified manifest's.
+    services.setting = [id = info.m.id, page = info.m.settings](const std::string& key)
+        -> result<std::string> {
+      MV_TRY(settings_values values, default_settings_values());
+      return values.value_json(id, /*publisher: the app's own*/ "", page, key);
     };
   }
   std::unique_ptr<loaded_addon> out(new loaded_addon());

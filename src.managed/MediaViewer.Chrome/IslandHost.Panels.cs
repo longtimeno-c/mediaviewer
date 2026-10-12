@@ -206,7 +206,9 @@ public static partial class IslandHost
 
     // ---- small builders -------------------------------------------------------
 
-    private static TextBlock Text(string text, ChromeColour color, double size = UiFontSize,
+    // size 0: the UI size (a default parameter must be a constant, and that one
+    // follows the theme's type scale).
+    private static TextBlock Text(string text, ChromeColour color, double size = 0,
                                   bool bold = false, int maxLines = 0)
     {
         var t = new TextBlock
@@ -214,7 +216,7 @@ public static partial class IslandHost
             Text = text,
             Foreground = Brush(color),
             FontFamily = UiFont,
-            FontSize = size,
+            FontSize = size > 0 ? size : UiFontSize,
             TextWrapping = TextWrapping.Wrap,
         };
         if (bold) t.FontWeight = FontWeights.SemiBold;
@@ -305,7 +307,7 @@ public static partial class IslandHost
             Content = new FontIcon { Glyph = Glyph.Close, FontFamily = IconFont, FontSize = TypeCaption, Foreground = Brush(Body) },
             Background = Brush(Colors.Transparent),
             BorderThickness = new Thickness(0),
-            Padding = new Thickness(8, 6, 8, 6),
+            Padding = Pad(8, 6, 8, 6),
             IsTabStop = false,
             AllowFocusOnInteraction = false,
         };
@@ -326,7 +328,7 @@ public static partial class IslandHost
         };
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        var header = new Grid { Padding = new Thickness(14, 10, 6, 6) };
+        var header = new Grid { Padding = Pad(14, 10, 6, 6) };
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         header.Children.Add(Text(title, Title, UiFontSize, bold: true));
@@ -422,10 +424,10 @@ public static partial class IslandHost
         body.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         body.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
 
-        var bar = new Grid { Padding = new Thickness(14, 0, 14, 8) };
+        var bar = new Grid { Padding = Pad(14, 0, 14, 8) };
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        _metaTabs = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+        _metaTabs = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(4) };
         bar.Children.Add(_metaTabs);
         _metaLoadingText = Text("", Body);
         Grid.SetColumn(_metaLoadingText, 1);
@@ -520,7 +522,7 @@ public static partial class IslandHost
             },
             Background = on ? Brush(ChromeColour.PressedWash) : Brush(Colors.Transparent),
             BorderThickness = new Thickness(0),
-            Padding = new Thickness(10, 3, 10, 3),
+            Padding = Pad(10, 3, 10, 3),
             AllowFocusOnInteraction = false,
         };
         int index = MetaTabButtons.Count;
@@ -596,12 +598,12 @@ public static partial class IslandHost
         {
             var empty = new Border
             {
-                Padding = new Thickness(14),
+                Padding = Pad(14),
                 Child = Text(_metaLoading ? "Reading…" : "Nothing selected", Body),
             };
             return new ScrollViewer { Content = WithSlotSections(empty), VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
         }
-        var rows = new StackPanel { Spacing = 6, Padding = new Thickness(14, 10, 14, 14) };
+        var rows = new StackPanel { Spacing = Space(6), Padding = Pad(14, 10, 14, 14) };
         foreach ((string label, string value) in _metaSummary)
         {
             if (label == "Date taken")
@@ -637,7 +639,7 @@ public static partial class IslandHost
             }
             rows.Children.Add(row);
         }
-        rows.Children.Add(new Border { Height = 1, Background = Brush(Hairline), Margin = new Thickness(0, 4, 0, 4) });
+        rows.Children.Add(new Border { Height = 1, Background = Brush(Hairline), Margin = Pad(0, 4, 0, 4) });
         var foot = new Grid();
         foot.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         foot.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -711,7 +713,7 @@ public static partial class IslandHost
     // write_fields::date_taken), so no reader sees two dates.
     private static UIElement BuildDateRow(string value)
     {
-        var col = new StackPanel { Spacing = 6 };
+        var col = new StackPanel { Spacing = Space(6) };
         var row = new Grid();
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(MetaLabelWidth) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -745,7 +747,7 @@ public static partial class IslandHost
                     CancelMetaEdits();
                     RenderMeta();
                 }, tip: "Esc"));
-            actions.Margin = new Thickness(MetaLabelWidth, 0, 0, 0);
+            actions.Margin = Pad(MetaLabelWidth, 0, 0, 0);
             col.Children.Add(actions);
             return col;
         }
@@ -788,7 +790,7 @@ public static partial class IslandHost
         host.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
 
         // Not a TextBox: that control fail-fasts in these islands (see FakeInput).
-        var top = new Grid { Margin = new Thickness(10), ColumnSpacing = 6 };
+        var top = new Grid { Margin = Pad(10), ColumnSpacing = Space(6) };
         top.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         top.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         var search = new FakeInput("Search tags and values");
@@ -808,7 +810,7 @@ public static partial class IslandHost
 
         if (_metaAddingTag)
         {
-            var form = new StackPanel { Spacing = 6, Padding = new Thickness(10, 0, 10, 10) };
+            var form = new StackPanel { Spacing = Space(6), Padding = Pad(10, 0, 10, 10) };
             var key = new FakeInput("Key (Xmp.dc.subject)");
             key.SetText(_metaNewKey);
             AutomationProperties_SetName(key, "New tag key");
@@ -846,7 +848,7 @@ public static partial class IslandHost
         // A plain scrolling stack, not a ListView: clearing and refilling a ListView of
         // elements from a key event fail-fasts in these islands. A tag list is at most
         // a few thousand rows, and the search narrows it, so the rows are capped.
-        var list = new StackPanel { Padding = new Thickness(10, 0, 10, 10) };
+        var list = new StackPanel { Padding = Pad(10, 0, 10, 10) };
         var scroll = new ScrollViewer
         {
             Content = WithSlotSections(list),  // Fill() clears `list` only
@@ -895,7 +897,7 @@ public static partial class IslandHost
                     group = t.Group;
                     // The Mac's List section header: regular, not bold (issue #198).
                     var header = Text(group, Body, TypeBody);
-                    header.Margin = new Thickness(0, 10, 0, 2);
+                    header.Margin = Pad(0, 10, 0, 2);
                     list.Children.Add(header);
                 }
                 if (!cells.TryGetValue(t, out UIElement? cell))
@@ -954,7 +956,7 @@ public static partial class IslandHost
     {
         // A background so the whole row, not only its label, takes the hover
         // that shows the untranslated key (the Mac's .help on the row).
-        var cell = new StackPanel { Margin = new Thickness(0, 2, 0, 2), Spacing = 2, Background = Brush(Colors.Transparent) };
+        var cell = new StackPanel { Margin = Pad(0, 2, 0, 2), Spacing = Space(2), Background = Brush(Colors.Transparent) };
         var head = new Grid();
         head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -972,7 +974,7 @@ public static partial class IslandHost
                 FontSize = 12,
                 Foreground = Brush(Body),
                 VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(6, 0, 4, 0),
+                Margin = Pad(6, 0, 4, 0),
             };
             ToolTipService.SetToolTip(glyph, t.LockReason);
             AutomationProperties_SetName(glyph, "Read-only: " + t.LockReason);
@@ -1036,7 +1038,7 @@ public static partial class IslandHost
     // there whether or not the file has a comment yet.
     private static StackPanel BuildCommentForm()
     {
-        var form = new StackPanel { Spacing = 6, Padding = new Thickness(10, 0, 10, 10) };
+        var form = new StackPanel { Spacing = Space(6), Padding = Pad(10, 0, 10, 10) };
         form.Children.Add(Text("Comment", Title));
         var box = new FakeInput("Comment");
         box.SetText(_metaDraft);
@@ -1097,7 +1099,7 @@ public static partial class IslandHost
 
     private static UIElement BuildStreams()
     {
-        var col = new StackPanel { Spacing = 12, Padding = new Thickness(14, 10, 14, 14) };
+        var col = new StackPanel { Spacing = Space(12), Padding = Pad(14, 10, 14, 14) };
         StackPanel? current = null;
         bool chapters = false;
         int chapter = 0;
@@ -1107,7 +1109,7 @@ public static partial class IslandHost
             switch (f[0])
             {
                 case "S" when f.Length >= 4:
-                    current = new StackPanel { Spacing = 4 };
+                    current = new StackPanel { Spacing = Space(4) };
                     current.Children.Add(Text($"#{f[1]}  {Capitalise(f[2])}  —  {f[3]}", Title, TypeBody));
                     col.Children.Add(current);
                     break;
@@ -1305,9 +1307,9 @@ public static partial class IslandHost
         Grid root = PanelShell("Folders", Command.FolderTree, out Grid body);
         body.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         body.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        _treeUp = new Border { Padding = new Thickness(14, 2, 14, 8) };
+        _treeUp = new Border { Padding = Pad(14, 2, 14, 8) };
         body.Children.Add(_treeUp);
-        _treeList = new StackPanel { Padding = new Thickness(8, 0, 8, 12) };
+        _treeList = new StackPanel { Padding = Pad(8, 0, 8, 12) };
         var scroll = new ScrollViewer
         {
             Content = _treeList,
@@ -1399,7 +1401,7 @@ public static partial class IslandHost
             string name = Path.GetFileName(parent.TrimEnd('\\', '/'));
             string target = parent;
             Button up = FlatButton(
-                Text("↑  Up to " + (name.Length == 0 ? parent : name), Body), new Thickness(0, 2, 8, 2));
+                Text("↑  Up to " + (name.Length == 0 ? parent : name), Body), Pad(0, 2, 8, 2));
             up.Click += (_, _) => OpenTreePath(target);
             up.KeyDown += (_, e) => TreeArrow(up, e);
             _treeUp.Child = up;
@@ -1437,9 +1439,9 @@ public static partial class IslandHost
                 Text = "▸", FontFamily = UiFont, FontSize = UiFontSize, Foreground = Brush(Body),
                 Width = 16, TextAlignment = TextAlignment.Center,
             };
-            Button toggle = FlatButton(_glyph, new Thickness(0, 2, 0, 2), tabStop: false);
+            Button toggle = FlatButton(_glyph, Pad(0, 2, 0, 2), tabStop: false);
             Button open_folder = FlatButton(
-                Text(name, current ? Title : Body, UiFontSize, bold: current), new Thickness(2, 2, 8, 2));
+                Text(name, current ? Title : Body, UiFontSize, bold: current), Pad(2, 2, 8, 2));
             open_folder.Click += (_, _) => OpenTreePath(Path);
             toggle.Click += (_, _) => SetOpen(!_open);
             // Right opens a folder's children, Left closes them; Enter (the button's

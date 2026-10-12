@@ -1174,6 +1174,8 @@ extern "C" int32_t mv_addons_state_json(char* buf, int32_t size) {
       w.key("description").string(found->m.description);
       w.key("hint_on").string(found->m.hint_on);
       w.key("hint_text").string(found->m.hint_text);
+      // PR 56: whether Settings has a page for it (mv_addons_settings_page).
+      w.key("settings").boolean(!found->m.settings.empty());
     }
   }
   w.key("installed").boolean(installed);
@@ -1272,6 +1274,35 @@ extern "C" int32_t mv_open_addons_theme(const char* addon_id, const char* theme_
   return copy_out(theme ? *theme : std::string(), buf, size);
 }
 
+// PR 56 (docs/design/25): settings pages and keymap packs, over the same
+// open_json.h calls the Windows ABI wraps, so both hosts are fed one JSON.
+
+extern "C" int32_t mv_addons_settings_page(const char* id, char* buf, int32_t size) {
+  auto s = open_store_once();
+  if (!id || !s) return copy_out({}, buf, size);
+  const mv::addon::store* first = ensure_store() ? &*state().store : nullptr;
+  return copy_out(mv::addon::addon_settings_page_json(*s, first, id), buf, size);
+}
+
+extern "C" int32_t mv_addons_setting_set(const char* id, const char* key, const char* value_json,
+                                         char* buf, int32_t size) {
+  auto s = open_store_once();
+  if (!id || !key || !value_json || !s) return copy_out({}, buf, size);
+  const mv::addon::store* first = ensure_store() ? &*state().store : nullptr;
+  return copy_out(mv::addon::addon_setting_set_json(*s, first, id, key, value_json), buf, size);
+}
+
+extern "C" bool mv_addons_settings_forget(const char* id) {
+  return id && mv::addon::addon_settings_forget(id);
+}
+
+extern "C" int32_t mv_open_addons_keymap(const char* addon_id, const char* pack_id, char* buf,
+                                         int32_t size) {
+  auto s = open_store_once();
+  if (!addon_id || !pack_id || !s) return copy_out({}, buf, size);
+  return copy_out(mv::addon::open_keymap_json(*s, addon_id, pack_id), buf, size);
+}
+
 extern "C" int32_t mv_addons_sha256(const char* path, char* buf, int32_t size) {
   return copy_out(path ? mv::addon::sha256_file(path) : std::string(), buf, size);
 }
@@ -1342,6 +1373,7 @@ extern "C" int32_t mv_addon2_state_json(const char* id, char* buf, int32_t size)
       w.key("size").integer(static_cast<std::int64_t>(found->size));
       w.key("state").string(state_name(found->state));
       w.key("why").string(mv::addon::rejection_name(found->why));
+      w.key("settings").boolean(!found->m.settings.empty());
     }
   }
   w.key("installed").boolean(installed);

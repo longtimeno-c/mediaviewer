@@ -520,7 +520,7 @@ typedef struct mv_host_api {
    * when the person has not changed it. MV_ERR_IO when the add-on's page has
    * no such key. A short buffer returns MV_ERR_INVALID_ARG with *out_size
    * (bytes including the NUL) set. Appended: read it only when `struct_size`
-   * covers it and the pointer is non-NULL. (PR 56; NULL until it lands.) */
+   * covers it and the pointer is non-NULL. */
   mv_status(MV_CALL* settings_get)(void* host, const char* key_utf8, char* out_utf8,
                                    uint32_t capacity, uint32_t* out_size);
 
@@ -606,7 +606,7 @@ typedef mv_status(MV_CALL* mv_addon_get_fn)(uint32_t host_api, const mv_host_api
  * ------------------------------------------------------------------------- */
 
 /* [{"id","name","version","dir","size","state":"ok|needs_update|invalid",
- *   "why","loaded","description","hint_on","hint_text","commands":[...]}] for
+ *   "why","loaded","description","hint_on","hint_text","settings","commands":[...]}] for
  * every add-on folder present (the last four from docs/design/25's contributions;
  * empty for an older manifest). Empty array when none. */
 MV_API mv_status MV_CALL mv_addon_installed_json(char* out, uint32_t cap, uint32_t* needed);
@@ -758,7 +758,8 @@ MV_API mv_status MV_CALL mv_slots_thumbnail_path(const char* path_utf8, char* ou
 
 /* ---------------------------------------------------------------------------
  * Open add-ons (docs/design/25): add-ons from other makers, one `.mvaddon` file
- * each, signed by its publisher. Data only under contribution API 1 (themes):
+ * each, signed by its publisher. Data only under contribution API 1-2 (themes,
+ * settings pages, keymap packs, theme shape):
  * nothing here loads code. They live beside the add-ons above, under their
  * own folder, and neither set of calls sees the other's.
  *
@@ -769,8 +770,9 @@ MV_API mv_status MV_CALL mv_slots_thumbnail_path(const char* path_utf8, char* ou
  * ------------------------------------------------------------------------- */
 
 /* The contribution API this host serves (an add-on's manifest declares the
- * range it was written for).  1  themes; 4  screens; 5  chrome slots and
- * search providers (docs/design/25 §7). */
+ * range it was written for).  1  themes.  2  settings pages, keymap packs,
+ * theme shape (PR 56).  4  screens; 5  chrome slots and search providers
+ * (docs/design/25 §7). */
 #define MV_ADDON_CONTRIBUTION_API 5
 
 /* What a package is, for the consent sheet; installs and creates nothing.
@@ -780,7 +782,7 @@ MV_API mv_status MV_CALL mv_slots_thumbnail_path(const char* path_utf8, char* ou
  *    "cannot","id","name","version",
  *    "description","licence","size","update_url",
  *    "publisher":{"name","url","key","fingerprint"},"api":{"min","max"},
- *    "themes":[{"id","name"}]}
+ *    "themes":[{"id","name"}],"settings":bool,"keymaps":[{"id","name"}]}
  * The add-on's fields are present whenever its publisher's signature held,
  * so a refusal can still say whose add-on it was. */
 MV_API mv_status MV_CALL mv_open_addon_inspect(const char* package_utf8, char* out, uint32_t cap,
@@ -798,7 +800,8 @@ MV_API mv_status MV_CALL mv_open_addon_install(const char* package_utf8,
 
 /* [{"folder","id","name","version","state":"ok|needs_update|invalid","why",
  *   "description","licence","size","update_url","publisher":{...},
- *   "themes":[{"id","name"}]}], re-verified. "[]" when none are installed;
+ *   "themes":[{"id","name"}],"settings":bool,"keymaps":[{"id","name"}]}],
+ *   re-verified. "[]" when none are installed;
  * the folder is not created. */
 MV_API mv_status MV_CALL mv_open_addon_list_json(char* out, uint32_t cap, uint32_t* needed);
 
@@ -812,6 +815,37 @@ MV_API mv_status MV_CALL mv_open_addon_remove(const char* folder);
  * longer verifies, and the chrome returns to its default. */
 MV_API mv_status MV_CALL mv_open_addon_theme_json(const char* addon_id, const char* theme_id,
                                                   char* out, uint32_t cap, uint32_t* needed);
+
+/* ---- PR 56: declarative contributions (contribution API 2) ---------------
+ * Settings pages, keymap packs (docs/design/25 "Settings page", "Keymap").
+ * [worker-thread]: each re-verifies the add-on, and a write goes to disk. */
+
+/* The settings page of add-on `addon_id` (an open add-on's dotted id, or a
+ * first-party add-on's plain id) with each value folded in, in the order the
+ * manifest wrote it:
+ *   {"id","title","sections":[{"title","help","items":[{"type":"toggle|
+ *    choice|number|text","key","label","help","enabled_by","default","value",
+ *    number: "min","max","step","unit"; choice: "options":[{"value","label"}];
+ *    text: "max_length","placeholder"}]}]}
+ * MV_ERR_NOT_FOUND when the add-on has no page or is not installed. */
+MV_API mv_status MV_CALL mv_addon_settings_json(const char* addon_id, char* out, uint32_t cap,
+                                                uint32_t* needed);
+
+/* Stores one value from that page (JSON text: true, 15, "english"):
+ * {"ok","message"}; "message" says why when it was refused. */
+MV_API mv_status MV_CALL mv_addon_setting_set(const char* addon_id, const char* key,
+                                              const char* value_json, char* out, uint32_t cap,
+                                              uint32_t* needed);
+
+/* Forgets what was chosen on add-on `addon_id`'s page: Remove without "keep
+ * its settings". MV_OK when nothing was stored. */
+MV_API mv_status MV_CALL mv_addon_settings_forget(const char* addon_id);
+
+/* One keymap pack of an installed open add-on, for the shell to apply:
+ *   {"addon","id","name","bindings":[{"command","keys":[...]}]}
+ * MV_ERR_NOT_FOUND when the add-on or pack is gone. */
+MV_API mv_status MV_CALL mv_open_addon_keymap_json(const char* addon_id, const char* pack_id,
+                                                   char* out, uint32_t cap, uint32_t* needed);
 
 /* The base app's own card watch, for the one-time "Install Import?" hint
  * when a card appears and Import is not installed (docs/design/18). Posts
