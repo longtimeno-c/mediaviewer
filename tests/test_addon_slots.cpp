@@ -422,6 +422,13 @@ TEST_CASE("surfaces are copied, bounded, and go with their tree", "[addon][slots
   REQUIRE(r.post_surface("slotstest", "spot", "pixels", g, px.data(), 8, 2, 16) == status::invalid_arg);
   REQUIRE(r.post_surface("slotstest", "spot", "pixels", g, px.data(), 5000, 1, 20000) == status::invalid_arg);
   REQUIRE(r.post_surface("slotstest", "spot", "pixels", g + 99, px.data(), 8, 2, 48) == status::cancelled);
+  // Ids no node names are kept (pixels may come first), but not without limit.
+  int kept = 0;
+  for (int i = 0; i < 40; ++i) {
+    if (r.post_surface("slotstest", "spot", "extra" + std::to_string(i), g, px.data(), 8, 2, 48) == status::ok) ++kept;
+  }
+  REQUIRE(kept == 15);  // 16 per screen, "pixels" included
+  REQUIRE(r.post_surface("slotstest", "spot", "pixels", g, px.data(), 8, 2, 48) == status::ok);  // a known id still updates
   // A new tree without that surface drops its pixels.
   REQUIRE(r.post_screen("slotstest", "spot", g, R"({"type":"text","id":"t","text":"x"})") == status::ok);
   REQUIRE_FALSE(r.surface("slotstest", "spot", "pixels", out));

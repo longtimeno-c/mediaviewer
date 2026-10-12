@@ -17,6 +17,8 @@ namespace mv::addon {
 namespace {
 
 
+constexpr std::size_t kMaxSurfacesPerScreen = 16;
+
 const char* place_name(screen_place p) noexcept {
   switch (p) {
     case screen_place::info_section: return "info";
@@ -1091,6 +1093,11 @@ status slot_registry::post_surface(const std::string& addon_id, const std::strin
     status why = status::ok;
     screen_state* st = addressed(addon_id, screen_id, generation, why);
     if (!st) return why;
+    // Bounded by count as well as size: an id no node names is kept (pixels
+    // may come before their tree), but not without limit (16 x 64 MB at most).
+    if (st->surfaces.size() >= kMaxSurfacesPerScreen && st->surfaces.count(surface_id) == 0) {
+      return status::invalid_arg;
+    }
     auto& slot = st->surfaces[surface_id];
     // Unique across the registry, not per slot: a section for the next file
     // starts a new slot, and a chrome caching by revision must not take its
