@@ -626,7 +626,8 @@ void MV_CALL t_search_progress(void* host, const char* provider, uint64_t g, uin
 
 int32_t MV_CALL t_is_stale(void* host, uint64_t g) {
   try {
-    return self(host).slots().is_stale(g) ? 1 : 0;
+    host_table& t = self(host);
+    return t.slots().is_stale(t.addon_id(), g) ? 1 : 0;
   } catch (...) {
     return 1;
   }
@@ -683,20 +684,30 @@ mv_status MV_CALL t_locations_in(void* host, const char* folder, uint64_t g, mv_
     // a cloud provider holds are skipped: reading them would download them.
     auto walked = io::walk_files(folder, 0, [&](const io::tree_entry& e) {
       if (e.cloud_only) return true;
-      if (t.slots().is_stale(g)) {
+      // Stale also once the add-on is being removed: detach joins this worker,
+      // so the walk must notice and stop rather than finish the folder.
+      const auto stale = [&] { return t.slots().is_stale(t.addon_id(), g); };
+      if (stale()) {
         result = MV_ERR_CANCELLED;
         return false;
       }
-      // Background priority: a metadata read waits while the viewer presents
-      // (docs/design/18 "Priority"); a cache hit costs no read.
-      if (t.services().should_yield) {
-        for (int spins = 0; spins < 200 && t.services().should_yield(); ++spins) {
-          std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
-      }
       mv_addon_location_entry entry{};
       entry.path_utf8 = e.path_utf8.c_str();
-      entry.location = cached_location(e.path_utf8, e.size, e.mtime_unix, t.services().location);
+      // A cache hit costs no read, so it does not wait.
+      if (!peek_cached_location(e.path_utf8, e.size, e.mtime_unix, entry.location)) {
+        // Background priority: a metadata read waits while the viewer presents
+        // (docs/design/18 "Priority"), bounded, and still hears a cancel.
+        if (t.services().should_yield) {
+          for (int spins = 0; spins < 200 && t.services().should_yield(); ++spins) {
+            if (stale()) {
+              result = MV_ERR_CANCELLED;
+              return false;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+          }
+        }
+        entry.location = cached_location(e.path_utf8, e.size, e.mtime_unix, t.services().location);
+      }
       return visit(user, &entry) != 0;
     });
     if (result != MV_OK) return result;

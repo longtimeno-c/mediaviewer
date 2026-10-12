@@ -973,6 +973,15 @@ bool slot_registry::is_stale(std::uint64_t g) const {
                       [g](const auto& s) { return s.second.generation == g; });
 }
 
+bool slot_registry::is_stale(const std::string& addon_id, std::uint64_t g) const {
+  {
+    std::lock_guard lock(m_);
+    // detach erases the entry under m_ before it joins the worker.
+    if (addons_.count(addon_id) == 0) return true;
+  }
+  return is_stale(g);
+}
+
 slot_registry::screen_state* slot_registry::addressed(const std::string& addon_id,
                                                       const std::string& screen_id,
                                                       std::uint64_t generation, status& why) {
@@ -1236,6 +1245,15 @@ mv_addon_location cached_location(const std::string& path, std::uint64_t size, s
   if (cache().size() > 500'000) cache().clear();
   cache()[path] = cached{size, mtime, loc};
   return loc;
+}
+
+bool peek_cached_location(const std::string& path, std::uint64_t size, std::int64_t mtime,
+                          mv_addon_location& out) {
+  std::lock_guard lock(cache_m());
+  auto it = cache().find(path);
+  if (it == cache().end() || it->second.size != size || it->second.mtime != mtime) return false;
+  out = it->second.loc;
+  return true;
 }
 
 void clear_location_cache() {

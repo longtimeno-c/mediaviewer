@@ -604,6 +604,8 @@ TEST_CASE("a native add-on fills every slot and screen through the v3 host table
     }
     return l;
   };
+  std::atomic<bool> yield_now{false};  // "the viewer is presenting"
+  svc.should_yield = [&yield_now] { return yield_now.load(); };
   auto loaded = mv::addon::loaded_addon::load(st, "slots-test", svc);
   REQUIRE(loaded);
   REQUIRE((*loaded)->slots_attached());
@@ -709,8 +711,27 @@ TEST_CASE("a native add-on fills every slot and screen through the v3 host table
   reg.drain();
   REQUIRE(eventually([&] { return reg.status_json().find("2 chosen") != std::string::npos; }));
 
+  // A cached walk does not wait while the viewer presents: a cache hit reads nothing.
+  yield_now = true;
+  const auto cached_start = std::chrono::steady_clock::now();
+  reg.search(MV_SLOT_SCOPE_FILES, "portugal", utf8(folder));
+  reg.drain();
+  CHECK(std::chrono::steady_clock::now() - cached_start < std::chrono::milliseconds(500));
+  REQUIRE(mv::json::parse(reg.search_json(MV_SLOT_SCOPE_FILES))->find("rows")->a.size() == 2);
+
+  // Removed while its worker is inside a walk that waits out the viewer's
+  // presents (uncached files): the walk sees its add-on going and stops, so
+  // the remove does not wait for the folder (4 files x 2 s here).
+  mv::addon::clear_location_cache();
+  const auto searches_before = probe->calls(1);
+  reg.search(MV_SLOT_SCOPE_FILES, "portugal", utf8(folder));
+  REQUIRE(eventually([&] { return probe->calls(1) > searches_before; }));
+  const auto remove_start = std::chrono::steady_clock::now();
+
   // Removing the add-on removes every item, with no restart.
   loaded->reset();
+  CHECK(std::chrono::steady_clock::now() - remove_start < std::chrono::milliseconds(500));
+  yield_now = false;
   REQUIRE_FALSE(reg.attached("slots-test"));
   REQUIRE(mv::json::parse(reg.contributions_json())->find("items")->a.empty());
   REQUIRE(reg.status_json() == "[]");
