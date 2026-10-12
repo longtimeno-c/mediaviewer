@@ -369,7 +369,8 @@ struct mv_session {
     if (completion_event) ::SetEvent(completion_event);
     // #291: the first image is on its way to the screen: the folder's tag
     // pass may start now (never ahead of the view, CLAUDE.md).
-    if (c.kind == MV_COMPLETION_IMAGE_OPENED && c.status == MV_OK && image_shown_hook &&
+    if (c.kind == static_cast<uint32_t>(MV_COMPLETION_IMAGE_OPENED) && c.status == static_cast<uint32_t>(MV_OK) &&
+        image_shown_hook &&
         tag_pass_due.load(std::memory_order_relaxed)) {
       try {
         image_shown_hook();
