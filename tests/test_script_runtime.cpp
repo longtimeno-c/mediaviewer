@@ -605,3 +605,35 @@ TEST_CASE("table.insert, table.remove and a sort with a C comparator stop on tim
     REQUIRE(took < fast_limits().wall + 400ms);
   }
 }
+
+TEST_CASE("a plain string.find stops on time", "[script][limits]") {
+  // A plain find (or a pattern with no specials) is a memchr / memcmp loop,
+  // O(len(s) * len(p)) with no VM instruction: 16 MB against 8 MB held the
+  // worker for good under the shipped 64 MB.
+  for (const char* slow : {
+           "local s = string.rep('a', 1 << 24) local p = string.rep('a', 1 << 23) .. 'b'\n"
+           "s:find(p, 1, true)",
+           "local s = string.rep('a', 1 << 24) local p = string.rep('a', 1 << 23) .. 'b'\n"
+           "s:find(p)",
+       }) {
+    INFO(slow);
+    auto p = std::make_unique<probe>();
+    auto a = start(*p, std::string("function slow()\n") + slow + "\nend", 0, script_limits{});
+    REQUIRE(a->wait_idle(5s));
+    const auto t0 = clk::now();
+    REQUIRE(a->run_function("command slow", "slow", {}));
+    const bool stopped = p->wait_stopped(4s);
+    if (!stopped) {
+      (void)a.release();
+      (void)p.release();
+    }
+    REQUIRE(stopped);
+    const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(p->stopped_at - t0);
+    INFO(took.count() << " ms");
+    REQUIRE(p->why == script_stop::time);
+    REQUIRE(took < script_limits{}.wall + 400ms);
+  }
+  // A find that succeeds is unchanged.
+  const auto out = eval("mv.log(('hello world'):find('o w', 1, true), ('abc'):find('c'))");
+  REQUIRE(out[0] == "5\t3\t3");  // the first call is cut to one value
+}

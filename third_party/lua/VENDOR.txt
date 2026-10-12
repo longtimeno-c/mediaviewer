@@ -24,7 +24,9 @@ Local changes, all marked "MediaViewer" (diff against the tarball to see them):
   src/lstrlib.c         match() checks the flag on entry (pattern backtracking
                         runs no VM instruction, so the count hook never fires);
                         string.rep returns "" at once when the piece and the
-                        separator are both empty (it looped n times copying nothing)
+                        separator are both empty (it looped n times copying nothing);
+                        lmemfind (a plain find, O(len s * len p)) checks the flag
+                        per candidate
   src/ltablib.c         table.move, table.insert, table.remove and table.sort
                         (every comparison) check the flag per step: __len sets
                         their bound, and a C comparator runs no VM code

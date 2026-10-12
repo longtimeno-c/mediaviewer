@@ -672,7 +672,8 @@ static const char *match (MatchState *ms, const char *s, const char *p) {
 
 
 
-static const char *lmemfind (const char *s1, size_t l1,
+static const char *lmemfind (lua_State *L,  /* MediaViewer: for the watchdog's flag */
+                               const char *s1, size_t l1,
                                const char *s2, size_t l2) {
   if (l2 == 0) return s1;  /* empty strings are everywhere */
   else if (l2 > l1) return NULL;  /* avoids a negative 'l1' */
@@ -681,6 +682,7 @@ static const char *lmemfind (const char *s1, size_t l1,
     l2--;  /* 1st char will be checked by 'memchr' */
     l1 = l1-l2;  /* 's2' cannot be found after that */
     while (l1 > 0 && (init = (const char *)memchr(s1, *s2, l1)) != NULL) {
+      mv_lua_check_interrupt(L);  /* MediaViewer: O(l1 * l2), no VM instruction */
       init++;   /* 1st char is already checked */
       if (memcmp(init, s2+1, l2) == 0)
         return init-1;
@@ -784,7 +786,7 @@ static int str_find_aux (lua_State *L, int find) {
   /* explicit request or no special characters? */
   if (find && (lua_toboolean(L, 4) || nospecials(p, lp))) {
     /* do a plain search */
-    const char *s2 = lmemfind(s + init, ls - init, p, lp);
+    const char *s2 = lmemfind(L, s + init, ls - init, p, lp);  /* MediaViewer: L */
     if (s2) {
       lua_pushinteger(L, (s2 - s) + 1);
       lua_pushinteger(L, (s2 - s) + lp);
