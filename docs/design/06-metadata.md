@@ -191,9 +191,15 @@ either side, in either order when lettered; degrees-minutes[-seconds] with `°�
 ±180; a sign and S/W together are refused. A line under the field shows the point Save will
 write, or why not. Return saves, Esc cancels; the field owns its keys (a text focus, as every
 pane field). **A blank save removes the location**, after a confirmation — "Remove location
-from this file? This can't be undone from MediaViewer.", Remove (destructive) and Cancel
-(default, Esc): a native alert on the Mac, an in-pane box on Windows (a `ContentDialog` needs a
-top-level window; the pane is an island, as Settings' confirmations are).
+from this file?" / "Revert all can bring it back until you quit MediaViewer. It also undoes
+your other changes to this file.", Remove (destructive) and Cancel (default, Esc): a native
+alert on the Mac, an in-pane box on Windows (a `ContentDialog` needs a top-level window; the
+pane is an island, as Settings' confirmations are). The second line is what *Revert* (above)
+does: the session's snapshot puts every tag back as it was before the first write, and the
+button lasts until the app quits (or a revert is used; it refuses if another app has since
+changed the sidecar). Esc on the confirmation closes it and leaves the field open with its
+text, on both hosts. Saving the starting text untouched writes nothing: that text is rounded
+to 6 decimals, so comparing the parsed point with the file's would count it as an edit.
 
 The write is `write_fields::location`, through the same checked writer and sidecar rule:
 

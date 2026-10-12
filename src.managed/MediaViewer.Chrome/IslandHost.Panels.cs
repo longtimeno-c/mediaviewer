@@ -738,6 +738,10 @@ public static partial class IslandHost
         return col;
     }
 
+    // The confirmation's second line; the Mac says the same (MetadataView.swift).
+    private const string RemoveLocationMessage =
+        "Revert all can bring it back until you quit MediaViewer. It also undoes your other changes to this file.";
+
     // "Remove location from this file?" in the pane. Cancel is first and takes
     // the keyboard: Enter on it cancels, and Remove must be chosen.
     private static FrameworkElement BuildLocationConfirm()
@@ -751,8 +755,10 @@ public static partial class IslandHost
             CornerRadius = new CornerRadius(8),
         };
         box.Children.Add(Text("Remove location from this file?", Title, bold: true));
-        box.Children.Add(Text("This can't be undone from MediaViewer.", Body, UiFontSize - 2));
-        AutomationProperties_SetName(box, "Remove location from this file? This can't be undone from MediaViewer.");
+        // Revert all restores every tag as it was before this session's first
+        // write to the file, until the app quits (meta::revert, docs/design/06).
+        box.Children.Add(Text(RemoveLocationMessage, Body, UiFontSize - 2));
+        AutomationProperties_SetName(box, "Remove location from this file? " + RemoveLocationMessage);
         Button cancel = MetaButton("Cancel", () =>
         {
             _metaConfirmLocation = false;
@@ -792,8 +798,12 @@ public static partial class IslandHost
             RenderMeta();
             return;
         }
-        // Unchanged: no write, as an unchanged comment makes none.
-        bool same = _metaWhere is { } w && Math.Abs(w.Lat - lat) < 1e-9 && Math.Abs(w.Lon - lon) < 1e-9;
+        // Unchanged: no write, as an unchanged comment makes none. The starting
+        // text is rounded to 6 decimals, so saving it untouched must not count as
+        // an edit of a position the file holds more precisely.
+        bool untouched = _metaWhere is not null && text.Trim() == LocationStartText();
+        bool same = untouched ||
+                    (_metaWhere is { } w && Math.Abs(w.Lat - lat) < 1e-9 && Math.Abs(w.Lon - lon) < 1e-9);
         CancelMetaEdits();
         if (!same) SendLocation(text);
         RenderMeta();

@@ -263,14 +263,24 @@ struct MetadataView: View {
       Button("Cancel", role: .cancel) { fieldFocused = true }
         .keyboardShortcut(.defaultAction)
     } message: {
-      Text("This can't be undone from MediaViewer.")
+      // Revert all restores every tag as it was before this session's first
+      // write to the file, until the app quits (meta::revert, docs/design/06).
+      Text(MetadataView.removeLocationMessage)
     }
   }
+
+  /// The confirmation's second line; Windows says the same (IslandHost.Panels.cs).
+  static let removeLocationMessage =
+    "Revert all can bring it back until you quit MediaViewer. It also undoes your other changes to this file."
 
   private func saveLocation() {
     switch store.parseLocation(locationDraft) {
     case .point(let lat, let lon, _):
-      // Unchanged: no write, as an unchanged comment makes none.
+      // Unchanged: no write, as an unchanged comment makes none. The starting
+      // text is rounded to 6 decimals, so saving it untouched must not count as
+      // an edit of a position the file holds more precisely.
+      let untouched = locationDraft.trimmingCharacters(in: .whitespaces) == store.locationText
+      if untouched && store.location != nil { cancelEdits(); store.blur(); return }
       if let at = store.location, abs(at.lat - lat) < 1e-9, abs(at.lon - lon) < 1e-9 {
         cancelEdits()
         store.blur()
