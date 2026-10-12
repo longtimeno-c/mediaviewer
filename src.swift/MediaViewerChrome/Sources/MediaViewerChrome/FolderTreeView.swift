@@ -83,12 +83,13 @@ final class FolderTreeStore: ObservableObject {
   /// folder; whether its listing is what is on screen.
   @Published private(set) var photosAvailable = false
   @Published private(set) var photosOpen = false
-  private var timer: Timer?
   private var revealedKey = ""
 
   private init() {
-    timer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
-      MainActor.assumeIsolated { self?.poll() }
+    // Issue #178: polled when the main run loop has run (ChromePulse), not on a timer.
+    ChromePulse.shared.add { [weak self] in
+      self?.poll()
+      return false
     }
   }
 
@@ -107,13 +108,16 @@ final class FolderTreeStore: ObservableObject {
     let photosShown = mv_chrome_photos_library_open()
     if photosShown != photosOpen { photosOpen = photosShown }
     let crumbs = readCrumbs()
+    // Only what moved is published: a poll runs on every pass of the main run
+    // loop while the tree is up, and an unchanged write would redraw it.
     guard let first = crumbs.first else {
-      root = nil
-      currentPath = ""
+      if root != nil { root = nil }
+      if !currentPath.isEmpty { currentPath = "" }
       revealedKey = ""
       return
     }
-    currentPath = crumbs.last?.path ?? first.path
+    let path = crumbs.last?.path ?? first.path
+    if path != currentPath { currentPath = path }
     if root?.path != first.path {
       root = TreeNode(name: first.name, path: first.path)
       revealedKey = ""

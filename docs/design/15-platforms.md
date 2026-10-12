@@ -39,6 +39,14 @@ as photos. (The Final Cut Pro extension's preview uses `AVPlayerView`; that exte
 Mac-only surface, [23-nle-search.md](23-nle-search.md).) There is no Electron, Tauri, Node, D3D12,
 Vulkan, MoltenVK, wgpu or SPIR-V anywhere; each OS has one present path.
 
+The Mac chrome's stores mirror host state by reading the bridge (`mv_chrome_*`), and they read it when
+the main run loop has done work, not on timers (`ChromePulse.swift`, issue #178): a run-loop observer
+polls every store on the loop's way back to sleep, so an idle app on a still is not woken. One
+coalesced 0.1 s timer runs only while something moves off the main thread (a clip playing, a running
+job or backup on screen) and for a second after the last key or click. The host polls the render
+thread's video status only while a clip or a sound is the current item, and the Video Editor's
+cut-follow tick runs only while its clip plays. The Import and AI add-on stores still tick at 2 Hz.
+
 ## The call
 
 v1 shipped on Windows first; the core was kept hostable from PR 4 so the Mac app could be a host plus

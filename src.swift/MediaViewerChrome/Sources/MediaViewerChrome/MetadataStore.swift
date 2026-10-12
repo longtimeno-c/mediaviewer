@@ -93,13 +93,13 @@ final class MetadataStore: ObservableObject {
   @Published private(set) var focusSeq: UInt64 = 0
 
   private var generation: UInt64 = .max
-  private var timer: Timer?
 
   private init() {
-    timer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in
-      MainActor.assumeIsolated { self?.poll() }
+    // Issue #178: polled when the main run loop has run (ChromePulse), not on a timer.
+    ChromePulse.shared.add { [weak self] in
+      self?.poll()
+      return false
     }
-    poll()
   }
 
   /// A still has no streams; the Streams tab is for clips.

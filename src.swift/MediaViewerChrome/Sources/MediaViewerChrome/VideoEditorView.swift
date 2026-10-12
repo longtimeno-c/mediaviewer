@@ -61,26 +61,47 @@ final class VideoEditorStore: ObservableObject {
   private let clock = EditorClock.shared
   private var generation: UInt64 = .max
   private var stripCount: Int32 = -1
+  private var started = false
   private var timer: Timer?
 
-  private init() {}
-
-  /// The window is up: poll the host. Stops again when the window goes, so a
-  /// closed editor costs nothing (it used to poll for the rest of the session).
-  func start() {
-    guard timer == nil else { return }
-    generation = .max
-    stripCount = -1
-    poll()
-    timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
-      MainActor.assumeIsolated { self?.poll() }
+  private init() {
+    ChromePulse.shared.add { [weak self] in
+      self?.pulse()
+      return false
     }
   }
 
+  /// The window is up: poll the host. Stops again when the window goes, so a
+  /// closed editor costs nothing (it used to poll for the rest of the session).
+  /// Issue #178: polled when the main run loop has run (ChromePulse); the
+  /// 30 Hz playhead timer runs only while the clip plays, not while paused.
+  func start() {
+    guard !started else { return }
+    started = true
+    generation = .max
+    stripCount = -1
+    poll()
+  }
+
   func stop() {
-    timer?.invalidate()
-    timer = nil
+    started = false
+    follow(false)
     open = false
+  }
+
+  private func pulse() {
+    if started { poll() }
+  }
+
+  private func follow(_ playing: Bool) {
+    if playing, timer == nil {
+      timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+        MainActor.assumeIsolated { self?.poll() }
+      }
+    } else if !playing, let t = timer {
+      t.invalidate()
+      timer = nil
+    }
   }
 
   private func poll() {
@@ -88,6 +109,7 @@ final class VideoEditorStore: ObservableObject {
     guard mv_chrome_editor_view(&v) else { return }
     let isOpen = v.open != 0
     if isOpen != open { open = isOpen }
+    follow(isOpen && v.playing != 0)
     guard isOpen else { return }
     if clock.scrubNs == nil, v.playhead_ns != clock.playheadNs { clock.playheadNs = v.playhead_ns }
     if (v.playing != 0) != clock.playing { clock.playing = v.playing != 0 }
