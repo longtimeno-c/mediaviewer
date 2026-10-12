@@ -11,6 +11,8 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstring>
 #include <memory>
@@ -81,6 +83,8 @@ static_assert(alignof(mv_completion) == 8, "mv_completion layout is part of the 
 static_assert(sizeof(mv_image_info) == 24, "mv_image_info layout is part of the ABI");
 static_assert(sizeof(mv_folder_item) == 32, "mv_folder_item layout is part of the ABI");
 static_assert(offsetof(mv_folder_item, pair_kind) == 24, "mv_folder_item layout is part of the ABI");
+static_assert(sizeof(mv_folder_entry) == 56, "mv_folder_entry layout is part of the ABI");
+static_assert(offsetof(mv_folder_entry, moment_ms) == 32, "mv_folder_entry layout is part of the ABI");
 static_assert(sizeof(mv_folder_summary) == 16, "mv_folder_summary layout is part of the ABI");
 // ABI 0.13 appended ranges_ns / range_count (PR 30); a 0.10 caller's struct is
 // the first 40 bytes and is still accepted (clip_session::to_request).
@@ -189,6 +193,17 @@ struct mv_session {
   std::mutex tile_service_mutex;
   std::unique_ptr<mv::image::tile_service> tile_service;
 
+  // Issue #166: a neighbour's single-texture create too big for one frame's
+  // upload budget waits while the render thread presents a moving canvas
+  // (set_canvas_moving). The render thread only stores and notifies; it never
+  // takes `upload_gate_mutex`. Waiters also wake on a selection
+  // (mv_folder_select), on `closing`, and every k_upload_gate_poll as a
+  // backstop (a cancelled one is noticed there).
+  std::atomic<bool> canvas_moving{false};
+  std::atomic<bool> closing{false};
+  std::mutex upload_gate_mutex;
+  std::condition_variable upload_gate_cv;
+
   // A navigation stop (PR 7). `path` is the primary — what thumbs, decode,
   // prefetch and video detection use; `secondary_path` is the other half of a
   // RAW+JPEG or Live Photo pair, empty when unpaired.
@@ -223,13 +238,17 @@ struct mv_session {
   // 0.19: io::kHideAudio / kHideDocuments. `folder_listing` stays unfiltered,
   // so turning a kind back on re-applies without another scan.
   std::atomic<std::uint32_t> hidden_kinds{0};
-  // 0.20 (issue #206): the kind filter, io::kHide* bits, and for
+  // 0.22 (issue #206): the kind filter, io::kHide* bits, and for
   // kHideUnmarked the paths that stay (folder_mutex). `kind_filter_changed`
   // is consumed by the relist mv_folder_set_kind_filter makes, the one that
   // does not keep the stop on screen unless it passes.
   std::atomic<std::uint32_t> kind_filter{0};
   std::unordered_set<std::string> kind_kept;
   bool kind_filter_changed = false;
+  // 0.21 (issue #210): a rename the host made (folder_mutex). The next relist
+  // follows the stop to its new name instead of letting the next one slide in.
+  std::string renamed_from;
+  std::string renamed_to;
   std::vector<mv::io::listed_item> folder_listing;
   std::unordered_map<std::string, date_stamp> date_stamps;
   // Issue #207: each file's rating and colour label for View > Show's cull
@@ -488,10 +507,13 @@ mv::image::tile_service& tile_service_for(mv_session* session) {
 // above ~64 MP or past the 16384 texture limit - a tiled pyramid with its
 // overview (docs/design/04). `mip_limit` 1 is the top-level-only staging upload of
 // the single-texture path; a tiled image has no such stage.
+// `gate` (issue #166) holds back an over-budget single-texture create; the
+// tiled path has its own budget (the tile service) and ignores it.
 status upload_still(mv_session* session, ID3D11Device* device,
                     const std::shared_ptr<mv::image::display_image>& cpu,
                     const mv::job_context& ctx, std::uint32_t mip_limit,
-                    std::unique_ptr<mv::image::gpu_image>& out) {
+                    std::unique_ptr<mv::image::gpu_image>& out,
+                    const mv::image::create_gate* gate = nullptr) {
   if (mv::image::needs_tiles(cpu->width, cpu->height)) {
     std::shared_ptr<const mv::image::tile_source> reuse;
     {
@@ -504,7 +526,7 @@ status upload_still(mv_session* session, ID3D11Device* device,
     out = std::make_unique<mv::image::gpu_image>(std::move(uploaded).value());
     return status::ok;
   }
-  auto uploaded = mv::image::upload(device, *cpu, ctx.gen(), &ctx, mip_limit);
+  auto uploaded = mv::image::upload(device, *cpu, ctx.gen(), &ctx, mip_limit, gate);
   if (!uploaded) return uploaded.error();
   out = std::make_unique<mv::image::gpu_image>(std::move(uploaded).value());
   out->quality = mip_limit == 1 ? mv::image::gpu_quality::full_top : mv::image::gpu_quality::full;
@@ -524,17 +546,23 @@ void publish_clip_placeholder(mv_session* session, const std::string& path, std:
                               std::int64_t mtime_unix, std::uint64_t size,
                               const mv::job_context& ctx) {
   if (!session->thumbs.is_open()) return;
-  std::string file;
-  if (auto mhit = session->thumbs.lookup(
-          mv::image::moment_thumb_key(path, moment_ms, mtime_unix, size));
-      mhit && !mhit.value().empty()) {
-    file = std::move(mhit).value();
-  } else if (auto phit = session->thumbs.lookup(mv::image::thumb_key{path, mtime_unix, size});
-             phit && !phit.value().empty()) {
-    file = std::move(phit).value();
+  // Foreground: no stat per candidate (issue #168). The read is the check, and
+  // a row whose file has gone is dropped and the next candidate tried.
+  std::optional<std::vector<std::uint8_t>> bytes;
+  for (const mv::image::thumb_key& key :
+       {mv::image::moment_thumb_key(path, moment_ms, mtime_unix, size),
+        mv::image::thumb_key{path, mtime_unix, size}}) {
+    if (ctx.cancelled()) return;
+    auto hit = session->thumbs.lookup_unverified(key);
+    if (!hit || hit.value().empty()) continue;
+    auto read = mv::io::read_all(hit.value());
+    if (!read) {
+      session->thumbs.forget(key);
+      continue;
+    }
+    bytes = std::move(read).value();
+    break;
   }
-  if (file.empty() || ctx.cancelled()) return;
-  auto bytes = mv::io::read_all(file);
   if (!bytes || ctx.cancelled()) return;
   auto decoded = mv::image::decode_bytes(bytes.value(), &ctx, 1);
   if (!decoded) return;
@@ -600,6 +628,41 @@ bool path_is_selected(mv_session* session, const std::string& path) {
   }
   if (session->folder_selected >= session->folder_items.size()) return false;
   return session->folder_items[session->folder_selected].path == path;
+}
+
+// Issue #166: wakes upload gates to re-check (the canvas stopped, a
+// selection, closing).
+void wake_upload_gates(mv_session* session) noexcept { session->upload_gate_cv.notify_all(); }
+
+// The backstop for a wake the render thread's lock-free notify can miss.
+constexpr auto k_upload_gate_poll = std::chrono::milliseconds(50);
+
+// [worker] Issue #166's budget for a full-resolution single texture. A
+// neighbour's create bigger than one frame's upload budget would hold the
+// device lock (ID3D10Multithread) across presents while the user pans or zooms
+// the current image, so it waits until the canvas stops moving. What is on
+// screen never waits: the selected path (including a neighbour the user has
+// just landed on, handed off mid-wait) goes at once, as does any create that
+// fits the budget. False when the job was cancelled or the session is closing.
+struct neighbour_create_gate {
+  mv_session* session = nullptr;
+  const std::string* path = nullptr;
+  const mv::job_context* ctx = nullptr;
+};
+
+bool wait_for_still_canvas(void* user, std::uint64_t texture_bytes) {
+  const auto& g = *static_cast<const neighbour_create_gate*>(user);
+  mv_session* session = g.session;
+  if (texture_bytes <= mv::image::k_frame_budget_create_bytes) return true;
+  for (;;) {
+    if (session->closing.load(std::memory_order_acquire) || g.ctx->cancelled()) return false;
+    if (!session->canvas_moving.load(std::memory_order_acquire)) return true;
+    if (path_is_selected(session, *g.path)) return true;
+    // Any wake (or the poll) goes round the checks above again.
+    std::unique_lock lock(session->upload_gate_mutex);
+    if (!session->canvas_moving.load(std::memory_order_acquire)) continue;
+    (void)session->upload_gate_cv.wait_for(lock, k_upload_gate_poll);
+  }
 }
 
 void push_folder_selected(mv_session* session, uint32_t index) {
@@ -1081,6 +1144,10 @@ void submit_decode_to_lru(mv_session* session, std::string path, mv::generation 
         // (lru_put) and its pyramid is the expensive part. Dropped here.
         if (tiled && !path_is_selected(session, path)) return status::ok;
 
+        // Issue #166: a neighbour's over-budget create waits out a pan or zoom
+        // of the image on screen; the selected path never waits.
+        neighbour_create_gate gate_state{session, &path, &ctx};
+        const mv::image::create_gate gate{&wait_for_still_canvas, &gate_state};
         auto upload_and_publish = [&](std::uint32_t mip_limit) -> status {
           auto dev = session->copy_device();
           if (!dev) {
@@ -1090,7 +1157,7 @@ void submit_decode_to_lru(mv_session* session, std::string path, mv::generation 
             return status::ok;
           }
           std::unique_ptr<mv::image::gpu_image> gpu;
-          const status up = upload_still(session, dev.Get(), cpu, ctx, mip_limit, gpu);
+          const status up = upload_still(session, dev.Get(), cpu, ctx, mip_limit, gpu, &gate);
           if (up != status::ok) return up;
           if (ctx.cancelled()) return status::cancelled;
           lru_put(session, path, *gpu, info);
@@ -1565,6 +1632,25 @@ void apply_folder_list(mv_session* session, std::vector<mv::io::listed_item> lis
       previous_path = session->folder_items[previous_index].path;
       previous_secondary = session->folder_items[previous_index].secondary_path;
     }
+    if (!session->renamed_from.empty()) {
+      // F2 (0.21): once the listing shows the rename, the stop on screen is
+      // the file it was, under its new name.
+      bool from_listed = false;
+      bool to_listed = false;
+      for (const auto& e : listed) {
+        from_listed |= e.primary.path_utf8 == session->renamed_from;
+        to_listed |= e.primary.path_utf8 == session->renamed_to;
+      }
+      if (!from_listed && to_listed) {
+        if (previous_path == session->renamed_from) {
+          previous_path = session->renamed_to;
+          previous_secondary.clear();
+        }
+        if (want == session->renamed_from) want = session->folder_select_path = session->renamed_to;
+        session->renamed_from.clear();
+        session->renamed_to.clear();
+      }
+    }
     session->folder_items.clear();
     session->folder_items.reserve(listed.size());
     for (auto& e : listed) {
@@ -1723,6 +1809,10 @@ mv_status MV_CALL mv_session_release(mv_session_t session) {
     // submits jobs), then the pool.
     session->clip.reset();
     session->watcher.stop();
+    // Issue #166: a neighbour held at its upload gate gives up before the
+    // pool joins it.
+    session->closing.store(true, std::memory_order_release);
+    wake_upload_gates(session);
     session->jobs.shutdown();
     session->thumbs.close();
     delete session->ready.exchange(nullptr, std::memory_order_acq_rel);
@@ -1975,6 +2065,8 @@ mv_status MV_CALL mv_folder_open(mv_session_t session, const char* utf8_dir,
       session->folder_list_title.clear();
       session->folder_list_moments.clear();
       session->folder_select_path = select;
+      session->renamed_from.clear();  // 0.21: a rename follows within one folder
+      session->renamed_to.clear();
       session->folder_listing.clear();
       session->folder_items.clear();
       session->folder_subdirs.clear();
@@ -2056,6 +2148,8 @@ mv_status MV_CALL mv_folder_open_list(mv_session_t session, const char* title_ut
       session->folder_list_title = title_utf8 ? title_utf8 : "";
       session->folder_list_moments = std::move(moments);
       session->folder_select_path = select;
+      session->renamed_from.clear();  // 0.21: a rename follows within one folder
+      session->renamed_to.clear();
       session->folder_listing.clear();
       session->folder_items.clear();
       session->folder_subdirs.clear();
@@ -2118,6 +2212,51 @@ mv_status MV_CALL mv_folder_item_moment(mv_session_t session, uint32_t index, in
     std::lock_guard lock(session->folder_mutex);
     if (index >= session->folder_items.size()) return status::invalid_arg;
     *out_ms = session->folder_items[index].moment_ms;
+    return status::ok;
+  }));
+}
+
+mv_status MV_CALL mv_folder_entries(mv_session_t session, mv_folder_entry* entries,
+                                    uint32_t entry_cap, char* strings, uint32_t string_cap,
+                                    uint32_t* out_count, uint32_t* out_string_bytes) {
+  return static_cast<mv_status>(guard("mv_folder_entries", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    MV_REQUIRE(out_count != nullptr, "out_count must not be null");
+    MV_REQUIRE(out_string_bytes != nullptr, "out_string_bytes must not be null");
+    std::lock_guard lock(session->folder_mutex);
+    const auto& items = session->folder_items;
+    std::uint64_t bytes = 0;
+    for (const auto& it : items) {
+      bytes += it.name.size() + it.path.size() + it.thumb_path.size() + it.secondary_path.size() + 4;
+    }
+    MV_REQUIRE(bytes <= UINT32_MAX && items.size() <= UINT32_MAX, "listing too large");
+    *out_count = static_cast<uint32_t>(items.size());
+    *out_string_bytes = static_cast<uint32_t>(bytes);
+    if (items.size() > entry_cap || bytes > string_cap) return status::invalid_arg;
+    if (!items.empty() && (entries == nullptr || strings == nullptr)) return status::invalid_arg;
+    uint32_t at = 0;
+    const auto put = [&](const std::string& s) {
+      const uint32_t offset = at;
+      std::memcpy(strings + at, s.c_str(), s.size() + 1);
+      at += static_cast<uint32_t>(s.size() + 1);
+      return offset;
+    };
+    for (std::size_t i = 0; i < items.size(); ++i) {
+      const auto& it = items[i];
+      mv_folder_entry e{};
+      e.item.index = static_cast<uint32_t>(i);
+      e.item.flags = (i == session->folder_selected ? 1u : 0u) | (it.primary_raw ? 2u : 0u) |
+                     (it.clip ? 4u : 0u);
+      e.item.size_bytes = it.size;
+      e.item.mtime_unix = it.mtime_unix;
+      e.item.pair_kind = static_cast<uint32_t>(it.pair);
+      e.moment_ms = it.moment_ms;
+      e.name_offset = put(it.name);
+      e.path_offset = put(it.path);
+      e.thumb_offset = put(it.thumb_path);
+      e.pair_offset = put(it.secondary_path);
+      entries[i] = e;
+    }
     return status::ok;
   }));
 }
@@ -2256,6 +2395,20 @@ mv_status MV_CALL mv_folder_note_metadata_written(mv_session_t session, const ch
     session->cull_stamps.erase(path);
     if (session->cull_forgotten.size() > 256) session->cull_forgotten.clear();
     session->cull_forgotten[path] = ++session->cull_epoch;
+    return status::ok;
+  }));
+}
+
+mv_status MV_CALL mv_folder_renamed(mv_session_t session, const char* old_utf8,
+                                    const char* new_utf8) {
+  return static_cast<mv_status>(guard("mv_folder_renamed", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    MV_REQUIRE(old_utf8 != nullptr && new_utf8 != nullptr, "paths must not be null");
+    std::lock_guard lock(session->folder_mutex);
+    if (session->folder_dir.empty() || session->folder_is_list) return status::ok;
+    // The folder watcher's relist of the rename applies it (apply_folder_list).
+    session->renamed_from = old_utf8;
+    session->renamed_to = new_utf8;
     return status::ok;
   }));
 }
@@ -2399,6 +2552,10 @@ mv_status MV_CALL mv_folder_select(mv_session_t session, uint32_t index, uint64_
     }
     if (out_job_id) *out_job_id = 0;
     submit_decode_to_lru(session, std::move(path), gen);
+    // Issue #166: after the hand-off above, so a neighbour waiting at its
+    // upload gate wakes as the selected path (not as a cancelled job between
+    // the bump and the hand-off) and creates at once.
+    wake_upload_gates(session);
     submit_prefetch(session, index, gen);
     return status::ok;
   }));
@@ -2839,6 +2996,20 @@ std::span<const gfx::tile_quad> tiles_frame(const image::gpu_image& image,
 
 image::tile_stats tiles_stats(const image::gpu_image& image) noexcept {
   return image.tiles ? image.tiles->stats() : image::tile_stats{};
+}
+
+image::texture_upload_stats texture_upload_stats() noexcept {
+  return image::texture_upload_stats_now();
+}
+
+void set_canvas_moving(mv_session_t session, bool moving) noexcept {
+  if (!session) return;
+  // One exchange per frame. Stopping wakes the neighbours' gated creates
+  // (issue #166); the render thread never takes the gate's mutex, and a wake
+  // lost to that is caught by the gate's poll.
+  if (session->canvas_moving.exchange(moving, std::memory_order_acq_rel) && !moving) {
+    wake_upload_gates(session);
+  }
 }
 
 bool take_animation_frame(mv_session_t session, std::uint32_t generation,

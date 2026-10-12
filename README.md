@@ -75,7 +75,7 @@ Measured on a Ryzen 7 5700X3D, RTX 4070 and a 59.95 Hz display. One desktop, not
 
 ![Audio/video error over 120 seconds of playback](docs/img/perf-av-sync.svg)
 
-What is still slower than it should be: a full RAW decode takes 1.0–1.9 s behind the preview, and one timed Canon CR3 open dropped a frame while that preview cross-faded to the full image. A 4K HEVC test clip played at about 24 fps on screen, with a worst gap of 367 ms. Playback has been measured for one to two minutes, not yet a half hour. The folder chart is stills only.
+What is still slower than it should be: a full RAW decode takes 1.0–1.9 s behind the preview, and one timed Canon CR3 open dropped a frame while that preview cross-faded to the full image. A 4K HEVC test clip played at about 24 fps on screen, with a worst gap of 367 ms. The folder chart is stills only.
 
 ### Against Windows Photos and Media Player
 
