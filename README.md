@@ -75,7 +75,7 @@ Measured on a Ryzen 7 5700X3D, RTX 4070 and a 59.95 Hz display. One desktop, not
 
 ![Audio/video error over 120 seconds of playback](docs/img/perf-av-sync.svg)
 
-What is still slower than it should be: a full RAW decode takes 1.0–1.9 s behind the preview, and one timed Canon CR3 open dropped a frame while that preview cross-faded to the full image. A 4K HEVC test clip played at about 24 fps on screen, with a worst gap of 367 ms. Playback has been measured for one to two minutes, not yet a half hour. The folder chart is stills only.
+What is still slower than it should be: a full RAW decode takes 1.0–1.9 s behind the preview, and one timed Canon CR3 open dropped a frame while that preview cross-faded to the full image. A 4K HEVC test clip played at about 24 fps on screen, with a worst gap of 367 ms. The folder chart is stills only.
 
 ### Against Windows Photos and Media Player
 
@@ -119,7 +119,8 @@ Every chart is re-measured and redrawn by one command, `python tools/perf/regene
 
 Every action has a key, and `?` shows the full list, generated from the same command table the app runs.
 Arrow keys or `A`/`D` browse, `Space` advances, `Insert` marks, `F7`/`F8` copy or move marked files to a folder,
-`Delete` sends to the Recycle Bin, `F11` goes fullscreen, `F5` starts a slideshow. Every key can be remapped in Settings (`Ctrl+,`).
+`Delete` sends to the Recycle Bin, `F11` goes fullscreen, `F5` starts a slideshow. Cull a card on the keypad: `0`–`5` rate,
+`6`–`9` colour-label and `X` rejects, in the XMP that Lightroom and Bridge read, then View ▸ Show just the picks or one colour. Every key can be remapped in Settings (`Ctrl+,`).
 
 ## Video that lives with your photos
 

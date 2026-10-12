@@ -273,6 +273,7 @@ std::vector<field> summary_rows(const metadata& m) {
     add("Made with", v);
   }
   add("Rating", format_rating(s.rating));
+  add("Label", s.label);
   add("Comment", s.comment);
   return rows;
 }

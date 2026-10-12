@@ -143,6 +143,9 @@ enum chrome_command : int {
   chrome_cmd_video_muted = 1032,
   chrome_cmd_video_track = 1033,
   chrome_cmd_video_loop = 1034,
+  // Issue #210: the rename popup was confirmed (Enter); native pulls the new
+  // name (no extension) with take_parked_text. Esc sends nothing.
+  chrome_cmd_rename = 1035,
 };
 
 // chrome_cmd_video_loop's argument. The C# side mirrors it.
@@ -193,6 +196,7 @@ enum class chrome_popup : std::int32_t {
   settings = 5,
   export_image = 6,  // PR 10; mode_mask carries the last packed choice to preselect
   clip_tools = 7,    // PR 14; mode_mask carries clip flags (trim_state.h kClipFlag*)
+  rename = 8,        // issue #210; mode_mask carries the folder index of the stop to rename
 };
 
 struct chrome_popup_args {
@@ -266,6 +270,16 @@ static_assert(static_cast<int>(command_id::trim_keyframe) == 139);
 static_assert(static_cast<int>(command_id::trim_reencode) == 140);
 static_assert(static_cast<int>(command_id::jobs_pane) == 143);
 static_assert(static_cast<int>(command_id::clip_tools) == 144);
+// Issue #220: the Open and View flyouts post these (IslandHost.FileMenu.cs).
+static_assert(static_cast<int>(command_id::first) == 22 && static_cast<int>(command_id::last) == 23);
+static_assert(static_cast<int>(command_id::toggle_mark) == 61);
+static_assert(static_cast<int>(command_id::copy_to_pick) == 65 &&
+              static_cast<int>(command_id::move_to_pick) == 67);
+static_assert(static_cast<int>(command_id::delete_to_recycle_bin) == 68 &&
+              static_cast<int>(command_id::slideshow_start) == 69);
+static_assert(static_cast<int>(command_id::copy_path) == 147 &&
+              static_cast<int>(command_id::copy_flattened) == 148 &&
+              static_cast<int>(command_id::share) == 149);
 // PR 29: the Edit workspace's buttons send these (the Mac bridge pins 150 too; PR 15 took 147-149).
 static_assert(static_cast<int>(command_id::edit_workspace) == 150);
 static_assert(static_cast<int>(command_id::rotate_ccw) == 96 && static_cast<int>(command_id::rotate_cw) == 97);
@@ -279,6 +293,16 @@ static_assert(static_cast<int>(command_id::clip_split) == 145 &&
               static_cast<int>(command_id::trim_remove_middle) == 146);
 static_assert(static_cast<int>(command_id::crop_aspect_set) == 155);
 static_assert(static_cast<int>(command_id::crop_straighten_set) == 156);
+// Keyed commands whose live key the island's menus and tooltips name (KeyOf).
+static_assert(static_cast<int>(command_id::skim_back) == 34 &&
+              static_cast<int>(command_id::skim_forward) == 35);
+static_assert(static_cast<int>(command_id::zoom_200) == 39 && static_cast<int>(command_id::zoom_400) == 40);
+static_assert(static_cast<int>(command_id::crop_aspect_cycle) == 151 &&
+              static_cast<int>(command_id::crop_aspect_swap) == 152);
+static_assert(static_cast<int>(command_id::show_original) == 153);
+static_assert(static_cast<int>(command_id::search_open) == 157);
+// Issue #206: View > Show's items (arg = io::kind_filter).
+static_assert(static_cast<int>(command_id::kind_filter_set) == 174);
 static_assert(chrome_cmd_edit_tab >= kCommandCount && chrome_cmd_edit_action >= kCommandCount);
 static_assert(chrome_cmd_meta_tags >= kCommandCount && chrome_cmd_meta_date >= kCommandCount);
 static_assert(chrome_cmd_editor_seek >= kCommandCount && chrome_cmd_editor_action >= kCommandCount);
@@ -287,6 +311,7 @@ static_assert(chrome_cmd_open_recent >= kCommandCount);
 static_assert(chrome_cmd_editor_trim_grab >= kCommandCount && chrome_cmd_editor_trim_to >= kCommandCount);
 static_assert(chrome_cmd_open_in_app >= kCommandCount);
 static_assert(chrome_cmd_video_volume >= kCommandCount && chrome_cmd_video_loop >= kCommandCount);
+static_assert(chrome_cmd_rename >= kCommandCount);
 static_assert(is_reserved_notification(chrome_cmd_set_settings));
 static_assert(is_reserved_notification(chrome_cmd_folder_ready));
 static_assert(is_reserved_notification(chrome_cmd_video_active));
@@ -314,7 +339,7 @@ static_assert(is_reserved_notification(chrome_cmd_focus_changed));
       chrome_cmd_drag_items, chrome_cmd_drag_ended, chrome_cmd_open_recent,
       chrome_cmd_editor_trim_grab, chrome_cmd_editor_trim_to, chrome_cmd_open_in_app,
       chrome_cmd_video_volume, chrome_cmd_video_muted, chrome_cmd_video_track,
-      chrome_cmd_video_loop};
+      chrome_cmd_video_loop, chrome_cmd_rename};
   std::uint32_t h = 17;
   for (const int id : ids) h = h * 31u + static_cast<std::uint32_t>(id);
   return static_cast<std::int32_t>(h);
@@ -573,7 +598,10 @@ inline constexpr std::int32_t kMetaEditDropDraft = 8;  // Esc: forget what was t
 
 struct chrome_flags_args {
   std::int32_t flags;
-  std::int32_t sort;  // PR 9: packed sort order, so Settings and View > Sort by show the truth
+  // PR 9: packed sort order, so Settings and View > Sort by show the truth.
+  // Issue #206 / #207: bits 8-11 are the kind filter View > Show applied
+  // (io::kind_filter), so its marker is native's choice too.
+  std::int32_t sort;
 };
 
 static_assert(sizeof(chrome_flags_args) == 8, "keep in sync with ChromeFlagsArgs");
@@ -627,10 +655,12 @@ inline constexpr int kFilmstripDip = 112;
 // of the video, centred and above the filmstrip, like the Mac's, and leaves
 // after an idle interval while the clip plays (shell/transport_autohide.h). It
 // no longer reserves canvas, so showing or hiding it never refits the video.
-inline constexpr int kTransportDip = 52;
-// The bar hugs its controls (chrome_cmd_transport_width); this is only its width
-// before the island has reported one.
-inline constexpr int kTransportMaxWidthDip = 880;
+// 44 DIPs, the Mac's strip height (TransportView.swift, issue #195).
+inline constexpr int kTransportDip = 44;
+// The island reports the width it wants (chrome_cmd_transport_width): the Mac's
+// 720 bar, wider only while trim's controls need it, and the scrubber flexes
+// inside. This is only its width before the island has reported one.
+inline constexpr int kTransportMaxWidthDip = 720;
 inline constexpr int kTransportPadDip = 14;     // each side, between the bar's edge and its controls
 inline constexpr int kTransportMarginDip = 10;  // above the filmstrip / bottom edge
 inline constexpr int kTransportSideDip = 16;    // minimum gap to the window's sides
@@ -876,6 +906,9 @@ class chrome_host {
   // Push the persisted toggles into the settings menu so the menu and the
   // keyboard cannot disagree about what is on.
   void apply_settings(std::int32_t flags, std::int32_t sort = 0) noexcept;
+  // Issue #206: the kind filter every later apply_settings carries (bits 8-11
+  // of its sort word). Set once the core has applied it; not saved.
+  void set_kind_filter(std::int32_t filter) noexcept { kind_filter_ = filter & 15; }
 
   // Push the current playback rate into the command bar's speed dropdown.
   void apply_rate(float rate) noexcept;
@@ -985,6 +1018,7 @@ class chrome_host {
   chrome_entry_fn show_transport_ = nullptr;
   chrome_entry_fn detach_transport_ = nullptr;
   chrome_entry_fn apply_settings_ = nullptr;
+  std::int32_t kind_filter_ = 0;
   chrome_entry_fn apply_rate_ = nullptr;
   chrome_entry_fn apply_audio_ = nullptr;
   chrome_entry_fn set_command_table_ = nullptr;
