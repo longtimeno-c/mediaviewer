@@ -7891,10 +7891,10 @@ static std::string MvBadgeKey(const mv::io::dir_entry& e) {
 - (void)setAIBadgeTo:(const mv::shell::ai_badge&)badge {
   if (badge == _aiBadge) return;
   _aiBadge = badge;
-  if (badge.shown) {
-    [MVChromeHost setAIBadgeWithTitle:[NSString stringWithUTF8String:badge.title.c_str()] ?: @""
-                             evidence:[NSString stringWithUTF8String:badge.evidence.c_str()] ?: @""];
-  }
+  // Hidden, the text is cleared too: that closes a popover a hover or focus
+  // left open, so it never floats over the next item with the last one's text.
+  [MVChromeHost setAIBadgeWithTitle:[NSString stringWithUTF8String:badge.title.c_str()] ?: @""
+                           evidence:[NSString stringWithUTF8String:badge.evidence.c_str()] ?: @""];
   [self layoutAIBadge];
 }
 

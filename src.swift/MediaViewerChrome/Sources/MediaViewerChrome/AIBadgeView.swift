@@ -53,7 +53,11 @@ struct AIBadgeView: View {
     .focusEffectDisabled()
     .focused($focused)
     .onHover { hovering = $0 }
-    .popover(isPresented: Binding(get: { hovering || focused }, set: { if !$0 { hovering = false } }),
+    // The host clears the text when it hides the badge. A hidden view gets no
+    // hover-out, so without this the popover would stay up over the next item.
+    .onChange(of: store.title) { _, title in if title.isEmpty { hovering = false } }
+    .popover(isPresented: Binding(get: { !store.title.isEmpty && (hovering || focused) },
+                                  set: { if !$0 { hovering = false } }),
              arrowEdge: .top) {
       VStack(alignment: .leading, spacing: 4) {
         Text(store.title).font(.callout.weight(.semibold)).foregroundStyle(MVTheme.title)
