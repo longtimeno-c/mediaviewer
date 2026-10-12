@@ -27,8 +27,8 @@ internal sealed partial class ManagePanel
     private readonly AiChrome _chrome;
     private readonly AiApi _api;
     private readonly Look _look;
-    private readonly TextBlock _status;
-    private readonly TextBlock _compute;
+    // The search panel's status pill (StatusPill.cs), as on the Mac.
+    private readonly StatusPill _pill;
     private readonly Button _pause;
     private readonly Button _indexAnyway;
     private readonly ComboBox _computeBox;
@@ -106,31 +106,22 @@ internal sealed partial class ManagePanel
         _look = chrome.Look;
         Root = new StackPanel { Spacing = 10, Margin = new Thickness(0, 8, 0, 0) };
 
-        // Status, compute, Pause / Resume.
-        _status = _look.Text("", null, AddonColour.Title);
-        _compute = _look.Text("", 12);
+        // Status: the pill (ring, line, stage chips, detail, compute badge) with
+        // Index anyway and Pause / Resume in it, as the Mac's StatusPill.
         _pause = _look.Button("Pause indexing", TogglePause);
-        var statusText = new StackPanel { Spacing = 2 };
-        statusText.Children.Add(_status);
-        statusText.Children.Add(_compute);
-        _audioLine = _look.Text("", 12);
-        _audioLine.Visibility = Visibility.Collapsed;
-        statusText.Children.Add(_audioLine);
-        var statusRow = new Grid { ColumnSpacing = 16 };
-        statusRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        statusRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        statusRow.Children.Add(statusText);
         // Paused on battery: "Index anyway" until the machine is next on AC (never saved).
         _indexAnyway = _look.Button("Index anyway", IndexAnyway);
         _indexAnyway.Visibility = Visibility.Collapsed;
         ToolTipService.SetToolTip(_indexAnyway,
             "Carry on indexing on battery until this PC is next plugged in. The setting below stays as it is.");
-        var statusActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
-        statusActions.Children.Add(_indexAnyway);
-        statusActions.Children.Add(_pause);
-        Grid.SetColumn(statusActions, 1);
-        statusRow.Children.Add(statusActions);
-        Root.Children.Add(Stroked(_look.Card(statusRow, 12)));
+        _pill = new StatusPill(_look, _indexAnyway, _pause);
+        Root.Children.Add(_pill.Root);
+        // "Sound: 12 of 40 clips · Speech: 8 of 40" once it is done; while a
+        // pass runs, the pill's stage chips say it.
+        _audioLine = _look.Text("", 12);
+        _audioLine.Margin = new Thickness(12, 0, 0, 0);
+        _audioLine.Visibility = Visibility.Collapsed;
+        Root.Children.Add(_audioLine);
 
         // Sections as on the Mac (ManagementView.section): a 15 semibold title
         // over one card with a hairline stroke, its rows inside.
@@ -537,20 +528,17 @@ internal sealed partial class ManagePanel
     {
         if (!_chrome.StatusValid)
         {
-            _status.Text = "Local search is not running.";
-            _compute.Text = "";
+            _pill.ShowNotRunning();
+            _audioLine.Visibility = Visibility.Collapsed;
             return;
         }
         MvAiStatus s = _chrome.Status;
-        _status.Text = Look.StatusLine(s);
-        string? why = Look.FallbackReason(s);
-        string model = s.ModelText.Length > 0 ? " · " + s.ModelText : "";
-        _compute.Text = (why ?? $"Running on {Look.ComputeBadge(s)}") + model;
+        _pill.Update(s);
         _pause.Content = s.State == MvAiState.Paused ? "Resume indexing" : "Pause indexing";
         _indexAnyway.Visibility = Look.OnBattery(s) ? Visibility.Visible : Visibility.Collapsed;
-        // "Sound: 12 of 40 clips · Speech: 8 of 40", while there is sound work.
         bool audio = (s.Flags & MvAiStatus.FlagAudioReady) != 0;
-        _audioLine.Visibility = audio && (s.SoundTotal > 0 || s.SpeechTotal > 0) ? Visibility.Visible : Visibility.Collapsed;
+        _audioLine.Visibility = audio && (s.SoundTotal > 0 || s.SpeechTotal > 0) && !_pill.ShowsStages
+            ? Visibility.Visible : Visibility.Collapsed;
         _audioLine.Text = $"Sound: {s.SoundDone:N0} of {s.SoundTotal:N0} clips · Speech: {s.SpeechDone:N0} of {s.SpeechTotal:N0}";
         if (audio != _audioReady)
         {

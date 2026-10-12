@@ -821,11 +821,18 @@ internal sealed class PeopleGrid
                 FontSize = 14,
                 CornerRadius = new CornerRadius(12),
                 BorderThickness = new Thickness(0),
-                Background = fill,
-                Foreground = ink,
                 HorizontalContentAlignment = HorizontalAlignment.Center,
                 VerticalContentAlignment = VerticalAlignment.Center,
             };
+            // Its own fill under the pointer, not WinUI's grey.
+            if (fill is SolidColorBrush solid)
+            {
+                Look.KeepFill(b, solid, Look.Stronger(solid, 24), Look.Stronger(solid, 48), ink);
+            }
+            else
+            {
+                Look.KeepFill(b, fill, fill, fill, ink);
+            }
             return b;
         }
 
