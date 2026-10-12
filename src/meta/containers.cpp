@@ -472,15 +472,21 @@ void read_bmff(byte_source& file, bool stills, sink& out) {
 
 namespace {
 
+// A profile's text is a name or a copyright line, shown capped at 512 bytes. The
+// input is capped too: all 256 tag entries can point at one multi-megabyte tag.
+constexpr std::size_t kMaxIccText = 4096;
+
 // 'desc' (v2 textDescriptionType), 'text', or 'mluc' (v4) as UTF-8.
 std::string icc_text(bytes tag) {
   if (tag.size() < 12) return {};
   if (util::fourcc_is(tag, 0, "desc")) {
     const std::size_t n = util::be32(tag, 8);
     if (n == 0 || !util::has(tag, 12, n)) return {};
-    return latin1_or_utf8(util::chars(tag.subspan(12, n)));
+    return latin1_or_utf8(util::chars(tag.subspan(12, std::min(n, kMaxIccText))));
   }
-  if (util::fourcc_is(tag, 0, "text")) return latin1_or_utf8(util::chars(tag.subspan(8)));
+  if (util::fourcc_is(tag, 0, "text")) {
+    return latin1_or_utf8(util::chars(tag.subspan(8, std::min(tag.size() - 8, kMaxIccText))));
+  }
   if (util::fourcc_is(tag, 0, "mluc") && tag.size() >= 16) {
     const std::size_t count = util::be32(tag, 8), rec = util::be32(tag, 12);
     if (count == 0 || rec < 12) return {};
@@ -496,8 +502,10 @@ std::string icc_text(bytes tag) {
     }
     const std::size_t r = 16 + pick * rec;
     if (!util::has(tag, r, 12)) return {};
-    const std::size_t len = util::be32(tag, r + 4), off = util::be32(tag, r + 8);
+    std::size_t len = util::be32(tag, r + 4);
+    const std::size_t off = util::be32(tag, r + 8);
     if (!util::has(tag, off, len)) return {};
+    len = std::min(len, 2 * kMaxIccText);
     std::string out;
     for (std::size_t i = 0; i + 1 < len; i += 2) {
       std::uint32_t cp = util::be16(tag, off + i);
