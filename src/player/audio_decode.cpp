@@ -56,6 +56,9 @@ void run_audio_decode_thread(video_pipeline& pipe) noexcept {
   double rate = 1;
   time_ns next_pts = 0;
   bool seeded = false;
+  // Held while a packet is in libavcodec, given back while parked (issue #233).
+  // Described with the track's codec once one is opened.
+  auto crash = clip_crash_slot(pipe, "audio", "none", LIBAVCODEC_IDENT);
   for (;;) {
     // Parked, not polled, while there is nothing to decode (issue #230): a
     // queued packet or stop wakes it.
@@ -64,13 +67,20 @@ void run_audio_decode_thread(video_pipeline& pipe) noexcept {
     packet_ptr packet;
     std::uint32_t packet_generation = 0;
     if (!pipe.audio_packets.try_pop(packet, &packet_generation)) {
+      crash.idle();
       pipe.wake.wait(seen); continue;
     }
     if (packet_generation != pipe.generation.load()) continue;
     const int selected = pipe.selected_audio.load();
     if (selected < 0) continue;
     AVStream* stream = pipe.format->streams[selected];
+    crash.busy();
     if (selected != stream_index) {
+      crash.describe({.family = pipe.crash.container,
+                      .decoder = avcodec_get_name(stream->codecpar->codec_id),
+                      .version = LIBAVCODEC_IDENT,
+                      .correlation_id = pipe.crash.correlation_id,
+                      .role = "audio"});
       const AVCodec* decoder = avcodec_find_decoder(stream->codecpar->codec_id);
       codec.reset(decoder ? avcodec_alloc_context3(decoder) : nullptr);
       if (!codec || avcodec_parameters_to_context(codec.get(), stream->codecpar) < 0 ||
@@ -131,8 +141,10 @@ void run_audio_decode_thread(video_pipeline& pipe) noexcept {
             const std::uint32_t seen_space = pipe.wake.epoch();
             if (pipe.stopping.load() || generation != pipe.generation.load()) break;
             if (pipe.clock.submit(block)) break;
+            crash.idle();
             pipe.wake.wait(seen_space);
           }
+          crash.busy();
         }
         av_frame_unref(filtered.get());
       }

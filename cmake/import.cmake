@@ -54,6 +54,9 @@ add_library(mv_addon STATIC
   ${R}/src/addon/theme.h
   ${R}/src/addon/host.cpp
   ${R}/src/addon/host.h
+  # Issue #299: the AI pack's resume.json, read by the host at launch.
+  ${R}/src/addon/ai_resume.cpp
+  ${R}/src/addon/ai_resume.h
   ${MV_ADDON_LOADER}
   ${R}/src/abi/include/mediaviewer/mediaviewer_addon.h
 )
