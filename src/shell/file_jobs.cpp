@@ -5,6 +5,7 @@
 #include <memory>
 #include <new>
 
+#include "io/duplicate.h"
 #include "io/file_ops.h"
 #include "io/file_port.h"
 #include "io/in_flight.h"
@@ -30,23 +31,40 @@ void file_jobs::stop() noexcept {
 bool file_jobs::submit(HWND notify, file_job_kind kind, std::vector<std::string> paths,
                        std::string dest_dir, std::uint64_t token) noexcept {
   if (!started_ || !notify || paths.empty()) return false;
-  if (kind != file_job_kind::recycle && dest_dir.empty()) return false;
+  if ((kind == file_job_kind::copy || kind == file_job_kind::move) && dest_dir.empty()) return false;
+  if (kind == file_job_kind::duplicate && paths.size() > 2) return false;
   try {
     // job_fn is a std::function, so what it captures must be copyable.
     auto work = std::make_shared<file_job_result>();
     work->kind = kind;
     work->token = token;
     work->items.reserve(paths.size());
-    for (auto& p : paths) {
+    // A duplicate reports once, for its stop; the pair half rides along.
+    std::string secondary;
+    if (kind == file_job_kind::duplicate && paths.size() == 2) secondary = std::move(paths[1]);
+    for (std::size_t i = 0; i < paths.size(); ++i) {
+      if (kind == file_job_kind::duplicate && i > 0) break;
       file_job_item item;
-      item.path = std::move(p);
+      item.path = std::move(paths[i]);
       work->items.push_back(std::move(item));
     }
+    auto pair_half = std::make_shared<std::string>(std::move(secondary));
     auto dest = std::make_shared<std::string>(std::move(dest_dir));
 
     const mv::job_id id = pool_.submit_at(
-        mv::background_generation, [work, dest, notify](const mv::job_context&) -> mv::status {
-          if (work->kind == file_job_kind::recycle) {
+        mv::background_generation,
+        [work, dest, pair_half, notify](const mv::job_context&) -> mv::status {
+          if (work->kind == file_job_kind::duplicate) {
+            auto& item = work->items.front();
+            try {
+              const auto group = io::duplicate_group(item.path, *pair_half);
+              auto r = io::duplicate_files(group, io::native_duplicate_style());
+              if (!r) item.status = r.error();
+              else item.dest = r.value().front();
+            } catch (...) {
+              item.status = mv::status::out_of_memory;
+            }
+          } else if (work->kind == file_job_kind::recycle) {
             for (auto& item : work->items) {
               auto r = io::recycle_file(item.path);
               if (!r) item.status = r.error();

@@ -26,7 +26,10 @@ namespace mv::shell {
 // rename (issue #210): one stop, F2. paths = {the file, its pair half if any},
 // dest_dir = the new name without extension (io/rename_stop.h). items[0].dest
 // (and items[1].dest) say where they went.
-enum class file_job_kind : std::uint8_t { copy, move, recycle, rename };
+// duplicate (issue #289): one stop beside itself, its paths the primary and
+// then the other half of a pair; io/duplicate.h adds the XMP sidecar. Only
+// the primary's item reports, its `dest` the copy to select.
+enum class file_job_kind : std::uint8_t { copy, move, recycle, rename, duplicate };
 
 struct file_job_item {
   std::string path;          // source, UTF-8

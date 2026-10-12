@@ -217,6 +217,7 @@ Marks are a separate set from the selection, so arrow-key browsing never makes a
 | `Ctrl+Shift+C` | Viewing | Copy path(s) as text |
 | `Ctrl+Alt+C` | browse | Copy the current still with edits baked, as PNG (worker thread) |
 | `Ctrl+Shift+S` | Viewing | Share (Windows Share / macOS share sheet) |
+| `Ctrl+Shift+D` | Viewing | **Duplicate** the item on screen beside itself, then select the copy. Mac: File ▸ Duplicate; both: the command bar's Open menu |
 
 These are on the mouse too: the Mac's File menu, and on Windows the command bar's **Open** flyout
 (Mark / Unmark, Copy / Move Marked To…, Move to Recycle Bin, Share…, Copy Path, Copy Edited
@@ -240,6 +241,12 @@ Mac's View and Go menus do. Each item posts its command's id, so it acts as the 
   library file, while the file has unsaved edits or a metadata write in flight, and for a name a
   volume would refuse (a slash or backslash, `< > : " | ? *`, a trailing dot or space, Windows
   device names).
+- **Duplicate** names the copy as the platform's file manager does: `NAME copy.ext`, then
+  `NAME copy 2.ext` on the Mac; `NAME - Copy.ext`, then `NAME - Copy (2).ext` on Windows
+  (`io/duplicate.h`). A RAW+JPEG or Live Photo stop and its XMP sidecar take one number together,
+  so the copies pair again. Verified copies on the I/O pool; the copy is selected once the watcher
+  lists it. The Mac listing does not pair, so there a file goes with its sidecar only. Off in a
+  slideshow, crop, trim and the Video Editor, and on a Photos library item (issue #72).
 - **Delete** only uses the Recycle Bin / Trash. Where there is none (a share, some removable
   drives, bin off) the item is refused, not deleted, and the user is told how many. Marks clear
   only for items that succeeded. On the Mac, File ▸ Move to Trash (`⌘⌫`) is off while a text

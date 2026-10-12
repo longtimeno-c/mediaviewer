@@ -307,6 +307,10 @@ constexpr binding kBindings[] = {
     row(C('8'), mod_ctrl | mod_shift, kViewing, edge, label_green),
     row(C('9'), mod_ctrl | mod_shift, kViewing, edge, label_blue),
     row(C('U'), mod_none, kBrowse | kVideo, edge, clear_label),
+    // Issue #289: Duplicate. Appended. Preview's ⇧⌘S is Share here (PR 15), so
+    // the D twin of it; Ctrl+D alone is Unmark all. Not in a slideshow, crop
+    // or trim: a write beside the original is not made from those by accident.
+    row(C('D'), mod_ctrl | mod_shift, kViewing, edge, duplicate),
 };
 
 // The router's index stores row + 1 in a byte.
@@ -493,6 +497,7 @@ constexpr command_info kCommands[] = {
     {label_green, "Label green"},
     {label_blue, "Label blue"},
     {clear_label, "Clear label"},
+    {duplicate, "Duplicate"},
 };
 
 const char* named_key(key k) noexcept {

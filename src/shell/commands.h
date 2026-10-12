@@ -352,6 +352,9 @@ enum class command_id : std::uint16_t {
   label_green,
   label_blue,
   clear_label,
+  // Issue #289: File > Duplicate, the item on screen copied beside itself
+  // (io/duplicate.h) with its pair and sidecar, then selected. Appended.
+  duplicate,
   count
 };
 inline constexpr int kAddonCommandSlots = 8;

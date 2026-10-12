@@ -1249,6 +1249,20 @@ TEST_CASE("an add-on's manifest contributes command rows (docs/design/25)", "[sh
   REQUIRE(mv::shell::live_bindings()[0].k == mv::shell::default_bindings()[0].k);
 }
 
+TEST_CASE("Ctrl+Shift+D duplicates the item on screen, not in a slideshow or crop", "[shell][commands]") {
+  key_router r;
+  const std::uint8_t cs = mod_ctrl | mod_shift;
+  REQUIRE(r.lookup(char_key('D'), cs, mode::browse)->command == command_id::duplicate);
+  REQUIRE(r.lookup(char_key('D'), cs, mode::video)->command == command_id::duplicate);
+  REQUIRE(r.lookup(char_key('D'), cs, mode::gallery)->command == command_id::duplicate);
+  REQUIRE(r.lookup(char_key('D'), cs, mode::slideshow) == nullptr);
+  REQUIRE(r.lookup(char_key('D'), cs, mode::crop) == nullptr);
+  // Ctrl+D stays Unmark all.
+  REQUIRE(r.lookup(char_key('D'), mod_ctrl, mode::browse)->command == command_id::unmark_all);
+  REQUIRE(find_command(command_id::duplicate) != nullptr);
+  REQUIRE_FALSE(find_command(command_id::duplicate)->keyless);
+}
+
 TEST_CASE("issue #182: menu chords follow the live table and its crop mask", "[shell][commands]") {
   mv::shell::reset_live_bindings();
   const auto chord_of = [](command_id id) {

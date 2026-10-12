@@ -74,6 +74,7 @@ public static partial class IslandHost
         public const int OpenCrumb = 1008;
         public const int GalleryColumns = 1009;
         public const int FolderUp = 115;  // mirrors command_id::folder_up
+        public const int Duplicate = 181;  // mirrors command_id::duplicate (issue #289)
         // Milestone G: arg 1/0 = the Import add-on is loaded / absent (its
         // commands exist only while it is). OpenPath: native pulls the path
         // with TakeTreePath and opens it in the viewer.

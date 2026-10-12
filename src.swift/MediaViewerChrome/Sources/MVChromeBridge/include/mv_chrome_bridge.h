@@ -43,6 +43,8 @@ enum MvMenuCmd : int32_t {
   kMenuShowBlue, kMenuShowPurple,
   // Issue #210: File > Rename… (F2).
   kMenuRename,
+  // Issue #289: File > Duplicate.
+  kMenuDuplicate,
 };
 typedef enum MvMenuCmd MvMenuCmd;
 
