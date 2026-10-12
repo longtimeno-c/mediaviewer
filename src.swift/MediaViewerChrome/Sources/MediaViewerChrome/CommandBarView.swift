@@ -164,8 +164,8 @@ public struct CommandBarView: View {
           BarFlyout(title: "Open") { close in
             FlyoutItem(title: "Media…", shortcut: key("Open media…")) { close(); mv_chrome_menu(kMenuOpen) }
             FlyoutItem(title: "Folder…", shortcut: key("Open folder…")) { close(); mv_chrome_menu(kMenuOpenFolder) }
-            FlyoutItem(title: current.map { "Open: " + $0 } ?? "Open: (nothing open)",
-                       shortcut: key("Show in Explorer"), enabled: current != nil) {
+            // kMenuReveal reveals the file in Finder; it does not open it (issue #187).
+            FlyoutItem(title: "Show in Finder", shortcut: key("Show in Explorer"), enabled: current != nil) {
               close(); mv_chrome_menu(kMenuReveal)
             }
           }
