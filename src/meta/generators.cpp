@@ -136,20 +136,27 @@ std::string evidence_line(std::string_view field, std::string_view value) {
 
 provenance derive_provenance(const parse::evidence& ev) {
   provenance p;
-  // An AI source type is the strongest statement a file can make. Count the AI
-  // ones so a C2PA claim is named even when XMP repeats the same term.
-  std::string_view ai_term;
-  std::size_t ai_terms = 0;
+  // An AI source type is the strongest statement a file can make. source_types
+  // holds XMP's and C2PA's together (XMP's first: the readers run in that
+  // order), so XMP's own term is set aside once and the C2PA claim, when there
+  // is one, is named with its own term.
+  std::string_view c2pa_term;
+  bool any_ai = false;
+  bool xmp_skipped = false;
+  const bool xmp_ai = source_type_is_ai(ev.xmp_source_type);
   for (const std::string& s : ev.source_types) {
     if (!source_type_is_ai(s)) continue;
-    if (ai_terms++ == 0) ai_term = s;
+    any_ai = true;
+    if (xmp_ai && !xmp_skipped && s == ev.xmp_source_type) {
+      xmp_skipped = true;
+      continue;
+    }
+    if (c2pa_term.empty()) c2pa_term = s;
   }
-  const bool xmp_ai = source_type_is_ai(ev.xmp_source_type);
-  if (ai_terms > 0) {
+  if (any_ai) {
     p.ai_generated = true;
-    const bool c2pa_ai = ai_terms > (xmp_ai ? 1u : 0u);
-    p.evidence = c2pa_ai ? "Content Credentials (C2PA): " + describe_source_type(ai_term)
-                         : "IPTC digital source type (XMP): " + describe_source_type(ev.xmp_source_type);
+    p.evidence = !c2pa_term.empty() ? "Content Credentials (C2PA): " + describe_source_type(c2pa_term)
+                                    : "IPTC digital source type (XMP): " + describe_source_type(ev.xmp_source_type);
   }
 
   // Every field that can name the tool, most authoritative first.

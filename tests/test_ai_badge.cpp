@@ -86,7 +86,12 @@ TEST_CASE("evidence names the deciding fact, most authoritative first", "[ai-bad
   // Both say it: the signed claim is named.
   mv::meta::parse::evidence both = xmp;
   both.source_types.emplace_back(kTrained);
-  CHECK(derive_provenance(both).evidence.rfind("Content Credentials (C2PA): ", 0) == 0);
+  CHECK(derive_provenance(both).evidence == "Content Credentials (C2PA): AI-generated (trainedAlgorithmicMedia)");
+  // ... with the claim's own term, not XMP's, whichever came first.
+  mv::meta::parse::evidence same = xmp;
+  same.source_types.emplace_back(kComposite);
+  CHECK(derive_provenance(same).evidence ==
+        "Content Credentials (C2PA): Includes AI-generated elements (compositeWithTrainedAlgorithmicMedia)");
 
   // A generator named by a field, no source type.
   mv::meta::parse::evidence tool;
