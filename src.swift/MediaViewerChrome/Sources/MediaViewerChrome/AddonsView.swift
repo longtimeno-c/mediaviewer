@@ -529,7 +529,7 @@ struct AddonsSection: View {
       // own management view (LocalSearchView.swift).
       LocalSearchSection().padding(.top, 16)
       // docs/design/25: add-ons from other makers, under their own heading.
-      OpenAddonsSection().padding(.top, 16)
+      OpenAddonsSection().padding(.top, 16).id(OpenAddonStore.sectionAnchor)
     }
     // Opening Settings asks the channel, whatever the automatic-check switch
     // says: the person is looking at what can be installed.

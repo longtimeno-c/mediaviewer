@@ -2458,8 +2458,8 @@ static void MvAdoptNewDefaultViewerTypes() {
     if (app && path) (void)[app openEntryPath:path];
   };
   if (std::getenv("MV_EDIT_SELFTEST_SOAK") == nullptr) {
+    MvAddonsSetFolderModel(&_folder);  // docs/design/25 PR 57: scripts with folder.read
     if (MvClaimAddonHost()) {
-      MvAddonsSetFolderModel(&_folder);  // docs/design/25 PR 57: scripts with folder.read
       MvAddonsStart(open_from_addon, nullptr);
       // docs/design/23: Final Cut Pro search stays as Settings left it (background, later).
       MvFcpStart();
@@ -7266,11 +7266,14 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
         if (row && row->script) ++rows;
       }
       static int waited = 0;
-      if (rows < 2 && ++waited < 40) {
+      // ...and for the folder handed on the command line to list.
+      if ((rows < 2 || _folder.item_count() == 0) && ++waited < 40) {
         [self performSelector:@selector(scriptSelfTestRetry:) withObject:dir afterDelay:0.25];
         return;
       }
-      [self editSelfTestLine:[NSString stringWithFormat:@"s0 script_rows=%d\n", rows] dir:dir];
+      [self editSelfTestLine:[NSString stringWithFormat:@"s0 script_rows=%d folder_items=%zu\n", rows,
+                                                    _folder.item_count()]
+                     dir:dir];
       [self addonSelfTestSnap:@"s0-loaded" dir:dir];
       [self scriptSelfTestKey:40 chars:@"k"];  // Count files
       next = 1.0;
@@ -7288,6 +7291,8 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
       (void)mv_open_addons_scripts(buf, static_cast<int32_t>(sizeof(buf)));
       [self editSelfTestLine:[NSString stringWithFormat:@"s2 scripts=%s\n", buf] dir:dir];
       [self setSettingsVisible:YES];
+      [MVChromeHost revealOpenAddons];
+      next = 2.0;
       break;
     }
     case 3: [self addonSelfTestSnap:@"s3-settings" dir:dir];

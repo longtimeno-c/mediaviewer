@@ -117,6 +117,13 @@ final class OpenAddonStore: ObservableObject {
   @Published private(set) var installed: [OpenAddon] = []
   /// Script add-ons by id: running, or stopped and why (PR 57).
   @Published private(set) var scripts: [String: ScriptStatus] = [:]
+  /// Settings scrolls to From others when this moves (the PR 57 verify rig).
+  static let sectionAnchor = "open-addons-section"
+  @Published private(set) var revealRequests = 0
+  func reveal() {
+    revealRequests += 1
+    refresh()
+  }
   /// The first read of what is installed has landed.
   @Published private(set) var known = false
   @Published private(set) var offer: OpenAddonOffer?

@@ -74,6 +74,12 @@ public final class MVChromeHost: NSObject {
     PhotosBackupStore.shared.reveal()
   }
 
+  /// The host's MV_SCRIPT_SELFTEST rig (main_mac.mm, docs/design/25 PR 57): Settings
+  /// scrolled to From others, where a stopped script add-on says why.
+  @MainActor @objc public static func revealOpenAddons() {
+    OpenAddonStore.shared.reveal()
+  }
+
   /// The host's MV_ADDON_SELFTEST rig (main_mac.mm): the same calls the
   /// buttons make, and one line of state for its log. Inert otherwise.
   @MainActor @objc public static func addonSelfTest(_ action: String, argument: String) -> String {

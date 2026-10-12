@@ -890,6 +890,10 @@ void MvAddonsStartReader(MvAddonsOpenPathFn open_path, void* ctx) {
   // never searches costs nothing. The reader starts on the first ⌘F
   // (MvAddonsReaderSearch) or when Settings opens (mv_addon2_reader_start).
   // No card hint either: Import is not loaded or installed from this window.
+  // docs/design/25 PR 57: script add-ons run in every window's process, so their
+  // keys answer in every window (each reads its own folder). Utility QoS,
+  // after the chrome; they never write the store.
+  scripts_reload_async();
 }
 
 namespace {
@@ -1263,7 +1267,9 @@ void scripts_reload_async() {
   dispatch_async(script_queue(), ^{
     mac_scripts& sc = scripts();
     if (sc.quitting.load()) return;
-    auto store = open_store_once();
+    // Not open_store_once: that one sweeps .staging, which a window that is
+    // not the add-on host must leave alone. Reading needs no sweep.
+    auto store = mv::addon::default_open_store();
     if (!store) return;
     std::lock_guard<std::mutex> lock(sc.m);
     script_host_locked().reload(*store);
@@ -1324,7 +1330,9 @@ extern "C" void mv_open_addons_restart(const char* addon_id) {
   dispatch_async(script_queue(), ^{
     mac_scripts& sc = scripts();
     if (sc.quitting.load()) return;
-    auto store = open_store_once();
+    // Not open_store_once: that one sweeps .staging, which a window that is
+    // not the add-on host must leave alone. Reading needs no sweep.
+    auto store = mv::addon::default_open_store();
     if (!store) return;
     std::lock_guard<std::mutex> lock(sc.m);
     script_host_locked().restart(*store, id);
