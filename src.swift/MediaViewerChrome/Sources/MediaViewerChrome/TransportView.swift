@@ -10,7 +10,7 @@ private struct VolumeSliderRow: View {
 
   var body: some View {
     HStack(spacing: 6) {
-      Image(systemName: "speaker.fill").font(.caption)
+      Image(systemName: "speaker.fill").font(MVTheme.font(12))
       Slider(
         value: Binding(
           get: { Double(store.draggingVolume ?? store.volume) },
@@ -19,7 +19,9 @@ private struct VolumeSliderRow: View {
         onEditingChanged: { editing in if !editing { store.endVolumeDrag() } }
       )
       .frame(width: 120)
-      Image(systemName: "speaker.wave.3.fill").font(.caption)
+      .accessibilityLabel("Volume")
+      .accessibilityValue("\(Int((store.draggingVolume ?? store.volume) * 100)) percent")
+      Image(systemName: "speaker.wave.3.fill").font(MVTheme.font(12))
     }
     .padding(.horizontal, 10)
     .padding(.vertical, 4)
@@ -106,6 +108,7 @@ private struct MatchMarks: View {
 
 struct TransportView: View {
   @ObservedObject private var store = VideoStore.shared
+  @State private var moreShown = false
 
   private static func clock(_ ms: Int64) -> String {
     let total = max(0, Int(ms / 1000))
@@ -113,17 +116,42 @@ struct TransportView: View {
     return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%d:%02d", m, s)
   }
 
+  /// "Mute (⇧M)": the help text with the key bound to `command` in the live
+  /// table, so a remap shows (issue #187). Labels are cached per keys generation.
+  @MainActor private static func hint(_ text: String, _ command: String) -> String {
+    SettingsStore.keyLabel(command).map { "\(text) (\($0))" } ?? text
+  }
+
+  /// "Playback speed (⇧Q slower, ⇧E faster)".
+  @MainActor private static var speedHelp: String {
+    let keys = [("Slower", "slower"), ("Faster", "faster")].compactMap { command, word in
+      SettingsStore.keyLabel(command).map { "\($0) \(word)" }
+    }
+    return keys.isEmpty ? "Playback speed" : "Playback speed (\(keys.joined(separator: ", ")))"
+  }
+
+  private static func rateText(_ x100: Int32) -> String {
+    x100 == 100 ? "1x" : String(format: "%.2gx", Double(x100) / 100)
+  }
+
   var body: some View {
     let duration = max(store.durationMs, 1)
     let shown = store.scrubMs ?? store.positionMs
     HStack(spacing: 10) {
       Button(action: { store.skip(-10_000) }) { Image(systemName: "gobackward.10") }
+        .help(Self.hint("Back 10 seconds", "Back 10 s"))
+        .accessibilityLabel("Back 10 seconds")
       Button(action: { store.toggle() }) {
         Image(systemName: store.playing ? "pause.fill" : "play.fill").frame(width: 18)
       }
+      .help(Self.hint(store.playing ? "Pause" : "Play", "Play / pause"))
+      .accessibilityLabel(store.playing ? "Pause" : "Play")
       Button(action: { store.skip(10_000) }) { Image(systemName: "goforward.10") }
+        .help(Self.hint("Forward 10 seconds", "Forward 10 s"))
+        .accessibilityLabel("Forward 10 seconds")
 
-      Text(Self.clock(shown)).monospacedDigit().font(.caption).frame(minWidth: 40, alignment: .trailing)
+      Text(Self.clock(shown)).monospacedDigit().font(MVTheme.font(12)).frame(minWidth: 40, alignment: .trailing)
+        .accessibilityHidden(true)  // the scrubber's value says it
       Slider(
         value: Binding(
           get: { Double(shown) },
@@ -135,47 +163,68 @@ struct TransportView: View {
         .overlay { TrimMarks().allowsHitTesting(false) }
         // Milestone H: this clip's other matches in the active search.
         .overlay { MatchMarks().allowsHitTesting(false) }
-      Text(Self.clock(store.durationMs)).monospacedDigit().font(.caption)
+        // Bound to milliseconds: without these VoiceOver reads "34,512".
+        .accessibilityLabel("Position")
+        .accessibilityValue("\(Self.clock(shown)) of \(Self.clock(store.durationMs))")
+      Text(Self.clock(store.durationMs)).monospacedDigit().font(MVTheme.font(12))
         .frame(minWidth: 40, alignment: .leading)
+        .accessibilityHidden(true)
 
       if store.trimArmed {
         Text(store.trimPreviewing ? store.trimLabel + " · previewing" : store.trimLabel)
-          .font(.caption).monospacedDigit()
+          .font(MVTheme.font(12)).monospacedDigit()
           .foregroundStyle(MVTheme.title)
           .lineLimit(1)
         // The keyed commands for the mouse: Return / ⇧Return in trim mode.
         Button("Save") { store.run(TrimCommand.keyframe) }
+          .buttonStyle(FlatButtonStyle(compact: true))
           .help("Keyframe trim: instant, no re-encode (Return)")
         Button("Save exact") { store.run(TrimCommand.reencode) }
+          .buttonStyle(FlatButtonStyle(compact: true))
           .help("Frame-accurate re-encode on the hardware encoder; slower (⇧Return)")
       }
 
       Menu {
         ForEach(VideoStore.speeds, id: \.self) { rate in
-          Button(action: { store.setSpeed(x100: rate) }) {
-            Text(rate == 100 ? "1x" : String(format: "%.2gx", Double(rate) / 100))
-          }
+          Button(action: { store.setSpeed(x100: rate) }) { Text(Self.rateText(rate)) }
         }
       } label: {
-        Text(String(format: "%.2gx", Double(store.rateX100) / 100)).font(.caption).monospacedDigit()
+        Text(String(format: "%.2gx", Double(store.rateX100) / 100)).font(MVTheme.font(12)).monospacedDigit()
       }
       .menuStyle(.borderlessButton).fixedSize()
+      .help(Self.speedHelp)
+      .accessibilityLabel("Playback speed")
+      .accessibilityValue(Self.rateText(store.rateX100))
 
       Button(action: { store.toggleMute() }) {
         Image(systemName: store.muted ? "speaker.slash.fill" : "speaker.wave.2.fill").frame(width: 18)
       }
+      .help(Self.hint(store.muted ? "Unmute" : "Mute", "Mute"))
+      .accessibilityLabel(store.muted ? "Unmute" : "Mute")
 
       // Windows parity (IslandHost.Video.cs "More" panel): frame step and volume
       // are not one-tap-frequent enough to earn main-bar space, same call Windows made.
-      Menu {
-        Button(action: { store.step(-1) }) { Text("Previous frame") }
-        Button(action: { store.step(1) }) { Text("Next frame") }
-        Divider()
-        VolumeSliderRow()
-      } label: {
+      // A popover, not a Menu: a Menu on macOS is NSMenuItems and does not draw a
+      // custom row holding a Slider, which hid the only pointer volume control
+      // (issue #187).
+      Button(action: { moreShown.toggle() }) {
         Image(systemName: "ellipsis.circle").frame(width: 18)
       }
-      .menuStyle(.borderlessButton).fixedSize()
+      .help("Frame step and volume")
+      .accessibilityLabel("More playback controls")
+      .popover(isPresented: $moreShown, arrowEdge: .top) {
+        VStack(alignment: .leading, spacing: 2) {
+          Button(action: { store.step(-1) }) { Text("Previous frame").frame(maxWidth: .infinity, alignment: .leading) }
+            .help(Self.hint("Previous frame", "Previous frame"))
+          Button(action: { store.step(1) }) { Text("Next frame").frame(maxWidth: .infinity, alignment: .leading) }
+            .help(Self.hint("Next frame", "Next frame"))
+          Divider().padding(.vertical, 4)
+          VolumeSliderRow()
+        }
+        .buttonStyle(FlatButtonStyle(compact: true))
+        .padding(8)
+        .frame(width: 200)
+      }
     }
     .buttonStyle(.plain)
     .padding(.horizontal, 14)

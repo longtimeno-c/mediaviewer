@@ -207,6 +207,40 @@ the CPU self-test reference in `selftest.txt` (keyed by runtime, provider, model
   `path#t=ms` rows through the host table. There is no second thumbnail path.
 - Resumable: state is per asset and spec; a kill mid-clip resumes at the last committed frame
   (`resume_ms`).
+- **Unfinished roots wait for Resume (issue #299, 2026-10-11).** A quit or a kill while a root
+  is unfinished does not resume on the next open, and unfinished work is not a reason to load the
+  pack. The shipped pack runs with `engine_options::hold_unfinished` (`addon_entry.cpp`):
+  - **Held.** A root whose pictures were not all indexed when the engine started is *held*: not
+    walked, not queued on any track, not fetched from iCloud or a cloud drive, and left out of
+    the status counts, until `set_setting("resume_root", <id>)` (0: every held root), a Rescan,
+    re-enabling it or Index this folder on it. Search answers from what it committed meanwhile;
+    `roots_json` marks it `"held": true`. Opening search loads the pack (#292, above) but does
+    not resume a held root. Same rule for the Photos library and an ordinary folder.
+  - **`data/resume.json`.** The control thread keeps it current (after each walk, and at most
+    every 5 s otherwise, written only when it changed, through a `.tmp` and a rename):
+    `{"version":1,"roots":[{"id","path","kind","done","total","held"}]}`, the enabled roots
+    with pictures still to index. It holds local paths beside `index.db`, which holds them
+    already; nothing is sent anywhere (rule 6).
+  - **The launch notice, both hosts.** The worker that verifies the installed pack at launch
+    also reads `resume.json` (Mac: `addons_mac.mm` through `addon/ai_resume.h`; Windows:
+    `IslandHost.ResumeNotice.cs`). Nothing of the pack loads for it. With roots listed, a small
+    notice in the bottom-right corner, not a modal, asks "Resume indexing Photos?" (two roots:
+    "Photos and Holiday"; more: "Photos, Holiday and 2 more"). **Resume** loads the pack as the
+    first search does (no panel opens; the pill says "Starting Local search…") and, once it
+    attaches, sends `resume_root` 0: each root is walked (its startup delta was skipped), then
+    indexed from `resume_ms`, redoing nothing committed. **Dismiss** leaves them paused and loads
+    nothing; the notice does not come back that session, and the next launch asks again. The Mac
+    notice is a self-sizing SwiftUI card pinned over the canvas corner (`ResumeNoticeView.swift`,
+    above the filmstrip when it is up); Windows has no island in that corner, so the notice is a
+    windowed `Popup` of the command-bar island (`ShouldConstrainToRootBounds = false`, as the
+    bar's flyouts are), placed from the window's client rectangle on every resize. Neither takes
+    focus. A later window (the reader) indexes nothing and shows no notice.
+  - **Settings → Local search**, in the pack's folder list (`ManagementView.swift`,
+    `ManagePanel.cs`): a held root's row reads "N of M · paused since last time" and offers
+    **Resume** in place of Pause, which sends `resume_root` for that root alone.
+  - **What it costs** is in the decision log: files added to a held root wait too. A pack that
+    has never run with the option has no `resume.json`, so the first launch after the update asks
+    nothing; the roots it holds then show Resume in Settings.
 - A folder whose walk fails (offline, moved, no access) keeps its rows; `roots_json` says
   `"error":"unreadable"` and Settings says "Couldn't read this folder" rather than "Up to date".
 
@@ -244,14 +278,21 @@ unindexed.
   "mountain" and "mountains" are the same query.
 - **Scan** (`vectors.h`): brute-force int8 dot product over an in-memory matrix of every stored
   frame of the active model (loaded, not memory-mapped; ~77 MB at 100 k L/14 frames). 100,000
-  ViT-L rows scan in ~31 ms on one core. There is no ANN index.
+  ViT-L rows scan in ~31 ms on one core. There is no ANN index. Dropping assets (a root
+  removed, a scan's gone or changed list, a reader's refresh) tombstones their rows in one
+  pass with at most one compaction (`remove_assets`), and a path finds its asset through a
+  `path_key → id` map kept beside the asset table, not a walk of it (`clip_matches`,
+  `search_similar`; issue #174).
 - **Ranking:** top frames, then **grouped per clip** with the best moment first and "N more in
   this clip", so one long video cannot fill the page (`mv_ai_result`). `find_text` returns at
   most 5,000 rows.
 - **Scope:** the open folder and its subfolders (default) · all indexed folders
   (`MV_AI_SCOPE_TREE` / `MV_AI_SCOPE_ALL`; the panel offers no folder-only scope). Kind filter
   (photos / videos) and tower filter (pictures / sounds / speech). A nonsense query returns
-  "nothing found", not the least-bad ten (below).
+  "nothing found", not the least-bad ten (below). With no folder open the folder scope searches
+  everywhere, and the Mac panel shows *Everywhere* chosen; opening another folder asks a
+  folder-scoped search again (on the panel's next showing if it is closed), never leaving the
+  last folder's results under the new one (issue #191).
 - **Find similar:** the current still or the paused frame as the query. An indexed still or
   moment uses its stored vector; another paused frame is embedded on demand.
 
@@ -363,7 +404,9 @@ people.
   thumbnail and `mm:ss`. **Enter** on a video tile opens the clip paused on that moment, with
   the scrub bar marking the clip's other matches.
 - **Search panel** (`MediaViewer.Ai.Chrome` / `AI.bundle`): opened from the search icon in the
-  path bar or `Ctrl+F` / `⌘F`. Query field with name suggestions, *Look in* (this folder and
+  path bar or `Ctrl+F` / `⌘F`. The first time in a session it starts the pack first (*Starting on
+  demand*, below): the command-bar pill reads "Starting Local search…" and the panel opens once
+  the pack attaches. Query field with name suggestions, *Look in* (this folder and
   subfolders · everywhere · Photos on the Mac when indexed), kind and Pictures / Sounds / Speech
   filters, the snippet under a spoken result. Without the pack the same icon and key open the
   base app's file search ([16](16-commands.md) "File search").
@@ -382,7 +425,10 @@ people.
 - **Indexing status:** a status pill (progress, pause/resume, "paused — playing video"), never a
   modal. It shows assets/frames completed, the active root, measured rate and an ETA range from
   completed work (`mv_ai_status`). The Windows pill does not appear for a load that is waiting
-  on the viewer.
+  on the viewer. On both hosts the command-bar pill has a ring (the pass's progress, with an arc
+  that turns while work runs), fades in and out, and has a menu: Open search, and Index anyway
+  while on battery. On Windows the pack reports these through `IAddonHost3.SetIndexingPill`;
+  an older pack's `SetIndexingStatus` still drives the line.
 - **Settings → Local search:** per-piece install, Compute, Quality, Precision, "Index videos
   for", battery threshold, index size and cap, remembered roots (with *Index Pictures* / *Videos*
   (*Movies*) offered while no root covers them, and the reason when an add fails), *Index
@@ -405,19 +451,34 @@ Indexing is a background load on the machine and GPU of a viewer whose point is 
   present loop is busy (`should_yield`: playback, panning, springs, a slideshow, a transition,
   and for 2 s after any dropped frame), while on battery below the threshold (default 30 %), and
   while the user has paused it. **Index anyway** wherever "Paused on battery" shows (search
-  footer, Settings, the Mac command-bar pill's menu) sets `battery_override` for that spell on
+  footer, Settings, the command-bar pill's menu) sets `battery_override` for that spell on
   battery; it is never saved, and going back to AC or restarting ends it. The viewer's own
   yields are not overridable.
+- **Starting on demand (issue #292, 2026-10-11):** at launch nothing of the pack loads: no ONNX
+  Runtime, no model sessions, no indexing threads. The host only verifies the installed pack, so
+  the search icon and `Ctrl+F` / `⌘F` offer Local search (Windows `AiOnDemand`, Mac
+  `mv_addon2_ai_on_demand`). The first search of the session loads the pack (the query-side
+  models with the rest), and the pack's startup delta and indexing then run for the rest of the
+  session (a root left unfinished last session excepted: it waits for Resume, below); the command-bar pill reads "Starting Local search…" meanwhile, since the panel is the
+  pack's and cannot show before it attaches. Opening Settings does not start it: Settings →
+  Local search says it starts at the first search and offers **Start now**, which loads it so the
+  pack's own panel (compute, folders, People) shows. Installing Core (or a piece with Core
+  already running) in Settings still loads it at once. A later window's reader was already on
+  demand ([18](18-import.md) "One host process"), and so is the Final Cut Pro agent: launchd
+  starts it only when the extension connects, and it exits when idle ([23](23-nle-search.md)).
+  The cost is in the decision log: files added while search was never opened are indexed only
+  once search is first opened that session.
 - **Loading:** opening the models (a GPU context, a gigabyte of weights, the self-test) waits for
   the same quiet viewer indexing does, and reports LOADING with `yield_reason` VIEWER meanwhile.
-  Pictures become searchable first; the audio models open after them. Settings never loads the
-  runtime. The self-test's CPU half is cached in `selftest.txt` (~15 s off a 40 s CUDA ViT-L
-  load); the provider still runs and is checked against it every start.
+  Pictures become searchable first; the audio models open after them. Settings' own reads never
+  load the runtime. The self-test's CPU half is cached in `selftest.txt` (~15 s off a 40 s CUDA
+  ViT-L load); the provider still runs and is checked against it every start.
 - **GPU:** a vendor provider owns its own device; the CPU backend is the pressure valve.
 - **Memory:** decoded-frame and tensor memory are capped; the search matrix is ~77 MB at 100 k
   L/14 frames.
 - **Disk:** the index has a size cap (`index_cap_bytes`, default 8 GB; over it, indexing stops
-  with `MV_AI_STATUS_INDEX_FULL`) and per-folder delete; its size shows in Settings.
+  with `MV_AI_STATUS_INDEX_FULL`) and per-folder delete; its size shows in Settings, where both
+  hosts pick the cap (2, 5, 10, 20 or 50 GB) and removing a folder asks first.
 
 ## ABI
 
@@ -818,7 +879,7 @@ Ryzen 16-thread, RTX 4070, ORT 1.30.
   grouping, dedupe, yield, pause, migration never mixing specs, clear, size cap, find-similar,
   people corrections, face deletion leaving no faces.db.
 - Query scan: 100,000 ViT-L int8 rows (2,000 clips × 50, with per-asset stats) in **31 ms** on
-  one core (`mv_ai_tests "[perf]"`, which fails over 100 ms in optimised builds); with the ~30 ms
+  one core (`mv_ai_tests "[.perf-bench]"`, which fails over 100 ms in optimised builds); with the ~30 ms
   CUDA text tower a query is ~60 ms.
 - A 1-hour 4K HEVC clip (synthetic, with a soundtrack): pictures, sound and speech in **302 s**
   on CUDA with ViT-L and Whisper small — model load ~25 s, 255 picture moments ~190 s, sound

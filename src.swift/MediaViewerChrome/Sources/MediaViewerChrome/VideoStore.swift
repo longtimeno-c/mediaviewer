@@ -27,6 +27,10 @@ final class VideoStore: ObservableObject {
   @Published var draggingVolume: Float?
   /// While the thumb is held, the strip shows (and seeks to) this, not the clip.
   @Published var scrubMs: Int64?
+  /// One slider gesture. A click writes the minimum and then the time under
+  /// the pointer; only the latest sample in a turn is sought (issue #362).
+  private var scrubSerial = 0
+  private var scrubClosed = false
 
   // PR 13: trim mode on the scrub bar (shell/trim_state.h via the bridge).
   // Nanoseconds; -1 = unset. Re-read only when the host's trim generation moves.
@@ -48,21 +52,21 @@ final class VideoStore: ObservableObject {
   @Published private(set) var matchCurrent: Int = -1
   private var matchGeneration: UInt64 = .max
 
-  private var timer: Timer?
-
   private init() {
-    timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-      MainActor.assumeIsolated { self?.poll() }
-    }
+    // Issue #178: polled when the main run loop has run (ChromePulse). The
+    // render thread moves the position, so its timer runs while a clip plays;
+    // while one is the current item, the host's transport poll wakes the loop.
+    ChromePulse.shared.add { [weak self] in self?.poll() ?? false }
   }
 
-  private func poll() {
+  /// True while a clip plays: the position moves off the main thread.
+  private func poll() -> Bool {
     var pos: Int64 = 0, dur: Int64 = 0, rate: Int32 = 100
     var isPlaying = false, isMuted = false
     var vol: Float = 1.0
     let on = mv_chrome_video_status(&pos, &dur, &isPlaying, &rate, &isMuted, &vol)
     if on != active { active = on }
-    guard on else { return }
+    guard on else { return false }
     if scrubMs == nil, pos != positionMs { positionMs = pos }
     if dur != durationMs { durationMs = dur }
     if isPlaying != playing { playing = isPlaying }
@@ -71,6 +75,7 @@ final class VideoStore: ObservableObject {
     if draggingVolume == nil, vol != volume { volume = vol }
     pollTrim()
     pollMatches()
+    return isPlaying
   }
 
   private func pollMatches() {
@@ -135,13 +140,62 @@ final class VideoStore: ObservableObject {
   /// Drag: nearest keyframe, instant. Release: decode forward to the frame.
   func scrub(to ms: Int64) {
     scrubMs = ms
-    mv_chrome_video_seek(ms, false)
+    let serial = bumpScrub()
+    DispatchQueue.main.async { [weak self] in
+      MainActor.assumeIsolated { self?.flushScrub(serial) }
+    }
   }
   func endScrub() {
-    guard let ms = scrubMs else { return }
+    guard scrubMs != nil else { return }
+    scrubClosed = true
+    let serial = bumpScrub()
+    DispatchQueue.main.async { [weak self] in
+      MainActor.assumeIsolated { self?.flushScrub(serial) }
+    }
+  }
+
+  private func bumpScrub() -> Int {
+    scrubSerial &+= 1
+    return scrubSerial
+  }
+
+  private func flushScrub(_ serial: Int) {
+    guard serial == scrubSerial, let ms = scrubMs else { return }
+    if scrubClosed {
+      settleScrub(ms)
+    } else if !Self.scrubOriginIsSpurious(playheadMs: positionMs, sampleMs: ms) {
+      mv_chrome_video_seek(ms, false)
+    }
+  }
+
+  /// The minimum at the end of a click may be the slider's first sample, with
+  /// the real time arriving on the next turn. Hold it; a newer sample cancels
+  /// the hold. A click that really is at the start still lands there.
+  private func settleScrub(_ ms: Int64) {
+    if Self.scrubOriginIsSpurious(playheadMs: positionMs, sampleMs: ms) {
+      let serial = scrubSerial
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+        MainActor.assumeIsolated {
+          guard let self, serial == self.scrubSerial else { return }
+          self.commitScrub(0)
+        }
+      }
+      return
+    }
+    commitScrub(ms)
+  }
+
+  private func commitScrub(_ ms: Int64) {
     positionMs = ms
     mv_chrome_video_seek(ms, true)
     scrubMs = nil
+    scrubClosed = false
+  }
+
+  /// Half a second, `player::scrub_origin_playhead_ns`. The sample is the
+  /// slider's minimum while the playhead is already past that.
+  private static func scrubOriginIsSpurious(playheadMs: Int64, sampleMs: Int64) -> Bool {
+    sampleMs <= 0 && playheadMs > 500
   }
 
   func setSpeed(x100: Int32) {
