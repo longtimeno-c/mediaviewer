@@ -516,23 +516,20 @@ private struct TrailWidthKey: PreferenceKey {
 }
 
 /// The path group's search icon (owner, 2026-09-28; it replaced the gallery
-/// search bar). Always there: it does what ⌘F does. With Local search loaded
-/// or still starting at launch it opens that panel (a click while it starts
-/// opens it once it attaches); without it, file search, which needs no add-on
-/// and no index (docs/design/16 "File search").
+/// search bar). Always there: it does what ⌘F does. With Local search
+/// installed it opens that panel: at once when loaded, else the pack starts
+/// (issue #292) and the panel opens once it attaches; without it, file
+/// search, which needs no add-on and no index (docs/design/16 "File search").
 private struct PathSearchButton: View {
   @ObservedObject private var search = LocalSearchStore.shared
 
   var body: some View {
     PathIcon(symbol: "magnifyingglass", enabled: true) {
-      if search.searchAvailable {
-        search.openSearchWhenReady()
-      } else if !mv_addon2_reader_search() {
-        // A later window starts its reader on this click (as on ⌘F); otherwise file search.
-        mv_chrome_file_search()
-      }
+      // The pack (or a later window's reader) starts on this click, as on ⌘F;
+      // with nothing on its way, file search.
+      if !search.openSearchWhenReady() { mv_chrome_file_search() }
     }
-    .help(search.loaded ? "Search photos and videos (⌘F)"
+    .help(search.loaded || search.onDemand ? "Search photos and videos (⌘F)"
           : search.searchAvailable ? "Search photos and videos (⌘F). Local search is starting…"
           : "Find files by name in this folder (⌘F)")
     .accessibilityLabel(search.searchAvailable ? "Search" : "Find files by name")

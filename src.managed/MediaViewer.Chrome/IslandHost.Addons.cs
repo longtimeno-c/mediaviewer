@@ -290,7 +290,12 @@ public static partial class IslandHost
             {
                 ApplyAddonStates(states);
                 if (ImportSlot.Usable) LoadAddon(ImportSlot);
-                if (AiSlot.Usable) LoadAddon(AiSlot);
+                // The AI pack is verified here, not loaded (issue #292,
+                // docs/design/17 "Starting on demand"): no runtime, no model
+                // sessions, no indexing threads until the first search
+                // (OpenFileSearch) or Settings' Start now. The search icon
+                // offers it meanwhile (AiOnDemand).
+                UpdatePathSearchButton();
                 AlertIfUnusable(ImportSlot);
                 AlertIfUnusable(AiSlot);
                 RefreshAddonRow();
@@ -411,8 +416,14 @@ public static partial class IslandHost
         if (reader && slot != AiSlot) return;
         MediaViewerSession session = _folderSession;
         slot.Busy = true;
-        // The path bar's search icon shows while the pack starts.
-        if (slot == AiSlot) OnSearchLoadChanged();
+        // The path bar's search icon shows while the pack starts, and the
+        // command-bar pill says so: the panel is the pack's, so it cannot.
+        if (slot == AiSlot)
+        {
+            HostSetIndexingPill(AiStartingText, true);
+            OnSearchLoadChanged();
+            RefreshLocalSearch();
+        }
         _ = Task.Run(() =>
         {
             try
@@ -441,7 +452,11 @@ public static partial class IslandHost
                         SetSlotStatus(slot, $"{AddonFailTitle(slot)}. {why}");
                         ShowAddonAlert(slot, AddonFailTitle(slot), why, open: asked);
                     }
-                    if (slot == AiSlot) OnSearchLoadChanged();
+                    if (slot == AiSlot)
+                    {
+                        HostSetIndexingPill(null, false);
+                        OnSearchLoadChanged();
+                    }
                 });
             }
         });
@@ -496,6 +511,8 @@ public static partial class IslandHost
             {
                 throw new InvalidOperationException("no IAddonChrome in the add-on");
             }
+            // "Starting Local search…" goes; the pack posts its own line.
+            if (slot == AiSlot) HostSetIndexingPill(null, false);
             chrome.Attach(new AddonHost(slot), table);
             slot.Chrome = chrome;
             slot.State = slot.State with { Loaded = true };
