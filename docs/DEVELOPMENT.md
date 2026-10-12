@@ -926,6 +926,11 @@ cmake --build build-fuzz --config Release --target mv_fuzzers
 #   ASAN_OPTIONS=detect_leaks=0 ./fuzz_meta_png -max_total_time=600 corpus tests/data/seeds/png tests/data/seeds/c2pa
 # Their seeds (tests/data/seeds/{c2pa,xmp,icc}) come from the test builders:
 #   MV_SEED_DIR=tests/data/seeds mv_tests "[.write-seeds]"
+# #352: fuzz_meta_location (meta::parse_location, the Location editor) is pure and builds
+# from one file:
+#   /opt/homebrew/opt/llvm/bin/clang++ -std=c++20 -fsanitize=fuzzer,address,undefined -fno-rtti -Isrc \
+#     -Itools/fuzz tools/fuzz/fuzz_meta_location.cpp src/meta/location_edit.cpp -o fuzz_meta_location
+#   ASAN_OPTIONS=detect_leaks=0 ./fuzz_meta_location -max_total_time=600 -max_len=512 corpus tests/data/seeds/location
 
 # PR 7 clean-VM gate: a HEIC decodes with MV_OS_CODEC=0, and the process has
 # loaded libheif + libde265 and NO Media Foundation, WIC codec extension, or

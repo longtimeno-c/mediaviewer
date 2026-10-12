@@ -63,6 +63,8 @@ $table = [ordered]@{
     meta_bmff   = @{ Seeds = @('heic', 'avif', 'c2pa');                 MaxLen = 131072 }
     meta_xmp    = @{ Seeds = @('xmp');                                  MaxLen = 65536 }
     meta_icc    = @{ Seeds = @('icc');                                  MaxLen = 65536 }
+    # #352: the Location editor's parser; the text is capped at 256 bytes.
+    meta_location = @{ Seeds = @('location');                           MaxLen = 512 }
 }
 
 if ($Harness.Count -eq 1 -and $Harness[0] -match ',') { $Harness = $Harness[0] -split ',' }

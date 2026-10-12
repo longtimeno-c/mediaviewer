@@ -81,6 +81,10 @@ Suites are registered with CTest and run by `ctest` on both platforms; see
    `_jpeg`, `_png`, `_webp`, `_bmff`, `_xmp`, `_icc`; [06-metadata.md](06-metadata.md#beyond-exiv2-290)),
    which link only `mv_meta_parse` and abort on a row past the cap or a string that is not
    valid UTF-8. Their seeds are `tests/data/seeds/{c2pa,xmp,icc}` plus the image families.
+   #352 adds `fuzz_meta_location` for the Location editor's parser (`meta::parse_location`,
+   built from `src/meta/location_edit.cpp` alone): an accepted point is finite, in range and
+   never `-0`, a refusal is one UTF-8 line that fits the ABI's 128 bytes, and the editor's
+   starting text reads back to the point. Seeds: `tests/data/seeds/location`.
 6. **Clean-VM gate** (`test_clean_vm_heic.cpp`, label `cleanvm`). A HEIC decodes with
    `MV_OS_CODEC=0`, and the process has loaded libheif + libde265 and no Media Foundation,
    WIC codec extension or `\WindowsApps\` module. It is its own executable because
