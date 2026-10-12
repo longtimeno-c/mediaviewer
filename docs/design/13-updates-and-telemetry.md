@@ -206,7 +206,12 @@ A minidump from a photo viewer can hold decoded pixels, a path and EXIF GPS. Scr
 on the next launch, before any send could be offered:
 
 - every captured byte outside a thread stack is zeroed (this replaces an arena-tagged heap
-  filter: it removes decoded image buffers without needing to find them);
+  filter: it removes decoded image buffers without needing to find them). On Windows this
+  drops the environment, the command line and the current directory: they live in the PEB,
+  not on a stack;
+- an environment block found on a thread stack is zeroed too, with the argv strings packed
+  against it. macOS puts that block at the top of the main stack, so the step above keeps
+  it, and a username inside an email there is not always a whole identity token;
 - paths, media filenames and the username / computer name are masked, same length;
 - annotations carry only format, decoder / version, correlation id and optional geometry, built
   from literals, integers and the names FFmpeg keeps in static storage (demuxer, codec) inside the
@@ -245,10 +250,12 @@ on the next launch, before any send could be offered:
 - **Scrub.** The Windows scrub, plus POSIX paths under `/Users`, `/Volumes`, `/private`, `/var`,
   `/tmp`, `/home`, …, keeping module layout (`.dylib`, `.app/Contents/…`, `.framework/…`) with
   only the user component masked. Thread-stack bytes also lose an unrooted run of two or more
-  path components, while `://` URLs and relative `./` / `../` runs stay. Identities: short and
-  full user name, the Sharing computer name, the host name. The rewrite copies the dump's
-  extended attributes onto the replacement, because the Mac Crashpad database stores report
-  metadata there.
+  path components, while `://` URLs and relative `./` / `../` runs stay. The environment block
+  at the top of the main stack, and the argv strings packed against it, are zeroed (issue #349):
+  the kernel places them there, so they are inside the stack the rest of the scrub keeps.
+  Identities: short and full user name, the Sharing computer name, the host name. The rewrite
+  copies the dump's extended attributes onto the replacement, because the Mac Crashpad database
+  stores report metadata there.
 - **Chrome path.** `NSApplicationCrashOnExceptions` is on. AppKit catches an exception raised in
   event handling and calls `-[NSApplication reportException:]`, which traps without calling
   `NSUncaughtExceptionHandler`; that method and the uncaught handler both write one scrubbed text

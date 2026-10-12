@@ -9,6 +9,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Hosting;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Animation;
 using Microsoft.UI.Xaml.Shapes;
 using Windows.UI;
 
@@ -241,7 +242,7 @@ public static partial class IslandHost
 
     private static UIElement BuildClipTools(int flags, out UIElement focusTarget)
     {
-        var panel = new StackPanel { Spacing = 2, Margin = new Thickness(12), IsTabStop = true, MinWidth = 380 };
+        var panel = new StackPanel { Spacing = 2, IsTabStop = true, Width = 400 };
         panel.Children.Add(Label("Clip tools", UiFontSize + 2));
         panel.Children.Add(Label("New files beside the clip; the original is never changed.", UiFontSize, mute: true));
         var rows = new TextBlock[ClipTools.Length];
@@ -254,7 +255,9 @@ public static partial class IslandHost
             for (int i = 0; i < rows.Length; ++i)
             {
                 rows[i].Text = (i == row ? "▶ " : "  ") + ClipTools[i].Name;
-                rows[i].Foreground = Brush(!Enabled(i) ? Body : i == row ? Title : Body);
+                // A tool the clip cannot use is the Disabled colour, not a
+                // dimmer copy of an enabled row (the Mac's .tertiary).
+                rows[i].Foreground = Brush(!Enabled(i) ? ChromeColour.Disabled : i == row ? Title : Body);
                 AutomationProperties_SetName(rows[i], ClipTools[i].Name + (Enabled(i) ? "" : ", unavailable"));
             }
         }
@@ -287,6 +290,15 @@ public static partial class IslandHost
             panel.Children.Add(b);
         }
         panel.Children.Add(Label("↑ ↓ choose   Enter run   Esc cancel   ·   jobs: Ctrl+J", UiFontSize, mute: true));
+        // Cancel (Esc) and Run (Enter) for the mouse (ClipToolsView.swift).
+        Button cancel = TextButton("Cancel", ClosePopup);
+        cancel.IsTabStop = false;
+        ToolTipService.SetToolTip(cancel, "Esc");
+        Button run = AccentButton("Run", () => Run(row));
+        run.IsTabStop = false;
+        run.IsEnabled = row < ClipTools.Length;  // a clip no tool can use
+        ToolTipService.SetToolTip(run, "Enter");
+        panel.Children.Add(SheetButtons(cancel, run));
         AutomationProperties_SetName(panel, "Clip tools");
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetHelpText(
             panel, "Up and Down choose a tool, Enter runs it, Escape cancels");
@@ -322,6 +334,10 @@ public static partial class IslandHost
         public TextBlock Title = null!;
         public TextBlock Status = null!;
         public JobBar Bar = null!;
+        // Only the action for the job's state shows (JobsView.swift).
+        public Button Cancel = null!;
+        public Button Retry = null!;
+        public Button Reveal = null!;
     }
 
     // A job's progress as two plain borders. Not a ProgressBar: WinUI's has no
@@ -335,8 +351,23 @@ public static partial class IslandHost
     {
         public readonly Grid Root;
         private readonly Border _fill;
+        // Indeterminate: a soft accent pulse sweeps across, off the left edge to
+        // off the right, eased, as the Mac's ActivityBar (AddonsView.swift). A
+        // Storyboard on a TranslateTransform, as the load bar's sweep
+        // (IslandHost.cs): it runs only while the bar is indeterminate, visible
+        // and in the tree, so a finished or hidden bar costs nothing. With
+        // Windows' animations off it is a still, half-strength fill instead.
+        private readonly Border _pulse;
+        private readonly TranslateTransform _slide = new();
+        private readonly LinearGradientBrush _pulseBrush;
+        private Storyboard? _sweep;
+        private double _sweepWidth;
         private double _value;
         private bool _indeterminate;
+        private bool _loaded;
+
+        private const double SweepPeriodMs = 1400;
+        private const double PulseFraction = 0.35;
 
         public JobBar()
         {
@@ -346,9 +377,38 @@ public static partial class IslandHost
                 HorizontalAlignment = HorizontalAlignment.Left,
                 CornerRadius = new CornerRadius(2),
             };
+            _pulseBrush = new LinearGradientBrush
+            {
+                StartPoint = new Windows.Foundation.Point(0, 0.5),
+                EndPoint = new Windows.Foundation.Point(1, 0.5),
+            };
+            _pulse = new Border
+            {
+                Background = _pulseBrush,
+                HorizontalAlignment = HorizontalAlignment.Left,
+                RenderTransform = _slide,
+                Visibility = Visibility.Collapsed,
+            };
             Root = new Grid { Height = 4, Background = Brush(Hairline), CornerRadius = new CornerRadius(2) };
             Root.Children.Add(_fill);
-            Root.SizeChanged += (_, _) => Layout();
+            Root.Children.Add(_pulse);
+            Root.SizeChanged += (_, e) =>
+            {
+                // A Grid does not clip its children, and the pulse runs off both ends.
+                Root.Clip = new RectangleGeometry { Rect = new Windows.Foundation.Rect(0, 0, e.NewSize.Width, e.NewSize.Height) };
+                Layout();
+            };
+            Root.Loaded += (_, _) =>
+            {
+                _loaded = true;
+                Layout();
+            };
+            Root.Unloaded += (_, _) =>
+            {
+                _loaded = false;
+                StopSweep();
+            };
+            Root.RegisterPropertyChangedCallback(UIElement.VisibilityProperty, (_, _) => Layout());
         }
 
         public double Value
@@ -360,7 +420,7 @@ public static partial class IslandHost
             }
         }
 
-        // Running with no fraction yet: a fixed third, not an animation.
+        // Running with no fraction yet: the sweep (or the still fill).
         public bool IsIndeterminate
         {
             set
@@ -375,7 +435,65 @@ public static partial class IslandHost
             set => Root.Visibility = value;
         }
 
-        private void Layout() => _fill.Width = Math.Max(0, (_indeterminate ? 0.33 : _value) * Root.ActualWidth);
+        private void Layout()
+        {
+            double width = Root.ActualWidth;
+            bool still = _indeterminate && !HostAnimationsEnabled();
+            bool sweep = _indeterminate && !still;
+            _fill.Opacity = still ? 0.45 : 1;
+            _fill.Width = Math.Max(0, (still ? 1 : _indeterminate ? 0 : _value) * width);
+            _pulse.Visibility = sweep ? Visibility.Visible : Visibility.Collapsed;
+            if (sweep && _loaded && width > 0 && Root.Visibility == Visibility.Visible) StartSweep(width);
+            else StopSweep();
+        }
+
+        private void StartSweep(double width)
+        {
+            if (_sweep is not null && _sweepWidth == width) return;
+            StopSweep();
+            try
+            {
+                // The accent as it is now (a theme change re-lays out the bar).
+                Color accent = Brush(TrimAccent).Color;
+                _pulseBrush.GradientStops.Clear();
+                _pulseBrush.GradientStops.Add(new GradientStop { Color = Color.FromArgb(0, accent.R, accent.G, accent.B), Offset = 0 });
+                _pulseBrush.GradientStops.Add(new GradientStop { Color = accent, Offset = 0.5 });
+                _pulseBrush.GradientStops.Add(new GradientStop { Color = Color.FromArgb(0, accent.R, accent.G, accent.B), Offset = 1 });
+                double pulse = Math.Max(8, width * PulseFraction);
+                _pulse.Width = pulse;
+                _slide.X = -pulse;
+                var slide = new DoubleAnimation
+                {
+                    From = -pulse,
+                    To = width,
+                    Duration = new Duration(TimeSpan.FromMilliseconds(SweepPeriodMs)),
+                    RepeatBehavior = RepeatBehavior.Forever,
+                    EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut },
+                };
+                Storyboard.SetTarget(slide, _slide);
+                Storyboard.SetTargetProperty(slide, "X");
+                _sweep = new Storyboard();
+                _sweep.Children.Add(slide);
+                _sweep.Begin();
+                _sweepWidth = width;
+            }
+            catch (Exception ex)
+            {
+                // No sweep is better than a broken pane: fall back to the still fill.
+                System.Diagnostics.Debug.WriteLine(ex);
+                _sweep = null;
+                _pulse.Visibility = Visibility.Collapsed;
+                _fill.Opacity = 0.45;
+                _fill.Width = Root.ActualWidth;
+            }
+        }
+
+        private void StopSweep()
+        {
+            _sweep?.Stop();
+            _sweep = null;
+            _sweepWidth = 0;
+        }
     }
 
     public static int ShowJobsPane(IntPtr arg, int sizeBytes) => ShowPanel(
@@ -413,12 +531,12 @@ public static partial class IslandHost
         col.Children.Add(_jobsEmpty);
         _jobsList = new StackPanel { Spacing = 6 };
         col.Children.Add(_jobsList);
-        var clear = new Button { Content = Text("Clear finished", Title), IsTabStop = false };
-        clear.Click += (_, _) =>
+        Button clear = EditButton("Clear finished", () =>
         {
             _folderSession?.ClipClearFinished();
             RefreshJobs();
-        };
+        });
+        clear.IsTabStop = false;
         col.Children.Add(clear);
         col.Children.Add(Text("↑ ↓ choose · Delete cancel · R retry · Enter show in Explorer · Esc back",
                               Body, UiFontSize - 3));
@@ -552,6 +670,11 @@ public static partial class IslandHost
             row.Bar.Visibility = p.State is MvClipJobState.Running or MvClipJobState.Queued
                 ? Visibility.Visible : Visibility.Collapsed;
             row.Root.BorderBrush = Brush(i == _jobCursor ? TrimAccent : Hairline);
+            bool running = p.State is MvClipJobState.Running or MvClipJobState.Queued;
+            row.Cancel.Visibility = running ? Visibility.Visible : Visibility.Collapsed;
+            row.Retry.Visibility = p.State is MvClipJobState.Failed or MvClipJobState.Cancelled
+                ? Visibility.Visible : Visibility.Collapsed;
+            row.Reveal.Visibility = p.State == MvClipJobState.Done ? Visibility.Visible : Visibility.Collapsed;
         }
     }
 
@@ -562,9 +685,12 @@ public static partial class IslandHost
         row.Status = Text("", Body, UiFontSize - 3);
         row.Bar = new JobBar();
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-        buttons.Children.Add(TextButton("Cancel", () => { _folderSession?.ClipCancel(id); RefreshJobs(); }));
-        buttons.Children.Add(TextButton("Retry", () => { _folderSession?.ClipRetry(id); RefreshJobs(); }));
-        buttons.Children.Add(TextButton("Show in Explorer", () => RevealJob(id)));
+        row.Cancel = EditButton("Cancel", () => { _folderSession?.ClipCancel(id); RefreshJobs(); });
+        row.Retry = EditButton("Retry", () => { _folderSession?.ClipRetry(id); RefreshJobs(); });
+        row.Reveal = EditButton("Show in Explorer", () => RevealJob(id));
+        buttons.Children.Add(row.Cancel);
+        buttons.Children.Add(row.Retry);
+        buttons.Children.Add(row.Reveal);
         var inner = new StackPanel { Spacing = 3 };
         inner.Children.Add(row.Title);
         inner.Children.Add(row.Bar.Root);
@@ -576,7 +702,7 @@ public static partial class IslandHost
             BorderThickness = new Thickness(1),
             BorderBrush = Brush(Hairline),
             Padding = new Thickness(8, 6, 8, 6),
-            CornerRadius = new CornerRadius(4),
+            CornerRadius = new CornerRadius(6),
         };
         return row;
     }

@@ -45,7 +45,7 @@ Dependencies point **downward only**. The enforced map
 |---|---|
 | `core` | — |
 | `io`, `gfx` | `core` |
-| `codec` | `gfx`, `io`, `core` |
+| `codec` | `gfx`, `core` |
 | `image`, `meta`, `player` | `codec`, `gfx`, `io`, `core` |
 | `edit`, `canvas` | `image`, `codec`, `gfx`, `io`, `core` |
 | `addon` | `io`, `core` |
@@ -55,6 +55,12 @@ Dependencies point **downward only**. The enforced map
 | `nle` | `addon`, `image`, `io`, `core` |
 | `shellext` | `image`, `codec`, `gfx`, `io`, `core` |
 | `shell` | everything, including `abi` and `nle` |
+
+`codec` does not include `io`. A document page still picks font files lazily, including per-character
+fallbacks, so the caller cannot pass the bytes in at `codec::decode`. `codec/fonts.h` only names the
+file (CoreText / DirectWrite). The read is `text::set_font_reader`, installed by `image/pipeline.cpp`
+before main. A binary that links `codec` without `image` (the docx fuzzer) installs the same reader
+itself; with none installed the face stays unloaded and layout continues.
 
 No native module depends on `shell`, which keeps the core testable headlessly and hostable on both
 OSes. The C# and Swift chrome depend on the C ABI alone. An add-on links nothing of the core and

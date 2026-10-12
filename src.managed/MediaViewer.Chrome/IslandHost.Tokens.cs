@@ -32,6 +32,18 @@ public static partial class IslandHost
     private const byte WashHoverAlpha = 15;
     private const byte WashPressedAlpha = 28;
 
+    // Settings buttons are filled (SettingsView.swift SettingsButtonStyle):
+    // primary.opacity 0.08 at rest, 0.16 pressed; hover sits between.
+    private const byte SettingsFillAlpha = 20;
+    private const byte SettingsFillHoverAlpha = 31;
+    private const byte SettingsFillPressedAlpha = 41;
+    private const double RadiusSettingsButton = 6;
+
+    // Settings type (SettingsView.swift): section titles 16 semibold, notes
+    // 13, details and the footer hint 12.
+    private const double TypeSection = 16;
+    private const double TypeNote = 13;
+
     // Segoe Fluent Icons on Windows 11, MDL2 Assets on 10: the same code points.
     private static FontFamily? _iconFont;
     private static FontFamily IconFont => _iconFont ??= new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets");
@@ -48,6 +60,96 @@ public static partial class IslandHost
         public const string Close = "\uE711";
         public const string Check = "\uE73E";
         public const string Back = "\uE76B";
+        public const string Rotate = "\uE7AD";      // clockwise; mirrored for left
+        public const string FlipArrows = "\uE8AB";  // Switch: left and right arrows
+        public const string Previous = "\uE892";
+        public const string Next = "\uE893";
+    }
+
+    // A flat icon button for the panes (the Mac's iconButton in EditView.swift:
+    // compact FlatButtonStyle, .help and an accessibility label). `transform`
+    // turns or mirrors the glyph where Segoe has only one direction.
+    private static Button PaneIconButton(string glyph, string label, string? key, Action click,
+                                         Transform? transform = null)
+    {
+        var icon = new FontIcon
+        {
+            Glyph = glyph, FontFamily = IconFont, FontSize = TypeBody, Foreground = Brush(Title),
+            RenderTransform = transform, RenderTransformOrigin = new Windows.Foundation.Point(0.5, 0.5),
+        };
+        var b = new Button
+        {
+            Content = icon,
+            Background = Brush(Microsoft.UI.Colors.Transparent),
+            Padding = new Thickness(8, 6, 8, 6),
+            MinWidth = 36,
+            VerticalAlignment = VerticalAlignment.Center,
+            // As EditButton: the crop, trim and editor keys stay the canvas's.
+            AllowFocusOnInteraction = false,
+        };
+        FlattenButton(b);
+        ToolTipService.SetToolTip(b, key is null ? label : $"{label}  {key}");
+        AutomationProperties.SetName(b, label);
+        if (key is not null) AutomationProperties.SetHelpText(b, "Key " + key);
+        b.Click += (_, _) => Guarded(click);
+        return b;
+    }
+
+    // Activity with no fraction (the Mac's ProgressView spinner): a quarter
+    // arc turning once a second. Not ProgressRing, which cannot load in these
+    // islands. The animation runs only while Active is set, so a pane left
+    // open on a ready view costs nothing (rule: idle is free).
+    private sealed class Spinner
+    {
+        public readonly FrameworkElement Root;
+        private readonly Microsoft.UI.Xaml.Media.Animation.Storyboard _turn;
+        private bool _active;
+
+        public Spinner(double size)
+        {
+            var spin = new RotateTransform();
+            var arc = new Microsoft.UI.Xaml.Shapes.Ellipse
+            {
+                Width = size, Height = size,
+                Stroke = Brush(Body),
+                StrokeThickness = 2,
+                // A quarter of the circumference, in stroke thicknesses.
+                StrokeDashArray = new DoubleCollection { Math.PI * (size - 2) / 4 / 2, 1000 },
+                StrokeDashCap = PenLineCap.Round,
+                RenderTransform = spin,
+                RenderTransformOrigin = new Windows.Foundation.Point(0.5, 0.5),
+            };
+            Root = new Grid
+            {
+                Width = size, Height = size,
+                VerticalAlignment = VerticalAlignment.Center,
+                Visibility = Visibility.Collapsed,
+                Children = { arc },
+            };
+            AutomationProperties.SetName(Root, "Working");
+            var anim = new Microsoft.UI.Xaml.Media.Animation.DoubleAnimation
+            {
+                From = 0, To = 360,
+                Duration = new Duration(TimeSpan.FromSeconds(1)),
+                RepeatBehavior = Microsoft.UI.Xaml.Media.Animation.RepeatBehavior.Forever,
+            };
+            Microsoft.UI.Xaml.Media.Animation.Storyboard.SetTarget(anim, spin);
+            Microsoft.UI.Xaml.Media.Animation.Storyboard.SetTargetProperty(anim, "Angle");
+            _turn = new Microsoft.UI.Xaml.Media.Animation.Storyboard { Children = { anim } };
+            Root.Unloaded += (_, _) => { _turn.Stop(); _active = false; };
+        }
+
+        public bool Active
+        {
+            get => _active;
+            set
+            {
+                if (value == _active) return;
+                _active = value;
+                Root.Visibility = value ? Visibility.Visible : Visibility.Collapsed;
+                if (value) _turn.Begin(); else _turn.Stop();
+            }
+        }
     }
 
     // An icon-only bar button in the flat style; the tooltip doubles as its
@@ -81,6 +183,43 @@ public static partial class IslandHost
         if (ToolTipService.GetToolTip(b) as string == tip) return;
         ToolTipService.SetToolTip(b, tip);
         AutomationProperties.SetName(b, tip);
+    }
+
+    // A sheet's default button (the Mac's .keyboardShortcut(.defaultAction)):
+    // filled with the accent. AccentButtonStyle comes with XamlControlsResources,
+    // which these islands do not have, so the fill is per-element lightweight
+    // resources over WinUI's own template, never a ControlTemplate.
+    private static Button AccentButton(string label, Action click)
+    {
+        SolidColorBrush fill = Brush(ChromeColour.ControlAccent);
+        SolidColorBrush ink = Brush(ChromeColour.OnAccent);
+        var b = new Button
+        {
+            Content = new TextBlock { Text = label, FontFamily = UiFont, FontSize = UiFontSize, Foreground = ink },
+            Background = fill,
+            Foreground = ink,
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(16, 7, 16, 7),
+            CornerRadius = new CornerRadius(RadiusButton),
+            VerticalAlignment = VerticalAlignment.Center,
+            AllowFocusOnInteraction = false,
+        };
+        b.Resources["ButtonBackground"] = fill;
+        b.Resources["ButtonBackgroundPointerOver"] = new SolidColorBrush(fill.Color) { Opacity = 0.88 };
+        b.Resources["ButtonBackgroundPressed"] = new SolidColorBrush(fill.Color) { Opacity = 0.76 };
+        b.Resources["ButtonBackgroundDisabled"] = Brush(ChromeColour.PressedWash);
+        foreach (string key in new[] { "ButtonForeground", "ButtonForegroundPointerOver", "ButtonForegroundPressed" })
+            b.Resources[key] = ink;
+        b.Resources["ButtonForegroundDisabled"] = Brush(ChromeColour.Disabled);
+        foreach (string key in new[] { "ButtonBorderBrush", "ButtonBorderBrushPointerOver",
+                                       "ButtonBorderBrushPressed", "ButtonBorderBrushDisabled" })
+            b.Resources[key] = Brush(Microsoft.UI.Colors.Transparent);
+        b.IsEnabledChanged += (_, _) =>
+        {
+            if (b.Content is TextBlock t) t.Foreground = b.IsEnabled ? ink : Brush(ChromeColour.Disabled);
+        };
+        b.Click += (_, _) => Guarded(click);
+        return b;
     }
 
     // m:ss, or h:mm:ss from an hour (TransportView.swift clock).

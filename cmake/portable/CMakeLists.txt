@@ -78,6 +78,7 @@ endif()
 # ---- io: the POSIX halves of the new ports -------------------------------------
 add_library(mv_io STATIC
   "${MV_ROOT}/src/io/content_hash.cpp"
+  "${MV_ROOT}/src/io/file_mac.cpp"
   "${MV_ROOT}/src/io/file_port.cpp"
   "${MV_ROOT}/src/io/file_port_mac.cpp"
   "${MV_ROOT}/src/io/verified_copy.cpp"

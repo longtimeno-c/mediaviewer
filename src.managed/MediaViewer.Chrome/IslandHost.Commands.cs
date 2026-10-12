@@ -6,6 +6,7 @@ using Microsoft.UI.Input;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
+using Windows.Foundation;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Shapes;
@@ -184,10 +185,14 @@ public static partial class IslandHost
             // digits, so it reports text focus and the router yields.
             _popupTakesText = args.Kind is PopupKind.GoTo or PopupKind.Find or PopupKind.Export
                 or PopupKind.ClipTools or PopupKind.Rename;
+            // Export and clip tools are sheets (issue #199): a centred card,
+            // radius 12, padding 20 (ExportView.swift, ClipToolsView.swift),
+            // not a menu hanging off the bar's corner.
+            bool sheet = args.Kind is PopupKind.Export or PopupKind.ClipTools or PopupKind.Rename;
             var flyout = new Flyout
             {
                 ShouldConstrainToRootBounds = false,
-                FlyoutPresenterStyle = FlyoutPresenterStyle(),
+                FlyoutPresenterStyle = sheet ? SheetPresenterStyle() : FlyoutPresenterStyle(),
                 Placement = FlyoutPlacementMode.BottomEdgeAlignedLeft,
                 Content = content,
             };
@@ -211,7 +216,10 @@ public static partial class IslandHost
                 }
             };
             _popup = flyout;
-            flyout.ShowAt(anchor);
+            if (sheet && SheetOrigin(anchor, content) is Point origin)
+                flyout.ShowAt(anchor, new FlyoutShowOptions { Position = origin, Placement = FlyoutPlacementMode.Bottom });
+            else
+                flyout.ShowAt(anchor);
             return 0;
         }
         catch (Exception ex)
@@ -220,6 +228,59 @@ public static partial class IslandHost
             Send(Command.Popup, 0);
             return unchecked((int)0x80004005);
         }
+    }
+
+    private static Style SheetPresenterStyle()
+    {
+        Style style = FlyoutPresenterStyle();
+        style.Setters.Add(new Setter(FlyoutPresenter.CornerRadiusProperty, new CornerRadius(RadiusSheet)));
+        style.Setters.Add(new Setter(FlyoutPresenter.PaddingProperty, new Thickness(20)));
+        // The stock presenter caps its size; a sheet sizes to its content.
+        style.Setters.Add(new Setter(FrameworkElement.MaxWidthProperty, 640.0));
+        style.Setters.Add(new Setter(FrameworkElement.MaxHeightProperty, 900.0));
+        return style;
+    }
+
+    // Where a sheet's top-centre goes, relative to the bar (which sits at the
+    // client origin): centred in the main window's client area. Null when the
+    // window cannot be measured; the caller then shows it the old way.
+    private static Point? SheetOrigin(FrameworkElement anchor, UIElement content)
+    {
+        if (_themeWindow == IntPtr.Zero || anchor.XamlRoot is null) return null;
+        if (!GetClientRect(_themeWindow, out ClientRect rect)) return null;
+        double scale = anchor.XamlRoot.RasterizationScale > 0 ? anchor.XamlRoot.RasterizationScale : 1;
+        double width = (rect.Right - rect.Left) / scale;
+        double height = (rect.Bottom - rect.Top) / scale;
+        if (width <= 0 || height <= 0) return null;
+        content.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        double sheet = content.DesiredSize.Height + 2 * 20 + 2;  // padding and hairline
+        return new Point(width / 2, Math.Max(16, (height - sheet) / 2));
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ClientRect
+    {
+        public int Left, Top, Right, Bottom;
+    }
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetClientRect(IntPtr hWnd, out ClientRect rect);
+
+    // A sheet's Cancel / default-button row, right-aligned (the Mac's HStack
+    // with .cancelAction and .defaultAction).
+    private static StackPanel SheetButtons(Button cancel, Button primary)
+    {
+        var buttons = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Margin = new Thickness(0, 10, 0, 0),
+        };
+        buttons.Children.Add(cancel);
+        buttons.Children.Add(primary);
+        return buttons;
     }
 
     private static void ClosePopup()
@@ -303,10 +364,12 @@ public static partial class IslandHost
         FontSize = () => UiFontSize,
         Title = () => Brush(Title),
         Body = () => Brush(Body),
-        Canvas = () => Brush(Canvas),
+        // The Mac's field: a surface fill, radius 6, a 1 px accent border when focused.
+        Canvas = () => Brush(ChromeColour.Surface),
         Hairline = () => Brush(Hairline),
         Selection = () => Brush(TextSelection),
         SelectionInk = () => Brush(TextSelectionInk),
+        Accent = () => Brush(ChromeColour.Accent),
     };
 
     private sealed class FakeInput : MediaViewer.Shared.FakeInput
@@ -497,7 +560,7 @@ public static partial class IslandHost
         int row = 0;
         const int Rows = 4;
 
-        var panel = new StackPanel { Spacing = 6, Margin = new Thickness(12), IsTabStop = true, MinWidth = 320 };
+        var panel = new StackPanel { Spacing = 6, IsTabStop = true, Width = 340 };
         panel.Children.Add(Label("Export a copy", UiFontSize + 2));
         panel.Children.Add(Label("Beside the original as name-edit; never overwrites.", UiFontSize, mute: true));
         var rowLabels = new TextBlock[Rows];
@@ -564,14 +627,14 @@ public static partial class IslandHost
         }
         panel.Children.Add(grid);
         panel.Children.Add(Label("\u2191 \u2193 choose   \u2190 \u2192 change   Enter export   Esc cancel", UiFontSize, mute: true));
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right };
-        var export = new Button { Content = "Export", IsTabStop = false };
-        export.Click += (_, _) => Confirm();
-        var cancel = new Button { Content = "Cancel", IsTabStop = false };
-        cancel.Click += (_, _) => ClosePopup();
-        buttons.Children.Add(cancel);
-        buttons.Children.Add(export);
-        panel.Children.Add(buttons);
+        // Cancel (Esc) and the accent default, Export (Enter).
+        Button cancel = TextButton("Cancel", ClosePopup);
+        cancel.IsTabStop = false;
+        ToolTipService.SetToolTip(cancel, "Esc");
+        Button export = AccentButton("Export", Confirm);
+        export.IsTabStop = false;
+        ToolTipService.SetToolTip(export, "Enter");
+        panel.Children.Add(SheetButtons(cancel, export));
         AutomationProperties_SetName(panel, "Export a copy");
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetHelpText(
             panel, "Up and Down choose a setting, Left and Right change it, Enter exports, Escape cancels");

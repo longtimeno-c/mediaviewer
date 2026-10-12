@@ -26,9 +26,14 @@ public static partial class IslandHost
         // The Mac's FlatButtonStyle: disabled text, and the title colour as a
         // hover / pressed (and selected) wash.
         Disabled, HoverWash, PressedWash,
+        // The Mac's SettingsButtonStyle: a filled Settings button (the text
+        // colour at 0.08, 0.16 pressed), and the label on an accent default.
+        SettingsFill, SettingsFillHover, SettingsFillPressed, AccentInk,
         // What Windows' own controls (slider, toggle, check box) fill with: a
         // theme's accent, the system accent, or the contrast theme's highlight.
         ControlAccent,
+        // Text on a ControlAccent fill (the default button of a sheet).
+        OnAccent,
     }
 
     private static readonly Dictionary<ChromeColour, SolidColorBrush> ThemeBrushes = new();
@@ -161,7 +166,21 @@ public static partial class IslandHost
             : ColorHelper.FromArgb(WashHoverAlpha, washInk.R, washInk.G, washInk.B));
         Set(ChromeColour.PressedWash, contrast ? SystemColour(13)
             : ColorHelper.FromArgb(WashPressedAlpha, washInk.R, washInk.G, washInk.B));
+        // In a contrast theme a fill is the system's button face, and hover /
+        // press the highlight, as Windows' own buttons are.
+        Set(ChromeColour.SettingsFill, contrast ? SystemColour(15)  // COLOR_BTNFACE
+            : ColorHelper.FromArgb(SettingsFillAlpha, washInk.R, washInk.G, washInk.B));
+        Set(ChromeColour.SettingsFillHover, contrast ? SystemColour(13)
+            : ColorHelper.FromArgb(SettingsFillHoverAlpha, washInk.R, washInk.G, washInk.B));
+        Set(ChromeColour.SettingsFillPressed, contrast ? SystemColour(13)
+            : ColorHelper.FromArgb(SettingsFillPressedAlpha, washInk.R, washInk.G, washInk.B));
+        Set(ChromeColour.AccentInk, contrast ? SystemColour(14) : Rgb(255, 255, 255));  // COLOR_HIGHLIGHTTEXT
         Set(ChromeColour.ControlAccent, controlAccent);
+        // White on a dark accent, black on a light one; the contrast theme's
+        // highlight text on its highlight.
+        double accentLuma = 0.2126 * controlAccent.R + 0.7152 * controlAccent.G + 0.0722 * controlAccent.B;
+        Set(ChromeColour.OnAccent, contrast ? SystemColour(14)                 // COLOR_HIGHLIGHTTEXT
+            : accentLuma > 160 ? Rgb(0, 0, 0) : Rgb(255, 255, 255));
         PublishControlAccent();
 
         // The native welcome/game is outside the XAML tree. Ship the current
