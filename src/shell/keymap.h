@@ -45,9 +45,15 @@ struct keymap_result {
 //  - a key two bindings of the pack claim in overlapping modes goes to the
 //    first; the later one is skipped;
 //  - any other row holding a key the pack gave out, in an overlapping mode,
-//    is left without a key (shown so in Settings, never silent).
+//    is left without a key (shown so in Settings, never silent);
+//  - a key `host_owns` says the host keeps for itself (the Mac's fixed menu
+//    chords: ⌘Q, ⌘H, ⌘M, ⌘⌫, which the menu sees before any row) is skipped,
+//    as Settings' key capture refuses it (issue #182); the row keeps its
+//    default.
 // The caller rebuilds the router, persists the table and republishes `?`.
-keymap_result apply_keymap(std::span<const addon::keymap_binding> bindings);
+using host_owns_key = bool (*)(key k, std::uint8_t mods, void* context);
+keymap_result apply_keymap(std::span<const addon::keymap_binding> bindings,
+                           host_owns_key host_owns = nullptr, void* context = nullptr);
 
 // {"addon", "id", "name", "bindings": [...]} (addon/open_json.h
 // open_keymap_json) to its bindings; false when it is not that shape.

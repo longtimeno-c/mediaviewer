@@ -230,7 +230,8 @@ command_id command_by_slug(std::string_view slug) noexcept {
   return none;
 }
 
-keymap_result apply_keymap(std::span<const addon::keymap_binding> bindings) {
+keymap_result apply_keymap(std::span<const addon::keymap_binding> bindings,
+                           host_owns_key host_owns, void* context) {
   keymap_result out;
   reset_live_bindings();
   const std::span<const binding> live = live_bindings();
@@ -253,6 +254,10 @@ keymap_result apply_keymap(std::span<const addon::keymap_binding> bindings) {
       claim c{row, key::none, mod_none, live[static_cast<std::size_t>(row)].modes};
       if (!b.keys[j].empty() && !parse_key_label(b.keys[j], c.k, c.mods)) {
         out.skipped.push_back("not a key: " + b.keys[j]);
+        continue;
+      }
+      if (c.k != key::none && host_owns && host_owns(c.k, c.mods, context)) {
+        out.skipped.push_back(b.keys[j] + " belongs to the menu");
         continue;
       }
       const auto taken = std::find_if(claims.begin(), claims.end(), [&](const claim& o) {

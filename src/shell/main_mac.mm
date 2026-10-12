@@ -9384,7 +9384,12 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   }
   [self cancelKeyCapture];
   [self cancelKeyHolds];  // rebuild forgets held keys (issue #186)
-  const mv::shell::keymap_result r = mv::shell::apply_keymap(bindings);
+  // ⌘H, ⌘Q, ⌘M, ⌘⌫ are the fixed menu items', which see them first: a pack
+  // row given one would never run, as Settings' capture refuses (issue #182).
+  const mv::shell::keymap_result r = mv::shell::apply_keymap(
+      bindings, [](mv::shell::key k, std::uint8_t mods, void*) -> bool {
+        return MvMenuOwnsChord(NSApp.mainMenu, k, mods);
+      });
   [self rebuildKeys];
   [self persistKeys];
   ++_keysGeneration;

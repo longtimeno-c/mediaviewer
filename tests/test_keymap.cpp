@@ -200,6 +200,30 @@ TEST_CASE("what a pack cannot apply is skipped and said, the rest applies", "[ke
   REQUIRE(router.on_key({char_key('J'), mod_none, false, false}, still()).command == command_id::prev);
 }
 
+TEST_CASE("a key the host keeps for its menu is skipped, the row keeps its default",
+          "[keys][keymap]") {
+  restore_table restore;
+  // The Mac's fixed menu chords (⌘Q, ⌘H, ⌘M, ⌘⌫) see the key before any row,
+  // so a pack row given one would never run (issue #182).
+  const auto menu_owns = [](key k, std::uint8_t mods, void*) {
+    return k == char_key('Q') && mods == mod_ctrl;
+  };
+  const binding before = live_bindings()[0];
+  const std::size_t prev_row = 0;
+  REQUIRE(before.command == command_id::prev);
+  const std::vector<keymap_binding> pack{{"prev", {"Ctrl+Q"}}, {"next", {"L"}}};
+  const keymap_result r = apply_keymap(pack, menu_owns);
+  REQUIRE(r.skipped.size() == 1);
+  REQUIRE(r.skipped[0].find("Ctrl+Q") != std::string::npos);
+  REQUIRE(live_bindings()[prev_row].k == before.k);
+  REQUIRE(live_bindings()[prev_row].mods == before.mods);
+  key_router router;
+  router.rebuild(live_bindings());
+  REQUIRE(router.on_key({char_key('L'), mod_none, false, false}, still()).command == command_id::next);
+  // Without a host rule (Windows) the same pack takes the chord.
+  REQUIRE(apply_keymap(pack).skipped.empty());
+}
+
 TEST_CASE("a pack may bind a row an add-on contributes, by add-on and id", "[keys][keymap]") {
   restore_table restore;
   addon_command_row row;
