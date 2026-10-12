@@ -18,9 +18,17 @@ public static partial class IslandHost
     private enum ChromeColour
     {
         Canvas, PanelBg, Surface, Title, Body, Hairline, Selection,
+        // MVTheme.accent: the current item's outline, the focused row.
+        Accent,
         TrimAccent, TrimKeep, KeyframeTick, StarOn,
         // FakeInput's selected text: its highlight and the text on it.
         TextSelection, TextSelectionInk,
+        // The Mac's FlatButtonStyle: disabled text, and the title colour as a
+        // hover / pressed (and selected) wash.
+        Disabled, HoverWash, PressedWash,
+        // What Windows' own controls (slider, toggle, check box) fill with: a
+        // theme's accent, the system accent, or the contrast theme's highlight.
+        ControlAccent,
     }
 
     private static readonly Dictionary<ChromeColour, SolidColorBrush> ThemeBrushes = new();
@@ -92,6 +100,11 @@ public static partial class IslandHost
         Color title = dark ? Rgb(235, 236, 240) : Rgb(27, 27, 27);
         Color body = dark ? Rgb(177, 181, 191) : Rgb(92, 92, 92);
         Color line = dark ? Rgb(78, 81, 91) : Rgb(195, 197, 202);
+        Color disabled = dark ? Rgb(112, 115, 125) : Rgb(160, 161, 166);
+        // The washes follow the appearance, not a theme token (docs/design/25,
+        // the Mac's Color.primary): white on a dark chrome, black on a light one,
+        // at low alpha. `dark` is resolved after a one-palette theme forces it.
+        Color washInk = dark ? Rgb(255, 255, 255) : Rgb(0, 0, 0);
         Color accent = _themeSettings.GetColorValue(dark ? UIColorType.AccentLight2 : UIColorType.AccentDark2);
         if (themed is not null)
         {
@@ -102,12 +115,16 @@ public static partial class IslandHost
             title = themed.Title;
             body = themed.Body;
             line = themed.Hairline;
+            disabled = themed.Disabled;
             accent = themed.Accent;
         }
         Color selection = Blend(canvas, accent, 0.14);
         Color keep = ColorHelper.FromArgb(70, accent.R, accent.G, accent.B);
         Color textSelection = ColorHelper.FromArgb(96, accent.R, accent.G, accent.B);
         Color textSelectionInk = title;
+        Color controlAccent = themed is null
+            ? _themeSettings.GetColorValue(dark ? UIColorType.AccentLight1 : UIColorType.Accent)
+            : accent;
 
         if (contrast)
         {
@@ -119,6 +136,8 @@ public static partial class IslandHost
             keep = SystemColour(13);                               // COLOR_HIGHLIGHT
             textSelection = SystemColour(13);                      // COLOR_HIGHLIGHT
             textSelectionInk = SystemColour(14);                   // COLOR_HIGHLIGHTTEXT
+            disabled = SystemColour(17);                           // COLOR_GRAYTEXT
+            controlAccent = SystemColour(13);                      // COLOR_HIGHLIGHT
         }
 
         Set(ChromeColour.Canvas, canvas);
@@ -128,12 +147,22 @@ public static partial class IslandHost
         Set(ChromeColour.Body, body);
         Set(ChromeColour.Hairline, line);
         Set(ChromeColour.Selection, selection);
+        Set(ChromeColour.Accent, accent);
         Set(ChromeColour.TrimAccent, accent);
         Set(ChromeColour.TrimKeep, keep);
         Set(ChromeColour.KeyframeTick, body);
         Set(ChromeColour.StarOn, accent);
         Set(ChromeColour.TextSelection, textSelection);
         Set(ChromeColour.TextSelectionInk, textSelectionInk);
+        Set(ChromeColour.Disabled, disabled);
+        // In a contrast theme a wash would be invisible against WindowText;
+        // the hover then uses the highlight colour, as Windows' own buttons do.
+        Set(ChromeColour.HoverWash, contrast ? SystemColour(13)
+            : ColorHelper.FromArgb(WashHoverAlpha, washInk.R, washInk.G, washInk.B));
+        Set(ChromeColour.PressedWash, contrast ? SystemColour(13)
+            : ColorHelper.FromArgb(WashPressedAlpha, washInk.R, washInk.G, washInk.B));
+        Set(ChromeColour.ControlAccent, controlAccent);
+        PublishControlAccent();
 
         // The native welcome/game is outside the XAML tree. Ship the current
         // system window colour to its snapshot on the UI thread, including
@@ -167,6 +196,39 @@ public static partial class IslandHost
         else ThemeBrushes.Add(role, new SolidColorBrush(colour));
     }
 
+    // Lightweight resource keys of Windows' own controls, set once on the
+    // Application so every island and add-on window resolves them (the Mac's
+    // .tint(MVTheme.accent) on each chrome root). The brush is live: a theme
+    // or appearance change recolours it in place, no re-template. Resource
+    // overrides only, never a ControlTemplate (IslandHost.Edit.cs FlattenButton).
+    private static readonly string[] ControlAccentKeys =
+    {
+        "SliderTrackValueFill", "SliderTrackValueFillPointerOver", "SliderTrackValueFillPressed",
+        "SliderThumbBackground", "SliderThumbBackgroundPointerOver", "SliderThumbBackgroundPressed",
+        "ToggleSwitchFillOn", "ToggleSwitchFillOnPointerOver", "ToggleSwitchFillOnPressed",
+        "CheckBoxCheckBackgroundFillChecked", "CheckBoxCheckBackgroundFillCheckedPointerOver",
+        "CheckBoxCheckBackgroundFillCheckedPressed",
+    };
+    private static bool _controlAccentPublished;
+
+    private static void PublishControlAccent()
+    {
+        if (_controlAccentPublished) return;
+        try
+        {
+            ResourceDictionary? resources = Application.Current?.Resources;
+            if (resources is null) return;
+            SolidColorBrush accent = Brush(ChromeColour.ControlAccent);
+            foreach (string key in ControlAccentKeys) resources[key] = accent;
+            _controlAccentPublished = true;
+        }
+        catch (Exception ex)
+        {
+            // Best effort, like the appearance hooks: never cost the chrome.
+            System.Diagnostics.Debug.WriteLine(ex);
+        }
+    }
+
     private static Color Rgb(byte r, byte g, byte b) => ColorHelper.FromArgb(255, r, g, b);
     private static Color Blend(Color background, Color foreground, double amount) => Rgb(
         (byte)Math.Round(background.R + (foreground.R - background.R) * amount),
@@ -189,6 +251,17 @@ public static partial class IslandHost
         _accessibilitySettings = null;
         _themeDispatcher = null;
         _themeWindow = IntPtr.Zero;
+        try
+        {
+            ResourceDictionary? resources = _controlAccentPublished ? Application.Current?.Resources : null;
+            if (resources is not null)
+                foreach (string key in ControlAccentKeys) resources.Remove(key);
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+        }
+        _controlAccentPublished = false;
         ThemeBrushes.Clear();
     }
 
