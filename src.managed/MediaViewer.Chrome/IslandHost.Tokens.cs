@@ -32,6 +32,18 @@ public static partial class IslandHost
     private const byte WashHoverAlpha = 15;
     private const byte WashPressedAlpha = 28;
 
+    // Settings buttons are filled (SettingsView.swift SettingsButtonStyle):
+    // primary.opacity 0.08 at rest, 0.16 pressed; hover sits between.
+    private const byte SettingsFillAlpha = 20;
+    private const byte SettingsFillHoverAlpha = 31;
+    private const byte SettingsFillPressedAlpha = 41;
+    private const double RadiusSettingsButton = 6;
+
+    // Settings type (SettingsView.swift): section titles 16 semibold, notes
+    // 13, details and the footer hint 12.
+    private const double TypeSection = 16;
+    private const double TypeNote = 13;
+
     // Segoe Fluent Icons on Windows 11, MDL2 Assets on 10: the same code points.
     private static FontFamily? _iconFont;
     private static FontFamily IconFont => _iconFont ??= new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets");

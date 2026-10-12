@@ -9,6 +9,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Hosting;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Animation;
 using Microsoft.UI.Xaml.Shapes;
 using Windows.UI;
 
@@ -339,8 +340,23 @@ public static partial class IslandHost
     {
         public readonly Grid Root;
         private readonly Border _fill;
+        // Indeterminate: a soft accent pulse sweeps across, off the left edge to
+        // off the right, eased, as the Mac's ActivityBar (AddonsView.swift). A
+        // Storyboard on a TranslateTransform, as the load bar's sweep
+        // (IslandHost.cs): it runs only while the bar is indeterminate, visible
+        // and in the tree, so a finished or hidden bar costs nothing. With
+        // Windows' animations off it is a still, half-strength fill instead.
+        private readonly Border _pulse;
+        private readonly TranslateTransform _slide = new();
+        private readonly LinearGradientBrush _pulseBrush;
+        private Storyboard? _sweep;
+        private double _sweepWidth;
         private double _value;
         private bool _indeterminate;
+        private bool _loaded;
+
+        private const double SweepPeriodMs = 1400;
+        private const double PulseFraction = 0.35;
 
         public JobBar()
         {
@@ -350,9 +366,38 @@ public static partial class IslandHost
                 HorizontalAlignment = HorizontalAlignment.Left,
                 CornerRadius = new CornerRadius(2),
             };
+            _pulseBrush = new LinearGradientBrush
+            {
+                StartPoint = new Windows.Foundation.Point(0, 0.5),
+                EndPoint = new Windows.Foundation.Point(1, 0.5),
+            };
+            _pulse = new Border
+            {
+                Background = _pulseBrush,
+                HorizontalAlignment = HorizontalAlignment.Left,
+                RenderTransform = _slide,
+                Visibility = Visibility.Collapsed,
+            };
             Root = new Grid { Height = 4, Background = Brush(Hairline), CornerRadius = new CornerRadius(2) };
             Root.Children.Add(_fill);
-            Root.SizeChanged += (_, _) => Layout();
+            Root.Children.Add(_pulse);
+            Root.SizeChanged += (_, e) =>
+            {
+                // A Grid does not clip its children, and the pulse runs off both ends.
+                Root.Clip = new RectangleGeometry { Rect = new Windows.Foundation.Rect(0, 0, e.NewSize.Width, e.NewSize.Height) };
+                Layout();
+            };
+            Root.Loaded += (_, _) =>
+            {
+                _loaded = true;
+                Layout();
+            };
+            Root.Unloaded += (_, _) =>
+            {
+                _loaded = false;
+                StopSweep();
+            };
+            Root.RegisterPropertyChangedCallback(UIElement.VisibilityProperty, (_, _) => Layout());
         }
 
         public double Value
@@ -364,7 +409,7 @@ public static partial class IslandHost
             }
         }
 
-        // Running with no fraction yet: a fixed third, not an animation.
+        // Running with no fraction yet: the sweep (or the still fill).
         public bool IsIndeterminate
         {
             set
@@ -379,7 +424,65 @@ public static partial class IslandHost
             set => Root.Visibility = value;
         }
 
-        private void Layout() => _fill.Width = Math.Max(0, (_indeterminate ? 0.33 : _value) * Root.ActualWidth);
+        private void Layout()
+        {
+            double width = Root.ActualWidth;
+            bool still = _indeterminate && !HostAnimationsEnabled();
+            bool sweep = _indeterminate && !still;
+            _fill.Opacity = still ? 0.45 : 1;
+            _fill.Width = Math.Max(0, (still ? 1 : _indeterminate ? 0 : _value) * width);
+            _pulse.Visibility = sweep ? Visibility.Visible : Visibility.Collapsed;
+            if (sweep && _loaded && width > 0 && Root.Visibility == Visibility.Visible) StartSweep(width);
+            else StopSweep();
+        }
+
+        private void StartSweep(double width)
+        {
+            if (_sweep is not null && _sweepWidth == width) return;
+            StopSweep();
+            try
+            {
+                // The accent as it is now (a theme change re-lays out the bar).
+                Color accent = Brush(TrimAccent).Color;
+                _pulseBrush.GradientStops.Clear();
+                _pulseBrush.GradientStops.Add(new GradientStop { Color = Color.FromArgb(0, accent.R, accent.G, accent.B), Offset = 0 });
+                _pulseBrush.GradientStops.Add(new GradientStop { Color = accent, Offset = 0.5 });
+                _pulseBrush.GradientStops.Add(new GradientStop { Color = Color.FromArgb(0, accent.R, accent.G, accent.B), Offset = 1 });
+                double pulse = Math.Max(8, width * PulseFraction);
+                _pulse.Width = pulse;
+                _slide.X = -pulse;
+                var slide = new DoubleAnimation
+                {
+                    From = -pulse,
+                    To = width,
+                    Duration = new Duration(TimeSpan.FromMilliseconds(SweepPeriodMs)),
+                    RepeatBehavior = RepeatBehavior.Forever,
+                    EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut },
+                };
+                Storyboard.SetTarget(slide, _slide);
+                Storyboard.SetTargetProperty(slide, "X");
+                _sweep = new Storyboard();
+                _sweep.Children.Add(slide);
+                _sweep.Begin();
+                _sweepWidth = width;
+            }
+            catch (Exception ex)
+            {
+                // No sweep is better than a broken pane: fall back to the still fill.
+                System.Diagnostics.Debug.WriteLine(ex);
+                _sweep = null;
+                _pulse.Visibility = Visibility.Collapsed;
+                _fill.Opacity = 0.45;
+                _fill.Width = Root.ActualWidth;
+            }
+        }
+
+        private void StopSweep()
+        {
+            _sweep?.Stop();
+            _sweep = null;
+            _sweepWidth = 0;
+        }
     }
 
     public static int ShowJobsPane(IntPtr arg, int sizeBytes) => ShowPanel(

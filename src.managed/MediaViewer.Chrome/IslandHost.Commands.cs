@@ -303,10 +303,12 @@ public static partial class IslandHost
         FontSize = () => UiFontSize,
         Title = () => Brush(Title),
         Body = () => Brush(Body),
-        Canvas = () => Brush(Canvas),
+        // The Mac's field: a surface fill, radius 6, a 1 px accent border when focused.
+        Canvas = () => Brush(ChromeColour.Surface),
         Hairline = () => Brush(Hairline),
         Selection = () => Brush(TextSelection),
         SelectionInk = () => Brush(TextSelectionInk),
+        Accent = () => Brush(ChromeColour.Accent),
     };
 
     private sealed class FakeInput : MediaViewer.Shared.FakeInput
