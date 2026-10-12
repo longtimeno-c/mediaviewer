@@ -616,8 +616,8 @@ public static partial class IslandHost
     }
 
     /// <summary>
-    /// Native pushing the current playback rate in. The dropdown is a view of
-    /// the rate, never a second place it is decided — the keyboard is the one
+    /// Native pushing the current playback rate in. The strip's speed menu is a
+    /// view of the rate, never a second place it is decided — the keyboard is the one
     /// router (docs/design/16), so Q/E and this menu cannot drift apart.
     /// </summary>
     public static int ApplyRate(IntPtr arg, int sizeBytes)
@@ -662,58 +662,48 @@ public static partial class IslandHost
     // The ladder the keyboard steps through, mirrored from main.cpp's
     // kRateLadder. Every value is exact in float, so no epsilon is needed.
     private static readonly double[] SpeedLadder = { 0.25, 0.5, 1, 1.5, 2, 4 };
-    private static ComboBox? _speed;
+    // The strip's borderless "1x" menu (TransportView.swift's speed Menu,
+    // issue #195); null while the strip is down. It used to be a ComboBox in
+    // the command bar, away from the clip it controls.
+    private static Button? _speed;
     private static Button? _helpButton;  // `?` on the bar; its tooltip names the live key
-    private static bool _updatingSpeed;
 
     private static string SpeedLabel(double rate) =>
         rate == Math.Floor(rate) ? $"{rate:0}x" : $"{rate:0.##}x";
 
+    // A view of native's rate (ApplyRate), never a second place it is decided.
     private static void SetSpeedSelection(double rate)
     {
-        if (_speed is null) return;
-        int index = 0;
-        double best = double.MaxValue;
-        for (int i = 0; i < SpeedLadder.Length; ++i)
+        if (_speed?.Content is TextBlock label) label.Text = SpeedLabel(rate > 0 ? rate : 1);
+    }
+
+    private static Button BuildSpeed()
+    {
+        Button speed = TextButton(SpeedLabel(_videoRate), () => { });
+        if (speed.Content is TextBlock label) label.FontSize = TypeCaption;
+        speed.Padding = new Thickness(8, 7, 8, 7);
+        SetIconTip(speed, SpeedTip());
+        var menu = new MenuFlyout
         {
-            double delta = Math.Abs(SpeedLadder[i] - rate);
-            if (delta < best) { best = delta; index = i; }
+            Placement = FlyoutPlacementMode.Top,
+            MenuFlyoutPresenterStyle = MenuFlyoutPresenterStyle(),
+        };
+        foreach (double rate in SpeedLadder)
+        {
+            float r = (float)rate;
+            menu.Items.Add(Item(SpeedLabel(rate), null, () => Send(Command.SetRate, r)));
         }
-        _updatingSpeed = true;
-        _speed.SelectedIndex = index;
-        _updatingSpeed = false;
-    }
-
-    // The dropdown is dead weight with no clip open, and a speed control on a
-    // photo is a lie about what the key does.
-    private static void SetSpeedVisible(bool visible)
-    {
-        if (_speed is not null) _speed.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
-    }
-
-    private static ComboBox BuildSpeed()
-    {
-        _speed = new ComboBox
+        // Its own popup, like More: it holds the bar up while it is open.
+        menu.Opened += (_, _) => SetTransportHeld(true);
+        menu.Closed += (_, _) =>
         {
-            FontFamily = UiFont,
-            FontSize = UiFontSize,
-            Foreground = Brush(Title),
-            MinWidth = 88,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(0, 0, 8, 0),
-            Visibility = Visibility.Collapsed,
+            SetTransportHeld(false);
+            RestoreCanvasFocus();
         };
-        AutomationProperties_SetName(_speed, "Playback speed");
-        foreach (double rate in SpeedLadder) _speed.Items.Add(SpeedLabel(rate));
-        _speed.SelectedIndex = 2;  // 1x
-        _speed.SelectionChanged += (_, _) =>
-        {
-            if (_updatingSpeed || _speed.SelectedIndex < 0) return;
-            Send(Command.SetRate, (float)SpeedLadder[_speed.SelectedIndex]);
-        };
-        ToolTipService.SetToolTip(_speed, SpeedTip());
-        _speed.DropDownClosed += (_, _) => RestoreCanvasFocus();
-        return _speed;
+        FlyoutBase.SetAttachedFlyout(speed, menu);
+        speed.Click += (_, _) => FlyoutBase.ShowAttachedFlyout(speed);
+        _speed = speed;
+        return speed;
     }
 
     private static string SpeedTip()
@@ -1505,26 +1495,22 @@ public static partial class IslandHost
         row.Children.Add(BuildUpdateButton());
         row.Children.Add(BuildImportHint());  // Milestone G (IslandHost.Addons.cs)
 
-        var speed = BuildSpeed();
-        speed.HorizontalAlignment = HorizontalAlignment.Right;
         Button helpBtn = TextButton("?", () => Send(Command.Help));
         ToolTipService.SetToolTip(helpBtn, WithKey("Keyboard shortcuts", Command.Help));
         _helpButton = helpBtn;
 
-        // Menus left; speed, the folder trail, then `?` on the far right.
+        // Menus left; the folder trail, then `?` on the far right. Speed is in
+        // the transport strip (issue #195).
         FrameworkElement path = BuildBarPathRow();
         var bar = new Grid { VerticalAlignment = VerticalAlignment.Stretch };
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         Grid.SetColumn(row, 0);
         bar.Children.Add(row);
-        Grid.SetColumn(speed, 1);
-        bar.Children.Add(speed);
-        Grid.SetColumn(path, 2);
+        Grid.SetColumn(path, 1);
         bar.Children.Add(path);
-        Grid.SetColumn(helpBtn, 3);
+        Grid.SetColumn(helpBtn, 2);
         bar.Children.Add(helpBtn);
 
         var root = new Grid

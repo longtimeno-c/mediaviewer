@@ -344,8 +344,8 @@ public static partial class IslandHost
     {
         _matchMarks = new Microsoft.UI.Xaml.Controls.Canvas
         {
-            Width = SeekWidth,
             IsHitTestVisible = false,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Stretch,
         };
         _matchDurationMs = 0;
@@ -379,7 +379,7 @@ public static partial class IslandHost
         {
             bool current = i == _matchCurrent;
             double f = Math.Clamp((double)_matchMs[i] / _matchDurationMs, 0, 1);
-            double x = SeekInset + f * (SeekWidth - 2 * SeekInset);
+            double x = SeekInset + f * (_seekWidth - 2 * SeekInset);
             if (!current && x - last < 3) continue;  // a dense clip: one dot per three pixels
             last = x;
             double d = current ? 8 : 5;
