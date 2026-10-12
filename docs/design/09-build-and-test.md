@@ -96,7 +96,10 @@ Suites are registered with CTest and run by `ctest` on both platforms; see
      popped (fade cut short, view jumped, frame dropped inside the fade), with the animated gate
      judged on the same run.
    - The lab itself has `--soak`, `--static`, `--pan-soak`, `--browse-soak`, `--av-soak N --csv`
-     (A/V drift; under 1800 s it is diagnostic only) and `--json`.
+     (A/V drift; under 1800 s it is diagnostic only) and `--json`. `--compare` starts in the
+     two-up compare; with `--pan-soak` (one file, so no previous still) the left half draws the
+     same texture again, so the soak measures both draws, and the report's `compare_frames`
+     counts the presents that drew two halves.
    - The soak proves the render thread presented on time; it does not see first-pixel time,
      full-resolution time or media rate, which have their own reports.
 8. **Swapchain recovery** (`mv_swapchain_recovery`): device-loss and handle ownership.
@@ -203,7 +206,8 @@ Velopack keeps one full package for rollback. `build-release.ps1` fails above 25
   checks that the pipe's server process runs as the same user; if not, it sends nothing and
   runs alone. `--new-instance` overrides it.
 - **Command line:** `mediaviewer <path>` opens a file or folder. The remaining switches are
-  lab / harness switches (`--soak`, `--browse-soak`, `--no-chrome`, `--restore-*`, …).
+  lab / harness switches (`--soak`, `--browse-soak`, `--no-chrome`, `--restore-*`, …), except
+  `--compare`, which starts in the two-up compare (`|`).
 
 ## Distribution
 
@@ -225,7 +229,7 @@ Code signing, the update manifest, staged rollout, crash reports and telemetry a
 
 - Golden-image (perceptual-diff) tests of decoded output.
 - A memory/handle-leak check over a 500-file browse loop.
-- `--slideshow`, `--fullscreen`, `--compare` command-line switches.
+- `--slideshow`, `--fullscreen` command-line switches.
 - Explorer property handler; shell "Edit" verb; tabs / multi-window.
 - Mica backdrop on the main window (used only in add-on windows).
 - An AppContainer decode process.

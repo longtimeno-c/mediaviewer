@@ -184,8 +184,20 @@ crop. Keys are shown Windows-style; on macOS read `⌘` for `Ctrl`.
 | `Ctrl+C` | Viewing | With the eyedropper on: copy `#RRGGBB  rgb(r, g, b)  x y`. Otherwise copy the marked (else current / gallery-selected) file(s) |
 | hold `Z` | browse, video | Loupe: 100 % around the cursor or a keyboard point; arrows nudge it. Same texture, no decode |
 | hold `\` | browse, video | Previous item, for burst pick, from the five-slot GPU LRU (Mac: the last still shown, kept on the GPU) |
+| `\|` | browse, video | **Two-up compare** (issue #208): the previous still (the one hold `\` shows) on the left, the current one on the right, under one camera (below). Toggle; `--compare` starts with it on |
 | `;` | browse, video | Play a Live Photo's motion once, with audio, and return to the still. `;` again, `Esc` or navigation return early. **Mac: not built** |
 | `Ctrl+Shift+A` | all | Always on top (`HWND_TOPMOST`) |
+
+**Two-up compare.** `|` (the Shift twin of `\`, as `Shift+O` / `Shift+I` pair their keys)
+splits the canvas: the camera frames the current still in the right half, and the left half is a
+second draw of the previous still's texture, already resident, in the same present. No decode,
+no second present path; a tiled previous still draws its overview. Pan, zoom, the wheel (over
+either half, toward the same spot) and `0`–`4` move both: a same-size burst frame is the identical
+view, a different frame shows the same region at the same magnification relative to its fit
+(`shell/compare.h`, shared by both labs). Walking the folder keeps the split, so `D` through a burst
+compares each frame with the one before. Stills only: on a clip, in crop mode and under a
+slideshow blackout the canvas is one-up and the toggle waits; hold `\` does nothing while the split
+is up (the previous still is already on screen). A fitted view refits to its half.
 
 **Gallery.** Full-client grid of the folder. `A` `D` / `←` `→` move by item, `W` `S` / `↑` `↓`
 by row; a click opens in the viewer. Child folders are big tiles when the folder holds only
@@ -378,6 +390,7 @@ presents ([rendering](03-rendering.md)). Toggles request one redraw.
 |---|---|
 | Loupe (hold `Z`) | Camera / viewport change; same texture |
 | Hold-previous (hold `\`) | The five-slot LRU; no second session |
+| Two-up compare (`\|`) | A second blit of the resident previous texture into the left half; same present |
 | Clipping blinkies (`C`) | Shader; may present while on (it animates), labelled in F3 |
 | Pixel grid (≥ 400 %) | Shader |
 | Canvas background / checkerboard (`B`) | Clear colour + optional shader |

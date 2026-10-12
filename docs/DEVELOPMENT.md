@@ -477,6 +477,7 @@ copy, and check Finder's **Open With** and a Quick Look thumbnail.
 | `S` | sticky zoom: keep zoom and position when you move to the next item (off by default) |
 | hold `Z` | loupe: 100 % (or 2x the current zoom) around the cursor |
 | hold `\` | show the previous image, for picking between burst frames |
+| `\|` | two-up compare: the previous image beside the current one, panned and zoomed together (stills; `--compare` starts with it on) |
 | `B` | canvas background: dark / gray / white / checkerboard |
 | `C` | clipping blinkies (red highlights, blue shadows). The canvas keeps presenting while on |
 | `O` | info line: file name, position in the folder, size, zoom |
@@ -580,8 +581,11 @@ run's decode job counts under `"held"`; every step carries `full_ms`. Those are 
 the in-flight decode hand-off is for, and `perf-browse.svg` ignores them),
 `--av-soak <seconds> --csv <path>` (headless A/V drift soak on a clip — see
 [Test](#test)), `--pan-soak` (with `--soak` and `--open`: pan the still at 100 % across
-the whole frame on a fixed path, to measure cached-image and tiled-pyramid pan), or a
-positional file or folder.
+the whole frame on a fixed path, to measure cached-image and tiled-pyramid pan),
+`--compare` (start in the two-up compare; add it to `--pan-soak` to pan both halves, the
+left one drawing the same still again since one file has no previous, or to `--browse-soak`
+to walk a folder with the split up; `compare_frames` in the soak JSON counts the two-half
+presents), or a positional file or folder.
 
 A still's first pixel is a preview (JPEG DCT 1/4, or a RAW's embedded JPEG); the full
 decode then *refines* the same item rather than replacing it: the view you have — fit,

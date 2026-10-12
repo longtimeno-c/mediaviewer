@@ -285,6 +285,11 @@ constexpr binding kBindings[] = {
     // PageDown inside one stop; plain PageUp / PageDown still skip ten stops.
     row(key::page_down, mod_ctrl, kBrowse | kIsland, repeat, next_page),
     row(key::page_up, mod_ctrl, kBrowse | kIsland, repeat, prev_page),
+    // Issue #208 (docs/design/16 View). Appended. `|` is the Shift twin of `\`
+    // (hold previous), as PR 9 / 10 paired O, I and C: hold `\` flips to the
+    // previous still, `|` keeps it beside the current one. Video too, so the
+    // toggle can be turned off from a clip (a clip never splits).
+    row(C('|'), mod_none, kBrowse | kVideo, edge, compare_two_up),
 };
 
 // The router's index stores row + 1 in a byte.
@@ -462,6 +467,7 @@ constexpr command_info kCommands[] = {
     {addon_cmd_6, "Add-on command 7", true},
     {addon_cmd_7, "Add-on command 8", true},
     {new_window, "New window"},
+    {compare_two_up, "Compare with previous"},
 };
 
 const char* named_key(key k) noexcept {

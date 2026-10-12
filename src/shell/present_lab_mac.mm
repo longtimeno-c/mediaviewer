@@ -4,6 +4,7 @@
 #include "shell/present_busy.h"
 #include "shell/video_report.h"
 #include "shell/edit_view.h"
+#include "shell/compare.h"
 #include "shell/loupe.h"
 #include "shell/dino_draw.h"
 #include "shell/welcome_screen.h"
@@ -567,6 +568,33 @@ void present_lab_mac::update_video_status() noexcept {
   vs_volume_.store(video_volume_, std::memory_order_relaxed);
   vs_item_.store(media_item_, std::memory_order_relaxed);
   vs_active_.store(true, std::memory_order_release);
+}
+
+bool present_lab_mac::apply_compare_split(input_snapshot& snapshot,
+                                          std::uint32_t host_chrome_left) noexcept {
+  snapshot.chrome_left_px = host_chrome_left;
+  compare_split split;
+  // Stills only, as on Windows: a clip, crop mode and a blackout stay one-up.
+  const bool still = current_image_ && !video_frame_;
+  if (snapshot.compare && still && !snapshot.blackout && !snapshot.edit[0].crop_overlay) {
+    split = split_compare(canvas_origin_x(snapshot), usable_window_w(snapshot), snapshot.dpi_scale);
+    if (split.valid) snapshot.chrome_left_px = static_cast<std::uint32_t>(split.right_x);
+  }
+  const bool changed = split.valid != compare_split_.valid ||
+                       (split.valid && (split.right_x != compare_split_.right_x ||
+                                        split.right_w != compare_split_.right_w));
+  compare_split_ = split;
+  if (!changed) return false;
+  if (float pw = 0, ph = 0; picture_size(&pw, &ph)) {
+    // A fitted (or filled) view stays fitted in its new frame at once, as a
+    // resize does; a zoomed one keeps its zoom and pan.
+    if (camera_.fit_mode()) {
+      camera_.fit(pw, ph, usable_window_w(snapshot), usable_window_h(snapshot), /*immediate=*/true);
+    } else if (camera_.fill_mode()) {
+      camera_.fill(pw, ph, usable_window_w(snapshot), usable_window_h(snapshot), /*immediate=*/true);
+    }
+  }
+  return true;
 }
 
 bool present_lab_mac::picture_size(float* w, float* h) const noexcept {
@@ -1214,7 +1242,10 @@ void present_lab_mac::render_thread_main() noexcept {
 
     while (running_.load(std::memory_order_acquire)) {
       @autoreleasepool {
-        const input_snapshot snapshot = input_.acquire();
+        // Not const: the compare split (issue #208) docks the previous still on
+        // the left of this copy, as PR 29's Edit pane docks on the right.
+        input_snapshot snapshot = input_.acquire();
+        const std::uint32_t host_chrome_left = snapshot.chrome_left_px;
         edit_slots_[0] = snapshot.edit[0];
         edit_slots_[1] = snapshot.edit[1];
         const double elapsed = monotonic_seconds() - start;
@@ -1235,6 +1266,9 @@ void present_lab_mac::render_thread_main() noexcept {
         const bool input_activity = input_cursor_.consume_activity(snapshot);
         if (input_activity && warmed_up_ && !options_.start_animating) ++idle_stats_.input_events;
         bool redraw = input_activity;
+        // Before anything frames the camera: usable_window_w and
+        // canvas_origin_x are then the right half while compare is up.
+        if (apply_compare_split(snapshot, host_chrome_left)) redraw = true;
         if (snapshot.background != seen_background_ ||
             snapshot.home_background_rgb != seen_home_background_rgb_) {
           seen_background_ = snapshot.background;
@@ -1527,6 +1561,8 @@ void present_lab_mac::render_thread_main() noexcept {
         seen_fill_seq_ = snapshot.fill_seq;
         std::int64_t pan_steps_x = 0, pan_steps_y = 0;
         const bool panned = input_cursor_.consume_pan(snapshot, pan_steps_x, pan_steps_y);
+        // A still that just landed may start the split; refit before input.
+        if (apply_compare_split(snapshot, host_chrome_left)) redraw = true;
         bool picture_framed = false;
         const float wheel = input_cursor_.consume_wheel(snapshot);
         if (wheel != 0.0f) redraw = true;
@@ -1595,7 +1631,10 @@ void present_lab_mac::render_thread_main() noexcept {
           last_mouse_y_ = snapshot.mouse_y;
 
           if (wheel != 0.0f && snapshot.mouse_in_client) {
-            camera_.wheel_toward(snapshot.mouse_x - canvas_origin_x(snapshot), snapshot.mouse_y, wheel,
+            // Over either half of a compare, toward the same spot of the picture.
+            camera_.wheel_toward(compare_cursor_x(snapshot.mouse_x, compare_split_) -
+                                     canvas_origin_x(snapshot),
+                                 snapshot.mouse_y, wheel,
                                  window_w, window_h,
                                  image_w, image_h);
           }
@@ -1730,6 +1769,8 @@ void present_lab_mac::render_thread_main() noexcept {
           }
         }
 
+        // A clip's first frame ends the split (a clip never splits).
+        if (apply_compare_split(snapshot, host_chrome_left)) redraw = true;
         pacer_.frame_begin();
         const double now = monotonic_seconds();
         const float delta = static_cast<float>(now - last_frame);
@@ -1866,7 +1907,10 @@ void present_lab_mac::render_thread_main() noexcept {
 
         // Hold `\` and hold Z need a still under them; neither draws on a clip.
         const bool still_up = current_image_ && !video_frame_ && !snapshot.blackout;
-        const bool show_previous = still_up && snapshot.hold_previous && previous_image_;
+        // With compare up the previous still is already on screen; hold `\`
+        // then changes nothing.
+        const bool show_previous =
+            still_up && snapshot.hold_previous && !compare_split_.valid && previous_image_;
         const float view_x = canvas_origin_x(snapshot);
         const float view_y = static_cast<float>(snapshot.chrome_height_px);
         const float view_w = usable_window_w(snapshot);
@@ -1889,6 +1933,16 @@ void present_lab_mac::render_thread_main() noexcept {
                         IM_COL32(0, 0, 0, 200), "\\  previous");
             fg->AddText(ImGui::GetFont(), fs, ImVec2(view_x + pad, view_y + pad), text,
                         "\\  previous");
+          }
+          if (still_up && compare_split_.valid) {
+            // view_x is the right half here; the left one starts at the split.
+            const float pad = 12.0f * scale;
+            const float fs = 16.0f * scale;
+            const char* label = previous_image_ ? "|  previous" : "|  no previous still yet";
+            const float lx = compare_split_.left_x + pad;
+            fg->AddText(ImGui::GetFont(), fs, ImVec2(lx + scale, view_y + pad + scale),
+                        IM_COL32(0, 0, 0, 200), label);
+            fg->AddText(ImGui::GetFont(), fs, ImVec2(lx, view_y + pad), text, label);
           }
         }
 
@@ -1917,6 +1971,24 @@ void present_lab_mac::render_thread_main() noexcept {
           video_blitter_.draw((__bridge void*)enc, video_frame_->luma, video_frame_->chroma,
                               video_frame_->colour, vp);
         } else if (current_image_) {
+          // Two-up compare: the blitter's triangle covers the drawable, so each
+          // half is scissored to its own rect (the loupe does the same).
+          const auto target_w = static_cast<float>(drawable.texture.width);
+          const auto target_h = static_cast<float>(drawable.texture.height);
+          const auto scissor_to = [&](float x, float y, float w, float h) {
+            const float x0 = std::clamp(x, 0.0f, target_w);
+            const float y0 = std::clamp(y, 0.0f, target_h);
+            const float x1 = std::clamp(x + w, x0, target_w);
+            const float y1 = std::clamp(y + h, y0, target_h);
+            if (x1 - x0 < 1.0f || y1 - y0 < 1.0f) return false;
+            [enc setScissorRect:MTLScissorRect{static_cast<NSUInteger>(x0),
+                                               static_cast<NSUInteger>(y0),
+                                               static_cast<NSUInteger>(x1 - x0),
+                                               static_cast<NSUInteger>(y1 - y0)}];
+            return true;
+          };
+          const bool split = compare_split_.valid && !show_previous;
+          if (split) (void)scissor_to(view_x, view_y, view_w, view_h);
           gfx::blit_params_mac bp;
           bp.pan_x = camera_.pan_x();
           bp.pan_y = camera_.pan_y();
@@ -2017,6 +2089,44 @@ void present_lab_mac::render_thread_main() noexcept {
                                                    drawable.texture.height}];
               }
             }
+          }
+          if (split && previous_image_) {
+            // The previous still in the left half: a second draw of a texture
+            // already resident, in this same present (shell/compare.h). The
+            // camera is the current one's, linked as a fraction of each picture.
+            const image::gpu_image_mac& prev = *previous_image_;
+            const edit::placement pp = place_image(prev);
+            const edit_view* pev = edit_for(prev.item_id);
+            gfx::blit_params_mac pb;
+            pb.image_w = static_cast<float>(pp.cropped.w);
+            pb.image_h = static_cast<float>(pp.cropped.h);
+            pb.texture_w = static_cast<float>(prev.texture_width ? prev.texture_width : prev.width);
+            pb.texture_h =
+                static_cast<float>(prev.texture_height ? prev.texture_height : prev.height);
+            for (int i = 0; i < 6; ++i) pb.uv_map[i] = pp.map.m[i];
+            pb.clip_to_source = pev && pev->keep_frame;
+            apply_adjust(pev, pb);
+            const compare_camera lc =
+                linked_camera(camera_.pan_x(), camera_.pan_y(), camera_.zoom(), bp.image_w,
+                              bp.image_h, pb.image_w, pb.image_h, compare_split_.left_w, view_h);
+            pb.pan_x = lc.pan_x;
+            pb.pan_y = lc.pan_y;
+            pb.zoom = lc.zoom;
+            pb.window_w = compare_split_.left_w;
+            pb.window_h = view_h;
+            pb.origin_x = compare_split_.left_x;
+            pb.origin_y = view_y;
+            pb.background = snapshot.background;
+            for (int i = 0; i < 3; ++i) pb.theme_background[i] = theme_rgb[i];
+            pb.time_seconds = static_cast<float>(elapsed);
+            pb.clipping = snapshot.clipping;
+            if (scissor_to(compare_split_.left_x, view_y, compare_split_.left_w, view_h)) {
+              blitter_.draw((__bridge void*)enc, prev.texture, pb);
+            }
+          }
+          if (split) {
+            [enc setScissorRect:MTLScissorRect{0, 0, drawable.texture.width,
+                                               drawable.texture.height}];
           }
         }
         ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(), cb, enc);

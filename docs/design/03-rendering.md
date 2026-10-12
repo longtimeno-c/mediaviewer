@@ -56,7 +56,8 @@ window; there is still one swapchain and one present path.
    ~0 % GPU). The loop presents every vblank while anything is live: video, an animation, a moving
    spring, a fade, or the **500 ms tail after the last input** (so a flick does not stutter at its end).
    Viewer overlays (info, AF points, pixel grid, loupe) are draws in the same present and idle-stop with
-   it. **Clipping blinkies are the exception**: they animate, so they present until toggled off; they
+   it, as is the two-up compare (`|`): the previous still is a second draw of its resident texture
+   into the left half of the canvas, under the current still's camera ([16](16-commands.md)). **Clipping blinkies are the exception**: they animate, so they present until toggled off; they
    are off by default ([16-commands.md](16-commands.md)).
    **The idle wait has no timeout** (except occlusion probes, soak deadlines and a pending video-gap
    deadline). A worker finishing a texture the canvas should show signals the session's image-ready

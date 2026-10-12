@@ -333,6 +333,9 @@ enum class command_id : std::uint16_t {
   // Ctrl/Cmd+N: another window, its own process (docs/design/16 "Window").
   // Appended after the add-on slots so every earlier wire id stays put.
   new_window,
+  // Issue #208 (docs/design/16 "View"): `|` toggles a two-up compare of the
+  // previous still beside the current one, under one camera. Appended.
+  compare_two_up,
   count
 };
 inline constexpr int kAddonCommandSlots = 8;

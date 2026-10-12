@@ -133,6 +133,9 @@ struct input_snapshot {
   std::int32_t loupe_steps_x = 0;
   std::int32_t loupe_steps_y = 0;
   bool hold_previous = false;   // held backslash
+  // `|` (issue #208, shell/compare.h): the previous still beside the current
+  // one under one camera. A level; the render thread splits only over a still.
+  bool compare = false;
   bool info_overlay = false;    // O
   bool af_points = false;       // Shift+O: quads from `meta`, no file read
   bool eyedropper = false;      // Shift+I: one-pixel readout at the cursor
