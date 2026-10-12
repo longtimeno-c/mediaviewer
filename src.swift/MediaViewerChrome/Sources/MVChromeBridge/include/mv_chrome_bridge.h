@@ -137,6 +137,19 @@ void mv_chrome_select_index_and_close_gallery(int32_t index);
 // another removed). [main-thread]
 uint64_t mv_chrome_listing_generation(void);
 
+// #291 (docs/design/16 "File search"): the files of the listing whose tags
+// (camera, lens, made-with, software, title, caption, keywords, creator) hold
+// every word of `query_utf8`, folded as names are. JSON:
+//   {"done":n,"total":m,"reading":bool,"hits":[[index,"why"],...]}
+// `index` as mv_chrome_item_name; `why` the tag that matched ("Canon EOS R5").
+// Only files the folder's background tag pass has read; `reading` while it
+// runs ("Still reading tags — done of total"). A lookup in memory, never a
+// file read. Returns the byte length needed, as the tables. [main-thread]
+int32_t mv_chrome_tag_search(const char* query_utf8, char* buf, int32_t size);
+// Bumped when the tag pass learns more about the folder on screen: an open
+// search re-runs its tag half. [main-thread]
+uint64_t mv_chrome_tag_generation(void);
+
 // Bumped when the host rewrites a listed file in place (a lossless rotate, a
 // metadata write) and updates its size / mtime without a relist, so Swift
 // re-reads mv_chrome_item_thumb_key and the cell asks for the new thumbnail.

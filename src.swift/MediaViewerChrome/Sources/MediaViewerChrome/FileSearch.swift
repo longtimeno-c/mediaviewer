@@ -13,6 +13,12 @@
 // the viewer still walks the whole folder. Nothing here blocks the main
 // thread: names are folded off it, once per listing, and a keystroke runs one
 // memmem pass.
+//
+// #291: then tags. After the name hits come the files whose tags (camera, lens,
+// made-with, software, title, caption, keywords, creator) hold every word,
+// from the core's folder tag pass (mv_chrome_tag_search: memory, no file
+// read), each with the tag it matched on under its tile. While that pass is
+// still reading the folder the bar says "Still reading tags — 340 of 2,000".
 import AppKit
 import MVChromeBridge
 import SwiftUI
@@ -31,6 +37,10 @@ final class FileSearchStore: ObservableObject {
   @Published private(set) var folders: [Int]?
   /// The field takes the keyboard, text selected.
   @Published private(set) var focusRequest = 0
+  /// #291: why a tile matched when its name did not ("Canon EOS R5"), by index.
+  @Published private(set) var why: [Int: String] = [:]
+  /// "Still reading tags — 340 of 2,000" while the folder's tag pass runs.
+  @Published private(set) var tagNote = ""
 
   // Computed, not stored: FolderStore's own init reaches listingChanged(_:).
   private var folderStore: FolderStore { FolderStore.shared }
@@ -41,6 +51,9 @@ final class FileSearchStore: ObservableObject {
   private var debounce: Task<Void, Never>?
   /// The folder the field belongs to: another folder closes it.
   private var searchFolder = ""
+  /// Re-runs the tag half while the folder's tag pass is still reading.
+  private var tagWatch: Task<Void, Never>?
+  private var tagGeneration: UInt64 = 0
 
   private init() {}
 
@@ -91,6 +104,10 @@ final class FileSearchStore: ObservableObject {
         items = nil
         folders = nil
       }
+      if !why.isEmpty { why = [:] }
+      if !tagNote.isEmpty { tagNote = "" }
+      tagWatch?.cancel()
+      tagWatch = nil
       pushFilter(nil, nil)
       return
     }
@@ -100,11 +117,82 @@ final class FileSearchStore: ObservableObject {
       return
     }
     let query = FoldedNames.fold(text.trimmingCharacters(in: .whitespacesAndNewlines))
-    let names = folded.matching(query)
+    let nameHits = folded.matching(query)
     let folderHits = foldedFolders.matching(query)
+    let names = withTags(nameHits, typed: text.trimmingCharacters(in: .whitespacesAndNewlines))
     if names != items { items = names }
     if folderHits != folders { folders = folderHits }
     pushFilter(names, folderHits)
+  }
+
+  // MARK: Tags (#291)
+
+  private struct TagAnswer: Decodable {
+    let done: Int
+    let total: Int
+    let reading: Bool
+    let hits: [[TagHitPart]]
+  }
+  private enum TagHitPart: Decodable {
+    case index(Int)
+    case text(String)
+    init(from decoder: Decoder) throws {
+      let c = try decoder.singleValueContainer()
+      if let i = try? c.decode(Int.self) { self = .index(i) } else { self = .text(try c.decode(String.self)) }
+    }
+  }
+
+  /// Name hits first, then the files only their tags matched, in listing order.
+  private func withTags(_ nameHits: [Int], typed: String) -> [Int] {
+    tagGeneration = mv_chrome_tag_generation()
+    let need = Int(typed.withCString { mv_chrome_tag_search($0, nil, 0) })
+    var answer: TagAnswer?
+    if need > 0 {
+      var buf = [CChar](repeating: 0, count: need + 1)
+      _ = buf.withUnsafeMutableBufferPointer { b in
+        typed.withCString { mv_chrome_tag_search($0, b.baseAddress, Int32(b.count)) }
+      }
+      answer = try? JSONDecoder().decode(TagAnswer.self, from: Data(String(cString: buf).utf8))
+    }
+    var out = nameHits
+    var reasons: [Int: String] = [:]
+    if let answer {
+      let named = Set(nameHits)
+      for hit in answer.hits {
+        guard hit.count == 2, case .index(let i) = hit[0], case .text(let w) = hit[1], !named.contains(i)
+        else { continue }
+        out.append(i)
+        reasons[i] = w
+      }
+      let note = answer.reading && answer.total > 0
+        ? "Still reading tags — \(answer.done.formatted()) of \(answer.total.formatted())" : ""
+      if note != tagNote { tagNote = note }
+      watchTags(answer.reading)
+    }
+    if reasons != why { why = reasons }
+    return out
+  }
+
+  /// While the tag pass reads the folder, re-run the search as it learns more
+  /// (a poll that exists only while a search is typed and tags are coming).
+  private func watchTags(_ reading: Bool) {
+    guard reading else {
+      tagWatch?.cancel()
+      tagWatch = nil
+      return
+    }
+    guard tagWatch == nil else { return }
+    tagWatch = Task { [weak self] in
+      while !Task.isCancelled {
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        guard let self, !Task.isCancelled else { return }
+        if mv_chrome_tag_generation() != self.tagGeneration {
+          self.tagWatch = nil
+          self.applyNames()
+          return
+        }
+      }
+    }
   }
 
   /// Folding thousands of names is Foundation work (~11 ms for 10,000): off the
@@ -189,7 +277,7 @@ struct FileSearchBar: View {
     HStack(spacing: 8) {
       Image(systemName: "magnifyingglass")
         .foregroundStyle(MVTheme.body)
-      TextField("Find files by name in this folder", text: $store.text)
+      TextField("Find files by name or tag in this folder", text: $store.text)
         .textFieldStyle(.plain)
         .font(MVTheme.font(14))
         .foregroundStyle(MVTheme.title)
@@ -208,7 +296,14 @@ struct FileSearchBar: View {
             store.text = ""
           }
         }
-        .accessibilityLabel("Find files by name")
+        .accessibilityLabel("Find files by name or tag")
+      if store.active && !store.tagNote.isEmpty {
+        Text(store.tagNote)
+          .font(MVTheme.font(12))
+          .foregroundStyle(MVTheme.body)
+          .lineLimit(1)
+          .fixedSize()
+      }
       if store.active {
         Text("\(store.shownCount) of \(store.totalCount)")
           .font(MVTheme.font(12))
@@ -250,7 +345,9 @@ struct FileSearchNotice: View {
   @ObservedObject private var store = FileSearchStore.shared
 
   var body: some View {
-    Text("No files named “\(store.text.trimmingCharacters(in: .whitespacesAndNewlines))” in this folder.")
+    Text(store.tagNote.isEmpty
+      ? "No files named or tagged “\(store.text.trimmingCharacters(in: .whitespacesAndNewlines))” in this folder."
+      : "No match yet. \(store.tagNote)")
       .font(MVTheme.font(14))
       .foregroundStyle(MVTheme.body)
       .multilineTextAlignment(.center)
