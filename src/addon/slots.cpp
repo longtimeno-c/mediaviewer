@@ -825,6 +825,11 @@ std::string slot_registry::screens_json() const {
       if (s.id == key.second) def = &s;
     }
     if (!def) continue;
+    // The newest surface revision (registry-unique): a post_surface moves this,
+    // not the tree's revision, so a chrome that rebuilds on revision alone
+    // would never show new pixels.
+    std::uint64_t pixels = 0;
+    for (const auto& [sid, px] : st.surfaces) pixels = std::max(pixels, px.revision);
     w.begin_object()
         .key("addon").string(st.addon)
         .key("id").string(st.id)
@@ -834,6 +839,7 @@ std::string slot_registry::screens_json() const {
         .key("height").integer(def->height)
         .key("generation").integer(static_cast<std::int64_t>(st.generation))
         .key("revision").integer(static_cast<std::int64_t>(st.tree.revision()))
+        .key("pixels").integer(static_cast<std::int64_t>(pixels))
         .key("tree").raw(st.tree.json())
         .end_object();
   }
@@ -854,6 +860,25 @@ bool slot_registry::surface(const std::string& addon_id, const std::string& scre
   auto it = st->surfaces.find(surface_id);
   if (it == st->surfaces.end()) return false;
   out = it->second;
+  return true;
+}
+
+bool slot_registry::surface_size(const std::string& addon_id, const std::string& screen_id,
+                                 const std::string& surface_id, std::uint32_t& width, std::uint32_t& height,
+                                 std::uint64_t& revision) const {
+  std::lock_guard lock(m_);
+  const screen_state* st = nullptr;
+  if (auto s = screens_.find(std::make_pair(addon_id, screen_id)); s != screens_.end()) {
+    st = &s->second;
+  } else if (auto i = info_.find(std::make_pair(addon_id, screen_id)); i != info_.end()) {
+    st = &i->second;
+  }
+  if (!st) return false;
+  auto it = st->surfaces.find(surface_id);
+  if (it == st->surfaces.end()) return false;
+  width = it->second.width;
+  height = it->second.height;
+  revision = it->second.revision;
   return true;
 }
 
@@ -1063,7 +1088,10 @@ status slot_registry::post_surface(const std::string& addon_id, const std::strin
     screen_state* st = addressed(addon_id, screen_id, generation, why);
     if (!st) return why;
     auto& slot = st->surfaces[surface_id];
-    px.revision = slot.revision + 1;
+    // Unique across the registry, not per slot: a section for the next file
+    // starts a new slot, and a chrome caching by revision must not take its
+    // first pixels for the previous file's.
+    px.revision = ++surface_revision_;
     slot = std::move(px);
     bits = st->place == screen_place::info_section ? slot_changed_info : slot_changed_screens;
   }

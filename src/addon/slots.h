@@ -77,7 +77,7 @@ enum slot_change : std::uint32_t {
 struct surface_pixels {
   std::uint32_t width = 0;
   std::uint32_t height = 0;
-  std::uint64_t revision = 0;
+  std::uint64_t revision = 0;  // unique across the registry's surfaces
   std::vector<std::uint8_t> bgra;  // width * 4 per row, premultiplied
 };
 
@@ -147,10 +147,15 @@ class slot_registry {
   // {"generation","path","sections":[{"addon","id","title","revision","tree":{..}}]}
   // -- only the sections that have answered for the current file, in order.
   [[nodiscard]] std::string info_json() const;
-  // [{"addon","id","title","place","width","height","generation","revision","tree":{..}|null}]
+  // [{"addon","id","title","place","width","height","generation","revision","pixels","tree":{..}|null}]
   [[nodiscard]] std::string screens_json() const;
   [[nodiscard]] bool surface(const std::string& addon_id, const std::string& screen_id,
                              const std::string& surface_id, surface_pixels& out) const;
+  // The same surface's size and revision without copying its pixels (a chrome
+  // that already holds that revision draws what it has).
+  [[nodiscard]] bool surface_size(const std::string& addon_id, const std::string& screen_id,
+                                  const std::string& surface_id, std::uint32_t& width, std::uint32_t& height,
+                                  std::uint64_t& revision) const;
   // {"generation","scope","query","searching":bool,
   //  "providers":[{"addon","id","name","done","read","total"}],
   //  "rows":[{"path","why","addon","provider"}]}
@@ -247,6 +252,7 @@ class slot_registry {
   std::map<std::pair<std::string, std::string>, std::string> status_;
   mv_slot_theme last_theme_{};
   float last_scale_ = 1.0f;
+  std::uint64_t surface_revision_ = 0;  // under m_
 
   std::atomic<std::uint64_t> generation_{0};
   std::atomic<std::uint64_t> calls_{0};

@@ -896,7 +896,9 @@ public static partial class IslandHost
         {
             var at = new ScreenAt(JStr(s, "addon"), JStr(s, "id"));
             wanted.Add(at);
-            long revision = (long)JNum(s, "revision", 0);
+            // The tree's revision and its newest pixels: a surface post moves only
+            // the latter, and must still redraw (a map's first pixels, a zoom reply).
+            long revision = ((long)JNum(s, "revision", 0) << 40) ^ (long)JNum(s, "pixels", 0);
             string place = JStr(s, "place");
             if (!ScreenWindows.TryGetValue(at, out var open))
             {
