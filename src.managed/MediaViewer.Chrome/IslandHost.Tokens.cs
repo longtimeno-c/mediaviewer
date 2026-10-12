@@ -55,7 +55,99 @@ public static partial class IslandHost
         public const string Rewind = "\uEB9E";
         public const string FastForward = "\uEB9D";
         public const string More = "\uE712";
+        public const string Volume = "\uE767";
+        public const string Mute = "\uE74F";
         public const string Close = "\uE711";
+        public const string Rotate = "\uE7AD";      // clockwise; mirrored for left
+        public const string FlipArrows = "\uE8AB";  // Switch: left and right arrows
+        public const string Previous = "\uE892";
+        public const string Next = "\uE893";
+    }
+
+    // A flat icon button for the panes (the Mac's iconButton in EditView.swift:
+    // compact FlatButtonStyle, .help and an accessibility label). `transform`
+    // turns or mirrors the glyph where Segoe has only one direction.
+    private static Button PaneIconButton(string glyph, string label, string? key, Action click,
+                                         Transform? transform = null)
+    {
+        var icon = new FontIcon
+        {
+            Glyph = glyph, FontFamily = IconFont, FontSize = TypeBody, Foreground = Brush(Title),
+            RenderTransform = transform, RenderTransformOrigin = new Windows.Foundation.Point(0.5, 0.5),
+        };
+        var b = new Button
+        {
+            Content = icon,
+            Background = Brush(Microsoft.UI.Colors.Transparent),
+            Padding = new Thickness(8, 6, 8, 6),
+            MinWidth = 36,
+            VerticalAlignment = VerticalAlignment.Center,
+            // As EditButton: the crop, trim and editor keys stay the canvas's.
+            AllowFocusOnInteraction = false,
+        };
+        FlattenButton(b);
+        ToolTipService.SetToolTip(b, key is null ? label : $"{label}  {key}");
+        AutomationProperties.SetName(b, label);
+        if (key is not null) AutomationProperties.SetHelpText(b, "Key " + key);
+        b.Click += (_, _) => Guarded(click);
+        return b;
+    }
+
+    // Activity with no fraction (the Mac's ProgressView spinner): a quarter
+    // arc turning once a second. Not ProgressRing, which cannot load in these
+    // islands. The animation runs only while Active is set, so a pane left
+    // open on a ready view costs nothing (rule: idle is free).
+    private sealed class Spinner
+    {
+        public readonly FrameworkElement Root;
+        private readonly Microsoft.UI.Xaml.Media.Animation.Storyboard _turn;
+        private bool _active;
+
+        public Spinner(double size)
+        {
+            var spin = new RotateTransform();
+            var arc = new Microsoft.UI.Xaml.Shapes.Ellipse
+            {
+                Width = size, Height = size,
+                Stroke = Brush(Body),
+                StrokeThickness = 2,
+                // A quarter of the circumference, in stroke thicknesses.
+                StrokeDashArray = new DoubleCollection { Math.PI * (size - 2) / 4 / 2, 1000 },
+                StrokeDashCap = PenLineCap.Round,
+                RenderTransform = spin,
+                RenderTransformOrigin = new Windows.Foundation.Point(0.5, 0.5),
+            };
+            Root = new Grid
+            {
+                Width = size, Height = size,
+                VerticalAlignment = VerticalAlignment.Center,
+                Visibility = Visibility.Collapsed,
+                Children = { arc },
+            };
+            AutomationProperties.SetName(Root, "Working");
+            var anim = new Microsoft.UI.Xaml.Media.Animation.DoubleAnimation
+            {
+                From = 0, To = 360,
+                Duration = new Duration(TimeSpan.FromSeconds(1)),
+                RepeatBehavior = Microsoft.UI.Xaml.Media.Animation.RepeatBehavior.Forever,
+            };
+            Microsoft.UI.Xaml.Media.Animation.Storyboard.SetTarget(anim, spin);
+            Microsoft.UI.Xaml.Media.Animation.Storyboard.SetTargetProperty(anim, "Angle");
+            _turn = new Microsoft.UI.Xaml.Media.Animation.Storyboard { Children = { anim } };
+            Root.Unloaded += (_, _) => { _turn.Stop(); _active = false; };
+        }
+
+        public bool Active
+        {
+            get => _active;
+            set
+            {
+                if (value == _active) return;
+                _active = value;
+                Root.Visibility = value ? Visibility.Visible : Visibility.Collapsed;
+                if (value) _turn.Begin(); else _turn.Stop();
+            }
+        }
     }
 
     // An icon-only bar button in the flat style; the tooltip doubles as its

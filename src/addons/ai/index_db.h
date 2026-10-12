@@ -68,6 +68,9 @@ struct track_filter {
   std::uint32_t media_bit = 1;
   std::uint32_t default_media = 1;
   std::int64_t skip_root = 0;  // a root to leave out (the Photos library while access is off)
+  // Roots held until the user resumes them (issue #299, engine_options::
+  // hold_unfinished): left out of the work and of the counts.
+  std::vector<std::int64_t> held;
 };
 
 struct speech_in {
@@ -242,6 +245,10 @@ class index_db {
   [[nodiscard]] std::uint64_t frames_in_root(std::int64_t root, const std::string& spec);
   [[nodiscard]] std::uint64_t assets_in_root(std::int64_t root);
   [[nodiscard]] std::uint64_t done_in_root(std::int64_t root, const std::string& spec);
+  // How many assets of `root` pending() would still return for `spec` (the
+  // filter's held roots aside): 0 when the root's indexing is finished.
+  [[nodiscard]] std::uint64_t pending_in_root(std::int64_t root, const std::string& spec, std::int32_t max_tries,
+                                              const track_filter& filter = {});
   [[nodiscard]] std::uint64_t unavailable_in_root(std::int64_t root, const std::string& spec);
   // Every stored frame of `spec` with an id above `after_id`, streamed in id
   // order (a reader catching up takes only what was committed since).

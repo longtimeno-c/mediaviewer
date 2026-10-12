@@ -51,7 +51,9 @@ public static partial class IslandHost
     private const ChromeColour KeyframeTick = ChromeColour.KeyframeTick;
 
     // The slider's track starts and ends about half a thumb in from its edges.
-    private const double SeekWidth = 320;
+    // The scrubber flexes with the strip (issue #195), so the overlays are
+    // placed against its laid-out width, kept here; 320 until the first layout.
+    private static double _seekWidth = 320;
     private const double SeekInset = 10;
 
     /// <summary>
@@ -99,15 +101,24 @@ public static partial class IslandHost
     }
 
     /// <summary>The scrubber with the trim overlay on top (BuildTransport).</summary>
-    private static UIElement WrapSeekForTrim(Slider seek)
+    private static FrameworkElement WrapSeekForTrim(Slider seek)
     {
         _trimMarks = new Microsoft.UI.Xaml.Controls.Canvas
         {
-            Width = SeekWidth,
             IsHitTestVisible = false,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Stretch,
         };
-        var grid = new Grid { Width = SeekWidth, VerticalAlignment = VerticalAlignment.Center };
+        var grid = new Grid { HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Center };
+        // The marks are absolute x positions: redraw them when the strip
+        // resizes the scrubber.
+        grid.SizeChanged += (_, e) =>
+        {
+            if (e.NewSize.Width <= 0 || e.NewSize.Width == _seekWidth) return;
+            _seekWidth = e.NewSize.Width;
+            RenderTrim();
+            RenderMatchMarks(false);
+        };
         grid.Children.Add(seek);
         grid.Children.Add(_trimMarks);
         // Milestone H: Local search's matching moments (IslandHost.LocalSearch.cs).
@@ -116,7 +127,7 @@ public static partial class IslandHost
     }
 
     /// <summary>The label and the two save buttons, shown while trim is armed.</summary>
-    private static UIElement BuildTrimBar()
+    private static FrameworkElement BuildTrimBar()
     {
         _trimLabel = new TextBlock
         {
@@ -151,7 +162,7 @@ public static partial class IslandHost
     {
         if (_trimDuration <= 0) return SeekInset;
         double f = Math.Clamp((double)t / _trimDuration, 0, 1);
-        return SeekInset + f * (SeekWidth - 2 * SeekInset);
+        return SeekInset + f * (_seekWidth - 2 * SeekInset);
     }
 
     private static void RenderTrim()
@@ -245,6 +256,7 @@ public static partial class IslandHost
             {
                 rows[i].Text = (i == row ? "▶ " : "  ") + ClipTools[i].Name;
                 rows[i].Foreground = Brush(!Enabled(i) ? Body : i == row ? Title : Body);
+                AutomationProperties_SetName(rows[i], ClipTools[i].Name + (Enabled(i) ? "" : ", unavailable"));
             }
         }
         void Move(int delta)
@@ -255,6 +267,7 @@ public static partial class IslandHost
                 if (Enabled(row)) break;
             }
             Refresh();
+            RaiseLive(rows[row]);  // the panel keeps focus: speak the row (issue #223)
         }
         void Run(int i)
         {
@@ -267,6 +280,7 @@ public static partial class IslandHost
         for (int i = 0; i < ClipTools.Length; ++i)
         {
             rows[i] = Label("", UiFontSize);
+            MarkLive(rows[i]);
             int captured = i;
             var b = FlatButton(rows[i], new Thickness(0, 1, 0, 1), tabStop: false);
             b.IsEnabled = Enabled(i);
@@ -274,6 +288,9 @@ public static partial class IslandHost
             panel.Children.Add(b);
         }
         panel.Children.Add(Label("↑ ↓ choose   Enter run   Esc cancel   ·   jobs: Ctrl+J", UiFontSize, mute: true));
+        AutomationProperties_SetName(panel, "Clip tools");
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetHelpText(
+            panel, "Up and Down choose a tool, Enter runs it, Escape cancels");
         Refresh();
         panel.KeyDown += (_, e) =>
         {
@@ -306,6 +323,10 @@ public static partial class IslandHost
         public TextBlock Title = null!;
         public TextBlock Status = null!;
         public JobBar Bar = null!;
+        // Only the action for the job's state shows (JobsView.swift).
+        public Button Cancel = null!;
+        public Button Retry = null!;
+        public Button Reveal = null!;
     }
 
     // A job's progress as two plain borders. Not a ProgressBar: WinUI's has no
@@ -499,12 +520,12 @@ public static partial class IslandHost
         col.Children.Add(_jobsEmpty);
         _jobsList = new StackPanel { Spacing = 6 };
         col.Children.Add(_jobsList);
-        var clear = new Button { Content = Text("Clear finished", Title), IsTabStop = false };
-        clear.Click += (_, _) =>
+        Button clear = EditButton("Clear finished", () =>
         {
             _folderSession?.ClipClearFinished();
             RefreshJobs();
-        };
+        });
+        clear.IsTabStop = false;
         col.Children.Add(clear);
         col.Children.Add(Text("↑ ↓ choose · Delete cancel · R retry · Enter show in Explorer · Esc back",
                               Body, UiFontSize - 3));
@@ -638,6 +659,11 @@ public static partial class IslandHost
             row.Bar.Visibility = p.State is MvClipJobState.Running or MvClipJobState.Queued
                 ? Visibility.Visible : Visibility.Collapsed;
             row.Root.BorderBrush = Brush(i == _jobCursor ? TrimAccent : Hairline);
+            bool running = p.State is MvClipJobState.Running or MvClipJobState.Queued;
+            row.Cancel.Visibility = running ? Visibility.Visible : Visibility.Collapsed;
+            row.Retry.Visibility = p.State is MvClipJobState.Failed or MvClipJobState.Cancelled
+                ? Visibility.Visible : Visibility.Collapsed;
+            row.Reveal.Visibility = p.State == MvClipJobState.Done ? Visibility.Visible : Visibility.Collapsed;
         }
     }
 
@@ -648,9 +674,12 @@ public static partial class IslandHost
         row.Status = Text("", Body, UiFontSize - 3);
         row.Bar = new JobBar();
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-        buttons.Children.Add(TextButton("Cancel", () => { _folderSession?.ClipCancel(id); RefreshJobs(); }));
-        buttons.Children.Add(TextButton("Retry", () => { _folderSession?.ClipRetry(id); RefreshJobs(); }));
-        buttons.Children.Add(TextButton("Show in Explorer", () => RevealJob(id)));
+        row.Cancel = EditButton("Cancel", () => { _folderSession?.ClipCancel(id); RefreshJobs(); });
+        row.Retry = EditButton("Retry", () => { _folderSession?.ClipRetry(id); RefreshJobs(); });
+        row.Reveal = EditButton("Show in Explorer", () => RevealJob(id));
+        buttons.Children.Add(row.Cancel);
+        buttons.Children.Add(row.Retry);
+        buttons.Children.Add(row.Reveal);
         var inner = new StackPanel { Spacing = 3 };
         inner.Children.Add(row.Title);
         inner.Children.Add(row.Bar.Root);
@@ -662,7 +691,7 @@ public static partial class IslandHost
             BorderThickness = new Thickness(1),
             BorderBrush = Brush(Hairline),
             Padding = new Thickness(8, 6, 8, 6),
-            CornerRadius = new CornerRadius(4),
+            CornerRadius = new CornerRadius(6),
         };
         return row;
     }
