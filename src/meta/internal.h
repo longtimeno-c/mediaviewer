@@ -47,6 +47,9 @@ struct field_state {
   std::optional<int> rating;  // -1 rejected, 0..5
   std::optional<int> orientation;
   std::optional<std::string> comment;
+  // Issue #207: XMP xmp:Label, the colour label Lightroom and Bridge write
+  // ("Red", "Yellow", ...). nullopt when absent or empty.
+  std::optional<std::string> label;
 };
 // XMP first for the rating (it is what this app and Lightroom write), then the
 // EXIF Rating / RatingPercent tags Windows uses; the EXIF UserComment first for
@@ -84,6 +87,9 @@ void read_still(std::span<const std::uint8_t> bytes, bool decoder_orients, metad
 
 // Date-taken only, for sort (a prefix is enough). nullopt when absent.
 [[nodiscard]] std::optional<std::int64_t> still_date_key(std::span<const std::uint8_t> bytes) noexcept;
+// Issue #207: the PR 12 fields alone (rating, label...), for the cull filter.
+// nullopt when Exiv2 cannot parse `bytes` (a prefix cut mid-segment, say).
+[[nodiscard]] std::optional<field_state> still_fields(std::span<const std::uint8_t> bytes) noexcept;
 
 // libavformat: container facts, per-stream inspector, chapters, tags.
 // Returns false when FFmpeg cannot open the file as a clip.

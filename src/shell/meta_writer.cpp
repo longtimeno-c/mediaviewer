@@ -125,6 +125,14 @@ std::optional<std::string> meta_writer::pending_comment(std::string_view path) c
   return std::nullopt;
 }
 
+std::optional<std::string> meta_writer::pending_label(std::string_view path) const {
+  if (const entry* e = find(path)) {
+    if (auto l = label_of(e->fields)) return l;
+  }
+  if (in_flight_ && in_flight_->path == path) return label_of(in_flight_->fields);
+  return std::nullopt;
+}
+
 std::optional<meta_outcome> meta_writer::take_failure() {
   std::optional<meta_outcome> f = std::move(failure_);
   failure_.reset();
@@ -168,6 +176,78 @@ meta::write_fields comment_fields(std::string_view utf8) {
   f.comment = utf8.empty() ? meta::change<std::string>::remove()
                            : meta::change<std::string>::to(std::string(utf8));
   return f;
+}
+
+const char* colour_label_name(colour_label l) noexcept {
+  switch (l) {
+    case colour_label::none: return "";
+    case colour_label::red: return "Red";
+    case colour_label::yellow: return "Yellow";
+    case colour_label::green: return "Green";
+    case colour_label::blue: return "Blue";
+    case colour_label::purple: return "Purple";
+  }
+  return "";
+}
+
+std::string label_toggled(colour_label pressed, std::string_view now) {
+  const std::string_view want = colour_label_name(pressed);
+  if (want.empty()) return {};
+  // Case-insensitive, ASCII: another app may have written "red".
+  const auto same = [](std::string_view a, std::string_view b) {
+    if (a.size() != b.size()) return false;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+      char x = a[i], y = b[i];
+      if (x >= 'A' && x <= 'Z') x = static_cast<char>(x - 'A' + 'a');
+      if (y >= 'A' && y <= 'Z') y = static_cast<char>(y - 'A' + 'a');
+      if (x != y) return false;
+    }
+    return true;
+  };
+  return same(want, now) ? std::string{} : std::string(want);
+}
+
+meta::write_fields label_fields(std::string_view label) {
+  meta::write_fields f;
+  meta::tag_edit t;
+  t.key = kLabelTag;
+  t.value = label.empty() ? meta::change<std::string>::remove()
+                          : meta::change<std::string>::to(std::string(label));
+  f.tags.push_back(std::move(t));
+  return f;
+}
+
+std::optional<std::string> label_of(const meta::write_fields& fields) {
+  for (auto it = fields.tags.rbegin(); it != fields.tags.rend(); ++it) {
+    if (it->key != kLabelTag) continue;
+    return it->value.k == meta::change<std::string>::kind::set ? it->value.value : std::string{};
+  }
+  return std::nullopt;
+}
+
+std::string describe_write(const meta::write_fields& fields) {
+  using meta::change;
+  if (fields.rating.touches()) {
+    const int stars = fields.rating.k == change<int>::kind::clear ? 0 : fields.rating.value;
+    return stars == 0 ? std::string("Rating cleared") : meta::format_rating(stars);
+  }
+  if (fields.comment.touches()) {
+    return fields.comment.k == change<std::string>::kind::clear ? "Comment removed" : "Comment saved";
+  }
+  if (fields.date_taken.touches()) {
+    return fields.date_taken.k == change<std::string>::kind::clear ? "Date taken removed"
+                                                                  : "Date taken saved";
+  }
+  if (fields.location.touches()) {  // #352
+    return fields.location.k == change<meta::geo_point>::kind::clear ? "Location removed"
+                                                                     : "Location saved";
+  }
+  if (fields.tags.size() == 1) {
+    if (auto l = label_of(fields)) return l->empty() ? std::string("Label cleared") : "Label: " + *l;
+    return "Metadata saved";
+  }
+  if (!fields.tags.empty()) return std::to_string(fields.tags.size()) + " tags saved";
+  return {};
 }
 
 }  // namespace mv::shell

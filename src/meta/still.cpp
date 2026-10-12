@@ -364,6 +364,7 @@ void fill_summary(const Exiv2::ExifData& e, const Exiv2::XmpData& x, Exiv2::Imag
   const field_state f = read_fields(e, x, comment_order_of(image));
   s.rating = f.rating.value_or(0);
   s.comment = f.comment.value_or(std::string{});
+  s.label = f.label.value_or(std::string{});
 }
 
 // SubjectArea is the one standard AF-ish tag (EXIF 2.3); vendor notes below are
@@ -497,6 +498,16 @@ std::optional<std::int64_t> still_date_key(std::span<const std::uint8_t> bytes) 
     if (!image) return std::nullopt;
     const std::string stamp = date_stamp(image->exifData(), image->xmpData());
     return parse_date_key(stamp);
+  } catch (...) {
+    return std::nullopt;
+  }
+}
+
+std::optional<field_state> still_fields(std::span<const std::uint8_t> bytes) noexcept {
+  try {
+    auto image = open(bytes);
+    if (!image) return std::nullopt;
+    return read_fields(image->exifData(), image->xmpData(), comment_order_of(*image));
   } catch (...) {
     return std::nullopt;
   }

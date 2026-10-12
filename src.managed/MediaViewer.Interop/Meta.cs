@@ -6,7 +6,7 @@ using System.Text;
 
 namespace MediaViewer.Interop;
 
-/// <summary>Mirrors <c>mv_location_input</c> (mediaviewer.h, ABI 0.20). 152 bytes.</summary>
+/// <summary>Mirrors <c>mv_location_input</c> (mediaviewer.h, ABI 0.27). 152 bytes.</summary>
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct MvLocationInput
 {
