@@ -54,7 +54,7 @@ public static partial class IslandHost
             // here and then immediately hiding it left an ItemsRepeater bound
             // to `Items`; the first folder-open show bound a second one and
             // AccessViolation'd in set_ItemsSource.
-            Move(NewIsland(ref _filmstrip, parent), 1, 1, args.ClientHeight);
+            Move(NewIsland(ref _filmstrip, parent, takeFocus: true), 1, 1, args.ClientHeight);
             return 0;
         }
         catch (Exception ex)
@@ -71,6 +71,7 @@ public static partial class IslandHost
             if (arg == IntPtr.Zero || sizeBytes < ResizeArgsSize) return unchecked((int)0x80070057);
             ChromeResizeArgs args = Marshal.PtrToStructure<ChromeResizeArgs>(arg);
             Move(_filmstrip, args.Width, args.Height, args.Y);
+            NoteFilmstripTop(args.Height > 1, args.Y);
             return 0;
         }
         catch (Exception ex)
@@ -224,23 +225,27 @@ public static partial class IslandHost
         if (_folderSession is null) return;
         Items.Clear();
         _selectedIndex = -1;
-        uint count = _folderSession.FolderCount;
         // Milestone H: a result list (mv_folder_open_list) rather than a
         // directory. Its clips carry the moment they open on, shown as m:ss.
         bool list = IsResultList();
-        for (uint i = 0; i < count; ++i)
+        // Issue #226: the whole listing in one core call (one lock, reused
+        // buffers), not eight calls and four allocations per stop.
+        int count = _folderSession.ReadFolderEntries(out ReadOnlySpan<MvFolderEntry> entries,
+                                                     out ReadOnlySpan<byte> strings);
+        for (int i = 0; i < count; ++i)
         {
-            MvFolderItem rec = _folderSession.FolderItemAt(i);
-            long moment = list ? _folderSession.ItemMoment(i) : -1;
+            ref readonly MvFolderEntry e = ref entries[i];
+            MvFolderItem rec = e.Item;
+            long moment = list ? e.MomentMs : -1;
             Items.Add(new FolderItemVm
             {
-                Index = (int)i,
-                Name = _folderSession.FolderItemName(i),
-                Path = _folderSession.FolderItemPath(i),
-                PairPath = rec.PairKind == MvPairKind.None ? "" : _folderSession.FolderItemPairPath(i),
+                Index = i,
+                Name = MediaViewerSession.EntryString(strings, e.NameOffset),
+                Path = MediaViewerSession.EntryString(strings, e.PathOffset),
+                PairPath = rec.PairKind == MvPairKind.None ? "" : MediaViewerSession.EntryString(strings, e.PairOffset),
                 Badge = moment >= 0 ? MomentLabel(moment) : BadgeFor(rec),
                 IsClip = (rec.Flags & MvFolderItem.FlagClip) != 0,
-                ThumbPath = _folderSession.FolderItemThumbPath(i),
+                ThumbPath = MediaViewerSession.EntryString(strings, e.ThumbOffset),
                 Selected = (rec.Flags & MvFolderItem.FlagSelected) != 0,
             });
         }
@@ -347,6 +352,7 @@ public static partial class IslandHost
         _selectedIndex = index;
         ScrollTo(index);
         GalleryScrollTo(index);
+        AnnounceSelection(index);
     }
 
     private static void ScrollTo(int index)
@@ -393,7 +399,12 @@ public static partial class IslandHost
             VerticalScrollBarVisibility = ScrollBarVisibility.Disabled,
             HorizontalScrollMode = ScrollMode.Enabled,
             VerticalScrollMode = ScrollMode.Disabled,
+            // Tab lands here (issue #217): ← → walk, typing is typeahead. A
+            // click still leaves the keys with the canvas, as before.
+            IsTabStop = true,
+            AllowFocusOnInteraction = false,
         };
+        AutomationProperties_SetName(_filmstripScroll, "Filmstrip");
         var scroll = _filmstripScroll;
         scroll.CharacterReceived += OnTypeahead;  // docs/design/16 typeahead
         scroll.KeyDown += (_, e) =>

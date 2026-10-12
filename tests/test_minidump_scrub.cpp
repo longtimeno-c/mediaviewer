@@ -5,8 +5,11 @@
 
 #include <algorithm>
 #include <cstring>
+#include <latch>
+#include <set>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include "codec/crash_test_hook.h"
@@ -222,6 +225,162 @@ TEST_CASE("scrub_text masks an unrooted path fragment and keeps a url and a rela
   CHECK(s.find("pad/canary") == std::string::npos);
   CHECK(s.find("https://example.com/a/b") != std::string::npos);
   CHECK(s.find("./rel/path/") != std::string::npos);
+}
+
+namespace {
+
+// Issue #349. macOS puts argv and the environment at the high end of the main
+// thread stack, so "zero everything outside a stack" keeps them. A username
+// inside an email local-part is not always a bounded identity token. The
+// Windows environment lives in the PEB (the second memory range), which the
+// same pass already zeros.
+std::vector<std::uint8_t> make_env_dump() {
+  dump_builder d;
+  d.b.assign(0x1800, 0);
+  d.u32(0, 0x504D444D);
+  d.u32(4, 42899);
+  d.u32(8, 3);
+  d.u32(12, 32);
+  d.u32(32, 3); d.u32(36, 4 + 48); d.u32(40, 0x100);
+  d.u32(44, 5); d.u32(48, 4 + 32); d.u32(52, 0x200);
+  d.u32(56, 4); d.u32(60, 0x100);  d.u32(64, 0x300);
+  d.u32(0x100, 1);
+  d.u64(0x104 + 24, 0x10000);
+  d.u32(0x104 + 32, 0x800);
+  d.u32(0x104 + 36, 0x800);
+  d.u32(0x104 + 40, 0x40);
+  d.u32(0x104 + 44, 0x1400);
+  d.u32(0x200, 2);
+  d.u64(0x204, 0x10000); d.u32(0x204 + 8, 0x800); d.u32(0x204 + 12, 0x800);
+  d.u64(0x214, 0x90000); d.u32(0x214 + 8, 0x200); d.u32(0x214 + 12, 0x1000);
+  d.ascii(0x304, "/Users/alice/Applications/MediaViewer.app/Contents/MacOS/MediaViewer");
+  d.ascii(0x820, "Fatal error: Index out of range");
+  d.ascii(0x880, "NOTE=kept visible marker");
+  std::string slab;
+  auto add = [&](const char* s) {
+    slab += s;
+    slab.push_back('\0');
+  };
+  add("/Users/alice/Pictures/SECRET_FILENAME_canary.cr2");
+  add("USER=alice");
+  add("HOME=/Users/alice");
+  add("PATH=/usr/bin");
+  add("SHELL=/bin/zsh");
+  add("EMAIL=alice.jones@example.com");
+  add("LOGNAME=alice");
+  d.ascii(0xC00, slab);
+  // Windows-shaped process environment, outside every stack (the PEB).
+  d.ascii(0x1010, "USERNAME=alice");
+  d.ascii(0x1080, "EMAIL=alice.jones@example.com");
+  d.ascii(0x10C0, "C:\\Users\\alice\\Pictures\\trip");
+  d.b[0x1100] = 0xA5;
+  d.ascii(0x1400, "C:\\ctx");
+  return d.b;
+}
+
+}  // namespace
+
+TEST_CASE("scrub drops an environment block on a stack and a PEB environment",
+          "[crash][scrub][mac]") {
+  auto dump = make_env_dump();
+  const auto r = mv::shell::scrub_minidump(dump, {{"alice"}});
+  REQUIRE(r.valid);
+  CHECK(r.zeroed_bytes > 0);
+  // The stack slab: username, email, home, and the argv path packed against it.
+  CHECK_FALSE(contains(dump, "alice", false));
+  CHECK_FALSE(contains(dump, "alice.jones@example.com", false));
+  CHECK_FALSE(contains(dump, "example.com", false));
+  CHECK_FALSE(contains(dump, "SECRET_FILENAME_canary", false));
+  CHECK_FALSE(contains(dump, "/Users/alice", false));
+  CHECK_FALSE(contains(dump, "USER=", false));
+  // A crash reason and a single KEY=value that is not an environment block stay.
+  CHECK(contains(dump, "Fatal error: Index out of range", false));
+  CHECK(contains(dump, "kept visible marker", false));
+  // Symbolication keeps the bundle layout. The profile name is masked in place.
+  CHECK(contains(dump, "/Users/", false));
+  CHECK(contains(dump, "/Applications/MediaViewer.app/Contents/MacOS/MediaViewer", false));
+  CHECK(contains(dump, "C:\\ctx", false));
+  // The PEB range is zero, not masked: Windows already drops this block.
+  for (std::size_t i = 0x1000; i < 0x1200; ++i) REQUIRE(dump[i] == 0);
+
+  const auto again = mv::shell::scrub_minidump(dump, {{"alice"}});
+  CHECK(again.already_scrubbed);
+}
+
+TEST_CASE("concurrent decodes never share a crash slot", "[crash]") {
+  // Slots used to be assigned by thread modulo eight, so two of a 14-thread
+  // pool's decoders could write the same slot and a dump lost one's format.
+  namespace cc = mv::crash_context;
+  constexpr std::size_t n = cc::kSlotCount;
+  std::vector<std::size_t> got(n + 1, 0);
+  std::latch claimed(static_cast<std::ptrdiff_t>(n + 1));
+  std::latch release(1);
+  std::vector<std::thread> threads;
+  for (std::size_t i = 0; i <= n; ++i) {
+    threads.emplace_back([&, i] {
+      got[i] = cc::begin_decode({"TIFF", "libtiff", "", 0});
+      claimed.count_down();
+      release.wait();
+      cc::end_decode();
+    });
+  }
+  claimed.wait();
+  std::set<std::size_t> distinct;
+  std::size_t unannotated = 0;
+  for (std::size_t slot : got) {
+    if (slot == n) ++unannotated;
+    else distinct.insert(slot);
+  }
+  CHECK(distinct.size() == n);  // every slot held by exactly one decode
+  CHECK(unannotated == 1);      // the one past the table writes nowhere
+  release.count_down();
+  for (auto& t : threads) t.join();
+
+  // All released: a fresh decode gets a slot again.
+  CHECK(cc::begin_decode({"PNG", "libspng", "", 0}) < n);
+  CHECK(std::string(cc::this_thread_slot()).find("fmt=PNG") != std::string::npos);
+  cc::end_decode();
+  CHECK(std::string(cc::this_thread_slot()).empty());
+}
+
+TEST_CASE("a long-lived thread's slot is held while busy and given back while idle", "[crash]") {
+  // Issue #233: the player's demux / decode threads and clip jobs.
+  namespace cc = mv::crash_context;
+  {
+    cc::thread_slot slot;
+    slot.describe({.family = "mov,mp4,m4a,3gp,3g2,mj2", .decoder = "hevc", .version = "Lavc61",
+                   .correlation_id = 7, .role = "video"},
+                  3840, 2160, 10);
+    CHECK(std::string(cc::this_thread_slot()).empty());  // described, not yet busy
+    slot.busy();
+    REQUIRE(slot.held());
+    const std::string text = cc::this_thread_slot();
+    CHECK(text.rfind("role=video fmt=mov,mp4", 0) == 0);
+    CHECK(text.find("dec=hevc/Lavc61 cid=7 3840x2160 10bit") != std::string::npos);
+    slot.busy();  // already held: nothing changes
+    CHECK(std::string(cc::this_thread_slot()) == text);
+    slot.describe({.family = "mov,mp4,m4a,3gp,3g2,mj2", .decoder = "aac", .version = "Lavc61",
+                   .correlation_id = 7, .role = "audio"});
+    CHECK(std::string(cc::this_thread_slot()).find("role=audio") == 0);
+    slot.idle();  // parked
+    CHECK_FALSE(slot.held());
+    CHECK(std::string(cc::this_thread_slot()).empty());
+    slot.busy();
+    CHECK(slot.held());
+  }  // destroyed while held: released
+  CHECK(std::string(cc::this_thread_slot()).empty());
+
+  // Inside an outer decode the thread slot leaves the outer annotation alone.
+  REQUIRE(cc::begin_decode({"TIFF", "libtiff", "", 0}) < cc::kSlotCount);
+  {
+    cc::thread_slot inner({.family = "mp4", .decoder = "h264", .version = "", .role = "clip"});
+    inner.busy();
+    CHECK_FALSE(inner.held());
+    CHECK(std::string(cc::this_thread_slot()).find("fmt=TIFF") != std::string::npos);
+  }
+  CHECK(std::string(cc::this_thread_slot()).find("fmt=TIFF") != std::string::npos);
+  cc::end_decode();
+  CHECK_FALSE(mv::codec::crash_test_video_armed());  // MV_CRASH_TEST must not be set for tests
 }
 
 TEST_CASE("decode crash scope annotates without paths and is inert unarmed", "[crash]") {

@@ -91,6 +91,7 @@ internal sealed class Look
             Color c = ToColor(_host.Colour(role));
             brush.Color = Color.FromArgb(alpha, c.R, c.G, c.B);
         }
+        if (_critical is not null) _critical.Color = CriticalColour();
         Changed?.Invoke();
     }
 
@@ -144,6 +145,113 @@ internal sealed class Look
         CornerRadius = new CornerRadius(8),
         Background = this[AddonColour.Surface],
     };
+
+    /// <summary>
+    /// A button for an action that deletes something (the Mac's
+    /// <c>role: .destructive</c>): the label in the system's critical red, kept
+    /// through pointer-over and pressed. High contrast keeps the system's colours.
+    /// </summary>
+    public Button DestructiveButton(string label, Action click)
+    {
+        Button b = Button(label, click);
+        if (HighContrast()) return b;
+        SolidColorBrush red = Critical;
+        b.Foreground = red;
+        b.Resources["ButtonForeground"] = red;
+        b.Resources["ButtonForegroundPointerOver"] = red;
+        b.Resources["ButtonForegroundPressed"] = red;
+        return b;
+    }
+
+    /// <summary>
+    /// The system's critical red (Fluent SystemFillColorCritical: #C42B1C on a
+    /// light theme, #FF99A4 on a dark one), as the Mac uses systemRed rather than
+    /// a theme colour. Shared and recoloured on a theme change.
+    /// </summary>
+    public SolidColorBrush Critical => _critical ??= new SolidColorBrush(CriticalColour());
+
+    private SolidColorBrush? _critical;
+
+    private Color CriticalColour()
+    {
+        Color c = ToColor(_host.Colour(AddonColour.Canvas));
+        bool dark = 0.2126 * c.R + 0.7152 * c.G + 0.0722 * c.B < 128;
+        return dark ? Color.FromArgb(255, 0xFF, 0x99, 0xA4) : Color.FromArgb(255, 0xC4, 0x2B, 0x1C);
+    }
+
+    /// <summary>Whether Windows is in a contrast theme: custom fills give way to the system's.</summary>
+    public static bool HighContrast()
+    {
+        try { return new Windows.UI.ViewManagement.AccessibilitySettings().HighContrast; }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex.Message);
+            return false;
+        }
+    }
+
+    /// <summary>Segoe Fluent Icons, with Segoe MDL2 Assets on Windows 10.</summary>
+    public static FontFamily IconFont => _iconFont ??= new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets");
+
+    private static FontFamily? _iconFont;
+
+    /// <summary>The recessed track a single-choice group sits in (a segmented control).</summary>
+    public Border Track(UIElement segments, bool hc) => new()
+    {
+        Child = segments,
+        Padding = new Thickness(2),
+        CornerRadius = new CornerRadius(7),
+        Background = hc ? new SolidColorBrush(Microsoft.UI.Colors.Transparent) : LiveTint(AddonColour.Body, 22),
+        BorderBrush = this[AddonColour.Hairline],
+        BorderThickness = new Thickness(1),
+    };
+
+    /// <summary>
+    /// One segment of a track: quiet until chosen, then raised on the surface
+    /// colour with the title colour and a hairline. Lightweight styling (the
+    /// template's own resource keys), so pointer, pressed and the system focus
+    /// visual stay Fluent; high contrast keeps the system's toggle look.
+    /// </summary>
+    public Microsoft.UI.Xaml.Controls.Primitives.ToggleButton Segment(string label, Action click, bool hc, double fontSize = 13)
+    {
+        var b = new Microsoft.UI.Xaml.Controls.Primitives.ToggleButton
+        {
+            Content = label,
+            FontFamily = Font,
+            FontSize = fontSize,
+            Padding = new Thickness(10, 2, 10, 3),
+            MinHeight = 0,
+            MinWidth = 0,
+            Height = 24,
+            CornerRadius = new CornerRadius(5),
+            BorderThickness = new Thickness(1),
+        };
+        if (!hc)
+        {
+            var clear = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+            ToggleBrushes(b, "Background", clear, LiveTint(AddonColour.Body, 26), LiveTint(AddonColour.Body, 40),
+                          this[AddonColour.Surface], this[AddonColour.Surface], LiveTint(AddonColour.Surface, 210));
+            ToggleBrushes(b, "Foreground", this[AddonColour.Body], this[AddonColour.Title], this[AddonColour.Title],
+                          this[AddonColour.Title], this[AddonColour.Title], this[AddonColour.Title]);
+            ToggleBrushes(b, "BorderBrush", clear, clear, clear,
+                          this[AddonColour.Hairline], this[AddonColour.Hairline], this[AddonColour.Hairline]);
+        }
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(b, label);
+        b.Click += (_, _) => click();
+        return b;
+    }
+
+    /// <summary>ToggleButton lightweight styling: rest, pointer over, pressed, then the checked three.</summary>
+    public static void ToggleBrushes(Microsoft.UI.Xaml.Controls.Primitives.ToggleButton b, string part, Brush rest, Brush over,
+                                     Brush pressed, Brush on, Brush onOver, Brush onPressed)
+    {
+        b.Resources[$"ToggleButton{part}"] = rest;
+        b.Resources[$"ToggleButton{part}PointerOver"] = over;
+        b.Resources[$"ToggleButton{part}Pressed"] = pressed;
+        b.Resources[$"ToggleButton{part}Checked"] = on;
+        b.Resources[$"ToggleButton{part}CheckedPointerOver"] = onOver;
+        b.Resources[$"ToggleButton{part}CheckedPressed"] = onPressed;
+    }
 
     // ---- motion (docs/design/17 brief: quick, physical, never blocking input) ------------
 

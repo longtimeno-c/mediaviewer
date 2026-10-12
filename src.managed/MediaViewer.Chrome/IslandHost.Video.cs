@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 using System.Runtime.InteropServices;
 using Microsoft.UI;
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
@@ -35,7 +36,9 @@ public static partial class IslandHost
     private static DesktopWindowXamlSource? _transport;
     private static Slider? _seek;
     private static Button? _play;
-    private static TextBlock? _videoTime;
+    private static TextBlock? _videoElapsed;
+    private static TextBlock? _videoDuration;
+    private static Button? _muteButton;
     private static ComboBox? _audioTracks;
     private static Slider? _volume;
     private static ToggleSwitch? _mute;
@@ -50,12 +53,32 @@ public static partial class IslandHost
     private static SystemMediaTransportControls? _smtc;
     private static bool _updatingVideo, _draggingSeek;
     private static long _lastScrub;
+    // Issue #362. The slider raises ValueChanged from its own pointer handler
+    // before PointerPressed sets _draggingSeek, and the first sample is the
+    // range minimum. Seeking that exactly presents the opening frame.
+    // Half a second, player::scrub_origin_playhead_ns.
+    private static bool _deferredSeekQueued, _seekPlayheadCaptured;
+    private static long _deferredSeekNs = -1;
+    private static long _seekPlayheadNs;
+    private static int _originHoldEpoch;
+    private static DispatcherQueueTimer? _originHoldTimer;
     private static bool _videoActive;
     private static bool _videoPlaying;
     private static bool _transportHeld;
     private static int _transportWidth;
 
-    private const int TransportDip = 52;
+    // TransportView.swift: a 44 pt strip, controls 10 apart, 14 in from each
+    // side (kTransportDip / kTransportPadDip in chrome_host.h match). The
+    // island is a rectangular window, so the Mac's radius-10 card is not.
+    private const int TransportDip = 44;
+    private const double TransportSpacing = 10;
+    private const double TransportPad = 14;
+    // The Mac's bar is 720 wide at most (main_mac.mm) and the scrubber takes
+    // what the buttons leave. This is the row inside that, before native adds
+    // the padding back; native narrows it to the window.
+    private const double TransportRowDip = 720 - 2 * TransportPad;
+    // The narrowest scrubber worth reporting a wider bar for (trim armed).
+    private const double SeekMinWidth = 160;
 
     public static int AttachTransport(IntPtr arg, int sizeBytes)
     {
@@ -66,7 +89,7 @@ public static partial class IslandHost
             BorrowSessionIfNone(args);
 
             // Parked, with no content: nothing is open.
-            Move(NewIsland(ref _transport, parent), 1, 1, args.ClientHeight);
+            Move(NewIsland(ref _transport, parent, takeFocus: true), 1, 1, args.ClientHeight);
 
             StartVideoControls(parent);
             return 0;
@@ -108,7 +131,10 @@ public static partial class IslandHost
             {
                 _seek = null;
                 _play = null;
-                _videoTime = null;
+                _videoElapsed = null;
+                _videoDuration = null;
+                _muteButton = null;
+                _speed = null;
                 _audioTracks = null;
                 _volume = null;
                 _mute = null;
@@ -150,7 +176,10 @@ public static partial class IslandHost
             DisposeSource(ref _transport);
             _seek = null;
             _play = null;
-            _videoTime = null;
+            _videoElapsed = null;
+            _videoDuration = null;
+            _muteButton = null;
+            _speed = null;
             _audioTracks = null;
             _volume = null;
             _mute = null;
@@ -189,6 +218,7 @@ public static partial class IslandHost
         {
             if (_volume is not null) _volume.Value = _audioVolume;
             if (_mute is not null) _mute.IsOn = muted;
+            SetMuteIcon();
             if (_audioTracks is not null && track >= 0 && track < _audioTracks.Items.Count)
                 _audioTracks.SelectedIndex = track;
         }
@@ -205,37 +235,50 @@ public static partial class IslandHost
         _play = IconButton(Glyph.Pause, "Pause  Space", ToggleVideo);
         Button back = IconButton(Glyph.Rewind, "Back 10 seconds", () => SkipVideo(-10_000_000_000));
         Button forward = IconButton(Glyph.FastForward, "Forward 10 seconds", () => SkipVideo(10_000_000_000));
+        // Flexes (issue #195): the scrubber takes whatever width the buttons
+        // leave, as the Mac's does.
         _seek = new Slider
         {
             Minimum = 0,
             Maximum = 1,
-            Width = 320,
             StepFrequency = 0.01,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Center,
         };
+        AutomationProperties_SetName(_seek, "Seek");
         _seek.AddHandler(UIElement.PointerPressedEvent,
-                         new PointerEventHandler((_, _) => { _draggingSeek = true; SetTransportHeld(true); }), true);
+                         new PointerEventHandler((_, _) =>
+                         {
+                             _draggingSeek = true;
+                             SetTransportHeld(true);
+                             CaptureSeekPlayhead();
+                         }), true);
         _seek.AddHandler(UIElement.PointerReleasedEvent,
                          new PointerEventHandler((_, _) => { FinishSeek(); RestoreCanvasFocus(); }), true);
         _seek.PointerCaptureLost += (_, _) => FinishSeek();
         _seek.ValueChanged += (_, e) =>
         {
             if (_updatingVideo || _folderSession is null) return;
-            long now = Environment.TickCount64;
-            // A drag is a scrub: nearest keyframe, throttled. The release is the
-            // exact seek (docs/design/05's two modes).
-            if (_draggingSeek && now - _lastScrub < 75) return;
-            _lastScrub = now;
-            _folderSession.VideoSeek((long)(e.NewValue * 1e9), !_draggingSeek);
+            CaptureSeekPlayhead();
+            // A newer sample cancels an origin hold left by a click that
+            // released on the slider's minimum (issue #362).
+            CancelOriginHold();
+            // Coalesce. A click's minimum and its real time both land before
+            // the dispatcher runs, and PointerPressed has set _draggingSeek
+            // by then. FinishSeek is the exact seek (docs/design/05).
+            _deferredSeekNs = (long)(e.NewValue * 1e9);
+            if (_deferredSeekQueued) return;
+            _deferredSeekQueued = true;
+            if (_dispatcher?.DispatcherQueue.TryEnqueue(ApplyDeferredTransportSeek) != true)
+                ApplyDeferredTransportSeek();
         };
-        _videoTime = new TextBlock
-        {
-            FontFamily = UiFont,
-            FontSize = TypeCaption,
-            Foreground = Brush(Body),
-            VerticalAlignment = VerticalAlignment.Center,
-            MinWidth = 92,
-        };
+        // Elapsed left of the scrubber, duration right of it (TransportView.swift).
+        _videoElapsed = ClockText(TextAlignment.Right);
+        _videoDuration = ClockText(TextAlignment.Left);
+        // Mute in the strip, as on the Mac. A request to native, which owns it
+        // for Shift+M too and answers with ApplyAudio (issue #214).
+        _muteButton = IconButton(Glyph.Volume, "Mute  Shift+M", () => Send(Command.VideoMuted, _audioMuted ? 0 : 1));
+        SetMuteIcon();
 
         Button more = IconButton(Glyph.More, "More: frame step, volume, audio track, loop", () => { });
         var panel = new StackPanel { Spacing = 10, Padding = new Thickness(12), MinWidth = 260 };
@@ -286,33 +329,41 @@ public static partial class IslandHost
         FlyoutBase.SetAttachedFlyout(more, flyout);
         more.Click += (_, _) => FlyoutBase.ShowAttachedFlyout(more);
 
-        var row = new StackPanel
+        // One row, the Mac's order: skip, play, skip, elapsed, scrubber,
+        // duration, trim, speed, mute, More. Only the scrubber's column is
+        // star-sized, so the strip's spare width all goes to it.
+        var row = new Grid
         {
-            Orientation = Orientation.Horizontal,
-            Spacing = 6,
-            // Centred. Native sizes the bar to this row's width, so the
-            // hairline hugs the controls rather than boxing empty space.
-            HorizontalAlignment = HorizontalAlignment.Center,
+            ColumnSpacing = TransportSpacing,
             VerticalAlignment = VerticalAlignment.Center,
         };
-        row.Children.Add(back);
-        row.Children.Add(_play);
-        row.Children.Add(forward);
-        // PR 13: trim's markers, keyframe grid and kept range over the scrubber,
-        // and its label and save buttons after the clock (IslandHost.Clip.cs).
-        row.Children.Add(WrapSeekForTrim(_seek));
-        row.Children.Add(_videoTime);
-        row.Children.Add(BuildTrimBar());
-        row.Children.Add(more);
+        FrameworkElement[] cells =
+        {
+            back, _play, forward, _videoElapsed,
+            // PR 13: trim's markers, keyframe grid and kept range over the
+            // scrubber, and its label and save buttons after the clock
+            // (IslandHost.Clip.cs).
+            WrapSeekForTrim(_seek),
+            _videoDuration, BuildTrimBar(), BuildSpeed(), _muteButton, more,
+        };
+        const int seekColumn = 4;
+        for (int i = 0; i < cells.Length; ++i)
+        {
+            row.ColumnDefinitions.Add(new ColumnDefinition
+            {
+                Width = i == seekColumn ? new GridLength(1, GridUnitType.Star) : GridLength.Auto,
+            });
+            Grid.SetColumn(cells[i], i);
+            row.Children.Add(cells[i]);
+        }
 
-        // The bar is as wide as its controls. The row may be clipped while the
-        // island is narrower than it (trim just armed), so the natural width is
-        // summed from the children, which a horizontal StackPanel measures
-        // unconstrained.
-        row.LayoutUpdated += (_, _) => ReportTransportWidth(row);
+        // Native sizes the bar from the width reported here and narrows it to
+        // the window; the scrubber flexes inside whatever it gets.
+        row.LayoutUpdated += (_, _) => ReportTransportWidth(row, seekColumn);
 
-        // A floating bar over the video (issue #38): hairline all round, the
-        // controls centred. The island window is rectangular, so no rounding.
+        // A floating bar over the video (issue #38): hairline all round. The
+        // island window is rectangular, so no rounding. The padding is inside
+        // the hairline, so it is one less than the Mac's 14.
         var root = new Border
         {
             RequestedTheme = IslandTheme,
@@ -320,36 +371,127 @@ public static partial class IslandHost
             BorderBrush = Brush(Hairline),
             BorderThickness = new Thickness(1),
             Height = TransportDip,
+            Padding = new Thickness(TransportPad - 1, 0, TransportPad - 1, 0),
             Child = row,
         };
+        // Issue #224: the island covers the canvas's WM_DROPFILES.
+        WireFileDrop(root);
         return root;
     }
 
-    private static void ReportTransportWidth(StackPanel row)
+    private static TextBlock ClockText(TextAlignment align) => new()
+    {
+        FontFamily = UiFont,
+        FontSize = TypeCaption,
+        Foreground = Brush(Body),
+        VerticalAlignment = VerticalAlignment.Center,
+        TextAlignment = align,
+        MinWidth = 40,
+    };
+
+    private static void SetMuteIcon()
+    {
+        if (_muteButton is null) return;
+        SetIcon(_muteButton, _audioMuted ? Glyph.Mute : Glyph.Volume,
+                _audioMuted ? "Unmute  Shift+M" : "Mute  Shift+M");
+    }
+
+    // The row's wanted width: its fixed controls at their natural size plus
+    // the scrubber, and at least the Mac's 720 bar. Trim's label and buttons
+    // can push past that; the bar then grows rather than clip them, and
+    // native still bounds it by the window's sides.
+    private static void ReportTransportWidth(Grid row, int seekColumn)
     {
         double width = 0;
         int shown = 0;
         foreach (UIElement child in row.Children)
         {
             if (child.Visibility != Visibility.Visible) continue;
-            width += child.DesiredSize.Width;
             ++shown;
+            if (child is FrameworkElement fe && Grid.GetColumn(fe) == seekColumn) continue;
+            width += child.DesiredSize.Width;
         }
-        if (shown > 1) width += row.Spacing * (shown - 1);
-        int dip = (int)Math.Ceiling(width);
-        if (dip <= 0 || dip == _transportWidth) return;
+        if (shown > 1) width += row.ColumnSpacing * (shown - 1);
+        int dip = (int)Math.Ceiling(Math.Max(TransportRowDip, width + SeekMinWidth));
+        if (dip == _transportWidth) return;
         _transportWidth = dip;
         // Not from inside layout: native answers by moving this island.
         if (_dispatcher?.DispatcherQueue.TryEnqueue(() => Send(Command.TransportWidth, dip)) != true)
             Send(Command.TransportWidth, dip);
     }
 
+    private static void CancelOriginHold()
+    {
+        ++_originHoldEpoch;
+        _originHoldTimer?.Stop();
+        _originHoldTimer = null;
+    }
+
+    private static void CaptureSeekPlayhead()
+    {
+        if (_seekPlayheadCaptured || _folderSession is null) return;
+        _seekPlayheadNs = Math.Max(0, _folderSession.VideoPosition);
+        _seekPlayheadCaptured = true;
+    }
+
+    // The latest slider sample. A drag scrubs by keyframe; anything else (a
+    // keyboard change) seeks exactly. The minimum during a drag, while the
+    // playhead was already past the start, is not a seek.
+    private static void ApplyDeferredTransportSeek()
+    {
+        _deferredSeekQueued = false;
+        if (_folderSession is null || _deferredSeekNs < 0) return;
+        long ns = _deferredSeekNs;
+        _deferredSeekNs = -1;
+        if (_draggingSeek)
+        {
+            if (ns <= 0 && _seekPlayheadNs > 500_000_000) return;
+            long now = Environment.TickCount64;
+            if (now - _lastScrub < 75) return;
+            _lastScrub = now;
+            _folderSession.VideoSeek(ns, false);
+            return;
+        }
+        _seekPlayheadCaptured = false;
+        _folderSession.VideoSeek(ns, true);
+    }
+
     private static void FinishSeek()
     {
-        if (!_draggingSeek || _seek is null) return;
+        if (!_draggingSeek || _seek is null || _folderSession is null) return;
+        long ns = (long)(_seek.Value * 1e9);
+        // Clear the coalesced sample before dropping _draggingSeek, so an
+        // apply queued from this gesture cannot seek the minimum exactly.
+        _deferredSeekNs = -1;
         _draggingSeek = false;
         SetTransportHeld(false);
-        _folderSession?.VideoSeek((long)(_seek.Value * 1e9), true);
+        CancelOriginHold();
+        if (ns <= 0 && _seekPlayheadNs > 500_000_000)
+        {
+            // The real time may still be on its way. A sample cancels this.
+            int epoch = _originHoldEpoch;
+            var timer = _dispatcher?.DispatcherQueue.CreateTimer();
+            if (timer is null)
+            {
+                _seekPlayheadCaptured = false;
+                _folderSession.VideoSeek(0, true);
+                return;
+            }
+            _originHoldTimer = timer;
+            timer.Interval = TimeSpan.FromMilliseconds(80);
+            timer.IsRepeating = false;
+            timer.Tick += (_, _) =>
+            {
+                if (epoch != _originHoldEpoch || _folderSession is null || _seek is null) return;
+                _originHoldTimer = null;
+                _seekPlayheadCaptured = false;
+                _folderSession.VideoSeek((long)(_seek.Value * 1e9), true);
+            };
+            timer.Start();
+            return;
+        }
+        _seekPlayheadCaptured = false;
+        _folderSession.VideoSeek(ns, true);
     }
 
     private static void SkipVideo(long deltaNs)
@@ -432,7 +574,6 @@ public static partial class IslandHost
         // on the same notification: pause and the end bring the bar back.
         if (video != _videoActive || playing != _videoPlaying)
         {
-            if (video != _videoActive) SetSpeedVisible(video);
             _videoActive = video;
             _videoPlaying = playing;
             Send(Command.VideoActive, video ? (playing ? 2 : 1) : 0);
@@ -454,14 +595,16 @@ public static partial class IslandHost
 
         long position = Math.Max(0, _folderSession.VideoPosition);
         UpdateMatchDuration(Math.Max(0, info.DurationNs) / 1_000_000);
-        if (_seek is not null && _play is not null && _videoTime is not null && _audioTracks is not null)
+        if (_seek is not null && _play is not null && _videoElapsed is not null && _videoDuration is not null
+            && _audioTracks is not null)
         {
             _updatingVideo = true;
             _seek.Maximum = Math.Max(.001, info.DurationNs / 1e9);
             if (!_draggingSeek) _seek.Value = Math.Clamp(position / 1e9, 0, _seek.Maximum);
             SetIcon(_play, state == 1 ? Glyph.Pause : Glyph.Play, state == 1 ? "Pause  Space" : "Play  Space");
             // m:ss, h:mm:ss from an hour: "mm\:ss" dropped the hours of a long clip.
-            _videoTime.Text = $"{Clock(position)} / {Clock(info.DurationNs)}";
+            _videoElapsed.Text = Clock(position);
+            _videoDuration.Text = Clock(info.DurationNs);
             if (_audioTracks.Items.Count != info.AudioTracks) {
                 _audioTracks.Items.Clear();
                 for (uint i = 0; i < info.AudioTracks; ++i) _audioTracks.Items.Add($"Track {i + 1}");
