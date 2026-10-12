@@ -248,5 +248,100 @@ class AiPackTest(unittest.TestCase):
         self.assertEqual(mod.main(["check"]), 0)
 
 
+class PlacesPackTest(unittest.TestCase):
+    """docs/design/27: Places carries its own code and its own data."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        key = Ed25519PrivateKey.generate()
+        self.key = key
+        seed = key.private_bytes(serialization.Encoding.Raw, serialization.PrivateFormat.Raw,
+                                 serialization.NoEncryption())
+        self.key_file = self.tmp / "addon.key"
+        self.key_file.write_text(seed.hex())
+        self.out = self.tmp / "dist"
+        self.src = self.tmp / "places"
+        self.src.mkdir()
+        (self.src / "mv_places.dll").write_bytes(b"MZ" + os.urandom(1024))
+        (self.src / "libmv_places.dylib").write_bytes(b"\xcf\xfa\xed\xfe" + os.urandom(1024))
+        (self.src / "mv_places.pdb").write_bytes(b"not shipped")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def stage(self):
+        addon_pack.main(["stage-places", "--src", str(self.src),
+                         "--blob", str(ROOT / "tests/data/geo/places-test.mvgeo")])
+
+    def pack(self, platform="win-x64"):
+        addon_pack.main(["pack", "--addon", "places", "--platform", platform, "--src", str(self.src),
+                         "--version", "1.0.0", "--key", str(self.key_file), "--out", str(self.out)])
+        return self.out / f"mediaviewer-addon-places-{platform}.json"
+
+    def test_the_package_carries_the_code_and_the_place_database(self):
+        self.stage()
+        for platform, native in (("win-x64", "mv_places.dll"), ("macos", "libmv_places.dylib")):
+            m = json.loads(self.pack(platform).read_bytes())
+            self.assertEqual(m["id"], "places")
+            self.assertEqual(m["host_api"], {"min": 3, "max": 3})
+            self.assertEqual(m["native"], native)
+            self.assertEqual(m["chrome"], "")  # the hosts render its tree
+            lic = {f["path"]: f["licence"] for f in m["files"]}
+            self.assertEqual(lic[native], "GPL-3.0-or-later")
+            self.assertEqual(lic["data/places.mvgeo"], "CC-BY-4.0 AND LicenseRef-PublicDomain")
+            self.assertIn("LICENSES/NOTICE.txt", lic)
+            self.assertNotIn("mv_places.pdb", lic)
+            # Owner, 2026-10-12: the Place section, search and settings; no bar item, no window.
+            self.assertEqual(sorted(m["contributes"]), ["api", "info_sections", "search_providers", "settings"])
+            self.assertEqual(m["contributes"]["info_sections"][0]["id"], "place")
+            self.assertEqual(m["contributes"]["search_providers"][0]["prefixes"], ["place:", "in:"])
+            keys = [i["key"] for s in m["contributes"]["settings"]["sections"] for i in s["items"]]
+            self.assertEqual(keys, ["show_map", "show_town", "town_radius_km", "label_names"])
+            self.assertIn("Offline", m["description"])
+        with zipfile.ZipFile(self.out / "mediaviewer-addon-places-win-x64.zip") as z:
+            notice = z.read("LICENSES/NOTICE.txt").decode()
+        self.assertIn("GeoNames", notice)
+        self.assertIn("CC-BY 4.0", notice)
+        self.assertIn("Natural Earth", notice)
+
+    def test_no_place_database_no_package(self):
+        with self.assertRaises(FileNotFoundError):
+            self.pack()
+
+    def test_staging_refuses_a_file_that_is_not_a_place_database(self):
+        bogus = self.tmp / "bogus.mvgeo"
+        bogus.write_bytes(b"not a database")
+        with self.assertRaises(ValueError):
+            addon_pack.main(["stage-places", "--src", str(self.src), "--blob", str(bogus)])
+
+    def test_data_licences_join_the_allowed_set_but_nothing_else_does(self):
+        self.assertTrue(addon_pack.licence_allowed("CC-BY-4.0"))
+        self.assertTrue(addon_pack.licence_allowed("CC-BY-4.0 AND LicenseRef-PublicDomain"))
+        self.assertFalse(addon_pack.licence_allowed("CC-BY-NC-4.0"))
+        self.assertFalse(addon_pack.licence_allowed("CC-BY-4.0 AND CC-BY-NC-4.0"))
+        self.assertFalse(addon_pack.licence_allowed("CC-BY-SA-4.0"))
+
+    def test_cpp_verifier_accepts_the_package(self):
+        tool = os.environ.get("MV_ADDON_VERIFY")
+        if not tool:
+            self.skipTest("MV_ADDON_VERIFY not set (the portable build sets it)")
+        self.stage()
+        manifest = self.pack()
+        m = json.loads(manifest.read_bytes())
+        staged = self.tmp / "staged"
+        with zipfile.ZipFile(manifest.parent / m["archive"]["path"]) as z:
+            z.extractall(staged)
+        shutil.copy(manifest, staged / "manifest.json")
+        shutil.copy(str(manifest) + ".sig", staged / "manifest.json.sig")
+        r = subprocess.run([tool, str(staged), raw_public(self.key), "win-x64"], capture_output=True, text=True)
+        verdict = r.stdout.strip().splitlines()[0] if r.stdout.strip() else r.stdout
+        # The settings page is PR 56's contribution point: a host without it
+        # (no src/addon/settings_values.h) refuses the page, and so the add-on.
+        if (ROOT / "src/addon/settings_values.h").exists():
+            self.assertEqual(verdict, "ok")
+        else:
+            self.assertEqual(verdict, "malformed")
+
+
 if __name__ == "__main__":
     unittest.main()
