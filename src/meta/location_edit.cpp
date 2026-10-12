@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "meta/meta.h"
 #include "meta/write.h"
@@ -183,6 +184,20 @@ const char* parse_coordinate(std::string_view s, coordinate& out) {
   return nullptr;
 }
 
+// Two plain decimals: "38.7979 -9.3907", split at the one space between them.
+// Units are not allowed here, so a DMS pair without a separator or letters is
+// refused rather than guessed. npos when there is no such split.
+std::size_t plain_split(std::string_view s) {
+  for (char c : s) {
+    if (c == kDeg || c == kMin || c == kSec) return std::string_view::npos;
+  }
+  const std::string_view t = trim(s);
+  const std::size_t space = t.find(' ');
+  if (space == std::string_view::npos) return std::string_view::npos;
+  if (trim(t.substr(space)).find(' ') != std::string_view::npos) return std::string_view::npos;
+  return static_cast<std::size_t>(t.data() - s.data()) + space;
+}
+
 // Where the text splits into its two coordinates: a comma or semicolon; else
 // after a trailing hemisphere letter, or before a leading one; else between
 // two plain numbers. npos when there is no split. `skip` is the separator's
@@ -199,7 +214,7 @@ std::size_t split_point(std::string_view s, std::size_t& skip) {
   if (sep != std::string_view::npos) return sep;
   skip = 0;
   // Letters: "38 47 52 N 9 23 27 W" (suffixes) or "N 38 47 52 W 9 23 27" (prefixes).
-  std::size_t letters[4];
+  std::size_t letters[4] = {0, 0, 0, 0};
   std::size_t count = 0;
   for (std::size_t i = 0; i < s.size(); ++i) {
     if (is_hemi(s[i])) {
@@ -214,20 +229,13 @@ std::size_t split_point(std::string_view s, std::size_t& skip) {
   if (count == 1) {
     // One letter on one half only: "38.79N -9.39" splits after it, "-9.39 W"... is one half.
     const bool leads = trim(s.substr(0, letters[0])).empty();
-    if (!leads) return letters[0] + 1;
-    return std::string_view::npos;
+    if (leads) return std::string_view::npos;
+    // "-38.79 9.39 W": the letter ends the second half; split the numbers before it.
+    if (trim(s.substr(letters[0] + 1)).empty()) return plain_split(s.substr(0, letters[0]));
+    return letters[0] + 1;
   }
   if (count != 0) return std::string_view::npos;
-  // Two plain decimals: "38.7979 -9.3907". Units are not allowed here, so a
-  // DMS pair without a separator or letters is refused rather than guessed.
-  for (char c : s) {
-    if (c == kDeg || c == kMin || c == kSec) return std::string_view::npos;
-  }
-  const std::string_view t = trim(s);
-  const std::size_t space = t.find(' ');
-  if (space == std::string_view::npos) return std::string_view::npos;
-  if (trim(t.substr(space)).find(' ') != std::string_view::npos) return std::string_view::npos;
-  return static_cast<std::size_t>(t.data() - s.data()) + space;
+  return plain_split(s);
 }
 
 void trim_zeros(std::string& s) {

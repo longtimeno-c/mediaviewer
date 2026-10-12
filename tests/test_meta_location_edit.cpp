@@ -243,6 +243,15 @@ TEST_CASE("location text: hemisphere letters, either side, any order", "[meta][l
   CHECK(near(r.point.lon, 151.2093));
   r = ok("38.7979N, -9.3907");  // one half lettered, the other signed
   CHECK(near(r.point.lon, -9.3907));
+  r = ok("38.7979N -9.3907");  // the same without the comma
+  CHECK(near(r.point.lon, -9.3907));
+  r = ok("-33.8688 151.2093 E");  // and the other way round: the letter ends the line
+  CHECK(near(r.point.lat, -33.8688));
+  CHECK(near(r.point.lon, 151.2093));
+  r = ok("-33.8688 151.2093E");
+  CHECK(near(r.point.lon, 151.2093));
+  bad("38.7979 N");             // one coordinate is not a position
+  bad("38 47 52 9 23 27 W");    // a DMS pair needs a separator or both letters
 }
 
 TEST_CASE("location text: degrees, minutes and seconds", "[meta][location][parse]") {
