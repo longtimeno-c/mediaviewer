@@ -234,12 +234,16 @@ jobs:
           enableCrossOsArchive: true
           lookup-only: true
 
+      # Never blocks the Windows legs: if geonames.org is down or the build
+      # fails, they run without the full table ("[geo]" then skips it).
       - name: Build the place database
+        id: geo-build
         if: steps.geo.outputs.cache-hit != 'true'
+        continue-on-error: true
         run: python3 -I tools/geo/build_places.py --downloads "$RUNNER_TEMP/geo-downloads" --out tools/testmedia/geo/places.mvgeo --accept-upstream
 
       - name: Save place database
-        if: steps.geo.outputs.cache-hit != 'true'
+        if: steps.geo.outputs.cache-hit != 'true' && steps.geo-build.outcome == 'success'
         uses: actions/cache/save@v4
         with:
           path: tools/testmedia/geo/places.mvgeo
@@ -334,12 +338,12 @@ jobs:
           fail-on-cache-miss: true
 
       - name: Restore place database
+        id: geo
         uses: actions/cache/restore@v4
         with:
           path: tools/testmedia/geo/places.mvgeo
           key: ${{ needs.test-media.outputs.geo-key }}
           enableCrossOsArchive: true
-          fail-on-cache-miss: true
 
       # Includes mv_broken_tests (PR 7 verify: "nothing in the broken corpus
       # crashes or hangs") in every matrix leg, ASan included. A failing input
@@ -354,9 +358,10 @@ jobs:
           # A missing clip or sample FAILS here instead of skipping
           # (tests/corpus.h); test_corpus.cpp fails if a CI run drops this.
           MV_REQUIRE_CORPUS: '1'
-          # mv_tests "[geo]": the full table runs, and fails if the blob is missing.
+          # mv_tests "[geo]": the full table runs when the blob was built, and is
+          # required only then, so a GeoNames outage skips the table, not the leg.
           MV_GEO_BLOB: ${{ github.workspace }}/tools/testmedia/geo/places.mvgeo
-          MV_REQUIRE_GEO: '1'
+          MV_REQUIRE_GEO: ${{ steps.geo.outputs.cache-hit == 'true' && '1' || '0' }}
         run: ctest --test-dir build -C ${{ matrix.config }} --output-on-failure
 
       - name: Upload broken-corpus reproducers

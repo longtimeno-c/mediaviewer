@@ -158,6 +158,14 @@ def fetch(dl_dir, accept_upstream):
                     f.write(b)
             got = sha256_of(part)
             if got != s["sha256"]:
+                # Only GeoNames moves under a fixed URL. Natural Earth is pinned
+                # to a commit, so a different file there is damage or tampering,
+                # and --accept-upstream never takes it.
+                if not s["url"].startswith(GN_BASE):
+                    os.remove(part)
+                    sys.exit(f"build_places: {s['file']} does not match its pin (sha256 {got}, pinned "
+                             f"{s['sha256']}). It is fetched from a fixed commit, so this is not an upstream "
+                             f"update; --accept-upstream does not apply.")
                 if not accept_upstream:
                     os.remove(part)
                     sys.exit(f"build_places: {s['file']} changed upstream (sha256 {got}, pinned "
@@ -887,7 +895,7 @@ M64 = (1 << 64) - 1
 
 
 def checksum(data):
-    """The blob checksum (src/geo/blob.cpp checksum()): four lanes over
+    """The blob checksum (src/geo/geo.cpp checksum()): four lanes over
     little-endian u64 words, each h = (h ^ w) * K; h ^= h >> 29, folded at the end."""
     n = len(data) // 8
     words = struct.unpack(f"<{n}Q", data[:n * 8])

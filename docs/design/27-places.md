@@ -185,7 +185,7 @@ Plan examples, and what they give:
   no "Douro" admin-1, so it reads "Vila Real" or "Porto".
 - The minimum on land is just the country.
 
-The poles are clamped and longitudes wrapped, so -539.95 is 180.05 W. Natural Earth splits
+The poles are clamped and longitudes wrapped, so -539.95 is 179.95° W. Natural Earth splits
 features at ±180°, and the town and coast searches wrap their grid columns.
 
 **The town radius (owner call in the plan).** 15 km is kept. On the 300-row table, the named
