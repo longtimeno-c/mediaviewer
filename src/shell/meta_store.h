@@ -9,12 +9,11 @@
 //     never a file read (PR 9 verify: "toggling AF points and the info overlay
 //     does not re-read the file"). `reads()` counts the reads so a test can
 //     hold the store to that.
-//   * the date-taken sort key for every file in a folder, filled by one
-//     background job, so "sort by date taken" parses each file once per
-//     (path, mtime, size) and never on the UI thread.
+// The date-taken sort keys moved to meta::tag_index (#291): the folder pass
+// that reads every file's tags gives them too, from meta_cache.db.
 //
-// Thread model: `get` / `peek` / `date_key` are UI-thread calls that only take
-// a short mutex; loads and key scans run on the job system. `on_ready` fires on
+// Thread model: `get` / `peek` are UI-thread calls that only take a short
+// mutex; loads run on the job system. `on_ready` fires on
 // the pool thread — the host marshals it (no dispatcher here, docs/design/14).
 #pragma once
 
@@ -38,13 +37,12 @@ namespace mv::shell {
 class meta_store {
  public:
   using loader_fn = std::function<result<meta::metadata>(std::string_view utf8_path)>;
-  using date_reader_fn = std::function<std::optional<std::int64_t>(std::string_view utf8_path)>;
   // Runs on the pool thread. `path` is the item the record is for.
   using ready_fn = std::function<void(std::string path)>;
 
-  // Defaults read through meta::read / meta::read_date_taken.
+  // Defaults to meta::read.
   meta_store();
-  meta_store(loader_fn loader, date_reader_fn dates);
+  explicit meta_store(loader_fn loader);
   ~meta_store();
 
   meta_store(const meta_store&) = delete;
@@ -58,15 +56,6 @@ class meta_store {
                                                           ready_fn on_ready);
   // Cache only — never submits.
   [[nodiscard]] std::shared_ptr<const meta::metadata> peek(const io::dir_entry& e) const;
-
-  // Date-taken keys. `date_key` is a cache read. `resolve_date_keys` queues one
-  // background job over `entries` that reads every missing key, then calls
-  // `on_done` (pool thread). Calling it again supersedes the previous scan.
-  [[nodiscard]] std::optional<std::int64_t> date_key(const io::dir_entry& e) const;
-  void resolve_date_keys(std::vector<io::dir_entry> entries, job_system& jobs,
-                         std::function<void()> on_done);
-  // True once since the last call if keys arrived (the host re-sorts on it).
-  [[nodiscard]] bool consume_dates_changed() noexcept;
 
   // PR 12: drops every cached record for `utf8_path` (whatever its mtime and
   // size), so the next `get` reads it again. A write that landed in a sidecar

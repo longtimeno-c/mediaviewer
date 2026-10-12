@@ -11,7 +11,7 @@
 namespace mv::meta {
 
 struct tag_index::state {
-  meta_cache* cache = nullptr;
+  cache_fn cache_of;
   reader_fn reader;
 
   mutable std::mutex m;
@@ -31,6 +31,7 @@ struct tag_index::state {
   std::unordered_map<std::string, known_file> files;
   std::uint32_t known = 0;  // listed files with facts for their current stamp
   bool reading = false;
+  std::vector<std::string> forget;  // invalidated paths whose cache rows still stand
 
   std::atomic<std::uint64_t> scan{0};
   std::atomic<bool> changed{false};
@@ -65,14 +66,23 @@ status run_chunk(const std::shared_ptr<tag_index::state>& st, std::uint64_t scan
                  const tag_index::busy_fn& busy) {
   const auto current = [&] { return st->scan.load(std::memory_order_acquire) == scan; };
   if (!current()) return status::cancelled;
-  if (from == 0 && st->cache) {
+  meta_cache* cache = st->cache_of ? st->cache_of() : nullptr;
+  if (cache) {
+    std::vector<std::string> forget;
+    {
+      std::lock_guard lock(st->m);
+      forget.swap(st->forget);
+    }
+    for (const std::string& p : forget) cache->forget(p);
+  }
+  if (from == 0 && cache) {
     // A folder seen before: one SELECT, no file reads.
     std::string dir;
     {
       std::lock_guard lock(st->m);
       dir = st->dir;
     }
-    std::vector<cached_facts> rows = st->cache->folder(dir);
+    std::vector<cached_facts> rows = cache->folder(dir);
     bool any = false;
     {
       std::lock_guard lock(st->m);
@@ -111,7 +121,7 @@ status run_chunk(const std::shared_ptr<tag_index::state>& st, std::uint64_t scan
     row.folded = folded_text(row.facts.fields);
     got.push_back(std::move(row));
   }
-  if (st->cache && !got.empty()) (void)st->cache->store(got);
+  if (cache && !got.empty()) (void)cache->store(got);
   bool last = to >= entries->size();
   {
     std::lock_guard lock(st->m);
@@ -143,8 +153,11 @@ void submit_chunk(const std::shared_ptr<tag_index::state>& st, std::uint64_t sca
 
 }  // namespace
 
-tag_index::tag_index(meta_cache* cache, reader_fn reader) : state_(std::make_shared<state>()) {
-  state_->cache = cache;
+tag_index::tag_index(meta_cache* cache, reader_fn reader)
+    : tag_index(cache ? cache_fn([cache] { return cache; }) : cache_fn(), std::move(reader)) {}
+
+tag_index::tag_index(cache_fn cache, reader_fn reader) : state_(std::make_shared<state>()) {
+  state_->cache_of = std::move(cache);
   state_->reader = reader ? std::move(reader) : reader_fn([](std::string_view p) { return read_search_facts(p); });
 }
 
@@ -172,7 +185,7 @@ void tag_index::scan(std::string dir, std::vector<io::dir_entry> entries, job_sy
     for (const std::string& p : st->order) {
       if (st->fresh(p)) ++st->known;
     }
-    anything = st->known < st->order.size() || (st->cache && st->known == 0 && !st->order.empty());
+    anything = st->known < st->order.size();
     st->reading = anything;
   }
   if (!anything) return;
@@ -258,8 +271,8 @@ void tag_index::invalidate(std::string_view path) {
     const std::string p(path);
     if (state_->fresh(p) && state_->known > 0) --state_->known;
     state_->files.erase(p);
+    state_->forget.push_back(p);
   }
-  if (state_->cache) state_->cache->forget(path);
 }
 
 std::uint64_t tag_index::reads() const noexcept { return state_->reads.load(std::memory_order_relaxed); }

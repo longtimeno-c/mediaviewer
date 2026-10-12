@@ -46,6 +46,10 @@ class tag_index {
   // `cache` may be null (no persistence: tests, or a cache that failed to
   // open). It must outlive the index. The reader defaults to read_search_facts.
   explicit tag_index(meta_cache* cache, reader_fn reader = {});
+  // The cache is asked for on the pass's first job, never on the caller's
+  // thread (opening it is I/O): the hosts pass `default_meta_cache`.
+  using cache_fn = std::function<meta_cache*()>;
+  explicit tag_index(cache_fn cache, reader_fn reader = {});
   ~tag_index();
   tag_index(const tag_index&) = delete;
   tag_index& operator=(const tag_index&) = delete;
@@ -94,7 +98,8 @@ class tag_index {
   void each_location(const std::function<bool(const std::string& path, const geo_point& where)>& visit) const;
 
   // PR 12: a metadata write landed for `path` (its sidecar may hold the new
-  // tags): drop what is known, in memory and in the cache.
+  // tags): drop what is known. Memory only, so the UI thread may call it; the
+  // cache row goes on the pass's next job. Call `scan` again to read it.
   void invalidate(std::string_view path);
 
   // Files read from disk (not from the cache) since construction: the tests
