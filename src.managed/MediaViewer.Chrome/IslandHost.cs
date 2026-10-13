@@ -1556,6 +1556,7 @@ public static partial class IslandHost
         root.PreviewKeyDown += OnSettingsKeyDown;
         root.PreviewKeyUp += OnSettingsKeyUp;
         root.KeyDown += OnSettingsNavigationKeyDown;
+        ThemeField.Lay(root);
         return root;
     }
 

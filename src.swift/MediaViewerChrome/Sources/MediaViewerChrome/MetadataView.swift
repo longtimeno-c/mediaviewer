@@ -83,7 +83,7 @@ struct MetadataView: View {
       // coordinates and map) are the last items of whichever tab is open, inside its
       // scrolling content: they scroll with the list and never squeeze it.
     }
-    .background(MVTheme.canvas)
+    .background(ThemeField())
     .overlay(alignment: .leading) { Rectangle().fill(MVTheme.hairline).frame(width: 1) }
     // The pane's width, for the add-ons' surfaces (docs/design/25 PR 59).
     .background(GeometryReader { geo in

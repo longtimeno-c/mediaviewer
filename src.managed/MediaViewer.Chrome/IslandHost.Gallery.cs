@@ -598,6 +598,7 @@ public static partial class IslandHost
         root.Children.Add(_galleryScroll);
         _galleryRoot = root;
         UpdateGallerySections();
+        ThemeField.Lay(root);
         return root;
     }
 

@@ -238,6 +238,8 @@ public static partial class IslandHost
 
         // Milestone H: an add-on's own window follows (IAddonHost2.ThemeChanged).
         RaiseHostThemeChanged();
+        // The ground effect follows the same brushes. It is not on the photo canvas.
+        ThemeMotion.Raise();
     }
 
     private static bool _themeTitleDark = true;

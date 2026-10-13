@@ -311,7 +311,7 @@ public struct CommandBarView: View {
       Rectangle().fill(MVTheme.hairline).frame(height: 1)
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .background(MVTheme.canvas)
+    .background(ThemeField())
   }
 }
 
@@ -531,7 +531,7 @@ private struct ListTitleBar: View {
     .font(MVTheme.font(14))
     .padding(.horizontal, MVTheme.space(10))
     .frame(maxWidth: .infinity, alignment: .leading)
-    .background(MVTheme.canvas)
+    .background(ThemeField())
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Search results for \(title)")
   }

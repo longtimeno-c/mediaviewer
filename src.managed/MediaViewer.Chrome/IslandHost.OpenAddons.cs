@@ -271,7 +271,7 @@ public static partial class IslandHost
 
     private static string ThemeDetail() => _themeNote.Length > 0
         ? _themeNote
-        : "Colours of the bars, panes and text. Themes come from add-ons; your photos are never recoloured.";
+        : "Colours and a quiet ground for the bars and panes. Your photos are never recoloured.";
 
     // SettingsRow's second label, so the row can say why a theme is not showing.
     private static TextBlock? FindDetail(FrameworkElement row) =>
@@ -288,6 +288,12 @@ public static partial class IslandHost
             _themeKeys = new List<string> { "" };
             _themePicker.Items.Clear();
             _themePicker.Items.Add("Default");
+            // Default, then the five host palettes, then every add-on theme.
+            foreach (BuiltinThemes.Item builtin in BuiltinThemes.All)
+            {
+                _themeKeys.Add(builtin.Key);
+                _themePicker.Items.Add(builtin.Name);
+            }
             foreach (OpenAddon addon in _openAddons)
             {
                 if (addon.State != "ok") continue;

@@ -82,7 +82,7 @@ struct EditStripView: View {
     }
     .padding(MVTheme.space(12))
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    .background(MVTheme.canvas)
+    .background(ThemeField())
     .overlay(alignment: .leading) { Rectangle().fill(MVTheme.hairline).frame(width: 1) }
     .overlay(alignment: .bottom) { Rectangle().fill(MVTheme.hairline).frame(height: 1) }
     .clipped()
@@ -109,7 +109,7 @@ struct EditPaneView: View {
       .frame(maxWidth: .infinity, alignment: .topLeading)
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    .background(MVTheme.canvas)
+    .background(ThemeField())
     .overlay(alignment: .leading) { Rectangle().fill(MVTheme.hairline).frame(width: 1) }
     .clipped()
   }
