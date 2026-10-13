@@ -295,6 +295,8 @@ TEST_CASE("selecting every tile of a large grid is checked in one pass", "[addon
   REQUIRE(t.check_event("g", ev_select, all) == error::none);
   const auto ms =
       std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
-  CHECK(ms < 200);
+  // One pass is ~10 ms in Release and ~250 ms under MSVC ASan Debug; the
+  // quadratic scan this guards against took seconds even in Release.
+  CHECK(ms < 2000);
   REQUIRE(t.check_event("g", ev_select, R"(["/fixtures/tiles/nope.JPG"])") == error::bad_value);
 }
