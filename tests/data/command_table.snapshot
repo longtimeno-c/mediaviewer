@@ -103,6 +103,18 @@ hold Y	Show original (hold)	153	0
 Ctrl+F	Search…	157	1
 Ctrl+PageDown	Next page	161	1
 Ctrl+PageUp	Previous page	162	1
+F2	Rename…	172	1
+	Show next kind	173	1
+X	Reject / unreject	175	1
+Numpad 6	Label red	176	1
+Numpad 7	Label yellow	177	1
+Numpad 8	Label green	178	1
+Numpad 9	Label blue	179	1
+Ctrl+Shift+6	Label red	176	1
+Ctrl+Shift+7	Label yellow	177	1
+Ctrl+Shift+8	Label green	178	1
+Ctrl+Shift+9	Label blue	179	1
+U	Clear label	180	1
 
 [video]
 Left	Previous	9	1
@@ -206,6 +218,18 @@ Ctrl+Shift+C	Copy path	147	1
 Ctrl+Shift+S	Share…	149	1
 Enter	Edit image / Edit video	150	1
 Ctrl+F	Search…	157	1
+F2	Rename…	172	1
+	Show next kind	173	1
+X	Reject / unreject	175	1
+Numpad 6	Label red	176	1
+Numpad 7	Label yellow	177	1
+Numpad 8	Label green	178	1
+Numpad 9	Label blue	179	1
+Ctrl+Shift+6	Label red	176	1
+Ctrl+Shift+7	Label yellow	177	1
+Ctrl+Shift+8	Label green	178	1
+Ctrl+Shift+9	Label blue	179	1
+U	Clear label	180	1
 
 [slideshow]
 Left	Previous	9	1
@@ -300,6 +324,16 @@ Ctrl+Shift+S	Share…	149	1
 Ctrl+F	Search…	157	1
 Ctrl+PageDown	Next page	161	1
 Ctrl+PageUp	Previous page	162	1
+F2	Rename…	172	1
+	Show next kind	173	1
+Numpad 6	Label red	176	1
+Numpad 7	Label yellow	177	1
+Numpad 8	Label green	178	1
+Numpad 9	Label blue	179	1
+Ctrl+Shift+6	Label red	176	1
+Ctrl+Shift+7	Label yellow	177	1
+Ctrl+Shift+8	Label green	178	1
+Ctrl+Shift+9	Label blue	179	1
 
 [loupe]
 A	Previous	9	1
@@ -392,6 +426,16 @@ Ctrl+J	Jobs	143	1
 Ctrl+Shift+C	Copy path	147	1
 Ctrl+Shift+S	Share…	149	1
 Ctrl+F	Search…	157	1
+F2	Rename…	172	1
+	Show next kind	173	1
+Numpad 6	Label red	176	1
+Numpad 7	Label yellow	177	1
+Numpad 8	Label green	178	1
+Numpad 9	Label blue	179	1
+Ctrl+Shift+6	Label red	176	1
+Ctrl+Shift+7	Label yellow	177	1
+Ctrl+Shift+8	Label green	178	1
+Ctrl+Shift+9	Label blue	179	1
 
 [runner]
 A	Previous	9	1
