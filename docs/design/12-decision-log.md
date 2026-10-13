@@ -370,6 +370,11 @@ from any codec. Forced through it, ProRes 422 played at 55 frames/s.
 (non-exact, settle on release). Speed is on the command-bar dropdown and `Shift+Q` / `Shift+E`.
 `J` / `L` are ±10 s in the viewer.
 
+**Arrows on a playing or strip-less clip (2026-10-12, issue #361).** `←` `→` are `Q` / `E` while the clip plays or the filmstrip is hidden (mode `skim`, layered over video);
+paused with the strip up they still walk, since that is when the strip is being used to pick.
+`A` / `D` walk in every case. A hold keeps its command until key-up, so a clip that ends
+mid-skim cannot turn the next repeat into a walk.
+
 **A transport click does not seek 0 on the way (2026-10-12).** The system slider reports its
 minimum before the time under the pointer. `media_source::seek` publishes that target and arms
 preview before the frame is decoded, so the minimum presents the opening frame. A non-exact seek

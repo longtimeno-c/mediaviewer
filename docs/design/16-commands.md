@@ -90,6 +90,7 @@ Resolved from state at every keydown (`resolve_mode`), never kept on a stack, in
 | **runner** | The empty-window game is up | `Space` jumps/retries, `3` toggles 2D/3D |
 | **loupe** | `Z` held | Layers over browse/video: only arrows (nudge) and `Z` / `\` differ |
 | **slideshow** | Slideshow running | |
+| **skim** | A clip that is playing, or with the filmstrip hidden (`T`) | Layers over **video**: only `←` `→` differ — they skip ±2 s like `Q` / `E` (issue #361) |
 | **video** | Current item is a clip or an animation | |
 | **browse** | Otherwise | |
 
@@ -120,8 +121,8 @@ No island grows over the canvas, except a clip's **transport bar**, which floats
 the video and auto-hides (`shell/transport_autohide.h`, shared by both hosts):
 
 - Playing, it hides after `kTransportIdleMs` (2.5 s) with no activity; pointer movement, a click,
-  the wheel, a transport command (`Space` `K` `J` `L` `Q` `E` `,` `.`, speed, mute, `↑` `↓`
-  volume), `Tab`, or a fullscreen change bring it back.
+  the wheel, a transport command (`Space` `K` `J` `L` `Q` `E` `,` `.`, `←` `→` in skim mode, speed, mute,
+  `↑` `↓` volume), `Tab`, or a fullscreen change bring it back.
 - Paused, ended, hovered, scrubbing, a menu open, keyboard focus in it, or a screen reader running:
   it stays. Never over the gallery or Settings, never on a Live Photo stop.
 - Fullscreen: the pointer hides with it while over the video. Windowed: never.
@@ -137,7 +138,7 @@ crop. Keys are shown Windows-style; on macOS read `⌘` for `Ctrl`.
 
 | Key | Modes | Command |
 |---|---|---|
-| `←` `→` | Walk, gallery | Previous / next (repeat) |
+| `←` `→` | Walk, gallery | Previous / next (repeat). On a clip that is playing, or with the filmstrip hidden, they are `Q` / `E` instead (skim mode, below); paused with the strip up they walk |
 | `A` `D` | All but crop | Previous / next — on a clip too; transport is `Q` `E` |
 | `Backspace` | Walk | Previous |
 | `Space` | browse | Next. On a clip or animation: play / pause; in a slideshow: pause; in the runner: jump |
@@ -309,6 +310,7 @@ works regardless. To see only the keepers, or one colour, use View ▸ Show's cu
 | `Space` | video | Play / pause |
 | tap `Q` / `E` | video | Skip −2 s / +2 s, exact, on the down edge |
 | hold `Q` / `E` | video | Skim ∓2 s per repeat with non-exact (keyframe) seeks; release settles exactly. Intent accumulates across the burst |
+| tap / hold `←` `→` | skim | The same skip and skim as `Q` / `E`, while the clip plays or the filmstrip is hidden (issue #361). Paused with the strip showing they walk the folder; `T` hides the strip so they skip. `A` / `D` walk in every case. A hold that started as a skim stays one until key-up, even if the clip pauses or ends under it |
 | `Shift+Q` / `Shift+E` | video | Playback speed one rung down / up: 0.25 / 0.5 / 1 / 1.5 / 2 / 4. The transport strip's speed menu (`1x`) is a view of this; native owns the rate |
 | `J` `K` `L` | video | −10 s / pause / +10 s |
 | `,` `.` | video | Frame step (also on animations) |

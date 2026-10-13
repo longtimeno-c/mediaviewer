@@ -4815,7 +4815,13 @@ mv::shell::view_state view_state_of(app_state* app) noexcept {
       s.focus = mv::shell::focus_kind::text;
     }
   }
-  if (video_mode(app)) s.item = mv::shell::item_kind::clip;
+  // One play-state read serves both: is a clip on screen, and is it playing
+  // (issue #361: ← → skip ±2 s while it plays or with the strip hidden).
+  std::uint32_t play = MV_PLAY_STOPPED;
+  if (app->session && mv_video_state(app->session, &play) != MV_OK) play = MV_PLAY_STOPPED;
+  s.clip_playing = play == MV_PLAY_PLAYING;
+  s.filmstrip_visible = app->chrome.filmstrip_visible();
+  if (play != MV_PLAY_STOPPED) s.item = mv::shell::item_kind::clip;
   else if (app->lab.animation() != mv::shell::animation_state::none) s.item = mv::shell::item_kind::animation;
   else if (app->mode != open_mode::none) s.item = mv::shell::item_kind::still;
   s.gallery_open = app->gallery_visible;
@@ -6811,8 +6817,10 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       underneath.popup_open = false;
       const mv::shell::mode under_mode = mv::shell::resolve_mode(underneath);
       auto modes = static_cast<std::int32_t>(mv::shell::mask_of(under_mode));
-      // Trim layers over video (key_router.cpp), so `?` lists both.
-      if (under_mode == mv::shell::mode::trim) modes |= mv::shell::kVideo;
+      // Trim and skim layer over video (key_router.cpp), so `?` lists both.
+      if (under_mode == mv::shell::mode::trim || under_mode == mv::shell::mode::skim) {
+        modes |= mv::shell::kVideo;
+      }
       app->popup_open = true;
       if (app->fullscreen) layout_chrome(app);  // the flyouts hang off the bar
       app->chrome.show_popup(kind, modes);
