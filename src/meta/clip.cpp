@@ -152,10 +152,16 @@ void describe_video(const AVStream& st, stream_info& s) {
   }
   add(s, "Bit rate", bitrate_text(p.bit_rate));
 
-  if (p.color_primaries != AVCOL_PRI_UNSPECIFIED) add(s, "Colour primaries", av_color_primaries_name(p.color_primaries));
-  if (p.color_trc != AVCOL_TRC_UNSPECIFIED) add(s, "Transfer", av_color_transfer_name(p.color_trc));
-  if (p.color_space != AVCOL_SPC_UNSPECIFIED) add(s, "Matrix", av_color_space_name(p.color_space));
-  if (p.color_range != AVCOL_RANGE_UNSPECIFIED) add(s, "Range", av_color_range_name(p.color_range));
+  // A container may carry any number here; FFmpeg names only the ones it
+  // knows and returns NULL for the rest (a std::string from NULL crashed:
+  // #291 review, fuzz_meta_search on a damaged clip).
+  const auto named = [&s](const char* label, const char* name) {
+    if (name) add(s, label, name);
+  };
+  if (p.color_primaries != AVCOL_PRI_UNSPECIFIED) named("Colour primaries", av_color_primaries_name(p.color_primaries));
+  if (p.color_trc != AVCOL_TRC_UNSPECIFIED) named("Transfer", av_color_transfer_name(p.color_trc));
+  if (p.color_space != AVCOL_SPC_UNSPECIFIED) named("Matrix", av_color_space_name(p.color_space));
+  if (p.color_range != AVCOL_RANGE_UNSPECIFIED) named("Range", av_color_range_name(p.color_range));
 
   if (const AVPacketSideData* sd = av_packet_side_data_get(
           p.coded_side_data, p.nb_coded_side_data, AV_PKT_DATA_MASTERING_DISPLAY_METADATA);

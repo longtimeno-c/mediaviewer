@@ -38,6 +38,10 @@ inline constexpr std::int32_t kSettingBackgroundMask = 7 << kSettingBackgroundSh
 // as off: audio and documents are Open With types (D5, 2026-10-03).
 inline constexpr std::int32_t kSettingShowAudio = 1 << 12;
 inline constexpr std::int32_t kSettingShowDocuments = 1 << 13;
+// #345: Settings -> Viewer -> "Show a badge on AI-generated images", on by
+// default (owner, 2026-10-11). Stored inverted -- set = hidden -- so a word
+// saved before the bit existed reads as on.
+inline constexpr std::int32_t kSettingHideAiBadge = 1 << 14;
 
 // A folder open is an explicit "show me this folder", so the filmstrip earns
 // its 112 DIP. Opening one image is a viewing intent: the folder is still
@@ -55,6 +59,8 @@ struct view_settings {
   // kind out; a file opened directly still shows.
   bool show_audio = false;
   bool show_documents = false;
+  // #345: the canvas's AI-generated badge (shell/ai_badge.h). On by default.
+  bool ai_badge = true;
   // PR 9: the folder sort, packed by io::pack_sort (key in bits 0-2, descending
   // in bit 3). Not part of flags(): the chrome gets it beside them.
   std::int32_t sort = 0;
@@ -66,6 +72,7 @@ struct view_settings {
            (sticky_zoom ? kSettingStickyZoom : 0) |
            (show_audio ? kSettingShowAudio : 0) |
            (show_documents ? kSettingShowDocuments : 0) |
+           (ai_badge ? 0 : kSettingHideAiBadge) |
            ((static_cast<std::int32_t>(background <= 4 ? background : 0)) << kSettingBackgroundShift);
   }
 
@@ -77,6 +84,7 @@ struct view_settings {
     s.sticky_zoom = (flags & kSettingStickyZoom) != 0;
     s.show_audio = (flags & kSettingShowAudio) != 0;
     s.show_documents = (flags & kSettingShowDocuments) != 0;
+    s.ai_badge = (flags & kSettingHideAiBadge) == 0;
     const auto background = (flags & kSettingBackgroundMask) >> kSettingBackgroundShift;
     s.background = static_cast<std::uint8_t>(background <= 4 ? background : 0);
     return s;

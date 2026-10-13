@@ -4,11 +4,12 @@ Anyone can make an add-on, and anyone can install one from a file or a link. Thi
 the person making one. The design and its reasons are in
 [docs/design/25-open-addons.md](design/25-open-addons.md).
 
-**What an add-on can hold today: themes.** Colours and a typeface for MediaViewer's bars, panes
-and text. Settings pages, keymaps, commands and whole screens are planned
-([docs/design/25](design/25-open-addons.md#7-the-contribution-model)): code will run as a sandboxed
-script with screens described as data, and no add-on will ever get network access. An add-on
-that names code is refused until that runtime exists.
+**What an add-on can hold today:** themes (colours, a typeface, and how round, roomy and large
+the chrome is), a settings page, key layouts, and scripts. A script is Lua 5.4 that MediaViewer
+runs in a sandbox, with commands people run from the keyboard ([Scripts](#scripts)). Whole
+screens and chrome slots from other makers are planned
+([docs/design/25](design/25-open-addons.md#7-the-contribution-model)). No add-on ever gets network
+access, and native code (a DLL or a dylib) is never loaded from an add-on.
 
 ## In five minutes
 
@@ -26,12 +27,14 @@ python3 tools/addon-sdk/mvaddon.py init my-addon --id you.my-addon --name "My Ad
 python3 tools/addon-sdk/mvaddon.py pack my-addon --key publisher.key --out dist
 ```
 
-`dist/you.my-addon-1.0.0.mvaddon` is your add-on. Drop it on MediaViewer, or use
+`dist/you.my-addon-1.0.0.mvaddon` is your add-on. For a script add-on instead of a theme, add
+`--script` to `init`: it starts a command that says how many files the open folder holds. Drop it on MediaViewer, or use
 **Settings → Add-ons → From others → Install from file…**. To let people install it from a link,
 put the file on any `https://` address and give them the address.
 
-`tools/addon-sdk/mvaddon.py` is MIT-licensed, so using it puts no licence on your add-on. A
-working example is in [examples/addons/film-tones](../examples/addons/film-tones).
+`tools/addon-sdk/mvaddon.py` is MIT-licensed, so using it puts no licence on your add-on. Working
+examples: a theme in [examples/addons/film-tones](../examples/addons/film-tones), a script in
+[examples/addons/folder-count](../examples/addons/folder-count).
 
 **Your add-on is yours.** MediaViewer is GPL, but an add-on that reaches it only through this
 format and its documented interfaces is not a work based on MediaViewer: you may publish it under
@@ -89,7 +92,8 @@ my-addon/
 | `name`, `publisher.name`, `description` | Plain text. Control characters, right-to-left overrides and zero-width characters are refused |
 | `licence` | An SPDX identifier. A file with a different licence goes in `"licences": { "path": "SPDX" }` |
 | `publisher.url`, `update_url` | `https://` only, or empty |
-| `api` | The contribution API you wrote for. `1` is themes |
+| `api` | The contribution API you wrote for. `1` is themes; `2` adds a settings page, key layouts and a theme's shape; `3` adds scripts. Use the lowest `min` your add-on needs (a theme-only add-on keeps `1` so older MediaViewers install it); with `max` at that API an older MediaViewer says your add-on needs a newer one instead of installing half of it |
+| `scripts`, `permissions` | A script add-on's, below ([Scripts](#scripts)) |
 
 `pack` adds the rest: the schema, your public key, and each file's size and SHA-256.
 
@@ -141,6 +145,205 @@ and should not expect to.
 - When the system's high-contrast setting is on, the system's colours are used and your theme
   waits.
 
+### A theme's shape (API 2)
+
+A theme file with `"schema": 2` may also say how the chrome is drawn (your manifest's `api.max` must then be at least 2). Each is a scale on
+MediaViewer's own sizes, so `1` is what it looks like today:
+
+```json
+"shape": { "radius": 0.5, "density": 0.85, "type_scale": 0.95 }
+```
+
+| Key | Range | Scales |
+|---|---|---|
+| `radius` | 0 – 2 | Corner radii. `0` is square |
+| `density` | 0.75 – 1.25 | Padding and the space between rows |
+| `type_scale` | 0.85 – 1.25 | Text sizes |
+
+Any of the three may be left out. The photo grid, the filmstrip, the video transport and the
+editor's timeline keep their sizes. On Windows a new shape shows the next time MediaViewer starts.
+`examples/addons/settings-demo/themes/compact.json` is one.
+
+## A settings page (API 2)
+
+Your add-on can have a page in Settings. You write what is on it; MediaViewer draws it with its
+own controls on both Windows and the Mac, in the order you wrote:
+
+```json
+"contributes": {
+  "settings": {
+    "title": "Places",
+    "sections": [
+      { "title": "Place", "help": "How a photo's place is named.",
+        "items": [
+          { "type": "toggle", "key": "show_town", "label": "Name the town", "default": true },
+          { "type": "number", "key": "town_radius_km", "label": "Town radius",
+            "min": 1, "max": 50, "step": 1, "unit": "km", "default": 15,
+            "help": "Name the nearest town within this distance.", "enabled_by": "show_town" },
+          { "type": "choice", "key": "label_names", "label": "Place names",
+            "options": [ { "value": "english", "label": "English" },
+                         { "value": "local", "label": "Local" } ],
+            "default": "english" },
+          { "type": "text", "key": "home", "label": "Home town", "max_length": 64,
+            "placeholder": "Lisbon", "default": "" } ] } ] } }
+```
+
+| `type` | Drawn as | Also takes |
+|---|---|---|
+| `toggle` | A switch | `default`: `true` or `false` |
+| `choice` | A menu of the labels | `options`: 2 to 32 `{ "value", "label" }`; `default` is one of the values |
+| `number` | A field with − / + (a stepper on the Mac) and the unit | `min`, `max`, `step` (default 1, at least 0.001), `unit` (16 bytes); `default` in range; every number to at most three decimals |
+| `text` | A field | `max_length` (1 – 1024 bytes, default 256), `placeholder` |
+
+- Every item has a `key` (`a`–`z` first, then lowercase letters, digits and `_`, 40 at most,
+  unique on the page), a `label` and a `default`; `help` is optional.
+- `enabled_by` names a toggle above the item: the item is greyed out while that toggle is off.
+- Up to 16 sections and 64 items. A key MediaViewer does not know, or a default outside its own
+  rule, refuses the add-on, and `pack` tells you which.
+- What people choose is kept per add-on, survives a restart and an update, and is kept when your
+  add-on is removed unless they untick **Keep its settings**. A value your new version's page no
+  longer allows (a narrower range, a removed option) reads as your default.
+- **Who reads the values:** a script add-on reads its own with `mv.settings.get(key)`
+  ([Scripts](#what-a-script-can-call)); a data add-on's page is for the person, and MediaViewer's
+  own add-ons read theirs natively.
+  `examples/addons/settings-demo` has a page with every kind of item.
+
+## Key layouts (API 2)
+
+A key layout gives MediaViewer's own commands other keys: the FastStone, IrfanView or Vim habits
+someone already has. The person picks it under Settings → Keyboard shortcuts → **Key layout**
+and clicks **Apply**:
+
+```json
+"contributes": {
+  "keymaps": [
+    { "id": "vim", "name": "Vim",
+      "bindings": [
+        { "command": "prev", "keys": ["Left", "H"] },
+        { "command": "next", "keys": ["Right", "L"] },
+        { "command": "toggle_mark", "keys": ["Insert", "X"] } ] } ] }
+```
+
+- **`command`** is the command's name in MediaViewer's source: `next`, `prev`, `first`, `last`,
+  `zoom_in`, `fit`, `toggle_mark`, `toggle_gallery`, `fullscreen`… (the `command_id` names in
+  `src/shell/commands.h`; they never change).
+- **`keys` go, in turn, to that command's rows** in MediaViewer's default table. Previous's rows
+  are Left, A, Backspace…, so `["Left", "H"]` keeps Left and puts H where A was. `""` leaves a
+  row without a key; rows after the last key keep theirs. A layout re-keys rows; it cannot add
+  one. Settings lists the rows in order.
+- Keys are written as Settings and `?` show them: `Ctrl+Shift+O`, `Page Down`, `F11`, `?`.
+  `Ctrl` is `⌘` on a Mac.
+- **A key your layout uses is taken from whatever held it** in the same modes (H no longer flips
+  the photo in the example); Settings shows those commands as unbound. Two of your own bindings
+  on one key: the first wins.
+- Applying is once. After that the keys are the person's: they can change any of them, they stay
+  if your add-on is removed, and **Reset to default** puts MediaViewer's defaults back.
+- A command or key this MediaViewer does not know is skipped and listed when the layout is
+  applied, so one layout can serve an older and a newer version.
+- Up to 8 layouts of 256 commands each. `examples/addons/vim-keys` is one.
+## Scripts
+
+A script add-on carries Lua 5.4 source and the commands it adds. MediaViewer runs it on a thread
+of its own, in a sandbox, never on the thread that draws the window: a slow or broken script
+cannot freeze the viewer.
+
+```
+folder-count/
+  addon.json
+  main.lua
+```
+
+```json
+{
+  "id": "you.folder-count",
+  "name": "Folder Count",
+  "version": "1.0.0",
+  "licence": "MIT",
+  "publisher": { "name": "You", "url": "" },
+  "api": { "min": 3, "max": 3 },
+  "scripts": ["main.lua"],
+  "permissions": ["folder.read"],
+  "contributes": {
+    "commands": [
+      { "id": "count-files", "name": "Count files", "key": "Ctrl+Shift+K", "run": "count_files" }
+    ]
+  }
+}
+```
+
+```lua
+function count_files()
+  local n = mv.folder.count()
+  mv.notify(n == 1 and "1 file in this folder" or (n .. " files in this folder"))
+end
+```
+
+**How it runs.** When MediaViewer starts (after the window is up) or your add-on is installed, it
+runs each file in `scripts`, in order, in one environment: define your functions there. Each time
+a command's key is pressed, MediaViewer calls the global function its `run` names. One call at a
+time, in order; calls never overlap.
+
+| Field | Rule |
+|---|---|
+| `scripts` | `.lua` files of the folder, 16 at most, 1 MB each, 4 MB together. Source text only: compiled Lua is refused |
+| `permissions` | Any of `folder.read`, `thumbnails`, `selection`. None is granted unless you list it, and each is a line the person reads before installing |
+| `commands[].id` | Lowercase letters, digits and hyphens, unique in your add-on |
+| `commands[].name` | What `?`, Settings and the person see |
+| `commands[].key` | A key as MediaViewer writes it: `Ctrl+Shift+K`, `Alt+F5`. `Ctrl` is `Cmd` on a Mac. Optional |
+| `commands[].run` | The name of a global function in your scripts |
+| `commands[].modes` | `viewing` (default: photos, clips and the gallery), `video`, `browse` or `all` |
+| `commands[].payload` | What the function is called with: `none` (default), `marks` (the marked files' paths), `marked_or_current`, `screen` (`{path, video}`). Anything but `none` needs `selection` |
+
+**If your key is taken.** A key MediaViewer itself uses, or another add-on took first, is
+dropped: the command is still listed, without a key, Settings says why, and the person can give it
+one. MediaViewer has room for eight add-on commands at a time.
+
+### What a script can call
+
+Only what is listed here exists. The parts that need a permission are **absent** without it:
+`mv.folder` is `nil` unless you asked for `folder.read`.
+
+| Call | Permission | What it does |
+|---|---|---|
+| `mv.id`, `mv.api` | — | Your add-on's id; the contribution API of this MediaViewer (5) |
+| `mv.permissions` | — | A table of what was granted: `mv.permissions["folder.read"] == true` |
+| `mv.notify(text)` | — | Shows one short line to the person, with your add-on's name in front (200 bytes at most, four a second at most). Returns whether it was shown |
+| `mv.log(...)`, `print(...)` | — | A line for you, the developer. It stays on this computer: in the macOS unified log (private), nowhere on Windows yet |
+| `mv.on(event, fn)` | — | Answers an event a later MediaViewer sends (screens and search providers will). None is sent yet |
+| `mv.folder.count()` | `folder.read` | How many files the open folder lists, as the viewer lists them |
+| `mv.folder.name(i)` | `folder.read` | The name of the `i`th file (from 1), or `nil` |
+| `mv.folder.path()` | `folder.read` | The open folder's path, or `nil` (a search result list has none) |
+| `mv.selection.current()` | `selection` | The path of the file on screen, or `nil` |
+| `mv.settings.get(key)` | — | The value of `key` on your own settings page ([A settings page](#a-settings-page-api-2)): what the person chose, or your default; `nil` for a key your page does not have, or with no page |
+
+`thumbnails` adds nothing yet: it is for the thumbnail parts of screens, which come next.
+
+The Lua standard library is there in part: `string` (without `string.dump`), `table`, `math`,
+`utf8`, `coroutine`, and the basics (`pairs`, `pcall`, `setmetatable`, `tostring` and the rest).
+`load` takes text only. `collectgarbage` answers `"count"`, `"collect"`, `"step"` and
+`"isrunning"`. A `__gc` metamethod never runs, and `__mode` does nothing: every table keeps
+what it holds. There is no `io`, `os`, `package`, `require`, `dofile`, `loadfile` or `debug`, no
+socket and no file call, and there never will be a network one.
+
+### The limits
+
+Every call your add-on handles (and your scripts' first run) gets:
+
+| Limit | Value |
+|---|---|
+| Memory | 64 MB for everything your add-on holds |
+| Steps | 100 million Lua instructions per call |
+| Time | 1 second per call |
+
+Go over one and **your add-on is stopped**: it does nothing more until the person clicks
+**Start again** in Settings → Add-ons → From others, or MediaViewer starts again. Settings says
+which limit it hit, for example "One of its tasks (command count-files) ran for more than 100
+million steps". A Lua error is not a stop: the call ends, Settings shows the last error, and the
+next key press calls you again. Catching errors with `pcall` does not get around a limit.
+
+Scripts are for glue, not pixel loops: a loop over a 10,000-file folder is fine; resizing
+images in Lua is not, and MediaViewer will offer that as a call later.
+
 ## Check before you publish
 
 ```bash
@@ -156,9 +359,9 @@ It says what MediaViewer will say. The reasons it can give:
 | `missing_signature`, `bad_signature` | Not signed, or changed after signing |
 | `file_missing`, `file_mismatch`, `unexpected_file` | The files are not the ones the manifest lists |
 | `unsafe_path` | A file name that leaves the folder (`..`, a drive, a backslash), or a theme whose `path` is not one of the files |
-| `malformed` | A field missing, mistyped, or not allowed. With `api.max` of 1, a key MediaViewer does not know is a mistake |
-| `code_not_allowed` | The manifest names `native`, `chrome`, `scripts` or `main` |
-| `needs_update` | `api.min` is newer than this MediaViewer |
+| `malformed` | A field missing, mistyped, or not allowed. With an `api.max` this MediaViewer reaches, a key it does not know is a mistake. A script under an `api.max` below 3, a permission named twice, a `network` permission, a command whose `run` is not a Lua name, or one that sends paths without `selection` |
+| `code_not_allowed` | The manifest names `native`, `chrome` or `main` (native code is never loaded from an add-on), or it has `scripts` and this MediaViewer is older than API 3 |
+| `needs_update` | `api.min` is newer than this MediaViewer, or the add-on asks for a permission only a newer one grants (`files.write`, `metadata.write`) |
 | `invalid_theme` | A theme file that does not pass the rules above; the detail names the theme and the rule |
 
 Two more come only from MediaViewer, because they depend on what is installed: `other_publisher`
@@ -180,7 +383,15 @@ MediaViewer has not checked this add-on or who made it.
 ```
 
 The Adds, Can and Cannot lines are worked out by MediaViewer from your manifest. You cannot
-write them.
+write them. For the Folder Count example they read:
+
+```
+Adds      1 command
+Can       Run its own script inside MediaViewer, stopped if it uses too much memory or time
+Can       Add commands you can run from the keyboard
+Can       See the names of the files in the open folder
+Cannot    Change your files or use the network
+```
 
 ## Testing the tool itself
 

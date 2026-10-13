@@ -35,6 +35,7 @@ old PR 15 is PR 8; old AI-search PRs 21–25 are 20–24. PR 25 is unused.
 | 49 | Network-speed copy engine ([24](24-transfer.md)) | both |
 | 54 | Find duplicates in the Import add-on ([18](18-import.md#find-duplicates-pr-54)) | both |
 | 55 | Open add-ons: packages and themes ([25](25-open-addons.md)) | both |
+| 57 | Open add-ons: code, the Lua sandbox and commands ([25](25-open-addons.md)) | both (Windows half compiled by CI, not yet run) |
 
 Local search inside Final Cut Pro and FCPXML export (issue #71) has no PR number:
 [23](23-nle-search.md).
@@ -545,6 +546,25 @@ present-loop gates; with none installed, no folder is created and nothing of an 
 at start. Where each part stands:
 [25 "Implementation notes"](25-open-addons.md#implementation-notes-pr-55-2026-09-29).
 
+## PR 57 — Open add-ons: code
+
+Other makers' add-ons run code as Lua 5.4 scripts in a sandbox (owner call 1, 2026-10-03): one
+state and one worker per add-on, never the UI, render or decode threads; 64 MB, 100 million
+instructions and 1 s per task, a count hook and a watchdog; no `io` / `os` / `package` / `debug`,
+no bytecode; permissions (`folder.read`, `thumbnails`, `selection`) each a line in the consent
+sheet and absent from the script's environment unless granted; no network permission and no
+socket call. Commands (contribution API 3) take the `addon_cmd_*` slots and give way to the base
+app's keys. Over a limit the add-on stops and Settings says which limit and why, with Start
+again. Code: `third_party/lua` (vendored, static), `src/addon/script_*`, `src/abi/script_abi.cpp`
+(ABI 0.26), `shell/addons_mac.mm`, `shell/main.cpp`, `OpenAddons.swift`,
+`IslandHost.OpenAddons.cs`; the SDK's `init --script` and `examples/addons/folder-count`.
+Design, limits and measurements: [25](25-open-addons.md#implementation-notes-pr-57-2026-10-11).
+
+**Verify (both platforms):** a script command runs from its key; a runaway loop and an
+allocation bomb each stop the add-on, not the viewer, within the watchdog's bound; without
+`folder.read` the folder API is absent; both present-loop gates hold while a script spins.
+Where each part stands: [25 "Implementation notes (PR 57)"](25-open-addons.md#implementation-notes-pr-57-2026-10-11).
+
 ## Not built
 
 - **PR 31** — Video Editor: several clips, zoom, dissolves ([21](21-video-editor.md)).
@@ -552,17 +572,20 @@ at start. Where each part stands:
   spike exist.
 - **PRs 27–28** — Voice query add-on ([19](19-voice.md)).
 - **PR 50** — Transfer, the general copier, and the SMB link check (no `mv_transfer_*` ABI).
-- **PRs 56–60** — the rest of the open add-ons ([25](25-open-addons.md)): declarative
-  contributions (settings pages, keymap packs), a sandboxed script runtime (Lua), screens as
-  data, slots and search providers, files. The owner's calls for them were made 2026-10-03
+- **PRs 57–60** — the rest of the open add-ons ([25](25-open-addons.md)): a sandboxed script
+  runtime (Lua), screens as data, slots and search providers, files. The owner's calls for them were made 2026-10-03
   ([25 §17](25-open-addons.md#17-decisions-owner-2026-10-03)). PR 56's first half is built
   (2026-10-04): Import's commands, keys, Settings line and card hint come from its manifest
   (`contributes`, eight `addon_cmd_*` slots, ABI 0.18), with an older Import kept working
-  through the built-in rows.
+  through the built-in rows. Its second half is built (2026-10-11; contribution API 2, ABI 0.24):
+  settings pages from a schema on both hosts with values kept per add-on, keymap packs, theme
+  shape, and MediaViewer's own add-on windows on the host's tokens. Verify on the Mac in the
+  app; the Windows half compiles and is owed a run
+  ([25](25-open-addons.md#pr-56-second-half-declarative-contributions-2026-10-11)).
 - Windows grouped as tabs / `Ctrl+Tab` (split out of PR 15; Mac windows have tabbing disabled).
 - The Windows property handler (split out of PR 15; it needs HKLM).
 - Backlog: further photo adjusts and local edits, full RAW develop, smart cut, HDR output,
   formats outside the D5 set (JPEG XL, EXR, PSD, SVG, DDS, JPEG 2000, VVC), batch metadata
-  tools, JSON keymap import/export (planned as keymap packs, PR 56), a canvas and F3-overlay
+  tools, a person's own keymap import/export (named layouts ship as keymap packs, PR 56), a canvas and F3-overlay
   colour scheme and a user font file (the chrome's themes landed as add-on themes in PR 55),
   AppContainer decode process, per-machine MSI, Windows ARM64.

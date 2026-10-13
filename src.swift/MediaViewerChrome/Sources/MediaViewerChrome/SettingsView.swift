@@ -30,6 +30,9 @@ final class SettingsStore: ObservableObject {
   /// Set = folders list the kind (settings.h kSettingShow*). Off by default.
   static let showAudio: Int32 = 1 << 12
   static let showDocuments: Int32 = 1 << 13
+  /// #345: set = the AI badge is hidden (settings.h kSettingHideAiBadge), so the
+  /// badge is on by default and in every word saved before the bit existed.
+  static let hideAiBadge: Int32 = 1 << 14
 
   @Published private(set) var visible = false
   @Published private(set) var flags: Int32 = 0
@@ -144,6 +147,8 @@ final class SettingsStore: ObservableObject {
   func beginCapture(_ row: Int32) { mv_chrome_key_capture_begin(row); generation = .max; poll() }
   func cancelCapture() { mv_chrome_key_capture_cancel(); generation = .max; poll() }
   func resetKeys() { mv_chrome_keys_reset(); generation = .max; poll() }
+  /// A key layout was applied (KeyLayoutRow): re-read the table now.
+  func keysChanged() { generation = .max; poll() }
   func close() { mv_chrome_menu(kMenuSettings) }
 }
 
@@ -155,8 +160,8 @@ private struct SettingsRow<Content: View>: View {
   @ViewBuilder let content: () -> Content
 
   var body: some View {
-    HStack(spacing: 24) {
-      VStack(alignment: .leading, spacing: 4) {
+    HStack(spacing: MVTheme.space(24)) {
+      VStack(alignment: .leading, spacing: MVTheme.space(4)) {
         Text(title).font(MVTheme.font()).foregroundStyle(MVTheme.title)
         Text(detail).font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
           .fixedSize(horizontal: false, vertical: true)
@@ -166,10 +171,10 @@ private struct SettingsRow<Content: View>: View {
         .labelsHidden()
         .accessibilityLabel(title)
     }
-    .padding(14)
+    .padding(MVTheme.space(14))
     .frame(maxWidth: .infinity, alignment: .leading)
-    .background(RoundedRectangle(cornerRadius: 8).fill(MVTheme.surface))
-    .overlay(RoundedRectangle(cornerRadius: 8).stroke(MVTheme.hairline, lineWidth: 1))
+    .background(RoundedRectangle(cornerRadius: MVTheme.radius(8)).fill(MVTheme.surface))
+    .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(8)).stroke(MVTheme.hairline, lineWidth: 1))
   }
 }
 
@@ -177,12 +182,14 @@ private struct SettingsToggle: View {
   let title: String
   let detail: String
   let bit: Int32
+  /// The bit means "off" (a setting that is on by default).
+  var inverted = false
   @ObservedObject var store: SettingsStore
   var body: some View {
     SettingsRow(title: title, detail: detail) {
       Toggle(title, isOn: Binding(
-        get: { store.flags & bit != 0 },
-        set: { store.setFlag(bit, $0) }))
+        get: { (store.flags & bit != 0) != inverted },
+        set: { store.setFlag(bit, $0 != inverted) }))
         .toggleStyle(.switch)
         .fixedSize()
     }
@@ -202,8 +209,8 @@ private struct SettingsButtonStyle: ButtonStyle {
     configuration.label
       .font(MVTheme.font())
       .foregroundStyle(MVTheme.title)
-      .padding(.horizontal, 12).padding(.vertical, 7)
-      .background(RoundedRectangle(cornerRadius: 6)
+      .padding(.horizontal, MVTheme.space(12)).padding(.vertical, MVTheme.space(7))
+      .background(RoundedRectangle(cornerRadius: MVTheme.radius(6))
         .fill(Color.primary.opacity(configuration.isPressed ? 0.16 : 0.08)))
       .contentShape(Rectangle())
   }
@@ -235,13 +242,13 @@ struct SettingsView: View {
 
   private func section(_ title: String) -> some View {
     Text(title).font(MVTheme.font(16)).fontWeight(.semibold)
-      .foregroundStyle(MVTheme.title).padding(.top, 12)
+      .foregroundStyle(MVTheme.title).padding(.top, MVTheme.space(12))
   }
 
   private var preferences: some View {
     ScrollViewReader { scroll in
     ScrollView {
-      VStack(alignment: .leading, spacing: 8) {
+      VStack(alignment: .leading, spacing: MVTheme.space(8)) {
         section("Filmstrip")
         SettingsToggle(title: "When opening a folder", detail: "Show thumbnails below the viewer.",
                        bit: SettingsStore.filmstripFolder, store: store)
@@ -266,6 +273,11 @@ struct SettingsView: View {
           Toggle("Descending order", isOn: Binding(get: { store.sortDescending }, set: { store.sortDescending = $0 }))
             .toggleStyle(.switch).fixedSize()
         }
+        // #345 (docs/design/06 "The AI badge"): on by default (owner, 2026-10-11).
+        section("Viewer")
+        SettingsToggle(title: "Show a badge on AI-generated images",
+                       detail: "When a file says it was made by an AI tool, mark it in the corner. Files that say nothing get no mark.",
+                       bit: SettingsStore.hideAiBadge, inverted: true, store: store)
         section("File types")
         SettingsToggle(title: "Show audio files",
                        detail: "List MP3, M4A and M4P files in folders. A file you open directly still opens.",
@@ -324,9 +336,9 @@ struct SettingsView: View {
           .id(PhotosBackupStore.anchor)
         // Import and (Milestone H, docs/design/17) Local search, as items of one
         // Add-ons section; Local search is absent on an Intel Mac.
-        AddonsSection().padding(.top, 20)
+        AddonsSection().padding(.top, MVTheme.space(20))
       }
-      .padding(.horizontal, 24).padding(.bottom, 24)
+      .padding(.horizontal, MVTheme.space(24)).padding(.bottom, MVTheme.space(24))
       .frame(maxWidth: 800)
       .frame(maxWidth: .infinity)
     }
@@ -337,6 +349,13 @@ struct SettingsView: View {
       keyboard = false
       DispatchQueue.main.async {
         withAnimation(nil) { scroll.scrollTo(OpenAddonSheet.anchor, anchor: .center) }
+      }
+    }
+    // docs/design/25 PR 57: the script rig shows From others (a stopped add-on's line).
+    .onChange(of: addons.revealRequests) { _, _ in
+      keyboard = false
+      DispatchQueue.main.async {
+        withAnimation(nil) { scroll.scrollTo(OpenAddonStore.sectionAnchor, anchor: .top) }
       }
     }
     // docs/design/26: the welcome card's iCloud Photos row opens Settings here.
@@ -361,12 +380,13 @@ struct SettingsView: View {
   }
 
   private var shortcuts: some View {
-    VStack(alignment: .leading, spacing: 12) {
+    VStack(alignment: .leading, spacing: MVTheme.space(12)) {
       HStack {
         Text("Keyboard shortcuts").font(MVTheme.font(18)).foregroundStyle(MVTheme.title)
         Spacer()
         SettingsButton(title: "Reset to default") { store.resetKeys() }
       }
+      KeyLayoutRow()
       TextField("Search commands or keys", text: $filter)
         .textFieldStyle(.roundedBorder)
         .font(MVTheme.font())
@@ -378,7 +398,7 @@ struct SettingsView: View {
       ScrollView {
         LazyVStack(spacing: 0) {
           ForEach(shown) { row in
-            HStack(spacing: 16) {
+            HStack(spacing: MVTheme.space(16)) {
               Text(row.name).font(MVTheme.font()).foregroundStyle(MVTheme.title)
                 .frame(maxWidth: .infinity, alignment: .leading)
               Button {
@@ -391,24 +411,24 @@ struct SettingsView: View {
               .buttonStyle(SettingsButtonStyle())
               .accessibilityLabel("Change shortcut for " + row.name)
             }
-            .padding(.vertical, 6)
+            .padding(.vertical, MVTheme.space(6))
             Rectangle().fill(MVTheme.hairline.opacity(0.5)).frame(height: 1)
           }
           if shown.isEmpty {
             Text("No matching shortcuts").font(MVTheme.font()).foregroundStyle(MVTheme.body)
-              .padding(.top, 16)
+              .padding(.top, MVTheme.space(16))
           }
         }
       }
     }
-    .padding(24)
+    .padding(MVTheme.space(24))
     .frame(maxWidth: 900)
     .frame(maxWidth: .infinity)
   }
 
   var body: some View {
     VStack(spacing: 0) {
-      HStack(spacing: 24) {
+      HStack(spacing: MVTheme.space(24)) {
         Text("Settings").font(MVTheme.font(24)).foregroundStyle(MVTheme.title)
         Spacer(minLength: 0)
         Picker("Settings category", selection: $keyboard) {
@@ -417,14 +437,14 @@ struct SettingsView: View {
         }
         .pickerStyle(.segmented).labelsHidden().frame(maxWidth: 320)
       }
-      .padding(.horizontal, 24).padding(.vertical, 18)
+      .padding(.horizontal, MVTheme.space(24)).padding(.vertical, MVTheme.space(18))
       Rectangle().fill(MVTheme.hairline).frame(height: 1)
       Group {
         if keyboard && addons.offer == nil { shortcuts } else { preferences }
       }
       .frame(maxWidth: .infinity, maxHeight: .infinity)
       Rectangle().fill(MVTheme.hairline).frame(height: 1)
-      HStack(spacing: 12) {
+      HStack(spacing: MVTheme.space(12)) {
         Text(hint).font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
         Spacer()
         if store.captureRow >= 0 {
@@ -432,7 +452,7 @@ struct SettingsView: View {
         }
         SettingsButton(title: "Done") { store.close() }
       }
-      .padding(.horizontal, 24).padding(.vertical, 12)
+      .padding(.horizontal, MVTheme.space(24)).padding(.vertical, MVTheme.space(12))
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .background(MVTheme.canvas)

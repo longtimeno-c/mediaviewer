@@ -47,6 +47,13 @@ struct generator {
 struct provenance {
   std::string made_with;  // generator or provenance tool; empty when nothing says
   bool ai_generated = false;
+  // #345: why ai_generated is true, for a person (the canvas badge's tooltip):
+  // the field that said so and what it said, e.g. "Content Credentials (C2PA):
+  // AI-generated (trainedAlgorithmicMedia)" or "XMP CreatorTool: Midjourney".
+  // Empty when ai_generated is false: there is no evidence of "not AI".
+  std::string evidence;
+
+  friend bool operator==(const provenance&, const provenance&) = default;
 };
 
 // The rule (doc 06): made_with is the first table match in C2PA claim generator,
@@ -55,7 +62,13 @@ struct provenance {
 // for its workflow chunks; else the C2PA claim generator as written (a
 // provenance tool, e.g. "Adobe Photoshop 25.0"). A camera's or editor's Software
 // that is not in the table is not "made with". ai_generated: an AI source type,
-// a table match flagged ai, or the PNG generator chunks.
+// a table match flagged ai, or the PNG generator chunks. evidence names the
+// deciding fact, most authoritative first: an AI source type (C2PA before XMP),
+// then the field whose generator matched, then the PNG generator chunks.
 [[nodiscard]] provenance derive_provenance(const parse::evidence& ev);
+
+// #345: one evidence line, "<field>: <value>", the value cleaned and capped at
+// 80 bytes on a character boundary (a PNG `parameters` tail can be a prompt).
+[[nodiscard]] std::string evidence_line(std::string_view field, std::string_view value);
 
 }  // namespace mv::meta

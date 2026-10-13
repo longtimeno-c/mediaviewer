@@ -20,8 +20,45 @@ into `docs/design/06-metadata.md` (pane, place, badge), `16-commands.md` (search
 `docs/design/06-metadata.md` ("Beyond Exiv2", "Made with and AI provenance", position as numbers)
 and `14-abi.md` (the chrome bridges' facts). Its Windows half (the native C++ and the running
 WinUI pane) is owed to Windows CI and a Windows run. #291 is open with no PR. Place and the map
-are #344 (slices 2–3 and the place half of slice 4); the badge is #345 (slice 5). Slices 2–5 can
-start from `summary::where`, `summary::made_with` and `summary::ai_generated`.
+are #344 (slices 2–3 and the place half of slice 4). Slices 2–4 can start from `summary::where`
+and `summary::made_with`.
+
+**Slice 5 (#345) is built** on branch `feature/issue-345-ai-badge` (on top of #290) and folded
+into `docs/design/06-metadata.md` ("The AI badge"), `16-commands.md` (Focus, Settings) and
+`14-abi.md`. The badge gets its answer with the pane closed from a bounded provenance probe
+(`meta/probe.h`) on the pool, after the metadata pause. Its Windows half (native C++, the island,
+the running chrome) is owed to Windows CI and a Windows run.
+
+**Slice 2, core: built** on `feature/issue-344-place-names`, described in
+[docs/design/27-places.md](../design/27-places.md):
+- `src/geo`, the place database and `tools/geo/build_places.py`;
+- the label rule, with four refinements the fixtures needed: a 1.5 km coast snap, atoll towns,
+  a town "reach" for cities, and same-region towns;
+- the 300-row `mv_tests "[geo]"` table, the fuzzer and the perf bench. Open is 11–12 ms
+  (target < 30 ms) and the lookup p99 is 8.4 µs (target < 50 µs).
+
+**Changed by the owner (2026-10-11):** Places is an **add-on** that carries its own code and
+data (the place blob, ~5.4 MB compressed), not a core dependency of `meta`. Without the add-on
+the pane shows coordinates. So the pane half of slice 2 below becomes the add-on's info-pane
+section (#348 slots / plan/25 PR 59), and search by place in slice 4 becomes its search provider.
+
+**Slice 3 and the place half of slice 4: built (2026-10-12)** on `feature/issue-344-places-addon`,
+folded into [doc 27](../design/27-places.md): the Places add-on (`src/addons/places`) with the
+pane's Place section at the foot of the Metadata pane, the offline map (cursor zoom from country to
+town scale, town dots and names, no streets), search by place for a folder (`portugal`, `place:`,
+`in:` when not a date), its settings page, packaging and both release workflows. Owed: the Windows
+half is compiled in CI only; 0 idle presents with the section shown and alternated
+first-pixel / browse runs on a quiet machine; Local search over the whole index (needs the index's
+coordinates through the host, doc 17).
+
+**Not built:** the `O` overlay line. The town radius stays 15 km (reasoning in doc 27).
+
+**Slice 4 (#291) is built** on branch `feature/issue-291-metadata-search`, without place names in
+the app (owner, 2026-10-11: places come from the Places add-on's search provider). It is folded
+into `06-metadata.md` ("Search text"), `16-commands.md` ("File search") and `17-local-ai-search.md`
+("Schema 4", "Query syntax"). Its Windows half (the native C++ in `abi.cpp` and the running WinUI
+search) is owed to Windows CI and a Windows run. The provider merge in the chromes is #348's.
+`place:` over the whole index waits for a host call that enumerates the index's coordinates.
 
 ## 0. Rules this touches
 
@@ -133,7 +170,7 @@ coordinates. It is drawn from the same Natural Earth polygons as slice 2. No til
 pane on a geotagged still causes no present beyond the pane's own (idle 0 presents after);
 arrow-held browsing with the pane open shows no regression (`--browse-soak`, alternated).
 
-### Slice 4 — Every tag searchable, place included (#291)
+### ~~Slice 4 — Every tag searchable, place included (#291)~~ — built without place names in the app; see the Status above and docs 06 / 16 / 17. The text below is kept for the verify.
 
 **Plain search (no AI pack), both platforms.**
 - **The tag text:** a per-file search string is built once in the core from the slice 1 read: make,
@@ -169,7 +206,7 @@ arrow-held browsing with the pane open shows no regression (`--browse-soak`, alt
   noise (alternated runs, `--browse-soak --json`).
 - The 3 → 4 migration survives a kill mid-step (the #176 test pattern).
 
-### Slice 5 — AI-generated badge on the canvas
+### ~~Slice 5 — AI-generated badge on the canvas (#345)~~ — built; see doc 06 "The AI badge". The text below is kept for the verify.
 
 - **Badge:** when `summary.ai_generated` is true, a small badge (a sparkle glyph plus "AI", about
   20 pt) sits in the bottom-right of the canvas, above the transport strip on clips. It has a

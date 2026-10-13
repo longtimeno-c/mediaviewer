@@ -47,25 +47,7 @@ bool id_part(std::string_view part) noexcept {
 // nothing that reorders or hides what is beside it (bidi controls, zero
 // width), bounded. UTF-8 validity is the parser's.
 bool display_text(std::string_view s, std::size_t max_bytes, bool may_be_empty) noexcept {
-  if (s.empty()) return may_be_empty;
-  if (s.size() > max_bytes || s.front() == ' ' || s.back() == ' ') return false;
-  for (std::size_t i = 0; i < s.size(); ++i) {
-    const auto c = static_cast<unsigned char>(s[i]);
-    if (c < 0x20 || c == 0x7F) return false;
-    if (c == 0xE2 && i + 2 < s.size()) {
-      const auto c1 = static_cast<unsigned char>(s[i + 1]);
-      const auto c2 = static_cast<unsigned char>(s[i + 2]);
-      // U+200B..U+200F, U+2028..U+202E, U+2060..U+206F.
-      if (c1 == 0x80 && ((c2 >= 0x8B && c2 <= 0x8F) || (c2 >= 0xA8 && c2 <= 0xAE))) return false;
-      if (c1 == 0x81 && c2 >= 0xA0 && c2 <= 0xAF) return false;
-    }
-    // U+FEFF, a zero-width no-break space.
-    if (c == 0xEF && i + 2 < s.size() && static_cast<unsigned char>(s[i + 1]) == 0xBB &&
-        static_cast<unsigned char>(s[i + 2]) == 0xBF) {
-      return false;
-    }
-  }
-  return true;
+  return valid_display_text(s, max_bytes, may_be_empty);
 }
 
 bool version_text(std::string_view v) noexcept {
@@ -88,13 +70,44 @@ bool version_text(std::string_view v) noexcept {
 // Keys a manifest may carry under each API. One this host knows nothing of
 // is a mistake when the manifest claims no API newer than the host's, and
 // something a newer host understands when it does.
-constexpr std::array<std::string_view, 12> kTopLevelKeys{
+constexpr std::array<std::string_view, 14> kTopLevelKeys{
     "schema", "id", "name", "version", "description", "licence", "publisher",
-    "update_url", "api", "installed_size", "files", "contributes"};
-constexpr std::array<std::string_view, 1> kContributesKeys{"themes"};
-// Code, by any name the plan gives it: never loaded from a schema 2 add-on by
-// a host that runs none (docs/design/25 "Code").
-constexpr std::array<std::string_view, 4> kCodeKeys{"native", "chrome", "scripts", "main"};
+    "update_url", "api", "installed_size", "files", "contributes",
+    // API 3 (PR 57): code, and what it may reach.
+    "scripts", "permissions"};
+// Native code, by any name the plan gives it: never loaded from a schema 2
+// add-on (docs/design/25 §9: other makers' code runs only as script).
+constexpr std::array<std::string_view, 3> kCodeKeys{"native", "chrome", "main"};
+
+// Permissions a later host may grant (docs/design/25 §9, PR 60). Named here so
+// a manifest asking for one is "needs a newer MediaViewer", not malformed.
+constexpr std::array<std::string_view, 2> kLaterPermissions{"files.write", "metadata.write"};
+
+constexpr std::size_t kMaxScripts = 16;
+constexpr std::size_t kMaxScriptBytes = 1u << 20;       // one .lua file
+constexpr std::size_t kMaxScriptsTotal = 4u << 20;      // every .lua file together
+constexpr std::size_t kMaxCommands = 32;
+
+bool ends_with(std::string_view s, std::string_view tail) noexcept {
+  return s.size() >= tail.size() && s.substr(s.size() - tail.size()) == tail;
+}
+
+// A Lua name a command runs: [A-Za-z_][A-Za-z0-9_]*, 64 at most.
+bool lua_name(std::string_view s) noexcept {
+  if (s.empty() || s.size() > 64) return false;
+  if (s[0] >= '0' && s[0] <= '9') return false;
+  return std::all_of(s.begin(), s.end(), [](char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+  });
+}
+
+// A key label as the command table reads it (shell parse_key_label): printable
+// ASCII, 32 at most. Whether it names a key is the host's to say; one it
+// cannot read leaves the row without a key, and Settings says so.
+bool key_text(std::string_view s) noexcept {
+  if (s.size() > 32) return false;
+  return std::all_of(s.begin(), s.end(), [](char c) { return c > 0x20 && c < 0x7F; });
+}
 
 template <std::size_t N>
 bool known(const std::array<std::string_view, N>& keys, std::string_view key) noexcept {
@@ -102,6 +115,23 @@ bool known(const std::array<std::string_view, N>& keys, std::string_view key) no
 }
 
 }  // namespace
+
+const char* permission_name(std::uint32_t bit) noexcept {
+  switch (bit) {
+    case perm_folder_read: return "folder.read";
+    case perm_thumbnails: return "thumbnails";
+    case perm_selection: return "selection";
+    default: return nullptr;
+  }
+}
+
+std::uint32_t permission_from_name(std::string_view name) noexcept {
+  for (std::uint32_t bit = 1; bit <= kPermissionsAll; bit <<= 1) {
+    const char* n = permission_name(bit);
+    if (n && name == n) return bit;
+  }
+  return 0;
+}
 
 bool valid_open_id(std::string_view id) noexcept {
   if (id.size() < 3 || id.size() > 64) return false;
@@ -322,6 +352,55 @@ open_decision check_open_manifest(std::span<const std::uint8_t> bytes,
       if (!known(kTopLevelKeys, key_name)) return d;
     }
   }
+
+  // Code (API 3): Lua text files of the package, run in the order listed.
+  // Code under a range that ends before the API that introduced it is a
+  // mistake, never a data add-on that happens to carry a script.
+  if (const json::value* scripts = doc->find("scripts")) {
+    if (api < kScriptApi) {
+      // A host from before code would have refused it by name.
+      d.why = rejection::code_not_allowed;
+      return d;
+    }
+    if (m.api_max < kScriptApi || scripts->k != json::kind::array || scripts->a.empty() ||
+        scripts->a.size() > kMaxScripts) {
+      return d;
+    }
+    std::uint64_t script_bytes = 0;
+    for (const json::value& sv : scripts->a) {
+      if (sv.k != json::kind::string || !ends_with(sv.s, ".lua")) return d;
+      const auto f = std::find_if(m.files.begin(), m.files.end(),
+                                  [&](const manifest_file& mf) { return mf.path == sv.s; });
+      if (f == m.files.end()) {
+        d.why = rejection::unsafe_path;
+        return d;
+      }
+      if (f->size > kMaxScriptBytes) return d;
+      if (std::find(m.scripts.begin(), m.scripts.end(), sv.s) != m.scripts.end()) return d;
+      script_bytes += f->size;
+      m.scripts.push_back(sv.s);
+    }
+    if (script_bytes > kMaxScriptsTotal) return d;
+  }
+  if (const json::value* perms = doc->find("permissions")) {
+    // Only code asks for anything; a data add-on reaches nothing.
+    if (m.scripts.empty() || perms->k != json::kind::array || perms->a.size() > 16) return d;
+    for (const json::value& pv : perms->a) {
+      if (pv.k != json::kind::string) return d;
+      const std::uint32_t bit = permission_from_name(pv.s);
+      if (bit == 0) {
+        // There is no network permission, ever (owner, 2026-10-03).
+        if (pv.s == "network") return d;
+        if (known(kLaterPermissions, pv.s) || !strict) {
+          d.why = rejection::needs_update;
+          return d;
+        }
+        return d;
+      }
+      if (m.permissions & bit) return d;
+      m.permissions |= bit;
+    }
+  }
   if (contributes) {
     for (const auto& [key_name, value] : contributes->o) {
       if (key_name == "themes") {
@@ -346,7 +425,86 @@ open_decision check_open_manifest(std::span<const std::uint8_t> bytes,
           }
           m.themes.push_back(theme_ref{*theme_id, *theme_name, *theme_path});
         }
-      } else if (strict && !known(kContributesKeys, key_name)) {
+      } else if ((key_name == "settings" || key_name == "keymaps") &&
+                 contribution_api(key_name) <= api) {
+        // API 2 (PR 56). Named by a manifest that claims an older API, the
+        // point is a mistake, not something this host should guess at.
+        if (m.api_max < contribution_api(key_name)) return d;
+        std::string detail;
+        if (key_name == "settings") {
+          auto page = parse_settings_page(value, &detail);
+          if (!page) return d;
+          m.settings = std::move(*page);
+        } else {
+          auto packs = parse_keymaps(value, &detail);
+          if (!packs) return d;
+          m.keymaps = std::move(*packs);
+        }
+      } else if (contribution_api(key_name) >= 4 && contribution_api(key_name) <= api) {
+        // Screens and slots (PRs 58-59) are filled by code: a stranger's add-on
+        // gets them with PR 57's sandboxed scripts, not before. MediaViewer's
+        // own native add-ons fill them through the host table (manifest.cpp).
+        d.why = rejection::code_not_allowed;
+        return d;
+      } else if (key_name == "commands" && api >= kScriptApi) {
+        // A command runs a script function: none without code.
+        if (m.scripts.empty() || value.k != json::kind::array || value.a.empty() ||
+            value.a.size() > kMaxCommands) {
+          return d;
+        }
+        for (const json::value& c : value.a) {
+          if (c.k != json::kind::object) return d;
+          script_command cmd;
+          const std::string* cid = c.str("id");
+          const std::string* cname = c.str("name");
+          const std::string* run = c.str("run");
+          if (!cid || !cname || !run || cid->size() > 32 || !id_part(*cid) ||
+              !display_text(*cname, 64, false) || !lua_name(*run)) {
+            return d;
+          }
+          for (const auto& [field, fv] : c.o) {
+            (void)fv;
+            static constexpr std::array<std::string_view, 6> kFields{"id",  "name",  "key",
+                                                                     "run", "modes", "payload"};
+            if (strict && !known(kFields, field)) return d;
+          }
+          cmd.id = *cid;
+          cmd.name = *cname;
+          cmd.run = *run;
+          if (const json::value* k = c.find("key")) {
+            if (k->k != json::kind::string || !key_text(k->s)) return d;
+            cmd.key = k->s;
+          }
+          cmd.modes = "viewing";
+          if (const json::value* mo = c.find("modes")) {
+            if (mo->k != json::kind::string ||
+                (mo->s != "viewing" && mo->s != "video" && mo->s != "browse" && mo->s != "all")) {
+              return d;
+            }
+            cmd.modes = mo->s;
+          }
+          cmd.payload = "none";
+          if (const json::value* pl = c.find("payload")) {
+            if (pl->k != json::kind::string ||
+                (pl->s != "none" && pl->s != "marks" && pl->s != "marked_or_current" &&
+                 pl->s != "screen")) {
+              return d;
+            }
+            cmd.payload = pl->s;
+          }
+          // Paths ride along only with the permission that shows them.
+          if (cmd.payload != "none" && !(m.permissions & perm_selection)) return d;
+          const bool dup = std::any_of(m.commands.begin(), m.commands.end(),
+                                       [&](const script_command& o) { return o.id == cmd.id; });
+          if (dup) return d;
+          m.commands.push_back(std::move(cmd));
+        }
+      } else if (strict) {
+        // A point this host has not built, in a manifest that claims no API
+        // past this host's: unknown (contribution_api() == 0), or named under
+        // an API too old for it. Either is a mistake, not something a newer
+        // host would read. A manifest reaching past the host's API may carry
+        // points for a later host; this one leaves them alone.
         return d;
       }
     }

@@ -48,7 +48,43 @@ enum MVTheme {
 
   static func font(_ size: CGFloat = 16) -> Font {
     _ = registered
-    return .custom(family ?? "CozetteVector", size: size)
+    return .custom(family ?? "CozetteVector", size: size * typeScale)
+  }
+
+  // Theme shape (theme schema 2, docs/design/25 "Theme, shape"): scales on the
+  // chrome's own literals, which are the defaults (1). Set once when a theme
+  // is painted; read in view bodies like the colours.
+  fileprivate(set) static var radiusScale: CGFloat = 1
+  fileprivate(set) static var density: CGFloat = 1
+  fileprivate(set) static var typeScale: CGFloat = 1
+  /// A corner radius the chrome would draw as `r`.
+  static func radius(_ r: CGFloat) -> CGFloat { r * radiusScale }
+  /// Padding or spacing the chrome would use as `p`.
+  static func space(_ p: CGFloat) -> CGFloat { (p * density).rounded() }
+}
+
+/// The host's tokens for MediaViewer's own add-on windows (Import, Duplicates,
+/// Local search; issue #204), which are separate bundles and cannot see
+/// MVTheme. They look this class up by name (`NSClassFromString`) and call
+/// `tokens`; an older app has no such class and they keep the system's
+/// colours. `MVChromeThemeDidChange` is posted after every repaint.
+@objc(MVChromeTheme)
+public final class MVChromeTheme: NSObject {
+  /// "canvas", "surface", "title", "body", "disabled", "hairline", "accent":
+  /// NSColor (dynamic: they follow light / dark); "font": the family name;
+  /// "radius", "density", "typeScale": NSNumber scales (1 = the literals).
+  @MainActor @objc public static func tokens() -> [String: Any] { published }
+  @MainActor fileprivate static var published: [String: Any] = defaults()
+  static let didChange = Notification.Name("MVChromeThemeDidChange")
+
+  @MainActor fileprivate static func defaults() -> [String: Any] {
+    [
+      "canvas": NSColor.windowBackgroundColor, "surface": NSColor.controlBackgroundColor,
+      "title": NSColor.labelColor, "body": NSColor.secondaryLabelColor,
+      "disabled": NSColor.disabledControlTextColor, "hairline": NSColor.separatorColor,
+      "accent": NSColor.controlAccentColor, "font": "CozetteVector",
+      "radius": 1.0, "density": 1.0, "typeScale": 1.0,
+    ]
   }
 }
 
@@ -83,6 +119,10 @@ struct ThemeTokens: Equatable {
   let font: String
   let dark: ThemePalette?
   let light: ThemePalette?
+  /// Theme shape (schema 2); 1 each for a schema 1 theme or an older cache.
+  let radius: Double
+  let density: Double
+  let typeScale: Double
 
   init?(json: String) {
     guard let obj = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any],
@@ -96,6 +136,15 @@ struct ThemeTokens: Equatable {
     dark = ThemePalette(theme["dark"])
     light = ThemePalette(theme["light"])
     if dark == nil && light == nil { return nil }
+    // The core bounds these; clamp again so a hand-edited cache cannot do worse.
+    let shape = theme["shape"] as? [String: Any] ?? [:]
+    func scale(_ key: String, _ lo: Double, _ hi: Double) -> Double {
+      let v = (shape[key] as? NSNumber)?.doubleValue ?? 1
+      return v.isFinite ? Swift.min(hi, Swift.max(lo, v)) : 1
+    }
+    radius = scale("radius", 0, 2)
+    density = scale("density", 0.75, 1.25)
+    typeScale = scale("type_scale", 0.85, 1.25)
   }
 }
 
@@ -226,9 +275,14 @@ final class ThemeStore: ObservableObject {
     guard let t = shown else {
       MVTheme.themed = nil
       MVTheme.family = nil
+      MVTheme.radiusScale = 1
+      MVTheme.density = 1
+      MVTheme.typeScale = 1
       NSApp?.appearance = nil
       mv_chrome_set_theme_canvas(false, false, 0, false, 0)
+      MVChromeTheme.published = MVChromeTheme.defaults()
       generation += 1
+      NotificationCenter.default.post(name: MVChromeTheme.didChange, object: nil)
       return
     }
     // One palette: the chrome keeps that appearance, so the system's own
@@ -238,22 +292,31 @@ final class ThemeStore: ObservableObject {
     } else {
       NSApp?.appearance = NSAppearance(named: t.dark != nil ? .darkAqua : .aqua)
     }
-    func dynamic(_ token: String) -> Color {
+    func dynamicNS(_ token: String) -> NSColor {
       let dark = (t.dark ?? t.light)!.colour(token)
       let light = (t.light ?? t.dark)!.colour(token)
-      return Color(nsColor: NSColor(name: nil) { appearance in
+      return NSColor(name: nil) { appearance in
         appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light
-      })
+      }
     }
+    func dynamic(_ token: String) -> Color { Color(nsColor: dynamicNS(token)) }
     MVTheme.themed = MVTheme.Colours(
       canvas: dynamic("canvas"), surface: dynamic("surface"), title: dynamic("title"),
       body: dynamic("body"), disabled: dynamic("disabled"), hairline: dynamic("hairline"),
       accent: dynamic("accent"))
     MVTheme.family = t.font.isEmpty || NSFontManager.shared.availableMembers(ofFontFamily: t.font) == nil
       ? nil : t.font
+    MVTheme.radiusScale = CGFloat(t.radius)
+    MVTheme.density = CGFloat(t.density)
+    MVTheme.typeScale = CGFloat(t.typeScale)
     mv_chrome_set_theme_canvas(true, t.dark != nil, t.dark?.canvasRGB ?? 0,
                                t.light != nil, t.light?.canvasRGB ?? 0)
+    var published: [String: Any] = ["font": MVTheme.family ?? "CozetteVector",
+                                    "radius": t.radius, "density": t.density, "typeScale": t.typeScale]
+    for token in ThemePalette.tokens { published[token] = dynamicNS(token) }
+    MVChromeTheme.published = published
     generation += 1
+    NotificationCenter.default.post(name: MVChromeTheme.didChange, object: nil)
   }
 }
 

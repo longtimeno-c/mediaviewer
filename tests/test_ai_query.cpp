@@ -325,5 +325,52 @@ TEST_CASE("query: edit distance with transpositions", "[ai][query]") {
   CHECK(q::edit_distance("trstan", "tristan", 2) == 1);
   CHECK(q::edit_distance("kitten", "sitting", 5) == 3);
   CHECK(q::edit_distance("abc", "xyzzy", 1) == 2);  // stops past the limit
-  CHECK(q::fold("JOSÉ Ærø") == "jose aero");
+  CHECK(q::fold("JOSÉ Ærø") == "jose ærø");  // #291: the hosts' fold; æ and ø have no decomposition
+}
+
+// ---- #291: tag and place terms --------------------------------------------------------
+
+TEST_CASE("camera:, lens:, ai:, made: and place: parse into the plan", "[ai][query][tags]") {
+  auto p = q::parse("beach camera:R5 lens:\"24-70\" -camera:iphone");
+  CHECK(p.cameras == std::vector<std::string>{"r5"});
+  CHECK(p.not_cameras == std::vector<std::string>{"iphone"});
+  CHECK(p.lenses == std::vector<std::string>{"24-70"});
+  REQUIRE(p.words.size() == 1);
+  CHECK(p.words[0].text == "beach");
+
+  CHECK(q::parse("ai:yes").ai == 1);
+  CHECK(q::parse("ai:no").ai == -1);
+  CHECK(q::parse("-ai:yes").ai == -1);
+  CHECK(q::parse("made:yes").ai == 1);
+  auto m = q::parse("made:ChatGPT ai:firefly -made:midjourney");
+  CHECK(m.made == std::vector<std::string>{"chatgpt", "firefly"});
+  CHECK(m.not_made == std::vector<std::string>{"midjourney"});
+  CHECK(m.ai == 0);
+
+  auto pl = q::parse("place:Portugália in:lisbon -place:spain");
+  CHECK(pl.places == std::vector<std::string>{"Portugália", "lisbon"});
+  CHECK(pl.not_places == std::vector<std::string>{"spain"});
+  // in: is a date when it reads as one; a digit never starts a place.
+  auto d = q::parse("in:2024");
+  CHECK(d.has_dates());
+  CHECK(d.places.empty());
+  CHECK(q::parse("in:20").places.empty());  // a date being typed
+  // An empty term still being typed is dropped.
+  CHECK(q::parse("camera:").cameras.empty());
+  CHECK(q::parse("place:").places.empty());
+
+  const auto plan = q::resolve(q::parse("R5 sunset camera:canon"), {});
+  CHECK(plan.cameras == std::vector<std::string>{"canon"});
+  CHECK(plan.tag_words == std::vector<std::string>{"r5", "sunset"});
+  CHECK(plan.has_tags());
+  CHECK(plan.narrows());
+  CHECK(q::resolve(q::parse("beach with dog"), {}).tag_words == std::vector<std::string>{"beach", "dog"});
+}
+
+TEST_CASE("the query fold is the hosts' fold", "[ai][query][tags]") {
+  CHECK(q::fold("Straße") == "straße");  // was "strasse" before #291
+  CHECK(q::fold("Łódź") == "łodz");
+  CHECK(q::tag_contains("Canon EOS R5", "eos r5"));
+  CHECK_FALSE(q::tag_contains("Canon EOS R5", ""));
+  CHECK(q::name_matches("/x/Portuga\xCC\x81lia.jpg", std::vector<std::string>{"portugalia"}, {}));
 }

@@ -13,7 +13,14 @@
 // the viewer still walks the whole folder. Nothing here blocks the main
 // thread: names are folded off it, once per listing, and a keystroke runs one
 // memmem pass.
+//
+// #291: then tags. After the name hits come the files whose tags (camera, lens,
+// made-with, software, title, caption, keywords, creator) hold every word,
+// from the core's folder tag pass (mv_chrome_tag_search: memory, no file
+// read), each with the tag it matched on under its tile. While that pass is
+// still reading the folder the bar says "Still reading tags — 340 of 2,000".
 import AppKit
+import Combine
 import MVChromeBridge
 import SwiftUI
 
@@ -31,6 +38,10 @@ final class FileSearchStore: ObservableObject {
   @Published private(set) var folders: [Int]?
   /// The field takes the keyboard, text selected.
   @Published private(set) var focusRequest = 0
+  /// #291: why a tile matched when its name did not ("Canon EOS R5"), by index.
+  @Published private(set) var why: [Int: String] = [:]
+  /// "Still reading tags — 340 of 2,000" while the folder's tag pass runs.
+  @Published private(set) var tagNote = ""
 
   // Computed, not stored: FolderStore's own init reaches listingChanged(_:).
   private var folderStore: FolderStore { FolderStore.shared }
@@ -41,8 +52,23 @@ final class FileSearchStore: ObservableObject {
   private var debounce: Task<Void, Never>?
   /// The folder the field belongs to: another folder closes it.
   private var searchFolder = ""
+  /// docs/design/25 PR 59: what the add-ons' search providers matched (Places:
+  /// `portugal`), by the generation of the query they answer. Name hits show
+  /// at once; a provider's rows join them when they arrive, and a stale
+  /// answer (an older query) is never shown.
+  private var nameHits: [Int] = []
+  private var providerGeneration: UInt64 = 0
+  @Published private(set) var providerNote = ""
+  private var slotWatch: AnyCancellable?
+  /// Re-runs the tag half while the folder's tag pass is still reading.
+  private var tagWatch: Task<Void, Never>?
+  private var tagGeneration: UInt64 = 0
 
-  private init() {}
+  private init() {
+    slotWatch = SlotStore.shared.$fileSearch.sink { [weak self] state in
+      MainActor.assumeIsolated { self?.providersAnswered(state) }
+    }
+  }
 
   var active: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
   var shownCount: Int { (items?.count ?? 0) + (folders?.count ?? 0) }
@@ -91,6 +117,16 @@ final class FileSearchStore: ObservableObject {
         items = nil
         folders = nil
       }
+      if providerGeneration != 0 {
+        // The providers' last answer goes with the text (an empty query asks nobody).
+        providerGeneration = 0
+        SlotStore.shared.search(scope: 1, query: "", folder: "")
+        providerNote = ""
+      }
+      if !why.isEmpty { why = [:] }
+      if !tagNote.isEmpty { tagNote = "" }
+      tagWatch?.cancel()
+      tagWatch = nil
       pushFilter(nil, nil)
       return
     }
@@ -99,12 +135,151 @@ final class FileSearchStore: ObservableObject {
       foldNames(generation)
       return
     }
-    let query = FoldedNames.fold(text.trimmingCharacters(in: .whitespacesAndNewlines))
-    let names = folded.matching(query)
-    let folderHits = foldedFolders.matching(query)
-    if names != items { items = names }
+    let typed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    let query = FoldedNames.fold(typed)
+    // A prefix a provider declares ("place:") is the provider's alone: no name has
+    // it. Unclaimed ("place:" with Places not installed), it is an ordinary name query.
+    let prefixed = SlotStore.shared.claimsFilePrefix(query)
+    let names = prefixed ? [] : folded.matching(query)
+    let folderHits = prefixed ? [] : foldedFolders.matching(query)
+    // #291: then the files only their tags matched (a prefix a provider claims
+    // is the provider's alone), then the providers' rows.
+    if prefixed {
+      nameHits = names
+      if !why.isEmpty { why = [:] }
+      if !tagNote.isEmpty { tagNote = "" }
+    } else {
+      nameHits = withTags(names, typed: typed)
+    }
+    // The providers hear the query on their own workers; this returns at once.
+    providerGeneration = SlotStore.shared.search(scope: 1, query: typed, folder: searchFolder)
+    let merged = merge(nameHits)
+    if merged != items { items = merged }
     if folderHits != folders { folders = folderHits }
-    pushFilter(names, folderHits)
+    pushFilter(merged, folderHits)
+  }
+
+  /// Name hits, then the providers' rows for this query in this folder.
+  /// `state`: the providers' answer (a @Published sink sees the new value before
+  /// the store holds it, so it is passed in).
+  private func merge(_ names: [Int], _ given: SlotSearchState? = nil) -> [Int] {
+    let state = given ?? SlotStore.shared.fileSearch
+    guard state.generation == providerGeneration, !state.rows.isEmpty else { return names }
+    var seen = Set(names)
+    var out = names
+    let prefix = searchFolder.hasSuffix("/") ? searchFolder : searchFolder + "/"
+    // Name -> index once per listing, not a scan of every name per row
+    // (2,000 rows x 10,000 names on the main actor).
+    let generation = folderStore.listingGeneration
+    if nameIndexGeneration != generation {
+      nameIndex = Dictionary(folderStore.names.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
+      nameIndexGeneration = generation
+    }
+    for row in state.rows where row.path.hasPrefix(prefix) {
+      let name = String(row.path.dropFirst(prefix.count))
+      if let i = nameIndex[name], seen.insert(i).inserted { out.append(i) }
+    }
+    return out
+  }
+  private var nameIndex: [String: Int] = [:]
+  private var nameIndexGeneration: UInt64 = .max
+
+  private func providersAnswered(_ state: SlotSearchState) {
+    guard isOpen, active, state.generation == providerGeneration else {
+      if !providerNote.isEmpty { providerNote = "" }
+      return
+    }
+    if state.searching && state.total > 0 {
+      providerNote = "Still reading tags — \(state.read) of \(state.total)"
+    } else if let why = state.rows.first?.why, !why.isEmpty {
+      providerNote = why
+    } else {
+      providerNote = ""
+    }
+    let merged = merge(nameHits, state)
+    guard merged != items else { return }
+    items = merged
+    pushFilter(merged, folders ?? [])
+  }
+
+  // MARK: Tags (#291)
+
+  private struct TagAnswer: Decodable {
+    let done: Int
+    let total: Int
+    let reading: Bool
+    let hits: [[TagHitPart]]
+  }
+  private enum TagHitPart: Decodable {
+    case index(Int)
+    case text(String)
+    init(from decoder: Decoder) throws {
+      let c = try decoder.singleValueContainer()
+      if let i = try? c.decode(Int.self) { self = .index(i) } else { self = .text(try c.decode(String.self)) }
+    }
+  }
+
+  /// Name hits first, then the files only their tags matched, in listing order.
+  private func withTags(_ nameHits: [Int], typed: String) -> [Int] {
+    tagGeneration = mv_chrome_tag_generation()
+    var need = Int(typed.withCString { mv_chrome_tag_search($0, nil, 0) })
+    var answer: TagAnswer?
+    // The pass runs on a worker: the answer can grow between the size call and
+    // the copy, and a cut copy is JSON that does not decode (no hits, and no
+    // more polling). Ask again with the bigger size.
+    var attempt = 0
+    while need > 0 && attempt < 4 {
+      attempt += 1
+      var buf = [CChar](repeating: 0, count: need + 4097)
+      let got = buf.withUnsafeMutableBufferPointer { b in
+        Int(typed.withCString { mv_chrome_tag_search($0, b.baseAddress, Int32(b.count)) })
+      }
+      if got >= buf.count {
+        need = got
+        continue
+      }
+      answer = try? JSONDecoder().decode(TagAnswer.self, from: Data(String(cString: buf).utf8))
+      break
+    }
+    var out = nameHits
+    var reasons: [Int: String] = [:]
+    if let answer {
+      let named = Set(nameHits)
+      for hit in answer.hits {
+        guard hit.count == 2, case .index(let i) = hit[0], case .text(let w) = hit[1], !named.contains(i)
+        else { continue }
+        out.append(i)
+        reasons[i] = w
+      }
+      let note = answer.reading && answer.total > 0
+        ? "Still reading tags — \(answer.done.formatted()) of \(answer.total.formatted())" : ""
+      if note != tagNote { tagNote = note }
+      watchTags(answer.reading)
+    }
+    if reasons != why { why = reasons }
+    return out
+  }
+
+  /// While the tag pass reads the folder, re-run the search as it learns more
+  /// (a poll that exists only while a search is typed and tags are coming).
+  private func watchTags(_ reading: Bool) {
+    guard reading else {
+      tagWatch?.cancel()
+      tagWatch = nil
+      return
+    }
+    guard tagWatch == nil else { return }
+    tagWatch = Task { [weak self] in
+      while !Task.isCancelled {
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        guard let self, !Task.isCancelled else { return }
+        if mv_chrome_tag_generation() != self.tagGeneration {
+          self.tagWatch = nil
+          self.applyNames()
+          return
+        }
+      }
+    }
   }
 
   /// Folding thousands of names is Foundation work (~11 ms for 10,000): off the
@@ -186,10 +361,10 @@ struct FileSearchBar: View {
   @FocusState private var focused: Bool
 
   var body: some View {
-    HStack(spacing: 8) {
+    HStack(spacing: MVTheme.space(8)) {
       Image(systemName: "magnifyingglass")
         .foregroundStyle(MVTheme.body)
-      TextField("Find files by name in this folder", text: $store.text)
+      TextField("Find files by name or tag in this folder", text: $store.text)
         .textFieldStyle(.plain)
         .font(MVTheme.font(14))
         .foregroundStyle(MVTheme.title)
@@ -208,7 +383,21 @@ struct FileSearchBar: View {
             store.text = ""
           }
         }
-        .accessibilityLabel("Find files by name")
+        .accessibilityLabel("Find files by name or tag")
+      if store.active && !store.tagNote.isEmpty {
+        // #291: the folder's tag pass is still reading.
+        Text(store.tagNote)
+          .font(MVTheme.font(12))
+          .foregroundStyle(MVTheme.body)
+          .lineLimit(1)
+          .fixedSize()
+      } else if store.active && !store.providerNote.isEmpty {
+        Text(store.providerNote)
+          .font(MVTheme.font(12))
+          .foregroundStyle(MVTheme.body)
+          .lineLimit(1)
+          .accessibilityLabel("Matched by an add-on: \(store.providerNote)")
+      }
       if store.active {
         Text("\(store.shownCount) of \(store.totalCount)")
           .font(MVTheme.font(12))
@@ -227,10 +416,10 @@ struct FileSearchBar: View {
       .help("Close file search (Esc)")
       .accessibilityLabel("Close file search")
     }
-    .padding(.horizontal, 10)
+    .padding(.horizontal, MVTheme.space(10))
     .frame(height: 30)
-    .background(RoundedRectangle(cornerRadius: 6).fill(MVTheme.surface))
-    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(focused ? MVTheme.accent : MVTheme.hairline,
+    .background(RoundedRectangle(cornerRadius: MVTheme.radius(6)).fill(MVTheme.surface))
+    .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(6)).strokeBorder(focused ? MVTheme.accent : MVTheme.hairline,
                                                              lineWidth: 1))
     .onAppear { takeFocus() }
     .onChange(of: store.focusRequest) { _, _ in takeFocus() }
@@ -250,11 +439,13 @@ struct FileSearchNotice: View {
   @ObservedObject private var store = FileSearchStore.shared
 
   var body: some View {
-    Text("No files named “\(store.text.trimmingCharacters(in: .whitespacesAndNewlines))” in this folder.")
+    Text(store.tagNote.isEmpty
+      ? "No files named or tagged “\(store.text.trimmingCharacters(in: .whitespacesAndNewlines))” in this folder."
+      : "No match yet. \(store.tagNote)")
       .font(MVTheme.font(14))
       .foregroundStyle(MVTheme.body)
       .multilineTextAlignment(.center)
       .frame(maxWidth: .infinity)
-      .padding(.top, 60)
+      .padding(.top, MVTheme.space(60))
   }
 }

@@ -104,6 +104,7 @@ class walker {
     }
     if (uri == kIptcExt && local == "DigitalSourceType" && out_.ev.source_types.size() < 32) {
       out_.ev.source_types.push_back(value.substr(0, 256));
+      if (out_.ev.xmp_source_type.empty()) out_.ev.xmp_source_type = value.substr(0, 256);
     }
     if (listed_ && listed_(ctx_, uri, tail)) return;
     const auto colon = top_qname.find(':');

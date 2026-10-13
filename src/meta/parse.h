@@ -35,6 +35,8 @@ struct evidence {
   std::string c2pa_generator;               // claim_generator_info name [version], else claim_generator
   std::vector<std::string> c2pa_agents;     // actions' softwareAgent names
   std::vector<std::string> source_types;    // digitalSourceType values: C2PA actions, XMP Iptc4xmpExt
+  std::string xmp_source_type;              // #345: the XMP one alone (also in source_types), so the
+                                            // badge can say which of the two said it
   std::string c2pa_signer;                  // the signing certificate's subject O, else CN
   bool png_parameters = false;              // a PNG `parameters` text chunk (AUTOMATIC1111 / SD)
   bool png_comfyui = false;                 // a PNG `prompt` / `workflow` chunk holding JSON
