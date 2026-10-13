@@ -317,17 +317,22 @@ TEST_CASE("an allocation bomb stops the add-on at the memory ceiling", "[script]
            "local t = {} for i = 1, math.maxinteger do t[i] = i end",
        }) {
     INFO(bomb);
+    // The memory ceiling is what is under test: the time and instruction
+    // limits are lifted so a slow runner (ASan, TSan) cannot reach them first.
+    script_limits limits = fast_limits();
+    limits.wall = 10s;
+    limits.instructions = 2'000'000'000;
     probe p;
-    auto a = start(p, std::string("function bomb()\n") + bomb + "\nend");
+    auto a = start(p, std::string("function bomb()\n") + bomb + "\nend", 0, limits);
     REQUIRE(a->wait_idle(5s));
     const auto t0 = clk::now();
     REQUIRE(a->run_function("command bomb", "bomb", {}));
-    REQUIRE(p.wait_stopped(5s));
+    REQUIRE(p.wait_stopped(15s));
     const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(p.stopped_at - t0);
     INFO(took.count() << " ms; " << p.message);
     REQUIRE(p.why == script_stop::memory);
-    REQUIRE(took < fast_limits().wall + 400ms);
-    REQUIRE(a->status().memory_peak <= fast_limits().memory_bytes);
+    REQUIRE(took < limits.wall);
+    REQUIRE(a->status().memory_peak <= limits.memory_bytes);
   }
 }
 
