@@ -17,8 +17,8 @@ filters by extension only to decide what is a candidate; decode always probes.
 | GIF | incl. animation | **giflib** |
 | WebP | still, animated, lossless | **libwebp** (+ demux) |
 | TIFF | tiled, striped, multi-page (pages with `Ctrl+PageUp/PageDown`) | **libtiff** |
-| ICO | largest entry, ranked by the payload's own dimensions | own reader (`codec/ico.cpp`) |
-| HEIF / HEIC | HEVC-coded stills, grids, sequences | **libheif** + **libde265** (Windows OS codec first for eligible stills, below) |
+| ICO | largest entry, ranked by the payload's own dimensions; every size a page | own reader (`codec/ico.cpp`) |
+| HEIF / HEIC | HEVC-coded stills, grids, sequences; several top-level images are pages | **libheif** + **libde265** (Windows OS codec first for eligible stills, below) |
 | AVIF | still + animated | **libavif** + **dav1d** |
 | RAW | CR2/CR3, NEF, ARW, ORF, RAF, RW2, DNG, … | **LibRaw** (OpenMP) |
 | PDF | every page, `/Rotate` applied, on white | the OS: **CoreGraphics** (`codec/pdf_mac.cpp`), **Windows.Data.Pdf** (`codec/pdf_win.cpp`) |
@@ -69,7 +69,9 @@ features off so no x265 encoder is linked.
 - On Windows a HEIC goes to WIC only when WIC can match the bundled result: one HEVC-coded
   still (`hvc1` or `grid`), 8-bit, no alpha, not PQ/HLG, colour either an embedded ICC or
   sRGB-in-effect nclx. It also requires WIC's HEIF decoder **and** a registered HEVC decoder
-  MFT. Anything else (Display P3 nclx, 10-bit, sequences) is bundled.
+  MFT. Anything else (Display P3 nclx, 10-bit, sequences) is bundled. A file with several
+  pages (top-level images) may take WIC for page 0: WIC's frame 0 is the primary, the size
+  check guards it, and `inspect_heic` supplies the count. Pages past 0 are always libheif.
 - Any OS failure other than cancellation falls through silently to libheif, which then judges
   the file.
 - On macOS `try_os_decode` always declines (ImageIO is not wired), so HEIC is always libheif.
@@ -295,7 +297,13 @@ A multi-page file is one navigation stop; its pages are `Ctrl+PageUp` / `Ctrl+Pa
 (`next_page` / `prev_page`). `codec::decode(bytes, ctx, threads, page)` decodes one page and the
 raster (then `display_image`, `gpu_image_mac`, `mv_image_info.page_count`) carries `page` and
 `page_count`. TIFF pages are the full-resolution IFDs in file order; reduced-resolution subfiles (a
-scanner's thumbnail) are skipped. Page 0 is the file as always — cached, prefetched, thumbnailed. A
+scanner's thumbnail) are skipped. An ICO's pages are its directory entries in the still's rank order
+(largest, then deepest: page 0 is the still, then the smaller sizes). A HEIC's pages are its
+top-level images (a burst or image collection): page 0 is the primary, then the others in file
+order; thumbnails, auxiliary images (alpha, depth, gain maps), a derived image's inputs and the
+primary's `altr` alternatives (a `tmap`) are not pages, and an `msf1` sequence stays an animation
+(`codec/heif.cpp`, `heic_pages`). A single-image HEIC pays one libheif call for the count. Page 0 is
+the file as always — cached, prefetched, thumbnailed. A
 page past 0 is one decode at the view generation the turn set: no cache, no prefetch, no first-pixel
 preview, published under its own key so the canvas fits it like a new stop. Windows turns pages
 through `mv_folder_select_page` (ABI 0.16); the Mac host calls `present_lab_mac::open_item(…, page)`.
@@ -359,7 +367,5 @@ relists when done; nothing waits for them on the open or the first pixel.
 - Progressive refinement of progressive JPEG / interlaced PNG passes.
 - Disk thumbnail as first pixel for a still (used only for clip placeholders).
 - An "ignore orientation" toggle.
-- ICO size / HEIC sequence-frame navigation with `Ctrl+PageUp/PageDown` (TIFF, PDF and DOCX pages are built)
-  (`codec::decode_page` takes a page index; no command uses it).
 - Populating from the OS thumbnail cache; BC7 GPU-resident thumbnails; a content-hash key.
 - macOS ImageIO path for HEIC.
