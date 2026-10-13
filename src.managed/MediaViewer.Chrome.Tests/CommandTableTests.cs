@@ -13,7 +13,7 @@ namespace MediaViewer.Chrome.Tests;
 public class CommandTableTests
 {
     private static readonly string[] Modes =
-        { "browse", "video", "slideshow", "island", "loupe", "gallery", "runner", "crop", "trim" };
+        { "browse", "video", "slideshow", "island", "loupe", "gallery", "runner", "crop", "trim", "skim" };
 
     [Fact]
     public void SnapshotHasEveryModeOfCommandsH()

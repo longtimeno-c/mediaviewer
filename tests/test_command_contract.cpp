@@ -81,7 +81,7 @@ key random_key(std::mt19937& rng) {
 }
 
 const char* const kModeNames[] = {"browse", "video", "slideshow", "island", "loupe",
-                                  "gallery", "runner", "crop", "trim"};
+                                  "gallery", "runner", "crop", "trim", "skim"};
 static_assert(std::size(kModeNames) == static_cast<std::size_t>(kModeCount),
               "a new mode needs a name here and a section in command_table.snapshot");
 

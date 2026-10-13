@@ -715,8 +715,10 @@ void apply_key_remaps(std::span<const key_remap> remaps) noexcept {
   reset_live_bindings();
   auto& live = live_store();
   const auto valid = [](const key_remap& r) {
+    // key is uint16_t, so a >= 0 test is always true and GCC -Wtype-limits
+    // rejects it. 0 (key::none) stays in range: an unbound row must load back.
     return r.row >= 0 && static_cast<std::size_t>(r.row) < std::size(kBindings) &&
-           static_cast<int>(r.k) >= 0 && static_cast<int>(r.k) < kKeyCount && r.mods < kModCombos;
+           static_cast<int>(r.k) < kKeyCount && r.mods < kModCombos;
   };
   // The list is the whole difference from the defaults, so it is set as it is.
   // Replaying it through rebind_live is not the same table: a swap displaces a row
@@ -725,7 +727,9 @@ void apply_key_remaps(std::span<const key_remap> remaps) noexcept {
     if (!valid(r)) continue;
     binding& b = live[static_cast<std::size_t>(r.row)];
     b.k = r.k;
-    b.mods = r.k == key::none ? mod_none : r.mods;
+    // GCC -Wextra rejects a ternary of enum mod and uint8_t.
+    if (r.k == key::none) b.mods = mod_none;
+    else b.mods = r.mods;
   }
   // No collision pass: the default table already shares keys between rows whose
   // modes overlap (the router's row order decides), and a rebind_live swap only

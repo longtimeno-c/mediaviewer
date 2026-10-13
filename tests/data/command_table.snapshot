@@ -518,3 +518,25 @@ Ctrl+J	Jobs	143	1
 Ctrl+S	Clip tools…	144	1
 Ctrl+B	Split clip at playhead	145	1
 Ctrl+X	Trim: remove in–out	146	1
+
+[skim]
+A	Previous	9	1
+D	Next	10	1
+F	Fullscreen	41	1
+F11	Fullscreen	41	1
+Ctrl+O	Open media…	1	1
+Ctrl+Shift+O	Open folder…	11	1
+Ctrl+E	Show in Explorer	80	1
+Ctrl+W	Close window	38	1
+Ctrl+N	New window	171	1
+F3	Frame-time overlay	7	1
+G	Gallery	12	1
+T	Filmstrip	17	1
+Ctrl+Shift+A	Always on top	51	1
+?	Keyboard shortcuts	75	1
+Ctrl+,	Settings	84	1
+Ctrl+Shift+E	Folder tree	78	1
+Left	Skip back 2 s	34	1
+hold Left	Skip back 2 s	34	1
+Right	Skip forward 2 s	35	1
+hold Right	Skip forward 2 s	35	1
