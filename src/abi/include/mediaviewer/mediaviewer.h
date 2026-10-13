@@ -240,8 +240,9 @@ typedef struct mv_image_info {
   uint32_t format;          /* 1 JPEG, 2 PNG, 3 BMP — matches codec::format_family */
   uint32_t icc_tagged;      /* non-zero if an ICC profile (or sRGB chunk) was used */
   uint32_t transfer_intent; /* 0 = display-referred (no tone map) */
-  uint32_t page_count;      /* 0.16: pages in the file (TIFF, PDF, DOCX); 1 for a
-                               single-page still. Was `reserved` (always 0). */
+  uint32_t page_count;      /* 0.16: pages in the file (TIFF, PDF, DOCX, ICO sizes,
+                               HEIC top-level images); 1 for a single-page still.
+                               Was `reserved` (always 0). */
 } mv_image_info;
 
 /* [any-thread][no-block] `utf8_path` is owned by the caller and copied before

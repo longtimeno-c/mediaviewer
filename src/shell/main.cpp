@@ -65,6 +65,7 @@
 #include "shell/trim_state.h"
 #include "shell/transport_autohide.h"
 #include "shell/file_jobs.h"
+#include "shell/gesture.h"
 #include "shell/key_router.h"
 #include "core/job_system.h"
 #include "edit/histogram.h"
@@ -318,6 +319,15 @@ struct app_state {
   ULONGLONG last_scroll_tick = 0;
   ULONGLONG page_turn_tick = 0;
   bool page_turn_latched = false;
+  // Issue #212 (docs/design/16 "Touch and trackpad"): WM_GESTURE pinch and pan
+  // on a touchscreen, and the touchpad's sideways swipe (WM_MOUSEHWHEEL).
+  // Pinch -> wheel_total, pan -> scroll_px, swipe -> folder_step: no new
+  // camera path and no new snapshot field.
+  mv::shell::pinch_to_wheel touch_pinch;
+  mv::shell::swipe_detector touch_swipe{64.0, 1000};
+  mv::shell::swipe_detector wheel_swipe{mv::shell::kWheelSwipeThreshold, mv::shell::kWheelSwipeGapMs};
+  ULONGLONG touch_zoom_distance = 0;
+  POINT touch_pan_last{};
   // A document's "Open in <app>" (docs/design/20): the apps for open_with_ext,
   // default first, looked up once per extension off the UI thread.
   std::wstring open_with_ext;
@@ -2374,6 +2384,87 @@ void folder_step(app_state* app, int delta) {
   const auto next = mv::shell::step_index(selected, delta, count, app->settings.wrap);
   if (!next) return;
   folder_select(app, *next);
+}
+
+// Issue #212 (docs/design/16 "Touch and trackpad"): a swipe steps the folder
+// as A / D do, but only on the viewer itself: not under the gallery, and not
+// while crop owns the arrows.
+void swipe_step(app_state* app, int delta) {
+  if (delta == 0 || app->gallery_visible || app->edits.crop_active()) return;
+  folder_step(app, delta);
+}
+
+// Touchscreen pinch and pan, from WM_GESTURE. Returns false for what
+// DefWindowProc must see (GID_BEGIN / GID_END, the gestures left off).
+//
+// WM_GESTURE, not WM_POINTER or DirectManipulation: the system recogniser
+// gives the pinch distance and centre and a pan, and a tap still arrives as
+// the promoted mouse click every other path already handles (welcome rows,
+// canvas focus). Raw pointers would mean re-deriving taps and contact
+// bookkeeping; DirectManipulation brings its own viewport and inertia to
+// fight the camera springs. Here a gesture is only input: pinch -> wheel
+// units toward the fingers, pan -> screen pixels, swipe -> folder step.
+bool handle_gesture(app_state* app, HWND hwnd, const GESTUREINFO& gi) {
+  if (gi.dwID == GID_BEGIN) {
+    app->touch_swipe = mv::shell::swipe_detector{
+        mv::shell::touch_swipe_threshold_px(app->input.dpi_scale), 1000};
+    app->touch_pinch.reset();
+    app->touch_zoom_distance = 0;
+    return false;
+  }
+  if (gi.dwID == GID_END) {
+    app->touch_swipe.end();
+    return false;
+  }
+  if (gi.dwID != GID_ZOOM && gi.dwID != GID_PAN) return false;
+  POINT at{gi.ptsLocation.x, gi.ptsLocation.y};
+  ::ScreenToClient(hwnd, &at);
+  const bool begin = (gi.dwFlags & GF_BEGIN) != 0;
+
+  if (gi.dwID == GID_ZOOM) {
+    // A pinch is never also a swipe, however far its centre drifts.
+    app->touch_swipe.suppress();
+    const ULONGLONG distance = gi.ullArguments;
+    if (begin || app->touch_zoom_distance == 0 || distance == 0) {
+      app->touch_zoom_distance = distance;
+      return true;
+    }
+    const double scale =
+        static_cast<double>(distance) / static_cast<double>(app->touch_zoom_distance);
+    app->touch_zoom_distance = distance;
+    const std::int64_t units = app->touch_pinch.feed(scale);
+    if (units == 0) return true;
+    app->input.mouse_x = static_cast<float>(at.x);
+    app->input.mouse_y = static_cast<float>(at.y);
+    app->input.wheel_total += units;
+    ++app->input.activity_seq;
+    publish(app);
+    transport_activity(app);
+    return true;
+  }
+
+  // GID_PAN: the contact centre, in physical pixels like the mouse.
+  if (begin) {
+    app->touch_pan_last = at;
+    return true;
+  }
+  const LONG dx = at.x - app->touch_pan_last.x;
+  const LONG dy = at.y - app->touch_pan_last.y;
+  app->touch_pan_last = at;
+  if (dx == 0 && dy == 0) return true;
+  if (app->lab.view_fitted()) {
+    // The opening view is locked (no drag at fit): a sideways stroke is
+    // swipe-next. Fingers moving left bring in the next item.
+    swipe_step(app, app->touch_swipe.feed(-dx, -dy, ::GetTickCount64()));
+    return true;
+  }
+  // Zoomed: the content follows the fingers, through pan_by_screen's springs.
+  app->input.scroll_px_x -= dx;
+  app->input.scroll_px_y -= dy;
+  ++app->input.activity_seq;
+  publish(app);
+  transport_activity(app);
+  return true;
 }
 
 // Skim, not transport: J/L are the +/-10 s jumps, Q/E are the shuttle you hold
@@ -4727,7 +4818,13 @@ mv::shell::view_state view_state_of(app_state* app) noexcept {
       s.focus = mv::shell::focus_kind::text;
     }
   }
-  if (video_mode(app)) s.item = mv::shell::item_kind::clip;
+  // One play-state read serves both: is a clip on screen, and is it playing
+  // (issue #361: ← → skip ±2 s while it plays or with the strip hidden).
+  std::uint32_t play = MV_PLAY_STOPPED;
+  if (app->session && mv_video_state(app->session, &play) != MV_OK) play = MV_PLAY_STOPPED;
+  s.clip_playing = play == MV_PLAY_PLAYING;
+  s.filmstrip_visible = app->chrome.filmstrip_visible();
+  if (play != MV_PLAY_STOPPED) s.item = mv::shell::item_kind::clip;
   else if (app->lab.animation() != mv::shell::animation_state::none) s.item = mv::shell::item_kind::animation;
   else if (app->mode != open_mode::none) s.item = mv::shell::item_kind::still;
   s.gallery_open = app->gallery_visible;
@@ -6763,8 +6860,10 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       underneath.popup_open = false;
       const mv::shell::mode under_mode = mv::shell::resolve_mode(underneath);
       auto modes = static_cast<std::int32_t>(mv::shell::mask_of(under_mode));
-      // Trim layers over video (key_router.cpp), so `?` lists both.
-      if (under_mode == mv::shell::mode::trim) modes |= mv::shell::kVideo;
+      // Trim and skim layer over video (key_router.cpp), so `?` lists both.
+      if (under_mode == mv::shell::mode::trim || under_mode == mv::shell::mode::skim) {
+        modes |= mv::shell::kVideo;
+      }
       app->popup_open = true;
       if (app->fullscreen) layout_chrome(app);  // the flyouts hang off the bar
       app->chrome.show_popup(kind, modes);
@@ -7745,7 +7844,39 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       return 0;
     }
 
+    case WM_GESTURENOTIFY: {
+      // Issue #212: pinch, and pan with one finger in any direction. No
+      // gutter (a pan that starts sideways may turn) and no inertia (the
+      // springs settle the camera; a flick steps one item, it does not coast).
+      GESTURECONFIG config[] = {
+          {GID_ZOOM, GC_ZOOM, 0},
+          {GID_PAN,
+           GC_PAN | GC_PAN_WITH_SINGLE_FINGER_VERTICALLY | GC_PAN_WITH_SINGLE_FINGER_HORIZONTALLY,
+           GC_PAN_WITH_GUTTER | GC_PAN_WITH_INERTIA},
+          {GID_ROTATE, 0, GC_ROTATE},
+          {GID_TWOFINGERTAP, 0, GC_TWOFINGERTAP},
+          {GID_PRESSANDTAP, 0, GC_PRESSANDTAP},
+      };
+      ::SetGestureConfig(hwnd, 0, static_cast<UINT>(std::size(config)), config, sizeof(GESTURECONFIG));
+      break;  // and DefWindowProc, as WM_GESTURENOTIFY requires
+    }
+
+    case WM_GESTURE: {
+      GESTUREINFO gi{};
+      gi.cbSize = sizeof(gi);
+      const auto handle = reinterpret_cast<HGESTUREINFO>(lparam);
+      if (!::GetGestureInfo(handle, &gi) || !handle_gesture(app, hwnd, gi)) break;
+      ::CloseGestureInfoHandle(handle);
+      return 0;
+    }
+
     case WM_MOUSEWHEEL: {
+      // A vertical scroll is travel the sideways swipe weighs against, so a
+      // zoom with some drift never turns the item. Ctrl+wheel (a touchpad
+      // pinch, which zooms below like any wheel) is not a scroll.
+      if ((GET_KEYSTATE_WPARAM(wparam) & MK_CONTROL) == 0) {
+        (void)app->wheel_swipe.feed(0, GET_WHEEL_DELTA_WPARAM(wparam), ::GetTickCount64());
+      }
       if ((GET_KEYSTATE_WPARAM(wparam) & MK_CONTROL) == 0 && document_scrolls(app)) {
         scroll_document(app, 0, -GET_WHEEL_DELTA_WPARAM(wparam));
         transport_activity(app);
@@ -7759,9 +7890,15 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
     }
 
     case WM_MOUSEHWHEEL: {
-      // Tilt / two-finger sideways: pans a document only (it never zoomed).
-      if (!document_scrolls(app)) break;
-      scroll_document(app, GET_WHEEL_DELTA_WPARAM(wparam), 0);
+      // Tilt / two-finger sideways: pans a document (it never zoomed);
+      // anywhere else it is swipe-next (issue #212), one item per swipe or
+      // tilt click. Positive scrolls right: the content moves left, next.
+      if (document_scrolls(app)) {
+        scroll_document(app, GET_WHEEL_DELTA_WPARAM(wparam), 0);
+        return 0;
+      }
+      swipe_step(app, app->wheel_swipe.feed(GET_WHEEL_DELTA_WPARAM(wparam), 0, ::GetTickCount64()));
+      transport_activity(app);
       return 0;
     }
 
