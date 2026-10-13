@@ -172,11 +172,22 @@ result<rename_outcome> rename_no_replace(std::string_view from_utf8, std::string
   // temp file is always beside its final name, on the same volume).
   // WRITE_THROUGH: the rename is on disk before F8 across volumes deletes the
   // source.
-  if (::MoveFileExW(from.c_str(), to.c_str(), MOVEFILE_WRITE_THROUGH)) {
-    return rename_outcome::renamed;
+  // Issue #387: a reader that did not share delete (a decode of the stop just
+  // opened, a thumbnail read, an antivirus scan) refuses the move for as long
+  // as it holds the file. Those holds are short, so wait them out briefly:
+  // about a second at most. The callers are I/O workers, never the UI thread.
+  constexpr int kSharingRetries = 20;
+  for (int attempt = 0;; ++attempt) {
+    if (::MoveFileExW(from.c_str(), to.c_str(), MOVEFILE_WRITE_THROUGH)) {
+      return rename_outcome::renamed;
+    }
+    const DWORD e = ::GetLastError();
+    if (exists_error(e)) return rename_outcome::name_taken;
+    if ((e != ERROR_SHARING_VIOLATION && e != ERROR_LOCK_VIOLATION) || attempt >= kSharingRetries) {
+      return err(status::io);
+    }
+    ::Sleep(50);
   }
-  if (exists_error(::GetLastError())) return rename_outcome::name_taken;
-  return err(status::io);
 }
 
 // ---------------------------------------------------------------------------
