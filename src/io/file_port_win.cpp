@@ -205,7 +205,9 @@ expected file_reader::open(std::string_view utf8_path, read_mode mode, bool conc
   // pages the writer just filled (docs/design/18 "read back uncached").
   DWORD flags = mode == read_mode::uncached ? FILE_FLAG_NO_BUFFERING : FILE_FLAG_SEQUENTIAL_SCAN;
   if (concurrent) flags |= FILE_FLAG_OVERLAPPED;
-  HANDLE h = ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+  // FILE_SHARE_DELETE: as io/file.cpp, a reader never blocks a rename.
+  HANDLE h = ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE,
+                           nullptr, OPEN_EXISTING,
                            flags, nullptr);
   if (h == INVALID_HANDLE_VALUE) return err(status::io);
   LARGE_INTEGER size{};
