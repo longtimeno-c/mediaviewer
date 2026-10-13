@@ -172,6 +172,9 @@ if(MV_FFMPEG_FOUND AND MV_SPNG_FOUND AND JPEG_FOUND)
     "${MV_ROOT}/src/edit/clip_helper.cpp"
     "${MV_ROOT}/src/edit/hwencode_none.cpp"
     "${MV_ROOT}/src/edit/encode.cpp"
+    # clip jobs annotate their thread like still decodes (#233); the slots
+    # are plain portable C++ (issue #385).
+    "${MV_ROOT}/src/core/crash_context.cpp"
   )
   target_include_directories(mv_clip PUBLIC "${MV_ROOT}/src")
   target_link_libraries(mv_clip PUBLIC mv_io mv_project_options PkgConfig::MV_FFMPEG
