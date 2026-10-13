@@ -1264,7 +1264,7 @@ public static partial class IslandHost
     // fetched), then the archive (size + SHA-256 before it is opened), then
     // extraction into staging, then the core's full verify-and-install.
     // `admit` sees the verified manifest before the archive is requested and
-    // may refuse it (the AI family's 3 GB rule) by throwing.
+    // may refuse it (the AI family's 5 GB rule) by throwing.
     private static async Task DownloadAndInstall(AddonSlot slot, Action<JsonElement>? admit,
                                                  IProgress<AddonPhase>? progress = null)
     {

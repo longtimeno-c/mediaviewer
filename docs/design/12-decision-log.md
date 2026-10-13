@@ -951,7 +951,18 @@ download from Settings, never in the base installer. Indexes are local to one ma
 
 **3 GB ceiling for the AI family (2026-09-25).** The base viewer's 250 MB limit does not apply to
 the optional pack. Installed pieces may total up to 3 GB; `index.db` and thumbnails are user data,
-outside it. CI rejects an oversized combination and the installer refuses it.
+outside it. CI rejects an oversized combination and the installer refuses it. Raised to 5 GB on
+2026-10-13 (next entry).
+
+**AI family ceiling is 5 GB (2026-10-13, owner).** Amends the row above. Installed pieces of the
+`ai` family may total 5 GB. The index, the thumbnail cache and the Core ML compile cache stay
+outside it, as before. Today's heaviest install (Core, People, Sound and the CUDA piece) is still
+about 2.93 GB, so nothing already installed grows and nothing new is downloaded. The room, about
+2.0 GB, is what a later piece has to fit in: the document text model in
+`docs/plans/document-search.md`, including multilingual-e5-small, which did not fit in 3 GB, or
+one more vision or speech piece of that size. A piece that would pass 5 GB is still refused
+before download. Enhance stays its own family. Its 5 GB figure is a per-weights-file cap, not
+this ceiling.
 
 **Towers and pieces (2026-09-26).** CLIP ViT-B/32 and ViT-L/14 both ship (L/14: +6 points R@1 but
 1.9 img/s on CPU); Auto picks by backend. int8 stored vectors (≤ 0.5 points), not int8 weights.

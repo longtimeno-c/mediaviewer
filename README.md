@@ -182,7 +182,7 @@ All of it is computed on your computer; nothing is uploaded.
 - **Your cloud folders too.** Folders on OneDrive or iCloud Drive are indexed, online-only files included if you let it fetch them.
 - **Move house without re-indexing.** Export the index to one file and import it on another computer, or after moving a library to a NAS. Thumbnails and People go only if you tick them.
 - **You can see it working.** Settings shows each folder's progress, the pass that is running, and a Rescan that says what it is doing.
-- Pieces install separately: Core about 1.2 GB, Sound about 1 GB, People about 40 MB, and at most 3 GB in all. On a Mac, Local search needs Apple silicon.
+- Pieces install separately: Core about 1.2 GB, Sound about 1 GB, People about 40 MB, and at most 5 GB in all. On a Mac, Local search needs Apple silicon.
 
 **How well it finds things.** Measured on a 25,000-photo library of captioned COCO photos, the size of a real camera roll, with the setting you get out of the box. Every result is checked against the photo's own captions. The raw report is [`docs/perf/search.json`](docs/perf/search.json).
 

@@ -235,7 +235,7 @@ class AiPackTest(unittest.TestCase):
                                           str(self.out / "mediaviewer-addon-ai-faces-win-x64.json")]), 0)
         big = dict(faces)
         big["id"] = "ai-cuda"
-        big["installed_size"] = 3_000_000_000 - core["installed_size"] + 1
+        big["installed_size"] = addon_pack.CEILINGS["ai"] - core["installed_size"] + 1
         big["files"] = [{"path": "onnxruntime_providers_cuda.dll", "sha256": "0" * 64, "size": 1, "licence": "MIT"}]
         (self.out / "big.json").write_text(json.dumps(big))
         self.assertEqual(addon_pack.main(["ceiling", str(self.out / "mediaviewer-addon-ai-win-x64.json"),

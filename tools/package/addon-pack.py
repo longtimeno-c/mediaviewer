@@ -20,7 +20,7 @@ or runtime-only pieces `ai-faces` and `ai-cuda` (`part_of: ai`, no native
 entry, no chrome). Model files carry the licence tools/package/ai-models.py
 recorded in the staged `licences.json`; a licence outside the allowed set
 fails the pack (the weights-licence gate). `ceiling` refuses a family whose
-supported installed combination exceeds 3 GB (docs/design/17).
+supported installed combination exceeds 5 GB (docs/design/17).
 
 The manifest lists every file with its SHA-256, size and licence, the host API
 range the add-on supports, and the archive's own name, size and SHA-256. It
@@ -54,7 +54,7 @@ import zipfile
 # an SPDX "A AND B" expression; every part must be allowed.
 ALLOWED_LICENCES = {"GPL-3.0-or-later", "MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause",
                     "Zlib", "ISC", "CC0-1.0", "CC-BY-4.0", "LicenseRef-PublicDomain"}
-CEILINGS = {"ai": 3_000_000_000}  # docs/design/17; src/addon/manifest.cpp family_ceiling agrees
+CEILINGS = {"ai": 5_000_000_000}  # docs/design/17; src/addon/manifest.cpp family_ceiling agrees
 
 # What ships, per add-on and platform. Anything else in the build folder stays
 # out. `licences`: (prefix, SPDX) for files the staged licences.json does not

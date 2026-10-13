@@ -702,7 +702,7 @@ int32_t mv_fcp_state(void);                                                 // [
 // or hides the extension in Final Cut Pro. Returns the state after.
 int32_t mv_fcp_set_enabled(bool on);                                        // [worker]
 void mv_fcp_open_login_items(void);                                         // [main-thread]
-// A family's installed bytes and ceiling (0 = none); "ai" has 3 GB.
+// A family's installed bytes and ceiling (0 = none); "ai" has 5 GB.
 bool mv_addon2_family_usage(const char* family, uint64_t* used, uint64_t* ceiling);  // [worker]
 // The loaded chrome's Settings view (an NSView*, owned by the chrome), or NULL.
 void* mv_addon2_settings_view(const char* id);                             // [main-thread]

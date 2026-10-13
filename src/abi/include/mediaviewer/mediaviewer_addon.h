@@ -659,7 +659,7 @@ MV_API mv_status MV_CALL mv_addon_make_staging(char* out_utf8, uint32_t cap);
 MV_API mv_status MV_CALL mv_addon_install(const char* staged_dir_utf8);
 
 /* Milestone H: a family's installed bytes and its ceiling (0 = none), for
- * "Install local search, downloads ~N GB, uses ~N GB" and the 3 GB rule
+ * "Install local search, downloads ~N GB, uses ~N GB" and the 5 GB rule
  * (docs/design/17): the chrome refuses before downloading a piece that would not
  * fit, and mv_addon_install refuses it again (MV_ERR_UNSUPPORTED_FORMAT).
  * `family` is the parent's id ("ai"). [worker-thread] */

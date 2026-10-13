@@ -438,7 +438,7 @@ both present-loop gates held while importing.
 
 A downloadable add-on installed from Settings (Add-ons → Local search) through PR 16's
 mechanism; the base installer, disk image and updates never carry it. Installed pieces total up
-to 3 GB (the index is separate user data). Windows runs ONNX Runtime on CPU plus vendor
+to 5 GB (the index is separate user data). Windows runs ONNX Runtime on CPU plus vendor
 providers; the Mac runs ONNX Runtime with the Core ML provider. Code: `src/infer`,
 `src/addons/ai`, `MediaViewer.Ai.Chrome`, `src.swift/AIChrome`. Full design, models, index,
 yield policy and verify lines: [Local AI search](17-local-ai-search.md).

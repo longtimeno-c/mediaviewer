@@ -108,7 +108,7 @@ src/infer   embedder { embed_image(s), embed_text }    clip_model, clap, whisper
 - **Core ML needs static shapes.** The image tower's free dimensions are pinned at open
   (`session_options::fixed_dims`, batch 4 = the engine's photo batch; `embed_images` splits and
   pads other batch sizes), which puts every node on Core ML. Opening is slow even from its cache
-  (`data/cache/coreml`, ~1.2 GB B/32 / ~4.1 GB L/14, outside the 3 GB ceiling), so the pack
+  (`data/cache/coreml`, ~1.2 GB B/32 / ~4.1 GB L/14, outside the 5 GB install ceiling), so the pack
   **answers on CPU at once** and a background thread opens Core ML, runs the self-test and swaps
   it in (`upgrading_clip` in `pack.cpp`). Text queries stay on CPU (3.3 ms B/32, 6.4 ms L/14).
   **Indexing waits for the swap** (`engine::upgrading`, 2026-10-05): the status stays *Loading* /
@@ -142,10 +142,11 @@ signed manifest, verify-before-load, per-user versioned folder, explicit updates
   queues a Core that is itself behind first, so no piece runs ahead of the engine it was built
   with. Remove deletes the files and offers to delete the index; `data/cache` (Core ML) is
   deleted even when the index is kept.
-- **3 GB installed ceiling** for the family (`family_ceiling`, `addon-pack.py ceiling`): every
+- **5 GB installed ceiling** for the family (`family_ceiling`, `addon-pack.py ceiling`): every
   supported combination must fit, and the store refuses an install that would exceed it. The
-  index and the thumbnail cache are user data and do not count. Worst supported combination
-  ~2.93 GB.
+  index and the thumbnail cache are user data and do not count. The pieces that ship today
+  reach ~2.93 GB in the heaviest combination, which leaves about 2.0 GB for a later piece.
+  Raised from 3 GB on 2026-10-13 ([12](12-decision-log.md)).
 - Downloaded on explicit opt-in, a plain GET of fixed release URLs with no identifier. The Mac
   pack is Developer ID-signed and notarized and loads under library validation.
 - **Location:** `%LocalAppData%\MediaViewer\addons\ai\<version>` on Windows and

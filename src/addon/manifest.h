@@ -104,7 +104,7 @@ enum class rejection : std::uint8_t {
   file_mismatch,
   unexpected_file,   // a file in the folder the manifest does not list
   needs_update,      // host API outside the add-on's range
-  over_ceiling,      // the family would exceed its installed-size ceiling (docs/design/17: 3 GB)
+  over_ceiling,      // the family would exceed its installed-size ceiling (docs/design/17: 5 GB)
   // Open add-ons (docs/design/25; package.h, open_manifest.h, open_store.h). Appended.
   too_large,         // the package or its entry count is over the cap
   bad_package,       // not the strict ZIP a package is
@@ -148,8 +148,8 @@ struct decision {
 // This process's CPU architecture as a manifest spells it.
 [[nodiscard]] std::string_view current_arch() noexcept;
 
-// Installed-size ceilings per family (docs/design/17: the AI pack's Core, one vendor
-// piece and Faces together stay under 3 GB). 0 = no ceiling.
+// Installed-size ceilings per family (docs/design/17: the AI pack stays under 5 GB).
+// 0 = no ceiling.
 [[nodiscard]] std::uint64_t family_ceiling(std::string_view family) noexcept;
 // The family an add-on or piece belongs to: its part_of, else its own id.
 [[nodiscard]] inline const std::string& family_of(const manifest& m) noexcept {
