@@ -22,6 +22,12 @@ result<raster> decode(std::span<const std::uint8_t> bytes, const job_context* ct
         return decode_pdf(bytes, page, ctx);
       case format_family::docx:
         return decode_docx(bytes, page, ctx);
+      case format_family::ico:
+        return decode_ico_page(bytes, page, ctx);
+      case format_family::heic:
+        // Pages past the primary are bundled: the OS path decodes only the
+        // primary (os_decode.h).
+        return decode_heic(bytes, ctx, raw_thread_limit, page);
       default:
         return err(status::invalid_arg);
     }
