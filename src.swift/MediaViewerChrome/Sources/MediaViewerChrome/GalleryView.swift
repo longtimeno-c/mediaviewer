@@ -37,8 +37,16 @@ struct GalleryView: View {
       }
       // A folder of folders has no image to show through the material, and the
       // canvas behind may still hold the previous folder's last photo.
-      .background(store.names.isEmpty ? AnyShapeStyle(Color(nsColor: .windowBackgroundColor))
-                                      : AnyShapeStyle(.regularMaterial))
+      .background {
+        // No photos: an opaque ground, so the previous picture does not show
+        // through, and a built-in theme can lay its effect here. With photos,
+        // the material stays so the picture shows through the grid.
+        if store.names.isEmpty {
+          ThemeField()
+        } else {
+          Rectangle().fill(.regularMaterial)
+        }
+      }
   }
 
   private var grid: some View {

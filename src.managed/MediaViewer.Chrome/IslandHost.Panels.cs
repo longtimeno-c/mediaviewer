@@ -349,6 +349,7 @@ public static partial class IslandHost
         body = new Grid();
         Grid.SetRow(body, 1);
         root.Children.Add(body);
+        ThemeField.Lay(root);
         // Issue #224: every pane (metadata, folder tree, adjust, jobs) is an
         // island over the canvas's WM_DROPFILES, so it takes a file drop too.
         WireFileDrop(root);

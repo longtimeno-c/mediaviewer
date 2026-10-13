@@ -238,11 +238,33 @@ A theme file, one per theme the add-on lists:
   follow the appearance, not a token). The first-party add-ons' own windows read the host's
   tokens since PR 56 (Import and Duplicates on both hosts, Local search on the Mac; the Windows
   AI chrome already did).
-- **Choosing one:** Settings → Appearance → **Theme**: Default, then every theme of every
-  installed add-on. Installing does not switch.
+- **Choosing one:** Settings → Appearance → **Theme**: Default, then nineteen host palettes
+  compiled into both chromes — Dark, Light, Midnight (rain), Cyberpunk (a circuit), Retrowave
+  (embers), Forest (petals), Starfield, Terminal (fireflies), Organs (slow rain), Ume (petals),
+  GPT, Claude, Cute (sparkles), Eclipse (a starfield), Porcelain (dots, light), Arcade (a
+  circuit), Blueprint (dots), Monolith (a slow drift) and Yoyo (fireflies) — then every theme
+  of every installed add-on. Installing an add-on does not switch. Each is one palette and
+  sets no `font`, so the chrome keeps that appearance, system-drawn controls included, and a
+  choice applies at once on both hosts. They are not packages: no publisher key and no install
+  sheet. A theme someone else ships is still Contribution API 1, and still appears after the
+  built-ins. Default clears the override (`mv.theme.*` on the Mac, `theme.json` beside
+  `settings.ini` on Windows).
+- **Ground effect:** a built-in may draw one effect behind the chrome — falling rain, a
+  starfield, fireflies, petals, embers, sparkles, a circuit, a slow drift, or a still dot
+  grid. Dark, GPT and Claude draw none. It is not a token and not part of the theme JSON, so
+  API 1 is unchanged and an add-on cannot set one. It is drawn by the host in its own panes.
+  It is not drawn on a photo, a video, the swapchain, or the present loop. It ticks at 10 Hz
+  only while the app is in front and someone has moved the pointer or a key in the last five
+  seconds, and it stops under Reduce Motion (Mac) or when Windows animations are off. High
+  contrast still hides the theme, effect included. Dots do not move, and neither does a theme
+  with no ground. Organs' rain is much slower and smaller than Midnight's. A pane that uses
+  the system material (the Mac filmstrip, folder tree, help and transport) keeps that
+  material, so the picture can show through it.
 - **Start-up:** the chrome stores the resolved tokens of the theme in use in its own settings
   and paints with them at once. The add-on is verified on a worker afterwards; if it is gone,
-  changed or refused, the chrome returns to Default and says why in Settings.
+  changed or refused, the chrome returns to Default and says why in Settings. A built-in theme
+  is resolved from the palette compiled into the chrome. The cache records which one, and the
+  resolved tokens, and is rewritten when they differ. That adds no file read before first pixel.
 
 ## 9. Code: how a stranger's add-on runs
 

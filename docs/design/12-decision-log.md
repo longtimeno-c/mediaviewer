@@ -1275,6 +1275,45 @@ built-in binding, superseding and restoring), the manifest cases, the packer's c
 the full suite and the add-on rig. Not verified: a signed Import carrying the new manifest in
 the app (a local build cannot load its own unsigned Import); Windows beyond compiling.
 
+**Built-in themes are host palettes in the Appearance picker (2026-10-12, issue #359).**
+Settings → Appearance → Theme lists Default, then Ember, Graphite, Harbour, Linen and Studio,
+then every theme of every installed open add-on. The five are one palette each, compiled into
+both chromes, with no `font`. A fresh profile shows them with nothing installed. They do not
+go through the open-add-on store, a publisher key or the install sheet; `mediaviewer.` stays
+reserved, so the selection key `mediaviewer.builtin/<id>` cannot be an add-on's. One palette
+keeps that appearance, including system-drawn controls, and applies at once on both hosts
+because there is no typeface to defer. Default still clears the override (`mv.theme.*`,
+`theme.json`) and follows the system. High contrast still wins. Contribution API 1 remains
+the path for a theme someone else ships. The photo, the video, the colour pipeline, the
+histogram's channel colours and the F3 overlay are not tokens. The palettes add no work to
+the present loop and no file read before first pixel beyond the token cache the chrome
+already kept.
+
+**The five built-ins are Midnight, Starfield, Terminal, Ume and Porcelain, each with one
+ground effect (2026-10-12, same issue).** The first cut's Ember, Graphite, Harbour, Linen
+and Studio were flat palettes. A built-in theme is one palette and one quiet ground, drawn
+behind the chrome only: rain, a starfield, fireflies, petals, dots. The effect is not a
+token, not in the theme JSON, and not in Contribution API 1, so an add-on still cannot set
+one and the photo canvas still receives only the flat canvas colour it already did. The
+effect ticks at 10 Hz on the UI thread while the app is in front and input is recent, and
+it stops when the app is inactive, when the pointer and keyboard have been still for five
+seconds, under Reduce Motion, or when Windows animations are off. High contrast still wins.
+Dots do not tick. Mac panes that are a system material stay a system material. Nothing was
+added to the present loop.
+
+**Nineteen built-ins, and four more grounds (2026-10-12, same issue).** The picker is Dark,
+Light, Midnight, Cyberpunk, Retrowave, Forest, Starfield, Terminal, Organs, Ume, GPT, Claude,
+Cute, Eclipse, Porcelain, Arcade, Blueprint, Monolith and Yoyo, in that order. The new grounds
+are a circuit (a faint grid and a few pulses along it), embers, sparkles and a slow drift.
+Dark, GPT and Claude have no ground, so they do not tick. Organs is the same rain at a crawl:
+speed 0.05, size 0.75, colour #451616. Speed and size are host fields on the row, not tokens;
+every other theme leaves them at 1, so Midnight, Starfield, Terminal, Ume and Porcelain look
+the same as they did. Retrowave's title is #ed5e76, the same hue as #e94560 lifted so it
+clears 4.5 : 1 on both its canvas and its surface; the accent stays #e94560. A ground is
+still not a token, still not in Contribution API 1, and still absent from the present loop.
+The palettes follow the Odysseus set. The photo canvas still receives only the flat canvas
+colour.
+
 **Declarative contributions: contribution API 2 (2026-10-11; PR 56's second half,
 [25](25-open-addons.md#pr-56-second-half-declarative-contributions-2026-10-11)).** Owner, the
 same day: finish the open add-on spine (the rule change made with it, "an add-on carries its own

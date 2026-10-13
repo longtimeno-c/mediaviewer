@@ -5,8 +5,9 @@
 //
 // With no theme the tokens are AppKit's semantic colours, which follow light,
 // dark and increased contrast by themselves. A theme is seven colours per
-// palette from an add-on's file, read and checked by the core (contrast
-// included) and handed here as JSON; this file never reads an add-on.
+// palette: five built into the chrome (BuiltinThemes.swift), or one from an
+// add-on's file, read and checked by the core (contrast included) and handed
+// here as JSON. This file never reads an add-on.
 //
 // Start-up never waits for an add-on ("the view comes first"): the tokens of
 // the theme in use are kept in the defaults and painted at once. The add-on
@@ -188,7 +189,13 @@ final class ThemeStore: ObservableObject {
 
   private init() {
     selection = stored(Self.keySelection) ?? ""
-    if !selection.isEmpty, let cached = stored(Self.keyTokens) {
+    if let builtin = BuiltinThemes.item(selection: selection) {
+      // The palette is in the binary. The defaults hold the choice and the
+      // resolved tokens, which is what the next launch paints from.
+      let json = builtin.json
+      tokens = ThemeTokens(json: json)
+      if stored(Self.keyTokens) != json { store(json, Self.keyTokens) }
+    } else if !selection.isEmpty, let cached = stored(Self.keyTokens) {
       tokens = ThemeTokens(json: cached)
     }
     paint()
@@ -199,7 +206,7 @@ final class ThemeStore: ObservableObject {
     ) { [weak self] _ in
       MainActor.assumeIsolated { self?.paint() }
     }
-    if !selection.isEmpty { verify() }
+    if !selection.isEmpty, BuiltinThemes.item(selection: selection) == nil { verify() }
   }
 
   static func key(addon: String, theme: String) -> String { addon + "/" + theme }
@@ -224,8 +231,22 @@ final class ThemeStore: ObservableObject {
       tokens = nil
       store(nil, Self.keyTokens)
       paint()
+    } else if let builtin = BuiltinThemes.item(selection: key) {
+      apply(builtin)
     } else {
       verify()
+    }
+  }
+
+  /// A built-in palette, from the binary. No add-on read.
+  private func apply(_ item: BuiltinThemes.Item) {
+    let json = item.json
+    guard let fresh = ThemeTokens(json: json) else { return }
+    note = ""
+    if stored(Self.keyTokens) != json { store(json, Self.keyTokens) }
+    if fresh != tokens {
+      tokens = fresh
+      paint()
     }
   }
 
@@ -235,7 +256,12 @@ final class ThemeStore: ObservableObject {
   }
 
   /// Reads the theme from its add-on, which re-verifies the add-on: a worker.
+  /// A built-in is already in the binary, so it never takes that path.
   private func verify() {
+    if let builtin = BuiltinThemes.item(selection: selection) {
+      apply(builtin)
+      return
+    }
     let chosen = selection
     let parts = chosen.split(separator: "/", maxSplits: 1).map(String.init)
     guard parts.count == 2 else { return }

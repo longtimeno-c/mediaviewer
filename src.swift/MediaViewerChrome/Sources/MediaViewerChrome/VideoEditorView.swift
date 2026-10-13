@@ -259,7 +259,7 @@ struct VideoEditorView: View {
       .padding(.bottom, 8)
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .background(MVTheme.canvas)
+    .background(ThemeField())
     .focusable()
     .focused($focused)
     .focusEffectDisabled()

@@ -179,7 +179,8 @@ public static partial class IslandHost
             SettingsButton("Make default…", () => OpenUri("ms-settings:defaultapps?registeredAppUser=MediaViewer"))));
         view.Children.Add(SettingsSection("Appearance"));
         view.Children.Add(SettingsRow("Canvas background", "The area behind your photos and videos.", _background));
-        // docs/design/25: the chrome's colours, from an installed add-on.
+        // docs/design/25: the chrome's colours. Default, the built-in palettes,
+        // then every theme an installed add-on contributes.
         view.Children.Add(BuildThemeRow());
         view.Children.Add(SettingsSection("Updates and privacy"));
         AddUpdateSettingsRow(view);
@@ -345,6 +346,7 @@ public static partial class IslandHost
         root.Children.Add(footer);
         root.IsTabStop = true;
         SelectCategory(_settingsKeyboard, false);
+        ThemeField.Lay(root);
         return root;
     }
 
