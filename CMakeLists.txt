@@ -580,6 +580,7 @@ add_library(mv_meta STATIC
   src/meta/clip.cpp
   src/meta/af.cpp
   src/meta/format.cpp
+  src/meta/location_edit.cpp
   src/meta/tables.cpp
   src/meta/fields.cpp
   src/meta/sidecar.cpp
@@ -751,6 +752,7 @@ add_library(mediaviewer_core SHARED
   src/abi/abi.cpp
   src/abi/addon_abi.cpp
   src/abi/crash_export.cpp
+  src/abi/meta_abi.cpp
   src/abi/include/mediaviewer/mediaviewer_crash.h
   src/abi/video_session.h
   src/abi/guard.h
@@ -1085,6 +1087,7 @@ if(MV_BUILD_TESTS)
     tests/test_meta_store.cpp
     # PR 12: the metadata writer, and the host-shared write queue.
     tests/test_meta_write.cpp
+    tests/test_meta_location_edit.cpp
     tests/test_meta_writer_queue.cpp
     src/shell/meta_store.cpp
     src/shell/meta_writer.cpp

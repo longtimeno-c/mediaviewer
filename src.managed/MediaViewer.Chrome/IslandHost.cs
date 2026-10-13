@@ -502,7 +502,11 @@ public static partial class IslandHost
         try
         {
             int kind = FocusKind.CommandBar;
-            if (_popupTakesText || IsTypeInField(e.NewFocusedElement))
+            // #352: the Location confirmation's buttons take Enter / Tab and leave on
+            // Esc (= Cancel, through DropDraft), as a field does.
+            bool metaConfirm = _metaConfirmLocation && e.NewFocusedElement is UIElement inPane &&
+                               inPane.XamlRoot is XamlRoot paneRoot && OwnsRoot(_metaPane, paneRoot);
+            if (_popupTakesText || metaConfirm || IsTypeInField(e.NewFocusedElement))
             {
                 kind = FocusKind.Text;
             }

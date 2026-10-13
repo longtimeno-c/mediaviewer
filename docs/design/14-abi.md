@@ -1,7 +1,7 @@
 # 14 — The C ABI
 
 The flat C ABI between the hosts' chrome and the C++ core, as declared in
-[`src/abi/include/mediaviewer/`](../../src/abi/include/mediaviewer/) (current version **0.19**).
+[`src/abi/include/mediaviewer/`](../../src/abi/include/mediaviewer/) (current version **0.27**).
 
 The Windows host is C# WinUI over `mediaviewer_core.dll` and calls this ABI through P/Invoke
 ([`src.managed/MediaViewer.Interop`](../../src.managed/MediaViewer.Interop/)). The Mac host links
@@ -290,6 +290,9 @@ mv_status mv_folder_set_kind_filter(mv_session_t, uint32_t mask, const char* con
 /* 0.23 (issue #207): the host rewrote this file's rating / label; drop what the filter cached */
 mv_status mv_folder_note_metadata_written(mv_session_t, const char* utf8_path);
 mv_status mv_list_subdirectories(const char* utf8_dir, char* utf8, uint32_t cap, uint32_t* out_bytes);
+/* 0.27 (#352): the Location editor's text -> MV_LOCATION_POINT (lat / lon, text = preview),
+ * _BLANK (remove) or _INVALID (text = why). Pure, no session; mv_location_input is 152 bytes. */
+mv_status mv_meta_parse_location(const char* utf8, mv_location_input* out);
 ```
 
 - The session owns the sort order, so filmstrip, gallery and arrow keys read one list. `set`
@@ -529,8 +532,12 @@ double   where_lat, where_lon;   /* WGS 84 degrees; valid when facts & kMetaFact
 double   where_altitude_m;       /* metres, negative below sea level; facts & kMetaFactAltitude */
 uint64_t made_with;              /* UTF-8 summary.made_with, valid for the call only */
 int32_t  made_with_len;
-int32_t  facts;                  /* kMetaFactWhere 1, kMetaFactAltitude 2, kMetaFactAiGenerated 4 */
+int32_t  facts;                  /* kMetaFactWhere 1, kMetaFactAltitude 2, kMetaFactAiGenerated 4,
+                                    #352: kMetaFactLocationSet 8, _Clear 16, _InOriginal 32 */
 ```
+
+#352: the Location editor parks `"L\ttext"` on `chrome_cmd_meta_tags` (native reads it again
+with `meta::parse_location`; blank removes); its live preview calls `mv_meta_parse_location`.
 
 **Mac** — the chrome bridge (`mv_chrome_bridge.h`):
 
@@ -542,6 +549,10 @@ typedef struct mv_chrome_meta_facts {
 } mv_chrome_meta_facts;
 bool    mv_chrome_meta_facts_get(mv_chrome_meta_facts* out);    /* false: no record */
 int32_t mv_chrome_meta_made_with(char* buf, int32_t size);      /* two-call, like the tables */
+/* #352: flags also MV_META_FACT_LOCATION_SET 8, _CLEAR 16, _IN_ORIGINAL 32 */
+bool    mv_chrome_meta_parse_location(const char* utf8, mv_chrome_location_input* out);
+int32_t mv_chrome_meta_location_text(char* buf, int32_t size);  /* "38.7979, -9.3907" */
+void    mv_chrome_meta_set_location(const char* utf8);          /* blank removes */
 ```
 
 `ai_generated` is set on positive evidence only; a clear flag means "not stated", never "not
@@ -571,6 +582,10 @@ both hosts now write that table with the same `meta::editable_properties_table`.
 | 0.21 | `mv_folder_renamed` — an F2 rename keeps its stop (issue #210) |
 | 0.22 | `mv_folder_set_kind_filter`, `MV_FOLDER_HIDE_STILLS` / `_CLIPS` / `_RAW` / `_UNMARKED` — View ▸ Show (issue #206) |
 | 0.23 | The cull bits `MV_FOLDER_HIDE_REJECTED` / `_UNPICKED` / `MV_FOLDER_HIDE_OTHER_LABELS` (`MV_FOLDER_LABEL_SHIFT`) and `mv_folder_note_metadata_written` — View ▸ Show's cull filters (issue #207) |
+| 0.24 | Reserved for docs/design/25 PR 56 (settings pages, keymap packs) |
+| 0.25 | Reserved for docs/design/25 PRs 58-59 (screens and slots, #348) |
+| 0.26 | Reserved for docs/design/25 PR 57 (script add-ons) |
+| 0.27 | `mv_meta_parse_location` / `mv_location_input` — the Metadata pane's Location editor (#352) |
 
 ## Not built
 
