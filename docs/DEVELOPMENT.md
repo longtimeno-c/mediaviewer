@@ -465,12 +465,13 @@ copy, and check Finder's **Open With** and a Quick Look thumbnail.
 | `Space` / `Backspace` | next / previous. On a clip, `Space` is play/pause. It is no longer the lab sweep |
 | `Home` / `End` | first / last in the folder |
 | `PageUp` / `PageDown` | back / forward ten |
-| `Ctrl+PageUp` / `Ctrl+PageDown` | previous / next page of a TIFF, PDF or DOCX (`⌘` on the Mac). Within a page: zoom (wheel, `+` `-`, `1`–`4`) and drag to pan. On a PDF or DOCX with the filmstrip hidden the wheel / trackpad scrolls and turns pages at the edges; `⌘`/`Ctrl`+wheel or a pinch zooms |
+| `Ctrl+PageUp` / `Ctrl+PageDown` | previous / next page of a TIFF, PDF or DOCX, size of an ICO, or image of a multi-image HEIC (`⌘` on the Mac). Within a page: zoom (wheel, `+` `-`, `1`–`4`) and drag to pan. On a PDF or DOCX with the filmstrip hidden the wheel / trackpad scrolls and turns pages at the edges; `⌘`/`Ctrl`+wheel or a pinch zooms |
 | `Enter` on a PDF or DOCX | open it in its default app (the bar's **Open in <app>**, ▾ for the others) |
 | `J` / `K` / `L` | clip transport: −10 s / pause / +10 s ([docs/design/16](design/16-commands.md)) |
 | `,` / `.` | frame step back / forward while paused |
 | `A` / `D` | previous / next beside the arrows, in every mode including on a clip |
 | `Q` / `E` | on a clip, two commands on one key: **tap** skips ±2 s, **hold** skims ±2 s per key repeat and settles on an exact seek when released. `Shift+Q` / `Shift+E` step playback speed. Off a clip they do nothing |
+| `Left` / `Right` on a clip | walk the folder while the clip is paused with the filmstrip showing; while it plays, or with the filmstrip hidden (`T`), they are `Q` / `E` (tap ±2 s, hold skims). Stills always walk |
 | `R` | reset the measurement window |
 | `0` | fit to window |
 | `1` | 100 % |
@@ -577,7 +578,12 @@ keyboard layout, not a US key position.
 
 Wheel zooms toward the cursor; drag pans. Zoom-out floors at 50 % (Fit can
 still go smaller on a huge image) and rubber-bands a little past that, then
-springs back to centre. Drop a file on the window.
+springs back to centre. Drop a file on the window. A pinch (touchscreen,
+touchpad, trackpad) zooms like the wheel; a sideways swipe or mouse tilt steps
+next / previous; a finger drag pans once zoomed
+([docs/design/16](design/16-commands.md) "Touch and trackpad"). The gesture
+maths has unit tests (`mv_tests "[gesture]"`); real touch hardware is not in
+any automated run.
 
 Command line: `--soak <seconds>`, `--json <path>`, `--gate` (non-zero exit if the verify
 line fails), `--no-overlay`, `--static`, `--no-chrome`, `--open <path>`,
