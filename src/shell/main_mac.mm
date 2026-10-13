@@ -65,6 +65,7 @@
 #include "abi/clip_session.h"
 #include "shell/trim_state.h"
 #include "shell/transport_autohide.h"
+#include "shell/gesture.h"
 #include "shell/browse_index.h"
 #include "shell/browse_path.h"
 #include "shell/commands.h"
@@ -76,6 +77,7 @@
 #include "edit/clip_strip.h"
 #include "shell/folder_model_mac.h"
 #include "meta/meta.h"
+#include "meta/tables.h"
 #include "shell/key_router.h"
 #include "shell/meta_store.h"
 #include "shell/os_integration.h"
@@ -454,6 +456,9 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)navigateFirst;
 - (void)navigateLast;
 - (void)navigateSkip:(std::ptrdiff_t)delta;
+// Issue #212: a trackpad swipe, +1 next / -1 previous. Not under the gallery
+// or while crop owns the arrows.
+- (void)swipeStep:(int)delta;
 - (void)turnPage:(int)delta;
 - (BOOL)turnPage:(int)delta land:(BOOL)land;
 // Document scrolling (docs/design/04 "Pages"): the wheel or trackpad over a PDF or
@@ -679,6 +684,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)metaRevert;
 - (void)metaSetTag:(const char*)key value:(const char*)value;  // value NULL removes
 - (void)metaSetDate:(const char*)value;                        // NULL removes
+- (void)metaSetLocation:(const char*)text;                     // #352: as typed; blank removes
 - (uint64_t)metaFocusSeq;
 - (BOOL)metaFocusTags;
 - (void)metaBlur;
@@ -1082,17 +1088,6 @@ bool MvResolveEntry(const std::string& path, std::string* dir, std::string* sele
   return true;
 }
 
-const char* MvOriginName(mv::meta::origin o) {
-  switch (o) {
-    case mv::meta::origin::exif: return "exif";
-    case mv::meta::origin::iptc: return "iptc";
-    case mv::meta::origin::xmp: return "xmp";
-    case mv::meta::origin::container: return "container";
-    case mv::meta::origin::computed: return "computed";
-  }
-  return "exif";
-}
-
 const char* MvKindName(mv::meta::stream_kind k) {
   switch (k) {
     case mv::meta::stream_kind::video: return "video";
@@ -1144,20 +1139,44 @@ extern "C" int32_t mv_chrome_meta_summary(char* buf, int32_t size) {
 }
 extern "C" int32_t mv_chrome_meta_properties(char* buf, int32_t size) {
   std::string out;
+  // PR 29: the raw form an edit starts from, and what an edit may do. #290: the
+  // same table Windows gets (meta/tables.h), so the new read-only origins and
+  // their access column cannot drift between the hosts.
   if (const auto rec = g_chrome_app ? [g_chrome_app metaRecord] : nullptr) {
-    for (const auto& p : rec->properties) {
-      // PR 29: the raw form an edit starts from, and what an edit may do.
-      const mv::meta::tag_access a = mv::meta::access_of(
-          p.raw_tag, rec->writes_in_file ? mv::meta::write_target::in_file : mv::meta::write_target::sidecar);
-      const char* access = a == mv::meta::tag_access::editable      ? "e"
-                           : a == mv::meta::tag_access::via_sidecar ? "s"
-                                                                    : "r";
-      out += std::string(MvOriginName(p.space)) + "\t" + MvFlat(p.group) + "\t" + MvFlat(p.label) +
-             "\t" + MvFlat(p.value) + "\t" + MvFlat(p.raw_tag) + "\t" + MvFlat(p.raw) + "\t" + access +
-             "\n";
-    }
+    out = mv::meta::editable_properties_table(*rec);
   }
   return MvCopyOut(out, buf, size);
+}
+// #290: position and provenance as numbers (mv_chrome_bridge.h).
+extern "C" bool mv_chrome_meta_facts_get(mv_chrome_meta_facts* out) {
+  if (!out || out->struct_size < sizeof(uint32_t) * 2) return false;
+  const uint32_t size = std::min<uint32_t>(out->struct_size, sizeof(mv_chrome_meta_facts));
+  mv_chrome_meta_facts f{};
+  f.struct_size = size;
+  const auto rec = g_chrome_app ? [g_chrome_app metaRecord] : nullptr;
+  if (rec) {
+    if (rec->s.where) {
+      f.flags |= MV_META_FACT_WHERE;
+      f.lat = rec->s.where->lat;
+      f.lon = rec->s.where->lon;
+      if (rec->s.where->altitude) {
+        f.flags |= MV_META_FACT_ALTITUDE;
+        f.altitude_m = *rec->s.where->altitude;
+      }
+    }
+    if (rec->s.ai_generated) f.flags |= MV_META_FACT_AI_GENERATED;
+    // #352: what the Summary's Location row may do.
+    const mv::meta::location_rights rights = mv::meta::location_rights_of(*rec);
+    if (rights.can_set) f.flags |= MV_META_FACT_LOCATION_SET;
+    if (rights.can_clear) f.flags |= MV_META_FACT_LOCATION_CLEAR;
+    if (rights.in_original) f.flags |= MV_META_FACT_LOCATION_IN_ORIGINAL;
+  }
+  std::memcpy(out, &f, size);
+  return rec != nullptr;
+}
+extern "C" int32_t mv_chrome_meta_made_with(char* buf, int32_t size) {
+  const auto rec = g_chrome_app ? [g_chrome_app metaRecord] : nullptr;
+  return MvCopyOut(rec ? MvFlat(rec->s.made_with) : std::string{}, buf, size);
 }
 extern "C" int32_t mv_chrome_meta_streams(char* buf, int32_t size) {
   std::string out;
@@ -1225,6 +1244,42 @@ extern "C" void mv_chrome_set_gallery_filter(uint64_t listing_generation, bool a
 extern "C" void mv_chrome_meta_set_tag(const char* key, const char* value) {
   (void)mv::shell::crash::note_native_call();
   if (g_chrome_app && key) [g_chrome_app metaSetTag:key value:value];
+}
+// #352: the Location editor. Parsing is pure and cheap, so the field's preview
+// calls it on every keystroke; the write goes through the PR 12 queue.
+extern "C" bool mv_chrome_meta_parse_location(const char* utf8, mv_chrome_location_input* out) {
+  if (!utf8 || !out || out->struct_size < sizeof(mv_chrome_location_input)) return false;
+  const mv::meta::location_input r = mv::meta::parse_location(utf8);
+  out->lat = out->lon = 0;
+  std::string text;
+  switch (r.k) {
+    case mv::meta::location_input::kind::point:
+      out->kind = MV_LOCATION_INPUT_POINT;
+      out->lat = r.point.lat;
+      out->lon = r.point.lon;
+      text = mv::meta::format_point(r.point);
+      break;
+    case mv::meta::location_input::kind::blank:
+      out->kind = MV_LOCATION_INPUT_BLANK;
+      break;
+    case mv::meta::location_input::kind::invalid:
+      out->kind = MV_LOCATION_INPUT_INVALID;
+      text = r.error;
+      break;
+  }
+  std::size_t n = std::min(text.size(), sizeof(out->text) - 1);
+  while (n > 0 && n < text.size() && (static_cast<unsigned char>(text[n]) & 0xC0) == 0x80) --n;
+  std::memcpy(out->text, text.data(), n);
+  out->text[n] = '\0';
+  return true;
+}
+extern "C" int32_t mv_chrome_meta_location_text(char* buf, int32_t size) {
+  const auto rec = g_chrome_app ? [g_chrome_app metaRecord] : nullptr;
+  return MvCopyOut(rec && rec->s.where ? mv::meta::format_location_input(*rec->s.where) : std::string{}, buf, size);
+}
+extern "C" void mv_chrome_meta_set_location(const char* utf8) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) [g_chrome_app metaSetLocation:utf8 ? utf8 : ""];
 }
 extern "C" void mv_chrome_meta_set_date(const char* value) {
   (void)mv::shell::crash::note_native_call();
@@ -1766,6 +1821,10 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 @implementation MvMetalView {
   int _welcomePress;  // welcome row under the left press, + 1; 0 = none
   BOOL _welcomePressRemove;  // ... and the press was on its remove button
+  // Issue #212 (shell/gesture.h): a pinch's sub-notch remainder, and the
+  // two-finger sideways swipe that steps one item.
+  mv::shell::pinch_to_wheel _pinch;
+  mv::shell::swipe_detector _wheelSwipe;
 }
 - (void)viewDidChangeEffectiveAppearance {
   [super viewDidChangeEffectiveAppearance];
@@ -1976,6 +2035,20 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
     if (self.app) [self.app transportActivity];
     return;
   }
+  // Issue #212: a two-finger sideways swipe (or a tilt) is swipe-next, one
+  // item per swipe; its momentum runs out inside the detector's latch. A
+  // negative delta moves the content left (natural scrolling: fingers left),
+  // which brings in the next item, as on Windows. Precise deltas are points;
+  // three of them weigh as one wheel unit.
+  const double per_unit = event.hasPreciseScrollingDeltas ? 3.0 : 120.0;
+  const int swipe = _wheelSwipe.feed(-event.scrollingDeltaX * per_unit, event.scrollingDeltaY * per_unit,
+                                     static_cast<std::uint64_t>(event.timestamp * 1000.0));
+  if (swipe != 0 && self.app) [self.app swipeStep:swipe];
+  if (std::abs(event.scrollingDeltaX) > std::abs(event.scrollingDeltaY)) {
+    // Sideways never zooms.
+    if (self.app) [self.app transportActivity];
+    return;
+  }
   self.snap->wheel_total += static_cast<std::int64_t>(event.scrollingDeltaY * 120.0);
   ++self.snap->activity_seq;
   [self publish];
@@ -1983,15 +2056,23 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   if (self.app) [self.app transportActivity];
 }
 // A trackpad pinch zooms toward the pointer, as the wheel does: one wheel notch
-// is a 15 % step (canvas/camera.cpp kWheelFactor).
+// is a 15 % step (canvas/camera.cpp kWheelFactor). shell/gesture.h carries the
+// sub-unit remainder, so a slow pinch is not rounded away (issue #212).
 - (void)magnifyWithEvent:(NSEvent*)event {
-  const double factor = 1.0 + event.magnification;
-  if (factor <= 0.0) return;
+  if (event.phase == NSEventPhaseBegan) _pinch.reset();
+  const std::int64_t units = _pinch.feed(1.0 + event.magnification);
+  if (units == 0) return;
   [self trackPointer:event];
-  self.snap->wheel_total += static_cast<std::int64_t>(std::lround(std::log(factor) / std::log(1.15) * 120.0));
+  self.snap->wheel_total += units;
   ++self.snap->activity_seq;
   [self publish];
   if (self.lab) self.lab->wake();
+}
+// A three-finger swipe, when System Settings sends it as a swipe ("Swipe
+// between pages" with three fingers): deltaX is +1 for a swipe to the left,
+// the next item.
+- (void)swipeWithEvent:(NSEvent*)event {
+  if (event.deltaX != 0.0 && self.app) [self.app swipeStep:event.deltaX > 0.0 ? 1 : -1];
 }
 // Without a tracking area AppKit never sends mouseMoved: to a plain view, which is
 // why the eyedropper had no cursor to read. Idle stays idle: the move only wakes
@@ -4826,8 +4907,10 @@ static BOOL MvCopyUtf8(const std::string& text, char* buf, int32_t size) {
     under.popup_open = false;
     const mv::shell::mode under_mode = mv::shell::resolve_mode(under);
     auto modes = static_cast<std::int32_t>(mv::shell::mask_of(under_mode));
-    // Trim layers over video (key_router.cpp), so `?` lists both, as on Windows.
-    if (under_mode == mv::shell::mode::trim) modes |= mv::shell::kVideo;
+    // Trim and skim layer over video (key_router.cpp), so `?` lists both, as on Windows.
+    if (under_mode == mv::shell::mode::trim || under_mode == mv::shell::mode::skim) {
+      modes |= mv::shell::kVideo;
+    }
     [MVChromeHost reloadHelpWithModes:modes];
   }
   self.helpHost.hidden = !visible;
@@ -5770,6 +5853,12 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   s.pane_open = _metaPaneVisible || _treeVisible || _adjust.visible() || _jobsVisible || _ws.open;
   s.crop = _edits.crop_active();
   s.trim = _trim.armed() && s.item == mv::shell::item_kind::clip;
+  // Issue #361: on a clip, ← → skip ±2 s while it plays or with the strip hidden.
+  s.filmstrip_visible = [self filmstripVisible];
+  if (s.item == mv::shell::item_kind::clip) {
+    const auto st = _lab.video_status_snapshot();
+    s.clip_playing = st.active && st.playing;
+  }
   // Milestone H: Esc from a result list is the path bar's "Back to folder".
   s.list_open = _listOpen;
   return s;
@@ -8336,6 +8425,37 @@ static double mv_wall_seconds() {
   [self scheduleMetaWrite:0.05];
 }
 
+// #352: the Summary's Location editor. The text is read again here (the
+// field's preview is only a preview); blank removes every GPS row, which the
+// pane asks to confirm first. Windows' twin is main.cpp location_change.
+- (void)metaSetLocation:(const char*)text {
+  const mv::io::dir_entry* entry = [self currentEntry];
+  const auto rec = [self metaRecord];
+  if (!entry || !rec || [self refuseWriteTo:entry->path_utf8]) return;
+  const mv::meta::location_input in = mv::meta::parse_location(text);
+  mv::meta::write_fields f;
+  if (in.k == mv::meta::location_input::kind::invalid) {
+    NSBeep();
+    [self noticeShow:std::string(in.error)];
+    return;
+  }
+  if (in.k == mv::meta::location_input::kind::point) {
+    f.location = mv::meta::change<mv::meta::geo_point>::to(in.point);
+  } else {
+    const mv::meta::location_rights rights = mv::meta::location_rights_of(*rec);
+    if (!rights.can_clear) {
+      NSBeep();
+      [self noticeShow:rights.in_original
+                           ? std::string("This file's own location is in the original, which is never rewritten")
+                           : std::string("There is no location to remove")];
+      return;
+    }
+    f.location = mv::meta::change<mv::meta::geo_point>::remove();
+  }
+  _metaWriter.submit(entry->path_utf8, f);
+  [self scheduleMetaWrite:0.05];
+}
+
 - (void)metaRevert {
   const mv::io::dir_entry* entry = [self currentEntry];
   if (!entry || _metaWritten.count(entry->path_utf8) == 0 || [self refuseWriteTo:entry->path_utf8]) return;
@@ -8403,6 +8523,7 @@ static double mv_wall_seconds() {
     [self noticeShow:job.revert                  ? std::string("Could not revert the metadata")
                      : job.fields.rating.touches() ? std::string("Could not save the rating")
                      : job.fields.comment.touches() ? std::string("Could not save the comment")
+                     : job.fields.location.touches() ? std::string("Could not save the location; nothing was changed")
                      : out.error == mv::status::invalid_arg
                          ? std::string("That value does not fit the tag; nothing was changed")
                          : std::string("Could not save the metadata; nothing was changed")];
@@ -9749,6 +9870,11 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
 - (void)navigatePrev {
   if (_items.empty()) return;
   [self selectIndex:_index.prev()];
+}
+- (void)swipeStep:(int)delta {
+  if (delta == 0 || _galleryVisible || _edits.crop_active()) return;
+  if (delta > 0) [self navigateNext];
+  else [self navigatePrev];
 }
 - (void)navigateFirst {
   if (_items.empty()) return;

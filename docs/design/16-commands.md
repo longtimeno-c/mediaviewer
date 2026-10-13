@@ -94,6 +94,7 @@ Resolved from state at every keydown (`resolve_mode`), never kept on a stack, in
 | **runner** | The empty-window game is up | `Space` jumps/retries, `3` toggles 2D/3D |
 | **loupe** | `Z` held | Layers over browse/video: only arrows (nudge) and `Z` / `\` differ |
 | **slideshow** | Slideshow running | |
+| **skim** | A clip that is playing, or with the filmstrip hidden (`T`) | Layers over **video**: only `←` `→` differ — they skip ±2 s like `Q` / `E` (issue #361) |
 | **video** | Current item is a clip or an animation | |
 | **browse** | Otherwise | |
 
@@ -109,6 +110,12 @@ a search result list is a place, not an overlay). A list opened from the empty w
 from the welcome) goes back to the empty window: the welcome card with its recent folders, the
 canvas cleared (2026-10-05; it used to leave the last result up, and on Windows did nothing).
 With nothing to leave, the key is not handled.
+A confirmation inside a pane field is part of that field's step (#352, the Location editor's
+"Remove location from this file?"): the first `Esc` is its Cancel and the field keeps the
+keyboard with its text, the next leaves the field. On the Mac that is the native alert; on
+Windows the router still resolves `blur_text`, and the host stops when the island answers that
+the drop only closed its confirmation (`SetMetaEdit` returns `S_FALSE`), as file search's field
+answers for its first `Esc`.
 `Ctrl+W` / `Alt+F4` close the window.
 
 ## Focus
@@ -124,8 +131,8 @@ No island grows over the canvas, except a clip's **transport bar**, which floats
 the video and auto-hides (`shell/transport_autohide.h`, shared by both hosts):
 
 - Playing, it hides after `kTransportIdleMs` (2.5 s) with no activity; pointer movement, a click,
-  the wheel, a transport command (`Space` `K` `J` `L` `Q` `E` `,` `.`, speed, mute, `↑` `↓`
-  volume), `Tab`, or a fullscreen change bring it back.
+  the wheel, a transport command (`Space` `K` `J` `L` `Q` `E` `,` `.`, `←` `→` in skim mode, speed, mute,
+  `↑` `↓` volume), `Tab`, or a fullscreen change bring it back.
 - Paused, ended, hovered, scrubbing, a menu open, keyboard focus in it, or a screen reader running:
   it stays. Never over the gallery or Settings, never on a Live Photo stop.
 - Fullscreen: the pointer hides with it while over the video. Windowed: never.
@@ -141,13 +148,13 @@ crop. Keys are shown Windows-style; on macOS read `⌘` for `Ctrl`.
 
 | Key | Modes | Command |
 |---|---|---|
-| `←` `→` | Walk, gallery | Previous / next (repeat) |
+| `←` `→` | Walk, gallery | Previous / next (repeat). On a clip that is playing, or with the filmstrip hidden, they are `Q` / `E` instead (skim mode, below); paused with the strip up they walk |
 | `A` `D` | All but crop | Previous / next — on a clip too; transport is `Q` `E` |
 | `Backspace` | Walk | Previous |
 | `Space` | browse | Next. On a clip or animation: play / pause; in a slideshow: pause; in the runner: jump |
 | `Home` / `End` | Walk | First / last |
 | `PageUp` / `PageDown` | Walk | Back / forward ten |
-| `Ctrl+PageUp` / `Ctrl+PageDown` | Browse, island | Previous / next page of a multi-page file (TIFF, PDF, DOCX); a notice says "Page n of m" |
+| `Ctrl+PageUp` / `Ctrl+PageDown` | Browse, island | Previous / next page of a multi-page file (TIFF, PDF, DOCX, an ICO's sizes, a HEIC's top-level images); a notice says "Page n of m" |
 | `F5` | browse, video | Slideshow |
 | `F` / `F11` | all | Fullscreen |
 | `Ctrl+O` | All but crop | Open media… |
@@ -313,6 +320,7 @@ works regardless. To see only the keepers, or one colour, use View ▸ Show's cu
 | `Space` | video | Play / pause |
 | tap `Q` / `E` | video | Skip −2 s / +2 s, exact, on the down edge |
 | hold `Q` / `E` | video | Skim ∓2 s per repeat with non-exact (keyframe) seeks; release settles exactly. Intent accumulates across the burst |
+| tap / hold `←` `→` | skim | The same skip and skim as `Q` / `E`, while the clip plays or the filmstrip is hidden (issue #361). Paused with the strip showing they walk the folder; `T` hides the strip so they skip. `A` / `D` walk in every case. A hold that started as a skim stays one until key-up, even if the clip pauses or ends under it |
 | `Shift+Q` / `Shift+E` | video | Playback speed one rung down / up: 0.25 / 0.5 / 1 / 1.5 / 2 / 4. The transport strip's speed menu (`1x`) is a view of this; native owns the rate |
 | `J` `K` `L` | video | −10 s / pause / +10 s |
 | `,` `.` | video | Frame step (also on animations) |
@@ -472,6 +480,23 @@ Chrome, in memory, no decode.
 - **On (`S`):** advancing keeps zoom and the pan centre as a fraction of the image; a different
   aspect keeps the centre. Camera state, not a decode; prefetch is unaffected.
 
+## Touch and trackpad
+
+Gestures are input to the commands above, never a camera path of their own (issue #212,
+[12](12-decision-log.md) 2026-10-12; maths in `shell/gesture.h`, shared by both hosts):
+
+| Gesture | Does |
+|---|---|
+| Pinch (touchscreen, precision touchpad, Mac trackpad) | Zooms toward the fingers like the wheel: wheel units in the input snapshot, the same springs, floor and rubber-band |
+| One-finger drag, zoomed (touchscreen) | Pans; the content follows the finger through `pan_by_screen`'s springs |
+| Sideways swipe at fit (touchscreen, one finger) | Next (swipe left) / previous (swipe right), once per touch |
+| Two-finger sideways swipe (touchpad, trackpad), mouse tilt | Next / previous, once per swipe or tilt click; momentum runs out in the latch. On a PDF or DOCX with the filmstrip hidden it scrolls the page instead |
+| Three-finger swipe (Mac, when System Settings sends it) | Next / previous |
+
+A swipe does nothing under the gallery or in crop. A tap is the system's promoted click. Windows
+reads the touchscreen through `WM_GESTURE` (pan inertia and gutter off); the touchpad's pinch is
+already `Ctrl`+wheel. The Mac reads `magnifyWithEvent:`, `scrollWheel:` and `swipeWithEvent:`.
+
 ## Animation
 
 GIF / APNG / WebP play on the render thread's frame clock ([image pipeline](04-image-pipeline.md)).
@@ -510,7 +535,11 @@ No hot-path ABI for commands. Commands invoke existing session calls (`mv_folder
 
 - `Ctrl+Enter` open in an external editor; set as wallpaper.
 - `Ctrl+Tab` / tabs, and several windows inside one process.
+- `U` clear label and `X` reject mark.
+- A filter (all / photos / videos / RAW) on the listing.
 - `Ctrl+PageUp` / `Ctrl+PageDown` for ICO sizes and HEIC sequences (pages of TIFF, PDF and DOCX are built).
+- `U` clear label and `X` reject mark.
+- A filter (all / photos / videos / RAW) on the listing.
 - Touch gestures (swipe, pinch).
 - Import / export of key maps and named alternate layouts.
 - Voice add-on hold-to-talk (`Ctrl+Shift+Space`).

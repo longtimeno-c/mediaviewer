@@ -330,6 +330,26 @@ target_link_libraries(mv_player
 add_library(mv::player ALIAS mv_player)
 
 # ---------------------------------------------------------------------------
+# mv_meta_parse -- #290 (docs/design/06 "Beyond Exiv2"): the portable, bounds-checked
+# readers for C2PA / JUMBF, PNG text chunks, raw XMP, ICC and container items, and the
+# generator table. Bytes in, rows out: no Exiv2, no FFmpeg, no platform header (D9),
+# so the libFuzzer harnesses (tools/fuzz/fuzz_meta_*.cpp) link it alone.
+# ---------------------------------------------------------------------------
+add_library(mv_meta_parse STATIC
+  src/meta/parse_common.cpp
+  src/meta/c2pa.cpp
+  src/meta/containers.cpp
+  src/meta/xmp_raw.cpp
+  src/meta/generators.cpp
+  src/meta/parse.h
+  src/meta/parse_util.h
+  src/meta/generators.h
+)
+target_link_libraries(mv_meta_parse
+  PUBLIC mv_core
+  PRIVATE mv_codec ZLIB::ZLIB)
+
+# ---------------------------------------------------------------------------
 # mv_meta -- PR 9 metadata read model (docs/design/06): Exiv2 for EXIF / IPTC / XMP and
 # maker notes, libavformat for container and per-stream facts. Exiv2 is GPL-2.0
 # and dynamic-link only (CLAUDE.md "Licensing"), so it comes from the
@@ -345,6 +365,7 @@ add_library(mv_meta STATIC
   src/meta/clip.cpp
   src/meta/af.cpp
   src/meta/format.cpp
+  src/meta/location_edit.cpp
   src/meta/tables.cpp
   src/meta/fields.cpp
   src/meta/sidecar.cpp
@@ -359,7 +380,7 @@ target_include_directories(mv_meta SYSTEM PRIVATE ${FFMPEG_INCLUDE_DIRS})
 target_link_directories(mv_meta PRIVATE ${FFMPEG_LIBRARY_DIRS})
 target_link_libraries(mv_meta
   PUBLIC mv_core
-  PRIVATE mv_codec mv_io Exiv2::exiv2lib ${FFMPEG_LIBRARIES})
+  PRIVATE mv_meta_parse mv_codec mv_io Exiv2::exiv2lib ${FFMPEG_LIBRARIES})
 add_library(mv::meta ALIAS mv_meta)
 
 # ---------------------------------------------------------------------------
@@ -834,9 +855,12 @@ if(MV_BUILD_TESTS)
     tests/test_pdf_mac.mm
     # PR 9: the metadata read model. Fixtures are built in the test.
     tests/test_meta.cpp
+    tests/test_meta_provenance.cpp
+    tests/test_meta_bench.cpp
     tests/test_meta_store.cpp
     # PR 12: the metadata writer, and the host-shared write queue.
     tests/test_meta_write.cpp
+    tests/test_meta_location_edit.cpp
     tests/test_meta_writer_queue.cpp
     # PR 10: edit stack, lossless JPEG, export, the edit session.
     tests/test_edit.cpp
@@ -913,7 +937,7 @@ if(MV_BUILD_TESTS)
   # test_meta.cpp writes fixtures with Exiv2 and libavformat's muxer.
   target_include_directories(mv_tests SYSTEM PRIVATE ${FFMPEG_INCLUDE_DIRS})
   target_link_directories(mv_tests PRIVATE ${FFMPEG_LIBRARY_DIRS})
-  target_link_libraries(mv_tests PRIVATE Exiv2::exiv2lib ${FFMPEG_LIBRARIES})
+  target_link_libraries(mv_tests PRIVATE Exiv2::exiv2lib ${FFMPEG_LIBRARIES} mv_meta_parse ZLIB::ZLIB)
   include(Catch)
   # The same properties as Windows (CMakeLists.txt): Catch2's SKIPPED marker so a
   # corpus-gated or Mac-gated case is reported as Skipped, not Passed, even where

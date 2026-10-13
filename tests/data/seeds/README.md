@@ -29,6 +29,13 @@ safe to redistribute. The real format corpus stays out of git (docs/design/09).
 | RAW | `tiny.dng`: DNG 1.4, 8-bit RGB thumbnail IFD0 + 16-bit RGGB CFA SubIFD | hand-built |
 | PDF | two pages, the second `/Rotate 90` | `pdf_two_pages()`, hand-written objects and xref |
 | DOCX | heading, bold run, list item, two-cell table, a small page size | `docx_small()`, Python `zipfile` |
+| C2PA (#290) | a JUMBF store; it in JPEG APP11 segments, a PNG `caBX` (with SD / ComfyUI text chunks) and an MP4 `uuid` box | `mv_tests "[.write-seeds]"` (`tests/test_meta_provenance.cpp`) |
+| XMP (#290) | a Midjourney-like packet: unregistered namespace, struct, lang-alt, history | the same |
+| ICC (#290) | a v4 display profile with `desc` (mluc) and `cprt` | the same |
+| Location (#352) | what a person types in the Location editor: decimal, DMS with `°′″`, spaces, `º` and `''`, lettered and swapped, blank | hand-written text |
+
+The #290 families are written by the test builders instead:
+`MV_SEED_DIR=tests/data/seeds mv_tests "[.write-seeds]"`.
 
 Regenerate (bytes may change with encoder versions; that alone is not a bug):
 

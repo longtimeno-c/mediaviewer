@@ -370,6 +370,11 @@ from any codec. Forced through it, ProRes 422 played at 55 frames/s.
 (non-exact, settle on release). Speed is on the command-bar dropdown and `Shift+Q` / `Shift+E`.
 `J` / `L` are ±10 s in the viewer.
 
+**Arrows on a playing or strip-less clip (2026-10-12, issue #361).** `←` `→` are `Q` / `E` while the clip plays or the filmstrip is hidden (mode `skim`, layered over video);
+paused with the strip up they still walk, since that is when the strip is being used to pick.
+`A` / `D` walk in every case. A hold keeps its command until key-up, so a clip that ends
+mid-skim cannot turn the next repeat into a walk.
+
 **A transport click does not seek 0 on the way (2026-10-12).** The system slider reports its
 minimum before the time under the pointer. `media_source::seek` publishes that target and arms
 preview before the frame is decoded, so the minimum presents the opening frame. A non-exact seek
@@ -409,6 +414,18 @@ that moves every capture-time tag together, through the same checked JPEG rewrit
 identical, image data unchanged) and sidecar rule: a RAW, HEIC, PNG or clip is never opened for
 writing. Layout, maker-note and orientation tags are read-only. The snapshot covers every tag, so
 Revert restores the file's bytes exactly. One file, one change set; not a batch engine.
+
+**Location is editable; blank removes, with a confirmation (owner, 2026-10-12, #352).** Summary's
+Location row has Edit instead of Remove: coordinates typed in, read by one core parser
+(`meta::parse_location`) on both hosts, and a blank save removes the location only after a
+confirmation (a native alert on the Mac, an in-pane box on Windows; Remove destructive, Cancel
+default and Esc). It says Revert all can bring the location back until the app quits, which is
+what the session snapshot does. This reverses "writing or editing coordinates:
+out of scope" (`docs/plans/metadata-search-and-place.md` §4, doc 06 *Not built*). The write is
+`write_fields::location` through PR 12's checked writer and sidecar rule: EXIF GPS in a plain JPEG,
+XMP `exif:GPS*` in a sidecar otherwise, the original never touched (rule 5); the sidecar's position
+now wins on read, as its rating does. Altitude is kept unless given. Remove is offered only when it
+reaches every copy the viewer reads, so a RAW's or HEIC's own fix can be overridden, not removed.
 
 ---
 
@@ -530,6 +547,22 @@ focus. The tree follows the directory watcher and diffs rows in place.
 the end of the folder path runs `Ctrl+F` / `⌘F`: with Local search loaded, starting, or installed
 and waiting for the first search (2026-10-11) it opens the search panel; without it, **file search**, a name filter over the listed folder with no index (the
 Windows chrome entry is still named `GallerySearch`). `/` in the gallery is the folder row's find.
+
+**Touch and trackpad are input, not a camera path (2026-10-12, issue #212).** A pinch becomes
+wheel units toward the fingers (`wheel_total`, so `camera::wheel_toward` and the ω=18, ζ=1
+springs zoom), a zoomed pan becomes screen pixels (`scroll_px`, `camera::pan_by_screen`), and a
+swipe is the folder step `A` / `D` take; `shell/gesture.h` is the shared maths (sub-unit pinch
+remainder, a once-per-gesture swipe latch). No snapshot field, ABI call or present path was added.
+On Windows the touchscreen uses **`WM_GESTURE`**, not `WM_POINTER` or DirectManipulation: the
+system recogniser hands over the pinch distance and centre and a pan while a tap still arrives as
+the promoted mouse click every existing path handles; raw pointers would mean re-deriving taps,
+and DirectManipulation brings its own viewport and inertia to fight the springs. Pan inertia and
+the gutter are configured off (`WM_GESTURENOTIFY`). A precision touchpad's pinch was already
+`Ctrl`+wheel; its two-finger sideways swipe (`WM_MOUSEHWHEEL`) and a mouse's tilt now step one item
+per swipe or click, latched until 250 ms of quiet so momentum does not run through the folder. A
+document keeps its sideways scroll. At fit a one-finger stroke is swipe-next because the opening
+view is locked (no drag at fit); zoomed, it pans. The Mac already zoomed on `magnifyWithEvent:`; it
+gained the same remainder and the sideways swipe (`scrollWheel:` and `swipeWithEvent:`).
 
 ---
 

@@ -14,6 +14,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <chrono>
+#include <cstddef>
 #include <cstring>
 #include <string>
 #include <thread>
@@ -426,4 +427,39 @@ TEST_CASE("clip index and a keyframe trim through the exports (ABI 0.10)", "[abi
   REQUIRE(mv_clip_clear_finished(s.handle) == MV_OK);
   REQUIRE(mv_clip_jobs(s.handle, nullptr, 0, &count) == MV_OK);
   REQUIRE(count == 0);
+}
+
+TEST_CASE("mv_meta_parse_location reads what the Location editor takes", "[abi][location]") {
+  // #352: the Windows chrome's live preview. C# declares the struct field for field.
+  REQUIRE(sizeof(mv_location_input) == 152);
+  REQUIRE(offsetof(mv_location_input, kind) == 4);
+  REQUIRE(offsetof(mv_location_input, lat) == 8);
+  REQUIRE(offsetof(mv_location_input, lon) == 16);
+  REQUIRE(offsetof(mv_location_input, text) == 24);
+
+  mv_location_input in{};
+  in.struct_size = sizeof(in);
+  REQUIRE(mv_meta_parse_location(
+              "38\xC2\xB0" "47\xE2\x80\xB2" "52\xE2\x80\xB3 N, 9\xC2\xB0" "23\xE2\x80\xB2" "27\xE2\x80\xB3 W",
+              &in) == MV_OK);
+  CHECK(in.kind == MV_LOCATION_POINT);
+  CHECK(in.lat > 38.79);
+  CHECK(in.lat < 38.80);
+  CHECK(in.lon < -9.39);
+  CHECK(in.lon > -9.40);
+  CHECK(std::string(in.text) == "38.79778\xC2\xB0 N, 9.39083\xC2\xB0 W");
+
+  REQUIRE(mv_meta_parse_location("   ", &in) == MV_OK);
+  CHECK(in.kind == MV_LOCATION_BLANK);
+  CHECK(in.text[0] == '\0');
+
+  REQUIRE(mv_meta_parse_location("91, 0", &in) == MV_OK);
+  CHECK(in.kind == MV_LOCATION_INVALID);
+  CHECK(std::string(in.text).find("Latitude") != std::string::npos);
+
+  CHECK(mv_meta_parse_location(nullptr, &in) == MV_ERR_INVALID_ARG);
+  CHECK(mv_meta_parse_location("1, 2", nullptr) == MV_ERR_INVALID_ARG);
+  mv_location_input tiny{};
+  tiny.struct_size = 8;
+  CHECK(mv_meta_parse_location("1, 2", &tiny) == MV_ERR_INVALID_ARG);
 }

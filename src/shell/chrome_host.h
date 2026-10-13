@@ -15,6 +15,7 @@
 #include <string>
 
 #include "core/result.h"
+#include "meta/meta.h"
 #include "shell/adjust_pane.h"
 #include "shell/commands.h"
 #include "shell/key_router.h"
@@ -101,7 +102,8 @@ enum chrome_command : int {
   chrome_cmd_edit_action = 1020,
   // PR 29 (owner, 2026-09-26): every tag editable. meta_tags: native pulls
   // the parked edits with take_parked_text, one per line: "S\tkey\tvalue"
-  // sets, "R\tkey" removes. meta_date: the parked "YYYY-MM-DD HH:MM:SS" goes
+  // sets, "R\tkey" removes; #352: "L\ttext" is the Location editor's text as
+  // typed (meta::parse_location; blank removes the location). meta_date: the parked "YYYY-MM-DD HH:MM:SS" goes
   // into every capture-time tag; arg 1 removes them all (nothing parked).
   chrome_cmd_meta_tags = 1021,
   chrome_cmd_meta_date = 1022,
@@ -437,9 +439,26 @@ struct chrome_meta_args {
   std::int32_t properties_len;
   std::int32_t streams_len;
   std::int32_t loading;
+  // #290 (docs/design/06, 14): the record's provenance and position as numbers,
+  // for the map (#344) and the AI badge (#345). The summary table already
+  // carries the "Made with" row; these are the same facts, not re-derived.
+  double where_lat;           // valid when facts & kMetaFactWhere
+  double where_lon;
+  double where_altitude_m;    // valid when facts & kMetaFactAltitude
+  std::uint64_t made_with;    // UTF-8 summary.made_with, valid for the call only
+  std::int32_t made_with_len;
+  std::int32_t facts;         // kMetaFact*
 };
 
-static_assert(sizeof(chrome_meta_args) == 40, "keep in sync with ChromeMetaArgs");
+inline constexpr std::int32_t kMetaFactWhere = 1 << 0;
+inline constexpr std::int32_t kMetaFactAltitude = 1 << 1;
+inline constexpr std::int32_t kMetaFactAiGenerated = 1 << 2;
+// #352: what the Summary's Location row may do (meta::location_rights_of).
+inline constexpr std::int32_t kMetaFactLocationSet = 1 << 3;         // Edit can save a position
+inline constexpr std::int32_t kMetaFactLocationClear = 1 << 4;       // a blank save can remove it
+inline constexpr std::int32_t kMetaFactLocationInOriginal = 1 << 5;  // the original's own: never removed
+
+static_assert(sizeof(chrome_meta_args) == 80, "keep in sync with ChromeMetaArgs");
 
 // PR 12: what the pane's rating, comment and Revert show. A change still in the
 // write queue already counts, so a key or a click shows at once.
@@ -750,8 +769,10 @@ class chrome_host {
   [[nodiscard]] bool meta_pane_visible() const noexcept { return panels_attached_ && meta_visible_; }
   [[nodiscard]] bool folder_tree_visible() const noexcept { return panels_attached_ && tree_visible_; }
   // The record's tables, formatted once by the host; the pane re-renders from them.
+  // #290: `facts` (null while loading) supplies made_with, ai_generated and where.
   void set_meta_data(bool loading, const std::string& summary, const std::string& properties,
-                     const std::string& streams) noexcept;
+                     const std::string& streams, const meta::summary* facts = nullptr,
+                     std::int32_t extra_facts = 0) noexcept;  // #352: kMetaFactLocation*
   void set_tree_root(const std::string& utf8_dir) noexcept;
   // The folder the user chose in the tree ("" if none pending).
   [[nodiscard]] std::string take_tree_path() noexcept;
@@ -760,7 +781,9 @@ class chrome_host {
   // read, which is not the same as an empty string: "" clears a comment.
   [[nodiscard]] bool take_parked_text(std::string& out) noexcept;
   // PR 12: the pane's rating / comment / Revert state (chrome_meta_edit_args).
-  void set_meta_edit(std::int32_t rating, const std::string& comment, std::int32_t flags) noexcept;
+  // #352: true when a kMetaEditDropDraft only closed an in-pane confirmation
+  // (the Location remove): the pane keeps the keyboard, so Esc stops there.
+  bool set_meta_edit(std::int32_t rating, const std::string& comment, std::int32_t flags) noexcept;
 
   // PR 11: the adjust pane, a third panel island on the right (it and the
   // metadata pane share that edge; the host shows one at a time). Optional

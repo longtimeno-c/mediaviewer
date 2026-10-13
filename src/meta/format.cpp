@@ -78,6 +78,128 @@ std::string format_coordinate(double degrees, char hemisphere) {
   return buf;
 }
 
+std::string format_point(const geo_point& p) {
+  return format_coordinate(p.lat, p.lat < 0 ? 'S' : 'N') + ", " + format_coordinate(p.lon, p.lon < 0 ? 'W' : 'E');
+}
+
+const char* origin_name(origin o) noexcept {
+  switch (o) {
+    case origin::exif: return "exif";
+    case origin::iptc: return "iptc";
+    case origin::xmp: return "xmp";
+    case origin::container: return "container";
+    case origin::computed: return "computed";
+    case origin::c2pa: return "c2pa";
+    case origin::png_text: return "png_text";
+    case origin::icc: return "icc";
+    case origin::xmp_raw: return "xmp_raw";
+  }
+  return "exif";
+}
+
+namespace {
+
+// A locale-free unsigned decimal ("51.502") at s[pos]; advances pos. `int_digits`
+// counts the digits before the point. False when there is no digit.
+bool decimal(std::string_view s, std::size_t& pos, double& out, std::size_t& int_digits) noexcept {
+  double v = 0;
+  std::size_t start = pos;
+  while (pos < s.size() && s[pos] >= '0' && s[pos] <= '9' && pos - start < 12) v = v * 10 + (s[pos++] - '0');
+  int_digits = pos - start;
+  bool any = int_digits > 0;
+  if (pos < s.size() && s[pos] == '.') {
+    ++pos;
+    double scale = 0.1;
+    for (std::size_t n = 0; pos < s.size() && s[pos] >= '0' && s[pos] <= '9'; ++pos, ++n) {
+      if (n < 15) v += (s[pos] - '0') * scale;
+      scale *= 0.1;
+      any = true;
+    }
+  }
+  out = v;
+  return any;
+}
+
+// ISO 6709 one coordinate: ±D[D[D]][.d], ±DDMM[.m], ±DDMMSS[.s] (`deg_digits`
+// = 2 for latitude, 3 for longitude).
+bool iso_coordinate(std::string_view s, std::size_t& pos, std::size_t deg_digits, double& out) noexcept {
+  if (pos >= s.size() || (s[pos] != '+' && s[pos] != '-')) return false;
+  const bool neg = s[pos++] == '-';
+  const std::size_t start = pos;
+  double v = 0;
+  std::size_t ints = 0;
+  if (!decimal(s, pos, v, ints)) return false;
+  if (ints > deg_digits) {
+    // Degrees and minutes (and seconds) packed into the integer part.
+    const std::string_view whole = s.substr(start, ints);
+    const double frac = v - std::floor(v);
+    int d = 0, m = 0, sec = 0;
+    for (std::size_t i = 0; i < deg_digits; ++i) d = d * 10 + (whole[i] - '0');
+    if (ints == deg_digits + 2) {
+      m = (whole[deg_digits] - '0') * 10 + (whole[deg_digits + 1] - '0');
+      v = d + (m + frac) / 60.0;
+    } else if (ints == deg_digits + 4) {
+      m = (whole[deg_digits] - '0') * 10 + (whole[deg_digits + 1] - '0');
+      sec = (whole[deg_digits + 2] - '0') * 10 + (whole[deg_digits + 3] - '0');
+      v = d + m / 60.0 + (sec + frac) / 3600.0;
+    } else {
+      return false;
+    }
+    if (m >= 60 || sec >= 60) return false;
+  }
+  out = neg ? -v : v;
+  return true;
+}
+
+}  // namespace
+
+std::optional<double> parse_xmp_coordinate(std::string_view s) noexcept {
+  while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.remove_prefix(1);
+  while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\0')) s.remove_suffix(1);
+  if (s.empty()) return std::nullopt;
+  bool neg = false;
+  const char h = s.back();
+  const bool hemi = h == 'N' || h == 'S' || h == 'E' || h == 'W' || h == 'n' || h == 's' || h == 'e' || h == 'w';
+  if (hemi) {
+    neg = h == 'S' || h == 'W' || h == 's' || h == 'w';
+    s.remove_suffix(1);
+  }
+  std::size_t pos = 0;
+  if (!hemi && pos < s.size() && (s[pos] == '-' || s[pos] == '+')) neg = s[pos++] == '-';
+  double parts[3] = {0, 0, 0};
+  std::size_t n = 0;
+  for (; n < 3; ++n) {
+    std::size_t ints = 0;
+    if (!decimal(s, pos, parts[n], ints)) return std::nullopt;
+    if (pos == s.size()) {
+      ++n;
+      break;
+    }
+    if (s[pos] != ',') return std::nullopt;
+    ++pos;
+  }
+  if (pos != s.size()) return std::nullopt;
+  if (n >= 2 && parts[1] >= 60) return std::nullopt;
+  if (n >= 3 && parts[2] >= 60) return std::nullopt;
+  const double v = parts[0] + parts[1] / 60.0 + parts[2] / 3600.0;
+  if (!(v <= 180.0)) return std::nullopt;
+  return neg ? -v : v;
+}
+
+std::optional<geo_point> parse_iso6709(std::string_view s) noexcept {
+  std::size_t pos = 0;
+  geo_point p;
+  if (!iso_coordinate(s, pos, 2, p.lat) || !iso_coordinate(s, pos, 3, p.lon)) return std::nullopt;
+  if (std::fabs(p.lat) > 90.0 || std::fabs(p.lon) > 180.0) return std::nullopt;
+  if (pos < s.size() && (s[pos] == '+' || s[pos] == '-')) {
+    const bool neg = s[pos++] == '-';
+    double alt = 0;
+    std::size_t ints = 0;
+    if (decimal(s, pos, alt, ints) && alt < 100000.0) p.altitude = neg ? -alt : alt;
+  }
+  return p;
+}
+
 void orient_point(std::uint8_t orientation, float& x, float& y) noexcept {
   const float ox = x, oy = y;
   switch (orientation) {
@@ -143,6 +265,13 @@ std::vector<field> summary_rows(const metadata& m) {
   }
   add("Date taken", s.date_taken);
   add("Location", s.gps);
+  // #290: only when the file names a generator or says it is AI-made; there is
+  // no "—" for it, because no provenance is not a gap a file is expected to fill.
+  if (!s.made_with.empty() || s.ai_generated) {
+    std::string v = s.made_with;
+    if (s.ai_generated) v += v.empty() ? "AI-generated" : " \xC2\xB7 AI-generated";
+    add("Made with", v);
+  }
   add("Rating", format_rating(s.rating));
   add("Label", s.label);
   add("Comment", s.comment);

@@ -118,7 +118,7 @@ if(NOT MV_FUZZ_MODE MATCHES "^static")
 endif()
 
 # Instrument everything that links mv_project_options.
-set(MV_FUZZ_INSTRUMENTED mv_core mv_codec mv_image mv_gfx mv_io)
+set(MV_FUZZ_INSTRUMENTED mv_core mv_codec mv_image mv_gfx mv_io mv_meta_parse)
 set_target_properties(${MV_FUZZ_INSTRUMENTED} PROPERTIES
   MSVC_RUNTIME_LIBRARY "${MV_FUZZ_CRT}")
 target_compile_options(mv_project_options INTERFACE
@@ -134,7 +134,11 @@ target_compile_definitions(mv_project_options INTERFACE
   _DISABLE_OPTIONAL_ANNOTATION)
 
 set(MV_FUZZ_HARNESSES
-  jpeg png bmp gif webp tiff ico heic avif raw raw_preview decode animation thumbnail pdf docx)
+  jpeg png bmp gif webp tiff ico heic avif raw raw_preview decode animation thumbnail pdf docx
+  # #290: the metadata readers beyond Exiv2 (meta/parse.h), linked alone.
+  meta_c2pa meta_jpeg meta_png meta_webp meta_bmff meta_xmp meta_icc
+  # #352: the Location editor's parser (pure; built from its one source file).
+  meta_location)
 
 add_custom_target(mv_fuzzers)
 
@@ -145,6 +149,13 @@ foreach(name IN LISTS MV_FUZZ_HARNESSES)
   target_link_libraries(${target} PRIVATE mv_codec)
   if(name STREQUAL "decode")
     target_link_libraries(${target} PRIVATE mv_image)
+  endif()
+  if(name MATCHES "^meta_")
+    target_sources(${target} PRIVATE fuzz_meta.h)
+    target_link_libraries(${target} PRIVATE mv_meta_parse)
+  endif()
+  if(name STREQUAL "meta_location")
+    target_sources(${target} PRIVATE "${CMAKE_SOURCE_DIR}/src/meta/location_edit.cpp")
   endif()
   # fuzz_docx links codec without image, so it reads font files itself.
   if(name STREQUAL "docx")

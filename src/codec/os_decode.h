@@ -13,6 +13,11 @@
 //     (PQ/HLG), colour either an embedded ICC (which WIC must return through
 //     GetColorContexts) or sRGB-in-effect nclx. Anything the OS would have to
 //     guess — Display P3 nclx, 10-bit, sequences — is bundled.
+//   * A file with several pages (top-level images, issue #211) may still take
+//     the OS path for page 0: WIC's frame 0 is the primary (checked on Windows
+//     11 26200 with the primary first, second and third in file order; the
+//     size check below is the guard), and the count comes from inspect_heic.
+//     Pages past 0 are always bundled (decode.cpp).
 //   * The OS path runs only if WIC has a HEIF decoder AND an HEVC decoder MFT
 //     is registered (the Store HEVC Video Extension). WIC's HEIF container
 //     decoder exists on a clean VM and fails there; that failure is silent.
@@ -39,6 +44,7 @@ struct heic_still_info {
   bool srgb_in_effect = true; // no colour box, or nclx that tag_sdr leaves untagged
   bool hdr = false;           // nclx PQ / HLG
   bool sequence = false;      // msf1 track present
+  std::uint32_t pages = 1;    // top-level images that are pages (decode.h); primary first
 };
 
 // Header-only parse through libheif: no pixels are decoded. `unsupported_format`

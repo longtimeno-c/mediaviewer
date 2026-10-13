@@ -65,6 +65,7 @@
 #include "shell/trim_state.h"
 #include "shell/transport_autohide.h"
 #include "shell/file_jobs.h"
+#include "shell/gesture.h"
 #include "shell/key_router.h"
 #include "core/job_system.h"
 #include "edit/histogram.h"
@@ -315,6 +316,15 @@ struct app_state {
   ULONGLONG last_scroll_tick = 0;
   ULONGLONG page_turn_tick = 0;
   bool page_turn_latched = false;
+  // Issue #212 (docs/design/16 "Touch and trackpad"): WM_GESTURE pinch and pan
+  // on a touchscreen, and the touchpad's sideways swipe (WM_MOUSEHWHEEL).
+  // Pinch -> wheel_total, pan -> scroll_px, swipe -> folder_step: no new
+  // camera path and no new snapshot field.
+  mv::shell::pinch_to_wheel touch_pinch;
+  mv::shell::swipe_detector touch_swipe{64.0, 1000};
+  mv::shell::swipe_detector wheel_swipe{mv::shell::kWheelSwipeThreshold, mv::shell::kWheelSwipeGapMs};
+  ULONGLONG touch_zoom_distance = 0;
+  POINT touch_pan_last{};
   // A document's "Open in <app>" (docs/design/20): the apps for open_with_ext,
   // default first, looked up once per extension off the UI thread.
   std::wstring open_with_ext;
@@ -1258,7 +1268,7 @@ void metadata_selection_changed(app_state* app) {
   push_meta_pane(app);
 }
 
-void push_meta_edit(app_state* app, bool drop_draft = false) noexcept;
+bool push_meta_edit(app_state* app, bool drop_draft = false) noexcept;
 void set_adjust_pane(app_state* app, bool on);
 
 // The pane shows the record already held: three text tables, formatted here once
@@ -1270,9 +1280,14 @@ void push_meta_pane(app_state* app) noexcept {
   if (!app || !app->chrome.meta_pane_visible()) return;
   push_meta_edit(app);
   if (app->meta_record) {
+    // #352: what the Location row may do, beside the position itself.
+    const mv::meta::location_rights rights = mv::meta::location_rights_of(*app->meta_record);
+    const std::int32_t location = (rights.can_set ? mv::shell::kMetaFactLocationSet : 0) |
+                                  (rights.can_clear ? mv::shell::kMetaFactLocationClear : 0) |
+                                  (rights.in_original ? mv::shell::kMetaFactLocationInOriginal : 0);
     app->chrome.set_meta_data(false, mv::meta::summary_table(*app->meta_record),
                               mv::meta::editable_properties_table(*app->meta_record),
-                              mv::meta::streams_table(*app->meta_record));
+                              mv::meta::streams_table(*app->meta_record), &app->meta_record->s, location);
     return;
   }
   std::uint32_t count = 0;
@@ -1352,8 +1367,10 @@ std::string meta_comment_now(app_state* app, const std::string& path) {
   return app->meta_record ? app->meta_record->s.comment : std::string{};
 }
 
-void push_meta_edit(app_state* app, bool drop_draft) noexcept {
-  if (!app || !app->chrome.meta_pane_visible()) return;
+// True when the island took a drop (Esc) by closing an in-pane confirmation
+// only (#352): the field under it keeps the keyboard.
+bool push_meta_edit(app_state* app, bool drop_draft) noexcept {
+  if (!app || !app->chrome.meta_pane_visible()) return false;
   try {
     const std::string path = current_item_path(app);
     std::int32_t flags = 0;
@@ -1364,8 +1381,9 @@ void push_meta_edit(app_state* app, bool drop_draft) noexcept {
     app->focus_comment_next = false;
     const std::int32_t rating = path.empty() ? 0 : meta_rating_now(app, path);
     const std::string comment = path.empty() ? std::string{} : meta_comment_now(app, path);
-    app->chrome.set_meta_edit(rating, comment, flags);
+    return app->chrome.set_meta_edit(rating, comment, flags);
   } catch (...) {
+    return false;
   }
 }
 
@@ -1484,11 +1502,36 @@ void revert_current_metadata(app_state* app) noexcept {
   }
 }
 
-// PR 29 (owner, 2026-09-26): any tag, from the pane's tag tree, its Add tag
-// form and Summary's Remove location. The island parks one edit per line
-// ("S\tkey\tvalue" sets, "R\tkey" removes); they go as one queued write, so
-// removing a location is one checked rewrite, not one per GPS tag. The Mac
-// host's twin is main_mac.mm metaSetTag.
+// #352: the Location editor's text as a write, or false with why not.
+bool location_change(app_state* app, const std::string& text, mv::meta::change<mv::meta::geo_point>& out,
+                     std::string& why) {
+  const mv::meta::location_input in = mv::meta::parse_location(text);
+  if (in.k == mv::meta::location_input::kind::invalid) {
+    why = in.error;
+    return false;
+  }
+  if (in.k == mv::meta::location_input::kind::point) {
+    out = mv::meta::change<mv::meta::geo_point>::to(in.point);
+    return true;
+  }
+  const mv::meta::location_rights rights =
+      app->meta_record ? mv::meta::location_rights_of(*app->meta_record) : mv::meta::location_rights{};
+  if (!rights.can_clear) {
+    why = rights.in_original ? "This file's own location is in the original, which is never rewritten"
+                             : "There is no location to remove";
+    return false;
+  }
+  out = mv::meta::change<mv::meta::geo_point>::remove();
+  return true;
+}
+
+// PR 29 (owner, 2026-09-26): any tag, from the pane's tag tree and its Add tag
+// form. The island parks one edit per line ("S\tkey\tvalue" sets, "R\tkey"
+// removes); they go as one queued write. #352: "L\ttext" is Summary's Location
+// editor, the text as typed: read again here by meta::parse_location (the
+// island's preview is only a preview), blank removes every GPS row, after the
+// island's confirmation. The Mac host's twins are main_mac.mm metaSetTag and
+// metaSetLocation.
 void set_tags_from_pane(app_state* app) noexcept {
   try {
     std::string parked;
@@ -1506,6 +1549,11 @@ void set_tags_from_pane(app_state* app) noexcept {
       if (end == std::string::npos) end = parked.size();
       const std::string line = parked.substr(at, end - at);
       at = end + 1;
+      if (line.size() >= 2 && line[0] == 'L' && line[1] == '\t') {
+        std::string why;
+        if (!location_change(app, line.substr(2), f.location, why)) refused = why;
+        continue;
+      }
       if (line.size() < 3 || line[1] != '\t' || (line[0] != 'S' && line[0] != 'R')) continue;
       const bool remove = line[0] == 'R';
       const std::size_t tab = remove ? std::string::npos : line.find('\t', 2);
@@ -1526,7 +1574,7 @@ void set_tags_from_pane(app_state* app) noexcept {
       ::MessageBeep(MB_ICONWARNING);
       notice_show(app, refused);
     }
-    if (f.tags.empty()) return;
+    if (f.empty()) return;
     app->meta_writer.submit(path, f);
     schedule_meta_write(app, kCommentDebounceMs);
   } catch (...) {
@@ -1610,6 +1658,7 @@ void on_meta_write_done(app_state* app, std::unique_ptr<meta_write_result> r) {
     notice_show(app, job.revert                     ? "Could not revert the metadata"
                      : job.fields.rating.touches()  ? "Could not save the rating"
                      : job.fields.comment.touches() ? "Could not save the comment"
+                     : job.fields.location.touches() ? "Could not save the location; nothing was changed"
                      : out.error == mv::status::invalid_arg
                          ? "That value does not fit the tag; nothing was changed"
                          : "Could not save the metadata; nothing was changed");
@@ -2371,6 +2420,87 @@ void folder_step(app_state* app, int delta) {
   const auto next = mv::shell::step_index(selected, delta, count, app->settings.wrap);
   if (!next) return;
   folder_select(app, *next);
+}
+
+// Issue #212 (docs/design/16 "Touch and trackpad"): a swipe steps the folder
+// as A / D do, but only on the viewer itself: not under the gallery, and not
+// while crop owns the arrows.
+void swipe_step(app_state* app, int delta) {
+  if (delta == 0 || app->gallery_visible || app->edits.crop_active()) return;
+  folder_step(app, delta);
+}
+
+// Touchscreen pinch and pan, from WM_GESTURE. Returns false for what
+// DefWindowProc must see (GID_BEGIN / GID_END, the gestures left off).
+//
+// WM_GESTURE, not WM_POINTER or DirectManipulation: the system recogniser
+// gives the pinch distance and centre and a pan, and a tap still arrives as
+// the promoted mouse click every other path already handles (welcome rows,
+// canvas focus). Raw pointers would mean re-deriving taps and contact
+// bookkeeping; DirectManipulation brings its own viewport and inertia to
+// fight the camera springs. Here a gesture is only input: pinch -> wheel
+// units toward the fingers, pan -> screen pixels, swipe -> folder step.
+bool handle_gesture(app_state* app, HWND hwnd, const GESTUREINFO& gi) {
+  if (gi.dwID == GID_BEGIN) {
+    app->touch_swipe = mv::shell::swipe_detector{
+        mv::shell::touch_swipe_threshold_px(app->input.dpi_scale), 1000};
+    app->touch_pinch.reset();
+    app->touch_zoom_distance = 0;
+    return false;
+  }
+  if (gi.dwID == GID_END) {
+    app->touch_swipe.end();
+    return false;
+  }
+  if (gi.dwID != GID_ZOOM && gi.dwID != GID_PAN) return false;
+  POINT at{gi.ptsLocation.x, gi.ptsLocation.y};
+  ::ScreenToClient(hwnd, &at);
+  const bool begin = (gi.dwFlags & GF_BEGIN) != 0;
+
+  if (gi.dwID == GID_ZOOM) {
+    // A pinch is never also a swipe, however far its centre drifts.
+    app->touch_swipe.suppress();
+    const ULONGLONG distance = gi.ullArguments;
+    if (begin || app->touch_zoom_distance == 0 || distance == 0) {
+      app->touch_zoom_distance = distance;
+      return true;
+    }
+    const double scale =
+        static_cast<double>(distance) / static_cast<double>(app->touch_zoom_distance);
+    app->touch_zoom_distance = distance;
+    const std::int64_t units = app->touch_pinch.feed(scale);
+    if (units == 0) return true;
+    app->input.mouse_x = static_cast<float>(at.x);
+    app->input.mouse_y = static_cast<float>(at.y);
+    app->input.wheel_total += units;
+    ++app->input.activity_seq;
+    publish(app);
+    transport_activity(app);
+    return true;
+  }
+
+  // GID_PAN: the contact centre, in physical pixels like the mouse.
+  if (begin) {
+    app->touch_pan_last = at;
+    return true;
+  }
+  const LONG dx = at.x - app->touch_pan_last.x;
+  const LONG dy = at.y - app->touch_pan_last.y;
+  app->touch_pan_last = at;
+  if (dx == 0 && dy == 0) return true;
+  if (app->lab.view_fitted()) {
+    // The opening view is locked (no drag at fit): a sideways stroke is
+    // swipe-next. Fingers moving left bring in the next item.
+    swipe_step(app, app->touch_swipe.feed(-dx, -dy, ::GetTickCount64()));
+    return true;
+  }
+  // Zoomed: the content follows the fingers, through pan_by_screen's springs.
+  app->input.scroll_px_x -= dx;
+  app->input.scroll_px_y -= dy;
+  ++app->input.activity_seq;
+  publish(app);
+  transport_activity(app);
+  return true;
 }
 
 // Skim, not transport: J/L are the +/-10 s jumps, Q/E are the shuttle you hold
@@ -4724,7 +4854,13 @@ mv::shell::view_state view_state_of(app_state* app) noexcept {
       s.focus = mv::shell::focus_kind::text;
     }
   }
-  if (video_mode(app)) s.item = mv::shell::item_kind::clip;
+  // One play-state read serves both: is a clip on screen, and is it playing
+  // (issue #361: ← → skip ±2 s while it plays or with the strip hidden).
+  std::uint32_t play = MV_PLAY_STOPPED;
+  if (app->session && mv_video_state(app->session, &play) != MV_OK) play = MV_PLAY_STOPPED;
+  s.clip_playing = play == MV_PLAY_PLAYING;
+  s.filmstrip_visible = app->chrome.filmstrip_visible();
+  if (play != MV_PLAY_STOPPED) s.item = mv::shell::item_kind::clip;
   else if (app->lab.animation() != mv::shell::animation_state::none) s.item = mv::shell::item_kind::animation;
   else if (app->mode != open_mode::none) s.item = mv::shell::item_kind::still;
   s.gallery_open = app->gallery_visible;
@@ -5326,8 +5462,10 @@ void walk_back(app_state* app, mv::shell::back_target target) noexcept {
         return;
       }
       // PR 12: Esc in the comment field drops the edit. The pane forgets the
-      // draft before focus leaves, so leaving it does not commit.
-      push_meta_edit(app, true);
+      // draft before focus leaves, so leaving it does not commit. #352: Esc on
+      // the Location remove confirmation closes only that and the field keeps
+      // the keyboard, as the Mac's alert does; the next Esc leaves the field.
+      if (push_meta_edit(app, true)) return;
       focus_canvas(app);
       return;
     case back_target::canvas_focus:
@@ -6714,8 +6852,10 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       underneath.popup_open = false;
       const mv::shell::mode under_mode = mv::shell::resolve_mode(underneath);
       auto modes = static_cast<std::int32_t>(mv::shell::mask_of(under_mode));
-      // Trim layers over video (key_router.cpp), so `?` lists both.
-      if (under_mode == mv::shell::mode::trim) modes |= mv::shell::kVideo;
+      // Trim and skim layer over video (key_router.cpp), so `?` lists both.
+      if (under_mode == mv::shell::mode::trim || under_mode == mv::shell::mode::skim) {
+        modes |= mv::shell::kVideo;
+      }
       app->popup_open = true;
       if (app->fullscreen) layout_chrome(app);  // the flyouts hang off the bar
       app->chrome.show_popup(kind, modes);
@@ -7656,7 +7796,39 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       return 0;
     }
 
+    case WM_GESTURENOTIFY: {
+      // Issue #212: pinch, and pan with one finger in any direction. No
+      // gutter (a pan that starts sideways may turn) and no inertia (the
+      // springs settle the camera; a flick steps one item, it does not coast).
+      GESTURECONFIG config[] = {
+          {GID_ZOOM, GC_ZOOM, 0},
+          {GID_PAN,
+           GC_PAN | GC_PAN_WITH_SINGLE_FINGER_VERTICALLY | GC_PAN_WITH_SINGLE_FINGER_HORIZONTALLY,
+           GC_PAN_WITH_GUTTER | GC_PAN_WITH_INERTIA},
+          {GID_ROTATE, 0, GC_ROTATE},
+          {GID_TWOFINGERTAP, 0, GC_TWOFINGERTAP},
+          {GID_PRESSANDTAP, 0, GC_PRESSANDTAP},
+      };
+      ::SetGestureConfig(hwnd, 0, static_cast<UINT>(std::size(config)), config, sizeof(GESTURECONFIG));
+      break;  // and DefWindowProc, as WM_GESTURENOTIFY requires
+    }
+
+    case WM_GESTURE: {
+      GESTUREINFO gi{};
+      gi.cbSize = sizeof(gi);
+      const auto handle = reinterpret_cast<HGESTUREINFO>(lparam);
+      if (!::GetGestureInfo(handle, &gi) || !handle_gesture(app, hwnd, gi)) break;
+      ::CloseGestureInfoHandle(handle);
+      return 0;
+    }
+
     case WM_MOUSEWHEEL: {
+      // A vertical scroll is travel the sideways swipe weighs against, so a
+      // zoom with some drift never turns the item. Ctrl+wheel (a touchpad
+      // pinch, which zooms below like any wheel) is not a scroll.
+      if ((GET_KEYSTATE_WPARAM(wparam) & MK_CONTROL) == 0) {
+        (void)app->wheel_swipe.feed(0, GET_WHEEL_DELTA_WPARAM(wparam), ::GetTickCount64());
+      }
       if ((GET_KEYSTATE_WPARAM(wparam) & MK_CONTROL) == 0 && document_scrolls(app)) {
         scroll_document(app, 0, -GET_WHEEL_DELTA_WPARAM(wparam));
         transport_activity(app);
@@ -7670,9 +7842,15 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
     }
 
     case WM_MOUSEHWHEEL: {
-      // Tilt / two-finger sideways: pans a document only (it never zoomed).
-      if (!document_scrolls(app)) break;
-      scroll_document(app, GET_WHEEL_DELTA_WPARAM(wparam), 0);
+      // Tilt / two-finger sideways: pans a document (it never zoomed);
+      // anywhere else it is swipe-next (issue #212), one item per swipe or
+      // tilt click. Positive scrolls right: the content moves left, next.
+      if (document_scrolls(app)) {
+        scroll_document(app, GET_WHEEL_DELTA_WPARAM(wparam), 0);
+        return 0;
+      }
+      swipe_step(app, app->wheel_swipe.feed(GET_WHEEL_DELTA_WPARAM(wparam), 0, ::GetTickCount64()));
+      transport_activity(app);
       return 0;
     }
 
