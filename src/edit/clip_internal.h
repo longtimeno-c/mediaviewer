@@ -17,6 +17,7 @@ extern "C" {
 #include <libavutil/avutil.h>
 }
 
+#include "core/crash_context.h"
 #include "core/result.h"
 #include "edit/clip.h"
 
@@ -63,6 +64,9 @@ struct source {
   int audio = -1;  // best audio stream, -1 if none
   time_ns origin_ns = 0;  // container start_time, as player/video_source.cpp
   time_ns duration_ns = 0;
+  // This job's crash-report slot while the source is open (issue #233): the
+  // container and the decoder the job reads with, never the path.
+  crash_context::thread_slot crash;
 };
 
 // Opens read-only with an interrupt callback on `cancel`, finds the streams.

@@ -202,7 +202,10 @@ expected swapchain::resize(std::uint32_t width, std::uint32_t height) noexcept {
 
   width_ = width;
   height_ = height;
-  refresh_output_info();
+  // No refresh_output_info() here: a resize cannot change the refresh rate, and
+  // during a live drag-resize this runs every frame on the render thread
+  // (QueryDisplayConfig + two allocations). Create, retarget and the display
+  // change / window move path re-read it (issue #162).
   return create_rtv();
 }
 
