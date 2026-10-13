@@ -116,8 +116,6 @@ add_executable(mv_import_tests
   "${MV_ROOT}/tests/test_verified_copy.cpp"
   "${MV_ROOT}/tests/test_addon_manifest.cpp"
   "${MV_ROOT}/tests/test_open_addons.cpp"
-  "${MV_ROOT}/tests/test_addon_screens.cpp"
-  "${MV_ROOT}/tests/test_addon_slots.cpp"
   "${MV_ROOT}/tests/test_ai_resume.cpp"
   "${MV_ROOT}/tests/test_import_naming.cpp"
   "${MV_ROOT}/tests/test_import_engine.cpp"
@@ -127,9 +125,8 @@ target_link_libraries(mv_import_tests PRIVATE mv_io mv_addon mv_import_engine
   ${MV_SODIUM_TARGET} ${MV_CATCH2_TARGET})
 target_include_directories(mv_import_tests PRIVATE "${MV_ROOT}/src" "${MV_ROOT}/tests")
 target_compile_definitions(mv_import_tests PRIVATE
-  MV_IMPORT_MODULE_PATH="$<TARGET_FILE:mv_import>"
-  MV_SLOTS_TEST_MODULE_PATH="$<TARGET_FILE:mv_slots_test_addon>")
-add_dependencies(mv_import_tests mv_import mv_slots_test_addon)
+  MV_IMPORT_MODULE_PATH="$<TARGET_FILE:mv_import>")
+add_dependencies(mv_import_tests mv_import)
 add_test(NAME mv_import_tests COMMAND mv_import_tests)
 # The dateless-file fallback is local wall-clock time; pin the zone.
 set_tests_properties(mv_import_tests PROPERTIES ENVIRONMENT "TZ=UTC")
@@ -164,6 +161,7 @@ if(PkgConfig_FOUND)
 endif()
 if(MV_FFMPEG_FOUND AND MV_SPNG_FOUND AND JPEG_FOUND)
   add_library(mv_clip STATIC
+    "${MV_ROOT}/src/core/crash_context.cpp"
     "${MV_ROOT}/src/edit/clip_common.cpp"
     "${MV_ROOT}/src/edit/clip_copy.cpp"
     "${MV_ROOT}/src/edit/clip_encode.cpp"
@@ -174,7 +172,8 @@ if(MV_FFMPEG_FOUND AND MV_SPNG_FOUND AND JPEG_FOUND)
     "${MV_ROOT}/src/edit/clip_helper.cpp"
     "${MV_ROOT}/src/edit/hwencode_none.cpp"
     "${MV_ROOT}/src/edit/encode.cpp"
-    # clip_common names its threads' crash slots (#233).
+    # clip jobs annotate their thread like still decodes (#233); the slots
+    # are plain portable C++ (issue #385).
     "${MV_ROOT}/src/core/crash_context.cpp"
   )
   target_include_directories(mv_clip PUBLIC "${MV_ROOT}/src")

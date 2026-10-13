@@ -1134,6 +1134,7 @@ if(MV_BUILD_TESTS)
     tests/test_heif_avif.cpp
     tests/test_animation_session.cpp
     tests/test_navigation.cpp
+    tests/test_gesture.cpp
     tests/test_present_policy.cpp
     tests/test_metal_pacer.cpp
     tests/test_frametime_report.cpp
