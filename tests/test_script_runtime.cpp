@@ -578,10 +578,14 @@ TEST_CASE("weak tables are strong, so no collect runs unbounded", "[script][sand
   REQUIRE(ended);
   // Ending at all is the point (before, the collect never returned). A slow
   // runner (TSan, a loaded CI box) may spend the 1 s building the chain.
-  if (p->wait_stopped(200ms)) {
+  // The stop notice can trail the task's end on a slow runner (MSVC ASan), so
+  // a task that logged nothing waits for its stop instead of guessing early.
+  const auto lines = p->log_lines();
+  if (lines.empty()) {
+    REQUIRE(p->wait_stopped(5s));
     REQUIRE((p->why == script_stop::time || p->why == script_stop::instructions));
   } else {
-    REQUIRE(p->log_lines() == std::vector<std::string>{"kept\ttrue"});
+    REQUIRE(lines == std::vector<std::string>{"kept\ttrue"});
   }
 }
 
