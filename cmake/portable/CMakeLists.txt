@@ -162,6 +162,7 @@ if(PkgConfig_FOUND)
 endif()
 if(MV_FFMPEG_FOUND AND MV_SPNG_FOUND AND JPEG_FOUND)
   add_library(mv_clip STATIC
+    "${MV_ROOT}/src/core/crash_context.cpp"
     "${MV_ROOT}/src/edit/clip_common.cpp"
     "${MV_ROOT}/src/edit/clip_copy.cpp"
     "${MV_ROOT}/src/edit/clip_encode.cpp"

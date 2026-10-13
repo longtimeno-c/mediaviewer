@@ -365,12 +365,18 @@ TEST_CASE("mv_folder_renamed keeps the renamed stop selected", "[abi][folder][re
           MV_OK);
   REQUIRE(wait_kind(session.handle, MV_COMPLETION_FOLDER_READY, &c));
 
-  // b.bmp becomes z.bmp: it sorts last now, and the stop goes with it.
-  auto r = mv::io::rename_stop(utf8(dir + L"\\b.bmp"), {}, "z",
-                               [&](const std::string& from, const std::string& to) {
-                                 REQUIRE(mv_folder_renamed(session.handle, from.c_str(), to.c_str()) ==
-                                         MV_OK);
-                               });
+  // b.bmp becomes z.bmp: it sorts last now, and the stop goes with it. The
+  // session may still hold the file open for a decode or thumb (a sharing
+  // violation on Windows), so a refused move is retried briefly.
+  const auto told = [&](const std::string& from, const std::string& to) {
+    REQUIRE(mv_folder_renamed(session.handle, from.c_str(), to.c_str()) == MV_OK);
+  };
+  const auto rename_deadline = std::chrono::steady_clock::now() + 4s;
+  auto r = mv::io::rename_stop(utf8(dir + L"\\b.bmp"), {}, "z", told);
+  while (!r && std::chrono::steady_clock::now() < rename_deadline) {
+    std::this_thread::sleep_for(50ms);
+    r = mv::io::rename_stop(utf8(dir + L"\\b.bmp"), {}, "z", told);
+  }
   REQUIRE(r);
   const auto deadline = std::chrono::steady_clock::now() + 8s;
   std::string name;

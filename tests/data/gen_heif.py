@@ -171,6 +171,22 @@ ipexif[0x0112] = 6
 ipim.save(OUT / "iphone_like.heic", quality=92, chroma=420, exif=ipexif.tobytes(),
           icc_profile=icc_rgb("Display P3 (test)", P3))
 
+# 8. Several top-level images (a burst / image collection, issue #211): three
+#    flat 32x16 stills, red / green / blue in file order, with the *second*
+#    (green) as the primary, so page 0 is the primary and the rest follow in
+#    file order. The blue one is 16x32 so a page turn changes the shape.
+#    Lossy 8-bit 4:2:0 like a phone's, so the OS (WIC) path may take page 0.
+def flat(w, h, rgb):
+    a = np.zeros((h, w, 3), np.uint8)
+    a[:, :] = rgb
+    return Image.fromarray(a)
+
+
+burst = pillow_heif.from_pillow(flat(32, 16, (255, 0, 0)))
+burst.add_from_pillow(flat(32, 16, (0, 255, 0)))
+burst.add_from_pillow(flat(16, 32, (0, 0, 255)))
+burst.save(OUT / "multi_image.heic", primary_index=1, quality=90, chroma=420)
+
 # PNG with the P3 ICC for the AVIF generator (ffmpeg carries iCCP to colr prof).
 Image.fromarray(red).save(OUT.parent / "p3_red.png", icc_profile=icc_rgb("Display P3 (test)", P3))
 
