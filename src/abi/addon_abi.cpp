@@ -19,6 +19,7 @@
 
 #include "abi/addon_bridge.h"
 #include "abi/guard.h"
+#include "abi/test_hooks.h"
 #include "addon/host.h"
 #include "addon/manifest.h"
 #include "addon/open_json.h"
@@ -432,6 +433,14 @@ MV_API mv_status MV_CALL mv_addon_remove(const char* id, uint32_t keep_data) {
 }
 
 }  // extern "C"
+
+// abi/test_hooks.h: the DLL's own copy of mv_io's folder overrides.
+void mv::abi::set_user_dirs_for_tests(const char* thumbs_utf8, const char* addons_utf8,
+                                      const char* open_addons_utf8) noexcept {
+  if (thumbs_utf8) mv::io::set_thumb_cache_dir_override(thumbs_utf8);
+  if (addons_utf8) mv::io::set_addons_dir_override(addons_utf8);
+  if (open_addons_utf8) mv::io::set_open_addons_dir_override(open_addons_utf8);
+}
 
 namespace {
 

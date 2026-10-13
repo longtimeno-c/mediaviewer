@@ -10,21 +10,31 @@
 // contract the managed half depends on.
 
 #include <windows.h>
+#include <d3d11.h>
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include "abi/native.h"
+#include "abi/test_hooks.h"
 #include "corpus.h"
 #include "gfx/device.h"
+#include "io/paths.h"
 #include "mediaviewer/mediaviewer.h"
+#include "mediaviewer/mediaviewer_addon.h"
 #include "mediaviewer/mediaviewer_clip.h"
+#include "mediaviewer/mediaviewer_crash.h"
 #include "clip_fixture.h"
+#include "fixtures.h"
+#include "fixtures_tiff_ico.h"
 #include "import_fixture.h"
 
 using namespace std::chrono_literals;
@@ -426,4 +436,530 @@ TEST_CASE("clip index and a keyframe trim through the exports (ABI 0.10)", "[abi
   REQUIRE(mv_clip_clear_finished(s.handle) == MV_OK);
   REQUIRE(mv_clip_jobs(s.handle, nullptr, 0, &count) == MV_OK);
   REQUIRE(count == 0);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #151: exports no test called. A result list (how Windows opens AI-search
+// results), a page turn, the video transport's argument checks, the clip
+// queue's unknown ids, the crash-context table and the volume watch.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Writes a 2 x 2 BMP: the smallest still every build decodes.
+void write_small_bmp(const std::filesystem::path& p) {
+  const std::uint8_t rgba[] = {255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255};
+  mv::test::write_bytes(p, fixtures::bmp_rgba(2, 2, rgba));
+}
+
+// Drains until a completion of `kind` arrives. Other completions are dropped,
+// so callers poll state (counts, info, thumb paths) rather than wait twice.
+bool wait_for_kind(mv_session_t s, uint32_t kind, mv_completion* out = nullptr) {
+  const auto deadline = std::chrono::steady_clock::now() + 10s;
+  mv_completion buf[32]{};
+  while (std::chrono::steady_clock::now() < deadline) {
+    const uint32_t n = mv_completion_drain(s, buf, 32);
+    for (uint32_t i = 0; i < n; ++i) {
+      if (buf[i].kind == kind) {
+        if (out) *out = buf[i];
+        return true;
+      }
+    }
+    std::this_thread::sleep_for(2ms);
+  }
+  return false;
+}
+
+// Polls the session's image until `w` x `h` is on screen.
+bool wait_for_image(mv_session_t s, uint32_t w, uint32_t h, mv_image_info* out = nullptr) {
+  const auto deadline = std::chrono::steady_clock::now() + 10s;
+  mv_image_info info{};
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (mv_session_image_info(s, &info) == MV_OK && info.width == w && info.height == h) {
+      if (out) *out = info;
+      return true;
+    }
+    std::this_thread::sleep_for(2ms);
+  }
+  return false;
+}
+
+// Every job the session submitted has finished or been cancelled.
+bool wait_for_idle(mv_session_t s) {
+  const auto deadline = std::chrono::steady_clock::now() + 10s;
+  mv_job_stats stats{};
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (mv_session_job_stats(s, &stats) != MV_OK) return false;
+    if (stats.queue_depth == 0 && stats.completed + stats.cancelled >= stats.submitted) return true;
+    std::this_thread::sleep_for(2ms);
+  }
+  return false;
+}
+
+using index_string_fn = mv_status(MV_CALL*)(mv_session_t, uint32_t, char*, uint32_t, uint32_t*);
+using session_string_fn = mv_status(MV_CALL*)(mv_session_t, char*, uint32_t, uint32_t*);
+
+std::string folder_string(mv_session_t s, uint32_t index, index_string_fn fn) {
+  char buf[1024]{};
+  uint32_t bytes = 0;
+  REQUIRE(fn(s, index, buf, sizeof(buf), &bytes) == MV_OK);
+  return std::string(buf);
+}
+
+std::string session_string(mv_session_t s, session_string_fn fn) {
+  char buf[1024]{};
+  uint32_t bytes = 0;
+  REQUIRE(fn(s, buf, sizeof(buf), &bytes) == MV_OK);
+  return std::string(buf);
+}
+
+// The thumbnail cache goes to the scratch folder, not the user's profile. The
+// DLL has its own copy of mv_io, so its override is set through test_hooks.h.
+struct thumb_cache_override {
+  explicit thumb_cache_override(const std::filesystem::path& dir) {
+    std::filesystem::create_directories(dir);
+    mv::io::set_thumb_cache_dir_override(mv::test::utf8(dir));
+    mv::abi::set_user_dirs_for_tests(mv::test::utf8(dir).c_str(), nullptr, nullptr);
+  }
+  ~thumb_cache_override() {
+    mv::io::set_thumb_cache_dir_override({});
+    mv::abi::set_user_dirs_for_tests("", nullptr, nullptr);
+  }
+  thumb_cache_override(const thumb_cache_override&) = delete;
+  thumb_cache_override& operator=(const thumb_cache_override&) = delete;
+};
+
+}  // namespace
+
+TEST_CASE("mv_folder_open_list keeps order, drops missing paths, reports moments and title",
+          "[abi][folder][list]") {
+  mv::test::scratch_dir dir("abi_list");
+  thumb_cache_override thumbs(dir / "thumbs");
+  // Names out of name order: a list keeps the order it was given (best match
+  // first), never the folder sort.
+  const std::string zebra = mv::test::utf8(dir / "zebra.bmp");
+  const std::string gone = mv::test::utf8(dir / "deleted_since_indexed.bmp");
+  const std::string apple = mv::test::utf8(dir / "apple.bmp");
+  write_small_bmp(dir / "zebra.bmp");
+  write_small_bmp(dir / "apple.bmp");
+
+  session_guard s;
+  const char* paths[] = {zebra.c_str(), gone.c_str(), apple.c_str()};
+  const int64_t moments[] = {-1, 500, 1200};
+
+  CHECK(mv_folder_open_list(nullptr, "t", paths, moments, 3, 0, nullptr) == MV_ERR_INVALID_ARG);
+  CHECK(mv_folder_open_list(s.handle, "t", nullptr, nullptr, 3, 0, nullptr) == MV_ERR_INVALID_ARG);
+  const char* with_empty[] = {zebra.c_str(), ""};
+  CHECK(mv_folder_open_list(s.handle, "t", with_empty, nullptr, 2, 0, nullptr) ==
+        MV_ERR_INVALID_ARG);
+
+  uint64_t job = 0;
+  // Select "apple" (index 2 as given); the missing file before it drops out.
+  REQUIRE(mv_folder_open_list(s.handle, "guy on a skateboard", paths, moments, 3, 2, &job) == MV_OK);
+  REQUIRE(job != 0);
+  mv_completion ready{};
+  REQUIRE(wait_for_kind(s.handle, MV_COMPLETION_FOLDER_READY, &ready));
+  REQUIRE(ready.status == MV_OK);
+  REQUIRE(ready.payload == 2);
+
+  uint32_t count = 0;
+  REQUIRE(mv_folder_count(s.handle, &count) == MV_OK);
+  REQUIRE(count == 2);
+  CHECK(folder_string(s.handle, 0, mv_folder_item_name) == "zebra.bmp");
+  CHECK(folder_string(s.handle, 1, mv_folder_item_name) == "apple.bmp");
+
+  uint32_t selected = 99;
+  REQUIRE(mv_folder_selected(s.handle, &selected) == MV_OK);
+  CHECK(selected == 1);
+
+  int64_t moment = 0;
+  REQUIRE(mv_folder_item_moment(s.handle, 0, &moment) == MV_OK);
+  CHECK(moment == -1);
+  REQUIRE(mv_folder_item_moment(s.handle, 1, &moment) == MV_OK);
+  CHECK(moment == 1200);
+  CHECK(mv_folder_item_moment(s.handle, 2, &moment) == MV_ERR_INVALID_ARG);
+  CHECK(mv_folder_item_moment(s.handle, 0, nullptr) == MV_ERR_INVALID_ARG);
+  CHECK(mv_folder_item_moment(nullptr, 0, &moment) == MV_ERR_INVALID_ARG);
+
+  CHECK(session_string(s.handle, mv_folder_list_title) == "guy on a skateboard");
+  // A list is not a directory and has no folder tiles.
+  CHECK(session_string(s.handle, mv_folder_directory).empty());
+  uint32_t subfolders = 99;
+  REQUIRE(mv_folder_subfolder_count(s.handle, &subfolders) == MV_OK);
+  CHECK(subfolders == 0);
+  char buf[64]{};
+  uint32_t bytes = 0;
+  CHECK(mv_folder_subfolder_path(s.handle, 0, buf, sizeof(buf), &bytes) == MV_ERR_INVALID_ARG);
+  CHECK(mv_folder_summary_cover_thumb_path(s.handle, 0, buf, sizeof(buf), &bytes) ==
+        MV_ERR_INVALID_ARG);
+
+  // Thumbs land for both items through the same cache as a folder.
+  CHECK(mv_folder_thumbs_visible(nullptr, 0, 2) == MV_ERR_INVALID_ARG);
+  REQUIRE(mv_folder_thumbs_visible(s.handle, 0, 2) == MV_OK);
+  const auto deadline = std::chrono::steady_clock::now() + 10s;
+  std::string thumb0;
+  std::string thumb1;
+  while (std::chrono::steady_clock::now() < deadline && (thumb0.empty() || thumb1.empty())) {
+    thumb0 = folder_string(s.handle, 0, mv_folder_item_thumb_path);
+    thumb1 = folder_string(s.handle, 1, mv_folder_item_thumb_path);
+    std::this_thread::sleep_for(5ms);
+  }
+  CHECK_FALSE(thumb0.empty());
+  CHECK_FALSE(thumb1.empty());
+  CHECK(thumb0 != thumb1);
+  CHECK(mv_folder_item_thumb_path(s.handle, 2, buf, sizeof(buf), &bytes) == MV_ERR_INVALID_ARG);
+
+  // Opening a directory ends the list: no title, the directory reported, no moments.
+  REQUIRE(mv_folder_open(s.handle, mv::test::utf8(dir.root()).c_str(), nullptr, &job) == MV_OK);
+  REQUIRE(wait_for_kind(s.handle, MV_COMPLETION_FOLDER_READY));
+  CHECK(session_string(s.handle, mv_folder_list_title).empty());
+  CHECK_FALSE(session_string(s.handle, mv_folder_directory).empty());
+  REQUIRE(mv_folder_count(s.handle, &count) == MV_OK);
+  REQUIRE(count == 2);
+  for (uint32_t i = 0; i < count; ++i) {
+    REQUIRE(mv_folder_item_moment(s.handle, i, &moment) == MV_OK);
+    CHECK(moment == -1);
+  }
+
+  REQUIRE(mv_folder_close(s.handle) == MV_OK);
+  CHECK(wait_for_idle(s.handle));
+}
+
+TEST_CASE("mv_folder_select_page shows page 2 of a 3-page TIFF and ignores page 5",
+          "[abi][folder][pages]") {
+  mv::test::scratch_dir dir("abi_pages");
+  thumb_cache_override thumbs(dir / "thumbs");
+  // Each page a different size, so the image info says which page is shown.
+  const auto tiff = fixtures::tiff_pages({
+      {.grey = 40, .reduced = false, .width = 8, .height = 8},
+      {.grey = 80, .reduced = false, .width = 16, .height = 4},
+      {.grey = 120, .reduced = false, .width = 4, .height = 12},
+  });
+  REQUIRE_FALSE(tiff.empty());
+  const std::string path = mv::test::utf8(dir / "scan.tif");
+  mv::test::write_bytes(dir / "scan.tif", tiff);
+
+  session_guard s;
+  CHECK(mv_folder_select_page(nullptr, 1, nullptr) == MV_ERR_INVALID_ARG);
+  // Nothing listed, so nothing is selected.
+  CHECK(mv_folder_select_page(s.handle, 1, nullptr) == MV_ERR_INVALID_ARG);
+
+  const char* paths[] = {path.c_str()};
+  uint64_t job = 0;
+  REQUIRE(mv_folder_open_list(s.handle, "scan", paths, nullptr, 1, 0, &job) == MV_OK);
+  REQUIRE(wait_for_kind(s.handle, MV_COMPLETION_FOLDER_READY));
+  mv_image_info info{};
+  REQUIRE(wait_for_image(s.handle, 8, 8, &info));
+  CHECK(info.page_count == 3);
+
+  REQUIRE(mv_folder_select_page(s.handle, 1, &job) == MV_OK);
+  REQUIRE(wait_for_image(s.handle, 16, 4, &info));
+  CHECK(info.page_count == 3);
+
+  // A page past the end leaves the page on screen as it is.
+  REQUIRE(mv_folder_select_page(s.handle, 5, &job) == MV_OK);
+  REQUIRE(wait_for_idle(s.handle));
+  REQUIRE(mv_session_image_info(s.handle, &info) == MV_OK);
+  CHECK(info.width == 16);
+  CHECK(info.height == 4);
+
+  // Page 0 is the stop itself, as mv_folder_select.
+  REQUIRE(mv_folder_select_page(s.handle, 0, &job) == MV_OK);
+  REQUIRE(wait_for_image(s.handle, 8, 8));
+
+  REQUIRE(mv_folder_close(s.handle) == MV_OK);
+  CHECK(wait_for_idle(s.handle));
+}
+
+TEST_CASE("the video transport rejects a null session and is harmless with no clip",
+          "[abi][video]") {
+  CHECK(mv_video_pause(nullptr) == MV_ERR_INVALID_ARG);
+  CHECK(mv_video_seek(nullptr, 0, 1) == MV_ERR_INVALID_ARG);
+  CHECK(mv_video_step(nullptr, 1) == MV_ERR_INVALID_ARG);
+  CHECK(mv_video_set_rate(nullptr, 1.0) == MV_ERR_INVALID_ARG);
+  CHECK(mv_video_set_volume(nullptr, 0.5f) == MV_ERR_INVALID_ARG);
+  CHECK(mv_video_select_audio_track(nullptr, 0) == MV_ERR_INVALID_ARG);
+  CHECK(mv_video_set_loop(nullptr, 0, -1) == MV_ERR_INVALID_ARG);
+  int64_t position = -1;
+  CHECK(mv_video_position(nullptr, &position) == MV_ERR_INVALID_ARG);
+  mv_video_stats stats{};
+  CHECK(mv_video_get_stats(nullptr, &stats) == MV_ERR_INVALID_ARG);
+
+  session_guard s;
+  CHECK(mv_video_position(s.handle, nullptr) == MV_ERR_INVALID_ARG);
+  CHECK(mv_video_get_stats(s.handle, nullptr) == MV_ERR_INVALID_ARG);
+
+  // No clip open: the commands queue for nothing and succeed. An out-of-range
+  // rate is clamped to 0.25 .. 4.0 by the player (mediaviewer.h), not rejected.
+  CHECK(mv_video_pause(s.handle) == MV_OK);
+  CHECK(mv_video_seek(s.handle, 1'000'000'000, 0) == MV_OK);
+  CHECK(mv_video_seek(s.handle, 1'000'000'000, 1) == MV_OK);
+  CHECK(mv_video_step(s.handle, -1) == MV_OK);
+  CHECK(mv_video_set_rate(s.handle, 64.0) == MV_OK);
+  CHECK(mv_video_set_volume(s.handle, 0.25f) == MV_OK);
+  CHECK(mv_video_select_audio_track(s.handle, 3) == MV_OK);
+  CHECK(mv_video_set_loop(s.handle, 0, 1'000'000'000) == MV_OK);
+  CHECK(mv_video_set_loop(s.handle, 0, -1) == MV_OK);
+
+  REQUIRE(mv_video_position(s.handle, &position) == MV_OK);
+  CHECK(position == 0);
+  REQUIRE(mv_video_get_stats(s.handle, &stats) == MV_OK);
+  CHECK(stats.position_ns == 0);
+  CHECK(stats.frames_presented == 0);
+}
+
+namespace {
+
+// A device with video support, as a hosted runner has one: with no GPU the
+// hardware driver type is the Basic Render Driver, which accepts
+// VIDEO_SUPPORT and has no video decoder, so the clip decodes in software
+// (test_video_ring.cpp). That is enough to drive the transport.
+struct video_device {
+  ID3D11Device* device = nullptr;
+  video_device() {
+    const UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
+    const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
+    if (FAILED(::D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags, levels,
+                                   ARRAYSIZE(levels), D3D11_SDK_VERSION, &device, nullptr,
+                                   nullptr))) {
+      device = nullptr;
+      return;
+    }
+    ID3D10Multithread* mt = nullptr;
+    if (SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&mt)))) {
+      mt->SetMultithreadProtected(TRUE);
+      mt->Release();
+    }
+  }
+  ~video_device() {
+    if (device) device->Release();
+  }
+  video_device(const video_device&) = delete;
+  video_device& operator=(const video_device&) = delete;
+};
+
+// Stands in for the present loop: poll_video is what applies the transport
+// commands and takes frames, and only the render thread calls it.
+struct video_pump {
+  explicit video_pump(mv_session_t s) : session(s) {}
+  mv_session_t session;
+  mv::player::video_frame frame;
+  bool active = false;
+  int shown = 0;
+  bool ended = false;
+  void poll() {
+    if (mv::abi::poll_video(session, 16'666'667, frame, active)) ++shown;
+    mv_completion drained[32]{};
+    const uint32_t n = mv_completion_drain(session, drained, 32);
+    for (uint32_t i = 0; i < n; ++i) ended = ended || drained[i].kind == MV_COMPLETION_VIDEO_ENDED;
+  }
+  template <class Pred>
+  bool until(Pred pred, std::chrono::milliseconds limit = 5s) {
+    const auto deadline = std::chrono::steady_clock::now() + limit;
+    while (std::chrono::steady_clock::now() < deadline) {
+      poll();
+      if (pred()) return true;
+      std::this_thread::sleep_for(4ms);
+    }
+    return false;
+  }
+  void run_for(std::chrono::milliseconds span) {
+    (void)until([] { return false; }, span);
+  }
+  int64_t position() {
+    int64_t p = -1;
+    REQUIRE(mv_video_position(session, &p) == MV_OK);
+    return p;
+  }
+  uint32_t state() {
+    uint32_t s = 99;
+    REQUIRE(mv_video_state(session, &s) == MV_OK);
+    return s;
+  }
+  mv_video_stats stats() {
+    mv_video_stats s{};
+    REQUIRE(mv_video_get_stats(session, &s) == MV_OK);
+    return s;
+  }
+};
+
+constexpr int64_t kFrameNs = 33'333'333;  // the fixture's 30 fps
+constexpr int64_t kSecondNs = 1'000'000'000;
+
+}  // namespace
+
+TEST_CASE("the video transport drives a playing synthetic clip", "[abi][video]") {
+  // Issue #151: every transport call against a clip that is really playing,
+  // with what each one is for observed through the ABI. A synthetic clip
+  // (clip_fixture.h: 4 s, 30 fps, MPEG-4 + MP2), so no corpus.
+  mv::test::scratch_dir dir("abi_transport");
+  thumb_cache_override thumbs(dir / "thumbs");  // the player's resume note goes beside it
+  const std::string path = mv::test::utf8(dir / "clip.mp4");
+  REQUIRE(mv::test::clipfx::make(path, {}));
+
+  video_device device;
+  if (!device.device) SKIP("no D3D11 device with video support on this machine");
+  session_guard s(2);
+  REQUIRE(mv::abi::attach_device(s.handle, device.device) == mv::status::ok);
+  REQUIRE(mv_video_set_muted(s.handle, 1) == MV_OK);  // the audio clock still runs at gain 0
+  uint64_t job = 0;
+  REQUIRE(mv_video_open(s.handle, path.c_str(), &job) == MV_OK);
+  video_pump pump(s.handle);
+  REQUIRE(pump.until([&] { return pump.shown > 0; }));
+  mv_video_info info{};
+  REQUIRE(mv_video_get_info(s.handle, &info) == MV_OK);
+  CHECK(info.duration_ns == 4 * kSecondNs);
+  CHECK(info.audio_tracks == 1);
+
+  // Play: frames are presented and the position moves.
+  REQUIRE(mv_video_play(s.handle) == MV_OK);
+  REQUIRE(pump.until([&] {
+    return pump.state() == MV_PLAY_PLAYING && pump.stats().frames_presented >= 10;
+  }));
+  CHECK(pump.position() > 0);
+
+  // Pause: the position holds.
+  REQUIRE(mv_video_pause(s.handle) == MV_OK);
+  REQUIRE(pump.until([&] { return pump.state() == MV_PLAY_PAUSED; }));
+  const int64_t paused_at = pump.position();
+  pump.run_for(300ms);
+  CHECK(pump.position() == paused_at);
+
+  // Exact seek while paused shows the frame at the target.
+  int before = pump.shown;
+  REQUIRE(mv_video_seek(s.handle, 2 * kSecondNs, 1) == MV_OK);
+  REQUIRE(pump.until([&] { return pump.shown > before; }));
+  const int64_t at_seek = pump.position();
+  CHECK(std::llabs(at_seek - 2 * kSecondNs) <= kFrameNs / 2);
+
+  // A step forward is the next frame; a step back returns to this one.
+  before = pump.shown;
+  REQUIRE(mv_video_step(s.handle, 1) == MV_OK);
+  REQUIRE(pump.until([&] { return pump.shown > before; }));
+  const int64_t stepped = pump.position();
+  CHECK(std::llabs(stepped - at_seek - kFrameNs) <= kFrameNs / 2);
+  before = pump.shown;
+  REQUIRE(mv_video_step(s.handle, -1) == MV_OK);
+  REQUIRE(pump.until([&] { return pump.shown > before && pump.position() < stepped; }));
+  CHECK(std::llabs(pump.position() - at_seek) <= kFrameNs / 2);
+  CHECK(pump.state() == MV_PLAY_PAUSED);
+
+  // Rate: taken, and clamped to 0.25 .. 4.0 rather than refused (mediaviewer.h).
+  for (const double rate : {2.0, 64.0, 0.1, 1.0}) {
+    const double want = rate > 4.0 ? 4.0 : (rate < 0.25 ? 0.25 : rate);
+    REQUIRE(mv_video_set_rate(s.handle, rate) == MV_OK);
+    CHECK(pump.until([&] { return pump.stats().playback_rate == want; }));
+  }
+  CHECK(std::llabs(pump.position() - at_seek) <= kFrameNs / 2);
+
+  // Volume moves nothing but the gain.
+  pump.run_for(100ms);
+  const int64_t before_volume = pump.position();
+  REQUIRE(mv_video_set_volume(s.handle, 0.5f) == MV_OK);
+  pump.run_for(200ms);
+  CHECK(pump.position() == before_volume);
+  CHECK(pump.state() == MV_PLAY_PAUSED);
+
+  // Choosing the (only) audio track re-reads from where it is; a track that
+  // is not there is ignored.
+  before = pump.shown;
+  REQUIRE(mv_video_select_audio_track(s.handle, 0) == MV_OK);
+  CHECK(pump.until([&] { return pump.shown > before; }));
+  CHECK(std::llabs(pump.position() - before_volume) <= kFrameNs / 2);
+  REQUIRE(mv_video_select_audio_track(s.handle, 5) == MV_OK);
+  pump.run_for(200ms);
+  CHECK(std::llabs(pump.position() - before_volume) <= kFrameNs / 2);
+  CHECK(pump.state() == MV_PLAY_PAUSED);
+
+  // An A-B loop over 1.0 .. 1.5 s keeps playback inside it and wraps.
+  REQUIRE(mv_video_set_loop(s.handle, kSecondNs, 3 * kSecondNs / 2) == MV_OK);
+  REQUIRE(mv_video_seek(s.handle, kSecondNs, 1) == MV_OK);
+  REQUIRE(mv_video_play(s.handle) == MV_OK);
+  int64_t highest = 0;
+  int64_t last = 0;
+  int wraps = 0;
+  (void)pump.until(
+      [&] {
+        const int64_t p = pump.position();
+        highest = std::max(highest, p);
+        if (p + 200'000'000 < last) ++wraps;
+        last = p;
+        return false;
+      },
+      1500ms);
+  CHECK(wraps >= 1);
+  CHECK(highest <= 3 * kSecondNs / 2 + 250'000'000);
+
+  // Loop off: playback runs past B to the end.
+  REQUIRE(mv_video_set_loop(s.handle, 0, -1) == MV_OK);
+  REQUIRE(mv_video_seek(s.handle, 3 * kSecondNs + kSecondNs / 2, 1) == MV_OK);
+  REQUIRE(mv_video_play(s.handle) == MV_OK);
+  CHECK(pump.until([&] { return pump.state() == MV_PLAY_ENDED; }));
+  CHECK(pump.ended);
+
+  // The stats and the position agree, and say what happened.
+  const mv_video_stats stats = pump.stats();
+  CHECK(stats.position_ns == pump.position());
+  CHECK(stats.position_ns > 3 * kSecondNs + kSecondNs / 2);
+  CHECK(stats.frames_presented >= 10);
+  CHECK(stats.playback_rate == 1.0);
+
+  REQUIRE(mv_video_close(s.handle) == MV_OK);
+  pump.poll();
+  CHECK(pump.state() == MV_PLAY_STOPPED);
+  mv::abi::detach_device(s.handle);
+}
+
+TEST_CASE("mv_probe_is_video answers by magic bytes", "[abi][video][probe]") {
+  mv::test::scratch_dir dir("abi_probe");
+  const std::string clip = mv::test::utf8(dir / "clip.mp4");
+  REQUIRE(mv::test::clipfx::make(clip, {}));
+  // A still named like a clip is still a still.
+  const std::string fake = mv::test::utf8(dir / "still.mp4");
+  write_small_bmp(dir / "still.mp4");
+
+  session_guard s;
+  int32_t is_video = -1;
+  CHECK(mv_probe_is_video(nullptr, clip.c_str(), &is_video) == MV_ERR_INVALID_ARG);
+  CHECK(mv_probe_is_video(s.handle, nullptr, &is_video) == MV_ERR_INVALID_ARG);
+  CHECK(mv_probe_is_video(s.handle, clip.c_str(), nullptr) == MV_ERR_INVALID_ARG);
+
+  REQUIRE(mv_probe_is_video(s.handle, clip.c_str(), &is_video) == MV_OK);
+  CHECK(is_video == 1);
+  REQUIRE(mv_probe_is_video(s.handle, fake.c_str(), &is_video) == MV_OK);
+  CHECK(is_video == 0);
+  // A file that is not there is an error, not "not a video".
+  const std::string missing = mv::test::utf8(dir / "missing.mp4");
+  CHECK(mv_probe_is_video(s.handle, missing.c_str(), &is_video) != MV_OK);
+}
+
+TEST_CASE("the clip queue rejects null sessions and ids it never issued", "[abi][clip]") {
+  uint64_t retried = 0;
+  CHECK(mv_clip_set_helper(nullptr, "helper.exe") == MV_ERR_INVALID_ARG);
+  CHECK(mv_clip_cancel(nullptr, 1) == MV_ERR_INVALID_ARG);
+  CHECK(mv_clip_retry(nullptr, 1, &retried) == MV_ERR_INVALID_ARG);
+
+  session_guard s;
+  CHECK(mv_clip_set_helper(s.handle, nullptr) == MV_ERR_INVALID_ARG);
+  CHECK(mv_clip_set_helper(s.handle, "") == MV_ERR_INVALID_ARG);
+  CHECK(mv_clip_set_helper(s.handle, MV_CLIPJOB_PATH) == MV_OK);
+  CHECK(mv_clip_cancel(s.handle, 424242) == MV_ERR_INVALID_ARG);
+  CHECK(mv_clip_retry(s.handle, 424242, nullptr) == MV_ERR_INVALID_ARG);
+  CHECK(mv_clip_retry(s.handle, 424242, &retried) == MV_ERR_INVALID_ARG);
+  CHECK(retried == 0);
+}
+
+TEST_CASE("mv_crash_context hands out a stable table", "[abi][crash]") {
+  CHECK(mv_crash_context(nullptr) == MV_ERR_INVALID_ARG);
+  mv_crash_context_info first{};
+  mv_crash_context_info second{};
+  REQUIRE(mv_crash_context(&first) == MV_OK);
+  REQUIRE(mv_crash_context(&second) == MV_OK);
+  CHECK(first.slots != nullptr);
+  CHECK(first.slot_count > 0);
+  CHECK(first.slot_bytes > 0);
+  CHECK(first.last_call_correlation_id != nullptr);
+  // The crash handler reads these addresses after the fact: they never move.
+  CHECK(first.slots == second.slots);
+  CHECK(first.last_call_correlation_id == second.last_call_correlation_id);
 }
