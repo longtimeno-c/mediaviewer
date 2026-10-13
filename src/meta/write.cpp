@@ -1285,6 +1285,11 @@ tag_access access_of(std::string_view key, write_target target) noexcept {
   }
 }
 
+tag_access row_access(const property& p, write_target target) noexcept {
+  if (p.space != origin::exif && p.space != origin::iptc && p.space != origin::xmp) return tag_access::read_only;
+  return access_of(p.raw_tag, target);
+}
+
 bool exif_date_of(std::string_view stamp, std::string& exif_out, std::string& xmp_out) {
   // "YYYY-MM-DD HH:MM:SS", with '-' or ':' in the date and ' ' or 'T' between.
   if (stamp.size() != 19) return false;

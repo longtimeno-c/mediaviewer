@@ -36,6 +36,7 @@
 #include <vector>
 
 #include "core/result.h"
+#include "meta/meta.h"
 
 namespace mv::meta {
 
@@ -100,6 +101,11 @@ enum class write_target : std::uint8_t { in_file, sidecar };
 // PR 29: what a write to `key` may do on a file whose writes land at `target`
 // (write_target_for). Pure: decided by the key, not by the file.
 [[nodiscard]] tag_access access_of(std::string_view key, write_target target) noexcept;
+
+// #290: what the pane's editability column shows for a row. Only Exiv2's own
+// EXIF / IPTC / XMP rows go through access_of; C2PA, PNG text, ICC, raw XMP,
+// container and computed rows are read-only (rule 5: the writer is unchanged).
+[[nodiscard]] tag_access row_access(const property& p, write_target target) noexcept;
 
 // PR 29: "2024-05-01 14:03:22" (or "...T..." ) -> the EXIF form
 // "2024:05:01 14:03:22" / the XMP form "2024-05-01T14:03:22". False for

@@ -19,7 +19,11 @@ One vocabulary for the UI ([`src/meta/meta.h`](../../src/meta/meta.h)). `meta::r
 fills a `metadata`:
 
 ```cpp
-enum class origin { exif, iptc, xmp, container, computed };
+enum class origin { exif, iptc, xmp, container, computed,   // Exiv2, libavformat, the viewer
+                    c2pa, png_text, icc, xmp_raw };         // #290: meta/parse.h
+
+struct geo_point { double lat = 0, lon = 0; std::optional<double> altitude; };
+// summary also holds: std::optional<geo_point> where; std::string made_with; bool ai_generated;
 
 struct property {          // one row of the full tree
   origin      space;
@@ -49,14 +53,82 @@ Views:
 
 1. **Summary** (`summary_rows`) — dimensions, file size, format, camera, lens, exposure,
    aperture, ISO, focal length, date taken, GPS, duration, codec, bitrate. Every row for the
-   item's kind is present; an empty one shows "—" so missing reads as missing.
-2. **Full tree** — every tag, grouped, searchable, raw value kept.
+   item's kind is present; an empty one shows "—" so missing reads as missing. The one
+   exception is **Made with** (#290), shown only when the file names a generator or says it
+   is AI-made ("ChatGPT · AI-generated"): no provenance is not a gap a file is expected to fill.
+2. **Full tree** ("All tags") — every tag, grouped by source, searchable, raw key and value
+   kept. Both hosts list every row (Windows uses a virtualised `ItemsRepeater`; there is no row
+   cap in the pane). The read model caps a file at 4 000 rows so a hostile file cannot build a
+   100 MB tree.
 3. **Streams** — per video/audio/subtitle/data/attachment stream: codec and labelled fields
    (profile/level, resolution, pixel format, bit depth, frame rate, colour, HDR mastering
    metadata, rotation, channels, sample rate, language…), plus chapters.
 
 `summary` also carries numeric clip facts (audio channels, sample rate, every codec) for
 non-human consumers such as the Spotlight importer, and the date-taken sort key.
+
+**Position as numbers** (#290): `summary::where` keeps the GPS fix the `gps` display string is
+made from — WGS 84 degrees, north and east positive, altitude in metres (negative below sea
+level) when the file gives one. Sources in order: EXIF `GPSLatitude/Longitude` (+Ref,
+`GPSAltitude`/`GPSAltitudeRef`); else XMP `exif:GPSLatitude/GPSLongitude` in XMP's
+`"DDD,MM.mmmk"` / `"DDD,MM,SSk"` form (drones such as DJI write only these) with
+`exif:GPSAltitude`; else a clip's ISO 6709 `com.apple.quicktime.location.ISO6709` /
+`location`, altitude included. Place names and the map (#344) read `where`, never the string.
+
+## Beyond Exiv2 (#290)
+
+Exiv2 does not surface everything a file carries. [`src/meta/parse.h`](../../src/meta/parse.h)
+holds portable, bounds-checked readers (library `mv_meta_parse`: no Exiv2, no FFmpeg, no platform
+header, D9) whose rows join the tree:
+
+| Origin / group | What | From |
+|---|---|---|
+| `c2pa` "Content Credentials (C2PA)" | Claim generator (`claim_generator_info` name + version, else `claim_generator`), title, actions, digital source type, software agent, signer (leaf certificate subject O / CN), certificate issuer, signing time (RFC 3161 `genTime`), manifest and ingredient counts, and "Validation: not checked" | The JUMBF store: JPEG APP11 (segments reassembled by sequence number, continuation headers dropped, the instance labelled `c2pa` chosen), PNG `caBX`, ISO-BMFF top-level `uuid` (C2PA UUID, purpose `manifest`) or `c2pa` box in HEIF / AVIF / MP4 / MOV |
+| `c2pa` "C2PA assertions" | Every assertion of every manifest (active first) and the claim, flattened to `label.path[n].key = value`; byte strings shown as their size | CBOR (bounded decoder) and JSON boxes |
+| `png_text` "PNG text" | Every `tEXt`, `zTXt` and `iTXt` chunk, compressed or not, keyed `PNG.<chunk>.<keyword>`, `iTXt` language in the label; text shown up to 2 048 characters | Latin-1 by the spec, UTF-8 kept when valid; XMP and Exiv2's "Raw profile type" chunks stay Exiv2's |
+| `icc` "ICC profile" | Description, copyright, device manufacturer / model, version, class, colour space, PCS, date, CMM, creator, rendering intent | The profile Exiv2 already reassembled (`desc` / `text` / `mluc`). The description also replaces the summary's "Embedded ICC profile" placeholder |
+| `xmp_raw` "Xmp.<prefix>" | Any leaf of the XMP packet Exiv2 did not list, keyed as the packet spells it in Exiv2's path form (`History[2]/stEvt:action`) | An RDF walk over the packet Exiv2 holds (`codec/xml.h`, DOCTYPE refused); checked against Exiv2's keys by namespace URI. Exiv2 0.28 registers unknown namespaces itself, so in practice this is a safety net for what it cannot key |
+| `container` "JFIF", "JPEG", "WebP", "HEIF", "PNG" | JFIF version / density / thumbnail, JFXX, COM comments, Adobe APP14 transform; WebP features, canvas, loop count, background, frames, lossy / lossless, alpha; HEIF brands, primary item, item types, references, `mime` items, auxiliary images (alpha, depth, HDR gain map), `nclx` colour, bits per channel; PNG `pHYs`, `sRGB`, `gAMA`, `acTL` | The container's own structures |
+
+Cost: the readers run over the 8 MB prefix `read` already holds, and the packet and profile
+Exiv2 already parsed; only ISO-BMFF opens the file again, for a top-level header walk and the
+boxes it keeps (meta ≤ 4 MB, C2PA ≤ 32 MB). Every loop, nesting level, decompression (1 MB per
+chunk, 8 MB per file), string and row count is capped. Nothing is validated and nothing goes
+online (rule 6): a C2PA signature, hash or certificate chain is shown as the file states it.
+`read_date_taken` does not run them. Each reader has a libFuzzer harness (`fuzz_meta_*`,
+[09-build-and-test.md](09-build-and-test.md)).
+
+All of these rows are **read-only** (`row_access`, rule 5): only Exiv2's own EXIF / IPTC / XMP
+rows go through `access_of`, and PR 12's writer and sidecar rule are unchanged.
+
+## Made with and AI provenance (#290)
+
+`summary::made_with` and `summary::ai_generated` are derived once, in the core, by
+`derive_provenance` ([`src/meta/generators.h`](../../src/meta/generators.h)) from what the
+readers collected. One table of known generators (ChatGPT / GPT-4o / gpt-image, DALL·E, Sora,
+OpenAI, Adobe Firefly, Midjourney, Stable Diffusion and its UIs — AUTOMATIC1111, ComfyUI,
+InvokeAI, Fooocus, NovelAI, DreamStudio — Bing Image Creator, Microsoft Designer, Meta AI,
+Google Imagen / Gemini, Leonardo.Ai, Ideogram, FLUX, Runway, Luma, Kling, Krea, Playground,
+Canva Magic Media, Recraft, NightCafe, Craiyon, Grok), matched as whole words, ignoring case,
+the more specific spelling first; tested in `mv_tests "[provenance]"`.
+
+- **made_with** is the first table match in: C2PA claim generator, C2PA action software agents,
+  PNG `Software`, other PNG generator text (`Generator`, `Source`, `Model`, the `Version:` tail
+  of `parameters`), XMP `CreatorTool`, EXIF `Software` (or a clip's software tag). Else
+  "Stable Diffusion" for a PNG `parameters` chunk, or "ComfyUI" for `prompt` / `workflow` JSON
+  chunks. Else the C2PA claim generator as written — a signed claim names its tool even when
+  it is not a generator ("Adobe Photoshop 25.0"). A camera's or an editor's Software that the
+  table does not know is **not** "made with".
+- **ai_generated** is true on positive evidence only: a C2PA action's or XMP
+  `Iptc4xmpExt:DigitalSourceType` of `trainedAlgorithmicMedia` or
+  `compositeWithTrainedAlgorithmicMedia` (IPTC URI or bare term, in any manifest of the store,
+  since an ingredient's AI origin is still evidence), a table match, or the PNG generator chunks.
+- Never from the file name, never from pixels. A file with no provenance is not "not AI":
+  missing metadata proves nothing, and nothing in the UI says otherwise.
+
+The hosts get these as POD next to the tables: `chrome_meta_args` (Windows, 80 bytes) and
+`mv_chrome_meta_facts_get` / `mv_chrome_meta_made_with` (Mac bridge); see
+[14-abi.md](14-abi.md).
 
 ## Writing
 
@@ -93,7 +165,8 @@ colour; [16-commands.md](16-commands.md) "Status, sort, filter, typeahead"), fro
 
 Per-tag access (`access_of`): `editable` (set and remove), `via_sidecar` (set only; the value
 goes to the sidecar under its XMP name), `read_only` (structure, maker notes, computed or
-container rows).
+container rows). The pane's column uses `row_access`, which is `read_only` for every row that
+is not Exiv2's own EXIF / IPTC / XMP (C2PA, PNG text, ICC, raw XMP, container, computed).
 
 **Atomic replace** goes through the `io` replace port
 ([`src/io/replace.h`](../../src/io/replace.h)): Windows writes a same-directory temp,

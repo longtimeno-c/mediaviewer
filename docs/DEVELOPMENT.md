@@ -948,6 +948,15 @@ python tools\testmedia\make-seeds.py
 cmake -S . -B build-fuzz -A x64 -T ClangCL -DMV_FUZZ=ON -DMV_BUILD_TESTS=OFF
 cmake --build build-fuzz --config Release --target mv_fuzzers
 .\tools\fuzz\run.ps1 -BuildDir build-fuzz -Seconds 60      # -Harness png,gif to pick
+# #290: the metadata readers (meta/parse.h) have harnesses too: meta_c2pa, meta_jpeg,
+# meta_png, meta_webp, meta_bmff, meta_xmp, meta_icc. They link mv_meta_parse alone, so on
+# a Mac they build with Homebrew LLVM (Apple clang ships no libFuzzer), e.g.:
+#   /opt/homebrew/opt/llvm/bin/clang++ -std=c++20 -fsanitize=fuzzer,address,undefined -fno-rtti -Isrc \
+#     -Itools/fuzz tools/fuzz/fuzz_meta_png.cpp src/meta/{parse_common,c2pa,containers,xmp_raw,generators}.cpp \
+#     src/codec/xml.cpp -lz -o fuzz_meta_png
+#   ASAN_OPTIONS=detect_leaks=0 ./fuzz_meta_png -max_total_time=600 corpus tests/data/seeds/png tests/data/seeds/c2pa
+# Their seeds (tests/data/seeds/{c2pa,xmp,icc}) come from the test builders:
+#   MV_SEED_DIR=tests/data/seeds mv_tests "[.write-seeds]"
 
 # PR 7 clean-VM gate: a HEIC decodes with MV_OS_CODEC=0, and the process has
 # loaded libheif + libde265 and NO Media Foundation, WIC codec extension, or
@@ -1372,6 +1381,31 @@ integers. There is no free-text field to put a filename in.
 There is no upload endpoint yet, exactly as there is none for crash reports.
 
 ## Where this actually is
+
+### Every tag and AI provenance in the Metadata pane (#290, docs/plans/metadata-search-and-place.md slice 1, 2026-10-11)
+
+All tags now lists C2PA / Content Credentials (JPEG APP11, PNG `caBX`, ISO-BMFF `uuid`), every
+PNG text chunk, raw XMP Exiv2 did not list, the ICC profile and JFIF / WebP / HEIF container
+items, all read-only ([06-metadata.md](design/06-metadata.md#beyond-exiv2-290)). Summary gains
+"Made with" from one generator table; `meta::summary` keeps GPS as numbers (`where`, from EXIF,
+XMP or ISO 6709) and `made_with` / `ai_generated` for the map and badge slices.
+
+- **Mac (M-series, 2026-10-11):** compiles clean (`-Werror`), app and SwiftUI chrome included.
+  `mv_tests` 675 cases (667 passed, 8 skipped); `"[provenance]"`, `"[gps]"`, `"[icc]"` cover the
+  ChatGPT (multi-segment APP11), Firefly, Microsoft Designer `caBX`, Stable Diffusion, ComfyUI,
+  Midjourney XMP, DJI XMP GPS, ISO-BMFF, ICC and 2 000-tag fixtures plus truncation / mutation of
+  every reader. The seven `fuzz_meta_*` harnesses ran 600 s each under ASan + UBSan (Homebrew
+  LLVM 23): 0.66–2.3 M executions each, no finding. `mv_tests "[.perf-meta]"`, five alternated
+  base / new runs, 60 reads each: camera JPEG 17.7–20.0 ms base vs 16.9–22.8 ms new, 10 s clip
+  10.3–13.3 vs 11.0–13.8 ms, HEIC 61–71 vs 56–77 µs, PNG and WebP overlapping (the readers alone
+  cost ~2 µs on a JPEG; meta reads run only when the pane or overlay wants a record). PR 1 gate:
+  the animated soak passes (3 599 frames, max 17.2 ms); the idle soak's CPU line failed on this
+  machine for base (95.7 %) and new (74.4 %) alike, 0 presents in both — owed to a quiet run.
+  Not checked in the running app by hand.
+- **Windows:** the C# chrome compiles on the Mac (`dotnet msbuild -t:Compile`). The native side
+  (`chrome_host.*`, `main.cpp`, the 80-byte `chrome_meta_args`), the virtualised All tags list
+  (`ItemsRepeater`, no 400-row cap) and the clang-cl fuzz build are compiled and run only by CI
+  and a Windows machine: not yet.
 
 ### Local search: ask before resuming an interrupted index (issue #299, 2026-10-11)
 
