@@ -619,11 +619,11 @@ void reset_live_bindings() noexcept {
 bool set_live_key(int index, key k, std::uint8_t mods) noexcept {
   auto& live = live_store();
   if (index < 0 || static_cast<std::size_t>(index) >= live.size()) return false;
-  if (static_cast<int>(k) < 0 || static_cast<int>(k) >= kKeyCount) return false;
+  if (static_cast<int>(k) >= kKeyCount) return false;  // key is unsigned
   if (mods >= kModCombos) return false;
   binding& target = live[static_cast<std::size_t>(index)];
   target.k = k;
-  target.mods = k == key::none ? mod_none : mods;
+  target.mods = k == key::none ? static_cast<std::uint8_t>(mod_none) : mods;
   return true;
 }
 
