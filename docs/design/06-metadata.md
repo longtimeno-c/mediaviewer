@@ -64,6 +64,14 @@ Views:
    (profile/level, resolution, pixel format, bit depth, frame rate, colour, HDR mastering
    metadata, rotation, channels, sample rate, language…), plus chapters.
 
+Below all three, at the very bottom of the pane whichever tab is open, an installed add-on may
+add a section for the file on screen (Places: the place, the coordinates and a map that zooms
+under the cursor; owner, 2026-10-12; how it is drawn: [27](27-places.md#the-map)). It is asked for only while the pane shows, never for a file without coordinates when
+it needs them, and runs on the add-on's worker; without the add-on the pane is as above
+([25](25-open-addons.md#implementation-notes-prs-58-59-2026-10-11)). A file's coordinates alone
+come from a bounded read, `meta::read_location` (`src/meta/location.h`), for a search provider
+walking a folder.
+
 `summary` also carries numeric clip facts (audio channels, sample rate, every codec) for
 non-human consumers such as the Spotlight importer, and the date-taken sort key.
 
@@ -129,6 +137,128 @@ the more specific spelling first; tested in `mv_tests "[provenance]"`.
 The hosts get these as POD next to the tables: `chrome_meta_args` (Windows, 80 bytes) and
 `mv_chrome_meta_facts_get` / `mv_chrome_meta_made_with` (Mac bridge); see
 [14-abi.md](14-abi.md).
+
+`summary::ai_evidence` (#345) is the deciding fact as one line for a person, most authoritative
+first: an AI source type ("Content Credentials (C2PA): AI-generated (trainedAlgorithmicMedia)",
+or "Includes AI-generated elements (compositeWithTrainedAlgorithmicMedia)" for a composite; the
+XMP term reads "IPTC digital source type (XMP): …"), else the field whose generator matched
+("XMP CreatorTool: Midjourney", value capped at 80 bytes), else the PNG generator chunks. It is
+empty whenever `ai_generated` is false.
+
+## The AI badge (#345)
+
+When the item on screen says it was AI-made, a small badge — a sparkle and "AI", 44 × 20 pt — sits
+in the bottom-right of the canvas: 16 pt in from the right (or from a right-hand pane), 10 pt above
+the filmstrip or the bottom edge, and above a clip's transport bar. Hover or keyboard focus shows
+"Made with <generator>" (or "AI-generated" when nothing names the tool) and the evidence line.
+**Positive evidence only: a file that says nothing gets no badge, and there is never a "not AI"
+mark.** The text is decided once in `shell/ai_badge.h`, shared by both hosts.
+
+- **Chrome, not canvas.** SwiftUI (`AIBadgeView.swift`, an `NSHostingView` over the
+  `CAMetalLayer`) and WinUI (`IslandHost.AiBadge.cs`, its own island, like the transport) draw
+  it. Showing, hiding or hovering it never touches the input snapshot, so a still with the badge
+  up idles at 0 presents. Switching the setting skips the snapshot poke the other view settings
+  make. Hidden under the gallery, Settings and the Video Editor (and, on Windows, with fullscreen
+  chrome hidden).
+- **Where the answer comes from, pane closed.** The full read is 7–40 ms of Exiv2 or libavformat per file and
+  only runs when something shows metadata. The badge asks `meta_store::provenance` instead: a full
+  record already held answers it; otherwise `meta::probe_provenance`
+  ([`src/meta/probe.h`](../../src/meta/probe.h)) runs once on the pool, after the same 90 ms
+  pause as a metadata read, so held arrows probe nothing and nothing sits ahead of the picture.
+  The probe reads only where provenance lives, by seeking, and feeds the same readers and
+  `derive_provenance`:
+
+  | File | What the probe reads |
+  |---|---|
+  | JPEG | APP11 (C2PA), the first APP1 XMP and APP1 EXIF IFD0 `Software`; other segments stepped over unread |
+  | PNG | `caBX`, text chunks (the first XMP `iTXt` included), `eXIf`; image data skipped by seeking |
+  | WebP | the first `EXIF` and `XMP ` chunks |
+  | TIFF and TIFF-based RAW | IFD0 `Software` and XMP (tag 700): TIFF, DNG, CR2, NEF, ARW, PEF, ORF (`IIRO` / `IIRS` / `MMOR`), RW2 (`IIU\0`) |
+  | RAF | the embedded JPEG's header segments, through the offset and length at bytes 84 / 88 |
+  | CR3 | `moov`'s Canon box (`CMT1` is an IFD0) and the top-level XMP `uuid` |
+  | HEIF, AVIF | the top-level C2PA box; the `meta` box's first `Exif` item and first `application/rdf+xml` mime item, through `iinf` / `iloc` (file offsets or `idat`) |
+  | MP4, MOV | the top-level C2PA box and XMP `uuid`; `moov` found wherever it sits, its children's headers walked to `udta` / `meta` alone: `©swr`, `©too` (QuickTime strings or iTunes `data`), the `com.apple.quicktime.software` key, `udta/XMP_` |
+
+  Each extent is capped (1 MB XMP, 256 KB EXIF, 1 MB for a HEIF `meta`, a clip's `udta` / `meta`
+  or CR3's Canon box); the first instance of each kind is kept, as the full read keeps; every byte
+  read from the file counts against one budget (a largest C2PA box plus 1 MB). A file that would
+  need more is "unknown": no badge, never a longer read. An XMP sidecar is not read: sidecars are
+  the full read's, and MediaViewer writes only ratings and edits there. The full read merges the
+  probe's evidence for the fields its own readers miss (a clip's XMP; PNG text or a C2PA store
+  past its 8 MB prefix — C2PA only when the prefix held no store, so a store is never parsed
+  twice), so the pane and the badge always agree; tests hold the two to each other fixture by fixture (`[probe]`), and
+  `fuzz_meta_probe` fuzzes the whole walk. Cost (`mv_tests "[.perf-meta]"`, warm, median): 38 µs
+  for a 6 MP camera JPEG against 15 ms for the full read, 49 µs for a 60 s 1080p MOV (moov at the
+  end) against 12 ms, 32–93 µs for DNG / NEF / ARW, 307 µs for a CR3, 54 µs for a HEIC. Answers are
+  kept in their own 1 024-entry LRU keyed by path + mtime + size; a cached answer shows at once on
+  the Mac.
+- **Setting.** *Settings → Viewer → "Show a badge on AI-generated images"*, on by default (owner,
+  2026-10-11). Stored inverted as `kSettingHideAiBadge` (bit 14 of the view flags; `[view]
+  ai_badge` in the Windows ini, `mv.viewFlags` on the Mac), so settings saved before it read as on.
+  Off hides the badge at once and stops the probes; no relaunch.
+- **Accessibility.** Named "AI-generated" for VoiceOver and Narrator, with the title and evidence
+  as its value / help text. Reached by keyboard focus in the chrome's order (Mac: the key-view
+  loop; Windows: `Tab` off the end of the command bar, before the canvas). It takes no keys of its
+  own: with it focused the router still runs the viewer's commands, as with the command bar.
+## Search text (#291)
+
+Every tag searchable, without the AI pack ([16](16-commands.md) "File search"). Code:
+[`src/meta/search.h`](../../src/meta/search.h), [`meta_cache.h`](../../src/meta/meta_cache.h),
+[`tag_index.h`](../../src/meta/tag_index.h); tests `mv_tests "[search]"`.
+
+- **The fields.** `search_facts_of` builds one list per file from the read model, in "why"
+  order, no empty values, no repeats (a value already inside an earlier field is dropped, so
+  "Canon" does not repeat "Canon EOS R5"): camera (`summary::camera`, plus a make the camera line
+  lacks: "NIKON CORPORATION"), lens, made-with, software (EXIF `Software`, XMP `CreatorTool`, a
+  clip's software), title (XMP `dc:title`, IPTC object name and headline, a clip's `title`),
+  caption (XMP `dc:description`, IPTC caption, EXIF `ImageDescription`, a clip's description or
+  comment, the PR 12 user comment), each keyword (XMP `dc:subject`, IPTC keywords, a clip's
+  keywords), creator (EXIF `Artist`, XMP `dc:creator`, IPTC by-line, a clip's artist / author).
+  Camera placeholders ("OLYMPUS DIGITAL CAMERA", "SONY DSC") and blanks make no field. XMP
+  sidecars count, as everywhere.
+- **No place names.** The Places add-on names places and answers `portugal` through its search
+  provider ([27](27-places.md), [25](25-open-addons.md) §7); the app links no geocoder (owner,
+  2026-10-11). The facts keep the coordinates (`summary::where`) for its `locations_in`.
+- **The fold** is `core/fold.h`, the hosts' name rule (decompose, drop marks, lowercase; ß, æ, ø,
+  ł stay). Header-only so the AI pack folds with it too. The fields are folded and joined by
+  U+001F, so a word never spans two fields and a match names its field.
+- **Matching:** every typed word must be found somewhere in the file's folded fields; the "why"
+  is the field the first word matched in ("Canon EOS R5", "ChatGPT"), cut at 48 characters. One
+  folded letter matches nothing (a single key would light up every camera make).
+- **The read** for search is bounded: `read_search_facts` parses the file's first 512 KB (where
+  JPEG APPn, PNG chunks, WebP chunks and the HEIF meta box live), retries a TIFF / RAW on the pane's
+  8 MB when the head held no tags, reads a clip through libavformat, and overlays the sidecar.
+  No write-target probe. On a 6 MP camera JPEG: 0.19 ms, against 10.9 ms for the pane's full
+  `meta::read` and 0.09 ms for `read_date_taken` (`mv_tests "[.perf-search]"`, M-series Mac,
+  warm cache).
+- **`meta_cache.db`** (SQLite, WAL) next to the thumbnail cache: one row per file, valid while
+  path, size, mtime and `kSearchFactsVersion` match. It holds the fields and their fold, date
+  taken, the position and the AI flag. A damaged or foreign file (not a database, another schema,
+  or corruption found by a later write) is deleted and made again (it is a cache); a file another
+  process has locked (a second window) is busy, never deleted, and an open that fails is retried
+  at most every 30 s. Rows of files gone from a folder are dropped when the folder is seen again
+  (a file only hidden by a setting keeps its row); a folder never revisited keeps its rows, as the
+  thumbnail cache keeps its thumbs (about 0.5–0.9 KB a file, path included). A PR 12 write that lands in a sidecar drops the file's row (`tag_index::invalidate`
+  on the Mac, `mv_folder_forget_tags` on Windows), since the file's own stamp cannot tell.
+  Nothing in it leaves the machine (rule 6).
+- **The folder pass** (`tag_index`) keeps the facts of the folder on screen in memory. A folder
+  seen before costs one `SELECT` and no file reads; otherwise each file is read once, ever. It
+  runs as background-queue chunks of 32 files, so every view job and the ±2 prefetch go first.
+  Between files it steps aside for the view: a view-tied job waiting for a worker gets the pass's
+  worker (the chunk re-queues itself where it stopped), and while one runs (the photo's full
+  decode, the prefetch; `job_system::foreground_running`) or the viewer is presenting
+  (`g_present_busy` / `mv_present_set_busy`) it waits. A relist of the same folder reuses the rows
+  already in memory (one `SELECT` per folder). It starts only once the item on screen has its first image (Mac: the
+  0.2 s folder timer sees `showing_still`, or a second has passed for a clip; Windows: the
+  selected stop's `IMAGE_OPENED`, or the first tag search). Sorting by date taken starts it at
+  once, as the date scan did, and the listing re-sorts once, when the pass ends (both hosts).
+- **Date taken rides the same pass.** The sort keys come from the facts, so a folder costs one
+  read per file, not a date read and a tag read, and a folder seen before sorts by date at once.
+  On a folder never seen, each key costs the 0.19 ms search read instead of the 0.09 ms date
+  read.
+- **Served to add-ons:** the host table's `tag_facts` (the AI pack's schema 4,
+  [17](17-local-ai-search.md)) and, through #348, `location_of` / `locations_in` for the Places
+  provider read the same cache.
 
 ## Writing
 
@@ -254,10 +384,11 @@ These read the already-parsed `metadata` — no file I/O on toggle
   Y-axis sign has not been checked against a real Canon file.
 - **Eyedropper (`Shift+I`)** — a one-pixel readback on demand, sRGB 8-bit + hex; `Ctrl+C` copies
   the colour while it is on.
-- **Sort by date taken** — sort key 4 of `mv_folder_set_sort`. `read_date_taken` reads a bounded
-  prefix once per file on a worker, remembered per (path, mtime, size); until a stamp lands the
-  file sorts by mtime, and the listing re-sorts when stamps arrive. Camera stamps carry no zone,
-  so the key is the stamp read as UTC.
+- **Sort by date taken** — sort key 4 of `mv_folder_set_sort`. The keys come from the folder's
+  tag pass ("Search text" above): one bounded read per file, once ever (meta_cache.db); until a
+  stamp lands the file sorts by mtime, and the listing re-sorts when stamps arrive. Camera stamps
+  carry no zone, so the key is the stamp read as UTC. A Photos library item's key is its
+  `creationDate`.
 - **Rating and label for the cull filter** (issue #207) — `read_cull_marks` reads the rating and
   `xmp:Label` alone (`io::cull_marks`: −1..5 and Red / Yellow / Green / Blue / Purple, or
   "other" for another app's word), on a worker, once per file: the same 256 KB head as
@@ -274,5 +405,7 @@ These read the already-parsed `metadata` — no file I/O on toggle
 - Writing back to the Windows Property System.
 - Batch metadata: date/time shift across a selection, copy metadata to many, filename
   templating, strip-on-share copies.
-- GPS map pin.
+- Writing coordinates from a map. (The GPS map pin itself is built, read-only, by the Places
+  add-on: place label, coordinates and an offline map at the foot of the pane,
+  [27-places.md](27-places.md); decision log 2026-10-11.)
 - Keywords as a feature. (Colour labels and a filter on them are built, issue #207.)

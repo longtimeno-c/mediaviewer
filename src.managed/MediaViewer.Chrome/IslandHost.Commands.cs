@@ -90,6 +90,9 @@ public static partial class IslandHost
                 });
             }
             RefreshSettingsKeys();
+            // docs/design/25 PR 57: a script add-on that starts or stops changes the
+            // table; Settings' From others re-reads the scripts' state (no file read).
+            RefreshOpenScripts();
             RefreshKeyTips();
             return 0;
         }
@@ -330,12 +333,12 @@ public static partial class IslandHost
     // (0xC000027B).
     private static UIElement BuildHelp(int modeMask)
     {
-        var list = new StackPanel { Spacing = 2, Margin = new Thickness(12, 8, 12, 10) };
+        var list = new StackPanel { Spacing = Space(2), Margin = Pad(12, 8, 12, 10) };
         list.Children.Add(Label("Keyboard shortcuts", UiFontSize + 2));
         list.Children.Add(Label("Esc closes.", UiFontSize, mute: true));
         foreach (CommandEntry entry in Entries(modeMask))
         {
-            var row = new Grid { ColumnSpacing = 16 };
+            var row = new Grid { ColumnSpacing = Space(16) };
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(220) });
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             TextBlock keys = Label(entry.Keys, UiFontSize);
@@ -406,7 +409,7 @@ public static partial class IslandHost
         string query = "";
         string prompt = Items.Count > 0 ? $"Go to 1 – {Items.Count}" : "Nothing open";
         TextBlock label = QueryLabel(prompt);
-        var panel = new StackPanel { Spacing = 4, Margin = new Thickness(10), IsTabStop = true };
+        var panel = new StackPanel { Spacing = Space(4), Margin = Pad(10), IsTabStop = true };
         panel.Children.Add(label);
         // Typing lands on a label, not a field: name the panel and speak the
         // number as it is typed (issue #223).
@@ -482,11 +485,12 @@ public static partial class IslandHost
         return panel;
     }
 
-    // `/` from the canvas: find by name in the already-loaded listing.
+    // `/` from the canvas: find by name in the already-loaded listing, then
+    // (#291) by tag, from the core's folder tag pass (memory, never a read).
     private static UIElement BuildFind(out UIElement focusTarget)
     {
         string query = "";
-        const string prompt = "Find by name";
+        const string prompt = "Find by name or tag";
         TextBlock label = QueryLabel(prompt);
         TextBlock match = Label("", UiFontSize, mute: true);
         int found = -1;
@@ -495,14 +499,18 @@ public static partial class IslandHost
         {
             SetQuery(label, prompt, query);
             found = FindByName(query.Trim(), prefixOnly: false);
-            match.Text = found >= 0 ? $"{Items[found].Name}   ({found + 1} / {Items.Count})"
+            string why = "";
+            string reading = "";
+            if (found < 0 && query.Trim().Length > 0) (found, why, reading) = FindByTag(query.Trim());
+            match.Text = found >= 0 ? $"{Items[found].Name}   ({found + 1} / {Items.Count})" + (why.Length > 0 ? $"   · {why}" : "")
+                       : reading.Length > 0 ? reading
                        : query.Length > 0 ? "No match" : "";
             AutomationProperties_SetName(match, found >= 0 ? $"{Items[found].Name}, {found + 1} of {Items.Count}"
                                                 : match.Text);
             RaiseLive(match);
         }
 
-        var panel = new StackPanel { Spacing = 6, Margin = new Thickness(10), IsTabStop = true };
+        var panel = new StackPanel { Spacing = Space(6), Margin = Pad(10), IsTabStop = true };
         panel.Children.Add(label);
         panel.Children.Add(match);
         // The result line is what Narrator reads as the name is typed (issue #223).
@@ -539,6 +547,34 @@ public static partial class IslandHost
         return panel;
     }
 
+    // #291: the first stop whose tags hold every word, its why, and the
+    // "still reading" note while the tag pass runs.
+    private static (int Index, string Why, string Reading) FindByTag(string query)
+    {
+        string json = _folderSession?.FolderTagSearch(query) ?? "";
+        if (json.Length == 0) return (-1, "", "");
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            int total = root.GetProperty("total").GetInt32();
+            string reading = root.GetProperty("reading").GetBoolean() && total > 0
+                ? $"Still reading tags — {root.GetProperty("done").GetInt32():N0} of {total:N0}"
+                : "";
+            foreach (var hit in root.GetProperty("hits").EnumerateArray())
+            {
+                int index = hit[0].GetInt32();
+                if ((uint)index < (uint)Items.Count) return (index, hit[1].GetString() ?? "", reading);
+            }
+            return (-1, "", reading);
+        }
+        catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException
+                                       or KeyNotFoundException or IndexOutOfRangeException)
+        {
+            return (-1, "", "");
+        }
+    }
+
     // PR 10 export dialog (docs/design/10: "export dialog in WinUI"). Keyboard-complete
     // and TextBox-free (the 0xC000027B fail-fast): ↑ ↓ pick a row, ← → change
     // it, Enter exports, Esc cancels. Clicking a value steps it. The answer goes
@@ -560,12 +596,12 @@ public static partial class IslandHost
         int row = 0;
         const int Rows = 4;
 
-        var panel = new StackPanel { Spacing = 6, IsTabStop = true, Width = 340 };
+        var panel = new StackPanel { Spacing = Space(6), IsTabStop = true, Width = 340 };
         panel.Children.Add(Label("Export a copy", UiFontSize + 2));
         panel.Children.Add(Label("Beside the original as name-edit; never overwrites.", UiFontSize, mute: true));
         var rowLabels = new TextBlock[Rows];
         string[] names = { "Format", "Quality", "Size", "Metadata" };
-        var grid = new Grid { ColumnSpacing = 16, RowSpacing = 4, Margin = new Thickness(0, 6, 0, 6) };
+        var grid = new Grid { ColumnSpacing = Space(16), RowSpacing = Space(4), Margin = Pad(0, 6, 0, 6) };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
@@ -619,7 +655,7 @@ public static partial class IslandHost
             rowLabels[r] = Label("", UiFontSize);
             MarkLive(rowLabels[r]);
             int captured = r;
-            var value = FlatButton(rowLabels[r], new Thickness(0));
+            var value = FlatButton(rowLabels[r], Pad(0));
             value.Click += (_, _) => { row = captured; Step(captured, 1); };
             Grid.SetRow(value, r);
             Grid.SetColumn(value, 1);

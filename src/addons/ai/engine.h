@@ -362,6 +362,13 @@ class engine {
     std::int64_t root = 0;
     std::int64_t mtime = 0;  // unix seconds: in: / before: / after: (query.h)
     bool cloud = false;      // online-only: no track reads it until fetched
+    // #291 (schema 4): its tags, once the backfill has read them.
+    bool tags = false;
+    std::string camera, lens, made_with;  // folded
+    bool ai = false;
+    bool has_where = false;
+    std::vector<std::string> fields;      // the search fields as shown (the why)
+    std::string folded;                   // search.h's folded_text rule
   };
   struct result_row {
     std::int64_t asset = 0;
@@ -438,6 +445,12 @@ class engine {
   // Whether an unavailable Photos asset is on this Mac now (the launch check).
   [[nodiscard]] bool photos_local(const asset_row& a) const;
   void scan_all();
+  // #291: reads the tags of assets that have none yet (new, changed, or an
+  // index migrated from schema 3) through the host's tag_facts, in batches,
+  // yielding to the viewer. Resumable: the index's `tags` column is the
+  // bookmark. True while more remain.
+  bool backfill_tags();
+  void adopt_tags(const asset_tags& t);
   // Pixels and files for an asset path: a file goes to the host, a Photos
   // library key ("photos:...") to the Photos source.
   [[nodiscard]] result<rgb_frame> still_of(const std::string& path, std::uint32_t edge) const;
@@ -492,6 +505,16 @@ class engine {
   std::atomic<bool> settling_{false};
   // Faces landed since the control loop last posted AI_PEOPLE (faces_of).
   std::atomic<bool> people_changed_{false};
+  // #291: the Photos library's location and creation date by asset key, from
+  // the last enumeration, for the tag backfill.
+  struct photos_tag {
+    bool has_location = false;
+    double lat = 0, lon = 0;
+    std::int64_t created = 0;
+  };
+  std::mutex photos_tags_m_;
+  std::unordered_map<std::string, photos_tag> photos_tags_;
+  std::atomic<bool> tags_pending_{true};
   // `replacing`: a piece reload, so an absent piece clears what it answered.
   void load_audio(const settings& s, std::uint32_t speech_quality, bool replacing);
   // Blocks until the viewer is quiet (or stopping): opening sessions contends

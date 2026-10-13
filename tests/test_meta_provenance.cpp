@@ -24,6 +24,7 @@
 #include "meta/generators.h"
 #include "meta/meta.h"
 #include "meta/parse.h"
+#include "meta/probe.h"
 #include "meta/tables.h"
 #include "meta/write.h"
 
@@ -826,4 +827,481 @@ TEST_CASE("write the metadata fuzz seeds", "[.write-seeds]") {
       "<xmpMM:History><rdf:Seq><rdf:li stEvt:action=\"saved\"/><rdf:li><rdf:Description stEvt:action=\"x\"/>"
       "</rdf:li></rdf:Seq></xmpMM:History></rdf:Description></rdf:RDF></x:xmpmeta>";
   put("xmp", "midjourney_like.xmp", bytes(xmp.begin(), xmp.end()));
+}
+
+// ---- #345: the badge's probe gives the full read's answer ------------------------
+namespace {
+
+void le16(bytes& out, std::uint32_t v) {
+  out.push_back(static_cast<std::uint8_t>(v));
+  out.push_back(static_cast<std::uint8_t>(v >> 8));
+}
+void le32(bytes& out, std::uint32_t v) {
+  le16(out, v & 0xFFFF);
+  le16(out, v >> 16);
+}
+
+// A little-endian TIFF block whose IFD0 holds only Software.
+bytes tiff_software(std::string_view software) {
+  bytes t{'I', 'I', 42, 0};
+  le32(t, 8);
+  le16(t, 1);
+  le16(t, 0x0131);
+  le16(t, 2);
+  le32(t, static_cast<std::uint32_t>(software.size() + 1));
+  le32(t, 8 + 2 + 12 + 4);
+  le32(t, 0);  // no next IFD
+  append(t, software);
+  t.push_back(0);
+  return t;
+}
+bytes exif_app1(std::string_view software) {
+  bytes p;
+  append(p, std::string_view("Exif\0\0", 6));
+  append(p, tiff_software(software));
+  return segment(0xE1, p);
+}
+bytes xmp_app1(const std::string& packet) {
+  bytes p;
+  append(p, std::string_view("http://ns.adobe.com/xap/1.0/\0", 29));
+  append(p, packet);
+  return segment(0xE1, p);
+}
+std::string xmp_packet(std::string_view attrs) {
+  return "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">"
+         "<rdf:Description rdf:about=\"\" xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\""
+         " xmlns:Iptc4xmpExt=\"http://iptc.org/std/Iptc4xmpExt/2008-02-29/\" " +
+         std::string(attrs) + "/></rdf:RDF></x:xmpmeta>";
+}
+
+// The probe and meta::read agree on all three facts; returns the probe's answer.
+mv::meta::provenance same_answer(const std::string& name, const bytes& b) {
+  temp_file f(name);
+  f.write(b);
+  const auto m = mv::meta::read(f.utf8());
+  REQUIRE(m);
+  const mv::meta::provenance p = mv::meta::probe_provenance(f.utf8());
+  INFO(name);
+  CHECK(p.made_with == m->s.made_with);
+  CHECK(p.ai_generated == m->s.ai_generated);
+  CHECK(p.evidence == m->s.ai_evidence);
+  return p;
+}
+
+}  // namespace
+
+TEST_CASE("the provenance probe agrees with the full read, fixture by fixture", "[meta][provenance][probe]") {
+  const std::string params = "a fox\nSteps: 20, Seed: 1, Model: sdxl, Version: v1.10.1";
+  // ChatGPT: C2PA in APP11 segments, behind a camera-style EXIF and before the scan.
+  std::vector<bytes> segs{exif_app1("Firmware 1.0")};
+  for (auto& s : app11(c2pa_store("ChatGPT", kTrained, "GPT-4o"), 120)) segs.push_back(s);
+  auto p = same_answer("p_chatgpt.jpg", jpeg_with_segments(grey_jpeg(), segs));
+  CHECK(p.ai_generated);
+  CHECK(p.made_with == "ChatGPT");
+  CHECK(p.evidence == "Content Credentials (C2PA): AI-generated (trainedAlgorithmicMedia)");
+
+  // Firefly: segments out of order.
+  segs = app11(c2pa_store("Adobe Firefly", kTrained, "Adobe Firefly"), 64, 7);
+  std::reverse(segs.begin(), segs.end());
+  p = same_answer("p_firefly.jpg", jpeg_with_segments(grey_jpeg(), segs));
+  CHECK(p.made_with == "Adobe Firefly");
+
+  // Midjourney-style XMP CreatorTool; an IPTC source type in XMP.
+  p = same_answer("p_mj.jpg", jpeg_with_segments(grey_jpeg(), {xmp_app1(xmp_packet("xmp:CreatorTool=\"Midjourney 6\""))}));
+  CHECK(p.evidence == "XMP CreatorTool: Midjourney 6");
+  p = same_answer("p_iptc.jpg", jpeg_with_segments(grey_jpeg(), {xmp_app1(xmp_packet(
+                                    "Iptc4xmpExt:DigitalSourceType=\"" + std::string(kTrained) + "\""))}));
+  CHECK(p.ai_generated);
+  CHECK(p.evidence.rfind("IPTC digital source type (XMP): ", 0) == 0);
+  // A generator in EXIF Software.
+  p = same_answer("p_exif.jpg", jpeg_with_segments(grey_jpeg(), {exif_app1("Adobe Firefly 2.1")}));
+  CHECK(p.evidence == "EXIF Software: Adobe Firefly 2.1");
+  // A camera JPEG with an editor's XMP, and a bare JPEG: nothing.
+  p = same_answer("p_camera.jpg",
+                  jpeg_with_segments(grey_jpeg(), {exif_app1("Firmware Version 1.8.1"),
+                                                   xmp_app1(xmp_packet("xmp:CreatorTool=\"Adobe Lightroom\""))}));
+  CHECK_FALSE(p.ai_generated);
+  CHECK(p.made_with.empty());
+  CHECK_FALSE(same_answer("p_plain.jpg", grey_jpeg()).ai_generated);
+
+  // PNG: caBX plus generator chunks; the chunks alone; ComfyUI; the XMP packet; plain.
+  p = same_answer("p_sd.png", png_with(small_png(), {png_chunk("caBX", c2pa_store("Microsoft Designer", kTrained, "DALL-E 3")),
+                                                    text_chunk("parameters", params)}));
+  CHECK(p.made_with == "Microsoft Designer");
+  p = same_answer("p_sd2.png", png_with(small_png(), {text_chunk("parameters", params)}));
+  CHECK(p.ai_generated);
+  p = same_answer("p_comfy.png", png_with(small_png(), {itxt_chunk("prompt", "{\"3\": {}}", false),
+                                                       ztxt_chunk("workflow", "{\"nodes\": []}")}));
+  CHECK(p.made_with == "ComfyUI");
+  p = same_answer("p_xmp.png", png_with(small_png(), {itxt_chunk("XML:com.adobe.xmp",
+                                                                 xmp_packet("xmp:CreatorTool=\"Midjourney\""), false)}));
+  CHECK(p.made_with == "Midjourney");
+  CHECK_FALSE(same_answer("p_plain.png", png_with(small_png(), {text_chunk("Author", "Me")})).ai_generated);
+  // Text after the image data counts too (the probe seeks past IDAT).
+  bytes late = small_png();
+  const bytes tail = text_chunk("parameters", params);
+  late.insert(late.end() - 12, tail.begin(), tail.end());  // just before IEND
+  p = same_answer("p_late.png", late);
+  CHECK(p.ai_generated);
+
+  // A clip with its C2PA box after a large mdat (Sora / Veo layout).
+  bytes uuid{0xD8, 0xFE, 0xC3, 0xD6, 0x1B, 0x0E, 0x48, 0x3C, 0x92, 0x97, 0x58, 0x28, 0x87, 0x7E, 0xC4, 0x81, 0, 0, 0, 0};
+  append(uuid, std::string_view("manifest\0\0\0\0\0\0\0\0\0", 17));
+  append(uuid, c2pa_store("Sora", kTrained, "Sora"));
+  bytes file = box("ftyp", bytes{'i', 's', 'o', 'm', 0, 0, 0, 0, 'i', 's', 'o', 'm'});
+  append(file, box("mdat", bytes(1 << 20, 0)));
+  append(file, box("uuid", uuid));
+  p = same_answer("p_sora.mp4", file);
+  CHECK(p.made_with == "Sora");
+  CHECK(p.ai_generated);
+}
+
+TEST_CASE("the provenance probe: WebP chunks, damage, and files it cannot read", "[meta][provenance][probe]") {
+  // WebP: an XMP chunk after the bitstream (an odd-sized one, padded).
+  bytes riff;
+  append(riff, std::string_view("WEBP"));
+  bytes chunk;
+  append(chunk, std::string_view("VP8X"));
+  le32(chunk, 10);
+  bytes vp8x(10, 0);
+  vp8x[0] = 0x0C;  // EXIF + XMP
+  append(chunk, vp8x);
+  append(chunk, std::string_view("VP8 "));
+  le32(chunk, 3);
+  append(chunk, bytes{1, 2, 3, 0});
+  const std::string packet = xmp_packet("xmp:CreatorTool=\"Ideogram 2.0\"");
+  append(chunk, std::string_view("XMP "));
+  le32(chunk, static_cast<std::uint32_t>(packet.size()));
+  append(chunk, packet);
+  if (packet.size() & 1) chunk.push_back(0);
+  append(riff, chunk);
+  bytes webp;
+  append(webp, std::string_view("RIFF"));
+  le32(webp, static_cast<std::uint32_t>(riff.size()));
+  append(webp, riff);
+  {
+    temp_file f("p.webp");
+    f.write(webp);
+    const auto p = mv::meta::probe_provenance(f.utf8());
+    CHECK(p.made_with == "Ideogram");
+    CHECK(p.evidence == "XMP CreatorTool: Ideogram 2.0");
+  }
+
+  // Truncated and mutated: never a crash.
+  const bytes jpeg = jpeg_with_segments(grey_jpeg(), app11(c2pa_store("ChatGPT", kTrained, "GPT-4o"), 120));
+  for (std::size_t cut : {std::size_t{3}, std::size_t{40}, std::size_t{200}, jpeg.size() / 2}) {
+    temp_file f("p_cut.jpg");
+    f.write(bytes(jpeg.begin(), jpeg.begin() + static_cast<std::ptrdiff_t>(cut)));
+    (void)mv::meta::probe_provenance(f.utf8());
+  }
+  bytes bad = jpeg;
+  for (std::size_t i = 4; i < bad.size(); i += 37) bad[i] ^= 0x5A;
+  {
+    temp_file f("p_bad.jpg");
+    f.write(bad);
+    (void)mv::meta::probe_provenance(f.utf8());
+  }
+  // Missing and empty files have no provenance.
+  CHECK_FALSE(mv::meta::probe_provenance((fs::temp_directory_path() / "mv_prov_absent.jpg").string()).ai_generated);
+  temp_file empty("p_empty.jpg");
+  empty.write({});
+  CHECK(mv::meta::probe_provenance(empty.utf8()) == mv::meta::provenance{});
+}
+
+// ---- #345: HEIF items, clip udta / meta, RAW --------------------------------------
+namespace {
+
+bytes fullbox(std::string_view type, std::uint8_t version, const bytes& payload) {
+  bytes p{version, 0, 0, 0};
+  append(p, payload);
+  return box(type, p);
+}
+bytes cstr_bytes(std::string_view s) {
+  bytes b(s.begin(), s.end());
+  b.push_back(0);
+  return b;
+}
+
+// A TIFF-structured file (TIFF, DNG, ORF, RW2 by `magic`) whose IFD0 holds
+// Software and, when given, an XMP packet (tag 700).
+bytes tiff_file(std::string_view software, const std::string& xmp, const bytes& header = {'I', 'I', 42, 0}) {
+  const std::uint16_t n = xmp.empty() ? 1 : 2;
+  const std::uint32_t data_at = 8 + 2 + 12u * n + 4;
+  bytes t = header;
+  le32(t, 8);
+  le16(t, n);
+  le16(t, 0x0131);
+  le16(t, 2);
+  le32(t, static_cast<std::uint32_t>(software.size() + 1));
+  le32(t, data_at);
+  if (!xmp.empty()) {
+    le16(t, 700);
+    le16(t, 1);
+    le32(t, static_cast<std::uint32_t>(xmp.size()));
+    le32(t, data_at + static_cast<std::uint32_t>(software.size() + 1));
+  }
+  le32(t, 0);
+  append(t, software);
+  t.push_back(0);
+  append(t, xmp);
+  return t;
+}
+
+// A HEIF still with an XMP `mime` item and an `Exif` item, in mdat or in idat.
+bytes heif_with_items(const std::string& xmp, std::string_view software, bool in_idat) {
+  bytes exif{0, 0, 0, 6};
+  append(exif, std::string_view("Exif\0\0", 6));
+  append(exif, tiff_software(software));
+  bytes data = bytes(xmp.begin(), xmp.end());
+  const std::uint32_t xmp_len = static_cast<std::uint32_t>(xmp.size());
+  append(data, exif);
+  const auto build = [&](std::uint32_t base) {
+    bytes hdlr(4, 0);
+    append(hdlr, std::string_view("pict"));
+    hdlr.insert(hdlr.end(), 12, 0);
+    hdlr.push_back(0);
+    bytes infe1{0, 1, 0, 0};
+    append(infe1, std::string_view("mime"));
+    append(infe1, cstr_bytes("XMP"));
+    append(infe1, cstr_bytes("application/rdf+xml"));
+    bytes infe2{0, 2, 0, 0};
+    append(infe2, std::string_view("Exif"));
+    append(infe2, cstr_bytes(""));
+    bytes iinf{0, 2};
+    append(iinf, fullbox("infe", 2, infe1));
+    append(iinf, fullbox("infe", 2, infe2));
+    bytes iloc{0x44, 0x00, 0, 2};  // offset 4, length 4, base 0, index 0; two items
+    for (int item = 1; item <= 2; ++item) {
+      be16(iloc, static_cast<std::uint32_t>(item));
+      be16(iloc, in_idat ? 1 : 0);  // construction method
+      be16(iloc, 0);
+      be16(iloc, 1);
+      be32(iloc, (in_idat ? 0 : base) + (item == 1 ? 0 : xmp_len));
+      be32(iloc, item == 1 ? xmp_len : static_cast<std::uint32_t>(exif.size()));
+    }
+    bytes meta = fullbox("hdlr", 0, hdlr);
+    append(meta, fullbox("iinf", 0, iinf));
+    append(meta, fullbox("iloc", 1, iloc));
+    if (in_idat) append(meta, box("idat", data));
+    return fullbox("meta", 0, meta);
+  };
+  bytes ftyp = box("ftyp", bytes{'h', 'e', 'i', 'c', 0, 0, 0, 0, 'm', 'i', 'f', '1', 'h', 'e', 'i', 'c'});
+  const std::uint32_t meta_len = static_cast<std::uint32_t>(build(0).size());
+  bytes file = ftyp;
+  append(file, build(static_cast<std::uint32_t>(ftyp.size()) + meta_len + 8));
+  append(file, box("mdat", in_idat ? bytes(16, 0) : data));
+  return file;
+}
+
+bytes qt_string(std::string_view type, std::string_view text) {
+  bytes p;
+  be16(p, static_cast<std::uint32_t>(text.size()));
+  be16(p, 0x55C4);  // language: und
+  append(p, text);
+  return box(type, p);
+}
+bytes data_atom(std::string_view text) {
+  bytes p;
+  be32(p, 1);  // UTF-8
+  be32(p, 0);
+  append(p, text);
+  return box("data", p);
+}
+bytes mvhd() { return fullbox("mvhd", 0, bytes(96, 0)); }
+
+// A clip: ftyp, a large mdat, then moov holding `children` (the moov-at-end layout).
+bytes clip_with(std::string_view brand, const std::vector<bytes>& children, std::size_t mdat_bytes = 1 << 20) {
+  bytes ftyp_p(brand.begin(), brand.end());
+  be32(ftyp_p, 0);
+  append(ftyp_p, brand);
+  bytes file = box("ftyp", ftyp_p);
+  append(file, box("mdat", bytes(mdat_bytes, 0)));
+  bytes moov = mvhd();
+  append(moov, box("trak", bytes(64 * 1024, 0)));  // a sample table the probe must seek past
+  for (const auto& c : children) append(moov, c);
+  append(file, box("moov", moov));
+  return file;
+}
+
+bytes uuid_box(const std::uint8_t (&id)[16], const bytes& payload) {
+  bytes p(id, id + 16);
+  append(p, payload);
+  return box("uuid", p);
+}
+constexpr std::uint8_t kXmpUuidT[16] = {0xBE, 0x7A, 0xCF, 0xCB, 0x97, 0xA9, 0x42, 0xE8,
+                                        0x9C, 0x71, 0x99, 0x94, 0x91, 0xE3, 0xAF, 0xAC};
+constexpr std::uint8_t kCanonUuidT[16] = {0x85, 0xC0, 0xB6, 0x87, 0x82, 0x0F, 0x11, 0xE0,
+                                          0x81, 0x11, 0xF4, 0xCE, 0x46, 0x2B, 0x6A, 0x48};
+
+}  // namespace
+
+TEST_CASE("the probe reads HEIF items, clip tags and RAW, and agrees with the full read",
+          "[meta][provenance][probe]") {
+  const std::string mj = xmp_packet("xmp:CreatorTool=\"Midjourney\"");
+  const std::string iptc = xmp_packet("Iptc4xmpExt:DigitalSourceType=\"" + std::string(kTrained) + "\"");
+
+  // HEIF: XMP mime item (CreatorTool, then an IPTC source type), Exif item; in mdat and in idat.
+  auto p = same_answer("p_mj.heic", heif_with_items(mj, "Firmware 1.0", false));
+  CHECK(p.made_with == "Midjourney");
+  CHECK(p.evidence == "XMP CreatorTool: Midjourney");
+  p = same_answer("p_iptc.heic", heif_with_items(iptc, "Firmware 1.0", true));
+  CHECK(p.ai_generated);
+  CHECK(p.evidence.rfind("IPTC digital source type (XMP): AI-generated", 0) == 0);
+  p = same_answer("p_exif.heic", heif_with_items(xmp_packet("xmp:Rating=\"3\""), "Adobe Firefly 3", false));
+  CHECK(p.evidence == "EXIF Software: Adobe Firefly 3");
+  CHECK_FALSE(same_answer("p_cam.heic", heif_with_items(xmp_packet("xmp:Rating=\"3\""), "iOS 18.1", true)).ai_generated);
+
+  // QuickTime: udta (C)swr naming a generator, moov after a large mdat.
+  p = same_answer("p_swr.mov", clip_with("qt  ", {box("udta", qt_string("\xA9swr", "Runway Gen-3 Alpha"))}));
+  CHECK(p.made_with == "Runway");
+  CHECK(p.evidence == "EXIF Software: Runway Gen-3 Alpha");
+  // MP4: udta/meta/ilst (C)too, iTunes style.
+  {
+    bytes hdlr(4, 0);
+    append(hdlr, std::string_view("mdirappl"));
+    hdlr.insert(hdlr.end(), 9, 0);
+    bytes meta = fullbox("hdlr", 0, hdlr);
+    append(meta, box("ilst", box("\xA9too", data_atom("Sora"))));
+    p = same_answer("p_too.mp4", clip_with("isom", {box("udta", fullbox("meta", 0, meta))}));
+    CHECK(p.made_with == "Sora");
+  }
+  // QuickTime moov/meta keys: com.apple.quicktime.software.
+  {
+    bytes hdlr(4, 0);
+    append(hdlr, std::string_view("mdta"));
+    hdlr.insert(hdlr.end(), 13, 0);
+    bytes keys{0, 0, 0, 0};
+    be32(keys, 1);
+    const std::string_view key = "com.apple.quicktime.software";
+    be32(keys, static_cast<std::uint32_t>(key.size() + 8));
+    append(keys, std::string_view("mdta"));
+    append(keys, key);
+    bytes item;
+    be32(item, static_cast<std::uint32_t>(8 + data_atom("Luma Dream Machine").size()));
+    be32(item, 1);  // key index 1
+    append(item, data_atom("Luma Dream Machine"));
+    bytes meta = fullbox("hdlr", 0, hdlr);
+    append(meta, box("keys", keys));
+    append(meta, box("ilst", item));
+    p = same_answer("p_keys.mov", clip_with("qt  ", {box("meta", meta)}));
+    CHECK(p.made_with == "Luma Dream Machine");
+  }
+  // A clip's XMP: udta/XMP_ and the top-level XMP uuid.
+  p = same_answer("p_xmp.mov", clip_with("qt  ", {box("udta", box("XMP_", bytes(iptc.begin(), iptc.end())))}));
+  CHECK(p.ai_generated);
+  {
+    bytes file = clip_with("isom", {});
+    append(file, uuid_box(kXmpUuidT, bytes(mj.begin(), mj.end())));
+    p = same_answer("p_xmpuuid.mp4", file);
+    CHECK(p.made_with == "Midjourney");
+  }
+  // A clip whose C2PA and XMP say the same term: the signed claim is named, by
+  // the probe and by the full read's merge alike.
+  {
+    bytes c2pa{0xD8, 0xFE, 0xC3, 0xD6, 0x1B, 0x0E, 0x48, 0x3C, 0x92, 0x97, 0x58, 0x28, 0x87, 0x7E, 0xC4, 0x81};
+    be32(c2pa, 0);  // version, flags
+    append(c2pa, std::string_view("manifest\0", 9));
+    be32(c2pa, 0);
+    be32(c2pa, 0);  // merkle offset
+    append(c2pa, c2pa_store("Sora", kTrained, "Sora"));
+    bytes file = clip_with("qt  ", {box("udta", box("XMP_", bytes(iptc.begin(), iptc.end())))});
+    append(file, box("uuid", c2pa));
+    p = same_answer("p_c2pa_xmp.mov", file);
+    CHECK(p.evidence.rfind("Content Credentials (C2PA): ", 0) == 0);
+  }
+  // A camera clip: nothing.
+  CHECK_FALSE(same_answer("p_cam.mov", clip_with("qt  ", {box("udta", qt_string("\xA9swr", "17.1"))})).ai_generated);
+
+  // RAW, TIFF-based: DNG Software; DNG XMP CreatorTool; ORF and RW2 headers.
+  p = same_answer("p_sw.dng", tiff_file("Adobe Firefly 2.1", ""));
+  CHECK(p.evidence == "EXIF Software: Adobe Firefly 2.1");
+  p = same_answer("p_xmp.dng", tiff_file("Adobe DNG Converter 16.0", mj));
+  CHECK(p.made_with == "Midjourney");
+  p = same_answer("p.orf", tiff_file("Adobe Firefly", "", {'I', 'I', 'R', 'O'}));
+  CHECK(p.made_with == "Adobe Firefly");
+  p = same_answer("p.rw2", tiff_file("Adobe Firefly", "", {'I', 'I', 'U', 0}));
+  CHECK(p.made_with == "Adobe Firefly");
+  CHECK_FALSE(same_answer("p_cam.dng", tiff_file("Canon EOS R5 Firmware 1.8.1", "")).ai_generated);
+
+  // CR3: moov's Canon box, CMT1 = IFD0 Software; and an XMP uuid.
+  {
+    bytes canon = box("CNCV", bytes(30, 'x'));
+    append(canon, box("CMT1", tiff_software("Adobe Firefly 2")));
+    append(canon, box("CMT2", tiff_software("ignored")));
+    bytes ftyp_p{'c', 'r', 'x', ' ', 0, 0, 0, 1, 'c', 'r', 'x', ' ', 'i', 's', 'o', 'm'};
+    bytes moov = mvhd();
+    append(moov, uuid_box(kCanonUuidT, canon));
+    bytes file = box("ftyp", ftyp_p);
+    append(file, box("moov", moov));
+    append(file, box("mdat", bytes(4096, 0)));
+    CHECK(same_answer("p.cr3", file).evidence == "EXIF Software: Adobe Firefly 2");
+    bytes with_xmp = box("ftyp", ftyp_p);
+    bytes moov2 = mvhd();
+    append(moov2, uuid_box(kCanonUuidT, box("CMT1", tiff_software("Canon EOS R5"))));
+    append(with_xmp, box("moov", moov2));
+    append(with_xmp, uuid_box(kXmpUuidT, bytes(mj.begin(), mj.end())));
+    CHECK(same_answer("p2.cr3", with_xmp).made_with == "Midjourney");
+  }
+
+  // RAF: the embedded JPEG's EXIF, through the header's offset and length.
+  {
+    const bytes jpeg = jpeg_with_segments(grey_jpeg(), {exif_app1("Adobe Firefly 2.1")});
+    bytes raf;
+    append(raf, std::string_view("FUJIFILMCCD-RAW 0201FF383501"));
+    raf.resize(84, 0);
+    be32(raf, 160);
+    be32(raf, static_cast<std::uint32_t>(jpeg.size()));
+    raf.resize(160, 0);
+    append(raf, jpeg);
+    append(raf, bytes(8192, 0));
+    CHECK(same_answer("p.raf", raf).made_with == "Adobe Firefly");
+  }
+}
+
+TEST_CASE("write the provenance probe fuzz seeds", "[.write-seeds]") {
+  const char* dir = std::getenv("MV_SEED_DIR");
+  if (!dir) SKIP("set MV_SEED_DIR");
+  const fs::path d = fs::path(dir) / "probe";
+  fs::create_directories(d);
+  const auto put = [&](const std::string& file, const bytes& b) {
+    std::ofstream f(d / file, std::ios::binary);
+    f.write(reinterpret_cast<const char*>(b.data()), static_cast<std::streamsize>(b.size()));
+  };
+  const std::string mj = xmp_packet("xmp:CreatorTool=\"Midjourney\"");
+  put("heif_items.heic", heif_with_items(mj, "Firmware 1.0", false));
+  put("heif_idat.heic", heif_with_items(mj, "Adobe Firefly", true));
+  put("swr.mov", clip_with("qt  ", {box("udta", qt_string("\xA9swr", "Runway Gen-3"))}, 256));
+  put("xmp.mov", clip_with("qt  ", {box("udta", box("XMP_", bytes(mj.begin(), mj.end())))}, 256));
+  put("dng_xmp.dng", tiff_file("Adobe DNG Converter", mj));
+  put("orf.orf", tiff_file("Adobe Firefly", "", {'I', 'I', 'R', 'O'}));
+  bytes canon = box("CMT1", tiff_software("Adobe Firefly 2"));
+  bytes moov = mvhd();
+  append(moov, uuid_box(kCanonUuidT, canon));
+  bytes cr3 = box("ftyp", bytes{'c', 'r', 'x', ' ', 0, 0, 0, 1, 'c', 'r', 'x', ' '});
+  append(cr3, box("moov", moov));
+  put("cmt1.cr3", cr3);
+}
+
+TEST_CASE("provenance past the full read's 8 MB prefix: the full read agrees with the probe",
+          "[meta][provenance][probe]") {
+  // PNG: 9 MB of IDAT, then the Stable Diffusion `parameters` chunk.
+  {
+    bytes png = small_png();
+    bytes tail = png_chunk("IDAT", bytes(9u << 20, 0));
+    append(tail, text_chunk("parameters", "a fox\nSteps: 20, Version: v1.10.1"));
+    png.insert(png.end() - 12, tail.begin(), tail.end());  // before IEND
+    const auto p = same_answer("p_big.png", png);
+    CHECK(p.ai_generated);
+    CHECK(p.made_with == "Stable Diffusion");
+  }
+  // JPEG: 9 MB of APP2 segments before the APP11 C2PA store.
+  {
+    std::vector<bytes> segs;
+    for (int i = 0; i < 145; ++i) segs.push_back(segment(0xE2, bytes(65000, 0x20)));
+    for (auto& s : app11(c2pa_store("ChatGPT", kTrained, "GPT-4o"), 4000)) segs.push_back(s);
+    const auto p = same_answer("p_big.jpg", jpeg_with_segments(grey_jpeg(), segs));
+    CHECK(p.ai_generated);
+    CHECK(p.made_with == "ChatGPT");
+    CHECK(p.evidence == "Content Credentials (C2PA): AI-generated (trainedAlgorithmicMedia)");
+  }
 }

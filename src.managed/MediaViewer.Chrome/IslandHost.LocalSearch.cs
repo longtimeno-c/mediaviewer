@@ -634,6 +634,7 @@ public static partial class IslandHost
         _localSearchPanel = new StackPanel { Spacing = 10 };
         _localSearchStatus = Note("");
         view.Children.Add(_localSearchPanel);
+        view.Children.Add(FirstPartyPageHost(AiSlot, FacesSlot, AudioSlot, CudaSlot));  // PR 56
         view.Children.Add(_localSearchStatus);
         EnsureReaderStarted();  // a later window: what is installed, read now
         _localSearchRestartButton = AddonRestartButton();

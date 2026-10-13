@@ -26,6 +26,12 @@
 // embeddings are frames rows under the CLAP spec, and transcripts live in
 // `speech`. A schema-1 index is upgraded in place.
 //
+// Schema 4 (#291, docs/design/17 "Schema 4"): assets gain tags (0 until read),
+// taken_at, lat, lon, camera, lens, made_with, ai, and place / country /
+// region (NULL: place names come from the Places add-on at query time), and
+// an FTS5 asset_text(rowid = asset id, text = the folded search fields). One
+// transaction, as every step: a kill in it leaves schema 3.
+//
 // docs/design/17 sketches one assets row per (path, mtime, size, spec); progress is
 // that row's per-model half, so two models' vectors live side by side while
 // a quality change migrates (PR 23: "old index kept until the new one
@@ -39,8 +45,10 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "core/result.h"
@@ -88,6 +96,21 @@ struct asset_row {
   asset_kind kind = asset_kind::photo;
   std::int64_t duration_ms = 0;
   bool cloud = false;  // only a cloud provider has it (schema 3): never read until fetched
+};
+
+// #291 (schema 4): what an asset's tags say, as the host's tag_facts gave
+// them. `text` is the search fields folded (core/fold.h) and joined by spaces,
+// as asset_text holds it.
+struct asset_tags {
+  std::int64_t id = 0;
+  std::int64_t mtime = 0;  // the stamp the facts were read at
+  std::uint64_t size = 0;
+  std::optional<std::int64_t> taken_at;  // date taken read as UTC
+  bool has_where = false;
+  double lat = 0, lon = 0;
+  std::string camera, lens, made_with;
+  bool ai = false;
+  std::string text;
 };
 
 // One embedding to store. `emb` is float and L2-normalised; the store
@@ -260,6 +283,24 @@ class index_db {
   [[nodiscard]] std::vector<asset_row> all_assets();
   [[nodiscard]] result<asset_row> asset_by_path(const std::string& path);
   [[nodiscard]] result<asset_row> asset_by_id(std::int64_t id);
+  // ---- tags (#291, schema 4) -----------------------------------------------------
+  // Assets of enabled roots whose tags are not read yet (tags = 0; cloud-only
+  // ones wait for their bytes), oldest first: the backfill's next batch.
+  [[nodiscard]] std::vector<asset_row> assets_needing_tags(std::size_t limit);
+  [[nodiscard]] std::uint64_t tags_pending();
+  // Stores a batch in one transaction; a row whose asset's stamp moved since
+  // the read is dropped (its tags are read again).
+  [[nodiscard]] expected commit_tags(std::span<const asset_tags> rows);
+  // Every asset with tags read, for the engine's memory at start.
+  [[nodiscard]] expected each_tags(const std::function<void(const asset_tags&)>& visit);
+  // An FTS5 MATCH over asset_text (empty when the index has no FTS5). For a
+  // reader that does not keep the text in memory. `words` is what was typed:
+  // each word is matched as a quoted string (fts_phrases), never parsed as
+  // FTS5 query syntax.
+  [[nodiscard]] std::vector<std::int64_t> match_text(const std::string& words, std::size_t limit);
+  // `typed` as an FTS5 query of quoted strings, one per word, ANDed.
+  [[nodiscard]] static std::string fts_phrases(std::string_view typed);
+
   // Specs that have rows (a half-migrated index has two).
   [[nodiscard]] std::vector<std::string> specs();
 

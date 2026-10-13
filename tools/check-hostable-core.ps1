@@ -19,7 +19,7 @@
 #
 # Both apply in:
 #   core/, codec/, canvas/, image/, meta/, player/, edit/, addon/, addons/,
-#   infer/, and io/*.h
+#   geo/, infer/, and io/*.h
 # and to .h, .hpp, .cpp, .mm and .m files.
 #
 # Platform I/O stays in io/*_win.cpp / io/*_mac.cpp (and the existing
@@ -41,7 +41,7 @@ if (-not $SourceRoot) {
 
 $SourceRoot = (Resolve-Path $SourceRoot).Path
 
-$bannedModules = @('core', 'codec', 'canvas', 'image', 'meta', 'player', 'edit', 'addon', 'addons', 'infer')
+$bannedModules = @('core', 'codec', 'canvas', 'image', 'meta', 'player', 'edit', 'addon', 'addons', 'infer', 'geo')
 
 $rules = @(
     [pscustomobject]@{

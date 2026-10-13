@@ -415,6 +415,26 @@ identical, image data unchanged) and sidecar rule: a RAW, HEIC, PNG or clip is n
 writing. Layout, maker-note and orientation tags are read-only. The snapshot covers every tag, so
 Revert restores the file's bytes exactly. One file, one change set; not a batch engine.
 
+**The GPS map pin is built: read-only, on an offline map (2026-10-11, owner; #344).** 06 listed
+"GPS map pin" under Not built. The Places add-on now shows a geotagged file's place label, its
+coordinates and a small map with the pin at the foot of the Metadata pane. It is read-only: the
+map does not edit coordinates (writing them is #352's own change), and clicking it opens nothing
+(rule 6). The map is drawn by the add-on from the Natural Earth polygons and GeoNames towns it
+ships, on a worker, into a bitmap the chrome shows: no tiles, no MapKit, no network, because every
+tile or geocoder service would receive the photo's coordinates. Places is an add-on carrying its
+own code and data (the row "An add-on carries its own code and its own data", under Add-on
+mechanism). Without it the pane shows coordinates as before.
+
+**The map is the pane's last section and zooms under the cursor (2026-10-12, owner; #344).**
+Places contributes the info-pane section, the search provider and its settings page only: no bar,
+path or status item and no window. The section sits at the very bottom of the pane, below the
+footer, whenever the file has coordinates. A pinch or mouse wheel over the map zooms about the
+cursor, a drag pans, a double-click zooms one step; a trackpad two-finger scroll keeps scrolling the
+pane. The chrome moves the last bitmap during the gesture and the add-on re-draws once it settles
+(#348's generic surface events); no present. The range runs from country scale (40° tall) to town
+scale (0.2°) with cities1000 town dots and names, never streets, and says so under the map. The pin
+never leaves the picture: a pan is clamped to keep the photo's point inside it.
+
 **Location is editable; blank removes, with a confirmation (owner, 2026-10-12, #352).** Summary's
 Location row has Edit instead of Remove: coordinates typed in, read by one core parser
 (`meta::parse_location`) on both hosts, and a blank save removes the location only after a
@@ -426,6 +446,19 @@ out of scope" (`docs/plans/metadata-search-and-place.md` §4, doc 06 *Not built*
 XMP `exif:GPS*` in a sidecar otherwise, the original never touched (rule 5); the sidecar's position
 now wins on read, as its rating does. Altitude is kept unless given. Remove is offered only when it
 reaches every copy the viewer reads, so a RAW's or HEIC's own fix can be overridden, not removed.
+
+**Every tag searchable (2026-10-12, #291).** File search and `/` match tags after names, from a
+per-folder background pass (`meta::tag_index`) over a bounded 512 KB head read, kept in
+`meta_cache.db` beside the thumbnail cache. The pass starts after the item's first image, runs as
+background-queue chunks behind every view job and waits while the viewer presents. Date-taken sort
+keys moved onto the same pass, one read per file instead of two. On a folder never seen, each key
+costs the search read (0.19 ms on a 6 MP JPEG) instead of the date read (0.09 ms); a folder seen
+before sorts at once. The app's search text has no place names: owner, 2026-10-11, places come
+from the Places add-on's search provider. The AI pack's query fold moved onto the hosts' rule
+(`core/fold.h`): ß, æ and ø are no longer expanded to ss, ae and o, so a word means the same in
+file search and Local search. AI index schema 4 adds the tag columns and an FTS5 `asset_text`
+(`sqlite3[fts5]` in vcpkg). Its place / country / region columns stay NULL, and `place:` is
+answered at query time by the provider.
 
 ---
 
@@ -837,6 +870,44 @@ LoadLibrary's error mapped to words on Windows, dlerror's kind on the Mac. The A
 `mv_last_error_message`. The window shows "⚠ Local search couldn't start" (or Import), with the
 reason and Open Settings, beside the indexing pill.
 
+**An add-on carries its own code and its own data (2026-10-11, owner, #348).** A feature delivered
+as an add-on lives in its package: its native library, its chrome (if any) and its data, signed
+and verified together, installed and removed together. It is not shipped dormant inside the app
+with only the bulk downloaded. This replaces the 2026-09-28 call made for Final Cut Pro search
+("Shipped inside MediaViewer.app, off until turned on", below under Final Cut Pro search) as the
+rule for add-ons. Still true: there is never a second *app* to install or open; an add-on is a
+package the one app loads. The first to follow it is Places (#344): `src/geo` and its GeoNames /
+Natural Earth data ship in the Places package, not in the base install. What was built under the
+old call (the Final Cut extension and agent) is not moved by this change; moving it is its own
+work and its own row.
+
+**Screens and slots are filled through the host table first (2026-10-11, #348).** PRs 58–59 landed
+before PR 57's script runtime, so MediaViewer's own native add-ons fill them through host table v3
+(`screen_post` … `locations_in`) and the add-on side's `mv.slots.1` (§9 option B), and the
+registry reaches an add-on's code through a `slot_client` so a script add-on fills the same points
+later. A stranger's (schema 2) add-on that names a screen or slot point is refused
+`code_not_allowed` until then. Every request runs on one worker per add-on, coalesced by kind,
+generation-tagged; the chromes read tables and never wait (rule 1). Contribution API numbers keep
+§7's: screens are 4 and slots 5 although 2 and 3 (PRs 56 and 57) are built separately; a manifest
+naming a point by an API it does not reach is malformed, one whose range starts past the host's is
+"needs a newer MediaViewer".
+
+**Local search is a search provider (2026-10-11, #348).** While the AI pack is attached the host
+lists it in the registry as the local-scope provider; the path bar's search icon stays the base
+app's own (file search or Local search, as before), and a Local search query also goes to every
+other local-scope provider, whose rows the result list's path row offers to add ("+ 3 in
+Portugal"). The pack's own results keep their rich list (moments, faces, scrub markers) in its
+panel; it answers the registry with no extra rows. Moving those results into the registry would
+mean rebuilding the AI chrome on the screen vocabulary, which is not this change.
+
+**A docked pane is a window held to the viewer's right edge (2026-10-11, #348).** Neither host has
+a slot for a third docked island beside the Metadata pane and the folder tree without a layout
+change in the native hosts (`main_mac.mm`, `chrome_host.cpp`). An add-on's `pane` screen is a
+child panel on the Mac and a window placed at the right edge on Windows, with Done and Esc to
+close. A true docked island is a follow-up if an add-on needs one. It overlaps the canvas's right
+side (no reflow). Held on the Mac (moves, resizes, full screen, a new main viewer window: 2026-10-12);
+on Windows only placed at open, see [25](25-open-addons.md) "Screens".
+
 ---
 
 ## Import add-on
@@ -1053,7 +1124,7 @@ no Windows twin. Shared on both platforms: the pack's read-only reader (`mv_ai_r
 engine in read-only mode, so results match the app by construction), the wire format, the
 thumbnail lookup and the FCPXML writer (`src/nle`, `mv-nle-export`).
 
-**Shipped inside MediaViewer.app, off until turned on (2026-09-28).** arm64 only: the `.appex`
+**Shipped inside MediaViewer.app, off until turned on (2026-09-28).** (No longer the rule for add-ons: 2026-10-11, "An add-on carries its own code and its own data", under Add-on mechanism.) arm64 only: the `.appex`
 (~180 KB) and a launchd job running `MediaViewer --search-agent`, handed over in `main()` before
 anything of the viewer starts. A separate agent binary carried ~1.8 MB of copies of code the app
 already links; measured cold and warm query times were within noise of it. **Turn on** registers
@@ -1193,6 +1264,120 @@ built-in binding, superseding and restoring), the manifest cases, the packer's c
 the full suite and the add-on rig. Not verified: a signed Import carrying the new manifest in
 the app (a local build cannot load its own unsigned Import); Windows beyond compiling.
 
+**Declarative contributions: contribution API 2 (2026-10-11; PR 56's second half,
+[25](25-open-addons.md#pr-56-second-half-declarative-contributions-2026-10-11)).** Owner, the
+same day: finish the open add-on spine (the rule change made with it, "an add-on carries its own
+code and its own data", is its own row under Add-on mechanism, from #348's branch). Settings
+pages, keymap packs and theme shape are
+data an add-on's manifest carries; both hosts render them natively. None reverses a D-decision.
+
+- **One table of contribution points** (`kContributionPoints`, `open_manifest.h`): every §7
+  point with the API that introduces it (settings and keymaps 2, commands 3, screens 4, slots
+  and providers 5), the same rows on every branch so PRs 56–59 merge without touching each
+  other's lines. A strict manifest (no API past the host's) that names a point the host has not
+  built is malformed; one reaching past the host's API keeps it for a later host. Manifest
+  schema stays 2.
+- **Settings values live in one JSON file per add-on id, written by the core**
+  (`io::addon_settings_dir()`: `addon-settings` / `Add-on Settings`, beside the add-on folders),
+  not in each host's own store (§7 had "the host's store"). Both hosts, a first-party add-on
+  (host table `settings_get`) and a script (PR 57) must read the same values, the core is the
+  only thing all four share, and it makes namespacing, persistence and keep-on-remove one
+  Catch2-tested store. Values are checked against the page on the way in and again on the way
+  out, so a page narrowed by an update hands the add-on its default, not an old value. Nothing
+  is created until a value is written.
+- **Remove keeps an add-on's settings unless asked** ("Keep its settings", on by default, in the
+  Remove panel; Import's "Remove everything" forgets them). Installing again finds them.
+- **A first-party (schema 1) manifest may carry a page too**, read by native code through the
+  host table's new last row `settings_get` (appended under `struct_size`; `MV_ADDON_HOST_API`
+  not bumped). The Places add-on (#344) is its first user.
+- **A keymap pack is applied once, then it is the person's table.** Picking a layout resets to
+  `default_bindings()` and writes the pack's keys in; from then it persists like any remap,
+  survives the add-on's removal, and Reset restores the defaults. Nothing is resolved per key;
+  the router stays an array index. Commands are named by their enumerator (`next`,
+  `toggle_mark`; `shell/keymap.h`, stable), or `<add-on id>/<command id>` for a contributed row
+  (agreed with PR 57). **A binding's keys go to the command's rows in table order**: a pack
+  cannot add a row (persisted remaps are by row index), only re-key or clear one. A key the
+  pack gives out is taken from any other row holding it in an overlapping mode (left unbound,
+  shown so) rather than swapped, so the result does not depend on the order of the pack.
+  Unknown commands and keys are skipped and said, not refused: a pack for a newer MediaViewer
+  applies what this one knows.
+- **A saved key table is put back exactly** (`set_live_key`, no swap), unbound rows included;
+  it used to be replayed through `rebind_live`, which swaps and could not express "no key".
+  **Reset keeps an add-on's superseded built-in rows without their key** (found here: they got
+  it back).
+- **Theme shape is three bounded scales on today's literals** (theme file schema 2:
+  `radius` 0–2, `density` 0.75–1.25, `type_scale` 0.85–1.25), resolved once when the theme is
+  painted. Geometry that native layout or measured gates depend on (gallery tiles, filmstrip,
+  transport, the Video Editor's timeline) keeps its literals. On Windows, as for the typeface,
+  a new shape shows at the next start.
+- **MediaViewer's own add-on windows read the host's tokens** (issue #204). Mac: the app
+  publishes them as the class method `+[MVChromeTheme tokens]` and posts
+  `MVChromeThemeDidChange`; Import and Local search look the class up by name, so an older app
+  leaves them on the system colours and neither bundle links the app. Windows: Import and
+  Duplicates use `IAddonHost2` colours, face and `ThemeChanged` (as the AI chrome already did)
+  and a new, separate `IAddonThemeShape` interface (no members added to the frozen ones).
+- **ABI 0.24**, additive: `mv_addon_settings_json`, `mv_addon_setting_set`,
+  `mv_addon_settings_forget`, `mv_open_addon_keymap_json`; the open list carries `settings` and
+  `keymaps`, the installed list `settings`. The Windows chrome hands a pack to native through
+  the parked-text channel, raised from 16 KB to 128 KB so a 256-binding pack fits.
+**Other makers' code runs as Lua 5.4, vendored, in a sandbox per add-on (PR 57, 2026-10-11).**
+§9 A of [25](25-open-addons.md) with Lua, as the owner decided; the first spike held every limit,
+so WebAssembly was not taken up. What was decided while building it:
+
+- **Lua kept over WASM.** The sandbox holds its limits in about 1,000 lines of runtime: the
+  allocator caps memory, a count hook every 10,000 instructions enforces the instruction budget
+  and the wall clock, and a stop raised at every instruction afterwards cannot be swallowed by
+  `pcall` (each instruction after a caught error raises again). The escape attempts people know
+  (`string.dump`, binary `load`, the shared string metatable, `collectgarbage("stop")`, deep and
+  C recursion, `string.rep` bombs, coroutine loops) are tested; 563,234 fuzzed inputs found
+  nothing. WASM would have meant a runtime many times larger and a toolchain an author must
+  install for a first command.
+- **Vendored, not vcpkg.** The pinned baseline ships Lua 5.5, and the Windows triplet links ports
+  as DLLs; vendoring 5.4.8 (hash from vcpkg's own port) keeps it static on both platforms and
+  lets the binary carry no `io`, `os`, `package` or `debug` code at all. Built as C++, so a Lua
+  error is an exception and the runtime's RAII holds across it.
+- **Local changes to Lua**, marked in `third_party/lua/VENDOR.txt`: pattern matching, a plain
+  `string.find`, `table.move`, `table.insert`, `table.remove` and `table.sort` (every
+  comparison) check the watchdog's flag (they can run for minutes without one VM instruction,
+  so the count hook alone never fires), and `string.rep` of nothing returns at once instead of
+  looping 10^15 times. **Added 2026-10-12 by the PR 57 security review:** no `__gc` finalizer
+  runs (Lua calls one with hooks off, so a looping finalizer held the worker for good and hung
+  the destructor's join at `lua_close`), and `__mode` is ignored, so every table is strong
+  (ephemeron convergence is quadratic inside one atomic GC step, where nothing can stop it:
+  a 200,000-link chain held the worker past 4 s). Both are in `lgc.c`; scripts lose finalizers
+  and weak tables, which glue does not need. The plain find and the `insert` / `remove` /
+  sort-comparison checks came from the same review (each held the worker for good).
+- **The limits:** 64 MB of memory per add-on, 100 million VM instructions and 1 s of wall clock
+  per task (each command call, and the scripts' first run), a 4 MB C stack per worker (macOS
+  gives a secondary thread 512 KB, which Lua's 200 C levels can exceed), 256 tasks queued.
+  Measured on the Mac (arm64, Release, a loaded machine): a spin stops by the instruction budget
+  after about 0.75 s; an allocation bomb at the ceiling within the same bound; a C-side loop by
+  the watchdog's 1 s. The numbers are generous for glue (a loop over 10,000 file names is
+  thousandths of the budget) and small enough that a stuck add-on costs one core for a second.
+- **Over a limit the add-on stops** until Start again or the next launch, rather than retrying:
+  a script that ran away once will again, and a stop the person can see beats a core lost
+  quietly. A Lua error is not a stop: the call ends, Settings shows the last error.
+- **One thread per add-on, one watchdog thread for all,** asleep unless a task runs, so an idle
+  add-on costs nothing (§11). Scripts run in every window's process (they never write the
+  store), so their keys answer in every window.
+- **Permissions are bindings that are not installed.** Without `folder.read`, `mv.folder` is
+  `nil`, not a function that refuses. `thumbnails` is accepted and shown but adds nothing until
+  PR 58's thumbnail nodes; `files.write` / `metadata.write` are "needs a newer MediaViewer"
+  until PR 60; `network` is malformed, always.
+- **A script's key gives way.** A clash with the base app's row, or an earlier add-on's, in a
+  shared mode drops the add-on's key and keeps the row (Settings says why). First-party rows are
+  not held to it: Import supersedes its own built-in rows.
+- **Notices name their add-on.** `mv.notify` shows "Folder Count: 4 files in this folder" in the
+  bar's notice (four a second at most, 200 bytes), so a person never mistakes a stranger's line
+  for MediaViewer's.
+- **Windows: the shell's listener, not the completion queue.** The chrome drains the session's
+  completions; script notices and start / stop are the shell's (title notice, command table), so
+  the core calls a documented any-thread listener and the shell posts to its window (ABI 0.26).
+- **Not yet:** slots and screens for scripts (PRs 58–59 built them for native add-ons; script
+  bindings register through `add_script_binding`). `mv.settings.get` landed when PR 56 and PR 57
+  were integrated (2026-10-12): a binding over the same `settings_values::value_json` the host
+  table's `settings_get` reads.
+
 ---
 
 ## Not built
@@ -1202,8 +1387,8 @@ the app (a local build cannot load its own unsigned Import); Windows beyond comp
 - Multi-window viewers grouped as OS tabs with `Ctrl+Tab`: Mac windows disallow tabbing; one window.
 - Explorer property handler: per-user installs cannot register one.
 - Staged rollout (5 % → 25 % → 100 %): one channel per release goes to everyone.
-- Keymap import/export and named layouts (planned as keymap packs, PR 56); a user font file.
-- Open add-ons PRs 56–60: settings pages, keymap packs, the Lua sandbox, screens, slots, files.
+- Keymap import/export by the person (named layouts ship as keymap packs, PR 56); a user font file.
+- Open add-ons PR 60 (files), and screens and slots for other makers' scripts (the Lua sandbox, PR 57, and native screens and slots, PRs 58–59, are built).
 - Live Photo ContentIdentifier check: pairing is by name only.
 - `F2` rename and an `X` reject mark.
 - Reverse playback in the Video Editor.

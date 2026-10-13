@@ -33,7 +33,7 @@ struct AdjustView: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
+    VStack(alignment: .leading, spacing: MVTheme.space(10)) {
       HStack {
         Text("Adjust").font(.headline)
         Spacer()
@@ -63,7 +63,7 @@ struct AdjustView: View {
         .foregroundStyle(.secondary)
       Spacer(minLength: 0)
     }
-    .padding(14)
+    .padding(MVTheme.space(14))
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     .background(.regularMaterial)
     .overlay(alignment: .leading) { Rectangle().fill(Color.primary.opacity(0.15)).frame(width: 1) }
@@ -88,7 +88,7 @@ struct AdjustView: View {
     let binding = Binding<Double>(
       get: { store.values[i] },
       set: { store.set(i, $0) })
-    return VStack(alignment: .leading, spacing: 2) {
+    return VStack(alignment: .leading, spacing: MVTheme.space(2)) {
       HStack {
         Text(spec.name).foregroundStyle(i == row && focused ? .primary : .secondary)
         Spacer()
@@ -98,10 +98,10 @@ struct AdjustView: View {
         .disabled(!store.ready)
         .onTapGesture(count: 2) { store.set(i, 0) }
     }
-    .padding(.vertical, 2)
-    .padding(.horizontal, 4)
+    .padding(.vertical, MVTheme.space(2))
+    .padding(.horizontal, MVTheme.space(4))
     .background(i == row && focused ? Color.primary.opacity(0.08) : .clear,
-                in: RoundedRectangle(cornerRadius: 6))
+                in: RoundedRectangle(cornerRadius: MVTheme.radius(6)))
   }
 
   // R, G, B and luma as four translucent filled paths, the Windows pane's drawing.
@@ -129,6 +129,6 @@ struct AdjustView: View {
         ctx.fill(path, with: .color(colours[c]))
       }
     }
-    .clipShape(RoundedRectangle(cornerRadius: 4))
+    .clipShape(RoundedRectangle(cornerRadius: MVTheme.radius(4)))
   }
 }

@@ -39,6 +39,21 @@ Both hosts use the same table and router; tests are `tests/test_key_router*.cpp`
   shown in `?` — Open RAW / Open JPEG of a pair.
 - Island-only commands (`zoom_preset`, `select_item`, `gallery_activate`, the adjust sliders,
   crop preset buttons…) carry an argument and have no key.
+- **Keymap packs** (PR 56, [25 "Keymap"](25-open-addons.md#7-the-contribution-model)): the
+  v1.1 "named layouts" come as add-ons. Settings → Keyboard shortcuts → **Key layout** lists every
+  layout of every installed add-on; **Apply** resets the table to `default_bindings()` and writes
+  the layout's keys into the rows it names (`shell/keymap.h` `apply_keymap`), once. From then it
+  is the person's table: persisted like a remap, kept when the add-on goes, and **Reset**
+  restores the defaults. `?` and Settings read the same live table, so they list what the layout
+  bound. A layout names commands by their enumerator (`next`, `toggle_mark`, `zoom_in`;
+  `command_slug`, stable, every command a row runs has one) or `<add-on id>/<command id>` for a
+  contributed row. **Its keys go to that command's rows in table order** (`"prev": ["Left", "H"]`
+  keeps Left and puts H where A was; `""` leaves a row without a key; rows past the list keep
+  theirs): a layout cannot add a row, because remaps persist by row index. A key it gives out is
+  taken from any other row holding it in an overlapping mode, which is left unbound (shown so),
+  rather than swapped. Unknown commands and keys are skipped and listed, not refused. The Mac
+  also refuses a chord a fixed menu item owns at capture; a layout is not checked against the
+  menu (owed). A saved table is put back exactly (`set_live_key`), unbound rows included.
 - **Add-on commands** (Import: `open_import`, `import_now`; Local search: `search_*`) are listed,
   routed and shown only while their add-on is loaded (`set_addon_commands_available` per
   family); otherwise the key falls through as if unbound. The exception is `Ctrl+F`, which runs
@@ -124,7 +139,8 @@ Rings, visible: **canvas** (default), **filmstrip**, **gallery**, **pane** (fold
 metadata, adjust, Edit, jobs), plus the command bar and the transport. `Tab` / `Shift+Tab` cross the
 island boundary; `Esc` returns to the canvas. Fullscreen hides chrome.
 On Windows `Tab` from the canvas walks the visible rings in reading order — command bar, folder
-tree, gallery, Edit, metadata, adjust, jobs, transport, filmstrip — and then back to the canvas;
+tree, gallery, Edit, metadata, adjust, jobs, transport, filmstrip, the AI badge while it is up —
+and then back to the canvas;
 `Shift+Tab` walks it backwards (`IslandHost.FocusOrder`, issue #217).
 
 No island grows over the canvas, except a clip's **transport bar**, which floats over the bottom of
@@ -137,6 +153,23 @@ the video and auto-hides (`shell/transport_autohide.h`, shared by both hosts):
   it stays. Never over the gallery or Settings, never on a Live Photo stop.
 - Fullscreen: the pointer hides with it while over the video. Windowed: never.
 - Visual only: no refit, no second action on the wake, no repaint while idle.
+
+The **AI badge** (#345, [06](06-metadata.md#the-ai-badge-345)) is the other small chrome over the
+canvas: bottom-right, above the transport on a clip, hidden under the gallery, Settings and the
+Video Editor. It is in the focus order (Mac: the key-view loop; Windows: the last ring of
+`IslandHost.FocusOrder`, after the filmstrip and before the canvas). Focus there
+shows its tooltip; it binds no keys, so the router keeps running viewer commands, as with the
+command bar. Never a present.
+
+## Settings
+
+The Settings screen (`Ctrl+,`) holds the view preferences and the key table; both hosts lay it
+out the same way and store the view preferences as one flags word (`shell/settings.h`
+`view_settings`: Windows `settings.ini` `[view]`, Mac `mv.viewFlags`). Sections: Filmstrip,
+Browsing, **Viewer** (#345: "Show a badge on AI-generated images", on by default, owner
+2026-10-11, stored inverted as `kSettingHideAiBadge` so older settings read as on), File types,
+Appearance, then updates and add-ons. A change applies at once, without a relaunch; the AI badge
+switch pokes nothing the render thread reads.
 
 ## Default map
 
@@ -164,7 +197,7 @@ crop. Keys are shown Windows-style; on macOS read `⌘` for `Ctrl`.
 | `Ctrl+N` | all | New window (⌘N; also File ▸ New Window and the Dock menu on the Mac) |
 | `Ctrl+,` | All but crop | Settings |
 | `Ctrl+G` | Viewing | Go to index. **Mac: not built** (no go-to popup yet; `⌘G` falls through) |
-| `/` | browse, video, gallery | Find by name in the loaded listing (gallery folder row: find a folder tile) |
+| `/` | browse, video, gallery | Find by name, then by tag, in the loaded listing (gallery folder row: find a folder tile) |
 | `Ctrl+Shift+E` | All but crop | Folder tree: show and focus |
 | `Ctrl+↑` | Viewing | Up one folder, selecting the folder just left |
 | `Ctrl+←` / `Ctrl+→` | browse, video | Previous / next sibling folder |
@@ -371,6 +404,18 @@ pauses / resumes while copying, `Shift+Space` toggles its day, `Ctrl+Tab` / `Ctr
 next / previous source, `Ctrl+J` ejects, `Esc` closes the window and the import carries on
 ([import](18-import.md)).
 
+### Add-on commands (PR 57, from scripts)
+
+An open add-on with a script ([25](25-open-addons.md)) contributes rows: a name, a default key
+and the script function it calls. They take the eight `addon_cmd_*` slots after any first-party
+add-on's rows, are listed in `?` and Settings, and are rebindable like any row. **Another
+maker's key never displaces the base app's:** when it clashes with a built-in row as bound now
+(remaps included), or with an earlier contributed row, in a mode they share, the key is dropped,
+the row stays listed without one, and Settings → Add-ons → From others says "Ctrl+O is already
+Open, so this command has no key" (`set_addon_commands`, `addon_command_notes_json`). Running one
+posts the call to the add-on's own worker and returns: the key never waits on a script. Keymap
+packs name these rows `<addon-id>/<command-id>`.
+
 ### Search
 
 | Key | Modes | Command |
@@ -387,12 +432,29 @@ the results in the viewer on that tile, `Ctrl+Enter` opens them all as the galle
 character returns to the field; `Esc` returns to the field, then closes.
 
 **File search** (base app, no index): shows the gallery if hidden and opens "Find files by name
-in this folder" over the grid. Typing filters the grid, folder tiles too, by a case- and
+or tag in this folder" over the grid. Typing filters the grid, folder tiles too, by a case- and
 accent-insensitive substring, ~70 ms after the last key, with an "N of M" count. A view over the
 gallery only: arrows move among matches; the viewer and filmstrip still walk the whole folder.
 `Enter` / `↓` go to the grid on the first match; `Esc` clears, then closes; closing the gallery
 or opening another folder closes it. Names are folded once per listing off the UI thread; a
 keystroke is one pass (≤ 2 ms for 10,000 items). No disk walk.
+
+**Tags (#291).** After the name matches come the files whose tags hold every typed word:
+camera, lens, made-with, software, title, caption, keywords, creator
+([06](06-metadata.md) "Search text"). `R5` finds the Canon EOS R5 shots, `ChatGPT` the images it
+made. A tag match shows *why* under its tile ("Canon EOS R5"). The tags come from the folder's
+background tag pass, never from a read on a keystroke (`mv_chrome_tag_search` on the Mac,
+`mv_folder_tag_search` on Windows: a lookup in memory, ~1 ms at 20,000 files). The pass starts
+after the item on screen has its first image and yields to the viewer. While it is still reading,
+the bar says "Still reading tags — 340 of 2,000" and the results grow as it learns more (the
+chrome re-runs the search on `tag_generation`, polling only while a search is typed and tags
+are coming). A folder seen before answers at once (meta_cache.db). Place names (`portugal`)
+come from the Places add-on's search provider, whose rows join after these ([25](25-open-addons.md)
+§7, #348); the app's own tag text has none. Order: names, tags, providers.
+
+`/` over files opens the same search on the Mac. On Windows it is the find box over the
+listing, which jumps to the first name match, else the first tag match with its tag shown
+("IMG_0412.JPG · Canon EOS R5").
 
 ### `?`
 
@@ -440,8 +502,9 @@ Chrome, in memory, no decode.
   folder model.
 - **Sort:** name, modified, size, type, date taken; ascending or descending
   (`mv_folder_set_sort`, saved as `[view] sort` on Windows; View ▸ Sort By on both). Date-taken
-  keys are read once per file by one background job and the listing re-sorts in place when they
-  land; a file with no stamp sorts by mtime.
+  keys come from the folder's tag pass (one bounded read per file, once ever, kept in
+  meta_cache.db) and the listing re-sorts in place once the pass ends; a file with no stamp sorts by
+  mtime.
 - **Show** (issue #206): View ▸ Show on both hosts (the menu bar and the command bar's View on the
   Mac, the command bar's View on Windows): **All**, **Photos** (every still, RAW included),
   **Videos**, **RAW** (a RAW, or a RAW+JPEG pair) or **Marked** (the marks as they are when it is
@@ -470,7 +533,7 @@ Chrome, in memory, no decode.
   host's `meta_store` keeps the cache (`cull_marks_of`, `resolve_cull_marks`).
 - **Typeahead:** with the filmstrip or gallery focused, typing jumps to the first name starting
   with what was typed (300 ms idle resets). On the canvas every letter is a command, so `/` opens
-  a find box over the loaded listing. `Ctrl+G` goes to an index.
+  a find box over the loaded listing (names, then tags; above). `Ctrl+G` goes to an index.
 - **Wrap** at folder ends: on by default, a setting.
 - **Session:** window placement, last folder, zoom mode, wrap, background. Not a catalog.
 
@@ -541,7 +604,7 @@ No hot-path ABI for commands. Commands invoke existing session calls (`mv_folder
 - `U` clear label and `X` reject mark.
 - A filter (all / photos / videos / RAW) on the listing.
 - Touch gestures (swipe, pinch).
-- Import / export of key maps and named alternate layouts.
+- Import / export of a person's own key map (named layouts ship as keymap packs, above).
 - Voice add-on hold-to-talk (`Ctrl+Shift+Space`).
 - **On the Mac** (issue #183): `Ctrl+G` go to index, `;` Live Photo motion, and Open RAW /
   Open JPEG of a pair. `MvCommandSupported` leaves them out, so `?` and Settings do not list

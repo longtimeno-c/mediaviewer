@@ -127,27 +127,62 @@ std::string describe_source_type(std::string_view uri) {
   return out.empty() ? std::string(uri) : out + " (" + std::string(t) + ")";
 }
 
+std::string evidence_line(std::string_view field, std::string_view value) {
+  std::string out(field);
+  out += ": ";
+  out += parse::clean_text(value, 80);
+  return out;
+}
+
 provenance derive_provenance(const parse::evidence& ev) {
   provenance p;
-  for (const std::string& s : ev.source_types) p.ai_generated |= source_type_is_ai(s);
+  // An AI source type is the strongest statement a file can make. source_types
+  // holds XMP's and C2PA's together (XMP's first: the readers run in that
+  // order), so XMP's own term is set aside once and the C2PA claim, when there
+  // is one, is named with its own term.
+  std::string_view c2pa_term;
+  bool any_ai = false;
+  bool xmp_skipped = false;
+  const bool xmp_ai = source_type_is_ai(ev.xmp_source_type);
+  for (const std::string& s : ev.source_types) {
+    if (!source_type_is_ai(s)) continue;
+    any_ai = true;
+    if (xmp_ai && !xmp_skipped && s == ev.xmp_source_type) {
+      xmp_skipped = true;
+      continue;
+    }
+    if (c2pa_term.empty()) c2pa_term = s;
+  }
+  if (any_ai) {
+    p.ai_generated = true;
+    p.evidence = !c2pa_term.empty() ? "Content Credentials (C2PA): " + describe_source_type(c2pa_term)
+                                    : "IPTC digital source type (XMP): " + describe_source_type(ev.xmp_source_type);
+  }
 
   // Every field that can name the tool, most authoritative first.
-  const auto try_match = [&](std::string_view text) {
+  const auto try_match = [&](std::string_view field, std::string_view text) {
     if (!p.made_with.empty()) return;
     if (const auto g = match_generator(text)) {
       p.made_with = std::string(g->name);
-      p.ai_generated |= g->ai;
+      if (g->ai && !p.ai_generated) {
+        p.ai_generated = true;
+        p.evidence = evidence_line(field, text);
+      }
     }
   };
-  try_match(ev.c2pa_generator);
-  for (const std::string& a : ev.c2pa_agents) try_match(a);
-  try_match(ev.png_software);
-  for (const std::string& t : ev.png_generator_text) try_match(t);
-  try_match(ev.xmp_creator_tool);
-  try_match(ev.exif_software);
+  try_match("C2PA claim generator", ev.c2pa_generator);
+  for (const std::string& a : ev.c2pa_agents) try_match("C2PA software agent", a);
+  try_match("PNG Software", ev.png_software);
+  for (const std::string& t : ev.png_generator_text) try_match("PNG text", t);
+  try_match("XMP CreatorTool", ev.xmp_creator_tool);
+  try_match("EXIF Software", ev.exif_software);
 
   // The generator chunks themselves: these tools write them and nothing else does.
   if (ev.png_parameters || ev.png_comfyui) {
+    if (!p.ai_generated) {
+      p.evidence = ev.png_comfyui ? "PNG prompt / workflow chunks (a ComfyUI graph)"
+                                  : "PNG parameters chunk (Stable Diffusion settings)";
+    }
     p.ai_generated = true;
     if (p.made_with.empty()) p.made_with = ev.png_comfyui ? "ComfyUI" : "Stable Diffusion";
   }

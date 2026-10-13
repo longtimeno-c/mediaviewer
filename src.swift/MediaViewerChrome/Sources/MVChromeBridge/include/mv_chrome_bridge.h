@@ -69,6 +69,11 @@ void mv_chrome_key_capture_cancel(void);
 int32_t mv_chrome_key_capture_row(void);
 void mv_chrome_keys_reset(void);
 uint64_t mv_chrome_keys_generation(void);
+// PR 56 (docs/design/16 "Keymap packs"): applies a pack (mv_open_addons_keymap's
+// JSON) to the live table once: the defaults with the pack's keys written in,
+// persisted like any remap. Writes {"changed","displaced","skipped":[...]}.
+// [main-thread]
+int32_t mv_chrome_apply_keymap(const char* pack_json, char* buf, int32_t size);
 
 // Bumps input_snapshot.one_to_one_seq and wakes the render thread. [any-thread]
 void mv_chrome_one_to_one(void);
@@ -173,6 +178,19 @@ void mv_chrome_select_index_and_close_gallery(int32_t index);
 // stale even if the item count is unchanged (a rename, or one file added and
 // another removed). [main-thread]
 uint64_t mv_chrome_listing_generation(void);
+
+// #291 (docs/design/16 "File search"): the files of the listing whose tags
+// (camera, lens, made-with, software, title, caption, keywords, creator) hold
+// every word of `query_utf8`, folded as names are. JSON:
+//   {"done":n,"total":m,"reading":bool,"hits":[[index,"why"],...]}
+// `index` as mv_chrome_item_name; `why` the tag that matched ("Canon EOS R5").
+// Only files the folder's background tag pass has read; `reading` while it
+// runs ("Still reading tags — done of total"). A lookup in memory, never a
+// file read. Returns the byte length needed, as the tables. [main-thread]
+int32_t mv_chrome_tag_search(const char* query_utf8, char* buf, int32_t size);
+// Bumped when the tag pass learns more about the folder on screen: an open
+// search re-runs its tag half. [main-thread]
+uint64_t mv_chrome_tag_generation(void);
 
 // Bumped when the host rewrites a listed file in place (a lossless rotate, a
 // metadata write) and updates its size / mtime without a relist, so Swift
@@ -490,6 +508,70 @@ int32_t mv_chrome_export_last_choice(void);
 void mv_chrome_export_confirm(int32_t packed);
 void mv_chrome_export_cancel(void);
 
+// ---- Screens and slots (docs/design/25 §7, §10; PRs 58-59), src/shell/slots_mac.mm ------
+//
+// What MediaViewer's own add-ons add to existing pages (an info-pane section, a
+// search provider, command-bar / path-bar / context-menu / status items, tile
+// badges) and the windows, panes and sheets they open, as JSON snapshots of the
+// core's registry (src/addon/slots.h documents each shape). None of these waits
+// on an add-on: requests post to its worker and return; answers arrive through
+// the callback, which runs on the main thread with the OR of what changed
+// (1 contributions, 2 info, 4 screens, 8 search, 16 badges, 32 status).
+// Strings follow mv_chrome_command_table's rule. [main-thread] unless noted.
+typedef struct mv_chrome_slot_theme {
+  uint32_t canvas;    // 0xRRGGBBAA, the chrome's theme tokens (docs/design/25 §8)
+  uint32_t surface;
+  uint32_t title;
+  uint32_t body;
+  uint32_t disabled;
+  uint32_t hairline;
+  uint32_t accent;
+  uint32_t dark;      // 1 when the chrome is dark
+} mv_chrome_slot_theme;
+typedef void (*mv_chrome_slots_changed_fn)(uint32_t bits);
+void mv_chrome_slots_set_callback(mv_chrome_slots_changed_fn fn);
+int32_t mv_chrome_slots_contributions(char* buf, int32_t size);
+int32_t mv_chrome_slots_info(char* buf, int32_t size);
+int32_t mv_chrome_slots_screens(char* buf, int32_t size);
+int32_t mv_chrome_slots_search_results(uint32_t scope, char* buf, int32_t size);  // 1 files, 2 local
+int32_t mv_chrome_slots_badges(char* buf, int32_t size);
+int32_t mv_chrome_slots_status(char* buf, int32_t size);
+uint64_t mv_chrome_slots_request_info(const char* path, const char* location_text,
+                                      const mv_chrome_slot_theme* theme, float width, float scale);
+void mv_chrome_slots_clear_info(void);
+uint64_t mv_chrome_slots_search(uint32_t scope, const char* query, const char* folder);
+uint64_t mv_chrome_slots_request_badges(const char* folder);
+bool mv_chrome_slots_open_screen(const char* addon, const char* screen, const char* path,
+                                 const mv_chrome_slot_theme* theme, float width, float height,
+                                 float scale);
+bool mv_chrome_slots_close_screen(const char* addon, const char* screen);
+// A control changed (kind: 1 click, 2 change, 3 submit, 4 select, 5 activate);
+// value_json is checked against the tree before the add-on hears of it.
+bool mv_chrome_slots_event(const char* addon, const char* screen, const char* node, uint32_t kind,
+                           const char* value_json);
+// An item was chosen; paths_json is a JSON array of the files it targets.
+bool mv_chrome_slots_invoke(const char* addon, const char* item, const char* paths_json);
+// A surface's BGRA pixels (premultiplied). Returns the bytes needed (0: none);
+// copies when `cap` is enough. [any-thread]
+int64_t mv_chrome_slots_surface(const char* addon, const char* screen, const char* surface,
+                                uint8_t* out, int64_t cap, uint32_t* width, uint32_t* height,
+                                uint64_t* revision);
+// A screen's thumbnail / thumbnail_grid tile: the viewer's JPEG-512 of any
+// still, by path, made on a utility queue. The callback (main thread) gets the
+// JPEG's path, or NULL when there is none. A tile that leaves the screen
+// cancels its request.
+typedef void (*mv_chrome_slots_thumb_fn)(const char* path, const char* jpeg_path);
+void mv_chrome_slots_set_thumb_callback(mv_chrome_slots_thumb_fn fn);
+void mv_chrome_slots_request_thumbnail(const char* path);
+void mv_chrome_slots_cancel_thumbnail(const char* path);
+// Settings -> Add-ons: the installed first-party add-ons that fill screens or
+// slots, [{"id","name","version","description","state","why","loaded"}].
+// [worker] (reads the store). Refresh loads one just installed; Remove takes
+// every item away at once, no restart. Implemented in src/shell/addons_mac.mm.
+int32_t mv_chrome_slot_addons(char* buf, int32_t size);
+void mv_chrome_slot_addons_refresh(void);
+bool mv_chrome_slot_addon_remove(const char* id, bool keep_data);
+
 // Milestone G add-ons (docs/design/18 "Add-ons"), implemented in src/shell/addons_mac.mm.
 // Strings follow mv_chrome_command_table's rule: returns the length needed,
 // writes at most `size` bytes NUL-terminated. [worker-thread] where noted:
@@ -522,6 +604,27 @@ bool mv_open_addons_remove(const char* folder);                                 
 // "" when the add-on or theme is gone or no longer verifies.
 int32_t mv_open_addons_theme(const char* addon_id, const char* theme_id,
                              char* buf, int32_t size);                          // [worker]
+// PR 56 (docs/design/25 "Settings page", "Keymap"): an add-on's settings page with
+// its values (the dotted id of an open add-on, or a first-party id), one value
+// stored ({"ok","message"}), and what was chosen forgotten (Remove without
+// "keep its settings"). One keymap pack of an installed open add-on, for
+// mv_chrome_apply_keymap. "" when gone. [worker]
+int32_t mv_addons_settings_page(const char* id, char* buf, int32_t size);       // [worker]
+int32_t mv_addons_setting_set(const char* id, const char* key, const char* value_json,
+                              char* buf, int32_t size);                         // [worker]
+bool mv_addons_settings_forget(const char* id);                                 // [worker]
+int32_t mv_open_addons_keymap(const char* addon_id, const char* pack_id,
+                              char* buf, int32_t size);                         // [worker]
+// docs/design/25 PR 57: the script add-ons the app runs, for Settings
+// (src/addon/script_host.h status_json): [{"id","state":"running|stopped|
+// starting","stop","message","last_error","memory_peak","tasks","commands":
+// [{"id","name","key","note"}]}]. Reads no file. [any-thread]
+int32_t mv_open_addons_scripts(char* buf, int32_t size);
+// Settings "Start again" for a stopped script add-on; also what an install or
+// a remove calls, so the running set follows the store. Returns at once; the
+// work runs on the scripts' own queue. [any-thread]
+void mv_open_addons_restart(const char* addon_id);
+void mv_open_addons_reload(void);
 // The theme's canvas colours (0xRRGGBB), so the viewer's own "System"
 // background follows the theme; has_dark / has_light say which palettes the
 // theme gives. active = false returns it to the window's colour. [main-thread]

@@ -173,6 +173,10 @@ public static partial class IslandHost
         public const int VideoMuted = 1032;
         public const int VideoTrack = 1033;
         public const int VideoLoop = 1034;
+        // docs/design/25 PR 56: Settings applied a keymap pack; native pulls the
+        // pack's JSON with TakeTreePath (chrome_cmd_apply_keymap). Not in
+        // Checksum: chrome_command_checksum() does not list it either.
+        public const int ApplyKeymap = 1050;
         // Issue #210: the rename popup's Enter; native takes the parked name.
         public const int Rename = 1035;
         public const int RotateCcw = 96;
@@ -277,6 +281,9 @@ public static partial class IslandHost
         // Set = folders list the kind (settings.h kSettingShow*). Off by default.
         public const int ShowAudio = 1 << 12;
         public const int ShowDocuments = 1 << 13;
+        // #345: set = the AI badge is hidden (settings.h kSettingHideAiBadge), so
+        // it is on by default and in every word saved before the bit existed.
+        public const int HideAiBadge = 1 << 14;
     }
 
     // Telemetry is absent from this initial word on purpose: until native
@@ -772,6 +779,9 @@ public static partial class IslandHost
         }
         _busyDelay?.Stop();
         _busyDelay = null;
+        // docs/design/25 PR 58: add-on screen windows are WinUI Windows on this
+        // thread's XAML runtime; they close before it goes.
+        CloseScreenWindowsForShutdown();
         ShutdownTheme();
         _xaml?.Dispose();
         _xaml = null;
@@ -822,11 +832,14 @@ public static partial class IslandHost
 
     // docs/design/16 Focus: the rings Tab crosses, in screen reading order —
     // command bar, folder tree, gallery, the right column (Edit, metadata,
-    // adjust, jobs), transport, filmstrip — and then the canvas. A ring is
-    // visible while its island has content (hidden ones are dropped and parked).
+    // adjust, jobs), transport, filmstrip, the AI badge while it is up (#345:
+    // it sits on the canvas, so it is the last ring before it) — and then the
+    // canvas. A ring is visible while its island has content (hidden ones are
+    // dropped and parked).
     private static DesktopWindowXamlSource?[] FocusOrder() => new[]
     {
         _source, _tree, _gallery, _editPane, _metaPane, _adjustPane, _jobsPane, _transport, _filmstrip,
+        _aiBadgeShown ? _aiBadge : null,
     };
 
     private static bool _focusWalking;
@@ -874,7 +887,8 @@ public static partial class IslandHost
     // after WindowsXamlManager; a static FontFamily ctor runs too early.
     private const string UiFontFile = "CozetteVector.ttf";
     private const string UiFontFamilyName = "CozetteVector";
-    private const double UiFontSize = 16;
+    // In the theme's type scale (IslandHost.Theme.cs TypeSize), 16 without one.
+    private static double UiFontSize => TypeSize(16);
     private static FontFamily? _uiFont;
     private static FontFamily UiFont => _uiFont ??= LoadUiFont();
     private static string? _gdiFontPath;
@@ -1011,7 +1025,7 @@ public static partial class IslandHost
             Foreground = Brush(Title),
             Background = new SolidColorBrush(Colors.Transparent),
             BorderThickness = new Thickness(0),
-            Padding = new Thickness(14, 7, 14, 7),
+            Padding = Pad(14, 7, 14, 7),
             FontFamily = UiFont,
             FontSize = UiFontSize,
             FontWeight = Microsoft.UI.Text.FontWeights.Normal,
@@ -1044,8 +1058,8 @@ public static partial class IslandHost
         style.Setters.Add(new Setter(FlyoutPresenter.BackgroundProperty, Brush(Canvas)));
         style.Setters.Add(new Setter(FlyoutPresenter.BorderBrushProperty, Brush(Hairline)));
         style.Setters.Add(new Setter(FlyoutPresenter.BorderThicknessProperty, new Thickness(1)));
-        style.Setters.Add(new Setter(FlyoutPresenter.CornerRadiusProperty, new CornerRadius(RadiusFlyout)));
-        style.Setters.Add(new Setter(FlyoutPresenter.PaddingProperty, new Thickness(4)));
+        style.Setters.Add(new Setter(FlyoutPresenter.CornerRadiusProperty, Corner(RadiusFlyout)));
+        style.Setters.Add(new Setter(FlyoutPresenter.PaddingProperty, Pad(4)));
         style.Setters.Add(new Setter(FlyoutPresenter.FontFamilyProperty, UiFont));
         style.Setters.Add(new Setter(FlyoutPresenter.FontSizeProperty, UiFontSize));
         style.Setters.Add(new Setter(Control.AllowFocusOnInteractionProperty, true));
@@ -1058,8 +1072,8 @@ public static partial class IslandHost
         style.Setters.Add(new Setter(MenuFlyoutPresenter.BackgroundProperty, Brush(Canvas)));
         style.Setters.Add(new Setter(MenuFlyoutPresenter.BorderBrushProperty, Brush(Hairline)));
         style.Setters.Add(new Setter(MenuFlyoutPresenter.BorderThicknessProperty, new Thickness(1)));
-        style.Setters.Add(new Setter(MenuFlyoutPresenter.CornerRadiusProperty, new CornerRadius(RadiusFlyout)));
-        style.Setters.Add(new Setter(MenuFlyoutPresenter.PaddingProperty, new Thickness(4)));
+        style.Setters.Add(new Setter(MenuFlyoutPresenter.CornerRadiusProperty, Corner(RadiusFlyout)));
+        style.Setters.Add(new Setter(MenuFlyoutPresenter.PaddingProperty, Pad(4)));
         style.Setters.Add(new Setter(MenuFlyoutPresenter.FontFamilyProperty, UiFont));
         style.Setters.Add(new Setter(MenuFlyoutPresenter.FontSizeProperty, UiFontSize));
         return style;
@@ -1074,7 +1088,7 @@ public static partial class IslandHost
             FontFamily = UiFont,
             FontSize = UiFontSize,
             Background = new SolidColorBrush(Colors.Transparent),
-            Padding = new Thickness(12, 8, 12, 8),
+            Padding = Pad(12, 8, 12, 8),
         };
         // Lightweight resources, never a template (see TextButton): the
         // chrome's washes and colours in place of Windows' own.
@@ -1485,10 +1499,10 @@ public static partial class IslandHost
         var row = new StackPanel
         {
             Orientation = Orientation.Horizontal,
-            Spacing = 2,
+            Spacing = Space(2),
             HorizontalAlignment = HorizontalAlignment.Left,
             VerticalAlignment = VerticalAlignment.Center,
-            Padding = new Thickness(8, 0, 8, 0),
+            Padding = Pad(8, 0, 8, 0),
         };
         row.Children.Add(openBtn);
         row.Children.Add(viewBtn);

@@ -85,6 +85,9 @@ struct summary {
   // trainedAlgorithmicMedia or compositeWithTrainedAlgorithmicMedia, or a
   // field naming a known AI generator. False means "not stated", never "not AI".
   bool ai_generated = false;
+  // #345: why ai_generated is true, one line for a person (generators.h
+  // provenance::evidence); empty when it is false.
+  std::string ai_evidence;
   std::string colour_space;
   std::string duration;      // "1:23.4" (clips)
   std::string codec;         // primary video codec

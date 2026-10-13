@@ -133,6 +133,19 @@ class job_system {
   }
   [[nodiscard]] std::size_t queue_depth() const noexcept;
 
+  // [any-thread, no-block] View-tied (non-background) jobs waiting for a
+  // worker, and running. A background pass that must never compete with the
+  // view (#291's folder tag pass) steps aside while either is non-zero:
+  // queued work gets its worker back at once (the pass re-queues itself),
+  // running work is waited out. Approximate by construction, like the
+  // counters above.
+  [[nodiscard]] std::uint32_t foreground_queued() const noexcept {
+    return fg_queued_.load(std::memory_order_relaxed);
+  }
+  [[nodiscard]] std::uint32_t foreground_running() const noexcept {
+    return fg_running_.load(std::memory_order_relaxed);
+  }
+
  private:
   struct impl;
   std::unique_ptr<impl> impl_;
@@ -143,6 +156,8 @@ class job_system {
   std::atomic<std::uint64_t> completed_{0};
   std::atomic<std::uint64_t> cancelled_{0};
   std::uint32_t worker_count_{0};
+  std::atomic<std::uint32_t> fg_queued_{0};
+  std::atomic<std::uint32_t> fg_running_{0};
 };
 
 }  // namespace mv

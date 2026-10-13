@@ -229,6 +229,6 @@ struct TransportView: View {
     .buttonStyle(.plain)
     .padding(.horizontal, 14)
     .frame(height: 44)
-    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: MVTheme.radius(10)))
   }
 }

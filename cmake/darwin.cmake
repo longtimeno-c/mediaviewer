@@ -236,11 +236,15 @@ add_library(mv_io STATIC
   src/io/verified_copy.h
   src/io/volume.h
   src/io/volume_mac.cpp
+  # docs/design/06 "Place": the place database is read in place.
+  src/io/mapped_file.h
+  src/io/mapped_file_posix.cpp
 )
 find_package(blake3 CONFIG REQUIRED)
 target_link_libraries(mv_io PUBLIC mv_core PRIVATE "-framework CoreServices"
   "-framework CoreFoundation" "-framework DiskArbitration" BLAKE3::blake3)
 add_library(mv::io ALIAS mv_io)
+include("${CMAKE_CURRENT_LIST_DIR}/geo.cmake")
 
 # ---------------------------------------------------------------------------
 # mv_image — colour (LCMS) + PR 17's decode entrypoint + Metal upload +
@@ -341,6 +345,8 @@ add_library(mv_meta_parse STATIC
   src/meta/containers.cpp
   src/meta/xmp_raw.cpp
   src/meta/generators.cpp
+  src/meta/probe.cpp
+  src/meta/probe.h
   src/meta/parse.h
   src/meta/parse_util.h
   src/meta/generators.h
@@ -360,6 +366,9 @@ find_package(exiv2 CONFIG REQUIRED)
 
 add_library(mv_meta STATIC
   src/meta/read.cpp
+  src/meta/probe_file.cpp
+  src/meta/location.cpp
+  src/meta/location.h
   src/meta/still.cpp
   src/meta/carried.cpp
   src/meta/clip.cpp
@@ -370,7 +379,13 @@ add_library(mv_meta STATIC
   src/meta/fields.cpp
   src/meta/sidecar.cpp
   src/meta/write.cpp
+  src/meta/search.cpp
+  src/meta/meta_cache.cpp
+  src/meta/tag_index.cpp
   src/meta/write.h
+  src/meta/search.h
+  src/meta/meta_cache.h
+  src/meta/tag_index.h
   src/meta/tables.h
   src/meta/meta.h
   src/meta/af.h
@@ -380,7 +395,7 @@ target_include_directories(mv_meta SYSTEM PRIVATE ${FFMPEG_INCLUDE_DIRS})
 target_link_directories(mv_meta PRIVATE ${FFMPEG_LIBRARY_DIRS})
 target_link_libraries(mv_meta
   PUBLIC mv_core
-  PRIVATE mv_meta_parse mv_codec mv_io Exiv2::exiv2lib ${FFMPEG_LIBRARIES})
+  PRIVATE mv_meta_parse mv_codec mv_io Exiv2::exiv2lib unofficial::sqlite3::sqlite3 ${FFMPEG_LIBRARIES})
 add_library(mv::meta ALIAS mv_meta)
 
 # ---------------------------------------------------------------------------
@@ -462,6 +477,11 @@ find_package(unofficial-sodium CONFIG REQUIRED)
 set(MV_SQLITE_TARGET unofficial::sqlite3::sqlite3)
 set(MV_SODIUM_TARGET unofficial-sodium::sodium)
 include("${CMAKE_CURRENT_LIST_DIR}/import.cmake")
+# docs/design/25 §9 A (PR 57): Lua and the script runtime.
+include("${CMAKE_CURRENT_LIST_DIR}/script.cmake")
+# The Places add-on (docs/design/27): libmv_places.dylib in build/addons/places,
+# packed and signed separately; never in the app bundle.
+include("${CMAKE_CURRENT_LIST_DIR}/places.cmake")
 
 # Milestone H: host table v2's pixels (src/abi/addon_media.h) over the still
 # pipeline, the clip sampler and the JPEG-512 cache. In the app; knows no
@@ -511,6 +531,8 @@ add_library(mv_shell STATIC
   # translates virtual keys. Pure C++, no platform header.
   src/shell/command_table.cpp
   src/shell/commands.h
+  src/shell/keymap.cpp
+  src/shell/keymap.h
   src/shell/key_router.cpp
   src/shell/key_router.h
   # PR 9: date-taken sort and the metadata cache (both portable).
@@ -549,7 +571,7 @@ add_library(mv_shell STATIC
   src/shell/os_integration.h
 )
 target_include_directories(mv_shell PUBLIC src/abi/include)
-target_link_libraries(mv_shell PUBLIC mv_core mv_io mv_meta mv_edit mv_addon mv_addon_media mv_clip
+target_link_libraries(mv_shell PUBLIC mv_core mv_io mv_meta mv_edit mv_addon mv_script mv_addon_media mv_clip
   PRIVATE ${MV_SQLITE_TARGET})
 add_library(mv::shell ALIAS mv_shell)
 
@@ -634,6 +656,8 @@ set(MV_MAC_HOST_SOURCES
   # Milestone G: add-ons (Settings > Add-ons, the Import chrome's host side).
   src/shell/addons_mac.mm
   src/shell/addons_mac.h
+  # docs/design/25 PRs 58-59: screens and slots, the registry behind the bridge.
+  src/shell/slots_mac.mm
   # docs/design/23: Final Cut Pro on / off (the agent and extension in the bundle).
   src/shell/fcp_mac.mm
   src/shell/present_busy.h
@@ -643,6 +667,7 @@ set_source_files_properties(
   src/shell/crash_reporter_mac.mm
   src/shell/present_lab_mac.mm
   src/shell/addons_mac.mm
+  src/shell/slots_mac.mm
   src/shell/fcp_mac.mm
   src/shell/install_from_dmg_mac.mm
   PROPERTIES COMPILE_FLAGS "-fobjc-arc")
@@ -817,6 +842,7 @@ if(MV_BUILD_TESTS)
     tests/test_key_router.cpp
     tests/test_key_router_review.cpp
     tests/test_command_contract.cpp
+    tests/test_keymap.cpp
     tests/test_kind_filter.cpp
     tests/test_rename_stop.cpp
     tests/test_write_guard.cpp
@@ -857,7 +883,11 @@ if(MV_BUILD_TESTS)
     tests/test_meta.cpp
     tests/test_meta_provenance.cpp
     tests/test_meta_bench.cpp
+    tests/test_meta_location.cpp
     tests/test_meta_store.cpp
+    # #345: the canvas's AI badge (setting, evidence text, the store's probe).
+    tests/test_ai_badge.cpp
+    tests/test_meta_search.cpp
     # PR 12: the metadata writer, and the host-shared write queue.
     tests/test_meta_write.cpp
     tests/test_meta_location_edit.cpp
@@ -897,6 +927,10 @@ if(MV_BUILD_TESTS)
     tests/test_listing_stamp.cpp
     # Issue #236: a stale pending clip is retired, both hosts.
     tests/test_video_session.cpp
+    # Issue #344: the offline reverse geocoder (docs/design/06 "Place").
+    tests/test_geo.cpp
+    # Issue #344 slice 3: the Places add-on's map, Place section and search.
+    tests/test_places.cpp
   )
   target_link_libraries(mv_tests PRIVATE
     mv_core
@@ -910,6 +944,8 @@ if(MV_BUILD_TESTS)
     mv_player
     mv_meta
     mv_clip
+    mv_geo_open
+    mv_places_engine
     JPEG::JPEG
     ${MV_SPNG_TARGET}
     GIF::GIF
@@ -924,6 +960,8 @@ if(MV_BUILD_TESTS)
     Catch2::Catch2WithMain
     "-framework Metal")
   target_include_directories(mv_tests PRIVATE src tools tests src/abi/include)
+  target_compile_definitions(mv_tests PRIVATE MV_GEO_FULL_BLOB="${MV_GEO_BLOB}"
+    MV_GEO_TEST_BLOB="${CMAKE_SOURCE_DIR}/tests/data/geo/places-test.mvgeo")
   # The clip helper with its test hooks (a crash, a hang, a software encoder).
   add_executable(mv_clipjob_test tools/clipjob/main.cpp)
   target_link_libraries(mv_clipjob_test PRIVATE mv_clip)
@@ -953,6 +991,9 @@ if(MV_BUILD_TESTS)
     tests/test_verified_copy.cpp
     tests/test_addon_manifest.cpp
     tests/test_open_addons.cpp
+    tests/test_addon_contributions.cpp
+    tests/test_addon_screens.cpp
+    tests/test_addon_slots.cpp
     tests/test_ai_resume.cpp
     tests/test_import_naming.cpp
     tests/test_import_engine.cpp
@@ -962,14 +1003,28 @@ if(MV_BUILD_TESTS)
     unofficial-sodium::sodium Catch2::Catch2WithMain)
   target_include_directories(mv_import_tests PRIVATE src tests)
   target_compile_definitions(mv_import_tests PRIVATE
-    MV_IMPORT_MODULE_PATH="$<TARGET_FILE:mv_import>")
+    MV_IMPORT_MODULE_PATH="$<TARGET_FILE:mv_import>"
+    MV_SLOTS_TEST_MODULE_PATH="$<TARGET_FILE:mv_slots_test_addon>")
   if(MV_ADDON_DEV_PUBLIC_KEY)
     # A developer build pins its own key (cmake/import.cmake); CI never sets it.
     target_compile_definitions(mv_import_tests PRIVATE MV_TEST_DEV_ADDON_KEY=1)
   endif()
-  add_dependencies(mv_import_tests mv_import)
+  add_dependencies(mv_import_tests mv_import mv_slots_test_addon)
+  mv_places_addon_tests(mv_import_tests)
   catch_discover_tests(mv_import_tests TEST_PREFIX "import_" PROPERTIES ENVIRONMENT "TZ=UTC"
     SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT ${MV_TEST_TIMEOUT})
+
+  # docs/design/25 §9 A (PR 57): the script sandbox, its limits, and script
+  # add-ons as packages. The same sources run on Linux CI and the Mac.
+  add_executable(mv_script_tests
+    tests/test_script_runtime.cpp
+    tests/test_script_addons.cpp
+  )
+  target_link_libraries(mv_script_tests PRIVATE mv_script mv_lua mv_addon mv_io
+    unofficial-sodium::sodium Catch2::Catch2WithMain)
+  target_include_directories(mv_script_tests PRIVATE src tests)
+  catch_discover_tests(mv_script_tests TEST_PREFIX "script_"
+    PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT ${MV_TEST_TIMEOUT})
 
   # docs/design/25: the add-on SDK (tools/addon-sdk) packs, and the app's own reader
   # says what it makes of each package, so the two cannot drift.
