@@ -15,6 +15,22 @@ using mv::addon::screen::tree;
 
 namespace {
 
+// Wall-clock bounds hold in an optimised build only. A Debug or sanitizer build
+// (MSVC ASan Debug runs these ~200x slower) still runs every functional check.
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
+#define MV_TEST_SANITIZED 1
+#endif
+#endif
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#define MV_TEST_SANITIZED 1
+#endif
+#if defined(NDEBUG) && !defined(MV_TEST_SANITIZED)
+constexpr bool kTimed = true;
+#else
+constexpr bool kTimed = false;
+#endif
+
 // One node of every type (§10), each with what it needs.
 const char* kEveryType = R"({"type":"split","id":"root","axis":"horizontal","fraction":0.3,"children":[
  {"type":"scroll","id":"side","height":400,"children":[
@@ -271,7 +287,7 @@ TEST_CASE("a 2,000-tile thumbnail grid is one cheap node", "[addon][screens]") {
   REQUIRE(t.find("g")->props.find("items")->a.size() == 2000);
   // Parse, check, write and one diff: the host does this once per post, on the
   // add-on's thread, never per frame. Generous bound for a loaded CI runner.
-  CHECK(ms < 500);
+  if constexpr (kTimed) CHECK(ms < 500);
 }
 
 TEST_CASE("selecting every tile of a large grid is checked in one pass", "[addon][screens]") {
@@ -295,8 +311,8 @@ TEST_CASE("selecting every tile of a large grid is checked in one pass", "[addon
   REQUIRE(t.check_event("g", ev_select, all) == error::none);
   const auto ms =
       std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
-  // One pass is ~10 ms in Release and ~250 ms under MSVC ASan Debug; the
-  // quadratic scan this guards against took seconds even in Release.
-  CHECK(ms < 2000);
+  // One pass is ~10 ms in Release; the quadratic scan this guards against
+  // took seconds there.
+  if constexpr (kTimed) CHECK(ms < 200);
   REQUIRE(t.check_event("g", ev_select, R"(["/fixtures/tiles/nope.JPG"])") == error::bad_value);
 }
