@@ -16,7 +16,7 @@ struct MetaRow: Identifiable {
 
 struct MetaProperty: Identifiable {
   let id: Int
-  let space: String  // exif | iptc | xmp | container | computed
+  let space: String  // exif | iptc | xmp | container | computed | c2pa | png_text | icc | xmp_raw
   let group: String
   let label: String
   let value: String
@@ -31,11 +31,36 @@ struct MetaProperty: Identifiable {
   /// Why a row cannot be changed, for its lock's help tag.
   var lockReason: String {
     switch space {
-    case "container": return "Stored in the video container; container tags are read-only"
+    case "container": return "Stored in the file's container; container tags are read-only"
     case "computed": return "Worked out by the viewer, not stored in the file"
+    case "c2pa": return "Content Credentials are signed by their maker; shown as stated, never changed"
+    case "png_text": return "A PNG text chunk; shown, never rewritten"
+    case "icc": return "Part of the embedded colour profile"
+    case "xmp_raw": return "An XMP property read as written; it is shown, not edited here"
     default: return "Describes the file itself (size, layout, maker note); changing it would break the file"
     }
   }
+}
+
+/// #290: meta::geo_point — WGS 84 degrees, north / east positive; metres.
+struct MetaLocation: Equatable {
+  let lat: Double
+  let lon: Double
+  let altitude: Double?
+}
+
+/// #352: what the Location editor's text says (meta::parse_location, through the bridge).
+enum LocationParse: Equatable {
+  case point(lat: Double, lon: Double, preview: String)
+  case blank
+  case invalid(String)
+}
+
+/// #352 (meta::location_rights_of): what the Summary's Location row may do.
+struct LocationRights: Equatable {
+  var canSet = false
+  var canClear = false
+  var inOriginal = false
 }
 
 struct MetaStream: Identifiable {
@@ -83,6 +108,15 @@ final class MetadataStore: ObservableObject {
   @Published private(set) var chapters: [MetaChapter] = []
   /// The item the record is for: a half-typed edit belongs to it (issue #190).
   @Published private(set) var itemPath = ""
+  /// #290: provenance and position as the core decided them (meta::summary). The
+  /// summary's "Made with" row already shows the first two; these are for the
+  /// map (#344) and the AI badge (#345).
+  @Published private(set) var madeWith = ""
+  @Published private(set) var aiGenerated = false
+  @Published private(set) var location: MetaLocation?
+  /// #352: the Location editor's starting text ("38.7979, -9.3907") and what the row may do.
+  @Published private(set) var locationText = ""
+  @Published private(set) var locationRights = LocationRights()
 
   // PR 12 (docs/design/06 "Writing"): what the pane edits. The host owns the truth; a
   // change is queued there and lands on its I/O pool. The rating and comment are
@@ -140,12 +174,27 @@ final class MetadataStore: ObservableObject {
   func setDate(_ value: String) { value.withCString { mv_chrome_meta_set_date($0) } }
   func removeDate() { mv_chrome_meta_set_date(nil) }
 
-  /// GPS rows the file lets us remove (EXIF GPSInfo, XMP exif:GPS*).
-  var locationKeys: [String] {
-    properties.filter {
-      $0.removable && ($0.rawTag.hasPrefix("Exif.GPSInfo.") || $0.rawTag.hasPrefix("Xmp.exif.GPS"))
-    }.map(\.rawTag)
+  /// #352: reads the text exactly as the write will. Pure and cheap: the field's
+  /// preview calls it on every keystroke.
+  func parseLocation(_ text: String) -> LocationParse {
+    var r = mv_chrome_location_input()
+    r.struct_size = UInt32(MemoryLayout<mv_chrome_location_input>.size)
+    let ok = text.withCString { mv_chrome_meta_parse_location($0, &r) }
+    guard ok else { return .invalid("Could not read the position") }
+    let message = withUnsafeBytes(of: &r.text) { raw -> String in
+      let bytes = raw.bindMemory(to: UInt8.self)
+      let end = bytes.firstIndex(of: 0) ?? bytes.count
+      return String(decoding: bytes[..<end], as: UTF8.self)
+    }
+    switch r.kind {
+    case UInt32(MV_LOCATION_INPUT_POINT): return .point(lat: r.lat, lon: r.lon, preview: message)
+    case UInt32(MV_LOCATION_INPUT_BLANK): return .blank
+    default: return .invalid(message)
+    }
   }
+  /// The position as typed; blank removes every GPS row (the view confirms first).
+  func setLocation(_ text: String) { text.withCString { mv_chrome_meta_set_location($0) } }
+
   /// The date as the editor shows it ("2024-05-01 14:03:22"), from the summary.
   var dateTaken: String {
     summary.first { $0.label == "Date taken" }?.value ?? ""
@@ -183,5 +232,20 @@ final class MetadataStore: ObservableObject {
     }
     streams = parsed
     chapters = chaps
+    madeWith = readText { mv_chrome_meta_made_with($0, $1) }
+    var facts = mv_chrome_meta_facts()
+    facts.struct_size = UInt32(MemoryLayout<mv_chrome_meta_facts>.size)
+    _ = mv_chrome_meta_facts_get(&facts)
+    aiGenerated = facts.flags & UInt32(MV_META_FACT_AI_GENERATED) != 0
+    location = facts.flags & UInt32(MV_META_FACT_WHERE) != 0
+      ? MetaLocation(
+        lat: facts.lat, lon: facts.lon,
+        altitude: facts.flags & UInt32(MV_META_FACT_ALTITUDE) != 0 ? facts.altitude_m : nil)
+      : nil
+    locationRights = LocationRights(
+      canSet: facts.flags & UInt32(MV_META_FACT_LOCATION_SET) != 0,
+      canClear: facts.flags & UInt32(MV_META_FACT_LOCATION_CLEAR) != 0,
+      inOriginal: facts.flags & UInt32(MV_META_FACT_LOCATION_IN_ORIGINAL) != 0)
+    locationText = readText { mv_chrome_meta_location_text($0, $1) }
   }
 }

@@ -812,7 +812,8 @@ void chrome_host::set_adjust_view(const adjust_view& view) noexcept {
 
 void chrome_host::set_meta_data(bool loading, const std::string& summary,
                                 const std::string& properties,
-                                const std::string& streams) noexcept {
+                                const std::string& streams, const meta::summary* facts,
+                                std::int32_t extra_facts) noexcept {
   if (!panels_attached_ || !set_meta_data_) return;
   chrome_meta_args args{};
   args.summary = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(summary.data()));
@@ -822,6 +823,21 @@ void chrome_host::set_meta_data(bool loading, const std::string& summary,
   args.properties_len = static_cast<std::int32_t>(properties.size());
   args.streams_len = static_cast<std::int32_t>(streams.size());
   args.loading = loading ? 1 : 0;
+  args.facts = extra_facts;
+  if (facts) {
+    if (facts->where) {
+      args.facts |= kMetaFactWhere;
+      args.where_lat = facts->where->lat;
+      args.where_lon = facts->where->lon;
+      if (facts->where->altitude) {
+        args.facts |= kMetaFactAltitude;
+        args.where_altitude_m = *facts->where->altitude;
+      }
+    }
+    if (facts->ai_generated) args.facts |= kMetaFactAiGenerated;
+    args.made_with = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(facts->made_with.data()));
+    args.made_with_len = static_cast<std::int32_t>(facts->made_with.size());
+  }
   (void)set_meta_data_(&args, static_cast<std::int32_t>(sizeof(args)));
 }
 
@@ -858,15 +874,16 @@ bool chrome_host::take_parked_text(std::string& out) noexcept {
   }
 }
 
-void chrome_host::set_meta_edit(std::int32_t rating, const std::string& comment,
+bool chrome_host::set_meta_edit(std::int32_t rating, const std::string& comment,
                                 std::int32_t flags) noexcept {
-  if (!panels_attached_ || !set_meta_edit_) return;
+  if (!panels_attached_ || !set_meta_edit_) return false;
   chrome_meta_edit_args args{};
   args.comment = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(comment.data()));
   args.comment_len = static_cast<std::int32_t>(comment.size());
   args.rating = rating;
   args.flags = flags;
-  (void)set_meta_edit_(&args, static_cast<std::int32_t>(sizeof(args)));
+  // S_FALSE (1): Esc closed the pane's confirmation and nothing else.
+  return set_meta_edit_(&args, static_cast<std::int32_t>(sizeof(args))) == 1;
 }
 
 void chrome_host::apply_rate(float rate) noexcept {

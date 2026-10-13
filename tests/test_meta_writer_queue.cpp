@@ -208,6 +208,24 @@ TEST_CASE("tag and date edits for one file coalesce, the later value winning", "
   CHECK(job->fields.date_taken.value == "2020-01-01 00:00:00");
 }
 
+TEST_CASE("location edits for one file coalesce, a remove after a set winning", "[meta][queue][location]") {
+  // #352: the Location editor saves, then a blank save removes, before the
+  // first write ran: one write, the remove.
+  meta_writer w;
+  mv::meta::write_fields set;
+  set.location = change<mv::meta::geo_point>::to(mv::meta::geo_point{38.7979, -9.3907, std::nullopt});
+  w.submit("/a.jpg", set);
+  w.submit("/a.jpg", rating_fields(2));
+  mv::meta::write_fields clear;
+  clear.location = change<mv::meta::geo_point>::remove();
+  w.submit("/a.jpg", clear);
+  const auto job = w.take_next();
+  REQUIRE(job);
+  CHECK(job->fields.location.k == change<mv::meta::geo_point>::kind::clear);
+  CHECK(job->fields.rating.touches());  // the rating rides along
+  CHECK_FALSE(w.has_pending());
+}
+
 // Issue #207: the culling keys' state machine, shared by both hosts.
 TEST_CASE("X toggles reject; a label key toggles its label; U clears", "[meta][writer][cull]") {
   using mv::shell::colour_label;

@@ -72,17 +72,6 @@ std::string tag(const AVDictionary* d, const char* key) {
   return e && e->value ? e->value : std::string();
 }
 
-// ISO 6709 "+48.8584+002.2945+035.000/" → "48.85840° N, 2.29450° E".
-std::string iso6709(const std::string& s) {
-  if (s.size() < 4 || (s[0] != '+' && s[0] != '-')) return {};
-  char* end = nullptr;
-  const double lat = std::strtod(s.c_str(), &end);
-  if (!end || (*end != '+' && *end != '-')) return {};
-  const double lon = std::strtod(end, &end);
-  if (std::fabs(lat) > 90.0 || std::fabs(lon) > 180.0) return {};
-  return format_coordinate(lat, lat < 0 ? 'S' : 'N') + ", " + format_coordinate(lon, lon < 0 ? 'W' : 'E');
-}
-
 const char* chroma_name(const AVPixFmtDescriptor* d) {
   if (!d || d->nb_components < 3 || (d->flags & AV_PIX_FMT_FLAG_RGB)) return nullptr;
   if (d->log2_chroma_w == 0 && d->log2_chroma_h == 0) return "4:4:4";
@@ -259,7 +248,7 @@ void add_tags(metadata& out, const char* group, const AVDictionary* d) {
 
 }  // namespace
 
-bool read_clip(std::string_view utf8_path, metadata& out) noexcept {
+bool read_clip(std::string_view utf8_path, metadata& out, parse::evidence* ev) noexcept {
   try {
     format_ptr ctx = open(utf8_path, true);
     if (!ctx) return false;
@@ -344,9 +333,18 @@ bool read_clip(std::string_view utf8_path, metadata& out) noexcept {
     const std::string make = tag(ctx->metadata, "com.apple.quicktime.make");
     const std::string model = tag(ctx->metadata, "com.apple.quicktime.model");
     s.camera = model.empty() ? make : make.empty() ? model : make + " " + model;
+    // ISO 6709 "+48.8584+002.2945+035.000/": the point and its altitude (#290).
     for (const char* key : {"com.apple.quicktime.location.ISO6709", "location"}) {
-      s.gps = iso6709(tag(ctx->metadata, key));
-      if (!s.gps.empty()) break;
+      if (const auto p = parse_iso6709(tag(ctx->metadata, key))) {
+        s.where = p;
+        s.gps = format_point(*p);
+        break;
+      }
+    }
+    // #290: the generator evidence a clip's tags can carry.
+    if (ev) {
+      ev->exif_software = tag(ctx->metadata, "com.apple.quicktime.software");
+      if (ev->exif_software.empty()) ev->exif_software = tag(ctx->metadata, "encoder");
     }
     return true;
   } catch (...) {

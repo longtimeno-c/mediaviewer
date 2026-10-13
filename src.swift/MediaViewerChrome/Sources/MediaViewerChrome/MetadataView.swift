@@ -7,10 +7,12 @@
 //
 // PR 29 (owner, 2026-09-26; docs/design/12): every tag is editable here, not just a
 // rating and a comment. The date taken has its own editor (it moves every
-// capture-time tag together), location can be removed in one go, and each tag
+// capture-time tag together), so does the location (#352, owner 2026-10-12:
+// coordinates typed in, blank removes after a confirmation), and each tag
 // in the tree can be edited or removed where the file allows it. A lock marks
 // the rows that describe the file itself. Edits queue on the host and land on
 // its I/O pool; Revert puts every tag back as it was before this session.
+import AppKit
 import SwiftUI
 
 struct MetadataView: View {
@@ -22,6 +24,10 @@ struct MetadataView: View {
   @State private var draft = ""
   @State private var editingDate = false
   @State private var dateDraft = ""
+  // #352: the Location editor, and the confirmation before a blank save removes it.
+  @State private var editingLocation = false
+  @State private var locationDraft = ""
+  @State private var confirmRemoveLocation = false
   @State private var addingTag = false
   @State private var newKey = ""
   @State private var newValue = ""
@@ -121,6 +127,8 @@ struct MetadataView: View {
   private func cancelEdits() {
     editing = nil
     editingDate = false
+    editingLocation = false
+    confirmRemoveLocation = false
     addingTag = false
     fieldFocused = false
   }
@@ -137,6 +145,8 @@ struct MetadataView: View {
           ForEach(store.summary) { row in
             if row.label == "Date taken" {
               dateRow(row)
+            } else if row.label == "Location" {
+              locationRow(row)
             } else if row.label == "Label" {
               labelRow(row)
             } else {
@@ -146,12 +156,6 @@ struct MetadataView: View {
                   .foregroundStyle(row.value.isEmpty ? MVTheme.disabled : MVTheme.title)
                   .textSelection(.enabled)
                   .frame(maxWidth: .infinity, alignment: .leading)
-                if row.label == "Location" && !row.value.isEmpty && !store.locationKeys.isEmpty {
-                  Button("Remove") { store.locationKeys.forEach { store.removeTag($0) } }
-                    .buttonStyle(FlatButtonStyle(compact: true))
-                    .help("Remove every GPS tag from this file")
-                    .accessibilityLabel("Remove location")
-                }
               }
               .font(MVTheme.font(14))
             }
@@ -254,6 +258,128 @@ struct MetadataView: View {
       }
     }
     .font(MVTheme.font(14))
+  }
+
+  // MARK: Location (#352)
+
+  /// One line under the field: the point Save will write, or why it will not.
+  private func locationNote(_ parsed: LocationParse) -> (text: String, error: Bool) {
+    switch parsed {
+    case .point(_, _, let preview): return ("\u{2192} " + preview, false)
+    case .blank:
+      if store.locationRights.canClear { return ("Saving an empty field removes the location", false) }
+      if store.locationRights.inOriginal {
+        return ("This file's own location is in the original, which is never rewritten: change it, not remove it", true)
+      }
+      return ("Enter latitude and longitude, e.g. 38.7979, -9.3907", false)
+    case .invalid(let why): return (why, true)
+    }
+  }
+
+  private var locationEditHelp: String {
+    if !store.canEdit || !store.locationRights.canSet { return "This item cannot be written" }
+    if store.locationRights.inOriginal {
+      return "Change where this was taken. The original keeps its own; the new one goes in the XMP sidecar, which wins"
+    }
+    return "Change or remove where this was taken (decimal or degrees, minutes, seconds)"
+  }
+
+  private func locationRow(_ row: MetaRow) -> some View {
+    let note = locationNote(store.parseLocation(locationDraft))
+    return VStack(alignment: .leading, spacing: 6) {
+      HStack(alignment: .firstTextBaseline, spacing: 10) {
+        Text(row.label).foregroundStyle(MVTheme.body).frame(width: 100, alignment: .leading)
+        if editingLocation {
+          TextField("38.7979, -9.3907", text: $locationDraft)
+            .textFieldStyle(.roundedBorder)
+            .font(MVTheme.font(14))
+            .focused($fieldFocused)
+            .onSubmit { saveLocation() }
+            .onExitCommand { cancelEdits(); store.blur() }
+            .accessibilityLabel("Location, latitude and longitude")
+            .accessibilityHint(note.text)
+        } else {
+          Text(row.value.isEmpty ? "—" : row.value)
+            .foregroundStyle(row.value.isEmpty ? MVTheme.disabled : MVTheme.title)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
+          Button("Edit") {
+            cancelEdits()
+            locationDraft = store.locationText
+            editingLocation = true
+            fieldFocused = true
+          }
+          .buttonStyle(FlatButtonStyle(compact: true))
+          .disabled(!store.canEdit || !store.locationRights.canSet)
+          .help(locationEditHelp)
+          .accessibilityLabel("Edit location")
+        }
+      }
+      if editingLocation {
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+          Spacer().frame(width: 106)
+          if note.error {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Color(nsColor: .systemRed))
+              .accessibilityHidden(true)
+          }
+          Text(note.text)
+            .font(MVTheme.font(12))
+            .foregroundStyle(note.error ? Color(nsColor: .systemRed) : MVTheme.body)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityLabel(note.error ? "Error: " + note.text : note.text)
+        }
+        HStack(spacing: 6) {
+          Spacer().frame(width: 100)
+          Button("Save") { saveLocation() }.buttonStyle(FlatButtonStyle(selected: true, compact: true))
+            .help("Return")
+          Button("Cancel") { cancelEdits(); store.blur() }.buttonStyle(FlatButtonStyle(compact: true))
+            .help("Esc")
+        }
+      }
+    }
+    .font(MVTheme.font(14))
+    // A native alert: Esc and Return both land on Cancel; Remove must be chosen.
+    .alert("Remove location from this file?", isPresented: $confirmRemoveLocation) {
+      Button("Remove", role: .destructive) {
+        store.setLocation("")
+        cancelEdits()
+        store.blur()
+      }
+      .accessibilityLabel("Remove location")
+      Button("Cancel", role: .cancel) { fieldFocused = true }
+        .keyboardShortcut(.defaultAction)
+    } message: {
+      // Revert all restores every tag as it was before this session's first
+      // write to the file, until the app quits (meta::revert, docs/design/06).
+      Text(MetadataView.removeLocationMessage)
+    }
+  }
+
+  /// The confirmation's second line; Windows says the same (IslandHost.Panels.cs).
+  static let removeLocationMessage =
+    "Revert all can bring it back until you quit MediaViewer. It also undoes your other changes to this file."
+
+  private func saveLocation() {
+    switch store.parseLocation(locationDraft) {
+    case .point(let lat, let lon, _):
+      // Unchanged: no write, as an unchanged comment makes none. The starting
+      // text is rounded to 6 decimals, so saving it untouched must not count as
+      // an edit of a position the file holds more precisely.
+      let untouched = locationDraft.trimmingCharacters(in: .whitespaces) == store.locationText
+      if untouched && store.location != nil { cancelEdits(); store.blur(); return }
+      if let at = store.location, abs(at.lat - lat) < 1e-9, abs(at.lon - lon) < 1e-9 {
+        cancelEdits()
+        store.blur()
+        return
+      }
+      store.setLocation(locationDraft)
+      cancelEdits()
+      store.blur()
+    case .blank:
+      if store.locationRights.canClear { confirmRemoveLocation = true } else { NSSound.beep() }
+    case .invalid:
+      NSSound.beep()
+    }
   }
 
   private func saveDate() {

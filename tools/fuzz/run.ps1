@@ -56,6 +56,16 @@ $table = [ordered]@{
     pdf         = @{ Seeds = @('pdf');                                  MaxLen = 65536 }
     docx        = @{ Seeds = @('docx');                                 MaxLen = 65536 }
     script      = @{ Seeds = @('script');                               MaxLen = 16384 }
+    # #290: the metadata readers beyond Exiv2 (meta/parse.h).
+    meta_c2pa   = @{ Seeds = @('c2pa');                                 MaxLen = 65536 }
+    meta_jpeg   = @{ Seeds = @('jpeg', 'c2pa');                         MaxLen = 65536 }
+    meta_png    = @{ Seeds = @('png', 'c2pa');                          MaxLen = 65536 }
+    meta_webp   = @{ Seeds = @('webp');                                 MaxLen = 65536 }
+    meta_bmff   = @{ Seeds = @('heic', 'avif', 'c2pa');                 MaxLen = 131072 }
+    meta_xmp    = @{ Seeds = @('xmp');                                  MaxLen = 65536 }
+    meta_icc    = @{ Seeds = @('icc');                                  MaxLen = 65536 }
+    # #352: the Location editor's parser; the text is capped at 256 bytes.
+    meta_location = @{ Seeds = @('location');                           MaxLen = 512 }
 }
 
 if ($Harness.Count -eq 1 -and $Harness[0] -match ',') { $Harness = $Harness[0] -split ',' }

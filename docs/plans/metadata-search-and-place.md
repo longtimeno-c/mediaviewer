@@ -16,8 +16,12 @@ into `docs/design/06-metadata.md` (pane, place, badge), `16-commands.md` (search
 
 ## Status (2026-10-11)
 
-Plan only; nothing built. #290 and #291 are open with no PR. Place and the map are #344 (slices
-2–3 and the place half of slice 4); the badge is #345 (slice 5).
+**Slice 1 (#290) is built** on branch `feature/issue-290-all-tags` and folded into
+`docs/design/06-metadata.md` ("Beyond Exiv2", "Made with and AI provenance", position as numbers)
+and `14-abi.md` (the chrome bridges' facts). Its Windows half (the native C++ and the running
+WinUI pane) is owed to Windows CI and a Windows run. #291 is open with no PR. Place and the map
+are #344 (slices 2–3 and the place half of slice 4); the badge is #345 (slice 5). Slices 2–5 can
+start from `summary::where`, `summary::made_with` and `summary::ai_generated`.
 
 ## 0. Rules this touches
 
@@ -25,8 +29,8 @@ Plan only; nothing built. #290 and #291 are open with no PR. Place and the map a
   in the app. No `CLGeocoder`, no MapKit tiles, no Bing/OSM/Google tiles, no web geocoder: each of
   those sends the photo's coordinates to a server. This is the reason for the bundled data and the
   self-drawn map, not a preference.
-- **Rule 5 (never modify an original).** Everything here is read-only. The existing Location
-  "Remove" button and PR 12's writer are unchanged.
+- **Rule 5 (never modify an original).** Everything here is read-only. PR 12's writer is
+  unchanged by these slices; the Location row's Edit (#352, 2026-10-12) writes through it.
 - **Rule 1 / performance.** Tag reading, place lookup and map drawing run on workers. The badge and
   the map never cause a present on a still (idle stays 0 presents). The folder-wide tag read for
   search never runs ahead of first pixel or the ±2 prefetch window.
@@ -34,7 +38,7 @@ Plan only; nothing built. #290 and #291 are open with no PR. Place and the map a
   WinUI half per slice, a verify line on each platform, plus both PR 1 present-loop gates.
 - **Decision log.** `06-metadata.md` lists "GPS map pin" under *Not built*; slice 3 builds it, so add
   a dated row to `12-decision-log.md` (owner, 2026-10-11, read-only pin, offline map). Writing
-  coordinates stays not built.
+  coordinates was out of scope here; #352 (owner, 2026-10-12) built it separately.
 - **Licensing.** GeoNames data is CC-BY 4.0: an attribution line in the third-party notices and the
   About box. Natural Earth is public domain. Both are data, not linked code.
 
@@ -54,7 +58,7 @@ Plan only; nothing built. #290 and #291 are open with no PR. Place and the map a
 
 Each slice is one PR, both platforms. Order matters: 1 → 2 → 3 → 4; 5 can follow 1 in parallel.
 
-### Slice 1 — All tags (#290)
+### ~~Slice 1 — All tags (#290)~~ — built; see doc 06. The text below is kept for the verify.
 
 As written in #290: C2PA/JUMBF (JPEG APP11, PNG `caBX`, ISO-BMFF `c2pa`/`uuid`), PNG
 `tEXt`/`zTXt`/`iTXt`, unregistered XMP namespaces listed raw, ICC description/copyright, JFIF,
@@ -196,7 +200,9 @@ hold.
 
 ## 4. Out of scope
 
-- Writing or editing coordinates.
+- ~~Writing or editing coordinates.~~ Reversed by the owner, 2026-10-12 (#352): the Location row
+  is editable and a blank save removes it after a confirmation ([06](../design/06-metadata.md)
+  "The Location row", [12](../design/12-decision-log.md)).
 - Street-level maps.
 - Online geocoding of any kind.
 - A batch metadata engine.
