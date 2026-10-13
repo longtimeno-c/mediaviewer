@@ -32,6 +32,9 @@ mode resolve_mode(const view_state& s) noexcept {
   if (s.game && s.item == item_kind::none && !s.popup_open) return mode::runner;
   if (s.loupe_held) return mode::loupe;
   if (s.slideshow) return mode::slideshow;
+  // Issue #361: a clip that plays, or with the strip hidden, skims on ← →.
+  // Skim layers over video (on_key falls back to the video rows).
+  if (s.item == item_kind::clip && (s.clip_playing || !s.filmstrip_visible)) return mode::skim;
   if (s.item == item_kind::clip || s.item == item_kind::animation) return mode::video;
   return mode::browse;
 }
@@ -182,6 +185,17 @@ route key_router::on_key(const key_event& e, const view_state& s) noexcept {
     return {command_id::back, target, true};
   }
 
+  // A tap/hold that became a hold keeps going until its key-up, whatever the
+  // mode does meanwhile (issue #361: a held → skims a playing clip; if the clip
+  // ends or pauses mid-hold the mode drops back to video, where → walks, and
+  // the next repeat must not change the item).
+  if (e.repeat) {
+    if (held* h = find_held(e.k); h && !h->momentary && h->hold != command_id::none) {
+      h->repeated = true;
+      return {h->hold, back_target::none, true};
+    }
+  }
+
   const mode m = resolve_mode(s);
   const binding* b = lookup(e.k, e.mods, m);
   // Gallery navigation is available immediately after G, regardless of which
@@ -222,7 +236,13 @@ route key_router::on_key(const key_event& e, const view_state& s) noexcept {
     // keep working mid-cull.
     view_state under = s;
     under.loupe_held = false;
-    b = lookup(e.k, e.mods, resolve_mode(under));
+    const mode under_mode = resolve_mode(under);
+    b = lookup(e.k, e.mods, under_mode);
+    if (!b && under_mode == mode::skim) b = lookup(e.k, e.mods, mode::video);
+  }
+  if (!b && m == mode::skim) {
+    // Skim layers over video: only ← → differ (issue #361).
+    b = lookup(e.k, e.mods, mode::video);
   }
   if (!b && m == mode::trim) {
     // Trim layers over video like the loupe over browse: the transport keys
@@ -241,7 +261,7 @@ route key_router::on_key(const key_event& e, const view_state& s) noexcept {
       if (e.repeat && find_held(e.k)) return {command_id::none, back_target::none, true};
       held* h = claim_held(e.k);
       if (!h) return {};  // four keys already held; a fifth hold is not tracked
-      *h = held{b, e.k, b->release, true, false};
+      *h = held{b, e.k, command_id::none, b->release, true, false};
       return {b->command, back_target::none, true};
     }
     case repeat_policy::tap_hold: {
@@ -255,7 +275,7 @@ route key_router::on_key(const key_event& e, const view_state& s) noexcept {
       // Tap fires on the down edge so Q/E skip without waiting for key-up.
       // The first typematic repeat makes it a hold; a repeat with no recorded
       // down (focus arrived mid-hold) starts the hold from here.
-      *h = held{b, e.k, b->release, false, e.repeat};
+      *h = held{b, e.k, b->hold, b->release, false, e.repeat};
       if (!e.repeat) return {b->command, back_target::none, true};
       return {b->hold, back_target::none, true};
     }
