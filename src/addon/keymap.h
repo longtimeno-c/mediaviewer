@@ -37,6 +37,13 @@ namespace mv::addon {
 inline constexpr std::size_t kKeymapMaxPacks = 8;
 inline constexpr std::size_t kKeymapMaxBindings = 256;
 inline constexpr std::size_t kKeymapMaxKeys = 8;
+// One pack, as keymaps_to_json writes it ({"id","name","bindings"}, compact,
+// '"' and '\' escaped), is at most this many bytes. The counts above allow
+// about 170 KB; this is what both hosts carry (issue #356): Windows moves the
+// pack through the chrome's 128 KB parked-text buffer (shell/chrome_host.cpp,
+// which static_asserts the room), the Mac by pointer. The SDK checks the same
+// (tools/addon-sdk/mvaddon.py KEYMAP_MAX_PACK_BYTES).
+inline constexpr std::size_t kKeymapMaxPackBytes = 64u << 10;
 
 struct keymap_binding {
   std::string command;
@@ -58,5 +65,7 @@ struct keymap_pack {
 // The packs as the chromes and the shell read them back:
 // [{"id","name","bindings":[{"command","keys":[...]}]}].
 [[nodiscard]] std::string keymaps_to_json(const std::vector<keymap_pack>& packs);
+// One pack's bytes in that JSON (kKeymapMaxPackBytes bounds it).
+[[nodiscard]] std::size_t keymap_pack_json_bytes(const keymap_pack& pack);
 
 }  // namespace mv::addon
