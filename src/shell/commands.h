@@ -333,9 +333,6 @@ enum class command_id : std::uint16_t {
   // Ctrl/Cmd+N: another window, its own process (docs/design/16 "Window").
   // Appended after the add-on slots so every earlier wire id stays put.
   new_window,
-  // Issue #208 (docs/design/16 "View"): `|` toggles a two-up compare of the
-  // previous still beside the current one, under one camera. Appended.
-  compare_two_up,
   // Issue #210 (docs/design/16 "Marks, copy, move"): F2 renames the file on screen,
   // its pair and its sidecars with it. Appended.
   rename_file,
@@ -355,6 +352,10 @@ enum class command_id : std::uint16_t {
   label_green,
   label_blue,
   clear_label,
+  // Issue #208 (docs/design/16 "View"): `|` toggles a two-up compare of the
+  // previous still beside the current one, under one camera. Appended.
+  // Appended after #207's ids so every earlier wire id stays put.
+  compare_two_up,
   count
 };
 inline constexpr int kAddonCommandSlots = 8;
