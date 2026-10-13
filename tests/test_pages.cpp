@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Pages inside one navigation stop (docs/plans/audio-and-documents.md §2.3):
 // codec::decode takes a page, says how many there are, and skips a TIFF's
-// reduced-resolution subfiles; Ctrl+PageDown / PageUp are the keys.
+// reduced-resolution subfiles; an ICO's sizes are pages too (issue #211; the
+// HEIC half is in test_heif_avif.cpp). Ctrl+PageDown / PageUp are the keys.
 #include "catch_compat.h"
 
 #include <cstdint>
@@ -77,6 +78,68 @@ TEST_CASE("A multi-page TIFF decodes each page and counts only real pages", "[pa
   REQUIRE(shown);
   CHECK(shown->page == 1);
   CHECK(shown->page_count == 3);
+}
+
+// A flat w x h 32-bit icon entry of one colour.
+fixtures::ico_entry ico_size(std::uint32_t w, std::uint32_t h, std::uint8_t r, std::uint8_t g,
+                             std::uint8_t b) {
+  std::vector<std::uint8_t> px(static_cast<std::size_t>(w) * h * 4);
+  for (std::size_t i = 0; i < px.size(); i += 4) {
+    px[i] = r;
+    px[i + 1] = g;
+    px[i + 2] = b;
+    px[i + 3] = 255;
+  }
+  fixtures::ico_entry e;
+  e.payload = fixtures::ico_dib(w, h, 32, px.data());
+  e.w_byte = static_cast<std::uint8_t>(w);
+  e.h_byte = static_cast<std::uint8_t>(h);
+  e.bpp = 32;
+  return e;
+}
+
+TEST_CASE("An ICO's sizes are pages, largest first", "[pages][ico]") {
+  // Directory order is small, large, medium: pages follow the still's rank.
+  const auto bytes = fixtures::ico_file({ico_size(16, 16, 255, 0, 0), ico_size(48, 48, 0, 255, 0),
+                                         ico_size(32, 32, 0, 0, 255)});
+
+  auto first = mv::codec::decode(bytes);
+  REQUIRE(first);
+  CHECK(first->page == 0);
+  CHECK(first->page_count == 3);
+  CHECK(first->width == 48);
+  CHECK(first->rgba[1] == 255);  // green: the still is unchanged
+
+  auto second = mv::codec::decode(bytes, nullptr, 4, 1);
+  REQUIRE(second);
+  CHECK(second->page == 1);
+  CHECK(second->page_count == 3);
+  CHECK(second->format == mv::codec::format_family::ico);
+  CHECK(second->width == 32);
+  CHECK(second->rgba[2] == 255);  // blue
+
+  auto third = mv::codec::decode(bytes, nullptr, 4, 2);
+  REQUIRE(third);
+  CHECK(third->width == 16);
+  CHECK(third->rgba[0] == 255);  // red
+
+  auto past = mv::codec::decode(bytes, nullptr, 4, 3);
+  REQUIRE_FALSE(past);
+  CHECK(past.error() == status::invalid_arg);
+
+  auto shown = mv::image::decode_bytes(bytes, nullptr, 4, 2);
+  REQUIRE(shown);
+  CHECK(shown->page == 2);
+  CHECK(shown->page_count == 3);
+
+  // A lone icon is one page.
+  const auto lone = fixtures::ico_file({ico_size(16, 16, 9, 9, 9)});
+  auto only = mv::codec::decode(lone);
+  REQUIRE(only);
+  CHECK(only->page_count == 1);
+  auto none = mv::codec::decode(lone, nullptr, 4, 1);
+  REQUIRE_FALSE(none);
+  CHECK(none.error() == status::invalid_arg);
 }
 
 TEST_CASE("A single-page file is one page, and has no page 1", "[pages]") {
