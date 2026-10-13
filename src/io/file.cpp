@@ -29,7 +29,10 @@ result<std::vector<std::uint8_t>> read_prefix(std::string_view utf8_path, std::s
     return err(status::invalid_arg);
   }
 
-  HANDLE file = ::CreateFileW(wide.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+  // FILE_SHARE_DELETE: reading a file never stops the person renaming or
+  // deleting it (F2, Explorer); what was read stays valid (issue #387).
+  HANDLE file = ::CreateFileW(wide.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE,
+                              nullptr, OPEN_EXISTING,
                               FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
   if (file == INVALID_HANDLE_VALUE) return err(status::io);
 
