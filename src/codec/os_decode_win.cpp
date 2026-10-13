@@ -175,6 +175,7 @@ result<raster> try_os_decode(std::span<const std::uint8_t> bytes, const job_cont
     out.height = h;
     out.format = format_family::heic;
     out.intent = transfer_intent::display_referred;
+    out.page_count = info.pages;  // frame 0 is the primary, page 0 (os_decode.h)
 
     if (info.has_icc) {
       // The profile must come back through WIC, or WIC's output is untagged

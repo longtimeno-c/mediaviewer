@@ -30,6 +30,14 @@ void set_addons_dir_override(std::string_view utf8_dir);  // tests; empty restor
 [[nodiscard]] result<std::string> open_addons_dir();
 void set_open_addons_dir_override(std::string_view utf8_dir);  // tests; empty restores
 
+// What people chose on add-ons' settings pages (docs/design/25 "Settings page"),
+// one JSON file per add-on id: %LocalAppData%\MediaViewer\addon-settings,
+// ~/Library/Application Support/MediaViewer/Add-on Settings. Beside the
+// add-on folders, so removing an add-on can keep them. NOT created here: the
+// first value written makes it.
+[[nodiscard]] result<std::string> addon_settings_dir();
+void set_addon_settings_dir_override(std::string_view utf8_dir);  // tests; empty restores
+
 // PR 15: where Ctrl+Alt+C / ⌘⌥C writes the flattened copy it puts on the
 // clipboard (%LocalAppData%\MediaViewer\clipboard, ~/Library/Caches/
 // MediaViewer/Clipboard). Never the browsed folder. Created if missing.

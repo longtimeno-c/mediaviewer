@@ -661,6 +661,8 @@ public static partial class IslandHost
         row.Children.Add(scroller);
         row.Children.Add(_barPathCurrent);
         row.Children.Add(_barSearchButton);
+        // docs/design/25 PR 59: the add-ons' path-bar icons.
+        row.Children.Add(BuildSlotPathItems());
         row.Children.Add(new Border
         {
             Width = 1, Height = 18,
@@ -711,6 +713,8 @@ public static partial class IslandHost
         }
         if (_barSearchButton is null) return;
         bool loaded = SearchChrome is not null;
+        // docs/design/25 §7: while the pack is attached it is the local-scope provider.
+        SlotNative.LocalSearchProvider(loaded);
         bool waiting = AiOnDemand();
         bool pack = loaded || waiting || AiStarting();
         _barSearchButton.Visibility = Visibility.Visible;
@@ -963,15 +967,37 @@ public static partial class IslandHost
                 Margin = new Thickness(0, 2, 0, 0),
             };
             var col = new StackPanel { Spacing = 4 };
+            // docs/design/25 PR 59: the add-ons' badges, from a table (no add-on call per
+            // tile). With no add-on contributing badges the tile is exactly the plain one:
+            // no extra element, no subscription (the tiles are rebuilt when that changes).
+            UIElement badged = WithPlayBadge(WithBadge(image, vm.Badge), vm.IsClip, 40);
+            Action? unsubscribeBadges = null;
+            if (_slotTileBadges)
+            {
+                badged = WithSlotBadges(badged, vm, out Action unsubscribe);
+                unsubscribeBadges = unsubscribe;
+            }
             var clipped = new Border
             {
                 CornerRadius = new CornerRadius(6),
-                Child = WithPlayBadge(WithBadge(image, vm.Badge), vm.IsClip, 40),
+                Child = badged,
                 Width = GalleryTile,
                 Height = GalleryTile,
             };
             col.Children.Add(clipped);
             col.Children.Add(name);
+            // #291: why a file search showed this tile when its name did not match.
+            var why = new TextBlock
+            {
+                Text = vm.Why,
+                FontFamily = UiFont,
+                FontSize = 11,
+                Foreground = Brush(Body),
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxWidth = GalleryTile,
+                Visibility = vm.Why.Length > 0 ? Visibility.Visible : Visibility.Collapsed,
+            };
+            col.Children.Add(why);
             var border = new Border
             {
                 Width = GalleryTile,
@@ -997,15 +1023,28 @@ public static partial class IslandHost
             void OnChanged(object? _, System.ComponentModel.PropertyChangedEventArgs e)
             {
                 if (e.PropertyName is nameof(FolderItemVm.ThumbPath) or null) SetThumb();
+                if (e.PropertyName is nameof(FolderItemVm.Why) or null)
+                {
+                    why.Text = vm.Why;
+                    why.Visibility = vm.Why.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+                }
                 if (e.PropertyName is nameof(FolderItemVm.Selected) or nameof(FolderItemVm.GalleryCurrent) or null)
                     border.BorderThickness = new Thickness(vm.Selected && _folderCursor < 0 ? 2 : 0);
             }
             vm.PropertyChanged += OnChanged;
             // Recycling without this leaks a handler per realisation, and every
             // thumb completion then walks a growing list of dead elements.
-            border.Tag = (Action)(() => vm.PropertyChanged -= OnChanged);
+            border.Tag = unsubscribeBadges is null
+                ? (Action)(() => vm.PropertyChanged -= OnChanged)
+                : (Action)(() =>
+                {
+                    vm.PropertyChanged -= OnChanged;
+                    unsubscribeBadges();
+                });
 
             border.Tapped += (_, _) => Send(Command.GalleryActivate, vm.Index);
+            // docs/design/25 PR 59: the add-ons' context-menu entries, only when some exist.
+            if (_slotTileContext) AttachSlotContextMenu(border, vm);
             WireFileDrag(border, vm);
             return border;
         }

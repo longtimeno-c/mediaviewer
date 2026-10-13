@@ -29,6 +29,9 @@ and a verify line on each platform (D9, amended). The order is:
 | 50 | **Transfer**: a general copier (copy/move any files and folders, verified, resumable) and an SMB link check | Planned |
 | 55 | **Open add-ons**: add-ons anyone can make, one `.mvaddon` file signed by its publisher, installed from a file or a link with a sheet that says what it is; themes as the first thing one can contribute; the author's tool and guide ([docs/design/25-open-addons.md](design/25-open-addons.md), [ADDONS.md](ADDONS.md)); ABI 0.17 | Shared core and SDK tested on the Mac (ASan / UBSan) and cross-checked against each other; both halves run in the app (Mac: `MV_ADDON_SELFTEST`; Windows: by hand, 2026-10-03), launch and pacing measured against the base on both; install from a link, `.mvaddon` double-click on a rebuilt installer, VoiceOver / Narrator and the idle clause of both gates (which fails on the base too) owed. PRs 56–60 are planned; the owner's calls for 57–60 were made 2026-10-03 (docs/design/25 §17) |
 | 56 | **Import described by its manifest** (the first half of [docs/design/25](design/25-open-addons.md)'s declarative contributions): its commands, keys, Settings line and card hint come from `manifest.json`; both chromes drive it through one generic run-command call; an older installed Import keeps working through the built-in rows; ABI 0.18 | Mac: shell and manifest suites, the packer cross-check, the full suite and the rig pass; a signed Import with the new manifest has not been loaded in the app. Windows: both C# projects compile; the native side is CI's |
+| 56 | **Declarative contributions** (the second half; contribution API 2): an add-on's settings page drawn from its manifest on both hosts, its values kept per add-on (and on remove unless asked), key layouts (keymap packs) applied once with Reset back to the defaults, theme shape (radius, density, type scale), and Import / Duplicates / Local search on the host's theme tokens ([docs/design/25](design/25-open-addons.md#pr-56-second-half-declarative-contributions-2026-10-11), [ADDONS.md](ADDONS.md)); ABI 0.24 | Mac: Catch2 (schema, values, keymaps over every built-in command, shape), the SDK cross-check, 2.5 M fuzz inputs, the full suite and the rig's PR 56 leg pass in the app; launch and pacing measured against the base on a loaded machine (no difference; the idle CPU clause fails on base too). Windows: every C# project compiles clean; the native half is CI's; nothing run in the app yet |
+| 57 | **Add-on scripts**: other makers' add-ons run Lua 5.4 (vendored, static) in a sandbox per add-on on its own worker, with commands on keys, permissions in the consent sheet (`folder.read`, `thumbnails`, `selection`; no network) and limits (64 MB, 100 M instructions and 1 s per task, a watchdog) that stop the add-on and say why in Settings ([docs/design/25-open-addons.md](design/25-open-addons.md#implementation-notes-pr-57-2026-10-11), [ADDONS.md](ADDONS.md#scripts)); ABI 0.26 | Mac: built, `mv_script_tests` and the SDK cross-check pass, the key walk runs in the app (`MV_SCRIPT_SELFTEST`), the fuzz harness ran ~15 min clean, Mac PR 1 gate and launch timings measured with a script spinning / installed. Windows: compiled in CI only (shell, ABI, chrome); the Windows key walk, the Windows gate with a script spinning and Narrator / VoiceOver on the new Settings lines owed |
+| 58–59 | **Screens and slots**: MediaViewer's own native add-ons add to pages that exist (an info-pane section at the very bottom of the Metadata pane, file search and Local search providers, command-bar / path-bar / status items, gallery tile badges, context-menu entries) and open windows, docked panes and sheets from a view tree both chromes render ([docs/design/25](design/25-open-addons.md#implementation-notes-prs-58-59-2026-10-11)); host table v3; ABI 0.25 | Mac: the shared suite passes (with a real test add-on through a signed store; also under ASan / UBSan and TSan); the app built and, with the test add-on sideloaded, drew its section at the bottom of the pane and its items. Windows: both C# projects compile; the native side is CI's. Measurements and the keyboard / VoiceOver / Narrator passes are owed ([Where this actually is](#screens-and-slots-prs-58-59-2026-10-11)). Script add-ons wait for PR 57; Places is #344 |
 
 See [docs/design/10-roadmap.md](design/10-roadmap.md). Old Mac numbers in the history below map as
 PR 16 → Mac PR 1, 17 → Mac PR 2/7, 18 → Mac PR 3/4/6, 19 → Mac PR 5, 20 → Mac PR 8.
@@ -463,12 +466,13 @@ copy, and check Finder's **Open With** and a Quick Look thumbnail.
 | `Space` / `Backspace` | next / previous. On a clip, `Space` is play/pause. It is no longer the lab sweep |
 | `Home` / `End` | first / last in the folder |
 | `PageUp` / `PageDown` | back / forward ten |
-| `Ctrl+PageUp` / `Ctrl+PageDown` | previous / next page of a TIFF, PDF or DOCX (`⌘` on the Mac). Within a page: zoom (wheel, `+` `-`, `1`–`4`) and drag to pan. On a PDF or DOCX with the filmstrip hidden the wheel / trackpad scrolls and turns pages at the edges; `⌘`/`Ctrl`+wheel or a pinch zooms |
+| `Ctrl+PageUp` / `Ctrl+PageDown` | previous / next page of a TIFF, PDF or DOCX, size of an ICO, or image of a multi-image HEIC (`⌘` on the Mac). Within a page: zoom (wheel, `+` `-`, `1`–`4`) and drag to pan. On a PDF or DOCX with the filmstrip hidden the wheel / trackpad scrolls and turns pages at the edges; `⌘`/`Ctrl`+wheel or a pinch zooms |
 | `Enter` on a PDF or DOCX | open it in its default app (the bar's **Open in <app>**, ▾ for the others) |
 | `J` / `K` / `L` | clip transport: −10 s / pause / +10 s ([docs/design/16](design/16-commands.md)) |
 | `,` / `.` | frame step back / forward while paused |
 | `A` / `D` | previous / next beside the arrows, in every mode including on a clip |
 | `Q` / `E` | on a clip, two commands on one key: **tap** skips ±2 s, **hold** skims ±2 s per key repeat and settles on an exact seek when released. `Shift+Q` / `Shift+E` step playback speed. Off a clip they do nothing |
+| `Left` / `Right` on a clip | walk the folder while the clip is paused with the filmstrip showing; while it plays, or with the filmstrip hidden (`T`), they are `Q` / `E` (tap ±2 s, hold skims). Stills always walk |
 | `R` | reset the measurement window |
 | `0` | fit to window |
 | `1` | 100 % |
@@ -575,7 +579,12 @@ keyboard layout, not a US key position.
 
 Wheel zooms toward the cursor; drag pans. Zoom-out floors at 50 % (Fit can
 still go smaller on a huge image) and rubber-bands a little past that, then
-springs back to centre. Drop a file on the window.
+springs back to centre. Drop a file on the window. A pinch (touchscreen,
+touchpad, trackpad) zooms like the wheel; a sideways swipe or mouse tilt steps
+next / previous; a finger drag pans once zoomed
+([docs/design/16](design/16-commands.md) "Touch and trackpad"). The gesture
+maths has unit tests (`mv_tests "[gesture]"`); real touch hardware is not in
+any automated run.
 
 Command line: `--soak <seconds>`, `--json <path>`, `--gate` (non-zero exit if the verify
 line fails), `--no-overlay`, `--static`, `--no-chrome`, `--open <path>`,
@@ -903,6 +912,14 @@ build/bin/mv_import_tests "[.perf-bench]"
 # asks the app's own reader (mv_addon_verify --open) about every package
 ctest --test-dir build -C Release -R addon_sdk --output-on-failure
 python tools/addon-sdk/test_mvaddon.py        # the tool alone, no build needed
+# PR 56: settings pages, keymap packs and theme shape, and keymaps on the live table
+build/bin/mv_import_tests "[addon]"
+build/bin/mv_tests "[keymap]"
+
+# docs/design/25 PR 57, the script sandbox: escapes, limits, permissions absent
+# from the environment, script manifests and packages, the host's set of
+# script add-ons (also in cmake/portable)
+ctest --test-dir build -C Release -R script_ --output-on-failure
 
 # ...and the same engine headless on Linux or any POSIX machine (CI's
 # portable-core job, Ubuntu under ASan + UBSan; SQLite, libsodium, BLAKE3 and Catch2 from vcpkg via
@@ -938,10 +955,33 @@ $env:MV_BROKEN_DUMP = "broken-dump" # write each failing input here
 # seeds are synthetic and committed; regenerate with (needs Pillow, pillow-heif):
 python tools\testmedia\make-seeds.py
 
-# libFuzzer harnesses, one per decoder entry point (clang-cl + ASan)
+# libFuzzer harnesses, one per decoder entry point (clang-cl + ASan), and
+# fuzz_script: arbitrary text as an add-on script under tight limits (PR 57;
+# non-gating in CI until its first runs there, seeds in tests/data/seeds/script)
 cmake -S . -B build-fuzz -A x64 -T ClangCL -DMV_FUZZ=ON -DMV_BUILD_TESTS=OFF
 cmake --build build-fuzz --config Release --target mv_fuzzers
 .\tools\fuzz\run.ps1 -BuildDir build-fuzz -Seconds 60      # -Harness png,gif to pick
+# #290: the metadata readers (meta/parse.h) have harnesses too: meta_c2pa, meta_jpeg,
+# meta_png, meta_webp, meta_bmff, meta_xmp, meta_icc, and (#345) meta_probe, the AI badge's
+# provenance probe (add src/meta/probe.cpp src/codec/probe.cpp to the line below, seeds
+# tests/data/seeds/probe). They link mv_meta_parse alone, so on
+# a Mac they build with Homebrew LLVM (Apple clang ships no libFuzzer), e.g.:
+#   /opt/homebrew/opt/llvm/bin/clang++ -std=c++20 -fsanitize=fuzzer,address,undefined -fno-rtti -Isrc \
+#     -Itools/fuzz tools/fuzz/fuzz_meta_png.cpp src/meta/{parse_common,c2pa,containers,xmp_raw,generators}.cpp \
+#     src/codec/xml.cpp -lz -o fuzz_meta_png
+#   ASAN_OPTIONS=detect_leaks=0 ./fuzz_meta_png -max_total_time=600 corpus tests/data/seeds/png tests/data/seeds/c2pa
+# Their seeds (tests/data/seeds/{c2pa,xmp,icc}) come from the test builders:
+#   MV_SEED_DIR=tests/data/seeds mv_tests "[.write-seeds]"
+# #352: fuzz_meta_location (meta::parse_location, the Location editor) is pure and builds
+# from one file:
+#   /opt/homebrew/opt/llvm/bin/clang++ -std=c++20 -fsanitize=fuzzer,address,undefined -fno-rtti -Isrc \
+#     -Itools/fuzz tools/fuzz/fuzz_meta_location.cpp src/meta/location_edit.cpp -o fuzz_meta_location
+#   ASAN_OPTIONS=detect_leaks=0 ./fuzz_meta_location -max_total_time=600 -max_len=512 corpus tests/data/seeds/location
+# On a Mac, Homebrew's LLVM has libFuzzer (Apple clang does not): build
+# tools/fuzz/fuzz_script.cpp, third_party/lua/src/*.c (as C++),
+# src/addon/script_runtime.cpp, script_thread_posix.cpp, open_manifest.cpp and
+# manifest.cpp with -fsanitize=fuzzer-no-link,address,undefined, then link with
+# -fsanitize=fuzzer,address,undefined, libsodium.a and build/libmv_io.a.
 
 # PR 7 clean-VM gate: a HEIC decodes with MV_OS_CODEC=0, and the process has
 # loaded libheif + libde265 and NO Media Foundation, WIC codec extension, or
@@ -964,6 +1004,59 @@ ctest --test-dir build -C Release -L cleanvm --output-on-failure
 .\build\bin\Release\mediaviewer_lab.exe --av-soak 1860 --csv drift.csv `
   tools\testmedia\soak_31min_1080p_hevc_aac.mp4
 ```
+
+### Place database (Places, docs/design/27)
+
+`src/geo` reads a place database built from pinned Natural Earth and GeoNames downloads by
+`tools/geo/build_places.py`. The script uses the Python standard library only and must be run
+with `-I`. The full blob is not in git (17 MB). A 111 KB test blob is:
+`tests/data/geo/places-test.mvgeo`.
+
+```sh
+# the full blob, through CMake: first run downloads ~66 MB into build/geo-downloads
+# (MV_GEO_DOWNLOADS to move it) and takes about a minute; later runs reuse the cache
+cmake --build build --target mv_geo_data          # -> build/geo/places.mvgeo
+# ...or by hand
+python3 -I tools/geo/build_places.py --downloads build/geo-downloads --out build/geo/places.mvgeo
+# GeoNames republishes daily under the same URL: a changed file fails the pin.
+# --accept-upstream takes it and prints the hash to pin.
+
+# the committed test blob, after changing the script or the format (src/geo/blob.h)
+python3 -I tools/geo/build_places.py --downloads build/geo-downloads \
+  --out tests/data/geo/places-test.mvgeo --subset test
+
+# the fold table (shared with file search and Local search, core/fold.h), after
+# changing the fold rule or for a newer Unicode
+python3 -I tools/fold/gen_fold_table.py > src/core/fold_table.inc
+
+# tests: fold, the test blob, a damaged-blob sweep; the 300-row table when the
+# full blob exists (MV_GEO_BLOB=path for one built elsewhere; MV_REQUIRE_GEO=1
+# fails instead of skipping, as CI does)
+build/bin/mv_tests "[geo]"
+# load < 30 ms, one lookup < 50 us
+build/bin/mv_tests "geo: load and lookup timings"     # also part of "[.perf-bench]"
+# the loader fuzzer is fuzz_geo in mv_fuzzers (run.ps1 -Harness geo)
+
+# The Places add-on (docs/design/27): build/addons/places/(lib)mv_places.(dylib|dll)
+cmake --build build --target mv_places
+build/bin/mv_tests "[places]"                  # map pixels, cache, gestures, section, search
+build/bin/mv_import_tests "[places]"           # its manifest, then the add-on through a signed store
+build/bin/mv_tests "places: map render time at pane width x 160 pt"   # in "[.perf-bench]"
+MV_PLACES_MAP_DUMP=<dir> build/bin/mv_tests "[.places-map-dump]"      # BMPs of the map to look at
+# the map's fuzzer is fuzz_places_map in mv_fuzzers (run.ps1 -Harness places_map)
+# Package it (release: the workflow does this after signing the code)
+python3 tools/package/addon-pack.py stage-places --src build/addons/places --blob build/geo/places.mvgeo
+python3 tools/package/addon-pack.py pack --addon places --platform macos --src build/addons/places \
+  --version 1.0.0 --key <key file> --out dist/
+```
+
+To see it in the app on a developer build (`-DMV_ADDON_DEV_PUBLIC_KEY`): pack with the dev key as
+above, unzip it with `ditto -x -k` into `<scratch>/addons/Places/1.0.0/` beside the signed
+`manifest.json(.sig)`, and start a copy of the app with its own bundle id, `HOME`,
+`MV_DEV_ADDONS_DIR` and `MV_DEV_THUMBS_DIR` (as the slots test add-on, under "Where this actually
+is"). PR 56 is in the same build, so the manifest's `settings` page installs as it is; a change
+on Places' page in Settings redraws the Place section at once (`mv_import_tests "[settings]"`
+covers the re-ask, `"[places]"` Places' own settings).
 
 ### Performance suite: regenerating the README charts
 
@@ -1050,6 +1143,67 @@ a substitute for one: PR 49's verify line wants a real 10 GbE share). The fixtur
 incompressible, so a share that compresses on the wire shows no flattering number. On
 Windows the reference is `robocopy <src> <dst> /E /MT:16 /J`; on the Mac,
 `ditto <src> <dst>`. Delete the fixtures from the share afterwards.
+
+### Open add-ons self-test, PR 56 leg (macOS)
+
+The same rig walks settings pages and key layouts across a restart: install
+`example.settings-demo`, photograph its page (`p2-page.png`, `p4-page.png`), change four values;
+then a second launch over the same folder installs `example.vim-keys`, reads the values back,
+applies the Vim layout, Reset, removes settings-demo keeping its settings, installs it again and
+removes it without. Keys are not written to your preferences while it runs:
+
+```bash
+python3 tools/addon-sdk/mvaddon.py pack examples/addons/settings-demo --key /tmp/mv-addon.key --out /tmp/mv-addon
+python3 tools/addon-sdk/mvaddon.py pack examples/addons/vim-keys --key /tmp/mv-addon.key --out /tmp/mv-addon
+```
+
+```bash
+MV_ADDON_SELFTEST=/tmp/mv-addon/rig56 MV_ADDON_SELFTEST_PR56=a caffeinate -d -i build/bin/MediaViewer /tmp/mv-addon/example.settings-demo-1.0.0.mvaddon
+MV_ADDON_SELFTEST=/tmp/mv-addon/rig56 MV_ADDON_SELFTEST_PR56=b MV_ADDON_SELFTEST_REINSTALL=/tmp/mv-addon/example.settings-demo-1.0.0.mvaddon caffeinate -d -i build/bin/MediaViewer /tmp/mv-addon/example.vim-keys-1.0.0.mvaddon
+```
+
+`rig56/state.txt` has a line per step: the page's values, the keys of Previous / Next / Toggle
+mark / Flip horizontal / Forward 10 s before and after the layout and after Reset, and whether
+the settings file was kept.
+
+The settings / keymap / theme parsers have a libFuzzer harness, `tools/fuzz/fuzz_addon_contributions.cpp`,
+in the Windows clang-cl fuzz build (`mv_fuzzers`, seeds in `tests/data/seeds/addon`); its header
+has the one-line Homebrew LLVM build for a quick run on a Mac.
+
+### Script add-ons self-test (PR 57, macOS)
+
+`MV_SCRIPT_SELFTEST=<folder>` presses an add-on's keys as a person would (key events through the
+app's own queue: router, command table, runtime) and photographs the result. Put two add-ons in
+`<folder>/store` first: the example Folder Count (Count files, `⌘⇧K`, with `folder.read`) and a
+spinner whose Spin command (`⌘⇧J`) never returns:
+
+```bash
+python3 tools/addon-sdk/mvaddon.py pack examples/addons/folder-count --key /tmp/mv-addon.key --out /tmp/mv-script
+```
+
+```bash
+build/bin/mv_addon_verify --open /tmp/mv-script/example.folder-count-1.0.0.mvaddon /tmp/mv-script/rig/store
+```
+
+Pack and install the spinner the same way (`"scripts": ["main.lua"]`, `function spin() while
+true do end end`, a command `spin` on `Ctrl+Shift+J`), then:
+
+```bash
+MV_SCRIPT_SELFTEST=/tmp/mv-script/rig caffeinate -d -i build/bin/MediaViewer tools/testmedia/raw
+```
+
+`rig/state.txt` gets the notice Count files showed ("Folder Count: 4 files in this folder"), the
+scripts' state after Spin (stopped, "ran for more than 100 million steps"), and `s0` … `s3` PNGs,
+the last of Settings → From others. Two more variables serve the measurements and are inert
+unless set (both hosts): `MV_SCRIPT_STORE=<folder>` reads open add-ons from that folder instead
+of the profile's, and `MV_SCRIPT_SPIN=<addon>/<command>` keeps that command running back to back
+(for the present-loop gate with a script busy; a command that stays inside the limits, such as a
+half-second loop, keeps the add-on's worker at one core without stopping it):
+
+```bash
+MV_SCRIPT_STORE=/tmp/mv-script/rig/store MV_SCRIPT_SPIN=rig.spinner/burn caffeinate -d -i build/bin/frametime --seconds 60 --lab build/bin/mediaviewer_lab
+```
+
 ### Open add-ons self-test (PR 55, macOS)
 
 The Mac app can walk the whole add-on flow by itself and photograph each step: the sheet for a
@@ -1367,6 +1521,223 @@ There is no upload endpoint yet, exactly as there is none for crash reports.
 
 ## Where this actually is
 
+### The AI badge on the canvas (#345, docs/plans/metadata-search-and-place.md slice 5, 2026-10-12)
+
+A file that says it was AI-made gets a small "AI" badge in the bottom-right of the canvas, with
+"Made with …" and the evidence on hover or focus; *Settings → Viewer* switches it off
+([06-metadata.md](design/06-metadata.md#the-ai-badge-345)). The answer comes from a bounded
+provenance probe (`meta/probe.h`) on the pool, after the metadata pause, so the pane need not be
+open. The probe covers JPEG, PNG, WebP, TIFF, TIFF-based RAW (DNG, CR2, NEF, ARW, PEF, ORF, RW2),
+RAF, CR3, HEIF / AVIF items (Exif, XMP) and clips (moov udta / meta: (C)swr, (C)too, the
+QuickTime software key, XMP), by seeking, under one byte budget. Tests: `mv_tests "[ai-badge]"`
+(the setting's default, the evidence lines, the badge text, the store's probe cache) and
+`"[probe]"` (the probe gives the full read's answer, fixture by fixture — HEIF items in mdat and
+idat, MOV (C)swr, MP4 (C)too, QuickTime keys, clip XMP, DNG / ORF / RW2, CR3 CMT1, RAF — plus
+WebP, truncated and mutated files). `mv_tests "[.perf-meta]"` prints the probe's cost and answer
+beside each full read (`MV_BENCH_DIR=folder` adds every file in it).
+
+- **Mac (M-series, 2026-10-12):** compiles clean, app and SwiftUI chrome included. `mv_tests` 681
+  cases (674 passed, 8 skipped). Probe vs full read, warm, median of 40 (one fuzzer running on
+  another core): camera JPEG 6 MP 38 µs vs 15.0 ms, PNG 2.2 MP 685 µs vs 3.4 ms, HEIC seed 23 vs
+  92 µs, libheif example HEIC 54 vs 691 µs, WebP 23 vs 97 µs, CR3 (Canon EOS R6) 307 µs vs 18.2 ms,
+  NEF 93 µs vs 38.6 ms, DNG 32 µs vs 21.7 ms, ARW 48 µs vs 19.8 ms, 60 s 1080p MP4 / MOV (moov at
+  the end) 42–49 µs vs 12.7–13.1 ms; the MOV with `com.apple.quicktime.software=Sora` reads "Sora,
+  AI" from both. `fuzz_meta_probe` (Homebrew LLVM, ASan + UBSan): 661 s, 8.2 M executions, coverage 4 856, no finding. In a copy of the app
+  under its own bundle id: the badge shows on a ChatGPT-style C2PA JPEG and not on a camera JPEG,
+  is named "AI-generated" in the accessibility tree, and switching the setting off and on hides
+  and restores it with no relaunch. The hover / focus popover and VoiceOver reading it were not
+  checked by hand.
+  `--browse-soak` on a 14-file folder (12 camera JPEGs from the RAW samples, 2 with a C2PA store),
+  base and new alternated, three runs each: cold jumps median 60.1 / 53.6 / 59.6 ms base vs
+  39.6 / 63.6 / 64.7 ms new (the last new run voided: window covered 0.7 s); cached arrows
+  0.38 / 0.41 / 0.48 vs 0.44 / 0.47 / 0.46 ms. First pixel (`--soak 6 --static`, three
+  alternated runs): AI JPEG 61 / 79 / 63 ms base vs 48 / 124 / 57 new, camera JPEG 31 / 39 / 38
+  vs 34 / 40 / 26; full resolution overlaps the same way. Held arrows were not measured: the Mac
+  `--browse-soak` has no held phase (the probe is never submitted while keys repeat; the 90 ms
+  pause restarts on each arrow). Idle with the badge up: on this in-use machine every 20 s
+  static soak presented, base included (badge on 58 / 19 / 14, badge off 27 / 27 / 27, base 53 /
+  13 / 28): the badge's own zero is not established by measurement. PR 1 gate: the animated soak
+  passed once (3 600 frames, p99 16.95 ms, max 22.9 ms) and the idle soak had 0 presents but
+  failed the CPU line (1.9 %), as the base did (1.75 %); a second new run stalled 22 s with the
+  window covered. Owed to a quiet run.
+- **Windows:** the C# chrome compiles on the Mac and passes the WinUI control check by script.
+  The native half (`main.cpp`, `chrome_host.*`, `chrome_ai_badge_args`, the geometry test in
+  `test_chrome_host.cpp`) and the running island are compiled and run only by CI and a Windows
+  machine: not yet. The island's corners are filled with the chrome's canvas colour, not see-
+  through: an island cannot blur the swapchain under it.
+
+### Every tag searchable (#291, docs/plans/metadata-search-and-place.md slice 4, 2026-10-12)
+
+File search (Ctrl/⌘+F, and `/`) matches names, then tags: camera, lens, made-with, software,
+title, caption, keywords, creator ([06](design/06-metadata.md#search-text-291),
+[16](design/16-commands.md)). A folder's tags are read once, in the background, after the first
+image, into `meta_cache.db` next to the thumbnail cache. Date-taken sort rides the same pass. Local
+search gains `camera:`, `lens:`, `ai:` / `made:`, `place:` / `in:` and the AI index schema 4
+([17](design/17-local-ai-search.md)). Place names are the Places add-on's (owner, 2026-10-11).
+The app's search text has none.
+
+- **Tests:** `mv_tests "[search]"` (fold, builder, match / why, cache keying and invalidation,
+  the folder pass, a fake Places provider), `mv_ai_tests "[schema4],[tags]"` (3 → 4 migration,
+  a real kill mid-step via `fork` + `SIGKILL`, the backfill and its resume, the terms) and
+  `"[query]"`. `mv_tests "[.perf-search]"` times one search read against `meta::read` and
+  `read_date_taken`.
+- **Verify fixture:** `MV_SEARCH_FIXTURE_DIR=<dir> [MV_SEARCH_FIXTURE_COPIES=n] mv_tests
+  "[.make-search-fixture]"` writes `camera_r5.jpg`, `chatgpt.jpg`, `plain.jpg` and `nikon.jpg`.
+  For the 20 k folder, hard-link them 20,000 times (no disk cost).
+- **Dependency:** `sqlite3[fts5]` in `vcpkg.json` (both platforms). The first configure
+  rebuilds sqlite3.
+- **Mac (M-series, 2026-10-12):** compiles clean, app and both SwiftUI chromes included. `mv_tests` 688 cases (680
+  passed, 8 skipped); `mv_ai_tests` 114 (106 passed, 8 skipped). Two of four full AI runs had one
+  different engine test time out (`an empty index adopts the file's Quality`, another), and each
+  passed alone. The `[tags]` and `[schema4]` cases passed 5 of 5 runs.
+  - Bridge check: the dev app was driven through lldb on the four-file fixture, with no AI pack.
+    `mv_chrome_tag_search` gave `R5` → camera_r5.jpg ("Canon EOS R5"), `ChatGPT` → chatgpt.jpg,
+    `nikon` → nikon.jpg, `holiday` / `pena` → camera_r5.jpg, and `portugal` → nothing (no
+    place names in the app).
+  - Perf, base (`feature/issue-290-all-tags` eab9f08b, own worktree) vs new, alternated, Release,
+    20,000 hard-linked JPEGs, meta_cache.db deleted before each new run so the pass read all
+    20,000 during it:
+    - First pixel (`--soak 6 --static`, 3 runs each): base 9 / 14 / 10 ms, new 18 / 12 / 0 ms.
+      Full resolution: base 20–26 ms, new 12–21 ms.
+    - `--browse-soak --json` (2 runs each): arrow → next, warm, ready median 0.02 ms in all four
+      runs. The max was 0.03 / 0.10 ms base and 0.06 / 0.02 ms new; warm present median was
+      0.23 / 0.18 ms base and 0.22 / 0.20 ms new. Cold jumps: median 0.02 ms everywhere; max
+      86 / 23 ms base and 24 / 14 ms new.
+    - Limits of this run: the hard-linked fixture is four images, so decode work is light, and
+      first pixel was measured 3 times only. Not measured: a 20 k folder of distinct camera
+      files, the Windows `quick` / `held` steps.
+  - PR 1 gate: the animated soak passes (3,600 frames, p99 16.75 ms, max 16.86 ms). The idle
+    soak's CPU line fails on this machine for new (76.8 %) and base (84.6 %) alike, both with
+    0 presents. That is environmental, as in #290.
+  - Not clicked through the SwiftUI search bar by hand.
+- **Windows:** the C# chromes (Chrome, Ai.Chrome, Interop) compile on the Mac with
+  `dotnet msbuild -t:Compile`. The native half is compiled and run only by CI and a Windows
+  machine, so none of it has run yet: `abi.cpp` (the session's tag pass, `mv_folder_tag_search`,
+  `mv_folder_forget_tags`, date sort from the pass), `addon_abi.cpp` (`tag_facts`),
+  `main.cpp`, and the running WinUI search and `/` find box. Also owed there: the verify line
+  and the PR 1 gate.
+
+### Every tag and AI provenance in the Metadata pane (#290, docs/plans/metadata-search-and-place.md slice 1, 2026-10-11)
+
+All tags now lists C2PA / Content Credentials (JPEG APP11, PNG `caBX`, ISO-BMFF `uuid`), every
+PNG text chunk, raw XMP Exiv2 did not list, the ICC profile and JFIF / WebP / HEIF container
+items, all read-only ([06-metadata.md](design/06-metadata.md#beyond-exiv2-290)). Summary gains
+"Made with" from one generator table; `meta::summary` keeps GPS as numbers (`where`, from EXIF,
+XMP or ISO 6709) and `made_with` / `ai_generated` for the map and badge slices.
+
+- **Mac (M-series, 2026-10-11):** compiles clean (`-Werror`), app and SwiftUI chrome included.
+  `mv_tests` 675 cases (667 passed, 8 skipped); `"[provenance]"`, `"[gps]"`, `"[icc]"` cover the
+  ChatGPT (multi-segment APP11), Firefly, Microsoft Designer `caBX`, Stable Diffusion, ComfyUI,
+  Midjourney XMP, DJI XMP GPS, ISO-BMFF, ICC and 2 000-tag fixtures plus truncation / mutation of
+  every reader. The seven `fuzz_meta_*` harnesses ran 600 s each under ASan + UBSan (Homebrew
+  LLVM 23): 0.66–2.3 M executions each, no finding. `mv_tests "[.perf-meta]"`, five alternated
+  base / new runs, 60 reads each: camera JPEG 17.7–20.0 ms base vs 16.9–22.8 ms new, 10 s clip
+  10.3–13.3 vs 11.0–13.8 ms, HEIC 61–71 vs 56–77 µs, PNG and WebP overlapping (the readers alone
+  cost ~2 µs on a JPEG; meta reads run only when the pane or overlay wants a record). PR 1 gate:
+  the animated soak passes (3 599 frames, max 17.2 ms); the idle soak's CPU line failed on this
+  machine for base (95.7 %) and new (74.4 %) alike, 0 presents in both — owed to a quiet run.
+  Not checked in the running app by hand.
+- **Windows:** the C# chrome compiles on the Mac (`dotnet msbuild -t:Compile`). The native side
+  (`chrome_host.*`, `main.cpp`, the 80-byte `chrome_meta_args`), the virtualised All tags list
+  (`ItemsRepeater`, no 400-row cap) and the clang-cl fuzz build are compiled and run only by CI
+  and a Windows machine: not yet.
+
+### Location editing in the Metadata pane (#352, owner 2026-10-12)
+
+Summary's Location row has **Edit** instead of Remove: type decimal or degrees-minutes-seconds
+coordinates, see the parsed point (or the error) under the field, Return saves, Esc cancels. A
+blank save removes the location after a confirmation. Plain JPEGs get EXIF GPS in place;
+everything else an XMP sidecar; RAW originals are never touched
+([06-metadata.md](design/06-metadata.md#the-location-row-352-owner-2026-10-12)). Tests:
+`mv_tests "[location]"` (link or fetch `tools/testmedia/raw` for the RAW case).
+
+- **Mac (M-series, 2026-10-12):** core, bridge, SwiftUI half and `mv_tests` built and run;
+  `fuzz_meta_location` ran 600 s under ASan + UBSan with no finding. The Mac alert's Esc and
+  focus were not driven in the app.
+- **Windows:** the C# chrome compiles on the Mac. `main.cpp`, `chrome_host.*`,
+  `src/abi/meta_abi.cpp` (ABI 0.27) and `test_abi_roundtrip` are compiled only by CI and a
+  Windows machine: not yet run, and neither is the in-pane confirmation's Esc (closes only the
+  confirmation; the field keeps the keyboard).
+### Places: the offline reverse geocoder (issue #344, plan slice 2, 2026-10-11)
+
+The core is built:
+- `src/geo`, `tools/geo/build_places.py` and the place database format;
+- `mv_tests "[geo]"`, including 300 hand-checked coordinates when the full blob exists;
+- the `fuzz_geo` loader fuzzer, which ran 10 minutes clean after its first find was fixed;
+- the perf bench.
+
+Measured on this Mac (Release, warm): open in 11–12 ms; lookup p99 8.4 µs on land and 4 µs on
+a random sweep. The blob is 17.2 MB, or 5.4 MB xz-compressed.
+
+### Places add-on and its map (issue #344, plan slice 3 + place search, 2026-10-12)
+
+Built on `feature/issue-344-places-addon` (merges #348's slots): `src/addons/places`, its
+manifest (the info section, the search provider, the settings page; nothing else), the map
+rasteriser with cursor zoom down to town scale, packaging (`addon-pack.py` entry, `stage-places`,
+the data licences) and both release workflows.
+
+- **Mac (M-series):** `mv_tests "[places]"` 9 cases / 261 assertions and `"[geo]"` pass;
+  `mv_import_tests` 94 cases pass, including `"[places]"` (2 cases, the add-on through a signed
+  store); `test_addon_pack.py` 22 tests pass with the C++ verifier. The map renders in 4.5–4.7 ms
+  CPU (median) at 640 × 320 px, max ~20 ms ([27](design/27-places.md#performance)). A dev copy of
+  the app with Places sideloaded showed, at the bottom of the pane opened with `I`, the label, the
+  coordinates and the map with the accent pin and town names; −, double-click and drag re-drew it
+  with the pin held on the photo's point. A 5-minute `fuzz_geo` run with `towns_in` was clean.
+- **Review pass (2026-10-12):** fixed Antarctica drawn as water (a ring round the globe), rings
+  a world away from the view, `wrap180` looping on a huge longitude, a 1600 pt pane at 3× getting
+  no map, search never saying done past the host's 100 000-row cap, `mv_geo` symbols exported from
+  the module, and `mv_addon_verify` checking against host table 1. Now `mv_tests "[places]"`
+  12 cases / 296 assertions (ASan + UBSan clean), the full `mv_tests` 682 cases (8 skipped),
+  `mv_import_tests` 94 cases, `test_addon_pack.py` 22 tests with the verifier; a 5-minute
+  `fuzz_places_map` run (71.8 k executions, ASan + UBSan) was clean. Map CPU time not worse
+  (240 renders, base/new alternated ×3, medians: 1× 0.58/0.58, 0.69/0.69, 0.66/0.64 ms; 2×
+  1.70/1.63, 1.80/1.76, 1.88/1.74 ms).
+- **Static soak, dev copy, alternated base (no add-on) / new (Places):** both present about once a
+  second with the pane closed and about twice a second with it open (30 s: base 54, new 61
+  presents with the pane open, one run each), on a machine at load average 50–85. Places did not
+  add a present pattern of its own, but the base was not at 0 idle presents in this setup either,
+  so **0 presents idle with the section shown is not established**; it is owed to a quiet-machine
+  run with the PR 1 gate.
+- **Not measured:** `--browse-soak` with the pane open (the harness cannot open the pane, and the
+  machine was loaded), launch → first pixel with the add-on installed (alternated), pinch and
+  mouse-wheel zoom by hand (computer use cannot send them; the gesture maths is unit-tested and
+  #348's chrome sends the events), Windows anything: the add-on compiles in CI only.
+
+### Screens and slots (PRs 58-59, 2026-10-11)
+
+What is built is in [docs/design/25](design/25-open-addons.md#implementation-notes-prs-58-59-2026-10-11).
+
+- **Mac (M-series, 2026-10-12):** `mv_import_tests` 92 cases pass, including 19 new ones
+  (`"[screens]"`, `"[slots]"`; the last loads `mv_slots_test_addon` through a signed store and the
+  v3 table). The same suite passes under ASan / UBSan and `"[slots]"` under TSan (the portable
+  build, with `-DCMAKE_EXE_LINKER_FLAGS="-framework CoreFoundation -framework DiskArbitration
+  -framework IOKit"` on a Mac). `mv_tests` 665 cases (657 passed, 8 skipped), the 2 new `"[location]"` among them. The app builds; with the test
+  add-on sideloaded (below) into a dev copy, the Metadata pane showed its section last, under
+  the footer, with the coordinates and a surface carrying the accent pin, and the command bar and
+  path bar showed its items.
+- **Windows:** both C# projects compile (warnings are errors); no `check-winui-controls` word in
+  the new files. `slots_abi.cpp` and `addon_abi.cpp` were syntax-checked with clang on the Mac;
+  MSVC builds them in CI.
+- **Owed, both hosts:** launch → first pixel with a slot add-on installed (alternated runs), 0
+  presents idle with a section shown, both PR 1 gates, the 2,000-tile grid scrolling, file search
+  finding the fixtures in the running app, a screen driven by keyboard alone, VoiceOver and
+  Narrator naming every control, removal from Settings in the running app, Windows' docked pane
+  placement.
+
+**Running the test add-on (developer builds only).** Configure with
+`-DMV_ADDON_DEV_PUBLIC_KEY=<your key's public half>`, build `mediaviewer_app` (Mac) or the core
+and chrome (Windows) and `mv_slots_test_addon`, then:
+
+```sh
+python3 tools/package/slots-test-sideload.py --module build/addons/slots-test/libmv_slots_test_addon.dylib \
+  --key <dev key file> --addons <scratch>/addons --fixtures <scratch>/fixtures    # --platform win-x64 on Windows
+# Mac: a copy with its own bundle id, HOME, add-ons and thumbnails; never the real profile
+open -n --env HOME=<scratch>/home --env MV_DEV_ADDONS_DIR=<scratch>/addons \
+  --env MV_DEV_THUMBS_DIR=<scratch>/thumbs <copy of MediaViewer.app> --args <scratch>/fixtures/inside_a.jpg
+```
+
+Every name in the test add-on is "Slots test"; nothing in it looks like Places. Quit the dev
+copy when done.
 ### Local search: ask before resuming an interrupted index (issue #299, 2026-10-11)
 
 A quit or a kill part-way through indexing no longer carries on, or loads the pack, at the next
@@ -1838,6 +2209,8 @@ src/image       LCMS colour (8-bit display LUT; sRGB copy-through), CPU mips,
                 immutable GPU upload, JPEG-512 thumbs
 src/meta        EXIF / IPTC / XMP (Exiv2) + container / stream (libavformat) read
                 model, summary rows, AF geometry (PR 9)
+src/geo         offline reverse geocoder over the place database (the Places
+                add-on links it; docs/design/27)
 src/edit        EditStack + geometry (the blit's output -> source map), lossless
                 JPEG rotate / flip / MCU crop, JPEG / PNG export with a metadata
                 policy (PR 10)
@@ -1845,7 +2218,10 @@ src/canvas      pan/zoom springs, fit / fill / 100 %, sticky zoom
 src/gfx         D3D11 device, flip-model swapchain, frame pacer, blit
 src/addon       the add-on host: MediaViewer's own add-ons (signed manifests, store,
                 loader, host function table) and open add-ons from other makers
-                (package reader, manifest schema 2, publisher keys, themes; docs/design/25)
+                (package reader, manifest schema 2, publisher keys, themes; the Lua
+                script sandbox, its limits and commands, script_*; docs/design/25)
+third_party/lua Lua 5.4.8, vendored, static (MIT); without io/os/package/debug
+                (third_party/lua/VENDOR.txt)
 src/abi         the flat C ABI — the top of the native graph; animation session
 src/shell       Win32 window, render thread, present lab, hostfxr island host,
                 key router and live command table, marks, slideshow, file jobs,
@@ -1856,7 +2232,8 @@ src.managed/    C# interop and WinUI chrome (hosted as an island, not the app):
 tests/          Catch2 suites for core, gfx, codec, colour, camera, ABI, folder,
                 key router, file ops, slideshow, animation
 tools/          frametime harness, module-graph, hostable-core, and licence gates;
-                addon-sdk (MIT): the tool people make add-ons with
+                addon-sdk (MIT): the tool people make add-ons with; geo/build_places.py
+                (the place database from pinned Natural Earth + GeoNames data)
 examples/       an add-on that packs and installs as it is (MIT)
 docs/design/    how each subsystem works (design reference)
 docs/plans/     forward plans not built yet

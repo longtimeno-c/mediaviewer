@@ -63,6 +63,20 @@ bool host::has_pixels() const noexcept {
          api_->decode_still_rgb && api_->sampler_open;
 }
 
+bool host::has_tag_facts() const noexcept {
+  return api_ && api_->struct_size >= offsetof(mv_host_api, tag_facts) + sizeof(api_->tag_facts) &&
+         api_->tag_facts;
+}
+
+result<mv_addon_tag_facts> host::tag_facts(const std::string& path) const {
+  if (!has_tag_facts()) return err(status::unsupported_format);
+  mv_addon_tag_facts out{};
+  out.struct_size = sizeof(out);
+  const mv_status s = api_->tag_facts(api_->host, path.c_str(), &out);
+  if (s != MV_OK) return err(to_status(s));
+  return out;
+}
+
 bool host::has_walk2() const noexcept {
   return api_ && api_->struct_size >= offsetof(mv_host_api, walk_files2) + sizeof(api_->walk_files2) &&
          api_->walk_files2;

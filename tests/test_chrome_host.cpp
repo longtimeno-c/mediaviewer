@@ -15,6 +15,7 @@ TEST_CASE("chrome attach args stay 40 bytes") {
   REQUIRE(sizeof(mv::shell::chrome_show_args) == 16);
   REQUIRE(sizeof(mv::shell::chrome_flags_args) == 8);
   REQUIRE(sizeof(mv::shell::chrome_browse_args) == 32);
+  REQUIRE(sizeof(mv::shell::chrome_meta_args) == 80);  // #290: provenance and position
 }
 
 TEST_CASE("view settings round-trip through the flag word") {
@@ -120,4 +121,27 @@ TEST_CASE("focus in any pane island classifies as pane, not the command bar") {
   REQUIRE(classify(nullptr) == mv::shell::focus_kind::command_bar);
 
   ::DestroyWindow(top);  // takes the children with it
+}
+
+TEST_CASE("the AI badge sits bottom-right, above the filmstrip, the transport and clear of a pane", "[ai-badge]") {
+  using mv::shell::ai_badge_rect;
+  // 96 DPI, 1000 x 800, nothing else up: 44 x 20, 16 in from the right, 10 up.
+  auto r = ai_badge_rect(1000, 800, 0, 0, false, 96);
+  CHECK(r.width == 44);
+  CHECK(r.height == 20);
+  CHECK(r.x == 1000 - 16 - 44);
+  CHECK(r.y == 800 - 10 - 20);
+  // Above the filmstrip, and above a clip's transport bar plus a gap.
+  CHECK(ai_badge_rect(1000, 800, 112, 0, false, 96).y == 800 - 112 - 10 - 20);
+  CHECK(ai_badge_rect(1000, 800, 112, 0, true, 96).y == 800 - 112 - 10 - mv::shell::chrome_transport_height_px(96) - 8 - 20);
+  // Left of a right-hand pane.
+  CHECK(ai_badge_rect(1000, 800, 0, 360, false, 96).x == 1000 - 360 - 16 - 44);
+  // Scaled at 150 %, and never off the client's top-left.
+  r = ai_badge_rect(1000, 800, 0, 0, false, 144);
+  CHECK(r.width == 66);
+  CHECK(r.height == 30);
+  r = ai_badge_rect(10, 10, 0, 0, true, 96);
+  CHECK(r.x == 0);
+  CHECK(r.y == 0);
+  static_assert(sizeof(mv::shell::chrome_ai_badge_args) == 48);
 }

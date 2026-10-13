@@ -96,6 +96,11 @@ class host {
   [[nodiscard]] expected store_thumbnail_jpeg(const std::string& path, std::int64_t pts_ms,
                                               std::span<const std::uint8_t> jpeg) const;
 
+  // #291: a file's tag facts from the host's meta_cache.db (an older host
+  // has none: has_tag_facts() false).
+  [[nodiscard]] bool has_tag_facts() const noexcept;
+  [[nodiscard]] result<mv_addon_tag_facts> tag_facts(const std::string& path) const;
+
   [[nodiscard]] bool should_yield() const noexcept;
   void post(mv_addon_event_kind kind, mv_status status, std::uint64_t id,
             std::int64_t payload) const noexcept;

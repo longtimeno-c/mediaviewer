@@ -96,6 +96,9 @@ enum class mode : std::uint8_t {
   runner = 6,     // empty-window game; number keys do not change image zoom
   crop = 7,       // PR 10: crop / straighten on the canvas; arrows nudge the rect
   trim = 8,       // PR 13: trim armed on a clip; layers over video (key_router.cpp)
+  // Issue #361: a clip that is playing, or with the filmstrip hidden. Layers
+  // over video like trim; only ← → differ (they skip ±2 s the way Q / E do).
+  skim = 9,
   count
 };
 
@@ -112,8 +115,9 @@ inline constexpr mode_mask kGallery = 1 << 5;
 inline constexpr mode_mask kRunner = 1 << 6;
 inline constexpr mode_mask kCrop = 1 << 7;
 inline constexpr mode_mask kTrim = 1 << 8;
+inline constexpr mode_mask kSkim = 1 << 9;
 inline constexpr mode_mask kAllModes =
-    kBrowse | kVideo | kSlideshow | kIsland | kLoupe | kGallery | kRunner | kCrop | kTrim;
+    kBrowse | kVideo | kSlideshow | kIsland | kLoupe | kGallery | kRunner | kCrop | kTrim | kSkim;
 
 [[nodiscard]] constexpr mode_mask mask_of(mode m) noexcept {
   return static_cast<mode_mask>(1u << static_cast<unsigned>(m));
@@ -412,6 +416,10 @@ void reset_live_bindings() noexcept;
 // Change row `index` to (k, mods). A collision in overlapping modes swaps the
 // two rows so nothing is left unbound. False if index is out of range.
 [[nodiscard]] bool rebind_live(int index, key k, std::uint8_t mods) noexcept;
+// Set row `index` to (k, mods) exactly, `key::none` included, with no swap:
+// how a saved table is put back (each row's saved key is its final key) and
+// how a keymap pack (shell/keymap.h) writes the rows it names.
+[[nodiscard]] bool set_live_key(int index, key k, std::uint8_t mods) noexcept;
 [[nodiscard]] std::span<const command_info> command_infos() noexcept;
 [[nodiscard]] const command_info* find_command(command_id id) noexcept;
 // Bound commands whose effect has not landed yet. Empty before PR 6 ships.
@@ -429,6 +437,10 @@ void set_addon_commands_available(addon_family family, bool available) noexcept;
 [[nodiscard]] bool addon_commands_available(addon_family family) noexcept;
 // Whether this add-on command may run now (always true for a base command).
 [[nodiscard]] bool addon_command_available(command_id id) noexcept;
+// Whether `id` is a built-in row of an add-on whose loaded manifest
+// contributes rows of its own (set_addon_commands): such a row stays without
+// a key, so the router never answers it ahead of the contributed one.
+[[nodiscard]] bool command_superseded(command_id id) noexcept;
 void set_addon_commands_available(bool available) noexcept;
 [[nodiscard]] bool addon_commands_available() noexcept;
 
@@ -444,12 +456,22 @@ struct addon_command_row {
   std::uint8_t mods = mod_none;
   mode_mask modes = 0;
   std::string payload;
+  // docs/design/25 PR 57: a row a script add-on (another maker's) contributes.
+  // Its key never displaces the base app's: on a clash with a built-in row (or
+  // an earlier contributed row) in an overlapping mode the key is dropped and
+  // `note` says why, for Settings. The host's script runtime runs it, not a chrome.
+  bool script = false;
+  std::string note;
 };
 // Replaces every contributed row with `rows` (at most kAddonCommandSlots;
 // the rest are dropped): they take addon_cmd_0.. in order and are appended
 // to the live table after the built-in rows, so remaps of built-in rows keep
 // their indices. The caller rebuilds the router and the chrome's table.
 void set_addon_commands(std::span<const addon_command_row> rows);
+// What set_addon_commands did with each script row's key, for Settings:
+// [{"addon","id","note"}] for every row whose key was dropped (a clash, or no
+// slot left). "[]" when none.
+[[nodiscard]] std::string addon_command_notes_json();
 // The row behind addon_cmd_n, or null when that slot is empty.
 [[nodiscard]] const addon_command_row* addon_command(command_id id) noexcept;
 // "Ctrl+Shift+I" / "Cmd+Shift+F7" (Cmd and Option are the Mac spellings of

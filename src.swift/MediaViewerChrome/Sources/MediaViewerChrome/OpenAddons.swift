@@ -40,6 +40,9 @@ struct OpenAddon: Identifiable, Equatable {
   let can: [String]
   let cannot: String
   let themes: [Theme]
+  /// API 2 (PR 56): whether Settings has a page for it, and its key layouts.
+  let settings: Bool
+  let keymaps: [Theme]
 
   var id: String { folder }
 
@@ -64,10 +67,42 @@ struct OpenAddon: Identifiable, Equatable {
       guard let id = $0["id"] as? String else { return nil }
       return Theme(id: id, name: $0["name"] as? String ?? id)
     }
+    settings = obj["settings"] as? Bool ?? false
+    keymaps = (obj["keymaps"] as? [[String: Any]] ?? []).compactMap {
+      guard let id = $0["id"] as? String else { return nil }
+      return Theme(id: id, name: $0["name"] as? String ?? id)
+    }
   }
 
   /// "acme.example" of "https://acme.example/about", for the sheet's From line.
   var publisherHost: String { URL(string: publisherURL)?.host ?? "" }
+}
+
+/// A script add-on as the app runs it (docs/design/25 PR 57): running, or stopped
+/// and why. From mv_open_addons_scripts (src/addon/script_host.h).
+struct ScriptStatus: Equatable {
+  struct Command: Equatable {
+    let id: String
+    let name: String
+    let key: String
+    let note: String
+  }
+  let state: String  // running | starting | stopped
+  let stop: String   // none | memory | instructions | time | load_error | stopped
+  let message: String
+  let lastError: String
+  let commands: [Command]
+
+  init(_ obj: [String: Any]) {
+    state = obj["state"] as? String ?? ""
+    stop = obj["stop"] as? String ?? ""
+    message = obj["message"] as? String ?? ""
+    lastError = obj["last_error"] as? String ?? ""
+    commands = (obj["commands"] as? [[String: Any]] ?? []).map {
+      Command(id: $0["id"] as? String ?? "", name: $0["name"] as? String ?? "",
+              key: $0["key"] as? String ?? "", note: $0["note"] as? String ?? "")
+    }
+  }
 }
 
 /// A package that has been looked at and is waiting for an answer.
@@ -88,6 +123,15 @@ final class OpenAddonStore: ObservableObject {
   static let shared = OpenAddonStore()
 
   @Published private(set) var installed: [OpenAddon] = []
+  /// Script add-ons by id: running, or stopped and why (PR 57).
+  @Published private(set) var scripts: [String: ScriptStatus] = [:]
+  /// Settings scrolls to From others when this moves (the PR 57 verify rig).
+  static let sectionAnchor = "open-addons-section"
+  @Published private(set) var revealRequests = 0
+  func reveal() {
+    revealRequests += 1
+    refresh()
+  }
   /// The first read of what is installed has landed.
   @Published private(set) var known = false
   @Published private(set) var offer: OpenAddonOffer?
@@ -97,6 +141,9 @@ final class OpenAddonStore: ObservableObject {
   @Published var enteringLink = false
   @Published var link = ""
   @Published var confirmingRemove: String?
+  /// The Remove panel's "Keep its settings" (docs/design/25 "Settings page"): on
+  /// unless the person turns it off.
+  @Published var keepSettings = true
 
   private init() {}
 
@@ -116,10 +163,41 @@ final class OpenAddonStore: ObservableObject {
       let json = OpenAddonBridge.read { mv_open_addons_list($0, $1) }
       let rows = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [[String: Any]] ?? []
       let list = rows.map(OpenAddon.init)
+      let scripts = Self.readScripts()
       await MainActor.run {
         self.installed = list
+        self.scripts = scripts
         self.known = true
       }
+    }
+  }
+
+  nonisolated private static func readScripts() -> [String: ScriptStatus] {
+    let json = OpenAddonBridge.read { mv_open_addons_scripts($0, $1) }
+    let rows = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [[String: Any]] ?? []
+    var out: [String: ScriptStatus] = [:]
+    for row in rows {
+      if let id = row["id"] as? String { out[id] = ScriptStatus(row) }
+    }
+    return out
+  }
+
+  /// Re-reads only the scripts' state: cheap (no file is read), for after a
+  /// start or a stop the app made on its own.
+  func refreshScripts() {
+    Task.detached(priority: .utility) {
+      let scripts = Self.readScripts()
+      await MainActor.run { self.scripts = scripts }
+    }
+  }
+
+  /// Settings "Start again" for a script add-on that stopped.
+  func restart(_ addon: OpenAddon) {
+    mv_open_addons_restart(addon.addonID)
+    message = "\(addon.name) is starting again."
+    Task { @MainActor in
+      try? await Task.sleep(for: .milliseconds(600))
+      self.refreshScripts()
     }
   }
 
@@ -292,8 +370,13 @@ final class OpenAddonStore: ObservableObject {
     busy = true
     let folder = addon.folder
     let name = addon.name
+    let forget = addon.settings && !keepSettings
+    let id = addon.addonID
+    keepSettings = true
     Task.detached(priority: .userInitiated) {
       let removed = mv_open_addons_remove(folder)
+      // Kept unless asked: installing it again finds what was chosen.
+      if removed && forget { _ = mv_addons_settings_forget(id) }
       await MainActor.run {
         self.busy = false
         self.message = removed ? "\(name) removed." : "\(name) could not be removed."
@@ -416,9 +499,9 @@ struct OpenAddonsSection: View {
   @ObservedObject var settings = SettingsStore.shared
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
+    VStack(alignment: .leading, spacing: MVTheme.space(8)) {
       Text("From others").font(MVTheme.font()).foregroundStyle(MVTheme.title)
-      note("Add-ons made by other people, installed from a file or a link. MediaViewer does not check them or who made them. The ones it installs are data, such as themes: they cannot run code, read your files, or use the network.")
+      note("Add-ons made by other people, installed from a file or a link. MediaViewer does not check them or who made them. A theme is data. An add-on with a script runs it inside MediaViewer, stopped if it uses too much memory or time, with only the permissions it showed when you installed it. No add-on can use the network.")
 
       if let offer = store.offer {
         OpenAddonSheet(offer: offer)
@@ -451,10 +534,12 @@ struct OpenAddonsSection: View {
     }
     .onAppear { if settings.visible { store.refresh() } }
     .onChange(of: settings.visible) { _, visible in if visible { store.refresh() } }
+    // A script that stops on its own changes the command table: re-read its state.
+    .onReceive(settings.$rows) { _ in if settings.visible { store.refreshScripts() } }
   }
 
   @ViewBuilder private func row(_ addon: OpenAddon) -> some View {
-    VStack(alignment: .leading, spacing: 4) {
+    VStack(alignment: .leading, spacing: MVTheme.space(4)) {
       Text("\(addon.name) \(addon.version)").font(MVTheme.font(14)).foregroundStyle(MVTheme.title)
       if !addon.publisher.isEmpty {
         note("From \(addon.publisher) · key \(addon.fingerprint) · \(addon.adds)")
@@ -463,11 +548,22 @@ struct OpenAddonsSection: View {
         note("Needs a newer MediaViewer, so it is not in use.")
       } else if addon.state != "ok" {
         note("This copy did not pass verification, so it is not in use.")
+      } else if let script = store.scripts[addon.addonID] {
+        scriptLines(addon, script)
+      }
+      if addon.settings && addon.state == "ok" && store.confirmingRemove != addon.folder {
+        AddonSettingsPage(addonID: addon.addonID, fallbackTitle: addon.name)
+          .id(addon.addonID + "@" + addon.version)
       }
       if store.confirmingRemove == addon.folder {
+        if addon.settings {
+          Toggle("Keep its settings", isOn: $store.keepSettings)
+            .toggleStyle(.checkbox).font(MVTheme.font(13))
+            .help("Kept, installing \(addon.name) again brings back what you chose on its settings page.")
+        }
         HStack {
           Button("Remove \(addon.name)") { store.remove(addon) }
-          Button("Cancel") { store.confirmingRemove = nil }
+          Button("Cancel") { store.confirmingRemove = nil; store.keepSettings = true }
         }
       } else {
         HStack {
@@ -479,7 +575,31 @@ struct OpenAddonsSection: View {
         }
       }
     }
-    .padding(.vertical, 4)
+    .padding(.vertical, MVTheme.space(4))
+  }
+
+  /// A script add-on's state and its commands (docs/design/25 PR 57): a stopped one
+  /// says which limit and why, and can be started again.
+  @ViewBuilder private func scriptLines(_ addon: OpenAddon, _ script: ScriptStatus) -> some View {
+    switch script.state {
+    case "running": note("Running.")
+    case "starting": note("Starting…")
+    default:
+      Text("Stopped. \(script.message)").font(MVTheme.font(13)).foregroundStyle(MVTheme.title)
+        .fixedSize(horizontal: false, vertical: true)
+        .accessibilityLabel("Stopped: \(script.message)")
+    }
+    if !script.lastError.isEmpty, script.state != "stopped" {
+      note("Its last error: \(script.lastError)").textSelection(.enabled)
+    }
+    ForEach(script.commands, id: \.id) { c in
+      let keys = c.key.isEmpty ? "no key" : SettingsStore.macLabel(c.key)
+      note(c.note.isEmpty ? "Command: \(c.name) (\(keys))" : "Command: \(c.name). \(c.note).")
+    }
+    if script.state == "stopped" {
+      Button("Start again") { store.restart(addon) }.disabled(store.busy)
+        .help("Runs \(addon.name)'s script again from the start, with the same limits.")
+    }
   }
 
   private func note(_ text: String) -> some View {
@@ -508,7 +628,7 @@ struct OpenAddonSheet: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
+    VStack(alignment: .leading, spacing: MVTheme.space(8)) {
       Text(title).font(MVTheme.font(16)).fontWeight(.semibold).foregroundStyle(MVTheme.title)
         .fixedSize(horizontal: false, vertical: true)
       if let a = offer.addon {
@@ -540,10 +660,10 @@ struct OpenAddonSheet: View {
         Button("Close") { store.cancel() }.keyboardShortcut(.defaultAction)
       }
     }
-    .padding(14)
+    .padding(MVTheme.space(14))
     .frame(maxWidth: .infinity, alignment: .leading)
-    .background(RoundedRectangle(cornerRadius: 8).fill(MVTheme.surface))
-    .overlay(RoundedRectangle(cornerRadius: 8).stroke(MVTheme.hairline, lineWidth: 1))
+    .background(RoundedRectangle(cornerRadius: MVTheme.radius(8)).fill(MVTheme.surface))
+    .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(8)).stroke(MVTheme.hairline, lineWidth: 1))
     .accessibilityElement(children: .contain)
     .accessibilityLabel(title)
     .id(Self.anchor)

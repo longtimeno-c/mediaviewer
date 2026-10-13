@@ -142,7 +142,8 @@ The transport floats over the video and gets out of the way after a moment of pl
 
 `I` opens a metadata pane: a summary card, a searchable tree of every EXIF, IPTC and XMP tag, and a per-stream inspector
 for clips. `O` overlays camera, exposure and date on the image, `Shift+O` draws autofocus points, and `Shift+I` is a
-one-pixel colour eyedropper (`Ctrl+C` copies the value).
+one-pixel colour eyedropper (`Ctrl+C` copies the value). A file that says it was made by an AI tool gets a small
+**AI** badge in the corner (hover to see which tool and why); switch it off in **Settings → Viewer**.
 
 ## Colour done right
 
@@ -222,7 +223,8 @@ The optional **Import** add-on copies a card or folder into your library.
 - **Anyone can make an add-on.** One `.mvaddon` file, signed by the person who made it. Drop it on MediaViewer, or use
   **Settings → Add-ons → From others** to install from a file or a link.
 - **Nineteen themes built in.** Dark, Light, Midnight, Cyberpunk, Retrowave, Forest, Starfield, Terminal, Organs, Ume, GPT, Claude, Cute, Eclipse, Porcelain, Arcade, Blueprint, Monolith and Yoyo are in Settings → Appearance with nothing else installed. Grounds in the chrome run from rain, stars, fireflies and petals to embers, sparkles, a circuit and a slow drift. A few stay still. Default still follows the system, and a photo's colour is never changed.
-- **Themes from anyone.** Colours and a typeface for MediaViewer's bars, panes and text. A theme dresses the app and never touches your photos' colour.
+- **Themes, key layouts and settings.** Colours, a typeface and how round and roomy the bars and panes are; a key layout for the hands you already have (a Vim layout ships as an example), with one click back to the defaults; and an add-on's own page in Settings. A theme dresses the app and never touches your photos' colour.
+- **Commands from a script.** An add-on can bring its own keyboard commands, written in Lua and run in a sandbox on a thread of its own, so a slow or broken one is stopped and the viewer carries on. It reaches only what it asked for when you installed it.
 - **Safe to try.** You see who signed it and what it is before it installs, only its original publisher can update it, and an add-on never gets network access.
 - **Make your own in five minutes** with a single-file Python tool and a guide: [docs/ADDONS.md](docs/ADDONS.md). Your add-on is yours to licence however you like.
 

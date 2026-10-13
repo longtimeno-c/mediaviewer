@@ -177,11 +177,39 @@ func int64(_ v: Any?) -> Int64 {
 
 /// The base chrome's colour roles (MVTheme in MediaViewerChrome): semantic
 /// AppKit colours, so light, dark and increased contrast follow the system.
+/// The host's chrome tokens (docs/design/25 "Themes", issue #204), so an add-on
+/// theme reaches Local search's windows too. The app publishes them as the
+/// `tokens` class method of MVChromeTheme and posts MVChromeThemeDidChange; an
+/// app from before PR 56 has neither, and every token is the system's. The
+/// twin of ImportChrome's HostTheme (neither bundle links the other or the app).
+@MainActor
 enum AITheme {
-  static let title = Color(nsColor: .labelColor)
-  static let body = Color(nsColor: .secondaryLabelColor)
-  static let hairline = Color(nsColor: .separatorColor)
-  static let surface = Color(nsColor: .controlBackgroundColor)
+  private static var tokens: [String: Any] = read()
+  static let didChange = Notification.Name("MVChromeThemeDidChange")
+
+  private static func read() -> [String: Any] {
+    guard let type = NSClassFromString("MVChromeTheme") as? NSObject.Type else { return [:] }
+    let selector = NSSelectorFromString("tokens")
+    guard type.responds(to: selector),
+          let value = type.perform(selector)?.takeUnretainedValue() as? [String: Any]
+    else { return [:] }
+    return value
+  }
+  static func refresh() { tokens = read() }
+  private static func colour(_ key: String, _ fallback: NSColor) -> Color {
+    Color(nsColor: tokens[key] as? NSColor ?? fallback)
+  }
+  private static func scale(_ key: String) -> CGFloat {
+    CGFloat((tokens[key] as? NSNumber)?.doubleValue ?? 1)
+  }
+
+  static var title: Color { colour("title", .labelColor) }
+  static var body: Color { colour("body", .secondaryLabelColor) }
+  static var hairline: Color { colour("hairline", .separatorColor) }
+  static var surface: Color { colour("surface", .controlBackgroundColor) }
+  static var canvas: Color { colour("canvas", .windowBackgroundColor) }
+  static var accent: Color { colour("accent", .controlAccentColor) }
+  static func radius(_ r: CGFloat) -> CGFloat { r * scale("radius") }
 
   private static let registered: Bool = {
     // The base app registers the face for the process; registering again
@@ -193,7 +221,35 @@ enum AITheme {
 
   static func font(_ size: CGFloat = 16) -> Font {
     _ = registered
-    return .custom("CozetteVector", size: size)
+    return .custom(tokens["font"] as? String ?? "CozetteVector", size: size * scale("typeScale"))
+  }
+}
+
+/// Generation Local search's roots rebuild on when the app's theme changes.
+@MainActor
+final class AIThemeWatch: ObservableObject {
+  static let shared = AIThemeWatch()
+  @Published private(set) var generation = 0
+  private init() {
+    NotificationCenter.default.addObserver(forName: AITheme.didChange, object: nil, queue: .main) {
+      [weak self] _ in
+      MainActor.assumeIsolated {
+        AITheme.refresh()
+        self?.generation += 1
+      }
+    }
+  }
+}
+
+/// A root: rebuilt on a theme change (rare), tinted with the accent.
+struct AIThemeRoot<Content: View>: View {
+  @ObservedObject private var watch = AIThemeWatch.shared
+  let content: Content
+  init(@ViewBuilder _ content: () -> Content) { self.content = content() }
+  var body: some View {
+    content
+      .tint(AITheme.accent)
+      .id(watch.generation)
   }
 }
 
@@ -447,8 +503,8 @@ struct AIProgressRing: View {
           let t = context.date.timeIntervalSinceReferenceDate
           Circle()
             .trim(from: 0, to: 0.32)
-            .stroke(AngularGradient(gradient: Gradient(colors: [Color.accentColor.opacity(0),
-                                                                Color.accentColor.opacity(0.7)]),
+            .stroke(AngularGradient(gradient: Gradient(colors: [AITheme.accent.opacity(0),
+                                                                AITheme.accent.opacity(0.7)]),
                                     center: .center,
                                     startAngle: .degrees(0), endAngle: .degrees(0.32 * 360)),
                     style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
@@ -459,7 +515,7 @@ struct AIProgressRing: View {
       if progress > 0.002 {
         Circle()
           .trim(from: 0, to: min(1, progress))
-          .stroke(Color.accentColor, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+          .stroke(AITheme.accent, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
           .rotationEffect(.degrees(-90))
           .animation(.easeOut(duration: 0.4), value: progress)
       }
@@ -477,7 +533,7 @@ struct StageChip: View {
     HStack(spacing: 4) {
       if stage.finished {
         Image(systemName: "checkmark").font(.system(size: 9, weight: .semibold))
-          .foregroundStyle(Color.accentColor)
+          .foregroundStyle(AITheme.accent)
         Text(stage.name)
       } else {
         AIProgressRing(progress: stage.fraction, spinning: false, lineWidth: 1.5)

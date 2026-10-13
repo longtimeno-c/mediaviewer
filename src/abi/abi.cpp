@@ -54,6 +54,8 @@
 #include "io/pairing.h"
 #include "io/sort_order.h"
 #include "meta/meta.h"
+#include "meta/tag_index.h"
+#include "core/json.h"
 #include "io/paths.h"
 
 // The enum values on both sides of the line must stay numerically identical.
@@ -226,15 +228,15 @@ struct mv_session {
   };
 
   // PR 9 sort. `folder_listing` is the paired scan in scan order, kept so a new
-  // order (or a batch of date-taken stamps) re-applies without another disk
-  // scan. `date_stamps` is checked per (mtime, size): a rewritten file is read
-  // again, and a file with no stamp is remembered as such rather than retried.
-  struct date_stamp {
-    std::int64_t mtime_unix = 0;
-    std::uint64_t size = 0;
-    std::optional<std::int64_t> key;
-  };
+  // order (or the date-taken keys) re-applies without another disk scan.
+  // #291: the keys come from `tags`, the folder's tag pass (meta/tag_index.h),
+  // checked per (mtime, size); meta_cache.db keeps them across launches.
   std::atomic<std::int32_t> sort_packed{0};
+  std::unique_ptr<mv::meta::tag_index> tags = std::make_unique<mv::meta::tag_index>(
+      mv::meta::tag_index::cache_fn([] { return &mv::meta::default_meta_cache(); }));
+  // The listing changed; its tag pass waits for the selected stop's first image.
+  std::atomic<bool> tag_pass_due{false};
+  std::atomic<std::uint64_t> tag_generation{0};
   // 0.19: io::kHideAudio / kHideDocuments. `folder_listing` stays unfiltered,
   // so turning a kind back on re-applies without another scan.
   std::atomic<std::uint32_t> hidden_kinds{0};
@@ -250,7 +252,6 @@ struct mv_session {
   std::string renamed_from;
   std::string renamed_to;
   std::vector<mv::io::listed_item> folder_listing;
-  std::unordered_map<std::string, date_stamp> date_stamps;
   // Issue #207: each file's rating and colour label for View > Show's cull
   // filters (io::needs_cull_marks), checked per (mtime, size) like the date
   // stamps and read on a worker, never at scan. A sidecar write leaves the
@@ -411,7 +412,18 @@ struct mv_session {
                        dropped, static_cast<unsigned long long>(total));
     }
     if (completion_event) ::SetEvent(completion_event);
+    // #291: the first image is on its way to the screen: the folder's tag
+    // pass may start now (never ahead of the view, CLAUDE.md).
+    if (c.kind == static_cast<uint32_t>(MV_COMPLETION_IMAGE_OPENED) && c.status == static_cast<uint32_t>(MV_OK) &&
+        image_shown_hook &&
+        tag_pass_due.load(std::memory_order_relaxed)) {
+      try {
+        image_shown_hook();
+      } catch (...) {
+      }
+    }
   }
+  std::function<void()> image_shown_hook;
 
   mv::gfx::com_ptr<ID3D11Device> copy_device() {
     std::lock_guard lock(device_mutex);
@@ -1385,15 +1397,8 @@ void sort_listed(mv_session* session, std::vector<mv::io::listed_item>& listed) 
   std::vector<mv::io::dir_entry> primaries;
   primaries.reserve(listed.size());
   for (const auto& l : listed) primaries.push_back(l.primary);
-  mv::io::sort_entries(primaries, order, [session](const mv::io::dir_entry& e) {
-    std::lock_guard lock(session->folder_mutex);
-    const auto it = session->date_stamps.find(e.path_utf8);
-    if (it == session->date_stamps.end() || it->second.mtime_unix != e.mtime_unix ||
-        it->second.size != e.size) {
-      return std::optional<std::int64_t>{};
-    }
-    return it->second.key;
-  });
+  const mv::meta::tag_index* tags = session->tags.get();
+  mv::io::sort_entries(primaries, order, [tags](const mv::io::dir_entry& e) { return tags->date_key(e); });
   std::unordered_map<std::string, std::size_t> at;
   at.reserve(listed.size());
   for (std::size_t i = 0; i < listed.size(); ++i) at.emplace(listed[i].primary.path_utf8, i);
@@ -1403,45 +1408,40 @@ void sort_listed(mv_session* session, std::vector<mv::io::listed_item>& listed) 
   listed = std::move(sorted);
 }
 
-// Date taken needs a bounded read of every file. One background job fills the
-// stamps still missing, then re-applies the listing once. A second call for the
-// same listing finds nothing missing and does nothing, so this cannot loop.
-void resolve_date_stamps(mv_session* session) {
-  std::vector<mv::io::dir_entry> missing;
+// #291: the folder's tag pass (meta/tag_index.h) reads every file's tags and
+// date taken once, in background chunks behind every view job, waiting while
+// the viewer is busy. Started when the selected stop's first image is opened,
+// or at once when the listing is sorted by date taken (as the date scan always
+// was), or by the first tag search. When it ends with date-taken order, the
+// listing is re-applied once; a second call with nothing missing reads nothing.
+void start_tag_pass(mv_session* session) {
+  session->tag_pass_due.store(false, std::memory_order_relaxed);
+  std::vector<mv::io::dir_entry> files;
   std::string dir;
   {
     std::lock_guard lock(session->folder_mutex);
+    if (session->folder_is_list) return;
     dir = session->folder_dir;
-    for (const auto& l : session->folder_listing) {
-      const auto it = session->date_stamps.find(l.primary.path_utf8);
-      if (it == session->date_stamps.end() || it->second.mtime_unix != l.primary.mtime_unix ||
-          it->second.size != l.primary.size) {
-        missing.push_back(l.primary);
-      }
-    }
+    files.reserve(session->folder_listing.size());
+    for (const auto& l : session->folder_listing) files.push_back(l.primary);
   }
-  if (missing.empty()) return;
-  (void)session->jobs.submit_at(
-      mv::background_generation,
-      [session, dir, missing = std::move(missing)](const mv::job_context&) -> status {
-        for (const auto& e : missing) {
-          const auto key = mv::meta::read_date_taken(e.path_utf8);
-          std::lock_guard lock(session->folder_mutex);
-          if (session->folder_dir != dir) return status::ok;  // the user moved on
-          session->date_stamps[e.path_utf8] = {e.mtime_unix, e.size, key};
-        }
+  if (dir.empty() || files.empty()) return;
+  session->tags->scan(
+      dir, std::move(files), session->jobs,
+      [session, dir] {
+        session->tag_generation.fetch_add(1, std::memory_order_relaxed);
+        if (session->tags->progress().reading) return;
         std::vector<mv::io::listed_item> again;
         {
           std::lock_guard lock(session->folder_mutex);
-          if (session->folder_dir != dir) return status::ok;
+          if (session->folder_dir != dir) return;  // the user moved on
           again = session->folder_listing;
         }
-        if (mv::io::unpack_sort(session->sort_packed.load()).key ==
-            mv::io::sort_key::date_taken) {
+        if (mv::io::unpack_sort(session->sort_packed.load()).key == mv::io::sort_key::date_taken) {
           apply_folder_list(session, std::move(again), true);
         }
-        return status::ok;
-      });
+      },
+      [] { return mv::abi::present_busy(); });
 }
 
 // Issue #207: the rating and label of `e` when its stamp is current, else null.
@@ -1617,7 +1617,9 @@ void apply_folder_list(mv_session* session, std::vector<mv::io::listed_item> lis
     refresh_subdirs(session);
     sort_listed(session, listed);
     if (mv::io::unpack_sort(session->sort_packed.load()).key == mv::io::sort_key::date_taken) {
-      resolve_date_stamps(session);
+      start_tag_pass(session);
+    } else {
+      session->tag_pass_due.store(true, std::memory_order_relaxed);
     }
   }
   std::string want;
@@ -1763,6 +1765,18 @@ mv_status MV_CALL mv_session_create(const mv_session_config* config, mv_session_
     if (etw) mv::trace::provider_register();
 
     auto session = std::make_unique<mv_session>();
+    // #291: the first image opened starts the folder's tag pass, on a worker
+    // (push_completion may run under another lock; the pass takes folder_mutex).
+    {
+      mv_session* raw = session.get();
+      session->image_shown_hook = [raw] {
+        if (!raw->tag_pass_due.exchange(false, std::memory_order_relaxed)) return;
+        (void)raw->jobs.submit_at(mv::background_generation, [raw](const mv::job_context&) -> status {
+          start_tag_pass(raw);
+          return status::ok;
+        });
+      };
+    }
 
     session->completion_event = ::CreateEventW(nullptr, TRUE /*manual reset*/,
                                                FALSE /*non-signalled*/, nullptr);
@@ -2422,6 +2436,63 @@ mv_status MV_CALL mv_folder_get_sort(mv_session_t session, int32_t* out_packed) 
   }));
 }
 
+// 0.28 (#291): tag search over the open folder, from the tag pass's memory.
+mv_status MV_CALL mv_folder_tag_search(mv_session_t session, const char* query_utf8, char* utf8, uint32_t cap,
+                                       uint32_t* out_bytes) {
+  return static_cast<mv_status>(guard("mv_folder_tag_search", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    MV_REQUIRE(query_utf8 != nullptr, "query_utf8 must not be null");
+    // A clip or a document on screen opens no image: the first search starts
+    // the pass instead, on a worker.
+    if (session->tag_pass_due.exchange(false, std::memory_order_relaxed)) {
+      (void)session->jobs.submit_at(mv::background_generation, [session](const mv::job_context&) -> status {
+        start_tag_pass(session);
+        return status::ok;
+      });
+    }
+    const auto hits = session->tags->match(query_utf8);
+    std::unordered_map<std::string, std::size_t> index_of;
+    bool is_list = false;
+    {
+      std::lock_guard lock(session->folder_mutex);
+      is_list = session->folder_is_list;
+      if (!hits.empty() && !is_list) {
+        index_of.reserve(session->folder_items.size());
+        for (std::size_t i = 0; i < session->folder_items.size(); ++i) {
+          index_of.emplace(session->folder_items[i].path, i);
+        }
+      }
+    }
+    const auto p = session->tags->progress();
+    mv::json::writer w;
+    w.begin_object();
+    w.key("done").integer(p.done);
+    w.key("total").integer(p.total);
+    w.key("reading").boolean(p.reading || session->tag_pass_due.load(std::memory_order_relaxed));
+    w.key("hits").begin_array();
+    for (const auto& h : hits) {
+      const auto it = index_of.find(h.path);
+      if (it == index_of.end()) continue;
+      w.begin_array();
+      w.integer(static_cast<std::int64_t>(it->second));
+      w.string(h.why);
+      w.end_array();
+    }
+    w.end_array();
+    w.end_object();
+    return copy_utf8(w.take(), utf8, cap, out_bytes);
+  }));
+}
+
+mv_status MV_CALL mv_folder_tag_generation(mv_session_t session, uint64_t* out_generation) {
+  return static_cast<mv_status>(guard("mv_folder_tag_generation", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    MV_REQUIRE(out_generation != nullptr, "out_generation must not be null");
+    *out_generation = session->tag_generation.load(std::memory_order_relaxed);
+    return status::ok;
+  }));
+}
+
 mv_status MV_CALL mv_list_subdirectories(const char* utf8_dir, char* utf8, uint32_t cap,
                                          uint32_t* out_bytes) {
   return static_cast<mv_status>(guard("mv_list_subdirectories", [&]() -> status {
@@ -2447,6 +2518,21 @@ mv_status MV_CALL mv_folder_forget(mv_session_t session, const char* utf8_path) 
     const std::string path(utf8_path);
     std::lock_guard lock(session->lru_mutex);
     std::erase_if(session->lru, [&](const mv_session::lru_slot& s) { return s.path == path; });
+    return status::ok;
+  }));
+}
+
+// 0.28 (#291): a metadata write landed (maybe only in the sidecar, so the
+// file's stamp cannot tell): the tag pass reads the file again.
+mv_status MV_CALL mv_folder_forget_tags(mv_session_t session, const char* utf8_path) {
+  return static_cast<mv_status>(guard("mv_folder_forget_tags", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    MV_REQUIRE(utf8_path != nullptr && utf8_path[0] != '\0', "utf8_path must not be empty");
+    session->tags->invalidate(utf8_path);
+    (void)session->jobs.submit_at(mv::background_generation, [session](const mv::job_context&) -> status {
+      start_tag_pass(session);
+      return status::ok;
+    });
     return status::ok;
   }));
 }
