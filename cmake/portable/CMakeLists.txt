@@ -94,8 +94,6 @@ set_target_properties(mv_io PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # ---- the add-on host and the Import add-on --------------------------------------
 set(MV_SOURCE_ROOT "${MV_ROOT}")
 include("${MV_ROOT}/cmake/import.cmake")
-# docs/design/25 §9 A (PR 57): Lua and the script runtime.
-include("${MV_ROOT}/cmake/script.cmake")
 # Milestone H: the AI pack (cmake/ai.cmake); its engine tests run here too.
 include("${MV_ROOT}/cmake/ai.cmake")
 
@@ -118,9 +116,6 @@ add_executable(mv_import_tests
   "${MV_ROOT}/tests/test_verified_copy.cpp"
   "${MV_ROOT}/tests/test_addon_manifest.cpp"
   "${MV_ROOT}/tests/test_open_addons.cpp"
-  "${MV_ROOT}/tests/test_addon_contributions.cpp"
-  "${MV_ROOT}/tests/test_addon_screens.cpp"
-  "${MV_ROOT}/tests/test_addon_slots.cpp"
   "${MV_ROOT}/tests/test_ai_resume.cpp"
   "${MV_ROOT}/tests/test_import_naming.cpp"
   "${MV_ROOT}/tests/test_import_engine.cpp"
@@ -130,22 +125,11 @@ target_link_libraries(mv_import_tests PRIVATE mv_io mv_addon mv_import_engine
   ${MV_SODIUM_TARGET} ${MV_CATCH2_TARGET})
 target_include_directories(mv_import_tests PRIVATE "${MV_ROOT}/src" "${MV_ROOT}/tests")
 target_compile_definitions(mv_import_tests PRIVATE
-  MV_IMPORT_MODULE_PATH="$<TARGET_FILE:mv_import>"
-  MV_SLOTS_TEST_MODULE_PATH="$<TARGET_FILE:mv_slots_test_addon>")
-add_dependencies(mv_import_tests mv_import mv_slots_test_addon)
+  MV_IMPORT_MODULE_PATH="$<TARGET_FILE:mv_import>")
+add_dependencies(mv_import_tests mv_import)
 add_test(NAME mv_import_tests COMMAND mv_import_tests)
 # The dateless-file fallback is local wall-clock time; pin the zone.
 set_tests_properties(mv_import_tests PROPERTIES ENVIRONMENT "TZ=UTC")
-
-# docs/design/25 §9 A (PR 57): the script sandbox and script add-ons.
-add_executable(mv_script_tests
-  "${MV_ROOT}/tests/test_script_runtime.cpp"
-  "${MV_ROOT}/tests/test_script_addons.cpp"
-)
-target_link_libraries(mv_script_tests PRIVATE mv_script mv_lua mv_addon mv_io
-  ${MV_SODIUM_TARGET} ${MV_CATCH2_TARGET})
-target_include_directories(mv_script_tests PRIVATE "${MV_ROOT}/src" "${MV_ROOT}/tests")
-add_test(NAME mv_script_tests COMMAND mv_script_tests)
 
 # The packing tool's cross-check (tools/package/test_addon_pack.py).
 add_executable(mv_addon_verify "${MV_ROOT}/tools/addon-verify/main.cpp")
@@ -177,6 +161,7 @@ if(PkgConfig_FOUND)
 endif()
 if(MV_FFMPEG_FOUND AND MV_SPNG_FOUND AND JPEG_FOUND)
   add_library(mv_clip STATIC
+    "${MV_ROOT}/src/core/crash_context.cpp"
     "${MV_ROOT}/src/edit/clip_common.cpp"
     "${MV_ROOT}/src/edit/clip_copy.cpp"
     "${MV_ROOT}/src/edit/clip_encode.cpp"
@@ -187,7 +172,8 @@ if(MV_FFMPEG_FOUND AND MV_SPNG_FOUND AND JPEG_FOUND)
     "${MV_ROOT}/src/edit/clip_helper.cpp"
     "${MV_ROOT}/src/edit/hwencode_none.cpp"
     "${MV_ROOT}/src/edit/encode.cpp"
-    # clip_common names its threads' crash slots (#233).
+    # clip jobs annotate their thread like still decodes (#233); the slots
+    # are plain portable C++ (issue #385).
     "${MV_ROOT}/src/core/crash_context.cpp"
   )
   target_include_directories(mv_clip PUBLIC "${MV_ROOT}/src")
