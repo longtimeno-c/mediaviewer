@@ -459,7 +459,7 @@ TEST_CASE("mv_meta_parse_location reads what the Location editor takes", "[abi][
 
   CHECK(mv_meta_parse_location(nullptr, &in) == MV_ERR_INVALID_ARG);
   CHECK(mv_meta_parse_location("1, 2", nullptr) == MV_ERR_INVALID_ARG);
-  mv_location_input small{};
-  small.struct_size = 8;
-  CHECK(mv_meta_parse_location("1, 2", &small) == MV_ERR_INVALID_ARG);
+  mv_location_input tiny{};
+  tiny.struct_size = 8;
+  CHECK(mv_meta_parse_location("1, 2", &tiny) == MV_ERR_INVALID_ARG);
 }
