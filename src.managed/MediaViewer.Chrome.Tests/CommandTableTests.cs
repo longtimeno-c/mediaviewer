@@ -53,27 +53,23 @@ public class CommandTableTests
     }
 
     [Fact]
-    public void WindowsMenuShortcutsAreTheDefaultKeys()
+    public void WindowsMenuShortcutsComeFromTheLiveTable()
     {
-        // IslandHost.cs prints a shortcut beside each menu item by hand:
-        // Item("Gallery", "G", () => Send(Command.ToggleGallery)). It must be a key
-        // the default table binds to that command in browse mode.
+        // Since #197, IslandHost.cs reads each menu shortcut from the live key table:
+        // Item("Media…", KeyOf(Command.Open), () => { Send(Command.Open); ... }).
+        // A literal shortcut ("G"), or the key of a different command than the one
+        // the item sends, would drift from the table (and from a Settings remap).
         string text = Repo.Read("src.managed", "MediaViewer.Chrome", "IslandHost.cs");
-        var byName = CommandIdTests.CSharpCommandConstants().ToDictionary(c => c.Name, c => c.Value);
         var items = Regex.Matches(text,
-            @"\bItem\(""([^""]*)"",\s*""([^""]+)"",\s*\(\)\s*=>\s*\{?\s*Send\(Command\.(\w+)\)").ToList();
-        Assert.True(items.Count >= 10, $"found only {items.Count} menu items with a shortcut");
+            @"\bItem\(""([^""]*)"",\s*([^,]+?),\s*\(\)\s*=>\s*\{?\s*Send\(Command\.(\w+)\)").ToList();
+        Assert.True(items.Count >= 10, $"found only {items.Count} menu items that send a command");
         var failures = new List<string>();
         foreach (Match m in items)
         {
-            string label = m.Groups[1].Value, shortcut = m.Groups[2].Value, constant = m.Groups[3].Value;
-            int id = byName[constant];
-            var bound = Snapshot.Rows.Where(r => r.Id == id && r.Mode == "browse").Select(r => r.Keys).ToList();
-            if (!bound.Contains(shortcut))
-            {
-                failures.Add($"menu \"{label}\" shows {shortcut} for Command.{constant} ({id}); " +
-                             $"browse binds {(bound.Count == 0 ? "nothing" : string.Join(" / ", bound))}");
-            }
+            string label = m.Groups[1].Value, shortcut = m.Groups[2].Value.Trim(), constant = m.Groups[3].Value;
+            if (shortcut == "null" || shortcut == $"KeyOf(Command.{constant})") continue;
+            failures.Add($"menu \"{label}\" sends Command.{constant} but shows {shortcut}; " +
+                         $"use KeyOf(Command.{constant}) or null");
         }
         Assert.True(failures.Count == 0, string.Join("\n", failures));
     }
