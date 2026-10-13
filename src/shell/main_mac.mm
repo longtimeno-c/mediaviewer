@@ -65,6 +65,7 @@
 #include "abi/clip_session.h"
 #include "shell/trim_state.h"
 #include "shell/transport_autohide.h"
+#include "shell/gesture.h"
 #include "shell/browse_index.h"
 #include "shell/browse_path.h"
 #include "shell/commands.h"
@@ -458,6 +459,9 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)navigateFirst;
 - (void)navigateLast;
 - (void)navigateSkip:(std::ptrdiff_t)delta;
+// Issue #212: a trackpad swipe, +1 next / -1 previous. Not under the gallery
+// or while crop owns the arrows.
+- (void)swipeStep:(int)delta;
 - (void)turnPage:(int)delta;
 - (BOOL)turnPage:(int)delta land:(BOOL)land;
 // Document scrolling (docs/design/04 "Pages"): the wheel or trackpad over a PDF or
@@ -1770,6 +1774,10 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 @implementation MvMetalView {
   int _welcomePress;  // welcome row under the left press, + 1; 0 = none
   BOOL _welcomePressRemove;  // ... and the press was on its remove button
+  // Issue #212 (shell/gesture.h): a pinch's sub-notch remainder, and the
+  // two-finger sideways swipe that steps one item.
+  mv::shell::pinch_to_wheel _pinch;
+  mv::shell::swipe_detector _wheelSwipe;
 }
 - (void)viewDidChangeEffectiveAppearance {
   [super viewDidChangeEffectiveAppearance];
@@ -1980,6 +1988,20 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
     if (self.app) [self.app transportActivity];
     return;
   }
+  // Issue #212: a two-finger sideways swipe (or a tilt) is swipe-next, one
+  // item per swipe; its momentum runs out inside the detector's latch. A
+  // negative delta moves the content left (natural scrolling: fingers left),
+  // which brings in the next item, as on Windows. Precise deltas are points;
+  // three of them weigh as one wheel unit.
+  const double per_unit = event.hasPreciseScrollingDeltas ? 3.0 : 120.0;
+  const int swipe = _wheelSwipe.feed(-event.scrollingDeltaX * per_unit, event.scrollingDeltaY * per_unit,
+                                     static_cast<std::uint64_t>(event.timestamp * 1000.0));
+  if (swipe != 0 && self.app) [self.app swipeStep:swipe];
+  if (std::abs(event.scrollingDeltaX) > std::abs(event.scrollingDeltaY)) {
+    // Sideways never zooms.
+    if (self.app) [self.app transportActivity];
+    return;
+  }
   self.snap->wheel_total += static_cast<std::int64_t>(event.scrollingDeltaY * 120.0);
   ++self.snap->activity_seq;
   [self publish];
@@ -1987,15 +2009,23 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   if (self.app) [self.app transportActivity];
 }
 // A trackpad pinch zooms toward the pointer, as the wheel does: one wheel notch
-// is a 15 % step (canvas/camera.cpp kWheelFactor).
+// is a 15 % step (canvas/camera.cpp kWheelFactor). shell/gesture.h carries the
+// sub-unit remainder, so a slow pinch is not rounded away (issue #212).
 - (void)magnifyWithEvent:(NSEvent*)event {
-  const double factor = 1.0 + event.magnification;
-  if (factor <= 0.0) return;
+  if (event.phase == NSEventPhaseBegan) _pinch.reset();
+  const std::int64_t units = _pinch.feed(1.0 + event.magnification);
+  if (units == 0) return;
   [self trackPointer:event];
-  self.snap->wheel_total += static_cast<std::int64_t>(std::lround(std::log(factor) / std::log(1.15) * 120.0));
+  self.snap->wheel_total += units;
   ++self.snap->activity_seq;
   [self publish];
   if (self.lab) self.lab->wake();
+}
+// A three-finger swipe, when System Settings sends it as a swipe ("Swipe
+// between pages" with three fingers): deltaX is +1 for a swipe to the left,
+// the next item.
+- (void)swipeWithEvent:(NSEvent*)event {
+  if (event.deltaX != 0.0 && self.app) [self.app swipeStep:event.deltaX > 0.0 ? 1 : -1];
 }
 // Without a tracking area AppKit never sends mouseMoved: to a plain view, which is
 // why the eyedropper had no cursor to read. Idle stays idle: the move only wakes
@@ -4830,8 +4860,10 @@ static BOOL MvCopyUtf8(const std::string& text, char* buf, int32_t size) {
     under.popup_open = false;
     const mv::shell::mode under_mode = mv::shell::resolve_mode(under);
     auto modes = static_cast<std::int32_t>(mv::shell::mask_of(under_mode));
-    // Trim layers over video (key_router.cpp), so `?` lists both, as on Windows.
-    if (under_mode == mv::shell::mode::trim) modes |= mv::shell::kVideo;
+    // Trim and skim layer over video (key_router.cpp), so `?` lists both, as on Windows.
+    if (under_mode == mv::shell::mode::trim || under_mode == mv::shell::mode::skim) {
+      modes |= mv::shell::kVideo;
+    }
     [MVChromeHost reloadHelpWithModes:modes];
   }
   self.helpHost.hidden = !visible;
@@ -5774,6 +5806,12 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   s.pane_open = _metaPaneVisible || _treeVisible || _adjust.visible() || _jobsVisible || _ws.open;
   s.crop = _edits.crop_active();
   s.trim = _trim.armed() && s.item == mv::shell::item_kind::clip;
+  // Issue #361: on a clip, ← → skip ±2 s while it plays or with the strip hidden.
+  s.filmstrip_visible = [self filmstripVisible];
+  if (s.item == mv::shell::item_kind::clip) {
+    const auto st = _lab.video_status_snapshot();
+    s.clip_playing = st.active && st.playing;
+  }
   // Milestone H: Esc from a result list is the path bar's "Back to folder".
   s.list_open = _listOpen;
   return s;
@@ -9759,6 +9797,11 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
 - (void)navigatePrev {
   if (_items.empty()) return;
   [self selectIndex:_index.prev()];
+}
+- (void)swipeStep:(int)delta {
+  if (delta == 0 || _galleryVisible || _edits.crop_active()) return;
+  if (delta > 0) [self navigateNext];
+  else [self navigatePrev];
 }
 - (void)navigateFirst {
   if (_items.empty()) return;

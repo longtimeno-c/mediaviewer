@@ -1001,11 +1001,13 @@ void present_lab::render_thread_main() noexcept {
                               media_width(), media_height(), view.w, view.h);
         redraw = true;
       }
-      // Document scrolling (docs/design/04 "Pages"): screen pixels, consumed
-      // with or without a picture so none banks up for the next one.
+      // Document scrolling (docs/design/04 "Pages") and a touch pan on a
+      // zoomed still or clip (issue #212): screen pixels, consumed with or
+      // without a picture so none banks up for the next one.
       float scroll_x = 0.0f;
       float scroll_y = 0.0f;
-      if (input_cursor_.consume_scroll(snapshot, scroll_x, scroll_y) && current_image_) {
+      if (input_cursor_.consume_scroll(snapshot, scroll_x, scroll_y) &&
+          (current_image_ || current_video_.texture)) {
         const auto view = usable_canvas(snapshot);
         camera_.pan_by_screen(scroll_x, scroll_y, media_width(), media_height(), view.w, view.h);
         redraw = true;

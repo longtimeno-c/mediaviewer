@@ -96,6 +96,9 @@ enum class mode : std::uint8_t {
   runner = 6,     // empty-window game; number keys do not change image zoom
   crop = 7,       // PR 10: crop / straighten on the canvas; arrows nudge the rect
   trim = 8,       // PR 13: trim armed on a clip; layers over video (key_router.cpp)
+  // Issue #361: a clip that is playing, or with the filmstrip hidden. Layers
+  // over video like trim; only ← → differ (they skip ±2 s the way Q / E do).
+  skim = 9,
   count
 };
 
@@ -112,8 +115,9 @@ inline constexpr mode_mask kGallery = 1 << 5;
 inline constexpr mode_mask kRunner = 1 << 6;
 inline constexpr mode_mask kCrop = 1 << 7;
 inline constexpr mode_mask kTrim = 1 << 8;
+inline constexpr mode_mask kSkim = 1 << 9;
 inline constexpr mode_mask kAllModes =
-    kBrowse | kVideo | kSlideshow | kIsland | kLoupe | kGallery | kRunner | kCrop | kTrim;
+    kBrowse | kVideo | kSlideshow | kIsland | kLoupe | kGallery | kRunner | kCrop | kTrim | kSkim;
 
 [[nodiscard]] constexpr mode_mask mask_of(mode m) noexcept {
   return static_cast<mode_mask>(1u << static_cast<unsigned>(m));
