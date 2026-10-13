@@ -133,7 +133,7 @@ TEST_CASE("the AI badge sits bottom-right, above the filmstrip, the transport an
   CHECK(r.y == 800 - 10 - 20);
   // Above the filmstrip, and above a clip's transport bar plus a gap.
   CHECK(ai_badge_rect(1000, 800, 112, 0, false, 96).y == 800 - 112 - 10 - 20);
-  CHECK(ai_badge_rect(1000, 800, 112, 0, true, 96).y == 800 - 112 - 10 - 52 - 8 - 20);
+  CHECK(ai_badge_rect(1000, 800, 112, 0, true, 96).y == 800 - 112 - 10 - mv::shell::chrome_transport_height_px(96) - 8 - 20);
   // Left of a right-hand pane.
   CHECK(ai_badge_rect(1000, 800, 0, 360, false, 96).x == 1000 - 360 - 16 - 44);
   // Scaled at 150 %, and never off the client's top-left.
