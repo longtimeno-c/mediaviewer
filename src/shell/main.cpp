@@ -53,6 +53,7 @@
 #include "mediaviewer/mediaviewer.h"
 #include "mediaviewer/mediaviewer_addon.h"
 #include "mediaviewer/mediaviewer_clip.h"
+#include "canvas/document_scroll.h"
 #include "canvas/refinement.h"
 #include "shell/adjust_pane.h"
 #include "shell/ai_badge.h"
@@ -66,6 +67,7 @@
 #include "shell/trim_state.h"
 #include "shell/transport_autohide.h"
 #include "shell/file_jobs.h"
+#include "shell/filmstrip_hint.h"
 #include "shell/gesture.h"
 #include "shell/key_router.h"
 #include "shell/keymap.h"
@@ -319,15 +321,12 @@ struct app_state {
   std::uint32_t page = 0;
   std::uint32_t page_of = UINT32_MAX;
   std::uint32_t page_count = 0;
-  // Document scrolling (docs/design/04 "Pages"): travel pushed past an edge
-  // (screen px, signed), the sub-pixel remainders, and the latch that lets one
-  // flick turn one page.
-  double overscroll = 0.0;
-  double scroll_rem_x = 0.0;
-  double scroll_rem_y = 0.0;
-  ULONGLONG last_scroll_tick = 0;
-  ULONGLONG page_turn_tick = 0;
-  bool page_turn_latched = false;
+  // Document scrolling (docs/design/04 "Scrolling a document"): the shared
+  // page-turn rule and its sub-pixel carry (canvas/document_scroll.h).
+  mv::canvas::document_scroller doc_scroll;
+  // The "Press T" filmstrip hint (shell/filmstrip_hint.h): learned once the
+  // user hid the strip over a document; persisted in settings.ini [hints].
+  bool strip_hint_learned = false;
   // Issue #212 (docs/design/16 "Touch and trackpad"): WM_GESTURE pinch and pan
   // on a touchscreen, and the touchpad's sideways swipe (WM_MOUSEHWHEEL).
   // Pinch -> wheel_total, pan -> scroll_px, swipe -> folder_step: no new
@@ -1989,6 +1988,7 @@ void schedule_rotation_write(app_state* app) noexcept {
 
 void adjust_item_changed(app_state* app);
 void adjust_colour_changed(app_state* app);
+void strip_hint_show(app_state* app);
 
 // The canvas is about to show the selected item (a select, a listing landing,
 // a reselect after a rewrite). The previous slot keeps its geometry for the
@@ -2044,6 +2044,8 @@ void edit_item_opened(app_state* app) {
   adjust_item_changed(app);
   // PR 29: an open workspace follows the item to a tab it offers.
   workspace_item_changed(app);
+  // A document arriving under the filmstrip: say how to scroll it.
+  strip_hint_show(app);
 }
 
 void start_rotation_write(app_state* app) {
@@ -2411,6 +2413,54 @@ void folder_select(app_state* app, std::uint32_t index) {
   }
 }
 
+// The "Press T" filmstrip hint (shell/filmstrip_hint.h, docs/design/16): what the
+// canvas shows that the strip changes the input for. A document: with the strip
+// up the wheel zooms, hidden it scrolls.
+mv::shell::strip_hint_subject strip_hint_subject_now(app_state* app) {
+  if (!app || !app->session || app->mode == open_mode::none || app->edit_path.empty()) {
+    return mv::shell::strip_hint_subject::none;
+  }
+  if (app->gallery_visible || app->editor.open) return mv::shell::strip_hint_subject::none;
+  if (mv::io::is_document_name(app->edit_path)) return mv::shell::strip_hint_subject::document;
+  return mv::shell::strip_hint_subject::none;
+}
+
+// The hint's text when it is due now, else empty.
+std::string_view strip_hint_due_text(app_state* app) {
+  const auto subject = strip_hint_subject_now(app);
+  if (!mv::shell::strip_hint_due(subject, app->chrome.filmstrip_visible(), app->strip_hint_learned)) return {};
+  return mv::shell::strip_hint_text(subject);
+}
+
+bool notice_showing(app_state* app, std::string_view utf8) {
+  if (!app || app->notice.empty() || ::GetTickCount64() >= app->notice_until) return false;
+  try {
+    return app->notice.find(wide_from_utf8(std::string(utf8))) != std::wstring::npos;
+  } catch (...) {
+    return false;
+  }
+}
+
+// Shows the hint in the notice line if it is due and not already there.
+void strip_hint_show(app_state* app) {
+  const auto text = strip_hint_due_text(app);
+  if (text.empty() || notice_showing(app, text)) return;
+  notice_show(app, std::string(text));
+}
+
+// T: hiding the strip over a subject teaches the hint, for good.
+void strip_hint_toggled(app_state* app) {
+  if (!app || app->strip_hint_learned) return;
+  const auto subject = strip_hint_subject_now(app);
+  if (!mv::shell::strip_hint_learned_by_toggle(subject, app->chrome.filmstrip_visible())) return;
+  app->strip_hint_learned = true;
+  mv::shell::save_strip_hint_learned();
+  if (notice_showing(app, mv::shell::strip_hint_text(subject))) {
+    app->notice_until = 0;
+    update_title(app);
+  }
+}
+
 // Ctrl+PageDown / PageUp: the next or previous page of the multi-page still
 // on screen (docs/plans/audio-and-documents.md §2.3). The count is what the
 // core reported for the image on screen; until it has, and on a single-page
@@ -2439,7 +2489,7 @@ bool turn_page(app_state* app, int delta, bool land = false) {
   app->page = static_cast<std::uint32_t>(want);
   ++app->input.page_land_seq;
   app->input.page_land = land ? (delta > 0 ? 1 : -1) : 0;
-  notice_show(app, "Page " + std::to_string(app->page + 1) + " of " + std::to_string(app->page_count));
+  notice_show(app, mv::shell::page_notice(app->page, app->page_count, strip_hint_due_text(app)));
   ++app->input.activity_seq;
   publish(app);
   return true;
@@ -2456,49 +2506,40 @@ bool document_scrolls(app_state* app) {
 
 // `dx` / `dy` in wheel units (120 a notch; a touchpad sends less), positive
 // moving the view right / down. A notch is a tenth of the canvas, as a
-// keyboard pan step is. A scroll held against the top or bottom edge for
-// kTurnPx turns the page: one per notch on a wheel, one per flick on a
-// touchpad (its inertia does not run on through the document).
+// keyboard pan step is, and glides there on the canvas spring; a precision
+// touchpad's deltas (and its momentum) move the view directly. Pushing past the
+// top or bottom edge turns the page at once (canvas/document_scroll.h).
 void scroll_document(app_state* app, int dx, int dy) {
-  const ULONGLONG now = ::GetTickCount64();
   const bool notched = dx % WHEEL_DELTA == 0 && dy % WHEEL_DELTA == 0;
-  if (notched ? now - app->page_turn_tick > 120 : now - app->last_scroll_tick > 250) {
-    app->page_turn_latched = false;
-  }
+  // A notch is a tenth of the canvas. A touchpad keeps the step the wheel
+  // units always had here (a tenth of the canvas per 120), so a two-finger
+  // swipe covers the same ground as before, only without the spring.
   const double step = std::max(1.0, 0.1 * static_cast<double>(app->input.height)) / WHEEL_DELTA;
-  const double px = dx * step;
-  double py = dy * step;
-  const double turn_px = 60.0 * std::max(1.0f, app->input.dpi_scale);
-  const unsigned edges = app->lab.scroll_edges();
-  const bool at_edge = std::abs(py) >= std::abs(px) && py != 0.0 &&
-                       (py > 0 ? (edges & mv::canvas::camera::kEdgeBottom) != 0
-                               : (edges & mv::canvas::camera::kEdgeTop) != 0);
-  if (at_edge) {
-    if ((app->overscroll > 0) != (py > 0) || now - app->last_scroll_tick > 300) app->overscroll = 0;
-    app->overscroll += py;
-    if (!app->page_turn_latched && std::abs(app->overscroll) >= turn_px) {
-      const int delta = app->overscroll > 0 ? 1 : -1;
-      app->overscroll = 0;
-      const std::uint32_t before = app->page;
-      if (turn_page(app, delta, /*land=*/true) && app->page != before) {
-        app->page_turn_latched = true;
-        app->page_turn_tick = now;
-      }
+  // Read the ack before the edges: the lab stores them the other way round.
+  const std::uint32_t ack = app->lab.page_land_ack();
+  mv::canvas::document_scroll_input in;
+  in.dx = dx * step;
+  in.dy = dy * step;
+  in.precise = !notched;
+  in.now = static_cast<double>(::GetTickCount64()) / 1000.0;
+  in.edges = app->lab.scroll_edges();
+  in.canvas_h = static_cast<float>(app->input.height);
+  in.land_ack = ack;
+  const auto out = app->doc_scroll.feed(in);
+  if (out.turn != 0) {
+    const std::uint32_t before = app->page;
+    if (turn_page(app, out.turn, /*land=*/true) && app->page != before) {
+      app->doc_scroll.turned(app->input.page_land_seq, in.now);
     }
-    py = 0;
-  } else {
-    app->overscroll = 0;
   }
-  app->last_scroll_tick = now;
-  app->scroll_rem_x += px;
-  app->scroll_rem_y += py;
-  const auto ix = static_cast<std::int64_t>(std::trunc(app->scroll_rem_x));
-  const auto iy = static_cast<std::int64_t>(std::trunc(app->scroll_rem_y));
-  app->scroll_rem_x -= static_cast<double>(ix);
-  app->scroll_rem_y -= static_cast<double>(iy);
-  if (ix == 0 && iy == 0) return;
-  app->input.scroll_px_x += ix;
-  app->input.scroll_px_y += iy;
+  if (out.px_x == 0 && out.px_y == 0) return;
+  if (out.direct) {
+    app->input.scroll_direct_px_x += out.px_x;
+    app->input.scroll_direct_px_y += out.px_y;
+  } else {
+    app->input.scroll_px_x += out.px_x;
+    app->input.scroll_px_y += out.px_y;
+  }
   ++app->input.activity_seq;
   publish(app);
 }
@@ -3636,6 +3677,7 @@ void toggle_filmstrip_setting(app_state* app) {
   // T toggles the strip for the mode you are in, and that is the preference
   // that gets written: turning it off while browsing a folder should not also
   // turn it off for the single images you open from Explorer.
+  strip_hint_toggled(app);
   bool& flag = app->mode == open_mode::image ? app->settings.filmstrip_for_image
                                              : app->settings.filmstrip_for_folder;
   flag = !flag;
@@ -8049,6 +8091,8 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       ++app->input.activity_seq;
       publish(app);
       transport_activity(app);
+      // The wheel zoomed a document because the strip is up: say how to scroll.
+      if ((GET_KEYSTATE_WPARAM(wparam) & MK_CONTROL) == 0) strip_hint_show(app);
       return 0;
     }
 
@@ -8535,6 +8579,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   mv::shell::register_settings_ui_thread();
   (void)mv::shell::app_settings().start();
   app.settings = mv::shell::load_view_settings();
+  app.strip_hint_learned = mv::shell::load_strip_hint_learned();
   app.input.sticky_zoom = app.settings.sticky_zoom;
   app.input.background = app.settings.background;
   app.destinations = mv::shell::load_destinations();

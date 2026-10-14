@@ -112,6 +112,14 @@ class present_lab {
     return scroll_edges_.load(std::memory_order_relaxed);
   }
 
+  // [any-thread][no-block] The page_land_seq whose page the render thread has
+  // put on screen (camera::turn_page applied). Stored after scroll_edges(), so
+  // a host that sees its turn acknowledged reads the new page's edges
+  // (canvas/document_scroll.h waits on this before turning again).
+  [[nodiscard]] std::uint32_t page_land_ack() const noexcept {
+    return page_land_ack_.load(std::memory_order_acquire);
+  }
+
   // [any-thread][no-block] True while a still (not a clip) is on the canvas.
   [[nodiscard]] bool showing_still() const noexcept {
     return showing_still_.load(std::memory_order_relaxed);
@@ -413,6 +421,7 @@ class present_lab {
   std::atomic<bool> finished_{false};
   std::atomic<bool> view_fitted_{true};
   std::atomic<unsigned> scroll_edges_{3};
+  std::atomic<std::uint32_t> page_land_ack_{0};
   std::uint32_t seen_page_land_seq_ = 0;
   std::atomic<bool> showing_still_{false};
   std::atomic<std::uint8_t> anim_state_{0};

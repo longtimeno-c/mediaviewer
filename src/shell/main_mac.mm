@@ -43,6 +43,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "canvas/document_scroll.h"
 #include "core/job_system.h"
 #include "core/json.h"
 #include "core/trace.h"
@@ -58,6 +59,7 @@
 #include "io/verified_copy.h"
 #include "shell/addons_mac.h"
 #include "shell/fcp_mac.h"
+#include "shell/filmstrip_hint.h"
 #if defined(MV_WITH_SEARCH_AGENT)
 #include "nle/mac/agent_mac.h"
 #endif
@@ -475,6 +477,12 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 // DOCX with the filmstrip hidden pans the page and turns it past an edge.
 - (BOOL)documentScrolls;
 - (void)scrollDocument:(NSEvent*)event;
+// The one "Press T" filmstrip hint (shell/filmstrip_hint.h): shown in the notice
+// line while it is due; learned when T hides the strip over its subject.
+- (void)stripHintShow;
+- (void)stripHintToggled;
+- (mv::shell::strip_hint_subject)stripHintSubjectNow;
+- (std::string_view)stripHintDueText;
 
 // Marks, copy/move, Trash (docs/design/16-commands.md "Marks, copy, move"; folded
 // into PR 18 from Windows PR 6, docs/design/12 2026-09-17).
@@ -2091,6 +2099,8 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   [self publish];
   if (self.lab) self.lab->wake();
   if (self.app) [self.app transportActivity];
+  // The wheel zoomed a document because the strip is up: say how to scroll.
+  if ((event.modifierFlags & NSEventModifierFlagCommand) == 0 && self.app) [self.app stripHintShow];
 }
 // A trackpad pinch zooms toward the pointer, as the wheel does: one wheel notch
 // is a 15 % step (canvas/camera.cpp kWheelFactor). shell/gesture.h carries the
@@ -2357,14 +2367,11 @@ static void MvAdoptNewDefaultViewerTypes() {
   // §2.3): 0 for the file itself; a new stop starts at 0.
   std::uint32_t _shownPage;
   std::uint32_t _shownPageCount;  // last count the lab reported for this stop; 0 unknown
-  // Document scrolling: travel pushed past an edge (screen px, signed), the
-  // sub-pixel remainders, and the latch that lets one gesture turn one page.
-  double _overscroll;
-  double _scrollRemX;
-  double _scrollRemY;
-  double _lastScrollTime;
-  double _pageTurnTime;
-  BOOL _pageTurnLatched;
+  // Document scrolling (docs/design/04 "Scrolling a document"): the shared
+  // page-turn rule and its sub-pixel carry (canvas/document_scroll.h).
+  mv::canvas::document_scroller _docScroll;
+  // The "Press T" filmstrip hint is learned (NSUserDefaults mv.hint.filmstripT).
+  BOOL _stripHintLearned;
   // Milestone H: the moment the shown clip was opened at (-1 none). The same
   // result selected again keeps the clip where it is; another moment of it
   // reopens. kShownMomentStale after a new search, so its moment opens afresh.
@@ -4473,6 +4480,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   // the next folder by a key that looked like it did nothing (Windows'
   // toggle_filmstrip_setting makes the same call).
   if (_items.empty()) return;
+  [self stripHintToggled];
   [self setFilmstripVisible:!_filmstripVisible];
 }
 - (void)setFilmstripVisible:(BOOL)visible {
@@ -6478,6 +6486,8 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   [self adjustItemChanged:mv::shell::is_video_name(entry.name_utf8) ? 0 : item];
   // PR 29: an open workspace follows the item to a tab it offers.
   if (mv::shell::follow_subject(_ws, [self editSubject])) [self syncWorkspace];
+  // A document arriving under the filmstrip: say how to scroll it.
+  [self stripHintShow];
 }
 
 - (void)publishEdit {
@@ -10358,6 +10368,7 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   _viewFlags = [d objectForKey:kDefaultsViewFlags] != nil
                    ? static_cast<int32_t>([d integerForKey:kDefaultsViewFlags])
                    : mv::shell::view_settings{}.flags();
+  _stripHintLearned = [d boolForKey:@"mv.hint.filmstripT"];
   mv::shell::reset_live_bindings();
   for (NSString* row in [d arrayForKey:kDefaultsKeys]) {
     int idx = 0, k = 0, m = 0;
@@ -10578,7 +10589,7 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   if (!_items.empty() && _index.current() < _items.size()) {
     [self editItemOpened:_items[_index.current()] item:_shownItem];
   }
-  [self noticeShow:"Page " + std::to_string(_shownPage + 1) + " of " + std::to_string(count)];
+  [self noticeShow:mv::shell::page_notice(_shownPage, count, [self stripHintDueText])];
   [self pokeSnapshot];
   return YES;
 }
@@ -10589,55 +10600,69 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   if (mv::shell::photos::is_key(_shownPath)) return NO;
   return mv::io::is_document_name(_shownPath) ? YES : NO;
 }
-// Pans the page in screen pixels; a scroll held against the top or bottom edge
-// for kTurnPx turns to the previous or next page, landing at its bottom or top
-// at the same zoom. A trackpad gesture turns at most one page (its momentum
-// does not run on through the document); a mouse wheel one per notch.
+// A wheel notch is a tenth of the canvas and glides there on the canvas spring;
+// a trackpad's deltas (and its momentum) move the view directly. Pushing past
+// the top or bottom edge turns the page at once, landing at its top or bottom
+// at the same zoom (canvas/document_scroll.h, shared with Windows).
 - (void)scrollDocument:(NSEvent*)event {
   const double scale = self.window.backingScaleFactor > 0 ? self.window.backingScaleFactor : 1.0;
   const BOOL precise = event.hasPreciseScrollingDeltas;
-  // A wheel notch is a tenth of the canvas, as a keyboard pan step is.
   const double step = precise ? scale : std::max(1.0, 0.1 * static_cast<double>(_snap.height));
-  const double dx = -event.scrollingDeltaX * step;
-  double dy = -event.scrollingDeltaY * step;
-  const double now = CACurrentMediaTime();
-  // A new trackpad gesture unlatches; its momentum never does. Scrolls outside
-  // any gesture (a wheel, a synthesized scroll) unlatch after a short pause.
-  if (event.phase == NSEventPhaseBegan || event.phase == NSEventPhaseMayBegin) _pageTurnLatched = NO;
-  const bool in_gesture = event.phase != NSEventPhaseNone || event.momentumPhase != NSEventPhaseNone;
-  if (!in_gesture && now - _pageTurnTime > 0.12) _pageTurnLatched = NO;
-  const double kTurnPx = 60.0 * scale;
-  const unsigned edges = _lab.scroll_edges();
-  const bool vertical = std::abs(dy) >= std::abs(dx);
-  const bool at_edge = vertical && dy != 0.0 &&
-                       (dy > 0 ? (edges & mv::canvas::camera::kEdgeBottom) != 0
-                               : (edges & mv::canvas::camera::kEdgeTop) != 0);
-  if (at_edge) {
-    if ((_overscroll > 0) != (dy > 0) || now - _lastScrollTime > 0.3) _overscroll = 0;
-    _overscroll += dy;
-    if (!_pageTurnLatched && std::abs(_overscroll) >= kTurnPx) {
-      const int delta = _overscroll > 0 ? 1 : -1;
-      _overscroll = 0;
-      if ([self turnPage:delta land:YES]) {
-        _pageTurnLatched = YES;
-        _pageTurnTime = now;
-      }
-    }
-    dy = 0;
-  } else {
-    _overscroll = 0;
+  // Read the ack before the edges: the lab stores them the other way round.
+  const std::uint32_t ack = _lab.page_land_ack();
+  mv::canvas::document_scroll_input in;
+  in.dx = -event.scrollingDeltaX * step;
+  in.dy = -event.scrollingDeltaY * step;
+  in.precise = precise == YES;
+  in.now = CACurrentMediaTime();
+  in.edges = _lab.scroll_edges();
+  in.canvas_h = static_cast<float>(_snap.height);
+  in.land_ack = ack;
+  const auto out = _docScroll.feed(in);
+  if (out.turn != 0 && [self turnPage:out.turn land:YES]) {
+    _docScroll.turned(_snap.page_land_seq, in.now);
   }
-  _lastScrollTime = now;
-  _scrollRemX += dx;
-  _scrollRemY += dy;
-  const auto px = static_cast<std::int64_t>(std::trunc(_scrollRemX));
-  const auto py = static_cast<std::int64_t>(std::trunc(_scrollRemY));
-  _scrollRemX -= static_cast<double>(px);
-  _scrollRemY -= static_cast<double>(py);
-  if (px == 0 && py == 0) return;
-  _snap.scroll_px_x += px;
-  _snap.scroll_px_y += py;
+  if (out.px_x == 0 && out.px_y == 0) return;
+  if (out.direct) {
+    _snap.scroll_direct_px_x += out.px_x;
+    _snap.scroll_direct_px_y += out.px_y;
+  } else {
+    _snap.scroll_px_x += out.px_x;
+    _snap.scroll_px_y += out.px_y;
+  }
   [self pokeSnapshot];
+}
+
+// The "Press T" filmstrip hint (shell/filmstrip_hint.h, docs/design/16), the
+// Windows host's strip_hint_* twins.
+- (mv::shell::strip_hint_subject)stripHintSubjectNow {
+  if (_items.empty() || _shownItem == 0 || _shownPath.empty()) return mv::shell::strip_hint_subject::none;
+  if (_galleryVisible || _editorOpen || mv::shell::photos::is_key(_shownPath)) {
+    return mv::shell::strip_hint_subject::none;
+  }
+  if (mv::io::is_document_name(_shownPath)) return mv::shell::strip_hint_subject::document;
+  return mv::shell::strip_hint_subject::none;
+}
+- (std::string_view)stripHintDueText {
+  const auto subject = [self stripHintSubjectNow];
+  if (!mv::shell::strip_hint_due(subject, [self filmstripVisible] == YES, _stripHintLearned == YES)) return {};
+  return mv::shell::strip_hint_text(subject);
+}
+- (void)stripHintShow {
+  const auto text = [self stripHintDueText];
+  if (text.empty() || _noticeText.find(text) != std::string::npos) return;
+  [self noticeShow:std::string(text)];
+}
+- (void)stripHintToggled {
+  if (_stripHintLearned) return;
+  const auto subject = [self stripHintSubjectNow];
+  if (!mv::shell::strip_hint_learned_by_toggle(subject, [self filmstripVisible] == YES)) return;
+  _stripHintLearned = YES;
+  [NSUserDefaults.standardUserDefaults setBool:YES forKey:@"mv.hint.filmstripT"];
+  if (_noticeText.find(mv::shell::strip_hint_text(subject)) != std::string::npos) {
+    [_noticeTimer invalidate];
+    [self noticeClear];
+  }
 }
 
 - (void)navigateSkip:(std::ptrdiff_t)delta {

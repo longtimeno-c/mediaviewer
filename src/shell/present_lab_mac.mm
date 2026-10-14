@@ -1544,6 +1544,8 @@ void present_lab_mac::render_thread_main() noexcept {
         // Consumed with or without a picture, so no scroll banks up for the next one.
         float scroll_x = 0.0f, scroll_y = 0.0f;
         const bool scrolled = input_cursor_.consume_scroll(snapshot, scroll_x, scroll_y);
+        float direct_x = 0.0f, direct_y = 0.0f;
+        const bool scrolled_direct = input_cursor_.consume_scroll_direct(snapshot, direct_x, direct_y);
         unsigned edges = canvas::camera::kEdgeTop | canvas::camera::kEdgeBottom;
 
         if (float image_w = 0, image_h = 0; picture_size(&image_w, &image_h)) {
@@ -1614,9 +1616,15 @@ void present_lab_mac::render_thread_main() noexcept {
             camera_.pan_by_screen(scroll_x, scroll_y, image_w, image_h, window_w, window_h);
             redraw = true;
           }
+          // A trackpad's: the view follows at once (canvas/document_scroll.h).
+          if (scrolled_direct) {
+            camera_.scroll_direct(direct_x, direct_y, image_w, image_h, window_w, window_h);
+            redraw = true;
+          }
           edges = camera_.vertical_edges(image_h, window_h);
         }
         scroll_edges_.store(edges, std::memory_order_relaxed);
+        page_land_ack_.store(seen_page_land_seq_, std::memory_order_release);
         // The UI thread reads this to let ↑ ↓ fall through at fit. Lock-free.
         view_fitted_.store(!picture_framed || camera_.fit_mode(), std::memory_order_relaxed);
         if (redraw) last_input_time_ = elapsed;
