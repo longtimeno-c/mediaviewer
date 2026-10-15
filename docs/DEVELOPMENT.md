@@ -1571,8 +1571,21 @@ Three Windows-only fixes; the Mac is unchanged.
   (`dotnet msbuild -t:Compile`, warnings as errors); no banned WinUI control. Not run on Windows:
   the native change (`main.cpp`) compiles only in CI, and the verify line, the placement of the
   notice island (100 % / 200 %, resize, under Settings) and the PR 1 gate are owed to a Windows
-  machine. The filmstrip hint (`IslandHost.HintNotice.cs`) is still a windowed `Popup` of the bar
-  and has not been seen on Windows either.
+  machine.
+
+### Windows: the "Press T" filmstrip hint shows (#446, 2026-10-15)
+
+The hint card never appeared on Windows. It was the last windowed `Popup` in the chrome, built like
+the resume notice above, and is now an island of its own in the same corner
+(`IslandHost.HintNotice.cs`), made on the first show and parked, not disposed, when it fades. Native
+also asks again when the filmstrip comes up (`main.cpp`, the layout sync): on Windows the strip
+state is what is shown, so a clip or document that opened before its folder had a strip was never
+due. The Mac was already correct; a Mac that has learned the hint (`mv.hint.filmstripT`) shows
+nothing, by design.
+
+- **Checked:** the C# compiles on the Mac (warnings as errors). Not run on Windows: the native line
+  compiles only in CI, and the card's placement, stacking over the resume notice, "Got it" keeping
+  the keyboard on the canvas and the PR 1 gate are owed to a Windows machine.
 
 ### The AI badge on the canvas (#345, docs/plans/metadata-search-and-place.md slice 5, 2026-10-12)
 

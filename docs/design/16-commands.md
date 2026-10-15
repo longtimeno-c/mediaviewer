@@ -239,8 +239,9 @@ to hide the filmstrip and scroll" (the wheel zooms until the strip is hidden); o
 to hide the filmstrip and skip 2 s with ← →" (the arrows walk the folder until it is hidden, issue
 #416). It is a small card in the window's bottom-right corner, above the filmstrip and above the
 resume-indexing notice when that is up, in that notice's look (Windows `IslandHost.HintNotice.cs`,
-entry `ShowHint`; Mac `HintNoticeView.swift`); it was the title's status line, which nobody saw. It
-shows when such a document or clip comes on screen, when the wheel zooms a document (at most once a
+entry `ShowHint`, an island of its own like the resume notice since #446; Mac `HintNoticeView.swift`);
+it was the title's status line, which nobody saw. It shows when such a document or clip comes on
+screen, when the filmstrip comes up under one, when the wheel zooms a document (at most once a
 second) and on a page turn, fades after eight seconds, and goes when nothing it covers is on screen.
 It takes no focus. Once `T` has hidden the strip over either subject, or the card's "Got it" was
 clicked, it never shows again (Windows `settings.ini` `[hints] filmstrip_t`, Mac

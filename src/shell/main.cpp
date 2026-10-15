@@ -8093,6 +8093,10 @@ void apply_view_state(app_state* app) noexcept {
                                         : false);
   if (want_filmstrip != app->chrome.filmstrip_visible()) {
     app->chrome.show_filmstrip(want_filmstrip, width, height, dpi);
+    // The strip here is the shown state, not the wish (the Mac's
+    // -filmstripVisible is the wish): a clip or document that opened before
+    // its folder had a strip was not due then, so ask again now.
+    strip_hint_show(app);
   }
   const bool want_gallery = app->gallery_visible && !settings;
   if (want_gallery != app->chrome.gallery_visible()) {

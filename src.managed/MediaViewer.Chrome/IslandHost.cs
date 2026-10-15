@@ -612,6 +612,7 @@ public static partial class IslandHost
         {
             UnhookFocus();
             DropResumeNotice();  // its island is a child of this window
+            DropHintNotice();  // so is the hint card's
             if (_source is not null) _source.TakeFocusRequested -= OnTakeFocusRequested;
             DisposeSource(ref _source);
             _onCommand = null;
