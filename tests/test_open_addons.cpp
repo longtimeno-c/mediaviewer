@@ -4,6 +4,7 @@
 // and every way of getting it wrong is refused with its reason).
 #include "catch_compat.h"
 
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -461,7 +462,14 @@ TEST_CASE("an installed add-on is checked every time it is listed", "[open-addon
   SECTION("a changed file") {
     std::string text = good_theme();
     text[text.find("#e0793a")] = '!';
-    write_text(addon / "1.2.0" / "themes" / "dusk.json", text);
+    const fs::path dusk = addon / "1.2.0" / "themes" / "dusk.json";
+    const auto installed_at = fs::last_write_time(dusk);
+    write_text(dusk, text);
+    // Same size: only the time tells the verified cache (manifest.cpp,
+    // verify_files) it changed, and a rewrite inside one tick of the
+    // Windows clock kept it, so the cache answered "verified" and the theme
+    // check said invalid_theme. A real edit lands later than its install.
+    fs::last_write_time(dusk, installed_at + std::chrono::seconds(2));
     const auto listed = store.list();
     REQUIRE(listed.size() == 1);
     REQUIRE(listed[0].state == install_state::invalid);
