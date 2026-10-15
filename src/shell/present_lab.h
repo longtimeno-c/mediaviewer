@@ -487,6 +487,7 @@ class present_lab {
   std::uint32_t seen_zoom_out_seq_ = 0;
   std::uint32_t seen_zoom_preset_seq_ = 0;
   std::uint32_t seen_fill_seq_ = 0;
+  std::uint32_t seen_af_focus_seq_ = 0;  // issue #209, Shift+Z
   std::uint32_t seen_discard_seq_ = 0;
   double animation_phase_ = 0.0;
   double last_input_time_ = -1.0;  // < 0: no input yet, do not fake a 500 ms tail

@@ -525,6 +525,7 @@ A one-pixel grid appears at 400 % and above.
 | `I` | metadata pane: summary card, searchable tag tree, and for clips the per-stream inspector (PR 9). Focuses the pane; `Esc` returns to the photo, a second `Esc` closes it |
 | `Ctrl+Shift+E` | folder tree, rooted at the open folder (PR 9). Focuses it: arrows walk, Right / Left open and close a folder, `Enter` opens it, `Esc` returns to the photo. It follows the folder as subfolders come and go |
 | `O` / `Shift+O` / `Shift+I` | info overlay with exposure lines / AF points / eyedropper (PR 9) |
+| `Shift+Z` | zoom to the AF point: 100 % centred on the in-focus point, for a focus check (issue #209) |
 | `Ctrl+C` | copy the eyedropper colour if it is on, otherwise the marked (or current) file(s) |
 
 The title bar shows the current file, its position in the folder, its size and
@@ -914,6 +915,9 @@ dotnet src.managed\MediaViewer.AbiSmokeTest\bin\Release\net8.0-windows\MediaView
 dotnet publish src.managed\MediaViewer.Chrome\MediaViewer.Chrome.csproj -c Release -r win-x64 --no-self-contained
 
 # Milestone G: the Import add-on's suite (built with the core, both platforms)
+# Its verified copies flush durably and read back uncached in scratch folders
+# under %TEMP%, so they run at the speed of that disk; CI points TMP/TEMP at
+# the runner's local disk (runner.temp), not C:.
 ctest --test-dir build -C Release -R import_ --output-on-failure
 # PR 54 find duplicates: time a first scan and a cached rescan (synthetic tree,
 # or MV_DUP_BENCH_DIR=<folder>, read only; the hash cache is a scratch import.db)
@@ -959,11 +963,14 @@ ctest --test-dir build -C Release -R "clip|trim" --output-on-failure
 
 # PR 7 broken-file corpus: every seed in tests/data/seeds truncated, stomped,
 # bit-flipped and given absurd dimensions, plus tests/data/broken, through every
-# decode entry point. Fails on a crash, an escaped exception, a call over 5 s,
-# or runaway memory. Part of plain ctest; this runs just that suite.
+# decode entry point. Fails on a crash, an escaped exception, a call over 5 s
+# (60 s for each family's first-use warm-up), or runaway memory. Part of plain
+# ctest; this runs just that suite.
 ctest --test-dir build -C Release -L broken --output-on-failure
 $env:MV_BROKEN_FULL = "1"          # exhaustive sweep (nightly CI)
 $env:MV_BROKEN_DUMP = "broken-dump" # write each failing input here
+$env:MV_BROKEN_TIMEOUT_MS = "5000"  # per-call budget (60000 in Debug/ASan)
+$env:MV_BROKEN_FIRST_USE_MS = "60000" # each family's warm-up call
 # seeds are synthetic and committed; regenerate with (needs Pillow, pillow-heif):
 python tools\testmedia\make-seeds.py
 

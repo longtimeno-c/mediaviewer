@@ -323,6 +323,9 @@ struct app_state {
   // path; a relist of the same file keeps it). Answered by meta.provenance.
   mv::shell::ai_badge ai_badge;
   std::string ai_badge_path;
+  // Issue #209: Shift+Z waits for the item's record (one read on the pool, or
+  // a cache hit) and fires the zoom when it is adopted. Cleared on navigation.
+  bool af_focus_pending = false;
   // PR 12 (docs/design/06 "Writing", docs/design/16 Rate). Rating, comment and revert are
   // queued here and written on `jobs`: a plain JPEG in place, everything else
   // in an XMP sidecar. `meta_written` is the paths written this session, the
@@ -1251,7 +1254,25 @@ int right_pane_px(int client_width, std::uint32_t dpi) noexcept;
 // ---- PR 9: metadata for the overlays ---------------------------------------
 
 bool metadata_wanted(const app_state* app) noexcept {
-  return app->input.info_overlay || app->input.af_points || app->meta_pane_visible;
+  return app->input.info_overlay || app->input.af_points || app->meta_pane_visible ||
+         app->af_focus_pending;
+}
+
+void notice_show(app_state* app, const std::string& utf8) noexcept;
+
+// Issue #209 (Shift+Z): the record is here, so the overlay quads published
+// with it are the item's. The render thread picks the point and moves the
+// camera; this only says when, or why there is nothing to zoom to.
+void af_focus_fire(app_state* app) noexcept {
+  app->af_focus_pending = false;
+  if (app->input.meta.af_count == 0) {
+    notice_show(app, "No AF point recorded in this file");
+    return;
+  }
+  app->zoom_intent_tick = ::GetTickCount64();
+  ++app->input.af_focus_seq;
+  ++app->input.activity_seq;
+  publish(app);
 }
 
 // The selected item as the store keys it: path + mtime + size, from the
@@ -1300,6 +1321,7 @@ void adopt_metadata(app_state* app, std::shared_ptr<const mv::meta::metadata> re
   publish(app);
   push_meta_pane(app);
   ai_badge_refresh(app);  // #345: the full record is the badge's best answer
+  if (app->af_focus_pending) af_focus_fire(app);
 }
 
 // A cache hit is adopted at once; a miss submits one read on the pool and its
@@ -1330,6 +1352,7 @@ void metadata_ready(app_state* app) {
 void metadata_selection_changed(app_state* app) {
   if (!app->window) return;
   ::KillTimer(app->window, kMetaTimerId);
+  app->af_focus_pending = false;  // Shift+Z was for the item just left
   if (app->meta_record) {
     app->meta_record.reset();
     app->input.meta = mv::shell::meta_overlay{};
@@ -7076,6 +7099,17 @@ bool run_canvas_command(app_state* app, mv::shell::command_id command) noexcept 
       app->input.af_points = !app->input.af_points;
       request_metadata_now(app);
       return set_level(app);
+    // Issue #209: 100 % on the AF point. The quads come from the record the
+    // store holds (or one read on the pool); the camera moves on the render
+    // thread. Nothing here reads the file.
+    case zoom_af_point:
+      if (app->meta_record) {
+        af_focus_fire(app);
+      } else {
+        app->af_focus_pending = true;
+        request_metadata_now(app);
+      }
+      return true;
     case eyedropper:
       app->input.eyedropper = !app->input.eyedropper;
       return set_level(app);

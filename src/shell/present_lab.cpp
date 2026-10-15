@@ -4,6 +4,7 @@
 #include "shell/video_report.h"
 #include "shell/dino_draw.h"
 #include "shell/error_screen.h"
+#include "shell/af_focus.h"
 #include "shell/home_ground.h"
 #include "shell/loupe.h"
 #include "shell/welcome_screen.h"
@@ -966,6 +967,24 @@ void present_lab::render_thread_main() noexcept {
         seen_eye_x_ = snapshot.mouse_x;
         seen_eye_y_ = snapshot.mouse_y;
         redraw = true;
+      }
+    }
+    if (snapshot.af_focus_seq != seen_af_focus_seq_) {
+      // Issue #209 (Shift+Z): 100 % centred on the AF point, carried through
+      // the edit map so a turned or cropped still lands on the same pixels.
+      // Camera state only; the refinement the zoom asks for is the usual one.
+      seen_af_focus_seq_ = snapshot.af_focus_seq;
+      if (current_image_ && !current_video_.texture) {
+        const edit::placement placed = place_image(*current_image_);
+        const auto picked = pick_af_focus(snapshot.meta);
+        const auto out = picked ? af_focus_in_output(*picked, placed.map) : std::nullopt;
+        if (out) {
+          const auto view = usable_canvas(snapshot);
+          const float pw = static_cast<float>(placed.cropped.w);
+          const float ph = static_cast<float>(placed.cropped.h);
+          camera_.zoom_to(1.0f, out->u * pw, out->v * ph, pw, ph, view.w, view.h);
+          redraw = true;
+        }
       }
     }
     if (snapshot.fill_seq != seen_fill_seq_) {
