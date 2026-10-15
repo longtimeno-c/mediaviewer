@@ -420,8 +420,10 @@ jobs:
       - name: Unit tests
         # The suite under ASan passed 12 of 15 minutes on #121 alone, and the
         # broken corpus's PDF and DOCX sweeps take minutes each there; 15 stays
-        # the budget for the other legs (a hang still fails them fast).
-        timeout-minutes: ${{ matrix.toolchain == 'msvc-asan' && 30 || 15 }}
+        # the budget for the Release legs (a hang still fails them fast). The
+        # msvc Debug leg outgrew 15 by 2026-10-15 (1305 tests, ~14 min before
+        # the PDF sweep's ~160 s; no test hung), so Debug gets 25.
+        timeout-minutes: ${{ matrix.toolchain == 'msvc-asan' && 30 || matrix.config == 'Debug' && 25 || 15 }}
         env:
           MV_BROKEN_DUMP: ${{ github.workspace }}/broken-dump
           # A missing clip or sample FAILS here instead of skipping
