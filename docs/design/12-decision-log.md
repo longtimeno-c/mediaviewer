@@ -1592,6 +1592,23 @@ marks do not line up with the panes' (own seed, own rect, own clock).
 
 ---
 
+## Video at 4K on Windows
+
+**One decode thread on D3D11VA, and a 1 ms timer while a clip plays (2026-10-06).** A 4K 30 fps
+HEVC clip showed ~24 fps on Windows (screen comparison, worst gap 367 ms) while the same clip
+plays at 29.7 decoded frames/s on the Mac. `thread_count = 0` had been set on the claim that
+it "is ignored on the hardware path"; FFmpeg runs frame threads around a D3D11VA hwaccel too, so
+a 16-thread CPU got ~15 frames of start-up latency and contended for the device lock. The
+pipeline's short waits (`reserve_slot`, the demuxer's full queue, FFmpeg's `Sleep(2)` on
+`E_PENDING`) each lasted a 15.6 ms Windows tick. Now: one thread on D3D11VA (VideoToolbox keeps
+auto), and `timeBeginPeriod(1)` held only while a clip is playing, so a still or a paused clip
+keeps the default tick. `--av-soak` reports `decoded`, `stale` and `decoder` so decode rate is
+told apart from selector drops. Measured 2026-10-15 on the RTX 4070 / 5700X3D desktop (18 s
+`--av-soak`, base/new alternated ×3): base was already at rate here (539 presented, 2 dropped),
+new presents 540 with 1 dropped and 545 decoded on `d3d11va`, and the worst poll gap falls from
+~32.7 ms to ~18.6 ms (A/V error p99 ~16–26 ms → ~2 ms on two of three runs). The ~24 fps of the
+screen comparison did not reproduce on this machine; the PR 1 gate and idle are unchanged.
+
 ## Not built
 
 - Voice query add-on (PRs 27–28): no voice add-on or `search_query` host entry exists.

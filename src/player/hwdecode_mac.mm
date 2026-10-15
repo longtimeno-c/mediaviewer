@@ -207,4 +207,6 @@ status create_texture_from_planes(gpu_device_ptr device, std::uint32_t width, st
   return status::ok;
 }
 
+void hold_playback_timer(bool) noexcept {}  // Darwin sleeps are already precise.
+
 }  // namespace mv::player
