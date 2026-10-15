@@ -1451,7 +1451,11 @@ pipeline's short waits (`reserve_slot`, the demuxer's full queue, FFmpeg's `Slee
 `E_PENDING`) each lasted a 15.6 ms Windows tick. Now: one thread on D3D11VA (VideoToolbox keeps
 auto), and `timeBeginPeriod(1)` held only while a clip is playing, so a still or a paused clip
 keeps the default tick. `--av-soak` reports `decoded`, `stale` and `decoder` so decode rate is
-told apart from selector drops. Windows before/after numbers are owed from the 4070 desktop.
+told apart from selector drops. Measured 2026-10-15 on the RTX 4070 / 5700X3D desktop (18 s
+`--av-soak`, base/new alternated ×3): base was already at rate here (539 presented, 2 dropped),
+new presents 540 with 1 dropped and 545 decoded on `d3d11va`, and the worst poll gap falls from
+~32.7 ms to ~18.6 ms (A/V error p99 ~16–26 ms → ~2 ms on two of three runs). The ~24 fps of the
+screen comparison did not reproduce on this machine; the PR 1 gate and idle are unchanged.
 
 ## Not built
 
