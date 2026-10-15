@@ -193,9 +193,13 @@ class fake_faces final : public mv::ai::face_analyzer {
 
 // A clip named "*_rgb.mp4": red for 3 s, green for 3 s, blue for 3 s, one
 // keyframe a second. "*_slow*" sleeps per frame so a test can stop mid-clip.
+// "anna3s*" shows Anna's face on the frame at 3 s alone (#407). Frames closer
+// than `min_gap_ms` to the last one given are skipped, as the real sampler's
+// minimum gap does (the People-only grid's 2 s).
 class fake_sampler final : public mv::addon::video_sampler {
  public:
-  fake_sampler(std::string name, std::int64_t start) : name_(std::move(name)), t_(start) {
+  fake_sampler(std::string name, std::int64_t start, std::uint32_t min_gap_ms = 0)
+      : name_(std::move(name)), t_(start), min_gap_(min_gap_ms) {
     facts_.duration_ms = 9000;
     facts_.width = 64;
     facts_.height = 36;
@@ -210,8 +214,15 @@ class fake_sampler final : public mv::addon::video_sampler {
       return f;
     }
     if (name_.find("slow") != std::string::npos) std::this_thread::sleep_for(std::chrono::milliseconds(60));
+    while (last_ >= 0 && t_ - last_ < min_gap_ && t_ < facts_.duration_ms) t_ += 1000;
+    if (t_ >= facts_.duration_ms) {
+      f.end = true;
+      return f;
+    }
+    last_ = t_;
     const rgb c = t_ < 3000 ? rgb{220, 20, 20} : (t_ < 6000 ? rgb{20, 220, 20} : rgb{20, 20, 220});
     f.image = solid(c, 64, 36);
+    if (name_.rfind("anna3s", 0) == 0 && t_ == 3000) f.image.rgb[2] = 11;  // fake_faces: Anna
     f.pts_ms = t_;
     f.pts_tb = t_ * 90;
     f.tb_num = 1;
@@ -224,6 +235,8 @@ class fake_sampler final : public mv::addon::video_sampler {
  private:
   std::string name_;
   std::int64_t t_;
+  std::int64_t min_gap_ = 0;
+  std::int64_t last_ = -1;
   mv::addon::video_facts facts_;
 };
 
@@ -578,6 +591,7 @@ struct rig {
   std::atomic<int> battery_percent{100};
   std::atomic<int> stills_decoded{0};
   std::atomic<int> cue_reads{0};
+  std::atomic<int> samplers_opened{0};
   std::unique_ptr<mv::addon::host_table> table;
   std::shared_ptr<cloud_world> cloud = std::make_shared<cloud_world>();
   mv_host_api api{};  // the table, its walk_files2 flagging `cloud`'s online-only names
@@ -638,10 +652,11 @@ struct rig {
       if (name.rfind("ben", 0) == 0) img.rgb[2] = 22;
       return img;
     };
-    svc.open_sampler = [](const std::string& path, const mv::addon::sampler_options& o)
+    svc.open_sampler = [this](const std::string& path, const mv::addon::sampler_options& o)
         -> mv::result<std::unique_ptr<mv::addon::video_sampler>> {
+      ++samplers_opened;
       return std::unique_ptr<mv::addon::video_sampler>(
-          new fake_sampler(utf8(fs::path(path).filename()), o.start_ms));
+          new fake_sampler(utf8(fs::path(path).filename()), o.start_ms, o.min_gap_ms));
     };
     svc.video_frame = [](const std::string& path, std::int64_t ms, std::uint32_t) -> mv::result<mv::addon::rgb_image> {
       fake_sampler s(utf8(fs::path(path).filename()), ms);
@@ -1427,6 +1442,9 @@ TEST_CASE("clearing the index frees it and a size cap stops indexing", "[ai][eng
   CHECK(r.status().state == MV_AI_STATE_PAUSED);
 }
 
+// The schema a fresh or migrated index ends at (index_db.cpp kSchemaVersion).
+constexpr const char* kSchemaNow = "7";
+
 TEST_CASE("an index migrates from schema 1, and again after a crash left a step half done", "[ai][engine]") {
   scratch_dir dir{"ai-migrate"};
   const std::string path = utf8(dir / "index.db");
@@ -1451,7 +1469,7 @@ TEST_CASE("an index migrates from schema 1, and again after a crash left a step 
   {
     auto d = mv::ai::index_db::open(path);
     REQUIRE(d);
-    CHECK((*d)->meta("schema") == "5");
+    CHECK((*d)->meta("schema") == kSchemaNow);
     const auto roots = (*d)->roots();
     REQUIRE(roots.size() == 1);
     CHECK(roots[0].media == 0);
@@ -1462,12 +1480,12 @@ TEST_CASE("an index migrates from schema 1, and again after a crash left a step 
   {
     auto d = mv::ai::index_db::open(path);
     REQUIRE(d);
-    CHECK((*d)->meta("schema") == "5");
+    CHECK((*d)->meta("schema") == kSchemaNow);
     REQUIRE((*d)->set_meta("schema", "2"));
   }
   auto d = mv::ai::index_db::open(path);
   REQUIRE(d);
-  CHECK((*d)->meta("schema") == "5");
+  CHECK((*d)->meta("schema") == kSchemaNow);
   CHECK((*d)->roots().size() == 1);
 }
 
@@ -1517,10 +1535,10 @@ TEST_CASE("schema 3 migrates to 4: the tag columns and asset_text, keeping the a
   {
     auto d = mv::ai::index_db::open(path);
     REQUIRE(d);
-    CHECK((*d)->meta("schema") == "5");
+    CHECK((*d)->meta("schema") == kSchemaNow);
     for (const char* c : {"tags", "taken_at", "lat", "lon", "camera", "lens", "made_with", "ai", "place", "country",
                           "region", "rating", "label", "iso", "aperture_x100", "focal_mm", "shutter_den",
-                          "shutter_us"}) {
+                          "shutter_us", "motion", "motion_mtime", "motion_size", "motion_cloud"}) {
       CHECK(column_exists(path, c));
     }
     const auto all = (*d)->all_assets();
@@ -1587,7 +1605,7 @@ TEST_CASE("schema 3 migrates to 4: the tag columns and asset_text, keeping the a
   }
   auto d = mv::ai::index_db::open(path);
   REQUIRE(d);
-  CHECK((*d)->meta("schema") == "5");
+  CHECK((*d)->meta("schema") == kSchemaNow);
 }
 
 #if !defined(_WIN32)
@@ -1627,7 +1645,7 @@ TEST_CASE("the 3 -> 4 migration survives a kill mid-step", "[ai][engine][schema4
   CHECK_FALSE(column_exists(path, "tags"));  // nothing of the step survived
   auto d = mv::ai::index_db::open(path);
   REQUIRE(d);
-  CHECK((*d)->meta("schema") == "5");
+  CHECK((*d)->meta("schema") == kSchemaNow);
   CHECK(column_exists(path, "camera"));
   CHECK((*d)->all_assets().size() == 1);
 }
@@ -2197,6 +2215,112 @@ TEST_CASE("cues: a long clip's lines commit in batches, and a resume never doubl
   auto more = r.eng->result_at(id, 0);
   REQUIRE(more);
   CHECK(more->more_in_clip == 0);  // one row, not a doubled line
+}
+
+TEST_CASE("re-analysing faces looks at the frames the picture pass kept (#407)", "[ai][engine][faces][moments]") {
+  rig r;
+  // Anna is on the 3 s frame alone: kept by the picture pass (it turns
+  // green there), 3 s from either kept neighbour. The People pass's own
+  // 2 s grid (0, 2, 4, 6, 8 s) would not see her.
+  r.file("clips/anna3s_rgb.mp4");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
+  REQUIRE(r.idle());
+  const int embedded = r.fast->images_embedded.load();
+  REQUIRE(r.eng->faces_enable(true));
+  REQUIRE(wait_for([&] { return (r.status().flags & MV_AI_STATUS_FACES_READY) != 0; }, kSettleMs));
+  REQUIRE(r.idle());
+  auto people = mv::json::parse(r.eng->people_json());
+  REQUIRE(people);
+  REQUIRE(people->a.size() == 1);
+  auto faces = mv::json::parse(r.eng->person_faces_json(*people->a[0].integer("id")));
+  REQUIRE(faces);
+  REQUIRE(faces->a.size() == 1);
+  CHECK(*faces->a[0].integer("pts_ms") == 3000);
+  CHECK(r.fast->images_embedded.load() == embedded);  // nothing embedded again
+}
+
+TEST_CASE("the People pass falls back to its own grid for a clip with no picture rows (#407)",
+          "[ai][engine][faces][moments]") {
+  rig r;
+  r.file("clips/anna3s_rgb.mp4");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
+  REQUIRE(r.idle());
+  r.eng.reset();
+  {
+    // As if the pictures had kept nothing for it (a poster-only clip).
+    sqlite3* db = nullptr;
+    REQUIRE(sqlite3_open(utf8(r.dir / "data" / "index.db").c_str(), &db) == SQLITE_OK);
+    REQUIRE(sqlite3_exec(db, "DELETE FROM frames;", nullptr, nullptr, nullptr) == SQLITE_OK);
+    sqlite3_close(db);
+  }
+  r.start();
+  REQUIRE(r.idle());
+  const int before = r.samplers_opened.load();
+  REQUIRE(r.eng->faces_enable(true));
+  REQUIRE(wait_for([&] { return (r.status().flags & MV_AI_STATUS_FACES_READY) != 0; }, kSettleMs));
+  REQUIRE(r.idle());
+  CHECK(r.samplers_opened.load() > before);  // the 2 s / 10 s grid ran
+  // It completes (scanned), and that grid misses the face on the 3 s frame.
+  CHECK(mv::json::parse(r.eng->people_json())->a.empty());
+}
+
+TEST_CASE("a Live Photo's motion is sampled onto its still and opens the movie (#407)", "[ai][engine][live]") {
+  rig r;
+  r.file("blue_live.jpg");  // the still: blue
+  r.file("blue_live.mov");  // its motion: red, green, then blue
+  r.file("red_raw.jpg");    // a RAW+JPEG pair stays one asset
+  r.file("red_raw.cr2");
+  r.start();
+  auto root = r.eng->index_folder(utf8(r.photos()), false);
+  REQUIRE(root);
+  REQUIRE(r.idle());
+  const mv_ai_status s = r.status();
+  CHECK(s.assets_total == 2);  // the Live Photo's still and the JPEG
+  CHECK(s.assets_failed == 0);
+
+  // "green" is only in the movie: the still's asset, at that moment, opening
+  // the movie as a clip.
+  const std::uint64_t id = r.eng->search_text("green", "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+  REQUIRE(r.eng->wait_search(id, kSettleMs));
+  const auto rows = r.rows(id);
+  REQUIRE(rows.size() == 1);
+  CHECK(rows[0].first == "blue_live.mov");
+  CHECK(rows[0].second == 3000);
+  auto res = r.eng->result_at(id, 0);
+  REQUIRE(res);
+  CHECK(res->kind == MV_AI_KIND_VIDEOS);
+  auto path = r.eng->result_path(id, 0);
+  REQUIRE(path);
+  CHECK(fs::path(*path).filename() == "blue_live.mov");
+  // N / Shift+N on the movie walk the still's moments.
+  auto moments = r.eng->clip_matches(id, *path);
+  REQUIRE(moments);
+  REQUIRE_FALSE(moments->empty());
+  CHECK(moments->front().first == 3000);
+  // The tile is the movie's moment from the viewer's cache.
+  auto thumb = r.eng->result_thumb(id, 0);
+  REQUIRE(thumb);
+  CHECK(thumb->find("blue_live.mov#3000") != std::string::npos);
+  // A match at no timestamp is the still.
+  const auto red = r.search("red");
+  CHECK(has_row(red, "red_raw.jpg"));
+  CHECK_FALSE(has_row(red, "red_raw.cr2"));
+
+  // The movie edited under the same still: only the motion is sampled again.
+  const int embeds = r.fast->images_embedded.load();
+  const int stills = r.stills_decoded.load();
+  std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+  write_bytes(r.photos() / "blue_live.mov", pattern(32, 9));
+  REQUIRE(r.eng->root_rescan(*root));
+  REQUIRE(wait_for([&] { return r.fast->images_embedded.load() > embeds; }, kSettleMs));
+  REQUIRE(r.idle());
+  CHECK(r.fast->images_embedded.load() - embeds == 9);  // the movie's nine frames, not the still
+  CHECK(r.stills_decoded.load() == stills);             // the still is not read again
+  const auto again = r.search("green");
+  REQUIRE(again.size() == 1);
+  CHECK(again[0].first == "blue_live.mov");
 }
 
 TEST_CASE("audio: a folder indexed for pictures only does no audio work", "[ai][engine][audio]") {

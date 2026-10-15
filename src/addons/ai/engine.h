@@ -366,6 +366,11 @@ class engine {
     // as UTC, or a Photos item's creationDate) once the backfill has read it.
     std::optional<std::int64_t> taken_at;
     bool cloud = false;      // online-only: no track reads it until fetched
+    // #407: a Live Photo still's paired movie ("" none): its frames are this
+    // asset's moments, and a moment opens the movie.
+    std::string motion;
+    std::string motion_key;  // path_key(motion)
+    bool motion_cloud = false;
     // #291 (schema 4): its tags, once the backfill has read them.
     bool tags = false;
     std::string camera, lens, made_with;  // folded
@@ -455,6 +460,24 @@ class engine {
   // unavailable so the whole clip is indexed once its original is on this Mac.
   void index_poster(const work_item& item, const loaded_clip& clip, std::uint32_t edge);
   void faces_of(std::int64_t asset, const std::string& path, std::int64_t pts_ms, const rgb_frame& img);
+  // #407: the moments the picture pass stored for an asset (its build
+  // tower's, else the answering one's), and the People pass over exactly
+  // those frames of `media` (a clip, or a Live Photo's movie). False when
+  // stopping part-way.
+  [[nodiscard]] std::vector<std::int64_t> stored_moments(std::int64_t asset);
+  bool faces_on_moments(std::int64_t asset, const std::string& media, const std::vector<std::int64_t>& moments,
+                        std::uint32_t edge);
+  // #407: a Live Photo's movie sampled onto its still's id (`seed`: the
+  // still's vector, so a first frame like it is not kept twice). Commits the
+  // asset done; returns false only when stopping (left partial: resumes).
+  bool index_motion(const work_item& item, const std::string& motion, bool motion_cloud, const loaded_clip& clip,
+                    bool faces_on, std::vector<float> seed);
+  // #407: a still whose movie changed: its motion vectors and faces go (the
+  // index dropped the rows); the still's own vector stays.
+  void motion_changed(const std::vector<std::int64_t>& ids);
+  // #407: what a result row opens: the asset, or for a Live Photo moment its
+  // movie (as a clip). [assets_m_ held]
+  void row_target_locked(std::int64_t asset, std::int64_t pts_ms, std::string& path, std::uint32_t& kind) const;
   bool wait_turn();  // false: stopping
   mv_ai_yield yield_reason() const;
   // scans
@@ -698,6 +721,11 @@ class engine {
   // path_key -> id beside assets_ (issue #174): a path's asset without a walk
   // of every indexed asset under assets_m_. Kept with assets_ under assets_m_.
   std::unordered_map<std::string, std::int64_t> asset_by_key_;
+  // #407: a Live Photo movie's key -> its still's id (under assets_m_).
+  std::unordered_map<std::string, std::int64_t> motion_by_key_;
+  // A path's asset, or the still a Live Photo movie belongs to. [assets_m_ held]
+  [[nodiscard]] std::int64_t asset_or_motion_locked(const std::string& key) const;
+  void set_motion_locked(std::int64_t id, asset_meta& m, const std::string& motion, bool cloud);
   void unindex_key_locked(std::int64_t id, const std::string& key);
   void erase_asset_locked(std::int64_t id);
   [[nodiscard]] std::int64_t asset_of_key_locked(const std::string& key) const;

@@ -166,7 +166,10 @@ signed manifest, verify-before-load, per-user versioned folder, explicit updates
    ~1 s, so this yields ~1 candidate per second cheaply.
 2. **Coverage fallback.** Long-GOP sources can go minutes between keyframes. A **maximum gap**
    (2 s) fills the grid by decoding forward from kept packets; a **minimum gap** (500 ms) stops a
-   burst of scene-cut keyframes flooding the index. People-only sampling uses 2 s / 10 s.
+   burst of scene-cut keyframes flooding the index. The People pass on its own (re-analyse, or
+   People turned on after the pictures) decodes the moments the picture pass kept, through the
+   host's frame fetch, so a face sharp on one indexed frame is seen (#407); only a clip with no
+   picture rows falls back to its own 2 s / 10 s grid.
 3. **Dedupe by embedding.** A frame whose cosine to the last *kept* frame is above `dedupe`
    (0.97) is dropped. A static interview shot collapses to a few rows; an action scene keeps
    many.
@@ -177,7 +180,17 @@ signed manifest, verify-before-load, per-user versioned folder, explicit updates
 5. **Record** `pts` in the stream time base and in milliseconds, plus a keyframe / grid-fill
    flag, so jump-to-moment lands on the exact frame through the player's seek.
 6. **Photos** are one row each, embedded from a first-pixel-quality decode (RAW uses the embedded
-   preview). Live Photo and RAW+JPEG pairs index once, on the pair's still.
+   preview). Live Photo and RAW+JPEG pairs index once, on the pair's still. A Live Photo's movie
+   (the folder pair `IMG_1234.HEIC` + `IMG_1234.MOV`; schema 7's `motion` columns) is sampled
+   with the same sampler and the same 0.97 dedupe, seeded with the still's vector, and its frames
+   are stored on the still's id with their `pts_ms`, at most 32 (#407). A moment opens the movie
+   at that time (the result's path is the movie and its kind a clip; `N` walks the still's
+   moments); a match at no timestamp is the still. The still commits first (progress partial),
+   the movie after (done), so a kill resumes the motion alone. A movie edited, added or brought
+   down from the cloud under the same still re-queues only the motion. An online-only movie is
+   read only with *Index online-only files* on and the fetch's gate open (brought down in place
+   and given back), otherwise the still is indexed alone. Photos library Live Photos are one
+   PhotoKit asset and stay a still.
 
 ## Index store
 
@@ -254,6 +267,13 @@ one, so 2 s and 1/250 both match). A clip has no exposure block: those stay NULL
 - A rating written to a RAW's XMP sidecar leaves the RAW's own stamp alone, so the index keeps
   the old rating until the file's stamp changes or the index is rebuilt (the base app's
   meta_cache drops its row; the AI index has no such signal yet).
+### Schema 6 and 7 (#406, #407)
+
+Schema 6 adds `cues` ("Cues" below). Schema 7 adds `motion`, `motion_mtime`, `motion_size` and
+`motion_cloud` to `assets`: a Live Photo still's movie and its stamp (Frame sampling, step 6). The
+first walk after the step fills them and queues each Live Photo's motion alone; the still is not
+embedded again.
+
 People live in a separate `faces.db`; the label bars in `labels.f32`;
 the CPU self-test reference in `selftest.txt` (keyed by runtime, provider, model and piece).
 

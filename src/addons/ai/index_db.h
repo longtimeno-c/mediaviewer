@@ -42,6 +42,12 @@
 // file's, not a model's; a changed (mtime, size) drops the asset's rows. Its
 // progress is a progress row under kCueSpec, so a kill resumes it.
 //
+// Schema 7 (#407): assets gain motion, motion_mtime, motion_size and
+// motion_cloud: a Live Photo still's paired movie, whose frames are stored on
+// the still's id with their pts_ms. A changed partner (added, gone, edited,
+// brought down from the cloud) drops those frames and re-queues the motion
+// alone (progress back to partial); the still keeps its row.
+//
 // docs/design/17 sketches one assets row per (path, mtime, size, spec); progress is
 // that row's per-model half, so two models' vectors live side by side while
 // a quality change migrates (PR 23: "old index kept until the new one
@@ -116,6 +122,11 @@ struct asset_row {
   asset_kind kind = asset_kind::photo;
   std::int64_t duration_ms = 0;
   bool cloud = false;  // only a cloud provider has it (schema 3): never read until fetched
+  // #407 (schema 7): a Live Photo still's paired movie, "" for none.
+  std::string motion;
+  std::int64_t motion_mtime = 0;
+  std::uint64_t motion_size = 0;
+  bool motion_cloud = false;
 };
 
 // What the tag backfill has read of an asset (assets.tags): 0 nothing, 1 the
@@ -226,6 +237,9 @@ class index_db {
     std::int64_t id = 0;
     bool added = false;
     bool changed = false;  // (mtime, size) differed: frames and progress dropped
+    // #407: the still is the same but its Live Photo movie changed: the
+    // motion frames were dropped and its picture progress set back to partial.
+    bool motion_changed = false;
   };
   struct seen_file {
     std::string path;
@@ -233,6 +247,11 @@ class index_db {
     std::uint64_t size = 0;
     asset_kind kind = asset_kind::photo;
     bool cloud = false;  // its bytes are only in the cloud (host walk_files2)
+    // #407: a Live Photo still's paired movie, "" for none.
+    std::string motion{};
+    std::int64_t motion_mtime = 0;
+    std::uint64_t motion_size = 0;
+    bool motion_cloud = false;
   };
   // Records a batch of files found under `root` in scan `generation`, in one
   // transaction. The result is in the batch's order.
@@ -320,6 +339,9 @@ class index_db {
                                     std::int64_t after_id = 0);
   [[nodiscard]] expected each_frame_of(std::int64_t asset, const std::string& spec,
                                        const std::function<void(const frame_out&)>& visit);
+  // #407: the moments stored for an asset under `spec` (pts_ms >= 0), in
+  // order, without their vectors: what the People pass decodes again.
+  [[nodiscard]] std::vector<std::int64_t> moment_times(std::int64_t asset, const std::string& spec);
   [[nodiscard]] std::vector<asset_row> all_assets();
   [[nodiscard]] result<asset_row> asset_by_path(const std::string& path);
   [[nodiscard]] result<asset_row> asset_by_id(std::int64_t id);

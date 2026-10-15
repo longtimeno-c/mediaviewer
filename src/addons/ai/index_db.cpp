@@ -11,7 +11,7 @@
 namespace mv::ai {
 namespace {
 
-constexpr int kSchemaVersion = 6;
+constexpr int kSchemaVersion = 7;
 
 // A prepared statement that finalizes itself; binds are 1-based.
 class stmt {
@@ -75,6 +75,10 @@ asset_row asset_from(const stmt& s, int c0) {
   a.kind = s.i64(c0 + 5) == 2 ? asset_kind::video : asset_kind::photo;
   a.duration_ms = s.i64(c0 + 6);
   a.cloud = s.i64(c0 + 7) != 0;
+  a.motion = s.text(c0 + 8);
+  a.motion_mtime = s.i64(c0 + 9);
+  a.motion_size = static_cast<std::uint64_t>(s.i64(c0 + 10));
+  a.motion_cloud = s.i64(c0 + 11) != 0;
   return a;
 }
 
@@ -87,7 +91,10 @@ bool has_column(sqlite3* db, const char* table, const char* column) {
   return false;
 }
 
-constexpr const char* kAssetCols = "a.id, a.path, a.root_id, a.mtime, a.size, a.kind, a.duration_ms, a.cloud";
+constexpr const char* kAssetCols =
+    "a.id, a.path, a.root_id, a.mtime, a.size, a.kind, a.duration_ms, a.cloud,"
+    " COALESCE(a.motion, ''), COALESCE(a.motion_mtime, 0), COALESCE(a.motion_size, 0), a.motion_cloud";
+constexpr int kAssetColCount = 12;
 
 }  // namespace
 
@@ -272,6 +279,28 @@ result<std::unique_ptr<index_db>> index_db::open(const std::string& path) {
     }
     v = "6";
   }
+  // Schema 6 -> 7 (#407): a Live Photo still's paired movie and its stamp, so
+  // the motion is sampled onto the still's id. NULL until the next walk sees
+  // the pair; that walk queues the motion alone (see_assets).
+  if (v == "6") {
+    if (!d->exec("BEGIN")) return err(status::corrupt);
+    bool ok = true;
+    static constexpr std::pair<const char*, const char*> kColumns[] = {
+        {"motion", "ALTER TABLE assets ADD COLUMN motion TEXT;"},
+        {"motion_mtime", "ALTER TABLE assets ADD COLUMN motion_mtime INTEGER;"},
+        {"motion_size", "ALTER TABLE assets ADD COLUMN motion_size INTEGER;"},
+        {"motion_cloud", "ALTER TABLE assets ADD COLUMN motion_cloud INTEGER NOT NULL DEFAULT 0;"},
+    };
+    for (const auto& [column, sql] : kColumns) {
+      if (ok && !has_column(d->db_, "assets", column)) ok = d->exec(sql);
+    }
+    ok = ok && static_cast<bool>(d->set_meta("schema", "7"));
+    if (!ok || !d->exec("COMMIT")) {
+      d->exec("ROLLBACK");
+      return err(status::corrupt);
+    }
+    v = "7";
+  }
   if (v != std::to_string(kSchemaVersion)) {
     return err(status::unsupported_format);  // a newer add-on's index
   }
@@ -387,20 +416,44 @@ result<std::vector<index_db::upsert>> index_db::see_assets(std::int64_t root,
   bool ok = true;
   {
     // Prepared once per batch and reset per file, not prepared per file.
-    stmt q(db_, "SELECT id, mtime, size FROM assets WHERE path = ?1");
+    stmt q(db_, "SELECT id, mtime, size, COALESCE(motion, ''), COALESCE(motion_mtime, 0),"
+                " COALESCE(motion_size, 0), motion_cloud FROM assets WHERE path = ?1");
     stmt f(db_, "DELETE FROM frames WHERE asset_id = ?1");
     stmt p(db_, "DELETE FROM progress WHERE asset_id = ?1");
     stmt c(db_, "DELETE FROM cues WHERE asset_id = ?1");
+    // #407: a Live Photo's movie changed under the same still: its frames go
+    // and the picture pass comes back for the motion alone.
+    stmt mf(db_, "DELETE FROM frames WHERE asset_id = ?1 AND pts_ms >= 0");
+    stmt mp(db_, "UPDATE progress SET state = 1, resume_ms = 0 WHERE asset_id = ?1 AND state = 2");
     stmt w(db_, "UPDATE assets SET mtime = ?2, size = ?3, kind = ?4, seen = ?5, cloud = ?6,"
-                " tags = CASE WHEN mtime = ?2 AND size = ?3 THEN tags ELSE 0 END WHERE id = ?1");
-    stmt ins(db_, "INSERT INTO assets(path, root_id, mtime, size, kind, seen, cloud)"
-                  " VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)");
+                " tags = CASE WHEN mtime = ?2 AND size = ?3 THEN tags ELSE 0 END,"
+                " motion = ?7, motion_mtime = ?8, motion_size = ?9, motion_cloud = ?10 WHERE id = ?1");
+    stmt ins(db_, "INSERT INTO assets(path, root_id, mtime, size, kind, seen, cloud, motion, motion_mtime,"
+                  " motion_size, motion_cloud) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)");
+    const auto bind_motion = [](stmt& s, int at, const seen_file& file) {
+      if (!file.motion.empty()) {
+        s.bind(at, file.motion).bind(at + 1, file.motion_mtime).bind(at + 2, static_cast<std::int64_t>(file.motion_size));
+      }
+      s.bind(at + 3, std::int64_t{file.motion_cloud ? 1 : 0});
+    };
     for (const seen_file& file : files) {
       upsert u;
       q.reset();
       if (q.bind(1, file.path).step_row()) {
         u.id = q.i64(0);
         const bool same = q.i64(1) == file.mtime && static_cast<std::uint64_t>(q.i64(2)) == file.size;
+        const bool same_motion = q.text(3) == file.motion && q.i64(4) == (file.motion.empty() ? 0 : file.motion_mtime) &&
+                                 static_cast<std::uint64_t>(q.i64(5)) == (file.motion.empty() ? 0 : file.motion_size) &&
+                                 (q.i64(6) != 0) == file.motion_cloud;
+        if (same && !same_motion) {
+          mf.reset();
+          mp.reset();
+          if (!mf.bind(1, u.id).run() || !mp.bind(1, u.id).run()) {
+            ok = false;
+            break;
+          }
+          u.motion_changed = true;
+        }
         if (!same) {
           // Stale: edited or replaced. Its vectors describe other pixels.
           f.reset();
@@ -413,18 +466,22 @@ result<std::vector<index_db::upsert>> index_db::see_assets(std::int64_t root,
           u.changed = true;
         }
         w.reset();
-        if (!w.bind(1, u.id).bind(2, file.mtime).bind(3, static_cast<std::int64_t>(file.size))
-                 .bind(4, std::int64_t{static_cast<int>(file.kind)}).bind(5, generation)
-                 .bind(6, std::int64_t{file.cloud ? 1 : 0}).run()) {
+        w.bind(1, u.id).bind(2, file.mtime).bind(3, static_cast<std::int64_t>(file.size))
+            .bind(4, std::int64_t{static_cast<int>(file.kind)}).bind(5, generation)
+            .bind(6, std::int64_t{file.cloud ? 1 : 0});
+        bind_motion(w, 7, file);
+        if (!w.run()) {
           ok = false;
           break;
         }
       } else {
         ins.reset();
-        if (!ins.bind(1, file.path).bind(2, root).bind(3, file.mtime)
-                 .bind(4, static_cast<std::int64_t>(file.size))
-                 .bind(5, std::int64_t{static_cast<int>(file.kind)}).bind(6, generation)
-                 .bind(7, std::int64_t{file.cloud ? 1 : 0}).run()) {
+        ins.bind(1, file.path).bind(2, root).bind(3, file.mtime)
+            .bind(4, static_cast<std::int64_t>(file.size))
+            .bind(5, std::int64_t{static_cast<int>(file.kind)}).bind(6, generation)
+            .bind(7, std::int64_t{file.cloud ? 1 : 0});
+        bind_motion(ins, 8, file);
+        if (!ins.run()) {
           ok = false;
           break;
         }
@@ -509,9 +566,9 @@ std::vector<work_item> index_db::pending_where(const std::string& spec, std::siz
   while (s.step_row()) {
     work_item w;
     w.asset = asset_from(s, 0);
-    w.state = static_cast<work_state>(s.i64(8));
-    w.resume_ms = s.i64(9);
-    w.tries = static_cast<std::int32_t>(s.i64(10));
+    w.state = static_cast<work_state>(s.i64(kAssetColCount));
+    w.resume_ms = s.i64(kAssetColCount + 1);
+    w.tries = static_cast<std::int32_t>(s.i64(kAssetColCount + 2));
     out.push_back(std::move(w));
   }
   return out;
@@ -887,6 +944,15 @@ expected index_db::each_frame_of(std::int64_t asset, const std::string& spec,
     visit(f);
   }
   return {};
+}
+
+std::vector<std::int64_t> index_db::moment_times(std::int64_t asset, const std::string& spec) {
+  std::lock_guard lock(m_);
+  std::vector<std::int64_t> out;
+  stmt s(db_, "SELECT pts_ms FROM frames WHERE asset_id = ?1 AND spec = ?2 AND pts_ms >= 0 ORDER BY pts_ms");
+  s.bind(1, asset).bind(2, spec);
+  while (s.step_row()) out.push_back(s.i64(0));
+  return out;
 }
 
 std::vector<asset_row> index_db::all_assets() {

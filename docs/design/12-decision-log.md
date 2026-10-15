@@ -1167,6 +1167,19 @@ about what was said. Bitmap subtitles are not OCR'd. **Cost:** one header open p
 (after its pictures), and a full demux of the subtitle stream for files that have one (an MKV
 reads its clusters to find the cues), capped at two hours and 8,000 lines.
 
+**The People pass looks at the indexed frames; a Live Photo's motion is indexed (2026-10-15,
+#407).** Re-analyse (and People turned on after the pictures) used to resample a clip on its own
+2 s / 10 s grid from 0, so a face sharp on one kept frame and gone for the next ten seconds was
+never seen; on the owner's library, mostly clip frames, that was the common case. It now decodes
+exactly the `pts_ms` the picture pass kept (the host's frame fetch, no pixels stored), and keeps
+the grid only for a clip with no picture rows. A Live Photo's 1–3 s movie, dropped before, is
+sampled onto the still's id (same sampler, same dedupe, seeded with the still) and a moment opens
+the movie. Not changed: the sampler's 500 ms / 2 s gaps, keyframe-only decode, the dedupe.
+**Cost:** one host frame fetch per stored moment in a People-only pass (a file open and a decode
+from the keyframe each, against one sequential sampler pass before), and a handful of frames per
+Live Photo in the picture pass. An exported index carries no `motion` columns, so the receiver
+samples each Live Photo's movie once more.
+
 ---
 
 ## Final Cut Pro search (Mac)

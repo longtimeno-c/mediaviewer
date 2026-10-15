@@ -224,6 +224,8 @@ void engine::load_assets() {
     m.root = a.root_id;
     m.mtime = a.mtime;
     m.cloud = a.cloud;
+    m.motion = std::move(a.motion);
+    m.motion_cloud = a.motion_cloud;
     by_key[m.key] = a.id;
     all.emplace(a.id, std::move(m));
   }
@@ -231,6 +233,12 @@ void engine::load_assets() {
     std::lock_guard lock(assets_m_);
     assets_ = std::move(all);
     asset_by_key_ = std::move(by_key);
+    motion_by_key_.clear();
+    for (auto& [id, m] : assets_) {
+      if (m.motion.empty()) continue;
+      m.motion_key = path_key(m.motion);
+      motion_by_key_[m.motion_key] = id;
+    }
   }
   (void)db_->each_tags([this](const asset_tags& t) { adopt_tags(t); });
   tags_pending_ = true;
@@ -399,7 +407,42 @@ void engine::erase_asset_locked(std::int64_t id) {
   auto it = assets_.find(id);
   if (it == assets_.end()) return;
   unindex_key_locked(id, it->second.key);
+  if (!it->second.motion_key.empty()) {
+    if (auto k = motion_by_key_.find(it->second.motion_key); k != motion_by_key_.end() && k->second == id) {
+      motion_by_key_.erase(k);
+    }
+  }
   assets_.erase(it);
+}
+
+void engine::set_motion_locked(std::int64_t id, asset_meta& m, const std::string& motion, bool cloud) {
+  m.motion_cloud = cloud;
+  if (m.motion == motion) return;
+  if (!m.motion_key.empty()) {
+    if (auto k = motion_by_key_.find(m.motion_key); k != motion_by_key_.end() && k->second == id) motion_by_key_.erase(k);
+  }
+  m.motion = motion;
+  m.motion_key = motion.empty() ? std::string() : path_key(motion);
+  if (!m.motion_key.empty()) motion_by_key_[m.motion_key] = id;
+}
+
+std::int64_t engine::asset_or_motion_locked(const std::string& key) const {
+  if (const std::int64_t id = asset_of_key_locked(key); id != 0) return id;
+  const auto it = motion_by_key_.find(key);
+  return it == motion_by_key_.end() ? 0 : it->second;
+}
+
+void engine::row_target_locked(std::int64_t asset, std::int64_t pts_ms, std::string& path, std::uint32_t& kind) const {
+  const auto it = assets_.find(asset);
+  if (it == assets_.end()) return;
+  const asset_meta& m = it->second;
+  path = m.path;
+  kind = m.kind == asset_kind::video ? MV_AI_KIND_VIDEOS : MV_AI_KIND_PHOTOS;
+  // A Live Photo's moment opens its movie there, as a clip's moment does.
+  if (m.kind == asset_kind::photo && pts_ms >= 0 && !m.motion.empty()) {
+    path = m.motion;
+    kind = MV_AI_KIND_VIDEOS;
+  }
 }
 
 std::int64_t engine::asset_of_key_locked(const std::string& key) const {
@@ -1996,10 +2039,13 @@ bool engine::see_batch(const root_row& root, std::vector<index_db::seen_file>& b
     batch.clear();
     return false;
   }
+  std::vector<std::int64_t> motion;  // #407: a Live Photo's movie changed under its still
+  {
   std::lock_guard lock(assets_m_);
   for (std::size_t i = 0; i < batch.size(); ++i) {
     const index_db::upsert& u = (*r)[i];
     if (u.changed) changed.push_back(u.id);
+    if (u.motion_changed && !u.changed) motion.push_back(u.id);
     asset_meta& m = assets_[u.id];
     if (u.changed || u.added) {
       m.tags = false;  // read again by the backfill (the index set tags = 0)
@@ -2019,9 +2065,37 @@ bool engine::see_batch(const root_row& root, std::vector<index_db::seen_file>& b
     m.root = root.id;
     m.mtime = batch[i].mtime;
     m.cloud = batch[i].cloud;
+    set_motion_locked(u.id, m, batch[i].motion, batch[i].motion_cloud);
+  }
   }
   batch.clear();
+  motion_changed(motion);
   return true;
+}
+
+void engine::motion_changed(const std::vector<std::int64_t>& ids) {
+  if (ids.empty()) return;
+  // The index dropped the motion rows; the still's own vector comes back from
+  // its row, so only the movie's moments leave the matrix.
+  store_.remove_assets(ids);
+  std::string active;
+  {
+    std::lock_guard lock(models_m_);
+    active = answer_.meta.spec_key;
+    if (faces_) {
+      for (std::int64_t id : ids) {
+        (void)faces_->forget_asset(id);
+        faces_scanned_.erase(id);
+      }
+    }
+  }
+  if (!active.empty()) {
+    for (std::int64_t id : ids) {
+      (void)db_->each_frame_of(id, active, [&](const frame_out& f) {
+        if (f.pts_ms < 0) store_.add(id, f.pts_ms, f.generic, f.scale, f.emb);
+      });
+    }
+  }
 }
 
 void engine::scan_root(const root_row& root) {
@@ -2098,6 +2172,15 @@ void engine::scan_root(const root_row& root) {
       // opt-in) but no track reads it: reading it would download it.
       batch.push_back(index_db::seen_file{files[i].path, files[i].mtime, files[i].size,
                                           k == 2 ? asset_kind::video : asset_kind::photo, files[i].cloud_only});
+      // #407: a Live Photo still keeps its movie, sampled onto the still's id.
+      if (partner[i] != UINT32_MAX && kind[i] == 2 && k == 1 && media_kind_of_name(names[partner[i]]) == 2) {
+        const host::entry& mov = files[partner[i]];
+        index_db::seen_file& still = batch.back();
+        still.motion = mov.path;
+        still.motion_mtime = mov.mtime;
+        still.motion_size = mov.size;
+        still.motion_cloud = mov.cloud_only;
+      }
       if (batch.size() >= 512) flush();
     }
   }
@@ -3197,9 +3280,25 @@ void engine::process_photos(std::vector<work_item>& items, const loaded_clip& cl
     if (faces_model_) face_spec = faces_model_->spec_key();
   }
   const std::uint32_t edge = faces_on ? 1024u : std::max<std::uint32_t>(448u, clip.meta.input_edge * 2);
+  // #407: each still's Live Photo movie ("" none).
+  std::unordered_map<std::int64_t, std::pair<std::string, bool>> motion;
+  {
+    std::lock_guard lock(assets_m_);
+    for (const work_item& w : items) {
+      if (auto it = assets_.find(w.asset.id); it != assets_.end() && !it->second.motion.empty()) {
+        motion[w.asset.id] = {it->second.motion, it->second.motion_cloud};
+      }
+    }
+  }
   std::vector<rgb_frame> imgs;
   std::vector<const work_item*> ok;
   for (const work_item& w : items) {
+    // Only its movie owed, and no faces to look for: the still is not read.
+    if (!faces_only && !faces_on && w.state == work_state::partial && motion.count(w.asset.id)) {
+      imgs.emplace_back();
+      ok.push_back(&w);
+      continue;
+    }
     auto img = still_of(w.asset.path, edge);
     if (!img) {
       // Photos access went away mid-run: leave it pending; the next scan
@@ -3228,10 +3327,16 @@ void engine::process_photos(std::vector<work_item>& items, const loaded_clip& cl
   }
   if (imgs.empty()) return;
   if (!faces_only) {
+    // A still whose movie alone is owed (#407: partial) is in the index already.
     std::vector<infer::rgb_view> views;
-    for (const rgb_frame& f : imgs) views.push_back(infer::rgb_view{f.rgb.data(), f.width, f.height});
+    std::vector<std::size_t> embed_idx;
+    for (std::size_t i = 0; i < ok.size(); ++i) {
+      if (ok[i]->state == work_state::partial && motion.count(ok[i]->asset.id)) continue;
+      views.push_back(infer::rgb_view{imgs[i].rgb.data(), imgs[i].width, imgs[i].height});
+      embed_idx.push_back(i);
+    }
     std::vector<float> embs;
-    if (!clip.model->embed_images(views, embs)) {
+    if (!views.empty() && !clip.model->embed_images(views, embs)) {
       for (const work_item* w : ok) (void)db_->fail(w->asset.id, clip.meta.spec_key);
       return;
     }
@@ -3240,15 +3345,20 @@ void engine::process_photos(std::vector<work_item>& items, const loaded_clip& cl
       std::lock_guard lock(models_m_);
       active = answer_.meta.spec_key;
     }
-    for (std::size_t i = 0; i < ok.size(); ++i) {
-      const std::span<const float> e(embs.data() + i * clip.meta.dim, clip.meta.dim);
+    std::vector<std::vector<float>> seeds(ok.size());
+    for (std::size_t j = 0; j < embed_idx.size(); ++j) {
+      const std::size_t i = embed_idx[j];
+      const std::span<const float> e(embs.data() + j * clip.meta.dim, clip.meta.dim);
       frame_in f;
       f.emb = e;
       f.generic = max_dot(e, clip.generic);
+      // A Live Photo's still commits first; the asset is done with its movie.
+      const bool owes_motion = motion.count(ok[i]->asset.id) != 0;
       if (!db_->commit_frames(ok[i]->asset.id, clip.meta.spec_key, std::span<const frame_in>(&f, 1),
-                              work_state::done, 0, clip.meta.dim)) {
+                              owes_motion ? work_state::partial : work_state::done, 0, clip.meta.dim)) {
         continue;
       }
+      seeds[i].assign(e.begin(), e.end());
       if (clip.meta.spec_key == active) {
         std::vector<std::int8_t> q;
         float scale = 1;
@@ -3259,10 +3369,22 @@ void engine::process_photos(std::vector<work_item>& items, const loaded_clip& cl
       units_done_ += 1;
       frames_done_ += 1;
     }
+    for (std::size_t i = 0; i < ok.size(); ++i) {
+      const auto m = motion.find(ok[i]->asset.id);
+      if (m == motion.end()) continue;
+      if (seeds[i].empty()) (void)store_.vector_of(ok[i]->asset.id, -1, seeds[i]);
+      if (!index_motion(*ok[i], m->second.first, m->second.second, clip, faces_on, std::move(seeds[i]))) return;
+    }
   }
   if (faces_on) {
     for (std::size_t i = 0; i < ok.size(); ++i) {
       faces_of(ok[i]->asset.id, ok[i]->asset.path, -1, imgs[i]);
+      // #407: the People pass on its own looks at the movie's stored moments.
+      if (faces_only) {
+        if (const auto m = motion.find(ok[i]->asset.id); m != motion.end()) {
+          if (!faces_on_moments(ok[i]->asset.id, m->second.first, stored_moments(ok[i]->asset.id), 768)) return;
+        }
+      }
       std::lock_guard lock(models_m_);
       if (faces_) {
         (void)faces_->mark_scanned(ok[i]->asset.id, face_spec);
@@ -3270,6 +3392,128 @@ void engine::process_photos(std::vector<work_item>& items, const loaded_clip& cl
       }
     }
   }
+}
+
+std::vector<std::int64_t> engine::stored_moments(std::int64_t asset) {
+  std::string build, answer;
+  {
+    std::lock_guard lock(models_m_);
+    build = build_.meta.spec_key;
+    answer = answer_.meta.spec_key;
+  }
+  std::vector<std::int64_t> out;
+  if (!build.empty()) out = db_->moment_times(asset, build);
+  if (out.empty() && !answer.empty() && answer != build) out = db_->moment_times(asset, answer);
+  return out;
+}
+
+bool engine::faces_on_moments(std::int64_t asset, const std::string& media, const std::vector<std::int64_t>& moments,
+                              std::uint32_t edge) {
+  for (std::int64_t ms : moments) {
+    if (!wait_turn()) return false;
+    // The host's frame fetch at that moment: decoded again, never stored.
+    auto img = frame_of(media, ms, edge);
+    if (img) faces_of(asset, media, ms, *img);
+  }
+  return true;
+}
+
+bool engine::index_motion(const work_item& item, const std::string& motion, bool motion_cloud, const loaded_clip& clip,
+                          bool faces_on, std::vector<float> seed) {
+  const auto done = [&] {
+    (void)db_->commit_frames(item.asset.id, clip.meta.spec_key, {}, work_state::done, 0, clip.meta.dim);
+  };
+  // An online-only movie follows the cloud-file rule: read only with "Index
+  // online-only files" on and the fetch's gate open; the still stands alone
+  // otherwise (a later walk that finds it local re-queues the motion).
+  bool hydrated = false;
+  if (motion_cloud) {
+    if (!cloud_ || cloud_gate() != MV_AI_ICLOUD_DOWNLOADING || !cloud_->hydrate(motion, nullptr)) {
+      done();
+      return true;
+    }
+    hydrated = true;
+  }
+  struct give_back {
+    engine* e;
+    const std::string& path;
+    bool on;
+    ~give_back() {
+      if (on && e->cloud_) (void)e->cloud_->dehydrate(path);
+    }
+  } const back{this, motion, hydrated};
+  mv_addon_sampler_options o{};
+  o.struct_size = sizeof(o);
+  o.min_gap_ms = 500;
+  o.max_gap_ms = 2000;
+  o.max_long_edge = faces_on ? 768u : std::max<std::uint32_t>(448u, clip.meta.input_edge * 2);
+  auto sampler = host_.open_sampler(motion, o);
+  if (!sampler) {
+    done();  // the movie will not open: the still answers alone
+    return true;
+  }
+  const mv_addon_video_info info = (*sampler)->info();
+  if (info.duration_ms > 0) (void)db_->set_duration(item.asset.id, info.duration_ms);
+  // A Live Photo is a few seconds: a handful of frames. A long "movie" beside
+  // a still is capped rather than indexed as a clip under the photo.
+  constexpr std::size_t kMaxMotionFrames = 32;
+  std::vector<rgb_frame> frames;
+  while (frames.size() < kMaxMotionFrames) {
+    if (!wait_turn()) return false;
+    auto f = (*sampler)->next();
+    if (!f || (f->flags & MV_ADDON_FRAME_END)) break;
+    frames.push_back(std::move(*f));
+  }
+  std::vector<float> embs;
+  if (!frames.empty()) {
+    std::vector<infer::rgb_view> views;
+    for (const rgb_frame& f : frames) views.push_back(infer::rgb_view{f.rgb.data(), f.width, f.height});
+    if (!clip.model->embed_images(views, embs)) {
+      done();
+      return true;
+    }
+  }
+  std::vector<float> last_kept = std::move(seed);
+  std::vector<frame_in> keep;
+  std::vector<std::size_t> kept_idx;
+  for (std::size_t i = 0; i < frames.size(); ++i) {
+    const std::span<const float> e(embs.data() + i * clip.meta.dim, clip.meta.dim);
+    // The same 0.97 dedupe, seeded with the still: a movie frame that looks
+    // like it adds nothing the still does not answer.
+    if (last_kept.size() == clip.meta.dim && infer::dot(e, last_kept) >= clip.meta.dedupe) continue;
+    last_kept.assign(e.begin(), e.end());
+    frame_in f;
+    f.pts_ms = frames[i].pts_ms;
+    f.pts_tb = frames[i].pts_tb;
+    f.tb_num = frames[i].tb_num;
+    f.tb_den = frames[i].tb_den;
+    f.flags = frames[i].flags;
+    f.emb = e;
+    f.generic = max_dot(e, clip.generic);
+    keep.push_back(f);
+    kept_idx.push_back(i);
+  }
+  for (std::size_t i : kept_idx) (void)host_.moment_thumbnail(motion, frames[i].pts_ms, &frames[i]);
+  if (faces_on) {
+    for (std::size_t i : kept_idx) faces_of(item.asset.id, motion, frames[i].pts_ms, frames[i]);
+  }
+  if (!db_->commit_frames(item.asset.id, clip.meta.spec_key, keep, work_state::done, 0, clip.meta.dim)) return true;
+  std::string active;
+  {
+    std::lock_guard lock(models_m_);
+    active = answer_.meta.spec_key;
+  }
+  if (clip.meta.spec_key == active) {
+    for (const frame_in& f : keep) {
+      std::vector<std::int8_t> q;
+      float scale = 1;
+      quantise(f.emb, q, scale);
+      store_.add(item.asset.id, f.pts_ms, f.generic, scale, q);
+    }
+  }
+  std::lock_guard lock(status_m_);
+  frames_done_ += keep.size();
+  return true;
 }
 
 void engine::index_poster(const work_item& item, const loaded_clip& clip, std::uint32_t edge) {
@@ -3345,6 +3589,17 @@ void engine::process_video(const work_item& item, const loaded_clip& clip, bool 
     if (!faces_only) (void)db_->fail(item.asset.id, clip.meta.spec_key);
     no_faces();
     return;
+  }
+  // #407: the People pass on its own decodes the moments the picture pass
+  // kept (a face sharp on one indexed frame is seen), not a coarser grid of
+  // its own. Only a clip with no picture rows falls back to the 2 s / 10 s grid.
+  if (faces_only) {
+    const std::vector<std::int64_t> moments = stored_moments(item.asset.id);
+    if (!moments.empty()) {
+      if (!faces_on_moments(item.asset.id, item.asset.path, moments, o.max_long_edge)) return;  // stopping: resumes
+      no_faces();  // scanned: every stored moment was looked at
+      return;
+    }
   }
   auto sampler = host_.open_sampler(*file, o);
   if (!sampler) {
@@ -4276,6 +4531,7 @@ void engine::reload_from_db() {
     std::lock_guard lock(assets_m_);
     assets_.clear();
     asset_by_key_.clear();
+    motion_by_key_.clear();
     for (asset_row& a : db_->all_assets()) {
       asset_meta m;
       m.key = path_key(a.path);
@@ -4286,7 +4542,9 @@ void engine::reload_from_db() {
       m.mtime = a.mtime;
       m.cloud = a.cloud;
       asset_by_key_[m.key] = a.id;
-      assets_.emplace(a.id, std::move(m));
+      const std::int64_t id = a.id;
+      auto& placed = assets_.emplace(id, std::move(m)).first->second;
+      set_motion_locked(id, placed, a.motion, a.motion_cloud);
     }
   }
   // Their tags (and so their date taken) as the index holds them.
@@ -4408,6 +4666,11 @@ void engine::add_row(search_state& st, std::int64_t asset, std::int64_t pts_ms, 
     ++r.more;
     r.match |= match;
     if (rank > r.rank) {  // a better moment of the same clip leads
+      if ((r.pts_ms < 0) != (pts_ms < 0)) {
+        // #407: a Live Photo's still and its movie's moment open different files.
+        std::lock_guard lock(assets_m_);
+        row_target_locked(asset, pts_ms, r.path, r.kind);
+      }
       r.pts_ms = pts_ms;
       r.score = score;
       r.rank = rank;
@@ -4427,10 +4690,8 @@ void engine::add_row(search_state& st, std::int64_t asset, std::int64_t pts_ms, 
   r.snippet = std::move(snippet);
   {
     std::lock_guard lock(assets_m_);
-    auto found = assets_.find(asset);
-    if (found == assets_.end()) return;
-    r.path = found->second.path;
-    r.kind = found->second.kind == asset_kind::video ? MV_AI_KIND_VIDEOS : MV_AI_KIND_PHOTOS;
+    if (assets_.find(asset) == assets_.end()) return;
+    row_target_locked(asset, pts_ms, r.path, r.kind);
   }
   st.row_of[asset] = st.rows.size();
   st.rows.push_back(std::move(r));
@@ -4919,7 +5180,7 @@ std::uint64_t engine::search_similar(const std::string& path, std::int64_t pts_m
     {
       const std::string key = path_key(path);
       std::lock_guard lock(assets_m_);
-      self = asset_of_key_locked(key);
+      self = asset_or_motion_locked(key);
     }
     // An indexed still or sampled moment is its own query; a paused frame
     // that was never sampled is embedded now (docs/design/17 "Find similar"). The
@@ -5104,7 +5365,7 @@ result<std::vector<std::pair<std::int64_t, float>>> engine::clip_matches(std::ui
   {
     const std::string key = path_key(path);
     std::lock_guard lock(assets_m_);
-    asset = asset_of_key_locked(key);
+    asset = asset_or_motion_locked(key);  // #407: a Live Photo's movie walks its still's moments
   }
   std::lock_guard lock(search_m_);
   auto it = searches_.find(id);
