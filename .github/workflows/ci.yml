@@ -433,6 +433,14 @@ jobs:
           MV_REQUIRE_GEO: ${{ steps.geo.outputs.cache-hit == 'true' && '1' || '0' }}
         run: ctest --test-dir build -C ${{ matrix.config }} --output-on-failure
 
+      # Issue #155: the one real Recycle Bin test (tests/test_file_ops.cpp) is
+      # hidden as [.recycle] because it puts a scratch file in the user's bin,
+      # so ctest never runs it. A hosted runner's bin is throwaway: run it here.
+      - name: Recycle Bin test
+        if: matrix.toolchain == 'msvc' && matrix.config == 'Release'
+        timeout-minutes: 5
+        run: ./build/bin/Release/mv_tests.exe "[.recycle]"
+
       - name: Upload broken-corpus reproducers
         if: failure()
         uses: actions/upload-artifact@v4

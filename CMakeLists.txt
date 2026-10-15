@@ -1090,6 +1090,7 @@ if(MV_BUILD_TESTS)
     tests/test_refinement.cpp
     tests/test_chrome_host.cpp
     tests/test_dir.cpp
+    tests/test_dir_watcher.cpp
     tests/test_dir_tree.cpp
     tests/test_browse_path.cpp
     tests/test_folder.cpp

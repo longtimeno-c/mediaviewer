@@ -80,6 +80,7 @@ TEST_CASE("the recycle plumbing refuses rather than deletes permanently", "[io][
 
 // Hidden: puts a real (scratch) file in this user's Recycle Bin. Run by name:
 //   mv_tests "[.recycle]"
+// CI runs it on the MSVC Release leg (.github/workflows/ci.yml, issue #155).
 TEST_CASE("a real file goes to the Recycle Bin", "[.recycle]") {
   const fs::path p = fs::temp_directory_path() /
                      ("mv_recycle_" + std::to_string(::GetCurrentProcessId()) + "_" +
