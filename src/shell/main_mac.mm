@@ -9138,7 +9138,17 @@ static std::string MvBadgeKey(const mv::io::dir_entry& e) {
                                                    }];
 }
 
+// A notice for work in flight: no timer, it stays until its owner clears it
+// (noticeClear) or another notice replaces it. Opening the Photos library (#420).
+- (void)noticeShowUntilCleared:(const std::string&)text {
+  [_noticeTimer invalidate];
+  _noticeTimer = nil;
+  _noticeText = text;
+  ++_noticeGeneration;
+}
+
 - (void)noticeClear {
+  [_noticeTimer invalidate];
   _noticeTimer = nil;
   _noticeText.clear();
   ++_noticeGeneration;
@@ -9561,7 +9571,8 @@ static std::string MvBadgeKey(const mv::io::dir_entry& e) {
 // selected, in the gallery (what Photos lands on). Enumeration is PhotoKit on
 // a worker, names from the fetched assets (no per-asset resource lookup: that
 // took minutes, #420); "photos: listed N assets in M ms" in the unified log.
-// A notice says it is opening; one listing at a time.
+// A notice says it is opening and stays until the listing ends; one listing
+// at a time.
 - (void)openPhotosLibrary {
   if (![self photosLibraryAvailable]) {
     NSBeep();
@@ -9570,7 +9581,7 @@ static std::string MvBadgeKey(const mv::io::dir_entry& e) {
   if (_photosListing) return;  // the listing in flight opens the list
   _photosListing = YES;
   static const std::string kOpening = "Opening the Photos library…";
-  [self noticeShow:kOpening];
+  [self noticeShowUntilCleared:kOpening];
   MvLabApp* __weak weakSelf = self;
   _jobs.submit_at(mv::background_generation, [weakSelf](const mv::job_context&) -> mv::status {
     auto listed = mv::shell::photos::enumerate();
