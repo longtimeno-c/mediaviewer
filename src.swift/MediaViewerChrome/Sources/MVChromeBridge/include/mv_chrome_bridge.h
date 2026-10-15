@@ -505,6 +505,12 @@ bool mv_chrome_set_kind_filter(int32_t filter);
 int32_t mv_chrome_update_channel(void);
 void mv_chrome_set_update_channel(int32_t channel);
 
+// Automatic update checks (Sparkle, the same switch as the app menu's "Check
+// for Updates Automatically"): -1 without an updater, 0 off, 1 on. Turning it
+// on checks now. [main-thread]
+int32_t mv_chrome_update_auto_check(void);
+void mv_chrome_set_update_auto_check(bool on);
+
 // ---- PR 10: export sheet (docs/design/10 "SwiftUI crop mode and export sheet") -------
 //
 // The sheet's choice is one integer, packed exactly as the Windows export

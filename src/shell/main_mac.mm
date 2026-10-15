@@ -705,6 +705,10 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 // 1 preview (signed prereleases as well). Persisted in NSUserDefaults.
 - (int32_t)updateChannel;
 - (void)setUpdateChannel:(int32_t)channel;
+// Sparkle's automatic checks: -1 without an updater, 0 off, 1 on. The menu's
+// "Check for Updates Automatically" and Settings share it.
+- (int32_t)updateAutoCheck;
+- (void)setUpdateAutoCheck:(BOOL)on;
 // PR 11
 - (BOOL)adjustVisible;
 - (void)setAdjustVisible:(BOOL)visible;
@@ -1506,6 +1510,12 @@ extern "C" int32_t mv_chrome_update_channel(void) {
 }
 extern "C" void mv_chrome_set_update_channel(int32_t channel) {
   if (g_chrome_app) [g_chrome_app setUpdateChannel:channel];
+}
+extern "C" int32_t mv_chrome_update_auto_check(void) {
+  return g_chrome_app ? [g_chrome_app updateAutoCheck] : -1;
+}
+extern "C" void mv_chrome_set_update_auto_check(bool on) {
+  if (g_chrome_app) [g_chrome_app setUpdateAutoCheck:on ? YES : NO];
 }
 
 extern "C" int32_t mv_chrome_export_last_choice(void) {
@@ -6093,7 +6103,7 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
 
 - (void)toggleAutomaticUpdateChecks:(NSMenuItem*)item {
   (void)item;
-  _updater.updater.automaticallyChecksForUpdates = !_updater.updater.automaticallyChecksForUpdates;
+  [self setUpdateAutoCheck:!_updater.updater.automaticallyChecksForUpdates];
 }
 
 // The preview channel reads the appcast of the newest release, prerelease or
@@ -6229,6 +6239,26 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   [self resolveFeedThenCheck:YES];
 #else
   (void)channel;
+#endif
+}
+
+- (int32_t)updateAutoCheck {
+#if MV_WITH_SPARKLE
+  return _updater ? (_updater.updater.automaticallyChecksForUpdates ? 1 : 0) : -1;
+#else
+  return -1;
+#endif
+}
+
+// Sparkle persists the choice (SUEnableAutomaticChecks in the app's defaults).
+// Turning it on checks now, as Windows pokes its updater.
+- (void)setUpdateAutoCheck:(BOOL)on {
+#if MV_WITH_SPARKLE
+  if (!_updater || _updater.updater.automaticallyChecksForUpdates == on) return;
+  _updater.updater.automaticallyChecksForUpdates = on;
+  if (on) [self resolveFeedThenCheck:YES];
+#else
+  (void)on;
 #endif
 }
 
