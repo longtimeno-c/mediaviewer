@@ -2530,6 +2530,9 @@ static void MvAdoptNewDefaultViewerTypes() {
   std::uint64_t _photosResolveSeq;
   NSTimer* _photosFetchTimer;
   std::shared_ptr<std::atomic<bool>> _photosFetchCancel;
+  // A library listing is on a worker: a second Open Photos Library waits for it
+  // rather than starting another (#420).
+  BOOL _photosListing;
   // docs/design/26 "Backup": the one run, on its own thread; whether its end has
   // been written to the defaults (the "last backup" line).
   std::unique_ptr<mv::shell::backup::engine> _photosBackup;
@@ -9135,7 +9138,17 @@ static std::string MvBadgeKey(const mv::io::dir_entry& e) {
                                                    }];
 }
 
+// A notice for work in flight: no timer, it stays until its owner clears it
+// (noticeClear) or another notice replaces it. Opening the Photos library (#420).
+- (void)noticeShowUntilCleared:(const std::string&)text {
+  [_noticeTimer invalidate];
+  _noticeTimer = nil;
+  _noticeText = text;
+  ++_noticeGeneration;
+}
+
 - (void)noticeClear {
+  [_noticeTimer invalidate];
   _noticeTimer = nil;
   _noticeText.clear();
   ++_noticeGeneration;
@@ -9346,11 +9359,31 @@ static std::string MvBadgeKey(const mv::io::dir_entry& e) {
     _listNames.push_back(e.name_utf8 + " \u2014 " + mv::shell::browse_path::leaf(parent));
   }
   // Still equal (same name in two folders of the same name): the full path is
-  // unique, so every name falls back to it.
+  // unique, so every file's name falls back to it. A library item's path is
+  // its photos: key, which is no name to show: two shots in the same minute
+  // are numbered instead (a 23 k-asset library always has a pair, so every
+  // caption was a key, #420).
   std::vector<std::string> check = _listNames;
   std::sort(check.begin(), check.end());
   if (std::adjacent_find(check.begin(), check.end()) != check.end()) {
-    for (std::size_t i = 0; i < _items.size(); ++i) _listNames[i] = _items[i].path_utf8;
+    std::unordered_map<std::string, int> count;
+    for (const auto& n : _listNames) ++count[n];
+    std::unordered_map<std::string, int> seen;
+    bool files_collide = false;
+    for (std::size_t i = 0; i < _items.size(); ++i) {
+      std::string& n = _listNames[i];
+      if (count[n] < 2) continue;
+      if (!mv::shell::photos::is_key(_items[i].path_utf8)) {
+        files_collide = true;
+        continue;
+      }
+      if (const int k = ++seen[n]; k > 1) n += " (" + std::to_string(k) + ")";
+    }
+    if (files_collide) {
+      for (std::size_t i = 0; i < _items.size(); ++i) {
+        if (!mv::shell::photos::is_key(_items[i].path_utf8)) _listNames[i] = _items[i].path_utf8;
+      }
+    }
   }
 }
 
@@ -9555,18 +9588,30 @@ static std::string MvBadgeKey(const mv::io::dir_entry& e) {
 }
 
 // The whole library, oldest first, as a list of virtual items; the newest
-// selected, in the gallery (what Photos lands on). Enumeration is PhotoKit
-// on a worker: a second on a 23 k-asset library (docs/design/17 measured 0.9 s).
+// selected, in the gallery (what Photos lands on). Enumeration is PhotoKit on
+// a worker, names from the fetched assets (no per-asset resource lookup: that
+// took minutes, #420); "photos: listed N assets in M ms" in the unified log.
+// A notice says it is opening and stays until the listing ends; one listing
+// at a time.
 - (void)openPhotosLibrary {
   if (![self photosLibraryAvailable]) {
     NSBeep();
     return;
   }
+  if (_photosListing) return;  // the listing in flight opens the list
+  _photosListing = YES;
+  static const std::string kOpening = "Opening the Photos library…";
+  [self noticeShowUntilCleared:kOpening];
   MvLabApp* __weak weakSelf = self;
   _jobs.submit_at(mv::background_generation, [weakSelf](const mv::job_context&) -> mv::status {
     auto listed = mv::shell::photos::enumerate();
     if (!listed) {
       dispatch_async(dispatch_get_main_queue(), ^{
+        MvLabApp* strongSelf = weakSelf;
+        if (strongSelf) {
+          strongSelf->_photosListing = NO;
+          if ([strongSelf noticeText] == kOpening) [strongSelf noticeClear];
+        }
         NSBeep();
       });
       return listed.error();
@@ -9585,6 +9630,8 @@ static std::string MvBadgeKey(const mv::io::dir_entry& e) {
     dispatch_async(dispatch_get_main_queue(), ^{
       MvLabApp* strongSelf = weakSelf;
       if (!strongSelf) return;
+      strongSelf->_photosListing = NO;
+      if ([strongSelf noticeText] == kOpening) [strongSelf noticeClear];
       if (entries->empty()) {
         [strongSelf noticeShow:"Your Photos library has no photos or videos MediaViewer can show."];
         return;
