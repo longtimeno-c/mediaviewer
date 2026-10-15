@@ -197,7 +197,11 @@ std::vector<std::string> files_in(const fs::path& dir) {
   std::vector<std::string> out;
   if (!fs::exists(dir)) return out;
   for (const auto& e : fs::recursive_directory_iterator(dir)) {
-    if (e.is_regular_file()) out.push_back(utf8(fs::relative(e.path(), dir)));
+    if (!e.is_regular_file()) continue;
+    // Relative paths with "/" on every platform, as the sender's names travel.
+    std::string rel = utf8(fs::relative(e.path(), dir));
+    std::replace(rel.begin(), rel.end(), '\\', '/');
+    out.push_back(std::move(rel));
   }
   std::sort(out.begin(), out.end());
   return out;
