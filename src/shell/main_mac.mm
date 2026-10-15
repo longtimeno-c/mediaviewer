@@ -177,6 +177,8 @@ static bool MvCommandSupported(mv::shell::command_id c) {
     case compare_two_up:
     // PR 9
     case info_overlay: case af_points: case eyedropper: case copy_clipboard: case metadata_pane: case folder_tree:
+    // Issue #209
+    case zoom_af_point:
     // PR 10
     case rotate_ccw: case rotate_cw: case flip_horizontal: case flip_vertical: case crop_mode:
     case crop_commit: case crop_move_left: case crop_move_right: case crop_move_up:
@@ -709,6 +711,10 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 // 1 preview (signed prereleases as well). Persisted in NSUserDefaults.
 - (int32_t)updateChannel;
 - (void)setUpdateChannel:(int32_t)channel;
+// Sparkle's automatic checks: -1 without an updater, 0 off, 1 on. The menu's
+// "Check for Updates Automatically" and Settings share it.
+- (int32_t)updateAutoCheck;
+- (void)setUpdateAutoCheck:(BOOL)on;
 // PR 11
 - (BOOL)adjustVisible;
 - (void)setAdjustVisible:(BOOL)visible;
@@ -1510,6 +1516,12 @@ extern "C" int32_t mv_chrome_update_channel(void) {
 }
 extern "C" void mv_chrome_set_update_channel(int32_t channel) {
   if (g_chrome_app) [g_chrome_app setUpdateChannel:channel];
+}
+extern "C" int32_t mv_chrome_update_auto_check(void) {
+  return g_chrome_app ? [g_chrome_app updateAutoCheck] : -1;
+}
+extern "C" void mv_chrome_set_update_auto_check(bool on) {
+  if (g_chrome_app) [g_chrome_app setUpdateAutoCheck:on ? YES : NO];
 }
 
 extern "C" int32_t mv_chrome_export_last_choice(void) {
@@ -2650,6 +2662,8 @@ static void MvAdoptNewDefaultViewerTypes() {
   std::uint64_t _tagMapGeneration;
   std::unordered_map<std::string, std::size_t> _tagIndexOf;
   std::shared_ptr<const mv::meta::metadata> _metaRecord;
+  // Issue #209: Shift+Z waits for the record and fires when it is adopted.
+  BOOL _afFocusPending;
   std::uint64_t _metaGeneration;
   BOOL _metaPaneVisible;
   BOOL _treeVisible;
@@ -6097,7 +6111,7 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
 
 - (void)toggleAutomaticUpdateChecks:(NSMenuItem*)item {
   (void)item;
-  _updater.updater.automaticallyChecksForUpdates = !_updater.updater.automaticallyChecksForUpdates;
+  [self setUpdateAutoCheck:!_updater.updater.automaticallyChecksForUpdates];
 }
 
 // The preview channel reads the appcast of the newest release, prerelease or
@@ -6233,6 +6247,26 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   [self resolveFeedThenCheck:YES];
 #else
   (void)channel;
+#endif
+}
+
+- (int32_t)updateAutoCheck {
+#if MV_WITH_SPARKLE
+  return _updater ? (_updater.updater.automaticallyChecksForUpdates ? 1 : 0) : -1;
+#else
+  return -1;
+#endif
+}
+
+// Sparkle persists the choice (SUEnableAutomaticChecks in the app's defaults).
+// Turning it on checks now, as Windows pokes its updater.
+- (void)setUpdateAutoCheck:(BOOL)on {
+#if MV_WITH_SPARKLE
+  if (!_updater || _updater.updater.automaticallyChecksForUpdates == on) return;
+  _updater.updater.automaticallyChecksForUpdates = on;
+  if (on) [self resolveFeedThenCheck:YES];
+#else
+  (void)on;
 #endif
 }
 
@@ -6673,6 +6707,16 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
       _snap.af_points = !_snap.af_points;
       if (_snap.af_points) [self requestMetadataNow];
       [self pokeSnapshot];
+      return YES;
+    // Issue #209: 100 % on the AF point, from the record already held (or one
+    // read on the pool); the render thread moves the camera.
+    case zoom_af_point:
+      if (_metaRecord) {
+        [self afFocusFire];
+      } else {
+        _afFocusPending = YES;
+        [self requestMetadataNow];
+      }
       return YES;
     case eyedropper:
       _snap.eyedropper = !_snap.eyedropper;
@@ -8922,7 +8966,20 @@ static double mv_wall_seconds() {
 // ---- PR 9: metadata, folder tree, sort ------------------------------------------
 
 - (BOOL)metadataWanted {
-  return _metaPaneVisible || _snap.info_overlay || _snap.af_points;
+  return _metaPaneVisible || _snap.info_overlay || _snap.af_points || _afFocusPending;
+}
+
+// Issue #209 (Shift+Z): the record is adopted, so the quads in _snap.meta are
+// this item's. Bump the edge, or say why there is nothing to zoom to.
+- (void)afFocusFire {
+  _afFocusPending = NO;
+  if (_snap.meta.af_count == 0) {
+    [self noticeShow:std::string("No AF point recorded in this file")];
+    return;
+  }
+  _zoomIntentAt = CACurrentMediaTime();
+  ++_snap.af_focus_seq;
+  [self pokeSnapshot];
 }
 
 // Selection moved: the old record is no longer the item on screen. The new one is
@@ -8931,6 +8988,7 @@ static double mv_wall_seconds() {
 - (void)metadataSelectionChanged {
   [_metaDebounce invalidate];
   _metaDebounce = nil;
+  _afFocusPending = NO;  // Shift+Z was for the item just left
   if (_metaRecord) _metaRecord.reset();
   ++_metaGeneration;
   _snap.meta = mv::shell::meta_overlay{};
@@ -9004,6 +9062,7 @@ static double mv_wall_seconds() {
   // #345: the full record is the badge's best answer (it reads what the probe
   // leaves out: a clip's software tag, a HEIF's XMP).
   [self aiBadgeRefresh];
+  if (_afFocusPending) [self afFocusFire];
 }
 
 - (BOOL)metaPaneVisible { return _metaPaneVisible; }

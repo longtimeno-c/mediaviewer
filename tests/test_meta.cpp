@@ -27,6 +27,8 @@ extern "C" {
 #include "meta/af.h"
 #include "meta/meta.h"
 #include "meta/tables.h"
+#include "edit/edit_stack.h"
+#include "shell/af_focus.h"
 
 namespace {
 
@@ -598,4 +600,92 @@ TEST_CASE("the editable properties table carries the raw value and the access", 
   CHECK(mv::meta::editable_properties_table(m) ==
         "exif\tExif.Image\tArtist\tAnn Lee\tExif.Image.Artist\tAnn Lee\ts\n"
         "container\tContainer\tCodec\th264\tContainer.codec\th264\tr\n");
+}
+
+// Issue #209 (Shift+Z): which AF point the zoom lands on, in the picture the
+// camera frames: through the EXIF orientation the decoder applied and any user
+// rotate / flip / crop on top.
+namespace {
+mv::shell::meta_overlay overlay_of(const std::vector<mv::meta::af_point>& q) {
+  mv::shell::meta_overlay o;
+  for (std::size_t i = 0; i < q.size() && i < mv::shell::meta_overlay::kMaxAf; ++i) {
+    o.af[i][0] = q[i].x;
+    o.af[i][1] = q[i].y;
+    o.af[i][2] = q[i].w;
+    o.af[i][3] = q[i].h;
+    o.af[i][4] = q[i].in_focus ? 1.0f : 0.0f;
+    o.af_count = static_cast<std::uint8_t>(i + 1);
+  }
+  return o;
+}
+}  // namespace
+
+TEST_CASE("the AF focus target is the in-focus point, oriented and edited", "[meta][af]") {
+  using mv::shell::af_focus_in_output;
+  using mv::shell::pick_af_focus;
+  SECTION("no quads: nothing to zoom to") {
+    CHECK_FALSE(pick_af_focus(mv::shell::meta_overlay{}).has_value());
+  }
+  SECTION("an in-focus point wins over selected ones") {
+    const auto o = overlay_of({{0.0f, 0.0f, 0.1f, 0.1f, false},
+                               {0.6f, 0.4f, 0.1f, 0.2f, true},
+                               {0.8f, 0.8f, 0.1f, 0.1f, false}});
+    const auto p = pick_af_focus(o);
+    REQUIRE(p);
+    CHECK(p->u == Catch::Approx(0.65f));
+    CHECK(p->v == Catch::Approx(0.5f));
+  }
+  SECTION("a cluster lands on its middle point, not between points") {
+    const auto o = overlay_of({{0.10f, 0.5f, 0.02f, 0.02f, true},
+                               {0.20f, 0.5f, 0.02f, 0.02f, true},
+                               {0.30f, 0.5f, 0.02f, 0.02f, true},
+                               {0.90f, 0.9f, 0.02f, 0.02f, false}});
+    const auto p = pick_af_focus(o);
+    REQUIRE(p);
+    CHECK(p->u == Catch::Approx(0.21f));
+    CHECK(p->v == Catch::Approx(0.51f));
+  }
+  SECTION("none in focus: the selected point") {
+    const auto p = pick_af_focus(overlay_of({{0.4f, 0.2f, 0.2f, 0.2f, false}}));
+    REQUIRE(p);
+    CHECK(p->u == Catch::Approx(0.5f));
+    CHECK(p->v == Catch::Approx(0.3f));
+  }
+
+  // A RAW stored landscape and shown portrait (orientation 6): the stored-grid
+  // centre (0.2, 0.25) is displayed at (1 - 0.25, 0.2).
+  mv::meta::metadata m;
+  m.af_points.push_back({0.1f, 0.2f, 0.2f, 0.1f, true});
+  m.display_orientation = 6;
+  const auto shown = pick_af_focus(overlay_of(mv::meta::displayed_af_points(m)));
+  REQUIRE(shown);
+  CHECK(shown->u == Catch::Approx(0.75f));
+  CHECK(shown->v == Catch::Approx(0.2f));
+
+  SECTION("unedited: the displayed point as is") {
+    const auto out = af_focus_in_output(*shown, mv::edit::affine{});
+    REQUIRE(out);
+    CHECK(out->u == Catch::Approx(0.75f));
+    CHECK(out->v == Catch::Approx(0.2f));
+  }
+  SECTION("a user quarter turn clockwise carries it with the pixels") {
+    mv::edit::geometry g;
+    g.orient = mv::codec::kRotateCw;
+    const auto placed = mv::edit::place(g, {4000, 6000});
+    const auto out = af_focus_in_output(*shown, placed.map);
+    REQUIRE(out);
+    // Clockwise: source (u, v) -> output (1 - v, u).
+    CHECK(out->u == Catch::Approx(0.8f));
+    CHECK(out->v == Catch::Approx(0.75f));
+  }
+  SECTION("a crop that keeps it rescales it; one that cuts it away refuses") {
+    mv::edit::geometry g;
+    g.crop = {0.5f, 0.0f, 0.5f, 0.5f};
+    const auto keep = af_focus_in_output(*shown, mv::edit::place(g, {4000, 6000}).map);
+    REQUIRE(keep);
+    CHECK(keep->u == Catch::Approx(0.5f));
+    CHECK(keep->v == Catch::Approx(0.4f));
+    g.crop = {0.0f, 0.5f, 0.5f, 0.5f};
+    CHECK_FALSE(af_focus_in_output(*shown, mv::edit::place(g, {4000, 6000}).map).has_value());
+  }
 }

@@ -390,3 +390,34 @@ TEST_CASE("the opening view does not pan", "[canvas]") {
   REQUIRE(cam.fit_mode());
   cam.drag_end();
 }
+
+// Issue #209: Shift+Z springs to 100 % with the AF point at the window centre,
+// clamped so no background shows; it leaves fit.
+TEST_CASE("zoom_to centres a point at a zoom, clamped to the image", "[canvas]") {
+  camera cam;
+  cam.fit(6000.0f, 4000.0f, 1200.0f, 800.0f, true);
+  REQUIRE(cam.fit_mode());
+  cam.zoom_to(1.0f, 4500.0f, 1000.0f, 6000.0f, 4000.0f, 1200.0f, 800.0f);
+  REQUIRE_FALSE(cam.fit_mode());
+  REQUIRE_FALSE(cam.fill_mode());
+  REQUIRE_THAT(cam.target_zoom(), WithinAbs(1.0f, 1e-6f));
+  REQUIRE_THAT(cam.target_pan_x(), WithinAbs(4500.0f, 1e-3f));
+  REQUIRE_THAT(cam.target_pan_y(), WithinAbs(1000.0f, 1e-3f));
+  // Springs, not a jump: the displayed zoom is still the fit until it steps.
+  REQUIRE(cam.zoom() < 0.5f);
+  for (int i = 0; i < 240; ++i) cam.step(1.0f / 120.0f);
+  REQUIRE_THAT(cam.zoom(), WithinAbs(1.0f, 1e-3f));
+  REQUIRE_THAT(cam.pan_x(), WithinAbs(4500.0f, 0.5f));
+
+  // A point in a corner lands as near the centre as the edge allows.
+  cam.zoom_to(1.0f, 10.0f, 3990.0f, 6000.0f, 4000.0f, 1200.0f, 800.0f);
+  REQUIRE_THAT(cam.target_pan_x(), WithinAbs(600.0f, 1e-3f));
+  REQUIRE_THAT(cam.target_pan_y(), WithinAbs(3600.0f, 1e-3f));
+  // An image narrower than the window at that zoom stays centred on that axis.
+  cam.zoom_to(1.0f, 10.0f, 10.0f, 1000.0f, 4000.0f, 1200.0f, 800.0f);
+  REQUIRE_THAT(cam.target_pan_x(), WithinAbs(500.0f, 1e-3f));
+  REQUIRE_THAT(cam.target_pan_y(), WithinAbs(400.0f, 1e-3f));
+  // Degenerate geometry changes nothing.
+  cam.zoom_to(2.0f, 0.0f, 0.0f, 0.0f, 4000.0f, 1200.0f, 800.0f);
+  REQUIRE_THAT(cam.target_zoom(), WithinAbs(1.0f, 1e-6f));
+}

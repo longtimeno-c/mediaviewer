@@ -81,7 +81,9 @@ Suites are registered with CTest and run by `ctest` on both platforms; see
 4. **Broken-file corpus** (`test_broken_corpus.cpp`, label `broken`). Every seed in
    `tests/data/seeds` is truncated, stomped, bit-flipped and given absurd dimensions, plus the
    hand-made files in `tests/data/broken`, through every decode entry point. Fails on a crash,
-   an escaped exception, a call over 5 s, or runaway memory. `MV_BROKEN_FULL=1` is the
+   an escaped exception, a call over 5 s, or runaway memory. Each family's first call in the
+   process is a warm-up on its real seed with 60 s (`MV_BROKEN_FIRST_USE_MS`): loading an OS
+   decoder (Windows.Data.Pdf) on a cold runner is one-time setup, not a hang. `MV_BROKEN_FULL=1` is the
    exhaustive nightly sweep; `MV_BROKEN_DUMP` writes failing inputs.
 5. **Fuzzing.** One libFuzzer harness per decoder entry point (`tools/fuzz/fuzz_*.cpp`:
    JPEG, PNG, BMP, GIF, WebP, TIFF, ICO, HEIC, AVIF, RAW, RAW preview, animation, the

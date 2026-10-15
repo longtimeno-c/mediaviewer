@@ -4,6 +4,7 @@
 #include "shell/present_busy.h"
 #include "shell/video_report.h"
 #include "shell/edit_view.h"
+#include "shell/af_focus.h"
 #include "shell/compare.h"
 #include "shell/loupe.h"
 #include "shell/dino_draw.h"
@@ -1602,6 +1603,8 @@ void present_lab_mac::render_thread_main() noexcept {
         const bool zoom_out = snapshot.zoom_out_seq != seen_zoom_out_seq_;
         const bool zoom_preset = snapshot.zoom_preset_seq != seen_zoom_preset_seq_;
         const bool fill = snapshot.fill_seq != seen_fill_seq_;
+        const bool af_focus = snapshot.af_focus_seq != seen_af_focus_seq_;
+        seen_af_focus_seq_ = snapshot.af_focus_seq;
         seen_zoom_in_seq_ = snapshot.zoom_in_seq;
         seen_zoom_out_seq_ = snapshot.zoom_out_seq;
         seen_zoom_preset_seq_ = snapshot.zoom_preset_seq;
@@ -1650,6 +1653,18 @@ void present_lab_mac::render_thread_main() noexcept {
           }
           if (zoom_preset) camera_.set_zoom(snapshot.zoom_preset, image_w, image_h, window_w, window_h);
           if (fill) camera_.fill(image_w, image_h, window_w, window_h, /*immediate=*/false);
+          // Issue #209 (Shift+Z): 100 % on the AF point, through the edit map
+          // (the Windows lab's twin). Stills only; camera state only.
+          if (af_focus && current_image_ && !video_frame_) {
+            const auto picked = pick_af_focus(snapshot.meta);
+            const auto out =
+                picked ? af_focus_in_output(*picked, place_image(*current_image_).map) : std::nullopt;
+            if (out) {
+              camera_.zoom_to(1.0f, out->u * image_w, out->v * image_h, image_w, image_h, window_w,
+                              window_h);
+              redraw = true;
+            }
+          }
           if (zoom_in || zoom_out || zoom_preset || fill) redraw = true;
           if (panned) {
             // One keyboard pan step is a tenth of the canvas, whatever the

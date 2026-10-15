@@ -389,6 +389,8 @@ These read the already-parsed `metadata` — no file I/O on toggle
   `FocusPoint` and EXIF `SubjectArea`. Stored-grid boxes are mapped through exactly the
   orientation the decoder already applied (`displayed_af_points`). Off by default. The Canon
   Y-axis sign has not been checked against a real Canon file.
+- **Zoom to AF point (`Shift+Z`)** — the same quads, as a camera target: 100 % centred on the
+  in-focus point (`shell/af_focus.h`), carried through the edit map. A focus check in one key.
 - **Eyedropper (`Shift+I`)** — a one-pixel readback on demand, sRGB 8-bit + hex; `Ctrl+C` copies
   the colour while it is on.
 - **Sort by date taken** — sort key 4 of `mv_folder_set_sort`. The keys come from the folder's
