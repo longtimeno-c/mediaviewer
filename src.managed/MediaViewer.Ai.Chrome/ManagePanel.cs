@@ -76,6 +76,10 @@ internal sealed partial class ManagePanel
     private readonly ToggleButton[] _videoIndex = new ToggleButton[3];
     private readonly TextBlock _videoIndexHint;
     private readonly TextBlock _audioLine;
+    // Text in pictures (#403): "Read text in photos" (read_text, on by default),
+    // greyed with a reason when this Windows has no OCR language.
+    private readonly ToggleSwitch _readText;
+    private readonly TextBlock _readTextDetail;
     private MvAiMedia _videoIndexValue = MvAiMedia.Pictures;
     private bool _audioReady;
     // The faces bits and people count the People rows were last drawn for:
@@ -234,6 +238,16 @@ internal sealed partial class ManagePanel
             "Pictures finds what a clip shows; Sound finds what it sounds like and what is said. Photos are always pictures.", 12));
         videoDetail.Children.Add(_videoIndexHint);
         Section("Videos").Children.Add(Row("Index videos for", videoDetail, _look.Track(segments, hc)));
+
+        _readText = new ToggleSwitch { OnContent = "", OffContent = "", MinWidth = 0, Width = 48, IsOn = true };
+        AutomationProperties.SetName(_readText, "Read text in photos");
+        _readText.Toggled += (_, _) =>
+        {
+            if (_updating) return;
+            Set("read_text", _readText.IsOn ? "1" : "0");
+        };
+        _readTextDetail = _look.Text(ReadTextDetail(true), 12);
+        Section("Text in pictures").Children.Add(Row("Read text in photos", _readTextDetail, _readText));
 
         // Indexed folders: one row each with a hairline between, then Add.
         StackPanel folders = Section("Indexed folders");
@@ -522,6 +536,10 @@ internal sealed partial class ManagePanel
             _cloudUnsupported = r.TryGetProperty("cloud_supported", out JsonElement cs) && cs.ValueKind == JsonValueKind.False;
             _cloudSwitch.IsEnabled = !_cloudUnsupported;
             _cloudSwitch.IsOn = r.TryGetProperty("cloud_files", out JsonElement cf) && cf.ValueKind == JsonValueKind.True;
+            bool textAvailable = !r.TryGetProperty("text_available", out JsonElement ta) || ta.ValueKind != JsonValueKind.False;
+            _readText.IsEnabled = textAvailable;
+            _readText.IsOn = textAvailable && (!r.TryGetProperty("read_text", out JsonElement rt) || rt.ValueKind != JsonValueKind.False);
+            _readTextDetail.Text = ReadTextDetail(textAvailable);
             ShowCap(r.TryGetProperty("index_cap_bytes", out JsonElement ic) && ic.TryGetInt64(out long cap)
                 ? Math.Max(0, cap) : 8_000_000_000);
         }
@@ -692,6 +710,10 @@ internal sealed partial class ManagePanel
     // so the box never reads blank.
     private static readonly long[] CapChoices =
         { 2_000_000_000, 5_000_000_000, 10_000_000_000, 20_000_000_000, 50_000_000_000 };
+
+    private static string ReadTextDetail(bool available) => available
+        ? "Finds photos and video moments by the words in them: a sign, a shirt, a page. Windows reads them on this PC; nothing leaves it."
+        : "Windows has no text recognition for your languages, so photos are not searched by the words in them. Add a language with OCR in Settings → Time & language.";
 
     private static string CapText(long bytes) =>
         bytes <= 0 ? "No limit" : $"{bytes / 1e9:0.#} GB";

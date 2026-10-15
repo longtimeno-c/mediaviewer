@@ -108,3 +108,73 @@ TEST_CASE("the OS text reader finds the labelled phrases (#403)", "[.ocr-fixture
   CHECK(recall >= 0.9);
 #endif
 }
+
+// The text on clip moments (engine::process_text_moments): what one moment
+// costs on top of the picture pass. Every clip in the folder, twelve moments
+// spread over it (the picture pass keeps a moment every 0.5-2 s on a change;
+// the cost per moment is what matters), each decoded at the text edge (2,048,
+// the clip's own size when smaller) by the host's seek-and-decode, then read.
+// The 448 px seek of the same moment is printed for scale.
+//
+//   MV_OCR_CLIP_DIR=<folder of clips> mv_ai_tests "[.ocr-moments]"
+TEST_CASE("the OS text reader's cost per clip moment (#403)", "[.ocr-moments]") {
+#if !defined(MV_AI_TEST_DECODE)
+  SKIP("built without the host's decoders");
+#else
+  const char* dir_env = std::getenv("MV_OCR_CLIP_DIR");
+  if (!dir_env) SKIP("MV_OCR_CLIP_DIR not set");
+  auto reader = mv::ai::make_text_reader();
+  if (!reader) SKIP("no OS text reader here");
+  constexpr int kMoments = 12;
+  std::vector<double> seek_small, seek_large, ocr, total;
+  int clips = 0, with_text = 0, moments = 0;
+  std::vector<fs::path> files;
+  for (const auto& e : fs::directory_iterator(fs::path(dir_env))) {
+    if (e.is_regular_file()) files.push_back(e.path());
+  }
+  std::sort(files.begin(), files.end());
+  for (const fs::path& p : files) {
+    const std::string file = p.string();
+    mv::addon::video_facts facts;
+    {
+      auto sampler = mv::addon::media::open_sampler(file, mv::addon::sampler_options{});
+      if (!sampler) continue;  // not a clip
+      facts = (*sampler)->facts();
+    }
+    if (facts.duration_ms <= 0) continue;
+    ++clips;
+    for (int i = 0; i < kMoments; ++i) {
+      const std::int64_t ms = facts.duration_ms * (2 * i + 1) / (2 * kMoments);
+      auto t0 = std::chrono::steady_clock::now();
+      auto small = mv::addon::media::video_frame(file, ms, 448);
+      seek_small.push_back(ms_since(t0));
+      if (!small) continue;
+      t0 = std::chrono::steady_clock::now();
+      auto big = mv::addon::media::video_frame(file, ms, 2048);
+      const double decode = ms_since(t0);
+      seek_large.push_back(decode);
+      REQUIRE(big);
+      mv::ai::rgb_frame f;
+      f.width = big->width;
+      f.height = big->height;
+      f.rgb = std::move(big->rgb);
+      t0 = std::chrono::steady_clock::now();
+      auto lines = reader->read(f);
+      const double read = ms_since(t0);
+      ocr.push_back(read);
+      total.push_back(decode + read);
+      REQUIRE(lines);
+      ++moments;
+      if (!lines->empty()) ++with_text;
+    }
+    std::printf("clip %d: %ux%u, %.1f s\n", clips, facts.width, facts.height,
+                static_cast<double>(facts.duration_ms) / 1000.0);
+  }
+  if (moments == 0) SKIP("no clips decoded in MV_OCR_CLIP_DIR");
+  std::printf(
+      "{\"reader\":\"%s\",\"clips\":%d,\"moments\":%d,\"with_text\":%d,\"seek_448_ms_median\":%.1f,"
+      "\"seek_2048_ms_median\":%.1f,\"read_ms_median\":%.1f,\"moment_ms_median\":%.1f,\"moment_ms_mean\":%.1f}\n",
+      reader->spec_key().c_str(), clips, moments, with_text, median(seek_small), median(seek_large), median(ocr),
+      median(total), std::accumulate(total.begin(), total.end(), 0.0) / static_cast<double>(total.size()));
+#endif
+}

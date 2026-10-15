@@ -435,10 +435,24 @@ class engine {
   // #406: a clip's chapter titles and text subtitle lines (host read_cues),
   // committed in batches under kCueSpec so a kill resumes. No model.
   void process_cues(const work_item& item);
-  // #403: the text in a batch of photos, read by the OS, one cue row each.
+  // #403: the text in a batch of photos, read by the OS, one cue row each;
+  // a clip goes to process_text_moments.
   void process_text(std::vector<work_item>& items);
+  // The text on the moments a clip's picture pass kept: each decoded again,
+  // read, one cue row at its pts_ms (the same text as the moment before is
+  // not stored twice). Committed every few moments under `spec`, so a stop
+  // resumes after the last; nothing is embedded.
+  void process_text_moments(const work_item& item, text_reader& reader, const std::string& spec);
+  // Commits' rows into cue_rows_, first dropping the asset's picture rows from
+  // `replace_from` (index_db::commit_cues' rule); empties `rows`.
+  void store_text(std::int64_t asset, std::int64_t replace_from, std::vector<cue_in>& rows);
+  // The OS's lines as one row's text, capped.
+  [[nodiscard]] static std::string joined_text(const std::vector<std::string>& lines);
   // The OS text reader's progress spec while reading text is on, else "".
   [[nodiscard]] std::string text_spec() const;
+  // Its spec for clip moments (text_spec() + kMomentsSuffix), else "".
+  [[nodiscard]] std::string text_moments_spec() const;
+  static constexpr const char* kMomentsSuffix = "/moments";
   [[nodiscard]] std::uint32_t default_media() const;
   [[nodiscard]] platform::power power_state() const;
   // audio search
@@ -705,6 +719,7 @@ class engine {
   // #403: made on the control thread (Windows joins it to the MTA first), set
   // once under models_m_ and never replaced, so a worker may keep the pointer.
   std::unique_ptr<text_reader> text_;
+  std::atomic<bool> text_none_{false};  // make_text_reader was asked and the OS has none
   std::atomic<bool> models_ready_{false};
   std::atomic<bool> models_failed_{false};
   std::atomic<bool> reload_models_{false};
@@ -836,6 +851,19 @@ class engine {
   };
   std::deque<tick> ticks_;
   counts counts_{};
+  // The text passes' counts (cue, photo text, clip-moment text), kept between
+  // refreshes: three queries over every asset are ~14 ms at 25 k assets, so an
+  // idle refresh (once a second) reuses them unless something can have moved
+  // them (text_counts_due_, the picture counts or spec, work pending) or 30 s
+  // have passed. Under status_m_.
+  struct text_counts {
+    counts cues, photos, moments;
+    std::string key;  // the specs and picture counts they were taken with
+    double at = -1e9;
+  };
+  text_counts text_counts_;
+  // Set by a cue or text commit and by read_text: the next refresh counts again.
+  std::atomic<bool> text_counts_due_{true};
   std::string active_root_;
   std::map<std::int64_t, std::pair<std::uint64_t, std::uint64_t>> root_counts_;  // assets, done
   std::vector<root_row> roots_cache_;

@@ -162,14 +162,17 @@ class fake_embedder final : public mv::infer::embedder {
 };
 
 // #403: the OS text reader, faked. The fake still marks a photo's text in
-// pixel 1's green channel (the rig's still_rgb sets it from the name).
+// pixel 1's green channel (the rig's still_rgb sets it from the name); a
+// "*sign*" clip's frames carry it from 3 s, and their second + 1 in pixel 1's
+// blue (fake_sampler).
 constexpr std::uint8_t kSignSuited = 77;  // "*sign*": a sign reading SUITED AND / BOOTED
 constexpr std::uint8_t kSignKoln = 78;    // "*koln*": Grüße aus / KÖLN
 class fake_text final : public mv::ai::text_reader {
  public:
-  explicit fake_text(std::atomic<int>* reads) : reads_(reads) {}
+  // `seen` is told of every picture before it is read (it may block).
+  explicit fake_text(std::function<void(const mv::ai::rgb_frame&)> seen) : seen_(std::move(seen)) {}
   mv::result<std::vector<std::string>> read(const mv::ai::rgb_frame& img) override {
-    ++*reads_;
+    seen_(img);
     if (img.rgb.size() < 6) return std::vector<std::string>{};
     if (img.rgb[4] == kSignSuited) return std::vector<std::string>{"SUITED AND", "BOOTED"};
     if (img.rgb[4] == kSignKoln) return std::vector<std::string>{"Grüße aus", "KÖLN"};
@@ -178,7 +181,7 @@ class fake_text final : public mv::ai::text_reader {
   const std::string& spec_key() const noexcept override { return key_; }
 
  private:
-  std::atomic<int>* reads_;
+  std::function<void(const mv::ai::rgb_frame&)> seen_;
   std::string key_ = "ocr/fake/1";
 };
 
@@ -244,6 +247,11 @@ class fake_sampler final : public mv::addon::video_sampler {
     const rgb c = t_ < 3000 ? rgb{220, 20, 20} : (t_ < 6000 ? rgb{20, 220, 20} : rgb{20, 20, 220});
     f.image = solid(c, 64, 36);
     if (name_.rfind("anna3s", 0) == 0 && t_ == 3000) f.image.rgb[2] = 11;  // fake_faces: Anna
+    if (name_.find("sign") != std::string::npos) {
+      // #403: a sign in shot from 3 s (fake_text), and which second this is.
+      if (t_ >= 3000) f.image.rgb[4] = kSignSuited;
+      f.image.rgb[5] = static_cast<std::uint8_t>(t_ / 1000 + 1);
+    }
     f.pts_ms = t_;
     f.pts_tb = t_ * 90;
     f.tb_num = 1;
@@ -614,7 +622,17 @@ struct rig {
   std::atomic<int> cue_reads{0};
   std::atomic<int> samplers_opened{0};
   std::atomic<bool> text_available{false};  // #403: off unless a test reads text
-  std::atomic<int> text_reads{0};
+  std::atomic<int> text_reads{0};           // photos read (a still: 32 px wide)
+  std::atomic<int> clip_text_reads{0};      // clip moments read (a frame: 64 px wide)
+  std::mutex text_m;
+  std::vector<int> sign_seconds;            // the second of each "*sign*" clip moment read
+  // Set: the reader waits on a clip moment (a pass still running). Never on a
+  // photo: with one worker (four cores) a photo's text can be claimed before
+  // the walk has listed a clip, and holding it would starve that clip's pictures.
+  std::atomic<bool> hold_text{false};
+  std::atomic<int> text_holding{0};  // reads that waited on hold_text
+  std::atomic<bool> hold_cues{false};       // set: read_cues waits
+  std::atomic<int> yield_after_clip_reads{-1};  // >= 0: the host asks to yield after that many
   std::unique_ptr<mv::addon::host_table> table;
   std::shared_ptr<cloud_world> cloud = std::make_shared<cloud_world>();
   mv_host_api api{};  // the table, its walk_files2 flagging `cloud`'s online-only names
@@ -763,6 +781,7 @@ struct rig {
     svc.read_cues = [this](const std::string& path, std::int64_t start_ms, std::int64_t max_ms, std::uint32_t max_cues,
                            const std::function<bool(const mv::addon::host_services::cue&)>& visit) -> mv::expected {
       ++cue_reads;
+      while (hold_cues) std::this_thread::sleep_for(std::chrono::milliseconds(5));
       const std::string name = utf8(fs::path(path).filename());
       std::vector<mv::addon::host_services::cue> all;
       if (name.find("manycues") != std::string::npos) {
@@ -873,7 +892,22 @@ struct rig {
     d.cloud = [this] { return std::unique_ptr<mv::ai::cloud_files>(new fake_cloud(cloud)); };
     d.text = [this]() -> std::unique_ptr<mv::ai::text_reader> {
       if (!text_available) return nullptr;
-      return std::make_unique<fake_text>(&text_reads);
+      return std::make_unique<fake_text>([this](const mv::ai::rgb_frame& img) {
+        if (hold_text && img.width == 64) {
+          ++text_holding;
+          while (hold_text) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        if (img.width != 64) {
+          ++text_reads;
+          return;
+        }
+        const int n = ++clip_text_reads;
+        if (img.rgb.size() >= 6 && img.rgb[5] != 0) {
+          std::lock_guard lock(text_m);
+          sign_seconds.push_back(img.rgb[5] - 1);
+        }
+        if (n == yield_after_clip_reads) busy = true;
+      });
     };
     d.open_speech = [this](std::uint32_t, std::uint32_t) -> mv::result<mv::ai::loaded_speech> {
       if (!audio_available) return mv::err(mv::status::io);
@@ -2363,7 +2397,8 @@ TEST_CASE("words in a photo are found by quoted and plain words (#403)", "[ai][e
   REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
   REQUIRE(r.idle());
   CHECK(r.status().assets_failed == 0);
-  CHECK(r.text_reads.load() == 3);  // each photo once; a clip is not read
+  CHECK(r.text_reads.load() == 3);       // each photo once
+  CHECK(r.clip_text_reads.load() == 3);  // and the clip's three moments (red, green, blue)
   const int embedded = r.fast->images_embedded.load();
 
   const auto top = [&](const std::string& q) {
@@ -2429,6 +2464,191 @@ TEST_CASE("without an OS text reader nothing changes (#403)", "[ai][engine][ocr]
   CHECK(r.status().assets_done == 1);
   CHECK(r.search("\"suited and booted\"").empty());
   CHECK(r.text_reads.load() == 0);
+}
+
+TEST_CASE("words on a clip's moments find the clip at that moment (#403)", "[ai][engine][ocr][moments]") {
+  rig r;
+  r.text_available = true;
+  r.file("clips/street_sign.mp4");  // red 0-2 s, green 3-5 s, blue 6-8 s; a sign in shot from 3 s
+  r.file("green_plain.jpg");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
+  REQUIRE(r.idle());
+  CHECK(r.status().assets_failed == 0);
+  const int embedded = r.fast->images_embedded.load();
+  // Each moment the picture pass kept, read once; nothing more embedded.
+  CHECK(r.clip_text_reads.load() == 3);
+  {
+    std::lock_guard lock(r.text_m);
+    CHECK(r.sign_seconds == std::vector<int>{0, 3, 6});
+  }
+
+  const std::uint64_t id = r.eng->search_text("\"suited and booted\"", "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+  REQUIRE(r.eng->wait_search(id, kSettleMs));
+  const auto rows = r.rows(id);
+  // The sign held in shot over two moments is one row, at the first.
+  REQUIRE(rows.size() == 1);
+  CHECK(rows[0].first == "street_sign.mp4");
+  CHECK(rows[0].second == 3000);
+  auto res = r.eng->result_at(id, 0);
+  REQUIRE(res);
+  CHECK((res->match & MV_AI_MATCH_TEXT) != 0);
+  CHECK(res->more_in_clip == 0);
+  auto why = r.eng->result_snippet(id, 0);
+  REQUIRE(why);
+  CHECK(*why == "In the picture: SUITED AND BOOTED");
+  CHECK(r.search("said:booted") == std::vector<std::pair<std::string, std::int64_t>>{{"street_sign.mp4", 3000}});
+
+  // Counted, and read once, ever: a restart reads nothing again.
+  CHECK(r.status().text_total == 2);  // the photo and the clip
+  CHECK(r.status().text_done == 2);
+  r.start();
+  REQUIRE(r.idle());
+  CHECK(r.clip_text_reads.load() == 3);
+  CHECK(r.search("\"suited and booted\"").size() == 1);
+  CHECK(r.fast->images_embedded.load() == embedded);
+
+  // Off: a new clip is not read; back on, it is.
+  REQUIRE(r.eng->set_setting("read_text", "0"));
+  r.file("clips/second_sign.mp4", 24);
+  REQUIRE(r.eng->root_rescan(1));
+  REQUIRE(wait_for([&] { return r.status().assets_total == 3; }, kSettleMs));
+  REQUIRE(r.idle());
+  CHECK(r.clip_text_reads.load() == 3);
+  CHECK(r.status().text_total == 0);  // no pass, nothing to count
+  REQUIRE(r.eng->set_setting("read_text", "1"));
+  REQUIRE(wait_for([&] { return r.clip_text_reads.load() == 6; }, kSettleMs));
+  REQUIRE(r.idle());
+  CHECK(r.search("\"suited and booted\"").size() == 2);
+}
+
+TEST_CASE("text on a clip's moments resumes after the last committed moment (#403)", "[ai][engine][ocr][moments]") {
+  rig r;
+  r.text_available = true;
+  r.yield_after_clip_reads = 1;  // the host gets busy as the first moment is read
+  r.file("clips/street_sign.mp4");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
+  REQUIRE(wait_for([&] { return r.clip_text_reads.load() == 1; }, kSettleMs));
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));  // yielding at the next moment
+  CHECK(r.clip_text_reads.load() == 1);
+  r.eng.reset();  // quit while yielding: the first moment commits, the rest wait
+  r.busy = false;
+  r.yield_after_clip_reads = -1;
+  r.start();
+  REQUIRE(r.idle());
+  {
+    // Every moment read once across the quit: none twice, none skipped.
+    std::lock_guard lock(r.text_m);
+    CHECK(r.sign_seconds == std::vector<int>{0, 3, 6});
+  }
+  const auto rows = r.search("\"suited and booted\"");
+  REQUIRE(rows.size() == 1);
+  CHECK(rows[0].second == 3000);
+}
+
+// Where a status wait stuck, for the failure that follows.
+static std::string status_dump(const mv_ai_status& s) {
+  std::ostringstream o;
+  o << "state " << s.state << ", yield " << s.yield_reason << ", assets " << s.assets_done << "/" << s.assets_total
+    << " (failed " << s.assets_failed << "), cues " << s.cues_done << "/" << s.cues_total << ", text " << s.text_done
+    << "/" << s.text_total << ", flags " << s.flags;
+  return o.str();
+}
+
+TEST_CASE("the status counts the cue pass, never idle while it runs (#406)", "[ai][engine][cues]") {
+  rig r;  // no OS text reader: only the cue pass is held
+  r.hold_cues = true;
+  struct release {
+    rig& r;
+    ~release() { r.hold_cues = false; }
+  } guard{r};
+  r.file("red_plain.jpg");
+  r.file("clips/birthday_cues.mp4");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
+  // The clip's cues are being read (after its pictures: claim's order).
+  const bool reading = wait_for([&] { return r.cue_reads.load() >= 1; }, kSettleMs);
+  UNSCOPED_INFO("cue reads " << r.cue_reads.load() << "; " << status_dump(r.status()));
+  REQUIRE(reading);
+  std::this_thread::sleep_for(std::chrono::milliseconds(1500));  // a status refresh or two
+  {
+    const mv_ai_status s = r.status();
+    INFO(status_dump(s));
+    CHECK(s.struct_size == sizeof(mv_ai_status));
+    CHECK(s.state != MV_AI_STATE_IDLE);
+    CHECK(s.cues_total == 1);
+    CHECK(s.cues_done == 0);
+    CHECK(s.text_total == 0);  // no reader, no text pass
+  }
+  CHECK_FALSE(r.eng->wait_idle(200));
+  r.hold_cues = false;
+  REQUIRE(r.idle());
+  const mv_ai_status s = r.status();
+  INFO(status_dump(s));
+  CHECK(s.cues_total == 1);
+  CHECK(s.cues_done == 1);
+}
+
+TEST_CASE("the status counts the text pass, never idle while it runs (#403)", "[ai][engine][ocr]") {
+  rig r;
+  r.text_available = true;
+  r.hold_text = true;  // clip moments only (rig)
+  struct release {
+    rig& r;
+    ~release() { r.hold_text = false; }
+  } guard{r};
+  r.file("red_sign.jpg");
+  r.file("clips/street_sign.mp4");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
+  // A moment of the clip is being read (after its pictures: the `after` spec).
+  const bool reading = wait_for([&] { return r.text_holding.load() >= 1; }, kSettleMs);
+  UNSCOPED_INFO("photo reads " << r.text_reads.load() << "; " << status_dump(r.status()));
+  REQUIRE(reading);
+  std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+  {
+    const mv_ai_status s = r.status();
+    INFO(status_dump(s));
+    CHECK(s.state != MV_AI_STATE_IDLE);
+    CHECK(s.text_total == 2);  // the photo, and the clip whose pictures are done
+    CHECK(s.text_done < s.text_total);
+  }
+  CHECK_FALSE(r.eng->wait_idle(200));
+  r.hold_text = false;
+  REQUIRE(r.idle());
+  const mv_ai_status s = r.status();
+  INFO(status_dump(s));
+  CHECK(s.text_total == 2);
+  CHECK(s.text_done == 2);
+}
+
+TEST_CASE("read_text is in settings_json and outlives a restart (#403)", "[ai][engine][ocr]") {
+  rig r;
+  r.start();
+  const auto read_text = [&] {
+    auto doc = mv::json::parse(r.eng->settings_json());
+    REQUIRE(doc);
+    return doc->boolean("read_text");
+  };
+  CHECK(read_text() == true);  // on by default
+  REQUIRE(r.eng->set_setting("read_text", "0"));
+  CHECK(read_text() == false);
+  r.start();
+  CHECK(read_text() == false);
+  REQUIRE(r.eng->set_setting("read_text", "1"));
+  CHECK(read_text() == true);
+
+  // Whether the OS can read text here: the rig's has no reader until asked.
+  const auto available = [&] {
+    auto doc = mv::json::parse(r.eng->settings_json());
+    return doc && doc->boolean("text_available") == true;
+  };
+  REQUIRE(wait_for([&] { return !available(); }, kSettleMs));
+  r.text_available = true;
+  r.start();
+  REQUIRE(r.idle());
+  CHECK(available());
 }
 
 TEST_CASE("a Live Photo's movie changing keeps the still's named face (#407)", "[ai][engine][live][faces]") {
@@ -4049,4 +4269,62 @@ TEST_CASE("re-analysing faces keeps the user's people and settles once at the en
   CHECK(*people->a[1].integer("faces") == 2);
   CHECK(r.status().faces_total == 5);  // replaced in place, not added again
   CHECK(r.search("photos of Anna").size() == 3);
+}
+
+// The status refresh runs once a second, indexing or idle (control_loop): what
+// the text passes' three counts add to it, against the picture count it
+// already makes, on a 25,000-asset index where every pass is done. Hidden:
+// `mv_ai_tests "[.perf-bench]"` prints the medians as JSON.
+TEST_CASE("perf: the text passes' status counts on a 25 k index", "[.perf-bench][ai][engine]") {
+  scratch_dir dir{"ai-counts"};
+  auto d = mv::ai::index_db::open(utf8(dir / "index.db"));
+  REQUIRE(d);
+  auto root = (*d)->add_root("/library", true);
+  REQUIRE(root);
+  std::vector<mv::ai::index_db::seen_file> files;
+  for (int i = 0; i < 25000; ++i) {
+    mv::ai::index_db::seen_file f;
+    f.kind = i % 5 == 0 ? mv::ai::asset_kind::video : mv::ai::asset_kind::photo;
+    f.path = "/library/" + std::to_string(i) + (f.kind == mv::ai::asset_kind::video ? ".mov" : ".jpg");
+    f.mtime = 1;
+    f.size = 100;
+    files.push_back(std::move(f));
+  }
+  const std::int64_t gen = (*d)->next_generation();
+  auto ups = (*d)->see_assets(*root, files, gen);
+  REQUIRE(ups);
+  const std::string pic = "fake/pic", ocr = "ocr/fake/1", moments = "ocr/fake/1/moments";
+  for (std::size_t i = 0; i < ups->size(); ++i) {
+    const std::int64_t id = (*ups)[i].id;
+    const bool video = files[i].kind == mv::ai::asset_kind::video;
+    REQUIRE((*d)->commit_cues(id, {}, mv::ai::work_state::done, 0, -1, pic));
+    REQUIRE((*d)->commit_cues(id, {}, mv::ai::work_state::done, 0, -1, video ? moments : ocr));
+    if (video) REQUIRE((*d)->commit_cues(id, {}, mv::ai::work_state::done, 0, -1));
+  }
+  const std::uint32_t media = MV_AI_MEDIA_PICTURES;
+  const auto time = [](const std::function<void()>& f) {
+    std::vector<double> ms;
+    for (int i = 0; i < 30; ++i) {
+      const auto t0 = std::chrono::steady_clock::now();
+      f();
+      ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+    }
+    std::sort(ms.begin(), ms.end());
+    return ms[ms.size() / 2];
+  };
+  const double pictures = time([&] {
+    CHECK((*d)->count(pic, mv::ai::track_filter{true, MV_AI_MEDIA_PICTURES, media, 0, {}}).done == 25000);
+  });
+  const double cues = time([&] {
+    CHECK((*d)->count(mv::ai::kCueSpec, mv::ai::track_filter{false, MV_AI_MEDIA_BOTH, media, 0, {}}).done == 5000);
+  });
+  const double photos_text = time([&] {
+    CHECK((*d)->count(ocr, mv::ai::track_filter{true, 0, media, 0, {}}).done == 20000);
+  });
+  const double moments_text = time([&] {
+    CHECK((*d)->count(moments, mv::ai::track_filter{false, MV_AI_MEDIA_PICTURES, media, 0, {}}, pic).done == 5000);
+  });
+  std::printf("{\"assets\":25000,\"pictures_count_ms\":%.2f,\"cues_count_ms\":%.2f,\"text_count_ms\":%.2f,"
+              "\"moments_count_ms\":%.2f,\"added_ms_per_refresh\":%.2f}\n",
+              pictures, cues, photos_text, moments_text, cues + photos_text + moments_text);
 }
