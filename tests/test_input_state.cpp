@@ -104,16 +104,16 @@ TEST_CASE("the loupe looks at its point at 100 %, or twice the zoom past it", "[
 }
 
 // Issue #408: the home's theme and its ground effect's rest rule.
-TEST_CASE("the home's ground runs 30 Hz in front, 10 Hz behind, then rests", "[shell][home]") {
+TEST_CASE("the home's ground runs every frame in front, 10 Hz behind, then rests", "[shell][home]") {
   using mv::shell::home_effect;
   using mv::shell::home_ground_clock;
-  constexpr double kFast = home_ground_clock::kFastTick;
+  constexpr double kFast = home_ground_clock::kEveryFrame;
   constexpr double kSlow = home_ground_clock::kSlowTick;
   home_ground_clock c;
   // No input yet: nothing moves (the labs record launch as one).
   REQUIRE(c.interval(true, home_effect::rain, true, true, false, 0.0) == 0.0);
   c.input(0.0);
-  // In front and in use: 30 a second.
+  // In front and in use: every display frame.
   REQUIRE(c.interval(true, home_effect::rain, true, true, false, 1.0) == kFast);
   // Behind another app but visible: 10 a second.
   REQUIRE(c.interval(true, home_effect::rain, false, true, false, 1.0) == kSlow);
@@ -127,15 +127,19 @@ TEST_CASE("the home's ground runs 30 Hz in front, 10 Hz behind, then rests", "[s
   REQUIRE(c.interval(true, home_effect::none, true, true, false, 1.0) == 0.0);
   REQUIRE(c.interval(true, home_effect::rain, true, false, false, 1.0) == 0.0);
   REQUIRE(c.interval(true, home_effect::rain, true, true, true, 1.0) == 0.0);
-  // The first tick is due at once and does not advance the clock; then one per interval.
+  // In use, every pass ticks (the display paces the loop); the first does not
+  // advance the clock, the next advances by the real frame time.
   REQUIRE(c.step(kFast, 1.0));
   REQUIRE(c.time == 0.0);
-  REQUIRE_FALSE(c.step(kFast, 1.0 + kFast * 0.5));
-  REQUIRE(c.until_next(kFast, 1.0 + kFast * 0.5) > 0.0);
-  REQUIRE(c.step(kFast, 1.0 + kFast));
-  REQUIRE(c.time > kFast * 0.99);
-  // A wait that wakes a hair early still ticks, so the loop never spins.
-  REQUIRE(c.step(kFast, 1.0 + 2 * kFast - 0.001));
+  REQUIRE(c.step(kFast, 1.0 + 1.0 / 60.0));
+  REQUIRE(c.time > 0.0166);
+  REQUIRE(c.step(kFast, 1.0 + 1.0 / 60.0 + 1.0 / 120.0));  // a ProMotion frame
+  // Slow ticks wait their interval; a wait that wakes a hair early still ticks,
+  // so the loop never spins.
+  REQUIRE(c.step(kSlow, 1.5));
+  REQUIRE_FALSE(c.step(kSlow, 1.55));
+  REQUIRE(c.until_next(kSlow, 1.55) > 0.0);
+  REQUIRE(c.step(kSlow, 1.6 - 0.001));
   // Dropping to the slow rate keeps the clock continuous; a late tick never jumps.
   const double t0 = c.time;
   REQUIRE(c.step(kSlow, 2.0));

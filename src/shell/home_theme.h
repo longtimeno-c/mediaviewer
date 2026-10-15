@@ -89,8 +89,8 @@ struct home_theme {
 // The ground effect's motion rule (home_ground.h draws it) as a pure clock, so
 // both labs share it and a test can drive it. The chromes' panes run the same
 // rule (ThemeField.swift / ThemeField.cs ThemeMotion). Owner, 2026-10-15:
-//   - 30 frames a second while the app is in front and the pointer or a key
-//     moved in the last 5 seconds;
+//   - every display frame (60 a second, 120 on a ProMotion display) while the
+//     app is in front and the pointer or a key moved in the last 5 seconds;
 //   - otherwise 10 a second while the window is visible (behind another app,
 //     or in front but quiet), for up to 60 seconds after the last input;
 //   - then it rests, and never moves while hidden, minimised or covered, or
@@ -99,7 +99,11 @@ struct home_theme {
 // window left behind another app rests a minute after you leave it.
 // Times are the render thread's own seconds.
 struct home_ground_clock {
-  static constexpr double kFastTick = 1.0 / 30.0;
+  // In use: a tick on every loop pass, and the loop presents on the display's
+  // own beat (the frame-latency wait on Windows, the display link on the Mac),
+  // so the rate is the display's. Each tick is still a static frame, never
+  // `live`: background work is not told to yield for it.
+  static constexpr double kEveryFrame = 0.001;
   static constexpr double kSlowTick = 0.1;
   static constexpr double kFastWindow = 5.0;   // input this recent, in front: fast
   static constexpr double kSlowWindow = 60.0;  // input this recent, visible: slow
@@ -120,7 +124,7 @@ struct home_ground_clock {
     if (!home || !home_effect_moves(effect) || !visible || reduce_motion || last_input < 0.0)
       return 0.0;
     const double quiet = now - last_input;
-    if (active && quiet < kFastWindow) return kFastTick;
+    if (active && quiet < kFastWindow) return kEveryFrame;
     return quiet < kSlowWindow ? kSlowTick : 0.0;
   }
 

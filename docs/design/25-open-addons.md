@@ -265,7 +265,8 @@ A theme file, one per theme the add-on lists:
   and since issue #408 on the empty window behind the welcome card (`shell/home_ground.h`, the
   panes' field ported mark for mark, one static present a tick). It stops once a
   photo or a video is up; it is never drawn on a photo, a video or an error card, and it does
-  not change the clear. It ticks 30 times a second while the app is in front and someone has
+  not change the clear. It moves on every display frame (60 a second, 120 on ProMotion) while the
+  app is in front and someone has
   moved the pointer or a key in the last five seconds (over the canvas, the bar or a pane), and
   10 times a second while the window is visible, behind another app or quiet, for up to a minute
   after the last input; then it rests. It never moves while the window is hidden, minimised or

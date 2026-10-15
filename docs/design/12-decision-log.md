@@ -1461,8 +1461,11 @@ bridge keeps the latest theme and applies it when the app registers.
 
 **The ground effect moves faster, and behind other apps (2026-10-15, owner).** Was: 10 frames a
 second, only while the app was in front and the pointer or a key had moved in the last five
-seconds. The owner found it choppy, and frozen whenever another app was in front. Now: 30 a
-second in front and in use; 10 a second while the window is visible (behind another app, or in
+seconds. The owner found it choppy, and frozen whenever another app was in front, and then
+asked for 60 at least. Now: every display frame in front and in use (60 a second, 120 on
+ProMotion: the home ticks on each pass of a loop the display paces, the panes on the display link
+on the Mac and `CompositionTarget.Rendering` on Windows, since a fixed 60 Hz timer drifts against
+the display); 10 a second while the window is visible (behind another app, or in
 front but quiet), for up to a minute after the last input; then rest. Never while hidden,
 minimised or covered, never under Reduce Motion or with Windows animations off. One rule in
 three places (`home_ground_clock`, both chromes' `ThemeMotion`), and the bar's and panes' input

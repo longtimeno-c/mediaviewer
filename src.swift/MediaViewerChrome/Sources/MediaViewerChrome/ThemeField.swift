@@ -9,8 +9,8 @@
 // clears MVTheme.themed, so this paints the system ground and stops.
 // Photo and video live on the swapchain, which is a different view.
 //
-// Motion rests (owner, 2026-10-15): thirty frames a second while this app is
-// in front and a pointer or a key moved in the last five seconds; ten while a
+// Motion rests (owner, 2026-10-15): every display frame while this app is in
+// front and a pointer or a key moved in the last five seconds; ten while a
 // window is visible, for up to a minute after the last input; then none, and
 // none under Reduce Motion. Dots do not move, and a theme with no ground does
 // not either.
@@ -23,7 +23,7 @@ import SwiftUI
 import MVChromeBridge
 
 @MainActor
-final class ThemeMotion: ObservableObject {
+final class ThemeMotion: NSObject, ObservableObject {
   static let shared = ThemeMotion()
 
   @Published private(set) var time: TimeInterval = 0
@@ -31,20 +31,23 @@ final class ThemeMotion: ObservableObject {
 
   private var listeners = 0
   private var timer: Timer?
+  /// In use: the display's own frame callback, so marks move on its beat (60
+  /// a second, 120 on ProMotion). A fixed 60 Hz timer drifts against it.
+  private var link: CADisplayLink?
   private var monitor: Any?
   private var lastInput = CACurrentMediaTime()
   private var lastTick = CACurrentMediaTime()
   private var lastForward: CFTimeInterval = 0
   // The rule (owner, 2026-10-15; the native home runs the same, shell/home_theme.h
-  // home_ground_clock): 30 a second in front with input in the last 5 seconds,
-  // 10 a second while a window is visible for up to 60 seconds after the last
-  // input, then rest.
-  private let fastTick: TimeInterval = 1.0 / 30.0
+  // home_ground_clock): every display frame in front with input in the last 5
+  // seconds, 10 a second while a window is visible for up to 60 seconds after
+  // the last input, then rest.
   private let slowTick: TimeInterval = 0.1
   private let fastWindow: TimeInterval = 5
   private let slowWindow: TimeInterval = 60
 
-  private init() {
+  override private init() {
+    super.init()
     reduce = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
     NSWorkspace.shared.notificationCenter.addObserver(
       forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
@@ -107,42 +110,60 @@ final class ThemeMotion: ObservableObject {
     return app.windows.contains { $0.isVisible && !$0.isMiniaturized && $0.occlusionState.contains(.visible) }
   }
 
-  /// Seconds between ticks now, or 0 to rest.
-  private var every: TimeInterval {
-    guard listeners > 0, !reduce, visible else { return 0 }
+  private enum Pace: Equatable { case rest, everyFrame, slow }
+
+  private var pace: Pace {
+    guard listeners > 0, !reduce, visible else { return .rest }
     let quiet = CACurrentMediaTime() - lastInput
-    if (NSApp?.isActive ?? false) && quiet < fastWindow { return fastTick }
-    return quiet < slowWindow ? slowTick : 0
+    if (NSApp?.isActive ?? false) && quiet < fastWindow { return .everyFrame }
+    return quiet < slowWindow ? .slow : .rest
+  }
+
+  private var running: Pace {
+    link != nil ? .everyFrame : timer != nil ? .slow : .rest
   }
 
   private func consider() {
-    let want = every
-    if want > 0 {
-      if let timer, abs(timer.timeInterval - want) < 0.001 { return }
-      timer?.invalidate()
-      lastTick = CACurrentMediaTime()
-      let timer = Timer(timeInterval: want, repeats: true) { [weak self] _ in
+    let want = pace
+    guard want != running else { return }
+    let was = running
+    link?.invalidate()
+    link = nil
+    timer?.invalidate()
+    timer = nil
+    if was == .rest { lastTick = CACurrentMediaTime() }
+    switch want {
+    case .rest:
+      break
+    case .everyFrame:
+      let screen = NSApp?.mainWindow?.screen ?? NSApp?.windows.first?.screen ?? NSScreen.main
+      if let link = screen?.displayLink(target: self, selector: #selector(frame(_:))) {
+        link.add(to: .main, forMode: .common)
+        self.link = link
+      }
+    case .slow:
+      let timer = Timer(timeInterval: slowTick, repeats: true) { [weak self] _ in
         MainActor.assumeIsolated { self?.tick() }
       }
-      timer.tolerance = want * 0.1
+      timer.tolerance = slowTick * 0.1
       RunLoop.main.add(timer, forMode: .common)
       self.timer = timer
-    } else {
-      timer?.invalidate()
-      timer = nil
     }
   }
 
+  @objc private func frame(_ link: CADisplayLink) {
+    tick()
+  }
+
   private func tick() {
-    let want = every
-    guard want > 0 else {
+    guard pace != .rest else {
       consider()
       return
     }
     let now = CACurrentMediaTime()
     time += min(0.1, now - lastTick)
     lastTick = now
-    if let timer, abs(timer.timeInterval - want) >= 0.001 { consider() }
+    if pace != running { consider() }
   }
 }
 

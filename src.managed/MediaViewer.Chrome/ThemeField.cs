@@ -5,7 +5,7 @@
 // paints the canvas colour. Not a token, so an add-on theme has none, and
 // the photo canvas never sees it.
 //
-// Motion rests (owner, 2026-10-15): thirty frames a second while this app is
+// Motion rests (owner, 2026-10-15): every compositor frame while this app is
 // in front and a pointer or a key moved in the last five seconds; ten while
 // the window is visible, for up to a minute after the last input; then none,
 // and none while Windows has animations off. Dots do not move, and a theme with no ground does not either.
@@ -43,13 +43,14 @@ internal static class ThemeMotion
     private static long _lastInput;
     private static long _lastTick;
     private static long _lastForward = long.MinValue / 2;
-    private static int _intervalMs;  // 0 = stopped
+    private enum Pace { Rest, EveryFrame, Slow }
+    private static Pace _running = Pace.Rest;
     private static DispatcherQueueTimer? _timer;
     // The rule (owner, 2026-10-15; the native home runs the same, shell/home_theme.h
-    // home_ground_clock): 30 a second in front with input in the last 5 seconds,
-    // 10 a second while the window is visible for up to 60 seconds after the
-    // last input, then rest.
-    private const int FastMs = 33;
+    // home_ground_clock): every compositor frame in front with input in the last
+    // 5 seconds (CompositionTarget.Rendering, the display's own beat; a 16 ms
+    // timer rides Windows' 15.6 ms tick and judders), 10 a second while the
+    // window is visible for up to 60 seconds after the last input, then rest.
     private const int SlowMs = 100;
     private const long FastWindowMs = 5000;
     private const long SlowWindowMs = 60000;
@@ -87,54 +88,57 @@ internal static class ThemeMotion
         Ensure();
     }
 
-    // Milliseconds between ticks now, or 0 to rest.
-    private static int Want()
+    private static Pace Want()
     {
-        if (_listeners == 0 || _reduce || !Visible()) return 0;
+        if (_listeners == 0 || _reduce || !Visible()) return Pace.Rest;
         long quiet = Environment.TickCount64 - _lastInput;
-        if (InFront() && quiet < FastWindowMs) return FastMs;
-        return quiet < SlowWindowMs ? SlowMs : 0;
+        if (InFront() && quiet < FastWindowMs) return Pace.EveryFrame;
+        return quiet < SlowWindowMs ? Pace.Slow : Pace.Rest;
     }
 
     private static void Ensure()
     {
-        int want = Want();
-        if (want == 0)
+        Pace want = Want();
+        if (want == _running) return;
+        if (_running == Pace.EveryFrame) CompositionTarget.Rendering -= OnRendering;
+        _timer?.Stop();
+        if (_running == Pace.Rest) _lastTick = Environment.TickCount64;
+        _running = Pace.Rest;
+        if (want == Pace.Rest) return;
+        if (want == Pace.EveryFrame)
         {
-            _timer?.Stop();
-            _intervalMs = 0;
+            CompositionTarget.Rendering += OnRendering;
+            _running = Pace.EveryFrame;
             return;
         }
-        if (want == _intervalMs) return;
         DispatcherQueue? queue = DispatcherQueue.GetForCurrentThread();
         if (queue is null) return;
         if (_timer is null)
         {
             _timer = queue.CreateTimer();
             _timer.IsRepeating = true;
-            _timer.Tick += OnTick;
+            _timer.Interval = TimeSpan.FromMilliseconds(SlowMs);
+            _timer.Tick += (_, _) => Step();
         }
-        _timer.Stop();
-        _timer.Interval = TimeSpan.FromMilliseconds(want);
-        if (_intervalMs == 0) _lastTick = Environment.TickCount64;
-        _intervalMs = want;
         _timer.Start();
+        _running = Pace.Slow;
     }
 
-    private static void OnTick(DispatcherQueueTimer sender, object args)
+    private static void OnRendering(object? sender, object args) => Step();
+
+    private static void Step()
     {
-        int want = Want();
-        if (want == 0)
+        Pace want = Want();
+        if (want == Pace.Rest)
         {
-            sender.Stop();
-            _intervalMs = 0;
+            Ensure();
             return;
         }
         long now = Environment.TickCount64;
         Time += Math.Min(0.1, (now - _lastTick) / 1000.0);
         _lastTick = now;
         Tick?.Invoke();
-        if (want != _intervalMs) Ensure();
+        if (want != _running) Ensure();
     }
 
     private static bool InFront()
