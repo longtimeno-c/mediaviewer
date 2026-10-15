@@ -737,17 +737,18 @@ public static partial class IslandHost
         return menu;
     }
 
-    // A gallery or filmstrip tile's context menu: the add-ons' entries (Shift+F10
-    // or the menu key on a focused tile too). Nothing when none contributes any.
+    // A gallery or filmstrip tile's context menu: the add-ons' entries, then
+    // Share (issue #444; IslandHost.Share.cs). Shift+F10 or the menu key on a
+    // focused tile too.
     private static void AttachSlotContextMenu(FrameworkElement tile, FolderItemVm vm)
     {
         tile.ContextRequested += (_, e) =>
         {
-            MenuFlyout? menu = SlotContextMenuFor(vm);
-            if (menu is null) return;
-            if (e.TryGetPosition(tile, out Windows.Foundation.Point at))
+            Windows.Foundation.Point? point = e.TryGetPosition(tile, out Windows.Foundation.Point at) ? at : null;
+            MenuFlyout menu = TileContextMenuFor(vm, tile, point);
+            if (point is { } p)
             {
-                menu.ShowAt(tile, new Microsoft.UI.Xaml.Controls.Primitives.FlyoutShowOptions { Position = at });
+                menu.ShowAt(tile, new Microsoft.UI.Xaml.Controls.Primitives.FlyoutShowOptions { Position = p });
             }
             else
             {
@@ -773,14 +774,14 @@ public static partial class IslandHost
             // The bar sits at the client origin (SheetOrigin): its coordinates are
             // the client area's, in DIPs.
             if (vm is null || _source?.Content is not FrameworkElement anchor || anchor.XamlRoot is null) return 1;
-            MenuFlyout? menu = SlotContextMenuFor(vm);
-            if (menu is null) return 1;
             double scale = anchor.XamlRoot.RasterizationScale > 0 ? anchor.XamlRoot.RasterizationScale : 1;
+            var position = new Windows.Foundation.Point(x / scale, y / scale);
+            MenuFlyout menu = TileContextMenuFor(vm, anchor, position);
             menu.ShouldConstrainToRootBounds = false;  // over the canvas, outside the bar's island
             menu.Closed += (_, _) => RestoreCanvasFocus();
             menu.ShowAt(anchor, new Microsoft.UI.Xaml.Controls.Primitives.FlyoutShowOptions
             {
-                Position = new Windows.Foundation.Point(x / scale, y / scale),
+                Position = position,
             });
             return 0;
         }

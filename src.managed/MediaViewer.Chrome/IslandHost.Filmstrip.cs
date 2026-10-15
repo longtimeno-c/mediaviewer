@@ -113,6 +113,7 @@ public static partial class IslandHost
             _filmstripRoot = null;
             Items.Clear();
             _selectedIndex = -1;
+            UpdateBarShareButton();
             SetBusy(false);
             return 0;
         }
@@ -271,6 +272,7 @@ public static partial class IslandHost
             if (Items[i].Selected) { selected = i; break; }
         }
         _selectedIndex = selected;
+        UpdateBarShareButton();
         if (selected >= 0) ScrollTo(selected);
         ReloadFolders();
         UpdateGalleryCount();
@@ -369,6 +371,7 @@ public static partial class IslandHost
         if (_selectedIndex >= 0 && _selectedIndex < Items.Count) Items[_selectedIndex].Selected = false;
         if (index >= 0 && index < Items.Count) Items[index].Selected = true;
         _selectedIndex = index;
+        UpdateBarShareButton();
         ScrollTo(index);
         GalleryScrollTo(index);
         AnnounceSelection(index);

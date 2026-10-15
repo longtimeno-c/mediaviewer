@@ -28,7 +28,9 @@ Narrator. Other makers' script add-ons still have no network permission (owner, 
     other screen shows the same code before anything about the files leaves; then it waits for
     Accept, then progress and **Cancel**.
 - **The gallery** ([16](16-commands.md#gallery-range-and-share-413)): Shift-click selects a range,
-  dragging a cell drags it out, and one share icon ("Send") opens Sharepoint with the selection.
+  dragging a cell drags it out, and one share icon opens the share menu ([16 "Share"](16-commands.md#share-444)),
+  whose first entry is Sharepoint with the selection (issue #444: the same menu as `Ctrl+Shift+S`,
+  the bar's share button and right-click Share ▸).
   Without Sharepoint the icon offers the same one-click install as the other add-ons.
 
 ## Finding each other

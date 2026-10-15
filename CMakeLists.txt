@@ -833,6 +833,7 @@ add_executable(mediaviewer_lab WIN32
   src/shell/file_jobs.cpp
   src/shell/file_jobs.h
   src/shell/marks.h
+  src/shell/share_menu.h
   src/shell/meta_store.cpp
   src/shell/meta_store.h
   src/shell/meta_writer.cpp
@@ -1182,6 +1183,8 @@ if(MV_BUILD_TESTS)
     tests/test_corpus.cpp
     tests/test_key_router.cpp
     tests/test_key_router_review.cpp
+    # Issue #444: the one share command's file set and wire argument.
+    tests/test_share_menu.cpp
     tests/test_keymap.cpp
     tests/test_collision_name.cpp
     tests/test_rename_stop.cpp

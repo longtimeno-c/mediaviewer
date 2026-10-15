@@ -16,6 +16,7 @@ TEST_CASE("chrome attach args stay 40 bytes") {
   REQUIRE(sizeof(mv::shell::chrome_flags_args) == 8);
   REQUIRE(sizeof(mv::shell::chrome_browse_args) == 32);
   REQUIRE(sizeof(mv::shell::chrome_meta_args) == 80);  // #290: provenance and position
+  REQUIRE(sizeof(mv::shell::chrome_share_args) == 24);  // #444: IslandHost.ShareMenu
 }
 
 TEST_CASE("view settings round-trip through the flag word") {
