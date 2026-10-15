@@ -346,6 +346,10 @@ struct app_state {
   // The "Press T" filmstrip hint (shell/filmstrip_hint.h): learned once the
   // user hid the strip over a document; persisted in settings.ini [hints].
   bool strip_hint_learned = false;
+  // Its bottom-right card (chrome_host::show_hint) was sent up, and when: the
+  // wheel re-shows it at most once a second, and a non-document hides it.
+  bool strip_hint_card = false;
+  std::uint64_t strip_hint_shown_at = 0;
   // Issue #212 (docs/design/16 "Touch and trackpad"): WM_GESTURE pinch and pan
   // on a touchscreen, and the touchpad's sideways swipe (WM_MOUSEHWHEEL).
   // Pinch -> wheel_total, pan -> scroll_px, swipe -> folder_step: no new
@@ -2107,7 +2111,7 @@ void edit_item_opened(app_state* app) {
   adjust_item_changed(app);
   // PR 29: an open workspace follows the item to a tab it offers.
   workspace_item_changed(app);
-  // A document arriving under the filmstrip: say how to scroll it.
+  // A document or a clip arriving under the filmstrip: say what T changes.
   strip_hint_show(app);
 }
 
@@ -2478,13 +2482,15 @@ void folder_select(app_state* app, std::uint32_t index) {
 
 // The "Press T" filmstrip hint (shell/filmstrip_hint.h, docs/design/16): what the
 // canvas shows that the strip changes the input for. A document: with the strip
-// up the wheel zooms, hidden it scrolls.
+// up the wheel zooms, hidden it scrolls. A clip (issue #416): with the strip up
+// ← → walk the folder, hidden they skip ±2 s.
 mv::shell::strip_hint_subject strip_hint_subject_now(app_state* app) {
   if (!app || !app->session || app->mode == open_mode::none || app->edit_path.empty()) {
     return mv::shell::strip_hint_subject::none;
   }
   if (app->gallery_visible || app->editor.open) return mv::shell::strip_hint_subject::none;
   if (mv::io::is_document_name(app->edit_path)) return mv::shell::strip_hint_subject::document;
+  if (mv::shell::is_video_name(app->edit_path)) return mv::shell::strip_hint_subject::clip;
   return mv::shell::strip_hint_subject::none;
 }
 
@@ -2495,20 +2501,34 @@ std::string_view strip_hint_due_text(app_state* app) {
   return mv::shell::strip_hint_text(subject);
 }
 
-bool notice_showing(app_state* app, std::string_view utf8) {
-  if (!app || app->notice.empty() || ::GetTickCount64() >= app->notice_until) return false;
-  try {
-    return app->notice.find(wide_from_utf8(std::string(utf8))) != std::wstring::npos;
-  } catch (...) {
-    return false;
-  }
+void strip_hint_hide(app_state* app) {
+  if (!app->strip_hint_card) return;
+  app->strip_hint_card = false;
+  app->chrome.show_hint({});
 }
 
-// Shows the hint in the notice line if it is due and not already there.
+// Shows the hint's card (bottom right, it fades by itself) if it is due, and
+// takes it down when what is on screen no longer has it due.
 void strip_hint_show(app_state* app) {
+  if (!app) return;
   const auto text = strip_hint_due_text(app);
-  if (text.empty() || notice_showing(app, text)) return;
-  notice_show(app, std::string(text));
+  if (text.empty()) {
+    strip_hint_hide(app);
+    return;
+  }
+  const std::uint64_t now = ::GetTickCount64();
+  if (app->strip_hint_card && now - app->strip_hint_shown_at < 1000) return;
+  app->strip_hint_card = true;
+  app->strip_hint_shown_at = now;
+  app->chrome.show_hint(std::string(text));
+}
+
+// The hint is learned for good: T hid the strip over its subject, or the
+// card's "Got it" was clicked.
+void strip_hint_learn(app_state* app) {
+  app->strip_hint_learned = true;
+  mv::shell::save_strip_hint_learned();
+  strip_hint_hide(app);
 }
 
 // T: hiding the strip over a subject teaches the hint, for good.
@@ -2516,12 +2536,7 @@ void strip_hint_toggled(app_state* app) {
   if (!app || app->strip_hint_learned) return;
   const auto subject = strip_hint_subject_now(app);
   if (!mv::shell::strip_hint_learned_by_toggle(subject, app->chrome.filmstrip_visible())) return;
-  app->strip_hint_learned = true;
-  mv::shell::save_strip_hint_learned();
-  if (notice_showing(app, mv::shell::strip_hint_text(subject))) {
-    app->notice_until = 0;
-    update_title(app);
-  }
+  strip_hint_learn(app);
 }
 
 // Ctrl+PageDown / PageUp: the next or previous page of the multi-page still
@@ -2552,7 +2567,8 @@ bool turn_page(app_state* app, int delta, bool land = false) {
   app->page = static_cast<std::uint32_t>(want);
   ++app->input.page_land_seq;
   app->input.page_land = land ? (delta > 0 ? 1 : -1) : 0;
-  notice_show(app, mv::shell::page_notice(app->page, app->page_count, strip_hint_due_text(app)));
+  notice_show(app, mv::shell::page_notice(app->page, app->page_count));
+  strip_hint_show(app);
   ++app->input.activity_seq;
   publish(app);
   return true;
@@ -4549,6 +4565,9 @@ void chrome_on_command(void* ctx, int command, float arg) {
       *slot[command - mv::shell::chrome_cmd_home_effect_intensity] = v;
       return;
     }
+    case mv::shell::chrome_cmd_hint_learned:
+      if (!app->strip_hint_learned) strip_hint_learn(app);
+      return;
     case mv::shell::chrome_cmd_home_ground_input:
       ++app->input.pointer_seq;
       publish(app);  // wakes the render thread; it notes the time, draws nothing

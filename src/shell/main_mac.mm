@@ -442,6 +442,10 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 // and hides it), above the filmstrip when that is up.
 @property(nonatomic, strong) NSView* resumeHost;
 @property(nonatomic, strong) NSLayoutConstraint* resumeBottom;
+// The "Press T" filmstrip hint card (HintNoticeView.swift), in the same corner,
+// above the resume notice while that is up.
+@property(nonatomic, strong) NSView* hintHost;
+@property(nonatomic, strong) NSLayoutConstraint* hintBottom;
 @property(nonatomic, strong) NSView* clipToolsHost;
 // PR 29 (docs/design/20): the Edit workspace's strip and its Crop / Trim pane. The
 // right-edge panes' tops follow the strip while it is open.
@@ -481,10 +485,12 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 // DOCX with the filmstrip hidden pans the page and turns it past an edge.
 - (BOOL)documentScrolls;
 - (void)scrollDocument:(NSEvent*)event;
-// The one "Press T" filmstrip hint (shell/filmstrip_hint.h): shown in the notice
-// line while it is due; learned when T hides the strip over its subject.
+// The one "Press T" filmstrip hint (shell/filmstrip_hint.h): shown in its card
+// while it is due; learned when T hides the strip over its subject, or "Got it".
 - (void)stripHintShow;
 - (void)stripHintToggled;
+- (void)stripHintLearn;
+- (void)layoutHintNotice;
 - (mv::shell::strip_hint_subject)stripHintSubjectNow;
 - (std::string_view)stripHintDueText;
 
@@ -1407,6 +1413,10 @@ extern "C" void mv_chrome_meta_set_location(const char* utf8) {
 extern "C" void mv_chrome_meta_set_date(const char* value) {
   (void)mv::shell::crash::note_native_call();
   if (g_chrome_app) [g_chrome_app metaSetDate:value];
+}
+extern "C" void mv_chrome_hint_learned(void) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) [g_chrome_app stripHintLearn];
 }
 extern "C" uint64_t mv_chrome_notice_generation(void) {
   return g_chrome_app ? [g_chrome_app noticeGeneration] : 0;
@@ -2479,6 +2489,8 @@ static void MvAdoptNewDefaultViewerTypes() {
   mv::canvas::document_scroller _docScroll;
   // The "Press T" filmstrip hint is learned (NSUserDefaults mv.hint.filmstripT).
   BOOL _stripHintLearned;
+  BOOL _stripHintCard;  // the card was sent up (-stripHintShow)
+  CFTimeInterval _stripHintShownAt;
   // Milestone H: the moment the shown clip was opened at (-1 none). The same
   // result selected again keeps the clip where it is; another moment of it
   // reopens. kShownMomentStale after a new search, so its moment opens afresh.
@@ -3165,6 +3177,15 @@ static void MvAdoptNewDefaultViewerTypes() {
   [NSLayoutConstraint activateConstraints:@[
     [self.resumeHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-8.0],
     self.resumeBottom,
+  ]];
+  // The "Press T" filmstrip hint card: the same corner, above the resume
+  // notice while that is up (-layoutHintNotice). Hidden until shown.
+  self.hintHost = [MVChromeHost makeHintNoticeView];
+  [container addSubview:self.hintHost];
+  self.hintBottom = [self.hintHost.bottomAnchor constraintEqualToAnchor:container.bottomAnchor constant:-8.0];
+  [NSLayoutConstraint activateConstraints:@[
+    [self.hintHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-8.0],
+    self.hintBottom,
   ]];
 
   [self installMainMenu];
@@ -4709,6 +4730,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   self.adjustBottom.constant = pane_bottom;
   self.jobsBottom.constant = pane_bottom;
   self.resumeBottom.constant = pane_bottom - 8.0;
+  [self layoutHintNotice];
   [self layoutAIBadge];  // #345
   // chrome_bottom_px must reflect the toggle immediately (canvas fit/pan
   // math reads it via present_lab_mac.mm's usable_window_h()) -- -syncSize
@@ -6732,7 +6754,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   [self adjustItemChanged:mv::shell::is_video_name(entry.name_utf8) ? 0 : item];
   // PR 29: an open workspace follows the item to a tab it offers.
   if (mv::shell::follow_subject(_ws, [self editSubject])) [self syncWorkspace];
-  // A document arriving under the filmstrip: say how to scroll it.
+  // A document or a clip arriving under the filmstrip: say what T changes.
   [self stripHintShow];
 }
 
@@ -10982,7 +11004,8 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   if (!_items.empty() && _index.current() < _items.size()) {
     [self editItemOpened:_items[_index.current()] item:_shownItem];
   }
-  [self noticeShow:mv::shell::page_notice(_shownPage, count, [self stripHintDueText])];
+  [self noticeShow:mv::shell::page_notice(_shownPage, count)];
+  [self stripHintShow];
   [self pokeSnapshot];
   return YES;
 }
@@ -11034,6 +11057,7 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
     return mv::shell::strip_hint_subject::none;
   }
   if (mv::io::is_document_name(_shownPath)) return mv::shell::strip_hint_subject::document;
+  if (mv::shell::is_video_name(_shownPath)) return mv::shell::strip_hint_subject::clip;  // issue #416
   return mv::shell::strip_hint_subject::none;
 }
 - (std::string_view)stripHintDueText {
@@ -11041,21 +11065,46 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   if (!mv::shell::strip_hint_due(subject, [self filmstripVisible] == YES, _stripHintLearned == YES)) return {};
   return mv::shell::strip_hint_text(subject);
 }
+// Shows the card (it fades by itself) when the hint is due, and takes it down
+// when what is on screen no longer has it due. The wheel re-shows it at most
+// once a second.
 - (void)stripHintShow {
   const auto text = [self stripHintDueText];
-  if (text.empty() || _noticeText.find(text) != std::string::npos) return;
-  [self noticeShow:std::string(text)];
+  if (text.empty()) {
+    [self stripHintHide];
+    return;
+  }
+  const CFTimeInterval now = CACurrentMediaTime();
+  if (_stripHintCard && now - _stripHintShownAt < 1.0) return;
+  _stripHintCard = YES;
+  _stripHintShownAt = now;
+  [self layoutHintNotice];
+  [MVChromeHost showHint:[[NSString alloc] initWithBytes:text.data()
+                                                  length:text.size()
+                                                encoding:NSUTF8StringEncoding] ?: @""];
+}
+- (void)stripHintHide {
+  if (!_stripHintCard) return;
+  _stripHintCard = NO;
+  [MVChromeHost showHint:@""];
+}
+- (void)stripHintLearn {
+  if (_stripHintLearned) return;
+  _stripHintLearned = YES;
+  [NSUserDefaults.standardUserDefaults setBool:YES forKey:@"mv.hint.filmstripT"];
+  [self stripHintHide];
 }
 - (void)stripHintToggled {
   if (_stripHintLearned) return;
   const auto subject = [self stripHintSubjectNow];
   if (!mv::shell::strip_hint_learned_by_toggle(subject, [self filmstripVisible] == YES)) return;
-  _stripHintLearned = YES;
-  [NSUserDefaults.standardUserDefaults setBool:YES forKey:@"mv.hint.filmstripT"];
-  if (_noticeText.find(mv::shell::strip_hint_text(subject)) != std::string::npos) {
-    [_noticeTimer invalidate];
-    [self noticeClear];
-  }
+  [self stripHintLearn];
+}
+// Above the filmstrip when it is up, and above the resume notice while that shows.
+- (void)layoutHintNotice {
+  CGFloat bottom = -([self filmstripVisible] ? kFilmstripHeightPoints : 0.0) - 8.0;
+  if (self.resumeHost != nil && !self.resumeHost.hidden) bottom -= self.resumeHost.fittingSize.height;
+  self.hintBottom.constant = bottom;
 }
 
 - (void)navigateSkip:(std::ptrdiff_t)delta {

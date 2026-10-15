@@ -215,6 +215,22 @@ public final class MVChromeHost: NSObject {
     return hosting
   }
 
+  /// The "Press T" filmstrip hint card (HintNoticeView.swift): sized like the
+  /// resume notice, pinned by its bottom-right corner, hidden until shown.
+  @MainActor @objc public static func makeHintNoticeView() -> NSView {
+    let hosting = NSHostingView(rootView: ThemedRoot(content: HintNoticeView()))
+    hosting.sizingOptions = [.intrinsicContentSize]
+    hosting.translatesAutoresizingMaskIntoConstraints = false
+    hosting.isHidden = true
+    HintNoticeStore.shared.host = hosting
+    return hosting
+  }
+
+  /// Show the hint card for a few seconds, or hide it with "".
+  @MainActor @objc public static func showHint(_ text: String) {
+    HintNoticeStore.shared.show(text)
+  }
+
   /// PR 11 verify only (MV_CRASH_TEST=nsexception, crash_reporter_mac.h): an
   /// NSException raised from the chrome, inside AppKit's event handling.
   @objc public static func crashTestException() {

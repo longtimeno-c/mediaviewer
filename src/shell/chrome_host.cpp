@@ -301,6 +301,8 @@ expected chrome_host::load() noexcept {
   // Optional (docs/design/25 PR 56): without it Settings cannot list what a
   // key layout skipped.
   set_keymap_report_ = get_entry(L"SetKeymapReport");
+  // Optional the same way: without it the filmstrip hint is not shown.
+  show_hint_ = get_entry(L"ShowHint");
   // Optional the same way (issue #214): without it the More flyout's audio
   // controls do not follow the keys.
   apply_audio_ = get_entry(L"ApplyAudio");
@@ -967,6 +969,14 @@ void chrome_host::set_keymap_report(const std::string& json) noexcept {
   args.utf8 = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(json.data()));
   args.length = static_cast<std::int32_t>(json.size());
   (void)set_keymap_report_(&args, static_cast<std::int32_t>(sizeof(args)));
+}
+
+void chrome_host::show_hint(const std::string& utf8) noexcept {
+  if (!attached_ || !show_hint_) return;
+  chrome_table_args args{};
+  args.utf8 = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(utf8.data()));
+  args.length = static_cast<std::int32_t>(utf8.size());
+  (void)show_hint_(&args, static_cast<std::int32_t>(sizeof(args)));
 }
 
 void chrome_host::show_popup(chrome_popup kind, std::int32_t mode_mask) noexcept {

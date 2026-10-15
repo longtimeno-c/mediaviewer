@@ -214,6 +214,7 @@ public static partial class IslandHost
     {
         _filmstripTop = visible ? Math.Max(0, y) : 0;
         PlaceResumeNotice();
+        PlaceHintNotice();
     }
 
     private static void ResumeFromNotice()
