@@ -122,6 +122,9 @@ jobs:
         # test_corpus.cpp's CI guard accepts as a decision rather than an oversight.
         env:
           MV_REQUIRE_CORPUS: '0'
+          # Scratch on the runner's local disk, as CI's Unit tests (ci.yml).
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
         run: ctest --test-dir build -C Release --output-on-failure
 
       - name: Licence policy (manifest + vcpkg tree)
