@@ -174,6 +174,9 @@ enum chrome_command : int {
   // the empty window's ground restarts its clock (input_snapshot::pointer_seq).
   // The chrome sends it a few times a second at most; no frame by itself.
   chrome_cmd_home_ground_input = 1080,
+  // The "Press T" filmstrip hint card's "Got it" (shell/filmstrip_hint.h): the
+  // hint is learned, as T hiding the strip over a document teaches it.
+  chrome_cmd_hint_learned = 1081,
 };
 
 // chrome_cmd_video_loop's argument. The C# side mirrors it.
@@ -989,6 +992,9 @@ class chrome_host {
   // (shell/keymap.h keymap_report_json: {"changed","displaced","skipped"}).
   // Answered inside chrome_cmd_apply_keymap. Optional: an older chrome lacks it.
   void set_keymap_report(const std::string& json) noexcept;
+  // The "Press T" filmstrip hint card (shell/filmstrip_hint.h): shows `utf8`
+  // in the bottom-right card for a few seconds, or hides it when empty.
+  void show_hint(const std::string& utf8) noexcept;
 
   // Opens a flyout on the command bar, or closes any (chrome_popup::close).
   void show_popup(chrome_popup kind, std::int32_t mode_mask) noexcept;
@@ -1069,6 +1075,7 @@ class chrome_host {
   chrome_entry_fn set_drag_paths_ = nullptr;
   chrome_entry_fn set_recent_folders_ = nullptr;
   chrome_entry_fn set_keymap_report_ = nullptr;  // PR 56, optional
+  chrome_entry_fn show_hint_ = nullptr;  // optional: the filmstrip hint card
   chrome_entry_fn show_popup_ = nullptr;
   chrome_entry_fn attach_panels_ = nullptr;
   chrome_entry_fn detach_panels_ = nullptr;

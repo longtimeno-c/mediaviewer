@@ -94,6 +94,9 @@ public static partial class IslandHost
         public const int HomeEffectSpeed = 1078;
         public const int HomeEffectSize = 1079;
         public const int HomeGroundInput = 1080;
+        // The filmstrip hint card's "Got it" (chrome_cmd_hint_learned,
+        // IslandHost.HintNotice.cs). Not in Checksum, as the Home ids are not.
+        public const int HintLearned = 1081;
         // Issue #38: arg 1 while a scrub or the More flyout holds the transport
         // up, 0 when it lets go (chrome_cmd_transport_hold).
         public const int TransportHold = 1017;
@@ -568,6 +571,7 @@ public static partial class IslandHost
             Move(_source, args.Width, args.Height, args.Y);
             _barTop = Math.Max(0, args.Y);
             PlaceResumeNotice();  // the bottom-right corner moved (issue #299)
+            PlaceHintNotice();
             return 0;
         }
         catch (Exception ex)
@@ -796,6 +800,8 @@ public static partial class IslandHost
         }
         _busyDelay?.Stop();
         _busyDelay = null;
+        _hintNoticeTimer?.Stop();
+        _hintNoticeTimer = null;
         // docs/design/25 PR 58: add-on screen windows are WinUI Windows on this
         // thread's XAML runtime; they close before it goes.
         CloseScreenWindowsForShutdown();

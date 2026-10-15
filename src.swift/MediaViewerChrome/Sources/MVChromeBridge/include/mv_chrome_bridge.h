@@ -420,6 +420,9 @@ void mv_chrome_meta_set_location(const char* utf8);
 // text is empty once it has been up long enough. Returns the length needed.
 uint64_t mv_chrome_notice_generation(void);
 int32_t mv_chrome_notice_text(char* buf, int32_t size);
+// The "Press T" filmstrip hint card's "Got it" (shell/filmstrip_hint.h): the
+// hint is learned for good, as T hiding the strip over a document teaches it.
+void mv_chrome_hint_learned(void);
 
 // Folder tree. `mv_chrome_list_subdirectories` does a directory read, so call it
 // from a background task, never from the main actor. [any-thread] Writes
