@@ -608,7 +608,8 @@ host serves every layout from 1 up, so Import keeps loading.
 ## Audio
 
 A video's **soundtrack** is indexed for what it **sounds like** (CLAP) and what is **said**
-(Whisper transcripts). Standalone audio files are not indexed.
+(Whisper transcripts). Standalone audio files are not indexed; indexing them, behind File types
+"Show audio files", is planned in [audio-search](../plans/audio-search.md) (#355).
 
 - **The option.** Settings "Index videos for" is Pictures / Sound / Both, and each remembered
   folder may override it (`root_set_media`, `MV_AI_MEDIA_*`). Unset means Pictures, or Both once
