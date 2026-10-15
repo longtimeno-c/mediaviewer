@@ -1025,6 +1025,10 @@ void MvAddonsStartReader(MvAddonsOpenPathFn open_path, void* ctx) {
   // keys answer in every window (each reads its own folder). Utility QoS,
   // after the chrome; they never write the store.
   scripts_reload_async();
+  // docs/design/25 PRs 58-59, issue #402: the add-ons that fill screens and
+  // slots load in this window too, on the add-on queue at utility QoS. Found
+  // by manifest only, so this hashes Places' files, never the AI pack's.
+  MvSlotAddonsStart();
 }
 
 namespace {
@@ -1883,6 +1887,12 @@ extern "C" bool mv_addon2_ai_status(mv_chrome_ai_status* out) {
 // (addon/host.cpp), and unloading detaches every item before its code goes
 // (no restart). The chrome reads the registry through mv_chrome_slots_*
 // (slots_mac.mm).
+//
+// Every window (issue #402): each window is its own process, and each loads
+// them once, the first window and later ones alike, so a later window shows
+// the same sections, providers, badges and entries, and closing the first
+// window takes nothing from the others. They only read; what stays the first
+// window's is installing and removing them (the store's writes).
 
 namespace {
 
@@ -1901,7 +1911,7 @@ slot_addons_state& slot_addons() {
 }
 
 bool fills_slots(const mv::addon::installed& i) {
-  return !i.m.slots.empty() && i.m.part_of.empty() && i.id != "import" && !is_ai_family(i.id);
+  return i.id == i.m.id && mv::addon::loads_for_slots(i.m) && !is_ai_family(i.id);
 }
 
 // A file's coordinates for the host table (location_of / locations_in), from
@@ -1933,21 +1943,29 @@ mv::addon::host_services slot_services() {
   return svc;
 }
 
-// [addon_queue] Loads every installed slot add-on not loaded yet.
+// [addon_queue] Loads every installed slot add-on not loaded yet. Found by
+// their signed manifests alone (no file hashed: a later window must not hash
+// the AI pack to find Places); loading one verifies its own files.
 void load_slot_addons_now() {
   if (g_quitting.load(std::memory_order_relaxed) || !ensure_store()) return;
   slot_addons_state& sa = slot_addons();
-  for (const mv::addon::installed& i : state().store->list()) {
-    if (!fills_slots(i) || sa.loaded.count(i.id)) continue;
-    auto loaded = mv::addon::loaded_addon::load(*state().store, i.id, slot_services());
-    std::lock_guard<std::mutex> lock(sa.m);
-    if (!loaded) {
-      sa.errors[i.id] = mv::status_name(loaded.error());
+  for (const mv::addon::store::listed& l : state().store->manifests()) {
+    const std::string& id = l.m.id;
+    if (!mv::addon::loads_for_slots(l.m) || is_ai_family(id) || sa.loaded.count(id)) continue;
+    if (l.state != mv::addon::install_state::ok) {
+      std::lock_guard<std::mutex> lock(sa.m);
+      sa.errors[id] = mv::status_name(mv::status::unsupported_format);  // needs a newer MediaViewer
       continue;
     }
-    sa.errors.erase(i.id);
-    sa.loaded_ids.insert(i.id);
-    sa.loaded.emplace(i.id, std::move(*loaded));
+    auto loaded = mv::addon::loaded_addon::load(*state().store, id, slot_services());
+    std::lock_guard<std::mutex> lock(sa.m);
+    if (!loaded) {
+      sa.errors[id] = mv::status_name(loaded.error());
+      continue;
+    }
+    sa.errors.erase(id);
+    sa.loaded_ids.insert(id);
+    sa.loaded.emplace(id, std::move(*loaded));
   }
 }
 
@@ -1965,7 +1983,8 @@ void note_slot_addons_changed() {
 }  // namespace
 
 void MvSlotAddonsStart() {
-  if (state().reader) return;  // the first window hosts the add-ons (docs/design/18 "One host process")
+  // Every window's process, the first and later ones (issue #402): they only
+  // read, so unlike Import and the indexer they are not the host's alone.
   dispatch_async(addon_queue(), ^{
     load_slot_addons_now();
     note_slot_addons_changed();

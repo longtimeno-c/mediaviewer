@@ -976,6 +976,11 @@ class chrome_host {
   // shows what it is in Settings and asks; nothing is installed without the
   // answer. False when the chrome has no such entry.
   [[nodiscard]] bool offer_addon(const std::string& path_utf8) noexcept;
+  // docs/design/25, issue #402: a right-click on the canvas at (x, y), client
+  // pixels of the main window. The chrome shows the add-ons' context-menu
+  // entries for the file on screen, as its gallery tile lists them. False when
+  // it showed nothing (no entry, no file, or no such entry point).
+  [[nodiscard]] bool show_canvas_menu(std::int32_t x, std::int32_t y) noexcept;
 
   // Drag-out. The answer to chrome_cmd_drag_items: the files to drag, one
   // UTF-8 path per line (empty: drag the cell alone). `own_drag` tells the
@@ -1065,6 +1070,7 @@ class chrome_host {
   chrome_entry_fn share_files_ = nullptr;
   chrome_entry_fn show_addon_ = nullptr;  // Milestone H
   chrome_entry_fn offer_addon_ = nullptr;  // docs/design/25, optional
+  chrome_entry_fn show_canvas_menu_ = nullptr;  // issue #402, optional
   chrome_entry_fn run_addon_command_ = nullptr;  // docs/design/25, optional
   chrome_entry_fn set_drag_paths_ = nullptr;
   chrome_entry_fn set_recent_folders_ = nullptr;

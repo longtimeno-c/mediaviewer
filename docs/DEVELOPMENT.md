@@ -536,7 +536,7 @@ first; turn that off under Settings.
 | `Tab` | focus the command bar island |
 | `Esc` | walks out one level: gallery, fullscreen, then island focus back to the canvas, and last, in a search result list, **Back to folder**. It never quits |
 | `Ctrl+W` / `Alt+F4` | close the window |
-| `Ctrl+N` (`⌘N`) | a new window: its own process on the empty window; add-ons stay in the first window's process |
+| `Ctrl+N` (`⌘N`) | a new window: its own process on the empty window; add-ons stay in the first window's process, except those that only fill screens and slots (Places), which every window loads (#402) |
 
 **Editing (PR 10, Windows and macOS).** Edits are kept per file for the session; the
 original is only ever rewritten by a lossless JPEG rotate / flip.
@@ -1780,6 +1780,13 @@ What is built is in [docs/design/25](design/25-open-addons.md#implementation-not
   finding the fixtures in the running app, a screen driven by keyboard alone, VoiceOver and
   Narrator naming every control, removal from Settings in the running app, Windows' docked pane
   placement.
+- **Every window, and entries on the filmstrip and canvas (#402, 2026-10-15):** slot add-ons
+  load in every window's process, found by manifest without hashing; context-menu entries show
+  on filmstrip tiles and the canvas as on gallery tiles. Mac: `mv_import_tests` 114 cases pass
+  (`"[slots]"` 14, two new); the app and its Swift chrome build. Windows: the chrome compiles;
+  the native side (`addon_abi.cpp`, `chrome_host.cpp`, `main.cpp`) is CI's. Owed: a second
+  window and the menus tried in the running app on both hosts, the first-pixel cost of a later
+  window loading Places (alternated runs), both PR 1 gates.
 
 **Running the test add-on (developer builds only).** Configure with
 `-DMV_ADDON_DEV_PUBLIC_KEY=<your key's public half>`, build `mediaviewer_app` (Mac) or the core
