@@ -127,7 +127,16 @@ texture limit — a still is not one texture:
 - The render thread marks the tiles visible at the current LOD plus a **one-tile ring**
   through lock-free per-tile states; the session's `tile_service` thread builds and creates
   them — 4 per 16 ms tick, at most 24 in flight — and the render thread draws ready tiles coarse
-  to fine over the overview. It never waits on the service and never creates a texture.
+  to fine (up to two levels above the LOD) over the overview. Once every on-screen tile at the
+  LOD is ready, the coarser levels and the overview are hidden and are not drawn: the base pass
+  paints only the background (`blitter::draw_background`, no texture fetch) and the LOD's
+  tiles go over it (`tile_set::covers_view`, issue #164). It never waits on the service and
+  never creates a texture.
+- **Drawing tiles** (`gfx::blitter::draw_tiles`): every tile's record (content origin, level
+  scale, content size) is written into one dynamic per-instance vertex buffer with a single
+  `Map(WRITE_DISCARD)` per frame (1024 records per map; a frame with more maps again), then
+  each tile is one `DrawInstanced(6, 1, 0, i)` with its own texture bound. No per-tile
+  constant-buffer rename (issue #164). Windows only: the Mac host has no tiled path yet.
   The service sleeps on an atomic poke count with no timeout (0 wakeups on a still); a tile
   request, a new set, and dropping a set's last outside handle each poke it.
 - Resident tile VRAM is capped at **256 MB** (~750 tiles), LRU-evicted, separate from the

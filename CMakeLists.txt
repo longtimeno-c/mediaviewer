@@ -265,6 +265,7 @@ set(_mv_blit_hlsl "${CMAKE_CURRENT_SOURCE_DIR}/src/gfx/blit.hlsl")
 set(_mv_kernel_tokens "${CMAKE_CURRENT_SOURCE_DIR}/src/gfx/adjust_kernel_tokens.h")
 mv_fxc(MV_GFX_SHADERS "${_mv_blit_hlsl}" vs_main vs_5_0 kBlitVsMain "${_mv_kernel_tokens}")
 mv_fxc(MV_GFX_SHADERS "${_mv_blit_hlsl}" ps_main ps_5_0 kBlitPsMain "${_mv_kernel_tokens}")
+mv_fxc(MV_GFX_SHADERS "${_mv_blit_hlsl}" ps_background ps_5_0 kBlitPsBackground "${_mv_kernel_tokens}")
 mv_fxc(MV_GFX_SHADERS "${_mv_blit_hlsl}" vs_tile vs_5_0 kBlitVsTile "${_mv_kernel_tokens}")
 mv_fxc(MV_GFX_SHADERS "${_mv_blit_hlsl}" ps_tile ps_5_0 kBlitPsTile "${_mv_kernel_tokens}")
 set(_mv_video_blit_hlsl "${CMAKE_CURRENT_SOURCE_DIR}/src/gfx/video_blit.hlsl")
@@ -1100,6 +1101,7 @@ if(MV_BUILD_TESTS)
     tests/test_abi_image.cpp
     tests/test_upload.cpp
     tests/test_tiles.cpp
+    tests/test_blit.cpp
     tests/test_refinement.cpp
     tests/test_chrome_host.cpp
     tests/test_dir.cpp
