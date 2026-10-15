@@ -278,28 +278,14 @@ struct SettingsView: View {
                        bit: SettingsStore.showDocuments, store: store)
         section("Appearance")
         // docs/design/25: the chrome's colours. Default, then the built-in
-        // palettes, then every theme an installed add-on contributes. The
-        // photo is never recoloured.
+        // palettes, then every theme an installed add-on contributes, chosen
+        // in a sheet. The photo is never recoloured.
         SettingsRow(title: "Theme",
                     detail: theme.note.isEmpty
                       ? "Colours and a quiet ground for the window, its bars and panes, and the area around your photos and videos. Your photos are never recoloured."
                       : theme.note) {
-          Picker("Theme", selection: Binding(get: { theme.selection }, set: { theme.choose($0) })) {
-            Text("Default").tag("")
-            ForEach(BuiltinThemes.all, id: \.key) { Text($0.name).tag($0.key) }
-            ForEach(addons.themes, id: \.key) { Text($0.name).tag($0.key) }
-            // A choice whose add-on is not installed now stays listed, so the
-            // picker shows what is chosen.
-            if !theme.selection.isEmpty, BuiltinThemes.item(selection: theme.selection) == nil,
-               !addons.themes.contains(where: { $0.key == theme.selection }) {
-              // "Not available" when the add-on is there but refused (the
-              // line beside says why), "Not installed" when it is gone.
-              let addonID = String(theme.selection.prefix { $0 != "/" })
-              Text(addons.installed.contains { $0.addonID == addonID } ? "Not available" : "Not installed")
-                .tag(theme.selection)
-            }
-          }
-          .pickerStyle(.menu).frame(width: 180)
+          // Issue #394: a sheet of cards in each theme's colours (ThemePicker.swift).
+          ThemePickerButton()
         }
         .id(ThemeStore.rowAnchor)
         if store.updateChannel >= 0 {

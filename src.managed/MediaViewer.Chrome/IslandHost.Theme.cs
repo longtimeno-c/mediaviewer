@@ -129,6 +129,18 @@ public static partial class IslandHost
     private static void OnHighContrastChanged(AccessibilitySettings sender, object args) => QueueThemeRefresh();
     private static void QueueThemeRefresh() => _themeDispatcher?.TryEnqueue(RefreshTheme);
 
+    /// <summary>The chrome's own colours with no theme (Default), for the
+    /// appearance asked; the theme picker draws its Default card with them.</summary>
+    private static ThemePalette DefaultPalette(bool dark) => new(
+        Canvas: dark ? Rgb(33, 35, 42) : Rgb(243, 243, 243),
+        Surface: dark ? Rgb(48, 50, 58) : Rgb(255, 255, 255),
+        Title: dark ? Rgb(235, 236, 240) : Rgb(27, 27, 27),
+        Body: dark ? Rgb(177, 181, 191) : Rgb(92, 92, 92),
+        Disabled: dark ? Rgb(112, 115, 125) : Rgb(160, 161, 166),
+        Hairline: dark ? Rgb(78, 81, 91) : Rgb(195, 197, 202),
+        Accent: _themeSettings?.GetColorValue(dark ? UIColorType.AccentLight2 : UIColorType.AccentDark2)
+                ?? (dark ? Rgb(153, 235, 255) : Rgb(0, 62, 146)));
+
     private static void RefreshTheme()
     {
         if (_themeSettings is null) return; // a queued notification after shutdown
@@ -140,18 +152,19 @@ public static partial class IslandHost
         // appearance, so Windows' own controls match it.
         ThemePalette? themed = contrast ? null : ThemedPalette(ref dark);
 
-        Color canvas = dark ? Rgb(33, 35, 42) : Rgb(243, 243, 243);
+        ThemePalette basis = DefaultPalette(dark);
+        Color canvas = basis.Canvas;
         Color panel = dark ? Rgb(27, 29, 35) : Rgb(249, 249, 249);
-        Color surface = dark ? Rgb(48, 50, 58) : Rgb(255, 255, 255);
-        Color title = dark ? Rgb(235, 236, 240) : Rgb(27, 27, 27);
-        Color body = dark ? Rgb(177, 181, 191) : Rgb(92, 92, 92);
-        Color line = dark ? Rgb(78, 81, 91) : Rgb(195, 197, 202);
-        Color disabled = dark ? Rgb(112, 115, 125) : Rgb(160, 161, 166);
+        Color surface = basis.Surface;
+        Color title = basis.Title;
+        Color body = basis.Body;
+        Color line = basis.Hairline;
+        Color disabled = basis.Disabled;
         // The washes follow the appearance, not a theme token (docs/design/25,
         // the Mac's Color.primary): white on a dark chrome, black on a light one,
         // at low alpha. `dark` is resolved after a one-palette theme forces it.
         Color washInk = dark ? Rgb(255, 255, 255) : Rgb(0, 0, 0);
-        Color accent = _themeSettings.GetColorValue(dark ? UIColorType.AccentLight2 : UIColorType.AccentDark2);
+        Color accent = basis.Accent;
         if (themed is not null)
         {
             // The token table is the Mac's too (MVTheme): one background for

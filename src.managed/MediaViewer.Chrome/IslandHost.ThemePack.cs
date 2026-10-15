@@ -235,6 +235,7 @@ public static partial class IslandHost
     /// <summary>An add-on was installed, updated or removed.</summary>
     private static void ThemeAddonsChanged()
     {
+        ForgetThemePreviews();
         if (_themeSelection.Length > 0) VerifyTheme();
     }
 
