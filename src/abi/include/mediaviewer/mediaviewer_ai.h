@@ -532,6 +532,18 @@ typedef struct mv_ai_api {
    * while People is off or its piece is not loaded. Posts
    * MV_ADDON_EVENT_AI_PEOPLE as faces move. [no-block] */
   mv_status(MV_CALL* people_reanalyse)(void* ctx);
+
+  /* ---- the index's coordinates (#398, docs/design/17 "Places over the index") -- */
+  /* Every indexed asset whose tags gave coordinates (assets.lat / lon, schema
+   * 4), in id order: `path_utf8` the asset's key, `location.has` = 1. Reads
+   * index.db only, never a file; the index is locked for one batch's SELECT
+   * (512 rows), never while `visit` runs, so indexing goes on between
+   * batches. `visit` returning 0 stops it: MV_ERR_CANCELLED. The host serves
+   * this to other add-ons as the host table's locations_of_index (Places'
+   * `place:` over the whole index). Works through the reader door too.
+   * Appended: read it only when `struct_size` covers it and the pointer is
+   * non-NULL. [worker-thread] */
+  mv_status(MV_CALL* each_location)(void* ctx, mv_addon_location_fn visit, void* user);
 } mv_ai_api;
 
 #ifdef __cplusplus

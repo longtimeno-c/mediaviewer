@@ -53,6 +53,7 @@
 
 #include "addon/ai_resume.h"
 #include "addon/host.h"
+#include "addon/index_locations.h"
 #include "addon/manifest.h"
 #include "addon/open_json.h"
 #include "addon/script_host.h"
@@ -671,6 +672,16 @@ void unload_ai() {
   }
   s.ai.chrome = nil;
   s.ai.table = nullptr;
+  // #398: other add-ons' locations_of_index stop reading the pack's index now
+  // (a walk in flight stops at its next row). The wait for it to leave the
+  // pack runs on addon_queue(), ahead of the retire queued there: never on
+  // the main thread.
+  mv::addon::retract_index_locations();
+  if (!g_quitting.load(std::memory_order_relaxed)) {
+    dispatch_async(addon_queue(), ^{
+      mv::addon::wait_index_locations_idle();
+    });
+  }
   retire(std::move(s.ai.addon));
   s.ai.bundle = nil;   // mapped until quit, inert (NSBundle -unload is unsafe for Swift)
   s.ai.loading = false;
@@ -723,6 +734,10 @@ bool attach_ai(std::unique_ptr<mv::addon::loaded_addon>& loaded) {
   s.ai.bundle = bundle;
   s.ai.chrome = chrome;
   s.ai.error.clear();
+  // #398: while the pack is attached (the writer or a later window's reader:
+  // both read index.db), its index's coordinates serve every add-on's
+  // locations_of_index (Places' place: over the whole index).
+  mv::addon::publish_index_locations(mv::addon::ai_index_locations(static_cast<const mv_ai_api*>(table)));
   mv::shell::set_addon_commands_available(mv::shell::addon_family::ai, true);
   register_local_search_provider(true);
   // The folder already on screen counts as opened.
@@ -1170,6 +1185,8 @@ void MvAddonsQuit() {
   s.ai.table = nullptr;
   s.ai.bundle = nil;
   s.ai.loading = false;
+  // #398: no index walk starts now (not waited on: quit does not wait on a pack).
+  mv::addon::retract_index_locations();
   if (idle) {
     mv::addon::stop_for_exit(std::move(s.ai.addon));
   } else {

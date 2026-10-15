@@ -12,8 +12,9 @@ offline map that zooms under the cursor down to town scale, search by place for 
 settings page and its packaging. It fills #348's slots (info section, search provider) through
 host table v3 and needs PR 56 for its settings page. Without the add-on the app shows
 coordinates, as it always has. Settings → Add-ons offers the install on both hosts even when
-Places is not installed: optional, and the preferred install. Owed: the Windows half is compiled only in CI; Local search over the
-whole index needs the index's coordinates (doc 17). Plan:
+Places is not installed: optional, and the preferred install. Local search over the whole index
+walks the index's own coordinates (#398, doc 17 "Places over the index"). Owed: the Windows half
+is compiled only in CI. Plan:
 [metadata-search-and-place.md](../plans/metadata-search-and-place.md), slices 2-3 and the place
 half of slice 4.
 
@@ -291,7 +292,9 @@ under 0.2 ms. During a gesture nothing is drawn: the chrome moves the last bitma
   accepted, declaring only the section, the provider and settings; then `mv_places` installed in a
   signed store with the test blob as `data/places.mvgeo`, loaded through host table v3, answering
   the section (label, coordinates, 600 × 320 surface, pin, marks), a −, a zoom, a pan and a
-  double-click, `portugal` / `place:spain` / `in:2024` over a fake `locations_in`, and removal.
+  double-click, `portugal` / `place:spain` / `in:2024` over a fake `locations_in`, Local search
+  with no folder (`place:portugal`, `in:spain`) over a fake `locations_of_index`, done with no
+  rows when no index is attached, and removal.
   Until PR 56 lands in the same host, the test leaves the settings page out of the manifest (the
   host would refuse it).
 - `tools/package/test_addon_pack.py` `PlacesPackTest`: the package's files, licences, notice and
@@ -421,8 +424,11 @@ up and posts rows in batches of 128 with the file's place label as the `why`. Th
 (`place_query`): the folded query equals a country's or region's name in any of the database's
 languages, or starts one at 4 letters or more ("portu" finds Portugal while typing, "po" does
 not); or it equals the file's own town (starts it, at 4 letters). A point at sea is in no country.
-A query starting with a digit is never a place. Local search over the whole index (folder "")
-gets no rows until the index's coordinates can be enumerated through the host (owed, doc 17).
+A query starting with a digit is never a place. Local search over the whole index (folder "",
+nothing open) walks the host table's `locations_of_index` instead (#398): the AI pack's
+index.db coordinates, streamed with no file read, under the same rule and the same batches. A
+host without that row, or with no AI pack loaded, gets `done` with no rows (doc 17 "Places over
+the index").
 
 ### Settings (PR 56 schema)
 

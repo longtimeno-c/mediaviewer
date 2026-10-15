@@ -265,14 +265,22 @@ int32_t MV_CALL visit_location(void* user, const mv_addon_location_entry* e) {
   }
 }
 
+// #398: appended after read_cues; an older host's table stops before it.
+bool has_locations_of_index(const mv_host_api* host) {
+  return host->struct_size >= offsetof(mv_host_api, locations_of_index) + sizeof(host->locations_of_index) &&
+         host->locations_of_index != nullptr;
+}
+
 mv_status MV_CALL search(void*, const mv_slot_search_request* r) {
   return guard([&] {
     if (!r || !r->provider_id) return MV_ERR_INVALID_ARG;
     const mv::geo::database* db = database();
     const char* folder = r->folder_utf8 ? r->folder_utf8 : "";
-    // Local search over the whole index (no folder) needs the index's own
-    // coordinates (plan slice 4, #291); until then Places answers a folder.
-    if (!db || !*folder) {
+    // Local search over the whole index (no folder) walks the index's own
+    // coordinates (#398, locations_of_index), served from what the index
+    // holds. A host without that row gets done with no rows.
+    const bool whole_index = !*folder;
+    if (!db || (whole_index && !has_locations_of_index(g->host))) {
       return g->host->search_post(g->host->host, r->provider_id, r->generation, nullptr, 0, 1);
     }
     const auto q = mv::places::place_query::compile(*db, r->folded_utf8 ? r->folded_utf8 : "");
@@ -282,7 +290,11 @@ mv_status MV_CALL search(void*, const mv_slot_search_request* r) {
     c.db = db;
     c.q = &q;
     c.opts = read_settings().lookup();
-    const mv_status st = g->host->locations_in(g->host->host, folder, r->generation, &visit_location, &c);
+    // No index attached (MV_ERR_NOT_FOUND) or a failed walk: `done` with what
+    // was found, as below.
+    const mv_status st =
+        whole_index ? g->host->locations_of_index(g->host->host, r->generation, &visit_location, &c)
+                    : g->host->locations_in(g->host->host, folder, r->generation, &visit_location, &c);
     if (st == MV_ERR_CANCELLED || c.stale) return MV_ERR_CANCELLED;
     g->host->search_progress(g->host->host, r->provider_id, r->generation, c.seen, c.seen);
     if (c.refused) {  // past the cap: post only `done`

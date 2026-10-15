@@ -493,10 +493,24 @@ Words fold with the shared rule (`core/fold.h`, the hosts' name fold): decompose
 lowercase; ß, æ, ø and ł stay themselves. Before #291 the pack's own Latin-1 fold turned ß into
 "ss" and æ into "ae"; "strasse" no longer finds "Straße", as in file search on Windows and its tag half on the Mac (the Mac chrome's name half uses Swift's full case folding, which does turn ß into "ss"; see `core/fold.h`).
 
-**Owed:** `place:` in Local search narrows to geotagged assets and relies on the Places
-provider's rows for the place itself. Over the whole index (folder "") the provider gets no
-rows until the host table can enumerate the index's coordinates (a `locations_of_index`
-call, not built); a combined query (`beach place:portugal`) is the geotagged beaches until then.
+**Places over the index (#398).** `place:` in Local search narrows to geotagged assets and
+relies on the Places provider's rows for the place itself. Over a folder the provider walks the
+host's `locations_in`; over the whole index (folder "", nothing open) it walks the host table's
+`locations_of_index`, appended after `read_cues`. That call streams (path, lat, lon) for every
+indexed asset with coordinates, from what index.db already holds (schema 4's `lat` / `lon`,
+filled by the tag backfill). No file and no file's metadata is read. The pack serves it as
+mv.ai.1 `each_location`, 512 rows a `SELECT` in id order (`index_db::located_assets`), with
+index.db's lock held for the `SELECT` only and never while a row is visited, so indexing goes on
+between batches. Because the pack is an add-on, the core cannot link it. Each host publishes the
+pack's row in a process-wide source (`src/addon/index_locations.h`) when the pack attaches (the
+writer or a later window's reader). It retracts the row before the pack goes: a walk in flight
+stops at its next row, and the library is unloaded only once no walk is inside it. The Mac waits
+on its add-on queue, never the main thread. The host's thunk is generation-tagged. A request that
+goes stale, or an add-on being removed (detach joins its worker), stops the walk with
+`MV_ERR_CANCELLED`; staleness is checked every 64 rows. With no pack attached the call returns
+`MV_ERR_NOT_FOUND`, and Places posts done with no rows. A combined query
+(`beach place:portugal`) is the intersection the chrome shows: the pack's geotagged beaches and
+the provider's Portuguese assets.
 
 ## UI and commands
 

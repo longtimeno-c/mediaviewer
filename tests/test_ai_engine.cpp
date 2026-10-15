@@ -1779,6 +1779,83 @@ TEST_CASE("camera:, ai:, made:, place: and a plain tag word in Local search", "[
   CHECK(lens_rows.front().first == "red_r5.jpg");
 }
 
+// #398: mv.ai.1 each_location, which the host serves to Places as
+// locations_of_index: the geotagged assets from index.db, no file read.
+TEST_CASE("the index lists its geotagged assets in batches, from index.db alone", "[ai][engine][tags][places]") {
+  SECTION("index_db: id order, batches, only rows with both coordinates") {
+    scratch_dir dir{"ai-located"};
+    auto d = mv::ai::index_db::open(utf8(dir / "index.db"));
+    REQUIRE(d);
+    auto root = (*d)->add_root("/library", true);
+    REQUIRE(root);
+    std::vector<mv::ai::index_db::seen_file> files;
+    for (int i = 0; i < 1200; ++i) {
+      mv::ai::index_db::seen_file f;
+      f.path = "/library/" + std::to_string(i) + ".jpg";
+      f.mtime = 1;
+      f.size = 100;
+      files.push_back(std::move(f));
+    }
+    auto ups = (*d)->see_assets(*root, files, (*d)->next_generation());
+    REQUIRE(ups);
+    CHECK((*d)->located_assets(0, 512)->empty());  // nothing read yet
+    // Every other asset geotagged; the rest read with no position.
+    std::vector<mv::ai::asset_tags> tags;
+    for (std::size_t i = 0; i < ups->size(); ++i) {
+      mv::ai::asset_tags t;
+      t.id = (*ups)[i].id;
+      t.mtime = 1;
+      t.size = 100;
+      t.has_where = i % 2 == 0;
+      t.lat = 38.0 + static_cast<double>(i) / 10000.0;
+      t.lon = -9.0;
+      tags.push_back(t);
+    }
+    REQUIRE((*d)->commit_tags(tags));
+    std::vector<mv::ai::index_db::located> all;
+    std::int64_t after = 0;
+    int batches = 0;
+    for (;;) {
+      auto batch = (*d)->located_assets(after, 512);
+      REQUIRE(batch);
+      ++batches;
+      all.insert(all.end(), batch->begin(), batch->end());
+      if (batch->size() < 512) break;
+      after = batch->back().id;
+    }
+    CHECK(batches == 2);
+    REQUIRE(all.size() == 600);
+    CHECK(all[0].path == "/library/0.jpg");
+    CHECK(std::abs(all[0].lat - 38.0) < 1e-9);
+    CHECK(all[1].path == "/library/2.jpg");
+    CHECK(std::abs(all[1].lon + 9.0) < 1e-9);
+    for (std::size_t i = 1; i < all.size(); ++i) CHECK(all[i].id > all[i - 1].id);
+  }
+  SECTION("engine: the geotagged file, and a visit that stops") {
+    rig r;
+    r.file("red_r5.jpg");
+    r.file("blue_geo.jpg");
+    r.file("green_geo.jpg");
+    r.start();
+    REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+    REQUIRE(r.idle());
+    std::vector<std::string> names;
+    REQUIRE(r.eng->each_location([&](const mv::ai::index_db::located& l) {
+      names.push_back(utf8(fs::path(l.path).filename()));
+      CHECK(std::abs(l.lat - 38.7975) < 1e-6);
+      CHECK(std::abs(l.lon + 9.3883) < 1e-6);
+      return true;
+    }));
+    std::sort(names.begin(), names.end());
+    CHECK(names == std::vector<std::string>{"blue_geo.jpg", "green_geo.jpg"});
+    int seen = 0;
+    const mv::expected stopped = r.eng->each_location([&](const mv::ai::index_db::located&) { return ++seen < 1; });
+    REQUIRE_FALSE(stopped);
+    CHECK(stopped.error() == mv::status::cancelled);
+    CHECK(seen == 1);
+  }
+}
+
 TEST_CASE("date terms use the date taken, and the file's time only when there is none", "[ai][engine][tags][dates]") {
   rig r;
   r.file("red_y2019.jpg");  // taken in 2019, written (mtime) today

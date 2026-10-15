@@ -370,6 +370,17 @@ class index_db {
   [[nodiscard]] expected commit_tags(std::span<const asset_tags> rows);
   // Every asset with tags read (any level), for the engine's memory at start.
   [[nodiscard]] expected each_tags(const std::function<void(const asset_tags&)>& visit);
+  // #398: the assets with coordinates (lat and lon both set), id above
+  // `after_id`, in id order, at most `limit`: one batch of what the host
+  // table's locations_of_index streams. The lock is held for this SELECT
+  // only; the caller visits the batch after it returns and asks again from
+  // the last id.
+  struct located {
+    std::int64_t id = 0;
+    std::string path;
+    double lat = 0, lon = 0;
+  };
+  [[nodiscard]] result<std::vector<located>> located_assets(std::int64_t after_id, std::size_t limit);
   // An FTS5 MATCH over asset_text (empty when the index has no FTS5). For a
   // reader that does not keep the text in memory. `words` is what was typed:
   // each word is matched as a quoted string (fts_phrases), never parsed as

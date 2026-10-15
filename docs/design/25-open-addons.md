@@ -652,7 +652,9 @@ How it works:
   provider's prefix (`place:`) goes to that provider alone, prefix removed, unless a digit follows
   (Local search's `in:2024` stays a date term). `locations_in` walks the folder at background
   priority (it waits while the viewer presents) and caches coordinates by path + size + mtime, so
-  a second query reads nothing.
+  a second query reads nothing. Local search with no folder open has `locations_of_index`
+  instead (#398): the AI pack's index's coordinates, read from the index, never from the files
+  ([17](17-local-ai-search.md) "Places over the index").
 - **Badges** are asked once per folder the gallery shows, posted as sets, inverted once into a
   path → badges table; a tile is a dictionary lookup (the verify counts add-on calls).
 - **Items.** A bar or path item with `opens` opens that screen with no add-on call; otherwise the

@@ -640,6 +640,22 @@ typedef struct mv_host_api {
    * only when `struct_size` covers it and the pointer is non-NULL. */
   mv_status(MV_CALL* read_cues)(void* host, const char* path_utf8, int64_t start_ms, int64_t max_ms,
                                 uint32_t max_cues, mv_addon_cue_fn visit, void* user);
+  /* ---- the index's coordinates (#398, docs/design/17 "Places over the index") -- */
+  /* [worker-thread] Every asset of the Local search index (the AI pack's
+   * index.db, schema 4's lat / lon) that has coordinates, as locations_in
+   * visits a folder's: `path_utf8` is the index's own key for the asset (a
+   * file path, or "photos:<id>" for the Mac Photos library), `location.has`
+   * is 1, no altitude. Served from what the index already holds: no file and
+   * no file's metadata is read, and the index is locked for one batch's
+   * SELECT at a time, never across `visit`. `generation` is the search
+   * request it serves: when it goes stale, or the add-on is being removed,
+   * the walk stops with MV_ERR_CANCELLED. `visit` returning 0 stops it with
+   * MV_OK, as locations_in. MV_ERR_NOT_FOUND when no index is attached (the
+   * AI pack is not loaded), or it went during the walk (what was visited
+   * stands). Appended after read_cues: read it only when `struct_size`
+   * covers it and the pointer is non-NULL. */
+  mv_status(MV_CALL* locations_of_index)(void* host, uint64_t generation, mv_addon_location_fn visit,
+                                         void* user);
 } mv_host_api;
 
 typedef struct mv_addon_api {

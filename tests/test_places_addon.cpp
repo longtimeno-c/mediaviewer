@@ -15,6 +15,7 @@
 #include <sodium.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <optional>
 #include <string>
@@ -219,6 +220,24 @@ TEST_CASE("places: the add-on answers the Place section and search through the v
     }
     return std::nullopt;
   };
+  // #398: the Local search index's coordinates, as the AI pack would serve
+  // them (keys under /index, none of them files on disk).
+  std::atomic<int> index_walks{0};
+  std::atomic<bool> index_attached{true};
+  svc.index_locations = [&](const mv::addon::index_location_visit& visit) -> mv::expected {
+    if (!index_attached) return mv::err(status::not_found);
+    ++index_walks;
+    for (const auto& f : trip) {
+      const std::string key = std::string("/index/") + f.name;
+      mv_addon_location_entry e{};
+      e.path_utf8 = key.c_str();
+      e.location.has = 1;
+      e.location.lat = f.lat;
+      e.location.lon = f.lon;
+      if (!visit(e)) return mv::err(status::cancelled);
+    }
+    return {};
+  };
   auto loaded = mv::addon::loaded_addon::load(st, "places", svc);
   REQUIRE(loaded);
   REQUIRE((*loaded)->slots_attached());
@@ -296,6 +315,36 @@ TEST_CASE("places: the add-on answers the Place section and search through the v
   reg.search(MV_SLOT_SCOPE_FILES, "in:2024", utf8(folder));
   reg.drain();
   CHECK(mv::json::parse(reg.search_json(MV_SLOT_SCOPE_FILES))->find("rows")->a.empty());
+
+  // #398: Local search with no folder open walks the index's coordinates
+  // (locations_of_index over the fake index above): no file is read.
+  const auto local_found = [&] {
+    std::vector<std::string> out;
+    auto doc = mv::json::parse(reg.search_json(MV_SLOT_SCOPE_LOCAL));
+    REQUIRE(doc);
+    for (const auto& row : doc->find("rows")->a) out.push_back(*row.str("path"));
+    std::sort(out.begin(), out.end());
+    return out;
+  };
+  const auto local_done = [&] {
+    auto doc = mv::json::parse(reg.search_json(MV_SLOT_SCOPE_LOCAL));
+    return doc && !doc->find("searching")->b;
+  };
+  reg.search(MV_SLOT_SCOPE_LOCAL, "place:portugal", "");
+  reg.drain();
+  CHECK(local_found() == std::vector<std::string>{"/index/funchal.heic", "/index/porto.mov", "/index/sintra.jpg"});
+  CHECK(local_done());
+  CHECK(index_walks.load() == 1);
+  reg.search(MV_SLOT_SCOPE_LOCAL, "in:spain", "");
+  reg.drain();
+  CHECK(local_found() == std::vector<std::string>{"/index/badajoz.jpg", "/index/llivia.jpg"});
+  // No index attached (the AI pack not loaded): done, with no rows.
+  index_attached = false;
+  reg.search(MV_SLOT_SCOPE_LOCAL, "place:portugal", "");
+  reg.drain();
+  CHECK(local_found().empty());
+  CHECK(local_done());
+  index_attached = true;
 
   // Settings take effect at once (docs/design/27 "Settings"): a change re-asks
   // the section for the file on screen, once, and Places reads the new value.

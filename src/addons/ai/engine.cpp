@@ -1462,6 +1462,22 @@ expected engine::people_reanalyse() {
   return {};
 }
 
+// #398: the index's coordinates for the host table's locations_of_index.
+// index.db is the only thing read: the tag backfill put lat / lon there.
+expected engine::each_location(const std::function<bool(const index_db::located&)>& visit) {
+  if (!db_) return err(status::not_found);
+  std::int64_t after = 0;
+  for (;;) {
+    if (stopping_.load(std::memory_order_relaxed)) return err(status::cancelled);
+    MV_TRY(std::vector<index_db::located> batch, db_->located_assets(after, kLocationBatch));
+    for (const index_db::located& l : batch) {
+      if (!visit(l)) return err(status::cancelled);
+    }
+    if (batch.size() < kLocationBatch) return {};
+    after = batch.back().id;
+  }
+}
+
 // The settle at the end of a re-run. Every face is this model's now, the
 // people are the user's (carried box by box); a full refinement with no
 // focus judges every unpinned face: it may leave a person the new vectors

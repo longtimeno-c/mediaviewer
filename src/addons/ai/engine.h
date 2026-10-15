@@ -338,6 +338,13 @@ class engine {
   [[nodiscard]] expected people_reanalyse();
   [[nodiscard]] result<std::string> face_thumb(std::int64_t face) const;  // [worker-thread]
 
+  // #398 (mv.ai.1 each_location): every indexed asset with coordinates, from
+  // index.db alone, in batches (the index is locked per batch's SELECT, never
+  // while `visit` runs). `visit` returning false stops: status::cancelled.
+  // [worker-thread]
+  static constexpr std::size_t kLocationBatch = 512;
+  [[nodiscard]] expected each_location(const std::function<bool(const index_db::located&)>& visit);
+
   // ---- sharing an index (docs/design/17 "Sharing an index") ---------------------------
   // An export / import runs on the control thread, one at a time (status::busy
   // while one is queued or running); transfer_json reports it. [no-block]

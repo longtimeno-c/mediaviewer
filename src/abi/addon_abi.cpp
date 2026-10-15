@@ -17,10 +17,12 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 
 #include "abi/addon_bridge.h"
 #include "abi/guard.h"
 #include "addon/host.h"
+#include "addon/index_locations.h"
 #include "addon/manifest.h"
 #include "addon/open_json.h"
 #include "abi/addon_media.h"
@@ -559,6 +561,13 @@ MV_API mv_status MV_CALL mv_addon_unload(const char* id) {
       gone = std::move(it->second);
       g_loaded.erase(it);
     }
+    // #398: the AI pack's index stops serving other add-ons' locations_of_index
+    // first; a walk in flight stops at its next row, and none is inside the
+    // pack when its library goes.
+    if (std::string_view(id) == "ai") {
+      mv::addon::retract_index_locations();
+      mv::addon::wait_index_locations_idle();
+    }
     gone.addon.reset();  // shutdown, then unload; outside the lock
     if (gone.session) (void)mv_session_release(gone.session);
     return status::ok;
@@ -572,6 +581,9 @@ MV_API mv_status MV_CALL mv_addon_quit(void) {
       std::lock_guard lock(g_mutex);
       all.swap(g_loaded);  // static destruction finds nothing left to join
     }
+    // #398: no index walk starts now; one in flight stops at its next row.
+    // Not waited on: the pack is abandoned, never unmapped.
+    mv::addon::retract_index_locations();
     for (auto& [id, entry] : all) {
       // The entry's session stays retained: a pack left running still posts.
       const bool ai_family = id == "ai" || id.rfind("ai-", 0) == 0;
@@ -696,6 +708,13 @@ mv::status load_addon(mv_session_t session, const char* id, const char* interfac
     }
     (void)mv_session_retain(session);
     it = g_loaded.emplace(id, loaded_entry{std::move(*loaded), session, reader}).first;
+    // #398: while the AI pack is loaded (the writer or a reader: both read
+    // index.db), its index's coordinates serve every add-on's
+    // locations_of_index (Places' place: over the whole index).
+    if (std::string_view(id) == "ai") {
+      mv::addon::publish_index_locations(mv::addon::ai_index_locations(
+          static_cast<const mv_ai_api*>(it->second.addon->query(MV_AI_INTERFACE))));
+    }
   }
   const void* iface = it->second.addon->query(interface_id);
   if (!iface) return status::unsupported_format;
