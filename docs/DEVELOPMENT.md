@@ -472,7 +472,7 @@ copy, and check Finder's **Open With** and a Quick Look thumbnail.
 | `,` / `.` | frame step back / forward while paused |
 | `A` / `D` | previous / next beside the arrows, in every mode including on a clip |
 | `Q` / `E` | on a clip, two commands on one key: **tap** skips ±2 s, **hold** skims ±2 s per key repeat and settles on an exact seek when released. `Shift+Q` / `Shift+E` step playback speed. Off a clip they do nothing |
-| `Left` / `Right` on a clip | walk the folder while the clip is paused with the filmstrip showing; while it plays, or with the filmstrip hidden (`T`), they are `Q` / `E` (tap ±2 s, hold skims). Stills always walk |
+| `Left` / `Right` on a clip | walk the folder while the filmstrip is showing, paused or playing; with the filmstrip hidden (`T`) they are `Q` / `E` (tap ±2 s, hold skims). Stills always walk |
 | `R` | reset the measurement window |
 | `0` | fit to window |
 | `1` | 100 % |

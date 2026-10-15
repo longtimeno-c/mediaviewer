@@ -383,7 +383,18 @@ from any codec. Forced through it, ProRes 422 played at 55 frames/s.
 **Arrows on a playing or strip-less clip (2026-10-12, issue #361).** `←` `→` are `Q` / `E` while the clip plays or the filmstrip is hidden (mode `skim`, layered over video);
 paused with the strip up they still walk, since that is when the strip is being used to pick.
 `A` / `D` walk in every case. A hold keeps its command until key-up, so a clip that ends
-mid-skim cannot turn the next repeat into a walk.
+mid-skim cannot turn the next repeat into a walk. *(The playing half reversed 2026-10-15, below.)*
+
+**Arrows skip only with the filmstrip hidden (2026-10-15, owner; issue #416).** Reverses the
+playing half of #361: with the carousel on screen `←` `→` move to the previous / next item on a
+clip, paused or playing, and never skip. Only `T` (strip hidden) makes them `Q` / `E` (mode `skim`):
+a tap is the exact ±2 s seek, a hold skims, release settles. The strip being visible is the one
+rule, so the router no longer carries a play-state bit. `Q` / `E` still skip, `A` / `D` still walk,
+a still walks either way, `Shift`+arrows pan and `J` / `L` are ±10 s, in every case. A hold keeps
+the command it started with until key-up in both directions: a skim stays a skim if `T` shows the
+strip under it, and a walk stays a walk if `T` hides it (the router now pins a plain repeat row's
+command for the hold, as it already did a tap/hold's; a pinned walk owes nothing on key-up or on
+a focus-loss cancel).
 
 **A transport click does not seek 0 on the way (2026-10-12).** The system slider reports its
 minimum before the time under the pointer. `media_source::seek` publishes that target and arms
