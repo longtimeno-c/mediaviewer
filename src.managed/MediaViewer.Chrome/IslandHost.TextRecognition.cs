@@ -9,7 +9,7 @@ using Windows.Media.Ocr;
 namespace MediaViewer.Chrome;
 
 /// <summary>
-/// Copy Text in Image (Preview's; docs/design/16 View): the Windows half of
+/// Text in images (Live Text, as in Photos; docs/design/16): the Windows half of
 /// shell/text_in_image.h's port. Windows.Media.Ocr is WinRT, so it lives here
 /// rather than in the native host (D9 keeps it out of image/ as well). On
 /// device: nothing is sent anywhere (rule 6), and no Store download is ever
@@ -23,8 +23,9 @@ public static partial class IslandHost
     /// Native, on a pool worker (never the UI thread): it blocks until the
     /// recognition finishes. In: chrome_text_recognition_args { int64 pixels;
     /// int32 width; int32 height; int64 out_utf8; int32 out_capacity;
-    /// int32 out_length }, BGRA8 opaque pixels. Writes the lines read, UTF-8,
-    /// one per line, and their length. Back: 0 read (maybe nothing), 1 no OCR
+    /// int32 out_length }, BGRA8 opaque pixels. Writes the words read, UTF-8,
+    /// one record per line (line, left, top, width, height, text; tabs
+    /// between), and their length. Back: 0 read (maybe nothing), 1 no OCR
     /// language for the user's profile, 2 no OCR on this system, else failed.
     /// </summary>
     public static int RecognizeText(IntPtr arg, int sizeBytes)
@@ -53,8 +54,28 @@ public static partial class IslandHost
                 bytes.AsBuffer(), BitmapPixelFormat.Bgra8, width, height, BitmapAlphaMode.Premultiplied);
             OcrResult result = engine.RecognizeAsync(bitmap).AsTask().GetAwaiter().GetResult();
 
+            // One word per line: line, left, top, width, height (pixels), text
+            // (shell/text_in_image.h parse_word_records).
             var text = new StringBuilder();
-            foreach (OcrLine line in result.Lines) text.Append(line.Text).Append('\n');
+            var inv = System.Globalization.CultureInfo.InvariantCulture;
+            int lineIndex = 0;
+            foreach (OcrLine line in result.Lines)
+            {
+                bool any = false;
+                foreach (OcrWord word in line.Words)
+                {
+                    if (string.IsNullOrWhiteSpace(word.Text)) continue;
+                    Windows.Foundation.Rect r = word.BoundingRect;
+                    text.Append(lineIndex.ToString(inv)).Append('\t')
+                        .Append(r.X.ToString("0.##", inv)).Append('\t')
+                        .Append(r.Y.ToString("0.##", inv)).Append('\t')
+                        .Append(r.Width.ToString("0.##", inv)).Append('\t')
+                        .Append(r.Height.ToString("0.##", inv)).Append('\t')
+                        .Append(word.Text.Replace('\t', ' ').Replace('\n', ' ').Replace('\r', ' ')).Append('\n');
+                    any = true;
+                }
+                if (any) ++lineIndex;
+            }
             byte[] utf8 = Encoding.UTF8.GetBytes(text.ToString());
             if (utf8.Length > capacity) return unchecked((int)0x8007007A);  // ERROR_INSUFFICIENT_BUFFER
             Marshal.Copy(utf8, 0, output, utf8.Length);

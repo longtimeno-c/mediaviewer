@@ -211,7 +211,6 @@ public static partial class IslandHost
         public const int EditWorkspace = 150;
         public const int CropAspectSet = 155;      // arg: preset, + 16 portrait
         public const int CropStraightenSet = 156;  // arg: degrees
-        public const int CopyTextInImage = 181;    // Preview's Copy Text in Image (keyless)
         // Keyed commands the island never sends, only names the key of (KeyOf).
         public const int SkimBack = 34;
         public const int SkimForward = 35;
@@ -1458,23 +1457,6 @@ public static partial class IslandHost
         viewFlyout.Opening += (_, _) => RefreshViewMenu(viewFlyout, sortMenu, kindMenu);
         RefreshViewMenu(viewFlyout, sortMenu, kindMenu);
 
-        // Preview's Edit > Copy Text in Image, one click from the bar beside View
-        // (docs/design/16 View). Disabled, never hidden, without a still on screen.
-        var toolsFlyout = new MenuFlyout
-        {
-            ShouldConstrainToRootBounds = false,
-            MenuFlyoutPresenterStyle = MenuFlyoutPresenterStyle(),
-        };
-        MenuFlyoutItem copyText = Item("Copy text in image", null, () => Send(Command.CopyTextInImage));
-        toolsFlyout.Items.Add(copyText);
-        toolsFlyout.Opening += (_, _) =>
-        {
-            copyText.IsEnabled = _editSubject == SubjectStill && !_galleryVisible;
-            // No key by default, as in Preview; one given in Settings shows here.
-            copyText.KeyboardAcceleratorTextOverride =
-                CommandRows.FirstOrDefault(r => r.Id == Command.CopyTextInImage)?.Keys ?? "";
-        };
-
         _settingsFlyout = new MenuFlyout
         {
             ShouldConstrainToRootBounds = false,
@@ -1515,12 +1497,6 @@ public static partial class IslandHost
             if (viewBtn is not null) FlyoutBase.ShowAttachedFlyout(viewBtn);
         });
         AttachBarFlyout(viewBtn, viewFlyout);
-        Button? toolsBtn = null;
-        toolsBtn = TextButton("Tools", () =>
-        {
-            if (toolsBtn is not null) FlyoutBase.ShowAttachedFlyout(toolsBtn);
-        });
-        AttachBarFlyout(toolsBtn, toolsFlyout);
         // PR 29 (docs/design/20): the visible way in to every edit, a bar button like
         // Settings. Enter does the same. Native's SetEditView keeps its label.
         Button editBtn = BuildEditBarButton();
@@ -1547,7 +1523,6 @@ public static partial class IslandHost
         };
         row.Children.Add(openBtn);
         row.Children.Add(viewBtn);
-        row.Children.Add(toolsBtn);
         row.Children.Add(editBtn);
         row.Children.Add(openInBar);
         row.Children.Add(settingsBtn);

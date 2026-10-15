@@ -197,11 +197,19 @@ class present_lab {
   void draw_overlay(const input_snapshot& snapshot) noexcept;
   // Loupe frame, hold-previous label, info line. ImGui, same present.
   void draw_view_overlays(const input_snapshot& snapshot) noexcept;
+  // Text in images: the selection's highlight, and canvas_map for the host.
+  void draw_text_overlay(const input_snapshot& snapshot) noexcept;
   bool write_json_report() const noexcept;
 
  public:
   // [any-thread] What the eyedropper last read, as `#RRGGBB  rgb(r, g, b)  x y`;
   // empty when it is off or the cursor is not over a readable still.
+  // [any-thread] Text in images (docs/design/16): where the still was last
+  // drawn, for the host's hit-test.
+  [[nodiscard]] canvas_map still_map() const {
+    std::lock_guard<std::mutex> lock(eye_mutex_);
+    return still_map_;
+  }
   [[nodiscard]] std::string eyedropper_text() const {
     std::lock_guard<std::mutex> lock(eye_mutex_);
     return eye_text_;
@@ -222,6 +230,7 @@ class present_lab {
   eyedropper_sample eye_;
   gfx::com_ptr<ID3D11Texture2D> eye_staging_;
   mutable std::mutex eye_mutex_;
+  canvas_map still_map_;  // under eye_mutex_
   std::string eye_text_;
   std::uint32_t seen_meta_seq_ = 0;
   std::uint8_t seen_view_flags2_ = 0;

@@ -357,9 +357,6 @@ enum class command_id : std::uint16_t {
   label_green,
   label_blue,
   clear_label,
-  // Preview's Edit > Copy Text in Image (docs/design/16 View): on-device OCR of the
-  // still on screen to the clipboard. Keyless, as in Preview. Appended.
-  copy_text_in_image,
   count
 };
 inline constexpr int kAddonCommandSlots = 8;

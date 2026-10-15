@@ -43,8 +43,6 @@ enum MvMenuCmd : int32_t {
   kMenuShowBlue, kMenuShowPurple,
   // Issue #210: File > Rename… (F2).
   kMenuRename,
-  // Preview's Edit > Copy Text in Image.
-  kMenuCopyText,
 };
 typedef enum MvMenuCmd MvMenuCmd;
 

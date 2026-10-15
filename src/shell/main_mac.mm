@@ -76,6 +76,7 @@
 #include "shell/crash_reporter_mac.h"
 #include "shell/edit_session.h"
 #include "shell/text_in_image.h"
+#include "shell/text_select.h"
 #include "shell/text_recognition_mac.h"
 #include "shell/edit_view.h"
 #include "shell/edit_workspace.h"
@@ -194,8 +195,6 @@ static bool MvCommandSupported(mv::shell::command_id c) {
     case keyframe_next: case jobs_pane: case clip_tools: case clip_split:
     // PR 15
     case copy_path: case copy_flattened: case share:
-    // Preview's Copy Text in Image (Vision, shell/text_recognition_mac.mm)
-    case copy_text_in_image:
     // Pages (docs/plans/audio-and-documents.md §2.3)
     case next_page: case prev_page:
     // PR 29
@@ -580,6 +579,15 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
                       speed:(float)speed
                        size:(float)size;
 - (void)pointerActivity;
+// Text in images (Live Text, shell/text_select.h). The canvas view hands over
+// the pointer in physical pixels. -textPressX:y:clicks: is a left press and
+// returns whether it landed on text (then it selects and never pans);
+// -textHoverX:y: returns whether the pointer is over text (the I-beam) and
+// starts reading the still once the pointer has rested on it.
+- (BOOL)textPressX:(float)x y:(float)y clicks:(NSInteger)clicks;
+- (void)textDragX:(float)x y:(float)y;
+- (void)textRelease;
+- (BOOL)textHoverX:(float)x y:(float)y;
 
 // One key router, one command table (docs/design/16), shared with Windows. Keys are
 // translated to `mv::shell::key` at the edge (MvKeyFromEvent) and routed; the
@@ -1921,6 +1929,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 @implementation MvMetalView {
   int _welcomePress;  // welcome row under the left press, + 1; 0 = none
   BOOL _welcomePressRemove;  // ... and the press was on its remove button
+  BOOL _textBeam;            // the I-beam is up over text in a still
   // Issue #212 (shell/gesture.h): a pinch's sub-notch remainder, and the
   // two-finger sideways swipe that steps one item.
   mv::shell::pinch_to_wheel _pinch;
@@ -2087,6 +2096,11 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   }
   [self trackPointer:event];
   _welcomePress = self.app ? [self.app welcomeRowAtPointerOnRemove:&_welcomePressRemove] + 1 : 0;
+  // Text in images: a press on a word selects (published with the press, so
+  // the render thread never starts a pan for it).
+  self.snap->text_press = self.app && [self.app textPressX:self.snap->mouse_x
+                                                         y:self.snap->mouse_y
+                                                    clicks:event.clickCount];
   self.snap->mouse_down[0] = true;
   ++self.snap->activity_seq;
   [self publish];
@@ -2095,6 +2109,10 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 }
 - (void)mouseUp:(NSEvent*)event {
   self.snap->mouse_down[0] = false;
+  if (self.snap->text_press) {
+    self.snap->text_press = false;
+    if (self.app) [self.app textRelease];
+  }
   ++self.snap->activity_seq;
   [self publish];
   if (self.lab) self.lab->wake();
@@ -2192,6 +2210,10 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 - (void)mouseExited:(NSEvent*)event {
   (void)event;
   self.snap->mouse_in_client = false;
+  if (_textBeam) {
+    _textBeam = NO;
+    [NSCursor.arrowCursor set];
+  }
   if (self.app && self.snap->recents.hover >= 0) {
     (void)[self.app welcomePointerMoved];
     [NSCursor.arrowCursor set];
@@ -2214,6 +2236,11 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   // redraws (the app bumps the snapshot); an empty welcome stays idle.
   if (self.app && self.snap->recents.count > 0) {
     [([self.app welcomePointerMoved] ? NSCursor.pointingHandCursor : NSCursor.arrowCursor) set];
+  } else if (self.app && (event.type == NSEventTypeMouseMoved || self.snap->text_press)) {
+    // Text in images: the I-beam over words in a still.
+    const BOOL beam = self.snap->mouse_in_client && [self.app textHoverX:self.snap->mouse_x y:self.snap->mouse_y];
+    if (beam || _textBeam) [(beam ? NSCursor.IBeamCursor : NSCursor.arrowCursor) set];
+    _textBeam = beam;
   }
   if (self.snap->eyedropper || self.snap->loupe) ++self.snap->activity_seq;
   [self publish];
@@ -2226,6 +2253,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 }
 - (void)mouseDragged:(NSEvent*)event {
   [self mouseMoved:event];
+  if (self.snap->text_press && self.app) [self.app textDragX:self.snap->mouse_x y:self.snap->mouse_y];
   ++self.snap->activity_seq;
   [self publish];
   if (self.lab) self.lab->wake();
@@ -2589,6 +2617,10 @@ static void MvAdoptNewDefaultViewerTypes() {
   // the item id _lab.open_item returned (so a reload never borrows it).
   mv::shell::edit_session _edits;
   std::uint64_t _itemId;
+  // Text in images (shell/text_select.h): the words read from the still on
+  // screen and what is selected; a dwell timer before a still is read.
+  mv::shell::text_select _text;
+  NSTimer* _textDwell;
   NSTimer* _rotateDebounce;
   // docs/design/26: Photos library items. What each key resolved to (a file in place,
   // a cache preview, or a fetched original); the sequence that tells a stale
@@ -4592,6 +4624,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   const BOOL changed = _galleryVisible != visible;
   _galleryVisible = visible;
   self.galleryHost.hidden = !visible;
+  [self textSync];
   [self layoutAIBadge];  // #345
   if (changed && visible) [self followGalleryFilter];
   // File search belongs to the grid: it closes with it, filter and all.
@@ -5381,9 +5414,6 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
   switch (static_cast<MvMenuCmd>(cmd)) {
     case kMenuOpen: [self openFolderPanel:NO]; break;
     case kMenuNewWindow: [self openNewWindow]; break;
-    case kMenuCopyText:
-      if (![self runCommand:mv::shell::command_id::copy_text_in_image back:mv::shell::back_target::none]) NSBeep();
-      break;
     case kMenuOpenFolder: [self openFolderPanel:YES]; break;
     case kMenuOpenPhotos: [self openPhotosLibrary]; break;
     case kMenuTrash: [self deleteMarkedToTrash]; break;
@@ -5497,9 +5527,6 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
     }
     return subject == mv::shell::edit_subject::still;
   }
-  // Disabled, never hidden, when there is no still on screen (a clip, audio,
-  // a document, an animation, the gallery).
-  if (tag == kMenuCopyText) return [self editSubject] == mv::shell::edit_subject::still && !_galleryVisible;
   if (tag == kMenuFolderTree) item.state = _treeVisible ? NSControlStateValueOn : NSControlStateValueOff;
   if ([self menuCmdBlocked:tag]) return NO;
   switch (static_cast<MvMenuCmd>(item.tag)) {
@@ -5664,9 +5691,6 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
   [self addMenuItem:@"Save Copy…" cmd:kMenuSaveCopy key:@"" mods:0 toMenu:edit];
   [edit addItem:[NSMenuItem separatorItem]];
   [self addMenuItem:@"Trim Video" cmd:kMenuTrim key:@"" mods:0 toMenu:edit];
-  // Where Preview has it, and as there, no key (one can be given in Settings).
-  [edit addItem:[NSMenuItem separatorItem]];
-  [self addMenuItem:@"Copy Text in Image" cmd:kMenuCopyText key:@"" mods:0 toMenu:edit];
 
   NSMenu* view = submenu(@"View");
   [self addMenuItem:@"Fit to Window" cmd:kMenuFit key:@"" mods:0 toMenu:view];
@@ -6134,6 +6158,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   s.filmstrip_visible = [self filmstripVisible];
   // Milestone H: Esc from a result list is the path bar's "Back to folder".
   s.list_open = _listOpen;
+  s.text_selected = _text.has_selection();
   return s;
 }
 
@@ -6307,6 +6332,9 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
           [self pokeSnapshot];
           break;
         case mv::shell::back_target::result_list: [self closeList]; break;
+        case mv::shell::back_target::text_selection:
+          if (_text.clear()) [self textPublish];
+          break;
         default: break;
       }
       return YES;
@@ -6484,7 +6512,15 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
       [self pokeSnapshot];
       return YES;
     case toggle_mark: [self toggleMarkCurrent]; return YES;
-    case mark_all: [self markAll]; return YES;
+    case mark_all:
+      // With words selected in the still, Select All is every word (Photos);
+      // otherwise it marks every file.
+      if (_text.has_selection() && _text.select_all()) {
+        [self textPublish];
+        return YES;
+      }
+      [self markAll];
+      return YES;
     case unmark_all: [self unmarkAll]; return YES;
     case copy_to: [self copyMarkedPickDestination:NO]; return YES;
     case copy_to_pick: [self copyMarkedPickDestination:YES]; return YES;
@@ -6530,6 +6566,17 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
       return YES;
     case copy_clipboard: {
       NSPasteboard* board = [NSPasteboard generalPasteboard];
+      // Words selected in the still (text in images): that text.
+      if (_text.has_selection()) {
+        const std::string text = _text.text();
+        [board clearContents];
+        if (![board setString:[NSString stringWithUTF8String:text.c_str()] forType:NSPasteboardTypeString]) {
+          NSBeep();
+          return YES;
+        }
+        [self noticeShow:mv::shell::copy_text_notice(_text.words())];
+        return YES;
+      }
       // Eyedropper on and a pixel under the cursor: that colour.
       if (_snap.eyedropper) {
         const std::string text = _lab.eyedropper_text();
@@ -6560,7 +6607,6 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
       return [board setString:[NSString stringWithUTF8String:text.c_str()] forType:NSPasteboardTypeString];
     }
     case copy_flattened: return [self copyFlattened];
-    case copy_text_in_image: return [self copyTextInImage];
     case share: return [self shareMarkedOrCurrent];
     case metadata_pane:
       if (!_metaPaneVisible && _adjust.visible()) [self setAdjustVisible:NO];
@@ -6638,6 +6684,8 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     _snap.edit[0] = mv::shell::view_of(_edits, _itemId, 0);
   }
   ++_editGeneration;  // the strip's edit count, the Crop pane's draft
+  // A new item, a turn or a crop: words read before no longer line up.
+  [self textSync];
 }
 
 - (BOOL)runEditCommand:(mv::shell::command_id)command {
@@ -6711,6 +6759,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     [self runEditCommand:mv::shell::command_id::crop_commit];
   }
   self.editStripHost.hidden = !open;
+  [self textSync];
   const CGFloat top = open ? kEditStripHeightPoints : 0.0;
   self.metaTop.constant = top;
   self.adjustTop.constant = top;
@@ -10336,39 +10385,105 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
   return YES;
 }
 
-// Edit > Copy Text in Image (Preview's): Vision reads the still as the canvas
-// shows its geometry, on the pool (rule 1) and on device (rule 6); the text
-// goes on the pasteboard on the main thread and the notice says how much.
-// Nothing found leaves the pasteboard as it was.
-- (BOOL)copyTextInImage {
-  if (_items.empty() || _index.current() >= _items.size() ||
-      [self editSubject] != mv::shell::edit_subject::still || _galleryVisible) {
-    return NO;
+// ---- Text in images (Live Text, docs/design/16 "Text in images") -------------------
+
+// What the words on screen would be read from: the still and its geometry, or
+// nothing when there is no still to select in (a clip, audio, a document, an
+// animation, the gallery, the Edit workspace). A change drops the old words.
+- (mv::shell::text_select::source)textSource {
+  mv::shell::text_select::source src;
+  if ([self editSubject] != mv::shell::edit_subject::still || _galleryVisible || _ws.open ||
+      _edits.crop_active() || _showOriginal) {
+    return src;
   }
+  src.item = _itemId;
+  src.geometry = _edits.export_geometry();
+  return src;
+}
+
+- (void)textSync {
+  if (_text.show([self textSource])) [self textPublish];
+}
+
+- (void)textPublish {
+  _text.fill(_snap.text);
+  [self pokeSnapshot];
+}
+
+// The pointer in 0..1 of the still as the render thread last drew it.
+- (BOOL)textPointX:(float)x y:(float)y u:(float*)u v:(float*)v aspect:(float*)aspect {
+  const mv::shell::canvas_map map = _lab.still_map();
+  if (!map.to_uv(x, y, *u, *v)) return NO;
+  *aspect = map.aspect();
+  return YES;
+}
+
+- (BOOL)textPressX:(float)x y:(float)y clicks:(NSInteger)clicks {
+  [self textSync];
+  if (!_text.has_words()) return NO;
+  if (_snap.eyedropper || _snap.loupe) return NO;
+  float u = 0, v = 0, aspect = 1;
+  if (![self textPointX:x y:y u:&u v:&v aspect:&aspect]) return NO;
+  const bool had = _text.has_selection();
+  const bool on_text = _text.press(u, v, aspect, static_cast<int>(clicks));
+  if (on_text || had) [self textPublish];
+  return on_text ? YES : NO;
+}
+
+- (void)textDragX:(float)x y:(float)y {
+  float u = 0, v = 0, aspect = 1;
+  if (![self textPointX:x y:y u:&u v:&v aspect:&aspect]) return;
+  _text.drag(u, v);
+  [self textPublish];
+}
+
+- (void)textRelease {
+  const bool had = _text.has_selection();
+  _text.release();
+  if (had != _text.has_selection()) [self textPublish];
+}
+
+// The pointer moved over the canvas. Reading a still costs a decode and the
+// recogniser, so it waits until the pointer has rested on a still for half a
+// second (arrowing through a folder never reads anything), runs on the pool
+// (rule 1) and on device (rule 6), and is read once per still and geometry.
+- (BOOL)textHoverX:(float)x y:(float)y {
+  [self textSync];
+  float u = 0, v = 0, aspect = 1;
+  const BOOL placed = [self textPointX:x y:y u:&u v:&v aspect:&aspect];
+  if (placed && _text.wants_read() && !_textDwell) {
+    MvLabApp* __weak weakSelf = self;
+    _textDwell = [NSTimer scheduledTimerWithTimeInterval:0.5
+                                                 repeats:NO
+                                                   block:^(NSTimer*) {
+                                                     MvLabApp* strongSelf = weakSelf;
+                                                     if (!strongSelf) return;
+                                                     strongSelf->_textDwell = nil;
+                                                     [strongSelf textRead];
+                                                   }];
+  }
+  return placed && !_snap.eyedropper && !_snap.loupe && _text.over_text(u, v, aspect) ? YES : NO;
+}
+
+- (void)textRead {
+  [self textSync];
+  if (!_text.wants_read() || _items.empty() || _index.current() >= _items.size()) return;
+  if (!_lab.still_map().valid) return;
+  const mv::shell::text_select::source src = _text.current();
   const std::string path = _items[_index.current()].path_utf8;
-  const mv::edit::geometry g = _edits.export_geometry();
+  _text.reading();
   MvLabApp* __weak weakSelf = self;
-  _jobs.submit_at(mv::background_generation, [path, g, weakSelf](const mv::job_context&) -> mv::status {
+  _jobs.submit_at(mv::background_generation, [path, src, weakSelf](const mv::job_context&) -> mv::status {
     mv::shell::vision_text_recognizer recognizer;
-    const mv::shell::copied_text out = mv::shell::run_copy_text(path, g, recognizer);
-    NSString* text = out.text.empty() ? nil : [NSString stringWithUTF8String:out.text.c_str()];
-    const std::string notice = mv::shell::copy_text_notice(out);
+    auto out = std::make_shared<mv::shell::read_text>(mv::shell::run_text_recognition(path, src.geometry, recognizer));
     dispatch_async(dispatch_get_main_queue(), ^{
       MvLabApp* strongSelf = weakSelf;
       if (!strongSelf) return;
-      if (text) {
-        NSPasteboard* board = NSPasteboard.generalPasteboard;
-        [board clearContents];
-        if (![board setString:text forType:NSPasteboardTypeString]) {
-          NSBeep();
-          return;
-        }
-      }
-      [strongSelf noticeShow:notice];
+      (void)strongSelf->_text.set_words(src, std::move(out->layout));
+      // Nothing to say on the Mac: Vision is always there.
     });
     return mv::status::ok;
   });
-  return YES;
 }
 
 // ⌘⇧S: the system share picker with the marked files, else the current one,

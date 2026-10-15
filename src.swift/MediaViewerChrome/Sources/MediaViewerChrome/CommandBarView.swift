@@ -165,7 +165,7 @@ public struct CommandBarView: View {
     // shortcut column is only a label, read from the live table so a remap shows.
     VStack(spacing: 0) {
       HStack(spacing: 0) {
-        // Same order and labels as the Windows bar: Open, View, Tools, Edit image /
+        // Same order and labels as the Windows bar: Open, View, Edit image /
         // Edit video (PR 29), Settings, About; the folder trail, then `?`, at
         // the far right.
         HStack(spacing: 0) {
@@ -213,14 +213,6 @@ public struct CommandBarView: View {
             FlyoutItem(title: "Clipping warnings", shortcut: key("Clipping")) { close(); mv_chrome_run_command(ViewCommand.clipping) }
             FlyoutItem(title: "Frame-time overlay", shortcut: key("Frame-time overlay")) { close(); mv_chrome_menu(kMenuOverlay) }
             FlyoutItem(title: "Keyboard shortcuts", shortcut: key("Keyboard shortcuts")) { close(); mv_chrome_menu(kMenuHelp) }
-          }
-          // Preview's Edit > Copy Text in Image, one click from the bar (the menu bar has
-          // it under Edit). Disabled, not hidden, when no still is on screen.
-          BarFlyout(title: "Tools") { close in
-            FlyoutItem(title: "Copy text in image", shortcut: key("Copy text in image"),
-                       enabled: edit.subject == 1 && !edit.galleryVisible) {
-              close(); mv_chrome_menu(kMenuCopyText)
-            }
           }
           // PR 29 (docs/design/20): the visible way in to every edit, a bar button like
           // Settings. Return does the same. Shown only over media.

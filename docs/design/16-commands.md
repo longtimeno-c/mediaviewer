@@ -115,7 +115,7 @@ folder and `Q` / `E` still skip.
 ### `Esc` walks out
 
 `resolve_back` picks one target per press, never quitting: text field → popup (`?`, go-to, find)
-→ Settings → Live Photo motion → crop (cancel) → trim (disarm, markers kept) → pane → gallery →
+→ Settings → Live Photo motion → selected text in a still (deselect) → crop (cancel) → trim (disarm, markers kept) → pane → gallery →
 slideshow → fullscreen → runner → canvas focus → result list ("Back to folder", the outermost:
 a search result list is a place, not an overlay). A list opened from the empty window (a search
 from the welcome) goes back to the empty window: the welcome card with its recent folders, the
@@ -226,7 +226,7 @@ crop. Keys are shown Windows-style; on macOS read `⌘` for `Ctrl`.
 | `Shift+O` | Viewing | AF-point quads from the maker notes already read |
 | `I` | Viewing | Metadata pane: focuses it; `←` `→` change tab, `↓` reaches tag search; `Esc` returns to the canvas, a second `Esc` closes it |
 | `Shift+I` | Viewing | Eyedropper: one-pixel sRGB 8-bit + hex readout under the cursor (stills) |
-| `Ctrl+C` | Viewing | With the eyedropper on: copy `#RRGGBB  rgb(r, g, b)  x y`. Otherwise copy the marked (else current / gallery-selected) file(s) |
+| `Ctrl+C` | Viewing | With words selected in the still ([Text in images](#text-in-images)): copy that text. With the eyedropper on: copy `#RRGGBB  rgb(r, g, b)  x y`. Otherwise copy the marked (else current / gallery-selected) file(s) |
 | hold `Z` | browse, video | Loupe: 100 % around the cursor or a keyboard point; arrows nudge it. Same texture, no decode |
 | hold `\` | browse, video | Previous item, for burst pick, from the five-slot GPU LRU (Mac: the last still shown, kept on the GPU) |
 | `;` | browse, video | Play a Live Photo's motion once, with audio, and return to the still. `;` again, `Esc` or navigation return early. **Mac: not built** |
@@ -257,7 +257,7 @@ Marks are a separate set from the selection, so arrow-key browsing never makes a
 | Key | Modes | Command |
 |---|---|---|
 | `Insert` / `Shift+Space` | browse, video | Toggle mark on current |
-| `Ctrl+A` | Viewing | Mark all |
+| `Ctrl+A` | Viewing | Mark all; with words selected in the still, select every word instead |
 | `Ctrl+D` | Viewing | Unmark all |
 | `F7` / `Shift+F7` | Viewing | Copy marked (else current) to the last destination / pick a folder |
 | `F8` / `Shift+F8` | Viewing | Move, same rule |
@@ -266,7 +266,6 @@ Marks are a separate set from the selection, so arrow-key browsing never makes a
 | `Ctrl+Shift+C` | Viewing | Copy path(s) as text |
 | `Ctrl+Alt+C` | browse | Copy the current still with edits baked, as PNG (worker thread) |
 | `Ctrl+Shift+S` | Viewing | Share (Windows Share / macOS share sheet) |
-| (none) | browse | Copy Text in Image: on-device OCR of the current still to the clipboard (Edit menu on the Mac, Tools flyout on both bars; worker thread) |
 
 These are on the mouse too: the Mac's File menu, and on Windows the command bar's **Open** flyout
 (Mark / Unmark, Copy / Move Marked To…, Move to Recycle Bin, Share…, Copy Path, Copy Edited
@@ -566,6 +565,37 @@ A swipe does nothing under the gallery or in crop. A tap is the system's promote
 reads the touchscreen through `WM_GESTURE` (pan inertia and gutter off); the touchpad's pinch is
 already `Ctrl`+wheel. The Mac reads `magnifyWithEvent:`, `scrollWheel:` and `swipeWithEvent:`.
 
+## Text in images
+
+As in Photos, text in a still can be selected with the mouse and copied: no menu item, mode or
+setting ([12](12-decision-log.md) 2026-10-15, which replaced 2026-10-10's Copy Text in Image).
+
+| Pointer | Does |
+|---|---|
+| Hover over text | I-beam cursor |
+| Press on a word and drag | Selects from that word to the word nearest the pointer, whole words in reading order; a press on text never pans or starts a file drag |
+| Double-click / triple-click | Selects the word / its line; a drag from there extends by words / lines |
+| Click on text without dragging, or press off the text | Clears the selection (off the text the press pans as before) |
+
+`Ctrl+C` / `⌘C` then copies it (the notice says "Copied 12 words"), `Ctrl+A` / `⌘A` selects every
+word, and `Esc` deselects before anything else on the canvas walks out.
+
+**When a still is read.** Recognition costs a decode and the OS recogniser, so it is never part of
+showing an image: it starts only after the pointer has rested on a still for 500 ms (arrowing or
+clicking through a folder reads nothing), on the job pool (rule 1), once per still and geometry. A
+new item, a turn, a crop, Show original, the gallery or the Edit workspace drops the words. Stills
+only: not a clip, an animation, audio or a document page.
+
+**How.** `shell/text_in_image.h` renders the still as the canvas shows it (geometry applied, 4096 px
+long edge, alpha over white) for a port, `text_recognizer`, that returns words with boxes in 0..1 of
+that image: Vision `VNRecognizeTextRequest` on the Mac (each word boxed with
+`boundingBoxForRange:`), `Windows.Media.Ocr` in the WinUI chrome on Windows (`OcrWord.BoundingRect`,
+sent back as one tab-separated record per word). `shell/text_select.h` is the hosts' shared
+selection model on the UI thread. The render thread publishes `canvas_map` (where the still is) for
+the host's hit-test and draws `input_snapshot::text`, one translucent box per selected line; a
+press that `text_press` marks is never a pan. On device, nothing logged (rule 6); without an OCR
+language Windows says so once a session and offers no Store download (rule 7).
+
 ## Animation
 
 GIF / APNG / WebP play on the render thread's frame clock ([image pipeline](04-image-pipeline.md)).
@@ -608,7 +638,8 @@ No hot-path ABI for commands. Commands invoke existing session calls (`mv_folder
 - A filter (all / photos / videos / RAW) on the listing.
 - `Ctrl+PageUp` / `Ctrl+PageDown` for ICO sizes and HEIC sequences (pages of TIFF, PDF and DOCX are built).
 - `U` clear label and `X` reject mark.
-- Selecting text on the canvas (a Live Text overlay); Copy Text in Image copies all of it.
+- Text in images: selecting part of a word (selection is by whole words), a right-click menu
+  (Copy, Look Up), and text in PDF / DOCX pages, clips or animations.
 - A filter (all / photos / videos / RAW) on the listing.
 - Touch gestures (swipe, pinch).
 - Import / export of a person's own key map (named layouts ship as keymap packs, above).

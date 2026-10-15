@@ -51,8 +51,7 @@ TEST_CASE("no two bindings share a key, modifiers and mode", "[shell][commands]"
     // so does issue #206's Show next kind.
     if (b.k == key::none) {
       REQUIRE((b.command == command_id::open_raw || b.command == command_id::open_jpeg ||
-               b.command == command_id::kind_filter_next ||
-               b.command == command_id::copy_text_in_image));
+               b.command == command_id::kind_filter_next));
       continue;
     }
     for (int m = 0; m < kModeCount; ++m) {
@@ -120,8 +119,6 @@ TEST_CASE("the PR 3-5 island command ids keep their wire values", "[shell][comma
   REQUIRE(static_cast<int>(command_id::help) == 75);
   REQUIRE(static_cast<int>(command_id::reveal_in_explorer) == 80);
   REQUIRE(static_cast<int>(command_id::open_settings) == 84);
-  // The two chromes send these by number (IslandHost.cs, CommandBarView.swift via kMenuCopyText).
-  REQUIRE(static_cast<int>(command_id::copy_text_in_image) == 172);
 }
 
 TEST_CASE("B no longer cycles a canvas background", "[shell][commands]") {
@@ -447,6 +444,26 @@ TEST_CASE("Esc in a result list is Back to folder, after everything over it",
   s.popup_open = false;
   s.settings_open = true;
   REQUIRE(resolve_back(s) == back_target::settings);
+}
+
+TEST_CASE("Esc deselects text in a still before it leaves anything", "[shell][router]") {
+  // Text in images (shell/text_select.h): selected words are the innermost
+  // level on the canvas; a popup or Settings over them still closes first.
+  key_router r;
+  view_state s;
+  s.text_selected = true;
+  s.pane_open = true;
+  s.gallery_open = true;
+  s.fullscreen = true;
+  REQUIRE(r.on_key(down(key::escape), s).back == back_target::text_selection);
+  s.text_selected = false;
+  REQUIRE(r.on_key(down(key::escape), s).back == back_target::pane);
+  s.text_selected = true;
+  s.settings_open = true;
+  REQUIRE(resolve_back(s) == back_target::settings);
+  s.settings_open = false;
+  s.popup_open = true;
+  REQUIRE(resolve_back(s) == back_target::popup);
 }
 
 TEST_CASE("a focused text control owns every key but Esc", "[shell][router]") {

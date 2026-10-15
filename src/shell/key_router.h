@@ -38,6 +38,7 @@ struct view_state {
   bool popup_open = false;  // `?`, go-to or find flyout is up
   bool settings_open = false;  // the settings screen covers the canvas
   bool motion_playing = false;  // `;` is playing a Live Photo's motion (PR 7)
+  bool text_selected = false;   // text in images: words are selected on the canvas
   bool pane_open = false;  // PR 8+
   bool crop = false;       // PR 10: crop mode on the canvas
   bool trim = false;       // PR 13: trim armed on the current clip
@@ -70,6 +71,7 @@ enum class back_target : std::uint8_t {
   canvas_focus,
   game,  // leave the empty-window runner (dino_game.h)
   result_list,  // Milestone H: back from a result list to its folder ("Back to folder")
+  text_selection,  // text in images: clear the selected words (shell/text_select.h)
 };
 
 [[nodiscard]] back_target resolve_back(const view_state& s) noexcept;

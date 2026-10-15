@@ -318,9 +318,6 @@ constexpr binding kBindings[] = {
     // they walk the folder (kWalk, first rows); A / D walk it in every case.
     row(key::left, mod_none, kSkim, tap_hold, skim_back, skim_back, skim_settle),
     row(key::right, mod_none, kSkim, tap_hold, skim_forward, skim_forward, skim_settle),
-    // Copy Text in Image (docs/design/16 View). Appended. No key, as in Preview:
-    // the menu bar (Mac), the command bar's Tools flyout, or one from Settings.
-    row(key::none, mod_none, kBrowse, edge, copy_text_in_image),
 };
 
 // The router's index stores row + 1 in a byte.
@@ -509,7 +506,6 @@ constexpr command_info kCommands[] = {
     {label_green, "Label green"},
     {label_blue, "Label blue"},
     {clear_label, "Clear label"},
-    {copy_text_in_image, "Copy text in image"},
 };
 
 const char* named_key(key k) noexcept {

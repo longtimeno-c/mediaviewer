@@ -634,6 +634,21 @@ can give it one). No off switch: the owner's ease-of-access call (2026-10-10) wa
 concepts or settings", and the command does nothing until it is chosen. Selecting text on the
 canvas (a Live Text overlay) is not built.
 
+**Text in images: select on the canvas, not a menu command (2026-10-15, owner, issue #289).**
+Replaces the entry above before it shipped. The owner asked for Photos' behaviour, "click down on
+the text to select it", instead of Edit ▸ Copy Text in Image and a Tools flyout; the command
+(`copy_text_in_image`), its menu item and both flyouts are gone. The recogniser port now returns
+words with boxes (`text_word`, 0..1 of the rendered still); `shell/text_select.h` is the shared
+selection model (press-drag by whole words, double-click word, triple-click line, a click clears),
+driven by each host from the UI thread through `canvas_map`, which the render thread publishes
+after each frame with a still. The highlight travels in the input snapshot like the AF quads, and
+`input_snapshot::text_press` keeps a press on text from panning. `⌘C`/`Ctrl+C` copies a selection
+before the eyedropper and files, `⌘A`/`Ctrl+A` selects all words only when some are selected (Mark
+all otherwise), and `Esc` has a `text_selection` level just inside the Live Photo's. Reading a
+still is the cost, so it waits for the pointer to rest on it for 500 ms and runs on the pool; a
+keyboard-only browse never reads anything. Selection is by whole words because
+`Windows.Media.Ocr` boxes words, not characters.
+
 ---
 
 ## Windows chrome (XAML islands)
