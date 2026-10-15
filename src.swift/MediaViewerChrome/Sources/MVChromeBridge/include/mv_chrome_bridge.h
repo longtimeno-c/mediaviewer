@@ -69,6 +69,11 @@ void mv_chrome_key_capture_cancel(void);
 int32_t mv_chrome_key_capture_row(void);
 void mv_chrome_keys_reset(void);
 uint64_t mv_chrome_keys_generation(void);
+// PR 56 (docs/design/16 "Keymap packs"): applies a pack (mv_open_addons_keymap's
+// JSON) to the live table once: the defaults with the pack's keys written in,
+// persisted like any remap. Writes {"changed","displaced","skipped":[...]}.
+// [main-thread]
+int32_t mv_chrome_apply_keymap(const char* pack_json, char* buf, int32_t size);
 
 // Bumps input_snapshot.one_to_one_seq and wakes the render thread. [any-thread]
 void mv_chrome_one_to_one(void);
@@ -174,6 +179,19 @@ void mv_chrome_select_index_and_close_gallery(int32_t index);
 // another removed). [main-thread]
 uint64_t mv_chrome_listing_generation(void);
 
+// #291 (docs/design/16 "File search"): the files of the listing whose tags
+// (camera, lens, made-with, software, title, caption, keywords, creator) hold
+// every word of `query_utf8`, folded as names are. JSON:
+//   {"done":n,"total":m,"reading":bool,"hits":[[index,"why"],...]}
+// `index` as mv_chrome_item_name; `why` the tag that matched ("Canon EOS R5").
+// Only files the folder's background tag pass has read; `reading` while it
+// runs ("Still reading tags — done of total"). A lookup in memory, never a
+// file read. Returns the byte length needed, as the tables. [main-thread]
+int32_t mv_chrome_tag_search(const char* query_utf8, char* buf, int32_t size);
+// Bumped when the tag pass learns more about the folder on screen: an open
+// search re-runs its tag half. [main-thread]
+uint64_t mv_chrome_tag_generation(void);
+
 // Bumped when the host rewrites a listed file in place (a lossless rotate, a
 // metadata write) and updates its size / mtime without a relist, so Swift
 // re-reads mv_chrome_item_thumb_key and the cell asks for the new thumbnail.
@@ -186,6 +204,13 @@ uint64_t mv_chrome_thumb_generation(void);
 uint64_t mv_chrome_marks_generation(void);
 int32_t mv_chrome_marked_count(void);
 bool mv_chrome_is_marked(int32_t index);
+// Issue #413: the gallery's shift-click range. `indices` in the order the grid
+// shows them; count 0 clears it. While it holds files, copy, F7/F8, Delete, copy
+// path and Share act on it. The host clears it on any other selection, a
+// relist, another folder, or the grid closing (the generation moves).
+void mv_chrome_gallery_set_range(const int32_t* indices, int32_t count);
+uint64_t mv_chrome_gallery_range_generation(void);
+int32_t mv_chrome_gallery_range_count(void);
 
 // Is the item at `index` a clip (a video, by extension: the same test the host
 // uses to route it to the player)? Drives the gallery's play badge. False for
@@ -299,14 +324,39 @@ bool mv_chrome_meta_loading(void);
 // most `size` bytes, NUL-terminated, like mv_chrome_command_table.
 //   summary:    "label\tvalue"                      every row for the kind, value may be empty
 //   properties: "space\tgroup\tlabel\tvalue\traw_tag\traw\taccess"
-//               space = exif|iptc|xmp|container|computed; raw = the value in the
-//               form an edit takes; access (PR 29, meta::access_of) = e editable
+//               space = exif|iptc|xmp|container|computed|c2pa|png_text|icc|xmp_raw
+//               (#290 added the last four, always read-only); raw = the value in the
+//               form an edit takes; access (PR 29, meta::row_access) = e editable
 //               (set, remove), s set only (into the XMP sidecar), r read-only
 //   streams:    "S\tindex\tkind\tcodec" starts a stream, "F\tlabel\tvalue" adds a field to
 //               it, "C\tstart_ms\ttitle" is a chapter; empty for a still
 int32_t mv_chrome_meta_summary(char* buf, int32_t size);
 int32_t mv_chrome_meta_properties(char* buf, int32_t size);
 int32_t mv_chrome_meta_streams(char* buf, int32_t size);
+
+// #290 (docs/design/06 "Made with and AI provenance", docs/design/14): the record's
+// position and provenance as numbers, for the map (#344) and the AI badge (#345).
+// POD; `struct_size` is set by the caller and only the fields it covers are
+// written, so an older caller keeps working when fields are appended.
+enum {
+  MV_META_FACT_WHERE = 1u << 0,         // lat / lon are set
+  MV_META_FACT_ALTITUDE = 1u << 1,      // altitude_m is set
+  MV_META_FACT_AI_GENERATED = 1u << 2,  // positive evidence only; clear = not stated
+  // #352 (meta::location_rights_of): what the Summary's Location row may do.
+  MV_META_FACT_LOCATION_SET = 1u << 3,          // Edit can save a position
+  MV_META_FACT_LOCATION_CLEAR = 1u << 4,        // a blank save can remove it
+  MV_META_FACT_LOCATION_IN_ORIGINAL = 1u << 5,  // the original's own fix: never removed
+};
+typedef struct mv_chrome_meta_facts {
+  uint32_t struct_size;  // sizeof(mv_chrome_meta_facts), in
+  uint32_t flags;        // MV_META_FACT_*
+  double lat, lon;       // WGS 84 degrees, north / east positive
+  double altitude_m;     // above sea level, negative below
+} mv_chrome_meta_facts;
+// False, with the covered fields zeroed, when there is no record.
+bool mv_chrome_meta_facts_get(mv_chrome_meta_facts* out);
+// summary.made_with ("ChatGPT", "Adobe Firefly", a C2PA claim generator); "" when none.
+int32_t mv_chrome_meta_made_with(char* buf, int32_t size);
 
 // ---- PR 12: rating, comment, revert (docs/design/06 "Writing", docs/design/16 Rate) ---------
 //
@@ -348,11 +398,38 @@ void mv_chrome_meta_set_tag(const char* key, const char* value);
 // removes them all.
 void mv_chrome_meta_set_date(const char* value);
 
+// #352 (owner, 2026-10-12): the Summary's Location editor. parse_location reads
+// what was typed exactly as the write will (meta::parse_location: decimal, N/S/E/W,
+// degrees-minutes-seconds); pure and cheap, for the field's live preview. False
+// only for a null pointer or a short struct_size. [any-thread]
+enum {
+  MV_LOCATION_INPUT_POINT = 0,    // lat / lon set; text = "38.79790° N, 9.39070° W"
+  MV_LOCATION_INPUT_BLANK = 1,    // whitespace only: remove the location; text empty
+  MV_LOCATION_INPUT_INVALID = 2,  // text = why, one line
+};
+typedef struct mv_chrome_location_input {
+  uint32_t struct_size;  // sizeof(mv_chrome_location_input), in
+  uint32_t kind;         // MV_LOCATION_INPUT_*
+  double lat, lon;
+  char text[128];        // UTF-8, NUL-terminated
+} mv_chrome_location_input;
+bool mv_chrome_meta_parse_location(const char* utf8, mv_chrome_location_input* out);
+// The editor's starting text for the record's position ("38.7979, -9.3907"); ""
+// when it has none. Returns the length needed, like the tables.
+int32_t mv_chrome_meta_location_text(char* buf, int32_t size);
+// Queues the position as typed (read again by the core); blank removes every
+// GPS row -- the pane confirms that first. Refused with a beep and a notice
+// when the text does not read or the row cannot remove (MV_META_FACT_LOCATION_*).
+void mv_chrome_meta_set_location(const char* utf8);
+
 // One line for the command bar: what a key or a click just did ("★★★★☆  saved",
 // "Could not save the rating"). The generation moves when the text changes; the
 // text is empty once it has been up long enough. Returns the length needed.
 uint64_t mv_chrome_notice_generation(void);
 int32_t mv_chrome_notice_text(char* buf, int32_t size);
+// The "Press T" filmstrip hint card's "Got it" (shell/filmstrip_hint.h): the
+// hint is learned for good, as T hiding the strip over a document teaches it.
+void mv_chrome_hint_learned(void);
 
 // Folder tree. `mv_chrome_list_subdirectories` does a directory read, so call it
 // from a background task, never from the main actor. [any-thread] Writes
@@ -428,6 +505,12 @@ bool mv_chrome_set_kind_filter(int32_t filter);
 int32_t mv_chrome_update_channel(void);
 void mv_chrome_set_update_channel(int32_t channel);
 
+// Automatic update checks (Sparkle, the same switch as the app menu's "Check
+// for Updates Automatically"): -1 without an updater, 0 off, 1 on. Turning it
+// on checks now. [main-thread]
+int32_t mv_chrome_update_auto_check(void);
+void mv_chrome_set_update_auto_check(bool on);
+
 // ---- PR 10: export sheet (docs/design/10 "SwiftUI crop mode and export sheet") -------
 //
 // The sheet's choice is one integer, packed exactly as the Windows export
@@ -440,6 +523,76 @@ int32_t mv_chrome_export_last_choice(void);
 // closes the sheet.
 void mv_chrome_export_confirm(int32_t packed);
 void mv_chrome_export_cancel(void);
+
+// ---- Screens and slots (docs/design/25 §7, §10; PRs 58-59), src/shell/slots_mac.mm ------
+//
+// What MediaViewer's own add-ons add to existing pages (an info-pane section, a
+// search provider, command-bar / path-bar / context-menu / status items, tile
+// badges) and the windows, panes and sheets they open, as JSON snapshots of the
+// core's registry (src/addon/slots.h documents each shape). None of these waits
+// on an add-on: requests post to its worker and return; answers arrive through
+// the callback, which runs on the main thread with the OR of what changed
+// (1 contributions, 2 info, 4 screens, 8 search, 16 badges, 32 status).
+// Strings follow mv_chrome_command_table's rule. [main-thread] unless noted.
+typedef struct mv_chrome_slot_theme {
+  uint32_t canvas;    // 0xRRGGBBAA, the chrome's theme tokens (docs/design/25 §8)
+  uint32_t surface;
+  uint32_t title;
+  uint32_t body;
+  uint32_t disabled;
+  uint32_t hairline;
+  uint32_t accent;
+  uint32_t dark;      // 1 when the chrome is dark
+} mv_chrome_slot_theme;
+typedef void (*mv_chrome_slots_changed_fn)(uint32_t bits);
+void mv_chrome_slots_set_callback(mv_chrome_slots_changed_fn fn);
+int32_t mv_chrome_slots_contributions(char* buf, int32_t size);
+int32_t mv_chrome_slots_info(char* buf, int32_t size);
+int32_t mv_chrome_slots_screens(char* buf, int32_t size);
+int32_t mv_chrome_slots_search_results(uint32_t scope, char* buf, int32_t size);  // 1 files, 2 local
+int32_t mv_chrome_slots_badges(char* buf, int32_t size);
+int32_t mv_chrome_slots_status(char* buf, int32_t size);
+uint64_t mv_chrome_slots_request_info(const char* path, const char* location_text,
+                                      const mv_chrome_slot_theme* theme, float width, float scale);
+void mv_chrome_slots_clear_info(void);
+uint64_t mv_chrome_slots_search(uint32_t scope, const char* query, const char* folder);
+uint64_t mv_chrome_slots_request_badges(const char* folder);
+bool mv_chrome_slots_open_screen(const char* addon, const char* screen, const char* path,
+                                 const mv_chrome_slot_theme* theme, float width, float height,
+                                 float scale);
+bool mv_chrome_slots_close_screen(const char* addon, const char* screen);
+// A control changed (kind: 1 click, 2 change, 3 submit, 4 select, 5 activate);
+// value_json is checked against the tree before the add-on hears of it.
+bool mv_chrome_slots_event(const char* addon, const char* screen, const char* node, uint32_t kind,
+                           const char* value_json);
+// An item was chosen; paths_json is a JSON array of the files it targets.
+bool mv_chrome_slots_invoke(const char* addon, const char* item, const char* paths_json);
+// #410: one of a slot add-on's manifest commands (Settings' Open, the share icon).
+bool mv_chrome_slots_command(const char* addon, const char* command, const char* paths_json);
+// A surface's BGRA pixels (premultiplied). Returns the bytes needed (0: none);
+// copies when `cap` is enough. [any-thread]
+int64_t mv_chrome_slots_surface(const char* addon, const char* screen, const char* surface,
+                                uint8_t* out, int64_t cap, uint32_t* width, uint32_t* height,
+                                uint64_t* revision);
+// A screen's thumbnail / thumbnail_grid tile: the viewer's JPEG-512 of any
+// still, by path, made on a utility queue. The callback (main thread) gets the
+// JPEG's path, or NULL when there is none. A tile that leaves the screen
+// cancels its request.
+typedef void (*mv_chrome_slots_thumb_fn)(const char* path, const char* jpeg_path);
+void mv_chrome_slots_set_thumb_callback(mv_chrome_slots_thumb_fn fn);
+void mv_chrome_slots_request_thumbnail(const char* path);
+void mv_chrome_slots_cancel_thumbnail(const char* path);
+// Settings -> Add-ons: the installed first-party add-ons that fill screens or
+// slots, [{"id","name","version","description","state","why","loaded"}].
+// [worker] (reads the store). Refresh loads one just installed; Remove takes
+// every item away at once, no restart. The changed callback (main thread) runs
+// after that load or remove has updated the list. Implemented in
+// src/shell/addons_mac.mm.
+int32_t mv_chrome_slot_addons(char* buf, int32_t size);
+void mv_chrome_slot_addons_refresh(void);
+typedef void (*mv_chrome_slot_addons_changed_fn)(void);
+void mv_chrome_slot_addons_set_changed(mv_chrome_slot_addons_changed_fn fn);
+bool mv_chrome_slot_addon_remove(const char* id, bool keep_data);
 
 // Milestone G add-ons (docs/design/18 "Add-ons"), implemented in src/shell/addons_mac.mm.
 // Strings follow mv_chrome_command_table's rule: returns the length needed,
@@ -473,11 +626,46 @@ bool mv_open_addons_remove(const char* folder);                                 
 // "" when the add-on or theme is gone or no longer verifies.
 int32_t mv_open_addons_theme(const char* addon_id, const char* theme_id,
                              char* buf, int32_t size);                          // [worker]
-// The theme's canvas colours (0xRRGGBB), so the viewer's own "System"
-// background follows the theme; has_dark / has_light say which palettes the
-// theme gives. active = false returns it to the window's colour. [main-thread]
-void mv_chrome_set_theme_canvas(bool active, bool has_dark, uint32_t dark_rgb,
-                                bool has_light, uint32_t light_rgb);
+// PR 56 (docs/design/25 "Settings page", "Keymap"): an add-on's settings page with
+// its values (the dotted id of an open add-on, or a first-party id), one value
+// stored ({"ok","message"}), and what was chosen forgotten (Remove without
+// "keep its settings"). One keymap pack of an installed open add-on, for
+// mv_chrome_apply_keymap. "" when gone. [worker]
+int32_t mv_addons_settings_page(const char* id, char* buf, int32_t size);       // [worker]
+int32_t mv_addons_setting_set(const char* id, const char* key, const char* value_json,
+                              char* buf, int32_t size);                         // [worker]
+bool mv_addons_settings_forget(const char* id);                                 // [worker]
+int32_t mv_open_addons_keymap(const char* addon_id, const char* pack_id,
+                              char* buf, int32_t size);                         // [worker]
+// docs/design/25 PR 57: the script add-ons the app runs, for Settings
+// (src/addon/script_host.h status_json): [{"id","state":"running|stopped|
+// starting","stop","message","last_error","memory_peak","tasks","commands":
+// [{"id","name","key","note"}]}]. Reads no file. [any-thread]
+int32_t mv_open_addons_scripts(char* buf, int32_t size);
+// Settings "Start again" for a stopped script add-on; also what an install or
+// a remove calls, so the running set follows the store. Returns at once; the
+// work runs on the scripts' own queue. [any-thread]
+void mv_open_addons_restart(const char* addon_id);
+void mv_open_addons_reload(void);
+// Issue #408: the theme the native empty window and the canvas clear use.
+// One palette of tokens, each 0xRRGGBBAA (sRGB). `canvas` is the clear on
+// every screen (welcome, still, video); the welcome card draws with the rest.
+typedef struct mv_home_palette {
+  uint32_t canvas, surface, title, body, hairline, accent;
+} mv_home_palette;
+// active = a theme is on: `dark` / `light` (either may be NULL, not both) are
+// its palettes, and the host picks one by the window's appearance. active =
+// false (Default, or increased contrast): the host resolves AppKit's own
+// colours. `effect` is a built-in's ground ("none", "rain", ... as
+// BuiltinThemes.swift names them; NULL = none) with its ink 0xRRGGBB and an
+// intensity, a speed and a size in 0.01 .. 1. [main-thread]
+void mv_chrome_set_home_theme(bool active, const mv_home_palette* dark, const mv_home_palette* light,
+                              const char* effect, uint32_t effect_rgb, float intensity, float speed,
+                              float size);
+// The pointer moved or a key went down over the chrome (the bar, a pane): the
+// empty window's ground effect restarts its clock as the panes' does. The
+// chrome calls it a few times a second at most. [main-thread]
+void mv_chrome_ground_input(void);
 
 // Milestone H (docs/design/17): the same management by add-on id, for the AI pack
 // ("ai" = Core, "ai-faces" = People, "ai-audio" = Sound) beside Import. Also addons_mac.mm. The
@@ -550,7 +738,7 @@ int32_t mv_fcp_state(void);                                                 // [
 // or hides the extension in Final Cut Pro. Returns the state after.
 int32_t mv_fcp_set_enabled(bool on);                                        // [worker]
 void mv_fcp_open_login_items(void);                                         // [main-thread]
-// A family's installed bytes and ceiling (0 = none); "ai" has 3 GB.
+// A family's installed bytes and ceiling (0 = none); "ai" has 5 GB.
 bool mv_addon2_family_usage(const char* family, uint64_t* used, uint64_t* ceiling);  // [worker]
 // The loaded chrome's Settings view (an NSView*, owned by the chrome), or NULL.
 void* mv_addon2_settings_view(const char* id);                             // [main-thread]
@@ -578,6 +766,12 @@ typedef struct mv_chrome_ai_status {
   uint64_t sound_done;
   uint64_t speech_total;
   uint64_t speech_done;
+  // 2026-10-15: a clip's own text (chapters, subtitles) and the text the OS
+  // reads in pictures (#403, #406); zero from an older pack.
+  uint64_t cues_total;
+  uint64_t cues_done;
+  uint64_t text_total;
+  uint64_t text_done;
 } mv_chrome_ai_status;
 bool mv_addon2_ai_status(mv_chrome_ai_status* out);
 

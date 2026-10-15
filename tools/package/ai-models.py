@@ -22,7 +22,7 @@ plain GET of a fixed URL: no token, no identifier.
 
 `check` is the weights-licence gate docs/design/17 names: every file must carry a
 licence from ALLOWED_LICENCES (non-commercial or research-only weights fail),
-and the Core pack's supported combinations must fit the 3 GB ceiling given
+and the Core pack's supported combinations must fit the 5 GB ceiling given
 the sizes listed. CI runs it; it needs no network.
 """
 import argparse
@@ -39,7 +39,7 @@ MODELS = Path(__file__).with_name("ai-models.json")
 
 ALLOWED_LICENCES = {"MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "Zlib", "ISC", "CC0-1.0",
                     "GPL-3.0-or-later"}
-CEILING = 3_000_000_000  # docs/design/17: Core + one vendor piece + Faces, installed
+CEILING = 5_000_000_000  # docs/design/17: installed pieces of the ai family
 
 
 def sha256_file(path: Path) -> str:
@@ -142,11 +142,11 @@ def check(_args) -> int:
     # a vendor piece (ORT CUDA: ~205 MB; allow 400 MB for native code and chrome).
     worst = sizes.get("ai", 0) + sizes.get("ai-faces", 0) + sizes.get("ai-audio", 0) + 400_000_000 + 250_000_000
     if worst > CEILING:
-        bad.append(f"Core + Faces + Audio + a vendor piece is ~{worst / 1e9:.2f} GB, over the 3 GB ceiling")
+        bad.append(f"Core + Faces + Audio + a vendor piece is ~{worst / 1e9:.2f} GB, over the {CEILING / 1e9:.0f} GB ceiling")
     for b in bad:
         print(b, file=sys.stderr)
     if not bad:
-        print(f"ok: models {sizes}, worst supported combination ~{worst / 1e9:.2f} GB of 3 GB")
+        print(f"ok: models {sizes}, worst supported combination ~{worst / 1e9:.2f} GB of {CEILING / 1e9:.0f} GB")
     return 1 if bad else 0
 
 

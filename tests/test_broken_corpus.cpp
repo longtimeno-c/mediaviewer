@@ -18,7 +18,9 @@
 //   * no C++ exception escapes the decoder,
 //   * a successful result is self-consistent (rgba.size() == w*h*4, w,h > 0),
 //   * each call finishes inside the time budget: 5 s per call in an optimised
-//     build, 60 s in Debug / ASan (MV_BROKEN_TIMEOUT_MS overrides). A hung
+//     build, 60 s in Debug / ASan (MV_BROKEN_TIMEOUT_MS overrides). Each
+//     family's first call in the process is a warm-up on its real seed with
+//     60 s (MV_BROKEN_FIRST_USE_MS): one-time OS setup is not a hang. A hung
 //     call cannot be abandoned safely, so an overrun prints the variant,
 //     dumps it, and ends the process with exit code 3 — ctest reports a
 //     failure, not a pass that never finished,
@@ -108,6 +110,16 @@ constexpr bool kOptimised = false;
 
 std::uint64_t timeout_ms() {
   return env_u64("MV_BROKEN_TIMEOUT_MS", kOptimised ? 5000 : 60000);
+}
+// The first call into a family's decoder in this process pays its one-time
+// setup: loading the OS component and its device on a cold CI VM (Windows.
+// Data.Pdf activates WinRT, Direct2D and WIC). That is not a property of any
+// input, so a warm-up call on the family's real seed takes it, on this longer
+// budget, before the per-input sweep starts (2026-10-15: one Release run timed
+// out on the very first PDF call, the seed as-is, of a sweep whose thousands of
+// calls take ~130 s in all; the same call passes in every other run).
+std::uint64_t first_use_timeout_ms() {
+  return std::max<std::uint64_t>(timeout_ms(), env_u64("MV_BROKEN_FIRST_USE_MS", 60000));
 }
 std::uint64_t mem_budget_bytes() { return env_u64("MV_BROKEN_MEM_MB", 2560) << 20; }
 bool full_sweep() { return env_flag("MV_BROKEN_FULL"); }
@@ -248,9 +260,11 @@ class watchdog {
 
   // Runs `fn` on the worker. Appends to `failures` on an exception, a memory
   // overrun, or a false return from `fn` (an invariant). Never returns on a
-  // timeout.
+  // timeout: `budget_ms`, or timeout_ms() when 0.
   void run(const std::string& name, std::span<const std::uint8_t> bytes,
-           const std::function<std::string()>& fn, std::vector<std::string>& failures) {
+           const std::function<std::string()>& fn, std::vector<std::string>& failures,
+           std::uint64_t budget_ms = 0) {
+    if (budget_ms == 0) budget_ms = timeout_ms();
     std::snprintf(g_current_name, sizeof(g_current_name), "%s", name.c_str());
     g_current_data = bytes.data();
     g_current_size = bytes.size();
@@ -265,7 +279,7 @@ class watchdog {
     }
     cv_.notify_all();
 
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms());
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(budget_ms);
     std::unique_lock lock(mu_);
     while (!done_) {
       cv_.wait_for(lock, std::chrono::milliseconds(5));
@@ -273,8 +287,8 @@ class watchdog {
       if (!done_ && std::chrono::steady_clock::now() > deadline) {
         std::fprintf(stderr,
                      "\n[broken-corpus] HANG: %s did not return within %llu ms "
-                     "(MV_BROKEN_TIMEOUT_MS). Exiting.\n",
-                     name.c_str(), static_cast<unsigned long long>(timeout_ms()));
+                     "(MV_BROKEN_TIMEOUT_MS, MV_BROKEN_FIRST_USE_MS for a warm-up). Exiting.\n",
+                     name.c_str(), static_cast<unsigned long long>(budget_ms));
         std::fflush(stderr);
         dump_bytes(g_current_name, bytes.data(), bytes.size());
         std::_Exit(3);
@@ -924,6 +938,26 @@ format_family family_from_dir(std::string_view dir) {
   return format_family::unknown;
 }
 
+constexpr const char* kEveryFamilyDir[] = {"jpeg", "png", "bmp", "gif",  "webp", "tiff",
+                                           "ico",  "heic", "avif", "raw", "pdf",  "docx"};
+
+// Takes each family's first-use setup on its first seed, through the direct
+// decoder and the image pipeline (which may pick an OS decoder), on
+// first_use_timeout_ms(). A warm-up that never returns is still a hang.
+void warm_up(watchdog& dog, std::span<const char* const> dirs, std::vector<std::string>& failures) {
+  for (const char* dir : dirs) {
+    const auto seeds = files_in(data_dir() / "seeds" / dir, std::string(dir) + "/");
+    if (seeds.empty()) continue;
+    const format_family family = family_from_dir(dir);
+    const auto& seed = seeds.front();
+    dog.run(seed.name + " :: warm-up", seed.bytes, [&] {
+      (void)family_decoder(family, seed.bytes);
+      (void)mv::image::decode_bytes(seed.bytes);
+      return std::string{};
+    }, failures, first_use_timeout_ms());
+  }
+}
+
 void run_family(const char* dir) {
   const auto seeds = files_in(data_dir() / "seeds" / dir, std::string(dir) + "/");
   if (seeds.empty()) {
@@ -934,6 +968,8 @@ void run_family(const char* dir) {
   watchdog dog;
   std::vector<std::string> failures;
   sweep_stats stats;
+  const char* const warm[] = {dir};
+  warm_up(dog, warm, failures);
   const auto started = std::chrono::steady_clock::now();
   for (const auto& seed : seeds) {
     for_each_variant(seed, true, [&](const std::string& name, std::span<const std::uint8_t> b) {
@@ -1012,6 +1048,7 @@ TEST_CASE("broken corpus: hand-crafted files in tests/data/broken", "[codec][bro
   watchdog dog;
   std::vector<std::string> failures;
   sweep_stats stats;
+  warm_up(dog, kEveryFamilyDir, failures);
   for (const auto& file : nasties) {
     const format_family family = mv::codec::probe(file.bytes);
     const auto started = std::chrono::steady_clock::now();
@@ -1129,6 +1166,7 @@ TEST_CASE("broken corpus: empty, one-byte, magic-only and synthetic bombs", "[co
   watchdog dog;
   std::vector<std::string> failures;
   sweep_stats stats;
+  warm_up(dog, kEveryFamilyDir, failures);
   for (const auto& in : inputs) {
     sweep_one(dog, in.name, in.bytes, mv::codec::probe(in.bytes), sweep_options{200000u},
               failures, stats);
@@ -1155,4 +1193,23 @@ TEST_CASE("broken corpus: the watchdog reports exceptions and lying results",
   lying.height = 4;
   lying.rgba.resize(8);
   CHECK_FALSE(check_raster("x", mv::result<mv::codec::raster>(std::move(lying))).empty());
+}
+
+TEST_CASE("broken corpus: a warm-up gets the first-use budget, not the per-input one",
+          "[codec][broken][harness]") {
+  // With a 50 ms per-input budget, a 300 ms first call ends the process (exit
+  // 3, a ctest failure) if the watchdog charges it to MV_BROKEN_TIMEOUT_MS.
+  const char* was = std::getenv("MV_BROKEN_TIMEOUT_MS");
+  const std::string saved = was ? was : "";
+  _putenv_s("MV_BROKEN_TIMEOUT_MS", "50");
+  const std::uint64_t first_use = first_use_timeout_ms();
+  watchdog dog;
+  std::vector<std::string> failures;
+  const std::vector<std::uint8_t> none;
+  dog.run("slow first use", none, [] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    return std::string{};
+  }, failures, first_use);
+  _putenv_s("MV_BROKEN_TIMEOUT_MS", saved.c_str());  // "" removes it
+  CHECK(failures.empty());
 }

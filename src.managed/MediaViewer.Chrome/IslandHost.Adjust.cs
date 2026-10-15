@@ -128,11 +128,11 @@ public static partial class IslandHost
     private static UIElement BuildAdjustPane()
     {
         Grid root = PanelShell("Adjust", Command.AdjustPane, out Grid body);
-        var col = new StackPanel { Spacing = 10, Padding = new Thickness(14, 4, 14, 14) };
+        var col = new StackPanel { Spacing = Space(10), Padding = Pad(14, 4, 14, 14) };
 
         _histCanvas = new Canvas { Height = 96, Background = Brush(ChromeColour.Surface) };
         // Clipped to radius 4, as the Mac's clipShape (issue #198).
-        col.Children.Add(new Border { CornerRadius = new CornerRadius(RadiusButton), Child = _histCanvas });
+        col.Children.Add(new Border { CornerRadius = Corner(RadiusButton), Child = _histCanvas });
         _adjustClip = Text("", Body, UiFontSize - 2);
         col.Children.Add(_adjustClip);
         _adjustStatus = Text("", Body);
@@ -150,7 +150,7 @@ public static partial class IslandHost
         for (int i = 0; i < AdjustSpecs.Length; i++)
         {
             AdjustSpec spec = AdjustSpecs[i];
-            var rowStack = new StackPanel { Spacing = 2 };
+            var rowStack = new StackPanel { Spacing = Space(2) };
             var head = new Grid();
             head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -192,8 +192,8 @@ public static partial class IslandHost
             var row = new Border
             {
                 Child = rowStack,
-                Padding = new Thickness(4, 2, 4, 2),
-                CornerRadius = new CornerRadius(6),
+                Padding = Pad(4, 2, 4, 2),
+                CornerRadius = Corner(6),
                 Background = Brush(Colors.Transparent),
             };
             slider.GotFocus += (_, _) => FocusAdjustRow(index, true);

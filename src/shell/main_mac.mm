@@ -28,6 +28,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <memory>
 #include <mutex>
@@ -43,6 +44,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "canvas/document_scroll.h"
 #include "core/job_system.h"
 #include "core/json.h"
 #include "core/trace.h"
@@ -58,26 +60,36 @@
 #include "io/verified_copy.h"
 #include "shell/addons_mac.h"
 #include "shell/fcp_mac.h"
+#include "shell/filmstrip_hint.h"
 #if defined(MV_WITH_SEARCH_AGENT)
 #include "nle/mac/agent_mac.h"
 #endif
 #include "shell/adjust_pane.h"
+#include "shell/ai_badge.h"
 #include "abi/clip_session.h"
 #include "shell/trim_state.h"
 #include "shell/transport_autohide.h"
+#include "shell/gesture.h"
 #include "shell/browse_index.h"
 #include "shell/browse_path.h"
 #include "shell/commands.h"
 #include "shell/crash_reporter_mac.h"
 #include "shell/edit_session.h"
+#include "shell/text_in_image.h"
+#include "shell/text_select.h"
+#include "shell/text_recognition_mac.h"
 #include "shell/edit_view.h"
 #include "shell/edit_workspace.h"
 #include "shell/video_timeline.h"
 #include "edit/clip_strip.h"
 #include "shell/folder_model_mac.h"
 #include "meta/meta.h"
+#include "meta/tables.h"
 #include "shell/key_router.h"
+#include "shell/keymap.h"
 #include "shell/meta_store.h"
+#include "meta/tag_index.h"
+#include "shell/present_busy.h"
 #include "shell/os_integration.h"
 #include "shell/meta_writer.h"
 #include "io/sort_order.h"
@@ -152,7 +164,7 @@ static bool MvCommandSupported(mv::shell::command_id c) {
     case toggle_mark: case mark_all: case unmark_all: case copy_to: case copy_to_pick:
     case move_to: case move_to_pick: case delete_to_recycle_bin: case slideshow_start:
     case slideshow_pause: case slideshow_faster: case slideshow_slower: case help:
-    case reveal_in_explorer: case open_settings: case cycle_background: case sticky_zoom:
+    case reveal_in_explorer: case open_settings: case sticky_zoom:
     case reset_stats: case always_on_top: case close_window: case new_window: case pan_up: case pan_down:
     case folder_up: case folder_prev: case folder_next:
     // Issue #183: the View keys, the loupe, hold-previous and the slideshow's
@@ -163,6 +175,8 @@ static bool MvCommandSupported(mv::shell::command_id c) {
     case hold_previous_release: case blackout: case shuffle:
     // PR 9
     case info_overlay: case af_points: case eyedropper: case copy_clipboard: case metadata_pane: case folder_tree:
+    // Issue #209
+    case zoom_af_point:
     // PR 10
     case rotate_ccw: case rotate_cw: case flip_horizontal: case flip_vertical: case crop_mode:
     case crop_commit: case crop_move_left: case crop_move_right: case crop_move_up:
@@ -219,6 +233,8 @@ mv::shell::present_lab_mac* g_chrome_lab = nullptr;
 // private MvLabApp ivars only MvLabApp's own methods can reach — the bridge
 // functions below call through this pointer rather than duplicating state.
 MvLabApp* g_chrome_app = nullptr;
+// #291: one main-queue refresh in flight for the tag pass at a time.
+static std::atomic<bool> g_tag_refresh_posted{false};
 
 // docs/design/16 "Window": a new window (Cmd+N) is a new MediaViewer process on the
 // empty window; the viewer's state is one per process. Set from --new-window:
@@ -407,6 +423,10 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 @property(nonatomic, strong) NSView* exportHost;
 @property(nonatomic, strong) NSView* transportHost;
 @property(nonatomic, strong) NSLayoutConstraint* transportBottom;
+// #345: the AI-generated badge, bottom-right of the canvas (shell/ai_badge.h).
+@property(nonatomic, strong) NSView* aiBadgeHost;
+@property(nonatomic, strong) NSLayoutConstraint* aiBadgeBottom;
+@property(nonatomic, strong) NSLayoutConstraint* aiBadgeTrailing;
 // PR 9: the metadata pane (right) and folder tree (left) float over the canvas like the
 // gallery does. Mac has no horizontal canvas inset yet (docs/design/12 2026-09-24).
 @property(nonatomic, strong) NSView* metaHost;
@@ -424,6 +444,10 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 // and hides it), above the filmstrip when that is up.
 @property(nonatomic, strong) NSView* resumeHost;
 @property(nonatomic, strong) NSLayoutConstraint* resumeBottom;
+// The "Press T" filmstrip hint card (HintNoticeView.swift), in the same corner,
+// above the resume notice while that is up.
+@property(nonatomic, strong) NSView* hintHost;
+@property(nonatomic, strong) NSLayoutConstraint* hintBottom;
 @property(nonatomic, strong) NSView* clipToolsHost;
 // PR 29 (docs/design/20): the Edit workspace's strip and its Crop / Trim pane. The
 // right-edge panes' tops follow the strip while it is open.
@@ -454,12 +478,23 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)navigateFirst;
 - (void)navigateLast;
 - (void)navigateSkip:(std::ptrdiff_t)delta;
+// Issue #212: a trackpad swipe, +1 next / -1 previous. Not under the gallery
+// or while crop owns the arrows.
+- (void)swipeStep:(int)delta;
 - (void)turnPage:(int)delta;
 - (BOOL)turnPage:(int)delta land:(BOOL)land;
 // Document scrolling (docs/design/04 "Pages"): the wheel or trackpad over a PDF or
 // DOCX with the filmstrip hidden pans the page and turns it past an edge.
 - (BOOL)documentScrolls;
 - (void)scrollDocument:(NSEvent*)event;
+// The one "Press T" filmstrip hint (shell/filmstrip_hint.h): shown in its card
+// while it is due; learned when T hides the strip over its subject, or "Got it".
+- (void)stripHintShow;
+- (void)stripHintToggled;
+- (void)stripHintLearn;
+- (void)layoutHintNotice;
+- (mv::shell::strip_hint_subject)stripHintSubjectNow;
+- (std::string_view)stripHintDueText;
 
 // Marks, copy/move, Trash (docs/design/16-commands.md "Marks, copy, move"; folded
 // into PR 18 from Windows PR 6, docs/design/12 2026-09-17).
@@ -543,11 +578,24 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)runMenuCmd:(NSInteger)cmd;
 - (void)syncHomeAppearance;
 - (void)commandsChanged;
-- (void)setThemeCanvasActive:(BOOL)active
-                     hasDark:(BOOL)hasDark
-                        dark:(uint32_t)dark
-                    hasLight:(BOOL)hasLight
-                       light:(uint32_t)light;
+- (void)setHomeThemeActive:(BOOL)active
+                       dark:(const mv_home_palette*)dark
+                      light:(const mv_home_palette*)light
+                     effect:(int)effect
+                  effectRgb:(uint32_t)effectRgb
+                  intensity:(float)intensity
+                      speed:(float)speed
+                       size:(float)size;
+- (void)pointerActivity;
+// Text in images (Live Text, shell/text_select.h). The canvas view hands over
+// the pointer in physical pixels. -textPressX:y:clicks: is a left press and
+// returns whether it landed on text (then it selects and never pans);
+// -textHoverX:y: returns whether the pointer is over text (the I-beam) and
+// starts reading the still once the pointer has rested on it.
+- (BOOL)textPressX:(float)x y:(float)y clicks:(NSInteger)clicks;
+- (void)textDragX:(float)x y:(float)y;
+- (void)textRelease;
+- (BOOL)textHoverX:(float)x y:(float)y;
 
 // One key router, one command table (docs/design/16), shared with Windows. Keys are
 // translated to `mv::shell::key` at the edge (MvKeyFromEvent) and routed; the
@@ -582,6 +630,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)cancelKeyCapture;
 - (int)captureRow;
 - (void)resetKeys;
+- (std::string)applyKeymap:(const char*)packJson;
 - (uint64_t)keysGeneration;
 - (void)setGalleryVisible:(BOOL)visible;
 - (void)toggleFilmstrip;
@@ -612,10 +661,19 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)setHelpVisible:(BOOL)visible;
 - (void)toggleHelp;
 - (uint64_t)listingGeneration;
+// #291: tag search over the folder on screen (docs/design/16 "File search").
+- (std::string)tagSearchJSON:(const char*)query;
+- (uint64_t)tagGeneration;
 - (BOOL)currentItemIsVideo;
 - (BOOL)currentItemIsAudio;
 - (BOOL)itemIsVideoAtIndex:(NSInteger)index;
 - (uint64_t)marksGeneration;
+// Issue #413: the gallery's shift-click range (paths in listing order). While
+// it holds files, copy, F7/F8, Delete, copy path, Share and drag-out act on it.
+- (void)setGalleryRangeIndices:(const int32_t*)indices count:(int32_t)count;
+- (void)clearGalleryRange;
+- (uint64_t)galleryRangeGeneration;
+- (NSInteger)galleryRangeCount;
 - (uint64_t)thumbGeneration;
 - (std::string)thumbKeyAtIndex:(NSInteger)index;
 - (std::string)listingSnapshot;
@@ -649,6 +707,10 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 // 1 preview (signed prereleases as well). Persisted in NSUserDefaults.
 - (int32_t)updateChannel;
 - (void)setUpdateChannel:(int32_t)channel;
+// Sparkle's automatic checks: -1 without an updater, 0 off, 1 on. The menu's
+// "Check for Updates Automatically" and Settings share it.
+- (int32_t)updateAutoCheck;
+- (void)setUpdateAutoCheck:(BOOL)on;
 // PR 11
 - (BOOL)adjustVisible;
 - (void)setAdjustVisible:(BOOL)visible;
@@ -679,6 +741,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)metaRevert;
 - (void)metaSetTag:(const char*)key value:(const char*)value;  // value NULL removes
 - (void)metaSetDate:(const char*)value;                        // NULL removes
+- (void)metaSetLocation:(const char*)text;                     // #352: as typed; blank removes
 - (uint64_t)metaFocusSeq;
 - (BOOL)metaFocusTags;
 - (void)metaBlur;
@@ -695,6 +758,7 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
                    count:(int32_t)folderCount;
 - (uint64_t)noticeGeneration;
 - (std::string)noticeText;
+- (void)noticeShow:(const std::string&)text;
 // PR 29 (docs/design/20): the Edit workspace, read and driven by the bridge.
 - (uint64_t)editGeneration;
 // Points the Edit workspace docks on the right (0 when closed): the canvas
@@ -784,6 +848,12 @@ extern "C" void mv_chrome_menu(MvMenuCmd cmd) {
   (void)mv::shell::crash::note_native_call();
   if (g_chrome_app) [g_chrome_app runMenuCmd:cmd];
 }
+void MvAppShowNotice(const std::string& text) {
+  std::string copy = text;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (g_chrome_app) [g_chrome_app noticeShow:copy];
+  });
+}
 void MvAppCommandsChanged() {
   if (!g_chrome_app) return;
   if ([NSThread isMainThread]) {
@@ -795,16 +865,62 @@ void MvAppCommandsChanged() {
 extern "C" bool mv_chrome_settings_visible(void) {
   return g_chrome_app ? [g_chrome_app settingsVisible] == YES : false;
 }
-// docs/design/25: a theme's canvas colour stands in for the window's where the
-// viewer draws its own "System" background (the welcome screen, the letterbox).
-extern "C" void mv_chrome_set_theme_canvas(bool active, bool has_dark, uint32_t dark_rgb,
-                                           bool has_light, uint32_t light_rgb) {
-  if (!g_chrome_app) return;
-  [g_chrome_app setThemeCanvasActive:active ? YES : NO
-                             hasDark:has_dark ? YES : NO
-                                dark:dark_rgb
-                            hasLight:has_light ? YES : NO
-                               light:light_rgb];
+// Issue #408: the chrome's theme for the native empty window and the clear
+// on every screen. There is no canvas background of its own.
+// The chrome paints its theme while the window is still being built, before
+// g_chrome_app is set, so the latest call is kept here and applied when the
+// app registers (mvApplyParkedHomeTheme). Main thread only.
+namespace {
+struct parked_home_theme {
+  bool set = false;
+  bool active = false;
+  bool has_dark = false;
+  bool has_light = false;
+  mv_home_palette dark{};
+  mv_home_palette light{};
+  int effect = 0;
+  uint32_t effect_rgb = 0;
+  float intensity = 1.0f;
+  float speed = 1.0f;
+  float size = 1.0f;
+};
+parked_home_theme g_parked_home_theme;
+}  // namespace
+
+static void mvApplyParkedHomeTheme() {
+  const parked_home_theme& p = g_parked_home_theme;
+  if (!g_chrome_app || !p.set) return;
+  [g_chrome_app setHomeThemeActive:p.active ? YES : NO
+                              dark:p.has_dark ? &p.dark : nullptr
+                             light:p.has_light ? &p.light : nullptr
+                            effect:p.effect
+                         effectRgb:p.effect_rgb
+                         intensity:p.intensity
+                             speed:p.speed
+                              size:p.size];
+}
+
+extern "C" void mv_chrome_ground_input(void) {
+  if (g_chrome_app) [g_chrome_app pointerActivity];
+}
+
+extern "C" void mv_chrome_set_home_theme(bool active, const mv_home_palette* dark,
+                                         const mv_home_palette* light, const char* effect,
+                                         uint32_t effect_rgb, float intensity, float speed,
+                                         float size) {
+  parked_home_theme& p = g_parked_home_theme;
+  p.set = true;
+  p.active = active;
+  p.has_dark = dark != nullptr;
+  p.has_light = light != nullptr;
+  if (dark) p.dark = *dark;
+  if (light) p.light = *light;
+  p.effect = mv::shell::home_effect_from_name(effect);
+  p.effect_rgb = effect_rgb;
+  p.intensity = intensity;
+  p.speed = speed;
+  p.size = size;
+  mvApplyParkedHomeTheme();
 }
 extern "C" int32_t mv_chrome_view_flags(void) {
   return g_chrome_app ? [g_chrome_app viewFlags] : 0;
@@ -846,6 +962,15 @@ extern "C" int32_t mv_chrome_key_capture_row(void) {
 extern "C" void mv_chrome_keys_reset(void) {
   if (g_chrome_app) [g_chrome_app resetKeys];
 }
+extern "C" int32_t mv_chrome_apply_keymap(const char* pack_json, char* buf, int32_t size) {
+  std::string out = g_chrome_app && pack_json ? [g_chrome_app applyKeymap:pack_json] : std::string();
+  if (buf && size > 0) {
+    const std::size_t n = std::min<std::size_t>(out.size(), static_cast<std::size_t>(size) - 1);
+    std::memcpy(buf, out.data(), n);
+    buf[n] = '\0';
+  }
+  return static_cast<int32_t>(out.size());
+}
 extern "C" uint64_t mv_chrome_keys_generation(void) {
   return g_chrome_app ? [g_chrome_app keysGeneration] : 0;
 }
@@ -860,6 +985,22 @@ extern "C" void mv_chrome_select_index_and_close_gallery(int32_t index) {
     [g_chrome_app selectIndex:static_cast<std::size_t>(index)];
   }
   [g_chrome_app setGalleryVisible:NO];
+}
+// Issue #413: the gallery's range, set from Swift's shift-click (the indices
+// in the order the grid shows them) and cleared by any other selection.
+extern "C" void mv_chrome_gallery_set_range(const int32_t* indices, int32_t count) {
+  if (!g_chrome_app) return;
+  if (!indices || count <= 0) {
+    [g_chrome_app clearGalleryRange];
+  } else {
+    [g_chrome_app setGalleryRangeIndices:indices count:count];
+  }
+}
+extern "C" uint64_t mv_chrome_gallery_range_generation(void) {
+  return g_chrome_app ? [g_chrome_app galleryRangeGeneration] : 0;
+}
+extern "C" int32_t mv_chrome_gallery_range_count(void) {
+  return g_chrome_app ? static_cast<int32_t>([g_chrome_app galleryRangeCount]) : 0;
 }
 extern "C" uint64_t mv_chrome_listing_generation(void) {
   return g_chrome_app ? [g_chrome_app listingGeneration] : 0;
@@ -1082,17 +1223,6 @@ bool MvResolveEntry(const std::string& path, std::string* dir, std::string* sele
   return true;
 }
 
-const char* MvOriginName(mv::meta::origin o) {
-  switch (o) {
-    case mv::meta::origin::exif: return "exif";
-    case mv::meta::origin::iptc: return "iptc";
-    case mv::meta::origin::xmp: return "xmp";
-    case mv::meta::origin::container: return "container";
-    case mv::meta::origin::computed: return "computed";
-  }
-  return "exif";
-}
-
 const char* MvKindName(mv::meta::stream_kind k) {
   switch (k) {
     case mv::meta::stream_kind::video: return "video";
@@ -1144,20 +1274,44 @@ extern "C" int32_t mv_chrome_meta_summary(char* buf, int32_t size) {
 }
 extern "C" int32_t mv_chrome_meta_properties(char* buf, int32_t size) {
   std::string out;
+  // PR 29: the raw form an edit starts from, and what an edit may do. #290: the
+  // same table Windows gets (meta/tables.h), so the new read-only origins and
+  // their access column cannot drift between the hosts.
   if (const auto rec = g_chrome_app ? [g_chrome_app metaRecord] : nullptr) {
-    for (const auto& p : rec->properties) {
-      // PR 29: the raw form an edit starts from, and what an edit may do.
-      const mv::meta::tag_access a = mv::meta::access_of(
-          p.raw_tag, rec->writes_in_file ? mv::meta::write_target::in_file : mv::meta::write_target::sidecar);
-      const char* access = a == mv::meta::tag_access::editable      ? "e"
-                           : a == mv::meta::tag_access::via_sidecar ? "s"
-                                                                    : "r";
-      out += std::string(MvOriginName(p.space)) + "\t" + MvFlat(p.group) + "\t" + MvFlat(p.label) +
-             "\t" + MvFlat(p.value) + "\t" + MvFlat(p.raw_tag) + "\t" + MvFlat(p.raw) + "\t" + access +
-             "\n";
-    }
+    out = mv::meta::editable_properties_table(*rec);
   }
   return MvCopyOut(out, buf, size);
+}
+// #290: position and provenance as numbers (mv_chrome_bridge.h).
+extern "C" bool mv_chrome_meta_facts_get(mv_chrome_meta_facts* out) {
+  if (!out || out->struct_size < sizeof(uint32_t) * 2) return false;
+  const uint32_t size = std::min<uint32_t>(out->struct_size, sizeof(mv_chrome_meta_facts));
+  mv_chrome_meta_facts f{};
+  f.struct_size = size;
+  const auto rec = g_chrome_app ? [g_chrome_app metaRecord] : nullptr;
+  if (rec) {
+    if (rec->s.where) {
+      f.flags |= MV_META_FACT_WHERE;
+      f.lat = rec->s.where->lat;
+      f.lon = rec->s.where->lon;
+      if (rec->s.where->altitude) {
+        f.flags |= MV_META_FACT_ALTITUDE;
+        f.altitude_m = *rec->s.where->altitude;
+      }
+    }
+    if (rec->s.ai_generated) f.flags |= MV_META_FACT_AI_GENERATED;
+    // #352: what the Summary's Location row may do.
+    const mv::meta::location_rights rights = mv::meta::location_rights_of(*rec);
+    if (rights.can_set) f.flags |= MV_META_FACT_LOCATION_SET;
+    if (rights.can_clear) f.flags |= MV_META_FACT_LOCATION_CLEAR;
+    if (rights.in_original) f.flags |= MV_META_FACT_LOCATION_IN_ORIGINAL;
+  }
+  std::memcpy(out, &f, size);
+  return rec != nullptr;
+}
+extern "C" int32_t mv_chrome_meta_made_with(char* buf, int32_t size) {
+  const auto rec = g_chrome_app ? [g_chrome_app metaRecord] : nullptr;
+  return MvCopyOut(rec ? MvFlat(rec->s.made_with) : std::string{}, buf, size);
 }
 extern "C" int32_t mv_chrome_meta_streams(char* buf, int32_t size) {
   std::string out;
@@ -1226,9 +1380,49 @@ extern "C" void mv_chrome_meta_set_tag(const char* key, const char* value) {
   (void)mv::shell::crash::note_native_call();
   if (g_chrome_app && key) [g_chrome_app metaSetTag:key value:value];
 }
+// #352: the Location editor. Parsing is pure and cheap, so the field's preview
+// calls it on every keystroke; the write goes through the PR 12 queue.
+extern "C" bool mv_chrome_meta_parse_location(const char* utf8, mv_chrome_location_input* out) {
+  if (!utf8 || !out || out->struct_size < sizeof(mv_chrome_location_input)) return false;
+  const mv::meta::location_input r = mv::meta::parse_location(utf8);
+  out->lat = out->lon = 0;
+  std::string text;
+  switch (r.k) {
+    case mv::meta::location_input::kind::point:
+      out->kind = MV_LOCATION_INPUT_POINT;
+      out->lat = r.point.lat;
+      out->lon = r.point.lon;
+      text = mv::meta::format_point(r.point);
+      break;
+    case mv::meta::location_input::kind::blank:
+      out->kind = MV_LOCATION_INPUT_BLANK;
+      break;
+    case mv::meta::location_input::kind::invalid:
+      out->kind = MV_LOCATION_INPUT_INVALID;
+      text = r.error;
+      break;
+  }
+  std::size_t n = std::min(text.size(), sizeof(out->text) - 1);
+  while (n > 0 && n < text.size() && (static_cast<unsigned char>(text[n]) & 0xC0) == 0x80) --n;
+  std::memcpy(out->text, text.data(), n);
+  out->text[n] = '\0';
+  return true;
+}
+extern "C" int32_t mv_chrome_meta_location_text(char* buf, int32_t size) {
+  const auto rec = g_chrome_app ? [g_chrome_app metaRecord] : nullptr;
+  return MvCopyOut(rec && rec->s.where ? mv::meta::format_location_input(*rec->s.where) : std::string{}, buf, size);
+}
+extern "C" void mv_chrome_meta_set_location(const char* utf8) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) [g_chrome_app metaSetLocation:utf8 ? utf8 : ""];
+}
 extern "C" void mv_chrome_meta_set_date(const char* value) {
   (void)mv::shell::crash::note_native_call();
   if (g_chrome_app) [g_chrome_app metaSetDate:value];
+}
+extern "C" void mv_chrome_hint_learned(void) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) [g_chrome_app stripHintLearn];
 }
 extern "C" uint64_t mv_chrome_notice_generation(void) {
   return g_chrome_app ? [g_chrome_app noticeGeneration] : 0;
@@ -1251,6 +1445,13 @@ extern "C" int32_t mv_chrome_list_subdirectories(const char* dir_utf8, char* buf
   std::string out;
   for (const auto& d : dirs.value()) out += MvFlat(d.name_utf8) + "\t" + d.path_utf8 + "\n";
   return MvCopyOut(out, buf, size);
+}
+extern "C" int32_t mv_chrome_tag_search(const char* query_utf8, char* buf, int32_t size) {
+  if (!g_chrome_app || !query_utf8) return MvCopyOut("", buf, size);
+  return MvCopyOut([g_chrome_app tagSearchJSON:query_utf8], buf, size);
+}
+extern "C" uint64_t mv_chrome_tag_generation(void) {
+  return g_chrome_app ? [g_chrome_app tagGeneration] : 0;
 }
 extern "C" int32_t mv_chrome_current_folder(char* buf, int32_t size) {
   if (!g_chrome_app) return MvCopyOut("", buf, size);
@@ -1311,6 +1512,12 @@ extern "C" int32_t mv_chrome_update_channel(void) {
 }
 extern "C" void mv_chrome_set_update_channel(int32_t channel) {
   if (g_chrome_app) [g_chrome_app setUpdateChannel:channel];
+}
+extern "C" int32_t mv_chrome_update_auto_check(void) {
+  return g_chrome_app ? [g_chrome_app updateAutoCheck] : -1;
+}
+extern "C" void mv_chrome_set_update_auto_check(bool on) {
+  if (g_chrome_app) [g_chrome_app setUpdateAutoCheck:on ? YES : NO];
 }
 
 extern "C" int32_t mv_chrome_export_last_choice(void) {
@@ -1766,6 +1973,12 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 @implementation MvMetalView {
   int _welcomePress;  // welcome row under the left press, + 1; 0 = none
   BOOL _welcomePressRemove;  // ... and the press was on its remove button
+  BOOL _textBeam;            // the I-beam is up over text in a still
+  // Issue #212 (shell/gesture.h): a pinch's sub-notch remainder, and the
+  // two-finger sideways swipe that steps one item.
+  mv::shell::pinch_to_wheel _pinch;
+  mv::shell::swipe_detector _wheelSwipe;
+  BOOL _contextMenuShown;  // the last menuForEvent: answered with a menu (issue #402)
 }
 - (void)viewDidChangeEffectiveAppearance {
   [super viewDidChangeEffectiveAppearance];
@@ -1928,6 +2141,11 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   }
   [self trackPointer:event];
   _welcomePress = self.app ? [self.app welcomeRowAtPointerOnRemove:&_welcomePressRemove] + 1 : 0;
+  // Text in images: a press on a word selects (published with the press, so
+  // the render thread never starts a pan for it).
+  self.snap->text_press = self.app && [self.app textPressX:self.snap->mouse_x
+                                                         y:self.snap->mouse_y
+                                                    clicks:event.clickCount];
   self.snap->mouse_down[0] = true;
   ++self.snap->activity_seq;
   [self publish];
@@ -1936,6 +2154,10 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 }
 - (void)mouseUp:(NSEvent*)event {
   self.snap->mouse_down[0] = false;
+  if (self.snap->text_press) {
+    self.snap->text_press = false;
+    if (self.app) [self.app textRelease];
+  }
   ++self.snap->activity_seq;
   [self publish];
   if (self.lab) self.lab->wake();
@@ -1957,11 +2179,31 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   }
 }
 - (void)rightMouseDown:(NSEvent*)event {
-  (void)event;
   self.snap->mouse_down[1] = true;
   ++self.snap->activity_seq;
   [self publish];
   if (self.app) [self.app transportActivity];
+  // NSView's own shows menuForEvent:'s menu (and returns when it closes, its
+  // tracking having taken the release), or passes the click on when it is nil.
+  _contextMenuShown = NO;
+  [super rightMouseDown:event];
+  if (_contextMenuShown) {
+    self.snap->mouse_down[1] = false;
+    [self publish];
+  }
+}
+// docs/design/25, issue #402: the add-ons' context-menu entries for the file on
+// screen, as its gallery tile lists them (right-click or Control-click). Nil,
+// so no menu, over the gallery, the editor, an empty window, or when no add-on
+// contributes an entry.
+- (NSMenu*)menuForEvent:(NSEvent*)event {
+  (void)event;
+  NSMenu* menu = nil;
+  if (self.app && ![self.app galleryVisible] && ![self.app editorOwnsCanvas] && [self.app hasFolder]) {
+    menu = [MVChromeHost canvasContextMenu];
+  }
+  _contextMenuShown = menu != nil;
+  return menu;
 }
 - (void)rightMouseUp:(NSEvent*)event {
   (void)event;
@@ -1976,22 +2218,46 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
     if (self.app) [self.app transportActivity];
     return;
   }
+  // Issue #212: a two-finger sideways swipe (or a tilt) is swipe-next, one
+  // item per swipe; its momentum runs out inside the detector's latch. A
+  // negative delta moves the content left (natural scrolling: fingers left),
+  // which brings in the next item, as on Windows. Precise deltas are points;
+  // three of them weigh as one wheel unit.
+  const double per_unit = event.hasPreciseScrollingDeltas ? 3.0 : 120.0;
+  const int swipe = _wheelSwipe.feed(-event.scrollingDeltaX * per_unit, event.scrollingDeltaY * per_unit,
+                                     static_cast<std::uint64_t>(event.timestamp * 1000.0));
+  if (swipe != 0 && self.app) [self.app swipeStep:swipe];
+  if (std::abs(event.scrollingDeltaX) > std::abs(event.scrollingDeltaY)) {
+    // Sideways never zooms.
+    if (self.app) [self.app transportActivity];
+    return;
+  }
   self.snap->wheel_total += static_cast<std::int64_t>(event.scrollingDeltaY * 120.0);
   ++self.snap->activity_seq;
   [self publish];
   if (self.lab) self.lab->wake();
   if (self.app) [self.app transportActivity];
+  // The wheel zoomed a document because the strip is up: say how to scroll.
+  if ((event.modifierFlags & NSEventModifierFlagCommand) == 0 && self.app) [self.app stripHintShow];
 }
 // A trackpad pinch zooms toward the pointer, as the wheel does: one wheel notch
-// is a 15 % step (canvas/camera.cpp kWheelFactor).
+// is a 15 % step (canvas/camera.cpp kWheelFactor). shell/gesture.h carries the
+// sub-unit remainder, so a slow pinch is not rounded away (issue #212).
 - (void)magnifyWithEvent:(NSEvent*)event {
-  const double factor = 1.0 + event.magnification;
-  if (factor <= 0.0) return;
+  if (event.phase == NSEventPhaseBegan) _pinch.reset();
+  const std::int64_t units = _pinch.feed(1.0 + event.magnification);
+  if (units == 0) return;
   [self trackPointer:event];
-  self.snap->wheel_total += static_cast<std::int64_t>(std::lround(std::log(factor) / std::log(1.15) * 120.0));
+  self.snap->wheel_total += units;
   ++self.snap->activity_seq;
   [self publish];
   if (self.lab) self.lab->wake();
+}
+// A three-finger swipe, when System Settings sends it as a swipe ("Swipe
+// between pages" with three fingers): deltaX is +1 for a swipe to the left,
+// the next item.
+- (void)swipeWithEvent:(NSEvent*)event {
+  if (event.deltaX != 0.0 && self.app) [self.app swipeStep:event.deltaX > 0.0 ? 1 : -1];
 }
 // Without a tracking area AppKit never sends mouseMoved: to a plain view, which is
 // why the eyedropper had no cursor to read. Idle stays idle: the move only wakes
@@ -2009,6 +2275,10 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
 - (void)mouseExited:(NSEvent*)event {
   (void)event;
   self.snap->mouse_in_client = false;
+  if (_textBeam) {
+    _textBeam = NO;
+    [NSCursor.arrowCursor set];
+  }
   if (self.app && self.snap->recents.hover >= 0) {
     (void)[self.app welcomePointerMoved];
     [NSCursor.arrowCursor set];
@@ -2031,6 +2301,11 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   // redraws (the app bumps the snapshot); an empty welcome stays idle.
   if (self.app && self.snap->recents.count > 0) {
     [([self.app welcomePointerMoved] ? NSCursor.pointingHandCursor : NSCursor.arrowCursor) set];
+  } else if (self.app && (event.type == NSEventTypeMouseMoved || self.snap->text_press)) {
+    // Text in images: the I-beam over words in a still.
+    const BOOL beam = self.snap->mouse_in_client && [self.app textHoverX:self.snap->mouse_x y:self.snap->mouse_y];
+    if (beam || _textBeam) [(beam ? NSCursor.IBeamCursor : NSCursor.arrowCursor) set];
+    _textBeam = beam;
   }
   if (self.snap->eyedropper || self.snap->loupe) ++self.snap->activity_seq;
   [self publish];
@@ -2038,9 +2313,12 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   // Issue #38: movement (and entry, which arrives as a move) wakes the clip's
   // transport. A bool test and nothing else when no clip is on screen.
   if (self.app) [self.app transportActivity];
+  // Issue #408: the home's ground effect rests five seconds after the pointer.
+  if (self.app) [self.app pointerActivity];
 }
 - (void)mouseDragged:(NSEvent*)event {
   [self mouseMoved:event];
+  if (self.snap->text_press && self.app) [self.app textDragX:self.snap->mouse_x y:self.snap->mouse_y];
   ++self.snap->activity_seq;
   [self publish];
   if (self.lab) self.lab->wake();
@@ -2239,14 +2517,13 @@ static void MvAdoptNewDefaultViewerTypes() {
   // §2.3): 0 for the file itself; a new stop starts at 0.
   std::uint32_t _shownPage;
   std::uint32_t _shownPageCount;  // last count the lab reported for this stop; 0 unknown
-  // Document scrolling: travel pushed past an edge (screen px, signed), the
-  // sub-pixel remainders, and the latch that lets one gesture turn one page.
-  double _overscroll;
-  double _scrollRemX;
-  double _scrollRemY;
-  double _lastScrollTime;
-  double _pageTurnTime;
-  BOOL _pageTurnLatched;
+  // Document scrolling (docs/design/04 "Scrolling a document"): the shared
+  // page-turn rule and its sub-pixel carry (canvas/document_scroll.h).
+  mv::canvas::document_scroller _docScroll;
+  // The "Press T" filmstrip hint is learned (NSUserDefaults mv.hint.filmstripT).
+  BOOL _stripHintLearned;
+  BOOL _stripHintCard;  // the card was sent up (-stripHintShow)
+  CFTimeInterval _stripHintShownAt;
   // Milestone H: the moment the shown clip was opened at (-1 none). The same
   // result selected again keeps the clip where it is; another moment of it
   // reopens. kShownMomentStale after a new search, so its moment opens afresh.
@@ -2258,6 +2535,10 @@ static void MvAdoptNewDefaultViewerTypes() {
   // Bumped by every change to `_marks`; Swift rebuilds its marked-name set
   // when it moves (mv_chrome_marks_generation).
   std::uint64_t _marksGeneration;
+  // Issue #413: the gallery's shift-click range, paths in listing order, and
+  // its generation (mv_chrome_gallery_range_generation). Empty: none.
+  std::vector<std::string> _galleryRange;
+  std::uint64_t _galleryRangeGeneration;
   // Bumped when the app rewrites a listed file in place (lossless rotate, a
   // metadata write) and refreshes its size / mtime without a relist: Swift
   // re-reads the thumbnail keys when it moves (mv_chrome_thumb_generation).
@@ -2269,12 +2550,23 @@ static void MvAdoptNewDefaultViewerTypes() {
   // rows of the live table that differ from the defaults.
   mv::shell::key_router _router;
   BOOL _settingsVisible;
-  // docs/design/25: the theme's canvas colours, when a theme is on.
-  BOOL _themeCanvasActive;
+  // docs/design/25, issue #408: the theme's palettes and ground, when a theme
+  // is on; otherwise syncHomeAppearance resolves AppKit's colours.
+  BOOL _themeActive;
   BOOL _themeHasDark;
   BOOL _themeHasLight;
-  uint32_t _themeDarkRgb;
-  uint32_t _themeLightRgb;
+  mv_home_palette _themeDark;
+  mv_home_palette _themeLight;
+  mv::shell::home_effect _themeEffect;
+  uint32_t _themeEffectRgb;
+  float _themeIntensity;
+  float _themeSpeed;
+  float _themeSize;
+  // The ground's rest rule needs to hear the pointer, at most a few times a
+  // second (input_snapshot::pointer_seq).
+  CFTimeInterval _lastPointerBump;
+  id _reduceMotionObserver;
+  id _systemColoursObserver;
 
   // Issue #38: the clip transport's idle state (shell/transport_autohide.h, the
   // same rule Windows runs). One one-shot timer at most, only while a clip
@@ -2355,11 +2647,30 @@ static void MvAdoptNewDefaultViewerTypes() {
   // lookup and never a file read. A record is asked for only while something is
   // showing it, and after a short pause so arrow-key scrubbing queues no reads.
   mv::shell::meta_store _meta;
+  // #291: every file's tags and date taken, read once per folder in the
+  // background (meta/tag_index.h), behind the view; meta_cache.db keeps them.
+  std::unique_ptr<mv::meta::tag_index> _tags;
+  // The listing changed and its tag pass waits for the item's first pixel.
+  BOOL _tagScanPending;
+  CFAbsoluteTime _tagScanListedAt;
+  NSTimer* _tagScanTimer;  // #291 + #178: armed per listing until the pass starts
+  std::uint64_t _tagGeneration;
+  std::uint64_t _tagMapGeneration;
+  std::unordered_map<std::string, std::size_t> _tagIndexOf;
   std::shared_ptr<const mv::meta::metadata> _metaRecord;
+  // Issue #209: Shift+Z waits for the record and fires when it is adopted.
+  BOOL _afFocusPending;
   std::uint64_t _metaGeneration;
   BOOL _metaPaneVisible;
   BOOL _treeVisible;
   NSTimer* _metaDebounce;
+  // #345: the AI badge. Its answer comes from `_meta.provenance` -- the held
+  // record, or a bounded probe on the pool after the same pause as above -- so
+  // it needs no pane open and never sits ahead of the picture. `_aiBadgeKey` is
+  // the item it was asked for (path, mtime, size), so a relist keeps it.
+  mv::shell::ai_badge _aiBadge;
+  NSTimer* _aiBadgeDebounce;
+  std::string _aiBadgeKey;
   // PR 12 (docs/design/06 "Writing", docs/design/16 Rate). Rating, comment and revert are
   // queued here and written on the pool: a plain JPEG in place, everything else
   // in an XMP sidecar. `_metaWritten` is the paths written this session, the
@@ -2379,6 +2690,10 @@ static void MvAdoptNewDefaultViewerTypes() {
   // the item id _lab.open_item returned (so a reload never borrows it).
   mv::shell::edit_session _edits;
   std::uint64_t _itemId;
+  // Text in images (shell/text_select.h): the words read from the still on
+  // screen and what is selected; a dwell timer before a still is read.
+  mv::shell::text_select _text;
+  NSTimer* _textDwell;
   NSTimer* _rotateDebounce;
   // docs/design/26: Photos library items. What each key resolved to (a file in place,
   // a cache preview, or a fetched original); the sequence that tells a stale
@@ -2388,6 +2703,9 @@ static void MvAdoptNewDefaultViewerTypes() {
   std::uint64_t _photosResolveSeq;
   NSTimer* _photosFetchTimer;
   std::shared_ptr<std::atomic<bool>> _photosFetchCancel;
+  // A library listing is on a worker: a second Open Photos Library waits for it
+  // rather than starting another (#420).
+  BOOL _photosListing;
   // docs/design/26 "Backup": the one run, on its own thread; whether its end has
   // been written to the defaults (the "last backup" line).
   std::unique_ptr<mv::shell::backup::engine> _photosBackup;
@@ -2503,6 +2821,13 @@ static void MvAdoptNewDefaultViewerTypes() {
   return self;
 }
 - (void)applicationDidFinishLaunching:(NSNotification*)notification {
+  // docs/design/25 PR 57 verify rigs: open add-ons from a scratch store, never the
+  // profile's. Before anything lists the store.
+  if (const char* dir = std::getenv("MV_SCRIPT_SELFTEST"); dir && *dir) {
+    mv::io::set_open_addons_dir_override((std::string(dir) + "/store").c_str());
+  } else if (const char* store = std::getenv("MV_SCRIPT_STORE"); store && *store) {
+    mv::io::set_open_addons_dir_override(store);
+  }
   _folderCursor = -1;
   _siblingIndex = -1;
   (void)notification;
@@ -2520,6 +2845,7 @@ static void MvAdoptNewDefaultViewerTypes() {
     if (app && entry) [app openEntryPaths:@[ entry ] failed:nil];
   };
   if (std::getenv("MV_EDIT_SELFTEST_SOAK") == nullptr) {
+    MvAddonsSetFolderModel(&_folder);  // docs/design/25 PR 57: scripts with folder.read
     if (MvClaimAddonHost()) {
       MvAddonsStart(open_from_addon, nullptr);
       // docs/design/23: Final Cut Pro search stays as Settings left it (background, later).
@@ -2690,6 +3016,25 @@ static void MvAdoptNewDefaultViewerTypes() {
     [self.transportHost.heightAnchor constraintEqualToConstant:44.0],
     self.transportBottom,
     preferredWidth,
+  ]];
+
+  // #345: the AI-generated badge. Chrome over the canvas like the transport, so
+  // it never presents; hidden until the item on screen says it was AI-made.
+  // -layoutAIBadge keeps it clear of the filmstrip, a clip's transport and the
+  // right-hand panes.
+  self.aiBadgeHost = [MVChromeHost makeAIBadgeView];
+  self.aiBadgeHost.hidden = YES;
+  self.aiBadgeHost.translatesAutoresizingMaskIntoConstraints = NO;
+  [container addSubview:self.aiBadgeHost];
+  self.aiBadgeBottom = [self.aiBadgeHost.bottomAnchor constraintEqualToAnchor:container.bottomAnchor
+                                                                     constant:-10.0];
+  self.aiBadgeTrailing = [self.aiBadgeHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor
+                                                                         constant:-16.0];
+  [NSLayoutConstraint activateConstraints:@[
+    [self.aiBadgeHost.widthAnchor constraintEqualToConstant:MVChromeHost.aiBadgeWidth],
+    [self.aiBadgeHost.heightAnchor constraintEqualToConstant:MVChromeHost.aiBadgeHeight],
+    self.aiBadgeBottom,
+    self.aiBadgeTrailing,
   ]];
 
   // Gallery: an overlay over the canvas below the command bar (docs/design/16:
@@ -2868,6 +3213,15 @@ static void MvAdoptNewDefaultViewerTypes() {
     [self.resumeHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-8.0],
     self.resumeBottom,
   ]];
+  // The "Press T" filmstrip hint card: the same corner, above the resume
+  // notice while that is up (-layoutHintNotice). Hidden until shown.
+  self.hintHost = [MVChromeHost makeHintNoticeView];
+  [container addSubview:self.hintHost];
+  self.hintBottom = [self.hintHost.bottomAnchor constraintEqualToAnchor:container.bottomAnchor constant:-8.0];
+  [NSLayoutConstraint activateConstraints:@[
+    [self.hintHost.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-8.0],
+    self.hintBottom,
+  ]];
 
   [self installMainMenu];
   [self installTextEditKeys];
@@ -2875,9 +3229,11 @@ static void MvAdoptNewDefaultViewerTypes() {
   g_chrome_snap = &_snap;
   g_chrome_lab = &_lab;
   g_chrome_app = self;
+  mvApplyParkedHomeTheme();  // issue #408: the chrome's first paint came before this
   [self scheduleChromeCrashTest];
   [self scheduleEditSelfTest];
   [self scheduleAddonSelfTest];
+  [self scheduleScriptSelfTest];
 
   _snap.window_visible = YES;
   _snap.window_active = YES;
@@ -2889,6 +3245,24 @@ static void MvAdoptNewDefaultViewerTypes() {
     return;
   }
   _options.jobs = &_jobs;
+  _tags = std::make_unique<mv::meta::tag_index>(
+      mv::meta::tag_index::cache_fn([] { return &mv::meta::default_meta_cache(); }),
+      [](std::string_view path) -> mv::result<mv::meta::search_facts> {
+        // docs/design/26: a Photos item is a key; its position and date come
+        // from PHAsset (location, creationDate), read locally.
+        if (mv::shell::photos::is_key(path)) {
+          const std::string key(path);
+          MV_TRY(auto described, mv::shell::photos::describe(std::span<const std::string>(&key, 1)));
+          mv::meta::search_facts f;
+          if (!described.empty() && described[0]) {
+            const auto& it = *described[0];
+            if (it.has_location) f.where = mv::meta::geo_point{it.lat, it.lon, std::nullopt};
+            f.date_taken_key = it.created;
+          }
+          return f;
+        }
+        return mv::meta::read_search_facts(path);
+      });
   // Milestone H: a clip opened on its moment shows its cached thumbnail first.
   // _folder lives as long as the process (MvLabApp is never destroyed).
   {
@@ -3404,6 +3778,7 @@ static void MvAdoptNewDefaultViewerTypes() {
     _transportClip = clip;
     _transportPlaying = playing;
     [self applyTransportAutohide];
+    [self layoutAIBadge];  // #345: the badge sits above a clip's strip
   }
 }
 
@@ -3412,11 +3787,21 @@ static void MvAdoptNewDefaultViewerTypes() {
     [self askDefaultViewerOnce];
   }
   [self pollTransport];
+  // #345: the badge follows the transport, the filmstrip and the panes. No
+  // timer polls this any more (issue #178), so each of those changes calls
+  // -layoutAIBadge too; here it catches an item list that emptied or filled.
+  [self layoutAIBadge];
   // Date-taken keys arriving on the pool re-sort the listing in place: the same
-  // items, the current one still selected, no image reload.
-  if (_meta.consume_dates_changed() && _sort.key == mv::io::sort_key::date_taken && !_listOpen) {
-    [self resortKeepingSelection];
+  // items, the current one still selected, no image reload. Once, when the pass
+  // ends (as Windows and the date scan before it): a re-sort per chunk re-sorted
+  // and republished a 20 k listing five times a second while the pass ran.
+  if (_tags && _tags->consume_changed()) {
+    ++_tagGeneration;  // an open file search re-runs its tag half
+    if (_sort.key == mv::io::sort_key::date_taken && !_listOpen && !_tags->progress().reading) {
+      [self resortKeepingSelection];
+    }
   }
+  [self startTagScanIfDue];
   // Issue #207: ratings and labels arriving on the pool re-apply a cull filter.
   if (_meta.consume_cull_changed() && mv::io::needs_cull_marks(mv::io::kind_filter_mask(_kindFilter))) {
     _refilterListing = YES;
@@ -3512,6 +3897,14 @@ static void MvAdoptNewDefaultViewerTypes() {
     [self makeListNames];
   } else {
     [self sortItems];
+    _tagScanListedAt = CFAbsoluteTimeGetCurrent();
+    // Sorting by date is asked for, so its keys start now, as the date scan
+    // always did; otherwise the pass waits for the item's first pixel.
+    if (_sort.key == mv::io::sort_key::date_taken) {
+      [self startTagScan];
+    } else {
+      [self armTagScan];
+    }
   }
   ++_listingGeneration;
 
@@ -3527,6 +3920,7 @@ static void MvAdoptNewDefaultViewerTypes() {
     });
     ++_marksGeneration;
   }
+  [self clearGalleryRange];  // #413: indices of the old listing
 
   std::size_t new_index = 0;
   if (!_items.empty()) {
@@ -3572,6 +3966,8 @@ static void MvAdoptNewDefaultViewerTypes() {
 }
 
 - (void)selectIndex:(std::size_t)new_index {
+  // Issue #413: another selection ends a gallery range (arrows move one cell).
+  [self clearGalleryRange];
   _index.reset(_items.size(), new_index);
   [self applyFilmstripLayout];
   [self trimItemChanged];
@@ -3652,6 +4048,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   }
   [self updateMarkSnapshot];
   [self metadataSelectionChanged];
+  [self aiBadgeSelectionChanged];
   [self publish];
 }
 
@@ -3676,50 +4073,115 @@ static void MvAdoptNewDefaultViewerTypes() {
   [self editorTickResume];
 }
 
-- (void)setThemeCanvasActive:(BOOL)active
-                     hasDark:(BOOL)hasDark
-                        dark:(uint32_t)dark
-                    hasLight:(BOOL)hasLight
-                       light:(uint32_t)light {
-  _themeCanvasActive = active && (hasDark || hasLight);
-  _themeHasDark = hasDark;
-  _themeHasLight = hasLight;
-  _themeDarkRgb = dark & 0xFFFFFFu;
-  _themeLightRgb = light & 0xFFFFFFu;
+- (void)setHomeThemeActive:(BOOL)active
+                       dark:(const mv_home_palette*)dark
+                      light:(const mv_home_palette*)light
+                     effect:(int)effect
+                  effectRgb:(uint32_t)effectRgb
+                  intensity:(float)intensity
+                      speed:(float)speed
+                       size:(float)size {
+  _themeActive = active && (dark != nullptr || light != nullptr);
+  _themeHasDark = dark != nullptr;
+  _themeHasLight = light != nullptr;
+  if (dark) _themeDark = *dark;
+  if (light) _themeLight = *light;
+  // An add-on theme has no ground; neither has Default or increased contrast.
+  const bool known = effect >= 0 && effect < static_cast<int>(mv::shell::home_effect::count);
+  _themeEffect = _themeActive && known ? static_cast<mv::shell::home_effect>(effect)
+                                       : mv::shell::home_effect::none;
+  _themeEffectRgb = effectRgb & 0xFFFFFFu;
+  const auto unit = [](float v) { return v > 0.0f && v <= 1.0f ? v : 1.0f; };
+  _themeIntensity = unit(intensity);
+  _themeSpeed = unit(speed);
+  _themeSize = unit(size);
   [self syncHomeAppearance];
 }
 
+// The ground's five seconds restart on a pointer move. Rate-limited: a bump
+// wakes the render thread, which only notes the time (no frame).
+- (void)pointerActivity {
+  const CFTimeInterval now = CACurrentMediaTime();
+  if (now - _lastPointerBump < 0.5) return;
+  _lastPointerBump = now;
+  ++_snap.pointer_seq;
+  [self.view publish];
+  _lab.wake();
+}
+
 - (void)syncHomeAppearance {
-  // AppKit resolves the semantic colour for this window's effective appearance.
+  // AppKit resolves the semantic colours for this window's effective appearance.
   // Do this on the UI thread; the Metal thread reads only the POD snapshot.
   if (!self.view.window) return;
-  if (_themeCanvasActive) {
+  if (!_reduceMotionObserver) {
+    __weak MvLabApp* weakSelf = self;
+    _reduceMotionObserver = [[NSWorkspace sharedWorkspace].notificationCenter
+        addObserverForName:NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification
+                    object:nil
+                     queue:NSOperationQueue.mainQueue
+                usingBlock:^(NSNotification*) { [weakSelf syncHomeAppearance]; }];
+    // Default's accent is the system's: follow a change made in System Settings.
+    _systemColoursObserver = [NSNotificationCenter.defaultCenter
+        addObserverForName:NSSystemColorsDidChangeNotification
+                    object:nil
+                     queue:NSOperationQueue.mainQueue
+                usingBlock:^(NSNotification*) { [weakSelf syncHomeAppearance]; }];
+  }
+  mv::shell::home_theme home;
+  if (_themeActive) {
     // A theme with one palette keeps the chrome in that appearance, so the
     // palette it has is the one in use.
     NSAppearanceName match = [self.view.effectiveAppearance
         bestMatchFromAppearancesWithNames:@[ NSAppearanceNameAqua, NSAppearanceNameDarkAqua ]];
     const bool dark = [match isEqualToString:NSAppearanceNameDarkAqua];
-    const std::uint32_t themed = (dark && _themeHasDark) || !_themeHasLight ? _themeDarkRgb
-                                                                            : _themeLightRgb;
-    if (_snap.home_background_rgb == themed) return;
-    _snap.home_background_rgb = themed;
-    [self publish];
-    return;
+    const mv_home_palette& p = (dark && _themeHasDark) || !_themeHasLight ? _themeDark : _themeLight;
+    home.canvas = p.canvas;
+    home.surface = p.surface;
+    home.title = p.title;
+    home.body = p.body;
+    home.hairline = p.hairline;
+    home.accent = p.accent;
+    home.effect = _themeEffect;
+    home.effect_rgb = _themeEffectRgb;
+    home.intensity = _themeIntensity;
+    home.speed = _themeSpeed;
+    home.size = _themeSize;
+  } else {
+    // Default (and increased contrast): the chrome's own tokens are AppKit's
+    // semantic colours (Theme.swift MVTheme), resolved here the same way. A
+    // dynamic colour resolves against the current drawing appearance, so
+    // convert it while this view's appearance is current (macOS 11+).
+    const auto rgba = [](NSColor* c) -> std::uint32_t {
+      if (!c) return 0;
+      const auto component = [](CGFloat value) -> std::uint32_t {
+        return static_cast<std::uint32_t>(
+            std::lround(std::clamp(static_cast<double>(value), 0.0, 1.0) * 255.0));
+      };
+      return (component(c.redComponent) << 24) | (component(c.greenComponent) << 16) |
+             (component(c.blueComponent) << 8) | component(c.alphaComponent);
+    };
+    std::array<std::uint32_t, 6> resolved{};
+    std::array<std::uint32_t, 6>* const out = &resolved;  // a block cannot capture a C array
+    [self.view.effectiveAppearance performAsCurrentDrawingAppearance:^{
+      NSColor* const colours[6] = {NSColor.windowBackgroundColor, NSColor.controlBackgroundColor,
+                                   NSColor.labelColor, NSColor.secondaryLabelColor,
+                                   NSColor.separatorColor, NSColor.controlAccentColor};
+      for (std::size_t i = 0; i < 6; ++i)
+        (*out)[i] = rgba([colours[i] colorUsingColorSpace:NSColorSpace.sRGBColorSpace]);
+    }];
+    const std::array<std::uint32_t, 6>& t = resolved;
+    if (t[0] == 0) return;
+    home.canvas = t[0] | 0xFFu;  // the clear is opaque
+    home.surface = t[1];
+    home.title = t[2];
+    home.body = t[3];
+    home.hairline = t[4];
+    home.accent = t[5];
   }
-  // A dynamic colour resolves against the current drawing appearance, so
-  // convert it while this view's appearance is current (macOS 11+).
-  __block NSColor* c = nil;
-  [self.view.effectiveAppearance performAsCurrentDrawingAppearance:^{
-    c = [[NSColor windowBackgroundColor] colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
-  }];
-  if (!c) return;
-  const auto component = [](CGFloat value) -> std::uint32_t {
-    return static_cast<std::uint32_t>(std::lround(std::clamp(static_cast<double>(value), 0.0, 1.0) * 255.0));
-  };
-  const std::uint32_t rgb = (component(c.redComponent) << 16) |
-                            (component(c.greenComponent) << 8) | component(c.blueComponent);
-  if (_snap.home_background_rgb == rgb) return;
-  _snap.home_background_rgb = rgb;
+  const bool reduce = NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
+  if (_snap.home == home && _snap.reduce_motion == reduce) return;
+  _snap.home = home;
+  _snap.reduce_motion = reduce;
   [self publish];
 }
 
@@ -3747,6 +4209,15 @@ static void MvAdoptNewDefaultViewerTypes() {
 
 - (std::vector<mv::io::dir_entry>)markedOrCurrentEntries {
   std::vector<mv::io::dir_entry> out;
+  // Issue #413: a gallery range is the selection while it holds files: copy,
+  // F7/F8, Delete, copy path and Share act on it, in listing order.
+  if (!_galleryRange.empty()) {
+    const std::set<std::string> in(_galleryRange.begin(), _galleryRange.end());
+    for (const auto& entry : _items) {
+      if (in.count(entry.path_utf8)) out.push_back(entry);
+    }
+    if (!out.empty()) return out;
+  }
   if (!_marks.empty()) {
     for (const auto& entry : _items) {
       if (_marks.count(entry.path_utf8)) out.push_back(entry);
@@ -4245,8 +4716,11 @@ static void MvAdoptNewDefaultViewerTypes() {
 }
 - (void)setGalleryVisible:(BOOL)visible {
   const BOOL changed = _galleryVisible != visible;
+  if (!visible) [self clearGalleryRange];  // #413: the range belongs to the grid
   _galleryVisible = visible;
   self.galleryHost.hidden = !visible;
+  [self textSync];
+  [self layoutAIBadge];  // #345
   if (changed && visible) [self followGalleryFilter];
   // File search belongs to the grid: it closes with it, filter and all.
   if (changed && !visible) [MVChromeHost closeFileSearch];
@@ -4271,6 +4745,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   // the next folder by a key that looked like it did nothing (Windows'
   // toggle_filmstrip_setting makes the same call).
   if (_items.empty()) return;
+  [self stripHintToggled];
   [self setFilmstripVisible:!_filmstripVisible];
 }
 - (void)setFilmstripVisible:(BOOL)visible {
@@ -4290,6 +4765,8 @@ static void MvAdoptNewDefaultViewerTypes() {
   self.adjustBottom.constant = pane_bottom;
   self.jobsBottom.constant = pane_bottom;
   self.resumeBottom.constant = pane_bottom - 8.0;
+  [self layoutHintNotice];
+  [self layoutAIBadge];  // #345
   // chrome_bottom_px must reflect the toggle immediately (canvas fit/pan
   // math reads it via present_lab_mac.mm's usable_window_h()) -- -syncSize
   // already recomputes it from -filmstripVisible and republishes, the same
@@ -4374,6 +4851,29 @@ static void MvAdoptNewDefaultViewerTypes() {
 }
 - (uint64_t)marksGeneration {
   return _marksGeneration;
+}
+- (void)setGalleryRangeIndices:(const int32_t*)indices count:(int32_t)count {
+  std::vector<std::string> range;
+  range.reserve(static_cast<std::size_t>(count));
+  for (int32_t i = 0; i < count; ++i) {
+    const int32_t at = indices[i];
+    if (at >= 0 && static_cast<std::size_t>(at) < _items.size()) {
+      range.push_back(_items[static_cast<std::size_t>(at)].path_utf8);
+    }
+  }
+  _galleryRange = std::move(range);
+  ++_galleryRangeGeneration;
+}
+- (void)clearGalleryRange {
+  if (_galleryRange.empty()) return;
+  _galleryRange.clear();
+  ++_galleryRangeGeneration;
+}
+- (uint64_t)galleryRangeGeneration {
+  return _galleryRangeGeneration;
+}
+- (NSInteger)galleryRangeCount {
+  return static_cast<NSInteger>(_galleryRange.size());
 }
 - (uint64_t)thumbGeneration {
   return _thumbGeneration;
@@ -4826,8 +5326,10 @@ static BOOL MvCopyUtf8(const std::string& text, char* buf, int32_t size) {
     under.popup_open = false;
     const mv::shell::mode under_mode = mv::shell::resolve_mode(under);
     auto modes = static_cast<std::int32_t>(mv::shell::mask_of(under_mode));
-    // Trim layers over video (key_router.cpp), so `?` lists both, as on Windows.
-    if (under_mode == mv::shell::mode::trim) modes |= mv::shell::kVideo;
+    // Trim and skim layer over video (key_router.cpp), so `?` lists both, as on Windows.
+    if (under_mode == mv::shell::mode::trim || under_mode == mv::shell::mode::skim) {
+      modes |= mv::shell::kVideo;
+    }
     [MVChromeHost reloadHelpWithModes:modes];
   }
   self.helpHost.hidden = !visible;
@@ -5605,7 +6107,7 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
 
 - (void)toggleAutomaticUpdateChecks:(NSMenuItem*)item {
   (void)item;
-  _updater.updater.automaticallyChecksForUpdates = !_updater.updater.automaticallyChecksForUpdates;
+  [self setUpdateAutoCheck:!_updater.updater.automaticallyChecksForUpdates];
 }
 
 // The preview channel reads the appcast of the newest release, prerelease or
@@ -5744,6 +6246,26 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
 #endif
 }
 
+- (int32_t)updateAutoCheck {
+#if MV_WITH_SPARKLE
+  return _updater ? (_updater.updater.automaticallyChecksForUpdates ? 1 : 0) : -1;
+#else
+  return -1;
+#endif
+}
+
+// Sparkle persists the choice (SUEnableAutomaticChecks in the app's defaults).
+// Turning it on checks now, as Windows pokes its updater.
+- (void)setUpdateAutoCheck:(BOOL)on {
+#if MV_WITH_SPARKLE
+  if (!_updater || _updater.updater.automaticallyChecksForUpdates == on) return;
+  _updater.updater.automaticallyChecksForUpdates = on;
+  if (on) [self resolveFeedThenCheck:YES];
+#else
+  (void)on;
+#endif
+}
+
 // ---- Keys, commands, settings -----------------------------------------------
 
 - (void)pokeSnapshot {
@@ -5770,8 +6292,12 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   s.pane_open = _metaPaneVisible || _treeVisible || _adjust.visible() || _jobsVisible || _ws.open;
   s.crop = _edits.crop_active();
   s.trim = _trim.armed() && s.item == mv::shell::item_kind::clip;
+  // Issue #416: on a clip, ← → skip ±2 s only with the strip hidden (T);
+  // playing or paused is not a mode.
+  s.filmstrip_visible = [self filmstripVisible];
   // Milestone H: Esc from a result list is the path bar's "Back to folder".
   s.list_open = _listOpen;
+  s.text_selected = _text.has_selection();
   return s;
 }
 
@@ -5945,6 +6471,9 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
           [self pokeSnapshot];
           break;
         case mv::shell::back_target::result_list: [self closeList]; break;
+        case mv::shell::back_target::text_selection:
+          if (_text.clear()) [self textPublish];
+          break;
         default: break;
       }
       return YES;
@@ -5967,7 +6496,9 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     case typeahead: {
       const bool on_folders = _galleryVisible && !_subdirs.empty() &&
                               (_folderCursor >= 0 || _items.empty());
-      if (!on_folders) return NO;
+      // #291: over files, `/` is file search (names, then tags), as ⌘F is
+      // without Local search (docs/design/16 "File search").
+      if (!on_folders) return _items.empty() || _listOpen ? NO : [self openFileSearch];
       _folderQuery.clear();
       [self touchFolderFind];
       if (_folderCursor < 0 && !_subdirs.empty()) _folderCursor = 0;
@@ -6060,12 +6591,6 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
       [[NSWorkspace sharedWorkspace] activateFileViewerSelectingURLs:@[ [NSURL fileURLWithPath:path] ]];
       return YES;
     }
-    case cycle_background:
-      [self setViewFlags:(_viewFlags & ~mv::shell::kSettingBackgroundMask) |
-                         ((((_viewFlags & mv::shell::kSettingBackgroundMask) >>
-                            mv::shell::kSettingBackgroundShift) + 1) % 5)
-                             << mv::shell::kSettingBackgroundShift];
-      return YES;
     case sticky_zoom: [self setViewFlags:_viewFlags ^ mv::shell::kSettingStickyZoom]; return YES;
     // Clip / animation transport. Space, K and `,` `.` reach the render thread as
     // latched counters (input_snapshot), like pan and zoom.
@@ -6126,7 +6651,15 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
       [self pokeSnapshot];
       return YES;
     case toggle_mark: [self toggleMarkCurrent]; return YES;
-    case mark_all: [self markAll]; return YES;
+    case mark_all:
+      // With words selected in the still, Select All is every word (Photos);
+      // otherwise it marks every file.
+      if (_text.has_selection() && _text.select_all()) {
+        [self textPublish];
+        return YES;
+      }
+      [self markAll];
+      return YES;
     case unmark_all: [self unmarkAll]; return YES;
     case copy_to: [self copyMarkedPickDestination:NO]; return YES;
     case copy_to_pick: [self copyMarkedPickDestination:YES]; return YES;
@@ -6166,12 +6699,33 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
       if (_snap.af_points) [self requestMetadataNow];
       [self pokeSnapshot];
       return YES;
+    // Issue #209: 100 % on the AF point, from the record already held (or one
+    // read on the pool); the render thread moves the camera.
+    case zoom_af_point:
+      if (_metaRecord) {
+        [self afFocusFire];
+      } else {
+        _afFocusPending = YES;
+        [self requestMetadataNow];
+      }
+      return YES;
     case eyedropper:
       _snap.eyedropper = !_snap.eyedropper;
       [self pokeSnapshot];
       return YES;
     case copy_clipboard: {
       NSPasteboard* board = [NSPasteboard generalPasteboard];
+      // Words selected in the still (text in images): that text.
+      if (_text.has_selection()) {
+        const std::string text = _text.text();
+        [board clearContents];
+        if (![board setString:[NSString stringWithUTF8String:text.c_str()] forType:NSPasteboardTypeString]) {
+          NSBeep();
+          return YES;
+        }
+        [self noticeShow:mv::shell::copy_text_notice(_text.words())];
+        return YES;
+      }
       // Eyedropper on and a pixel under the cursor: that colour.
       if (_snap.eyedropper) {
         const std::string text = _lab.eyedropper_text();
@@ -6265,6 +6819,8 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   [self adjustItemChanged:mv::shell::is_video_name(entry.name_utf8) ? 0 : item];
   // PR 29: an open workspace follows the item to a tab it offers.
   if (mv::shell::follow_subject(_ws, [self editSubject])) [self syncWorkspace];
+  // A document or a clip arriving under the filmstrip: say what T changes.
+  [self stripHintShow];
 }
 
 - (void)publishEdit {
@@ -6277,6 +6833,8 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     _snap.edit[0] = mv::shell::view_of(_edits, _itemId, 0);
   }
   ++_editGeneration;  // the strip's edit count, the Crop pane's draft
+  // A new item, a turn or a crop: words read before no longer line up.
+  [self textSync];
 }
 
 - (BOOL)runEditCommand:(mv::shell::command_id)command {
@@ -6350,11 +6908,13 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     [self runEditCommand:mv::shell::command_id::crop_commit];
   }
   self.editStripHost.hidden = !open;
+  [self textSync];
   const CGFloat top = open ? kEditStripHeightPoints : 0.0;
   self.metaTop.constant = top;
   self.adjustTop.constant = top;
   self.jobsTop.constant = top;
   self.editPaneHost.hidden = !(open && (tab == edit_tab::crop || tab == edit_tab::trim));
+  [self layoutAIBadge];  // #345
   if (open || _wsShown) {
     // One right-edge pane at a time: each setter below closes the others.
     const BOOL colour = open && tab == edit_tab::colour;
@@ -6831,6 +7391,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   if (visible && _adjust.visible()) [self setAdjustVisible:NO];
   _jobsVisible = visible;
   self.jobsHost.hidden = !visible;
+  [self layoutAIBadge];  // #345
   ++_jobsGeneration;
   if (!visible) [self workspacePaneClosed:mv::shell::edit_tab::jobs];
   if (visible && focus) [self.window makeFirstResponder:self.jobsHost];
@@ -7020,6 +7581,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     [self editorLoadClip];
     [self editorTickResume];
     [self.editorWindow makeKeyAndOrderFront:nil];
+    [self layoutAIBadge];  // #345
   } else {
     [self.editorWindow close];  // windowWillClose -> editorWindowClosed
   }
@@ -7032,6 +7594,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   _timeline.end_trim();
   _editorOpen = NO;
   ++_editorToken;
+  [self layoutAIBadge];  // #345
   [_editorTick invalidate];
   _editorTick = nil;
   [self moveCanvasToEditor:NO];
@@ -7492,12 +8055,205 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
   if (dir == nullptr || *dir == '\0') return;
   NSString* out = [NSString stringWithUTF8String:dir];
   NSString* store = [out stringByAppendingPathComponent:@"store"];
-  [[NSFileManager defaultManager] removeItemAtPath:store error:nil];
+  // PR 56's leg runs twice over one store (a restart in between), so its
+  // second launch keeps what the first installed and chose.
+  const char* pr56 = std::getenv("MV_ADDON_SELFTEST_PR56");
+  const bool second = pr56 != nullptr && std::string_view(pr56) == "b";
+  if (!second) {
+    [[NSFileManager defaultManager] removeItemAtPath:store error:nil];
+    [[NSFileManager defaultManager] removeItemAtPath:[out stringByAppendingPathComponent:@"settings"] error:nil];
+    [[NSFileManager defaultManager] removeItemAtPath:[out stringByAppendingPathComponent:@"state.txt"] error:nil];
+  }
   [[NSFileManager defaultManager] createDirectoryAtPath:out withIntermediateDirectories:YES attributes:nil error:nil];
-  [[NSFileManager defaultManager] removeItemAtPath:[out stringByAppendingPathComponent:@"state.txt"] error:nil];
   mv::io::set_open_addons_dir_override(store.UTF8String);
+  mv::io::set_addon_settings_dir_override([out stringByAppendingPathComponent:@"settings"].UTF8String);
   MV_LOG_WARN("addons: MV_ADDON_SELFTEST armed; the app will quit when it is done");
+  if (pr56 != nullptr) {
+    [self addon56SelfTestStep:0 dir:out second:second];
+    return;
+  }
   [self addonSelfTestStep:0 dir:out];
+}
+
+// ---- PR 56: settings pages, keep-on-remove, key layouts (the same rig) -------------
+// MV_ADDON_SELFTEST_PR56=a, launched with example.settings-demo: install, the
+// page drawn and read, four values changed, read again; quit. Then =b, launched
+// with example.vim-keys, over the same <folder>: the values after the restart,
+// the Vim layout applied and Reset, settings-demo removed keeping its settings,
+// installed again (MV_ADDON_SELFTEST_REINSTALL=<its .mvaddon>), removed without.
+// Keys are never written to the person's defaults while the rig runs.
+
+- (void)addon56Line:(NSString*)line dir:(NSString*)dir {
+  [self editSelfTestLine:[line stringByAppendingString:@"\n"] dir:dir];
+}
+
+// "key=value ..." of a page as the core hands it to the hosts. [worker]
+static std::string MvSelfTestPageSummary(const char* addon) {
+  char buf[16384];
+  const int32_t n = mv_addons_settings_page(addon, buf, sizeof buf);
+  if (n <= 0) return "(no page)";
+  const auto doc = mv::json::parse(std::string_view(buf, std::min<std::size_t>(n, sizeof buf - 1)));
+  if (!doc) return "(unreadable)";
+  std::string out;
+  const mv::json::value* sections = doc->find("sections");
+  for (const mv::json::value& s : sections ? sections->a : std::vector<mv::json::value>{}) {
+    const mv::json::value* items = s.find("items");
+    for (const mv::json::value& it : items ? items->a : std::vector<mv::json::value>{}) {
+      const std::string* key = it.str("key");
+      const std::string* type = it.str("type");
+      const mv::json::value* v = it.find("value");
+      if (!key || !type || !v) continue;
+      std::string value = v->k == mv::json::kind::boolean ? (v->b ? "true" : "false")
+                          : v->k == mv::json::kind::string ? "\"" + v->s + "\""
+                          : v->is_integer ? std::to_string(v->i) : std::to_string(v->d);
+      out += *key + "(" + *type + ")=" + value + " ";
+    }
+  }
+  return out;
+}
+
+// The labels the live table (the one `?` and Settings read) gives a few
+// commands a layout touches.
+- (NSString*)addon56Keys {
+  std::string table(1 << 17, '\0');
+  const int32_t need = mv_chrome_command_table(table.data(), static_cast<int32_t>(table.size()));
+  table.resize(std::min<std::size_t>(need > 0 ? static_cast<std::size_t>(need) : 0, table.size() - 1));
+  std::string out;
+  std::size_t at = 0;
+  while (at < table.size()) {
+    const std::size_t end = table.find('\n', at);
+    const std::string line = table.substr(at, end == std::string::npos ? std::string::npos : end - at);
+    at = end == std::string::npos ? table.size() : end + 1;
+    std::vector<std::string> f;
+    std::size_t p = 0;
+    for (;;) {
+      const std::size_t tab = line.find('\t', p);
+      f.push_back(line.substr(p, tab == std::string::npos ? std::string::npos : tab - p));
+      if (tab == std::string::npos) break;
+      p = tab + 1;
+    }
+    if (f.size() < 4) continue;
+    if (f[2] == "Previous" || f[2] == "Next" || f[2] == "Toggle mark" || f[2] == "Flip horizontal" ||
+        f[2] == "Forward 10 s") {
+      out += f[2] + "=" + (f[3].empty() ? std::string("(none)") : f[3]) + "; ";
+    }
+  }
+  return [NSString stringWithUTF8String:out.c_str()];
+}
+
+- (void)addon56SelfTestStep:(int)step dir:(NSString*)dir second:(bool)second {
+  BOOL done = NO;
+  NSString* page = [dir stringByAppendingPathComponent:@"settings"];
+  NSString* file = [page stringByAppendingPathComponent:@"example.settings-demo.json"];
+  __weak MvLabApp* weakSelf = self;
+  const auto pageLine = [weakSelf, dir](NSString* name) {
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+      const std::string summary = MvSelfTestPageSummary("example.settings-demo");
+      dispatch_async(dispatch_get_main_queue(), ^{
+        [weakSelf addon56Line:[NSString stringWithFormat:@"%@ page: %s", name, summary.c_str()] dir:dir];
+      });
+    });
+  };
+  if (!second) {
+    switch (step) {
+      case 0: break;
+      case 1: [self addonSelfTestSnap:@"p1-sheet" dir:dir];
+        (void)[MVChromeHost addonSelfTest:@"confirm" argument:@""];
+        break;
+      case 2: [self addonSelfTestSnap:@"p2-installed" dir:dir];
+        [MVChromeHost addonSelfTestPage:@"example.settings-demo"
+                                   path:[dir stringByAppendingPathComponent:@"p2-page.png"]];
+        pageLine(@"p2-defaults");
+        break;
+      case 3: {
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+          std::string said;
+          for (const auto& [key, value] : std::initializer_list<std::pair<const char*, const char*>>{
+                   {"town_radius_km", "40"}, {"show_town", "false"}, {"label_names", "\"local\""},
+                   {"home", "\"Porto\""}, {"town_radius_km", "400"}}) {
+            char buf[1024];
+            (void)mv_addons_setting_set("example.settings-demo", key, value, buf, sizeof buf);
+            said += std::string(key) + "=" + value + " -> " + buf + " ";
+          }
+          dispatch_async(dispatch_get_main_queue(), ^{
+            [weakSelf addon56Line:[NSString stringWithFormat:@"p3-set: %s", said.c_str()] dir:dir];
+          });
+        });
+        break;
+      }
+      case 4:
+        pageLine(@"p4-after-set");
+        [MVChromeHost addonSelfTestPage:@"example.settings-demo"
+                                   path:[dir stringByAppendingPathComponent:@"p4-page.png"]];
+        break;
+      default: done = YES; break;
+    }
+  } else {
+    switch (step) {
+      case 0: break;
+      case 1: (void)[MVChromeHost addonSelfTest:@"confirm" argument:@""];
+        break;
+      case 2: {
+        pageLine(@"q2-after-restart");
+        [self addon56Line:[NSString stringWithFormat:@"q2-keys-before: %@", [self addon56Keys]] dir:dir];
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+          char pack[16384];
+          const int32_t n = mv_open_addons_keymap("example.vim-keys", "vim", pack, sizeof pack);
+          const std::string json(pack, n > 0 ? std::min<std::size_t>(n, sizeof pack - 1) : 0);
+          dispatch_async(dispatch_get_main_queue(), ^{
+            MvLabApp* strong = weakSelf;
+            if (!strong) return;
+            const std::string report = [strong applyKeymap:json.c_str()];
+            [strong addon56Line:[NSString stringWithFormat:@"q2-apply: %s", report.c_str()] dir:dir];
+          });
+        });
+        break;
+      }
+      case 3:
+        [self addon56Line:[NSString stringWithFormat:@"q3-keys-after-apply: %@", [self addon56Keys]] dir:dir];
+        [self resetKeys];
+        break;
+      case 4:
+        [self addon56Line:[NSString stringWithFormat:@"q4-keys-after-reset: %@", [self addon56Keys]] dir:dir];
+        [MVChromeHost addonSelfTestRemove:@"example.settings-demo" keepSettings:YES];
+        break;
+      case 5:
+        pageLine(@"q5-removed-kept");
+        [self addon56Line:[NSString stringWithFormat:@"q5-file-kept=%d",
+                                                     [[NSFileManager defaultManager] fileExistsAtPath:file] ? 1 : 0]
+                      dir:dir];
+        if (const char* again = std::getenv("MV_ADDON_SELFTEST_REINSTALL")) {
+          [MVChromeHost addonSelfTestOffer:[NSString stringWithUTF8String:again]];
+        }
+        break;
+      case 6:
+        [self addon56Line:[NSString stringWithFormat:@"q6 %@", [MVChromeHost addonSelfTest:@"confirm" argument:@""]]
+                      dir:dir];
+        break;
+      case 7:
+        [self addon56Line:[NSString stringWithFormat:@"q7 %@", [MVChromeHost addonSelfTest:@"state" argument:@""]]
+                      dir:dir];
+        pageLine(@"q7-installed-again");
+        [MVChromeHost addonSelfTestRemove:@"example.settings-demo" keepSettings:NO];
+        break;
+      case 8:
+        pageLine(@"q8-removed-forgotten");
+        [self addon56Line:[NSString stringWithFormat:@"q8-file-kept=%d",
+                                                     [[NSFileManager defaultManager] fileExistsAtPath:file] ? 1 : 0]
+                      dir:dir];
+        [MVChromeHost addonSelfTestRemove:@"example.vim-keys" keepSettings:NO];
+        break;
+      default: done = YES; break;
+    }
+  }
+  if (done) {
+    [NSApp terminate:nil];
+    return;
+  }
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(1.5 * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+                   [weakSelf addon56SelfTestStep:step + 1 dir:dir second:second];
+                 });
 }
 
 - (void)addonSelfTestSnap:(NSString*)name dir:(NSString*)dir {
@@ -7509,7 +8265,7 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
   [png writeToFile:[dir stringByAppendingPathComponent:[name stringByAppendingString:@".png"]] atomically:YES];
   NSString* state = [MVChromeHost addonSelfTest:@"state" argument:@""];
   [self editSelfTestLine:[NSString stringWithFormat:@"%@ settings=%d home_rgb=%06x %@\n", name,
-                                                    _settingsVisible ? 1 : 0, _snap.home_background_rgb, state]
+                                                    _settingsVisible ? 1 : 0, _snap.home.canvas >> 8, state]
                      dir:dir];
 }
 
@@ -7574,6 +8330,105 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
                  dispatch_get_main_queue(), ^{
                    [weakSelf addonSelfTestStep:step + 1 dir:dir];
                  });
+}
+
+// ---- docs/design/25 PR 57: the script add-ons' verify rig ----------------------------
+
+// MV_SCRIPT_SELFTEST=<folder>. Inert unless set. The runner installs two add-ons
+// into <folder>/store first (tools/addon-sdk, mv_addon_verify --open): the
+// example Folder Count (Count files on Cmd+Shift+K, with folder.read) and a
+// spinner whose Spin command (Cmd+Shift+J) never returns. The rig presses each
+// key as a person would -- a key event through the app's own event queue, so
+// the router, the command table and the script runtime all run -- and writes
+// the notice the first one shows, the scripts' state after the second, and
+// the window as PNGs into <folder>/state.txt, then quits.
+- (void)scheduleScriptSelfTest {
+  const char* dir = std::getenv("MV_SCRIPT_SELFTEST");
+  if (dir == nullptr || *dir == '\0') return;
+  NSString* out = [NSString stringWithUTF8String:dir];
+  [[NSFileManager defaultManager] removeItemAtPath:[out stringByAppendingPathComponent:@"state.txt"] error:nil];
+  MV_LOG_WARN("scripts: MV_SCRIPT_SELFTEST armed; the app will quit when it is done");
+  [self scriptSelfTestStep:0 dir:out];
+}
+
+- (void)scriptSelfTestKey:(unsigned short)keyCode chars:(NSString*)chars {
+  const NSEventModifierFlags mods = NSEventModifierFlagCommand | NSEventModifierFlagShift;
+  for (NSEventType type : {NSEventTypeKeyDown, NSEventTypeKeyUp}) {
+    NSEvent* e = [NSEvent keyEventWithType:type
+                                  location:NSZeroPoint
+                             modifierFlags:mods
+                                 timestamp:[NSProcessInfo processInfo].systemUptime
+                              windowNumber:self.window.windowNumber
+                                   context:nil
+                                characters:chars.uppercaseString
+               charactersIgnoringModifiers:chars
+                                 isARepeat:NO
+                                   keyCode:keyCode];
+    [NSApp postEvent:e atStart:NO];
+  }
+}
+
+- (void)scriptSelfTestStep:(int)step dir:(NSString*)dir {
+  BOOL done = NO;
+  double next = 1.5;
+  switch (step) {
+    case 0: {
+      // Wait for the scripts' rows to reach the live table (a worker lists and
+      // verifies the store after launch).
+      int rows = 0;
+      for (int i = 0; i < mv::shell::kAddonCommandSlots; ++i) {
+        const auto* row = mv::shell::addon_command(
+            static_cast<mv::shell::command_id>(static_cast<int>(mv::shell::command_id::addon_cmd_0) + i));
+        if (row && row->script) ++rows;
+      }
+      static int waited = 0;
+      // ...and for the folder handed on the command line to list.
+      if ((rows < 2 || _folder.item_count() == 0) && ++waited < 40) {
+        [self performSelector:@selector(scriptSelfTestRetry:) withObject:dir afterDelay:0.25];
+        return;
+      }
+      [self editSelfTestLine:[NSString stringWithFormat:@"s0 script_rows=%d folder_items=%zu\n", rows,
+                                                    _folder.item_count()]
+                     dir:dir];
+      [self addonSelfTestSnap:@"s0-loaded" dir:dir];
+      [self scriptSelfTestKey:40 chars:@"k"];  // Count files
+      next = 1.0;
+      break;
+    }
+    case 1: {
+      [self editSelfTestLine:[NSString stringWithFormat:@"s1 notice=%s\n", _noticeText.c_str()] dir:dir];
+      [self addonSelfTestSnap:@"s1-notice" dir:dir];
+      [self scriptSelfTestKey:38 chars:@"j"];  // Spin: never returns
+      next = 2.5;  // past the 1 s watchdog bound, and the viewer still answers
+      break;
+    }
+    case 2: {
+      char buf[16384] = {};
+      (void)mv_open_addons_scripts(buf, static_cast<int32_t>(sizeof(buf)));
+      [self editSelfTestLine:[NSString stringWithFormat:@"s2 scripts=%s\n", buf] dir:dir];
+      [self setSettingsVisible:YES];
+      [MVChromeHost revealOpenAddons];
+      next = 2.0;
+      break;
+    }
+    case 3: [self addonSelfTestSnap:@"s3-settings" dir:dir];
+      done = YES;
+      break;
+    default: done = YES; break;
+  }
+  if (done) {
+    [NSApp terminate:nil];
+    return;
+  }
+  __weak MvLabApp* weakSelf = self;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(next * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+                   [weakSelf scriptSelfTestStep:step + 1 dir:dir];
+                 });
+}
+
+- (void)scriptSelfTestRetry:(NSString*)dir {
+  [self scriptSelfTestStep:0 dir:dir];
 }
 
 // ---- PR 29: the Edit workspace's verify rig ------------------------------------
@@ -8059,6 +8914,7 @@ static double mv_wall_seconds() {
     _adjust.working_dropped();
   }
   self.adjustHost.hidden = !visible;
+  [self layoutAIBadge];  // #345
   [self bumpAdjustView];
   if (!visible) [self workspacePaneClosed:mv::shell::edit_tab::colour];
   if (visible) {
@@ -8101,7 +8957,20 @@ static double mv_wall_seconds() {
 // ---- PR 9: metadata, folder tree, sort ------------------------------------------
 
 - (BOOL)metadataWanted {
-  return _metaPaneVisible || _snap.info_overlay || _snap.af_points;
+  return _metaPaneVisible || _snap.info_overlay || _snap.af_points || _afFocusPending;
+}
+
+// Issue #209 (Shift+Z): the record is adopted, so the quads in _snap.meta are
+// this item's. Bump the edge, or say why there is nothing to zoom to.
+- (void)afFocusFire {
+  _afFocusPending = NO;
+  if (_snap.meta.af_count == 0) {
+    [self noticeShow:std::string("No AF point recorded in this file")];
+    return;
+  }
+  _zoomIntentAt = CACurrentMediaTime();
+  ++_snap.af_focus_seq;
+  [self pokeSnapshot];
 }
 
 // Selection moved: the old record is no longer the item on screen. The new one is
@@ -8110,6 +8979,7 @@ static double mv_wall_seconds() {
 - (void)metadataSelectionChanged {
   [_metaDebounce invalidate];
   _metaDebounce = nil;
+  _afFocusPending = NO;  // Shift+Z was for the item just left
   if (_metaRecord) _metaRecord.reset();
   ++_metaGeneration;
   _snap.meta = mv::shell::meta_overlay{};
@@ -8180,6 +9050,10 @@ static double mv_wall_seconds() {
   }
   _snap.meta = o;
   [self pokeSnapshot];
+  // #345: the full record is the badge's best answer (it reads what the probe
+  // leaves out: a clip's software tag, a HEIF's XMP).
+  [self aiBadgeRefresh];
+  if (_afFocusPending) [self afFocusFire];
 }
 
 - (BOOL)metaPaneVisible { return _metaPaneVisible; }
@@ -8188,6 +9062,123 @@ static double mv_wall_seconds() {
 }
 - (uint64_t)metaGeneration { return _metaGeneration; }
 - (std::shared_ptr<const mv::meta::metadata>)metaRecord { return _metaRecord; }
+
+// ---- #345: the AI-generated badge --------------------------------------------------
+//
+// shell/ai_badge.h decides the text; meta_store::provenance supplies the answer
+// (a held record, an earlier probe, or one bounded probe on the pool). A cached
+// answer shows at once; a miss waits the metadata pause first, so holding an
+// arrow probes none of the items flashing past. Nothing here touches `_snap`:
+// the badge is an NSHostingView over the canvas, never a present.
+
+- (BOOL)aiBadgeEnabled {
+  return mv::shell::view_settings::from_flags(_viewFlags).ai_badge ? YES : NO;
+}
+
+// The current item as the store keys it; a Photos item through its resolved file.
+- (BOOL)aiBadgeEntry:(mv::io::dir_entry&)entry {
+  if (_items.empty() || _index.current() >= _items.size()) return NO;
+  entry = _items[_index.current()];
+  if (mv::shell::photos::is_key(entry.path_utf8)) {
+    const auto hit = _photosResolved.find(entry.path_utf8);
+    if (hit == _photosResolved.end()) return NO;
+    entry.path_utf8 = hit->second.path;
+  }
+  return YES;
+}
+
+static std::string MvBadgeKey(const mv::io::dir_entry& e) {
+  return e.path_utf8 + '\0' + std::to_string(e.mtime_unix) + '\0' + std::to_string(e.size);
+}
+
+- (void)setAIBadgeTo:(const mv::shell::ai_badge&)badge {
+  if (badge == _aiBadge) return;
+  _aiBadge = badge;
+  // Hidden, the text is cleared too: that closes a popover a hover or focus
+  // left open, so it never floats over the next item with the last one's text.
+  [MVChromeHost setAIBadgeWithTitle:[NSString stringWithUTF8String:badge.title.c_str()] ?: @""
+                           evidence:[NSString stringWithUTF8String:badge.evidence.c_str()] ?: @""];
+  [self layoutAIBadge];
+}
+
+- (void)aiBadgeSelectionChanged {
+  mv::io::dir_entry entry;
+  const BOOL have = [self aiBadgeEntry:entry];
+  const std::string key = have ? MvBadgeKey(entry) : std::string();
+  if (key == _aiBadgeKey) return;  // a relist, the same file: keep what is shown
+  _aiBadgeKey = key;
+  [_aiBadgeDebounce invalidate];
+  _aiBadgeDebounce = nil;
+  if (!have || ![self aiBadgeEnabled]) {
+    [self setAIBadgeTo:mv::shell::ai_badge{}];
+    return;
+  }
+  if (auto hit = _meta.peek_provenance(entry)) {
+    [self setAIBadgeTo:mv::shell::make_ai_badge(*hit, true)];
+    return;
+  }
+  [self setAIBadgeTo:mv::shell::ai_badge{}];
+  _aiBadgeDebounce = [NSTimer scheduledTimerWithTimeInterval:0.09
+                                                      target:self
+                                                    selector:@selector(aiBadgeRequestNow)
+                                                    userInfo:nil
+                                                     repeats:NO];
+}
+
+- (void)aiBadgeRequestNow {
+  [_aiBadgeDebounce invalidate];
+  _aiBadgeDebounce = nil;
+  mv::io::dir_entry entry;
+  if (![self aiBadgeEnabled] || ![self aiBadgeEntry:entry]) return;
+  MvLabApp* app = self;
+  const auto answer = _meta.provenance(entry, _jobs, [app](std::string) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [app aiBadgeRefresh];
+    });
+  });
+  if (answer) [self setAIBadgeTo:mv::shell::make_ai_badge(*answer, true)];
+}
+
+// An answer landed (a probe, or a full record): show it if it is still the
+// item on screen. Never submits.
+- (void)aiBadgeRefresh {
+  mv::io::dir_entry entry;
+  if (![self aiBadgeEntry:entry] || MvBadgeKey(entry) != _aiBadgeKey) return;
+  if (auto hit = _meta.peek_provenance(entry)) {
+    [self setAIBadgeTo:mv::shell::make_ai_badge(*hit, [self aiBadgeEnabled] == YES)];
+  }
+}
+
+// Settings -> Viewer: off hides it at once; on asks again for what is on screen.
+- (void)aiBadgeSettingChanged {
+  _aiBadgeKey.clear();
+  [self aiBadgeSelectionChanged];
+}
+
+// Bottom-right of the canvas: above the filmstrip, above a clip's transport,
+// left of a right-hand pane; gone under the gallery, Settings or the Video Editor.
+- (void)layoutAIBadge {
+  NSView* host = self.aiBadgeHost;
+  if (!host) return;
+  const BOOL covered = _galleryVisible || _settingsVisible || _editorOpen;
+  const BOOL want = _aiBadge.shown && !covered && !_items.empty();
+  if (want) {
+    const BOOL rightPane = !self.metaHost.hidden || !self.adjustHost.hidden || !self.jobsHost.hidden ||
+                           !self.editPaneHost.hidden || !self.editStripHost.hidden;
+    const CGFloat trailing = -(16.0 + (rightPane ? kMetaPaneWidthPoints : 0.0));
+    CGFloat bottom = -(([self filmstripVisible] ? kFilmstripHeightPoints : 0.0) + 10.0);
+    if (_transportClip) bottom -= 44.0 + 8.0;  // the strip's height and a gap
+    if (self.aiBadgeTrailing.constant != trailing) self.aiBadgeTrailing.constant = trailing;
+    if (self.aiBadgeBottom.constant != bottom) self.aiBadgeBottom.constant = bottom;
+  }
+  if (host.hidden == !want) return;
+  host.hidden = !want;
+  if (!want && self.window.firstResponder &&
+      [self.window.firstResponder isKindOfClass:[NSView class]] &&
+      [(NSView*)self.window.firstResponder isDescendantOf:host]) {
+    [self.window makeFirstResponder:self.view];  // focus never stays on a hidden badge
+  }
+}
 
 // ---- PR 12: rating, comment, revert ----------------------------------------------
 //
@@ -8336,6 +9327,37 @@ static double mv_wall_seconds() {
   [self scheduleMetaWrite:0.05];
 }
 
+// #352: the Summary's Location editor. The text is read again here (the
+// field's preview is only a preview); blank removes every GPS row, which the
+// pane asks to confirm first. Windows' twin is main.cpp location_change.
+- (void)metaSetLocation:(const char*)text {
+  const mv::io::dir_entry* entry = [self currentEntry];
+  const auto rec = [self metaRecord];
+  if (!entry || !rec || [self refuseWriteTo:entry->path_utf8]) return;
+  const mv::meta::location_input in = mv::meta::parse_location(text);
+  mv::meta::write_fields f;
+  if (in.k == mv::meta::location_input::kind::invalid) {
+    NSBeep();
+    [self noticeShow:std::string(in.error)];
+    return;
+  }
+  if (in.k == mv::meta::location_input::kind::point) {
+    f.location = mv::meta::change<mv::meta::geo_point>::to(in.point);
+  } else {
+    const mv::meta::location_rights rights = mv::meta::location_rights_of(*rec);
+    if (!rights.can_clear) {
+      NSBeep();
+      [self noticeShow:rights.in_original
+                           ? std::string("This file's own location is in the original, which is never rewritten")
+                           : std::string("There is no location to remove")];
+      return;
+    }
+    f.location = mv::meta::change<mv::meta::geo_point>::remove();
+  }
+  _metaWriter.submit(entry->path_utf8, f);
+  [self scheduleMetaWrite:0.05];
+}
+
 - (void)metaRevert {
   const mv::io::dir_entry* entry = [self currentEntry];
   if (!entry || _metaWritten.count(entry->path_utf8) == 0 || [self refuseWriteTo:entry->path_utf8]) return;
@@ -8403,6 +9425,7 @@ static double mv_wall_seconds() {
     [self noticeShow:job.revert                  ? std::string("Could not revert the metadata")
                      : job.fields.rating.touches() ? std::string("Could not save the rating")
                      : job.fields.comment.touches() ? std::string("Could not save the comment")
+                     : job.fields.location.touches() ? std::string("Could not save the location; nothing was changed")
                      : out.error == mv::status::invalid_arg
                          ? std::string("That value does not fit the tag; nothing was changed")
                          : std::string("Could not save the metadata; nothing was changed")];
@@ -8413,6 +9436,10 @@ static double mv_wall_seconds() {
   // What the store cached for this file is out of date: a JPEG's stamp moved,
   // a sidecar's did not, so drop it by path either way.
   _meta.invalidate(out.path);
+  if (_tags) {
+    _tags->invalidate(out.path);
+    [self armTagScan];  // read it again shortly
+  }
   struct stat st{};
   if (::stat(out.path.c_str(), &st) == 0) {
     const auto new_size = static_cast<std::uint64_t>(st.st_size);
@@ -8462,7 +9489,17 @@ static double mv_wall_seconds() {
                                                    }];
 }
 
+// A notice for work in flight: no timer, it stays until its owner clears it
+// (noticeClear) or another notice replaces it. Opening the Photos library (#420).
+- (void)noticeShowUntilCleared:(const std::string&)text {
+  [_noticeTimer invalidate];
+  _noticeTimer = nil;
+  _noticeText = text;
+  ++_noticeGeneration;
+}
+
 - (void)noticeClear {
+  [_noticeTimer invalidate];
   _noticeTimer = nil;
   _noticeText.clear();
   ++_noticeGeneration;
@@ -8482,6 +9519,7 @@ static double mv_wall_seconds() {
   if (visible == _metaPaneVisible) return;
   _metaPaneVisible = visible;
   self.metaHost.hidden = !visible;
+  [self layoutAIBadge];  // #345
   ++_metaGeneration;
   if (!visible) [self workspacePaneClosed:mv::shell::edit_tab::info];
   if (visible) [self requestMetadataNow];
@@ -8516,17 +9554,103 @@ static double mv_wall_seconds() {
 // re-orders the same listing when the order (or the date keys) change, keeping the
 // current item current without reloading its image.
 - (void)sortItems {
-  mv::shell::meta_store* store = &_meta;
-  mv::io::sort_entries(_items, _sort, [store](const mv::io::dir_entry& e) {
-    return store->date_key(e);
+  const mv::meta::tag_index* tags = _tags.get();
+  mv::io::sort_entries(_items, _sort, [tags](const mv::io::dir_entry& e) {
+    return tags ? tags->date_key(e) : std::optional<std::int64_t>{};
   });
-  if (_sort.key == mv::io::sort_key::date_taken && !_items.empty()) {
-    // One background scan fills the keys; the listing re-sorts when it lands.
-    // Issue #178: the scan posts when it lands (no timer polls for it).
-    _meta.resolve_date_keys(_items, _jobs, [] {
-      dispatch_async(dispatch_get_main_queue(), ^{ [g_chrome_app refreshFolderIfChanged]; });
-    });
+  // Sorting never starts the tag pass: resortKeepingSelection runs when the
+  // pass ends, and restarting it there would re-read the cache and re-list
+  // the folder on every tick. A fresh listing and a change to date-taken
+  // order start it (refreshFolderIfChanged, setSortOrder:).
+}
+
+// #291: the folder's tag pass starts once the item on screen has its first
+// pixel (or after a second, for a clip or a slow file), so it never runs ahead
+// of the view or the +-2 prefetch (CLAUDE.md "The view comes first"). No timer
+// polls the folder any more (issue #178), so a fresh listing arms a short one
+// (-armTagScan) that checks every 0.2 s and stops as soon as the pass starts:
+// within about a second, then nothing ticks.
+- (void)armTagScan {
+  _tagScanPending = YES;
+  if (_tagScanTimer) return;
+  __weak MvLabApp* weakSelf = self;
+  _tagScanTimer = [NSTimer scheduledTimerWithTimeInterval:0.2
+                                                  repeats:YES
+                                                    block:^(NSTimer* timer) {
+                                                      (void)timer;
+                                                      [weakSelf tagScanTick];
+                                                    }];
+  _tagScanTimer.tolerance = 0.04;
+}
+
+- (void)tagScanTick {
+  [self startTagScanIfDue];
+  if (_tagScanPending && !_listOpen && !_items.empty()) return;
+  [_tagScanTimer invalidate];
+  _tagScanTimer = nil;
+}
+
+- (void)startTagScanIfDue {
+  if (!_tagScanPending || _listOpen || _items.empty()) return;
+  if (!_lab.showing_still() && CFAbsoluteTimeGetCurrent() - _tagScanListedAt < 1.0) return;
+  [self startTagScan];
+}
+
+- (void)startTagScan {
+  _tagScanPending = NO;
+  if (!_tags || _listOpen || _items.empty() || _currentDir.empty()) return;
+  std::vector<mv::io::dir_entry> files;
+  files.reserve(_items.size());
+  for (const auto& e : _items) files.push_back(e);  // Photos keys too (PHAsset.location)
+  // Each chunk and the end post one refresh (coalesced): it bumps the tag
+  // generation for an open file search and re-sorts by date once the pass
+  // ends. Issue #178: nothing polls for it.
+  _tags->scan(
+      _currentDir, std::move(files), _jobs,
+      [] {
+        if (g_tag_refresh_posted.exchange(true, std::memory_order_acq_rel)) return;
+        dispatch_async(dispatch_get_main_queue(), ^{
+          g_tag_refresh_posted.store(false, std::memory_order_release);
+          [g_chrome_app refreshFolderIfChanged];
+        });
+      },
+      [] { return mv::shell::g_present_busy.load(std::memory_order_relaxed); });
+}
+
+- (uint64_t)tagGeneration {
+  return _tagGeneration;
+}
+
+// {"done":n,"total":m,"reading":b,"hits":[[index,"why"],...]}: the files of
+// the listing whose tags hold every word, in listing order (names are the
+// chrome's own half).
+- (std::string)tagSearchJSON:(const char*)query {
+  mv::json::writer w;
+  w.begin_object();
+  const auto p = _tags ? _tags->progress() : mv::meta::tag_index::progress_info{};
+  w.key("done").integer(p.done);
+  w.key("total").integer(p.total);
+  w.key("reading").boolean(p.reading || _tagScanPending);
+  w.key("hits").begin_array();
+  if (_tags && !_listOpen) {
+    if (_tagMapGeneration != _listingGeneration) {
+      _tagIndexOf.clear();
+      _tagIndexOf.reserve(_items.size());
+      for (std::size_t i = 0; i < _items.size(); ++i) _tagIndexOf.emplace(_items[i].path_utf8, i);
+      _tagMapGeneration = _listingGeneration;
+    }
+    for (const auto& h : _tags->match(query)) {
+      const auto it = _tagIndexOf.find(h.path);
+      if (it == _tagIndexOf.end()) continue;
+      w.begin_array();
+      w.integer(static_cast<std::int64_t>(it->second));
+      w.string(h.why);
+      w.end_array();
+    }
   }
+  w.end_array();
+  w.end_object();
+  return w.take();
 }
 
 - (void)resortKeepingSelection {
@@ -8586,11 +9710,31 @@ static double mv_wall_seconds() {
     _listNames.push_back(e.name_utf8 + " \u2014 " + mv::shell::browse_path::leaf(parent));
   }
   // Still equal (same name in two folders of the same name): the full path is
-  // unique, so every name falls back to it.
+  // unique, so every file's name falls back to it. A library item's path is
+  // its photos: key, which is no name to show: two shots in the same minute
+  // are numbered instead (a 23 k-asset library always has a pair, so every
+  // caption was a key, #420).
   std::vector<std::string> check = _listNames;
   std::sort(check.begin(), check.end());
   if (std::adjacent_find(check.begin(), check.end()) != check.end()) {
-    for (std::size_t i = 0; i < _items.size(); ++i) _listNames[i] = _items[i].path_utf8;
+    std::unordered_map<std::string, int> count;
+    for (const auto& n : _listNames) ++count[n];
+    std::unordered_map<std::string, int> seen;
+    bool files_collide = false;
+    for (std::size_t i = 0; i < _items.size(); ++i) {
+      std::string& n = _listNames[i];
+      if (count[n] < 2) continue;
+      if (!mv::shell::photos::is_key(_items[i].path_utf8)) {
+        files_collide = true;
+        continue;
+      }
+      if (const int k = ++seen[n]; k > 1) n += " (" + std::to_string(k) + ")";
+    }
+    if (files_collide) {
+      for (std::size_t i = 0; i < _items.size(); ++i) {
+        if (!mv::shell::photos::is_key(_items[i].path_utf8)) _listNames[i] = _items[i].path_utf8;
+      }
+    }
   }
 }
 
@@ -8751,6 +9895,7 @@ static double mv_wall_seconds() {
     _marks.clear();
     ++_marksGeneration;
   }
+  [self clearGalleryRange];
   _metaRecord.reset();
   ++_metaGeneration;
   ++_listingGeneration;
@@ -8795,18 +9940,30 @@ static double mv_wall_seconds() {
 }
 
 // The whole library, oldest first, as a list of virtual items; the newest
-// selected, in the gallery (what Photos lands on). Enumeration is PhotoKit
-// on a worker: a second on a 23 k-asset library (docs/design/17 measured 0.9 s).
+// selected, in the gallery (what Photos lands on). Enumeration is PhotoKit on
+// a worker, names from the fetched assets (no per-asset resource lookup: that
+// took minutes, #420); "photos: listed N assets in M ms" in the unified log.
+// A notice says it is opening and stays until the listing ends; one listing
+// at a time.
 - (void)openPhotosLibrary {
   if (![self photosLibraryAvailable]) {
     NSBeep();
     return;
   }
+  if (_photosListing) return;  // the listing in flight opens the list
+  _photosListing = YES;
+  static const std::string kOpening = "Opening the Photos library…";
+  [self noticeShowUntilCleared:kOpening];
   MvLabApp* __weak weakSelf = self;
   _jobs.submit_at(mv::background_generation, [weakSelf](const mv::job_context&) -> mv::status {
     auto listed = mv::shell::photos::enumerate();
     if (!listed) {
       dispatch_async(dispatch_get_main_queue(), ^{
+        MvLabApp* strongSelf = weakSelf;
+        if (strongSelf) {
+          strongSelf->_photosListing = NO;
+          if ([strongSelf noticeText] == kOpening) [strongSelf noticeClear];
+        }
         NSBeep();
       });
       return listed.error();
@@ -8825,6 +9982,8 @@ static double mv_wall_seconds() {
     dispatch_async(dispatch_get_main_queue(), ^{
       MvLabApp* strongSelf = weakSelf;
       if (!strongSelf) return;
+      strongSelf->_photosListing = NO;
+      if ([strongSelf noticeText] == kOpening) [strongSelf noticeClear];
       if (entries->empty()) {
         [strongSelf noticeShow:"Your Photos library has no photos or videos MediaViewer can show."];
         return;
@@ -8946,6 +10105,7 @@ static double mv_wall_seconds() {
                               resolved.size, moment);
   [self editItemOpened:entry item:_shownItem];
   [self metadataSelectionChanged];
+  [self aiBadgeSelectionChanged];
   [_photosFetchTimer invalidate];
   _photosFetchTimer = nil;
   if (!resolved.preview) return;
@@ -9174,6 +10334,8 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
   _sort = next;
   [[NSUserDefaults standardUserDefaults] setInteger:packed forKey:@"mv.sort"];
   [self resortKeepingSelection];
+  // The tag pass gives the date keys; it reads nothing it already has.
+  if (_sort.key == mv::io::sort_key::date_taken && !_listOpen) [self startTagScan];
 }
 
 // ---- PR 15: OS integration (docs/design/10 "OS integration", docs/design/16 View) ------------
@@ -9388,6 +10550,107 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
   return YES;
 }
 
+// ---- Text in images (Live Text, docs/design/16 "Text in images") -------------------
+
+// What the words on screen would be read from: the still and its geometry, or
+// nothing when there is no still to select in (a clip, audio, a document, an
+// animation, the gallery, the Edit workspace). A change drops the old words.
+- (mv::shell::text_select::source)textSource {
+  mv::shell::text_select::source src;
+  if ([self editSubject] != mv::shell::edit_subject::still || _galleryVisible || _ws.open ||
+      _edits.crop_active() || _showOriginal) {
+    return src;
+  }
+  src.item = _itemId;
+  src.geometry = _edits.export_geometry();
+  return src;
+}
+
+- (void)textSync {
+  if (_text.show([self textSource])) [self textPublish];
+}
+
+- (void)textPublish {
+  _text.fill(_snap.text);
+  [self pokeSnapshot];
+}
+
+// The pointer in 0..1 of the still as the render thread last drew it.
+- (BOOL)textPointX:(float)x y:(float)y u:(float*)u v:(float*)v aspect:(float*)aspect {
+  const mv::shell::canvas_map map = _lab.still_map();
+  if (!map.to_uv(x, y, *u, *v)) return NO;
+  *aspect = map.aspect();
+  return YES;
+}
+
+- (BOOL)textPressX:(float)x y:(float)y clicks:(NSInteger)clicks {
+  [self textSync];
+  if (!_text.has_words()) return NO;
+  if (_snap.eyedropper || _snap.loupe) return NO;
+  float u = 0, v = 0, aspect = 1;
+  if (![self textPointX:x y:y u:&u v:&v aspect:&aspect]) return NO;
+  const bool had = _text.has_selection();
+  const bool on_text = _text.press(u, v, aspect, static_cast<int>(clicks));
+  if (on_text || had) [self textPublish];
+  return on_text ? YES : NO;
+}
+
+- (void)textDragX:(float)x y:(float)y {
+  float u = 0, v = 0, aspect = 1;
+  if (![self textPointX:x y:y u:&u v:&v aspect:&aspect]) return;
+  _text.drag(u, v);
+  [self textPublish];
+}
+
+- (void)textRelease {
+  const bool had = _text.has_selection();
+  _text.release();
+  if (had != _text.has_selection()) [self textPublish];
+}
+
+// The pointer moved over the canvas. Reading a still costs a decode and the
+// recogniser, so it waits until the pointer has rested on a still for half a
+// second (arrowing through a folder never reads anything), runs on the pool
+// (rule 1) and on device (rule 6), and is read once per still and geometry.
+- (BOOL)textHoverX:(float)x y:(float)y {
+  [self textSync];
+  float u = 0, v = 0, aspect = 1;
+  const BOOL placed = [self textPointX:x y:y u:&u v:&v aspect:&aspect];
+  if (placed && _text.wants_read() && !_textDwell) {
+    MvLabApp* __weak weakSelf = self;
+    _textDwell = [NSTimer scheduledTimerWithTimeInterval:0.5
+                                                 repeats:NO
+                                                   block:^(NSTimer*) {
+                                                     MvLabApp* strongSelf = weakSelf;
+                                                     if (!strongSelf) return;
+                                                     strongSelf->_textDwell = nil;
+                                                     [strongSelf textRead];
+                                                   }];
+  }
+  return placed && !_snap.eyedropper && !_snap.loupe && _text.over_text(u, v, aspect) ? YES : NO;
+}
+
+- (void)textRead {
+  [self textSync];
+  if (!_text.wants_read() || _items.empty() || _index.current() >= _items.size()) return;
+  if (!_lab.still_map().valid) return;
+  const mv::shell::text_select::source src = _text.current();
+  const std::string path = _items[_index.current()].path_utf8;
+  _text.reading();
+  MvLabApp* __weak weakSelf = self;
+  _jobs.submit_at(mv::background_generation, [path, src, weakSelf](const mv::job_context&) -> mv::status {
+    mv::shell::vision_text_recognizer recognizer;
+    auto out = std::make_shared<mv::shell::read_text>(mv::shell::run_text_recognition(path, src.geometry, recognizer));
+    dispatch_async(dispatch_get_main_queue(), ^{
+      MvLabApp* strongSelf = weakSelf;
+      if (!strongSelf) return;
+      (void)strongSelf->_text.set_words(src, std::move(out->layout));
+      // Nothing to say on the Mac: Vision is always there.
+    });
+    return mv::status::ok;
+  });
+}
+
 // ⌘⇧S: the system share picker with the marked files, else the current one,
 // anchored at the top centre of the canvas.
 - (BOOL)shareMarkedOrCurrent {
@@ -9549,35 +10812,43 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   if (!visible) [self cancelKeyCapture];
   _settingsVisible = visible;
   self.settingsHost.hidden = !visible;
+  [self layoutAIBadge];  // #345
   if (visible) [self cancelKeyHolds];
   if (!visible) [self.window makeFirstResponder:self.view];
 }
 - (int32_t)viewFlags { return _viewFlags; }
 
-// The view settings that reach native state: wrap (browse_index), background
-// and sticky zoom (input_snapshot, read by the render thread). The two filmstrip
+// The view settings that reach native state: wrap (browse_index) and sticky
+// zoom (input_snapshot, read by the render thread). The two filmstrip
 // preferences are applied when something is opened.
 - (void)applyViewFlags {
   const auto s = mv::shell::view_settings::from_flags(_viewFlags);
   _index.set_wrap(s.wrap);
-  _snap.background = s.background;
   _snap.sticky_zoom = s.sticky_zoom;
   [self pokeSnapshot];
 }
 - (void)setViewFlags:(int32_t)flags {
   const auto before = mv::shell::view_settings::from_flags(_viewFlags).hidden_kinds();
+  const int32_t changed = flags ^ _viewFlags;
   _viewFlags = flags;
+  // #355: Local search indexes audio files only while they are shown.
+  if (changed & mv::shell::kSettingShowAudio) MvAddonsShowAudioChanged((flags & mv::shell::kSettingShowAudio) != 0);
   // Picked up on the main queue, like any relist.
   if (mv::shell::view_settings::from_flags(flags).hidden_kinds() != before) {
     _refilterListing = YES;
     dispatch_async(dispatch_get_main_queue(), ^{ [g_chrome_app refreshFolderIfChanged]; });
   }
   [[NSUserDefaults standardUserDefaults] setInteger:flags forKey:kDefaultsViewFlags];
-  [self applyViewFlags];
+  // #345: the AI badge is chrome only; switching it pokes nothing the render
+  // thread reads, so it never costs a present.
+  if (changed & ~mv::shell::kSettingHideAiBadge) [self applyViewFlags];
+  if (changed & mv::shell::kSettingHideAiBadge) [self aiBadgeSettingChanged];
   ++_keysGeneration;  // the Settings screen re-reads flags and keys on this
 }
 
 - (void)persistKeys {
+  // The verify rig changes keys (PR 56's key layout leg); the person's stay theirs.
+  if (std::getenv("MV_ADDON_SELFTEST") != nullptr) return;
   const auto live = mv::shell::live_bindings();
   const auto def = mv::shell::default_bindings();
   NSMutableArray<NSString*>* rows = [NSMutableArray array];
@@ -9595,11 +10866,14 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   _viewFlags = [d objectForKey:kDefaultsViewFlags] != nil
                    ? static_cast<int32_t>([d integerForKey:kDefaultsViewFlags])
                    : mv::shell::view_settings{}.flags();
+  // #355: before the AI pack attaches, which reads it.
+  MvAddonsShowAudioChanged((_viewFlags & mv::shell::kSettingShowAudio) != 0);
+  _stripHintLearned = [d boolForKey:@"mv.hint.filmstripT"];
   mv::shell::reset_live_bindings();
   for (NSString* row in [d arrayForKey:kDefaultsKeys]) {
     int idx = 0, k = 0, m = 0;
     if (sscanf(row.UTF8String, "%d,%d,%d", &idx, &k, &m) == 3) {
-      (void)mv::shell::rebind_live(idx, static_cast<mv::shell::key>(k), static_cast<std::uint8_t>(m));
+      (void)mv::shell::set_live_key(idx, static_cast<mv::shell::key>(k), static_cast<std::uint8_t>(m));
     }
   }
   [self rebuildKeys];
@@ -9621,7 +10895,6 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   // launch, and the next input publishes the snapshot anyway).
   const auto prefs = mv::shell::view_settings::from_flags(_viewFlags);
   _index.set_wrap(prefs.wrap);
-  _snap.background = prefs.background;
   _snap.sticky_zoom = prefs.sticky_zoom;
 }
 
@@ -9631,6 +10904,29 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   [self rebuildKeys];
   [self persistKeys];
   ++_keysGeneration;
+}
+
+// docs/design/16 "Keymap packs": once, from Settings. The defaults with the pack's
+// keys written in; from then on the person's table, persisted like a remap.
+- (std::string)applyKeymap:(const char*)packJson {
+  std::vector<mv::addon::keymap_binding> bindings;
+  if (!mv::shell::keymap_bindings_from_json(packJson, bindings)) {
+    mv::shell::keymap_result refused;
+    refused.skipped.push_back("not a key layout");
+    return mv::shell::keymap_report_json(refused);
+  }
+  [self cancelKeyCapture];
+  [self cancelKeyHolds];  // rebuild forgets held keys (issue #186)
+  // ⌘H, ⌘Q, ⌘M, ⌘⌫ are the fixed menu items', which see them first: a pack
+  // row given one would never run, as Settings' capture refuses (issue #182).
+  const mv::shell::keymap_result r = mv::shell::apply_keymap(
+      bindings, [](mv::shell::key k, std::uint8_t mods, void*) -> bool {
+        return MvMenuOwnsChord(NSApp.mainMenu, k, mods);
+      });
+  [self rebuildKeys];
+  [self persistKeys];
+  ++_keysGeneration;
+  return mv::shell::keymap_report_json(r);
 }
 
 - (int)captureRow { return _captureRow; }
@@ -9750,6 +11046,11 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   if (_items.empty()) return;
   [self selectIndex:_index.prev()];
 }
+- (void)swipeStep:(int)delta {
+  if (delta == 0 || _galleryVisible || _edits.crop_active()) return;
+  if (delta > 0) [self navigateNext];
+  else [self navigatePrev];
+}
 - (void)navigateFirst {
   if (_items.empty()) return;
   [self selectIndex:_index.first()];
@@ -9787,7 +11088,8 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   if (!_items.empty() && _index.current() < _items.size()) {
     [self editItemOpened:_items[_index.current()] item:_shownItem];
   }
-  [self noticeShow:"Page " + std::to_string(_shownPage + 1) + " of " + std::to_string(count)];
+  [self noticeShow:mv::shell::page_notice(_shownPage, count)];
+  [self stripHintShow];
   [self pokeSnapshot];
   return YES;
 }
@@ -9798,55 +11100,95 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   if (mv::shell::photos::is_key(_shownPath)) return NO;
   return mv::io::is_document_name(_shownPath) ? YES : NO;
 }
-// Pans the page in screen pixels; a scroll held against the top or bottom edge
-// for kTurnPx turns to the previous or next page, landing at its bottom or top
-// at the same zoom. A trackpad gesture turns at most one page (its momentum
-// does not run on through the document); a mouse wheel one per notch.
+// A wheel notch is a tenth of the canvas and glides there on the canvas spring;
+// a trackpad's deltas (and its momentum) move the view directly. Pushing past
+// the top or bottom edge turns the page at once, landing at its top or bottom
+// at the same zoom (canvas/document_scroll.h, shared with Windows).
 - (void)scrollDocument:(NSEvent*)event {
   const double scale = self.window.backingScaleFactor > 0 ? self.window.backingScaleFactor : 1.0;
   const BOOL precise = event.hasPreciseScrollingDeltas;
-  // A wheel notch is a tenth of the canvas, as a keyboard pan step is.
   const double step = precise ? scale : std::max(1.0, 0.1 * static_cast<double>(_snap.height));
-  const double dx = -event.scrollingDeltaX * step;
-  double dy = -event.scrollingDeltaY * step;
-  const double now = CACurrentMediaTime();
-  // A new trackpad gesture unlatches; its momentum never does. Scrolls outside
-  // any gesture (a wheel, a synthesized scroll) unlatch after a short pause.
-  if (event.phase == NSEventPhaseBegan || event.phase == NSEventPhaseMayBegin) _pageTurnLatched = NO;
-  const bool in_gesture = event.phase != NSEventPhaseNone || event.momentumPhase != NSEventPhaseNone;
-  if (!in_gesture && now - _pageTurnTime > 0.12) _pageTurnLatched = NO;
-  const double kTurnPx = 60.0 * scale;
-  const unsigned edges = _lab.scroll_edges();
-  const bool vertical = std::abs(dy) >= std::abs(dx);
-  const bool at_edge = vertical && dy != 0.0 &&
-                       (dy > 0 ? (edges & mv::canvas::camera::kEdgeBottom) != 0
-                               : (edges & mv::canvas::camera::kEdgeTop) != 0);
-  if (at_edge) {
-    if ((_overscroll > 0) != (dy > 0) || now - _lastScrollTime > 0.3) _overscroll = 0;
-    _overscroll += dy;
-    if (!_pageTurnLatched && std::abs(_overscroll) >= kTurnPx) {
-      const int delta = _overscroll > 0 ? 1 : -1;
-      _overscroll = 0;
-      if ([self turnPage:delta land:YES]) {
-        _pageTurnLatched = YES;
-        _pageTurnTime = now;
-      }
-    }
-    dy = 0;
-  } else {
-    _overscroll = 0;
+  // Read the ack before the edges: the lab stores them the other way round.
+  const std::uint32_t ack = _lab.page_land_ack();
+  mv::canvas::document_scroll_input in;
+  in.dx = -event.scrollingDeltaX * step;
+  in.dy = -event.scrollingDeltaY * step;
+  in.precise = precise == YES;
+  in.now = CACurrentMediaTime();
+  in.edges = _lab.scroll_edges();
+  in.canvas_h = static_cast<float>(_snap.height);
+  in.land_ack = ack;
+  const auto out = _docScroll.feed(in);
+  if (out.turn != 0 && [self turnPage:out.turn land:YES]) {
+    _docScroll.turned(_snap.page_land_seq, in.now);
   }
-  _lastScrollTime = now;
-  _scrollRemX += dx;
-  _scrollRemY += dy;
-  const auto px = static_cast<std::int64_t>(std::trunc(_scrollRemX));
-  const auto py = static_cast<std::int64_t>(std::trunc(_scrollRemY));
-  _scrollRemX -= static_cast<double>(px);
-  _scrollRemY -= static_cast<double>(py);
-  if (px == 0 && py == 0) return;
-  _snap.scroll_px_x += px;
-  _snap.scroll_px_y += py;
+  if (out.px_x == 0 && out.px_y == 0) return;
+  if (out.direct) {
+    _snap.scroll_direct_px_x += out.px_x;
+    _snap.scroll_direct_px_y += out.px_y;
+  } else {
+    _snap.scroll_px_x += out.px_x;
+    _snap.scroll_px_y += out.px_y;
+  }
   [self pokeSnapshot];
+}
+
+// The "Press T" filmstrip hint (shell/filmstrip_hint.h, docs/design/16), the
+// Windows host's strip_hint_* twins.
+- (mv::shell::strip_hint_subject)stripHintSubjectNow {
+  if (_items.empty() || _shownItem == 0 || _shownPath.empty()) return mv::shell::strip_hint_subject::none;
+  if (_galleryVisible || _editorOpen || mv::shell::photos::is_key(_shownPath)) {
+    return mv::shell::strip_hint_subject::none;
+  }
+  if (mv::io::is_document_name(_shownPath)) return mv::shell::strip_hint_subject::document;
+  if (mv::shell::is_video_name(_shownPath)) return mv::shell::strip_hint_subject::clip;  // issue #416
+  return mv::shell::strip_hint_subject::none;
+}
+- (std::string_view)stripHintDueText {
+  const auto subject = [self stripHintSubjectNow];
+  if (!mv::shell::strip_hint_due(subject, [self filmstripVisible] == YES, _stripHintLearned == YES)) return {};
+  return mv::shell::strip_hint_text(subject);
+}
+// Shows the card (it fades by itself) when the hint is due, and takes it down
+// when what is on screen no longer has it due. The wheel re-shows it at most
+// once a second.
+- (void)stripHintShow {
+  const auto text = [self stripHintDueText];
+  if (text.empty()) {
+    [self stripHintHide];
+    return;
+  }
+  const CFTimeInterval now = CACurrentMediaTime();
+  if (_stripHintCard && now - _stripHintShownAt < 1.0) return;
+  _stripHintCard = YES;
+  _stripHintShownAt = now;
+  [self layoutHintNotice];
+  [MVChromeHost showHint:[[NSString alloc] initWithBytes:text.data()
+                                                  length:text.size()
+                                                encoding:NSUTF8StringEncoding] ?: @""];
+}
+- (void)stripHintHide {
+  if (!_stripHintCard) return;
+  _stripHintCard = NO;
+  [MVChromeHost showHint:@""];
+}
+- (void)stripHintLearn {
+  if (_stripHintLearned) return;
+  _stripHintLearned = YES;
+  [NSUserDefaults.standardUserDefaults setBool:YES forKey:@"mv.hint.filmstripT"];
+  [self stripHintHide];
+}
+- (void)stripHintToggled {
+  if (_stripHintLearned) return;
+  const auto subject = [self stripHintSubjectNow];
+  if (!mv::shell::strip_hint_learned_by_toggle(subject, [self filmstripVisible] == YES)) return;
+  [self stripHintLearn];
+}
+// Above the filmstrip when it is up, and above the resume notice while that shows.
+- (void)layoutHintNotice {
+  CGFloat bottom = -([self filmstripVisible] ? kFilmstripHeightPoints : 0.0) - 8.0;
+  if (self.resumeHost != nil && !self.resumeHost.hidden) bottom -= self.resumeHost.fittingSize.height;
+  self.hintBottom.constant = bottom;
 }
 
 - (void)navigateSkip:(std::ptrdiff_t)delta {

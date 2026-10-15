@@ -161,8 +161,10 @@ int main(int argc, char** argv) {
                 info.video.width, info.video.height, info.video.ten_bit ? "10-bit" : "8-bit",
                 info.video.codec_name, info.video.frame_rate, info.duration_ns / 1e9, info.audio_tracks);
     std::printf("decoder     %s\n", decoder_name(st.decoder));
-    std::printf("frames      acquired=%llu (%.1f/s) last=%ux%u %s\n", (unsigned long long)acquired,
-                acquired / elapsed, width, height, ten_bit ? "P010" : "NV12");
+    std::printf("frames      acquired=%llu (%.1f/s) decoded=%llu (%.1f/s) stale=%llu last=%ux%u %s\n",
+                (unsigned long long)acquired, acquired / elapsed,
+                (unsigned long long)st.frames_decoded, st.frames_decoded / elapsed,
+                (unsigned long long)st.frames_dropped_stale, width, height, ten_bit ? "P010" : "NV12");
     std::printf("clock       audio_master=%d fallback=%d position=%.2fs\n", st.audio_master ? 1 : 0,
                 (int)st.fallback, src->position_ns() / 1e9);
     std::printf("presenter   presented=%llu dropped_late=%llu held_cadence=%llu held_starved=%llu "

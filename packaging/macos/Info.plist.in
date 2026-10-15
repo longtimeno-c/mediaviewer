@@ -58,6 +58,14 @@
        shows this once, the first time MediaViewer asks Photos to show a photo. -->
   <key>NSAppleEventsUsageDescription</key>
   <string>MediaViewer asks Photos to show the photo or video you are viewing when you choose Show in Photos. It sends nothing else to Photos.</string>
+  <!-- Sharepoint (issue #410, docs/design/28): only while its window is open or
+       receiving is on. The local-network prompt shows the first time it looks
+       for MediaViewers nearby; the Bluetooth one the first time it uses
+       Bluetooth. Without these keys macOS refuses (Bluetooth: ends the app). -->
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Sharepoint finds other MediaViewers on your network and sends them photos and videos you choose, after the person there accepts. Nothing goes to the internet.</string>
+  <key>NSBluetoothAlwaysUsageDescription</key>
+  <string>Sharepoint uses Bluetooth to find MediaViewers nearby and send them a few photos when you are not on the same network. Nothing moves until the person there accepts.</string>
   <key>NSHumanReadableCopyright</key>
   <string>Copyright (C) 2026 longtimeno-c. Licensed under GPL-3.0-or-later. https://github.com/longtimeno-c/mediaviewer</string>
 

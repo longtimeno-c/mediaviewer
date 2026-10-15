@@ -321,6 +321,15 @@ public static unsafe partial class AddonNative
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial MvStatus mv_addon_load_guest(IntPtr session, byte* id, byte* iface, IntPtr* outIface,
+        byte* chrome, uint chromeCap);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial MvStatus mv_addon_slot_addons_json(byte* output, uint cap, uint* needed);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     private static partial MvStatus mv_addon_unload(byte* id);
 
     [LibraryImport(Library)]
@@ -354,6 +363,93 @@ public static unsafe partial class AddonNative
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     private static partial MvStatus mv_open_addon_theme_json(byte* addon, byte* theme, byte* output, uint cap,
         uint* needed);
+
+    // ---- PR 56: declarative contributions (docs/design/25 "Settings page", "Keymap") ----
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial MvStatus mv_addon_settings_json(byte* addon, byte* output, uint cap, uint* needed);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial MvStatus mv_addon_setting_set(byte* addon, byte* key, byte* valueJson, byte* output,
+        uint cap, uint* needed);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial MvStatus mv_addon_settings_forget(byte* addon);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial MvStatus mv_open_addon_keymap_json(byte* addon, byte* pack, byte* output, uint cap,
+        uint* needed);
+
+    /// <summary>The settings page of an open add-on (dotted id) or a first-party one
+    /// ("import"), values folded in; null when it has none, is not installed, or the
+    /// core predates PR 56.</summary>
+    public static string? SettingsJson(string addonId)
+    {
+        byte[] addon = Z(addonId);
+        try
+        {
+            return Json((b, c, n) =>
+            {
+                fixed (byte* a = addon) return mv_addon_settings_json(a, (byte*)b, c, (uint*)n);
+            }, "mv_addon_settings_json");
+        }
+        catch (Exception ex) when (ex is MediaViewerException or EntryPointNotFoundException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Stores one value of that page (JSON text: true, 15, "english"):
+    /// {"ok","message"}. Throws <see cref="MediaViewerException"/> when the core
+    /// cannot answer at all.</summary>
+    public static string SettingSet(string addonId, string key, string valueJson)
+    {
+        byte[] addon = Z(addonId);
+        byte[] k = Z(key);
+        byte[] v = Z(valueJson);
+        return Json((b, c, n) =>
+        {
+            fixed (byte* a = addon)
+            fixed (byte* pk = k)
+            fixed (byte* pv = v)
+            {
+                return mv_addon_setting_set(a, pk, pv, (byte*)b, c, (uint*)n);
+            }
+        }, "mv_addon_setting_set");
+    }
+
+    /// <summary>Forgets what was chosen on the add-on's page (Remove without "Keep its settings").</summary>
+    public static void SettingsForget(string addonId)
+    {
+        fixed (byte* p = Z(addonId)) Check(mv_addon_settings_forget(p), "mv_addon_settings_forget");
+    }
+
+    /// <summary>One keymap pack of an installed open add-on, for the shell to apply;
+    /// null when the add-on or pack is gone.</summary>
+    public static string? OpenKeymapJson(string addonId, string packId)
+    {
+        byte[] addon = Z(addonId);
+        byte[] pack = Z(packId);
+        try
+        {
+            return Json((b, c, n) =>
+            {
+                fixed (byte* a = addon)
+                fixed (byte* k = pack)
+                {
+                    return mv_open_addon_keymap_json(a, k, (byte*)b, c, (uint*)n);
+                }
+            }, "mv_open_addon_keymap_json");
+        }
+        catch (Exception ex) when (ex is MediaViewerException or EntryPointNotFoundException)
+        {
+            return null;
+        }
+    }
 
     private static byte[] Z(string s) => Encoding.UTF8.GetBytes(s + "\0");
 
@@ -404,6 +500,35 @@ public static unsafe partial class AddonNative
         {
             return "[]";
         }
+    }
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial MvStatus mv_script_status_json(byte* output, uint cap, uint* needed);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial MvStatus mv_script_restart(byte* addonId);
+
+    /// <summary>docs/design/25 PR 57: the script add-ons the core runs, for Settings
+    /// (running, or stopped and why). Reads no file. "[]" on an older core.</summary>
+    public static string ScriptStatus()
+    {
+        try
+        {
+            return Json((b, c, n) => mv_script_status_json((byte*)b, c, (uint*)n), "mv_script_status_json");
+        }
+        catch (EntryPointNotFoundException)
+        {
+            return "[]";
+        }
+    }
+
+    /// <summary>Settings "Start again" for a stopped script add-on. Reads and
+    /// hashes its files: a worker.</summary>
+    public static void ScriptRestart(string addonId)
+    {
+        fixed (byte* p = Z(addonId)) Check(mv_script_restart(p), "mv_script_restart");
     }
 
     /// <summary>Installed open add-ons, re-verified. "[]" when none.</summary>
@@ -464,6 +589,14 @@ public static unsafe partial class AddonNative
     public static string InstalledJson() =>
         Json((b, c, n) => mv_addon_installed_json((byte*)b, c, (uint*)n), "mv_addon_installed_json");
 
+    /// <summary>
+    /// Issue #402: the installed add-ons a window loads for their screens and slots
+    /// alone, from their signed manifests, hashing no file (a later window must not
+    /// hash the AI pack to find Places). <see cref="Load"/> verifies the one it loads.
+    /// </summary>
+    public static string SlotAddonsJson() =>
+        Json((b, c, n) => mv_addon_slot_addons_json((byte*)b, c, (uint*)n), "mv_addon_slot_addons_json");
+
     public static string CheckManifest(byte[] manifest, byte[]? signature)
     {
         byte[] sig = signature ?? Array.Empty<byte>();
@@ -522,9 +655,11 @@ public static unsafe partial class AddonNative
     /// <remarks><paramref name="reader"/>: through the add-on's read-only door, for a window whose
     /// process does not host the add-ons (docs/design/18 "One host process", 2026-10-07).
     /// <see cref="MvStatus.NotFound"/> then means nothing is indexed yet. <see cref="MvStatus.Io"/>:
-    /// the add-on verified but Windows would not load it; the exception's message says why.</remarks>
+    /// the add-on verified but Windows would not load it; the exception's message says why.
+    /// <paramref name="guest"/> (issue #402): the add-on's own entry in such a window, for one that
+    /// only reads (it fills screens and slots); the store is left alone.</remarks>
     public static (IntPtr Interface, string ChromePath) Load(MediaViewerSession session, string id, string interfaceId,
-        bool reader = false)
+        bool reader = false, bool guest = false)
     {
         byte[] chrome = new byte[32 * 1024];
         IntPtr iface = IntPtr.Zero;
@@ -536,10 +671,10 @@ public static unsafe partial class AddonNative
             fixed (byte* f = Z(interfaceId))
             fixed (byte* c = chrome)
             {
-                Check(reader
-                    ? mv_addon_load_reader(session.Handle.DangerousGetHandle(), i, f, &iface, c, (uint)chrome.Length)
-                    : mv_addon_load(session.Handle.DangerousGetHandle(), i, f, &iface, c, (uint)chrome.Length),
-                    reader ? "mv_addon_load_reader" : "mv_addon_load");
+                IntPtr h = session.Handle.DangerousGetHandle();
+                if (reader) Check(mv_addon_load_reader(h, i, f, &iface, c, (uint)chrome.Length), "mv_addon_load_reader");
+                else if (guest) Check(mv_addon_load_guest(h, i, f, &iface, c, (uint)chrome.Length), "mv_addon_load_guest");
+                else Check(mv_addon_load(h, i, f, &iface, c, (uint)chrome.Length), "mv_addon_load");
             }
         }
         finally
@@ -690,6 +825,22 @@ public interface IAddonHost3 : IAddonHost2
     void SetIndexingPill(string? text, bool busy, double fraction, bool onBattery);
 }
 
+/// <summary>
+/// docs/design/25 PR 56 (theme API 2): the shape of the theme in use, as scales of
+/// the chrome's own literals (1 = unchanged). A separate interface, never new
+/// members on <see cref="IAddonHost2"/>: an installed add-on was compiled
+/// against it as it is. UI thread; resolved once when the theme is applied.
+/// </summary>
+public interface IAddonThemeShape
+{
+    /// <summary>Corner radii, 0..2.</summary>
+    double RadiusScale { get; }
+    /// <summary>Padding and spacing, 0.75..1.25.</summary>
+    double Density { get; }
+    /// <summary>Font sizes, 0.85..1.25.</summary>
+    double TypeScale { get; }
+}
+
 /// <summary>The search commands the native router forwards (ShowAddon kinds).</summary>
 public static class SearchCommand
 {
@@ -735,4 +886,10 @@ public interface ISearchChrome
     /// <summary>A family piece (ai-faces, ai-cuda) was installed or removed while
     /// the pack is loaded: the chrome asks the pack to pick it up.</summary>
     void OnPiecesChanged();
+
+    /// <summary>Settings → File types "Show audio files", sent when the chrome
+    /// attaches and whenever it changes: audio files are indexed and searched
+    /// only while it is on (#355). A default body, so an older search chrome
+    /// still loads.</summary>
+    void OnShowAudioChanged(bool on) { }
 }

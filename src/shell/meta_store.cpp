@@ -8,6 +8,8 @@
 #include <unordered_set>
 #include <utility>
 
+#include "meta/probe.h"
+
 namespace mv::shell {
 namespace {
 
@@ -25,7 +27,6 @@ std::string key_of(const io::dir_entry& e) {
 
 struct meta_store::state {
   loader_fn loader;
-  date_reader_fn dates;
   cull_reader_fn culls;
 
   std::mutex mutex;
@@ -42,12 +43,6 @@ struct meta_store::state {
   std::uint64_t gen = 0;
   std::unordered_map<std::string, std::uint64_t> invalidated;
 
-  // std::nullopt inside the map = "read it, it has no date" (cached so a
-  // dateless file is not re-read on every re-sort).
-  std::unordered_map<std::string, std::optional<std::int64_t>> date_keys;
-  std::atomic<std::uint64_t> dates_scan{0};
-  std::atomic<bool> dates_changed{false};
-
   // Issue #207: rating + label by the same key (nothing cached = not read).
   std::unordered_map<std::string, io::cull_marks> cull_keys;
   std::atomic<std::uint64_t> cull_scan{0};
@@ -55,18 +50,40 @@ struct meta_store::state {
   std::atomic<std::uint64_t> cull_reads{0};
 
   std::atomic<std::uint64_t> reads{0};
+
+  // #345: probe answers, keyed like the records, with their own LRU.
+  probe_fn probe;
+  std::list<std::string> prov_lru;
+  struct prov_record {
+    meta::provenance value;
+    std::list<std::string>::iterator lru_it;
+  };
+  std::unordered_map<std::string, prov_record> prov;
+  std::unordered_set<std::string> prov_in_flight;
+  std::atomic<std::uint64_t> probes{0};
+
+  // Under `mutex`. A held full record is the better answer when there is one.
+  [[nodiscard]] std::optional<meta::provenance> provenance_locked(const std::string& key) {
+    if (const auto it = cache.find(key); it != cache.end() && it->second.value) {
+      const meta::summary& s = it->second.value->s;
+      return meta::provenance{s.made_with, s.ai_generated, s.ai_evidence};
+    }
+    if (const auto it = prov.find(key); it != prov.end()) {
+      prov_lru.splice(prov_lru.begin(), prov_lru, it->second.lru_it);
+      return it->second.value;
+    }
+    return std::nullopt;
+  }
 };
 
-meta_store::meta_store() : meta_store(
-    [](std::string_view p) { return meta::read(p); },
-    [](std::string_view p) { return meta::read_date_taken(p); }) {}
+meta_store::meta_store() : meta_store([](std::string_view p) { return meta::read(p); }) {}
 
-meta_store::meta_store(loader_fn loader, date_reader_fn dates, cull_reader_fn culls)
+meta_store::meta_store(loader_fn loader, cull_reader_fn culls, probe_fn probe)
     : state_(std::make_shared<state>()) {
   state_->loader = std::move(loader);
-  state_->dates = std::move(dates);
   state_->culls = culls ? std::move(culls)
                         : cull_reader_fn([](std::string_view p) { return meta::read_cull_marks(p); });
+  state_->probe = probe ? std::move(probe) : probe_fn([](std::string_view p) { return meta::probe_provenance(p); });
 }
 
 meta_store::~meta_store() = default;
@@ -128,46 +145,52 @@ std::shared_ptr<const meta::metadata> meta_store::get(const io::dir_entry& e, jo
   return nullptr;
 }
 
-std::optional<std::int64_t> meta_store::date_key(const io::dir_entry& e) const {
+std::optional<meta::provenance> meta_store::peek_provenance(const io::dir_entry& e) const {
   std::lock_guard<std::mutex> lock(state_->mutex);
-  const auto it = state_->date_keys.find(key_of(e));
-  return it == state_->date_keys.end() ? std::nullopt : it->second;
+  return state_->provenance_locked(key_of(e));
 }
 
-void meta_store::resolve_date_keys(std::vector<io::dir_entry> entries, job_system& jobs,
-                                   std::function<void()> on_done) {
+std::optional<meta::provenance> meta_store::provenance(const io::dir_entry& e, job_system& jobs,
+                                                       ready_fn on_ready) {
+  const std::string key = key_of(e);
+  {
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    if (auto hit = state_->provenance_locked(key)) return hit;
+    if (!state_->prov_in_flight.insert(key).second) return std::nullopt;  // already probing
+  }
   std::shared_ptr<state> st = state_;
-  const std::uint64_t scan = st->dates_scan.fetch_add(1, std::memory_order_acq_rel) + 1;
+  const std::string path = e.path_utf8;
   jobs.submit_at(
       background_generation,
-      [st, scan, entries = std::move(entries), done = std::move(on_done)](const job_context&) -> status {
-        bool any = false;
-        for (const auto& e : entries) {
-          // A newer scan (another folder, another sort) owns the store now.
-          if (st->dates_scan.load(std::memory_order_acquire) != scan) {
-            if (any) st->dates_changed.store(true, std::memory_order_release);
-            return status::cancelled;
-          }
-          const std::string key = key_of(e);
-          {
-            std::lock_guard<std::mutex> lock(st->mutex);
-            if (st->date_keys.count(key)) continue;
-          }
-          const std::optional<std::int64_t> k = st->dates(e.path_utf8);
-          {
-            std::lock_guard<std::mutex> lock(st->mutex);
-            st->date_keys[key] = k;
-          }
-          any = true;
+      [st, key, path, ready = std::move(on_ready)](const job_context&) -> status {
+        st->probes.fetch_add(1, std::memory_order_relaxed);
+        std::uint64_t started = 0;
+        {
+          std::lock_guard<std::mutex> lock(st->mutex);
+          started = st->gen;
         }
-        if (any) st->dates_changed.store(true, std::memory_order_release);
-        if (done) done();
+        meta::provenance p = st->probe(path);
+        {
+          std::lock_guard<std::mutex> lock(st->mutex);
+          st->prov_in_flight.erase(key);
+          const auto inv = st->invalidated.find(path);
+          if (inv == st->invalidated.end() || inv->second <= started) {
+            st->prov_lru.push_front(key);
+            st->prov[key] = {std::move(p), st->prov_lru.begin()};
+            while (st->prov_lru.size() > kProvenanceCapacity) {
+              st->prov.erase(st->prov_lru.back());
+              st->prov_lru.pop_back();
+            }
+          }
+        }
+        if (ready) ready(path);
         return status::ok;
       });
+  return std::nullopt;
 }
 
-bool meta_store::consume_dates_changed() noexcept {
-  return state_->dates_changed.exchange(false, std::memory_order_acq_rel);
+std::uint64_t meta_store::probes() const noexcept {
+  return state_->probes.load(std::memory_order_relaxed);
 }
 
 std::vector<std::optional<io::cull_marks>> meta_store::cull_marks_of(
@@ -247,6 +270,14 @@ void meta_store::invalidate(std::string_view utf8_path) {
       ++it;
     }
   }
+  for (auto it = state_->prov.begin(); it != state_->prov.end();) {
+    if (it->first.compare(0, prefix.size(), prefix) == 0) {
+      state_->prov_lru.erase(it->second.lru_it);
+      it = state_->prov.erase(it);
+    } else {
+      ++it;
+    }
+  }
   std::erase_if(state_->cull_keys,
                 [&](const auto& kv) { return kv.first.compare(0, prefix.size(), prefix) == 0; });
 }
@@ -255,7 +286,8 @@ void meta_store::clear() {
   std::lock_guard<std::mutex> lock(state_->mutex);
   state_->cache.clear();
   state_->lru.clear();
-  state_->date_keys.clear();
+  state_->prov.clear();
+  state_->prov_lru.clear();
   state_->cull_keys.clear();
 }
 

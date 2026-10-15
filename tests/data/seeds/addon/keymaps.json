@@ -1,0 +1,1 @@
+[{"id": "vim", "name": "Vim", "bindings": [{"command": "prev", "keys": ["Left", "H"]}, {"command": "next", "keys": ["Right", "L"]}, {"command": "toggle_mark", "keys": ["Insert", "X"]}]}]

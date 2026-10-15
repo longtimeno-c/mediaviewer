@@ -81,7 +81,10 @@ public enum MvAiKinds : uint
 {
     Photos = 1,
     Videos = 2,
-    All = 3,
+    // #355: standalone audio files (MP3, M4A, M4P), while "audio_files" is on.
+    // 4 is reserved for documents; All widened from 3 to 11.
+    Audio = 8,
+    All = 11,
 
     // MV_AI_FIND_* (audio, 2026-09-27), OR'ed in: what to look for. None = all.
     FindPictures = 0x10,
@@ -115,9 +118,18 @@ public enum MvAiMatch : uint
     Picture = 1,
     Sound = 2,
     Speech = 4,
+    // #291: the file's tags matched; ResultSnippet is the tag.
+    Tags = 8,
+    // #406: text the file carries (a chapter title, a subtitle line);
+    // ResultSnippet names which ("Chapter: …").
+    Text = 16,
 }
 
-/// <summary>Mirrors <c>mv_ai_status</c> field for field (1336 bytes).</summary>
+/// <summary>
+/// Mirrors <c>mv_ai_status</c> field for field (1672 bytes with the text-pass
+/// counts). Append with the header: the ABI smoke test compares every field's
+/// offset and size with tools/abi-layout's dump of the native struct.
+/// </summary>
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct MvAiStatus
 {
@@ -184,6 +196,13 @@ public unsafe struct MvAiStatus
     public ulong CloudFilesFetched;
     public MvAiCloudFetch CloudFetch;
     public float CloudFetchProgress;
+    // The text passes (2026-10-15), appended: a clip's own text (chapters,
+    // subtitles; #406) and text the OS reads in photos and on clip moments
+    // (#403), assets to do and done. Zero from a pack before them.
+    public ulong CuesTotal;
+    public ulong CuesDone;
+    public ulong TextTotal;
+    public ulong TextDone;
 
     /// <summary>Display only (rule 6: never logged).</summary>
     public readonly string ActiveRootText
@@ -315,10 +334,13 @@ public sealed unsafe class AiApi
     public AiApi(IntPtr table)
     {
         if (table == IntPtr.Zero) throw new ArgumentNullException(nameof(table));
-        // The POD layouts, pinned against mediaviewer_ai.h: a drift here reads
-        // as garbage progress rather than as an error.
-        if (sizeof(MvAiStatus) != 1336 || sizeof(MvAiResult) != 32)
-            throw new InvalidOperationException("mv_ai_status / mv_ai_result layout drifted");
+        // mv_ai_result comes back as an array, so its size is the stride: pinned.
+        // MvAiStatus is not: it carries struct_size, the pack fills only what this
+        // chrome declared and Status() zeroes the rest, so a pack with fields
+        // appended (or one from before them) still attaches. Field for field
+        // against mediaviewer_ai.h is the ABI smoke test's job in CI.
+        if (sizeof(MvAiResult) != 32)
+            throw new InvalidOperationException("mv_ai_result layout drifted");
         _api = (MvAiApi*)table;
         if (_api->StructSize < (uint)sizeof(MvAiApi))
             throw new InvalidOperationException("AI add-on table is older than this chrome");
@@ -365,6 +387,7 @@ public sealed unsafe class AiApi
     // ---- state and settings (no-block) ----
     public MvAiStatus Status()
     {
+        // Zeroed, so the fields an older pack does not fill read as 0.
         MvAiStatus s = default;
         s.StructSize = (uint)sizeof(MvAiStatus);
         Check(_api->Status(Ctx, &s));

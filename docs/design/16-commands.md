@@ -35,6 +35,21 @@ Both hosts use the same table and router; tests are `tests/test_key_router*.cpp`
   shown in `?` — Open RAW / Open JPEG of a pair.
 - Island-only commands (`zoom_preset`, `select_item`, `gallery_activate`, the adjust sliders,
   crop preset buttons…) carry an argument and have no key.
+- **Keymap packs** (PR 56, [25 "Keymap"](25-open-addons.md#7-the-contribution-model)): the
+  v1.1 "named layouts" come as add-ons. Settings → Keyboard shortcuts → **Key layout** lists every
+  layout of every installed add-on; **Apply** resets the table to `default_bindings()` and writes
+  the layout's keys into the rows it names (`shell/keymap.h` `apply_keymap`), once. From then it
+  is the person's table: persisted like a remap, kept when the add-on goes, and **Reset**
+  restores the defaults. `?` and Settings read the same live table, so they list what the layout
+  bound. A layout names commands by their enumerator (`next`, `toggle_mark`, `zoom_in`;
+  `command_slug`, stable, every command a row runs has one) or `<add-on id>/<command id>` for a
+  contributed row. **Its keys go to that command's rows in table order** (`"prev": ["Left", "H"]`
+  keeps Left and puts H where A was; `""` leaves a row without a key; rows past the list keep
+  theirs): a layout cannot add a row, because remaps persist by row index. A key it gives out is
+  taken from any other row holding it in an overlapping mode, which is left unbound (shown so),
+  rather than swapped. Unknown commands and keys are skipped and listed, not refused. The Mac
+  also refuses a chord a fixed menu item owns at capture; a layout is not checked against the
+  menu (owed). A saved table is put back exactly (`set_live_key`), unbound rows included.
 - **Add-on commands** (Import: `open_import`, `import_now`; Local search: `search_*`) are listed,
   routed and shown only while their add-on is loaded (`set_addon_commands_available` per
   family); otherwise the key falls through as if unbound. The exception is `Ctrl+F`, which runs
@@ -90,6 +105,7 @@ Resolved from state at every keydown (`resolve_mode`), never kept on a stack, in
 | **runner** | The empty-window game is up | `Space` jumps/retries, `3` toggles 2D/3D |
 | **loupe** | `Z` held | Layers over browse/video: only arrows (nudge) and `Z` / `\` differ |
 | **slideshow** | Slideshow running | |
+| **skim** | A clip with the filmstrip hidden (`T`), paused or playing | Layers over **video**: only `←` `→` differ — they skip ±2 s like `Q` / `E` (issue #416; #361's playing half reversed) |
 | **video** | Current item is a clip or an animation | |
 | **browse** | Otherwise | |
 
@@ -99,12 +115,18 @@ folder and `Q` / `E` still skip.
 ### `Esc` walks out
 
 `resolve_back` picks one target per press, never quitting: text field → popup (`?`, go-to, find)
-→ Settings → Live Photo motion → crop (cancel) → trim (disarm, markers kept) → pane → gallery →
+→ Settings → Live Photo motion → selected text in a still (deselect) → crop (cancel) → trim (disarm, markers kept) → pane → gallery →
 slideshow → fullscreen → runner → canvas focus → result list ("Back to folder", the outermost:
 a search result list is a place, not an overlay). A list opened from the empty window (a search
 from the welcome) goes back to the empty window: the welcome card with its recent folders, the
 canvas cleared (2026-10-05; it used to leave the last result up, and on Windows did nothing).
 With nothing to leave, the key is not handled.
+A confirmation inside a pane field is part of that field's step (#352, the Location editor's
+"Remove location from this file?"): the first `Esc` is its Cancel and the field keeps the
+keyboard with its text, the next leaves the field. On the Mac that is the native alert; on
+Windows the router still resolves `blur_text`, and the host stops when the island answers that
+the drop only closed its confirmation (`SetMetaEdit` returns `S_FALSE`), as file search's field
+answers for its first `Esc`.
 `Ctrl+W` / `Alt+F4` close the window.
 
 ## Focus
@@ -113,19 +135,37 @@ Rings, visible: **canvas** (default), **filmstrip**, **gallery**, **pane** (fold
 metadata, adjust, Edit, jobs), plus the command bar and the transport. `Tab` / `Shift+Tab` cross the
 island boundary; `Esc` returns to the canvas. Fullscreen hides chrome.
 On Windows `Tab` from the canvas walks the visible rings in reading order — command bar, folder
-tree, gallery, Edit, metadata, adjust, jobs, transport, filmstrip — and then back to the canvas;
+tree, gallery, Edit, metadata, adjust, jobs, transport, filmstrip, the AI badge while it is up —
+and then back to the canvas;
 `Shift+Tab` walks it backwards (`IslandHost.FocusOrder`, issue #217).
 
 No island grows over the canvas, except a clip's **transport bar**, which floats over the bottom of
 the video and auto-hides (`shell/transport_autohide.h`, shared by both hosts):
 
 - Playing, it hides after `kTransportIdleMs` (2.5 s) with no activity; pointer movement, a click,
-  the wheel, a transport command (`Space` `K` `J` `L` `Q` `E` `,` `.`, speed, mute, `↑` `↓`
-  volume), `Tab`, or a fullscreen change bring it back.
+  the wheel, a transport command (`Space` `K` `J` `L` `Q` `E` `,` `.`, `←` `→` in skim mode, speed, mute,
+  `↑` `↓` volume), `Tab`, or a fullscreen change bring it back.
 - Paused, ended, hovered, scrubbing, a menu open, keyboard focus in it, or a screen reader running:
   it stays. Never over the gallery or Settings, never on a Live Photo stop.
 - Fullscreen: the pointer hides with it while over the video. Windowed: never.
 - Visual only: no refit, no second action on the wake, no repaint while idle.
+
+The **AI badge** (#345, [06](06-metadata.md#the-ai-badge-345)) is the other small chrome over the
+canvas: bottom-right, above the transport on a clip, hidden under the gallery, Settings and the
+Video Editor. It is in the focus order (Mac: the key-view loop; Windows: the last ring of
+`IslandHost.FocusOrder`, after the filmstrip and before the canvas). Focus there
+shows its tooltip; it binds no keys, so the router keeps running viewer commands, as with the
+command bar. Never a present.
+
+## Settings
+
+The Settings screen (`Ctrl+,`) holds the view preferences and the key table; both hosts lay it
+out the same way and store the view preferences as one flags word (`shell/settings.h`
+`view_settings`: Windows `settings.ini` `[view]`, Mac `mv.viewFlags`). Sections: Filmstrip,
+Browsing, **Viewer** (#345: "Show a badge on AI-generated images", on by default, owner
+2026-10-11, stored inverted as `kSettingHideAiBadge` so older settings read as on), File types,
+Appearance, then updates and add-ons. A change applies at once, without a relaunch; the AI badge
+switch pokes nothing the render thread reads.
 
 ## Default map
 
@@ -137,13 +177,13 @@ crop. Keys are shown Windows-style; on macOS read `⌘` for `Ctrl`.
 
 | Key | Modes | Command |
 |---|---|---|
-| `←` `→` | Walk, gallery | Previous / next (repeat) |
+| `←` `→` | Walk, gallery | Previous / next (repeat). On a clip with the filmstrip hidden (`T`) they are `Q` / `E` instead (skim mode, below); with the strip up they walk, paused or playing |
 | `A` `D` | All but crop | Previous / next — on a clip too; transport is `Q` `E` |
 | `Backspace` | Walk | Previous |
 | `Space` | browse | Next. On a clip or animation: play / pause; in a slideshow: pause; in the runner: jump |
 | `Home` / `End` | Walk | First / last |
 | `PageUp` / `PageDown` | Walk | Back / forward ten |
-| `Ctrl+PageUp` / `Ctrl+PageDown` | Browse, island | Previous / next page of a multi-page file (TIFF, PDF, DOCX); a notice says "Page n of m" |
+| `Ctrl+PageUp` / `Ctrl+PageDown` | Browse, island | Previous / next page of a multi-page file (TIFF, PDF, DOCX, an ICO's sizes, a HEIC's top-level images); a notice says "Page n of m" |
 | `F5` | browse, video | Slideshow |
 | `F` / `F11` | all | Fullscreen |
 | `Ctrl+O` | All but crop | Open media… |
@@ -153,7 +193,7 @@ crop. Keys are shown Windows-style; on macOS read `⌘` for `Ctrl`.
 | `Ctrl+N` | all | New window (⌘N; also File ▸ New Window and the Dock menu on the Mac) |
 | `Ctrl+,` | All but crop | Settings |
 | `Ctrl+G` | Viewing | Go to index. **Mac: not built** (no go-to popup yet; `⌘G` falls through) |
-| `/` | browse, video, gallery | Find by name in the loaded listing (gallery folder row: find a folder tile) |
+| `/` | browse, video, gallery | Find by name, then by tag, in the loaded listing (gallery folder row: find a folder tile) |
 | `Ctrl+Shift+E` | All but crop | Folder tree: show and focus |
 | `Ctrl+↑` | Viewing | Up one folder, selecting the folder just left |
 | `Ctrl+←` / `Ctrl+→` | browse, video | Previous / next sibling folder |
@@ -180,18 +220,32 @@ crop. Keys are shown Windows-style; on macOS read `⌘` for `Ctrl`.
 | `W` `S`, `↑` `↓` | gallery | Previous / next row |
 | `Enter` | gallery | Open the selection in the viewer (leaving fullscreen / slideshow, restoring the filmstrip if enabled) |
 | `T` | all | Filmstrip show / hide (stored per mode: folder open or single image) |
-| `B` | Viewing | Cycle background: black / gray / white / checkerboard |
 | `S` | browse, video, island | Sticky zoom on advance |
 | `C` | Viewing | Clipping blinkies |
 | `O` | Viewing | On-canvas info overlay (filename, index, exposure triangle) |
 | `Shift+O` | Viewing | AF-point quads from the maker notes already read |
+| `Shift+Z` | browse | Zoom to the AF point: springs to 100 % centred on the in-focus point (else the selected one; of several, the one nearest their middle), through any rotate / crop. Camera state only; the record is the one `Shift+O` reads (one read on the pool if nothing has asked yet). "No AF point recorded" when there is none; nothing when a crop has cut it away |
 | `I` | Viewing | Metadata pane: focuses it; `←` `→` change tab, `↓` reaches tag search; `Esc` returns to the canvas, a second `Esc` closes it |
 | `Shift+I` | Viewing | Eyedropper: one-pixel sRGB 8-bit + hex readout under the cursor (stills) |
-| `Ctrl+C` | Viewing | With the eyedropper on: copy `#RRGGBB  rgb(r, g, b)  x y`. Otherwise copy the marked (else current / gallery-selected) file(s) |
+| `Ctrl+C` | Viewing | With words selected in the still ([Text in images](#text-in-images)): copy that text. With the eyedropper on: copy `#RRGGBB  rgb(r, g, b)  x y`. Otherwise copy the marked (else current / gallery-selected) file(s) |
 | hold `Z` | browse, video | Loupe: 100 % around the cursor or a keyboard point; arrows nudge it. Same texture, no decode |
 | hold `\` | browse, video | Previous item, for burst pick, from the five-slot GPU LRU (Mac: the last still shown, kept on the GPU) |
 | `;` | browse, video | Play a Live Photo's motion once, with audio, and return to the still. `;` again, `Esc` or navigation return early. **Mac: not built** |
 | `Ctrl+Shift+A` | all | Always on top (`HWND_TOPMOST`) |
+
+**Filmstrip hint.** Some input means something else while the filmstrip is up, and the hint says
+so (`shell/filmstrip_hint.h`, shared). Over a PDF or DOCX with the strip showing it reads "Press T
+to hide the filmstrip and scroll" (the wheel zooms until the strip is hidden); over a clip, "Press T
+to hide the filmstrip and skip 2 s with ← →" (the arrows walk the folder until it is hidden, issue
+#416). It is a small card in the window's bottom-right corner, above the filmstrip and above the
+resume-indexing notice when that is up, in that notice's look (Windows `IslandHost.HintNotice.cs`,
+entry `ShowHint`; Mac `HintNoticeView.swift`); it was the title's status line, which nobody saw. It
+shows when such a document or clip comes on screen, when the wheel zooms a document (at most once a
+second) and on a page turn, fades after eight seconds, and goes when nothing it covers is on screen.
+It takes no focus. Once `T` has hidden the strip over either subject, or the card's "Got it" was
+clicked, it never shows again (Windows `settings.ini` `[hints] filmstrip_t`, Mac
+`mv.hint.filmstripT`). There is one hint: each subject is a `strip_hint_subject` value and a string
+beside it, sharing the learned flag.
 
 **Gallery.** Full-client grid of the folder. `A` `D` / `←` `→` move by item, `W` `S` / `↑` `↓`
 by row; a click opens in the viewer. Child folders are big tiles when the folder holds only
@@ -201,18 +255,39 @@ gallery: opening it pauses a playing clip, a clip selected in it waits paused on
 and closing it resumes only the clip that was playing. The folder path lives in the command bar
 left of `?` (a long middle collapses into a menu), with Up and Root buttons outside the trail.
 
+#### Gallery range and share (#413)
+
+- **Shift-click** selects every image from the selected cell (the anchor) to the clicked one, in
+  the grid's order (a file search's filter counts), and the grid stays open. A plain click still
+  opens one image. Further Shift-clicks keep the same anchor.
+- **Arrows** move one cell and never grow the range; marks stay the set `Insert` /
+  `Shift+Space` edit. Another selection, another folder, a relist or closing the grid ends the
+  range (on Windows native also drops it once its anchor is no longer selected).
+- **While a range stands** it is the selection: copy (`Ctrl+C` / `⌘C`), `F7` / `F8`, `Delete`,
+  copy path and Share act on it, in listing order, ahead of the marks. The range is tinted and
+  outlined; "N selected" sits over the grid on the Mac.
+- **Drag-out from the gallery** starts from any cell (the Mac picks the drag up below SwiftUI,
+  `GalleryDrag`, as the grid's scroll view never handed it to the cell). A cell of the range drags
+  the whole range, a marked cell the marks, any other cell itself; each file with its pair on
+  Windows, copy-only, originals untouched. The filmstrip's drag is unchanged.
+- **One share icon** ("Send") over the grid sends the gallery's selection (the range, else the
+  selected cell) to [Sharepoint](28-sharepoint.md), with those files and no others. Without
+  Sharepoint it offers the one-click install. It is not the OS share sheet (`Ctrl+Shift+S`).
+
 ### Marks, copy, move
 
 Marks are a separate set from the selection, so arrow-key browsing never makes accidental ranges.
+The gallery's Shift-click range (above) is the one deliberate range: while it stands, the
+commands below act on it first.
 
 | Key | Modes | Command |
 |---|---|---|
 | `Insert` / `Shift+Space` | browse, video | Toggle mark on current |
-| `Ctrl+A` | Viewing | Mark all |
+| `Ctrl+A` | Viewing | Mark all; with words selected in the still, select every word instead |
 | `Ctrl+D` | Viewing | Unmark all |
 | `F7` / `Shift+F7` | Viewing | Copy marked (else current) to the last destination / pick a folder |
 | `F8` / `Shift+F8` | Viewing | Move, same rule |
-| `Delete` | browse, video | Recycle Bin / Trash, with confirm. Marks if any, else current |
+| `Delete` | browse, video, gallery | Recycle Bin / Trash, with confirm. The gallery's range if one stands, else marks if any, else current |
 | `F2` | Viewing | Rename the current file (the gallery's selected cell); also File ▸ Rename… on the Mac |
 | `Ctrl+Shift+C` | Viewing | Copy path(s) as text |
 | `Ctrl+Alt+C` | browse | Copy the current still with edits baked, as PNG (worker thread) |
@@ -309,6 +384,7 @@ works regardless. To see only the keepers, or one colour, use View ▸ Show's cu
 | `Space` | video | Play / pause |
 | tap `Q` / `E` | video | Skip −2 s / +2 s, exact, on the down edge |
 | hold `Q` / `E` | video | Skim ∓2 s per repeat with non-exact (keyframe) seeks; release settles exactly. Intent accumulates across the burst |
+| tap / hold `←` `→` | skim | The same skip and skim as `Q` / `E`, only while the filmstrip is hidden (issue #416). With the strip showing they walk the folder, paused or playing; `T` hides the strip so they skip. `A` / `D` walk in every case. A hold keeps what it started as until key-up: a skim stays a skim if `T` shows the strip under it, a walk stays a walk if `T` hides it |
 | `Shift+Q` / `Shift+E` | video | Playback speed one rung down / up: 0.25 / 0.5 / 1 / 1.5 / 2 / 4. The transport strip's speed menu (`1x`) is a view of this; native owns the rate |
 | `J` `K` `L` | video | −10 s / pause / +10 s |
 | `,` `.` | video | Frame step (also on animations) |
@@ -359,6 +435,25 @@ pauses / resumes while copying, `Shift+Space` toggles its day, `Ctrl+Tab` / `Ctr
 next / previous source, `Ctrl+J` ejects, `Esc` closes the window and the import carries on
 ([import](18-import.md)).
 
+### Sharepoint (while the add-on is installed)
+
+One row, **Sharepoint**, with no default key (issue #410): it opens Sharepoint's window with the
+marked or current files as the ones to send. Settings can give it a key like any row. The row is
+the add-on's manifest command; an add-on that fills slots and has no chrome gets it as a command
+event (`run_command`, [28](28-sharepoint.md#host-pieces-this-added)).
+
+### Add-on commands (PR 57, from scripts)
+
+An open add-on with a script ([25](25-open-addons.md)) contributes rows: a name, a default key
+and the script function it calls. They take the eight `addon_cmd_*` slots after any first-party
+add-on's rows, are listed in `?` and Settings, and are rebindable like any row. **Another
+maker's key never displaces the base app's:** when it clashes with a built-in row as bound now
+(remaps included), or with an earlier contributed row, in a mode they share, the key is dropped,
+the row stays listed without one, and Settings → Add-ons → From others says "Ctrl+O is already
+Open, so this command has no key" (`set_addon_commands`, `addon_command_notes_json`). Running one
+posts the call to the add-on's own worker and returns: the key never waits on a script. Keymap
+packs name these rows `<addon-id>/<command-id>`.
+
 ### Search
 
 | Key | Modes | Command |
@@ -375,12 +470,29 @@ the results in the viewer on that tile, `Ctrl+Enter` opens them all as the galle
 character returns to the field; `Esc` returns to the field, then closes.
 
 **File search** (base app, no index): shows the gallery if hidden and opens "Find files by name
-in this folder" over the grid. Typing filters the grid, folder tiles too, by a case- and
+or tag in this folder" over the grid. Typing filters the grid, folder tiles too, by a case- and
 accent-insensitive substring, ~70 ms after the last key, with an "N of M" count. A view over the
 gallery only: arrows move among matches; the viewer and filmstrip still walk the whole folder.
 `Enter` / `↓` go to the grid on the first match; `Esc` clears, then closes; closing the gallery
 or opening another folder closes it. Names are folded once per listing off the UI thread; a
 keystroke is one pass (≤ 2 ms for 10,000 items). No disk walk.
+
+**Tags (#291).** After the name matches come the files whose tags hold every typed word:
+camera, lens, made-with, software, title, caption, keywords, creator
+([06](06-metadata.md) "Search text"). `R5` finds the Canon EOS R5 shots, `ChatGPT` the images it
+made. A tag match shows *why* under its tile ("Canon EOS R5"). The tags come from the folder's
+background tag pass, never from a read on a keystroke (`mv_chrome_tag_search` on the Mac,
+`mv_folder_tag_search` on Windows: a lookup in memory, ~1 ms at 20,000 files). The pass starts
+after the item on screen has its first image and yields to the viewer. While it is still reading,
+the bar says "Still reading tags — 340 of 2,000" and the results grow as it learns more (the
+chrome re-runs the search on `tag_generation`, polling only while a search is typed and tags
+are coming). A folder seen before answers at once (meta_cache.db). Place names (`portugal`)
+come from the Places add-on's search provider, whose rows join after these ([25](25-open-addons.md)
+§7, #348); the app's own tag text has none. Order: names, tags, providers.
+
+`/` over files opens the same search on the Mac. On Windows it is the find box over the
+listing, which jumps to the first name match, else the first tag match with its tag shown
+("IMG_0412.JPG · Canon EOS R5").
 
 ### `?`
 
@@ -414,9 +526,10 @@ presents ([rendering](03-rendering.md)). Toggles request one redraw.
 | Hold-previous (hold `\`) | The five-slot LRU; no second session |
 | Clipping blinkies (`C`) | Shader; may present while on (it animates), labelled in F3 |
 | Pixel grid (≥ 400 %) | Shader |
-| Canvas background / checkerboard (`B`) | Clear colour + optional shader |
+| Around the picture (no key) | The theme's `canvas` token as the clear and in the blit; there is no canvas background of its own (issue #408, [12](12-decision-log.md)) |
 | On-canvas info (`O`) | Overlay text from the folder model and metadata already read |
 | AF-point quads (`Shift+O`) | A few quads from maker notes already in the property model |
+| Zoom to AF point (`Shift+Z`) | Camera target only (`shell/af_focus.h` → `camera::zoom_to`); the zoom's refinement is the usual one |
 | Eyedropper (`Shift+I`) | One-pixel staging readback on demand, never a full-texture download |
 | Histogram | On the adjust pane, computed after the sliders settle |
 
@@ -428,8 +541,9 @@ Chrome, in memory, no decode.
   folder model.
 - **Sort:** name, modified, size, type, date taken; ascending or descending
   (`mv_folder_set_sort`, saved as `[view] sort` on Windows; View ▸ Sort By on both). Date-taken
-  keys are read once per file by one background job and the listing re-sorts in place when they
-  land; a file with no stamp sorts by mtime.
+  keys come from the folder's tag pass (one bounded read per file, once ever, kept in
+  meta_cache.db) and the listing re-sorts in place once the pass ends; a file with no stamp sorts by
+  mtime.
 - **Show** (issue #206): View ▸ Show on both hosts (the menu bar and the command bar's View on the
   Mac, the command bar's View on Windows): **All**, **Photos** (every still, RAW included),
   **Videos**, **RAW** (a RAW, or a RAW+JPEG pair) or **Marked** (the marks as they are when it is
@@ -458,7 +572,7 @@ Chrome, in memory, no decode.
   host's `meta_store` keeps the cache (`cull_marks_of`, `resolve_cull_marks`).
 - **Typeahead:** with the filmstrip or gallery focused, typing jumps to the first name starting
   with what was typed (300 ms idle resets). On the canvas every letter is a command, so `/` opens
-  a find box over the loaded listing. `Ctrl+G` goes to an index.
+  a find box over the loaded listing (names, then tags; above). `Ctrl+G` goes to an index.
 - **Wrap** at folder ends: on by default, a setting.
 - **Session:** window placement, last folder, zoom mode, wrap, background. Not a catalog.
 
@@ -467,6 +581,54 @@ Chrome, in memory, no decode.
 - **Off (default):** each item fits.
 - **On (`S`):** advancing keeps zoom and the pan centre as a fraction of the image; a different
   aspect keeps the centre. Camera state, not a decode; prefetch is unaffected.
+
+## Touch and trackpad
+
+Gestures are input to the commands above, never a camera path of their own (issue #212,
+[12](12-decision-log.md) 2026-10-12; maths in `shell/gesture.h`, shared by both hosts):
+
+| Gesture | Does |
+|---|---|
+| Pinch (touchscreen, precision touchpad, Mac trackpad) | Zooms toward the fingers like the wheel: wheel units in the input snapshot, the same springs, floor and rubber-band |
+| One-finger drag, zoomed (touchscreen) | Pans; the content follows the finger through `pan_by_screen`'s springs |
+| Sideways swipe at fit (touchscreen, one finger) | Next (swipe left) / previous (swipe right), once per touch |
+| Two-finger sideways swipe (touchpad, trackpad), mouse tilt | Next / previous, once per swipe or tilt click; momentum runs out in the latch. On a PDF or DOCX with the filmstrip hidden it scrolls the page instead |
+| Three-finger swipe (Mac, when System Settings sends it) | Next / previous |
+
+A swipe does nothing under the gallery or in crop. A tap is the system's promoted click. Windows
+reads the touchscreen through `WM_GESTURE` (pan inertia and gutter off); the touchpad's pinch is
+already `Ctrl`+wheel. The Mac reads `magnifyWithEvent:`, `scrollWheel:` and `swipeWithEvent:`.
+
+## Text in images
+
+As in Photos, text in a still can be selected with the mouse and copied: no menu item, mode or
+setting ([12](12-decision-log.md) 2026-10-15, which replaced 2026-10-10's Copy Text in Image).
+
+| Pointer | Does |
+|---|---|
+| Hover over text | I-beam cursor |
+| Press on a word and drag | Selects from that word to the word nearest the pointer, whole words in reading order; a press on text never pans or starts a file drag |
+| Double-click / triple-click | Selects the word / its line; a drag from there extends by words / lines |
+| Click on text without dragging, or press off the text | Clears the selection (off the text the press pans as before) |
+
+`Ctrl+C` / `⌘C` then copies it (the notice says "Copied 12 words"), `Ctrl+A` / `⌘A` selects every
+word, and `Esc` deselects before anything else on the canvas walks out.
+
+**When a still is read.** Recognition costs a decode and the OS recogniser, so it is never part of
+showing an image: it starts only after the pointer has rested on a still for 500 ms (arrowing or
+clicking through a folder reads nothing), on the job pool (rule 1), once per still and geometry. A
+new item, a turn, a crop, Show original, the gallery or the Edit workspace drops the words. Stills
+only: not a clip, an animation, audio or a document page.
+
+**How.** `shell/text_in_image.h` renders the still as the canvas shows it (geometry applied, 4096 px
+long edge, alpha over white) for a port, `text_recognizer`, that returns words with boxes in 0..1 of
+that image: Vision `VNRecognizeTextRequest` on the Mac (each word boxed with
+`boundingBoxForRange:`), `Windows.Media.Ocr` in the WinUI chrome on Windows (`OcrWord.BoundingRect`,
+sent back as one tab-separated record per word). `shell/text_select.h` is the hosts' shared
+selection model on the UI thread. The render thread publishes `canvas_map` (where the still is) for
+the host's hit-test and draws `input_snapshot::text`, one translucent box per selected line; a
+press that `text_press` marks is never a pan. On device, nothing logged (rule 6); without an OCR
+language Windows says so once a session and offers no Store download (rule 7).
 
 ## Animation
 
@@ -506,9 +668,15 @@ No hot-path ABI for commands. Commands invoke existing session calls (`mv_folder
 
 - `Ctrl+Enter` open in an external editor; set as wallpaper.
 - `Ctrl+Tab` / tabs, and several windows inside one process.
+- `U` clear label and `X` reject mark.
+- A filter (all / photos / videos / RAW) on the listing.
 - `Ctrl+PageUp` / `Ctrl+PageDown` for ICO sizes and HEIC sequences (pages of TIFF, PDF and DOCX are built).
+- `U` clear label and `X` reject mark.
+- Text in images: selecting part of a word (selection is by whole words), a right-click menu
+  (Copy, Look Up), and text in PDF / DOCX pages, clips or animations.
+- A filter (all / photos / videos / RAW) on the listing.
 - Touch gestures (swipe, pinch).
-- Import / export of key maps and named alternate layouts.
+- Import / export of a person's own key map (named layouts ship as keymap packs, above).
 - Voice add-on hold-to-talk (`Ctrl+Shift+Space`).
 - **On the Mac** (issue #183): `Ctrl+G` go to index, `;` Live Photo motion, and Open RAW /
   Open JPEG of a pair. `MvCommandSupported` leaves them out, so `?` and Settings do not list

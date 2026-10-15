@@ -11,6 +11,7 @@
 // WinUI 3 chrome inside it as XAML content islands.
 
 #include <algorithm>
+#include <charconv>
 #include <windows.h>
 #include <objbase.h>
 #include <ole2.h>
@@ -53,11 +54,15 @@
 #include "mediaviewer/mediaviewer.h"
 #include "mediaviewer/mediaviewer_addon.h"
 #include "mediaviewer/mediaviewer_clip.h"
+#include "canvas/document_scroll.h"
 #include "canvas/refinement.h"
 #include "shell/adjust_pane.h"
+#include "shell/ai_badge.h"
 #include "shell/browse_path.h"
 #include "shell/chrome_host.h"
 #include "shell/edit_session.h"
+#include "shell/text_in_image.h"
+#include "shell/text_select.h"
 #include "shell/edit_view.h"
 #include "shell/edit_workspace.h"
 #include "shell/video_timeline.h"
@@ -65,7 +70,10 @@
 #include "shell/trim_state.h"
 #include "shell/transport_autohide.h"
 #include "shell/file_jobs.h"
+#include "shell/filmstrip_hint.h"
+#include "shell/gesture.h"
 #include "shell/key_router.h"
+#include "shell/keymap.h"
 #include "core/job_system.h"
 #include "edit/histogram.h"
 #include "image/linear.h"
@@ -118,6 +126,9 @@ enum class open_mode { none, folder, image };
 constexpr UINT_PTR kMetaTimerId = 0x7501;   // PR 9: pause before a metadata read
 constexpr UINT kMetaDebounceMs = 90;
 constexpr UINT kMsgMetaReady = WM_APP + 0x71;  // a metadata read finished (any thread posts)
+// #345: the AI badge's provenance answer, after the same pause as a metadata read.
+constexpr UINT_PTR kAiBadgeTimerId = 0x7502;
+constexpr UINT kMsgAiBadgeReady = WM_APP + 0x7D;  // a provenance probe finished (any thread posts)
 constexpr UINT_PTR kRotateTimerId = 0x7601;  // PR 10: the lossless write waits for the keys to stop
 constexpr UINT kRotateDebounceMs = 400;
 constexpr UINT kMsgEditJobDone = WM_APP + 0x72;  // a rotate write or an export finished (any thread posts)
@@ -136,6 +147,13 @@ constexpr UINT kMsgOpenForwarded = WM_APP + 0x78;   // a second instance handed 
 constexpr UINT kMsgOwnDragEnded = WM_APP + 0x7A;
 // A document's "Open in <app>" list (shell/open_with_win.h) came back.
 constexpr UINT kMsgOpenWithReady = WM_APP + 0x7B;
+// docs/design/25 PR 57: the script add-ons have a notice (wparam 1) or started or
+// stopped (wparam 2). Posted by the core's listener, on any thread.
+constexpr UINT kMsgScripts = WM_APP + 0x7C;
+constexpr UINT kMsgTextRead = WM_APP + 0x7E;  // text in images: a still was read (any thread posts)
+// Text in images: the pointer rests on a still this long before it is read.
+constexpr UINT_PTR kTextDwellTimerId = 0x7C01;
+constexpr UINT kTextDwellMs = 500;
 constexpr UINT kThumbPrev = 0x5101;                 // taskbar thumbnail toolbar button ids
 constexpr UINT kThumbPlay = 0x5102;
 constexpr UINT kThumbNext = 0x5103;
@@ -229,6 +247,18 @@ struct app_state {
   std::string edit_path;
   std::uint64_t edit_key = 0;
   std::uint32_t edit_generation = 0;
+  // Text in images (shell/text_select.h): the words read from the still on
+  // screen and what is selected; the dwell before a read; the I-beam; the last
+  // left press, for double and triple clicks (no CS_DBLCLKS: the canvas keeps
+  // plain downs); whether a missing OCR language was already said.
+  mv::shell::text_select text;
+  bool text_dwell = false;
+  bool text_beam = false;
+  bool text_told = false;
+  DWORD text_click_time = 0;
+  int text_click_x = 0;
+  int text_click_y = 0;
+  int text_clicks = 0;
   std::uint64_t edit_size = 0;
   std::int64_t edit_mtime = 0;
   // The export dialog's last answer, preselected next time (pack_export).
@@ -288,6 +318,13 @@ struct app_state {
   bool main_active = true;  // the viewer's own WM_ACTIVATE (input.window_active also counts the editor)
   mv::shell::meta_store meta;
   std::shared_ptr<const mv::meta::metadata> meta_record;
+  // #345: the canvas's AI badge (shell/ai_badge.h) and the item it is for (its
+  // path; a relist of the same file keeps it). Answered by meta.provenance.
+  mv::shell::ai_badge ai_badge;
+  std::string ai_badge_path;
+  // Issue #209: Shift+Z waits for the item's record (one read on the pool, or
+  // a cache hit) and fires the zoom when it is adopted. Cleared on navigation.
+  bool af_focus_pending = false;
   // PR 12 (docs/design/06 "Writing", docs/design/16 Rate). Rating, comment and revert are
   // queued here and written on `jobs`: a plain JPEG in place, everything else
   // in an XMP sidecar. `meta_written` is the paths written this session, the
@@ -306,15 +343,25 @@ struct app_state {
   std::uint32_t page = 0;
   std::uint32_t page_of = UINT32_MAX;
   std::uint32_t page_count = 0;
-  // Document scrolling (docs/design/04 "Pages"): travel pushed past an edge
-  // (screen px, signed), the sub-pixel remainders, and the latch that lets one
-  // flick turn one page.
-  double overscroll = 0.0;
-  double scroll_rem_x = 0.0;
-  double scroll_rem_y = 0.0;
-  ULONGLONG last_scroll_tick = 0;
-  ULONGLONG page_turn_tick = 0;
-  bool page_turn_latched = false;
+  // Document scrolling (docs/design/04 "Scrolling a document"): the shared
+  // page-turn rule and its sub-pixel carry (canvas/document_scroll.h).
+  mv::canvas::document_scroller doc_scroll;
+  // The "Press T" filmstrip hint (shell/filmstrip_hint.h): learned once the
+  // user hid the strip over a document; persisted in settings.ini [hints].
+  bool strip_hint_learned = false;
+  // Its bottom-right card (chrome_host::show_hint) was sent up, and when: the
+  // wheel re-shows it at most once a second, and a non-document hides it.
+  bool strip_hint_card = false;
+  std::uint64_t strip_hint_shown_at = 0;
+  // Issue #212 (docs/design/16 "Touch and trackpad"): WM_GESTURE pinch and pan
+  // on a touchscreen, and the touchpad's sideways swipe (WM_MOUSEHWHEEL).
+  // Pinch -> wheel_total, pan -> scroll_px, swipe -> folder_step: no new
+  // camera path and no new snapshot field.
+  mv::shell::pinch_to_wheel touch_pinch;
+  mv::shell::swipe_detector touch_swipe{64.0, 1000};
+  mv::shell::swipe_detector wheel_swipe{mv::shell::kWheelSwipeThreshold, mv::shell::kWheelSwipeGapMs};
+  ULONGLONG touch_zoom_distance = 0;
+  POINT touch_pan_last{};
   // A document's "Open in <app>" (docs/design/20): the apps for open_with_ext,
   // default first, looked up once per extension off the UI thread.
   std::wstring open_with_ext;
@@ -402,6 +449,12 @@ struct app_state {
   // docs/design/16 marks, copy, move. Marks are UI-thread state keyed by path; the
   // file work runs on files' own I/O worker and reports back by message.
   mv::shell::mark_set marks;
+  // Issue #413: the gallery's shift-click range: paths in the grid's order,
+  // and the cell selected when it was made. Live only while the gallery is up
+  // and that cell is still selected (selection_targets), so any other
+  // selection, another folder or the grid closing ends it with no hook.
+  std::vector<std::string> gallery_range;
+  std::string gallery_range_anchor;
   // Issue #206: View > Show. For this run only; the core filters the listing.
   mv::io::kind_filter kind_filter = mv::io::kind_filter::all;
   mv::shell::file_jobs files;
@@ -565,7 +618,13 @@ bool welcome_lists_recents(const app_state* app) noexcept {
   return app->mode == open_mode::none && app->early_open_dir.empty() && app->record_recent;
 }
 
+void text_sync(app_state* app) noexcept;
+void text_publish(app_state* app);
+
 void publish(app_state* app) noexcept {
+  // Text in images: a new item, a turn, the gallery or the Edit workspace
+  // drops words read before (and their highlight) in this same snapshot.
+  text_sync(app);
   // The card's rows go the moment anything opens, whichever route opened it.
   if (app->input.recents.count != 0 && !welcome_lists_recents(app)) {
     app->input.recents.count = 0;
@@ -984,6 +1043,25 @@ std::string current_item_path(app_state* app) {
   return item_path_at(app, selected);
 }
 
+// Issue #413: the gallery's range, when it still stands (the grid is up and
+// the cell it started from is still selected); a stale one is dropped here.
+bool gallery_range_live(app_state* app) {
+  if (app->gallery_range.empty()) return false;
+  if (!app->gallery_visible || current_item_path(app) != app->gallery_range_anchor) {
+    app->gallery_range.clear();
+    app->gallery_range_anchor.clear();
+    return false;
+  }
+  return true;
+}
+
+// What copy, F7/F8, Delete, copy path and Share act on: the gallery's range
+// while it stands, else the marks, else the current item (docs/design/16).
+std::vector<std::string> selection_targets(app_state* app) {
+  if (gallery_range_live(app)) return app->gallery_range;
+  return app->marks.targets(current_item_path(app));
+}
+
 // MV_PAIR_* of the selected stop; MV_PAIR_NONE with nothing selected.
 std::uint32_t current_pair_kind(app_state* app) noexcept {
   std::uint32_t selected = 0;
@@ -1168,10 +1246,32 @@ void refresh_item_info(app_state* app) noexcept {
   app->input.item_name[cap - 1] = '\0';
 }
 
+void ai_badge_refresh(app_state* app);
+void layout_ai_badge(app_state* app) noexcept;
+int right_pane_px(int client_width, std::uint32_t dpi) noexcept;
+
 // ---- PR 9: metadata for the overlays ---------------------------------------
 
 bool metadata_wanted(const app_state* app) noexcept {
-  return app->input.info_overlay || app->input.af_points || app->meta_pane_visible;
+  return app->input.info_overlay || app->input.af_points || app->meta_pane_visible ||
+         app->af_focus_pending;
+}
+
+void notice_show(app_state* app, const std::string& utf8) noexcept;
+
+// Issue #209 (Shift+Z): the record is here, so the overlay quads published
+// with it are the item's. The render thread picks the point and moves the
+// camera; this only says when, or why there is nothing to zoom to.
+void af_focus_fire(app_state* app) noexcept {
+  app->af_focus_pending = false;
+  if (app->input.meta.af_count == 0) {
+    notice_show(app, "No AF point recorded in this file");
+    return;
+  }
+  app->zoom_intent_tick = ::GetTickCount64();
+  ++app->input.af_focus_seq;
+  ++app->input.activity_seq;
+  publish(app);
 }
 
 // The selected item as the store keys it: path + mtime + size, from the
@@ -1219,6 +1319,8 @@ void adopt_metadata(app_state* app, std::shared_ptr<const mv::meta::metadata> re
   ++app->input.activity_seq;
   publish(app);
   push_meta_pane(app);
+  ai_badge_refresh(app);  // #345: the full record is the badge's best answer
+  if (app->af_focus_pending) af_focus_fire(app);
 }
 
 // A cache hit is adopted at once; a miss submits one read on the pool and its
@@ -1249,6 +1351,7 @@ void metadata_ready(app_state* app) {
 void metadata_selection_changed(app_state* app) {
   if (!app->window) return;
   ::KillTimer(app->window, kMetaTimerId);
+  app->af_focus_pending = false;  // Shift+Z was for the item just left
   if (app->meta_record) {
     app->meta_record.reset();
     app->input.meta = mv::shell::meta_overlay{};
@@ -1258,7 +1361,81 @@ void metadata_selection_changed(app_state* app) {
   push_meta_pane(app);
 }
 
-void push_meta_edit(app_state* app, bool drop_draft = false) noexcept;
+// ---- #345: the AI-generated badge -------------------------------------------
+//
+// shell/ai_badge.h decides the text; meta_store::provenance supplies the answer:
+// the held record, an earlier probe, or one bounded probe on the pool (a few
+// kilobytes, meta/probe.h), asked after the metadata pause so holding an arrow
+// probes nothing. The badge is its own island over the canvas: nothing here
+// touches app->input or publishes, so it never costs a present.
+
+void set_ai_badge(app_state* app, const mv::shell::ai_badge& badge) {
+  if (badge == app->ai_badge) return;
+  app->ai_badge = badge;
+  layout_ai_badge(app);
+}
+
+void ai_badge_selection_changed(app_state* app) {
+  if (!app->window) return;
+  const std::string path = current_item_path(app);
+  if (path == app->ai_badge_path) return;  // a relist: the same file
+  app->ai_badge_path = path;
+  ::KillTimer(app->window, kAiBadgeTimerId);
+  set_ai_badge(app, {});
+  if (!path.empty() && app->settings.ai_badge) ::SetTimer(app->window, kAiBadgeTimerId, kMetaDebounceMs, nullptr);
+}
+
+void ai_badge_request_now(app_state* app) {
+  if (!app->window) return;
+  ::KillTimer(app->window, kAiBadgeTimerId);
+  if (!app->settings.ai_badge) return;
+  mv::io::dir_entry entry;
+  if (!current_dir_entry(app, entry) || entry.path_utf8 != app->ai_badge_path) return;
+  const HWND hwnd = app->window;
+  const auto answer = app->meta.provenance(entry, app->jobs, [hwnd](std::string) {
+    ::PostMessageW(hwnd, kMsgAiBadgeReady, 0, 0);
+  });
+  if (answer) set_ai_badge(app, mv::shell::make_ai_badge(*answer, true));
+}
+
+// An answer landed (a probe or a full record). Never submits.
+void ai_badge_refresh(app_state* app) {
+  if (!app || !app->settings.ai_badge || app->ai_badge_path.empty()) return;
+  mv::io::dir_entry entry;
+  if (!current_dir_entry(app, entry) || entry.path_utf8 != app->ai_badge_path) return;
+  if (auto hit = app->meta.peek_provenance(entry)) set_ai_badge(app, mv::shell::make_ai_badge(*hit, true));
+}
+
+// Settings -> Viewer: off hides it at once; on asks again for what is on screen.
+void ai_badge_setting_changed(app_state* app) {
+  app->ai_badge_path.clear();
+  ai_badge_selection_changed(app);
+}
+
+// Bottom-right of the canvas: above the filmstrip and a clip's transport, left of
+// a right-hand pane; gone under the gallery, Settings, the Video Editor and
+// fullscreen with the chrome hidden.
+void layout_ai_badge(app_state* app) noexcept {
+  if (!app || !app->window || !app->chrome.panels_attached()) return;
+  RECT rc{};
+  ::GetClientRect(app->window, &rc);
+  const auto dpi = ::GetDpiForWindow(app->window);
+  const int width = rc.right - rc.left;
+  const int height = rc.bottom - rc.top;
+  const bool chrome_hidden = app->fullscreen && !app->fullscreen_reveal;
+  const bool covered = app->gallery_visible || app->settings_open || app->editor.open || chrome_hidden;
+  const bool right_pane = app->chrome.meta_pane_visible() || app->chrome.adjust_pane_visible() ||
+                          app->chrome.jobs_pane_visible() || app->chrome.edit_pane_visible();
+  const int strip = app->chrome.filmstrip_visible() ? mv::shell::chrome_filmstrip_height_px(dpi) : 0;
+  const mv::shell::chrome_rect at = mv::shell::ai_badge_rect(
+      width, height, strip, right_pane ? right_pane_px(width, dpi) : 0, app->chrome.transport_visible(), dpi);
+  const bool want = app->ai_badge.shown && !covered;
+  // Hidden: parked below the client area, so it never takes the canvas's clicks.
+  const mv::shell::chrome_rect parked{at.x, height + 1, at.width, at.height};
+  app->chrome.show_ai_badge(want, want ? at : parked, app->ai_badge.title, app->ai_badge.evidence);
+}
+
+bool push_meta_edit(app_state* app, bool drop_draft = false) noexcept;
 void set_adjust_pane(app_state* app, bool on);
 
 // The pane shows the record already held: three text tables, formatted here once
@@ -1270,9 +1447,14 @@ void push_meta_pane(app_state* app) noexcept {
   if (!app || !app->chrome.meta_pane_visible()) return;
   push_meta_edit(app);
   if (app->meta_record) {
+    // #352: what the Location row may do, beside the position itself.
+    const mv::meta::location_rights rights = mv::meta::location_rights_of(*app->meta_record);
+    const std::int32_t location = (rights.can_set ? mv::shell::kMetaFactLocationSet : 0) |
+                                  (rights.can_clear ? mv::shell::kMetaFactLocationClear : 0) |
+                                  (rights.in_original ? mv::shell::kMetaFactLocationInOriginal : 0);
     app->chrome.set_meta_data(false, mv::meta::summary_table(*app->meta_record),
                               mv::meta::editable_properties_table(*app->meta_record),
-                              mv::meta::streams_table(*app->meta_record));
+                              mv::meta::streams_table(*app->meta_record), &app->meta_record->s, location);
     return;
   }
   std::uint32_t count = 0;
@@ -1352,8 +1534,10 @@ std::string meta_comment_now(app_state* app, const std::string& path) {
   return app->meta_record ? app->meta_record->s.comment : std::string{};
 }
 
-void push_meta_edit(app_state* app, bool drop_draft) noexcept {
-  if (!app || !app->chrome.meta_pane_visible()) return;
+// True when the island took a drop (Esc) by closing an in-pane confirmation
+// only (#352): the field under it keeps the keyboard.
+bool push_meta_edit(app_state* app, bool drop_draft) noexcept {
+  if (!app || !app->chrome.meta_pane_visible()) return false;
   try {
     const std::string path = current_item_path(app);
     std::int32_t flags = 0;
@@ -1364,8 +1548,9 @@ void push_meta_edit(app_state* app, bool drop_draft) noexcept {
     app->focus_comment_next = false;
     const std::int32_t rating = path.empty() ? 0 : meta_rating_now(app, path);
     const std::string comment = path.empty() ? std::string{} : meta_comment_now(app, path);
-    app->chrome.set_meta_edit(rating, comment, flags);
+    return app->chrome.set_meta_edit(rating, comment, flags);
   } catch (...) {
+    return false;
   }
 }
 
@@ -1484,11 +1669,36 @@ void revert_current_metadata(app_state* app) noexcept {
   }
 }
 
-// PR 29 (owner, 2026-09-26): any tag, from the pane's tag tree, its Add tag
-// form and Summary's Remove location. The island parks one edit per line
-// ("S\tkey\tvalue" sets, "R\tkey" removes); they go as one queued write, so
-// removing a location is one checked rewrite, not one per GPS tag. The Mac
-// host's twin is main_mac.mm metaSetTag.
+// #352: the Location editor's text as a write, or false with why not.
+bool location_change(app_state* app, const std::string& text, mv::meta::change<mv::meta::geo_point>& out,
+                     std::string& why) {
+  const mv::meta::location_input in = mv::meta::parse_location(text);
+  if (in.k == mv::meta::location_input::kind::invalid) {
+    why = in.error;
+    return false;
+  }
+  if (in.k == mv::meta::location_input::kind::point) {
+    out = mv::meta::change<mv::meta::geo_point>::to(in.point);
+    return true;
+  }
+  const mv::meta::location_rights rights =
+      app->meta_record ? mv::meta::location_rights_of(*app->meta_record) : mv::meta::location_rights{};
+  if (!rights.can_clear) {
+    why = rights.in_original ? "This file's own location is in the original, which is never rewritten"
+                             : "There is no location to remove";
+    return false;
+  }
+  out = mv::meta::change<mv::meta::geo_point>::remove();
+  return true;
+}
+
+// PR 29 (owner, 2026-09-26): any tag, from the pane's tag tree and its Add tag
+// form. The island parks one edit per line ("S\tkey\tvalue" sets, "R\tkey"
+// removes); they go as one queued write. #352: "L\ttext" is Summary's Location
+// editor, the text as typed: read again here by meta::parse_location (the
+// island's preview is only a preview), blank removes every GPS row, after the
+// island's confirmation. The Mac host's twins are main_mac.mm metaSetTag and
+// metaSetLocation.
 void set_tags_from_pane(app_state* app) noexcept {
   try {
     std::string parked;
@@ -1506,6 +1716,11 @@ void set_tags_from_pane(app_state* app) noexcept {
       if (end == std::string::npos) end = parked.size();
       const std::string line = parked.substr(at, end - at);
       at = end + 1;
+      if (line.size() >= 2 && line[0] == 'L' && line[1] == '\t') {
+        std::string why;
+        if (!location_change(app, line.substr(2), f.location, why)) refused = why;
+        continue;
+      }
       if (line.size() < 3 || line[1] != '\t' || (line[0] != 'S' && line[0] != 'R')) continue;
       const bool remove = line[0] == 'R';
       const std::size_t tab = remove ? std::string::npos : line.find('\t', 2);
@@ -1526,7 +1741,7 @@ void set_tags_from_pane(app_state* app) noexcept {
       ::MessageBeep(MB_ICONWARNING);
       notice_show(app, refused);
     }
-    if (f.tags.empty()) return;
+    if (f.empty()) return;
     app->meta_writer.submit(path, f);
     schedule_meta_write(app, kCommentDebounceMs);
   } catch (...) {
@@ -1610,6 +1825,7 @@ void on_meta_write_done(app_state* app, std::unique_ptr<meta_write_result> r) {
     notice_show(app, job.revert                     ? "Could not revert the metadata"
                      : job.fields.rating.touches()  ? "Could not save the rating"
                      : job.fields.comment.touches() ? "Could not save the comment"
+                     : job.fields.location.touches() ? "Could not save the location; nothing was changed"
                      : out.error == mv::status::invalid_arg
                          ? "That value does not fit the tag; nothing was changed"
                          : "Could not save the metadata; nothing was changed");
@@ -1621,6 +1837,7 @@ void on_meta_write_done(app_state* app, std::unique_ptr<meta_write_result> r) {
   // What the store cached for this file is out of date: a JPEG's stamp moved,
   // a sidecar's did not, so drop it by path either way.
   app->meta.invalidate(out.path);
+  (void)mv_folder_forget_tags(app->session, out.path.c_str());  // #291: search reads its tags again
   // Issue #207: and the rating / label View > Show's cull filters cached.
   (void)mv_folder_note_metadata_written(app->session, out.path.c_str());
   if (r->stamped) {
@@ -1797,11 +2014,24 @@ HGLOBAL bytes_to_global(const std::vector<std::uint8_t>& bytes) {
 
 bool copy_to_clipboard(app_state* app) {
   if (!app || !app->window) return false;
+  // Words selected in the still (text in images): that text, CRLF.
+  if (app->text.has_selection()) {
+    const std::string text = app->text.text();
+    std::string crlf;
+    crlf.reserve(text.size() + text.size() / 16);
+    for (const char c : text) {
+      if (c == '\n') crlf.push_back('\r');
+      crlf.push_back(c);
+    }
+    if (!set_clipboard(app, CF_UNICODETEXT, text_to_global(crlf))) return false;
+    notice_show(app, mv::shell::copy_text_notice(app->text.words()));
+    return true;
+  }
   if (app->input.eyedropper) {
     const std::string text = app->lab.eyedropper_text();
     if (!text.empty()) return set_clipboard(app, CF_UNICODETEXT, text_to_global(text));
   }
-  const auto targets = expand_pair_targets(app, app->marks.targets(current_item_path(app)));
+  const auto targets = expand_pair_targets(app, selection_targets(app));
   if (targets.empty()) return false;
   return set_clipboard(app, CF_HDROP, hdrop_to_global(targets));
 }
@@ -1848,6 +2078,7 @@ void schedule_rotation_write(app_state* app) noexcept {
 
 void adjust_item_changed(app_state* app);
 void adjust_colour_changed(app_state* app);
+void strip_hint_show(app_state* app);
 
 // The canvas is about to show the selected item (a select, a listing landing,
 // a reselect after a rewrite). The previous slot keeps its geometry for the
@@ -1903,6 +2134,8 @@ void edit_item_opened(app_state* app) {
   adjust_item_changed(app);
   // PR 29: an open workspace follows the item to a tab it offers.
   workspace_item_changed(app);
+  // A document or a clip arriving under the filmstrip: say what T changes.
+  strip_hint_show(app);
 }
 
 void start_rotation_write(app_state* app) {
@@ -2259,6 +2492,7 @@ void folder_select(app_state* app, std::uint32_t index) {
     refresh_item_info(app);
     refresh_mark_state(app);
     metadata_selection_changed(app);
+    ai_badge_selection_changed(app);
     edit_item_opened(app);
     // Navigation keeps a fullscreen reveal up; it hides once this settles.
     if (app->fullscreen_reveal && app->window) {
@@ -2267,6 +2501,65 @@ void folder_select(app_state* app, std::uint32_t index) {
     ++app->input.activity_seq;
     publish(app);
   }
+}
+
+// The "Press T" filmstrip hint (shell/filmstrip_hint.h, docs/design/16): what the
+// canvas shows that the strip changes the input for. A document: with the strip
+// up the wheel zooms, hidden it scrolls. A clip (issue #416): with the strip up
+// ← → walk the folder, hidden they skip ±2 s.
+mv::shell::strip_hint_subject strip_hint_subject_now(app_state* app) {
+  if (!app || !app->session || app->mode == open_mode::none || app->edit_path.empty()) {
+    return mv::shell::strip_hint_subject::none;
+  }
+  if (app->gallery_visible || app->editor.open) return mv::shell::strip_hint_subject::none;
+  if (mv::io::is_document_name(app->edit_path)) return mv::shell::strip_hint_subject::document;
+  if (mv::shell::is_video_name(app->edit_path)) return mv::shell::strip_hint_subject::clip;
+  return mv::shell::strip_hint_subject::none;
+}
+
+// The hint's text when it is due now, else empty.
+std::string_view strip_hint_due_text(app_state* app) {
+  const auto subject = strip_hint_subject_now(app);
+  if (!mv::shell::strip_hint_due(subject, app->chrome.filmstrip_visible(), app->strip_hint_learned)) return {};
+  return mv::shell::strip_hint_text(subject);
+}
+
+void strip_hint_hide(app_state* app) {
+  if (!app->strip_hint_card) return;
+  app->strip_hint_card = false;
+  app->chrome.show_hint({});
+}
+
+// Shows the hint's card (bottom right, it fades by itself) if it is due, and
+// takes it down when what is on screen no longer has it due.
+void strip_hint_show(app_state* app) {
+  if (!app) return;
+  const auto text = strip_hint_due_text(app);
+  if (text.empty()) {
+    strip_hint_hide(app);
+    return;
+  }
+  const std::uint64_t now = ::GetTickCount64();
+  if (app->strip_hint_card && now - app->strip_hint_shown_at < 1000) return;
+  app->strip_hint_card = true;
+  app->strip_hint_shown_at = now;
+  app->chrome.show_hint(std::string(text));
+}
+
+// The hint is learned for good: T hid the strip over its subject, or the
+// card's "Got it" was clicked.
+void strip_hint_learn(app_state* app) {
+  app->strip_hint_learned = true;
+  mv::shell::save_strip_hint_learned();
+  strip_hint_hide(app);
+}
+
+// T: hiding the strip over a subject teaches the hint, for good.
+void strip_hint_toggled(app_state* app) {
+  if (!app || app->strip_hint_learned) return;
+  const auto subject = strip_hint_subject_now(app);
+  if (!mv::shell::strip_hint_learned_by_toggle(subject, app->chrome.filmstrip_visible())) return;
+  strip_hint_learn(app);
 }
 
 // Ctrl+PageDown / PageUp: the next or previous page of the multi-page still
@@ -2297,7 +2590,8 @@ bool turn_page(app_state* app, int delta, bool land = false) {
   app->page = static_cast<std::uint32_t>(want);
   ++app->input.page_land_seq;
   app->input.page_land = land ? (delta > 0 ? 1 : -1) : 0;
-  notice_show(app, "Page " + std::to_string(app->page + 1) + " of " + std::to_string(app->page_count));
+  notice_show(app, mv::shell::page_notice(app->page, app->page_count));
+  strip_hint_show(app);
   ++app->input.activity_seq;
   publish(app);
   return true;
@@ -2314,49 +2608,40 @@ bool document_scrolls(app_state* app) {
 
 // `dx` / `dy` in wheel units (120 a notch; a touchpad sends less), positive
 // moving the view right / down. A notch is a tenth of the canvas, as a
-// keyboard pan step is. A scroll held against the top or bottom edge for
-// kTurnPx turns the page: one per notch on a wheel, one per flick on a
-// touchpad (its inertia does not run on through the document).
+// keyboard pan step is, and glides there on the canvas spring; a precision
+// touchpad's deltas (and its momentum) move the view directly. Pushing past the
+// top or bottom edge turns the page at once (canvas/document_scroll.h).
 void scroll_document(app_state* app, int dx, int dy) {
-  const ULONGLONG now = ::GetTickCount64();
   const bool notched = dx % WHEEL_DELTA == 0 && dy % WHEEL_DELTA == 0;
-  if (notched ? now - app->page_turn_tick > 120 : now - app->last_scroll_tick > 250) {
-    app->page_turn_latched = false;
-  }
+  // A notch is a tenth of the canvas. A touchpad keeps the step the wheel
+  // units always had here (a tenth of the canvas per 120), so a two-finger
+  // swipe covers the same ground as before, only without the spring.
   const double step = std::max(1.0, 0.1 * static_cast<double>(app->input.height)) / WHEEL_DELTA;
-  const double px = dx * step;
-  double py = dy * step;
-  const double turn_px = 60.0 * std::max(1.0f, app->input.dpi_scale);
-  const unsigned edges = app->lab.scroll_edges();
-  const bool at_edge = std::abs(py) >= std::abs(px) && py != 0.0 &&
-                       (py > 0 ? (edges & mv::canvas::camera::kEdgeBottom) != 0
-                               : (edges & mv::canvas::camera::kEdgeTop) != 0);
-  if (at_edge) {
-    if ((app->overscroll > 0) != (py > 0) || now - app->last_scroll_tick > 300) app->overscroll = 0;
-    app->overscroll += py;
-    if (!app->page_turn_latched && std::abs(app->overscroll) >= turn_px) {
-      const int delta = app->overscroll > 0 ? 1 : -1;
-      app->overscroll = 0;
-      const std::uint32_t before = app->page;
-      if (turn_page(app, delta, /*land=*/true) && app->page != before) {
-        app->page_turn_latched = true;
-        app->page_turn_tick = now;
-      }
+  // Read the ack before the edges: the lab stores them the other way round.
+  const std::uint32_t ack = app->lab.page_land_ack();
+  mv::canvas::document_scroll_input in;
+  in.dx = dx * step;
+  in.dy = dy * step;
+  in.precise = !notched;
+  in.now = static_cast<double>(::GetTickCount64()) / 1000.0;
+  in.edges = app->lab.scroll_edges();
+  in.canvas_h = static_cast<float>(app->input.height);
+  in.land_ack = ack;
+  const auto out = app->doc_scroll.feed(in);
+  if (out.turn != 0) {
+    const std::uint32_t before = app->page;
+    if (turn_page(app, out.turn, /*land=*/true) && app->page != before) {
+      app->doc_scroll.turned(app->input.page_land_seq, in.now);
     }
-    py = 0;
-  } else {
-    app->overscroll = 0;
   }
-  app->last_scroll_tick = now;
-  app->scroll_rem_x += px;
-  app->scroll_rem_y += py;
-  const auto ix = static_cast<std::int64_t>(std::trunc(app->scroll_rem_x));
-  const auto iy = static_cast<std::int64_t>(std::trunc(app->scroll_rem_y));
-  app->scroll_rem_x -= static_cast<double>(ix);
-  app->scroll_rem_y -= static_cast<double>(iy);
-  if (ix == 0 && iy == 0) return;
-  app->input.scroll_px_x += ix;
-  app->input.scroll_px_y += iy;
+  if (out.px_x == 0 && out.px_y == 0) return;
+  if (out.direct) {
+    app->input.scroll_direct_px_x += out.px_x;
+    app->input.scroll_direct_px_y += out.px_y;
+  } else {
+    app->input.scroll_px_x += out.px_x;
+    app->input.scroll_px_y += out.px_y;
+  }
   ++app->input.activity_seq;
   publish(app);
 }
@@ -2371,6 +2656,87 @@ void folder_step(app_state* app, int delta) {
   const auto next = mv::shell::step_index(selected, delta, count, app->settings.wrap);
   if (!next) return;
   folder_select(app, *next);
+}
+
+// Issue #212 (docs/design/16 "Touch and trackpad"): a swipe steps the folder
+// as A / D do, but only on the viewer itself: not under the gallery, and not
+// while crop owns the arrows.
+void swipe_step(app_state* app, int delta) {
+  if (delta == 0 || app->gallery_visible || app->edits.crop_active()) return;
+  folder_step(app, delta);
+}
+
+// Touchscreen pinch and pan, from WM_GESTURE. Returns false for what
+// DefWindowProc must see (GID_BEGIN / GID_END, the gestures left off).
+//
+// WM_GESTURE, not WM_POINTER or DirectManipulation: the system recogniser
+// gives the pinch distance and centre and a pan, and a tap still arrives as
+// the promoted mouse click every other path already handles (welcome rows,
+// canvas focus). Raw pointers would mean re-deriving taps and contact
+// bookkeeping; DirectManipulation brings its own viewport and inertia to
+// fight the camera springs. Here a gesture is only input: pinch -> wheel
+// units toward the fingers, pan -> screen pixels, swipe -> folder step.
+bool handle_gesture(app_state* app, HWND hwnd, const GESTUREINFO& gi) {
+  if (gi.dwID == GID_BEGIN) {
+    app->touch_swipe = mv::shell::swipe_detector{
+        mv::shell::touch_swipe_threshold_px(app->input.dpi_scale), 1000};
+    app->touch_pinch.reset();
+    app->touch_zoom_distance = 0;
+    return false;
+  }
+  if (gi.dwID == GID_END) {
+    app->touch_swipe.end();
+    return false;
+  }
+  if (gi.dwID != GID_ZOOM && gi.dwID != GID_PAN) return false;
+  POINT at{gi.ptsLocation.x, gi.ptsLocation.y};
+  ::ScreenToClient(hwnd, &at);
+  const bool begin = (gi.dwFlags & GF_BEGIN) != 0;
+
+  if (gi.dwID == GID_ZOOM) {
+    // A pinch is never also a swipe, however far its centre drifts.
+    app->touch_swipe.suppress();
+    const ULONGLONG distance = gi.ullArguments;
+    if (begin || app->touch_zoom_distance == 0 || distance == 0) {
+      app->touch_zoom_distance = distance;
+      return true;
+    }
+    const double scale =
+        static_cast<double>(distance) / static_cast<double>(app->touch_zoom_distance);
+    app->touch_zoom_distance = distance;
+    const std::int64_t units = app->touch_pinch.feed(scale);
+    if (units == 0) return true;
+    app->input.mouse_x = static_cast<float>(at.x);
+    app->input.mouse_y = static_cast<float>(at.y);
+    app->input.wheel_total += units;
+    ++app->input.activity_seq;
+    publish(app);
+    transport_activity(app);
+    return true;
+  }
+
+  // GID_PAN: the contact centre, in physical pixels like the mouse.
+  if (begin) {
+    app->touch_pan_last = at;
+    return true;
+  }
+  const LONG dx = at.x - app->touch_pan_last.x;
+  const LONG dy = at.y - app->touch_pan_last.y;
+  app->touch_pan_last = at;
+  if (dx == 0 && dy == 0) return true;
+  if (app->lab.view_fitted()) {
+    // The opening view is locked (no drag at fit): a sideways stroke is
+    // swipe-next. Fingers moving left bring in the next item.
+    swipe_step(app, app->touch_swipe.feed(-dx, -dy, ::GetTickCount64()));
+    return true;
+  }
+  // Zoomed: the content follows the fingers, through pan_by_screen's springs.
+  app->input.scroll_px_x -= dx;
+  app->input.scroll_px_y -= dy;
+  ++app->input.activity_seq;
+  publish(app);
+  transport_activity(app);
+  return true;
 }
 
 // Skim, not transport: J/L are the +/-10 s jumps, Q/E are the shuttle you hold
@@ -3413,6 +3779,7 @@ void toggle_filmstrip_setting(app_state* app) {
   // T toggles the strip for the mode you are in, and that is the preference
   // that gets written: turning it off while browsing a folder should not also
   // turn it off for the single images you open from Explorer.
+  strip_hint_toggled(app);
   bool& flag = app->mode == open_mode::image ? app->settings.filmstrip_for_image
                                              : app->settings.filmstrip_for_folder;
   flag = !flag;
@@ -4189,14 +4556,49 @@ void chrome_on_command(void* ctx, int command, float arg) {
   // it went away may act on the app now.
   if (!app || app->closing) return;
   switch (command) {
-    case mv::shell::chrome_cmd_home_colour: {
-      const auto rgb = static_cast<std::uint32_t>(arg) & 0xFFFFFFu;
-      if (app->input.home_background_rgb != rgb) {
-        app->input.home_background_rgb = rgb;
-        publish(app);
-      }
+    // Issue #408: the theme's tokens and ground. Each stores; home_colour,
+    // which RefreshTheme sends last, publishes them together (one redraw).
+    case mv::shell::chrome_cmd_home_surface:
+    case mv::shell::chrome_cmd_home_title:
+    case mv::shell::chrome_cmd_home_body:
+    case mv::shell::chrome_cmd_home_hairline:
+    case mv::shell::chrome_cmd_home_accent: {
+      const std::uint32_t rgba = mv::shell::home_opaque(static_cast<std::uint32_t>(arg));
+      auto& h = app->input.home;
+      std::uint32_t* const slot[] = {&h.surface, &h.title, &h.body, &h.hairline, &h.accent};
+      *slot[command - mv::shell::chrome_cmd_home_surface] = rgba;
       return;
     }
+    case mv::shell::chrome_cmd_home_effect: {
+      const int e = static_cast<int>(arg);
+      app->input.home.effect = e > 0 && e < static_cast<int>(mv::shell::home_effect::count)
+                                   ? static_cast<mv::shell::home_effect>(e)
+                                   : mv::shell::home_effect::none;
+      return;
+    }
+    case mv::shell::chrome_cmd_home_effect_rgb:
+      app->input.home.effect_rgb = static_cast<std::uint32_t>(arg) & 0xFFFFFFu;
+      return;
+    case mv::shell::chrome_cmd_home_effect_intensity:
+    case mv::shell::chrome_cmd_home_effect_speed:
+    case mv::shell::chrome_cmd_home_effect_size: {
+      const float v = arg > 0.0f && arg <= 1.0f ? arg : 1.0f;
+      auto& h = app->input.home;
+      float* const slot[] = {&h.intensity, &h.speed, &h.size};
+      *slot[command - mv::shell::chrome_cmd_home_effect_intensity] = v;
+      return;
+    }
+    case mv::shell::chrome_cmd_hint_learned:
+      if (!app->strip_hint_learned) strip_hint_learn(app);
+      return;
+    case mv::shell::chrome_cmd_home_ground_input:
+      ++app->input.pointer_seq;
+      publish(app);  // wakes the render thread; it notes the time, draws nothing
+      return;
+    case mv::shell::chrome_cmd_home_colour:
+      app->input.home.canvas = mv::shell::home_opaque(static_cast<std::uint32_t>(arg));
+      publish(app);  // one redraw only if a token changed (present_lab compares)
+      return;
     case mv::shell::chrome_cmd_open:
       if (app->window) open_file_dialog(app, app->window);
       return;
@@ -4246,12 +4648,16 @@ void chrome_on_command(void* ctx, int command, float arg) {
     case mv::shell::chrome_cmd_toggle_filmstrip:
       toggle_filmstrip_setting(app);
       return;
-    case mv::shell::chrome_cmd_set_settings:
+    case mv::shell::chrome_cmd_set_settings: {
+      // #345: the AI badge alone is chrome only; switching it must not refit or
+      // present the canvas, so it skips apply_view_state below.
+      const std::int32_t view_before = app->settings.flags();
       {
         const std::int32_t keep_sort = app->settings.sort;
         app->settings = mv::shell::view_settings::from_flags(static_cast<std::int32_t>(arg));
         app->settings.sort = keep_sort;
       }
+      const std::int32_t view_changed = view_before ^ app->settings.flags();
       mv::shell::save_view_settings(app->settings);
       mv::shell::app_settings().set_int(
           "update", "auto_check",
@@ -4267,11 +4673,12 @@ void chrome_on_command(void* ctx, int command, float arg) {
             (static_cast<std::int32_t>(arg) & mv::shell::telemetry::kChromeFlagTelemetry) != 0);
       }
       app->input.sticky_zoom = app->settings.sticky_zoom;
-      app->input.background = app->settings.background;
       (void)mv_folder_set_hidden_kinds(app->session, app->settings.hidden_kinds());
       app->chrome.apply_settings(chrome_flags(app), app->settings.sort);
-      apply_view_state(app);
+      if (view_changed & mv::shell::kSettingHideAiBadge) ai_badge_setting_changed(app);
+      if (view_changed != mv::shell::kSettingHideAiBadge) apply_view_state(app);
       return;
+    }
     case mv::shell::chrome_cmd_tree_open: {
       // The island cannot pass a string through the callback; it parks the
       // chosen folder and native pulls it (chrome_host::take_tree_path).
@@ -4312,6 +4719,31 @@ void chrome_on_command(void* ctx, int command, float arg) {
       app->router.rebuild(mv::shell::live_bindings());
       publish_command_table(app);
       return;
+    case mv::shell::chrome_cmd_apply_keymap: {
+      // Applied once (docs/design/16 "Keymap packs"): the table is the defaults
+      // with the pack's keys written in, then it is the person's like any remap.
+      std::vector<mv::addon::keymap_binding> bindings;
+      if (!mv::shell::keymap_bindings_from_json(app->chrome.take_tree_path(), bindings)) {
+        mv::shell::keymap_result refused;
+        refused.skipped.push_back("not a key layout");
+        app->chrome.set_keymap_report(mv::shell::keymap_report_json(refused));
+        return;
+      }
+      mv::shell::command_id released[mv::shell::key_router::kHeldSlots]{};
+      const std::size_t n = app->router.cancel_holds(released);
+      for (std::size_t i = 0; i < n; ++i) (void)run_command(app, released[i]);
+      const mv::shell::keymap_result r = mv::shell::apply_keymap(bindings);
+      if (!r.skipped.empty()) {
+        MV_LOG_INFO("keymap: %d rows set, %d unbound, %zu skipped", r.rows_changed, r.displaced,
+                    r.skipped.size());
+      }
+      persist_live_keys();
+      app->router.rebuild(mv::shell::live_bindings());
+      publish_command_table(app);
+      // Settings lists what was skipped or left unbound, as the Mac does.
+      app->chrome.set_keymap_report(mv::shell::keymap_report_json(r));
+      return;
+    }
     case mv::shell::chrome_cmd_set_rate:
       apply_rate(app, rate_index_for(static_cast<double>(arg)));
       return;
@@ -4366,7 +4798,16 @@ void chrome_on_command(void* ctx, int command, float arg) {
       // listing for the common case.
       app->own_drag = true;
       std::string lines;
-      if (!app->marks.empty()) {
+      const std::uint32_t at = static_cast<std::uint32_t>(arg < 0.0f ? 0.0f : arg);
+      // Issue #413: any cell of the gallery's range drags the whole range.
+      if (gallery_range_live(app) && at < folder_count(app) &&
+          std::find(app->gallery_range.begin(), app->gallery_range.end(), item_path_at(app, at)) !=
+              app->gallery_range.end()) {
+        for (const std::string& p : expand_pair_targets(app, app->gallery_range)) {
+          lines += p;
+          lines += '\n';
+        }
+      } else if (!app->marks.empty()) {
         const std::uint32_t count = folder_count(app);
         const auto index = static_cast<std::uint32_t>(arg < 0.0f ? 0.0f : arg);
         if (index < count && app->marks.contains(item_path_at(app, index))) {
@@ -4493,6 +4934,30 @@ void chrome_on_command(void* ctx, int command, float arg) {
     case mv::shell::chrome_cmd_meta_revert:
       revert_current_metadata(app);
       return;
+    case mv::shell::chrome_cmd_gallery_range: {
+      // Issue #413: Shift-click in the gallery. The indices come parked, in
+      // the grid's order; the range stands while `arg` stays selected.
+      std::string parked;
+      if (!app->chrome.take_parked_text(parked)) return;
+      app->gallery_range.clear();
+      app->gallery_range_anchor.clear();
+      std::uint32_t selected = 0;
+      if (!selected_index(app, selected) || arg < 0.0f || static_cast<std::uint32_t>(arg) != selected) return;
+      const std::uint32_t count = folder_count(app);
+      std::size_t at = 0;
+      while (at < parked.size()) {
+        const std::size_t comma = std::min(parked.find(',', at), parked.size());
+        std::uint32_t index = 0;
+        const auto [end, ec] = std::from_chars(parked.data() + at, parked.data() + comma, index);
+        if (ec == std::errc{} && end == parked.data() + comma && index < count) {
+          std::string p = item_path_at(app, index);
+          if (!p.empty()) app->gallery_range.push_back(std::move(p));
+        }
+        at = comma + 1;
+      }
+      if (!app->gallery_range.empty()) app->gallery_range_anchor = item_path_at(app, selected);
+      return;
+    }
     case mv::shell::chrome_cmd_rename:
       commit_rename(app);
       if (app->window) focus_canvas(app);
@@ -4724,7 +5189,12 @@ mv::shell::view_state view_state_of(app_state* app) noexcept {
       s.focus = mv::shell::focus_kind::text;
     }
   }
-  if (video_mode(app)) s.item = mv::shell::item_kind::clip;
+  // The play state says whether a clip is on screen. Issue #416: on a clip,
+  // ← → skip ±2 s only with the strip hidden; playing or paused is not a mode.
+  std::uint32_t play = MV_PLAY_STOPPED;
+  if (app->session && mv_video_state(app->session, &play) != MV_OK) play = MV_PLAY_STOPPED;
+  s.filmstrip_visible = app->chrome.filmstrip_visible();
+  if (play != MV_PLAY_STOPPED) s.item = mv::shell::item_kind::clip;
   else if (app->lab.animation() != mv::shell::animation_state::none) s.item = mv::shell::item_kind::animation;
   else if (app->mode != open_mode::none) s.item = mv::shell::item_kind::still;
   s.gallery_open = app->gallery_visible;
@@ -4745,6 +5215,7 @@ mv::shell::view_state view_state_of(app_state* app) noexcept {
   // Milestone H: Esc from a result list is the path bar's "Back to folder"
   // (leave_result_list's own condition, so the key is never swallowed).
   s.list_open = !app->list_title.empty();
+  s.text_selected = app->text.has_selection();
   return s;
 }
 
@@ -5278,7 +5749,44 @@ void refresh_contributed_commands(app_state* app) noexcept {
       }
     }
   }
+  // docs/design/25 PR 57: other makers' script commands, after ours. Their keys
+  // give way to the base app's (set_addon_commands), and Settings says so.
+  json.assign(16 * 1024, '\0');
+  needed = 0;
+  status = mv_script_commands_json(json.data(), static_cast<uint32_t>(json.size()), &needed);
+  if (status == MV_ERR_INVALID_ARG && needed > json.size()) {
+    json.assign(needed, '\0');
+    status = mv_script_commands_json(json.data(), static_cast<uint32_t>(json.size()), &needed);
+  }
+  if (status == MV_OK && needed > 0) {
+    json.resize(needed - 1);
+    if (const auto doc = mv::json::parse(json); doc && doc->k == mv::json::kind::array) {
+      for (const mv::json::value& c : doc->a) {
+        const std::string* addon = c.str("addon");
+        const std::string* id = c.str("id");
+        const std::string* name = c.str("name");
+        if (!addon || !id || !name) continue;
+        mv::shell::addon_command_row r;
+        r.addon = *addon;
+        r.id = *id;
+        r.name = *name;
+        r.script = true;
+        const std::string* label = c.str("key");
+        if (label && !label->empty() && !mv::shell::parse_key_label(*label, r.k, r.mods)) {
+          r.k = mv::shell::key::none;
+          r.mods = 0;
+          r.note = "\"" + *label + "\" is not a key MediaViewer knows, so this command has no key";
+        }
+        const std::string* modes = c.str("modes");
+        r.modes = mv::shell::parse_modes(modes ? *modes : "viewing");
+        const std::string* payload = c.str("payload");
+        r.payload = payload ? *payload : "none";
+        rows.push_back(std::move(r));
+      }
+    }
+  }
   mv::shell::set_addon_commands(rows);
+  (void)mv_script_set_key_notes(mv::shell::addon_command_notes_json().c_str());
   // rebuild forgets held keys; release them first (issue #186).
   mv::shell::command_id released[mv::shell::key_router::kHeldSlots]{};
   const std::size_t n = app->router.cancel_holds(released);
@@ -5332,8 +5840,10 @@ void walk_back(app_state* app, mv::shell::back_target target) noexcept {
         return;
       }
       // PR 12: Esc in the comment field drops the edit. The pane forgets the
-      // draft before focus leaves, so leaving it does not commit.
-      push_meta_edit(app, true);
+      // draft before focus leaves, so leaving it does not commit. #352: Esc on
+      // the Location remove confirmation closes only that and the field keeps
+      // the keyboard, as the Mac's alert does; the next Esc leaves the field.
+      if (push_meta_edit(app, true)) return;
       focus_canvas(app);
       return;
     case back_target::canvas_focus:
@@ -5346,6 +5856,9 @@ void walk_back(app_state* app, mv::shell::back_target target) noexcept {
       return;
     case back_target::result_list:
       (void)leave_result_list(app);
+      return;
+    case back_target::text_selection:
+      if (app->text.clear()) text_publish(app);
       return;
     case back_target::pane:
       // Esc from the canvas closes what is open: the Edit workspace (PR 29;
@@ -5471,7 +5984,7 @@ void set_fullscreen_reveal(app_state* app, bool on) noexcept {
 // only UI-thread part; the bytes move on the file-job worker.
 bool start_transfer(app_state* app, mv::shell::file_job_kind kind, bool pick) {
   if (!app || !app->window) return false;
-  auto targets = expand_pair_targets(app, app->marks.targets(current_item_path(app)));
+  auto targets = expand_pair_targets(app, selection_targets(app));
   if (targets.empty()) return false;
   std::string dest;
   if (!pick && !app->destinations.empty()) dest = app->destinations.front();
@@ -5498,7 +6011,7 @@ bool start_transfer(app_state* app, mv::shell::file_job_kind kind, bool pick) {
 // with no bin is refused on the worker, never deleted permanently.
 bool start_recycle(app_state* app) {
   if (!app || !app->window) return false;
-  const auto stops = app->marks.targets(current_item_path(app));
+  const auto stops = selection_targets(app);
   if (stops.empty()) return false;
   // A paired stop goes with both halves, and the question says so (PR 7).
   auto targets = expand_pair_targets(app, stops);
@@ -5751,7 +6264,7 @@ void motion_tick(app_state* app) noexcept {
 // pair gives both halves, as Ctrl+C does.
 bool copy_paths_to_clipboard(app_state* app) {
   if (!app) return false;
-  const auto targets = expand_pair_targets(app, app->marks.targets(current_item_path(app)));
+  const auto targets = expand_pair_targets(app, selection_targets(app));
   const std::string text = mv::shell::paths_as_text(targets, "\r\n");
   if (text.empty()) return false;
   return set_clipboard(app, CF_UNICODETEXT, text_to_global(text));
@@ -5817,11 +6330,160 @@ void on_flatten_done(app_state* app, std::unique_ptr<flatten_job_result> r) {
   }
 }
 
+// Text in images (Live Text; docs/design/16): shell/text_in_image.h's port on
+// Windows. Windows.Media.Ocr is WinRT, so the chrome runs it
+// (IslandHost.RecognizeText), synchronously, on the worker that calls this.
+// On device (rule 6); no text or pixel is logged.
+class chrome_text_recognizer final : public mv::shell::text_recognizer {
+ public:
+  explicit chrome_text_recognizer(mv::shell::chrome_entry_fn entry) noexcept : entry_(entry) {}
+
+  mv::shell::text_recognition recognise(const mv::shell::text_image& image,
+                                        mv::shell::text_layout& layout) noexcept override {
+    using mv::shell::text_recognition;
+    layout = {};
+    if (!entry_) return text_recognition::unavailable;
+    try {
+      // A 4096 px page of small print is a few thousand words of ~30 bytes.
+      std::string buf(std::size_t{1} << 20, '\0');
+      mv::shell::chrome_text_recognition_args args{};
+      args.pixels = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(image.pixels.data()));
+      args.width = static_cast<std::int32_t>(image.width);
+      args.height = static_cast<std::int32_t>(image.height);
+      args.out_utf8 = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(buf.data()));
+      args.out_capacity = static_cast<std::int32_t>(buf.size());
+      switch (entry_(&args, static_cast<std::int32_t>(sizeof(args)))) {
+        case 0:
+          if (args.out_length < 0 || args.out_length > args.out_capacity) return text_recognition::failed;
+          buf.resize(static_cast<std::size_t>(args.out_length));
+          layout = mv::shell::parse_word_records(buf, image.width, image.height);
+          return text_recognition::ok;
+        case 1: return text_recognition::no_language;
+        case 2: return text_recognition::unavailable;
+        default: return text_recognition::failed;
+      }
+    } catch (...) {
+      return text_recognition::failed;
+    }
+  }
+
+ private:
+  mv::shell::chrome_entry_fn entry_ = nullptr;
+};
+
+// What the words on screen would be read from: the still and its geometry, or
+// nothing when there is no still to select in (a clip, audio, a document, an
+// animation, the gallery, the Edit workspace, a crop, Show original).
+mv::shell::text_select::source text_source(app_state* app) noexcept {
+  mv::shell::text_select::source src;
+  if (edit_subject_of(app) != mv::shell::edit_subject::still || app->gallery_visible || app->ws.open ||
+      app->edits.crop_active() || app->show_original || app->edit_key == 0) {
+    return src;
+  }
+  // The path's key with the select's generation: a rewritten file is read again.
+  src.item = app->edit_key * 31u + app->edit_generation;
+  src.geometry = app->edits.export_geometry();
+  return src;
+}
+
+void text_sync(app_state* app) noexcept {
+  if (!app || !app->text.show(text_source(app))) return;
+  app->text.fill(app->input.text);
+  ++app->input.activity_seq;
+}
+
+void text_publish(app_state* app) {
+  app->text.fill(app->input.text);
+  ++app->input.activity_seq;
+  publish(app);
+}
+
+// The pointer in 0..1 of the still as the render thread last drew it.
+bool text_point(app_state* app, float x, float y, float& u, float& v, float& aspect) noexcept {
+  const mv::shell::canvas_map map = app->lab.still_map();
+  if (!map.to_uv(x, y, u, v)) return false;
+  aspect = map.aspect();
+  return true;
+}
+
+// A left press at (x, y), client pixels. True when it landed on text: it
+// selects, and the render thread does not pan for it.
+bool text_press(app_state* app, int x, int y) {
+  // Double and triple clicks, by the system's time and distance.
+  const DWORD now = static_cast<DWORD>(::GetMessageTime());
+  const int cx = ::GetSystemMetrics(SM_CXDOUBLECLK) / 2;
+  const int cy = ::GetSystemMetrics(SM_CYDOUBLECLK) / 2;
+  const bool again = app->text_clicks > 0 && now - app->text_click_time <= ::GetDoubleClickTime() &&
+                     std::abs(x - app->text_click_x) <= cx && std::abs(y - app->text_click_y) <= cy;
+  app->text_clicks = again ? std::min(app->text_clicks + 1, 3) : 1;
+  app->text_click_time = now;
+  app->text_click_x = x;
+  app->text_click_y = y;
+  text_sync(app);
+  if (!app->text.has_words() || app->input.eyedropper || app->input.loupe) return false;
+  float u = 0, v = 0, aspect = 1;
+  if (!text_point(app, static_cast<float>(x), static_cast<float>(y), u, v, aspect)) return false;
+  const bool had = app->text.has_selection();
+  const bool on_text = app->text.press(u, v, aspect, app->text_clicks);
+  if (on_text || had) app->text.fill(app->input.text);
+  return on_text;
+}
+
+// The pointer moved over the canvas: the I-beam over words, and a read once
+// the pointer has rested on a still (arrowing through a folder never reads).
+void text_hover(app_state* app, int x, int y) {
+  text_sync(app);
+  float u = 0, v = 0, aspect = 1;
+  const bool placed = text_point(app, static_cast<float>(x), static_cast<float>(y), u, v, aspect);
+  if (placed && app->text.wants_read() && !app->text_dwell && app->window) {
+    app->text_dwell = ::SetTimer(app->window, kTextDwellTimerId, kTextDwellMs, nullptr) != 0;
+  }
+  app->text_beam = placed && !app->input.eyedropper && !app->input.loupe && app->text.over_text(u, v, aspect);
+}
+
+// Decode and OCR on the pool (rule 1), on device (rule 6); kMsgTextRead hands
+// the words to app->text if the still is still the one on screen.
+struct text_read_result {
+  mv::shell::text_select::source from;
+  mv::shell::read_text read;
+};
+
+void start_text_read(app_state* app) {
+  app->text_dwell = false;
+  if (app->window) ::KillTimer(app->window, kTextDwellTimerId);
+  text_sync(app);
+  if (!app->window || !app->text.wants_read() || !app->lab.still_map().valid) return;
+  const mv::shell::text_select::source from = app->text.current();
+  const mv::shell::chrome_entry_fn entry = app->chrome.text_recognition_entry();
+  app->text.reading();
+  const HWND hwnd = app->window;
+  app->jobs.submit_at(mv::background_generation,
+                      [path = app->edit_path, from, entry, hwnd](const mv::job_context&) -> mv::status {
+                        chrome_text_recognizer recognizer(entry);
+                        auto* r = new (std::nothrow) text_read_result{
+                            from, mv::shell::run_text_recognition(path, from.geometry, recognizer,
+                                                                  mv::shell::text_pixel_order::bgra)};
+                        if (r && !::PostMessageW(hwnd, kMsgTextRead, 0, reinterpret_cast<LPARAM>(r))) delete r;
+                        return mv::status::ok;
+                      });
+}
+
+void on_text_read(app_state* app, std::unique_ptr<text_read_result> r) {
+  if (!app || !r) return;
+  const std::string why = mv::shell::text_recognition_notice(r->read);
+  if (!app->text.set_words(r->from, std::move(r->read.layout))) return;
+  // No OCR language, or no OCR: said once a session, not on every still.
+  if (!why.empty() && !app->text_told) {
+    app->text_told = true;
+    notice_show(app, why);
+  }
+}
+
 // Ctrl+Shift+S: Windows Share with the marked (else current) file(s). The
 // share sheet is WinRT, so the chrome shows it (IslandHost.Share.cs).
 bool share_targets(app_state* app) {
   if (!app || !app->window) return false;
-  const auto targets = expand_pair_targets(app, app->marks.targets(current_item_path(app)));
+  const auto targets = expand_pair_targets(app, selection_targets(app));
   if (targets.empty()) return false;
   mv::json::writer w;
   w.begin_array();
@@ -6293,7 +6955,7 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
         }
         w.end_array();
       } else if (row->payload == "marked_or_current") {
-        const auto targets = expand_pair_targets(app, app->marks.targets(current_item_path(app)));
+        const auto targets = expand_pair_targets(app, selection_targets(app));
         if (targets.empty()) return false;
         w.begin_array();
         for (const std::string& t : targets) w.string(t);
@@ -6306,6 +6968,9 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       } else {
         w.null();
       }
+      // docs/design/25 PR 57: another maker's row runs in its script, on its own
+      // worker; posting never blocks, and its answer comes back as a notice.
+      if (row->script) return mv_script_run_command(row->addon.c_str(), row->id.c_str(), w.str().c_str()) == MV_OK;
       return app->chrome.run_addon_command(row->addon, row->id, w.str());
     }
     case open_import: {
@@ -6324,7 +6989,7 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     case import_now: {
       if (!mv::shell::addon_commands_available()) return false;
       const auto targets =
-          expand_pair_targets(app, app->marks.targets(current_item_path(app)));
+          expand_pair_targets(app, selection_targets(app));
       if (targets.empty()) return false;
       mv::json::writer w;
       w.begin_array();
@@ -6559,9 +7224,6 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       return true;
 
     // View state the render thread draws from (levels, not edges).
-    case cycle_background:
-      app->input.background = static_cast<std::uint8_t>((app->input.background + 1) % 5);
-      return set_level(app);
     case sticky_zoom:
       app->input.sticky_zoom = !app->input.sticky_zoom;
       return set_level(app);
@@ -6599,6 +7261,17 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       app->input.af_points = !app->input.af_points;
       request_metadata_now(app);
       return set_level(app);
+    // Issue #209: 100 % on the AF point. The quads come from the record the
+    // store holds (or one read on the pool); the camera moves on the render
+    // thread. Nothing here reads the file.
+    case zoom_af_point:
+      if (app->meta_record) {
+        af_focus_fire(app);
+      } else {
+        app->af_focus_pending = true;
+        request_metadata_now(app);
+      }
+      return true;
     case eyedropper:
       app->input.eyedropper = !app->input.eyedropper;
       return set_level(app);
@@ -6638,6 +7311,12 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       return set_level(app);
     }
     case mark_all: {
+      // With words selected in the still, Select All is every word (Photos);
+      // otherwise it marks every file.
+      if (app->text.has_selection() && app->text.select_all()) {
+        text_publish(app);
+        return true;
+      }
       const std::uint32_t count = folder_count(app);
       if (count == 0) return false;
       std::vector<std::string> paths;
@@ -6720,8 +7399,10 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       underneath.popup_open = false;
       const mv::shell::mode under_mode = mv::shell::resolve_mode(underneath);
       auto modes = static_cast<std::int32_t>(mv::shell::mask_of(under_mode));
-      // Trim layers over video (key_router.cpp), so `?` lists both.
-      if (under_mode == mv::shell::mode::trim) modes |= mv::shell::kVideo;
+      // Trim and skim layer over video (key_router.cpp), so `?` lists both.
+      if (under_mode == mv::shell::mode::trim || under_mode == mv::shell::mode::skim) {
+        modes |= mv::shell::kVideo;
+      }
       app->popup_open = true;
       if (app->fullscreen) layout_chrome(app);  // the flyouts hang off the bar
       app->chrome.show_popup(kind, modes);
@@ -7255,6 +7936,7 @@ void layout_panels(app_state* app) noexcept {
   if (want_meta && !want_adjust && !want_jobs) push_meta_pane(app);
   if (want_adjust) push_adjust_pane(app);
   layout_editor(app);  // PR 30: the card beside whatever pane is up
+  layout_ai_badge(app);  // #345: clear of the panes, the strip and the transport
 }
 
 void layout_chrome(app_state* app) noexcept {
@@ -7275,6 +7957,46 @@ void layout_chrome(app_state* app) noexcept {
   if (app->chrome.transport_attached()) app->chrome.resize_transport(width, height, strip, dpi);
   if (app->chrome.gallery_attached()) app->chrome.resize_gallery(width, height, dpi);
   layout_panels(app);
+}
+
+// docs/design/25 PR 57: the script add-ons' listener. Any thread; hops to the UI
+// thread, which then reads what changed.
+void MV_CALL scripts_listener(void* user, uint32_t what) {
+  if (HWND hwnd = static_cast<HWND>(user)) ::PostMessageW(hwnd, kMsgScripts, what, 0);
+}
+
+void on_scripts_message(app_state* app, std::uint32_t what) noexcept {
+  if (!app) return;
+  if (what == 1) {
+    std::string json(4096, '\0');
+    uint32_t needed = 0;
+    mv_status status = mv_script_take_notices_json(json.data(), static_cast<uint32_t>(json.size()), &needed);
+    if (status == MV_ERR_INVALID_ARG && needed > json.size()) {
+      json.assign(needed, '\0');
+      status = mv_script_take_notices_json(json.data(), static_cast<uint32_t>(json.size()), &needed);
+    }
+    if (status != MV_OK || needed == 0) return;
+    json.resize(needed - 1);
+    // The newest line is the one to show; the notice is one line on the title.
+    if (const auto doc = mv::json::parse(json); doc && doc->k == mv::json::kind::array && !doc->a.empty()) {
+      if (const std::string* text = doc->a.back().str("text")) notice_show(app, *text);
+    }
+    return;
+  }
+  // An add-on started or stopped: its rows come or go, and Settings re-reads.
+  refresh_contributed_commands(app);
+  app->chrome.set_command_table(mv::shell::describe_commands());
+}
+
+// Starts the script add-ons once the window and the chrome are up, never
+// before first pixel: listing and verifying the store reads files (a worker).
+void start_scripts(app_state* app) {
+  if (!app || !app->session || !app->window) return;
+  (void)mv_script_set_listener(&scripts_listener, app->window);
+  app->jobs.submit_at(mv::background_generation, [session = app->session](const mv::job_context&) {
+    (void)mv_script_reload(session);
+    return mv::status::ok;
+  });
 }
 
 bool attach_chrome(app_state* app) {
@@ -7468,6 +8190,14 @@ void apply_window_icons(HWND hwnd) noexcept {
   if (next_small) icon_small = next_small;
 }
 
+// Windows' "Animation effects" (Settings > Accessibility), which the chrome
+// reads as UISettings.AnimationsEnabled: off stops the home's ground effect.
+bool client_animations_off() noexcept {
+  BOOL on = TRUE;
+  if (!::SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &on, 0)) return false;
+  return on == FALSE;
+}
+
 LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
   if (msg == WM_NCCREATE) {
     auto* create = reinterpret_cast<CREATESTRUCTW*>(lparam);
@@ -7562,6 +8292,18 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         ::TrackMouseEvent(&tme);
         app->tracking_mouse = true;
       }
+      // Text in images: a drag that started on text extends the selection;
+      // otherwise the I-beam over words, and the dwell before a read.
+      if (app->input.text_press && (wparam & MK_LBUTTON)) {
+        float u = 0, v = 0, aspect = 1;
+        if (text_point(app, app->input.mouse_x, app->input.mouse_y, u, v, aspect)) {
+          app->text.drag(u, v);
+          app->text.fill(app->input.text);
+          ++app->input.activity_seq;
+        }
+      } else if (moved && app->input.recents.count == 0) {
+        text_hover(app, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+      }
       // At fit, left-drag is not a pan. After the system drag threshold it
       // is a file drag of the current item (same CF_HDROP as the gallery).
       if (app->file_drag_armed && (wparam & MK_LBUTTON) && app->lab.view_fitted()) {
@@ -7589,6 +8331,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       ++app->input.activity_seq;
       app->tracking_mouse = false;
       app->input.mouse_in_client = false;
+      app->text_beam = false;
       app->input.recents.hover = -1;
       app->input.recents.hover_remove = false;
       publish(app);
@@ -7607,6 +8350,13 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       if (reinterpret_cast<HWND>(wparam) == hwnd && LOWORD(lparam) == HTCLIENT &&
           app->input.recents.hover >= 0) {
         ::SetCursor(::LoadCursorW(nullptr, IDC_HAND));
+        return TRUE;
+      }
+      // Text in images: the I-beam over words in a still, and through a drag
+      // that selects.
+      if (reinterpret_cast<HWND>(wparam) == hwnd && LOWORD(lparam) == HTCLIENT &&
+          (app->text_beam || app->input.text_press)) {
+        ::SetCursor(::LoadCursorW(nullptr, IDC_IBEAM));
         return TRUE;
       }
       break;
@@ -7628,7 +8378,13 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         app->island_focus = mv::shell::focus_kind::command_bar;
         ::SetCapture(hwnd);
         transport_activity(app);
-        if (msg == WM_LBUTTONDOWN && app->lab.view_fitted()) {
+        // Text in images: a press on a word selects (published with the
+        // press, so the render thread never pans for it) and is never a
+        // file drag.
+        if (msg == WM_LBUTTONDOWN) {
+          app->input.text_press = text_press(app, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+        }
+        if (msg == WM_LBUTTONDOWN && app->lab.view_fitted() && !app->input.text_press) {
           app->file_drag_armed = true;
           app->file_drag_x = GET_X_LPARAM(lparam);
           app->file_drag_y = GET_Y_LPARAM(lparam);
@@ -7646,7 +8402,20 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         ::ReleaseCapture();
         app->file_drag_armed = false;
       }
+      if (msg == WM_LBUTTONUP && app->input.text_press) {
+        app->input.text_press = false;
+        const bool had = app->text.has_selection();
+        app->text.release();
+        if (had != app->text.has_selection()) app->text.fill(app->input.text);
+      }
       publish(app);
+      // docs/design/25, issue #402: a right-click on the file on screen shows
+      // the add-ons' context-menu entries, as its gallery tile does. The
+      // chrome decides whether there is anything to show (a XAML flyout; it
+      // returns at once).
+      if (msg == WM_RBUTTONUP && !app->gallery_visible && !app->editor.open) {
+        (void)app->chrome.show_canvas_menu(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+      }
       // A click on a recent folder (or its x): pressed and released on the
       // same row and the same part of it.
       if (msg == WM_LBUTTONUP && app->welcome_press >= 0) {
@@ -7662,7 +8431,39 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       return 0;
     }
 
+    case WM_GESTURENOTIFY: {
+      // Issue #212: pinch, and pan with one finger in any direction. No
+      // gutter (a pan that starts sideways may turn) and no inertia (the
+      // springs settle the camera; a flick steps one item, it does not coast).
+      GESTURECONFIG config[] = {
+          {GID_ZOOM, GC_ZOOM, 0},
+          {GID_PAN,
+           GC_PAN | GC_PAN_WITH_SINGLE_FINGER_VERTICALLY | GC_PAN_WITH_SINGLE_FINGER_HORIZONTALLY,
+           GC_PAN_WITH_GUTTER | GC_PAN_WITH_INERTIA},
+          {GID_ROTATE, 0, GC_ROTATE},
+          {GID_TWOFINGERTAP, 0, GC_TWOFINGERTAP},
+          {GID_PRESSANDTAP, 0, GC_PRESSANDTAP},
+      };
+      ::SetGestureConfig(hwnd, 0, static_cast<UINT>(std::size(config)), config, sizeof(GESTURECONFIG));
+      break;  // and DefWindowProc, as WM_GESTURENOTIFY requires
+    }
+
+    case WM_GESTURE: {
+      GESTUREINFO gi{};
+      gi.cbSize = sizeof(gi);
+      const auto handle = reinterpret_cast<HGESTUREINFO>(lparam);
+      if (!::GetGestureInfo(handle, &gi) || !handle_gesture(app, hwnd, gi)) break;
+      ::CloseGestureInfoHandle(handle);
+      return 0;
+    }
+
     case WM_MOUSEWHEEL: {
+      // A vertical scroll is travel the sideways swipe weighs against, so a
+      // zoom with some drift never turns the item. Ctrl+wheel (a touchpad
+      // pinch, which zooms below like any wheel) is not a scroll.
+      if ((GET_KEYSTATE_WPARAM(wparam) & MK_CONTROL) == 0) {
+        (void)app->wheel_swipe.feed(0, GET_WHEEL_DELTA_WPARAM(wparam), ::GetTickCount64());
+      }
       if ((GET_KEYSTATE_WPARAM(wparam) & MK_CONTROL) == 0 && document_scrolls(app)) {
         scroll_document(app, 0, -GET_WHEEL_DELTA_WPARAM(wparam));
         transport_activity(app);
@@ -7672,13 +8473,21 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       ++app->input.activity_seq;
       publish(app);
       transport_activity(app);
+      // The wheel zoomed a document because the strip is up: say how to scroll.
+      if ((GET_KEYSTATE_WPARAM(wparam) & MK_CONTROL) == 0) strip_hint_show(app);
       return 0;
     }
 
     case WM_MOUSEHWHEEL: {
-      // Tilt / two-finger sideways: pans a document only (it never zoomed).
-      if (!document_scrolls(app)) break;
-      scroll_document(app, GET_WHEEL_DELTA_WPARAM(wparam), 0);
+      // Tilt / two-finger sideways: pans a document (it never zoomed);
+      // anywhere else it is swipe-next (issue #212), one item per swipe or
+      // tilt click. Positive scrolls right: the content moves left, next.
+      if (document_scrolls(app)) {
+        scroll_document(app, GET_WHEEL_DELTA_WPARAM(wparam), 0);
+        return 0;
+      }
+      swipe_step(app, app->wheel_swipe.feed(GET_WHEEL_DELTA_WPARAM(wparam), 0, ::GetTickCount64()));
+      transport_activity(app);
       return 0;
     }
 
@@ -7743,6 +8552,10 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       on_flatten_done(app, std::unique_ptr<flatten_job_result>(reinterpret_cast<flatten_job_result*>(lparam)));
       return 0;
 
+    case kMsgTextRead:
+      on_text_read(app, std::unique_ptr<text_read_result>(reinterpret_cast<text_read_result*>(lparam)));
+      return 0;
+
     case kMsgEditorLoaded:  // PR 30: the Video Editor's probe and strip
       on_editor_loaded(app, std::unique_ptr<editor_load_result>(reinterpret_cast<editor_load_result*>(lparam)));
       return 0;
@@ -7790,8 +8603,16 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       metadata_ready(app);
       return 0;
 
+    case kMsgAiBadgeReady:
+      ai_badge_refresh(app);
+      return 0;
+
     case kMsgOpenWithReady:
       on_open_with_ready(app, std::unique_ptr<open_with_result>(reinterpret_cast<open_with_result*>(lparam)));
+      return 0;
+
+    case kMsgScripts:
+      on_scripts_message(app, static_cast<std::uint32_t>(wparam));
       return 0;
 
     case kMsgSiblingsReady:
@@ -7805,6 +8626,10 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       return 0;
 
     case WM_TIMER:
+      if (wparam == kTextDwellTimerId) {
+        start_text_read(app);
+        return 0;
+      }
       if (wparam == kEditorReleaseTimerId) {
         editor_release_tick(app);
         return 0;
@@ -7823,6 +8648,10 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       }
       if (wparam == kMetaTimerId) {
         request_metadata_now(app);
+        return 0;
+      }
+      if (wparam == kAiBadgeTimerId) {
+        ai_badge_request_now(app);
         return 0;
       }
       if (wparam == kTitleTimerId) {
@@ -7930,6 +8759,15 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       app->chrome.detach();
       ::PostQuitMessage(0);
       return 0;
+
+    case WM_SETTINGCHANGE:
+      // Issue #408: Settings > Accessibility > Animation effects. The home's
+      // ground effect stops while they are off, as the chrome's panes do.
+      if (const bool off = client_animations_off(); off != app->input.reduce_motion) {
+        app->input.reduce_motion = off;
+        publish(app);
+      }
+      break;
 
     default:
       break;
@@ -8140,8 +8978,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   mv::shell::register_settings_ui_thread();
   (void)mv::shell::app_settings().start();
   app.settings = mv::shell::load_view_settings();
+  app.strip_hint_learned = mv::shell::load_strip_hint_learned();
   app.input.sticky_zoom = app.settings.sticky_zoom;
-  app.input.background = app.settings.background;
+  app.input.reduce_motion = client_animations_off();
   app.destinations = mv::shell::load_destinations();
   app.recent_folders = mv::shell::load_recent_folders();
   app.home_utf8 = profile_folder_utf8();
@@ -8155,7 +8994,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   // The toolbar is added when Explorer reports the button, not before.
   app.taskbar_created_msg = ::RegisterWindowMessageW(L"TaskbarButtonCreated");
   for (const auto& o : mv::shell::load_key_overrides()) {
-    (void)mv::shell::rebind_live(o.row, static_cast<mv::shell::key>(o.k), o.mods);
+    (void)mv::shell::set_live_key(o.row, static_cast<mv::shell::key>(o.k), o.mods);
   }
   app.router.rebuild(mv::shell::live_bindings());
   if (!app.files.start()) MV_LOG_WARN("files: I/O worker did not start; F7 / F8 / Delete disabled");
@@ -8261,6 +9100,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
     publish(&app);
   }
   if (!requested_paths.empty()) open_paths(&app, requested_paths);
+  start_scripts(&app);  // docs/design/25 PR 57: after the chrome, on a worker
   if (g_browse.enabled) ::SetTimer(hwnd, kBrowseTimerId, kBrowseTickMs, nullptr);
   // PR 29: MV_EDIT_SELFTEST=<folder> walks the Edit workspace (docs/design/20 verify).
   if (wchar_t dir[MAX_PATH]{}; ::GetEnvironmentVariableW(L"MV_EDIT_SELFTEST", dir, MAX_PATH) > 0) {
@@ -8309,6 +9149,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   // static destruction after main returned, joining a pack's model load or
   // inference batch (seconds), and could free it under a chrome read.
   (void)mv_addon_quit();
+  // Scripts stop at their next instruction check; their workers are joined here.
+  (void)mv_script_set_listener(nullptr, nullptr);
+  (void)mv_script_stop_all();
   const ULONGLONG addons_quit_at = ::GetTickCount64();
 
   // PR 12: writes the user asked for and has not seen land — a rating inside
