@@ -15,7 +15,8 @@ namespace {
 
 // Bump to throw every row away (a column change). kSearchFactsVersion covers
 // what search_facts_of extracts; this covers the table's shape.
-constexpr const char* kSchema = "1";
+// 2 (#405): rating, label and the exposure numbers.
+constexpr const char* kSchema = "2";
 
 constexpr const char* kCreate =
     "CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);"
@@ -24,11 +25,14 @@ constexpr const char* kCreate =
     " fields TEXT NOT NULL, folded TEXT NOT NULL, camera TEXT NOT NULL, lens TEXT NOT NULL,"
     " made_with TEXT NOT NULL, ai INTEGER NOT NULL, taken INTEGER NOT NULL,"
     " has_where INTEGER NOT NULL, lat REAL NOT NULL, lon REAL NOT NULL,"
-    " has_alt INTEGER NOT NULL, alt REAL NOT NULL);"
+    " has_alt INTEGER NOT NULL, alt REAL NOT NULL, rating INTEGER NOT NULL, label TEXT NOT NULL,"
+    " iso INTEGER NOT NULL, aperture INTEGER NOT NULL, focal INTEGER NOT NULL,"
+    " shutter_den INTEGER NOT NULL, shutter_us INTEGER NOT NULL);"
     "CREATE INDEX IF NOT EXISTS files_dir ON files(dir);";
 
 constexpr const char* kCols =
-    "path, size, mtime, fields, folded, camera, lens, made_with, ai, taken, has_where, lat, lon, has_alt, alt";
+    "path, size, mtime, fields, folded, camera, lens, made_with, ai, taken, has_where, lat, lon, has_alt, alt,"
+    " rating, label, iso, aperture, focal, shutter_den, shutter_us";
 
 class stmt {
  public:
@@ -102,6 +106,13 @@ cached_facts row_of(const stmt& s) {
     if (s.col_i64(13) != 0) p.altitude = s.col_real(14);
     r.facts.where = p;
   }
+  r.facts.rating = static_cast<int>(s.col_i64(15));
+  r.facts.label = s.col_text(16);
+  r.facts.iso = static_cast<std::int32_t>(s.col_i64(17));
+  r.facts.aperture_x100 = static_cast<std::int32_t>(s.col_i64(18));
+  r.facts.focal_mm = static_cast<std::int32_t>(s.col_i64(19));
+  r.facts.shutter_den = static_cast<std::int32_t>(s.col_i64(20));
+  r.facts.shutter_us = s.col_i64(21);
   return r;
 }
 
@@ -230,8 +241,10 @@ expected meta_cache::store(std::span<const cached_facts> rows) {
   {
     stmt s(db_,
            "INSERT OR REPLACE INTO files(path, dir, size, mtime, version, fields, folded, camera, lens,"
-           " made_with, ai, taken, has_where, lat, lon, has_alt, alt)"
-           " VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)");
+           " made_with, ai, taken, has_where, lat, lon, has_alt, alt, rating, label, iso, aperture, focal,"
+           " shutter_den, shutter_us)"
+           " VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,"
+           " ?21, ?22, ?23, ?24)");
     ok = s.ok();
     for (const cached_facts& r : rows) {
       if (!ok) break;
@@ -253,6 +266,13 @@ expected meta_cache::store(std::span<const cached_facts> rows) {
       s.real(15, f.where ? f.where->lon : 0.0);
       s.i64(16, f.where && f.where->altitude ? 1 : 0);
       s.real(17, f.where && f.where->altitude ? *f.where->altitude : 0.0);
+      s.i64(18, f.rating);
+      s.text(19, f.label);
+      s.i64(20, f.iso);
+      s.i64(21, f.aperture_x100);
+      s.i64(22, f.focal_mm);
+      s.i64(23, f.shutter_den);
+      s.i64(24, f.shutter_us);
       ok = s.run();
     }
   }

@@ -65,6 +65,7 @@
 #include "io/paths.h"
 #include "meta/location.h"
 #include "meta/meta.h"
+#include "meta/cues.h"
 #include "meta/meta_cache.h"
 #include "mv_chrome_bridge.h"
 #include "shell/commands.h"
@@ -375,7 +376,32 @@ bool tag_facts(const std::string& path, mv_addon_tag_facts& out) {
   put(out.lens_utf8, sizeof(out.lens_utf8), f.lens);
   put(out.made_with_utf8, sizeof(out.made_with_utf8), f.made_with);
   put(out.fields_utf8, sizeof(out.fields_utf8), mv::meta::joined_fields(f.fields, sizeof(out.fields_utf8)));
+  // #405: rating, label and exposure (the table's struct_size says they are there).
+  out.rating = f.rating;
+  out.iso = f.iso;
+  out.aperture_x100 = f.aperture_x100;
+  out.focal_mm = f.focal_mm;
+  out.shutter_den = f.shutter_den;
+  out.shutter_us = f.shutter_us;
+  put(out.label_utf8, sizeof(out.label_utf8), f.label);
   return true;
+}
+
+// #406: a clip's chapter titles and text subtitle cues for the AI pack (meta/cues.h).
+mv::expected read_cues(const std::string& path, std::int64_t start_ms, std::int64_t max_ms, std::uint32_t max_cues,
+                       const std::function<bool(const mv::addon::host_services::cue&)>& visit) {
+  mv::meta::cue_limits lim;
+  lim.start_ms = start_ms;
+  lim.max_ms = max_ms;
+  lim.max_cues = max_cues;
+  return mv::meta::read_cues(path, lim, [&](const mv::meta::cue& c) {
+    mv::addon::host_services::cue out;
+    out.kind = c.kind == mv::meta::cue_kind::chapter ? MV_ADDON_CUE_CHAPTER : MV_ADDON_CUE_SUBTITLE;
+    out.start_ms = c.start_ms;
+    out.end_ms = c.end_ms;
+    out.text = c.text;
+    return visit(out);
+  });
 }
 
 bool capture_info(const std::string& path, mv_addon_capture& out) {
@@ -528,6 +554,7 @@ bool load_import_attempt() {
   mv::addon::host_services svc;
   svc.capture = &capture_info;
   svc.tag_facts = &tag_facts;
+  svc.read_cues = &read_cues;
   svc.thumbnail = &thumbnail;
   svc.should_yield = [] { return mv::shell::g_present_busy.load(std::memory_order_relaxed); };
   svc.post = [](const mv_addon_event& e) {
@@ -600,6 +627,7 @@ mv::addon::host_services ai_services() {
   mv::addon::host_services svc;
   svc.capture = &capture_info;
   svc.tag_facts = &tag_facts;
+  svc.read_cues = &read_cues;
   svc.thumbnail = &thumbnail;
   // Indexing waits while the present loop is busy (docs/design/17 "Yield policy":
   // playback, panning, a slideshow, a transition).
@@ -1836,6 +1864,11 @@ extern "C" bool mv_addon2_ai_status(mv_chrome_ai_status* out) {
   out->sound_done = st.sound_done;
   out->speech_total = st.speech_total;
   out->speech_done = st.speech_done;
+  // Zero from a pack older than the text passes' counts (2026-10-15).
+  out->cues_total = st.cues_total;
+  out->cues_done = st.cues_done;
+  out->text_total = st.text_total;
+  out->text_done = st.text_done;
   return true;
 }
 

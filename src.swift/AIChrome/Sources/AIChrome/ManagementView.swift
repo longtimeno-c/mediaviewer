@@ -103,6 +103,10 @@ final class ManagementModel: ObservableObject {
   @Published private(set) var icloudVideos = false
   /// Settings → Indexed folders → "Download iCloud Drive files to index them" (2026-10-05).
   @Published private(set) var cloudFiles = false
+  /// Settings → Text in pictures → "Read text in photos" (#403, on by default).
+  @Published private(set) var readText = true
+  /// macOS can read text here (Vision); false leaves the switch off and says why.
+  @Published private(set) var textAvailable = true
   /// "icloud" when the pack can fetch evicted iCloud Drive files here.
   @Published private(set) var cloudProvider = ""
   /// Why the last folder action did nothing, said under the list.
@@ -274,6 +278,8 @@ final class ManagementModel: ObservableObject {
     facesOn = obj["faces"] as? Bool ?? false
     icloudVideos = obj["icloud_videos"] as? Bool ?? false
     cloudFiles = obj["cloud_files"] as? Bool ?? false
+    readText = obj["read_text"] as? Bool ?? true
+    textAvailable = obj["text_available"] as? Bool ?? true
     cloudProvider = obj["cloud_provider"] as? String ?? ""
     coreMLAvailable = (obj["available"] as? [String: Any])?["coreml"] as? Bool ?? false
     let index = Int(int64(obj["video_index"]))
@@ -880,6 +886,19 @@ struct ManagementView: View {
           }
           .frame(width: 240)
           .help(model.audioReady ? "" : "Sound and Both need the Sound piece: install it above.")
+        }
+      }
+      section("Text in pictures") {
+        row("Read text in photos",
+            detail: model.textAvailable
+              ? "Finds photos and video moments by the words in them: a sign, a shirt, a page. macOS reads them on this Mac; nothing leaves it."
+              : "macOS cannot read text on this Mac, so photos are not searched by the words in them.") {
+          Toggle("Read text in photos",
+                 isOn: Binding(get: { model.readText && model.textAvailable },
+                               set: { model.set("read_text", $0 ? 1 : 0) }))
+            .toggleStyle(.switch)
+            .labelsHidden()
+            .disabled(!model.textAvailable)
         }
       }
       if model.photosSupported {

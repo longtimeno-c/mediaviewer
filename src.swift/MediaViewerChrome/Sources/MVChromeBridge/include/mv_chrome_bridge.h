@@ -730,6 +730,12 @@ typedef struct mv_chrome_ai_status {
   uint64_t sound_done;
   uint64_t speech_total;
   uint64_t speech_done;
+  // 2026-10-15: a clip's own text (chapters, subtitles) and the text the OS
+  // reads in pictures (#403, #406); zero from an older pack.
+  uint64_t cues_total;
+  uint64_t cues_done;
+  uint64_t text_total;
+  uint64_t text_done;
 } mv_chrome_ai_status;
 bool mv_addon2_ai_status(mv_chrome_ai_status* out);
 

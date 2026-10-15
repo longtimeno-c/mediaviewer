@@ -117,12 +117,15 @@ public enum MvAiMatch : uint
     Speech = 4,
     // #291: the file's tags matched; ResultSnippet is the tag.
     Tags = 8,
+    // #406: text the file carries (a chapter title, a subtitle line);
+    // ResultSnippet names which ("Chapter: …").
+    Text = 16,
 }
 
 /// <summary>
-/// Mirrors <c>mv_ai_status</c> field for field (1640 bytes). Append with the
-/// header: the ABI smoke test compares every field's offset and size with
-/// tools/abi-layout's dump of the native struct.
+/// Mirrors <c>mv_ai_status</c> field for field (1672 bytes with the text-pass
+/// counts). Append with the header: the ABI smoke test compares every field's
+/// offset and size with tools/abi-layout's dump of the native struct.
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct MvAiStatus
@@ -190,6 +193,13 @@ public unsafe struct MvAiStatus
     public ulong CloudFilesFetched;
     public MvAiCloudFetch CloudFetch;
     public float CloudFetchProgress;
+    // The text passes (2026-10-15), appended: a clip's own text (chapters,
+    // subtitles; #406) and text the OS reads in photos and on clip moments
+    // (#403), assets to do and done. Zero from a pack before them.
+    public ulong CuesTotal;
+    public ulong CuesDone;
+    public ulong TextTotal;
+    public ulong TextDone;
 
     /// <summary>Display only (rule 6: never logged).</summary>
     public readonly string ActiveRootText

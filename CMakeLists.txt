@@ -1123,6 +1123,8 @@ if(MV_BUILD_TESTS)
     # Issue #344: the offline reverse geocoder (docs/design/06 "Place").
     tests/test_geo.cpp
     tests/test_meta_search.cpp
+    # #406: a clip's chapter titles and text subtitle cues for Local search.
+    tests/test_meta_cues.cpp
     # Issue #344 slice 3: the Places add-on's map, Place section and search.
     tests/test_places.cpp
     # PR 12: the metadata writer, and the host-shared write queue.
@@ -1386,6 +1388,8 @@ if(MV_BUILD_TESTS)
     tests/test_ai_infer.cpp
     tests/test_ai_audio.cpp
     tests/test_ai_query.cpp
+    # #403: the OS text reader over a labelled set (hidden: [.ocr-fixture]).
+    tests/test_ai_ocr.cpp
     tests/test_nle.cpp
   )
   target_link_libraries(mv_ai_tests PRIVATE mv_ai_engine mv_infer mv_nle mv_addon mv_addon_media mv_io

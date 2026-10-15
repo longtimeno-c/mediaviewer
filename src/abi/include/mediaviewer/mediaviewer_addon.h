@@ -20,6 +20,7 @@
 #ifndef MEDIAVIEWER_ADDON_H
 #define MEDIAVIEWER_ADDON_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include "mediaviewer.h"
@@ -183,7 +184,38 @@ typedef struct mv_addon_tag_facts {
   char lens_utf8[128];
   char made_with_utf8[128]; /* "ChatGPT", "Adobe Firefly" */
   char fields_utf8[2048];
+  /* #405 (appended): the rating, colour label and exposure, for Local search's
+   * rating: / label: / iso: / f: / mm: / shutter: terms. A host that knows
+   * them returns a struct_size covering them (MV_ADDON_TAG_FACTS_V2_SIZE);
+   * an older host's struct_size stops at fields_utf8. 0 = absent for every
+   * number. Never part of fields_utf8. */
+  int32_t rating;           /* 1..5, -1 rejected, 0 unrated */
+  int32_t iso;              /* ISO speed */
+  int32_t aperture_x100;    /* f/2.8 -> 280 */
+  int32_t focal_mm;         /* whole millimetres */
+  int32_t shutter_den;      /* N when the exposure time is 1/N s */
+  int32_t reserved;
+  int64_t shutter_us;       /* the exposure time in microseconds */
+  char label_utf8[64];      /* the colour label as written: "Red" */
 } mv_addon_tag_facts;
+/* The size before #405's fields: what an older host or add-on passes. */
+#define MV_ADDON_TAG_FACTS_V1_SIZE ((uint32_t)offsetof(mv_addon_tag_facts, rating))
+#define MV_ADDON_TAG_FACTS_V2_SIZE ((uint32_t)sizeof(mv_addon_tag_facts))
+
+/* #406 (docs/design/17 "Cues"): a clip's own text, one cue at a time, in start
+ * order: a chapter title or a text subtitle line (mov_text, SubRip, ASS,
+ * WebVTT), markup removed. Bitmap subtitles are never sent. */
+#define MV_ADDON_CUE_CHAPTER 1u
+#define MV_ADDON_CUE_SUBTITLE 2u
+typedef struct mv_addon_cue {
+  uint32_t struct_size;
+  uint32_t kind;            /* MV_ADDON_CUE_* */
+  int64_t start_ms;         /* on the player's timeline */
+  int64_t end_ms;
+  const char* text_utf8;    /* valid during the call */
+} mv_addon_cue;
+/* Return 0 to stop the read (read_cues then returns MV_ERR_CANCELLED). */
+typedef int32_t(MV_CALL* mv_addon_cue_fn)(void* user, const mv_addon_cue* cue);
 
 #define MV_ADDON_COPY_MAX_TARGETS 4
 
@@ -599,6 +631,15 @@ typedef struct mv_host_api {
    * after PR 56's settings_get and #348's v3 rows (docs/design/14); host API
    * not bumped. */
   mv_status(MV_CALL* tag_facts)(void* host, const char* path_utf8, mv_addon_tag_facts* out);
+  /* ---- cues (#406, docs/design/17 "Cues") ------------------------------------ */
+  /* [worker-thread] A clip's chapter titles and text subtitle cues (mv_addon_cue
+   * above), in start order, from `start_ms` (a resume: nothing starting earlier)
+   * to `max_ms`, at most `max_cues`. A file with neither returns MV_OK at once,
+   * having read only its header. MV_ERR_IO when it cannot be opened;
+   * MV_ERR_CANCELLED when `visit` returned 0. Appended after tag_facts: read it
+   * only when `struct_size` covers it and the pointer is non-NULL. */
+  mv_status(MV_CALL* read_cues)(void* host, const char* path_utf8, int64_t start_ms, int64_t max_ms,
+                                uint32_t max_cues, mv_addon_cue_fn visit, void* user);
 } mv_host_api;
 
 typedef struct mv_addon_api {

@@ -233,7 +233,9 @@ Every tag searchable, without the AI pack ([16](16-commands.md) "File search"). 
   warm cache).
 - **`meta_cache.db`** (SQLite, WAL) next to the thumbnail cache: one row per file, valid while
   path, size, mtime and `kSearchFactsVersion` match. It holds the fields and their fold, date
-  taken, the position and the AI flag. A damaged or foreign file (not a database, another schema,
+  taken, the position and the AI flag, and (#405, `kSearchFactsVersion` 2, cache schema 2) the
+  rating, colour label, ISO, aperture, focal length and exposure time as numbers. Those numbers
+  are never search fields: a word search for "400" does not return every ISO 400 frame. A damaged or foreign file (not a database, another schema,
   or corruption found by a later write) is deleted and made again (it is a cache); a file another
   process has locked (a second window) is busy, never deleted, and an open that fails is retried
   at most every 30 s. Rows of files gone from a folder are dropped when the folder is seen again
@@ -256,7 +258,7 @@ Every tag searchable, without the AI pack ([16](16-commands.md) "File search"). 
   read per file, not a date read and a tag read, and a folder seen before sorts by date at once.
   On a folder never seen, each key costs the 0.19 ms search read instead of the 0.09 ms date
   read.
-- **Served to add-ons:** the host table's `tag_facts` (the AI pack's schema 4,
+- **Served to add-ons:** the host table's `tag_facts` (the AI pack's schema 4 and 5,
   [17](17-local-ai-search.md)) and, through #348, `location_of` / `locations_in` for the Places
   provider read the same cache.
 

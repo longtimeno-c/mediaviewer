@@ -1173,6 +1173,80 @@ treated like a path (never logged). The base app carries `NSPhotoLibraryUsageDes
 photos-library entitlement, because TCC attributes the request to the app; access is asked only on
 a click. A full re-enumeration of 23,089 assets takes 0.43 s, so no change tokens.
 
+**Date terms go by the date taken (2026-10-15, #404).** `in:`, `before:`, `after:`, `since:` and
+`until:`, and the newest-first order of a filters-only search, use schema 4's `taken_at` (the
+camera's wall clock read as UTC, the viewer's date-taken sort key, or a Photos item's
+`creationDate`) and fall back to the file's modification time only while an asset has none (no
+EXIF date, or the tag backfill has not reached it). A camera dump copied or synced in 2026 matched
+`in:2026` and not the year it was shot. No timezone conversion: `in:2024-06` is the stamp's own
+calendar month. Nothing is re-embedded and the schema is unchanged; the column was already there.
+**Cost:** during the backfill a file's date can move from its mtime to its date taken, so a date
+query run then may change its answer once.
+
+**Rating, label and exposure are query terms, not words (2026-10-15, #405).** `rating:`,
+`rejected`, `label:`, `iso:`, `f:`, `mm:` and `shutter:` filter on numbers the tag pass already
+reads from the header the Metadata pane's summary comes from, stored in AI index schema 5 and in
+meta_cache.db (`kSearchFactsVersion` 2). They are kept out of the search fields and `asset_text`
+on purpose: a plain "400" matching every ISO 400 frame would bury the picture search. Aperture
+matches within 0.05 stops (f/2.8 written as 2.8 or as APEX's 2.83) and shutter within a sixth of
+a stop (1/250 is not 1/320). The tag bookmark became a level (1 = schema 4's facts, 2 = these),
+so a schema-4 index reads each file's facts once more, embedding nothing. **Cost:** one bounded
+head read per indexed file after the update (the cache rows of version 1 are read again), and a
+rating written to a RAW's sidecar does not reach the AI index until the file's stamp changes.
+
+**A clip's chapters and text subtitles are indexed as exact text (2026-10-15, #406).** Quoted
+words and `said:` match a chapter title or a text subtitle line as they match a Whisper line,
+with the cue's start as the moment and a snippet that names the source ("Chapter: …",
+"Subtitle: …", `MV_AI_MATCH_TEXT`). The host reads cues as packet text through the FFmpeg it
+already links (no subtitle decoder, no new library); they live in their own `cues` table, not
+under the Whisper spec, so removing the audio piece keeps them and a shared index never disagrees
+about what was said. Bitmap subtitles are not OCR'd. **Cost:** one header open per indexed clip
+(after its pictures), and a full demux of the subtitle stream for files that have one (an MKV
+reads its clusters to find the cues), capped at two hours and 8,000 lines.
+
+**The People pass looks at the indexed frames; a Live Photo's motion is indexed (2026-10-15,
+#407).** Re-analyse (and People turned on after the pictures) used to resample a clip on its own
+2 s / 10 s grid from 0, so a face sharp on one kept frame and gone for the next ten seconds was
+never seen; on the owner's library, mostly clip frames, that was the common case. It now decodes
+exactly the `pts_ms` the picture pass kept (the host's frame fetch, no pixels stored), and keeps
+the grid only for a clip with no picture rows. A Live Photo's 1–3 s movie, dropped before, is
+sampled onto the still's id (same sampler, same dedupe, seeded with the still) and a moment opens
+the movie. Not changed: the sampler's 500 ms / 2 s gaps, keyframe-only decode, the dedupe.
+**Cost:** one host frame fetch per stored moment in a People-only pass (a file open and a decode
+from the keyframe each, against one sequential sampler pass before), and a handful of frames per
+Live Photo in the picture pass. An exported index carries no `motion` columns, so the receiver
+samples each Live Photo's movie once more.
+
+**Words in photos are read by the OS and searched as text (2026-10-15, #403, urgent).** "suited
+and booted" found the photo in Apple Photos and not here: CLIP does not read. The pack now asks the
+operating system's own recogniser (Vision on the Mac, Windows.Media.Ocr on Windows; no model, no
+download, nothing sent anywhere) for each photo's text in a background pass after the pictures,
+and stores it as a `cues` row (kind 3) that quoted words, `said:` and plain words match like a
+transcript line. A separate 2,048 px decode rather than the picture pass's 448 px one, because
+sign and shirt text is small: 95 % of 40 labelled phrases on the Mac at 44 ms median a photo.
+**Cost:** one extra decode and an OS read per photo, once; on the owner's 23 k-photo library that
+is about 20–35 minutes of one background worker on an M-series Mac, after the pictures are done.
+Video frames are not read yet.
+
+**The text on clip moments is read too, and the text passes count in the status (2026-10-15,
+#403 follow-up).** A sign or a burned-in caption in a clip is found at its moment: the text pass
+reads the moments the picture pass stored, after that pass is done with the clip, decoding each
+again at 2,048 px. Not the sampler's frames as they go by, because the picture pass decodes at
+448 and must never wait on the OS reader; not every keyframe, because the stored moments are
+already the clip's distinct views, and a sign held in shot over several of them is stored once.
+Its own progress spec (`<reader>/moments`) so the photos already read are not read again, and
+commits every 8 moments so a stop resumes; nothing is embedded. **Cost:** the moment's seek and
+decode, which is most of it, plus the OS read: about 0.2 s a moment on the Mac (180–218 ms median
+over three runs of 72 moments from six of the owner's clips, the read 20–22 ms of it, on a loaded
+machine), once per clip, after its pictures. The cue and text passes now have
+counts in `mv_ai_status` and keep the state from idle: before, the pill said "Up to date" while
+they ran. Those three counts are 14 ms a refresh at 25,000 assets and the refresh runs once a
+second even when idle, so they are cached and counted again only when something can have moved
+them, or every 30 s (about 0.5 ms a second idle). The **Read text in photos** switch (Settings → Local search, both hosts, on by
+default) turns both text passes off. The cue and text counts are appended on `mv_ai_status`
+(1,672 bytes with them) and read only when `struct_size` covers them. `AiApi` still does not
+pin that size (#388); the ABI smoke test compares the C# mirror with the header.
+
 ---
 
 ## Final Cut Pro search (Mac)
