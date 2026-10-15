@@ -6,7 +6,6 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
-using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.ApplicationModel.DataTransfer;
 using Windows.Storage;
 
@@ -161,22 +160,19 @@ public static partial class IslandHost
         yield return windows;
     }
 
-    private static BitmapImage? _appIconSmall;
-
     /// <summary>
     /// Sharepoint's entry wears the MediaViewer icon: the PNG About already
-    /// ships beside the exe (AboutMarkFile), decoded once at menu size and
-    /// shared by every menu. The Wi-Fi glyph if the file is missing.
+    /// ships beside the exe (AboutMarkFile), in full colour. A BitmapIcon, not
+    /// an ImageIcon, which the island host bans (tools/check-winui-controls.ps1).
+    /// The Wi-Fi glyph if the file is missing.
     /// </summary>
     private static IconElement SharepointMenuIcon()
     {
         try
         {
-            _appIconSmall ??= new BitmapImage(new Uri(Path.Combine(ExeDirectory(), AboutMarkFile)))
-            {
-                DecodePixelWidth = 32,
-            };
-            return new ImageIcon { Source = _appIconSmall, Width = 16, Height = 16 };
+            string file = Path.Combine(ExeDirectory(), AboutMarkFile);
+            if (!File.Exists(file)) return new FontIcon { Glyph = "", FontFamily = SymbolFont };
+            return new BitmapIcon { UriSource = new Uri(file), ShowAsMonochrome = false, Width = 16, Height = 16 };
         }
         catch (Exception ex)
         {
