@@ -224,11 +224,29 @@ public static partial class IslandHost
             : accentLuma > 160 ? Rgb(0, 0, 0) : Rgb(255, 255, 255));
         PublishControlAccent();
 
-        // The native welcome/game is outside the XAML tree. Ship the current
-        // system window colour to its snapshot on the UI thread, including
-        // changes to Windows contrast themes. It never alters the photo canvas.
-        uint homeRgb = (uint)(canvas.R << 16 | canvas.G << 8 | canvas.B);
-        _onCommand?.Invoke(_context, Command.HomeColour, homeRgb);
+        // Issue #408: the native welcome/game and the clear behind every photo
+        // and video are outside the XAML tree. Ship them the same tokens, on
+        // the UI thread, including Windows contrast themes; a built-in's ground
+        // too (an add-on theme, Default and contrast have none). HomeColour
+        // comes last: it publishes the rest. Photo and video pixels are never
+        // recoloured.
+        static float Pack(Color c) => (uint)(c.R << 16 | c.G << 8 | c.B);
+        _onCommand?.Invoke(_context, Command.HomeSurface, Pack(surface));
+        _onCommand?.Invoke(_context, Command.HomeTitle, Pack(title));
+        _onCommand?.Invoke(_context, Command.HomeBody, Pack(body));
+        _onCommand?.Invoke(_context, Command.HomeHairline, Pack(line));
+        _onCommand?.Invoke(_context, Command.HomeAccent, Pack(accent));
+        BuiltinThemes.Item? ground = themed is null ? null : BuiltinThemes.Find(ChromeThemeSelection);
+        _onCommand?.Invoke(_context, Command.HomeEffect,
+            ground is { } g ? BuiltinThemes.EffectIndex(g.Effect) : 0);
+        if (ground is { } item)
+        {
+            _onCommand?.Invoke(_context, Command.HomeEffectRgb, item.EffectRgb & 0xFFFFFFu);
+            _onCommand?.Invoke(_context, Command.HomeEffectIntensity, (float)item.Intensity);
+            _onCommand?.Invoke(_context, Command.HomeEffectSpeed, (float)item.Speed);
+            _onCommand?.Invoke(_context, Command.HomeEffectSize, (float)item.Size);
+        }
+        _onCommand?.Invoke(_context, Command.HomeColour, Pack(canvas));
 
         ApplyIslandTheme(themed is null ? ElementTheme.Default
             : dark ? ElementTheme.Dark : ElementTheme.Light);

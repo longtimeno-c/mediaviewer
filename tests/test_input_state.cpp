@@ -102,3 +102,51 @@ TEST_CASE("the loupe looks at its point at 100 %, or twice the zoom past it", "[
   c = mv::shell::loupe_view(b, 0.0f, 0.0f, 1000.0f, 800.0f, 100.0f, 50.0f, 40.0f);
   REQUIRE(c.zoom == 64.0f);
 }
+
+// Issue #408: the home's theme and its ground effect's rest rule.
+TEST_CASE("the home's ground ticks at 10 Hz and rests five seconds after input", "[shell][home]") {
+  using mv::shell::home_effect;
+  using mv::shell::home_ground_clock;
+  home_ground_clock c;
+  // No input yet: nothing moves (the labs record launch as one).
+  REQUIRE_FALSE(c.live(true, home_effect::rain, true, false, 0.0));
+  c.input(0.0);
+  REQUIRE(c.live(true, home_effect::rain, true, false, 0.0));
+  // Only on the home, only an effect that moves, only in front, not under Reduce Motion.
+  REQUIRE_FALSE(c.live(false, home_effect::rain, true, false, 1.0));
+  REQUIRE_FALSE(c.live(true, home_effect::dots, true, false, 1.0));
+  REQUIRE_FALSE(c.live(true, home_effect::none, true, false, 1.0));
+  REQUIRE_FALSE(c.live(true, home_effect::rain, false, false, 1.0));
+  REQUIRE_FALSE(c.live(true, home_effect::rain, true, true, 1.0));
+  // The first tick is due at once and does not advance the clock; then one a tenth.
+  REQUIRE(c.step(true, 1.00));
+  REQUIRE(c.time == 0.0);
+  REQUIRE_FALSE(c.step(true, 1.05));
+  REQUIRE(c.until_next(1.05) > 0.04);
+  REQUIRE(c.step(true, 1.10));
+  REQUIRE(c.time > 0.099);
+  // Five quiet seconds: it rests, and a resume does not jump the clock.
+  REQUIRE_FALSE(c.live(true, home_effect::rain, true, false, 5.0));
+  const double before = c.time;
+  REQUIRE_FALSE(c.step(false, 5.0));
+  c.input(60.0);
+  REQUIRE(c.step(true, 60.0));
+  REQUIRE(c.time == before);
+}
+
+TEST_CASE("home effects are named as the chromes name them", "[shell][home]") {
+  using mv::shell::home_effect;
+  using mv::shell::home_effect_from_name;
+  REQUIRE(home_effect_from_name("none") == static_cast<int>(home_effect::none));
+  REQUIRE(home_effect_from_name("rain") == static_cast<int>(home_effect::rain));
+  REQUIRE(home_effect_from_name("perlin-flow") == static_cast<int>(home_effect::perlin_flow));
+  REQUIRE(home_effect_from_name("rai") == -1);
+  REQUIRE(home_effect_from_name("rainy") == -1);
+  REQUIRE(home_effect_from_name(nullptr) == -1);
+  // A theme change is one redraw: the labs compare the whole struct.
+  mv::shell::input_snapshot a;
+  mv::shell::input_snapshot b = a;
+  REQUIRE(a.home == b.home);
+  b.home.accent = 0xFF0000FFu;
+  REQUIRE_FALSE(a.home == b.home);
+}

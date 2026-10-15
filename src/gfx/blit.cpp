@@ -22,7 +22,7 @@ struct alignas(16) blit_cb {
   float image_w, image_h;
   float origin_x, origin_y;
   float texture_w, texture_h;
-  float background, clipping, time, grid;
+  float unused0, clipping, time, grid;  // unused0: the retired background mode (#408)
   float map0[4];
   float map1[4];
   float inv0[4];
@@ -155,7 +155,6 @@ void blitter::bind_camera(ID3D11DeviceContext* ctx, const blit_params& p, float 
   cb.origin_y = p.origin_y;
   cb.texture_w = texture_w;
   cb.texture_h = texture_h;
-  cb.background = static_cast<float>(p.background);
   cb.clipping = p.clipping ? 1.0f : 0.0f;
   cb.time = p.time_seconds;
   cb.grid = p.pixel_grid ? 1.0f : 0.0f;

@@ -1438,6 +1438,28 @@ so WebAssembly was not taken up. What was decided while building it:
   were integrated (2026-10-12): a binding over the same `settings_values::value_json` the host
   table's `settings_get` reads.
 
+**No canvas background: every screen is the theme's (2026-10-15, issue #408).** Owner call:
+remove the canvas background rather than give it a colour scheme of its own. Settings' "Canvas
+background" row (System, Grey, White, Checkerboard, Dark), `B` and `cycle_background` are gone
+on both hosts. The clear behind the welcome card, behind a still and behind a video, and what
+shows through a transparent pixel, is the theme's `canvas` token, the colour the chrome
+already paints; only the slideshow blackout differs. The welcome card draws with the theme's
+surface, title, body, hairline and accent instead of a grey derived from one RGB, and a
+built-in's ground effect moves behind it on the empty window only (10 Hz static presents by the
+panes' rest rule, never `live`, so a still stays at 0 presents). Kept, so nothing else moves:
+the command id (`retired_background`, keyless, like the palette's), a key-table row with no key
+and no mode (saved rebinds name rows by index), the constant buffer's float (`unused0`, so the
+HLSL and MSL layouts do not shift), and the thumbnail matte (changing it would re-encode every
+cached thumbnail). View-settings bits 4-6 are read and ignored. The checkerboard is gone with
+it: a transparent image now shows the theme's ground, not a pattern. Two rendering details:
+ImGui draws into the labs' _SRGB targets, which read a vertex colour as linear, so a token is
+decoded first (`home_ink.h`; drawn as is, Midnight's `#161b22` card came out `#555c65`), and a
+translucent token or ground mark is mixed over its known solid ground in sRGB, as the panes
+blend, because linear blending made the rain several times brighter than in the bar
+(`home_over`). On the Mac the chrome paints its theme before the app object exists, so the
+bridge keeps the latest theme and applies it when the app registers. Known gap: the home's
+marks do not line up with the panes' (own seed, own rect, own clock).
+
 ---
 
 ## Not built

@@ -70,7 +70,6 @@ TEST_CASE("settings store: typed values round-trip through the file and a restar
     view_settings v;
     v.wrap = false;
     v.sticky_zoom = true;
-    v.background = 4;
     v.ai_badge = false;  // #345: [view] ai_badge, on by default
     v.sort = 2 | 8;  // PR 9: size, descending
     save_view_settings(store, v);
@@ -90,7 +89,6 @@ TEST_CASE("settings store: typed values round-trip through the file and a restar
   const view_settings v = load_view_settings(again);
   REQUIRE_FALSE(v.wrap);
   REQUIRE(v.sticky_zoom);
-  REQUIRE(v.background == 4);
   REQUIRE_FALSE(v.ai_badge);
   REQUIRE(v.sort == (2 | 8));
   // A hand-edited or future key is name, never an out-of-range order.

@@ -33,7 +33,6 @@ public static partial class IslandHost
     private static ToggleSwitch? _showAudio;
     private static ToggleSwitch? _showDocuments;
     private static ToggleSwitch? _aiBadgeToggle;  // #345
-    private static ComboBox? _background;
     private static ComboBox? _sortKey;
     private static ToggleSwitch? _sortDescending;
     private static int _capturingRow = -1;
@@ -97,27 +96,6 @@ public static partial class IslandHost
         view.Children.Add(SettingsSection("Browsing"));
         view.Children.Add(SettingsRow("Wrap at the end", "Continue from the last item to the first.", _wrap));
         view.Children.Add(SettingsRow("Keep pan and zoom", "Keep your view position when moving to the next item.", _sticky));
-        _background = new ComboBox
-        {
-            FontFamily = UiFont,
-            FontSize = UiFontSize,
-            Foreground = Brush(Title),
-            Width = 180,
-        };
-        _background.Items.Add("System");
-        _background.Items.Add("Grey");
-        _background.Items.Add("White");
-        _background.Items.Add("Checkerboard");
-        _background.Items.Add("Dark");
-        _background.SelectedIndex = (_settingFlags & SettingFlag.BackgroundMask) >> SettingFlag.BackgroundShift;
-        _background.SelectionChanged += (_, _) =>
-        {
-            if (_updatingSettingsUi || _background.SelectedIndex < 0) return;
-            int next = (_settingFlags & ~SettingFlag.BackgroundMask) |
-                       (_background.SelectedIndex << SettingFlag.BackgroundShift);
-            Send(Command.SetSettings, next);
-        };
-
         _sortKey = new ComboBox
         {
             FontFamily = UiFont,
@@ -178,7 +156,6 @@ public static partial class IslandHost
             "Choose MediaViewer for photos and videos in Windows Settings.",
             SettingsButton("Make default…", () => OpenUri("ms-settings:defaultapps?registeredAppUser=MediaViewer"))));
         view.Children.Add(SettingsSection("Appearance"));
-        view.Children.Add(SettingsRow("Canvas background", "The area behind your photos and videos.", _background));
         // docs/design/25: the chrome's colours. Default, the built-in palettes,
         // then every theme an installed add-on contributes.
         view.Children.Add(BuildThemeRow());
@@ -554,11 +531,6 @@ public static partial class IslandHost
             if (_aiBadgeToggle is not null) _aiBadgeToggle.IsOn = !HasFlag(SettingFlag.HideAiBadge);
             RefreshUpdateSettingsRow();
             RefreshTelemetrySettingsRow();
-            if (_background is not null)
-            {
-                _background.SelectedIndex =
-                    (_settingFlags & SettingFlag.BackgroundMask) >> SettingFlag.BackgroundShift;
-            }
             if (_sortKey is not null) _sortKey.SelectedIndex = Math.Clamp(_sortPacked & 7, 0, SortNames.Length - 1);
             if (_sortDescending is not null) _sortDescending.IsOn = (_sortPacked & 8) != 0;
         }

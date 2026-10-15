@@ -4454,14 +4454,42 @@ void chrome_on_command(void* ctx, int command, float arg) {
   // it went away may act on the app now.
   if (!app || app->closing) return;
   switch (command) {
-    case mv::shell::chrome_cmd_home_colour: {
-      const auto rgb = static_cast<std::uint32_t>(arg) & 0xFFFFFFu;
-      if (app->input.home_background_rgb != rgb) {
-        app->input.home_background_rgb = rgb;
-        publish(app);
-      }
+    // Issue #408: the theme's tokens and ground. Each stores; home_colour,
+    // which RefreshTheme sends last, publishes them together (one redraw).
+    case mv::shell::chrome_cmd_home_surface:
+    case mv::shell::chrome_cmd_home_title:
+    case mv::shell::chrome_cmd_home_body:
+    case mv::shell::chrome_cmd_home_hairline:
+    case mv::shell::chrome_cmd_home_accent: {
+      const std::uint32_t rgba = mv::shell::home_opaque(static_cast<std::uint32_t>(arg));
+      auto& h = app->input.home;
+      std::uint32_t* const slot[] = {&h.surface, &h.title, &h.body, &h.hairline, &h.accent};
+      *slot[command - mv::shell::chrome_cmd_home_surface] = rgba;
       return;
     }
+    case mv::shell::chrome_cmd_home_effect: {
+      const int e = static_cast<int>(arg);
+      app->input.home.effect = e > 0 && e < static_cast<int>(mv::shell::home_effect::count)
+                                   ? static_cast<mv::shell::home_effect>(e)
+                                   : mv::shell::home_effect::none;
+      return;
+    }
+    case mv::shell::chrome_cmd_home_effect_rgb:
+      app->input.home.effect_rgb = static_cast<std::uint32_t>(arg) & 0xFFFFFFu;
+      return;
+    case mv::shell::chrome_cmd_home_effect_intensity:
+    case mv::shell::chrome_cmd_home_effect_speed:
+    case mv::shell::chrome_cmd_home_effect_size: {
+      const float v = arg > 0.0f && arg <= 1.0f ? arg : 1.0f;
+      auto& h = app->input.home;
+      float* const slot[] = {&h.intensity, &h.speed, &h.size};
+      *slot[command - mv::shell::chrome_cmd_home_effect_intensity] = v;
+      return;
+    }
+    case mv::shell::chrome_cmd_home_colour:
+      app->input.home.canvas = mv::shell::home_opaque(static_cast<std::uint32_t>(arg));
+      publish(app);  // one redraw only if a token changed (present_lab compares)
+      return;
     case mv::shell::chrome_cmd_open:
       if (app->window) open_file_dialog(app, app->window);
       return;
@@ -4536,7 +4564,6 @@ void chrome_on_command(void* ctx, int command, float arg) {
             (static_cast<std::int32_t>(arg) & mv::shell::telemetry::kChromeFlagTelemetry) != 0);
       }
       app->input.sticky_zoom = app->settings.sticky_zoom;
-      app->input.background = app->settings.background;
       (void)mv_folder_set_hidden_kinds(app->session, app->settings.hidden_kinds());
       app->chrome.apply_settings(chrome_flags(app), app->settings.sort);
       if (view_changed & mv::shell::kSettingHideAiBadge) ai_badge_setting_changed(app);
@@ -6903,9 +6930,6 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       return true;
 
     // View state the render thread draws from (levels, not edges).
-    case cycle_background:
-      app->input.background = static_cast<std::uint8_t>((app->input.background + 1) % 5);
-      return set_level(app);
     case sticky_zoom:
       app->input.sticky_zoom = !app->input.sticky_zoom;
       return set_level(app);
@@ -7855,6 +7879,14 @@ void apply_window_icons(HWND hwnd) noexcept {
   if (next_small) icon_small = next_small;
 }
 
+// Windows' "Animation effects" (Settings > Accessibility), which the chrome
+// reads as UISettings.AnimationsEnabled: off stops the home's ground effect.
+bool client_animations_off() noexcept {
+  BOOL on = TRUE;
+  if (!::SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &on, 0)) return false;
+  return on == FALSE;
+}
+
 LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
   if (msg == WM_NCCREATE) {
     auto* create = reinterpret_cast<CREATESTRUCTW*>(lparam);
@@ -8370,6 +8402,15 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       ::PostQuitMessage(0);
       return 0;
 
+    case WM_SETTINGCHANGE:
+      // Issue #408: Settings > Accessibility > Animation effects. The home's
+      // ground effect stops while they are off, as the chrome's panes do.
+      if (const bool off = client_animations_off(); off != app->input.reduce_motion) {
+        app->input.reduce_motion = off;
+        publish(app);
+      }
+      break;
+
     default:
       break;
   }
@@ -8581,7 +8622,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   app.settings = mv::shell::load_view_settings();
   app.strip_hint_learned = mv::shell::load_strip_hint_learned();
   app.input.sticky_zoom = app.settings.sticky_zoom;
-  app.input.background = app.settings.background;
+  app.input.reduce_motion = client_animations_off();
   app.destinations = mv::shell::load_destinations();
   app.recent_folders = mv::shell::load_recent_folders();
   app.home_utf8 = profile_folder_utf8();

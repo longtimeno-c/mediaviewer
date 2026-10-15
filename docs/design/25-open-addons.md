@@ -211,7 +211,7 @@ A theme file, one per theme the add-on lists:
 
 | Token | Means | WinUI (`IslandHost.Theme.cs`) | SwiftUI (`MVTheme`) |
 |---|---|---|---|
-| `canvas` | The chrome's background; the canvas's "System" background follows it | `Canvas`, `PanelBg`, native home colour | `canvas`, host `home_background_rgb` |
+| `canvas` | The chrome's background, and the viewer's on every screen: the empty window, and around a photo or a video (issue #408; there is no canvas background of its own) | `Canvas`, `PanelBg`, native `home.canvas` | `canvas`, host `home.canvas` |
 | `surface` | Rows, fields, cards | `Surface` | `surface` |
 | `title` | Primary text | `Title` | `title` |
 | `body` | Secondary text | `Body` | `body` |
@@ -233,6 +233,15 @@ A theme file, one per theme the add-on lists:
   ships no font file in API 1 (the backlog's user font is API 2's to weigh). On the Mac it
   changes at once; on Windows every control holds the face it was built with, so a new
   typeface shows at the next start and Settings says so.
+- **The empty window** (issue #408) is drawn natively by ImGui, so the hosts hand the render
+  thread the resolved tokens in the input snapshot (`input_state.h` `home`): `canvas` for the
+  clear, `surface` for the welcome card and its hovered row, `title` and `body` for the type,
+  `hairline` for the rule and the edges, `accent` for the hover and the glyphs. Default sends
+  the system's own colours (AppKit's semantic colours on the Mac, the chrome's system palette
+  on Windows) and high contrast the system's contrast colours, so the native side never
+  derives a colour. The chrome already holds the tokens, so this reads no file before first
+  pixel. Not built yet: a theme's `font` on the card (the card keeps CozetteVector); no
+  built-in sets one.
 - **Not themed:** photo and video pixels, the canvas's colour pipeline, the F3 overlay (ImGui,
   a lab tool), the histogram's channel colours (they carry meaning), the hover washes (they
   follow the appearance, not a token). The first-party add-ons' own windows read the host's
@@ -252,8 +261,11 @@ A theme file, one per theme the add-on lists:
 - **Ground effect:** a built-in may draw one effect behind the chrome — falling rain, a
   starfield, fireflies, petals, embers, sparkles, a circuit, a slow drift, or a still dot
   grid. Dark, GPT and Claude draw none. It is not a token and not part of the theme JSON, so
-  API 1 is unchanged and an add-on cannot set one. It is drawn by the host in its own panes.
-  It is not drawn on a photo, a video, the swapchain, or the present loop. It ticks at 10 Hz
+  API 1 is unchanged and an add-on cannot set one. It is drawn by the host in its own panes,
+  and since issue #408 on the empty window behind the welcome card (`shell/home_ground.h`, the
+  panes' field ported mark for mark, ten static presents a second at most). It stops once a
+  photo or a video is up; it is never drawn on a photo, a video or an error card, and it does
+  not change the clear. It ticks at 10 Hz
   only while the app is in front and someone has moved the pointer or a key in the last five
   seconds, and it stops under Reduce Motion (Mac) or when Windows animations are off. High
   contrast still hides the theme, effect included. Dots do not move, and neither does a theme

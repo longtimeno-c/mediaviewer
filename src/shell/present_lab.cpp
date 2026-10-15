@@ -4,6 +4,7 @@
 #include "shell/video_report.h"
 #include "shell/dino_draw.h"
 #include "shell/error_screen.h"
+#include "shell/home_ground.h"
 #include "shell/loupe.h"
 #include "shell/welcome_screen.h"
 
@@ -929,19 +930,18 @@ void present_lab::render_thread_main() noexcept {
 
     {
       const auto flags = static_cast<std::uint8_t>(
-          (snapshot.background & 0x3) | (snapshot.sticky_zoom ? 0x4 : 0) |
+          (snapshot.sticky_zoom ? 0x4 : 0) |
           (snapshot.clipping ? 0x8 : 0) | (snapshot.loupe ? 0x10 : 0) |
           (snapshot.hold_previous ? 0x20 : 0) | (snapshot.info_overlay ? 0x40 : 0) |
           (snapshot.item_marked ? 0x80 : 0));
-      if (flags != seen_view_flags_ || snapshot.background != seen_background_ ||
-          snapshot.home_background_rgb != seen_home_background_rgb_ ||
+      if (flags != seen_view_flags_ || !seen_home_valid_ || !(snapshot.home == seen_home_) ||
           snapshot.loupe_steps_x != seen_loupe_steps_x_ ||
           snapshot.loupe_steps_y != seen_loupe_steps_y_ ||
           snapshot.marked_count != seen_marked_count_ || snapshot.blackout != seen_blackout_ ||
           snapshot.item_index != seen_item_index_ || snapshot.item_count != seen_item_count_) {
         seen_view_flags_ = flags;
-        seen_background_ = snapshot.background;
-        seen_home_background_rgb_ = snapshot.home_background_rgb;
+        seen_home_ = snapshot.home;
+        seen_home_valid_ = true;
         seen_marked_count_ = snapshot.marked_count;
         seen_blackout_ = snapshot.blackout;
         seen_item_index_ = snapshot.item_index;
@@ -1078,6 +1078,20 @@ void present_lab::render_thread_main() noexcept {
     // tail from last_input_time=0 at launch) kept Present running while the
     // WinUI island composed — DXGI counted those as missed frames, and the
     // overlay froze on them. Paint once, then wait.
+    // Issue #408: the home's ground effect. A pointer move or a key restarts
+    // its five seconds (launch counts as one); each due tick is one static
+    // frame, never `live`, so it stops the moment a file is up or it rests.
+    if (input_activity || snapshot.pointer_seq != seen_pointer_seq_ || ground_.last_input < 0.0) {
+      seen_pointer_seq_ = snapshot.pointer_seq;
+      ground_.input(elapsed);
+    }
+    {
+      const bool home = !current_image_ && !current_video_.texture && !video_open_ && !open_error_ &&
+                        !sweep_mode_ && !game_.active() && !snapshot.blackout;
+      ground_live_ = ground_.live(home, snapshot.home.effect, snapshot.window_active && snapshot.window_visible,
+                                  snapshot.reduce_motion, elapsed);
+      if (ground_.step(ground_live_, elapsed)) redraw = true;
+    }
     if (redraw) last_input_time_ = elapsed;
     const bool pan_tail = current_image_ && last_input_time_ >= 0.0 &&
                           (elapsed - last_input_time_) < 0.5;
@@ -1143,6 +1157,13 @@ void present_lab::render_thread_main() noexcept {
         const auto gap_ms = static_cast<DWORD>(
             std::ceil(std::max(0.0, video_gap_deadline_ - elapsed) * 1000.0));
         timeout = std::min(timeout, gap_ms);
+      }
+      if (ground_live_) {
+        // The ground's next tick, or the end of its five seconds, whichever
+        // is first: a resting ground sleeps like any still.
+        const double rest = home_ground_clock::kRest - (elapsed - ground_.last_input);
+        const double next = std::min(ground_.until_next(elapsed), std::max(0.0, rest));
+        timeout = std::min(timeout, static_cast<DWORD>(std::ceil(next * 1000.0)));
       }
       HANDLE waits[2] = {wake_event_, nullptr};
       DWORD n = 1;
@@ -1215,21 +1236,17 @@ void present_lab::render_thread_main() noexcept {
     // Clear to a colour, per the PR 1 brief. The values are LINEAR: the render
     // target view is _SRGB, so the hardware encodes on write. Writing 0.05 here
     // and reading back 0.05 in a screenshot would mean the sRGB view was lost.
-    const float clear_level = gfx::background_clear(snapshot.background);
-    const bool home = !current_image_ && !current_video_.texture && !video_open_ &&
-                      !(sweep_mode_ && animating_) && !snapshot.blackout;
-    const bool system_background = home || snapshot.background == 0;
+    // Issue #408: every screen is the theme's canvas token, the colour the
+    // chrome paints (Default = the system's): the welcome, a still and a
+    // video alike. Only the slideshow blackout differs.
     const float theme_rgb[3] = {
-        home_linear_channel(snapshot.home_background_rgb, 16),
-        home_linear_channel(snapshot.home_background_rgb, 8),
-        home_linear_channel(snapshot.home_background_rgb, 0)};
+        home_linear_channel(snapshot.home.canvas, 24),
+        home_linear_channel(snapshot.home.canvas, 16),
+        home_linear_channel(snapshot.home.canvas, 8)};
     const float clear[4] = {
-        snapshot.blackout ? 0.0f : system_background ? theme_rgb[0]
-            : snapshot.background == 4 ? 0.016f : clear_level,
-        snapshot.blackout ? 0.0f : system_background ? theme_rgb[1]
-            : snapshot.background == 4 ? 0.018f : clear_level,
-        snapshot.blackout ? 0.0f : system_background ? theme_rgb[2]
-            : snapshot.background == 4 ? 0.024f : clear_level,
+        snapshot.blackout ? 0.0f : theme_rgb[0],
+        snapshot.blackout ? 0.0f : theme_rgb[1],
+        snapshot.blackout ? 0.0f : theme_rgb[2],
         1.0f};
     device_.context()->ClearRenderTargetView(rtv, clear);
 
@@ -1290,7 +1307,6 @@ void present_lab::render_thread_main() noexcept {
       bp.image_h = shown_h;
       bp.texture_w = static_cast<float>(shown->texture_width);
       bp.texture_h = static_cast<float>(shown->texture_height);
-      bp.background = snapshot.background;
       for (int i = 0; i < 3; ++i) bp.theme_background[i] = theme_rgb[i];
       bp.clipping = snapshot.clipping;
       bp.time_seconds = static_cast<float>(elapsed);
@@ -1816,7 +1832,7 @@ void present_lab::draw_frame(const input_snapshot& snapshot, double elapsed_seco
       animating_ = false;
     }
     draw_open_error(bg, ImGui::GetFont(), w, h, chrome, scale, open_error_status_,
-                    "Left / Right  for another file", home_palette(snapshot.home_background_rgb));
+                    "Left / Right  for another file", snapshot.home);
     return;
   }
 
@@ -1839,7 +1855,9 @@ void present_lab::draw_frame(const input_snapshot& snapshot, double elapsed_seco
   const welcome_text text{
       .open_hint = "or press Ctrl+O to choose a file, Ctrl+Shift+O for a folder",
       .keys = "0 fit    1 100%    + / -  zoom    Space  play/pause    F  fullscreen    F3  frame-time"};
-  const home_palette theme(snapshot.home_background_rgb);
+  const home_theme& theme = snapshot.home;
+  // Issue #408: the built-in theme's ground, behind the card (and the runner).
+  draw_home_ground(bg, w, h, scale, theme, ground_.time);
   if (!sweep_mode_ && game_.active()) {
     const float dt =
         last_game_elapsed_ > 0.0 ? static_cast<float>(elapsed_seconds - last_game_elapsed_) : 0.0f;

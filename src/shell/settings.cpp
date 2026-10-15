@@ -71,8 +71,6 @@ view_settings load_view_settings(const settings_store& store) noexcept {
   s.show_audio = doc->get_int(kView, "show_audio", s.show_audio ? 1 : 0) != 0;
   s.show_documents = doc->get_int(kView, "show_documents", s.show_documents ? 1 : 0) != 0;
   s.ai_badge = doc->get_int(kView, "ai_badge", s.ai_badge ? 1 : 0) != 0;
-  const int bg = doc->get_int(kView, "background", s.background);
-  s.background = static_cast<std::uint8_t>(bg < 0 || bg > 4 ? 0 : bg);
   // Normalised, so a hand-edited or future value cannot leave an unknown key.
   s.sort = io::pack_sort(io::unpack_sort(doc->get_int(kView, "sort", 0)));
   return s;
@@ -87,7 +85,8 @@ void save_view_settings(settings_store& store, const view_settings& s) noexcept 
     d.set(kView, "show_audio", s.show_audio ? "1" : "0");
     d.set(kView, "show_documents", s.show_documents ? "1" : "0");
     d.set(kView, "ai_badge", s.ai_badge ? "1" : "0");
-    d.set(kView, "background", std::to_string(static_cast<unsigned>(s.background <= 4 ? s.background : 0)));
+    // Issue #408: no canvas background. An old file's `background` stays as
+    // it was (unread); nothing writes it again.
     d.set(kView, "sort", std::to_string(s.sort));
   });
 }

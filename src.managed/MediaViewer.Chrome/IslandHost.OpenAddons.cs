@@ -271,7 +271,7 @@ public static partial class IslandHost
 
     private static string ThemeDetail() => _themeNote.Length > 0
         ? _themeNote
-        : "Colours and a quiet ground for the bars and panes. Your photos are never recoloured.";
+        : "Colours and a quiet ground for the window, its bars and panes, and the area around your photos and videos. Your photos are never recoloured.";
 
     // SettingsRow's second label, so the row can say why a theme is not showing.
     private static TextBlock? FindDetail(FrameworkElement row) =>

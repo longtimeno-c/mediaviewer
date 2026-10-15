@@ -625,11 +625,21 @@ int32_t mv_open_addons_scripts(char* buf, int32_t size);
 // work runs on the scripts' own queue. [any-thread]
 void mv_open_addons_restart(const char* addon_id);
 void mv_open_addons_reload(void);
-// The theme's canvas colours (0xRRGGBB), so the viewer's own "System"
-// background follows the theme; has_dark / has_light say which palettes the
-// theme gives. active = false returns it to the window's colour. [main-thread]
-void mv_chrome_set_theme_canvas(bool active, bool has_dark, uint32_t dark_rgb,
-                                bool has_light, uint32_t light_rgb);
+// Issue #408: the theme the native empty window and the canvas clear use.
+// One palette of tokens, each 0xRRGGBBAA (sRGB). `canvas` is the clear on
+// every screen (welcome, still, video); the welcome card draws with the rest.
+typedef struct mv_home_palette {
+  uint32_t canvas, surface, title, body, hairline, accent;
+} mv_home_palette;
+// active = a theme is on: `dark` / `light` (either may be NULL, not both) are
+// its palettes, and the host picks one by the window's appearance. active =
+// false (Default, or increased contrast): the host resolves AppKit's own
+// colours. `effect` is a built-in's ground ("none", "rain", ... as
+// BuiltinThemes.swift names them; NULL = none) with its ink 0xRRGGBB and an
+// intensity, a speed and a size in 0.01 .. 1. [main-thread]
+void mv_chrome_set_home_theme(bool active, const mv_home_palette* dark, const mv_home_palette* light,
+                              const char* effect, uint32_t effect_rgb, float intensity, float speed,
+                              float size);
 
 // Milestone H (docs/design/17): the same management by add-on id, for the AI pack
 // ("ai" = Core, "ai-faces" = People, "ai-audio" = Sound) beside Import. Also addons_mac.mm. The
