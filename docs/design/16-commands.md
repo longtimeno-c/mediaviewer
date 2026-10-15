@@ -271,9 +271,43 @@ left of `?` (a long middle collapses into a menu), with Up and Root buttons outs
   `GalleryDrag`, as the grid's scroll view never handed it to the cell). A cell of the range drags
   the whole range, a marked cell the marks, any other cell itself; each file with its pair on
   Windows, copy-only, originals untouched. The filmstrip's drag is unchanged.
-- **One share icon** ("Send") over the grid sends the gallery's selection (the range, else the
-  selected cell) to [Sharepoint](28-sharepoint.md), with those files and no others. Without
-  Sharepoint it offers the one-click install. It is not the OS share sheet (`Ctrl+Shift+S`).
+- **One share icon** ("Share") over the grid opens the share menu (below) for the gallery's
+  selection.
+
+#### Share (#444)
+
+One command, `share` (id 149, `Ctrl+Shift+S` / `⌘⇧S`), and every way in runs it: the key, the
+gallery's share icon, the command bar's **share button beside Home**, File ▸ Share… / Open ▸
+Share…, and **Share ▸** on the right-click menu of a gallery cell, a filmstrip cell and the canvas.
+`shell/share_menu.h` is the part both hosts share.
+
+- **Which files.** The selection: the gallery's range while it stands, else the marks, else the
+  current file. A right-click on a file that is part of the selection shares the selection; on any
+  other file, that file alone (`share_stops`). The bar button is off with nothing to share.
+- **The menu.** [Sharepoint](28-sharepoint.md) first (its window with those files, or its
+  one-click install when it is not there), then the system's targets: **Windows Share** (Mail,
+  Phone Link, Nearby Share, apps; `DataTransferManager`) on Windows, `NSSharingServicePicker`
+  (Mail, Messages, AirDrop, Notes…) on the Mac, where Sharepoint is the picker's first entry (its
+  delegate puts it there). The right-click **Share ▸** submenu lists the same two entries; picking
+  one runs the command with that entry (`share_target`) and the clicked file.
+- **Sidecars.** Sharepoint gets the files with their pair halves and takes each XMP itself; the
+  system sheet gets the media files only, never a sidecar (`share_system_files`).
+- **Nothing is read before a target is asked for**, and nothing is sent until one is picked
+  (rule 6). The UI thread only picks the stops. Windows walks the listing for pair halves on the
+  pool (`mv_folder_entries`) and the chrome shows the menu when that lands; the Mac lists both
+  halves of a pair as items, so its set is a walk of the in-memory listing with no syscall.
+- **Large sets on the Mac.** Opening `NSSharingServicePicker` costs about 0.09 ms per file on the
+  main thread (ShareKit stats and sandbox-checks every URL to match its targets: 65 ms warm for 500
+  files). Past 50 files the picker is shown with one file per kind and every target it offers is
+  wrapped to receive all the files when picked; a target that will not take that many (Mail and
+  Messages cap attachments) says so and sends nothing. 500 files: 65 → 21 ms warm, 139 → 94 ms on
+  the first open in a process (the first open's ~90 ms loads the share services, whatever the count).
+- **One route.** Sharepoint's own **Send with Sharepoint…** context entry is left out of the
+  right-click menus on both hosts: Share ▸ Sharepoint is that route.
+- **Wire.** The island's command carries one float: `(clicked + 1) * 16 + from * 4 + target`
+  (`pack_share_request`; `from` only says where the menu is anchored). Native answers through the
+  chrome's `ShareMenu` entry (`chrome_share_args` + `{"files", "media"}`) on Windows and
+  `MVChromeHost.presentShare` on the Mac (`mv_chrome_share` is the Swift side's way in).
 
 ### Marks, copy, move
 
@@ -292,7 +326,7 @@ commands below act on it first.
 | `F2` | Viewing | Rename the current file (the gallery's selected cell); also File ▸ Rename… on the Mac |
 | `Ctrl+Shift+C` | Viewing | Copy path(s) as text |
 | `Ctrl+Alt+C` | browse | Copy the current still with edits baked, as PNG (worker thread) |
-| `Ctrl+Shift+S` | Viewing | Share (Windows Share / macOS share sheet) |
+| `Ctrl+Shift+S` | Viewing | Share: the share menu (Sharepoint, then Windows Share / the macOS picker) |
 
 These are on the mouse too: the Mac's File menu, and on Windows the command bar's **Open** flyout
 (Mark / Unmark, Copy / Move Marked To…, Move to Recycle Bin, Share…, Copy Path, Copy Edited

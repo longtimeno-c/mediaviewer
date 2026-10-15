@@ -1,7 +1,7 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Sharepoint from the app's side (issues #410, #413; docs/design/28): the
-// gallery's share icon, its one-click install, and Settings' row while it is
+// Sharepoint from the app's side (issues #410, #413, #444; docs/design/28): the
+// share menu's first entry, its one-click install, and Settings' row while it is
 // not installed. The window itself is the add-on's view tree
 // (IslandHost.Screens.cs). Nothing here talks to the network except the plain
 // GETs of the add-on's fixed release assets that every add-on install makes,
@@ -70,13 +70,12 @@ public static partial class IslandHost
         RefreshSlotSettings();
     }
 
-    // ---- the gallery's share icon (#413) ------------------------------------------------
+    // ---- the share menu's Sharepoint entry (#413, #444) ----------------------------------
 
-    /// <summary>The share icon: the gallery's selection (its shift-click range, else
-    /// the selected cell) to Sharepoint, or the one-click install.</summary>
-    private static void ShareGallerySelection(FrameworkElement anchor)
+    /// <summary>The share menu's first entry (IslandHost.Share.cs): these files to
+    /// Sharepoint, or the one-click install anchored where the menu was.</summary>
+    private static void ShareWithSharepoint(List<string> paths, FrameworkElement? anchor, Windows.Foundation.Point? at)
     {
-        List<string> paths = GallerySelectionPaths();
         if (paths.Count == 0) return;
         if (OpenSharepoint(paths))
         {
@@ -86,11 +85,20 @@ public static partial class IslandHost
             else ClearGalleryRange();
             return;
         }
+        if (anchor?.XamlRoot is null) return;
         var panel = new StackPanel { Spacing = 8, MaxWidth = 340 };
         BuildSharepointOffer(panel, paths);
         _shareFlyout = new Flyout { Content = panel, Placement = FlyoutPlacementMode.BottomEdgeAlignedRight };
         _shareFlyout.Closed += (_, _) => _shareFlyout = null;
-        _shareFlyout.ShowAt(anchor);
+        if (at is { } p)
+        {
+            _shareFlyout.ShouldConstrainToRootBounds = false;
+            _shareFlyout.ShowAt(anchor, new FlyoutShowOptions { Position = p });
+        }
+        else
+        {
+            _shareFlyout.ShowAt(anchor);
+        }
         if (SharepointSlot.Offer.Kind is OfferKind.Unknown or OfferKind.Unreachable) ProbeOffer(SharepointSlot);
     }
 

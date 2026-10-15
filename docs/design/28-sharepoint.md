@@ -16,9 +16,11 @@ Narrator. Other makers' script add-ons still have no network permission (owner, 
 ## What a person sees
 
 - **The window**, "Sharepoint", opened from its row in Settings → Add-ons (**Open Sharepoint**),
-  from its command (the palette; no default key, issue #410), from the gallery's share icon and
-  from the **Send with Sharepoint…** context entry on a gallery tile. Its design is AirDrop's
-  (#442), the same on both hosts, top to bottom:
+  from its command (the palette; no default key, issue #410), and from the share menu's first
+  entry ([16 "Share"](16-commands.md#share-444)): the gallery's share icon, the bar's share button,
+  `Ctrl+Shift+S` and right-click Share ▸. Its manifest's own **Send with Sharepoint…** context
+  entry is left out of the hosts' right-click menus (#444), so there is one route. Its design is
+  AirDrop's (#442), the same on both hosts, top to bottom:
   - this computer's name as others see it, and **Keep receiving when this window is closed** (kept
     across launches; the command bar shows **Sharepoint: receiving** while it is on);
   - **what is offered to this computer**, in a card of its own: the sender's round tile (its
@@ -35,7 +37,9 @@ Narrator. Other makers' script add-ons still have no network permission (owner, 
     accept"; then the tile's own ring fills while the bytes move, and it ends with a done or
     failed mark on the tile and a line saying what happened.
 - **The gallery** ([16](16-commands.md#gallery-range-and-share-413)): Shift-click selects a range,
-  dragging a cell drags it out, and one share icon ("Send") opens Sharepoint with the selection.
+  dragging a cell drags it out, and one share icon opens the share menu ([16 "Share"](16-commands.md#share-444)),
+  whose first entry is Sharepoint with the selection (issue #444: the same menu as `Ctrl+Shift+S`,
+  the bar's share button and right-click Share ▸).
   Without Sharepoint the icon offers the same one-click install as the other add-ons.
 
 ## Finding each other

@@ -490,16 +490,6 @@ final class FolderStore: ObservableObject {
     range = indices
   }
 
-  /// What the gallery's share icon sends (#413): the range, else the selected
-  /// cell. Full paths, no file I/O.
-  func gallerySelectionPaths() -> [String] {
-    let indices = range.isEmpty ? (names.indices.contains(current.index) ? [current.index] : []) : range
-    return indices.compactMap { i in
-      let path = Self.bridgeString { mv_chrome_item_path(Int32(i), $0, $1) }
-      return path.hasPrefix("/") ? path : nil
-    }
-  }
-
   /// The files a drag from the cell at `index` carries: every marked item in
   /// listing order when that cell is marked (the marks are the multi-selection,
   /// as for ⌘C and F7/F8), else that item alone. Full paths of the originals,
