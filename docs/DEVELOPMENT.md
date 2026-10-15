@@ -1917,6 +1917,37 @@ What is built is in [docs/design/28](design/28-sharepoint.md).
   the app, both hosts' first-run prompts (local network and Bluetooth on the Mac, Defender
   Firewall on Windows), VoiceOver and Narrator over the window, the Windows PR 1 gate.
 
+### Sharepoint, AirDrop-smooth (issue #442, 2026-10-15)
+
+What changed is in [docs/design/28](design/28-sharepoint.md): the AirDrop-like window on both
+hosts and the screen vocabulary it added (`tiles`, card, ring, code field, display text); the
+sender types the code the receiver shows (three wrong codes end the link); received files go to
+Downloads and Save to is kept; Keep receiving is kept across launches with **Sharepoint:
+receiving** in the command bar; the receiver checks file N while N+1 arrives; the share icon no
+longer waits for an earlier selection; Windows screen windows have the app icon, a size floor and
+an owner, and Settings shows each add-on as one card.
+
+- **Mac (M-series, Mac17,4):** `MediaViewer.app`, the Swift chrome and `libmv_sharepoint.dylib`
+  build. `mv_import_tests` 150 cases and `mv_tests` 850 (839 passed, 11 skipped) pass;
+  `"[sharepoint]"` 33 cases and `"[screens]"` 13. ThreadSanitizer: `"[sharepoint]"` four runs at
+  once, 0 reports; `"[screens]"` 0. `test_addon_pack.py` passes.
+- **Measured (Mac):** `"[.sharepoint-bench]"` (loopback, alternated with the base three times):
+  500 × 2 MiB 124–141 → 158–180 MB/s, 1 GiB unchanged (crypto-bound); `"[.sharepoint-idle]"`
+  Keep receiving on, window closed: 0.020 % CPU, 6.4 switches a second, no present (off 0.0003 %).
+  The PR 1 gate (`frametime --seconds 60`) passed alone (3599 frames, p99 16.8 ms, max 16.9 ms,
+  idle 0 presents, 0.042 %) and with Sharepoint sending over loopback in another process the whole
+  time (p99 16.8 ms, max 16.8 ms, idle 0 presents, 0.037 %).
+- **Seen on the Mac:** every state of the window drawn by the chrome's own `ScreenNodeView` (light
+  and dark) in a scratch render harness, and the window opened in a dev copy of the app, offline
+  (`MV_SHAREPOINT_OFFLINE=1`, dev-signed, files handed over through `mv_chrome_slots_invoke`).
+- **Windows:** the C# compiles (warnings are errors). `net_win.cpp`'s Downloads lookup and lock
+  meet a compiler in CI only. Not run: the window's look, its icon, Settings' cards, the stall fix
+  in the app.
+- **Owed:** two machines (Wi-Fi and Bluetooth MB/s against a plain copy, typing the code, Keep
+  receiving after a relaunch seen from the other machine), Bluetooth's idle cost with Keep
+  receiving on, Windows screenshots and an ETW trace of the share icon on 500 items, the Windows
+  PR 1 gate, VoiceOver and Narrator over the new tiles and code field.
+
 ### Local search: ask before resuming an interrupted index (issue #299, 2026-10-11)
 
 A quit or a kill part-way through indexing no longer carries on, or loads the pack, at the next
