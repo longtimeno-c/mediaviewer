@@ -122,6 +122,17 @@ struct refine_output {
 
 [[nodiscard]] refine_output refine_people(const refine_input& in, const refine_params& p);
 
+// One person's prototype from its faces (rows of `emb`, dim floats each), by
+// the very rules refine_people builds with: faces_db's online matcher caches
+// these, so the two cannot drift. Only the first max_refs refs count, as there.
+[[nodiscard]] person_proto build_person_proto(std::uint32_t dim, std::span<const float> emb,
+                                              std::span<const refine_face> faces, std::int64_t person,
+                                              bool named, const refine_params& p);
+// support(v, p): the mean of the top_k cosines of `v` to p's exemplars,
+// skipping `self` (0 skips nothing). -1 when it has none.
+[[nodiscard]] float exemplar_support(std::span<const float> v, const person_proto& p, std::int64_t self,
+                                     std::uint32_t top_k);
+
 // ---- duplicates (docs/design/17 "Merge duplicates") ----------------------------------
 
 struct dedupe_person {

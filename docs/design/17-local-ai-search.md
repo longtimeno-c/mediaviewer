@@ -827,14 +827,43 @@ faces on the control thread.
 
 ### Online clustering
 
-`faces.cpp`. Scores are mean pairwise cosine (sum · v / n) everywhere — assign, "this person",
-consolidate — not cosine to a normalised centroid (which inflates a stranger by ~√ρ). A new face
-joins the best person at `same_person`; one with a second person within `ambiguous` of the best
-waits **unassigned** (`person_id` NULL). **Quality gates it:** an *unusable* face (quality < 0.10)
-joins nobody, and a *weak* one (< 0.35) may join a person but never starts one. The idle consolidate merges at mean pairwise `merge_at`,
-an average that stays an average after a merge (no chaining). The user's faces are **pinned**:
-faces they split out; the cover of a person when they name it and of both sides when they merge;
-covers prefer pinned faces.
+`faces.cpp`. Scores are in pairwise cosine units everywhere — assign, "this person",
+consolidate — never cosine to a normalised centroid (which inflates a stranger by ~√ρ). A new face
+is matched in two steps. Every person is scored by mean pairwise cosine (sum · v / n), and the
+best `shortlist` (3) at or above `same_person − 2 × margin` are kept. Then each shortlisted person
+the user **confirmed** (it has a pinned face) is rescored by its **exemplars**: the refinement's
+`support`, the mean of the top 3 cosines to its pinned faces and good core (≤ 12, built by
+`build_person_proto`, the refinement's own `build_proto`). Every other person keeps its mean.
+The face joins the best person at `same_person`. If a second shortlisted person is within
+`ambiguous` of the best, it waits **unassigned** (`person_id` NULL). "This person"
+(`nearest_person`) uses the same scorer without the ambiguity rule. **Quality gates it:** an
+*unusable* face (quality < 0.10) joins nobody. A *weak* one (< 0.35) may join a person but never
+starts one, and it is matched by the mean alone, because the refinement never admits a weak face
+by exemplars either. The idle consolidate merges at mean pairwise `merge_at`, an average that
+stays an average after a merge (no chaining). The user's faces are **pinned**: faces they split
+out, the cover of a person when they name it, and both covers when they merge. Covers prefer
+pinned faces.
+
+**Corrections are what new faces meet (2026-10-15, #434).** Before this change a person's
+corrections counted only in the refinement. Online, a new face met the average of every member,
+so a varied person ("Tristan", front-on and side-on) scored *lower* as he grew. Now the faces the
+user confirmed are anchors for every new photo: a side-on face whose mean to him is below the
+threshold joins once a side-on cover of his is pinned. The exemplars are cached per person in
+`faces_db` and rebuilt lazily, under the lock, only for a shortlisted confirmed person. Only the
+first `max_refs` (256) refs' vectors are read. The cache is dropped on a rename, merge, split or
+reject, when faces leave or are re-analysed, and on an import. A refinement commit replaces it
+with the protos it just built. Ordinary growth rebuilds it only once the person is a quarter
+larger or smaller than when it was built. **Unconfirmed people keep the mean.** On LFW, scoring
+every person by exemplars let a newcomer whose mean was just under the threshold join a lookalike
+(IR-50 online BCubed F 0.9975 → 0.9945, P 0.9991 → 0.9933). Restricted to confirmed people, LFW
+is unchanged (`[.people-bench]`: IR-50 online F 0.9975, +merge 0.9980, settled 0.9988; SFace
+0.9899 / 0.9893 / 0.9938). The bench's corrections phase merges each person's fragments and names
+everyone with 3+ photos after 60 % of the faces, then files the remaining 40 % online. There, SFace's
+remaining 40 % rises from F 0.9964 (P 0.9983, R 0.9946) to 0.9969 (P 0.9972, R 0.9966), and
+IR-50's is unchanged at 0.9989. On a copy of the owner's library (`[.people-api]`), the 3,284 unfiled usable faces offered
+again cost 0.28–0.30 ms per `add` against 0.27–0.33 ms before (runs alternated), and one more of
+them files to a named person (556 against 555). The settle (`[.people-settle]`) does not use
+this path and is unchanged (263 people in 2+ photos, 76 in 5+).
 
 **Cost at a large library (2026-10-06, owner: "a lot of other UI seems to lag").** Every People
 read holds the engine's model lock, which a search, a rename and the status counts wait on, so

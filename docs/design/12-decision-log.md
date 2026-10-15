@@ -1101,6 +1101,14 @@ and clips, not faces, and Settings lists the first 24 with "Show all". The onlin
 made people of blurred clip frames that resembled each other more than anyone; numbers in
 docs/design/17 "People model". Libraries settle once under the new rules, nothing read again.
 
+**New faces meet a confirmed person's exemplars (2026-10-15, #434).** This amends the 2026-10-06
+rule that a new face joins by mean pairwise cosine to every member. The best 3 people by that mean
+are shortlisted. A shortlisted person with a pinned face (the user named, merged or split it) is
+then rescored by the refinement's exemplar `support`, so the faces the user confirmed are what new
+photos are matched against. Weak faces and unconfirmed people keep the mean. Exemplars for every
+person were tried and dropped: on LFW they cost online BCubed F 0.9975 → 0.9945, because a newcomer
+joined a lookalike. Numbers are in docs/design/17 "Online clustering".
+
 **People follow the open folder (2026-10-03).** While a folder is open the People grid offers
 "This folder | + Subfolders" only; everyone shows only with no folder open. A folder open is the
 user saying what they are looking at, and everyone-from-everywhere inside one read as a leak. A
