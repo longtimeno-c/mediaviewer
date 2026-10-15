@@ -829,7 +829,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           MODE: ${{ inputs.mode }}
-          # The jobs above pack the Import add-on; publish requires it (stable).
+          # The jobs above pack the Import and Sharepoint add-ons; publish requires
+          # both (stable), and uploads only add-ons it lists (github-release.py).
           MV_RELEASE_ADDONS: '1'
           # ...and the Local search pack with its Sound and People pieces (and,
           # on Windows, NVIDIA acceleration).

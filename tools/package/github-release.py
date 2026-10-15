@@ -74,11 +74,15 @@ def prepare():
 
 # The optional add-ons, one signed package per add-on and platform. The apps
 # fetch them from releases/latest, so once the release workflow packs them every
-# stable release must carry them: Import (docs/design/18) with MV_RELEASE_ADDONS=1, and
-# the Local search pack and its pieces (docs/design/17) with MV_RELEASE_AI=1. NVIDIA
+# stable release must carry them: Import (docs/design/18) and Sharepoint (docs/design/28,
+# code only, like Import) with MV_RELEASE_ADDONS=1, and the Local search pack and its
+# pieces (docs/design/17) with MV_RELEASE_AI=1. Publish uploads only what is listed
+# here: an add-on packed into the upload folder but not listed never reaches the
+# release. NVIDIA
 # acceleration (ai-cuda) is a Windows-only piece: ONNX Runtime's CUDA build
 # (MIT); the CUDA runtime and cuDNN stay user-supplied (log 2026-10-03).
 ADDON_PLATFORMS = ('win-x64', 'macos')
+FIRST_PARTY_ADDONS = ('import', 'sharepoint')
 AI_ADDONS = ('ai', 'ai-audio', 'ai-faces', 'ai-cuda')
 WINDOWS_ONLY_ADDONS = ('ai-cuda',)
 
@@ -92,7 +96,7 @@ def required_addons(mode):
         return []
     ids = []
     if os.environ.get('MV_RELEASE_ADDONS') == '1':
-        ids.append('import')
+        ids += FIRST_PARTY_ADDONS
     if os.environ.get('MV_RELEASE_AI') == '1':
         ids += AI_ADDONS
     return ids

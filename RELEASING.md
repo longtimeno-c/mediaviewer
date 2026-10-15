@@ -199,6 +199,20 @@ Whisper) and `mediaviewer-addon-ai-faces-*` (People). About 2.3 GB per platform.
 - `publish` refuses a stable release without all seven (`MV_RELEASE_AI=1`): the three pieces on
   both platforms, plus `ai-cuda` on Windows.
 
+**Sharepoint (docs/design/28)** ships beside Import on every stable release:
+`mediaviewer-addon-sharepoint-win-x64.*` and `-macos.*`. It is code only (no data to stage), so
+it is required like Import: `publish` refuses a stable release without both platforms
+(`MV_RELEASE_ADDONS=1`, `FIRST_PARTY_ADDONS` in `tools/package/github-release.py`). `publish`
+uploads only the add-ons it lists, so a new first-party add-on goes on that list as well as in
+the workflow.
+
+- **Windows:** "Find the Sharepoint add-on build", its signing step and "Pack the Sharepoint
+  add-on" sign `mv_sharepoint.dll` and pack it (`addon-pack.py pack --addon sharepoint
+  --require-pinned-key`); the upload loop copies it beside Import.
+- **macOS:** each architecture's `libmv_sharepoint.dylib` is joined with `lipo_merge.py`, signed
+  and notarized with `macpack.py addon`, then packed ("Sharepoint add-on (join, sign, notarize,
+  pack)").
+
 With the patch applied, a **stable** run of the
 release workflow builds, signs and packs both, and `publish` refuses a stable release without them
 (the apps fetch the add-on from `releases/latest`, so a release that lacks it would leave Settings
