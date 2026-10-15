@@ -1309,7 +1309,8 @@ Sent to an organisation-local multicast group and the subnet broadcast with a TT
 **Bluetooth is a GATT pipe, and a set over 32 MiB is refused on it (2026-10-15; a budget).**
 Windows gives apps no connection-oriented LE channel, so a Mac-to-Windows send has GATT only:
 writes without response one way, notifications the other, tens of kilobytes a second. 32 MiB is a
-few minutes at that rate; past it the window says to join the same Wi-Fi.
+few minutes at that rate. Past it the window says so before Send, and Send waits for the peer on
+Wi-Fi and starts by itself when it is there (2026-10-15, owner), rather than failing after Send.
 
 **Commit, then reveal, and the sender confirms the code (2026-10-15).** With both keys sent at
 once, a machine in the middle could learn each side's key first and search a few thousand keys

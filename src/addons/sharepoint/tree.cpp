@@ -63,6 +63,18 @@ std::string names_line(const std::vector<std::string>& names, std::size_t count)
   return out;
 }
 
+// Why Send waits for Wi-Fi, and what to do about it.
+std::string wifi_hint(const view& v, const std::string& peer) {
+  const std::string why = "These files are " + size_text(v.file_bytes) +
+                          " and Bluetooth carries 32 MB at most. ";
+  if (!v.wifi_up) {
+    return why + "This computer is not on a network: turn on Wi-Fi here and join the same network as " + peer +
+           ". Send waits, and starts as soon as " + peer + " is there.";
+  }
+  return why + peer + " is only in Bluetooth range: put both computers on the same Wi-Fi network. Send waits, " +
+         "and starts as soon as " + peer + " is there.";
+}
+
 std::string moved_text(std::uint32_t files, std::uint32_t count, std::uint64_t bytes, std::uint64_t total) {
   return std::to_string(files) + " of " + std::to_string(count) + " files, " + size_text(bytes) + " of " +
          size_text(total);
@@ -151,8 +163,9 @@ std::string build_tree(const view& v) {
       text(w, "files_more", "and " + std::to_string(v.file_count - v.file_names.size()) + " more", "caption");
     }
   }
-  const bool sending = v.out == view::out_phase::connecting || v.out == view::out_phase::confirming ||
-                       v.out == view::out_phase::waiting || v.out == view::out_phase::sending;
+  const bool sending = v.out == view::out_phase::waiting_wifi || v.out == view::out_phase::connecting ||
+                       v.out == view::out_phase::confirming || v.out == view::out_phase::waiting ||
+                       v.out == view::out_phase::sending;
   row(w, "file_actions");
   folder_field(w, "send_folder", "Send a folder", "", "Pick a folder to send");
   button(w, "clear", "Clear", "plain", v.file_count == 0 || sending);
@@ -176,10 +189,28 @@ std::string build_tree(const view& v) {
   for (const auto& p : v.peers) {
     if (p.id == v.selected_peer) target = p.name;
   }
-  button(w, "send", target.empty() ? std::string("Send") : "Send to " + target, "primary",
-         sending || target.empty() || v.file_count == 0 || v.reading_folder);
+  // Too big for Bluetooth and the peer is only in Bluetooth range: say what
+  // to do before Send, and let Send wait for the peer on Wi-Fi.
+  const bool over_wifi = needs_wifi(v);
+  if (over_wifi && !sending) {
+    text(w, "send_hint", wifi_hint(v, target), "secondary");
+  }
+  button(w, "send",
+         target.empty() ? std::string("Send") : over_wifi ? "Send to " + target + " over Wi-Fi" : "Send to " + target,
+         "primary", sending || target.empty() || v.file_count == 0 || v.reading_folder);
 
   switch (v.out) {
+    case view::out_phase::waiting_wifi:
+      text(w, "out_note",
+           "Waiting for " + v.out_peer + " on Wi-Fi. " +
+               (v.wifi_up ? "Put both computers on the same network; the send starts as soon as " + v.out_peer +
+                                " is there."
+                          : std::string("This computer is not on a network: turn on Wi-Fi here and join the same "
+                                        "network as ") +
+                                v.out_peer + ". The send starts as soon as it is there."),
+           "secondary");
+      button(w, "out_cancel", "Cancel", "destructive");
+      break;
     case view::out_phase::connecting:
       text(w, "out_note", "Connecting to " + v.out_peer + "\xE2\x80\xA6");
       button(w, "out_cancel", "Cancel", "destructive");

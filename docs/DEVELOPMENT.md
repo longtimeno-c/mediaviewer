@@ -1803,14 +1803,16 @@ copy when done.
 What is built is in [docs/design/28](design/28-sharepoint.md).
 
 - **Mac (M-series):** the app, the Swift chrome and `libmv_sharepoint.dylib` build clean.
-  `mv_import_tests` 135 cases pass, 23 of them `"[sharepoint]"`: the path rule, the offer (a
+  `mv_import_tests` 138 cases pass, 26 of them `"[sharepoint]"`: the path rule, the offer (a
   wrapping total and an oversized file refused), the beacon, the code, the channel (same code
   both ends, a machine in the middle shows two codes, a key that does not match its commitment
   and an altered byte end it, another version is refused, pings never stretch a deadline), a
   peer that connects and stalls does not hold up shutdown, made-up beacons neither flood the list
   nor take a peer's address, and two or three engines over loopback TCP
   found through an in-memory bus (nothing about the files leaves before the sender's person
-  confirms the code; Accept delivers with matching bytes and keeps both on a name clash; pair half and sidecar ride along; a folder keeps its shape without housekeeping; Decline,
+  confirms the code; Accept delivers with matching bytes and keeps both on a name clash; a set
+  over 32 MiB to a peer heard only on Bluetooth says so before Send, waits, and sends by itself
+  once the peer's beacon arrives, and Cancel ends the wait; pair half and sidecar ride along; a folder keeps its shape without housekeeping; Decline,
   closing the window and a third client receive nothing; busy; Cancel from either side keeps what
   finished and leaves no `.mvtmp`; no room; an offer opens a closed window when receiving is on;
   no presence with the window closed), then the add-on through a signed store and the v3 table,

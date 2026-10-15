@@ -173,7 +173,8 @@ void engine::reconcile() {
   bool want = false;
   {
     std::lock_guard lock(m_);
-    want = !stopping_.load() && (visible_locked() || transfer_running_);
+    // A send waiting for its peer on Wi-Fi keeps listening, window or not.
+    want = !stopping_.load() && (visible_locked() || transfer_running_ || !waiting_peer_.empty());
   }
   if (want && !presence_on_) {
     start_presence();
@@ -270,7 +271,7 @@ void engine::refresh_peers_locked() {
     const bool wifi = p.wifi && fresh(p.wifi_seen);
     const bool bt = !p.bt_handle.empty() && fresh(p.bt_seen);
     if (!wifi && !bt) continue;
-    rows.push_back({id, p.name, wifi && bt ? "Wi-Fi and Bluetooth" : wifi ? "Wi-Fi" : "Bluetooth"});
+    rows.push_back({id, p.name, wifi && bt ? "Wi-Fi and Bluetooth" : wifi ? "Wi-Fi" : "Bluetooth", wifi, bt});
   }
   std::sort(rows.begin(), rows.end(), [](const view::peer_row& a, const view::peer_row& b) {
     return a.name != b.name ? a.name < b.name : a.id < b.id;
@@ -290,6 +291,7 @@ void engine::refresh_peers_locked() {
 void engine::on_beacon(const beacon& b, const std::string& address) {
   if (b.id == id_) return;  // our own, looped back
   bool changed = false;
+  bool ready = false;
   {
     std::lock_guard lock(m_);
     const auto now = std::chrono::steady_clock::now();
@@ -308,8 +310,13 @@ void engine::on_beacon(const beacon& b, const std::string& address) {
     p.wifi_seen = std::chrono::steady_clock::now();
     refresh_peers_locked();
     changed = std::exchange(peers_changed_, false);
+    ready = b.id == waiting_peer_ && !transfer_running_;
   }
-  if (changed) post_throttled();
+  if (ready) {
+    start_waiting_send();  // the peer the big set waited for is on Wi-Fi now
+  } else if (changed) {
+    post_throttled();
+  }
 }
 
 void engine::on_tick() {
@@ -501,7 +508,7 @@ void engine::set_files(const std::vector<std::string>& paths) {
 }
 
 bool engine::out_busy_locked() const noexcept {
-  return v_.out == view::out_phase::connecting || v_.out == view::out_phase::confirming ||
+  return v_.out == view::out_phase::waiting_wifi || v_.out == view::out_phase::connecting || v_.out == view::out_phase::confirming ||
          v_.out == view::out_phase::waiting || v_.out == view::out_phase::sending;
 }
 
@@ -686,6 +693,20 @@ void engine::cancel_transfer() {
     decided_.notify_all();
   }
   for (const auto& l : opening) l->shutdown();  // a handshake a peer stalls
+  bool was_waiting = false;
+  {
+    std::lock_guard lock(m_);
+    if (v_.out == view::out_phase::waiting_wifi) {
+      was_waiting = true;
+      waiting_peer_.clear();
+      v_.out = view::out_phase::ended;
+      v_.out_note = "Cancelled. Nothing was sent.";
+    }
+  }
+  if (was_waiting) {
+    request_reconcile();
+    post();
+  }
   if (ch) {
     // Said if the link is free now; never waits behind a chunk being sent.
     (void)ch->try_send(msg::cancel, "{}");
@@ -722,28 +743,60 @@ hooks engine::hooks_for(bool sending) {
 
 // ---- sending ------------------------------------------------------------------------
 
+void engine::start_waiting_send() {
+  {
+    std::lock_guard lock(m_);
+    if (waiting_peer_.empty() || v_.out != view::out_phase::waiting_wifi) return;
+    v_.selected_peer = waiting_peer_;
+    waiting_peer_.clear();
+    v_.out = view::out_phase::idle;
+  }
+  start_send();  // the peer is fresh on Wi-Fi now, so this connects there
+}
+
+bool needs_wifi(const view& v) noexcept {
+  if (v.selected_peer.empty() || v.file_bytes <= kBluetoothMaxBytes) return false;
+  for (const auto& p : v.peers) {
+    if (p.id == v.selected_peer) return p.bt && !p.wifi;
+  }
+  return false;
+}
+
 void engine::start_send() {
   std::string peer_id;
   std::vector<outgoing_file> files;
+  bool waiting = false;
   {
     std::lock_guard lock(m_);
     if (transfer_running_ || files_.empty() || v_.reading_folder || v_.selected_peer.empty()) return;
-    if (peers_.find(v_.selected_peer) == peers_.end()) return;
-    transfer_running_ = true;
-    cancel_.store(false);
-    peer_id = v_.selected_peer;
-    files = files_;
-    out_decision_ = 0;
-    v_.out = view::out_phase::connecting;
-    v_.out_peer = peers_[peer_id].name;
+    if (v_.out == view::out_phase::waiting_wifi || peers_.find(v_.selected_peer) == peers_.end()) return;
+    v_.out_peer = peers_[v_.selected_peer].name;
     v_.out_code.clear();
     v_.out_note.clear();
-    v_.out_bytes = 0;
-    v_.out_files = 0;
-    v_.out_count = static_cast<std::uint32_t>(files.size());
-    v_.out_total = v_.file_bytes;
+    if (needs_wifi(v_)) {
+      // Too big for Bluetooth: wait for this peer on Wi-Fi (on_beacon starts
+      // the send), with presence kept up meanwhile.
+      waiting_peer_ = v_.selected_peer;
+      v_.out = view::out_phase::waiting_wifi;
+      waiting = true;
+    } else {
+      transfer_running_ = true;
+      cancel_.store(false);
+      peer_id = v_.selected_peer;
+      files = files_;
+      out_decision_ = 0;
+      v_.out = view::out_phase::connecting;
+      v_.out_bytes = 0;
+      v_.out_files = 0;
+      v_.out_count = static_cast<std::uint32_t>(files.size());
+      v_.out_total = v_.file_bytes;
+    }
   }
   post();
+  if (waiting) {
+    request_reconcile();
+    return;
+  }
   std::lock_guard threads(threads_m_);
   if (transfer_thread_.joinable()) transfer_thread_.join();
   transfer_thread_ = std::thread([this, peer_id, files = std::move(files)]() mutable {

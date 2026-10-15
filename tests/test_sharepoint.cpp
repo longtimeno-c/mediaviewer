@@ -14,6 +14,7 @@
 #include <atomic>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <map>
 #include <mutex>
 #include <string>
@@ -437,7 +438,8 @@ TEST_CASE("sharepoint: every state of the window is a tree the hosts accept", "[
   v.selected_peer = "0123456789abcdef";
   v.wifi_up = true;
   states.push_back(v);
-  for (auto phase : {sp::view::out_phase::connecting, sp::view::out_phase::confirming, sp::view::out_phase::waiting,
+  for (auto phase : {sp::view::out_phase::waiting_wifi, sp::view::out_phase::connecting,
+                     sp::view::out_phase::confirming, sp::view::out_phase::waiting,
                      sp::view::out_phase::sending,
                      sp::view::out_phase::done, sp::view::out_phase::ended}) {
     v.out = phase;
@@ -472,6 +474,34 @@ TEST_CASE("sharepoint: every state of the window is a tree the hosts accept", "[
   // The code is on the screen while an offer waits.
   v.in = sp::view::in_phase::asking;
   CHECK(sp::build_tree(v).find("Code 654 321") != std::string::npos);
+}
+
+TEST_CASE("sharepoint: a set too big for Bluetooth says to use Wi-Fi before Send", "[sharepoint]") {
+  sp::view v;
+  v.my_name = "Studio";
+  v.wifi_up = true;
+  v.file_names = {"clip.mov"};
+  v.file_count = 1;
+  v.file_bytes = 340'000'000;
+  v.peers = {{"0123456789abcdef", "Laptop", "Bluetooth", false, true}};
+  v.selected_peer = "0123456789abcdef";
+  CHECK(sp::needs_wifi(v));
+  std::string tree = sp::build_tree(v);
+  INFO(tree);
+  CHECK(tree.find("Send to Laptop over Wi-Fi") != std::string::npos);
+  CHECK(tree.find("Laptop is only in Bluetooth range") != std::string::npos);
+  CHECK(mv::addon::screen::tree{}.set(tree) == mv::addon::screen::error::none);
+  // No network here: the person turns on Wi-Fi on this computer.
+  v.wifi_up = false;
+  tree = sp::build_tree(v);
+  CHECK(tree.find("turn on Wi-Fi here") != std::string::npos);
+  // Small enough for Bluetooth, or the peer on Wi-Fi too: a plain Send.
+  v.file_bytes = 1'000'000;
+  CHECK_FALSE(sp::needs_wifi(v));
+  v.file_bytes = 340'000'000;
+  v.peers[0].wifi = true;
+  CHECK_FALSE(sp::needs_wifi(v));
+  CHECK(sp::build_tree(v).find("over Wi-Fi") == std::string::npos);
 }
 
 // ---- two and three clients ------------------------------------------------------------------------
@@ -775,4 +805,125 @@ TEST_CASE("sharepoint: made-up beacons cannot flood the list or take a peer's ad
   const auto it = std::find_if(v.peers.begin(), v.peers.end(), [](const auto& p) { return p.id == "0000000000001000"; });
   REQUIRE(it != v.peers.end());
   CHECK(it->name == "Flood 0");
+}
+
+namespace {
+// Reports one peer on "Bluetooth" a few times a second; it cannot connect.
+struct fake_bluetooth final : sp::bluetooth {
+  sp::bt_peer peer;
+  std::atomic<bool> stop_{false};
+  std::thread t;
+  explicit fake_bluetooth(sp::bt_peer p) : peer(std::move(p)) {}
+  ~fake_bluetooth() override { stop(); }
+  bool start(const std::string&, const std::string&, peer_fn on_peer, link_fn, std::string&) override {
+    stop_.store(false);
+    t = std::thread([this, on_peer = std::move(on_peer)] {
+      while (!stop_.load()) {
+        on_peer(peer);
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+      }
+    });
+    return true;
+  }
+  void stop() noexcept override {
+    stop_.store(true);
+    if (t.joinable()) t.join();
+  }
+  mv::result<std::unique_ptr<sp::link>> connect(const std::string&, int) override {
+    return mv::err(mv::status::io);
+  }
+};
+
+// Ann hears Bea only on Bluetooth until the test lets Bea's beacon through.
+struct bt_only_sender {
+  fake_host host;
+  inject_discovery* inject = nullptr;
+  sp::engine eng;
+  bt_only_sender(const fs::path& received, const std::string& bea_id)
+      : host(received), eng(host, options(bea_id)) {
+    eng.screen_opened("");
+  }
+  sp::engine::options options(const std::string& bea_id) {
+    sp::engine::options o;
+    o.my_name = "Ann";
+    o.loopback_only = true;
+    o.make_discovery = [this] {
+      auto d = std::make_unique<inject_discovery>();
+      inject = d.get();
+      return std::unique_ptr<sp::discovery>(std::move(d));
+    };
+    o.make_bluetooth = [bea_id] {
+      return std::unique_ptr<sp::bluetooth>(std::make_unique<fake_bluetooth>(sp::bt_peer{"handle", bea_id, "Bea"}));
+    };
+    return o;
+  }
+};
+}  // namespace
+
+TEST_CASE("sharepoint: a big set to a Bluetooth-only peer waits for it on Wi-Fi, then sends", "[sharepoint]") {
+  scratch_dir s("sharepoint_wait_wifi");
+  bus b;
+  client bea(b, s / "bea_received", "Bea");
+  std::uint16_t port = 0;
+  REQUIRE(eventually([&] {
+    std::lock_guard lock(b.m);
+    for (const auto& [k, m] : b.members) port = m.self.port;
+    return port != 0;
+  }));
+  bt_only_sender ann(s / "ann_received", bea.eng.id());
+  // 33 MiB: over Bluetooth's 32.
+  const fs::path big = s / "out" / "clip.mov";
+  fs::create_directories(big.parent_path());
+  { std::ofstream(big, std::ios::binary).put('x'); }
+  fs::resize_file(big, 33ull * 1024 * 1024);
+  ann.eng.set_files({utf8(big)});
+  REQUIRE(eventually([&] {
+    const auto v = ann.eng.snapshot();
+    return !v.reading_folder && v.file_count == 1 && !v.peers.empty();
+  }));
+  CHECK(ann.eng.snapshot().peers[0].via == "Bluetooth");
+  ann.eng.on_event("peers", 4, "[\"" + bea.eng.id() + "\"]");
+  CHECK(sp::needs_wifi(ann.eng.snapshot()));
+  ann.eng.on_event("send", 1, "");
+  REQUIRE(eventually([&] { return ann.eng.snapshot().out == sp::view::out_phase::waiting_wifi; }));
+  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  CHECK(ann.eng.snapshot().out == sp::view::out_phase::waiting_wifi);  // nothing tried over Bluetooth
+  CHECK(bea.eng.snapshot().in == sp::view::in_phase::none);
+
+  // Bea joins the network: her beacon arrives, and the send starts by itself.
+  sp::beacon bea_beacon{bea.eng.id(), "Bea", port};
+  ann.inject->seen(bea_beacon, "127.0.0.1");
+  REQUIRE(eventually([&] { return ann.eng.snapshot().out == sp::view::out_phase::confirming; }));
+  ann.eng.on_event("out_confirm", 1, "");
+  REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::asking; }));
+  bea.eng.on_event("accept", 1, "");
+  ann.eng.wait_idle();
+  bea.eng.wait_idle();
+  INFO(ann.eng.snapshot().out_note);
+  CHECK(ann.eng.snapshot().out == sp::view::out_phase::done);
+  CHECK(fs::file_size(s / "bea_received" / "clip.mov") == 33ull * 1024 * 1024);
+}
+
+TEST_CASE("sharepoint: Cancel ends a send that waits for Wi-Fi", "[sharepoint]") {
+  scratch_dir s("sharepoint_wait_cancel");
+  bt_only_sender ann(s / "ann_received", "0123456789abcdef");
+  const fs::path big = s / "out" / "clip.mov";
+  fs::create_directories(big.parent_path());
+  { std::ofstream(big, std::ios::binary).put('x'); }
+  fs::resize_file(big, 40ull * 1024 * 1024);
+  ann.eng.set_files({utf8(big)});
+  REQUIRE(eventually([&] {
+    const auto v = ann.eng.snapshot();
+    return !v.reading_folder && v.file_count == 1 && !v.peers.empty();
+  }));
+  ann.eng.on_event("peers", 4, "[\"0123456789abcdef\"]");
+  ann.eng.on_event("send", 1, "");
+  REQUIRE(eventually([&] { return ann.eng.snapshot().out == sp::view::out_phase::waiting_wifi; }));
+  ann.eng.on_event("out_cancel", 1, "");
+  CHECK(ann.eng.snapshot().out == sp::view::out_phase::ended);
+  CHECK(ann.eng.snapshot().out_note == "Cancelled. Nothing was sent.");
+  // The peer appearing on Wi-Fi afterwards starts nothing.
+  ann.inject->seen(sp::beacon{"0123456789abcdef", "Bea", 40000}, "127.0.0.1");
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  CHECK(ann.eng.snapshot().out == sp::view::out_phase::ended);
 }

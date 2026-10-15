@@ -67,13 +67,17 @@ struct view {
   bool reading_folder = false;
   struct peer_row {
     std::string id, name, via;  // via: "Wi-Fi", "Bluetooth", "Wi-Fi and Bluetooth"
+    bool wifi = false, bt = false;  // heard on each in the last kPeerForgetMs
   };
   std::vector<peer_row> peers;
   std::string selected_peer;
+  // waiting_wifi: the set is too big for Bluetooth and the peer is only in
+  // Bluetooth range; the send starts by itself once the peer is heard on Wi-Fi.
   // confirming: the link is up and both screens show the code; nothing about
   // the files has left until this person says the codes match.
-  enum class out_phase : std::uint8_t { idle, connecting, confirming, waiting, sending, done, ended } out =
-      out_phase::idle;
+  enum class out_phase : std::uint8_t {
+    idle, waiting_wifi, connecting, confirming, waiting, sending, done, ended
+  } out = out_phase::idle;
   std::string out_peer, out_code, out_note;
   std::uint64_t out_bytes = 0, out_total = 0;
   std::uint32_t out_files = 0, out_count = 0;
@@ -89,6 +93,10 @@ struct view {
   std::uint32_t in_files = 0;
   std::string destination;
 };
+
+// The selected peer is heard only on Bluetooth and the set is over
+// kBluetoothMaxBytes: Send waits for it on Wi-Fi instead (the window says so).
+[[nodiscard]] bool needs_wifi(const view& v) noexcept;
 
 // The view tree (docs/design/25 §10 vocabulary) for `v`. Pure; tested.
 [[nodiscard]] std::string build_tree(const view& v);
@@ -181,6 +189,8 @@ class engine {
   void on_incoming(std::unique_ptr<link> l);
   void accept_loop();
   void start_send();
+  // The peer the send waited for is on Wi-Fi now: go.
+  void start_waiting_send();
   void run_send(std::string peer_id, std::vector<outgoing_file> files);
   void run_receive(std::unique_ptr<link> l);
   void end_transfer();
@@ -212,6 +222,8 @@ class engine {
   std::uint64_t files_generation_ = 0;    // under m_
   int decision_ = 0;                      // under m_: 0 none, 1 accept, 2 decline
   int out_decision_ = 0;                  // under m_: 0 none, 1 codes match, 2 cancel
+  // The peer a too-big set waits to see on Wi-Fi (out_phase::waiting_wifi).
+  std::string waiting_peer_;              // under m_
   // Links in their handshake (no channel yet), so a cancel or the destructor
   // can end one a peer stalls.
   std::vector<std::shared_ptr<link>> opening_;  // under m_

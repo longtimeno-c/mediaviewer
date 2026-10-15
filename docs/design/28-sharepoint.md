@@ -50,8 +50,12 @@ host loads it after first pixel, and the engine is made at the first open or com
   is one row.
 - **Bluetooth LE between a Mac and a Windows PC** has one common way to move bytes: GATT. Windows
   gives apps no connection-oriented LE channel. GATT moves tens of kilobytes a second, so a set
-  over **32 MiB is refused on Bluetooth** and the window says to join the same Wi-Fi
-  ([12](12-decision-log.md#sharepoint)). Wi-Fi carries anything.
+  over **32 MiB never goes over Bluetooth** ([12](12-decision-log.md#sharepoint)); Wi-Fi carries
+  anything. Picking a peer heard only on Bluetooth with such a set shows, before Send, why and
+  what to do: put both computers on the same Wi-Fi network, or, when this computer has no
+  network, turn on Wi-Fi here. Send then reads **Send to … over Wi-Fi** and waits ("Waiting for
+  … on Wi-Fi", with Cancel); the moment that peer's beacon arrives the send starts by itself, code
+  check and Accept as always. Presence stays up while it waits, window closed or not.
 - Sending prefers Wi-Fi when the peer's beacon is fresh, and falls back to Bluetooth.
 
 ## The wire
