@@ -38,6 +38,7 @@
 
 #include <cstdint>
 #include <string_view>
+#include <vector>
 
 #include "meta/generators.h"
 #include "meta/parse.h"
@@ -58,9 +59,14 @@ inline constexpr std::uint64_t kProbeMaxFileBytes = (32u << 20) + (1u << 20);
 // fields its own readers do not reach (a clip's XMP), so the two agree.
 // `c2pa` = false skips the C2PA stores (JPEG APP11, PNG caBX, the BMFF box):
 // the full read has already parsed them, and they are the probe's largest reads.
-void probe_evidence(parse::byte_source& src, parse::evidence& ev, bool c2pa = true) noexcept;
+// `rows` (optional) receives the rows the readers produced on the way (#402:
+// the full read keeps the C2PA rows of a store past its prefix for All tags);
+// null discards them.
+void probe_evidence(parse::byte_source& src, parse::evidence& ev, bool c2pa = true,
+                    std::vector<property>* rows = nullptr) noexcept;
 // The same over a file, through the capped source probe_provenance uses, so the
 // full read's merge is held to kProbeMaxFileBytes too (probe_file.cpp).
-void probe_evidence(std::string_view utf8_path, parse::evidence& ev, bool c2pa) noexcept;
+void probe_evidence(std::string_view utf8_path, parse::evidence& ev, bool c2pa,
+                    std::vector<property>* rows = nullptr) noexcept;
 
 }  // namespace mv::meta
