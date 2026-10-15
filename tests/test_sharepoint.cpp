@@ -25,6 +25,7 @@
 #include "addons/sharepoint/channel.h"
 #include "addons/sharepoint/engine.h"
 #include "addons/sharepoint/net.h"
+#include "addons/sharepoint/prefs.h"
 #include "addons/sharepoint/transfer.h"
 #include "addons/sharepoint/wire.h"
 #include "import_fixture.h"
@@ -511,6 +512,64 @@ TEST_CASE("sharepoint: a set too big for Bluetooth says to use Wi-Fi before Send
   v.peers[0].wifi = true;
   CHECK_FALSE(sp::needs_wifi(v));
   CHECK(sp::build_tree(v).find("over Wi-Fi") == std::string::npos);
+}
+
+// ---- what is kept across launches (#442) ------------------------------------------------------------
+
+TEST_CASE("sharepoint: the prefs file survives a write that stopped half-way", "[sharepoint]") {
+  scratch_dir s("sharepoint_prefs_file");
+  const std::string path = utf8(s / "sharepoint.json");
+  CHECK_FALSE(sp::load_prefs(path).has_value());
+  sp::prefs p;
+  p.receiving = true;
+  p.destination = "/Volumes/Photos/In";
+  REQUIRE(sp::save_prefs(path, p));
+  CHECK(sp::load_prefs(path) == p);
+  p.receiving = false;
+  REQUIRE(sp::save_prefs(path, p));
+  CHECK(sp::load_prefs(path) == p);
+  CHECK_FALSE(fs::exists(s / "sharepoint.json.new"));
+  // Stopped after removing the old file, before the rename: the new one is read.
+  fs::rename(s / "sharepoint.json", s / "sharepoint.json.new");
+  CHECK(sp::load_prefs(path) == p);
+  // A leftover .new does not stop the next write.
+  p.receiving = true;
+  REQUIRE(sp::save_prefs(path, p));
+  CHECK(sp::load_prefs(path) == p);
+  write_text(s / "sharepoint.json", "not json");
+  CHECK_FALSE(sp::load_prefs(path).has_value());
+}
+
+TEST_CASE("sharepoint: received files go to Downloads unless Save to picked another, which is kept",
+          "[sharepoint]") {
+#if defined(__APPLE__)
+  const std::string downloads = sp::net::downloads_folder();
+  CHECK(downloads.size() > 10);
+  CHECK(downloads.substr(downloads.size() - 10) == "/Downloads");
+#endif
+  scratch_dir s("sharepoint_prefs");
+  bus b;
+  fs::create_directories(s / "Downloads");
+  fs::create_directories(s / "chosen");
+  fake_host host(s / "Downloads");  // the host's default: its Downloads
+  sp::engine::options o = client::options(b, "Bea");
+  o.prefs_path = utf8(s / "data" / "sharepoint.json");
+  fs::create_directories(s / "data");
+  {
+    sp::engine e(host, o);
+    CHECK(e.snapshot().destination == utf8(s / "Downloads"));
+    e.on_event("destination", 2, "\"" + json_path(s / "chosen") + "\"");
+    CHECK(e.snapshot().destination == utf8(s / "chosen"));
+  }
+  {
+    sp::engine e(host, o);  // the next launch
+    CHECK(e.snapshot().destination == utf8(s / "chosen"));
+  }
+  fs::remove_all(s / "chosen");
+  {
+    sp::engine e(host, o);  // the folder went: Downloads, until another is picked
+    CHECK(e.snapshot().destination == utf8(s / "Downloads"));
+  }
 }
 
 // ---- two and three clients ------------------------------------------------------------------------

@@ -8,6 +8,7 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
+#include <pwd.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -15,6 +16,7 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 
@@ -268,6 +270,18 @@ result<std::unique_ptr<beacon_socket>> open_beacon_socket(std::uint16_t port) {
     (void)::setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &m, sizeof m);  // broadcast still works without it
   }
   return std::unique_ptr<beacon_socket>(std::make_unique<udp_beacon>(fd, port));
+}
+
+std::string downloads_folder() {
+  std::string home;
+  if (const char* h = std::getenv("HOME"); h && *h) {
+    home = h;
+  } else if (const passwd* pw = ::getpwuid(::getuid()); pw && pw->pw_dir) {
+    home = pw->pw_dir;
+  }
+  if (home.empty()) return {};
+  while (home.size() > 1 && home.back() == '/') home.pop_back();
+  return home + "/Downloads";
 }
 
 #if !defined(__APPLE__)

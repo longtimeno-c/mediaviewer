@@ -59,4 +59,9 @@ class beacon_socket {
 // computer name on Windows). Never a user name.
 [[nodiscard]] std::string machine_name();
 
+// The person's Downloads folder, where received files land unless they pick
+// another (#442, as AirDrop): FOLDERID_Downloads on Windows, ~/Downloads on
+// the Mac. "" when there is none. A local read; never blocks on the network.
+[[nodiscard]] std::string downloads_folder();
+
 }  // namespace mv::sharepoint::net

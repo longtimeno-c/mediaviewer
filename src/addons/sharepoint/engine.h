@@ -38,6 +38,7 @@
 #include <vector>
 
 #include "addons/sharepoint/channel.h"
+#include "addons/sharepoint/prefs.h"
 #include "addons/sharepoint/presence.h"
 #include "addons/sharepoint/transfer.h"
 
@@ -110,8 +111,8 @@ class engine_host {
   // Opens (an offer arrived while receiving with the window closed) or
   // closes the window.
   virtual void show_screen(bool show) = 0;
-  // Where received files go unless the person picks another folder:
-  // <the default photo folder>/Received. "" when there is none.
+  // Where received files go unless the person picks another folder: the
+  // Downloads folder (#442; net::downloads_folder). "" when there is none.
   [[nodiscard]] virtual std::string default_destination() = 0;
   // Free bytes on the volume of `dir`, if known.
   [[nodiscard]] virtual std::optional<std::uint64_t> free_bytes(const std::string& dir) = 0;
@@ -136,6 +137,11 @@ class engine {
     // No presence at all: no socket, no beacon, no Bluetooth (the loader
     // test, which opens the window; MV_SHAREPOINT_OFFLINE=1).
     bool offline = false;
+    // Where the prefs live (prefs.h; the add-on's data folder). "" keeps
+    // nothing across launches. `initial`: already read by the caller; when
+    // empty the engine reads `prefs_path` itself.
+    std::string prefs_path;
+    std::optional<prefs> initial;
   };
 
   engine(engine_host& host, options opts);
@@ -178,6 +184,9 @@ class engine {
   void control_loop();
   void request_reconcile();
   void reconcile();
+  // The prefs change: written on the control thread, never the caller's.
+  void request_save();
+  void save_now();
   void post();            // the tree now (any thread)
   void post_throttled();  // within ~100 ms, coalesced
   void start_presence();
@@ -252,6 +261,7 @@ class engine {
   std::condition_variable control_cv_;
   bool reconcile_wanted_ = false;                     // under control_m_
   bool post_pending_ = false;                         // under control_m_
+  bool save_wanted_ = false;                          // under control_m_
   std::chrono::steady_clock::time_point post_due_{};  // under control_m_
   std::thread control_thread_;
 
@@ -273,8 +283,5 @@ class engine {
   std::optional<files_job> files_next_;  // under files_m_
   std::thread files_thread_;             // under files_m_; made at the first set
 };
-
-// "Received" under the default photo folder.
-inline constexpr const char* kReceivedFolder = "Received";
 
 }  // namespace mv::sharepoint

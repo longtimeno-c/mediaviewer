@@ -85,7 +85,13 @@ engine::engine(engine_host& host, options opts) : host_(host), opts_(std::move(o
   id_ = random_id();
   if (opts_.my_name.empty()) opts_.my_name = net::machine_name();
   v_.my_name = clean_name(opts_.my_name);
+  // What was kept from the last run (#442). A saved folder that is gone
+  // falls back to the default; it is not forgotten until another is picked.
+  const prefs kept = opts_.initial ? *opts_.initial : load_prefs(opts_.prefs_path).value_or(prefs{});
   v_.destination = host_.default_destination();
+  if (!kept.destination.empty()) {
+    if (auto st = io::stat_path(kept.destination); st && st->is_directory) v_.destination = kept.destination;
+  }
   control_thread_ = std::thread([this] { control_loop(); });
 }
 
@@ -119,6 +125,7 @@ engine::~engine() {
   }
   if (control_thread_.joinable()) control_thread_.join();
   stop_presence();
+  if (save_wanted_) save_now();  // a change the control thread had not written yet
 }
 
 // ---- posting and the control thread ------------------------------------------------
@@ -149,15 +156,41 @@ void engine::request_reconcile() {
   control_cv_.notify_all();
 }
 
+void engine::request_save() {
+  if (opts_.prefs_path.empty()) return;
+  std::lock_guard lock(control_m_);
+  save_wanted_ = true;
+  control_cv_.notify_all();
+}
+
+void engine::save_now() {
+  prefs p;
+  {
+    std::lock_guard lock(m_);
+    p.receiving = v_.receiving;
+    p.destination = v_.destination == host_.default_destination() ? std::string() : v_.destination;
+  }
+  {
+    std::lock_guard lock(control_m_);
+    save_wanted_ = false;
+  }
+  if (!save_prefs(opts_.prefs_path, p)) host_.log(1, "sharepoint: could not keep the settings");
+}
+
 void engine::control_loop() {
   std::unique_lock lock(control_m_);
   while (!stopping_.load()) {
     if (post_pending_) {
-      control_cv_.wait_until(lock, post_due_, [&] { return stopping_.load() || reconcile_wanted_; });
+      control_cv_.wait_until(lock, post_due_, [&] { return stopping_.load() || reconcile_wanted_ || save_wanted_; });
     } else {
-      control_cv_.wait(lock, [&] { return stopping_.load() || reconcile_wanted_ || post_pending_; });
+      control_cv_.wait(lock, [&] { return stopping_.load() || reconcile_wanted_ || post_pending_ || save_wanted_; });
     }
     if (stopping_.load()) break;
+    if (save_wanted_) {
+      lock.unlock();
+      save_now();
+      lock.lock();
+    }
     if (reconcile_wanted_) {
       reconcile_wanted_ = false;
       lock.unlock();
@@ -687,10 +720,15 @@ void engine::on_event(const std::string& node, std::uint32_t kind, const std::st
     if (st && st->is_directory) read_folder(*text);
   } else if (node == "destination" && (kind == kChange || kind == kSubmit) && text) {
     auto st = io::stat_path(*text);
+    bool changed = false;
     {
       std::lock_guard lock(m_);
-      if (st && st->is_directory) v_.destination = *text;
+      if (st && st->is_directory && v_.destination != *text) {
+        v_.destination = *text;
+        changed = true;
+      }
     }
+    if (changed) request_save();  // kept for the next launch (#442)
     post();  // a folder that is not there puts the last good one back
   } else if ((node == "accept" || node == "decline") && kind == kClick) {
     bool connecting = false;

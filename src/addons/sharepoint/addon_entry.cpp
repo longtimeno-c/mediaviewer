@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "addons/sharepoint/engine.h"
+#include "addons/sharepoint/net.h"
 #include "core/json.h"
 #include "io/file_port.h"
 
@@ -77,10 +78,14 @@ class host_bridge final : public mv::sharepoint::engine_host {
 
   void show_screen(bool show) override { (void)h_->screen_show(h_->host, kScreen, show ? 1 : 0); }
 
-  std::string default_destination() override {
+  // Downloads, as AirDrop (#442); Save to picks another.
+  std::string default_destination() override { return mv::sharepoint::net::downloads_folder(); }
+
+  // The add-on's own data folder (made by the host), or "".
+  std::string data_dir() {
     char buf[4096];
-    if (!h_->default_library_dir || h_->default_library_dir(h_->host, buf, sizeof buf) != MV_OK || !*buf) return {};
-    return mv::io::join_path(buf, mv::sharepoint::kReceivedFolder);
+    if (!h_->data_dir || h_->data_dir(h_->host, buf, sizeof buf) != MV_OK || !*buf) return {};
+    return buf;
   }
 
   std::optional<std::uint64_t> free_bytes(const std::string& dir) override {
@@ -128,6 +133,9 @@ struct addon_state {
       // The loader test opens the window without touching the network.
       const char* offline = std::getenv("MV_SHAREPOINT_OFFLINE");
       o.offline = offline && offline[0] == '1';
+      if (const std::string dir = bridge->data_dir(); !dir.empty()) {
+        o.prefs_path = mv::io::join_path(dir, mv::sharepoint::kPrefsFile);
+      }
       eng = std::make_unique<engine>(*bridge, std::move(o));
     }
     return *eng;

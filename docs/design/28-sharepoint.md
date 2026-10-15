@@ -111,8 +111,13 @@ address is ignored, and the list holds at most 64. A receiver already in a trans
   shape under its own name, without housekeeping (`@eaDir`, `#recycle`, `$RECYCLE.BIN`, `System
   Volume Information`, `lost+found`, `__MACOSX`, `Thumbs.db`, `desktop.ini`, dot files, our own
   `.mvtmp`).
-- **Where it lands**: the folder the person picks under **Save to**, else
-  `<the default photo folder>/Received`, made on Accept. Every relative path passes
+- **Where it lands**: the system **Downloads** folder, as AirDrop (`FOLDERID_Downloads` on Windows,
+  `~/Downloads` on the Mac; `net::downloads_folder`, #442), made on Accept if it is missing. A sent
+  folder keeps its own name inside it. **Save to** picks another folder, and that choice is kept
+  across launches in the add-on's own prefs (`prefs.h`: `sharepoint.json` in its data folder,
+  written on the engine's control thread); a kept folder that is gone falls back to Downloads
+  until another is picked. Until #442 the default was `<the default photo folder>/Received`.
+  Every relative path passes
   `safe_relative` (`/` only, no `..`, no root, no drive or stream, no device name, no trailing dot
   or space, valid UTF-8, at most 1024 bytes and 32 levels): one bad path refuses the whole offer.
   A free-space check (the volume's free bytes less 64 MiB) answers `no_room` before any byte moves.
@@ -181,7 +186,8 @@ second while bytes move; those posts update chrome and never present the canvas.
 | Sealed channel | `channel.*`, `link.h` |
 | Sending and the verified receive | `transfer.*` |
 | Engine, presence, the window's tree | `engine.*`, `presence.*`, `tree.cpp` |
-| Sockets, machine name | `net.h`, `net_posix.cpp`, `net_win.cpp`, `machine_mac.cpp` |
+| What is kept across launches | `prefs.*` |
+| Sockets, machine name, Downloads | `net.h`, `net_posix.cpp`, `net_win.cpp`, `machine_mac.cpp` |
 | Bluetooth | `bt_pipe.*`, `bt_mac.mm` (CoreBluetooth), `bt_win.cpp` (C++/WinRT), `bt_none.cpp` |
 | The add-on's export and manifest | `addon_entry.cpp`, `manifest.json`; `cmake/sharepoint.cmake` |
 | Mac chrome | `Sharepoint.swift` (offer, share icon), `SlotItems.swift` (Settings), `ScreenView.swift` (Choose…), `GalleryView.swift` / `FolderStore.swift` (range, drag) |

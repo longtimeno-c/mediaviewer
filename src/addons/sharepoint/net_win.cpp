@@ -11,6 +11,8 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <knownfolders.h>
+#include <shlobj.h>
 
 #include <algorithm>
 #include <atomic>
@@ -293,6 +295,21 @@ result<std::unique_ptr<beacon_socket>> open_beacon_socket(std::uint16_t port) {
     (void)::setsockopt(s, IPPROTO_IP, IP_ADD_MEMBERSHIP, reinterpret_cast<const char*>(&m), sizeof m);
   }
   return std::unique_ptr<beacon_socket>(std::make_unique<udp_beacon>(s, port));
+}
+
+std::string downloads_folder() {
+  PWSTR wide = nullptr;
+  std::string out;
+  if (SUCCEEDED(::SHGetKnownFolderPath(FOLDERID_Downloads, KF_FLAG_DEFAULT, nullptr, &wide)) && wide) {
+    const int n = static_cast<int>(::wcslen(wide));
+    const int bytes = ::WideCharToMultiByte(CP_UTF8, 0, wide, n, nullptr, 0, nullptr, nullptr);
+    if (bytes > 0) {
+      out.assign(static_cast<std::size_t>(bytes), '\0');
+      ::WideCharToMultiByte(CP_UTF8, 0, wide, n, out.data(), bytes, nullptr, nullptr);
+    }
+  }
+  ::CoTaskMemFree(wide);
+  return out;
 }
 
 std::string machine_name() {
