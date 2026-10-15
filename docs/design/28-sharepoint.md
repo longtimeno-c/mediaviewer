@@ -153,8 +153,38 @@ address is ignored, and the list holds at most 64. A receiver already in a trans
   again; only then is it renamed into place with no-replace. A taken name keeps both
   (`name (2).ext`, `io::unique_name`). A mismatch, an error, a cancel or a dropped link removes the
   temporary. Files that finished stay; nothing partial is left. The file's mtime is kept.
+- **The next file arrives while the last one is checked** (#442). The thread reading the link
+  writes and hashes each file; at `file_end`, once the streamed hash is the sender's, the file
+  goes to a verifier (two threads, in order, at most four files waiting, each an open
+  temporary) that flushes it, reads it back uncached, hashes again, renames it with no-replace
+  and sends its `file_done`; the sender's `done` is answered only after every check. Every rule
+  above holds for each file exactly as before; only file N+1 no longer waits for file N's flush
+  and read-back. A cancel or a dropped link still drops the file being written; files that had
+  arrived whole finish their check, as they did when it ran inline.
 - Between chunks both sides wait while the viewer presents (the host table's `should_yield`, as
   Import does), so a pan keeps its frames.
+
+**Throughput** (`mv_import_tests "[.sharepoint-bench]"`, #442): two engines in one process over
+loopback TCP, timed from Accept to the receiver's `done`, against a plain copy of the same files
+through a loopback socket (no hash, seal, flush or read-back). Mac M-series (Mac17,4), Release,
+warm cache, base and new alternated three times, load average ~5 (other work on the machine):
+
+| Case | Plain copy | Before | After |
+|---|---|---|---|
+| 500 × 2 MiB | 2,150–2,950 MB/s | 124–141 MB/s | 158–180 MB/s |
+| 1 × 1 GiB | 1,285–2,920 MB/s | 251–373 MB/s | 243–273 MB/s (no change: within noise) |
+
+Many files gained from the pipelined check (each file's flush to stable storage is most of its
+cost on loopback, and two checks overlap); a single file cannot, and on loopback it is bound by
+the seal (libsodium's portable ChaCha20-Poly1305, about a third of the CPU in a profile). Tried
+and dropped, because it measured no faster: reading and hashing a few chunks ahead of the seal on
+the sender (1 GiB: 373–389 MB/s against 370–385 before). Not tried: larger chunks (the frame limit
+is part of protocol 1; an older receiver would refuse the frame), socket buffer sizes (setting
+them turns off the OS's autotuning on a real link, which loopback cannot show), and pausing only
+for a pan rather than for every present (`should_yield` is the host table's one signal, shared
+with Import; it would need a host change on both platforms and the PR 1 gate measured with a
+transfer running). Loopback is not Wi-Fi or Bluetooth: no radio was measured here, so the MB/s a
+person sees between two machines is not in this table.
 
 ## Threads
 

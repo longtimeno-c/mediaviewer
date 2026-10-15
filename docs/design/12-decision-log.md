@@ -1378,6 +1378,12 @@ entry. The check is local to the sender (constant time, digits only, a partial e
 try); three wrong entries send `cancel` and end the link. The wire is unchanged (protocol 1): the
 receiver waits for the offer either way. Bluetooth's passkey entry is the pattern.
 
+**The receiver checks file N while file N+1 arrives (2026-10-15, #442).** Two verifier threads,
+at most four whole files waiting, each still flushed, read back uncached, hashed and renamed with
+no-replace before its `file_done`; the sender's `done` waits for every check. Measured on loopback
+(Mac, alternated): 500 × 2 MiB 124–141 → 158–180 MB/s; one 1 GiB file unchanged (crypto-bound).
+Reading ahead on the sender measured no faster and was not kept. `[.sharepoint-bench]`.
+
 **Each file's hash comes after its bytes, not in the offer (2026-10-15).** A hash list up front
 would make the sender read every file twice before the first byte moved (a large video read
 whole first). `file_end` carries the BLAKE3 of the bytes as read; the receiver checks it, then

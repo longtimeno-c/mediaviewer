@@ -1074,6 +1074,8 @@ python3 tools/package/addon-pack.py pack --addon places --platform macos --src b
 # Sharepoint (docs/design/28): build/addons/sharepoint/(lib)mv_sharepoint.(dylib|dll)
 cmake --build build --target mv_sharepoint
 build/bin/mv_import_tests "[sharepoint]"       # wire, channel, 2-3 engines over loopback TCP, the add-on through the loader
+build/bin/mv_import_tests "[.sharepoint-bench]"   # MB/s against a plain copy over loopback (MV_BENCH_DIR, _BIG_MB, _SMALL, _SMALL_KB, _CASES)
+build/bin/mv_import_tests "[.sharepoint-idle]"    # CPU while Keep receiving is on, window closed (MV_IDLE_SECONDS)
 python3 -m unittest tools/package/test_addon_pack.py   # SharepointPackTest among them
 python3 tools/package/addon-pack.py pack --addon sharepoint --platform macos --src build/addons/sharepoint \
   --version 1.0.0 --key <key file> --out dist/

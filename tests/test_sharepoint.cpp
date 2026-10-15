@@ -810,6 +810,48 @@ TEST_CASE("sharepoint: a wrong code three times ends the link, and nothing about
   CHECK(files_in(s / "bea_received").empty());
 }
 
+TEST_CASE("sharepoint: many files checked while the next arrive all land whole, same names kept apart",
+          "[sharepoint]") {
+  // #442: file N is flushed, read back and renamed on the verifier while
+  // file N+1 arrives. Two files of one offer with one name both stay.
+  scratch_dir s("sharepoint_pipeline");
+  bus b;
+  client ann(b, s / "ann_received", "Ann");
+  client bea(b, s / "bea_received", "Bea");
+  const fs::path dest = s / "dest";
+  fs::create_directories(dest);
+  std::vector<fs::path> files;
+  for (int i = 0; i < 40; ++i) {
+    const fs::path f = s / "out" / ("IMG_" + std::to_string(i) + ".JPG");
+    write_bytes(f, pattern(static_cast<std::size_t>(1000 + i * 7919), static_cast<std::uint8_t>(i)));
+    files.push_back(f);
+  }
+  write_text(s / "other" / "IMG_0.JPG", "another camera");
+  files.push_back(s / "other" / "IMG_0.JPG");
+  ann.pick(files);
+  bea.save_into(dest);
+  ann.send_to(bea);
+  REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::asking; }));
+  bea.eng.on_event("accept", 1, "");
+  ann.eng.wait_idle();
+  bea.eng.wait_idle();
+  INFO(bea.eng.snapshot().in_note);
+  CHECK(ann.eng.snapshot().out == sp::view::out_phase::done);
+  CHECK(bea.eng.snapshot().in == sp::view::in_phase::done);
+  CHECK(bea.eng.snapshot().in_files == 41);
+  CHECK(files_in(dest).size() == 41);
+  CHECK_FALSE(any_temporary(dest));
+  for (int i = 1; i < 40; ++i) {
+    const std::string name = "IMG_" + std::to_string(i) + ".JPG";
+    CHECK(read_bytes(dest / name) == read_bytes(s / "out" / name));
+  }
+  // Both IMG_0.JPG arrived; which one got the plain name depends on which check ended first.
+  const auto a = read_bytes(dest / "IMG_0.JPG");
+  const auto c = read_bytes(dest / "IMG_0 (2).JPG");
+  CHECK(((a == read_bytes(s / "out" / "IMG_0.JPG") && c == read_bytes(s / "other" / "IMG_0.JPG")) ||
+         (c == read_bytes(s / "out" / "IMG_0.JPG") && a == read_bytes(s / "other" / "IMG_0.JPG"))));
+}
+
 TEST_CASE("sharepoint: a pair half and a sidecar ride along; a folder keeps its shape", "[sharepoint]") {
   scratch_dir s("sharepoint_pairs");
   bus b;
