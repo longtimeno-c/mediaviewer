@@ -640,6 +640,10 @@ typedef struct mv_home_palette {
 void mv_chrome_set_home_theme(bool active, const mv_home_palette* dark, const mv_home_palette* light,
                               const char* effect, uint32_t effect_rgb, float intensity, float speed,
                               float size);
+// The pointer moved or a key went down over the chrome (the bar, a pane): the
+// empty window's ground effect restarts its clock as the panes' does. The
+// chrome calls it a few times a second at most. [main-thread]
+void mv_chrome_ground_input(void);
 
 // Milestone H (docs/design/17): the same management by add-on id, for the AI pack
 // ("ai" = Core, "ai-faces" = People, "ai-audio" = Sound) beside Import. Also addons_mac.mm. The

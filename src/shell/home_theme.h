@@ -86,12 +86,25 @@ struct home_theme {
   }
 };
 
-// The ground effect's rest rule (home_ground.h draws it) as a pure clock, so
-// both labs share it and a test can drive it.
+// The ground effect's motion rule (home_ground.h draws it) as a pure clock, so
+// both labs share it and a test can drive it. The chromes' panes run the same
+// rule (ThemeField.swift / ThemeField.cs ThemeMotion). Owner, 2026-10-15:
+//   - 30 frames a second while the app is in front and the pointer or a key
+//     moved in the last 5 seconds;
+//   - otherwise 10 a second while the window is visible (behind another app,
+//     or in front but quiet), for up to 60 seconds after the last input;
+//   - then it rests, and never moves while hidden, minimised or covered, or
+//     under Reduce Motion / Windows animations off.
+// Input is ours only: the app cannot see the pointer in other apps, so a
+// window left behind another app rests a minute after you leave it.
 // Times are the render thread's own seconds.
 struct home_ground_clock {
-  static constexpr double kTick = 0.1;   // ten frames a second
-  static constexpr double kRest = 5.0;   // pointer / key quiet for this long: rest
+  static constexpr double kFastTick = 1.0 / 30.0;
+  static constexpr double kSlowTick = 0.1;
+  static constexpr double kFastWindow = 5.0;   // input this recent, in front: fast
+  static constexpr double kSlowWindow = 60.0;  // input this recent, visible: slow
+  static constexpr double kMaxStep = 0.1;      // a late tick never jumps further
+  static constexpr double kEarly = 0.002;      // a wait may wake this early
 
   double time = 0.0;         // the effect's clock; advances only while ticking
   double last_input = -1.0;  // < 0: none yet (the labs record launch as one)
@@ -99,30 +112,34 @@ struct home_ground_clock {
 
   void input(double now) noexcept { last_input = now; }
 
-  // Whether the effect may move now. `home` is the welcome on screen (nothing
-  // open, no error, no runner); `active` the app in front.
-  [[nodiscard]] bool live(bool home, home_effect effect, bool active, bool reduce_motion,
-                          double now) const noexcept {
-    return home && home_effect_moves(effect) && active && !reduce_motion && last_input >= 0.0 &&
-           now - last_input < kRest;
+  // Seconds between ticks now, or 0 to rest. `home` is the welcome on screen
+  // (nothing open, no error, no runner); `active` the app in front; `visible`
+  // the window on screen and not covered.
+  [[nodiscard]] double interval(bool home, home_effect effect, bool active, bool visible,
+                                bool reduce_motion, double now) const noexcept {
+    if (!home || !home_effect_moves(effect) || !visible || reduce_motion || last_input < 0.0)
+      return 0.0;
+    const double quiet = now - last_input;
+    if (active && quiet < kFastWindow) return kFastTick;
+    return quiet < kSlowWindow ? kSlowTick : 0.0;
   }
 
   // Called once per loop pass. True when a tick is due: the caller draws one
   // frame. Resting clears the tick so a resume never jumps.
-  [[nodiscard]] bool step(bool is_live, double now) noexcept {
-    if (!is_live) {
+  [[nodiscard]] bool step(double every, double now) noexcept {
+    if (every <= 0.0) {
       last_tick = -1.0;
       return false;
     }
-    if (last_tick >= 0.0 && now - last_tick < kTick) return false;
-    if (last_tick >= 0.0) time += std::min(kTick, now - last_tick);
+    if (last_tick >= 0.0 && now - last_tick < every - kEarly) return false;
+    if (last_tick >= 0.0) time += std::min(kMaxStep, now - last_tick);
     last_tick = now;
     return true;
   }
 
-  // Seconds the idle wait may sleep before the next tick (live only).
-  [[nodiscard]] double until_next(double now) const noexcept {
-    return last_tick < 0.0 ? 0.0 : std::max(0.0, kTick - (now - last_tick));
+  // Seconds the idle wait may sleep before the next tick (moving only).
+  [[nodiscard]] double until_next(double every, double now) const noexcept {
+    return last_tick < 0.0 ? 0.0 : std::max(0.0, every - (now - last_tick));
   }
 };
 

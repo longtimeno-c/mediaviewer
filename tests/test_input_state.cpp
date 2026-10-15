@@ -104,33 +104,47 @@ TEST_CASE("the loupe looks at its point at 100 %, or twice the zoom past it", "[
 }
 
 // Issue #408: the home's theme and its ground effect's rest rule.
-TEST_CASE("the home's ground ticks at 10 Hz and rests five seconds after input", "[shell][home]") {
+TEST_CASE("the home's ground runs 30 Hz in front, 10 Hz behind, then rests", "[shell][home]") {
   using mv::shell::home_effect;
   using mv::shell::home_ground_clock;
+  constexpr double kFast = home_ground_clock::kFastTick;
+  constexpr double kSlow = home_ground_clock::kSlowTick;
   home_ground_clock c;
   // No input yet: nothing moves (the labs record launch as one).
-  REQUIRE_FALSE(c.live(true, home_effect::rain, true, false, 0.0));
+  REQUIRE(c.interval(true, home_effect::rain, true, true, false, 0.0) == 0.0);
   c.input(0.0);
-  REQUIRE(c.live(true, home_effect::rain, true, false, 0.0));
-  // Only on the home, only an effect that moves, only in front, not under Reduce Motion.
-  REQUIRE_FALSE(c.live(false, home_effect::rain, true, false, 1.0));
-  REQUIRE_FALSE(c.live(true, home_effect::dots, true, false, 1.0));
-  REQUIRE_FALSE(c.live(true, home_effect::none, true, false, 1.0));
-  REQUIRE_FALSE(c.live(true, home_effect::rain, false, false, 1.0));
-  REQUIRE_FALSE(c.live(true, home_effect::rain, true, true, 1.0));
-  // The first tick is due at once and does not advance the clock; then one a tenth.
-  REQUIRE(c.step(true, 1.00));
+  // In front and in use: 30 a second.
+  REQUIRE(c.interval(true, home_effect::rain, true, true, false, 1.0) == kFast);
+  // Behind another app but visible: 10 a second.
+  REQUIRE(c.interval(true, home_effect::rain, false, true, false, 1.0) == kSlow);
+  // In front but quiet for 5 s: 10 a second until a minute has passed, then rest.
+  REQUIRE(c.interval(true, home_effect::rain, true, true, false, 5.0) == kSlow);
+  REQUIRE(c.interval(true, home_effect::rain, false, true, false, 59.9) == kSlow);
+  REQUIRE(c.interval(true, home_effect::rain, true, true, false, 60.0) == 0.0);
+  // Never off the home, without a moving effect, hidden or covered, or under Reduce Motion.
+  REQUIRE(c.interval(false, home_effect::rain, true, true, false, 1.0) == 0.0);
+  REQUIRE(c.interval(true, home_effect::dots, true, true, false, 1.0) == 0.0);
+  REQUIRE(c.interval(true, home_effect::none, true, true, false, 1.0) == 0.0);
+  REQUIRE(c.interval(true, home_effect::rain, true, false, false, 1.0) == 0.0);
+  REQUIRE(c.interval(true, home_effect::rain, true, true, true, 1.0) == 0.0);
+  // The first tick is due at once and does not advance the clock; then one per interval.
+  REQUIRE(c.step(kFast, 1.0));
   REQUIRE(c.time == 0.0);
-  REQUIRE_FALSE(c.step(true, 1.05));
-  REQUIRE(c.until_next(1.05) > 0.04);
-  REQUIRE(c.step(true, 1.10));
-  REQUIRE(c.time > 0.099);
-  // Five quiet seconds: it rests, and a resume does not jump the clock.
-  REQUIRE_FALSE(c.live(true, home_effect::rain, true, false, 5.0));
+  REQUIRE_FALSE(c.step(kFast, 1.0 + kFast * 0.5));
+  REQUIRE(c.until_next(kFast, 1.0 + kFast * 0.5) > 0.0);
+  REQUIRE(c.step(kFast, 1.0 + kFast));
+  REQUIRE(c.time > kFast * 0.99);
+  // A wait that wakes a hair early still ticks, so the loop never spins.
+  REQUIRE(c.step(kFast, 1.0 + 2 * kFast - 0.001));
+  // Dropping to the slow rate keeps the clock continuous; a late tick never jumps.
+  const double t0 = c.time;
+  REQUIRE(c.step(kSlow, 2.0));
+  REQUIRE(c.time - t0 <= home_ground_clock::kMaxStep + 1e-9);
+  // Resting, then a resume, does not jump the clock.
   const double before = c.time;
-  REQUIRE_FALSE(c.step(false, 5.0));
-  c.input(60.0);
-  REQUIRE(c.step(true, 60.0));
+  REQUIRE_FALSE(c.step(0.0, 70.0));
+  c.input(100.0);
+  REQUIRE(c.step(kFast, 100.0));
   REQUIRE(c.time == before);
 }
 

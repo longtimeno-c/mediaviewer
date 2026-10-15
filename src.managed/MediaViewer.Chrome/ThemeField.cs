@@ -5,9 +5,10 @@
 // paints the canvas colour. Not a token, so an add-on theme has none, and
 // the photo canvas never sees it.
 //
-// Motion rests. Ten frames a second, and only while this app is in front,
-// Windows has animations on, and a pointer or a key moved in the last five
-// seconds. Dots do not move, and a theme with no ground does not either.
+// Motion rests (owner, 2026-10-15): thirty frames a second while this app is
+// in front and a pointer or a key moved in the last five seconds; ten while
+// the window is visible, for up to a minute after the last input; then none,
+// and none while Windows has animations off. Dots do not move, and a theme with no ground does not either.
 // Stopping the timer leaves the last frame. Speed scales velocities and size
 // scales radii; 1 leaves a mark as written. Every position is a function of
 // the clock, not of the last frame.
@@ -32,18 +33,37 @@ internal static class ThemeMotion
     internal static double Time { get; private set; }
     internal static event Action? Tick;
     internal static event Action? Changed;
+    // The main window, for "visible"; and the native empty window's ear for
+    // input over the islands (IslandHost sets both).
+    internal static IntPtr Window;
+    internal static Action? ForwardInput;
 
     private static int _listeners;
     private static bool _reduce;
-    private static bool _running;
     private static long _lastInput;
     private static long _lastTick;
+    private static long _lastForward = long.MinValue / 2;
+    private static int _intervalMs;  // 0 = stopped
     private static DispatcherQueueTimer? _timer;
-    private const long RestMs = 5000;
+    // The rule (owner, 2026-10-15; the native home runs the same, shell/home_theme.h
+    // home_ground_clock): 30 a second in front with input in the last 5 seconds,
+    // 10 a second while the window is visible for up to 60 seconds after the
+    // last input, then rest.
+    private const int FastMs = 33;
+    private const int SlowMs = 100;
+    private const long FastWindowMs = 5000;
+    private const long SlowWindowMs = 60000;
 
     internal static void Bump()
     {
         _lastInput = Environment.TickCount64;
+        // The native empty window hears its own HWND; the islands are separate
+        // windows, so pass their input on (a few a second).
+        if (_lastInput - _lastForward >= 500)
+        {
+            _lastForward = _lastInput;
+            ForwardInput?.Invoke();
+        }
         Ensure();
     }
 
@@ -67,44 +87,54 @@ internal static class ThemeMotion
         Ensure();
     }
 
+    // Milliseconds between ticks now, or 0 to rest.
+    private static int Want()
+    {
+        if (_listeners == 0 || _reduce || !Visible()) return 0;
+        long quiet = Environment.TickCount64 - _lastInput;
+        if (InFront() && quiet < FastWindowMs) return FastMs;
+        return quiet < SlowWindowMs ? SlowMs : 0;
+    }
+
     private static void Ensure()
     {
-        bool live = _listeners > 0 && !_reduce && InFront()
-                    && Environment.TickCount64 - _lastInput < RestMs;
-        if (!live)
+        int want = Want();
+        if (want == 0)
         {
             _timer?.Stop();
-            _running = false;
+            _intervalMs = 0;
             return;
         }
-        if (_running) return;
+        if (want == _intervalMs) return;
         DispatcherQueue? queue = DispatcherQueue.GetForCurrentThread();
         if (queue is null) return;
         if (_timer is null)
         {
             _timer = queue.CreateTimer();
-            _timer.Interval = TimeSpan.FromMilliseconds(100);
             _timer.IsRepeating = true;
             _timer.Tick += OnTick;
         }
-        _lastTick = Environment.TickCount64;
-        _running = true;
+        _timer.Stop();
+        _timer.Interval = TimeSpan.FromMilliseconds(want);
+        if (_intervalMs == 0) _lastTick = Environment.TickCount64;
+        _intervalMs = want;
         _timer.Start();
     }
 
     private static void OnTick(DispatcherQueueTimer sender, object args)
     {
-        if (_listeners == 0 || _reduce || !InFront()
-            || Environment.TickCount64 - _lastInput >= RestMs)
+        int want = Want();
+        if (want == 0)
         {
             sender.Stop();
-            _running = false;
+            _intervalMs = 0;
             return;
         }
         long now = Environment.TickCount64;
         Time += Math.Min(0.1, (now - _lastTick) / 1000.0);
         _lastTick = now;
         Tick?.Invoke();
+        if (want != _intervalMs) Ensure();
     }
 
     private static bool InFront()
@@ -113,11 +143,24 @@ internal static class ThemeMotion
         return pid == (uint)Environment.ProcessId;
     }
 
+    // On screen: shown and not minimised. Windows does not say cheaply whether
+    // another window covers it; the native canvas stops on DXGI occlusion.
+    private static bool Visible() =>
+        Window == IntPtr.Zero || (IsWindowVisible(Window) && !IsIconic(Window));
+
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
 
     [DllImport("user32.dll")]
     private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindowVisible(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsIconic(IntPtr hWnd);
 }
 
 internal sealed class ThemeField : Grid

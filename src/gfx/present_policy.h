@@ -22,6 +22,9 @@ struct present_request {
   bool window_active = true;
   bool occluded = false;
   bool soak = false;  // timed soak: present even if the window is inactive
+  // Issue #408: the empty window's ground effect has a tick due. It may present
+  // while the window is visible but not in front (shell/home_theme.h).
+  bool ground_tick = false;
   bool animating = false;
   bool camera_moving = false;
   bool video_active = false;
@@ -48,7 +51,7 @@ struct present_decision {
   present_decision d;
   d.pan_tail = pan_tail_active(r);
   d.live = r.video_active || r.video_loading || r.animating || r.camera_moving || d.pan_tail;
-  const bool allowed = r.window_visible && !r.occluded && (r.soak || r.window_active);
+  const bool allowed = r.window_visible && !r.occluded && (r.soak || r.window_active || r.ground_tick);
   if (!allowed) return d;
   if (d.live) {
     d.wants_frame = true;

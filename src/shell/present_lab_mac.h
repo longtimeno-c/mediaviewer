@@ -504,7 +504,8 @@ class present_lab_mac {
   bool seen_home_valid_ = false;
   std::uint32_t seen_pointer_seq_ = 0;
   home_ground_clock ground_;
-  bool ground_live_ = false;
+  double ground_every_ = 0.0;  // seconds between ticks now; 0 = resting
+  bool ground_tick_ = false;     // a tick is due this pass (may present while behind)
   double animation_phase_ = 0.0;
   double last_input_time_ = -1.0;
 

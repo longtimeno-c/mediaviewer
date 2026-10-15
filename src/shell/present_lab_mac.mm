@@ -1627,10 +1627,11 @@ void present_lab_mac::render_thread_main() noexcept {
         page_land_ack_.store(seen_page_land_seq_, std::memory_order_release);
         // The UI thread reads this to let ↑ ↓ fall through at fit. Lock-free.
         view_fitted_.store(!picture_framed || camera_.fit_mode(), std::memory_order_relaxed);
-        // Issue #408: the home's ground effect. A pointer move or a key
-        // restarts its five seconds (launch counts as one); each due tick is
-        // one static frame, never `animating`, so it stops the moment a file
-        // is up or it rests.
+        // Issue #408: the home's ground effect (home_theme.h home_ground_clock:
+        // 30 Hz in front and in use, 10 Hz while visible, then rest). A pointer
+        // move or a key, here or over the bar and panes (pointer_seq),
+        // restarts it; launch counts as one. Each due tick is one static frame,
+        // never `animating`, so it stops the moment a file is up.
         if (input_activity || snapshot.pointer_seq != seen_pointer_seq_ || ground_.last_input < 0.0) {
           seen_pointer_seq_ = snapshot.pointer_seq;
           ground_.input(elapsed);
@@ -1639,10 +1640,11 @@ void present_lab_mac::render_thread_main() noexcept {
           const bool home = current_image_ == nullptr && video_frame_ == nullptr && !media_ &&
                             video_opening_.load(std::memory_order_acquire) == 0 && !sweep_mode_ &&
                             !game_.active() && !snapshot.blackout;
-          ground_live_ = ground_.live(home, snapshot.home.effect,
-                                      snapshot.window_active && snapshot.window_visible,
-                                      snapshot.reduce_motion, elapsed);
-          if (ground_.step(ground_live_, elapsed)) redraw = true;
+          ground_every_ = ground_.interval(home, snapshot.home.effect, snapshot.window_active,
+                                           snapshot.window_visible && !occluded_,
+                                           snapshot.reduce_motion, elapsed);
+          ground_tick_ = ground_.step(ground_every_, elapsed);
+          if (ground_tick_) redraw = true;
         }
         if (redraw) last_input_time_ = elapsed;
         if (fade_from_ && !fade_.active(elapsed)) {
@@ -1656,6 +1658,7 @@ void present_lab_mac::render_thread_main() noexcept {
         req.window_active = snapshot.window_active;
         req.occluded = occluded_;
         req.soak = options_.soak_seconds > 0.0 || options_.harness;
+        req.ground_tick = ground_tick_;  // a ground tick may present behind another app
         // docs/design/03 rule 4's one labelled exception, as on Windows: blinkies
         // animate, so a still with them on presents until C turns them off.
         const bool blinkies =
@@ -1698,11 +1701,10 @@ void present_lab_mac::render_thread_main() noexcept {
                                          : k_warmup_seconds - elapsed;
             timeout = std::min(timeout, std::max(0.0, remaining));
           }
-          if (ground_live_) {
-            // The ground's next tick, or the end of its five seconds, whichever
-            // is first: a resting ground sleeps like any still.
-            const double rest = home_ground_clock::kRest - (elapsed - ground_.last_input);
-            timeout = std::min(timeout, std::min(ground_.until_next(elapsed), std::max(0.0, rest)));
+          if (ground_every_ > 0.0) {
+            // The ground's next tick; the tick re-reads the rule, so a ground
+            // that has gone quiet rests within one interval.
+            timeout = std::min(timeout, ground_.until_next(ground_every_, elapsed));
           }
           std::unique_lock lock(g_wait_mutex);
           g_wait_cv.wait_for(lock, std::chrono::duration<double>(timeout), [&] {

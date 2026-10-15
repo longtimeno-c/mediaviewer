@@ -4486,6 +4486,10 @@ void chrome_on_command(void* ctx, int command, float arg) {
       *slot[command - mv::shell::chrome_cmd_home_effect_intensity] = v;
       return;
     }
+    case mv::shell::chrome_cmd_home_ground_input:
+      ++app->input.pointer_seq;
+      publish(app);  // wakes the render thread; it notes the time, draws nothing
+      return;
     case mv::shell::chrome_cmd_home_colour:
       app->input.home.canvas = mv::shell::home_opaque(static_cast<std::uint32_t>(arg));
       publish(app);  // one redraw only if a token changed (present_lab compares)

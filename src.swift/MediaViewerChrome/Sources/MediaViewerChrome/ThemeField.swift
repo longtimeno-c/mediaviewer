@@ -9,15 +9,18 @@
 // clears MVTheme.themed, so this paints the system ground and stops.
 // Photo and video live on the swapchain, which is a different view.
 //
-// Motion rests. Ten frames a second, and only while this app is in front,
-// Reduce Motion is off, and a pointer or a key moved in the last five
-// seconds. Dots do not move, and a theme with no ground does not either.
+// Motion rests (owner, 2026-10-15): thirty frames a second while this app is
+// in front and a pointer or a key moved in the last five seconds; ten while a
+// window is visible, for up to a minute after the last input; then none, and
+// none under Reduce Motion. Dots do not move, and a theme with no ground does
+// not either.
 // A still photo still presents nothing: this timer is the chrome's, and it
 // stops. Speed scales velocities and size scales radii; 1 leaves a mark as
 // written. Every position is a function of the clock, not of the last frame.
 import AppKit
 import QuartzCore
 import SwiftUI
+import MVChromeBridge
 
 @MainActor
 final class ThemeMotion: ObservableObject {
@@ -31,7 +34,15 @@ final class ThemeMotion: ObservableObject {
   private var monitor: Any?
   private var lastInput = CACurrentMediaTime()
   private var lastTick = CACurrentMediaTime()
-  private let rest: TimeInterval = 5
+  private var lastForward: CFTimeInterval = 0
+  // The rule (owner, 2026-10-15; the native home runs the same, shell/home_theme.h
+  // home_ground_clock): 30 a second in front with input in the last 5 seconds,
+  // 10 a second while a window is visible for up to 60 seconds after the last
+  // input, then rest.
+  private let fastTick: TimeInterval = 1.0 / 30.0
+  private let slowTick: TimeInterval = 0.1
+  private let fastWindow: TimeInterval = 5
+  private let slowWindow: TimeInterval = 60
 
   private init() {
     reduce = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
@@ -49,8 +60,12 @@ final class ThemeMotion: ObservableObject {
     note.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
       MainActor.assumeIsolated { self?.bump() }
     }
-    note.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
-      MainActor.assumeIsolated { self?.consider() }
+    for name in [NSApplication.didResignActiveNotification, NSApplication.didHideNotification,
+                 NSApplication.didUnhideNotification, NSWindow.didChangeOcclusionStateNotification,
+                 NSWindow.didMiniaturizeNotification, NSWindow.didDeminiaturizeNotification] {
+      note.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+        MainActor.assumeIsolated { self?.consider() }
+      }
     }
     note.addObserver(forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main) { note in
       MainActor.assumeIsolated { (note.object as? NSWindow)?.acceptsMouseMovedEvents = true }
@@ -67,6 +82,12 @@ final class ThemeMotion: ObservableObject {
 
   func bump() {
     lastInput = CACurrentMediaTime()
+    // The native empty window runs the same rule and hears the canvas itself;
+    // the bar and the panes are ours, so pass their input on (a few a second).
+    if lastInput - lastForward >= 0.5 {
+      lastForward = lastInput
+      mv_chrome_ground_input()
+    }
     consider()
   }
 
@@ -80,18 +101,30 @@ final class ThemeMotion: ObservableObject {
     consider()
   }
 
-  private var live: Bool {
-    listeners > 0 && !reduce && (NSApp?.isActive ?? false)
-      && CACurrentMediaTime() - lastInput < rest
+  /// A window of ours on screen and not covered.
+  private var visible: Bool {
+    guard let app = NSApp, !app.isHidden else { return false }
+    return app.windows.contains { $0.isVisible && !$0.isMiniaturized && $0.occlusionState.contains(.visible) }
+  }
+
+  /// Seconds between ticks now, or 0 to rest.
+  private var every: TimeInterval {
+    guard listeners > 0, !reduce, visible else { return 0 }
+    let quiet = CACurrentMediaTime() - lastInput
+    if (NSApp?.isActive ?? false) && quiet < fastWindow { return fastTick }
+    return quiet < slowWindow ? slowTick : 0
   }
 
   private func consider() {
-    if live {
-      guard timer == nil else { return }
+    let want = every
+    if want > 0 {
+      if let timer, abs(timer.timeInterval - want) < 0.001 { return }
+      timer?.invalidate()
       lastTick = CACurrentMediaTime()
-      let timer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
+      let timer = Timer(timeInterval: want, repeats: true) { [weak self] _ in
         MainActor.assumeIsolated { self?.tick() }
       }
+      timer.tolerance = want * 0.1
       RunLoop.main.add(timer, forMode: .common)
       self.timer = timer
     } else {
@@ -101,13 +134,15 @@ final class ThemeMotion: ObservableObject {
   }
 
   private func tick() {
-    guard live else {
+    let want = every
+    guard want > 0 else {
       consider()
       return
     }
     let now = CACurrentMediaTime()
     time += min(0.1, now - lastTick)
     lastTick = now
+    if let timer, abs(timer.timeInterval - want) >= 0.001 { consider() }
   }
 }
 

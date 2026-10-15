@@ -870,6 +870,10 @@ static void mvApplyParkedHomeTheme() {
                               size:p.size];
 }
 
+extern "C" void mv_chrome_ground_input(void) {
+  if (g_chrome_app) [g_chrome_app pointerActivity];
+}
+
 extern "C" void mv_chrome_set_home_theme(bool active, const mv_home_palette* dark,
                                          const mv_home_palette* light, const char* effect,
                                          uint32_t effect_rgb, float intensity, float speed,

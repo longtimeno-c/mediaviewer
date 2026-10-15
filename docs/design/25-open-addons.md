@@ -263,11 +263,14 @@ A theme file, one per theme the add-on lists:
   grid. Dark, GPT and Claude draw none. It is not a token and not part of the theme JSON, so
   API 1 is unchanged and an add-on cannot set one. It is drawn by the host in its own panes,
   and since issue #408 on the empty window behind the welcome card (`shell/home_ground.h`, the
-  panes' field ported mark for mark, ten static presents a second at most). It stops once a
+  panes' field ported mark for mark, one static present a tick). It stops once a
   photo or a video is up; it is never drawn on a photo, a video or an error card, and it does
-  not change the clear. It ticks at 10 Hz
-  only while the app is in front and someone has moved the pointer or a key in the last five
-  seconds, and it stops under Reduce Motion (Mac) or when Windows animations are off. High
+  not change the clear. It ticks 30 times a second while the app is in front and someone has
+  moved the pointer or a key in the last five seconds (over the canvas, the bar or a pane), and
+  10 times a second while the window is visible, behind another app or quiet, for up to a minute
+  after the last input; then it rests. It never moves while the window is hidden, minimised or
+  covered (on Windows, covered means DXGI occlusion: the panes cannot tell), and it stops under
+  Reduce Motion (Mac) or when Windows animations are off (owner, 2026-10-15). High
   contrast still hides the theme, effect included. Dots do not move, and neither does a theme
   with no ground. Organs' rain is much slower and smaller than Midnight's. A pane that uses
   the system material (the Mac filmstrip, folder tree, help and transport) keeps that

@@ -58,7 +58,7 @@ Run on a native desktop; a successful compile is not a visual or GPU result.
 | Enable Windows contrast themes, including a light-background scheme | Surfaces/text use the selected system colours; selected items and hover/focus remain distinguishable. |
 | Enable macOS Increase contrast and Reduce transparency | Dynamic colours and system materials remain readable. |
 | Choose Midnight, Cyberpunk, then Forest or Starfield with nothing open; then open a photo and a video | The welcome card reads as that theme from its own colours, the area behind it is the chrome's background, and the ground effect moves behind the card. With a photo or video up the area around it is the same colour, the effect is gone, and a still idles at 0 presents. Settings has no Canvas background row, and `B` does nothing. |
-| With a moving theme on the empty window, stop touching the pointer and keys; then turn on Reduce Motion (Mac) or turn off Animation effects (Windows) | The effect stops five seconds after the last input and resumes on the next move; with motion reduced it never moves. |
+| With a moving theme on the empty window, move the pointer over the bar, then stop; click into another app; minimise; then turn on Reduce Motion (Mac) or turn off Animation effects (Windows) | Smooth (30 a second) while in use, in the bar and on the home alike; slower (10 a second) once quiet or behind another app; still a minute after the last input; still while minimised; with motion reduced it never moves. |
 
 Inherited PR 3 verify: **zero dropped frames while panning a cached image at
 the display's refresh rate**; focus/tab traversal must cross island boundaries,

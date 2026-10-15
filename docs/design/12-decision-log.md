@@ -1445,7 +1445,7 @@ on both hosts. The clear behind the welcome card, behind a still and behind a vi
 shows through a transparent pixel, is the theme's `canvas` token, the colour the chrome
 already paints; only the slideshow blackout differs. The welcome card draws with the theme's
 surface, title, body, hairline and accent instead of a grey derived from one RGB, and a
-built-in's ground effect moves behind it on the empty window only (10 Hz static presents by the
+built-in's ground effect moves behind it on the empty window only (static presents by the
 panes' rest rule, never `live`, so a still stays at 0 presents). Kept, so nothing else moves:
 the command id (`retired_background`, keyless, like the palette's), a key-table row with no key
 and no mode (saved rebinds name rows by index), the constant buffer's float (`unused0`, so the
@@ -1457,7 +1457,19 @@ decoded first (`home_ink.h`; drawn as is, Midnight's `#161b22` card came out `#5
 translucent token or ground mark is mixed over its known solid ground in sRGB, as the panes
 blend, because linear blending made the rain several times brighter than in the bar
 (`home_over`). On the Mac the chrome paints its theme before the app object exists, so the
-bridge keeps the latest theme and applies it when the app registers. Known gap: the home's
+bridge keeps the latest theme and applies it when the app registers.
+
+**The ground effect moves faster, and behind other apps (2026-10-15, owner).** Was: 10 frames a
+second, only while the app was in front and the pointer or a key had moved in the last five
+seconds. The owner found it choppy, and frozen whenever another app was in front. Now: 30 a
+second in front and in use; 10 a second while the window is visible (behind another app, or in
+front but quiet), for up to a minute after the last input; then rest. Never while hidden,
+minimised or covered, never under Reduce Motion or with Windows animations off. One rule in
+three places (`home_ground_clock`, both chromes' `ThemeMotion`), and the bar's and panes' input
+now reaches the empty window's clock, which only heard the canvas. The app sees no input in
+other apps, so a window left behind another app rests a minute after you leave it; moving for
+ever while visible was the alternative, at a steady cost with nobody using the app. A tick
+behind another app may present (`present_request::ground_tick`); nothing else does. Known gap: the home's
 marks do not line up with the panes' (own seed, own rect, own clock).
 
 ---

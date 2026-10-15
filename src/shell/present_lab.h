@@ -413,7 +413,8 @@ class present_lab {
   bool seen_home_valid_ = false;
   std::uint32_t seen_pointer_seq_ = 0;
   home_ground_clock ground_;
-  bool ground_live_ = false;
+  double ground_every_ = 0.0;  // seconds between ticks now; 0 = resting
+  bool ground_tick_ = false;     // a tick is due this pass (may present while behind)
   std::int32_t seen_loupe_steps_x_ = 0;
   std::int32_t seen_loupe_steps_y_ = 0;
   std::uint32_t seen_marked_count_ = 0;

@@ -170,6 +170,10 @@ enum chrome_command : int {
   chrome_cmd_home_effect_intensity = 1077,
   chrome_cmd_home_effect_speed = 1078,
   chrome_cmd_home_effect_size = 1079,
+  // The pointer moved or a key went down over an island (the bar, a pane):
+  // the empty window's ground restarts its clock (input_snapshot::pointer_seq).
+  // The chrome sends it a few times a second at most; no frame by itself.
+  chrome_cmd_home_ground_input = 1080,
 };
 
 // chrome_cmd_video_loop's argument. The C# side mirrors it.

@@ -331,6 +331,8 @@ public static partial class IslandHost
         _accessibilitySettings = null;
         _themeDispatcher = null;
         _themeWindow = IntPtr.Zero;
+        ThemeMotion.Window = IntPtr.Zero;
+        ThemeMotion.ForwardInput = null;
         try
         {
             ResourceDictionary? resources = _controlAccentPublished ? Application.Current?.Resources : null;
