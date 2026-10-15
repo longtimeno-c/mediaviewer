@@ -875,7 +875,13 @@ original) into `<data>/cache/icloud/<row id>.<ext>`:
 - It waits (`mv_ai_status.icloud_fetch`) on battery, on an expensive or constrained network
   (`network_unmetered`, `NWPathMonitor`), under 10 GB free, and while indexing is paused. A clip iCloud
   does not send is skipped until the next start. `icloud_videos_left` / `_fetched` and the download's
-  progress are in the status; the status line says "Downloading from iCloud (42%) · 1,847 clips left".
+  progress are in the status. The status line treats the queue as the rest of the same run
+  (issue #417, 2026-10-15): while the pictures pass still has this Mac's files, its count and ETA
+  are that pass only, so the line says "Indexing pictures 24,442 of 24,443 on this Mac · under a
+  minute" and the note under it carries on with "Then 1,833 clips from iCloud · downloading the
+  next (42%), each indexed as it lands" (or why the fetch waits: for indexing to catch up, power,
+  an unmetered network, 10 GB free). Once nothing local is left the line is "Downloading from
+  iCloud · 1,847 clips left". Clips put off to the next launch are not counted as this run.
 - Photos are never fetched: PhotoKit keeps a local preview of nearly every photo, which is what the
   picture pass reads.
 

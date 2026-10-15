@@ -461,8 +461,11 @@ MV_AI_SPEECH_CLIP=/tmp/speech.mp4 \
       done. The management view shows "Sound: 40 of 40 clips · Speech: 40 of 40" once all are
       done. The command-bar pill says "Indexing sound 12 of 40 clips" once pictures are done.
 - [ ] **iCloud clips (2026-10-05):** Settings → Photos Library → *Download iCloud videos to index
-      them* is off by default. Turned on, on power and Wi‑Fi: the status line says "Downloading
-      from iCloud (N%) · M clips left", at most two files sit in
+      them* is off by default. Turned on, on power and Wi‑Fi: while the pictures pass still has
+      local files the status line says "Indexing pictures N of T on this Mac · …" with "Then M
+      clips from iCloud · downloading the next (N%), each indexed as it lands" under it (never an
+      almost-done count beside a separate "M clips left to download", issue #417); once nothing
+      local is left it says "Downloading from iCloud · M clips left". At most two files sit in
       `~/Library/Application Support/MediaViewer/Add-ons/AI/data/cache/icloud`, each is deleted once
       indexed, and an iCloud-only clip's later moment (and words said in it) is then found. On
       battery it says "iCloud downloads wait for power"; on a phone hotspot "…wait for an unmetered
