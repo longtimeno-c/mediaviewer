@@ -789,7 +789,10 @@ the 2026-10-03 numbers are in the PR that added it (a publish 51 → 8 ms, a peo
 500 → 46 ms of CPU).
 `--filter SearchModelTests` checks the search panel's model against a fake table (issue #191):
 a search re-asks when another folder opens under "Folder & subfolders", and Tab only takes a
-name looked up for the words as typed.
+name looked up for the words as typed. `--filter StatusLineTests` checks the footer's status
+line from a status struct (issue #417): with iCloud clips queued the pictures count and ETA are
+named as this Mac's files and the clips as the rest of the run; with the queue empty it is the
+plain pictures / sound / speech line.
 
 **The Photos library source (Mac, issue #72; docs/design/17 "Photos library source").** Engine
 behaviour is tested with a fake PhotoKit: `mv_ai_tests "[photos]"`. On a real library, two
