@@ -30,6 +30,10 @@
 #include "addons/sharepoint/wire.h"
 #include "import_fixture.h"
 
+#if !defined(_WIN32)
+#include <sys/resource.h>
+#endif
+
 using namespace mv::test;
 namespace sp = mv::sharepoint;
 
@@ -136,9 +140,15 @@ class fake_host final : public sp::engine_host {
   }
   // Shown with a failure (ctest prints the output): where a transfer ended.
   void log(int, const char* ascii) override { std::fprintf(stderr, "[log] %s\n", ascii); }
+  bool post_status(const std::string& text) override {
+    std::lock_guard lock(m);
+    status = text;
+    return true;
+  }
 
   std::mutex m;
   std::string last_tree;
+  std::string status;
   int posts = 0;
   int shown = 0;
   std::optional<std::uint64_t> room;
@@ -570,6 +580,71 @@ TEST_CASE("sharepoint: received files go to Downloads unless Save to picked anot
     sp::engine e(host, o);  // the folder went: Downloads, until another is picked
     CHECK(e.snapshot().destination == utf8(s / "Downloads"));
   }
+}
+
+TEST_CASE("sharepoint: Keep receiving is kept across launches, with presence and the status text", "[sharepoint]") {
+  scratch_dir s("sharepoint_keep");
+  bus b;
+  fs::create_directories(s / "data");
+  sp::engine::options o = client::options(b, "Bea");
+  o.prefs_path = utf8(s / "data" / "sharepoint.json");
+  auto members = [&] {
+    std::lock_guard lock(b.m);
+    return b.members.size();
+  };
+  {
+    fake_host host(s / "in");
+    sp::engine e(host, o);  // a launch with nothing kept: no presence
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    CHECK(members() == 0);
+    e.screen_opened("");
+    e.on_event("receiving", 2, "true");
+    e.screen_closed();
+    REQUIRE(eventually([&] {
+      std::lock_guard lock(host.m);
+      return host.status == sp::kReceivingStatus;
+    }));
+    CHECK(members() == 1);  // still discoverable with the window closed
+  }
+  REQUIRE(eventually([&] { return members() == 0; }));
+  {
+    fake_host host(s / "in");
+    sp::engine e(host, o);  // the next launch: on, window closed, nothing asked
+    REQUIRE(eventually([&] { return members() == 1; }));
+    CHECK(e.snapshot().receiving);
+    REQUIRE(eventually([&] {
+      std::lock_guard lock(host.m);
+      return host.status == sp::kReceivingStatus;
+    }));
+    // Turned off with the window closed: no beacon, no listener, no status.
+    e.on_event("receiving", 2, "false");
+    REQUIRE(eventually([&] { return members() == 0; }));
+    REQUIRE(eventually([&] {
+      std::lock_guard lock(host.m);
+      return host.status.empty();
+    }));
+  }
+  {
+    fake_host host(s / "in");
+    sp::engine e(host, o);  // and off is kept too
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    CHECK(members() == 0);
+    CHECK_FALSE(e.snapshot().receiving);
+  }
+}
+
+TEST_CASE("sharepoint: one process at a time keeps receiving at launch", "[sharepoint]") {
+  scratch_dir s("sharepoint_lock");
+  const std::string path = utf8(s / "sharepoint.json.lock");
+  auto first = sp::net::try_lock_instance(path);
+  REQUIRE(first);
+#if !defined(_WIN32)
+  // flock is per open file description: a second open in this process stands
+  // in for a second window's process.
+  CHECK_FALSE(sp::net::try_lock_instance(path));
+#endif
+  first.reset();
+  CHECK(sp::net::try_lock_instance(path));
 }
 
 // ---- two and three clients ------------------------------------------------------------------------
@@ -1028,3 +1103,56 @@ TEST_CASE("sharepoint: Cancel ends a send that waits for Wi-Fi", "[sharepoint]")
   std::this_thread::sleep_for(std::chrono::milliseconds(300));
   CHECK(ann.eng.snapshot().out == sp::view::out_phase::ended);
 }
+
+// ---- harness: the idle cost of Keep receiving (#442) --------------------------------------------------
+//
+// mv_import_tests "[.sharepoint-idle]": this process's CPU time while an
+// engine sits with its window closed, Keep receiving off and then on (the
+// real UDP beacon socket, the listener on loopback so the run opens no
+// port to the network; Bluetooth is not in the test build). MV_IDLE_SECONDS
+// sets each phase (default 20). Prints one JSON line.
+#if !defined(_WIN32)
+namespace {
+double cpu_seconds() {
+  rusage u{};
+  ::getrusage(RUSAGE_SELF, &u);
+  return static_cast<double>(u.ru_utime.tv_sec + u.ru_stime.tv_sec) +
+         static_cast<double>(u.ru_utime.tv_usec + u.ru_stime.tv_usec) / 1e6;
+}
+long wakeups() {
+  rusage u{};
+  ::getrusage(RUSAGE_SELF, &u);
+  return u.ru_nvcsw + u.ru_nivcsw;
+}
+}  // namespace
+
+TEST_CASE("sharepoint: idle cost of Keep receiving", "[.sharepoint-idle]") {
+  const char* env = std::getenv("MV_IDLE_SECONDS");
+  const int seconds = env ? std::max(1, std::atoi(env)) : 20;
+  scratch_dir s("sharepoint_idle_cost");
+  fake_host host(s / "in");
+  sp::engine::options o;
+  o.my_name = "Idle";
+  o.use_bluetooth = false;
+  o.loopback_only = true;
+  sp::engine e(host, o);  // the real UDP discovery
+  auto phase = [&](const char* name) {
+    const double c0 = cpu_seconds();
+    const long w0 = wakeups();
+    const auto t0 = std::chrono::steady_clock::now();
+    std::this_thread::sleep_for(std::chrono::seconds(seconds));
+    const double wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    const double cpu = cpu_seconds() - c0;
+    std::printf("{\"phase\":\"%s\",\"seconds\":%.1f,\"cpu_ms\":%.1f,\"cpu_percent\":%.4f,\"switches_per_s\":%.1f}\n", name,
+                wall, cpu * 1000, 100.0 * cpu / wall, static_cast<double>(wakeups() - w0) / wall);
+  };
+  phase("off");
+  e.on_event("receiving", 2, "true");
+  REQUIRE(eventually([&] { return e.snapshot().wifi_up; }));
+  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  phase("on");
+  e.on_event("receiving", 2, "false");
+  REQUIRE(eventually([&] { return !e.snapshot().wifi_up; }));
+  phase("off_again");
+}
+#endif

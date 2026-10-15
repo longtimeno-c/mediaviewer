@@ -88,11 +88,15 @@ engine::engine(engine_host& host, options opts) : host_(host), opts_(std::move(o
   // What was kept from the last run (#442). A saved folder that is gone
   // falls back to the default; it is not forgotten until another is picked.
   const prefs kept = opts_.initial ? *opts_.initial : load_prefs(opts_.prefs_path).value_or(prefs{});
+  v_.receiving = kept.receiving;  // presence starts on the control thread, below
   v_.destination = host_.default_destination();
   if (!kept.destination.empty()) {
     if (auto st = io::stat_path(kept.destination); st && st->is_directory) v_.destination = kept.destination;
   }
   control_thread_ = std::thread([this] { control_loop(); });
+  // Keep receiving was on at the last launch (#442): presence and the status
+  // text come up on the control thread, never the caller's. Off: nothing.
+  if (kept.receiving) request_reconcile();
 }
 
 engine::~engine() {
@@ -177,15 +181,47 @@ void engine::save_now() {
   if (!save_prefs(opts_.prefs_path, p)) host_.log(1, "sharepoint: could not keep the settings");
 }
 
+void engine::sync_status() {
+  std::string want;
+  {
+    std::lock_guard lock(m_);
+    want = v_.receiving && !stopping_.load() ? kReceivingStatus : "";
+  }
+  if (want == status_shown_) return;
+  if (host_.post_status(want)) {
+    status_shown_ = want;
+    status_tries_ = 0;
+    std::lock_guard lock(control_m_);
+    status_due_ = {};
+    return;
+  }
+  // The add-on loads before the host attaches its items: try again shortly,
+  // for a while (40 x 250 ms).
+  std::lock_guard lock(control_m_);
+  status_due_ = ++status_tries_ < 40 ? std::chrono::steady_clock::now() + std::chrono::milliseconds(250)
+                                     : std::chrono::steady_clock::time_point{};
+}
+
 void engine::control_loop() {
   std::unique_lock lock(control_m_);
   while (!stopping_.load()) {
-    if (post_pending_) {
-      control_cv_.wait_until(lock, post_due_, [&] { return stopping_.load() || reconcile_wanted_ || save_wanted_; });
+    const auto none = std::chrono::steady_clock::time_point{};
+    const auto due = post_pending_ && status_due_ != none ? std::min(post_due_, status_due_)
+                     : post_pending_                     ? post_due_
+                                                         : status_due_;
+    const auto woken = [&] { return stopping_.load() || reconcile_wanted_ || save_wanted_; };
+    if (due != none) {
+      control_cv_.wait_until(lock, due, woken);
     } else {
-      control_cv_.wait(lock, [&] { return stopping_.load() || reconcile_wanted_ || post_pending_ || save_wanted_; });
+      control_cv_.wait(lock, [&] { return woken() || post_pending_; });
     }
     if (stopping_.load()) break;
+    if (status_due_ != none && std::chrono::steady_clock::now() >= status_due_) {
+      status_due_ = none;
+      lock.unlock();
+      sync_status();
+      lock.lock();
+    }
     if (save_wanted_) {
       lock.unlock();
       save_now();
@@ -220,6 +256,7 @@ void engine::reconcile() {
   } else if (!want && presence_on_) {
     stop_presence();
   }
+  sync_status();
 }
 
 // ---- presence -----------------------------------------------------------------------
@@ -692,11 +729,14 @@ void engine::on_event(const std::string& node, std::uint32_t kind, const std::st
   constexpr std::uint32_t kClick = 1, kChange = 2, kSubmit = 3, kSelect = 4;
 
   if (node == "receiving" && kind == kChange && value && value->k == json::kind::boolean) {
+    bool changed = false;
     {
       std::lock_guard lock(m_);
+      changed = v_.receiving != value->b;
       v_.receiving = value->b;
     }
     request_reconcile();
+    if (changed) request_save();  // kept for the next launch (#442)
     post();
   } else if (node == "peers" && kind == kSelect && value && value->k == json::kind::array) {
     std::lock_guard lock(m_);

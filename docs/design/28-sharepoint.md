@@ -18,7 +18,8 @@ Narrator. Other makers' script add-ons still have no network permission (owner, 
 - **The window**, "Sharepoint", opened from its row in Settings → Add-ons (**Open Sharepoint**),
   from its command (the palette; no default key, issue #410), from the gallery's share icon and
   from the **Send with Sharepoint…** context entry on a gallery tile. It lists:
-  - this computer's name as others see it, and **Keep receiving when this window is closed**;
+  - this computer's name as others see it, and **Keep receiving when this window is closed** (kept
+    across launches; the command bar shows **Sharepoint: receiving** while it is on);
   - someone connecting (their name and the **code**, **Decline**), then their offer (the files,
     **Save to** with Choose…, **Accept** / **Decline**), then progress and **Cancel**, then what
     arrived;
@@ -36,7 +37,26 @@ Narrator. Other makers' script add-ons still have no network permission (owner, 
 Presence runs only while the window is open, while **Keep receiving** is on, or while a transfer
 runs. With the window closed and receiving off there is no socket, no beacon, no Bluetooth and no
 thread: the idle viewer announces nothing and polls nothing. Nothing in the add-on runs before the
-host loads it after first pixel, and the engine is made at the first open or command, not at load.
+host loads it after first pixel, and the engine is made at the first open or command, not at load,
+unless Keep receiving was on.
+
+**Keep receiving is kept across launches** (#442, [12](12-decision-log.md#sharepoint)). The toggle
+is written to the add-on's prefs (`prefs.h`, `sharepoint.json` in its data folder) on the engine's
+control thread. At load, `mv_addon_get` reads that file (one small read); when the toggle was on it
+makes the engine, whose control thread starts presence. The host loads slot add-ons on its add-on
+queue (Mac) or a worker (Windows) after first pixel, so presence never starts before first pixel
+or on the foreground queue. Each window is its own process ([18](18-import.md) "One host
+process"): only the one holding `sharepoint.json.lock` (`net::try_lock_instance`: `flock` on the
+Mac, an unshared handle on Windows) starts receiving at load, so one machine shows up once. While
+the toggle is on, the command bar shows **Sharepoint: receiving** (a status item, both hosts), so
+a person can see this machine is discoverable after a relaunch. Off at load: the read, and nothing
+else (no engine, thread, socket or lock).
+
+Idle cost with it on and the window closed (`mv_import_tests "[.sharepoint-idle]"`, Mac M-series,
+15 s per phase, the real UDP beacon, listener on loopback, no Bluetooth in the test build): off
+0.0003 % CPU and 0.1 context switches a second; on 0.020 % (2.9 ms of CPU in 15 s) and 6.4 switches
+a second (the beacon once a second, the listener's 200 ms poll); off again 0.0001 %. No present:
+the engine never touches the canvas.
 
 | Bearer | Announce | Hear | Carry |
 |---|---|---|---|
@@ -153,7 +173,8 @@ second while bytes move; those posts update chrome and never present the canvas.
 - The beacon carries a random id, the machine's name and a port; the offer travels sealed, to the
   peer picked. No account, no cloud, no internet relay: the beacon's TTL is 1 and nothing resolves
   a name.
-- Receiving is off until the window opens or the person turns it on, for this run of the app.
+- Receiving is off until the window opens or the person turns it on. Turned on, it stays on across
+  launches until turned off (#442), and the command bar says so (**Sharepoint: receiving**).
 
 ## Host pieces this added
 
@@ -198,6 +219,5 @@ second while bytes move; those posts update chrome and never present the canvas.
 ## Not built
 
 - Bonjour / DNS-SD discovery (the beacon is one portable socket on both OSes); IPv6.
-- Receiving across launches (the toggle is for this run).
 - A peer that is neither on the LAN nor in Bluetooth range: no relay, by design.
 - Resuming a transfer that dropped: finished files stay, the rest is sent again.

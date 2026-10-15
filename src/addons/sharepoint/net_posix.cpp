@@ -9,6 +9,7 @@
 #include <netinet/tcp.h>
 #include <poll.h>
 #include <pwd.h>
+#include <sys/file.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -270,6 +271,27 @@ result<std::unique_ptr<beacon_socket>> open_beacon_socket(std::uint16_t port) {
     (void)::setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &m, sizeof m);  // broadcast still works without it
   }
   return std::unique_ptr<beacon_socket>(std::make_unique<udp_beacon>(fd, port));
+}
+
+namespace {
+class flock_lock final : public instance_lock {
+ public:
+  explicit flock_lock(int fd) : fd_(fd) {}
+  ~flock_lock() override { ::close(fd_); }  // closing lets go of the lock
+
+ private:
+  int fd_;
+};
+}  // namespace
+
+std::unique_ptr<instance_lock> try_lock_instance(const std::string& path) {
+  const int fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+  if (fd < 0) return nullptr;
+  if (::flock(fd, LOCK_EX | LOCK_NB) != 0) {
+    ::close(fd);
+    return nullptr;
+  }
+  return std::make_unique<flock_lock>(fd);
 }
 
 std::string downloads_folder() {

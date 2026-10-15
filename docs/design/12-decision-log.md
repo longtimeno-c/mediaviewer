@@ -1359,6 +1359,16 @@ not protect the sender: a machine claiming the receiver's id from another addres
 Accept itself. So the sender's person confirms the code before the offer (even the names) leaves,
 and a fresh peer keeps its address. Two clicks, one per side, as Bluetooth's numeric comparison.
 
+**Keep receiving is kept across launches (owner, 2026-10-15, #442; reverses "the toggle is for this
+run").** Turned on, it stays on after a relaunch until turned off: the add-on keeps it in its own
+data folder (`sharepoint.json`), and at load, only when it was on, makes the engine, whose control
+thread starts presence. That is after first pixel and off the foreground queue (slot add-ons load
+on the add-on queue / a worker), and in one window's process at a time (a lock file). Off at load
+is one small read and nothing else. While it is on the command bar shows **Sharepoint: receiving**,
+so a person knows the machine is discoverable. Measured idle cost with it on, window closed (Mac,
+`[.sharepoint-idle]`, 15 s): 0.020 % CPU, 6.4 context switches a second, no present; off 0.0003 %.
+The earlier call kept the idle viewer silent by default; it still is unless the person asked.
+
 **Each file's hash comes after its bytes, not in the offer (2026-10-15).** A hash list up front
 would make the sender read every file twice before the first byte moved (a large video read
 whole first). `file_end` carries the BLAKE3 of the bytes as read; the receiver checks it, then

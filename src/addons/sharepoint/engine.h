@@ -123,7 +123,17 @@ class engine_host {
   [[nodiscard]] virtual std::vector<std::uint32_t> pair_partners(const std::vector<std::string>& names) = 0;
   // Never a path, a name or an address (rule 6).
   virtual void log(int level, const char* ascii) = 0;
+  // The command bar's status text ("" hides it): shows that this machine is
+  // discoverable while Keep receiving is on (#442). False when the host did
+  // not take it (the add-on not attached yet): the engine tries again.
+  virtual bool post_status(const std::string& text) {
+    (void)text;
+    return true;
+  }
 };
+
+// The status text while Keep receiving is on.
+inline constexpr const char* kReceivingStatus = "Sharepoint: receiving";
 
 class engine {
  public:
@@ -187,6 +197,8 @@ class engine {
   // The prefs change: written on the control thread, never the caller's.
   void request_save();
   void save_now();
+  // The control thread: the status text for the toggle, posted (or retried).
+  void sync_status();
   void post();            // the tree now (any thread)
   void post_throttled();  // within ~100 ms, coalesced
   void start_presence();
@@ -262,6 +274,11 @@ class engine {
   bool reconcile_wanted_ = false;                     // under control_m_
   bool post_pending_ = false;                         // under control_m_
   bool save_wanted_ = false;                          // under control_m_
+  // The status text the host shows (post_status), and a retry while the
+  // host is not ready for it.
+  std::string status_shown_;                          // control thread
+  int status_tries_ = 0;                              // control thread
+  std::chrono::steady_clock::time_point status_due_{};  // under control_m_; {} = none
   std::chrono::steady_clock::time_point post_due_{};  // under control_m_
   std::thread control_thread_;
 
