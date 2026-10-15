@@ -2048,7 +2048,7 @@ void edit_item_opened(app_state* app) {
   adjust_item_changed(app);
   // PR 29: an open workspace follows the item to a tab it offers.
   workspace_item_changed(app);
-  // A document arriving under the filmstrip: say how to scroll it.
+  // A document or a clip arriving under the filmstrip: say what T changes.
   strip_hint_show(app);
 }
 
@@ -2419,13 +2419,15 @@ void folder_select(app_state* app, std::uint32_t index) {
 
 // The "Press T" filmstrip hint (shell/filmstrip_hint.h, docs/design/16): what the
 // canvas shows that the strip changes the input for. A document: with the strip
-// up the wheel zooms, hidden it scrolls.
+// up the wheel zooms, hidden it scrolls. A clip (issue #416): with the strip up
+// ← → walk the folder, hidden they skip ±2 s.
 mv::shell::strip_hint_subject strip_hint_subject_now(app_state* app) {
   if (!app || !app->session || app->mode == open_mode::none || app->edit_path.empty()) {
     return mv::shell::strip_hint_subject::none;
   }
   if (app->gallery_visible || app->editor.open) return mv::shell::strip_hint_subject::none;
   if (mv::io::is_document_name(app->edit_path)) return mv::shell::strip_hint_subject::document;
+  if (mv::shell::is_video_name(app->edit_path)) return mv::shell::strip_hint_subject::clip;
   return mv::shell::strip_hint_subject::none;
 }
 

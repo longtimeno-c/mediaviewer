@@ -188,6 +188,11 @@ TEST_CASE("filmstrip hint: one hint, due over a document with the strip up, unti
   using mv::shell::strip_hint_learned_by_toggle;
   using mv::shell::strip_hint_text;
   REQUIRE(strip_hint_text(strip_hint_subject::document) == "Press T to hide the filmstrip and scroll");
+  REQUIRE(strip_hint_text(strip_hint_subject::clip) ==
+          "Press T to hide the filmstrip and skip 2 s with \xE2\x86\x90 \xE2\x86\x92");
+  REQUIRE(strip_hint_due(strip_hint_subject::clip, true, false));
+  REQUIRE_FALSE(strip_hint_due(strip_hint_subject::clip, true, true));  // one learned flag
+  REQUIRE(strip_hint_learned_by_toggle(strip_hint_subject::clip, true));
   REQUIRE(strip_hint_text(strip_hint_subject::none).empty());
   REQUIRE(strip_hint_due(strip_hint_subject::document, true, false));
   REQUIRE_FALSE(strip_hint_due(strip_hint_subject::document, false, false));  // strip hidden

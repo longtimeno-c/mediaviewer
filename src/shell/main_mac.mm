@@ -6632,7 +6632,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   [self adjustItemChanged:mv::shell::is_video_name(entry.name_utf8) ? 0 : item];
   // PR 29: an open workspace follows the item to a tab it offers.
   if (mv::shell::follow_subject(_ws, [self editSubject])) [self syncWorkspace];
-  // A document arriving under the filmstrip: say how to scroll it.
+  // A document or a clip arriving under the filmstrip: say what T changes.
   [self stripHintShow];
 }
 
@@ -10830,6 +10830,7 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
     return mv::shell::strip_hint_subject::none;
   }
   if (mv::io::is_document_name(_shownPath)) return mv::shell::strip_hint_subject::document;
+  if (mv::shell::is_video_name(_shownPath)) return mv::shell::strip_hint_subject::clip;  // issue #416
   return mv::shell::strip_hint_subject::none;
 }
 - (std::string_view)stripHintDueText {

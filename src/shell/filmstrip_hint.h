@@ -10,10 +10,12 @@
 // good once the user has pressed T over a subject with the strip up, or
 // clicked the card's "Got it".
 //
-// One hint, not one per feature: a new subject (issue #416, a clip whose
-// ←/→ walk the folder with the strip up and skip ±2 s with it hidden) is one
-// enum value and one string here, and shares the learned flag. Shared by both
-// hosts (D9); pure, header-only.
+// The same goes for a clip (issue #416): with the strip up ← → walk the
+// folder, hidden they skip ±2 s.
+//
+// One hint, not one per feature: each subject is one enum value and one
+// string here, and they share the learned flag. Shared by both hosts (D9);
+// pure, header-only.
 #pragma once
 
 #include <cstdint>
@@ -25,11 +27,13 @@ namespace mv::shell {
 enum class strip_hint_subject : std::uint8_t {
   none,
   document,  // a PDF or DOCX on the canvas
+  clip,      // a video or audio file (issue #416)
 };
 
 [[nodiscard]] constexpr std::string_view strip_hint_text(strip_hint_subject s) noexcept {
   switch (s) {
     case strip_hint_subject::document: return "Press T to hide the filmstrip and scroll";
+    case strip_hint_subject::clip: return "Press T to hide the filmstrip and skip 2 s with \xE2\x86\x90 \xE2\x86\x92";
     case strip_hint_subject::none: break;
   }
   return {};
