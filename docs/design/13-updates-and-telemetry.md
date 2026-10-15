@@ -130,7 +130,9 @@ installed from Settings → Add-ons, never part of the base installer or its upd
   installer's last step.
 - **macOS**: Sparkle with automatic checks and automatic download; the app also checks on every
   start (Sparkle's scheduled check alone would miss a release for up to 6 h). Sparkle installs a
-  zip of the stapled app, never the disk image.
+  zip of the stapled app, never the disk image. Settings → *Automatic update checks* and the app
+  menu's **Check for Updates Automatically** are one switch (Sparkle's own
+  `automaticallyChecksForUpdates`); turning it on checks now.
 - **Never interrupt.** No modal, no forced restart. The command bar shows "Checking for
   updates…" / "Downloading update…" quietly, then **"Update ready — restart"**. Ignored, a staged
   update applies on exit (Windows) or is held for the user (macOS delegate).
