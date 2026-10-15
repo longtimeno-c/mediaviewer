@@ -257,6 +257,7 @@ final class ThemeStore: ObservableObject {
 
   /// An add-on was installed, updated or removed: what is painted may be stale.
   func addonsChanged() {
+    ThemePreviewStore.shared.forget()
     if !selection.isEmpty { verify() }
   }
 

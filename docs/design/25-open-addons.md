@@ -701,8 +701,8 @@ Where it lives:
 | One JSON and one wording for both hosts | `src/addon/open_json.*` |
 | C ABI 0.17 (Windows) and the chrome bridge (Mac) | `mv_open_addon_*` in `mediaviewer_addon.h` / `abi/addon_abi.cpp`; `mv_open_addons_*` in `mv_chrome_bridge.h` / `shell/addons_mac.mm` |
 | A package handed to the app | `shell/open_request.*` (`open_kind::addon_package`), `shell/main.cpp`, `chrome_host::offer_addon` → `IslandHost.OfferAddon`; `main_mac.mm -openEntryPath:` (launch) and `-openEntryPaths:failed:` (a drop, Open, Finder) → `MVChromeHost.offerAddonPackage` |
-| Mac chrome | `Theme.swift` (`MVTheme`, `ThemeStore`, `ThemedRoot`), `OpenAddons.swift` (store, download, section, sheet), the Theme row in `SettingsView.swift` |
-| Windows chrome | `IslandHost.ThemePack.cs`, `IslandHost.OpenAddons.cs`, the hook in `IslandHost.Theme.cs` `RefreshTheme`, `AddonNative.Open*` in `MediaViewer.Interop/Addons.cs` |
+| Mac chrome | `Theme.swift` (`MVTheme`, `ThemeStore`, `ThemedRoot`), `OpenAddons.swift` (store, download, section, sheet), the Theme row in `SettingsView.swift` and its picker sheet in `ThemePicker.swift` |
+| Windows chrome | `IslandHost.ThemePack.cs`, `IslandHost.ThemePicker.cs` (the Theme row and its picker sheet), `IslandHost.OpenAddons.cs`, the hook in `IslandHost.Theme.cs` `RefreshTheme`, `AddonNative.Open*` in `MediaViewer.Interop/Addons.cs` |
 | The author's tool, guide and example | `tools/addon-sdk/mvaddon.py` (MIT), `docs/ADDONS.md`, `examples/addons/film-tones` |
 | Tests | `tests/test_open_addons.cpp` (in `mv_import_tests`, all three builds), `tests/test_open_request.cpp`, `tools/addon-sdk/test_mvaddon.py` (ctest `addon_sdk`, cross-checked by `tools/addon-verify --open`), the Mac rig `MV_ADDON_SELFTEST` |
 
@@ -716,6 +716,12 @@ Calls made while building it (none reverses a D-decision; logged in [12](12-deci
 - **On the Mac a theme change rebuilds the chrome's SwiftUI roots** (`ThemedRoot`, one `.id`),
   so no view watches the theme; Settings returns to the Theme row afterwards. On Windows the
   shared brushes are recoloured in place, as for a system appearance change.
+- **The Theme row opens a sheet of cards** (issue #394), not a menu: Default, the built-ins,
+  then add-on themes, each drawn in its own tokens (a bar, a pane, the accent, a six-colour
+  strip). An add-on's tokens are read on a worker when the sheet opens, with a blank card until
+  they arrive. A click, or Return / Space on the keyboard cursor, closes the sheet and applies
+  the theme; Esc or Cancel keeps it. On the Mac the theme is applied after the sheet is
+  dismissed, because a theme change rebuilds the chrome.
 - **A theme's typeface waits for the next start on Windows** ([§8](#8-themes-api-1)).
 - **The Mac reads `mv.theme.*` from the defaults; Windows reads `theme.json`** beside
   `settings.ini`, once, when the chrome starts.
