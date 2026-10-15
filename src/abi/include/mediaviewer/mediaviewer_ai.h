@@ -156,7 +156,11 @@ typedef enum mv_ai_photos_access {
                                           then identifies the people in it. Off by default */
 #define MV_AI_TRANSFER_THUMBS 2u       /* the viewer's cached JPEG-512 tiles (never made) */
 
-/* Polled by the status line (~4 Hz while visible). [no-block] */
+/* Polled by the status line (~4 Hz while visible). [no-block]
+ * 1640 bytes. The Windows chrome mirrors this as MvAiStatus and pins its size in
+ * AiApi's constructor (src.managed/MediaViewer.Interop/Ai.cs): appending a field
+ * here means appending it there and moving that pin in the same change, or the
+ * chrome refuses the pack ("layout drifted"). addon_entry.cpp static_asserts it. */
 typedef struct mv_ai_status {
   uint32_t struct_size;
   uint32_t state;              /* mv_ai_state */

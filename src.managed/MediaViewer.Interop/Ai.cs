@@ -119,7 +119,7 @@ public enum MvAiMatch : uint
     Tags = 8,
 }
 
-/// <summary>Mirrors <c>mv_ai_status</c> field for field (1336 bytes).</summary>
+/// <summary>Mirrors <c>mv_ai_status</c> field for field (1640 bytes; pinned in <see cref="AiApi"/>).</summary>
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct MvAiStatus
 {
@@ -319,7 +319,7 @@ public sealed unsafe class AiApi
         if (table == IntPtr.Zero) throw new ArgumentNullException(nameof(table));
         // The POD layouts, pinned against mediaviewer_ai.h: a drift here reads
         // as garbage progress rather than as an error.
-        if (sizeof(MvAiStatus) != 1336 || sizeof(MvAiResult) != 32)
+        if (sizeof(MvAiStatus) != 1640 || sizeof(MvAiResult) != 32)
             throw new InvalidOperationException("mv_ai_status / mv_ai_result layout drifted");
         _api = (MvAiApi*)table;
         if (_api->StructSize < (uint)sizeof(MvAiApi))

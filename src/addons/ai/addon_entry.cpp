@@ -62,6 +62,10 @@ mv_status write_out(const std::string& text, char* out, uint32_t cap, uint32_t* 
 engine& eng(void* ctx) { return *static_cast<addon_state*>(ctx)->eng; }
 std::string str(const char* s) { return s ? std::string(s) : std::string(); }
 
+// The Windows chrome pins MvAiStatus at this size (Ai.cs, AiApi) and refuses a
+// pack that differs: appending a field moves both numbers in the same change.
+static_assert(sizeof(mv_ai_status) == 1640, "mv_ai_status resized: move the MvAiStatus pin in Ai.cs too");
+
 mv_status MV_CALL t_status(void* ctx, mv_ai_status* out) {
   return guard([&] {
     if (!out) return MV_ERR_INVALID_ARG;
