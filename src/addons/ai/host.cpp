@@ -63,6 +63,45 @@ bool host::has_pixels() const noexcept {
          api_->decode_still_rgb && api_->sampler_open;
 }
 
+bool host::has_tag_facts() const noexcept {
+  return api_ && api_->struct_size >= offsetof(mv_host_api, tag_facts) + sizeof(api_->tag_facts) &&
+         api_->tag_facts;
+}
+
+result<mv_addon_tag_facts> host::tag_facts(const std::string& path) const {
+  if (!has_tag_facts()) return err(status::unsupported_format);
+  mv_addon_tag_facts out{};
+  out.struct_size = sizeof(out);
+  const mv_status s = api_->tag_facts(api_->host, path.c_str(), &out);
+  if (s != MV_OK) return err(to_status(s));
+  return out;
+}
+
+bool host::has_cues() const noexcept {
+  return api_ && api_->struct_size >= offsetof(mv_host_api, read_cues) + sizeof(api_->read_cues) && api_->read_cues;
+}
+
+namespace {
+int32_t MV_CALL cue_thunk(void* user, const mv_addon_cue* c) {
+  const auto& visit = *static_cast<const std::function<bool(const host::cue&)>*>(user);
+  if (!c || !c->text_utf8) return 1;
+  host::cue out;
+  out.kind = c->kind;
+  out.start_ms = c->start_ms;
+  out.end_ms = c->end_ms;
+  out.text = c->text_utf8;
+  return visit(out) ? 1 : 0;
+}
+}  // namespace
+
+expected host::read_cues(const std::string& path, std::int64_t start_ms, std::int64_t max_ms, std::uint32_t max_cues,
+                         const std::function<bool(const cue&)>& visit) const {
+  if (!has_cues()) return err(status::unsupported_format);
+  void* user = const_cast<void*>(static_cast<const void*>(&visit));
+  const mv_status s = api_->read_cues(api_->host, path.c_str(), start_ms, max_ms, max_cues, &cue_thunk, user);
+  return s == MV_OK ? expected{} : err(to_status(s));
+}
+
 bool host::has_walk2() const noexcept {
   return api_ && api_->struct_size >= offsetof(mv_host_api, walk_files2) + sizeof(api_->walk_files2) &&
          api_->walk_files2;

@@ -90,6 +90,15 @@ class open_store {
   [[nodiscard]] result<std::string> theme_json(std::string_view addon_id,
                                                std::string_view theme_id) const;
 
+  // A file of an installed add-on (`installed` from list() or find()), read
+  // once and checked against its manifest entry (size and SHA-256) on the
+  // bytes returned, so what runs is what was signed even if the folder changed
+  // since it was listed. status::corrupt when it differs; status::invalid_arg
+  // when the manifest does not list `path` or it is over `max_bytes`.
+  [[nodiscard]] result<std::string> verified_file(const open_installed& installed,
+                                                  std::string_view path,
+                                                  std::uint64_t max_bytes) const;
+
   // At start, if the folder exists: clear stale staging.
   void startup_cleanup() const;
 

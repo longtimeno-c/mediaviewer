@@ -51,13 +51,23 @@ class store {
   [[nodiscard]] std::vector<installed> list() const;
   [[nodiscard]] result<installed> find(const std::string& id) const;
 
+  // The newest signed manifest of each add-on, WITHOUT hashing its files:
+  // what is installed, for a window that must not hash every pack (the AI
+  // Core is GBs) to find the few it loads (docs/design/25 "Every window").
+  // `state` is ok or needs_update; loading one still verifies its files.
+  struct listed {
+    manifest m;
+    install_state state = install_state::ok;
+  };
+  [[nodiscard]] std::vector<listed> manifests() const;
+
   // A fresh staging folder for a download, under the addons folder so the
   // final move is a rename on one volume.
   [[nodiscard]] result<std::string> make_staging() const;
 
   // Verifies a staged folder (manifest.json + .sig + files) and moves it into
   // place. The folder is consumed either way. A family over its ceiling
-  // (family_ceiling; the AI pack's 3 GB) is refused: status::unsupported_format,
+  // (family_ceiling; the AI pack's 5 GB) is refused: status::unsupported_format,
   // like an add-on that needs a newer app; family_usage says which. An older version than one that
   // is installed and verifies is refused (status::corrupt): no downgrades. Older versions stay until
   // the next start (startup_cleanup): the one replaced may be running. The newest that verifies loads.
@@ -88,7 +98,8 @@ class store {
   // files: which add-on a folder holds, and its signed installed size. A
   // multi-GB pack (the AI Core) makes a full verify cost seconds, so only the
   // add-on being loaded is hashed (Milestone H).
-  [[nodiscard]] bool peek(const std::string& dir_name, manifest& out) const;
+  [[nodiscard]] bool peek(const std::string& dir_name, manifest& out,
+                          install_state* state = nullptr) const;
 
   std::string root_;
   std::vector<std::uint8_t> key_;

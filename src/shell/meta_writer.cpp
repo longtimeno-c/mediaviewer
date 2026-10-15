@@ -26,6 +26,7 @@ void merge(meta::write_fields& into, const meta::write_fields& from) {
     if (!replaced) into.tags.push_back(t);
   }
   if (from.date_taken.touches()) into.date_taken = from.date_taken;
+  if (from.location.touches()) into.location = from.location;  // #352
 }
 
 }  // namespace
@@ -236,6 +237,10 @@ std::string describe_write(const meta::write_fields& fields) {
   if (fields.date_taken.touches()) {
     return fields.date_taken.k == change<std::string>::kind::clear ? "Date taken removed"
                                                                   : "Date taken saved";
+  }
+  if (fields.location.touches()) {  // #352
+    return fields.location.k == change<meta::geo_point>::kind::clear ? "Location removed"
+                                                                     : "Location saved";
   }
   if (fields.tags.size() == 1) {
     if (auto l = label_of(fields)) return l->empty() ? std::string("Label cleared") : "Label: " + *l;

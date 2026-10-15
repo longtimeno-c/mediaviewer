@@ -82,7 +82,7 @@ internal sealed class SearchWindow : Window, IDisposable
     private Border _similarChip = null!;
     private TextBlock _similarText = null!;
     private readonly ToggleButton[] _scopeChips = new ToggleButton[2];
-    private readonly ToggleButton[] _kindChips = new ToggleButton[3];
+    private readonly ToggleButton[] _kindChips = new ToggleButton[4];
     private readonly ToggleButton[] _findChips = new ToggleButton[3];
     private readonly string[] _scopeTips = new string[2];
     private bool _findAudio;  // the audio availability ShowFind last drew
@@ -287,9 +287,11 @@ internal sealed class SearchWindow : Window, IDisposable
             ("All", "Show photos and videos.", MvAiKinds.All),
             ("Photos", "Show photos only.", MvAiKinds.Photos),
             ("Videos", "Show videos only.", MvAiKinds.Videos),
+            // #355: only while File types "Show audio files" is on (ShowAudioKind).
+            ("Audio", "Show audio files only (MP3, M4A, M4P).", MvAiKinds.Audio),
         };
         var kinds = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2 };
-        for (int i = 0; i < 3; ++i)
+        for (int i = 0; i < kindNames.Length; ++i)
         {
             MvAiKinds k = kindNames[i].Kind;
             _kindChips[i] = Segment(kindNames[i].Name, () => SetKinds(k), hc);
@@ -330,6 +332,7 @@ internal sealed class SearchWindow : Window, IDisposable
         WireArrows(_scopeChips);
         WireArrows(_kindChips);
         WireArrows(_findChips);
+        ShowAudioKind();
         _findAudio = AudioReady;
         ShowFind();
 
@@ -905,7 +908,31 @@ internal sealed class SearchWindow : Window, IDisposable
         _kindChips[0].IsChecked = kinds == MvAiKinds.All;
         _kindChips[1].IsChecked = kinds == MvAiKinds.Photos;
         _kindChips[2].IsChecked = kinds == MvAiKinds.Videos;
+        _kindChips[3].IsChecked = kinds == MvAiKinds.Audio;
         if (run && changed) RunQuery(quiet: false);
+    }
+
+    // #355: the Audio segment, and "All" naming what it shows, follow "Show
+    // audio files". Turned off while Audio is chosen: back to All.
+    private void ShowAudioKind()
+    {
+        bool on = _chrome.AudioFiles;
+        _kindChips[3].Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+        _kindChips[3].IsEnabled = on;  // WireArrows skips it
+        ToolTipService.SetToolTip(_kindChips[0], on ? "Show photos, videos and audio files." : "Show photos and videos.");
+    }
+
+    internal void OnAudioFilesChanged()
+    {
+        ShowAudioKind();
+        if (!_chrome.AudioFiles && _kinds == MvAiKinds.Audio)
+        {
+            SetKinds(MvAiKinds.All);
+        }
+        else if (_query.Text.Trim().Length > 0 || _similar is not null)
+        {
+            RunQuery(quiet: true);  // audio results come or go
+        }
     }
 
     private string? ScopeDir => _scope == MvAiScope.All ? null : _chrome.Folder;
@@ -1064,7 +1091,7 @@ internal sealed class SearchWindow : Window, IDisposable
             {
                 t.Revealed = true;
                 t.Thumb = was.Thumb;
-                if ((t.Match & MvAiMatch.Speech) != 0 && was.Snippet is not null) t.Snippet = was.Snippet;
+                if ((t.Match & (MvAiMatch.Speech | MvAiMatch.Text)) != 0 && was.Snippet is not null) t.Snippet = was.Snippet;
             }
             else if (_thumbs.TryGet(t.Key, out ImageSource? cached))
             {
@@ -1171,13 +1198,15 @@ internal sealed class SearchWindow : Window, IDisposable
             // The query language in one line (docs/design/17 "Query syntax"); the pack
             // parses it, so the Mac panel shows the same examples.
             TextBlock examples = Centre(_look.Text(
-                "Sam beach   ·   Sam “happy birthday”   ·   Sam or Alex   ·   -video   ·   in:2024", 12, AddonColour.Title));
+                "Sam beach   ·   Sam “happy birthday”   ·   -video   ·   in:2024   ·   camera:R5   ·   ai:yes   ·   place:Portugal", 12, AddonColour.Title));
             examples.FontFamily = new FontFamily("Cascadia Mono, Consolas");
             examples.Margin = new Thickness(0, 10, 0, 0);
             _empty.Children.Add(examples);
             _empty.Children.Add(Centre(_look.Text(
                 "A name finds that person; “quotes” find words said in videos; - leaves something out; " +
-                "video or photo picks a kind; in:, before: and after: use the file's date; file: matches its name.", 12)));
+                "video or photo picks a kind; in:, before: and after: use the file's date; file: matches its name; " +
+                "camera:, lens: and made: match its tags, ai:yes its AI provenance; place: or in:<place> where it was " +
+                "taken (with the Places add-on); a plain word also matches tags.", 12)));
         }
         _empty.Visibility = Visibility.Visible;
         FadeIn(_empty);
@@ -1669,7 +1698,7 @@ internal sealed class SearchWindow : Window, IDisposable
     // file name (which stays in the tooltip). [worker-thread] in the pack.
     private void RequestSnippet(ResultTile tile)
     {
-        if (tile.SnippetRequested || (tile.Match & MvAiMatch.Speech) == 0) return;
+        if (tile.SnippetRequested || (tile.Match & (MvAiMatch.Speech | MvAiMatch.Tags | MvAiMatch.Text)) == 0) return;
         tile.SnippetRequested = true;
         ulong search = _search;
         AiApi api = _api;
@@ -1694,6 +1723,16 @@ internal sealed class SearchWindow : Window, IDisposable
     {
         if (tile.Caption is not TextBlock caption || snippet.Length == 0) return;
         caption.Inlines.Clear();
+        if ((tile.Match & MvAiMatch.Speech) == 0 || (tile.Match & MvAiMatch.Text) != 0)
+        {
+            // #291: the tag that matched ("Canon EOS R5"), as it is; #406: or the
+            // file's own text, which names itself ("Chapter: Birthday cake").
+            caption.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run { Text = snippet });
+            caption.FontStyle = Windows.UI.Text.FontStyle.Normal;
+            bool text = (tile.Match & MvAiMatch.Text) != 0;
+            ToolTipService.SetToolTip(caption, text ? $"{tile.Name}: {snippet}" : $"{tile.Name}: matched tag “{snippet}”");
+            return;
+        }
         caption.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run { Text = "“" });
         // The query's words, emphasised where they appear (whole-word, any case).
         var words = new HashSet<string>(
