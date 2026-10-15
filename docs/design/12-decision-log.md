@@ -860,6 +860,16 @@ not "need an update" when Local search shipped. Fields appended without bumping 
 (`thumbnail_jpeg`, `thumbnail_store_jpeg`, `recycle_file`) are read only when `struct_size` covers
 them and they are non-NULL.
 
+**The Windows chrome does not pin `mv_ai_status`'s size (2026-10-15, issue #388).** `AiApi` refused
+any pack whose status struct was not exactly the size it was built with. The number was hand-copied
+and went stale (1336 against a 1640-byte struct from 2026-10-05), so the Windows chrome refused every
+pack and Local search "could not start". The struct already carries `struct_size`: the pack fills
+only what the chrome declared, and the chrome zeroes the rest, so an older or newer pack is safe to
+attach. The size check is dropped for `mv_ai_status`. `mv_ai_result` keeps its exact check, because
+it comes back as an array with no `struct_size`, so its size is the stride. Drift is now caught
+in CI: `tools/abi-layout` prints the offset and size of each field as MSVC lays them out, and the
+ABI smoke test compares them, both ways, with the C# mirror.
+
 **Developer key (2026-09-26).** `MV_ADDON_DEV_PUBLIC_KEY` lets a developer build trust a local key
 so a pack can be sideloaded; with it, `MV_DEV_ADDONS_DIR` / `MV_DEV_THUMBS_DIR` keep the run out of
 the user's install. CMake warns and refuses it under GitHub Actions.

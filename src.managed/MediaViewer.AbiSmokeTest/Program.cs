@@ -15,6 +15,7 @@
 
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using MediaViewer.AbiSmokeTest;
 using MediaViewer.Interop;
 
 int failures = 0;
@@ -53,6 +54,23 @@ Check("MvCompletion.JobId at offset 8",
       Marshal.OffsetOf<MvCompletion>(nameof(MvCompletion.JobId)) == 8);
 Check("MvCompletion.Payload at offset 32",
       Marshal.OffsetOf<MvCompletion>(nameof(MvCompletion.Payload)) == 32);
+
+// The AI pack's structs, against the native compiler's own numbers
+// (mv_abi_layout's output, the second argument; CI always passes it).
+if (args.Length > 1)
+{
+    var dump = NativeLayout.Read(args[1]);
+    foreach (var (native, managed) in new[] { ("mv_ai_status", typeof(MvAiStatus)), ("mv_ai_result", typeof(MvAiResult)) })
+    {
+        var problems = NativeLayout.Compare(dump, native, managed);
+        foreach (string p in problems) Console.WriteLine($"         {p}");
+        Check($"{managed.Name} mirrors {native} field for field", problems.Count == 0);
+    }
+}
+else
+{
+    Console.WriteLine("  [skip] AI structs: no mv_abi_layout output given");
+}
 
 Console.WriteLine();
 Console.WriteLine("session lifetime (SafeHandle)");

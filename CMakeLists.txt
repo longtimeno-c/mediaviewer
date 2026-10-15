@@ -750,6 +750,12 @@ add_executable(ai-bench tools/ai-bench/main.cpp)
 target_link_libraries(ai-bench PRIVATE mv_addon mv_addon_media mv_io mv_core mv_project_options)
 target_include_directories(ai-bench PRIVATE src src/abi/include)
 
+# mv_abi_layout: the native layout of the structs C# mirrors by hand, for the
+# ABI smoke test to compare with (tools/abi-layout). Headers only.
+add_executable(mv_abi_layout tools/abi-layout/main.cpp)
+target_link_libraries(mv_abi_layout PRIVATE mv_project_options)
+target_include_directories(mv_abi_layout PRIVATE src/abi/include)
+
 # ---------------------------------------------------------------------------
 # mv_canvas — pan/zoom springs (docs/design/03)
 # ---------------------------------------------------------------------------

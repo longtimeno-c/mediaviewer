@@ -468,12 +468,17 @@ jobs:
       - name: Build the core
         run: |
           cmake -S . -B build -A x64 -DMV_BUILD_TESTS=OFF
-          cmake --build build --config Release --target mediaviewer_core
+          cmake --build build --config Release --target mediaviewer_core mv_abi_layout
+
+      # The layout MSVC gave the structs C# mirrors by hand (tools/abi-layout);
+      # the smoke test compares every field with the C# struct.
+      - name: Dump the native struct layout
+        run: build/bin/Release/mv_abi_layout.exe > build/abi-layout.txt
 
       - name: Run the smoke test
         run: |
           dotnet build src.managed/MediaViewer.AbiSmokeTest/MediaViewer.AbiSmokeTest.csproj -c Release
-          dotnet src.managed/MediaViewer.AbiSmokeTest/bin/Release/net8.0-windows/MediaViewer.AbiSmokeTest.dll build/bin/Release
+          dotnet src.managed/MediaViewer.AbiSmokeTest/bin/Release/net8.0-windows/MediaViewer.AbiSmokeTest.dll build/bin/Release build/abi-layout.txt
 
   # ---------------------------------------------------------------------------
   # The D6 gate. Real GPU only.

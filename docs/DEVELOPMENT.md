@@ -901,9 +901,13 @@ ctest --test-dir build -C Release --output-on-failure
 # if MV_REQUIRE_CORPUS is unset ('0' is an explicit opt-out, as release.yml uses).
 $env:MV_REQUIRE_CORPUS = "1"; ctest --test-dir build -C Release --output-on-failure
 
-# the ABI, end to end from C#: SafeHandle, struct layout, completion drain
+# the ABI, end to end from C#: SafeHandle, struct layout, completion drain. The
+# second argument is mv_abi_layout's dump: the AI structs' C# mirrors are then
+# compared field for field with the native layout (skipped without it; CI passes it)
+cmake --build build --config Release --target mv_abi_layout
+build\bin\Release\mv_abi_layout.exe > build\abi-layout.txt
 dotnet build src.managed\MediaViewer.AbiSmokeTest\MediaViewer.AbiSmokeTest.csproj -c Release
-dotnet src.managed\MediaViewer.AbiSmokeTest\bin\Release\net8.0-windows\MediaViewer.AbiSmokeTest.dll build\bin\Release
+dotnet src.managed\MediaViewer.AbiSmokeTest\bin\Release\net8.0-windows\MediaViewer.AbiSmokeTest.dll build\bin\Release build\abi-layout.txt
 
 # WinUI chrome (also published beside mediaviewer_lab.exe by the CMake build)
 dotnet publish src.managed\MediaViewer.Chrome\MediaViewer.Chrome.csproj -c Release -r win-x64 --no-self-contained

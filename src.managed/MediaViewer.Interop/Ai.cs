@@ -119,7 +119,11 @@ public enum MvAiMatch : uint
     Tags = 8,
 }
 
-/// <summary>Mirrors <c>mv_ai_status</c> field for field (1336 bytes).</summary>
+/// <summary>
+/// Mirrors <c>mv_ai_status</c> field for field (1640 bytes). Append with the
+/// header: the ABI smoke test compares every field's offset and size with
+/// tools/abi-layout's dump of the native struct.
+/// </summary>
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct MvAiStatus
 {
@@ -317,10 +321,13 @@ public sealed unsafe class AiApi
     public AiApi(IntPtr table)
     {
         if (table == IntPtr.Zero) throw new ArgumentNullException(nameof(table));
-        // The POD layouts, pinned against mediaviewer_ai.h: a drift here reads
-        // as garbage progress rather than as an error.
-        if (sizeof(MvAiStatus) != 1336 || sizeof(MvAiResult) != 32)
-            throw new InvalidOperationException("mv_ai_status / mv_ai_result layout drifted");
+        // mv_ai_result comes back as an array, so its size is the stride: pinned.
+        // MvAiStatus is not: it carries struct_size, the pack fills only what this
+        // chrome declared and Status() zeroes the rest, so a pack with fields
+        // appended (or one from before them) still attaches. Field for field
+        // against mediaviewer_ai.h is the ABI smoke test's job in CI.
+        if (sizeof(MvAiResult) != 32)
+            throw new InvalidOperationException("mv_ai_result layout drifted");
         _api = (MvAiApi*)table;
         if (_api->StructSize < (uint)sizeof(MvAiApi))
             throw new InvalidOperationException("AI add-on table is older than this chrome");
@@ -367,6 +374,7 @@ public sealed unsafe class AiApi
     // ---- state and settings (no-block) ----
     public MvAiStatus Status()
     {
+        // Zeroed, so the fields an older pack does not fill read as 0.
         MvAiStatus s = default;
         s.StructSize = (uint)sizeof(MvAiStatus);
         Check(_api->Status(Ctx, &s));
