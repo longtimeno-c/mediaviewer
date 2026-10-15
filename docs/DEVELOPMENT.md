@@ -1734,7 +1734,12 @@ a random sweep. The blob is 17.2 MB, or 5.4 MB xz-compressed.
 Built on `feature/issue-344-places-addon` (merges #348's slots): `src/addons/places`, its
 manifest (the info section, the search provider, the settings page; nothing else), the map
 rasteriser with cursor zoom down to town scale, packaging (`addon-pack.py` entry, `stage-places`,
-the data licences) and both release workflows.
+the data licences) and both release workflows. A stable release publishes
+`mediaviewer-addon-places-{win-x64,macos}.{zip,json,json.sig}` when that pack is complete. Places
+is preferred, not required: `publish` still publishes when it was not packed, warns, and refuses a
+partial or invalid pack. A staging or pack failure does not fail the release. Preview and
+artifacts runs do not pack it. Settings → Add-ons offers it on both hosts even when it is not
+installed (optional; coordinates still show without it).
 
 - **Mac (M-series):** `mv_tests "[places]"` 9 cases / 261 assertions and `"[geo]"` pass;
   `mv_import_tests` 94 cases pass, including `"[places]"` (2 cases, the add-on through a signed

@@ -239,23 +239,28 @@ jobs:
             --version $env:VERSION --key $env:MANIFEST_KEY --out dist/addon --require-pinned-key
           if ($LASTEXITCODE) { throw 'add-on packing failed' }
 
-      # Places (docs/design/27): an add-on with its own code and its own data. The
-      # DLL is signed like Import's; the place database is built by
-      # tools/geo/build_places.py from its pinned downloads into the add-on's
-      # data/ folder, then packed. --accept-upstream: GeoNames republishes its
-      # dump daily under the same URL, so the pins go stale (owner call open in
-      # docs/design/27: mirror the snapshot); the blob's META records every
-      # input's hash either way.
+      # Places (docs/design/27): preferred, not required. The DLL is signed like
+      # Import's; the place database is built by tools/geo/build_places.py from
+      # its pinned downloads into the add-on's data/ folder, then packed.
+      # --accept-upstream: GeoNames republishes its dump daily under the same
+      # URL, so the pins go stale (owner call open in docs/design/27: mirror
+      # the snapshot); the blob's META records every input's hash either way.
+      # A miss here does not fail the release: publish carries Places when the
+      # pack is complete and publishes without it when the pack is absent.
       - name: Find the Places add-on build
         id: places
         if: inputs.mode == 'stable'
         run: |
           $dll = Get-ChildItem build/addons/places -Recurse -Filter mv_places.dll | Select-Object -First 1
-          if (-not $dll) { throw 'mv_places.dll was not built' }
+          if (-not $dll) {
+            Write-Warning 'mv_places.dll was not built; this release will not carry Places.'
+            "dir=" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
           "dir=$($dll.DirectoryName)" >> $env:GITHUB_OUTPUT
 
       - name: Sign the Places add-on's binary
-        if: inputs.mode == 'stable' && steps.sign.outputs.meta != ''
+        if: inputs.mode == 'stable' && steps.sign.outputs.meta != '' && steps.places.outputs.dir != ''
         uses: azure/artifact-signing-action@v1
         with:
           azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -277,12 +282,24 @@ jobs:
           MANIFEST_KEY: ${{ steps.sign.outputs.key }}
           PLACES_DIR: ${{ steps.places.outputs.dir }}
         run: |
-          python tools/package/addon-pack.py stage-places --src $env:PLACES_DIR `
-            --downloads (Join-Path $env:RUNNER_TEMP 'geo-downloads') --accept-upstream
-          if ($LASTEXITCODE) { throw 'staging the place database failed' }
-          python tools/package/addon-pack.py pack --addon places --platform win-x64 --src $env:PLACES_DIR `
-            --version $env:VERSION --key $env:MANIFEST_KEY --out dist/addon --require-pinned-key
-          if ($LASTEXITCODE) { throw 'packing places failed' }
+          if (-not $env:PLACES_DIR) { exit 0 }
+          $packed = @(
+            'dist/addon/mediaviewer-addon-places-win-x64.zip',
+            'dist/addon/mediaviewer-addon-places-win-x64.json',
+            'dist/addon/mediaviewer-addon-places-win-x64.json.sig'
+          )
+          try {
+            python tools/package/addon-pack.py stage-places --src $env:PLACES_DIR `
+              --downloads (Join-Path $env:RUNNER_TEMP 'geo-downloads') --accept-upstream
+            if ($LASTEXITCODE) { throw 'staging the place database failed' }
+            python tools/package/addon-pack.py pack --addon places --platform win-x64 --src $env:PLACES_DIR `
+              --version $env:VERSION --key $env:MANIFEST_KEY --out dist/addon --require-pinned-key
+            if ($LASTEXITCODE) { throw 'packing places failed' }
+          } catch {
+            Write-Warning "Places was not packed ($_). This release will not carry it."
+            Remove-Item -LiteralPath $packed -Force -ErrorAction SilentlyContinue
+            exit 0
+          }
 
       # Sharepoint (docs/design/28): code only; signed like Import's DLL.
       - name: Find the Sharepoint add-on build
@@ -396,8 +413,23 @@ jobs:
           }
           # Add-ons stay on the stable feed (docs/design/18): previews carry none.
           if ($env:MODE -eq 'stable') {
-            foreach ($addon in 'import', 'places', 'sharepoint', 'ai', 'ai-audio', 'ai-faces', 'ai-cuda') {
+            foreach ($addon in 'import', 'sharepoint', 'ai', 'ai-audio', 'ai-faces', 'ai-cuda') {
               Copy-Item "dist/addon/mediaviewer-addon-$addon-win-x64.zip", "dist/addon/mediaviewer-addon-$addon-win-x64.json", "dist/addon/mediaviewer-addon-$addon-win-x64.json.sig" upload
+            }
+            # Places is preferred: upload a complete pack, and publish without it
+            # when packing produced nothing. A partial pack is not uploaded.
+            $places = @(
+              'dist/addon/mediaviewer-addon-places-win-x64.zip',
+              'dist/addon/mediaviewer-addon-places-win-x64.json',
+              'dist/addon/mediaviewer-addon-places-win-x64.json.sig'
+            )
+            $have = @($places | Where-Object { Test-Path -LiteralPath $_ })
+            if ($have.Count -eq 3) {
+              Copy-Item -LiteralPath $places upload
+            } elseif ($have.Count -gt 0) {
+              throw 'Places add-on pack is incomplete'
+            } else {
+              Write-Warning 'Places add-on was not packed; this release will not carry it.'
             }
           }
 
@@ -729,29 +761,37 @@ jobs:
       # Places (docs/design/27): joined and signed like Import; the code is
       # notarized first, then the place database goes into data/ and the
       # folder is packed (the data carries no code; ditto keeps the signature).
+      # Preferred, not required: a failure here leaves the release without it.
       - name: Places add-on (join, sign, notarize, stage the place database, pack)
         if: inputs.mode == 'stable'
         timeout-minutes: 30
         run: |
-          set -euo pipefail
-          mkdir -p places/arm64 build/addons
-          tar -xf apps/PlacesAddon-arm64.tar -C places/arm64
-          if [[ -f apps/PlacesAddon-x64.tar ]]; then
-            mkdir -p places/x86_64
-            tar -xf apps/PlacesAddon-x64.tar -C places/x86_64
-            python3 tools/mac/lipo_merge.py --arm64 places/arm64 --x86_64 places/x86_64 --out build/addons/places
-          else
-            cp -R places/arm64 build/addons/places
+          if ! (
+            set -euo pipefail
+            mkdir -p places/arm64 build/addons
+            tar -xf apps/PlacesAddon-arm64.tar -C places/arm64
+            if [[ -f apps/PlacesAddon-x64.tar ]]; then
+              mkdir -p places/x86_64
+              tar -xf apps/PlacesAddon-x64.tar -C places/x86_64
+              python3 tools/mac/lipo_merge.py --arm64 places/arm64 --x86_64 places/x86_64 --out build/addons/places
+            else
+              cp -R places/arm64 build/addons/places
+            fi
+            python3 tools/mac/macpack.py addon --dir build/addons/places \
+              --identity "$MV_MAC_SIGN_IDENTITY" --notary-profile mediaviewer-notary
+            python3 tools/package/addon-pack.py stage-places --src build/addons/places \
+              --downloads "$RUNNER_TEMP/geo-downloads" --accept-upstream
+            python3 tools/package/addon-pack.py pack --addon places --platform macos --src build/addons/places \
+              --version "$VERSION" --key "$RUNNER_TEMP/release.key" --out build/release/addon --require-pinned-key
+            cp build/release/addon/mediaviewer-addon-places-macos.zip \
+               build/release/addon/mediaviewer-addon-places-macos.json \
+               build/release/addon/mediaviewer-addon-places-macos.json.sig upload/
+          ); then
+            echo "::warning::Places add-on was not packed; this release will not carry it."
+            rm -f upload/mediaviewer-addon-places-macos.zip \
+                  upload/mediaviewer-addon-places-macos.json \
+                  upload/mediaviewer-addon-places-macos.json.sig
           fi
-          python3 tools/mac/macpack.py addon --dir build/addons/places \
-            --identity "$MV_MAC_SIGN_IDENTITY" --notary-profile mediaviewer-notary
-          python3 tools/package/addon-pack.py stage-places --src build/addons/places \
-            --downloads "$RUNNER_TEMP/geo-downloads" --accept-upstream
-          python3 tools/package/addon-pack.py pack --addon places --platform macos --src build/addons/places \
-            --version "$VERSION" --key "$RUNNER_TEMP/release.key" --out build/release/addon --require-pinned-key
-          cp build/release/addon/mediaviewer-addon-places-macos.zip \
-             build/release/addon/mediaviewer-addon-places-macos.json \
-             build/release/addon/mediaviewer-addon-places-macos.json.sig upload/
 
       # Sharepoint (docs/design/28): joined and signed like Places, code only.
       - name: Sharepoint add-on (join, sign, notarize, pack)
@@ -829,8 +869,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           MODE: ${{ inputs.mode }}
-          # The jobs above pack the Import and Sharepoint add-ons; publish requires
-          # both (stable), and uploads only add-ons it lists (github-release.py).
+          # The jobs above pack Import and Sharepoint; publish requires both
+          # (stable), and uploads only add-ons it lists (github-release.py).
+          # Places is uploaded when its pack is complete and is not required.
           MV_RELEASE_ADDONS: '1'
           # ...and the Local search pack with its Sound and People pieces (and,
           # on Windows, NVIDIA acceleration).

@@ -883,6 +883,7 @@ public static partial class IslandHost
     {
         if (slot == ImportSlot) RefreshAddonRow();
         else if (slot == SharepointSlot) RefreshSharepointOffer();  // #410
+        else if (slot == PlacesChannel) RefreshSlotSettings();
         else RefreshLocalSearch();
     }
 
@@ -1053,6 +1054,12 @@ public static partial class IslandHost
         {
             _importConfirming = false;
             RefreshAddonRow();
+            return true;
+        }
+        if (_slotConfirming is not null)
+        {
+            _slotConfirming = null;
+            RefreshSlotSettings();
             return true;
         }
         return CancelOpenAddonConfirm();

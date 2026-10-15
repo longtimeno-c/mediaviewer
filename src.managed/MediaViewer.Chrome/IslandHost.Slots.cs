@@ -65,6 +65,17 @@ public static partial class IslandHost
     private static string _slotListTitle = "";
     private static readonly List<SlotAddonRow> SlotAddonRows = new();
     private static readonly HashSet<string> SlotAddonsLoaded = new(StringComparer.Ordinal);
+    // The installed-list read has landed. Until then the Places row does not
+    // offer Install: an empty list is also "not read yet".
+    private static bool _slotAddonsRead;
+    // Places has no chrome of its own. This slot is the release channel only
+    // (not in AddonSlots, so LoadAddon never looks for a DLL beside it).
+    private static readonly AddonSlot PlacesChannel = new("places", "Places", null, null);
+    private static string _placesMessage = "";
+    private static AddonSettingsPage? _placesPage;
+    private static string _placesPageVersion = "";
+    private static int _placesPageGen;
+    private static bool _placesPageLoading;
     private static StackPanel? _slotBarPanel;
     private static StackPanel? _slotPathPanel;
     private static StackPanel? _slotSettingsPanel;
@@ -121,6 +132,7 @@ public static partial class IslandHost
             SlotAddonRows.AddRange(found);
             SlotAddonsLoaded.Clear();
             foreach (string id in loaded) SlotAddonsLoaded.Add(id);
+            _slotAddonsRead = true;
             EnsureSlotListener();
             RefreshSlotSettings();
         });
@@ -132,11 +144,25 @@ public static partial class IslandHost
     {
         SlotAddonRows.RemoveAll(r => r.Id == id);
         SlotAddonsLoaded.Remove(id);
+        if (id == PlacesChannel.Id)
+        {
+            _placesPage = null;
+            _placesPageVersion = "";
+            _placesPageLoading = false;
+            _placesPageGen++;
+            _placesMessage = "";
+        }
         RefreshSlotSettings();
         _ = Task.Run(() =>
         {
             try { AddonNative.Remove(id, keepData); }
             catch (MediaViewerException ex) { System.Diagnostics.Debug.WriteLine(ex.Message); }
+            // "Remove everything" forgets the settings page too (PR 56, as Import).
+            if (!keepData)
+            {
+                try { AddonNative.SettingsForget(id); }
+                catch (MediaViewerException ex) { System.Diagnostics.Debug.WriteLine(ex.Message); }
+            }
         });
     }
 
@@ -718,11 +744,20 @@ public static partial class IslandHost
 
     // ---- Settings -> Add-ons ------------------------------------------------------------
 
+    private const string PlacesFallback =
+        "Place names, an offline map and search by place. Nothing is sent anywhere.";
+
+    private const string PlacesOptional =
+        "Optional, preferred. The app works without it: a geotagged photo still shows its coordinates.";
+
     private static void AddSlotAddonsSettingsRows(StackPanel view)
     {
         _slotSettingsPanel = new StackPanel { Spacing = 6, Margin = new Thickness(0, 12, 0, 0) };
         view.Children.Add(_slotSettingsPanel);
         RefreshSlotSettings();
+        // Opening Settings asks the channel, as Import does. A later window
+        // does not install (the first one hosts the add-ons).
+        if (!_addonsElsewhere) ProbeOffer(PlacesChannel);
     }
 
     private static string? _slotConfirming;
@@ -731,6 +766,7 @@ public static partial class IslandHost
     {
         if (_slotSettingsPanel is null) return;
         _slotSettingsPanel.Children.Clear();
+        AddPlacesSettingsRow();
         // #410: Sharepoint, offered with one click while it is not installed.
         if (!SharepointInstalled)
         {
@@ -741,6 +777,7 @@ public static partial class IslandHost
         }
         foreach (SlotAddonRow row in SlotAddonRows)
         {
+            if (row.Id == PlacesChannel.Id) continue;
             _slotSettingsPanel.Children.Add(Label(row.Name));
             if (row.Description.Length > 0) _slotSettingsPanel.Children.Add(WrappedLabel(row.Description));
             bool loaded = SlotAddonsLoaded.Contains(row.Id);
@@ -750,36 +787,246 @@ public static partial class IslandHost
                 "needs_update" => $"Version {row.Version} needs a newer MediaViewer.",
                 _ => "The installed copy did not pass verification and is not loaded.",
             }));
-            var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-            if (_slotConfirming == row.Id)
+            StackPanel buttons = SlotRemoveButtons(row);
+            // #410: an add-on with a window of its own opens it from here, as
+            // Import does ("Open Import").
+            if (_slotConfirming != row.Id && loaded && SlotWindowScreens.TryGetValue(row.Id, out string? screen))
             {
-                buttons.Children.Add(EditButton("Remove, keep its data", () => { _slotConfirming = null; RemoveSlotAddon(row.Id, true); }));
-                buttons.Children.Add(EditButton("Remove everything", () => { _slotConfirming = null; RemoveSlotAddon(row.Id, false); }));
-                buttons.Children.Add(EditButton("Cancel", () => { _slotConfirming = null; RefreshSlotSettings(); }));
-            }
-            else
-            {
-                // #410: an add-on with a window of its own opens it from here, as
-                // Import does ("Open Import").
-                if (loaded && SlotWindowScreens.TryGetValue(row.Id, out string? screen))
-                {
-                    string id = row.Id;
-                    buttons.Children.Add(EditButton($"Open {row.Name}", () => SlotNative.OpenScreen(
-                        id, screen, "", SlotTheme(), 0, 0, (float)SlotScale())));
-                }
-                Button remove = EditButton("Remove…", () => { _slotConfirming = row.Id; RefreshSlotSettings(); });
-                AutomationProperties.SetName(remove, $"Remove {row.Name}");
-                buttons.Children.Add(remove);
-            }
-            foreach (UIElement child in buttons.Children)
-            {
-                if (child is Button b)
-                {
-                    b.AllowFocusOnInteraction = true;
-                    b.IsTabStop = true;
-                }
+                string id = row.Id;
+                Button open = EditButton($"Open {row.Name}", () => SlotNative.OpenScreen(
+                    id, screen, "", SlotTheme(), 0, 0, (float)SlotScale()));
+                open.AllowFocusOnInteraction = true;
+                open.IsTabStop = true;
+                buttons.Children.Insert(0, open);
             }
             _slotSettingsPanel.Children.Add(buttons);
         }
+    }
+
+    private static void AddPlacesSettingsRow()
+    {
+        if (_slotSettingsPanel is null) return;
+        var title = Label("Places");
+        title.Foreground = Brush(Title);
+        _slotSettingsPanel.Children.Add(title);
+        SlotAddonRow? installed = null;
+        foreach (SlotAddonRow row in SlotAddonRows)
+        {
+            if (row.Id == PlacesChannel.Id) { installed = row; break; }
+        }
+        string described = installed?.Description ?? "";
+        if (described.Length == 0) described = PlacesChannel.Offer.Description;
+        _slotSettingsPanel.Children.Add(WrappedLabel(described.Length > 0 ? described : PlacesFallback));
+        if (_addonsElsewhere)
+        {
+            _slotSettingsPanel.Children.Add(WrappedLabel(AddonsElsewhereText));
+            return;
+        }
+        if (!_slotAddonsRead)
+        {
+            _slotSettingsPanel.Children.Add(WrappedLabel("Checking installed add-ons…"));
+            return;
+        }
+        if (installed is null)
+        {
+            _slotSettingsPanel.Children.Add(WrappedLabel(PlacesOptional));
+            AddPlacesOffer();
+            return;
+        }
+        bool loaded = SlotAddonsLoaded.Contains(installed.Id);
+        _slotSettingsPanel.Children.Add(WrappedLabel(installed.State switch
+        {
+            "ok" => loaded ? $"Installed, version {installed.Version}." : $"Installed, version {installed.Version}; starting…",
+            "needs_update" => $"Version {installed.Version} needs a newer MediaViewer.",
+            _ => "The installed copy did not pass verification and is not loaded.",
+        }));
+        if (PlacesChannel.Busy && PlacesChannel.Phase is not null)
+        {
+            _slotSettingsPanel.Children.Add(ProgressFor(PlacesChannel, 320));
+        }
+        else if (_slotConfirming == installed.Id)
+        {
+            _slotSettingsPanel.Children.Add(SlotRemoveButtons(installed));
+        }
+        else
+        {
+            var buttons = SlotRemoveButtons(installed);
+            if (PlacesChannel.Offer.Kind == OfferKind.Available && PlacesChannel.Offer.Version.Length > 0 &&
+                IsNewer(PlacesChannel.Offer.Version, installed.Version))
+            {
+                buttons.Children.Insert(0, SettingsButton(
+                    $"Update to {PlacesChannel.Offer.Version}, {DownloadSize(PlacesChannel.Offer.ArchiveSize)}",
+                    StartPlacesInstall));
+            }
+            if (installed.State != "ok") buttons.Children.Insert(0, SettingsButton("Reinstall", StartPlacesInstall));
+            _slotSettingsPanel.Children.Add(buttons);
+        }
+        if (_placesMessage.Length > 0) _slotSettingsPanel.Children.Add(WrappedLabel(_placesMessage));
+        if (installed.State == "ok")
+        {
+            EnsurePlacesPage(installed.Version);
+            if (_placesPage is not null) _slotSettingsPanel.Children.Add(BuildSettingsPage(_placesPage));
+        }
+    }
+
+    private static void AddPlacesOffer()
+    {
+        if (_slotSettingsPanel is null) return;
+        if (PlacesChannel.Busy && PlacesChannel.Phase is not null)
+        {
+            _slotSettingsPanel.Children.Add(ProgressFor(PlacesChannel, 320));
+            return;
+        }
+        switch (PlacesChannel.Offer.Kind)
+        {
+            case OfferKind.Available:
+                Button install = SettingsButton(
+                    $"Install Places, {DownloadSize(PlacesChannel.Offer.ArchiveSize)}", StartPlacesInstall);
+                install.HorizontalAlignment = HorizontalAlignment.Left;
+                install.IsEnabled = !PlacesChannel.Busy;
+                _slotSettingsPanel.Children.Add(install);
+                break;
+            case OfferKind.NotPublished:
+                _slotSettingsPanel.Children.Add(WrappedLabel(
+                    "Places is not published for download yet. It will be offered here once a release carries it."));
+                break;
+            case OfferKind.NeedsNewerApp:
+                _slotSettingsPanel.Children.Add(WrappedLabel(
+                    "The published Places add-on needs a newer MediaViewer. Update MediaViewer, then install it."));
+                break;
+            case OfferKind.Unreachable:
+                _slotSettingsPanel.Children.Add(WrappedLabel("Could not reach the download server."));
+                Button retry = SettingsButton("Try again", () => ProbeOffer(PlacesChannel));
+                retry.HorizontalAlignment = HorizontalAlignment.Left;
+                _slotSettingsPanel.Children.Add(retry);
+                break;
+            default:
+                _slotSettingsPanel.Children.Add(WrappedLabel("Checking for Places…"));
+                break;
+        }
+        if (_placesMessage.Length > 0) _slotSettingsPanel.Children.Add(WrappedLabel(_placesMessage));
+    }
+
+    private static void EnsurePlacesPage(string version)
+    {
+        if (_placesPageVersion == version || _placesPageLoading) return;
+        _placesPageLoading = true;
+        int gen = ++_placesPageGen;
+        _ = Task.Run(() =>
+        {
+            AddonSettingsPage? page = ReadSettingsPage(PlacesChannel.Id);
+            DispatcherQueueControllerTryEnqueue(() =>
+            {
+                if (gen != _placesPageGen) return;
+                _placesPageLoading = false;
+                _placesPage = page;
+                _placesPageVersion = version;
+                RefreshSlotSettings();
+            });
+        });
+    }
+
+    private static void StartPlacesInstall()
+    {
+        if (PlacesChannel.Busy || !_slotAddonsRead || _addonsElsewhere || _folderSession is null) return;
+        bool wasLoaded = SlotAddonsLoaded.Contains(PlacesChannel.Id);
+        string? update = null;
+        foreach (SlotAddonRow row in SlotAddonRows)
+        {
+            if (row.Id == PlacesChannel.Id && PlacesChannel.Offer.Kind == OfferKind.Available &&
+                IsNewer(PlacesChannel.Offer.Version, row.Version))
+            {
+                update = PlacesChannel.Offer.Version;
+            }
+        }
+        PlacesChannel.Busy = true;
+        PlacesChannel.Phase = new AddonPhase(AddonPhaseKind.Downloading);
+        _placesMessage = "";
+        IProgress<AddonPhase> progress = PhaseReporter(PlacesChannel);
+        RefreshSlotSettings();
+        MediaViewerSession session = _folderSession;
+        _ = Task.Run(async () =>
+        {
+            string message;
+            bool restart = false;
+            try
+            {
+                await DownloadAndInstall(PlacesChannel, null, progress).ConfigureAwait(false);
+                if (wasLoaded && update is not null)
+                {
+                    message = $"Places {update} is installed. Restart MediaViewer to use it.";
+                    restart = true;
+                }
+                else
+                {
+                    message = update is null ? "Places installed." : $"Places updated to {update}.";
+                    StartSlotAddons(session);
+                }
+            }
+            catch (AddonNotPublishedException)
+            {
+                message = "";
+                DispatcherQueueControllerTryEnqueue(() => PlacesChannel.Offer = new AddonOffer(OfferKind.NotPublished, 0));
+            }
+            catch (Exception ex) when (ex is HttpRequestException or IOException or MediaViewerException
+                                           or InvalidDataException or TaskCanceledException or JsonException)
+            {
+                System.Diagnostics.Debug.WriteLine(ex);
+                message = ex is MediaViewerException or InvalidDataException
+                    ? "The download did not verify, so nothing was installed."
+                    : "Places could not be downloaded. Check the connection and try again.";
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine(ex);
+                message = "Places could not be installed.";
+            }
+            string? installedVersion = update;
+            DispatcherQueueControllerTryEnqueue(() =>
+            {
+                PlacesChannel.Busy = false;
+                PlacesChannel.Phase = null;
+                _placesMessage = message;
+                if (restart && installedVersion is not null)
+                {
+                    AddonRestartNeeded($"Places {installedVersion}");
+                    for (int i = 0; i < SlotAddonRows.Count; ++i)
+                    {
+                        if (SlotAddonRows[i].Id != PlacesChannel.Id) continue;
+                        SlotAddonRows[i] = SlotAddonRows[i] with { Version = installedVersion };
+                    }
+                }
+                _placesPage = null;
+                _placesPageVersion = "";
+                _placesPageLoading = false;
+                RefreshSlotSettings();
+            });
+        });
+    }
+
+    private static StackPanel SlotRemoveButtons(SlotAddonRow row)
+    {
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        if (_slotConfirming == row.Id)
+        {
+            buttons.Children.Add(EditButton("Remove, keep its data", () => { _slotConfirming = null; RemoveSlotAddon(row.Id, true); }));
+            buttons.Children.Add(EditButton("Remove everything", () => { _slotConfirming = null; RemoveSlotAddon(row.Id, false); }));
+            buttons.Children.Add(EditButton("Cancel", () => { _slotConfirming = null; RefreshSlotSettings(); }));
+        }
+        else
+        {
+            Button remove = EditButton("Remove…", () => { _slotConfirming = row.Id; RefreshSlotSettings(); });
+            AutomationProperties.SetName(remove, $"Remove {row.Name}");
+            buttons.Children.Add(remove);
+        }
+        foreach (UIElement child in buttons.Children)
+        {
+            if (child is Button b)
+            {
+                b.AllowFocusOnInteraction = true;
+                b.IsTabStop = true;
+            }
+        }
+        return buttons;
     }
 }

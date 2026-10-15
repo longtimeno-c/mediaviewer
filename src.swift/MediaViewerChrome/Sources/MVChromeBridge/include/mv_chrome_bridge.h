@@ -576,9 +576,13 @@ void mv_chrome_slots_cancel_thumbnail(const char* path);
 // Settings -> Add-ons: the installed first-party add-ons that fill screens or
 // slots, [{"id","name","version","description","state","why","loaded"}].
 // [worker] (reads the store). Refresh loads one just installed; Remove takes
-// every item away at once, no restart. Implemented in src/shell/addons_mac.mm.
+// every item away at once, no restart. The changed callback (main thread) runs
+// after that load or remove has updated the list. Implemented in
+// src/shell/addons_mac.mm.
 int32_t mv_chrome_slot_addons(char* buf, int32_t size);
 void mv_chrome_slot_addons_refresh(void);
+typedef void (*mv_chrome_slot_addons_changed_fn)(void);
+void mv_chrome_slot_addons_set_changed(mv_chrome_slot_addons_changed_fn fn);
 bool mv_chrome_slot_addon_remove(const char* id, bool keep_data);
 
 // Milestone G add-ons (docs/design/18 "Add-ons"), implemented in src/shell/addons_mac.mm.

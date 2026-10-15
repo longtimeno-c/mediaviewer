@@ -2007,12 +2007,24 @@ void load_slot_addons_now() {
   note_slot_commands();
 }
 
+std::atomic<mv_chrome_slot_addons_changed_fn> g_slot_addons_changed{nullptr};
+
+// Main thread, after the store and the loaded set are both updated. The
+// contributions hop can land before loaded_ids is inserted, so Settings does
+// not treat that hop as "the list is current".
+void note_slot_addons_changed() {
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (auto cb = g_slot_addons_changed.load()) cb();
+  });
+}
+
 }  // namespace
 
 void MvSlotAddonsStart() {
   if (state().reader) return;  // the first window hosts the add-ons (docs/design/18 "One host process")
   dispatch_async(addon_queue(), ^{
     load_slot_addons_now();
+    note_slot_addons_changed();
   });
 }
 
@@ -2055,6 +2067,10 @@ extern "C" int32_t mv_chrome_slot_addons(char* buf, int32_t size) {
 // [main-thread] Loads a slot add-on just installed (or sideloaded).
 extern "C" void mv_chrome_slot_addons_refresh(void) { MvSlotAddonsStart(); }
 
+extern "C" void mv_chrome_slot_addons_set_changed(mv_chrome_slot_addons_changed_fn fn) {
+  g_slot_addons_changed.store(fn);
+}
+
 // [main-thread][no-block] Removes one: every item it contributed goes at once
 // (the registry detaches it on addon_queue before its shutdown), then its
 // files; keep_data keeps its data folder. No restart.
@@ -2076,10 +2092,12 @@ extern "C" bool mv_chrome_slot_addon_remove(const char* id, bool keep_data) {
       sa.errors.erase(s);
     }
     note_slot_commands();
-    if (!ensure_store()) return;
-    mac_addons& st = state();
-    std::lock_guard<std::mutex> lock(st.store_writes);
-    (void)st.store->remove(s, keep_data);
+    if (ensure_store()) {
+      mac_addons& st = state();
+      std::lock_guard<std::mutex> lock(st.store_writes);
+      (void)st.store->remove(s, keep_data);
+    }
+    note_slot_addons_changed();
   });
   return true;
 }
