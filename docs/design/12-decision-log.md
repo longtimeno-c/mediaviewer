@@ -1465,7 +1465,11 @@ seconds. The owner found it choppy, and frozen whenever another app was in front
 asked for 60 at least. Now: every display frame in front and in use (60 a second, 120 on
 ProMotion: the home ticks on each pass of a loop the display paces, the panes on the display link
 on the Mac and `CompositionTarget.Rendering` on Windows, since a fixed 60 Hz timer drifts against
-the display); 10 a second while the window is visible (behind another app, or in
+the display. On the Mac the panes' marks are Core Animation layers moved on a thread of their
+own (`ThemeTicker`): publishing the clock to SwiftUI re-laid out and re-rendered each pane on
+every tick, and a main-thread display link woke the main run loop 60 times a second, where every
+pass polls all the chrome stores (`ChromePulse`). Profiled 2026-10-15: the native home's own
+work per frame is a few samples, and it was SwiftUI that cost); 10 a second while the window is visible (behind another app, or in
 front but quiet), for up to a minute after the last input; then rest. Never while hidden,
 minimised or covered, never under Reduce Motion or with Windows animations off. One rule in
 three places (`home_ground_clock`, both chromes' `ThemeMotion`), and the bar's and panes' input
