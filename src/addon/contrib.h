@@ -96,6 +96,10 @@ struct contributions {
   std::vector<search_provider_contrib> search_providers;
   std::vector<item_contrib> items;
   std::vector<badge_contrib> badges;
+  // The manifest's command ids (`contributes.commands`). For an add-on that
+  // fills slots, running one is a command event to it (slot_registry::
+  // run_command, 2026-10-15): it has no chrome to send it to. Filled at load.
+  std::vector<std::string> commands;
 
   [[nodiscard]] bool empty() const noexcept {
     return screens.empty() && info_sections.empty() && search_providers.empty() && items.empty() &&

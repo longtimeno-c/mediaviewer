@@ -40,6 +40,7 @@ public static partial class IslandHost
     private static TextBlock? _galleryCount;
     private static StackPanel? _galleryStack;
     private static TextBlock? _photosHeader;
+    private static Button? _galleryShare;  // #413
     private static TextBlock? _galleryEmpty;
     private static TextBlock? _folderFindLabel;
     private static ItemsRepeater? _folderChipRepeater;
@@ -303,6 +304,7 @@ public static partial class IslandHost
         onHidden: () =>
         {
             _galleryVisible = false;
+            ClearGalleryRange();  // #413: the range belongs to the grid
             RenderEditBarButton();
             GallerySearchHidden();
             ReleaseRepeater(ref _galleryRepeater);
@@ -556,7 +558,17 @@ public static partial class IslandHost
         _galleryStack.Children.Add(_folderFindLabel);
         _galleryStack.Children.Add(_folderStrip);
         _galleryStack.Children.Add(_folderRepeater);
-        _galleryStack.Children.Add(_photosHeader);
+        // Issue #413: the photos' header, and one share icon for the grid's
+        // selection (the shift-click range, else the selected cell): Sharepoint,
+        // not the system share sheet.
+        var photosRow = new Grid();
+        photosRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        photosRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        photosRow.Children.Add(_photosHeader);
+        _galleryShare = BuildGalleryShareButton();
+        Grid.SetColumn(_galleryShare, 1);
+        photosRow.Children.Add(_galleryShare);
+        _galleryStack.Children.Add(photosRow);
         _galleryStack.Children.Add(_galleryRepeater);
         _galleryStack.Children.Add(_galleryEmpty);
 
@@ -1156,6 +1168,14 @@ public static partial class IslandHost
             }
             SetThumb();
 
+            // Issue #413: the shift-click range is tinted and outlined.
+            void PaintRange()
+            {
+                border.Background = vm.InRange ? Brush(Hairline) : null;
+                border.BorderThickness = new Thickness((vm.Selected && _folderCursor < 0) || vm.InRange ? 2 : 0);
+            }
+            PaintRange();
+
             void OnChanged(object? _, System.ComponentModel.PropertyChangedEventArgs e)
             {
                 if (e.PropertyName is nameof(FolderItemVm.ThumbPath) or null) SetThumb();
@@ -1164,8 +1184,9 @@ public static partial class IslandHost
                     why.Text = vm.Why;
                     why.Visibility = vm.Why.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
                 }
-                if (e.PropertyName is nameof(FolderItemVm.Selected) or nameof(FolderItemVm.GalleryCurrent) or null)
-                    border.BorderThickness = new Thickness(vm.Selected && _folderCursor < 0 ? 2 : 0);
+                if (e.PropertyName is nameof(FolderItemVm.Selected) or nameof(FolderItemVm.GalleryCurrent)
+                    or nameof(FolderItemVm.InRange) or null)
+                    PaintRange();
             }
             vm.PropertyChanged += OnChanged;
             // Recycling without this leaks a handler per realisation, and every
@@ -1178,7 +1199,13 @@ public static partial class IslandHost
                     unsubscribeBadges();
                 });
 
-            border.Tapped += (_, _) => Send(Command.GalleryActivate, vm.Index);
+            border.Tapped += (_, _) =>
+            {
+                // Issue #413: Shift-click selects every image from the selected
+                // cell to this one and the grid stays; a plain click opens it.
+                if (ShiftDown()) ExtendGalleryRange(vm.Index);
+                else Send(Command.GalleryActivate, vm.Index);
+            };
             // docs/design/25 PR 59: the add-ons' context-menu entries, only when some exist.
             if (_slotTileContext) AttachSlotContextMenu(border, vm);
             WireFileDrag(border, vm);

@@ -935,7 +935,9 @@ result<std::unique_ptr<loaded_addon>> loaded_addon::load(const store& s, const s
   if (!info.m.slots.empty() && version >= kSlotsHostApi) {
     if (const auto* table = static_cast<const mv_addon_slots*>(out->query(MV_SLOTS_INTERFACE))) {
       slot_registry& reg = out->table_->slots();
-      if (reg.attach(info.id, info.m.name, info.m.slots, native_slot_client(api.addon, table), info.dir) ==
+      contributions c = info.m.slots;
+      for (const manifest_command& cmd : info.m.commands) c.commands.push_back(cmd.id);
+      if (reg.attach(info.id, info.m.name, std::move(c), native_slot_client(api.addon, table), info.dir) ==
           status::ok) {
         out->slots_ = &reg;
       }

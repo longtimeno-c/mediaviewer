@@ -250,9 +250,30 @@ gallery: opening it pauses a playing clip, a clip selected in it waits paused on
 and closing it resumes only the clip that was playing. The folder path lives in the command bar
 left of `?` (a long middle collapses into a menu), with Up and Root buttons outside the trail.
 
+#### Gallery range and share (#413)
+
+- **Shift-click** selects every image from the selected cell (the anchor) to the clicked one, in
+  the grid's order (a file search's filter counts), and the grid stays open. A plain click still
+  opens one image. Further Shift-clicks keep the same anchor.
+- **Arrows** move one cell and never grow the range; marks stay the set `Insert` /
+  `Shift+Space` edit. Another selection, another folder, a relist or closing the grid ends the
+  range (on Windows native also drops it once its anchor is no longer selected).
+- **While a range stands** it is the selection: copy (`Ctrl+C` / `⌘C`), `F7` / `F8`, `Delete`,
+  copy path and Share act on it, in listing order, ahead of the marks. The range is tinted and
+  outlined; "N selected" sits over the grid on the Mac.
+- **Drag-out from the gallery** starts from any cell (the Mac picks the drag up below SwiftUI,
+  `GalleryDrag`, as the grid's scroll view never handed it to the cell). A cell of the range drags
+  the whole range, a marked cell the marks, any other cell itself; each file with its pair on
+  Windows, copy-only, originals untouched. The filmstrip's drag is unchanged.
+- **One share icon** ("Send") over the grid sends the gallery's selection (the range, else the
+  selected cell) to [Sharepoint](28-sharepoint.md), with those files and no others. Without
+  Sharepoint it offers the one-click install. It is not the OS share sheet (`Ctrl+Shift+S`).
+
 ### Marks, copy, move
 
 Marks are a separate set from the selection, so arrow-key browsing never makes accidental ranges.
+The gallery's Shift-click range (above) is the one deliberate range: while it stands, the
+commands below act on it first.
 
 | Key | Modes | Command |
 |---|---|---|
@@ -261,7 +282,7 @@ Marks are a separate set from the selection, so arrow-key browsing never makes a
 | `Ctrl+D` | Viewing | Unmark all |
 | `F7` / `Shift+F7` | Viewing | Copy marked (else current) to the last destination / pick a folder |
 | `F8` / `Shift+F8` | Viewing | Move, same rule |
-| `Delete` | browse, video | Recycle Bin / Trash, with confirm. Marks if any, else current |
+| `Delete` | browse, video, gallery | Recycle Bin / Trash, with confirm. The gallery's range if one stands, else marks if any, else current |
 | `F2` | Viewing | Rename the current file (the gallery's selected cell); also File ▸ Rename… on the Mac |
 | `Ctrl+Shift+C` | Viewing | Copy path(s) as text |
 | `Ctrl+Alt+C` | browse | Copy the current still with edits baked, as PNG (worker thread) |
@@ -408,6 +429,13 @@ opens that file in the viewer), `Ctrl+Enter` imports from anywhere, `Space` togg
 pauses / resumes while copying, `Shift+Space` toggles its day, `Ctrl+Tab` / `Ctrl+Shift+Tab` the
 next / previous source, `Ctrl+J` ejects, `Esc` closes the window and the import carries on
 ([import](18-import.md)).
+
+### Sharepoint (while the add-on is installed)
+
+One row, **Sharepoint**, with no default key (issue #410): it opens Sharepoint's window with the
+marked or current files as the ones to send. Settings can give it a key like any row. The row is
+the add-on's manifest command; an add-on that fills slots and has no chrome gets it as a command
+event (`run_command`, [28](28-sharepoint.md#host-pieces-this-added)).
 
 ### Add-on commands (PR 57, from scripts)
 

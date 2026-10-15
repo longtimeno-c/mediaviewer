@@ -204,6 +204,13 @@ uint64_t mv_chrome_thumb_generation(void);
 uint64_t mv_chrome_marks_generation(void);
 int32_t mv_chrome_marked_count(void);
 bool mv_chrome_is_marked(int32_t index);
+// Issue #413: the gallery's shift-click range. `indices` in the order the grid
+// shows them; count 0 clears it. While it holds files, copy, F7/F8, Delete, copy
+// path and Share act on it. The host clears it on any other selection, a
+// relist, another folder, or the grid closing (the generation moves).
+void mv_chrome_gallery_set_range(const int32_t* indices, int32_t count);
+uint64_t mv_chrome_gallery_range_generation(void);
+int32_t mv_chrome_gallery_range_count(void);
 
 // Is the item at `index` a clip (a video, by extension: the same test the host
 // uses to route it to the player)? Drives the gallery's play badge. False for
@@ -551,6 +558,8 @@ bool mv_chrome_slots_event(const char* addon, const char* screen, const char* no
                            const char* value_json);
 // An item was chosen; paths_json is a JSON array of the files it targets.
 bool mv_chrome_slots_invoke(const char* addon, const char* item, const char* paths_json);
+// #410: one of a slot add-on's manifest commands (Settings' Open, the share icon).
+bool mv_chrome_slots_command(const char* addon, const char* command, const char* paths_json);
 // A surface's BGRA pixels (premultiplied). Returns the bytes needed (0: none);
 // copies when `cap` is enough. [any-thread]
 int64_t mv_chrome_slots_surface(const char* addon, const char* screen, const char* surface,

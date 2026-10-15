@@ -335,7 +335,17 @@ public static partial class IslandHost
                     last = field.Text;
                     SendScreenEvent(at, id, SlotNative.EventChange, JsonString(field.Text));
                 };
-                return field;
+                if (JStr(n, "pick") != "folder") return field;
+                // "pick": "folder" (#410): the system folder dialog, reported as the
+                // field's change; typing a path still works.
+                var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+                row.Children.Add(field);
+                Button choose = EditButton("Choose\u2026", () => PickScreenFolder(at, id, field, v => last = v));
+                choose.AllowFocusOnInteraction = true;
+                choose.IsTabStop = true;
+                AutomationProperties.SetName(choose, "Choose a folder for " + JStr(n, "label"));
+                row.Children.Add(choose);
+                return row;
             }
             case "progress":
             {
@@ -1087,6 +1097,32 @@ public static partial class IslandHost
             }
         };
         return root;
+    }
+
+    // #410: a screen's folder field. The dialog belongs to the screen's own
+    // window (else the viewer's); the folder goes to the add-on as the field's
+    // change, as if typed.
+    private static async void PickScreenFolder(ScreenAt at, string id, FakeInput field, Action<string> remember)
+    {
+        try
+        {
+            var picker = new Windows.Storage.Pickers.FolderPicker();
+            picker.FileTypeFilter.Add("*");
+            IntPtr owner = ScreenWindows.TryGetValue(at, out var open)
+                ? WinRT.Interop.WindowNative.GetWindowHandle(open.Window)
+                : _themeWindow;
+            WinRT.Interop.InitializeWithWindow.Initialize(picker, owner);
+            Windows.Storage.StorageFolder? folder = await picker.PickSingleFolderAsync();
+            if (folder is null) return;
+            field.Text = folder.Path;
+            remember(folder.Path);
+            SendScreenEvent(at, id, SlotNative.EventChange, JsonString(folder.Path));
+        }
+        catch (Exception ex)
+        {
+            // Never let an exception out of a XAML event: that is a fail-fast.
+            System.Diagnostics.Debug.WriteLine(ex);
+        }
     }
 
     private static Window OpenScreenWindow(JsonElement s, ScreenAt at, string place)
