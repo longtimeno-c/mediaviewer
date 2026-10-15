@@ -162,6 +162,13 @@ second while bytes move; those posts update chrome and never present the canvas.
   is offered with one click while it is not installed (its release channel,
   `mediaviewer-addon-sharepoint-<platform>`).
 - **The gallery's range** on both hosts ([16](16-commands.md#gallery-range-and-share-413)).
+- **An add-on's screen window on Windows is a MediaViewer window** (#442, `OpenScreenWindow`): the
+  app's icon in the title bar, taskbar and Alt+Tab (`Shared/AppIcon.cs`, as Import's windows);
+  the manifest's size in DIPs at the viewer's DPI, with a floor (`PreferredMinimumWidth` /
+  `Height`); a window or sheet is owned by the viewer (above it, minimised with it) and opens
+  centred over it; and every one carries `MediaViewer.AddonWindow`, so the viewer's key router
+  leaves its keys alone (a digit typed into the code field is text, not a rating). A docked pane
+  stays unowned, as [25](25-open-addons.md#implementation-notes-prs-58-59-2026-10-11) says.
 - **App permissions**: the Mac's Info.plist names `NSLocalNetworkUsageDescription` and
   `NSBluetoothAlwaysUsageDescription` (macOS asks once each, the first time Sharepoint looks).
   Windows asks through Defender Firewall at the first listen.

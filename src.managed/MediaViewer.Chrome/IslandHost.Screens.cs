@@ -1125,37 +1125,92 @@ public static partial class IslandHost
         }
     }
 
+    [DllImport("user32.dll", EntryPoint = "GetDpiForWindow")]
+    private static extern uint SlotGetDpiForWindow(IntPtr hwnd);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
+    private static extern IntPtr SlotSetWindowLongPtr(IntPtr hwnd, int index, IntPtr value);
+
+    [DllImport("user32.dll", EntryPoint = "SetPropW", CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SlotSetProp(IntPtr hwnd, string name, IntPtr data);
+
+    private const int SlotGwlpHwndParent = -8;
+
+    // #442: an add-on's window is a MediaViewer window. The app's icon in the
+    // title bar, the taskbar and Alt+Tab (AppIcon, as Import's windows); sized in
+    // DIPs at the viewer's DPI with a floor it cannot be shrunk past; a window or
+    // sheet is owned by the viewer (it stays above it and minimises with it) and
+    // centred over it; and every one is marked so the viewer's key router leaves
+    // its keys alone (main.cpp handle_app_key): a digit typed into a field is
+    // text, not a rating.
     private static Window OpenScreenWindow(JsonElement s, ScreenAt at, string place)
     {
-        var w = new Window { Title = JStr(s, "title") };
+        string title = JStr(s, "title");
+        var w = new Window { Title = title.Length > 0 ? title : "MediaViewer" };
+        MediaViewer.Shared.AppIcon.Apply(w);
+        IntPtr hwnd = WinRT.Interop.WindowNative.GetWindowHandle(w);
         int width = (int)JNum(s, "width", 0), height = (int)JNum(s, "height", 0);
         SlotRect main = default;
         bool haveMain = _themeWindow != IntPtr.Zero && SlotGetWindowRect(_themeWindow, out main);
+        uint dpi = _themeWindow != IntPtr.Zero ? SlotGetDpiForWindow(_themeWindow) : 0;
+        double scale = dpi > 0 ? dpi / 96.0 : 1.0;
+        int Px(double dip) => (int)Math.Round(dip * scale);
+        int minW, minH;
         switch (place)
         {
             case "pane":
             {
                 // Docked to the right edge of the viewer window.
-                int pw = width > 0 ? width : 340;
-                int ph = haveMain ? main.Bottom - main.Top : (height > 0 ? height : 640);
+                int pw = Px(width > 0 ? width : 340);
+                int ph = haveMain ? main.Bottom - main.Top : Px(height > 0 ? height : 640);
                 w.AppWindow.Resize(new Windows.Graphics.SizeInt32(pw, ph));
                 if (haveMain) w.AppWindow.Move(new Windows.Graphics.PointInt32(main.Right - pw, main.Top));
+                (minW, minH) = (Px(260), Px(320));
                 break;
             }
             case "sheet":
             {
-                int sw = width > 0 ? width : 520, sh = height > 0 ? height : 420;
+                int sw = Px(width > 0 ? width : 520), sh = Px(height > 0 ? height : 420);
                 w.AppWindow.Resize(new Windows.Graphics.SizeInt32(sw, sh));
                 if (haveMain)
                 {
                     w.AppWindow.Move(new Windows.Graphics.PointInt32(
-                        main.Left + (main.Right - main.Left - sw) / 2, main.Top + 60));
+                        main.Left + (main.Right - main.Left - sw) / 2, main.Top + Px(60)));
                 }
+                (minW, minH) = (Px(360), Px(280));
                 break;
             }
             default:
-                w.AppWindow.Resize(new Windows.Graphics.SizeInt32(width > 0 ? width : 760, height > 0 ? height : 560));
+            {
+                int ww = Px(width > 0 ? width : 760), wh = Px(height > 0 ? height : 560);
+                w.AppWindow.Resize(new Windows.Graphics.SizeInt32(ww, wh));
+                if (haveMain)
+                {
+                    // Over the viewer, a third of the way down, as the AI windows open.
+                    int mw = main.Right - main.Left, mh = main.Bottom - main.Top;
+                    w.AppWindow.Move(new Windows.Graphics.PointInt32(
+                        main.Left + (mw - ww) / 2, main.Top + Math.Max(0, (mh - wh) / 3)));
+                }
+                (minW, minH) = (Px(Math.Min(420, width > 0 ? width : 420)), Px(Math.Min(480, height > 0 ? height : 480)));
                 break;
+            }
+        }
+        try
+        {
+            if (w.AppWindow.Presenter is Microsoft.UI.Windowing.OverlappedPresenter op)
+            {
+                op.PreferredMinimumWidth = minW;
+                op.PreferredMinimumHeight = minH;
+                op.IsMinimizable = place == "pane";  // an owned window minimises with the viewer
+            }
+            if (place != "pane" && _themeWindow != IntPtr.Zero) SlotSetWindowLongPtr(hwnd, SlotGwlpHwndParent, _themeWindow);
+            SlotSetProp(hwnd, "MediaViewer.AddonWindow", 1);
+        }
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException or COMException)
+        {
+            // Cosmetic: the window still works without the floor or the owner.
+            System.Diagnostics.Debug.WriteLine(ex.Message);
         }
         w.Closed += (_, _) =>
         {
