@@ -36,10 +36,11 @@ provenance probe_provenance(std::string_view utf8_path) noexcept {
   }
 }
 
-void probe_evidence(std::string_view utf8_path, parse::evidence& ev, bool c2pa) noexcept {
+void probe_evidence(std::string_view utf8_path, parse::evidence& ev, bool c2pa,
+                    std::vector<property>* rows) noexcept {
   try {
     capped_file src;
-    if (src.open(utf8_path)) probe_evidence(src, ev, c2pa);
+    if (src.open(utf8_path)) probe_evidence(src, ev, c2pa, rows);
   } catch (...) {
   }
 }

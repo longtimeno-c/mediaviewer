@@ -15,6 +15,7 @@
 
 #include <cstdint>
 
+#include "shell/home_theme.h"
 #include "shell/welcome_layout.h"
 
 namespace mv::shell {
@@ -34,6 +35,40 @@ struct meta_overlay {
   // applied by the host): x, y, w, h, in_focus (1 / 0).
   std::uint8_t af_count = 0;
   float af[kMaxAf][5] = {};
+};
+
+// Text in images (Live Text, docs/design/16): the selected text's highlight,
+// one box per selected line, normalised 0..1 in the *displayed* image (as the
+// AF quads): x0, y0, x1, y1. The host owns the words and the selection
+// (shell/text_select.h); the render thread only draws these. A change bumps
+// activity_seq for its one redraw.
+struct text_highlight {
+  static constexpr int kMaxRects = 48;
+  std::uint8_t count = 0;
+  float rect[kMaxRects][4] = {};
+};
+
+// The other way: where the still on screen is, published by the render thread
+// after each frame that drew one, so the host can turn the pointer into a
+// place in the image without a camera of its own. `valid` is false while no
+// still is drawn (a clip, an animation, a document, the gallery, nothing).
+struct canvas_map {
+  bool valid = false;
+  float centre_x = 0.0f;  // the view's centre, physical pixels in the client
+  float centre_y = 0.0f;
+  float zoom = 1.0f;      // screen pixels per image pixel
+  float pan_x = 0.0f;     // the image pixel at the centre
+  float pan_y = 0.0f;
+  float width = 0.0f;     // the displayed (edited) image, in its texture's pixels
+  float height = 0.0f;
+  // Screen pixel -> 0..1 across the displayed image (may fall outside 0..1).
+  [[nodiscard]] bool to_uv(float sx, float sy, float& u, float& v) const noexcept {
+    if (!valid || zoom <= 0.0f || width <= 0.0f || height <= 0.0f) return false;
+    u = (pan_x + (sx - centre_x) / zoom) / width;
+    v = (pan_y + (sy - centre_y) / zoom) / height;
+    return true;
+  }
+  [[nodiscard]] float aspect() const noexcept { return height > 0.0f ? width / height : 1.0f; }
 };
 
 // PR 10: the edit geometry for one opened item, as the render thread needs it
@@ -122,10 +157,18 @@ struct input_snapshot {
 
   // docs/design/16 view state. Levels, not edges: the render thread draws what these
   // say, and redraws once when any of them changes.
-  std::uint8_t background = 0;  // B: 0 system, 1 grey, 2 white, 3 checkerboard, 4 dark
-  // OS chrome colour, 0xRRGGBB. Only the empty welcome/game view uses it;
-  // The default canvas follows this colour too; explicit choices remain fixed.
-  std::uint32_t home_background_rgb = 0x21232Au;
+  // Issue #408: the chrome's resolved theme tokens (Default = the system's,
+  // high contrast = the system's contrast colours). `home.canvas` is the clear
+  // on every screen, behind a still and a video too; the welcome card draws
+  // with the rest, and the home's ground effect with `home.effect`. There is
+  // no canvas background of its own. A change is one redraw.
+  home_theme home;
+  // The ground's rest rule (home_ground.h): Reduce Motion on the Mac, Windows
+  // animations off. And a count of pointer moves and keys that the host bumps
+  // without asking for a frame (at most a few a second): a bump wakes the
+  // render thread, which restarts the ground's five seconds.
+  bool reduce_motion = false;
+  std::uint32_t pointer_seq = 0;
   // The welcome card's recent folders (labels only; the host keeps the paths
   // and hit-tests the rows). count 0 once anything is open. A change bumps
   // activity_seq for its one redraw.
@@ -141,6 +184,10 @@ struct input_snapshot {
   bool af_points = false;       // Shift+O: quads from `meta`, no file read
   bool eyedropper = false;      // Shift+I: one-pixel readout at the cursor
   meta_overlay meta;
+  // Text in images: what is selected, and whether the left button went down
+  // on text (it selects, so the render thread does not pan for it).
+  text_highlight text;
+  bool text_press = false;
   // PR 10: [0] is the item on the canvas, [1] the one before it. A lossless
   // rotate reloads the file under a new item id; until its pixels land the
   // old texture keeps the old geometry, so the turn never flashes back.

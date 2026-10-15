@@ -55,7 +55,7 @@ TEST_CASE("the AI badge setting is on by default and in words saved before it", 
   const auto round = view_settings::from_flags(off.flags());
   CHECK(round.wrap == off.wrap);
   CHECK(round.show_audio == off.show_audio);
-  CHECK(round.background == off.background);
+  CHECK(round.sticky_zoom == off.sticky_zoom);
   CHECK(mv::shell::kSettingHideAiBadge == (1 << 14));  // SettingsView.swift, IslandHost.cs
 }
 

@@ -420,8 +420,10 @@ jobs:
       - name: Unit tests
         # The suite under ASan passed 12 of 15 minutes on #121 alone, and the
         # broken corpus's PDF and DOCX sweeps take minutes each there; 15 stays
-        # the budget for the other legs (a hang still fails them fast).
-        timeout-minutes: ${{ matrix.toolchain == 'msvc-asan' && 30 || 15 }}
+        # the budget for the Release legs (a hang still fails them fast). The
+        # msvc Debug leg outgrew 15 by 2026-10-15 (1305 tests, ~14 min before
+        # the PDF sweep's ~160 s; no test hung), so Debug gets 25.
+        timeout-minutes: ${{ matrix.toolchain == 'msvc-asan' && 30 || matrix.config == 'Debug' && 25 || 15 }}
         env:
           MV_BROKEN_DUMP: ${{ github.workspace }}/broken-dump
           # A missing clip or sample FAILS here instead of skipping
@@ -468,12 +470,17 @@ jobs:
       - name: Build the core
         run: |
           cmake -S . -B build -A x64 -DMV_BUILD_TESTS=OFF
-          cmake --build build --config Release --target mediaviewer_core
+          cmake --build build --config Release --target mediaviewer_core mv_abi_layout
+
+      # The layout MSVC gave the structs C# mirrors by hand (tools/abi-layout);
+      # the smoke test compares every field with the C# struct.
+      - name: Dump the native struct layout
+        run: build/bin/Release/mv_abi_layout.exe > build/abi-layout.txt
 
       - name: Run the smoke test
         run: |
           dotnet build src.managed/MediaViewer.AbiSmokeTest/MediaViewer.AbiSmokeTest.csproj -c Release
-          dotnet src.managed/MediaViewer.AbiSmokeTest/bin/Release/net8.0-windows/MediaViewer.AbiSmokeTest.dll build/bin/Release
+          dotnet src.managed/MediaViewer.AbiSmokeTest/bin/Release/net8.0-windows/MediaViewer.AbiSmokeTest.dll build/bin/Release build/abi-layout.txt
 
   # ---------------------------------------------------------------------------
   # The D6 gate. Real GPU only.

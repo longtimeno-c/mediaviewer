@@ -30,8 +30,9 @@ inline constexpr std::int32_t kSettingFilmstripFolder = 1 << 0;
 inline constexpr std::int32_t kSettingFilmstripImage = 1 << 1;
 inline constexpr std::int32_t kSettingWrap = 1 << 2;  // docs/design/16: wrap at folder ends
 inline constexpr std::int32_t kSettingStickyZoom = 1 << 3;
-inline constexpr std::int32_t kSettingBackgroundShift = 4;
-inline constexpr std::int32_t kSettingBackgroundMask = 7 << kSettingBackgroundShift;
+// Bits 4-6 were the canvas background (0 system .. 4 dark). Issue #408
+// removed it: every screen is the theme's background. A word saved with them
+// set still reads; they are ignored and never written again.
 // Bits 8-11 are the Windows chrome's update / telemetry bits (IslandHost.cs).
 // Set = list that kind in folders (Settings, "Show audio files" / "Show
 // documents"). Off by default, and a word saved before these existed reads
@@ -54,7 +55,6 @@ struct view_settings {
   // first. On by default (docs/design/16).
   bool wrap = true;
   bool sticky_zoom = false;
-  std::uint8_t background = 0;  // 0 system, 1 grey, 2 white, 3 checkerboard, 4 dark
   // Settings, "Show audio files" / "Show documents". Off: folders leave that
   // kind out; a file opened directly still shows.
   bool show_audio = false;
@@ -72,8 +72,7 @@ struct view_settings {
            (sticky_zoom ? kSettingStickyZoom : 0) |
            (show_audio ? kSettingShowAudio : 0) |
            (show_documents ? kSettingShowDocuments : 0) |
-           (ai_badge ? 0 : kSettingHideAiBadge) |
-           ((static_cast<std::int32_t>(background <= 4 ? background : 0)) << kSettingBackgroundShift);
+           (ai_badge ? 0 : kSettingHideAiBadge);
   }
 
   [[nodiscard]] static view_settings from_flags(std::int32_t flags) noexcept {
@@ -85,8 +84,6 @@ struct view_settings {
     s.show_audio = (flags & kSettingShowAudio) != 0;
     s.show_documents = (flags & kSettingShowDocuments) != 0;
     s.ai_badge = (flags & kSettingHideAiBadge) == 0;
-    const auto background = (flags & kSettingBackgroundMask) >> kSettingBackgroundShift;
-    s.background = static_cast<std::uint8_t>(background <= 4 ? background : 0);
     return s;
   }
 

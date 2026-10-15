@@ -321,6 +321,15 @@ public static unsafe partial class AddonNative
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial MvStatus mv_addon_load_guest(IntPtr session, byte* id, byte* iface, IntPtr* outIface,
+        byte* chrome, uint chromeCap);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial MvStatus mv_addon_slot_addons_json(byte* output, uint cap, uint* needed);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     private static partial MvStatus mv_addon_unload(byte* id);
 
     [LibraryImport(Library)]
@@ -580,6 +589,14 @@ public static unsafe partial class AddonNative
     public static string InstalledJson() =>
         Json((b, c, n) => mv_addon_installed_json((byte*)b, c, (uint*)n), "mv_addon_installed_json");
 
+    /// <summary>
+    /// Issue #402: the installed add-ons a window loads for their screens and slots
+    /// alone, from their signed manifests, hashing no file (a later window must not
+    /// hash the AI pack to find Places). <see cref="Load"/> verifies the one it loads.
+    /// </summary>
+    public static string SlotAddonsJson() =>
+        Json((b, c, n) => mv_addon_slot_addons_json((byte*)b, c, (uint*)n), "mv_addon_slot_addons_json");
+
     public static string CheckManifest(byte[] manifest, byte[]? signature)
     {
         byte[] sig = signature ?? Array.Empty<byte>();
@@ -638,9 +655,11 @@ public static unsafe partial class AddonNative
     /// <remarks><paramref name="reader"/>: through the add-on's read-only door, for a window whose
     /// process does not host the add-ons (docs/design/18 "One host process", 2026-10-07).
     /// <see cref="MvStatus.NotFound"/> then means nothing is indexed yet. <see cref="MvStatus.Io"/>:
-    /// the add-on verified but Windows would not load it; the exception's message says why.</remarks>
+    /// the add-on verified but Windows would not load it; the exception's message says why.
+    /// <paramref name="guest"/> (issue #402): the add-on's own entry in such a window, for one that
+    /// only reads (it fills screens and slots); the store is left alone.</remarks>
     public static (IntPtr Interface, string ChromePath) Load(MediaViewerSession session, string id, string interfaceId,
-        bool reader = false)
+        bool reader = false, bool guest = false)
     {
         byte[] chrome = new byte[32 * 1024];
         IntPtr iface = IntPtr.Zero;
@@ -652,10 +671,10 @@ public static unsafe partial class AddonNative
             fixed (byte* f = Z(interfaceId))
             fixed (byte* c = chrome)
             {
-                Check(reader
-                    ? mv_addon_load_reader(session.Handle.DangerousGetHandle(), i, f, &iface, c, (uint)chrome.Length)
-                    : mv_addon_load(session.Handle.DangerousGetHandle(), i, f, &iface, c, (uint)chrome.Length),
-                    reader ? "mv_addon_load_reader" : "mv_addon_load");
+                IntPtr h = session.Handle.DangerousGetHandle();
+                if (reader) Check(mv_addon_load_reader(h, i, f, &iface, c, (uint)chrome.Length), "mv_addon_load_reader");
+                else if (guest) Check(mv_addon_load_guest(h, i, f, &iface, c, (uint)chrome.Length), "mv_addon_load_guest");
+                else Check(mv_addon_load(h, i, f, &iface, c, (uint)chrome.Length), "mv_addon_load");
             }
         }
         finally
@@ -867,4 +886,10 @@ public interface ISearchChrome
     /// <summary>A family piece (ai-faces, ai-cuda) was installed or removed while
     /// the pack is loaded: the chrome asks the pack to pick it up.</summary>
     void OnPiecesChanged();
+
+    /// <summary>Settings → File types "Show audio files", sent when the chrome
+    /// attaches and whenever it changes: audio files are indexed and searched
+    /// only while it is on (#355). A default body, so an older search chrome
+    /// still loads.</summary>
+    void OnShowAudioChanged(bool on) { }
 }

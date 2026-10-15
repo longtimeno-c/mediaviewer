@@ -211,7 +211,7 @@ A theme file, one per theme the add-on lists:
 
 | Token | Means | WinUI (`IslandHost.Theme.cs`) | SwiftUI (`MVTheme`) |
 |---|---|---|---|
-| `canvas` | The chrome's background; the canvas's "System" background follows it | `Canvas`, `PanelBg`, native home colour | `canvas`, host `home_background_rgb` |
+| `canvas` | The chrome's background, and the viewer's on every screen: the empty window, and around a photo or a video (issue #408; there is no canvas background of its own) | `Canvas`, `PanelBg`, native `home.canvas` | `canvas`, host `home.canvas` |
 | `surface` | Rows, fields, cards | `Surface` | `surface` |
 | `title` | Primary text | `Title` | `title` |
 | `body` | Secondary text | `Body` | `body` |
@@ -233,11 +233,30 @@ A theme file, one per theme the add-on lists:
   ships no font file in API 1 (the backlog's user font is API 2's to weigh). On the Mac it
   changes at once; on Windows every control holds the face it was built with, so a new
   typeface shows at the next start and Settings says so.
+- **The empty window** (issue #408) is drawn natively by ImGui, so the hosts hand the render
+  thread the resolved tokens in the input snapshot (`input_state.h` `home`): `canvas` for the
+  clear, `surface` for the welcome card and its hovered row, `title` and `body` for the type,
+  `hairline` for the rule and the edges, `accent` for the hover and the glyphs. Default sends
+  the system's own colours (AppKit's semantic colours on the Mac, the chrome's system palette
+  on Windows) and high contrast the system's contrast colours, so the native side never
+  derives a colour. The chrome already holds the tokens, so this reads no file before first
+  pixel. Not built yet: a theme's `font` on the card (the card keeps CozetteVector); no
+  built-in sets one.
 - **Not themed:** photo and video pixels, the canvas's colour pipeline, the F3 overlay (ImGui,
   a lab tool), the histogram's channel colours (they carry meaning), the hover washes (they
   follow the appearance, not a token). The first-party add-ons' own windows read the host's
   tokens since PR 56 (Import and Duplicates on both hosts, Local search on the Mac; the Windows
   AI chrome already did).
+- **Where shape reaches** (theme schema 2; issue #402): every padding, spacing and corner radius
+  of the host chromes goes through the shape tokens: `MVTheme.space` / `MVTheme.radius` on the
+  Mac, `Space` / `Pad` / `Corner` on Windows. That includes the add-on slot surfaces (#348) and
+  script screens (PR 57). These stay literals because they are geometry, not spacing: the photo
+  grid's tiles, gutter and inset (the keyboard's column math), the filmstrip's cells and gutter
+  (on Windows the cells fill the native strip), the video transport bar (Windows sizes its
+  native island from `kTransportPadDip`), the editor timeline's tracks, pills and circles
+  (radius = half the height; the Mac's `Capsule`), hairlines and highlight outsets, and the
+  metadata pane's label column. The add-on windows (Import, Duplicates, Local search on the
+  Mac) scale corner radii only.
 - **Choosing one:** Settings → Appearance → **Theme**: Default, then nineteen host palettes
   compiled into both chromes — Dark, Light, Midnight (rain), Cyberpunk (a circuit), Retrowave
   (embers), Forest (petals), Starfield, Terminal (fireflies), Organs (slow rain), Ume (petals),
@@ -252,10 +271,17 @@ A theme file, one per theme the add-on lists:
 - **Ground effect:** a built-in may draw one effect behind the chrome — falling rain, a
   starfield, fireflies, petals, embers, sparkles, a circuit, a slow drift, or a still dot
   grid. Dark, GPT and Claude draw none. It is not a token and not part of the theme JSON, so
-  API 1 is unchanged and an add-on cannot set one. It is drawn by the host in its own panes.
-  It is not drawn on a photo, a video, the swapchain, or the present loop. It ticks at 10 Hz
-  only while the app is in front and someone has moved the pointer or a key in the last five
-  seconds, and it stops under Reduce Motion (Mac) or when Windows animations are off. High
+  API 1 is unchanged and an add-on cannot set one. It is drawn by the host in its own panes,
+  and since issue #408 on the empty window behind the welcome card (`shell/home_ground.h`, the
+  panes' field ported mark for mark, one static present a tick). It stops once a
+  photo or a video is up; it is never drawn on a photo, a video or an error card, and it does
+  not change the clear. It moves on every display frame (60 a second, 120 on ProMotion) while the
+  app is in front and someone has
+  moved the pointer or a key in the last five seconds (over the canvas, the bar or a pane), and
+  10 times a second while the window is visible, behind another app or quiet, for up to a minute
+  after the last input; then it rests. It never moves while the window is hidden, minimised or
+  covered (on Windows, covered means DXGI occlusion: the panes cannot tell), and it stops under
+  Reduce Motion (Mac) or when Windows animations are off (owner, 2026-10-15). High
   contrast still hides the theme, effect included. Dots do not move, and neither does a theme
   with no ground. Organs' rain is much slower and smaller than Midnight's. A pane that uses
   the system material (the Mac filmstrip, folder tree, help and transport) keeps that
@@ -626,13 +652,24 @@ How it works:
   provider's prefix (`place:`) goes to that provider alone, prefix removed, unless a digit follows
   (Local search's `in:2024` stays a date term). `locations_in` walks the folder at background
   priority (it waits while the viewer presents) and caches coordinates by path + size + mtime, so
-  a second query reads nothing.
+  a second query reads nothing. Local search with no folder open has `locations_of_index`
+  instead (#398): the AI pack's index's coordinates, read from the index, never from the files
+  ([17](17-local-ai-search.md) "Places over the index").
 - **Badges** are asked once per folder the gallery shows, posted as sets, inverted once into a
   path → badges table; a tile is a dictionary lookup (the verify counts add-on calls).
 - **Items.** A bar or path item with `opens` opens that screen with no add-on call; otherwise the
   add-on gets a `command` event with the paths its `target` names (the marks, else the current
-  file; the folder). Context-menu entries are on gallery tiles. Status items are text in the
-  command bar.
+  file; the folder). Context-menu entries are on gallery tiles, filmstrip tiles and the canvas
+  (issue #402, 2026-10-15): whatever a gallery tile lists for a file, the filmstrip's tile for it
+  and a right-click (Control-click on the Mac) on the canvas showing it list too, each invoked
+  with the paths the gallery tile would give it (the marks when it is one of them). Nothing
+  shows where no add-on contributes an entry, over the gallery or the Video Editor, or on an
+  empty window. Mac: `SlotContextMenu` on `FilmstripView`'s cells, and `menuForEvent:` on the
+  canvas view asking `MVChromeHost.canvasContextMenu` (`SlotCanvasMenu`). Windows:
+  `AttachSlotContextMenu` on the filmstrip's tiles, and `WM_RBUTTONUP` on the canvas calling the
+  chrome's optional `ShowCanvasMenu` (a `MenuFlyout` at the pointer). The canvas menu has no
+  keyboard way in yet (a tile's is Shift+F10 / the menu key on Windows, VoiceOver's Show Menu on
+  the Mac). Status items are text in the command bar.
 - **Screens** open as a window, a docked pane or a sheet, each with Done and Esc. The docked pane
   is not an island in the viewer's layout ([12](12-decision-log.md)): it lies **over** the right
   side of the canvas, which does not reflow around it. On the Mac it is a child panel held to the
@@ -644,13 +681,41 @@ How it works:
   the C# host (a WinEvent hook or the host's window procedure), not done yet. A thumbnail grid is
   virtualised (LazyVGrid / ItemsRepeater) and each tile asks the viewer's JPEG-512 cache as it
   appears, cancelled as it leaves.
-- **Removal** (Settings → Add-ons lists every installed slot add-on with Remove): the add-on is
-  detached first, which removes every item and waits for a call it is in, then shut down and
-  unloaded; off the UI thread on both hosts. No restart.
+- **Removal** (Settings → Add-ons lists every installed slot add-on with Remove). Places is
+  listed there even when it is not installed, with Install: it is optional and preferred
+  ([27](27-places.md)). The add-on is detached first, which removes every item and waits for a
+  call it is in, then shut down and unloaded; off the UI thread on both hosts. No restart.
 - **Local search** is listed as the local-scope provider while the AI pack is attached
   ([12](12-decision-log.md)).
 - **Launch.** Slot add-ons load on the add-on queue / a worker after Import's and the AI pack's
   checks, never on the UI thread; nothing is asked of one until something is shown.
+- **Every window (issue #402, 2026-10-15).** Each window is its own process
+  ([18](18-import.md) "One host process"), and every one loads the slot add-ons once, the first
+  and later ones alike: a later window shows the same info sections, providers, badges, items,
+  status and entries, a window opened later gets them, and closing the first window takes
+  nothing from the others. They only read; what stays with the window that hosts the add-ons is
+  the store's writes (install, update, Remove; Settings in a later window says where). A later
+  window loads them at launch on the add-on queue (Mac, utility QoS) or a worker (Windows,
+  `mv_addon_load_guest`, which never sweeps the store), after its chrome. Both hosts find them by
+  their signed manifests alone (`store::manifests`, `loads_for_slots`; on Windows
+  `mv_addon_slot_addons_json`), hashing no file, so a window never hashes the AI pack to find
+  Places; loading one still verifies its own files. A Remove in the first window takes the
+  add-on from that window at once; another window keeps it until it closes (Windows defers a
+  loaded file's removal to the next start, as for any add-on in use). A changed setting re-asks
+  only in the window that wrote it; another reads the new value at its next request.
+
+**Added for Sharepoint (2026-10-15, [28](28-sharepoint.md#host-pieces-this-added)):**
+
+- A `text_field` may carry `"pick": "folder"`: the hosts add **Choose…** beside it, show the
+  system folder dialog (`NSOpenPanel`; WinUI's `FolderPicker`, owned by the screen's window) and
+  report the folder as the field's `change`. Typing a path still works; the add-on checks it.
+- An add-on that fills slots may contribute **commands** (`contributes.commands`): the hosts list
+  them with the other add-on rows, and running one is a `command` event to the add-on
+  (`node_id` = the command id, value = the files its payload names), through
+  `slot_registry::run_command` (`mv_slots_command`, ABI 0.29; the Mac host calls the registry).
+  It has no chrome to send the command to.
+- **Settings → Add-ons** gives such an add-on with a window screen an **Open …** button, as Import
+  has; the window opens through `open_screen` with no file.
 
 For a script add-on (PR 57): the registry reaches code through `slot_client`; a script runtime
 implements it on its own worker and calls the same `post_*` functions the v3 rows wrap.
@@ -671,8 +736,8 @@ Where it lives:
 | One JSON and one wording for both hosts | `src/addon/open_json.*` |
 | C ABI 0.17 (Windows) and the chrome bridge (Mac) | `mv_open_addon_*` in `mediaviewer_addon.h` / `abi/addon_abi.cpp`; `mv_open_addons_*` in `mv_chrome_bridge.h` / `shell/addons_mac.mm` |
 | A package handed to the app | `shell/open_request.*` (`open_kind::addon_package`), `shell/main.cpp`, `chrome_host::offer_addon` → `IslandHost.OfferAddon`; `main_mac.mm -openEntryPath:` (launch) and `-openEntryPaths:failed:` (a drop, Open, Finder) → `MVChromeHost.offerAddonPackage` |
-| Mac chrome | `Theme.swift` (`MVTheme`, `ThemeStore`, `ThemedRoot`), `OpenAddons.swift` (store, download, section, sheet), the Theme row in `SettingsView.swift` |
-| Windows chrome | `IslandHost.ThemePack.cs`, `IslandHost.OpenAddons.cs`, the hook in `IslandHost.Theme.cs` `RefreshTheme`, `AddonNative.Open*` in `MediaViewer.Interop/Addons.cs` |
+| Mac chrome | `Theme.swift` (`MVTheme`, `ThemeStore`, `ThemedRoot`), `OpenAddons.swift` (store, download, section, sheet), the Theme row in `SettingsView.swift` and its picker sheet in `ThemePicker.swift` |
+| Windows chrome | `IslandHost.ThemePack.cs`, `IslandHost.ThemePicker.cs` (the Theme row and its picker sheet), `IslandHost.OpenAddons.cs`, the hook in `IslandHost.Theme.cs` `RefreshTheme`, `AddonNative.Open*` in `MediaViewer.Interop/Addons.cs` |
 | The author's tool, guide and example | `tools/addon-sdk/mvaddon.py` (MIT), `docs/ADDONS.md`, `examples/addons/film-tones` |
 | Tests | `tests/test_open_addons.cpp` (in `mv_import_tests`, all three builds), `tests/test_open_request.cpp`, `tools/addon-sdk/test_mvaddon.py` (ctest `addon_sdk`, cross-checked by `tools/addon-verify --open`), the Mac rig `MV_ADDON_SELFTEST` |
 
@@ -686,6 +751,12 @@ Calls made while building it (none reverses a D-decision; logged in [12](12-deci
 - **On the Mac a theme change rebuilds the chrome's SwiftUI roots** (`ThemedRoot`, one `.id`),
   so no view watches the theme; Settings returns to the Theme row afterwards. On Windows the
   shared brushes are recoloured in place, as for a system appearance change.
+- **The Theme row opens a sheet of cards** (issue #394), not a menu: Default, the built-ins,
+  then add-on themes, each drawn in its own tokens (a bar, a pane, the accent, a six-colour
+  strip). An add-on's tokens are read on a worker when the sheet opens, with a blank card until
+  they arrive. A click, or Return / Space on the keyboard cursor, closes the sheet and applies
+  the theme; Esc or Cancel keeps it. On the Mac the theme is applied after the sheet is
+  dismissed, because a theme change rebuilds the chrome.
 - **A theme's typeface waits for the next start on Windows** ([§8](#8-themes-api-1)).
 - **The Mac reads `mv.theme.*` from the defaults; Windows reads `theme.json`** beside
   `settings.ini`, once, when the chrome starts.

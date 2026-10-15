@@ -630,13 +630,13 @@ bool is_tiff_like(bytes head) noexcept {
 
 }  // namespace
 
-void probe_evidence(parse::byte_source& src, parse::evidence& ev, bool c2pa) noexcept {
+void probe_evidence(parse::byte_source& src, parse::evidence& ev, bool c2pa, std::vector<property>* rows) noexcept {
   try {
     reader r(src);
     const bytes head = r.head();
     if (head.empty()) return;
-    std::vector<property> rows;  // the readers' rows; a probe keeps only the evidence
-    parse::sink out{rows, ev, 4000};
+    std::vector<property> discarded;  // the readers' rows; a probe keeps only the evidence
+    parse::sink out{rows ? *rows : discarded, ev, 4000};
     const auto family = codec::probe(head.first(std::min<std::size_t>(head.size(), 1024)));
     switch (family) {
       case codec::format_family::jpeg: probe_jpeg(r, out, c2pa); break;

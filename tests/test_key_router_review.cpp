@@ -30,8 +30,13 @@ TEST_CASE("table rows are well-formed", "[shell][commands][review]") {
   for (const auto& b : rows) {
     INFO("key " << static_cast<int>(b.k) << " command " << static_cast<int>(b.command));
     // PR 7: Open RAW / Open JPEG, and issue #206's Show next kind, are the only
-    // rows that ship unbound.
+    // live rows that ship unbound. Issue #408's retired `B` keeps a row with no
+    // key and no mode (saved rebinds name rows by index).
     if (b.k == key::none) {
+      if (is_retired_command(static_cast<int>(b.command))) {
+        REQUIRE(b.modes == 0);
+        continue;
+      }
       REQUIRE((b.command == command_id::open_raw || b.command == command_id::open_jpeg ||
                b.command == command_id::kind_filter_next));
       continue;

@@ -181,13 +181,18 @@ TEST_CASE("document scroll: a trackpad delta moves the view at once, clamped",
   REQUIRE(fitted.pan_y() == y);
 }
 
-TEST_CASE("filmstrip hint: one hint, due over a document with the strip up, until T",
+TEST_CASE("filmstrip hint: one hint, due over a document with the strip up, until T or Got it",
           "[shell][filmstrip_hint]") {
   using mv::shell::strip_hint_subject;
   using mv::shell::strip_hint_due;
   using mv::shell::strip_hint_learned_by_toggle;
   using mv::shell::strip_hint_text;
   REQUIRE(strip_hint_text(strip_hint_subject::document) == "Press T to hide the filmstrip and scroll");
+  REQUIRE(strip_hint_text(strip_hint_subject::clip) ==
+          "Press T to hide the filmstrip and skip 2 s with \xE2\x86\x90 \xE2\x86\x92");
+  REQUIRE(strip_hint_due(strip_hint_subject::clip, true, false));
+  REQUIRE_FALSE(strip_hint_due(strip_hint_subject::clip, true, true));  // one learned flag
+  REQUIRE(strip_hint_learned_by_toggle(strip_hint_subject::clip, true));
   REQUIRE(strip_hint_text(strip_hint_subject::none).empty());
   REQUIRE(strip_hint_due(strip_hint_subject::document, true, false));
   REQUIRE_FALSE(strip_hint_due(strip_hint_subject::document, false, false));  // strip hidden
@@ -197,7 +202,6 @@ TEST_CASE("filmstrip hint: one hint, due over a document with the strip up, unti
   REQUIRE(strip_hint_learned_by_toggle(strip_hint_subject::document, true));
   REQUIRE_FALSE(strip_hint_learned_by_toggle(strip_hint_subject::document, false));
   REQUIRE_FALSE(strip_hint_learned_by_toggle(strip_hint_subject::none, true));
-  REQUIRE(mv::shell::page_notice(0, 50, {}) == "Page 1 of 50");
-  REQUIRE(mv::shell::page_notice(4, 50, strip_hint_text(strip_hint_subject::document)) ==
-          "Page 5 of 50 \xC2\xB7 Press T to hide the filmstrip and scroll");
+  REQUIRE(mv::shell::page_notice(0, 50) == "Page 1 of 50");
+  REQUIRE(mv::shell::page_notice(4, 50) == "Page 5 of 50");
 }

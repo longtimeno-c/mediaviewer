@@ -121,6 +121,11 @@ extern "C" bool mv_chrome_slots_invoke(const char* addon, const char* item, cons
                                                 paths_json ? std::string(paths_json) : "[]") == mv::status::ok;
 }
 
+extern "C" bool mv_chrome_slots_command(const char* addon, const char* command, const char* paths_json) {
+  return mv::addon::default_slots().run_command(str(addon), str(command),
+                                                paths_json ? std::string(paths_json) : "[]") == mv::status::ok;
+}
+
 extern "C" int64_t mv_chrome_slots_surface(const char* addon, const char* screen, const char* surface,
                                            uint8_t* out, int64_t cap, uint32_t* width, uint32_t* height,
                                            uint64_t* revision) {

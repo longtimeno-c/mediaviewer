@@ -206,9 +206,9 @@ private struct TreeRow: View {
       .fontWeight(node.path == current ? .semibold : .regular)
       .foregroundStyle(node.path == current ? MVTheme.accent : Color.primary)
       .background(
-        RoundedRectangle(cornerRadius: 4)
+        RoundedRectangle(cornerRadius: MVTheme.radius(4))
           .fill(node.path == cursor ? Color.primary.opacity(0.1) : .clear)
-          .padding(-2)
+          .padding(-2)  // the highlight's outset past the row, not spacing
       )
       .accessibilityAddTraits(node.path == cursor ? [.isSelected] : [])
     }

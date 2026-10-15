@@ -34,6 +34,7 @@
 #include "player/media_source.h"
 #include "player/playback_hold.h"
 #include "shell/dino_game.h"
+#include "shell/home_theme.h"
 #include "shell/input_state.h"
 
 namespace mv::shell {
@@ -313,6 +314,8 @@ class present_lab_mac {
   [[nodiscard]] const edit_view* edit_for(std::uint64_t item) const noexcept;
   [[nodiscard]] edit::placement place_image(const image::gpu_image_mac& img) const noexcept;
   void draw_crop_overlay(const input_snapshot& snapshot) noexcept;
+  // Text in images: the selection's highlight, and canvas_map for the host.
+  void draw_text_overlay(const input_snapshot& snapshot) noexcept;
   // PR 11 working texture: one-way hand-offs (worker -> render thread) the
   // same shape as pending_image_; `working_` is render-thread only.
   struct working_texture_mac {
@@ -331,6 +334,12 @@ class present_lab_mac {
  public:
   // [any-thread] What the eyedropper last read, ready for the clipboard; empty when
   // the cursor is off the picture or the eyedropper is off.
+  // Text in images (docs/design/16): where the still was last drawn, for the
+  // host's hit-test. Any thread.
+  [[nodiscard]] canvas_map still_map() const {
+    std::lock_guard<std::mutex> lock(eye_mutex_);
+    return still_map_;
+  }
   [[nodiscard]] std::string eyedropper_text() const {
     std::lock_guard<std::mutex> lock(eye_mutex_);
     return eye_text_;
@@ -347,6 +356,7 @@ class present_lab_mac {
   };
   eyedropper_sample eye_;
   mutable std::mutex eye_mutex_;
+  canvas_map still_map_;  // under eye_mutex_
   std::string eye_text_;  // "#RRGGBB  rgb(r, g, b)  x, y" for the texel under the cursor
 
   void* view_ = nullptr;
@@ -497,8 +507,14 @@ class present_lab_mac {
   std::uint32_t seen_reset_seq_ = 0;
   std::uint32_t seen_resize_seq_ = 0;
   std::uint32_t seen_display_seq_ = 0;
-  std::uint8_t seen_background_ = 255;
-  std::uint32_t seen_home_background_rgb_ = 0xFFFFFFFFu;
+  // Issue #408: the theme's tokens (one redraw when they change) and the
+  // home's ground effect, which ticks at 10 Hz by its rest rule.
+  home_theme seen_home_{};
+  bool seen_home_valid_ = false;
+  std::uint32_t seen_pointer_seq_ = 0;
+  home_ground_clock ground_;
+  double ground_every_ = 0.0;  // seconds between ticks now; 0 = resting
+  bool ground_tick_ = false;     // a tick is due this pass (may present while behind)
   double animation_phase_ = 0.0;
   double last_input_time_ = -1.0;
 

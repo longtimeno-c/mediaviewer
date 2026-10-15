@@ -238,6 +238,7 @@ public static partial class IslandHost
     private static void ReloadItems()
     {
         if (_folderSession is null) return;
+        _galleryRange.Clear();  // #413: indices of the old listing
         Items.Clear();
         _selectedIndex = -1;
         // Milestone H: a result list (mv_folder_open_list) rather than a
@@ -341,9 +342,9 @@ public static partial class IslandHost
         grid.Children.Add(new Border
         {
             Background = new SolidColorBrush(ColorHelper.FromArgb(0xC0, 0, 0, 0)),
-            CornerRadius = new CornerRadius(2),
-            Padding = new Thickness(3, 0, 3, 1),
-            Margin = new Thickness(3),
+            CornerRadius = Corner(2),
+            Padding = Pad(3, 0, 3, 1),
+            Margin = Pad(3),
             HorizontalAlignment = HorizontalAlignment.Left,
             VerticalAlignment = VerticalAlignment.Top,
             IsHitTestVisible = false,
@@ -362,6 +363,9 @@ public static partial class IslandHost
     {
         // Touch two items, not two thousand: the old loop was O(folder) per key
         // repeat and every write raised PropertyChanged.
+        // Issue #413: another selection ends the gallery's range (native drops
+        // it too: its anchor is no longer the current item).
+        if (index != _selectedIndex) ClearGalleryRange();
         if (_selectedIndex >= 0 && _selectedIndex < Items.Count) Items[_selectedIndex].Selected = false;
         if (index >= 0 && index < Items.Count) Items[index].Selected = true;
         _selectedIndex = index;
@@ -404,7 +408,7 @@ public static partial class IslandHost
         // AV in IItemsRepeaterMethods.set_ItemsSource on a populated listing.
         _repeater = new ItemsRepeater
         {
-            Layout = new StackLayout { Orientation = Orientation.Horizontal, Spacing = 6 },
+            Layout = new StackLayout { Orientation = Orientation.Horizontal, Spacing = 6 },  // the strip keeps its sizes (docs/ADDONS.md)
             ItemTemplate = new FilmstripFactory(),
         };
         _filmstripScroll = new ScrollViewer
@@ -460,14 +464,14 @@ public static partial class IslandHost
                 TextTrimming = TextTrimming.CharacterEllipsis,
                 MaxWidth = 88,
             };
-            var col = new StackPanel { Spacing = 4 };
+            var col = new StackPanel { Spacing = 4 };  // the cell fills the native strip (FilmstripDip): geometry, not density
             col.Children.Add(WithPlayBadge(WithBadge(image, vm.Badge), vm.IsClip, 28));
             col.Children.Add(name);
             var border = new Border
             {
                 Width = 96,
                 Padding = new Thickness(4),
-                CornerRadius = new CornerRadius(RadiusButton),
+                CornerRadius = Corner(RadiusButton),
                 BorderThickness = new Thickness(vm.Selected ? 2 : 0),
                 BorderBrush = Brush(ChromeColour.Accent),  // the Mac's accent outline
                 Child = col,
@@ -497,6 +501,10 @@ public static partial class IslandHost
             border.Tag = (Action)(() => vm.PropertyChanged -= OnChanged);
 
             border.Tapped += (_, _) => Send(Command.SelectItem, vm.Index);
+            // docs/design/25, issue #402: the add-ons' context-menu entries, as on the
+            // gallery's tile for the same file. Read when asked, so no remake when
+            // they change; nothing is shown while none exists.
+            AttachSlotContextMenu(border, vm);
             WireFileDrag(border, vm);
             return border;
         }
@@ -560,6 +568,18 @@ internal sealed class FolderItemVm : INotifyPropertyChanged
             if (_thumbPath == value) return;
             _thumbPath = value;
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ThumbPath)));
+        }
+    }
+    // Issue #413: inside the gallery's shift-click range.
+    private bool _inRange;
+    public bool InRange
+    {
+        get => _inRange;
+        set
+        {
+            if (_inRange == value) return;
+            _inRange = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(InRange)));
         }
     }
     private bool _galleryCurrent;

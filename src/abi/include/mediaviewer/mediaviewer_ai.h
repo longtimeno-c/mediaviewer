@@ -98,7 +98,12 @@ typedef enum mv_ai_scope {
 
 #define MV_AI_KIND_PHOTOS 1u
 #define MV_AI_KIND_VIDEOS 2u
-#define MV_AI_KIND_ALL 3u
+/* #355 (docs/plans/audio-search.md): standalone audio files (MP3, M4A, M4P),
+ * indexed only while the "audio_files" setting is on. 4 is reserved for
+ * documents (docs/plans/document-search.md). An older chrome's 3 still means
+ * photos and videos; ALL widened from 3 to 11. */
+#define MV_AI_KIND_AUDIO 8u
+#define MV_AI_KIND_ALL 11u
 
 /* What a search looks for, OR'ed into `kinds` (2026-09-27, audio). None of
  * these set means all three. */
@@ -121,6 +126,10 @@ typedef enum mv_ai_scope {
 /* #291: the file's tags matched (camera, lens, made-with, software, title,
  * caption, keywords, creator); result_snippet is the tag ("Canon EOS R5"). */
 #define MV_AI_MATCH_TAGS 8u
+/* #406: text the file carries matched (a chapter title or a text subtitle
+ * line); result_snippet says which ("Chapter: Birthday cake", "Subtitle:
+ * suited and booted") and is shown as it is, unquoted. */
+#define MV_AI_MATCH_TEXT 16u
 
 #define MV_AI_STATUS_INDEX_FULL 1u     /* over the index size cap: indexing stopped */
 #define MV_AI_STATUS_FACES_ON 2u       /* the People opt-in is on */
@@ -156,7 +165,10 @@ typedef enum mv_ai_photos_access {
                                           then identifies the people in it. Off by default */
 #define MV_AI_TRANSFER_THUMBS 2u       /* the viewer's cached JPEG-512 tiles (never made) */
 
-/* Polled by the status line (~4 Hz while visible). [no-block] */
+/* Polled by the status line (~4 Hz while visible). [no-block]
+ * Append only. The Windows chrome mirrors this field for field as MvAiStatus
+ * (src.managed/MediaViewer.Interop/Ai.cs): append a field there too, and list it
+ * in tools/abi-layout/main.cpp. CI's ABI smoke test compares the two. */
 typedef struct mv_ai_status {
   uint32_t struct_size;
   uint32_t state;              /* mv_ai_state */
@@ -220,6 +232,16 @@ typedef struct mv_ai_status {
   uint64_t cloud_files_fetched;    /* brought down and indexed since the pack started */
   uint32_t cloud_fetch;            /* mv_ai_icloud_fetch: the same states */
   float cloud_fetch_progress;      /* the file in progress, 0..1 */
+  /* The text passes (2026-10-15): a clip's own text (#406: chapter titles and
+   * text subtitles), and text read in pictures by the OS (#403: photos, and
+   * the moments a clip's picture pass kept). Assets to do and done, failed and
+   * unavailable counted as done, as for sound. text_total is 0 with "read_text"
+   * off or no OS reader. While either is short the state is not IDLE. Read
+   * these only when struct_size covers them. */
+  uint64_t cues_total;
+  uint64_t cues_done;
+  uint64_t text_total;
+  uint64_t text_done;
 } mv_ai_status;
 
 typedef enum mv_ai_icloud_fetch {
@@ -240,7 +262,7 @@ typedef struct mv_ai_result {
   uint64_t asset_id;
   int64_t pts_ms;              /* -1 for a photo */
   float score;                 /* cosine similarity, higher is closer */
-  uint32_t kind;               /* MV_AI_KIND_PHOTOS or MV_AI_KIND_VIDEOS */
+  uint32_t kind;               /* MV_AI_KIND_PHOTOS, _VIDEOS or _AUDIO */
   uint32_t more_in_clip;       /* other matching moments in the same clip */
   uint32_t match;              /* MV_AI_MATCH_*: what matched at pts_ms (picture, sound, speech) */
 } mv_ai_result;
@@ -261,6 +283,8 @@ typedef struct mv_ai_api {
    *  to index them, then make them online-only again; 2026-10-05), "cloud_provider":"onedrive" |
    *  "icloud" | "" (none on this platform), "cloud_supported":bool (Windows only: false when
    *  this Windows has no Cloud Files API, before 10 1709; 2026-10-07),
+   *  "audio_files":false (index MP3 / M4A / M4P: the chrome forwards File types "Show audio
+   *  files" here; #355),
    *  "read_only":bool (loaded through MV_AI_READER_ENTRY_SYMBOL: a second window's reader,
    *  2026-10-07),
    *  "available":{"cuda":bool,"openvino":bool,"coreml":bool},
@@ -270,6 +294,10 @@ typedef struct mv_ai_api {
   /* key: "compute" | "quality" | "pause_on_battery_percent" | "battery_override"
    * | "index_cap_bytes" | "min_score" | "reload" | "icloud_videos" (1 / 0, saved)
    * | "cloud_files" (1 / 0, saved)
+   * | "audio_files" (1 / 0, saved; #355: the base app's File types "Show audio files", which
+   * each chrome sends when the pack loads and when the toggle changes. On: every enabled root
+   * is walked again and its audio files queued. Off: audio results go at once and their rows
+   * are deleted)
    * | "retry_large" (any value: forget that the accelerated provider failed the large tower
    * here, MV_AI_STATUS_SMALL_FALLBACK, and let Auto try it again; 2026-10-05)
    * | "video_index" (MV_AI_MEDIA_*, 0 = Pictures, plus
@@ -299,6 +327,7 @@ typedef struct mv_ai_api {
   /* [{"id":1,"path":"...","recursive":true,"enabled":true,"assets":N,
    *   "done":N,"frames":N,"bytes":N,"last_scan":unix,
    *   "cloud_only":N (online-only files not yet indexed, 2026-10-05),
+   *   "audio":N (the audio files among "assets", folders only; #355),
    *   "error":"unreadable" (present when the last walk of the folder failed: offline,
    *   moved, no access; the rows are kept),
    *   "held":bool (left unfinished last session, it waits for set_setting "resume_root";
@@ -515,6 +544,18 @@ typedef struct mv_ai_api {
    * while People is off or its piece is not loaded. Posts
    * MV_ADDON_EVENT_AI_PEOPLE as faces move. [no-block] */
   mv_status(MV_CALL* people_reanalyse)(void* ctx);
+
+  /* ---- the index's coordinates (#398, docs/design/17 "Places over the index") -- */
+  /* Every indexed asset whose tags gave coordinates (assets.lat / lon, schema
+   * 4), in id order: `path_utf8` the asset's key, `location.has` = 1. Reads
+   * index.db only, never a file; the index is locked for one batch's SELECT
+   * (512 rows), never while `visit` runs, so indexing goes on between
+   * batches. `visit` returning 0 stops it: MV_ERR_CANCELLED. The host serves
+   * this to other add-ons as the host table's locations_of_index (Places'
+   * `place:` over the whole index). Works through the reader door too.
+   * Appended: read it only when `struct_size` covers it and the pointer is
+   * non-NULL. [worker-thread] */
+  mv_status(MV_CALL* each_location)(void* ctx, mv_addon_location_fn visit, void* user);
 } mv_ai_api;
 
 #ifdef __cplusplus

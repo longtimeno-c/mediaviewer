@@ -38,6 +38,7 @@ struct view_state {
   bool popup_open = false;  // `?`, go-to or find flyout is up
   bool settings_open = false;  // the settings screen covers the canvas
   bool motion_playing = false;  // `;` is playing a Live Photo's motion (PR 7)
+  bool text_selected = false;   // text in images: words are selected on the canvas
   bool pane_open = false;  // PR 8+
   bool crop = false;       // PR 10: crop mode on the canvas
   bool trim = false;       // PR 13: trim armed on the current clip
@@ -45,11 +46,10 @@ struct view_state {
   // Milestone H: a search result list ("Search: ...") is open in place of a
   // folder and there is somewhere to go back to (docs/design/16 `Esc`).
   bool list_open = false;
-  // Issue #361: on a clip, ← → skip ±2 s (mode::skim) while it plays or while
-  // the filmstrip is hidden; paused with the strip up they walk the folder.
-  // Defaults keep a bare view_state walking: strip up, nothing playing.
+  // Issue #416 (was #361): on a clip, ← → skip ±2 s (mode::skim) only while
+  // the filmstrip is hidden; with the strip up they walk the folder, playing or
+  // paused. The default keeps a bare view_state walking: strip up.
   bool filmstrip_visible = true;
-  bool clip_playing = false;
 };
 
 [[nodiscard]] mode resolve_mode(const view_state& s) noexcept;
@@ -71,6 +71,7 @@ enum class back_target : std::uint8_t {
   canvas_focus,
   game,  // leave the empty-window runner (dino_game.h)
   result_list,  // Milestone H: back from a result list to its folder ("Back to folder")
+  text_selection,  // text in images: clear the selected words (shell/text_select.h)
 };
 
 [[nodiscard]] back_target resolve_back(const view_state& s) noexcept;
@@ -132,7 +133,7 @@ class key_router {
   struct held {
     const binding* row = nullptr;
     key k = key::none;
-    command_id hold = command_id::none;  // a tap/hold's per-repeat command
+    command_id hold = command_id::none;  // the per-repeat command (tap/hold, or a plain repeat row)
     command_id release = command_id::none;
     bool momentary = false;
     bool repeated = false;

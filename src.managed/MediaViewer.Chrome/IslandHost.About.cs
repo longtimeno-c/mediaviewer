@@ -69,7 +69,7 @@ public static partial class IslandHost
             Width = 64,
             Height = 64,
             VerticalAlignment = VerticalAlignment.Top,
-            Margin = new Thickness(0, 2, 14, 0),
+            Margin = Pad(0, 2, 14, 0),
         };
         try
         {
@@ -103,7 +103,7 @@ public static partial class IslandHost
             Foreground = Brush(Body),
             FontFamily = UiFont,
             FontSize = UiFontSize,
-            Margin = new Thickness(0, 6, 0, 0),
+            Margin = Pad(0, 6, 0, 0),
         };
         var licence = new TextBlock
         {
@@ -121,7 +121,7 @@ public static partial class IslandHost
             FontFamily = UiFont,
             FontSize = UiFontSize,
             TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 6, 0, 0),
+            Margin = Pad(0, 6, 0, 0),
         };
         var hint = new TextBlock
         {
@@ -130,12 +130,12 @@ public static partial class IslandHost
             FontFamily = UiFont,
             FontSize = UiFontSize,
             TextWrapping = TextWrapping.Wrap,
-            Margin = new Thickness(0, 10, 0, 0),
+            Margin = Pad(0, 10, 0, 0),
         };
 
         var sourceLink = AboutLink("Source code for this build (LGPL components)",
                                    () => OpenUri(RepoUrl + "/releases"));
-        var links = new StackPanel { Spacing = 0, Margin = new Thickness(-6, 8, 0, 0) };
+        var links = new StackPanel { Spacing = 0, Margin = Pad(-6, 8, 0, 0) };
         links.Children.Add(AboutLink("Licence (GPL-3.0-or-later)",
                                      () => OpenLocal(Path.Combine(dir, LicenceFile), RepoUrl + "/blob/main/LICENSE", textOnly: true)));
         links.Children.Add(AboutLink("Notice",
@@ -157,7 +157,7 @@ public static partial class IslandHost
         var root = new StackPanel
         {
             Orientation = Orientation.Horizontal,
-            Margin = new Thickness(12, 10, 12, 10),
+            Margin = Pad(12, 10, 12, 10),
             MaxWidth = 460,
             TabFocusNavigation = Microsoft.UI.Xaml.Input.KeyboardNavigationMode.Cycle,
         };
@@ -196,7 +196,7 @@ public static partial class IslandHost
                 FontSize = UiFontSize,
                 TextWrapping = TextWrapping.Wrap,
             },
-            Padding = new Thickness(6, 3, 6, 3),
+            Padding = Pad(6, 3, 6, 3),
             FontFamily = UiFont,
             FontSize = UiFontSize,
             IsTabStop = true,

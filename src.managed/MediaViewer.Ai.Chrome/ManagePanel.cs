@@ -75,7 +75,13 @@ internal sealed partial class ManagePanel
     private bool _cudaAvailable;
     private readonly ToggleButton[] _videoIndex = new ToggleButton[3];
     private readonly TextBlock _videoIndexHint;
+    // #355: how audio files are indexed, or how to turn them on.
+    private readonly TextBlock _audioFilesDetail;
     private readonly TextBlock _audioLine;
+    // Text in pictures (#403): "Read text in photos" (read_text, on by default),
+    // greyed with a reason when this Windows has no OCR language.
+    private readonly ToggleSwitch _readText;
+    private readonly TextBlock _readTextDetail;
     private MvAiMedia _videoIndexValue = MvAiMedia.Pictures;
     private bool _audioReady;
     // The faces bits and people count the People rows were last drawn for:
@@ -234,6 +240,18 @@ internal sealed partial class ManagePanel
             "Pictures finds what a clip shows; Sound finds what it sounds like and what is said. Photos are always pictures.", 12));
         videoDetail.Children.Add(_videoIndexHint);
         Section("Videos").Children.Add(Row("Index videos for", videoDetail, _look.Track(segments, hc)));
+        _audioFilesDetail = _look.Text(AudioFilesDetail(_chrome.AudioFiles), 12);
+        Section("Audio files").Children.Add(Row("MP3, M4A and M4P", _audioFilesDetail, new StackPanel()));
+
+        _readText = new ToggleSwitch { OnContent = "", OffContent = "", MinWidth = 0, Width = 48, IsOn = true };
+        AutomationProperties.SetName(_readText, "Read text in photos");
+        _readText.Toggled += (_, _) =>
+        {
+            if (_updating) return;
+            Set("read_text", _readText.IsOn ? "1" : "0");
+        };
+        _readTextDetail = _look.Text(ReadTextDetail(true), 12);
+        Section("Text in pictures").Children.Add(Row("Read text in photos", _readTextDetail, _readText));
 
         // Indexed folders: one row each with a hairline between, then Add.
         StackPanel folders = Section("Indexed folders");
@@ -518,10 +536,15 @@ internal sealed partial class ManagePanel
             _videoIndexValue = videoIndex is >= 1 and <= 3 ? (MvAiMedia)videoIndex : MvAiMedia.Pictures;
             _audioReady = r.TryGetProperty("audio_ready", out JsonElement ar) && ar.ValueKind == JsonValueKind.True;
             ShowVideoIndex();
+            _audioFilesDetail.Text = AudioFilesDetail(_chrome.AudioFiles);
             _cloudProvider = r.TryGetProperty("cloud_provider", out JsonElement cp) && cp.GetString() == "onedrive";
             _cloudUnsupported = r.TryGetProperty("cloud_supported", out JsonElement cs) && cs.ValueKind == JsonValueKind.False;
             _cloudSwitch.IsEnabled = !_cloudUnsupported;
             _cloudSwitch.IsOn = r.TryGetProperty("cloud_files", out JsonElement cf) && cf.ValueKind == JsonValueKind.True;
+            bool textAvailable = !r.TryGetProperty("text_available", out JsonElement ta) || ta.ValueKind != JsonValueKind.False;
+            _readText.IsEnabled = textAvailable;
+            _readText.IsOn = textAvailable && (!r.TryGetProperty("read_text", out JsonElement rt) || rt.ValueKind != JsonValueKind.False);
+            _readTextDetail.Text = ReadTextDetail(textAvailable);
             ShowCap(r.TryGetProperty("index_cap_bytes", out JsonElement ic) && ic.TryGetInt64(out long cap)
                 ? Math.Max(0, cap) : 8_000_000_000);
         }
@@ -693,6 +716,10 @@ internal sealed partial class ManagePanel
     private static readonly long[] CapChoices =
         { 2_000_000_000, 5_000_000_000, 10_000_000_000, 20_000_000_000, 50_000_000_000 };
 
+    private static string ReadTextDetail(bool available) => available
+        ? "Finds photos and video moments by the words in them: a sign, a shirt, a page. Windows reads them on this PC; nothing leaves it."
+        : "Windows has no text recognition for your languages, so photos are not searched by the words in them. Add a language with OCR in Settings → Time & language.";
+
     private static string CapText(long bytes) =>
         bytes <= 0 ? "No limit" : $"{bytes / 1e9:0.#} GB";
 
@@ -723,7 +750,13 @@ internal sealed partial class ManagePanel
     // Held (issue #299): left unfinished last session, it waits for Resume.
     private sealed record RootRow(ulong Id, string Path, bool Recursive, bool Enabled, long Assets, long Done, long Bytes,
                                   MvAiMedia Media, bool Scanning, long CloudOnly, bool Unreadable, long LastScan,
-                                  bool Held);
+                                  bool Held, long Audio);
+
+    // #355: the Settings line under "Audio files". Indexed only while File
+    // types "Show audio files" is on; then by their tags and cover art.
+    private static string AudioFilesDetail(bool on) => on
+        ? "Found by their tags (title, artist, album) and cover art."
+        : "Not searched. Turn on Show audio files in Settings → File types to search them.";
 
     // The newest roots read: an older one finishing late never draws over it.
     private int _rootsRead;
@@ -757,7 +790,8 @@ internal sealed partial class ManagePanel
                         r.TryGetProperty("cloud_only", out JsonElement co) ? co.GetInt64() : 0,
                         r.TryGetProperty("error", out JsonElement er) && er.GetString() == "unreadable",
                         r.TryGetProperty("last_scan", out JsonElement ls) ? ls.GetInt64() : 0,
-                        r.TryGetProperty("held", out JsonElement hd) && hd.ValueKind == JsonValueKind.True));
+                        r.TryGetProperty("held", out JsonElement hd) && hd.ValueKind == JsonValueKind.True,
+                        r.TryGetProperty("audio", out JsonElement au) ? au.GetInt64() : 0));
                 }
             }
             catch (Exception ex) when (ex is MediaViewerException or JsonException or KeyNotFoundException
@@ -821,6 +855,7 @@ internal sealed partial class ManagePanel
                 : $"{r.Done:N0} of {local:N0}"
                   + (r.Held ? " · paused since last time" : r.Scanning ? " · checking for changes…" : "");
             if (r.CloudOnly > 0 && !r.Unreadable) state += $" · {r.CloudOnly:N0} only in OneDrive";
+            if (r.Audio > 0 && !r.Unreadable) state += r.Audio == 1 ? " · 1 audio file" : $" · {r.Audio:N0} audio files";
             labels.Children.Add(_look.Text((r.Recursive ? "and subfolders · " : "") + state + " · " + Look.Size(r.Bytes), 12,
                 r.Unreadable ? AddonColour.Accent : AddonColour.Body));
             // Paused folders' bars are quiet (the Mac tints them secondary).

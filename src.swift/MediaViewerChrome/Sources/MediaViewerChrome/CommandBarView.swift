@@ -32,7 +32,7 @@ struct FlatButtonStyle: ButtonStyle {
       configuration.label
         .font(MVTheme.font(compact ? 14 : 16))
         .foregroundStyle(enabled ? MVTheme.title : MVTheme.disabled)
-        .padding(.horizontal, compact ? 8 : 14).padding(.vertical, compact ? 5 : 7)
+        .padding(.horizontal, MVTheme.space(compact ? 8 : 14)).padding(.vertical, MVTheme.space(compact ? 5 : 7))
         .background(
           RoundedRectangle(cornerRadius: MVTheme.radius(4)).fill(Color.primary.opacity(
             configuration.isPressed || selected ? 0.11 : (hover && enabled ? 0.06 : 0))))
@@ -249,7 +249,7 @@ public struct CommandBarView: View {
               Text("Place names from GeoNames (geonames.org), CC BY 4.0. Borders from Natural Earth.")
                 .font(MVTheme.font())
                 .foregroundStyle(MVTheme.body)
-                .padding(.top, 6)
+                .padding(.top, MVTheme.space(6))
                 .fixedSize(horizontal: false, vertical: true)
               FlyoutItem(title: "Licence (GPL-3.0-or-later)") {
                 openLegalFile("LICENSE.txt", github: "LICENSE")

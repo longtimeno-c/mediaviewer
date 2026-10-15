@@ -32,6 +32,7 @@ and a verify line on each platform (D9, amended). The order is:
 | 56 | **Declarative contributions** (the second half; contribution API 2): an add-on's settings page drawn from its manifest on both hosts, its values kept per add-on (and on remove unless asked), key layouts (keymap packs) applied once with Reset back to the defaults, theme shape (radius, density, type scale), and Import / Duplicates / Local search on the host's theme tokens ([docs/design/25](design/25-open-addons.md#pr-56-second-half-declarative-contributions-2026-10-11), [ADDONS.md](ADDONS.md)); ABI 0.24 | Mac: Catch2 (schema, values, keymaps over every built-in command, shape), the SDK cross-check, 2.5 M fuzz inputs, the full suite and the rig's PR 56 leg pass in the app; launch and pacing measured against the base on a loaded machine (no difference; the idle CPU clause fails on base too). Windows: every C# project compiles clean; the native half is CI's; nothing run in the app yet |
 | 57 | **Add-on scripts**: other makers' add-ons run Lua 5.4 (vendored, static) in a sandbox per add-on on its own worker, with commands on keys, permissions in the consent sheet (`folder.read`, `thumbnails`, `selection`; no network) and limits (64 MB, 100 M instructions and 1 s per task, a watchdog) that stop the add-on and say why in Settings ([docs/design/25-open-addons.md](design/25-open-addons.md#implementation-notes-pr-57-2026-10-11), [ADDONS.md](ADDONS.md#scripts)); ABI 0.26 | Mac: built, `mv_script_tests` and the SDK cross-check pass, the key walk runs in the app (`MV_SCRIPT_SELFTEST`), the fuzz harness ran ~15 min clean, Mac PR 1 gate and launch timings measured with a script spinning / installed. Windows: compiled in CI only (shell, ABI, chrome); the Windows key walk, the Windows gate with a script spinning and Narrator / VoiceOver on the new Settings lines owed |
 | 58–59 | **Screens and slots**: MediaViewer's own native add-ons add to pages that exist (an info-pane section at the very bottom of the Metadata pane, file search and Local search providers, command-bar / path-bar / status items, gallery tile badges, context-menu entries) and open windows, docked panes and sheets from a view tree both chromes render ([docs/design/25](design/25-open-addons.md#implementation-notes-prs-58-59-2026-10-11)); host table v3; ABI 0.25 | Mac: the shared suite passes (with a real test add-on through a signed store; also under ASan / UBSan and TSan); the app built and, with the test add-on sideloaded, drew its section at the bottom of the pane and its items. Windows: both C# projects compile; the native side is CI's. Measurements and the keyboard / VoiceOver / Narrator passes are owed ([Where this actually is](#screens-and-slots-prs-58-59-2026-10-11)). Script add-ons wait for PR 57; Places is #344 |
+| #410, #413 | **Sharepoint**: send photos, video and audio to a MediaViewer nearby over Wi-Fi or Bluetooth; both screens show the same code and nothing moves until the other person accepts; its window is a view tree both hosts draw ([docs/design/28](design/28-sharepoint.md)). The gallery's Shift-click range, drag-out from any gallery cell and one share icon that opens Sharepoint; ABI 0.29 | Mac: built; `mv_import_tests "[sharepoint]"` (two and three engines over loopback TCP), the full suites and the packer test pass; the window opened offline in a dev copy and the range drove copy path there; the PR 1 gate passed with the add-on installed. Windows: the C# compiles; native (sockets, WinRT Bluetooth, the range) is CI's. Two machines, Bluetooth and the hand checks are owed ([Where this actually is](#sharepoint-issues-410-413-2026-10-15)) |
 
 See [docs/design/10-roadmap.md](design/10-roadmap.md). Old Mac numbers in the history below map as
 PR 16 → Mac PR 1, 17 → Mac PR 2/7, 18 → Mac PR 3/4/6, 19 → Mac PR 5, 20 → Mac PR 8.
@@ -120,10 +121,11 @@ that apply to what you are doing.
 
 The Windows and macOS UI follows the system's light or dark appearance,
 including Settings, browsing, editing panels and Import. Appearance changes
-apply while the app is open. The empty welcome screen and dinosaur runner follow
-the system window colour too. The photo/video **Canvas background** now defaults
-to System; Grey, White, Checkerboard and Dark remain fixed choices. Build and
-interactive checks are documented in [System appearance verification](system-theme-verify.md).
+apply while the app is open. There is no separate canvas background: the empty
+window, the welcome card and the area around a photo or a video all take the
+theme in use (Default follows the system), and a built-in theme's ground effect
+moves behind the welcome card. Build and interactive checks are documented in
+[System appearance verification](system-theme-verify.md).
 
 **Licence: GPL-3.0-or-later** ([LICENSE](../LICENSE)). Settled in PR 1; the reasoning is in
 [docs/design/11-licensing.md](design/11-licensing.md).
@@ -138,7 +140,7 @@ interactive checks are documented in [System appearance verification](system-the
 | **`mediaviewer_core.dll`** | The native core behind a flat C ABI: job system, JPEG/PNG/BMP/GIF/WebP decode (giflib, libwebp), TIFF/ICO (libtiff), HEIC/HEIF (libheif + libde265), AVIF (libavif + dav1d) and camera RAW (LibRaw, embedded preview first), scan-time RAW+JPEG / Live Photo pairing, with animated GIF/APNG/WebP fed a frame at a time into a small texture ring, LCMS colour, immutable GPU upload, pan/zoom camera, folder listing, thumbnail cache, ±2 prefetch LRU, and the PR 5 video surface (open, transport, position/state/info/stats, magic-byte video probe). |
 | **`MediaViewer.Chrome.dll`** | C# WinUI 3 chrome, loaded by the lab through hostfxr. Open (image or folder), View (zoom in/out, fit, 50 / 100 / 200 / 400 %, overlay), About, `ItemsRepeater` filmstrip, load indicator. Flyouts are supposed to open over the canvas without clipping — that is part of PR 3's verify. |
 | **`frametime.exe`** | The frame-time regression harness. Runs a soak, writes a JSON report, compares against a rolling baseline, and fails on a dropped frame. |
-| **`mediaviewer_lab` (Darwin)** | Mac PRs 1–6 Metal present lab. AppKit window, `CAMetalLayer` (max drawable 2 — Metal's minimum, see docs/design/12 — 8-bit sRGB), `CAMetalDisplayLink` wait-before-encode, idle → stop presenting, F3 overlay. Decodes a JPEG/PNG/BMP (plus the rest of the D5 stills) onto an immutable Metal texture; wheel-zoom-toward-cursor, drag-pan, `0`–`4` zoom presets, `+`/`-`, keyboard pan when zoomed, hold `Z` loupe, hold `\` previous, `C` clipping blinkies. Real folder browsing: argv/drag-drop opens a folder or a file (selecting it), `←`/`→`/`A`/`D`/`Space`/`Home`/`End`/`PageUp`/`PageDown` navigate it (every key goes through the same command table and key router as Windows, with `⌘` standing for `Ctrl` and the Mac Delete key for `Delete`), an FSEvents watch keeps the listing live. SwiftUI chrome hosted in the same window via a C bridge into the render thread's `input_snapshot`: a Windows-style command bar (Open / View / Settings / About, `?` at the right), a Settings screen (`⌘,`: filmstrip/wrap/sticky-zoom/background preferences and remappable keys, persisted in `NSUserDefaults`), a bottom filmstrip (`T` toggles) and a full-grid gallery overlay (`G` toggles), both lazy-loading JPEG-512 thumbnails from a shared SQLite cache. **Nested folders (PR 26):** child folders show as tiles. A folder of only folders uses big tiles; one that also holds photos keeps a short folder row above them. A tile says when photos were found further down, when it is only more folders, and when that look stopped early. The path stays on screen while a photo is open. `⌘↑` goes up and returns to the folder you left; `⌘←` / `⌘→` open the folder beside it; `/` on the folder row finds a tile by name. The Windows host matches that chrome. Marks (`Insert`/`Shift+Space`/`Ctrl+A`/`Ctrl+D`), copy/move to a chosen folder (`F7`/`F8`, collision-safe), Trash delete with confirm (`Delete`), fullscreen (`F11`/`F`), a stills-only slideshow (`F5`; `.` blackout, `R` shuffle), and drag-out (`⌘`+drag on the canvas; a plain drag from a gallery, filmstrip or search-result cell, the marks when that cell is marked, as the original files). **Video (Mac PR 5):** FFmpeg + VideoToolbox decode, copied out of the decoder pool into a presentation ring of our own Metal textures, an MSL twin of the video shader (NV12/P010, the stream's matrix/range/transfer, HLG/PQ tone-mapped to SDR), Core Audio as the master A/V clock (no `AVPlayer`), a SwiftUI transport strip and the docs/design/16 video keys, and poster thumbnails for clips. Metadata read (PR 9, see above); no rating/metadata writes or RAW-pairing UI yet. Not on the Mac yet: `⌘G` go to, `;` Live Photo motion, Open RAW / Open JPEG of a pair ([docs/design/16](design/16-commands.md) "Not built"). Builds on Apple Silicon and Intel, macOS 14+ (Intel: unverified for frame pacing). |
+| **`mediaviewer_lab` (Darwin)** | Mac PRs 1–6 Metal present lab. AppKit window, `CAMetalLayer` (max drawable 2 — Metal's minimum, see docs/design/12 — 8-bit sRGB), `CAMetalDisplayLink` wait-before-encode, idle → stop presenting, F3 overlay. Decodes a JPEG/PNG/BMP (plus the rest of the D5 stills) onto an immutable Metal texture; wheel-zoom-toward-cursor, drag-pan, `0`–`4` zoom presets, `+`/`-`, keyboard pan when zoomed, hold `Z` loupe, hold `\` previous, `C` clipping blinkies. Real folder browsing: argv/drag-drop opens a folder or a file (selecting it), `←`/`→`/`A`/`D`/`Space`/`Home`/`End`/`PageUp`/`PageDown` navigate it (every key goes through the same command table and key router as Windows, with `⌘` standing for `Ctrl` and the Mac Delete key for `Delete`), an FSEvents watch keeps the listing live. SwiftUI chrome hosted in the same window via a C bridge into the render thread's `input_snapshot`: a Windows-style command bar (Open / View / Settings / About, `?` at the right), a Settings screen (`⌘,`: filmstrip/wrap/sticky-zoom preferences and remappable keys, persisted in `NSUserDefaults`), a bottom filmstrip (`T` toggles) and a full-grid gallery overlay (`G` toggles), both lazy-loading JPEG-512 thumbnails from a shared SQLite cache. **Nested folders (PR 26):** child folders show as tiles. A folder of only folders uses big tiles; one that also holds photos keeps a short folder row above them. A tile says when photos were found further down, when it is only more folders, and when that look stopped early. The path stays on screen while a photo is open. `⌘↑` goes up and returns to the folder you left; `⌘←` / `⌘→` open the folder beside it; `/` on the folder row finds a tile by name. The Windows host matches that chrome. Marks (`Insert`/`Shift+Space`/`Ctrl+A`/`Ctrl+D`), copy/move to a chosen folder (`F7`/`F8`, collision-safe), Trash delete with confirm (`Delete`), fullscreen (`F11`/`F`), a stills-only slideshow (`F5`; `.` blackout, `R` shuffle), and drag-out (`⌘`+drag on the canvas; a plain drag from a gallery, filmstrip or search-result cell, the marks when that cell is marked, as the original files). **Video (Mac PR 5):** FFmpeg + VideoToolbox decode, copied out of the decoder pool into a presentation ring of our own Metal textures, an MSL twin of the video shader (NV12/P010, the stream's matrix/range/transfer, HLG/PQ tone-mapped to SDR), Core Audio as the master A/V clock (no `AVPlayer`), a SwiftUI transport strip and the docs/design/16 video keys, and poster thumbnails for clips. Metadata read (PR 9, see above); no rating/metadata writes or RAW-pairing UI yet. Not on the Mac yet: `⌘G` go to, `;` Live Photo motion, Open RAW / Open JPEG of a pair ([docs/design/16](design/16-commands.md) "Not built"). Builds on Apple Silicon and Intel, macOS 14+ (Intel: unverified for frame pacing). |
 | **`MediaViewer.Interop`** | The C# side of the ABI — `SafeHandle`, struct layouts, completion drain. The filmstrip island borrows the session and drains folder/thumb completions. |
 | **Import add-on** (Milestone G) | An optional add-on installed from Settings → Add-ons ([docs/design/18](design/18-import.md)): copy a card or folder into a library, skip what is already there by content (size, then BLAKE3), verify every copy by reading it back, sort into dated folders with RAW+JPEG / Live Photo pairs and camera sidecars kept together, resume after an unplug, back up to a second drive from one read, verify an old folder for silent corruption, and **find duplicates** in a folder tree (every file, grouped by identical bytes; PR 54), where one copy at a time can be moved to the Recycle Bin / Trash, never the last. Apart from that, never deletes from, formats or overwrites anything. `mv_import.dll` / `libmv_import.dylib` plus its chrome (`MediaViewer.Import.Chrome.dll` / `Import.bundle`) are built beside the app in `build/addons/import` and shipped as a separate signed download that a stable run of the release workflow packs beside the app (RELEASING.md); the base install does not contain them. Settings → Add-ons offers Install only when that download exists and verifies for the running app. With it absent, `Ctrl+Shift+I` / `Ctrl+Shift+F7` do not exist. The shared engine is tested; the Windows and Mac hosts are written but their first platform builds and every hardware verify line are owed (docs/design/10). Also from this work, in the base app: `F8` across drives now deletes the source only after a verified copy. |
 
@@ -472,7 +474,7 @@ copy, and check Finder's **Open With** and a Quick Look thumbnail.
 | `,` / `.` | frame step back / forward while paused |
 | `A` / `D` | previous / next beside the arrows, in every mode including on a clip |
 | `Q` / `E` | on a clip, two commands on one key: **tap** skips ±2 s, **hold** skims ±2 s per key repeat and settles on an exact seek when released. `Shift+Q` / `Shift+E` step playback speed. Off a clip they do nothing |
-| `Left` / `Right` on a clip | walk the folder while the clip is paused with the filmstrip showing; while it plays, or with the filmstrip hidden (`T`), they are `Q` / `E` (tap ±2 s, hold skims). Stills always walk |
+| `Left` / `Right` on a clip | walk the folder while the filmstrip is showing, paused or playing; with the filmstrip hidden (`T`) they are `Q` / `E` (tap ±2 s, hold skims). Stills always walk |
 | `R` | reset the measurement window |
 | `0` | fit to window |
 | `1` | 100 % |
@@ -483,7 +485,6 @@ copy, and check Finder's **Open With** and a Quick Look thumbnail.
 | `S` | sticky zoom: keep zoom and position when you move to the next item (off by default) |
 | hold `Z` | loupe: 100 % (or 2x the current zoom) around the cursor |
 | hold `\` | show the previous image, for picking between burst frames |
-| `B` | canvas background: dark / gray / white / checkerboard |
 | `C` | clipping blinkies (red highlights, blue shadows). The canvas keeps presenting while on |
 | `O` | info line: file name, position in the folder, size, zoom |
 | `Ctrl+Shift+A` | always on top |
@@ -532,12 +533,12 @@ the zoom. Arrow keys, `Space` and the slideshow wrap from the last item to the
 first; turn that off under Settings.
 | `Ctrl+Shift+O` | open a folder |
 | `Left` / `Right` | previous / next in the folder |
-| `G` | gallery: thumbnail grid of the folder. A folder of only folders uses big tiles; a mixed folder keeps a short chip row above the photos. Covers and counts show on the tiles; the folder path sits in the command bar just left of `?`. **Up** (↑) and **Root** (house) buttons stay outside the scrolling trail: Up opens the enclosing folder; Root returns to the highest folder reached in this browsing session (the first breadcrumb). The `…` menu opens hidden parent folders directly. Full paths are available on hover. These controls remain available, including while a photo is open. `Ctrl+Up` goes up and selects the folder you left; `Ctrl+Left` / `Ctrl+Right` open the sibling beside it. A search icon at the right end of the path (and beside "Search: …" on a result list) does what `Ctrl+F` / `⌘F` does: with Local search installed it opens the search panel (the first search of a session starts the pack, which loads nothing at launch) (where `file:name` searches file names); without it, **file search**, a field over the grid that filters this folder's tiles by name as you type (no index; `Esc` clears, then closes); the command bar stays above the gallery on both hosts, so the path and the icon are there over the grid too. `/` on the folder row finds a tile by name. `W` / `S` or Up / Down move between rows and cross from folders to images; `A` / `D` or Left / Right move between items. `+` / `-` enlarge / shrink thumbnails (`=` also enlarges). `Enter` opens a folder or the selected image. A click does the same; `Esc` leaves |
+| `G` | gallery: thumbnail grid of the folder. A folder of only folders uses big tiles; a mixed folder keeps a short chip row above the photos. Covers and counts show on the tiles; the folder path sits in the command bar just left of `?`. The Open, View, Settings and `?` buttons keep their width; the trail is what shrinks and scrolls. **Up** (↑) and **Root** (house) buttons stay outside the scrolling trail: Up opens the enclosing folder; Root returns to the highest folder reached in this browsing session (the first breadcrumb). The `…` menu opens hidden parent folders directly. Full paths are available on hover. These controls remain available, including while a photo is open. `Ctrl+Up` goes up and selects the folder you left; `Ctrl+Left` / `Ctrl+Right` open the sibling beside it. A search icon at the right end of the path (and beside "Search: …" on a result list) does what `Ctrl+F` / `⌘F` does: with Local search installed it opens the search panel (the first search of a session starts the pack, which loads nothing at launch) (where `file:name` searches file names); without it, **file search**, a field over the grid that filters this folder's tiles by name as you type (no index; `Esc` clears, then closes); the command bar stays above the gallery on both hosts, so the path and the icon are there over the grid too. `/` on the folder row finds a tile by name. `W` / `S` or Up / Down move between rows and cross from folders to images; `A` / `D` or Left / Right move between items. `+` / `-` enlarge / shrink thumbnails (`=` also enlarges). `Enter` opens a folder or the selected image. A click does the same; `Esc` leaves |
 | `T` | filmstrip show/hide, for the mode you are in (folder open or single image) |
 | `Tab` | focus the command bar island |
 | `Esc` | walks out one level: gallery, fullscreen, then island focus back to the canvas, and last, in a search result list, **Back to folder**. It never quits |
 | `Ctrl+W` / `Alt+F4` | close the window |
-| `Ctrl+N` (`⌘N`) | a new window: its own process on the empty window; add-ons stay in the first window's process |
+| `Ctrl+N` (`⌘N`) | a new window: its own process on the empty window; add-ons stay in the first window's process, except those that only fill screens and slots (Places), which every window loads (#402) |
 
 **Editing (PR 10, Windows and macOS).** Edits are kept per file for the session; the
 original is only ever rewritten by a lossless JPEG rotate / flip.
@@ -790,7 +791,10 @@ the 2026-10-03 numbers are in the PR that added it (a publish 51 → 8 ms, a peo
 500 → 46 ms of CPU).
 `--filter SearchModelTests` checks the search panel's model against a fake table (issue #191):
 a search re-asks when another folder opens under "Folder & subfolders", and Tab only takes a
-name looked up for the words as typed.
+name looked up for the words as typed. `--filter StatusLineTests` checks the footer's status
+line from a status struct (issue #417): with iCloud clips queued the pictures count and ETA are
+named as this Mac's files and the clips as the rest of the run; with the queue empty it is the
+plain pictures / sound / speech line.
 
 **The Photos library source (Mac, issue #72; docs/design/17 "Photos library source").** Engine
 behaviour is tested with a fake PhotoKit: `mv_ai_tests "[photos]"`. On a real library, two
@@ -871,7 +875,11 @@ its own bundle id has Photos access and the flag `mv.photosLibrary.added` is set
 defaults; the flag is set by the pack's Settings when the library is a root, so a dev build
 without the pack loaded can be pointed at it by hand (`defaults write
 io.github.longtimeno-c.mediaviewer.dev mv.photosLibrary.added -bool true`) once macOS has
-granted that bundle Photos access. The viewer's on-view downloads and previews live in
+granted that bundle Photos access. The listing's time is logged as `photos: listed N assets in
+M ms`: `log stream --predicate 'subsystem == "org.mediaviewer" AND category == "photos"'` (in zsh,
+`/usr/bin/log`: `log` is a builtin). `tools/photos/name_probe.m` times the walk and its names
+outside the app and checks them against the resources (counts only; its header says how to give
+it Photos access). The viewer's on-view downloads and previews live in
 `~/Library/Caches/MediaViewer/Photos Library/` (write-protected, emptied at launch); a backup's
 fetched originals wait in `~/Library/Caches/MediaViewer/Photos Backup/` and are removed when
 the run ends.
@@ -895,9 +903,13 @@ ctest --test-dir build -C Release --output-on-failure
 # if MV_REQUIRE_CORPUS is unset ('0' is an explicit opt-out, as release.yml uses).
 $env:MV_REQUIRE_CORPUS = "1"; ctest --test-dir build -C Release --output-on-failure
 
-# the ABI, end to end from C#: SafeHandle, struct layout, completion drain
+# the ABI, end to end from C#: SafeHandle, struct layout, completion drain. The
+# second argument is mv_abi_layout's dump: the AI structs' C# mirrors are then
+# compared field for field with the native layout (skipped without it; CI passes it)
+cmake --build build --config Release --target mv_abi_layout
+build\bin\Release\mv_abi_layout.exe > build\abi-layout.txt
 dotnet build src.managed\MediaViewer.AbiSmokeTest\MediaViewer.AbiSmokeTest.csproj -c Release
-dotnet src.managed\MediaViewer.AbiSmokeTest\bin\Release\net8.0-windows\MediaViewer.AbiSmokeTest.dll build\bin\Release
+dotnet src.managed\MediaViewer.AbiSmokeTest\bin\Release\net8.0-windows\MediaViewer.AbiSmokeTest.dll build\bin\Release build\abi-layout.txt
 
 # WinUI chrome (also published beside mediaviewer_lab.exe by the CMake build)
 dotnet publish src.managed\MediaViewer.Chrome\MediaViewer.Chrome.csproj -c Release -r win-x64 --no-self-contained
@@ -1048,6 +1060,13 @@ MV_PLACES_MAP_DUMP=<dir> build/bin/mv_tests "[.places-map-dump]"      # BMPs of 
 # Package it (release: the workflow does this after signing the code)
 python3 tools/package/addon-pack.py stage-places --src build/addons/places --blob build/geo/places.mvgeo
 python3 tools/package/addon-pack.py pack --addon places --platform macos --src build/addons/places \
+  --version 1.0.0 --key <key file> --out dist/
+
+# Sharepoint (docs/design/28): build/addons/sharepoint/(lib)mv_sharepoint.(dylib|dll)
+cmake --build build --target mv_sharepoint
+build/bin/mv_import_tests "[sharepoint]"       # wire, channel, 2-3 engines over loopback TCP, the add-on through the loader
+python3 -m unittest tools/package/test_addon_pack.py   # SharepointPackTest among them
+python3 tools/package/addon-pack.py pack --addon sharepoint --platform macos --src build/addons/sharepoint \
   --version 1.0.0 --key <key file> --out dist/
 ```
 
@@ -1618,6 +1637,89 @@ The app's search text has none.
   `main.cpp`, and the running WinUI search and `/` find box. Also owed there: the verify line
   and the PR 1 gate.
 
+### Local search over audio files, slice A1 (#355, docs/plans/audio-search.md, 2026-10-15)
+
+MP3, M4A and M4P are indexed by their tags and cover art, only while Settings → File types
+**Show audio files** is on ([17](design/17-local-ai-search.md) "Audio"). The index goes to schema
+8 (no table change). `meta_cache.db` rows are read again once (`kSearchFactsVersion` 3: album,
+album artist, composer, genre). Sound and speech on audio files are slice A2.
+
+- **Tests:** `mv_ai_tests "[audiofiles],[query]"` (the gate: off adds no row and decodes nothing,
+  on indexes, off drops results at once and rows after, a restart keeps it off; the kind bit,
+  `is:audio`, an older chrome's 3); `mv_tests "[audio]"` (cover art from an M4A the test writes,
+  none is `not_found`; title, artist, album and genre as search fields);
+  `swift test --filter SearchModelTests` (the Audio segment).
+- **Mac (M-series, 2026-10-15):** `mv_ai_tests` 133 cases, 125 passed, 8 skipped (model-backed);
+  `mv_tests` 830 cases, 819 passed, 11 skipped; `mv_import_tests` 112 passed; `MediaViewer`,
+  `mediaviewer_lab`, `mv_ai` and the AI SwiftUI chrome build.
+- **Windows:** both C# chromes compile on the Mac. The native change is portable (pack,
+  `addon_media.cpp`, `edit/clip_sample.cpp`, `meta/search.cpp`) and is compiled on Windows only
+  by CI.
+- **Owed:** the plan's A1 verify on a real folder (300 photos and 200 audio files) in the app on
+  both hosts; both PR 1 gates with the pack indexing audio files; timing the walk with the
+  setting off.
+
+### Local search reads more of each file (#403–#407, 2026-10-15)
+
+Five changes to the AI pack's index and query language
+([17](design/17-local-ai-search.md), [12](design/12-decision-log.md)). The index goes from schema
+4 to 7, one transaction a step; nothing already embedded is embedded again.
+
+| Issue | What changed | Schema |
+|---|---|---|
+| #404 | `in:` / `before:` / `after:` / `since:` / `until:` use the date taken, the file's time only when there is none | none |
+| #405 | `rating:`, `rejected`, `label:`, `iso:`, `f:`, `mm:`, `shutter:`; meta_cache.db and the host's `tag_facts` carry them | 5 |
+| #406 | chapter titles and text subtitle lines (host `read_cues`, `meta/cues.h`) match quoted and plain words | 6 |
+| #407 | the People pass decodes the moments the picture pass kept; a Live Photo's movie is sampled onto its still | 7 |
+| #403 | the OS reads the text in each photo (Vision / Windows.Media.Ocr) for quoted and plain words | (uses 6) |
+| #403 follow-up | the text on the moments a clip's picture pass kept, one row per moment; Settings → Local search → **Read text in photos** on both hosts; `mv_ai_status` counts the cue and text passes | (uses 6) |
+
+- **Tests:** `mv_ai_tests "[dates],[exposure],[cues],[moments],[live],[ocr],[schema4],[tags],[query]"`,
+  and `mv_tests "[search],[cues]"` (the cue reader over Matroska / SubRip and MP4 / mov_text
+  files the test writes, `tests/cue_fixture.h`).
+- **OCR recall and cost:** `python3 tools/ai/ocr-fixture.py <dir>` writes 40 labelled photos;
+  `MV_OCR_FIXTURE_DIR=<dir> mv_ai_tests "[.ocr-fixture]"` reads them with the real OS reader and
+  prints recall and per-photo times as JSON (needs Pillow; on Windows, an OCR language).
+  `MV_OCR_CLIP_DIR=<folder of clips> mv_ai_tests "[.ocr-moments]"` prints what a clip moment
+  costs the text pass (the 2,048 px seek and decode, and the read) as JSON.
+- **Mac (M-series, 2026-10-15):** `mv_ai_tests` 127 cases, 119 passed, 8 skipped (the
+  model-backed ones, as before); `mv_tests` 824 cases, 813 passed, 11 skipped; `mv_import_tests`
+  (the add-on host table) 112 passed. The app (`mediaviewer_lab`) and the AI SwiftUI chrome build. Vision over the fixture: 38 of
+  40 phrases, read 44 ms median a photo.
+- **Windows:** the C# chromes compile on the Mac (`dotnet msbuild -t:Compile`). The native
+  half is compiled only by CI: `ocr_win.cpp` (C++/WinRT), the host's `read_cues` and `tag_facts`
+  in `addon_abi.cpp`. The OCR fixture on Windows, the Windows PR 1 gate and the Mac PR 1 gate
+  with the pack indexing are owed.
+- **#403 follow-up, Mac (M-series, 2026-10-15):** `mv_ai_tests` 131 cases, 123 passed, 8 skipped;
+  `mediaviewer_lab`, `mv_ai` and the AI SwiftUI chrome build. Tests: `mv_ai_tests "[ocr]"` (clip
+  moments, resume after a quit, the status counts, `read_text` / `text_available`);
+  `"[.perf-bench]"` times the status counts (14 ms at 25,000 assets, cached between refreshes).
+  A clip moment costs ~0.2 s (`"[.ocr-moments]"`, mostly the seek and decode; machine loaded).
+  **Windows:** the C# chromes compile on the Mac; the engine change is portable and compiled only
+  by CI there. The cue and text counts are appended on `MvAiStatus` (1,672 bytes). `AiApi` does not
+  pin that size (#388); the ABI smoke test compares the C# mirror with the header. Windows OCR on
+  clips, both PR 1 gates with the pack indexing are owed.
+
+### `place:` over the whole Local search index (#398, 2026-10-15)
+
+`place:portugal` in Local search with no folder open now finds the indexed Portuguese assets.
+Places walks the host table's new `locations_of_index`, which serves the AI pack's index.db
+coordinates (mv.ai.1 `each_location`) and reads no file
+([17](design/17-local-ai-search.md) "Places over the index").
+
+- **Tests:** `mv_import_tests "[slots]"` (the thunk over a fake index: every row once, a visit
+  that stops, a stale generation, a request going stale mid-walk, a removed add-on, publish and
+  retract of the process-wide source with a walk in flight); `mv_import_tests "[places]"` (the
+  real `mv_places` answering `place:portugal` / `in:spain` with no folder, and no index attached);
+  `mv_ai_tests "[places]"` (`index_db::located_assets` batches and `engine::each_location`).
+- **Mac (M-series, 2026-10-15):** `mv_import_tests` 114 passed; `mv_ai_tests` 133 cases, 125
+  passed, 8 skipped (model-backed, as before); `mv_tests "[places]"` 12 passed, 1 skipped.
+  `addons_mac.mm` compiles. Not run: the live verify (the AI pack and Places installed in the
+  app, `place:portugal` with no folder open) and the PR 1 gate, which this change does not touch
+  (no render-thread or UI-thread work).
+- **Windows:** the wiring is in `addon_abi.cpp` (publish on the `ai` load, retract and wait on
+  unload, retract at quit), compiled only by CI; no C# change. The live verify is owed there too.
+
 ### Every tag and AI provenance in the Metadata pane (#290, docs/plans/metadata-search-and-place.md slice 1, 2026-10-11)
 
 All tags now lists C2PA / Content Credentials (JPEG APP11, PNG `caBX`, ISO-BMFF `uuid`), every
@@ -1675,7 +1777,12 @@ a random sweep. The blob is 17.2 MB, or 5.4 MB xz-compressed.
 Built on `feature/issue-344-places-addon` (merges #348's slots): `src/addons/places`, its
 manifest (the info section, the search provider, the settings page; nothing else), the map
 rasteriser with cursor zoom down to town scale, packaging (`addon-pack.py` entry, `stage-places`,
-the data licences) and both release workflows.
+the data licences) and both release workflows. A stable release publishes
+`mediaviewer-addon-places-{win-x64,macos}.{zip,json,json.sig}` when that pack is complete. Places
+is preferred, not required: `publish` still publishes when it was not packed, warns, and refuses a
+partial or invalid pack. A staging or pack failure does not fail the release. Preview and
+artifacts runs do not pack it. Settings → Add-ons offers it on both hosts even when it is not
+installed (optional; coordinates still show without it).
 
 - **Mac (M-series):** `mv_tests "[places]"` 9 cases / 261 assertions and `"[geo]"` pass;
   `mv_import_tests` 94 cases pass, including `"[places]"` (2 cases, the add-on through a signed
@@ -1724,6 +1831,13 @@ What is built is in [docs/design/25](design/25-open-addons.md#implementation-not
   finding the fixtures in the running app, a screen driven by keyboard alone, VoiceOver and
   Narrator naming every control, removal from Settings in the running app, Windows' docked pane
   placement.
+- **Every window, and entries on the filmstrip and canvas (#402, 2026-10-15):** slot add-ons
+  load in every window's process, found by manifest without hashing; context-menu entries show
+  on filmstrip tiles and the canvas as on gallery tiles. Mac: `mv_import_tests` 114 cases pass
+  (`"[slots]"` 14, two new); the app and its Swift chrome build. Windows: the chrome compiles;
+  the native side (`addon_abi.cpp`, `chrome_host.cpp`, `main.cpp`) is CI's. Owed: a second
+  window and the menus tried in the running app on both hosts, the first-pixel cost of a later
+  window loading Places (alternated runs), both PR 1 gates.
 
 **Running the test add-on (developer builds only).** Configure with
 `-DMV_ADDON_DEV_PUBLIC_KEY=<your key's public half>`, build `mediaviewer_app` (Mac) or the core
@@ -1739,6 +1853,59 @@ open -n --env HOME=<scratch>/home --env MV_DEV_ADDONS_DIR=<scratch>/addons \
 
 Every name in the test add-on is "Slots test"; nothing in it looks like Places. Quit the dev
 copy when done.
+### Sharepoint (issues #410, #413, 2026-10-15)
+
+What is built is in [docs/design/28](design/28-sharepoint.md).
+
+- **Mac (M-series):** the app, the Swift chrome and `libmv_sharepoint.dylib` build clean.
+  `mv_import_tests` 138 cases pass, 26 of them `"[sharepoint]"`: the path rule, the offer (a
+  wrapping total and an oversized file refused), the beacon, the code, the channel (same code
+  both ends, a machine in the middle shows two codes, a key that does not match its commitment
+  and an altered byte end it, another version is refused, pings never stretch a deadline), a
+  peer that connects and stalls does not hold up shutdown, made-up beacons neither flood the list
+  nor take a peer's address, and two or three engines over loopback TCP
+  found through an in-memory bus (nothing about the files leaves before the sender's person
+  confirms the code; Accept delivers with matching bytes and keeps both on a name clash; a set
+  over 32 MiB to a peer heard only on Bluetooth says so before Send, waits, and sends by itself
+  once the peer's beacon arrives, and Cancel ends the wait; pair half and sidecar ride along; a folder keeps its shape without housekeeping; Decline,
+  closing the window and a third client receive nothing; busy; Cancel from either side keeps what
+  finished and leaves no `.mvtmp`; no room; an offer opens a closed window when receiving is on;
+  no presence with the window closed), then the add-on through a signed store and the v3 table,
+  offline. `mv_tests` 819 cases (808 passed, 11 skipped) and `mv_script_tests` pass;
+  `SharepointPackTest` passes.
+- **ThreadSanitizer (Mac, 2026-10-15):** `"[sharepoint]"` is TSan-clean: 16 runs, 8 one after
+  another and 8 as four at once (load average ~12), every one 23 cases passed, 0 reports. The
+  engine, the channel and its pinger, the transfer's reader, the busy refusals and the accept loop
+  raised nothing. The first run's 4 reports were all the flood test's own fake discovery
+  publishing its callback to the test thread unsynchronised; it now publishes through an atomic.
+  Sharepoint is not in `cmake/portable`, so this is the [macOS](#macos-mac-prs-16) configure in
+  its own build directory with `-fsanitize=thread -fno-omit-frame-pointer -g` in
+  `CMAKE_{C,CXX,OBJC,OBJCXX}_FLAGS` and `-fsanitize=thread` in
+  `CMAKE_{EXE,SHARED,MODULE}_LINKER_FLAGS`, then `ninja mv_import_tests` and
+  `TZ=UTC build-tsan/bin/mv_import_tests "[sharepoint]"`. Bluetooth (`bt_mac.mm`, `bt_win.cpp`)
+  and the UDP beacon thread (`presence.cpp`) are not exercised by these tests, so TSan says nothing
+  about them.
+- **In a dev copy (offline, `MV_SHAREPOINT_OFFLINE=1`, sideloaded with the dev key):** its command
+  opened the window with the two files it was given, on the host's theme; the gallery shows the
+  share icon; a range set through the bridge made copy path copy the three files, and Next ended
+  it. The Shift-click itself, the range's tint, the drag out of the grid, the Choose… dialog and
+  the share icon's install offer need a mouse: owed to a hand check.
+- **Measured, Mac, alternated, warm (load average 5–22):** launch → first pixel of a RAW
+  (`mediaviewer_lab --soak 6 --static`) without / with Sharepoint installed, 15 runs each:
+  22–76 ms (median 39) / 23–88 ms (median 33). No difference within noise. The PR 1 gate
+  (`frametime --seconds 60`) passed with Sharepoint installed (3600 frames, max 17.0 ms, idle
+  0 presents, 0.06 % CPU); the alternated base run failed on a 1.3 s stall on a machine that had
+  just woken, so the base's pass is not shown by this run.
+- **Windows:** the C# compiles (warnings are errors). `net_win.cpp`, `bt_win.cpp` (C++/WinRT,
+  the first use in the tree, under `/W4 /WX /GR-`), `main.cpp`'s range and `slots_abi.cpp` meet a
+  compiler in CI only.
+- **Owed:** the issue's verify on two machines on one Wi-Fi (see each other, same code, Accept
+  delivers the marked files with matching bytes, Cancel mid-way leaves nothing partial, a third
+  machine receives nothing), the same small send with Wi-Fi off and Bluetooth on (Mac–Mac,
+  Mac–Windows, Windows–Windows), the crash-report check after a transfer, Windows anything in
+  the app, both hosts' first-run prompts (local network and Bluetooth on the Mac, Defender
+  Firewall on Windows), VoiceOver and Narrator over the window, the Windows PR 1 gate.
+
 ### Local search: ask before resuming an interrupted index (issue #299, 2026-10-11)
 
 A quit or a kill part-way through indexing no longer carries on, or loads the pack, at the next

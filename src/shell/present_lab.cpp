@@ -5,6 +5,7 @@
 #include "shell/dino_draw.h"
 #include "shell/error_screen.h"
 #include "shell/af_focus.h"
+#include "shell/home_ground.h"
 #include "shell/loupe.h"
 #include "shell/welcome_screen.h"
 
@@ -930,19 +931,18 @@ void present_lab::render_thread_main() noexcept {
 
     {
       const auto flags = static_cast<std::uint8_t>(
-          (snapshot.background & 0x3) | (snapshot.sticky_zoom ? 0x4 : 0) |
+          (snapshot.sticky_zoom ? 0x4 : 0) |
           (snapshot.clipping ? 0x8 : 0) | (snapshot.loupe ? 0x10 : 0) |
           (snapshot.hold_previous ? 0x20 : 0) | (snapshot.info_overlay ? 0x40 : 0) |
           (snapshot.item_marked ? 0x80 : 0));
-      if (flags != seen_view_flags_ || snapshot.background != seen_background_ ||
-          snapshot.home_background_rgb != seen_home_background_rgb_ ||
+      if (flags != seen_view_flags_ || !seen_home_valid_ || !(snapshot.home == seen_home_) ||
           snapshot.loupe_steps_x != seen_loupe_steps_x_ ||
           snapshot.loupe_steps_y != seen_loupe_steps_y_ ||
           snapshot.marked_count != seen_marked_count_ || snapshot.blackout != seen_blackout_ ||
           snapshot.item_index != seen_item_index_ || snapshot.item_count != seen_item_count_) {
         seen_view_flags_ = flags;
-        seen_background_ = snapshot.background;
-        seen_home_background_rgb_ = snapshot.home_background_rgb;
+        seen_home_ = snapshot.home;
+        seen_home_valid_ = true;
         seen_marked_count_ = snapshot.marked_count;
         seen_blackout_ = snapshot.blackout;
         seen_item_index_ = snapshot.item_index;
@@ -1053,7 +1053,8 @@ void present_lab::render_thread_main() noexcept {
     }
     {
       const bool left = snapshot.mouse_down[0];
-      if (left && !was_left_down_) camera_.drag_begin();
+      // A press on text selects it (shell/text_select.h): no pan for it.
+      if (left && !was_left_down_ && !snapshot.text_press) camera_.drag_begin();
       if (left && was_left_down_ && (current_image_ || current_video_.texture)) {
         camera_.drag_delta(snapshot.mouse_x - last_mouse_x_, snapshot.mouse_y - last_mouse_y_);
       }
@@ -1097,6 +1098,24 @@ void present_lab::render_thread_main() noexcept {
     // tail from last_input_time=0 at launch) kept Present running while the
     // WinUI island composed — DXGI counted those as missed frames, and the
     // overlay froze on them. Paint once, then wait.
+    // Issue #408: the home's ground effect (home_theme.h home_ground_clock:
+    // 30 Hz in front and in use, 10 Hz while visible, then rest). A pointer
+    // move or a key, here or over the bar and panes (pointer_seq), restarts
+    // it; launch counts as one. Each due tick is one static frame, never
+    // `live`, so it stops the moment a file is up.
+    if (input_activity || snapshot.pointer_seq != seen_pointer_seq_ || ground_.last_input < 0.0) {
+      seen_pointer_seq_ = snapshot.pointer_seq;
+      ground_.input(elapsed);
+    }
+    {
+      const bool home = !current_image_ && !current_video_.texture && !video_open_ && !open_error_ &&
+                        !sweep_mode_ && !game_.active() && !snapshot.blackout;
+      ground_every_ = ground_.interval(home, snapshot.home.effect, snapshot.window_active,
+                                       snapshot.window_visible && !occluded_, snapshot.reduce_motion,
+                                       elapsed);
+      ground_tick_ = ground_.step(ground_every_, elapsed);
+      if (ground_tick_) redraw = true;
+    }
     if (redraw) last_input_time_ = elapsed;
     const bool pan_tail = current_image_ && last_input_time_ >= 0.0 &&
                           (elapsed - last_input_time_) < 0.5;
@@ -1119,9 +1138,10 @@ void present_lab::render_thread_main() noexcept {
       busy_drop_at_ = elapsed;
     }
     const bool frame_pressure = elapsed - busy_drop_at_ < 2.0;
+    // A ground tick may present behind another app: the window is visible.
     const bool allowed = snapshot.window_visible && !occluded_ &&
                          (options_.soak_seconds > 0.0 || options_.present_when_inactive ||
-                          snapshot.window_active);
+                          snapshot.window_active || ground_tick_);
     bool wants_frame = false;
     if (allowed) {
       if (live) {
@@ -1162,6 +1182,12 @@ void present_lab::render_thread_main() noexcept {
         const auto gap_ms = static_cast<DWORD>(
             std::ceil(std::max(0.0, video_gap_deadline_ - elapsed) * 1000.0));
         timeout = std::min(timeout, gap_ms);
+      }
+      if (ground_every_ > 0.0) {
+        // The ground's next tick; the tick re-reads the rule, so a ground that
+        // has gone quiet rests within one interval and sleeps like any still.
+        const double next = ground_.until_next(ground_every_, elapsed);
+        timeout = std::min(timeout, static_cast<DWORD>(std::ceil(next * 1000.0)));
       }
       HANDLE waits[2] = {wake_event_, nullptr};
       DWORD n = 1;
@@ -1222,6 +1248,7 @@ void present_lab::render_thread_main() noexcept {
     // pacer scored (PR 7 no-pop instrument).
     refine_fade_tick(elapsed);
     draw_frame(snapshot, elapsed);
+    draw_text_overlay(snapshot);
     draw_view_overlays(snapshot);
     draw_crop_overlay(snapshot);
     if (overlay_visible_) draw_overlay(snapshot);
@@ -1234,21 +1261,17 @@ void present_lab::render_thread_main() noexcept {
     // Clear to a colour, per the PR 1 brief. The values are LINEAR: the render
     // target view is _SRGB, so the hardware encodes on write. Writing 0.05 here
     // and reading back 0.05 in a screenshot would mean the sRGB view was lost.
-    const float clear_level = gfx::background_clear(snapshot.background);
-    const bool home = !current_image_ && !current_video_.texture && !video_open_ &&
-                      !(sweep_mode_ && animating_) && !snapshot.blackout;
-    const bool system_background = home || snapshot.background == 0;
+    // Issue #408: every screen is the theme's canvas token, the colour the
+    // chrome paints (Default = the system's): the welcome, a still and a
+    // video alike. Only the slideshow blackout differs.
     const float theme_rgb[3] = {
-        home_linear_channel(snapshot.home_background_rgb, 16),
-        home_linear_channel(snapshot.home_background_rgb, 8),
-        home_linear_channel(snapshot.home_background_rgb, 0)};
+        home_linear_channel(snapshot.home.canvas, 24),
+        home_linear_channel(snapshot.home.canvas, 16),
+        home_linear_channel(snapshot.home.canvas, 8)};
     const float clear[4] = {
-        snapshot.blackout ? 0.0f : system_background ? theme_rgb[0]
-            : snapshot.background == 4 ? 0.016f : clear_level,
-        snapshot.blackout ? 0.0f : system_background ? theme_rgb[1]
-            : snapshot.background == 4 ? 0.018f : clear_level,
-        snapshot.blackout ? 0.0f : system_background ? theme_rgb[2]
-            : snapshot.background == 4 ? 0.024f : clear_level,
+        snapshot.blackout ? 0.0f : theme_rgb[0],
+        snapshot.blackout ? 0.0f : theme_rgb[1],
+        snapshot.blackout ? 0.0f : theme_rgb[2],
         1.0f};
     device_.context()->ClearRenderTargetView(rtv, clear);
 
@@ -1309,7 +1332,6 @@ void present_lab::render_thread_main() noexcept {
       bp.image_h = shown_h;
       bp.texture_w = static_cast<float>(shown->texture_width);
       bp.texture_h = static_cast<float>(shown->texture_height);
-      bp.background = snapshot.background;
       for (int i = 0; i < 3; ++i) bp.theme_background[i] = theme_rgb[i];
       bp.clipping = snapshot.clipping;
       bp.time_seconds = static_cast<float>(elapsed);
@@ -1613,6 +1635,45 @@ void present_lab::draw_crop_overlay(const input_snapshot& snapshot) noexcept {
               IM_COL32(235, 235, 240, 255), label);
 }
 
+// Text in images (docs/design/16): publish where the still is for the host's
+// hit-test, then draw the selection the host published, one translucent box per
+// line, as Photos tints selected text. No still (a clip, an animation): no map.
+void present_lab::draw_text_overlay(const input_snapshot& snapshot) noexcept {
+  canvas_map map;
+  const float pw = media_width();
+  const float ph = media_height();
+  if (current_image_ && !current_video_.texture && !anim_frame_ && !snapshot.blackout && pw > 0.0f &&
+      ph > 0.0f) {
+    const auto view = usable_canvas(snapshot);
+    map.valid = true;
+    map.centre_x = view.x + view.w * 0.5f;
+    map.centre_y = view.y + view.h * 0.5f;
+    map.zoom = camera_.zoom();
+    map.pan_x = camera_.pan_x();
+    map.pan_y = camera_.pan_y();
+    map.width = pw;
+    map.height = ph;
+  }
+  {
+    std::lock_guard<std::mutex> lock(eye_mutex_);
+    still_map_ = map;
+  }
+  if (!map.valid || snapshot.text.count == 0) return;
+  ImDrawList* fg = ImGui::GetForegroundDrawList();
+  const float scale = snapshot.dpi_scale > 0.0f ? snapshot.dpi_scale : 1.0f;
+  const float pad = 2.0f * scale;
+  const auto to_screen = [&](float u, float v) {
+    return ImVec2(map.centre_x + (u * pw - map.pan_x) * map.zoom, map.centre_y + (v * ph - map.pan_y) * map.zoom);
+  };
+  for (int i = 0; i < snapshot.text.count && i < text_highlight::kMaxRects; ++i) {
+    const float* r = snapshot.text.rect[i];
+    const ImVec2 a = to_screen(r[0], r[1]);
+    const ImVec2 b = to_screen(r[2], r[3]);
+    fg->AddRectFilled(ImVec2(a.x - pad, a.y - pad), ImVec2(b.x + pad, b.y + pad), IM_COL32(64, 140, 255, 90),
+                      3.0f * scale);
+  }
+}
+
 void present_lab::draw_view_overlays(const input_snapshot& snapshot) noexcept {
   if (!current_image_ && !current_video_.texture) return;
   if (snapshot.blackout) return;
@@ -1835,7 +1896,7 @@ void present_lab::draw_frame(const input_snapshot& snapshot, double elapsed_seco
       animating_ = false;
     }
     draw_open_error(bg, ImGui::GetFont(), w, h, chrome, scale, open_error_status_,
-                    "Left / Right  for another file", home_palette(snapshot.home_background_rgb));
+                    "Left / Right  for another file", snapshot.home);
     return;
   }
 
@@ -1858,7 +1919,9 @@ void present_lab::draw_frame(const input_snapshot& snapshot, double elapsed_seco
   const welcome_text text{
       .open_hint = "or press Ctrl+O to choose a file, Ctrl+Shift+O for a folder",
       .keys = "0 fit    1 100%    + / -  zoom    Space  play/pause    F  fullscreen    F3  frame-time"};
-  const home_palette theme(snapshot.home_background_rgb);
+  const home_theme& theme = snapshot.home;
+  // Issue #408: the built-in theme's ground, behind the card (and the runner).
+  draw_home_ground(bg, w, h, scale, theme, ground_.time);
   if (!sweep_mode_ && game_.active()) {
     const float dt =
         last_game_elapsed_ > 0.0 ? static_cast<float>(elapsed_seconds - last_game_elapsed_) : 0.0f;

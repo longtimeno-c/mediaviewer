@@ -107,12 +107,12 @@ bool source_type_is_ai(std::string_view uri) noexcept {
   return t == "trainedAlgorithmicMedia" || t == "compositeWithTrainedAlgorithmicMedia";
 }
 
-std::string describe_source_type(std::string_view uri) {
-  const std::string_view t = source_type_term(uri);
-  if (t == "trainedAlgorithmicMedia") return "AI-generated (trainedAlgorithmicMedia)";
-  if (t == "compositeWithTrainedAlgorithmicMedia") {
-    return "Includes AI-generated elements (compositeWithTrainedAlgorithmicMedia)";
-  }
+namespace {
+
+// The term read as words ("AI-generated", "Digital capture"); empty for none.
+std::string source_type_words(std::string_view t) {
+  if (t == "trainedAlgorithmicMedia") return "AI-generated";
+  if (t == "compositeWithTrainedAlgorithmicMedia") return "Includes AI-generated elements";
   // Any other IPTC term, its camelCase read as words: "digitalCapture" → "Digital capture".
   std::string out;
   for (std::size_t i = 0; i < t.size(); ++i) {
@@ -124,7 +124,24 @@ std::string describe_source_type(std::string_view uri) {
       out += i == 0 && c >= 'a' && c <= 'z' ? static_cast<char>(c - 'a' + 'A') : c;
     }
   }
-  return out.empty() ? std::string(uri) : out + " (" + std::string(t) + ")";
+  return out;
+}
+
+}  // namespace
+
+std::string describe_source_type(std::string_view uri) {
+  const std::string_view t = source_type_term(uri);
+  const std::string words = source_type_words(t);
+  return words.empty() ? std::string(uri) : words + " (" + std::string(t) + ")";
+}
+
+std::string describe_source_type_value(std::string_view value) {
+  std::string_view v = value;
+  while (!v.empty() && (v.front() == ' ' || v.front() == '\t' || v.front() == '\n')) v.remove_prefix(1);
+  while (!v.empty() && (v.back() == ' ' || v.back() == '\t' || v.back() == '\n')) v.remove_suffix(1);
+  const std::string words = source_type_words(source_type_term(v));
+  if (words.empty()) return std::string(value);
+  return words + " (" + std::string(v) + ")";
 }
 
 std::string evidence_line(std::string_view field, std::string_view value) {

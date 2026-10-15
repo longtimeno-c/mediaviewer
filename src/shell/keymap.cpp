@@ -17,7 +17,7 @@ struct slug_row {
   std::string_view slug;
 };
 
-// Every command but none, the retired palette and the add-on slots, by its
+// Every command but none, the retired ids and the add-on slots, by its
 // enumerator's name. A pack names commands by these, so they never change;
 // a new command appends a row (tests/test_keymap.cpp checks every one).
 constexpr slug_row kSlugs[] = {
@@ -59,7 +59,6 @@ constexpr slug_row kSlugs[] = {
     {fullscreen, "fullscreen"},
     {fill, "fill"},
     {reset_view, "reset_view"},
-    {cycle_background, "cycle_background"},
     {sticky_zoom, "sticky_zoom"},
     {clipping, "clipping"},
     {loupe, "loupe"},
