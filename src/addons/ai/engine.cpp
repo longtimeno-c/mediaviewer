@@ -294,6 +294,7 @@ void engine::adopt_tags(const asset_tags& t) {
   m.made_with = text::fold(t.made_with);
   m.ai = t.ai;
   m.has_where = t.has_where;
+  m.taken_at = t.taken_at;
   m.fields = split_fields(t.text);
   m.folded = folded_fields(m.fields);
 }
@@ -1973,6 +1974,7 @@ bool engine::see_batch(const root_row& root, std::vector<index_db::seen_file>& b
     asset_meta& m = assets_[u.id];
     if (u.changed || u.added) {
       m.tags = false;  // read again by the backfill (the index set tags = 0)
+      m.taken_at.reset();  // dated by mtime until then (#404)
       tags_pending_ = true;
     }
     m.path = batch[i].path;
@@ -4162,10 +4164,13 @@ void engine::reload_from_db() {
       m.kind = a.kind;
       m.root = a.root_id;
       m.mtime = a.mtime;
+      m.cloud = a.cloud;
       asset_by_key_[m.key] = a.id;
       assets_.emplace(a.id, std::move(m));
     }
   }
+  // Their tags (and so their date taken) as the index holds them.
+  (void)db_->each_tags([this](const asset_tags& t) { adopt_tags(t); });
   std::string active, sound_spec, speech_spec;
   std::uint32_t dim = 0, sound_dim = 0;
   {
@@ -4255,7 +4260,9 @@ std::shared_ptr<std::set<std::int64_t>> engine::scope_assets(const std::string& 
     for (const auto& [id, m] : assets_) {
       const std::uint32_t k = m.kind == asset_kind::video ? MV_AI_KIND_VIDEOS : MV_AI_KIND_PHOTOS;
       if (!(k & kinds)) continue;
-      if (m.mtime < from_unix || m.mtime >= to_unix) continue;
+      // #404: the date taken when the tags gave one, else the file's time.
+      const std::int64_t when = m.when();
+      if (when < from_unix || when >= to_unix) continue;
       if (scope != MV_AI_SCOPE_ALL && !key.empty()) {
         if (scope == MV_AI_SCOPE_FOLDER && m.dir_key != key) continue;
         if (scope == MV_AI_SCOPE_TREE && m.dir_key != key && !under(m.dir_key, key)) continue;
@@ -4693,11 +4700,11 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
                 !plan.not_text.empty() || !plan.not_phrases.empty())) {
       // Filters alone ("video in:2024", "file:IMG_12"): everything they allow,
       // newest first.
-      std::vector<std::pair<std::int64_t, std::int64_t>> by_date;  // (mtime, asset)
+      std::vector<std::pair<std::int64_t, std::int64_t>> by_date;  // (date taken else mtime, asset)
       {
         std::lock_guard lock(assets_m_);
         for (std::int64_t a : *allowed) {
-          if (auto it = assets_.find(a); it != assets_.end()) by_date.push_back({it->second.mtime, a});
+          if (auto it = assets_.find(a); it != assets_.end()) by_date.push_back({it->second.when(), a});
         }
       }
       std::sort(by_date.begin(), by_date.end(), std::greater<>());

@@ -40,6 +40,7 @@
 #include "addon/host.h"
 #include "addons/ai/engine.h"
 #include "addons/ai/index_db.h"
+#include "addons/ai/query.h"
 #include "nle/search_session.h"
 #include "core/json.h"
 #include "import_fixture.h"
@@ -381,6 +382,7 @@ struct photos_lib {
     mv::ai::asset_kind kind = mv::ai::asset_kind::photo;
     bool local = true;       // false: only iCloud has the original
     std::string clip_file;   // a local clip's file (the fake sampler reads its name)
+    std::int64_t created = 0;  // creationDate, unix seconds (#404)
   };
   std::mutex m;
   mv::ai::photos_access access = mv::ai::photos_access::full;
@@ -417,7 +419,9 @@ class fake_photos final : public mv::ai::photos_source {
       items = lib_->items;
     }
     for (const auto& it : items) {
-      if (!visit(mv::ai::photos_item{it.id, it.mtime, 100, it.kind})) return mv::err(mv::status::cancelled);
+      mv::ai::photos_item pi{it.id, it.mtime, 100, it.kind};
+      pi.created = it.created;
+      if (!visit(pi)) return mv::err(mv::status::cancelled);
     }
     return {};
   }
@@ -673,6 +677,11 @@ struct rig {
         out.flags |= MV_ADDON_TAG_HAS_LOCATION;
         out.lat = 38.7975;
         out.lon = -9.3883;
+      }
+      // #404: "y2019" was taken on 2019-06-15 12:00 (wall clock read as UTC).
+      if (name.find("y2019") != std::string::npos) {
+        out.flags |= MV_ADDON_TAG_HAS_DATE;
+        out.taken_unix = mv::ai::query::days_from_civil(2019, 6, 15) * 86400 + 12 * 3600;
       }
       std::strcpy(out.fields_utf8, fields.c_str());
       return true;
@@ -1621,6 +1630,56 @@ TEST_CASE("camera:, ai:, made:, place: and a plain tag word in Local search", "[
   const auto lens_rows = r.rows(lens);
   REQUIRE_FALSE(lens_rows.empty());
   CHECK(lens_rows.front().first == "red_r5.jpg");
+}
+
+TEST_CASE("date terms use the date taken, and the file's time only when there is none", "[ai][engine][tags][dates]") {
+  rig r;
+  r.file("red_y2019.jpg");  // taken in 2019, written (mtime) today
+  r.file("red_plain.jpg");  // no date taken: its mtime, today
+  // A Photos item modified in 1970 (mtime 1) and created in 2018.
+  r.library->items = {{"red-old", 1, mv::ai::asset_kind::photo, true, "", 0}};
+  r.library->items.front().created = mv::ai::query::days_from_civil(2018, 3, 1) * 86400;
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.eng->index_photos_library());
+  REQUIRE(r.idle());
+  const int embedded = r.fast->images_embedded.load();
+  const auto names = [](const std::vector<std::pair<std::string, std::int64_t>>& rows) {
+    std::set<std::string> out;
+    for (const auto& [n, _] : rows) out.insert(n);
+    return out;
+  };
+  const auto now = std::chrono::system_clock::now();
+  const std::int64_t year_now =
+      1970 + std::chrono::duration_cast<std::chrono::hours>(now.time_since_epoch()).count() / (24 * 36525 / 100);
+  const std::string this_year = "in:" + std::to_string(year_now);
+
+  CHECK(names(r.search("in:2019")) == std::set<std::string>{"red_y2019.jpg"});
+  CHECK(names(r.search("before:2020")).count("red_y2019.jpg") == 1);
+  CHECK(names(r.search("before:2020")).count("red_plain.jpg") == 0);
+  CHECK(names(r.search("in:2019-06")) == std::set<std::string>{"red_y2019.jpg"});
+  CHECK(names(r.search("in:2019-07")).empty());
+  // The file's own time no longer dates it...
+  CHECK(names(r.search(this_year)).count("red_y2019.jpg") == 0);
+  // ...but a file with no date taken still matches on it.
+  CHECK(names(r.search(this_year)).count("red_plain.jpg") == 1);
+  // A Photos row goes by its creationDate.
+  CHECK(names(r.search("in:2018")) == std::set<std::string>{"photos:red-old"});
+  CHECK(names(r.search("in:1970")).empty());
+  // A description with a date narrows the same way.
+  CHECK(names(r.search("red in:2019")) == std::set<std::string>{"red_y2019.jpg"});
+  // Filters alone list newest first by the same date.
+  const auto all = r.search("after:2000");
+  REQUIRE(all.size() == 3);
+  CHECK(all[0].first == "red_plain.jpg");
+  CHECK(all[1].first == "red_y2019.jpg");
+  CHECK(all[2].first == "photos:red-old");
+  // Nothing was embedded again, and a restart reads the dates from the index.
+  CHECK(r.fast->images_embedded.load() == embedded);
+  r.start();
+  REQUIRE(r.idle());
+  CHECK(names(r.search("in:2019")) == std::set<std::string>{"red_y2019.jpg"});
+  CHECK(r.fast->images_embedded.load() == embedded);
 }
 
 TEST_CASE("the tag backfill resumes after a restart and reads nothing twice", "[ai][engine][tags]") {

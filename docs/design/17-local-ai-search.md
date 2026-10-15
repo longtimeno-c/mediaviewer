@@ -420,9 +420,9 @@ same thing by the same words. Terms narrow each other (AND).
 | `Trist`, `tristna` (alone) | a lone word that starts or nearly spells a name: those people first, then what the word describes (so "car" still finds cars when there is a Carla) |
 | `-Nico`, `-beach`, `-"goodbye"`, `-video` | leave out a person, what a picture search finds, a phrase said, a kind |
 | `beach video`, `is:photo`, `videos of Anna` | a kind: the last word, `is:` / `type:`, or a leading "videos of"; "photos of …" asks for anything |
-| `in:2024`, `in:2024-06`, `before:2025`, `after:2023-05`, `since:2024-03-01`, `until:2024` | the **file's** date (modification time, UTC). Capture dates (EXIF) are not in the index |
+| `in:2024`, `in:2024-06`, `before:2025`, `after:2023-05`, `since:2024-03-01`, `until:2024` | the **date taken** (`taken_at`: the camera's wall clock read as UTC, no timezone conversion; a Photos item's `creationDate`), and the file's modification time (UTC) for a file with none or whose tags are not read yet (#404) |
 | `file:IMG_12`, `file:"trip 2024"`, `-file:copy` | the file's **name** (not its folder) contains the text, case and accents folded. Indexed files only |
-| `video in:2024`, `file:IMG_12` | filters alone: everything they allow, newest first |
+| `video in:2024`, `file:IMG_12` | filters alone: everything they allow, newest first (by the same date) |
 | `camera:R5`, `camera:canon`, `-camera:iphone` | the file's camera tag (make and model) contains the text, folded (#291) |
 | `lens:24-70`, `lens:"RF 50"` | the lens tag contains the text |
 | `ai:yes`, `ai:no`, `made:yes` | AI provenance (positive evidence: C2PA / IPTC trained-algorithmic source, or a known generator); `ai:no` is every file without that evidence |
@@ -434,9 +434,8 @@ Lead-ins ("pull up all the …", "show me …", "find …") are trimmed. Typing 
 names people for the word being typed (`suggest_json`; prefix first, then a near spelling of one
 letter, two from eight letters); **Tab** or a click completes the word. A word that is not a
 name, a kind or an operator stays in the description; an unfinished `in:20` is ignored. Not in
-the index, so not in the syntax: OCR (quoted words search speech only). Date terms still use the
-file's modification time; `taken_at` makes date taken possible, a change of its own (plan "Out of
-scope"). Per keystroke the parse is linear in the query plus one `SELECT` of the named people.
+the index, so not in the syntax: OCR (quoted words search speech only). Date terms use the date
+taken where the tag backfill has read one (#404, [12](12-decision-log.md)). Per keystroke the parse is linear in the query plus one `SELECT` of the named people.
 
 Words fold with the shared rule (`core/fold.h`, the hosts' name fold): decompose, drop marks,
 lowercase; ß, æ, ø and ł stay themselves. Before #291 the pack's own Latin-1 fold turned ß into
@@ -972,7 +971,7 @@ refresh in the fourth, p99 ≤ 17.1 ms.
 - An OpenVINO piece (the code path exists, nothing is published).
 - A memory-mapped search matrix (it is loaded into memory).
 - Local search on Intel Macs (no x86_64 ORT).
-- OCR, places, EXIF capture dates or camera in the index and query language.
+- OCR and place names in the index and query language (places are the Places add-on's, answered at query time).
 - A "nothing found" z calibration for CLAP.
 - Background (unrequested) People refinement; the incremental refinement path
   (`refine_begin(false)`) exists in faces.db and its tests but has no caller.

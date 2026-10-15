@@ -360,7 +360,10 @@ class engine {
     std::string dir_key;  // its folder's key
     asset_kind kind = asset_kind::photo;
     std::int64_t root = 0;
-    std::int64_t mtime = 0;  // unix seconds: in: / before: / after: (query.h)
+    std::int64_t mtime = 0;  // unix seconds: the file's modification time
+    // #404: the date taken (schema 4's taken_at: the camera's wall clock read
+    // as UTC, or a Photos item's creationDate) once the backfill has read it.
+    std::optional<std::int64_t> taken_at;
     bool cloud = false;      // online-only: no track reads it until fetched
     // #291 (schema 4): its tags, once the backfill has read them.
     bool tags = false;
@@ -369,6 +372,9 @@ class engine {
     bool has_where = false;
     std::vector<std::string> fields;      // the search fields as shown (the why)
     std::string folded;                   // search.h's folded_text rule
+    // What in: / before: / after: / since: / until: and the filter-only
+    // order go by (#404): the date taken, else the file's modification time.
+    [[nodiscard]] std::int64_t when() const noexcept { return taken_at ? *taken_at : mtime; }
   };
   struct result_row {
     std::int64_t asset = 0;
@@ -551,7 +557,7 @@ class engine {
   std::uint64_t submit(std::function<void(search_state&)> run);
   std::function<bool(std::int64_t)> scope_filter(const std::string& scope_dir, std::uint32_t scope,
                                                  std::uint32_t kinds) const;
-  // The assets in scope, of `kinds`, with a file date in [from_unix, to_unix):
+  // The assets in scope, of `kinds`, dated (asset_meta::when) in [from_unix, to_unix):
   // a snapshot, so a scan never takes assets_m_.
   std::shared_ptr<std::set<std::int64_t>> scope_assets(
       const std::string& scope_dir, std::uint32_t scope, std::uint32_t kinds,

@@ -1136,6 +1136,16 @@ treated like a path (never logged). The base app carries `NSPhotoLibraryUsageDes
 photos-library entitlement, because TCC attributes the request to the app; access is asked only on
 a click. A full re-enumeration of 23,089 assets takes 0.43 s, so no change tokens.
 
+**Date terms go by the date taken (2026-10-15, #404).** `in:`, `before:`, `after:`, `since:` and
+`until:`, and the newest-first order of a filters-only search, use schema 4's `taken_at` (the
+camera's wall clock read as UTC, the viewer's date-taken sort key, or a Photos item's
+`creationDate`) and fall back to the file's modification time only while an asset has none (no
+EXIF date, or the tag backfill has not reached it). A camera dump copied or synced in 2026 matched
+`in:2026` and not the year it was shot. No timezone conversion: `in:2024-06` is the stamp's own
+calendar month. Nothing is re-embedded and the schema is unchanged; the column was already there.
+**Cost:** during the backfill a file's date can move from its mtime to its date taken, so a date
+query run then may change its answer once.
+
 ---
 
 ## Final Cut Pro search (Mac)

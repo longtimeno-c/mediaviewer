@@ -12,7 +12,9 @@
 //   beach video  is:photo  a kind (the last word, "videos of ...", or is: /
 //                          type:); "photos of ..." still asks for anything
 //   in:2024  before:2025-06  after:2023  since:2024-03-01
-//                          the file's date (modification time, UTC)
+//                          the date taken (#404: the camera's wall clock read
+//                          as UTC, or a Photos item's creationDate), else the
+//                          file's modification time (UTC) while there is none
 //   said:hello             same as "hello"
 //   file:IMG_12  file:"my trip"  -file:copy
 //                          the file's name contains the text (case and accents
