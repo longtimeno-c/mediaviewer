@@ -323,8 +323,9 @@ struct StatusLine: Equatable {
     switch state {
     case MV_AI_STATE_INDEXING.rawValue:
       // The line names the pass that is running: pictures first, then the
-      // clips' sound, then their speech. The ETA covers pictures only (the
-      // pack's estimate), so it is shown only while pictures run.
+      // clips' own text, the text in pictures, the clips' sound, then their
+      // speech (the pack's order). The ETA covers pictures only (the pack's
+      // estimate), so it is shown only while pictures run.
       switch Self.phase(s) {
       case .pictures where Self.picturesDone(s) >= s.assets_total && s.icloud_videos_left > 0:
         // Everything on this Mac is done; a clip is on its way from iCloud.
@@ -335,9 +336,13 @@ struct StatusLine: Equatable {
           + "\(countText(s.cloud_files_left)) left to index"
       case .pictures:
         let eta = etaText(s.eta_low_seconds, s.eta_high_seconds)
-        text = (s.sound_total > 0 || s.speech_total > 0 ? "Indexing pictures " : "Indexing ")
+        text = (s.sound_total > 0 || s.speech_total > 0 || s.text_total > 0 ? "Indexing pictures " : "Indexing ")
           + "\(countText(Self.picturesDone(s))) of \(countText(s.assets_total))"
           + (eta.isEmpty ? "" : " · \(eta)")
+      case .cues:
+        text = "Reading chapters and subtitles \(countText(s.cues_done)) of \(countText(s.cues_total)) clips"
+      case .text:
+        text = "Reading text in pictures \(countText(s.text_done)) of \(countText(s.text_total))"
       case .sound:
         text = "Indexing sound \(countText(s.sound_done)) of \(countText(s.sound_total)) clips"
       case .speech:
@@ -389,6 +394,8 @@ struct StatusLine: Equatable {
     let phase = Self.phase(s)
     switch phase {
     case .pictures: progress = fraction(Self.picturesDone(s), s.assets_total)
+    case .cues: progress = fraction(s.cues_done, s.cues_total)
+    case .text: progress = fraction(s.text_done, s.text_total)
     case .sound: progress = fraction(s.sound_done, s.sound_total)
     case .speech: progress = fraction(s.speech_done, s.speech_total)
     }
@@ -444,7 +451,7 @@ struct StatusLine: Equatable {
     detail = notes.joined(separator: " · ")
   }
 
-  enum Phase { case pictures, sound, speech }
+  enum Phase { case pictures, cues, text, sound, speech }
 
   /// The opt-in iCloud fetch (Settings → Photos Library), when it has
   /// something to say: what it is downloading, or what it waits for.
@@ -475,10 +482,13 @@ struct StatusLine: Equatable {
     s.assets_done + s.assets_failed + s.assets_unavailable + s.cloud_files_left
   }
 
-  /// The pass running now: pictures until they are all handled, then sound,
-  /// then speech. Pictures again once everything is handled.
+  /// The pass running now: pictures until they are all handled, then the
+  /// clips' own text, the text in pictures, sound, then speech. Pictures again
+  /// once everything is handled.
   static func phase(_ s: mv_ai_status) -> Phase {
     if picturesDone(s) < s.assets_total { return .pictures }
+    if s.cues_done < s.cues_total { return .cues }
+    if s.text_done < s.text_total { return .text }
     if s.sound_done < s.sound_total { return .sound }
     if s.speech_done < s.speech_total { return .speech }
     return .pictures

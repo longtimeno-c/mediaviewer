@@ -456,7 +456,7 @@ same thing by the same words. Terms narrow each other (AND).
 | Typed | Means |
 |---|---|
 | `Tristan beach` | photos / moments with Tristan, ranked by "beach" (no "nothing found" test inside a person's own) |
-| `Tristan "hello"`, `Tristan:"hello"`, `said:hello` | Tristan, and a clip whose transcript, a chapter title or a text subtitle line (#406, "Cues"), or a photo whose text (#403, "Text in pictures"), has those words in that order; the line is the snippet |
+| `Tristan "hello"`, `Tristan:"hello"`, `said:hello` | Tristan, and a clip whose transcript, a chapter title or a text subtitle line (#406, "Cues"), or a photo or clip moment whose text (#403, "Text in pictures"), has those words in that order; the line is the snippet |
 | `Tristan Aaryan`, `Tristan and Aaryan` | both in the same photo or clip |
 | `Tristan or Aaryan` | either |
 | `Anna Smith`, `anna` | a named person: the whole name or the first name, any case, accents folded |
@@ -659,7 +659,8 @@ is found without the audio piece and without Whisper hearing it.
   cue's `start_ms`; plain words also match it by the speech rule (word coverage), beside the
   picture search, not instead of it. Such a row has `MV_AI_MATCH_TEXT`, and its snippet names the
   source: "Chapter: Birthday cake" or "Subtitle: suited and booted", shown unquoted (both chromes).
-  Burned-in text and OCR are not this ([#403](https://github.com/longtimeno-c/mediaviewer/issues/403)).
+  Burned-in text is read by the OS instead ("Text in pictures"). The cue pass and the text pass
+  share the table but not their rows: a resumed cue pass drops only chapters and subtitles.
 
 ## Text in pictures (#403)
 
@@ -673,24 +674,58 @@ does.
   from the Windows SDK; `windowsapp.lib`, no package). No model ships and nothing leaves the
   machine. A Windows with no OCR language installed, or another platform, has no reader: the
   track stays off and nothing else changes.
-- **Its own pass** (`track::text`), photos only, after the pictures and the clips' cues: a
-  2,048 px decode (small text needs pixels; the picture pass reads 448) and the OS reader, four
-  photos a claim, `wait_turn` before each. One `cues` row per photo, kind 3 (`picture`),
-  `start_ms` −1, the lines joined by spaces so a phrase split over two lines of a sign is one
-  phrase, at most 4,000 bytes. Progress under the reader's spec (`ocr/vision-accurate/1`,
-  `ocr/windows-media/1`): read once, ever, until the file changes; an export carries none.
-  Video keyframes are not read yet.
+- **Its own pass** (`track::text`), after the pictures and the clips' cues: a 2,048 px decode
+  (small text needs pixels; the picture pass reads 448) and the OS reader, four photos a claim,
+  `wait_turn` before each. One `cues` row per photo, kind 3 (`picture`), `start_ms` −1, the lines
+  joined by spaces so a phrase split over two lines of a sign is one phrase, at most 4,000 bytes.
+  Progress under the reader's spec (`ocr/vision-accurate/1`, `ocr/windows-media/1`): read once,
+  ever, until the file changes; a photo read again (a new reader, a Live Photo's movie changed)
+  replaces its row. An export carries none.
+- **Clip moments** (2026-10-15): a clip is taken only once its picture pass is done
+  (`index_db::pending`'s `after`), under a spec of its own, the reader's plus `/moments`
+  (`ocr/vision-accurate/1/moments`), so photos already read stay read. The moments are the ones
+  the picture pass stored (`engine::stored_moments`, as the People pass reads them), each seeked
+  and decoded again at 2,048 px (the clip's own size when smaller) by the host's `video_frame`,
+  read, and dropped: nothing is embedded or kept but the text. One `picture` row per moment at its
+  `pts_ms`; a moment whose text is the one before's is not stored again, so a sign held in shot is
+  one row at the moment it appears. Committed every 8 moments (partial, `resume_ms` the last
+  moment read); a stop commits what was read and a restart goes on after it; a fresh read first
+  drops the clip's earlier text rows. A clip where no moment decoded or read is failed (tried
+  again like any failure). Only clips whose root indexes pictures; the iCloud fetch keeps a
+  downloaded clip until its moments are read. A quoted search returns the clip at that moment with
+  "In the picture: …" as the snippet.
 - **Search** as for cues: quoted words and `said:` match the photo's text, plain words by word
   coverage beside the picture search; words are folded (`core/fold.h`) on both sides, so
   "koln" finds "KÖLN". The row has `MV_AI_MATCH_TEXT` and the snippet "In the picture: …".
-- **Off switch:** `set_setting("read_text", 0)` (saved; `settings_json` reports it) leaves the
-  track out from the next claim; 1 brings it back for what was not read. No chrome control yet.
+- **Off switch:** Settings → Local search → Text in pictures → **Read text in photos** on both
+  hosts (`set_setting("read_text", 0/1)`, saved, read back from `settings_json`) leaves the
+  photo and clip passes out from the next claim; on brings them back for what was not read; text
+  already read stays searchable. `settings_json`'s `text_available` is false when the OS has no
+  reader (a Windows without an OCR language): the switch is shown off and greyed, and says why.
+- **Status:** `mv_ai_status` counts both text passes (appended `cues_total` / `cues_done`, a clip's
+  own text; `text_total` / `text_done`, photos plus clips whose pictures are done; failed and
+  unavailable count as done). While either is short the state is not idle, so no chrome says "Up
+  to date" while they run; the status lines name them ("Reading chapters and subtitles 3 of 40
+  clips", "Reading text in pictures 120 of 400"), after the pictures, as the pack runs them.
+  The three counts cost 14 ms together at 25,000 assets (`mv_ai_tests "[.perf-bench]"`, beside the
+  picture count's 8 ms), and the status refreshes once a second even idle, so they are kept
+  between refreshes and counted again only after a cue or text item, a `read_text` change, a
+  change in the picture counts, spec or held roots, while a text pass has work, or every 30 s.
 - **Measured** (Apple M-series, `mv_ai_tests "[.ocr-fixture]"` over `tools/ai/ocr-fixture.py`'s
   40 labelled camera-sized photos: signs, posters, shirts, screenshots): Vision found 38 of 40
   phrases (0.95), "suited and booted" among them; it read "trom" for "from" on one sign and lost
   the last word of a tilted shirt. Per photo: the text pass's 2,048 px decode 10.1 ms median
   against the picture pass's 448 px decode 8.6 ms, and the read 44 ms median, 84 ms mean. Two runs,
   the same numbers. Windows is not measured.
+- **Measured, clip moments** (Apple M-series, `MV_OCR_CLIP_DIR=<dir> mv_ai_tests
+  "[.ocr-moments]"`: six of the owner's clips (3840×2160 and 2704×1520 GoPro, two 1080×1920
+  iPhone, a 2688×1520 CCTV clip with a burned-in clock, a 720×1280 phone clip), 12 moments each; 72 moments, 19 with text). Per moment, 180, 210 and 218 ms
+  median over three runs (264–269 ms mean), on a machine other builds kept at load 8–12 (two more
+  runs at load 33: 303 and 400 ms; not a quiet-machine number). Of that the OS read is 20–22 ms;
+  the rest is the host's seek and software decode from the keyframe before the moment, 165–170 ms
+  at 2,048 px and the same (166–169 ms) at 448 px: the decode, not the edge or the reader, is the
+  cost. So a clip costs its moment count × ~0.2 s once, on one background worker, after its
+  pictures; the People pass already pays one such decode a moment. Windows is not measured.
 
 ## People
 
@@ -1080,9 +1115,8 @@ refresh in the fourth, p99 ≤ 17.1 ms.
 - A memory-mapped search matrix (it is loaded into memory).
 - Local search on Intel Macs (no x86_64 ORT).
 - Place names in the index and query language (places are the Places add-on's, answered at query time).
-- Text in video frames (#403 reads photos only), and a Settings control for `read_text`.
-- A count of their own for the cue and text passes in `mv_ai_status`: like the People pass, they run
-  after the pictures while the status says the folder is up to date.
+- Reading a clip's text from the picture pass's own decode: each moment is seeked and decoded
+  again, which is most of a moment's cost ("Text in pictures").
 - A "nothing found" z calibration for CLAP.
 - Background (unrequested) People refinement; the incremental refinement path
   (`refine_begin(false)`) exists in faces.db and its tests but has no caller.

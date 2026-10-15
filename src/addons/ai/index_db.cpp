@@ -526,17 +526,25 @@ static std::string held_where(const track_filter& filter) {
   return in + ")";
 }
 
+// pending()'s `after` spec, as SQL over `a`: bound as ?8.
+static std::string after_where(const std::string& after) {
+  if (after.empty()) return {};
+  return " AND EXISTS(SELECT 1 FROM progress q WHERE q.asset_id = a.id AND q.spec = ?8 AND q.state = 2)";
+}
+
 // pending()'s rule for "still to do", as SQL over `a` and `p`.
 constexpr const char* kPendingWhere =
     " (p.state IS NULL OR p.state = 0 OR p.state = 1 OR (p.state = 3 AND p.tries < ?2)) AND a.cloud = 0";
 
 std::vector<work_item> index_db::pending(const std::string& spec, std::size_t limit,
-                                         std::int32_t max_tries, const track_filter& filter) {
-  return pending_where(spec, limit, max_tries, filter, "");
+                                         std::int32_t max_tries, const track_filter& filter,
+                                         const std::string& after) {
+  return pending_where(spec, limit, max_tries, filter, "", after);
 }
 
 std::vector<work_item> index_db::pending_among(const std::string& spec, std::span<const std::int64_t> ids,
-                                               std::int32_t max_tries, const track_filter& filter) {
+                                               std::int32_t max_tries, const track_filter& filter,
+                                               const std::string& after) {
   if (ids.empty()) return {};
   // Integers only, so written into the SQL; a handful at most.
   std::string in = " AND a.id IN (";
@@ -545,11 +553,12 @@ std::vector<work_item> index_db::pending_among(const std::string& spec, std::spa
     in += std::to_string(ids[i]);
   }
   in += ")";
-  return pending_where(spec, ids.size(), max_tries, filter, in);
+  return pending_where(spec, ids.size(), max_tries, filter, in, after);
 }
 
 std::vector<work_item> index_db::pending_where(const std::string& spec, std::size_t limit, std::int32_t max_tries,
-                                               const track_filter& filter, const std::string& extra) {
+                                               const track_filter& filter, const std::string& extra,
+                                               const std::string& after) {
   std::lock_guard lock(m_);
   std::vector<work_item> out;
   const std::string sql = std::string("SELECT ") + kAssetCols +
@@ -557,12 +566,13 @@ std::vector<work_item> index_db::pending_where(const std::string& spec, std::siz
       " FROM assets a JOIN roots r ON r.id = a.root_id AND r.enabled = 1"
       " LEFT JOIN progress p ON p.asset_id = a.id AND p.spec = ?1"
       " WHERE" + std::string(kPendingWhere) +
-      std::string(kTrackWhere) + held_where(filter) + extra +
+      std::string(kTrackWhere) + held_where(filter) + after_where(after) + extra +
       " ORDER BY COALESCE(p.state, 0) = 1 DESC, a.kind ASC, a.id ASC LIMIT ?3";
   stmt s(db_, sql.c_str());
   s.bind(1, spec).bind(2, std::int64_t{max_tries}).bind(3, static_cast<std::int64_t>(limit))
       .bind(4, std::int64_t{filter.photos ? 1 : 0}).bind(5, std::int64_t{filter.default_media})
       .bind(6, std::int64_t{filter.media_bit}).bind(7, filter.skip_root);
+  if (!after.empty()) s.bind(8, after);
   while (s.step_row()) {
     work_item w;
     w.asset = asset_from(s, 0);
@@ -780,9 +790,11 @@ expected index_db::commit_cues(std::int64_t asset, std::span<const cue_in> cues,
   if (!exec("BEGIN")) return err(status::io);
   bool ok = true;
   {
-    if (replace_from >= 0) {
-      stmt d(db_, "DELETE FROM cues WHERE asset_id = ?1 AND start_ms >= ?2");
-      ok = d.bind(1, asset).bind(2, replace_from).run();
+    if (replace_from != -1) {
+      // The pass's own rows only: a clip's subtitles and the text on its
+      // moments are two passes over one table.
+      stmt d(db_, "DELETE FROM cues WHERE asset_id = ?1 AND start_ms >= ?2 AND (kind = 3) = ?3");
+      ok = d.bind(1, asset).bind(2, replace_from).bind(3, std::int64_t{spec == kCueSpec ? 0 : 1}).run();
     }
     stmt ins(db_, "INSERT INTO cues(asset_id, start_ms, end_ms, kind, text) VALUES(?1, ?2, ?3, ?4, ?5)");
     for (const cue_in& c : cues) {
@@ -835,7 +847,7 @@ expected index_db::drop_spec(const std::string& spec) {
   return exec("COMMIT") ? expected{} : err(status::io);
 }
 
-counts index_db::count(const std::string& spec, const track_filter& filter) {
+counts index_db::count(const std::string& spec, const track_filter& filter, const std::string& after) {
   std::lock_guard lock(m_);
   counts c;
   const std::string sql = std::string(
@@ -849,10 +861,11 @@ counts index_db::count(const std::string& spec, const track_filter& filter) {
       " SUM(CASE WHEN a.cloud = 1 AND (p.state IS NULL OR p.state < 2) THEN 1 ELSE 0 END)"
       " FROM assets a JOIN roots r ON r.id = a.root_id AND r.enabled = 1"
       " LEFT JOIN progress p ON p.asset_id = a.id AND p.spec = ?1 WHERE 1") + kTrackWhere +
-      held_where(filter);
+      held_where(filter) + after_where(after);
   stmt a(db_, sql.c_str());
   a.bind(4, std::int64_t{filter.photos ? 1 : 0}).bind(5, std::int64_t{filter.default_media})
       .bind(6, std::int64_t{filter.media_bit}).bind(7, filter.skip_root);
+  if (!after.empty()) a.bind(8, after);
   if (a.bind(1, spec).step_row()) {
     c.assets = static_cast<std::uint64_t>(a.i64(0));
     c.done = static_cast<std::uint64_t>(a.i64(1));

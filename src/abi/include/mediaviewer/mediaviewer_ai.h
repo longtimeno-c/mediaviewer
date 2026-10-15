@@ -224,6 +224,16 @@ typedef struct mv_ai_status {
   uint64_t cloud_files_fetched;    /* brought down and indexed since the pack started */
   uint32_t cloud_fetch;            /* mv_ai_icloud_fetch: the same states */
   float cloud_fetch_progress;      /* the file in progress, 0..1 */
+  /* The text passes (2026-10-15): a clip's own text (#406: chapter titles and
+   * text subtitles), and text read in pictures by the OS (#403: photos, and
+   * the moments a clip's picture pass kept). Assets to do and done, failed and
+   * unavailable counted as done, as for sound. text_total is 0 with "read_text"
+   * off or no OS reader. While either is short the state is not IDLE. Read
+   * these only when struct_size covers them. */
+  uint64_t cues_total;
+  uint64_t cues_done;
+  uint64_t text_total;
+  uint64_t text_done;
 } mv_ai_status;
 
 typedef enum mv_ai_icloud_fetch {

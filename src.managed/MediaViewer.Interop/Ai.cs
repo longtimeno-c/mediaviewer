@@ -122,7 +122,7 @@ public enum MvAiMatch : uint
     Text = 16,
 }
 
-/// <summary>Mirrors <c>mv_ai_status</c> field for field (1336 bytes).</summary>
+/// <summary>Mirrors <c>mv_ai_status</c> field for field (1672 bytes).</summary>
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct MvAiStatus
 {
@@ -189,6 +189,13 @@ public unsafe struct MvAiStatus
     public ulong CloudFilesFetched;
     public MvAiCloudFetch CloudFetch;
     public float CloudFetchProgress;
+    // The text passes (2026-10-15), appended: a clip's own text (chapters,
+    // subtitles; #406) and text the OS reads in photos and on clip moments
+    // (#403), assets to do and done. Zero from a pack before them.
+    public ulong CuesTotal;
+    public ulong CuesDone;
+    public ulong TextTotal;
+    public ulong TextDone;
 
     /// <summary>Display only (rule 6: never logged).</summary>
     public readonly string ActiveRootText
@@ -322,7 +329,7 @@ public sealed unsafe class AiApi
         if (table == IntPtr.Zero) throw new ArgumentNullException(nameof(table));
         // The POD layouts, pinned against mediaviewer_ai.h: a drift here reads
         // as garbage progress rather than as an error.
-        if (sizeof(MvAiStatus) != 1336 || sizeof(MvAiResult) != 32)
+        if (sizeof(MvAiStatus) != 1672 || sizeof(MvAiResult) != 32)
             throw new InvalidOperationException("mv_ai_status / mv_ai_result layout drifted");
         _api = (MvAiApi*)table;
         if (_api->StructSize < (uint)sizeof(MvAiApi))

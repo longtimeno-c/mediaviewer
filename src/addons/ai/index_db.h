@@ -99,8 +99,11 @@ struct track_filter {
 
 // #406: the progress spec of the cue pass (not a model: there is no vector).
 inline constexpr const char* kCueSpec = "cues/1";
-// #403: `picture` is text read in a photo by the OS (text_reader.h), one row
-// per photo at start_ms -1, under its reader's progress spec.
+// commit_cues' replace_from: drop every row of the pass's kind first.
+inline constexpr std::int64_t kAllCues = INT64_MIN;
+// #403: `picture` is text read in a picture by the OS (text_reader.h): one row
+// per photo at start_ms -1 under its reader's progress spec, and one per clip
+// moment at that moment's pts_ms under the reader's moments spec.
 enum class cue_kind : std::uint8_t { chapter = 1, subtitle = 2, picture = 3 };
 struct cue_in {
   std::int64_t start_ms = 0;
@@ -268,13 +271,18 @@ class index_db {
   // ---- work ---------------------------------------------------------------------
   // Assets of enabled roots with no done / failed progress for `spec` (and
   // failed ones with tries < max_tries): partial clips first, then photos,
-  // then clips. The indexer puts the folder on screen first.
+  // then clips. The indexer puts the folder on screen first. `after`, when
+  // set, is a spec that must be done first: only assets whose progress for it
+  // is done (the text on a clip's moments waits for the picture pass that
+  // chose them); count() takes it too.
   [[nodiscard]] std::vector<work_item> pending(const std::string& spec, std::size_t limit,
-                                               std::int32_t max_tries, const track_filter& filter = {});
+                                               std::int32_t max_tries, const track_filter& filter = {},
+                                               const std::string& after = {});
   // pending(), limited to `ids`: the clips the iCloud fetch has downloaded,
   // which go to the front of the queue (2026-10-05).
   [[nodiscard]] std::vector<work_item> pending_among(const std::string& spec, std::span<const std::int64_t> ids,
-                                                     std::int32_t max_tries, const track_filter& filter = {});
+                                                     std::int32_t max_tries, const track_filter& filter = {},
+                                                     const std::string& after = {});
   [[nodiscard]] expected set_duration(std::int64_t asset, std::int64_t duration_ms);
   // Stores frames and moves progress in one transaction (a kill between two
   // commits resumes at `resume_ms`; nothing committed is redone).
@@ -315,8 +323,10 @@ class index_db {
       const std::function<void(std::int64_t asset, std::int64_t start_ms, std::int64_t end_ms,
                                const std::string& text)>& visit);
   // #406: a clip's cues, with progress under kCueSpec, in one transaction.
-  // `replace_from` >= 0 first drops the asset's cues starting at or after it
-  // (a resumed pass sends them again).
+  // `replace_from` other than -1 first drops the asset's cues starting at or
+  // after it (a resumed pass sends them again; kAllCues drops every one).
+  // Only the pass's own kind goes: kCueSpec owns chapters and subtitles, a
+  // text reader's specs own `picture` rows.
   [[nodiscard]] expected commit_cues(std::int64_t asset, std::span<const cue_in> cues, work_state state,
                                      std::int64_t resume_ms, std::int64_t replace_from = -1,
                                      const std::string& spec = kCueSpec);
@@ -326,7 +336,8 @@ class index_db {
   [[nodiscard]] expected drop_spec(const std::string& spec);
 
   // ---- reads --------------------------------------------------------------------
-  [[nodiscard]] counts count(const std::string& spec, const track_filter& filter = {});
+  [[nodiscard]] counts count(const std::string& spec, const track_filter& filter = {},
+                             const std::string& after = {});
   [[nodiscard]] std::uint64_t frames_in_root(std::int64_t root, const std::string& spec);
   [[nodiscard]] std::uint64_t assets_in_root(std::int64_t root);
   [[nodiscard]] std::uint64_t done_in_root(std::int64_t root, const std::string& spec);
@@ -383,7 +394,8 @@ class index_db {
   index_db() = default;
   bool exec(const char* sql);
   std::vector<work_item> pending_where(const std::string& spec, std::size_t limit, std::int32_t max_tries,
-                                       const track_filter& filter, const std::string& extra);
+                                       const track_filter& filter, const std::string& extra,
+                                       const std::string& after);
   std::mutex m_;
   sqlite3* db_ = nullptr;
   std::string path_;

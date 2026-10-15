@@ -1191,6 +1191,26 @@ sign and shirt text is small: 95 % of 40 labelled phrases on the Mac at 44 ms me
 is about 20–35 minutes of one background worker on an M-series Mac, after the pictures are done.
 Video frames are not read yet.
 
+**The text on clip moments is read too, and the text passes count in the status (2026-10-15,
+#403 follow-up).** A sign or a burned-in caption in a clip is found at its moment: the text pass
+reads the moments the picture pass stored, after that pass is done with the clip, decoding each
+again at 2,048 px. Not the sampler's frames as they go by, because the picture pass decodes at
+448 and must never wait on the OS reader; not every keyframe, because the stored moments are
+already the clip's distinct views, and a sign held in shot over several of them is stored once.
+Its own progress spec (`<reader>/moments`) so the photos already read are not read again, and
+commits every 8 moments so a stop resumes; nothing is embedded. **Cost:** the moment's seek and
+decode, which is most of it, plus the OS read: about 0.2 s a moment on the Mac (180–218 ms median
+over three runs of 72 moments from six of the owner's clips, the read 20–22 ms of it, on a loaded
+machine), once per clip, after its pictures. The cue and text passes now have
+counts in `mv_ai_status` and keep the state from idle: before, the pill said "Up to date" while
+they ran. Those three counts are 14 ms a refresh at 25,000 assets and the refresh runs once a
+second even when idle, so they are cached and counted again only when something can have moved
+them, or every 30 s (about 0.5 ms a second idle). The **Read text in photos** switch (Settings → Local search, both hosts, on by
+default) turns both text passes off. The Windows interop's pinned `MvAiStatus` size had stayed at
+1,336 bytes since the People fields while the struct grew to 1,640 (the iCloud, provider-detail
+and cloud-file fields), so `AiApi`'s layout check would throw; it is 1,672 now, checked against
+the header.
+
 ---
 
 ## Final Cut Pro search (Mac)

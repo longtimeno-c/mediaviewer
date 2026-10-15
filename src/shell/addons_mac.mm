@@ -1864,6 +1864,11 @@ extern "C" bool mv_addon2_ai_status(mv_chrome_ai_status* out) {
   out->sound_done = st.sound_done;
   out->speech_total = st.speech_total;
   out->speech_done = st.speech_done;
+  // Zero from a pack older than the text passes' counts (2026-10-15).
+  out->cues_total = st.cues_total;
+  out->cues_done = st.cues_done;
+  out->text_total = st.text_total;
+  out->text_done = st.text_done;
   return true;
 }
 
