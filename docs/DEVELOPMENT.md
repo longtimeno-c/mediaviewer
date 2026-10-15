@@ -1764,6 +1764,18 @@ What is built is in [docs/design/28](design/28-sharepoint.md).
   no presence with the window closed), then the add-on through a signed store and the v3 table,
   offline. `mv_tests` 819 cases (808 passed, 11 skipped) and `mv_script_tests` pass;
   `SharepointPackTest` passes.
+- **ThreadSanitizer (Mac, 2026-10-15):** `"[sharepoint]"` is TSan-clean: 16 runs, 8 one after
+  another and 8 as four at once (load average ~12), every one 23 cases passed, 0 reports. The
+  engine, the channel and its pinger, the transfer's reader, the busy refusals and the accept loop
+  raised nothing. The first run's 4 reports were all the flood test's own fake discovery
+  publishing its callback to the test thread unsynchronised; it now publishes through an atomic.
+  Sharepoint is not in `cmake/portable`, so this is the [macOS](#macos-mac-prs-16) configure in
+  its own build directory with `-fsanitize=thread -fno-omit-frame-pointer -g` in
+  `CMAKE_{C,CXX,OBJC,OBJCXX}_FLAGS` and `-fsanitize=thread` in
+  `CMAKE_{EXE,SHARED,MODULE}_LINKER_FLAGS`, then `ninja mv_import_tests` and
+  `TZ=UTC build-tsan/bin/mv_import_tests "[sharepoint]"`. Bluetooth (`bt_mac.mm`, `bt_win.cpp`)
+  and the UDP beacon thread (`presence.cpp`) are not exercised by these tests, so TSan says nothing
+  about them.
 - **In a dev copy (offline, `MV_SHAREPOINT_OFFLINE=1`, sideloaded with the dev key):** its command
   opened the window with the two files it was given, on the host's theme; the gallery shows the
   share icon; a range set through the bridge made copy path copy the three files, and Next ended

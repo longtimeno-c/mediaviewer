@@ -727,10 +727,14 @@ TEST_CASE("sharepoint: a peer that connects and stalls cannot hold the receiver 
 
 namespace {
 // Beacons the test makes up, as a flood or a spoof would.
+// The engine starts it on its control thread; `ready` publishes `seen` to the
+// test's thread.
 struct inject_discovery final : sp::discovery {
   seen_fn seen;
+  std::atomic<bool> ready{false};
   bool start(const sp::beacon&, seen_fn s, tick_fn) override {
     seen = std::move(s);
+    ready.store(true);
     return true;
   }
   void stop() noexcept override {}
@@ -739,7 +743,7 @@ struct inject_discovery final : sp::discovery {
 
 TEST_CASE("sharepoint: made-up beacons cannot flood the list or take a peer's address", "[sharepoint]") {
   scratch_dir s("sharepoint_flood");
-  inject_discovery* inject = nullptr;
+  std::atomic<inject_discovery*> inject{nullptr};
   fake_host host(s / "received");
   sp::engine::options o;
   o.my_name = "Ann";
@@ -752,16 +756,19 @@ TEST_CASE("sharepoint: made-up beacons cannot flood the list or take a peer's ad
   };
   sp::engine eng(host, o);
   eng.screen_opened("");
-  REQUIRE(eventually([&] { return inject && inject->seen; }));
+  REQUIRE(eventually([&] {
+    const inject_discovery* d = inject.load();
+    return d && d->ready.load();
+  }));
   for (int i = 0; i < 500; ++i) {
     char id[17];
     std::snprintf(id, sizeof id, "%016x", 0x1000 + i);
-    inject->seen(sp::beacon{id, "Flood " + std::to_string(i), 40000}, "10.0.0.9");
+    inject.load()->seen(sp::beacon{id, "Flood " + std::to_string(i), 40000}, "10.0.0.9");
   }
   REQUIRE(eventually([&] { return eng.snapshot().peers.size() == sp::kMaxPeers; }));
   CHECK(eng.snapshot().peers.size() == sp::kMaxPeers);
   // A fresh peer keeps its address: a second machine claiming its id is ignored.
-  inject->seen(sp::beacon{"0000000000001000", "Somebody else", 50000}, "10.0.0.66");
+  inject.load()->seen(sp::beacon{"0000000000001000", "Somebody else", 50000}, "10.0.0.66");
   std::this_thread::sleep_for(std::chrono::milliseconds(200));
   const auto v = eng.snapshot();
   const auto it = std::find_if(v.peers.begin(), v.peers.end(), [](const auto& p) { return p.id == "0000000000001000"; });
