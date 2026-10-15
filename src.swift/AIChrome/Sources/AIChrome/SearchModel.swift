@@ -25,6 +25,8 @@ struct AIResult: Identifiable, Equatable, Sendable {
   var matchedPicture: Bool { match & MV_AI_MATCH_PICTURE != 0 }
   var matchedSound: Bool { match & MV_AI_MATCH_SOUND != 0 }
   var matchedSpeech: Bool { match & MV_AI_MATCH_SPEECH != 0 }
+  /// #291: the file's tags matched; the snippet is the tag.
+  var matchedTags: Bool { match & MV_AI_MATCH_TAGS != 0 }
   /// Stable across a re-run of the same search while the index grows, so a
   /// tile that is already on screen keeps its picture and does not fade in again.
   var id: String { "\(path)|\(ptsMs)" }
@@ -733,7 +735,7 @@ final class SearchModel: ObservableObject {
     s.onScreen = true
     guard !s.requested, let ref = refs[r.id] else { return }
     let key = "tile|\(r.path)|\(r.ptsMs)"
-    let wantSnippet = r.matchedSpeech && !s.snippetRead && table.hasAudio
+    let wantSnippet = (r.matchedSpeech || r.matchedTags) && !s.snippetRead && table.hasAudio
     if s.image == nil, let hit = ImageCache.shared.get(key) { s.image = hit }
     guard s.image == nil || wantSnippet else { return }
     s.requested = true

@@ -436,6 +436,7 @@ public static partial class IslandHost
         };
         _filmstripRoot = root;
         WireFileDrop(root);
+        ThemeField.Lay(root);
         return root;
     }
 
@@ -525,6 +526,19 @@ internal sealed class FolderItemVm : INotifyPropertyChanged
     // File search's key for Name (case and diacritics folded),
     // filled for a whole listing off the UI thread the first time it is needed.
     public string? Folded { get; set; }
+    // #291: the tag a file search matched on when the name did not ("Canon EOS
+    // R5"), shown under the gallery tile; "" otherwise.
+    private string _why = "";
+    public string Why
+    {
+        get => _why;
+        set
+        {
+            if (_why == value) return;
+            _why = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Why)));
+        }
+    }
     // A video: gallery and filmstrip tiles carry a play badge so clips read apart
     // from stills at a glance. False on a core older than ABI 0.15.
     public bool IsClip { get; set; }

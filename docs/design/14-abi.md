@@ -1,7 +1,7 @@
 # 14 — The C ABI
 
 The flat C ABI between the hosts' chrome and the C++ core, as declared in
-[`src/abi/include/mediaviewer/`](../../src/abi/include/mediaviewer/) (current version **0.19**).
+[`src/abi/include/mediaviewer/`](../../src/abi/include/mediaviewer/) (current version **0.28**).
 
 The Windows host is C# WinUI over `mediaviewer_core.dll` and calls this ABI through P/Invoke
 ([`src.managed/MediaViewer.Interop`](../../src.managed/MediaViewer.Interop/)). The Mac host links
@@ -289,7 +289,16 @@ mv_status mv_folder_set_kind_filter(mv_session_t, uint32_t mask, const char* con
                                     uint32_t kept_count);
 /* 0.23 (issue #207): the host rewrote this file's rating / label; drop what the filter cached */
 mv_status mv_folder_note_metadata_written(mv_session_t, const char* utf8_path);
+/* 0.28 (#291): tag search over the open folder, from its tag pass; JSON
+ * {"done","total","reading","hits":[[index,"why"],...]}. Never a read. */
+mv_status mv_folder_tag_search(mv_session_t, const char* query_utf8, char* utf8, uint32_t cap, uint32_t* out_bytes);
+mv_status mv_folder_tag_generation(mv_session_t, uint64_t* out_generation);
+/* 0.28: a PR 12 write landed (maybe only in the sidecar): read its tags again */
+mv_status mv_folder_forget_tags(mv_session_t, const char* utf8_path);
 mv_status mv_list_subdirectories(const char* utf8_dir, char* utf8, uint32_t cap, uint32_t* out_bytes);
+/* 0.27 (#352): the Location editor's text -> MV_LOCATION_POINT (lat / lon, text = preview),
+ * _BLANK (remove) or _INVALID (text = why). Pure, no session; mv_location_input is 152 bytes. */
+mv_status mv_meta_parse_location(const char* utf8, mv_location_input* out);
 ```
 
 - The session owns the sort order, so filmstrip, gallery and arrow keys read one list. `set`
@@ -511,6 +520,104 @@ Windows shell turns into live command rows ([25 §7](25-open-addons.md#7-the-con
 `mv_addon_installed_json` and `mv_addon_check_manifest` gain `description`, `hint_on` and
 `hint_text`. The Mac host reads the same manifests directly.
 
+## Metadata pane facts — the chrome bridges (#290)
+
+The metadata pane's record never crosses `mediaviewer.h`: each host reads the `meta::metadata`
+it already holds and hands its chrome text tables (`meta/tables.h`). #290 adds the record's
+provenance and position as POD beside them, so the map (#344) and the AI badge (#345) read
+numbers the core decided, never parse the "Made with" or "Location" rows. `mediaviewer.h` and
+its version are unchanged.
+
+**Windows** — `chrome_meta_args` ([`src/shell/chrome_host.h`](../../src/shell/chrome_host.h),
+`SetMetaData`) grows from 40 to **80 bytes**; the managed `ChromeMetaArgs` and
+`MetaDataArgsSize` match it and the attach probe refuses a mismatch (`-11`):
+
+```c
+/* after summary, properties, streams, *_len, loading (40 bytes, unchanged) */
+double   where_lat, where_lon;   /* WGS 84 degrees; valid when facts & kMetaFactWhere */
+double   where_altitude_m;       /* metres, negative below sea level; facts & kMetaFactAltitude */
+uint64_t made_with;              /* UTF-8 summary.made_with, valid for the call only */
+int32_t  made_with_len;
+int32_t  facts;                  /* kMetaFactWhere 1, kMetaFactAltitude 2, kMetaFactAiGenerated 4,
+                                    #352: kMetaFactLocationSet 8, _Clear 16, _InOriginal 32 */
+```
+
+#352: the Location editor parks `"L\ttext"` on `chrome_cmd_meta_tags` (native reads it again
+with `meta::parse_location`; blank removes); its live preview calls `mv_meta_parse_location`.
+
+**Mac** — the chrome bridge (`mv_chrome_bridge.h`):
+
+```c
+typedef struct mv_chrome_meta_facts {
+  uint32_t struct_size;          /* in: sizeof as the caller knows it; only covered fields written */
+  uint32_t flags;                /* MV_META_FACT_WHERE 1, _ALTITUDE 2, _AI_GENERATED 4 */
+  double   lat, lon, altitude_m;
+} mv_chrome_meta_facts;
+bool    mv_chrome_meta_facts_get(mv_chrome_meta_facts* out);    /* false: no record */
+int32_t mv_chrome_meta_made_with(char* buf, int32_t size);      /* two-call, like the tables */
+/* #352: flags also MV_META_FACT_LOCATION_SET 8, _CLEAR 16, _IN_ORIGINAL 32 */
+bool    mv_chrome_meta_parse_location(const char* utf8, mv_chrome_location_input* out);
+int32_t mv_chrome_meta_location_text(char* buf, int32_t size);  /* "38.7979, -9.3907" */
+void    mv_chrome_meta_set_location(const char* utf8);          /* blank removes */
+```
+
+`ai_generated` is set on positive evidence only; a clear flag means "not stated", never "not
+AI" ([06-metadata.md](06-metadata.md#made-with-and-ai-provenance-290)). The properties table's
+`space` column gains `c2pa`, `png_text`, `icc` and `xmp_raw`, whose access column is always `r`;
+both hosts now write that table with the same `meta::editable_properties_table`.
+
+**The AI badge (#345).** Not part of the pane: the host pushes the badge's text, decided by
+`shell/ai_badge.h`, whenever the item or its answer changes. Windows: an optional chrome entry
+`ShowAiBadge` taking `chrome_ai_badge_args` (48 bytes: `visible, x, y, width, height,
+title_len`, then UTF-8 `title` and `evidence` pointers, `evidence_len`, reserved; managed
+`ChromeAiBadgeArgs`), sent only when something changed; an older chrome without it simply has no
+badge. Mac: `MVChromeHost.makeAIBadgeView()` and `setAIBadge(title:evidence:)` from
+`main_mac.mm`, which also shows, hides and places the hosting view. Neither crosses
+`mediaviewer.h`.
+
+## PR 56 — settings pages and keymap packs (ABI 0.24)
+
+Minor bump, additive, in `mediaviewer_addon.h` ([25](25-open-addons.md), contribution API 2):
+`mv_addon_settings_json` (an add-on's settings page with its values, open or first-party id),
+`mv_addon_setting_set` (one value, checked against the page: `{"ok","message"}`),
+`mv_addon_settings_forget` (Remove without "keep its settings") and `mv_open_addon_keymap_json`
+(one keymap pack, which the Windows chrome parks for native to apply). The open list gains
+`settings` and `keymaps`, the installed list `settings`. The host function table gains
+`settings_get` after `walk_files2` (appended under `struct_size`, host API not bumped; the v3
+rows of 0.25 follow it): a native add-on reads its own page's values, fresh on every call. The Mac host reaches the same `open_json.h` calls through
+`mv_addons_settings_*` and `mv_open_addons_keymap` in the chrome bridge, and applies a pack with
+`mv_chrome_apply_keymap`.
+
+## PRs 58–59 — screens and slots (ABI 0.25)
+
+Minor bump, additive, in `mediaviewer_addon.h` ([25](25-open-addons.md#implementation-notes-prs-58-59-2026-10-11)).
+The chrome side, `mv_slots_*`, is **[any-thread][no-block]**: every call copies one of the
+registry's tables (JSON, the `cap` / `needed` rule) or posts a request to an add-on's worker and
+returns its generation; `mv_slots_set_listener` registers one any-thread callback with what
+changed, which the chrome marshals to its dispatcher (the core never calls a dispatcher).
+`mv_slots_event` refuses a value the screen's tree could not produce (`MV_ERR_INVALID_ARG`).
+`mv_slots_thumbnail_path` is **[worker-thread]**. The add-on side is the host function table's v3
+rows and the add-on's `mv.slots.1` interface; table versions still only append (PR 56's
+`settings_get` sits after `walk_files2`, before v3). The Mac host has the same calls as
+`mv_chrome_slots_*` in its bridge.
+
+## PR 57 — script add-ons (ABI 0.26)
+
+Minor bump, additive, in `mediaviewer_addon.h` ([25 §9](25-open-addons.md#9-code-how-a-strangers-add-on-runs)):
+`mv_script_set_listener`, `mv_script_reload(session)`, `mv_script_restart`, `mv_script_stop_all`,
+`mv_script_commands_json`, `mv_script_run_command`, `mv_script_set_key_notes`,
+`mv_script_status_json`, `mv_script_take_notices_json`; contribution API 3 (`MV_ADDON_CONTRIBUTION_API` is 5 with PRs 58–59).
+`reload` / `restart` read and hash files (**[worker-thread]**); the rest are
+**[any-thread][no-block]**, so the shell's key handler can post a command from the UI thread.
+Scripts reach the viewer through the session's own folder model calls, and back through the
+**listener**, a documented any-thread callback the shell marshals (`PostMessageW` to its window):
+1 a notice is waiting, 2 an add-on started or stopped. Not the completion queue: the chrome
+drains that, and these are the shell's. `mv_open_addon_install` / `_remove` reload the scripts
+themselves. The verify rigs `MV_SCRIPT_STORE` and `MV_SCRIPT_SPIN` are read by `mv_script_reload`
+and inert unless set. The Mac host drives
+`src/addon/script_host.h` directly; Swift reads `mv_open_addons_scripts` and calls
+`mv_open_addons_restart` in the chrome bridge.
+
 ## Version history
 
 | Minor | Change |
@@ -533,6 +640,11 @@ Windows shell turns into live command rows ([25 §7](25-open-addons.md#7-the-con
 | 0.21 | `mv_folder_renamed` — an F2 rename keeps its stop (issue #210) |
 | 0.22 | `mv_folder_set_kind_filter`, `MV_FOLDER_HIDE_STILLS` / `_CLIPS` / `_RAW` / `_UNMARKED` — View ▸ Show (issue #206) |
 | 0.23 | The cull bits `MV_FOLDER_HIDE_REJECTED` / `_UNPICKED` / `MV_FOLDER_HIDE_OTHER_LABELS` (`MV_FOLDER_LABEL_SHIFT`) and `mv_folder_note_metadata_written` — View ▸ Show's cull filters (issue #207) |
+| 0.24 | Settings pages and keymap packs: `mv_addon_settings_json` / `_setting_set` / `_settings_forget`, `mv_open_addon_keymap_json`; host table `settings_get` |
+| 0.25 | Screens and slots: `mv_slots_*` (contributions, info sections, screens, search, badges, status, events, items, surfaces, the local-search provider, thumbnails by path); host table v3 (`MV_ADDON_HOST_API` 3) and `mv.slots.1`; `"slots"` in the installed JSON |
+| 0.26 | Script add-ons: `mv_script_*`; `MV_ADDON_CONTRIBUTION_API` 3 (5 once PRs 58–59 joined) |
+| 0.27 | `mv_meta_parse_location` / `mv_location_input` — the Metadata pane's Location editor (#352) |
+| 0.28 | `mv_folder_tag_search`, `mv_folder_tag_generation`, `mv_folder_forget_tags` (#291 file search by tag). Add-on host table: `tag_facts` appended last, after PR 56's `settings_get` and #348's v3 rows (no version bump; read when `struct_size` covers it). `mediaviewer_ai.h`: `MV_AI_MATCH_TAGS`. Mac bridge: `mv_chrome_tag_search`, `mv_chrome_tag_generation` |
 
 ## Not built
 

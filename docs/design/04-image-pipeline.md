@@ -310,14 +310,24 @@ through `mv_folder_select_page` (ABI 0.16); the Mac host calls `present_lab_mac:
 The host remembers the count the core last reported and shows "Page n of m" in its notice line.
 **Scrolling a document.** Over a PDF or DOCX with the filmstrip hidden, the wheel and trackpad
 scroll instead of zooming (`⌘`/`Ctrl`+wheel and a pinch still zoom; with the filmstrip shown the
-wheel zooms as on any still). The host turns each event into screen pixels
-(`input_snapshot::scroll_px_x/y`; a wheel notch is a tenth of the canvas) and the render thread pans
-with `camera::pan_by_screen`. The render thread publishes which vertical edges the camera rests on
-(`scroll_edges()`, both at fit); a scroll held 60 px past one turns the page with `page_land_seq`,
-and the new page keeps its on-screen width and lands at its top (forward) or bottom (back)
-(`camera::turn_page`) instead of fitting. One trackpad gesture, or one wheel burst, turns at most one
-page. Hosts: `-scrollDocument:` (main_mac.mm), `scroll_document` (main.cpp, `WM_MOUSEWHEEL` /
-`WM_MOUSEHWHEEL`).
+wheel zooms as on any still, and the "Press T" hint below says so). Both hosts feed each event to
+the shared `canvas::document_scroller` (`canvas/document_scroll.h`), which decides pan or page turn
+and turns the travel into whole screen pixels. A wheel notch is a tenth of the canvas and goes to
+`input_snapshot::scroll_px_x/y`: the render thread moves the camera *target*
+(`camera::pan_by_screen`) and the canvas spring (ω=18, ζ=1) glides the view there, so a notch never
+jumps. A trackpad's deltas and its momentum go to `scroll_direct_px_x/y`: `camera::scroll_direct`
+moves the view with the target, so the page stays under the fingers. The render thread publishes
+which vertical edges the camera rests on (`scroll_edges()`, both at fit). Pushing past one turns the
+page at once, with no hold: a notch, or any trackpad travel past the edge of a page taller than the
+canvas; at fit (the whole page on screen) a trackpad turns one page per third of the canvas height
+of travel. The new page keeps its on-screen width and lands at its top (forward) or bottom (back)
+(`camera::turn_page`) instead of fitting, and momentum carries on into it, so a fling runs through
+the document. Until the render thread acknowledges the turn (`page_land_ack()`, stored after the
+edges; 0.5 s timeout for a page that fails) the published edges are the old page's, so nothing turns
+again and the vertical travel is dropped. Pages are still separate stops, not one continuous strip:
+laying the next page out under the current one needs two pages on the canvas at once, which the
+one-still present path does not do. Hosts: `-scrollDocument:` (main_mac.mm), `scroll_document`
+(main.cpp, `WM_MOUSEWHEEL` / `WM_MOUSEHWHEEL`; a touchpad is a delta that is not a multiple of 120).
 
 ## Leaving kinds out of a listing
 

@@ -118,6 +118,9 @@ typedef enum mv_ai_scope {
 #define MV_AI_MATCH_PICTURE 1u
 #define MV_AI_MATCH_SOUND 2u
 #define MV_AI_MATCH_SPEECH 4u
+/* #291: the file's tags matched (camera, lens, made-with, software, title,
+ * caption, keywords, creator); result_snippet is the tag ("Canon EOS R5"). */
+#define MV_AI_MATCH_TAGS 8u
 
 #define MV_AI_STATUS_INDEX_FULL 1u     /* over the index size cap: indexing stopped */
 #define MV_AI_STATUS_FACES_ON 2u       /* the People opt-in is on */

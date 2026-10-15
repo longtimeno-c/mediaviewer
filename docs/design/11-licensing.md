@@ -71,6 +71,7 @@ Position: bundle decoders, never bundle a software HEVC or AAC encoder.
 | Crashpad (+ mini_chromium) | Apache-2.0 (BSD-3) | Client static; `crashpad_handler` a separate program |
 | BLAKE3 | CC0-1.0 (dual CC0 / Apache-2.0, taken under CC0) | DLL / static |
 | libsodium | ISC | DLL / static |
+| Lua 5.4.8 | MIT | **Static, vendored** in `third_party/lua` (both platforms): the add-on script runtime ([25 §9](25-open-addons.md#9-code-how-a-strangers-add-on-runs)). Interpreter only; no JIT exists in Lua, and `io` / `os` / `package` / `debug` are not compiled in. `tools/licence-check.ps1` fails if one of those files, or a `luajit` / `luasocket`-style port, appears |
 | Dear ImGui | MIT | Static; present lab and F3 overlay only |
 | Catch2 | BSL-1.0 | Tests only |
 | Velopack, BouncyCastle.Cryptography | MIT | Managed assemblies (Windows updater) |
@@ -83,6 +84,22 @@ Position: bundle decoders, never bundle a software HEVC or AAC encoder.
 Everything in the table is attributed in [THIRD-PARTY.md](../../THIRD-PARTY.md), which is
 shown in the About dialog and copied into `MediaViewer.app/Contents/Resources` with `LICENSE`.
 On macOS `tools/mac/macpack.py` fails the bundle if any dylib reference points outside it.
+
+## Data
+
+The Places add-on ([27-places.md](27-places.md)) ships a place database built from data, not
+linked code:
+
+| Data | Licence | Obligation |
+|---|---|---|
+| GeoNames `cities1000`, `countryInfo`, `admin1CodesASCII` (place and region names, populations) | **CC-BY 4.0** | Attribution wherever the names are shown: a line in the About box on both hosts, [THIRD-PARTY.md](../../THIRD-PARTY.md), the add-on's notice, and the blob's own `META` |
+| Natural Earth 1:10m admin-0 / admin-1 (borders) | Public domain | None; credited anyway |
+
+CC-BY 4.0 data in a GPL program is fine. The licences cover different works: the data is not a
+derivative of the code, and the attribution is a notice, not an added restriction on the program
+(GPL §7(b) allows "preservation of specified reasonable legal notices or author
+attributions"). `tools/package/addon-pack.py` allows code licences only. The Places package needs
+`CC-BY-4.0` and a public-domain marker added to its allowed set when the add-on is packed.
 
 ## Source offer
 

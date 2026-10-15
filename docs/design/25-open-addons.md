@@ -4,8 +4,15 @@
 made and installed by anyone, not just our repo… if people have a compatible file / URL they can
 install their add-on… add-ons can do a wide range of things like add new screens"). Post-v1,
 Windows and macOS together (D9). Milestone L, PRs 55–60. Not a D-decision. PR 55 is built
-([Implementation notes](#implementation-notes-pr-55-2026-09-29)); the owner's calls on code, network,
-the file type and licensing were made on 2026-10-03 ([§17](#17-decisions-owner-2026-10-03)).**
+([Implementation notes](#implementation-notes-pr-55-2026-09-29)); PR 56 is built, both halves
+([first](#pr-56-first-half-import-described-by-its-manifest-2026-10-04),
+[second](#pr-56-second-half-declarative-contributions-2026-10-11)); the owner's calls on code, network,
+the file type and licensing were made on 2026-10-03 ([§17](#17-decisions-owner-2026-10-03)). PRs 58
+(screens) and 59 (slots) are built for MediaViewer's own native add-ons, ahead of PR 57's scripts
+([Implementation notes](#implementation-notes-prs-58-59-2026-10-11)). Owner, 2026-10-11: an add-on
+carries its own code and its own data ([§1](#1-what-this-is)). PR 57, code, is built on both hosts
+(2026-10-11, [Implementation notes](#implementation-notes-pr-57-2026-10-11); its Windows half is
+compiled by CI and not yet run).**
 
 ## 1. What this is
 
@@ -19,6 +26,13 @@ Two things, which today are one closed thing:
    twice, once per host (the path-bar search icon, the Settings page it owns). This plan adds a
    **contribution model**: named points an add-on fills in — themes, settings pages, commands and
    keys, chrome slots, search providers, whole screens — that both hosts read from one table.
+
+**An add-on carries its own code and its own data (owner, 2026-10-11).** A feature delivered as an
+add-on lives in its package: its library, any chrome, and its data, signed together and installed
+and removed together. It is not shipped dormant inside the app with only the bulk downloaded (the
+2026-09-28 call made for Final Cut Pro search, which this replaces as the rule; [12](12-decision-log.md)).
+There is still never a second *app* to install or open. Places (#344) is the first: `src/geo` and
+its place data ship in the Places package, and fill the screens and slots below.
 
 **What does not change:** Import, Local search and Voice ([18](18-import.md),
 [17](17-local-ai-search.md), [19](19-voice.md)) keep their channel, their key, their native code
@@ -96,10 +110,14 @@ is refused with a reason that says so.
 - **Strictness:** a manifest that claims no API newer than the app's may hold no key the app
   does not know (a typo fails loudly instead of doing nothing). One that reaches past the app's
   API may, so one package can serve an older and a newer MediaViewer.
-- **Code is refused by name.** `native`, `chrome`, `scripts`, `main` at the top level or under
-  `contributes` refuse the add-on (`code_not_allowed`) until a PR that runs third-party code
-  lands ([§9](#9-code-how-a-strangers-add-on-runs)). No API range turns a data add-on into one
-  that runs.
+- **Native code is refused by name.** `native`, `chrome`, `main` at the top level or under
+  `contributes` refuse the add-on (`code_not_allowed`), whatever its range: other makers' code
+  runs only as a script ([§9](#9-code-how-a-strangers-add-on-runs)).
+- **Scripts (API 3, PR 57).** `scripts` lists the package's `.lua` files, run in order in one
+  sandbox; `permissions` names what they may reach; `contributes.commands` adds key-bound rows
+  that call a script function. A range that ends before API 3 cannot carry them (malformed),
+  and a host before PR 57 refuses them by name (`code_not_allowed`), so no API range turns a
+  data add-on into one that runs. The shape is in [Implementation notes (PR 57)](#implementation-notes-pr-57-2026-10-11).
 
 ## 5. Identity and trust
 
@@ -163,17 +181,20 @@ introduced it, exists on both hosts, and has a default the base app provides.
 |---|---|---|---|---|---|
 | **Built-in add-ons by manifest** | — | 56 (first half, built 2026-10-04) | A first-party manifest (schema 1) says its one-line description, its commands with their default keys and modes, and the hint it asks for; the app reads them instead of naming the add-on | Import's two built-in rows and its hard-coded Settings text, for a manifest from before it said any | Rows are resolved once at load into eight reserved command slots (`addon_cmd_0..7`), appended to the live table; dispatch is still an array index |
 | **Theme** | 1 | 55 | Colour tokens (dark and / or light), a font family | The system-following palette, CozetteVector | Tokens cached by the chrome; read before the add-on is verified, corrected after |
-| **Theme, shape** | 2 | 56 | Corner radius scale, density, type scale | Today's literals | Same table |
-| **Settings page** | 2 | 56 | A schema: sections, toggles, choices, numbers, text, each with a key, default and help | — | Rendered by the host when Settings opens; values live in the host's store, namespaced by add-on id |
-| **Keymap** | 2 | 56 | Bindings for existing commands (the v1.1 "named layouts": FastStone, IrfanView, vim) | `default_bindings()` | Applied to the live table once; the router stays an array index ([16](16-commands.md)) |
-| **Command** | 3 | 57 | A name, a default key, and the script function it runs | — | Rows appended to the table at load; a key clash is resolved for the base app, the add-on's key is dropped and Settings says so |
-| **Screen** | 4 | 58 | A view tree ([§10](#10-screens)) in a window, a pane or a sheet | — | Built by the host from data; updates are diffs posted from the add-on's worker |
-| **Chrome slot** | 5 | 59 | Command-bar and path-bar items, context-menu entries, info-pane sections, status items, gallery tile badges | — | Badges come from a table filled off-thread; **no add-on call per tile**, ever |
-| **Search provider** | 5 | 59 | Answers a query with a list of files | File-name search (base app, 2026-09-28) | Runs on the add-on's worker with the query's generation; a stale answer is dropped |
+| **Theme, shape** | 2 | 56 (built 2026-10-11) | Corner radius scale, density, type scale (theme file schema 2) | Today's literals | Same table, resolved once when the theme is painted |
+| **Settings page** | 2 | 56 (built 2026-10-11) | A schema: sections, toggles, choices, numbers, text, each with a key, default and help; `enabled_by` greys an item while a toggle is off | — | Rendered by the host when Settings opens; values in one file per add-on id the core keeps (not each host's own store: [12](12-decision-log.md)), kept on remove unless asked |
+| **Keymap** | 2 | 56 (built 2026-10-11) | Bindings for existing commands (the v1.1 "named layouts": FastStone, IrfanView, vim) | `default_bindings()` | Applied to the live table once; the router stays an array index ([16](16-commands.md#one-table-editable)) |
+| **Command** | 3 | 57 (built 2026-10-11) | A name, a default key, and the script function it runs | — | Rows appended to the table at load; a key clash is resolved for the base app, the add-on's key is dropped and Settings says so |
+| **Screen** | 4 | 58 (built 2026-10-11, first-party native) | A view tree ([§10](#10-screens)) in a window, a pane or a sheet | — | Built by the host from data; updates are diffs posted from the add-on's worker |
+| **Chrome slot** | 5 | 59 (built 2026-10-11, first-party native) | Command-bar and path-bar items, context-menu entries, info-pane sections, status items, gallery tile badges | — | Badges come from a table filled off-thread; **no add-on call per tile**, ever |
+| **Search provider** | 5 | 59 (built 2026-10-11, first-party native) | Answers a query with a list of files | File-name search (base app, 2026-09-28) | Runs on the add-on's worker with the query's generation; a stale answer is dropped |
 | **Export / files** | 6 | 60 | Writes new files into a folder the user chose; metadata through PR 12's writer | — | Jobs on the job system, generation-tagged |
 
 Local search becomes a search provider in PR 59 instead of owning the path-bar button (#76); it
-keeps its native pack and its own channel.
+keeps its native pack and its own channel. As built (2026-10-11): while the pack is attached the
+host lists it in the registry as the local-scope provider, a Local search query goes to every
+other local-scope provider too, and the result list's path row offers their rows ("+ 3 in
+Portugal"); the pack's own rich results stay in its panel.
 
 ## 8. Themes (API 1)
 
@@ -214,13 +235,36 @@ A theme file, one per theme the add-on lists:
   typeface shows at the next start and Settings says so.
 - **Not themed:** photo and video pixels, the canvas's colour pipeline, the F3 overlay (ImGui,
   a lab tool), the histogram's channel colours (they carry meaning), the hover washes (they
-  follow the appearance, not a token), and the first-party add-ons' own windows until they read
-  the host's tokens (PR 56).
-- **Choosing one:** Settings → Appearance → **Theme**: Default, then every theme of every
-  installed add-on. Installing does not switch.
+  follow the appearance, not a token). The first-party add-ons' own windows read the host's
+  tokens since PR 56 (Import and Duplicates on both hosts, Local search on the Mac; the Windows
+  AI chrome already did).
+- **Choosing one:** Settings → Appearance → **Theme**: Default, then nineteen host palettes
+  compiled into both chromes — Dark, Light, Midnight (rain), Cyberpunk (a circuit), Retrowave
+  (embers), Forest (petals), Starfield, Terminal (fireflies), Organs (slow rain), Ume (petals),
+  GPT, Claude, Cute (sparkles), Eclipse (a starfield), Porcelain (dots, light), Arcade (a
+  circuit), Blueprint (dots), Monolith (a slow drift) and Yoyo (fireflies) — then every theme
+  of every installed add-on. Installing an add-on does not switch. Each is one palette and
+  sets no `font`, so the chrome keeps that appearance, system-drawn controls included, and a
+  choice applies at once on both hosts. They are not packages: no publisher key and no install
+  sheet. A theme someone else ships is still Contribution API 1, and still appears after the
+  built-ins. Default clears the override (`mv.theme.*` on the Mac, `theme.json` beside
+  `settings.ini` on Windows).
+- **Ground effect:** a built-in may draw one effect behind the chrome — falling rain, a
+  starfield, fireflies, petals, embers, sparkles, a circuit, a slow drift, or a still dot
+  grid. Dark, GPT and Claude draw none. It is not a token and not part of the theme JSON, so
+  API 1 is unchanged and an add-on cannot set one. It is drawn by the host in its own panes.
+  It is not drawn on a photo, a video, the swapchain, or the present loop. It ticks at 10 Hz
+  only while the app is in front and someone has moved the pointer or a key in the last five
+  seconds, and it stops under Reduce Motion (Mac) or when Windows animations are off. High
+  contrast still hides the theme, effect included. Dots do not move, and neither does a theme
+  with no ground. Organs' rain is much slower and smaller than Midnight's. A pane that uses
+  the system material (the Mac filmstrip, folder tree, help and transport) keeps that
+  material, so the picture can show through it.
 - **Start-up:** the chrome stores the resolved tokens of the theme in use in its own settings
   and paints with them at once. The add-on is verified on a worker afterwards; if it is gone,
-  changed or refused, the chrome returns to Default and says why in Settings.
+  changed or refused, the chrome returns to Default and says why in Settings. A built-in theme
+  is resolved from the palette compiled into the chrome. The cache records which one, and the
+  resolved tokens, and is rewritten when they differ. That adds no file read before first pixel.
 
 ## 9. Code: how a stranger's add-on runs
 
@@ -331,9 +375,9 @@ installed.
 |---|---|---|
 | **55** | **Open packages and themes.** The `.mvaddon` reader, manifest schema 2, publisher keys, the consent sheet, install from file and from link, check for update, remove, Settings → Add-ons "From others", Settings → Appearance → Theme, the token table on both hosts, the SDK, the author's guide | A package made by the SDK with a fresh key installs from a file and from an `https` link, shows the publisher and fingerprint, and themes the chrome; choosing Default restores it exactly. **Refused, each with its reason:** one changed byte in any file or the manifest; an extra entry; a compressed, encrypted or ZIP64 package; a path with `..`; a package naming code; a second publisher's package under an installed id; an older version; a theme under the contrast floor; a package swapped after the sheet was shown. The link request carries no cookie, query or identifier of ours. With an add-on installed and a theme on: launch → first pixel and launch → full resolution within noise of none installed (alternated runs), 0 presents idle, **both present-loop gates**. With none installed: no folder created, no file read at start |
 | 56 | **Declarative contributions.** Settings pages from a schema, keymap packs, theme shape (radius, density, type scale), first-party chromes read the host's tokens | A settings page renders the same controls and order on both hosts from one schema; its values survive restart and removal-with-keep; a keymap pack rebinds and Reset restores; `?` lists what is bound |
-| 57 | **Code** (owner call 1, made). The runtime, one worker per add-on, limits and watchdog, permissions in the consent sheet, commands | A script command runs from its key on both hosts; a runaway loop and an allocation bomb each stop the add-on, not the viewer, within the watchdog's bound; without `folder.read` the folder API is absent; **both gates hold while a script spins** |
-| 58 | **Screens.** The view vocabulary, windows / panes / sheets, diffs, events | One add-on's screen renders natively on both hosts, keyboard-only, VoiceOver and Narrator name every control; a 2,000-tile thumbnail grid scrolls without a hitch |
-| 59 | **Slots and search providers.** Bar items, context menus, info-pane sections, tile badges; file-name search and Local search as providers | Badges for a 10,000-file folder cost no add-on call per tile (counted); a slow provider never delays typing; removing the add-on removes every item |
+| 57 | **Code** (owner call 1, made; **built 2026-10-11**). The runtime, one worker per add-on, limits and watchdog, permissions in the consent sheet, commands | A script command runs from its key on both hosts; a runaway loop and an allocation bomb each stop the add-on, not the viewer, within the watchdog's bound; without `folder.read` the folder API is absent; **both gates hold while a script spins** |
+| 58 | **Screens** (built 2026-10-11 for first-party native add-ons, [notes](#implementation-notes-prs-58-59-2026-10-11)). The view vocabulary, windows / panes / sheets, diffs, events | One add-on's screen renders natively on both hosts, keyboard-only, VoiceOver and Narrator name every control; a 2,000-tile thumbnail grid scrolls without a hitch |
+| 59 | **Slots and search providers** (built 2026-10-11 for first-party native add-ons). Bar items, context menus, info-pane sections, tile badges; file-name search and Local search as providers | Badges for a 10,000-file folder cost no add-on call per tile (counted); a slow provider never delays typing; removing the add-on removes every item |
 | 60 | **Files.** `files.write`, exports, `metadata.write`. No `network`, ever | An add-on export never overwrites and never touches an original (rule 5, tested by hash); no add-on can open a connection, shown by the host API's surface |
 
 **Sequencing:** 55 is useful alone and decides nothing about code. 57 → 58 → 59 → 60 are the
@@ -371,6 +415,110 @@ add-on whose manifest says what it contributes" rather than a special case in bo
   behaviour, not the pack's), and the hard-coded list of first-party channels, which the app must
   know to offer a download at all.
 
+### PR 56, second half: declarative contributions (2026-10-11)
+
+Settings pages from a schema, keymap packs, theme shape, and first-party chromes on the host's
+tokens: contribution API 2. Manifest schema stays 2. Calls made are in
+[12](12-decision-log.md) ("Declarative contributions").
+
+**The manifest.** `contributes.settings` (one page) and `contributes.keymaps` (up to eight
+layouts) are API 2 points; a theme file with `"schema": 2` may carry `shape`. Every §7 point and
+its API is one table, `kContributionPoints` (`open_manifest.h`), the same on the branches of
+PRs 56–59. Under API 2 a manifest whose `api.max` is 1 may not name them (malformed); an API 1
+host leaves them to a later one; `api.min` above the host's is "needs a newer MediaViewer",
+never half-loaded. Every PR 55 refusal stands (code keys still refuse by name). A schema 1
+(first-party) manifest may carry `contributes.settings` too: Places (#344) is its first user.
+A change takes effect at once in an add-on that fills slots: see "A changed setting re-asks"
+under PRs 58–59.
+
+| Piece | Code |
+|---|---|
+| The page schema and its rules (sections, toggle / choice / number / text, `enabled_by`, bounds) | `src/addon/settings_schema.*` |
+| The values: one JSON per add-on id, checked in and out, cached, keep or forget; each file names the publisher key it was written for, and values kept for one publisher are never read for another (installing another publisher's add-on under the id deletes them) | `src/addon/settings_values.*`; the folder is `io::addon_settings_dir()` (`src/io/paths*`), never created by a read |
+| Keymap pack shape | `src/addon/keymap.*` |
+| Applying a pack to the live table; stable command names | `src/shell/keymap.*` (`apply_keymap`, `command_slug`); `set_live_key` and Reset's superseded rows in `src/shell/command_table.cpp` |
+| Theme shape | `src/addon/theme.*` (`theme_shape`) |
+| One JSON for both hosts | `src/addon/open_json.*` (`addon_settings_page_json`, `addon_setting_set_json`, `addon_settings_forget`, `open_keymap_json`; `settings` / `keymaps` in the list and the sheet's lines) |
+| Host table | `settings_get`, the row after `walk_files2` in `mv_host_api` (`host.cpp`), before the v3 rows of PRs 58–59; host API not bumped |
+| C ABI 0.24 (Windows), chrome bridge (Mac) | `mv_addon_settings_json` / `_setting_set` / `_settings_forget`, `mv_open_addon_keymap_json`; `mv_addons_settings_*`, `mv_open_addons_keymap`, `mv_chrome_apply_keymap` |
+| Mac chrome | `AddonSettingsPage.swift` (page, Key layout row), `OpenAddons.swift` (page under each add-on, Keep its settings), `AddonsView.swift` (Import's page), `Theme.swift` (`MVTheme.radius` / `space` / type scale; `MVChromeTheme` for the add-on bundles); `HostTheme.swift` (Import), `AITheme` (Local search) |
+| Windows chrome | `IslandHost.AddonSettings.cs`, `IslandHost.OpenAddons.cs`, `IslandHost.Settings.cs` (Key layout), `IslandHost.Theme.cs` / `ThemePack.cs` (shape), `ImportLook.cs` (Import, Duplicates), `IAddonThemeShape` in `MediaViewer.Interop/Addons.cs`; native `chrome_cmd_apply_keymap` (1050) in `main.cpp` |
+| SDK, examples, guide | `tools/addon-sdk/mvaddon.py` (checks pages, layouts, shape; API 2), `examples/addons/settings-demo`, `examples/addons/vim-keys`, `docs/ADDONS.md` |
+| Tests | `tests/test_addon_contributions.cpp` (`mv_import_tests`), `tests/test_keymap.cpp` (`mv_tests`), `tools/addon-sdk/test_mvaddon.py` (cross-checked by `mv_addon_verify --open`), `tools/fuzz/fuzz_addon_contributions.cpp`, the Mac rig's PR 56 leg (`MV_ADDON_SELFTEST_PR56`) |
+
+**Same controls, same order.** toggle → a switch (`ToggleSwitch`); choice → a menu of the labels
+(`ComboBox`); number → a field with − / + (Windows: `FakeInput` and two buttons; Mac: a field and
+a stepper) and the unit; text → a field (`FakeInput` / `TextField`). The page title, then each
+section's title and help, then each item with its help beneath, in the manifest's order. Only
+controls that pass `tools/check-winui-controls.ps1`.
+
+**Coordination (2026-10-11).** With PRs 58–59 (#348): the point table, API numbers 4–5 for theirs,
+and `settings_get` as the host-table row before their rows. With PR 57: API 3; contributed
+commands are named `<add-on id>/<command id>` in packs; `mv.settings.get` reads
+`settings_values::value_json` with the script's id, publisher and page (wired at integration,
+2026-10-12). On merge,
+`kContributionApi` / `MV_ADDON_CONTRIBUTION_API` and `MV_ABI_VERSION_MINOR` take the highest
+and join their comments.
+
+**Measured on the Mac** (arm64, Release, 2026-10-11/12, the owner's machine while other agents
+built beside it: load average 8–49 through the runs). Base is `8ef8679`
+(`plan/metadata-search-and-place`) in its own source copy and build directory; "add-ons" is the
+new build with `example.settings-demo` and `example.vim-keys` installed in the profile and
+Compact Dusk (a schema 2 theme with shape) on. Runs alternated base, new, add-ons; one untimed
+warm-up open per file and build; `mediaviewer_lab --soak 6 --static`:
+
+| File | Build | First pixel, s (5 runs) | Full resolution, s (5 runs) | Dropped |
+|---|---|---|---|---|
+| `sony_ilce7rm3.arw` | base | 0.061 · 0.060 · 0.145 · 0.054 · 0.040 | 1.451 · 1.489 · 1.477 · 1.433 · 1.172 | 1 · 1 · 2 · 1 · 0 |
+| | new | 0.056 · 0.055 · 0.058 · 0.040 · 0.044 | 1.538 · 1.642 · 1.445 · 0.955 · 1.201 | 1 · 1 · 1 · 0 · 1 |
+| | add-ons | 0.057 · 0.053 · 0.062 · 0.041 · 0.041 | 1.415 · 1.375 · 1.388 · 0.995 · 1.166 | 1 · 2 · 1 · 0 · 1 |
+| `canon_eosr6.cr3` | base | 0.045 · 0.103 · 0.050 · 0.082 · 0.044 | 0.544 · 0.823 · 0.706 · 0.786 · 0.684 | 0 |
+| | new | 0.033 · 0.060 · 0.044 · 0.096 · 0.046 | 0.474 · 0.838 · 0.704 · 0.837 · 0.678 | 0 |
+| | add-ons | 0.099 · 0.048 · 0.048 · 0.049 · 0.040 | 0.796 · 0.737 · 0.752 · 0.610 · 0.509 | 0 |
+
+The ranges overlap in every row. The absolute numbers are 2–3× PR 55's on this machine (full
+resolution 1.2–1.6 s against 0.47 s): the machine was loaded, so these runs can show "no
+difference between the builds", not the product's speed. The `--static` report's idle presents
+were 0–42 on every build alike (base included). Mac PR 1's gate (`frametime --seconds 60`),
+alternated:
+
+| Run | Build | Animated: frames · p99 ms · max ms | Idle: presents · CPU of one core |
+|---|---|---|---|
+| 1 | base | 3600 · 16.85 · 16.94 | 0 · **64 %** |
+| 2 | add-ons | 3600 · 16.75 · 16.89 | 0 · **42 %** |
+| 3 | base | 3600 · 16.85 · 16.95 | 0 · **80 %** |
+| 4 | add-ons | 3568 · 16.85 · 538 | 0 · **83 %** |
+| 5 | base | 3537 · 16.90 · 1068 | 0 · **3.1 %** |
+| 6 | add-ons | 3600 · 16.85 · 22.2 | 0 · **1.5 %** |
+
+Pacing is the same on both builds; the long frames land on base and add-ons alike, under the
+load. **0 presents idle on every run.** The idle CPU clause (≤ 1 %) fails on every run, base
+included, as in PR 55, so "both present-loop gates hold" is not shown on this machine for this
+PR either. Windows: not measured.
+
+PR 56's verify line, where each part stands:
+
+| Verify | State |
+|---|---|
+| A settings page renders the same controls and order on both hosts from one schema | **Mac: run in the app** (rig, `p2-page.png` / `p4-page.png`: title, sections, switch, switch, field + stepper + "km" greyed by `enabled_by`, menu, field, in the manifest's order). **Windows: built and compiled only** (same order and mapping in code); owed in the app |
+| Its values survive restart and removal-with-keep | **Mac: run in the app** across two launches (40 / false / "local" / "Porto" read back after the restart; an out-of-range 400 refused with its message; removed keeping: file kept, page gone; installed again: the values back; removed without: file gone). Core: Catch2. **Windows: owed** |
+| A keymap pack rebinds and Reset restores | **Mac: run in the app** (Vim: Previous A→H, Next D→L, Toggle mark Shift+Space→X; Flip horizontal and Forward 10 s left unbound and reported; Reset: every row back). Core: every built-in command rebound and reset in `tests/test_keymap.cpp`. **Windows: owed** (native apply compiled only in CI) |
+| `?` lists what is bound | **Mac**: the rig reads the table `?` and Settings read; Catch2 checks each rebound row's `?` line. **Windows: owed** |
+| Launch → first pixel within noise with these add-ons installed | **Mac: measured** (above, loaded machine). **Windows: owed** |
+| 0 presents idle | **Mac: 0 on every gate run.** Windows: owed |
+| Both present-loop gates | **Not shown**: Mac pacing holds, the idle CPU clause fails on base and new alike; Windows not run |
+
+Owed before this merges: the Windows half run in the app (settings page, keep-on-remove, Key
+layout and Reset, Import / Duplicates under a theme, shape at next start), VoiceOver / Narrator
+on the page, a layout checked against the Mac's fixed menu chords, and the Windows fuzz build of
+`fuzz_addon_contributions` (it ran 2.5 M inputs clean under libFuzzer + ASan + UBSan on the Mac).
+
+### PR 57: code (2026-10-11)
+
+Built on both hosts: Lua 5.4 in a sandbox per add-on, its limits and watchdog, permissions in
+the consent sheet, commands from a script. What it is, the API, the limits and where each part
+of the verify stands: [Implementation notes (PR 57)](#implementation-notes-pr-57-2026-10-11).
+
 ## 15. Not in this plan
 
 A store, a registry, reviews, ratings or a hosted index; payments; automatic updates of
@@ -404,6 +552,111 @@ Asked as open calls on 2026-09-29; answered on the pull request on 2026-10-03.
 4. **Licence of add-ons:** delegated; decided as the GPL section 7 additional permission in
    [§12](#12-licensing), with the SDK staying MIT.
 5. **"From others"** stays the wording.
+
+## Implementation notes (PRs 58-59, 2026-10-11)
+
+Built for MediaViewer's own native add-ons (§9 option B), ahead of PR 57's scripts, issue #348.
+The first consumer is Places (#344): an info-pane section (place, coordinates, a map surface with
+a chrome-drawn pin) and a search provider (`portugal`, `place:`, `in:`).
+
+| Piece | Code |
+|---|---|
+| The view-tree vocabulary (all 19 node types), its checks, diffs and events | `src/addon/screen.*` |
+| What a manifest contributes (screens, info sections, providers, items, badges; the symbol set) | `src/addon/contrib.h`; parsed for schema 1 in `src/addon/manifest.cpp` |
+| The registry: tables built at attach, one worker per add-on, coalesced generation-tagged requests, trees, surfaces, rows, badge sets, status | `src/addon/slots.*` |
+| Host table v3 (`screen_post` … `locations_in`) and the add-on side `mv.slots.1` | `mediaviewer_addon.h`, thunks in `src/addon/host.cpp`; `loaded_addon::load` attaches, its destructor detaches first |
+| A file's coordinates, a bounded read | `src/meta/location.*` (becomes `geo_point` when #290 lands) |
+| C ABI 0.25 for the Windows chrome | `mv_slots_*` in `src/abi/slots_abi.cpp`, `mv_slots_thumbnail_path` in `abi/addon_abi.cpp`; `SlotNative` in `MediaViewer.Interop/Slots.cs` |
+| Mac bridge and chrome | `mv_chrome_slots_*` in `src/shell/slots_mac.mm`; slot add-ons loaded in `addons_mac.mm` (`MvSlotAddonsStart`); `SlotStore.swift`, `ScreenView.swift`, `SlotItems.swift`, hooks in `MetadataView/Store`, `FileSearch`, `CommandBarView`, `GalleryView`, `AddonsView` |
+| Windows chrome | `IslandHost.Slots.cs`, `IslandHost.Screens.cs`, hooks in `IslandHost.Panels.cs`, `.FileSearch.cs`, `.Gallery.cs`, `.Addons.cs` |
+| Tests | `tests/test_addon_screens.cpp`, `tests/test_addon_slots.cpp` (in `mv_import_tests`, all three builds) over a real native test add-on, `tests/addons/slots_test` (`mv_slots_test_addon`), loaded through a signed store; `tests/test_meta_location.cpp` in `mv_tests` |
+
+How it works:
+
+- **Manifest (schema 1).** `contributes.api {min, max}` names the contribution API range; then
+  `screens`, `info_sections`, `search_providers`, `bar_items`, `path_items`, `context_menu`,
+  `status_items`, `tile_badges`, each an array of at most 16. A point outside the range is
+  malformed; a range starting past this host (5) is "needs a newer MediaViewer". Naming any of
+  them needs `host_api.min` 3, and an add-on that only fills slots may name no `chrome`. A
+  stranger's schema 2 add-on naming one is `code_not_allowed` until PR 57.
+- **One worker per add-on.** Every call into an add-on (`info_section`, `search`, `screen_open`,
+  `badges`, `event`) runs there. A newer request of the same kind replaces the queued one; events
+  queue in order. Generations are global: a post for a stale one is `MV_ERR_CANCELLED` and
+  changes nothing, and `is_stale` lets a provider stop early. An idle add-on's worker sleeps on a
+  condition variable.
+- **Trees.** The core keeps each screen's tree, checks every tree and diff whole, and hands the
+  chromes one canonical JSON. Every control, picture and surface must carry a `label` (its
+  VoiceOver / Narrator name), or the tree is refused. Events from the chrome are checked against
+  the tree (node exists, is interactive and enabled, value of the right kind and range) and the
+  tree keeps the new value; the add-on answers with a diff. Text fields report on Return and on
+  losing focus, sliders when let go: never an add-on call per key.
+- **Info sections** are asked for when the Metadata pane shows a file, once per file and width,
+  and never for a file without coordinates when the section says `"when": "location"`. Both hosts
+  draw them at the very bottom of the pane opened with `I`, after all built-in metadata, on every
+  tab, never collapsed (owner, 2026-10-12). A `surface` is BGRA the add-on drew at the pane's
+  width × backing scale; the chrome draws the pin over it in the accent colour, with a drop-in
+  that Reduce Motion turns off, and the surface's `marks` (up to 64 names, priority order, a
+  name skipped where it would overlap one drawn or the pin) as native text.
+- **A changed setting re-asks (2026-10-12).** When a write changes what an add-on reads from its
+  settings page (`mv_addon_setting_set` / the Mac bridge's `mv_addons_setting_set` storing a
+  different value, Remove without keep forgetting the file, an install by another publisher
+  deleting kept values), `settings_values` tells its listeners with the add-on's id, after the
+  write is on disk and outside the store's lock. Every slot registry listens
+  (`slot_registry::settings_changed`): that add-on's info sections for the file on screen are
+  asked again under a new generation of their own (the file's request keeps its generation; a
+  late answer to the old one is dropped; what the section showed stays until the answer
+  replaces it), and, if it has badges, its badge sets for the folder shown go and it is asked
+  again. Other add-ons are not asked; nothing is asked when nothing is on screen; the same value
+  written again asks nobody. Generic, not per add-on. The requests coalesce like any other, so a
+  run of changes costs one answer. The chromes refresh through the listener they already have
+  (a section whose tree revision moved is redrawn): no new work on the UI thread, and the write
+  itself is unchanged. An add-on reads its values through `settings_get` on every request and
+  event and caches none across a change; a picture cache keys on anything a setting changes in
+  the pixels. Search results already shown are not re-run: the next query reads the new values.
+- **Interactive surfaces (owner, 2026-10-12).** A surface with `"interactive": true` (or
+  `{"min_scale", "max_scale"}`) takes the pointer: a mouse wheel or a trackpad pinch (on Windows a
+  precision touchpad's pinch arrives as Ctrl + wheel) zooms about the pointer, a drag pans, a
+  double-click is reported; a trackpad two-finger scroll is left to the pane. During a gesture
+  the chrome scales / moves the current pixels itself, within the bounds, and when it settles
+  sends one event (`zoom` {scale, x, y}, `pan` {dx, dy}, `double` {x, y}; surface coordinates,
+  0..1); the add-on's next pixels replace the provisional transform. Nothing presents the canvas.
+- **Search providers.** File search posts the typed text on every debounced change and returns;
+  name hits show at once and a provider's rows join when they arrive, with its reason
+  ("Portugal") or "Still reading tags — N of M" under the field. A query starting with a
+  provider's prefix (`place:`) goes to that provider alone, prefix removed, unless a digit follows
+  (Local search's `in:2024` stays a date term). `locations_in` walks the folder at background
+  priority (it waits while the viewer presents) and caches coordinates by path + size + mtime, so
+  a second query reads nothing.
+- **Badges** are asked once per folder the gallery shows, posted as sets, inverted once into a
+  path → badges table; a tile is a dictionary lookup (the verify counts add-on calls).
+- **Items.** A bar or path item with `opens` opens that screen with no add-on call; otherwise the
+  add-on gets a `command` event with the paths its `target` names (the marks, else the current
+  file; the folder). Context-menu entries are on gallery tiles. Status items are text in the
+  command bar.
+- **Screens** open as a window, a docked pane or a sheet, each with Done and Esc. The docked pane
+  is not an island in the viewer's layout ([12](12-decision-log.md)): it lies **over** the right
+  side of the canvas, which does not reflow around it. On the Mac it is a child panel held to the
+  right edge of the viewer window's content: it follows the viewer's moves, resizes and full
+  screen (in and out), and moves to whichever viewer window becomes main. On Windows it is a
+  separate window placed at the viewer's right edge when it opens and **not held after that**:
+  moving, resizing or maximising the viewer leaves it where it was, and it is not owned by the
+  viewer window (it does not minimise with it). Holding it needs the viewer's move/size events in
+  the C# host (a WinEvent hook or the host's window procedure), not done yet. A thumbnail grid is
+  virtualised (LazyVGrid / ItemsRepeater) and each tile asks the viewer's JPEG-512 cache as it
+  appears, cancelled as it leaves.
+- **Removal** (Settings → Add-ons lists every installed slot add-on with Remove): the add-on is
+  detached first, which removes every item and waits for a call it is in, then shut down and
+  unloaded; off the UI thread on both hosts. No restart.
+- **Local search** is listed as the local-scope provider while the AI pack is attached
+  ([12](12-decision-log.md)).
+- **Launch.** Slot add-ons load on the add-on queue / a worker after Import's and the AI pack's
+  checks, never on the UI thread; nothing is asked of one until something is shown.
+
+For a script add-on (PR 57): the registry reaches code through `slot_client`; a script runtime
+implements it on its own worker and calls the same `post_*` functions the v3 rows wrap.
+
+PRs 58 and 59 are one branch: the registry carries both and the Metadata pane's sections are a
+screen in a slot, so the two halves share every file.
 
 ## Implementation notes (PR 55, 2026-09-29)
 
@@ -546,3 +799,164 @@ BLAKE3 skip, verify, resume) stays native and only its window, today written twi
 (`MediaViewer.Import.Chrome.dll`, `Import.bundle`), becomes one view tree both hosts render, which
 would make it PR 58's first real screen. Possible now with no owner call: PR 56's "first-party
 chromes read the host's tokens", so Import's and Local search's windows follow the theme.
+
+## Implementation notes (PR 57, 2026-10-11)
+
+Other makers' code runs as Lua 5.4 in a sandbox per add-on ([§9](#9-code-how-a-strangers-add-on-runs) A).
+The reasons for each call below are in [12](12-decision-log.md) ("Other makers' code runs as Lua 5.4").
+
+| Piece | Code |
+|---|---|
+| Lua 5.4.8, vendored, static, MIT, without `io` / `os` / `package` / `debug` and the tools; marked changes for the watchdog, and no finalizers or weak tables | `third_party/lua` (`VENDOR.txt`), `cmake/script.cmake` (`mv_lua`, built as C++) |
+| The sandbox, its limits, the watchdog, the `mv` bindings, Lua ↔ JSON | `src/addon/script_runtime.*`, `src/addon/script_thread_{posix,win}.cpp` (a worker with a 4 MB stack) |
+| The host's set of script add-ons: load from the store (bytes re-hashed as they are read), commands, status, Start again, the spin rig | `src/addon/script_host.*`; `open_store::verified_file` |
+| Manifest: `scripts`, `permissions`, `contributes.commands` at API 3; the sheet's lines | `src/addon/open_manifest.*`, `src/addon/open_json.cpp` |
+| Key clashes give way to the base app; notes for Settings | `shell/command_table.cpp` (`addon_command_row.script`, `addon_command_notes_json`) |
+| Windows | ABI 0.26 `mv_script_*` (`abi/script_abi.cpp`); `shell/main.cpp` (start after the chrome, run rows, `kMsgScripts` notices); `IslandHost.OpenAddons.cs`, `AddonNative.ScriptStatus` / `ScriptRestart` |
+| Mac | `shell/addons_mac.mm` (the host, the folder model and item on screen as services, rows), `main_mac.mm` (`MvAppShowNotice`, the `MV_SCRIPT_SELFTEST` rig); `OpenAddons.swift` (`ScriptStatus`, Start again), bridge `mv_open_addons_scripts` / `_restart` / `_reload` |
+| SDK, guide, example | `tools/addon-sdk/mvaddon.py` (`init --script`, script rules, compiled Lua refused at pack), `docs/ADDONS.md` "Scripts", `examples/addons/folder-count` |
+| Tests | `tests/test_script_runtime.cpp`, `tests/test_script_addons.cpp` (`mv_script_tests`, also in cmake/portable), `tests/test_key_router.cpp` (key clash), `tools/addon-sdk/test_mvaddon.py` (cross-checked by `mv_addon_verify --open`), `tools/fuzz/fuzz_script.cpp` |
+
+### The manifest (schema 2, API 3)
+
+```json
+{
+  "api": { "min": 3, "max": 3 },
+  "scripts": ["main.lua"],
+  "permissions": ["folder.read"],
+  "contributes": {
+    "commands": [
+      { "id": "count-files", "name": "Count files", "key": "Ctrl+Shift+K", "run": "count_files",
+        "modes": "viewing", "payload": "none" }
+    ]
+  }
+}
+```
+
+- **`scripts`**: 1–16 listed `.lua` files, ≤ 1 MB each, ≤ 4 MB together, run in order in one
+  environment; loaded as text only (`mode "t"`). Under a range ending before 3: malformed; on a
+  host before 3: `code_not_allowed`.
+- **`permissions`**: each of `folder.read`, `thumbnails`, `selection` at most once, only with
+  scripts. `files.write` / `metadata.write` (PR 60): `needs_update`. `network`: malformed, always.
+- **`commands`**: 1–32 (eight slots in the table); `id` `[a-z0-9-]{1,32}`, `name` display text,
+  `key` a printable label (`Ctrl` is `Cmd` on the Mac), `run` a Lua name, `modes`
+  `viewing|video|browse|all`, `payload` `none|marks|marked_or_current|screen` (anything but
+  `none` needs `selection`). Only with scripts.
+- **Unchanged:** `native`, `chrome`, `main` refuse the add-on whatever its range, and every PR 55
+  refusal holds for a package with code (tested: a changed script byte, an unlisted `.lua`,
+  compression, `..`).
+
+### The script API
+
+Only this exists; a part whose permission was not granted is **absent** (`mv.folder == nil`):
+
+| Name | Permission | |
+|---|---|---|
+| `mv.id`, `mv.api`, `mv.permissions` | — | the add-on's id, 3, the granted set |
+| `mv.notify(text)` | — | one line in the host's notice (Windows: the title's; Mac: the command bar's), prefixed with the add-on's name; ≤ 200 bytes, ≤ 4 a second |
+| `mv.log(...)`, `print` | — | stays local: the macOS unified log (private); not kept on Windows yet |
+| `mv.on(event, fn)` | — | handlers for later points' events (`script_call::call_handlers`); none sent yet |
+| `mv.folder.count()`, `.name(i)`, `.path()` | `folder.read` | the viewer's listing: Mac `folder_model`, Windows the session's `mv_folder_*` |
+| `mv.selection.current()` | `selection` | the file on screen |
+
+Standard library: `string` without `dump` (its metatable locked: `getmetatable("")` is `false`),
+`table`, `math`, `utf8`, `coroutine`, the base functions without `dofile` / `loadfile` /
+`require` / `warn`; `load` text-only into the sandbox; `collectgarbage` with `count`, `collect`,
+`step`, `isrunning` only. A `__gc` metamethod never runs and `__mode` has no effect (every
+table is strong): both could hold a worker where no limit reaches ([12](12-decision-log.md)).
+A command's function is called with its payload as a Lua value.
+`thumbnails` puts nothing in the environment: it gates PR 58's thumbnail nodes.
+
+**For later points** (agreed with PRs 58–59): `add_script_binding({name, api, permission,
+install})` installs more `mv.*` tables per state; `script_addon::post(script_task)` runs work on
+the add-on's worker (dropped unrun when its generation is stale); `script_call::call_handlers`,
+`with_state`, `lua_to_json` / `push_json` carry screens, diffs, search answers and badges.
+`script_host::find(id)` hands the add-on to a slot registry; its stop callback is where items
+are detached.
+
+### Limits (as shipped)
+
+| Limit | Value | Enforced by |
+|---|---|---|
+| Memory | 64 MB per add-on | the `lua_Alloc`: refused growth stops the add-on, and stays refused |
+| Instructions | 100 M per task | a count hook every 10,000 instructions |
+| Wall clock | 1 s per task | the same hook, and one watchdog thread (asleep unless a task runs) for the loops that run no VM instruction (pattern matching, a plain `string.find`, `table.move`, `table.insert`, `table.remove`, `table.sort`) |
+| C stack | 4 MB worker | Lua's own 200-level C limit inside it |
+| Queue | 256 tasks | `post` returns false past it |
+
+A task is a command call, a handler call, or the scripts' first run. Once a limit is hit, every
+instruction raises, so `pcall` cannot keep the add-on alive; its state is closed on its worker.
+Settings → Add-ons → From others shows "Stopped." with the limit in words ("One of its tasks
+(command spin) ran for more than 100 million steps.") and **Start again**. A Lua error is not a
+stop: Settings shows the last error.
+
+### Verify, where each part stands
+
+| Verify (plan §14) | State |
+|---|---|
+| A script command runs from its key | **Mac: run in the app.** `MV_SCRIPT_SELFTEST` posts ⌘⇧K through the app's own event queue: the router, the live table and the runtime ran, and the bar showed "Folder Count: 4 files in this folder" (`tools/testmedia/raw`). **Windows: owed** (compiled by CI; the path is `run_command` → `mv_script_run_command` → `notice_show`) |
+| A runaway loop and an allocation bomb each stop the add-on, not the viewer, within the watchdog's bound | **Tested on the Mac** (`mv_script_tests`, both hosts' shared code): `while true`, a `pcall` loop, a coroutine loop, a tail-call loop, five allocation bombs and two C-side loops each stop within bound + 400 ms (300 ms test bound); with the shipped limits a spin stops after ~0.75 s. **In the Mac app:** ⌘⇧J on the spinner stopped it ("ran for more than 100 million steps") and the viewer kept answering; Settings showed it. **Windows: owed** (same code) |
+| Without `folder.read` the folder API is absent | **Tested** (`mv.folder`, `mv.selection`, `mv.thumbnails` are `nil` without their permission; present with it) |
+| Both present-loop gates hold while a script spins | **Mac:** **Not shown, as on the base: pacing holds alike with and without a script spinning, and
+the idle clause fails on both.** Measured below; the machine was loaded throughout (other
+builds; load average 18–50). **Windows: owed** (`MV_SCRIPT_SPIN` works there too; CI's self-hosted gate does not set it) |
+| Launch → first pixel within noise with a script add-on installed | **Mac:** **Measured; the ranges overlap in every row** (below). The machine was loaded, so these
+show no change that runs on it can see, and nothing finer. **Windows: owed** |
+
+Measured on the Mac (arm64, Release, 2026-10-12, the owner's machine with other agents'
+builds running: load average 18–50). Base is `8ef8679` (this branch's parent) built from its own
+source copy and build directory. "spin" is this build with two script add-ons installed in a
+scratch store (`MV_SCRIPT_STORE`) and `MV_SCRIPT_SPIN=rig.spinner/burn` keeping one add-on's
+worker busy throughout (a 40 M-instruction loop posted back to back; checked on its own: in a
+20 s static soak the lab process sat at 97–100 % of one core with the rig and ~0.5 % without, by
+`ps` every 2 s). Mac PR 1 gate, `frametime --seconds 60`,
+alternated:
+
+| Run | Build | Animated: frames · p99 ms · max ms | Idle: presents · CPU of one core | Notes |
+|---|---|---|---|---|
+| 1 | base | 3600 · 16.80 · 22.31 | 0 · 92.5 % | |
+| 2 | spin | 3598 · 16.85 · 42.30 | 0 · 200.2 % | void as a spin run: the rig's loop crossed its own 100 M budget, so the add-on stopped in its first second of each phase (the stop working as designed); shortened to 40 M after |
+| 3 | base | 3598 · 16.90 · 49.98 | 0 · 100.1 % | |
+| 4 | spin | 3600 · 16.95 · 19.12 | 2 · 47.9 % | void as a spin run, as 2 |
+| 5 | base | 3600 · 16.95 · 22.31 | 19 · 37.1 % | 19 input events: the machine was in use; another agent's lab soak overlapped |
+| 6 | spin | 3599 · 16.95 · 28.01 | 0 · 186.5 % | spinning throughout |
+| 7 | base | 3553 · 17.10 · 662.7 | 0 · 104.9 % | |
+| 8 | spin | 3598 · 16.90 · 22.06 | 0 · 100.1 % | spinning throughout |
+| 9 | base | 406 · 23.05 · 46,715 | 0 · 52.4 % | display link stalled 47 s: void |
+| 10 | spin | 3599 · 16.95 · 33.28 | 0 · 85.5 % | spinning throughout |
+
+Pacing with a script spinning is within the base's own spread (p99 16.85–16.95 ms against
+16.80–17.10 ms; the drops and long frames land on base runs as much as on spin runs). The idle
+CPU clause (≤ 1 %) fails on every base run, as it did in PR 55's measurements, so the gate as a
+whole is not shown on this machine; with a script spinning the lab's idle CPU is one core higher,
+which is the script's own work on its own thread (no present waited on it), and 0 presents idle
+hold on the spin runs. Launch → first pixel and → full resolution, `mediaviewer_lab --soak 6
+--static`, one untimed warm-up open per file, then base / new (no script add-on, an empty
+scratch store) / script (the two add-ons installed, idle) alternated, two sessions (3 and 5
+rounds):
+
+| File | Build | First pixel, s | Full resolution, s |
+|---|---|---|---|
+| `sony_ilce7rm3.arw` | base | 0.021 · 0.055 · 0.118 · 0.124 · 0.074 · 0.083 · 0.121 · 0.084 | 0.519 · 1.231 · 1.264 · 3.357 · 1.739 · 2.631 · 2.171 · 2.175 |
+| | new | 0.050 · 0.049 · 0.049 · 0.137 · 0.069 · 0.075 · 0.097 · 0.079 | 1.285 · 1.231 · 1.246 · 4.239 · 2.050 · 2.065 · 1.970 · 2.000 |
+| | script | 0.047 · 0.047 · 0.051 · 0.119 · 0.072 · 0.080 · 0.062 · 0.075 | 1.176 · 1.050 · 1.337 · 1.969 · 2.171 · 2.083 · 1.593 · 1.977 |
+| `canon_eosr6.cr3` | base | 0.051 · 0.048 · 0.043 · 0.114 · 0.094 · 0.133 · 0.079 · 0.071 | 0.685 · 0.694 · 0.564 · 0.977 · 2.353 · 3.218 · 1.658 · 1.462 |
+| | new | 0.048 · 0.045 · 0.043 · 0.069 · 0.097 · 0.126 · 0.081 · 0.065 | 0.774 · 0.784 · 0.653 · 1.178 · 2.715 · 3.471 · 1.905 · 1.877 |
+| | script | 0.047 · 0.048 · 0.043 · 0.116 · 0.079 · 0.059 · 0.068 · 0.067 | 0.822 · 0.764 · 0.656 · 2.214 · 4.234 · 1.287 · 1.118 · 1.601 |
+
+The ranges overlap in every row. On a quiet machine the full-resolution numbers are a third of
+these (PR 55's table above); a re-run there is owed, and is the run to quote. Nothing of a
+script add-on runs before first pixel by construction: the scripts are listed and started on a
+utility-QoS queue after the chrome is up (Windows: a background job after the chrome attaches).
+
+**Fuzzing.** `tools/fuzz/fuzz_script.cpp` (arbitrary text as a script, every permission, 8 MB /
+2 M instructions / 250 ms, then its `f`): 563,234 inputs, about 15 minutes of fuzzing on the Mac
+under ASan + UBSan with Homebrew's libFuzzer (the run's 1,587 s span includes the machine
+sleeping; the two "slow units" it saved run in 9 ms), 10,470 coverage edges; no crash, no
+sanitizer report, no hang. In CI it joins the non-gating harnesses until it has been seen to
+start on the runner. `mv_script_tests` also passes under ASan + UBSan (the runtime, Lua and the
+tests instrumented).
+
+Owed before this merges: the Windows key walk, the Windows gate with a script spinning, the
+Windows launch timings; VoiceOver / Narrator on the new Settings lines; a `files.write`-era
+review of the permission lines. (`mv.settings.get` landed with PR 56's store, 2026-10-12.)

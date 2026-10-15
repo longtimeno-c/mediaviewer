@@ -69,9 +69,9 @@ private struct FilmstripCell: View {
       }
     }
     .frame(width: 78, height: 78)
-    .clipShape(RoundedRectangle(cornerRadius: 4))
+    .clipShape(RoundedRectangle(cornerRadius: MVTheme.radius(4)))
     .overlay(
-      RoundedRectangle(cornerRadius: 4)
+      RoundedRectangle(cornerRadius: MVTheme.radius(4))
         .strokeBorder(highlight.isCurrent ? MVTheme.accent : .clear, lineWidth: 2)
     )
     .overlay { if isClip { PlayBadge(diameter: 28) } }

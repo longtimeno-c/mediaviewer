@@ -49,6 +49,13 @@ class camera {
   void pan_by_screen(float dx_screen, float dy_screen, float image_w, float image_h,
                      float window_w, float window_h) noexcept;
 
+  // Trackpad scroll of a document (canvas/document_scroll.h): pans like
+  // pan_by_screen, clamped the same way, but the view moves with the target
+  // (no spring lag under the fingers). A spring already in flight keeps its
+  // offset and velocity, so a wheel glide and a trackpad push add up.
+  void scroll_direct(float dx_screen, float dy_screen, float image_w, float image_h,
+                     float window_w, float window_h) noexcept;
+
   // Jump to an absolute zoom in [50 %, 6400 %]. 50 % is allowed even when
   // that is smaller than fit (letterboxed). Fit-to-window is a separate
   // command and may go below 50 % on a huge image.
