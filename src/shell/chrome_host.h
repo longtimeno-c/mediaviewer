@@ -152,6 +152,12 @@ enum chrome_command : int {
   // Issue #210: the rename popup was confirmed (Enter); native pulls the new
   // name (no extension) with take_parked_text. Esc sends nothing.
   chrome_cmd_rename = 1035,
+  // Issue #413: the gallery's shift-click range. Native pulls the folder
+  // indices (comma-separated, in the grid's order) with take_parked_text; arg
+  // is the anchor, the cell selected when it was made. While the gallery is up
+  // and the anchor is still selected, copy, F7/F8, Delete, copy path, Share and
+  // drag-out act on the range.
+  chrome_cmd_gallery_range = 1036,
 };
 
 // chrome_cmd_video_loop's argument. The C# side mirrors it.
@@ -318,6 +324,7 @@ static_assert(chrome_cmd_editor_trim_grab >= kCommandCount && chrome_cmd_editor_
 static_assert(chrome_cmd_open_in_app >= kCommandCount);
 static_assert(chrome_cmd_video_volume >= kCommandCount && chrome_cmd_video_loop >= kCommandCount);
 static_assert(chrome_cmd_rename >= kCommandCount);
+static_assert(chrome_cmd_gallery_range >= kCommandCount);
 static_assert(is_reserved_notification(chrome_cmd_set_settings));
 static_assert(is_reserved_notification(chrome_cmd_folder_ready));
 static_assert(is_reserved_notification(chrome_cmd_video_active));
@@ -345,7 +352,7 @@ static_assert(is_reserved_notification(chrome_cmd_focus_changed));
       chrome_cmd_drag_items, chrome_cmd_drag_ended, chrome_cmd_open_recent,
       chrome_cmd_editor_trim_grab, chrome_cmd_editor_trim_to, chrome_cmd_open_in_app,
       chrome_cmd_video_volume, chrome_cmd_video_muted, chrome_cmd_video_track,
-      chrome_cmd_video_loop, chrome_cmd_rename};
+      chrome_cmd_video_loop, chrome_cmd_rename, chrome_cmd_gallery_range};
   std::uint32_t h = 17;
   for (const int id : ids) h = h * 31u + static_cast<std::uint32_t>(id);
   return static_cast<std::int32_t>(h);

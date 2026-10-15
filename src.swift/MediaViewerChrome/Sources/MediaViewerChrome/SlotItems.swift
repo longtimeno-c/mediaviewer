@@ -245,11 +245,17 @@ struct SlotAddonsSection: View {
   }
 
   @ObservedObject private var settings = SettingsStore.shared
+  @ObservedObject private var slots = SlotStore.shared
+  @ObservedObject private var sharepoint = SharepointStore.shared
   @State private var rows: [Row] = []
   @State private var confirming: String?
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
+      // #410: Sharepoint, offered with one click while it is not installed.
+      if !sharepoint.installed && !rows.contains(where: { $0.id == SharepointStore.addonID }) {
+        SharepointOffer()
+      }
       ForEach(rows) { row in
         VStack(alignment: .leading, spacing: 6) {
           Text(row.name).font(MVTheme.font()).foregroundStyle(MVTheme.title)
@@ -265,13 +271,22 @@ struct SlotAddonsSection: View {
               Button("Cancel") { confirming = nil }
             }
           } else {
-            Button("Remove…") { confirming = row.id }.accessibilityLabel("Remove \(row.name)")
+            HStack {
+              // #410: an add-on with a window of its own opens it from here, as
+              // Import does ("Open Import").
+              if row.loaded, let screen = slots.windowScreens[row.id] {
+                Button("Open \(row.name)") { slots.openScreen(addon: row.id, screen: screen) }
+              }
+              Button("Remove…") { confirming = row.id }.accessibilityLabel("Remove \(row.name)")
+            }
           }
         }
       }
     }
     .onAppear { refresh() }
     .onChange(of: settings.visible) { _, visible in if visible { refresh() } }
+    // An add-on that just attached (Sharepoint after its one-click install).
+    .onChange(of: slots.windowScreens) { _, _ in refresh() }
   }
 
   private func stateText(_ row: Row) -> String {
@@ -286,6 +301,7 @@ struct SlotAddonsSection: View {
     confirming = nil
     _ = id.withCString { mv_chrome_slot_addon_remove($0, keep) }
     rows.removeAll { $0.id == id }
+    if id == SharepointStore.addonID { SharepointStore.shared.refresh() }
   }
 
   private func refresh() {

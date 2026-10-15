@@ -129,7 +129,8 @@ constexpr binding kBindings[] = {
     row(key::f7, mod_shift, kViewing, edge, copy_to_pick),
     row(key::f8, mod_none, kViewing, edge, move_to),
     row(key::f8, mod_shift, kViewing, edge, move_to_pick),
-    row(key::del, mod_none, kBrowse | kVideo, edge, delete_to_recycle_bin),
+    // Issue #413: in the gallery too, for its shift-click range (or the cell).
+    row(key::del, mod_none, kBrowse | kVideo | kGallery, edge, delete_to_recycle_bin),
 
     // Slideshow.
     row(C('+'), mod_none, kSlideshow, repeat, slideshow_faster),

@@ -32,6 +32,7 @@ and a verify line on each platform (D9, amended). The order is:
 | 56 | **Declarative contributions** (the second half; contribution API 2): an add-on's settings page drawn from its manifest on both hosts, its values kept per add-on (and on remove unless asked), key layouts (keymap packs) applied once with Reset back to the defaults, theme shape (radius, density, type scale), and Import / Duplicates / Local search on the host's theme tokens ([docs/design/25](design/25-open-addons.md#pr-56-second-half-declarative-contributions-2026-10-11), [ADDONS.md](ADDONS.md)); ABI 0.24 | Mac: Catch2 (schema, values, keymaps over every built-in command, shape), the SDK cross-check, 2.5 M fuzz inputs, the full suite and the rig's PR 56 leg pass in the app; launch and pacing measured against the base on a loaded machine (no difference; the idle CPU clause fails on base too). Windows: every C# project compiles clean; the native half is CI's; nothing run in the app yet |
 | 57 | **Add-on scripts**: other makers' add-ons run Lua 5.4 (vendored, static) in a sandbox per add-on on its own worker, with commands on keys, permissions in the consent sheet (`folder.read`, `thumbnails`, `selection`; no network) and limits (64 MB, 100 M instructions and 1 s per task, a watchdog) that stop the add-on and say why in Settings ([docs/design/25-open-addons.md](design/25-open-addons.md#implementation-notes-pr-57-2026-10-11), [ADDONS.md](ADDONS.md#scripts)); ABI 0.26 | Mac: built, `mv_script_tests` and the SDK cross-check pass, the key walk runs in the app (`MV_SCRIPT_SELFTEST`), the fuzz harness ran ~15 min clean, Mac PR 1 gate and launch timings measured with a script spinning / installed. Windows: compiled in CI only (shell, ABI, chrome); the Windows key walk, the Windows gate with a script spinning and Narrator / VoiceOver on the new Settings lines owed |
 | 58–59 | **Screens and slots**: MediaViewer's own native add-ons add to pages that exist (an info-pane section at the very bottom of the Metadata pane, file search and Local search providers, command-bar / path-bar / status items, gallery tile badges, context-menu entries) and open windows, docked panes and sheets from a view tree both chromes render ([docs/design/25](design/25-open-addons.md#implementation-notes-prs-58-59-2026-10-11)); host table v3; ABI 0.25 | Mac: the shared suite passes (with a real test add-on through a signed store; also under ASan / UBSan and TSan); the app built and, with the test add-on sideloaded, drew its section at the bottom of the pane and its items. Windows: both C# projects compile; the native side is CI's. Measurements and the keyboard / VoiceOver / Narrator passes are owed ([Where this actually is](#screens-and-slots-prs-58-59-2026-10-11)). Script add-ons wait for PR 57; Places is #344 |
+| #410, #413 | **Sharepoint**: send photos, video and audio to a MediaViewer nearby over Wi-Fi or Bluetooth; both screens show the same code and nothing moves until the other person accepts; its window is a view tree both hosts draw ([docs/design/28](design/28-sharepoint.md)). The gallery's Shift-click range, drag-out from any gallery cell and one share icon that opens Sharepoint; ABI 0.29 | Mac: built; `mv_import_tests "[sharepoint]"` (two and three engines over loopback TCP), the full suites and the packer test pass; the window opened offline in a dev copy and the range drove copy path there; the PR 1 gate passed with the add-on installed. Windows: the C# compiles; native (sockets, WinRT Bluetooth, the range) is CI's. Two machines, Bluetooth and the hand checks are owed ([Where this actually is](#sharepoint-issues-410-413-2026-10-15)) |
 
 See [docs/design/10-roadmap.md](design/10-roadmap.md). Old Mac numbers in the history below map as
 PR 16 → Mac PR 1, 17 → Mac PR 2/7, 18 → Mac PR 3/4/6, 19 → Mac PR 5, 20 → Mac PR 8.
@@ -1048,6 +1049,13 @@ MV_PLACES_MAP_DUMP=<dir> build/bin/mv_tests "[.places-map-dump]"      # BMPs of 
 python3 tools/package/addon-pack.py stage-places --src build/addons/places --blob build/geo/places.mvgeo
 python3 tools/package/addon-pack.py pack --addon places --platform macos --src build/addons/places \
   --version 1.0.0 --key <key file> --out dist/
+
+# Sharepoint (docs/design/28): build/addons/sharepoint/(lib)mv_sharepoint.(dylib|dll)
+cmake --build build --target mv_sharepoint
+build/bin/mv_import_tests "[sharepoint]"       # wire, channel, 2-3 engines over loopback TCP, the add-on through the loader
+python3 -m unittest tools/package/test_addon_pack.py   # SharepointPackTest among them
+python3 tools/package/addon-pack.py pack --addon sharepoint --platform macos --src build/addons/sharepoint \
+  --version 1.0.0 --key <key file> --out dist/
 ```
 
 To see it in the app on a developer build (`-DMV_ADDON_DEV_PUBLIC_KEY`): pack with the dev key as
@@ -1738,6 +1746,45 @@ open -n --env HOME=<scratch>/home --env MV_DEV_ADDONS_DIR=<scratch>/addons \
 
 Every name in the test add-on is "Slots test"; nothing in it looks like Places. Quit the dev
 copy when done.
+### Sharepoint (issues #410, #413, 2026-10-15)
+
+What is built is in [docs/design/28](design/28-sharepoint.md).
+
+- **Mac (M-series):** the app, the Swift chrome and `libmv_sharepoint.dylib` build clean.
+  `mv_import_tests` 135 cases pass, 23 of them `"[sharepoint]"`: the path rule, the offer (a
+  wrapping total and an oversized file refused), the beacon, the code, the channel (same code
+  both ends, a machine in the middle shows two codes, a key that does not match its commitment
+  and an altered byte end it, another version is refused, pings never stretch a deadline), a
+  peer that connects and stalls does not hold up shutdown, made-up beacons neither flood the list
+  nor take a peer's address, and two or three engines over loopback TCP
+  found through an in-memory bus (nothing about the files leaves before the sender's person
+  confirms the code; Accept delivers with matching bytes and keeps both on a name clash; pair half and sidecar ride along; a folder keeps its shape without housekeeping; Decline,
+  closing the window and a third client receive nothing; busy; Cancel from either side keeps what
+  finished and leaves no `.mvtmp`; no room; an offer opens a closed window when receiving is on;
+  no presence with the window closed), then the add-on through a signed store and the v3 table,
+  offline. `mv_tests` 819 cases (808 passed, 11 skipped) and `mv_script_tests` pass;
+  `SharepointPackTest` passes.
+- **In a dev copy (offline, `MV_SHAREPOINT_OFFLINE=1`, sideloaded with the dev key):** its command
+  opened the window with the two files it was given, on the host's theme; the gallery shows the
+  share icon; a range set through the bridge made copy path copy the three files, and Next ended
+  it. The Shift-click itself, the range's tint, the drag out of the grid, the Choose… dialog and
+  the share icon's install offer need a mouse: owed to a hand check.
+- **Measured, Mac, alternated, warm (load average 5–22):** launch → first pixel of a RAW
+  (`mediaviewer_lab --soak 6 --static`) without / with Sharepoint installed, 15 runs each:
+  22–76 ms (median 39) / 23–88 ms (median 33). No difference within noise. The PR 1 gate
+  (`frametime --seconds 60`) passed with Sharepoint installed (3600 frames, max 17.0 ms, idle
+  0 presents, 0.06 % CPU); the alternated base run failed on a 1.3 s stall on a machine that had
+  just woken, so the base's pass is not shown by this run.
+- **Windows:** the C# compiles (warnings are errors). `net_win.cpp`, `bt_win.cpp` (C++/WinRT,
+  the first use in the tree, under `/W4 /WX /GR-`), `main.cpp`'s range and `slots_abi.cpp` meet a
+  compiler in CI only.
+- **Owed:** the issue's verify on two machines on one Wi-Fi (see each other, same code, Accept
+  delivers the marked files with matching bytes, Cancel mid-way leaves nothing partial, a third
+  machine receives nothing), the same small send with Wi-Fi off and Bluetooth on (Mac–Mac,
+  Mac–Windows, Windows–Windows), the crash-report check after a transfer, Windows anything in
+  the app, both hosts' first-run prompts (local network and Bluetooth on the Mac, Defender
+  Firewall on Windows), VoiceOver and Narrator over the window, the Windows PR 1 gate.
+
 ### Local search: ask before resuming an interrupted index (issue #299, 2026-10-11)
 
 A quit or a kill part-way through indexing no longer carries on, or loads the pack, at the next

@@ -118,6 +118,11 @@ public static unsafe partial class SlotNative
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     private static partial MvStatus mv_slots_invoke(byte* addon, byte* item, byte* paths);
 
+    // ABI 0.29 (#410): a slot add-on's manifest command.
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial MvStatus mv_slots_command(byte* addon, byte* command, byte* paths);
+
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     private static partial MvStatus mv_slots_surface(byte* addon, byte* screen, byte* surface, byte* output,
@@ -271,6 +276,19 @@ public static unsafe partial class SlotNative
             fixed (byte* v = Z(valueJson))
             {
                 return mv_slots_event(a, s, n, kind, v) == MvStatus.Ok;
+            }
+        }, false);
+
+    /// <summary>One of a slot add-on's manifest commands (#410): the add-on gets a command
+    /// event carrying the files its payload names.</summary>
+    public static bool Command(string addon, string command, string pathsJson) =>
+        Try(() =>
+        {
+            fixed (byte* a = Z(addon))
+            fixed (byte* c = Z(command))
+            fixed (byte* p = Z(pathsJson))
+            {
+                return mv_slots_command(a, c, p) == MvStatus.Ok;
             }
         }, false);
 

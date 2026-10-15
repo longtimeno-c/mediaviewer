@@ -284,6 +284,42 @@ jobs:
             --version $env:VERSION --key $env:MANIFEST_KEY --out dist/addon --require-pinned-key
           if ($LASTEXITCODE) { throw 'packing places failed' }
 
+      # Sharepoint (docs/design/28): code only; signed like Import's DLL.
+      - name: Find the Sharepoint add-on build
+        id: sharepoint
+        if: inputs.mode == 'stable'
+        run: |
+          $dll = Get-ChildItem build/addons/sharepoint -Recurse -Filter mv_sharepoint.dll | Select-Object -First 1
+          if (-not $dll) { throw 'mv_sharepoint.dll was not built' }
+          "dir=$($dll.DirectoryName)" >> $env:GITHUB_OUTPUT
+
+      - name: Sign the Sharepoint add-on's binary
+        if: inputs.mode == 'stable' && steps.sign.outputs.meta != ''
+        uses: azure/artifact-signing-action@v1
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.TRUSTED_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.TRUSTED_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.TRUSTED_SIGNING_PROFILE }}
+          files-folder: ${{ steps.sharepoint.outputs.dir }}
+          files-folder-filter: dll
+          files-folder-recurse: false
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Pack the Sharepoint add-on
+        if: inputs.mode == 'stable'
+        env:
+          MANIFEST_KEY: ${{ steps.sign.outputs.key }}
+          SHAREPOINT_DIR: ${{ steps.sharepoint.outputs.dir }}
+        run: |
+          python tools/package/addon-pack.py pack --addon sharepoint --platform win-x64 --src $env:SHAREPOINT_DIR `
+            --version $env:VERSION --key $env:MANIFEST_KEY --out dist/addon --require-pinned-key
+          if ($LASTEXITCODE) { throw 'packing sharepoint failed' }
+
       # Local search (docs/design/17): the Core pack and its Sound and People pieces,
       # each its own signed download on the same release, like Import. Only our
       # own two DLLs are signed; ONNX Runtime's carry Microsoft's signature.
@@ -360,7 +396,7 @@ jobs:
           }
           # Add-ons stay on the stable feed (docs/design/18): previews carry none.
           if ($env:MODE -eq 'stable') {
-            foreach ($addon in 'import', 'places', 'ai', 'ai-audio', 'ai-faces', 'ai-cuda') {
+            foreach ($addon in 'import', 'places', 'sharepoint', 'ai', 'ai-audio', 'ai-faces', 'ai-cuda') {
               Copy-Item "dist/addon/mediaviewer-addon-$addon-win-x64.zip", "dist/addon/mediaviewer-addon-$addon-win-x64.json", "dist/addon/mediaviewer-addon-$addon-win-x64.json.sig" upload
             }
           }
@@ -517,6 +553,7 @@ jobs:
           python3 tools/mac/test_check_minos.py -v
           # Nothing shipped may need a newer macOS than LSMinimumSystemVersion.
           python3 tools/mac/check_minos.py build/MediaViewer.app build/addons/import build/addons/places \
+            build/addons/sharepoint \
             $([[ -d build/addons/ai ]] && echo build/addons/ai)
 
       # upload-artifact zips drop symlinks and modes; Sparkle.framework needs both.
@@ -528,6 +565,8 @@ jobs:
           tar -C build/addons/import -cf "upload/ImportAddon-${{ matrix.arch }}.tar" libmv_import.dylib Import.bundle
           # Places: the dylib only; its place database is staged once, in `macos`.
           tar -C build/addons/places -cf "upload/PlacesAddon-${{ matrix.arch }}.tar" libmv_places.dylib
+          # Sharepoint (docs/design/28): the dylib, joined and signed in `macos`.
+          tar -C build/addons/sharepoint -cf "upload/SharepointAddon-${{ matrix.arch }}.tar" libmv_sharepoint.dylib
           # Local search is arm64 only (ORT ships no x86_64 macOS build).
           if [[ -d build/addons/ai ]]; then
             cp build/_ort/*/ThirdPartyNotices.txt build/addons/ai/
@@ -713,6 +752,29 @@ jobs:
           cp build/release/addon/mediaviewer-addon-places-macos.zip \
              build/release/addon/mediaviewer-addon-places-macos.json \
              build/release/addon/mediaviewer-addon-places-macos.json.sig upload/
+
+      # Sharepoint (docs/design/28): joined and signed like Places, code only.
+      - name: Sharepoint add-on (join, sign, notarize, pack)
+        if: inputs.mode == 'stable'
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          mkdir -p sharepoint/arm64 build/addons
+          tar -xf apps/SharepointAddon-arm64.tar -C sharepoint/arm64
+          if [[ -f apps/SharepointAddon-x64.tar ]]; then
+            mkdir -p sharepoint/x86_64
+            tar -xf apps/SharepointAddon-x64.tar -C sharepoint/x86_64
+            python3 tools/mac/lipo_merge.py --arm64 sharepoint/arm64 --x86_64 sharepoint/x86_64 --out build/addons/sharepoint
+          else
+            cp -R sharepoint/arm64 build/addons/sharepoint
+          fi
+          python3 tools/mac/macpack.py addon --dir build/addons/sharepoint \
+            --identity "$MV_MAC_SIGN_IDENTITY" --notary-profile mediaviewer-notary
+          python3 tools/package/addon-pack.py pack --addon sharepoint --platform macos --src build/addons/sharepoint \
+            --version "$VERSION" --key "$RUNNER_TEMP/release.key" --out build/release/addon --require-pinned-key
+          cp build/release/addon/mediaviewer-addon-sharepoint-macos.zip \
+             build/release/addon/mediaviewer-addon-sharepoint-macos.json \
+             build/release/addon/mediaviewer-addon-sharepoint-macos.json.sig upload/
 
       - name: Local search pack (sign, notarize, stage models, pack)
         if: inputs.mode == 'stable'

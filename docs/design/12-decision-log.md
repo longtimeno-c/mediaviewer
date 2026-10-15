@@ -1179,6 +1179,61 @@ MTU are never changed by the app.
 
 ---
 
+## Sharepoint
+
+Issues #410 and #413, [28](28-sharepoint.md).
+
+**A first-party add-on may open a local link the person asked for (owner, 2026-10-14).** Sharepoint
+listens, beacons and uses Bluetooth only while its window is open, receiving is on or a transfer
+runs; the idle viewer has no socket. Bytes go only to the peer the sender picked, after the person
+there accepted, sealed end to end. Rule 6's line is unchanged: no path, file name, pixel, EXIF,
+address or peer name reaches a log, telemetry or a crash report. Other makers' script add-ons
+still have no network permission (2026-10-03).
+
+**Discovery is one UDP beacon a second, not Bonjour / DNS-SD (2026-10-15).** One portable socket
+file per OS (`net_posix.cpp`, `net_win.cpp`) instead of `dns_sd` on the Mac and `DnsServiceBrowse`
+on Windows: the same code finds and is found on both, and it runs only while the window is open.
+Sent to an organisation-local multicast group and the subnet broadcast with a TTL of 1.
+
+**Bluetooth is a GATT pipe, and a set over 32 MiB is refused on it (2026-10-15; a budget).**
+Windows gives apps no connection-oriented LE channel, so a Mac-to-Windows send has GATT only:
+writes without response one way, notifications the other, tens of kilobytes a second. 32 MiB is a
+few minutes at that rate; past it the window says to join the same Wi-Fi.
+
+**Commit, then reveal, and the sender confirms the code (2026-10-15).** With both keys sent at
+once, a machine in the middle could learn each side's key first and search a few thousand keys
+for two six-digit codes that match. The client now commits to a hash of its key before it sees
+the server's, and the server shows its key only after that. And the receiver's Accept alone did
+not protect the sender: a machine claiming the receiver's id from another address could answer
+Accept itself. So the sender's person confirms the code before the offer (even the names) leaves,
+and a fresh peer keeps its address. Two clicks, one per side, as Bluetooth's numeric comparison.
+
+**Each file's hash comes after its bytes, not in the offer (2026-10-15).** A hash list up front
+would make the sender read every file twice before the first byte moved (a large video read
+whole first). `file_end` carries the BLAKE3 of the bytes as read; the receiver checks it, then
+reads the temporary back uncached and checks again before the rename, as `verified_copy` does.
+
+**The receive is written in the add-on, with `verified_copy`'s rules (2026-10-15).** The bytes
+come from a link, not a path, and copying a temporary again would write a large video twice. The
+add-on compiles the file port in (exclusive create, durable flush, uncached read-back, no-replace
+rename), as Places compiles `io/mapped_file`; it links nothing of the core.
+`tools/check-module-graph.ps1` lets `addons/` include `io/` for it.
+
+**A slot add-on's manifest commands are events to it (2026-10-15).** It has no chrome to run
+them, so the host sends a `command` event with the payload's files (`run_command`, ABI 0.29).
+
+**The gallery's Shift-click range is the selection while it stands (2026-10-15, #413).** It is
+made only by Shift-click, so arrow browsing still never makes one; copy, `F7` / `F8`, `Delete`,
+copy path, Share and drag-out act on it ahead of the marks, which stay what `Insert` /
+`Shift+Space` edit. `Delete` reaches the gallery for it. On Windows native drops the range once
+its anchor is no longer selected, so no selection path needs a hook.
+
+**Gallery drag-out on the Mac starts below SwiftUI (2026-10-15, #413).** In the grid's vertical
+`ScrollView` the cell's `DragGesture` never saw the mouse drag; a local event monitor turns a
+press on a hovered cell that moves 4 pt into the file drag.
+
+---
+
 ## Open add-ons
 
 **Anyone can make an add-on; a contribution model (2026-09-29, owner, issue #79).** "Add-ons can

@@ -238,6 +238,7 @@ public static partial class IslandHost
     private static void ReloadItems()
     {
         if (_folderSession is null) return;
+        _galleryRange.Clear();  // #413: indices of the old listing
         Items.Clear();
         _selectedIndex = -1;
         // Milestone H: a result list (mv_folder_open_list) rather than a
@@ -362,6 +363,9 @@ public static partial class IslandHost
     {
         // Touch two items, not two thousand: the old loop was O(folder) per key
         // repeat and every write raised PropertyChanged.
+        // Issue #413: another selection ends the gallery's range (native drops
+        // it too: its anchor is no longer the current item).
+        if (index != _selectedIndex) ClearGalleryRange();
         if (_selectedIndex >= 0 && _selectedIndex < Items.Count) Items[_selectedIndex].Selected = false;
         if (index >= 0 && index < Items.Count) Items[index].Selected = true;
         _selectedIndex = index;
@@ -560,6 +564,18 @@ internal sealed class FolderItemVm : INotifyPropertyChanged
             if (_thumbPath == value) return;
             _thumbPath = value;
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ThumbPath)));
+        }
+    }
+    // Issue #413: inside the gallery's shift-click range.
+    private bool _inRange;
+    public bool InRange
+    {
+        get => _inRange;
+        set
+        {
+            if (_inRange == value) return;
+            _inRange = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(InRange)));
         }
     }
     private bool _galleryCurrent;

@@ -643,6 +643,12 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (BOOL)currentItemIsAudio;
 - (BOOL)itemIsVideoAtIndex:(NSInteger)index;
 - (uint64_t)marksGeneration;
+// Issue #413: the gallery's shift-click range (paths in listing order). While
+// it holds files, copy, F7/F8, Delete, copy path, Share and drag-out act on it.
+- (void)setGalleryRangeIndices:(const int32_t*)indices count:(int32_t)count;
+- (void)clearGalleryRange;
+- (uint64_t)galleryRangeGeneration;
+- (NSInteger)galleryRangeCount;
 - (uint64_t)thumbGeneration;
 - (std::string)thumbKeyAtIndex:(NSInteger)index;
 - (std::string)listingSnapshot;
@@ -904,6 +910,22 @@ extern "C" void mv_chrome_select_index_and_close_gallery(int32_t index) {
     [g_chrome_app selectIndex:static_cast<std::size_t>(index)];
   }
   [g_chrome_app setGalleryVisible:NO];
+}
+// Issue #413: the gallery's range, set from Swift's shift-click (the indices
+// in the order the grid shows them) and cleared by any other selection.
+extern "C" void mv_chrome_gallery_set_range(const int32_t* indices, int32_t count) {
+  if (!g_chrome_app) return;
+  if (!indices || count <= 0) {
+    [g_chrome_app clearGalleryRange];
+  } else {
+    [g_chrome_app setGalleryRangeIndices:indices count:count];
+  }
+}
+extern "C" uint64_t mv_chrome_gallery_range_generation(void) {
+  return g_chrome_app ? [g_chrome_app galleryRangeGeneration] : 0;
+}
+extern "C" int32_t mv_chrome_gallery_range_count(void) {
+  return g_chrome_app ? static_cast<int32_t>([g_chrome_app galleryRangeCount]) : 0;
 }
 extern "C" uint64_t mv_chrome_listing_generation(void) {
   return g_chrome_app ? [g_chrome_app listingGeneration] : 0;
@@ -2383,6 +2405,10 @@ static void MvAdoptNewDefaultViewerTypes() {
   // Bumped by every change to `_marks`; Swift rebuilds its marked-name set
   // when it moves (mv_chrome_marks_generation).
   std::uint64_t _marksGeneration;
+  // Issue #413: the gallery's shift-click range, paths in listing order, and
+  // its generation (mv_chrome_gallery_range_generation). Empty: none.
+  std::vector<std::string> _galleryRange;
+  std::uint64_t _galleryRangeGeneration;
   // Bumped when the app rewrites a listed file in place (lossless rotate, a
   // metadata write) and refreshes its size / mtime without a relist: Swift
   // re-reads the thumbnail keys when it moves (mv_chrome_thumb_generation).
@@ -3734,6 +3760,7 @@ static void MvAdoptNewDefaultViewerTypes() {
     });
     ++_marksGeneration;
   }
+  [self clearGalleryRange];  // #413: indices of the old listing
 
   std::size_t new_index = 0;
   if (!_items.empty()) {
@@ -3779,6 +3806,8 @@ static void MvAdoptNewDefaultViewerTypes() {
 }
 
 - (void)selectIndex:(std::size_t)new_index {
+  // Issue #413: another selection ends a gallery range (arrows move one cell).
+  [self clearGalleryRange];
   _index.reset(_items.size(), new_index);
   [self applyFilmstripLayout];
   [self trimItemChanged];
@@ -3955,6 +3984,15 @@ static void MvAdoptNewDefaultViewerTypes() {
 
 - (std::vector<mv::io::dir_entry>)markedOrCurrentEntries {
   std::vector<mv::io::dir_entry> out;
+  // Issue #413: a gallery range is the selection while it holds files: copy,
+  // F7/F8, Delete, copy path and Share act on it, in listing order.
+  if (!_galleryRange.empty()) {
+    const std::set<std::string> in(_galleryRange.begin(), _galleryRange.end());
+    for (const auto& entry : _items) {
+      if (in.count(entry.path_utf8)) out.push_back(entry);
+    }
+    if (!out.empty()) return out;
+  }
   if (!_marks.empty()) {
     for (const auto& entry : _items) {
       if (_marks.count(entry.path_utf8)) out.push_back(entry);
@@ -4453,6 +4491,7 @@ static void MvAdoptNewDefaultViewerTypes() {
 }
 - (void)setGalleryVisible:(BOOL)visible {
   const BOOL changed = _galleryVisible != visible;
+  if (!visible) [self clearGalleryRange];  // #413: the range belongs to the grid
   _galleryVisible = visible;
   self.galleryHost.hidden = !visible;
   [self layoutAIBadge];  // #345
@@ -4585,6 +4624,29 @@ static void MvAdoptNewDefaultViewerTypes() {
 }
 - (uint64_t)marksGeneration {
   return _marksGeneration;
+}
+- (void)setGalleryRangeIndices:(const int32_t*)indices count:(int32_t)count {
+  std::vector<std::string> range;
+  range.reserve(static_cast<std::size_t>(count));
+  for (int32_t i = 0; i < count; ++i) {
+    const int32_t at = indices[i];
+    if (at >= 0 && static_cast<std::size_t>(at) < _items.size()) {
+      range.push_back(_items[static_cast<std::size_t>(at)].path_utf8);
+    }
+  }
+  _galleryRange = std::move(range);
+  ++_galleryRangeGeneration;
+}
+- (void)clearGalleryRange {
+  if (_galleryRange.empty()) return;
+  _galleryRange.clear();
+  ++_galleryRangeGeneration;
+}
+- (uint64_t)galleryRangeGeneration {
+  return _galleryRangeGeneration;
+}
+- (NSInteger)galleryRangeCount {
+  return static_cast<NSInteger>(_galleryRange.size());
 }
 - (uint64_t)thumbGeneration {
   return _thumbGeneration;
@@ -9514,6 +9576,7 @@ static std::string MvBadgeKey(const mv::io::dir_entry& e) {
     _marks.clear();
     ++_marksGeneration;
   }
+  [self clearGalleryRange];
   _metaRecord.reset();
   ++_metaGeneration;
   ++_listingGeneration;

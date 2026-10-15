@@ -181,8 +181,13 @@ public static partial class IslandHost
                 }
                 foreach (JsonElement b in JArr(r, "badges"))
                     SlotBadgeDefs[JStr(b, "key")] = new SlotBadge(JStr(b, "key"), JStr(b, "label"), JStr(b, "symbol"));
+                NoteSlotWindowScreens(r);  // #410
             }
             catch (JsonException ex) { System.Diagnostics.Debug.WriteLine(ex.Message); }
+        }
+        else
+        {
+            SlotWindowScreens.Clear();
         }
         // A new add-on may want the file on screen and the folder.
         _slotInfoKey = "";
@@ -207,6 +212,7 @@ public static partial class IslandHost
             _slotTileContext = context;
             RemakeGalleryTiles();
         }
+        AfterSlotContributions();  // #410: Settings' Open, a share waiting on Sharepoint
     }
 
     private static bool _slotTileBadges;
@@ -724,6 +730,14 @@ public static partial class IslandHost
     {
         if (_slotSettingsPanel is null) return;
         _slotSettingsPanel.Children.Clear();
+        // #410: Sharepoint, offered with one click while it is not installed.
+        if (!SharepointInstalled)
+        {
+            var offer = new StackPanel { Spacing = 6 };
+            BuildSharepointOffer(offer, null);
+            _slotSettingsPanel.Children.Add(offer);
+            if (SharepointSlot.Offer.Kind == OfferKind.Unknown) ProbeOffer(SharepointSlot);
+        }
         foreach (SlotAddonRow row in SlotAddonRows)
         {
             _slotSettingsPanel.Children.Add(Label(row.Name));
@@ -744,6 +758,14 @@ public static partial class IslandHost
             }
             else
             {
+                // #410: an add-on with a window of its own opens it from here, as
+                // Import does ("Open Import").
+                if (loaded && SlotWindowScreens.TryGetValue(row.Id, out string? screen))
+                {
+                    string id = row.Id;
+                    buttons.Children.Add(EditButton($"Open {row.Name}", () => SlotNative.OpenScreen(
+                        id, screen, "", SlotTheme(), 0, 0, (float)SlotScale())));
+                }
                 Button remove = EditButton("Remove…", () => { _slotConfirming = row.Id; RefreshSlotSettings(); });
                 AutomationProperties.SetName(remove, $"Remove {row.Name}");
                 buttons.Children.Add(remove);

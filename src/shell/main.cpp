@@ -11,6 +11,7 @@
 // WinUI 3 chrome inside it as XAML content islands.
 
 #include <algorithm>
+#include <charconv>
 #include <windows.h>
 #include <objbase.h>
 #include <ole2.h>
@@ -423,6 +424,12 @@ struct app_state {
   // docs/design/16 marks, copy, move. Marks are UI-thread state keyed by path; the
   // file work runs on files' own I/O worker and reports back by message.
   mv::shell::mark_set marks;
+  // Issue #413: the gallery's shift-click range: paths in the grid's order,
+  // and the cell selected when it was made. Live only while the gallery is up
+  // and that cell is still selected (selection_targets), so any other
+  // selection, another folder or the grid closing ends it with no hook.
+  std::vector<std::string> gallery_range;
+  std::string gallery_range_anchor;
   // Issue #206: View > Show. For this run only; the core filters the listing.
   mv::io::kind_filter kind_filter = mv::io::kind_filter::all;
   mv::shell::file_jobs files;
@@ -1003,6 +1010,25 @@ std::string current_item_path(app_state* app) {
   std::uint32_t selected = 0;
   if (!selected_index(app, selected)) return {};
   return item_path_at(app, selected);
+}
+
+// Issue #413: the gallery's range, when it still stands (the grid is up and
+// the cell it started from is still selected); a stale one is dropped here.
+bool gallery_range_live(app_state* app) {
+  if (app->gallery_range.empty()) return false;
+  if (!app->gallery_visible || current_item_path(app) != app->gallery_range_anchor) {
+    app->gallery_range.clear();
+    app->gallery_range_anchor.clear();
+    return false;
+  }
+  return true;
+}
+
+// What copy, F7/F8, Delete, copy path and Share act on: the gallery's range
+// while it stands, else the marks, else the current item (docs/design/16).
+std::vector<std::string> selection_targets(app_state* app) {
+  if (gallery_range_live(app)) return app->gallery_range;
+  return app->marks.targets(current_item_path(app));
 }
 
 // MV_PAIR_* of the selected stop; MV_PAIR_NONE with nothing selected.
@@ -1941,7 +1967,7 @@ bool copy_to_clipboard(app_state* app) {
     const std::string text = app->lab.eyedropper_text();
     if (!text.empty()) return set_clipboard(app, CF_UNICODETEXT, text_to_global(text));
   }
-  const auto targets = expand_pair_targets(app, app->marks.targets(current_item_path(app)));
+  const auto targets = expand_pair_targets(app, selection_targets(app));
   if (targets.empty()) return false;
   return set_clipboard(app, CF_HDROP, hdrop_to_global(targets));
 }
@@ -4662,7 +4688,16 @@ void chrome_on_command(void* ctx, int command, float arg) {
       // listing for the common case.
       app->own_drag = true;
       std::string lines;
-      if (!app->marks.empty()) {
+      const std::uint32_t at = static_cast<std::uint32_t>(arg < 0.0f ? 0.0f : arg);
+      // Issue #413: any cell of the gallery's range drags the whole range.
+      if (gallery_range_live(app) && at < folder_count(app) &&
+          std::find(app->gallery_range.begin(), app->gallery_range.end(), item_path_at(app, at)) !=
+              app->gallery_range.end()) {
+        for (const std::string& p : expand_pair_targets(app, app->gallery_range)) {
+          lines += p;
+          lines += '\n';
+        }
+      } else if (!app->marks.empty()) {
         const std::uint32_t count = folder_count(app);
         const auto index = static_cast<std::uint32_t>(arg < 0.0f ? 0.0f : arg);
         if (index < count && app->marks.contains(item_path_at(app, index))) {
@@ -4789,6 +4824,30 @@ void chrome_on_command(void* ctx, int command, float arg) {
     case mv::shell::chrome_cmd_meta_revert:
       revert_current_metadata(app);
       return;
+    case mv::shell::chrome_cmd_gallery_range: {
+      // Issue #413: Shift-click in the gallery. The indices come parked, in
+      // the grid's order; the range stands while `arg` stays selected.
+      std::string parked;
+      if (!app->chrome.take_parked_text(parked)) return;
+      app->gallery_range.clear();
+      app->gallery_range_anchor.clear();
+      std::uint32_t selected = 0;
+      if (!selected_index(app, selected) || arg < 0.0f || static_cast<std::uint32_t>(arg) != selected) return;
+      const std::uint32_t count = folder_count(app);
+      std::size_t at = 0;
+      while (at < parked.size()) {
+        const std::size_t comma = std::min(parked.find(',', at), parked.size());
+        std::uint32_t index = 0;
+        const auto [end, ec] = std::from_chars(parked.data() + at, parked.data() + comma, index);
+        if (ec == std::errc{} && end == parked.data() + comma && index < count) {
+          std::string p = item_path_at(app, index);
+          if (!p.empty()) app->gallery_range.push_back(std::move(p));
+        }
+        at = comma + 1;
+      }
+      if (!app->gallery_range.empty()) app->gallery_range_anchor = item_path_at(app, selected);
+      return;
+    }
     case mv::shell::chrome_cmd_rename:
       commit_rename(app);
       if (app->window) focus_canvas(app);
@@ -5812,7 +5871,7 @@ void set_fullscreen_reveal(app_state* app, bool on) noexcept {
 // only UI-thread part; the bytes move on the file-job worker.
 bool start_transfer(app_state* app, mv::shell::file_job_kind kind, bool pick) {
   if (!app || !app->window) return false;
-  auto targets = expand_pair_targets(app, app->marks.targets(current_item_path(app)));
+  auto targets = expand_pair_targets(app, selection_targets(app));
   if (targets.empty()) return false;
   std::string dest;
   if (!pick && !app->destinations.empty()) dest = app->destinations.front();
@@ -5839,7 +5898,7 @@ bool start_transfer(app_state* app, mv::shell::file_job_kind kind, bool pick) {
 // with no bin is refused on the worker, never deleted permanently.
 bool start_recycle(app_state* app) {
   if (!app || !app->window) return false;
-  const auto stops = app->marks.targets(current_item_path(app));
+  const auto stops = selection_targets(app);
   if (stops.empty()) return false;
   // A paired stop goes with both halves, and the question says so (PR 7).
   auto targets = expand_pair_targets(app, stops);
@@ -6092,7 +6151,7 @@ void motion_tick(app_state* app) noexcept {
 // pair gives both halves, as Ctrl+C does.
 bool copy_paths_to_clipboard(app_state* app) {
   if (!app) return false;
-  const auto targets = expand_pair_targets(app, app->marks.targets(current_item_path(app)));
+  const auto targets = expand_pair_targets(app, selection_targets(app));
   const std::string text = mv::shell::paths_as_text(targets, "\r\n");
   if (text.empty()) return false;
   return set_clipboard(app, CF_UNICODETEXT, text_to_global(text));
@@ -6162,7 +6221,7 @@ void on_flatten_done(app_state* app, std::unique_ptr<flatten_job_result> r) {
 // share sheet is WinRT, so the chrome shows it (IslandHost.Share.cs).
 bool share_targets(app_state* app) {
   if (!app || !app->window) return false;
-  const auto targets = expand_pair_targets(app, app->marks.targets(current_item_path(app)));
+  const auto targets = expand_pair_targets(app, selection_targets(app));
   if (targets.empty()) return false;
   mv::json::writer w;
   w.begin_array();
@@ -6634,7 +6693,7 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
         }
         w.end_array();
       } else if (row->payload == "marked_or_current") {
-        const auto targets = expand_pair_targets(app, app->marks.targets(current_item_path(app)));
+        const auto targets = expand_pair_targets(app, selection_targets(app));
         if (targets.empty()) return false;
         w.begin_array();
         for (const std::string& t : targets) w.string(t);
@@ -6668,7 +6727,7 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     case import_now: {
       if (!mv::shell::addon_commands_available()) return false;
       const auto targets =
-          expand_pair_targets(app, app->marks.targets(current_item_path(app)));
+          expand_pair_targets(app, selection_targets(app));
       if (targets.empty()) return false;
       mv::json::writer w;
       w.begin_array();
