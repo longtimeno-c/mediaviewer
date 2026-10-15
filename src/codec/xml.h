@@ -38,6 +38,15 @@ class reader {
   [[nodiscard]] const std::string& text() const noexcept { return text_; }
   // Element depth after this token (a start counts itself).
   [[nodiscard]] int depth() const noexcept { return depth_; }
+  // The current start element's attributes in document order (#290: XMP's
+  // RDF puts properties and xmlns declarations there).
+  [[nodiscard]] std::size_t attribute_count() const noexcept { return attrs_.size(); }
+  [[nodiscard]] std::string_view attribute_name(std::size_t i) const noexcept {
+    return i < attrs_.size() ? attrs_[i].name : std::string_view{};
+  }
+  [[nodiscard]] std::string_view attribute_value(std::size_t i) const noexcept {
+    return i < attrs_.size() ? std::string_view(attrs_[i].value) : std::string_view{};
+  }
 
   // Skips the rest of the element whose start was just read.
   void skip_element();

@@ -31,6 +31,12 @@
 #include <thread>
 #include <vector>
 
+#if !defined(_WIN32)
+#include <csignal>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
 #include "addon/host.h"
 #include "addons/ai/engine.h"
 #include "addons/ai/index_db.h"
@@ -646,6 +652,30 @@ struct rig {
       std::lock_guard lock(thumbs_m);
       jpegs[path + "#" + std::to_string(ms)].assign(jpeg.begin(), jpeg.end());
       return {};
+    };
+    // #291: the host's tag facts, by name: r5 a Canon EOS R5, gpt ChatGPT
+    // (AI), geo a position.
+    svc.tag_facts = [](const std::string& path, mv_addon_tag_facts& out) {
+      const std::string name = utf8(fs::path(path).filename());
+      if (name.find("broken") != std::string::npos) return false;
+      std::string fields;
+      if (name.find("r5") != std::string::npos) {
+        std::strcpy(out.camera_utf8, "Canon EOS R5");
+        std::strcpy(out.lens_utf8, "RF24-70mm F2.8 L IS USM");
+        fields = "Canon EOS R5\x1fRF24-70mm F2.8 L IS USM";
+      }
+      if (name.find("gpt") != std::string::npos) {
+        out.flags |= MV_ADDON_TAG_AI_GENERATED;
+        std::strcpy(out.made_with_utf8, "ChatGPT");
+        fields = "ChatGPT";
+      }
+      if (name.find("geo") != std::string::npos) {
+        out.flags |= MV_ADDON_TAG_HAS_LOCATION;
+        out.lat = 38.7975;
+        out.lon = -9.3883;
+      }
+      std::strcpy(out.fields_utf8, fields.c_str());
+      return true;
     };
     table = std::make_unique<mv::addon::host_table>(std::move(svc));
     table->set_negotiated(MV_ADDON_HOST_API);
@@ -1347,7 +1377,7 @@ TEST_CASE("an index migrates from schema 1, and again after a crash left a step 
   {
     auto d = mv::ai::index_db::open(path);
     REQUIRE(d);
-    CHECK((*d)->meta("schema") == "3");
+    CHECK((*d)->meta("schema") == "4");
     const auto roots = (*d)->roots();
     REQUIRE(roots.size() == 1);
     CHECK(roots[0].media == 0);
@@ -1358,13 +1388,254 @@ TEST_CASE("an index migrates from schema 1, and again after a crash left a step 
   {
     auto d = mv::ai::index_db::open(path);
     REQUIRE(d);
-    CHECK((*d)->meta("schema") == "3");
+    CHECK((*d)->meta("schema") == "4");
     REQUIRE((*d)->set_meta("schema", "2"));
   }
   auto d = mv::ai::index_db::open(path);
   REQUIRE(d);
-  CHECK((*d)->meta("schema") == "3");
+  CHECK((*d)->meta("schema") == "4");
   CHECK((*d)->roots().size() == 1);
+}
+
+namespace {
+
+// A schema-3 index as #176's builds left it, with one asset.
+void make_schema3(const std::string& path) {
+  sqlite3* db = nullptr;
+  REQUIRE(sqlite3_open(path.c_str(), &db) == SQLITE_OK);
+  REQUIRE(sqlite3_exec(db,
+                       "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);"
+                       "CREATE TABLE roots(id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE,"
+                       " recursive INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,"
+                       " last_scan_at INTEGER NOT NULL DEFAULT 0, media INTEGER NOT NULL DEFAULT 0);"
+                       "CREATE TABLE assets(id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE,"
+                       " root_id INTEGER NOT NULL REFERENCES roots(id) ON DELETE CASCADE,"
+                       " mtime INTEGER NOT NULL, size INTEGER NOT NULL, kind INTEGER NOT NULL,"
+                       " duration_ms INTEGER NOT NULL DEFAULT 0, seen INTEGER NOT NULL DEFAULT 0,"
+                       " cloud INTEGER NOT NULL DEFAULT 0);"
+                       "INSERT INTO meta VALUES('schema', '3');"
+                       "INSERT INTO roots(path, recursive) VALUES('/photos', 1);"
+                       "INSERT INTO assets(path, root_id, mtime, size, kind) VALUES('/photos/r5.jpg', 1, 5, 10, 1);",
+                       nullptr, nullptr, nullptr) == SQLITE_OK);
+  sqlite3_close(db);
+}
+
+bool column_exists(const std::string& path, const char* column) {
+  sqlite3* db = nullptr;
+  if (sqlite3_open(path.c_str(), &db) != SQLITE_OK) return false;
+  sqlite3_stmt* st = nullptr;
+  sqlite3_prepare_v2(db, "PRAGMA table_info(assets)", -1, &st, nullptr);
+  bool found = false;
+  while (st && sqlite3_step(st) == SQLITE_ROW) {
+    if (std::strcmp(reinterpret_cast<const char*>(sqlite3_column_text(st, 1)), column) == 0) found = true;
+  }
+  sqlite3_finalize(st);
+  sqlite3_close(db);
+  return found;
+}
+
+}  // namespace
+
+TEST_CASE("schema 3 migrates to 4: the tag columns and asset_text, keeping the assets", "[ai][engine][schema4]") {
+  scratch_dir dir{"ai-schema4"};
+  const std::string path = utf8(dir / "index.db");
+  make_schema3(path);
+  {
+    auto d = mv::ai::index_db::open(path);
+    REQUIRE(d);
+    CHECK((*d)->meta("schema") == "4");
+    for (const char* c : {"tags", "taken_at", "lat", "lon", "camera", "lens", "made_with", "ai", "place", "country",
+                          "region"}) {
+      CHECK(column_exists(path, c));
+    }
+    const auto all = (*d)->all_assets();
+    REQUIRE(all.size() == 1);
+    CHECK((*d)->tags_pending() == 1);  // the backfill reads it
+    mv::ai::asset_tags t;
+    t.id = all[0].id;
+    t.mtime = 5;
+    t.size = 10;
+    t.camera = "Canon EOS R5";
+    t.text = "Canon EOS R5";
+    t.ai = false;
+    t.has_where = true;
+    t.lat = 38.8;
+    t.lon = -9.4;
+    t.taken_at = 1714572202;
+    REQUIRE((*d)->commit_tags(std::span<const mv::ai::asset_tags>(&t, 1)));
+    CHECK((*d)->tags_pending() == 0);
+    // A stale read (the stamp moved since) is dropped.
+    mv::ai::asset_tags stale = t;
+    stale.mtime = 4;
+    stale.camera = "Nikon";
+    REQUIRE((*d)->commit_tags(std::span<const mv::ai::asset_tags>(&stale, 1)));
+    int seen = 0;
+    REQUIRE((*d)->each_tags([&](const mv::ai::asset_tags& r) {
+      ++seen;
+      CHECK(r.camera == "Canon EOS R5");
+      CHECK(r.has_where);
+      CHECK(r.taken_at == 1714572202);
+      CHECK(r.text == "Canon EOS R5");
+    }));
+    CHECK(seen == 1);
+    if ((*d)->meta("asset_text") == "fts5") {
+      CHECK((*d)->match_text("r5", 10) == std::vector<std::int64_t>{all[0].id});
+      CHECK((*d)->match_text("canon r5", 10) == std::vector<std::int64_t>{all[0].id});
+      // Typed text is never FTS5 syntax: operators, quotes, column filters
+      // and a lone star are words (no match, and never an SQL error).
+      for (const char* hostile : {"r5 OR", "\"", "canon\" OR \"x", "NEAR(canon r5)", "text:canon", "*", "-r5",
+                                  "^canon", "r5 AND NOT canon"}) {
+        CAPTURE(hostile);
+        const auto hits = (*d)->match_text(hostile, 10);
+        CHECK(hits.size() <= 1);
+      }
+      CHECK((*d)->match_text("nikon OR canon", 10).empty());  // OR is a word, not an operator
+    }
+    CHECK(mv::ai::index_db::fts_phrases(" a  \"b\" ") == "\"a\" \"\"\"b\"\"\"");
+    CHECK(mv::ai::index_db::fts_phrases("").empty());
+    // A changed file reads its tags again.
+    const mv::ai::index_db::seen_file f{"/photos/r5.jpg", 6, 11, mv::ai::asset_kind::photo};
+    REQUIRE((*d)->see_assets(1, std::span<const mv::ai::index_db::seen_file>(&f, 1), (*d)->next_generation()));
+    CHECK((*d)->tags_pending() == 1);
+    // A removed asset takes its text with it (the trigger).
+    REQUIRE((*d)->remove_root(1));
+    seen = 0;
+    REQUIRE((*d)->each_tags([&](const mv::ai::asset_tags&) { ++seen; }));
+    CHECK(seen == 0);
+  }
+  // Half done, as a crash before the schema bump could leave it: the columns
+  // there, the schema still 3. It migrates instead of failing.
+  {
+    auto d = mv::ai::index_db::open(path);
+    REQUIRE(d);
+    REQUIRE((*d)->set_meta("schema", "3"));
+  }
+  auto d = mv::ai::index_db::open(path);
+  REQUIRE(d);
+  CHECK((*d)->meta("schema") == "4");
+}
+
+#if !defined(_WIN32)
+TEST_CASE("the 3 -> 4 migration survives a kill mid-step", "[ai][engine][schema4]") {
+  // The step is one transaction. A child process starts it as index_db does
+  // (BEGIN, the ALTERs, the FTS table) and is killed before COMMIT: the
+  // file is what a power cut or a force quit leaves. The next open finds
+  // schema 3, unchanged, and migrates.
+  scratch_dir dir{"ai-schema4-kill"};
+  const std::string path = utf8(dir / "index.db");
+  make_schema3(path);
+  {
+    sqlite3* db = nullptr;
+    REQUIRE(sqlite3_open(path.c_str(), &db) == SQLITE_OK);
+    REQUIRE(sqlite3_exec(db, "PRAGMA journal_mode=WAL;", nullptr, nullptr, nullptr) == SQLITE_OK);
+    sqlite3_close(db);
+  }
+  const pid_t child = fork();
+  REQUIRE(child >= 0);
+  if (child == 0) {
+    sqlite3* db = nullptr;
+    if (sqlite3_open(path.c_str(), &db) != SQLITE_OK) _exit(2);
+    sqlite3_exec(db, "BEGIN;"
+                     "ALTER TABLE assets ADD COLUMN tags INTEGER NOT NULL DEFAULT 0;"
+                     "ALTER TABLE assets ADD COLUMN taken_at INTEGER;"
+                     "ALTER TABLE assets ADD COLUMN lat REAL;"
+                     "CREATE VIRTUAL TABLE IF NOT EXISTS asset_text USING fts5(text);",
+                 nullptr, nullptr, nullptr);
+    // Make sure the uncommitted pages reach the WAL file, then die.
+    sqlite3_exec(db, "PRAGMA cache_spill=1;", nullptr, nullptr, nullptr);
+    ::kill(::getpid(), SIGKILL);
+    _exit(3);
+  }
+  int status = 0;
+  REQUIRE(waitpid(child, &status, 0) == child);
+  CHECK(WIFSIGNALED(status));
+  CHECK_FALSE(column_exists(path, "tags"));  // nothing of the step survived
+  auto d = mv::ai::index_db::open(path);
+  REQUIRE(d);
+  CHECK((*d)->meta("schema") == "4");
+  CHECK(column_exists(path, "camera"));
+  CHECK((*d)->all_assets().size() == 1);
+}
+#endif
+
+TEST_CASE("camera:, ai:, made:, place: and a plain tag word in Local search", "[ai][engine][tags]") {
+  rig r;
+  r.file("red_r5.jpg");
+  r.file("green_gpt.jpg");
+  r.file("blue_geo.jpg");
+  r.file("red_plain.jpg");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  const auto names = [](const std::vector<std::pair<std::string, std::int64_t>>& rows) {
+    std::set<std::string> out;
+    for (const auto& [n, _] : rows) out.insert(n);
+    return out;
+  };
+  CHECK(names(r.search("camera:R5")) == std::set<std::string>{"red_r5.jpg"});
+  CHECK(names(r.search("camera:canon")) == std::set<std::string>{"red_r5.jpg"});
+  CHECK(names(r.search("lens:24-70")) == std::set<std::string>{"red_r5.jpg"});
+  CHECK(names(r.search("ai:yes")) == std::set<std::string>{"green_gpt.jpg"});
+  CHECK(names(r.search("made:chatgpt")) == std::set<std::string>{"green_gpt.jpg"});
+  CHECK(names(r.search("ai:no")).count("green_gpt.jpg") == 0);
+  CHECK(names(r.search("ai:no")).size() == 3);
+  CHECK(names(r.search("-camera:r5")).count("red_r5.jpg") == 0);
+  // place: keeps the geotagged; the Places provider says which place.
+  CHECK(names(r.search("place:portugal")) == std::set<std::string>{"blue_geo.jpg"});
+  CHECK(names(r.search("in:sintra")) == std::set<std::string>{"blue_geo.jpg"});
+  // in:2024 is still a date (no file is from 2024 here by mtime? it filters by date).
+  // A camera term narrows a description: red AND a Canon R5.
+  const auto red_r5 = r.search("red camera:r5");
+  REQUIRE_FALSE(red_r5.empty());
+  CHECK(names(red_r5) == std::set<std::string>{"red_r5.jpg"});
+
+  // A plain word that is a tag: that file first, the tag as the snippet.
+  const std::uint64_t id = r.eng->search_text("R5", "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+  REQUIRE(r.eng->wait_search(id, 5000));
+  const auto rows = r.rows(id);
+  REQUIRE_FALSE(rows.empty());
+  CHECK(rows.front().first == "red_r5.jpg");
+  auto first = r.eng->result_at(id, 0);
+  REQUIRE(first);
+  CHECK((first->match & MV_AI_MATCH_TAGS) != 0);
+  auto why = r.eng->result_snippet(id, 0);
+  REQUIRE(why);
+  CHECK(*why == "Canon EOS R5");
+  const std::uint64_t gpt = r.eng->search_text("chatgpt", "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+  REQUIRE(r.eng->wait_search(gpt, 5000));
+  const auto gpt_rows = r.rows(gpt);
+  REQUIRE_FALSE(gpt_rows.empty());
+  CHECK(gpt_rows.front().first == "green_gpt.jpg");
+  // #291 review: a tag word matches where a word starts ("r5", "24-70"), not
+  // anywhere inside one: "anon" is in "Canon" but is no tag hit.
+  const std::uint64_t mid = r.eng->search_text("anon", "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+  REQUIRE(r.eng->wait_search(mid, 5000));
+  const auto mid_rows = r.rows(mid);
+  for (std::size_t i = 0; i < mid_rows.size(); ++i) {
+    auto res = r.eng->result_at(mid, static_cast<std::uint32_t>(i));
+    REQUIRE(res);
+    CHECK((res->match & MV_AI_MATCH_TAGS) == 0);
+  }
+  const std::uint64_t lens = r.eng->search_text("70mm", "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+  REQUIRE(r.eng->wait_search(lens, 5000));
+  const auto lens_rows = r.rows(lens);
+  REQUIRE_FALSE(lens_rows.empty());
+  CHECK(lens_rows.front().first == "red_r5.jpg");
+}
+
+TEST_CASE("the tag backfill resumes after a restart and reads nothing twice", "[ai][engine][tags]") {
+  rig r;
+  r.file("red_r5.jpg");
+  r.file("green_gpt.jpg");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  CHECK(r.search("camera:r5").size() == 1);
+  // A restart: the tags come from the index, not from the host again.
+  r.start();
+  REQUIRE(r.idle());
+  CHECK(r.search("camera:r5").size() == 1);
+  CHECK(r.search("ai:yes").size() == 1);
 }
 
 TEST_CASE("find similar returns the other stills of the same look, not the query", "[ai][engine]") {

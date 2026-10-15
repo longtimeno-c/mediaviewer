@@ -73,7 +73,7 @@ final class LocalSearchStore: ObservableObject {
   /// install or a download until this is true.
   @Published private(set) var stateKnown = false
   @Published private(set) var used: UInt64 = 0
-  @Published private(set) var ceiling: UInt64 = 3_000_000_000
+  @Published private(set) var ceiling: UInt64 = 5_000_000_000
   @Published private(set) var loaded = false
   @Published private(set) var loading = false
   /// Installed and verified, waiting unloaded for the first search (issue
@@ -83,7 +83,7 @@ final class LocalSearchStore: ObservableObject {
   /// The same, in words (mv_addon2_load_reason): Settings' status line.
   @Published private(set) var loadReason = ""
   /// The piece downloading or installing now. Installs run one at a time (no
-  /// fight over bandwidth, and each piece's 3 GB check sees the one before it
+  /// fight over bandwidth, and each piece's 5 GB check sees the one before it
   /// landed); more clicks queue behind it in `queued`.
   @Published private(set) var busyPiece: String?
   /// The busy piece's install progress (Settings' bar).
@@ -94,12 +94,12 @@ final class LocalSearchStore: ObservableObject {
   /// What each install of the current batch said, shown together.
   private var batchNotes: [String] = []
   /// Between one install and the next: the installed sizes are being read
-  /// again, so the next piece's 3 GB check counts the one that just landed.
+  /// again, so the next piece's 5 GB check counts the one that just landed.
   @Published private(set) var advancing = false
   @Published var message = ""
   @Published var confirmingRemove: String?
   /// Pieces whose removal is queued on the host's add-on queue (it unloads,
-  /// then deletes up to 3 GB). Their rows read "Removing…" at once and offer
+  /// then deletes up to 5 GB). Their rows read "Removing…" at once and offer
   /// Install again the moment the store no longer lists them: before, the
   /// row still read Installed until the next start (owner report, 2026-09-27).
   @Published private(set) var removing: Set<String> = []
@@ -351,7 +351,7 @@ final class LocalSearchStore: ObservableObject {
     }
   }
 
-  /// The 3 GB rule (docs/design/17), before anything downloads: the piece's installed
+  /// The 5 GB rule (docs/design/17), before anything downloads: the piece's installed
   /// size, plus what the family already uses minus the copy it replaces.
   func refusal(for piece: Piece) -> String? {
     guard let bytes = piece.offeredBytes?.installed, ceiling > 0 else { return nil }
@@ -445,7 +445,7 @@ final class LocalSearchStore: ObservableObject {
       return
     }
     if !anyPending { batchNotes = [] }
-    // A piece behind a Core that is itself behind: Core first (its 3 GB check
+    // A piece behind a Core that is itself behind: Core first (its 5 GB check
     // runs when its turn comes, like every queued piece's).
     if !piece.required && coreBehind { queued.insert("ai", at: 0) }
     if piece.required { queued.insert(id, at: 0) } else { queued.append(id) }
@@ -477,7 +477,7 @@ final class LocalSearchStore: ObservableObject {
         note("\(piece.title) was not installed: it needs Core.")
         continue
       }
-      // The 3 GB rule, now that the pieces before it in the batch have landed.
+      // The 5 GB rule, now that the pieces before it in the batch have landed.
       if let refusal = refusal(for: piece) {
         note(refusal)
         continue
@@ -551,7 +551,7 @@ final class LocalSearchStore: ObservableObject {
         }
         self.note(text)
         // The next piece starts once the installed sizes are read again, so
-        // its 3 GB check counts the piece that just landed.
+        // its 5 GB check counts the piece that just landed.
         self.advancing = true
         self.refresh {
           self.advancing = false
@@ -643,7 +643,7 @@ struct LocalSearchSection: View {
   }
 
   private var content: some View {
-    VStack(alignment: .leading, spacing: 10) {
+    VStack(alignment: .leading, spacing: MVTheme.space(10)) {
       // An item of Settings → Add-ons, titled like Import.
       Text("Local search").font(MVTheme.font()).foregroundStyle(MVTheme.title)
       if !store.stateKnown {
@@ -683,13 +683,13 @@ struct LocalSearchSection: View {
         }
       }
     }
-    .background(RoundedRectangle(cornerRadius: 8).fill(MVTheme.surface))
-    .overlay(RoundedRectangle(cornerRadius: 8).stroke(MVTheme.hairline, lineWidth: 1))
+    .background(RoundedRectangle(cornerRadius: MVTheme.radius(8)).fill(MVTheme.surface))
+    .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(8)).stroke(MVTheme.hairline, lineWidth: 1))
     // docs/design/23: offered once Core is installed, on a Mac that carries the pieces.
     if store.coreInstalled, !store.removing.contains("ai"), store.finalCut != 0 {
       finalCutRow
-        .background(RoundedRectangle(cornerRadius: 8).fill(MVTheme.surface))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(MVTheme.hairline, lineWidth: 1))
+        .background(RoundedRectangle(cornerRadius: MVTheme.radius(8)).fill(MVTheme.surface))
+        .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(8)).stroke(MVTheme.hairline, lineWidth: 1))
         .transition(.opacity)
     }
     if let id = store.confirmingRemove {
@@ -703,7 +703,7 @@ struct LocalSearchSection: View {
     }
     AddonRestartButton()
     if store.loading {
-      HStack(spacing: 8) {
+      HStack(spacing: MVTheme.space(8)) {
         ProgressView().controlSize(.small)
         Text(LocalSearchStore.startingText).font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
       }
@@ -744,7 +744,7 @@ struct LocalSearchSection: View {
          : "Local search is not installed. " + LocalSearchStore.elsewhereText)
     if store.coreInstalled {
       if store.loading {
-        HStack(spacing: 8) {
+        HStack(spacing: MVTheme.space(8)) {
           ProgressView().controlSize(.small)
           Text("Starting Local search…").font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
         }
@@ -763,9 +763,9 @@ struct LocalSearchSection: View {
   /// Final Cut Pro search on or off (docs/design/23). Off, nothing of it runs and
   /// Final Cut Pro lists no MediaViewer extension.
   private var finalCutRow: some View {
-    HStack(alignment: .firstTextBaseline, spacing: 16) {
-      VStack(alignment: .leading, spacing: 3) {
-        HStack(spacing: 6) {
+    HStack(alignment: .firstTextBaseline, spacing: MVTheme.space(16)) {
+      VStack(alignment: .leading, spacing: MVTheme.space(3)) {
+        HStack(spacing: MVTheme.space(6)) {
           Text("Final Cut Pro").font(MVTheme.font()).foregroundStyle(MVTheme.title)
           Text(store.finalCut == 2 ? "On" : store.finalCut == 3 ? "Waiting for approval" : "Off")
             .font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
@@ -785,7 +785,7 @@ struct LocalSearchSection: View {
         Button("Turn off") { store.setFinalCut(false) }
       }
     }
-    .padding(12)
+    .padding(MVTheme.space(12))
   }
 
   private var finalCutDetail: String {
@@ -805,7 +805,7 @@ struct LocalSearchSection: View {
     let all = store.pieces.filter { store.updateAllIDs.contains($0.id) }
     let archive = all.compactMap { $0.offeredBytes?.archive }.reduce(0, +)
     let v = store.updateAllVersion
-    return HStack(alignment: .firstTextBaseline, spacing: 12) {
+    return HStack(alignment: .firstTextBaseline, spacing: MVTheme.space(12)) {
       Button {
         store.updateAll()
       } label: {
@@ -819,7 +819,7 @@ struct LocalSearchSection: View {
 
   private var introCard: some View {
     let core = store.core
-    return VStack(alignment: .leading, spacing: 8) {
+    return VStack(alignment: .leading, spacing: MVTheme.space(8)) {
       Text("Find photos and moments in your videos by describing them: “dog on a beach”, “guy on a skateboard”.")
         .font(MVTheme.font(13)).foregroundStyle(MVTheme.title)
         .fixedSize(horizontal: false, vertical: true)
@@ -853,10 +853,10 @@ struct LocalSearchSection: View {
         probeNote(core)
       }
     }
-    .padding(14)
+    .padding(MVTheme.space(14))
     .frame(maxWidth: .infinity, alignment: .leading)
-    .background(RoundedRectangle(cornerRadius: 12).fill(MVTheme.surface))
-    .overlay(RoundedRectangle(cornerRadius: 12).stroke(MVTheme.hairline, lineWidth: 1))
+    .background(RoundedRectangle(cornerRadius: MVTheme.radius(12)).fill(MVTheme.surface))
+    .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(12)).stroke(MVTheme.hairline, lineWidth: 1))
   }
 
   @ViewBuilder
@@ -877,9 +877,9 @@ struct LocalSearchSection: View {
   }
 
   private func pieceRow(_ piece: LocalSearchStore.Piece) -> some View {
-    HStack(alignment: .firstTextBaseline, spacing: 16) {
-      VStack(alignment: .leading, spacing: 3) {
-        HStack(spacing: 6) {
+    HStack(alignment: .firstTextBaseline, spacing: MVTheme.space(16)) {
+      VStack(alignment: .leading, spacing: MVTheme.space(3)) {
+        HStack(spacing: MVTheme.space(6)) {
           Text(piece.title).font(MVTheme.font()).foregroundStyle(MVTheme.title)
           if store.removing.contains(piece.id) {
             EmptyView()
@@ -899,14 +899,14 @@ struct LocalSearchSection: View {
       if store.busyPiece == piece.id {
         AddonProgressView(phase: store.phase ?? .downloading(done: 0, total: 0), width: 200)
       } else if store.queued.contains(piece.id) {
-        HStack(spacing: 8) {
+        HStack(spacing: MVTheme.space(8)) {
           Text(!piece.required && !store.coreInstalled ? "Queued, after Core" : "Queued")
             .font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
           Button("Cancel") { store.cancelQueued(piece.id) }
         }
         .transition(.opacity)
       } else if store.removing.contains(piece.id) {
-        HStack(spacing: 6) {
+        HStack(spacing: MVTheme.space(6)) {
           ProgressView().controlSize(.small)
           Text("Removing…").font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
         }
@@ -930,12 +930,12 @@ struct LocalSearchSection: View {
           .help(store.refusal(for: piece) ?? (piece.required || store.coreComing ? "" : "Install Core first."))
       }
     }
-    .padding(12)
+    .padding(MVTheme.space(12))
   }
 
   @ViewBuilder
   private func removeConfirm(_ id: String) -> some View {
-    VStack(alignment: .leading, spacing: 8) {
+    VStack(alignment: .leading, spacing: MVTheme.space(8)) {
       if id == "ai" {
         Text("Remove Local search? Also delete the search index? Keeping it means a reinstall can search right away.")
           .font(MVTheme.font(13)).foregroundStyle(MVTheme.title)
@@ -958,9 +958,9 @@ struct LocalSearchSection: View {
         }
       }
     }
-    .padding(12)
+    .padding(MVTheme.space(12))
     .frame(maxWidth: .infinity, alignment: .leading)
-    .background(RoundedRectangle(cornerRadius: 8).fill(MVTheme.surface))
+    .background(RoundedRectangle(cornerRadius: MVTheme.radius(8)).fill(MVTheme.surface))
   }
 
   private func note(_ text: String) -> some View {
@@ -1029,7 +1029,7 @@ struct LocalSearchBarItem: View {
   var body: some View {
     if store.pillVisible {
       Button { store.openSearchWhenReady() } label: {
-        HStack(spacing: 7) {
+        HStack(spacing: MVTheme.space(7)) {
           ProgressRing(progress: store.pillProgress, spinning: store.pillSpinning && !reduceMotion)
             .frame(width: 14, height: 14)
           Text(store.pillText)
@@ -1038,7 +1038,7 @@ struct LocalSearchBarItem: View {
             .lineLimit(1)
             .contentTransition(.numericText())
         }
-        .padding(.horizontal, 10).padding(.vertical, 5)
+        .padding(.horizontal, MVTheme.space(10)).padding(.vertical, MVTheme.space(5))
         .background(Capsule().fill(Color.primary.opacity(hover ? 0.10 : 0.06)))
         .contentShape(Capsule())
       }
@@ -1057,7 +1057,7 @@ struct LocalSearchBarItem: View {
       .accessibilityLabel(store.pillText)
       .accessibilityAction(named: "Index anyway") { if store.pillOnBattery { store.indexAnyway() } }
       .transition(.opacity.combined(with: .scale(scale: 0.96)))
-      .padding(.leading, 6)
+      .padding(.leading, MVTheme.space(6))
     }
   }
 }

@@ -58,7 +58,7 @@ TEST_CASE("a record is read once; toggling overlays is a lookup", "[meta][store]
   mv::job_system jobs;
   REQUIRE(mv::ok(jobs.start(2)));
   gate g;
-  mv::shell::meta_store store(fake_read, [](std::string_view) { return std::nullopt; });
+  mv::shell::meta_store store(fake_read);
   const auto a = entry("a.jpg");
 
   REQUIRE(store.get(a, jobs, [&](std::string) { g.open(); }) == nullptr);  // miss: loading
@@ -84,8 +84,7 @@ TEST_CASE("a second request while loading does not read twice", "[meta][store]")
         started.open();
         release.wait_for(1);
         return fake_read(p);
-      },
-      [](std::string_view) { return std::nullopt; });
+      });
   const auto a = entry("a.jpg");
   REQUIRE(store.get(a, jobs, [&](std::string) { done.open(); }) == nullptr);
   REQUIRE(started.wait_for(1));
@@ -99,7 +98,7 @@ TEST_CASE("a file rewritten in place is read again", "[meta][store]") {
   mv::job_system jobs;
   REQUIRE(mv::ok(jobs.start(2)));
   gate g;
-  mv::shell::meta_store store(fake_read, [](std::string_view) { return std::nullopt; });
+  mv::shell::meta_store store(fake_read);
   (void)store.get(entry("a.jpg", 1, 10), jobs, [&](std::string) { g.open(); });
   REQUIRE(g.wait_for(1));
   (void)store.get(entry("a.jpg", 2, 10), jobs, [&](std::string) { g.open(); });
@@ -112,8 +111,7 @@ TEST_CASE("an unreadable file caches an empty record instead of retrying", "[met
   REQUIRE(mv::ok(jobs.start(2)));
   gate g;
   mv::shell::meta_store store(
-      [](std::string_view) -> mv::result<mv::meta::metadata> { return mv::err(mv::status::io); },
-      [](std::string_view) { return std::nullopt; });
+      [](std::string_view) -> mv::result<mv::meta::metadata> { return mv::err(mv::status::io); });
   const auto a = entry("gone.jpg");
   (void)store.get(a, jobs, [&](std::string) { g.open(); });
   REQUIRE(g.wait_for(1));
@@ -128,7 +126,7 @@ TEST_CASE("the cache is bounded", "[meta][store]") {
   mv::job_system jobs;
   REQUIRE(mv::ok(jobs.start(2)));
   gate g;
-  mv::shell::meta_store store(fake_read, [](std::string_view) { return std::nullopt; });
+  mv::shell::meta_store store(fake_read);
   const int n = static_cast<int>(mv::shell::meta_store::kCapacity) + 10;
   // One read at a time: the LRU takes entries in completion order, and two
   // workers finishing out of order would let f0 outlive later files.
@@ -138,31 +136,6 @@ TEST_CASE("the cache is bounded", "[meta][store]") {
   }
   CHECK(store.peek(entry("f0.jpg")) == nullptr);                       // evicted
   CHECK(store.peek(entry("f" + std::to_string(n - 1) + ".jpg")) != nullptr);
-}
-
-TEST_CASE("date keys are read once per file and dateless files are remembered", "[meta][sort]") {
-  mv::job_system jobs;
-  REQUIRE(mv::ok(jobs.start(2)));
-  std::atomic<int> reads{0};
-  gate g;
-  mv::shell::meta_store store(fake_read, [&](std::string_view p) -> std::optional<std::int64_t> {
-    ++reads;
-    if (p.find("nodate") != std::string_view::npos) return std::nullopt;
-    return 1000;
-  });
-  std::vector<io::dir_entry> files{entry("a.jpg"), entry("nodate.jpg"), entry("b.jpg")};
-  CHECK_FALSE(store.date_key(files[0]).has_value());
-  store.resolve_date_keys(files, jobs, [&] { g.open(); });
-  REQUIRE(g.wait_for(1));
-  CHECK(reads == 3);
-  CHECK(store.date_key(files[0]) == 1000);
-  CHECK_FALSE(store.date_key(files[1]).has_value());
-  CHECK(store.consume_dates_changed());
-  CHECK_FALSE(store.consume_dates_changed());
-
-  store.resolve_date_keys(files, jobs, [&] { g.open(); });  // a re-sort: nothing to read
-  REQUIRE(g.wait_for(2));
-  CHECK(reads == 3);
 }
 
 TEST_CASE("sort orders", "[sort]") {
@@ -225,8 +198,7 @@ TEST_CASE("invalidate drops a path's records whatever their mtime and size", "[m
       [&](std::string_view p) {
         ++reads;
         return fake_read(p);
-      },
-      [](std::string_view) { return std::optional<std::int64_t>{}; });
+      });
   gate g;
   const auto a = entry("a.jpg", 1, 10);
   const auto b = entry("b.jpg", 1, 10);
@@ -258,8 +230,7 @@ TEST_CASE("a read that began before a write landed does not cache the old record
           release.wait_for(1);  // hold the first read while the write "lands"
         }
         return fake_read(p);
-      },
-      [](std::string_view) { return std::optional<std::int64_t>{}; });
+      });
   const auto a = entry("a.jpg", 1, 10);
   REQUIRE(store.get(a, jobs, [&](std::string) { done.open(); }) == nullptr);
   REQUIRE(started.wait_for(1));
@@ -281,7 +252,7 @@ TEST_CASE("cull marks are read once per file and dropped by invalidate", "[meta]
   std::atomic<int> reads{0};
   gate g;
   mv::shell::meta_store store(
-      fake_read, [](std::string_view) { return std::optional<std::int64_t>{}; },
+      fake_read,
       [&](std::string_view p) {
         ++reads;
         io::cull_marks m;

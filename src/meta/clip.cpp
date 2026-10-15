@@ -72,17 +72,6 @@ std::string tag(const AVDictionary* d, const char* key) {
   return e && e->value ? e->value : std::string();
 }
 
-// ISO 6709 "+48.8584+002.2945+035.000/" → "48.85840° N, 2.29450° E".
-std::string iso6709(const std::string& s) {
-  if (s.size() < 4 || (s[0] != '+' && s[0] != '-')) return {};
-  char* end = nullptr;
-  const double lat = std::strtod(s.c_str(), &end);
-  if (!end || (*end != '+' && *end != '-')) return {};
-  const double lon = std::strtod(end, &end);
-  if (std::fabs(lat) > 90.0 || std::fabs(lon) > 180.0) return {};
-  return format_coordinate(lat, lat < 0 ? 'S' : 'N') + ", " + format_coordinate(lon, lon < 0 ? 'W' : 'E');
-}
-
 const char* chroma_name(const AVPixFmtDescriptor* d) {
   if (!d || d->nb_components < 3 || (d->flags & AV_PIX_FMT_FLAG_RGB)) return nullptr;
   if (d->log2_chroma_w == 0 && d->log2_chroma_h == 0) return "4:4:4";
@@ -163,10 +152,16 @@ void describe_video(const AVStream& st, stream_info& s) {
   }
   add(s, "Bit rate", bitrate_text(p.bit_rate));
 
-  if (p.color_primaries != AVCOL_PRI_UNSPECIFIED) add(s, "Colour primaries", av_color_primaries_name(p.color_primaries));
-  if (p.color_trc != AVCOL_TRC_UNSPECIFIED) add(s, "Transfer", av_color_transfer_name(p.color_trc));
-  if (p.color_space != AVCOL_SPC_UNSPECIFIED) add(s, "Matrix", av_color_space_name(p.color_space));
-  if (p.color_range != AVCOL_RANGE_UNSPECIFIED) add(s, "Range", av_color_range_name(p.color_range));
+  // A container may carry any number here; FFmpeg names only the ones it
+  // knows and returns NULL for the rest (a std::string from NULL crashed:
+  // #291 review, fuzz_meta_search on a damaged clip).
+  const auto named = [&s](const char* label, const char* name) {
+    if (name) add(s, label, name);
+  };
+  if (p.color_primaries != AVCOL_PRI_UNSPECIFIED) named("Colour primaries", av_color_primaries_name(p.color_primaries));
+  if (p.color_trc != AVCOL_TRC_UNSPECIFIED) named("Transfer", av_color_transfer_name(p.color_trc));
+  if (p.color_space != AVCOL_SPC_UNSPECIFIED) named("Matrix", av_color_space_name(p.color_space));
+  if (p.color_range != AVCOL_RANGE_UNSPECIFIED) named("Range", av_color_range_name(p.color_range));
 
   if (const AVPacketSideData* sd = av_packet_side_data_get(
           p.coded_side_data, p.nb_coded_side_data, AV_PKT_DATA_MASTERING_DISPLAY_METADATA);
@@ -259,7 +254,7 @@ void add_tags(metadata& out, const char* group, const AVDictionary* d) {
 
 }  // namespace
 
-bool read_clip(std::string_view utf8_path, metadata& out) noexcept {
+bool read_clip(std::string_view utf8_path, metadata& out, parse::evidence* ev) noexcept {
   try {
     format_ptr ctx = open(utf8_path, true);
     if (!ctx) return false;
@@ -344,9 +339,18 @@ bool read_clip(std::string_view utf8_path, metadata& out) noexcept {
     const std::string make = tag(ctx->metadata, "com.apple.quicktime.make");
     const std::string model = tag(ctx->metadata, "com.apple.quicktime.model");
     s.camera = model.empty() ? make : make.empty() ? model : make + " " + model;
+    // ISO 6709 "+48.8584+002.2945+035.000/": the point and its altitude (#290).
     for (const char* key : {"com.apple.quicktime.location.ISO6709", "location"}) {
-      s.gps = iso6709(tag(ctx->metadata, key));
-      if (!s.gps.empty()) break;
+      if (const auto p = parse_iso6709(tag(ctx->metadata, key))) {
+        s.where = p;
+        s.gps = format_point(*p);
+        break;
+      }
+    }
+    // #290: the generator evidence a clip's tags can carry.
+    if (ev) {
+      ev->exif_software = tag(ctx->metadata, "com.apple.quicktime.software");
+      if (ev->exif_software.empty()) ev->exif_software = tag(ctx->metadata, "encoder");
     }
     return true;
   } catch (...) {

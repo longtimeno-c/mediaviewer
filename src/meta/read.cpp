@@ -10,7 +10,11 @@
 #include "codec/decode.h"
 #include "codec/format.h"
 #include "io/file.h"
+#include "io/file_port.h"
+#include "meta/generators.h"
 #include "meta/internal.h"
+#include "meta/probe.h"
+#include "meta/search.h"
 #include "meta/write.h"
 
 namespace mv::meta {
@@ -32,6 +36,96 @@ std::uint64_t file_size_of(std::string_view utf8_path) {
   return ec ? 0 : static_cast<std::uint64_t>(n);
 }
 
+// #290: the ISO-BMFF walk reads box headers at offsets, never the whole file.
+class file_source final : public parse::byte_source {
+ public:
+  bool open(std::string_view utf8_path) { return f_.open(utf8_path, io::read_mode::sequential).has_value(); }
+  [[nodiscard]] std::uint64_t size() const noexcept override { return f_.size(); }
+  [[nodiscard]] std::size_t read_at(std::uint64_t offset, std::span<std::uint8_t> into) noexcept override {
+    auto n = f_.read_at(offset, into);
+    return n ? *n : 0;
+  }
+
+ private:
+  io::file_reader f_;
+};
+
+bool is_bmff(std::span<const std::uint8_t> head) noexcept {
+  return head.size() >= 12 && head[4] == 'f' && head[5] == 't' && head[6] == 'y' && head[7] == 'p';
+}
+
+// #290: what Exiv2 and libavformat do not surface (meta/parse.h), then the
+// provenance rule (generators.h). Runs over the prefix already in memory; only
+// ISO-BMFF larger than the prefix opens the file again, for a few header reads
+// and the boxes it keeps.
+void read_beyond(std::string_view utf8_path, std::span<const std::uint8_t> prefix, codec::format_family family,
+                 parse::evidence& ev, metadata& out) {
+  parse::sink rows{out.properties, ev, 4000};
+  switch (family) {
+    case codec::format_family::jpeg: parse::read_jpeg(prefix, rows); break;
+    case codec::format_family::png: parse::read_png(prefix, rows); break;
+    case codec::format_family::webp: parse::read_webp(prefix, rows); break;
+    default: break;
+  }
+  const bool still_bmff = family == codec::format_family::heic || family == codec::format_family::avif;
+  if (still_bmff || (family == codec::format_family::unknown && is_bmff(prefix))) {
+    if (out.s.file_size != 0 && prefix.size() >= out.s.file_size) {
+      // The whole file is already in memory (most stills): no second open.
+      parse::memory_source m(prefix);
+      parse::read_bmff(m, still_bmff, rows);
+    } else {
+      file_source f;
+      if (f.open(utf8_path)) parse::read_bmff(f, still_bmff, rows);
+    }
+  }
+  // #345: what the badge's probe reads that Exiv2 / libavformat do not surface
+  // here (a clip's XMP, a HEIF item Exiv2 skipped), so the pane and the badge
+  // always reach the same answer. Fields the readers above filled win.
+  {
+    // Capped like the badge's probe. C2PA is left out when the readers above
+    // already found a store (no second parse); it is read when they found none
+    // and the prefix stopped short of the file, where the store may lie past it.
+    const bool truncated = out.s.file_size != 0 && prefix.size() < out.s.file_size;
+    const bool have_c2pa = !ev.c2pa_generator.empty() || !ev.c2pa_agents.empty() || !ev.c2pa_signer.empty();
+    const bool want_c2pa = truncated && !have_c2pa;
+    parse::evidence probed;
+    probe_evidence(utf8_path, probed, want_c2pa);
+    if (ev.exif_software.empty()) ev.exif_software = probed.exif_software;
+    if (ev.xmp_creator_tool.empty()) ev.xmp_creator_tool = probed.xmp_creator_tool;
+    // PNG text past the prefix (a `parameters` chunk after the image data).
+    ev.png_parameters = ev.png_parameters || probed.png_parameters;
+    ev.png_comfyui = ev.png_comfyui || probed.png_comfyui;
+    if (ev.png_software.empty()) ev.png_software = probed.png_software;
+    if (ev.png_generator_text.empty()) ev.png_generator_text = probed.png_generator_text;
+    if (want_c2pa) {
+      // A store only the probe reached: its claim, agents, signer and source
+      // types (all but XMP's own term, which is handled below).
+      ev.c2pa_generator = probed.c2pa_generator;
+      ev.c2pa_agents = probed.c2pa_agents;
+      ev.c2pa_signer = probed.c2pa_signer;
+      bool xmp_skipped = probed.xmp_source_type.empty();
+      for (const std::string& t : probed.source_types) {
+        if (!xmp_skipped && t == probed.xmp_source_type) {
+          xmp_skipped = true;
+          continue;
+        }
+        ev.source_types.push_back(t);
+      }
+    }
+    if (ev.xmp_source_type.empty() && !probed.xmp_source_type.empty()) {
+      // No XMP was read above, so this is XMP's own occurrence even when C2PA
+      // wrote the same term: always added, or derive_provenance would take the
+      // C2PA one for XMP's and name the wrong source.
+      ev.xmp_source_type = probed.xmp_source_type;
+      ev.source_types.push_back(probed.xmp_source_type);
+    }
+  }
+  const provenance p = derive_provenance(ev);
+  out.s.made_with = p.made_with;
+  out.s.ai_generated = p.ai_generated;
+  out.s.ai_evidence = p.evidence;
+}
+
 }  // namespace
 
 result<metadata> read(std::string_view utf8_path) {
@@ -50,10 +144,13 @@ result<metadata> read(std::string_view utf8_path) {
   metadata out;
   out.s.file_size = file_size_of(utf8_path);
   out.s.format = codec::format_name(family);
+  parse::evidence ev;
   if (family == codec::format_family::unknown) {
     // Not a still we know: a clip, or a file with nothing to say. Either way
     // the answer is a (possibly empty) metadata, not an error.
-    (void)detail::read_clip(utf8_path, out);  // false = nothing to say
+    (void)detail::read_clip(utf8_path, out, &ev);  // false = nothing to say
+    read_beyond(utf8_path, *prefix, family, ev, out);
+    out.where_in_file = out.s.where.has_value();  // #352: before the sidecar's goes over it
     detail::overlay_sidecar(utf8_path, out);
     return out;
   }
@@ -62,16 +159,49 @@ result<metadata> read(std::string_view utf8_path) {
   // RAW (LibRaw's flip) and, from PR 10, JPEG (codec/orient.h) reach the
   // screen already rotated by their EXIF orientation.
   const bool oriented = raw || family == codec::format_family::jpeg;
-  detail::read_still(*prefix, oriented, out);
+  detail::read_still(*prefix, oriented, out, &ev);
   if (out.properties.empty() && prefix->size() >= kPrefixBytes) {
-    if (auto whole = io::read_prefix(utf8_path, kWholeFileCap)) detail::read_still(*whole, oriented, out);
+    if (auto whole = io::read_prefix(utf8_path, kWholeFileCap)) detail::read_still(*whole, oriented, out, &ev);
   }
+  read_beyond(utf8_path, *prefix, family, ev, out);
+  out.where_in_file = out.s.where.has_value();  // #352: before the sidecar's goes over it
   detail::overlay_sidecar(utf8_path, out);
   if (family == codec::format_family::jpeg) {
     auto target = write_target_for(utf8_path);
     out.writes_in_file = target && *target == write_target::in_file;
   }
   return out;
+}
+
+// #291: the folder pass's read (search.h). The head of the file holds a
+// still's EXIF / IPTC / XMP / C2PA (JPEG APPn, PNG chunks, the HEIF meta box);
+// the scan data after it is never read. No write-target probe: nothing here
+// edits.
+result<search_facts> read_search_facts(std::string_view utf8_path) {
+  auto prefix = io::read_prefix(utf8_path, kSearchPrefixBytes);
+  if (!prefix && prefix.error() == status::corrupt) return search_facts{};  // empty file
+  if (!prefix) return err(prefix.error());
+  const std::span<const std::uint8_t> head(prefix->data(), std::min<std::size_t>(prefix->size(), 1024));
+  const codec::format_family family = codec::probe(head);
+  metadata out;
+  out.s.file_size = prefix->size() < kSearchPrefixBytes ? prefix->size() : file_size_of(utf8_path);
+  parse::evidence ev;
+  if (family == codec::format_family::unknown) {
+    (void)detail::read_clip(utf8_path, out, &ev);
+    read_beyond(utf8_path, *prefix, family, ev, out);
+    detail::overlay_sidecar(utf8_path, out);
+    return search_facts_of(out);
+  }
+  const bool raw = family == codec::format_family::raw || codec::looks_like_raw(*prefix);
+  detail::read_still(*prefix, raw || family == codec::format_family::jpeg, out, &ev);
+  if (out.properties.empty() && prefix->size() >= kSearchPrefixBytes &&
+      (raw || family == codec::format_family::tiff)) {
+    // TIFF-container RAW keeps IFDs past the head: the pane's 8 MB, once.
+    if (auto more = io::read_prefix(utf8_path, kPrefixBytes)) detail::read_still(*more, true, out, &ev);
+  }
+  read_beyond(utf8_path, *prefix, family, ev, out);
+  detail::overlay_sidecar(utf8_path, out);
+  return search_facts_of(out);
 }
 
 std::optional<std::int64_t> read_date_taken(std::string_view utf8_path) {

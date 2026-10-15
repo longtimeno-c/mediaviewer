@@ -115,6 +115,8 @@ public enum MvAiMatch : uint
     Picture = 1,
     Sound = 2,
     Speech = 4,
+    // #291: the file's tags matched; ResultSnippet is the tag.
+    Tags = 8,
 }
 
 /// <summary>Mirrors <c>mv_ai_status</c> field for field (1336 bytes).</summary>

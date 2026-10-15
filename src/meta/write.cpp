@@ -15,6 +15,7 @@
 #include <exiv2/exiv2.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -237,7 +238,21 @@ struct exif_row {
 using exif_rows_t = std::map<std::string, std::vector<exif_row>>;
 using text_rows_t = std::map<std::string, std::vector<std::string>>;
 
-using key_set = std::set<std::string>;
+// #352: every EXIF GPSInfo tag and XMP exif:GPS* property, whatever its name
+// (a vendor's numbered GPS tag included), is what a location write may change.
+bool is_gps_key(const std::string& key) {
+  return key.rfind("Exif.GPSInfo.", 0) == 0 || key.rfind("Xmp.exif.GPS", 0) == 0;
+}
+
+// Keys a write names. `gps`: and every GPS key (is_gps_key).
+struct key_set {
+  std::set<std::string> keys;
+  bool gps = false;
+  [[nodiscard]] std::size_t count(const std::string& key) const {
+    return keys.count(key) != 0 || (gps && is_gps_key(key)) ? 1 : 0;
+  }
+  void insert(std::string key) { keys.insert(std::move(key)); }
+};
 const key_set& no_keys() {
   static const key_set empty;
   return empty;
@@ -549,9 +564,122 @@ void apply_date(Exiv2::ExifData* e, Exiv2::XmpData& x, const change<std::string>
   }
 }
 
+// ---- #352: the location ---------------------------------------------------
+
+// |degrees| as EXIF's three rationals: "38/1 47/1 524400/10000" (seconds to
+// 1/10000, about 3 mm).
+std::string exif_dms(double degrees) {
+  constexpr long long kSec = 10000, kMinute = 60 * kSec, kDegree = 60 * kMinute;
+  long long t = std::llround(std::fabs(degrees) * static_cast<double>(kDegree));
+  const long long d = t / kDegree;
+  t -= d * kDegree;
+  const long long m = t / kMinute;
+  t -= m * kMinute;
+  char buf[64];
+  std::snprintf(buf, sizeof(buf), "%lld/1 %lld/1 %lld/%lld", d, m, t, kSec);
+  return buf;
+}
+
+// XMP's GPSCoordinate, "DDD,MM.mmmmmmk" (minutes to 1e-6, about 2 mm).
+std::string xmp_dm(double degrees, bool latitude) {
+  const char hemi = latitude ? (degrees < 0 ? 'S' : 'N') : (degrees < 0 ? 'W' : 'E');
+  constexpr long long kMicro = 1000000, kDegree = 60 * kMicro;
+  const long long t = std::llround(std::fabs(degrees) * static_cast<double>(kDegree));
+  const long long d = t / kDegree;
+  const long long rem = t - d * kDegree;
+  char buf[64];
+  std::snprintf(buf, sizeof(buf), "%lld,%lld.%06lld%c", d, rem / kMicro, rem % kMicro, hemi);
+  return buf;
+}
+
+// |metres| as a rational, centimetres.
+std::string altitude_rational(double metres) {
+  char buf[48];
+  std::snprintf(buf, sizeof(buf), "%lld/100", std::llround(std::fabs(metres) * 100.0));
+  return buf;
+}
+
+// A GPS tag a damaged file holds with the wrong type (an ASCII latitude, a
+// short GPSVersionID) is replaced, not re-parsed into its old type, so it
+// reads back as the standard tag. The post-write check reads the point back.
+void exif_set(Exiv2::ExifData& e, const char* key, const std::string& value) {
+  const auto at = e.findKey(Exiv2::ExifKey(key));
+  if (at != e.end()) e.erase(at);
+  if (e[key].setValue(value) != 0) throw bad_value{};
+}
+
+// The post-write check for a location: what was asked is what reads back.
+// EXIF seconds are kept to 1/10000 and XMP minutes to 1e-6, both well under
+// this (about 1 cm).
+bool location_reads_back(const change<geo_point>& c, const std::optional<geo_point>& got) {
+  if (!c.touches()) return true;
+  if (c.k == change<geo_point>::kind::clear) return !got.has_value();
+  constexpr double kTolerance = 1e-7;
+  if (!got || std::fabs(got->lat - c.value.lat) > kTolerance || std::fabs(got->lon - c.value.lon) > kTolerance) {
+    return false;
+  }
+  if (c.value.altitude && (!got->altitude || std::fabs(*got->altitude - *c.value.altitude) > 0.006)) return false;
+  return true;
+}
+
+void erase_gps(Exiv2::ExifData& e) {
+  for (auto it = e.begin(); it != e.end();) {
+    if (is_gps_key(it->key())) it = e.erase(it);
+    else ++it;
+  }
+}
+void erase_gps(Exiv2::XmpData& x) {
+  for (auto it = x.begin(); it != x.end();) {
+    if (is_gps_key(it->key())) it = x.erase(it);
+    else ++it;
+  }
+}
+
+// The location into a JPEG's own blocks (`e` set, `sidecar` false) or a
+// sidecar's XMP (write.h write_fields::location).
+void apply_location(Exiv2::ExifData* e, Exiv2::XmpData& x, const change<geo_point>& c, bool sidecar) {
+  if (!c.touches()) return;
+  if (c.k == change<geo_point>::kind::clear) {
+    if (e != nullptr) erase_gps(*e);
+    erase_gps(x);
+    return;
+  }
+  const geo_point& p = c.value;
+  if (e != nullptr) {
+    if (!has_key(*e, "Exif.GPSInfo.GPSVersionID")) exif_set(*e, "Exif.GPSInfo.GPSVersionID", "2 3 0 0");
+    exif_set(*e, "Exif.GPSInfo.GPSLatitudeRef", p.lat < 0 ? "S" : "N");
+    exif_set(*e, "Exif.GPSInfo.GPSLatitude", exif_dms(p.lat));
+    exif_set(*e, "Exif.GPSInfo.GPSLongitudeRef", p.lon < 0 ? "W" : "E");
+    exif_set(*e, "Exif.GPSInfo.GPSLongitude", exif_dms(p.lon));
+    if (p.altitude) {
+      exif_set(*e, "Exif.GPSInfo.GPSAltitudeRef", *p.altitude < 0 ? "1" : "0");
+      exif_set(*e, "Exif.GPSInfo.GPSAltitude", altitude_rational(*p.altitude));
+    }
+  }
+  // A sidecar states the position; a JPEG's own XMP only keeps the copies it
+  // already has in agreement with the EXIF just written.
+  const auto put = [&](const char* key, const std::string& value) {
+    if (sidecar || has_key(x, key)) set_xmp(x, key, value);
+  };
+  if (sidecar && !has_key(x, "Xmp.exif.GPSVersionID")) set_xmp(x, "Xmp.exif.GPSVersionID", "2.3.0.0");
+  put("Xmp.exif.GPSLatitude", xmp_dm(p.lat, true));
+  put("Xmp.exif.GPSLongitude", xmp_dm(p.lon, false));
+  if (p.altitude) {
+    put("Xmp.exif.GPSAltitudeRef", *p.altitude < 0 ? "1" : "0");
+    put("Xmp.exif.GPSAltitude", altitude_rational(*p.altitude));
+  }
+}
+
+bool valid_point(const geo_point& p) {
+  if (!std::isfinite(p.lat) || !std::isfinite(p.lon)) return false;
+  if (std::fabs(p.lat) > 90.0 || std::fabs(p.lon) > 180.0) return false;
+  return !p.altitude || (std::isfinite(*p.altitude) && std::fabs(*p.altitude) < 100000.0);
+}
+
 // Every key a write's tag and date edits may change, for the checks.
 key_set touched_keys(const write_fields& f) {
   key_set keys;
+  keys.gps = f.location.touches();
   for (const tag_edit& t : f.tags) {
     keys.insert(t.key);
     if (t.key.rfind("Xmp.", 0) != 0 && t.value.k == change<std::string>::kind::set) {
@@ -579,6 +707,7 @@ bool validate(const write_fields& f) {
     std::string a, b;
     if (!exif_date_of(f.date_taken.value, a, b)) return false;
   }
+  if (f.location.k == change<geo_point>::kind::set && !valid_point(f.location.value)) return false;
   if (f.rating.k == change<int>::kind::set && (f.rating.value < -1 || f.rating.value > kMaxRating)) return false;
   if (f.orientation.k == change<int>::kind::set && (f.orientation.value < 1 || f.orientation.value > 8)) return false;
   if (f.comment.k == change<std::string>::kind::set) {
@@ -903,6 +1032,7 @@ result<std::vector<std::uint8_t>> rewrite_jpeg(std::span<const std::uint8_t> ori
     apply_xmp(image->xmpData(), f, /*sidecar=*/false);
     apply_tags(&image->exifData(), &image->iptcData(), image->xmpData(), f, /*sidecar=*/false);
     apply_date(&image->exifData(), image->xmpData(), f.date_taken, /*sidecar=*/false);
+    apply_location(&image->exifData(), image->xmpData(), f.location, /*sidecar=*/false);
     // PR 29: what the named tags must read back as -- Exiv2's own encoding of
     // the edit, taken before it is written.
     const auto exif_want = exif_rows(image->exifData(), no_keys(), &touched);
@@ -947,6 +1077,9 @@ result<std::vector<std::uint8_t>> rewrite_jpeg(std::span<const std::uint8_t> ori
       const bool want = f.comment.k == change<std::string>::kind::set && !f.comment.value.empty();
       if (want ? got.comment != f.comment.value : got.comment.has_value()) return err(status::internal);
     }
+    if (!location_reads_back(f.location, detail::file_where(check->exifData(), check->xmpData()))) {
+      return err(status::internal);
+    }
     return out;
   } catch (const bad_value&) {
     return err(status::invalid_arg);
@@ -974,6 +1107,7 @@ result<sidecar_result> rewrite_sidecar(const std::string& path, const write_fiel
     apply_xmp(xmp, f, /*sidecar=*/true);
     apply_tags(nullptr, nullptr, xmp, f, /*sidecar=*/true);
     apply_date(nullptr, xmp, f.date_taken, /*sidecar=*/true);
+    apply_location(nullptr, xmp, f.location, /*sidecar=*/true);
     const auto touched_want = xmp_rows(xmp, no_keys(), &touched);
 
     sidecar_result r;
@@ -995,6 +1129,7 @@ result<sidecar_result> rewrite_sidecar(const std::string& path, const write_fiel
       const bool want = f.comment.k == change<std::string>::kind::set && !f.comment.value.empty();
       if (want ? got.comment != f.comment.value : got.comment.has_value()) return err(status::internal);
     }
+    if (!location_reads_back(f.location, detail::xmp_where(check))) return err(status::internal);
     return r;
   } catch (const bad_value&) {
     return err(status::invalid_arg);
@@ -1062,7 +1197,9 @@ result<write_outcome> apply(std::string_view utf8_path, const write_fields& file
   // PR 29: a tag the file cannot take is refused before anything is written.
   // A JPEG that Exiv2 then declines falls back to its sidecar only when every
   // tag edit can live there (an EXIF / IPTC remove cannot).
-  bool sidecar_ok = !file_fields.orientation.touches();
+  // A location remove cannot fall back either: a sidecar cannot take EXIF GPS out.
+  bool sidecar_ok = !file_fields.orientation.touches() &&
+                    file_fields.location.k != change<geo_point>::kind::clear;
   for (const tag_edit& t : file_fields.tags) {
     const tag_access here = access_of(t.key, target);
     const bool removes = t.value.k == change<std::string>::kind::clear;
@@ -1283,6 +1420,11 @@ tag_access access_of(std::string_view key, write_target target) noexcept {
   } catch (...) {
     return tag_access::read_only;
   }
+}
+
+tag_access row_access(const property& p, write_target target) noexcept {
+  if (p.space != origin::exif && p.space != origin::iptc && p.space != origin::xmp) return tag_access::read_only;
+  return access_of(p.raw_tag, target);
 }
 
 bool exif_date_of(std::string_view stamp, std::string& exif_out, std::string& xmp_out) {

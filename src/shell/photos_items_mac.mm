@@ -79,6 +79,14 @@ item item_of(PHAsset* a) {
   it.created = a.creationDate ? static_cast<std::int64_t>(a.creationDate.timeIntervalSince1970) : it.mtime;
   it.size = static_cast<std::uint64_t>(a.pixelWidth) * static_cast<std::uint64_t>(a.pixelHeight);
   it.video = a.mediaType == PHAssetMediaTypeVideo;
+  if (CLLocation* loc = a.location) {
+    const double lat = loc.coordinate.latitude, lon = loc.coordinate.longitude;
+    if (lat >= -90.0 && lat <= 90.0 && lon >= -180.0 && lon <= 180.0) {
+      it.has_location = true;
+      it.lat = lat;
+      it.lon = lon;
+    }
+  }
   return it;
 }
 

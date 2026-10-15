@@ -227,7 +227,7 @@ struct PeopleGrid: View {
       Button("Cancel") { selection = [] }
     }
     .padding(10)
-    .background(RoundedRectangle(cornerRadius: 6).fill(Color.accentColor.opacity(0.08)))
+    .background(RoundedRectangle(cornerRadius: AITheme.radius(6)).fill(AITheme.accent.opacity(0.08)))
   }
 }
 
@@ -338,7 +338,7 @@ private struct PersonCover: View, Equatable {
         if selected {
           Image(systemName: "checkmark.circle.fill")
             .symbolRenderingMode(.palette)
-            .foregroundStyle(.white, Color.accentColor)
+            .foregroundStyle(.white, AITheme.accent)
             .font(.system(size: 20))
             .transition(.scale.combined(with: .opacity))
         }
@@ -371,7 +371,7 @@ private struct PersonCover: View, Equatable {
   }
 
   private var ring: Color {
-    selected || dropTarget ? .accentColor : hover ? Color.accentColor.opacity(0.7) : AITheme.hairline
+    selected || dropTarget ? .accentColor : hover ? AITheme.accent.opacity(0.7) : AITheme.hairline
   }
 }
 
@@ -632,7 +632,7 @@ private struct FaceCell: View {
   var body: some View {
     FaceImage(table: table, faceID: face.id, box: face.box, monogram: "")
       .frame(width: 72, height: 72)
-      .overlay(Circle().stroke(selected ? Color.accentColor : .clear, lineWidth: 2.5).padding(-2))
+      .overlay(Circle().stroke(selected ? AITheme.accent : .clear, lineWidth: 2.5).padding(-2))
       .overlay(alignment: .topTrailing) {
         if hover {
           Button(action: reject) {

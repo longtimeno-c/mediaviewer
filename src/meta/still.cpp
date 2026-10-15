@@ -12,7 +12,10 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <mutex>
+#include <optional>
+#include <unordered_set>
 #include <string>
 
 #include "meta/af.h"
@@ -179,24 +182,111 @@ double rational_at(const Exiv2::Exifdatum& d, std::size_t i, bool& ok) {
   return static_cast<double>(r.first) / static_cast<double>(r.second);
 }
 
-std::string gps_of(const Exiv2::ExifData& e) {
-  const auto* lat = find(e, "Exif.GPSInfo.GPSLatitude");
-  const auto* lon = find(e, "Exif.GPSInfo.GPSLongitude");
-  if (!lat || !lon || lat->count() < 3 || lon->count() < 3) return {};
+std::string xmp_text(const Exiv2::XmpData& x, const char* key) {
+  const auto* d = find(x, key);
+  if (!d) return {};
   try {
-    bool ok = true;
-    const double la = rational_at(*lat, 0, ok) + rational_at(*lat, 1, ok) / 60 +
-                      rational_at(*lat, 2, ok) / 3600;
-    const double lo = rational_at(*lon, 0, ok) + rational_at(*lon, 1, ok) / 60 +
-                      rational_at(*lon, 2, ok) / 3600;
-    if (!ok || la > 90.0 || lo > 180.0) return {};
-    const std::string lar = ascii_of(e, "Exif.GPSInfo.GPSLatitudeRef");
-    const std::string lor = ascii_of(e, "Exif.GPSInfo.GPSLongitudeRef");
-    return format_coordinate(la, lar == "S" ? 'S' : 'N') + ", " +
-           format_coordinate(lo, lor == "W" ? 'W' : 'E');
+    return trim(d->toString());
   } catch (...) {
     return {};
   }
+}
+
+// "1234/10" or "123.4" → metres; nullopt when it is neither.
+std::optional<double> xmp_rational(const std::string& s) {
+  if (s.empty()) return std::nullopt;
+  char* end = nullptr;
+  const double a = std::strtod(s.c_str(), &end);
+  if (end == s.c_str()) return std::nullopt;
+  if (*end == '/') {
+    const double b = std::strtod(end + 1, nullptr);
+    if (b == 0) return std::nullopt;
+    return a / b;
+  }
+  return a;
+}
+
+// EXIF GPS, else XMP exif:GPS* (drones write only the latter), with altitude
+// when either says (GPSAltitudeRef 1 = below sea level).
+std::optional<geo_point> where_of(const Exiv2::ExifData& e, const Exiv2::XmpData& x) {
+  const auto* lat = find(e, "Exif.GPSInfo.GPSLatitude");
+  const auto* lon = find(e, "Exif.GPSInfo.GPSLongitude");
+  if (lat && lon && lat->count() >= 3 && lon->count() >= 3) {
+    try {
+      bool ok = true;
+      const double la = rational_at(*lat, 0, ok) + rational_at(*lat, 1, ok) / 60 +
+                        rational_at(*lat, 2, ok) / 3600;
+      const double lo = rational_at(*lon, 0, ok) + rational_at(*lon, 1, ok) / 60 +
+                        rational_at(*lon, 2, ok) / 3600;
+      if (ok && la <= 90.0 && lo <= 180.0) {
+        geo_point p;
+        p.lat = ascii_of(e, "Exif.GPSInfo.GPSLatitudeRef") == "S" ? -la : la;
+        p.lon = ascii_of(e, "Exif.GPSInfo.GPSLongitudeRef") == "W" ? -lo : lo;
+        if (const auto* alt = find(e, "Exif.GPSInfo.GPSAltitude"); alt && alt->count() >= 1) {
+          bool aok = true;
+          const double a = rational_at(*alt, 0, aok);
+          if (aok) p.altitude = int_of(e, "Exif.GPSInfo.GPSAltitudeRef", 0) == 1 ? -a : a;
+        }
+        return p;
+      }
+    } catch (...) {
+    }
+  }
+  return xmp_where(x);
+}
+
+}  // namespace
+
+std::optional<geo_point> file_where(const Exiv2::ExifData& e, const Exiv2::XmpData& x) noexcept {
+  try {
+    return where_of(e, x);
+  } catch (...) {
+    return std::nullopt;
+  }
+}
+
+std::optional<geo_point> xmp_where(const Exiv2::XmpData& x) noexcept {
+  try {
+    const auto xla = parse_xmp_coordinate(xmp_text(x, "Xmp.exif.GPSLatitude"));
+    const auto xlo = parse_xmp_coordinate(xmp_text(x, "Xmp.exif.GPSLongitude"));
+    if (!xla || !xlo || std::fabs(*xla) > 90.0 || std::fabs(*xlo) > 180.0) return std::nullopt;
+    geo_point p;
+    p.lat = *xla;
+    p.lon = *xlo;
+    if (const auto a = xmp_rational(xmp_text(x, "Xmp.exif.GPSAltitude"))) {
+      p.altitude = xmp_text(x, "Xmp.exif.GPSAltitudeRef") == "1" ? -*a : *a;
+    }
+    return p;
+  } catch (...) {
+    return std::nullopt;
+  }
+}
+
+namespace {
+
+// The listed_fn for parse::read_xmp: did Exiv2 already list this property?
+struct listed_ctx {
+  std::unordered_set<std::string> keys;  // every Exiv2 XMP row's key
+};
+
+bool exiv2_listed(void* ctx, std::string_view ns_uri, std::string_view path) {
+  const auto* c = static_cast<const listed_ctx*>(ctx);
+  std::string prefix;
+  try {
+    prefix = Exiv2::XmpProperties::prefix(std::string(ns_uri));
+  } catch (...) {
+    return false;
+  }
+  if (prefix.empty()) return false;
+  const std::string key = "Xmp." + prefix + "." + std::string(path);
+  // A simple array item ("subject[2]", "title[1][@xml:lang=x-default]") is one
+  // Exiv2 datum for the whole array.
+  std::string whole;
+  const auto bracket = path.find('[');
+  if (bracket != std::string_view::npos && path.find('/', bracket) == std::string_view::npos) {
+    whole = "Xmp." + prefix + "." + std::string(path.substr(0, bracket));
+  }
+  return c->keys.count(key) != 0 || (!whole.empty() && c->keys.count(whole) != 0);
 }
 
 std::string number(double v, const char* unit) {
@@ -257,7 +347,8 @@ void fill_summary(const Exiv2::ExifData& e, const Exiv2::XmpData& x, Exiv2::Imag
     s.date_taken = pretty_date(stamp);
     s.date_taken_key = parse_date_key(stamp).value_or(0);
   }
-  s.gps = gps_of(e);
+  s.where = where_of(e, x);
+  s.gps = s.where ? format_point(*s.where) : std::string{};
 
   s.colour_space = print_of(e, "Exif.Photo.ColorSpace");
   if (s.colour_space.empty()) {
@@ -362,7 +453,8 @@ std::unique_ptr<Exiv2::Image> open(std::span<const std::uint8_t> bytes) {
 }
 }  // namespace
 
-void read_still(std::span<const std::uint8_t> bytes, bool decoder_orients, metadata& out) noexcept {
+void read_still(std::span<const std::uint8_t> bytes, bool decoder_orients, metadata& out,
+                parse::evidence* ev) noexcept {
   try {
     auto image = open(bytes);
     if (!image) return;
@@ -377,6 +469,24 @@ void read_still(std::span<const std::uint8_t> bytes, bool decoder_orients, metad
     fill_summary(exif, xmp, *image, out);
     out.display_orientation = decoder_orients ? out.s.orientation : 1;
     out.af_points = find_af_points(exif, out.s);
+
+    // #290: what Exiv2 read but did not list. The packet and the profile are
+    // the bytes Exiv2 already holds, so nothing is read twice.
+    parse::evidence local;
+    parse::sink rows{out.properties, ev ? *ev : local, kMaxProperties};
+    rows.ev.exif_software = ascii_of(exif, "Exif.Image.Software");
+    if (const std::string& packet = image->xmpPacket(); !packet.empty()) {
+      listed_ctx ctx;
+      for (const property& p : out.properties) {
+        if (p.space == origin::xmp) ctx.keys.insert(p.raw_tag);
+      }
+      parse::read_xmp(packet, &exiv2_listed, &ctx, rows);
+    }
+    if (image->iccProfileDefined()) {
+      const Exiv2::DataBuf& icc = image->iccProfile();
+      const std::string desc = parse::read_icc(std::span<const std::uint8_t>(icc.c_data(), icc.size()), rows);
+      if (!desc.empty() && out.s.colour_space == "Embedded ICC profile") out.s.colour_space = desc;
+    }
   } catch (...) {
     // A damaged tag table: keep whatever was read before it.
   }

@@ -20,6 +20,7 @@ constexpr char kDestinations[] = "destinations";
 constexpr char kRecent[] = "recent";
 constexpr char kKeys[] = "keys";
 constexpr char kCrash[] = "crash";
+constexpr char kHints[] = "hints";
 
 std::string_view trim_separator(std::string_view p) noexcept {
   while (p.size() > 3 && (p.back() == '\\' || p.back() == '/')) p.remove_suffix(1);
@@ -69,6 +70,7 @@ view_settings load_view_settings(const settings_store& store) noexcept {
   s.sticky_zoom = doc->get_int(kView, "sticky_zoom", s.sticky_zoom ? 1 : 0) != 0;
   s.show_audio = doc->get_int(kView, "show_audio", s.show_audio ? 1 : 0) != 0;
   s.show_documents = doc->get_int(kView, "show_documents", s.show_documents ? 1 : 0) != 0;
+  s.ai_badge = doc->get_int(kView, "ai_badge", s.ai_badge ? 1 : 0) != 0;
   const int bg = doc->get_int(kView, "background", s.background);
   s.background = static_cast<std::uint8_t>(bg < 0 || bg > 4 ? 0 : bg);
   // Normalised, so a hand-edited or future value cannot leave an unknown key.
@@ -84,9 +86,19 @@ void save_view_settings(settings_store& store, const view_settings& s) noexcept 
     d.set(kView, "sticky_zoom", s.sticky_zoom ? "1" : "0");
     d.set(kView, "show_audio", s.show_audio ? "1" : "0");
     d.set(kView, "show_documents", s.show_documents ? "1" : "0");
+    d.set(kView, "ai_badge", s.ai_badge ? "1" : "0");
     d.set(kView, "background", std::to_string(static_cast<unsigned>(s.background <= 4 ? s.background : 0)));
     d.set(kView, "sort", std::to_string(s.sort));
   });
+}
+
+bool load_strip_hint_learned(const settings_store& store) noexcept {
+  const auto doc = store.snapshot();
+  return doc && doc->get_int(kHints, "filmstrip_t", 0) != 0;
+}
+
+void save_strip_hint_learned(settings_store& store) noexcept {
+  store.update([](settings_doc& d) { d.set(kHints, "filmstrip_t", "1"); });
 }
 
 std::vector<std::string> load_destinations(const settings_store& store) noexcept {
@@ -148,7 +160,7 @@ std::vector<key_override> load_key_overrides(const settings_store& store) noexce
       if (!v || v->empty()) continue;
       int row = 0, k = 0, mods = 0;
       if (std::sscanf(v->c_str(), "%d,%d,%d", &row, &k, &mods) != 3) continue;
-      if (row < 0 || k <= 0 || k > 0xFFFF || mods < 0 || mods >= 8) continue;
+      if (row < 0 || k < 0 || k > 0xFFFF || mods < 0 || mods >= 8) continue;
       out.push_back(key_override{row, static_cast<std::uint16_t>(k), static_cast<std::uint8_t>(mods)});
     }
     return out;
@@ -193,6 +205,8 @@ std::vector<key_override> load_key_overrides() noexcept { return load_key_overri
 void save_key_overrides(std::span<const key_override> list) noexcept { save_key_overrides(app_settings(), list); }
 view_settings load_view_settings() noexcept { return load_view_settings(app_settings()); }
 void save_view_settings(const view_settings& s) noexcept { save_view_settings(app_settings(), s); }
+bool load_strip_hint_learned() noexcept { return load_strip_hint_learned(app_settings()); }
+void save_strip_hint_learned() noexcept { save_strip_hint_learned(app_settings()); }
 std::vector<std::string> load_destinations() noexcept { return load_destinations(app_settings()); }
 void save_destinations(const std::vector<std::string>& list) noexcept { save_destinations(app_settings(), list); }
 std::vector<std::string> load_recent_folders() noexcept { return load_recent_folders(app_settings()); }

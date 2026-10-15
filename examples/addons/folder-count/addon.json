@@ -1,0 +1,17 @@
+{
+  "id": "example.folder-count",
+  "name": "Folder Count",
+  "version": "1.0.0",
+  "description": "A command that says how many files the open folder holds.",
+  "licence": "MIT",
+  "publisher": { "name": "Example Publisher", "url": "" },
+  "update_url": "",
+  "api": { "min": 3, "max": 3 },
+  "scripts": ["main.lua"],
+  "permissions": ["folder.read"],
+  "contributes": {
+    "commands": [
+      { "id": "count-files", "name": "Count files", "key": "Ctrl+Shift+K", "run": "count_files" }
+    ]
+  }
+}

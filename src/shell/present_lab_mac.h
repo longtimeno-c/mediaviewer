@@ -127,6 +127,14 @@ class present_lab_mac {
     return scroll_edges_.load(std::memory_order_relaxed);
   }
 
+  // [any-thread][no-block] The page_land_seq whose page the render thread has
+  // put on screen (camera::turn_page applied). Stored after scroll_edges(), so
+  // a host that sees its turn acknowledged reads the new page's edges
+  // (canvas/document_scroll.h waits on this before turning again).
+  [[nodiscard]] std::uint32_t page_land_ack() const noexcept {
+    return page_land_ack_.load(std::memory_order_acquire);
+  }
+
   // --browse-soak (the Windows lab's twin, present_lab.h): mark a navigation
   // just before selecting, then poll until the new item's first image is on
   // screen. ready_ms is mark -> image adopted by the render thread, present_ms
@@ -261,6 +269,7 @@ class present_lab_mac {
   std::atomic<std::uint32_t> pages_count_{0};
   std::atomic<std::uint64_t> pages_item_{0};
   std::atomic<unsigned> scroll_edges_{3};
+  std::atomic<std::uint32_t> page_land_ack_{0};
   // Render thread only, but for the atomics the UI polls.
   void note_nav_image(const image::gpu_image_mac& ready) noexcept;
   void commit_nav_present() noexcept;
