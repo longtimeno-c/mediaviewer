@@ -526,6 +526,7 @@ class present_lab_mac {
   std::uint32_t seen_zoom_in_seq_ = 0;
   std::uint32_t seen_zoom_out_seq_ = 0;
   std::uint32_t seen_zoom_preset_seq_ = 0;
+  std::uint32_t seen_af_focus_seq_ = 0;  // issue #209, Shift+Z
   std::uint32_t seen_fill_seq_ = 0;
   std::atomic<bool> view_fitted_{true};
   std::uint32_t seen_page_land_seq_ = 0;

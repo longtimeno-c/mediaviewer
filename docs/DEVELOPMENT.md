@@ -525,6 +525,7 @@ A one-pixel grid appears at 400 % and above.
 | `I` | metadata pane: summary card, searchable tag tree, and for clips the per-stream inspector (PR 9). Focuses the pane; `Esc` returns to the photo, a second `Esc` closes it |
 | `Ctrl+Shift+E` | folder tree, rooted at the open folder (PR 9). Focuses it: arrows walk, Right / Left open and close a folder, `Enter` opens it, `Esc` returns to the photo. It follows the folder as subfolders come and go |
 | `O` / `Shift+O` / `Shift+I` | info overlay with exposure lines / AF points / eyedropper (PR 9) |
+| `Shift+Z` | zoom to the AF point: 100 % centred on the in-focus point, for a focus check (issue #209) |
 | `Ctrl+C` | copy the eyedropper colour if it is on, otherwise the marked (or current) file(s) |
 
 The title bar shows the current file, its position in the folder, its size and
