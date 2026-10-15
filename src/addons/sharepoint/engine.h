@@ -53,6 +53,8 @@ inline constexpr int kPeerForgetMs = 4500;
 inline constexpr std::size_t kMaxPeers = 64;
 // Names listed under "Files to send" / in an offer, at most.
 inline constexpr std::size_t kListedNames = 200;
+// Wrong codes typed on the sender before the link ends (#442).
+inline constexpr int kCodeTries = 3;
 
 // What the window shows, as data (build_tree turns it into the view tree).
 struct view {
@@ -74,12 +76,16 @@ struct view {
   std::string selected_peer;
   // waiting_wifi: the set is too big for Bluetooth and the peer is only in
   // Bluetooth range; the send starts by itself once the peer is heard on Wi-Fi.
-  // confirming: the link is up and both screens show the code; nothing about
-  // the files has left until this person says the codes match.
+  // confirming: the link is up and the receiver's screen shows the code; this
+  // person types it here (#442). Nothing about the files has left until the
+  // code typed is the one this link derived; kCodeTries wrong ones end it.
+  // This screen never shows the code.
   enum class out_phase : std::uint8_t {
     idle, waiting_wifi, connecting, confirming, waiting, sending, done, ended
   } out = out_phase::idle;
-  std::string out_peer, out_code, out_note;
+  std::string out_peer, out_note;
+  std::string out_entry_note;  // confirming: "That is not the code ..." after a wrong one
+  int out_tries_left = kCodeTries;
   std::uint64_t out_bytes = 0, out_total = 0;
   std::uint32_t out_files = 0, out_count = 0;
 
@@ -255,7 +261,8 @@ class engine {
   bool transfer_running_ = false;         // under m_
   std::atomic<std::uint64_t> files_generation_{0};  // changed under m_; read anywhere
   int decision_ = 0;                      // under m_: 0 none, 1 accept, 2 decline
-  int out_decision_ = 0;                  // under m_: 0 none, 1 codes match, 2 cancel
+  int out_decision_ = 0;                  // under m_: 0 none, 1 code right, 2 cancel, 3 wrong too often
+  std::string out_expected_;              // under m_: the link's code, digits only; never in the view
   // The peer a too-big set waits to see on Wi-Fi (out_phase::waiting_wifi).
   std::string waiting_peer_;              // under m_
   // Links in their handshake (no channel yet), so a cancel or the destructor

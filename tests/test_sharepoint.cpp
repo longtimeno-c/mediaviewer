@@ -3,7 +3,8 @@
 // Sharepoint (docs/design/28): the wire's rules, the sealed channel, and two
 // or three engines sending to each other over loopback TCP, found through an
 // in-memory discovery bus instead of the LAN beacon. The issue's verify, as
-// far as one machine can run it: both sides show the same code, Accept
+// far as one machine can run it: both sides derive the same code (the
+// receiver shows it, the sender types it, #442), Accept
 // delivers the files with matching bytes, Decline and a third client receive
 // nothing, Cancel mid-way leaves nothing partial, a machine in the middle
 // shows two different codes, and no sender path climbs out of the folder.
@@ -189,8 +190,8 @@ struct client {
       return !v.reading_folder && v.file_count >= files.size();
     }));
   }
-  // Picks `other` and sends; with `confirm`, says the codes match as soon
-  // as both screens show one (what the person at this end checks).
+  // Picks `other` and sends; with `confirm`, types the code `other`'s
+  // screen shows (what the person at this end reads off the other screen).
   void send_to(const client& other, bool confirm = true) {
     REQUIRE(eventually([&] { return sees(other); }));
     eng.on_event("peers", 4, "[\"" + other.eng.id() + "\"]");
@@ -200,8 +201,18 @@ struct client {
       const auto o = eng.snapshot().out;
       return o == sp::view::out_phase::confirming || o == sp::view::out_phase::ended;
     }));
-    eng.on_event("out_confirm", 1, "");
+    if (eng.snapshot().out == sp::view::out_phase::ended) return;
+    std::string code;
+    if (!eventually([&] {
+          const auto v = other.eng.snapshot();
+          code = v.in_code;
+          return v.in == sp::view::in_phase::connecting && !code.empty();
+        }, 3)) {
+      return;  // busy there: this side ends on its own
+    }
+    type_code(code);
   }
+  void type_code(const std::string& code) { eng.on_event("out_code_entry", 3, "\"" + code + "\""); }
   void save_into(const fs::path& dir) { eng.on_event("destination", 2, "\"" + json_path(dir) + "\""); }
   std::string tree() {
     std::lock_guard lock(host.m);
@@ -464,7 +475,7 @@ TEST_CASE("sharepoint: every state of the window is a tree the hosts accept", "[
                      sp::view::out_phase::done, sp::view::out_phase::ended}) {
     v.out = phase;
     v.out_peer = "Laptop";
-    v.out_code = "123 456";
+    v.out_entry_note = "That is not the code on Laptop's screen. 2 tries left.";
     v.out_note = "Sent 2 files to Laptop.";
     v.out_total = 30'000'000;
     v.out_bytes = 10'000'000;
@@ -491,9 +502,15 @@ TEST_CASE("sharepoint: every state of the window is a tree the hosts accept", "[
     INFO(tree);
     CHECK(t.set(tree) == mv::addon::screen::error::none);
   }
-  // The code is on the screen while an offer waits.
-  v.in = sp::view::in_phase::asking;
+  // The receiver shows the code while the sender types it; the sender's
+  // screen never shows one (#442).
+  v.in = sp::view::in_phase::connecting;
   CHECK(sp::build_tree(v).find("Code 654 321") != std::string::npos);
+  v.in = sp::view::in_phase::none;
+  v.out = sp::view::out_phase::confirming;
+  const std::string sender = sp::build_tree(v);
+  CHECK(sender.find("out_code_entry") != std::string::npos);
+  CHECK(sender.find("654 321") == std::string::npos);
 }
 
 TEST_CASE("sharepoint: a set too big for Bluetooth says to use Wi-Fi before Send", "[sharepoint]") {
@@ -666,22 +683,23 @@ TEST_CASE("sharepoint: Accept delivers the files with their bytes, keeping both 
   ann.pick({s / "out" / "big.mov", s / "out" / "small.txt", s / "out" / "empty.jpg"});
   bea.save_into(dest);
 
-  // Both screens show the code before anything about the files leaves: the
-  // receiver knows only who is connecting until the sender's person confirms.
+  // The receiver shows the code before anything about the files leaves: it
+  // knows only who is connecting until the sender's person types the code.
   ann.send_to(bea, false);
   REQUIRE(eventually([&] { return ann.eng.snapshot().out == sp::view::out_phase::confirming; }));
   REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::connecting; }));
-  CHECK(bea.eng.snapshot().in_code == ann.eng.snapshot().out_code);
+  const std::string code = bea.eng.snapshot().in_code;
+  CHECK(code.size() == 7);
+  CHECK(bea.tree().find("Code " + code) != std::string::npos);
+  CHECK(ann.tree().find(code) == std::string::npos);  // the sender's screen never shows it
   CHECK(bea.eng.snapshot().in_count == 0);
-  ann.eng.on_event("out_confirm", 1, "");
+  ann.type_code(code);
   REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::asking; }));
   REQUIRE(eventually([&] { return ann.eng.snapshot().out == sp::view::out_phase::waiting; }));
   const auto asked = bea.eng.snapshot();
-  CHECK(asked.in_code == ann.eng.snapshot().out_code);
   CHECK(asked.in_peer == "Ann");
   CHECK(asked.in_count == 3);
   CHECK(files_in(dest) == std::vector<std::string>{"small.txt"});  // nothing yet
-  CHECK(bea.tree().find("Code " + asked.in_code) != std::string::npos);
 
   bea.eng.on_event("accept", 1, "");
   ann.eng.wait_idle();
@@ -731,6 +749,61 @@ TEST_CASE("sharepoint: a new set to send never waits for the one still being rea
   }));
   CHECK(ann.eng.snapshot().file_names == std::vector<std::string>{"b.jpg"});  // the newest set, not the first
   CHECK(ann.host.pair_calls.load() == 2);  // the replaced middle set was never read
+}
+
+TEST_CASE("sharepoint: a wrong code three times ends the link, and nothing about the files leaves",
+          "[sharepoint]") {
+  scratch_dir s("sharepoint_code");
+  bus b;
+  client ann(b, s / "ann_received", "Ann");
+  client bea(b, s / "bea_received", "Bea");
+  fs::create_directories(s / "bea_received");
+  write_text(s / "out" / "secret name.jpg", "only after the code");
+  ann.pick({s / "out" / "secret name.jpg"});
+  bea.save_into(s / "bea_received");
+
+  // A wrong code, then the right one: one wrong try is not the end.
+  ann.send_to(bea, false);
+  REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::connecting; }));
+  std::string code = bea.eng.snapshot().in_code;
+  std::string wrong = code;
+  wrong[0] = wrong[0] == '9' ? '1' : static_cast<char>(wrong[0] + 1);
+  ann.type_code("12");  // a partial entry is not a try
+  CHECK(ann.eng.snapshot().out_tries_left == sp::kCodeTries);
+  ann.type_code(wrong);
+  CHECK(ann.eng.snapshot().out_tries_left == sp::kCodeTries - 1);
+  CHECK(ann.eng.snapshot().out_entry_note.find("2 tries left") != std::string::npos);
+  CHECK(ann.eng.snapshot().out == sp::view::out_phase::confirming);
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  CHECK(bea.eng.snapshot().in == sp::view::in_phase::connecting);  // no offer yet
+  CHECK(bea.eng.snapshot().in_names.empty());
+  ann.type_code(code.substr(0, 3) + "-" + code.substr(4));  // separators do not matter
+  REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::asking; }));
+  bea.eng.on_event("decline", 1, "");
+  ann.eng.wait_idle();
+  bea.eng.wait_idle();
+
+  // Three wrong ones: the link ends, and the receiver never heard a name.
+  ann.send_to(bea, false);
+  REQUIRE(eventually([&] {
+    const auto v = bea.eng.snapshot();
+    return v.in == sp::view::in_phase::connecting && v.in_code != code;
+  }));
+  code = bea.eng.snapshot().in_code;
+  wrong = code;
+  wrong[6] = wrong[6] == '9' ? '1' : static_cast<char>(wrong[6] + 1);
+  for (int i = 0; i < sp::kCodeTries; ++i) ann.type_code(wrong);
+  ann.eng.wait_idle();
+  bea.eng.wait_idle();
+  INFO(ann.eng.snapshot().out_note);
+  CHECK(ann.eng.snapshot().out == sp::view::out_phase::ended);
+  CHECK(ann.eng.snapshot().out_note.find("wrong 3 times") != std::string::npos);
+  const auto there = bea.eng.snapshot();
+  CHECK(there.in == sp::view::in_phase::ended);
+  CHECK(there.in_names.empty());
+  CHECK(there.in_count == 0);
+  CHECK(bea.tree().find("secret name") == std::string::npos);
+  CHECK(files_in(s / "bea_received").empty());
 }
 
 TEST_CASE("sharepoint: a pair half and a sidecar ride along; a folder keeps its shape", "[sharepoint]") {
@@ -1070,7 +1143,8 @@ TEST_CASE("sharepoint: a big set to a Bluetooth-only peer waits for it on Wi-Fi,
   sp::beacon bea_beacon{bea.eng.id(), "Bea", port};
   ann.inject->seen(bea_beacon, "127.0.0.1");
   REQUIRE(eventually([&] { return ann.eng.snapshot().out == sp::view::out_phase::confirming; }));
-  ann.eng.on_event("out_confirm", 1, "");
+  REQUIRE(eventually([&] { return !bea.eng.snapshot().in_code.empty(); }));
+  ann.eng.on_event("out_code_entry", 3, "\"" + bea.eng.snapshot().in_code + "\"");
   REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::asking; }));
   bea.eng.on_event("accept", 1, "");
   ann.eng.wait_idle();

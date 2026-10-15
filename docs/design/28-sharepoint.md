@@ -1,8 +1,8 @@
 # 28 — Sharepoint: send files to a MediaViewer nearby
 
 How one MediaViewer sends photos, video and audio to another, the way a nearby share does: the
-two clients find each other, both show the same short code, and nothing moves until the person
-on the other side accepts. Issues [#410](https://github.com/longtimeno-c/mediaviewer/issues/410)
+two clients find each other, the receiver shows a short code that the sender types, and nothing
+moves until the person on the other side accepts. Issues [#410](https://github.com/longtimeno-c/mediaviewer/issues/410)
 (the add-on and its window) and [#413](https://github.com/longtimeno-c/mediaviewer/issues/413)
 (the gallery's range, drag-out and share icon). Built 2026-10-15; where each part stands is in
 [DEVELOPMENT.md](../DEVELOPMENT.md#sharepoint-issues-410-413-2026-10-15).
@@ -20,14 +20,14 @@ Narrator. Other makers' script add-ons still have no network permission (owner, 
   from the **Send with Sharepoint…** context entry on a gallery tile. It lists:
   - this computer's name as others see it, and **Keep receiving when this window is closed** (kept
     across launches; the command bar shows **Sharepoint: receiving** while it is on);
-  - someone connecting (their name and the **code**, **Decline**), then their offer (the files,
-    **Save to** with Choose…, **Accept** / **Decline**), then progress and **Cancel**, then what
-    arrived;
+  - someone connecting (their name and the **code** to type over there, **Decline**), then their
+    offer (the files, **Save to** with Choose…, **Accept** / **Decline**), then progress and
+    **Cancel**, then what arrived;
   - the files to send, **Send a folder** (Choose…), **Clear**;
   - **Nearby**: the MediaViewers it can see, each with how ("Wi-Fi", "Bluetooth" or both);
-  - **Send to …**, then the code and **Same code, send** / **Cancel**: the person checks that the
-    other screen shows the same code before anything about the files leaves; then it waits for
-    Accept, then progress and **Cancel**.
+  - **Send to …**, then a field for the code the other screen shows, and **Cancel**: the person
+    types it before anything about the files leaves (three wrong codes end the link); then it
+    waits for Accept, then progress and **Cancel**. This screen never shows the code.
 - **The gallery** ([16](16-commands.md#gallery-range-and-share-413)): Shift-click selects a range,
   dragging a cell drags it out, and one share icon ("Send") opens Sharepoint with the selection.
   Without Sharepoint the icon offers the same one-click install as the other add-ons.
@@ -93,12 +93,18 @@ the engine never touches the canvas.
    secretstream each way. Every later message is encrypted, authenticated and in order: one
    altered, dropped, replayed or reordered byte ends the link.
 3. **The code** is six digits from a BLAKE2b hash of both public keys, the client's first. Both
-   windows show it from here on: a machine in the middle shows each side a different one.
+   sides derive it; only the receiver's window shows it: a machine in the middle has a different
+   one on each link.
 4. The first sealed message on each side is who it is (`ident`: id, name). Names on screen are
    these, not the beacon's.
-5. **The sender's person confirms** that the other screen shows the same code (**Same code,
-   send**). Until then nothing about the files leaves, not even a name: a machine that only
-   claimed the peer's id, or one in the middle, shows the receiver no code or another one.
+5. **The sender's person types the code** the receiver's screen shows (#442, passkey entry rather
+   than numeric comparison: typing makes the person read the other screen). The sender checks it
+   on its own machine against the code it derived, digits only, in constant time; a partial entry
+   is not a try. A wrong one says so and how many tries are left; the third wrong one sends
+   `cancel` and ends the link. Until a right one nothing about the files leaves, not even a name:
+   a machine that only claimed the peer's id, or one in the middle, shows the receiver no code or
+   another one, so what the person types cannot match. The wire is unchanged from the comparison
+   (the receiver waits for the offer either way), so the protocol version stays 1.
 6. The sender's **offer**: the count, the total, and each file's relative path and size. No hash
    up front: the sender would have to read every file twice before the first byte moved.
 7. The receiver answers `accept`, or `decline` with `declined`, `busy` or `no_room`. Closing the
@@ -110,11 +116,11 @@ the engine never touches the canvas.
 9. `cancel` from either side ends it (sent only if the link is free, never behind a chunk). A ping
    goes out whenever a side has sent nothing for 2 s and 20 s of silence is a dropped link; a
    frame must arrive whole within 20 s of its first byte. Every wait before Accept is a deadline
-   (the handshake 8 s, the code and the answer 3 minutes) that pings never extend, and a
+   (the handshake 8 s, typing the code and the answer 3 minutes) that pings never extend, and a
    handshake still running is ended by Cancel or by the add-on stopping.
 
-**Who can take what.** Bytes move only from a sender to the peer its person picked, after both
-people saw the same code and the one at that peer accepted. A sender never answers a request for
+**Who can take what.** Bytes move only from a sender to the peer its person picked, after that
+person typed the code the peer's screen showed and the person at that peer accepted. A sender never answers a request for
 files, so a third machine that hears the beacon learns a name and a port, and nothing else. A
 peer heard in the last 4.5 s keeps its address and device: a beacon claiming its id from another
 address is ignored, and the list holds at most 64. A receiver already in a transfer answers

@@ -19,7 +19,7 @@ public static partial class IslandHost
 {
     private const string SharepointId = "sharepoint";
     private const string SharepointDescription =
-        "Send photos, video and audio to a MediaViewer nearby, over Wi-Fi or Bluetooth. Both screens show the same code, and nothing moves until the other person accepts.";
+        "Send photos, video and audio to a MediaViewer nearby, over Wi-Fi or Bluetooth. You type the code the other screen shows, and nothing moves until the other person accepts.";
 
     // Its release channel ("mediaviewer-addon-sharepoint-win-x64"). Not one of
     // AddonSlots: it has no chrome; it fills slots (IslandHost.Slots.cs).

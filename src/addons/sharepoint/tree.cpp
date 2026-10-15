@@ -107,18 +107,15 @@ std::string build_tree(const view& v) {
     text(w, "in_title", "From " + v.in_peer, "heading");
     switch (v.in) {
       case view::in_phase::connecting:
+        // #442: the code shows here only; the person at the sender types it.
         text(w, "in_code", "Code " + v.in_code, "title");
         text(w, "in_check",
-             v.in_peer + " is checking that this code is on its screen too. The files come next. Over " + v.in_via +
-                 ".",
-             "secondary");
+             "Type this code on " + v.in_peer + " to receive the files. Over " + v.in_via + ".", "secondary");
         button(w, "decline", "Decline", "plain");
         break;
       case view::in_phase::asking:
         text(w, "in_files", count_text(v.in_count, v.in_total) + ": " + names_line(v.in_names, v.in_count));
-        text(w, "in_code", "Code " + v.in_code, "title");
-        text(w, "in_check",
-             "Accept only if " + v.in_peer + " shows the same code. Over " + v.in_via + ".", "secondary");
+        text(w, "in_check", v.in_peer + " typed the code. Over " + v.in_via + ".", "secondary");
         folder_field(w, "destination", "Save to", v.destination, "Choose a folder");
         row(w, "in_actions");
         button(w, "accept", "Accept", "primary", v.destination.empty());
@@ -126,7 +123,6 @@ std::string build_tree(const view& v) {
         end(w);
         break;
       case view::in_phase::receiving:
-        text(w, "in_code", "Code " + v.in_code, "secondary");
         progress(w, "in_progress", "Receiving", v.in_bytes, v.in_total);
         text(w, "in_moved", moved_text(v.in_files, static_cast<std::uint32_t>(v.in_count), v.in_bytes, v.in_total),
              "secondary");
@@ -216,23 +212,19 @@ std::string build_tree(const view& v) {
       button(w, "out_cancel", "Cancel", "destructive");
       break;
     case view::out_phase::confirming:
-      text(w, "out_code", "Code " + v.out_code, "title");
-      text(w, "out_note",
-           "Check that " + v.out_peer + " shows this code too. If it does not, cancel: another computer is "
-           "answering. Nothing has been sent yet.",
-           "secondary");
-      row(w, "out_actions");
-      button(w, "out_confirm", "Same code, send", "primary");
+      // #442: typed, not compared. This screen never shows the code.
+      text(w, "out_note", "Type the code shown on " + v.out_peer + ". Nothing has been sent yet.", "secondary");
+      w.begin_object().key("type").string("text_field").key("id").string("out_code_entry");
+      w.key("label").string("Code shown on " + v.out_peer).key("value").string("");
+      w.key("placeholder").string("6 digits").end_object();
+      if (!v.out_entry_note.empty()) text(w, "out_entry_note", v.out_entry_note, "secondary");
       button(w, "out_cancel", "Cancel", "destructive");
-      end(w);
       break;
     case view::out_phase::waiting:
-      text(w, "out_code", "Code " + v.out_code, "title");
       text(w, "out_note", "Waiting for " + v.out_peer + " to accept.", "secondary");
       button(w, "out_cancel", "Cancel", "destructive");
       break;
     case view::out_phase::sending:
-      text(w, "out_code", "Code " + v.out_code, "secondary");
       progress(w, "out_progress", "Sending", v.out_bytes, v.out_total);
       text(w, "out_moved", moved_text(v.out_files, v.out_count, v.out_bytes, v.out_total), "secondary");
       button(w, "out_cancel", "Cancel", "destructive");

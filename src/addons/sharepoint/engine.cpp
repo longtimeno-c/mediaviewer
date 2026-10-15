@@ -78,6 +78,15 @@ std::string plural(std::uint32_t n, const char* one, const char* many) {
   return std::to_string(n) + " " + (n == 1 ? one : many);
 }
 
+// "123 456", "123-456", " 123456 " -> "123456".
+std::string digits_of(std::string_view s) {
+  std::string out;
+  for (char c : s) {
+    if (c >= '0' && c <= '9') out.push_back(c);
+  }
+  return out;
+}
+
 }  // namespace
 
 engine::engine(engine_host& host, options opts) : host_(host), opts_(std::move(opts)) {
@@ -781,12 +790,29 @@ void engine::on_event(const std::string& node, std::uint32_t kind, const std::st
       connecting = node == "decline" && v_.in == view::in_phase::connecting;
     }
     if (connecting) cancel_transfer();
-  } else if (node == "out_confirm" && kind == kClick) {
-    std::lock_guard lock(m_);
-    if (v_.out == view::out_phase::confirming && out_decision_ == 0) {
-      out_decision_ = 1;
-      decided_.notify_all();
+  } else if (node == "out_code_entry" && (kind == kChange || kind == kSubmit) && text) {
+    // The code the receiver's screen shows, typed here (#442). Checked on this
+    // machine against the code this link derived; a partial entry is not a try.
+    const std::string typed = digits_of(*text);
+    {
+      std::lock_guard lock(m_);
+      if (v_.out != view::out_phase::confirming || out_decision_ != 0 || out_expected_.empty()) return;
+      if (typed.size() < out_expected_.size()) {
+        if (kind == kSubmit && !typed.empty()) v_.out_entry_note = "The code has 6 digits.";
+      } else if (typed.size() == out_expected_.size() &&
+                 sodium_memcmp(typed.data(), out_expected_.data(), typed.size()) == 0) {
+        out_decision_ = 1;
+        v_.out_entry_note.clear();
+        decided_.notify_all();
+      } else if (--v_.out_tries_left <= 0) {
+        out_decision_ = 3;  // the link ends (run_send)
+        decided_.notify_all();
+      } else {
+        v_.out_entry_note = "That is not the code on " + v_.out_peer + "\xE2\x80\x99s screen. " +
+                            plural(static_cast<std::uint32_t>(v_.out_tries_left), "try", "tries") + " left.";
+      }
     }
+    post();
   } else if ((node == "in_cancel" || node == "out_cancel") && kind == kClick) {
     cancel_transfer();
   } else if (node == "in_dismiss" && kind == kClick) {
@@ -891,8 +917,10 @@ void engine::start_send() {
     if (transfer_running_ || files_.empty() || v_.reading_folder || v_.selected_peer.empty()) return;
     if (v_.out == view::out_phase::waiting_wifi || peers_.find(v_.selected_peer) == peers_.end()) return;
     v_.out_peer = peers_[v_.selected_peer].name;
-    v_.out_code.clear();
     v_.out_note.clear();
+    v_.out_entry_note.clear();
+    v_.out_tries_left = kCodeTries;
+    out_expected_.clear();
     if (needs_wifi(v_)) {
       // Too big for Bluetooth: wait for this peer on Wi-Fi (on_beacon starts
       // the send), with presence kept up meanwhile.
@@ -961,6 +989,7 @@ void engine::run_send(std::string peer_id, std::vector<outgoing_file> files) {
       std::lock_guard lock(m_);
       v_.out = view::out_phase::ended;
       v_.out_note = std::move(note);
+      out_expected_.clear();
     }
     end_transfer();
   };
@@ -1003,12 +1032,13 @@ void engine::run_send(std::string peer_id, std::vector<outgoing_file> files) {
     std::lock_guard lock(m_);
     live_ = ch;
     v_.out = view::out_phase::confirming;
-    v_.out_code = ch->code();
+    out_expected_ = digits_of(ch->code());
   }
   post();
-  // The person checks that the other screen shows the same code before the
-  // offer (even the files' names) leaves: a machine that only claimed the
-  // peer's id, or one in the middle, shows another code there or none.
+  // The person types the code the other screen shows before the offer (even
+  // the files' names) leaves (#442): a machine that only claimed the peer's
+  // id, or one in the middle, shows another code there or none, so what is
+  // typed cannot match this link's. Three wrong ones end the link.
   const auto asked = std::chrono::steady_clock::now();
   int confirmed = 0;
   for (;;) {
@@ -1023,11 +1053,17 @@ void engine::run_send(std::string peer_id, std::vector<outgoing_file> files) {
       ch->shutdown();
       return finish("Cancelled. Nothing was sent.");
     }
+    if (confirmed == 3) {
+      (void)ch->try_send(msg::cancel, "{}");
+      ch->shutdown();
+      return finish("The code was wrong " + std::to_string(kCodeTries) +
+                    " times, so the link to " + name + " ended. Nothing was sent.");
+    }
     if (confirmed == 1) break;
     if (std::chrono::steady_clock::now() - asked > kAskFor) {
       (void)ch->try_send(msg::cancel, "{}");
       ch->shutdown();
-      return finish("Nobody confirmed the code, so nothing was sent.");
+      return finish("Nobody typed the code, so nothing was sent.");
     }
     message m;
     auto r = ch->receive(m, 0);
@@ -1045,6 +1081,7 @@ void engine::run_send(std::string peer_id, std::vector<outgoing_file> files) {
   {
     std::lock_guard lock(m_);
     v_.out = view::out_phase::waiting;
+    out_expected_.clear();
   }
   post();
   const transfer_result r = send_files(*ch, files, hooks_for(true), [this] {
@@ -1104,6 +1141,12 @@ void engine::run_receive(std::unique_ptr<link> l) {
       v_.in_code = ch->code();
       v_.in_via = transport_name(ch->via());
       v_.in_note.clear();
+      // Nothing of an earlier offer stays on screen while this one connects.
+      v_.in_names.clear();
+      v_.in_count = 0;
+      v_.in_total = 0;
+      v_.in_bytes = 0;
+      v_.in_files = 0;
       open_window = !screen_open_;
     }
   }
