@@ -181,6 +181,7 @@ expected engine::start() {
     db_ = std::move(db);
   }
   load_assets();
+  load_cues();
   roots_cache_ = db_->roots();
   // A reader (the search agent) never touches PhotoKit: that would ask for
   // Photos access from a background process. It still knows the Photos root.
@@ -1976,6 +1977,7 @@ void engine::catch_up_reader() {
     }, reader_sound_);
   }
   if (!reader_speech_spec_.empty()) load_speech(reader_speech_spec_);
+  load_cues();
   end_answer_swap();
 }
 
@@ -2194,6 +2196,9 @@ void engine::forget_vectors(const std::vector<std::int64_t>& ids) {
     speech_rows_.erase(std::remove_if(speech_rows_.begin(), speech_rows_.end(),
                                       [&](const speech_row& r) { return drop.count(r.asset) != 0; }),
                        speech_rows_.end());
+    cue_rows_.erase(std::remove_if(cue_rows_.begin(), cue_rows_.end(),
+                                   [&](const cue_row& r) { return drop.count(r.asset) != 0; }),
+                    cue_rows_.end());
   }
   {
     std::lock_guard lock(work_m_);
@@ -2227,6 +2232,9 @@ void engine::end_root_scan(const root_row& root, std::int64_t gen, const std::ve
     speech_rows_.erase(std::remove_if(speech_rows_.begin(), speech_rows_.end(),
                                       [&](const speech_row& r) { return drop.count(r.asset) != 0; }),
                        speech_rows_.end());
+    cue_rows_.erase(std::remove_if(cue_rows_.begin(), cue_rows_.end(),
+                                   [&](const cue_row& r) { return drop.count(r.asset) != 0; }),
+                    cue_rows_.end());
   }
   store_.remove_assets(changed);
   sounds_.remove_assets(changed);
@@ -2730,6 +2738,8 @@ bool engine::claim(std::vector<work_item>& out, track& t) {
     if (speech_.model) speech_spec = speech_.spec_key;
   }
   if (spec.empty()) return false;
+  // #406: cues need the host's read_cues (an older host has none).
+  const std::string cue_spec = host_.has_cues() ? std::string(kCueSpec) : std::string();
   std::lock_guard lock(work_m_);
   {
     // A folder opened (note_folder_opened): it goes first from now on.
@@ -2765,6 +2775,7 @@ bool engine::claim(std::vector<work_item>& out, track& t) {
           }
         };
         among(spec, track::picture, track_filter{true, MV_AI_MEDIA_PICTURES, media, skip, held_now});
+        among(cue_spec, track::cues, track_filter{false, MV_AI_MEDIA_BOTH, media, skip, held_now});
         among(sound_spec, track::sound, track_filter{false, MV_AI_MEDIA_SOUND, media, skip, held_now});
         among(speech_spec, track::speech, track_filter{false, MV_AI_MEDIA_SOUND, media, skip, held_now});
         if (queue_.empty() && faces_on) {
@@ -2785,6 +2796,8 @@ bool engine::claim(std::vector<work_item>& out, track& t) {
       }
     }
     take(spec, track::picture, track_filter{true, MV_AI_MEDIA_PICTURES, media, skip, held_now});
+    // #406: a clip's own text, after its pictures (they never wait on it).
+    take(cue_spec, track::cues, track_filter{false, MV_AI_MEDIA_BOTH, media, skip, held_now});
     take(sound_spec, track::sound, track_filter{false, MV_AI_MEDIA_SOUND, media, skip, held_now});
     take(speech_spec, track::speech, track_filter{false, MV_AI_MEDIA_SOUND, media, skip, held_now});
     if (queue_.empty() && faces_on) {
@@ -2860,7 +2873,9 @@ void engine::worker_loop(unsigned) {
       speech = speech_;
     }
     const bool faces_only = t == track::faces;
-    if (t == track::sound) {
+    if (t == track::cues) {
+      process_cues(items.front());
+    } else if (t == track::sound) {
       if (sound.model) process_sound(items.front(), sound);
     } else if (t == track::speech) {
       if (speech.model) process_speech(items.front(), speech);
@@ -3000,6 +3015,79 @@ void engine::process_sound(const work_item& item, const loaded_sound& sound) {
     if (finished) return;
   }
   (void)db_->commit_frames(item.asset.id, sound.spec_key, {}, work_state::done, done_ms, sound.dim);
+}
+
+void engine::process_cues(const work_item& item) {
+  // A clip's whole text is small; a cap keeps a hostile file small too
+  // (docs/design/17 "Cues": the first two hours, 8,000 lines).
+  constexpr std::int64_t kMaxMs = 2 * 3600 * 1000;
+  constexpr std::uint32_t kMaxCues = 8000;
+  constexpr std::size_t kBatch = 64;
+  auto file = file_of(item.asset.path);
+  if (!file) {
+    if (file.error() == status::permission_denied) {
+      photos_readable_ = false;
+      return;
+    }
+    if (file.error() == status::io && is_photos_key(item.asset.path)) {
+      (void)db_->mark_unavailable(item.asset.id, kCueSpec);
+    } else {
+      (void)db_->fail(item.asset.id, kCueSpec);
+    }
+    return;
+  }
+  // A resumed pass reads from the last committed cue's start and sends that
+  // cue and any beside it again: the first commit replaces what it had.
+  const bool resumed = item.state == work_state::partial;
+  const std::int64_t from = resumed ? item.resume_ms : 0;
+  std::int64_t replace_from = resumed ? from : -1;
+  std::vector<cue_in> batch;
+  bool stopping = false;
+  const auto flush = [&](work_state state, std::int64_t resume) -> bool {
+    if (!db_->commit_cues(item.asset.id, batch, state, resume, replace_from)) return false;
+    {
+      std::lock_guard lock(speech_m_);
+      if (replace_from >= 0) {
+        cue_rows_.erase(std::remove_if(cue_rows_.begin(), cue_rows_.end(),
+                                       [&](const cue_row& r) {
+                                         return r.asset == item.asset.id && r.start_ms >= replace_from;
+                                       }),
+                        cue_rows_.end());
+      }
+      for (cue_in& c : batch) {
+        std::vector<std::string> words = infer::speech_words(c.text);
+        cue_rows_.push_back(cue_row{item.asset.id, c.start_ms, c.kind, std::move(c.text), std::move(words)});
+      }
+    }
+    replace_from = -1;
+    batch.clear();
+    return true;
+  };
+  bool write_failed = false;
+  const expected read = host_.read_cues(*file, from, kMaxMs, kMaxCues, [&](const host::cue& c) {
+    if (!wait_turn()) {
+      stopping = true;
+      return false;
+    }
+    batch.push_back(cue_in{c.start_ms, c.end_ms, c.kind == MV_ADDON_CUE_CHAPTER ? cue_kind::chapter : cue_kind::subtitle,
+                           c.text});
+    if (batch.size() >= kBatch && !flush(work_state::partial, batch.back().start_ms)) {
+      write_failed = true;
+      return false;
+    }
+    return true;
+  });
+  if (stopping) {
+    // Shutting down: what was read commits; the rest resumes.
+    if (!batch.empty()) (void)flush(work_state::partial, batch.back().start_ms);
+    return;
+  }
+  if (write_failed) return;  // left partial or pending: tried again
+  if (!read && read.error() != status::cancelled) {
+    (void)db_->fail(item.asset.id, kCueSpec);
+    return;
+  }
+  (void)flush(work_state::done, 0);
 }
 
 void engine::process_speech(const work_item& item, const loaded_speech& speech) {
@@ -3612,6 +3700,9 @@ expected engine::root_remove(std::int64_t id) {
     speech_rows_.erase(std::remove_if(speech_rows_.begin(), speech_rows_.end(),
                                       [&](const speech_row& r) { return drop.count(r.asset) != 0; }),
                        speech_rows_.end());
+    cue_rows_.erase(std::remove_if(cue_rows_.begin(), cue_rows_.end(),
+                                   [&](const cue_row& r) { return drop.count(r.asset) != 0; }),
+                    cue_rows_.end());
   }
   {
     std::lock_guard lock(models_m_);
@@ -3696,6 +3787,7 @@ expected engine::clear_index() {
   {
     std::lock_guard lock(speech_m_);
     speech_rows_.clear();
+    cue_rows_.clear();
   }
   {
     std::lock_guard lock(work_m_);
@@ -4224,6 +4316,7 @@ void engine::reload_from_db() {
     });
   }
   if (!speech_spec.empty()) load_speech(speech_spec);
+  load_cues();
   {
     std::lock_guard lock(work_m_);
     queue_.clear();
@@ -4378,6 +4471,20 @@ void engine::finish(search_state& st) {
   for (auto& [asset, list] : st.moments) std::sort(list.begin(), list.end());
 }
 
+void engine::load_cues() {
+  std::vector<cue_row> rows;
+  (void)db_->each_cue([&](std::int64_t asset, const cue_in& c) {
+    rows.push_back(cue_row{asset, c.start_ms, c.kind, c.text, infer::speech_words(c.text)});
+  });
+  std::lock_guard lock(speech_m_);
+  cue_rows_ = std::move(rows);
+}
+
+std::string engine::cue_snippet(const cue_row& r) {
+  std::string text = r.text.size() > 150 ? r.text.substr(0, 147) + "..." : r.text;
+  return (r.kind == cue_kind::chapter ? "Chapter: " : "Subtitle: ") + text;
+}
+
 void engine::load_speech(const std::string& spec) {
   std::vector<speech_row> rows;
   (void)db_->each_speech(spec, [&](std::int64_t asset, std::int64_t start, std::int64_t, const std::string& text) {
@@ -4437,34 +4544,45 @@ void engine::merge_audio(search_state& st, const std::string& query, const std::
   std::string phrase;
   for (const std::string& w : infer::speech_words(query)) phrase += (phrase.empty() ? "" : " ") + w;
   const double need = speech_coverage_needed(want.size(), precision);
-  std::vector<std::tuple<float, std::int64_t, std::int64_t, std::string>> found;
+  std::vector<std::tuple<float, std::int64_t, std::int64_t, std::string, std::uint32_t>> found;
+  // How much of the query a line's words hold (-1: not enough).
+  const auto rank_of = [&](const std::vector<std::string>& words) -> float {
+    std::size_t hit = 0;
+    for (const std::string& q : want) {
+      for (const std::string& w : words) {
+        if (w == q || (q.size() >= 4 && w.size() > q.size() && w.compare(0, q.size(), q) == 0)) {
+          ++hit;
+          break;
+        }
+      }
+    }
+    const double coverage = static_cast<double>(hit) / static_cast<double>(want.size());
+    if (coverage < need) return -1.0f;
+    std::string joined;
+    for (const std::string& w : words) joined += (joined.empty() ? "" : " ") + w;
+    const bool exact = joined.find(phrase) != std::string::npos;
+    return static_cast<float>(0.6 + 0.8 * coverage + (exact ? 0.2 : 0.0));
+  };
   {
     std::lock_guard lock(speech_m_);
     for (const speech_row& r : speech_rows_) {
       if (!allow(r.asset)) continue;
-      std::size_t hit = 0;
-      for (const std::string& q : want) {
-        for (const std::string& w : r.words) {
-          if (w == q || (q.size() >= 4 && w.size() > q.size() && w.compare(0, q.size(), q) == 0)) {
-            ++hit;
-            break;
-          }
-        }
-      }
-      const double coverage = static_cast<double>(hit) / static_cast<double>(want.size());
-      if (coverage < need) continue;
-      std::string joined;
-      for (const std::string& w : r.words) joined += (joined.empty() ? "" : " ") + w;
-      const bool exact = joined.find(phrase) != std::string::npos;
-      const float rank = static_cast<float>(0.6 + 0.8 * coverage + (exact ? 0.2 : 0.0));
-      found.emplace_back(rank, r.asset, r.start_ms, r.text);
+      const float rank = rank_of(r.words);
+      if (rank >= 0) found.emplace_back(rank, r.asset, r.start_ms, r.text, MV_AI_MATCH_SPEECH);
+    }
+    // #406: a chapter title or a subtitle line, said the same way; the
+    // snippet names which.
+    for (const cue_row& r : cue_rows_) {
+      if (!allow(r.asset)) continue;
+      const float rank = rank_of(r.words);
+      if (rank >= 0) found.emplace_back(rank, r.asset, r.start_ms, cue_snippet(r), MV_AI_MATCH_TEXT);
     }
   }
   std::sort(found.begin(), found.end(), [](const auto& a, const auto& b) { return std::get<0>(a) > std::get<0>(b); });
   if (found.size() > 2000) found.resize(2000);
-  for (auto& [rank, asset, start, text] : found) {
+  for (auto& [rank, asset, start, text, match] : found) {
     std::string snippet = text.size() > 160 ? text.substr(0, 157) + "..." : text;
-    add_row(st, asset, start, rank / 2.0f, rank, MV_AI_MATCH_SPEECH, std::move(snippet));
+    add_row(st, asset, start, rank / 2.0f, rank, match, std::move(snippet));
   }
 }
 
@@ -4628,11 +4746,13 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
     for (std::int64_t p : plan.not_people) {
       for (const face_row& f : faces_by_person[p]) allowed->erase(f.asset);
     }
-    // Words said: every quoted phrase, in the transcript (as consecutive words).
+    // Words said: every quoted phrase, in the transcript (as consecutive words),
+    // or (#406) in the clip's own text: a chapter title or a subtitle line.
     struct said {
       std::int64_t asset;
       std::int64_t start_ms;
-      std::string text;
+      std::string text;  // the snippet
+      std::uint32_t match = MV_AI_MATCH_SPEECH;
     };
     std::vector<said> said_rows;
     if (!plan.phrases.empty() || !plan.not_phrases.empty()) {
@@ -4657,6 +4777,21 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
             if (query::contains_phrase(r.words, w, false)) drop.insert(r.asset);
           }
           if (any) said_rows.push_back({r.asset, r.start_ms, r.text});
+        }
+        for (const cue_row& r : cue_rows_) {
+          if (!allowed->count(r.asset)) continue;
+          bool any = false;
+          for (std::size_t i = 0; i < want.size(); ++i) {
+            const bool open = plan.last_phrase_open && i + 1 == want.size();
+            if (query::contains_phrase(r.words, want[i], open)) {
+              have[i].insert(r.asset);
+              any = true;
+            }
+          }
+          for (const auto& w : not_want) {
+            if (query::contains_phrase(r.words, w, false)) drop.insert(r.asset);
+          }
+          if (any) said_rows.push_back({r.asset, r.start_ms, cue_snippet(r), MV_AI_MATCH_TEXT});
         }
       }
       for (const auto& h : have) keep_only(h);
@@ -4722,7 +4857,7 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
       for (said& r : said_rows) {
         if (!allowed->count(r.asset)) continue;
         std::string snippet = r.text.size() > 160 ? r.text.substr(0, 157) + "..." : std::move(r.text);
-        add_row(st, r.asset, r.start_ms, 0.7f, 1.4f, MV_AI_MATCH_SPEECH, std::move(snippet));
+        add_row(st, r.asset, r.start_ms, 0.7f, 1.4f, r.match, std::move(snippet));
       }
       said_rows.clear();
     } else if (plan.people_first.empty() &&
@@ -4748,7 +4883,7 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
     for (said& r : said_rows) {
       if (!st.row_of.count(r.asset)) continue;
       std::string snippet = r.text.size() > 160 ? r.text.substr(0, 157) + "..." : std::move(r.text);
-      add_row(st, r.asset, r.start_ms, 0.0f, -1.0f, MV_AI_MATCH_SPEECH, std::move(snippet));
+      add_row(st, r.asset, r.start_ms, 0.0f, -1.0f, r.match, std::move(snippet));
     }
     finish(st);
   });

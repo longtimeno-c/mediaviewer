@@ -293,6 +293,25 @@ mv_status MV_CALL t_tag_facts(void* host, const char* path, mv_addon_tag_facts* 
   });
 }
 
+mv_status MV_CALL t_read_cues(void* host, const char* path, int64_t start_ms, int64_t max_ms, uint32_t max_cues,
+                              mv_addon_cue_fn visit, void* user) {
+  return guarded([&] {
+    if (!path || !visit) return MV_ERR_INVALID_ARG;
+    const auto& read = self(host).services().read_cues;
+    if (!read) return MV_ERR_UNSUPPORTED_FORMAT;
+    const expected r = read(path, start_ms, max_ms, max_cues, [&](const host_services::cue& c) {
+      mv_addon_cue out{};
+      out.struct_size = sizeof(out);
+      out.kind = c.kind;
+      out.start_ms = c.start_ms;
+      out.end_ms = c.end_ms;
+      out.text_utf8 = c.text.c_str();
+      return visit(user, &out) != 0;
+    });
+    return r ? MV_OK : to_mv(r.error());
+  });
+}
+
 mv_status MV_CALL t_pair(void*, const char* const* names, uint32_t count, uint32_t* partner,
                          uint32_t* kind) {
   return guarded([&] {
@@ -806,6 +825,7 @@ host_table::host_table(host_services services) : svc_(std::move(services)) {
   api_.location_of = &t_location_of;
   api_.locations_in = &t_locations_in;
   api_.tag_facts = svc_.tag_facts ? &t_tag_facts : nullptr;
+  api_.read_cues = svc_.read_cues ? &t_read_cues : nullptr;
 }
 
 void host_table::set_negotiated(std::uint32_t version) noexcept { api_.host_api = version; }

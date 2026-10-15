@@ -34,6 +34,7 @@
 #include "io/volume.h"
 #include "meta/location.h"
 #include "meta/meta.h"
+#include "meta/cues.h"
 #include "meta/meta_cache.h"
 
 namespace mv::abi {
@@ -162,6 +163,23 @@ bool tag_facts(const std::string& path, mv_addon_tag_facts& out) {
   out.shutter_us = f.shutter_us;
   put(out.label_utf8, sizeof(out.label_utf8), f.label);
   return true;
+}
+
+// #406: a clip's chapter titles and text subtitle cues for the AI pack (meta/cues.h).
+mv::expected read_cues(const std::string& path, std::int64_t start_ms, std::int64_t max_ms, std::uint32_t max_cues,
+                       const std::function<bool(const mv::addon::host_services::cue&)>& visit) {
+  mv::meta::cue_limits lim;
+  lim.start_ms = start_ms;
+  lim.max_ms = max_ms;
+  lim.max_cues = max_cues;
+  return mv::meta::read_cues(path, lim, [&](const mv::meta::cue& c) {
+    mv::addon::host_services::cue out;
+    out.kind = c.kind == mv::meta::cue_kind::chapter ? MV_ADDON_CUE_CHAPTER : MV_ADDON_CUE_SUBTITLE;
+    out.start_ms = c.start_ms;
+    out.end_ms = c.end_ms;
+    out.text = c.text;
+    return visit(out);
+  });
 }
 
 // The viewer's capture date and camera for Import's layouts (mv_meta, PR 9).
@@ -584,6 +602,7 @@ mv::status load_addon(mv_session_t session, const char* id, const char* interfac
     mv::addon::host_services svc;
     svc.capture = &capture_info;
     svc.tag_facts = &tag_facts;
+    svc.read_cues = &read_cues;
     svc.thumbnail = &thumbnail;
     svc.should_yield = [] { return g_present_busy.load(std::memory_order_relaxed); };
     svc.post = [session](const mv_addon_event& e) {

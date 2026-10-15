@@ -121,6 +121,10 @@ typedef enum mv_ai_scope {
 /* #291: the file's tags matched (camera, lens, made-with, software, title,
  * caption, keywords, creator); result_snippet is the tag ("Canon EOS R5"). */
 #define MV_AI_MATCH_TAGS 8u
+/* #406: text the file carries matched (a chapter title or a text subtitle
+ * line); result_snippet says which ("Chapter: Birthday cake", "Subtitle:
+ * suited and booted") and is shown as it is, unquoted. */
+#define MV_AI_MATCH_TEXT 16u
 
 #define MV_AI_STATUS_INDEX_FULL 1u     /* over the index size cap: indexing stopped */
 #define MV_AI_STATUS_FACES_ON 2u       /* the People opt-in is on */

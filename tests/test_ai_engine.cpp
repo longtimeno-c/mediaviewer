@@ -577,6 +577,7 @@ struct rig {
   std::atomic<bool> on_battery{false};  // the fake power source
   std::atomic<int> battery_percent{100};
   std::atomic<int> stills_decoded{0};
+  std::atomic<int> cue_reads{0};
   std::unique_ptr<mv::addon::host_table> table;
   std::shared_ptr<cloud_world> cloud = std::make_shared<cloud_world>();
   mv_host_api api{};  // the table, its walk_files2 flagging `cloud`'s online-only names
@@ -715,6 +716,31 @@ struct rig {
       }
       std::strcpy(out.fields_utf8, fields.c_str());
       return true;
+    };
+    // #406: a clip named "*cues*" has a chapter "Birthday cake" at 4 s and a
+    // subtitle "suited and booted" at 7 s; "*manycues*" 200 subtitle lines a
+    // second apart; any other clip has none.
+    svc.read_cues = [this](const std::string& path, std::int64_t start_ms, std::int64_t max_ms, std::uint32_t max_cues,
+                           const std::function<bool(const mv::addon::host_services::cue&)>& visit) -> mv::expected {
+      ++cue_reads;
+      const std::string name = utf8(fs::path(path).filename());
+      std::vector<mv::addon::host_services::cue> all;
+      if (name.find("manycues") != std::string::npos) {
+        for (int i = 0; i < 200; ++i) {
+          all.push_back({MV_ADDON_CUE_SUBTITLE, i * 1000, i * 1000 + 900, "line number " + std::to_string(i)});
+        }
+      } else if (name.find("cues") != std::string::npos) {
+        all.push_back({MV_ADDON_CUE_CHAPTER, 4000, 7000, "Birthday cake"});
+        all.push_back({MV_ADDON_CUE_SUBTITLE, 7000, 8000, "suited and booted"});
+      }
+      std::uint32_t sent = 0;
+      for (const auto& c : all) {
+        if (c.start_ms < start_ms) continue;
+        if (c.start_ms > max_ms || sent >= max_cues) break;
+        ++sent;
+        if (!visit(c)) return mv::err(mv::status::cancelled);
+      }
+      return {};
     };
     table = std::make_unique<mv::addon::host_table>(std::move(svc));
     table->set_negotiated(MV_ADDON_HOST_API);
@@ -2076,6 +2102,101 @@ TEST_CASE("audio: a clip's sounds and speech are indexed and found at their mome
   CHECK(has_row(not_said, "red_photo.jpg"));
   CHECK_FALSE(has_row(not_said, "party_talk_bark.mp4"));
   CHECK(r.search("\"make a wi").size() == 1);  // a quote still being typed
+}
+
+TEST_CASE("chapter titles and subtitle lines are found by quoted words, at their moment (#406)",
+          "[ai][engine][cues]") {
+  rig r;
+  r.file("clips/party_cues.mp4");  // red / green / blue frames, and its cues
+  r.file("clips/rgb_plain.mp4");   // no cues
+  r.start();  // no audio piece
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
+  REQUIRE(r.idle());
+  CHECK(r.status().assets_failed == 0);
+  const int embedded = r.fast->images_embedded.load();
+
+  const auto first = [&](const std::string& q) {
+    const std::uint64_t id = r.eng->search_text(q, "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+    REQUIRE(r.eng->wait_search(id, kSettleMs));
+    return id;
+  };
+  {
+    const std::uint64_t id = first("\"birthday cake\"");
+    const auto rows = r.rows(id);
+    REQUIRE(rows.size() == 1);
+    CHECK(rows[0].first == "party_cues.mp4");
+    CHECK(rows[0].second == 4000);
+    auto res = r.eng->result_at(id, 0);
+    REQUIRE(res);
+    CHECK((res->match & MV_AI_MATCH_TEXT) != 0);
+    CHECK((res->match & MV_AI_MATCH_SPEECH) == 0);
+    auto why = r.eng->result_snippet(id, 0);
+    REQUIRE(why);
+    CHECK(*why == "Chapter: Birthday cake");
+  }
+  for (const char* q : {"\"suited and booted\"", "said:suited", "said:\"and booted\""}) {
+    CAPTURE(q);
+    const std::uint64_t id = first(q);
+    const auto rows = r.rows(id);
+    REQUIRE(rows.size() == 1);
+    CHECK(rows[0].first == "party_cues.mp4");
+    CHECK(rows[0].second == 7000);
+    auto why = r.eng->result_snippet(id, 0);
+    REQUIRE(why);
+    CHECK(*why == "Subtitle: suited and booted");
+  }
+  CHECK(r.search("\"wedding cake\"").empty());
+  CHECK(r.search("-\"birthday cake\" video").size() == 1);  // the plain clip
+  // Unquoted words still run the picture tower, and the text is found too.
+  const auto red = r.search("red");
+  CHECK(has_row(red, "party_cues.mp4"));
+  CHECK(has_row(red, "rgb_plain.mp4"));
+  const auto plain = r.search("birthday cake");
+  REQUIRE_FALSE(plain.empty());
+  CHECK(plain.front().first == "party_cues.mp4");
+  CHECK(plain.front().second == 4000);
+  // Nothing is embedded for the text, and a restart reads it from the index.
+  CHECK(r.fast->images_embedded.load() == embedded);
+  const int reads = r.cue_reads.load();
+  r.start();
+  REQUIRE(r.idle());
+  CHECK(r.cue_reads.load() == reads);  // done: not read again
+  CHECK(r.rows(first("\"birthday cake\"")).size() == 1);
+  CHECK(r.fast->images_embedded.load() == embedded);
+}
+
+TEST_CASE("cues: a long clip's lines commit in batches, and a resume never doubles them", "[ai][engine][cues]") {
+  rig r;
+  r.file("clips/rgb_manycues.mp4");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
+  REQUIRE(r.idle());
+  CHECK_FALSE(r.search("\"line number 150\"").empty());
+  r.eng.reset();
+  // As a kill would leave it: progress partial at line 100's start, rows past
+  // it already in (the batch that held them was committed before the kill).
+  {
+    auto d = mv::ai::index_db::open(utf8(r.dir / "data" / "index.db"));
+    REQUIRE(d);
+    const auto all = (*d)->all_assets();
+    REQUIRE(all.size() == 1);
+    REQUIRE((*d)->commit_cues(all[0].id, {}, mv::ai::work_state::partial, 100000));
+  }
+  r.start();
+  REQUIRE(r.idle());
+  auto d = mv::ai::index_db::open(utf8(r.dir / "data" / "index.db"));
+  REQUIRE(d);
+  int n = 0;
+  REQUIRE((*d)->each_cue([&](std::int64_t, const mv::ai::cue_in&) { ++n; }));
+  CHECK(n == 200);
+  const std::uint64_t id = r.eng->search_text("\"line number 150\"", "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+  REQUIRE(r.eng->wait_search(id, kSettleMs));
+  const auto rows = r.rows(id);
+  REQUIRE(rows.size() == 1);
+  CHECK(rows[0].second == 150000);
+  auto more = r.eng->result_at(id, 0);
+  REQUIRE(more);
+  CHECK(more->more_in_clip == 0);  // one row, not a doubled line
 }
 
 TEST_CASE("audio: a folder indexed for pictures only does no audio work", "[ai][engine][audio]") {

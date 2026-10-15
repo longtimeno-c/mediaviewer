@@ -195,11 +195,12 @@ asset_text(rowid = asset id, text)                                  -- FTS5, sch
 progress(asset_id, spec, state, resume_ms, tries, indexed_at)     -- per asset and model spec
 frames(id, asset_id, spec, pts_ms, pts_tb, tb_num, tb_den, flags, generic, scale, emb)
 speech(id, asset_id, spec, start_ms, end_ms, text)                 -- Whisper transcript lines
+cues(id, asset_id, start_ms, end_ms, kind, text)                   -- schema 6: chapters, text subtitles (#406)
 ```
 
 `emb` is the int8 vector, `scale` its per-vector scale, `generic` its best cosine against the
 tower's generic prompts. Each schema step (1 -> 2 `media`, 2 -> 3 `cloud`, 3 -> 4 tags, 4 -> 5
-rating and exposure) is one
+rating and exposure, 5 -> 6 cues) is one
 transaction and skips a column already there, so a crash mid-migration never leaves an index that
 will not open. A new index is made as schema 3 and takes the same 3 -> 4 step, so a fresh index and
 a migrated one cannot differ.
@@ -435,7 +436,7 @@ same thing by the same words. Terms narrow each other (AND).
 | Typed | Means |
 |---|---|
 | `Tristan beach` | photos / moments with Tristan, ranked by "beach" (no "nothing found" test inside a person's own) |
-| `Tristan "hello"`, `Tristan:"hello"`, `said:hello` | Tristan, and a clip whose transcript has those words in that order; the line is the snippet |
+| `Tristan "hello"`, `Tristan:"hello"`, `said:hello` | Tristan, and a clip whose transcript, a chapter title or a text subtitle line (#406, "Cues") has those words in that order; the line is the snippet |
 | `Tristan Aaryan`, `Tristan and Aaryan` | both in the same photo or clip |
 | `Tristan or Aaryan` | either |
 | `Anna Smith`, `anna` | a named person: the whole name or the first name, any case, accents folded |
@@ -464,7 +465,7 @@ Lead-ins ("pull up all the …", "show me …", "find …") are trimmed. Typing 
 names people for the word being typed (`suggest_json`; prefix first, then a near spelling of one
 letter, two from eight letters); **Tab** or a click completes the word. A word that is not a
 name, a kind or an operator stays in the description; an unfinished `in:20` is ignored. Not in
-the index, so not in the syntax: OCR (quoted words search speech only). Date terms use the date
+the index, so not in the syntax: OCR (quoted words search speech, chapter titles and subtitle lines). Date terms use the date
 taken where the tag backfill has read one (#404, [12](12-decision-log.md)). Per keystroke the parse is linear in the query plus one `SELECT` of the named people.
 
 Words fold with the shared rule (`core/fold.h`, the hosts' name fold): decompose, drop marks,
@@ -613,6 +614,31 @@ A video's **soundtrack** is indexed for what it **sounds like** (CLAP) and what 
   Each model's rows rank in their own units (margin over generic prompts for pictures and
   sounds, word coverage for speech) and merge per clip; a speech result carries its sentence
   (`result_snippet`). `MV_AI_STATUS_AUDIO_READY` and the sound / speech counts are in the status.
+
+## Cues (chapter titles and text subtitles, #406)
+
+Exact text a clip carries, so a chapter titled "birthday cake" or a caption "suited and booted"
+is found without the audio piece and without Whisper hearing it.
+
+- **Read by the host** (`read_cues` on the host table, appended after `tag_facts`;
+  `meta/cues.h`): chapters from the header, and the packets of text subtitle streams (mov_text,
+  SubRip, ASS / SSA, WebVTT) read as text with their markup removed. No subtitle decoder and no
+  new library: a cue is its packet. Bitmap subtitles (DVD, PGS) are pictures and are skipped, as
+  is a cue whose bytes are not UTF-8. At most the first two hours and 8,000 lines a file. A
+  file with neither chapters nor a text subtitle stream is done after its header.
+- **Stored** in `cues(id, asset_id, start_ms, end_ms, kind, text)` (schema 6), not as speech rows
+  under the Whisper spec: a shared index must not disagree about what was said, and removing the
+  audio piece keeps them. No spec: the text is the file's; a changed `(mtime, size)` drops the
+  rows. An export carries none (its cue progress is left out), so the receiver reads them.
+- **Its own pass:** a work track after the pictures (they never wait on it), on the index workers,
+  `wait_turn` between cues. It commits 64 cues at a time under progress spec `cues/1`; a kill
+  resumes at the last committed cue's start, and that commit first drops the rows from there, so
+  a resumed clip never holds a line twice. A host without `read_cues` leaves the track off.
+- **Search:** quoted phrases and `said:` match cue text as they match transcript lines, at the
+  cue's `start_ms`; plain words also match it by the speech rule (word coverage), beside the
+  picture search, not instead of it. Such a row has `MV_AI_MATCH_TEXT`, and its snippet names the
+  source: "Chapter: Birthday cake" or "Subtitle: suited and booted", shown unquoted (both chromes).
+  Burned-in text and OCR are not this ([#403](https://github.com/longtimeno-c/mediaviewer/issues/403)).
 
 ## People
 

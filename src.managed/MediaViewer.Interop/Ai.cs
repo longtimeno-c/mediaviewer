@@ -117,6 +117,9 @@ public enum MvAiMatch : uint
     Speech = 4,
     // #291: the file's tags matched; ResultSnippet is the tag.
     Tags = 8,
+    // #406: text the file carries (a chapter title, a subtitle line);
+    // ResultSnippet names which ("Chapter: …").
+    Text = 16,
 }
 
 /// <summary>Mirrors <c>mv_ai_status</c> field for field (1336 bytes).</summary>

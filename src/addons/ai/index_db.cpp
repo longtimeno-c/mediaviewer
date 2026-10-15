@@ -11,7 +11,7 @@
 namespace mv::ai {
 namespace {
 
-constexpr int kSchemaVersion = 5;
+constexpr int kSchemaVersion = 6;
 
 // A prepared statement that finalizes itself; binds are 1-based.
 class stmt {
@@ -255,6 +255,23 @@ result<std::unique_ptr<index_db>> index_db::open(const std::string& path) {
     }
     v = "5";
   }
+  // Schema 5 -> 6 (#406): a clip's own text (chapter titles, text subtitle
+  // lines). A table, not speech rows under a Whisper spec: a shared index must
+  // not disagree about what was said, and removing the audio piece keeps them.
+  if (v == "5") {
+    if (!d->exec("BEGIN")) return err(status::corrupt);
+    const bool ok =
+        d->exec("CREATE TABLE IF NOT EXISTS cues(id INTEGER PRIMARY KEY, asset_id INTEGER NOT NULL"
+                " REFERENCES assets(id) ON DELETE CASCADE, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL,"
+                " kind INTEGER NOT NULL, text TEXT NOT NULL);") &&
+        d->exec("CREATE INDEX IF NOT EXISTS cues_asset ON cues(asset_id, start_ms);") &&
+        static_cast<bool>(d->set_meta("schema", "6"));
+    if (!ok || !d->exec("COMMIT")) {
+      d->exec("ROLLBACK");
+      return err(status::corrupt);
+    }
+    v = "6";
+  }
   if (v != std::to_string(kSchemaVersion)) {
     return err(status::unsupported_format);  // a newer add-on's index
   }
@@ -373,6 +390,7 @@ result<std::vector<index_db::upsert>> index_db::see_assets(std::int64_t root,
     stmt q(db_, "SELECT id, mtime, size FROM assets WHERE path = ?1");
     stmt f(db_, "DELETE FROM frames WHERE asset_id = ?1");
     stmt p(db_, "DELETE FROM progress WHERE asset_id = ?1");
+    stmt c(db_, "DELETE FROM cues WHERE asset_id = ?1");
     stmt w(db_, "UPDATE assets SET mtime = ?2, size = ?3, kind = ?4, seen = ?5, cloud = ?6,"
                 " tags = CASE WHEN mtime = ?2 AND size = ?3 THEN tags ELSE 0 END WHERE id = ?1");
     stmt ins(db_, "INSERT INTO assets(path, root_id, mtime, size, kind, seen, cloud)"
@@ -387,7 +405,8 @@ result<std::vector<index_db::upsert>> index_db::see_assets(std::int64_t root,
           // Stale: edited or replaced. Its vectors describe other pixels.
           f.reset();
           p.reset();
-          if (!f.bind(1, u.id).run() || !p.bind(1, u.id).run()) {
+          c.reset();
+          if (!f.bind(1, u.id).run() || !p.bind(1, u.id).run() || !c.bind(1, u.id).run()) {
             ok = false;
             break;
           }
@@ -698,6 +717,53 @@ expected index_db::each_speech(
   return {};
 }
 
+expected index_db::commit_cues(std::int64_t asset, std::span<const cue_in> cues, work_state state,
+                               std::int64_t resume_ms, std::int64_t replace_from) {
+  std::lock_guard lock(m_);
+  if (!exec("BEGIN")) return err(status::io);
+  bool ok = true;
+  {
+    if (replace_from >= 0) {
+      stmt d(db_, "DELETE FROM cues WHERE asset_id = ?1 AND start_ms >= ?2");
+      ok = d.bind(1, asset).bind(2, replace_from).run();
+    }
+    stmt ins(db_, "INSERT INTO cues(asset_id, start_ms, end_ms, kind, text) VALUES(?1, ?2, ?3, ?4, ?5)");
+    for (const cue_in& c : cues) {
+      if (!ok) break;
+      ins.reset();
+      ins.bind(1, asset).bind(2, c.start_ms).bind(3, c.end_ms).bind(4, std::int64_t{static_cast<int>(c.kind)})
+          .bind(5, c.text);
+      ok = ins.run();
+    }
+    stmt p(db_, "INSERT INTO progress(asset_id, spec, state, resume_ms, indexed_at)"
+                " VALUES(?1, ?2, ?3, ?4, strftime('%s','now'))"
+                " ON CONFLICT(asset_id, spec) DO UPDATE SET state = excluded.state,"
+                " resume_ms = excluded.resume_ms, indexed_at = excluded.indexed_at");
+    ok = ok && p.bind(1, asset).bind(2, std::string(kCueSpec)).bind(3, std::int64_t{static_cast<int>(state)})
+                   .bind(4, resume_ms).run();
+  }
+  if (!ok) {
+    exec("ROLLBACK");
+    return err(status::io);
+  }
+  return exec("COMMIT") ? expected{} : err(status::io);
+}
+
+expected index_db::each_cue(const std::function<void(std::int64_t, const cue_in&)>& visit) {
+  std::lock_guard lock(m_);
+  stmt s(db_, "SELECT asset_id, start_ms, end_ms, kind, text FROM cues ORDER BY asset_id, start_ms");
+  if (!s.ok()) return err(status::io);
+  while (s.step_row()) {
+    cue_in c;
+    c.start_ms = s.i64(1);
+    c.end_ms = s.i64(2);
+    c.kind = s.i64(3) == 1 ? cue_kind::chapter : cue_kind::subtitle;
+    c.text = s.text(4);
+    visit(s.i64(0), c);
+  }
+  return {};
+}
+
 expected index_db::drop_spec(const std::string& spec) {
   std::lock_guard lock(m_);
   if (!exec("BEGIN")) return err(status::io);
@@ -871,7 +937,7 @@ expected index_db::set_meta(const std::string& key, const std::string& value) {
 
 expected index_db::clear() {
   std::lock_guard lock(m_);
-  if (!exec("DELETE FROM speech; DELETE FROM frames; DELETE FROM progress; DELETE FROM asset_text;"
+  if (!exec("DELETE FROM speech; DELETE FROM cues; DELETE FROM frames; DELETE FROM progress; DELETE FROM asset_text;"
             " DELETE FROM assets; DELETE FROM roots;")) {
     return err(status::io);
   }

@@ -414,7 +414,7 @@ class engine {
   void worker_loop(unsigned index);
   void search_loop();
   // work
-  enum class track : std::uint8_t { picture, faces, sound, speech };
+  enum class track : std::uint8_t { picture, faces, sound, speech, cues };
   struct job {
     work_item w;
     track t = track::picture;
@@ -422,6 +422,9 @@ class engine {
   bool claim(std::vector<work_item>& out, track& t);
   void process_sound(const work_item& item, const loaded_sound& sound);
   void process_speech(const work_item& item, const loaded_speech& speech);
+  // #406: a clip's chapter titles and text subtitle lines (host read_cues),
+  // committed in batches under kCueSpec so a kill resumes. No model.
+  void process_cues(const work_item& item);
   [[nodiscard]] std::uint32_t default_media() const;
   [[nodiscard]] platform::power power_state() const;
   // audio search
@@ -432,6 +435,18 @@ class engine {
     std::vector<std::string> words;
   };
   void load_speech(const std::string& spec);
+  // #406: a clip's own text in memory, matched like transcript lines but kept
+  // apart from them: removing the audio piece clears speech, never these.
+  struct cue_row {
+    std::int64_t asset = 0;
+    std::int64_t start_ms = 0;
+    cue_kind kind = cue_kind::subtitle;
+    std::string text;
+    std::vector<std::string> words;
+  };
+  void load_cues();
+  // "Chapter: …" / "Subtitle: …": the snippet says which.
+  [[nodiscard]] static std::string cue_snippet(const cue_row& r);
   void merge_audio(search_state& st, const std::string& query, const std::function<bool(std::int64_t)>& allow,
                    std::uint32_t find, std::uint32_t precision);
   void process_photos(std::vector<work_item>& items, const loaded_clip& clip, bool faces_only);
@@ -651,6 +666,7 @@ class engine {
   vector_store sounds_;   // the CLAP matrix (window starts as pts)
   mutable std::mutex speech_m_;
   std::vector<speech_row> speech_rows_;
+  std::vector<cue_row> cue_rows_;  // under speech_m_ (#406)
   std::atomic<bool> models_ready_{false};
   std::atomic<bool> models_failed_{false};
   std::atomic<bool> reload_models_{false};

@@ -1157,6 +1157,16 @@ so a schema-4 index reads each file's facts once more, embedding nothing. **Cost
 head read per indexed file after the update (the cache rows of version 1 are read again), and a
 rating written to a RAW's sidecar does not reach the AI index until the file's stamp changes.
 
+**A clip's chapters and text subtitles are indexed as exact text (2026-10-15, #406).** Quoted
+words and `said:` match a chapter title or a text subtitle line as they match a Whisper line,
+with the cue's start as the moment and a snippet that names the source ("Chapter: …",
+"Subtitle: …", `MV_AI_MATCH_TEXT`). The host reads cues as packet text through the FFmpeg it
+already links (no subtitle decoder, no new library); they live in their own `cues` table, not
+under the Whisper spec, so removing the audio piece keeps them and a shared index never disagrees
+about what was said. Bitmap subtitles are not OCR'd. **Cost:** one header open per indexed clip
+(after its pictures), and a full demux of the subtitle stream for files that have one (an MKV
+reads its clusters to find the cues), capped at two hours and 8,000 lines.
+
 ---
 
 ## Final Cut Pro search (Mac)

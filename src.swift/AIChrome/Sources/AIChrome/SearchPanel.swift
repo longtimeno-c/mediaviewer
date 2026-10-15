@@ -1018,8 +1018,9 @@ private struct ResultTile: View {
       picture
       if !slot.snippet.isEmpty {
         // The words that matched, quoted, under the frame they were said over;
-        // #291: or the tag that matched ("Canon EOS R5"), as it is.
-        Text(result.matchedSpeech ? "“\(slot.snippet)”" : slot.snippet)
+        // #291: or the tag that matched ("Canon EOS R5"), as it is; #406: or
+        // the file's own text, which names itself ("Chapter: …").
+        Text(result.matchedSpeech && !result.matchedText ? "“\(slot.snippet)”" : slot.snippet)
           .font(AITheme.font(12))
           .foregroundStyle(AITheme.body)
           .lineLimit(2)
@@ -1052,8 +1053,12 @@ private struct ResultTile: View {
     var text = result.isClip ? "\(result.name), at \(momentText(result.ptsMs))" : result.name
     if result.matchedSound { text += ", matched by sound" }
     if result.matchedSpeech { text += ", matched by speech" + (slot.snippet.isEmpty ? "" : ": \(slot.snippet)") }
-    if result.matchedTags && !result.matchedSpeech {
+    if result.matchedTags && !result.matchedSpeech && !result.matchedText {
       text += ", matched by tag" + (slot.snippet.isEmpty ? "" : ": \(slot.snippet)")
+    }
+    // #406: the snippet names it ("Chapter: Birthday cake").
+    if result.matchedText && !result.matchedSpeech {
+      text += ", matched by text" + (slot.snippet.isEmpty ? "" : ": \(slot.snippet)")
     }
     return text
   }

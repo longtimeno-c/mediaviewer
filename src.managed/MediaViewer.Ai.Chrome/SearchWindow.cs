@@ -1064,7 +1064,7 @@ internal sealed class SearchWindow : Window, IDisposable
             {
                 t.Revealed = true;
                 t.Thumb = was.Thumb;
-                if ((t.Match & MvAiMatch.Speech) != 0 && was.Snippet is not null) t.Snippet = was.Snippet;
+                if ((t.Match & (MvAiMatch.Speech | MvAiMatch.Text)) != 0 && was.Snippet is not null) t.Snippet = was.Snippet;
             }
             else if (_thumbs.TryGet(t.Key, out ImageSource? cached))
             {
@@ -1671,7 +1671,7 @@ internal sealed class SearchWindow : Window, IDisposable
     // file name (which stays in the tooltip). [worker-thread] in the pack.
     private void RequestSnippet(ResultTile tile)
     {
-        if (tile.SnippetRequested || (tile.Match & (MvAiMatch.Speech | MvAiMatch.Tags)) == 0) return;
+        if (tile.SnippetRequested || (tile.Match & (MvAiMatch.Speech | MvAiMatch.Tags | MvAiMatch.Text)) == 0) return;
         tile.SnippetRequested = true;
         ulong search = _search;
         AiApi api = _api;
@@ -1696,12 +1696,14 @@ internal sealed class SearchWindow : Window, IDisposable
     {
         if (tile.Caption is not TextBlock caption || snippet.Length == 0) return;
         caption.Inlines.Clear();
-        if ((tile.Match & MvAiMatch.Speech) == 0)
+        if ((tile.Match & MvAiMatch.Speech) == 0 || (tile.Match & MvAiMatch.Text) != 0)
         {
-            // #291: the tag that matched ("Canon EOS R5"), as it is.
+            // #291: the tag that matched ("Canon EOS R5"), as it is; #406: or the
+            // file's own text, which names itself ("Chapter: Birthday cake").
             caption.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run { Text = snippet });
             caption.FontStyle = Windows.UI.Text.FontStyle.Normal;
-            ToolTipService.SetToolTip(caption, $"{tile.Name}: matched tag “{snippet}”");
+            bool text = (tile.Match & MvAiMatch.Text) != 0;
+            ToolTipService.SetToolTip(caption, text ? $"{tile.Name}: {snippet}" : $"{tile.Name}: matched tag “{snippet}”");
             return;
         }
         caption.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run { Text = "“" });

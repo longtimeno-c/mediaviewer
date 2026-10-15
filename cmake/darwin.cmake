@@ -889,6 +889,8 @@ if(MV_BUILD_TESTS)
     # #345: the canvas's AI badge (setting, evidence text, the store's probe).
     tests/test_ai_badge.cpp
     tests/test_meta_search.cpp
+    # #406: a clip's chapter titles and text subtitle cues for Local search.
+    tests/test_meta_cues.cpp
     # PR 12: the metadata writer, and the host-shared write queue.
     tests/test_meta_write.cpp
     tests/test_meta_location_edit.cpp

@@ -37,6 +37,11 @@
 // schema 4's facts read, 2 = these too (kTagsLevel), so the backfill reads a
 // schema-4 row once more for them and never a row that has them.
 //
+// Schema 6 (#406): cues(id, asset_id, start_ms, end_ms, kind, text), a clip's
+// own chapter titles and text subtitle lines. No spec: the text is the
+// file's, not a model's; a changed (mtime, size) drops the asset's rows. Its
+// progress is a progress row under kCueSpec, so a kill resumes it.
+//
 // docs/design/17 sketches one assets row per (path, mtime, size, spec); progress is
 // that row's per-model half, so two models' vectors live side by side while
 // a quality change migrates (PR 23: "old index kept until the new one
@@ -84,6 +89,16 @@ struct track_filter {
   // Roots held until the user resumes them (issue #299, engine_options::
   // hold_unfinished): left out of the work and of the counts.
   std::vector<std::int64_t> held;
+};
+
+// #406: the progress spec of the cue pass (not a model: there is no vector).
+inline constexpr const char* kCueSpec = "cues/1";
+enum class cue_kind : std::uint8_t { chapter = 1, subtitle = 2 };
+struct cue_in {
+  std::int64_t start_ms = 0;
+  std::int64_t end_ms = 0;
+  cue_kind kind = cue_kind::subtitle;
+  std::string text;
 };
 
 struct speech_in {
@@ -278,6 +293,13 @@ class index_db {
       const std::string& spec,
       const std::function<void(std::int64_t asset, std::int64_t start_ms, std::int64_t end_ms,
                                const std::string& text)>& visit);
+  // #406: a clip's cues, with progress under kCueSpec, in one transaction.
+  // `replace_from` >= 0 first drops the asset's cues starting at or after it
+  // (a resumed pass sends them again).
+  [[nodiscard]] expected commit_cues(std::int64_t asset, std::span<const cue_in> cues, work_state state,
+                                     std::int64_t resume_ms, std::int64_t replace_from = -1);
+  [[nodiscard]] expected each_cue(
+      const std::function<void(std::int64_t asset, const cue_in& cue)>& visit);
   // Resets `spec`'s progress for every asset (a spec change, a clear).
   [[nodiscard]] expected drop_spec(const std::string& spec);
 
