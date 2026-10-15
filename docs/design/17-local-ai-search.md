@@ -456,7 +456,7 @@ same thing by the same words. Terms narrow each other (AND).
 | Typed | Means |
 |---|---|
 | `Tristan beach` | photos / moments with Tristan, ranked by "beach" (no "nothing found" test inside a person's own) |
-| `Tristan "hello"`, `Tristan:"hello"`, `said:hello` | Tristan, and a clip whose transcript, a chapter title or a text subtitle line (#406, "Cues") has those words in that order; the line is the snippet |
+| `Tristan "hello"`, `Tristan:"hello"`, `said:hello` | Tristan, and a clip whose transcript, a chapter title or a text subtitle line (#406, "Cues"), or a photo whose text (#403, "Text in pictures"), has those words in that order; the line is the snippet |
 | `Tristan Aaryan`, `Tristan and Aaryan` | both in the same photo or clip |
 | `Tristan or Aaryan` | either |
 | `Anna Smith`, `anna` | a named person: the whole name or the first name, any case, accents folded |
@@ -485,7 +485,8 @@ Lead-ins ("pull up all the …", "show me …", "find …") are trimmed. Typing 
 names people for the word being typed (`suggest_json`; prefix first, then a near spelling of one
 letter, two from eight letters); **Tab** or a click completes the word. A word that is not a
 name, a kind or an operator stays in the description; an unfinished `in:20` is ignored. Not in
-the index, so not in the syntax: OCR (quoted words search speech, chapter titles and subtitle lines). Date terms use the date
+the index, so not in the syntax: nothing of a file's text is left out now; quoted words search
+speech, chapter titles, subtitle lines and the text in photos ("Text in pictures"). Date terms use the date
 taken where the tag backfill has read one (#404, [12](12-decision-log.md)). Per keystroke the parse is linear in the query plus one `SELECT` of the named people.
 
 Words fold with the shared rule (`core/fold.h`, the hosts' name fold): decompose, drop marks,
@@ -659,6 +660,37 @@ is found without the audio piece and without Whisper hearing it.
   picture search, not instead of it. Such a row has `MV_AI_MATCH_TEXT`, and its snippet names the
   source: "Chapter: Birthday cake" or "Subtitle: suited and booted", shown unquoted (both chromes).
   Burned-in text and OCR are not this ([#403](https://github.com/longtimeno-c/mediaviewer/issues/403)).
+
+## Text in pictures (#403)
+
+Words in a photo (a sign, a poster, a shirt, a screenshot) are searchable: "suited and booted"
+finds the photo with those words on it, as Apple Photos' Live Text does. CLIP does not read; this
+does.
+
+- **Read by the operating system** (`text_reader.h`, a port in the pack like `cloud_files.h`):
+  Apple Vision's `VNRecognizeTextRequest` (accurate level, language correction, languages
+  detected) on the Mac, `Windows.Media.Ocr` for the user's profile languages on Windows (C++/WinRT
+  from the Windows SDK; `windowsapp.lib`, no package). No model ships and nothing leaves the
+  machine. A Windows with no OCR language installed, or another platform, has no reader: the
+  track stays off and nothing else changes.
+- **Its own pass** (`track::text`), photos only, after the pictures and the clips' cues: a
+  2,048 px decode (small text needs pixels; the picture pass reads 448) and the OS reader, four
+  photos a claim, `wait_turn` before each. One `cues` row per photo, kind 3 (`picture`),
+  `start_ms` −1, the lines joined by spaces so a phrase split over two lines of a sign is one
+  phrase, at most 4,000 bytes. Progress under the reader's spec (`ocr/vision-accurate/1`,
+  `ocr/windows-media/1`): read once, ever, until the file changes; an export carries none.
+  Video keyframes are not read yet.
+- **Search** as for cues: quoted words and `said:` match the photo's text, plain words by word
+  coverage beside the picture search; words are folded (`core/fold.h`) on both sides, so
+  "koln" finds "KÖLN". The row has `MV_AI_MATCH_TEXT` and the snippet "In the picture: …".
+- **Off switch:** `set_setting("read_text", 0)` (saved; `settings_json` reports it) leaves the
+  track out from the next claim; 1 brings it back for what was not read. No chrome control yet.
+- **Measured** (Apple M-series, `mv_ai_tests "[.ocr-fixture]"` over `tools/ai/ocr-fixture.py`'s
+  40 labelled camera-sized photos: signs, posters, shirts, screenshots): Vision found 38 of 40
+  phrases (0.95), "suited and booted" among them; it read "trom" for "from" on one sign and lost
+  the last word of a tilted shirt. Per photo: the text pass's 2,048 px decode 10.1 ms median
+  against the picture pass's 448 px decode 8.6 ms, and the read 44 ms median, 84 ms mean. Two runs,
+  the same numbers. Windows is not measured.
 
 ## People
 
@@ -1047,7 +1079,10 @@ refresh in the fourth, p99 ≤ 17.1 ms.
 - An OpenVINO piece (the code path exists, nothing is published).
 - A memory-mapped search matrix (it is loaded into memory).
 - Local search on Intel Macs (no x86_64 ORT).
-- OCR and place names in the index and query language (places are the Places add-on's, answered at query time).
+- Place names in the index and query language (places are the Places add-on's, answered at query time).
+- Text in video frames (#403 reads photos only), and a Settings control for `read_text`.
+- A count of their own for the cue and text passes in `mv_ai_status`: like the People pass, they run
+  after the pictures while the status says the folder is up to date.
 - A "nothing found" z calibration for CLAP.
 - Background (unrequested) People refinement; the incremental refinement path
   (`refine_begin(false)`) exists in faces.db and its tests but has no caller.

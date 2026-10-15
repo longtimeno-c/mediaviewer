@@ -161,6 +161,27 @@ class fake_embedder final : public mv::infer::embedder {
   float spice_;
 };
 
+// #403: the OS text reader, faked. The fake still marks a photo's text in
+// pixel 1's green channel (the rig's still_rgb sets it from the name).
+constexpr std::uint8_t kSignSuited = 77;  // "*sign*": a sign reading SUITED AND / BOOTED
+constexpr std::uint8_t kSignKoln = 78;    // "*koln*": Grüße aus / KÖLN
+class fake_text final : public mv::ai::text_reader {
+ public:
+  explicit fake_text(std::atomic<int>* reads) : reads_(reads) {}
+  mv::result<std::vector<std::string>> read(const mv::ai::rgb_frame& img) override {
+    ++*reads_;
+    if (img.rgb.size() < 6) return std::vector<std::string>{};
+    if (img.rgb[4] == kSignSuited) return std::vector<std::string>{"SUITED AND", "BOOTED"};
+    if (img.rgb[4] == kSignKoln) return std::vector<std::string>{"Grüße aus", "KÖLN"};
+    return std::vector<std::string>{};
+  }
+  const std::string& spec_key() const noexcept override { return key_; }
+
+ private:
+  std::atomic<int>* reads_;
+  std::string key_ = "ocr/fake/1";
+};
+
 // Faces from the file name: "anna_*" holds Anna's face, "ben_*" Ben's.
 class fake_faces final : public mv::ai::face_analyzer {
  public:
@@ -592,6 +613,8 @@ struct rig {
   std::atomic<int> stills_decoded{0};
   std::atomic<int> cue_reads{0};
   std::atomic<int> samplers_opened{0};
+  std::atomic<bool> text_available{false};  // #403: off unless a test reads text
+  std::atomic<int> text_reads{0};
   std::unique_ptr<mv::addon::host_table> table;
   std::shared_ptr<cloud_world> cloud = std::make_shared<cloud_world>();
   mv_host_api api{};  // the table, its walk_files2 flagging `cloud`'s online-only names
@@ -650,6 +673,8 @@ struct rig {
       auto img = solid(colour_named(name));
       if (name.rfind("anna", 0) == 0) img.rgb[2] = 11;
       if (name.rfind("ben", 0) == 0) img.rgb[2] = 22;
+      if (name.find("sign") != std::string::npos) img.rgb[4] = kSignSuited;
+      if (name.find("koln") != std::string::npos) img.rgb[4] = kSignKoln;
       return img;
     };
     svc.open_sampler = [this](const std::string& path, const mv::addon::sampler_options& o)
@@ -846,6 +871,10 @@ struct rig {
     d.photos = [this] { return std::unique_ptr<mv::ai::photos_source>(new fake_photos(library)); };
     d.photos_rescan_gap_s = 0;
     d.cloud = [this] { return std::unique_ptr<mv::ai::cloud_files>(new fake_cloud(cloud)); };
+    d.text = [this]() -> std::unique_ptr<mv::ai::text_reader> {
+      if (!text_available) return nullptr;
+      return std::make_unique<fake_text>(&text_reads);
+    };
     d.open_speech = [this](std::uint32_t, std::uint32_t) -> mv::result<mv::ai::loaded_speech> {
       if (!audio_available) return mv::err(mv::status::io);
       mv::ai::loaded_speech s;
@@ -2321,6 +2350,85 @@ TEST_CASE("a Live Photo's motion is sampled onto its still and opens the movie (
   const auto again = r.search("green");
   REQUIRE(again.size() == 1);
   CHECK(again[0].first == "blue_live.mov");
+}
+
+TEST_CASE("words in a photo are found by quoted and plain words (#403)", "[ai][engine][ocr]") {
+  rig r;
+  r.text_available = true;
+  r.file("red_sign.jpg");     // SUITED AND / BOOTED
+  r.file("blue_koln.jpg");    // Grüße aus / KÖLN
+  r.file("green_plain.jpg");  // no text
+  r.file("clips/rgb_clip.mp4");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
+  REQUIRE(r.idle());
+  CHECK(r.status().assets_failed == 0);
+  CHECK(r.text_reads.load() == 3);  // each photo once; a clip is not read
+  const int embedded = r.fast->images_embedded.load();
+
+  const auto top = [&](const std::string& q) {
+    const std::uint64_t id = r.eng->search_text(q, "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+    REQUIRE(r.eng->wait_search(id, kSettleMs));
+    return id;
+  };
+  {
+    // The reporter's case: a phrase split over two lines of a sign.
+    const std::uint64_t id = top("\"suited and booted\"");
+    const auto rows = r.rows(id);
+    REQUIRE(rows.size() == 1);
+    CHECK(rows[0].first == "red_sign.jpg");
+    CHECK(rows[0].second == -1);
+    auto res = r.eng->result_at(id, 0);
+    REQUIRE(res);
+    CHECK((res->match & MV_AI_MATCH_TEXT) != 0);
+    auto why = r.eng->result_snippet(id, 0);
+    REQUIRE(why);
+    CHECK(*why == "In the picture: SUITED AND BOOTED");
+  }
+  {
+    // Plain words: the photo with the words leads, the picture search beside it.
+    const auto rows = r.rows(top("suited and booted"));
+    REQUIRE_FALSE(rows.empty());
+    CHECK(rows.front().first == "red_sign.jpg");
+  }
+  CHECK(r.search("\"booted and suited\"").empty());  // order matters in quotes
+  CHECK(r.search("said:booted").size() == 1);
+  // Folded both ways: "koln" finds KÖLN, "grusse" does not (ß stays itself).
+  CHECK(r.rows(top("\"koln\"")).size() == 1);
+  CHECK(r.rows(top("\"grüße aus köln\"")).size() == 1);
+  CHECK(r.rows(top("\"GRÜSSE\"")).empty());
+  // A description still runs: "red" finds the sign by its colour.
+  CHECK(has_row(r.search("red"), "red_sign.jpg"));
+  CHECK(r.fast->images_embedded.load() == embedded);  // reading text embeds nothing
+
+  // Read once, ever: a restart reads nothing again.
+  r.start();
+  REQUIRE(r.idle());
+  CHECK(r.text_reads.load() == 3);
+  CHECK(r.rows(top("\"suited and booted\"")).size() == 1);
+
+  // Turned off: a new photo is not read (and is when it comes back on).
+  REQUIRE(r.eng->set_setting("read_text", "0"));
+  r.file("blue_sign2.jpg");
+  REQUIRE(r.eng->root_rescan(1));
+  REQUIRE(wait_for([&] { return r.status().assets_total == 5; }, kSettleMs));
+  REQUIRE(r.idle());
+  CHECK(r.text_reads.load() == 3);
+  REQUIRE(r.eng->set_setting("read_text", "1"));
+  REQUIRE(wait_for([&] { return r.text_reads.load() == 4; }, kSettleMs));
+  REQUIRE(r.idle());
+  CHECK(r.rows(top("\"suited and booted\"")).size() == 2);
+}
+
+TEST_CASE("without an OS text reader nothing changes (#403)", "[ai][engine][ocr]") {
+  rig r;  // text_available false: make_text_reader's "none"
+  r.file("red_sign.jpg");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  CHECK(r.status().assets_done == 1);
+  CHECK(r.search("\"suited and booted\"").empty());
+  CHECK(r.text_reads.load() == 0);
 }
 
 TEST_CASE("audio: a folder indexed for pictures only does no audio work", "[ai][engine][audio]") {

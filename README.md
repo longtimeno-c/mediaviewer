@@ -177,7 +177,9 @@ All of it is computed on your computer; nothing is uploaded.
 
 - **Pictures and video frames** use OpenAI CLIP: ViT-B/32 (*Fast*) or ViT-L/14 (*High*), picked for your hardware. It runs with NVIDIA acceleration on Windows and Core ML on Apple silicon. Every photo and sampled frame is indexed once in the background, so a search reads the index and never re-scans your files.
 - **Sound and speech.** An optional **Sound** piece indexes what videos sound like (LAION CLAP) and what is said in them (Whisper).
-- **Narrow it as you type:** `-beach` leaves something out, `video` or `is:photo` picks a kind, `in:2024` or `before:2025` limits the date, and quotes find words that are said.
+- **Words in the picture.** A sign, a poster or a shirt that says "suited and booted" is found by those words: your computer's own text recognition reads every photo once.
+- **Narrow it as you type:** `-beach` leaves something out, `video` or `is:photo` picks a kind, `in:2024` or `before:2025` limits the date the photo was taken, `rating:4+`, `label:red`, `iso:1600+` or `f:1.8` pick by your marks and the exposure, and quotes find words that are said, written in a chapter or subtitle, or shown in the picture.
+- **Live Photos move.** The few seconds of motion beside a Live Photo are searched too, and open at the moment that matched.
 - **Jump straight to the moment.** `Ctrl/⌘+F` searches, `Ctrl/⌘+Shift+F` finds similar, and `N` / `Shift+N` walk the matching moments in a clip.
 - **Your cloud folders too.** Folders on OneDrive or iCloud Drive are indexed, online-only files included if you let it fetch them.
 - **Move house without re-indexing.** Export the index to one file and import it on another computer, or after moving a library to a NAS. Thumbnails and People go only if you tick them.

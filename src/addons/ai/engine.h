@@ -41,6 +41,7 @@
 #include "addons/ai/photos_source.h"
 #include "addons/ai/platform.h"
 #include "addons/ai/query.h"
+#include "addons/ai/text_reader.h"
 #include "addons/ai/transfer.h"
 #include "addons/ai/vectors.h"
 #include "core/result.h"
@@ -192,6 +193,9 @@ struct engine_deps {
   // Online-only files in indexed folders (cloud_files.h): null uses
   // make_cloud_files() (OneDrive / iCloud Drive). The tests pass a fake.
   std::function<std::unique_ptr<cloud_files>()> cloud;
+  // Text in pictures (#403, text_reader.h): null uses make_text_reader()
+  // (Vision / Windows.Media.Ocr). The tests pass a fake, or one returning null.
+  std::function<std::unique_ptr<text_reader>()> text;
   // At most one change-driven Photos library rescan per this many seconds
   // (PhotoKit reports an iCloud sync as a burst of changes).
   double photos_rescan_gap_s = 10;
@@ -234,6 +238,7 @@ struct settings {
   std::uint32_t precision = kPrecisionDefault;      // 0 broader .. 2 calibrated .. 4 stricter
   bool icloud_videos = false;  // download iCloud-only clips to index them (2026-10-05, opt-in)
   bool cloud_files = false;    // fetch online-only OneDrive / iCloud Drive files to index them (2026-10-05, opt-in)
+  bool read_text = true;       // #403: read the text in photos (OS OCR), on by default
 };
 
 // A spoken-phrase search's share of the query's words a transcript line must
@@ -419,7 +424,7 @@ class engine {
   void worker_loop(unsigned index);
   void search_loop();
   // work
-  enum class track : std::uint8_t { picture, faces, sound, speech, cues };
+  enum class track : std::uint8_t { picture, faces, sound, speech, cues, text };
   struct job {
     work_item w;
     track t = track::picture;
@@ -430,6 +435,10 @@ class engine {
   // #406: a clip's chapter titles and text subtitle lines (host read_cues),
   // committed in batches under kCueSpec so a kill resumes. No model.
   void process_cues(const work_item& item);
+  // #403: the text in a batch of photos, read by the OS, one cue row each.
+  void process_text(std::vector<work_item>& items);
+  // The OS text reader's progress spec while reading text is on, else "".
+  [[nodiscard]] std::string text_spec() const;
   [[nodiscard]] std::uint32_t default_media() const;
   [[nodiscard]] platform::power power_state() const;
   // audio search
@@ -452,6 +461,9 @@ class engine {
   void load_cues();
   // "Chapter: …" / "Subtitle: …": the snippet says which.
   [[nodiscard]] static std::string cue_snippet(const cue_row& r);
+  // A file's own text as matched words: folded (core/fold.h), then the
+  // speech rule's words, so "KÖLN" on a sign and a typed "koln" meet.
+  [[nodiscard]] static std::vector<std::string> cue_words(std::string_view utf8);
   void merge_audio(search_state& st, const std::string& query, const std::function<bool(std::int64_t)>& allow,
                    std::uint32_t find, std::uint32_t precision);
   void process_photos(std::vector<work_item>& items, const loaded_clip& clip, bool faces_only);
@@ -690,6 +702,9 @@ class engine {
   mutable std::mutex speech_m_;
   std::vector<speech_row> speech_rows_;
   std::vector<cue_row> cue_rows_;  // under speech_m_ (#406)
+  // #403: made on the control thread (Windows joins it to the MTA first), set
+  // once under models_m_ and never replaced, so a worker may keep the pointer.
+  std::unique_ptr<text_reader> text_;
   std::atomic<bool> models_ready_{false};
   std::atomic<bool> models_failed_{false};
   std::atomic<bool> reload_models_{false};

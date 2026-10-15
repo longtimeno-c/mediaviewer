@@ -775,7 +775,7 @@ expected index_db::each_speech(
 }
 
 expected index_db::commit_cues(std::int64_t asset, std::span<const cue_in> cues, work_state state,
-                               std::int64_t resume_ms, std::int64_t replace_from) {
+                               std::int64_t resume_ms, std::int64_t replace_from, const std::string& spec) {
   std::lock_guard lock(m_);
   if (!exec("BEGIN")) return err(status::io);
   bool ok = true;
@@ -796,7 +796,7 @@ expected index_db::commit_cues(std::int64_t asset, std::span<const cue_in> cues,
                 " VALUES(?1, ?2, ?3, ?4, strftime('%s','now'))"
                 " ON CONFLICT(asset_id, spec) DO UPDATE SET state = excluded.state,"
                 " resume_ms = excluded.resume_ms, indexed_at = excluded.indexed_at");
-    ok = ok && p.bind(1, asset).bind(2, std::string(kCueSpec)).bind(3, std::int64_t{static_cast<int>(state)})
+    ok = ok && p.bind(1, asset).bind(2, spec).bind(3, std::int64_t{static_cast<int>(state)})
                    .bind(4, resume_ms).run();
   }
   if (!ok) {
@@ -814,7 +814,8 @@ expected index_db::each_cue(const std::function<void(std::int64_t, const cue_in&
     cue_in c;
     c.start_ms = s.i64(1);
     c.end_ms = s.i64(2);
-    c.kind = s.i64(3) == 1 ? cue_kind::chapter : cue_kind::subtitle;
+    const std::int64_t k = s.i64(3);
+    c.kind = k == 1 ? cue_kind::chapter : k == 3 ? cue_kind::picture : cue_kind::subtitle;
     c.text = s.text(4);
     visit(s.i64(0), c);
   }

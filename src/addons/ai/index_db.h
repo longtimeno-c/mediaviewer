@@ -99,7 +99,9 @@ struct track_filter {
 
 // #406: the progress spec of the cue pass (not a model: there is no vector).
 inline constexpr const char* kCueSpec = "cues/1";
-enum class cue_kind : std::uint8_t { chapter = 1, subtitle = 2 };
+// #403: `picture` is text read in a photo by the OS (text_reader.h), one row
+// per photo at start_ms -1, under its reader's progress spec.
+enum class cue_kind : std::uint8_t { chapter = 1, subtitle = 2, picture = 3 };
 struct cue_in {
   std::int64_t start_ms = 0;
   std::int64_t end_ms = 0;
@@ -316,7 +318,8 @@ class index_db {
   // `replace_from` >= 0 first drops the asset's cues starting at or after it
   // (a resumed pass sends them again).
   [[nodiscard]] expected commit_cues(std::int64_t asset, std::span<const cue_in> cues, work_state state,
-                                     std::int64_t resume_ms, std::int64_t replace_from = -1);
+                                     std::int64_t resume_ms, std::int64_t replace_from = -1,
+                                     const std::string& spec = kCueSpec);
   [[nodiscard]] expected each_cue(
       const std::function<void(std::int64_t asset, const cue_in& cue)>& visit);
   // Resets `spec`'s progress for every asset (a spec change, a clear).

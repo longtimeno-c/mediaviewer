@@ -1180,6 +1180,17 @@ from the keyframe each, against one sequential sampler pass before), and a handf
 Live Photo in the picture pass. An exported index carries no `motion` columns, so the receiver
 samples each Live Photo's movie once more.
 
+**Words in photos are read by the OS and searched as text (2026-10-15, #403, urgent).** "suited
+and booted" found the photo in Apple Photos and not here: CLIP does not read. The pack now asks the
+operating system's own recogniser (Vision on the Mac, Windows.Media.Ocr on Windows; no model, no
+download, nothing sent anywhere) for each photo's text in a background pass after the pictures,
+and stores it as a `cues` row (kind 3) that quoted words, `said:` and plain words match like a
+transcript line. A separate 2,048 px decode rather than the picture pass's 448 px one, because
+sign and shirt text is small: 95 % of 40 labelled phrases on the Mac at 44 ms median a photo.
+**Cost:** one extra decode and an OS read per photo, once; on the owner's 23 k-photo library that
+is about 20–35 minutes of one background worker on an M-series Mac, after the pictures are done.
+Video frames are not read yet.
+
 ---
 
 ## Final Cut Pro search (Mac)

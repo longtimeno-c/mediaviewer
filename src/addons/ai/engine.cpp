@@ -491,6 +491,7 @@ void engine::load_settings() {
       doc->integer("precision").value_or(kPrecisionDefault), 0, kPrecisionLevels - 1));
   settings_.icloud_videos = doc->boolean("icloud_videos").value_or(false);
   settings_.cloud_files = doc->boolean("cloud_files").value_or(false);
+  settings_.read_text = doc->boolean("read_text").value_or(true);
 }
 
 void engine::save_settings() const {
@@ -507,6 +508,7 @@ void engine::save_settings() const {
     w.key("precision").integer(settings_.precision);
     w.key("icloud_videos").boolean(settings_.icloud_videos);
     w.key("cloud_files").boolean(settings_.cloud_files);
+    w.key("read_text").boolean(settings_.read_text);
     w.end_object();
   }
   const std::string tmp = join(data_dir_, "settings.json.tmp");
@@ -540,6 +542,7 @@ std::string engine::settings_json() const {
   w.key("precision").integer(s.precision);
   w.key("icloud_videos").boolean(s.icloud_videos);
   w.key("cloud_files").boolean(s.cloud_files);
+  w.key("read_text").boolean(s.read_text);
   // A second window's reader (docs/design/18 "One host process"): it searches,
   // and the chrome hides what would change the index or the settings.
   w.key("read_only").boolean(options_.read_only);
@@ -638,6 +641,8 @@ expected engine::set_setting(const std::string& key, const std::string& value_js
       settings_.icloud_videos = x != 0;
     } else if (key == "cloud_files") {
       settings_.cloud_files = x != 0;
+    } else if (key == "read_text") {
+      settings_.read_text = x != 0;  // #403: the next claim takes (or leaves) the text track
     } else if (key == "precision") {
       // Read by each search as it starts: no reload, no re-index (docs/design/17
       // "Precision scale"). Out of range clamps to the nearest end.
@@ -655,7 +660,7 @@ expected engine::set_setting(const std::string& key, const std::string& value_js
     fetch_wake_ = true;
     fetch_cv_.notify_all();
   }
-  if (key == "video_index") {
+  if (key == "video_index" || key == "read_text") {
     std::lock_guard lock(work_m_);
     queue_.clear();
     queue_exhausted_ = false;
@@ -1711,6 +1716,12 @@ void engine::maybe_finish_migration() {
 
 void engine::control_loop() {
   loading_ = true;
+  {
+    // #403: the OS text reader, on this thread (not a host's UI thread).
+    auto reader = deps_.text ? deps_.text() : make_text_reader();
+    std::lock_guard lock(models_m_);
+    text_ = std::move(reader);
+  }
   load_models();
   const unsigned cores = std::max(1u, platform::hardware_threads());
   const unsigned n = std::max(1u, std::min(2u, cores / 4));
@@ -2439,7 +2450,10 @@ bool engine::fetch_wanted(std::int64_t asset) {
   if (spec.empty()) return true;
   return wants(spec, track_filter{true, MV_AI_MEDIA_PICTURES, media, skip, {}}) ||
          wants(sound_spec, track_filter{false, MV_AI_MEDIA_SOUND, media, skip, {}}) ||
-         wants(speech_spec, track_filter{false, MV_AI_MEDIA_SOUND, media, skip, {}});
+         wants(speech_spec, track_filter{false, MV_AI_MEDIA_SOUND, media, skip, {}}) ||
+         wants(host_.has_cues() ? std::string(kCueSpec) : std::string(),
+               track_filter{false, MV_AI_MEDIA_BOTH, media, skip, {}}) ||
+         wants(text_spec(), track_filter{true, 0, media, skip, {}});
 }
 
 void engine::fetch_reap(bool all) {
@@ -2823,6 +2837,8 @@ bool engine::claim(std::vector<work_item>& out, track& t) {
   if (spec.empty()) return false;
   // #406: cues need the host's read_cues (an older host has none).
   const std::string cue_spec = host_.has_cues() ? std::string(kCueSpec) : std::string();
+  // #403: text in photos, while the OS can read it and the setting is on.
+  const std::string ocr_spec = text_spec();
   std::lock_guard lock(work_m_);
   {
     // A folder opened (note_folder_opened): it goes first from now on.
@@ -2859,6 +2875,7 @@ bool engine::claim(std::vector<work_item>& out, track& t) {
         };
         among(spec, track::picture, track_filter{true, MV_AI_MEDIA_PICTURES, media, skip, held_now});
         among(cue_spec, track::cues, track_filter{false, MV_AI_MEDIA_BOTH, media, skip, held_now});
+        among(ocr_spec, track::text, track_filter{true, 0, media, skip, held_now});
         among(sound_spec, track::sound, track_filter{false, MV_AI_MEDIA_SOUND, media, skip, held_now});
         among(speech_spec, track::speech, track_filter{false, MV_AI_MEDIA_SOUND, media, skip, held_now});
         if (queue_.empty() && faces_on) {
@@ -2881,6 +2898,8 @@ bool engine::claim(std::vector<work_item>& out, track& t) {
     take(spec, track::picture, track_filter{true, MV_AI_MEDIA_PICTURES, media, skip, held_now});
     // #406: a clip's own text, after its pictures (they never wait on it).
     take(cue_spec, track::cues, track_filter{false, MV_AI_MEDIA_BOTH, media, skip, held_now});
+    // #403: the text in photos, after their pictures and the clips' own text.
+    take(ocr_spec, track::text, track_filter{true, 0, media, skip, held_now});
     take(sound_spec, track::sound, track_filter{false, MV_AI_MEDIA_SOUND, media, skip, held_now});
     take(speech_spec, track::speech, track_filter{false, MV_AI_MEDIA_SOUND, media, skip, held_now});
     if (queue_.empty() && faces_on) {
@@ -2918,7 +2937,7 @@ bool engine::claim(std::vector<work_item>& out, track& t) {
   if (queue_.empty()) return false;
   t = queue_.front().t;
   const bool photo = queue_.front().w.asset.kind == asset_kind::photo;
-  const std::size_t batch = photo && (t == track::picture || t == track::faces) ? kPhotoBatch : 1;
+  const std::size_t batch = photo && (t == track::picture || t == track::faces || t == track::text) ? kPhotoBatch : 1;
   while (!queue_.empty() && out.size() < batch) {
     const job& j = queue_.front();
     if ((j.w.asset.kind == asset_kind::photo) != photo || j.t != t) break;
@@ -2958,6 +2977,8 @@ void engine::worker_loop(unsigned) {
     const bool faces_only = t == track::faces;
     if (t == track::cues) {
       process_cues(items.front());
+    } else if (t == track::text) {
+      process_text(items);
     } else if (t == track::sound) {
       if (sound.model) process_sound(items.front(), sound);
     } else if (t == track::speech) {
@@ -3138,7 +3159,7 @@ void engine::process_cues(const work_item& item) {
                         cue_rows_.end());
       }
       for (cue_in& c : batch) {
-        std::vector<std::string> words = infer::speech_words(c.text);
+        std::vector<std::string> words = cue_words(c.text);
         cue_rows_.push_back(cue_row{item.asset.id, c.start_ms, c.kind, std::move(c.text), std::move(words)});
       }
     }
@@ -4735,7 +4756,7 @@ void engine::finish(search_state& st) {
 void engine::load_cues() {
   std::vector<cue_row> rows;
   (void)db_->each_cue([&](std::int64_t asset, const cue_in& c) {
-    rows.push_back(cue_row{asset, c.start_ms, c.kind, c.text, infer::speech_words(c.text)});
+    rows.push_back(cue_row{asset, c.start_ms, c.kind, c.text, cue_words(c.text)});
   });
   std::lock_guard lock(speech_m_);
   cue_rows_ = std::move(rows);
@@ -4743,7 +4764,73 @@ void engine::load_cues() {
 
 std::string engine::cue_snippet(const cue_row& r) {
   std::string text = r.text.size() > 150 ? r.text.substr(0, 147) + "..." : r.text;
-  return (r.kind == cue_kind::chapter ? "Chapter: " : "Subtitle: ") + text;
+  const char* source = r.kind == cue_kind::chapter ? "Chapter: " : r.kind == cue_kind::picture ? "In the picture: "
+                                                                                                : "Subtitle: ";
+  return source + text;
+}
+
+std::vector<std::string> engine::cue_words(std::string_view utf8) { return infer::speech_words(text::fold(utf8)); }
+
+std::string engine::text_spec() const {
+  {
+    std::lock_guard lock(settings_m_);
+    if (!settings_.read_text) return {};
+  }
+  std::lock_guard lock(models_m_);
+  return text_ ? text_->spec_key() : std::string();
+}
+
+void engine::process_text(std::vector<work_item>& items) {
+  text_reader* reader = nullptr;
+  {
+    std::lock_guard lock(models_m_);
+    reader = text_.get();  // set once, never replaced (engine.h)
+  }
+  if (!reader) return;
+  const std::string spec = reader->spec_key();
+  // Small text on a sign or a shirt needs pixels: a 2,048 px decode, not the
+  // picture pass's 448.
+  constexpr std::uint32_t kEdge = 2048;
+  // A wall of text (a screenshot, a page) keeps its first 4,000 bytes.
+  constexpr std::size_t kMaxBytes = 4000;
+  for (const work_item& w : items) {
+    if (!wait_turn()) return;  // stopping: the rest stay pending
+    auto img = still_of(w.asset.path, kEdge);
+    if (!img) {
+      if (img.error() == status::permission_denied) {
+        photos_readable_ = false;
+        continue;
+      }
+      if (img.error() == status::io && is_photos_key(w.asset.path)) {
+        (void)db_->mark_unavailable(w.asset.id, spec);
+      } else {
+        (void)db_->fail(w.asset.id, spec);
+      }
+      continue;
+    }
+    auto lines = reader->read(*img);
+    if (!lines) {
+      (void)db_->fail(w.asset.id, spec);
+      continue;
+    }
+    // One row for the photo, its lines joined, so a phrase split over two
+    // lines of a sign ("SUITED AND" / "BOOTED") is still one phrase.
+    std::string joined;
+    for (const std::string& l : *lines) {
+      if (l.empty()) continue;
+      if (joined.size() + l.size() + 1 > kMaxBytes) break;
+      if (!joined.empty()) joined.push_back(' ');
+      joined += l;
+    }
+    std::vector<cue_in> rows;
+    if (!joined.empty()) rows.push_back(cue_in{-1, -1, cue_kind::picture, joined});
+    if (!db_->commit_cues(w.asset.id, rows, work_state::done, 0, -1, spec)) continue;
+    if (!rows.empty()) {
+      std::vector<std::string> words = cue_words(joined);
+      std::lock_guard lock(speech_m_);
+      cue_rows_.push_back(cue_row{w.asset.id, -1, cue_kind::picture, std::move(joined), std::move(words)});
+    }
+  }
 }
 
 void engine::load_speech(const std::string& spec) {
@@ -4806,8 +4893,16 @@ void engine::merge_audio(search_state& st, const std::string& query, const std::
   for (const std::string& w : infer::speech_words(query)) phrase += (phrase.empty() ? "" : " ") + w;
   const double need = speech_coverage_needed(want.size(), precision);
   std::vector<std::tuple<float, std::int64_t, std::int64_t, std::string, std::uint32_t>> found;
+  // A file's own text is matched folded (core/fold.h), the query too.
+  std::vector<std::string> want_f;
+  for (std::string& w : cue_words(query)) {
+    if (!stop_word(w) && std::find(want_f.begin(), want_f.end(), w) == want_f.end()) want_f.push_back(std::move(w));
+  }
+  std::string phrase_f;
+  for (const std::string& w : cue_words(query)) phrase_f += (phrase_f.empty() ? "" : " ") + w;
   // How much of the query a line's words hold (-1: not enough).
-  const auto rank_of = [&](const std::vector<std::string>& words) -> float {
+  const auto rank_by = [](const std::vector<std::string>& want, const std::string& phrase, double need,
+                          const std::vector<std::string>& words) -> float {
     std::size_t hit = 0;
     for (const std::string& q : want) {
       for (const std::string& w : words) {
@@ -4817,6 +4912,7 @@ void engine::merge_audio(search_state& st, const std::string& query, const std::
         }
       }
     }
+    if (want.empty()) return -1.0f;
     const double coverage = static_cast<double>(hit) / static_cast<double>(want.size());
     if (coverage < need) return -1.0f;
     std::string joined;
@@ -4824,18 +4920,19 @@ void engine::merge_audio(search_state& st, const std::string& query, const std::
     const bool exact = joined.find(phrase) != std::string::npos;
     return static_cast<float>(0.6 + 0.8 * coverage + (exact ? 0.2 : 0.0));
   };
+  const double need_f = speech_coverage_needed(want_f.size(), precision);
   {
     std::lock_guard lock(speech_m_);
     for (const speech_row& r : speech_rows_) {
       if (!allow(r.asset)) continue;
-      const float rank = rank_of(r.words);
+      const float rank = rank_by(want, phrase, need, r.words);
       if (rank >= 0) found.emplace_back(rank, r.asset, r.start_ms, r.text, MV_AI_MATCH_SPEECH);
     }
     // #406: a chapter title or a subtitle line, said the same way; the
     // snippet names which.
     for (const cue_row& r : cue_rows_) {
       if (!allow(r.asset)) continue;
-      const float rank = rank_of(r.words);
+      const float rank = rank_by(want_f, phrase_f, need_f, r.words);
       if (rank >= 0) found.emplace_back(rank, r.asset, r.start_ms, cue_snippet(r), MV_AI_MATCH_TEXT);
     }
   }
@@ -5017,9 +5114,12 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
     };
     std::vector<said> said_rows;
     if (!plan.phrases.empty() || !plan.not_phrases.empty()) {
-      std::vector<std::vector<std::string>> want, not_want;
+      std::vector<std::vector<std::string>> want, not_want, want_f, not_want_f;
       for (const std::string& p : plan.phrases) want.push_back(query::words_of(p));
       for (const std::string& p : plan.not_phrases) not_want.push_back(query::words_of(p));
+      // A file's own text is matched folded (core/fold.h): "Köln" finds "KOLN".
+      for (const std::string& p : plan.phrases) want_f.push_back(cue_words(p));
+      for (const std::string& p : plan.not_phrases) not_want_f.push_back(cue_words(p));
       std::vector<std::set<std::int64_t>> have(want.size());
       std::set<std::int64_t> drop;
       {
@@ -5042,14 +5142,14 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
         for (const cue_row& r : cue_rows_) {
           if (!allowed->count(r.asset)) continue;
           bool any = false;
-          for (std::size_t i = 0; i < want.size(); ++i) {
-            const bool open = plan.last_phrase_open && i + 1 == want.size();
-            if (query::contains_phrase(r.words, want[i], open)) {
+          for (std::size_t i = 0; i < want_f.size(); ++i) {
+            const bool open = plan.last_phrase_open && i + 1 == want_f.size();
+            if (query::contains_phrase(r.words, want_f[i], open)) {
               have[i].insert(r.asset);
               any = true;
             }
           }
-          for (const auto& w : not_want) {
+          for (const auto& w : not_want_f) {
             if (query::contains_phrase(r.words, w, false)) drop.insert(r.asset);
           }
           if (any) said_rows.push_back({r.asset, r.start_ms, cue_snippet(r), MV_AI_MATCH_TEXT});

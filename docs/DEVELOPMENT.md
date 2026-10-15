@@ -1617,6 +1617,35 @@ The app's search text has none.
   `main.cpp`, and the running WinUI search and `/` find box. Also owed there: the verify line
   and the PR 1 gate.
 
+### Local search reads more of each file (#403–#407, 2026-10-15)
+
+Five changes to the AI pack's index and query language
+([17](design/17-local-ai-search.md), [12](design/12-decision-log.md)). The index goes from schema
+4 to 7, one transaction a step; nothing already embedded is embedded again.
+
+| Issue | What changed | Schema |
+|---|---|---|
+| #404 | `in:` / `before:` / `after:` / `since:` / `until:` use the date taken, the file's time only when there is none | none |
+| #405 | `rating:`, `rejected`, `label:`, `iso:`, `f:`, `mm:`, `shutter:`; meta_cache.db and the host's `tag_facts` carry them | 5 |
+| #406 | chapter titles and text subtitle lines (host `read_cues`, `meta/cues.h`) match quoted and plain words | 6 |
+| #407 | the People pass decodes the moments the picture pass kept; a Live Photo's movie is sampled onto its still | 7 |
+| #403 | the OS reads the text in each photo (Vision / Windows.Media.Ocr) for quoted and plain words | (uses 6) |
+
+- **Tests:** `mv_ai_tests "[dates],[exposure],[cues],[moments],[live],[ocr],[schema4],[tags],[query]"`,
+  and `mv_tests "[search],[cues]"` (the cue reader over Matroska / SubRip and MP4 / mov_text
+  files the test writes, `tests/cue_fixture.h`).
+- **OCR recall and cost:** `python3 tools/ai/ocr-fixture.py <dir>` writes 40 labelled photos;
+  `MV_OCR_FIXTURE_DIR=<dir> mv_ai_tests "[.ocr-fixture]"` reads them with the real OS reader and
+  prints recall and per-photo times as JSON (needs Pillow; on Windows, an OCR language).
+- **Mac (M-series, 2026-10-15):** `mv_ai_tests` 126 cases, 118 passed, 8 skipped (the
+  model-backed ones, as before); `mv_tests` 824 cases, 813 passed, 11 skipped; `mv_import_tests`
+  (the add-on host table) 112 passed. The app (`mediaviewer_lab`) and the AI SwiftUI chrome build. Vision over the fixture: 38 of
+  40 phrases, read 44 ms median a photo.
+- **Windows:** the C# chromes compile on the Mac (`dotnet msbuild -t:Compile`). The native
+  half is compiled only by CI: `ocr_win.cpp` (C++/WinRT), the host's `read_cues` and `tag_facts`
+  in `addon_abi.cpp`. The OCR fixture on Windows, the Windows PR 1 gate and the Mac PR 1 gate
+  with the pack indexing are owed.
+
 ### Every tag and AI provenance in the Metadata pane (#290, docs/plans/metadata-search-and-place.md slice 1, 2026-10-11)
 
 All tags now lists C2PA / Content Credentials (JPEG APP11, PNG `caBX`, ISO-BMFF `uuid`), every

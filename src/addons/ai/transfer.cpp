@@ -328,7 +328,7 @@ result<export_counts> write(const std::string& dest, const export_options& o, co
   // machine's business, and a pending row describes nothing).
   ok = exec(x, "INSERT INTO progress SELECT p.asset_id, p.spec, p.state, p.resume_ms, p.indexed_at"
                " FROM src.progress p JOIN assets a ON a.id = p.asset_id WHERE p.state IN (1, 2)"
-               " AND p.spec != 'cues/1'");  // #406: no cue rows travel, so the receiver reads them itself
+               " AND p.spec != 'cues/1' AND p.spec NOT LIKE 'ocr/%'");  // #406 / #403: no cue rows travel
   if (!ok) return fail(status::io);
   ok = exec(x, "INSERT INTO frames SELECT f.asset_id, f.spec, f.pts_ms, f.pts_tb, f.tb_num, f.tb_den, f.flags,"
                " f.generic, f.scale, f.emb FROM src.frames f"
