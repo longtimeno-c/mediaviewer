@@ -14,21 +14,102 @@
 // drawn: each tile keeps its identity (its index in the listing) and its
 // thumbnail slot, so filtering reloads nothing and a tile that stays shown is
 // not rebuilt.
+import AppKit
 import MVChromeBridge
 import SwiftUI
+
+/// Dragging a gallery cell out (issue #413). In the grid's vertical scroll view
+/// a SwiftUI drag gesture on the cell never sees the mouse drag, so this picks
+/// it up below SwiftUI: cells report the one under the pointer, and a local
+/// event monitor turns a press there that moves 4 pt into a file drag (the
+/// range, or the marks, when the cell is in them; else the cell, with nothing
+/// read from disk). The drag's events are the drag's: SwiftUI does not see them,
+/// so the press is no click. Installed the first time a cell is hovered;
+/// costs one comparison per mouse event after that.
+private struct EventBox: @unchecked Sendable {
+  let event: NSEvent?
+}
+
+@MainActor
+final class GalleryDrag {
+  static let shared = GalleryDrag()
+  private var hovered: Int?
+  private var pressed: (index: Int, point: NSPoint, window: NSWindow?)?
+  private var monitor: Any?
+
+  func hover(_ index: Int, inside: Bool) {
+    if inside {
+      hovered = index
+      install()
+    } else if hovered == index {
+      hovered = nil
+    }
+  }
+
+  private func install() {
+    guard monitor == nil else { return }
+    // A local monitor runs on the main thread; the box carries the event
+    // across the isolation check, which NSEvent (not Sendable) cannot.
+    monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]) { event in
+      let box = EventBox(event: event)
+      return MainActor.assumeIsolated { EventBox(event: box.event.flatMap { GalleryDrag.shared.handle($0) }) }.event
+    }
+  }
+
+  private func handle(_ event: NSEvent) -> NSEvent? {
+    switch event.type {
+    case .leftMouseDown:
+      pressed = nil
+      if let index = hovered, mv_chrome_gallery_visible() {
+        pressed = (index, event.locationInWindow, event.window)
+      }
+      return event
+    case .leftMouseDragged:
+      guard let p = pressed, event.window === p.window else { return event }
+      let dx = event.locationInWindow.x - p.point.x, dy = event.locationInWindow.y - p.point.y
+      guard dx * dx + dy * dy >= 16 else { return event }
+      pressed = nil
+      FileDragSource.shared.begin(with: event) { FolderStore.shared.dragFiles(from: p.index) }
+      return nil
+    default:
+      pressed = nil
+      return event
+    }
+  }
+}
 
 struct GalleryView: View {
   @ObservedObject private var store = FolderStore.shared
   @ObservedObject private var search = FileSearchStore.shared
+  // Whether any add-on fills tile badges / context entries (changes only when one
+  // attaches or goes): the cells carry those wrappers only then.
+  @ObservedObject private var tileFlags = SlotTileFlags.shared
+  // The photo grid keeps its sizes under a theme's density (docs/ADDONS.md
+  // "A theme's shape"): the gutter, the inset and the tiles are geometry.
   private let spacing: CGFloat = 8
   private let inset: CGFloat = 12
 
   var body: some View {
     grid
+      // docs/design/25 PR 59: badges for the folder the grid shows, one request per
+      // folder (and only while the grid is open: no add-on work for a viewer
+      // that never opens it).
+      .onAppear { SlotStore.shared.requestBadges(folder: SlotTargets.folder()) }
+      .onChange(of: store.listingGeneration) { _, _ in
+        SlotStore.shared.requestBadges(folder: SlotTargets.folder())
+      }
       // A folder of folders has no image to show through the material, and the
       // canvas behind may still hold the previous folder's last photo.
-      .background(store.names.isEmpty ? AnyShapeStyle(Color(nsColor: .windowBackgroundColor))
-                                      : AnyShapeStyle(.regularMaterial))
+      .background {
+        // No photos: an opaque ground, so the previous picture does not show
+        // through, and a built-in theme can lay its effect here. With photos,
+        // the material stays so the picture shows through the grid.
+        if store.names.isEmpty {
+          ThemeField()
+        } else {
+          Rectangle().fill(.regularMaterial)
+        }
+      }
   }
 
   private var grid: some View {
@@ -51,19 +132,34 @@ struct GalleryView: View {
         if search.isOpen {
           FileSearchBar()
             .padding(.horizontal, inset)
-            .padding(.top, 10)
+            .padding(.top, MVTheme.space(10))
         }
         if (mixed || foldersOnly), let query = store.folderQuery {
           Text(query.isEmpty ? "Find folder" : "Find folder: \(query)")
             .font(MVTheme.font(14))
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, inset)
-            .padding(.top, 8)
+            .padding(.top, MVTheme.space(8))
+        }
+        // Issue #413: one share icon for the grid's selection (the shift-click
+        // range, else the selected cell): Sharepoint, not the OS share sheet.
+        if !store.names.isEmpty && (store.currentIndex >= 0 || !store.range.isEmpty) {
+          HStack {
+            if store.range.count > 1 {
+              Text("\(store.range.count) selected")
+                .font(MVTheme.font(13))
+                .foregroundStyle(MVTheme.body)
+            }
+            Spacer()
+            GalleryShareButton()
+          }
+          .padding(.horizontal, inset)
+          .padding(.top, 8)
         }
         if mixed && !shownFolders.isEmpty {
           FolderStrip(cell: 44, shown: shownFolders)
             .padding(.horizontal, inset)
-            .padding(.vertical, 8)
+            .padding(.vertical, MVTheme.space(8))
         }
         ScrollViewReader { proxy in
           ScrollView {
@@ -94,12 +190,28 @@ struct GalleryView: View {
                       highlight: store.highlight(at: index),
                       isMarked: store.markedNames.contains(store.names[index]),
                       isClip: store.isClip(at: index),
-                      thumbKey: store.thumbKey(at: index), slot: store.slot(at: index)
+                      thumbKey: store.thumbKey(at: index), slot: store.slot(at: index),
+                      slotBadges: tileFlags.badges,
+                      why: search.why[index]
                     )
                     .id(index)
-                    .onTapGesture { store.selectAndCloseGallery(index) }
-                    // Drag out the original (the marks, when this cell is one).
-                    .fileDrag { store.dragFiles(from: index) }
+                    .onTapGesture {
+                      // Issue #413: Shift-click selects every image from the
+                      // selected cell to this one and the grid stays; a plain
+                      // click opens this one.
+                      if NSEvent.modifierFlags.contains(.shift) {
+                        store.extendRange(to: index, shown: shownItems)
+                      } else {
+                        store.selectAndCloseGallery(index)
+                      }
+                    }
+                    // docs/design/25 PR 59: the add-ons' context-menu entries, only when some exist.
+                    .modifier(SlotContextMenu(on: tileFlags.context, tile: index))
+                    // Drag out the original (the range or the marks, when this
+                    // cell is in them). Started by GalleryDrag's event monitor:
+                    // the grid's scroll view keeps a SwiftUI drag from reaching
+                    // the cell (#413).
+                    .onHover { inside in GalleryDrag.shared.hover(index, inside: inside) }
                   }
                 }
               }
@@ -113,7 +225,7 @@ struct GalleryView: View {
               Text("No supported photos or videos in this folder")
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity)
-                .padding(.top, 60)
+                .padding(.top, MVTheme.space(60))
             }
           }
           // In a child that observes only the selection: an arrow key re-runs
@@ -153,7 +265,7 @@ private struct FolderStrip: View {
   var body: some View {
     ScrollViewReader { proxy in
       ScrollView(.horizontal, showsIndicators: false) {
-        HStack(spacing: 8) {
+        HStack(spacing: MVTheme.space(8)) {
           ForEach(shown, id: \.self) { index in
             // SwiftUI can re-run a row of the old list after the list shrank
             // (a search or a person swapping the folder out): skip it, never
@@ -194,7 +306,7 @@ private struct FolderTile: View {
   @ObservedObject var card: FolderCard
 
   var body: some View {
-    VStack(spacing: 4) {
+    VStack(spacing: 4) {  // the tile's height: grid geometry
       Color.clear
         .frame(width: size, height: size)
         .overlay {
@@ -211,22 +323,22 @@ private struct FolderTile: View {
             }
           }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .clipShape(RoundedRectangle(cornerRadius: MVTheme.radius(6)))
         .overlay(alignment: .bottomLeading) {
           if card.loaded {
             Text(card.status)
               .font(MVTheme.font(11))
-              .padding(.horizontal, 6)
-              .padding(.vertical, 2)
+              .padding(.horizontal, MVTheme.space(6))
+              .padding(.vertical, MVTheme.space(2))
               .background(.ultraThinMaterial, in: Capsule())
-              .padding(6)
+              .padding(MVTheme.space(6))
           }
         }
         .overlay(
-          RoundedRectangle(cornerRadius: 6)
+          RoundedRectangle(cornerRadius: MVTheme.radius(6))
             .strokeBorder(isCursor ? MVTheme.accent : .clear, lineWidth: 2)
         )
-      HStack(spacing: 4) {
+      HStack(spacing: MVTheme.space(4)) {
         Image(systemName: "folder").font(MVTheme.font(12)).foregroundStyle(.secondary)
         Text(FolderStore.shared.folderName(path))
           .font(MVTheme.font(12))
@@ -248,7 +360,7 @@ private struct FolderChip: View {
   @ObservedObject var card: FolderCard
 
   var body: some View {
-    HStack(spacing: 6) {
+    HStack(spacing: MVTheme.space(6)) {
       Color.clear
         .frame(width: 36, height: 36)
         .overlay {
@@ -258,8 +370,8 @@ private struct FolderChip: View {
             Image(systemName: "folder.fill").foregroundStyle(.secondary)
           }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 4))
-      VStack(alignment: .leading, spacing: 1) {
+        .clipShape(RoundedRectangle(cornerRadius: MVTheme.radius(4)))
+      VStack(alignment: .leading, spacing: MVTheme.space(1)) {
         Text(FolderStore.shared.folderName(path))
           .font(MVTheme.font(12))
           .lineLimit(1)
@@ -272,13 +384,13 @@ private struct FolderChip: View {
       }
       .frame(width: 120, alignment: .leading)
     }
-    .padding(4)
+    .padding(MVTheme.space(4))
     .background(
-      RoundedRectangle(cornerRadius: 6)
+      RoundedRectangle(cornerRadius: MVTheme.radius(6))
         .fill(isCursor ? MVTheme.accent.opacity(0.18) : Color.primary.opacity(0.04))
     )
     .overlay(
-      RoundedRectangle(cornerRadius: 6)
+      RoundedRectangle(cornerRadius: MVTheme.radius(6))
         .strokeBorder(isCursor ? MVTheme.accent : .clear, lineWidth: 2)
     )
     .onAppear { FolderStore.shared.requestFolderSummaryIfNeeded(at: index) }
@@ -318,9 +430,12 @@ private struct GalleryCell: View {
   let isClip: Bool
   let thumbKey: String
   @ObservedObject var slot: ThumbSlot
+  var slotBadges = false
+  /// #291: the tag a file search matched on ("Canon EOS R5"), under the name.
+  var why: String? = nil
 
   var body: some View {
-    VStack(spacing: 4) {
+    VStack(spacing: 4) {  // the tile's height: grid geometry
       // Always a square: the placeholder and the loaded image must occupy the
       // same box, or rows go ragged as thumbnails arrive.
       Color.clear
@@ -334,18 +449,37 @@ private struct GalleryCell: View {
             Rectangle().fill(.quaternary)
           }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .clipShape(RoundedRectangle(cornerRadius: MVTheme.radius(6)))
+        // Issue #413: the shift-click range is tinted and outlined.
+        .overlay {
+          if highlight.inRange {
+            RoundedRectangle(cornerRadius: MVTheme.radius(6)).fill(MVTheme.accent.opacity(0.22))
+          }
+        }
         .overlay(
-          RoundedRectangle(cornerRadius: 6)
-            .strokeBorder(highlight.isCurrent && !onFolders ? MVTheme.accent : .clear, lineWidth: 2)
+          RoundedRectangle(cornerRadius: MVTheme.radius(6))
+            .strokeBorder((highlight.isCurrent && !onFolders) || highlight.inRange ? MVTheme.accent : .clear,
+                          lineWidth: 2)
         )
         .overlay { if isClip { PlayBadge(diameter: 40) } }
         .overlay(alignment: .topTrailing) { if isMarked { MarkBadge() } }
+        // docs/design/25 PR 59: the add-ons' badges, from a table (no add-on call per
+        // tile); with no add-on contributing badges the cell is exactly the plain one.
+        .modifier(SlotBadgesOverlay(on: slotBadges, name: name))
       Text(name)
         .font(MVTheme.font(12))
         .lineLimit(1)
         .truncationMode(.middle)
         .frame(width: size)
+      if let why {
+        Text(why)
+          .font(.caption2)
+          .foregroundStyle(.secondary)
+          .lineLimit(1)
+          .truncationMode(.tail)
+          .frame(width: size)
+          .accessibilityLabel("Matched tag: \(why)")
+      }
     }
     .onAppear { FolderStore.shared.requestThumbnailIfNeeded(at: index) }
     // Cells are identified by index: a new listing (a result list replacing

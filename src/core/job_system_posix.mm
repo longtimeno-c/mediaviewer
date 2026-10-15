@@ -144,7 +144,18 @@ status job_system::start(std::uint32_t worker_count) noexcept {
           impl_->cv.wait(lock, [this] { return !impl_->running || impl_->runnable(); });
           if (!impl_->running && impl_->empty()) return;
           job = impl_->pop();
+          if (job.gen != background_generation) {
+            fg_queued_.fetch_sub(1, std::memory_order_relaxed);
+            fg_running_.fetch_add(1, std::memory_order_relaxed);
+          }
         }
+        // Not running any more, whichever way this iteration ends.
+        struct fg_done {
+          std::atomic<std::uint32_t>* running;
+          ~fg_done() {
+            if (running) running->fetch_sub(1, std::memory_order_relaxed);
+          }
+        } fg_guard{job.gen != background_generation ? &fg_running_ : nullptr};
         const bool is_background = job.gen == background_generation;
 
         const generation now = generation_.load(std::memory_order_relaxed);
@@ -198,6 +209,7 @@ void job_system::shutdown() noexcept {
     if (!impl_->running) return;
     impl_->running = false;
     abandoned.swap(impl_->foreground);
+    fg_queued_.store(0, std::memory_order_relaxed);
     for (auto& job : impl_->background) abandoned.push_back(std::move(job));
     impl_->background.clear();
   }
@@ -229,6 +241,7 @@ job_id job_system::submit_at(generation gen, job_fn fn, job_done_fn on_done) noe
     if (!impl_->running) return invalid_job;
     auto& q = gen == background_generation ? impl_->background : impl_->foreground;
     q.push_back(job_record{id, gen, std::move(fn), std::move(on_done)});
+    if (gen != background_generation) fg_queued_.fetch_add(1, std::memory_order_relaxed);
   }
   submitted_.fetch_add(1, std::memory_order_relaxed);
   trace::job_submit(id, gen);

@@ -9,15 +9,18 @@
 //     never a file read (PR 9 verify: "toggling AF points and the info overlay
 //     does not re-read the file"). `reads()` counts the reads so a test can
 //     hold the store to that.
-//   * the date-taken sort key for every file in a folder, filled by one
-//     background job, so "sort by date taken" parses each file once per
-//     (path, mtime, size) and never on the UI thread.
+// The date-taken sort keys moved to meta::tag_index (#291): the folder pass
+// that reads every file's tags gives them too, from meta_cache.db.
 //   * issue #207: the rating and colour label of every file in a folder, for
 //     View > Show's cull filters (Picks, Not rejected, a colour), filled the
 //     same way and dropped by `invalidate` (a sidecar write leaves the key).
+//   * #345: the provenance of the item on screen, for the canvas's AI badge,
+//     pane open or not. A held full record answers it; otherwise one bounded
+//     probe (meta/probe.h, a few kilobytes) runs on a worker, and its answer is
+//     kept in its own, larger LRU of a few strings per file.
 //
-// Thread model: `get` / `peek` / `date_key` are UI-thread calls that only take
-// a short mutex; loads and key scans run on the job system. `on_ready` fires on
+// Thread model: `get` / `peek` are UI-thread calls that only take a short
+// mutex; loads run on the job system. `on_ready` fires on
 // the pool thread — the host marshals it (no dispatcher here, docs/design/14).
 #pragma once
 
@@ -34,6 +37,7 @@
 
 #include "core/job_system.h"
 #include "io/dir.h"
+#include "meta/generators.h"
 #include "io/pairing.h"
 #include "meta/meta.h"
 
@@ -42,15 +46,15 @@ namespace mv::shell {
 class meta_store {
  public:
   using loader_fn = std::function<result<meta::metadata>(std::string_view utf8_path)>;
-  using date_reader_fn = std::function<std::optional<std::int64_t>(std::string_view utf8_path)>;
   using cull_reader_fn = std::function<io::cull_marks(std::string_view utf8_path)>;
+  using probe_fn = std::function<meta::provenance(std::string_view utf8_path)>;
   // Runs on the pool thread. `path` is the item the record is for.
   using ready_fn = std::function<void(std::string path)>;
 
-  // Defaults read through meta::read / meta::read_date_taken /
-  // meta::read_cull_marks (also when `culls` is empty).
+  // Defaults read through meta::read / meta::read_cull_marks (also when
+  // `culls` is empty) / meta::probe_provenance (also when `probe` is empty).
   meta_store();
-  meta_store(loader_fn loader, date_reader_fn dates, cull_reader_fn culls = {});
+  explicit meta_store(loader_fn loader, cull_reader_fn culls = {}, probe_fn probe = {});
   ~meta_store();
 
   meta_store(const meta_store&) = delete;
@@ -65,16 +69,7 @@ class meta_store {
   // Cache only — never submits.
   [[nodiscard]] std::shared_ptr<const meta::metadata> peek(const io::dir_entry& e) const;
 
-  // Date-taken keys. `date_key` is a cache read. `resolve_date_keys` queues one
-  // background job over `entries` that reads every missing key, then calls
-  // `on_done` (pool thread). Calling it again supersedes the previous scan.
-  [[nodiscard]] std::optional<std::int64_t> date_key(const io::dir_entry& e) const;
-  void resolve_date_keys(std::vector<io::dir_entry> entries, job_system& jobs,
-                         std::function<void()> on_done);
-  // True once since the last call if keys arrived (the host re-sorts on it).
-  [[nodiscard]] bool consume_dates_changed() noexcept;
-
-  // Issue #207: rating + label, as date keys are. `cull_marks_of` answers a
+  // Issue #207: rating + label, read per folder in the background. `cull_marks_of` answers a
   // whole listing under one lock (nullopt = not read yet); it is a cache read,
   // never a file read, so the UI thread's relist can call it. `resolve_cull_marks`
   // reads the missing ones on one background job (a newer call supersedes it)
@@ -86,6 +81,19 @@ class meta_store {
   [[nodiscard]] bool consume_cull_changed() noexcept;
   // Cull reads performed (tests: a second relist must not read again).
   [[nodiscard]] std::uint64_t cull_reads() const noexcept;
+
+  // #345: what the file says about how it was made, for the AI badge. A full
+  // record already held for `e` answers at once (no probe); so does an earlier
+  // probe. Otherwise one probe is submitted (none while one for the key is in
+  // flight), `on_ready` fires on the pool thread when it lands, and this returns
+  // nullopt. The probe is meta::probe_provenance: bounded reads of the header
+  // bytes, never the full read.
+  [[nodiscard]] std::optional<meta::provenance> provenance(const io::dir_entry& e, job_system& jobs,
+                                                           ready_fn on_ready);
+  // Cache only (a held record, or a probe that landed) -- never submits.
+  [[nodiscard]] std::optional<meta::provenance> peek_provenance(const io::dir_entry& e) const;
+  // How many probes have run: a test holds held-arrow and cache hits to zero.
+  [[nodiscard]] std::uint64_t probes() const noexcept;
 
   // PR 12: drops every cached record for `utf8_path` (whatever its mtime and
   // size), and its rating + label (issue #207), so the next `get` or cull
@@ -99,6 +107,8 @@ class meta_store {
   void clear();
 
   static constexpr std::size_t kCapacity = 48;
+  // Provenance answers are a few short strings each; a whole folder's worth fits.
+  static constexpr std::size_t kProvenanceCapacity = 1024;
 
  private:
   struct state;

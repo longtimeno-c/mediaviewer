@@ -36,6 +36,7 @@
 #include <vector>
 
 #include "core/result.h"
+#include "meta/meta.h"
 
 namespace mv::meta {
 
@@ -88,18 +89,47 @@ struct write_fields {
   // exif:DateTimeOriginal, xmp:CreateDate, photoshop:DateCreated), so no
   // reader sees two dates. `remove()` deletes them all.
   change<std::string> date_taken;
+  // #352 (owner, 2026-10-12). The Location row. `to(p)` writes p.lat / p.lon
+  // and, only when p.altitude is set, the altitude; an altitude the file
+  // already has is kept otherwise. In a plain JPEG: EXIF GPSLatitude /
+  // GPSLongitude (+Ref, degrees / minutes / seconds rationals) and
+  // GPSVersionID 2.3.0.0 when absent; the JPEG's own XMP exif:GPS* copies are
+  // kept in agreement where it has them. In a sidecar: XMP exif:GPSLatitude /
+  // GPSLongitude in XMP's "DD,MM.mmmmmmk" form, exif:GPSVersionID when absent,
+  // exif:GPSAltitude / GPSAltitudeRef with an altitude. `remove()` deletes
+  // every EXIF GPSInfo tag and every XMP exif:GPS* property the write reaches
+  // (the JPEG and its sidecar, or the sidecar alone).
+  change<geo_point> location;
 
   [[nodiscard]] bool empty() const noexcept {
     return !rating.touches() && !orientation.touches() && !comment.touches() && tags.empty() &&
-           !date_taken.touches();
+           !date_taken.touches() && !location.touches();
   }
 };
+
+// #352: what the Metadata pane's Location row may do for a record.
+//   can_set      a new or changed position can be written (every file: a plain
+//                JPEG in place, anything else in its sidecar, which wins on read)
+//   can_clear    there is a position and removing it reaches every copy read
+//   in_original  the position is in a file written through a sidecar (RAW,
+//                HEIC, a clip, an MPF JPEG): it can be overridden, never removed
+struct location_rights {
+  bool can_set = false;
+  bool can_clear = false;
+  bool in_original = false;
+};
+[[nodiscard]] location_rights location_rights_of(const metadata& m) noexcept;
 
 enum class write_target : std::uint8_t { in_file, sidecar };
 
 // PR 29: what a write to `key` may do on a file whose writes land at `target`
 // (write_target_for). Pure: decided by the key, not by the file.
 [[nodiscard]] tag_access access_of(std::string_view key, write_target target) noexcept;
+
+// #290: what the pane's editability column shows for a row. Only Exiv2's own
+// EXIF / IPTC / XMP rows go through access_of; C2PA, PNG text, ICC, raw XMP,
+// container and computed rows are read-only (rule 5: the writer is unchanged).
+[[nodiscard]] tag_access row_access(const property& p, write_target target) noexcept;
 
 // PR 29: "2024-05-01 14:03:22" (or "...T..." ) -> the EXIF form
 // "2024:05:01 14:03:22" / the XMP form "2024-05-01T14:03:22". False for

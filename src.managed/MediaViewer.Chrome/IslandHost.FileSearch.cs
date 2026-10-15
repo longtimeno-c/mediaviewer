@@ -30,10 +30,17 @@ namespace MediaViewer.Chrome;
 /// keep their elements. Names are folded (case and diacritics) once per
 /// listing on a worker, so a keystroke is one ordinal substring pass. No
 /// TextBox: FakeInput, as in Settings (0xC000027B in these islands).
+///
+/// #291: then tags. After the name matches come the files whose tags (camera,
+/// lens, made-with, software, title, caption, keywords, creator) hold every
+/// word, from the core's folder tag pass (mv_folder_tag_search: memory, never
+/// a read), each with the tag it matched on under its tile. While the pass is
+/// still reading, the note says "Still reading tags — 340 of 2,000" and the
+/// search re-runs as it learns more.
 /// </remarks>
 public static partial class IslandHost
 {
-    private const string FileSearchPrompt = "Find files by name in this folder";
+    private const string FileSearchPrompt = "Find files by name or tag in this folder";
 
     // OpenFileSearch's answers, and the native entry's (chrome_host.h
     // gallery_search_action::open).
@@ -67,6 +74,12 @@ public static partial class IslandHost
     private static int _gsFolded = -1;
     private static bool _gsFolding;
     private static Action? _gsAfterFold;
+
+    // #291: re-runs the tag half while the folder's tag pass is still reading.
+    private static Microsoft.UI.Dispatching.DispatcherQueueTimer? _gsTagWatch;
+    private static ulong _gsTagGeneration;
+    private static string _gsTagNote = "";
+    private static readonly List<FolderItemVm> _gsWhyShown = new();
 
     private static IList<FolderItemVm> GalleryItems => _gsFiltering ? _gsItems : Items;
     private static IList<FolderCardVm> GalleryFolders => _gsFiltering ? _gsFolders : Folders;
@@ -279,7 +292,7 @@ public static partial class IslandHost
             FontSize = UiFontSize - 3,
             Foreground = Brush(Body),
             VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(6, 0, 4, 0),
+            Margin = Pad(6, 0, 4, 0),
         };
         Button close = EditButton("", () =>
         {
@@ -287,10 +300,10 @@ public static partial class IslandHost
             FocusGalleryGrid();
         }, tip: "Close file search (Esc)");
         close.Content = new FontIcon { Glyph = "", FontSize = 11, Foreground = Brush(Body) };
-        close.Padding = new Thickness(6, 4, 6, 4);
+        close.Padding = Pad(6, 4, 6, 4);
         AutomationProperties.SetName(close, "Close file search");
 
-        var inner = new Grid { ColumnSpacing = 2 };
+        var inner = new Grid { ColumnSpacing = Space(2) };
         inner.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         inner.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         inner.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -301,7 +314,7 @@ public static partial class IslandHost
             FontSize = 13,
             Foreground = Brush(Body),
             VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(2, 0, 2, 0),
+            Margin = Pad(2, 0, 2, 0),
         };
         inner.Children.Add(glyph);
         Grid.SetColumn(_gsField, 1);
@@ -316,8 +329,8 @@ public static partial class IslandHost
             Background = Brush(ChromeColour.Surface),
             BorderBrush = Brush(Hairline),
             BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(6),
-            Padding = new Thickness(8, 1, 3, 1),
+            CornerRadius = Corner(6),
+            Padding = Pad(8, 1, 3, 1),
             MinHeight = 32,
             MaxWidth = 640,
             HorizontalAlignment = HorizontalAlignment.Stretch,
@@ -325,7 +338,7 @@ public static partial class IslandHost
 
         var bar = new Grid
         {
-            Padding = new Thickness(12, 8, 12, 2),
+            Padding = Pad(12, 8, 12, 2),
             // Built with every gallery; shown only while file search is open.
             Visibility = _gsOpen ? Visibility.Visible : Visibility.Collapsed,
         };
@@ -342,9 +355,9 @@ public static partial class IslandHost
     {
         _gsNote = new StackPanel
         {
-            Spacing = 10,
+            Spacing = Space(10),
             HorizontalAlignment = HorizontalAlignment.Center,
-            Margin = new Thickness(0, 60, 0, 0),
+            Margin = Pad(0, 60, 0, 0),
             MaxWidth = 520,
             Visibility = Visibility.Collapsed,
         };
@@ -506,11 +519,23 @@ public static partial class IslandHost
         });
     }
 
-    private static void ApplyNamesFilter()
+    private static void ApplyNamesFilter() => ApplyNamesFilter(fromProviders: false);
+
+    // `fromProviders`: the add-ons' search providers answered (IslandHost.Slots.cs);
+    // the same pass again with their rows, the query not sent a second time.
+    private static void ApplyNamesFilter(bool fromProviders)
     {
-        string q = _gsOpen ? FoldName(_gsText.Trim()) : "";
+        string typed = _gsOpen ? _gsText.Trim() : "";
+        string q = FoldName(typed);
+        // docs/design/25 PR 59: the providers hear the query on their own workers
+        // (Places: `portugal`); this returns at once and their rows join later.
+        if (!fromProviders) PostSlotFileSearch(typed);
+        bool prefixed = SlotPrefixed(typed);
         if (q.Length == 0)
         {
+            ClearTagWhys();
+            StopTagWatch();
+            _gsTagNote = "";
             EndNamesFilter();
             ShowFileSearchNote(null);
             UpdateFileSearchCount();
@@ -518,7 +543,7 @@ public static partial class IslandHost
         }
         if (_gsFolded != _gsListing)
         {
-            FoldThen(ApplyNamesFilter);
+            FoldThen(() => ApplyNamesFilter(fromProviders));
             return;
         }
 
@@ -530,7 +555,7 @@ public static partial class IslandHost
         {
             FolderItemVm vm = Items[i];
             string key = vm.Folded ??= FoldName(vm.Name);
-            if (key.Contains(q, StringComparison.Ordinal))
+            if ((!prefixed && key.Contains(q, StringComparison.Ordinal)) || _slotFileHits.Contains(vm.Path))
             {
                 pos[i] = items.Count;
                 items.Add(vm);
@@ -543,13 +568,18 @@ public static partial class IslandHost
         var folders = new List<FolderCardVm>();
         foreach (FolderCardVm card in Folders)
         {
-            if (card.FoldedName.Contains(q, StringComparison.Ordinal)) folders.Add(card);
+            if (!prefixed && card.FoldedName.Contains(q, StringComparison.Ordinal)) folders.Add(card);
         }
+        // #291: then the files only their tags matched, after the names.
+        int named = items.Count;
+        AddTagMatches(items, pos);
 
         bool first = !_gsFiltering;
         _gsFiltering = true;
         _gsPos = pos;
-        if (first || !SyncView(_gsItems, items, v => v.Index)) _gsItems = new ObservableCollection<FolderItemVm>(items);
+        // SyncView edits in folder order; tag matches after the names are not.
+        if (first || items.Count != named || !SyncView(_gsItems, items, v => v.Index))
+            _gsItems = new ObservableCollection<FolderItemVm>(items);
         if (first || !SyncView(_gsFolders, folders, c => c.Index)) _gsFolders = new ObservableCollection<FolderCardVm>(folders);
         BindGallerySources();
         UpdateGallerySections();
@@ -557,10 +587,14 @@ public static partial class IslandHost
 
         if (items.Count == 0 && folders.Count == 0)
         {
-            ShowFileSearchNote($"No files named “{_gsText.Trim()}” in this folder.");
+            ShowFileSearchNote(_gsTagNote.Length > 0 ? $"No match yet. {_gsTagNote}"
+                : _slotFileNote.StartsWith("Still", StringComparison.Ordinal) ? _slotFileNote
+                : $"No files named or tagged “{_gsText.Trim()}” in this folder.");
             return;
         }
-        ShowFileSearchNote(null);
+        // The tag pass's "Still reading tags", else a provider's reason ("Portugal"),
+        // under the field.
+        ShowFileSearchNote(_gsTagNote.Length > 0 ? _gsTagNote : _slotFileNote.Length > 0 ? _slotFileNote : null);
         // The selection stays on a match: a hidden one hands over to the first.
         if (_folderCursor < 0 && items.Count > 0 && GalleryPos(_selectedIndex) < 0)
         {
@@ -571,6 +605,78 @@ public static partial class IslandHost
             GalleryScrollTo(_selectedIndex);
         }
     }
+
+    // ---- tags (#291) -----------------------------------------------------------------
+
+    /// <summary>
+    /// Appends the stops whose tags matched and whose names did not, sets
+    /// their <see cref="FolderItemVm.Why"/>, and the "still reading" note.
+    /// </summary>
+    private static void AddTagMatches(List<FolderItemVm> items, int[] pos)
+    {
+        ClearTagWhys();
+        _gsTagNote = "";
+        if (_folderSession is null) return;
+        _gsTagGeneration = _folderSession.FolderTagGeneration;
+        string json = _folderSession.FolderTagSearch(_gsText.Trim());
+        if (json.Length == 0) return;
+        bool reading = false;
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            System.Text.Json.JsonElement root = doc.RootElement;
+            reading = root.GetProperty("reading").GetBoolean();
+            int done = root.GetProperty("done").GetInt32();
+            int total = root.GetProperty("total").GetInt32();
+            if (reading && total > 0) _gsTagNote = $"Still reading tags — {done:N0} of {total:N0}";
+            foreach (System.Text.Json.JsonElement hit in root.GetProperty("hits").EnumerateArray())
+            {
+                int index = hit[0].GetInt32();
+                if ((uint)index >= (uint)Items.Count || pos[index] >= 0) continue;  // a name match already
+                FolderItemVm vm = Items[index];
+                vm.Why = hit[1].GetString() ?? "";
+                _gsWhyShown.Add(vm);
+                pos[index] = items.Count;
+                items.Add(vm);
+            }
+        }
+        catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException
+                                       or KeyNotFoundException or IndexOutOfRangeException)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+        }
+        if (reading) StartTagWatch(); else StopTagWatch();
+    }
+
+    private static void ClearTagWhys()
+    {
+        foreach (FolderItemVm vm in _gsWhyShown) vm.Why = "";
+        _gsWhyShown.Clear();
+    }
+
+    // A poll that exists only while a search is typed and tags are still coming.
+    private static void StartTagWatch()
+    {
+        if (_gsTagWatch is null)
+        {
+            _gsTagWatch = _dispatcher?.DispatcherQueue.CreateTimer();
+            if (_gsTagWatch is null) return;
+            _gsTagWatch.IsRepeating = true;
+            _gsTagWatch.Interval = TimeSpan.FromMilliseconds(300);
+            _gsTagWatch.Tick += (_, _) =>
+            {
+                try
+                {
+                    if (!_gsOpen || _folderSession is null) { StopTagWatch(); return; }
+                    if (_folderSession.FolderTagGeneration != _gsTagGeneration) ApplyNamesFilter();
+                }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
+            };
+        }
+        if (!_gsTagWatch.IsRunning) _gsTagWatch.Start();
+    }
+
+    private static void StopTagWatch() => _gsTagWatch?.Stop();
 
     private static void EndNamesFilter()
     {
@@ -650,6 +756,8 @@ public static partial class IslandHost
         if (newFolder) CloseFileSearch();
         else if (_gsFiltering && _galleryVisible) ApplyNamesFilter();
         UpdateFileSearchCount();
+        // docs/design/25 PR 59: badges for the folder the grid shows, once per folder.
+        if (_galleryVisible && !list) RequestSlotBadges(_openedFolder);
     }
 
     /// <summary>RealiseGallery: the repeaters are live; file search asked for
@@ -658,6 +766,7 @@ public static partial class IslandHost
     {
         _gsBound = true;
         BindGallerySources();
+        if (!_listOpen) RequestSlotBadges(_openedFolder);
         if (_gsOpenPending) ShowFileSearch();
     }
 }

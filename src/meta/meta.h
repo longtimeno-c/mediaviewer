@@ -28,7 +28,25 @@
 
 namespace mv::meta {
 
-enum class origin : std::uint8_t { exif, iptc, xmp, container, computed };
+// #290 appended the last four (docs/design/06 "Beyond Exiv2"): rows read by
+// meta/parse.h rather than Exiv2 or libavformat. All four are read-only.
+//   c2pa      Content Credentials: the curated claim rows and every assertion
+//   png_text  a PNG tEXt / zTXt / iTXt chunk
+//   icc       the embedded ICC profile's header and text tags
+//   xmp_raw   an XMP property Exiv2 did not list, keyed as the packet spells it
+// JFIF, JPEG comments, WebP chunks and HEIF items are `container` rows.
+enum class origin : std::uint8_t { exif, iptc, xmp, container, computed, c2pa, png_text, icc, xmp_raw };
+
+// The table name of an origin ("exif", …, "png_text", "xmp_raw"), as the
+// properties tables write it (tables.h).
+[[nodiscard]] const char* origin_name(origin o) noexcept;
+
+// #290: a position as numbers, WGS 84 degrees (north and east positive).
+// `altitude` is metres above sea level (negative below), when the file says.
+struct geo_point {
+  double lat = 0, lon = 0;
+  std::optional<double> altitude;
+};
 
 // One row of the full tree. `raw_tag` is always kept ("Exif.Photo.ExposureTime")
 // so the origin of a value is never lost to normalisation (docs/design/06).
@@ -55,6 +73,21 @@ struct summary {
   std::string focal_length;  // "85 mm"
   std::string date_taken;    // "2024-05-01 14:03:22"
   std::string gps;           // "48.85837° N, 2.29448° E"
+  // #290: the same position as numbers, from EXIF GPS, else XMP exif:GPS*
+  // (DJI and other drones), else a clip's ISO 6709 location. nullopt = none.
+  std::optional<geo_point> where;
+  // #290 (generators.h): the generator or provenance tool the file names
+  // ("ChatGPT", "Adobe Firefly", "Stable Diffusion", or a C2PA claim generator
+  // such as "Adobe Photoshop 25.0"); empty when nothing says. A camera's or an
+  // editor's Software is not "made with" unless the generator table knows it.
+  std::string made_with;
+  // True only on positive evidence: a C2PA / IPTC digitalSourceType of
+  // trainedAlgorithmicMedia or compositeWithTrainedAlgorithmicMedia, or a
+  // field naming a known AI generator. False means "not stated", never "not AI".
+  bool ai_generated = false;
+  // #345: why ai_generated is true, one line for a person (generators.h
+  // provenance::evidence); empty when it is false.
+  std::string ai_evidence;
   std::string colour_space;
   std::string duration;      // "1:23.4" (clips)
   std::string codec;         // primary video codec
@@ -127,6 +160,10 @@ struct metadata {
   // itself (a plain JPEG), false = its XMP sidecar. The pane's editability
   // column (access_of) is decided from this without another read.
   bool writes_in_file = false;
+  // #352: the file itself (not its XMP sidecar) holds a position. A sidecar
+  // cannot remove that one (rule 5), so the Location row's remove needs it
+  // (write.h location_rights_of).
+  bool where_in_file = false;
 };
 
 // Full read. Worker thread only. `status::io` when the file cannot be read;
@@ -152,6 +189,36 @@ struct metadata {
 [[nodiscard]] std::optional<std::int64_t> parse_date_key(std::string_view stamp) noexcept;
 // EXIF GPS: degrees/minutes/seconds + ref → "48.85837° N".
 [[nodiscard]] std::string format_coordinate(double degrees, char hemisphere);
+// #290: an XMP GPS coordinate, "DDD,MM,SSk" or "DDD,MM.mmk" (k = N S E W), or
+// plain signed decimal degrees → signed degrees. nullopt when it is not one.
+[[nodiscard]] std::optional<double> parse_xmp_coordinate(std::string_view text) noexcept;
+// #290: ISO 6709 "+48.8584+002.2945+035.000/" (altitude optional) → a point.
+[[nodiscard]] std::optional<geo_point> parse_iso6709(std::string_view text) noexcept;
+// "48.85837° N, 2.29448° E" for a point.
+[[nodiscard]] std::string format_point(const geo_point& p);
+
+// #352 (owner, 2026-10-12): what a person typed in the Location editor. Both
+// hosts call this (Mac bridge, Windows through the C ABI), so a position reads
+// the same on each. Accepted, latitude first unless letters say otherwise:
+//   decimal               "38.7979, -9.3907"   "38.7979 -9.3907"   "38.7979 N, 9.3907 W"
+//                         "N 38.7979, W 9.3907"  "9.3907 W, 38.7979 N"
+//   degrees, minutes[, s] "38°47′52″ N, 9°23′27″ W"   "38 47 52 N 9 23 27 W"
+//                         "38°47.874' N, 9°23.45' W"  ASCII ' and " (or '') for ′ and ″
+// A comma or semicolon separates the two; without one, N/S/E/W letters or a
+// single space between two plain decimals do. Only the last number of a
+// coordinate may have a fraction; minutes and seconds are under 60; latitude
+// within ±90, longitude within ±180; a sign and S / W together are refused.
+// Whitespace only is `blank` (the editor's "remove the location").
+struct location_input {
+  enum class kind : std::uint8_t { point, blank, invalid };
+  kind k = kind::invalid;
+  geo_point point;         // kind::point: lat / lon; altitude is never set
+  const char* error = "";  // kind::invalid: one line for the field (static, UTF-8)
+};
+[[nodiscard]] location_input parse_location(std::string_view utf8) noexcept;
+// The editor's starting text for a point: "38.7979, -9.3907" (6 decimals at
+// most, trailing zeros dropped). parse_location reads it back to the same point.
+[[nodiscard]] std::string format_location_input(const geo_point& p);
 // ---- PR 10: metadata an export carries ----------------------------------------
 
 // EXIF as a TIFF block (what follows "Exif\0\0" in a JPEG APP1) and the XMP

@@ -14,6 +14,8 @@
 // tools/addon-sdk/mvaddon.py made. Prints what the consent sheet is fed (the
 // inspect JSON); with a store folder it then installs there and prints the
 // install's JSON. Exit 0 only when every step said ok.
+#include <mediaviewer/mediaviewer_addon.h>
+
 #include <cstdio>
 #include <fstream>
 #include <iterator>
@@ -70,7 +72,10 @@ int main(int argc, char** argv) {
   }
   const auto manifest = slurp(mv::io::join_path(dir, "manifest.json"));
   const auto sig = slurp(mv::io::join_path(dir, "manifest.json.sig"));
-  const auto d = mv::addon::check_manifest(manifest, sig, key, 1, argv[3]);
+  // As this build's host would: every table from the oldest it serves to its
+  // own (an add-on needing table 2 or 3, the AI pack or Places, is not
+  // "needs_update" here when the app it ships beside takes it).
+  const auto d = mv::addon::check_manifest(manifest, sig, key, MV_ADDON_HOST_API, argv[3], MV_ADDON_HOST_API_OLDEST);
   if (!d.trusted()) {
     std::printf("%s\n", mv::addon::rejection_name(d.why));
     return 1;

@@ -25,6 +25,7 @@ public final class MVAIChrome: NSObject {
   private var panel: SearchPanelController?
   private var settingsHost: NSView?
   private var folder = ""
+  private var showAudio = false  // #355: File types "Show audio files"
   /// People → a person, opened in the gallery: its own search, apart from
   /// the panel's.
   private var personSearch: SearchModel?
@@ -46,6 +47,7 @@ public final class MVAIChrome: NSObject {
     guard let table else { return nil }
     let m = SearchModel(table: table)
     m.chrome = self
+    m.audioFilesChanged(showAudio)
     if !folder.isEmpty { m.folderChanged(folder) }
     search = m
     return m
@@ -56,6 +58,7 @@ public final class MVAIChrome: NSObject {
     guard let table else { return nil }
     let m = ManagementModel(table: table)
     m.chrome = self
+    m.audioFiles = showAudio
     if !folder.isEmpty { m.folderChanged(folder) }
     manage = m
     return m
@@ -144,6 +147,20 @@ public final class MVAIChrome: NSObject {
         _ = table.a.note_folder_opened?(table.ctx, dir)
       }
       manage?.folderChanged(dir)
+    }
+  }
+
+  /// #355: File types "Show audio files", on attach and on each change. The
+  /// pack indexes and searches audio files only while it is on; a reader (a
+  /// later window) only follows the first window's choice.
+  @objc(showAudioChanged:)
+  public func showAudioChanged(_ on: Bool) {
+    MainActor.assumeIsolated {
+      showAudio = on
+      if let table, !table.readOnly { table.setSetting("audio_files", on ? "1" : "0") }
+      search?.audioFilesChanged(on)
+      personSearch?.audioFilesChanged(on)
+      manage?.audioFiles = on
     }
   }
 
@@ -270,6 +287,7 @@ public final class MVAIChrome: NSObject {
     } else {
       m = SearchModel(table: table)
       m.chrome = self
+      m.audioFilesChanged(showAudio)
       personSearch = m
     }
     if !folder.isEmpty { m.folderChanged(folder) }

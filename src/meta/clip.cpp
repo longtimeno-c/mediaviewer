@@ -21,9 +21,12 @@ extern "C" {
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <memory>
 #include <string>
+#include <vector>
 
+#include "meta/cues.h"
 #include "meta/internal.h"
 
 namespace mv::meta::detail {
@@ -70,17 +73,6 @@ std::string duration_text(std::int64_t us) {
 std::string tag(const AVDictionary* d, const char* key) {
   const AVDictionaryEntry* e = av_dict_get(d, key, nullptr, AV_DICT_IGNORE_SUFFIX);
   return e && e->value ? e->value : std::string();
-}
-
-// ISO 6709 "+48.8584+002.2945+035.000/" → "48.85840° N, 2.29450° E".
-std::string iso6709(const std::string& s) {
-  if (s.size() < 4 || (s[0] != '+' && s[0] != '-')) return {};
-  char* end = nullptr;
-  const double lat = std::strtod(s.c_str(), &end);
-  if (!end || (*end != '+' && *end != '-')) return {};
-  const double lon = std::strtod(end, &end);
-  if (std::fabs(lat) > 90.0 || std::fabs(lon) > 180.0) return {};
-  return format_coordinate(lat, lat < 0 ? 'S' : 'N') + ", " + format_coordinate(lon, lon < 0 ? 'W' : 'E');
 }
 
 const char* chroma_name(const AVPixFmtDescriptor* d) {
@@ -163,10 +155,16 @@ void describe_video(const AVStream& st, stream_info& s) {
   }
   add(s, "Bit rate", bitrate_text(p.bit_rate));
 
-  if (p.color_primaries != AVCOL_PRI_UNSPECIFIED) add(s, "Colour primaries", av_color_primaries_name(p.color_primaries));
-  if (p.color_trc != AVCOL_TRC_UNSPECIFIED) add(s, "Transfer", av_color_transfer_name(p.color_trc));
-  if (p.color_space != AVCOL_SPC_UNSPECIFIED) add(s, "Matrix", av_color_space_name(p.color_space));
-  if (p.color_range != AVCOL_RANGE_UNSPECIFIED) add(s, "Range", av_color_range_name(p.color_range));
+  // A container may carry any number here; FFmpeg names only the ones it
+  // knows and returns NULL for the rest (a std::string from NULL crashed:
+  // #291 review, fuzz_meta_search on a damaged clip).
+  const auto named = [&s](const char* label, const char* name) {
+    if (name) add(s, label, name);
+  };
+  if (p.color_primaries != AVCOL_PRI_UNSPECIFIED) named("Colour primaries", av_color_primaries_name(p.color_primaries));
+  if (p.color_trc != AVCOL_TRC_UNSPECIFIED) named("Transfer", av_color_transfer_name(p.color_trc));
+  if (p.color_space != AVCOL_SPC_UNSPECIFIED) named("Matrix", av_color_space_name(p.color_space));
+  if (p.color_range != AVCOL_RANGE_UNSPECIFIED) named("Range", av_color_range_name(p.color_range));
 
   if (const AVPacketSideData* sd = av_packet_side_data_get(
           p.coded_side_data, p.nb_coded_side_data, AV_PKT_DATA_MASTERING_DISPLAY_METADATA);
@@ -259,7 +257,7 @@ void add_tags(metadata& out, const char* group, const AVDictionary* d) {
 
 }  // namespace
 
-bool read_clip(std::string_view utf8_path, metadata& out) noexcept {
+bool read_clip(std::string_view utf8_path, metadata& out, parse::evidence* ev) noexcept {
   try {
     format_ptr ctx = open(utf8_path, true);
     if (!ctx) return false;
@@ -344,14 +342,29 @@ bool read_clip(std::string_view utf8_path, metadata& out) noexcept {
     const std::string make = tag(ctx->metadata, "com.apple.quicktime.make");
     const std::string model = tag(ctx->metadata, "com.apple.quicktime.model");
     s.camera = model.empty() ? make : make.empty() ? model : make + " " + model;
+    // ISO 6709 "+48.8584+002.2945+035.000/": the point and its altitude (#290).
     for (const char* key : {"com.apple.quicktime.location.ISO6709", "location"}) {
-      s.gps = iso6709(tag(ctx->metadata, key));
-      if (!s.gps.empty()) break;
+      if (const auto p = parse_iso6709(tag(ctx->metadata, key))) {
+        s.where = p;
+        s.gps = format_point(*p);
+        break;
+      }
+    }
+    // #290: the generator evidence a clip's tags can carry.
+    if (ev) {
+      ev->exif_software = tag(ctx->metadata, "com.apple.quicktime.software");
+      if (ev->exif_software.empty()) ev->exif_software = tag(ctx->metadata, "encoder");
     }
     return true;
   } catch (...) {
     return false;
   }
+}
+
+static format_ptr open_clip_for_cues(std::string_view utf8_path) {
+  // Headers only: chapters are there, and the subtitle streams' codecs (no
+  // stream probing: a text stream's codec is in its header).
+  return open(utf8_path, false);
 }
 
 std::optional<std::int64_t> clip_date_key(std::string_view utf8_path) noexcept {
@@ -368,3 +381,211 @@ std::optional<std::int64_t> clip_date_key(std::string_view utf8_path) noexcept {
 }
 
 }  // namespace mv::meta::detail
+
+// ---- #406: chapters and text subtitle cues --------------------------------------------
+
+namespace mv::meta {
+namespace {
+
+bool valid_utf8(std::string_view s) {
+  std::size_t i = 0;
+  while (i < s.size()) {
+    const auto c = static_cast<unsigned char>(s[i]);
+    std::size_t n = c < 0x80 ? 1 : (c >> 5) == 0x6 ? 2 : (c >> 4) == 0xE ? 3 : (c >> 3) == 0x1E ? 4 : 0;
+    if (n == 0 || i + n > s.size()) return false;
+    for (std::size_t k = 1; k < n; ++k) {
+      if ((static_cast<unsigned char>(s[i + k]) & 0xC0) != 0x80) return false;
+    }
+    if (n == 1 && c < 0x20 && c != '\n' && c != '\r' && c != '\t') return false;  // control bytes: not text
+    i += n;
+  }
+  return true;
+}
+
+// Markup out, line breaks to spaces, runs of space collapsed, trimmed.
+std::string clean_line(std::string_view s, bool ass) {
+  std::string out;
+  out.reserve(s.size());
+  bool space = true;  // drop leading space
+  const auto put_space = [&] {
+    if (!space) out.push_back(' ');
+    space = true;
+  };
+  for (std::size_t i = 0; i < s.size(); ++i) {
+    const char c = s[i];
+    if (ass && c == '{') {  // an ASS override block: {\i1}
+      const std::size_t close = s.find('}', i);
+      if (close == std::string_view::npos) break;
+      i = close;
+      continue;
+    }
+    if (ass && c == '\\' && i + 1 < s.size() && (s[i + 1] == 'N' || s[i + 1] == 'n' || s[i + 1] == 'h')) {
+      put_space();
+      ++i;
+      continue;
+    }
+    if (c == '<') {  // <i>, </b>, <font color=...>, WebVTT's <c.yellow>, <00:01.000>
+      const std::size_t close = s.find('>', i);
+      if (close != std::string_view::npos && close - i <= 64) {
+        i = close;
+        continue;
+      }
+    }
+    if (c == '\n' || c == '\r' || c == '\t' || c == ' ') {
+      put_space();
+      continue;
+    }
+    out.push_back(c);
+    space = false;
+  }
+  while (!out.empty() && out.back() == ' ') out.pop_back();
+  if (out.size() > 512) {
+    std::size_t cut = 512;
+    while (cut > 0 && (static_cast<unsigned char>(out[cut]) & 0xC0) == 0x80) --cut;
+    out.resize(cut);
+  }
+  return out;
+}
+
+const char* text_codec(AVCodecID id) {
+  switch (id) {
+    case AV_CODEC_ID_MOV_TEXT: return "mov_text";
+    case AV_CODEC_ID_SUBRIP:
+    case AV_CODEC_ID_SRT: return "subrip";
+    case AV_CODEC_ID_ASS:
+    case AV_CODEC_ID_SSA: return "ass";
+    case AV_CODEC_ID_WEBVTT: return "webvtt";
+    case AV_CODEC_ID_TEXT: return "text";
+    default: return nullptr;  // bitmap subtitles (DVD, PGS, DVB) and the rest
+  }
+}
+
+}  // namespace
+
+std::string cue_text(std::string_view codec, std::string_view packet) {
+  std::string_view text = packet;
+  bool ass = false;
+  if (codec == "mov_text") {
+    // tx3g: a 16-bit big-endian length, then the text (style boxes after it).
+    if (packet.size() < 2) return {};
+    const std::size_t n = (static_cast<std::size_t>(static_cast<unsigned char>(packet[0])) << 8) |
+                          static_cast<unsigned char>(packet[1]);
+    if (n > packet.size() - 2) return {};
+    text = packet.substr(2, n);
+  } else if (codec == "ass") {
+    // ReadOrder,Layer,Style,Name,MarginL,MarginR,MarginV,Effect,Text
+    std::size_t at = 0;
+    for (int commas = 0; commas < 8; ++commas) {
+      at = packet.find(',', at);
+      if (at == std::string_view::npos) return {};
+      ++at;
+    }
+    text = packet.substr(at);
+    ass = true;
+  } else if (codec == "subrip") {
+    // An old-style "srt" packet may carry its timing line: keep the text lines.
+    if (text.find("-->") != std::string_view::npos) {
+      const std::size_t nl = text.find('\n', text.find("-->"));
+      text = nl == std::string_view::npos ? std::string_view{} : text.substr(nl + 1);
+    }
+  }
+  // A NUL ends the text (some muxers pad).
+  if (const std::size_t z = text.find('\0'); z != std::string_view::npos) text = text.substr(0, z);
+  if (text.empty() || !valid_utf8(text)) return {};
+  return clean_line(text, ass);
+}
+
+expected read_cues(std::string_view utf8_path, const cue_limits& limits,
+                   const std::function<bool(const cue&)>& visit) {
+  try {
+    detail::format_ptr ctx = detail::open_clip_for_cues(utf8_path);
+    if (!ctx) return err(status::io);
+    const std::int64_t origin_ms =
+        ctx->start_time != AV_NOPTS_VALUE && ctx->start_time > 0 ? ctx->start_time / 1000 : 0;
+    std::vector<cue> chapters;
+    for (unsigned i = 0; i < ctx->nb_chapters; ++i) {
+      const AVChapter& c = *ctx->chapters[i];
+      const AVDictionaryEntry* e = av_dict_get(c.metadata, "title", nullptr, 0);
+      if (!e || !e->value) continue;
+      std::string text(e->value);
+      if (!valid_utf8(text)) continue;
+      text = clean_line(text, false);
+      if (text.empty()) continue;
+      const double tb = av_q2d(c.time_base);
+      cue q;
+      q.kind = cue_kind::chapter;
+      q.start_ms = std::max<std::int64_t>(0, static_cast<std::int64_t>(static_cast<double>(c.start) * tb * 1000.0) - origin_ms);
+      q.end_ms = std::max(q.start_ms, static_cast<std::int64_t>(static_cast<double>(c.end) * tb * 1000.0) - origin_ms);
+      q.text = std::move(text);
+      chapters.push_back(std::move(q));
+    }
+    std::stable_sort(chapters.begin(), chapters.end(), [](const cue& a, const cue& b) { return a.start_ms < b.start_ms; });
+    std::vector<const char*> codec_of(ctx->nb_streams, nullptr);
+    bool any_text = false;
+    for (unsigned i = 0; i < ctx->nb_streams; ++i) {
+      AVStream* st = ctx->streams[i];
+      if (st->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE) codec_of[i] = text_codec(st->codecpar->codec_id);
+      if (codec_of[i]) {
+        any_text = true;
+      } else {
+        st->discard = AVDISCARD_ALL;  // only the text streams' packets are read
+      }
+    }
+    std::uint32_t sent = 0;
+    std::size_t next_chapter = 0;
+    bool full = false;
+    // Sends one cue if it is inside the limits; false stops the read.
+    const auto send = [&](const cue& q) -> int {
+      if (q.start_ms > limits.max_ms || sent >= limits.max_cues) {
+        full = true;
+        return 0;
+      }
+      if (q.start_ms < limits.start_ms) return 1;
+      ++sent;
+      return visit(q) ? 1 : -1;
+    };
+    const auto chapters_until = [&](std::int64_t t) -> int {
+      while (next_chapter < chapters.size() && chapters[next_chapter].start_ms <= t) {
+        const int r = send(chapters[next_chapter++]);
+        if (r <= 0) return r;
+      }
+      return 1;
+    };
+    if (any_text) {
+      AVPacket* pkt = av_packet_alloc();
+      if (!pkt) return err(status::out_of_memory);
+      struct packet_free {
+        AVPacket*& p;
+        ~packet_free() { av_packet_free(&p); }
+      } const free_it{pkt};
+      while (!full && av_read_frame(ctx.get(), pkt) >= 0) {
+        const int si = pkt->stream_index;
+        const char* codec = si >= 0 && static_cast<unsigned>(si) < codec_of.size() ? codec_of[static_cast<unsigned>(si)] : nullptr;
+        const std::int64_t ts = pkt->pts != AV_NOPTS_VALUE ? pkt->pts : pkt->dts;
+        if (!codec || ts == AV_NOPTS_VALUE || !pkt->data || pkt->size <= 0) {
+          av_packet_unref(pkt);
+          continue;
+        }
+        const AVRational tb = ctx->streams[si]->time_base;
+        cue q;
+        q.kind = cue_kind::subtitle;
+        q.start_ms = std::max<std::int64_t>(0, av_rescale_q(ts, tb, AVRational{1, 1000}) - origin_ms);
+        q.end_ms = q.start_ms + std::max<std::int64_t>(0, av_rescale_q(pkt->duration, tb, AVRational{1, 1000}));
+        q.text = cue_text(codec, std::string_view(reinterpret_cast<const char*>(pkt->data), static_cast<std::size_t>(pkt->size)));
+        av_packet_unref(pkt);
+        if (const int r = chapters_until(q.start_ms); r < 0) return err(status::cancelled);
+        else if (r == 0) break;
+        if (q.text.empty()) continue;  // not text: skipped
+        const int r = send(q);
+        if (r < 0) return err(status::cancelled);
+        if (r == 0) break;
+      }
+    }
+    if (!full && chapters_until(std::numeric_limits<std::int64_t>::max()) < 0) return err(status::cancelled);
+    return {};
+  } catch (...) {
+    return err(status::io);
+  }
+}
+
+}  // namespace mv::meta

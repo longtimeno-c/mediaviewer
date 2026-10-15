@@ -101,7 +101,7 @@ public static partial class IslandHost
         _updateProgress = new JobBar { Visibility = Visibility.Collapsed };
         _updateProgress.Root.Width = 90;
         _updateProgress.Root.VerticalAlignment = VerticalAlignment.Center;
-        _updateProgress.Root.Margin = new Thickness(0, 0, 10, 0);
+        _updateProgress.Root.Margin = Pad(0, 0, 10, 0);
         AutomationProperties.SetName(_updateProgress.Root, "Update download progress");
         var group = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
         group.Children.Add(_updateButton);
@@ -284,7 +284,7 @@ public static partial class IslandHost
         _checkNowNote = Label("");
         _checkNowNote.FontSize = 12;
         _checkNowNote.VerticalAlignment = VerticalAlignment.Center;
-        var checkNow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
+        var checkNow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(12) };
         checkNow.Children.Add(_checkNowNote);
         checkNow.Children.Add(_checkNow);
         ShowCheckNowNote(_lastUpdateStatus ?? _updater?.Status

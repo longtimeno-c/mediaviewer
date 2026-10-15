@@ -11,6 +11,6 @@ struct MarkBadge: View {
       .foregroundStyle(.white, MVTheme.accent)
       .font(.system(size: 16))
       .shadow(radius: 1)
-      .padding(3)
+      .padding(MVTheme.space(3))
   }
 }

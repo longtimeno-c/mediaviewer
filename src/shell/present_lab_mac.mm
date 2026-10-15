@@ -6,6 +6,7 @@
 #include "shell/edit_view.h"
 #include "shell/loupe.h"
 #include "shell/dino_draw.h"
+#include "shell/home_ground.h"
 #include "shell/welcome_screen.h"
 
 #include "image/pipeline.h"
@@ -951,6 +952,42 @@ bool present_lab_mac::take_working() noexcept {
   return changed;
 }
 
+// Text in images (docs/design/16): publish where the still is for the host's
+// hit-test, then draw the selection the host published, one translucent box per
+// line, as Photos tints selected text. No still (a clip, an animation): no map.
+void present_lab_mac::draw_text_overlay(const input_snapshot& snapshot) noexcept {
+  canvas_map map;
+  float pw = 0.0f, ph = 0.0f;
+  if (current_image_ && !video_frame_ && !anim_frame_ && picture_size(&pw, &ph) && pw > 0.0f && ph > 0.0f) {
+    map.valid = true;
+    map.centre_x = canvas_origin_x(snapshot) + usable_window_w(snapshot) * 0.5f;
+    map.centre_y = static_cast<float>(snapshot.chrome_height_px) + usable_window_h(snapshot) * 0.5f;
+    map.zoom = camera_.zoom();
+    map.pan_x = camera_.pan_x();
+    map.pan_y = camera_.pan_y();
+    map.width = pw;
+    map.height = ph;
+  }
+  {
+    std::lock_guard<std::mutex> lock(eye_mutex_);
+    still_map_ = map;
+  }
+  if (!map.valid || snapshot.text.count == 0) return;
+  ImDrawList* fg = ImGui::GetForegroundDrawList();
+  const float scale = snapshot.dpi_scale > 0.0f ? snapshot.dpi_scale : 1.0f;
+  const float pad = 2.0f * scale;
+  const auto to_screen = [&](float u, float v) {
+    return ImVec2(map.centre_x + (u * pw - map.pan_x) * map.zoom, map.centre_y + (v * ph - map.pan_y) * map.zoom);
+  };
+  for (int i = 0; i < snapshot.text.count && i < text_highlight::kMaxRects; ++i) {
+    const float* r = snapshot.text.rect[i];
+    const ImVec2 a = to_screen(r[0], r[1]);
+    const ImVec2 b = to_screen(r[2], r[3]);
+    fg->AddRectFilled(ImVec2(a.x - pad, a.y - pad), ImVec2(b.x + pad, b.y + pad), IM_COL32(64, 140, 255, 90),
+                      3.0f * scale);
+  }
+}
+
 // PR 9. Everything here reads `snapshot.meta` (published by the UI thread when
 // the selection's metadata arrives) plus the camera; toggling an overlay is one
 // more draw in the present that was already going out, never a file read.
@@ -1246,10 +1283,9 @@ void present_lab_mac::render_thread_main() noexcept {
         const bool input_activity = input_cursor_.consume_activity(snapshot);
         if (input_activity && warmed_up_ && !options_.start_animating) ++idle_stats_.input_events;
         bool redraw = input_activity;
-        if (snapshot.background != seen_background_ ||
-            snapshot.home_background_rgb != seen_home_background_rgb_) {
-          seen_background_ = snapshot.background;
-          seen_home_background_rgb_ = snapshot.home_background_rgb;
+        if (!seen_home_valid_ || !(snapshot.home == seen_home_)) {
+          seen_home_ = snapshot.home;
+          seen_home_valid_ = true;
           redraw = true;
         }
 
@@ -1544,6 +1580,8 @@ void present_lab_mac::render_thread_main() noexcept {
         // Consumed with or without a picture, so no scroll banks up for the next one.
         float scroll_x = 0.0f, scroll_y = 0.0f;
         const bool scrolled = input_cursor_.consume_scroll(snapshot, scroll_x, scroll_y);
+        float direct_x = 0.0f, direct_y = 0.0f;
+        const bool scrolled_direct = input_cursor_.consume_scroll_direct(snapshot, direct_x, direct_y);
         unsigned edges = canvas::camera::kEdgeTop | canvas::camera::kEdgeBottom;
 
         if (float image_w = 0, image_h = 0; picture_size(&image_w, &image_h)) {
@@ -1591,7 +1629,8 @@ void present_lab_mac::render_thread_main() noexcept {
           // mouse_down[0] alone once under way, even past the view's edge
           // (panning toward an edge is the common case this covers) --
           // mouse_in_client only gates *starting* a new drag.
-          if (snapshot.mouse_down[0] && (was_dragging_ || snapshot.mouse_in_client)) {
+          // A press on text selects it (shell/text_select.h): no pan for it.
+          if (snapshot.mouse_down[0] && (was_dragging_ || (snapshot.mouse_in_client && !snapshot.text_press))) {
             if (!was_dragging_) {
               camera_.drag_begin();
               was_dragging_ = true;
@@ -1614,11 +1653,36 @@ void present_lab_mac::render_thread_main() noexcept {
             camera_.pan_by_screen(scroll_x, scroll_y, image_w, image_h, window_w, window_h);
             redraw = true;
           }
+          // A trackpad's: the view follows at once (canvas/document_scroll.h).
+          if (scrolled_direct) {
+            camera_.scroll_direct(direct_x, direct_y, image_w, image_h, window_w, window_h);
+            redraw = true;
+          }
           edges = camera_.vertical_edges(image_h, window_h);
         }
         scroll_edges_.store(edges, std::memory_order_relaxed);
+        page_land_ack_.store(seen_page_land_seq_, std::memory_order_release);
         // The UI thread reads this to let ↑ ↓ fall through at fit. Lock-free.
         view_fitted_.store(!picture_framed || camera_.fit_mode(), std::memory_order_relaxed);
+        // Issue #408: the home's ground effect (home_theme.h home_ground_clock:
+        // 30 Hz in front and in use, 10 Hz while visible, then rest). A pointer
+        // move or a key, here or over the bar and panes (pointer_seq),
+        // restarts it; launch counts as one. Each due tick is one static frame,
+        // never `animating`, so it stops the moment a file is up.
+        if (input_activity || snapshot.pointer_seq != seen_pointer_seq_ || ground_.last_input < 0.0) {
+          seen_pointer_seq_ = snapshot.pointer_seq;
+          ground_.input(elapsed);
+        }
+        {
+          const bool home = current_image_ == nullptr && video_frame_ == nullptr && !media_ &&
+                            video_opening_.load(std::memory_order_acquire) == 0 && !sweep_mode_ &&
+                            !game_.active() && !snapshot.blackout;
+          ground_every_ = ground_.interval(home, snapshot.home.effect, snapshot.window_active,
+                                           snapshot.window_visible && !occluded_,
+                                           snapshot.reduce_motion, elapsed);
+          ground_tick_ = ground_.step(ground_every_, elapsed);
+          if (ground_tick_) redraw = true;
+        }
         if (redraw) last_input_time_ = elapsed;
         if (fade_from_ && !fade_.active(elapsed)) {
           fade_from_.reset();
@@ -1631,6 +1695,7 @@ void present_lab_mac::render_thread_main() noexcept {
         req.window_active = snapshot.window_active;
         req.occluded = occluded_;
         req.soak = options_.soak_seconds > 0.0 || options_.harness;
+        req.ground_tick = ground_tick_;  // a ground tick may present behind another app
         // docs/design/03 rule 4's one labelled exception, as on Windows: blinkies
         // animate, so a still with them on presents until C turns them off.
         const bool blinkies =
@@ -1672,6 +1737,11 @@ void present_lab_mac::render_thread_main() noexcept {
                                                (monotonic_seconds() - measurement_start_seconds_)
                                          : k_warmup_seconds - elapsed;
             timeout = std::min(timeout, std::max(0.0, remaining));
+          }
+          if (ground_every_ > 0.0) {
+            // The ground's next tick; the tick re-reads the rule, so a ground
+            // that has gone quiet rests within one interval.
+            timeout = std::min(timeout, ground_.until_next(ground_every_, elapsed));
           }
           std::unique_lock lock(g_wait_mutex);
           g_wait_cv.wait_for(lock, std::chrono::duration<double>(timeout), [&] {
@@ -1750,9 +1820,9 @@ void present_lab_mac::render_thread_main() noexcept {
         id<CAMetalDrawable> drawable = update.drawable;
         if (!drawable) continue;
         const float theme_rgb[3] = {
-            home_linear_channel(snapshot.home_background_rgb, 16),
-            home_linear_channel(snapshot.home_background_rgb, 8),
-            home_linear_channel(snapshot.home_background_rgb, 0)};
+            home_linear_channel(snapshot.home.canvas, 24),
+            home_linear_channel(snapshot.home.canvas, 16),
+            home_linear_channel(snapshot.home.canvas, 8)};
 
         gfx::display_link_tick tick;
         tick.valid = true;
@@ -1762,23 +1832,15 @@ void present_lab_mac::render_thread_main() noexcept {
         pass.colorAttachments[0].texture = drawable.texture;
         pass.colorAttachments[0].loadAction = MTLLoadActionClear;
         pass.colorAttachments[0].storeAction = MTLStoreActionStore;
-        // Settings' canvas background applies behind media. The empty welcome
-        // and runner use AppKit's window colour from the UI-thread snapshot.
-        {
-          const bool have_picture = current_image_ != nullptr || video_frame_ != nullptr;
-          const double lvl = gfx::background_clear_mac(snapshot.background);
-          if (snapshot.blackout) {
-            // Slideshow `.`: the canvas goes black and nothing is drawn over it.
-            pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
-          } else if ((!have_picture && !media_ && !(sweep_mode_ && animating_)) ||
-                     snapshot.background == 0) {
-            pass.colorAttachments[0].clearColor = MTLClearColorMake(
-                theme_rgb[0], theme_rgb[1], theme_rgb[2], 1.0);
-          } else {
-            pass.colorAttachments[0].clearColor =
-                snapshot.background == 4 ? MTLClearColorMake(0.016, 0.018, 0.024, 1.0)
-                                               : MTLClearColorMake(lvl, lvl, lvl, 1.0);
-          }
+        // Issue #408: every screen is the theme's canvas token, the colour
+        // the chrome paints (Default = AppKit's window colour): the welcome, a
+        // still and a video alike. Only the slideshow blackout differs.
+        if (snapshot.blackout) {
+          // Slideshow `.`: the canvas goes black and nothing is drawn over it.
+          pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 1.0);
+        } else {
+          pass.colorAttachments[0].clearColor =
+              MTLClearColorMake(theme_rgb[0], theme_rgb[1], theme_rgb[2], 1.0);
         }
 
         ImGui_ImplMetal_NewFrame(pass);
@@ -1810,8 +1872,10 @@ void present_lab_mac::render_thread_main() noexcept {
           const welcome_text text{
               .open_hint = "or press Cmd+O to choose a file or a folder",
               .keys = "0 fit    1 100%    + / -  zoom    Space  play/pause    F  fullscreen    ?  shortcuts"};
-          const home_palette theme(snapshot.home_background_rgb);
+          const home_theme& theme = snapshot.home;
           ImDrawList* bg = ImGui::GetBackgroundDrawList();
+          // Issue #408: the built-in theme's ground, behind the card (and the runner).
+          draw_home_ground(bg, w, h, scale, theme, ground_.time);
           if (!sweep_mode_ && game_.active()) {
             const float dt = last_game_elapsed_ > 0.0
                                  ? static_cast<float>(elapsed - last_game_elapsed_)
@@ -1883,6 +1947,7 @@ void present_lab_mac::render_thread_main() noexcept {
         const float view_w = usable_window_w(snapshot);
         const float view_h = usable_window_h(snapshot);
         if (!snapshot.blackout) {
+          draw_text_overlay(snapshot);
           draw_photo_overlays(snapshot);
           draw_crop_overlay(snapshot);
           const float scale = snapshot.dpi_scale > 0.0f ? snapshot.dpi_scale : 1.0f;
@@ -1948,7 +2013,6 @@ void present_lab_mac::render_thread_main() noexcept {
                                                                             : current_image_->height);
           for (int i = 0; i < 6; ++i) bp.uv_map[i] = pl.map.m[i];
           bp.clip_to_source = ev && ev->keep_frame;
-          bp.background = snapshot.background;
           for (int i = 0; i < 3; ++i) bp.theme_background[i] = theme_rgb[i];
           bp.time_seconds = static_cast<float>(elapsed);
           bp.clipping = snapshot.clipping;

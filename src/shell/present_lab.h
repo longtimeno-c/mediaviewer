@@ -37,6 +37,7 @@
 #include "mediaviewer/mediaviewer.h"
 #include "shell/dino_game.h"
 #include "shell/edit_view.h"
+#include "shell/home_theme.h"
 #include "shell/input_state.h"
 
 namespace mv::shell {
@@ -110,6 +111,14 @@ class present_lab {
   // (docs/design/04 "Pages").
   [[nodiscard]] unsigned scroll_edges() const noexcept {
     return scroll_edges_.load(std::memory_order_relaxed);
+  }
+
+  // [any-thread][no-block] The page_land_seq whose page the render thread has
+  // put on screen (camera::turn_page applied). Stored after scroll_edges(), so
+  // a host that sees its turn acknowledged reads the new page's edges
+  // (canvas/document_scroll.h waits on this before turning again).
+  [[nodiscard]] std::uint32_t page_land_ack() const noexcept {
+    return page_land_ack_.load(std::memory_order_acquire);
   }
 
   // [any-thread][no-block] True while a still (not a clip) is on the canvas.
@@ -188,11 +197,19 @@ class present_lab {
   void draw_overlay(const input_snapshot& snapshot) noexcept;
   // Loupe frame, hold-previous label, info line. ImGui, same present.
   void draw_view_overlays(const input_snapshot& snapshot) noexcept;
+  // Text in images: the selection's highlight, and canvas_map for the host.
+  void draw_text_overlay(const input_snapshot& snapshot) noexcept;
   bool write_json_report() const noexcept;
 
  public:
   // [any-thread] What the eyedropper last read, as `#RRGGBB  rgb(r, g, b)  x y`;
   // empty when it is off or the cursor is not over a readable still.
+  // [any-thread] Text in images (docs/design/16): where the still was last
+  // drawn, for the host's hit-test.
+  [[nodiscard]] canvas_map still_map() const {
+    std::lock_guard<std::mutex> lock(eye_mutex_);
+    return still_map_;
+  }
   [[nodiscard]] std::string eyedropper_text() const {
     std::lock_guard<std::mutex> lock(eye_mutex_);
     return eye_text_;
@@ -213,6 +230,7 @@ class present_lab {
   eyedropper_sample eye_;
   gfx::com_ptr<ID3D11Texture2D> eye_staging_;
   mutable std::mutex eye_mutex_;
+  canvas_map still_map_;  // under eye_mutex_
   std::string eye_text_;
   std::uint32_t seen_meta_seq_ = 0;
   std::uint8_t seen_view_flags2_ = 0;
@@ -398,8 +416,14 @@ class present_lab {
   // texture changed. Playing an animation must leave this where it was.
   std::uint32_t previous_image_changes_ = 0;
   std::uint8_t seen_view_flags_ = 0;
-  std::uint8_t seen_background_ = 255;
-  std::uint32_t seen_home_background_rgb_ = 0xFFFFFFFFu;
+  // Issue #408: the theme's tokens (one redraw when they change) and the
+  // home's ground effect, which ticks at 10 Hz by its rest rule.
+  home_theme seen_home_{};
+  bool seen_home_valid_ = false;
+  std::uint32_t seen_pointer_seq_ = 0;
+  home_ground_clock ground_;
+  double ground_every_ = 0.0;  // seconds between ticks now; 0 = resting
+  bool ground_tick_ = false;     // a tick is due this pass (may present while behind)
   std::int32_t seen_loupe_steps_x_ = 0;
   std::int32_t seen_loupe_steps_y_ = 0;
   std::uint32_t seen_marked_count_ = 0;
@@ -413,6 +437,7 @@ class present_lab {
   std::atomic<bool> finished_{false};
   std::atomic<bool> view_fitted_{true};
   std::atomic<unsigned> scroll_edges_{3};
+  std::atomic<std::uint32_t> page_land_ack_{0};
   std::uint32_t seen_page_land_seq_ = 0;
   std::atomic<bool> showing_still_{false};
   std::atomic<std::uint8_t> anim_state_{0};

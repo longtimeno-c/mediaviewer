@@ -47,6 +47,19 @@ public final class MVChromeHost: NSObject {
     host(TransportView())
   }
 
+  /// #345: the AI-generated badge, bottom-right of the canvas. main_mac.mm shows,
+  /// hides and places it; `setAIBadge` gives it its text.
+  @objc public static func makeAIBadgeView() -> NSView {
+    host(AIBadgeView())
+  }
+
+  @objc public static var aiBadgeWidth: CGFloat { AIBadgeView.width }
+  @objc public static var aiBadgeHeight: CGFloat { AIBadgeView.height }
+
+  @MainActor @objc public static func setAIBadge(title: String, evidence: String) {
+    AIBadgeStore.shared.set(title: title, evidence: evidence)
+  }
+
   @objc public static func makeHelpView() -> NSView {
     host(HelpView())
   }
@@ -74,6 +87,12 @@ public final class MVChromeHost: NSObject {
     PhotosBackupStore.shared.reveal()
   }
 
+  /// The host's MV_SCRIPT_SELFTEST rig (main_mac.mm, docs/design/25 PR 57): Settings
+  /// scrolled to From others, where a stopped script add-on says why.
+  @MainActor @objc public static func revealOpenAddons() {
+    OpenAddonStore.shared.reveal()
+  }
+
   /// The host's MV_ADDON_SELFTEST rig (main_mac.mm): the same calls the
   /// buttons make, and one line of state for its log. Inert otherwise.
   @MainActor @objc public static func addonSelfTest(_ action: String, argument: String) -> String {
@@ -99,6 +118,53 @@ public final class MVChromeHost: NSObject {
     let installed = addons.installed.map { "\($0.addonID) \($0.version) \($0.state)" }.joined(separator: ",")
     return "\(offer) installed=[\(installed)] themes=\(addons.themes.count) theme=\"\(theme.selection)\" "
       + "themed=\(MVTheme.themed != nil) note=\"\(theme.note)\" message=\"\(addons.message)\""
+  }
+
+  /// PR 56's leg of the same rig: an add-on's settings page drawn by the real
+  /// view, alone in an off-screen window, written as a PNG once it has read
+  /// its page; and the Remove panel's "Keep its settings". Inert otherwise.
+  @MainActor private static var pageSnapshots: [NSWindow] = []
+  @MainActor @objc public static func addonSelfTestPage(_ addonID: String, path: String) {
+    guard ProcessInfo.processInfo.environment["MV_ADDON_SELFTEST"] != nil else { return }
+    let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 600, height: 760),
+                          styleMask: [.borderless], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    let root = AddonSettingsPage(addonID: addonID, fallbackTitle: addonID)
+      .frame(width: 560).padding(MVTheme.space(20)).frame(maxHeight: .infinity, alignment: .top)
+      .background(MVTheme.canvas)
+    window.contentView = NSHostingView(rootView: ThemedRoot(content: root))
+    window.orderFrontRegardless()
+    pageSnapshots.append(window)
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+      guard let v = window.contentView else { return }
+      v.layoutSubtreeIfNeeded()
+      if let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) {
+        v.cacheDisplay(in: v.bounds, to: rep)
+        try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+      }
+      window.orderOut(nil)
+      pageSnapshots.removeAll { $0 === window }
+    }
+  }
+
+  @MainActor @objc public static func addonSelfTestRemove(_ folder: String, keepSettings: Bool) {
+    guard ProcessInfo.processInfo.environment["MV_ADDON_SELFTEST"] != nil else { return }
+    let addons = OpenAddonStore.shared
+    guard let addon = addons.installed.first(where: { $0.folder == folder }) else { return }
+    addons.keepSettings = keepSettings
+    addons.remove(addon)
+  }
+
+  @MainActor @objc public static func addonSelfTestOffer(_ path: String) {
+    guard ProcessInfo.processInfo.environment["MV_ADDON_SELFTEST"] != nil else { return }
+    OpenAddonStore.shared.offer(file: path)
+  }
+
+  /// docs/design/25, issue #402: the add-ons' context-menu entries for the file
+  /// on the canvas, as its gallery tile lists them. Nil when none contributes
+  /// one or no file is on screen (the canvas then shows no menu).
+  @MainActor @objc public static func canvasContextMenu() -> NSMenu? {
+    SlotCanvasMenu.make()
   }
 
   /// PR 9: the metadata pane and folder tree, floating over the canvas.
@@ -154,6 +220,22 @@ public final class MVChromeHost: NSObject {
     hosting.isHidden = true
     ResumeNoticeStore.shared.host = hosting
     return hosting
+  }
+
+  /// The "Press T" filmstrip hint card (HintNoticeView.swift): sized like the
+  /// resume notice, pinned by its bottom-right corner, hidden until shown.
+  @MainActor @objc public static func makeHintNoticeView() -> NSView {
+    let hosting = NSHostingView(rootView: ThemedRoot(content: HintNoticeView()))
+    hosting.sizingOptions = [.intrinsicContentSize]
+    hosting.translatesAutoresizingMaskIntoConstraints = false
+    hosting.isHidden = true
+    HintNoticeStore.shared.host = hosting
+    return hosting
+  }
+
+  /// Show the hint card for a few seconds, or hide it with "".
+  @MainActor @objc public static func showHint(_ text: String) {
+    HintNoticeStore.shared.show(text)
   }
 
   /// PR 11 verify only (MV_CRASH_TEST=nsexception, crash_reporter_mac.h): an
