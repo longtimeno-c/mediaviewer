@@ -5,6 +5,7 @@
 // C++, no models: every case runs everywhere.
 #include "catch_compat.h"
 
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -325,5 +326,160 @@ TEST_CASE("query: edit distance with transpositions", "[ai][query]") {
   CHECK(q::edit_distance("trstan", "tristan", 2) == 1);
   CHECK(q::edit_distance("kitten", "sitting", 5) == 3);
   CHECK(q::edit_distance("abc", "xyzzy", 1) == 2);  // stops past the limit
-  CHECK(q::fold("JOSÉ Ærø") == "jose aero");
+  CHECK(q::fold("JOSÉ Ærø") == "jose ærø");  // #291: the hosts' fold; æ and ø have no decomposition
+}
+
+// ---- #291: tag and place terms --------------------------------------------------------
+
+TEST_CASE("camera:, lens:, ai:, made: and place: parse into the plan", "[ai][query][tags]") {
+  auto p = q::parse("beach camera:R5 lens:\"24-70\" -camera:iphone");
+  CHECK(p.cameras == std::vector<std::string>{"r5"});
+  CHECK(p.not_cameras == std::vector<std::string>{"iphone"});
+  CHECK(p.lenses == std::vector<std::string>{"24-70"});
+  REQUIRE(p.words.size() == 1);
+  CHECK(p.words[0].text == "beach");
+
+  CHECK(q::parse("ai:yes").ai == 1);
+  CHECK(q::parse("ai:no").ai == -1);
+  CHECK(q::parse("-ai:yes").ai == -1);
+  CHECK(q::parse("made:yes").ai == 1);
+  auto m = q::parse("made:ChatGPT ai:firefly -made:midjourney");
+  CHECK(m.made == std::vector<std::string>{"chatgpt", "firefly"});
+  CHECK(m.not_made == std::vector<std::string>{"midjourney"});
+  CHECK(m.ai == 0);
+
+  auto pl = q::parse("place:Portugália in:lisbon -place:spain");
+  CHECK(pl.places == std::vector<std::string>{"Portugália", "lisbon"});
+  CHECK(pl.not_places == std::vector<std::string>{"spain"});
+  // in: is a date when it reads as one; a digit never starts a place.
+  auto d = q::parse("in:2024");
+  CHECK(d.has_dates());
+  CHECK(d.places.empty());
+  CHECK(q::parse("in:20").places.empty());  // a date being typed
+  // An empty term still being typed is dropped.
+  CHECK(q::parse("camera:").cameras.empty());
+  CHECK(q::parse("place:").places.empty());
+
+  const auto plan = q::resolve(q::parse("R5 sunset camera:canon"), {});
+  CHECK(plan.cameras == std::vector<std::string>{"canon"});
+  CHECK(plan.tag_words == std::vector<std::string>{"r5", "sunset"});
+  CHECK(plan.has_tags());
+  CHECK(plan.narrows());
+  CHECK(q::resolve(q::parse("beach with dog"), {}).tag_words == std::vector<std::string>{"beach", "dog"});
+}
+
+TEST_CASE("the query fold is the hosts' fold", "[ai][query][tags]") {
+  CHECK(q::fold("Straße") == "straße");  // was "strasse" before #291
+  CHECK(q::fold("Łódź") == "łodz");
+  CHECK(q::tag_contains("Canon EOS R5", "eos r5"));
+  CHECK_FALSE(q::tag_contains("Canon EOS R5", ""));
+  CHECK(q::name_matches("/x/Portuga\xCC\x81lia.jpg", std::vector<std::string>{"portugalia"}, {}));
+}
+
+TEST_CASE("query: rating, label and exposure terms (#405)", "[ai][query][exposure]") {
+  auto p = run("rating:5");
+  REQUIRE(p.ratings.size() == 1);
+  CHECK(p.ratings[0].lo == 5);
+  CHECK(p.ratings[0].hi == 5);
+  CHECK(p.text.empty());
+  CHECK(p.has_tags());
+  p = run("rating:3+");
+  REQUIRE(p.ratings.size() == 1);
+  CHECK(p.ratings[0].lo == 3);
+  CHECK(p.ratings[0].hi == 5);
+  p = run("rating:-1");
+  REQUIRE(p.ratings.size() == 1);
+  CHECK(p.ratings[0].lo == -1);
+  CHECK(p.ratings[0].hi == -1);
+  p = run("rejected beach");
+  REQUIRE(p.ratings.size() == 1);
+  CHECK(p.ratings[0].lo == -1);
+  CHECK(p.text == "beach");  // a description beside it still runs
+  p = run("-rating:1");
+  REQUIRE(p.ratings.size() == 1);
+  CHECK(p.ratings[0].negated);
+  CHECK(run("rating:6").ratings.empty());  // not a rating
+  CHECK(run("rating:").ratings.empty());   // still being typed
+
+  p = run("label:Red");
+  CHECK(p.labels == std::vector<std::string>{"red"});
+  CHECK(run("-label:red").not_labels == std::vector<std::string>{"red"});
+
+  p = run("iso:400 beach");
+  REQUIRE(p.isos.size() == 1);
+  CHECK(p.isos[0].lo == 400);
+  CHECK(p.isos[0].hi == 400);
+  CHECK(p.text == "beach");
+  CHECK(p.tag_words == std::vector<std::string>{"beach"});  // the number is never a tag word
+  p = run("iso:100-800");
+  CHECK(p.isos[0].lo == 100);
+  CHECK(p.isos[0].hi == 800);
+  p = run("iso:1600+");
+  CHECK(p.isos[0].lo == 1600);
+  CHECK(p.isos[0].hi == std::numeric_limits<std::int64_t>::max());
+
+  // Aperture: within 0.05 stops of the stored hundredths.
+  p = run("f:2.8");
+  REQUIRE(p.apertures.size() == 1);
+  CHECK(p.apertures[0].holds(280));
+  CHECK(p.apertures[0].holds(283));  // APEX's f/2.83
+  CHECK_FALSE(p.apertures[0].holds(320));
+  CHECK_FALSE(p.apertures[0].holds(250));
+  CHECK(run("f:f/2.8").apertures.size() == 1);
+  p = run("f:1.4-2.8");
+  CHECK(p.apertures[0].holds(140));
+  CHECK(p.apertures[0].holds(200));
+  CHECK(p.apertures[0].holds(280));
+  CHECK_FALSE(p.apertures[0].holds(400));
+  CHECK(run("f:2.").apertures.size() == 1);  // "2." reads as 2
+
+  p = run("mm:35");
+  CHECK(p.focals[0].lo == 35);
+  CHECK(p.focals[0].hi == 35);
+  p = run("mm:24-70");
+  CHECK(p.focals[0].lo == 24);
+  CHECK(p.focals[0].hi == 70);
+  CHECK(run("mm:50mm").focals.size() == 1);
+
+  // Shutter: 1/250 and 250 are the same; 2s is two seconds.
+  for (const char* t : {"shutter:1/250", "shutter:250"}) {
+    CAPTURE(t);
+    p = run(t);
+    REQUIRE(p.shutters.size() == 1);
+    CHECK(p.shutters[0].holds(4000));
+    CHECK_FALSE(p.shutters[0].holds(3125));  // 1/320
+    CHECK_FALSE(p.shutters[0].holds(5000));  // 1/200
+  }
+  p = run("shutter:2s");
+  CHECK(p.shutters[0].holds(2000000));
+  CHECK_FALSE(p.shutters[0].holds(4000));
+  CHECK(run("shutter:0.5").shutters[0].holds(500000));
+  p = run("shutter:1/1000-1/250");
+  CHECK(p.shutters[0].holds(1000));
+  CHECK(p.shutters[0].holds(2000));
+  CHECK(p.shutters[0].holds(4000));
+  CHECK_FALSE(p.shutters[0].holds(8000));
+
+  // A file with no value for a kept term does not match; a left-out term
+  // drops only a value in its range.
+  q::exposure_facts clip;  // a clip: rated 0, no exposure block
+  clip.rated = true;
+  q::exposure_facts shot;
+  shot.rated = true;
+  shot.rating = 5;
+  shot.label = "red";
+  shot.iso = 400;
+  shot.aperture_x100 = 280;
+  shot.focal_mm = 35;
+  shot.shutter_us = 4000;
+  CHECK(run("iso:400").exposure_matches(shot));
+  CHECK_FALSE(run("iso:400").exposure_matches(clip));
+  CHECK(run("-iso:400").exposure_matches(clip));
+  CHECK_FALSE(run("-iso:400").exposure_matches(shot));
+  CHECK(run("rating:0").exposure_matches(clip));
+  CHECK_FALSE(run("rating:0").exposure_matches(shot));
+  CHECK_FALSE(run("rating:0").exposure_matches(q::exposure_facts{}));  // not read yet
+  CHECK(run("label:red f:2.8 mm:35 shutter:1/250 rating:3+").exposure_matches(shot));
+  CHECK_FALSE(run("label:blue").exposure_matches(shot));
+  CHECK_FALSE(run("-label:red").exposure_matches(shot));
 }

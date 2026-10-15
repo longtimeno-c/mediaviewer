@@ -12,9 +12,11 @@
 
 #include <cstdint>
 #include <iterator>
+#include <algorithm>
 #include <string>
 
 #include "core/result.h"
+#include "meta/meta.h"
 #include "shell/adjust_pane.h"
 #include "shell/commands.h"
 #include "shell/key_router.h"
@@ -83,8 +85,11 @@ enum chrome_command : int {
   // PR 13. The island drained MV_COMPLETION_CLIP_INDEX (the island owns the
   // drain); arg is the request id, which native reads with mv_clip_index_get.
   chrome_cmd_clip_index = 1015,
-  // Appearance only: WinUI sends the system window colour as an exact
-  // 24-bit integer carried by float (all integers up to 2^24 are exact).
+  // Appearance only: WinUI sends the theme's canvas token (Default: the
+  // system window colour) as an exact 24-bit integer carried by float (all
+  // integers up to 2^24 are exact). Issue #408: it is the clear on every
+  // screen, and it comes last: it publishes the tokens sent before it
+  // (chrome_cmd_home_surface .. home_effect_size), which only store.
   chrome_cmd_home_colour = 1016,
   // Issue #38: arg != 0 while the transport is held open by something the
   // host cannot see from the canvas -- a scrub drag, the More flyout, a
@@ -101,7 +106,8 @@ enum chrome_command : int {
   chrome_cmd_edit_action = 1020,
   // PR 29 (owner, 2026-09-26): every tag editable. meta_tags: native pulls
   // the parked edits with take_parked_text, one per line: "S\tkey\tvalue"
-  // sets, "R\tkey" removes. meta_date: the parked "YYYY-MM-DD HH:MM:SS" goes
+  // sets, "R\tkey" removes; #352: "L\ttext" is the Location editor's text as
+  // typed (meta::parse_location; blank removes the location). meta_date: the parked "YYYY-MM-DD HH:MM:SS" goes
   // into every capture-time tag; arg 1 removes them all (nothing parked).
   chrome_cmd_meta_tags = 1021,
   chrome_cmd_meta_date = 1022,
@@ -141,9 +147,33 @@ enum chrome_command : int {
   chrome_cmd_video_muted = 1032,
   chrome_cmd_video_track = 1033,
   chrome_cmd_video_loop = 1034,
+  // docs/design/25 PR 56: Settings applied a keymap pack. Native pulls the pack's
+  // JSON (mv_open_addon_keymap_json) with take_tree_path, applies it to the
+  // live table (shell/keymap.h), persists and republishes. 1050, not the next
+  // free number, so the add-on PRs beside it (57-59) keep theirs.
+  chrome_cmd_apply_keymap = 1050,
   // Issue #210: the rename popup was confirmed (Enter); native pulls the new
   // name (no extension) with take_parked_text. Esc sends nothing.
   chrome_cmd_rename = 1035,
+  // Issue #408: the rest of the theme the native empty window draws with,
+  // sent by RefreshTheme before chrome_cmd_home_colour. Tokens are 0xRRGGBB
+  // in the float, as home_colour. home_effect: arg is a shell::home_effect
+  // (0 none); then its ink (0xRRGGBB) and an intensity, a speed and a size in
+  // 0.01 .. 1. 1070 up, clear of the next free numbers other branches take.
+  chrome_cmd_home_surface = 1070,
+  chrome_cmd_home_title = 1071,
+  chrome_cmd_home_body = 1072,
+  chrome_cmd_home_hairline = 1073,
+  chrome_cmd_home_accent = 1074,
+  chrome_cmd_home_effect = 1075,
+  chrome_cmd_home_effect_rgb = 1076,
+  chrome_cmd_home_effect_intensity = 1077,
+  chrome_cmd_home_effect_speed = 1078,
+  chrome_cmd_home_effect_size = 1079,
+  // The pointer moved or a key went down over an island (the bar, a pane):
+  // the empty window's ground restarts its clock (input_snapshot::pointer_seq).
+  // The chrome sends it a few times a second at most; no frame by itself.
+  chrome_cmd_home_ground_input = 1080,
 };
 
 // chrome_cmd_video_loop's argument. The C# side mirrors it.
@@ -455,9 +485,45 @@ struct chrome_meta_args {
   std::int32_t properties_len;
   std::int32_t streams_len;
   std::int32_t loading;
+  // #290 (docs/design/06, 14): the record's provenance and position as numbers,
+  // for the map (#344) and the AI badge (#345). The summary table already
+  // carries the "Made with" row; these are the same facts, not re-derived.
+  double where_lat;           // valid when facts & kMetaFactWhere
+  double where_lon;
+  double where_altitude_m;    // valid when facts & kMetaFactAltitude
+  std::uint64_t made_with;    // UTF-8 summary.made_with, valid for the call only
+  std::int32_t made_with_len;
+  std::int32_t facts;         // kMetaFact*
 };
 
-static_assert(sizeof(chrome_meta_args) == 40, "keep in sync with ChromeMetaArgs");
+inline constexpr std::int32_t kMetaFactWhere = 1 << 0;
+inline constexpr std::int32_t kMetaFactAltitude = 1 << 1;
+inline constexpr std::int32_t kMetaFactAiGenerated = 1 << 2;
+// #352: what the Summary's Location row may do (meta::location_rights_of).
+inline constexpr std::int32_t kMetaFactLocationSet = 1 << 3;         // Edit can save a position
+inline constexpr std::int32_t kMetaFactLocationClear = 1 << 4;       // a blank save can remove it
+inline constexpr std::int32_t kMetaFactLocationInOriginal = 1 << 5;  // the original's own: never removed
+
+static_assert(sizeof(chrome_meta_args) == 80, "keep in sync with ChromeMetaArgs");
+
+// #345 (docs/design/06 "The AI badge"): the canvas's AI-generated badge, a small
+// island of its own in the bottom-right (shell/ai_badge.h decides the text).
+// Strings are UTF-8, valid for the call only. Hidden: the island is parked at
+// x, y with no content.
+struct chrome_ai_badge_args {
+  std::int32_t visible;
+  std::int32_t x;
+  std::int32_t y;
+  std::int32_t width;
+  std::int32_t height;
+  std::int32_t title_len;
+  std::uint64_t title;     // "Made with ChatGPT"
+  std::uint64_t evidence;  // "Content Credentials (C2PA): AI-generated (trainedAlgorithmicMedia)"
+  std::int32_t evidence_len;
+  std::int32_t reserved;
+};
+
+static_assert(sizeof(chrome_ai_badge_args) == 48, "keep in sync with ChromeAiBadgeArgs");
 
 // PR 12: what the pane's rating, comment and Revert show. A change still in the
 // write queue already counts, so a key or a click shows at once.
@@ -664,6 +730,37 @@ inline constexpr int kTransportSideDip = 16;    // minimum gap to the window's s
   return static_cast<int>((kTransportDip * static_cast<int>(dpi) + 48) / 96);
 }
 
+// #345: the AI badge, the Mac's size (AIBadgeView.swift): a 44 x 20 DIP capsule,
+// 16 DIP in from the right (or from a right-hand pane), 10 DIP above the
+// filmstrip or the bottom edge, and above a clip's transport bar.
+inline constexpr int kAiBadgeWidthDip = 44;
+inline constexpr int kAiBadgeHeightDip = 20;
+inline constexpr int kAiBadgeSideDip = 16;
+inline constexpr int kAiBadgeGapDip = 8;  // above the transport bar
+
+struct chrome_rect {
+  int x = 0;
+  int y = 0;
+  int width = 0;
+  int height = 0;
+};
+
+// Pure, for the host test. `bottom_px`: the filmstrip's height or 0; `right_px`:
+// a right-hand pane's width or 0; `clip`: the transport bar is up.
+[[nodiscard]] inline chrome_rect ai_badge_rect(int width, int height, int bottom_px, int right_px, bool clip,
+                                               std::uint32_t dpi) noexcept {
+  if (dpi == 0) dpi = 96;
+  const auto px = [dpi](int dip) { return static_cast<int>((dip * static_cast<int>(dpi) + 48) / 96); };
+  chrome_rect r;
+  r.width = px(kAiBadgeWidthDip);
+  r.height = px(kAiBadgeHeightDip);
+  int above = bottom_px + px(kTransportMarginDip);
+  if (clip) above += chrome_transport_height_px(dpi) + px(kAiBadgeGapDip);
+  r.x = std::max(width - right_px - px(kAiBadgeSideDip) - r.width, 0);
+  r.y = std::max(height - above - r.height, 0);
+  return r;
+}
+
 // IslandWindow ids of the islands that classify as focus_kind::pane, past the
 // focus kinds: metadata, folder tree (PR 9), adjust (PR 11), Edit workspace
 // (PR 29), Jobs (PR 13). The C# side numbers them the same (IslandHost.cs).
@@ -768,8 +865,10 @@ class chrome_host {
   [[nodiscard]] bool meta_pane_visible() const noexcept { return panels_attached_ && meta_visible_; }
   [[nodiscard]] bool folder_tree_visible() const noexcept { return panels_attached_ && tree_visible_; }
   // The record's tables, formatted once by the host; the pane re-renders from them.
+  // #290: `facts` (null while loading) supplies made_with, ai_generated and where.
   void set_meta_data(bool loading, const std::string& summary, const std::string& properties,
-                     const std::string& streams) noexcept;
+                     const std::string& streams, const meta::summary* facts = nullptr,
+                     std::int32_t extra_facts = 0) noexcept;  // #352: kMetaFactLocation*
   void set_tree_root(const std::string& utf8_dir) noexcept;
   // The folder the user chose in the tree ("" if none pending).
   [[nodiscard]] std::string take_tree_path() noexcept;
@@ -778,7 +877,14 @@ class chrome_host {
   // read, which is not the same as an empty string: "" clears a comment.
   [[nodiscard]] bool take_parked_text(std::string& out) noexcept;
   // PR 12: the pane's rating / comment / Revert state (chrome_meta_edit_args).
-  void set_meta_edit(std::int32_t rating, const std::string& comment, std::int32_t flags) noexcept;
+  // #352: true when a kMetaEditDropDraft only closed an in-pane confirmation
+  // (the Location remove): the pane keeps the keyboard, so Esc stops there.
+  bool set_meta_edit(std::int32_t rating, const std::string& comment, std::int32_t flags) noexcept;
+  // #345: the AI badge (chrome_ai_badge_args). Optional like the panes; a call
+  // that changes nothing is not sent. Never touches the canvas or a present.
+  void show_ai_badge(bool visible, const chrome_rect& at, const std::string& title,
+                     const std::string& evidence) noexcept;
+  [[nodiscard]] bool ai_badge_visible() const noexcept { return panels_attached_ && ai_badge_visible_; }
 
   // PR 11: the adjust pane, a third panel island on the right (it and the
   // metadata pane share that edge; the host shows one at a time). Optional
@@ -905,6 +1011,10 @@ class chrome_host {
   // Open > Recent folders: "label\tpath\n" lines, most recent first. Pushed
   // at attach and whenever the list changes.
   void set_recent_folders(const std::string& utf8_lines) noexcept;
+  // docs/design/25 PR 56: what applying a key layout did, for Settings to say
+  // (shell/keymap.h keymap_report_json: {"changed","displaced","skipped"}).
+  // Answered inside chrome_cmd_apply_keymap. Optional: an older chrome lacks it.
+  void set_keymap_report(const std::string& json) noexcept;
 
   // Opens a flyout on the command bar, or closes any (chrome_popup::close).
   void show_popup(chrome_popup kind, std::int32_t mode_mask) noexcept;
@@ -985,6 +1095,7 @@ class chrome_host {
   chrome_entry_fn run_addon_command_ = nullptr;  // docs/design/25, optional
   chrome_entry_fn set_drag_paths_ = nullptr;
   chrome_entry_fn set_recent_folders_ = nullptr;
+  chrome_entry_fn set_keymap_report_ = nullptr;  // PR 56, optional
   chrome_entry_fn show_popup_ = nullptr;
   chrome_entry_fn attach_panels_ = nullptr;
   chrome_entry_fn detach_panels_ = nullptr;
@@ -996,6 +1107,12 @@ class chrome_host {
   chrome_entry_fn show_adjust_pane_ = nullptr;
   chrome_entry_fn set_adjust_view_ = nullptr;
   chrome_entry_fn set_meta_edit_ = nullptr;
+  chrome_entry_fn show_ai_badge_ = nullptr;  // #345, optional
+  bool ai_badge_visible_ = false;
+  bool ai_badge_sent_ = false;
+  chrome_rect ai_badge_at_{};
+  std::string ai_badge_title_;
+  std::string ai_badge_evidence_;
   chrome_entry_fn show_jobs_pane_ = nullptr;  // PR 13 / 14
   chrome_entry_fn set_trim_ = nullptr;        // PR 13
   chrome_entry_fn show_edit_pane_ = nullptr;  // PR 29

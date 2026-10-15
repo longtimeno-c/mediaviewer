@@ -55,6 +55,23 @@ $table = [ordered]@{
     animation   = @{ Seeds = @('gif', 'webp', 'png', 'heic', 'avif');   MaxLen = 131072 }
     pdf         = @{ Seeds = @('pdf');                                  MaxLen = 65536 }
     docx        = @{ Seeds = @('docx');                                 MaxLen = 65536 }
+    # #290: the metadata readers beyond Exiv2 (meta/parse.h).
+    meta_c2pa   = @{ Seeds = @('c2pa');                                 MaxLen = 65536 }
+    meta_jpeg   = @{ Seeds = @('jpeg', 'c2pa');                         MaxLen = 65536 }
+    meta_png    = @{ Seeds = @('png', 'c2pa');                          MaxLen = 65536 }
+    meta_webp   = @{ Seeds = @('webp');                                 MaxLen = 65536 }
+    meta_bmff   = @{ Seeds = @('heic', 'avif', 'c2pa');                 MaxLen = 131072 }
+    meta_xmp    = @{ Seeds = @('xmp');                                  MaxLen = 65536 }
+    meta_icc    = @{ Seeds = @('icc');                                  MaxLen = 65536 }
+    # #352: the Location editor's parser; the text is capped at 256 bytes.
+    meta_location = @{ Seeds = @('location');                           MaxLen = 512 }
+    meta_probe  = @{ Seeds = @('jpeg', 'png', 'webp', 'heic', 'avif', 'c2pa', 'probe'); MaxLen = 131072 }
+    # The place database loader (docs/design/06 "Place"); its seed is the test blob.
+    geo         = @{ Seeds = @(); SeedDirs = @('tests\data\geo');     MaxLen = 131072 }
+    # The Places map (docs/design/27): numbers, not a file; it reads the test blob itself.
+    places_map  = @{ Seeds = @();                                       MaxLen = 512 }
+    addon_contributions = @{ Seeds = @('addon');                        MaxLen = 16384 }
+    script      = @{ Seeds = @('script');                               MaxLen = 16384 }
 }
 
 if ($Harness.Count -eq 1 -and $Harness[0] -match ',') { $Harness = $Harness[0] -split ',' }
@@ -81,6 +98,11 @@ foreach ($name in $Harness) {
     $seedDirs = @()
     foreach ($family in $table[$name].Seeds) {
         $d = Join-Path $seeds $family
+        if (Test-Path $d) { $seedDirs += $d }
+    }
+    foreach ($rel in @($table[$name].SeedDirs)) {
+        if (-not $rel) { continue }
+        $d = Join-Path $repo $rel
         if (Test-Path $d) { $seedDirs += $d }
     }
     if ($name -in @('decode', 'animation', 'png', 'gif', 'tiff', 'ico', 'bmp', 'jpeg', 'webp', 'heic', 'avif', 'raw')) {

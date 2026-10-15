@@ -2,8 +2,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "addons/ai/query.h"
 
+#include "core/fold.h"
+
 #include <algorithm>
 #include <array>
+#include <cmath>
+#include <cstdlib>
+#include <optional>
 #include <utility>
 
 namespace mv::ai::query {
@@ -140,7 +145,8 @@ std::vector<token> tokens_of(std::string_view s) {
       if (j > i && j < s.size() && s[j] == ':') {
         const std::string op = lower_ascii(s.substr(i, j - i));
         if (is_one_of(op, {"in", "before", "after", "since", "until", "is", "type", "kind", "person", "said",
-                          "file"})) {
+                          "file", "camera", "lens", "ai", "made", "place", "rating", "label", "iso", "f", "mm",
+                          "shutter"})) {
           t.op = op;
           i = j + 1;
         } else {
@@ -260,59 +266,19 @@ std::string strip_lead_in(std::string_view q) {
 
 // ---- helpers --------------------------------------------------------------------------
 
-std::string fold(std::string_view s) {
-  std::string out;
-  out.reserve(s.size());
-  for (std::size_t i = 0; i < s.size(); ++i) {
-    const unsigned char c = static_cast<unsigned char>(s[i]);
-    if (c >= 'A' && c <= 'Z') {
-      out.push_back(static_cast<char>(c - 'A' + 'a'));
-    } else if (c == 0xC3 && i + 1 < s.size()) {
-      // Latin-1 letters (U+00C0-U+00FF): their base letter.
-      static constexpr char kBase[] = "aaaaaaaceeeeiiiidnooooo/ouuuuyts" "aaaaaaaceeeeiiiidnooooo/ouuuuyty";
-      const unsigned char n = static_cast<unsigned char>(s[i + 1]);
-      if (n >= 0x80 && n <= 0xBF) {
-        const char base = kBase[n - 0x80];
-        if (base == '/') {
-          out.append(s.substr(i, 2));  // x and ÷ are not letters
-        } else if (n == 0x9F) {
-          out.append("ss");
-        } else if (n == 0x86 || n == 0xA6) {
-          out.append("ae");
-        } else {
-          out.push_back(base);
-        }
-        ++i;
-        continue;
-      }
-      out.push_back(static_cast<char>(c));
-    } else {
-      out.push_back(static_cast<char>(c));
-    }
-  }
-  return out;
+std::string fold(std::string_view s) { return text::fold(s); }
+
+bool tag_contains(std::string_view value, std::string_view folded_term) {
+  return !folded_term.empty() && text::fold(value).find(folded_term) != std::string::npos;
 }
 
 bool name_matches(std::string_view path, std::span<const std::string> files,
                   std::span<const std::string> not_files) {
   if (files.empty() && not_files.empty()) return true;
   const std::size_t slash = path.find_last_of("/\\");
-  std::string name = fold(slash == std::string_view::npos ? path : path.substr(slash + 1));
-  // A Mac file name is often decomposed (e + U+0301): drop the combining
-  // marks (U+0300-U+036F) so it folds like a typed "é".
-  std::size_t w = 0;
-  for (std::size_t r = 0; r < name.size(); ++r) {
-    const auto c = static_cast<unsigned char>(name[r]);
-    if (r + 1 < name.size()) {
-      const auto n = static_cast<unsigned char>(name[r + 1]);
-      if ((c == 0xCC && n >= 0x80 && n <= 0xBF) || (c == 0xCD && n >= 0x80 && n <= 0xAF)) {
-        ++r;
-        continue;
-      }
-    }
-    name[w++] = name[r];
-  }
-  name.resize(w);
+  // The shared fold drops combining marks, so a decomposed Mac file name
+  // (e + U+0301) folds like a typed "é".
+  const std::string name = fold(slash == std::string_view::npos ? path : path.substr(slash + 1));
   for (const std::string& f : files) {
     if (name.find(f) == std::string::npos) return false;
   }
@@ -376,6 +342,129 @@ std::size_t edit_distance(std::string_view a, std::string_view b, std::size_t li
     std::swap(prev, cur);
   }
   return std::min(prev[m], limit + 1);
+}
+
+namespace {
+
+// A decimal number filling all of `s` ("2.8", "400", "-1"), or nullopt.
+std::optional<double> number_of(std::string_view s) {
+  if (s.empty() || s.size() > 24) return std::nullopt;
+  const std::string n(s);
+  char* end = nullptr;
+  const double v = std::strtod(n.c_str(), &end);
+  if (!end || *end != '\0' || !std::isfinite(v)) return std::nullopt;
+  for (char c : n) {
+    if (!((c >= '0' && c <= '9') || c == '.' || c == '-')) return std::nullopt;  // no "inf", "1e9", hex
+  }
+  return v;
+}
+
+// An exposure time in seconds: "1/250", "250" (1/250: how a camera shows
+// it), "2s", "2\"", "0.5", "1.5s".
+std::optional<double> seconds_of(std::string_view s) {
+  if (s.empty()) return std::nullopt;
+  if (const std::size_t slash = s.find('/'); slash != std::string_view::npos) {
+    const auto a = number_of(s.substr(0, slash));
+    const auto b = number_of(s.substr(slash + 1));
+    if (!a || !b || *a <= 0 || *b <= 0) return std::nullopt;
+    return *a / *b;
+  }
+  const char last = s.back();
+  if (last == 's' || last == '"') {
+    const auto v = number_of(s.substr(0, s.size() - 1));
+    return v && *v > 0 ? v : std::nullopt;
+  }
+  const auto v = number_of(s);
+  if (!v || *v <= 0) return std::nullopt;
+  return s.find('.') != std::string_view::npos ? *v : 1.0 / *v;
+}
+
+}  // namespace
+
+bool numeric_term(std::string_view op, std::string_view text, range& out) {
+  std::string_view t = text;
+  if (op == "f") {
+    // f:f/2.8 and f:/2.8 read as f:2.8.
+    if (t.size() > 1 && (t[0] == 'f' || t[0] == 'F') && t[1] == '/') t.remove_prefix(2);
+    if (!t.empty() && t[0] == '/') t.remove_prefix(1);
+  }
+  if (op == "mm" && t.size() > 2 && lower_ascii(t.substr(t.size() - 2)) == "mm") t.remove_suffix(2);
+  if (op == "iso" && t.size() > 3 && lower_ascii(t.substr(0, 3)) == "iso") t.remove_prefix(3);
+  if (t.empty()) return false;
+  bool plus = false;
+  if (t.back() == '+') {
+    plus = true;
+    t.remove_suffix(1);
+  }
+  // "a-b": the dash after the first character (rating:-1 is a number).
+  std::string_view a_text = t, b_text;
+  if (const std::size_t dash = t.find('-', 1); dash != std::string_view::npos) {
+    a_text = t.substr(0, dash);
+    b_text = t.substr(dash + 1);
+    if (plus || b_text.empty()) return false;
+  }
+  const auto value = [&](std::string_view s) { return op == "shutter" ? seconds_of(s) : number_of(s); };
+  const auto a = value(a_text);
+  if (!a) return false;
+  double lo = *a, hi = *a;
+  if (!b_text.empty()) {
+    const auto b = value(b_text);
+    if (!b) return false;
+    hi = *b;
+    if (hi < lo) std::swap(lo, hi);
+  }
+  constexpr auto kMax = std::numeric_limits<std::int64_t>::max();
+  if (op == "rating") {
+    if (lo != std::floor(lo) || hi != std::floor(hi) || lo < -1 || hi > 5) return false;
+    out.lo = static_cast<std::int64_t>(lo);
+    out.hi = plus ? 5 : static_cast<std::int64_t>(hi);
+    return true;
+  }
+  if (lo <= 0) return false;
+  if (op == "iso") {
+    out.lo = std::llround(lo);
+    out.hi = plus ? kMax : std::llround(hi);
+    return true;
+  }
+  if (op == "mm") {
+    out.lo = std::llround(lo);
+    out.hi = plus ? kMax : std::llround(hi);
+    return true;
+  }
+  if (op == "f") {
+    // Within 0.05 stops of the stored hundredths (a stop is a factor of
+    // sqrt(2) in N): f/2.8 stored as 2.8 or as APEX's 2.83 both match.
+    const double k = std::pow(2.0, 0.025);
+    out.lo = static_cast<std::int64_t>(std::floor(lo * 100.0 / k));
+    out.hi = plus ? kMax : static_cast<std::int64_t>(std::ceil(hi * 100.0 * k));
+    return true;
+  }
+  if (op == "shutter") {
+    // A sixth of a stop either side: 1/250 is not 1/320 (a third of a stop
+    // away), and a camera's 1/250 stored as 0.004 or 10/2500 still matches.
+    const double k = std::pow(2.0, 1.0 / 6.0);
+    out.lo = static_cast<std::int64_t>(std::floor(lo * 1e6 / k));
+    out.hi = plus ? kMax : static_cast<std::int64_t>(std::ceil(hi * 1e6 * k));
+    return true;
+  }
+  return false;
+}
+
+bool plan::exposure_matches(const exposure_facts& f) const {
+  const auto check = [](const std::vector<range>& terms, bool has, std::int64_t v) {
+    for (const range& r : terms) {
+      const bool in = has && r.holds(v);
+      if (r.negated ? in : !in) return false;
+    }
+    return true;
+  };
+  return check(ratings, f.rated, f.rating) && check(isos, f.iso > 0, f.iso) &&
+         check(apertures, f.aperture_x100 > 0, f.aperture_x100) && check(focals, f.focal_mm > 0, f.focal_mm) &&
+         check(shutters, f.shutter_us > 0, f.shutter_us) &&
+         std::all_of(labels.begin(), labels.end(),
+                     [&](const std::string& l) { return f.label.find(l) != std::string::npos; }) &&
+         std::none_of(not_labels.begin(), not_labels.end(),
+                      [&](const std::string& l) { return f.label.find(l) != std::string::npos; });
 }
 
 std::int64_t days_from_civil(std::int64_t y, unsigned m, unsigned d) noexcept {
@@ -526,6 +615,67 @@ parsed parse(std::string_view utf8) {
       or_pending = false;
       continue;
     }
+    // #291: tag terms. One still being typed ("camera:") is dropped.
+    if (t.op == "camera" || t.op == "lens") {
+      std::string f = fold(t.text);
+      if (!f.empty()) {
+        auto& keep = t.op == "camera" ? p.cameras : p.lenses;
+        auto& drop = t.op == "camera" ? p.not_cameras : p.not_lenses;
+        (t.negated ? drop : keep).push_back(std::move(f));
+      }
+      or_pending = false;
+      continue;
+    }
+    if (t.op == "ai" || t.op == "made") {
+      const std::string f = fold(t.text);
+      if (is_one_of(f, {"yes", "y", "true", "1", "ai"})) {
+        p.ai = t.negated ? -1 : 1;
+      } else if (is_one_of(f, {"no", "n", "false", "0"})) {
+        p.ai = t.negated ? 1 : -1;
+      } else if (!f.empty()) {
+        (t.negated ? p.not_made : p.made).push_back(f);
+      }
+      or_pending = false;
+      continue;
+    }
+    // #405: rating, label and exposure. One still being typed ("iso:", "f:2.")
+    // is dropped, not searched.
+    if (t.op == "label") {
+      std::string f = fold(t.text);
+      if (!f.empty()) (t.negated ? p.not_labels : p.labels).push_back(std::move(f));
+      or_pending = false;
+      continue;
+    }
+    if (t.op == "rating" || t.op == "iso" || t.op == "f" || t.op == "mm" || t.op == "shutter") {
+      range r;
+      if (numeric_term(t.op, t.text, r)) {
+        r.negated = t.negated;
+        auto& list = t.op == "rating" ? p.ratings
+                     : t.op == "iso"  ? p.isos
+                     : t.op == "f"    ? p.apertures
+                     : t.op == "mm"   ? p.focals
+                                      : p.shutters;
+        list.push_back(r);
+      }
+      or_pending = false;
+      continue;
+    }
+    if (t.op.empty() && !t.quoted && fold(t.text) == "rejected") {
+      p.ratings.push_back(range{-1, -1, t.negated});
+      or_pending = false;
+      continue;
+    }
+    if (t.op == "place" || t.op == "in") {
+      // in: is a date when it reads as one (in:2024, in:2024-06); a word
+      // starting with a digit never names a place. Anything else is a place.
+      std::int64_t start = 0, end = 0;
+      const bool digit = !t.text.empty() && t.text[0] >= '0' && t.text[0] <= '9';
+      if (t.op == "place" || (!digit && !date_range(t.text, start, end))) {
+        if (!fold(t.text).empty()) (t.negated ? p.not_places : p.places).push_back(t.text);
+        or_pending = false;
+        continue;
+      }
+    }
     if (t.op == "is" || t.op == "type" || t.op == "kind") {
       const std::uint32_t k = kind_word(fold(t.text));
       (t.negated ? p.not_kinds : p.kinds) |= k;
@@ -599,6 +749,22 @@ plan resolve(const parsed& p, std::span<const person_name> people) {
   out.to_unix = p.to_unix;
   out.files = p.files;
   out.not_files = p.not_files;
+  out.cameras = p.cameras;
+  out.not_cameras = p.not_cameras;
+  out.lenses = p.lenses;
+  out.not_lenses = p.not_lenses;
+  out.made = p.made;
+  out.not_made = p.not_made;
+  out.ai = p.ai;
+  out.places = p.places;
+  out.not_places = p.not_places;
+  out.ratings = p.ratings;
+  out.isos = p.isos;
+  out.apertures = p.apertures;
+  out.focals = p.focals;
+  out.shutters = p.shutters;
+  out.labels = p.labels;
+  out.not_labels = p.not_labels;
   if (out.from_unix >= out.to_unix) out.impossible = true;
   for (const parsed::phrase& ph : p.phrases) {
     if (ph.negated) {
@@ -700,6 +866,11 @@ plan resolve(const parsed& p, std::span<const person_name> people) {
   while (!text.empty() && joins(text.back())) text.pop_back();
   if (std::all_of(text.begin(), text.end(), [](const std::string& s) { return connector(fold(s)); })) text.clear();
   for (const std::string& s : text) out.text += (out.text.empty() ? "" : " ") + s;
+  // #291: the same words against the files' tags (connectors dropped).
+  for (const std::string& s : text) {
+    const std::string f = fold(s);
+    if (!f.empty() && !connector(f) && f != "or") out.tag_words.push_back(f);
+  }
 
   // A lone word that starts a name, or nearly spells one: those people lead
   // and the word still describes (a union). Not for a stop word, and not

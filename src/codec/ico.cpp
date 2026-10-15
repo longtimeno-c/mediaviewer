@@ -1,7 +1,8 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // ICO: ICONDIR of BMP (no BITMAPFILEHEADER) or PNG images. Largest size is
-// the still; other sizes are Ctrl+PageUp/PageDown inside one folder stop.
+// the still (page 0); every other entry is a page, Ctrl+PageUp/PageDown inside
+// one folder stop, in the same rank order (largest first) — decode_ico_page().
 //
 // Entries are ranked by the payload's own dimensions (directory bytes are
 // 8-bit, 0 means 256, and are often wrong), then bit depth. If the best entry
@@ -143,13 +144,10 @@ result<raster> decode_dib(std::span<const std::uint8_t> e, const job_context* ct
   return out;
 }
 
-}  // namespace
-
-result<raster> decode_ico(std::span<const std::uint8_t> bytes, const job_context* ctx) {
-  if (probe(bytes) != format_family::ico) return err(status::unsupported_format);
-  if (ctx && ctx->cancelled()) return err(status::cancelled);
+// The entries that decode, best first: ranked by the payload's own area, then
+// bit depth, then directory order. These are the file's pages.
+result<std::vector<candidate>> ranked_entries(std::span<const std::uint8_t> bytes) {
   if (bytes.size() < kDirHeader) return err(status::corrupt);
-
   const std::uint16_t count = u16(bytes.data() + 4);
   if (kDirHeader + kDirEntry * static_cast<std::size_t>(count) > bytes.size()) {
     return err(status::corrupt);
@@ -178,14 +176,34 @@ result<raster> decode_ico(std::span<const std::uint8_t> bytes, const job_context
     if (a.bits != b.bits) return a.bits > b.bits;
     return a.index < b.index;
   });
+  return cands;
+}
 
+result<raster> decode_entry(std::span<const std::uint8_t> bytes, const candidate& c,
+                            const job_context* ctx) {
+  const auto entry = bytes.subspan(c.offset, c.size);
+  result<raster> r = is_png(entry) ? decode_png(entry, ctx) : decode_dib(entry, ctx);
+  if (r) r->format = format_family::ico;
+  return r;
+}
+
+}  // namespace
+
+result<raster> decode_ico(std::span<const std::uint8_t> bytes, const job_context* ctx) {
+  if (probe(bytes) != format_family::ico) return err(status::unsupported_format);
+  if (ctx && ctx->cancelled()) return err(status::cancelled);
+  auto ranked = ranked_entries(bytes);
+  if (!ranked) return err(ranked.error());
+  const std::vector<candidate>& cands = ranked.value();
+  const auto pages = static_cast<std::uint32_t>(cands.size());
+
+  // Page 0 is the still: the best entry that decodes.
   status first = status::corrupt;
   bool have_error = false;
   for (const candidate& c : cands) {
-    const auto entry = bytes.subspan(c.offset, c.size);
-    result<raster> r = is_png(entry) ? decode_png(entry, ctx) : decode_dib(entry, ctx);
+    result<raster> r = decode_entry(bytes, c, ctx);
     if (r) {
-      r->format = format_family::ico;
+      r->page_count = pages;
       return r;
     }
     if (r.error() == status::cancelled || r.error() == status::out_of_memory) {
@@ -197,6 +215,22 @@ result<raster> decode_ico(std::span<const std::uint8_t> bytes, const job_context
     }
   }
   return err(first);
+}
+
+result<raster> decode_ico_page(std::span<const std::uint8_t> bytes, std::uint32_t page,
+                               const job_context* ctx) {
+  if (page == 0) return decode_ico(bytes, ctx);
+  if (probe(bytes) != format_family::ico) return err(status::unsupported_format);
+  if (ctx && ctx->cancelled()) return err(status::cancelled);
+  auto ranked = ranked_entries(bytes);
+  if (!ranked) return err(ranked.error());
+  const std::vector<candidate>& cands = ranked.value();
+  if (page >= cands.size()) return err(status::invalid_arg);
+  result<raster> r = decode_entry(bytes, cands[page], ctx);
+  if (!r) return r;
+  r->page = page;
+  r->page_count = static_cast<std::uint32_t>(cands.size());
+  return r;
 }
 
 }  // namespace mv::codec

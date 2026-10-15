@@ -15,6 +15,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 
 #include "abi/addon_bridge.h"
@@ -31,7 +32,14 @@
 #include "io/file_port.h"
 #include "io/paths.h"
 #include "io/volume.h"
+#include "meta/location.h"
 #include "meta/meta.h"
+#include "meta/cues.h"
+#include "meta/meta_cache.h"
+
+namespace mv::abi {
+void scripts_store_changed() noexcept;  // script_abi.cpp (docs/design/25 PR 57)
+}  // namespace mv::abi
 
 namespace {
 
@@ -91,8 +99,13 @@ status write_out(const std::string& text, char* out, uint32_t cap, uint32_t* nee
 // docs/design/25: what a manifest contributes, as the chromes and the shell read it.
 void write_contributions(mv::json::writer& w, const mv::addon::manifest& m) {
   w.key("description").string(m.description);
+  // docs/design/25 PRs 58-59: it fills screens or slots (load it with
+  // MV_SLOTS_INTERFACE to attach them).
+  w.key("slots").boolean(!m.slots.empty());
   w.key("hint_on").string(m.hint_on);
   w.key("hint_text").string(m.hint_text);
+  // PR 56: whether Settings has a page for it (mv_addon_settings_json).
+  w.key("settings").boolean(!m.settings.empty());
   w.key("commands").begin_array();
   for (const mv::addon::manifest_command& c : m.commands) {
     w.begin_object();
@@ -114,6 +127,59 @@ const char* state_name(mv::addon::install_state s) {
     case mv::addon::install_state::needs_update: return "needs_update";
     default: return "invalid";
   }
+}
+
+// #291: the host table's tag_facts, from meta_cache.db (a bounded read on a miss).
+bool tag_facts(const std::string& path, mv_addon_tag_facts& out) {
+  auto row = mv::meta::cached_or_read(mv::meta::default_meta_cache(), path);
+  if (!row) return false;
+  const mv::meta::search_facts& f = row->facts;
+  const auto put = [](char* dst, std::size_t cap, const std::string& src) {
+    std::size_t n = std::min(src.size(), cap - 1);
+    while (n > 0 && n < src.size() && (static_cast<unsigned char>(src[n]) & 0xC0) == 0x80) --n;
+    std::memcpy(dst, src.data(), n);
+    dst[n] = '\0';
+  };
+  if (f.date_taken_key != 0) {
+    out.flags |= MV_ADDON_TAG_HAS_DATE;
+    out.taken_unix = f.date_taken_key;
+  }
+  if (f.where) {
+    out.flags |= MV_ADDON_TAG_HAS_LOCATION;
+    out.lat = f.where->lat;
+    out.lon = f.where->lon;
+  }
+  if (f.ai_generated) out.flags |= MV_ADDON_TAG_AI_GENERATED;
+  put(out.camera_utf8, sizeof(out.camera_utf8), f.camera);
+  put(out.lens_utf8, sizeof(out.lens_utf8), f.lens);
+  put(out.made_with_utf8, sizeof(out.made_with_utf8), f.made_with);
+  put(out.fields_utf8, sizeof(out.fields_utf8), mv::meta::joined_fields(f.fields, sizeof(out.fields_utf8)));
+  // #405: rating, label and exposure (the table's struct_size says they are there).
+  out.rating = f.rating;
+  out.iso = f.iso;
+  out.aperture_x100 = f.aperture_x100;
+  out.focal_mm = f.focal_mm;
+  out.shutter_den = f.shutter_den;
+  out.shutter_us = f.shutter_us;
+  put(out.label_utf8, sizeof(out.label_utf8), f.label);
+  return true;
+}
+
+// #406: a clip's chapter titles and text subtitle cues for the AI pack (meta/cues.h).
+mv::expected read_cues(const std::string& path, std::int64_t start_ms, std::int64_t max_ms, std::uint32_t max_cues,
+                       const std::function<bool(const mv::addon::host_services::cue&)>& visit) {
+  mv::meta::cue_limits lim;
+  lim.start_ms = start_ms;
+  lim.max_ms = max_ms;
+  lim.max_cues = max_cues;
+  return mv::meta::read_cues(path, lim, [&](const mv::meta::cue& c) {
+    mv::addon::host_services::cue out;
+    out.kind = c.kind == mv::meta::cue_kind::chapter ? MV_ADDON_CUE_CHAPTER : MV_ADDON_CUE_SUBTITLE;
+    out.start_ms = c.start_ms;
+    out.end_ms = c.end_ms;
+    out.text = c.text;
+    return visit(out);
+  });
 }
 
 // The viewer's capture date and camera for Import's layouts (mv_meta, PR 9).
@@ -150,7 +216,32 @@ mv::result<std::string> thumbnail(const std::string& path) {
 
 }  // namespace
 
+// C++ linkage, as addon_bridge.h declares it: inside the extern "C" block
+// below it is "a different language linkage" (MSVC C2732, clang-cl error).
+namespace mv::abi {
+bool present_busy() noexcept { return g_present_busy.load(std::memory_order_relaxed); }
+}  // namespace mv::abi
+
 extern "C" {
+
+// docs/design/25 PR 58: a screen's thumbnail / thumbnail_grid tile, by path.
+// [worker-thread]. A clip has no poster here (the player makes those), and is
+// refused before anything is read.
+MV_API mv_status MV_CALL mv_slots_thumbnail_path(const char* path_utf8, char* out, uint32_t cap,
+                                                 uint32_t* needed) {
+  return static_cast<mv_status>(mv::abi::guard("mv_slots_thumbnail_path", [&] {
+    MV_REQUIRE(path_utf8, "path required");
+    std::string lower(path_utf8);
+    for (char& c : lower) c = static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
+    for (const char* ext : {".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi", ".ts", ".mts", ".m2ts"}) {
+      const std::size_t n = std::strlen(ext);
+      if (lower.size() >= n && lower.compare(lower.size() - n, n, ext) == 0) return status::unsupported_format;
+    }
+    auto made = thumbnail(path_utf8);
+    if (!made) return made.error();
+    return write_out(*made, out, cap, needed);
+  }));
+}
 
 MV_API void MV_CALL mv_present_set_busy(uint32_t busy) {
   g_present_busy.store(busy != 0, std::memory_order_relaxed);
@@ -271,8 +362,10 @@ MV_API mv_status MV_CALL mv_open_addon_install(const char* package_utf8,
     MV_REQUIRE(out && cap >= 1024, "the result buffer is too small to say what happened");
     auto s = mv::addon::default_open_store();
     if (!s) return s.error();
-    return write_out(mv::addon::open_install_json(*s, package_utf8, approved_sha256), out, cap,
-                     needed);
+    const status written =
+        write_out(mv::addon::open_install_json(*s, package_utf8, approved_sha256), out, cap, needed);
+    mv::abi::scripts_store_changed();  // a script add-on starts, an update replaces the old one
+    return written;
   }));
 }
 
@@ -290,6 +383,7 @@ MV_API mv_status MV_CALL mv_open_addon_remove(const char* folder) {
     auto s = mv::addon::default_open_store();
     if (!s) return s.error();
     auto removed = s->remove(folder);
+    if (removed) mv::abi::scripts_store_changed();  // its script stops and its commands go
     return removed ? status::ok : removed.error();
   }));
 }
@@ -303,6 +397,55 @@ MV_API mv_status MV_CALL mv_open_addon_theme_json(const char* addon_id, const ch
     auto theme = s->theme_json(addon_id, theme_id);
     if (!theme) return theme.error();
     return write_out(*theme, out, cap, needed);
+  }));
+}
+
+// PR 56 (docs/design/25): settings pages and keymap packs.
+
+MV_API mv_status MV_CALL mv_addon_settings_json(const char* addon_id, char* out, uint32_t cap,
+                                                uint32_t* needed) {
+  return static_cast<mv_status>(mv::abi::guard("mv_addon_settings_json", [&] {
+    MV_REQUIRE(addon_id && *addon_id, "addon_id is empty");
+    auto s = mv::addon::default_open_store();
+    if (!s) return s.error();
+    auto first = open_store();
+    const std::string page =
+        mv::addon::addon_settings_page_json(*s, first ? &*first : nullptr, addon_id);
+    if (page.empty()) return status::not_found;
+    return write_out(page, out, cap, needed);
+  }));
+}
+
+MV_API mv_status MV_CALL mv_addon_setting_set(const char* addon_id, const char* key,
+                                              const char* value_json, char* out, uint32_t cap,
+                                              uint32_t* needed) {
+  return static_cast<mv_status>(mv::abi::guard("mv_addon_setting_set", [&] {
+    MV_REQUIRE(addon_id && key && value_json, "addon_id, key and value_json are required");
+    auto s = mv::addon::default_open_store();
+    if (!s) return s.error();
+    auto first = open_store();
+    return write_out(mv::addon::addon_setting_set_json(*s, first ? &*first : nullptr, addon_id,
+                                                       key, value_json),
+                     out, cap, needed);
+  }));
+}
+
+MV_API mv_status MV_CALL mv_addon_settings_forget(const char* addon_id) {
+  return static_cast<mv_status>(mv::abi::guard("mv_addon_settings_forget", [&] {
+    MV_REQUIRE(addon_id && *addon_id, "addon_id is empty");
+    return mv::addon::addon_settings_forget(addon_id) ? status::ok : status::io;
+  }));
+}
+
+MV_API mv_status MV_CALL mv_open_addon_keymap_json(const char* addon_id, const char* pack_id,
+                                                   char* out, uint32_t cap, uint32_t* needed) {
+  return static_cast<mv_status>(mv::abi::guard("mv_open_addon_keymap_json", [&] {
+    MV_REQUIRE(addon_id && pack_id, "addon_id and pack_id are required");
+    auto s = mv::addon::default_open_store();
+    if (!s) return s.error();
+    const std::string pack = mv::addon::open_keymap_json(*s, addon_id, pack_id);
+    if (pack.empty()) return status::not_found;
+    return write_out(pack, out, cap, needed);
   }));
 }
 
@@ -458,6 +601,8 @@ mv::status load_addon(mv_session_t session, const char* id, const char* interfac
     }
     mv::addon::host_services svc;
     svc.capture = &capture_info;
+    svc.tag_facts = &tag_facts;
+    svc.read_cues = &read_cues;
     svc.thumbnail = &thumbnail;
     svc.should_yield = [] { return g_present_busy.load(std::memory_order_relaxed); };
     svc.post = [session](const mv_addon_event& e) {
@@ -468,6 +613,23 @@ mv::status load_addon(mv_session_t session, const char* id, const char* interfac
       c.generation = e.kind;
       c.payload = e.payload;
       mv::abi::push_addon_completion(session, c);
+    };
+    // Host table v3 (docs/design/25 PR 59): a file's coordinates, from #291's
+    // meta_cache.db (the folder's tag pass may have read it already; a miss is
+    // one bounded read, stored for next time).
+    svc.location = [](const std::string& path) -> std::optional<mv_addon_location> {
+      auto row = mv::meta::cached_or_read(mv::meta::default_meta_cache(), path);
+      if (!row || !row->facts.where) return std::nullopt;
+      const mv::meta::geo_point* fix = &*row->facts.where;
+      mv_addon_location l{};
+      l.has = 1;
+      l.lat = fix->lat;
+      l.lon = fix->lon;
+      if (fix->altitude) {
+        l.has_altitude = 1;
+        l.altitude_m = *fix->altitude;
+      }
+      return l;
     };
     if (auto lib = mv::io::default_library_dir()) svc.default_library = *lib;
     // Host table v2 (Milestone H): pixels from the viewer's own decoders.

@@ -269,6 +269,8 @@ expected chrome_host::load() noexcept {
   set_adjust_view_ = get_entry(L"SetAdjustView");
   // PR 12, optional the same way: without it the pane shows no rating controls.
   set_meta_edit_ = get_entry(L"SetMetaEdit");
+  // #345, optional the same way: without it there is no AI badge.
+  show_ai_badge_ = get_entry(L"ShowAiBadge");
   // PR 13 / 14, optional the same way.
   show_jobs_pane_ = get_entry(L"ShowJobsPane");
   set_trim_ = get_entry(L"SetTrim");
@@ -296,6 +298,9 @@ expected chrome_host::load() noexcept {
   // Optional: without them a drag carries one cell and Open lists no recents.
   set_drag_paths_ = get_entry(L"SetDragPaths");
   set_recent_folders_ = get_entry(L"SetRecentFolders");
+  // Optional (docs/design/25 PR 56): without it Settings cannot list what a
+  // key layout skipped.
+  set_keymap_report_ = get_entry(L"SetKeymapReport");
   // Optional the same way (issue #214): without it the More flyout's audio
   // controls do not follow the keys.
   apply_audio_ = get_entry(L"ApplyAudio");
@@ -814,7 +819,8 @@ void chrome_host::set_adjust_view(const adjust_view& view) noexcept {
 
 void chrome_host::set_meta_data(bool loading, const std::string& summary,
                                 const std::string& properties,
-                                const std::string& streams) noexcept {
+                                const std::string& streams, const meta::summary* facts,
+                                std::int32_t extra_facts) noexcept {
   if (!panels_attached_ || !set_meta_data_) return;
   chrome_meta_args args{};
   args.summary = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(summary.data()));
@@ -824,7 +830,49 @@ void chrome_host::set_meta_data(bool loading, const std::string& summary,
   args.properties_len = static_cast<std::int32_t>(properties.size());
   args.streams_len = static_cast<std::int32_t>(streams.size());
   args.loading = loading ? 1 : 0;
+  args.facts = extra_facts;
+  if (facts) {
+    if (facts->where) {
+      args.facts |= kMetaFactWhere;
+      args.where_lat = facts->where->lat;
+      args.where_lon = facts->where->lon;
+      if (facts->where->altitude) {
+        args.facts |= kMetaFactAltitude;
+        args.where_altitude_m = *facts->where->altitude;
+      }
+    }
+    if (facts->ai_generated) args.facts |= kMetaFactAiGenerated;
+    args.made_with = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(facts->made_with.data()));
+    args.made_with_len = static_cast<std::int32_t>(facts->made_with.size());
+  }
   (void)set_meta_data_(&args, static_cast<std::int32_t>(sizeof(args)));
+}
+
+void chrome_host::show_ai_badge(bool visible, const chrome_rect& at, const std::string& title,
+                                const std::string& evidence) noexcept {
+  if (!panels_attached_ || !show_ai_badge_) return;
+  const bool same_rect = at.x == ai_badge_at_.x && at.y == ai_badge_at_.y && at.width == ai_badge_at_.width &&
+                         at.height == ai_badge_at_.height;
+  if (ai_badge_sent_ && visible == ai_badge_visible_ &&
+      (!visible || (same_rect && title == ai_badge_title_ && evidence == ai_badge_evidence_))) {
+    return;
+  }
+  chrome_ai_badge_args args{};
+  args.visible = visible ? 1 : 0;
+  args.x = at.x;
+  args.y = at.y;
+  args.width = at.width;
+  args.height = at.height;
+  args.title = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(title.data()));
+  args.title_len = static_cast<std::int32_t>(title.size());
+  args.evidence = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(evidence.data()));
+  args.evidence_len = static_cast<std::int32_t>(evidence.size());
+  (void)show_ai_badge_(&args, static_cast<std::int32_t>(sizeof(args)));
+  ai_badge_sent_ = true;
+  ai_badge_visible_ = visible;
+  ai_badge_at_ = at;
+  ai_badge_title_ = title;
+  ai_badge_evidence_ = evidence;
 }
 
 void chrome_host::set_tree_root(const std::string& utf8_dir) noexcept {
@@ -846,7 +894,7 @@ bool chrome_host::take_parked_text(std::string& out) noexcept {
   // A path, or a comment of at most meta::kMaxCommentBytes; a longer one does
   // not fit and is refused (-1) rather than cut.
   try {
-    std::string buf(16384, '\0');
+    std::string buf(128u << 10, '\0');  // PR 56: a keymap pack fits (256 bindings)
     chrome_table_args args{};
     args.utf8 = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(buf.data()));
     args.length = static_cast<std::int32_t>(buf.size());
@@ -860,15 +908,16 @@ bool chrome_host::take_parked_text(std::string& out) noexcept {
   }
 }
 
-void chrome_host::set_meta_edit(std::int32_t rating, const std::string& comment,
+bool chrome_host::set_meta_edit(std::int32_t rating, const std::string& comment,
                                 std::int32_t flags) noexcept {
-  if (!panels_attached_ || !set_meta_edit_) return;
+  if (!panels_attached_ || !set_meta_edit_) return false;
   chrome_meta_edit_args args{};
   args.comment = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(comment.data()));
   args.comment_len = static_cast<std::int32_t>(comment.size());
   args.rating = rating;
   args.flags = flags;
-  (void)set_meta_edit_(&args, static_cast<std::int32_t>(sizeof(args)));
+  // S_FALSE (1): Esc closed the pane's confirmation and nothing else.
+  return set_meta_edit_(&args, static_cast<std::int32_t>(sizeof(args))) == 1;
 }
 
 void chrome_host::apply_rate(float rate) noexcept {
@@ -910,6 +959,14 @@ void chrome_host::set_recent_folders(const std::string& utf8_lines) noexcept {
   args.utf8 = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(utf8_lines.data()));
   args.length = static_cast<std::int32_t>(utf8_lines.size());
   (void)set_recent_folders_(&args, static_cast<std::int32_t>(sizeof(args)));
+}
+
+void chrome_host::set_keymap_report(const std::string& json) noexcept {
+  if (!attached_ || !set_keymap_report_) return;
+  chrome_table_args args{};
+  args.utf8 = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(json.data()));
+  args.length = static_cast<std::int32_t>(json.size());
+  (void)set_keymap_report_(&args, static_cast<std::int32_t>(sizeof(args)));
 }
 
 void chrome_host::show_popup(chrome_popup kind, std::int32_t mode_mask) noexcept {
@@ -1053,6 +1110,8 @@ void chrome_host::detach() noexcept {
     adjust_visible_ = false;
     jobs_visible_ = false;
     edit_visible_ = false;
+    ai_badge_visible_ = false;
+    ai_badge_sent_ = false;
   }
   if (transport_attached_ && detach_transport_) {
     (void)detach_transport_(nullptr, 0);

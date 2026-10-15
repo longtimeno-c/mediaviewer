@@ -21,7 +21,7 @@ leaves your computer.
 | **People** | Faces grouped into people. Name someone once, then find every photo and clip they are in |
 | **Edit without fear** | Crop, straighten, colour, lossless rotate, edit any metadata tag, trim and cut video. Originals are never touched |
 | **Import and back up** | Verified copies from a card at network speed, sorted by date, duplicates skipped. Back up your whole Photos library to a NAS |
-| **Make it yours** | Every key remappable, light or dark, and themes from anyone, installed from a file or a link |
+| **Make it yours** | Every key remappable, with built-in themes and more from anyone, installed from a file or a link |
 | **Private by design** | No account, no cloud, no upload. Telemetry is off unless you turn it on |
 
 ## Download
@@ -142,7 +142,8 @@ The transport floats over the video and gets out of the way after a moment of pl
 
 `I` opens a metadata pane: a summary card, a searchable tree of every EXIF, IPTC and XMP tag, and a per-stream inspector
 for clips. `O` overlays camera, exposure and date on the image, `Shift+O` draws autofocus points, and `Shift+I` is a
-one-pixel colour eyedropper (`Ctrl+C` copies the value).
+one-pixel colour eyedropper (`Ctrl+C` copies the value). A file that says it was made by an AI tool gets a small
+**AI** badge in the corner (hover to see which tool and why); switch it off in **Settings → Viewer**.
 
 ## Colour done right
 
@@ -176,12 +177,14 @@ All of it is computed on your computer; nothing is uploaded.
 
 - **Pictures and video frames** use OpenAI CLIP: ViT-B/32 (*Fast*) or ViT-L/14 (*High*), picked for your hardware. It runs with NVIDIA acceleration on Windows and Core ML on Apple silicon. Every photo and sampled frame is indexed once in the background, so a search reads the index and never re-scans your files.
 - **Sound and speech.** An optional **Sound** piece indexes what videos sound like (LAION CLAP) and what is said in them (Whisper).
-- **Narrow it as you type:** `-beach` leaves something out, `video` or `is:photo` picks a kind, `in:2024` or `before:2025` limits the date, and quotes find words that are said.
+- **Words in the picture.** A sign, a poster or a shirt that says "suited and booted" is found by those words: your computer's own text recognition reads every photo once.
+- **Narrow it as you type:** `-beach` leaves something out, `video` or `is:photo` picks a kind, `in:2024` or `before:2025` limits the date the photo was taken, `rating:4+`, `label:red`, `iso:1600+` or `f:1.8` pick by your marks and the exposure, and quotes find words that are said, written in a chapter or subtitle, or shown in the picture.
+- **Live Photos move.** The few seconds of motion beside a Live Photo are searched too, and open at the moment that matched.
 - **Jump straight to the moment.** `Ctrl/⌘+F` searches, `Ctrl/⌘+Shift+F` finds similar, and `N` / `Shift+N` walk the matching moments in a clip.
 - **Your cloud folders too.** Folders on OneDrive or iCloud Drive are indexed, online-only files included if you let it fetch them.
 - **Move house without re-indexing.** Export the index to one file and import it on another computer, or after moving a library to a NAS. Thumbnails and People go only if you tick them.
 - **You can see it working.** Settings shows each folder's progress, the pass that is running, and a Rescan that says what it is doing.
-- Pieces install separately: Core about 1.2 GB, Sound about 1 GB, People about 40 MB, and at most 3 GB in all. On a Mac, Local search needs Apple silicon.
+- Pieces install separately: Core about 1.2 GB, Sound about 1 GB, People about 40 MB, and at most 5 GB in all. On a Mac, Local search needs Apple silicon.
 
 **How well it finds things.** Measured on a 25,000-photo library of captioned COCO photos, the size of a real camera roll, with the setting you get out of the box. Every result is checked against the photo's own captions. The raw report is [`docs/perf/search.json`](docs/perf/search.json).
 
@@ -221,7 +224,9 @@ The optional **Import** add-on copies a card or folder into your library.
 
 - **Anyone can make an add-on.** One `.mvaddon` file, signed by the person who made it. Drop it on MediaViewer, or use
   **Settings → Add-ons → From others** to install from a file or a link.
-- **Themes first.** Colours and a typeface for MediaViewer's bars, panes and text. A theme dresses the app and never touches your photos' colour.
+- **Nineteen themes built in.** Dark, Light, Midnight, Cyberpunk, Retrowave, Forest, Starfield, Terminal, Organs, Ume, GPT, Claude, Cute, Eclipse, Porcelain, Arcade, Blueprint, Monolith and Yoyo are in Settings → Appearance with nothing else installed. A theme colours the whole window, the welcome screen and the space around your photos and videos included. Grounds run from rain, stars, fireflies and petals to embers, sparkles, a circuit and a slow drift, behind the bars, the panes and the welcome screen. A few stay still. Default still follows the system, and a photo's colour is never changed.
+- **Themes, key layouts and settings.** Colours, a typeface and how round and roomy the bars and panes are; a key layout for the hands you already have (a Vim layout ships as an example), with one click back to the defaults; and an add-on's own page in Settings. A theme dresses the app and never touches your photos' colour.
+- **Commands from a script.** An add-on can bring its own keyboard commands, written in Lua and run in a sandbox on a thread of its own, so a slow or broken one is stopped and the viewer carries on. It reaches only what it asked for when you installed it.
 - **Safe to try.** You see who signed it and what it is before it installs, only its original publisher can update it, and an add-on never gets network access.
 - **Make your own in five minutes** with a single-file Python tool and a guide: [docs/ADDONS.md](docs/ADDONS.md). Your add-on is yours to licence however you like.
 

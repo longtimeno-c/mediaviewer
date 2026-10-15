@@ -384,9 +384,12 @@ public static partial class IslandHost
         // the window; the scrubber flexes inside whatever it gets.
         row.LayoutUpdated += (_, _) => ReportTransportWidth(row, seekColumn);
 
-        // A floating bar over the video (issue #38): hairline all round. The
-        // island window is rectangular, so no rounding. The padding is inside
-        // the hairline, so it is one less than the Mac's 14.
+        // A floating bar over the video (issue #38): hairline all round, the
+        // controls centred. The island window is rectangular, so no rounding.
+        // The padding is inside the hairline, so it is one less than the Mac's 14.
+        var ground = new Grid();
+        ThemeField.Lay(ground);
+        ground.Children.Add(row);
         var root = new Border
         {
             RequestedTheme = IslandTheme,
@@ -395,7 +398,7 @@ public static partial class IslandHost
             BorderThickness = new Thickness(1),
             Height = TransportDip,
             Padding = new Thickness(TransportPad - 1, 0, TransportPad - 1, 0),
-            Child = row,
+            Child = ground,
         };
         // Issue #224: the island covers the canvas's WM_DROPFILES.
         WireFileDrop(root);

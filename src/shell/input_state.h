@@ -15,6 +15,7 @@
 
 #include <cstdint>
 
+#include "shell/home_theme.h"
 #include "shell/welcome_layout.h"
 
 namespace mv::shell {
@@ -110,6 +111,10 @@ struct input_snapshot {
   // per event whether a delta zooms (wheel_total) or scrolls (these).
   std::int64_t scroll_px_x = 0;
   std::int64_t scroll_px_y = 0;
+  // The same from a trackpad (canvas/document_scroll.h): the view follows at
+  // once instead of on the spring, so the page stays under the fingers.
+  std::int64_t scroll_direct_px_x = 0;
+  std::int64_t scroll_direct_px_y = 0;
   // A page turned by scrolling past an edge: the next still that lands (not a
   // refinement) keeps the zoom and lands at the top (+1) or bottom (-1)
   // instead of fitting. Latched by page_land_seq.
@@ -118,10 +123,18 @@ struct input_snapshot {
 
   // docs/design/16 view state. Levels, not edges: the render thread draws what these
   // say, and redraws once when any of them changes.
-  std::uint8_t background = 0;  // B: 0 system, 1 grey, 2 white, 3 checkerboard, 4 dark
-  // OS chrome colour, 0xRRGGBB. Only the empty welcome/game view uses it;
-  // The default canvas follows this colour too; explicit choices remain fixed.
-  std::uint32_t home_background_rgb = 0x21232Au;
+  // Issue #408: the chrome's resolved theme tokens (Default = the system's,
+  // high contrast = the system's contrast colours). `home.canvas` is the clear
+  // on every screen, behind a still and a video too; the welcome card draws
+  // with the rest, and the home's ground effect with `home.effect`. There is
+  // no canvas background of its own. A change is one redraw.
+  home_theme home;
+  // The ground's rest rule (home_ground.h): Reduce Motion on the Mac, Windows
+  // animations off. And a count of pointer moves and keys that the host bumps
+  // without asking for a frame (at most a few a second): a bump wakes the
+  // render thread, which restarts the ground's five seconds.
+  bool reduce_motion = false;
+  std::uint32_t pointer_seq = 0;
   // The welcome card's recent folders (labels only; the host keeps the paths
   // and hit-tests the rows). count 0 once anything is open. A change bumps
   // activity_seq for its one redraw.
@@ -238,6 +251,17 @@ struct input_cursor {
     dy = static_cast<float>(s.scroll_px_y - scroll_px_y);
     scroll_px_x = s.scroll_px_x;
     scroll_px_y = s.scroll_px_y;
+    return dx != 0.0f || dy != 0.0f;
+  }
+  std::int64_t scroll_direct_px_x = 0;
+  std::int64_t scroll_direct_px_y = 0;
+
+  // Trackpad document scroll since the last call, in screen pixels.
+  bool consume_scroll_direct(const input_snapshot& s, float& dx, float& dy) noexcept {
+    dx = static_cast<float>(s.scroll_direct_px_x - scroll_direct_px_x);
+    dy = static_cast<float>(s.scroll_direct_px_y - scroll_direct_px_y);
+    scroll_direct_px_x = s.scroll_direct_px_x;
+    scroll_direct_px_y = s.scroll_direct_px_y;
     return dx != 0.0f || dy != 0.0f;
   }
   bool consume_activity(const input_snapshot& s) noexcept {

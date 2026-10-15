@@ -213,8 +213,8 @@ Measure on the dev Mac (record chip, cores, RAM, macOS, ORT version from the `ru
       installed copy did not verify and Local search is not started (⌘F is file search). Same for an edited
       `manifest.json`, a removed file, and an extra file in the version folder. A pack signed
       with a non-pinned key is refused before the archive is fetched.
-- [ ] **3 GB ceiling.** With Core installed, fake a People manifest whose `installed_size` would
-      exceed 3 GB in total: the Install button is disabled with the sentence
+- [ ] **5 GB ceiling.** With Core installed, fake a People manifest whose `installed_size` would
+      exceed 5 GB in total: the Install button is disabled with the sentence
       "People needs about … Remove another piece first." and nothing is downloaded; forcing an
       install through the store is refused too (`mv_addons_install` false).
 - [ ] **Install / Remove per piece** works: Core, then People (People is disabled until Core is
@@ -447,7 +447,7 @@ MV_AI_SPEECH_CLIP=/tmp/speech.mp4 \
 ### Verify
 
 - [ ] **Settings:** a *Sound* row with its size beside Core and People (it adds its
-      ~1.03 GB); a family over 3 GB is refused before download. Install while Core runs is picked
+      ~1.03 GB); a family over 5 GB is refused before download. Install while Core runs is picked
       up at once (`set_setting("reload")`); Remove asks, then sound search stops.
 - [ ] **"Index videos for: Pictures · Sound · Both"** (an `NSSegmentedControl`: a `.segmented`
       `Picker` ignored per-item `.disabled`, owner report 2026-09-27): Sound and Both cannot be
@@ -461,8 +461,11 @@ MV_AI_SPEECH_CLIP=/tmp/speech.mp4 \
       done. The management view shows "Sound: 40 of 40 clips · Speech: 40 of 40" once all are
       done. The command-bar pill says "Indexing sound 12 of 40 clips" once pictures are done.
 - [ ] **iCloud clips (2026-10-05):** Settings → Photos Library → *Download iCloud videos to index
-      them* is off by default. Turned on, on power and Wi‑Fi: the status line says "Downloading
-      from iCloud (N%) · M clips left", at most two files sit in
+      them* is off by default. Turned on, on power and Wi‑Fi: while the pictures pass still has
+      local files the status line says "Indexing pictures N of T on this Mac · …" with "Then M
+      clips from iCloud · downloading the next (N%), each indexed as it lands" under it (never an
+      almost-done count beside a separate "M clips left to download", issue #417); once nothing
+      local is left it says "Downloading from iCloud · M clips left". At most two files sit in
       `~/Library/Application Support/MediaViewer/Add-ons/AI/data/cache/icloud`, each is deleted once
       indexed, and an iCloud-only clip's later moment (and words said in it) is then found. On
       battery it says "iCloud downloads wait for power"; on a phone hotspot "…wait for an unmetered

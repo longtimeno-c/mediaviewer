@@ -14,7 +14,7 @@ struct EditStripView: View {
   @ObservedObject private var store = EditStore.shared
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
+    VStack(alignment: .leading, spacing: MVTheme.space(8)) {
       HStack(alignment: .firstTextBaseline) {
         Text(store.title).font(MVTheme.font()).foregroundStyle(MVTheme.title)
         Text(store.name)
@@ -30,7 +30,7 @@ struct EditStripView: View {
           .accessibilityHint("Applies a crop in progress and closes the editor")
       }
       // Tabs: a segmented row of plain buttons so each can carry its key.
-      HStack(spacing: 4) {
+      HStack(spacing: MVTheme.space(4)) {
         ForEach(store.tabs, id: \.rawValue) { t in
           let selected = store.tab == t
           Button { store.select(t) } label: { Text(t.label).frame(maxWidth: .infinity) }
@@ -42,14 +42,14 @@ struct EditStripView: View {
         }
       }
       if store.isClip {
-        HStack(spacing: 8) {
+        HStack(spacing: MVTheme.space(8)) {
           Button("Clip tools…") { store.run(EditCommand.clipTools) }
             .buttonStyle(FlatButtonStyle(compact: true))
             .help("Rotate, split, remux, save a frame, audio, GIF (⌘S)")
           Spacer()
         }
       } else {
-        HStack(spacing: 8) {
+        HStack(spacing: MVTheme.space(8)) {
           Button("Undo") { store.run(EditCommand.undo) }
             .buttonStyle(FlatButtonStyle(compact: true))
             .disabled(store.editCount == 0)
@@ -80,9 +80,9 @@ struct EditStripView: View {
         .font(MVTheme.font(12))
         .foregroundStyle(MVTheme.body)
     }
-    .padding(12)
+    .padding(MVTheme.space(12))
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    .background(MVTheme.canvas)
+    .background(ThemeField())
     .overlay(alignment: .leading) { Rectangle().fill(MVTheme.hairline).frame(width: 1) }
     .overlay(alignment: .bottom) { Rectangle().fill(MVTheme.hairline).frame(height: 1) }
     .clipped()
@@ -105,11 +105,11 @@ struct EditPaneView: View {
           CropPane()
         }
       }
-      .padding(14)
+      .padding(MVTheme.space(14))
       .frame(maxWidth: .infinity, alignment: .topLeading)
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    .background(MVTheme.canvas)
+    .background(ThemeField())
     .overlay(alignment: .leading) { Rectangle().fill(MVTheme.hairline).frame(width: 1) }
     .clipped()
   }
@@ -128,9 +128,9 @@ private struct CropPane: View {
   private let columns = [GridItem(.adaptive(minimum: 64), spacing: 6)]
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 14) {
+    VStack(alignment: .leading, spacing: MVTheme.space(14)) {
       // Start / apply / cancel.
-      VStack(alignment: .leading, spacing: 6) {
+      VStack(alignment: .leading, spacing: MVTheme.space(6)) {
         SectionTitle(text: "Crop")
         if store.cropActive {
           if store.cropWidth > 0 {
@@ -158,7 +158,7 @@ private struct CropPane: View {
         }
       }
 
-      VStack(alignment: .leading, spacing: 6) {
+      VStack(alignment: .leading, spacing: MVTheme.space(6)) {
         SectionTitle(text: "Aspect ratio")
         LazyVGrid(columns: columns, alignment: .leading, spacing: 6) {
           ForEach(CropAspect.allCases, id: \.rawValue) { a in
@@ -180,7 +180,7 @@ private struct CropPane: View {
         Text("A next ratio · X swap, while cropping").font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
       }
 
-      VStack(alignment: .leading, spacing: 6) {
+      VStack(alignment: .leading, spacing: MVTheme.space(6)) {
         HStack {
           SectionTitle(text: "Straighten")
           Spacer()
@@ -197,9 +197,9 @@ private struct CropPane: View {
         Text(", . tilt 0.5° while cropping").font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
       }
 
-      VStack(alignment: .leading, spacing: 6) {
+      VStack(alignment: .leading, spacing: MVTheme.space(6)) {
         SectionTitle(text: "Rotate and flip")
-        HStack(spacing: 8) {
+        HStack(spacing: MVTheme.space(8)) {
           iconButton("rotate.left", "Rotate left", "[", EditCommand.rotateLeft)
           iconButton("rotate.right", "Rotate right", "]", EditCommand.rotateRight)
           iconButton("arrow.left.and.right.righttriangle.left.righttriangle.right", "Flip horizontal", "H",
@@ -232,8 +232,8 @@ private struct TrimPane: View {
   @ObservedObject private var video = VideoStore.shared
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 14) {
-      VStack(alignment: .leading, spacing: 6) {
+    VStack(alignment: .leading, spacing: MVTheme.space(14)) {
+      VStack(alignment: .leading, spacing: MVTheme.space(6)) {
         SectionTitle(text: "Trim")
         if video.trimArmed {
           if !video.trimLabel.isEmpty {
@@ -266,7 +266,7 @@ private struct TrimPane: View {
             .accessibilityHint("Key Command T")
         }
       }
-      VStack(alignment: .leading, spacing: 6) {
+      VStack(alignment: .leading, spacing: MVTheme.space(6)) {
         SectionTitle(text: "Tools")
         cmd("Split at playhead", "⌘B", EditCommand.clipSplit)
         cmd("More clip tools…", "⌘S", EditCommand.clipTools)

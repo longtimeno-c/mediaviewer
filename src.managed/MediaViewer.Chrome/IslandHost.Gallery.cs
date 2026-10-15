@@ -12,6 +12,7 @@ using Microsoft.UI.Xaml.Hosting;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
+using Windows.Foundation;
 using Windows.Graphics;
 
 namespace MediaViewer.Chrome;
@@ -44,10 +45,21 @@ public static partial class IslandHost
     private static ItemsRepeater? _folderChipRepeater;
     private static ScrollViewer? _folderStrip;
     private static FrameworkElement? _barPathRow;
+    private static ScrollViewer? _barPathScroller;
     private static Button? _barUpButton;
     private static Button? _barRootButton;
     private static TextBlock? _barPathCurrent;
+    private static double _barNameNatural;
+    private static double _barTrailNatural;
+    // Up, root, search, slot icons, rule, spacing and the row margin.
+    // Measured when those items change, never from the bar's size pass:
+    // measuring a live child there dirties layout and the pass never settles.
+    private static double _barPathFixed;
     private static StackPanel? _barCrumbTrail;
+    // The command bar grid and its menu cluster. FitBarPath reads their
+    // widths so a new bar item cannot cover Open / View / Settings.
+    private static Grid? _commandBar;
+    private static FrameworkElement? _commandBarMenus;
     // The trail's search icon (owner, 2026-09-28; it replaced the gallery
     // search bar): Ctrl+F's panel with Local search, file search without it.
     private static Button? _barSearchButton;
@@ -598,6 +610,7 @@ public static partial class IslandHost
         root.Children.Add(_galleryScroll);
         _galleryRoot = root;
         UpdateGallerySections();
+        ThemeField.Lay(root);
         return root;
     }
 
@@ -630,9 +643,12 @@ public static partial class IslandHost
             Margin = new Thickness(4, 0, 0, 0),
         };
         // Only as wide as the trail, up to a cap; past that it scrolls.
+        // FitBarPath sets Width from the room the menus left, so a long
+        // trail shrinks instead of pushing Open / View off the bar.
         ScrollViewer scroller = PathScroller(_barCrumbTrail);
         scroller.MaxWidth = 300;
         scroller.VerticalAlignment = VerticalAlignment.Center;
+        _barPathScroller = scroller;
         _barPathCurrent = new TextBlock
         {
             FontFamily = UiFont, FontSize = 13,
@@ -647,29 +663,129 @@ public static partial class IslandHost
         _barSearchButton = PathIconButton("\uE721", OpenSearchFromPath);
         AutomationProperties.SetName(_barSearchButton, "Search");
         _barSearchButton.Margin = new Thickness(4, 0, 0, 0);
-        var row = new StackPanel
+        // Right-aligned in the bar's middle column. Every column is Auto:
+        // a Star column here would swallow the spare width and open a gap
+        // in the middle of the trail. FitBarPath gives the scroller and the
+        // current name an explicit width so they are the parts that shrink.
+        var row = new Grid
         {
-            Orientation = Orientation.Horizontal,
-            Spacing = 2,
+            ColumnSpacing = 2,
             VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Right,
             Margin = new Thickness(0, 0, 4, 0),
             Visibility = Visibility.Collapsed,
+            MinWidth = 0,
         };
-        row.Children.Add(_barUpButton);
-        row.Children.Add(_barRootButton);
-        row.Children.Add(scroller);
-        row.Children.Add(_barPathCurrent);
-        row.Children.Add(_barSearchButton);
-        row.Children.Add(new Border
+        for (int i = 0; i < 7; ++i)
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto, MinWidth = 0 });
+        Put(row, _barUpButton, 0);
+        Put(row, _barRootButton, 1);
+        Put(row, scroller, 2);
+        Put(row, _barPathCurrent, 3);
+        Put(row, _barSearchButton, 4);
+        // docs/design/25 PR 59: the add-ons' path-bar icons.
+        Put(row, (FrameworkElement)BuildSlotPathItems(), 5);
+        Put(row, new Border
         {
             Width = 1, Height = 18,
             Background = Brush(Hairline),
             Margin = new Thickness(8, 0, 0, 0),
             VerticalAlignment = VerticalAlignment.Center,
-        });
+            IsHitTestVisible = false,
+        }, 6);
+        row.SizeChanged += (_, e) =>
+        {
+            // Children laid out past the room the menus left must not paint
+            // over Open / View / Settings. The clip is this row, not the bar.
+            row.Clip = new RectangleGeometry
+            {
+                Rect = new Rect(0, 0, e.NewSize.Width, e.NewSize.Height),
+            };
+        };
         _barPathRow = row;
         RebuildPathBars();
+        MeasurePathFixed();
         return row;
+    }
+
+    private static void MeasurePathFixed()
+    {
+        if (_barPathRow is not Grid path) return;
+        try
+        {
+            double w = path.Margin.Left + path.Margin.Right +
+                       path.ColumnSpacing * Math.Max(0, path.ColumnDefinitions.Count - 1);
+            foreach (FrameworkElement fe in path.Children.OfType<FrameworkElement>())
+            {
+                int column = Grid.GetColumn(fe);
+                if (column is 2 or 3 || fe.Visibility != Visibility.Visible) continue;
+                fe.Measure(new Size(double.PositiveInfinity, 48));
+                w += fe.DesiredSize.Width;
+            }
+            _barPathFixed = w;
+            FitBarPath();
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+        }
+    }
+
+    private static void Put(Grid row, FrameworkElement element, int column)
+    {
+        Grid.SetColumn(element, column);
+        row.Children.Add(element);
+    }
+
+    // The trail keeps the current name and gives up the ancestor crumbs
+    // first. Menus and `?` are not in this sum: they have their own columns
+    // and this must not change their width. Called when the bar, the menu
+    // cluster or the crumbs change size — a new button on the bar included.
+    private static bool _fittingPath;
+
+    private static void FitBarPath()
+    {
+        if (_fittingPath || _commandBar is null || _barPathRow is not Grid path ||
+            _barPathScroller is null || _barPathCurrent is null ||
+            _commandBarMenus is null || _helpButton is null)
+        {
+            return;
+        }
+        double bar = _commandBar.ActualWidth;
+        if (bar <= 0) return;
+        double room = bar - _commandBarMenus.ActualWidth - _helpButton.ActualWidth;
+        if (room < 0) room = 0;
+
+        _fittingPath = true;
+        try
+        {
+            // _barPathFixed already includes this row's margin. What remains
+            // is the scroller and the current name.
+            double flex = Math.Max(0, room - _barPathFixed);
+            double inner = Math.Max(0, room - path.Margin.Left - path.Margin.Right);
+            double nameMargin = _barPathCurrent.Margin.Left + _barPathCurrent.Margin.Right;
+            double nameW = Math.Min(_barNameNatural, Math.Max(0, flex - nameMargin));
+            double trailW = Math.Min(_barTrailNatural, Math.Max(0, flex - nameMargin - nameW));
+            if (double.IsNaN(_barPathScroller.Width) || Math.Abs(_barPathScroller.Width - trailW) > 0.5)
+                _barPathScroller.Width = trailW;
+            if (double.IsNaN(_barPathCurrent.Width) || Math.Abs(_barPathCurrent.Width - nameW) > 0.5)
+                _barPathCurrent.Width = nameW;
+            // MaxWidth is the element, inside its margin, so the row cannot
+            // extend into the menu column.
+            if (double.IsNaN(path.MaxWidth) || double.IsPositiveInfinity(path.MaxWidth) ||
+                Math.Abs(path.MaxWidth - inner) > 0.5)
+            {
+                path.MaxWidth = inner;
+            }
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+        }
+        finally
+        {
+            _fittingPath = false;
+        }
     }
 
     private static Button PathIconButton(string glyph, Action click)
@@ -694,6 +810,7 @@ public static partial class IslandHost
     {
         FillPathTrail(_barCrumbTrail, _barUpButton, _barRootButton, _barPathCurrent, _barPathRow);
         UpdatePathSearchButton();
+        FitBarPath();
     }
 
     // Always there (owner, 2026-09-28): it does what Ctrl+F does. With Local
@@ -710,6 +827,8 @@ public static partial class IslandHost
         }
         if (_barSearchButton is null) return;
         bool loaded = SearchChrome is not null;
+        // docs/design/25 §7: while the pack is attached it is the local-scope provider.
+        SlotNative.LocalSearchProvider(loaded);
         bool waiting = AiOnDemand();
         bool pack = loaded || waiting || AiStarting();
         _barSearchButton.Visibility = Visibility.Visible;
@@ -730,6 +849,19 @@ public static partial class IslandHost
         ToolTipService.SetToolTip(root, Crumbs.Count > 0 ? "Return to browsing root: " + Crumbs[0].Path : "No folder open");
         current.Text = Crumbs.Count > 0 ? (Crumbs.Count > 1 ? "›  " : "") + Crumbs[^1].Name : "";
         ToolTipService.SetToolTip(current, Crumbs.Count > 0 ? Crumbs[^1].Path : "");
+        // Natural width, before FitBarPath locks Width to the room left.
+        // MaxWidth 200 is the cap; a set Width would hide the real text width.
+        current.Width = double.NaN;
+        try
+        {
+            current.Measure(new Size(double.PositiveInfinity, 48));
+            _barNameNatural = Math.Max(0,
+                current.DesiredSize.Width - current.Margin.Left - current.Margin.Right);
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+        }
         trail.Children.Clear();
         var shown = DisplayCrumbs();
         for (int i = 0; i < shown.Count - 1; ++i)
@@ -776,6 +908,15 @@ public static partial class IslandHost
                 ToolTipService.SetToolTip(crumb, Crumbs[index].Path);
                 trail.Children.Add(crumb);
             }
+        }
+        try
+        {
+            trail.Measure(new Size(double.PositiveInfinity, 48));
+            _barTrailNatural = Math.Min(300, trail.DesiredSize.Width);
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
         }
     }
 
@@ -962,15 +1103,37 @@ public static partial class IslandHost
                 Margin = new Thickness(0, 2, 0, 0),
             };
             var col = new StackPanel { Spacing = 4 };
+            // docs/design/25 PR 59: the add-ons' badges, from a table (no add-on call per
+            // tile). With no add-on contributing badges the tile is exactly the plain one:
+            // no extra element, no subscription (the tiles are rebuilt when that changes).
+            UIElement badged = WithPlayBadge(WithBadge(image, vm.Badge), vm.IsClip, 40);
+            Action? unsubscribeBadges = null;
+            if (_slotTileBadges)
+            {
+                badged = WithSlotBadges(badged, vm, out Action unsubscribe);
+                unsubscribeBadges = unsubscribe;
+            }
             var clipped = new Border
             {
                 CornerRadius = new CornerRadius(6),
-                Child = WithPlayBadge(WithBadge(image, vm.Badge), vm.IsClip, 40),
+                Child = badged,
                 Width = GalleryTile,
                 Height = GalleryTile,
             };
             col.Children.Add(clipped);
             col.Children.Add(name);
+            // #291: why a file search showed this tile when its name did not match.
+            var why = new TextBlock
+            {
+                Text = vm.Why,
+                FontFamily = UiFont,
+                FontSize = 11,
+                Foreground = Brush(Body),
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                MaxWidth = GalleryTile,
+                Visibility = vm.Why.Length > 0 ? Visibility.Visible : Visibility.Collapsed,
+            };
+            col.Children.Add(why);
             var border = new Border
             {
                 Width = GalleryTile,
@@ -996,15 +1159,28 @@ public static partial class IslandHost
             void OnChanged(object? _, System.ComponentModel.PropertyChangedEventArgs e)
             {
                 if (e.PropertyName is nameof(FolderItemVm.ThumbPath) or null) SetThumb();
+                if (e.PropertyName is nameof(FolderItemVm.Why) or null)
+                {
+                    why.Text = vm.Why;
+                    why.Visibility = vm.Why.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+                }
                 if (e.PropertyName is nameof(FolderItemVm.Selected) or nameof(FolderItemVm.GalleryCurrent) or null)
                     border.BorderThickness = new Thickness(vm.Selected && _folderCursor < 0 ? 2 : 0);
             }
             vm.PropertyChanged += OnChanged;
             // Recycling without this leaks a handler per realisation, and every
             // thumb completion then walks a growing list of dead elements.
-            border.Tag = (Action)(() => vm.PropertyChanged -= OnChanged);
+            border.Tag = unsubscribeBadges is null
+                ? (Action)(() => vm.PropertyChanged -= OnChanged)
+                : (Action)(() =>
+                {
+                    vm.PropertyChanged -= OnChanged;
+                    unsubscribeBadges();
+                });
 
             border.Tapped += (_, _) => Send(Command.GalleryActivate, vm.Index);
+            // docs/design/25 PR 59: the add-ons' context-menu entries, only when some exist.
+            if (_slotTileContext) AttachSlotContextMenu(border, vm);
             WireFileDrag(border, vm);
             return border;
         }

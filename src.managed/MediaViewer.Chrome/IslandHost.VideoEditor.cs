@@ -543,6 +543,7 @@ public static partial class IslandHost
         AutomationProperties_SetName(root, "Video Editor timeline");
         _editorRoot = root;
         RenderEditor(full: true);
+        ThemeField.Lay(root);
         return root;
     }
 
@@ -874,6 +875,7 @@ public static partial class IslandHost
         col.Children.Add(buttons);
         root.Children.Add(col);
         AutomationProperties_SetName(root, "Editing in the Video Editor window");
+        ThemeField.Lay(root);
         return root;
     }
 }

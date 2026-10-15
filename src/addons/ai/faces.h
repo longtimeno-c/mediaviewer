@@ -140,6 +140,10 @@ class faces_db {
                              std::span<const face_in> faces);
   [[nodiscard]] expected mark_scanned(std::int64_t asset, const std::string& spec);
   [[nodiscard]] expected forget_asset(std::int64_t asset);
+  // #407: a Live Photo still's movie changed: its moments' faces go (pts_ms
+  // >= 0) and the asset is scanned again; the still's own faces, with their
+  // people, pins and "not this person", stay.
+  [[nodiscard]] expected forget_moments(std::int64_t asset);
 
   // Every person in min_faces photos or clips, or with a name. With `assets`
   // (the open folder's, docs/design/17 "People in the open folder"): only those

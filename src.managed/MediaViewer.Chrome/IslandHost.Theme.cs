@@ -44,6 +44,46 @@ public static partial class IslandHost
 
     private static SolidColorBrush Brush(ChromeColour role) => ThemeBrushes[role];
 
+    // docs/design/25 PR 56 (theme API 2): the theme's shape, as scales of the
+    // literals below (1 = today's). Resolved once at chrome start from the
+    // cached theme (ResolveThemeShape), never per frame: every control holds
+    // the radius, padding and size it was built with, so like the typeface a
+    // new shape shows at the next start. 1 with no theme or in high contrast.
+    private static double _radiusScale = 1;
+    private static double _density = 1;
+    private static double _typeScale = 1;
+
+    private static double RadiusScale => _radiusScale;
+    private static double Density => _density;
+    private static double TypeScale => _typeScale;
+
+    /// <summary>A corner radius literal, in the theme's shape.</summary>
+    private static double Radius(double literal) => _radiusScale == 1 ? literal : literal * _radiusScale;
+
+    /// <summary>A padding or spacing literal, in the theme's density (whole DIPs).</summary>
+    private static double Space(double literal) => _density == 1 ? literal : Math.Round(literal * _density);
+
+    /// <summary>A font size literal, in the theme's type scale (whole DIPs: the
+    /// chrome's face is a bitmap design and blurs between sizes).</summary>
+    private static double TypeSize(double literal) => _typeScale == 1 ? literal : Math.Round(literal * _typeScale);
+
+    private static CornerRadius Corner(double literal) => new(Radius(literal));
+
+    private static Thickness Pad(double uniform) => new(Space(uniform));
+
+    private static Thickness Pad(double left, double top, double right, double bottom) =>
+        new(Space(left), Space(top), Space(right), Space(bottom));
+
+    // Chrome start, after LoadCachedTheme and before the first control.
+    private static void ResolveThemeShape()
+    {
+        ThemeShape shape = _accessibilitySettings?.HighContrast == true || _theme is null
+            ? ThemeShape.Default : _theme.Shape;
+        _radiusScale = shape.Radius;
+        _density = shape.Density;
+        _typeScale = shape.TypeScale;
+    }
+
     private static void InitialiseTheme()
     {
         _themeDispatcher = DispatcherQueue.GetForCurrentThread();
@@ -54,6 +94,7 @@ public static partial class IslandHost
         // docs/design/25: the theme in use, from its cached tokens, before the first
         // brush exists; its add-on is verified on a worker afterwards.
         LoadCachedTheme();
+        ResolveThemeShape();
         // Brushes first: every Brush(role) lookup depends on them, so a failed
         // change hook below must still leave a complete palette.
         RefreshTheme();
@@ -183,11 +224,29 @@ public static partial class IslandHost
             : accentLuma > 160 ? Rgb(0, 0, 0) : Rgb(255, 255, 255));
         PublishControlAccent();
 
-        // The native welcome/game is outside the XAML tree. Ship the current
-        // system window colour to its snapshot on the UI thread, including
-        // changes to Windows contrast themes. It never alters the photo canvas.
-        uint homeRgb = (uint)(canvas.R << 16 | canvas.G << 8 | canvas.B);
-        _onCommand?.Invoke(_context, Command.HomeColour, homeRgb);
+        // Issue #408: the native welcome/game and the clear behind every photo
+        // and video are outside the XAML tree. Ship them the same tokens, on
+        // the UI thread, including Windows contrast themes; a built-in's ground
+        // too (an add-on theme, Default and contrast have none). HomeColour
+        // comes last: it publishes the rest. Photo and video pixels are never
+        // recoloured.
+        static float Pack(Color c) => (uint)(c.R << 16 | c.G << 8 | c.B);
+        _onCommand?.Invoke(_context, Command.HomeSurface, Pack(surface));
+        _onCommand?.Invoke(_context, Command.HomeTitle, Pack(title));
+        _onCommand?.Invoke(_context, Command.HomeBody, Pack(body));
+        _onCommand?.Invoke(_context, Command.HomeHairline, Pack(line));
+        _onCommand?.Invoke(_context, Command.HomeAccent, Pack(accent));
+        BuiltinThemes.Item? ground = themed is null ? null : BuiltinThemes.Find(ChromeThemeSelection);
+        _onCommand?.Invoke(_context, Command.HomeEffect,
+            ground is { } g ? BuiltinThemes.EffectIndex(g.Effect) : 0);
+        if (ground is { } item)
+        {
+            _onCommand?.Invoke(_context, Command.HomeEffectRgb, item.EffectRgb & 0xFFFFFFu);
+            _onCommand?.Invoke(_context, Command.HomeEffectIntensity, (float)item.Intensity);
+            _onCommand?.Invoke(_context, Command.HomeEffectSpeed, (float)item.Speed);
+            _onCommand?.Invoke(_context, Command.HomeEffectSize, (float)item.Size);
+        }
+        _onCommand?.Invoke(_context, Command.HomeColour, Pack(canvas));
 
         ApplyIslandTheme(themed is null ? ElementTheme.Default
             : dark ? ElementTheme.Dark : ElementTheme.Light);
@@ -197,6 +256,8 @@ public static partial class IslandHost
 
         // Milestone H: an add-on's own window follows (IAddonHost2.ThemeChanged).
         RaiseHostThemeChanged();
+        // The ground effect follows the same brushes. It is not on the photo canvas.
+        ThemeMotion.Raise();
     }
 
     private static bool _themeTitleDark = true;
@@ -270,6 +331,8 @@ public static partial class IslandHost
         _accessibilitySettings = null;
         _themeDispatcher = null;
         _themeWindow = IntPtr.Zero;
+        ThemeMotion.Window = IntPtr.Zero;
+        ThemeMotion.ForwardInput = null;
         try
         {
             ResourceDictionary? resources = _controlAccentPublished ? Application.Current?.Resources : null;

@@ -118,6 +118,13 @@ typedef enum mv_ai_scope {
 #define MV_AI_MATCH_PICTURE 1u
 #define MV_AI_MATCH_SOUND 2u
 #define MV_AI_MATCH_SPEECH 4u
+/* #291: the file's tags matched (camera, lens, made-with, software, title,
+ * caption, keywords, creator); result_snippet is the tag ("Canon EOS R5"). */
+#define MV_AI_MATCH_TAGS 8u
+/* #406: text the file carries matched (a chapter title or a text subtitle
+ * line); result_snippet says which ("Chapter: Birthday cake", "Subtitle:
+ * suited and booted") and is shown as it is, unquoted. */
+#define MV_AI_MATCH_TEXT 16u
 
 #define MV_AI_STATUS_INDEX_FULL 1u     /* over the index size cap: indexing stopped */
 #define MV_AI_STATUS_FACES_ON 2u       /* the People opt-in is on */
@@ -153,7 +160,10 @@ typedef enum mv_ai_photos_access {
                                           then identifies the people in it. Off by default */
 #define MV_AI_TRANSFER_THUMBS 2u       /* the viewer's cached JPEG-512 tiles (never made) */
 
-/* Polled by the status line (~4 Hz while visible). [no-block] */
+/* Polled by the status line (~4 Hz while visible). [no-block]
+ * Append only. The Windows chrome mirrors this field for field as MvAiStatus
+ * (src.managed/MediaViewer.Interop/Ai.cs): append a field there too, and list it
+ * in tools/abi-layout/main.cpp. CI's ABI smoke test compares the two. */
 typedef struct mv_ai_status {
   uint32_t struct_size;
   uint32_t state;              /* mv_ai_state */
@@ -217,6 +227,16 @@ typedef struct mv_ai_status {
   uint64_t cloud_files_fetched;    /* brought down and indexed since the pack started */
   uint32_t cloud_fetch;            /* mv_ai_icloud_fetch: the same states */
   float cloud_fetch_progress;      /* the file in progress, 0..1 */
+  /* The text passes (2026-10-15): a clip's own text (#406: chapter titles and
+   * text subtitles), and text read in pictures by the OS (#403: photos, and
+   * the moments a clip's picture pass kept). Assets to do and done, failed and
+   * unavailable counted as done, as for sound. text_total is 0 with "read_text"
+   * off or no OS reader. While either is short the state is not IDLE. Read
+   * these only when struct_size covers them. */
+  uint64_t cues_total;
+  uint64_t cues_done;
+  uint64_t text_total;
+  uint64_t text_done;
 } mv_ai_status;
 
 typedef enum mv_ai_icloud_fetch {

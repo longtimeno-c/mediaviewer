@@ -266,6 +266,16 @@ Import was the first add-on, and its mechanism is the one every add-on uses: the
     still inside leaves the pack running for the exit, as the AI chrome's does (issue #193).
   - **The Mac add-on is universal** (arm64 + x86_64, platform `macos`): both architectures'
     trees are joined with `tools/mac/lipo_merge.py` before signing and packing.
+- **Screens and slots (host table v3, 2026-10-11):** a first-party add-on whose manifest names
+  screens or slots (an info-pane section, a search provider, items, badges, windows) answers
+  through `mv.slots.1` and posts back through the v3 rows (`screen_post`, `screen_diff`,
+  `surface_post`, `search_post`, `search_progress`, `is_stale`, `badges_post`, `status_post`,
+  `screen_show`, `location_of`, `locations_in`); `loaded_addon::load` attaches its contributions
+  to the registry and its destructor detaches them before shutdown. Such an add-on needs no chrome
+  of its own (the hosts render its trees) and carries its own code and data in its package
+  (owner, 2026-10-11). The Mac host loads every installed one on the add-on queue after Import's
+  and the AI pack's checks; Windows loads it with `mv_addon_load(…, MV_SLOTS_INTERFACE)`. Details:
+  [25-open-addons.md](25-open-addons.md#implementation-notes-prs-58-59-2026-10-11).
 - **Add-ons from other makers** are a second kind, with their own package, key, folder and
   store: [25-open-addons.md](25-open-addons.md). Nothing in this section changes for
   MediaViewer's own add-ons, and neither kind loads through the other's path.
@@ -276,6 +286,8 @@ Import was the first add-on, and its mechanism is the one every add-on uses: the
   release workflow builds, signs and packs both platforms' add-on at the release version
   (`--require-pinned-key`; Mac via `macpack.py addon`, Developer ID + notarization), and
   `publish` refuses a stable release without it (`MV_RELEASE_ADDONS=1`).
+
+**Other makers' code (PR 57, 2026-10-11)** never sees the host function table. A script add-on runs in the Lua sandbox of [25 §9](25-open-addons.md#9-code-how-a-strangers-add-on-runs) and reaches the viewer only through the `mv.*` calls its permissions put in its environment; `MV_ADDON_HOST_API` is unchanged by it. Scripts run in every window's process (they never write the store), so their keys answer in every window.
 
 ### One host process
 

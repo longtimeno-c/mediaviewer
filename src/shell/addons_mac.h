@@ -58,6 +58,32 @@ bool MvAddonsRunContributedCommand(const std::string& addon, const std::string& 
 void MvAddonsQuit();
 void MvAddonsWaitStopped(double seconds);
 
+// docs/design/25 PRs 58-59: MediaViewer's own add-ons that fill screens and slots
+// (an info-pane section, a search provider, items, badges, windows). Start
+// loads the installed ones on the add-on queue (MvAddonsStart calls it after
+// Import's and the AI pack's checks); Quit stops them, their items first.
+void MvSlotAddonsStart();
+void MvSlotAddonsQuit();
+// [worker-thread] The viewer's JPEG-512 thumbnail of any still (cache hit, or made
+// now on the calling thread), for a screen's thumbnail and thumbnail_grid nodes.
+// "" when it has none (a clip, an unreadable file).
+std::string MvAddonsThumbnailPath(const std::string& path);
+// docs/design/25 PR 57: script add-ons. The viewer's folder model, for scripts
+// with folder.read (read through its own lock, on their workers); set once,
+// before MvAddonsStart. The item on screen comes from MvAddonsItemChanged.
+namespace mv::shell {
+class folder_model;
+}
+void MvAddonsSetFolderModel(const mv::shell::folder_model* folder);
+void MvScriptsItemChanged(const std::string& path);
+// A script add-on's command (shell/commands.h addon_command_row.script):
+// posted to its worker; never blocks. False when it could not be posted.
+bool MvScriptsRunCommand(const std::string& addon, const std::string& command,
+                         const std::string& payload_json);
+void MvScriptsQuit();
+// Defined in main_mac.mm: the command bar's one-line notice, from any thread.
+void MvAppShowNotice(const std::string& text);
+
 // Defined in main_mac.mm: an exact seek on the clip on screen, only if the
 // render thread has adopted it -- while the selected clip is still opening the
 // live one is the previous clip, and the seek is dropped (false).

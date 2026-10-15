@@ -103,6 +103,10 @@ final class ManagementModel: ObservableObject {
   @Published private(set) var icloudVideos = false
   /// Settings → Indexed folders → "Download iCloud Drive files to index them" (2026-10-05).
   @Published private(set) var cloudFiles = false
+  /// Settings → Text in pictures → "Read text in photos" (#403, on by default).
+  @Published private(set) var readText = true
+  /// macOS can read text here (Vision); false leaves the switch off and says why.
+  @Published private(set) var textAvailable = true
   /// "icloud" when the pack can fetch evicted iCloud Drive files here.
   @Published private(set) var cloudProvider = ""
   /// Why the last folder action did nothing, said under the list.
@@ -274,6 +278,8 @@ final class ManagementModel: ObservableObject {
     facesOn = obj["faces"] as? Bool ?? false
     icloudVideos = obj["icloud_videos"] as? Bool ?? false
     cloudFiles = obj["cloud_files"] as? Bool ?? false
+    readText = obj["read_text"] as? Bool ?? true
+    textAvailable = obj["text_available"] as? Bool ?? true
     cloudProvider = obj["cloud_provider"] as? String ?? ""
     coreMLAvailable = (obj["available"] as? [String: Any])?["coreml"] as? Bool ?? false
     let index = Int(int64(obj["video_index"]))
@@ -795,8 +801,8 @@ struct ManagementView: View {
       }
       .padding(12)
       .frame(maxWidth: .infinity, alignment: .leading)
-      .background(RoundedRectangle(cornerRadius: 8).fill(AITheme.surface))
-      .overlay(RoundedRectangle(cornerRadius: 8).stroke(AITheme.hairline, lineWidth: 1))
+      .background(RoundedRectangle(cornerRadius: AITheme.radius(8)).fill(AITheme.surface))
+      .overlay(RoundedRectangle(cornerRadius: AITheme.radius(8)).stroke(AITheme.hairline, lineWidth: 1))
       if model.facesOn && model.facesReady {
         section("People") {
           PeopleGrid(model: model, open: { _ in }, limit: Self.peopleShown, showAll: { allPeople = true })
@@ -882,6 +888,19 @@ struct ManagementView: View {
           .help(model.audioReady ? "" : "Sound and Both need the Sound piece: install it above.")
         }
       }
+      section("Text in pictures") {
+        row("Read text in photos",
+            detail: model.textAvailable
+              ? "Finds photos and video moments by the words in them: a sign, a shirt, a page. macOS reads them on this Mac; nothing leaves it."
+              : "macOS cannot read text on this Mac, so photos are not searched by the words in them.") {
+          Toggle("Read text in photos",
+                 isOn: Binding(get: { model.readText && model.textAvailable },
+                               set: { model.set("read_text", $0 ? 1 : 0) }))
+            .toggleStyle(.switch)
+            .labelsHidden()
+            .disabled(!model.textAvailable)
+        }
+      }
       if model.photosSupported {
         section("Photos Library") { photosSection }
       }
@@ -909,7 +928,7 @@ struct ManagementView: View {
         .padding(12)
         if !model.rootError.isEmpty {
           Text(model.rootError)
-            .font(AITheme.font(11)).foregroundStyle(Color.accentColor)
+            .font(AITheme.font(11)).foregroundStyle(AITheme.accent)
             .padding(.horizontal, 12).padding(.bottom, 8)
         }
         if model.cloudProvider == "icloud" {
@@ -1215,7 +1234,7 @@ struct ManagementView: View {
           .tint(root.enabled ? .accentColor : .secondary)
         Text(rootState(root) + (root.enabled ? (root.held ? " · paused since last time"
                                                 : root.scanning ? " · checking for changes…" : "") : " · paused"))
-          .font(AITheme.font(11)).foregroundStyle(root.unreadable ? Color.accentColor : AITheme.body)
+          .font(AITheme.font(11)).foregroundStyle(root.unreadable ? AITheme.accent : AITheme.body)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
       if root.enabled && root.held {
@@ -1286,8 +1305,8 @@ struct ManagementView: View {
       Text(title).font(AITheme.font(15)).fontWeight(.semibold).foregroundStyle(AITheme.title)
         .padding(.top, 8).padding(.bottom, 6)
       VStack(alignment: .leading, spacing: 0) { content() }
-        .background(RoundedRectangle(cornerRadius: 8).fill(AITheme.surface))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(AITheme.hairline, lineWidth: 1))
+        .background(RoundedRectangle(cornerRadius: AITheme.radius(8)).fill(AITheme.surface))
+        .overlay(RoundedRectangle(cornerRadius: AITheme.radius(8)).stroke(AITheme.hairline, lineWidth: 1))
     }
   }
 
@@ -1315,7 +1334,7 @@ struct ManagementView: View {
       Button("Cancel") { model.confirming = nil }.keyboardShortcut(.cancelAction)
     }
     .padding(12)
-    .background(Color.accentColor.opacity(0.08))
+    .background(AITheme.accent.opacity(0.08))
     .transition(.opacity)
   }
 }

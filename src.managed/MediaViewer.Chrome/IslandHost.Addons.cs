@@ -35,7 +35,7 @@ public static partial class IslandHost
 
     // Dir: the installed version's folder (its sibling "data" holds the add-on's own files).
     private sealed record AddonState(bool Installed, string Version, string State, long Size, bool Loaded,
-        string Description = "", string HintText = "", string Dir = "");
+        string Description = "", string HintText = "", string Dir = "", bool Settings = false);
 
     // Whether the release channel has a piece this build can install. Only
     // a manifest that verifies counts: the button never offers a download that
@@ -138,9 +138,9 @@ public static partial class IslandHost
         {
             _bar = new JobBar();
             _text = Label("");
-            _text.FontSize = 12;
+            _text.FontSize = TypeSize(12);
             _percent = Label("");
-            _percent.FontSize = 12;
+            _percent.FontSize = TypeSize(12);
             _percent.HorizontalAlignment = HorizontalAlignment.Right;
             var lines = new Grid();
             lines.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -148,7 +148,7 @@ public static partial class IslandHost
             lines.Children.Add(_text);
             Grid.SetColumn(_percent, 1);
             lines.Children.Add(_percent);
-            Root = new StackPanel { Spacing = 4, Width = width, HorizontalAlignment = HorizontalAlignment.Left };
+            Root = new StackPanel { Spacing = Space(4), Width = width, HorizontalAlignment = HorizontalAlignment.Left };
             Root.Children.Add(_bar.Root);
             Root.Children.Add(lines);
         }
@@ -288,6 +288,9 @@ public static partial class IslandHost
             Dictionary<string, AddonState> states = ReadAddonStates();
             try { AddonNative.WatchVolumes(session); }
             catch (MediaViewerException ex) { System.Diagnostics.Debug.WriteLine(ex.Message); }
+            // docs/design/25 PRs 58-59: the add-ons that fill screens and slots, on
+            // this worker, after the first-party ones are read.
+            StartSlotAddons(session);
             // Issue #299: an index left unfinished last session is not resumed by
             // itself. The pack's resume.json (beside index.db) says which roots
             // wait, so the window can ask without loading the pack.
@@ -364,7 +367,9 @@ public static partial class IslandHost
                     // docs/design/25: Settings' line and the card hint, from the manifest.
                     a.TryGetProperty("description", out JsonElement d) ? d.GetString() ?? "" : "",
                     a.TryGetProperty("hint_text", out JsonElement h) ? h.GetString() ?? "" : "",
-                    a.TryGetProperty("dir", out JsonElement dir) ? dir.GetString() ?? "" : "");
+                    a.TryGetProperty("dir", out JsonElement dir) ? dir.GetString() ?? "" : "",
+                    // PR 56: it has a settings page (IslandHost.AddonSettings.cs).
+                    a.TryGetProperty("settings", out JsonElement st) && st.ValueKind == JsonValueKind.True);
             }
         }
         catch (Exception ex) when (ex is MediaViewerException or JsonException or KeyNotFoundException)
@@ -383,6 +388,8 @@ public static partial class IslandHost
             slot.State = next with { Loaded = slot.Chrome is not null };
         }
         _addonStatesRead = true;
+        // PR 56: what is installed changed, so may the settings pages shown.
+        if (_settingsHost is not null) RefreshFirstPartyPages();
     }
 
     // ---- loading -------------------------------------------------------------
@@ -578,7 +585,7 @@ public static partial class IslandHost
     }
 
     /// <summary>The base chrome's services for an add-on (docs/design/18 IAddonHost; Milestone H IAddonHost2).</summary>
-    private sealed class AddonHost(AddonSlot slot) : IAddonHost3
+    private sealed class AddonHost(AddonSlot slot) : IAddonHost3, IAddonThemeShape
     {
         public void Post(Action action) => DispatcherQueueControllerTryEnqueue(action);
 
@@ -623,7 +630,14 @@ public static partial class IslandHost
         // not a wrong-thread crash. On the UI thread (every caller today) they
         // still run inline, in order. The getters below are UI-thread only.
         public void OpenList(string title, IReadOnlyList<string> paths, IReadOnlyList<long>? momentsMs,
-                             int selectIndex, bool gallery) => OnUi(() => HostOpenList(title, paths, momentsMs, selectIndex, gallery));
+                             int selectIndex, bool gallery) => OnUi(() =>
+        {
+            HostOpenList(title, paths, momentsMs, selectIndex, gallery);
+            // docs/design/25 PR 59: the same query to the other Local search providers;
+            // their rows show in the path row when they arrive (IslandHost.Slots.cs).
+            _slotListTitle = title;
+            SlotNative.Search(SlotNative.ScopeLocal, title, "");
+        });
 
         public void SeekVideo(long ms, bool exact) => OnUi(() => HostSeekVideo(ms, exact));
         public void SetScrubMarkers(IReadOnlyList<long> ms, int currentIndex) => OnUi(() => HostSetScrubMarkers(ms, currentIndex));
@@ -643,6 +657,11 @@ public static partial class IslandHost
         public string UiFontFamily => HostUiFontSource();
         public double UiFontSize => IslandHost.UiFontSize;
         public bool AnimationsEnabled => HostAnimationsEnabled();
+
+        // ---- IAddonThemeShape (PR 56): the shape this process was built with ----
+        public double RadiusScale => IslandHost.RadiusScale;
+        public double Density => IslandHost.Density;
+        public double TypeScale => IslandHost.TypeScale;
 
         public event Action? ThemeChanged
         {
@@ -910,7 +929,7 @@ public static partial class IslandHost
 
     private static StackPanel BuildImportHint()
     {
-        var panel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+        var panel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(4) };
         _importHint = TextButton("Card inserted — install Import?", () =>
         {
             ShowImportHint(false);
@@ -950,6 +969,8 @@ public static partial class IslandHost
         // Milestone H: the Local search pill (IslandHost.LocalSearch.cs),
         // collapsed unless the AI pack is indexing.
         panel.Children.Add(BuildIndexingPill());
+        // docs/design/25 PR 59: the add-ons' command-bar buttons and status text.
+        panel.Children.Add(BuildSlotBarItems());
         return panel;
     }
 
@@ -980,12 +1001,15 @@ public static partial class IslandHost
         heading.FontSize = TypeHeading;
         AutomationProperties.SetHeadingLevel(heading, Microsoft.UI.Xaml.Automation.Peers.AutomationHeadingLevel.Level2);
         view.Children.Add(heading);
-        _addonRow = new StackPanel { Spacing = 8 };
+        _addonRow = new StackPanel { Spacing = Space(8) };
         _addonStatus = Note("");
         view.Children.Add(_addonRow);
+        view.Children.Add(FirstPartyPageHost(ImportSlot));  // PR 56: its settings page
         view.Children.Add(_addonStatus);
         _importRestartButton = AddonRestartButton();
         view.Children.Add(_importRestartButton);
+        // docs/design/25 PRs 58-59: MediaViewer's own add-ons that fill screens and slots.
+        AddSlotAddonsSettingsRows(view);
         RefreshAddonRow();
         // Opening Settings asks the channel, whatever the automatic-check
         // switch says: the person is looking at what can be installed, or
@@ -1100,7 +1124,7 @@ public static partial class IslandHost
         _addonRow.Children.Add(Note(line));
         // While Import is busy (removing, loading) its buttons stay, disabled,
         // rather than vanishing (the Mac's .disabled(store.busy)).
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8) };
         if (UpdateVersion(ImportSlot) is string newer)
         {
             buttons.Children.Add(SettingsButton($"Update to {newer}, {DownloadSize(ImportSlot.Offer.ArchiveSize)}",
@@ -1128,7 +1152,7 @@ public static partial class IslandHost
         TextBlock q = Note("Remove Import? Its library index and import history (import.db) can stay, so a reinstall still knows what was imported.");
         q.Foreground = Brush(Title);
         _addonRow.Children.Add(q);
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8) };
         Button keep = SettingsButton("Remove, keep history", () => RemoveImport(keepData: true));
         buttons.Children.Add(keep);
         buttons.Children.Add(SettingsButton("Remove everything", () => RemoveImport(keepData: false)));
@@ -1154,6 +1178,12 @@ public static partial class IslandHost
             try
             {
                 AddonNative.Remove(ImportSlot.Id, keepData);
+                // PR 56: "Remove everything" forgets its settings page's values too.
+                if (!keepData)
+                {
+                    try { AddonNative.SettingsForget(ImportSlot.Id); }
+                    catch (MediaViewerException) { /* a file left behind; the add-on is gone */ }
+                }
                 done = "Import removed.";
             }
             catch (MediaViewerException)
@@ -1234,7 +1264,7 @@ public static partial class IslandHost
     // fetched), then the archive (size + SHA-256 before it is opened), then
     // extraction into staging, then the core's full verify-and-install.
     // `admit` sees the verified manifest before the archive is requested and
-    // may refuse it (the AI family's 3 GB rule) by throwing.
+    // may refuse it (the AI family's 5 GB rule) by throwing.
     private static async Task DownloadAndInstall(AddonSlot slot, Action<JsonElement>? admit,
                                                  IProgress<AddonPhase>? progress = null)
     {

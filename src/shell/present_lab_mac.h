@@ -34,6 +34,7 @@
 #include "player/media_source.h"
 #include "player/playback_hold.h"
 #include "shell/dino_game.h"
+#include "shell/home_theme.h"
 #include "shell/input_state.h"
 
 namespace mv::shell {
@@ -124,6 +125,14 @@ class present_lab_mac {
   // page on a scroll past an edge (docs/design/04 "Pages").
   [[nodiscard]] unsigned scroll_edges() const noexcept {
     return scroll_edges_.load(std::memory_order_relaxed);
+  }
+
+  // [any-thread][no-block] The page_land_seq whose page the render thread has
+  // put on screen (camera::turn_page applied). Stored after scroll_edges(), so
+  // a host that sees its turn acknowledged reads the new page's edges
+  // (canvas/document_scroll.h waits on this before turning again).
+  [[nodiscard]] std::uint32_t page_land_ack() const noexcept {
+    return page_land_ack_.load(std::memory_order_acquire);
   }
 
   // --browse-soak (the Windows lab's twin, present_lab.h): mark a navigation
@@ -260,6 +269,7 @@ class present_lab_mac {
   std::atomic<std::uint32_t> pages_count_{0};
   std::atomic<std::uint64_t> pages_item_{0};
   std::atomic<unsigned> scroll_edges_{3};
+  std::atomic<std::uint32_t> page_land_ack_{0};
   // Render thread only, but for the atomics the UI polls.
   void note_nav_image(const image::gpu_image_mac& ready) noexcept;
   void commit_nav_present() noexcept;
@@ -488,8 +498,14 @@ class present_lab_mac {
   std::uint32_t seen_reset_seq_ = 0;
   std::uint32_t seen_resize_seq_ = 0;
   std::uint32_t seen_display_seq_ = 0;
-  std::uint8_t seen_background_ = 255;
-  std::uint32_t seen_home_background_rgb_ = 0xFFFFFFFFu;
+  // Issue #408: the theme's tokens (one redraw when they change) and the
+  // home's ground effect, which ticks at 10 Hz by its rest rule.
+  home_theme seen_home_{};
+  bool seen_home_valid_ = false;
+  std::uint32_t seen_pointer_seq_ = 0;
+  home_ground_clock ground_;
+  double ground_every_ = 0.0;  // seconds between ticks now; 0 = resting
+  bool ground_tick_ = false;     // a tick is due this pass (may present while behind)
   double animation_phase_ = 0.0;
   double last_input_time_ = -1.0;
 

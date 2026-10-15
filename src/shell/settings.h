@@ -30,14 +30,19 @@ inline constexpr std::int32_t kSettingFilmstripFolder = 1 << 0;
 inline constexpr std::int32_t kSettingFilmstripImage = 1 << 1;
 inline constexpr std::int32_t kSettingWrap = 1 << 2;  // docs/design/16: wrap at folder ends
 inline constexpr std::int32_t kSettingStickyZoom = 1 << 3;
-inline constexpr std::int32_t kSettingBackgroundShift = 4;
-inline constexpr std::int32_t kSettingBackgroundMask = 7 << kSettingBackgroundShift;
+// Bits 4-6 were the canvas background (0 system .. 4 dark). Issue #408
+// removed it: every screen is the theme's background. A word saved with them
+// set still reads; they are ignored and never written again.
 // Bits 8-11 are the Windows chrome's update / telemetry bits (IslandHost.cs).
 // Set = list that kind in folders (Settings, "Show audio files" / "Show
 // documents"). Off by default, and a word saved before these existed reads
 // as off: audio and documents are Open With types (D5, 2026-10-03).
 inline constexpr std::int32_t kSettingShowAudio = 1 << 12;
 inline constexpr std::int32_t kSettingShowDocuments = 1 << 13;
+// #345: Settings -> Viewer -> "Show a badge on AI-generated images", on by
+// default (owner, 2026-10-11). Stored inverted -- set = hidden -- so a word
+// saved before the bit existed reads as on.
+inline constexpr std::int32_t kSettingHideAiBadge = 1 << 14;
 
 // A folder open is an explicit "show me this folder", so the filmstrip earns
 // its 112 DIP. Opening one image is a viewing intent: the folder is still
@@ -50,11 +55,12 @@ struct view_settings {
   // first. On by default (docs/design/16).
   bool wrap = true;
   bool sticky_zoom = false;
-  std::uint8_t background = 0;  // 0 system, 1 grey, 2 white, 3 checkerboard, 4 dark
   // Settings, "Show audio files" / "Show documents". Off: folders leave that
   // kind out; a file opened directly still shows.
   bool show_audio = false;
   bool show_documents = false;
+  // #345: the canvas's AI-generated badge (shell/ai_badge.h). On by default.
+  bool ai_badge = true;
   // PR 9: the folder sort, packed by io::pack_sort (key in bits 0-2, descending
   // in bit 3). Not part of flags(): the chrome gets it beside them.
   std::int32_t sort = 0;
@@ -66,7 +72,7 @@ struct view_settings {
            (sticky_zoom ? kSettingStickyZoom : 0) |
            (show_audio ? kSettingShowAudio : 0) |
            (show_documents ? kSettingShowDocuments : 0) |
-           ((static_cast<std::int32_t>(background <= 4 ? background : 0)) << kSettingBackgroundShift);
+           (ai_badge ? 0 : kSettingHideAiBadge);
   }
 
   [[nodiscard]] static view_settings from_flags(std::int32_t flags) noexcept {
@@ -77,8 +83,7 @@ struct view_settings {
     s.sticky_zoom = (flags & kSettingStickyZoom) != 0;
     s.show_audio = (flags & kSettingShowAudio) != 0;
     s.show_documents = (flags & kSettingShowDocuments) != 0;
-    const auto background = (flags & kSettingBackgroundMask) >> kSettingBackgroundShift;
-    s.background = static_cast<std::uint8_t>(background <= 4 ? background : 0);
+    s.ai_badge = (flags & kSettingHideAiBadge) == 0;
     return s;
   }
 
@@ -104,6 +109,14 @@ void save_key_overrides(std::span<const key_override> list) noexcept;
 void save_view_settings(settings_store& store, const view_settings& settings) noexcept;
 [[nodiscard]] view_settings load_view_settings() noexcept;
 void save_view_settings(const view_settings& settings) noexcept;
+
+// The "Press T" filmstrip hint (shell/filmstrip_hint.h) has been learned: the
+// user hid the strip over its subject, so it never shows again. Kept apart from
+// view_settings, which the chrome's Settings page round-trips as flags.
+[[nodiscard]] bool load_strip_hint_learned(const settings_store& store) noexcept;
+void save_strip_hint_learned(settings_store& store) noexcept;
+[[nodiscard]] bool load_strip_hint_learned() noexcept;
+void save_strip_hint_learned() noexcept;
 
 // F7 / F8 destinations, most recent first, at most five (docs/design/16). UTF-8
 // folder paths the user picked; they stay in the local settings file.

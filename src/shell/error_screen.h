@@ -15,7 +15,7 @@
 
 #include "core/status.h"
 #include "imgui.h"
-#include "shell/home_theme.h"
+#include "shell/home_ink.h"
 
 namespace mv::shell {
 
@@ -36,7 +36,7 @@ namespace mv::shell {
 // both hosts today, but the legend is the host's to own, as for the welcome).
 inline void draw_open_error(ImDrawList* bg, ImFont* font, float w, float h, float chrome,
                             float scale, status why, const char* hint,
-                            const home_palette& theme) noexcept {
+                            const home_theme& theme) noexcept {
   if (bg == nullptr || font == nullptr || w <= 0.0f || h <= chrome) return;
 
   const auto centred = [&](const char* s, float fs, float cx, float y, ImU32 col) {
@@ -53,26 +53,26 @@ inline void draw_open_error(ImDrawList* bg, ImFont* font, float w, float h, floa
   const ImVec2 hi(cx + card_w * 0.5f, cy + card_h * 0.5f);
 
   const float round = 18.0f * scale;
-  bg->AddRectFilled(lo, hi, theme.fill(), round);
-  bg->AddRect(lo, hi, theme.edge(), round, 0, 1.5f * scale);
+  bg->AddRectFilled(lo, hi, home_col(home_over(theme.surface, theme.canvas | 0xFFu)), round);
+  bg->AddRect(lo, hi, home_col(home_over(theme.hairline, home_over(theme.surface, theme.canvas | 0xFFu))), round, 0, 1.5f * scale);
 
   // A picture frame with a slash through it, from primitives. No asset to load.
   const float gw = 40.0f * scale;
   const float gh = 30.0f * scale;
   const ImVec2 g0(cx - gw, lo.y + 30.0f * scale);
   const ImVec2 g1(cx + gw, g0.y + gh * 2.0f);
-  const ImU32 c_glyph = theme.muted();
+  const ImU32 c_glyph = home_col(home_over(theme.accent, home_over(theme.surface, theme.canvas | 0xFFu)));
   bg->AddRect(g0, g1, c_glyph, 8.0f * scale, 0, 2.0f * scale);
   bg->AddLine(ImVec2(g0.x + 10.0f * scale, g1.y - 8.0f * scale),
               ImVec2(g1.x - 10.0f * scale, g0.y + 8.0f * scale), c_glyph, 2.5f * scale);
 
   float y = g1.y + 20.0f * scale;
-  centred("Can't open this file", 22.0f * scale, cx, y, theme.title());
+  centred("Can't open this file", 22.0f * scale, cx, y, home_col(home_over(theme.title, home_over(theme.surface, theme.canvas | 0xFFu))));
   y += 34.0f * scale;
-  centred(open_error_reason(why), 15.0f * scale, cx, y, theme.body());
+  centred(open_error_reason(why), 15.0f * scale, cx, y, home_col(home_over(theme.body, home_over(theme.surface, theme.canvas | 0xFFu))));
   if (hint != nullptr && hint[0] != '\0') {
     y += 28.0f * scale;
-    centred(hint, 13.0f * scale, cx, y, theme.muted());
+    centred(hint, 13.0f * scale, cx, y, home_col(home_over(theme.body, home_over(theme.surface, theme.canvas | 0xFFu))));
   }
 }
 
