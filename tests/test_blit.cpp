@@ -109,7 +109,9 @@ TEST_CASE("tiles draw from one instance buffer, batched past its capacity", "[bl
   p.window_h = static_cast<float>(kH);
   p.image_w = 66.0f;
   p.image_h = 66.0f;
-  p.background = 2;  // white
+  // White, so the background pass is told apart from the black clear (#408:
+  // the theme background is the only canvas background).
+  for (float& c : p.theme_background) c = 1.0f;
   p.pixel_grid = false;
 
   ID3D11RenderTargetView* rtvs[] = {rtv.Get()};
