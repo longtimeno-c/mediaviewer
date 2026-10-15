@@ -618,6 +618,37 @@ document keeps its sideways scroll. At fit a one-finger stroke is swipe-next bec
 view is locked (no drag at fit); zoomed, it pans. The Mac already zoomed on `magnifyWithEvent:`; it
 gained the same remainder and the sideways swipe (`scrollWheel:` and `swipeWithEvent:`).
 
+**Copy Text in Image (2026-10-10, issue #289).** Preview's Edit ▸ Copy Text in Image: the still on
+screen goes through the OS's on-device text recognition and the lines it read go on the clipboard
+as plain text, with a notice ("Copied 42 words", "No text found"). The recogniser is a port
+(`shell/text_in_image.h`, D9): Vision `VNRecognizeTextRequest` (accurate, language correction,
+automatic language) on the Mac; `Windows.Media.Ocr` (`OcrEngine.TryCreateFromUserProfileLanguages`
+on a `SoftwareBitmap`) in the WinUI chrome on Windows, called synchronously from a pool worker. The
+decode, the geometry (rotate, flip, crop, straighten — colour adjusts change no letter), a cap of
+4096 px on the long edge, alpha flattened over white, the tidy-up and the count are shared C++.
+Nothing leaves the machine (rule 6) and no Store download is offered (rule 7): a Windows profile
+with no OCR language gets a notice naming the Language settings page. Reached as Preview has it —
+Edit ▸ Copy Text in Image on the Mac menu bar — and from a **Tools** flyout beside View on both
+command bars; disabled, never hidden, without a still on screen. Keyless like Preview's (Settings
+can give it one). No off switch: the owner's ease-of-access call (2026-10-10) was "no extra
+concepts or settings", and the command does nothing until it is chosen. Selecting text on the
+canvas (a Live Text overlay) is not built.
+
+**Text in images: select on the canvas, not a menu command (2026-10-15, owner, issue #289).**
+Replaces the entry above before it shipped. The owner asked for Photos' behaviour, "click down on
+the text to select it", instead of Edit ▸ Copy Text in Image and a Tools flyout; the command
+(`copy_text_in_image`), its menu item and both flyouts are gone. The recogniser port now returns
+words with boxes (`text_word`, 0..1 of the rendered still); `shell/text_select.h` is the shared
+selection model (press-drag by whole words, double-click word, triple-click line, a click clears),
+driven by each host from the UI thread through `canvas_map`, which the render thread publishes
+after each frame with a still. The highlight travels in the input snapshot like the AF quads, and
+`input_snapshot::text_press` keeps a press on text from panning. `⌘C`/`Ctrl+C` copies a selection
+before the eyedropper and files, `⌘A`/`Ctrl+A` selects all words only when some are selected (Mark
+all otherwise), and `Esc` has a `text_selection` level just inside the Live Photo's. Reading a
+still is the cost, so it waits for the pointer to rest on it for 500 ms and runs on the pool; a
+keyboard-only browse never reads anything. Selection is by whole words because
+`Windows.Media.Ocr` boxes words, not characters.
+
 ---
 
 ## Windows chrome (XAML islands)

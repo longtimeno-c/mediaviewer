@@ -952,6 +952,42 @@ bool present_lab_mac::take_working() noexcept {
   return changed;
 }
 
+// Text in images (docs/design/16): publish where the still is for the host's
+// hit-test, then draw the selection the host published, one translucent box per
+// line, as Photos tints selected text. No still (a clip, an animation): no map.
+void present_lab_mac::draw_text_overlay(const input_snapshot& snapshot) noexcept {
+  canvas_map map;
+  float pw = 0.0f, ph = 0.0f;
+  if (current_image_ && !video_frame_ && !anim_frame_ && picture_size(&pw, &ph) && pw > 0.0f && ph > 0.0f) {
+    map.valid = true;
+    map.centre_x = canvas_origin_x(snapshot) + usable_window_w(snapshot) * 0.5f;
+    map.centre_y = static_cast<float>(snapshot.chrome_height_px) + usable_window_h(snapshot) * 0.5f;
+    map.zoom = camera_.zoom();
+    map.pan_x = camera_.pan_x();
+    map.pan_y = camera_.pan_y();
+    map.width = pw;
+    map.height = ph;
+  }
+  {
+    std::lock_guard<std::mutex> lock(eye_mutex_);
+    still_map_ = map;
+  }
+  if (!map.valid || snapshot.text.count == 0) return;
+  ImDrawList* fg = ImGui::GetForegroundDrawList();
+  const float scale = snapshot.dpi_scale > 0.0f ? snapshot.dpi_scale : 1.0f;
+  const float pad = 2.0f * scale;
+  const auto to_screen = [&](float u, float v) {
+    return ImVec2(map.centre_x + (u * pw - map.pan_x) * map.zoom, map.centre_y + (v * ph - map.pan_y) * map.zoom);
+  };
+  for (int i = 0; i < snapshot.text.count && i < text_highlight::kMaxRects; ++i) {
+    const float* r = snapshot.text.rect[i];
+    const ImVec2 a = to_screen(r[0], r[1]);
+    const ImVec2 b = to_screen(r[2], r[3]);
+    fg->AddRectFilled(ImVec2(a.x - pad, a.y - pad), ImVec2(b.x + pad, b.y + pad), IM_COL32(64, 140, 255, 90),
+                      3.0f * scale);
+  }
+}
+
 // PR 9. Everything here reads `snapshot.meta` (published by the UI thread when
 // the selection's metadata arrives) plus the camera; toggling an overlay is one
 // more draw in the present that was already going out, never a file read.
@@ -1593,7 +1629,8 @@ void present_lab_mac::render_thread_main() noexcept {
           // mouse_down[0] alone once under way, even past the view's edge
           // (panning toward an edge is the common case this covers) --
           // mouse_in_client only gates *starting* a new drag.
-          if (snapshot.mouse_down[0] && (was_dragging_ || snapshot.mouse_in_client)) {
+          // A press on text selects it (shell/text_select.h): no pan for it.
+          if (snapshot.mouse_down[0] && (was_dragging_ || (snapshot.mouse_in_client && !snapshot.text_press))) {
             if (!was_dragging_) {
               camera_.drag_begin();
               was_dragging_ = true;
@@ -1910,6 +1947,7 @@ void present_lab_mac::render_thread_main() noexcept {
         const float view_w = usable_window_w(snapshot);
         const float view_h = usable_window_h(snapshot);
         if (!snapshot.blackout) {
+          draw_text_overlay(snapshot);
           draw_photo_overlays(snapshot);
           draw_crop_overlay(snapshot);
           const float scale = snapshot.dpi_scale > 0.0f ? snapshot.dpi_scale : 1.0f;
