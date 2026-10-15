@@ -20,9 +20,9 @@ namespace MediaViewer.Chrome;
 /// and "Got it" learns the hint for good (Command.HintLearned), as T does.
 /// </summary>
 /// <remarks>
-/// A windowed <see cref="Popup"/> of the bar island, as the resume notice is:
-/// not light-dismissed, never takes focus, so the viewer keeps the keyboard. It
-/// stacks above the resume notice while that is up. The twin of the Mac's
+/// A windowed <see cref="Popup"/> of the bar island: not light-dismissed, never
+/// takes focus, so the viewer keeps the keyboard. It stacks above the resume
+/// notice (its own island since issue #443) while that is up. The twin of the Mac's
 /// HintNoticeView.swift.
 /// </remarks>
 public static partial class IslandHost
@@ -148,7 +148,7 @@ public static partial class IslandHost
         double height = _hintNoticeCard.DesiredSize.Height;
         int bottomPx = _filmstripTop > 0 ? _filmstripTop : client.Bottom - client.Top;
         double bottom = (bottomPx - _barTop) / scale - ResumeNoticeMargin;
-        if (_resumeNotice is not null && _resumeNoticeCard is not null)
+        if (_resumeNoticeCard is not null)
         {
             bottom -= _resumeNoticeCard.DesiredSize.Height + ResumeNoticeMargin;
         }

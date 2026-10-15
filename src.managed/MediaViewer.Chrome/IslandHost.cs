@@ -418,6 +418,7 @@ public static partial class IslandHost
             Move(_source, args.ClientWidth, args.ClientHeight, 0);
             EnsureFocusHook();
             StartUpdater();
+            ShowWaitingResumeNotice();  // issue #443: a launch read that came first
             return 0;
         }
         catch (Exception ex)
@@ -610,6 +611,7 @@ public static partial class IslandHost
         try
         {
             UnhookFocus();
+            DropResumeNotice();  // its island is a child of this window
             if (_source is not null) _source.TakeFocusRequested -= OnTakeFocusRequested;
             DisposeSource(ref _source);
             _onCommand = null;

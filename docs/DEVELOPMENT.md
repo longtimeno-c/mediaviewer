@@ -1550,6 +1550,30 @@ There is no upload endpoint yet, exactly as there is none for crash reports.
 
 ## Where this actually is
 
+### Windows search: the typed space, the resume notice, a result list from an empty window (#443, 2026-10-15)
+
+Three Windows-only fixes; the Mac is unchanged.
+
+- **Space in a search box.** Every type-in field (`Shared/FakeInput.cs`: Local search, file
+  search, rename, Settings, add-on pages) draws its text in TextBlocks either side of the caret,
+  and a TextBlock measures no trailing space, so the caret sat against the last letter until the
+  next one came. The runs now draw spaces as no-break spaces (same advance); the text keeps plain
+  spaces. The key router already left every key but Esc to a focused field
+  (`test_key_router.cpp`, "a focused text control owns every key but Esc").
+- **Resume indexing notice.** It is now an island of its own over the canvas corner, as the AI
+  badge is, instead of a windowed `Popup` of the command bar that never showed. A launch read
+  that lands before the bar is up waits for it.
+- **A result list from an empty window** (a later window's first search, a search from the
+  welcome) left native on "nothing open": no gallery, no strip, no arrows, only the chosen
+  result. FolderReady for a list now moves it to a listing (`main.cpp`), and the chrome sends
+  the panel's Enter / Ctrl+Enter view after FolderReady, not before it.
+- **Checked:** the three C# chromes (Chrome, Ai.Chrome, Import.Chrome) compile on the Mac
+  (`dotnet msbuild -t:Compile`, warnings as errors); no banned WinUI control. Not run on Windows:
+  the native change (`main.cpp`) compiles only in CI, and the verify line, the placement of the
+  notice island (100 % / 200 %, resize, under Settings) and the PR 1 gate are owed to a Windows
+  machine. The filmstrip hint (`IslandHost.HintNotice.cs`) is still a windowed `Popup` of the bar
+  and has not been seen on Windows either.
+
 ### The AI badge on the canvas (#345, docs/plans/metadata-search-and-place.md slice 5, 2026-10-12)
 
 A file that says it was AI-made gets a small "AI" badge in the bottom-right of the canvas, with
