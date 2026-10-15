@@ -11,7 +11,7 @@
 namespace mv::ai {
 namespace {
 
-constexpr int kSchemaVersion = 4;
+constexpr int kSchemaVersion = 8;
 
 // A prepared statement that finalizes itself; binds are 1-based.
 class stmt {
@@ -72,9 +72,14 @@ asset_row asset_from(const stmt& s, int c0) {
   a.root_id = s.i64(c0 + 2);
   a.mtime = s.i64(c0 + 3);
   a.size = static_cast<std::uint64_t>(s.i64(c0 + 4));
-  a.kind = s.i64(c0 + 5) == 2 ? asset_kind::video : asset_kind::photo;
+  const std::int64_t kind = s.i64(c0 + 5);
+  a.kind = kind == 2 ? asset_kind::video : kind == 4 ? asset_kind::audio : asset_kind::photo;
   a.duration_ms = s.i64(c0 + 6);
   a.cloud = s.i64(c0 + 7) != 0;
+  a.motion = s.text(c0 + 8);
+  a.motion_mtime = s.i64(c0 + 9);
+  a.motion_size = static_cast<std::uint64_t>(s.i64(c0 + 10));
+  a.motion_cloud = s.i64(c0 + 11) != 0;
   return a;
 }
 
@@ -87,7 +92,10 @@ bool has_column(sqlite3* db, const char* table, const char* column) {
   return false;
 }
 
-constexpr const char* kAssetCols = "a.id, a.path, a.root_id, a.mtime, a.size, a.kind, a.duration_ms, a.cloud";
+constexpr const char* kAssetCols =
+    "a.id, a.path, a.root_id, a.mtime, a.size, a.kind, a.duration_ms, a.cloud,"
+    " COALESCE(a.motion, ''), COALESCE(a.motion_mtime, 0), COALESCE(a.motion_size, 0), a.motion_cloud";
+constexpr int kAssetColCount = 12;
 
 }  // namespace
 
@@ -229,6 +237,78 @@ result<std::unique_ptr<index_db>> index_db::open(const std::string& path) {
     }
     v = "4";
   }
+  // Schema 4 -> 5 (#405): rating, colour label and exposure, NULL until the
+  // backfill reads them (`tags` < 2 brings every schema-4 row back to it
+  // once, for these alone: nothing is re-embedded). One transaction; a column
+  // already there is skipped, as for schema 4.
+  if (v == "4") {
+    if (!d->exec("BEGIN")) return err(status::corrupt);
+    bool ok = true;
+    static constexpr std::pair<const char*, const char*> kColumns[] = {
+        {"rating", "ALTER TABLE assets ADD COLUMN rating INTEGER;"},
+        {"label", "ALTER TABLE assets ADD COLUMN label TEXT;"},
+        {"iso", "ALTER TABLE assets ADD COLUMN iso INTEGER;"},
+        {"aperture_x100", "ALTER TABLE assets ADD COLUMN aperture_x100 INTEGER;"},
+        {"focal_mm", "ALTER TABLE assets ADD COLUMN focal_mm INTEGER;"},
+        {"shutter_den", "ALTER TABLE assets ADD COLUMN shutter_den INTEGER;"},
+        {"shutter_us", "ALTER TABLE assets ADD COLUMN shutter_us INTEGER;"},
+    };
+    for (const auto& [column, sql] : kColumns) {
+      if (ok && !has_column(d->db_, "assets", column)) ok = d->exec(sql);
+    }
+    ok = ok && static_cast<bool>(d->set_meta("schema", "5"));
+    if (!ok || !d->exec("COMMIT")) {
+      d->exec("ROLLBACK");
+      return err(status::corrupt);
+    }
+    v = "5";
+  }
+  // Schema 5 -> 6 (#406): a clip's own text (chapter titles, text subtitle
+  // lines). A table, not speech rows under a Whisper spec: a shared index must
+  // not disagree about what was said, and removing the audio piece keeps them.
+  if (v == "5") {
+    if (!d->exec("BEGIN")) return err(status::corrupt);
+    const bool ok =
+        d->exec("CREATE TABLE IF NOT EXISTS cues(id INTEGER PRIMARY KEY, asset_id INTEGER NOT NULL"
+                " REFERENCES assets(id) ON DELETE CASCADE, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL,"
+                " kind INTEGER NOT NULL, text TEXT NOT NULL);") &&
+        d->exec("CREATE INDEX IF NOT EXISTS cues_asset ON cues(asset_id, start_ms);") &&
+        static_cast<bool>(d->set_meta("schema", "6"));
+    if (!ok || !d->exec("COMMIT")) {
+      d->exec("ROLLBACK");
+      return err(status::corrupt);
+    }
+    v = "6";
+  }
+  // Schema 6 -> 7 (#407): a Live Photo still's paired movie and its stamp, so
+  // the motion is sampled onto the still's id. NULL until the next walk sees
+  // the pair; that walk queues the motion alone (see_assets).
+  if (v == "6") {
+    if (!d->exec("BEGIN")) return err(status::corrupt);
+    bool ok = true;
+    static constexpr std::pair<const char*, const char*> kColumns[] = {
+        {"motion", "ALTER TABLE assets ADD COLUMN motion TEXT;"},
+        {"motion_mtime", "ALTER TABLE assets ADD COLUMN motion_mtime INTEGER;"},
+        {"motion_size", "ALTER TABLE assets ADD COLUMN motion_size INTEGER;"},
+        {"motion_cloud", "ALTER TABLE assets ADD COLUMN motion_cloud INTEGER NOT NULL DEFAULT 0;"},
+    };
+    for (const auto& [column, sql] : kColumns) {
+      if (ok && !has_column(d->db_, "assets", column)) ok = d->exec(sql);
+    }
+    ok = ok && static_cast<bool>(d->set_meta("schema", "7"));
+    if (!ok || !d->exec("COMMIT")) {
+      d->exec("ROLLBACK");
+      return err(status::corrupt);
+    }
+    v = "7";
+  }
+  // Schema 7 -> 8 (#355): no table change. assets.kind may now be 4, an audio
+  // file (MP3, M4A, M4P); the bump keeps an older pack, which would read kind 4
+  // as a photo, off this index.
+  if (v == "7") {
+    MV_TRY_VOID(d->set_meta("schema", "8"));
+    v = "8";
+  }
   if (v != std::to_string(kSchemaVersion)) {
     return err(status::unsupported_format);  // a newer add-on's index
   }
@@ -308,6 +388,25 @@ expected index_db::remove_root(std::int64_t id) {
   return s.bind(1, id).run() ? expected{} : err(status::io);
 }
 
+result<std::vector<std::int64_t>> index_db::remove_kind(asset_kind kind) {
+  std::lock_guard lock(m_);
+  std::vector<std::int64_t> gone;
+  if (!exec("BEGIN")) return err(status::io);
+  {
+    stmt q(db_, "SELECT id FROM assets WHERE kind = ?1");
+    q.bind(1, std::int64_t{static_cast<int>(kind)});
+    while (q.step_row()) gone.push_back(q.i64(0));
+  }
+  // Frames, speech, cues and progress cascade; asset_text goes by its trigger.
+  stmt d(db_, "DELETE FROM assets WHERE kind = ?1");
+  if (!d.bind(1, std::int64_t{static_cast<int>(kind)}).run()) {
+    exec("ROLLBACK");
+    return err(status::io);
+  }
+  if (!exec("COMMIT")) return err(status::io);
+  return gone;
+}
+
 expected index_db::merge_root(std::int64_t from, std::int64_t to) {
   std::lock_guard lock(m_);
   if (!exec("BEGIN")) return err(status::io);
@@ -344,42 +443,72 @@ result<std::vector<index_db::upsert>> index_db::see_assets(std::int64_t root,
   bool ok = true;
   {
     // Prepared once per batch and reset per file, not prepared per file.
-    stmt q(db_, "SELECT id, mtime, size FROM assets WHERE path = ?1");
+    stmt q(db_, "SELECT id, mtime, size, COALESCE(motion, ''), COALESCE(motion_mtime, 0),"
+                " COALESCE(motion_size, 0), motion_cloud FROM assets WHERE path = ?1");
     stmt f(db_, "DELETE FROM frames WHERE asset_id = ?1");
     stmt p(db_, "DELETE FROM progress WHERE asset_id = ?1");
+    stmt c(db_, "DELETE FROM cues WHERE asset_id = ?1");
+    // #407: a Live Photo's movie changed under the same still: its frames go
+    // and the picture pass comes back for the motion alone.
+    stmt mf(db_, "DELETE FROM frames WHERE asset_id = ?1 AND pts_ms >= 0");
+    stmt mp(db_, "UPDATE progress SET state = 1, resume_ms = 0 WHERE asset_id = ?1 AND state = 2");
     stmt w(db_, "UPDATE assets SET mtime = ?2, size = ?3, kind = ?4, seen = ?5, cloud = ?6,"
-                " tags = CASE WHEN mtime = ?2 AND size = ?3 THEN tags ELSE 0 END WHERE id = ?1");
-    stmt ins(db_, "INSERT INTO assets(path, root_id, mtime, size, kind, seen, cloud)"
-                  " VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)");
+                " tags = CASE WHEN mtime = ?2 AND size = ?3 THEN tags ELSE 0 END,"
+                " motion = ?7, motion_mtime = ?8, motion_size = ?9, motion_cloud = ?10 WHERE id = ?1");
+    stmt ins(db_, "INSERT INTO assets(path, root_id, mtime, size, kind, seen, cloud, motion, motion_mtime,"
+                  " motion_size, motion_cloud) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)");
+    const auto bind_motion = [](stmt& s, int at, const seen_file& file) {
+      if (!file.motion.empty()) {
+        s.bind(at, file.motion).bind(at + 1, file.motion_mtime).bind(at + 2, static_cast<std::int64_t>(file.motion_size));
+      }
+      s.bind(at + 3, std::int64_t{file.motion_cloud ? 1 : 0});
+    };
     for (const seen_file& file : files) {
       upsert u;
       q.reset();
       if (q.bind(1, file.path).step_row()) {
         u.id = q.i64(0);
         const bool same = q.i64(1) == file.mtime && static_cast<std::uint64_t>(q.i64(2)) == file.size;
+        const bool same_motion = q.text(3) == file.motion && q.i64(4) == (file.motion.empty() ? 0 : file.motion_mtime) &&
+                                 static_cast<std::uint64_t>(q.i64(5)) == (file.motion.empty() ? 0 : file.motion_size) &&
+                                 (q.i64(6) != 0) == file.motion_cloud;
+        if (same && !same_motion) {
+          mf.reset();
+          mp.reset();
+          if (!mf.bind(1, u.id).run() || !mp.bind(1, u.id).run()) {
+            ok = false;
+            break;
+          }
+          u.motion_changed = true;
+        }
         if (!same) {
           // Stale: edited or replaced. Its vectors describe other pixels.
           f.reset();
           p.reset();
-          if (!f.bind(1, u.id).run() || !p.bind(1, u.id).run()) {
+          c.reset();
+          if (!f.bind(1, u.id).run() || !p.bind(1, u.id).run() || !c.bind(1, u.id).run()) {
             ok = false;
             break;
           }
           u.changed = true;
         }
         w.reset();
-        if (!w.bind(1, u.id).bind(2, file.mtime).bind(3, static_cast<std::int64_t>(file.size))
-                 .bind(4, std::int64_t{static_cast<int>(file.kind)}).bind(5, generation)
-                 .bind(6, std::int64_t{file.cloud ? 1 : 0}).run()) {
+        w.bind(1, u.id).bind(2, file.mtime).bind(3, static_cast<std::int64_t>(file.size))
+            .bind(4, std::int64_t{static_cast<int>(file.kind)}).bind(5, generation)
+            .bind(6, std::int64_t{file.cloud ? 1 : 0});
+        bind_motion(w, 7, file);
+        if (!w.run()) {
           ok = false;
           break;
         }
       } else {
         ins.reset();
-        if (!ins.bind(1, file.path).bind(2, root).bind(3, file.mtime)
-                 .bind(4, static_cast<std::int64_t>(file.size))
-                 .bind(5, std::int64_t{static_cast<int>(file.kind)}).bind(6, generation)
-                 .bind(7, std::int64_t{file.cloud ? 1 : 0}).run()) {
+        ins.bind(1, file.path).bind(2, root).bind(3, file.mtime)
+            .bind(4, static_cast<std::int64_t>(file.size))
+            .bind(5, std::int64_t{static_cast<int>(file.kind)}).bind(6, generation)
+            .bind(7, std::int64_t{file.cloud ? 1 : 0});
+        bind_motion(ins, 8, file);
+        if (!ins.run()) {
           ok = false;
           break;
         }
@@ -408,10 +537,14 @@ result<std::vector<std::int64_t>> index_db::end_scan(std::int64_t root, std::int
   return gone;
 }
 
-// The assets a track covers (track_filter), as SQL over `a` and `r`.
+// The assets a track covers (track_filter), as SQL over `a` and `r`. An audio
+// file (#355) is on the picture track alone (its cover art), as a still while
+// its root's media takes pictures; its sound and speech wait for slice A2.
 constexpr const char* kTrackWhere =
     " AND ((a.kind = 1 AND ?4 != 0) OR (a.kind = 2 AND"
-    " ((CASE r.media WHEN 0 THEN ?5 ELSE r.media END) & ?6) != 0)) AND a.root_id != ?7";
+    " ((CASE r.media WHEN 0 THEN ?5 ELSE r.media END) & ?6) != 0)"
+    " OR (a.kind = 4 AND ?4 != 0 AND (?6 & 1) != 0 AND"
+    " ((CASE r.media WHEN 0 THEN ?5 ELSE r.media END) & 1) != 0)) AND a.root_id != ?7";
 
 // The filter's held roots, as SQL over `a` (integers only, so written in).
 static std::string held_where(const track_filter& filter) {
@@ -424,17 +557,25 @@ static std::string held_where(const track_filter& filter) {
   return in + ")";
 }
 
+// pending()'s `after` spec, as SQL over `a`: bound as ?8.
+static std::string after_where(const std::string& after) {
+  if (after.empty()) return {};
+  return " AND EXISTS(SELECT 1 FROM progress q WHERE q.asset_id = a.id AND q.spec = ?8 AND q.state = 2)";
+}
+
 // pending()'s rule for "still to do", as SQL over `a` and `p`.
 constexpr const char* kPendingWhere =
     " (p.state IS NULL OR p.state = 0 OR p.state = 1 OR (p.state = 3 AND p.tries < ?2)) AND a.cloud = 0";
 
 std::vector<work_item> index_db::pending(const std::string& spec, std::size_t limit,
-                                         std::int32_t max_tries, const track_filter& filter) {
-  return pending_where(spec, limit, max_tries, filter, "");
+                                         std::int32_t max_tries, const track_filter& filter,
+                                         const std::string& after) {
+  return pending_where(spec, limit, max_tries, filter, "", after);
 }
 
 std::vector<work_item> index_db::pending_among(const std::string& spec, std::span<const std::int64_t> ids,
-                                               std::int32_t max_tries, const track_filter& filter) {
+                                               std::int32_t max_tries, const track_filter& filter,
+                                               const std::string& after) {
   if (ids.empty()) return {};
   // Integers only, so written into the SQL; a handful at most.
   std::string in = " AND a.id IN (";
@@ -443,11 +584,12 @@ std::vector<work_item> index_db::pending_among(const std::string& spec, std::spa
     in += std::to_string(ids[i]);
   }
   in += ")";
-  return pending_where(spec, ids.size(), max_tries, filter, in);
+  return pending_where(spec, ids.size(), max_tries, filter, in, after);
 }
 
 std::vector<work_item> index_db::pending_where(const std::string& spec, std::size_t limit, std::int32_t max_tries,
-                                               const track_filter& filter, const std::string& extra) {
+                                               const track_filter& filter, const std::string& extra,
+                                               const std::string& after) {
   std::lock_guard lock(m_);
   std::vector<work_item> out;
   const std::string sql = std::string("SELECT ") + kAssetCols +
@@ -455,18 +597,19 @@ std::vector<work_item> index_db::pending_where(const std::string& spec, std::siz
       " FROM assets a JOIN roots r ON r.id = a.root_id AND r.enabled = 1"
       " LEFT JOIN progress p ON p.asset_id = a.id AND p.spec = ?1"
       " WHERE" + std::string(kPendingWhere) +
-      std::string(kTrackWhere) + held_where(filter) + extra +
+      std::string(kTrackWhere) + held_where(filter) + after_where(after) + extra +
       " ORDER BY COALESCE(p.state, 0) = 1 DESC, a.kind ASC, a.id ASC LIMIT ?3";
   stmt s(db_, sql.c_str());
   s.bind(1, spec).bind(2, std::int64_t{max_tries}).bind(3, static_cast<std::int64_t>(limit))
       .bind(4, std::int64_t{filter.photos ? 1 : 0}).bind(5, std::int64_t{filter.default_media})
       .bind(6, std::int64_t{filter.media_bit}).bind(7, filter.skip_root);
+  if (!after.empty()) s.bind(8, after);
   while (s.step_row()) {
     work_item w;
     w.asset = asset_from(s, 0);
-    w.state = static_cast<work_state>(s.i64(8));
-    w.resume_ms = s.i64(9);
-    w.tries = static_cast<std::int32_t>(s.i64(10));
+    w.state = static_cast<work_state>(s.i64(kAssetColCount));
+    w.resume_ms = s.i64(kAssetColCount + 1);
+    w.tries = static_cast<std::int32_t>(s.i64(kAssetColCount + 2));
     out.push_back(std::move(w));
   }
   return out;
@@ -672,6 +815,56 @@ expected index_db::each_speech(
   return {};
 }
 
+expected index_db::commit_cues(std::int64_t asset, std::span<const cue_in> cues, work_state state,
+                               std::int64_t resume_ms, std::int64_t replace_from, const std::string& spec) {
+  std::lock_guard lock(m_);
+  if (!exec("BEGIN")) return err(status::io);
+  bool ok = true;
+  {
+    if (replace_from != -1) {
+      // The pass's own rows only: a clip's subtitles and the text on its
+      // moments are two passes over one table.
+      stmt d(db_, "DELETE FROM cues WHERE asset_id = ?1 AND start_ms >= ?2 AND (kind = 3) = ?3");
+      ok = d.bind(1, asset).bind(2, replace_from).bind(3, std::int64_t{spec == kCueSpec ? 0 : 1}).run();
+    }
+    stmt ins(db_, "INSERT INTO cues(asset_id, start_ms, end_ms, kind, text) VALUES(?1, ?2, ?3, ?4, ?5)");
+    for (const cue_in& c : cues) {
+      if (!ok) break;
+      ins.reset();
+      ins.bind(1, asset).bind(2, c.start_ms).bind(3, c.end_ms).bind(4, std::int64_t{static_cast<int>(c.kind)})
+          .bind(5, c.text);
+      ok = ins.run();
+    }
+    stmt p(db_, "INSERT INTO progress(asset_id, spec, state, resume_ms, indexed_at)"
+                " VALUES(?1, ?2, ?3, ?4, strftime('%s','now'))"
+                " ON CONFLICT(asset_id, spec) DO UPDATE SET state = excluded.state,"
+                " resume_ms = excluded.resume_ms, indexed_at = excluded.indexed_at");
+    ok = ok && p.bind(1, asset).bind(2, spec).bind(3, std::int64_t{static_cast<int>(state)})
+                   .bind(4, resume_ms).run();
+  }
+  if (!ok) {
+    exec("ROLLBACK");
+    return err(status::io);
+  }
+  return exec("COMMIT") ? expected{} : err(status::io);
+}
+
+expected index_db::each_cue(const std::function<void(std::int64_t, const cue_in&)>& visit) {
+  std::lock_guard lock(m_);
+  stmt s(db_, "SELECT asset_id, start_ms, end_ms, kind, text FROM cues ORDER BY asset_id, start_ms");
+  if (!s.ok()) return err(status::io);
+  while (s.step_row()) {
+    cue_in c;
+    c.start_ms = s.i64(1);
+    c.end_ms = s.i64(2);
+    const std::int64_t k = s.i64(3);
+    c.kind = k == 1 ? cue_kind::chapter : k == 3 ? cue_kind::picture : cue_kind::subtitle;
+    c.text = s.text(4);
+    visit(s.i64(0), c);
+  }
+  return {};
+}
+
 expected index_db::drop_spec(const std::string& spec) {
   std::lock_guard lock(m_);
   if (!exec("BEGIN")) return err(status::io);
@@ -685,7 +878,7 @@ expected index_db::drop_spec(const std::string& spec) {
   return exec("COMMIT") ? expected{} : err(status::io);
 }
 
-counts index_db::count(const std::string& spec, const track_filter& filter) {
+counts index_db::count(const std::string& spec, const track_filter& filter, const std::string& after) {
   std::lock_guard lock(m_);
   counts c;
   const std::string sql = std::string(
@@ -694,15 +887,16 @@ counts index_db::count(const std::string& spec, const track_filter& filter) {
       " SUM(CASE WHEN p.state = 3 THEN 1 ELSE 0 END),"
       " SUM(CASE WHEN a.kind = 2 AND a.cloud = 0 AND (p.state IS NULL OR p.state < 2)"
       "     THEN MAX(a.duration_ms - COALESCE(p.resume_ms, 0), 0) ELSE 0 END),"
-      " SUM(CASE WHEN a.kind = 1 AND a.cloud = 0 AND (p.state IS NULL OR p.state < 2) THEN 1 ELSE 0 END),"
+      " SUM(CASE WHEN a.kind IN (1, 4) AND a.cloud = 0 AND (p.state IS NULL OR p.state < 2) THEN 1 ELSE 0 END),"
       " SUM(CASE WHEN p.state = 4 THEN 1 ELSE 0 END),"
       " SUM(CASE WHEN a.cloud = 1 AND (p.state IS NULL OR p.state < 2) THEN 1 ELSE 0 END)"
       " FROM assets a JOIN roots r ON r.id = a.root_id AND r.enabled = 1"
       " LEFT JOIN progress p ON p.asset_id = a.id AND p.spec = ?1 WHERE 1") + kTrackWhere +
-      held_where(filter);
+      held_where(filter) + after_where(after);
   stmt a(db_, sql.c_str());
   a.bind(4, std::int64_t{filter.photos ? 1 : 0}).bind(5, std::int64_t{filter.default_media})
       .bind(6, std::int64_t{filter.media_bit}).bind(7, filter.skip_root);
+  if (!after.empty()) a.bind(8, after);
   if (a.bind(1, spec).step_row()) {
     c.assets = static_cast<std::uint64_t>(a.i64(0));
     c.done = static_cast<std::uint64_t>(a.i64(1));
@@ -728,6 +922,14 @@ std::uint64_t index_db::assets_in_root(std::int64_t root) {
   std::lock_guard lock(m_);
   stmt f(db_, "SELECT COUNT(*) FROM assets WHERE root_id = ?1");
   return f.bind(1, root).step_row() ? static_cast<std::uint64_t>(f.i64(0)) : 0;
+}
+
+std::uint64_t index_db::kind_in_root(std::int64_t root, asset_kind kind) {
+  std::lock_guard lock(m_);
+  stmt f(db_, "SELECT COUNT(*) FROM assets WHERE root_id = ?1 AND kind = ?2");
+  return f.bind(1, root).bind(2, std::int64_t{static_cast<int>(kind)}).step_row()
+             ? static_cast<std::uint64_t>(f.i64(0))
+             : 0;
 }
 
 std::uint64_t index_db::unavailable_in_root(std::int64_t root, const std::string& spec) {
@@ -797,6 +999,15 @@ expected index_db::each_frame_of(std::int64_t asset, const std::string& spec,
   return {};
 }
 
+std::vector<std::int64_t> index_db::moment_times(std::int64_t asset, const std::string& spec) {
+  std::lock_guard lock(m_);
+  std::vector<std::int64_t> out;
+  stmt s(db_, "SELECT pts_ms FROM frames WHERE asset_id = ?1 AND spec = ?2 AND pts_ms >= 0 ORDER BY pts_ms");
+  s.bind(1, asset).bind(2, spec);
+  while (s.step_row()) out.push_back(s.i64(0));
+  return out;
+}
+
 std::vector<asset_row> index_db::all_assets() {
   std::lock_guard lock(m_);
   std::vector<asset_row> out;
@@ -845,7 +1056,7 @@ expected index_db::set_meta(const std::string& key, const std::string& value) {
 
 expected index_db::clear() {
   std::lock_guard lock(m_);
-  if (!exec("DELETE FROM speech; DELETE FROM frames; DELETE FROM progress; DELETE FROM asset_text;"
+  if (!exec("DELETE FROM speech; DELETE FROM cues; DELETE FROM frames; DELETE FROM progress; DELETE FROM asset_text;"
             " DELETE FROM assets; DELETE FROM roots;")) {
     return err(status::io);
   }
@@ -858,22 +1069,23 @@ expected index_db::clear() {
 
 // ---- tags (#291, schema 4) -----------------------------------------------------------
 
-std::vector<asset_row> index_db::assets_needing_tags(std::size_t limit) {
+std::vector<asset_row> index_db::assets_needing_tags(std::size_t limit, int level) {
   std::lock_guard lock(m_);
   std::vector<asset_row> out;
   const std::string sql = std::string("SELECT ") + kAssetCols +
                           " FROM assets a JOIN roots r ON r.id = a.root_id"
-                          " WHERE a.tags = 0 AND a.cloud = 0 AND r.enabled = 1 ORDER BY a.id LIMIT ?1";
+                          " WHERE a.tags < ?2 AND a.cloud = 0 AND r.enabled = 1 ORDER BY a.id LIMIT ?1";
   stmt s(db_, sql.c_str());
-  s.bind(1, static_cast<std::int64_t>(limit));
+  s.bind(1, static_cast<std::int64_t>(limit)).bind(2, std::int64_t{level});
   while (s.step_row()) out.push_back(asset_from(s, 0));
   return out;
 }
 
-std::uint64_t index_db::tags_pending() {
+std::uint64_t index_db::tags_pending(int level) {
   std::lock_guard lock(m_);
   stmt s(db_, "SELECT COUNT(*) FROM assets a JOIN roots r ON r.id = a.root_id"
-              " WHERE a.tags = 0 AND a.cloud = 0 AND r.enabled = 1");
+              " WHERE a.tags < ?1 AND a.cloud = 0 AND r.enabled = 1");
+  s.bind(1, std::int64_t{level});
   return s.step_row() ? static_cast<std::uint64_t>(s.i64(0)) : 0;
 }
 
@@ -885,8 +1097,10 @@ expected index_db::commit_tags(std::span<const asset_tags> rows) {
   {
     // Only while the asset is the file that was read: a rescan that moved
     // its stamp meanwhile set tags back to 0, and this row is dropped.
-    stmt up(db_, "UPDATE assets SET tags = 1, taken_at = ?4, lat = ?5, lon = ?6, camera = ?7, lens = ?8,"
-                 " made_with = ?9, ai = ?10 WHERE id = ?1 AND mtime = ?2 AND size = ?3");
+    stmt up(db_, "UPDATE assets SET tags = ?11, taken_at = ?4, lat = ?5, lon = ?6, camera = ?7, lens = ?8,"
+                 " made_with = ?9, ai = ?10, rating = ?12, label = ?13, iso = ?14, aperture_x100 = ?15,"
+                 " focal_mm = ?16, shutter_den = ?17, shutter_us = ?18"
+                 " WHERE id = ?1 AND mtime = ?2 AND size = ?3");
     stmt del(db_, "DELETE FROM asset_text WHERE rowid = ?1");
     stmt ins(db_, "INSERT INTO asset_text(rowid, text) VALUES(?1, ?2)");
     for (const asset_tags& t : rows) {
@@ -895,6 +1109,17 @@ expected index_db::commit_tags(std::span<const asset_tags> rows) {
       if (t.taken_at) up.bind(4, *t.taken_at);
       if (t.has_where) up.bind_real(5, t.lat).bind_real(6, t.lon);
       up.bind(7, t.camera).bind(8, t.lens).bind(9, t.made_with).bind(10, std::int64_t{t.ai ? 1 : 0});
+      up.bind(11, std::int64_t{std::clamp(t.level, 1, kTagsLevel)});
+      // #405: NULL for what the file does not say (and all of it below level 2).
+      if (t.level >= 2) {
+        if (t.rating) up.bind(12, std::int64_t{*t.rating});
+        if (!t.label.empty()) up.bind(13, t.label);
+        if (t.iso > 0) up.bind(14, std::int64_t{t.iso});
+        if (t.aperture_x100 > 0) up.bind(15, std::int64_t{t.aperture_x100});
+        if (t.focal_mm > 0) up.bind(16, std::int64_t{t.focal_mm});
+        if (t.shutter_den > 0) up.bind(17, std::int64_t{t.shutter_den});
+        if (t.shutter_us > 0) up.bind(18, t.shutter_us);
+      }
       if (!up.run()) {
         ok = false;
         break;
@@ -923,7 +1148,8 @@ expected index_db::commit_tags(std::span<const asset_tags> rows) {
 expected index_db::each_tags(const std::function<void(const asset_tags&)>& visit) {
   std::lock_guard lock(m_);
   stmt s(db_, "SELECT a.id, a.mtime, a.size, a.taken_at, a.lat, a.lon, a.camera, a.lens, a.made_with, a.ai,"
-              " t.text FROM assets a LEFT JOIN asset_text t ON t.rowid = a.id WHERE a.tags = 1");
+              " t.text, a.tags, a.rating, a.label, a.iso, a.aperture_x100, a.focal_mm, a.shutter_den, a.shutter_us"
+              " FROM assets a LEFT JOIN asset_text t ON t.rowid = a.id WHERE a.tags >= 1");
   if (!s.ok()) return err(status::io);
   while (s.step_row()) {
     asset_tags t;
@@ -939,6 +1165,14 @@ expected index_db::each_tags(const std::function<void(const asset_tags&)>& visit
     t.made_with = s.text(8);
     t.ai = s.i64(9) != 0;
     t.text = s.text(10);
+    t.level = static_cast<int>(s.i64(11));
+    if (!s.is_null(12)) t.rating = static_cast<int>(s.i64(12));
+    t.label = s.text(13);
+    t.iso = static_cast<std::int32_t>(s.i64(14));
+    t.aperture_x100 = static_cast<std::int32_t>(s.i64(15));
+    t.focal_mm = static_cast<std::int32_t>(s.i64(16));
+    t.shutter_den = static_cast<std::int32_t>(s.i64(17));
+    t.shutter_us = s.i64(18);
     visit(t);
   }
   return {};
@@ -961,6 +1195,25 @@ std::string index_db::fts_phrases(std::string_view typed) {
       out.push_back(typed[i++]);
     }
     out.push_back('"');
+  }
+  return out;
+}
+
+result<std::vector<index_db::located>> index_db::located_assets(std::int64_t after_id, std::size_t limit) {
+  std::vector<located> out;
+  std::lock_guard lock(m_);
+  // The primary key walks in order; a row without both columns is skipped.
+  stmt s(db_, "SELECT id, path, lat, lon FROM assets WHERE id > ?1 AND lat IS NOT NULL AND lon IS NOT NULL"
+              " ORDER BY id LIMIT ?2");
+  if (!s.ok()) return err(status::io);
+  s.bind(1, after_id).bind(2, static_cast<std::int64_t>(limit));
+  while (s.step_row()) {
+    located l;
+    l.id = s.i64(0);
+    l.path = s.text(1);
+    l.lat = s.real(2);
+    l.lon = s.real(3);
+    out.push_back(std::move(l));
   }
   return out;
 }

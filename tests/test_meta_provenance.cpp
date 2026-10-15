@@ -1305,3 +1305,69 @@ TEST_CASE("provenance past the full read's 8 MB prefix: the full read agrees wit
     CHECK(p.evidence == "Content Credentials (C2PA): AI-generated (trainedAlgorithmicMedia)");
   }
 }
+
+TEST_CASE("a C2PA store past the 8 MB prefix lists the same All tags rows as one in the head",
+          "[meta][provenance][c2pa]") {
+  // #402: the summary reached a store past the prefix through the probe; the
+  // rows did not. The same store in the head and past 8 MB lists the same rows.
+  const bytes store = c2pa_store("ChatGPT", kTrained, "GPT-4o");
+  std::vector<bytes> near_segs;
+  for (auto& s : app11(store, 4000)) near_segs.push_back(s);
+  const auto near = read_bytes("c2pa_near.jpg", jpeg_with_segments(grey_jpeg(), near_segs));
+
+  std::vector<bytes> far_segs;
+  for (int i = 0; i < 145; ++i) far_segs.push_back(segment(0xE2, bytes(65000, 0x20)));  // ~9 MB of APP2
+  for (auto& s : app11(store, 4000)) far_segs.push_back(s);
+  const bytes far_jpeg = jpeg_with_segments(grey_jpeg(), far_segs);
+  REQUIRE(far_jpeg.size() > (8u << 20) + 4096);
+  const auto far = read_bytes("c2pa_far.jpg", far_jpeg);
+
+  CHECK(far.s.made_with == "ChatGPT");
+  CHECK(far.s.ai_generated);
+  const auto* gen = find_tag(far, "C2PA.claim.generator");
+  REQUIRE(gen);
+  CHECK(gen->value == "ChatGPT 1.0");
+  CHECK(gen->space == mv::meta::origin::c2pa);
+  REQUIRE(find_tag(far, "C2PA.actions.softwareAgent"));
+  CHECK(find_tag(far, "C2PA.actions.softwareAgent")->value == "GPT-4o");
+  REQUIRE(find_tag(far, "C2PA.signature.subject"));
+  CHECK(find_tag(far, "C2PA.signature.subject")->value == "OpenAI (ChatGPT signer)");
+  REQUIRE(find_tag(far, "C2PA.c2pa.actions.actions[1].action"));
+  CHECK(find_tag(far, "C2PA.c2pa.actions.actions[1].action")->value == "c2pa.created");
+
+  const auto c2pa_rows = [](const mv::meta::metadata& m) {
+    std::vector<std::string> out;
+    for (const auto& p : m.properties) {
+      if (p.space == mv::meta::origin::c2pa) out.push_back(p.raw_tag + "=" + p.value);
+    }
+    return out;
+  };
+  const auto a = c2pa_rows(near);
+  const auto b = c2pa_rows(far);
+  CHECK(a.size() > 10);
+  CHECK(a == b);  // the same rows, once each: the store is parsed once either way
+}
+
+TEST_CASE("XMP Iptc4xmpExt:DigitalSourceType shows its whole value in All tags", "[meta][provenance][xmp]") {
+  // #402: Exiv2 prints a term outside its five-term vocabulary as "(value)".
+  const auto source_row = [](const std::string& name, const std::string& uri) -> std::string {
+    const auto m = read_bytes(name, jpeg_with_segments(grey_jpeg(), {xmp_app1(xmp_packet(
+                                          "Iptc4xmpExt:DigitalSourceType=\"" + uri + "\""))}));
+    const auto* p = find_tag(m, "Xmp.iptcExt.DigitalSourceType");
+    REQUIRE(p);
+    CHECK(p->space == mv::meta::origin::xmp);
+    CHECK(p->raw == uri);
+    return p->value;
+  };
+  CHECK(source_row("dst_ai.jpg", std::string(kTrained)) == "AI-generated (" + std::string(kTrained) + ")");
+  const std::string composite =
+      "http://cv.iptc.org/newscodes/digitalsourcetype/compositeWithTrainedAlgorithmicMedia";
+  CHECK(source_row("dst_comp.jpg", composite) == "Includes AI-generated elements (" + composite + ")");
+  const std::string capture = "http://cv.iptc.org/newscodes/digitalsourcetype/digitalCapture";
+  CHECK(source_row("dst_cam.jpg", capture) == "Digital capture (" + capture + ")");
+  CHECK(source_row("dst_bare.jpg", "digitalCapture") == "Digital capture (digitalCapture)");
+
+  CHECK(mv::meta::describe_source_type_value(" " + std::string(kTrained) + " ") ==
+        "AI-generated (" + std::string(kTrained) + ")");
+  CHECK(mv::meta::describe_source_type_value("").empty());
+}

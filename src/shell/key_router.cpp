@@ -32,9 +32,10 @@ mode resolve_mode(const view_state& s) noexcept {
   if (s.game && s.item == item_kind::none && !s.popup_open) return mode::runner;
   if (s.loupe_held) return mode::loupe;
   if (s.slideshow) return mode::slideshow;
-  // Issue #361: a clip that plays, or with the strip hidden, skims on ← →.
-  // Skim layers over video (on_key falls back to the video rows).
-  if (s.item == item_kind::clip && (s.clip_playing || !s.filmstrip_visible)) return mode::skim;
+  // Issue #416 (was #361): a clip with the strip hidden skims on ← →, playing
+  // or paused; with the strip up the arrows walk the folder. Skim layers over
+  // video (on_key falls back to the video rows).
+  if (s.item == item_kind::clip && !s.filmstrip_visible) return mode::skim;
   if (s.item == item_kind::clip || s.item == item_kind::animation) return mode::video;
   return mode::browse;
 }
@@ -47,6 +48,9 @@ back_target resolve_back(const view_state& s) noexcept {
   // A Live Photo's motion is a moment on top of the still, not a mode: Esc
   // ends it before it touches gallery, slideshow or fullscreen.
   if (s.motion_playing) return back_target::motion;
+  // Selected words in a still are the innermost thing on the canvas, as in
+  // Photos: Esc deselects before it leaves a pane, the gallery or fullscreen.
+  if (s.text_selected) return back_target::text_selection;
   // 6f: an open `?` / go-to / find flyout must close before anything below. It
   // needs its own view_state bit; today a flyout closes on focus loss, which
   // is what canvas_focus causes.
@@ -134,8 +138,9 @@ std::size_t key_router::cancel_holds(std::span<command_id> released) noexcept {
   for (auto& h : held_) {
     if (!h.row) continue;
     // A momentary key always owes its release. A tap/hold owes one only once
-    // it became a hold; an unfinished tap is dropped rather than fired.
-    const bool owed = h.momentary || h.repeated;
+    // it became a hold; an unfinished tap is dropped rather than fired. A plain
+    // repeat row (a pinned walk) owes nothing.
+    const bool owed = h.momentary || (h.repeated && h.release != command_id::none);
     if (owed && n < released.size()) released[n++] = h.release;
     h = held{};
   }
@@ -149,6 +154,8 @@ route key_router::on_key(const key_event& e, const view_state& s) noexcept {
     const held was = *h;
     *h = held{};
     if (was.momentary) return {was.release, back_target::none, true};
+    // A plain repeat row owes nothing on key-up: the up is not handled, as before.
+    if (was.release == command_id::none) return {};
     // Tap already ran on down. A hold owes its settle; a tap does not.
     return {was.repeated ? was.release : command_id::none, back_target::none, true};
   }
@@ -185,10 +192,12 @@ route key_router::on_key(const key_event& e, const view_state& s) noexcept {
     return {command_id::back, target, true};
   }
 
-  // A tap/hold that became a hold keeps going until its key-up, whatever the
-  // mode does meanwhile (issue #361: a held → skims a playing clip; if the clip
-  // ends or pauses mid-hold the mode drops back to video, where → walks, and
-  // the next repeat must not change the item).
+  // A hold keeps its command until its key-up, whatever the mode does
+  // meanwhile (issue #416: a held → skims a clip with the strip hidden; if T
+  // shows the strip mid-hold the mode drops back to video, where → walks, and
+  // the next repeat must not change the item — and a → held as a walk with
+  // the strip up stays a walk if T hides it). Tap/hold rows and plain repeat
+  // rows both record the hold; momentary rows are their own case below.
   if (e.repeat) {
     if (held* h = find_held(e.k); h && !h->momentary && h->hold != command_id::none) {
       h->repeated = true;
@@ -241,7 +250,7 @@ route key_router::on_key(const key_event& e, const view_state& s) noexcept {
     if (!b && under_mode == mode::skim) b = lookup(e.k, e.mods, mode::video);
   }
   if (!b && m == mode::skim) {
-    // Skim layers over video: only ← → differ (issue #361).
+    // Skim layers over video: only ← → differ (issue #416).
     b = lookup(e.k, e.mods, mode::video);
   }
   if (!b && m == mode::trim) {
@@ -255,8 +264,14 @@ route key_router::on_key(const key_event& e, const view_state& s) noexcept {
     case repeat_policy::edge:
       if (e.repeat) return {};
       return {b->command, back_target::none, true};
-    case repeat_policy::repeat:
+    case repeat_policy::repeat: {
+      // Pin the command for the rest of the hold (above). A fifth held key
+      // is not tracked; it still routes, per event, through the mode.
+      if (held* h = claim_held(e.k); h && !h->momentary) {
+        *h = held{b, e.k, b->command, command_id::none, false, e.repeat};
+      }
       return {b->command, back_target::none, true};
+    }
     case repeat_policy::momentary: {
       if (e.repeat && find_held(e.k)) return {command_id::none, back_target::none, true};
       held* h = claim_held(e.k);

@@ -403,14 +403,14 @@ public static partial class IslandHost
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });  // key hints
         root.Children.Add(new Border { Height = 1, Background = Brush(Hairline) });
 
-        var bar = new Grid { Padding = new Thickness(10, 6, 10, 6) };
+        var bar = new Grid { Padding = Pad(10, 6, 10, 6) };
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         _editorPlay = PaneIconButton(Glyph.Play, "Play", "Space", () => SendEditor(EditorActions.TogglePlay));
         _editorTimecode = Text("", Title, UiFontSize - 2);
         _editorTimecode.VerticalAlignment = VerticalAlignment.Center;
-        _editorTimecode.Margin = new Thickness(10, 0, 10, 0);
+        _editorTimecode.Margin = Pad(10, 0, 10, 0);
         _editorDelete = EditButton("Delete", () => SendEditor(EditorActions.Delete),
                                    tip: "Delete the marked range, else the selected piece  Delete");
         _editorUndo = EditButton("Undo", () => SendEditor(EditorActions.Undo), tip: "Undo  Ctrl+Z");
@@ -448,7 +448,7 @@ public static partial class IslandHost
         Grid.SetRow(rule, 2);
         root.Children.Add(rule);
 
-        var area = new Grid { Padding = new Thickness(12, 10, 12, 10) };
+        var area = new Grid { Padding = Pad(12, 10, 12, 10) };
         // The Mac's ProgressView beside the text while the clip is read.
         _editorStatus = Text("Reading the clip…", Body, UiFontSize - 2);
         _editorStatus.VerticalAlignment = VerticalAlignment.Center;
@@ -456,7 +456,7 @@ public static partial class IslandHost
         _editorReading = new StackPanel
         {
             Orientation = Orientation.Horizontal,
-            Spacing = 8,
+            Spacing = Space(8),
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
         };
@@ -537,7 +537,7 @@ public static partial class IslandHost
         TextBlock hints = Hint(
             "Space play · Left Right frame · J K L shuttle · I O mark · X clear · [ ] trim · Ctrl+B split · " +
             "Delete · Ctrl+Z undo · Ctrl+E export · Esc close");
-        hints.Margin = new Thickness(12, 0, 12, 8);
+        hints.Margin = Pad(12, 0, 12, 8);
         Grid.SetRow(hints, 4);
         root.Children.Add(hints);
         AutomationProperties_SetName(root, "Video Editor timeline");
@@ -548,7 +548,7 @@ public static partial class IslandHost
     }
 
     private static UIElement EditorDivider() =>
-        new Border { Width = 1, Height = 18, Background = Brush(Hairline), Margin = new Thickness(6, 0, 6, 0) };
+        new Border { Width = 1, Height = 18, Background = Brush(Hairline), Margin = Pad(6, 0, 6, 0) };
 
     private static void Guard(Action action)
     {
@@ -791,7 +791,7 @@ public static partial class IslandHost
         {
             Width = w,
             Height = VideoH,
-            CornerRadius = new CornerRadius(5),
+            CornerRadius = Corner(5),
             Background = Brush(ChromeColour.Surface),
             Child = tiles,
         };
@@ -803,7 +803,7 @@ public static partial class IslandHost
         {
             Width = w,
             Height = VideoH,
-            CornerRadius = new CornerRadius(5),
+            CornerRadius = Corner(5),
             BorderBrush = Brush(selected ? TrimAccent : Hairline),
             BorderThickness = new Thickness(selected ? 3 : 1),
             IsHitTestVisible = false,
@@ -819,7 +819,7 @@ public static partial class IslandHost
         {
             Width = w,
             Height = AudioH,
-            CornerRadius = new CornerRadius(4),
+            CornerRadius = Corner(4),
             Background = Brush(ChromeColour.Surface),
         };
         XamlCanvas.SetLeft(box, x);
@@ -858,7 +858,7 @@ public static partial class IslandHost
         var root = new Grid { Background = Brush(Canvas), RequestedTheme = IslandTheme };
         var col = new StackPanel
         {
-            Spacing = 10,
+            Spacing = Space(10),
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
         };

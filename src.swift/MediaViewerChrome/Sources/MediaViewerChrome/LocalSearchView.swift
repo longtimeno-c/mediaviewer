@@ -217,7 +217,14 @@ final class LocalSearchStore: ObservableObject {
       default: return "Indexing paused"
       }
     }
-    // Pictures first; then the Sound piece's clips (sounds, then speech).
+    // Pictures first; then the clips' own text and the text in pictures;
+    // then the Sound piece's clips (sounds, then speech): the pack's order.
+    if s.assets_done >= s.assets_total, s.cues_done < s.cues_total {
+      return "Reading chapters and subtitles \(count(s.cues_done)) of \(count(s.cues_total)) clips"
+    }
+    if s.assets_done >= s.assets_total, s.text_done < s.text_total {
+      return "Reading text in pictures \(count(s.text_done)) of \(count(s.text_total))"
+    }
     if s.assets_done >= s.assets_total, s.sound_done < s.sound_total {
       return "Indexing sound \(count(s.sound_done)) of \(count(s.sound_total)) clips"
     }
@@ -710,7 +717,7 @@ struct LocalSearchSection: View {
     } else if store.onDemand {
       // Issue #292: nothing of the pack runs until the first search; its own
       // settings (compute, folders, People) need it running.
-      HStack(alignment: .firstTextBaseline, spacing: 12) {
+      HStack(alignment: .firstTextBaseline, spacing: MVTheme.space(12)) {
         Text("Local search starts the first time you search. Start it now to see its folders and settings.")
           .font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
           .fixedSize(horizontal: false, vertical: true)

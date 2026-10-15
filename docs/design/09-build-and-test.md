@@ -62,7 +62,9 @@ Suites are registered with CTest and run by `ctest` on both platforms; see
    add-on and clip suites. `tests/test_video_eof_mac.mm` and `test_metal_pacer.cpp` are
    Mac-only.
 2. **ABI smoke test from C#** (`src.managed/MediaViewer.AbiSmokeTest`): `SafeHandle`
-   lifetimes, struct layouts, completion drain against the built core.
+   lifetimes, struct layouts, completion drain against the built core. Structs C# mirrors by
+   hand (`MvAiStatus`, `MvAiResult`) are compared field for field with `tools/abi-layout`'s
+   dump of the native layout, so a mirror that misses an appended field fails CI.
 3. **Format corpus.** Not in git. `tools/testmedia/raw-manifest.json` and
    `heif-manifest.json` list each sample's URL, SHA-256, licence and source;
    `fetch-raw.ps1` / `fetch-heif.ps1` download and verify. The video corpus (~1.5 GB, incl. a

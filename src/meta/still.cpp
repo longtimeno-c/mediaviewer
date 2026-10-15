@@ -19,6 +19,7 @@
 #include <string>
 
 #include "meta/af.h"
+#include "meta/generators.h"
 #include "meta/internal.h"
 
 namespace mv::meta::detail {
@@ -61,7 +62,14 @@ void add_property(metadata& out, origin space, const Datum& d, const Exiv2::Exif
   p.raw = sanitise(cap(trim(d.toString())));
   std::string shown;
   try {
-    shown = d.print(data);
+    // #402: Exiv2's vocabulary for this tag has five terms and prints any
+    // other (trainedAlgorithmicMedia, every newer IPTC term) cut to
+    // "(value)"; the row shows the reading and the whole value instead.
+    if (space == origin::xmp && p.raw_tag == "Xmp.iptcExt.DigitalSourceType") {
+      shown = describe_source_type_value(trim(d.toString()));
+    } else {
+      shown = d.print(data);
+    }
   } catch (...) {
     shown.clear();
   }

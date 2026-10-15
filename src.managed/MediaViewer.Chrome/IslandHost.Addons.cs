@@ -280,6 +280,11 @@ public static partial class IslandHost
             // reader holds a text model: neither may compete with this window's
             // first pixel, nor cost a window that never searches.
             _addonsElsewhere = true;
+            // Issue #402: the add-ons that fill screens and slots load in every
+            // window, this one too, on a worker. They are found by manifest, so
+            // this hashes Places' files, never the AI pack's.
+            MediaViewerSession guestSession = _folderSession;
+            _ = Task.Run(() => StartSlotAddons(guestSession, guest: true));
             return;
         }
         MediaViewerSession session = _folderSession;
@@ -777,7 +782,15 @@ public static partial class IslandHost
             }
             if (parts.Count != 3) return unchecked((int)0x80070057);
             AddonSlot? slot = Array.Find(AddonSlots, s => s.Id == parts[0]);
-            if (slot?.Chrome is null) return 1;
+            if (slot is null)
+            {
+                // #410: an add-on that fills slots (Sharepoint) has no chrome; its
+                // command is an event to the add-on, with the files its payload
+                // names (a JSON array, or "[]" for a payload of none).
+                string paths = parts[2].StartsWith('[') ? parts[2] : "[]";
+                return SlotNative.Command(parts[0], parts[1], paths) ? 0 : 1;
+            }
+            if (slot.Chrome is null) return 1;
             if (slot.Chrome is IAddonCommands commands) return commands.RunCommand(parts[1], parts[2]) ? 0 : 1;
             // An Import chrome from before the generic entry: its two frozen calls.
             if (slot == ImportSlot)
@@ -874,6 +887,8 @@ public static partial class IslandHost
     private static void RefreshSlotUi(AddonSlot slot)
     {
         if (slot == ImportSlot) RefreshAddonRow();
+        else if (slot == SharepointSlot) RefreshSharepointOffer();  // #410
+        else if (slot == PlacesChannel) RefreshSlotSettings();
         else RefreshLocalSearch();
     }
 
@@ -1044,6 +1059,12 @@ public static partial class IslandHost
         {
             _importConfirming = false;
             RefreshAddonRow();
+            return true;
+        }
+        if (_slotConfirming is not null)
+        {
+            _slotConfirming = null;
+            RefreshSlotSettings();
             return true;
         }
         return CancelOpenAddonConfirm();

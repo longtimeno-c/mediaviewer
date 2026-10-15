@@ -96,8 +96,9 @@ enum class mode : std::uint8_t {
   runner = 6,     // empty-window game; number keys do not change image zoom
   crop = 7,       // PR 10: crop / straighten on the canvas; arrows nudge the rect
   trim = 8,       // PR 13: trim armed on a clip; layers over video (key_router.cpp)
-  // Issue #361: a clip that is playing, or with the filmstrip hidden. Layers
-  // over video like trim; only ← → differ (they skip ±2 s the way Q / E do).
+  // Issue #416 (was #361): a clip with the filmstrip hidden (T), paused or
+  // playing. Layers over video like trim; only ← → differ (they skip ±2 s the
+  // way Q / E do). With the strip up the arrows walk the folder.
   skim = 9,
   count
 };
@@ -179,7 +180,7 @@ enum class command_id : std::uint16_t {
   fullscreen,
   fill,
   reset_view,
-  cycle_background,
+  retired_background,  // was `B` (canvas background); issue #408 removed it. Keeps its id.
   sticky_zoom,
   clipping,
   loupe,
@@ -384,10 +385,12 @@ inline constexpr int kCommandCount = static_cast<int>(command_id::count);
 }
 
 // Ids that once were commands and are kept as holes so later ids keep their
-// wire values. 76 is the dropped Ctrl+K palette (docs/design/12 2026-09-13): no
-// command_info, no binding, never dispatched.
+// wire values. 76 is the dropped Ctrl+K palette (docs/design/12 2026-09-13);
+// retired_background was `B`, the canvas background, removed with it by issue
+// #408 (docs/design/12 2026-10-15). No binding, never dispatched.
 [[nodiscard]] constexpr bool is_retired_command(int id) noexcept {
-  return id == static_cast<int>(command_id::palette);
+  return id == static_cast<int>(command_id::palette) ||
+         id == static_cast<int>(command_id::retired_background);
 }
 
 // A row whose key is key::none is listed (Settings can give it one) but not

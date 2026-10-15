@@ -274,9 +274,13 @@ error check_props(node& n, std::size_t& items) {
                num_in(v, -1e12, 1e12);
           break;
         case node_type::text_field:
+          // "pick": "folder" (2026-10-15, Sharepoint): the host adds a
+          // Choose... button that shows the system folder dialog and reports
+          // the folder as the field's change; typing a path still works.
           ok = (key == "value" && str_max(v, kMaxText, true)) ||
                (key == "placeholder" && str_max(v, kMaxLabel)) ||
-               (key == "multiline" && v.k == json::kind::boolean);
+               (key == "multiline" && v.k == json::kind::boolean) ||
+               (key == "pick" && one_of(v, {"folder"}));
           break;
         case node_type::progress:
           ok = key == "value" && num_in(v, -1.0, 1.0);

@@ -14,6 +14,7 @@
 #include "image/thumb.h"
 #include "io/file.h"
 #include "io/file_port.h"
+#include "io/pairing.h"
 #include "io/paths.h"
 
 namespace mv::addon::media {
@@ -106,6 +107,16 @@ std::vector<std::uint8_t> rgba_of(const std::uint8_t* rgb, std::uint32_t w, std:
 }  // namespace
 
 result<rgb_image> decode_still(const std::string& path, std::uint32_t max_long_edge) {
+  // #355: an audio file's picture is its cover art, read from the header
+  // alone (never the whole file); none is status::not_found.
+  if (io::is_audio_name(path)) {
+    MV_TRY(edit::clip::sample_rgb art, edit::clip::cover_art_rgb(path, max_long_edge));
+    rgb_image out;
+    out.width = art.width;
+    out.height = art.height;
+    out.rgb = std::move(art.rgb);
+    return out;
+  }
   MV_TRY(auto bytes, io::read_all(path));
   // First-pixel quality: a DCT-scaled JPEG or the embedded RAW preview. Other
   // families (PNG, HEIC, WebP, ...) have no cheaper path than a decode.

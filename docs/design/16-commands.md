@@ -105,7 +105,7 @@ Resolved from state at every keydown (`resolve_mode`), never kept on a stack, in
 | **runner** | The empty-window game is up | `Space` jumps/retries, `3` toggles 2D/3D |
 | **loupe** | `Z` held | Layers over browse/video: only arrows (nudge) and `Z` / `\` differ |
 | **slideshow** | Slideshow running | |
-| **skim** | A clip that is playing, or with the filmstrip hidden (`T`) | Layers over **video**: only `←` `→` differ — they skip ±2 s like `Q` / `E` (issue #361) |
+| **skim** | A clip with the filmstrip hidden (`T`), paused or playing | Layers over **video**: only `←` `→` differ — they skip ±2 s like `Q` / `E` (issue #416; #361's playing half reversed) |
 | **video** | Current item is a clip or an animation | |
 | **browse** | Otherwise | |
 
@@ -115,7 +115,7 @@ folder and `Q` / `E` still skip.
 ### `Esc` walks out
 
 `resolve_back` picks one target per press, never quitting: text field → popup (`?`, go-to, find)
-→ Settings → Live Photo motion → crop (cancel) → trim (disarm, markers kept) → pane → gallery →
+→ Settings → Live Photo motion → selected text in a still (deselect) → crop (cancel) → trim (disarm, markers kept) → pane → gallery →
 slideshow → fullscreen → runner → canvas focus → result list ("Back to folder", the outermost:
 a search result list is a place, not an overlay). A list opened from the empty window (a search
 from the welcome) goes back to the empty window: the welcome card with its recent folders, the
@@ -177,7 +177,7 @@ crop. Keys are shown Windows-style; on macOS read `⌘` for `Ctrl`.
 
 | Key | Modes | Command |
 |---|---|---|
-| `←` `→` | Walk, gallery | Previous / next (repeat). On a clip that is playing, or with the filmstrip hidden, they are `Q` / `E` instead (skim mode, below); paused with the strip up they walk |
+| `←` `→` | Walk, gallery | Previous / next (repeat). On a clip with the filmstrip hidden (`T`) they are `Q` / `E` instead (skim mode, below); with the strip up they walk, paused or playing |
 | `A` `D` | All but crop | Previous / next — on a clip too; transport is `Q` `E` |
 | `Backspace` | Walk | Previous |
 | `Space` | browse | Next. On a clip or animation: play / pause; in a slideshow: pause; in the runner: jump |
@@ -220,14 +220,13 @@ crop. Keys are shown Windows-style; on macOS read `⌘` for `Ctrl`.
 | `W` `S`, `↑` `↓` | gallery | Previous / next row |
 | `Enter` | gallery | Open the selection in the viewer (leaving fullscreen / slideshow, restoring the filmstrip if enabled) |
 | `T` | all | Filmstrip show / hide (stored per mode: folder open or single image) |
-| `B` | Viewing | Cycle background: black / gray / white / checkerboard |
 | `S` | browse, video, island | Sticky zoom on advance |
 | `C` | Viewing | Clipping blinkies |
 | `O` | Viewing | On-canvas info overlay (filename, index, exposure triangle) |
 | `Shift+O` | Viewing | AF-point quads from the maker notes already read |
 | `I` | Viewing | Metadata pane: focuses it; `←` `→` change tab, `↓` reaches tag search; `Esc` returns to the canvas, a second `Esc` closes it |
 | `Shift+I` | Viewing | Eyedropper: one-pixel sRGB 8-bit + hex readout under the cursor (stills) |
-| `Ctrl+C` | Viewing | With the eyedropper on: copy `#RRGGBB  rgb(r, g, b)  x y`. Otherwise copy the marked (else current / gallery-selected) file(s) |
+| `Ctrl+C` | Viewing | With words selected in the still ([Text in images](#text-in-images)): copy that text. With the eyedropper on: copy `#RRGGBB  rgb(r, g, b)  x y`. Otherwise copy the marked (else current / gallery-selected) file(s) |
 | hold `Z` | browse, video | Loupe: 100 % around the cursor or a keyboard point; arrows nudge it. Same texture, no decode |
 | hold `\` | browse, video | Previous item, for burst pick, from the five-slot GPU LRU (Mac: the last still shown, kept on the GPU) |
 | `\|` | browse, video | **Two-up compare** (issue #208): the previous still (the one hold `\` shows) on the left, the current one on the right, under one camera (below). Toggle; `--compare` starts with it on |
@@ -246,13 +245,18 @@ slideshow blackout the canvas is one-up and the toggle waits; hold `\` does noth
 is up (the previous still is already on screen). A fitted view refits to its half.
 
 **Filmstrip hint.** Some input means something else while the filmstrip is up, and the hint says
-so in the notice line (`shell/filmstrip_hint.h`, shared): over a PDF or DOCX with the strip showing
-it reads "Press T to hide the filmstrip and scroll" (the wheel zooms until the strip is hidden). It
-shows when such a document comes on screen, when the wheel zooms one, and after "Page n of m" on a
-page turn; like any notice it fades after three seconds. Once `T` has hidden the strip over a
-document it never shows again (Windows `settings.ini` `[hints] filmstrip_t`, Mac
-`mv.hint.filmstripT`). There is one hint: another subject (a paused clip, issue #361) is a
-`strip_hint_subject` value and a string beside it, sharing the learned flag.
+so (`shell/filmstrip_hint.h`, shared). Over a PDF or DOCX with the strip showing it reads "Press T
+to hide the filmstrip and scroll" (the wheel zooms until the strip is hidden); over a clip, "Press T
+to hide the filmstrip and skip 2 s with ← →" (the arrows walk the folder until it is hidden, issue
+#416). It is a small card in the window's bottom-right corner, above the filmstrip and above the
+resume-indexing notice when that is up, in that notice's look (Windows `IslandHost.HintNotice.cs`,
+entry `ShowHint`; Mac `HintNoticeView.swift`); it was the title's status line, which nobody saw. It
+shows when such a document or clip comes on screen, when the wheel zooms a document (at most once a
+second) and on a page turn, fades after eight seconds, and goes when nothing it covers is on screen.
+It takes no focus. Once `T` has hidden the strip over either subject, or the card's "Got it" was
+clicked, it never shows again (Windows `settings.ini` `[hints] filmstrip_t`, Mac
+`mv.hint.filmstripT`). There is one hint: each subject is a `strip_hint_subject` value and a string
+beside it, sharing the learned flag.
 
 **Gallery.** Full-client grid of the folder. `A` `D` / `←` `→` move by item, `W` `S` / `↑` `↓`
 by row; a click opens in the viewer. Child folders are big tiles when the folder holds only
@@ -262,18 +266,39 @@ gallery: opening it pauses a playing clip, a clip selected in it waits paused on
 and closing it resumes only the clip that was playing. The folder path lives in the command bar
 left of `?` (a long middle collapses into a menu), with Up and Root buttons outside the trail.
 
+#### Gallery range and share (#413)
+
+- **Shift-click** selects every image from the selected cell (the anchor) to the clicked one, in
+  the grid's order (a file search's filter counts), and the grid stays open. A plain click still
+  opens one image. Further Shift-clicks keep the same anchor.
+- **Arrows** move one cell and never grow the range; marks stay the set `Insert` /
+  `Shift+Space` edit. Another selection, another folder, a relist or closing the grid ends the
+  range (on Windows native also drops it once its anchor is no longer selected).
+- **While a range stands** it is the selection: copy (`Ctrl+C` / `⌘C`), `F7` / `F8`, `Delete`,
+  copy path and Share act on it, in listing order, ahead of the marks. The range is tinted and
+  outlined; "N selected" sits over the grid on the Mac.
+- **Drag-out from the gallery** starts from any cell (the Mac picks the drag up below SwiftUI,
+  `GalleryDrag`, as the grid's scroll view never handed it to the cell). A cell of the range drags
+  the whole range, a marked cell the marks, any other cell itself; each file with its pair on
+  Windows, copy-only, originals untouched. The filmstrip's drag is unchanged.
+- **One share icon** ("Send") over the grid sends the gallery's selection (the range, else the
+  selected cell) to [Sharepoint](28-sharepoint.md), with those files and no others. Without
+  Sharepoint it offers the one-click install. It is not the OS share sheet (`Ctrl+Shift+S`).
+
 ### Marks, copy, move
 
 Marks are a separate set from the selection, so arrow-key browsing never makes accidental ranges.
+The gallery's Shift-click range (above) is the one deliberate range: while it stands, the
+commands below act on it first.
 
 | Key | Modes | Command |
 |---|---|---|
 | `Insert` / `Shift+Space` | browse, video | Toggle mark on current |
-| `Ctrl+A` | Viewing | Mark all |
+| `Ctrl+A` | Viewing | Mark all; with words selected in the still, select every word instead |
 | `Ctrl+D` | Viewing | Unmark all |
 | `F7` / `Shift+F7` | Viewing | Copy marked (else current) to the last destination / pick a folder |
 | `F8` / `Shift+F8` | Viewing | Move, same rule |
-| `Delete` | browse, video | Recycle Bin / Trash, with confirm. Marks if any, else current |
+| `Delete` | browse, video, gallery | Recycle Bin / Trash, with confirm. The gallery's range if one stands, else marks if any, else current |
 | `F2` | Viewing | Rename the current file (the gallery's selected cell); also File ▸ Rename… on the Mac |
 | `Ctrl+Shift+C` | Viewing | Copy path(s) as text |
 | `Ctrl+Alt+C` | browse | Copy the current still with edits baked, as PNG (worker thread) |
@@ -370,7 +395,7 @@ works regardless. To see only the keepers, or one colour, use View ▸ Show's cu
 | `Space` | video | Play / pause |
 | tap `Q` / `E` | video | Skip −2 s / +2 s, exact, on the down edge |
 | hold `Q` / `E` | video | Skim ∓2 s per repeat with non-exact (keyframe) seeks; release settles exactly. Intent accumulates across the burst |
-| tap / hold `←` `→` | skim | The same skip and skim as `Q` / `E`, while the clip plays or the filmstrip is hidden (issue #361). Paused with the strip showing they walk the folder; `T` hides the strip so they skip. `A` / `D` walk in every case. A hold that started as a skim stays one until key-up, even if the clip pauses or ends under it |
+| tap / hold `←` `→` | skim | The same skip and skim as `Q` / `E`, only while the filmstrip is hidden (issue #416). With the strip showing they walk the folder, paused or playing; `T` hides the strip so they skip. `A` / `D` walk in every case. A hold keeps what it started as until key-up: a skim stays a skim if `T` shows the strip under it, a walk stays a walk if `T` hides it |
 | `Shift+Q` / `Shift+E` | video | Playback speed one rung down / up: 0.25 / 0.5 / 1 / 1.5 / 2 / 4. The transport strip's speed menu (`1x`) is a view of this; native owns the rate |
 | `J` `K` `L` | video | −10 s / pause / +10 s |
 | `,` `.` | video | Frame step (also on animations) |
@@ -420,6 +445,13 @@ opens that file in the viewer), `Ctrl+Enter` imports from anywhere, `Space` togg
 pauses / resumes while copying, `Shift+Space` toggles its day, `Ctrl+Tab` / `Ctrl+Shift+Tab` the
 next / previous source, `Ctrl+J` ejects, `Esc` closes the window and the import carries on
 ([import](18-import.md)).
+
+### Sharepoint (while the add-on is installed)
+
+One row, **Sharepoint**, with no default key (issue #410): it opens Sharepoint's window with the
+marked or current files as the ones to send. Settings can give it a key like any row. The row is
+the add-on's manifest command; an add-on that fills slots and has no chrome gets it as a command
+event (`run_command`, [28](28-sharepoint.md#host-pieces-this-added)).
 
 ### Add-on commands (PR 57, from scripts)
 
@@ -506,7 +538,7 @@ presents ([rendering](03-rendering.md)). Toggles request one redraw.
 | Two-up compare (`\|`) | A second blit of the resident previous texture into the left half; same present |
 | Clipping blinkies (`C`) | Shader; may present while on (it animates), labelled in F3 |
 | Pixel grid (≥ 400 %) | Shader |
-| Canvas background / checkerboard (`B`) | Clear colour + optional shader |
+| Around the picture (no key) | The theme's `canvas` token as the clear and in the blit; there is no canvas background of its own (issue #408, [12](12-decision-log.md)) |
 | On-canvas info (`O`) | Overlay text from the folder model and metadata already read |
 | AF-point quads (`Shift+O`) | A few quads from maker notes already in the property model |
 | Eyedropper (`Shift+I`) | One-pixel staging readback on demand, never a full-texture download |
@@ -578,6 +610,37 @@ A swipe does nothing under the gallery or in crop. A tap is the system's promote
 reads the touchscreen through `WM_GESTURE` (pan inertia and gutter off); the touchpad's pinch is
 already `Ctrl`+wheel. The Mac reads `magnifyWithEvent:`, `scrollWheel:` and `swipeWithEvent:`.
 
+## Text in images
+
+As in Photos, text in a still can be selected with the mouse and copied: no menu item, mode or
+setting ([12](12-decision-log.md) 2026-10-15, which replaced 2026-10-10's Copy Text in Image).
+
+| Pointer | Does |
+|---|---|
+| Hover over text | I-beam cursor |
+| Press on a word and drag | Selects from that word to the word nearest the pointer, whole words in reading order; a press on text never pans or starts a file drag |
+| Double-click / triple-click | Selects the word / its line; a drag from there extends by words / lines |
+| Click on text without dragging, or press off the text | Clears the selection (off the text the press pans as before) |
+
+`Ctrl+C` / `⌘C` then copies it (the notice says "Copied 12 words"), `Ctrl+A` / `⌘A` selects every
+word, and `Esc` deselects before anything else on the canvas walks out.
+
+**When a still is read.** Recognition costs a decode and the OS recogniser, so it is never part of
+showing an image: it starts only after the pointer has rested on a still for 500 ms (arrowing or
+clicking through a folder reads nothing), on the job pool (rule 1), once per still and geometry. A
+new item, a turn, a crop, Show original, the gallery or the Edit workspace drops the words. Stills
+only: not a clip, an animation, audio or a document page.
+
+**How.** `shell/text_in_image.h` renders the still as the canvas shows it (geometry applied, 4096 px
+long edge, alpha over white) for a port, `text_recognizer`, that returns words with boxes in 0..1 of
+that image: Vision `VNRecognizeTextRequest` on the Mac (each word boxed with
+`boundingBoxForRange:`), `Windows.Media.Ocr` in the WinUI chrome on Windows (`OcrWord.BoundingRect`,
+sent back as one tab-separated record per word). `shell/text_select.h` is the hosts' shared
+selection model on the UI thread. The render thread publishes `canvas_map` (where the still is) for
+the host's hit-test and draws `input_snapshot::text`, one translucent box per selected line; a
+press that `text_press` marks is never a pan. On device, nothing logged (rule 6); without an OCR
+language Windows says so once a session and offers no Store download (rule 7).
+
 ## Animation
 
 GIF / APNG / WebP play on the render thread's frame clock ([image pipeline](04-image-pipeline.md)).
@@ -620,6 +683,8 @@ No hot-path ABI for commands. Commands invoke existing session calls (`mv_folder
 - A filter (all / photos / videos / RAW) on the listing.
 - `Ctrl+PageUp` / `Ctrl+PageDown` for ICO sizes and HEIC sequences (pages of TIFF, PDF and DOCX are built).
 - `U` clear label and `X` reject mark.
+- Text in images: selecting part of a word (selection is by whole words), a right-click menu
+  (Copy, Look Up), and text in PDF / DOCX pages, clips or animations.
 - A filter (all / photos / videos / RAW) on the listing.
 - Touch gestures (swipe, pinch).
 - Import / export of a person's own key map (named layouts ship as keymap packs, above).

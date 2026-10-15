@@ -156,6 +156,14 @@ struct decision {
   return m.part_of.empty() ? m.id : m.part_of;
 }
 
+// An add-on both hosts load for its screens and slots alone (docs/design/25
+// PRs 58-59): it contributes some, and is not Import, the AI family or a
+// piece (those load with chromes of their own, or not at all).
+[[nodiscard]] inline bool loads_for_slots(const manifest& m) noexcept {
+  return !m.slots.empty() && m.part_of.empty() && m.id != "import" && family_of(m) != "ai" &&
+         m.id.rfind("ai-", 0) != 0;
+}
+
 // A relative path that stays inside its folder on every OS.
 [[nodiscard]] bool safe_relative_path(std::string_view path) noexcept;
 

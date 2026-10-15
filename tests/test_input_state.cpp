@@ -181,3 +181,69 @@ TEST_CASE("compare is a level on the snapshot, off by default", "[shell][input][
   slot.publish(s);
   REQUIRE(slot.acquire().compare);
 }
+
+// Issue #408: the home's theme and its ground effect's rest rule.
+TEST_CASE("the home's ground runs every frame in front, 10 Hz behind, then rests", "[shell][home]") {
+  using mv::shell::home_effect;
+  using mv::shell::home_ground_clock;
+  constexpr double kFast = home_ground_clock::kEveryFrame;
+  constexpr double kSlow = home_ground_clock::kSlowTick;
+  home_ground_clock c;
+  // No input yet: nothing moves (the labs record launch as one).
+  REQUIRE(c.interval(true, home_effect::rain, true, true, false, 0.0) == 0.0);
+  c.input(0.0);
+  // In front and in use: every display frame.
+  REQUIRE(c.interval(true, home_effect::rain, true, true, false, 1.0) == kFast);
+  // Behind another app but visible: 10 a second.
+  REQUIRE(c.interval(true, home_effect::rain, false, true, false, 1.0) == kSlow);
+  // In front but quiet for 5 s: 10 a second until a minute has passed, then rest.
+  REQUIRE(c.interval(true, home_effect::rain, true, true, false, 5.0) == kSlow);
+  REQUIRE(c.interval(true, home_effect::rain, false, true, false, 59.9) == kSlow);
+  REQUIRE(c.interval(true, home_effect::rain, true, true, false, 60.0) == 0.0);
+  // Never off the home, without a moving effect, hidden or covered, or under Reduce Motion.
+  REQUIRE(c.interval(false, home_effect::rain, true, true, false, 1.0) == 0.0);
+  REQUIRE(c.interval(true, home_effect::dots, true, true, false, 1.0) == 0.0);
+  REQUIRE(c.interval(true, home_effect::none, true, true, false, 1.0) == 0.0);
+  REQUIRE(c.interval(true, home_effect::rain, true, false, false, 1.0) == 0.0);
+  REQUIRE(c.interval(true, home_effect::rain, true, true, true, 1.0) == 0.0);
+  // In use, every pass ticks (the display paces the loop); the first does not
+  // advance the clock, the next advances by the real frame time.
+  REQUIRE(c.step(kFast, 1.0));
+  REQUIRE(c.time == 0.0);
+  REQUIRE(c.step(kFast, 1.0 + 1.0 / 60.0));
+  REQUIRE(c.time > 0.0166);
+  REQUIRE(c.step(kFast, 1.0 + 1.0 / 60.0 + 1.0 / 120.0));  // a ProMotion frame
+  // Slow ticks wait their interval; a wait that wakes a hair early still ticks,
+  // so the loop never spins.
+  REQUIRE(c.step(kSlow, 1.5));
+  REQUIRE_FALSE(c.step(kSlow, 1.55));
+  REQUIRE(c.until_next(kSlow, 1.55) > 0.0);
+  REQUIRE(c.step(kSlow, 1.6 - 0.001));
+  // Dropping to the slow rate keeps the clock continuous; a late tick never jumps.
+  const double t0 = c.time;
+  REQUIRE(c.step(kSlow, 2.0));
+  REQUIRE(c.time - t0 <= home_ground_clock::kMaxStep + 1e-9);
+  // Resting, then a resume, does not jump the clock.
+  const double before = c.time;
+  REQUIRE_FALSE(c.step(0.0, 70.0));
+  c.input(100.0);
+  REQUIRE(c.step(kFast, 100.0));
+  REQUIRE(c.time == before);
+}
+
+TEST_CASE("home effects are named as the chromes name them", "[shell][home]") {
+  using mv::shell::home_effect;
+  using mv::shell::home_effect_from_name;
+  REQUIRE(home_effect_from_name("none") == static_cast<int>(home_effect::none));
+  REQUIRE(home_effect_from_name("rain") == static_cast<int>(home_effect::rain));
+  REQUIRE(home_effect_from_name("perlin-flow") == static_cast<int>(home_effect::perlin_flow));
+  REQUIRE(home_effect_from_name("rai") == -1);
+  REQUIRE(home_effect_from_name("rainy") == -1);
+  REQUIRE(home_effect_from_name(nullptr) == -1);
+  // A theme change is one redraw: the labs compare the whole struct.
+  mv::shell::input_snapshot a;
+  mv::shell::input_snapshot b = a;
+  REQUIRE(a.home == b.home);
+  b.home.accent = 0xFF0000FFu;
+  REQUIRE_FALSE(a.home == b.home);
+}

@@ -43,6 +43,11 @@ struct generator {
 [[nodiscard]] bool source_type_is_ai(std::string_view uri) noexcept;
 // A person's reading of the term: "AI-generated (trainedAlgorithmicMedia)".
 [[nodiscard]] std::string describe_source_type(std::string_view uri);
+// #402: the All tags value of XMP Iptc4xmpExt:DigitalSourceType: the reading,
+// then the value exactly as written ("AI-generated
+// (http://cv.iptc.org/newscodes/digitalsourcetype/trainedAlgorithmicMedia)").
+// Exiv2's own print knows five terms and shows any other cut to "(...)".
+[[nodiscard]] std::string describe_source_type_value(std::string_view value);
 
 struct provenance {
   std::string made_with;  // generator or provenance tool; empty when nothing says
