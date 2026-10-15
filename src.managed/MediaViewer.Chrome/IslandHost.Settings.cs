@@ -436,7 +436,7 @@ public static partial class IslandHost
         SetKeyFilter("");
         // Native resizes the island to the full client, then calls us. Wait one
         // tick so that MoveAndResize has been applied; building into the 48 DIP
-        // bar left this screen blank (star row height 0).
+        // bar left this screen blank.
         if (_dispatcher is not null)
             _dispatcher.DispatcherQueue.TryEnqueue(PresentSettings);
         else
@@ -453,8 +453,8 @@ public static partial class IslandHost
                 _settingsHost = BuildSettingsScreen();
                 _settingsHost.HorizontalAlignment = HorizontalAlignment.Stretch;
                 _settingsHost.VerticalAlignment = VerticalAlignment.Stretch;
-                Grid.SetRow(_settingsHost, 0);
-                Grid.SetRowSpan(_settingsHost, 3);
+                // Overlay, not a star row under the bar. A 0-tall star row
+                // blanks the menus (docs/design/12, 2026-10-15).
                 _chromeRoot.Children.Add(_settingsHost);
             }
             RefreshSettingsScreen();
