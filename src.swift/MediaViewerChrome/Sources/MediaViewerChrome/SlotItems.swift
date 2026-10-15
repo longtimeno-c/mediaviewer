@@ -1,7 +1,8 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The chrome slots an add-on fills (docs/design/25 §7, PR 59): command-bar and
-// path-bar buttons, status text, gallery tile badges and context-menu entries.
+// path-bar buttons, status text, gallery tile badges and context-menu entries
+// (on gallery and filmstrip tiles and the canvas, issue #402).
 // Each is drawn from SlotStore's tables like the chrome's own items, so it
 // takes the theme, the keyboard and VoiceOver's names; choosing one posts to
 // the add-on's worker and returns. The Windows twin is IslandHost.Slots.cs.
@@ -175,8 +176,8 @@ struct SlotTileBadges: View {
   }
 }
 
-/// The add-ons' context-menu entries for a gallery tile (Control-click, or
-/// VoiceOver's Show Menu).
+/// The add-ons' context-menu entries for a gallery or filmstrip tile
+/// (Control-click, or VoiceOver's Show Menu).
 struct SlotContextEntries: View {
   let tile: Int
   @ObservedObject private var slots = SlotStore.shared
@@ -185,6 +186,41 @@ struct SlotContextEntries: View {
     ForEach(slots.items(in: "context")) { item in
       Button(item.label) { slots.invoke(item, paths: SlotTargets.paths(for: item, tile: tile)) }
     }
+  }
+}
+
+/// The same entries as an AppKit menu, for the canvas (Control-click or a
+/// right-click on the file on screen, issue #402): the main_mac.mm view asks
+/// for it in menuForEvent:. Each entry targets the file on screen exactly as
+/// its gallery tile would (the marks when it is one of them).
+@MainActor
+enum SlotCanvasMenu {
+  private final class Entry: NSObject {
+    let item: SlotItem
+    let tile: Int
+    init(item: SlotItem, tile: Int) {
+      self.item = item
+      self.tile = tile
+    }
+    @MainActor @objc func choose(_ sender: Any?) {
+      SlotStore.shared.invoke(item, paths: SlotTargets.paths(for: item, tile: tile))
+    }
+  }
+
+  static func make() -> NSMenu? {
+    let store = FolderStore.shared
+    let tile = store.currentIndex
+    let entries = SlotStore.shared.items(in: "context")
+    guard !entries.isEmpty, store.names.indices.contains(tile) else { return nil }
+    let menu = NSMenu(title: "")
+    for item in entries {
+      let entry = Entry(item: item, tile: tile)
+      let row = NSMenuItem(title: item.label, action: #selector(Entry.choose(_:)), keyEquivalent: "")
+      row.target = entry
+      row.representedObject = entry  // the target is weak: the row keeps it alive
+      menu.addItem(row)
+    }
+    return menu
   }
 }
 
@@ -393,7 +429,9 @@ struct SlotAddonsSection: View {
           Text(row.name).font(MVTheme.font()).foregroundStyle(MVTheme.title)
           if !row.description.isEmpty { note(row.description) }
           note(stateText(row))
-          removeButtons(row)
+          // A later window shows what the add-on adds (issue #402) but leaves
+          // removing it to the first window, which owns the store.
+          if mv_addon2_elsewhere() { note(LocalSearchStore.elsewhereText) } else { removeButtons(row) }
         }
       }
     }

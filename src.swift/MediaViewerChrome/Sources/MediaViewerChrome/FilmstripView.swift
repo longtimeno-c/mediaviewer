@@ -9,6 +9,7 @@ import SwiftUI
 
 struct FilmstripView: View {
   @ObservedObject private var store = FolderStore.shared
+  @ObservedObject private var tileFlags = SlotTileFlags.shared
 
   var body: some View {
     ScrollViewReader { proxy in
@@ -29,6 +30,9 @@ struct FilmstripView: View {
               )
               .id(index)
               .onTapGesture { store.select(index) }
+              // docs/design/25, issue #402: the add-ons' context-menu entries, as on
+              // the gallery's tile for the same file; only when some exist.
+              .modifier(SlotContextMenu(on: tileFlags.context, tile: index))
               .fileDrag { store.dragFiles(from: index) }
             }
           }

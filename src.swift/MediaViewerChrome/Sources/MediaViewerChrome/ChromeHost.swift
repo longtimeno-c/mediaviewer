@@ -160,6 +160,13 @@ public final class MVChromeHost: NSObject {
     OpenAddonStore.shared.offer(file: path)
   }
 
+  /// docs/design/25, issue #402: the add-ons' context-menu entries for the file
+  /// on the canvas, as its gallery tile lists them. Nil when none contributes
+  /// one or no file is on screen (the canvas then shows no menu).
+  @MainActor @objc public static func canvasContextMenu() -> NSMenu? {
+    SlotCanvasMenu.make()
+  }
+
   /// PR 9: the metadata pane and folder tree, floating over the canvas.
   @objc public static func makeMetadataView() -> NSView {
     host(MetadataView())

@@ -894,4 +894,79 @@ TEST_CASE("an add-on on an older host table gets no slots", "[addon][slots]") {
   write_bytes(fs::path(*staged) / "manifest.json.sig", k.sign(m));
   REQUIRE_FALSE(st.install(*staged));
 }
+
+// Issue #402: every window loads the slot add-ons, so a later window finds them
+// by their signed manifests alone, hashing no file (it must not hash the AI
+// pack to find Places); the load itself still verifies the one it loads.
+TEST_CASE("slot add-ons are found by manifest without hashing; the load still verifies",
+          "[addon][slots]") {
+  keypair k;
+  scratch_dir s("addons_slots_listed");
+  const fs::path root = s / "addons";
+  fs::create_directories(root);
+  mv::addon::store st(utf8(root), k.pub, MV_ADDON_HOST_API);
+  const std::vector<std::uint8_t> module = read_bytes(MV_SLOTS_TEST_MODULE_PATH);
+  const std::string native = utf8(fs::path(MV_SLOTS_TEST_MODULE_PATH).filename());
+  const std::string m = slots_manifest(native, module, kContributes);
+#if defined(__APPLE__)
+  const fs::path dir = root / "Slots Test" / "1.0.0";  // the store's folder: the name on the Mac
+#else
+  const fs::path dir = root / "slots-test" / "1.0.0";  // the id elsewhere
+#endif
+  fs::create_directories(dir);
+  write_text(dir / "manifest.json", m);
+  write_bytes(dir / "manifest.json.sig", k.sign(m));
+  // The library differs from what the manifest hashed: only a verify sees it.
+  std::vector<std::uint8_t> tampered = module;
+  tampered[tampered.size() / 2] ^= 0xFF;
+  write_bytes(dir / fs::path(native), tampered);
+  // A download in progress is not an install.
+  auto staged = st.make_staging();
+  REQUIRE(staged);
+  write_text(fs::path(*staged) / "manifest.json", m);
+  write_bytes(fs::path(*staged) / "manifest.json.sig", k.sign(m));
+
+  const auto listed = st.manifests();
+  REQUIRE(listed.size() == 1);
+  CHECK(listed[0].m.id == "slots-test");
+  CHECK(listed[0].state == mv::addon::install_state::ok);
+  CHECK(mv::addon::loads_for_slots(listed[0].m));
+
+  // list() hashes, and finds what manifests() never looked at.
+  bool seen = false;
+  for (const mv::addon::installed& i : st.list()) {
+    if (i.id != "slots-test") continue;
+    seen = true;
+    CHECK(i.state == mv::addon::install_state::invalid);
+  }
+  CHECK(seen);
+  slot_registry reg;
+  mv::addon::host_services svc;
+  svc.slots = &reg;
+  auto loaded = mv::addon::loaded_addon::load(st, "slots-test", svc);
+  CHECK_FALSE(loaded);
+  CHECK_FALSE(reg.attached("slots-test"));
+}
+
+TEST_CASE("only add-ons that fill slots, and not Import, the AI family or a piece, load for them",
+          "[addon][slots]") {
+  keypair k;
+  const std::vector<std::uint8_t> bytes{1, 2, 3};
+  auto parsed = [&](const std::string& id) {
+    const std::string m = slots_manifest("lib.bin", bytes, kContributes, 3, 3, id);
+    const auto d = mv::addon::check_manifest(bytes_of(m), k.sign(m), k.pub, MV_ADDON_HOST_API);
+    REQUIRE(d.trusted());
+    return d.m;
+  };
+  CHECK(mv::addon::loads_for_slots(parsed("places")));
+  CHECK_FALSE(mv::addon::loads_for_slots(parsed("import")));
+  CHECK_FALSE(mv::addon::loads_for_slots(parsed("ai")));
+  CHECK_FALSE(mv::addon::loads_for_slots(parsed("ai-faces")));
+  mv::addon::manifest piece = parsed("places");
+  piece.part_of = "places";
+  CHECK_FALSE(mv::addon::loads_for_slots(piece));
+  mv::addon::manifest none = parsed("places");
+  none.slots = {};
+  CHECK_FALSE(mv::addon::loads_for_slots(none));
+}
 #endif

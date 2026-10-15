@@ -732,6 +732,23 @@ MV_API mv_status MV_CALL mv_addon_load_reader(mv_session_t session, const char* 
                                               const char* interface_id, const void** out_interface,
                                               char* out_chrome_utf8, uint32_t chrome_cap);
 
+/* 0.29 (issue #402): mv_addon_load for a window whose process does not host
+ * the add-ons, for an add-on that only reads (one that fills screens and
+ * slots): the add-on's own entry and interface, so every window shows its
+ * contributions, but the store is never swept (the host window may be
+ * installing into it). A process loads an add-on one way only (as above). */
+MV_API mv_status MV_CALL mv_addon_load_guest(mv_session_t session, const char* id,
+                                             const char* interface_id, const void** out_interface,
+                                             char* out_chrome_utf8, uint32_t chrome_cap);
+
+/* 0.29 (issue #402): every installed add-on a window loads for its screens and
+ * slots alone (it contributes some; not Import, the AI family or a piece),
+ * from its newest signed manifest WITHOUT hashing any file, so a window finds
+ * Places without hashing the AI pack:
+ *   [{"id","name","version","description","state":"ok|needs_update","loaded"}]
+ * Loading one still verifies its files. [worker-thread] */
+MV_API mv_status MV_CALL mv_addon_slot_addons_json(char* out, uint32_t cap, uint32_t* needed);
+
 /* docs/design/25 (2026-10-03): the commands the LOADED add-ons' manifests
  * contribute, for the host's command table:
  *   [{"addon","id","name","windows","mac","modes","payload"}]

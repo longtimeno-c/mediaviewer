@@ -90,40 +90,45 @@ public static partial class IslandHost
 
     // ---- loading the add-ons that fill slots --------------------------------------
 
-    // Worker, from StartAddons' read of what is installed: MediaViewer's own
-    // add-ons that contribute screens or slots, other than Import and the AI
-    // family (they have chromes of their own).
-    private static void StartSlotAddons(MediaViewerSession session)
+    // Worker: MediaViewer's own add-ons that contribute screens or slots, other
+    // than Import and the AI family (they have chromes of their own). Every
+    // window loads them (issue #402): each window is its own process, so a later
+    // one shows the same sections, providers, badges and entries, and closing
+    // the first takes nothing from it. `guest`: this process does not host the
+    // add-ons, so it loads them without touching the store. Found by manifest
+    // (no file hashed: a later window never hashes the AI pack to find Places);
+    // the load verifies the one it loads.
+    private static void StartSlotAddons(MediaViewerSession session, bool guest = false)
     {
         var found = new List<SlotAddonRow>();
         try
         {
-            using JsonDocument doc = JsonDocument.Parse(AddonNative.InstalledJson());
+            using JsonDocument doc = JsonDocument.Parse(AddonNative.SlotAddonsJson());
             foreach (JsonElement a in doc.RootElement.EnumerateArray())
             {
-                string id = JStr(a, "id");
-                bool slots = a.TryGetProperty("slots", out JsonElement s) && s.ValueKind == JsonValueKind.True;
-                if (!slots || id == "import" || id.StartsWith("ai", StringComparison.Ordinal) || JStr(a, "part_of").Length > 0) continue;
-                found.Add(new SlotAddonRow(id, JStr(a, "name"), JStr(a, "version"), JStr(a, "description"), JStr(a, "state"), false));
+                found.Add(new SlotAddonRow(JStr(a, "id"), JStr(a, "name"), JStr(a, "version"), JStr(a, "description"), JStr(a, "state"), false));
             }
         }
-        catch (Exception ex) when (ex is MediaViewerException or JsonException)
+        catch (Exception ex) when (ex is MediaViewerException or JsonException or EntryPointNotFoundException)
         {
             System.Diagnostics.Debug.WriteLine(ex.Message);
         }
         var loaded = new List<string>();
-        foreach (SlotAddonRow row in found)
+        for (int i = 0; i < found.Count; ++i)
         {
+            SlotAddonRow row = found[i];
             if (row.State != "ok") continue;
             try
             {
                 // Re-verifies, loads, and attaches what the manifest contributes.
-                _ = AddonNative.Load(session, row.Id, SlotNative.Interface);
+                _ = AddonNative.Load(session, row.Id, SlotNative.Interface, guest: guest);
                 loaded.Add(row.Id);
             }
             catch (MediaViewerException ex)
             {
                 System.Diagnostics.Debug.WriteLine(ex.Message);
+                // Only the load hashed it: a copy that failed is "did not pass verification".
+                if (ex.Status != MvStatus.UnsupportedFormat) found[i] = row with { State = "invalid" };
             }
         }
         DispatcherQueueControllerTryEnqueue(() =>
@@ -709,21 +714,31 @@ public static partial class IslandHost
         HostOpenList(title, paths, null, 0, true);
     }
 
-    // A gallery tile's context menu: the add-ons' entries (Shift+F10 or the
-    // menu key on a focused tile too). Nothing when none contributes any.
+    // The add-ons' context-menu entries for one file, each invoked with the paths
+    // a gallery tile for that file would give it (the marks when it is one).
+    // Null when no add-on contributes any.
+    private static MenuFlyout? SlotContextMenuFor(FolderItemVm vm)
+    {
+        List<SlotItem> entries = _slotItems.Where(i => i.Slot == "context").ToList();
+        if (entries.Count == 0) return null;
+        var menu = new MenuFlyout();
+        foreach (SlotItem item in entries)
+        {
+            var mi = new MenuFlyoutItem { Text = item.Label };
+            mi.Click += (_, _) => InvokeSlotItem(item, vm);
+            menu.Items.Add(mi);
+        }
+        return menu;
+    }
+
+    // A gallery or filmstrip tile's context menu: the add-ons' entries (Shift+F10
+    // or the menu key on a focused tile too). Nothing when none contributes any.
     private static void AttachSlotContextMenu(FrameworkElement tile, FolderItemVm vm)
     {
         tile.ContextRequested += (_, e) =>
         {
-            List<SlotItem> entries = _slotItems.Where(i => i.Slot == "context").ToList();
-            if (entries.Count == 0) return;
-            var menu = new MenuFlyout();
-            foreach (SlotItem item in entries)
-            {
-                var mi = new MenuFlyoutItem { Text = item.Label };
-                mi.Click += (_, _) => InvokeSlotItem(item, vm);
-                menu.Items.Add(mi);
-            }
+            MenuFlyout? menu = SlotContextMenuFor(vm);
+            if (menu is null) return;
             if (e.TryGetPosition(tile, out Windows.Foundation.Point at))
             {
                 menu.ShowAt(tile, new Microsoft.UI.Xaml.Controls.Primitives.FlyoutShowOptions { Position = at });
@@ -734,6 +749,40 @@ public static partial class IslandHost
             }
             e.Handled = true;
         };
+    }
+
+    /// <summary>
+    /// Native, on a right-click on the canvas (issue #402): { int32 x; int32 y }, client
+    /// pixels of the main window. Shows the add-ons' context-menu entries for the file
+    /// on screen, as its gallery tile lists them. 0 shown; 1 nothing to show.
+    /// </summary>
+    public static int ShowCanvasMenu(IntPtr arg, int sizeBytes)
+    {
+        try
+        {
+            if (arg == IntPtr.Zero || sizeBytes < 8) return unchecked((int)0x80070057);
+            int x = System.Runtime.InteropServices.Marshal.ReadInt32(arg);
+            int y = System.Runtime.InteropServices.Marshal.ReadInt32(arg, 4);
+            FolderItemVm? vm = _selectedIndex >= 0 && _selectedIndex < Items.Count ? Items[_selectedIndex] : null;
+            // The bar sits at the client origin (SheetOrigin): its coordinates are
+            // the client area's, in DIPs.
+            if (vm is null || _source?.Content is not FrameworkElement anchor || anchor.XamlRoot is null) return 1;
+            MenuFlyout? menu = SlotContextMenuFor(vm);
+            if (menu is null) return 1;
+            double scale = anchor.XamlRoot.RasterizationScale > 0 ? anchor.XamlRoot.RasterizationScale : 1;
+            menu.ShouldConstrainToRootBounds = false;  // over the canvas, outside the bar's island
+            menu.Closed += (_, _) => RestoreCanvasFocus();
+            menu.ShowAt(anchor, new Microsoft.UI.Xaml.Controls.Primitives.FlyoutShowOptions
+            {
+                Position = new Windows.Foundation.Point(x / scale, y / scale),
+            });
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+            return unchecked((int)0x80004005);
+        }
     }
 
     // ---- Settings -> Add-ons ------------------------------------------------------------
@@ -773,7 +822,9 @@ public static partial class IslandHost
                 "needs_update" => $"Version {row.Version} needs a newer MediaViewer.",
                 _ => "The installed copy did not pass verification and is not loaded.",
             }));
-            _slotSettingsPanel.Children.Add(SlotRemoveButtons(row));
+            // A later window shows what it adds (issue #402) but leaves removing
+            // it to the first window, which owns the store.
+            _slotSettingsPanel.Children.Add(_addonsElsewhere ? WrappedLabel(AddonsElsewhereText) : SlotRemoveButtons(row));
         }
     }
 

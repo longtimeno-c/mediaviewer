@@ -497,6 +497,10 @@ public static partial class IslandHost
             border.Tag = (Action)(() => vm.PropertyChanged -= OnChanged);
 
             border.Tapped += (_, _) => Send(Command.SelectItem, vm.Index);
+            // docs/design/25, issue #402: the add-ons' context-menu entries, as on the
+            // gallery's tile for the same file. Read when asked, so no remake when
+            // they change; nothing is shown while none exists.
+            AttachSlotContextMenu(border, vm);
             WireFileDrag(border, vm);
             return border;
         }
