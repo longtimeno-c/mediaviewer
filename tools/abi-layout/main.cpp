@@ -87,6 +87,10 @@ int main() {
   MV_FIELD(mv_ai_status, cloud_files_fetched);
   MV_FIELD(mv_ai_status, cloud_fetch);
   MV_FIELD(mv_ai_status, cloud_fetch_progress);
+  MV_FIELD(mv_ai_status, cues_total);
+  MV_FIELD(mv_ai_status, cues_done);
+  MV_FIELD(mv_ai_status, text_total);
+  MV_FIELD(mv_ai_status, text_done);
   MV_END(mv_ai_status);
 
   MV_BEGIN(mv_ai_result);
