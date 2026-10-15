@@ -9,6 +9,7 @@
 #include <cwchar>
 #include <vector>
 
+#include "addon/keymap.h"
 #include "core/trace.h"
 
 namespace mv::shell {
@@ -886,13 +887,23 @@ std::string chrome_host::take_tree_path() noexcept {
   return take_parked_text(out) ? out : std::string{};
 }
 
+namespace {
+// The parked text, its NUL included. A keymap pack crosses here
+// (chrome_cmd_apply_keymap) as open_keymap_json writes it: the pack plus an
+// "addon" key of at most a 64-byte id. The core caps the pack (issue #356), so
+// a pack the Mac applies fits here too.
+constexpr std::size_t kParkedTextBytes = 128u << 10;
+static_assert(mv::addon::kKeymapMaxPackBytes + 128 < kParkedTextBytes,
+              "a keymap pack the core accepts must fit the parked-text buffer");
+}  // namespace
+
 bool chrome_host::take_parked_text(std::string& out) noexcept {
   out.clear();
   if (!panels_attached_ || !take_tree_path_) return false;
-  // A path, or a comment of at most meta::kMaxCommentBytes; a longer one does
-  // not fit and is refused (-1) rather than cut.
+  // A path, a comment of at most meta::kMaxCommentBytes, or a keymap pack; a
+  // longer one does not fit and is refused (-1) rather than cut.
   try {
-    std::string buf(128u << 10, '\0');  // PR 56: a keymap pack fits (256 bindings)
+    std::string buf(kParkedTextBytes, '\0');
     chrome_table_args args{};
     args.utf8 = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(buf.data()));
     args.length = static_cast<std::int32_t>(buf.size());

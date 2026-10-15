@@ -590,6 +590,8 @@ public static partial class IslandHost
                 }
                 // Native takes the parked text into 128 KB, NUL included
                 // (chrome_host::take_parked_text; TakeTreePath refuses a longer one).
+                // The core caps an installed pack well under that (issue #356,
+                // addon/keymap.h kKeymapMaxPackBytes), so this is a guard only.
                 if (System.Text.Encoding.UTF8.GetByteCount(json) >= 128 * 1024)
                 {
                     _keymapNote.Text = $"{name} is too large to apply.";

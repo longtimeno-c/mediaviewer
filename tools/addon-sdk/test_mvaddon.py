@@ -293,6 +293,61 @@ class Pack(unittest.TestCase):
             self.refused(signed(manifest_for(files, api={"min": 1, "max": 1}), files),
                          "malformed", "dusk: a schema 2 theme needs api.max 2")
 
+    def test_a_key_layout_is_capped_at_what_both_hosts_carry(self):
+        # Issue #356: within every count, escaped labels made a layout ~170 KB,
+        # which Windows refused to apply and the Mac applied. The SDK and the app
+        # now cap one layout's JSON at KEYMAP_MAX_PACK_BYTES, the same bytes.
+        def label(n):  # writes as n bytes: '\' escapes to two
+            return "\\" * (n // 2) + ("A" if n % 2 else "")
+
+        def layout(target):
+            pack = {"id": "vim", "name": "Vim", "bindings": []}
+            names = (f"c{i}" for i in range(1000))
+            size = lambda: mvaddon.keymap_pack_bytes(pack)  # noqa: E731
+            while True:
+                pack["bindings"].append({"command": next(names), "keys": [label(64)] * 8})
+                if size() > target - 400:
+                    pack["bindings"].pop()
+                    break
+            before = size()
+            pack["bindings"].append({"command": next(names), "keys": [""]})
+            one = size() - before
+            pack["bindings"].pop()
+            left = target - before
+            while left > 2 * (one + 64):
+                pack["bindings"].append({"command": next(names), "keys": [label(64)]})
+                left -= one + 64
+            a = left // 2
+            pack["bindings"].append({"command": next(names), "keys": [label(a - one)]})
+            pack["bindings"].append({"command": next(names), "keys": [label(left - a - one)]})
+            return pack
+
+        limit = mvaddon.KEYMAP_MAX_PACK_BYTES
+        at = layout(limit)
+        self.assertEqual(mvaddon.keymap_pack_bytes(at), limit)
+        self.assertEqual(mvaddon.check_keymaps([at]), 1)
+        over = dict(at, name="Vim2")
+        worst = {"id": "vim", "name": "Vim", "bindings": [
+            {"command": f"c{i}", "keys": [label(64)] * 8} for i in range(256)]}
+        self.assertGreater(mvaddon.keymap_pack_bytes(worst), 128 << 10)
+        for pack in (over, worst):
+            with self.assertRaises(mvaddon.Refused) as refused:
+                mvaddon.check_keymaps([pack])
+            self.assertEqual(refused.exception.detail, "keymaps: vim: too large")
+        # The app agrees, byte for byte: the layout at the cap installs, one byte
+        # more does not.
+        files = {"themes/dusk.json": THEME}
+        manifest = manifest_for(files, api={"min": 2, "max": 2})
+        manifest["contributes"] = dict(manifest["contributes"], keymaps=[at])
+        package = signed(manifest, files)
+        mvaddon.check_package(package)
+        said = AppSays.about(package)
+        if said is not None:
+            self.assertTrue(said[0]["ok"], said[0])
+        for pack in (over, worst):
+            manifest["contributes"] = dict(manifest["contributes"], keymaps=[pack])
+            self.refused(signed(manifest, files), "malformed")
+
     def test_the_settings_and_keymap_examples_pack(self):
         for name in ("vim-keys", "settings-demo"):
             with self.subTest(example=name):
