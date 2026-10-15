@@ -16,8 +16,10 @@ Narrator. Other makers' script add-ons still have no network permission (owner, 
 ## What a person sees
 
 - **The window**, "Sharepoint", opened from its row in Settings → Add-ons (**Open Sharepoint**),
-  from its command (the palette; no default key, issue #410), from the gallery's share icon and
-  from the **Send with Sharepoint…** context entry on a gallery tile. It lists:
+  from its command (the palette; no default key, issue #410), and from the share menu's first
+  entry ([16 "Share"](16-commands.md#share-444)): the gallery's share icon, the bar's share button,
+  `Ctrl+Shift+S` and right-click Share ▸. Its manifest's own **Send with Sharepoint…** context
+  entry is left out of the hosts' right-click menus (#444), so there is one route. It lists:
   - this computer's name as others see it, and **Keep receiving when this window is closed**;
   - someone connecting (their name and the **code**, **Decline**), then their offer (the files,
     **Save to** with Choose…, **Accept** / **Decline**), then progress and **Cancel**, then what

@@ -295,6 +295,14 @@ Share…, and **Share ▸** on the right-click menu of a gallery cell, a filmstr
   (rule 6). The UI thread only picks the stops. Windows walks the listing for pair halves on the
   pool (`mv_folder_entries`) and the chrome shows the menu when that lands; the Mac lists both
   halves of a pair as items, so its set is a walk of the in-memory listing with no syscall.
+- **Large sets on the Mac.** Opening `NSSharingServicePicker` costs about 0.09 ms per file on the
+  main thread (ShareKit stats and sandbox-checks every URL to match its targets: 65 ms warm for 500
+  files). Past 50 files the picker is shown with one file per kind and every target it offers is
+  wrapped to receive all the files when picked; a target that will not take that many (Mail and
+  Messages cap attachments) says so and sends nothing. 500 files: 65 → 21 ms warm, 139 → 94 ms on
+  the first open in a process (the first open's ~90 ms loads the share services, whatever the count).
+- **One route.** Sharepoint's own **Send with Sharepoint…** context entry is left out of the
+  right-click menus on both hosts: Share ▸ Sharepoint is that route.
 - **Wire.** The island's command carries one float: `(clicked + 1) * 16 + from * 4 + target`
   (`pack_share_request`; `from` only says where the menu is anchored). Native answers through the
   chrome's `ShareMenu` entry (`chrome_share_args` + `{"files", "media"}`) on Windows and

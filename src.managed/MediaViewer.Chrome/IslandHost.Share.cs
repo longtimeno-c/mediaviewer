@@ -196,6 +196,12 @@ public static partial class IslandHost
         return menu;
     }
 
+    /// <summary>An add-on context entry the Share submenu already carries: Sharepoint's
+    /// "Send with Sharepoint…" (its manifest's <c>send_files</c>). Left out of the
+    /// right-click menus, so sending goes one way, through the share command.</summary>
+    private static bool IsShareRoutedSlotItem(SlotItem item) =>
+        item.Addon == SharepointId && item.Id == "send_files";
+
     // ---- the command bar's share button (beside Home) -------------------------------------
 
     private static Button BuildBarShareButton()

@@ -725,7 +725,9 @@ public static partial class IslandHost
     // Null when no add-on contributes any.
     private static MenuFlyout? SlotContextMenuFor(FolderItemVm vm)
     {
-        List<SlotItem> entries = _slotItems.Where(i => i.Slot == "context").ToList();
+        // Issue #444: Sharepoint's own "Send with Sharepoint…" is the Share
+        // submenu's first entry, one route through the share command.
+        List<SlotItem> entries = _slotItems.Where(i => i.Slot == "context" && !IsShareRoutedSlotItem(i)).ToList();
         if (entries.Count == 0) return null;
         var menu = new MenuFlyout();
         foreach (SlotItem item in entries)

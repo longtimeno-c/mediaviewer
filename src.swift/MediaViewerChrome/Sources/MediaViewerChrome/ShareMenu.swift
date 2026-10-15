@@ -96,18 +96,47 @@ final class ShareMenu {
 
   // MARK: - presenting
 
+  /// Up to this many files the picker gets every file. Past it, opening the
+  /// picker cost ~0.09 ms per file on the main thread (ShareKit stats and
+  /// sandbox-checks each URL to match extensions: 65 ms warm for 500), so it
+  /// is shown with one file per kind and each target it offers is handed all
+  /// of them when picked (SharePickerDelegate). Measured, issue #444.
+  static let exactLimit = 50
+
   private func showPicker(_ files: ShareFiles, view: NSView, rect: NSRect, withSharepoint: Bool) {
     guard !files.media.isEmpty else { return }
-    let picker = NSSharingServicePicker(items: files.media.map { URL(fileURLWithPath: $0, isDirectory: false) })
-    let delegate = withSharepoint
-      ? SharePickerDelegate(title: Self.sharepointTitle) { [weak self] in
-          self?.sharepoint(files.files, view: view, rect: rect)
-        }
-      : nil
+    let urls = files.media.map { URL(fileURLWithPath: $0, isDirectory: false) }
+    let exact = urls.count <= Self.exactLimit
+    let picker = NSSharingServicePicker(items: exact ? urls : Self.representatives(urls))
+    let delegate = SharePickerDelegate(
+      title: withSharepoint ? Self.sharepointTitle : nil,
+      allItems: exact ? nil : urls,
+      chooseSharepoint: { [weak self] in self?.sharepoint(files.files, view: view, rect: rect) },
+      refused: { title, count in Self.refused(title, count: count, in: view.window) })
     picker.delegate = delegate
     self.picker = picker
     pickerDelegate = delegate
     picker.show(relativeTo: rect, of: view, preferredEdge: .minY)
+  }
+
+  /// One file per extension, in order: what the picker matches targets on.
+  static func representatives(_ urls: [URL]) -> [URL] {
+    var seen = Set<String>()
+    return urls.filter { seen.insert($0.pathExtension.lowercased()).inserted }.prefix(8).map { $0 }
+  }
+
+  /// A target the system offered for the kinds that will not take this many
+  /// (Mail and Messages cap attachments): say so, send nothing.
+  private static func refused(_ title: String, count: Int, in window: NSWindow?) {
+    NSSound.beep()
+    let alert = NSAlert()
+    alert.messageText = "\(title) cannot take \(count) files at once."
+    alert.informativeText = "Select fewer files, or send them with Sharepoint or AirDrop."
+    if let window {
+      alert.beginSheetModal(for: window)
+    } else {
+      alert.runModal()
+    }
   }
 
   /// Sharepoint's window with these files, or its one-click install.
@@ -140,6 +169,13 @@ final class ShareMenu {
     return (content, NSRect(x: b.midX - 1, y: top, width: 2, height: 1))
   }
 
+  /// An add-on context entry the Share submenu already carries: Sharepoint's
+  /// "Send with Sharepoint…" (its manifest's `send_files`). Left out of the
+  /// right-click menus, so sending goes one way, through the share command.
+  nonisolated static func routesThroughShare(_ item: SlotItem) -> Bool {
+    item.addon == SharepointStore.addonID && item.item == "send_files"
+  }
+
   /// Sharepoint's entry: itself, or its one-click install.
   private static var sharepointTitle: String {
     SharepointStore.shared.ready || SharepointStore.shared.installed ? "Sharepoint" : "Install Sharepoint\u{2026}"
@@ -159,25 +195,47 @@ final class ShareMenu {
   }
 }
 
-/// Puts Sharepoint at the top of the system's list (the picker and its
-/// standard Share menu item both ask the delegate).
+/// Puts Sharepoint at the top of the system's list, and, when the picker was
+/// shown with one file per kind (`allItems`), hands each target every file
+/// once it is picked (a target that cannot take that many says so).
 final class SharePickerDelegate: NSObject, NSSharingServicePickerDelegate {
-  private let title: String
+  private let title: String?
+  private let allItems: [URL]?
   private let chooseSharepoint: @MainActor () -> Void
+  private let refused: @MainActor (String, Int) -> Void
 
-  init(title: String, chooseSharepoint: @escaping @MainActor () -> Void) {
+  init(title: String?, allItems: [URL]?, chooseSharepoint: @escaping @MainActor () -> Void,
+       refused: @escaping @MainActor (String, Int) -> Void) {
     self.title = title
+    self.allItems = allItems
     self.chooseSharepoint = chooseSharepoint
+    self.refused = refused
   }
 
   func sharingServicePicker(_ picker: NSSharingServicePicker, sharingServicesForItems items: [Any],
                             proposedSharingServices proposedServices: [NSSharingService]) -> [NSSharingService] {
+    var services = proposedServices
+    if let all = allItems {
+      let refused = refused
+      services = proposedServices.map { service in
+        NSSharingService(title: service.title, image: service.image, alternateImage: service.alternateImage) {
+          // Only now, after the pick: the target's own check on every file.
+          if service.canPerform(withItems: all) {
+            service.perform(withItems: all)
+          } else {
+            let name = service.title
+            MainActor.assumeIsolated { refused(name, all.count) }
+          }
+        }
+      }
+    }
+    guard let title else { return services }
     let image = NSImage(systemSymbolName: "dot.radiowaves.left.and.right", accessibilityDescription: title) ?? NSImage()
     let choose = chooseSharepoint
     let nearby = NSSharingService(title: title, image: image, alternateImage: nil) {
       MainActor.assumeIsolated { choose() }
     }
-    return [nearby] + proposedServices
+    return [nearby] + services
   }
 }
 

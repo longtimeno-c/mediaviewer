@@ -186,7 +186,9 @@ enum SlotCanvasMenu {
 
   static func make(tile: Int) -> NSMenu? {
     let store = FolderStore.shared
-    let entries = SlotStore.shared.items(in: "context")
+    // Issue #444: Sharepoint's own "Send with Sharepoint…" is the Share
+    // submenu's first entry (TileMenu), one route through the share command.
+    let entries = SlotStore.shared.items(in: "context").filter { !ShareMenu.routesThroughShare($0) }
     guard !entries.isEmpty, store.names.indices.contains(tile) else { return nil }
     let menu = NSMenu(title: "")
     for item in entries {
