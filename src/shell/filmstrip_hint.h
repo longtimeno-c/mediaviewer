@@ -7,7 +7,7 @@
 // its notice line (Windows: the title's status line; Mac: the notice label) and
 // stops for good once the user has pressed T over a subject with the strip up.
 //
-// One hint, not one per feature: a new subject (issue #361, a paused clip whose
+// One hint, not one per feature: a new subject (issue #416, a clip whose
 // ←/→ walk the folder with the strip up and skip ±2 s with it hidden) is one
 // enum value and one string here, and shares the learned flag. Shared by both
 // hosts (D9); pure, header-only.

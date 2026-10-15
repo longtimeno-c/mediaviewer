@@ -5983,12 +5983,9 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   s.pane_open = _metaPaneVisible || _treeVisible || _adjust.visible() || _jobsVisible || _ws.open;
   s.crop = _edits.crop_active();
   s.trim = _trim.armed() && s.item == mv::shell::item_kind::clip;
-  // Issue #361: on a clip, ← → skip ±2 s while it plays or with the strip hidden.
+  // Issue #416: on a clip, ← → skip ±2 s only with the strip hidden (T);
+  // playing or paused is not a mode.
   s.filmstrip_visible = [self filmstripVisible];
-  if (s.item == mv::shell::item_kind::clip) {
-    const auto st = _lab.video_status_snapshot();
-    s.clip_playing = st.active && st.playing;
-  }
   // Milestone H: Esc from a result list is the path bar's "Back to folder".
   s.list_open = _listOpen;
   return s;
