@@ -78,7 +78,14 @@ public static partial class IslandHost
     {
         List<string> paths = GallerySelectionPaths();
         if (paths.Count == 0) return;
-        if (OpenSharepoint(paths)) return;
+        if (OpenSharepoint(paths))
+        {
+            // #442: as on the Mac, the grid closes and its range with it. The
+            // add-on reads the files on its own thread; nothing here waits.
+            if (_galleryVisible) Send(Command.CloseGallery);
+            else ClearGalleryRange();
+            return;
+        }
         var panel = new StackPanel { Spacing = 8, MaxWidth = 340 };
         BuildSharepointOffer(panel, paths);
         _shareFlyout = new Flyout { Content = panel, Placement = FlyoutPlacementMode.BottomEdgeAlignedRight };

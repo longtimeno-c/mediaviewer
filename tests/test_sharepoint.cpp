@@ -115,6 +115,9 @@ class fake_host final : public sp::engine_host {
   std::optional<std::uint64_t> free_bytes(const std::string&) override { return room; }
   bool should_yield() override { return slow.load(); }
   std::vector<std::uint32_t> pair_partners(const std::vector<std::string>& names) override {
+    ++pair_calls;
+    // A slow folder (a large selection, a share): the reader is held here.
+    while (hold_pairs.load()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
     // RAW + JPEG by stem, as io::pairing does for the cases tested here.
     std::vector<std::uint32_t> out(names.size(), UINT32_MAX);
     for (std::size_t i = 0; i < names.size(); ++i) {
@@ -139,6 +142,8 @@ class fake_host final : public sp::engine_host {
   int shown = 0;
   std::optional<std::uint64_t> room;
   std::atomic<bool> slow{false};
+  std::atomic<bool> hold_pairs{false};
+  std::atomic<int> pair_calls{0};
 
  private:
   fs::path received_;
@@ -559,6 +564,39 @@ TEST_CASE("sharepoint: Accept delivers the files with their bytes, keeping both 
   CHECK_FALSE(any_temporary(dest));
   // The originals are untouched (rule 5).
   CHECK(read_bytes(s / "out" / "big.mov") == big);
+}
+
+TEST_CASE("sharepoint: a new set to send never waits for the one still being read", "[sharepoint]") {
+  // Issue #442: the share icon on Windows stalled the UI while an earlier
+  // selection was still being read (set_files joined the reader on the
+  // caller's thread). The caller hands the set over and returns.
+  scratch_dir s("sharepoint_handoff");
+  bus b;
+  client ann(b, s / "ann_received", "Ann");
+  write_text(s / "one" / "a.jpg", "a");
+  write_text(s / "two" / "b.jpg", "b");
+  ann.host.hold_pairs.store(true);
+  ann.eng.set_files({utf8(s / "one" / "a.jpg")});
+  REQUIRE(eventually([&] { return ann.host.pair_calls.load() >= 1; }));  // the reader is held inside the first set
+  // Under the old join this call would wait for the release below.
+  std::thread release([&] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+    ann.host.hold_pairs.store(false);
+  });
+  const auto t0 = std::chrono::steady_clock::now();
+  ann.eng.set_files({utf8(s / "two" / "b.jpg")});
+  ann.eng.on_event("clear", 1, "");
+  ann.eng.set_files({utf8(s / "two" / "b.jpg")});
+  const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+  CHECK(ms < 100);
+  CHECK(ann.eng.snapshot().reading_folder);
+  release.join();
+  REQUIRE(eventually([&] {
+    const auto v = ann.eng.snapshot();
+    return !v.reading_folder && v.file_count == 1;
+  }));
+  CHECK(ann.eng.snapshot().file_names == std::vector<std::string>{"b.jpg"});  // the newest set, not the first
+  CHECK(ann.host.pair_calls.load() == 2);  // the replaced middle set was never read
 }
 
 TEST_CASE("sharepoint: a pair half and a sidecar ride along; a folder keeps its shape", "[sharepoint]") {

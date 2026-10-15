@@ -130,7 +130,11 @@ address is ignored, and the list holds at most 64. A receiver already in a trans
 The host calls in on its worker for this add-on (open, close, clicks, commands). The engine
 (`engine.h`) keeps its own threads for what waits on the network: a control thread (the only one
 that starts and stops presence, and sends throttled posts), the listener's accept loop, the
-discovery thread, Bluetooth's queue or handlers, the one transfer, and a folder reader. None is a
+discovery thread, Bluetooth's queue or handlers, the one transfer, and a folder reader. The folder
+reader is one thread, made at the first set: a newer set replaces one waiting and stops one being
+read (its generation goes stale), and no caller waits for it, so handing over a large gallery
+selection returns at once (#442; it used to join the previous reader on the caller's thread). On
+Windows the share icon then closes the grid, which ends its range, as on the Mac. None is a
 UI or render thread; no lock is held across I/O; a Bluetooth callback that hands a link to the
 engine goes off the radio's queue and through a gate the bearer closes before it stops. The
 window is posted whole (`build_tree`, a pure function of the state, tested), at most ~10 times a

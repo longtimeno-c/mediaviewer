@@ -199,7 +199,20 @@ class engine {
   [[nodiscard]] result<std::unique_ptr<channel>> open_tracked(std::shared_ptr<link> l, bool client);
   void forget_opening(const std::shared_ptr<link>& l);
   void fail_transfer(bool sending) noexcept;  // after an exception on a transfer thread
+  // The files to send are read on one thread of the engine's (the folder
+  // reader), never on the caller's: a set asked for replaces one waiting, and
+  // the one being read stops at its next file (its generation is stale).
+  // Nobody waits for it (issue #442: the share icon stalled the UI on Windows).
+  struct files_job {
+    std::vector<std::string> paths;  // a set handed over...
+    std::string folder;              // ...or a folder, recursively
+    std::uint64_t gen = 0;
+  };
+  void queue_files(files_job job);
+  void files_loop();
+  [[nodiscard]] bool files_stale(std::uint64_t gen) const noexcept;
   void build_files(std::vector<std::string> paths, std::uint64_t gen);
+  void walk_folder(const std::string& folder, std::uint64_t gen);
   void publish_files(std::vector<outgoing_file> files, std::uint64_t gen);
   void read_folder(std::string folder);
   void cancel_transfer();
@@ -219,7 +232,7 @@ class engine {
   std::vector<outgoing_file> files_;      // under m_
   bool screen_open_ = false;              // under m_
   bool transfer_running_ = false;         // under m_
-  std::uint64_t files_generation_ = 0;    // under m_
+  std::atomic<std::uint64_t> files_generation_{0};  // changed under m_; read anywhere
   int decision_ = 0;                      // under m_: 0 none, 1 accept, 2 decline
   int out_decision_ = 0;                  // under m_: 0 none, 1 codes match, 2 cancel
   // The peer a too-big set waits to see on Wi-Fi (out_phase::waiting_wifi).
@@ -252,8 +265,13 @@ class engine {
 
   std::mutex threads_m_;
   std::thread transfer_thread_;
-  std::thread files_thread_;
   std::vector<helper> helpers_;  // busy refusals
+
+  // The folder reader (queue_files).
+  std::mutex files_m_;
+  std::condition_variable files_cv_;
+  std::optional<files_job> files_next_;  // under files_m_
+  std::thread files_thread_;             // under files_m_; made at the first set
 };
 
 // "Received" under the default photo folder.

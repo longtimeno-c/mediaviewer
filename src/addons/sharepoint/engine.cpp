@@ -101,11 +101,17 @@ engine::~engine() {
   {
     std::lock_guard lock(threads_m_);
     if (transfer_thread_.joinable()) transfer_thread_.join();
-    if (files_thread_.joinable()) files_thread_.join();
     for (auto& h : helpers_) {
       if (h.thread.joinable()) h.thread.join();
     }
     helpers_.clear();
+  }
+  {
+    std::unique_lock lock(files_m_);
+    files_cv_.notify_all();
+    std::thread reader = std::move(files_thread_);
+    lock.unlock();
+    if (reader.joinable()) reader.join();
   }
   {
     std::lock_guard lock(control_m_);
@@ -501,10 +507,44 @@ void engine::set_files(const std::vector<std::string>& paths) {
     gen = ++files_generation_;
     v_.reading_folder = true;
   }
-  post();
-  std::lock_guard threads(threads_m_);
-  if (files_thread_.joinable()) files_thread_.join();
-  files_thread_ = std::thread([this, paths, gen] { build_files(paths, gen); });
+  // Handed to the folder reader; this returns at once, whatever it is reading.
+  queue_files({paths, {}, gen});
+  post_throttled();
+}
+
+void engine::queue_files(files_job job) {
+  std::lock_guard lock(files_m_);
+  if (stopping_.load()) return;
+  files_next_ = std::move(job);  // a set waiting is replaced: only the newest is read
+  if (!files_thread_.joinable()) files_thread_ = std::thread([this] { files_loop(); });
+  files_cv_.notify_all();
+}
+
+bool engine::files_stale(std::uint64_t gen) const noexcept {
+  return stopping_.load() || gen != files_generation_.load();
+}
+
+void engine::files_loop() {
+  for (;;) {
+    files_job job;
+    {
+      std::unique_lock lock(files_m_);
+      files_cv_.wait(lock, [&] { return stopping_.load() || files_next_.has_value(); });
+      if (stopping_.load()) return;
+      job = std::move(*files_next_);
+      files_next_.reset();
+    }
+    if (files_stale(job.gen)) continue;
+    try {
+      if (!job.folder.empty()) {
+        walk_folder(job.folder, job.gen);
+      } else {
+        build_files(std::move(job.paths), job.gen);
+      }
+    } catch (...) {
+      publish_files({}, job.gen);  // out of memory: an empty set, not a stuck "Reading"
+    }
+  }
 }
 
 bool engine::out_busy_locked() const noexcept {
@@ -535,6 +575,7 @@ void engine::build_files(std::vector<std::string> paths, std::uint64_t gen) {
   std::set<std::string> taken;
   auto add = [&](const std::string& path) {
     if (out.size() >= kMaxFiles || !taken.insert(path).second) return;
+    if (files_stale(gen)) return;  // a newer set replaced this one
     auto st = io::stat_path(path);
     if (!st || st->is_directory) return;
     std::string rel(leaf_name(path));
@@ -542,7 +583,7 @@ void engine::build_files(std::vector<std::string> paths, std::uint64_t gen) {
     out.push_back({path, std::move(rel), st->size, st->mtime_unix});
   };
   for (const auto& p : paths) {
-    if (stopping_.load()) return;
+    if (files_stale(gen)) return;
     add(p);
   }
   // Each file with its pair half and its sidecars (docs/design/28 "What
@@ -550,12 +591,13 @@ void engine::build_files(std::vector<std::string> paths, std::uint64_t gen) {
   std::map<std::string, std::vector<std::string>> by_dir;
   for (const auto& f : out) by_dir[std::string(io::parent_of(f.path))].push_back(std::string(leaf_name(f.path)));
   for (const auto& [dir, chosen] : by_dir) {
-    if (stopping_.load()) return;
+    if (files_stale(gen)) return;
     std::vector<std::string> names;
     (void)io::walk_files(dir, 0, [&](const io::tree_entry& e) {
       if (!e.cloud_only) names.push_back(e.name_utf8);
-      return names.size() < 20000;
+      return names.size() < 20000 && !files_stale(gen);
     });
+    if (files_stale(gen)) return;
     std::unordered_map<std::string, std::size_t> index;
     std::unordered_map<std::string, std::vector<std::size_t>> by_stem;  // lower-case stem -> names
     for (std::size_t i = 0; i < names.size(); ++i) {
@@ -592,23 +634,23 @@ void engine::read_folder(std::string folder) {
     gen = ++files_generation_;
     v_.reading_folder = true;
   }
-  post();
-  std::lock_guard threads(threads_m_);
-  if (files_thread_.joinable()) files_thread_.join();
-  files_thread_ = std::thread([this, folder = std::move(folder), gen] {
-    std::vector<outgoing_file> out;
-    std::string top(leaf_name(folder));
-    while (!top.empty() && (top.back() == '/' || top.back() == '\\')) top.pop_back();
-    if (!safe_relative(top)) top = "Folder";
-    (void)io::walk_files(folder, 32, [&](const io::tree_entry& e) {
-      if (stopping_.load()) return false;
-      if (e.cloud_only || skipped_relative(e.relative_utf8)) return true;
-      std::string rel = top + "/" + e.relative_utf8;
-      if (safe_relative(rel)) out.push_back({e.path_utf8, std::move(rel), e.size, e.mtime_unix});
-      return out.size() < kMaxFiles;
-    });
-    publish_files(std::move(out), gen);
+  queue_files({{}, std::move(folder), gen});
+  post_throttled();
+}
+
+void engine::walk_folder(const std::string& folder, std::uint64_t gen) {
+  std::vector<outgoing_file> out;
+  std::string top(leaf_name(folder));
+  while (!top.empty() && (top.back() == '/' || top.back() == '\\')) top.pop_back();
+  if (!safe_relative(top)) top = "Folder";
+  (void)io::walk_files(folder, 32, [&](const io::tree_entry& e) {
+    if (files_stale(gen)) return false;
+    if (e.cloud_only || skipped_relative(e.relative_utf8)) return true;
+    std::string rel = top + "/" + e.relative_utf8;
+    if (safe_relative(rel)) out.push_back({e.path_utf8, std::move(rel), e.size, e.mtime_unix});
+    return out.size() < kMaxFiles;
   });
+  publish_files(std::move(out), gen);
 }
 
 void engine::on_event(const std::string& node, std::uint32_t kind, const std::string& value_json) {
