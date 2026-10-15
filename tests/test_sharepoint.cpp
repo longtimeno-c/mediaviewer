@@ -14,8 +14,11 @@
 #include <cstdio>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <map>
 #include <mutex>
 #include <string>
@@ -30,6 +33,7 @@
 #include "addons/sharepoint/transfer.h"
 #include "addons/sharepoint/wire.h"
 #include "import_fixture.h"
+#include "io/file_port.h"
 
 #if !defined(_WIN32)
 #include <sys/resource.h>
@@ -1230,3 +1234,180 @@ TEST_CASE("sharepoint: idle cost of Keep receiving", "[.sharepoint-idle]") {
   phase("off_again");
 }
 #endif
+
+// ---- harness: transfer throughput (#442) -----------------------------------------------------------
+//
+// mv_import_tests "[.sharepoint-bench]": MB/s of a Sharepoint send between two
+// engines in this process over loopback TCP, from Accept to the receiver's
+// done (every file hashed, flushed, read back uncached and renamed, as on a
+// real link), against a plain copy over the same kind of link (the bytes
+// through a loopback socket into a new file: no hash, no seal, no flush, no
+// read-back). Loopback is CPU- and disk-bound, not a Wi-Fi or Bluetooth link:
+// it shows what the code costs, not what a radio allows.
+//
+//   MV_BENCH_DIR        where the fixture and the received files live
+//                       (default: a scratch folder, removed afterwards);
+//                       the fixture is kept between runs when given
+//   MV_BENCH_BIG_MB     one big file (default 1024)
+//   MV_BENCH_SMALL      count of small files (default 500)
+//   MV_BENCH_SMALL_KB   each small file (default 2048)
+//   MV_BENCH_CASES      "big", "small" or "big,small" (default both)
+// Prints one JSON line per case and mode.
+namespace {
+
+std::size_t env_size(const char* name, std::size_t fallback) {
+  const char* v = std::getenv(name);
+  return v && *v ? static_cast<std::size_t>(std::strtoull(v, nullptr, 10)) : fallback;
+}
+
+// Incompressible bytes, written once; kept when the size already matches.
+void fixture_file(const fs::path& p, std::size_t bytes, std::uint32_t seed) {
+  std::error_code ec;
+  if (fs::exists(p, ec) && fs::file_size(p, ec) == bytes) return;
+  fs::create_directories(p.parent_path());
+  std::ofstream out(p, std::ios::binary | std::ios::trunc);
+  std::vector<char> block(1 << 20);
+  std::uint64_t x = 0x9E3779B97F4A7C15ull ^ seed;
+  std::size_t left = bytes;
+  while (left > 0) {
+    for (std::size_t i = 0; i + 8 <= block.size(); i += 8) {
+      x ^= x << 13;
+      x ^= x >> 7;
+      x ^= x << 17;
+      std::memcpy(block.data() + i, &x, 8);
+    }
+    const std::size_t n = std::min(left, block.size());
+    out.write(block.data(), static_cast<std::streamsize>(n));
+    left -= n;
+  }
+}
+
+void print_case(const char* name, const char* mode, std::uint64_t bytes, std::size_t files, double seconds) {
+  std::printf("{\"case\":\"%s\",\"mode\":\"%s\",\"files\":%zu,\"bytes\":%llu,\"seconds\":%.3f,\"mb_s\":%.1f}\n", name,
+              mode, files, static_cast<unsigned long long>(bytes), seconds,
+              static_cast<double>(bytes) / 1e6 / seconds);
+  std::fflush(stdout);
+}
+
+// The plain copy: each file's bytes through one loopback TCP connection into
+// a new file, 1 MiB at a time.
+double plain_copy(const std::vector<fs::path>& files, const fs::path& dest) {
+  fs::create_directories(dest);
+  auto l = sp::net::listen(true);
+  REQUIRE(l);
+  const auto t0 = std::chrono::steady_clock::now();
+  bool ok = true;
+  std::thread rx([&] {
+    auto a = (*l)->accept(5000);
+    if (!a) {
+      ok = false;
+      return;
+    }
+    std::vector<std::uint8_t> buf(1 << 20);
+    for (const auto& f : files) {
+      std::uint64_t left = fs::file_size(f);
+      mv::io::file_writer out;
+      if (!out.create_new(utf8(dest / f.filename()))) {
+        ok = false;
+        return;
+      }
+      while (left > 0) {
+        auto n = (*a)->read_some({buf.data(), static_cast<std::size_t>(std::min<std::uint64_t>(left, buf.size()))}, 20000);
+        if (!n || *n == 0 || !out.write({buf.data(), *n})) {
+          ok = false;
+          return;
+        }
+        left -= *n;
+      }
+      (void)out.close();
+    }
+  });
+  auto c = sp::net::connect({"127.0.0.1", (*l)->port()}, 5000);
+  REQUIRE(c);
+  std::vector<std::uint8_t> buf(1 << 20);
+  for (const auto& f : files) {
+    mv::io::file_reader in;
+    REQUIRE(in.open(utf8(f), mv::io::read_mode::sequential));
+    for (;;) {
+      auto n = in.read(buf);
+      REQUIRE(n);
+      if (*n == 0) break;
+      REQUIRE((*c)->write_all({buf.data(), *n}));
+    }
+  }
+  rx.join();
+  const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  CHECK(ok);
+  return s;
+}
+
+// A Sharepoint send of `files` from Ann to Bea, timed from Accept to done.
+double sharepoint_send(const std::vector<fs::path>& files, const fs::path& dest, const fs::path& work) {
+  bus b;
+  client ann(b, work / "ann_in", "Ann");
+  client bea(b, work / "bea_in", "Bea");
+  fs::create_directories(dest);
+  ann.pick(files);
+  bea.save_into(dest);
+  ann.send_to(bea);
+  REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::asking; }, 60));
+  const auto t0 = std::chrono::steady_clock::now();
+  bea.eng.on_event("accept", 1, "");
+  ann.eng.wait_idle();
+  bea.eng.wait_idle();
+  const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  INFO(bea.eng.snapshot().in_note);
+  CHECK(bea.eng.snapshot().in == sp::view::in_phase::done);
+  return s;
+}
+
+}  // namespace
+
+TEST_CASE("sharepoint: transfer throughput against a plain copy", "[.sharepoint-bench]") {
+  const char* dir_env = std::getenv("MV_BENCH_DIR");
+  std::optional<scratch_dir> scratch;
+  fs::path base;
+  if (dir_env && *dir_env) {
+    base = dir_env;
+  } else {
+    scratch.emplace("sharepoint_bench");
+    base = scratch->root();
+  }
+  const std::size_t big_mb = env_size("MV_BENCH_BIG_MB", 1024);
+  const std::size_t small_n = env_size("MV_BENCH_SMALL", 500);
+  const std::size_t small_kb = env_size("MV_BENCH_SMALL_KB", 2048);
+  const char* cases_env = std::getenv("MV_BENCH_CASES");
+  const std::string cases = cases_env && *cases_env ? cases_env : "big,small";
+
+  struct bench_case {
+    const char* name;
+    std::vector<fs::path> files;
+  };
+  std::vector<bench_case> runs;
+  if (cases.find("big") != std::string::npos) {
+    const fs::path f = base / "fixture" / "big" / "clip.mov";
+    fixture_file(f, big_mb << 20, 1);
+    runs.push_back({"big", {f}});
+  }
+  if (cases.find("small") != std::string::npos) {
+    bench_case c{"small", {}};
+    for (std::size_t i = 0; i < small_n; ++i) {
+      char name[32];
+      std::snprintf(name, sizeof name, "IMG_%04zu.JPG", i);
+      const fs::path f = base / "fixture" / "small" / name;
+      fixture_file(f, small_kb << 10, static_cast<std::uint32_t>(100 + i));
+      c.files.push_back(f);
+    }
+    runs.push_back(std::move(c));
+  }
+  for (const auto& c : runs) {
+    std::uint64_t bytes = 0;
+    for (const auto& f : c.files) bytes += fs::file_size(f);
+    const fs::path out = base / "out";
+    fs::remove_all(out);
+    print_case(c.name, "plain", bytes, c.files.size(), plain_copy(c.files, out / "plain"));
+    fs::remove_all(out);
+    print_case(c.name, "sharepoint", bytes, c.files.size(), sharepoint_send(c.files, out / "sharepoint", out / "work"));
+    fs::remove_all(out);
+  }
+}
