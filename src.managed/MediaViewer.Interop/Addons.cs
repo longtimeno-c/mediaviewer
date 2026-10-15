@@ -867,4 +867,10 @@ public interface ISearchChrome
     /// <summary>A family piece (ai-faces, ai-cuda) was installed or removed while
     /// the pack is loaded: the chrome asks the pack to pick it up.</summary>
     void OnPiecesChanged();
+
+    /// <summary>Settings → File types "Show audio files", sent when the chrome
+    /// attaches and whenever it changes: audio files are indexed and searched
+    /// only while it is on (#355). A default body, so an older search chrome
+    /// still loads.</summary>
+    void OnShowAudioChanged(bool on) { }
 }

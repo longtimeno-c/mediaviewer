@@ -110,7 +110,7 @@ TEST_CASE("query: leaving things out", "[ai][query]") {
   CHECK(p.not_phrases == std::vector<std::string>{"goodbye"});
 
   p = run("-video Tristan");
-  CHECK(p.kinds == 1u);  // photos
+  CHECK(p.kinds == (1u | 8u));  // photos and audio files (#355; none while they are not shown)
   p = run("-@nic beach");
   CHECK(p.not_people == std::vector<std::int64_t>{2});
   // A hyphenated word and a lone dash are not exclusions.
@@ -154,6 +154,24 @@ TEST_CASE("query: kinds, first or last, or is:", "[ai][query]") {
   CHECK(p.text == "a dog on the beach");
   p = run("photo");  // alone it is last as well: a filter
   CHECK(p.kinds == 1u);
+
+  // #355: audio files. "audio", "songs", "tracks" filter where a kind word
+  // does; "music" and "song" only after is:, since "piano music" is a sound.
+  p = run("beatles songs");
+  CHECK(p.kinds == 8u);
+  CHECK(p.text == "beatles");
+  p = run("songs about rain");
+  CHECK(p.kinds == 8u);
+  p = run("is:music jude");
+  CHECK(p.kinds == 8u);
+  CHECK(p.text == "jude");
+  p = run("is:song");
+  CHECK(p.kinds == 8u);
+  p = run("piano music");
+  CHECK(p.kinds == 0);
+  CHECK(p.text == "piano music");
+  p = run("red -is:audio");
+  CHECK(p.kinds == (1u | 2u));
 }
 
 TEST_CASE("query: dates are the file's, in UTC", "[ai][query]") {

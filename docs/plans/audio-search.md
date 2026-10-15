@@ -10,7 +10,7 @@ Issue #355. Written 2026-10-15.
 
 ## Status (2026-10-15)
 
-Plan only; nothing is built.
+Slice A1 is being built (this branch). A2 is not started.
 
 **Taken from the issue (#355):**
 
@@ -21,9 +21,8 @@ Plan only; nothing is built.
 - No new model. CLAP and Whisper are already in `ai-audio`.
 - M4P (FairPlay) is indexed from its tags and cover art only. Its audio is never read.
 
-**Owner call still open:** whether standalone audio should be searchable at all (§7, call 1). The
-issue's "Gated on the File types setting" section reads as a yes, gated, but it is not a recorded
-decision. Nothing below starts until it is.
+**Owner calls taken (2026-10-15):** standalone audio is searchable, behind "Show audio files"
+(§8, call 1). Whisper runs on music, so lyrics are searchable (§8, call 2).
 
 ## 1. The gate: "Show audio files"
 
@@ -33,11 +32,12 @@ page (`settings_get`).
 
 **Route: the chrome forwards it, as it forwards "Index videos for".** A new pack setting
 `audio_files` (0/1, default 0) goes through `set_setting` and is listed in `settings_json`. Each
-chrome sends it when the pack loads and every time the File types toggle changes. Windows:
-`IslandHost.Settings.cs` (the `_showAudio` toggle) calls into the AI chrome's `Set("audio_files",
-…)`. Mac: `SettingsView.swift` (`SettingsStore.showAudio`) calls the AI chrome's settings store.
-The pack stores it in `index.db` beside `video_index`, so the read-only reader (Final Cut Pro agent,
-[23](../design/23-nle-search.md)) sees the same value without a chrome.
+chrome sends it when the pack loads and every time the File types toggle changes. Windows: the
+base chrome calls `ISearchChrome.OnShowAudioChanged` (a default interface method, so an older
+search chrome still loads) on attach and from `ApplySettings`. Mac: `setViewFlags` and
+`loadSettings` call `MvAddonsShowAudioChanged`, which sends the optional `-showAudioChanged:` to
+the AI chrome. The pack keeps it in its `settings.json` beside `video_index`, which a reader (a
+later window, the Final Cut Pro agent, [23](../design/23-nle-search.md)) loads too.
 
 A host-table getter (`hidden_kinds`, appended) was the other option. It is not needed: the chrome
 already owns the moment the toggle flips, and a getter would still need a change event to drive
@@ -72,10 +72,12 @@ audio piece, and Both once it is installed. A music folder whose owner wants it 
 "what it sounds like" gets that from the piece being installed, with no extra switch.
 
 **M4P.** The host's container probe already knows FairPlay (`drms` / `sinf` scheme `itun`,
-audio-and-documents §1). `tag_facts` sets a new flag bit, `MV_ADDON_TAG_PROTECTED 0x8` (a flag,
-not a struct change, so the table version does not move). The pack never calls `audio_open` on a
-protected file: tags and cover art only, whatever the folder option. An unprotected `.m4p` (rare)
-and a protected `.m4a` are decided by the flag, not the extension.
+audio-and-documents §1). In A2 `tag_facts` sets a new flag bit, `MV_ADDON_TAG_PROTECTED 0x8` (a
+flag, not a struct change, so the table version does not move). The pack never calls `audio_open`
+on a protected file: tags and cover art only, whatever the folder option. An unprotected `.m4p`
+(rare) and a protected `.m4a` are decided by the flag, not the extension. A1 reads no audio at
+all, so it needs no flag: a protected file's tags and cover art are in the header, which is not
+encrypted.
 
 **Budgets (recorded in 17 when built).** Music libraries are the long tail here.
 
@@ -158,8 +160,9 @@ Windows: `SearchWindow.cs` kind segments and `AvailableFinds`. Mac: `SearchPanel
 
 ## 6. Sharing, privacy, other surfaces
 
-- **`.mvindex`:** audio assets travel with their rows like clips. An importer whose gate is off
-  skips audio assets and counts them ("40 audio files skipped: Show audio files is off").
+- **`.mvindex`:** an export carries audio assets with their rows. An import skips them for now
+  (`transfer.cpp` takes kinds 1 and 2 only), and the receiver's own walk indexes them while its
+  gate is on. Importing them, and counting the skipped ones, is A2's.
 - **Privacy:** transcripts of voice memos and songs stay in `index.db`, like soundtrack
   transcripts. They are kept out of crash reports, minidumps and telemetry, and *Clear index*,
   removing a root or turning the gate off deletes them.
@@ -175,14 +178,14 @@ change: with the gate off the scan does exactly the work it does today.
 
 | Slice | Delivers | Verify |
 |---|---|---|
-| **A1 — Gate, tags, cover art** | `audio_files` setting forwarded by both chromes; `asset_kind::audio`, schema 8; scan, re-queue on and drop on off; `tag_facts` fields and `MV_ADDON_TAG_PROTECTED` for audio; cover-art frame; `MV_AI_KIND_AUDIO`, `is:audio`; Audio segment; tiles and open at file; Settings copy and counts | §1's verify. On a folder of 300 photos + 200 MP3/M4A/M4P (incl. 10 M4P, 2 broken, 1 × 3 h): every file is found by its title and by its artist; a cover-art query ("album cover with a red car") finds the right one; M4P never reaches `audio_open`; broken files counted, never a crash; Mac PR 1 and Windows PR 1 gates with indexing running: 0 drops |
-| **A2 — Sounds and speech** | CLAP and Whisper passes on audio files under Sound / Both; cues; `mm:ss` tiles, open at moment, `N` / `Shift+N`; the per-folder flyout relabelled; the 3-hour cap | On the A1 set with `ai-audio`: a quoted line from a spoken-word file is found at its time (±2 s) and Enter seeks there; "dog barking" finds the field recording; an instrumental track adds no speech rows; indexing time per audio-minute within 10 % of the same audio as a soundtrack; both present-loop gates with indexing running: 0 drops |
+| **A1 — Gate, tags, cover art** | `audio_files` setting forwarded by both chromes; `asset_kind::audio`, schema 8; scan, re-queue on and drop on off; album, album artist, composer and genre in the search fields (`kSearchFactsVersion` 3); cover-art frame (`edit::clip::cover_art_rgb`, header only); `MV_AI_KIND_AUDIO`, `is:audio`; Audio segment; tiles and open at file; Settings copy and counts | §1's verify. On a folder of 300 photos + 200 MP3/M4A/M4P (incl. 10 M4P, 2 broken, 1 × 3 h): every file is found by its title and by its artist; a cover-art query ("album cover with a red car") finds the right one; M4P never reaches `audio_open`; broken files counted, never a crash; Mac PR 1 and Windows PR 1 gates with indexing running: 0 drops |
+| **A2 — Sounds and speech** | CLAP and Whisper passes on audio files under Sound / Both; `MV_ADDON_TAG_PROTECTED`; `.mvindex` import of audio rows; cues; `mm:ss` tiles, open at moment, `N` / `Shift+N`; the per-folder flyout relabelled; the 3-hour cap | On the A1 set with `ai-audio`: a quoted line from a spoken-word file is found at its time (±2 s) and Enter seeks there; "dog barking" finds the field recording; an instrumental track adds no speech rows; indexing time per audio-minute within 10 % of the same audio as a soundtrack; both present-loop gates with indexing running: 0 drops |
 
 A1 needs no model. Neither slice changes the viewer's own paths.
 
 ## 8. Owner calls
 
-1. Should standalone audio be searchable at all? (#355; the gating section suggests yes.)
-2. Lyrics: run Whisper on music (recommended: yes, the no-speech guard handles instrumentals, and
-   lyric search is the main reason to transcribe songs), or speech only for files under a
-   "spoken" genre tag.
+Both answered on 2026-10-15 (owner):
+
+1. Standalone audio is searchable, behind File types "Show audio files".
+2. Whisper runs on music: lyrics are searchable, and the no-speech guard handles instrumentals.

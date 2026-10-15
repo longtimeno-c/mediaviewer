@@ -98,7 +98,12 @@ typedef enum mv_ai_scope {
 
 #define MV_AI_KIND_PHOTOS 1u
 #define MV_AI_KIND_VIDEOS 2u
-#define MV_AI_KIND_ALL 3u
+/* #355 (docs/plans/audio-search.md): standalone audio files (MP3, M4A, M4P),
+ * indexed only while the "audio_files" setting is on. 4 is reserved for
+ * documents (docs/plans/document-search.md). An older chrome's 3 still means
+ * photos and videos; ALL widened from 3 to 11. */
+#define MV_AI_KIND_AUDIO 8u
+#define MV_AI_KIND_ALL 11u
 
 /* What a search looks for, OR'ed into `kinds` (2026-09-27, audio). None of
  * these set means all three. */
@@ -257,7 +262,7 @@ typedef struct mv_ai_result {
   uint64_t asset_id;
   int64_t pts_ms;              /* -1 for a photo */
   float score;                 /* cosine similarity, higher is closer */
-  uint32_t kind;               /* MV_AI_KIND_PHOTOS or MV_AI_KIND_VIDEOS */
+  uint32_t kind;               /* MV_AI_KIND_PHOTOS, _VIDEOS or _AUDIO */
   uint32_t more_in_clip;       /* other matching moments in the same clip */
   uint32_t match;              /* MV_AI_MATCH_*: what matched at pts_ms (picture, sound, speech) */
 } mv_ai_result;
@@ -278,6 +283,8 @@ typedef struct mv_ai_api {
    *  to index them, then make them online-only again; 2026-10-05), "cloud_provider":"onedrive" |
    *  "icloud" | "" (none on this platform), "cloud_supported":bool (Windows only: false when
    *  this Windows has no Cloud Files API, before 10 1709; 2026-10-07),
+   *  "audio_files":false (index MP3 / M4A / M4P: the chrome forwards File types "Show audio
+   *  files" here; #355),
    *  "read_only":bool (loaded through MV_AI_READER_ENTRY_SYMBOL: a second window's reader,
    *  2026-10-07),
    *  "available":{"cuda":bool,"openvino":bool,"coreml":bool},
@@ -287,6 +294,10 @@ typedef struct mv_ai_api {
   /* key: "compute" | "quality" | "pause_on_battery_percent" | "battery_override"
    * | "index_cap_bytes" | "min_score" | "reload" | "icloud_videos" (1 / 0, saved)
    * | "cloud_files" (1 / 0, saved)
+   * | "audio_files" (1 / 0, saved; #355: the base app's File types "Show audio files", which
+   * each chrome sends when the pack loads and when the toggle changes. On: every enabled root
+   * is walked again and its audio files queued. Off: audio results go at once and their rows
+   * are deleted)
    * | "retry_large" (any value: forget that the accelerated provider failed the large tower
    * here, MV_AI_STATUS_SMALL_FALLBACK, and let Auto try it again; 2026-10-05)
    * | "video_index" (MV_AI_MEDIA_*, 0 = Pictures, plus
@@ -316,6 +327,7 @@ typedef struct mv_ai_api {
   /* [{"id":1,"path":"...","recursive":true,"enabled":true,"assets":N,
    *   "done":N,"frames":N,"bytes":N,"last_scan":unix,
    *   "cloud_only":N (online-only files not yet indexed, 2026-10-05),
+   *   "audio":N (the audio files among "assets", folders only; #355),
    *   "error":"unreadable" (present when the last walk of the folder failed: offline,
    *   moved, no access; the rows are kept),
    *   "held":bool (left unfinished last session, it waits for set_setting "resume_root";

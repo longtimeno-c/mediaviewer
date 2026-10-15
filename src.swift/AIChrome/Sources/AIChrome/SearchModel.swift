@@ -80,14 +80,17 @@ enum SearchScope: UInt32, CaseIterable, Identifiable {
   }
 }
 
+/// MV_AI_KIND_*. #355: audio files (8) while File types "Show audio files" is
+/// on; 4 is reserved for documents, and All widened from 3 to 11.
 enum SearchKinds: UInt32, CaseIterable, Identifiable {
-  case all = 3, photos = 1, videos = 2
+  case all = 11, photos = 1, videos = 2, audio = 8
   var id: UInt32 { rawValue }
   var label: String {
     switch self {
     case .all: return "All"
     case .photos: return "Photos"
     case .videos: return "Videos"
+    case .audio: return "Audio"
     }
   }
   var help: String {
@@ -95,7 +98,12 @@ enum SearchKinds: UInt32, CaseIterable, Identifiable {
     case .all: return "Show photos and videos."
     case .photos: return "Show photos only."
     case .videos: return "Show videos only."
+    case .audio: return "Show audio files only (MP3, M4A, M4P)."
     }
+  }
+  /// The segments shown: Audio only while audio files are searched.
+  static func shown(audioFiles: Bool) -> [SearchKinds] {
+    audioFiles ? allCases : allCases.filter { $0 != .audio }
   }
 }
 
@@ -108,6 +116,8 @@ final class SearchModel: ObservableObject {
   @Published var query = ""
   @Published var scope: SearchScope = .tree
   @Published var kinds: SearchKinds = .all
+  /// #355: File types "Show audio files", as the host last sent it.
+  @Published private(set) var audioFiles = false
   /// What to find (2026-09-27): Pictures · Sounds · Speech. Empty = all three.
   @Published var finds: Set<Find> = []
 
@@ -468,6 +478,15 @@ final class SearchModel: ObservableObject {
   }
 
   func chipsChanged() { run(keepSelection: false) }
+
+  /// #355: the Audio segment follows "Show audio files"; turned off while it
+  /// is chosen, All. An open search answers again (audio results come or go).
+  func audioFilesChanged(_ on: Bool) {
+    guard on != audioFiles else { return }
+    audioFiles = on
+    if !on && kinds == .audio { kinds = .all }
+    if !query.trimmingCharacters(in: .whitespaces).isEmpty || reference != nil { run(keepSelection: true) }
+  }
 
   private var scopeDir: String? {
     if scope == .photos { return PhotosLibrary.rootKey }

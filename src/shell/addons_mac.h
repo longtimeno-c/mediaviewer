@@ -37,6 +37,10 @@ void MvAddonsImportNow(const std::vector<std::string>& paths);
 // Both are cheap message sends; with the AI pack absent they do nothing.
 void MvAddonsFolderOpened(const std::string& dir);
 void MvAddonsItemChanged(const std::string& path);
+// #355: Settings -> File types "Show audio files". Local search indexes audio
+// files only while it is on; the AI chrome forwards it to the pack ("audio_files")
+// when it attaches and on each change. [main-thread]
+void MvAddonsShowAudioChanged(bool on);
 // search_open / search_similar / search_next_match / search_prev_match, from
 // the command router. False when the AI chrome is not loaded or declined.
 bool MvAddonsRunCommand(const char* name);

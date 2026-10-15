@@ -221,6 +221,9 @@ public static partial class IslandHost
     private static void OnSearchChromeAttached()
     {
         _aiSettingsPanel = null;
+        // #355: audio files are indexed only while File types "Show audio files" is on.
+        try { SearchChrome?.OnShowAudioChanged(HasFlag(SettingFlag.ShowAudio)); }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
         if (_openedFolder.Length > 0)
         {
             try { SearchChrome?.OnFolderChanged(_openedFolder); }

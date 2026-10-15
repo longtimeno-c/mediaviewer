@@ -44,6 +44,7 @@
 #include "nle/search_session.h"
 #include "core/json.h"
 #include "import_fixture.h"
+#include "io/pairing.h"
 
 using namespace mv::test;
 using mv::ai::engine;
@@ -688,6 +689,10 @@ struct rig {
         decoded.push_back(name);
       }
       if (name.find("broken") != std::string::npos) return mv::err(mv::status::corrupt);
+      // #355: an audio file's picture is its cover art; "*cover*" has one.
+      if (mv::io::is_audio_name(name) && name.find("cover") == std::string::npos) {
+        return mv::err(mv::status::not_found);
+      }
       auto img = solid(colour_named(name));
       if (name.rfind("anna", 0) == 0) img.rgb[2] = 11;
       if (name.rfind("ben", 0) == 0) img.rgb[2] = 22;
@@ -767,6 +772,8 @@ struct rig {
         std::strcpy(out.label_utf8, "Red");
       }
       if (name.find("reject") != std::string::npos) out.rating = -1;
+      // #355: a song's tags (title, artist, album).
+      if (name.find("song") != std::string::npos) fields = "Hey Jude\x1fThe Beatles\x1fPast Masters";
       // #404: "y2019" was taken on 2019-06-15 12:00 (wall clock read as UTC).
       if (name.find("y2019") != std::string::npos) {
         out.flags |= MV_ADDON_TAG_HAS_DATE;
@@ -1506,7 +1513,7 @@ TEST_CASE("clearing the index frees it and a size cap stops indexing", "[ai][eng
 }
 
 // The schema a fresh or migrated index ends at (index_db.cpp kSchemaVersion).
-constexpr const char* kSchemaNow = "7";
+constexpr const char* kSchemaNow = "8";
 
 TEST_CASE("an index migrates from schema 1, and again after a crash left a step half done", "[ai][engine]") {
   scratch_dir dir{"ai-migrate"};
@@ -2103,6 +2110,87 @@ TEST_CASE("people in the open folder: only those with a face there, counted and 
   CHECK(*sub->a[0].integer("id") == anna);
   CHECK(r.eng->people_json("", MV_AI_SCOPE_FOLDER) == r.eng->people_json());
   CHECK(r.eng->people_json(utf8(r.photos() / "sub"), MV_AI_SCOPE_ALL) == r.eng->people_json());
+}
+
+TEST_CASE("audio files are indexed only while Show audio files is on (#355)", "[ai][engine][audiofiles]") {
+  rig r;
+  r.file("red_photo.jpg");
+  r.file("red_cover.mp3");   // cover art: red
+  r.file("song.m4a");        // tags only: "Hey Jude", "The Beatles"
+  r.file("blank.m4p");       // neither: found by name alone (file:)
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  const auto names = [](const std::vector<std::pair<std::string, std::int64_t>>& rows) {
+    std::set<std::string> out;
+    for (const auto& [n, _] : rows) out.insert(n);
+    return out;
+  };
+  const auto audio_rows = [&] {
+    auto doc = mv::json::parse(r.eng->roots_json());
+    REQUIRE(doc);
+    REQUIRE(doc->k == mv::json::kind::array);
+    REQUIRE(doc->a.size() == 1);
+    return doc->a[0].integer("audio").value_or(-1);
+  };
+  const auto setting = [&] {
+    auto doc = mv::json::parse(r.eng->settings_json());
+    REQUIRE(doc);
+    return doc->boolean("audio_files");
+  };
+
+  // Off (the default): no row, no read, nothing found.
+  CHECK(setting() == false);
+  CHECK(r.status().assets_total == 1);
+  CHECK(audio_rows() == 0);
+  CHECK_FALSE(r.was_decoded("red_cover.mp3"));
+  CHECK(names(r.search("red")) == std::set<std::string>{"red_photo.jpg"});
+  CHECK(r.search("beatles").empty());
+
+  // On: the folder's audio files are walked and indexed like a new folder.
+  REQUIRE(r.eng->set_setting("audio_files", "1"));
+  CHECK(setting() == true);
+  REQUIRE(wait_for([&] { return audio_rows() == 3; }, kSettleMs));
+  REQUIRE(r.idle());
+  const mv_ai_status on = r.status();
+  CHECK(on.assets_total == 4);
+  CHECK(on.assets_done == 4);  // blank.m4p has no cover art: done, not failed
+  CHECK(on.assets_failed == 0);
+  CHECK(r.was_decoded("red_cover.mp3"));
+  CHECK(names(r.search("red")) == std::set<std::string>{"red_photo.jpg", "red_cover.mp3"});
+  CHECK(names(r.search("beatles")) == std::set<std::string>{"song.m4a"});
+  CHECK(names(r.search("hey jude")) == std::set<std::string>{"song.m4a"});
+  CHECK(names(r.search("file:blank")) == std::set<std::string>{"blank.m4p"});
+  // The kind: its own bit, the Show segment, is:audio, and an older chrome's 3.
+  {
+    const std::uint64_t id = r.eng->search_text("red", "", MV_AI_SCOPE_ALL, MV_AI_KIND_AUDIO);
+    REQUIRE(r.eng->wait_search(id, kSettleMs));
+    REQUIRE(names(r.rows(id)) == std::set<std::string>{"red_cover.mp3"});
+    auto res = r.eng->result_at(id, 0);
+    REQUIRE(res);
+    CHECK(res->kind == MV_AI_KIND_AUDIO);
+    CHECK(res->pts_ms == -1);
+  }
+  CHECK(names(r.search("red is:audio")) == std::set<std::string>{"red_cover.mp3"});
+  CHECK(names(r.search("red songs")) == std::set<std::string>{"red_cover.mp3"});
+  CHECK(names(r.search("red -is:music")) == std::set<std::string>{"red_photo.jpg"});
+  CHECK(names(r.search("red", MV_AI_SCOPE_ALL, "", MV_AI_KIND_PHOTOS | MV_AI_KIND_VIDEOS)) ==
+        std::set<std::string>{"red_photo.jpg"});
+
+  // Off again: gone from results at once, then from the index.
+  REQUIRE(r.eng->set_setting("audio_files", "0"));
+  CHECK(names(r.search("red")) == std::set<std::string>{"red_photo.jpg"});
+  CHECK(r.search("beatles").empty());
+  REQUIRE(wait_for([&] { return audio_rows() == 0; }, kSettleMs));
+  REQUIRE(r.idle());
+  CHECK(r.status().assets_total == 1);
+
+  // It persists, and a restart walks no audio back in.
+  r.start();
+  REQUIRE(r.idle());
+  CHECK(setting() == false);
+  CHECK(audio_rows() == 0);
+  CHECK(r.search("beatles").empty());
 }
 
 TEST_CASE("a file the host cannot decode fails without stopping the rest", "[ai][engine]") {

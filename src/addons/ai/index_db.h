@@ -48,6 +48,11 @@
 // brought down from the cloud) drops those frames and re-queues the motion
 // alone (progress back to partial); the still keeps its row.
 //
+// Schema 8 (#355): no table change; assets.kind 4 is an audio file (MP3, M4A,
+// M4P), indexed only while the pack's "audio_files" setting is on. Its cover
+// art is a frame at pts_ms -1 like a photo's; its tags go through the same
+// backfill. Turning the setting off deletes every kind-4 asset (remove_kind).
+//
 // docs/design/17 sketches one assets row per (path, mtime, size, spec); progress is
 // that row's per-model half, so two models' vectors live side by side while
 // a quality change migrates (PR 23: "old index kept until the new one
@@ -73,7 +78,8 @@ struct sqlite3;
 
 namespace mv::ai {
 
-enum class asset_kind : std::uint8_t { photo = 1, video = 2 };
+// 3 is reserved for documents (docs/plans/document-search.md).
+enum class asset_kind : std::uint8_t { photo = 1, video = 2, audio = 4 };
 enum class work_state : std::uint8_t { pending = 0, partial = 1, done = 2, failed = 3, unavailable = 4 };
 
 struct root_row {
@@ -232,6 +238,10 @@ class index_db {
   [[nodiscard]] expected set_root_media(std::int64_t id, std::uint32_t media);
   // Deletes the root, its assets, their progress and frames.
   [[nodiscard]] expected remove_root(std::int64_t id);
+  // Deletes every asset of `kind` with its progress, frames, speech, cues and
+  // text, in one transaction (#355: "Show audio files" turned off). Returns
+  // their ids so the search matrix can drop them.
+  [[nodiscard]] result<std::vector<std::int64_t>> remove_kind(asset_kind kind);
   // Moves every asset of `from` to `to` and deletes `from` (a new tree root
   // that swallows an older one).
   [[nodiscard]] expected merge_root(std::int64_t from, std::int64_t to);
@@ -340,6 +350,8 @@ class index_db {
                              const std::string& after = {});
   [[nodiscard]] std::uint64_t frames_in_root(std::int64_t root, const std::string& spec);
   [[nodiscard]] std::uint64_t assets_in_root(std::int64_t root);
+  // #355: how many of them are of `kind` (Settings' "N audio files").
+  [[nodiscard]] std::uint64_t kind_in_root(std::int64_t root, asset_kind kind);
   [[nodiscard]] std::uint64_t done_in_root(std::int64_t root, const std::string& spec);
   // How many assets of `root` pending() would still return for `spec` (the
   // filter's held roots aside): 0 when the root's indexing is finished.

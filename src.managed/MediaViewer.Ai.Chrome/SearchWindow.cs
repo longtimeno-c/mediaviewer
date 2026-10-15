@@ -82,7 +82,7 @@ internal sealed class SearchWindow : Window, IDisposable
     private Border _similarChip = null!;
     private TextBlock _similarText = null!;
     private readonly ToggleButton[] _scopeChips = new ToggleButton[2];
-    private readonly ToggleButton[] _kindChips = new ToggleButton[3];
+    private readonly ToggleButton[] _kindChips = new ToggleButton[4];
     private readonly ToggleButton[] _findChips = new ToggleButton[3];
     private readonly string[] _scopeTips = new string[2];
     private bool _findAudio;  // the audio availability ShowFind last drew
@@ -287,9 +287,11 @@ internal sealed class SearchWindow : Window, IDisposable
             ("All", "Show photos and videos.", MvAiKinds.All),
             ("Photos", "Show photos only.", MvAiKinds.Photos),
             ("Videos", "Show videos only.", MvAiKinds.Videos),
+            // #355: only while File types "Show audio files" is on (ShowAudioKind).
+            ("Audio", "Show audio files only (MP3, M4A, M4P).", MvAiKinds.Audio),
         };
         var kinds = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2 };
-        for (int i = 0; i < 3; ++i)
+        for (int i = 0; i < kindNames.Length; ++i)
         {
             MvAiKinds k = kindNames[i].Kind;
             _kindChips[i] = Segment(kindNames[i].Name, () => SetKinds(k), hc);
@@ -330,6 +332,7 @@ internal sealed class SearchWindow : Window, IDisposable
         WireArrows(_scopeChips);
         WireArrows(_kindChips);
         WireArrows(_findChips);
+        ShowAudioKind();
         _findAudio = AudioReady;
         ShowFind();
 
@@ -905,7 +908,31 @@ internal sealed class SearchWindow : Window, IDisposable
         _kindChips[0].IsChecked = kinds == MvAiKinds.All;
         _kindChips[1].IsChecked = kinds == MvAiKinds.Photos;
         _kindChips[2].IsChecked = kinds == MvAiKinds.Videos;
+        _kindChips[3].IsChecked = kinds == MvAiKinds.Audio;
         if (run && changed) RunQuery(quiet: false);
+    }
+
+    // #355: the Audio segment, and "All" naming what it shows, follow "Show
+    // audio files". Turned off while Audio is chosen: back to All.
+    private void ShowAudioKind()
+    {
+        bool on = _chrome.AudioFiles;
+        _kindChips[3].Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+        _kindChips[3].IsEnabled = on;  // WireArrows skips it
+        ToolTipService.SetToolTip(_kindChips[0], on ? "Show photos, videos and audio files." : "Show photos and videos.");
+    }
+
+    internal void OnAudioFilesChanged()
+    {
+        ShowAudioKind();
+        if (!_chrome.AudioFiles && _kinds == MvAiKinds.Audio)
+        {
+            SetKinds(MvAiKinds.All);
+        }
+        else if (_query.Text.Trim().Length > 0 || _similar is not null)
+        {
+            RunQuery(quiet: true);  // audio results come or go
+        }
     }
 
     private string? ScopeDir => _scope == MvAiScope.All ? null : _chrome.Folder;

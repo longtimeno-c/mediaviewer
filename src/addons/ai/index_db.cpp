@@ -11,7 +11,7 @@
 namespace mv::ai {
 namespace {
 
-constexpr int kSchemaVersion = 7;
+constexpr int kSchemaVersion = 8;
 
 // A prepared statement that finalizes itself; binds are 1-based.
 class stmt {
@@ -72,7 +72,8 @@ asset_row asset_from(const stmt& s, int c0) {
   a.root_id = s.i64(c0 + 2);
   a.mtime = s.i64(c0 + 3);
   a.size = static_cast<std::uint64_t>(s.i64(c0 + 4));
-  a.kind = s.i64(c0 + 5) == 2 ? asset_kind::video : asset_kind::photo;
+  const std::int64_t kind = s.i64(c0 + 5);
+  a.kind = kind == 2 ? asset_kind::video : kind == 4 ? asset_kind::audio : asset_kind::photo;
   a.duration_ms = s.i64(c0 + 6);
   a.cloud = s.i64(c0 + 7) != 0;
   a.motion = s.text(c0 + 8);
@@ -301,6 +302,13 @@ result<std::unique_ptr<index_db>> index_db::open(const std::string& path) {
     }
     v = "7";
   }
+  // Schema 7 -> 8 (#355): no table change. assets.kind may now be 4, an audio
+  // file (MP3, M4A, M4P); the bump keeps an older pack, which would read kind 4
+  // as a photo, off this index.
+  if (v == "7") {
+    MV_TRY_VOID(d->set_meta("schema", "8"));
+    v = "8";
+  }
   if (v != std::to_string(kSchemaVersion)) {
     return err(status::unsupported_format);  // a newer add-on's index
   }
@@ -378,6 +386,25 @@ expected index_db::remove_root(std::int64_t id) {
   std::lock_guard lock(m_);
   stmt s(db_, "DELETE FROM roots WHERE id = ?1");  // cascades
   return s.bind(1, id).run() ? expected{} : err(status::io);
+}
+
+result<std::vector<std::int64_t>> index_db::remove_kind(asset_kind kind) {
+  std::lock_guard lock(m_);
+  std::vector<std::int64_t> gone;
+  if (!exec("BEGIN")) return err(status::io);
+  {
+    stmt q(db_, "SELECT id FROM assets WHERE kind = ?1");
+    q.bind(1, std::int64_t{static_cast<int>(kind)});
+    while (q.step_row()) gone.push_back(q.i64(0));
+  }
+  // Frames, speech, cues and progress cascade; asset_text goes by its trigger.
+  stmt d(db_, "DELETE FROM assets WHERE kind = ?1");
+  if (!d.bind(1, std::int64_t{static_cast<int>(kind)}).run()) {
+    exec("ROLLBACK");
+    return err(status::io);
+  }
+  if (!exec("COMMIT")) return err(status::io);
+  return gone;
 }
 
 expected index_db::merge_root(std::int64_t from, std::int64_t to) {
@@ -510,10 +537,14 @@ result<std::vector<std::int64_t>> index_db::end_scan(std::int64_t root, std::int
   return gone;
 }
 
-// The assets a track covers (track_filter), as SQL over `a` and `r`.
+// The assets a track covers (track_filter), as SQL over `a` and `r`. An audio
+// file (#355) is on the picture track alone (its cover art), as a still while
+// its root's media takes pictures; its sound and speech wait for slice A2.
 constexpr const char* kTrackWhere =
     " AND ((a.kind = 1 AND ?4 != 0) OR (a.kind = 2 AND"
-    " ((CASE r.media WHEN 0 THEN ?5 ELSE r.media END) & ?6) != 0)) AND a.root_id != ?7";
+    " ((CASE r.media WHEN 0 THEN ?5 ELSE r.media END) & ?6) != 0)"
+    " OR (a.kind = 4 AND ?4 != 0 AND (?6 & 1) != 0 AND"
+    " ((CASE r.media WHEN 0 THEN ?5 ELSE r.media END) & 1) != 0)) AND a.root_id != ?7";
 
 // The filter's held roots, as SQL over `a` (integers only, so written in).
 static std::string held_where(const track_filter& filter) {
@@ -856,7 +887,7 @@ counts index_db::count(const std::string& spec, const track_filter& filter, cons
       " SUM(CASE WHEN p.state = 3 THEN 1 ELSE 0 END),"
       " SUM(CASE WHEN a.kind = 2 AND a.cloud = 0 AND (p.state IS NULL OR p.state < 2)"
       "     THEN MAX(a.duration_ms - COALESCE(p.resume_ms, 0), 0) ELSE 0 END),"
-      " SUM(CASE WHEN a.kind = 1 AND a.cloud = 0 AND (p.state IS NULL OR p.state < 2) THEN 1 ELSE 0 END),"
+      " SUM(CASE WHEN a.kind IN (1, 4) AND a.cloud = 0 AND (p.state IS NULL OR p.state < 2) THEN 1 ELSE 0 END),"
       " SUM(CASE WHEN p.state = 4 THEN 1 ELSE 0 END),"
       " SUM(CASE WHEN a.cloud = 1 AND (p.state IS NULL OR p.state < 2) THEN 1 ELSE 0 END)"
       " FROM assets a JOIN roots r ON r.id = a.root_id AND r.enabled = 1"
@@ -891,6 +922,14 @@ std::uint64_t index_db::assets_in_root(std::int64_t root) {
   std::lock_guard lock(m_);
   stmt f(db_, "SELECT COUNT(*) FROM assets WHERE root_id = ?1");
   return f.bind(1, root).step_row() ? static_cast<std::uint64_t>(f.i64(0)) : 0;
+}
+
+std::uint64_t index_db::kind_in_root(std::int64_t root, asset_kind kind) {
+  std::lock_guard lock(m_);
+  stmt f(db_, "SELECT COUNT(*) FROM assets WHERE root_id = ?1 AND kind = ?2");
+  return f.bind(1, root).bind(2, std::int64_t{static_cast<int>(kind)}).step_row()
+             ? static_cast<std::uint64_t>(f.i64(0))
+             : 0;
 }
 
 std::uint64_t index_db::unavailable_in_root(std::int64_t root, const std::string& spec) {

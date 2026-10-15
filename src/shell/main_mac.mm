@@ -10502,6 +10502,8 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   const auto before = mv::shell::view_settings::from_flags(_viewFlags).hidden_kinds();
   const int32_t changed = flags ^ _viewFlags;
   _viewFlags = flags;
+  // #355: Local search indexes audio files only while they are shown.
+  if (changed & mv::shell::kSettingShowAudio) MvAddonsShowAudioChanged((flags & mv::shell::kSettingShowAudio) != 0);
   // Picked up on the main queue, like any relist.
   if (mv::shell::view_settings::from_flags(flags).hidden_kinds() != before) {
     _refilterListing = YES;
@@ -10535,6 +10537,8 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   _viewFlags = [d objectForKey:kDefaultsViewFlags] != nil
                    ? static_cast<int32_t>([d integerForKey:kDefaultsViewFlags])
                    : mv::shell::view_settings{}.flags();
+  // #355: before the AI pack attaches, which reads it.
+  MvAddonsShowAudioChanged((_viewFlags & mv::shell::kSettingShowAudio) != 0);
   _stripHintLearned = [d boolForKey:@"mv.hint.filmstripT"];
   mv::shell::reset_live_bindings();
   for (NSString* row in [d arrayForKey:kDefaultsKeys]) {

@@ -31,7 +31,8 @@ namespace mv::meta {
 
 // Bump when search_facts_of changes what it extracts: meta_cache.db rows of an
 // older version are read again. 2 (#405): rating, colour label and exposure.
-inline constexpr std::int32_t kSearchFactsVersion = 2;
+// 3 (#355): an audio file's album, album artist, composer and genre.
+inline constexpr std::int32_t kSearchFactsVersion = 3;
 
 // Between two folded fields. Never typed, never in a fold.
 inline constexpr char kFieldSeparator = '\x1f';

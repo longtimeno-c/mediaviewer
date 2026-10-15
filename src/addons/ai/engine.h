@@ -239,6 +239,9 @@ struct settings {
   bool icloud_videos = false;  // download iCloud-only clips to index them (2026-10-05, opt-in)
   bool cloud_files = false;    // fetch online-only OneDrive / iCloud Drive files to index them (2026-10-05, opt-in)
   bool read_text = true;       // #403: read the text in photos (OS OCR), on by default
+  // #355: index MP3 / M4A / M4P. The base app's File types "Show audio files",
+  // which the chrome forwards; off by default, as that setting is.
+  bool audio_files = false;
 };
 
 // A spoken-phrase search's share of the query's words a transcript line must
@@ -833,6 +836,12 @@ class engine {
   std::atomic<std::uint64_t> fetched_count_{0};
   std::atomic<std::uint64_t> icloud_left_{0};
   std::unique_ptr<cloud_files> cloud_;
+  // #355: "audio_files" was turned off: the control thread deletes the audio
+  // assets (index_db::remove_kind) and drops them from memory.
+  std::atomic<bool> drop_audio_{false};
+  // Its value for the walk and the search, read without settings_m_.
+  std::atomic<bool> audio_files_{false};
+  void drop_audio();
   std::atomic<bool> fetch_wake_{false};  // a fetch setting changed: look again now
   std::set<std::int64_t> cloud_skip_;  // the provider would not bring these down this run (fetch thread)
   std::atomic<std::uint32_t> cloud_state_{MV_AI_ICLOUD_OFF};
@@ -899,7 +908,10 @@ class engine {
 
 // Media by name, for the walk only (the host still probes bytes when it
 // decodes; docs/design/04 "probe by magic bytes"): what is worth offering it.
-[[nodiscard]] int media_kind_of_name(const std::string& name) noexcept;  // 0 none, 1 photo, 2 video
+// 3 is an audio file (#355), which the walk offers only while audio_files is on.
+[[nodiscard]] int media_kind_of_name(const std::string& name) noexcept;  // 0 none, 1 photo, 2 video, 3 audio
+// An asset kind as the MV_AI_KIND_* bit a search filters and a result carries.
+[[nodiscard]] std::uint32_t kind_bit(asset_kind kind) noexcept;
 // A comparable form of a path: '/' separators, no trailing '/', and on
 // Windows ASCII case folded.
 [[nodiscard]] std::string path_key(const std::string& path);
