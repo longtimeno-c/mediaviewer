@@ -1637,7 +1637,7 @@ Five changes to the AI pack's index and query language
 - **OCR recall and cost:** `python3 tools/ai/ocr-fixture.py <dir>` writes 40 labelled photos;
   `MV_OCR_FIXTURE_DIR=<dir> mv_ai_tests "[.ocr-fixture]"` reads them with the real OS reader and
   prints recall and per-photo times as JSON (needs Pillow; on Windows, an OCR language).
-- **Mac (M-series, 2026-10-15):** `mv_ai_tests` 126 cases, 118 passed, 8 skipped (the
+- **Mac (M-series, 2026-10-15):** `mv_ai_tests` 127 cases, 119 passed, 8 skipped (the
   model-backed ones, as before); `mv_tests` 824 cases, 813 passed, 11 skipped; `mv_import_tests`
   (the add-on host table) 112 passed. The app (`mediaviewer_lab`) and the AI SwiftUI chrome build. Vision over the fixture: 38 of
   40 phrases, read 44 ms median a photo.

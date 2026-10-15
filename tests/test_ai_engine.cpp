@@ -2431,6 +2431,40 @@ TEST_CASE("without an OS text reader nothing changes (#403)", "[ai][engine][ocr]
   CHECK(r.text_reads.load() == 0);
 }
 
+TEST_CASE("a Live Photo's movie changing keeps the still's named face (#407)", "[ai][engine][live][faces]") {
+  rig r;
+  r.file("anna_live.jpg");  // Anna on the still
+  r.file("anna_live.mov");
+  r.start();
+  auto root = r.eng->index_folder(utf8(r.photos()), false);
+  REQUIRE(root);
+  REQUIRE(r.eng->faces_enable(true));
+  REQUIRE(wait_for([&] { return (r.status().flags & MV_AI_STATUS_FACES_READY) != 0; }, kSettleMs));
+  REQUIRE(r.idle());
+  auto people = mv::json::parse(r.eng->people_json());
+  REQUIRE(people);
+  REQUIRE(people->a.size() == 1);
+  const std::int64_t anna = *people->a[0].integer("id");
+  REQUIRE(r.eng->person_rename(anna, "Anna"));
+  const auto face_ids = [&] {
+    std::set<std::int64_t> out;
+    auto faces = mv::json::parse(r.eng->person_faces_json(anna));
+    for (const auto& f : faces->a) out.insert(*f.integer("face"));
+    return out;
+  };
+  const std::set<std::int64_t> before = face_ids();
+  REQUIRE(before.size() == 1);
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+  write_bytes(r.photos() / "anna_live.mov", pattern(32, 9));
+  const int embeds = r.fast->images_embedded.load();
+  REQUIRE(r.eng->root_rescan(*root));
+  REQUIRE(wait_for([&] { return r.fast->images_embedded.load() > embeds; }, kSettleMs));
+  REQUIRE(r.idle());
+  CHECK(face_ids() == before);  // the same face row, still Anna's
+  CHECK(r.search("Anna").size() == 1);
+}
+
 TEST_CASE("audio: a folder indexed for pictures only does no audio work", "[ai][engine][audio]") {
   rig r;
   r.audio_available = true;

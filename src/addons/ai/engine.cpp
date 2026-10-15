@@ -2094,8 +2094,10 @@ void engine::motion_changed(const std::vector<std::int64_t>& ids) {
     std::lock_guard lock(models_m_);
     active = answer_.meta.spec_key;
     if (faces_) {
+      // The still's faces stay (people, pins, corrections); its movie's go,
+      // and the People pass looks at the asset again.
       for (std::int64_t id : ids) {
-        (void)faces_->forget_asset(id);
+        (void)faces_->forget_moments(id);
         faces_scanned_.erase(id);
       }
     }

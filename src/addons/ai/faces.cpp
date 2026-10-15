@@ -536,6 +536,24 @@ expected faces_db::mark_scanned(std::int64_t asset, const std::string& spec) {
   return {};
 }
 
+expected faces_db::forget_moments(std::int64_t asset) {
+  std::lock_guard lock(m_);
+  std::set<std::int64_t> touched;
+  {
+    stmt q(db_, "SELECT DISTINCT person_id FROM faces WHERE asset_id = ?1 AND pts_ms >= 0 AND person_id IS NOT NULL");
+    q.bind(1, asset);
+    while (q.step_row()) touched.insert(q.i64(0));
+  }
+  stmt d(db_, "DELETE FROM faces WHERE asset_id = ?1 AND pts_ms >= 0");
+  stmt s(db_, "DELETE FROM scanned WHERE asset_id = ?1");
+  if (!d.bind(1, asset).run() || !s.bind(1, asset).run()) return err(status::io);
+  for (std::int64_t p : touched) {
+    recompute_locked(p);
+    touch_locked(p);
+  }
+  return {};
+}
+
 expected faces_db::forget_asset(std::int64_t asset) {
   std::lock_guard lock(m_);
   std::set<std::int64_t> touched;
