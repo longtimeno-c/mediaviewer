@@ -767,6 +767,38 @@ mv_status MV_CALL t_locations_in(void* host, const char* folder, uint64_t g, mv_
   });
 }
 
+// #398: the Local search index's located assets. No file is read: the source
+// serves what the index holds, a batch at a time.
+mv_status MV_CALL t_locations_of_index(void* host, uint64_t g, mv_addon_location_fn visit, void* user) {
+  return guarded([&] {
+    if (!visit) return MV_ERR_INVALID_ARG;
+    host_table& t = self(host);
+    // Stale also once the add-on is being removed: detach joins this worker.
+    if (t.slots().is_stale(t.addon_id(), g)) return MV_ERR_CANCELLED;
+    bool stale = false;
+    bool stopped = false;  // the add-on's visit returned 0: as locations_in, MV_OK
+    std::uint32_t n = 0;
+    const index_location_visit each = [&](const mv_addon_location_entry& e) {
+      // is_stale takes the registry's lock: ask once every 64 rows.
+      if ((n++ & 63u) == 0 && t.slots().is_stale(t.addon_id(), g)) {
+        stale = true;
+        return false;
+      }
+      if (!e.path_utf8 || !e.location.has) return true;
+      if (visit(user, &e) != 0) return true;
+      stopped = true;
+      return false;
+    };
+    const auto& svc = t.services().index_locations;
+    const expected r = svc ? svc(each) : each_index_location(each);
+    if (stale) return MV_ERR_CANCELLED;
+    if (r || stopped) return MV_OK;
+    // Cancelled by neither: the index went mid-walk (the pack is going).
+    if (r.error() == status::cancelled) return MV_ERR_NOT_FOUND;
+    return to_mv(r.error());
+  });
+}
+
 void MV_CALL t_log(void*, int32_t, const char*) {
   // Deliberately nowhere yet: an add-on's messages are for a developer's
   // debugger, and the app has no log file that could leak a name (rule 6).
@@ -826,6 +858,9 @@ host_table::host_table(host_services services) : svc_(std::move(services)) {
   api_.locations_in = &t_locations_in;
   api_.tag_facts = svc_.tag_facts ? &t_tag_facts : nullptr;
   api_.read_cues = svc_.read_cues ? &t_read_cues : nullptr;
+  // Always set: whether an index is attached changes while the add-on runs
+  // (MV_ERR_NOT_FOUND meanwhile).
+  api_.locations_of_index = &t_locations_of_index;
 }
 
 void host_table::set_negotiated(std::uint32_t version) noexcept { api_.host_api = version; }

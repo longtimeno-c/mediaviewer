@@ -71,6 +71,9 @@ add_library(mv_addon STATIC
   # Issue #299: the AI pack's resume.json, read by the host at launch.
   ${R}/src/addon/ai_resume.cpp
   ${R}/src/addon/ai_resume.h
+  # #398: the Local search index's coordinates, served to other add-ons.
+  ${R}/src/addon/index_locations.cpp
+  ${R}/src/addon/index_locations.h
   ${MV_ADDON_LOADER}
   ${R}/src/abi/include/mediaviewer/mediaviewer_addon.h
 )

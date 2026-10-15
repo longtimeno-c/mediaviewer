@@ -1669,6 +1669,26 @@ Five changes to the AI pack's index and query language
   pin that size (#388); the ABI smoke test compares the C# mirror with the header. Windows OCR on
   clips, both PR 1 gates with the pack indexing are owed.
 
+### `place:` over the whole Local search index (#398, 2026-10-15)
+
+`place:portugal` in Local search with no folder open now finds the indexed Portuguese assets.
+Places walks the host table's new `locations_of_index`, which serves the AI pack's index.db
+coordinates (mv.ai.1 `each_location`) and reads no file
+([17](design/17-local-ai-search.md) "Places over the index").
+
+- **Tests:** `mv_import_tests "[slots]"` (the thunk over a fake index: every row once, a visit
+  that stops, a stale generation, a request going stale mid-walk, a removed add-on, publish and
+  retract of the process-wide source with a walk in flight); `mv_import_tests "[places]"` (the
+  real `mv_places` answering `place:portugal` / `in:spain` with no folder, and no index attached);
+  `mv_ai_tests "[places]"` (`index_db::located_assets` batches and `engine::each_location`).
+- **Mac (M-series, 2026-10-15):** `mv_import_tests` 114 passed; `mv_ai_tests` 133 cases, 125
+  passed, 8 skipped (model-backed, as before); `mv_tests "[places]"` 12 passed, 1 skipped.
+  `addons_mac.mm` compiles. Not run: the live verify (the AI pack and Places installed in the
+  app, `place:portugal` with no folder open) and the PR 1 gate, which this change does not touch
+  (no render-thread or UI-thread work).
+- **Windows:** the wiring is in `addon_abi.cpp` (publish on the `ai` load, retract and wait on
+  unload, retract at quit), compiled only by CI; no C# change. The live verify is owed there too.
+
 ### Every tag and AI provenance in the Metadata pane (#290, docs/plans/metadata-search-and-place.md slice 1, 2026-10-11)
 
 All tags now lists C2PA / Content Credentials (JPEG APP11, PNG `caBX`, ISO-BMFF `uuid`), every

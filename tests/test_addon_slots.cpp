@@ -17,6 +17,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <condition_variable>
 #include <mutex>
 #include <string>
@@ -327,6 +328,183 @@ TEST_CASE("a slow provider never delays typing; a stale answer is dropped", "[ad
   r.drain();
   REQUIRE(fc->searches == before);
   REQUIRE(mv::json::parse(r.search_json(MV_SLOT_SCOPE_FILES))->find("rows")->a.empty());
+}
+
+namespace {
+
+// What a locations_of_index walk handed the add-on.
+struct index_walk {
+  std::vector<std::string> paths;
+  std::size_t stop_after = 0;  // 0: never stop
+};
+
+int32_t MV_CALL collect_index_location(void* user, const mv_addon_location_entry* e) {
+  auto& w = *static_cast<index_walk*>(user);
+  w.paths.emplace_back(e->path_utf8);
+  return w.stop_after != 0 && w.paths.size() >= w.stop_after ? 0 : 1;
+}
+
+mv_addon_location_entry located(const std::string& path, double lat, double lon) {
+  mv_addon_location_entry e{};
+  e.path_utf8 = path.c_str();
+  e.location.has = 1;
+  e.location.lat = lat;
+  e.location.lon = lon;
+  return e;
+}
+
+// mv.ai.1's each_location over a fixed list, as the AI pack's index serves it.
+int32_t g_fake_ai_rows = 0;
+mv_status MV_CALL fake_ai_each_location(void*, mv_addon_location_fn visit, void* user) {
+  for (int32_t i = 0; i < g_fake_ai_rows; ++i) {
+    const std::string key = "photos:" + std::to_string(i);
+    const mv_addon_location_entry e = located(key, 38.7 + i * 0.001, -9.1);
+    if (visit(user, &e) == 0) return MV_ERR_CANCELLED;
+  }
+  return MV_OK;
+}
+
+}  // namespace
+
+TEST_CASE("locations_of_index streams the index's coordinates, generation-tagged, reading no file",
+          "[addon][slots]") {
+  slot_registry r;
+  REQUIRE(r.attach("slotstest", "Slots test", every_point(), std::make_unique<fake_client>(r, "slotstest")) ==
+          status::ok);
+  std::uint64_t g = r.search(MV_SLOT_SCOPE_LOCAL, "test: portugal", "");
+  r.drain();
+
+  // A fake index of 1000 located assets, plus rows the host drops (no
+  // coordinates, no key). Every 100th row can make the request go stale.
+  std::atomic<int> walks{0};
+  std::atomic<int> stale_at{-1};
+  mv::addon::host_services svc;
+  svc.slots = &r;
+  svc.index_locations = [&](const mv::addon::index_location_visit& visit) -> mv::expected {
+    ++walks;
+    for (int i = 0; i < 1000; ++i) {
+      if (i == stale_at) (void)r.search(MV_SLOT_SCOPE_LOCAL, "test: spain", "");
+      const std::string key = "/index/" + std::to_string(i) + ".jpg";
+      if (!visit(located(key, 38.0, -9.0))) return mv::err(status::cancelled);
+    }
+    mv_addon_location_entry none{};
+    none.path_utf8 = "/index/screenshot.png";
+    if (!visit(none)) return mv::err(status::cancelled);
+    mv_addon_location_entry nameless = located("", 1, 1);
+    nameless.path_utf8 = nullptr;
+    if (!visit(nameless)) return mv::err(status::cancelled);
+    return {};
+  };
+  mv::addon::host_table t(svc);
+  t.set_addon_id("slotstest");
+  const mv_host_api* api = t.api();
+  REQUIRE(api->struct_size >= offsetof(mv_host_api, locations_of_index) + sizeof(api->locations_of_index));
+  REQUIRE(api->locations_of_index);
+
+  SECTION("every located asset, once") {
+    index_walk w;
+    REQUIRE(api->locations_of_index(api->host, g, &collect_index_location, &w) == MV_OK);
+    CHECK(w.paths.size() == 1000);
+    CHECK(w.paths.front() == "/index/0.jpg");
+    CHECK(walks == 1);
+  }
+  SECTION("the add-on's visit stops it, as locations_in: MV_OK") {
+    index_walk w;
+    w.stop_after = 10;
+    REQUIRE(api->locations_of_index(api->host, g, &collect_index_location, &w) == MV_OK);
+    CHECK(w.paths.size() == 10);
+  }
+  SECTION("a stale generation never reaches the index") {
+    (void)r.search(MV_SLOT_SCOPE_LOCAL, "test: spain", "");
+    index_walk w;
+    CHECK(api->locations_of_index(api->host, g, &collect_index_location, &w) == MV_ERR_CANCELLED);
+    CHECK(walks == 0);
+    CHECK(w.paths.empty());
+  }
+  SECTION("a request going stale mid-walk stops it within 64 rows") {
+    stale_at = 100;
+    index_walk w;
+    CHECK(api->locations_of_index(api->host, g, &collect_index_location, &w) == MV_ERR_CANCELLED);
+    CHECK(w.paths.size() >= 100);
+    CHECK(w.paths.size() <= 164);
+  }
+  SECTION("a removed add-on's walk stops: detach does not wait it out") {
+    r.detach("slotstest");
+    index_walk w;
+    CHECK(api->locations_of_index(api->host, g, &collect_index_location, &w) == MV_ERR_CANCELLED);
+    CHECK(walks == 0);
+  }
+  SECTION("NULL visit") {
+    CHECK(api->locations_of_index(api->host, g, nullptr, nullptr) == MV_ERR_INVALID_ARG);
+  }
+}
+
+TEST_CASE("the index's coordinates come from the AI pack while it is published, and stop when it goes",
+          "[addon][slots]") {
+  slot_registry r;
+  REQUIRE(r.attach("slotstest", "Slots test", every_point(), std::make_unique<fake_client>(r, "slotstest")) ==
+          status::ok);
+  const std::uint64_t g = r.search(MV_SLOT_SCOPE_LOCAL, "test: portugal", "");
+  r.drain();
+  mv::addon::host_services svc;  // no index_locations: the process's source
+  svc.slots = &r;
+  mv::addon::host_table t(svc);
+  t.set_addon_id("slotstest");
+  const mv_host_api* api = t.api();
+
+  // Nothing published (the AI pack not loaded): not found, nothing visited.
+  mv::addon::retract_index_locations();
+  index_walk w;
+  CHECK(api->locations_of_index(api->host, g, &collect_index_location, &w) == MV_ERR_NOT_FOUND);
+  CHECK(w.paths.empty());
+
+  // An older pack (its mv.ai.1 table stops before each_location) is no source.
+  mv_ai_api ai{};
+  ai.struct_size = static_cast<uint32_t>(offsetof(mv_ai_api, each_location));
+  ai.each_location = &fake_ai_each_location;
+  CHECK_FALSE(mv::addon::ai_index_locations(&ai));
+  CHECK_FALSE(mv::addon::ai_index_locations(nullptr));
+
+  // The pack's each_location, through the published source.
+  ai.struct_size = sizeof(mv_ai_api);
+  g_fake_ai_rows = 700;
+  mv::addon::publish_index_locations(mv::addon::ai_index_locations(&ai));
+  CHECK(api->locations_of_index(api->host, g, &collect_index_location, &w) == MV_OK);
+  CHECK(w.paths.size() == 700);
+  CHECK(w.paths[3] == "photos:3");
+
+  // Retracted while a walk is inside the source: the walk stops at its next
+  // row (MV_ERR_NOT_FOUND: the index went), and wait_index_locations_idle
+  // returns only once it has left.
+  std::atomic<bool> inside{false}, release{false};
+  mv::addon::publish_index_locations([&](const mv::addon::index_location_visit& visit) -> mv::expected {
+    const std::string key = "/index/a.jpg";
+    if (!visit(located(key, 1, 1))) return mv::err(status::cancelled);
+    inside = true;
+    while (!release) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    if (!visit(located(key, 1, 1))) return mv::err(status::cancelled);
+    return {};
+  });
+  index_walk w2;
+  mv_status walked = MV_OK;
+  std::thread walker([&] { walked = api->locations_of_index(api->host, g, &collect_index_location, &w2); });
+  REQUIRE(eventually([&] { return inside.load(); }));
+  mv::addon::retract_index_locations();
+  std::atomic<bool> idle{false};
+  std::thread waiter([&] {
+    mv::addon::wait_index_locations_idle();
+    idle = true;
+  });
+  std::this_thread::sleep_for(std::chrono::milliseconds(30));
+  CHECK_FALSE(idle.load());
+  release = true;
+  walker.join();
+  waiter.join();
+  CHECK(idle.load());
+  CHECK(walked == MV_ERR_NOT_FOUND);
+  CHECK(w2.paths.size() == 1);
+  // And a new walk finds no index.
+  CHECK(api->locations_of_index(api->host, g, &collect_index_location, &w2) == MV_ERR_NOT_FOUND);
 }
 
 TEST_CASE("badges for a 10,000-file folder cost no add-on call per tile", "[addon][slots]") {

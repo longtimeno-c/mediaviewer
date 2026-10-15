@@ -21,6 +21,7 @@
 
 #include <mediaviewer/mediaviewer_addon.h>
 
+#include "addon/index_locations.h"
 #include "addon/media.h"
 #include "addon/slots.h"
 #include "addon/store.h"
@@ -90,6 +91,11 @@ struct host_services {
   std::function<expected(const std::string& path, std::int64_t start_ms, std::int64_t max_ms, std::uint32_t max_cues,
                          const std::function<bool(const cue&)>& visit)>
       read_cues;
+  // #398: the Local search index's located assets (the host table's
+  // locations_of_index). Empty: the process's published source
+  // (addon/index_locations.h), which each host fills from the AI pack while it
+  // is attached. Tests inject a fake.
+  std::function<expected(const index_location_visit& visit)> index_locations;
   std::string data_dir;         // created by the table
   std::string default_library;  // Pictures\MediaViewer
   // Honour mv_addon_copy_request's fault injection (tests, the verify rig).
