@@ -103,7 +103,9 @@ TEST_CASE("settings store: typed values round-trip through the file and a restar
   REQUIRE(again.get_int("update", "auto_check", 1) == 0);
 
   // The file stays readable by the Win32 profile API an older build used.
-  REQUIRE(::GetPrivateProfileIntW(L"view", L"background", -1, path.c_str()) == 4);
+  REQUIRE(::GetPrivateProfileIntW(L"view", L"sticky_zoom", -1, path.c_str()) == 1);
+  // Issue #408: no canvas background, so nothing writes the key any more.
+  REQUIRE(::GetPrivateProfileIntW(L"view", L"background", 77, path.c_str()) == 77);
   REQUIRE(::GetPrivateProfileIntW(L"view", L"ai_badge", -1, path.c_str()) == 0);
   wchar_t d1[64]{};
   ::GetPrivateProfileStringW(L"destinations", L"d1", L"", d1, 64, path.c_str());
