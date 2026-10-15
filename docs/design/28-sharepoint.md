@@ -223,6 +223,10 @@ second while bytes move; those posts update chrome and never present the canvas.
 - **Settings → Add-ons**: an add-on that fills slots and has a window gets **Open …**; Sharepoint
   is offered with one click while it is not installed (its release channel,
   `mediaviewer-addon-sharepoint-<platform>`).
+  On Windows each add-on there is one card (#442): its name, what it does, its state, the install
+  bar while it installs, its buttons (**Open …**, **Update**, **Remove…**), its message and its
+  settings page together, Import's status and restart inside Import's card; the Mac's
+  `AddonsSection` / `SlotAddonsSection` group the same way.
 - **The gallery's range** on both hosts ([16](16-commands.md#gallery-range-and-share-413)).
 - **An add-on's screen window on Windows is a MediaViewer window** (#442, `OpenScreenWindow`): the
   app's icon in the title bar, taskbar and Alt+Tab (`Shared/AppIcon.cs`, as Import's windows);

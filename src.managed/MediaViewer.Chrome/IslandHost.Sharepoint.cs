@@ -96,14 +96,21 @@ public static partial class IslandHost
 
     // ---- the offer: Settings and the share icon's flyout -----------------------------------
 
-    private static void BuildSharepointOffer(StackPanel panel, List<string>? thenOpen)
+    // `titled`: the name heads the panel (the share icon's flyout); Settings'
+    // card carries its own (#442).
+    private static void BuildSharepointOffer(StackPanel panel, List<string>? thenOpen, bool titled = true)
     {
-        panel.Children.Add(Label("Sharepoint"));
-        panel.Children.Add(WrappedLabel(SharepointDescription));
+        if (titled)
+        {
+            TextBlock name = Label("Sharepoint");
+            name.Foreground = Brush(Title);
+            panel.Children.Add(name);
+        }
+        panel.Children.Add(Note(SharepointDescription));
         if (_addonsElsewhere)
         {
             // A later window: the first one manages add-ons (docs/design/18 "One host process").
-            panel.Children.Add(WrappedLabel(AddonsElsewhereText));
+            panel.Children.Add(Note(AddonsElsewhereText));
             return;
         }
         if (SharepointSlot.Busy && SharepointSlot.Phase is { } phase)
@@ -119,34 +126,34 @@ public static partial class IslandHost
         {
             case OfferKind.Available:
             {
-                Button install = EditButton($"Install Sharepoint, {SizeText(offer.ArchiveSize)}",
-                                            () => StartSharepointInstall(thenOpen));
-                install.AllowFocusOnInteraction = true;
+                Button install = SettingsButton($"Install Sharepoint, {SizeText(offer.ArchiveSize)}",
+                                                () => StartSharepointInstall(thenOpen));
                 install.IsTabStop = true;
+                install.HorizontalAlignment = HorizontalAlignment.Left;
                 install.IsEnabled = !SharepointSlot.Busy;
                 panel.Children.Add(install);
                 break;
             }
             case OfferKind.NotPublished:
-                panel.Children.Add(WrappedLabel("Sharepoint is not published for download yet. It will be offered here once a release carries it."));
+                panel.Children.Add(Note("Sharepoint is not published for download yet. It will be offered here once a release carries it."));
                 break;
             case OfferKind.NeedsNewerApp:
-                panel.Children.Add(WrappedLabel("The published Sharepoint needs a newer MediaViewer. Update MediaViewer, then install it."));
+                panel.Children.Add(Note("The published Sharepoint needs a newer MediaViewer. Update MediaViewer, then install it."));
                 break;
             case OfferKind.Unreachable:
             {
-                panel.Children.Add(WrappedLabel("Could not reach the download server."));
-                Button retry = EditButton("Try again", () => ProbeOffer(SharepointSlot));
-                retry.AllowFocusOnInteraction = true;
+                panel.Children.Add(Note("Could not reach the download server."));
+                Button retry = SettingsButton("Try again", () => ProbeOffer(SharepointSlot));
                 retry.IsTabStop = true;
+                retry.HorizontalAlignment = HorizontalAlignment.Left;
                 panel.Children.Add(retry);
                 break;
             }
             default:
-                panel.Children.Add(WrappedLabel("Checking for Sharepoint…"));
+                panel.Children.Add(Note("Checking for Sharepoint…"));
                 break;
         }
-        if (_sharepointMessage.Length > 0) panel.Children.Add(WrappedLabel(_sharepointMessage));
+        if (_sharepointMessage.Length > 0) panel.Children.Add(Note(_sharepointMessage));
     }
 
     private static void RefreshSharepointOffer()
