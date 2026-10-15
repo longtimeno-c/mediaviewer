@@ -923,12 +923,17 @@ decode_claim claim_decode(mv_session* session, const std::string& path, mv::gene
   std::lock_guard lock(session->lru_mutex);
   for (auto& d : session->decode_inflight) {
     if (d.path != path) continue;
+    // Issue #435: a job from an older listing cancels itself at its
+    // folder_generation check, so it can neither stand in for this one nor be
+    // handed it. A folder or result list opened over a neighbour's prefetch
+    // keeps the job generation, and that prefetch used to swallow the decode.
+    if (d.folder_gen != folder_gen) continue;
     const mv::generation running = d.ticket->handoff.load(std::memory_order_acquire);
     if (running == gen) return decode_claim::duplicate;
     // An older job is doomed by the navigation that bumped the counter, so it
     // must not suppress the decode of the image the user has landed on -
     // unless it is running and can be handed that navigation instead.
-    if (d.handoff_ok && d.folder_gen == folder_gen && running < gen) {
+    if (d.handoff_ok && running < gen) {
       d.ticket->handoff.store(gen, std::memory_order_release);
       out = d.ticket;
       return decode_claim::handed_off;
