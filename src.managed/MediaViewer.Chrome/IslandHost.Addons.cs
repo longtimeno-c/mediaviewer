@@ -1016,14 +1016,21 @@ public static partial class IslandHost
         heading.FontSize = TypeHeading;
         AutomationProperties.SetHeadingLevel(heading, Microsoft.UI.Xaml.Automation.Peers.AutomationHeadingLevel.Level2);
         view.Children.Add(heading);
-        _addonRow = new StackPanel { Spacing = Space(8) };
+        // #442: Import's card holds everything of Import: its row (name, line,
+        // state, buttons or the install bar), its settings page, its status and
+        // its restart, as the Mac's AddonsSection does.
+        (Border importCard, StackPanel importBody) = AddonCard("Import");
+        importBody.Children.Clear();  // RefreshAddonRow writes the title itself
+        _addonRow = new StackPanel { Spacing = Space(6) };
         _addonStatus = Note("");
-        view.Children.Add(_addonRow);
-        view.Children.Add(FirstPartyPageHost(ImportSlot));  // PR 56: its settings page
-        view.Children.Add(_addonStatus);
+        importBody.Children.Add(_addonRow);
+        importBody.Children.Add(FirstPartyPageHost(ImportSlot));  // PR 56: its settings page
+        importBody.Children.Add(_addonStatus);
         _importRestartButton = AddonRestartButton();
-        view.Children.Add(_importRestartButton);
-        // docs/design/25 PRs 58-59: MediaViewer's own add-ons that fill screens and slots.
+        importBody.Children.Add(_importRestartButton);
+        view.Children.Add(importCard);
+        // docs/design/25 PRs 58-59: MediaViewer's own add-ons that fill screens
+        // and slots, a card each (IslandHost.Slots.cs).
         AddSlotAddonsSettingsRows(view);
         RefreshAddonRow();
         // Opening Settings asks the channel, whatever the automatic-check

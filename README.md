@@ -225,7 +225,7 @@ The optional **Import** add-on copies a card or folder into your library.
 The optional **Sharepoint** add-on sends photos, video and audio to another MediaViewer nearby.
 
 - **Pick, then send.** Shift-click a run of photos in the gallery and press *Send*, or drag them straight out of the grid.
-- **Same code on both screens.** Nothing moves until the person on the other side checks the code and accepts.
+- **Type the code the other screen shows.** Nothing moves until you have typed it and the person on the other side accepts.
 - **Verified copies.** Every file is checked as it lands and read back before it appears; a cancelled or dropped send leaves nothing half-written, and your originals stay where they are.
 - **Wi-Fi or Bluetooth.** Over the same network for anything, over Bluetooth for a few photos when you are not on one. No account, no cloud.
 

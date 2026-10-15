@@ -18,7 +18,7 @@ struct node_type_info {
   const char* name;
 };
 
-constexpr std::array<node_type_info, 19> kTypes{{
+constexpr std::array<node_type_info, 20> kTypes{{
     {node_type::stack, "stack"},
     {node_type::grid, "grid"},
     {node_type::scroll, "scroll"},
@@ -38,6 +38,7 @@ constexpr std::array<node_type_info, 19> kTypes{{
     {node_type::progress, "progress"},
     {node_type::separator, "separator"},
     {node_type::surface, "surface"},
+    {node_type::tiles, "tiles"},
 }};
 
 bool container(node_type t) noexcept {
@@ -60,6 +61,7 @@ bool needs_label(node_type t) noexcept {
     case node_type::text_field:
     case node_type::progress:
     case node_type::surface:
+    case node_type::tiles:
       return true;
     default:
       return false;
@@ -177,6 +179,37 @@ bool rows(const json::value& v, std::initializer_list<std::string_view> required
   return true;
 }
 
+// A tiles node's items (#442): id and text required; detail, initials (a
+// short monogram the host draws in the circle), progress (-1 none, else 0..1,
+// drawn as a ring) and mark ("done" / "failed") optional. Ids unique.
+bool tile_rows(const json::value& v, std::size_t& items) {
+  if (v.k != json::kind::array || v.a.size() > 256) return false;
+  items += v.a.size();
+  if (items > kMaxItems) return false;
+  std::set<std::string_view> seen;
+  for (const json::value& r : v.a) {
+    if (r.k != json::kind::object) return false;
+    for (const auto& [key, value] : r.o) {
+      bool ok = false;
+      if (key == "id") {
+        ok = str_max(value, 256);
+      } else if (key == "text" || key == "detail") {
+        ok = str_max(value, kMaxLabel);
+      } else if (key == "initials") {
+        ok = str_max(value, 16);
+      } else if (key == "progress") {
+        ok = num_in(value, -1.0, 1.0);
+      } else if (key == "mark") {
+        ok = one_of(value, {"done", "failed"});
+      }
+      if (!ok) return false;
+    }
+    const std::string* id = r.str("id");
+    if (!id || !r.str("text") || !seen.insert(*id).second) return false;
+  }
+  return true;
+}
+
 error check_props(node& n, std::size_t& items) {
   const json::value& p = n.props;
   for (const auto& [key, v] : p.o) {
@@ -189,9 +222,12 @@ error check_props(node& n, std::size_t& items) {
     } else {
       switch (n.type) {
         case node_type::stack:
+          // "look": "card" (#442): the host draws the stack on a rounded
+          // surface with padding, as its Settings cards.
           ok = (key == "axis" && one_of(v, {"vertical", "horizontal"})) ||
                (key == "spacing" && int_in(v, 0, 64)) ||
-               (key == "align" && one_of(v, {"start", "center", "end", "fill"}));
+               (key == "align" && one_of(v, {"start", "center", "end", "fill"})) ||
+               (key == "look" && one_of(v, {"plain", "card"}));
           break;
         case node_type::grid:
           ok = (key == "columns" && int_in(v, 1, 12)) || (key == "spacing" && int_in(v, 0, 64));
@@ -207,7 +243,7 @@ error check_props(node& n, std::size_t& items) {
         case node_type::text:
           ok = (key == "text" && str_max(v, kMaxText, true)) ||
                (key == "style" &&
-                one_of(v, {"body", "title", "heading", "secondary", "caption", "mono"})) ||
+                one_of(v, {"body", "title", "heading", "secondary", "caption", "mono", "display"})) ||
                (key == "copyable" && v.k == json::kind::boolean) || (key == "lines" && int_in(v, 0, 100));
           break;
         case node_type::image:
@@ -277,13 +313,24 @@ error check_props(node& n, std::size_t& items) {
           // "pick": "folder" (2026-10-15, Sharepoint): the host adds a
           // Choose... button that shows the system folder dialog and reports
           // the folder as the field's change; typing a path still works.
+          // "look": "code" with "digits": n (#442): a large entry for a short
+          // code that takes digits only and submits by itself once n are typed.
           ok = (key == "value" && str_max(v, kMaxText, true)) ||
                (key == "placeholder" && str_max(v, kMaxLabel)) ||
                (key == "multiline" && v.k == json::kind::boolean) ||
-               (key == "pick" && one_of(v, {"folder"}));
+               (key == "pick" && one_of(v, {"folder"})) ||
+               (key == "look" && one_of(v, {"plain", "code"})) || (key == "digits" && int_in(v, 1, 12));
           break;
         case node_type::progress:
-          ok = key == "value" && num_in(v, -1.0, 1.0);
+          // "look": "ring" (#442): a circle that fills, `size` points across.
+          ok = (key == "value" && num_in(v, -1.0, 1.0)) || (key == "look" && one_of(v, {"bar", "ring"})) ||
+               (key == "size" && int_in(v, 16, 256));
+          break;
+        case node_type::tiles:
+          // "static": shown, not chosen (a sender's avatar on an offer): no
+          // focus, no events.
+          ok = (key == "items" && tile_rows(v, items)) || (key == "selection" && string_array(v, 256, 256)) ||
+               (key == "size" && int_in(v, 32, 160)) || (key == "static" && v.k == json::kind::boolean);
           break;
         case node_type::separator:
           ok = false;
@@ -337,6 +384,7 @@ error check_props(node& n, std::size_t& items) {
       break;
     case node_type::thumbnail_grid:
     case node_type::list:
+    case node_type::tiles:
       if (!has("items")) return error::bad_prop;
       break;
     case node_type::table:
@@ -511,6 +559,7 @@ bool interactive(node_type t) noexcept {
     case node_type::slider:
     case node_type::number:
     case node_type::text_field:
+    case node_type::tiles:
       return true;
     default:
       return false;
@@ -683,6 +732,7 @@ error tree::check_event(std::string_view node_id, std::uint32_t kind, std::strin
       (n->props.find("interactive")->k == json::kind::object || n->props.boolean("interactive").value_or(false));
   if (!interactive(n->type) && !live_surface) return error::not_interactive;
   if (const auto d = n->props.boolean("disabled"); d && *d) return error::not_interactive;
+  if (n->type == node_type::tiles && n->props.boolean("static").value_or(false)) return error::not_interactive;
   std::optional<json::value> v;
   if (!value.empty()) {
     v = json::parse(value, 4);
@@ -743,7 +793,8 @@ error tree::check_event(std::string_view node_id, std::uint32_t kind, std::strin
       return error::none;
     case node_type::list:
     case node_type::table:
-    case node_type::thumbnail_grid: {
+    case node_type::thumbnail_grid:
+    case node_type::tiles: {
       const char* key = n->type == node_type::thumbnail_grid ? "path" : "id";
       const json::value* items = n->props.find(n->type == node_type::table ? "rows" : "items");
       if (kind == ev_activate) {

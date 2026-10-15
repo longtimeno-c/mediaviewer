@@ -282,7 +282,7 @@ class SharepointPackTest(unittest.TestCase):
             self.assertEqual(lic[native], "GPL-3.0-or-later")
             self.assertNotIn("mv_sharepoint.pdb", lic)
             c = m["contributes"]
-            self.assertEqual(sorted(c), ["api", "commands", "context_menu", "screens"])
+            self.assertEqual(sorted(c), ["api", "commands", "context_menu", "screens", "status_items"])
             self.assertEqual(c["screens"][0]["place"], "window")
             self.assertEqual(c["context_menu"][0]["id"], "send_files")
             # Issue #410: no new default key until the command table has one.
