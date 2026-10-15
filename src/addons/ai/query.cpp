@@ -17,6 +17,7 @@ namespace {
 
 constexpr std::uint32_t kPhotos = 1u;  // MV_AI_KIND_PHOTOS (the ABI header stays out of this TU)
 constexpr std::uint32_t kVideos = 2u;  // MV_AI_KIND_VIDEOS
+constexpr std::uint32_t kAudio = 8u;   // MV_AI_KIND_AUDIO (#355)
 
 bool space(unsigned char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v'; }
 
@@ -56,12 +57,17 @@ bool stop_word(std::string_view w) {
                                        "some", "this", "that", "who", "what", "where", "when"});
 }
 
-std::uint32_t kind_word(std::string_view folded) {
+// `named`: the word follows is: / type: / kind:, where "music" and "song" can
+// only mean audio files. Bare, they stay description words: "piano music" is
+// a sound to find, not a filter (#355).
+std::uint32_t kind_word(std::string_view folded, bool named = false) {
   if (is_one_of(folded, {"video", "videos", "clip", "clips", "movie", "movies", "film", "films"})) return kVideos;
   if (is_one_of(folded, {"photo", "photos", "picture", "pictures", "pic", "pics", "image", "images", "still",
                          "stills"})) {
     return kPhotos;
   }
+  if (is_one_of(folded, {"audio", "songs", "tracks"})) return kAudio;
+  if (named && is_one_of(folded, {"music", "song", "track", "mp3", "m4a"})) return kAudio;
   return 0;
 }
 
@@ -677,7 +683,7 @@ parsed parse(std::string_view utf8) {
       }
     }
     if (t.op == "is" || t.op == "type" || t.op == "kind") {
-      const std::uint32_t k = kind_word(fold(t.text));
+      const std::uint32_t k = kind_word(fold(t.text), true);
       (t.negated ? p.not_kinds : p.kinds) |= k;
       continue;
     }
@@ -727,7 +733,7 @@ parsed parse(std::string_view utf8) {
   const auto take_kind = [&](std::size_t at, bool first) {
     const std::uint32_t k = kind_word(fold(p.words[at].text));
     if (k == 0) return;
-    if (!first || k == kVideos) p.kinds |= k;
+    if (!first || k == kVideos || k == kAudio) p.kinds |= k;
     p.words.erase(p.words.begin() + static_cast<std::ptrdiff_t>(at));
   };
   if (!bare.empty()) {
@@ -743,7 +749,7 @@ parsed parse(std::string_view utf8) {
 plan resolve(const parsed& p, std::span<const person_name> people) {
   plan out;
   out.kinds = p.kinds;
-  if (p.not_kinds != 0) out.kinds = (out.kinds == 0 ? (kPhotos | kVideos) : out.kinds) & ~p.not_kinds;
+  if (p.not_kinds != 0) out.kinds = (out.kinds == 0 ? (kPhotos | kVideos | kAudio) : out.kinds) & ~p.not_kinds;
   if ((p.kinds != 0 || p.not_kinds != 0) && out.kinds == 0) out.impossible = true;
   out.from_unix = p.from_unix;
   out.to_unix = p.to_unix;

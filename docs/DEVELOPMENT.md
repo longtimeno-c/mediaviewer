@@ -1636,6 +1636,28 @@ The app's search text has none.
   `main.cpp`, and the running WinUI search and `/` find box. Also owed there: the verify line
   and the PR 1 gate.
 
+### Local search over audio files, slice A1 (#355, docs/plans/audio-search.md, 2026-10-15)
+
+MP3, M4A and M4P are indexed by their tags and cover art, only while Settings → File types
+**Show audio files** is on ([17](design/17-local-ai-search.md) "Audio"). The index goes to schema
+8 (no table change). `meta_cache.db` rows are read again once (`kSearchFactsVersion` 3: album,
+album artist, composer, genre). Sound and speech on audio files are slice A2.
+
+- **Tests:** `mv_ai_tests "[audiofiles],[query]"` (the gate: off adds no row and decodes nothing,
+  on indexes, off drops results at once and rows after, a restart keeps it off; the kind bit,
+  `is:audio`, an older chrome's 3); `mv_tests "[audio]"` (cover art from an M4A the test writes,
+  none is `not_found`; title, artist, album and genre as search fields);
+  `swift test --filter SearchModelTests` (the Audio segment).
+- **Mac (M-series, 2026-10-15):** `mv_ai_tests` 133 cases, 125 passed, 8 skipped (model-backed);
+  `mv_tests` 830 cases, 819 passed, 11 skipped; `mv_import_tests` 112 passed; `MediaViewer`,
+  `mediaviewer_lab`, `mv_ai` and the AI SwiftUI chrome build.
+- **Windows:** both C# chromes compile on the Mac. The native change is portable (pack,
+  `addon_media.cpp`, `edit/clip_sample.cpp`, `meta/search.cpp`) and is compiled on Windows only
+  by CI.
+- **Owed:** the plan's A1 verify on a real folder (300 photos and 200 audio files) in the app on
+  both hosts; both PR 1 gates with the pack indexing audio files; timing the walk with the
+  setting off.
+
 ### Local search reads more of each file (#403–#407, 2026-10-15)
 
 Five changes to the AI pack's index and query language

@@ -218,6 +218,11 @@ search_facts search_facts_of(const metadata& m) {
                         "Container.com.apple.quicktime.author", "Container.com.apple.quicktime.artist"}) {
     if (const property* p = find_tag(m, t)) b.add_list(value_of(*p));
   }
+  // #355: a song's album, album artist, composer and genre (ID3 / iTunes tags,
+  // as libavformat names them), so "abbey road" finds the album's tracks.
+  for (const char* t : {"Container.album", "Container.album_artist", "Container.composer", "Container.genre"}) {
+    if (const property* p = find_tag(m, t)) b.add_list(value_of(*p));
+  }
   return f;
 }
 

@@ -116,6 +116,8 @@
 - (void)folderChanged:(NSString*)dir;
 // The canvas item changed ("" none): scrub markers for a clip in the search.
 - (void)itemChanged:(NSString*)path;
+// #355: File types "Show audio files", on attach and on each change.
+- (void)showAudioChanged:(BOOL)on;
 // Settings -> Local search: the management view, owned (and kept) by the chrome.
 - (NSView*)settingsView;
 @end
@@ -210,6 +212,7 @@ struct mac_addons {
   std::mutex thumbs_mutex;  // the lazy open below; lookups are the store's own
   mv::image::thumb_store thumbs;
   std::string folder;       // the directory the viewer last opened
+  bool show_audio = false;  // #355: File types "Show audio files" [main-thread]
   // Another window's process holds Add-ons/.host.lock (main_mac.mm
   // MvClaimAddonHost): this one loads the AI pack through its read-only door
   // only, indexes nothing, loads no Import, installs or removes nothing, and
@@ -733,6 +736,10 @@ bool attach_ai(std::unique_ptr<mv::addon::loaded_addon>& loaded) {
   s.ai.error.clear();
   mv::shell::set_addon_commands_available(mv::shell::addon_family::ai, true);
   register_local_search_provider(true);
+  // #355: before anything is searched, whether audio files are.
+  if ([chrome respondsToSelector:@selector(showAudioChanged:)]) {
+    [(id<MVAIChrome>)chrome showAudioChanged:s.show_audio ? YES : NO];
+  }
   // The folder already on screen counts as opened.
   if (!s.folder.empty() && [chrome respondsToSelector:@selector(folderChanged:)]) {
     [(id<MVAIChrome>)chrome folderChanged:[NSString stringWithUTF8String:s.folder.c_str()]];
@@ -1100,6 +1107,13 @@ void MvAddonsFolderOpened(const std::string& dir) {
   if (chrome && [chrome respondsToSelector:@selector(folderChanged:)]) {
     [chrome folderChanged:ns(dir)];
   }
+}
+
+void MvAddonsShowAudioChanged(bool on) {
+  mac_addons& s = state();
+  s.show_audio = on;
+  id<MVAIChrome> chrome = ai_chrome();
+  if (chrome && [chrome respondsToSelector:@selector(showAudioChanged:)]) [chrome showAudioChanged:on ? YES : NO];
 }
 
 void MvAddonsItemChanged(const std::string& path) {

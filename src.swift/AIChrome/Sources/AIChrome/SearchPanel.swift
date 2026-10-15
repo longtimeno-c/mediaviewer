@@ -446,8 +446,9 @@ struct SearchRootView: View {
   private func kindGroup(captioned: Bool) -> some View {
     FilterGroup(caption: captioned ? "Show" : nil) {
       SegmentTrack {
-        ForEach(SearchKinds.allCases) { k in
-          FilterButton(label: k.label, on: model.kinds == k, style: .segment, help: k.help) {
+        ForEach(SearchKinds.shown(audioFiles: model.audioFiles)) { k in
+          FilterButton(label: k.label, on: model.kinds == k, style: .segment,
+                       help: k == .all && model.audioFiles ? "Show photos, videos and audio files." : k.help) {
             model.kinds = k
             model.chipsChanged()
           }

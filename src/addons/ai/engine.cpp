@@ -139,7 +139,19 @@ int media_kind_of_name(const std::string& name) noexcept {
   for (const char* e : videos) {
     if (ext == e) return 2;
   }
+  // #355: MP3 and iTunes M4A / M4P (io::is_audio_name's set).
+  for (const char* e : {"mp3", "m4a", "m4p"}) {
+    if (ext == e) return 3;
+  }
   return 0;
+}
+
+std::uint32_t kind_bit(asset_kind kind) noexcept {
+  switch (kind) {
+    case asset_kind::video: return MV_AI_KIND_VIDEOS;
+    case asset_kind::audio: return MV_AI_KIND_AUDIO;
+    default: return MV_AI_KIND_PHOTOS;
+  }
 }
 
 std::string path_key(const std::string& path) {
@@ -437,7 +449,7 @@ void engine::row_target_locked(std::int64_t asset, std::int64_t pts_ms, std::str
   if (it == assets_.end()) return;
   const asset_meta& m = it->second;
   path = m.path;
-  kind = m.kind == asset_kind::video ? MV_AI_KIND_VIDEOS : MV_AI_KIND_PHOTOS;
+  kind = kind_bit(m.kind);
   // A Live Photo's moment opens its movie there, as a clip's moment does.
   if (m.kind == asset_kind::photo && pts_ms >= 0 && !m.motion.empty()) {
     path = m.motion;
@@ -492,6 +504,8 @@ void engine::load_settings() {
   settings_.icloud_videos = doc->boolean("icloud_videos").value_or(false);
   settings_.cloud_files = doc->boolean("cloud_files").value_or(false);
   settings_.read_text = doc->boolean("read_text").value_or(true);
+  settings_.audio_files = doc->boolean("audio_files").value_or(false);
+  audio_files_ = settings_.audio_files;
 }
 
 void engine::save_settings() const {
@@ -509,6 +523,7 @@ void engine::save_settings() const {
     w.key("icloud_videos").boolean(settings_.icloud_videos);
     w.key("cloud_files").boolean(settings_.cloud_files);
     w.key("read_text").boolean(settings_.read_text);
+    w.key("audio_files").boolean(settings_.audio_files);
     w.end_object();
   }
   const std::string tmp = join(data_dir_, "settings.json.tmp");
@@ -543,6 +558,7 @@ std::string engine::settings_json() const {
   w.key("icloud_videos").boolean(s.icloud_videos);
   w.key("cloud_files").boolean(s.cloud_files);
   w.key("read_text").boolean(s.read_text);
+  w.key("audio_files").boolean(s.audio_files);
   // Whether the OS can read text here (Settings says why the switch does
   // nothing when it cannot): true until the reader has been asked for. Not
   // models_m_: this is the UI thread's call.
@@ -619,6 +635,7 @@ expected engine::set_setting(const std::string& key, const std::string& value_js
   }
   bool reload = false;
   bool pieces = false;
+  int audio_turned = 0;  // #355: 1 on, -1 off
   {
     std::lock_guard lock(settings_m_);
     if (key == "compute") {
@@ -648,6 +665,11 @@ expected engine::set_setting(const std::string& key, const std::string& value_js
     } else if (key == "read_text") {
       settings_.read_text = x != 0;  // #403: the next claim takes (or leaves) the text track
       text_counts_due_ = true;
+    } else if (key == "audio_files") {
+      const bool on = x != 0;
+      if (on != settings_.audio_files) audio_turned = on ? 1 : -1;
+      settings_.audio_files = on;
+      audio_files_ = on;  // the search drops audio results from here on
     } else if (key == "precision") {
       // Read by each search as it starts: no reload, no re-index (docs/design/17
       // "Precision scale"). Out of range clamps to the nearest end.
@@ -659,6 +681,18 @@ expected engine::set_setting(const std::string& key, const std::string& value_js
   if (!pieces) save_settings();
   if (reload || pieces) {
     (reload ? reload_models_ : reload_pieces_) = true;
+    control_cv_.notify_all();
+  }
+  if (audio_turned != 0) {
+    // On: every enabled root is walked again and its audio files queued (the
+    // rest are unchanged by (mtime, size)). Off: the control thread deletes
+    // the audio rows; the search already leaves them out.
+    std::lock_guard lock(control_m_);
+    if (audio_turned > 0) {
+      rescan_all_ = true;
+    } else {
+      drop_audio_ = true;
+    }
     control_cv_.notify_all();
   }
   if (key == "icloud_videos" || key == "cloud_files") {
@@ -1800,6 +1834,7 @@ void engine::control_loop() {
       }
       if (t) run_transfer(std::move(*t));
     }
+    if (drop_audio_.exchange(false)) drop_audio();
     bool all = false;
     std::set<std::int64_t> some;
     const double t = now_s();
@@ -1906,7 +1941,7 @@ void engine::control_loop() {
     std::unique_lock lock(control_m_);
     control_cv_.wait_for(lock, std::chrono::milliseconds(more_tags ? 0 : 1000), [this] {
       if (stopping_.load() || reload_models_.load() || reload_pieces_.load() || rescan_all_ ||
-          !rescan_roots_.empty()) {
+          !rescan_roots_.empty() || drop_audio_.load()) {
         return true;
       }
       std::lock_guard tl(transfer_m_);  // control_m_ -> transfer_m_ (a leaf)
@@ -2166,6 +2201,9 @@ void engine::scan_root(const root_row& root) {
     active_root_ = root.path;
   }
   const std::int64_t gen = db_->next_generation();
+  // One value for the whole walk: a toggle mid-walk is the next walk's (on)
+  // or drop_audio's (off).
+  const bool audio_files = audio_files_.load();
   std::vector<index_db::seen_file> batch;
   std::vector<std::int64_t> changed;
   bool failed = false;
@@ -2178,7 +2216,9 @@ void engine::scan_root(const root_row& root) {
   const expected walked = host_.walk(root.path, root.recursive ? 64 : 0, [&](const host::entry& e) {
     if (stopping_) return false;
     const std::string key = path_key(e.path);
-    if (housekeeping(key) || media_kind_of_name(e.path) == 0) return true;
+    const int k = media_kind_of_name(e.path);
+    // #355: audio only while the setting is on; off, it costs nothing past the name.
+    if (housekeeping(key) || k == 0 || (k == 3 && !audio_files)) return true;
     by_dir[key_parent(key)].push_back(e);
     return true;
   });
@@ -2216,6 +2256,13 @@ void engine::scan_root(const root_row& root) {
     }
     for (std::size_t i = 0; i < files.size(); ++i) {
       const int k = media_kind_of_name(names[i]);
+      if (k == 3) {
+        // #355: an audio file never pairs; its cover art is its picture.
+        batch.push_back(index_db::seen_file{files[i].path, files[i].mtime, files[i].size, asset_kind::audio,
+                                            files[i].cloud_only});
+        if (batch.size() >= 512) flush();
+        continue;
+      }
       if (partner[i] != UINT32_MAX) {
         const int other = media_kind_of_name(names[partner[i]]);
         // Keep the still: drop a Live Photo's clip, and a RAW's JPEG twin's RAW.
@@ -2314,6 +2361,22 @@ bool engine::photos_local(const asset_row& a) const {
   const std::string_view id = photos_id(a.path);
   if (a.kind == asset_kind::video) return photos_->video_file(id).has_value();
   return photos_->still(id, kPhotosProbeEdge).has_value();
+}
+
+// #355: "audio_files" off. Every audio asset goes, as removing Sound from a
+// folder drops its audio rows; a walk with the setting off would delete them
+// too (end_scan), but not until the next one.
+void engine::drop_audio() {
+  auto gone = db_->remove_kind(asset_kind::audio);
+  if (!gone || gone->empty()) return;
+  {
+    std::lock_guard lock(assets_m_);
+    for (std::int64_t id : *gone) erase_asset_locked(id);
+  }
+  forget_vectors(*gone);
+  refresh_counts();
+  post(MV_ADDON_EVENT_AI_ROOTS);
+  post(MV_ADDON_EVENT_AI_STATUS);
 }
 
 void engine::forget_vectors(const std::vector<std::int64_t>& ids) {
@@ -2937,6 +3000,7 @@ bool engine::claim(std::vector<work_item>& out, track& t) {
           for (std::int64_t id : fetched) {
             const auto it = assets_.find(id);
             if (it == assets_.end() || faces_scanned_.count(id) || in_flight_.count(id)) continue;
+            if (it->second.kind == asset_kind::audio) continue;  // cover art holds no People
             if (std::find(held_now.begin(), held_now.end(), it->second.root) != held_now.end()) continue;
             work_item w;
             w.asset.id = id;
@@ -2962,6 +3026,7 @@ bool engine::claim(std::vector<work_item>& out, track& t) {
       const std::int64_t skip_faces = skip_root();
       for (const auto& [id, m] : assets_) {
         if (faces_scanned_.count(id) || in_flight_.count(id)) continue;
+        if (m.kind == asset_kind::audio) continue;  // #355: cover art holds no People
         if (skip_faces != 0 && m.root == skip_faces) continue;
         if (std::find(held_now.begin(), held_now.end(), m.root) != held_now.end()) continue;
         if (m.cloud) continue;  // online-only: the fetch brings it down first
@@ -2990,11 +3055,12 @@ bool engine::claim(std::vector<work_item>& out, track& t) {
   }
   if (queue_.empty()) return false;
   t = queue_.front().t;
-  const bool photo = queue_.front().w.asset.kind == asset_kind::photo;
+  // An audio file's picture is a still (its cover art, #355): it batches with photos.
+  const bool photo = queue_.front().w.asset.kind != asset_kind::video;
   const std::size_t batch = photo && (t == track::picture || t == track::faces || t == track::text) ? kPhotoBatch : 1;
   while (!queue_.empty() && out.size() < batch) {
     const job& j = queue_.front();
-    if ((j.w.asset.kind == asset_kind::photo) != photo || j.t != t) break;
+    if ((j.w.asset.kind != asset_kind::video) != photo || j.t != t) break;
     if (in_flight_.count(j.w.asset.id)) {  // another track of this asset is running
       queue_.pop_front();
       continue;
@@ -3378,6 +3444,16 @@ void engine::process_photos(std::vector<work_item>& items, const loaded_clip& cl
       continue;
     }
     auto img = still_of(w.asset.path, edge);
+    if (!img && w.asset.kind == asset_kind::audio && !faces_only &&
+        (img.error() == status::not_found || img.error() == status::unsupported_format)) {
+      // #355: no cover art (or none that decodes). Its tags still find it:
+      // done, with no picture.
+      if (db_->commit_frames(w.asset.id, clip.meta.spec_key, {}, work_state::done, 0, clip.meta.dim)) {
+        std::lock_guard lock(status_m_);
+        units_done_ += 1;
+      }
+      continue;
+    }
     if (!img) {
       // Photos access went away mid-run: leave it pending; the next scan
       // takes the library out of the work until access is back.
@@ -3456,6 +3532,7 @@ void engine::process_photos(std::vector<work_item>& items, const loaded_clip& cl
   }
   if (faces_on) {
     for (std::size_t i = 0; i < ok.size(); ++i) {
+      if (ok[i]->asset.kind == asset_kind::audio) continue;  // #355: cover art holds no People
       faces_of(ok[i]->asset.id, ok[i]->asset.path, -1, imgs[i]);
       // #407: the People pass on its own looks at the movie's stored moments.
       if (faces_only) {
@@ -3866,6 +3943,8 @@ std::string engine::roots_json() {
     w.key("enabled").boolean(r.enabled);
     w.key("media").integer(r.media);
     w.key("assets").integer(static_cast<std::int64_t>(db_->assets_in_root(r.id)));
+    // #355: the audio files among them (0 while "audio_files" is off).
+    if (!photos) w.key("audio").integer(static_cast<std::int64_t>(db_->kind_in_root(r.id, asset_kind::audio)));
     w.key("done").integer(static_cast<std::int64_t>(spec.empty() ? 0 : db_->done_in_root(r.id, spec)));
     const std::uint64_t frames = spec.empty() ? 0 : db_->frames_in_root(r.id, spec);
     w.key("frames").integer(static_cast<std::int64_t>(frames));
@@ -4710,13 +4789,15 @@ std::shared_ptr<std::set<std::int64_t>> engine::scope_assets(const std::string& 
                                                              std::int64_t to_unix) const {
   const std::string key = scope_dir.empty() ? std::string() : path_key(scope_dir);
   if ((kinds & MV_AI_KIND_ALL) == 0) kinds |= MV_AI_KIND_ALL;
+  // #355: no audio result while "audio_files" is off, from the moment it is
+  // turned off (its rows go on the control thread after).
+  if (!audio_files_.load()) kinds &= ~MV_AI_KIND_AUDIO;
   // A snapshot of the qualifying assets, so the scan never takes assets_m_.
   auto allowed = std::make_shared<std::set<std::int64_t>>();
   {
     std::lock_guard lock(assets_m_);
     for (const auto& [id, m] : assets_) {
-      const std::uint32_t k = m.kind == asset_kind::video ? MV_AI_KIND_VIDEOS : MV_AI_KIND_PHOTOS;
-      if (!(k & kinds)) continue;
+      if (!(kind_bit(m.kind) & kinds)) continue;
       // #404: the date taken when the tags gave one, else the file's time.
       const std::int64_t when = m.when();
       if (when < from_unix || when >= to_unix) continue;

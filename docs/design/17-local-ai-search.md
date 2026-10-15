@@ -608,7 +608,21 @@ host serves every layout from 1 up, so Import keeps loading.
 ## Audio
 
 A video's **soundtrack** is indexed for what it **sounds like** (CLAP) and what is **said**
-(Whisper transcripts). Standalone audio files are not indexed.
+(Whisper transcripts).
+
+**Standalone audio files** (MP3, M4A, M4P; #355, [audio-search](../plans/audio-search.md)) are
+indexed only while File types "Show audio files" is on. Each chrome forwards that setting to the
+pack as `audio_files` when it attaches and on every change; off is the default. Off, the walk
+drops them by name, so they cost nothing. Turned on, every enabled root is walked again. Turned
+off, the search leaves them out at once and the control thread deletes their rows
+(`index_db::remove_kind`). An audio file is `asset_kind::audio` (4; schema 8, no table change)
+and `MV_AI_KIND_AUDIO` (8; `MV_AI_KIND_ALL` is 11, so an older chrome's 3 still means photos and
+videos). Slice A1 indexes its tags (title, artist, album, album artist, composer, genre) and its
+cover art: one picture at `pts_ms` -1, read from the header (`edit::clip::cover_art_rgb`), on the
+picture track while the folder's media takes pictures. No cover art is done, not failed. It never
+pairs, never goes to People or to the text-in-photos pass, and an `.mvindex` import skips it. Its
+sound and speech are slice A2. Query words: `is:audio` / `is:music` / `is:song`, and a trailing
+or leading `audio` / `songs` / `tracks`; bare `music` stays a description.
 
 - **The option.** Settings "Index videos for" is Pictures / Sound / Both, and each remembered
   folder may override it (`root_set_media`, `MV_AI_MEDIA_*`). Unset means Pictures, or Both once

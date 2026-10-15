@@ -81,7 +81,10 @@ public enum MvAiKinds : uint
 {
     Photos = 1,
     Videos = 2,
-    All = 3,
+    // #355: standalone audio files (MP3, M4A, M4P), while "audio_files" is on.
+    // 4 is reserved for documents; All widened from 3 to 11.
+    Audio = 8,
+    All = 11,
 
     // MV_AI_FIND_* (audio, 2026-09-27), OR'ed in: what to look for. None = all.
     FindPictures = 0x10,
