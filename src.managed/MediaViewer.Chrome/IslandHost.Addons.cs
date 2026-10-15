@@ -782,7 +782,15 @@ public static partial class IslandHost
             }
             if (parts.Count != 3) return unchecked((int)0x80070057);
             AddonSlot? slot = Array.Find(AddonSlots, s => s.Id == parts[0]);
-            if (slot?.Chrome is null) return 1;
+            if (slot is null)
+            {
+                // #410: an add-on that fills slots (Sharepoint) has no chrome; its
+                // command is an event to the add-on, with the files its payload
+                // names (a JSON array, or "[]" for a payload of none).
+                string paths = parts[2].StartsWith('[') ? parts[2] : "[]";
+                return SlotNative.Command(parts[0], parts[1], paths) ? 0 : 1;
+            }
+            if (slot.Chrome is null) return 1;
             if (slot.Chrome is IAddonCommands commands) return commands.RunCommand(parts[1], parts[2]) ? 0 : 1;
             // An Import chrome from before the generic entry: its two frozen calls.
             if (slot == ImportSlot)
@@ -879,6 +887,7 @@ public static partial class IslandHost
     private static void RefreshSlotUi(AddonSlot slot)
     {
         if (slot == ImportSlot) RefreshAddonRow();
+        else if (slot == SharepointSlot) RefreshSharepointOffer();  // #410
         else if (slot == PlacesChannel) RefreshSlotSettings();
         else RefreshLocalSearch();
     }

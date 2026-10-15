@@ -11,6 +11,7 @@
 // WinUI 3 chrome inside it as XAML content islands.
 
 #include <algorithm>
+#include <charconv>
 #include <windows.h>
 #include <objbase.h>
 #include <ole2.h>
@@ -60,6 +61,8 @@
 #include "shell/browse_path.h"
 #include "shell/chrome_host.h"
 #include "shell/edit_session.h"
+#include "shell/text_in_image.h"
+#include "shell/text_select.h"
 #include "shell/edit_view.h"
 #include "shell/edit_workspace.h"
 #include "shell/video_timeline.h"
@@ -147,6 +150,10 @@ constexpr UINT kMsgOpenWithReady = WM_APP + 0x7B;
 // docs/design/25 PR 57: the script add-ons have a notice (wparam 1) or started or
 // stopped (wparam 2). Posted by the core's listener, on any thread.
 constexpr UINT kMsgScripts = WM_APP + 0x7C;
+constexpr UINT kMsgTextRead = WM_APP + 0x7E;  // text in images: a still was read (any thread posts)
+// Text in images: the pointer rests on a still this long before it is read.
+constexpr UINT_PTR kTextDwellTimerId = 0x7C01;
+constexpr UINT kTextDwellMs = 500;
 constexpr UINT kThumbPrev = 0x5101;                 // taskbar thumbnail toolbar button ids
 constexpr UINT kThumbPlay = 0x5102;
 constexpr UINT kThumbNext = 0x5103;
@@ -240,6 +247,18 @@ struct app_state {
   std::string edit_path;
   std::uint64_t edit_key = 0;
   std::uint32_t edit_generation = 0;
+  // Text in images (shell/text_select.h): the words read from the still on
+  // screen and what is selected; the dwell before a read; the I-beam; the last
+  // left press, for double and triple clicks (no CS_DBLCLKS: the canvas keeps
+  // plain downs); whether a missing OCR language was already said.
+  mv::shell::text_select text;
+  bool text_dwell = false;
+  bool text_beam = false;
+  bool text_told = false;
+  DWORD text_click_time = 0;
+  int text_click_x = 0;
+  int text_click_y = 0;
+  int text_clicks = 0;
   std::uint64_t edit_size = 0;
   std::int64_t edit_mtime = 0;
   // The export dialog's last answer, preselected next time (pack_export).
@@ -423,6 +442,12 @@ struct app_state {
   // docs/design/16 marks, copy, move. Marks are UI-thread state keyed by path; the
   // file work runs on files' own I/O worker and reports back by message.
   mv::shell::mark_set marks;
+  // Issue #413: the gallery's shift-click range: paths in the grid's order,
+  // and the cell selected when it was made. Live only while the gallery is up
+  // and that cell is still selected (selection_targets), so any other
+  // selection, another folder or the grid closing ends it with no hook.
+  std::vector<std::string> gallery_range;
+  std::string gallery_range_anchor;
   // Issue #206: View > Show. For this run only; the core filters the listing.
   mv::io::kind_filter kind_filter = mv::io::kind_filter::all;
   mv::shell::file_jobs files;
@@ -586,7 +611,13 @@ bool welcome_lists_recents(const app_state* app) noexcept {
   return app->mode == open_mode::none && app->early_open_dir.empty() && app->record_recent;
 }
 
+void text_sync(app_state* app) noexcept;
+void text_publish(app_state* app);
+
 void publish(app_state* app) noexcept {
+  // Text in images: a new item, a turn, the gallery or the Edit workspace
+  // drops words read before (and their highlight) in this same snapshot.
+  text_sync(app);
   // The card's rows go the moment anything opens, whichever route opened it.
   if (app->input.recents.count != 0 && !welcome_lists_recents(app)) {
     app->input.recents.count = 0;
@@ -1003,6 +1034,25 @@ std::string current_item_path(app_state* app) {
   std::uint32_t selected = 0;
   if (!selected_index(app, selected)) return {};
   return item_path_at(app, selected);
+}
+
+// Issue #413: the gallery's range, when it still stands (the grid is up and
+// the cell it started from is still selected); a stale one is dropped here.
+bool gallery_range_live(app_state* app) {
+  if (app->gallery_range.empty()) return false;
+  if (!app->gallery_visible || current_item_path(app) != app->gallery_range_anchor) {
+    app->gallery_range.clear();
+    app->gallery_range_anchor.clear();
+    return false;
+  }
+  return true;
+}
+
+// What copy, F7/F8, Delete, copy path and Share act on: the gallery's range
+// while it stands, else the marks, else the current item (docs/design/16).
+std::vector<std::string> selection_targets(app_state* app) {
+  if (gallery_range_live(app)) return app->gallery_range;
+  return app->marks.targets(current_item_path(app));
 }
 
 // MV_PAIR_* of the selected stop; MV_PAIR_NONE with nothing selected.
@@ -1937,11 +1987,24 @@ HGLOBAL bytes_to_global(const std::vector<std::uint8_t>& bytes) {
 
 bool copy_to_clipboard(app_state* app) {
   if (!app || !app->window) return false;
+  // Words selected in the still (text in images): that text, CRLF.
+  if (app->text.has_selection()) {
+    const std::string text = app->text.text();
+    std::string crlf;
+    crlf.reserve(text.size() + text.size() / 16);
+    for (const char c : text) {
+      if (c == '\n') crlf.push_back('\r');
+      crlf.push_back(c);
+    }
+    if (!set_clipboard(app, CF_UNICODETEXT, text_to_global(crlf))) return false;
+    notice_show(app, mv::shell::copy_text_notice(app->text.words()));
+    return true;
+  }
   if (app->input.eyedropper) {
     const std::string text = app->lab.eyedropper_text();
     if (!text.empty()) return set_clipboard(app, CF_UNICODETEXT, text_to_global(text));
   }
-  const auto targets = expand_pair_targets(app, app->marks.targets(current_item_path(app)));
+  const auto targets = expand_pair_targets(app, selection_targets(app));
   if (targets.empty()) return false;
   return set_clipboard(app, CF_HDROP, hdrop_to_global(targets));
 }
@@ -4693,7 +4756,16 @@ void chrome_on_command(void* ctx, int command, float arg) {
       // listing for the common case.
       app->own_drag = true;
       std::string lines;
-      if (!app->marks.empty()) {
+      const std::uint32_t at = static_cast<std::uint32_t>(arg < 0.0f ? 0.0f : arg);
+      // Issue #413: any cell of the gallery's range drags the whole range.
+      if (gallery_range_live(app) && at < folder_count(app) &&
+          std::find(app->gallery_range.begin(), app->gallery_range.end(), item_path_at(app, at)) !=
+              app->gallery_range.end()) {
+        for (const std::string& p : expand_pair_targets(app, app->gallery_range)) {
+          lines += p;
+          lines += '\n';
+        }
+      } else if (!app->marks.empty()) {
         const std::uint32_t count = folder_count(app);
         const auto index = static_cast<std::uint32_t>(arg < 0.0f ? 0.0f : arg);
         if (index < count && app->marks.contains(item_path_at(app, index))) {
@@ -4820,6 +4892,30 @@ void chrome_on_command(void* ctx, int command, float arg) {
     case mv::shell::chrome_cmd_meta_revert:
       revert_current_metadata(app);
       return;
+    case mv::shell::chrome_cmd_gallery_range: {
+      // Issue #413: Shift-click in the gallery. The indices come parked, in
+      // the grid's order; the range stands while `arg` stays selected.
+      std::string parked;
+      if (!app->chrome.take_parked_text(parked)) return;
+      app->gallery_range.clear();
+      app->gallery_range_anchor.clear();
+      std::uint32_t selected = 0;
+      if (!selected_index(app, selected) || arg < 0.0f || static_cast<std::uint32_t>(arg) != selected) return;
+      const std::uint32_t count = folder_count(app);
+      std::size_t at = 0;
+      while (at < parked.size()) {
+        const std::size_t comma = std::min(parked.find(',', at), parked.size());
+        std::uint32_t index = 0;
+        const auto [end, ec] = std::from_chars(parked.data() + at, parked.data() + comma, index);
+        if (ec == std::errc{} && end == parked.data() + comma && index < count) {
+          std::string p = item_path_at(app, index);
+          if (!p.empty()) app->gallery_range.push_back(std::move(p));
+        }
+        at = comma + 1;
+      }
+      if (!app->gallery_range.empty()) app->gallery_range_anchor = item_path_at(app, selected);
+      return;
+    }
     case mv::shell::chrome_cmd_rename:
       commit_rename(app);
       if (app->window) focus_canvas(app);
@@ -5077,6 +5173,7 @@ mv::shell::view_state view_state_of(app_state* app) noexcept {
   // Milestone H: Esc from a result list is the path bar's "Back to folder"
   // (leave_result_list's own condition, so the key is never swallowed).
   s.list_open = !app->list_title.empty();
+  s.text_selected = app->text.has_selection();
   return s;
 }
 
@@ -5718,6 +5815,9 @@ void walk_back(app_state* app, mv::shell::back_target target) noexcept {
     case back_target::result_list:
       (void)leave_result_list(app);
       return;
+    case back_target::text_selection:
+      if (app->text.clear()) text_publish(app);
+      return;
     case back_target::pane:
       // Esc from the canvas closes what is open: the Edit workspace (PR 29;
       // a crop draft was cancelled one Esc earlier), else the tree first (it
@@ -5842,7 +5942,7 @@ void set_fullscreen_reveal(app_state* app, bool on) noexcept {
 // only UI-thread part; the bytes move on the file-job worker.
 bool start_transfer(app_state* app, mv::shell::file_job_kind kind, bool pick) {
   if (!app || !app->window) return false;
-  auto targets = expand_pair_targets(app, app->marks.targets(current_item_path(app)));
+  auto targets = expand_pair_targets(app, selection_targets(app));
   if (targets.empty()) return false;
   std::string dest;
   if (!pick && !app->destinations.empty()) dest = app->destinations.front();
@@ -5869,7 +5969,7 @@ bool start_transfer(app_state* app, mv::shell::file_job_kind kind, bool pick) {
 // with no bin is refused on the worker, never deleted permanently.
 bool start_recycle(app_state* app) {
   if (!app || !app->window) return false;
-  const auto stops = app->marks.targets(current_item_path(app));
+  const auto stops = selection_targets(app);
   if (stops.empty()) return false;
   // A paired stop goes with both halves, and the question says so (PR 7).
   auto targets = expand_pair_targets(app, stops);
@@ -6122,7 +6222,7 @@ void motion_tick(app_state* app) noexcept {
 // pair gives both halves, as Ctrl+C does.
 bool copy_paths_to_clipboard(app_state* app) {
   if (!app) return false;
-  const auto targets = expand_pair_targets(app, app->marks.targets(current_item_path(app)));
+  const auto targets = expand_pair_targets(app, selection_targets(app));
   const std::string text = mv::shell::paths_as_text(targets, "\r\n");
   if (text.empty()) return false;
   return set_clipboard(app, CF_UNICODETEXT, text_to_global(text));
@@ -6188,11 +6288,160 @@ void on_flatten_done(app_state* app, std::unique_ptr<flatten_job_result> r) {
   }
 }
 
+// Text in images (Live Text; docs/design/16): shell/text_in_image.h's port on
+// Windows. Windows.Media.Ocr is WinRT, so the chrome runs it
+// (IslandHost.RecognizeText), synchronously, on the worker that calls this.
+// On device (rule 6); no text or pixel is logged.
+class chrome_text_recognizer final : public mv::shell::text_recognizer {
+ public:
+  explicit chrome_text_recognizer(mv::shell::chrome_entry_fn entry) noexcept : entry_(entry) {}
+
+  mv::shell::text_recognition recognise(const mv::shell::text_image& image,
+                                        mv::shell::text_layout& layout) noexcept override {
+    using mv::shell::text_recognition;
+    layout = {};
+    if (!entry_) return text_recognition::unavailable;
+    try {
+      // A 4096 px page of small print is a few thousand words of ~30 bytes.
+      std::string buf(std::size_t{1} << 20, '\0');
+      mv::shell::chrome_text_recognition_args args{};
+      args.pixels = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(image.pixels.data()));
+      args.width = static_cast<std::int32_t>(image.width);
+      args.height = static_cast<std::int32_t>(image.height);
+      args.out_utf8 = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(buf.data()));
+      args.out_capacity = static_cast<std::int32_t>(buf.size());
+      switch (entry_(&args, static_cast<std::int32_t>(sizeof(args)))) {
+        case 0:
+          if (args.out_length < 0 || args.out_length > args.out_capacity) return text_recognition::failed;
+          buf.resize(static_cast<std::size_t>(args.out_length));
+          layout = mv::shell::parse_word_records(buf, image.width, image.height);
+          return text_recognition::ok;
+        case 1: return text_recognition::no_language;
+        case 2: return text_recognition::unavailable;
+        default: return text_recognition::failed;
+      }
+    } catch (...) {
+      return text_recognition::failed;
+    }
+  }
+
+ private:
+  mv::shell::chrome_entry_fn entry_ = nullptr;
+};
+
+// What the words on screen would be read from: the still and its geometry, or
+// nothing when there is no still to select in (a clip, audio, a document, an
+// animation, the gallery, the Edit workspace, a crop, Show original).
+mv::shell::text_select::source text_source(app_state* app) noexcept {
+  mv::shell::text_select::source src;
+  if (edit_subject_of(app) != mv::shell::edit_subject::still || app->gallery_visible || app->ws.open ||
+      app->edits.crop_active() || app->show_original || app->edit_key == 0) {
+    return src;
+  }
+  // The path's key with the select's generation: a rewritten file is read again.
+  src.item = app->edit_key * 31u + app->edit_generation;
+  src.geometry = app->edits.export_geometry();
+  return src;
+}
+
+void text_sync(app_state* app) noexcept {
+  if (!app || !app->text.show(text_source(app))) return;
+  app->text.fill(app->input.text);
+  ++app->input.activity_seq;
+}
+
+void text_publish(app_state* app) {
+  app->text.fill(app->input.text);
+  ++app->input.activity_seq;
+  publish(app);
+}
+
+// The pointer in 0..1 of the still as the render thread last drew it.
+bool text_point(app_state* app, float x, float y, float& u, float& v, float& aspect) noexcept {
+  const mv::shell::canvas_map map = app->lab.still_map();
+  if (!map.to_uv(x, y, u, v)) return false;
+  aspect = map.aspect();
+  return true;
+}
+
+// A left press at (x, y), client pixels. True when it landed on text: it
+// selects, and the render thread does not pan for it.
+bool text_press(app_state* app, int x, int y) {
+  // Double and triple clicks, by the system's time and distance.
+  const DWORD now = static_cast<DWORD>(::GetMessageTime());
+  const int cx = ::GetSystemMetrics(SM_CXDOUBLECLK) / 2;
+  const int cy = ::GetSystemMetrics(SM_CYDOUBLECLK) / 2;
+  const bool again = app->text_clicks > 0 && now - app->text_click_time <= ::GetDoubleClickTime() &&
+                     std::abs(x - app->text_click_x) <= cx && std::abs(y - app->text_click_y) <= cy;
+  app->text_clicks = again ? std::min(app->text_clicks + 1, 3) : 1;
+  app->text_click_time = now;
+  app->text_click_x = x;
+  app->text_click_y = y;
+  text_sync(app);
+  if (!app->text.has_words() || app->input.eyedropper || app->input.loupe) return false;
+  float u = 0, v = 0, aspect = 1;
+  if (!text_point(app, static_cast<float>(x), static_cast<float>(y), u, v, aspect)) return false;
+  const bool had = app->text.has_selection();
+  const bool on_text = app->text.press(u, v, aspect, app->text_clicks);
+  if (on_text || had) app->text.fill(app->input.text);
+  return on_text;
+}
+
+// The pointer moved over the canvas: the I-beam over words, and a read once
+// the pointer has rested on a still (arrowing through a folder never reads).
+void text_hover(app_state* app, int x, int y) {
+  text_sync(app);
+  float u = 0, v = 0, aspect = 1;
+  const bool placed = text_point(app, static_cast<float>(x), static_cast<float>(y), u, v, aspect);
+  if (placed && app->text.wants_read() && !app->text_dwell && app->window) {
+    app->text_dwell = ::SetTimer(app->window, kTextDwellTimerId, kTextDwellMs, nullptr) != 0;
+  }
+  app->text_beam = placed && !app->input.eyedropper && !app->input.loupe && app->text.over_text(u, v, aspect);
+}
+
+// Decode and OCR on the pool (rule 1), on device (rule 6); kMsgTextRead hands
+// the words to app->text if the still is still the one on screen.
+struct text_read_result {
+  mv::shell::text_select::source from;
+  mv::shell::read_text read;
+};
+
+void start_text_read(app_state* app) {
+  app->text_dwell = false;
+  if (app->window) ::KillTimer(app->window, kTextDwellTimerId);
+  text_sync(app);
+  if (!app->window || !app->text.wants_read() || !app->lab.still_map().valid) return;
+  const mv::shell::text_select::source from = app->text.current();
+  const mv::shell::chrome_entry_fn entry = app->chrome.text_recognition_entry();
+  app->text.reading();
+  const HWND hwnd = app->window;
+  app->jobs.submit_at(mv::background_generation,
+                      [path = app->edit_path, from, entry, hwnd](const mv::job_context&) -> mv::status {
+                        chrome_text_recognizer recognizer(entry);
+                        auto* r = new (std::nothrow) text_read_result{
+                            from, mv::shell::run_text_recognition(path, from.geometry, recognizer,
+                                                                  mv::shell::text_pixel_order::bgra)};
+                        if (r && !::PostMessageW(hwnd, kMsgTextRead, 0, reinterpret_cast<LPARAM>(r))) delete r;
+                        return mv::status::ok;
+                      });
+}
+
+void on_text_read(app_state* app, std::unique_ptr<text_read_result> r) {
+  if (!app || !r) return;
+  const std::string why = mv::shell::text_recognition_notice(r->read);
+  if (!app->text.set_words(r->from, std::move(r->read.layout))) return;
+  // No OCR language, or no OCR: said once a session, not on every still.
+  if (!why.empty() && !app->text_told) {
+    app->text_told = true;
+    notice_show(app, why);
+  }
+}
+
 // Ctrl+Shift+S: Windows Share with the marked (else current) file(s). The
 // share sheet is WinRT, so the chrome shows it (IslandHost.Share.cs).
 bool share_targets(app_state* app) {
   if (!app || !app->window) return false;
-  const auto targets = expand_pair_targets(app, app->marks.targets(current_item_path(app)));
+  const auto targets = expand_pair_targets(app, selection_targets(app));
   if (targets.empty()) return false;
   mv::json::writer w;
   w.begin_array();
@@ -6664,7 +6913,7 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
         }
         w.end_array();
       } else if (row->payload == "marked_or_current") {
-        const auto targets = expand_pair_targets(app, app->marks.targets(current_item_path(app)));
+        const auto targets = expand_pair_targets(app, selection_targets(app));
         if (targets.empty()) return false;
         w.begin_array();
         for (const std::string& t : targets) w.string(t);
@@ -6698,7 +6947,7 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     case import_now: {
       if (!mv::shell::addon_commands_available()) return false;
       const auto targets =
-          expand_pair_targets(app, app->marks.targets(current_item_path(app)));
+          expand_pair_targets(app, selection_targets(app));
       if (targets.empty()) return false;
       mv::json::writer w;
       w.begin_array();
@@ -7009,6 +7258,12 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
       return set_level(app);
     }
     case mark_all: {
+      // With words selected in the still, Select All is every word (Photos);
+      // otherwise it marks every file.
+      if (app->text.has_selection() && app->text.select_all()) {
+        text_publish(app);
+        return true;
+      }
       const std::uint32_t count = folder_count(app);
       if (count == 0) return false;
       std::vector<std::string> paths;
@@ -7984,6 +8239,18 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         ::TrackMouseEvent(&tme);
         app->tracking_mouse = true;
       }
+      // Text in images: a drag that started on text extends the selection;
+      // otherwise the I-beam over words, and the dwell before a read.
+      if (app->input.text_press && (wparam & MK_LBUTTON)) {
+        float u = 0, v = 0, aspect = 1;
+        if (text_point(app, app->input.mouse_x, app->input.mouse_y, u, v, aspect)) {
+          app->text.drag(u, v);
+          app->text.fill(app->input.text);
+          ++app->input.activity_seq;
+        }
+      } else if (moved && app->input.recents.count == 0) {
+        text_hover(app, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+      }
       // At fit, left-drag is not a pan. After the system drag threshold it
       // is a file drag of the current item (same CF_HDROP as the gallery).
       if (app->file_drag_armed && (wparam & MK_LBUTTON) && app->lab.view_fitted()) {
@@ -8011,6 +8278,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       ++app->input.activity_seq;
       app->tracking_mouse = false;
       app->input.mouse_in_client = false;
+      app->text_beam = false;
       app->input.recents.hover = -1;
       app->input.recents.hover_remove = false;
       publish(app);
@@ -8029,6 +8297,13 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       if (reinterpret_cast<HWND>(wparam) == hwnd && LOWORD(lparam) == HTCLIENT &&
           app->input.recents.hover >= 0) {
         ::SetCursor(::LoadCursorW(nullptr, IDC_HAND));
+        return TRUE;
+      }
+      // Text in images: the I-beam over words in a still, and through a drag
+      // that selects.
+      if (reinterpret_cast<HWND>(wparam) == hwnd && LOWORD(lparam) == HTCLIENT &&
+          (app->text_beam || app->input.text_press)) {
+        ::SetCursor(::LoadCursorW(nullptr, IDC_IBEAM));
         return TRUE;
       }
       break;
@@ -8050,7 +8325,13 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         app->island_focus = mv::shell::focus_kind::command_bar;
         ::SetCapture(hwnd);
         transport_activity(app);
-        if (msg == WM_LBUTTONDOWN && app->lab.view_fitted()) {
+        // Text in images: a press on a word selects (published with the
+        // press, so the render thread never pans for it) and is never a
+        // file drag.
+        if (msg == WM_LBUTTONDOWN) {
+          app->input.text_press = text_press(app, GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+        }
+        if (msg == WM_LBUTTONDOWN && app->lab.view_fitted() && !app->input.text_press) {
           app->file_drag_armed = true;
           app->file_drag_x = GET_X_LPARAM(lparam);
           app->file_drag_y = GET_Y_LPARAM(lparam);
@@ -8067,6 +8348,12 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
                !app->input.mouse_down[2]) {
         ::ReleaseCapture();
         app->file_drag_armed = false;
+      }
+      if (msg == WM_LBUTTONUP && app->input.text_press) {
+        app->input.text_press = false;
+        const bool had = app->text.has_selection();
+        app->text.release();
+        if (had != app->text.has_selection()) app->text.fill(app->input.text);
       }
       publish(app);
       // docs/design/25, issue #402: a right-click on the file on screen shows
@@ -8212,6 +8499,10 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       on_flatten_done(app, std::unique_ptr<flatten_job_result>(reinterpret_cast<flatten_job_result*>(lparam)));
       return 0;
 
+    case kMsgTextRead:
+      on_text_read(app, std::unique_ptr<text_read_result>(reinterpret_cast<text_read_result*>(lparam)));
+      return 0;
+
     case kMsgEditorLoaded:  // PR 30: the Video Editor's probe and strip
       on_editor_loaded(app, std::unique_ptr<editor_load_result>(reinterpret_cast<editor_load_result*>(lparam)));
       return 0;
@@ -8282,6 +8573,10 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       return 0;
 
     case WM_TIMER:
+      if (wparam == kTextDwellTimerId) {
+        start_text_read(app);
+        return 0;
+      }
       if (wparam == kEditorReleaseTimerId) {
         editor_release_tick(app);
         return 0;

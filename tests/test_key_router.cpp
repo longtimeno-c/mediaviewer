@@ -446,6 +446,26 @@ TEST_CASE("Esc in a result list is Back to folder, after everything over it",
   REQUIRE(resolve_back(s) == back_target::settings);
 }
 
+TEST_CASE("Esc deselects text in a still before it leaves anything", "[shell][router]") {
+  // Text in images (shell/text_select.h): selected words are the innermost
+  // level on the canvas; a popup or Settings over them still closes first.
+  key_router r;
+  view_state s;
+  s.text_selected = true;
+  s.pane_open = true;
+  s.gallery_open = true;
+  s.fullscreen = true;
+  REQUIRE(r.on_key(down(key::escape), s).back == back_target::text_selection);
+  s.text_selected = false;
+  REQUIRE(r.on_key(down(key::escape), s).back == back_target::pane);
+  s.text_selected = true;
+  s.settings_open = true;
+  REQUIRE(resolve_back(s) == back_target::settings);
+  s.settings_open = false;
+  s.popup_open = true;
+  REQUIRE(resolve_back(s) == back_target::popup);
+}
+
 TEST_CASE("a focused text control owns every key but Esc", "[shell][router]") {
   key_router r;
   view_state s = still();

@@ -142,6 +142,12 @@ class slot_registry {
   // array of the files it targets ("[]" for none).
   status invoke_item(const std::string& addon_id, const std::string& item_id,
                      const std::string& paths_json);
+  // One of the add-on's manifest commands ran (the palette, a key, Settings'
+  // Open). The add-on gets a command event (node = the command id, value =
+  // `paths_json`, the files its payload names: the marks, or the marks or
+  // the current file). not_found for an add-on or command it does not have.
+  status run_command(const std::string& addon_id, const std::string& command_id,
+                     const std::string& paths_json);
 
   // ---- the chrome reads (any thread; copies) -----------------------------------
   // {"addons":[{"id","name","dir"}],"sections":[{"addon","id","title","location"}],

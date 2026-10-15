@@ -48,6 +48,9 @@ back_target resolve_back(const view_state& s) noexcept {
   // A Live Photo's motion is a moment on top of the still, not a mode: Esc
   // ends it before it touches gallery, slideshow or fullscreen.
   if (s.motion_playing) return back_target::motion;
+  // Selected words in a still are the innermost thing on the canvas, as in
+  // Photos: Esc deselects before it leaves a pane, the gallery or fullscreen.
+  if (s.text_selected) return back_target::text_selection;
   // 6f: an open `?` / go-to / find flyout must close before anything below. It
   // needs its own view_state bit; today a flyout closes on focus loss, which
   // is what canvas_focus causes.

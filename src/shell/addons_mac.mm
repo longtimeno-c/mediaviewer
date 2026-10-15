@@ -131,6 +131,10 @@ void MvAppCommandsChanged();
 namespace {
 
 void refresh_contributed_commands();
+// #410: the command rows of the loaded add-ons that fill slots (Sharepoint),
+// kept as each loads (below, slot_addons_state).
+std::vector<mv::shell::addon_command_row> slot_command_rows();
+bool is_loaded_slot_addon(const std::string& id);
 // docs/design/25 PR 57: the script add-ons (defined with the open add-ons below).
 std::vector<mv::addon::script_command_row> script_rows();
 void scripts_set_key_notes(const std::string& notes_json);
@@ -502,6 +506,10 @@ void refresh_contributed_commands() {
   };
   const mac_addons& s = state();
   add(s.import.get());
+  // #410: MediaViewer's own add-ons that fill slots run their commands as
+  // events to the add-on (slot_registry::run_command); no key unless the
+  // manifest names one.
+  for (mv::shell::addon_command_row& r : slot_command_rows()) rows.push_back(std::move(r));
   // docs/design/25 PR 57: other makers' script commands, after ours. Their keys
   // give way to the base app's (set_addon_commands), and Settings says so.
   for (const mv::addon::script_command_row& c : script_rows()) {
@@ -1215,6 +1223,12 @@ bool MvAddonsRunContributedCommand(const std::string& addon, const std::string& 
   // docs/design/25 PR 57: another maker's row runs in its script, on its worker.
   // Posting never blocks; the answer (a notice) comes back on its own.
   if (addon.find('.') != std::string::npos) return MvScriptsRunCommand(addon, command, payload_json);
+  // #410: an add-on that fills slots has no chrome: its command is an event
+  // to it, with the files the payload names.
+  if (is_loaded_slot_addon(addon)) {
+    const std::string paths = !payload_json.empty() && payload_json.front() == '[' ? payload_json : "[]";
+    return mv::addon::default_slots().run_command(addon, command, paths) == mv::status::ok;
+  }
   mac_addons& s = state();
   if (addon != "import" || !s.chrome) return false;
   NSString* name = [NSString stringWithUTF8String:command.c_str()];
@@ -1920,11 +1934,52 @@ struct slot_addons_state {
   std::mutex m;
   std::map<std::string, std::string> errors;  // id -> status name of the last failed load
   std::set<std::string> loaded_ids;
+  std::vector<mv::shell::addon_command_row> command_rows;  // of the loaded ones (#410)
 };
 
 slot_addons_state& slot_addons() {
   static slot_addons_state* const s = new slot_addons_state;
   return *s;
+}
+
+// Rebuilds the command rows from what is loaded. [addon_queue]
+void note_slot_commands() {
+  slot_addons_state& sa = slot_addons();
+  std::vector<mv::shell::addon_command_row> rows;
+  for (const auto& [id, addon] : sa.loaded) {
+    if (!addon) continue;
+    const mv::addon::manifest& m = addon->info().m;
+    for (const mv::addon::manifest_command& c : m.commands) {
+      mv::shell::addon_command_row r;
+      r.addon = m.id;
+      r.id = c.id;
+      r.name = c.name;
+      if (!c.mac.empty() && !mv::shell::parse_key_label(c.mac, r.k, r.mods)) {
+        r.k = mv::shell::key::none;
+        r.mods = 0;
+      }
+      r.modes = mv::shell::parse_modes(c.modes);
+      r.payload = c.payload;
+      rows.push_back(std::move(r));
+    }
+  }
+  {
+    std::lock_guard<std::mutex> lock(sa.m);
+    sa.command_rows = std::move(rows);
+  }
+  dispatch_async(dispatch_get_main_queue(), ^{ refresh_contributed_commands(); });
+}
+
+std::vector<mv::shell::addon_command_row> slot_command_rows() {
+  slot_addons_state& sa = slot_addons();
+  std::lock_guard<std::mutex> lock(sa.m);
+  return sa.command_rows;
+}
+
+bool is_loaded_slot_addon(const std::string& id) {
+  slot_addons_state& sa = slot_addons();
+  std::lock_guard<std::mutex> lock(sa.m);
+  return sa.loaded_ids.count(id) != 0;
 }
 
 bool fills_slots(const mv::addon::installed& i) {
@@ -1984,6 +2039,7 @@ void load_slot_addons_now() {
     sa.loaded_ids.insert(id);
     sa.loaded.emplace(id, std::move(*loaded));
   }
+  note_slot_commands();
 }
 
 std::atomic<mv_chrome_slot_addons_changed_fn> g_slot_addons_changed{nullptr};
@@ -2071,6 +2127,7 @@ extern "C" bool mv_chrome_slot_addon_remove(const char* id, bool keep_data) {
       sa.loaded_ids.erase(s);
       sa.errors.erase(s);
     }
+    note_slot_commands();
     if (ensure_store()) {
       mac_addons& st = state();
       std::lock_guard<std::mutex> lock(st.store_writes);

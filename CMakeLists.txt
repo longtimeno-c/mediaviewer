@@ -728,6 +728,9 @@ include("${CMAKE_SOURCE_DIR}/cmake/script.cmake")
 # The Places add-on (docs/design/27): mv_places.dll in build/addons/places,
 # packed and signed separately; never installed with the app.
 include("${CMAKE_SOURCE_DIR}/cmake/places.cmake")
+# The Sharepoint add-on (docs/design/28): mv_sharepoint.dll in
+# build/addons/sharepoint, packed and signed separately; never installed with the app.
+include("${CMAKE_SOURCE_DIR}/cmake/sharepoint.cmake")
 
 # Milestone H: host table v2's pixels (src/abi/addon_media.h) over the viewer's
 # still pipeline, the clip sampler and the JPEG-512 cache. In the base app;
@@ -835,6 +838,10 @@ add_executable(mediaviewer_lab WIN32
   src/shell/meta_writer.h
   src/shell/edit_session.cpp
   src/shell/edit_session.h
+  src/shell/text_in_image.cpp
+  src/shell/text_in_image.h
+  src/shell/text_select.cpp
+  src/shell/text_select.h
   src/shell/edit_workspace.cpp
   src/shell/edit_workspace.h
   src/shell/video_timeline.cpp
@@ -1138,6 +1145,12 @@ if(MV_BUILD_TESTS)
     tests/test_edit_session.cpp
     tests/test_export_carried.cpp
     src/shell/edit_session.cpp
+    # Text in images: the recogniser's pixels, the words' layout and the
+    # selection (the OCR itself is the hosts' OS API).
+    tests/test_text_in_image.cpp
+    tests/test_text_select.cpp
+    src/shell/text_in_image.cpp
+    src/shell/text_select.cpp
     # PR 29: the Edit workspace's tab model.
     tests/test_edit_workspace.cpp
     src/shell/edit_workspace.cpp
@@ -1347,6 +1360,7 @@ if(MV_BUILD_TESTS)
   endif()
   add_dependencies(mv_import_tests mv_import mv_slots_test_addon)
   mv_places_addon_tests(mv_import_tests)
+  mv_sharepoint_tests(mv_import_tests)
   mv_asan_runtime_beside(mv_import_tests)
   catch_discover_tests(mv_import_tests TEST_PREFIX "import_"
     PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT ${MV_TEST_TIMEOUT}

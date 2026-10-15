@@ -587,6 +587,9 @@ private struct NumberNode: View {
   }
 }
 
+// @MainActor as a whole: its helpers (the folder dialog, the field) send events
+// from outside `body`, which older compilers do not treat as isolated.
+@MainActor
 private struct TextFieldNode: View {
   let node: ScreenNode
   let address: ScreenAddress
@@ -595,6 +598,43 @@ private struct TextFieldNode: View {
   @FocusState private var focused: Bool
 
   var body: some View {
+    HStack(spacing: 6) {
+      field
+      // "pick": "folder" (#410): the system folder dialog, reported as the field's change.
+      if node.string("pick") == "folder" {
+        Button("Choose\u{2026}") { chooseFolder() }
+          .buttonStyle(FlatButtonStyle(selected: false, compact: true))
+          .accessibilityLabel("Choose a folder for \(node.label)")
+      }
+    }
+  }
+
+  private func chooseFolder() {
+    let panel = NSOpenPanel()
+    panel.canChooseFiles = false
+    panel.canChooseDirectories = true
+    panel.allowsMultipleSelection = false
+    panel.canCreateDirectories = true
+    panel.prompt = "Choose"
+    panel.message = node.label
+    let current = text.isEmpty ? (node.string("value") ?? "") : text
+    if !current.isEmpty { panel.directoryURL = URL(fileURLWithPath: current, isDirectory: true) }
+    let done: (NSApplication.ModalResponse) -> Void = { response in
+      guard response == .OK, let url = panel.url else { return }
+      // AppKit calls a sheet's handler on the main thread.
+      MainActor.assumeIsolated {
+        text = url.path
+        SlotStore.shared.send(address, node: node.id, kind: 2, value: url.path)
+      }
+    }
+    if let window = NSApp.keyWindow {
+      panel.beginSheetModal(for: window, completionHandler: done)
+    } else {
+      done(panel.runModal())
+    }
+  }
+
+  private var field: some View {
     Group {
       if node.bool("multiline") {
         TextField(node.string("placeholder") ?? node.label, text: $text, axis: .vertical).lineLimit(3...8)

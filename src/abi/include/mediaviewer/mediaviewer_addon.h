@@ -842,6 +842,11 @@ MV_API mv_status MV_CALL mv_slots_event(const char* addon, const char* screen, c
                                         uint32_t kind, const char* value_json);
 /* A bar / path / context / status item; `paths_json` a JSON array of paths. */
 MV_API mv_status MV_CALL mv_slots_invoke(const char* addon, const char* item, const char* paths_json);
+/* 0.29 (#410): one of a slot add-on's manifest commands ran; `paths_json` is
+ * the JSON array of the files its payload names ("[]" for none). The add-on
+ * gets MV_SLOT_EVENT_COMMAND with node_id = the command id. MV_ERR_NOT_FOUND
+ * for an add-on or command it does not have. */
+MV_API mv_status MV_CALL mv_slots_command(const char* addon, const char* command, const char* paths_json);
 /* A surface's BGRA (premultiplied). *out_needed = bytes; MV_ERR_INVALID_ARG
  * when `cap` is short, MV_ERR_NOT_FOUND when there is none. */
 MV_API mv_status MV_CALL mv_slots_surface(const char* addon, const char* screen, const char* surface,

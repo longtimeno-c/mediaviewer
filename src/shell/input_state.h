@@ -37,6 +37,40 @@ struct meta_overlay {
   float af[kMaxAf][5] = {};
 };
 
+// Text in images (Live Text, docs/design/16): the selected text's highlight,
+// one box per selected line, normalised 0..1 in the *displayed* image (as the
+// AF quads): x0, y0, x1, y1. The host owns the words and the selection
+// (shell/text_select.h); the render thread only draws these. A change bumps
+// activity_seq for its one redraw.
+struct text_highlight {
+  static constexpr int kMaxRects = 48;
+  std::uint8_t count = 0;
+  float rect[kMaxRects][4] = {};
+};
+
+// The other way: where the still on screen is, published by the render thread
+// after each frame that drew one, so the host can turn the pointer into a
+// place in the image without a camera of its own. `valid` is false while no
+// still is drawn (a clip, an animation, a document, the gallery, nothing).
+struct canvas_map {
+  bool valid = false;
+  float centre_x = 0.0f;  // the view's centre, physical pixels in the client
+  float centre_y = 0.0f;
+  float zoom = 1.0f;      // screen pixels per image pixel
+  float pan_x = 0.0f;     // the image pixel at the centre
+  float pan_y = 0.0f;
+  float width = 0.0f;     // the displayed (edited) image, in its texture's pixels
+  float height = 0.0f;
+  // Screen pixel -> 0..1 across the displayed image (may fall outside 0..1).
+  [[nodiscard]] bool to_uv(float sx, float sy, float& u, float& v) const noexcept {
+    if (!valid || zoom <= 0.0f || width <= 0.0f || height <= 0.0f) return false;
+    u = (pan_x + (sx - centre_x) / zoom) / width;
+    v = (pan_y + (sy - centre_y) / zoom) / height;
+    return true;
+  }
+  [[nodiscard]] float aspect() const noexcept { return height > 0.0f ? width / height : 1.0f; }
+};
+
 // PR 10: the edit geometry for one opened item, as the render thread needs it
 // (edit::geometry flattened to POD). The render thread places it against the
 // texture it actually holds, so the UI never needs the decoded size to turn a
@@ -150,6 +184,10 @@ struct input_snapshot {
   bool af_points = false;       // Shift+O: quads from `meta`, no file read
   bool eyedropper = false;      // Shift+I: one-pixel readout at the cursor
   meta_overlay meta;
+  // Text in images: what is selected, and whether the left button went down
+  // on text (it selects, so the render thread does not pan for it).
+  text_highlight text;
+  bool text_press = false;
   // PR 10: [0] is the item on the canvas, [1] the one before it. A lossless
   // rotate reloads the file under a new item id; until its pixels land the
   // old texture keeps the old geometry, so the turn never flashes back.

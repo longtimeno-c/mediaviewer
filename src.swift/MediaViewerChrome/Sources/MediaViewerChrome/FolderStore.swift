@@ -75,6 +75,8 @@ final class CurrentItem: ObservableObject {
 @MainActor
 final class CellHighlight: ObservableObject {
   @Published fileprivate(set) var isCurrent = false
+  /// Issue #413: inside the gallery's shift-click range.
+  @Published fileprivate(set) var inRange = false
 }
 
 struct Crumb: Identifiable, Equatable {
@@ -149,6 +151,12 @@ final class FolderStore: ObservableObject {
   /// tags its filter with it).
   private(set) var listingGeneration: UInt64 = .max
   private var marksGeneration: UInt64 = .max
+  /// Issue #413: the gallery's shift-click range, by listing index, in the
+  /// order the grid shows it. The host holds it as paths (what copy, F7/F8,
+  /// Delete, copy path and Share act on) and clears it on any other
+  /// selection; its generation tells this store.
+  @Published private(set) var range: [Int] = []
+  private var rangeGeneration: UInt64 = .max
   private var thumbGeneration: UInt64 = .max
 
   private static let decodeQueue = DispatchQueue(
@@ -205,6 +213,11 @@ final class FolderStore: ObservableObject {
       return String(cString: base)
     }
     if query != folderQuery { folderQuery = query }
+    let rangeGen = mv_chrome_gallery_range_generation()
+    if rangeGen != rangeGeneration {
+      rangeGeneration = rangeGen
+      if mv_chrome_gallery_range_count() == 0, !range.isEmpty { setRangeHighlights([]) }
+    }
     let marks = mv_chrome_marks_generation()
     if listingChanged || marks != marksGeneration {
       marksGeneration = marks
@@ -431,6 +444,7 @@ final class FolderStore: ObservableObject {
     if let existing = highlights[index] { return existing }
     let created = CellHighlight()
     created.isCurrent = index == current.index
+    created.inRange = rangeSet.contains(index)
     highlights[index] = created
     return created
   }
@@ -444,6 +458,48 @@ final class FolderStore: ObservableObject {
 
   func select(_ index: Int) { mv_chrome_select_index(Int32(index)) }
 
+  private var rangeSet: Set<Int> = []
+
+  /// Issue #413: Shift-click in the gallery. Every image from the selected cell
+  /// (the anchor) to `index`, in the order `shown` lists them (the grid's, so a
+  /// file search's filter counts), and the grid stays open. A plain click, an
+  /// arrow, another folder or closing the grid ends it (the host clears it).
+  func extendRange(to index: Int, shown: [Int]) {
+    let anchor = current.index
+    guard let from = shown.firstIndex(of: anchor), let to = shown.firstIndex(of: index) else {
+      // No selected cell among those shown: the click selects as a plain one would
+      // not (the grid stays), and is the anchor next time.
+      setRange([index])
+      return
+    }
+    setRange(Array(shown[min(from, to)...max(from, to)]))
+  }
+
+  private func setRange(_ indices: [Int]) {
+    let raw = indices.map { Int32($0) }
+    raw.withUnsafeBufferPointer { mv_chrome_gallery_set_range($0.baseAddress, Int32($0.count)) }
+    rangeGeneration = mv_chrome_gallery_range_generation()
+    setRangeHighlights(indices)
+  }
+
+  private func setRangeHighlights(_ indices: [Int]) {
+    let fresh = Set(indices)
+    for i in rangeSet.subtracting(fresh) { highlights[i]?.inRange = false }
+    for i in fresh.subtracting(rangeSet) { highlights[i]?.inRange = true }
+    rangeSet = fresh
+    range = indices
+  }
+
+  /// What the gallery's share icon sends (#413): the range, else the selected
+  /// cell. Full paths, no file I/O.
+  func gallerySelectionPaths() -> [String] {
+    let indices = range.isEmpty ? (names.indices.contains(current.index) ? [current.index] : []) : range
+    return indices.compactMap { i in
+      let path = Self.bridgeString { mv_chrome_item_path(Int32(i), $0, $1) }
+      return path.hasPrefix("/") ? path : nil
+    }
+  }
+
   /// The files a drag from the cell at `index` carries: every marked item in
   /// listing order when that cell is marked (the marks are the multi-selection,
   /// as for ⌘C and F7/F8), else that item alone. Full paths of the originals,
@@ -452,7 +508,10 @@ final class FolderStore: ObservableObject {
   func dragFiles(from index: Int) -> [(path: String, image: CGImage?)] {
     guard names.indices.contains(index) else { return [] }
     var indices = [index]
-    if markedCount > 1, mv_chrome_is_marked(Int32(index)) {
+    if rangeSet.contains(index) {
+      // Issue #413: any cell of the gallery's range drags the whole range.
+      indices = range
+    } else if markedCount > 1, mv_chrome_is_marked(Int32(index)) {
       indices = names.indices.filter { mv_chrome_is_marked(Int32($0)) }
     }
     return indices.compactMap { i in

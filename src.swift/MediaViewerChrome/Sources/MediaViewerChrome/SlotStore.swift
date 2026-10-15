@@ -146,6 +146,8 @@ final class SlotStore: ObservableObject {
   @Published private(set) var sections: [SlotSection] = []
   @Published private(set) var screens: [SlotScreen] = []
   @Published private(set) var items: [SlotItem] = []
+  /// #410: each add-on's first window screen (Settings' Open, the share icon).
+  @Published private(set) var windowScreens: [String: String] = [:]
   @Published private(set) var status: [(id: String, label: String, text: String)] = []
   /// True while an add-on answers Local search (the path bar's button opens it).
   @Published private(set) var localSearch = false
@@ -230,6 +232,13 @@ final class SlotStore: ObservableObject {
                       symbol: $0["symbol"] as? String ?? "", target: $0["target"] as? String ?? "none",
                       opens: $0["opens"] as? String ?? "")
     }
+    var windows: [String: String] = [:]
+    for sc in doc["screens"] as? [[String: Any]] ?? [] {
+      guard let a = sc["addon"] as? String, let id = sc["id"] as? String, sc["place"] as? String == "window",
+            windows[a] == nil else { continue }
+      windows[a] = id
+    }
+    if windows != windowScreens { windowScreens = windows }
     badgeDefs = [:]
     for b in doc["badges"] as? [[String: Any]] ?? [] {
       guard let key = b["key"] as? String else { continue }
@@ -402,6 +411,23 @@ final class SlotStore: ObservableObject {
     _ = at.addon.withCString { a in
       at.screen.withCString { s in node.withCString { n in text.withCString { mv_chrome_slots_event(a, s, n, kind, $0) } } }
     }
+  }
+
+  /// #410: opens an add-on's window (Settings' Open), or brings it forward.
+  func openScreen(addon: String, screen: String, path: String = "") {
+    var theme = Self.theme()
+    _ = addon.withCString { a in
+      screen.withCString { s in path.withCString { p in mv_chrome_slots_open_screen(a, s, p, &theme, 0, 0, Self.scale) } }
+    }
+    SlotWindows.shared.bringForward(ScreenAddress(addon: addon, screen: screen))
+  }
+
+  /// #410: one of the add-on's items, by id, with `paths` (the gallery's share
+  /// icon asks Sharepoint's "send_files" this way). False when it has no such item.
+  @discardableResult
+  func invoke(addon: String, item: String, paths: [String]) -> Bool {
+    let json = (try? JSONSerialization.data(withJSONObject: paths)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+    return addon.withCString { a in item.withCString { i in json.withCString { mv_chrome_slots_invoke(a, i, $0) } } }
   }
 
   func close(_ at: ScreenAddress) {

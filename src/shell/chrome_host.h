@@ -155,6 +155,12 @@ enum chrome_command : int {
   // Issue #210: the rename popup was confirmed (Enter); native pulls the new
   // name (no extension) with take_parked_text. Esc sends nothing.
   chrome_cmd_rename = 1035,
+  // Issue #413: the gallery's shift-click range. Native pulls the folder
+  // indices (comma-separated, in the grid's order) with take_parked_text; arg
+  // is the anchor, the cell selected when it was made. While the gallery is up
+  // and the anchor is still selected, copy, F7/F8, Delete, copy path, Share and
+  // drag-out act on the range.
+  chrome_cmd_gallery_range = 1036,
   // Issue #408: the rest of the theme the native empty window draws with,
   // sent by RefreshTheme before chrome_cmd_home_colour. Tokens are 0xRRGGBB
   // in the float, as home_colour. home_effect: arg is a shell::home_effect
@@ -257,6 +263,25 @@ struct chrome_table_args {
 
 static_assert(sizeof(chrome_table_args) == 16, "keep in sync with ChromeTableArgs");
 
+// Text in images: one still for Windows.Media.Ocr (IslandHost.TextRecognition.cs).
+// The pixels are BGRA8, opaque, row stride width * 4; the island writes the
+// words it read, UTF-8, one record per line (shell/text_in_image.h
+// parse_word_records), into `out_utf8` and says how many bytes in
+// `out_length`. Both buffers are valid for the call only. Back: 0 read (the
+// text may be empty), 1 no OCR language for the user's profile, 2 no OCR on
+// this system, anything else failed.
+struct chrome_text_recognition_args {
+  std::uint64_t pixels;
+  std::int32_t width;
+  std::int32_t height;
+  std::uint64_t out_utf8;
+  std::int32_t out_capacity;
+  std::int32_t out_length;
+};
+
+static_assert(sizeof(chrome_text_recognition_args) == 32,
+              "keep in sync with IslandHost.RecognizeText");
+
 // Commands and island notifications share one id space (docs/design/16). These pin
 // the values the island already sends; commands.h reserves the notifications.
 static_assert(chrome_cmd_open == static_cast<int>(command_id::open));
@@ -340,6 +365,7 @@ static_assert(chrome_cmd_editor_trim_grab >= kCommandCount && chrome_cmd_editor_
 static_assert(chrome_cmd_open_in_app >= kCommandCount);
 static_assert(chrome_cmd_video_volume >= kCommandCount && chrome_cmd_video_loop >= kCommandCount);
 static_assert(chrome_cmd_rename >= kCommandCount);
+static_assert(chrome_cmd_gallery_range >= kCommandCount);
 static_assert(is_reserved_notification(chrome_cmd_set_settings));
 static_assert(is_reserved_notification(chrome_cmd_folder_ready));
 static_assert(is_reserved_notification(chrome_cmd_video_active));
@@ -367,7 +393,7 @@ static_assert(is_reserved_notification(chrome_cmd_focus_changed));
       chrome_cmd_drag_items, chrome_cmd_drag_ended, chrome_cmd_open_recent,
       chrome_cmd_editor_trim_grab, chrome_cmd_editor_trim_to, chrome_cmd_open_in_app,
       chrome_cmd_video_volume, chrome_cmd_video_muted, chrome_cmd_video_track,
-      chrome_cmd_video_loop, chrome_cmd_rename};
+      chrome_cmd_video_loop, chrome_cmd_rename, chrome_cmd_gallery_range};
   std::uint32_t h = 17;
   for (const int id : ids) h = h * 31u + static_cast<std::uint32_t>(id);
   return static_cast<std::int32_t>(h);
@@ -960,6 +986,14 @@ class chrome_host {
   // PR 15, Ctrl+Shift+S: Windows Share over `window` with the files in
   // `paths_json` (a UTF-8 JSON array). False when the chrome cannot share.
   bool share_files(HWND window, const std::string& paths_json) noexcept;
+  // Text in images: the island's Windows.Media.Ocr entry
+  // (chrome_text_recognition_args). It runs the recognition synchronously on
+  // the thread that calls it, so only a worker calls it: the UI thread reads
+  // the pointer here and hands it to the job. Null without a chrome or on a
+  // chrome without the entry.
+  [[nodiscard]] chrome_entry_fn text_recognition_entry() const noexcept {
+    return attached_ ? recognize_text_ : nullptr;
+  }
   // Milestone H: an add-on command by family (commands.h addon_family; 2 is
   // the AI pack, kinds 0 search / 1 similar / 2 next match / 3 previous
   // match). `json` is what is on screen. True when the add-on ran it; false
@@ -1068,6 +1102,7 @@ class chrome_host {
   chrome_entry_fn set_command_table_ = nullptr;
   chrome_entry_fn show_import_ = nullptr;
   chrome_entry_fn share_files_ = nullptr;
+  chrome_entry_fn recognize_text_ = nullptr;  // text in images, optional
   chrome_entry_fn show_addon_ = nullptr;  // Milestone H
   chrome_entry_fn offer_addon_ = nullptr;  // docs/design/25, optional
   chrome_entry_fn show_canvas_menu_ = nullptr;  // issue #402, optional

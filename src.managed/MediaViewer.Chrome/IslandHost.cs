@@ -193,6 +193,9 @@ public static partial class IslandHost
         public const int ApplyKeymap = 1050;
         // Issue #210: the rename popup's Enter; native takes the parked name.
         public const int Rename = 1035;
+        // Issue #413: the gallery's shift-click range; native takes the parked
+        // indices (arg: the anchor, still selected).
+        public const int GalleryRange = 1036;
         public const int RotateCcw = 96;
         public const int RotateCw = 97;
         public const int FlipHorizontal = 98;
@@ -240,7 +243,7 @@ public static partial class IslandHost
                 DragItems, DragEnded, OpenRecent,
                 EditorTrimGrab, EditorTrimTo, OpenInApp,
                 VideoVolume, VideoMuted, VideoTrack, VideoLoop,
-                Rename,
+                Rename, GalleryRange,
             };
             unchecked
             {

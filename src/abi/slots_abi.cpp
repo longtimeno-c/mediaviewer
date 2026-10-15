@@ -168,6 +168,13 @@ MV_API mv_status MV_CALL mv_slots_invoke(const char* addon, const char* item, co
   }));
 }
 
+MV_API mv_status MV_CALL mv_slots_command(const char* addon, const char* command, const char* paths_json) {
+  return static_cast<mv_status>(mv::abi::guard("mv_slots_command", [&] {
+    MV_REQUIRE(addon && command, "addon and command required");
+    return mv::addon::default_slots().run_command(addon, command, paths_json ? std::string(paths_json) : "[]");
+  }));
+}
+
 MV_API mv_status MV_CALL mv_slots_surface(const char* addon, const char* screen, const char* surface,
                                           uint8_t* out, uint64_t cap, uint32_t* out_width,
                                           uint32_t* out_height, uint64_t* out_revision,

@@ -704,6 +704,19 @@ How it works:
   loaded file's removal to the next start, as for any add-on in use). A changed setting re-asks
   only in the window that wrote it; another reads the new value at its next request.
 
+**Added for Sharepoint (2026-10-15, [28](28-sharepoint.md#host-pieces-this-added)):**
+
+- A `text_field` may carry `"pick": "folder"`: the hosts add **Choose…** beside it, show the
+  system folder dialog (`NSOpenPanel`; WinUI's `FolderPicker`, owned by the screen's window) and
+  report the folder as the field's `change`. Typing a path still works; the add-on checks it.
+- An add-on that fills slots may contribute **commands** (`contributes.commands`): the hosts list
+  them with the other add-on rows, and running one is a `command` event to the add-on
+  (`node_id` = the command id, value = the files its payload names), through
+  `slot_registry::run_command` (`mv_slots_command`, ABI 0.29; the Mac host calls the registry).
+  It has no chrome to send the command to.
+- **Settings → Add-ons** gives such an add-on with a window screen an **Open …** button, as Import
+  has; the window opens through `open_screen` with no file.
+
 For a script add-on (PR 57): the registry reaches code through `slot_client`; a script runtime
 implements it on its own worker and calls the same `post_*` functions the v3 rows wrap.
 

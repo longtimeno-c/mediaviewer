@@ -417,6 +417,8 @@ struct SlotAddonsSection: View {
   @ObservedObject private var settings = SettingsStore.shared
   @ObservedObject private var offer = PlacesOffer.shared
   @ObservedObject private var installed = Installed.shared
+  @ObservedObject private var slots = SlotStore.shared
+  @ObservedObject private var sharepoint = SharepointStore.shared
   @State private var confirming: String?
 
   private var places: Row? { installed.rows.first { $0.id == "places" } }
@@ -424,19 +426,36 @@ struct SlotAddonsSection: View {
   var body: some View {
     VStack(alignment: .leading, spacing: MVTheme.space(8)) {
       placesRow
+      // #410: Sharepoint, offered with one click while it is not installed.
+      if !sharepoint.installed && !installed.rows.contains(where: { $0.id == SharepointStore.addonID }) {
+        SharepointOffer()
+      }
       ForEach(installed.rows.filter { $0.id != "places" }) { row in
         VStack(alignment: .leading, spacing: MVTheme.space(6)) {
           Text(row.name).font(MVTheme.font()).foregroundStyle(MVTheme.title)
           if !row.description.isEmpty { note(row.description) }
           note(stateText(row))
-          // A later window shows what the add-on adds (issue #402) but leaves
-          // removing it to the first window, which owns the store.
-          if mv_addon2_elsewhere() { note(LocalSearchStore.elsewhereText) } else { removeButtons(row) }
+          // #410: an add-on with a window of its own opens it from here, as
+          // Import does ("Open Import"). A later window shows what the add-on
+          // adds (issue #402) but leaves removing it to the first window, which
+          // owns the store.
+          let elsewhere = mv_addon2_elsewhere()
+          if confirming != row.id, row.loaded, let screen = slots.windowScreens[row.id] {
+            HStack {
+              Button("Open \(row.name)") { slots.openScreen(addon: row.id, screen: screen) }
+              if !elsewhere { removeButtons(row) }
+            }
+          } else if !elsewhere {
+            removeButtons(row)
+          }
+          if elsewhere { note(LocalSearchStore.elsewhereText) }
         }
       }
     }
     .onAppear { installed.reload(); offer.probe() }
     .onChange(of: settings.visible) { _, visible in if visible { installed.reload(); offer.probe() } }
+    // An add-on that just attached (Sharepoint after its one-click install).
+    .onChange(of: slots.windowScreens) { _, _ in installed.reload() }
   }
 
   private var placesRow: some View {
@@ -547,6 +566,7 @@ struct SlotAddonsSection: View {
   private func remove(_ id: String, keep: Bool) {
     confirming = nil
     _ = id.withCString { mv_chrome_slot_addon_remove($0, keep) }
+    if id == SharepointStore.addonID { SharepointStore.shared.refresh() }
     if !keep {
       let forgotten = id
       Task.detached(priority: .utility) { _ = forgotten.withCString { mv_addons_settings_forget($0) } }

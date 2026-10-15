@@ -14,8 +14,69 @@
 // drawn: each tile keeps its identity (its index in the listing) and its
 // thumbnail slot, so filtering reloads nothing and a tile that stays shown is
 // not rebuilt.
+import AppKit
 import MVChromeBridge
 import SwiftUI
+
+/// Dragging a gallery cell out (issue #413). In the grid's vertical scroll view
+/// a SwiftUI drag gesture on the cell never sees the mouse drag, so this picks
+/// it up below SwiftUI: cells report the one under the pointer, and a local
+/// event monitor turns a press there that moves 4 pt into a file drag (the
+/// range, or the marks, when the cell is in them; else the cell, with nothing
+/// read from disk). The drag's events are the drag's: SwiftUI does not see them,
+/// so the press is no click. Installed the first time a cell is hovered;
+/// costs one comparison per mouse event after that.
+private struct EventBox: @unchecked Sendable {
+  let event: NSEvent?
+}
+
+@MainActor
+final class GalleryDrag {
+  static let shared = GalleryDrag()
+  private var hovered: Int?
+  private var pressed: (index: Int, point: NSPoint, window: NSWindow?)?
+  private var monitor: Any?
+
+  func hover(_ index: Int, inside: Bool) {
+    if inside {
+      hovered = index
+      install()
+    } else if hovered == index {
+      hovered = nil
+    }
+  }
+
+  private func install() {
+    guard monitor == nil else { return }
+    // A local monitor runs on the main thread; the box carries the event
+    // across the isolation check, which NSEvent (not Sendable) cannot.
+    monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]) { event in
+      let box = EventBox(event: event)
+      return MainActor.assumeIsolated { EventBox(event: box.event.flatMap { GalleryDrag.shared.handle($0) }) }.event
+    }
+  }
+
+  private func handle(_ event: NSEvent) -> NSEvent? {
+    switch event.type {
+    case .leftMouseDown:
+      pressed = nil
+      if let index = hovered, mv_chrome_gallery_visible() {
+        pressed = (index, event.locationInWindow, event.window)
+      }
+      return event
+    case .leftMouseDragged:
+      guard let p = pressed, event.window === p.window else { return event }
+      let dx = event.locationInWindow.x - p.point.x, dy = event.locationInWindow.y - p.point.y
+      guard dx * dx + dy * dy >= 16 else { return event }
+      pressed = nil
+      FileDragSource.shared.begin(with: event) { FolderStore.shared.dragFiles(from: p.index) }
+      return nil
+    default:
+      pressed = nil
+      return event
+    }
+  }
+}
 
 struct GalleryView: View {
   @ObservedObject private var store = FolderStore.shared
@@ -80,6 +141,21 @@ struct GalleryView: View {
             .padding(.horizontal, inset)
             .padding(.top, MVTheme.space(8))
         }
+        // Issue #413: one share icon for the grid's selection (the shift-click
+        // range, else the selected cell): Sharepoint, not the OS share sheet.
+        if !store.names.isEmpty && (store.currentIndex >= 0 || !store.range.isEmpty) {
+          HStack {
+            if store.range.count > 1 {
+              Text("\(store.range.count) selected")
+                .font(MVTheme.font(13))
+                .foregroundStyle(MVTheme.body)
+            }
+            Spacer()
+            GalleryShareButton()
+          }
+          .padding(.horizontal, inset)
+          .padding(.top, 8)
+        }
         if mixed && !shownFolders.isEmpty {
           FolderStrip(cell: 44, shown: shownFolders)
             .padding(.horizontal, inset)
@@ -119,11 +195,23 @@ struct GalleryView: View {
                       why: search.why[index]
                     )
                     .id(index)
-                    .onTapGesture { store.selectAndCloseGallery(index) }
+                    .onTapGesture {
+                      // Issue #413: Shift-click selects every image from the
+                      // selected cell to this one and the grid stays; a plain
+                      // click opens this one.
+                      if NSEvent.modifierFlags.contains(.shift) {
+                        store.extendRange(to: index, shown: shownItems)
+                      } else {
+                        store.selectAndCloseGallery(index)
+                      }
+                    }
                     // docs/design/25 PR 59: the add-ons' context-menu entries, only when some exist.
                     .modifier(SlotContextMenu(on: tileFlags.context, tile: index))
-                    // Drag out the original (the marks, when this cell is one).
-                    .fileDrag { store.dragFiles(from: index) }
+                    // Drag out the original (the range or the marks, when this
+                    // cell is in them). Started by GalleryDrag's event monitor:
+                    // the grid's scroll view keeps a SwiftUI drag from reaching
+                    // the cell (#413).
+                    .onHover { inside in GalleryDrag.shared.hover(index, inside: inside) }
                   }
                 }
               }
@@ -362,9 +450,16 @@ private struct GalleryCell: View {
           }
         }
         .clipShape(RoundedRectangle(cornerRadius: MVTheme.radius(6)))
+        // Issue #413: the shift-click range is tinted and outlined.
+        .overlay {
+          if highlight.inRange {
+            RoundedRectangle(cornerRadius: MVTheme.radius(6)).fill(MVTheme.accent.opacity(0.22))
+          }
+        }
         .overlay(
           RoundedRectangle(cornerRadius: MVTheme.radius(6))
-            .strokeBorder(highlight.isCurrent && !onFolders ? MVTheme.accent : .clear, lineWidth: 2)
+            .strokeBorder((highlight.isCurrent && !onFolders) || highlight.inRange ? MVTheme.accent : .clear,
+                          lineWidth: 2)
         )
         .overlay { if isClip { PlayBadge(diameter: 40) } }
         .overlay(alignment: .topTrailing) { if isMarked { MarkBadge() } }
