@@ -3837,6 +3837,7 @@ void update_client_metrics(app_state* app, HWND hwnd) noexcept;
 int right_pane_px(int client_width, std::uint32_t dpi) noexcept;
 void enable_dark_titlebar(HWND hwnd) noexcept;
 void set_editor_open(app_state* app, bool open);
+bool share_request_run(app_state* app, mv::shell::share_request request);
 
 std::string editor_name(const app_state* app) {
   const std::size_t slash = app->editor.path.find_last_of("\\/");
