@@ -198,8 +198,8 @@ struct client {
   // screen shows (what the person at this end reads off the other screen).
   void send_to(const client& other, bool confirm = true) {
     REQUIRE(eventually([&] { return sees(other); }));
-    eng.on_event("peers", 4, "[\"" + other.eng.id() + "\"]");
-    eng.on_event("send", 1, "");
+    // One click on its tile sends (#442).
+    eng.on_event("peers", 5, "\"" + other.eng.id() + "\"");
     if (!confirm) return;
     REQUIRE(eventually([&] {
       const auto o = eng.snapshot().out;
@@ -509,7 +509,7 @@ TEST_CASE("sharepoint: every state of the window is a tree the hosts accept", "[
   // The receiver shows the code while the sender types it; the sender's
   // screen never shows one (#442).
   v.in = sp::view::in_phase::connecting;
-  CHECK(sp::build_tree(v).find("Code 654 321") != std::string::npos);
+  CHECK(sp::build_tree(v).find("654 321") != std::string::npos);
   v.in = sp::view::in_phase::none;
   v.out = sp::view::out_phase::confirming;
   const std::string sender = sp::build_tree(v);
@@ -529,7 +529,7 @@ TEST_CASE("sharepoint: a set too big for Bluetooth says to use Wi-Fi before Send
   CHECK(sp::needs_wifi(v));
   std::string tree = sp::build_tree(v);
   INFO(tree);
-  CHECK(tree.find("Send to Laptop over Wi-Fi") != std::string::npos);
+  CHECK(tree.find("Click Laptop to send over Wi-Fi") != std::string::npos);
   CHECK(tree.find("Laptop is only in Bluetooth range") != std::string::npos);
   CHECK(mv::addon::screen::tree{}.set(tree) == mv::addon::screen::error::none);
   // No network here: the person turns on Wi-Fi on this computer.
@@ -694,7 +694,7 @@ TEST_CASE("sharepoint: Accept delivers the files with their bytes, keeping both 
   REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::connecting; }));
   const std::string code = bea.eng.snapshot().in_code;
   CHECK(code.size() == 7);
-  CHECK(bea.tree().find("Code " + code) != std::string::npos);
+  CHECK(bea.tree().find(code) != std::string::npos);
   CHECK(ann.tree().find(code) == std::string::npos);  // the sender's screen never shows it
   CHECK(bea.eng.snapshot().in_count == 0);
   ann.type_code(code);

@@ -640,9 +640,11 @@ void engine::publish_files(std::vector<outgoing_file> files, std::uint64_t gen) 
     v_.file_count = files_.size();
     v_.file_bytes = 0;
     v_.file_names.clear();
+    v_.file_paths.clear();
     for (const auto& f : files_) {
       v_.file_bytes += f.size;
       if (v_.file_names.size() < kListedNames) v_.file_names.push_back(f.rel);
+      if (v_.file_paths.size() < kShownThumbs) v_.file_paths.push_back(f.path);
     }
     if (v_.out == view::out_phase::done || v_.out == view::out_phase::ended) v_.out = view::out_phase::idle;
   }
@@ -735,7 +737,7 @@ void engine::walk_folder(const std::string& folder, std::uint64_t gen) {
 void engine::on_event(const std::string& node, std::uint32_t kind, const std::string& value_json) {
   const auto value = value_json.empty() ? std::nullopt : json::parse(value_json, 4);
   const std::string* text = value && value->k == json::kind::string ? &value->s : nullptr;
-  constexpr std::uint32_t kClick = 1, kChange = 2, kSubmit = 3, kSelect = 4;
+  constexpr std::uint32_t kClick = 1, kChange = 2, kSubmit = 3, kSelect = 4, kActivate = 5;
 
   if (node == "receiving" && kind == kChange && value && value->k == json::kind::boolean) {
     bool changed = false;
@@ -747,6 +749,14 @@ void engine::on_event(const std::string& node, std::uint32_t kind, const std::st
     request_reconcile();
     if (changed) request_save();  // kept for the next launch (#442)
     post();
+  } else if (node == "peers" && kind == kActivate && text) {
+    // #442: one click on a nearby computer sends to it, as AirDrop.
+    {
+      std::lock_guard lock(m_);
+      if (transfer_running_ || out_busy_locked()) return;
+      v_.selected_peer = *text;
+    }
+    start_send();
   } else if (node == "peers" && kind == kSelect && value && value->k == json::kind::array) {
     std::lock_guard lock(m_);
     v_.selected_peer = !value->a.empty() && value->a[0].k == json::kind::string ? value->a[0].s : std::string();
@@ -761,6 +771,7 @@ void engine::on_event(const std::string& node, std::uint32_t kind, const std::st
       v_.file_count = 0;
       v_.file_bytes = 0;
       v_.file_names.clear();
+      v_.file_paths.clear();
       v_.reading_folder = false;
     }
     post();
@@ -917,6 +928,7 @@ void engine::start_send() {
     if (transfer_running_ || files_.empty() || v_.reading_folder || v_.selected_peer.empty()) return;
     if (v_.out == view::out_phase::waiting_wifi || peers_.find(v_.selected_peer) == peers_.end()) return;
     v_.out_peer = peers_[v_.selected_peer].name;
+    v_.out_peer_id = v_.selected_peer;
     v_.out_note.clear();
     v_.out_entry_note.clear();
     v_.out_tries_left = kCodeTries;

@@ -53,6 +53,8 @@ inline constexpr int kPeerForgetMs = 4500;
 inline constexpr std::size_t kMaxPeers = 64;
 // Names listed under "Files to send" / in an offer, at most.
 inline constexpr std::size_t kListedNames = 200;
+// Thumbnails shown of the files to send (the window's strip).
+inline constexpr std::size_t kShownThumbs = 6;
 // Wrong codes typed on the sender before the link ends (#442).
 inline constexpr int kCodeTries = 3;
 
@@ -65,6 +67,7 @@ struct view {
 
   // ---- send
   std::vector<std::string> file_names;  // the first kListedNames
+  std::vector<std::string> file_paths;  // the first kShownThumbs, on this machine (thumbnails; never sent)
   std::size_t file_count = 0;
   std::uint64_t file_bytes = 0;
   bool reading_folder = false;
@@ -83,7 +86,7 @@ struct view {
   enum class out_phase : std::uint8_t {
     idle, waiting_wifi, connecting, confirming, waiting, sending, done, ended
   } out = out_phase::idle;
-  std::string out_peer, out_note;
+  std::string out_peer, out_peer_id, out_note;
   std::string out_entry_note;  // confirming: "That is not the code ..." after a wrong one
   int out_tries_left = kCodeTries;
   std::uint64_t out_bytes = 0, out_total = 0;

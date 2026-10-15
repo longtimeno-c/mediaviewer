@@ -17,17 +17,23 @@ Narrator. Other makers' script add-ons still have no network permission (owner, 
 
 - **The window**, "Sharepoint", opened from its row in Settings → Add-ons (**Open Sharepoint**),
   from its command (the palette; no default key, issue #410), from the gallery's share icon and
-  from the **Send with Sharepoint…** context entry on a gallery tile. It lists:
+  from the **Send with Sharepoint…** context entry on a gallery tile. Its design is AirDrop's
+  (#442), the same on both hosts, top to bottom:
   - this computer's name as others see it, and **Keep receiving when this window is closed** (kept
     across launches; the command bar shows **Sharepoint: receiving** while it is on);
-  - someone connecting (their name and the **code** to type over there, **Decline**), then their
-    offer (the files, **Save to** with Choose…, **Accept** / **Decline**), then progress and
-    **Cancel**, then what arrived;
-  - the files to send, **Send a folder** (Choose…), **Clear**;
-  - **Nearby**: the MediaViewers it can see, each with how ("Wi-Fi", "Bluetooth" or both);
-  - **Send to …**, then a field for the code the other screen shows, and **Cancel**: the person
-    types it before anything about the files leaves (three wrong codes end the link); then it
-    waits for Accept, then progress and **Cancel**. This screen never shows the code.
+  - **what is offered to this computer**, in a card of its own: the sender's round tile (its
+    monogram, name and how it is connected), "… wants to send you files" and the **code** in large
+    digits to type over there, **Decline**; then "… wants to send you 24 files, 412 MB", the first
+    names, **Save to** with Choose…, **Decline** / **Accept**; then a progress ring with its
+    percentage, the count and **Cancel**; then what arrived and **OK**;
+  - **Send**, a card: a strip of the first six files' thumbnails (the viewer's cache), the count
+    and size, the first names, **Send a folder** (Choose…), **Clear**;
+  - **Nearby**: the MediaViewers it can see as large round tiles (a monogram, the name, "Wi-Fi",
+    "Bluetooth" or both). **One click on a tile sends** to it. A card then asks for the code the
+    other screen shows, in one large field that takes digits only and goes by itself at the sixth
+    (three wrong codes end the link; this screen never shows the code); then "Waiting for … to
+    accept"; then the tile's own ring fills while the bytes move, and it ends with a done or
+    failed mark on the tile and a line saying what happened.
 - **The gallery** ([16](16-commands.md#gallery-range-and-share-413)): Shift-click selects a range,
   dragging a cell drags it out, and one share icon ("Send") opens Sharepoint with the selection.
   Without Sharepoint the icon offers the same one-click install as the other add-ons.
@@ -71,11 +77,10 @@ the engine never touches the canvas.
 - **Bluetooth LE between a Mac and a Windows PC** has one common way to move bytes: GATT. Windows
   gives apps no connection-oriented LE channel. GATT moves tens of kilobytes a second, so a set
   over **32 MiB never goes over Bluetooth** ([12](12-decision-log.md#sharepoint)); Wi-Fi carries
-  anything. Picking a peer heard only on Bluetooth with such a set shows, before Send, why and
-  what to do: put both computers on the same Wi-Fi network, or, when this computer has no
-  network, turn on Wi-Fi here. Send then reads **Send to … over Wi-Fi** and waits ("Waiting for
-  … on Wi-Fi", with Cancel); the moment that peer's beacon arrives the send starts by itself, code
-  check and Accept as always. Presence stays up while it waits, window closed or not.
+  anything. A peer heard only on Bluetooth, selected with such a set, shows why and what to do:
+  put both computers on the same Wi-Fi network, or, when this computer has no network, turn on
+  Wi-Fi here. A click on its tile then waits ("Waiting for … on Wi-Fi", with Cancel); the moment
+  that peer's beacon arrives the send starts by itself, code and Accept as always. Presence stays up while it waits, window closed or not.
 - Sending prefers Wi-Fi when the peer's beacon is fresh, and falls back to Bluetooth.
 
 ## The wire
@@ -216,7 +221,10 @@ second while bytes move; those posts update chrome and never present the canvas.
 
 - **Screens vocabulary**: a `text_field` may carry `"pick": "folder"`; the hosts add **Choose…**
   (`NSOpenPanel`; WinUI's `FolderPicker`) and report the folder as the field's change
-  ([25](25-open-addons.md#implementation-notes-prs-58-59-2026-10-11)).
+  ([25](25-open-addons.md#implementation-notes-prs-58-59-2026-10-11)). For the AirDrop-like window
+  (#442), generic additions drawn by both hosts, not a Sharepoint-only path: a `tiles` node, a
+  `stack` `"look": "card"`, a `progress` `"look": "ring"`, a `text_field` `"look": "code"` with
+  `"digits"`, and the `text` style `"display"` ([25](25-open-addons.md#implementation-notes-prs-58-59-2026-10-11)).
 - **Commands of an add-on that fills slots** become command events to it
   (`slot_registry::run_command`, `mv_slots_command`, ABI 0.29, [14](14-abi.md)): Sharepoint's key-less
   "Sharepoint" row carries the marked or current files.

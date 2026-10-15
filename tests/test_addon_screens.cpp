@@ -76,6 +76,59 @@ TEST_CASE("every node type of the vocabulary parses and round-trips", "[addon][s
   }
 }
 
+TEST_CASE("the #442 additions: tiles, a ring, a code field, a card, display text", "[addon][screens]") {
+  using namespace mv::addon::screen;
+  const char* json = R"({"type":"stack","id":"page","look":"card","children":[
+   {"type":"text","id":"code","text":"123 456","style":"display"},
+   {"type":"tiles","id":"peers","label":"Nearby","size":72,"selection":["a"],"items":[
+     {"id":"a","text":"Studio","detail":"Wi-Fi","initials":"S","progress":0.4},
+     {"id":"b","text":"Laptop","detail":"Bluetooth","mark":"done"},
+     {"id":"c","text":"Desk","progress":-1,"mark":"failed"}]},
+   {"type":"progress","id":"ring","label":"Sending","value":0.25,"look":"ring","size":96},
+   {"type":"text_field","id":"entry","label":"Code","look":"code","digits":6,"value":""}]})";
+  tree t;
+  REQUIRE(t.set(json) == error::none);
+  tree again;
+  REQUIRE(again.set(t.json()) == error::none);
+  CHECK(again.json() == t.json());
+  // A click on a tile is `activate` with its id; select takes one id; a
+  // tile that is not there, or a non-string, is refused.
+  CHECK(t.check_event("peers", ev_activate, R"("b")") == error::none);
+  CHECK(t.check_event("peers", ev_activate, R"("zz")") == error::bad_value);
+  CHECK(t.check_event("peers", ev_activate, "3") == error::bad_value);
+  CHECK(t.check_event("peers", ev_select, R"(["c"])") == error::none);
+  CHECK(t.check_event("peers", ev_select, R"(["a","b"])") == error::bad_value);
+  CHECK(t.check_event("peers", ev_click, "") == error::bad_value);
+  CHECK(t.check_event("entry", ev_submit, R"("123456")") == error::none);
+  CHECK(t.check_event("ring", ev_click, "") == error::not_interactive);
+  tree shown;
+  REQUIRE(shown.set(R"({"type":"tiles","id":"from","label":"From","static":true,"items":[{"id":"a","text":"Ann","initials":"A"}]})") ==
+          error::none);
+  CHECK(shown.check_event("from", ev_activate, R"("a")") == error::not_interactive);
+  // Each new key is checked.
+  const char* bad[] = {
+      R"({"type":"tiles","id":"t","label":"T"})",  // no items
+      R"({"type":"tiles","id":"t","items":[]})",   // no label
+      R"({"type":"tiles","id":"t","label":"T","items":[{"id":"a"}]})",
+      R"({"type":"tiles","id":"t","label":"T","items":[{"id":"a","text":"A","progress":2}]})",
+      R"({"type":"tiles","id":"t","label":"T","items":[{"id":"a","text":"A","mark":"maybe"}]})",
+      R"({"type":"tiles","id":"t","label":"T","items":[{"id":"a","text":"A","colour":"red"}]})",
+      R"({"type":"tiles","id":"t","label":"T","items":[{"id":"a","text":"A"},{"id":"a","text":"B"}]})",
+      R"({"type":"tiles","id":"t","label":"T","size":500,"items":[]})",
+      R"({"type":"progress","id":"p","label":"P","value":0.5,"look":"pie"})",
+      R"({"type":"progress","id":"p","label":"P","value":0.5,"size":4})",
+      R"({"type":"text_field","id":"f","label":"F","look":"pin"})",
+      R"({"type":"text_field","id":"f","label":"F","digits":40})",
+      R"({"type":"stack","id":"s","look":"glass"})",
+      R"({"type":"text","id":"x","text":"x","style":"huge"})",
+  };
+  for (const char* b : bad) {
+    INFO(b);
+    tree x;
+    CHECK(x.set(b) != error::none);
+  }
+}
+
 TEST_CASE("a control or picture without a label is refused (VoiceOver / Narrator)", "[addon][screens]") {
   const char* unnamed[] = {
       R"({"type":"button","id":"b"})",

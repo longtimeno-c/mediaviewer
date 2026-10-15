@@ -342,7 +342,8 @@ small vocabulary both hosts render with their own controls.
 - **Vocabulary (PR 58):** stack, grid, scroll, split, text, image, thumbnail (a file's, from
   the viewer's cache), thumbnail grid (virtualised by the host), list, table, button, toggle,
   choice, slider, number, text field, progress, separator, and `surface` (pixels the add-on
-  drew, for what the vocabulary lacks).
+  drew, for what the vocabulary lacks). Since #442 also `tiles`, and looks on stack, progress,
+  text field and text (implementation notes below).
 - **State** lives in the add-on. It posts a tree, then diffs; the host applies them on the UI
   thread in one pass. Events (click, change, key, selection) post back to the add-on's worker.
 - **Keyboard-complete** by construction: every control the host renders is focusable and named;
@@ -587,7 +588,7 @@ a chrome-drawn pin) and a search provider (`portugal`, `place:`, `in:`).
 
 | Piece | Code |
 |---|---|
-| The view-tree vocabulary (all 19 node types), its checks, diffs and events | `src/addon/screen.*` |
+| The view-tree vocabulary (all 20 node types), its checks, diffs and events | `src/addon/screen.*` |
 | What a manifest contributes (screens, info sections, providers, items, badges; the symbol set) | `src/addon/contrib.h`; parsed for schema 1 in `src/addon/manifest.cpp` |
 | The registry: tables built at attach, one worker per add-on, coalesced generation-tagged requests, trees, surfaces, rows, badge sets, status | `src/addon/slots.*` |
 | Host table v3 (`screen_post` … `locations_in`) and the add-on side `mv.slots.1` | `mediaviewer_addon.h`, thunks in `src/addon/host.cpp`; `loaded_addon::load` attaches, its destructor detaches first |
@@ -716,6 +717,25 @@ How it works:
   It has no chrome to send the command to.
 - **Settings → Add-ons** gives such an add-on with a window screen an **Open …** button, as Import
   has; the window opens through `open_screen` with no file.
+
+**Added for an AirDrop-like Sharepoint (#442, 2026-10-15)**, generic, drawn by both hosts
+(`ScreenView.swift`, `IslandHost.Screens.cs`) and checked by the core (`"[screens]"`):
+
+- **`tiles`** (interactive; `label` required): `items` of `{id, text, detail?, initials?,
+  progress?, mark?}` (at most 256), `selection`, `size` (32–160 points) and `static`. Each item is a
+  large round tile: `initials` in a circle in the accent colour, the name and caption under it, a
+  ring round the circle while `progress` is 0–1, and a `"done"` / `"failed"` mark. A click, Space or
+  Return on one is `activate` with its id; `select` takes one id. A `static` set is shown, not
+  chosen: no focus, and its events are refused.
+- **`stack` `"look": "card"`**: drawn on a rounded surface with a hairline and padding, as the
+  Settings cards. In a vertical stack with `"align": "center"` the hosts centre text too.
+- **`progress` `"look": "ring"`** with `size` (16–256): a ring that fills, its percentage in the
+  middle; an unknown value is a still third (nothing ticks while nothing moves).
+- **`text_field` `"look": "code"`** with `digits` (1–12): one large centred field that takes
+  digits only, groups them as typed and submits by itself when the last one is typed (Return
+  submits too), then clears for a retry. On Windows it is `FakeInput` with a larger face, as every
+  field there.
+- **`text` `"style": "display"`**: a large face for a short code read across a room.
 
 For a script add-on (PR 57): the registry reaches code through `slot_client`; a script runtime
 implements it on its own worker and calls the same `post_*` functions the v3 rows wrap.
