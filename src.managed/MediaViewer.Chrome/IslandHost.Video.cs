@@ -304,7 +304,7 @@ public static partial class IslandHost
         SetMuteIcon();
 
         Button more = IconButton(Glyph.More, "More: frame step, volume, audio track, loop", () => { });
-        var panel = new StackPanel { Spacing = 10, Padding = new Thickness(12), MinWidth = 260 };
+        var panel = new StackPanel { Spacing = Space(10), Padding = Pad(12), MinWidth = 260 };
         var steps = new StackPanel { Orientation = Orientation.Horizontal };
         steps.Children.Add(TextButton("Previous frame", () => _folderSession?.VideoStep(-1)));
         steps.Children.Add(TextButton("Next frame", () => _folderSession?.VideoStep(1)));

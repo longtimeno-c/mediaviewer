@@ -130,7 +130,7 @@ public final class MVChromeHost: NSObject {
                           styleMask: [.borderless], backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false
     let root = AddonSettingsPage(addonID: addonID, fallbackTitle: addonID)
-      .frame(width: 560).padding(20).frame(maxHeight: .infinity, alignment: .top)
+      .frame(width: 560).padding(MVTheme.space(20)).frame(maxHeight: .infinity, alignment: .top)
       .background(MVTheme.canvas)
     window.contentView = NSHostingView(rootView: ThemedRoot(content: root))
     window.orderFrontRegardless()

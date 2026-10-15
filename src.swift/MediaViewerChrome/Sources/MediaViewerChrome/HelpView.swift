@@ -65,8 +65,8 @@ struct HelpView: View {
       Text("Keyboard shortcuts").font(MVTheme.font(20))
       ScrollView {
         LazyVGrid(
-          columns: [GridItem(.adaptive(minimum: 340), spacing: 24, alignment: .top)],
-          alignment: .leading, spacing: 6
+          columns: [GridItem(.adaptive(minimum: 340), spacing: MVTheme.space(24), alignment: .top)],
+          alignment: .leading, spacing: MVTheme.space(6)
         ) {
           ForEach(store.entries) { entry in
             HStack(alignment: .firstTextBaseline) {

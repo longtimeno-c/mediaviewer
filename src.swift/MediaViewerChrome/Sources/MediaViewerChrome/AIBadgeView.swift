@@ -38,7 +38,7 @@ struct AIBadgeView: View {
   @FocusState private var focused: Bool
 
   var body: some View {
-    HStack(spacing: 3) {
+    HStack(spacing: MVTheme.space(3)) {
       Image(systemName: "sparkles").font(.system(size: 10, weight: .semibold))
       Text("AI").font(.system(size: 11, weight: .semibold))
     }
@@ -59,14 +59,14 @@ struct AIBadgeView: View {
     .popover(isPresented: Binding(get: { !store.title.isEmpty && (hovering || focused) },
                                   set: { if !$0 { hovering = false } }),
              arrowEdge: .top) {
-      VStack(alignment: .leading, spacing: 4) {
+      VStack(alignment: .leading, spacing: MVTheme.space(4)) {
         Text(store.title).font(.callout.weight(.semibold)).foregroundStyle(MVTheme.title)
         if !store.evidence.isEmpty {
           Text(store.evidence).font(.caption).foregroundStyle(MVTheme.body)
             .fixedSize(horizontal: false, vertical: true)
         }
       }
-      .padding(10)
+      .padding(MVTheme.space(10))
       .frame(maxWidth: 320, alignment: .leading)
     }
     .accessibilityElement(children: .ignore)

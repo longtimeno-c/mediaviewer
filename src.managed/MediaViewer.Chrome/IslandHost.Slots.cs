@@ -366,7 +366,7 @@ public static partial class IslandHost
 
     private static UIElement BuildSlotSection(ScreenAt at, string title, JsonElement tree)
     {
-        var section = new StackPanel { Spacing = 6, Padding = new Thickness(14, 10, 14, 14) };
+        var section = new StackPanel { Spacing = Space(6), Padding = Pad(14, 10, 14, 14) };
         TextBlock heading = Text(title, Body, UiFontSize - 3);
         AutomationProperties.SetHeadingLevel(heading, Microsoft.UI.Xaml.Automation.Peers.AutomationHeadingLevel.Level2);
         section.Children.Add(heading);
@@ -551,8 +551,8 @@ public static partial class IslandHost
         var row = new StackPanel
         {
             Orientation = Orientation.Horizontal,
-            Spacing = 2,
-            Margin = new Thickness(4),
+            Spacing = Space(2),
+            Margin = Pad(4),
             HorizontalAlignment = HorizontalAlignment.Left,
             VerticalAlignment = VerticalAlignment.Bottom,
             IsHitTestVisible = false,
@@ -617,7 +617,7 @@ public static partial class IslandHost
     // The add-ons' command-bar buttons and status text, after the chrome's own.
     private static UIElement BuildSlotBarItems()
     {
-        _slotBarPanel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
+        _slotBarPanel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(2), VerticalAlignment = VerticalAlignment.Center };
         RebuildSlotBar();
         return _slotBarPanel;
     }
@@ -638,7 +638,7 @@ public static partial class IslandHost
         {
             TextBlock t = Text(text, Body, UiFontSize - 3, maxLines: 1);
             t.VerticalAlignment = VerticalAlignment.Center;
-            t.Margin = new Thickness(6, 0, 6, 0);
+            t.Margin = Pad(6, 0, 6, 0);
             ToolTipService.SetToolTip(t, label);
             AutomationProperties.SetName(t, $"{label}: {text}");
             _slotBarPanel.Children.Add(t);
@@ -665,7 +665,7 @@ public static partial class IslandHost
     // search result list, what the other local-scope providers matched.
     private static UIElement BuildSlotPathItems()
     {
-        _slotPathPanel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
+        _slotPathPanel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(2), VerticalAlignment = VerticalAlignment.Center };
         RebuildSlotPathItems();
         return _slotPathPanel;
     }
@@ -746,7 +746,7 @@ public static partial class IslandHost
 
     private static void AddSlotAddonsSettingsRows(StackPanel view)
     {
-        _slotSettingsPanel = new StackPanel { Spacing = 6, Margin = new Thickness(0, 12, 0, 0) };
+        _slotSettingsPanel = new StackPanel { Spacing = Space(6), Margin = Pad(0, 12, 0, 0) };
         view.Children.Add(_slotSettingsPanel);
         RefreshSlotSettings();
         // Opening Settings asks the channel, as Import does. A later window
@@ -980,7 +980,7 @@ public static partial class IslandHost
 
     private static StackPanel SlotRemoveButtons(SlotAddonRow row)
     {
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(6) };
         if (_slotConfirming == row.Id)
         {
             buttons.Children.Add(EditButton("Remove, keep its data", () => { _slotConfirming = null; RemoveSlotAddon(row.Id, true); }));

@@ -79,7 +79,7 @@ public static partial class IslandHost
         {
             Content = icon,
             Background = Brush(Microsoft.UI.Colors.Transparent),
-            Padding = new Thickness(8, 6, 8, 6),
+            Padding = Pad(8, 6, 8, 6),
             MinWidth = 36,
             VerticalAlignment = VerticalAlignment.Center,
             // As EditButton: the crop, trim and editor keys stay the canvas's.
@@ -158,7 +158,7 @@ public static partial class IslandHost
         {
             Content = new FontIcon { Glyph = glyph, FontFamily = IconFont, FontSize = UiFontSize, Foreground = Brush(Title) },
             Background = Brush(Microsoft.UI.Colors.Transparent),
-            Padding = new Thickness(10, 7, 10, 7),
+            Padding = Pad(10, 7, 10, 7),
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
             // As TextButton: a click must not park the keyboard on the island.
@@ -197,8 +197,8 @@ public static partial class IslandHost
             Background = fill,
             Foreground = ink,
             BorderThickness = new Thickness(0),
-            Padding = new Thickness(16, 7, 16, 7),
-            CornerRadius = new CornerRadius(RadiusButton),
+            Padding = Pad(16, 7, 16, 7),
+            CornerRadius = Corner(RadiusButton),
             VerticalAlignment = VerticalAlignment.Center,
             AllowFocusOnInteraction = false,
         };
