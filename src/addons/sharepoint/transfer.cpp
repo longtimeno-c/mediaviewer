@@ -3,6 +3,7 @@
 #include "addons/sharepoint/transfer.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <memory>
 #include <optional>
@@ -21,6 +22,28 @@ constexpr int kTempAttempts = 16;
 constexpr int kRenameAttempts = 32;
 // The uncached read-back's buffer (aligned, a kIoAlign multiple).
 constexpr std::size_t kReadBackBytes = 4u * 1024 * 1024;
+
+// Where a transfer ended, if not delivered: the source line and the outcome,
+// for the host's log (no path, no name).
+void note(const hooks& h, const char* side, int line, outcome o) noexcept {
+  if (!h.note || o == outcome::delivered) return;
+  try {
+    char text[96];
+    std::snprintf(text, sizeof text, "sharepoint: %s ended %s (transfer.cpp:%d)", side, outcome_name(o), line);
+    h.note(text);
+  } catch (...) {
+  }
+}
+
+void note_status(const hooks& h, const char* what, int line, status st) noexcept {
+  if (!h.note) return;
+  try {
+    char text[96];
+    std::snprintf(text, sizeof text, "sharepoint: %s: %s (transfer.cpp:%d)", what, status_name(st), line);
+    h.note(text);
+  } catch (...) {
+  }
+}
 
 bool cancelled(const hooks& h) noexcept { return h.cancel && h.cancel->load(std::memory_order_relaxed); }
 
@@ -127,21 +150,22 @@ std::string offer_json(const std::vector<outgoing_file>& files) {
 transfer_result send_files(channel& ch, const std::vector<outgoing_file>& files, const hooks& h,
                            const std::function<void()>& on_accepted) {
   transfer_result res;
-  auto stop = [&](outcome o) {
+  auto stop = [&](outcome o, int line) {
+    note(h, "send", line, o);
     res.how = o;
-    if (o == outcome::cancelled) (void)ch.send(msg::cancel, std::string_view("{}"));
+    if (o == outcome::cancelled) (void)ch.try_send(msg::cancel, "{}");
     ch.shutdown();
     return res;
   };
-  if (files.empty() || files.size() > kMaxFiles) return stop(outcome::failed);
-  if (!ch.send(msg::offer, offer_json(files))) return stop(cancelled(h) ? outcome::cancelled : outcome::failed);
+  if (files.empty() || files.size() > kMaxFiles) return stop(outcome::failed, __LINE__);
+  if (!ch.send(msg::offer, offer_json(files))) return stop(cancelled(h) ? outcome::cancelled : outcome::failed, __LINE__);
 
   // The answer, while the person there decides (it declines by itself after
   // kAskMs; this waits a little longer, then gives up).
   message m;
   for (;;) {
     if (auto r = ch.receive(m, kAskMs + 30000); !r) {
-      return stop(cancelled(h) || r.error() == status::cancelled ? outcome::cancelled : outcome::failed);
+      return stop(cancelled(h) || r.error() == status::cancelled ? outcome::cancelled : outcome::failed, __LINE__);
     }
     if (m.type == msg::accept) break;
     if (m.type == msg::decline) {
@@ -151,8 +175,8 @@ transfer_result send_files(channel& ch, const std::vector<outgoing_file>& files,
       ch.shutdown();
       return res;
     }
-    if (m.type == msg::cancel) return stop(outcome::declined);
-    return stop(outcome::failed);
+    if (m.type == msg::cancel) return stop(outcome::declined, __LINE__);
+    return stop(outcome::failed, __LINE__);
   }
   if (on_accepted) on_accepted();
 
@@ -165,7 +189,9 @@ transfer_result send_files(channel& ch, const std::vector<outgoing_file>& files,
     for (;;) {
       bool got = false;
       try {
-        got = ch.receive(in).has_value();
+        auto r = ch.receive(in);
+        got = r.has_value();
+        if (!got) note_status(h, "send: reader", __LINE__, r.error());
       } catch (...) {
         got = false;  // out of memory: the link ends, the process does not
       }
@@ -196,9 +222,10 @@ transfer_result send_files(channel& ch, const std::vector<outgoing_file>& files,
       }
     }
   });
-  auto finish = [&](outcome o) {
+  auto finish = [&](outcome o, int line) {
+    note(h, "send", line, o);
     if (o != outcome::delivered) {
-      if (o == outcome::cancelled && !remote_cancel.load()) (void)ch.send(msg::cancel, std::string_view("{}"));
+      if (o == outcome::cancelled && !remote_cancel.load()) (void)ch.try_send(msg::cancel, "{}");
       ch.shutdown();
     }
     reader.join();
@@ -220,21 +247,21 @@ transfer_result send_files(channel& ch, const std::vector<outgoing_file>& files,
     io::file_reader in;
     if (!in.open(f.path, io::read_mode::sequential) || in.size() != f.size) {
       // Gone, unreadable or changed since the offer: said, not sent.
-      if (!ch.send(msg::file_skip, idx)) return finish(cancelled(h) ? outcome::cancelled : outcome::failed);
+      if (!ch.send(msg::file_skip, idx)) return finish(cancelled(h) ? outcome::cancelled : outcome::failed, __LINE__);
       ++res.skipped;
       continue;
     }
     const std::string begin = json_of([&](json::writer& w) {
       w.key("i").integer(i).key("size").integer(static_cast<std::int64_t>(f.size)).key("mtime").integer(f.mtime);
     });
-    if (!ch.send(msg::file_begin, begin)) return finish(cancelled(h) ? outcome::cancelled : outcome::failed);
+    if (!ch.send(msg::file_begin, begin)) return finish(cancelled(h) ? outcome::cancelled : outcome::failed, __LINE__);
     io::hasher hs;
     std::uint64_t got = 0;
     bool readable = true;
     for (;;) {
-      if (cancelled(h)) return finish(outcome::cancelled);
-      if (remote_cancel.load()) return finish(outcome::cancelled);
-      if (broken.load()) return finish(outcome::failed);
+      if (cancelled(h)) return finish(outcome::cancelled, __LINE__);
+      if (remote_cancel.load()) return finish(outcome::cancelled, __LINE__);
+      if (broken.load()) return finish(outcome::failed, __LINE__);
       auto n = in.read(chunk);
       if (!n) {
         readable = false;
@@ -247,26 +274,27 @@ transfer_result send_files(channel& ch, const std::vector<outgoing_file>& files,
         break;
       }
       hs.update({chunk.data(), *n});
-      if (!ch.send(msg::data, std::span<const std::uint8_t>(chunk.data(), *n))) {
-        return finish(cancelled(h) || remote_cancel.load() ? outcome::cancelled : outcome::failed);
+      if (auto sent = ch.send(msg::data, std::span<const std::uint8_t>(chunk.data(), *n)); !sent) {
+        note_status(h, "send: data", __LINE__, sent.error());
+        return finish(cancelled(h) || remote_cancel.load() ? outcome::cancelled : outcome::failed, __LINE__);
       }
       moved += *n;
       if (h.progress) h.progress(moved, sent_files);
       if (h.yield) h.yield();
     }
     if (!readable || got != f.size) {
-      if (!ch.send(msg::file_skip, idx)) return finish(cancelled(h) ? outcome::cancelled : outcome::failed);
+      if (!ch.send(msg::file_skip, idx)) return finish(cancelled(h) ? outcome::cancelled : outcome::failed, __LINE__);
       ++res.skipped;
       continue;
     }
     const io::content_hash digest = hs.finish();
     if (!ch.send(msg::file_end, std::span<const std::uint8_t>(digest.bytes.data(), digest.bytes.size()))) {
-      return finish(cancelled(h) ? outcome::cancelled : outcome::failed);
+      return finish(cancelled(h) ? outcome::cancelled : outcome::failed, __LINE__);
     }
     ++sent_files;
     if (h.progress) h.progress(moved, sent_files);
   }
-  if (!ch.send(msg::done, std::string_view("{}"))) return finish(outcome::failed);
+  if (!ch.send(msg::done, std::string_view("{}"))) return finish(outcome::failed, __LINE__);
   // The receiver's done comes after its last read-back and rename.
   reader.join();
   res.done = verified.load();
@@ -328,7 +356,8 @@ transfer_result receive_files(channel& ch, const incoming_offer& offer, const st
   std::uint32_t next = 0;
   std::uint32_t failed = 0;
   std::uint64_t moved = 0;
-  auto end = [&](outcome o, bool tell) {
+  auto end = [&](outcome o, bool tell, int line) {
+    note(h, "receive", line, o);
     if (cur) cur->drop();
     if (tell) (void)ch.send(msg::cancel, std::string_view("{}"));
     ch.shutdown();
@@ -338,9 +367,10 @@ transfer_result receive_files(channel& ch, const incoming_offer& offer, const st
 
   message m;
   for (;;) {
-    if (cancelled(h)) return end(outcome::cancelled, true);
+    if (cancelled(h)) return end(outcome::cancelled, true, __LINE__);
     if (auto r = ch.receive(m); !r) {
-      return end(cancelled(h) ? outcome::cancelled : outcome::failed, false);
+      note_status(h, "receive: link", __LINE__, r.error());
+      return end(cancelled(h) ? outcome::cancelled : outcome::failed, false, __LINE__);
     }
     switch (m.type) {
       case msg::file_begin: {
@@ -350,32 +380,32 @@ transfer_result receive_files(channel& ch, const incoming_offer& offer, const st
         const auto mtime = doc ? doc->integer("mtime") : std::nullopt;
         if ((cur && cur->open) || !i || *i != static_cast<std::int64_t>(next) || next >= offer.files.size() || !size ||
             static_cast<std::uint64_t>(*size) != offer.files[next].size) {
-          return end(outcome::failed, true);
+          return end(outcome::failed, true, __LINE__);
         }
         const std::string& rel = offer.files[next].rel;
         const std::string target = io::join_path(dest_dir, io::native_relative(rel));
         const std::string dir(io::parent_of(target));
-        if (!io::make_directories(dir)) return end(outcome::failed, true);
+        if (!io::make_directories(dir)) return end(outcome::failed, true, __LINE__);
         cur = std::make_unique<incoming>();
         cur->index = next;
         cur->size = static_cast<std::uint64_t>(*size);
         cur->mtime = mtime.value_or(0);
         cur->final_path = free_name(dir, leaf_name(rel));
-        if (cur->final_path.empty()) return end(outcome::failed, true);
+        if (cur->final_path.empty()) return end(outcome::failed, true, __LINE__);
         bool made = false;
         for (int a = 0; a < kTempAttempts && !made; ++a) {
           cur->temp_path = temp_name(cur->final_path, a);
           auto c = cur->out.create_new(cur->temp_path);
-          if (!c) return end(outcome::failed, true);
+          if (!c) return end(outcome::failed, true, __LINE__);
           made = *c == io::rename_outcome::renamed;
         }
-        if (!made) return end(outcome::failed, true);
+        if (!made) return end(outcome::failed, true, __LINE__);
         cur->open = true;
         break;
       }
       case msg::data: {
-        if (!cur || !cur->open || cur->got + m.body.size() > cur->size) return end(outcome::failed, true);
-        if (!cur->out.write(m.body)) return end(outcome::failed, true);
+        if (!cur || !cur->open || cur->got + m.body.size() > cur->size) return end(outcome::failed, true, __LINE__);
+        if (!cur->out.write(m.body)) return end(outcome::failed, true, __LINE__);
         cur->hash.update(m.body);
         cur->got += m.body.size();
         moved += m.body.size();
@@ -384,7 +414,7 @@ transfer_result receive_files(channel& ch, const incoming_offer& offer, const st
         break;
       }
       case msg::file_end: {
-        if (!cur || !cur->open || m.body.size() != 32 || cur->got != cur->size) return end(outcome::failed, true);
+        if (!cur || !cur->open || m.body.size() != 32 || cur->got != cur->size) return end(outcome::failed, true, __LINE__);
         io::content_hash sent;
         std::memcpy(sent.bytes.data(), m.body.data(), 32);
         bool ok = cur->hash.finish() == sent && cur->out.flush_durable().has_value();
@@ -393,7 +423,7 @@ transfer_result receive_files(channel& ch, const incoming_offer& offer, const st
         // From the device, as verified_copy's read-back.
         if (ok) {
           const auto back = read_back(cur->temp_path, h);
-          if (!back && cancelled(h)) return end(outcome::cancelled, true);
+          if (!back && cancelled(h)) return end(outcome::cancelled, true, __LINE__);
           ok = back && *back == sent;
         }
         if (ok) {
@@ -424,29 +454,29 @@ transfer_result receive_files(channel& ch, const incoming_offer& offer, const st
         ++next;
         if (h.progress) h.progress(moved, res.done);
         if (!ch.send(msg::file_done, json_of([&](json::writer& w) { w.key("i").integer(i).key("ok").boolean(ok); }))) {
-          return end(cancelled(h) ? outcome::cancelled : outcome::failed, false);
+          return end(cancelled(h) ? outcome::cancelled : outcome::failed, false, __LINE__);
         }
         break;
       }
       case msg::file_skip: {
         const auto i = int_field(m.text(), "i");
-        if (!i || *i != static_cast<std::int64_t>(next)) return end(outcome::failed, true);
+        if (!i || *i != static_cast<std::int64_t>(next)) return end(outcome::failed, true, __LINE__);
         if (cur) cur->drop();
         ++next;
         ++res.skipped;
         break;
       }
       case msg::done: {
-        if ((cur && cur->open) || next != offer.files.size()) return end(outcome::failed, true);
+        if ((cur && cur->open) || next != offer.files.size()) return end(outcome::failed, true, __LINE__);
         (void)ch.send(msg::done, std::string_view("{}"));
         ch.shutdown();
         res.how = failed == 0 ? outcome::delivered : outcome::failed;
         return res;
       }
       case msg::cancel:
-        return end(outcome::cancelled, false);
+        return end(outcome::cancelled, false, __LINE__);
       default:
-        return end(outcome::failed, true);
+        return end(outcome::failed, true, __LINE__);
     }
   }
 }

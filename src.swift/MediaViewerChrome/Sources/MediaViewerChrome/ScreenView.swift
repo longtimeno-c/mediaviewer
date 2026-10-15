@@ -587,6 +587,9 @@ private struct NumberNode: View {
   }
 }
 
+// @MainActor as a whole: its helpers (the folder dialog, the field) send events
+// from outside `body`, which older compilers do not treat as isolated.
+@MainActor
 private struct TextFieldNode: View {
   let node: ScreenNode
   let address: ScreenAddress
@@ -618,8 +621,11 @@ private struct TextFieldNode: View {
     if !current.isEmpty { panel.directoryURL = URL(fileURLWithPath: current, isDirectory: true) }
     let done: (NSApplication.ModalResponse) -> Void = { response in
       guard response == .OK, let url = panel.url else { return }
-      text = url.path
-      SlotStore.shared.send(address, node: node.id, kind: 2, value: url.path)
+      // AppKit calls a sheet's handler on the main thread.
+      MainActor.assumeIsolated {
+        text = url.path
+        SlotStore.shared.send(address, node: node.id, kind: 2, value: url.path)
+      }
     }
     if let window = NSApp.keyWindow {
       panel.beginSheetModal(for: window, completionHandler: done)

@@ -13,8 +13,8 @@ import SwiftUI
 @MainActor
 final class SharepointStore: ObservableObject {
   static let shared = SharepointStore()
-  static let addonID = "sharepoint"
-  static let screenID = "sharepoint"
+  nonisolated static let addonID = "sharepoint"
+  nonisolated static let screenID = "sharepoint"
   nonisolated private static let channel = AddonChannel(name: "mediaviewer-addon-sharepoint-macos")
 
   enum Offer: Equatable { case unknown, checking, available(Int), notPublished, needsNewerApp, unreachable }
@@ -95,9 +95,11 @@ final class SharepointStore: ObservableObject {
     pending = paths
     message = "Downloading Sharepoint\u{2026}"
     Task.detached {
-      var text = ""
+      // A constant set on every path: nothing mutable crosses into the main actor.
+      let text: String
       do {
         try await Self.channel.downloadAndInstall { p in Task { @MainActor in self.phase = p } }
+        text = ""
       } catch is AddonChannel.NotPublished {
         text = "Sharepoint is not published for download yet."
       } catch let e as AddonChannel.AddonError {

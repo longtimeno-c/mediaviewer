@@ -60,6 +60,9 @@ struct hooks {
   // Blocks while the viewer is presenting (the host table's should_yield,
   // as Import waits between buffers). May be empty.
   std::function<void()> yield;
+  // Why a transfer ended, if it was not delivered: fixed ASCII with a source
+  // line, for the host's log. May be empty.
+  std::function<void(const char*)> note;
 };
 
 enum class outcome : std::uint8_t {

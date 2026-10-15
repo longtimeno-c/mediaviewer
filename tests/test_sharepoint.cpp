@@ -129,7 +129,8 @@ class fake_host final : public sp::engine_host {
     }
     return out;
   }
-  void log(int, const char*) override {}
+  // Shown with a failure (ctest prints the output): where a transfer ended.
+  void log(int, const char* ascii) override { std::fprintf(stderr, "[log] %s\n", ascii); }
 
   std::mutex m;
   std::string last_tree;

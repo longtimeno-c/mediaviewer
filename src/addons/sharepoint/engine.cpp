@@ -696,6 +696,7 @@ void engine::cancel_transfer() {
 hooks engine::hooks_for(bool sending) {
   hooks h;
   h.cancel = &cancel_;
+  h.note = [this](const char* text) { host_.log(1, text); };
   h.yield = [this] {
     // While the viewer presents, wait between chunks (as Import does); the
     // channel's pinger keeps the link alive meanwhile.

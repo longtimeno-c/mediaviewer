@@ -26,6 +26,10 @@ import SwiftUI
 /// read from disk). The drag's events are the drag's: SwiftUI does not see them,
 /// so the press is no click. Installed the first time a cell is hovered;
 /// costs one comparison per mouse event after that.
+private struct EventBox: @unchecked Sendable {
+  let event: NSEvent?
+}
+
 @MainActor
 final class GalleryDrag {
   static let shared = GalleryDrag()
@@ -44,8 +48,11 @@ final class GalleryDrag {
 
   private func install() {
     guard monitor == nil else { return }
+    // A local monitor runs on the main thread; the box carries the event
+    // across the isolation check, which NSEvent (not Sendable) cannot.
     monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]) { event in
-      MainActor.assumeIsolated { GalleryDrag.shared.handle(event) }
+      let box = EventBox(event: event)
+      return MainActor.assumeIsolated { EventBox(event: box.event.flatMap { GalleryDrag.shared.handle($0) }) }.event
     }
   }
 

@@ -58,6 +58,17 @@ class tcp_link final : public link {
   }
   ~tcp_link() override {
     shutdown();
+    // A graceful close: whatever we sent reaches the peer. Closing a socket
+    // with unread data makes Windows reset the connection, and the peer can
+    // lose bytes it had not read yet (a "busy" answer, a cancel). Read off
+    // what is left, briefly, first.
+    char sink[4096];
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
+    while (std::chrono::steady_clock::now() < until) {
+      if (wait_for(s_, POLLRDNORM, 50) <= 0) continue;
+      const int n = ::recv(s_, sink, sizeof sink, 0);
+      if (n <= 0) break;
+    }
     ::closesocket(s_);
   }
 
@@ -78,10 +89,24 @@ class tcp_link final : public link {
 
   result<std::size_t> read_some(std::span<std::uint8_t> into, int timeout_ms) override {
     if (into.empty()) return std::size_t{0};
-    if (down_.load()) return err(status::cancelled);
-    const int ev = wait_for(s_, POLLRDNORM, timeout_ms);
-    if (ev == 0) return err(status::timeout);
+    // In slices: closing the sending side does not wake a WSAPoll that waits
+    // to read, so shutdown() is noticed here instead.
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms < 0 ? 0 : timeout_ms);
+    int ev = 0;
+    for (;;) {
+      if (down_.load()) return err(status::cancelled);
+      int slice = 100;
+      if (timeout_ms >= 0) {
+        const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(until - std::chrono::steady_clock::now());
+        if (left.count() <= 0 && timeout_ms > 0) return err(status::timeout);
+        slice = static_cast<int>(std::min<long long>(slice, std::max<long long>(left.count(), 0)));
+      }
+      ev = wait_for(s_, POLLRDNORM, slice);
+      if (ev != 0) break;
+      if (timeout_ms == 0) return err(status::timeout);
+    }
     if (ev < 0) return err(status::io);
+    if (down_.load()) return err(status::cancelled);
     const int want = static_cast<int>(std::min<std::size_t>(into.size(), 1u << 20));
     const int n = ::recv(s_, reinterpret_cast<char*>(into.data()), want, 0);
     if (n == SOCKET_ERROR) return err(down_.load() ? status::cancelled : status::io);
@@ -89,7 +114,9 @@ class tcp_link final : public link {
   }
 
   void shutdown() noexcept override {
-    if (!down_.exchange(true)) (void)::shutdown(s_, SD_BOTH);
+    // SD_SEND, not SD_BOTH: on Windows, data arriving after SD_RECEIVE
+    // resets the connection, and the peer loses what it had not read.
+    if (!down_.exchange(true)) (void)::shutdown(s_, SD_SEND);
   }
 
   transport via() const noexcept override { return transport::wifi; }
