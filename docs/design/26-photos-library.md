@@ -19,10 +19,13 @@ doing them and is a viewer fix on both platforms.
    Library* — the gallery, filmstrip, keys and marks of any folder — oldest first (the Photos
    app's Library order), the newest selected. Opening says *Opening the Photos library…* at
    once, keeps it up until the listing ends, and ignores another click while the listing runs;
-   the listing takes each name from the fetched asset (PhotoKit's `filename`, falling back to
-   the original's resource only when that is missing) and caches it by asset and modification
-   date, so it costs about what the AI pack's walk does rather than one resource lookup per
-   asset (that took 15 minutes on 24 k assets, #420). The time is in the unified log,
+   the listing takes each name from the fetched asset — PhotoKit's private `originalFilename`,
+   its property set (`PHAssetPropertySetOriginalMetadata`) fetched with the assets in one query
+   — and falls back to the original's resource only when that is missing. Names are cached by
+   asset and modification date. It costs about what the AI pack's walk does (23 k assets:
+   +~90 ms over the bare walk), not one resource lookup per asset (that took 15 minutes on
+   24 k assets, #420). The name is the file as shot (`IMG_0001.HEIC`) for an edited item too;
+   the resource lookup used to name 8,462 of 23,277 edited items `FullSizeRender.*`. The time is in the unified log,
    `photos: listed N assets in M ms` (count and time only). Not before the library was added:
    the row, the menu item and the backup section are absent until then, and absent again after *Remove*.
    The welcome card also shows an **iCloud Photos** row, on its own above *Recent folders*.

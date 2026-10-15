@@ -65,19 +65,47 @@ PHAssetResource* original_resource(PHAsset* a) {
   return rs.firstObject;
 }
 
-// The asset's own file name, from the fetched asset: no resource lookup.
-// `filename` is PHAsset's private key-value path (what Photos shows under
-// Info); nil or missing on a system without it, and then the caller falls
-// back to the resources. +[PHAssetResource assetResourcesForAsset:] is one
-// round trip to photolibraryd per asset: 15 minutes over a 24 k library
-// (#420), where the AI pack's walk of the same library takes 0.9 s.
-NSString* kvc_filename(PHAsset* a) {
+// The file name as shot (IMG_0001.HEIC), read from the fetched asset instead
+// of its resources. +[PHAssetResource assetResourcesForAsset:] is one round
+// trip to photolibraryd per asset: 15 minutes over a 24 k library (#420).
+// `originalFilename` is PHAsset's private key-value path; fetched with
+// with_names() it costs nothing more than the walk (23,277 assets: 439-504 ms
+// against 7.4-9.3 s unfetched, 2026-10-15). On those assets it equalled the
+// original resource's name for every one. nil when a system lacks the key:
+// the caller falls back to the resources.
+NSString* kvc_original_filename(PHAsset* a) {
   @try {
-    id v = [a valueForKey:@"filename"];
+    id v = [a valueForKey:@"originalFilename"];
     return [v isKindOfClass:[NSString class]] && [v length] ? (NSString*)v : nil;
   } @catch (NSException*) {
     return nil;
   }
+}
+
+// Fetches the property set that holds originalFilename with the assets, in
+// one query, rather than one per asset when the name is first read. Private
+// (PHFetchOptions' fetchPropertySets); without it the names are still right,
+// only slower.
+PHFetchOptions* with_names(PHFetchOptions* o) {
+  if ([o respondsToSelector:@selector(setFetchPropertySets:)]) {
+    @try {
+      [o setValue:@[ @"PHAssetPropertySetOriginalMetadata" ] forKey:@"fetchPropertySets"];
+    } @catch (NSException*) {
+    }
+  }
+  return o;
+}
+
+// The original's own resource (not an edit's FullSizeRender): the fallback
+// name, the same one originalFilename gives.
+PHAssetResource* shot_resource(PHAsset* a) {
+  NSArray<PHAssetResource*>* rs = [PHAssetResource assetResourcesForAsset:a];
+  const PHAssetResourceType want =
+      a.mediaType == PHAssetMediaTypeVideo ? PHAssetResourceTypeVideo : PHAssetResourceTypePhoto;
+  for (PHAssetResource* r in rs) {
+    if (r.type == want) return r;
+  }
+  return rs.firstObject;
 }
 
 // Names already looked up, by asset and version (an edit in Photos changes
@@ -103,9 +131,9 @@ std::string base_name(PHAsset* a) {
     if (hit != names().by_id.end() && hit->second.first == stamp) return hit->second.second;
   }
   std::string name;
-  if (NSString* fast = kvc_filename(a)) name = utf8(fast);
+  if (NSString* fast = kvc_original_filename(a)) name = utf8(fast);
   if (name.empty()) {
-    PHAssetResource* r = original_resource(a);
+    PHAssetResource* r = shot_resource(a);
     if (r) name = utf8(r.originalFilename);
   }
   if (name.empty()) return std::string("Photo");  // not cached: ask again next time
@@ -353,7 +381,7 @@ result<std::vector<item>> enumerate() {
   std::vector<item> out;
   @autoreleasepool {
     const double t0 = now_s();
-    PHFetchResult<PHAsset*>* all = [PHAsset fetchAssetsWithOptions:library_options()];
+    PHFetchResult<PHAsset*>* all = [PHAsset fetchAssetsWithOptions:with_names(library_options())];
     out.reserve(static_cast<std::size_t>(all.count));
     std::vector<item>* sink = &out;  // a block captures C++ objects by const copy
     [all enumerateObjectsUsingBlock:^(PHAsset* a, NSUInteger, BOOL*) {
@@ -386,7 +414,8 @@ result<std::vector<std::optional<item>>> describe(std::span<const std::string> k
     if (ids.count == 0) return out;
     std::unordered_map<std::string, item> by_key;
     std::unordered_map<std::string, item>* sink = &by_key;
-    PHFetchResult<PHAsset*>* found = [PHAsset fetchAssetsWithLocalIdentifiers:ids options:nil];
+    PHFetchResult<PHAsset*>* found = [PHAsset fetchAssetsWithLocalIdentifiers:ids
+                                                                     options:with_names([[PHFetchOptions alloc] init])];
     [found enumerateObjectsUsingBlock:^(PHAsset* a, NSUInteger, BOOL*) {
       @autoreleasepool {
         if (a.mediaType != PHAssetMediaTypeImage && a.mediaType != PHAssetMediaTypeVideo) return;

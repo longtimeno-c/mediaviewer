@@ -874,7 +874,10 @@ defaults; the flag is set by the pack's Settings when the library is a root, so 
 without the pack loaded can be pointed at it by hand (`defaults write
 io.github.longtimeno-c.mediaviewer.dev mv.photosLibrary.added -bool true`) once macOS has
 granted that bundle Photos access. The listing's time is logged as `photos: listed N assets in
-M ms`: `log stream --predicate 'subsystem == "org.mediaviewer" AND category == "photos"'`. The viewer's on-view downloads and previews live in
+M ms`: `log stream --predicate 'subsystem == "org.mediaviewer" AND category == "photos"'` (in zsh,
+`/usr/bin/log`: `log` is a builtin). `tools/photos/name_probe.m` times the walk and its names
+outside the app and checks them against the resources (counts only; its header says how to give
+it Photos access). The viewer's on-view downloads and previews live in
 `~/Library/Caches/MediaViewer/Photos Library/` (write-protected, emptied at launch); a backup's
 fetched originals wait in `~/Library/Caches/MediaViewer/Photos Backup/` and are removed when
 the run ends.

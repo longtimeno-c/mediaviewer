@@ -9359,11 +9359,31 @@ static std::string MvBadgeKey(const mv::io::dir_entry& e) {
     _listNames.push_back(e.name_utf8 + " \u2014 " + mv::shell::browse_path::leaf(parent));
   }
   // Still equal (same name in two folders of the same name): the full path is
-  // unique, so every name falls back to it.
+  // unique, so every file's name falls back to it. A library item's path is
+  // its photos: key, which is no name to show: two shots in the same minute
+  // are numbered instead (a 23 k-asset library always has a pair, so every
+  // caption was a key, #420).
   std::vector<std::string> check = _listNames;
   std::sort(check.begin(), check.end());
   if (std::adjacent_find(check.begin(), check.end()) != check.end()) {
-    for (std::size_t i = 0; i < _items.size(); ++i) _listNames[i] = _items[i].path_utf8;
+    std::unordered_map<std::string, int> count;
+    for (const auto& n : _listNames) ++count[n];
+    std::unordered_map<std::string, int> seen;
+    bool files_collide = false;
+    for (std::size_t i = 0; i < _items.size(); ++i) {
+      std::string& n = _listNames[i];
+      if (count[n] < 2) continue;
+      if (!mv::shell::photos::is_key(_items[i].path_utf8)) {
+        files_collide = true;
+        continue;
+      }
+      if (const int k = ++seen[n]; k > 1) n += " (" + std::to_string(k) + ")";
+    }
+    if (files_collide) {
+      for (std::size_t i = 0; i < _items.size(); ++i) {
+        if (!mv::shell::photos::is_key(_items[i].path_utf8)) _listNames[i] = _items[i].path_utf8;
+      }
+    }
   }
 }
 
