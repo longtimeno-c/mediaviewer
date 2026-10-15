@@ -128,10 +128,11 @@ class ReleaseTests(unittest.TestCase):
     def test_preview_publishes_signed_feeds_without_latest(self):
         self.stable_assets()
         os.environ['MODE'] = 'preview'
-        # Add-ons stay on the stable feed (docs/design/18): a preview carries none.
-        for platform in release.ADDON_PLATFORMS:
-            for name in release.addon_asset_names(platform):
-                (self.folder / name).unlink()
+        # Add-ons stay on the stable feed: a preview carries none.
+        for addon in release.FIRST_PARTY_ADDONS:
+            for platform in release.ADDON_PLATFORMS:
+                for name in release.addon_asset_names(platform, addon):
+                    (self.folder / name).unlink()
         calls = []
         self.lookup.side_effect = lambda *_: self.uploaded_draft() if calls else None
         def cli(*args):
@@ -172,13 +173,8 @@ class ReleaseTests(unittest.TestCase):
              'sha256': hashlib.sha256(b'payload').hexdigest()}]}
         (self.folder / 'mediaviewer-manifest.json').write_text(json.dumps(manifest))
         (self.folder / 'mediaviewer-manifest.json.sig').write_bytes(b'x' * 64)
-        for platform in release.ADDON_PLATFORMS:
-            base = f'mediaviewer-addon-import-{platform}'
-            (self.folder / (base + '.zip')).write_bytes(b'addon')
-            (self.folder / (base + '.json')).write_text(json.dumps({
-                'id': 'import', 'platform': platform, 'version': '0.1.1',
-                'archive': {'path': base + '.zip', 'size': 5, 'sha256': hashlib.sha256(b'addon').hexdigest()}}))
-            (self.folder / (base + '.json.sig')).write_bytes(b's' * 64)
+        for addon in release.FIRST_PARTY_ADDONS:
+            self.write_addon(addon)
         (self.folder / 'appcast.xml').write_text('''<!-- sparkle-signatures: fixture -->
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><item>
 <enclosure url="https://github.com/owner/repo/releases/download/v0.1.1/MediaViewer-0.1.1.zip"
@@ -203,9 +199,10 @@ sparkle:edSignature="fixture" length="7" /></item></channel></rss>''')
     def test_addons_are_not_required_until_the_workflow_packs_them(self):
         self.stable_assets()
         os.environ.pop('MV_RELEASE_ADDONS')
-        for platform in release.ADDON_PLATFORMS:
-            for name in release.addon_asset_names(platform):
-                (self.folder / name).unlink()
+        for addon in release.FIRST_PARTY_ADDONS:
+            for platform in release.ADDON_PLATFORMS:
+                for name in release.addon_asset_names(platform, addon):
+                    (self.folder / name).unlink()
         names = [p.name for p in release.validate_assets(self.folder, '0.1.1', 'stable', 'owner/repo', 'v0.1.1')]
         self.assertFalse(any(n.startswith('mediaviewer-addon-') for n in names))
 
@@ -222,12 +219,66 @@ sparkle:edSignature="fixture" length="7" /></item></channel></rss>''')
         with self.assertRaisesRegex(ValueError, 'not the release version'):
             release.publish(self.folder)
 
+    def test_stable_publishes_when_places_was_not_packed(self):
+        self.stable_assets()
+        names = [p.name for p in release.validate_assets(self.folder, '0.1.1', 'stable', 'owner/repo', 'v0.1.1')]
+        self.assertFalse(any('places' in name for name in names))
+
+    def test_stable_includes_places_when_it_was_packed(self):
+        self.stable_assets()
+        self.write_addon('places')
+        names = [p.name for p in release.validate_assets(self.folder, '0.1.1', 'stable', 'owner/repo', 'v0.1.1')]
+        for platform in release.ADDON_PLATFORMS:
+            for name in release.addon_asset_names(platform, 'places'):
+                self.assertIn(name, names)
+
+    def test_stable_includes_places_for_the_platform_that_packed_it(self):
+        self.stable_assets()
+        self.write_addon('places')
+        for name in release.addon_asset_names('win-x64', 'places'):
+            (self.folder / name).unlink()
+        names = [p.name for p in release.validate_assets(self.folder, '0.1.1', 'stable', 'owner/repo', 'v0.1.1')]
+        self.assertIn('mediaviewer-addon-places-macos.zip', names)
+        self.assertNotIn('mediaviewer-addon-places-win-x64.zip', names)
+
+    def test_stable_rejects_a_partial_places_pack(self):
+        self.stable_assets()
+        (self.folder / 'mediaviewer-addon-places-win-x64.zip').write_bytes(b'addon')
+        with self.assertRaisesRegex(ValueError, 'Incomplete places'):
+            release.validate_assets(self.folder, '0.1.1', 'stable', 'owner/repo', 'v0.1.1')
+
+    def test_stable_rejects_a_places_pack_from_another_version(self):
+        self.stable_assets()
+        self.write_addon('places')
+        m = self.folder / 'mediaviewer-addon-places-macos.json'
+        m.write_text(m.read_text().replace('"0.1.1"', '"0.1.0"'))
+        with self.assertRaisesRegex(ValueError, 'not the release version'):
+            release.validate_assets(self.folder, '0.1.1', 'stable', 'owner/repo', 'v0.1.1')
+
+    def test_preview_does_not_publish_places_even_when_packed(self):
+        self.stable_assets()
+        self.write_addon('places')
+        os.environ['MODE'] = 'preview'
+        names = [p.name for p in release.validate_assets(self.folder, '0.1.1', 'preview', 'owner/repo', 'v0.1.1')]
+        self.assertFalse(any('places' in name or name.startswith('mediaviewer-addon-') for name in names))
+
     def test_stable_uploads_the_addon(self):
         self.stable_assets()
         names = [p.name for p in release.validate_assets(self.folder, '0.1.1', 'stable', 'owner/repo', 'v0.1.1')]
+        for addon in release.FIRST_PARTY_ADDONS:
+            for platform in release.ADDON_PLATFORMS:
+                for name in release.addon_asset_names(platform, addon):
+                    self.assertIn(name, names)
+
+    def write_addon(self, addon, payload=b'addon'):
         for platform in release.ADDON_PLATFORMS:
-            for name in release.addon_asset_names(platform):
-                self.assertIn(name, names)
+            base = f'mediaviewer-addon-{addon}-{platform}'
+            (self.folder / (base + '.zip')).write_bytes(payload)
+            (self.folder / (base + '.json')).write_text(json.dumps({
+                'id': addon, 'platform': platform, 'version': '0.1.1',
+                'archive': {'path': base + '.zip', 'size': len(payload),
+                            'sha256': hashlib.sha256(payload).hexdigest()}}))
+            (self.folder / (base + '.json.sig')).write_bytes(b's' * 64)
 
     def ai_assets(self, addons=release.AI_ADDONS):
         os.environ['MV_RELEASE_AI'] = '1'

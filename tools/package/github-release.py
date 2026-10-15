@@ -73,12 +73,16 @@ def prepare():
 
 
 # The optional add-ons, one signed package per add-on and platform. The apps
-# fetch them from releases/latest, so once the release workflow packs them every
-# stable release must carry them: Import (docs/design/18) with MV_RELEASE_ADDONS=1, and
-# the Local search pack and its pieces (docs/design/17) with MV_RELEASE_AI=1. NVIDIA
-# acceleration (ai-cuda) is a Windows-only piece: ONNX Runtime's CUDA build
-# (MIT); the CUDA runtime and cuDNN stay user-supplied (log 2026-10-03).
+# fetch them from releases/latest. MV_RELEASE_ADDONS=1 requires Import
+# (docs/design/18): a stable release without it is refused. MV_RELEASE_AI=1
+# requires the Local search pack and its pieces (docs/design/17). Places
+# (docs/design/27) is preferred and not required: a complete pack is published,
+# and a release with none still publishes. NVIDIA acceleration (ai-cuda) is a
+# Windows-only piece: ONNX Runtime's CUDA build (MIT); the CUDA runtime and
+# cuDNN stay user-supplied (log 2026-10-03).
 ADDON_PLATFORMS = ('win-x64', 'macos')
+FIRST_PARTY_ADDONS = ('import',)
+PREFERRED_ADDONS = ('places',)
 AI_ADDONS = ('ai', 'ai-audio', 'ai-faces', 'ai-cuda')
 WINDOWS_ONLY_ADDONS = ('ai-cuda',)
 
@@ -92,10 +96,49 @@ def required_addons(mode):
         return []
     ids = []
     if os.environ.get('MV_RELEASE_ADDONS') == '1':
-        ids.append('import')
+        ids += FIRST_PARTY_ADDONS
     if os.environ.get('MV_RELEASE_AI') == '1':
         ids += AI_ADDONS
     return ids
+
+
+def preferred_asset_names(folder, version, mode):
+    """Places and anything else we ship when the pack is there.
+
+    A platform with no files is skipped. Some of its files, or a pack that
+    does not match its manifest, refuses the release: a half pack must not
+    be published, and a missing pack must not block it.
+    """
+    if mode != 'stable':
+        return []
+    names = []
+    for addon in PREFERRED_ADDONS:
+        for platform in addon_platforms(addon):
+            assets = addon_asset_names(platform, addon)
+            have = [name for name in assets
+                    if (folder / name).is_file() and (folder / name).stat().st_size > 0]
+            if not have:
+                continue
+            if len(have) != len(assets):
+                missing = [name for name in assets if name not in have]
+                raise ValueError(f'Incomplete {addon} add-on: missing ' + ', '.join(missing))
+            validate_addon(folder, version, platform, addon)
+            names += assets
+    return names
+
+
+def note_preferred(mode, asset_names):
+    if mode != 'stable':
+        return
+    packed = set(asset_names)
+    for addon in PREFERRED_ADDONS:
+        present = [platform for platform in addon_platforms(addon)
+                   if addon_asset_names(platform, addon)[0] in packed]
+        missing = [platform for platform in addon_platforms(addon) if platform not in present]
+        if not present:
+            print(f'::warning::{addon} add-on was not packed; this release will not carry it.')
+        elif missing:
+            print(f'::warning::{addon} add-on was not packed for ' + ', '.join(missing) + '.')
 
 
 def addons_required(mode):
@@ -134,6 +177,7 @@ def validate_assets(folder, version, mode, repo, tag):
         for addon in required_addons(mode):
             for platform in addon_platforms(addon):
                 names += addon_asset_names(platform, addon)
+        names += preferred_asset_names(folder, version, mode)
     for name in names:
         path = folder / name
         if not path.is_file() or path.stat().st_size == 0:
@@ -224,6 +268,7 @@ def publish(folder):
         raise ValueError('Only preview or stable may publish')
     version_tuple(version)
     assets = validate_assets(folder, version, mode, repo, tag)
+    note_preferred(mode, [p.name for p in assets])
     existing = release_by_tag(repo, tag)
     if existing and (not existing['draft'] or existing['target_commitish'] != sha):
         raise ValueError('Refusing to overwrite a published release or a draft from another commit')

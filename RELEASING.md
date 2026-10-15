@@ -26,7 +26,7 @@ bump the version, commit changes, or push them for you.
 |---|---|---|
 | `artifacts` (default) | Unsigned installers in Actions artifacts, retained 30 days | None |
 | `preview` | Both installers and signed update feeds as a **Pre-release**, for the Preview update channel | Same as stable |
-| `stable` | Both installers, signed update feeds and the Import add-on, marked **Latest** | Windows manifest key + all six Mac secrets; Azure optional |
+| `stable` | Both installers, signed update feeds, and the Import, Places and Local search add-ons, marked **Latest** | Windows manifest key + all six Mac secrets; Azure optional |
 
 After the updated workflow is on `main`, the equivalent commands are:
 
@@ -64,7 +64,7 @@ is the newer one. Signatures, the channel and "newer than installed" are checked
 as on the stable channel. Switching back to Stable never downgrades: the app keeps the
 preview version until a newer stable release exists.
 
-Previews carry no Import add-on; add-ons stay on the stable feed. They do not replace Latest
+Previews carry no add-ons; add-ons stay on the stable feed. They do not replace Latest
 or its `/latest/download/` URLs. **Do not manually promote a preview to Latest**: publish the
 next version as stable instead.
 
@@ -213,6 +213,15 @@ each release's add-on is newer than the last. Preview and artifacts runs do not 
   Developer ID (same Team ID: the app loads them under library validation) and notarizes them,
   and `addon-pack.py pack --platform macos --require-pinned-key` packs it with `ditto`, so the
   signatures survive.
+
+**Places ([docs/design/27](docs/design/27-places.md))** is packed the same way on a stable release
+when the build can: `mediaviewer-addon-places-*` on Windows and macOS. The workflow signs the
+binary (and, on the Mac, notarizes it), then `addon-pack.py stage-places` builds the place
+database into `data/` and `pack --addon places` signs the manifest. It is preferred, not required.
+`publish` uploads a complete pack and still publishes when none was packed; it warns, and it
+refuses a partial pack or one that does not match its manifest. A failure while staging or packing
+Places does not fail the release (the place database is built from upstream dumps whose pins go
+stale). Preview and artifacts runs do not pack it. Import stays required (`MV_RELEASE_ADDONS=1`).
 
 To pack by hand (the key file holds the private key, hex; never commit it or echo it into a log):
 

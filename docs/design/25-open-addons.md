@@ -660,9 +660,10 @@ How it works:
   the C# host (a WinEvent hook or the host's window procedure), not done yet. A thumbnail grid is
   virtualised (LazyVGrid / ItemsRepeater) and each tile asks the viewer's JPEG-512 cache as it
   appears, cancelled as it leaves.
-- **Removal** (Settings → Add-ons lists every installed slot add-on with Remove): the add-on is
-  detached first, which removes every item and waits for a call it is in, then shut down and
-  unloaded; off the UI thread on both hosts. No restart.
+- **Removal** (Settings → Add-ons lists every installed slot add-on with Remove). Places is
+  listed there even when it is not installed, with Install: it is optional and preferred
+  ([27](27-places.md)). The add-on is detached first, which removes every item and waits for a
+  call it is in, then shut down and unloaded; off the UI thread on both hosts. No restart.
 - **Local search** is listed as the local-scope provider while the AI pack is attached
   ([12](12-decision-log.md)).
 - **Launch.** Slot add-ons load on the add-on queue / a worker after Import's and the AI pack's

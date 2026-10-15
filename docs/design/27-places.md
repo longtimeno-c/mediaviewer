@@ -11,7 +11,8 @@ format, `mv_tests "[geo]"`, the fuzzer, the perf bench) and the **Places add-on*
 offline map that zooms under the cursor down to town scale, search by place for a folder, its
 settings page and its packaging. It fills #348's slots (info section, search provider) through
 host table v3 and needs PR 56 for its settings page. Without the add-on the app shows
-coordinates, as it always has. Owed: the Windows half is compiled only in CI; Local search over the
+coordinates, as it always has. Settings → Add-ons offers the install on both hosts even when
+Places is not installed: optional, and the preferred install. Owed: the Windows half is compiled only in CI; Local search over the
 whole index needs the index's coordinates (doc 17). Plan:
 [metadata-search-and-place.md](../plans/metadata-search-and-place.md), slices 2-3 and the place
 half of slice 4.
@@ -334,7 +335,7 @@ no window, no badge):
 |---|---|
 | Local dev / tests | `cmake --build build --target mv_geo_data` (or `-DMV_GEO_DATA=ON`) writes `build/geo/places.mvgeo`. Downloads are cached in `build/geo-downloads` (`MV_GEO_DOWNLOADS`). |
 | CI | The `test-media` job builds it, caches it, and restores it into `tools/testmedia/geo/`. |
-| Packaging (both platforms) | `addon-pack.py stage-places --src build/addons/places --downloads <cache> [--blob <built>]` puts it at `data/places.mvgeo` (it checks the magic and nothing else goes into `data/`), then `addon-pack.py pack --addon places` signs it like any add-on file. The release workflow does this on each platform after signing (and, on the Mac, notarizing) the code. |
+| Packaging (both platforms) | `addon-pack.py stage-places --src build/addons/places --downloads <cache> [--blob <built>]` puts it at `data/places.mvgeo` (it checks the magic and nothing else goes into `data/`), then `addon-pack.py pack --addon places` signs it like any add-on file. The release workflow does this on each platform after signing (and, on the Mac, notarizing) the code. Places is preferred, not required: `publish` uploads the zip, manifest and signature when the pack is complete, still publishes when it was not packed, and refuses a partial pack or one that does not match its manifest. A staging or pack failure does not fail the release. `MV_RELEASE_ADDONS=1` requires Import only. Preview and artifacts runs do not pack Places. |
 
 The data file is licensed `CC-BY-4.0 AND LicenseRef-PublicDomain` in the signed file list: the
 packer's allow-list takes those two data licences (an SPDX `AND` of allowed parts), and the
@@ -424,6 +425,13 @@ A query starting with a digit is never a place. Local search over the whole inde
 gets no rows until the index's coordinates can be enumerated through the host (owed, doc 17).
 
 ### Settings (PR 56 schema)
+
+**Offered before it is installed.** Settings → Add-ons lists Places on both hosts even when it
+is not there. The line says it is optional and preferred, and that a geotagged photo still shows
+its coordinates. Install, update and remove use the same release channel as Import
+(`releases/latest`, manifest and signature first). A fresh install loads at once. An update of a
+copy this process is already running waits for a restart. "Remove everything" forgets the
+settings page; "Remove, keep its data" keeps the user's index and the page.
 
 One page, "Place" (in `manifest.json`):
 - `show_map`: toggle, default on.
