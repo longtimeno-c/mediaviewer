@@ -336,8 +336,13 @@ struct StatusLine: Equatable {
           + "\(countText(s.cloud_files_left)) left to index"
       case .pictures:
         let eta = etaText(s.eta_low_seconds, s.eta_high_seconds)
-        text = (s.sound_total > 0 || s.speech_total > 0 || s.text_total > 0 ? "Indexing pictures " : "Indexing ")
+        // The count and the ETA are the pass over the files on this Mac.
+        // With iCloud clips still queued (issue #417) the line says so, and
+        // the note under it carries on with those clips, so the two read as
+        // one run rather than a nearly finished index beside a stray download.
+        text = (s.sound_total > 0 || s.speech_total > 0 || s.cues_total > 0 || s.text_total > 0 ? "Indexing pictures " : "Indexing ")
           + "\(countText(Self.picturesDone(s))) of \(countText(s.assets_total))"
+          + (Self.icloudQueued(s) ? " on this Mac" : "")
           + (eta.isEmpty ? "" : " · \(eta)")
       case .cues:
         text = "Reading chapters and subtitles \(countText(s.cues_done)) of \(countText(s.cues_total)) clips"
@@ -425,7 +430,11 @@ struct StatusLine: Equatable {
     if s.flags & MV_AI_STATUS_INDEX_FULL != 0 {
       notes.append("Index is full — raise the cap or remove a folder")
     }
-    if let fetch = Self.icloudNote(s) { notes.append(fetch) }
+    // While the line above still counts this Mac's files, the iCloud clips are
+    // the rest of the same run: "Then N clips from iCloud · …" (issue #417).
+    let afterLocal = state == MV_AI_STATE_INDEXING.rawValue && phase == .pictures
+      && Self.picturesDone(s) < s.assets_total
+    if let fetch = Self.icloudNote(s, afterLocal: afterLocal) { notes.append(fetch) }
     if s.flags & MV_AI_STATUS_NO_MODELS != 0 {
       notes.append("The search models could not be loaded. Reinstall Core in Settings")
     }
@@ -453,22 +462,52 @@ struct StatusLine: Equatable {
 
   enum Phase { case pictures, cues, text, sound, speech }
 
+  /// Whether the opt-in iCloud fetch still has clips to bring down and index
+  /// this run (issue #417): a download in progress or any of its waits. Clips
+  /// iCloud did not send are put off to the next launch, so they do not count.
+  static func icloudQueued(_ s: mv_ai_status) -> Bool {
+    guard s.icloud_videos_left > 0 else { return false }
+    switch s.icloud_fetch {
+    case MV_AI_ICLOUD_DOWNLOADING.rawValue, MV_AI_ICLOUD_WAIT_NETWORK.rawValue,
+         MV_AI_ICLOUD_WAIT_POWER.rawValue, MV_AI_ICLOUD_WAIT_INDEXER.rawValue,
+         MV_AI_ICLOUD_LOW_DISK.rawValue, MV_AI_ICLOUD_PAUSED.rawValue:
+      return true
+    default:
+      return false
+    }
+  }
+
   /// The opt-in iCloud fetch (Settings → Photos Library), when it has
-  /// something to say: what it is downloading, or what it waits for.
-  static func icloudNote(_ s: mv_ai_status) -> String? {
+  /// something to say: what it is downloading, or what it waits for. With
+  /// `afterLocal` (the line above still counts the files on this Mac) the
+  /// clips are named as the rest of the same run, "Then N clips from iCloud
+  /// · …", never as a separate download (issue #417). Every state says what
+  /// the fetch is doing or waiting for; "left to download" alone said neither.
+  static func icloudNote(_ s: mv_ai_status, afterLocal: Bool = false) -> String? {
     let left = countText(s.icloud_videos_left)
+    let then = "Then \(left) clips from iCloud"
     switch s.icloud_fetch {
     case MV_AI_ICLOUD_DOWNLOADING.rawValue:
       let pct = Int((Double(s.icloud_fetch_progress) * 100).rounded(.down))
-      return "Downloading from iCloud (\(pct)%) · \(left) clips left"
+      return afterLocal ? "\(then) · downloading the next (\(pct)%), each indexed as it lands"
+        : "Downloading from iCloud (\(pct)%) · \(left) clips left"
     case MV_AI_ICLOUD_WAIT_INDEXER.rawValue:
-      return "iCloud: \(left) clips left to download"
+      // The next clips are down (engine kFetchAhead); the fetch holds until
+      // the indexer has taken them.
+      return afterLocal ? "\(then) · the next are downloaded and wait for indexing to catch up"
+        : "iCloud downloads wait for indexing to catch up · \(left) clips left to download and index"
     case MV_AI_ICLOUD_WAIT_NETWORK.rawValue:
-      return s.icloud_videos_left > 0 ? "iCloud downloads wait for an unmetered network · \(left) clips left" : nil
+      guard s.icloud_videos_left > 0 else { return nil }
+      return afterLocal ? "\(then) · downloads wait for an unmetered network"
+        : "iCloud downloads wait for an unmetered network · \(left) clips left"
     case MV_AI_ICLOUD_WAIT_POWER.rawValue:
-      return s.icloud_videos_left > 0 ? "iCloud downloads wait for power · \(left) clips left" : nil
+      guard s.icloud_videos_left > 0 else { return nil }
+      return afterLocal ? "\(then) · downloads wait for power"
+        : "iCloud downloads wait for power · \(left) clips left"
     case MV_AI_ICLOUD_LOW_DISK.rawValue:
-      return s.icloud_videos_left > 0 ? "iCloud downloads wait: under 10 GB free · \(left) clips left" : nil
+      guard s.icloud_videos_left > 0 else { return nil }
+      return afterLocal ? "\(then) · downloads wait: under 10 GB free"
+        : "iCloud downloads wait: under 10 GB free · \(left) clips left"
     case MV_AI_ICLOUD_RETRY_LATER.rawValue:
       return "iCloud did not send \(left) clips; they are tried again next time MediaViewer starts"
     default:

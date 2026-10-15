@@ -383,7 +383,18 @@ from any codec. Forced through it, ProRes 422 played at 55 frames/s.
 **Arrows on a playing or strip-less clip (2026-10-12, issue #361).** `←` `→` are `Q` / `E` while the clip plays or the filmstrip is hidden (mode `skim`, layered over video);
 paused with the strip up they still walk, since that is when the strip is being used to pick.
 `A` / `D` walk in every case. A hold keeps its command until key-up, so a clip that ends
-mid-skim cannot turn the next repeat into a walk.
+mid-skim cannot turn the next repeat into a walk. *(The playing half reversed 2026-10-15, below.)*
+
+**Arrows skip only with the filmstrip hidden (2026-10-15, owner; issue #416).** Reverses the
+playing half of #361: with the carousel on screen `←` `→` move to the previous / next item on a
+clip, paused or playing, and never skip. Only `T` (strip hidden) makes them `Q` / `E` (mode `skim`):
+a tap is the exact ±2 s seek, a hold skims, release settles. The strip being visible is the one
+rule, so the router no longer carries a play-state bit. `Q` / `E` still skip, `A` / `D` still walk,
+a still walks either way, `Shift`+arrows pan and `J` / `L` are ±10 s, in every case. A hold keeps
+the command it started with until key-up in both directions: a skim stays a skim if `T` shows the
+strip under it, and a walk stays a walk if `T` hides it (the router now pins a plain repeat row's
+command for the hold, as it already did a tap/hold's; a pinned walk owes nothing on key-up or on
+a focus-loss cancel).
 
 **A transport click does not seek 0 on the way (2026-10-12).** The system slider reports its
 minimum before the time under the pointer. `media_source::seek` publishes that target and arms
@@ -617,6 +628,22 @@ a virtualising `ItemsRepeater`. `input_snapshot` carries `chrome_bottom_px` / `c
 `ShouldConstrainToRootBounds = false` so they are siblings of the swapchain. Decoded pixels never
 go to a XAML `Image`.
 
+**Command bar menus stay visible (2026-10-15).** Open, View, Edit, Settings, About and `?` were
+losing the bar whenever a large change added an Auto-sized neighbour (the folder trail, an import
+hint, an indexing pill, an add-on icon). Those neighbours sat beside a Star column, the Star
+column shrank to nothing, and the new item painted over the menus. The menu cluster is an Auto
+column. The trail is the only column that gives up width, and `?` is its own Auto column on the
+right. New bar items go in the menu row or the trail, not in a new Star column on the left. The
+bar is one 48 DIP row. A star row under it is 0 tall while the island is only the bar, and content
+measured into that row blanks the menus — Settings is an overlay added after the island has grown
+to the client, not a child of a star row.
+
+**No XAML object in an `IslandHost` static initializer (2026-10-15).** From 2026-10-11 the chrome
+did not attach at all — no command bar, gallery or chrome keys. `Attach` touches `IslandHost`
+statics (`RegisterUiFont`) before `EnsureApp` starts XAML, and an eager `SymbolFont` `FontFamily`
+threw `RPC_E_WRONG_THREAD` from the type initializer. XAML statics are lazy (`IconFont`,
+`SymbolFont`), built on first use after XAML is up.
+
 **Tear the chrome down before `DestroyWindow` (2026-09-13).** Chrome-on exits fail-fast about one
 in five (`0xC0000602`, `CoreUIComponents.dll`) when islands were disposed during `WM_DESTROY`.
 In `WM_CLOSE`, while the parent is whole: detach every island, pump pending messages once
@@ -848,6 +875,16 @@ signed version than a working installed one. A hidden file or link beside an add
 not "need an update" when Local search shipped. Fields appended without bumping the version
 (`thumbnail_jpeg`, `thumbnail_store_jpeg`, `recycle_file`) are read only when `struct_size` covers
 them and they are non-NULL.
+
+**The Windows chrome does not pin `mv_ai_status`'s size (2026-10-15, issue #388).** `AiApi` refused
+any pack whose status struct was not exactly the size it was built with. The number was hand-copied
+and went stale (1336 against a 1640-byte struct from 2026-10-05), so the Windows chrome refused every
+pack and Local search "could not start". The struct already carries `struct_size`: the pack fills
+only what the chrome declared, and the chrome zeroes the rest, so an older or newer pack is safe to
+attach. The size check is dropped for `mv_ai_status`. `mv_ai_result` keeps its exact check, because
+it comes back as an array with no `struct_size`, so its size is the stride. Drift is now caught
+in CI: `tools/abi-layout` prints the offset and size of each field as MSVC lays them out, and the
+ABI smoke test compares them, both ways, with the C# mirror.
 
 **Developer key (2026-09-26).** `MV_ADDON_DEV_PUBLIC_KEY` lets a developer build trust a local key
 so a pack can be sideloaded; with it, `MV_DEV_ADDONS_DIR` / `MV_DEV_THUMBS_DIR` keep the run out of
@@ -1206,10 +1243,9 @@ counts in `mv_ai_status` and keep the state from idle: before, the pill said "Up
 they ran. Those three counts are 14 ms a refresh at 25,000 assets and the refresh runs once a
 second even when idle, so they are cached and counted again only when something can have moved
 them, or every 30 s (about 0.5 ms a second idle). The **Read text in photos** switch (Settings → Local search, both hosts, on by
-default) turns both text passes off. The Windows interop's pinned `MvAiStatus` size had stayed at
-1,336 bytes since the People fields while the struct grew to 1,640 (the iCloud, provider-detail
-and cloud-file fields), so `AiApi`'s layout check would throw; it is 1,672 now, checked against
-the header.
+default) turns both text passes off. The cue and text counts are appended on `mv_ai_status`
+(1,672 bytes with them) and read only when `struct_size` covers them. `AiApi` still does not
+pin that size (#388); the ABI smoke test compares the C# mirror with the header.
 
 ---
 

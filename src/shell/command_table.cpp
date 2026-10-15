@@ -309,10 +309,10 @@ constexpr binding kBindings[] = {
     row(C('8'), mod_ctrl | mod_shift, kViewing, edge, label_green),
     row(C('9'), mod_ctrl | mod_shift, kViewing, edge, label_blue),
     row(C('U'), mod_none, kBrowse | kVideo, edge, clear_label),
-    // Issue #361. Appended so every row above keeps its Settings index. On a
-    // clip that is playing, or with the filmstrip hidden, ← → are Q / E
-    // (mode::skim layers over video). Paused with the strip up they walk the
-    // folder (kWalk, first rows); A / D walk it in every case.
+    // Issue #416 (was #361). Appended so every row above keeps its Settings
+    // index. On a clip with the filmstrip hidden (T), ← → are Q / E
+    // (mode::skim layers over video), playing or paused. With the strip up
+    // they walk the folder (kWalk, first rows); A / D walk it in every case.
     row(key::left, mod_none, kSkim, tap_hold, skim_back, skim_back, skim_settle),
     row(key::right, mod_none, kSkim, tap_hold, skim_forward, skim_forward, skim_settle),
 };

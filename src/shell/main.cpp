@@ -5020,11 +5020,10 @@ mv::shell::view_state view_state_of(app_state* app) noexcept {
       s.focus = mv::shell::focus_kind::text;
     }
   }
-  // One play-state read serves both: is a clip on screen, and is it playing
-  // (issue #361: ← → skip ±2 s while it plays or with the strip hidden).
+  // The play state says whether a clip is on screen. Issue #416: on a clip,
+  // ← → skip ±2 s only with the strip hidden; playing or paused is not a mode.
   std::uint32_t play = MV_PLAY_STOPPED;
   if (app->session && mv_video_state(app->session, &play) != MV_OK) play = MV_PLAY_STOPPED;
-  s.clip_playing = play == MV_PLAY_PLAYING;
   s.filmstrip_visible = app->chrome.filmstrip_visible();
   if (play != MV_PLAY_STOPPED) s.item = mv::shell::item_kind::clip;
   else if (app->lab.animation() != mv::shell::animation_state::none) s.item = mv::shell::item_kind::animation;

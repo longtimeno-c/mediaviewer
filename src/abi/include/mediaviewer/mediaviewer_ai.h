@@ -160,7 +160,10 @@ typedef enum mv_ai_photos_access {
                                           then identifies the people in it. Off by default */
 #define MV_AI_TRANSFER_THUMBS 2u       /* the viewer's cached JPEG-512 tiles (never made) */
 
-/* Polled by the status line (~4 Hz while visible). [no-block] */
+/* Polled by the status line (~4 Hz while visible). [no-block]
+ * Append only. The Windows chrome mirrors this field for field as MvAiStatus
+ * (src.managed/MediaViewer.Interop/Ai.cs): append a field there too, and list it
+ * in tools/abi-layout/main.cpp. CI's ABI smoke test compares the two. */
 typedef struct mv_ai_status {
   uint32_t struct_size;
   uint32_t state;              /* mv_ai_state */

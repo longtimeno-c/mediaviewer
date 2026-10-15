@@ -96,8 +96,9 @@ enum class mode : std::uint8_t {
   runner = 6,     // empty-window game; number keys do not change image zoom
   crop = 7,       // PR 10: crop / straighten on the canvas; arrows nudge the rect
   trim = 8,       // PR 13: trim armed on a clip; layers over video (key_router.cpp)
-  // Issue #361: a clip that is playing, or with the filmstrip hidden. Layers
-  // over video like trim; only ← → differ (they skip ±2 s the way Q / E do).
+  // Issue #416 (was #361): a clip with the filmstrip hidden (T), paused or
+  // playing. Layers over video like trim; only ← → differ (they skip ±2 s the
+  // way Q / E do). With the strip up the arrows walk the folder.
   skim = 9,
   count
 };

@@ -472,7 +472,7 @@ copy, and check Finder's **Open With** and a Quick Look thumbnail.
 | `,` / `.` | frame step back / forward while paused |
 | `A` / `D` | previous / next beside the arrows, in every mode including on a clip |
 | `Q` / `E` | on a clip, two commands on one key: **tap** skips ±2 s, **hold** skims ±2 s per key repeat and settles on an exact seek when released. `Shift+Q` / `Shift+E` step playback speed. Off a clip they do nothing |
-| `Left` / `Right` on a clip | walk the folder while the clip is paused with the filmstrip showing; while it plays, or with the filmstrip hidden (`T`), they are `Q` / `E` (tap ±2 s, hold skims). Stills always walk |
+| `Left` / `Right` on a clip | walk the folder while the filmstrip is showing, paused or playing; with the filmstrip hidden (`T`) they are `Q` / `E` (tap ±2 s, hold skims). Stills always walk |
 | `R` | reset the measurement window |
 | `0` | fit to window |
 | `1` | 100 % |
@@ -531,7 +531,7 @@ the zoom. Arrow keys, `Space` and the slideshow wrap from the last item to the
 first; turn that off under Settings.
 | `Ctrl+Shift+O` | open a folder |
 | `Left` / `Right` | previous / next in the folder |
-| `G` | gallery: thumbnail grid of the folder. A folder of only folders uses big tiles; a mixed folder keeps a short chip row above the photos. Covers and counts show on the tiles; the folder path sits in the command bar just left of `?`. **Up** (↑) and **Root** (house) buttons stay outside the scrolling trail: Up opens the enclosing folder; Root returns to the highest folder reached in this browsing session (the first breadcrumb). The `…` menu opens hidden parent folders directly. Full paths are available on hover. These controls remain available, including while a photo is open. `Ctrl+Up` goes up and selects the folder you left; `Ctrl+Left` / `Ctrl+Right` open the sibling beside it. A search icon at the right end of the path (and beside "Search: …" on a result list) does what `Ctrl+F` / `⌘F` does: with Local search installed it opens the search panel (the first search of a session starts the pack, which loads nothing at launch) (where `file:name` searches file names); without it, **file search**, a field over the grid that filters this folder's tiles by name as you type (no index; `Esc` clears, then closes); the command bar stays above the gallery on both hosts, so the path and the icon are there over the grid too. `/` on the folder row finds a tile by name. `W` / `S` or Up / Down move between rows and cross from folders to images; `A` / `D` or Left / Right move between items. `+` / `-` enlarge / shrink thumbnails (`=` also enlarges). `Enter` opens a folder or the selected image. A click does the same; `Esc` leaves |
+| `G` | gallery: thumbnail grid of the folder. A folder of only folders uses big tiles; a mixed folder keeps a short chip row above the photos. Covers and counts show on the tiles; the folder path sits in the command bar just left of `?`. The Open, View, Settings and `?` buttons keep their width; the trail is what shrinks and scrolls. **Up** (↑) and **Root** (house) buttons stay outside the scrolling trail: Up opens the enclosing folder; Root returns to the highest folder reached in this browsing session (the first breadcrumb). The `…` menu opens hidden parent folders directly. Full paths are available on hover. These controls remain available, including while a photo is open. `Ctrl+Up` goes up and selects the folder you left; `Ctrl+Left` / `Ctrl+Right` open the sibling beside it. A search icon at the right end of the path (and beside "Search: …" on a result list) does what `Ctrl+F` / `⌘F` does: with Local search installed it opens the search panel (the first search of a session starts the pack, which loads nothing at launch) (where `file:name` searches file names); without it, **file search**, a field over the grid that filters this folder's tiles by name as you type (no index; `Esc` clears, then closes); the command bar stays above the gallery on both hosts, so the path and the icon are there over the grid too. `/` on the folder row finds a tile by name. `W` / `S` or Up / Down move between rows and cross from folders to images; `A` / `D` or Left / Right move between items. `+` / `-` enlarge / shrink thumbnails (`=` also enlarges). `Enter` opens a folder or the selected image. A click does the same; `Esc` leaves |
 | `T` | filmstrip show/hide, for the mode you are in (folder open or single image) |
 | `Tab` | focus the command bar island |
 | `Esc` | walks out one level: gallery, fullscreen, then island focus back to the canvas, and last, in a search result list, **Back to folder**. It never quits |
@@ -789,7 +789,10 @@ the 2026-10-03 numbers are in the PR that added it (a publish 51 → 8 ms, a peo
 500 → 46 ms of CPU).
 `--filter SearchModelTests` checks the search panel's model against a fake table (issue #191):
 a search re-asks when another folder opens under "Folder & subfolders", and Tab only takes a
-name looked up for the words as typed.
+name looked up for the words as typed. `--filter StatusLineTests` checks the footer's status
+line from a status struct (issue #417): with iCloud clips queued the pictures count and ETA are
+named as this Mac's files and the clips as the rest of the run; with the queue empty it is the
+plain pictures / sound / speech line.
 
 **The Photos library source (Mac, issue #72; docs/design/17 "Photos library source").** Engine
 behaviour is tested with a fake PhotoKit: `mv_ai_tests "[photos]"`. On a real library, two
@@ -870,7 +873,11 @@ its own bundle id has Photos access and the flag `mv.photosLibrary.added` is set
 defaults; the flag is set by the pack's Settings when the library is a root, so a dev build
 without the pack loaded can be pointed at it by hand (`defaults write
 io.github.longtimeno-c.mediaviewer.dev mv.photosLibrary.added -bool true`) once macOS has
-granted that bundle Photos access. The viewer's on-view downloads and previews live in
+granted that bundle Photos access. The listing's time is logged as `photos: listed N assets in
+M ms`: `log stream --predicate 'subsystem == "org.mediaviewer" AND category == "photos"'` (in zsh,
+`/usr/bin/log`: `log` is a builtin). `tools/photos/name_probe.m` times the walk and its names
+outside the app and checks them against the resources (counts only; its header says how to give
+it Photos access). The viewer's on-view downloads and previews live in
 `~/Library/Caches/MediaViewer/Photos Library/` (write-protected, emptied at launch); a backup's
 fetched originals wait in `~/Library/Caches/MediaViewer/Photos Backup/` and are removed when
 the run ends.
@@ -894,9 +901,13 @@ ctest --test-dir build -C Release --output-on-failure
 # if MV_REQUIRE_CORPUS is unset ('0' is an explicit opt-out, as release.yml uses).
 $env:MV_REQUIRE_CORPUS = "1"; ctest --test-dir build -C Release --output-on-failure
 
-# the ABI, end to end from C#: SafeHandle, struct layout, completion drain
+# the ABI, end to end from C#: SafeHandle, struct layout, completion drain. The
+# second argument is mv_abi_layout's dump: the AI structs' C# mirrors are then
+# compared field for field with the native layout (skipped without it; CI passes it)
+cmake --build build --config Release --target mv_abi_layout
+build\bin\Release\mv_abi_layout.exe > build\abi-layout.txt
 dotnet build src.managed\MediaViewer.AbiSmokeTest\MediaViewer.AbiSmokeTest.csproj -c Release
-dotnet src.managed\MediaViewer.AbiSmokeTest\bin\Release\net8.0-windows\MediaViewer.AbiSmokeTest.dll build\bin\Release
+dotnet src.managed\MediaViewer.AbiSmokeTest\bin\Release\net8.0-windows\MediaViewer.AbiSmokeTest.dll build\bin\Release build\abi-layout.txt
 
 # WinUI chrome (also published beside mediaviewer_lab.exe by the CMake build)
 dotnet publish src.managed\MediaViewer.Chrome\MediaViewer.Chrome.csproj -c Release -r win-x64 --no-self-contained
@@ -1654,8 +1665,9 @@ Five changes to the AI pack's index and query language
   `"[.perf-bench]"` times the status counts (14 ms at 25,000 assets, cached between refreshes).
   A clip moment costs ~0.2 s (`"[.ocr-moments]"`, mostly the seek and decode; machine loaded).
   **Windows:** the C# chromes compile on the Mac; the engine change is portable and compiled only
-  by CI there. The `MvAiStatus` size check is 1,672 bytes (it said 1,336 since the People fields,
-  which the struct had outgrown). Windows OCR on clips, both PR 1 gates with the pack indexing are owed.
+  by CI there. The cue and text counts are appended on `MvAiStatus` (1,672 bytes). `AiApi` does not
+  pin that size (#388); the ABI smoke test compares the C# mirror with the header. Windows OCR on
+  clips, both PR 1 gates with the pack indexing are owed.
 
 ### Every tag and AI provenance in the Metadata pane (#290, docs/plans/metadata-search-and-place.md slice 1, 2026-10-11)
 
