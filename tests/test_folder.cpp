@@ -173,6 +173,53 @@ TEST_CASE("mv_folder_open decodes the file it was opened on beside the scan", "[
   mv::io::set_thumb_cache_dir_override({});
 }
 
+TEST_CASE("mv_folder_open_list shows a result the old folder was prefetching", "[abi][folder][list]") {
+  // Issue #435: a search result that was a neighbour of the photo on screen
+  // already had a prefetch decode queued or running. open_list moves the folder
+  // generation on, so that decode cancels itself; it must not also stand in
+  // for the result's own decode, or the canvas keeps the old photo until the
+  // user steps away and back.
+  const auto dir = temp_dir();
+  write_bmp(dir, L"a.bmp");
+  constexpr std::uint32_t big_w = 3000;
+  constexpr std::uint32_t big_h = 2000;
+  {
+    const std::vector<std::uint8_t> rgba(std::size_t{big_w} * big_h * 4, 128);
+    const auto bytes = fixtures::bmp_rgba(big_w, big_h, rgba.data());
+    std::ofstream f(dir + L"\\b.bmp", std::ios::binary);
+    REQUIRE(f.good());
+    f.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+  }
+  mv::io::set_thumb_cache_dir_override(utf8(dir + L"\\thumbs"));
+  REQUIRE(::CreateDirectoryW((dir + L"\\thumbs").c_str(), nullptr));
+
+  const std::string first = utf8(dir + L"\\a.bmp");
+  const std::string result = utf8(dir + L"\\b.bmp");
+  for (int round = 0; round < 3; ++round) {
+    session_guard session;
+    uint64_t job = 0;
+    REQUIRE(mv_folder_open(session.handle, utf8(dir).c_str(), first.c_str(), &job) == MV_OK);
+    // The listing selects a.bmp and queues b.bmp's prefetch.
+    REQUIRE(wait_kind(session.handle, MV_COMPLETION_FOLDER_READY, nullptr));
+
+    const char* paths[] = {result.c_str()};
+    REQUIRE(mv_folder_open_list(session.handle, "b", paths, nullptr, 1, 0, &job) == MV_OK);
+    REQUIRE(wait_kind(session.handle, MV_COMPLETION_FOLDER_READY, nullptr));
+
+    mv_image_info info{};
+    const auto deadline = std::chrono::steady_clock::now() + 8s;
+    while (std::chrono::steady_clock::now() < deadline) {
+      REQUIRE(mv_session_image_info(session.handle, &info) == MV_OK);
+      if (info.width == big_w) break;
+      std::this_thread::sleep_for(10ms);
+    }
+    REQUIRE(info.width == big_w);  // b.bmp, not a.bmp left on screen
+    REQUIRE(info.height == big_h);
+    REQUIRE(mv_folder_close(session.handle) == MV_OK);
+  }
+  mv::io::set_thumb_cache_dir_override({});
+}
+
 TEST_CASE("mv_folder_open lists child folders and summarises a tile", "[abi][folder][pr26]") {
   const auto dir = temp_dir();
   REQUIRE(::CreateDirectoryW((dir + L"\\2024").c_str(), nullptr));
