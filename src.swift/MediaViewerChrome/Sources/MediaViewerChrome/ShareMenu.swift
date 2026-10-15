@@ -79,7 +79,7 @@ final class ShareMenu {
     let nearby = ShareMenuAction(title: Self.sharepointTitle) {
       ShareMenu.shared.request(.sharepoint, from: .context, clicked: clicked)
     }
-    nearby.image = NSImage(systemSymbolName: "dot.radiowaves.left.and.right", accessibilityDescription: nil)
+    nearby.image = Self.appIcon(size: 16)
     nearby.toolTip = "Send to a MediaViewer nearby, over Wi-Fi or Bluetooth"
     sub.addItem(nearby)
     sub.addItem(.separator())
@@ -176,6 +176,14 @@ final class ShareMenu {
     item.addon == SharepointStore.addonID && item.item == "send_files"
   }
 
+  /// Sharepoint's entry (and its install) wears the MediaViewer icon, at
+  /// menu size for a menu row and larger for the picker's list.
+  static func appIcon(size: CGFloat) -> NSImage {
+    let icon = (NSApp.applicationIconImage ?? NSImage()).copy() as? NSImage ?? NSImage()
+    icon.size = NSSize(width: size, height: size)
+    return icon
+  }
+
   /// Sharepoint's entry: itself, or its one-click install.
   private static var sharepointTitle: String {
     SharepointStore.shared.ready || SharepointStore.shared.installed ? "Sharepoint" : "Install Sharepoint\u{2026}"
@@ -230,7 +238,7 @@ final class SharePickerDelegate: NSObject, NSSharingServicePickerDelegate {
       }
     }
     guard let title else { return services }
-    let image = NSImage(systemSymbolName: "dot.radiowaves.left.and.right", accessibilityDescription: title) ?? NSImage()
+    let image = MainActor.assumeIsolated { ShareMenu.appIcon(size: 32) }
     let choose = chooseSharepoint
     let nearby = NSSharingService(title: title, image: image, alternateImage: nil) {
       MainActor.assumeIsolated { choose() }

@@ -6,6 +6,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
+using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.ApplicationModel.DataTransfer;
 using Windows.Storage;
 
@@ -148,7 +149,7 @@ public static partial class IslandHost
     {
         bool have = SharepointReady || SharepointInstalled;
         MenuFlyoutItem nearby = Item(have ? "Sharepoint" : "Install Sharepoint…", null, sharepoint);
-        nearby.Icon = new FontIcon { Glyph = "", FontFamily = SymbolFont };
+        nearby.Icon = SharepointMenuIcon();
         ToolTipService.SetToolTip(nearby, "Send to a MediaViewer nearby, over Wi-Fi or Bluetooth");
         AutomationProperties.SetName(nearby, have ? "Send with Sharepoint" : "Install Sharepoint");
         yield return nearby;
@@ -158,6 +159,30 @@ public static partial class IslandHost
         windows.IsEnabled = systemEnabled;
         ToolTipService.SetToolTip(windows, "Mail, Phone Link, Nearby Share and other apps");
         yield return windows;
+    }
+
+    private static BitmapImage? _appIconSmall;
+
+    /// <summary>
+    /// Sharepoint's entry wears the MediaViewer icon: the PNG About already
+    /// ships beside the exe (AboutMarkFile), decoded once at menu size and
+    /// shared by every menu. The Wi-Fi glyph if the file is missing.
+    /// </summary>
+    private static IconElement SharepointMenuIcon()
+    {
+        try
+        {
+            _appIconSmall ??= new BitmapImage(new Uri(Path.Combine(ExeDirectory(), AboutMarkFile)))
+            {
+                DecodePixelWidth = 32,
+            };
+            return new ImageIcon { Source = _appIconSmall, Width = 16, Height = 16 };
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+            return new FontIcon { Glyph = "\uE701", FontFamily = SymbolFont };
+        }
     }
 
     /// <summary>
