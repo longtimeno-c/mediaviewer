@@ -670,6 +670,7 @@ public static partial class IslandHost
             AutomationProperties.SetName(more, $"Add {_slotLocalRows.Count} more results from add-ons");
             _slotPathPanel.Children.Add(more);
         }
+        MeasurePathFixed();
     }
 
     // docs/design/25 §7: a Local search query went to the other local-scope

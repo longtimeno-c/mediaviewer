@@ -121,10 +121,11 @@ that apply to what you are doing.
 
 The Windows and macOS UI follows the system's light or dark appearance,
 including Settings, browsing, editing panels and Import. Appearance changes
-apply while the app is open. The empty welcome screen and dinosaur runner follow
-the system window colour too. The photo/video **Canvas background** now defaults
-to System; Grey, White, Checkerboard and Dark remain fixed choices. Build and
-interactive checks are documented in [System appearance verification](system-theme-verify.md).
+apply while the app is open. There is no separate canvas background: the empty
+window, the welcome card and the area around a photo or a video all take the
+theme in use (Default follows the system), and a built-in theme's ground effect
+moves behind the welcome card. Build and interactive checks are documented in
+[System appearance verification](system-theme-verify.md).
 
 **Licence: GPL-3.0-or-later** ([LICENSE](../LICENSE)). Settled in PR 1; the reasoning is in
 [docs/design/11-licensing.md](design/11-licensing.md).
@@ -139,7 +140,7 @@ interactive checks are documented in [System appearance verification](system-the
 | **`mediaviewer_core.dll`** | The native core behind a flat C ABI: job system, JPEG/PNG/BMP/GIF/WebP decode (giflib, libwebp), TIFF/ICO (libtiff), HEIC/HEIF (libheif + libde265), AVIF (libavif + dav1d) and camera RAW (LibRaw, embedded preview first), scan-time RAW+JPEG / Live Photo pairing, with animated GIF/APNG/WebP fed a frame at a time into a small texture ring, LCMS colour, immutable GPU upload, pan/zoom camera, folder listing, thumbnail cache, ±2 prefetch LRU, and the PR 5 video surface (open, transport, position/state/info/stats, magic-byte video probe). |
 | **`MediaViewer.Chrome.dll`** | C# WinUI 3 chrome, loaded by the lab through hostfxr. Open (image or folder), View (zoom in/out, fit, 50 / 100 / 200 / 400 %, overlay), About, `ItemsRepeater` filmstrip, load indicator. Flyouts are supposed to open over the canvas without clipping — that is part of PR 3's verify. |
 | **`frametime.exe`** | The frame-time regression harness. Runs a soak, writes a JSON report, compares against a rolling baseline, and fails on a dropped frame. |
-| **`mediaviewer_lab` (Darwin)** | Mac PRs 1–6 Metal present lab. AppKit window, `CAMetalLayer` (max drawable 2 — Metal's minimum, see docs/design/12 — 8-bit sRGB), `CAMetalDisplayLink` wait-before-encode, idle → stop presenting, F3 overlay. Decodes a JPEG/PNG/BMP (plus the rest of the D5 stills) onto an immutable Metal texture; wheel-zoom-toward-cursor, drag-pan, `0`–`4` zoom presets, `+`/`-`, keyboard pan when zoomed, hold `Z` loupe, hold `\` previous, `C` clipping blinkies. Real folder browsing: argv/drag-drop opens a folder or a file (selecting it), `←`/`→`/`A`/`D`/`Space`/`Home`/`End`/`PageUp`/`PageDown` navigate it (every key goes through the same command table and key router as Windows, with `⌘` standing for `Ctrl` and the Mac Delete key for `Delete`), an FSEvents watch keeps the listing live. SwiftUI chrome hosted in the same window via a C bridge into the render thread's `input_snapshot`: a Windows-style command bar (Open / View / Settings / About, `?` at the right), a Settings screen (`⌘,`: filmstrip/wrap/sticky-zoom/background preferences and remappable keys, persisted in `NSUserDefaults`), a bottom filmstrip (`T` toggles) and a full-grid gallery overlay (`G` toggles), both lazy-loading JPEG-512 thumbnails from a shared SQLite cache. **Nested folders (PR 26):** child folders show as tiles. A folder of only folders uses big tiles; one that also holds photos keeps a short folder row above them. A tile says when photos were found further down, when it is only more folders, and when that look stopped early. The path stays on screen while a photo is open. `⌘↑` goes up and returns to the folder you left; `⌘←` / `⌘→` open the folder beside it; `/` on the folder row finds a tile by name. The Windows host matches that chrome. Marks (`Insert`/`Shift+Space`/`Ctrl+A`/`Ctrl+D`), copy/move to a chosen folder (`F7`/`F8`, collision-safe), Trash delete with confirm (`Delete`), fullscreen (`F11`/`F`), a stills-only slideshow (`F5`; `.` blackout, `R` shuffle), and drag-out (`⌘`+drag on the canvas; a plain drag from a gallery, filmstrip or search-result cell, the marks when that cell is marked, as the original files). **Video (Mac PR 5):** FFmpeg + VideoToolbox decode, copied out of the decoder pool into a presentation ring of our own Metal textures, an MSL twin of the video shader (NV12/P010, the stream's matrix/range/transfer, HLG/PQ tone-mapped to SDR), Core Audio as the master A/V clock (no `AVPlayer`), a SwiftUI transport strip and the docs/design/16 video keys, and poster thumbnails for clips. Metadata read (PR 9, see above); no rating/metadata writes or RAW-pairing UI yet. Not on the Mac yet: `⌘G` go to, `;` Live Photo motion, Open RAW / Open JPEG of a pair ([docs/design/16](design/16-commands.md) "Not built"). Builds on Apple Silicon and Intel, macOS 14+ (Intel: unverified for frame pacing). |
+| **`mediaviewer_lab` (Darwin)** | Mac PRs 1–6 Metal present lab. AppKit window, `CAMetalLayer` (max drawable 2 — Metal's minimum, see docs/design/12 — 8-bit sRGB), `CAMetalDisplayLink` wait-before-encode, idle → stop presenting, F3 overlay. Decodes a JPEG/PNG/BMP (plus the rest of the D5 stills) onto an immutable Metal texture; wheel-zoom-toward-cursor, drag-pan, `0`–`4` zoom presets, `+`/`-`, keyboard pan when zoomed, hold `Z` loupe, hold `\` previous, `C` clipping blinkies. Real folder browsing: argv/drag-drop opens a folder or a file (selecting it), `←`/`→`/`A`/`D`/`Space`/`Home`/`End`/`PageUp`/`PageDown` navigate it (every key goes through the same command table and key router as Windows, with `⌘` standing for `Ctrl` and the Mac Delete key for `Delete`), an FSEvents watch keeps the listing live. SwiftUI chrome hosted in the same window via a C bridge into the render thread's `input_snapshot`: a Windows-style command bar (Open / View / Settings / About, `?` at the right), a Settings screen (`⌘,`: filmstrip/wrap/sticky-zoom preferences and remappable keys, persisted in `NSUserDefaults`), a bottom filmstrip (`T` toggles) and a full-grid gallery overlay (`G` toggles), both lazy-loading JPEG-512 thumbnails from a shared SQLite cache. **Nested folders (PR 26):** child folders show as tiles. A folder of only folders uses big tiles; one that also holds photos keeps a short folder row above them. A tile says when photos were found further down, when it is only more folders, and when that look stopped early. The path stays on screen while a photo is open. `⌘↑` goes up and returns to the folder you left; `⌘←` / `⌘→` open the folder beside it; `/` on the folder row finds a tile by name. The Windows host matches that chrome. Marks (`Insert`/`Shift+Space`/`Ctrl+A`/`Ctrl+D`), copy/move to a chosen folder (`F7`/`F8`, collision-safe), Trash delete with confirm (`Delete`), fullscreen (`F11`/`F`), a stills-only slideshow (`F5`; `.` blackout, `R` shuffle), and drag-out (`⌘`+drag on the canvas; a plain drag from a gallery, filmstrip or search-result cell, the marks when that cell is marked, as the original files). **Video (Mac PR 5):** FFmpeg + VideoToolbox decode, copied out of the decoder pool into a presentation ring of our own Metal textures, an MSL twin of the video shader (NV12/P010, the stream's matrix/range/transfer, HLG/PQ tone-mapped to SDR), Core Audio as the master A/V clock (no `AVPlayer`), a SwiftUI transport strip and the docs/design/16 video keys, and poster thumbnails for clips. Metadata read (PR 9, see above); no rating/metadata writes or RAW-pairing UI yet. Not on the Mac yet: `⌘G` go to, `;` Live Photo motion, Open RAW / Open JPEG of a pair ([docs/design/16](design/16-commands.md) "Not built"). Builds on Apple Silicon and Intel, macOS 14+ (Intel: unverified for frame pacing). |
 | **`MediaViewer.Interop`** | The C# side of the ABI — `SafeHandle`, struct layouts, completion drain. The filmstrip island borrows the session and drains folder/thumb completions. |
 | **Import add-on** (Milestone G) | An optional add-on installed from Settings → Add-ons ([docs/design/18](design/18-import.md)): copy a card or folder into a library, skip what is already there by content (size, then BLAKE3), verify every copy by reading it back, sort into dated folders with RAW+JPEG / Live Photo pairs and camera sidecars kept together, resume after an unplug, back up to a second drive from one read, verify an old folder for silent corruption, and **find duplicates** in a folder tree (every file, grouped by identical bytes; PR 54), where one copy at a time can be moved to the Recycle Bin / Trash, never the last. Apart from that, never deletes from, formats or overwrites anything. `mv_import.dll` / `libmv_import.dylib` plus its chrome (`MediaViewer.Import.Chrome.dll` / `Import.bundle`) are built beside the app in `build/addons/import` and shipped as a separate signed download that a stable run of the release workflow packs beside the app (RELEASING.md); the base install does not contain them. Settings → Add-ons offers Install only when that download exists and verifies for the running app. With it absent, `Ctrl+Shift+I` / `Ctrl+Shift+F7` do not exist. The shared engine is tested; the Windows and Mac hosts are written but their first platform builds and every hardware verify line are owed (docs/design/10). Also from this work, in the base app: `F8` across drives now deletes the source only after a verified copy. |
 
@@ -473,7 +474,7 @@ copy, and check Finder's **Open With** and a Quick Look thumbnail.
 | `,` / `.` | frame step back / forward while paused |
 | `A` / `D` | previous / next beside the arrows, in every mode including on a clip |
 | `Q` / `E` | on a clip, two commands on one key: **tap** skips ±2 s, **hold** skims ±2 s per key repeat and settles on an exact seek when released. `Shift+Q` / `Shift+E` step playback speed. Off a clip they do nothing |
-| `Left` / `Right` on a clip | walk the folder while the clip is paused with the filmstrip showing; while it plays, or with the filmstrip hidden (`T`), they are `Q` / `E` (tap ±2 s, hold skims). Stills always walk |
+| `Left` / `Right` on a clip | walk the folder while the filmstrip is showing, paused or playing; with the filmstrip hidden (`T`) they are `Q` / `E` (tap ±2 s, hold skims). Stills always walk |
 | `R` | reset the measurement window |
 | `0` | fit to window |
 | `1` | 100 % |
@@ -484,7 +485,6 @@ copy, and check Finder's **Open With** and a Quick Look thumbnail.
 | `S` | sticky zoom: keep zoom and position when you move to the next item (off by default) |
 | hold `Z` | loupe: 100 % (or 2x the current zoom) around the cursor |
 | hold `\` | show the previous image, for picking between burst frames |
-| `B` | canvas background: dark / gray / white / checkerboard |
 | `C` | clipping blinkies (red highlights, blue shadows). The canvas keeps presenting while on |
 | `O` | info line: file name, position in the folder, size, zoom |
 | `Ctrl+Shift+A` | always on top |
@@ -532,7 +532,7 @@ the zoom. Arrow keys, `Space` and the slideshow wrap from the last item to the
 first; turn that off under Settings.
 | `Ctrl+Shift+O` | open a folder |
 | `Left` / `Right` | previous / next in the folder |
-| `G` | gallery: thumbnail grid of the folder. A folder of only folders uses big tiles; a mixed folder keeps a short chip row above the photos. Covers and counts show on the tiles; the folder path sits in the command bar just left of `?`. **Up** (↑) and **Root** (house) buttons stay outside the scrolling trail: Up opens the enclosing folder; Root returns to the highest folder reached in this browsing session (the first breadcrumb). The `…` menu opens hidden parent folders directly. Full paths are available on hover. These controls remain available, including while a photo is open. `Ctrl+Up` goes up and selects the folder you left; `Ctrl+Left` / `Ctrl+Right` open the sibling beside it. A search icon at the right end of the path (and beside "Search: …" on a result list) does what `Ctrl+F` / `⌘F` does: with Local search installed it opens the search panel (the first search of a session starts the pack, which loads nothing at launch) (where `file:name` searches file names); without it, **file search**, a field over the grid that filters this folder's tiles by name as you type (no index; `Esc` clears, then closes); the command bar stays above the gallery on both hosts, so the path and the icon are there over the grid too. `/` on the folder row finds a tile by name. `W` / `S` or Up / Down move between rows and cross from folders to images; `A` / `D` or Left / Right move between items. `+` / `-` enlarge / shrink thumbnails (`=` also enlarges). `Enter` opens a folder or the selected image. A click does the same; `Esc` leaves |
+| `G` | gallery: thumbnail grid of the folder. A folder of only folders uses big tiles; a mixed folder keeps a short chip row above the photos. Covers and counts show on the tiles; the folder path sits in the command bar just left of `?`. The Open, View, Settings and `?` buttons keep their width; the trail is what shrinks and scrolls. **Up** (↑) and **Root** (house) buttons stay outside the scrolling trail: Up opens the enclosing folder; Root returns to the highest folder reached in this browsing session (the first breadcrumb). The `…` menu opens hidden parent folders directly. Full paths are available on hover. These controls remain available, including while a photo is open. `Ctrl+Up` goes up and selects the folder you left; `Ctrl+Left` / `Ctrl+Right` open the sibling beside it. A search icon at the right end of the path (and beside "Search: …" on a result list) does what `Ctrl+F` / `⌘F` does: with Local search installed it opens the search panel (the first search of a session starts the pack, which loads nothing at launch) (where `file:name` searches file names); without it, **file search**, a field over the grid that filters this folder's tiles by name as you type (no index; `Esc` clears, then closes); the command bar stays above the gallery on both hosts, so the path and the icon are there over the grid too. `/` on the folder row finds a tile by name. `W` / `S` or Up / Down move between rows and cross from folders to images; `A` / `D` or Left / Right move between items. `+` / `-` enlarge / shrink thumbnails (`=` also enlarges). `Enter` opens a folder or the selected image. A click does the same; `Esc` leaves |
 | `T` | filmstrip show/hide, for the mode you are in (folder open or single image) |
 | `Tab` | focus the command bar island |
 | `Esc` | walks out one level: gallery, fullscreen, then island focus back to the canvas, and last, in a search result list, **Back to folder**. It never quits |
@@ -790,7 +790,10 @@ the 2026-10-03 numbers are in the PR that added it (a publish 51 → 8 ms, a peo
 500 → 46 ms of CPU).
 `--filter SearchModelTests` checks the search panel's model against a fake table (issue #191):
 a search re-asks when another folder opens under "Folder & subfolders", and Tab only takes a
-name looked up for the words as typed.
+name looked up for the words as typed. `--filter StatusLineTests` checks the footer's status
+line from a status struct (issue #417): with iCloud clips queued the pictures count and ETA are
+named as this Mac's files and the clips as the rest of the run; with the queue empty it is the
+plain pictures / sound / speech line.
 
 **The Photos library source (Mac, issue #72; docs/design/17 "Photos library source").** Engine
 behaviour is tested with a fake PhotoKit: `mv_ai_tests "[photos]"`. On a real library, two
@@ -871,7 +874,11 @@ its own bundle id has Photos access and the flag `mv.photosLibrary.added` is set
 defaults; the flag is set by the pack's Settings when the library is a root, so a dev build
 without the pack loaded can be pointed at it by hand (`defaults write
 io.github.longtimeno-c.mediaviewer.dev mv.photosLibrary.added -bool true`) once macOS has
-granted that bundle Photos access. The viewer's on-view downloads and previews live in
+granted that bundle Photos access. The listing's time is logged as `photos: listed N assets in
+M ms`: `log stream --predicate 'subsystem == "org.mediaviewer" AND category == "photos"'` (in zsh,
+`/usr/bin/log`: `log` is a builtin). `tools/photos/name_probe.m` times the walk and its names
+outside the app and checks them against the resources (counts only; its header says how to give
+it Photos access). The viewer's on-view downloads and previews live in
 `~/Library/Caches/MediaViewer/Photos Library/` (write-protected, emptied at launch); a backup's
 fetched originals wait in `~/Library/Caches/MediaViewer/Photos Backup/` and are removed when
 the run ends.
@@ -895,9 +902,13 @@ ctest --test-dir build -C Release --output-on-failure
 # if MV_REQUIRE_CORPUS is unset ('0' is an explicit opt-out, as release.yml uses).
 $env:MV_REQUIRE_CORPUS = "1"; ctest --test-dir build -C Release --output-on-failure
 
-# the ABI, end to end from C#: SafeHandle, struct layout, completion drain
+# the ABI, end to end from C#: SafeHandle, struct layout, completion drain. The
+# second argument is mv_abi_layout's dump: the AI structs' C# mirrors are then
+# compared field for field with the native layout (skipped without it; CI passes it)
+cmake --build build --config Release --target mv_abi_layout
+build\bin\Release\mv_abi_layout.exe > build\abi-layout.txt
 dotnet build src.managed\MediaViewer.AbiSmokeTest\MediaViewer.AbiSmokeTest.csproj -c Release
-dotnet src.managed\MediaViewer.AbiSmokeTest\bin\Release\net8.0-windows\MediaViewer.AbiSmokeTest.dll build\bin\Release
+dotnet src.managed\MediaViewer.AbiSmokeTest\bin\Release\net8.0-windows\MediaViewer.AbiSmokeTest.dll build\bin\Release build\abi-layout.txt
 
 # WinUI chrome (also published beside mediaviewer_lab.exe by the CMake build)
 dotnet publish src.managed\MediaViewer.Chrome\MediaViewer.Chrome.csproj -c Release -r win-x64 --no-self-contained
@@ -1624,6 +1635,47 @@ The app's search text has none.
   `mv_folder_forget_tags`, date sort from the pass), `addon_abi.cpp` (`tag_facts`),
   `main.cpp`, and the running WinUI search and `/` find box. Also owed there: the verify line
   and the PR 1 gate.
+
+### Local search reads more of each file (#403–#407, 2026-10-15)
+
+Five changes to the AI pack's index and query language
+([17](design/17-local-ai-search.md), [12](design/12-decision-log.md)). The index goes from schema
+4 to 7, one transaction a step; nothing already embedded is embedded again.
+
+| Issue | What changed | Schema |
+|---|---|---|
+| #404 | `in:` / `before:` / `after:` / `since:` / `until:` use the date taken, the file's time only when there is none | none |
+| #405 | `rating:`, `rejected`, `label:`, `iso:`, `f:`, `mm:`, `shutter:`; meta_cache.db and the host's `tag_facts` carry them | 5 |
+| #406 | chapter titles and text subtitle lines (host `read_cues`, `meta/cues.h`) match quoted and plain words | 6 |
+| #407 | the People pass decodes the moments the picture pass kept; a Live Photo's movie is sampled onto its still | 7 |
+| #403 | the OS reads the text in each photo (Vision / Windows.Media.Ocr) for quoted and plain words | (uses 6) |
+| #403 follow-up | the text on the moments a clip's picture pass kept, one row per moment; Settings → Local search → **Read text in photos** on both hosts; `mv_ai_status` counts the cue and text passes | (uses 6) |
+
+- **Tests:** `mv_ai_tests "[dates],[exposure],[cues],[moments],[live],[ocr],[schema4],[tags],[query]"`,
+  and `mv_tests "[search],[cues]"` (the cue reader over Matroska / SubRip and MP4 / mov_text
+  files the test writes, `tests/cue_fixture.h`).
+- **OCR recall and cost:** `python3 tools/ai/ocr-fixture.py <dir>` writes 40 labelled photos;
+  `MV_OCR_FIXTURE_DIR=<dir> mv_ai_tests "[.ocr-fixture]"` reads them with the real OS reader and
+  prints recall and per-photo times as JSON (needs Pillow; on Windows, an OCR language).
+  `MV_OCR_CLIP_DIR=<folder of clips> mv_ai_tests "[.ocr-moments]"` prints what a clip moment
+  costs the text pass (the 2,048 px seek and decode, and the read) as JSON.
+- **Mac (M-series, 2026-10-15):** `mv_ai_tests` 127 cases, 119 passed, 8 skipped (the
+  model-backed ones, as before); `mv_tests` 824 cases, 813 passed, 11 skipped; `mv_import_tests`
+  (the add-on host table) 112 passed. The app (`mediaviewer_lab`) and the AI SwiftUI chrome build. Vision over the fixture: 38 of
+  40 phrases, read 44 ms median a photo.
+- **Windows:** the C# chromes compile on the Mac (`dotnet msbuild -t:Compile`). The native
+  half is compiled only by CI: `ocr_win.cpp` (C++/WinRT), the host's `read_cues` and `tag_facts`
+  in `addon_abi.cpp`. The OCR fixture on Windows, the Windows PR 1 gate and the Mac PR 1 gate
+  with the pack indexing are owed.
+- **#403 follow-up, Mac (M-series, 2026-10-15):** `mv_ai_tests` 131 cases, 123 passed, 8 skipped;
+  `mediaviewer_lab`, `mv_ai` and the AI SwiftUI chrome build. Tests: `mv_ai_tests "[ocr]"` (clip
+  moments, resume after a quit, the status counts, `read_text` / `text_available`);
+  `"[.perf-bench]"` times the status counts (14 ms at 25,000 assets, cached between refreshes).
+  A clip moment costs ~0.2 s (`"[.ocr-moments]"`, mostly the seek and decode; machine loaded).
+  **Windows:** the C# chromes compile on the Mac; the engine change is portable and compiled only
+  by CI there. The cue and text counts are appended on `MvAiStatus` (1,672 bytes). `AiApi` does not
+  pin that size (#388); the ABI smoke test compares the C# mirror with the header. Windows OCR on
+  clips, both PR 1 gates with the pack indexing are owed.
 
 ### Every tag and AI provenance in the Metadata pane (#290, docs/plans/metadata-search-and-place.md slice 1, 2026-10-11)
 

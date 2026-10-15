@@ -25,8 +25,7 @@ final class SettingsStore: ObservableObject {
   static let filmstripImage: Int32 = 1 << 1
   static let wrap: Int32 = 1 << 2
   static let stickyZoom: Int32 = 1 << 3
-  static let backgroundShift: Int32 = 4
-  static let backgroundMask: Int32 = 7 << 4
+  // Bits 4-6 were the canvas background, removed by issue #408 (settings.h).
   /// Set = folders list the kind (settings.h kSettingShow*). Off by default.
   static let showAudio: Int32 = 1 << 12
   static let showDocuments: Int32 = 1 << 13
@@ -121,14 +120,6 @@ final class SettingsStore: ObservableObject {
     poll()
   }
 
-  var background: Int {
-    get { Int((flags & Self.backgroundMask) >> Self.backgroundShift) }
-    set {
-      mv_chrome_set_view_flags((flags & ~Self.backgroundMask) | (Int32(newValue) << Self.backgroundShift))
-      generation = .max
-      poll()
-    }
-  }
 
   var sortKey: Int {
     get { Int(sort & 7) }
@@ -286,22 +277,12 @@ struct SettingsView: View {
                        detail: "List PDF and Word (DOCX) files in folders. A file you open directly still opens.",
                        bit: SettingsStore.showDocuments, store: store)
         section("Appearance")
-        SettingsRow(title: "Canvas background", detail: "The area behind your photos and videos.") {
-          Picker("Canvas background", selection: Binding(get: { store.background }, set: { store.background = $0 })) {
-            Text("System").tag(0)
-            Text("Grey").tag(1)
-            Text("White").tag(2)
-            Text("Checkerboard").tag(3)
-            Text("Dark").tag(4)
-          }
-          .pickerStyle(.menu).frame(width: 180)
-        }
         // docs/design/25: the chrome's colours. Default, then the built-in
         // palettes, then every theme an installed add-on contributes. The
         // photo is never recoloured.
         SettingsRow(title: "Theme",
                     detail: theme.note.isEmpty
-                      ? "Colours and a quiet ground for the bars and panes. Your photos are never recoloured."
+                      ? "Colours and a quiet ground for the window, its bars and panes, and the area around your photos and videos. Your photos are never recoloured."
                       : theme.note) {
           Picker("Theme", selection: Binding(get: { theme.selection }, set: { theme.choose($0) })) {
             Text("Default").tag("")

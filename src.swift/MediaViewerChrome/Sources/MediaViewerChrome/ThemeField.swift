@@ -9,32 +9,49 @@
 // clears MVTheme.themed, so this paints the system ground and stops.
 // Photo and video live on the swapchain, which is a different view.
 //
-// Motion rests. Ten frames a second, and only while this app is in front,
-// Reduce Motion is off, and a pointer or a key moved in the last five
-// seconds. Dots do not move, and a theme with no ground does not either.
-// A still photo still presents nothing: this timer is the chrome's, and it
-// stops. Speed scales velocities and size scales radii; 1 leaves a mark as
+// Motion rests (owner, 2026-10-15): every display frame while this app is in
+// front and a pointer or a key moved in the last five seconds; ten while a
+// window is visible, for up to a minute after the last input; then none, and
+// none under Reduce Motion. Dots do not move, and a theme with no ground does
+// not either.
+// The marks are Core Animation layers moved on a thread of their own
+// (ThemeTicker), so neither SwiftUI nor the main run loop does anything per
+// frame. A still photo still presents nothing: the canvas is a different
+// view. Speed scales velocities and size scales radii; 1 leaves a mark as
 // written. Every position is a function of the clock, not of the last frame.
 import AppKit
 import QuartzCore
 import SwiftUI
+import MVChromeBridge
 
+/// The motion rule, decided on the main thread where input and window state
+/// live. It does not tick: ThemeTicker does, on its own thread. The main run
+/// loop wakes only when the rule changes pace (5 s and 60 s after input),
+/// never per frame: each pass of the main loop polls every chrome store
+/// (ChromePulse), so a 60 Hz main-thread tick re-laid out the window 60 times
+/// a second (profiled 2026-10-15).
 @MainActor
-final class ThemeMotion: ObservableObject {
+final class ThemeMotion: NSObject {
   static let shared = ThemeMotion()
 
-  @Published private(set) var time: TimeInterval = 0
-  @Published private(set) var reduce = false
-
+  private(set) var reduce = false
   private var listeners = 0
-  private var timer: Timer?
   private var monitor: Any?
   private var lastInput = CACurrentMediaTime()
-  private var lastTick = CACurrentMediaTime()
-  private let rest: TimeInterval = 5
+  private var lastForward: CFTimeInterval = 0
+  private var running: ThemeTicker.Pace = .rest
+  private var boundary: Timer?
+  // The rule (owner, 2026-10-15; the native home runs the same, shell/home_theme.h
+  // home_ground_clock): every display frame in front with input in the last 5
+  // seconds, 10 a second while a window is visible for up to 60 seconds after
+  // the last input, then rest.
+  private let fastWindow: TimeInterval = 5
+  private let slowWindow: TimeInterval = 60
 
-  private init() {
+  override private init() {
+    super.init()
     reduce = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    ThemeTicker.shared.setReduce(reduce)
     NSWorkspace.shared.notificationCenter.addObserver(
       forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
       object: nil, queue: .main
@@ -42,6 +59,7 @@ final class ThemeMotion: ObservableObject {
       MainActor.assumeIsolated {
         guard let self else { return }
         self.reduce = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        ThemeTicker.shared.setReduce(self.reduce)
         self.consider()
       }
     }
@@ -49,8 +67,13 @@ final class ThemeMotion: ObservableObject {
     note.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
       MainActor.assumeIsolated { self?.bump() }
     }
-    note.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
-      MainActor.assumeIsolated { self?.consider() }
+    for name in [NSApplication.didResignActiveNotification, NSApplication.didHideNotification,
+                 NSApplication.didUnhideNotification, NSWindow.didChangeOcclusionStateNotification,
+                 NSWindow.didMiniaturizeNotification, NSWindow.didDeminiaturizeNotification,
+                 NSWindow.didChangeScreenNotification] {
+      note.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+        MainActor.assumeIsolated { self?.consider(screenChanged: name == NSWindow.didChangeScreenNotification) }
+      }
     }
     note.addObserver(forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main) { note in
       MainActor.assumeIsolated { (note.object as? NSWindow)?.acceptsMouseMovedEvents = true }
@@ -67,60 +90,363 @@ final class ThemeMotion: ObservableObject {
 
   func bump() {
     lastInput = CACurrentMediaTime()
+    // The native empty window runs the same rule and hears the canvas itself;
+    // the bar and the panes are ours, so pass their input on (a few a second).
+    if lastInput - lastForward >= 0.5 {
+      lastForward = lastInput
+      mv_chrome_ground_input()
+    }
     consider()
   }
 
-  func retain() {
+  func hold() {
     listeners += 1
     bump()
   }
 
-  func release() {
+  func letGo() {
     listeners = max(0, listeners - 1)
     consider()
   }
 
-  private var live: Bool {
-    listeners > 0 && !reduce && (NSApp?.isActive ?? false)
-      && CACurrentMediaTime() - lastInput < rest
+  /// A window of ours on screen and not covered.
+  private var visible: Bool {
+    guard let app = NSApp, !app.isHidden else { return false }
+    return app.windows.contains { $0.isVisible && !$0.isMiniaturized && $0.occlusionState.contains(.visible) }
   }
 
-  private func consider() {
-    if live {
-      guard timer == nil else { return }
-      lastTick = CACurrentMediaTime()
-      let timer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
-        MainActor.assumeIsolated { self?.tick() }
-      }
-      RunLoop.main.add(timer, forMode: .common)
-      self.timer = timer
-    } else {
-      timer?.invalidate()
-      timer = nil
+  private var pace: ThemeTicker.Pace {
+    guard listeners > 0, !reduce, visible else { return .rest }
+    let quiet = CACurrentMediaTime() - lastInput
+    if (NSApp?.isActive ?? false) && quiet < fastWindow { return .everyFrame }
+    return quiet < slowWindow ? .slow : .rest
+  }
+
+  private func consider(screenChanged: Bool = false) {
+    let want = pace
+    if want != running || (screenChanged && want == .everyFrame) {
+      running = want
+      let screen = NSApp?.mainWindow?.screen ?? NSApp?.windows.first?.screen ?? NSScreen.main
+      ThemeTicker.shared.setPace(want, screen: screen)
     }
-  }
-
-  private func tick() {
-    guard live else {
-      consider()
+    // One main-thread wake at the rule's next boundary, not one per frame.
+    guard want != .rest else {
+      boundary?.invalidate()
+      boundary = nil
       return
     }
+    let quiet = CACurrentMediaTime() - lastInput
+    let next = (want == .everyFrame ? fastWindow : slowWindow) - quiet
+    if let boundary, boundary.isValid,
+       abs(boundary.fireDate.timeIntervalSinceNow - next) < 0.25 { return }
+    boundary?.invalidate()
+    let timer = Timer(timeInterval: max(0.05, next), repeats: false) { [weak self] _ in
+      MainActor.assumeIsolated {
+        self?.boundary = nil
+        self?.consider()
+      }
+    }
+    timer.tolerance = 0.1
+    RunLoop.main.add(timer, forMode: .common)
+    boundary = timer
+  }
+}
+
+/// The pane grounds' clock and layer updates, on a thread of their own with
+/// its own run loop: the display link (every frame) or a 10 Hz timer fires
+/// there, and the marks' layers move in an explicit Core Animation
+/// transaction, which Core Animation allows off the main thread. Everything
+/// here after `init` runs on that thread; the main thread reaches it only
+/// through `run`.
+final class ThemeTicker: NSObject, @unchecked Sendable {
+  static let shared = ThemeTicker()
+  enum Pace: Equatable { case rest, everyFrame, slow }
+
+  private var loop: CFRunLoop?
+  private let ready = DispatchSemaphore(value: 0)
+  // Ticker thread only:
+  private var link: CADisplayLink?
+  private var timer: Timer?
+  private var time: Double = 0
+  private var lastTick: Double = 0
+  private var moving = false
+  private var reduce = false
+  private var fields: [ThemeFieldLayers] = []
+
+  override private init() {
+    super.init()
+    let thread = Thread { [unowned self] in self.threadMain() }
+    thread.name = "mv.theme-ground"
+    thread.qualityOfService = .userInteractive
+    thread.start()
+    ready.wait()
+  }
+
+  private func threadMain() {
+    loop = CFRunLoopGetCurrent()
+    RunLoop.current.add(NSMachPort(), forMode: .default)  // keeps the loop alive
+    ready.signal()
+    while true { _ = RunLoop.current.run(mode: .default, before: .distantFuture) }
+  }
+
+  /// Runs `block` on the ticker thread.
+  func run(_ block: @escaping () -> Void) {
+    guard let loop else { return }
+    CFRunLoopPerformBlock(loop, CFRunLoopMode.defaultMode.rawValue, block)
+    CFRunLoopWakeUp(loop)
+  }
+
+  func add(_ field: ThemeFieldLayers) {
+    run { [self] in
+      if !fields.contains(where: { $0 === field }) { fields.append(field) }
+      draw(field)
+    }
+  }
+
+  func remove(_ field: ThemeFieldLayers) {
+    run { [self] in fields.removeAll { $0 === field } }
+  }
+
+  /// A field's size, item or visibility changed: take them and draw it once.
+  func update(_ field: ThemeFieldLayers, item: BuiltinThemes.Item?, size: CGSize, visible: Bool,
+              scale: CGFloat) {
+    run { [self] in
+      if field.item != item {
+        field.item = item
+        field.resetPools()
+      }
+      field.size = size
+      field.visible = visible
+      field.scale = scale
+      draw(field)
+    }
+  }
+
+  func setReduce(_ on: Bool) {
+    run { [self] in
+      reduce = on
+      fields.forEach(draw)
+    }
+  }
+
+  /// The display link is made on the main thread (it needs the screen) and
+  /// added to this thread's loop, so its callback fires here.
+  func setPace(_ pace: Pace, screen: NSScreen?) {
+    let newLink = pace == .everyFrame ? screen?.displayLink(target: self, selector: #selector(frame(_:))) : nil
+    run { [self] in
+      link?.invalidate()
+      link = nil
+      timer?.invalidate()
+      timer = nil
+      if !moving { lastTick = CACurrentMediaTime() }
+      moving = pace != .rest
+      switch pace {
+      case .rest:
+        break
+      case .everyFrame:
+        if let newLink {
+          newLink.add(to: .current, forMode: .default)
+          link = newLink
+        }
+      case .slow:
+        let timer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in self?.tick() }
+        timer.tolerance = 0.01
+        RunLoop.current.add(timer, forMode: .default)
+        self.timer = timer
+      }
+    }
+  }
+
+  @objc private func frame(_ link: CADisplayLink) { tick() }
+
+  private func tick() {
     let now = CACurrentMediaTime()
     time += min(0.1, now - lastTick)
     lastTick = now
+    fields.forEach(draw)
+  }
+
+  private func draw(_ field: ThemeFieldLayers) {
+    let moves = field.item.map { BuiltinThemes.moves($0.effect) } ?? false
+    field.render(time: moves && !reduce ? time : 0)
   }
 }
 
 /// Canvas colour, then the built-in's marks. Menus keep a flat fill: this is
-/// the pane ground, not a popover.
+/// the pane ground, not a popover. The colour is SwiftUI's and never changes
+/// on a tick; the marks are Core Animation layers in an AppKit view behind the
+/// pane's content, moved on each tick without SwiftUI (as the Windows twin
+/// moves XAML shapes).
 struct ThemeField: View {
   @ObservedObject private var theme = ThemeStore.shared
-  @ObservedObject private var motion = ThemeMotion.shared
-  @State private var holding = false
 
   private var item: BuiltinThemes.Item? {
     guard MVTheme.themed != nil else { return nil }
     return BuiltinThemes.item(selection: theme.selection)
+  }
+
+  var body: some View {
+    ZStack {
+      MVTheme.canvas
+      ThemeMarks(item: item)
+    }
+    .transaction { $0.animation = nil }
+    .accessibilityHidden(true)
+    .allowsHitTesting(false)
+  }
+}
+
+private struct ThemeMarks: NSViewRepresentable {
+  let item: BuiltinThemes.Item?
+  func makeNSView(context: Context) -> ThemeFieldNSView { ThemeFieldNSView() }
+  func updateNSView(_ view: ThemeFieldNSView, context: Context) { view.item = item }
+}
+
+/// One mark of a ground, in points, top-left origin, as ThemeGround computes it.
+struct ThemeMark {
+  enum Kind { case rect, dot, ellipse, star }
+  var kind: Kind
+  var x: Double, y: Double  // centre
+  var w: Double, h: Double
+  var rotation: Double = 0
+  var alpha: Double
+}
+
+/// The marks' layers of one field. Touched only on the ticker thread, except
+/// `container`, which the view adds and sizes on the main thread.
+final class ThemeFieldLayers: @unchecked Sendable {
+  let container = CALayer()
+  var item: BuiltinThemes.Item?
+  var size: CGSize = .zero
+  var visible = false
+  var scale: CGFloat = 2
+  private var pools: [ThemeMark.Kind: [CALayer]] = [:]
+  private var marks: [ThemeMark] = []
+
+  init() {
+    container.actions = ["sublayers": NSNull(), "bounds": NSNull(), "position": NSNull()]
+  }
+
+  func resetPools() {
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
+    for layer in pools.values.flatMap({ $0 }) { layer.removeFromSuperlayer() }
+    CATransaction.commit()
+    pools = [:]
+  }
+
+  /// Recompute the marks for the clock and move the layers: maths for at most
+  /// ~180 marks, and layer properties set with actions off. A hidden field
+  /// moves nothing and catches up when it is shown.
+  func render(time: Double) {
+    marks.removeAll(keepingCapacity: true)
+    if let item, visible {
+      ThemeGround.marks(Double(size.width), Double(size.height), item: item, time: time, into: &marks)
+    } else if !visible {
+      return
+    }
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
+    var used: [ThemeMark.Kind: Int] = [:]
+    let h = Double(size.height)
+    for mark in marks {
+      let i = used[mark.kind, default: 0]
+      used[mark.kind] = i + 1
+      let l = layer(kind: mark.kind, index: i)
+      l.isHidden = false
+      l.opacity = Float(max(0, min(1, mark.alpha)))
+      let size = CGSize(width: mark.w, height: mark.h)
+      if l.bounds.size != size {
+        l.bounds = CGRect(origin: .zero, size: size)
+        switch mark.kind {
+        case .dot: l.cornerRadius = min(size.width, size.height) / 2
+        case .ellipse: (l as? CAShapeLayer)?.path = CGPath(ellipseIn: l.bounds, transform: nil)
+        case .star: (l as? CAShapeLayer)?.path = ThemeGround.starPath(radius: size.width / 2)
+        case .rect: break
+        }
+      }
+      // AppKit's layer space is y-up: flip the centre and the turn.
+      l.position = CGPoint(x: mark.x, y: h - mark.y)
+      l.setAffineTransform(mark.rotation == 0 ? .identity : CGAffineTransform(rotationAngle: -mark.rotation))
+    }
+    for (kind, pool) in pools {
+      for l in pool.dropFirst(used[kind, default: 0]) where !l.isHidden { l.isHidden = true }
+    }
+    CATransaction.commit()
+  }
+
+  private func layer(kind: ThemeMark.Kind, index: Int) -> CALayer {
+    if let pool = pools[kind], index < pool.count { return pool[index] }
+    let ink = ThemeGround.cgColor(item?.effectRGB ?? 0xFFFFFF)
+    let l: CALayer
+    switch kind {
+    case .rect, .dot:
+      l = CALayer()
+      l.backgroundColor = ink
+    case .ellipse, .star:
+      let shape = CAShapeLayer()
+      shape.fillColor = ink
+      shape.strokeColor = nil
+      l = shape
+    }
+    l.contentsScale = scale
+    l.actions = ["position": NSNull(), "bounds": NSNull(), "opacity": NSNull(),
+                 "transform": NSNull(), "hidden": NSNull(), "path": NSNull()]
+    container.addSublayer(l)
+    pools[kind, default: []].append(l)
+    return l
+  }
+}
+
+/// The AppKit view behind a pane's content that carries its field's layers.
+/// Main thread: it holds the clock while its theme moves and tells the ticker
+/// what to draw; it never draws.
+@MainActor
+final class ThemeFieldNSView: NSView {
+  var item: BuiltinThemes.Item? {
+    didSet {
+      guard item != oldValue else { return }
+      syncHold()
+      push()
+    }
+  }
+
+  private let layers = ThemeFieldLayers()
+  private var holding = false
+  private var registered = false
+
+  override init(frame: NSRect) {
+    super.init(frame: frame)
+    wantsLayer = true
+    layerContentsRedrawPolicy = .never
+    layer?.addSublayer(layers.container)
+  }
+
+  required init?(coder: NSCoder) { fatalError("ThemeFieldNSView is code-only") }
+
+  override func hitTest(_ point: NSPoint) -> NSView? { nil }
+  override func isAccessibilityElement() -> Bool { false }
+
+  override func viewDidMoveToWindow() {
+    super.viewDidMoveToWindow()
+    if window != nil, !registered {
+      registered = true
+      ThemeTicker.shared.add(layers)
+    } else if window == nil, registered {
+      registered = false
+      ThemeTicker.shared.remove(layers)
+    }
+    syncHold()
+    push()
+  }
+
+  override func viewDidHide() { super.viewDidHide(); push() }
+  override func viewDidUnhide() { super.viewDidUnhide(); push() }
+  override func viewDidChangeBackingProperties() { super.viewDidChangeBackingProperties(); push() }
+
+  override func setFrameSize(_ newSize: NSSize) {
+    super.setFrameSize(newSize)
+    push()
   }
 
   private var moves: Bool {
@@ -128,49 +454,64 @@ struct ThemeField: View {
     return BuiltinThemes.moves(item.effect)
   }
 
-  var body: some View {
-    Canvas { context, size in
-      ThemeGround.draw(context, size, item: item,
-                       time: moves && !motion.reduce ? motion.time : 0)
-    }
-    .transaction { $0.animation = nil }
-    .accessibilityHidden(true)
-    .allowsHitTesting(false)
-    .onAppear { syncHold() }
-    .onDisappear {
-      if holding {
-        holding = false
-        motion.release()
-      }
-    }
-    .onChange(of: theme.generation) { _, _ in
-      syncHold()
-      motion.bump()
+  private func syncHold() {
+    let want = moves && window != nil
+    if want && !holding {
+      holding = true
+      ThemeMotion.shared.hold()
+    } else if !want && holding {
+      holding = false
+      ThemeMotion.shared.letGo()
     }
   }
 
-  private func syncHold() {
-    if moves && !holding {
-      holding = true
-      motion.retain()
-    } else if !moves && holding {
-      holding = false
-      motion.release()
-    }
+  private func push() {
+    if layers.container.superlayer == nil { layer?.addSublayer(layers.container) }
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
+    layers.container.frame = bounds
+    CATransaction.commit()
+    ThemeTicker.shared.update(layers, item: item, size: bounds.size,
+                              visible: window != nil && !isHiddenOrHasHiddenAncestor,
+                              scale: window?.backingScaleFactor ?? 2)
   }
 }
 
-private enum ThemeGround {
-  static func draw(_ context: GraphicsContext, _ size: CGSize, item: BuiltinThemes.Item?, time: Double) {
-    context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(MVTheme.canvas))
-    guard let item, size.width >= 8, size.height >= 8 else { return }
-    let w = size.width
-    let h = size.height
+/// The marks of each built-in ground. The Windows twin is ThemeField.cs: the
+/// counts, the speeds and the seed match. Points, top-left origin.
+enum ThemeGround {
+  static func cgColor(_ rgb: UInt32) -> CGColor {
+    CGColor(srgbRed: CGFloat((rgb >> 16) & 0xFF) / 255, green: CGFloat((rgb >> 8) & 0xFF) / 255,
+            blue: CGFloat(rgb & 0xFF) / 255, alpha: 1)
+  }
+
+  /// A four-point star of `radius`, centred in its 2r square, y-up.
+  static func starPath(radius r: Double) -> CGPath {
+    let path = CGMutablePath()
+    let c = CGPoint(x: r, y: r)
+    func p(_ x: Double, _ y: Double) -> CGPoint { CGPoint(x: c.x + x, y: c.y + y) }
+    path.move(to: p(0, -r))
+    path.addQuadCurve(to: p(r, 0), control: p(r * 0.15, -r * 0.15))
+    path.addQuadCurve(to: p(0, r), control: p(r * 0.15, r * 0.15))
+    path.addQuadCurve(to: p(-r, 0), control: p(-r * 0.15, r * 0.15))
+    path.addQuadCurve(to: p(0, -r), control: p(-r * 0.15, -r * 0.15))
+    path.closeSubpath()
+    return path
+  }
+
+  static func marks(_ w: Double, _ h: Double, item: BuiltinThemes.Item, time: Double,
+                    into out: inout [ThemeMark]) {
+    guard w >= 8, h >= 8 else { return }
     let area = w * h
-    let ink = item.effectRGB
     let gain = item.intensity
     let pace = item.speed
     let scale = item.size
+    func rect(_ x: Double, _ y: Double, _ rw: Double, _ rh: Double, _ alpha: Double) {
+      out.append(ThemeMark(kind: .rect, x: x + rw / 2, y: y + rh / 2, w: rw, h: rh, alpha: alpha))
+    }
+    func dot(_ x: Double, _ y: Double, _ radius: Double, _ alpha: Double) {
+      out.append(ThemeMark(kind: .dot, x: x, y: y, w: radius * 2, h: radius * 2, alpha: alpha))
+    }
     switch item.effect {
     case "none":
       break
@@ -181,7 +522,7 @@ private enum ThemeGround {
       while y < h {
         var x = spacing * 0.5
         while x < w {
-          dot(context, x, y, 1.2 * scale, ink, alpha)
+          dot(x, y, 1.2 * scale, alpha)
           x += spacing
         }
         y += spacing
@@ -196,8 +537,7 @@ private enum ThemeGround {
         let x = rng.next() * w
         let y0 = rng.next() * (h + len)
         let y = wrap(y0 + time * speed, h + len) - len
-        context.fill(Path(CGRect(x: x, y: y, width: 1, height: len)),
-                     with: .color(color(ink, alpha)))
+        rect(x, y, 1, len, alpha)
       }
     case "starfield":
       let n = count(area, per: 7000, cap: 90, min: 10)
@@ -209,8 +549,7 @@ private enum ThemeGround {
         let speed = (12 + z * 48) * pace
         let radius = (0.45 + z * 1.15) * scale
         let alpha = (0.10 + z * 0.38) * gain
-        let y = wrap(y0 + time * speed, h)
-        dot(context, x, y, radius, ink, alpha)
+        dot(x, wrap(y0 + time * speed, h), radius, alpha)
       }
     case "petals":
       let n = count(area, per: 26000, cap: 18, min: 6)
@@ -226,7 +565,13 @@ private enum ThemeGround {
         let x = x0 + sin(phase + time * 0.7 * pace) * amp
         let y = wrap(y0 + time * vy, h + 16) - 8
         let rot = phase + time * spin
-        petalMark(context, x, y, petal, rot, ink, 0.20 * gain, 0.13 * gain)
+        let off = petal * 0.15
+        let pw = petal * 1.4
+        let ph = petal * 0.64
+        out.append(ThemeMark(kind: .ellipse, x: x - off * cos(rot), y: y - off * sin(rot),
+                             w: pw, h: ph, rotation: rot, alpha: 0.20 * gain))
+        out.append(ThemeMark(kind: .ellipse, x: x + off * cos(rot), y: y + off * sin(rot),
+                             w: pw, h: ph, rotation: rot, alpha: 0.13 * gain))
       }
     case "fireflies":
       let n = count(area, per: 15000, cap: 32, min: 7)
@@ -242,7 +587,7 @@ private enum ThemeGround {
         let pulse = max(0, sin(time * (1.1 + depth) * pace + phase))
         let alpha = pulse * (0.16 + depth * 0.34) * gain
         if alpha > 0.02 {
-          dot(context, x, y, (1.1 + depth * 1.5) * scale, ink, alpha)
+          dot(x, y, (1.1 + depth * 1.5) * scale, alpha)
         }
       }
     case "synapse":
@@ -250,14 +595,12 @@ private enum ThemeGround {
       let line = 0.035 * gain
       var row = 0
       while Double(row) * spacing < h {
-        context.fill(Path(CGRect(x: 0, y: Double(row) * spacing, width: w, height: 1)),
-                     with: .color(color(ink, line)))
+        rect(0, Double(row) * spacing, w, 1, line)
         row += 1
       }
       var col = 0
       while Double(col) * spacing < w {
-        context.fill(Path(CGRect(x: Double(col) * spacing, y: 0, width: 1, height: h)),
-                     with: .color(color(ink, line)))
+        rect(Double(col) * spacing, 0, 1, h, line)
         col += 1
       }
       let n = count(area, per: 28000, cap: 14, min: 4)
@@ -273,13 +616,11 @@ private enum ThemeGround {
         let span = (vertical ? h : w) + trail
         let pos = wrap(phase * span + time * speed, span) - trail
         if vertical {
-          context.fill(Path(CGRect(x: lane, y: pos, width: 1, height: trail)),
-                       with: .color(color(ink, 0.30 * gain)))
-          dot(context, lane + 0.5, pos + trail, head, ink, 0.55 * gain)
+          rect(lane, pos, 1, trail, 0.30 * gain)
+          dot(lane + 0.5, pos + trail, head, 0.55 * gain)
         } else {
-          context.fill(Path(CGRect(x: pos, y: lane, width: trail, height: 1)),
-                       with: .color(color(ink, 0.30 * gain)))
-          dot(context, pos + trail, lane + 0.5, head, ink, 0.55 * gain)
+          rect(pos, lane, trail, 1, 0.30 * gain)
+          dot(pos + trail, lane + 0.5, head, 0.55 * gain)
         }
       }
     case "embers":
@@ -298,8 +639,8 @@ private enum ThemeGround {
         if fade * gain <= 0.02 { continue }
         let x = wrap(x0 + sin(phase + time * 0.8 * pace) * amp, w)
         let y = wrap(y0 - time * vy, h + 24)
-        dot(context, x, y, radius * 3.2, ink, 0.14 * fade * gain)
-        dot(context, x, y, radius * 0.65, ink, 0.62 * fade * gain)
+        dot(x, y, radius * 3.2, 0.14 * fade * gain)
+        dot(x, y, radius * 0.65, 0.62 * fade * gain)
       }
     case "sparkles":
       let n = count(area, per: 16000, cap: 28, min: 6)
@@ -313,7 +654,8 @@ private enum ThemeGround {
         let twinkle = max(0, sin(time * freq + phase))
         let alpha = twinkle * 0.42 * gain
         if alpha > 0.02 {
-          star(context, x, y, radius * (0.45 + twinkle * 0.55), ink, alpha)
+          let r = radius * (0.45 + twinkle * 0.55)
+          out.append(ThemeMark(kind: .star, x: x, y: y, w: r * 2, h: r * 2, alpha: alpha))
         }
       }
     case "perlin-flow":
@@ -330,7 +672,7 @@ private enum ThemeGround {
         let amp = (26 + smoothNoise(x0 * 0.008 + 3, y0 * 0.008) * 46) * scale
         for sample in 0..<3 {
           let at = flow(x0, y0, phase, freq, amp, time - lags[sample], pace, w, h)
-          dot(context, at.x, at.y, radii[sample] * scale, ink, alphas[sample] * gain)
+          dot(at.x, at.y, radii[sample] * scale, alphas[sample] * gain)
         }
       }
     default:
@@ -347,21 +689,6 @@ private enum ThemeGround {
     guard span > 1 else { return 0 }
     let m = value.truncatingRemainder(dividingBy: span)
     return m < 0 ? m + span : m
-  }
-
-  private static func color(_ rgb: UInt32, _ alpha: Double) -> Color {
-    Color(.sRGB,
-          red: Double((rgb >> 16) & 0xFF) / 255,
-          green: Double((rgb >> 8) & 0xFF) / 255,
-          blue: Double(rgb & 0xFF) / 255,
-          opacity: alpha)
-  }
-
-  private static func dot(_ context: GraphicsContext, _ x: Double, _ y: Double,
-                          _ radius: Double, _ rgb: UInt32, _ alpha: Double) {
-    let d = radius * 2
-    context.fill(Path(ellipseIn: CGRect(x: x - radius, y: y - radius, width: d, height: d)),
-                 with: .color(color(rgb, alpha)))
   }
 
   private static func noise2d(_ x: Double, _ y: Double) -> Double {
@@ -391,34 +718,6 @@ private enum ThemeGround {
     let x = wrap(x0 + cos(angle) * amp * 0.35 + sin(t * freq + phase) * amp, w)
     let y = wrap(y0 + sin(angle) * amp * 0.35 + cos(t * freq * 0.72 + phase) * amp * 0.62, h)
     return (x, y)
-  }
-
-  private static func star(_ context: GraphicsContext, _ x: Double, _ y: Double,
-                           _ radius: Double, _ rgb: UInt32, _ alpha: Double) {
-    var mark = context
-    mark.translateBy(x: x, y: y)
-    let r = radius
-    var path = Path()
-    path.move(to: CGPoint(x: 0, y: -r))
-    path.addQuadCurve(to: CGPoint(x: r, y: 0), control: CGPoint(x: r * 0.15, y: -r * 0.15))
-    path.addQuadCurve(to: CGPoint(x: 0, y: r), control: CGPoint(x: r * 0.15, y: r * 0.15))
-    path.addQuadCurve(to: CGPoint(x: -r, y: 0), control: CGPoint(x: -r * 0.15, y: r * 0.15))
-    path.addQuadCurve(to: CGPoint(x: 0, y: -r), control: CGPoint(x: -r * 0.15, y: -r * 0.15))
-    mark.fill(path, with: .color(color(rgb, alpha)))
-  }
-
-  private static func petalMark(_ context: GraphicsContext, _ x: Double, _ y: Double,
-                                _ size: Double, _ rot: Double, _ rgb: UInt32,
-                                _ alpha: Double, _ alpha2: Double) {
-    var mark = context
-    mark.translateBy(x: x, y: y)
-    mark.rotate(by: .radians(rot))
-    let w = size * 0.7
-    let h = size * 0.32
-    mark.fill(Path(ellipseIn: CGRect(x: -w - size * 0.15, y: -h, width: w * 2, height: h * 2)),
-              with: .color(color(rgb, alpha)))
-    mark.fill(Path(ellipseIn: CGRect(x: -w + size * 0.15, y: -h, width: w * 2, height: h * 2)),
-              with: .color(color(rgb, alpha2)))
   }
 }
 

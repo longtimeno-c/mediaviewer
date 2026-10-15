@@ -245,8 +245,8 @@ hold.
 - A batch metadata engine.
 - Validating C2PA signatures online.
 - Inferring AI generation from pixels.
-- Switching the AI index's date terms from file modified time to date taken. `taken_at` makes that
-  possible, but it is its own change.
+- ~~Switching the AI index's date terms from file modified time to date taken.~~ Done in #404
+  (2026-10-15): date terms use `taken_at`, the mtime only for a file with none.
 
 ## 5. Open calls for the owner
 

@@ -41,7 +41,7 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
 endif()
 
 project(mediaviewer
-  VERSION 0.1.29
+  VERSION 0.1.30
   DESCRIPTION "Media viewer for a real camera dump"
   LANGUAGES CXX)
 
@@ -544,7 +544,7 @@ target_link_directories(mv_player PRIVATE ${FFMPEG_LIBRARY_DIRS})
 target_link_libraries(mv_player
   PUBLIC mv_core mv_gfx
   PRIVATE mv_codec mv_io ${FFMPEG_LIBRARIES}
-          mfplat mfuuid ole32 uuid avrt ksuser)
+          mfplat mfuuid ole32 uuid avrt ksuser winmm)
 add_library(mv::player ALIAS mv_player)
 
 # ---------------------------------------------------------------------------
@@ -752,6 +752,12 @@ target_include_directories(copybench PRIVATE src)
 add_executable(ai-bench tools/ai-bench/main.cpp)
 target_link_libraries(ai-bench PRIVATE mv_addon mv_addon_media mv_io mv_core mv_project_options)
 target_include_directories(ai-bench PRIVATE src src/abi/include)
+
+# mv_abi_layout: the native layout of the structs C# mirrors by hand, for the
+# ABI smoke test to compare with (tools/abi-layout). Headers only.
+add_executable(mv_abi_layout tools/abi-layout/main.cpp)
+target_link_libraries(mv_abi_layout PRIVATE mv_project_options)
+target_include_directories(mv_abi_layout PRIVATE src/abi/include)
 
 # ---------------------------------------------------------------------------
 # mv_canvas — pan/zoom springs (docs/design/03)
@@ -1120,6 +1126,8 @@ if(MV_BUILD_TESTS)
     # Issue #344: the offline reverse geocoder (docs/design/06 "Place").
     tests/test_geo.cpp
     tests/test_meta_search.cpp
+    # #406: a clip's chapter titles and text subtitle cues for Local search.
+    tests/test_meta_cues.cpp
     # Issue #344 slice 3: the Places add-on's map, Place section and search.
     tests/test_places.cpp
     # PR 12: the metadata writer, and the host-shared write queue.
@@ -1384,6 +1392,8 @@ if(MV_BUILD_TESTS)
     tests/test_ai_infer.cpp
     tests/test_ai_audio.cpp
     tests/test_ai_query.cpp
+    # #403: the OS text reader over a labelled set (hidden: [.ocr-fixture]).
+    tests/test_ai_ocr.cpp
     tests/test_nle.cpp
   )
   target_link_libraries(mv_ai_tests PRIVATE mv_ai_engine mv_infer mv_nle mv_addon mv_addon_media mv_io

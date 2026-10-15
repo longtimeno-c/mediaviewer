@@ -22,6 +22,10 @@ internal static class BuiltinThemes
 
     internal static bool Moves(string effect) => effect != "dots" && effect != "none";
 
+    // The effect's number for the native empty window (issue #408): its index
+    // here, which is shell::home_effect's order (src/shell/home_theme.h).
+    internal static int EffectIndex(string effect) => Math.Max(0, Array.IndexOf(Effects, effect));
+
     private static readonly string[] Tokens =
         { "canvas", "surface", "title", "body", "disabled", "hairline", "accent" };
 

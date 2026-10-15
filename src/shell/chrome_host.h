@@ -85,8 +85,11 @@ enum chrome_command : int {
   // PR 13. The island drained MV_COMPLETION_CLIP_INDEX (the island owns the
   // drain); arg is the request id, which native reads with mv_clip_index_get.
   chrome_cmd_clip_index = 1015,
-  // Appearance only: WinUI sends the system window colour as an exact
-  // 24-bit integer carried by float (all integers up to 2^24 are exact).
+  // Appearance only: WinUI sends the theme's canvas token (Default: the
+  // system window colour) as an exact 24-bit integer carried by float (all
+  // integers up to 2^24 are exact). Issue #408: it is the clear on every
+  // screen, and it comes last: it publishes the tokens sent before it
+  // (chrome_cmd_home_surface .. home_effect_size), which only store.
   chrome_cmd_home_colour = 1016,
   // Issue #38: arg != 0 while the transport is held open by something the
   // host cannot see from the canvas -- a scrub drag, the More flyout, a
@@ -158,6 +161,25 @@ enum chrome_command : int {
   // and the anchor is still selected, copy, F7/F8, Delete, copy path, Share and
   // drag-out act on the range.
   chrome_cmd_gallery_range = 1036,
+  // Issue #408: the rest of the theme the native empty window draws with,
+  // sent by RefreshTheme before chrome_cmd_home_colour. Tokens are 0xRRGGBB
+  // in the float, as home_colour. home_effect: arg is a shell::home_effect
+  // (0 none); then its ink (0xRRGGBB) and an intensity, a speed and a size in
+  // 0.01 .. 1. 1070 up, clear of the next free numbers other branches take.
+  chrome_cmd_home_surface = 1070,
+  chrome_cmd_home_title = 1071,
+  chrome_cmd_home_body = 1072,
+  chrome_cmd_home_hairline = 1073,
+  chrome_cmd_home_accent = 1074,
+  chrome_cmd_home_effect = 1075,
+  chrome_cmd_home_effect_rgb = 1076,
+  chrome_cmd_home_effect_intensity = 1077,
+  chrome_cmd_home_effect_speed = 1078,
+  chrome_cmd_home_effect_size = 1079,
+  // The pointer moved or a key went down over an island (the bar, a pane):
+  // the empty window's ground restarts its clock (input_snapshot::pointer_seq).
+  // The chrome sends it a few times a second at most; no frame by itself.
+  chrome_cmd_home_ground_input = 1080,
 };
 
 // chrome_cmd_video_loop's argument. The C# side mirrors it.

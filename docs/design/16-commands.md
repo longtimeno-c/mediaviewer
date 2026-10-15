@@ -105,7 +105,7 @@ Resolved from state at every keydown (`resolve_mode`), never kept on a stack, in
 | **runner** | The empty-window game is up | `Space` jumps/retries, `3` toggles 2D/3D |
 | **loupe** | `Z` held | Layers over browse/video: only arrows (nudge) and `Z` / `\` differ |
 | **slideshow** | Slideshow running | |
-| **skim** | A clip that is playing, or with the filmstrip hidden (`T`) | Layers over **video**: only `←` `→` differ — they skip ±2 s like `Q` / `E` (issue #361) |
+| **skim** | A clip with the filmstrip hidden (`T`), paused or playing | Layers over **video**: only `←` `→` differ — they skip ±2 s like `Q` / `E` (issue #416; #361's playing half reversed) |
 | **video** | Current item is a clip or an animation | |
 | **browse** | Otherwise | |
 
@@ -177,7 +177,7 @@ crop. Keys are shown Windows-style; on macOS read `⌘` for `Ctrl`.
 
 | Key | Modes | Command |
 |---|---|---|
-| `←` `→` | Walk, gallery | Previous / next (repeat). On a clip that is playing, or with the filmstrip hidden, they are `Q` / `E` instead (skim mode, below); paused with the strip up they walk |
+| `←` `→` | Walk, gallery | Previous / next (repeat). On a clip with the filmstrip hidden (`T`) they are `Q` / `E` instead (skim mode, below); with the strip up they walk, paused or playing |
 | `A` `D` | All but crop | Previous / next — on a clip too; transport is `Q` `E` |
 | `Backspace` | Walk | Previous |
 | `Space` | browse | Next. On a clip or animation: play / pause; in a slideshow: pause; in the runner: jump |
@@ -220,7 +220,6 @@ crop. Keys are shown Windows-style; on macOS read `⌘` for `Ctrl`.
 | `W` `S`, `↑` `↓` | gallery | Previous / next row |
 | `Enter` | gallery | Open the selection in the viewer (leaving fullscreen / slideshow, restoring the filmstrip if enabled) |
 | `T` | all | Filmstrip show / hide (stored per mode: folder open or single image) |
-| `B` | Viewing | Cycle background: black / gray / white / checkerboard |
 | `S` | browse, video, island | Sticky zoom on advance |
 | `C` | Viewing | Clipping blinkies |
 | `O` | Viewing | On-canvas info overlay (filename, index, exposure triangle) |
@@ -239,8 +238,9 @@ it reads "Press T to hide the filmstrip and scroll" (the wheel zooms until the s
 shows when such a document comes on screen, when the wheel zooms one, and after "Page n of m" on a
 page turn; like any notice it fades after three seconds. Once `T` has hidden the strip over a
 document it never shows again (Windows `settings.ini` `[hints] filmstrip_t`, Mac
-`mv.hint.filmstripT`). There is one hint: another subject (a paused clip, issue #361) is a
-`strip_hint_subject` value and a string beside it, sharing the learned flag.
+`mv.hint.filmstripT`). There is one hint: another subject (a clip whose arrows walk with the strip
+up and skip with it hidden, issue #416) is a `strip_hint_subject` value and a string beside it,
+sharing the learned flag.
 
 **Gallery.** Full-client grid of the folder. `A` `D` / `←` `→` move by item, `W` `S` / `↑` `↓`
 by row; a click opens in the viewer. Child folders are big tiles when the folder holds only
@@ -379,7 +379,7 @@ works regardless. To see only the keepers, or one colour, use View ▸ Show's cu
 | `Space` | video | Play / pause |
 | tap `Q` / `E` | video | Skip −2 s / +2 s, exact, on the down edge |
 | hold `Q` / `E` | video | Skim ∓2 s per repeat with non-exact (keyframe) seeks; release settles exactly. Intent accumulates across the burst |
-| tap / hold `←` `→` | skim | The same skip and skim as `Q` / `E`, while the clip plays or the filmstrip is hidden (issue #361). Paused with the strip showing they walk the folder; `T` hides the strip so they skip. `A` / `D` walk in every case. A hold that started as a skim stays one until key-up, even if the clip pauses or ends under it |
+| tap / hold `←` `→` | skim | The same skip and skim as `Q` / `E`, only while the filmstrip is hidden (issue #416). With the strip showing they walk the folder, paused or playing; `T` hides the strip so they skip. `A` / `D` walk in every case. A hold keeps what it started as until key-up: a skim stays a skim if `T` shows the strip under it, a walk stays a walk if `T` hides it |
 | `Shift+Q` / `Shift+E` | video | Playback speed one rung down / up: 0.25 / 0.5 / 1 / 1.5 / 2 / 4. The transport strip's speed menu (`1x`) is a view of this; native owns the rate |
 | `J` `K` `L` | video | −10 s / pause / +10 s |
 | `,` `.` | video | Frame step (also on animations) |
@@ -521,7 +521,7 @@ presents ([rendering](03-rendering.md)). Toggles request one redraw.
 | Hold-previous (hold `\`) | The five-slot LRU; no second session |
 | Clipping blinkies (`C`) | Shader; may present while on (it animates), labelled in F3 |
 | Pixel grid (≥ 400 %) | Shader |
-| Canvas background / checkerboard (`B`) | Clear colour + optional shader |
+| Around the picture (no key) | The theme's `canvas` token as the clear and in the blit; there is no canvas background of its own (issue #408, [12](12-decision-log.md)) |
 | On-canvas info (`O`) | Overlay text from the folder model and metadata already read |
 | AF-point quads (`Shift+O`) | A few quads from maker notes already in the property model |
 | Eyedropper (`Shift+I`) | One-pixel staging readback on demand, never a full-texture download |

@@ -19,7 +19,7 @@ namespace {
 
 key_event down(key k, std::uint8_t mods = mod_none) { return {k, mods, false, false}; }
 key_event rep(key k, std::uint8_t mods = mod_none) { return {k, mods, true, false}; }
-key_event up(key k) { return {k, mod_none, false, true}; }
+key_event up(key k, std::uint8_t mods = mod_none) { return {k, mods, false, true}; }
 
 view_state still() {
   view_state s;
@@ -38,6 +38,13 @@ view_state clip() {
 TEST_CASE("no two bindings share a key, modifiers and mode", "[shell][commands]") {
   std::set<std::tuple<int, int, int>> seen;
   for (const auto& b : default_bindings()) {
+    // Issue #408: the retired `B` keeps a placeholder row (saved rebinds name
+    // rows by index), with no key and no mode, so it can never route.
+    if (is_retired_command(static_cast<int>(b.command))) {
+      REQUIRE(b.k == key::none);
+      REQUIRE(b.modes == 0);
+      continue;
+    }
     REQUIRE(b.modes != 0);
     REQUIRE(b.command != command_id::none);
     // PR 7: Open RAW / Open JPEG ship listed but unbound (docs/design/04, docs/design/16);
@@ -112,6 +119,17 @@ TEST_CASE("the PR 3-5 island command ids keep their wire values", "[shell][comma
   REQUIRE(static_cast<int>(command_id::help) == 75);
   REQUIRE(static_cast<int>(command_id::reveal_in_explorer) == 80);
   REQUIRE(static_cast<int>(command_id::open_settings) == 84);
+}
+
+TEST_CASE("B no longer cycles a canvas background", "[shell][commands]") {
+  // Issue #408: every screen is the theme's background; there is nothing to cycle.
+  key_router r;
+  for (const mode m : {mode::browse, mode::video}) {
+    const binding* b = r.lookup(char_key('B'), mod_none, m);
+    REQUIRE((b == nullptr || !is_retired_command(static_cast<int>(b->command))));
+  }
+  REQUIRE(find_command(command_id::retired_background) != nullptr);
+  REQUIRE(find_command(command_id::retired_background)->keyless);
 }
 
 TEST_CASE("number row is zoom, never rating", "[shell][commands]") {
@@ -618,46 +636,53 @@ TEST_CASE("Q/E: a tap skips, a hold skims and settles on release", "[shell][rout
   REQUIRE_FALSE(r.on_key(up(q), s).handled);
 }
 
-TEST_CASE("issue #361: on a clip, arrows skip while it plays or the strip is hidden",
+TEST_CASE("issue #416: on a clip, arrows skip only while the filmstrip is hidden",
           "[shell][router][skim]") {
   key_router r;
-  // Paused, filmstrip visible: the arrows walk the folder.
-  view_state paused = clip();
-  paused.filmstrip_visible = true;
-  paused.clip_playing = false;
-  REQUIRE(resolve_mode(paused) == mode::video);
-  REQUIRE(r.on_key(down(key::left), paused).command == command_id::prev);
-  REQUIRE(r.on_key(down(key::right), paused).command == command_id::next);
-  REQUIRE(r.on_key(rep(key::right), paused).command == command_id::next);  // still repeats
+  // Filmstrip visible: the arrows walk the folder, paused or playing (the
+  // router no longer knows about play state: issue #361 made a playing clip
+  // skim with the strip up, which #416 reversed).
+  view_state shown = clip();
+  shown.filmstrip_visible = true;
+  REQUIRE(resolve_mode(shown) == mode::video);
+  REQUIRE(r.on_key(down(key::left), shown).command == command_id::prev);
+  REQUIRE(r.on_key(up(key::left), shown).command == command_id::none);
+  REQUIRE_FALSE(r.on_key(up(key::left), shown).handled);  // no second up owed
+  REQUIRE(r.on_key(down(key::right), shown).command == command_id::next);
+  REQUIRE(r.on_key(rep(key::right), shown).command == command_id::next);  // still repeats
+  REQUIRE(r.on_key(up(key::right), shown).command == command_id::none);
+  // Q / E skip and A / D walk with the strip up too.
+  REQUIRE(r.on_key(down(char_key('Q')), shown).command == command_id::skim_back);
+  REQUIRE(r.on_key(up(char_key('Q')), shown).command == command_id::none);
+  REQUIRE(r.on_key(down(char_key('E')), shown).command == command_id::skim_forward);
+  REQUIRE(r.on_key(rep(char_key('E')), shown).command == command_id::skim_forward);
+  REQUIRE(r.on_key(up(char_key('E')), shown).command == command_id::skim_settle);
+  REQUIRE(r.on_key(down(char_key('A')), shown).command == command_id::prev);
+  REQUIRE(r.on_key(down(char_key('D')), shown).command == command_id::next);
 
-  view_state playing = paused;
-  playing.clip_playing = true;
-  view_state hidden = paused;
+  // Filmstrip hidden (T): the arrows are Q / E.
+  view_state hidden = shown;
   hidden.filmstrip_visible = false;
-  view_state both = playing;
-  both.filmstrip_visible = false;
-  for (const view_state& s : {playing, hidden, both}) {
-    REQUIRE(resolve_mode(s) == mode::skim);
-    // A tap is the exact ±2 s skip on the down edge, nothing on key-up.
-    REQUIRE(r.on_key(down(key::left), s).command == command_id::skim_back);
-    REQUIRE(r.on_key(up(key::left), s).command == command_id::none);
-    // A hold skims per repeat and settles on release, as Q / E do.
-    REQUIRE(r.on_key(down(key::right), s).command == command_id::skim_forward);
-    REQUIRE(r.on_key(rep(key::right), s).command == command_id::skim_forward);
-    REQUIRE(r.on_key(rep(key::right), s).command == command_id::skim_forward);
-    REQUIRE(r.on_key(up(key::right), s).command == command_id::skim_settle);
-    // A / D still walk; Q / E, J / L, Space, Shift+arrows and ↑ ↓ are unchanged.
-    REQUIRE(r.on_key(down(char_key('A')), s).command == command_id::prev);
-    REQUIRE(r.on_key(down(char_key('D')), s).command == command_id::next);
-    REQUIRE(r.on_key(down(char_key('Q')), s).command == command_id::skim_back);
-    REQUIRE(r.on_key(up(char_key('Q')), s).command == command_id::none);
-    REQUIRE(r.on_key(down(char_key('L')), s).command == command_id::jump_forward);
-    REQUIRE(r.on_key(down(char_key('J')), s).command == command_id::jump_back);
-    REQUIRE(r.on_key(down(key::space), s).command == command_id::play_pause);
-    REQUIRE(r.on_key(down(key::left, mod_shift), s).command == command_id::pan_left);
-    REQUIRE(r.on_key(down(key::up), s).command == command_id::pan_up);
-    REQUIRE(r.on_key(down(key::left, mod_ctrl), s).command == command_id::folder_prev);
-  }
+  REQUIRE(resolve_mode(hidden) == mode::skim);
+  // A tap is the exact ±2 s skip on the down edge, nothing on key-up.
+  REQUIRE(r.on_key(down(key::left), hidden).command == command_id::skim_back);
+  REQUIRE(r.on_key(up(key::left), hidden).command == command_id::none);
+  // A hold skims per repeat and settles on release, as Q / E do.
+  REQUIRE(r.on_key(down(key::right), hidden).command == command_id::skim_forward);
+  REQUIRE(r.on_key(rep(key::right), hidden).command == command_id::skim_forward);
+  REQUIRE(r.on_key(rep(key::right), hidden).command == command_id::skim_forward);
+  REQUIRE(r.on_key(up(key::right), hidden).command == command_id::skim_settle);
+  // A / D still walk; Q / E, J / L, Space, Shift+arrows and ↑ ↓ are unchanged.
+  REQUIRE(r.on_key(down(char_key('A')), hidden).command == command_id::prev);
+  REQUIRE(r.on_key(down(char_key('D')), hidden).command == command_id::next);
+  REQUIRE(r.on_key(down(char_key('Q')), hidden).command == command_id::skim_back);
+  REQUIRE(r.on_key(up(char_key('Q')), hidden).command == command_id::none);
+  REQUIRE(r.on_key(down(char_key('L')), hidden).command == command_id::jump_forward);
+  REQUIRE(r.on_key(down(char_key('J')), hidden).command == command_id::jump_back);
+  REQUIRE(r.on_key(down(key::space), hidden).command == command_id::play_pause);
+  REQUIRE(r.on_key(down(key::left, mod_shift), hidden).command == command_id::pan_left);
+  REQUIRE(r.on_key(down(key::up), hidden).command == command_id::pan_up);
+  REQUIRE(r.on_key(down(key::left, mod_ctrl), hidden).command == command_id::folder_prev);
 
   // A still walks whether or not the strip is up (there is nothing to skip),
   // and so does an animation.
@@ -665,37 +690,76 @@ TEST_CASE("issue #361: on a clip, arrows skip while it plays or the strip is hid
   still_hidden.filmstrip_visible = false;
   REQUIRE(resolve_mode(still_hidden) == mode::browse);
   REQUIRE(r.on_key(down(key::right), still_hidden).command == command_id::next);
+  REQUIRE(r.on_key(up(key::right), still_hidden).command == command_id::none);
   view_state anim = hidden;
   anim.item = item_kind::animation;
   REQUIRE(r.on_key(down(key::right), anim).command == command_id::next);
+  REQUIRE(r.on_key(up(key::right), anim).command == command_id::none);
 
   // Loupe, trim, slideshow and the strip keep the arrows they had.
-  view_state loupe = both;
+  view_state loupe = hidden;
   loupe.loupe_held = true;
   REQUIRE(r.on_key(down(key::left), loupe).command == command_id::loupe_nudge_left);
   REQUIRE(r.on_key(down(char_key('J')), loupe).command == command_id::jump_back);
-  view_state trim = both;
+  view_state trim = hidden;
   trim.trim = true;
   REQUIRE(resolve_mode(trim) == mode::trim);
   REQUIRE(r.on_key(down(key::right), trim).command == command_id::next);
-  view_state show = both;
+  REQUIRE(r.on_key(up(key::right), trim).command == command_id::none);
+  view_state show = hidden;
   show.slideshow = true;
   REQUIRE(r.on_key(down(key::right), show).command == command_id::next);
-  view_state strip = playing;
+  REQUIRE(r.on_key(up(key::right), show).command == command_id::none);
+  view_state strip = shown;
   strip.focus = focus_kind::filmstrip;
   REQUIRE(resolve_mode(strip) == mode::island);
-
-  // A hold that started as a skim stays a skim if the clip pauses or ends
-  // under it: the repeat never turns into a walk, the release still settles.
-  REQUIRE(r.on_key(down(key::right), playing).command == command_id::skim_forward);
-  REQUIRE(r.on_key(rep(key::right), playing).command == command_id::skim_forward);
-  REQUIRE(r.on_key(rep(key::right), paused).command == command_id::skim_forward);
-  REQUIRE(r.on_key(up(key::right), paused).command == command_id::skim_settle);
-  // After the key-up the paused clip walks again.
-  REQUIRE(r.on_key(down(key::right), paused).command == command_id::next);
 }
 
-TEST_CASE("issue #361: `?` and Settings list the arrows' skim rows", "[shell][commands][skim]") {
+TEST_CASE("issue #416: a hold keeps the command it started with when T toggles the strip",
+          "[shell][router][skim]") {
+  key_router r;
+  view_state shown = clip();
+  shown.filmstrip_visible = true;
+  view_state hidden = shown;
+  hidden.filmstrip_visible = false;
+
+  // A hold that started as a skim stays a skim if the strip comes back under
+  // it: the repeat never turns into a walk, the release still settles.
+  REQUIRE(r.on_key(down(key::right), hidden).command == command_id::skim_forward);
+  REQUIRE(r.on_key(rep(key::right), hidden).command == command_id::skim_forward);
+  REQUIRE(r.on_key(rep(key::right), shown).command == command_id::skim_forward);
+  REQUIRE(r.on_key(up(key::right), shown).command == command_id::skim_settle);
+  // After the key-up the strip-up clip walks again.
+  REQUIRE(r.on_key(down(key::right), shown).command == command_id::next);
+  REQUIRE(r.on_key(up(key::right), shown).command == command_id::none);
+
+  // A hold that started as a walk stays a walk if the strip hides under it:
+  // the repeat never turns into a skip, and the release owes no settle.
+  REQUIRE(r.on_key(down(key::left), shown).command == command_id::prev);
+  REQUIRE(r.on_key(rep(key::left), shown).command == command_id::prev);
+  REQUIRE(r.on_key(rep(key::left), hidden).command == command_id::prev);
+  const route up_walk = r.on_key(up(key::left), hidden);
+  REQUIRE(up_walk.command == command_id::none);
+  REQUIRE_FALSE(up_walk.handled);
+  // After the key-up the strip-less clip skips again.
+  REQUIRE(r.on_key(down(key::left), hidden).command == command_id::skim_back);
+  REQUIRE(r.on_key(up(key::left), hidden).command == command_id::none);
+
+  // A pinned walk owes nothing when the host cancels every hold (focus loss),
+  // and a skim mid-hold still owes its settle.
+  REQUIRE(r.on_key(down(key::right), shown).command == command_id::next);
+  REQUIRE(r.on_key(rep(key::right), shown).command == command_id::next);
+  REQUIRE(r.on_key(down(char_key('E')), shown).command == command_id::skim_forward);
+  REQUIRE(r.on_key(rep(char_key('E')), shown).command == command_id::skim_forward);
+  std::array<command_id, 4> released{};
+  REQUIRE(r.cancel_holds(released) == 1);
+  REQUIRE(released[0] == command_id::skim_settle);
+  // Both keys are released: a fresh down routes through the mode again.
+  REQUIRE(r.on_key(down(key::right), hidden).command == command_id::skim_forward);
+  REQUIRE(r.on_key(up(key::right), hidden).command == command_id::none);
+}
+
+TEST_CASE("issue #361 / #416: `?` and Settings list the arrows' skim rows", "[shell][commands][skim]") {
   key_router r;
   REQUIRE(r.lookup(key::left, mod_none, mode::skim)->command == command_id::skim_back);
   REQUIRE(r.lookup(key::right, mod_none, mode::skim)->command == command_id::skim_forward);
@@ -1446,8 +1510,12 @@ TEST_CASE("issue #182: menu chords follow the live table and its crop mask", "[s
 
 namespace {
 
+// A tap: the down's command, with the key released again so a later event on
+// the same key starts fresh (a hold pins its command until key-up, #416).
 command_id routed(key_router& r, key k, std::uint8_t mods, const view_state& s) {
-  return r.on_key(down(k, mods), s).command;
+  const command_id c = r.on_key(down(k, mods), s).command;
+  (void)r.on_key(up(k, mods), s);
+  return c;
 }
 
 view_state trimming() {

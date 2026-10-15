@@ -28,6 +28,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <memory>
 #include <mutex>
@@ -160,7 +161,7 @@ static bool MvCommandSupported(mv::shell::command_id c) {
     case toggle_mark: case mark_all: case unmark_all: case copy_to: case copy_to_pick:
     case move_to: case move_to_pick: case delete_to_recycle_bin: case slideshow_start:
     case slideshow_pause: case slideshow_faster: case slideshow_slower: case help:
-    case reveal_in_explorer: case open_settings: case cycle_background: case sticky_zoom:
+    case reveal_in_explorer: case open_settings: case sticky_zoom:
     case reset_stats: case always_on_top: case close_window: case new_window: case pan_up: case pan_down:
     case folder_up: case folder_prev: case folder_next:
     // Issue #183: the View keys, the loupe, hold-previous and the slideshow's
@@ -566,11 +567,15 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 - (void)runMenuCmd:(NSInteger)cmd;
 - (void)syncHomeAppearance;
 - (void)commandsChanged;
-- (void)setThemeCanvasActive:(BOOL)active
-                     hasDark:(BOOL)hasDark
-                        dark:(uint32_t)dark
-                    hasLight:(BOOL)hasLight
-                       light:(uint32_t)light;
+- (void)setHomeThemeActive:(BOOL)active
+                       dark:(const mv_home_palette*)dark
+                      light:(const mv_home_palette*)light
+                     effect:(int)effect
+                  effectRgb:(uint32_t)effectRgb
+                  intensity:(float)intensity
+                      speed:(float)speed
+                       size:(float)size;
+- (void)pointerActivity;
 
 // One key router, one command table (docs/design/16), shared with Windows. Keys are
 // translated to `mv::shell::key` at the edge (MvKeyFromEvent) and routed; the
@@ -836,16 +841,62 @@ void MvAppCommandsChanged() {
 extern "C" bool mv_chrome_settings_visible(void) {
   return g_chrome_app ? [g_chrome_app settingsVisible] == YES : false;
 }
-// docs/design/25: a theme's canvas colour stands in for the window's where the
-// viewer draws its own "System" background (the welcome screen, the letterbox).
-extern "C" void mv_chrome_set_theme_canvas(bool active, bool has_dark, uint32_t dark_rgb,
-                                           bool has_light, uint32_t light_rgb) {
-  if (!g_chrome_app) return;
-  [g_chrome_app setThemeCanvasActive:active ? YES : NO
-                             hasDark:has_dark ? YES : NO
-                                dark:dark_rgb
-                            hasLight:has_light ? YES : NO
-                               light:light_rgb];
+// Issue #408: the chrome's theme for the native empty window and the clear
+// on every screen. There is no canvas background of its own.
+// The chrome paints its theme while the window is still being built, before
+// g_chrome_app is set, so the latest call is kept here and applied when the
+// app registers (mvApplyParkedHomeTheme). Main thread only.
+namespace {
+struct parked_home_theme {
+  bool set = false;
+  bool active = false;
+  bool has_dark = false;
+  bool has_light = false;
+  mv_home_palette dark{};
+  mv_home_palette light{};
+  int effect = 0;
+  uint32_t effect_rgb = 0;
+  float intensity = 1.0f;
+  float speed = 1.0f;
+  float size = 1.0f;
+};
+parked_home_theme g_parked_home_theme;
+}  // namespace
+
+static void mvApplyParkedHomeTheme() {
+  const parked_home_theme& p = g_parked_home_theme;
+  if (!g_chrome_app || !p.set) return;
+  [g_chrome_app setHomeThemeActive:p.active ? YES : NO
+                              dark:p.has_dark ? &p.dark : nullptr
+                             light:p.has_light ? &p.light : nullptr
+                            effect:p.effect
+                         effectRgb:p.effect_rgb
+                         intensity:p.intensity
+                             speed:p.speed
+                              size:p.size];
+}
+
+extern "C" void mv_chrome_ground_input(void) {
+  if (g_chrome_app) [g_chrome_app pointerActivity];
+}
+
+extern "C" void mv_chrome_set_home_theme(bool active, const mv_home_palette* dark,
+                                         const mv_home_palette* light, const char* effect,
+                                         uint32_t effect_rgb, float intensity, float speed,
+                                         float size) {
+  parked_home_theme& p = g_parked_home_theme;
+  p.set = true;
+  p.active = active;
+  p.has_dark = dark != nullptr;
+  p.has_light = light != nullptr;
+  if (dark) p.dark = *dark;
+  if (light) p.light = *light;
+  p.effect = mv::shell::home_effect_from_name(effect);
+  p.effect_rgb = effect_rgb;
+  p.intensity = intensity;
+  p.speed = speed;
+  p.size = size;
+  mvApplyParkedHomeTheme();
 }
 extern "C" int32_t mv_chrome_view_flags(void) {
   return g_chrome_app ? [g_chrome_app viewFlags] : 0;
@@ -2188,6 +2239,8 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   // Issue #38: movement (and entry, which arrives as a move) wakes the clip's
   // transport. A bool test and nothing else when no clip is on screen.
   if (self.app) [self.app transportActivity];
+  // Issue #408: the home's ground effect rests five seconds after the pointer.
+  if (self.app) [self.app pointerActivity];
 }
 - (void)mouseDragged:(NSEvent*)event {
   [self mouseMoved:event];
@@ -2420,12 +2473,23 @@ static void MvAdoptNewDefaultViewerTypes() {
   // rows of the live table that differ from the defaults.
   mv::shell::key_router _router;
   BOOL _settingsVisible;
-  // docs/design/25: the theme's canvas colours, when a theme is on.
-  BOOL _themeCanvasActive;
+  // docs/design/25, issue #408: the theme's palettes and ground, when a theme
+  // is on; otherwise syncHomeAppearance resolves AppKit's colours.
+  BOOL _themeActive;
   BOOL _themeHasDark;
   BOOL _themeHasLight;
-  uint32_t _themeDarkRgb;
-  uint32_t _themeLightRgb;
+  mv_home_palette _themeDark;
+  mv_home_palette _themeLight;
+  mv::shell::home_effect _themeEffect;
+  uint32_t _themeEffectRgb;
+  float _themeIntensity;
+  float _themeSpeed;
+  float _themeSize;
+  // The ground's rest rule needs to hear the pointer, at most a few times a
+  // second (input_snapshot::pointer_seq).
+  CFTimeInterval _lastPointerBump;
+  id _reduceMotionObserver;
+  id _systemColoursObserver;
 
   // Issue #38: the clip transport's idle state (shell/transport_autohide.h, the
   // same rule Windows runs). One one-shot timer at most, only while a clip
@@ -2556,6 +2620,9 @@ static void MvAdoptNewDefaultViewerTypes() {
   std::uint64_t _photosResolveSeq;
   NSTimer* _photosFetchTimer;
   std::shared_ptr<std::atomic<bool>> _photosFetchCancel;
+  // A library listing is on a worker: a second Open Photos Library waits for it
+  // rather than starting another (#420).
+  BOOL _photosListing;
   // docs/design/26 "Backup": the one run, on its own thread; whether its end has
   // been written to the defaults (the "last backup" line).
   std::unique_ptr<mv::shell::backup::engine> _photosBackup;
@@ -3070,6 +3137,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   g_chrome_snap = &_snap;
   g_chrome_lab = &_lab;
   g_chrome_app = self;
+  mvApplyParkedHomeTheme();  // issue #408: the chrome's first paint came before this
   [self scheduleChromeCrashTest];
   [self scheduleEditSelfTest];
   [self scheduleAddonSelfTest];
@@ -3913,50 +3981,115 @@ static void MvAdoptNewDefaultViewerTypes() {
   [self editorTickResume];
 }
 
-- (void)setThemeCanvasActive:(BOOL)active
-                     hasDark:(BOOL)hasDark
-                        dark:(uint32_t)dark
-                    hasLight:(BOOL)hasLight
-                       light:(uint32_t)light {
-  _themeCanvasActive = active && (hasDark || hasLight);
-  _themeHasDark = hasDark;
-  _themeHasLight = hasLight;
-  _themeDarkRgb = dark & 0xFFFFFFu;
-  _themeLightRgb = light & 0xFFFFFFu;
+- (void)setHomeThemeActive:(BOOL)active
+                       dark:(const mv_home_palette*)dark
+                      light:(const mv_home_palette*)light
+                     effect:(int)effect
+                  effectRgb:(uint32_t)effectRgb
+                  intensity:(float)intensity
+                      speed:(float)speed
+                       size:(float)size {
+  _themeActive = active && (dark != nullptr || light != nullptr);
+  _themeHasDark = dark != nullptr;
+  _themeHasLight = light != nullptr;
+  if (dark) _themeDark = *dark;
+  if (light) _themeLight = *light;
+  // An add-on theme has no ground; neither has Default or increased contrast.
+  const bool known = effect >= 0 && effect < static_cast<int>(mv::shell::home_effect::count);
+  _themeEffect = _themeActive && known ? static_cast<mv::shell::home_effect>(effect)
+                                       : mv::shell::home_effect::none;
+  _themeEffectRgb = effectRgb & 0xFFFFFFu;
+  const auto unit = [](float v) { return v > 0.0f && v <= 1.0f ? v : 1.0f; };
+  _themeIntensity = unit(intensity);
+  _themeSpeed = unit(speed);
+  _themeSize = unit(size);
   [self syncHomeAppearance];
 }
 
+// The ground's five seconds restart on a pointer move. Rate-limited: a bump
+// wakes the render thread, which only notes the time (no frame).
+- (void)pointerActivity {
+  const CFTimeInterval now = CACurrentMediaTime();
+  if (now - _lastPointerBump < 0.5) return;
+  _lastPointerBump = now;
+  ++_snap.pointer_seq;
+  [self.view publish];
+  _lab.wake();
+}
+
 - (void)syncHomeAppearance {
-  // AppKit resolves the semantic colour for this window's effective appearance.
+  // AppKit resolves the semantic colours for this window's effective appearance.
   // Do this on the UI thread; the Metal thread reads only the POD snapshot.
   if (!self.view.window) return;
-  if (_themeCanvasActive) {
+  if (!_reduceMotionObserver) {
+    __weak MvLabApp* weakSelf = self;
+    _reduceMotionObserver = [[NSWorkspace sharedWorkspace].notificationCenter
+        addObserverForName:NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification
+                    object:nil
+                     queue:NSOperationQueue.mainQueue
+                usingBlock:^(NSNotification*) { [weakSelf syncHomeAppearance]; }];
+    // Default's accent is the system's: follow a change made in System Settings.
+    _systemColoursObserver = [NSNotificationCenter.defaultCenter
+        addObserverForName:NSSystemColorsDidChangeNotification
+                    object:nil
+                     queue:NSOperationQueue.mainQueue
+                usingBlock:^(NSNotification*) { [weakSelf syncHomeAppearance]; }];
+  }
+  mv::shell::home_theme home;
+  if (_themeActive) {
     // A theme with one palette keeps the chrome in that appearance, so the
     // palette it has is the one in use.
     NSAppearanceName match = [self.view.effectiveAppearance
         bestMatchFromAppearancesWithNames:@[ NSAppearanceNameAqua, NSAppearanceNameDarkAqua ]];
     const bool dark = [match isEqualToString:NSAppearanceNameDarkAqua];
-    const std::uint32_t themed = (dark && _themeHasDark) || !_themeHasLight ? _themeDarkRgb
-                                                                            : _themeLightRgb;
-    if (_snap.home_background_rgb == themed) return;
-    _snap.home_background_rgb = themed;
-    [self publish];
-    return;
+    const mv_home_palette& p = (dark && _themeHasDark) || !_themeHasLight ? _themeDark : _themeLight;
+    home.canvas = p.canvas;
+    home.surface = p.surface;
+    home.title = p.title;
+    home.body = p.body;
+    home.hairline = p.hairline;
+    home.accent = p.accent;
+    home.effect = _themeEffect;
+    home.effect_rgb = _themeEffectRgb;
+    home.intensity = _themeIntensity;
+    home.speed = _themeSpeed;
+    home.size = _themeSize;
+  } else {
+    // Default (and increased contrast): the chrome's own tokens are AppKit's
+    // semantic colours (Theme.swift MVTheme), resolved here the same way. A
+    // dynamic colour resolves against the current drawing appearance, so
+    // convert it while this view's appearance is current (macOS 11+).
+    const auto rgba = [](NSColor* c) -> std::uint32_t {
+      if (!c) return 0;
+      const auto component = [](CGFloat value) -> std::uint32_t {
+        return static_cast<std::uint32_t>(
+            std::lround(std::clamp(static_cast<double>(value), 0.0, 1.0) * 255.0));
+      };
+      return (component(c.redComponent) << 24) | (component(c.greenComponent) << 16) |
+             (component(c.blueComponent) << 8) | component(c.alphaComponent);
+    };
+    std::array<std::uint32_t, 6> resolved{};
+    std::array<std::uint32_t, 6>* const out = &resolved;  // a block cannot capture a C array
+    [self.view.effectiveAppearance performAsCurrentDrawingAppearance:^{
+      NSColor* const colours[6] = {NSColor.windowBackgroundColor, NSColor.controlBackgroundColor,
+                                   NSColor.labelColor, NSColor.secondaryLabelColor,
+                                   NSColor.separatorColor, NSColor.controlAccentColor};
+      for (std::size_t i = 0; i < 6; ++i)
+        (*out)[i] = rgba([colours[i] colorUsingColorSpace:NSColorSpace.sRGBColorSpace]);
+    }];
+    const std::array<std::uint32_t, 6>& t = resolved;
+    if (t[0] == 0) return;
+    home.canvas = t[0] | 0xFFu;  // the clear is opaque
+    home.surface = t[1];
+    home.title = t[2];
+    home.body = t[3];
+    home.hairline = t[4];
+    home.accent = t[5];
   }
-  // A dynamic colour resolves against the current drawing appearance, so
-  // convert it while this view's appearance is current (macOS 11+).
-  __block NSColor* c = nil;
-  [self.view.effectiveAppearance performAsCurrentDrawingAppearance:^{
-    c = [[NSColor windowBackgroundColor] colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
-  }];
-  if (!c) return;
-  const auto component = [](CGFloat value) -> std::uint32_t {
-    return static_cast<std::uint32_t>(std::lround(std::clamp(static_cast<double>(value), 0.0, 1.0) * 255.0));
-  };
-  const std::uint32_t rgb = (component(c.redComponent) << 16) |
-                            (component(c.greenComponent) << 8) | component(c.blueComponent);
-  if (_snap.home_background_rgb == rgb) return;
-  _snap.home_background_rgb = rgb;
+  const bool reduce = NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
+  if (_snap.home == home && _snap.reduce_motion == reduce) return;
+  _snap.home = home;
+  _snap.reduce_motion = reduce;
   [self publish];
 }
 
@@ -6045,12 +6178,9 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   s.pane_open = _metaPaneVisible || _treeVisible || _adjust.visible() || _jobsVisible || _ws.open;
   s.crop = _edits.crop_active();
   s.trim = _trim.armed() && s.item == mv::shell::item_kind::clip;
-  // Issue #361: on a clip, ← → skip ±2 s while it plays or with the strip hidden.
+  // Issue #416: on a clip, ← → skip ±2 s only with the strip hidden (T);
+  // playing or paused is not a mode.
   s.filmstrip_visible = [self filmstripVisible];
-  if (s.item == mv::shell::item_kind::clip) {
-    const auto st = _lab.video_status_snapshot();
-    s.clip_playing = st.active && st.playing;
-  }
   // Milestone H: Esc from a result list is the path bar's "Back to folder".
   s.list_open = _listOpen;
   return s;
@@ -6343,12 +6473,6 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
       [[NSWorkspace sharedWorkspace] activateFileViewerSelectingURLs:@[ [NSURL fileURLWithPath:path] ]];
       return YES;
     }
-    case cycle_background:
-      [self setViewFlags:(_viewFlags & ~mv::shell::kSettingBackgroundMask) |
-                         ((((_viewFlags & mv::shell::kSettingBackgroundMask) >>
-                            mv::shell::kSettingBackgroundShift) + 1) % 5)
-                             << mv::shell::kSettingBackgroundShift];
-      return YES;
     case sticky_zoom: [self setViewFlags:_viewFlags ^ mv::shell::kSettingStickyZoom]; return YES;
     // Clip / animation transport. Space, K and `,` `.` reach the render thread as
     // latched counters (input_snapshot), like pan and zoom.
@@ -7991,7 +8115,7 @@ static std::string MvSelfTestPageSummary(const char* addon) {
   [png writeToFile:[dir stringByAppendingPathComponent:[name stringByAppendingString:@".png"]] atomically:YES];
   NSString* state = [MVChromeHost addonSelfTest:@"state" argument:@""];
   [self editSelfTestLine:[NSString stringWithFormat:@"%@ settings=%d home_rgb=%06x %@\n", name,
-                                                    _settingsVisible ? 1 : 0, _snap.home_background_rgb, state]
+                                                    _settingsVisible ? 1 : 0, _snap.home.canvas >> 8, state]
                      dir:dir];
 }
 
@@ -9200,7 +9324,17 @@ static std::string MvBadgeKey(const mv::io::dir_entry& e) {
                                                    }];
 }
 
+// A notice for work in flight: no timer, it stays until its owner clears it
+// (noticeClear) or another notice replaces it. Opening the Photos library (#420).
+- (void)noticeShowUntilCleared:(const std::string&)text {
+  [_noticeTimer invalidate];
+  _noticeTimer = nil;
+  _noticeText = text;
+  ++_noticeGeneration;
+}
+
 - (void)noticeClear {
+  [_noticeTimer invalidate];
   _noticeTimer = nil;
   _noticeText.clear();
   ++_noticeGeneration;
@@ -9411,11 +9545,31 @@ static std::string MvBadgeKey(const mv::io::dir_entry& e) {
     _listNames.push_back(e.name_utf8 + " \u2014 " + mv::shell::browse_path::leaf(parent));
   }
   // Still equal (same name in two folders of the same name): the full path is
-  // unique, so every name falls back to it.
+  // unique, so every file's name falls back to it. A library item's path is
+  // its photos: key, which is no name to show: two shots in the same minute
+  // are numbered instead (a 23 k-asset library always has a pair, so every
+  // caption was a key, #420).
   std::vector<std::string> check = _listNames;
   std::sort(check.begin(), check.end());
   if (std::adjacent_find(check.begin(), check.end()) != check.end()) {
-    for (std::size_t i = 0; i < _items.size(); ++i) _listNames[i] = _items[i].path_utf8;
+    std::unordered_map<std::string, int> count;
+    for (const auto& n : _listNames) ++count[n];
+    std::unordered_map<std::string, int> seen;
+    bool files_collide = false;
+    for (std::size_t i = 0; i < _items.size(); ++i) {
+      std::string& n = _listNames[i];
+      if (count[n] < 2) continue;
+      if (!mv::shell::photos::is_key(_items[i].path_utf8)) {
+        files_collide = true;
+        continue;
+      }
+      if (const int k = ++seen[n]; k > 1) n += " (" + std::to_string(k) + ")";
+    }
+    if (files_collide) {
+      for (std::size_t i = 0; i < _items.size(); ++i) {
+        if (!mv::shell::photos::is_key(_items[i].path_utf8)) _listNames[i] = _items[i].path_utf8;
+      }
+    }
   }
 }
 
@@ -9621,18 +9775,30 @@ static std::string MvBadgeKey(const mv::io::dir_entry& e) {
 }
 
 // The whole library, oldest first, as a list of virtual items; the newest
-// selected, in the gallery (what Photos lands on). Enumeration is PhotoKit
-// on a worker: a second on a 23 k-asset library (docs/design/17 measured 0.9 s).
+// selected, in the gallery (what Photos lands on). Enumeration is PhotoKit on
+// a worker, names from the fetched assets (no per-asset resource lookup: that
+// took minutes, #420); "photos: listed N assets in M ms" in the unified log.
+// A notice says it is opening and stays until the listing ends; one listing
+// at a time.
 - (void)openPhotosLibrary {
   if (![self photosLibraryAvailable]) {
     NSBeep();
     return;
   }
+  if (_photosListing) return;  // the listing in flight opens the list
+  _photosListing = YES;
+  static const std::string kOpening = "Opening the Photos library…";
+  [self noticeShowUntilCleared:kOpening];
   MvLabApp* __weak weakSelf = self;
   _jobs.submit_at(mv::background_generation, [weakSelf](const mv::job_context&) -> mv::status {
     auto listed = mv::shell::photos::enumerate();
     if (!listed) {
       dispatch_async(dispatch_get_main_queue(), ^{
+        MvLabApp* strongSelf = weakSelf;
+        if (strongSelf) {
+          strongSelf->_photosListing = NO;
+          if ([strongSelf noticeText] == kOpening) [strongSelf noticeClear];
+        }
         NSBeep();
       });
       return listed.error();
@@ -9651,6 +9817,8 @@ static std::string MvBadgeKey(const mv::io::dir_entry& e) {
     dispatch_async(dispatch_get_main_queue(), ^{
       MvLabApp* strongSelf = weakSelf;
       if (!strongSelf) return;
+      strongSelf->_photosListing = NO;
+      if ([strongSelf noticeText] == kOpening) [strongSelf noticeClear];
       if (entries->empty()) {
         [strongSelf noticeShow:"Your Photos library has no photos or videos MediaViewer can show."];
         return;
@@ -10384,13 +10552,12 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
 }
 - (int32_t)viewFlags { return _viewFlags; }
 
-// The view settings that reach native state: wrap (browse_index), background
-// and sticky zoom (input_snapshot, read by the render thread). The two filmstrip
+// The view settings that reach native state: wrap (browse_index) and sticky
+// zoom (input_snapshot, read by the render thread). The two filmstrip
 // preferences are applied when something is opened.
 - (void)applyViewFlags {
   const auto s = mv::shell::view_settings::from_flags(_viewFlags);
   _index.set_wrap(s.wrap);
-  _snap.background = s.background;
   _snap.sticky_zoom = s.sticky_zoom;
   [self pokeSnapshot];
 }
@@ -10458,7 +10625,6 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   // launch, and the next input publishes the snapshot anyway).
   const auto prefs = mv::shell::view_settings::from_flags(_viewFlags);
   _index.set_wrap(prefs.wrap);
-  _snap.background = prefs.background;
   _snap.sticky_zoom = prefs.sticky_zoom;
 }
 

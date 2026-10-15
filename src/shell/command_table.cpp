@@ -93,7 +93,10 @@ constexpr binding kBindings[] = {
     row(C('R'), mod_none, kViewing, edge, reset_stats),
     row(C('G'), mod_none, kNotCrop, edge, toggle_gallery),
     row(C('T'), mod_none, kAllModes, edge, toggle_filmstrip),
-    row(C('B'), mod_none, kViewing, edge, cycle_background),
+    // Issue #408: `B` cycled a canvas background, which is gone. The row stays,
+    // keyless and in no mode, because saved rebinds name rows by index (Windows
+    // settings.ini [keys], the Mac's mv.keys): never routed, never listed.
+    row(key::none, mod_none, 0, edge, retired_background),
     row(C('S'), mod_none, kBrowse | kVideo | kIsland, edge, sticky_zoom),
     row(C('C'), mod_none, kViewing, edge, clipping),
     row(C('O'), mod_none, kViewing, edge, info_overlay),
@@ -310,10 +313,10 @@ constexpr binding kBindings[] = {
     row(C('8'), mod_ctrl | mod_shift, kViewing, edge, label_green),
     row(C('9'), mod_ctrl | mod_shift, kViewing, edge, label_blue),
     row(C('U'), mod_none, kBrowse | kVideo, edge, clear_label),
-    // Issue #361. Appended so every row above keeps its Settings index. On a
-    // clip that is playing, or with the filmstrip hidden, ← → are Q / E
-    // (mode::skim layers over video). Paused with the strip up they walk the
-    // folder (kWalk, first rows); A / D walk it in every case.
+    // Issue #416 (was #361). Appended so every row above keeps its Settings
+    // index. On a clip with the filmstrip hidden (T), ← → are Q / E
+    // (mode::skim layers over video), playing or paused. With the strip up
+    // they walk the folder (kWalk, first rows); A / D walk it in every case.
     row(key::left, mod_none, kSkim, tap_hold, skim_back, skim_back, skim_settle),
     row(key::right, mod_none, kSkim, tap_hold, skim_forward, skim_forward, skim_settle),
 };
@@ -365,7 +368,9 @@ constexpr command_info kCommands[] = {
     {gallery_smaller, "Gallery: smaller thumbnails"},
     {fill, "Fill"},
     {reset_view, "Reset view"},
-    {cycle_background, "Canvas background"},
+    // Issue #408: no canvas background; every screen is the theme's. Kept,
+    // keyless, so every later command keeps its wire value.
+    {retired_background, "Canvas background (retired)", true},
     {sticky_zoom, "Sticky zoom"},
     {clipping, "Clipping"},
     {loupe, "Loupe"},

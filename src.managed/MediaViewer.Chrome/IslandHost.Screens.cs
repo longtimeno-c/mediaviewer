@@ -34,7 +34,11 @@ public static partial class IslandHost
 {
     private readonly record struct ScreenAt(string Addon, string Screen);
 
-    private static readonly FontFamily SymbolFont = new("Segoe Fluent Icons,Segoe MDL2 Assets");
+    // Lazy, like IconFont: Attach touches IslandHost statics (RegisterUiFont)
+    // before EnsureApp starts XAML, and a FontFamily built then throws
+    // RPC_E_WRONG_THREAD from the type initializer, so no island attaches.
+    private static FontFamily? _symbolFont;
+    private static FontFamily SymbolFont => _symbolFont ??= new("Segoe Fluent Icons,Segoe MDL2 Assets");
 
     /// <summary>The host's glyph for a contribution's symbol (contrib.h kSymbols).</summary>
     private static string SlotGlyph(string symbol) => symbol switch

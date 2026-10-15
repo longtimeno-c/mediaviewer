@@ -26,8 +26,7 @@ struct blit_params_mac {
   float opacity = 1.0f;
   float origin_x = 0.0f;
   float origin_y = 0.0f;
-  // 0 system, 1 grey, 2 white, 3 checkerboard, 4 dark — same as blit_params.
-  int background = 0;
+  // The theme's canvas token, linear RGB — same as blit_params (issue #408).
   float theme_background[3] = {0.016f, 0.018f, 0.024f};
   bool clipping = false;
   float time_seconds = 0.0f;
@@ -45,16 +44,6 @@ struct blit_params_mac {
   float adjust0[4] = {1.0f, 1.0f, 1.0f, 1.0f};
   float adjust1[4] = {1.0f, 0.18f, 0.0f, 0.0f};
 };
-
-// Linear clear colour for fixed backgrounds — mode 0 comes from the host.
-[[nodiscard]] constexpr float background_clear_mac(int background) noexcept {
-  switch (background) {
-    case 1: return 0.214f;
-    case 2: return 1.0f;
-    case 3: return 0.527f;
-    default: return 0.018f;
-  }
-}
 
 class blitter_mac {
  public:

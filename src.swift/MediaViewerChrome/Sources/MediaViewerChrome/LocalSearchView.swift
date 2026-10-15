@@ -217,7 +217,14 @@ final class LocalSearchStore: ObservableObject {
       default: return "Indexing paused"
       }
     }
-    // Pictures first; then the Sound piece's clips (sounds, then speech).
+    // Pictures first; then the clips' own text and the text in pictures;
+    // then the Sound piece's clips (sounds, then speech): the pack's order.
+    if s.assets_done >= s.assets_total, s.cues_done < s.cues_total {
+      return "Reading chapters and subtitles \(count(s.cues_done)) of \(count(s.cues_total)) clips"
+    }
+    if s.assets_done >= s.assets_total, s.text_done < s.text_total {
+      return "Reading text in pictures \(count(s.text_done)) of \(count(s.text_total))"
+    }
     if s.assets_done >= s.assets_total, s.sound_done < s.sound_total {
       return "Indexing sound \(count(s.sound_done)) of \(count(s.sound_total)) clips"
     }

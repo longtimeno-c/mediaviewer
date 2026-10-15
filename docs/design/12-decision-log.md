@@ -383,7 +383,18 @@ from any codec. Forced through it, ProRes 422 played at 55 frames/s.
 **Arrows on a playing or strip-less clip (2026-10-12, issue #361).** `←` `→` are `Q` / `E` while the clip plays or the filmstrip is hidden (mode `skim`, layered over video);
 paused with the strip up they still walk, since that is when the strip is being used to pick.
 `A` / `D` walk in every case. A hold keeps its command until key-up, so a clip that ends
-mid-skim cannot turn the next repeat into a walk.
+mid-skim cannot turn the next repeat into a walk. *(The playing half reversed 2026-10-15, below.)*
+
+**Arrows skip only with the filmstrip hidden (2026-10-15, owner; issue #416).** Reverses the
+playing half of #361: with the carousel on screen `←` `→` move to the previous / next item on a
+clip, paused or playing, and never skip. Only `T` (strip hidden) makes them `Q` / `E` (mode `skim`):
+a tap is the exact ±2 s seek, a hold skims, release settles. The strip being visible is the one
+rule, so the router no longer carries a play-state bit. `Q` / `E` still skip, `A` / `D` still walk,
+a still walks either way, `Shift`+arrows pan and `J` / `L` are ±10 s, in every case. A hold keeps
+the command it started with until key-up in both directions: a skim stays a skim if `T` shows the
+strip under it, and a walk stays a walk if `T` hides it (the router now pins a plain repeat row's
+command for the hold, as it already did a tap/hold's; a pinned walk owes nothing on key-up or on
+a focus-loss cancel).
 
 **A transport click does not seek 0 on the way (2026-10-12).** The system slider reports its
 minimum before the time under the pointer. `media_source::seek` publishes that target and arms
@@ -617,6 +628,22 @@ a virtualising `ItemsRepeater`. `input_snapshot` carries `chrome_bottom_px` / `c
 `ShouldConstrainToRootBounds = false` so they are siblings of the swapchain. Decoded pixels never
 go to a XAML `Image`.
 
+**Command bar menus stay visible (2026-10-15).** Open, View, Edit, Settings, About and `?` were
+losing the bar whenever a large change added an Auto-sized neighbour (the folder trail, an import
+hint, an indexing pill, an add-on icon). Those neighbours sat beside a Star column, the Star
+column shrank to nothing, and the new item painted over the menus. The menu cluster is an Auto
+column. The trail is the only column that gives up width, and `?` is its own Auto column on the
+right. New bar items go in the menu row or the trail, not in a new Star column on the left. The
+bar is one 48 DIP row. A star row under it is 0 tall while the island is only the bar, and content
+measured into that row blanks the menus — Settings is an overlay added after the island has grown
+to the client, not a child of a star row.
+
+**No XAML object in an `IslandHost` static initializer (2026-10-15).** From 2026-10-11 the chrome
+did not attach at all — no command bar, gallery or chrome keys. `Attach` touches `IslandHost`
+statics (`RegisterUiFont`) before `EnsureApp` starts XAML, and an eager `SymbolFont` `FontFamily`
+threw `RPC_E_WRONG_THREAD` from the type initializer. XAML statics are lazy (`IconFont`,
+`SymbolFont`), built on first use after XAML is up.
+
 **Tear the chrome down before `DestroyWindow` (2026-09-13).** Chrome-on exits fail-fast about one
 in five (`0xC0000602`, `CoreUIComponents.dll`) when islands were disposed during `WM_DESTROY`.
 In `WM_CLOSE`, while the parent is whole: detach every island, pump pending messages once
@@ -848,6 +875,16 @@ signed version than a working installed one. A hidden file or link beside an add
 not "need an update" when Local search shipped. Fields appended without bumping the version
 (`thumbnail_jpeg`, `thumbnail_store_jpeg`, `recycle_file`) are read only when `struct_size` covers
 them and they are non-NULL.
+
+**The Windows chrome does not pin `mv_ai_status`'s size (2026-10-15, issue #388).** `AiApi` refused
+any pack whose status struct was not exactly the size it was built with. The number was hand-copied
+and went stale (1336 against a 1640-byte struct from 2026-10-05), so the Windows chrome refused every
+pack and Local search "could not start". The struct already carries `struct_size`: the pack fills
+only what the chrome declared, and the chrome zeroes the rest, so an older or newer pack is safe to
+attach. The size check is dropped for `mv_ai_status`. `mv_ai_result` keeps its exact check, because
+it comes back as an array with no `struct_size`, so its size is the stride. Drift is now caught
+in CI: `tools/abi-layout` prints the offset and size of each field as MSVC lays them out, and the
+ABI smoke test compares them, both ways, with the C# mirror.
 
 **Developer key (2026-09-26).** `MV_ADDON_DEV_PUBLIC_KEY` lets a developer build trust a local key
 so a pack can be sideloaded; with it, `MV_DEV_ADDONS_DIR` / `MV_DEV_THUMBS_DIR` keep the run out of
@@ -1135,6 +1172,80 @@ an iCloud original is fetched only when its preview is viewed (400 ms) and delet
 treated like a path (never logged). The base app carries `NSPhotoLibraryUsageDescription` and the
 photos-library entitlement, because TCC attributes the request to the app; access is asked only on
 a click. A full re-enumeration of 23,089 assets takes 0.43 s, so no change tokens.
+
+**Date terms go by the date taken (2026-10-15, #404).** `in:`, `before:`, `after:`, `since:` and
+`until:`, and the newest-first order of a filters-only search, use schema 4's `taken_at` (the
+camera's wall clock read as UTC, the viewer's date-taken sort key, or a Photos item's
+`creationDate`) and fall back to the file's modification time only while an asset has none (no
+EXIF date, or the tag backfill has not reached it). A camera dump copied or synced in 2026 matched
+`in:2026` and not the year it was shot. No timezone conversion: `in:2024-06` is the stamp's own
+calendar month. Nothing is re-embedded and the schema is unchanged; the column was already there.
+**Cost:** during the backfill a file's date can move from its mtime to its date taken, so a date
+query run then may change its answer once.
+
+**Rating, label and exposure are query terms, not words (2026-10-15, #405).** `rating:`,
+`rejected`, `label:`, `iso:`, `f:`, `mm:` and `shutter:` filter on numbers the tag pass already
+reads from the header the Metadata pane's summary comes from, stored in AI index schema 5 and in
+meta_cache.db (`kSearchFactsVersion` 2). They are kept out of the search fields and `asset_text`
+on purpose: a plain "400" matching every ISO 400 frame would bury the picture search. Aperture
+matches within 0.05 stops (f/2.8 written as 2.8 or as APEX's 2.83) and shutter within a sixth of
+a stop (1/250 is not 1/320). The tag bookmark became a level (1 = schema 4's facts, 2 = these),
+so a schema-4 index reads each file's facts once more, embedding nothing. **Cost:** one bounded
+head read per indexed file after the update (the cache rows of version 1 are read again), and a
+rating written to a RAW's sidecar does not reach the AI index until the file's stamp changes.
+
+**A clip's chapters and text subtitles are indexed as exact text (2026-10-15, #406).** Quoted
+words and `said:` match a chapter title or a text subtitle line as they match a Whisper line,
+with the cue's start as the moment and a snippet that names the source ("Chapter: …",
+"Subtitle: …", `MV_AI_MATCH_TEXT`). The host reads cues as packet text through the FFmpeg it
+already links (no subtitle decoder, no new library); they live in their own `cues` table, not
+under the Whisper spec, so removing the audio piece keeps them and a shared index never disagrees
+about what was said. Bitmap subtitles are not OCR'd. **Cost:** one header open per indexed clip
+(after its pictures), and a full demux of the subtitle stream for files that have one (an MKV
+reads its clusters to find the cues), capped at two hours and 8,000 lines.
+
+**The People pass looks at the indexed frames; a Live Photo's motion is indexed (2026-10-15,
+#407).** Re-analyse (and People turned on after the pictures) used to resample a clip on its own
+2 s / 10 s grid from 0, so a face sharp on one kept frame and gone for the next ten seconds was
+never seen; on the owner's library, mostly clip frames, that was the common case. It now decodes
+exactly the `pts_ms` the picture pass kept (the host's frame fetch, no pixels stored), and keeps
+the grid only for a clip with no picture rows. A Live Photo's 1–3 s movie, dropped before, is
+sampled onto the still's id (same sampler, same dedupe, seeded with the still) and a moment opens
+the movie. Not changed: the sampler's 500 ms / 2 s gaps, keyframe-only decode, the dedupe.
+**Cost:** one host frame fetch per stored moment in a People-only pass (a file open and a decode
+from the keyframe each, against one sequential sampler pass before), and a handful of frames per
+Live Photo in the picture pass. An exported index carries no `motion` columns, so the receiver
+samples each Live Photo's movie once more.
+
+**Words in photos are read by the OS and searched as text (2026-10-15, #403, urgent).** "suited
+and booted" found the photo in Apple Photos and not here: CLIP does not read. The pack now asks the
+operating system's own recogniser (Vision on the Mac, Windows.Media.Ocr on Windows; no model, no
+download, nothing sent anywhere) for each photo's text in a background pass after the pictures,
+and stores it as a `cues` row (kind 3) that quoted words, `said:` and plain words match like a
+transcript line. A separate 2,048 px decode rather than the picture pass's 448 px one, because
+sign and shirt text is small: 95 % of 40 labelled phrases on the Mac at 44 ms median a photo.
+**Cost:** one extra decode and an OS read per photo, once; on the owner's 23 k-photo library that
+is about 20–35 minutes of one background worker on an M-series Mac, after the pictures are done.
+Video frames are not read yet.
+
+**The text on clip moments is read too, and the text passes count in the status (2026-10-15,
+#403 follow-up).** A sign or a burned-in caption in a clip is found at its moment: the text pass
+reads the moments the picture pass stored, after that pass is done with the clip, decoding each
+again at 2,048 px. Not the sampler's frames as they go by, because the picture pass decodes at
+448 and must never wait on the OS reader; not every keyframe, because the stored moments are
+already the clip's distinct views, and a sign held in shot over several of them is stored once.
+Its own progress spec (`<reader>/moments`) so the photos already read are not read again, and
+commits every 8 moments so a stop resumes; nothing is embedded. **Cost:** the moment's seek and
+decode, which is most of it, plus the OS read: about 0.2 s a moment on the Mac (180–218 ms median
+over three runs of 72 moments from six of the owner's clips, the read 20–22 ms of it, on a loaded
+machine), once per clip, after its pictures. The cue and text passes now have
+counts in `mv_ai_status` and keep the state from idle: before, the pill said "Up to date" while
+they ran. Those three counts are 14 ms a refresh at 25,000 assets and the refresh runs once a
+second even when idle, so they are cached and counted again only when something can have moved
+them, or every 30 s (about 0.5 ms a second idle). The **Read text in photos** switch (Settings → Local search, both hosts, on by
+default) turns both text passes off. The cue and text counts are appended on `mv_ai_status`
+(1,672 bytes with them) and read only when `struct_size` covers them. `AiApi` still does not
+pin that size (#388); the ABI smoke test compares the C# mirror with the header.
 
 ---
 
@@ -1493,7 +1604,65 @@ so WebAssembly was not taken up. What was decided while building it:
   were integrated (2026-10-12): a binding over the same `settings_values::value_json` the host
   table's `settings_get` reads.
 
+**No canvas background: every screen is the theme's (2026-10-15, issue #408).** Owner call:
+remove the canvas background rather than give it a colour scheme of its own. Settings' "Canvas
+background" row (System, Grey, White, Checkerboard, Dark), `B` and `cycle_background` are gone
+on both hosts. The clear behind the welcome card, behind a still and behind a video, and what
+shows through a transparent pixel, is the theme's `canvas` token, the colour the chrome
+already paints; only the slideshow blackout differs. The welcome card draws with the theme's
+surface, title, body, hairline and accent instead of a grey derived from one RGB, and a
+built-in's ground effect moves behind it on the empty window only (static presents by the
+panes' rest rule, never `live`, so a still stays at 0 presents). Kept, so nothing else moves:
+the command id (`retired_background`, keyless, like the palette's), a key-table row with no key
+and no mode (saved rebinds name rows by index), the constant buffer's float (`unused0`, so the
+HLSL and MSL layouts do not shift), and the thumbnail matte (changing it would re-encode every
+cached thumbnail). View-settings bits 4-6 are read and ignored. The checkerboard is gone with
+it: a transparent image now shows the theme's ground, not a pattern. Two rendering details:
+ImGui draws into the labs' _SRGB targets, which read a vertex colour as linear, so a token is
+decoded first (`home_ink.h`; drawn as is, Midnight's `#161b22` card came out `#555c65`), and a
+translucent token or ground mark is mixed over its known solid ground in sRGB, as the panes
+blend, because linear blending made the rain several times brighter than in the bar
+(`home_over`). On the Mac the chrome paints its theme before the app object exists, so the
+bridge keeps the latest theme and applies it when the app registers.
+
+**The ground effect moves faster, and behind other apps (2026-10-15, owner).** Was: 10 frames a
+second, only while the app was in front and the pointer or a key had moved in the last five
+seconds. The owner found it choppy, and frozen whenever another app was in front, and then
+asked for 60 at least. Now: every display frame in front and in use (60 a second, 120 on
+ProMotion: the home ticks on each pass of a loop the display paces, the panes on the display link
+on the Mac and `CompositionTarget.Rendering` on Windows, since a fixed 60 Hz timer drifts against
+the display. On the Mac the panes' marks are Core Animation layers moved on a thread of their
+own (`ThemeTicker`): publishing the clock to SwiftUI re-laid out and re-rendered each pane on
+every tick, and a main-thread display link woke the main run loop 60 times a second, where every
+pass polls all the chrome stores (`ChromePulse`). Profiled 2026-10-15: the native home's own
+work per frame is a few samples, and it was SwiftUI that cost); 10 a second while the window is visible (behind another app, or in
+front but quiet), for up to a minute after the last input; then rest. Never while hidden,
+minimised or covered, never under Reduce Motion or with Windows animations off. One rule in
+three places (`home_ground_clock`, both chromes' `ThemeMotion`), and the bar's and panes' input
+now reaches the empty window's clock, which only heard the canvas. The app sees no input in
+other apps, so a window left behind another app rests a minute after you leave it; moving for
+ever while visible was the alternative, at a steady cost with nobody using the app. A tick
+behind another app may present (`present_request::ground_tick`); nothing else does. Known gap: the home's
+marks do not line up with the panes' (own seed, own rect, own clock).
+
 ---
+
+## Video at 4K on Windows
+
+**One decode thread on D3D11VA, and a 1 ms timer while a clip plays (2026-10-06).** A 4K 30 fps
+HEVC clip showed ~24 fps on Windows (screen comparison, worst gap 367 ms) while the same clip
+plays at 29.7 decoded frames/s on the Mac. `thread_count = 0` had been set on the claim that
+it "is ignored on the hardware path"; FFmpeg runs frame threads around a D3D11VA hwaccel too, so
+a 16-thread CPU got ~15 frames of start-up latency and contended for the device lock. The
+pipeline's short waits (`reserve_slot`, the demuxer's full queue, FFmpeg's `Sleep(2)` on
+`E_PENDING`) each lasted a 15.6 ms Windows tick. Now: one thread on D3D11VA (VideoToolbox keeps
+auto), and `timeBeginPeriod(1)` held only while a clip is playing, so a still or a paused clip
+keeps the default tick. `--av-soak` reports `decoded`, `stale` and `decoder` so decode rate is
+told apart from selector drops. Measured 2026-10-15 on the RTX 4070 / 5700X3D desktop (18 s
+`--av-soak`, base/new alternated ×3): base was already at rate here (539 presented, 2 dropped),
+new presents 540 with 1 dropped and 545 decoded on `d3d11va`, and the worst poll gap falls from
+~32.7 ms to ~18.6 ms (A/V error p99 ~16–26 ms → ~2 ms on two of three runs). The ~24 fps of the
+screen comparison did not reproduce on this machine; the PR 1 gate and idle are unchanged.
 
 ## Not built
 

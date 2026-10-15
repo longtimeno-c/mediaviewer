@@ -9,12 +9,13 @@
 #import <AVFoundation/AVFoundation.h>
 #import <Foundation/Foundation.h>
 #import <Photos/Photos.h>
+#include <os/log.h>
 
 #include <algorithm>
 #include <chrono>
+#include <mutex>
 #include <unordered_map>
 
-#include "core/trace.h"
 #include "image/thumb.h"
 #include "io/file_port.h"
 
@@ -64,10 +65,81 @@ PHAssetResource* original_resource(PHAsset* a) {
   return rs.firstObject;
 }
 
+// The file name as shot (IMG_0001.HEIC), read from the fetched asset instead
+// of its resources. +[PHAssetResource assetResourcesForAsset:] is one round
+// trip to photolibraryd per asset: 15 minutes over a 24 k library (#420).
+// `originalFilename` is PHAsset's private key-value path; fetched with
+// with_names() it costs nothing more than the walk (23,277 assets: 439-504 ms
+// against 7.4-9.3 s unfetched, 2026-10-15). On those assets it equalled the
+// original resource's name for every one. nil when a system lacks the key:
+// the caller falls back to the resources.
+NSString* kvc_original_filename(PHAsset* a) {
+  @try {
+    id v = [a valueForKey:@"originalFilename"];
+    return [v isKindOfClass:[NSString class]] && [v length] ? (NSString*)v : nil;
+  } @catch (NSException*) {
+    return nil;
+  }
+}
+
+// Fetches the property set that holds originalFilename with the assets, in
+// one query, rather than one per asset when the name is first read. Private
+// (PHFetchOptions' fetchPropertySets); without it the names are still right,
+// only slower.
+PHFetchOptions* with_names(PHFetchOptions* o) {
+  if ([o respondsToSelector:@selector(setFetchPropertySets:)]) {
+    @try {
+      [o setValue:@[ @"PHAssetPropertySetOriginalMetadata" ] forKey:@"fetchPropertySets"];
+    } @catch (NSException*) {
+    }
+  }
+  return o;
+}
+
+// The original's own resource (not an edit's FullSizeRender): the fallback
+// name, the same one originalFilename gives.
+PHAssetResource* shot_resource(PHAsset* a) {
+  NSArray<PHAssetResource*>* rs = [PHAssetResource assetResourcesForAsset:a];
+  const PHAssetResourceType want =
+      a.mediaType == PHAssetMediaTypeVideo ? PHAssetResourceTypeVideo : PHAssetResourceTypePhoto;
+  for (PHAssetResource* r in rs) {
+    if (r.type == want) return r;
+  }
+  return rs.firstObject;
+}
+
+// Names already looked up, by asset and version (an edit in Photos changes
+// the modification date), so a second listing or a search-result list never
+// asks again. Process lifetime; a name is a few dozen bytes.
+struct name_cache {
+  std::mutex mutex;
+  std::unordered_map<std::string, std::pair<std::int64_t, std::string>> by_id;
+};
+
+name_cache& names() {
+  static name_cache c;
+  return c;
+}
+
 std::string base_name(PHAsset* a) {
-  PHAssetResource* r = original_resource(a);
-  const std::string name = r ? utf8(r.originalFilename) : std::string();
-  return name.empty() ? std::string("Photo") : name;
+  NSDate* d = a.modificationDate ?: a.creationDate;
+  const std::int64_t stamp = d ? static_cast<std::int64_t>(d.timeIntervalSince1970 * 1000.0) : 0;
+  std::string id = utf8(a.localIdentifier);
+  {
+    std::lock_guard lock(names().mutex);
+    auto hit = names().by_id.find(id);
+    if (hit != names().by_id.end() && hit->second.first == stamp) return hit->second.second;
+  }
+  std::string name;
+  if (NSString* fast = kvc_original_filename(a)) name = utf8(fast);
+  if (name.empty()) {
+    PHAssetResource* r = shot_resource(a);
+    if (r) name = utf8(r.originalFilename);
+  }
+  if (name.empty()) return std::string("Photo");  // not cached: ask again next time
+  std::lock_guard lock(names().mutex);
+  names().by_id.insert_or_assign(std::move(id), std::make_pair(stamp, name));
+  return name;
 }
 
 item item_of(PHAsset* a) {
@@ -309,7 +381,7 @@ result<std::vector<item>> enumerate() {
   std::vector<item> out;
   @autoreleasepool {
     const double t0 = now_s();
-    PHFetchResult<PHAsset*>* all = [PHAsset fetchAssetsWithOptions:library_options()];
+    PHFetchResult<PHAsset*>* all = [PHAsset fetchAssetsWithOptions:with_names(library_options())];
     out.reserve(static_cast<std::size_t>(all.count));
     std::vector<item>* sink = &out;  // a block captures C++ objects by const copy
     [all enumerateObjectsUsingBlock:^(PHAsset* a, NSUInteger, BOOL*) {
@@ -320,7 +392,12 @@ result<std::vector<item>> enumerate() {
         sink->push_back(item_of(a));
       }
     }];
-    MV_LOG_INFO("photos: listed %zu assets in %.0f ms", out.size(), (now_s() - t0) * 1000.0);
+    // Count and time only, never an identifier (rule 6). MV_LOG_INFO reaches
+    // nothing on the Mac; this shows in Console and `log stream --predicate
+    // 'subsystem == "org.mediaviewer"'`.
+    static os_log_t photos_log = os_log_create("org.mediaviewer", "photos");
+    os_log(photos_log, "photos: listed %{public}zu assets in %{public}.0f ms", out.size(),
+           (now_s() - t0) * 1000.0);
   }
   return out;
 }
@@ -337,7 +414,8 @@ result<std::vector<std::optional<item>>> describe(std::span<const std::string> k
     if (ids.count == 0) return out;
     std::unordered_map<std::string, item> by_key;
     std::unordered_map<std::string, item>* sink = &by_key;
-    PHFetchResult<PHAsset*>* found = [PHAsset fetchAssetsWithLocalIdentifiers:ids options:nil];
+    PHFetchResult<PHAsset*>* found = [PHAsset fetchAssetsWithLocalIdentifiers:ids
+                                                                     options:with_names([[PHFetchOptions alloc] init])];
     [found enumerateObjectsUsingBlock:^(PHAsset* a, NSUInteger, BOOL*) {
       @autoreleasepool {
         if (a.mediaType != PHAssetMediaTypeImage && a.mediaType != PHAssetMediaTypeVideo) return;

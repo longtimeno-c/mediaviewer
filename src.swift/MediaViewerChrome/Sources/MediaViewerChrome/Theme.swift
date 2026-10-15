@@ -109,7 +109,12 @@ struct ThemePalette: Equatable {
     return NSColor(srgbRed: CGFloat((v >> 24) & 0xFF) / 255, green: CGFloat((v >> 16) & 0xFF) / 255,
                    blue: CGFloat((v >> 8) & 0xFF) / 255, alpha: CGFloat(v & 0xFF) / 255)
   }
-  var canvasRGB: UInt32 { (rgba["canvas"] ?? 0) >> 8 }
+  /// The tokens the native empty window draws with (issue #408), 0xRRGGBBAA.
+  var home: mv_home_palette {
+    mv_home_palette(canvas: rgba["canvas"] ?? 0, surface: rgba["surface"] ?? 0,
+                    title: rgba["title"] ?? 0, body: rgba["body"] ?? 0,
+                    hairline: rgba["hairline"] ?? 0, accent: rgba["accent"] ?? 0)
+  }
 }
 
 /// A theme as the core hands it over (src/addon/theme.h theme_to_json).
@@ -305,7 +310,7 @@ final class ThemeStore: ObservableObject {
       MVTheme.density = 1
       MVTheme.typeScale = 1
       NSApp?.appearance = nil
-      mv_chrome_set_theme_canvas(false, false, 0, false, 0)
+      mv_chrome_set_home_theme(false, nil, nil, nil, 0, 1, 1, 1)
       MVChromeTheme.published = MVChromeTheme.defaults()
       generation += 1
       NotificationCenter.default.post(name: MVChromeTheme.didChange, object: nil)
@@ -335,8 +340,19 @@ final class ThemeStore: ObservableObject {
     MVTheme.radiusScale = CGFloat(t.radius)
     MVTheme.density = CGFloat(t.density)
     MVTheme.typeScale = CGFloat(t.typeScale)
-    mv_chrome_set_theme_canvas(true, t.dark != nil, t.dark?.canvasRGB ?? 0,
-                               t.light != nil, t.light?.canvasRGB ?? 0)
+    // Issue #408: the native empty window and the canvas clear take the same
+    // tokens and the built-in's ground; an add-on theme has no ground.
+    var darkHome = t.dark?.home ?? mv_home_palette()
+    var lightHome = t.light?.home ?? mv_home_palette()
+    let ground = BuiltinThemes.item(selection: selection)
+    withUnsafePointer(to: &darkHome) { d in
+      withUnsafePointer(to: &lightHome) { l in
+        mv_chrome_set_home_theme(true, t.dark != nil ? d : nil, t.light != nil ? l : nil,
+                                 ground?.effect ?? "none", ground?.effectRGB ?? 0,
+                                 Float(ground?.intensity ?? 1), Float(ground?.speed ?? 1),
+                                 Float(ground?.size ?? 1))
+      }
+    }
     var published: [String: Any] = ["font": MVTheme.family ?? "CozetteVector",
                                     "radius": t.radius, "density": t.density, "typeScale": t.typeScale]
     for token in ThemePalette.tokens { published[token] = dynamicNS(token) }

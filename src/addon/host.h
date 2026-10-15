@@ -78,6 +78,18 @@ struct host_services {
   // A file's coordinates from the host's metadata read (location_of /
   // locations_in, cached by path + size + mtime). Empty: every file has none.
   location_reader location;
+  // #406: a clip's chapter titles and text subtitle cues (meta/cues.h in both
+  // hosts). Empty leaves the table's read_cues NULL. The visitor returning
+  // false stops the read (status::cancelled).
+  struct cue {
+    std::uint32_t kind = MV_ADDON_CUE_SUBTITLE;
+    std::int64_t start_ms = 0;
+    std::int64_t end_ms = 0;
+    std::string text;
+  };
+  std::function<expected(const std::string& path, std::int64_t start_ms, std::int64_t max_ms, std::uint32_t max_cues,
+                         const std::function<bool(const cue&)>& visit)>
+      read_cues;
   std::string data_dir;         // created by the table
   std::string default_library;  // Pictures\MediaViewer
   // Honour mv_addon_copy_request's fault injection (tests, the verify rig).
