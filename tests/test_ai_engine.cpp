@@ -630,6 +630,7 @@ struct rig {
   // photo: with one worker (four cores) a photo's text can be claimed before
   // the walk has listed a clip, and holding it would starve that clip's pictures.
   std::atomic<bool> hold_text{false};
+  std::atomic<int> text_holding{0};  // reads that waited on hold_text
   std::atomic<bool> hold_cues{false};       // set: read_cues waits
   std::atomic<int> yield_after_clip_reads{-1};  // >= 0: the host asks to yield after that many
   std::unique_ptr<mv::addon::host_table> table;
@@ -892,7 +893,10 @@ struct rig {
     d.text = [this]() -> std::unique_ptr<mv::ai::text_reader> {
       if (!text_available) return nullptr;
       return std::make_unique<fake_text>([this](const mv::ai::rgb_frame& img) {
-        while (hold_text && img.width == 64) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        if (hold_text && img.width == 64) {
+          ++text_holding;
+          while (hold_text) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
         if (img.width != 64) {
           ++text_reads;
           return;
@@ -2543,49 +2547,79 @@ TEST_CASE("text on a clip's moments resumes after the last committed moment (#40
   CHECK(rows[0].second == 3000);
 }
 
-TEST_CASE("the status counts the cue and text passes, never idle while they run (#403, #406)",
-          "[ai][engine][ocr][cues]") {
-  rig r;
-  r.text_available = true;
-  r.hold_text = true;
+// Where a status wait stuck, for the failure that follows.
+static std::string status_dump(const mv_ai_status& s) {
+  std::ostringstream o;
+  o << "state " << s.state << ", yield " << s.yield_reason << ", assets " << s.assets_done << "/" << s.assets_total
+    << " (failed " << s.assets_failed << "), cues " << s.cues_done << "/" << s.cues_total << ", text " << s.text_done
+    << "/" << s.text_total << ", flags " << s.flags;
+  return o.str();
+}
+
+TEST_CASE("the status counts the cue pass, never idle while it runs (#406)", "[ai][engine][cues]") {
+  rig r;  // no OS text reader: only the cue pass is held
   r.hold_cues = true;
   struct release {
     rig& r;
-    ~release() {
-      r.hold_text = false;
-      r.hold_cues = false;
-    }
+    ~release() { r.hold_cues = false; }
   } guard{r};
-  r.file("red_sign.jpg");
+  r.file("red_plain.jpg");
   r.file("clips/birthday_cues.mp4");
   r.start();
   REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
-  // Pictures done, the clip's cues and its moments' text both held.
-  REQUIRE(wait_for(
-      [&] {
-        const mv_ai_status s = r.status();
-        return s.assets_total == 2 && s.assets_done == 2 && r.cue_reads.load() >= 1 && s.cues_total == 1 &&
-               s.text_total >= 1;
-      },
-      kSettleMs));
+  // The clip's cues are being read (after its pictures: claim's order).
+  const bool reading = wait_for([&] { return r.cue_reads.load() >= 1; }, kSettleMs);
+  UNSCOPED_INFO("cue reads " << r.cue_reads.load() << "; " << status_dump(r.status()));
+  REQUIRE(reading);
   std::this_thread::sleep_for(std::chrono::milliseconds(1500));  // a status refresh or two
   {
     const mv_ai_status s = r.status();
+    INFO(status_dump(s));
     CHECK(s.struct_size == sizeof(mv_ai_status));
     CHECK(s.state != MV_AI_STATE_IDLE);
+    CHECK(s.cues_total == 1);
     CHECK(s.cues_done == 0);
-    CHECK(s.text_done < s.text_total);
+    CHECK(s.text_total == 0);  // no reader, no text pass
   }
   CHECK_FALSE(r.eng->wait_idle(200));
   r.hold_cues = false;
-  REQUIRE(wait_for([&] { return r.status().cues_done == 1; }, kSettleMs));
+  REQUIRE(r.idle());
+  const mv_ai_status s = r.status();
+  INFO(status_dump(s));
+  CHECK(s.cues_total == 1);
+  CHECK(s.cues_done == 1);
+}
+
+TEST_CASE("the status counts the text pass, never idle while it runs (#403)", "[ai][engine][ocr]") {
+  rig r;
+  r.text_available = true;
+  r.hold_text = true;  // clip moments only (rig)
+  struct release {
+    rig& r;
+    ~release() { r.hold_text = false; }
+  } guard{r};
+  r.file("red_sign.jpg");
+  r.file("clips/street_sign.mp4");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
+  // A moment of the clip is being read (after its pictures: the `after` spec).
+  const bool reading = wait_for([&] { return r.text_holding.load() >= 1; }, kSettleMs);
+  UNSCOPED_INFO("photo reads " << r.text_reads.load() << "; " << status_dump(r.status()));
+  REQUIRE(reading);
   std::this_thread::sleep_for(std::chrono::milliseconds(1500));
-  CHECK(r.status().state != MV_AI_STATE_IDLE);  // the text is still being read
+  {
+    const mv_ai_status s = r.status();
+    INFO(status_dump(s));
+    CHECK(s.state != MV_AI_STATE_IDLE);
+    CHECK(s.text_total == 2);  // the photo, and the clip whose pictures are done
+    CHECK(s.text_done < s.text_total);
+  }
+  CHECK_FALSE(r.eng->wait_idle(200));
   r.hold_text = false;
   REQUIRE(r.idle());
   const mv_ai_status s = r.status();
-  CHECK(s.cues_done == s.cues_total);
-  CHECK(s.text_total == 2);  // the photo, and the clip's moments
+  INFO(status_dump(s));
+  CHECK(s.text_total == 2);
   CHECK(s.text_done == 2);
 }
 
