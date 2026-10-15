@@ -41,7 +41,7 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
 endif()
 
 project(mediaviewer
-  VERSION 0.1.28
+  VERSION 0.1.29
   DESCRIPTION "Media viewer for a real camera dump"
   LANGUAGES CXX)
 
@@ -342,6 +342,9 @@ add_library(mv_io STATIC
   src/io/verified_copy.h
   src/io/volume.h
   src/io/volume_win.cpp
+  # docs/design/06 "Place": the place database is read in place.
+  src/io/mapped_file.h
+  src/io/mapped_file_win.cpp
 )
 # ole32 + uuid: IFileOperation for the Recycle Bin (PR 6).
 # setupapi + cfgmgr32: the volume port's eject (docs/design/18).
@@ -350,6 +353,7 @@ find_package(blake3 CONFIG REQUIRED)
 target_link_libraries(mv_io PUBLIC mv_core
   PRIVATE shell32 ole32 uuid setupapi cfgmgr32 BLAKE3::blake3)
 add_library(mv::io ALIAS mv_io)
+include("${CMAKE_SOURCE_DIR}/cmake/geo.cmake")
 
 # ---------------------------------------------------------------------------
 # mv_codec — JPEG / PNG / BMP, magic-byte probe (docs/design/04)
@@ -544,6 +548,28 @@ target_link_libraries(mv_player
 add_library(mv::player ALIAS mv_player)
 
 # ---------------------------------------------------------------------------
+# mv_meta_parse -- #290 (docs/design/06 "Beyond Exiv2"): the portable, bounds-checked
+# readers for C2PA / JUMBF, PNG text chunks, raw XMP, ICC and container items, and the
+# generator table. Bytes in, rows out: no Exiv2, no FFmpeg, no platform header (D9),
+# so the libFuzzer harnesses (tools/fuzz/fuzz_meta_*.cpp) link it alone.
+# ---------------------------------------------------------------------------
+add_library(mv_meta_parse STATIC
+  src/meta/parse_common.cpp
+  src/meta/c2pa.cpp
+  src/meta/containers.cpp
+  src/meta/xmp_raw.cpp
+  src/meta/generators.cpp
+  src/meta/probe.cpp
+  src/meta/probe.h
+  src/meta/parse.h
+  src/meta/parse_util.h
+  src/meta/generators.h
+)
+target_link_libraries(mv_meta_parse
+  PUBLIC mv_core
+  PRIVATE mv_codec ZLIB::ZLIB)
+
+# ---------------------------------------------------------------------------
 # mv_meta -- PR 9 metadata read model (docs/design/06). Exiv2 (GPL-2.0, DLL only) for
 # EXIF / IPTC / XMP and maker notes, libavformat for container and per-stream
 # facts. Depends downward only: meta -> {codec, io, core}.
@@ -555,16 +581,26 @@ add_library(mv::player ALIAS mv_player)
 find_package(exiv2 CONFIG REQUIRED)
 add_library(mv_meta STATIC
   src/meta/read.cpp
+  src/meta/probe_file.cpp
+  src/meta/location.cpp
+  src/meta/location.h
   src/meta/still.cpp
   src/meta/carried.cpp
   src/meta/clip.cpp
   src/meta/af.cpp
   src/meta/format.cpp
+  src/meta/location_edit.cpp
   src/meta/tables.cpp
   src/meta/fields.cpp
   src/meta/sidecar.cpp
   src/meta/write.cpp
+  src/meta/search.cpp
+  src/meta/meta_cache.cpp
+  src/meta/tag_index.cpp
   src/meta/write.h
+  src/meta/search.h
+  src/meta/meta_cache.h
+  src/meta/tag_index.h
   src/meta/tables.h
   src/meta/meta.h
   src/meta/af.h
@@ -574,7 +610,7 @@ target_include_directories(mv_meta SYSTEM PRIVATE ${FFMPEG_INCLUDE_DIRS})
 target_link_directories(mv_meta PRIVATE ${FFMPEG_LIBRARY_DIRS})
 target_link_libraries(mv_meta
   PUBLIC mv_core
-  PRIVATE mv_codec mv_io Exiv2::exiv2lib ${FFMPEG_LIBRARIES})
+  PRIVATE mv_meta_parse mv_codec mv_io Exiv2::exiv2lib unofficial::sqlite3::sqlite3 ${FFMPEG_LIBRARIES})
 add_library(mv::meta ALIAS mv_meta)
 
 # ---------------------------------------------------------------------------
@@ -687,6 +723,11 @@ find_package(unofficial-sodium CONFIG REQUIRED)
 set(MV_SQLITE_TARGET unofficial::sqlite3::sqlite3)
 set(MV_SODIUM_TARGET unofficial-sodium::sodium)
 include("${CMAKE_SOURCE_DIR}/cmake/import.cmake")
+# docs/design/25 §9 A (PR 57): Lua and the script runtime.
+include("${CMAKE_SOURCE_DIR}/cmake/script.cmake")
+# The Places add-on (docs/design/27): mv_places.dll in build/addons/places,
+# packed and signed separately; never installed with the app.
+include("${CMAKE_SOURCE_DIR}/cmake/places.cmake")
 
 # Milestone H: host table v2's pixels (src/abi/addon_media.h) over the viewer's
 # still pipeline, the clip sampler and the JPEG-512 cache. In the base app;
@@ -714,6 +755,7 @@ target_include_directories(ai-bench PRIVATE src src/abi/include)
 # ---------------------------------------------------------------------------
 add_library(mv_canvas STATIC
   src/canvas/camera.cpp
+  src/canvas/document_scroll.cpp
   src/canvas/camera.h
   src/canvas/spring.h
   src/canvas/refinement.h
@@ -730,7 +772,10 @@ add_library(mv::canvas ALIAS mv_canvas)
 add_library(mediaviewer_core SHARED
   src/abi/abi.cpp
   src/abi/addon_abi.cpp
+  src/abi/slots_abi.cpp
+  src/abi/script_abi.cpp
   src/abi/crash_export.cpp
+  src/abi/meta_abi.cpp
   src/abi/include/mediaviewer/mediaviewer_crash.h
   src/abi/video_session.h
   src/abi/guard.h
@@ -746,7 +791,7 @@ target_include_directories(mediaviewer_core
   PUBLIC  src/abi/include
   PRIVATE src)
 target_compile_definitions(mediaviewer_core PRIVATE MV_BUILDING_CORE)
-target_link_libraries(mediaviewer_core PRIVATE mv_core mv_image mv_canvas mv_io mv_player mv_meta mv_addon mv_addon_media mv_clip)
+target_link_libraries(mediaviewer_core PRIVATE mv_core mv_image mv_canvas mv_io mv_player mv_meta mv_addon mv_script mv_addon_media mv_clip)
 set_target_properties(mediaviewer_core PROPERTIES OUTPUT_NAME "mediaviewer_core")
 add_library(mv::abi ALIAS mediaviewer_core)
 
@@ -771,6 +816,8 @@ add_executable(mediaviewer_lab WIN32
   src/shell/chrome_host.h
   src/shell/command_table.cpp
   src/shell/commands.h
+  src/shell/keymap.cpp
+  src/shell/keymap.h
   src/shell/key_router.cpp
   src/shell/key_router.h
   src/shell/file_jobs.cpp
@@ -1036,6 +1083,7 @@ if(MV_BUILD_TESTS)
     tests/test_decode.cpp
     tests/test_colour.cpp
     tests/test_camera.cpp
+    tests/test_document_scroll.cpp
     tests/test_abi_image.cpp
     tests/test_upload.cpp
     tests/test_tiles.cpp
@@ -1060,9 +1108,20 @@ if(MV_BUILD_TESTS)
     tests/test_docx.cpp
     # PR 9 (docs/design/12 2026-09-24)
     tests/test_meta.cpp
+    tests/test_meta_provenance.cpp
+    tests/test_meta_bench.cpp
+    tests/test_meta_location.cpp
     tests/test_meta_store.cpp
+    # #345: the canvas's AI badge (setting, evidence text, the store's probe).
+    tests/test_ai_badge.cpp
+    # Issue #344: the offline reverse geocoder (docs/design/06 "Place").
+    tests/test_geo.cpp
+    tests/test_meta_search.cpp
+    # Issue #344 slice 3: the Places add-on's map, Place section and search.
+    tests/test_places.cpp
     # PR 12: the metadata writer, and the host-shared write queue.
     tests/test_meta_write.cpp
+    tests/test_meta_location_edit.cpp
     tests/test_meta_writer_queue.cpp
     src/shell/meta_store.cpp
     src/shell/meta_writer.cpp
@@ -1100,6 +1159,7 @@ if(MV_BUILD_TESTS)
     tests/test_corpus.cpp
     tests/test_key_router.cpp
     tests/test_key_router_review.cpp
+    tests/test_keymap.cpp
     tests/test_collision_name.cpp
     tests/test_rename_stop.cpp
     tests/test_file_ops.cpp
@@ -1130,6 +1190,7 @@ if(MV_BUILD_TESTS)
     tests/test_heif_avif.cpp
     tests/test_animation_session.cpp
     tests/test_navigation.cpp
+    tests/test_gesture.cpp
     tests/test_present_policy.cpp
     tests/test_metal_pacer.cpp
     tests/test_frametime_report.cpp
@@ -1140,6 +1201,7 @@ if(MV_BUILD_TESTS)
     tests/test_decode_variants.cpp
     src/shell/chrome_host.cpp
     src/shell/command_table.cpp
+    src/shell/keymap.cpp
     src/shell/key_router.cpp
     src/shell/file_jobs.cpp
     src/shell/open_request.cpp
@@ -1169,6 +1231,8 @@ if(MV_BUILD_TESTS)
     mv_image
     mv_canvas
     mv_meta
+    mv_meta_parse
+    ZLIB::ZLIB
     mv_edit
     mv_clip
     Exiv2::exiv2lib
@@ -1185,8 +1249,12 @@ if(MV_BUILD_TESTS)
     Catch2::Catch2WithMain
     ole32
     uuid
-    mv_io)
+    mv_io
+    mv_geo_open
+    mv_places_engine)
   target_include_directories(mv_tests PRIVATE src src/abi/include tools)
+  target_compile_definitions(mv_tests PRIVATE MV_GEO_FULL_BLOB="${MV_GEO_BLOB}"
+    MV_GEO_TEST_BLOB="${CMAKE_SOURCE_DIR}/tests/data/geo/places-test.mvgeo")
   # The clip helper with its test hooks (a crash, a hang, a software encoder);
   # the product MediaViewerClipJob.exe is built without them.
   add_executable(mv_clipjob_test tools/clipjob/main.cpp)
@@ -1251,6 +1319,9 @@ if(MV_BUILD_TESTS)
     tests/test_verified_copy.cpp
     tests/test_addon_manifest.cpp
     tests/test_open_addons.cpp
+    tests/test_addon_contributions.cpp
+    tests/test_addon_screens.cpp
+    tests/test_addon_slots.cpp
     tests/test_ai_resume.cpp
     tests/test_import_naming.cpp
     tests/test_import_engine.cpp
@@ -1260,16 +1331,31 @@ if(MV_BUILD_TESTS)
     unofficial-sodium::sodium Catch2::Catch2WithMain)
   target_include_directories(mv_import_tests PRIVATE src tests)
   target_compile_definitions(mv_import_tests PRIVATE
-    MV_IMPORT_MODULE_PATH="$<TARGET_FILE:mv_import>")
+    MV_IMPORT_MODULE_PATH="$<TARGET_FILE:mv_import>"
+    MV_SLOTS_TEST_MODULE_PATH="$<TARGET_FILE:mv_slots_test_addon>")
   if(MV_ADDON_DEV_PUBLIC_KEY)
     # A developer build pins its own key (cmake/import.cmake); CI never sets it.
     target_compile_definitions(mv_import_tests PRIVATE MV_TEST_DEV_ADDON_KEY=1)
   endif()
-  add_dependencies(mv_import_tests mv_import)
+  add_dependencies(mv_import_tests mv_import mv_slots_test_addon)
+  mv_places_addon_tests(mv_import_tests)
   mv_asan_runtime_beside(mv_import_tests)
   catch_discover_tests(mv_import_tests TEST_PREFIX "import_"
     PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT ${MV_TEST_TIMEOUT}
                ENVIRONMENT "TZ=UTC")
+
+  # docs/design/25 §9 A (PR 57): the script sandbox, its limits, and script
+  # add-ons as packages. The same sources run on Linux CI and the Mac.
+  add_executable(mv_script_tests
+    tests/test_script_runtime.cpp
+    tests/test_script_addons.cpp
+  )
+  target_link_libraries(mv_script_tests PRIVATE mv_script mv_lua mv_addon mv_io
+    unofficial-sodium::sodium Catch2::Catch2WithMain)
+  target_include_directories(mv_script_tests PRIVATE src tests)
+  mv_asan_runtime_beside(mv_script_tests)
+  catch_discover_tests(mv_script_tests TEST_PREFIX "script_"
+    PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:" TIMEOUT ${MV_TEST_TIMEOUT})
 
   # docs/design/25: the add-on SDK (tools/addon-sdk) packs, and the app's own reader
   # says what it makes of each package, so the two cannot drift.

@@ -57,7 +57,7 @@ class store {
 
   // Verifies a staged folder (manifest.json + .sig + files) and moves it into
   // place. The folder is consumed either way. A family over its ceiling
-  // (family_ceiling; the AI pack's 3 GB) is refused: status::unsupported_format,
+  // (family_ceiling; the AI pack's 5 GB) is refused: status::unsupported_format,
   // like an add-on that needs a newer app; family_usage says which. An older version than one that
   // is installed and verifies is refused (status::corrupt): no downgrades. Older versions stay until
   // the next start (startup_cleanup): the one replaced may be running. The newest that verifies loads.

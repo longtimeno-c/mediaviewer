@@ -990,18 +990,27 @@ void present_lab::render_thread_main() noexcept {
                               media_width(), media_height(), view.w, view.h);
         redraw = true;
       }
-      // Document scrolling (docs/design/04 "Pages"): screen pixels, consumed
-      // with or without a picture so none banks up for the next one.
+      // Document scrolling (docs/design/04 "Pages") and a touch pan on a
+      // zoomed still or clip (issue #212): screen pixels, consumed with or
+      // without a picture so none banks up for the next one.
       float scroll_x = 0.0f;
       float scroll_y = 0.0f;
-      if (input_cursor_.consume_scroll(snapshot, scroll_x, scroll_y) && current_image_) {
+      if (input_cursor_.consume_scroll(snapshot, scroll_x, scroll_y) &&
+          (current_image_ || current_video_.texture)) {
         const auto view = usable_canvas(snapshot);
         camera_.pan_by_screen(scroll_x, scroll_y, media_width(), media_height(), view.w, view.h);
+        redraw = true;
+      }
+      // A trackpad's: the view follows at once (canvas/document_scroll.h).
+      if (input_cursor_.consume_scroll_direct(snapshot, scroll_x, scroll_y) && current_image_) {
+        const auto view = usable_canvas(snapshot);
+        camera_.scroll_direct(scroll_x, scroll_y, media_width(), media_height(), view.w, view.h);
         redraw = true;
       }
       scroll_edges_.store(current_image_ ? camera_.vertical_edges(media_height(), usable_canvas(snapshot).h)
                                          : canvas::camera::kEdgeTop | canvas::camera::kEdgeBottom,
                           std::memory_order_relaxed);
+      page_land_ack_.store(seen_page_land_seq_, std::memory_order_release);
       // The UI thread reads this to let ↑ ↓ fall through at fit (docs/design/16:
       // they pan only when zoomed). Lock-free; the UI never waits on it.
       view_fitted_.store(!(current_image_ || current_video_.texture) || camera_.fit_mode(),

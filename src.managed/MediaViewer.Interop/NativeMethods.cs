@@ -143,6 +143,16 @@ internal static partial class NativeMethods
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial MvStatus mv_folder_close(MvSessionHandle session);
 
+    // 0.28 (#291): tag search over the open folder; a lookup in memory.
+    [LibraryImport(Library, StringMarshalling = StringMarshalling.Utf8)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial MvStatus mv_folder_tag_search(MvSessionHandle session, string query, IntPtr utf8,
+                                                          uint cap, out uint outBytes);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial MvStatus mv_folder_tag_generation(MvSessionHandle session, out ulong generation);
+
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial MvStatus mv_folder_directory(MvSessionHandle session, IntPtr utf8,

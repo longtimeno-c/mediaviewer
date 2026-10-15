@@ -385,6 +385,7 @@ public static partial class IslandHost
         // Issue #224: the island covers the canvas's WM_DROPFILES.
         WireFileDrop(root);
         RenderEditInPlace();
+        ThemeField.Lay(root);
         return root;
     }
 

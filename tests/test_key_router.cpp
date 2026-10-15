@@ -9,6 +9,7 @@
 #include <tuple>
 #include <vector>
 
+#include "core/json.h"
 #include "shell/commands.h"
 #include "shell/key_router.h"
 
@@ -615,6 +616,104 @@ TEST_CASE("Q/E: a tap skips, a hold skims and settles on release", "[shell][rout
   command_id released[key_router::kHeldSlots]{};
   REQUIRE(r.cancel_holds(released) == 0);  // an unfinished tap owes nothing
   REQUIRE_FALSE(r.on_key(up(q), s).handled);
+}
+
+TEST_CASE("issue #361: on a clip, arrows skip while it plays or the strip is hidden",
+          "[shell][router][skim]") {
+  key_router r;
+  // Paused, filmstrip visible: the arrows walk the folder.
+  view_state paused = clip();
+  paused.filmstrip_visible = true;
+  paused.clip_playing = false;
+  REQUIRE(resolve_mode(paused) == mode::video);
+  REQUIRE(r.on_key(down(key::left), paused).command == command_id::prev);
+  REQUIRE(r.on_key(down(key::right), paused).command == command_id::next);
+  REQUIRE(r.on_key(rep(key::right), paused).command == command_id::next);  // still repeats
+
+  view_state playing = paused;
+  playing.clip_playing = true;
+  view_state hidden = paused;
+  hidden.filmstrip_visible = false;
+  view_state both = playing;
+  both.filmstrip_visible = false;
+  for (const view_state& s : {playing, hidden, both}) {
+    REQUIRE(resolve_mode(s) == mode::skim);
+    // A tap is the exact ±2 s skip on the down edge, nothing on key-up.
+    REQUIRE(r.on_key(down(key::left), s).command == command_id::skim_back);
+    REQUIRE(r.on_key(up(key::left), s).command == command_id::none);
+    // A hold skims per repeat and settles on release, as Q / E do.
+    REQUIRE(r.on_key(down(key::right), s).command == command_id::skim_forward);
+    REQUIRE(r.on_key(rep(key::right), s).command == command_id::skim_forward);
+    REQUIRE(r.on_key(rep(key::right), s).command == command_id::skim_forward);
+    REQUIRE(r.on_key(up(key::right), s).command == command_id::skim_settle);
+    // A / D still walk; Q / E, J / L, Space, Shift+arrows and ↑ ↓ are unchanged.
+    REQUIRE(r.on_key(down(char_key('A')), s).command == command_id::prev);
+    REQUIRE(r.on_key(down(char_key('D')), s).command == command_id::next);
+    REQUIRE(r.on_key(down(char_key('Q')), s).command == command_id::skim_back);
+    REQUIRE(r.on_key(up(char_key('Q')), s).command == command_id::none);
+    REQUIRE(r.on_key(down(char_key('L')), s).command == command_id::jump_forward);
+    REQUIRE(r.on_key(down(char_key('J')), s).command == command_id::jump_back);
+    REQUIRE(r.on_key(down(key::space), s).command == command_id::play_pause);
+    REQUIRE(r.on_key(down(key::left, mod_shift), s).command == command_id::pan_left);
+    REQUIRE(r.on_key(down(key::up), s).command == command_id::pan_up);
+    REQUIRE(r.on_key(down(key::left, mod_ctrl), s).command == command_id::folder_prev);
+  }
+
+  // A still walks whether or not the strip is up (there is nothing to skip),
+  // and so does an animation.
+  view_state still_hidden = still();
+  still_hidden.filmstrip_visible = false;
+  REQUIRE(resolve_mode(still_hidden) == mode::browse);
+  REQUIRE(r.on_key(down(key::right), still_hidden).command == command_id::next);
+  view_state anim = hidden;
+  anim.item = item_kind::animation;
+  REQUIRE(r.on_key(down(key::right), anim).command == command_id::next);
+
+  // Loupe, trim, slideshow and the strip keep the arrows they had.
+  view_state loupe = both;
+  loupe.loupe_held = true;
+  REQUIRE(r.on_key(down(key::left), loupe).command == command_id::loupe_nudge_left);
+  REQUIRE(r.on_key(down(char_key('J')), loupe).command == command_id::jump_back);
+  view_state trim = both;
+  trim.trim = true;
+  REQUIRE(resolve_mode(trim) == mode::trim);
+  REQUIRE(r.on_key(down(key::right), trim).command == command_id::next);
+  view_state show = both;
+  show.slideshow = true;
+  REQUIRE(r.on_key(down(key::right), show).command == command_id::next);
+  view_state strip = playing;
+  strip.focus = focus_kind::filmstrip;
+  REQUIRE(resolve_mode(strip) == mode::island);
+
+  // A hold that started as a skim stays a skim if the clip pauses or ends
+  // under it: the repeat never turns into a walk, the release still settles.
+  REQUIRE(r.on_key(down(key::right), playing).command == command_id::skim_forward);
+  REQUIRE(r.on_key(rep(key::right), playing).command == command_id::skim_forward);
+  REQUIRE(r.on_key(rep(key::right), paused).command == command_id::skim_forward);
+  REQUIRE(r.on_key(up(key::right), paused).command == command_id::skim_settle);
+  // After the key-up the paused clip walks again.
+  REQUIRE(r.on_key(down(key::right), paused).command == command_id::next);
+}
+
+TEST_CASE("issue #361: `?` and Settings list the arrows' skim rows", "[shell][commands][skim]") {
+  key_router r;
+  REQUIRE(r.lookup(key::left, mod_none, mode::skim)->command == command_id::skim_back);
+  REQUIRE(r.lookup(key::right, mod_none, mode::skim)->command == command_id::skim_forward);
+  REQUIRE(r.lookup(key::left, mod_none, mode::video)->command == command_id::prev);
+  // Skim layers over video: nothing else is bound there, so a remap of a
+  // video key cannot collide with it.
+  int skim_rows = 0;
+  for (const binding& b : default_bindings()) {
+    if ((b.modes & kSkim) == 0 || b.modes == kAllModes || b.modes == (kAllModes & ~kCrop)) continue;
+    ++skim_rows;
+    REQUIRE((b.k == key::left || b.k == key::right));
+    REQUIRE(b.policy == repeat_policy::tap_hold);
+    REQUIRE(b.release == command_id::skim_settle);
+  }
+  REQUIRE(skim_rows == 2);
+  const std::string table = describe_commands();
+  const std::string skim = std::to_string(static_cast<int>(kSkim));
+  REQUIRE(table.find("\t" + skim + "\tSkip back 2 s\tLeft\t") != std::string::npos);
 }
 
 TEST_CASE("holds are per key: a second hold cannot swallow the first release", "[shell][router]") {
@@ -1247,6 +1346,55 @@ TEST_CASE("an add-on's manifest contributes command rows (docs/design/25)", "[sh
   REQUIRE(std::string(mv::shell::find_command(command_id::addon_cmd_0)->name) == "Add-on command 1");
   mv::shell::reset_live_bindings();
   REQUIRE(mv::shell::live_bindings()[0].k == mv::shell::default_bindings()[0].k);
+}
+
+TEST_CASE("a script add-on's key gives way to the base app's", "[shell][commands]") {
+  // docs/design/25 PR 57: another maker's key never displaces ours, nor an earlier
+  // add-on row's; the row stays listed with no key and the note says why.
+  using mv::shell::addon_command_row;
+  mv::shell::reset_live_bindings();
+  std::vector<addon_command_row> rows;
+  const auto row = [](std::string id, char c, std::uint8_t mods) {
+    addon_command_row r;
+    r.addon = "acme.tools";
+    r.id = std::move(id);
+    r.name = "Tool " + r.id;
+    r.k = mv::shell::char_key(c);
+    r.mods = mods;
+    r.modes = mv::shell::parse_modes("viewing");
+    r.payload = "none";
+    r.script = true;
+    return r;
+  };
+  rows.push_back(row("open", 'O', mv::shell::mod_ctrl));                          // Ctrl+O is Open
+  rows.push_back(row("free", 'K', mv::shell::mod_ctrl | mv::shell::mod_shift));   // free
+  rows.push_back(row("again", 'K', mv::shell::mod_ctrl | mv::shell::mod_shift));  // taken by "free"
+  mv::shell::set_addon_commands(rows);
+  REQUIRE(mv::shell::addon_command(command_id::addon_cmd_0)->k == key::none);
+  REQUIRE(mv::shell::addon_command(command_id::addon_cmd_0)->note.find("Ctrl+O is already") == 0);
+  REQUIRE(mv::shell::addon_command(command_id::addon_cmd_1)->k == mv::shell::char_key('K'));
+  REQUIRE(mv::shell::addon_command(command_id::addon_cmd_2)->k == key::none);
+  REQUIRE(mv::shell::addon_command(command_id::addon_cmd_2)->note.find("Tool free") != std::string::npos);
+  // The router still answers Ctrl+O with Open, and Ctrl+Shift+K with the add-on.
+  key_router r;
+  r.rebuild(mv::shell::live_bindings());
+  REQUIRE(r.lookup(mv::shell::char_key('O'), mv::shell::mod_ctrl, mv::shell::mode::browse)->command ==
+          command_id::open);
+  REQUIRE(r.lookup(mv::shell::char_key('K'), mv::shell::mod_ctrl | mv::shell::mod_shift,
+                   mv::shell::mode::browse)->command == command_id::addon_cmd_1);
+  const auto notes = mv::json::parse(mv::shell::addon_command_notes_json());
+  REQUIRE(notes);
+  REQUIRE(notes->a.size() == 2);
+  REQUIRE(*notes->a[0].str("id") == "open");
+  // A first-party row is not held to it (Import supersedes its own built-in rows).
+  addon_command_row ours = row("import", 'I', mv::shell::mod_ctrl | mv::shell::mod_shift);
+  ours.addon = "import";
+  ours.script = false;
+  mv::shell::set_addon_commands(std::vector<addon_command_row>{ours});
+  REQUIRE(mv::shell::addon_command(command_id::addon_cmd_0)->k == mv::shell::char_key('I'));
+  REQUIRE(mv::shell::addon_command_notes_json() == "[]");
+  mv::shell::set_addon_commands({});
+  mv::shell::reset_live_bindings();
 }
 
 TEST_CASE("issue #182: menu chords follow the live table and its crop mask", "[shell][commands]") {

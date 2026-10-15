@@ -671,7 +671,7 @@ internal sealed partial class ManagePanel
     {
         _indexSize.Text = $"{Look.Size((long)s.IndexBytes)} on disk" +
                           (_capBytes > 0 ? $" of at most {CapText(_capBytes)}" : "") +
-                          ". It is your data: it does not count toward the 3 GB.";
+                          ". It is your data: it does not count toward the 5 GB.";
     }
 
     private void ShowIndexConfirm(bool focus = false)

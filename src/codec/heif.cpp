@@ -7,6 +7,11 @@
 // is kept, so the displayed orientation comes from the container, as on an
 // iPhone. Gain-map auxiliary images are ignored (HDR output is v1.1).
 //
+// Pages (issue #211): a file with several top-level images (a burst or image
+// collection) is one folder stop; page 0 is the primary, then the other
+// top-level images in file order (heic_pages). A single-image file pays one
+// libheif call for the count.
+//
 // Colour (D6, codec/cicp.h): an embedded ICC wins for SDR; nclx P3 gets a
 // synthesised ICC; PQ/HLG are tone-mapped to SDR here with the video shader's
 // curves. >8-bit SDR is decoded at 16-bit interleaved and rounded to 8 bits
@@ -19,10 +24,12 @@
 #include "codec/decode.h"
 
 #include <libheif/heif.h>
+#include <libheif/heif_entity_groups.h>
 #include <libheif/heif_items.h>
 #include <libheif/heif_security.h>
 #include <libheif/heif_sequences.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -277,6 +284,52 @@ result<raster> decode_handle(heif_image_handle* handle, const job_context* job,
   return to_raster(img.get(), colour.value(), high_bit, job);
 }
 
+// --- pages ---------------------------------------------------------------------
+
+// The items that are pages, primary first (decode.h). libheif's top-level list
+// already leaves out thumbnails, auxiliary images and hidden items (a grid's
+// tiles); this also drops a derived image's visible inputs (`dimg` targets) and
+// the primary's alternatives (an `altr` group, e.g. an ISO 21496 `tmap`), which
+// are the same picture, not another one.
+std::vector<heif_item_id> heic_pages(heif_context* hctx, heif_item_id primary) {
+  std::vector<heif_item_id> pages{primary};
+  const int n = heif_context_get_number_of_top_level_images(hctx);
+  if (n <= 1) return pages;  // the common case: nothing more to look at
+  std::vector<heif_item_id> ids(static_cast<std::size_t>(n));
+  const int listed = heif_context_get_list_of_top_level_image_IDs(hctx, ids.data(), n);
+  ids.resize(static_cast<std::size_t>(std::clamp(listed, 0, n)));
+
+  std::vector<heif_item_id> not_pages;
+  for (const heif_item_id id : ids) {
+    for (int k = 0;; ++k) {
+      std::uint32_t type = 0;
+      heif_item_id* to = nullptr;
+      const std::size_t count = heif_context_get_item_references(hctx, id, k, &type, &to);
+      if (count == 0) {
+        heif_release_item_references(hctx, &to);
+        break;
+      }
+      if (type == fourcc('d', 'i', 'm', 'g')) not_pages.insert(not_pages.end(), to, to + count);
+      heif_release_item_references(hctx, &to);
+    }
+  }
+  int groups = 0;
+  if (heif_entity_group* altr =
+          heif_context_get_entity_groups(hctx, fourcc('a', 'l', 't', 'r'), primary, &groups)) {
+    for (int g = 0; g < groups; ++g) {
+      not_pages.insert(not_pages.end(), altr[g].entities, altr[g].entities + altr[g].num_entities);
+    }
+    heif_entity_groups_release(altr, groups);
+  }
+
+  for (const heif_item_id id : ids) {
+    if (id == primary || heif_item_get_item_type(hctx, id) == fourcc('t', 'm', 'a', 'p')) continue;
+    if (std::find(not_pages.begin(), not_pages.end(), id) != not_pages.end()) continue;
+    pages.push_back(id);
+  }
+  return pages;
+}
+
 // --- sequences -----------------------------------------------------------------
 
 class heic_source final : public animation_source {
@@ -406,7 +459,7 @@ class heic_source final : public animation_source {
 }  // namespace
 
 result<raster> decode_heic(std::span<const std::uint8_t> bytes, const job_context* ctx,
-                           unsigned thread_limit) {
+                           unsigned thread_limit, std::uint32_t page) {
   if (probe(bytes) != format_family::heic) return err(status::unsupported_format);
   if (ctx && ctx->cancelled()) return err(status::cancelled);
   // libde265 must be the HEVC decoder in the build; without one there is no
@@ -420,7 +473,27 @@ result<raster> decode_heic(std::span<const std::uint8_t> bytes, const job_contex
     heif_image_handle* raw = nullptr;
     const heif_error e = heif_context_get_primary_image_handle(hctx, &raw);
     handle_ptr handle(raw);
-    if (e.code == heif_error_Ok && handle) return decode_handle(handle.get(), ctx);
+    if (e.code == heif_error_Ok && handle) {
+      const std::vector<heif_item_id> pages =
+          heic_pages(hctx, heif_image_handle_get_item_id(handle.get()));
+      if (page >= pages.size()) return err(status::invalid_arg);
+      if (page != 0) {
+        heif_image_handle* other = nullptr;
+        if (heif_context_get_image_handle(hctx, pages[page], &other).code != heif_error_Ok ||
+            !other) {
+          if (other) heif_image_handle_release(other);
+          return err(status::corrupt);
+        }
+        handle.reset(other);
+      }
+      auto out = decode_handle(handle.get(), ctx);
+      if (out) {
+        out->page = page;
+        out->page_count = static_cast<std::uint32_t>(pages.size());
+      }
+      return out;
+    }
+    if (page != 0) return err(status::invalid_arg);
 
     // msf1-only files have no primary item: the still is the first frame.
     if (heif_context_has_sequence(hctx)) {
@@ -529,6 +602,8 @@ result<heic_still_info> inspect_heic(std::span<const std::uint8_t> bytes) {
       return err(status::unsupported_format);
     }
     handle_ptr handle(raw);
+    info.pages =
+        static_cast<std::uint32_t>(heic_pages(hctx, heif_image_handle_get_item_id(handle.get())).size());
     const std::uint32_t type =
         heif_item_get_item_type(hctx, heif_image_handle_get_item_id(handle.get()));
     info.hevc = type == fourcc('h', 'v', 'c', '1') || type == fourcc('g', 'r', 'i', 'd');

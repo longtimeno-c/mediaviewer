@@ -240,6 +240,32 @@ if (-not (Test-Path (Join-Path $RepoRoot 'THIRD-PARTY.md'))) {
     Add-Violation 'missing THIRD-PARTY.md' 'docs/design/11 requires a generated attribution file.'
 }
 
+# --- 5. The add-on script runtime (docs/design/25 §9 A, PR 57) ---------------
+# Lua is vendored, static, MIT: its licence travels with it. The sandbox's
+# promise is that io / os / package / debug are not in the binary at all, and
+# that nothing JIT-compiles (the Mac's hardened runtime takes no exception).
+$luaDir = Join-Path $RepoRoot 'third_party/lua'
+if (Test-Path $luaDir) {
+    if (-not (Test-Path (Join-Path $luaDir 'LICENSE'))) {
+        Add-Violation 'Lua licence missing' 'third_party/lua/LICENSE must travel with the vendored Lua (MIT).'
+    }
+    foreach ($absent in @('liolib.c', 'loslib.c', 'loadlib.c', 'ldblib.c', 'linit.c', 'lua.c', 'luac.c')) {
+        if (Test-Path (Join-Path $luaDir "src/$absent")) {
+            Add-Violation 'Lua library the sandbox excludes' "third_party/lua/src/$absent is present. docs/design/25 §9: the script runtime carries no io, os, package or debug library (third_party/lua/VENDOR.txt)."
+        }
+    }
+}
+foreach ($manifestName in @('vcpkg.json', 'tools/mac/dependencies/vcpkg.json')) {
+    $manifestPath = Join-Path $RepoRoot $manifestName
+    if (-not (Test-Path $manifestPath)) { continue }
+    foreach ($dep in (Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json).dependencies) {
+        $name = if ($dep -is [string]) { $dep } else { $dep.name }
+        if ($name -in @('luajit', 'luau', 'luasocket', 'luasec', 'luafilesystem')) {
+            Add-Violation 'script runtime port' "$manifestName declares '$name'. docs/design/25 §9: Lua 5.4 is vendored without a JIT, sockets or file access."
+        }
+    }
+}
+
 # --- Report -----------------------------------------------------------------
 if ($violations.Count -eq 0) {
     Write-Host 'licence check: clean'

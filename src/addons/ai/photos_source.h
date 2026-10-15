@@ -85,6 +85,11 @@ struct photos_item {
   std::int64_t mtime = 0;     // modificationDate, unix seconds
   std::uint64_t size = 0;     // pixelWidth * pixelHeight
   asset_kind kind = asset_kind::photo;
+  // #291: PHAsset.location and creationDate, read locally (never geocoded
+  // here: place names are the Places add-on's).
+  bool has_location = false;
+  double lat = 0, lon = 0;
+  std::int64_t created = 0;  // unix seconds, 0 unknown
 };
 
 class photos_source {

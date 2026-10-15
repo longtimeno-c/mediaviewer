@@ -97,6 +97,11 @@ internal class FakeInput : ContentControl
     public event Action? Submitted;
     public event Action? MoveDown;
 
+    /// <summary>The most UTF-8 bytes the text may hold (0: no limit). An edit that
+    /// would pass it keeps as much of the new text as fits, as a TextBox's
+    /// MaxLength does; an add-on's settings page counts its limit in bytes.</summary>
+    public int MaxUtf8Bytes { get; set; }
+
     // The main chrome's fields keep Enter and Down even with no listener, as
     // they always have: the native router must not see them while one has focus.
     protected bool OwnsEnterAndDown { get; init; }
@@ -315,6 +320,23 @@ internal class FakeInput : ContentControl
     // the caret after the new text, Changed once.
     private void Replace(int start, int end, string s, bool joinUndo = false)
     {
+        if (MaxUtf8Bytes > 0 && s.Length > 0)
+        {
+            int room = MaxUtf8Bytes - System.Text.Encoding.UTF8.GetByteCount(_text[..start] + _text[end..]);
+            // Every UTF-16 unit is at least one byte: cut a long paste to that
+            // first, so the loop below trims a few characters, not a megabyte
+            // one at a time on the UI thread.
+            if (s.Length > Math.Max(room, 0))
+            {
+                int keep = Math.Max(room, 0);
+                if (keep > 0 && char.IsHighSurrogate(s[keep - 1])) keep--;
+                s = s[..keep];
+            }
+            // Whole characters only: never half a surrogate pair.
+            while (s.Length > 0 && System.Text.Encoding.UTF8.GetByteCount(s) > room)
+                s = s[..(s.Length >= 2 && char.IsLowSurrogate(s[^1]) ? s.Length - 2 : s.Length - 1)];
+            if (s.Length == 0 && start == end) return;
+        }
         string next = _text[..start] + s + _text[end..];
         if (next == _text) return;
         if (!joinUndo) Push(_undo, (_text, _caretAt));

@@ -71,6 +71,7 @@ TEST_CASE("settings store: typed values round-trip through the file and a restar
     v.wrap = false;
     v.sticky_zoom = true;
     v.background = 4;
+    v.ai_badge = false;  // #345: [view] ai_badge, on by default
     v.sort = 2 | 8;  // PR 9: size, descending
     save_view_settings(store, v);
     save_destinations(store, {"D:\\Cull", "E:\\K\xC3\xA9" "ep"});  // non-ANSI survives
@@ -90,6 +91,7 @@ TEST_CASE("settings store: typed values round-trip through the file and a restar
   REQUIRE_FALSE(v.wrap);
   REQUIRE(v.sticky_zoom);
   REQUIRE(v.background == 4);
+  REQUIRE_FALSE(v.ai_badge);
   REQUIRE(v.sort == (2 | 8));
   // A hand-edited or future key is name, never an out-of-range order.
   again.set_int("view", "sort", 7);
@@ -104,6 +106,7 @@ TEST_CASE("settings store: typed values round-trip through the file and a restar
 
   // The file stays readable by the Win32 profile API an older build used.
   REQUIRE(::GetPrivateProfileIntW(L"view", L"background", -1, path.c_str()) == 4);
+  REQUIRE(::GetPrivateProfileIntW(L"view", L"ai_badge", -1, path.c_str()) == 0);
   wchar_t d1[64]{};
   ::GetPrivateProfileStringW(L"destinations", L"d1", L"", d1, 64, path.c_str());
   REQUIRE(std::wstring(d1) == L"E:\\K\u00E9ep");
@@ -130,6 +133,8 @@ TEST_CASE("settings store: reads a PR 4-7 ANSI file written by the profile API",
   settings_store store(path);
   store.load_from_disk();
   REQUIRE_FALSE(load_view_settings(store).wrap);
+  // #345: a file from before the AI badge has no ai_badge key: the badge is on.
+  REQUIRE(load_view_settings(store).ai_badge);
   REQUIRE(load_key_overrides(store).size() == 1);
   fs::remove_all(dir);
 }

@@ -54,8 +54,9 @@ in the core (`edit/`, `shell/edit_session`).
    non-destructive, *Save copy…* is the export ([07](07-photo-editing.md) "Export", a new file),
    and the lossless viewer rotate is the same debounced write as before.
 7. **Info tab: every tag editable** (one file, one change set, through the metadata writer).
-   *Summary* has an editable **Date taken** (moves every capture-time tag together), **Remove
-   location** and **Revert all**. *All tags* lets any tag the file allows be edited or removed,
+   *Summary* has an editable **Date taken** (moves every capture-time tag together), an
+   editable **Location** (#352: coordinates typed in, blank removes after a confirmation;
+   [06](06-metadata.md) "The Location row") and **Revert all**. *All tags* lets any tag the file allows be edited or removed,
    and one be added; a lock marks rows that describe the file itself (sizes, offsets, maker notes,
    orientation). `meta/write`'s checks, sidecar rule and whole-metadata snapshot apply
    ([06](06-metadata.md)).

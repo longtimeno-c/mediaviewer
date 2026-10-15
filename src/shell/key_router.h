@@ -45,6 +45,11 @@ struct view_state {
   // Milestone H: a search result list ("Search: ...") is open in place of a
   // folder and there is somewhere to go back to (docs/design/16 `Esc`).
   bool list_open = false;
+  // Issue #361: on a clip, ← → skip ±2 s (mode::skim) while it plays or while
+  // the filmstrip is hidden; paused with the strip up they walk the folder.
+  // Defaults keep a bare view_state walking: strip up, nothing playing.
+  bool filmstrip_visible = true;
+  bool clip_playing = false;
 };
 
 [[nodiscard]] mode resolve_mode(const view_state& s) noexcept;
@@ -127,6 +132,7 @@ class key_router {
   struct held {
     const binding* row = nullptr;
     key k = key::none;
+    command_id hold = command_id::none;  // a tap/hold's per-repeat command
     command_id release = command_id::none;
     bool momentary = false;
     bool repeated = false;

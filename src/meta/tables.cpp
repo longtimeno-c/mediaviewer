@@ -15,17 +15,6 @@ std::string flat(std::string s) {
   return s;
 }
 
-const char* origin_name(origin o) noexcept {
-  switch (o) {
-    case origin::exif: return "exif";
-    case origin::iptc: return "iptc";
-    case origin::xmp: return "xmp";
-    case origin::container: return "container";
-    case origin::computed: return "computed";
-  }
-  return "exif";
-}
-
 const char* kind_name(stream_kind k) noexcept {
   switch (k) {
     case stream_kind::video: return "video";
@@ -58,7 +47,7 @@ std::string editable_properties_table(const metadata& m) {
   const write_target target = m.writes_in_file ? write_target::in_file : write_target::sidecar;
   std::string out;
   for (const auto& p : m.properties) {
-    const tag_access a = access_of(p.raw_tag, target);
+    const tag_access a = row_access(p, target);
     const char* access = a == tag_access::editable ? "e" : a == tag_access::via_sidecar ? "s" : "r";
     out += std::string(origin_name(p.space)) + "\t" + flat(p.group) + "\t" + flat(p.label) + "\t" +
            flat(p.value) + "\t" + flat(p.raw_tag) + "\t" + flat(p.raw) + "\t" + access + "\n";
