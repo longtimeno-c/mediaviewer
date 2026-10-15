@@ -874,6 +874,7 @@ public static partial class IslandHost
     private static void RefreshSlotUi(AddonSlot slot)
     {
         if (slot == ImportSlot) RefreshAddonRow();
+        else if (slot == PlacesChannel) RefreshSlotSettings();
         else RefreshLocalSearch();
     }
 
@@ -1044,6 +1045,12 @@ public static partial class IslandHost
         {
             _importConfirming = false;
             RefreshAddonRow();
+            return true;
+        }
+        if (_slotConfirming is not null)
+        {
+            _slotConfirming = null;
+            RefreshSlotSettings();
             return true;
         }
         return CancelOpenAddonConfirm();
