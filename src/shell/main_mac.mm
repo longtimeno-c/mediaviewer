@@ -2530,6 +2530,9 @@ static void MvAdoptNewDefaultViewerTypes() {
   std::uint64_t _photosResolveSeq;
   NSTimer* _photosFetchTimer;
   std::shared_ptr<std::atomic<bool>> _photosFetchCancel;
+  // A library listing is on a worker: a second Open Photos Library waits for it
+  // rather than starting another (#420).
+  BOOL _photosListing;
   // docs/design/26 "Backup": the one run, on its own thread; whether its end has
   // been written to the defaults (the "last backup" line).
   std::unique_ptr<mv::shell::backup::engine> _photosBackup;
@@ -9555,18 +9558,29 @@ static std::string MvBadgeKey(const mv::io::dir_entry& e) {
 }
 
 // The whole library, oldest first, as a list of virtual items; the newest
-// selected, in the gallery (what Photos lands on). Enumeration is PhotoKit
-// on a worker: a second on a 23 k-asset library (docs/design/17 measured 0.9 s).
+// selected, in the gallery (what Photos lands on). Enumeration is PhotoKit on
+// a worker, names from the fetched assets (no per-asset resource lookup: that
+// took minutes, #420); "photos: listed N assets in M ms" in the unified log.
+// A notice says it is opening; one listing at a time.
 - (void)openPhotosLibrary {
   if (![self photosLibraryAvailable]) {
     NSBeep();
     return;
   }
+  if (_photosListing) return;  // the listing in flight opens the list
+  _photosListing = YES;
+  static const std::string kOpening = "Opening the Photos library…";
+  [self noticeShow:kOpening];
   MvLabApp* __weak weakSelf = self;
   _jobs.submit_at(mv::background_generation, [weakSelf](const mv::job_context&) -> mv::status {
     auto listed = mv::shell::photos::enumerate();
     if (!listed) {
       dispatch_async(dispatch_get_main_queue(), ^{
+        MvLabApp* strongSelf = weakSelf;
+        if (strongSelf) {
+          strongSelf->_photosListing = NO;
+          if ([strongSelf noticeText] == kOpening) [strongSelf noticeClear];
+        }
         NSBeep();
       });
       return listed.error();
@@ -9585,6 +9599,8 @@ static std::string MvBadgeKey(const mv::io::dir_entry& e) {
     dispatch_async(dispatch_get_main_queue(), ^{
       MvLabApp* strongSelf = weakSelf;
       if (!strongSelf) return;
+      strongSelf->_photosListing = NO;
+      if ([strongSelf noticeText] == kOpening) [strongSelf noticeClear];
       if (entries->empty()) {
         [strongSelf noticeShow:"Your Photos library has no photos or videos MediaViewer can show."];
         return;

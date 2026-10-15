@@ -9,12 +9,13 @@
 #import <AVFoundation/AVFoundation.h>
 #import <Foundation/Foundation.h>
 #import <Photos/Photos.h>
+#include <os/log.h>
 
 #include <algorithm>
 #include <chrono>
+#include <mutex>
 #include <unordered_map>
 
-#include "core/trace.h"
 #include "image/thumb.h"
 #include "io/file_port.h"
 
@@ -64,10 +65,53 @@ PHAssetResource* original_resource(PHAsset* a) {
   return rs.firstObject;
 }
 
+// The asset's own file name, from the fetched asset: no resource lookup.
+// `filename` is PHAsset's private key-value path (what Photos shows under
+// Info); nil or missing on a system without it, and then the caller falls
+// back to the resources. +[PHAssetResource assetResourcesForAsset:] is one
+// round trip to photolibraryd per asset: 15 minutes over a 24 k library
+// (#420), where the AI pack's walk of the same library takes 0.9 s.
+NSString* kvc_filename(PHAsset* a) {
+  @try {
+    id v = [a valueForKey:@"filename"];
+    return [v isKindOfClass:[NSString class]] && [v length] ? (NSString*)v : nil;
+  } @catch (NSException*) {
+    return nil;
+  }
+}
+
+// Names already looked up, by asset and version (an edit in Photos changes
+// the modification date), so a second listing or a search-result list never
+// asks again. Process lifetime; a name is a few dozen bytes.
+struct name_cache {
+  std::mutex mutex;
+  std::unordered_map<std::string, std::pair<std::int64_t, std::string>> by_id;
+};
+
+name_cache& names() {
+  static name_cache c;
+  return c;
+}
+
 std::string base_name(PHAsset* a) {
-  PHAssetResource* r = original_resource(a);
-  const std::string name = r ? utf8(r.originalFilename) : std::string();
-  return name.empty() ? std::string("Photo") : name;
+  NSDate* d = a.modificationDate ?: a.creationDate;
+  const std::int64_t stamp = d ? static_cast<std::int64_t>(d.timeIntervalSince1970 * 1000.0) : 0;
+  std::string id = utf8(a.localIdentifier);
+  {
+    std::lock_guard lock(names().mutex);
+    auto hit = names().by_id.find(id);
+    if (hit != names().by_id.end() && hit->second.first == stamp) return hit->second.second;
+  }
+  std::string name;
+  if (NSString* fast = kvc_filename(a)) name = utf8(fast);
+  if (name.empty()) {
+    PHAssetResource* r = original_resource(a);
+    if (r) name = utf8(r.originalFilename);
+  }
+  if (name.empty()) return std::string("Photo");  // not cached: ask again next time
+  std::lock_guard lock(names().mutex);
+  names().by_id.insert_or_assign(std::move(id), std::make_pair(stamp, name));
+  return name;
 }
 
 item item_of(PHAsset* a) {
@@ -320,7 +364,12 @@ result<std::vector<item>> enumerate() {
         sink->push_back(item_of(a));
       }
     }];
-    MV_LOG_INFO("photos: listed %zu assets in %.0f ms", out.size(), (now_s() - t0) * 1000.0);
+    // Count and time only, never an identifier (rule 6). MV_LOG_INFO reaches
+    // nothing on the Mac; this shows in Console and `log stream --predicate
+    // 'subsystem == "org.mediaviewer"'`.
+    static os_log_t photos_log = os_log_create("org.mediaviewer", "photos");
+    os_log(photos_log, "photos: listed %{public}zu assets in %{public}.0f ms", out.size(),
+           (now_s() - t0) * 1000.0);
   }
   return out;
 }

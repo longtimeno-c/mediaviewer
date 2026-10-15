@@ -17,7 +17,13 @@ doing them and is a viewer fix on both platforms.
    follows Settings when the window is key again), **File → Open Photos Library**, and
    `mv_chrome_open_photos_library` for the chrome. It opens as a listing titled *Photos
    Library* — the gallery, filmstrip, keys and marks of any folder — oldest first (the Photos
-   app's Library order), the newest selected. Not before the library was added: the row, the
+   app's Library order), the newest selected. Opening says *Opening the Photos library…* at
+   once and ignores another click while the listing runs; the listing takes each name from the
+   fetched asset (PhotoKit's `filename`, falling back to the original's resource only when that
+   is missing) and caches it by asset and modification date, so it costs about what the AI
+   pack's walk does rather than one resource lookup per asset (that took 15 minutes on 24 k
+   assets, #420). The time is in the unified log, `photos: listed N assets in M ms`
+   (count and time only). Not before the library was added: the row, the
    menu item and the backup section are absent until then, and absent again after *Remove*.
    The welcome card also shows an **iCloud Photos** row, on its own above *Recent folders*.
    It opens Settings at *Photos Library* (the backup), not the listing (owner, 2026-10-05):
