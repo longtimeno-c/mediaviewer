@@ -106,7 +106,7 @@ public static partial class IslandHost
         var label = new StackPanel
         {
             Orientation = Orientation.Horizontal,
-            Spacing = 3,
+            Spacing = Space(3),
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
         };
@@ -118,7 +118,7 @@ public static partial class IslandHost
 
         _aiBadgeTipTitle = new TextBlock { FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap };
         _aiBadgeTipEvidence = new TextBlock { FontSize = 12, TextWrapping = TextWrapping.Wrap, Opacity = 0.8 };
-        var tipBody = new StackPanel { Spacing = 4, MaxWidth = 320 };
+        var tipBody = new StackPanel { Spacing = Space(4), MaxWidth = 320 };
         tipBody.Children.Add(_aiBadgeTipTitle);
         tipBody.Children.Add(_aiBadgeTipEvidence);
         _aiBadgeTip = new ToolTip { Content = tipBody };
@@ -138,7 +138,7 @@ public static partial class IslandHost
             Background = Brush(PanelBg),
             BorderBrush = Brush(Hairline),
             BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(10),
+            CornerRadius = new CornerRadius(10),  // a pill (the Mac's Capsule), not a theme radius
             IsTabStop = true,
             UseSystemFocusVisuals = true,
         };

@@ -723,7 +723,7 @@ public static partial class IslandHost
     {
         Button speed = TextButton(SpeedLabel(_videoRate), () => { });
         if (speed.Content is TextBlock label) label.FontSize = TypeCaption;
-        speed.Padding = new Thickness(8, 7, 8, 7);
+        speed.Padding = Pad(8, 7, 8, 7);
         SetIconTip(speed, SpeedTip());
         var menu = new MenuFlyout
         {
@@ -1131,7 +1131,7 @@ public static partial class IslandHost
             item.Resources[key] = Brush(Title);
         item.Resources["MenuFlyoutItemForegroundDisabled"] = Brush(ChromeColour.Disabled);
         item.Resources["MenuFlyoutItemKeyboardAcceleratorTextForeground"] = Brush(Body);
-        item.CornerRadius = new CornerRadius(RadiusButton);
+        item.CornerRadius = Corner(RadiusButton);
         if (!string.IsNullOrEmpty(shortcut))
         {
             item.KeyboardAcceleratorTextOverride = shortcut;
@@ -1599,7 +1599,7 @@ public static partial class IslandHost
         bar.Children.Add(rule);
         Grid busy = BuildBusyBar();
         busy.VerticalAlignment = VerticalAlignment.Bottom;
-        busy.Margin = new Thickness(0, 0, 0, 1);
+        busy.Margin = new Thickness(0, 0, 0, 1);  // sits on the 1-DIP rule: a hairline, not spacing
         Grid.SetColumnSpan(busy, 3);
         bar.Children.Add(busy);
 

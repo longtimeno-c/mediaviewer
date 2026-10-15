@@ -717,7 +717,7 @@ struct LocalSearchSection: View {
     } else if store.onDemand {
       // Issue #292: nothing of the pack runs until the first search; its own
       // settings (compute, folders, People) need it running.
-      HStack(alignment: .firstTextBaseline, spacing: 12) {
+      HStack(alignment: .firstTextBaseline, spacing: MVTheme.space(12)) {
         Text("Local search starts the first time you search. Start it now to see its folders and settings.")
           .font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
           .fixedSize(horizontal: false, vertical: true)

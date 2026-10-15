@@ -294,6 +294,8 @@ expected chrome_host::load() noexcept {
   show_addon_ = get_entry(L"ShowAddon");
   // Optional (docs/design/25): without it a dropped add-on package is not offered.
   offer_addon_ = get_entry(L"OfferAddon");
+  // Optional the same way (issue #402): without it the canvas has no context menu.
+  show_canvas_menu_ = get_entry(L"ShowCanvasMenu");
   run_addon_command_ = get_entry(L"RunAddonCommand");
   // Optional: without them a drag carries one cell and Open lists no recents.
   set_drag_paths_ = get_entry(L"SetDragPaths");
@@ -1046,6 +1048,13 @@ bool chrome_host::offer_addon(const std::string& path_utf8) noexcept {
   std::memcpy(buf.data(), &len, 4);
   std::memcpy(buf.data() + 4, path_utf8.data(), path_utf8.size());
   return offer_addon_(buf.data(), static_cast<std::int32_t>(buf.size())) == 0;
+}
+
+bool chrome_host::show_canvas_menu(std::int32_t x, std::int32_t y) noexcept {
+  if (!attached_ || !show_canvas_menu_) return false;
+  // Two int32 fields, mirrored by IslandHost.ShowCanvasMenu.
+  std::int32_t args[] = {x, y};
+  return show_canvas_menu_(args, static_cast<std::int32_t>(sizeof(args))) == 0;
 }
 
 void chrome_host::navigate_gallery(std::int32_t direction, std::int32_t index) noexcept {

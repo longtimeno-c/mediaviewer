@@ -280,6 +280,11 @@ public static partial class IslandHost
             // reader holds a text model: neither may compete with this window's
             // first pixel, nor cost a window that never searches.
             _addonsElsewhere = true;
+            // Issue #402: the add-ons that fill screens and slots load in every
+            // window, this one too, on a worker. They are found by manifest, so
+            // this hashes Places' files, never the AI pack's.
+            MediaViewerSession guestSession = _folderSession;
+            _ = Task.Run(() => StartSlotAddons(guestSession, guest: true));
             return;
         }
         MediaViewerSession session = _folderSession;

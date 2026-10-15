@@ -74,7 +74,7 @@ private struct SlotThumbnail: View {
           Rectangle().fill(MVTheme.surface)
         }
       }
-      .clipShape(RoundedRectangle(cornerRadius: 6))
+      .clipShape(RoundedRectangle(cornerRadius: MVTheme.radius(6)))
       .onAppear { thumbs.want(path) }
       .onDisappear { thumbs.drop(path) }
       .accessibilityElement(children: .ignore)
@@ -122,7 +122,7 @@ struct ScreenNodeView: View {
     case "scroll":
       let height = node.int("height") ?? 0
       ScrollView(node.string("axis") == "horizontal" ? .horizontal : .vertical) {
-        VStack(alignment: .leading, spacing: 8) { ForEach(node.children) { child($0) } }.padding(2)
+        VStack(alignment: .leading, spacing: MVTheme.space(8)) { ForEach(node.children) { child($0) } }.padding(MVTheme.space(2))
       }
       .frame(maxHeight: height > 0 ? CGFloat(height) : .infinity)
     case "split":
@@ -392,8 +392,8 @@ private struct SurfaceNode: View {
     }
     .frame(width: width > 0 ? width : nil, height: height)
     .frame(maxWidth: width > 0 ? nil : .infinity)
-    .clipShape(RoundedRectangle(cornerRadius: 6))
-    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(MVTheme.hairline, lineWidth: 1))
+    .clipShape(RoundedRectangle(cornerRadius: MVTheme.radius(6)))
+    .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(6)).strokeBorder(MVTheme.hairline, lineWidth: 1))
     .accessibilityElement(children: .ignore)
     .accessibilityLabel(node.label)
     .accessibilityAddTraits(.isImage)
@@ -538,7 +538,7 @@ private struct SliderNode: View {
   var body: some View {
     let lo = node.double("min") ?? 0
     let hi = max(lo + 1e-9, node.double("max") ?? 1)
-    VStack(alignment: .leading, spacing: 2) {
+    VStack(alignment: .leading, spacing: MVTheme.space(2)) {
       Text("\(node.label): \(format(value))").font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
       Group {
         if let step = node.double("step"), step > 0 {
@@ -671,7 +671,7 @@ private struct ListNode: View {
     })) {
       ForEach(rows.indices, id: \.self) { i in
         let id = rows[i]["id"] as? String ?? ""
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: MVTheme.space(2)) {
           Text(rows[i]["text"] as? String ?? "").font(MVTheme.font(14)).foregroundStyle(MVTheme.title)
           if let detail = rows[i]["detail"] as? String {
             Text(detail).font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
@@ -706,14 +706,14 @@ private struct TableNode: View {
     let columns = node.rows("columns")
     let rows = node.rows("rows")
     VStack(alignment: .leading, spacing: 0) {
-      HStack(spacing: 8) {
+      HStack(spacing: MVTheme.space(8)) {
         ForEach(columns.indices, id: \.self) { c in
           Text(columns[c]["title"] as? String ?? "").font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
       }
-      .padding(.horizontal, 8)
-      .padding(.vertical, 4)
+      .padding(.horizontal, MVTheme.space(8))
+      .padding(.vertical, MVTheme.space(4))
       .accessibilityAddTraits(.isHeader)
       Rectangle().fill(MVTheme.hairline).frame(height: 1)
       List(selection: Binding(get: { selection }, set: { s in
@@ -723,7 +723,7 @@ private struct TableNode: View {
         ForEach(rows.indices, id: \.self) { r in
           let id = rows[r]["id"] as? String ?? ""
           let cells = rows[r]["cells"] as? [String] ?? []
-          HStack(spacing: 8) {
+          HStack(spacing: MVTheme.space(8)) {
             ForEach(columns.indices, id: \.self) { c in
               Text(c < cells.count ? cells[c] : "").font(MVTheme.font(13)).foregroundStyle(MVTheme.title)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -769,12 +769,12 @@ private struct ThumbnailGridNode: View {
       let cols = max(1, Int((geo.size.width - 16 + 8) / (tile + 8)))
       ScrollViewReader { proxy in
         ScrollView {
-          LazyVGrid(columns: Array(repeating: GridItem(.fixed(tile), spacing: 8), count: cols), spacing: 8) {
+          LazyVGrid(columns: Array(repeating: GridItem(.fixed(tile), spacing: MVTheme.space(8)), count: cols), spacing: MVTheme.space(8)) {
             ForEach(items.indices, id: \.self) { i in
               let path = items[i]["path"] as? String ?? ""
               let name = items[i]["label"] as? String ?? (path as NSString).lastPathComponent
               SlotThumbnail(path: path, size: tile, label: name)
-                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(
+                .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(6)).strokeBorder(
                   selection.contains(path) ? MVTheme.accent : (focused && i == cursor ? MVTheme.hairline : .clear),
                   lineWidth: 2))
                 .id(i)
@@ -786,7 +786,7 @@ private struct ThumbnailGridNode: View {
                 .accessibilityAddTraits(selection.contains(path) ? [.isButton, .isSelected] : .isButton)
             }
           }
-          .padding(8)
+          .padding(MVTheme.space(8))
         }
         .focusable()
         .focused($focused)
@@ -839,13 +839,13 @@ struct AddonInfoSections: View {
       VStack(alignment: .leading, spacing: 0) {
         ForEach(slots.sections) { section in
           Rectangle().fill(MVTheme.hairline).frame(height: 1)
-          VStack(alignment: .leading, spacing: 6) {
+          VStack(alignment: .leading, spacing: MVTheme.space(6)) {
             Text(section.title).font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
               .accessibilityAddTraits(.isHeader)
             ScreenNodeView(node: section.tree, address: ScreenAddress(addon: section.addon, screen: section.section),
                            revision: section.revision)
           }
-          .padding(14)
+          .padding(MVTheme.space(14))
         }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -873,12 +873,12 @@ struct SlotScreenRoot: View {
             .buttonStyle(FlatButtonStyle(compact: true))
             .keyboardShortcut(.cancelAction)
         }
-        .padding(12)
+        .padding(MVTheme.space(12))
         Rectangle().fill(MVTheme.hairline).frame(height: 1)
       }
       if let tree = screen?.tree {
         ScreenNodeView(node: tree, address: address, revision: screen?.revision ?? 0)
-          .padding(12)
+          .padding(MVTheme.space(12))
           .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
       } else {
         ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)

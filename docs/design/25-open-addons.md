@@ -247,6 +247,16 @@ A theme file, one per theme the add-on lists:
   follow the appearance, not a token). The first-party add-ons' own windows read the host's
   tokens since PR 56 (Import and Duplicates on both hosts, Local search on the Mac; the Windows
   AI chrome already did).
+- **Where shape reaches** (theme schema 2; issue #402): every padding, spacing and corner radius
+  of the host chromes goes through the shape tokens: `MVTheme.space` / `MVTheme.radius` on the
+  Mac, `Space` / `Pad` / `Corner` on Windows. That includes the add-on slot surfaces (#348) and
+  script screens (PR 57). These stay literals because they are geometry, not spacing: the photo
+  grid's tiles, gutter and inset (the keyboard's column math), the filmstrip's cells and gutter
+  (on Windows the cells fill the native strip), the video transport bar (Windows sizes its
+  native island from `kTransportPadDip`), the editor timeline's tracks, pills and circles
+  (radius = half the height; the Mac's `Capsule`), hairlines and highlight outsets, and the
+  metadata pane's label column. The add-on windows (Import, Duplicates, Local search on the
+  Mac) scale corner radii only.
 - **Choosing one:** Settings → Appearance → **Theme**: Default, then nineteen host palettes
   compiled into both chromes — Dark, Light, Midnight (rain), Cyberpunk (a circuit), Retrowave
   (embers), Forest (petals), Starfield, Terminal (fireflies), Organs (slow rain), Ume (petals),
@@ -642,13 +652,24 @@ How it works:
   provider's prefix (`place:`) goes to that provider alone, prefix removed, unless a digit follows
   (Local search's `in:2024` stays a date term). `locations_in` walks the folder at background
   priority (it waits while the viewer presents) and caches coordinates by path + size + mtime, so
-  a second query reads nothing.
+  a second query reads nothing. Local search with no folder open has `locations_of_index`
+  instead (#398): the AI pack's index's coordinates, read from the index, never from the files
+  ([17](17-local-ai-search.md) "Places over the index").
 - **Badges** are asked once per folder the gallery shows, posted as sets, inverted once into a
   path → badges table; a tile is a dictionary lookup (the verify counts add-on calls).
 - **Items.** A bar or path item with `opens` opens that screen with no add-on call; otherwise the
   add-on gets a `command` event with the paths its `target` names (the marks, else the current
-  file; the folder). Context-menu entries are on gallery tiles. Status items are text in the
-  command bar.
+  file; the folder). Context-menu entries are on gallery tiles, filmstrip tiles and the canvas
+  (issue #402, 2026-10-15): whatever a gallery tile lists for a file, the filmstrip's tile for it
+  and a right-click (Control-click on the Mac) on the canvas showing it list too, each invoked
+  with the paths the gallery tile would give it (the marks when it is one of them). Nothing
+  shows where no add-on contributes an entry, over the gallery or the Video Editor, or on an
+  empty window. Mac: `SlotContextMenu` on `FilmstripView`'s cells, and `menuForEvent:` on the
+  canvas view asking `MVChromeHost.canvasContextMenu` (`SlotCanvasMenu`). Windows:
+  `AttachSlotContextMenu` on the filmstrip's tiles, and `WM_RBUTTONUP` on the canvas calling the
+  chrome's optional `ShowCanvasMenu` (a `MenuFlyout` at the pointer). The canvas menu has no
+  keyboard way in yet (a tile's is Shift+F10 / the menu key on Windows, VoiceOver's Show Menu on
+  the Mac). Status items are text in the command bar.
 - **Screens** open as a window, a docked pane or a sheet, each with Done and Esc. The docked pane
   is not an island in the viewer's layout ([12](12-decision-log.md)): it lies **over** the right
   side of the canvas, which does not reflow around it. On the Mac it is a child panel held to the
@@ -668,6 +689,20 @@ How it works:
   ([12](12-decision-log.md)).
 - **Launch.** Slot add-ons load on the add-on queue / a worker after Import's and the AI pack's
   checks, never on the UI thread; nothing is asked of one until something is shown.
+- **Every window (issue #402, 2026-10-15).** Each window is its own process
+  ([18](18-import.md) "One host process"), and every one loads the slot add-ons once, the first
+  and later ones alike: a later window shows the same info sections, providers, badges, items,
+  status and entries, a window opened later gets them, and closing the first window takes
+  nothing from the others. They only read; what stays with the window that hosts the add-ons is
+  the store's writes (install, update, Remove; Settings in a later window says where). A later
+  window loads them at launch on the add-on queue (Mac, utility QoS) or a worker (Windows,
+  `mv_addon_load_guest`, which never sweeps the store), after its chrome. Both hosts find them by
+  their signed manifests alone (`store::manifests`, `loads_for_slots`; on Windows
+  `mv_addon_slot_addons_json`), hashing no file, so a window never hashes the AI pack to find
+  Places; loading one still verifies its own files. A Remove in the first window takes the
+  add-on from that window at once; another window keeps it until it closes (Windows defers a
+  loaded file's removal to the next start, as for any add-on in use). A changed setting re-asks
+  only in the window that wrote it; another reads the new value at its next request.
 
 **Added for Sharepoint (2026-10-15, [28](28-sharepoint.md#host-pieces-this-added)):**
 

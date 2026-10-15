@@ -640,6 +640,22 @@ typedef struct mv_host_api {
    * only when `struct_size` covers it and the pointer is non-NULL. */
   mv_status(MV_CALL* read_cues)(void* host, const char* path_utf8, int64_t start_ms, int64_t max_ms,
                                 uint32_t max_cues, mv_addon_cue_fn visit, void* user);
+  /* ---- the index's coordinates (#398, docs/design/17 "Places over the index") -- */
+  /* [worker-thread] Every asset of the Local search index (the AI pack's
+   * index.db, schema 4's lat / lon) that has coordinates, as locations_in
+   * visits a folder's: `path_utf8` is the index's own key for the asset (a
+   * file path, or "photos:<id>" for the Mac Photos library), `location.has`
+   * is 1, no altitude. Served from what the index already holds: no file and
+   * no file's metadata is read, and the index is locked for one batch's
+   * SELECT at a time, never across `visit`. `generation` is the search
+   * request it serves: when it goes stale, or the add-on is being removed,
+   * the walk stops with MV_ERR_CANCELLED. `visit` returning 0 stops it with
+   * MV_OK, as locations_in. MV_ERR_NOT_FOUND when no index is attached (the
+   * AI pack is not loaded), or it went during the walk (what was visited
+   * stands). Appended after read_cues: read it only when `struct_size`
+   * covers it and the pointer is non-NULL. */
+  mv_status(MV_CALL* locations_of_index)(void* host, uint64_t generation, mv_addon_location_fn visit,
+                                         void* user);
 } mv_host_api;
 
 typedef struct mv_addon_api {
@@ -731,6 +747,23 @@ MV_API mv_status MV_CALL mv_addon_load(mv_session_t session, const char* id,
 MV_API mv_status MV_CALL mv_addon_load_reader(mv_session_t session, const char* id,
                                               const char* interface_id, const void** out_interface,
                                               char* out_chrome_utf8, uint32_t chrome_cap);
+
+/* 0.29 (issue #402): mv_addon_load for a window whose process does not host
+ * the add-ons, for an add-on that only reads (one that fills screens and
+ * slots): the add-on's own entry and interface, so every window shows its
+ * contributions, but the store is never swept (the host window may be
+ * installing into it). A process loads an add-on one way only (as above). */
+MV_API mv_status MV_CALL mv_addon_load_guest(mv_session_t session, const char* id,
+                                             const char* interface_id, const void** out_interface,
+                                             char* out_chrome_utf8, uint32_t chrome_cap);
+
+/* 0.29 (issue #402): every installed add-on a window loads for its screens and
+ * slots alone (it contributes some; not Import, the AI family or a piece),
+ * from its newest signed manifest WITHOUT hashing any file, so a window finds
+ * Places without hashing the AI pack:
+ *   [{"id","name","version","description","state":"ok|needs_update","loaded"}]
+ * Loading one still verifies its files. [worker-thread] */
+MV_API mv_status MV_CALL mv_addon_slot_addons_json(char* out, uint32_t cap, uint32_t* needed);
 
 /* docs/design/25 (2026-10-03): the commands the LOADED add-ons' manifests
  * contribute, for the host's command table:

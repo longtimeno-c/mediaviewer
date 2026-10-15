@@ -9,7 +9,7 @@ private struct VolumeSliderRow: View {
   @ObservedObject private var store = VideoStore.shared
 
   var body: some View {
-    HStack(spacing: 6) {
+    HStack(spacing: MVTheme.space(6)) {
       Image(systemName: "speaker.fill").font(MVTheme.font(12))
       Slider(
         value: Binding(
@@ -23,8 +23,8 @@ private struct VolumeSliderRow: View {
       .accessibilityValue("\(Int((store.draggingVolume ?? store.volume) * 100)) percent")
       Image(systemName: "speaker.wave.3.fill").font(MVTheme.font(12))
     }
-    .padding(.horizontal, 10)
-    .padding(.vertical, 4)
+    .padding(.horizontal, MVTheme.space(10))
+    .padding(.vertical, MVTheme.space(4))
   }
 }
 
@@ -137,6 +137,8 @@ struct TransportView: View {
   var body: some View {
     let duration = max(store.durationMs, 1)
     let shown = store.scrubMs ?? store.positionMs
+    // The bar keeps its sizes under a theme (docs/ADDONS.md): Windows sizes its
+    // native island from the same 14 / 10 (chrome_host.h kTransportPadDip).
     HStack(spacing: 10) {
       Button(action: { store.skip(-10_000) }) { Image(systemName: "gobackward.10") }
         .help(Self.hint("Back 10 seconds", "Back 10 s"))
@@ -213,16 +215,16 @@ struct TransportView: View {
       .help("Frame step and volume")
       .accessibilityLabel("More playback controls")
       .popover(isPresented: $moreShown, arrowEdge: .top) {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: MVTheme.space(2)) {
           Button(action: { store.step(-1) }) { Text("Previous frame").frame(maxWidth: .infinity, alignment: .leading) }
             .help(Self.hint("Previous frame", "Previous frame"))
           Button(action: { store.step(1) }) { Text("Next frame").frame(maxWidth: .infinity, alignment: .leading) }
             .help(Self.hint("Next frame", "Next frame"))
-          Divider().padding(.vertical, 4)
+          Divider().padding(.vertical, MVTheme.space(4))
           VolumeSliderRow()
         }
         .buttonStyle(FlatButtonStyle(compact: true))
-        .padding(8)
+        .padding(MVTheme.space(8))
         .frame(width: 200)
       }
     }

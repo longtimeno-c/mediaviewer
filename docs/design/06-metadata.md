@@ -57,7 +57,10 @@ Views:
    exception is **Made with** (#290), shown only when the file names a generator or says it
    is AI-made ("ChatGPT · AI-generated"): no provenance is not a gap a file is expected to fill.
 2. **Full tree** ("All tags") — every tag, grouped by source, searchable, raw key and value
-   kept. Both hosts list every row (Windows uses a virtualised `ItemsRepeater`; there is no row
+   kept. A row's value is Exiv2's print, except XMP `Iptc4xmpExt:DigitalSourceType` (#402):
+   Exiv2's vocabulary knows five IPTC terms and prints any other (`trainedAlgorithmicMedia`)
+   as "(value)", so the row shows the reading and the whole value, "AI-generated
+   (http://cv.iptc.org/newscodes/digitalsourcetype/trainedAlgorithmicMedia)". Both hosts list every row (Windows uses a virtualised `ItemsRepeater`; there is no row
    cap in the pane). The read model caps a file at 4 000 rows so a hostile file cannot build a
    100 MB tree.
 3. **Streams** — per video/audio/subtitle/data/attachment stream: codec and labelled fields
@@ -186,7 +189,9 @@ mark.** The text is decided once in `shell/ai_badge.h`, shared by both hosts.
   the full read's, and MediaViewer writes only ratings and edits there. The full read merges the
   probe's evidence for the fields its own readers miss (a clip's XMP; PNG text or a C2PA store
   past its 8 MB prefix — C2PA only when the prefix held no store, so a store is never parsed
-  twice), so the pane and the badge always agree; tests hold the two to each other fixture by fixture (`[probe]`), and
+  twice), so the pane and the badge always agree. A store only the probe reached also gives
+  All tags its `c2pa` rows (#402): the probe's reader hands them back from the one parse, so a
+  store past the prefix lists exactly the rows the same store in the head would; tests hold the two to each other fixture by fixture (`[probe]`), and
   `fuzz_meta_probe` fuzzes the whole walk. Cost (`mv_tests "[.perf-meta]"`, warm, median): 38 µs
   for a 6 MP camera JPEG against 15 ms for the full read, 49 µs for a 60 s 1080p MOV (moov at the
   end) against 12 ms, 32–93 µs for DNG / NEF / ARW, 307 µs for a CR3, 54 µs for a HEIC. Answers are

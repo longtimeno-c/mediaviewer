@@ -8375,6 +8375,13 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
         if (had != app->text.has_selection()) app->text.fill(app->input.text);
       }
       publish(app);
+      // docs/design/25, issue #402: a right-click on the file on screen shows
+      // the add-ons' context-menu entries, as its gallery tile does. The
+      // chrome decides whether there is anything to show (a XAML flyout; it
+      // returns at once).
+      if (msg == WM_RBUTTONUP && !app->gallery_visible && !app->editor.open) {
+        (void)app->chrome.show_canvas_menu(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
+      }
       // A click on a recent folder (or its x): pressed and released on the
       // same row and the same part of it.
       if (msg == WM_LBUTTONUP && app->welcome_press >= 0) {

@@ -89,7 +89,8 @@ void read_beyond(std::string_view utf8_path, std::span<const std::uint8_t> prefi
     const bool have_c2pa = !ev.c2pa_generator.empty() || !ev.c2pa_agents.empty() || !ev.c2pa_signer.empty();
     const bool want_c2pa = truncated && !have_c2pa;
     parse::evidence probed;
-    probe_evidence(utf8_path, probed, want_c2pa);
+    std::vector<property> probed_rows;  // kept only with want_c2pa: the store's rows
+    probe_evidence(utf8_path, probed, want_c2pa, want_c2pa ? &probed_rows : nullptr);
     if (ev.exif_software.empty()) ev.exif_software = probed.exif_software;
     if (ev.xmp_creator_tool.empty()) ev.xmp_creator_tool = probed.xmp_creator_tool;
     // PNG text past the prefix (a `parameters` chunk after the image data).
@@ -110,6 +111,13 @@ void read_beyond(std::string_view utf8_path, std::span<const std::uint8_t> prefi
           continue;
         }
         ev.source_types.push_back(t);
+      }
+      // #402: and its rows, so All tags lists the store the summary names.
+      // Only its C2PA rows: the probe's XMP and EXIF are the head the readers
+      // above have already listed.
+      for (property& p : probed_rows) {
+        if (rows.full()) break;
+        if (p.space == origin::c2pa) out.properties.push_back(std::move(p));
       }
     }
     if (ev.xmp_source_type.empty() && !probed.xmp_source_type.empty()) {

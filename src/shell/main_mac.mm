@@ -1966,6 +1966,7 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   // two-finger sideways swipe that steps one item.
   mv::shell::pinch_to_wheel _pinch;
   mv::shell::swipe_detector _wheelSwipe;
+  BOOL _contextMenuShown;  // the last menuForEvent: answered with a menu (issue #402)
 }
 - (void)viewDidChangeEffectiveAppearance {
   [super viewDidChangeEffectiveAppearance];
@@ -2166,11 +2167,31 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   }
 }
 - (void)rightMouseDown:(NSEvent*)event {
-  (void)event;
   self.snap->mouse_down[1] = true;
   ++self.snap->activity_seq;
   [self publish];
   if (self.app) [self.app transportActivity];
+  // NSView's own shows menuForEvent:'s menu (and returns when it closes, its
+  // tracking having taken the release), or passes the click on when it is nil.
+  _contextMenuShown = NO;
+  [super rightMouseDown:event];
+  if (_contextMenuShown) {
+    self.snap->mouse_down[1] = false;
+    [self publish];
+  }
+}
+// docs/design/25, issue #402: the add-ons' context-menu entries for the file on
+// screen, as its gallery tile lists them (right-click or Control-click). Nil,
+// so no menu, over the gallery, the editor, an empty window, or when no add-on
+// contributes an entry.
+- (NSMenu*)menuForEvent:(NSEvent*)event {
+  (void)event;
+  NSMenu* menu = nil;
+  if (self.app && ![self.app galleryVisible] && ![self.app editorOwnsCanvas] && [self.app hasFolder]) {
+    menu = [MVChromeHost canvasContextMenu];
+  }
+  _contextMenuShown = menu != nil;
+  return menu;
 }
 - (void)rightMouseUp:(NSEvent*)event {
   (void)event;

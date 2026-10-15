@@ -537,7 +537,7 @@ first; turn that off under Settings.
 | `Tab` | focus the command bar island |
 | `Esc` | walks out one level: gallery, fullscreen, then island focus back to the canvas, and last, in a search result list, **Back to folder**. It never quits |
 | `Ctrl+W` / `Alt+F4` | close the window |
-| `Ctrl+N` (`⌘N`) | a new window: its own process on the empty window; add-ons stay in the first window's process |
+| `Ctrl+N` (`⌘N`) | a new window: its own process on the empty window; add-ons stay in the first window's process, except those that only fill screens and slots (Places), which every window loads (#402) |
 
 **Editing (PR 10, Windows and macOS).** Edits are kept per file for the session; the
 original is only ever rewritten by a lossless JPEG rotate / flip.
@@ -1699,6 +1699,26 @@ Five changes to the AI pack's index and query language
   pin that size (#388); the ABI smoke test compares the C# mirror with the header. Windows OCR on
   clips, both PR 1 gates with the pack indexing are owed.
 
+### `place:` over the whole Local search index (#398, 2026-10-15)
+
+`place:portugal` in Local search with no folder open now finds the indexed Portuguese assets.
+Places walks the host table's new `locations_of_index`, which serves the AI pack's index.db
+coordinates (mv.ai.1 `each_location`) and reads no file
+([17](design/17-local-ai-search.md) "Places over the index").
+
+- **Tests:** `mv_import_tests "[slots]"` (the thunk over a fake index: every row once, a visit
+  that stops, a stale generation, a request going stale mid-walk, a removed add-on, publish and
+  retract of the process-wide source with a walk in flight); `mv_import_tests "[places]"` (the
+  real `mv_places` answering `place:portugal` / `in:spain` with no folder, and no index attached);
+  `mv_ai_tests "[places]"` (`index_db::located_assets` batches and `engine::each_location`).
+- **Mac (M-series, 2026-10-15):** `mv_import_tests` 114 passed; `mv_ai_tests` 133 cases, 125
+  passed, 8 skipped (model-backed, as before); `mv_tests "[places]"` 12 passed, 1 skipped.
+  `addons_mac.mm` compiles. Not run: the live verify (the AI pack and Places installed in the
+  app, `place:portugal` with no folder open) and the PR 1 gate, which this change does not touch
+  (no render-thread or UI-thread work).
+- **Windows:** the wiring is in `addon_abi.cpp` (publish on the `ai` load, retract and wait on
+  unload, retract at quit), compiled only by CI; no C# change. The live verify is owed there too.
+
 ### Every tag and AI provenance in the Metadata pane (#290, docs/plans/metadata-search-and-place.md slice 1, 2026-10-11)
 
 All tags now lists C2PA / Content Credentials (JPEG APP11, PNG `caBX`, ISO-BMFF `uuid`), every
@@ -1810,6 +1830,13 @@ What is built is in [docs/design/25](design/25-open-addons.md#implementation-not
   finding the fixtures in the running app, a screen driven by keyboard alone, VoiceOver and
   Narrator naming every control, removal from Settings in the running app, Windows' docked pane
   placement.
+- **Every window, and entries on the filmstrip and canvas (#402, 2026-10-15):** slot add-ons
+  load in every window's process, found by manifest without hashing; context-menu entries show
+  on filmstrip tiles and the canvas as on gallery tiles. Mac: `mv_import_tests` 114 cases pass
+  (`"[slots]"` 14, two new); the app and its Swift chrome build. Windows: the chrome compiles;
+  the native side (`addon_abi.cpp`, `chrome_host.cpp`, `main.cpp`) is CI's. Owed: a second
+  window and the menus tried in the running app on both hosts, the first-pixel cost of a later
+  window loading Places (alternated runs), both PR 1 gates.
 
 **Running the test add-on (developer builds only).** Configure with
 `-DMV_ADDON_DEV_PUBLIC_KEY=<your key's public half>`, build `mediaviewer_app` (Mac) or the core

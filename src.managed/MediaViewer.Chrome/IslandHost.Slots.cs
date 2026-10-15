@@ -90,40 +90,45 @@ public static partial class IslandHost
 
     // ---- loading the add-ons that fill slots --------------------------------------
 
-    // Worker, from StartAddons' read of what is installed: MediaViewer's own
-    // add-ons that contribute screens or slots, other than Import and the AI
-    // family (they have chromes of their own).
-    private static void StartSlotAddons(MediaViewerSession session)
+    // Worker: MediaViewer's own add-ons that contribute screens or slots, other
+    // than Import and the AI family (they have chromes of their own). Every
+    // window loads them (issue #402): each window is its own process, so a later
+    // one shows the same sections, providers, badges and entries, and closing
+    // the first takes nothing from it. `guest`: this process does not host the
+    // add-ons, so it loads them without touching the store. Found by manifest
+    // (no file hashed: a later window never hashes the AI pack to find Places);
+    // the load verifies the one it loads.
+    private static void StartSlotAddons(MediaViewerSession session, bool guest = false)
     {
         var found = new List<SlotAddonRow>();
         try
         {
-            using JsonDocument doc = JsonDocument.Parse(AddonNative.InstalledJson());
+            using JsonDocument doc = JsonDocument.Parse(AddonNative.SlotAddonsJson());
             foreach (JsonElement a in doc.RootElement.EnumerateArray())
             {
-                string id = JStr(a, "id");
-                bool slots = a.TryGetProperty("slots", out JsonElement s) && s.ValueKind == JsonValueKind.True;
-                if (!slots || id == "import" || id.StartsWith("ai", StringComparison.Ordinal) || JStr(a, "part_of").Length > 0) continue;
-                found.Add(new SlotAddonRow(id, JStr(a, "name"), JStr(a, "version"), JStr(a, "description"), JStr(a, "state"), false));
+                found.Add(new SlotAddonRow(JStr(a, "id"), JStr(a, "name"), JStr(a, "version"), JStr(a, "description"), JStr(a, "state"), false));
             }
         }
-        catch (Exception ex) when (ex is MediaViewerException or JsonException)
+        catch (Exception ex) when (ex is MediaViewerException or JsonException or EntryPointNotFoundException)
         {
             System.Diagnostics.Debug.WriteLine(ex.Message);
         }
         var loaded = new List<string>();
-        foreach (SlotAddonRow row in found)
+        for (int i = 0; i < found.Count; ++i)
         {
+            SlotAddonRow row = found[i];
             if (row.State != "ok") continue;
             try
             {
                 // Re-verifies, loads, and attaches what the manifest contributes.
-                _ = AddonNative.Load(session, row.Id, SlotNative.Interface);
+                _ = AddonNative.Load(session, row.Id, SlotNative.Interface, guest: guest);
                 loaded.Add(row.Id);
             }
             catch (MediaViewerException ex)
             {
                 System.Diagnostics.Debug.WriteLine(ex.Message);
+                // Only the load hashed it: a copy that failed is "did not pass verification".
+                if (ex.Status != MvStatus.UnsupportedFormat) found[i] = row with { State = "invalid" };
             }
         }
         DispatcherQueueControllerTryEnqueue(() =>
@@ -372,7 +377,7 @@ public static partial class IslandHost
 
     private static UIElement BuildSlotSection(ScreenAt at, string title, JsonElement tree)
     {
-        var section = new StackPanel { Spacing = 6, Padding = new Thickness(14, 10, 14, 14) };
+        var section = new StackPanel { Spacing = Space(6), Padding = Pad(14, 10, 14, 14) };
         TextBlock heading = Text(title, Body, UiFontSize - 3);
         AutomationProperties.SetHeadingLevel(heading, Microsoft.UI.Xaml.Automation.Peers.AutomationHeadingLevel.Level2);
         section.Children.Add(heading);
@@ -557,8 +562,8 @@ public static partial class IslandHost
         var row = new StackPanel
         {
             Orientation = Orientation.Horizontal,
-            Spacing = 2,
-            Margin = new Thickness(4),
+            Spacing = Space(2),
+            Margin = Pad(4),
             HorizontalAlignment = HorizontalAlignment.Left,
             VerticalAlignment = VerticalAlignment.Bottom,
             IsHitTestVisible = false,
@@ -623,7 +628,7 @@ public static partial class IslandHost
     // The add-ons' command-bar buttons and status text, after the chrome's own.
     private static UIElement BuildSlotBarItems()
     {
-        _slotBarPanel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
+        _slotBarPanel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(2), VerticalAlignment = VerticalAlignment.Center };
         RebuildSlotBar();
         return _slotBarPanel;
     }
@@ -644,7 +649,7 @@ public static partial class IslandHost
         {
             TextBlock t = Text(text, Body, UiFontSize - 3, maxLines: 1);
             t.VerticalAlignment = VerticalAlignment.Center;
-            t.Margin = new Thickness(6, 0, 6, 0);
+            t.Margin = Pad(6, 0, 6, 0);
             ToolTipService.SetToolTip(t, label);
             AutomationProperties.SetName(t, $"{label}: {text}");
             _slotBarPanel.Children.Add(t);
@@ -671,7 +676,7 @@ public static partial class IslandHost
     // search result list, what the other local-scope providers matched.
     private static UIElement BuildSlotPathItems()
     {
-        _slotPathPanel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
+        _slotPathPanel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(2), VerticalAlignment = VerticalAlignment.Center };
         RebuildSlotPathItems();
         return _slotPathPanel;
     }
@@ -715,21 +720,31 @@ public static partial class IslandHost
         HostOpenList(title, paths, null, 0, true);
     }
 
-    // A gallery tile's context menu: the add-ons' entries (Shift+F10 or the
-    // menu key on a focused tile too). Nothing when none contributes any.
+    // The add-ons' context-menu entries for one file, each invoked with the paths
+    // a gallery tile for that file would give it (the marks when it is one).
+    // Null when no add-on contributes any.
+    private static MenuFlyout? SlotContextMenuFor(FolderItemVm vm)
+    {
+        List<SlotItem> entries = _slotItems.Where(i => i.Slot == "context").ToList();
+        if (entries.Count == 0) return null;
+        var menu = new MenuFlyout();
+        foreach (SlotItem item in entries)
+        {
+            var mi = new MenuFlyoutItem { Text = item.Label };
+            mi.Click += (_, _) => InvokeSlotItem(item, vm);
+            menu.Items.Add(mi);
+        }
+        return menu;
+    }
+
+    // A gallery or filmstrip tile's context menu: the add-ons' entries (Shift+F10
+    // or the menu key on a focused tile too). Nothing when none contributes any.
     private static void AttachSlotContextMenu(FrameworkElement tile, FolderItemVm vm)
     {
         tile.ContextRequested += (_, e) =>
         {
-            List<SlotItem> entries = _slotItems.Where(i => i.Slot == "context").ToList();
-            if (entries.Count == 0) return;
-            var menu = new MenuFlyout();
-            foreach (SlotItem item in entries)
-            {
-                var mi = new MenuFlyoutItem { Text = item.Label };
-                mi.Click += (_, _) => InvokeSlotItem(item, vm);
-                menu.Items.Add(mi);
-            }
+            MenuFlyout? menu = SlotContextMenuFor(vm);
+            if (menu is null) return;
             if (e.TryGetPosition(tile, out Windows.Foundation.Point at))
             {
                 menu.ShowAt(tile, new Microsoft.UI.Xaml.Controls.Primitives.FlyoutShowOptions { Position = at });
@@ -742,6 +757,40 @@ public static partial class IslandHost
         };
     }
 
+    /// <summary>
+    /// Native, on a right-click on the canvas (issue #402): { int32 x; int32 y }, client
+    /// pixels of the main window. Shows the add-ons' context-menu entries for the file
+    /// on screen, as its gallery tile lists them. 0 shown; 1 nothing to show.
+    /// </summary>
+    public static int ShowCanvasMenu(IntPtr arg, int sizeBytes)
+    {
+        try
+        {
+            if (arg == IntPtr.Zero || sizeBytes < 8) return unchecked((int)0x80070057);
+            int x = System.Runtime.InteropServices.Marshal.ReadInt32(arg);
+            int y = System.Runtime.InteropServices.Marshal.ReadInt32(arg, 4);
+            FolderItemVm? vm = _selectedIndex >= 0 && _selectedIndex < Items.Count ? Items[_selectedIndex] : null;
+            // The bar sits at the client origin (SheetOrigin): its coordinates are
+            // the client area's, in DIPs.
+            if (vm is null || _source?.Content is not FrameworkElement anchor || anchor.XamlRoot is null) return 1;
+            MenuFlyout? menu = SlotContextMenuFor(vm);
+            if (menu is null) return 1;
+            double scale = anchor.XamlRoot.RasterizationScale > 0 ? anchor.XamlRoot.RasterizationScale : 1;
+            menu.ShouldConstrainToRootBounds = false;  // over the canvas, outside the bar's island
+            menu.Closed += (_, _) => RestoreCanvasFocus();
+            menu.ShowAt(anchor, new Microsoft.UI.Xaml.Controls.Primitives.FlyoutShowOptions
+            {
+                Position = new Windows.Foundation.Point(x / scale, y / scale),
+            });
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+            return unchecked((int)0x80004005);
+        }
+    }
+
     // ---- Settings -> Add-ons ------------------------------------------------------------
 
     private const string PlacesFallback =
@@ -752,7 +801,7 @@ public static partial class IslandHost
 
     private static void AddSlotAddonsSettingsRows(StackPanel view)
     {
-        _slotSettingsPanel = new StackPanel { Spacing = 6, Margin = new Thickness(0, 12, 0, 0) };
+        _slotSettingsPanel = new StackPanel { Spacing = Space(6), Margin = Pad(0, 12, 0, 0) };
         view.Children.Add(_slotSettingsPanel);
         RefreshSlotSettings();
         // Opening Settings asks the channel, as Import does. A later window
@@ -787,7 +836,11 @@ public static partial class IslandHost
                 "needs_update" => $"Version {row.Version} needs a newer MediaViewer.",
                 _ => "The installed copy did not pass verification and is not loaded.",
             }));
-            StackPanel buttons = SlotRemoveButtons(row);
+            // A later window shows what it adds (issue #402) but leaves removing
+            // it to the first window, which owns the store.
+            StackPanel buttons = _addonsElsewhere
+                ? new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(6) }
+                : SlotRemoveButtons(row);
             // #410: an add-on with a window of its own opens it from here, as
             // Import does ("Open Import").
             if (_slotConfirming != row.Id && loaded && SlotWindowScreens.TryGetValue(row.Id, out string? screen))
@@ -799,7 +852,8 @@ public static partial class IslandHost
                 open.IsTabStop = true;
                 buttons.Children.Insert(0, open);
             }
-            _slotSettingsPanel.Children.Add(buttons);
+            if (buttons.Children.Count > 0) _slotSettingsPanel.Children.Add(buttons);
+            if (_addonsElsewhere) _slotSettingsPanel.Children.Add(WrappedLabel(AddonsElsewhereText));
         }
     }
 
@@ -1006,7 +1060,7 @@ public static partial class IslandHost
 
     private static StackPanel SlotRemoveButtons(SlotAddonRow row)
     {
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(6) };
         if (_slotConfirming == row.Id)
         {
             buttons.Children.Add(EditButton("Remove, keep its data", () => { _slotConfirming = null; RemoveSlotAddon(row.Id, true); }));

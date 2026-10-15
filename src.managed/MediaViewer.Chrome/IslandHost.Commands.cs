@@ -236,8 +236,8 @@ public static partial class IslandHost
     private static Style SheetPresenterStyle()
     {
         Style style = FlyoutPresenterStyle();
-        style.Setters.Add(new Setter(FlyoutPresenter.CornerRadiusProperty, new CornerRadius(RadiusSheet)));
-        style.Setters.Add(new Setter(FlyoutPresenter.PaddingProperty, new Thickness(20)));
+        style.Setters.Add(new Setter(FlyoutPresenter.CornerRadiusProperty, Corner(RadiusSheet)));
+        style.Setters.Add(new Setter(FlyoutPresenter.PaddingProperty, Pad(20)));
         // The stock presenter caps its size; a sheet sizes to its content.
         style.Setters.Add(new Setter(FrameworkElement.MaxWidthProperty, 640.0));
         style.Setters.Add(new Setter(FrameworkElement.MaxHeightProperty, 900.0));
@@ -277,9 +277,9 @@ public static partial class IslandHost
         var buttons = new StackPanel
         {
             Orientation = Orientation.Horizontal,
-            Spacing = 8,
+            Spacing = Space(8),
             HorizontalAlignment = HorizontalAlignment.Right,
-            Margin = new Thickness(0, 10, 0, 0),
+            Margin = Pad(0, 10, 0, 0),
         };
         buttons.Children.Add(cancel);
         buttons.Children.Add(primary);
@@ -462,7 +462,7 @@ public static partial class IslandHost
         string stem = dot > 0 ? name[..dot] : name;
         string ext = dot > 0 ? name[dot..] : "";
 
-        var panel = new StackPanel { Spacing = 6, Margin = new Thickness(12), MinWidth = 340 };
+        var panel = new StackPanel { Spacing = Space(6), Margin = Pad(12), MinWidth = 340 };
         panel.Children.Add(Label("Rename", UiFontSize + 2));
         string carried = item.PairPath.Length > 0
             ? $"Keeps {ext} and its pair; any .xmp sidecar follows. Never overwrites."

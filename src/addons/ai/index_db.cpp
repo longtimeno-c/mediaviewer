@@ -1199,6 +1199,25 @@ std::string index_db::fts_phrases(std::string_view typed) {
   return out;
 }
 
+result<std::vector<index_db::located>> index_db::located_assets(std::int64_t after_id, std::size_t limit) {
+  std::vector<located> out;
+  std::lock_guard lock(m_);
+  // The primary key walks in order; a row without both columns is skipped.
+  stmt s(db_, "SELECT id, path, lat, lon FROM assets WHERE id > ?1 AND lat IS NOT NULL AND lon IS NOT NULL"
+              " ORDER BY id LIMIT ?2");
+  if (!s.ok()) return err(status::io);
+  s.bind(1, after_id).bind(2, static_cast<std::int64_t>(limit));
+  while (s.step_row()) {
+    located l;
+    l.id = s.i64(0);
+    l.path = s.text(1);
+    l.lat = s.real(2);
+    l.lon = s.real(3);
+    out.push_back(std::move(l));
+  }
+  return out;
+}
+
 std::vector<std::int64_t> index_db::match_text(const std::string& words, std::size_t limit) {
   std::lock_guard lock(m_);
   std::vector<std::int64_t> out;

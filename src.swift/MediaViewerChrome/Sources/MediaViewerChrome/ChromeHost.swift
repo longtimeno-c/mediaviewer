@@ -130,7 +130,7 @@ public final class MVChromeHost: NSObject {
                           styleMask: [.borderless], backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false
     let root = AddonSettingsPage(addonID: addonID, fallbackTitle: addonID)
-      .frame(width: 560).padding(20).frame(maxHeight: .infinity, alignment: .top)
+      .frame(width: 560).padding(MVTheme.space(20)).frame(maxHeight: .infinity, alignment: .top)
       .background(MVTheme.canvas)
     window.contentView = NSHostingView(rootView: ThemedRoot(content: root))
     window.orderFrontRegardless()
@@ -158,6 +158,13 @@ public final class MVChromeHost: NSObject {
   @MainActor @objc public static func addonSelfTestOffer(_ path: String) {
     guard ProcessInfo.processInfo.environment["MV_ADDON_SELFTEST"] != nil else { return }
     OpenAddonStore.shared.offer(file: path)
+  }
+
+  /// docs/design/25, issue #402: the add-ons' context-menu entries for the file
+  /// on the canvas, as its gallery tile lists them. Nil when none contributes
+  /// one or no file is on screen (the canvas then shows no menu).
+  @MainActor @objc public static func canvasContextMenu() -> NSMenu? {
+    SlotCanvasMenu.make()
   }
 
   /// PR 9: the metadata pane and folder tree, floating over the canvas.

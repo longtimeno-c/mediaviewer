@@ -139,7 +139,7 @@ public static partial class IslandHost
         _trimBar = new StackPanel
         {
             Orientation = Orientation.Horizontal,
-            Spacing = 6,
+            Spacing = Space(6),
             VerticalAlignment = VerticalAlignment.Center,
             Visibility = Visibility.Collapsed,
         };
@@ -242,7 +242,7 @@ public static partial class IslandHost
 
     private static UIElement BuildClipTools(int flags, out UIElement focusTarget)
     {
-        var panel = new StackPanel { Spacing = 2, IsTabStop = true, Width = 400 };
+        var panel = new StackPanel { Spacing = Space(2), IsTabStop = true, Width = 400 };
         panel.Children.Add(Label("Clip tools", UiFontSize + 2));
         panel.Children.Add(Label("New files beside the clip; the original is never changed.", UiFontSize, mute: true));
         var rows = new TextBlock[ClipTools.Length];
@@ -284,7 +284,7 @@ public static partial class IslandHost
             rows[i] = Label("", UiFontSize);
             MarkLive(rows[i]);
             int captured = i;
-            var b = FlatButton(rows[i], new Thickness(0, 1, 0, 1), tabStop: false);
+            var b = FlatButton(rows[i], Pad(0, 1, 0, 1), tabStop: false);
             b.IsEnabled = Enabled(i);
             b.Click += (_, _) => Run(captured);
             panel.Children.Add(b);
@@ -375,7 +375,7 @@ public static partial class IslandHost
             {
                 Background = Brush(TrimAccent),
                 HorizontalAlignment = HorizontalAlignment.Left,
-                CornerRadius = new CornerRadius(2),
+                CornerRadius = new CornerRadius(2),  // the bar's pill ends: half its height
             };
             _pulseBrush = new LinearGradientBrush
             {
@@ -389,7 +389,7 @@ public static partial class IslandHost
                 RenderTransform = _slide,
                 Visibility = Visibility.Collapsed,
             };
-            Root = new Grid { Height = 4, Background = Brush(Hairline), CornerRadius = new CornerRadius(2) };
+            Root = new Grid { Height = 4, Background = Brush(Hairline), CornerRadius = new CornerRadius(2) };  // a pill: half its height
             Root.Children.Add(_fill);
             Root.Children.Add(_pulse);
             Root.SizeChanged += (_, e) =>
@@ -526,10 +526,10 @@ public static partial class IslandHost
     private static UIElement BuildJobsPane()
     {
         Grid root = PanelShell("Jobs", Command.JobsPane, out Grid body);
-        var col = new StackPanel { Spacing = 8, Padding = new Thickness(14, 4, 14, 14), IsTabStop = true };
+        var col = new StackPanel { Spacing = Space(8), Padding = Pad(14, 4, 14, 14), IsTabStop = true };
         _jobsEmpty = Text("No clip jobs. On a clip: Ctrl+T trims, Ctrl+S opens the clip tools.", Body);
         col.Children.Add(_jobsEmpty);
-        _jobsList = new StackPanel { Spacing = 6 };
+        _jobsList = new StackPanel { Spacing = Space(6) };
         col.Children.Add(_jobsList);
         Button clear = EditButton("Clear finished", () =>
         {
@@ -684,14 +684,14 @@ public static partial class IslandHost
         row.Title = Text("", Title, UiFontSize - 2, maxLines: 2);
         row.Status = Text("", Body, UiFontSize - 3);
         row.Bar = new JobBar();
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(6) };
         row.Cancel = EditButton("Cancel", () => { _folderSession?.ClipCancel(id); RefreshJobs(); });
         row.Retry = EditButton("Retry", () => { _folderSession?.ClipRetry(id); RefreshJobs(); });
         row.Reveal = EditButton("Show in Explorer", () => RevealJob(id));
         buttons.Children.Add(row.Cancel);
         buttons.Children.Add(row.Retry);
         buttons.Children.Add(row.Reveal);
-        var inner = new StackPanel { Spacing = 3 };
+        var inner = new StackPanel { Spacing = Space(3) };
         inner.Children.Add(row.Title);
         inner.Children.Add(row.Bar.Root);
         inner.Children.Add(row.Status);
@@ -701,8 +701,8 @@ public static partial class IslandHost
             Child = inner,
             BorderThickness = new Thickness(1),
             BorderBrush = Brush(Hairline),
-            Padding = new Thickness(8, 6, 8, 6),
-            CornerRadius = new CornerRadius(6),
+            Padding = Pad(8, 6, 8, 6),
+            CornerRadius = Corner(6),
         };
         return row;
     }

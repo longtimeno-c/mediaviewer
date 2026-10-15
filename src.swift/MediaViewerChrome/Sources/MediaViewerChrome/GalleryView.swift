@@ -84,6 +84,8 @@ struct GalleryView: View {
   // Whether any add-on fills tile badges / context entries (changes only when one
   // attaches or goes): the cells carry those wrappers only then.
   @ObservedObject private var tileFlags = SlotTileFlags.shared
+  // The photo grid keeps its sizes under a theme's density (docs/ADDONS.md
+  // "A theme's shape"): the gutter, the inset and the tiles are geometry.
   private let spacing: CGFloat = 8
   private let inset: CGFloat = 12
 
@@ -130,14 +132,14 @@ struct GalleryView: View {
         if search.isOpen {
           FileSearchBar()
             .padding(.horizontal, inset)
-            .padding(.top, 10)
+            .padding(.top, MVTheme.space(10))
         }
         if (mixed || foldersOnly), let query = store.folderQuery {
           Text(query.isEmpty ? "Find folder" : "Find folder: \(query)")
             .font(MVTheme.font(14))
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, inset)
-            .padding(.top, 8)
+            .padding(.top, MVTheme.space(8))
         }
         // Issue #413: one share icon for the grid's selection (the shift-click
         // range, else the selected cell): Sharepoint, not the OS share sheet.
@@ -157,7 +159,7 @@ struct GalleryView: View {
         if mixed && !shownFolders.isEmpty {
           FolderStrip(cell: 44, shown: shownFolders)
             .padding(.horizontal, inset)
-            .padding(.vertical, 8)
+            .padding(.vertical, MVTheme.space(8))
         }
         ScrollViewReader { proxy in
           ScrollView {
@@ -223,7 +225,7 @@ struct GalleryView: View {
               Text("No supported photos or videos in this folder")
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity)
-                .padding(.top, 60)
+                .padding(.top, MVTheme.space(60))
             }
           }
           // In a child that observes only the selection: an arrow key re-runs
@@ -263,7 +265,7 @@ private struct FolderStrip: View {
   var body: some View {
     ScrollViewReader { proxy in
       ScrollView(.horizontal, showsIndicators: false) {
-        HStack(spacing: 8) {
+        HStack(spacing: MVTheme.space(8)) {
           ForEach(shown, id: \.self) { index in
             // SwiftUI can re-run a row of the old list after the list shrank
             // (a search or a person swapping the folder out): skip it, never
@@ -304,7 +306,7 @@ private struct FolderTile: View {
   @ObservedObject var card: FolderCard
 
   var body: some View {
-    VStack(spacing: 4) {
+    VStack(spacing: 4) {  // the tile's height: grid geometry
       Color.clear
         .frame(width: size, height: size)
         .overlay {
@@ -326,17 +328,17 @@ private struct FolderTile: View {
           if card.loaded {
             Text(card.status)
               .font(MVTheme.font(11))
-              .padding(.horizontal, 6)
-              .padding(.vertical, 2)
+              .padding(.horizontal, MVTheme.space(6))
+              .padding(.vertical, MVTheme.space(2))
               .background(.ultraThinMaterial, in: Capsule())
-              .padding(6)
+              .padding(MVTheme.space(6))
           }
         }
         .overlay(
           RoundedRectangle(cornerRadius: MVTheme.radius(6))
             .strokeBorder(isCursor ? MVTheme.accent : .clear, lineWidth: 2)
         )
-      HStack(spacing: 4) {
+      HStack(spacing: MVTheme.space(4)) {
         Image(systemName: "folder").font(MVTheme.font(12)).foregroundStyle(.secondary)
         Text(FolderStore.shared.folderName(path))
           .font(MVTheme.font(12))
@@ -358,7 +360,7 @@ private struct FolderChip: View {
   @ObservedObject var card: FolderCard
 
   var body: some View {
-    HStack(spacing: 6) {
+    HStack(spacing: MVTheme.space(6)) {
       Color.clear
         .frame(width: 36, height: 36)
         .overlay {
@@ -369,7 +371,7 @@ private struct FolderChip: View {
           }
         }
         .clipShape(RoundedRectangle(cornerRadius: MVTheme.radius(4)))
-      VStack(alignment: .leading, spacing: 1) {
+      VStack(alignment: .leading, spacing: MVTheme.space(1)) {
         Text(FolderStore.shared.folderName(path))
           .font(MVTheme.font(12))
           .lineLimit(1)
@@ -382,7 +384,7 @@ private struct FolderChip: View {
       }
       .frame(width: 120, alignment: .leading)
     }
-    .padding(4)
+    .padding(MVTheme.space(4))
     .background(
       RoundedRectangle(cornerRadius: MVTheme.radius(6))
         .fill(isCursor ? MVTheme.accent.opacity(0.18) : Color.primary.opacity(0.04))
@@ -433,7 +435,7 @@ private struct GalleryCell: View {
   var why: String? = nil
 
   var body: some View {
-    VStack(spacing: 4) {
+    VStack(spacing: 4) {  // the tile's height: grid geometry
       // Always a square: the placeholder and the loaded image must occupy the
       // same box, or rows go ragged as thumbnails arrive.
       Color.clear

@@ -144,7 +144,7 @@ public static partial class IslandHost
 
     private static FrameworkElement BuildResumeNoticeCard(string question)
     {
-        var stack = new StackPanel { Spacing = 8 };
+        var stack = new StackPanel { Spacing = Space(8) };
         stack.Children.Add(new TextBlock
         {
             Text = question,
@@ -164,7 +164,7 @@ public static partial class IslandHost
         var buttons = new StackPanel
         {
             Orientation = Orientation.Horizontal,
-            Spacing = 8,
+            Spacing = Space(8),
             HorizontalAlignment = HorizontalAlignment.Right,
         };
         Button dismiss = TextButton("Dismiss", DismissResumeNotice);
@@ -180,8 +180,8 @@ public static partial class IslandHost
         var card = new Border
         {
             Width = ResumeNoticeWidth,
-            Padding = new Thickness(14),
-            CornerRadius = new CornerRadius(8),
+            Padding = Pad(14),
+            CornerRadius = Corner(8),
             BorderThickness = new Thickness(1),
             BorderBrush = Brush(Hairline),
             Background = Brush(ChromeColour.Surface),

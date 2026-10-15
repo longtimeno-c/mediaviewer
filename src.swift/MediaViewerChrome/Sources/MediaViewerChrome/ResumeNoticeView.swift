@@ -75,26 +75,26 @@ struct ResumeNoticeView: View {
   @ObservedObject private var store = ResumeNoticeStore.shared
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
+    VStack(alignment: .leading, spacing: MVTheme.space(8)) {
       Text(store.question)
         .font(MVTheme.font(14)).foregroundStyle(MVTheme.title)
         .fixedSize(horizontal: false, vertical: true)
       Text("Local search stopped part-way last time. It stays paused until you resume it.")
         .font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
         .fixedSize(horizontal: false, vertical: true)
-      HStack(spacing: 8) {
+      HStack(spacing: MVTheme.space(8)) {
         Spacer(minLength: 0)
         Button("Dismiss") { store.dismiss() }
           .help("Leave it paused. You can resume it from Settings → Local search.")
         Button("Resume") { store.resume() }
       }
     }
-    .padding(14)
+    .padding(MVTheme.space(14))
     .frame(width: ResumeNoticeView.width, alignment: .leading)
-    .background(RoundedRectangle(cornerRadius: 10).fill(MVTheme.surface))
-    .overlay(RoundedRectangle(cornerRadius: 10).stroke(MVTheme.hairline, lineWidth: 1))
+    .background(RoundedRectangle(cornerRadius: MVTheme.radius(10)).fill(MVTheme.surface))
+    .overlay(RoundedRectangle(cornerRadius: MVTheme.radius(10)).stroke(MVTheme.hairline, lineWidth: 1))
     .shadow(color: .black.opacity(0.18), radius: 8, y: 2)
-    .padding(8)  // room for the shadow inside the hosting view
+    .padding(MVTheme.space(8))  // room for the shadow inside the hosting view
     .fixedSize()
     .accessibilityElement(children: .contain)
     .accessibilityLabel(store.question)

@@ -158,7 +158,7 @@ public static partial class IslandHost
             }
             case "scroll":
             {
-                var inner = new StackPanel { Spacing = 8 };
+                var inner = new StackPanel { Spacing = Space(8) };
                 foreach (JsonElement c in JArr(n, "children")) inner.Children.Add(BuildScreenNode(c, at));
                 bool horizontal = JStr(n, "axis") == "horizontal";
                 if (horizontal) inner.Orientation = Orientation.Horizontal;
@@ -196,7 +196,7 @@ public static partial class IslandHost
                 for (int i = 0; i < Math.Min(2, parts.Length); ++i)
                 {
                     var child = (FrameworkElement)BuildScreenNode(parts[i], at);
-                    child.Margin = new Thickness(8);
+                    child.Margin = Pad(8);
                     if (vertical) Grid.SetRow(child, i * 2); else Grid.SetColumn(child, i * 2);
                     grid.Children.Add(child);
                 }
@@ -250,7 +250,7 @@ public static partial class IslandHost
                 string symbol = JStr(n, "symbol");
                 if (symbol.Length > 0)
                 {
-                    var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+                    var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(6) };
                     row.Children.Add(new FontIcon { Glyph = SlotGlyph(symbol), FontFamily = SymbolFont, FontSize = 12, Foreground = Brush(Title) });
                     row.Children.Add(Text(label, Title, UiFontSize - 2));
                     b.Content = row;
@@ -350,11 +350,11 @@ public static partial class IslandHost
             case "progress":
             {
                 double v = JNum(n, "value", -1);
-                var track = new Grid { Height = 6, MinWidth = 120, Background = Brush(Hairline), CornerRadius = new CornerRadius(3) };
+                var track = new Grid { Height = 6, MinWidth = 120, Background = Brush(Hairline), CornerRadius = new CornerRadius(3) };  // a pill: half its height
                 var fill = new Border
                 {
                     Background = Brush(TrimAccent),
-                    CornerRadius = new CornerRadius(3),
+                    CornerRadius = new CornerRadius(3),  // the bar's pill ends: half its height
                     HorizontalAlignment = HorizontalAlignment.Left,
                 };
                 track.Children.Add(fill);
@@ -364,7 +364,7 @@ public static partial class IslandHost
                 return track;
             }
             case "separator":
-                return new Border { Height = 1, Background = Brush(Hairline), Margin = new Thickness(0, 4, 0, 4) };
+                return new Border { Height = 1, Background = Brush(Hairline), Margin = Pad(0, 4, 0, 4) };
             case "surface":
                 return BuildSurface(n, at);
             default:
@@ -382,7 +382,7 @@ public static partial class IslandHost
         double lo = JNum(n, "min", -1e12), hi = JNum(n, "max", 1e12), step = JNum(n, "step", 1);
         double value = JNum(n, "value", Math.Max(lo, 0));
         string label = JStr(n, "label");
-        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(6) };
         TextBlock shown = Text($"{label}: {ScreenNumberJson(value)}", Title, UiFontSize - 2);
         shown.VerticalAlignment = VerticalAlignment.Center;
         void Step(double by)
@@ -423,7 +423,7 @@ public static partial class IslandHost
         JsonElement[] columns = table ? JArr(n, "columns").ToArray() : Array.Empty<JsonElement>();
         if (table)
         {
-            var header = new Grid { Padding = new Thickness(8, 4, 8, 4) };
+            var header = new Grid { Padding = Pad(8, 4, 8, 4) };
             for (int c = 0; c < columns.Length; ++c)
             {
                 header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -455,7 +455,7 @@ public static partial class IslandHost
             }
             else
             {
-                var col = new StackPanel { Spacing = 1 };
+                var col = new StackPanel { Spacing = Space(1) };
                 col.Children.Add(Text(JStr(r, "text"), Title, UiFontSize - 2));
                 string detail = JStr(r, "detail");
                 if (detail.Length > 0) col.Children.Add(Text(detail, Body, UiFontSize - 4));
@@ -535,7 +535,7 @@ public static partial class IslandHost
         {
             Width = size,
             Height = size,
-            CornerRadius = new CornerRadius(6),
+            CornerRadius = Corner(6),
             Background = Brush(ChromeColour.Surface),
             Child = img,
         };
@@ -622,7 +622,7 @@ public static partial class IslandHost
         ScrollViewer? scroller = null;
         var repeater = new ItemsRepeater
         {
-            Layout = new UniformGridLayout { MinItemWidth = tile, MinItemHeight = tile, MinColumnSpacing = 8, MinRowSpacing = 8 },
+            Layout = new UniformGridLayout { MinItemWidth = tile, MinItemHeight = tile, MinColumnSpacing = Space(8), MinRowSpacing = Space(8) },
             ItemsSource = vms,
         };
         repeater.ItemTemplate = new SlotTileFactory(tile, vm =>
@@ -760,7 +760,7 @@ public static partial class IslandHost
         var frame = new Grid
         {
             Height = height,
-            CornerRadius = new CornerRadius(6),
+            CornerRadius = Corner(6),
             BorderBrush = Brush(Hairline),
             BorderThickness = new Thickness(1),
             Background = Brush(ChromeColour.Surface),
@@ -1065,12 +1065,12 @@ public static partial class IslandHost
 
     private static UIElement BuildScreenRoot(JsonElement s, ScreenAt at, string place)
     {
-        var root = new Grid { Background = Brush(Canvas), RequestedTheme = IslandTheme, Padding = new Thickness(12) };
+        var root = new Grid { Background = Brush(Canvas), RequestedTheme = IslandTheme, Padding = Pad(12) };
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         if (place != "window")
         {
-            var head = new Grid { Margin = new Thickness(0, 0, 0, 8) };
+            var head = new Grid { Margin = Pad(0, 0, 0, 8) };
             head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             head.Children.Add(Text(JStr(s, "title"), Title, UiFontSize, bold: true));

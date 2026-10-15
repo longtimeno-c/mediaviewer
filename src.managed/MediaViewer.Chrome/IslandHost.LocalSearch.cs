@@ -287,7 +287,7 @@ public static partial class IslandHost
             MaxWidth = 360,
             TextTrimming = TextTrimming.CharacterEllipsis,
         };
-        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 7 };
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(7) };
         row.Children.Add(_indexingRing.Root);
         row.Children.Add(_indexingText);
         // Starting (issue #292) or indexing: what Ctrl+F does.
@@ -298,10 +298,10 @@ public static partial class IslandHost
             Background = Brush(ChromeColour.Surface),
             BorderBrush = Brush(Hairline),
             BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(12),
-            Padding = new Thickness(10, 3, 12, 3),
+            CornerRadius = new CornerRadius(12),  // a pill (the Mac's Capsule), not a theme radius
+            Padding = Pad(10, 3, 12, 3),
         };
-        _indexingPill.Padding = new Thickness(4, 0, 4, 0);
+        _indexingPill.Padding = Pad(4, 0, 4, 0);
         _indexingPill.Visibility = Visibility.Collapsed;
         _indexingPill.Opacity = 0;
         _indexingShown = false;
@@ -634,7 +634,7 @@ public static partial class IslandHost
         heading.Foreground = Brush(Title);
         _localSearchHeading = heading;
         view.Children.Add(heading);
-        _localSearchPanel = new StackPanel { Spacing = 10 };
+        _localSearchPanel = new StackPanel { Spacing = Space(10) };
         _localSearchStatus = Note("");
         view.Children.Add(_localSearchPanel);
         view.Children.Add(FirstPartyPageHost(AiSlot, FacesSlot, AudioSlot, CudaSlot));  // PR 56
@@ -719,15 +719,15 @@ public static partial class IslandHost
         }
 
         // The intro and its Install: only until Core is installed (the Mac's introCard).
-        var intro = new StackPanel { Spacing = 8 };
+        var intro = new StackPanel { Spacing = Space(8) };
         var card = new Border
         {
             Child = intro,
-            Padding = new Thickness(14),
+            Padding = Pad(14),
             Background = Brush(ChromeColour.Surface),
             BorderBrush = Brush(Hairline),
             BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(RadiusSheet),
+            CornerRadius = Corner(RadiusSheet),
         };
         TextBlock what = Note("Find photos and moments in videos by describing them: “dog on a beach”, “birthday cake”.");
         what.Foreground = Brush(Title);
@@ -825,7 +825,7 @@ public static partial class IslandHost
             Background = Brush(ChromeColour.Surface),
             BorderBrush = Brush(Hairline),
             BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(RadiusCard),
+            CornerRadius = Corner(RadiusCard),
         });
 
         if (_confirmCoreRemove) _localSearchPanel.Children.Add(BuildCoreRemoveConfirm());
@@ -903,13 +903,13 @@ public static partial class IslandHost
     {
         var row = new Grid
         {
-            Padding = new Thickness(12),
-            ColumnSpacing = 16,
+            Padding = Pad(12),
+            ColumnSpacing = Space(16),
         };
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var labels = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
+        var labels = new StackPanel { Spacing = Space(2), VerticalAlignment = VerticalAlignment.Center };
         TextBlock name = Label(title);
         name.Foreground = Brush(Title);
         labels.Children.Add(name);
@@ -933,7 +933,7 @@ public static partial class IslandHost
         else if (_aiQueue.Contains(slot))
         {
             // Waiting its turn; it can be taken out before it starts.
-            var queued = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+            var queued = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8) };
             queued.Children.Add(Small(slot.Parent is not null && !AiSlot.State.Installed ? "Queued, after Core" : "Queued"));
             Button cancel = SettingsButton("Cancel", () => CancelQueuedPiece(slot));
             AutomationProperties.SetName(cancel, $"Cancel installing {title}");
@@ -944,7 +944,7 @@ public static partial class IslandHost
         {
             // Removing: said at once, not a greyed Remove (owner report,
             // 2026-09-27); Install comes back when it has gone.
-            var removing = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+            var removing = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8) };
             removing.Children.Add(Small("Removing…"));
             AutomationProperties.SetName(removing, $"Removing {title}");
             action = removing;
@@ -968,7 +968,7 @@ public static partial class IslandHost
                 update.IsEnabled = !slot.Removing;
                 if (slot != AiSlot && CoreBehind()) ToolTipService.SetToolTip(update, "Core updates first.");
                 AutomationProperties.SetName(update, $"Update {title} to {newer}");
-                var both = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+                var both = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8) };
                 both.Children.Add(update);
                 both.Children.Add(remove);
                 action = both;
@@ -1085,7 +1085,7 @@ public static partial class IslandHost
         ask.Foreground = Brush(Title);
         box.Children.Add(ask);
         box.Children.Add(Note("Also delete the search index? Keeping it means a reinstall searches at once, without indexing again."));
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8) };
         // Keeping the index is the default (accent), and where Enter lands; Esc cancels.
         Button keep = SettingsButton("Remove, keep the index", () => RemoveCore(keepData: true), accent: true);
         buttons.Children.Add(keep);
@@ -1108,7 +1108,7 @@ public static partial class IslandHost
                 : $"Remove {slot.Name}? Indexing runs on the CPU until it is installed again.");
         ask.Foreground = Brush(Title);
         box.Children.Add(ask);
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8) };
         Button remove = SettingsButton("Remove", () =>
         {
             _confirmPieceRemove = null;
@@ -1123,16 +1123,16 @@ public static partial class IslandHost
         return ConfirmCard(box);
     }
 
-    private static StackPanel ConfirmBox() => new() { Spacing = 8 };
+    private static StackPanel ConfirmBox() => new() { Spacing = Space(8) };
 
     private static Border ConfirmCard(UIElement child) => new()
     {
         Child = child,
-        Padding = new Thickness(12),
+        Padding = Pad(12),
         Background = Brush(ChromeColour.Surface),
         BorderBrush = Brush(Hairline),
         BorderThickness = new Thickness(1),
-        CornerRadius = new CornerRadius(RadiusCard),
+        CornerRadius = Corner(RadiusCard),
     };
 
     /// <summary>Esc or Cancel on a Local search "Remove …?": false when none is open.</summary>

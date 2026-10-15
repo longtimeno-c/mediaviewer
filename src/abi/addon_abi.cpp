@@ -17,10 +17,12 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 
 #include "abi/addon_bridge.h"
 #include "abi/guard.h"
 #include "addon/host.h"
+#include "addon/index_locations.h"
 #include "addon/manifest.h"
 #include "addon/open_json.h"
 #include "abi/addon_media.h"
@@ -302,6 +304,35 @@ MV_API mv_status MV_CALL mv_addon_installed_json(char* out, uint32_t cap, uint32
   }));
 }
 
+MV_API mv_status MV_CALL mv_addon_slot_addons_json(char* out, uint32_t cap, uint32_t* needed) {
+  return static_cast<mv_status>(mv::abi::guard("mv_addon_slot_addons_json", [&] {
+    auto s = open_store();
+    if (!s) return s.error();
+    mv::json::writer w;
+    w.begin_array();
+    // Manifests only: no file is hashed (issue #402: a later window must not
+    // hash the AI pack to find Places). The load verifies the one it loads.
+    for (const mv::addon::store::listed& l : s->manifests()) {
+      if (!mv::addon::loads_for_slots(l.m)) continue;
+      bool loaded = false;
+      {
+        std::lock_guard lock(g_mutex);
+        loaded = g_loaded.count(l.m.id) != 0;
+      }
+      w.begin_object();
+      w.key("id").string(l.m.id);
+      w.key("name").string(l.m.name);
+      w.key("version").string(l.m.version);
+      w.key("description").string(l.m.description);
+      w.key("state").string(state_name(l.state));
+      w.key("loaded").boolean(loaded);
+      w.end_object();
+    }
+    w.end_array();
+    return write_out(w.str(), out, cap, needed);
+  }));
+}
+
 MV_API mv_status MV_CALL mv_addon_check_manifest(const void* manifest, uint32_t manifest_len,
                                                  const void* signature, uint32_t signature_len,
                                                  char* out, uint32_t cap, uint32_t* needed) {
@@ -530,6 +561,13 @@ MV_API mv_status MV_CALL mv_addon_unload(const char* id) {
       gone = std::move(it->second);
       g_loaded.erase(it);
     }
+    // #398: the AI pack's index stops serving other add-ons' locations_of_index
+    // first; a walk in flight stops at its next row, and none is inside the
+    // pack when its library goes.
+    if (std::string_view(id) == "ai") {
+      mv::addon::retract_index_locations();
+      mv::addon::wait_index_locations_idle();
+    }
     gone.addon.reset();  // shutdown, then unload; outside the lock
     if (gone.session) (void)mv_session_release(gone.session);
     return status::ok;
@@ -543,6 +581,9 @@ MV_API mv_status MV_CALL mv_addon_quit(void) {
       std::lock_guard lock(g_mutex);
       all.swap(g_loaded);  // static destruction finds nothing left to join
     }
+    // #398: no index walk starts now; one in flight stops at its next row.
+    // Not waited on: the pack is abandoned, never unmapped.
+    mv::addon::retract_index_locations();
     for (auto& [id, entry] : all) {
       // The entry's session stays retained: a pack left running still posts.
       const bool ai_family = id == "ai" || id.rfind("ai-", 0) == 0;
@@ -578,11 +619,20 @@ MV_API mv_status MV_CALL mv_addon_remove(const char* id, uint32_t keep_data) {
 
 namespace {
 
-// mv_addon_load and mv_addon_load_reader. `reader`: through the add-on's
-// reader door (docs/design/18 "One host process"): a window whose process
-// does not host the add-ons searches through it, and leaves the store alone.
+// How a process loads an add-on (docs/design/18 "One host process").
+enum class load_door {
+  host,    // mv_addon_load: the window that hosts the add-ons; the first load sweeps the store
+  reader,  // mv_addon_load_reader: the AI pack's read-only door, in a later window
+  guest,   // mv_addon_load_guest: the add-on's own entry in a later window (issue #402)
+};
+
+// mv_addon_load, mv_addon_load_reader and mv_addon_load_guest. A reader or a
+// guest is a window whose process does not host the add-ons: it leaves the
+// store alone (never sweeps it: the host window may be installing into it).
 mv::status load_addon(mv_session_t session, const char* id, const char* interface_id,
-                      const void** out_interface, char* out_chrome_utf8, uint32_t chrome_cap, bool reader) {
+                      const void** out_interface, char* out_chrome_utf8, uint32_t chrome_cap,
+                      load_door door) {
+  const bool reader = door == load_door::reader;
   MV_REQUIRE(session && id && interface_id && out_interface, "bad arguments");
   std::lock_guard lock(g_mutex);
   auto it = g_loaded.find(id);
@@ -595,7 +645,7 @@ mv::status load_addon(mv_session_t session, const char* id, const char* interfac
     // must not sweep .staging while the chrome is downloading into it. A
     // reader never sweeps: the host window may be installing into it.
     static bool cleaned = false;  // guarded by g_mutex
-    if (!cleaned && !reader) {
+    if (!cleaned && door == load_door::host) {
       s->startup_cleanup();
       cleaned = true;
     }
@@ -658,6 +708,13 @@ mv::status load_addon(mv_session_t session, const char* id, const char* interfac
     }
     (void)mv_session_retain(session);
     it = g_loaded.emplace(id, loaded_entry{std::move(*loaded), session, reader}).first;
+    // #398: while the AI pack is loaded (the writer or a reader: both read
+    // index.db), its index's coordinates serve every add-on's
+    // locations_of_index (Places' place: over the whole index).
+    if (std::string_view(id) == "ai") {
+      mv::addon::publish_index_locations(mv::addon::ai_index_locations(
+          static_cast<const mv_ai_api*>(it->second.addon->query(MV_AI_INTERFACE))));
+    }
   }
   const void* iface = it->second.addon->query(interface_id);
   if (!iface) return status::unsupported_format;
@@ -681,7 +738,7 @@ MV_API mv_status MV_CALL mv_addon_load(mv_session_t session, const char* id,
                                        const char* interface_id, const void** out_interface,
                                        char* out_chrome_utf8, uint32_t chrome_cap) {
   return static_cast<mv_status>(mv::abi::guard("mv_addon_load", [&] {
-    return load_addon(session, id, interface_id, out_interface, out_chrome_utf8, chrome_cap, false);
+    return load_addon(session, id, interface_id, out_interface, out_chrome_utf8, chrome_cap, load_door::host);
   }));
 }
 
@@ -689,7 +746,15 @@ MV_API mv_status MV_CALL mv_addon_load_reader(mv_session_t session, const char* 
                                               const char* interface_id, const void** out_interface,
                                               char* out_chrome_utf8, uint32_t chrome_cap) {
   return static_cast<mv_status>(mv::abi::guard("mv_addon_load_reader", [&] {
-    return load_addon(session, id, interface_id, out_interface, out_chrome_utf8, chrome_cap, true);
+    return load_addon(session, id, interface_id, out_interface, out_chrome_utf8, chrome_cap, load_door::reader);
+  }));
+}
+
+MV_API mv_status MV_CALL mv_addon_load_guest(mv_session_t session, const char* id,
+                                             const char* interface_id, const void** out_interface,
+                                             char* out_chrome_utf8, uint32_t chrome_cap) {
+  return static_cast<mv_status>(mv::abi::guard("mv_addon_load_guest", [&] {
+    return load_addon(session, id, interface_id, out_interface, out_chrome_utf8, chrome_cap, load_door::guest);
   }));
 }
 

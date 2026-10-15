@@ -9,6 +9,7 @@ import SwiftUI
 
 struct FilmstripView: View {
   @ObservedObject private var store = FolderStore.shared
+  @ObservedObject private var tileFlags = SlotTileFlags.shared
 
   var body: some View {
     ScrollViewReader { proxy in
@@ -16,7 +17,7 @@ struct FilmstripView: View {
         // LazyHStack, not HStack: PR 18's verify line asks for 2000 mixed
         // JPEGs to scroll "without a hitch" -- eagerly building 2000 cells
         // (and requesting 2000 thumbnails) up front is exactly the hitch.
-        LazyHStack(spacing: 4) {
+        LazyHStack(spacing: 4) {  // the strip keeps its sizes under a theme (docs/ADDONS.md)
           ForEach(store.names.indices, id: \.self) { index in
             // A stale row of a list that just shrank (a search result replacing
             // the folder): skip it, never index past the end.
@@ -29,6 +30,9 @@ struct FilmstripView: View {
               )
               .id(index)
               .onTapGesture { store.select(index) }
+              // docs/design/25, issue #402: the add-ons' context-menu entries, as on
+              // the gallery's tile for the same file; only when some exist.
+              .modifier(SlotContextMenu(on: tileFlags.context, tile: index))
               .fileDrag { store.dragFiles(from: index) }
             }
           }
