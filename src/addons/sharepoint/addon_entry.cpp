@@ -20,10 +20,12 @@
 #include <memory>
 #include <mutex>
 #include <new>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "addons/sharepoint/engine.h"
+#include "addons/sharepoint/net.h"
 #include "core/json.h"
 #include "io/file_port.h"
 
@@ -38,6 +40,7 @@ using mv::sharepoint::engine;
 constexpr uint32_t kHostApiMin = 3;
 constexpr uint32_t kHostApiMax = 3;
 constexpr const char* kScreen = "sharepoint";
+constexpr const char* kStatusItem = "receiving";  // manifest.json status_items
 
 template <typename Fn>
 mv_status guard(Fn&& fn) noexcept {
@@ -77,10 +80,14 @@ class host_bridge final : public mv::sharepoint::engine_host {
 
   void show_screen(bool show) override { (void)h_->screen_show(h_->host, kScreen, show ? 1 : 0); }
 
-  std::string default_destination() override {
+  // Downloads, as AirDrop (#442); Save to picks another.
+  std::string default_destination() override { return mv::sharepoint::net::downloads_folder(); }
+
+  // The add-on's own data folder (made by the host), or "".
+  std::string data_dir() {
     char buf[4096];
-    if (!h_->default_library_dir || h_->default_library_dir(h_->host, buf, sizeof buf) != MV_OK || !*buf) return {};
-    return mv::io::join_path(buf, mv::sharepoint::kReceivedFolder);
+    if (!h_->data_dir || h_->data_dir(h_->host, buf, sizeof buf) != MV_OK || !*buf) return {};
+    return buf;
   }
 
   std::optional<std::uint64_t> free_bytes(const std::string& dir) override {
@@ -110,6 +117,10 @@ class host_bridge final : public mv::sharepoint::engine_host {
     if (h_->log) h_->log(h_->host, level, ascii);
   }
 
+  bool post_status(const std::string& text) override {
+    return h_->status_post && h_->status_post(h_->host, kStatusItem, text.c_str()) == MV_OK;
+  }
+
  private:
   const mv_host_api* h_;
   std::mutex m_;
@@ -120,17 +131,38 @@ class host_bridge final : public mv::sharepoint::engine_host {
 struct addon_state {
   const mv_host_api* host = nullptr;
   std::unique_ptr<host_bridge> bridge;
-  std::unique_ptr<engine> eng;  // made on first use (the host's worker, one call at a time)
+  std::string prefs_path;  // "" without a data folder: nothing is kept
+  // This process keeps receiving at launch (one window's process at a time).
+  std::unique_ptr<mv::sharepoint::net::instance_lock> background;
+  // Made on first use (the host's worker, one call at a time), or at load
+  // when Keep receiving was on (the loader's thread, after first pixel).
+  // Declared last: it stops before the bridge it calls goes.
+  std::unique_ptr<engine> eng;
 
-  engine& get() {
+  engine& get(std::optional<mv::sharepoint::prefs> initial = std::nullopt) {
     if (!eng) {
       engine::options o;
       // The loader test opens the window without touching the network.
       const char* offline = std::getenv("MV_SHAREPOINT_OFFLINE");
       o.offline = offline && offline[0] == '1';
+      o.prefs_path = prefs_path;
+      o.initial = std::move(initial);
       eng = std::make_unique<engine>(*bridge, std::move(o));
     }
     return *eng;
+  }
+
+  // At load (#442): Keep receiving was on at the last launch, so the engine
+  // comes up now and listens; the host loads slot add-ons on its add-on
+  // queue / a worker after first pixel, never the foreground queue. Off: one
+  // small read, and no engine, thread or socket until the window opens.
+  void start_if_kept() {
+    if (prefs_path.empty()) return;
+    auto kept = mv::sharepoint::load_prefs(prefs_path);
+    if (!kept || !kept->receiving) return;
+    background = mv::sharepoint::net::try_lock_instance(prefs_path + ".lock");
+    if (!background) return;  // another window's process receives
+    (void)get(kept);
   }
 };
 
@@ -207,7 +239,11 @@ extern "C" MV_ADDON_EXPORT mv_status MV_CALL mv_addon_get(uint32_t host_api, con
     auto state = std::make_unique<addon_state>();
     state->host = host;
     state->bridge = std::make_unique<host_bridge>(host);
+    if (const std::string dir = state->bridge->data_dir(); !dir.empty()) {
+      state->prefs_path = mv::io::join_path(dir, mv::sharepoint::kPrefsFile);
+    }
     g = state.release();
+    g->start_if_kept();
     std::memset(out, 0, sizeof *out);
     out->struct_size = sizeof *out;
     out->id = "sharepoint";

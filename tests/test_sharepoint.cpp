@@ -3,7 +3,8 @@
 // Sharepoint (docs/design/28): the wire's rules, the sealed channel, and two
 // or three engines sending to each other over loopback TCP, found through an
 // in-memory discovery bus instead of the LAN beacon. The issue's verify, as
-// far as one machine can run it: both sides show the same code, Accept
+// far as one machine can run it: both sides derive the same code (the
+// receiver shows it, the sender types it, #442), Accept
 // delivers the files with matching bytes, Decline and a third client receive
 // nothing, Cancel mid-way leaves nothing partial, a machine in the middle
 // shows two different codes, and no sender path climbs out of the folder.
@@ -13,8 +14,11 @@
 #include <cstdio>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <map>
 #include <mutex>
 #include <string>
@@ -25,9 +29,15 @@
 #include "addons/sharepoint/channel.h"
 #include "addons/sharepoint/engine.h"
 #include "addons/sharepoint/net.h"
+#include "addons/sharepoint/prefs.h"
 #include "addons/sharepoint/transfer.h"
 #include "addons/sharepoint/wire.h"
 #include "import_fixture.h"
+#include "io/file_port.h"
+
+#if !defined(_WIN32)
+#include <sys/resource.h>
+#endif
 
 using namespace mv::test;
 namespace sp = mv::sharepoint;
@@ -115,6 +125,9 @@ class fake_host final : public sp::engine_host {
   std::optional<std::uint64_t> free_bytes(const std::string&) override { return room; }
   bool should_yield() override { return slow.load(); }
   std::vector<std::uint32_t> pair_partners(const std::vector<std::string>& names) override {
+    ++pair_calls;
+    // A slow folder (a large selection, a share): the reader is held here.
+    while (hold_pairs.load()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
     // RAW + JPEG by stem, as io::pairing does for the cases tested here.
     std::vector<std::uint32_t> out(names.size(), UINT32_MAX);
     for (std::size_t i = 0; i < names.size(); ++i) {
@@ -132,13 +145,21 @@ class fake_host final : public sp::engine_host {
   }
   // Shown with a failure (ctest prints the output): where a transfer ended.
   void log(int, const char* ascii) override { std::fprintf(stderr, "[log] %s\n", ascii); }
+  bool post_status(const std::string& text) override {
+    std::lock_guard lock(m);
+    status = text;
+    return true;
+  }
 
   std::mutex m;
   std::string last_tree;
+  std::string status;
   int posts = 0;
   int shown = 0;
   std::optional<std::uint64_t> room;
   std::atomic<bool> slow{false};
+  std::atomic<bool> hold_pairs{false};
+  std::atomic<int> pair_calls{0};
 
  private:
   fs::path received_;
@@ -173,19 +194,29 @@ struct client {
       return !v.reading_folder && v.file_count >= files.size();
     }));
   }
-  // Picks `other` and sends; with `confirm`, says the codes match as soon
-  // as both screens show one (what the person at this end checks).
+  // Picks `other` and sends; with `confirm`, types the code `other`'s
+  // screen shows (what the person at this end reads off the other screen).
   void send_to(const client& other, bool confirm = true) {
     REQUIRE(eventually([&] { return sees(other); }));
-    eng.on_event("peers", 4, "[\"" + other.eng.id() + "\"]");
-    eng.on_event("send", 1, "");
+    // One click on its tile sends (#442).
+    eng.on_event("peers", 5, "\"" + other.eng.id() + "\"");
     if (!confirm) return;
     REQUIRE(eventually([&] {
       const auto o = eng.snapshot().out;
       return o == sp::view::out_phase::confirming || o == sp::view::out_phase::ended;
     }));
-    eng.on_event("out_confirm", 1, "");
+    if (eng.snapshot().out == sp::view::out_phase::ended) return;
+    std::string code;
+    if (!eventually([&] {
+          const auto v = other.eng.snapshot();
+          code = v.in_code;
+          return v.in == sp::view::in_phase::connecting && !code.empty();
+        }, 3)) {
+      return;  // busy there: this side ends on its own
+    }
+    type_code(code);
   }
+  void type_code(const std::string& code) { eng.on_event("out_code_entry", 3, "\"" + code + "\""); }
   void save_into(const fs::path& dir) { eng.on_event("destination", 2, "\"" + json_path(dir) + "\""); }
   std::string tree() {
     std::lock_guard lock(host.m);
@@ -448,7 +479,7 @@ TEST_CASE("sharepoint: every state of the window is a tree the hosts accept", "[
                      sp::view::out_phase::done, sp::view::out_phase::ended}) {
     v.out = phase;
     v.out_peer = "Laptop";
-    v.out_code = "123 456";
+    v.out_entry_note = "That is not the code on Laptop's screen. 2 tries left.";
     v.out_note = "Sent 2 files to Laptop.";
     v.out_total = 30'000'000;
     v.out_bytes = 10'000'000;
@@ -475,9 +506,15 @@ TEST_CASE("sharepoint: every state of the window is a tree the hosts accept", "[
     INFO(tree);
     CHECK(t.set(tree) == mv::addon::screen::error::none);
   }
-  // The code is on the screen while an offer waits.
-  v.in = sp::view::in_phase::asking;
-  CHECK(sp::build_tree(v).find("Code 654 321") != std::string::npos);
+  // The receiver shows the code while the sender types it; the sender's
+  // screen never shows one (#442).
+  v.in = sp::view::in_phase::connecting;
+  CHECK(sp::build_tree(v).find("654 321") != std::string::npos);
+  v.in = sp::view::in_phase::none;
+  v.out = sp::view::out_phase::confirming;
+  const std::string sender = sp::build_tree(v);
+  CHECK(sender.find("out_code_entry") != std::string::npos);
+  CHECK(sender.find("654 321") == std::string::npos);
 }
 
 TEST_CASE("sharepoint: a set too big for Bluetooth says to use Wi-Fi before Send", "[sharepoint]") {
@@ -492,7 +529,7 @@ TEST_CASE("sharepoint: a set too big for Bluetooth says to use Wi-Fi before Send
   CHECK(sp::needs_wifi(v));
   std::string tree = sp::build_tree(v);
   INFO(tree);
-  CHECK(tree.find("Send to Laptop over Wi-Fi") != std::string::npos);
+  CHECK(tree.find("Click Laptop to send over Wi-Fi") != std::string::npos);
   CHECK(tree.find("Laptop is only in Bluetooth range") != std::string::npos);
   CHECK(mv::addon::screen::tree{}.set(tree) == mv::addon::screen::error::none);
   // No network here: the person turns on Wi-Fi on this computer.
@@ -506,6 +543,129 @@ TEST_CASE("sharepoint: a set too big for Bluetooth says to use Wi-Fi before Send
   v.peers[0].wifi = true;
   CHECK_FALSE(sp::needs_wifi(v));
   CHECK(sp::build_tree(v).find("over Wi-Fi") == std::string::npos);
+}
+
+// ---- what is kept across launches (#442) ------------------------------------------------------------
+
+TEST_CASE("sharepoint: the prefs file survives a write that stopped half-way", "[sharepoint]") {
+  scratch_dir s("sharepoint_prefs_file");
+  const std::string path = utf8(s / "sharepoint.json");
+  CHECK_FALSE(sp::load_prefs(path).has_value());
+  sp::prefs p;
+  p.receiving = true;
+  p.destination = "/Volumes/Photos/In";
+  REQUIRE(sp::save_prefs(path, p));
+  CHECK(sp::load_prefs(path) == p);
+  p.receiving = false;
+  REQUIRE(sp::save_prefs(path, p));
+  CHECK(sp::load_prefs(path) == p);
+  CHECK_FALSE(fs::exists(s / "sharepoint.json.new"));
+  // Stopped after removing the old file, before the rename: the new one is read.
+  fs::rename(s / "sharepoint.json", s / "sharepoint.json.new");
+  CHECK(sp::load_prefs(path) == p);
+  // A leftover .new does not stop the next write.
+  p.receiving = true;
+  REQUIRE(sp::save_prefs(path, p));
+  CHECK(sp::load_prefs(path) == p);
+  write_text(s / "sharepoint.json", "not json");
+  CHECK_FALSE(sp::load_prefs(path).has_value());
+}
+
+TEST_CASE("sharepoint: received files go to Downloads unless Save to picked another, which is kept",
+          "[sharepoint]") {
+#if defined(__APPLE__)
+  const std::string downloads = sp::net::downloads_folder();
+  CHECK(downloads.size() > 10);
+  CHECK(downloads.substr(downloads.size() - 10) == "/Downloads");
+#endif
+  scratch_dir s("sharepoint_prefs");
+  bus b;
+  fs::create_directories(s / "Downloads");
+  fs::create_directories(s / "chosen");
+  fake_host host(s / "Downloads");  // the host's default: its Downloads
+  sp::engine::options o = client::options(b, "Bea");
+  o.prefs_path = utf8(s / "data" / "sharepoint.json");
+  fs::create_directories(s / "data");
+  {
+    sp::engine e(host, o);
+    CHECK(e.snapshot().destination == utf8(s / "Downloads"));
+    e.on_event("destination", 2, "\"" + json_path(s / "chosen") + "\"");
+    CHECK(e.snapshot().destination == utf8(s / "chosen"));
+  }
+  {
+    sp::engine e(host, o);  // the next launch
+    CHECK(e.snapshot().destination == utf8(s / "chosen"));
+  }
+  fs::remove_all(s / "chosen");
+  {
+    sp::engine e(host, o);  // the folder went: Downloads, until another is picked
+    CHECK(e.snapshot().destination == utf8(s / "Downloads"));
+  }
+}
+
+TEST_CASE("sharepoint: Keep receiving is kept across launches, with presence and the status text", "[sharepoint]") {
+  scratch_dir s("sharepoint_keep");
+  bus b;
+  fs::create_directories(s / "data");
+  sp::engine::options o = client::options(b, "Bea");
+  o.prefs_path = utf8(s / "data" / "sharepoint.json");
+  auto members = [&] {
+    std::lock_guard lock(b.m);
+    return b.members.size();
+  };
+  {
+    fake_host host(s / "in");
+    sp::engine e(host, o);  // a launch with nothing kept: no presence
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    CHECK(members() == 0);
+    e.screen_opened("");
+    e.on_event("receiving", 2, "true");
+    e.screen_closed();
+    REQUIRE(eventually([&] {
+      std::lock_guard lock(host.m);
+      return host.status == sp::kReceivingStatus;
+    }));
+    CHECK(members() == 1);  // still discoverable with the window closed
+  }
+  REQUIRE(eventually([&] { return members() == 0; }));
+  {
+    fake_host host(s / "in");
+    sp::engine e(host, o);  // the next launch: on, window closed, nothing asked
+    REQUIRE(eventually([&] { return members() == 1; }));
+    CHECK(e.snapshot().receiving);
+    REQUIRE(eventually([&] {
+      std::lock_guard lock(host.m);
+      return host.status == sp::kReceivingStatus;
+    }));
+    // Turned off with the window closed: no beacon, no listener, no status.
+    e.on_event("receiving", 2, "false");
+    REQUIRE(eventually([&] { return members() == 0; }));
+    REQUIRE(eventually([&] {
+      std::lock_guard lock(host.m);
+      return host.status.empty();
+    }));
+  }
+  {
+    fake_host host(s / "in");
+    sp::engine e(host, o);  // and off is kept too
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    CHECK(members() == 0);
+    CHECK_FALSE(e.snapshot().receiving);
+  }
+}
+
+TEST_CASE("sharepoint: one process at a time keeps receiving at launch", "[sharepoint]") {
+  scratch_dir s("sharepoint_lock");
+  const std::string path = utf8(s / "sharepoint.json.lock");
+  auto first = sp::net::try_lock_instance(path);
+  REQUIRE(first);
+#if !defined(_WIN32)
+  // flock is per open file description: a second open in this process stands
+  // in for a second window's process.
+  CHECK_FALSE(sp::net::try_lock_instance(path));
+#endif
+  first.reset();
+  CHECK(sp::net::try_lock_instance(path));
 }
 
 // ---- two and three clients ------------------------------------------------------------------------
@@ -527,22 +687,23 @@ TEST_CASE("sharepoint: Accept delivers the files with their bytes, keeping both 
   ann.pick({s / "out" / "big.mov", s / "out" / "small.txt", s / "out" / "empty.jpg"});
   bea.save_into(dest);
 
-  // Both screens show the code before anything about the files leaves: the
-  // receiver knows only who is connecting until the sender's person confirms.
+  // The receiver shows the code before anything about the files leaves: it
+  // knows only who is connecting until the sender's person types the code.
   ann.send_to(bea, false);
   REQUIRE(eventually([&] { return ann.eng.snapshot().out == sp::view::out_phase::confirming; }));
   REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::connecting; }));
-  CHECK(bea.eng.snapshot().in_code == ann.eng.snapshot().out_code);
+  const std::string code = bea.eng.snapshot().in_code;
+  CHECK(code.size() == 7);
+  CHECK(bea.tree().find(code) != std::string::npos);
+  CHECK(ann.tree().find(code) == std::string::npos);  // the sender's screen never shows it
   CHECK(bea.eng.snapshot().in_count == 0);
-  ann.eng.on_event("out_confirm", 1, "");
+  ann.type_code(code);
   REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::asking; }));
   REQUIRE(eventually([&] { return ann.eng.snapshot().out == sp::view::out_phase::waiting; }));
   const auto asked = bea.eng.snapshot();
-  CHECK(asked.in_code == ann.eng.snapshot().out_code);
   CHECK(asked.in_peer == "Ann");
   CHECK(asked.in_count == 3);
   CHECK(files_in(dest) == std::vector<std::string>{"small.txt"});  // nothing yet
-  CHECK(bea.tree().find("Code " + asked.in_code) != std::string::npos);
 
   bea.eng.on_event("accept", 1, "");
   ann.eng.wait_idle();
@@ -559,6 +720,136 @@ TEST_CASE("sharepoint: Accept delivers the files with their bytes, keeping both 
   CHECK_FALSE(any_temporary(dest));
   // The originals are untouched (rule 5).
   CHECK(read_bytes(s / "out" / "big.mov") == big);
+}
+
+TEST_CASE("sharepoint: a new set to send never waits for the one still being read", "[sharepoint]") {
+  // Issue #442: the share icon on Windows stalled the UI while an earlier
+  // selection was still being read (set_files joined the reader on the
+  // caller's thread). The caller hands the set over and returns.
+  scratch_dir s("sharepoint_handoff");
+  bus b;
+  client ann(b, s / "ann_received", "Ann");
+  write_text(s / "one" / "a.jpg", "a");
+  write_text(s / "two" / "b.jpg", "b");
+  ann.host.hold_pairs.store(true);
+  ann.eng.set_files({utf8(s / "one" / "a.jpg")});
+  REQUIRE(eventually([&] { return ann.host.pair_calls.load() >= 1; }));  // the reader is held inside the first set
+  // Under the old join this call would wait for the release below.
+  std::thread release([&] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+    ann.host.hold_pairs.store(false);
+  });
+  const auto t0 = std::chrono::steady_clock::now();
+  ann.eng.set_files({utf8(s / "two" / "b.jpg")});
+  ann.eng.on_event("clear", 1, "");
+  ann.eng.set_files({utf8(s / "two" / "b.jpg")});
+  const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+  CHECK(ms < 100);
+  CHECK(ann.eng.snapshot().reading_folder);
+  release.join();
+  REQUIRE(eventually([&] {
+    const auto v = ann.eng.snapshot();
+    return !v.reading_folder && v.file_count == 1;
+  }));
+  CHECK(ann.eng.snapshot().file_names == std::vector<std::string>{"b.jpg"});  // the newest set, not the first
+  CHECK(ann.host.pair_calls.load() == 2);  // the replaced middle set was never read
+}
+
+TEST_CASE("sharepoint: a wrong code three times ends the link, and nothing about the files leaves",
+          "[sharepoint]") {
+  scratch_dir s("sharepoint_code");
+  bus b;
+  client ann(b, s / "ann_received", "Ann");
+  client bea(b, s / "bea_received", "Bea");
+  fs::create_directories(s / "bea_received");
+  write_text(s / "out" / "secret name.jpg", "only after the code");
+  ann.pick({s / "out" / "secret name.jpg"});
+  bea.save_into(s / "bea_received");
+
+  // A wrong code, then the right one: one wrong try is not the end.
+  ann.send_to(bea, false);
+  REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::connecting; }));
+  std::string code = bea.eng.snapshot().in_code;
+  std::string wrong = code;
+  wrong[0] = wrong[0] == '9' ? '1' : static_cast<char>(wrong[0] + 1);
+  ann.type_code("12");  // a partial entry is not a try
+  CHECK(ann.eng.snapshot().out_tries_left == sp::kCodeTries);
+  ann.type_code(wrong);
+  CHECK(ann.eng.snapshot().out_tries_left == sp::kCodeTries - 1);
+  CHECK(ann.eng.snapshot().out_entry_note.find("2 tries left") != std::string::npos);
+  CHECK(ann.eng.snapshot().out == sp::view::out_phase::confirming);
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  CHECK(bea.eng.snapshot().in == sp::view::in_phase::connecting);  // no offer yet
+  CHECK(bea.eng.snapshot().in_names.empty());
+  ann.type_code(code.substr(0, 3) + "-" + code.substr(4));  // separators do not matter
+  REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::asking; }));
+  bea.eng.on_event("decline", 1, "");
+  ann.eng.wait_idle();
+  bea.eng.wait_idle();
+
+  // Three wrong ones: the link ends, and the receiver never heard a name.
+  ann.send_to(bea, false);
+  REQUIRE(eventually([&] {
+    const auto v = bea.eng.snapshot();
+    return v.in == sp::view::in_phase::connecting && v.in_code != code;
+  }));
+  code = bea.eng.snapshot().in_code;
+  wrong = code;
+  wrong[6] = wrong[6] == '9' ? '1' : static_cast<char>(wrong[6] + 1);
+  for (int i = 0; i < sp::kCodeTries; ++i) ann.type_code(wrong);
+  ann.eng.wait_idle();
+  bea.eng.wait_idle();
+  INFO(ann.eng.snapshot().out_note);
+  CHECK(ann.eng.snapshot().out == sp::view::out_phase::ended);
+  CHECK(ann.eng.snapshot().out_note.find("wrong 3 times") != std::string::npos);
+  const auto there = bea.eng.snapshot();
+  CHECK(there.in == sp::view::in_phase::ended);
+  CHECK(there.in_names.empty());
+  CHECK(there.in_count == 0);
+  CHECK(bea.tree().find("secret name") == std::string::npos);
+  CHECK(files_in(s / "bea_received").empty());
+}
+
+TEST_CASE("sharepoint: many files checked while the next arrive all land whole, same names kept apart",
+          "[sharepoint]") {
+  // #442: file N is flushed, read back and renamed on the verifier while
+  // file N+1 arrives. Two files of one offer with one name both stay.
+  scratch_dir s("sharepoint_pipeline");
+  bus b;
+  client ann(b, s / "ann_received", "Ann");
+  client bea(b, s / "bea_received", "Bea");
+  const fs::path dest = s / "dest";
+  fs::create_directories(dest);
+  std::vector<fs::path> files;
+  for (int i = 0; i < 40; ++i) {
+    const fs::path f = s / "out" / ("IMG_" + std::to_string(i) + ".JPG");
+    write_bytes(f, pattern(static_cast<std::size_t>(1000 + i * 7919), static_cast<std::uint8_t>(i)));
+    files.push_back(f);
+  }
+  write_text(s / "other" / "IMG_0.JPG", "another camera");
+  files.push_back(s / "other" / "IMG_0.JPG");
+  ann.pick(files);
+  bea.save_into(dest);
+  ann.send_to(bea);
+  REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::asking; }));
+  bea.eng.on_event("accept", 1, "");
+  ann.eng.wait_idle();
+  bea.eng.wait_idle();
+  INFO(bea.eng.snapshot().in_note);
+  CHECK(ann.eng.snapshot().out == sp::view::out_phase::done);
+  CHECK(bea.eng.snapshot().in == sp::view::in_phase::done);
+  CHECK(bea.eng.snapshot().in_files == 41);
+  CHECK(files_in(dest).size() == 41);
+  CHECK_FALSE(any_temporary(dest));
+  for (int i = 1; i < 40; ++i) {
+    const std::string name = "IMG_" + std::to_string(i) + ".JPG";
+    CHECK(read_bytes(dest / name) == read_bytes(s / "out" / name));
+  }
+  // Both IMG_0.JPG arrived; which one got the plain name depends on which check ended first.
+  const auto a = read_bytes(dest / "IMG_0.JPG");
+  const auto c = read_bytes(dest / "IMG_0 (2).JPG");
+  CHECK(((a == read_bytes(s / "out" / "IMG_0.JPG") && c == read_bytes(s / "other" / "IMG_0.JPG")) ||
+         (c == read_bytes(s / "out" / "IMG_0.JPG") && a == read_bytes(s / "other" / "IMG_0.JPG"))));
 }
 
 TEST_CASE("sharepoint: a pair half and a sidecar ride along; a folder keeps its shape", "[sharepoint]") {
@@ -898,7 +1189,8 @@ TEST_CASE("sharepoint: a big set to a Bluetooth-only peer waits for it on Wi-Fi,
   sp::beacon bea_beacon{bea.eng.id(), "Bea", port};
   ann.inject->seen(bea_beacon, "127.0.0.1");
   REQUIRE(eventually([&] { return ann.eng.snapshot().out == sp::view::out_phase::confirming; }));
-  ann.eng.on_event("out_confirm", 1, "");
+  REQUIRE(eventually([&] { return !bea.eng.snapshot().in_code.empty(); }));
+  ann.eng.on_event("out_code_entry", 3, "\"" + bea.eng.snapshot().in_code + "\"");
   REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::asking; }));
   bea.eng.on_event("accept", 1, "");
   ann.eng.wait_idle();
@@ -930,4 +1222,234 @@ TEST_CASE("sharepoint: Cancel ends a send that waits for Wi-Fi", "[sharepoint]")
   ann.inject->seen(sp::beacon{"0123456789abcdef", "Bea", 40000}, "127.0.0.1");
   std::this_thread::sleep_for(std::chrono::milliseconds(300));
   CHECK(ann.eng.snapshot().out == sp::view::out_phase::ended);
+}
+
+// ---- harness: the idle cost of Keep receiving (#442) --------------------------------------------------
+//
+// mv_import_tests "[.sharepoint-idle]": this process's CPU time while an
+// engine sits with its window closed, Keep receiving off and then on (the
+// real UDP beacon socket, the listener on loopback so the run opens no
+// port to the network; Bluetooth is not in the test build). MV_IDLE_SECONDS
+// sets each phase (default 20). Prints one JSON line.
+#if !defined(_WIN32)
+namespace {
+double cpu_seconds() {
+  rusage u{};
+  ::getrusage(RUSAGE_SELF, &u);
+  return static_cast<double>(u.ru_utime.tv_sec + u.ru_stime.tv_sec) +
+         static_cast<double>(u.ru_utime.tv_usec + u.ru_stime.tv_usec) / 1e6;
+}
+long wakeups() {
+  rusage u{};
+  ::getrusage(RUSAGE_SELF, &u);
+  return u.ru_nvcsw + u.ru_nivcsw;
+}
+}  // namespace
+
+TEST_CASE("sharepoint: idle cost of Keep receiving", "[.sharepoint-idle]") {
+  const char* env = std::getenv("MV_IDLE_SECONDS");
+  const int seconds = env ? std::max(1, std::atoi(env)) : 20;
+  scratch_dir s("sharepoint_idle_cost");
+  fake_host host(s / "in");
+  sp::engine::options o;
+  o.my_name = "Idle";
+  o.use_bluetooth = false;
+  o.loopback_only = true;
+  sp::engine e(host, o);  // the real UDP discovery
+  auto phase = [&](const char* name) {
+    const double c0 = cpu_seconds();
+    const long w0 = wakeups();
+    const auto t0 = std::chrono::steady_clock::now();
+    std::this_thread::sleep_for(std::chrono::seconds(seconds));
+    const double wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    const double cpu = cpu_seconds() - c0;
+    std::printf("{\"phase\":\"%s\",\"seconds\":%.1f,\"cpu_ms\":%.1f,\"cpu_percent\":%.4f,\"switches_per_s\":%.1f}\n", name,
+                wall, cpu * 1000, 100.0 * cpu / wall, static_cast<double>(wakeups() - w0) / wall);
+  };
+  phase("off");
+  e.on_event("receiving", 2, "true");
+  REQUIRE(eventually([&] { return e.snapshot().wifi_up; }));
+  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  phase("on");
+  e.on_event("receiving", 2, "false");
+  REQUIRE(eventually([&] { return !e.snapshot().wifi_up; }));
+  phase("off_again");
+}
+#endif
+
+// ---- harness: transfer throughput (#442) -----------------------------------------------------------
+//
+// mv_import_tests "[.sharepoint-bench]": MB/s of a Sharepoint send between two
+// engines in this process over loopback TCP, from Accept to the receiver's
+// done (every file hashed, flushed, read back uncached and renamed, as on a
+// real link), against a plain copy over the same kind of link (the bytes
+// through a loopback socket into a new file: no hash, no seal, no flush, no
+// read-back). Loopback is CPU- and disk-bound, not a Wi-Fi or Bluetooth link:
+// it shows what the code costs, not what a radio allows.
+//
+//   MV_BENCH_DIR        where the fixture and the received files live
+//                       (default: a scratch folder, removed afterwards);
+//                       the fixture is kept between runs when given
+//   MV_BENCH_BIG_MB     one big file (default 1024)
+//   MV_BENCH_SMALL      count of small files (default 500)
+//   MV_BENCH_SMALL_KB   each small file (default 2048)
+//   MV_BENCH_CASES      "big", "small" or "big,small" (default both)
+// Prints one JSON line per case and mode.
+namespace {
+
+std::size_t env_size(const char* name, std::size_t fallback) {
+  const char* v = std::getenv(name);
+  return v && *v ? static_cast<std::size_t>(std::strtoull(v, nullptr, 10)) : fallback;
+}
+
+// Incompressible bytes, written once; kept when the size already matches.
+void fixture_file(const fs::path& p, std::size_t bytes, std::uint32_t seed) {
+  std::error_code ec;
+  if (fs::exists(p, ec) && fs::file_size(p, ec) == bytes) return;
+  fs::create_directories(p.parent_path());
+  std::ofstream out(p, std::ios::binary | std::ios::trunc);
+  std::vector<char> block(1 << 20);
+  std::uint64_t x = 0x9E3779B97F4A7C15ull ^ seed;
+  std::size_t left = bytes;
+  while (left > 0) {
+    for (std::size_t i = 0; i + 8 <= block.size(); i += 8) {
+      x ^= x << 13;
+      x ^= x >> 7;
+      x ^= x << 17;
+      std::memcpy(block.data() + i, &x, 8);
+    }
+    const std::size_t n = std::min(left, block.size());
+    out.write(block.data(), static_cast<std::streamsize>(n));
+    left -= n;
+  }
+}
+
+void print_case(const char* name, const char* mode, std::uint64_t bytes, std::size_t files, double seconds) {
+  std::printf("{\"case\":\"%s\",\"mode\":\"%s\",\"files\":%zu,\"bytes\":%llu,\"seconds\":%.3f,\"mb_s\":%.1f}\n", name,
+              mode, files, static_cast<unsigned long long>(bytes), seconds,
+              static_cast<double>(bytes) / 1e6 / seconds);
+  std::fflush(stdout);
+}
+
+// The plain copy: each file's bytes through one loopback TCP connection into
+// a new file, 1 MiB at a time.
+double plain_copy(const std::vector<fs::path>& files, const fs::path& dest) {
+  fs::create_directories(dest);
+  auto l = sp::net::listen(true);
+  REQUIRE(l);
+  const auto t0 = std::chrono::steady_clock::now();
+  bool ok = true;
+  std::thread rx([&] {
+    auto a = (*l)->accept(5000);
+    if (!a) {
+      ok = false;
+      return;
+    }
+    std::vector<std::uint8_t> buf(1 << 20);
+    for (const auto& f : files) {
+      std::uint64_t left = fs::file_size(f);
+      mv::io::file_writer out;
+      if (!out.create_new(utf8(dest / f.filename()))) {
+        ok = false;
+        return;
+      }
+      while (left > 0) {
+        auto n = (*a)->read_some({buf.data(), static_cast<std::size_t>(std::min<std::uint64_t>(left, buf.size()))}, 20000);
+        if (!n || *n == 0 || !out.write({buf.data(), *n})) {
+          ok = false;
+          return;
+        }
+        left -= *n;
+      }
+      (void)out.close();
+    }
+  });
+  auto c = sp::net::connect({"127.0.0.1", (*l)->port()}, 5000);
+  REQUIRE(c);
+  std::vector<std::uint8_t> buf(1 << 20);
+  for (const auto& f : files) {
+    mv::io::file_reader in;
+    REQUIRE(in.open(utf8(f), mv::io::read_mode::sequential));
+    for (;;) {
+      auto n = in.read(buf);
+      REQUIRE(n);
+      if (*n == 0) break;
+      REQUIRE((*c)->write_all({buf.data(), *n}));
+    }
+  }
+  rx.join();
+  const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  CHECK(ok);
+  return s;
+}
+
+// A Sharepoint send of `files` from Ann to Bea, timed from Accept to done.
+double sharepoint_send(const std::vector<fs::path>& files, const fs::path& dest, const fs::path& work) {
+  bus b;
+  client ann(b, work / "ann_in", "Ann");
+  client bea(b, work / "bea_in", "Bea");
+  fs::create_directories(dest);
+  ann.pick(files);
+  bea.save_into(dest);
+  ann.send_to(bea);
+  REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::asking; }, 60));
+  const auto t0 = std::chrono::steady_clock::now();
+  bea.eng.on_event("accept", 1, "");
+  ann.eng.wait_idle();
+  bea.eng.wait_idle();
+  const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  INFO(bea.eng.snapshot().in_note);
+  CHECK(bea.eng.snapshot().in == sp::view::in_phase::done);
+  return s;
+}
+
+}  // namespace
+
+TEST_CASE("sharepoint: transfer throughput against a plain copy", "[.sharepoint-bench]") {
+  const char* dir_env = std::getenv("MV_BENCH_DIR");
+  std::optional<scratch_dir> scratch;
+  fs::path base;
+  if (dir_env && *dir_env) {
+    base = dir_env;
+  } else {
+    scratch.emplace("sharepoint_bench");
+    base = scratch->root();
+  }
+  const std::size_t big_mb = env_size("MV_BENCH_BIG_MB", 1024);
+  const std::size_t small_n = env_size("MV_BENCH_SMALL", 500);
+  const std::size_t small_kb = env_size("MV_BENCH_SMALL_KB", 2048);
+  const char* cases_env = std::getenv("MV_BENCH_CASES");
+  const std::string cases = cases_env && *cases_env ? cases_env : "big,small";
+
+  struct bench_case {
+    const char* name;
+    std::vector<fs::path> files;
+  };
+  std::vector<bench_case> runs;
+  if (cases.find("big") != std::string::npos) {
+    const fs::path f = base / "fixture" / "big" / "clip.mov";
+    fixture_file(f, big_mb << 20, 1);
+    runs.push_back({"big", {f}});
+  }
+  if (cases.find("small") != std::string::npos) {
+    bench_case c{"small", {}};
+    for (std::size_t i = 0; i < small_n; ++i) {
+      char name[32];
+      std::snprintf(name, sizeof name, "IMG_%04zu.JPG", i);
+      const fs::path f = base / "fixture" / "small" / name;
+      fixture_file(f, small_kb << 10, static_cast<std::uint32_t>(100 + i));
+      c.files.push_back(f);
+    }
+    runs.push_back(std::move(c));
+  }
+  for (const auto& c : runs) {
+    std::uint64_t bytes = 0;
+    for (const auto& f : c.files) bytes += fs::file_size(f);
+    const fs::path out = base / "out";
+    fs::remove_all(out);
+    print_case(c.name, "plain", bytes, c.files.size(), plain_copy(c.files, out / "plain"));
+    fs::remove_all(out);
+    print_case(c.name, "sharepoint", bytes, c.files.size(), sharepoint_send(c.files, out / "sharepoint", out / "work"));
+    fs::remove_all(out);
+  }
 }

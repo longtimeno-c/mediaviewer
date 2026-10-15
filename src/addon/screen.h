@@ -50,6 +50,10 @@ enum class node_type : std::uint8_t {
   progress,
   separator,
   surface,
+  // #442 (Sharepoint's AirDrop-like window): large round tiles with a name, a
+  // caption, initials, a progress ring and a done / failed mark; a click or
+  // Return on one is `activate`.
+  tiles,
 };
 
 [[nodiscard]] const char* type_name(node_type t) noexcept;
@@ -131,8 +135,8 @@ enum event_kind : std::uint32_t {
   ev_click = 1,     // button
   ev_change = 2,    // toggle, choice, slider, number, text_field (value)
   ev_submit = 3,    // text_field Return
-  ev_select = 4,    // list, table, thumbnail_grid: selection (array of ids / paths)
-  ev_activate = 5,  // list, table, thumbnail_grid: Return / double-click on one (string)
+  ev_select = 4,    // list, table, thumbnail_grid, tiles: selection (array of ids / paths)
+  ev_activate = 5,  // list, table, thumbnail_grid: Return / double-click on one; tiles: a click (string)
   ev_open = 7,      // a window, pane or sheet opened (host-generated)
   ev_close = 8,     // it closed (host-generated)
   ev_command = 9,   // a bar / path / context / status item (host-generated)

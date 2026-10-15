@@ -1359,6 +1359,31 @@ not protect the sender: a machine claiming the receiver's id from another addres
 Accept itself. So the sender's person confirms the code before the offer (even the names) leaves,
 and a fresh peer keeps its address. Two clicks, one per side, as Bluetooth's numeric comparison.
 
+**Keep receiving is kept across launches (owner, 2026-10-15, #442; reverses "the toggle is for this
+run").** Turned on, it stays on after a relaunch until turned off: the add-on keeps it in its own
+data folder (`sharepoint.json`), and at load, only when it was on, makes the engine, whose control
+thread starts presence. That is after first pixel and off the foreground queue (slot add-ons load
+on the add-on queue / a worker), and in one window's process at a time (a lock file). Off at load
+is one small read and nothing else. While it is on the command bar shows **Sharepoint: receiving**,
+so a person knows the machine is discoverable. Measured idle cost with it on, window closed (Mac,
+`[.sharepoint-idle]`, 15 s): 0.020 % CPU, 6.4 context switches a second, no present; off 0.0003 %.
+The earlier call kept the idle viewer silent by default; it still is unless the person asked.
+
+**The sender types the code; it is not compared (owner, 2026-10-15, #442; amends "the sender
+confirms the code").** People clicked **Same code, send** without looking at the other screen. Now
+the receiver's window shows the code and the sender's person types it; the sender's screen never
+shows it. Commit, answer, reveal and the code's derivation are unchanged, so a machine in the
+middle still cannot make the two links' codes match, and the offer still leaves only after a right
+entry. The check is local to the sender (constant time, digits only, a partial entry is not a
+try); three wrong entries send `cancel` and end the link. The wire is unchanged (protocol 1): the
+receiver waits for the offer either way. Bluetooth's passkey entry is the pattern.
+
+**The receiver checks file N while file N+1 arrives (2026-10-15, #442).** Two verifier threads,
+at most four whole files waiting, each still flushed, read back uncached, hashed and renamed with
+no-replace before its `file_done`; the sender's `done` waits for every check. Measured on loopback
+(Mac, alternated): 500 × 2 MiB 124–141 → 158–180 MB/s; one 1 GiB file unchanged (crypto-bound).
+Reading ahead on the sender measured no faster and was not kept. `[.sharepoint-bench]`.
+
 **Each file's hash comes after its bytes, not in the offer (2026-10-15).** A hash list up front
 would make the sender read every file twice before the first byte moved (a large video read
 whole first). `file_end` carries the BLAKE3 of the bytes as read; the receiver checks it, then

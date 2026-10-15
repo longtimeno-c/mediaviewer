@@ -310,9 +310,11 @@ the CPU self-test reference in `selftest.txt` (keyed by runtime, provider, model
     indexed from `resume_ms`, redoing nothing committed. **Dismiss** leaves them paused and loads
     nothing; the notice does not come back that session, and the next launch asks again. The Mac
     notice is a self-sizing SwiftUI card pinned over the canvas corner (`ResumeNoticeView.swift`,
-    above the filmstrip when it is up); Windows has no island in that corner, so the notice is a
-    windowed `Popup` of the command-bar island (`ShouldConstrainToRootBounds = false`, as the
-    bar's flyouts are), placed from the window's client rectangle on every resize. Neither takes
+    above the filmstrip when it is up); on Windows it is a small island of its own over that
+    corner, as the AI badge is (`IslandHost.ResumeNotice.cs`), placed from the window's client
+    rectangle on every resize and above the other islands. It was a windowed `Popup` of the
+    command-bar island until #443, and never showed on Windows. A launch read that lands before
+    the command bar is up waits for it, as the Mac's store waits for its host. Neither takes
     focus. A later window (the reader) indexes nothing and shows no notice.
   - **Settings → Local search**, in the pack's folder list (`ManagementView.swift`,
     `ManagePanel.cs`): a held root's row reads "N of M · paused since last time" and offers

@@ -93,7 +93,7 @@ std::string sharepoint_manifest(const std::string& native, const std::vector<std
 
 }  // namespace
 
-TEST_CASE("sharepoint: the shipped manifest declares one window, one context entry, one key-less command",
+TEST_CASE("sharepoint: the shipped manifest declares one window, one context entry, one status, one key-less command",
           "[addon][sharepoint]") {
   keypair k;
   const std::string m = sharepoint_manifest("libmv_sharepoint.dylib", {1, 2, 3});
@@ -104,10 +104,13 @@ TEST_CASE("sharepoint: the shipped manifest declares one window, one context ent
   CHECK(c.screens[0].id == "sharepoint");
   CHECK(c.screens[0].title == "Sharepoint");
   CHECK(c.screens[0].place == mv::addon::screen_place::window);
-  REQUIRE(c.items.size() == 1);
+  REQUIRE(c.items.size() == 2);
   CHECK(c.items[0].id == "send_files");
   CHECK(c.items[0].slot == mv::addon::item_slot::context);
   CHECK(c.items[0].target == mv::addon::item_target::files);
+  // #442: "Sharepoint: receiving" in the command bar while Keep receiving is on.
+  CHECK(c.items[1].id == "receiving");
+  CHECK(c.items[1].slot == mv::addon::item_slot::status);
   REQUIRE(d.m.commands.size() == 1);
   CHECK(d.m.commands[0].id == "open");
   CHECK(d.m.commands[0].name == "Sharepoint");
@@ -194,8 +197,44 @@ TEST_CASE("sharepoint: the window opens from a command with its files, offline",
   REQUIRE(reg.close_screen("sharepoint", "sharepoint") == status::ok);
   reg.drain();
 
+  // Keep receiving: the toggle is kept in the add-on's data folder.
+  REQUIRE(reg.invoke_item("sharepoint", "send_files", one) == status::ok);
+  REQUIRE(eventually([&] {
+    reg.drain();
+    return reg.screens_json().find("receiving") != std::string::npos;
+  }));
+  REQUIRE(reg.send_event("sharepoint", "sharepoint", "receiving", 2, "true") == status::ok);
+  REQUIRE(eventually([&] { return reg.status_json().find("Sharepoint: receiving") != std::string::npos; }));
+  REQUIRE(reg.close_screen("sharepoint", "sharepoint") == status::ok);
+  reg.drain();
+
   loaded->reset();  // stops the engine and every thread before the library goes
   CHECK_FALSE(reg.attached("sharepoint"));
+  auto info = st.find("sharepoint");
+  REQUIRE(info);
+  const std::vector<std::uint8_t> kept = read_bytes(fs::path(info->data_dir) / "sharepoint.json");
+  CHECK(std::string(kept.begin(), kept.end()).find("\"receiving\":true") != std::string::npos);
+
+  // The next launch: on at load, before any window or command, with the
+  // status text up; nothing was asked of it through the registry.
+  slot_registry reg2;
+  svc.slots = &reg2;
+  auto again = mv::addon::loaded_addon::load(st, "sharepoint", svc);
+  REQUIRE(again);
+  REQUIRE(eventually([&] { return reg2.status_json().find("Sharepoint: receiving") != std::string::npos; }));
+  CHECK(reg2.addon_calls() == 0);
+  CHECK(mv::json::parse(reg2.screens_json())->a.empty());  // no window opened
+  again->reset();
+
+  // Off: kept off, and the next load makes nothing.
+  write_text(fs::path(info->data_dir) / "sharepoint.json", R"({"v":1,"receiving":false,"destination":""})");
+  slot_registry reg3;
+  svc.slots = &reg3;
+  auto off = mv::addon::loaded_addon::load(st, "sharepoint", svc);
+  REQUIRE(off);
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  CHECK(reg3.status_json().find("receiving") == std::string::npos);
+  off->reset();
 #if defined(_WIN32)
   _putenv_s("MV_SHAREPOINT_OFFLINE", "");
 #else

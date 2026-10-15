@@ -4986,6 +4986,14 @@ void chrome_on_command(void* ctx, int command, float arg) {
         if (title[0] != '\0' && app->list_title.empty()) app->list_return_select = app->edit_path;
         app->list_title = title;
         if (app->list_title.empty()) app->list_return_select.clear();
+        // Issue #443: a result list opened over the empty window (a later
+        // window's first search, a search from the welcome) is a listing like
+        // a folder. Every open route moves `mode` off `none`
+        // (welcome_lists_recents); this one did not, so the gallery was not
+        // available, the strip was not wanted and the arrows had no item:
+        // only the chosen result showed. Back from it is return_to_welcome,
+        // which puts `none` back.
+        if (!app->list_title.empty() && app->mode == open_mode::none) app->mode = open_mode::folder;
       }
       refresh_item_info(app);
       refresh_mark_state(app);
@@ -8164,6 +8172,10 @@ void apply_view_state(app_state* app) noexcept {
                                         : false);
   if (want_filmstrip != app->chrome.filmstrip_visible()) {
     app->chrome.show_filmstrip(want_filmstrip, width, height, dpi);
+    // The strip here is the shown state, not the wish (the Mac's
+    // -filmstripVisible is the wish): a clip or document that opened before
+    // its folder had a strip was not due then, so ask again now.
+    strip_hint_show(app);
   }
   const bool want_gallery = app->gallery_visible && !settings;
   if (want_gallery != app->chrome.gallery_visible()) {

@@ -32,7 +32,7 @@ and a verify line on each platform (D9, amended). The order is:
 | 56 | **Declarative contributions** (the second half; contribution API 2): an add-on's settings page drawn from its manifest on both hosts, its values kept per add-on (and on remove unless asked), key layouts (keymap packs) applied once with Reset back to the defaults, theme shape (radius, density, type scale), and Import / Duplicates / Local search on the host's theme tokens ([docs/design/25](design/25-open-addons.md#pr-56-second-half-declarative-contributions-2026-10-11), [ADDONS.md](ADDONS.md)); ABI 0.24 | Mac: Catch2 (schema, values, keymaps over every built-in command, shape), the SDK cross-check, 2.5 M fuzz inputs, the full suite and the rig's PR 56 leg pass in the app; launch and pacing measured against the base on a loaded machine (no difference; the idle CPU clause fails on base too). Windows: every C# project compiles clean; the native half is CI's; nothing run in the app yet |
 | 57 | **Add-on scripts**: other makers' add-ons run Lua 5.4 (vendored, static) in a sandbox per add-on on its own worker, with commands on keys, permissions in the consent sheet (`folder.read`, `thumbnails`, `selection`; no network) and limits (64 MB, 100 M instructions and 1 s per task, a watchdog) that stop the add-on and say why in Settings ([docs/design/25-open-addons.md](design/25-open-addons.md#implementation-notes-pr-57-2026-10-11), [ADDONS.md](ADDONS.md#scripts)); ABI 0.26 | Mac: built, `mv_script_tests` and the SDK cross-check pass, the key walk runs in the app (`MV_SCRIPT_SELFTEST`), the fuzz harness ran ~15 min clean, Mac PR 1 gate and launch timings measured with a script spinning / installed. Windows: compiled in CI only (shell, ABI, chrome); the Windows key walk, the Windows gate with a script spinning and Narrator / VoiceOver on the new Settings lines owed |
 | 58–59 | **Screens and slots**: MediaViewer's own native add-ons add to pages that exist (an info-pane section at the very bottom of the Metadata pane, file search and Local search providers, command-bar / path-bar / status items, gallery tile badges, context-menu entries) and open windows, docked panes and sheets from a view tree both chromes render ([docs/design/25](design/25-open-addons.md#implementation-notes-prs-58-59-2026-10-11)); host table v3; ABI 0.25 | Mac: the shared suite passes (with a real test add-on through a signed store; also under ASan / UBSan and TSan); the app built and, with the test add-on sideloaded, drew its section at the bottom of the pane and its items. Windows: both C# projects compile; the native side is CI's. Measurements and the keyboard / VoiceOver / Narrator passes are owed ([Where this actually is](#screens-and-slots-prs-58-59-2026-10-11)). Script add-ons wait for PR 57; Places is #344 |
-| #410, #413 | **Sharepoint**: send photos, video and audio to a MediaViewer nearby over Wi-Fi or Bluetooth; both screens show the same code and nothing moves until the other person accepts; its window is a view tree both hosts draw ([docs/design/28](design/28-sharepoint.md)). The gallery's Shift-click range, drag-out from any gallery cell and one share icon that opens Sharepoint; ABI 0.29 | Mac: built; `mv_import_tests "[sharepoint]"` (two and three engines over loopback TCP), the full suites and the packer test pass; the window opened offline in a dev copy and the range drove copy path there; the PR 1 gate passed with the add-on installed. Windows: the C# compiles; native (sockets, WinRT Bluetooth, the range) is CI's. Two machines, Bluetooth and the hand checks are owed ([Where this actually is](#sharepoint-issues-410-413-2026-10-15)) |
+| #410, #413 | **Sharepoint**: send photos, video and audio to a MediaViewer nearby over Wi-Fi or Bluetooth; the receiver shows a code the sender types (#442) and nothing moves until the other person accepts; its window is a view tree both hosts draw ([docs/design/28](design/28-sharepoint.md)). The gallery's Shift-click range, drag-out from any gallery cell and one share icon that opens Sharepoint; ABI 0.29 | Mac: built; `mv_import_tests "[sharepoint]"` (two and three engines over loopback TCP), the full suites and the packer test pass; the window opened offline in a dev copy and the range drove copy path there; the PR 1 gate passed with the add-on installed. Windows: the C# compiles; native (sockets, WinRT Bluetooth, the range) is CI's. Two machines, Bluetooth and the hand checks are owed ([Where this actually is](#sharepoint-issues-410-413-2026-10-15)) |
 | #444 | **Share everywhere**: one share command (`Ctrl+Shift+S` / `⌘⇧S`, the gallery's share icon, a share button beside Home, right-click Share ▸ on a gallery cell, a filmstrip cell or the canvas) opens one menu: Sharepoint first (or its install), then Windows Share / the macOS picker (Mail, Messages, AirDrop…). A right-click on a selected file shares the selection, on any other file that file; the system sheet gets media only ([docs/design/16 "Share"](design/16-commands.md#share-444)) | Mac: built; `mv_tests "[share]"` passes (file set, wire argument, command row; the `[.perf-bench]` case, 500 of 20 000 stops: 0.12 ms); the macOS picker for 500 files opens in 21 ms warm (was 65) by showing one file per kind past 50 files. Windows: the C# compiles; native is CI's. Owed: Mail with 3 files on both, the right-click menus and bar button by hand, a 500-item open on Windows, both PR 1 gates |
 
 See [docs/design/10-roadmap.md](design/10-roadmap.md). Old Mac numbers in the history below map as
@@ -1075,6 +1075,8 @@ python3 tools/package/addon-pack.py pack --addon places --platform macos --src b
 # Sharepoint (docs/design/28): build/addons/sharepoint/(lib)mv_sharepoint.(dylib|dll)
 cmake --build build --target mv_sharepoint
 build/bin/mv_import_tests "[sharepoint]"       # wire, channel, 2-3 engines over loopback TCP, the add-on through the loader
+build/bin/mv_import_tests "[.sharepoint-bench]"   # MB/s against a plain copy over loopback (MV_BENCH_DIR, _BIG_MB, _SMALL, _SMALL_KB, _CASES)
+build/bin/mv_import_tests "[.sharepoint-idle]"    # CPU while Keep receiving is on, window closed (MV_IDLE_SECONDS)
 python3 -m unittest tools/package/test_addon_pack.py   # SharepointPackTest among them
 python3 tools/package/addon-pack.py pack --addon sharepoint --platform macos --src build/addons/sharepoint \
   --version 1.0.0 --key <key file> --out dist/
@@ -1551,6 +1553,43 @@ There is no upload endpoint yet, exactly as there is none for crash reports.
 
 ## Where this actually is
 
+### Windows search: the typed space, the resume notice, a result list from an empty window (#443, 2026-10-15)
+
+Three Windows-only fixes; the Mac is unchanged.
+
+- **Space in a search box.** Every type-in field (`Shared/FakeInput.cs`: Local search, file
+  search, rename, Settings, add-on pages) draws its text in TextBlocks either side of the caret,
+  and a TextBlock measures no trailing space, so the caret sat against the last letter until the
+  next one came. The runs now draw spaces as no-break spaces (same advance); the text keeps plain
+  spaces. The key router already left every key but Esc to a focused field
+  (`test_key_router.cpp`, "a focused text control owns every key but Esc").
+- **Resume indexing notice.** It is now an island of its own over the canvas corner, as the AI
+  badge is, instead of a windowed `Popup` of the command bar that never showed. A launch read
+  that lands before the bar is up waits for it.
+- **A result list from an empty window** (a later window's first search, a search from the
+  welcome) left native on "nothing open": no gallery, no strip, no arrows, only the chosen
+  result. FolderReady for a list now moves it to a listing (`main.cpp`), and the chrome sends
+  the panel's Enter / Ctrl+Enter view after FolderReady, not before it.
+- **Checked:** the three C# chromes (Chrome, Ai.Chrome, Import.Chrome) compile on the Mac
+  (`dotnet msbuild -t:Compile`, warnings as errors); no banned WinUI control. Not run on Windows:
+  the native change (`main.cpp`) compiles only in CI, and the verify line, the placement of the
+  notice island (100 % / 200 %, resize, under Settings) and the PR 1 gate are owed to a Windows
+  machine.
+
+### Windows: the "Press T" filmstrip hint shows (#446, 2026-10-15)
+
+The hint card never appeared on Windows. It was the last windowed `Popup` in the chrome, built like
+the resume notice above, and is now an island of its own in the same corner
+(`IslandHost.HintNotice.cs`), made on the first show and parked, not disposed, when it fades. Native
+also asks again when the filmstrip comes up (`main.cpp`, the layout sync): on Windows the strip
+state is what is shown, so a clip or document that opened before its folder had a strip was never
+due. The Mac was already correct; a Mac that has learned the hint (`mv.hint.filmstripT`) shows
+nothing, by design.
+
+- **Checked:** the C# compiles on the Mac (warnings as errors). Not run on Windows: the native line
+  compiles only in CI, and the card's placement, stacking over the resume notice, "Got it" keeping
+  the keyboard on the canvas and the PR 1 gate are owed to a Windows machine.
+
 ### The AI badge on the canvas (#345, docs/plans/metadata-search-and-place.md slice 5, 2026-10-12)
 
 A file that says it was AI-made gets a small "AI" badge in the bottom-right of the canvas, with
@@ -1915,6 +1954,37 @@ What is built is in [docs/design/28](design/28-sharepoint.md).
   Mac–Windows, Windows–Windows), the crash-report check after a transfer, Windows anything in
   the app, both hosts' first-run prompts (local network and Bluetooth on the Mac, Defender
   Firewall on Windows), VoiceOver and Narrator over the window, the Windows PR 1 gate.
+
+### Sharepoint, AirDrop-smooth (issue #442, 2026-10-15)
+
+What changed is in [docs/design/28](design/28-sharepoint.md): the AirDrop-like window on both
+hosts and the screen vocabulary it added (`tiles`, card, ring, code field, display text); the
+sender types the code the receiver shows (three wrong codes end the link); received files go to
+Downloads and Save to is kept; Keep receiving is kept across launches with **Sharepoint:
+receiving** in the command bar; the receiver checks file N while N+1 arrives; the share icon no
+longer waits for an earlier selection; Windows screen windows have the app icon, a size floor and
+an owner, and Settings shows each add-on as one card.
+
+- **Mac (M-series, Mac17,4):** `MediaViewer.app`, the Swift chrome and `libmv_sharepoint.dylib`
+  build. `mv_import_tests` 150 cases and `mv_tests` 850 (839 passed, 11 skipped) pass;
+  `"[sharepoint]"` 33 cases and `"[screens]"` 13. ThreadSanitizer: `"[sharepoint]"` four runs at
+  once, 0 reports; `"[screens]"` 0. `test_addon_pack.py` passes.
+- **Measured (Mac):** `"[.sharepoint-bench]"` (loopback, alternated with the base three times):
+  500 × 2 MiB 124–141 → 158–180 MB/s, 1 GiB unchanged (crypto-bound); `"[.sharepoint-idle]"`
+  Keep receiving on, window closed: 0.020 % CPU, 6.4 switches a second, no present (off 0.0003 %).
+  The PR 1 gate (`frametime --seconds 60`) passed alone (3599 frames, p99 16.8 ms, max 16.9 ms,
+  idle 0 presents, 0.042 %) and with Sharepoint sending over loopback in another process the whole
+  time (p99 16.8 ms, max 16.8 ms, idle 0 presents, 0.037 %).
+- **Seen on the Mac:** every state of the window drawn by the chrome's own `ScreenNodeView` (light
+  and dark) in a scratch render harness, and the window opened in a dev copy of the app, offline
+  (`MV_SHAREPOINT_OFFLINE=1`, dev-signed, files handed over through `mv_chrome_slots_invoke`).
+- **Windows:** the C# compiles (warnings are errors). `net_win.cpp`'s Downloads lookup and lock
+  meet a compiler in CI only. Not run: the window's look, its icon, Settings' cards, the stall fix
+  in the app.
+- **Owed:** two machines (Wi-Fi and Bluetooth MB/s against a plain copy, typing the code, Keep
+  receiving after a relaunch seen from the other machine), Bluetooth's idle cost with Keep
+  receiving on, Windows screenshots and an ETW trace of the share icon on 500 items, the Windows
+  PR 1 gate, VoiceOver and Narrator over the new tiles and code field.
 
 ### Local search: ask before resuming an interrupted index (issue #299, 2026-10-11)
 

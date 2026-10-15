@@ -132,7 +132,7 @@ struct SharepointOffer: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
       Text("Sharepoint").font(MVTheme.font()).foregroundStyle(MVTheme.title)
-      Text("Send photos, video and audio to a MediaViewer nearby, over Wi-Fi or Bluetooth. Both screens show the same code, and nothing moves until the other person accepts.")
+      Text("Send photos, video and audio to a MediaViewer nearby, over Wi-Fi or Bluetooth. You type the code the other screen shows, and nothing moves until the other person accepts.")
         .font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
         .fixedSize(horizontal: false, vertical: true)
       if AddonStore.shared.elsewhere {
