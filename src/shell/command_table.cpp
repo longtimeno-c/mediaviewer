@@ -93,7 +93,10 @@ constexpr binding kBindings[] = {
     row(C('R'), mod_none, kViewing, edge, reset_stats),
     row(C('G'), mod_none, kNotCrop, edge, toggle_gallery),
     row(C('T'), mod_none, kAllModes, edge, toggle_filmstrip),
-    row(C('B'), mod_none, kViewing, edge, cycle_background),
+    // Issue #408: `B` cycled a canvas background, which is gone. The row stays,
+    // keyless and in no mode, because saved rebinds name rows by index (Windows
+    // settings.ini [keys], the Mac's mv.keys): never routed, never listed.
+    row(key::none, mod_none, 0, edge, retired_background),
     row(C('S'), mod_none, kBrowse | kVideo | kIsland, edge, sticky_zoom),
     row(C('C'), mod_none, kViewing, edge, clipping),
     row(C('O'), mod_none, kViewing, edge, info_overlay),
@@ -364,7 +367,9 @@ constexpr command_info kCommands[] = {
     {gallery_smaller, "Gallery: smaller thumbnails"},
     {fill, "Fill"},
     {reset_view, "Reset view"},
-    {cycle_background, "Canvas background"},
+    // Issue #408: no canvas background; every screen is the theme's. Kept,
+    // keyless, so every later command keeps its wire value.
+    {retired_background, "Canvas background (retired)", true},
     {sticky_zoom, "Sticky zoom"},
     {clipping, "Clipping"},
     {loupe, "Loupe"},

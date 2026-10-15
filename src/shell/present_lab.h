@@ -37,6 +37,7 @@
 #include "mediaviewer/mediaviewer.h"
 #include "shell/dino_game.h"
 #include "shell/edit_view.h"
+#include "shell/home_theme.h"
 #include "shell/input_state.h"
 
 namespace mv::shell {
@@ -406,8 +407,14 @@ class present_lab {
   // texture changed. Playing an animation must leave this where it was.
   std::uint32_t previous_image_changes_ = 0;
   std::uint8_t seen_view_flags_ = 0;
-  std::uint8_t seen_background_ = 255;
-  std::uint32_t seen_home_background_rgb_ = 0xFFFFFFFFu;
+  // Issue #408: the theme's tokens (one redraw when they change) and the
+  // home's ground effect, which ticks at 10 Hz by its rest rule.
+  home_theme seen_home_{};
+  bool seen_home_valid_ = false;
+  std::uint32_t seen_pointer_seq_ = 0;
+  home_ground_clock ground_;
+  double ground_every_ = 0.0;  // seconds between ticks now; 0 = resting
+  bool ground_tick_ = false;     // a tick is due this pass (may present while behind)
   std::int32_t seen_loupe_steps_x_ = 0;
   std::int32_t seen_loupe_steps_y_ = 0;
   std::uint32_t seen_marked_count_ = 0;

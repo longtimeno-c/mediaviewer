@@ -34,6 +34,7 @@
 #include "player/media_source.h"
 #include "player/playback_hold.h"
 #include "shell/dino_game.h"
+#include "shell/home_theme.h"
 #include "shell/input_state.h"
 
 namespace mv::shell {
@@ -497,8 +498,14 @@ class present_lab_mac {
   std::uint32_t seen_reset_seq_ = 0;
   std::uint32_t seen_resize_seq_ = 0;
   std::uint32_t seen_display_seq_ = 0;
-  std::uint8_t seen_background_ = 255;
-  std::uint32_t seen_home_background_rgb_ = 0xFFFFFFFFu;
+  // Issue #408: the theme's tokens (one redraw when they change) and the
+  // home's ground effect, which ticks at 10 Hz by its rest rule.
+  home_theme seen_home_{};
+  bool seen_home_valid_ = false;
+  std::uint32_t seen_pointer_seq_ = 0;
+  home_ground_clock ground_;
+  double ground_every_ = 0.0;  // seconds between ticks now; 0 = resting
+  bool ground_tick_ = false;     // a tick is due this pass (may present while behind)
   double animation_phase_ = 0.0;
   double last_input_time_ = -1.0;
 

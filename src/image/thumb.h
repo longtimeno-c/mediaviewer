@@ -27,8 +27,10 @@ inline constexpr char kThumbSpec[] = "jpg512.4";
 inline constexpr std::uint32_t kThumbLongEdge = 512;
 inline constexpr int kThumbJpegQuality = 80;
 // JPEG has no alpha: a thumbnail's transparency is composited onto this sRGB
-// grey before the encode. The viewer's dark alpha-case background (gfx
-// background_clear, linear 0.018), so a tile matches the image once opened.
+// grey before the encode. It was the viewer's old dark background (linear
+// 0.018); since issue #408 an open image shows the theme's canvas through its
+// alpha instead. The matte stays: changing it would re-encode every cached
+// thumbnail (kThumbSpec) for a few transparent files.
 inline constexpr std::uint8_t kThumbMatte = 36;
 
 struct thumb_key {

@@ -80,6 +80,20 @@ public static partial class IslandHost
         public const int AddonState = 1010;
         public const int OpenPath = 1011;
         public const int HomeColour = 1016;
+        // Issue #408: the theme's other tokens and the built-in's ground for the
+        // native empty window, sent before HomeColour, which publishes them
+        // (chrome_host.h chrome_cmd_home_surface .. home_effect_size).
+        public const int HomeSurface = 1070;
+        public const int HomeTitle = 1071;
+        public const int HomeBody = 1072;
+        public const int HomeHairline = 1073;
+        public const int HomeAccent = 1074;
+        public const int HomeEffect = 1075;
+        public const int HomeEffectRgb = 1076;
+        public const int HomeEffectIntensity = 1077;
+        public const int HomeEffectSpeed = 1078;
+        public const int HomeEffectSize = 1079;
+        public const int HomeGroundInput = 1080;
         // Issue #38: arg 1 while a scrub or the More flyout holds the transport
         // up, 0 when it lets go (chrome_cmd_transport_hold).
         public const int TransportHold = 1017;
@@ -267,8 +281,7 @@ public static partial class IslandHost
         public const int FilmstripForImage = 1 << 1;
         public const int Wrap = 1 << 2;
         public const int StickyZoom = 1 << 3;
-        public const int BackgroundShift = 4;
-        public const int BackgroundMask = 7 << 4;
+        // Bits 4-6 were the canvas background, removed by issue #408 (settings.h).
         // [update] auto_check, not a view setting (update_guard.h kChromeFlagUpdateAutoCheck).
         public const int UpdateAutoCheck = 1 << 8;
         // [telemetry] enabled / asked (telemetry.h kChromeFlagTelemetry*).
@@ -381,6 +394,10 @@ public static partial class IslandHost
                 ? null
                 : Marshal.GetDelegateForFunctionPointer<NativeCommand>(checked((IntPtr)args.OnCommand));
             _themeWindow = parent;
+            // Issue #408: the ground's clock reads the window's visibility, and
+            // input over the islands reaches the native empty window's ground.
+            ThemeMotion.Window = parent;
+            ThemeMotion.ForwardInput = () => _onCommand?.Invoke(_context, Command.HomeGroundInput, 0);
             RefreshTheme();
 
             if (_source is not null) _source.TakeFocusRequested -= OnTakeFocusRequested;

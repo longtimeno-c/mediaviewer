@@ -70,7 +70,8 @@ TEST_CASE("every command a row runs has a stable name, and names are unique", "[
   std::set<std::string_view> seen;
   for (const binding& b : default_bindings()) {
     for (const command_id id : {b.command, b.hold, b.release}) {
-      if (id == command_id::none) continue;
+      // Issue #408's retired `B` keeps a row with no name: a pack cannot bind it.
+      if (id == command_id::none || is_retired_command(static_cast<int>(id))) continue;
       const std::string_view slug = command_slug(id);
       INFO(static_cast<int>(id));
       REQUIRE_FALSE(slug.empty());
@@ -86,6 +87,9 @@ TEST_CASE("every command a row runs has a stable name, and names are unique", "[
   }
   REQUIRE(command_slug(command_id::none).empty());
   REQUIRE(command_slug(command_id::palette).empty());
+  // Issue #408: `B` and its command are gone; an old pack naming it is skipped.
+  REQUIRE(command_slug(command_id::retired_background).empty());
+  REQUIRE(command_by_slug("cycle_background") == command_id::none);
   REQUIRE(command_slug(command_id::addon_cmd_0).empty());
   REQUIRE(command_by_slug("next") == command_id::next);
   REQUIRE(command_by_slug("Next") == command_id::none);
@@ -106,6 +110,7 @@ TEST_CASE("a pack rebinds any built-in row, `?` lists it, and Reset restores", "
   std::set<command_id> done;
   for (std::size_t i = 0; i < defaults.size(); ++i) {
     const command_id id = defaults[i].command;
+    if (is_retired_command(static_cast<int>(id))) continue;  // issue #408: no name, no key
     if (!done.insert(id).second) continue;  // a command's first row
     const std::string slug(command_slug(id));
     INFO(slug);

@@ -133,3 +133,23 @@ TEST_CASE("constants match docs/design/03", "[gfx][present_policy]") {
   REQUIRE(mv::gfx::k_warmup_seconds == 1.0);
   REQUIRE(mv::gfx::k_occlusion_poll_ms == 200);
 }
+
+TEST_CASE("a ground tick presents behind another app, nothing else does", "[gfx][present_policy]") {
+  // Issue #408: the empty window's ground keeps moving at 10 Hz while the window
+  // is visible but not in front. Only the due tick may present; covered or
+  // hidden, nothing does.
+  mv::gfx::present_request r;
+  r.window_active = false;
+  r.painted_static = true;
+  r.redraw = true;
+  REQUIRE_FALSE(mv::gfx::decide_present(r).wants_frame);
+  r.ground_tick = true;
+  const auto d = mv::gfx::decide_present(r);
+  REQUIRE(d.wants_frame);
+  REQUIRE_FALSE(d.live);
+  r.occluded = true;
+  REQUIRE_FALSE(mv::gfx::decide_present(r).wants_frame);
+  r.occluded = false;
+  r.window_visible = false;
+  REQUIRE_FALSE(mv::gfx::decide_present(r).wants_frame);
+}

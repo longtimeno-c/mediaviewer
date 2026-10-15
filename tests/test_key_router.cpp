@@ -38,6 +38,13 @@ view_state clip() {
 TEST_CASE("no two bindings share a key, modifiers and mode", "[shell][commands]") {
   std::set<std::tuple<int, int, int>> seen;
   for (const auto& b : default_bindings()) {
+    // Issue #408: the retired `B` keeps a placeholder row (saved rebinds name
+    // rows by index), with no key and no mode, so it can never route.
+    if (is_retired_command(static_cast<int>(b.command))) {
+      REQUIRE(b.k == key::none);
+      REQUIRE(b.modes == 0);
+      continue;
+    }
     REQUIRE(b.modes != 0);
     REQUIRE(b.command != command_id::none);
     // PR 7: Open RAW / Open JPEG ship listed but unbound (docs/design/04, docs/design/16);
@@ -112,6 +119,17 @@ TEST_CASE("the PR 3-5 island command ids keep their wire values", "[shell][comma
   REQUIRE(static_cast<int>(command_id::help) == 75);
   REQUIRE(static_cast<int>(command_id::reveal_in_explorer) == 80);
   REQUIRE(static_cast<int>(command_id::open_settings) == 84);
+}
+
+TEST_CASE("B no longer cycles a canvas background", "[shell][commands]") {
+  // Issue #408: every screen is the theme's background; there is nothing to cycle.
+  key_router r;
+  for (const mode m : {mode::browse, mode::video}) {
+    const binding* b = r.lookup(char_key('B'), mod_none, m);
+    REQUIRE((b == nullptr || !is_retired_command(static_cast<int>(b->command))));
+  }
+  REQUIRE(find_command(command_id::retired_background) != nullptr);
+  REQUIRE(find_command(command_id::retired_background)->keyless);
 }
 
 TEST_CASE("number row is zoom, never rating", "[shell][commands]") {

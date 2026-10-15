@@ -220,7 +220,6 @@ crop. Keys are shown Windows-style; on macOS read `⌘` for `Ctrl`.
 | `W` `S`, `↑` `↓` | gallery | Previous / next row |
 | `Enter` | gallery | Open the selection in the viewer (leaving fullscreen / slideshow, restoring the filmstrip if enabled) |
 | `T` | all | Filmstrip show / hide (stored per mode: folder open or single image) |
-| `B` | Viewing | Cycle background: black / gray / white / checkerboard |
 | `S` | browse, video, island | Sticky zoom on advance |
 | `C` | Viewing | Clipping blinkies |
 | `O` | Viewing | On-canvas info overlay (filename, index, exposure triangle) |
@@ -494,7 +493,7 @@ presents ([rendering](03-rendering.md)). Toggles request one redraw.
 | Hold-previous (hold `\`) | The five-slot LRU; no second session |
 | Clipping blinkies (`C`) | Shader; may present while on (it animates), labelled in F3 |
 | Pixel grid (≥ 400 %) | Shader |
-| Canvas background / checkerboard (`B`) | Clear colour + optional shader |
+| Around the picture (no key) | The theme's `canvas` token as the clear and in the blit; there is no canvas background of its own (issue #408, [12](12-decision-log.md)) |
 | On-canvas info (`O`) | Overlay text from the folder model and metadata already read |
 | AF-point quads (`Shift+O`) | A few quads from maker notes already in the property model |
 | Eyedropper (`Shift+I`) | One-pixel staging readback on demand, never a full-texture download |
