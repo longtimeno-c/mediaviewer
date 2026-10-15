@@ -295,6 +295,16 @@ void engine::adopt_tags(const asset_tags& t) {
   m.ai = t.ai;
   m.has_where = t.has_where;
   m.taken_at = t.taken_at;
+  m.exposure = query::exposure_facts{};
+  if (t.level >= 2) {
+    m.exposure.rated = t.rating.has_value();
+    m.exposure.rating = t.rating.value_or(0);
+    m.exposure.label = text::fold(t.label);
+    m.exposure.iso = t.iso;
+    m.exposure.aperture_x100 = t.aperture_x100;
+    m.exposure.focal_mm = t.focal_mm;
+    m.exposure.shutter_us = t.shutter_us;
+  }
   m.fields = split_fields(t.text);
   m.folded = folded_fields(m.fields);
 }
@@ -313,7 +323,8 @@ bool engine::backfill_tags() {
   // A few seconds at most per control-loop turn: a scan or a model load waits
   // no longer than that behind it.
   while (!stopping_ && std::chrono::steady_clock::now() - started < std::chrono::seconds(2)) {
-    std::vector<asset_row> todo = db_->assets_needing_tags(128);
+    const int level = tags_level_.load();
+    std::vector<asset_row> todo = db_->assets_needing_tags(128, level);
     if (todo.empty()) {
       tags_pending_ = false;
       return false;
@@ -328,6 +339,7 @@ bool engine::backfill_tags() {
       t.id = a.id;
       t.mtime = a.mtime;
       t.size = a.size;
+      t.level = level;
       if (is_photos_key(a.path)) {
         std::lock_guard lock(photos_tags_m_);
         if (auto p = photos_tags_.find(a.path); p != photos_tags_.end()) {
@@ -349,6 +361,21 @@ bool engine::backfill_tags() {
           t.lens = f->lens_utf8;
           t.made_with = f->made_with_utf8;
           t.text = f->fields_utf8;
+          if (f->struct_size >= MV_ADDON_TAG_FACTS_V2_SIZE) {
+            // #405: rating, label and exposure. Never search text.
+            t.rating = f->rating;
+            t.label.assign(f->label_utf8, strnlen(f->label_utf8, sizeof(f->label_utf8)));
+            t.iso = f->iso;
+            t.aperture_x100 = f->aperture_x100;
+            t.focal_mm = f->focal_mm;
+            t.shutter_den = f->shutter_den;
+            t.shutter_us = f->shutter_us;
+          } else {
+            // A host from before #405: read to level 1 and ask nothing more
+            // of it this run (the next host that knows them reads them).
+            t.level = 1;
+            tags_level_ = 1;
+          }
         }
         // else unreadable: an empty row stands, so it is not asked again.
       }
@@ -1975,6 +2002,7 @@ bool engine::see_batch(const root_row& root, std::vector<index_db::seen_file>& b
     if (u.changed || u.added) {
       m.tags = false;  // read again by the backfill (the index set tags = 0)
       m.taken_at.reset();  // dated by mtime until then (#404)
+      m.exposure = query::exposure_facts{};  // #405: no values until read again
       tags_pending_ = true;
     }
     m.path = batch[i].path;
@@ -4575,6 +4603,9 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
                    all_in(a.lens, plan.lenses) && none_in(a.lens, plan.not_lenses) &&
                    all_in(a.made_with, plan.made) && none_in(a.made_with, plan.not_made) &&
                    (plan.ai == 0 || (plan.ai > 0) == a.ai);
+            // #405: rating, label, exposure; an asset not read to level 2
+            // has no value yet, so a kept term does not match it.
+            if (keep && plan.has_exposure()) keep = plan.exposure_matches(a.exposure);
           }
           if (keep && !plan.places.empty()) keep = a.has_where;
         }

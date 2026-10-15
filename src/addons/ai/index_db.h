@@ -32,6 +32,11 @@
 // an FTS5 asset_text(rowid = asset id, text = the folded search fields). One
 // transaction, as every step: a kill in it leaves schema 3.
 //
+// Schema 5 (#405): assets gain rating, label, iso, aperture_x100, focal_mm,
+// shutter_den and shutter_us (NULL until read). `tags` becomes a level: 1 =
+// schema 4's facts read, 2 = these too (kTagsLevel), so the backfill reads a
+// schema-4 row once more for them and never a row that has them.
+//
 // docs/design/17 sketches one assets row per (path, mtime, size, spec); progress is
 // that row's per-model half, so two models' vectors live side by side while
 // a quality change migrates (PR 23: "old index kept until the new one
@@ -98,11 +103,16 @@ struct asset_row {
   bool cloud = false;  // only a cloud provider has it (schema 3): never read until fetched
 };
 
+// What the tag backfill has read of an asset (assets.tags): 0 nothing, 1 the
+// schema 4 facts, 2 (#405, schema 5) rating, label and exposure too.
+inline constexpr int kTagsLevel = 2;
+
 // #291 (schema 4): what an asset's tags say, as the host's tag_facts gave
 // them. `text` is the search fields folded (core/fold.h) and joined by spaces,
 // as asset_text holds it.
 struct asset_tags {
   std::int64_t id = 0;
+  int level = kTagsLevel;  // what was read (an older host: 1, without the #405 facts)
   std::int64_t mtime = 0;  // the stamp the facts were read at
   std::uint64_t size = 0;
   std::optional<std::int64_t> taken_at;  // date taken read as UTC
@@ -111,6 +121,14 @@ struct asset_tags {
   std::string camera, lens, made_with;
   bool ai = false;
   std::string text;
+  // #405 (level 2). Absent: nullopt / empty / 0.
+  std::optional<int> rating;  // 1..5, -1 rejected, 0 unrated
+  std::string label;          // as written
+  std::int32_t iso = 0;
+  std::int32_t aperture_x100 = 0;
+  std::int32_t focal_mm = 0;
+  std::int32_t shutter_den = 0;
+  std::int64_t shutter_us = 0;
 };
 
 // One embedding to store. `emb` is float and L2-normalised; the store
@@ -284,14 +302,15 @@ class index_db {
   [[nodiscard]] result<asset_row> asset_by_path(const std::string& path);
   [[nodiscard]] result<asset_row> asset_by_id(std::int64_t id);
   // ---- tags (#291, schema 4) -----------------------------------------------------
-  // Assets of enabled roots whose tags are not read yet (tags = 0; cloud-only
-  // ones wait for their bytes), oldest first: the backfill's next batch.
-  [[nodiscard]] std::vector<asset_row> assets_needing_tags(std::size_t limit);
-  [[nodiscard]] std::uint64_t tags_pending();
+  // Assets of enabled roots whose tags are read below `level` (tags < level;
+  // cloud-only ones wait for their bytes), oldest first: the backfill's next
+  // batch.
+  [[nodiscard]] std::vector<asset_row> assets_needing_tags(std::size_t limit, int level = kTagsLevel);
+  [[nodiscard]] std::uint64_t tags_pending(int level = kTagsLevel);
   // Stores a batch in one transaction; a row whose asset's stamp moved since
   // the read is dropped (its tags are read again).
   [[nodiscard]] expected commit_tags(std::span<const asset_tags> rows);
-  // Every asset with tags read, for the engine's memory at start.
+  // Every asset with tags read (any level), for the engine's memory at start.
   [[nodiscard]] expected each_tags(const std::function<void(const asset_tags&)>& visit);
   // An FTS5 MATCH over asset_text (empty when the index has no FTS5). For a
   // reader that does not keep the text in memory. `words` is what was typed:

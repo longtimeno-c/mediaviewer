@@ -11,7 +11,7 @@
 namespace mv::ai {
 namespace {
 
-constexpr int kSchemaVersion = 4;
+constexpr int kSchemaVersion = 5;
 
 // A prepared statement that finalizes itself; binds are 1-based.
 class stmt {
@@ -228,6 +228,32 @@ result<std::unique_ptr<index_db>> index_db::open(const std::string& path) {
       return err(status::corrupt);
     }
     v = "4";
+  }
+  // Schema 4 -> 5 (#405): rating, colour label and exposure, NULL until the
+  // backfill reads them (`tags` < 2 brings every schema-4 row back to it
+  // once, for these alone: nothing is re-embedded). One transaction; a column
+  // already there is skipped, as for schema 4.
+  if (v == "4") {
+    if (!d->exec("BEGIN")) return err(status::corrupt);
+    bool ok = true;
+    static constexpr std::pair<const char*, const char*> kColumns[] = {
+        {"rating", "ALTER TABLE assets ADD COLUMN rating INTEGER;"},
+        {"label", "ALTER TABLE assets ADD COLUMN label TEXT;"},
+        {"iso", "ALTER TABLE assets ADD COLUMN iso INTEGER;"},
+        {"aperture_x100", "ALTER TABLE assets ADD COLUMN aperture_x100 INTEGER;"},
+        {"focal_mm", "ALTER TABLE assets ADD COLUMN focal_mm INTEGER;"},
+        {"shutter_den", "ALTER TABLE assets ADD COLUMN shutter_den INTEGER;"},
+        {"shutter_us", "ALTER TABLE assets ADD COLUMN shutter_us INTEGER;"},
+    };
+    for (const auto& [column, sql] : kColumns) {
+      if (ok && !has_column(d->db_, "assets", column)) ok = d->exec(sql);
+    }
+    ok = ok && static_cast<bool>(d->set_meta("schema", "5"));
+    if (!ok || !d->exec("COMMIT")) {
+      d->exec("ROLLBACK");
+      return err(status::corrupt);
+    }
+    v = "5";
   }
   if (v != std::to_string(kSchemaVersion)) {
     return err(status::unsupported_format);  // a newer add-on's index
@@ -858,22 +884,23 @@ expected index_db::clear() {
 
 // ---- tags (#291, schema 4) -----------------------------------------------------------
 
-std::vector<asset_row> index_db::assets_needing_tags(std::size_t limit) {
+std::vector<asset_row> index_db::assets_needing_tags(std::size_t limit, int level) {
   std::lock_guard lock(m_);
   std::vector<asset_row> out;
   const std::string sql = std::string("SELECT ") + kAssetCols +
                           " FROM assets a JOIN roots r ON r.id = a.root_id"
-                          " WHERE a.tags = 0 AND a.cloud = 0 AND r.enabled = 1 ORDER BY a.id LIMIT ?1";
+                          " WHERE a.tags < ?2 AND a.cloud = 0 AND r.enabled = 1 ORDER BY a.id LIMIT ?1";
   stmt s(db_, sql.c_str());
-  s.bind(1, static_cast<std::int64_t>(limit));
+  s.bind(1, static_cast<std::int64_t>(limit)).bind(2, std::int64_t{level});
   while (s.step_row()) out.push_back(asset_from(s, 0));
   return out;
 }
 
-std::uint64_t index_db::tags_pending() {
+std::uint64_t index_db::tags_pending(int level) {
   std::lock_guard lock(m_);
   stmt s(db_, "SELECT COUNT(*) FROM assets a JOIN roots r ON r.id = a.root_id"
-              " WHERE a.tags = 0 AND a.cloud = 0 AND r.enabled = 1");
+              " WHERE a.tags < ?1 AND a.cloud = 0 AND r.enabled = 1");
+  s.bind(1, std::int64_t{level});
   return s.step_row() ? static_cast<std::uint64_t>(s.i64(0)) : 0;
 }
 
@@ -885,8 +912,10 @@ expected index_db::commit_tags(std::span<const asset_tags> rows) {
   {
     // Only while the asset is the file that was read: a rescan that moved
     // its stamp meanwhile set tags back to 0, and this row is dropped.
-    stmt up(db_, "UPDATE assets SET tags = 1, taken_at = ?4, lat = ?5, lon = ?6, camera = ?7, lens = ?8,"
-                 " made_with = ?9, ai = ?10 WHERE id = ?1 AND mtime = ?2 AND size = ?3");
+    stmt up(db_, "UPDATE assets SET tags = ?11, taken_at = ?4, lat = ?5, lon = ?6, camera = ?7, lens = ?8,"
+                 " made_with = ?9, ai = ?10, rating = ?12, label = ?13, iso = ?14, aperture_x100 = ?15,"
+                 " focal_mm = ?16, shutter_den = ?17, shutter_us = ?18"
+                 " WHERE id = ?1 AND mtime = ?2 AND size = ?3");
     stmt del(db_, "DELETE FROM asset_text WHERE rowid = ?1");
     stmt ins(db_, "INSERT INTO asset_text(rowid, text) VALUES(?1, ?2)");
     for (const asset_tags& t : rows) {
@@ -895,6 +924,17 @@ expected index_db::commit_tags(std::span<const asset_tags> rows) {
       if (t.taken_at) up.bind(4, *t.taken_at);
       if (t.has_where) up.bind_real(5, t.lat).bind_real(6, t.lon);
       up.bind(7, t.camera).bind(8, t.lens).bind(9, t.made_with).bind(10, std::int64_t{t.ai ? 1 : 0});
+      up.bind(11, std::int64_t{std::clamp(t.level, 1, kTagsLevel)});
+      // #405: NULL for what the file does not say (and all of it below level 2).
+      if (t.level >= 2) {
+        if (t.rating) up.bind(12, std::int64_t{*t.rating});
+        if (!t.label.empty()) up.bind(13, t.label);
+        if (t.iso > 0) up.bind(14, std::int64_t{t.iso});
+        if (t.aperture_x100 > 0) up.bind(15, std::int64_t{t.aperture_x100});
+        if (t.focal_mm > 0) up.bind(16, std::int64_t{t.focal_mm});
+        if (t.shutter_den > 0) up.bind(17, std::int64_t{t.shutter_den});
+        if (t.shutter_us > 0) up.bind(18, t.shutter_us);
+      }
       if (!up.run()) {
         ok = false;
         break;
@@ -923,7 +963,8 @@ expected index_db::commit_tags(std::span<const asset_tags> rows) {
 expected index_db::each_tags(const std::function<void(const asset_tags&)>& visit) {
   std::lock_guard lock(m_);
   stmt s(db_, "SELECT a.id, a.mtime, a.size, a.taken_at, a.lat, a.lon, a.camera, a.lens, a.made_with, a.ai,"
-              " t.text FROM assets a LEFT JOIN asset_text t ON t.rowid = a.id WHERE a.tags = 1");
+              " t.text, a.tags, a.rating, a.label, a.iso, a.aperture_x100, a.focal_mm, a.shutter_den, a.shutter_us"
+              " FROM assets a LEFT JOIN asset_text t ON t.rowid = a.id WHERE a.tags >= 1");
   if (!s.ok()) return err(status::io);
   while (s.step_row()) {
     asset_tags t;
@@ -939,6 +980,14 @@ expected index_db::each_tags(const std::function<void(const asset_tags&)>& visit
     t.made_with = s.text(8);
     t.ai = s.i64(9) != 0;
     t.text = s.text(10);
+    t.level = static_cast<int>(s.i64(11));
+    if (!s.is_null(12)) t.rating = static_cast<int>(s.i64(12));
+    t.label = s.text(13);
+    t.iso = static_cast<std::int32_t>(s.i64(14));
+    t.aperture_x100 = static_cast<std::int32_t>(s.i64(15));
+    t.focal_mm = static_cast<std::int32_t>(s.i64(16));
+    t.shutter_den = static_cast<std::int32_t>(s.i64(17));
+    t.shutter_us = s.i64(18);
     visit(t);
   }
   return {};

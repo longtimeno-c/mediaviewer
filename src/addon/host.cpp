@@ -278,12 +278,18 @@ mv_status MV_CALL t_capture(void* host, const char* path, mv_addon_capture* out)
 
 mv_status MV_CALL t_tag_facts(void* host, const char* path, mv_addon_tag_facts* out) {
   return guarded([&] {
-    if (!path || !out || out->struct_size < sizeof(mv_addon_tag_facts)) return MV_ERR_INVALID_ARG;
-    *out = mv_addon_tag_facts{};
-    out->struct_size = sizeof(mv_addon_tag_facts);
+    // An add-on built before #405 passes the shorter struct: it gets what it
+    // knows, and struct_size says how much was written.
+    if (!path || !out || out->struct_size < MV_ADDON_TAG_FACTS_V1_SIZE) return MV_ERR_INVALID_ARG;
+    const std::uint32_t size = std::min<std::uint32_t>(out->struct_size, sizeof(mv_addon_tag_facts));
+    mv_addon_tag_facts full{};
+    full.struct_size = sizeof(mv_addon_tag_facts);
     const auto& facts = self(host).services().tag_facts;
     if (!facts) return MV_ERR_UNSUPPORTED_FORMAT;
-    return facts(path, *out) ? MV_OK : MV_ERR_IO;
+    const bool ok = facts(path, full);
+    full.struct_size = size;
+    std::memcpy(out, &full, size);
+    return ok ? MV_OK : MV_ERR_IO;
   });
 }
 

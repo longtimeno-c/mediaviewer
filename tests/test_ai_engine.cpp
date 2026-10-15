@@ -548,6 +548,24 @@ mv_status MV_CALL walk2_with_cloud(void* host, const char* root, int32_t depth, 
   return real(host, root, depth, &flag_cloud, &c);
 }
 
+// #405: a host from before the rating and exposure fields: its tag_facts
+// answers the shorter struct, as an app not yet updated under a newer pack.
+std::atomic<bool> g_old_tag_host{false};
+std::mutex g_tag_m;
+std::map<void*, decltype(mv_host_api::tag_facts)> g_tag_facts;  // by host
+
+mv_status MV_CALL tag_facts_maybe_old(void* host, const char* path, mv_addon_tag_facts* out) {
+  decltype(mv_host_api::tag_facts) real = nullptr;
+  {
+    std::lock_guard lock(g_tag_m);
+    const auto it = g_tag_facts.find(host);
+    if (it == g_tag_facts.end()) return MV_ERR_INTERNAL;
+    real = it->second;
+  }
+  if (g_old_tag_host.load() && out) out->struct_size = MV_ADDON_TAG_FACTS_V1_SIZE;
+  return real(host, path, out);
+}
+
 struct rig {
   scratch_dir dir{"ai"};
   std::mutex events_m;
@@ -678,6 +696,18 @@ struct rig {
         out.lat = 38.7975;
         out.lon = -9.3883;
       }
+      // #405: "iso400" is ISO 400, f/2.8, 1/250 s, 35 mm, five stars, Red;
+      // anything else is unrated with no exposure (a clip's case too).
+      if (name.find("iso400") != std::string::npos) {
+        out.rating = 5;
+        out.iso = 400;
+        out.aperture_x100 = 280;
+        out.focal_mm = 35;
+        out.shutter_den = 250;
+        out.shutter_us = 4000;
+        std::strcpy(out.label_utf8, "Red");
+      }
+      if (name.find("reject") != std::string::npos) out.rating = -1;
       // #404: "y2019" was taken on 2019-06-15 12:00 (wall clock read as UTC).
       if (name.find("y2019") != std::string::npos) {
         out.flags |= MV_ADDON_TAG_HAS_DATE;
@@ -694,9 +724,18 @@ struct rig {
       g_walks[api.host] = {api.walk_files2, cloud.get()};
     }
     api.walk_files2 = &walk2_with_cloud;
+    {
+      std::lock_guard lock(g_tag_m);
+      g_tag_facts[api.host] = api.tag_facts;
+    }
+    api.tag_facts = &tag_facts_maybe_old;
   }
   ~rig() {
     eng.reset();
+    {
+      std::lock_guard lock(g_tag_m);
+      g_tag_facts.erase(api.host);
+    }
     std::lock_guard lock(g_walks_m);
     g_walks.erase(api.host);
   }
@@ -1386,7 +1425,7 @@ TEST_CASE("an index migrates from schema 1, and again after a crash left a step 
   {
     auto d = mv::ai::index_db::open(path);
     REQUIRE(d);
-    CHECK((*d)->meta("schema") == "4");
+    CHECK((*d)->meta("schema") == "5");
     const auto roots = (*d)->roots();
     REQUIRE(roots.size() == 1);
     CHECK(roots[0].media == 0);
@@ -1397,12 +1436,12 @@ TEST_CASE("an index migrates from schema 1, and again after a crash left a step 
   {
     auto d = mv::ai::index_db::open(path);
     REQUIRE(d);
-    CHECK((*d)->meta("schema") == "4");
+    CHECK((*d)->meta("schema") == "5");
     REQUIRE((*d)->set_meta("schema", "2"));
   }
   auto d = mv::ai::index_db::open(path);
   REQUIRE(d);
-  CHECK((*d)->meta("schema") == "4");
+  CHECK((*d)->meta("schema") == "5");
   CHECK((*d)->roots().size() == 1);
 }
 
@@ -1452,9 +1491,10 @@ TEST_CASE("schema 3 migrates to 4: the tag columns and asset_text, keeping the a
   {
     auto d = mv::ai::index_db::open(path);
     REQUIRE(d);
-    CHECK((*d)->meta("schema") == "4");
+    CHECK((*d)->meta("schema") == "5");
     for (const char* c : {"tags", "taken_at", "lat", "lon", "camera", "lens", "made_with", "ai", "place", "country",
-                          "region"}) {
+                          "region", "rating", "label", "iso", "aperture_x100", "focal_mm", "shutter_den",
+                          "shutter_us"}) {
       CHECK(column_exists(path, c));
     }
     const auto all = (*d)->all_assets();
@@ -1521,7 +1561,7 @@ TEST_CASE("schema 3 migrates to 4: the tag columns and asset_text, keeping the a
   }
   auto d = mv::ai::index_db::open(path);
   REQUIRE(d);
-  CHECK((*d)->meta("schema") == "4");
+  CHECK((*d)->meta("schema") == "5");
 }
 
 #if !defined(_WIN32)
@@ -1561,7 +1601,7 @@ TEST_CASE("the 3 -> 4 migration survives a kill mid-step", "[ai][engine][schema4
   CHECK_FALSE(column_exists(path, "tags"));  // nothing of the step survived
   auto d = mv::ai::index_db::open(path);
   REQUIRE(d);
-  CHECK((*d)->meta("schema") == "4");
+  CHECK((*d)->meta("schema") == "5");
   CHECK(column_exists(path, "camera"));
   CHECK((*d)->all_assets().size() == 1);
 }
@@ -1680,6 +1720,84 @@ TEST_CASE("date terms use the date taken, and the file's time only when there is
   REQUIRE(r.idle());
   CHECK(names(r.search("in:2019")) == std::set<std::string>{"red_y2019.jpg"});
   CHECK(r.fast->images_embedded.load() == embedded);
+}
+
+TEST_CASE("rating:, label:, iso:, f:, mm: and shutter: in Local search (#405)", "[ai][engine][tags][exposure]") {
+  rig r;
+  r.file("red_iso400.jpg");  // ISO 400, f/2.8, 1/250, 35 mm, five stars, Red
+  r.file("red_plain.jpg");   // none of those, unrated
+  r.file("rgb_clip.mp4");    // a clip: no exposure block
+  r.file("blue_reject.jpg"); // rejected
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  const int embedded = r.fast->images_embedded.load();
+  const auto names = [](const std::vector<std::pair<std::string, std::int64_t>>& rows) {
+    std::set<std::string> out;
+    for (const auto& [n, _] : rows) out.insert(n);
+    return out;
+  };
+  const std::set<std::string> first{"red_iso400.jpg"};
+  for (const char* q : {"iso:400", "f:2.8", "mm:35", "shutter:1/250", "shutter:250", "rating:5", "rating:3+",
+                        "label:red", "label:Red", "iso:400 f:2.8 mm:35"}) {
+    CAPTURE(q);
+    CHECK(names(r.search(q)) == first);
+  }
+  CHECK(names(r.search("iso:100-200")).empty());
+  CHECK(names(r.search("iso:1600+")).empty());
+  CHECK(names(r.search("rating:0")) == std::set<std::string>{"red_plain.jpg", "rgb_clip.mp4"});
+  CHECK(names(r.search("rejected")) == std::set<std::string>{"blue_reject.jpg"});
+  CHECK(names(r.search("rating:-1")) == std::set<std::string>{"blue_reject.jpg"});
+  CHECK(names(r.search("-rating:5")).count("red_iso400.jpg") == 0);
+  CHECK(names(r.search("-rating:5")).size() == 3);
+  CHECK(names(r.search("-iso:400")).count("rgb_clip.mp4") == 1);  // no ISO: not in the range
+  // A description beside a term runs the picture tower on that subset.
+  CHECK(names(r.search("iso:400 red")) == first);
+  // The unrated red things: the photo and the clip whose first seconds are red.
+  CHECK(names(r.search("rating:0 red")) == std::set<std::string>{"red_plain.jpg", "rgb_clip.mp4"});
+  // A plain number is not a tag word: "400" finds no file by its ISO.
+  const std::uint64_t id = r.eng->search_text("400", "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+  REQUIRE(r.eng->wait_search(id, kSettleMs));
+  auto n = r.eng->result_count(id);
+  REQUIRE(n);
+  for (std::uint32_t i = 0; i < *n; ++i) {
+    auto res = r.eng->result_at(id, i);
+    REQUIRE(res);
+    CHECK((res->match & MV_AI_MATCH_TAGS) == 0);
+  }
+  CHECK(r.fast->images_embedded.load() == embedded);  // searching embeds no picture
+}
+
+TEST_CASE("an index read by an older host gains rating and exposure later without a re-embed (#405)",
+          "[ai][engine][tags][exposure]") {
+  rig r;
+  r.file("red_iso400.jpg");
+  r.file("green_r5.jpg");
+  g_old_tag_host = true;
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  const int embedded = r.fast->images_embedded.load();
+  CHECK(r.search("rating:5").empty());          // the old host said nothing of it
+  CHECK(r.search("camera:r5").size() == 1);     // what it did say is there
+  {
+    auto d = mv::ai::index_db::open(utf8(r.dir / "data" / "index.db"));
+    REQUIRE(d);
+    CHECK((*d)->tags_pending(1) == 0);
+    CHECK((*d)->tags_pending() == 2);  // level 2 owed, not spun on
+  }
+  // The app updates: the next run reads the new facts, embedding nothing.
+  g_old_tag_host = false;
+  r.start();
+  REQUIRE(r.idle());
+  CHECK(r.search("rating:5").size() == 1);
+  CHECK(r.search("iso:400").size() == 1);
+  CHECK(r.search("camera:r5").size() == 1);
+  CHECK(r.fast->images_embedded.load() == embedded);
+  r.eng.reset();
+  auto d = mv::ai::index_db::open(utf8(r.dir / "data" / "index.db"));
+  REQUIRE(d);
+  CHECK((*d)->tags_pending() == 0);
 }
 
 TEST_CASE("the tag backfill resumes after a restart and reads nothing twice", "[ai][engine][tags]") {

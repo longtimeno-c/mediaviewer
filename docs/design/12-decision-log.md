@@ -1146,6 +1146,17 @@ calendar month. Nothing is re-embedded and the schema is unchanged; the column w
 **Cost:** during the backfill a file's date can move from its mtime to its date taken, so a date
 query run then may change its answer once.
 
+**Rating, label and exposure are query terms, not words (2026-10-15, #405).** `rating:`,
+`rejected`, `label:`, `iso:`, `f:`, `mm:` and `shutter:` filter on numbers the tag pass already
+reads from the header the Metadata pane's summary comes from, stored in AI index schema 5 and in
+meta_cache.db (`kSearchFactsVersion` 2). They are kept out of the search fields and `asset_text`
+on purpose: a plain "400" matching every ISO 400 frame would bury the picture search. Aperture
+matches within 0.05 stops (f/2.8 written as 2.8 or as APEX's 2.83) and shutter within a sixth of
+a stop (1/250 is not 1/320). The tag bookmark became a level (1 = schema 4's facts, 2 = these),
+so a schema-4 index reads each file's facts once more, embedding nothing. **Cost:** one bounded
+head read per indexed file after the update (the cache rows of version 1 are read again), and a
+rating written to a RAW's sidecar does not reach the AI index until the file's stamp changes.
+
 ---
 
 ## Final Cut Pro search (Mac)

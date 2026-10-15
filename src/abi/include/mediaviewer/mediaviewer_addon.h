@@ -20,6 +20,7 @@
 #ifndef MEDIAVIEWER_ADDON_H
 #define MEDIAVIEWER_ADDON_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include "mediaviewer.h"
@@ -183,7 +184,23 @@ typedef struct mv_addon_tag_facts {
   char lens_utf8[128];
   char made_with_utf8[128]; /* "ChatGPT", "Adobe Firefly" */
   char fields_utf8[2048];
+  /* #405 (appended): the rating, colour label and exposure, for Local search's
+   * rating: / label: / iso: / f: / mm: / shutter: terms. A host that knows
+   * them returns a struct_size covering them (MV_ADDON_TAG_FACTS_V2_SIZE);
+   * an older host's struct_size stops at fields_utf8. 0 = absent for every
+   * number. Never part of fields_utf8. */
+  int32_t rating;           /* 1..5, -1 rejected, 0 unrated */
+  int32_t iso;              /* ISO speed */
+  int32_t aperture_x100;    /* f/2.8 -> 280 */
+  int32_t focal_mm;         /* whole millimetres */
+  int32_t shutter_den;      /* N when the exposure time is 1/N s */
+  int32_t reserved;
+  int64_t shutter_us;       /* the exposure time in microseconds */
+  char label_utf8[64];      /* the colour label as written: "Red" */
 } mv_addon_tag_facts;
+/* The size before #405's fields: what an older host or add-on passes. */
+#define MV_ADDON_TAG_FACTS_V1_SIZE ((uint32_t)offsetof(mv_addon_tag_facts, rating))
+#define MV_ADDON_TAG_FACTS_V2_SIZE ((uint32_t)sizeof(mv_addon_tag_facts))
 
 #define MV_ADDON_COPY_MAX_TARGETS 4
 

@@ -189,7 +189,8 @@ meta(key, value)
 roots(id, path, recursive, enabled, last_scan_at, media)          -- remembered index locations
 assets(id, path, root_id, mtime, size, kind, duration_ms, seen, cloud,  -- cloud: schema 3
        tags, taken_at, lat, lon, camera, lens, made_with, ai,         -- schema 4 (#291)
-       place, country, region)                                        -- schema 4, always NULL
+       place, country, region,                                        -- schema 4, always NULL
+       rating, label, iso, aperture_x100, focal_mm, shutter_den, shutter_us)  -- schema 5 (#405)
 asset_text(rowid = asset id, text)                                  -- FTS5, schema 4
 progress(asset_id, spec, state, resume_ms, tries, indexed_at)     -- per asset and model spec
 frames(id, asset_id, spec, pts_ms, pts_tb, tb_num, tb_den, flags, generic, scale, emb)
@@ -197,7 +198,8 @@ speech(id, asset_id, spec, start_ms, end_ms, text)                 -- Whisper tr
 ```
 
 `emb` is the int8 vector, `scale` its per-vector scale, `generic` its best cosine against the
-tower's generic prompts. Each schema step (1 -> 2 `media`, 2 -> 3 `cloud`, 3 -> 4 tags) is one
+tower's generic prompts. Each schema step (1 -> 2 `media`, 2 -> 3 `cloud`, 3 -> 4 tags, 4 -> 5
+rating and exposure) is one
 transaction and skips a column already there, so a crash mid-migration never leaves an index that
 will not open. A new index is made as schema 3 and takes the same 3 -> 4 step, so a fresh index and
 a migrated one cannot differ.
@@ -230,6 +232,27 @@ What each asset's tags say, so Local search can filter on them:
   Photos library items take `PHAsset.location` and `creationDate` from the last enumeration. A host without `tag_facts` (the pack updated before the app) backfills nothing and leaves `tags = 0`, so the first host that has it fills them; a failed commit waits the loop's usual second before trying again.
   An exported index (Sharing an index) carries no tags; the receiver reads them itself.
 - `wait_idle` waits for the backfill too.
+
+### Schema 5 (#405, 2026-10-15)
+
+Rating, colour label and exposure, for the `rating:` / `label:` / `iso:` / `f:` / `mm:` /
+`shutter:` terms. Columns, NULL until read: `rating` (1..5, −1 rejected, 0 unrated), `label` (as
+written), `iso`, `aperture_x100` (f/2.8 → 280), `focal_mm`, `shutter_den` (N when the exposure
+time is 1/N s) and `shutter_us` (the exposure time in microseconds, always set when there is
+one, so 2 s and 1/250 both match). A clip has no exposure block: those stay NULL.
+
+- **Where they come from:** the host's `tag_facts`, whose struct gained the fields at its end
+  (`MV_ADDON_TAG_FACTS_V2_SIZE`); the host's meta_cache.db reads them in the same bounded head
+  read as the search fields (`kSearchFactsVersion` 2, so each file's cache row is read once more).
+- **`tags` is a level now:** 1 = schema 4's facts read, 2 = these too (`kTagsLevel`). The step
+  leaves every schema-4 row at 1, so the backfill reads it once more for the new facts alone;
+  nothing is re-embedded. A host from before #405 answers the shorter struct: its rows stop at 1,
+  the engine asks no more of it that run, and the first host that serves the fields reads them.
+- **Never search text:** the numbers are not in `asset_text`, so a plain "400" is not an ISO
+  match.
+- A rating written to a RAW's XMP sidecar leaves the RAW's own stamp alone, so the index keeps
+  the old rating until the file's stamp changes or the index is rebuilt (the base app's
+  meta_cache drops its row; the AI index has no such signal yet).
 People live in a separate `faces.db`; the label bars in `labels.f32`;
 the CPU self-test reference in `selftest.txt` (keyed by runtime, provider, model and piece).
 
@@ -427,7 +450,14 @@ same thing by the same words. Terms narrow each other (AND).
 | `lens:24-70`, `lens:"RF 50"` | the lens tag contains the text |
 | `ai:yes`, `ai:no`, `made:yes` | AI provenance (positive evidence: C2PA / IPTC trained-algorithmic source, or a known generator); `ai:no` is every file without that evidence |
 | `made:chatgpt`, `ai:firefly`, `-made:midjourney` | the generator the file names ("made with") contains the text |
+| `rating:5`, `rating:3+`, `rating:0`, `rejected`, `rating:-1`, `-rating:1` | the stars the file states (0 unrated, −1 rejected), or at least that many (`+`); `-` leaves that rating out (#405) |
+| `label:red`, `-label:red` | the colour label contains the word, folded |
+| `iso:400`, `iso:100-800`, `iso:1600+` | ISO: exact, an inclusive range, or at least |
+| `f:2.8`, `f:1.4-2.8` | aperture, within 0.05 stops of the stored value (f/2.8 and APEX's f/2.83 are one) |
+| `mm:35`, `mm:24-70` | focal length in whole millimetres |
+| `shutter:1/250`, `shutter:250`, `shutter:2s` | the exposure time (a bare number N is 1/N s, as a camera shows it; `s` or a decimal point is seconds), within a sixth of a stop |
 | `place:portugal`, `in:lisbon`, `-place:spain` | where it was taken. `in:` is a date when it reads as one (`in:2024`) and a place otherwise; a word that starts with a digit is never a place; `in:` never names a folder (the scope does). The engine keeps the geotagged assets; which place matches is the Places add-on's search provider's answer, merged by the slot registry ([25](25-open-addons.md) §7) |
+| (any of the six above) | a file with no value for a kept term does not match it (an `iso:` term skips a clip); a left-out term drops only a value in its range. The terms filter before the towers run, so `iso:400 beach` ranks the ISO 400 frames by "beach" |
 | `R5`, `chatgpt`, `holiday` (plain words) | besides the picture / sound / speech search, files whose tags hold every word at the start of a word ("r5" in "Canon EOS R5", "70mm" in "RF24-70mm"; not "cat" inside "location") come first, with the tag as the snippet (`MV_AI_MATCH_TAGS`, shown unquoted under the tile) |
 
 Lead-ins ("pull up all the …", "show me …", "find …") are trimmed. Typing a name: the panel

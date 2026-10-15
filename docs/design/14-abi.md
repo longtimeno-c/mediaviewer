@@ -644,7 +644,7 @@ and inert unless set. The Mac host drives
 | 0.25 | Screens and slots: `mv_slots_*` (contributions, info sections, screens, search, badges, status, events, items, surfaces, the local-search provider, thumbnails by path); host table v3 (`MV_ADDON_HOST_API` 3) and `mv.slots.1`; `"slots"` in the installed JSON |
 | 0.26 | Script add-ons: `mv_script_*`; `MV_ADDON_CONTRIBUTION_API` 3 (5 once PRs 58–59 joined) |
 | 0.27 | `mv_meta_parse_location` / `mv_location_input` — the Metadata pane's Location editor (#352) |
-| 0.28 | `mv_folder_tag_search`, `mv_folder_tag_generation`, `mv_folder_forget_tags` (#291 file search by tag). Add-on host table: `tag_facts` appended last, after PR 56's `settings_get` and #348's v3 rows (no version bump; read when `struct_size` covers it). `mediaviewer_ai.h`: `MV_AI_MATCH_TAGS`. Mac bridge: `mv_chrome_tag_search`, `mv_chrome_tag_generation` |
+| 0.28 | `mv_folder_tag_search`, `mv_folder_tag_generation`, `mv_folder_forget_tags` (#291 file search by tag). Add-on host table: `tag_facts` appended last, after PR 56's `settings_get` and #348's v3 rows (no version bump; read when `struct_size` covers it). `mediaviewer_ai.h`: `MV_AI_MATCH_TAGS`. Mac bridge: `mv_chrome_tag_search`, `mv_chrome_tag_generation`. #405 (2026-10-15): `mv_addon_tag_facts` gained rating, ISO, aperture, focal length, shutter and label fields at its end (`MV_ADDON_TAG_FACTS_V1_SIZE` / `_V2_SIZE`); the host serves either size and returns the size it wrote |
 
 ## Not built
 

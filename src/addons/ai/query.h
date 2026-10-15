@@ -24,6 +24,12 @@
 //   ai:yes  ai:no  made:chatgpt  ai:firefly
 //                          AI provenance (summary::ai_generated), or the
 //                          generator the file names ("made with")
+//   rating:5  rating:3+  rating:0  rejected  -rating:1  label:red
+//   iso:400  iso:100-800  iso:1600+  f:2.8  f:1.4-2.8  mm:35  mm:24-70
+//   shutter:1/250  shutter:250  shutter:2s
+//                          the rating, colour label and exposure the file's
+//                          tags state (#405); a file with no value for a term
+//                          does not match it (a clip has no ISO)
 //   place:portugal  in:lisbon
 //                          where it was taken: answered by the Places add-on's
 //                          search provider; `in:` is a date when it reads as
@@ -48,6 +54,22 @@
 #include <vector>
 
 namespace mv::ai::query {
+
+// #405: a numeric term as an inclusive range in the index's own units
+// (rating, ISO, aperture hundredths, focal mm, shutter microseconds).
+struct range {
+  std::int64_t lo = std::numeric_limits<std::int64_t>::min();
+  std::int64_t hi = std::numeric_limits<std::int64_t>::max();
+  bool negated = false;  // -rating:1: the file must not be in it
+  [[nodiscard]] bool holds(std::int64_t v) const noexcept { return v >= lo && v <= hi; }
+};
+// What a file states for the #405 terms; `rated` false: not read yet.
+struct exposure_facts {
+  bool rated = false;
+  int rating = 0;
+  std::string label;  // folded
+  std::int64_t iso = 0, aperture_x100 = 0, focal_mm = 0, shutter_us = 0;  // 0 absent
+};
 
 // What the field said, before names are known.
 struct parsed {
@@ -76,6 +98,9 @@ struct parsed {
   std::vector<std::string> made, not_made;  // made:x / ai:x for x not yes/no
   int ai = 0;                               // ai:yes 1, ai:no -1, not said 0
   std::vector<std::string> places, not_places;  // place:x / in:x (not a date), as typed
+  // #405: rating: / rejected, label:, iso:, f:, mm:, shutter:.
+  std::vector<range> ratings, isos, apertures, focals, shutters;
+  std::vector<std::string> labels, not_labels;  // folded
   [[nodiscard]] bool has_dates() const noexcept {
     return from_unix != std::numeric_limits<std::int64_t>::min() ||
            to_unix != std::numeric_limits<std::int64_t>::max();
@@ -109,6 +134,9 @@ struct plan {
   // place: / in: (not a date). The engine keeps only geotagged assets; which
   // place matches is the Places add-on's provider's answer (docs/design/17).
   std::vector<std::string> places, not_places;
+  // #405: the rating, label and exposure terms, as parsed.
+  std::vector<range> ratings, isos, apertures, focals, shutters;
+  std::vector<std::string> labels, not_labels;
   // The plain words, folded, for the tag-text match (search.h's rule: every
   // word in the file's search fields). Empty when there are none.
   std::vector<std::string> tag_words;
@@ -129,8 +157,16 @@ struct plan {
   // A camera / lens / made-with / AI term, kept or left out.
   [[nodiscard]] bool has_tags() const noexcept {
     return !cameras.empty() || !not_cameras.empty() || !lenses.empty() || !not_lenses.empty() || !made.empty() ||
-           !not_made.empty() || ai != 0;
+           !not_made.empty() || ai != 0 || has_exposure();
   }
+  // #405: a rating, label or exposure term.
+  [[nodiscard]] bool has_exposure() const noexcept {
+    return !ratings.empty() || !isos.empty() || !apertures.empty() || !focals.empty() || !shutters.empty() ||
+           !labels.empty() || !not_labels.empty();
+  }
+  // Whether a file's facts pass every #405 term: a kept term needs a value in
+  // range (no value, no match); a left-out one drops only a value in range.
+  [[nodiscard]] bool exposure_matches(const exposure_facts& f) const;
   // A file name term, kept or left out.
   [[nodiscard]] bool has_files() const noexcept { return !files.empty() || !not_files.empty(); }
 };
@@ -176,6 +212,11 @@ struct suggestion {
 // {singular form, plural form} in that order whichever was typed, so
 // "mountain" and "mountains" embed as the same mean vector.
 [[nodiscard]] std::vector<std::string> number_forms(std::string_view text);
+
+// #405: a term's text as a range in the index's units; false when it does
+// not read as one yet (a term still being typed is dropped). `op` is the
+// operator: "rating", "iso", "f", "mm" or "shutter".
+[[nodiscard]] bool numeric_term(std::string_view op, std::string_view text, range& out);
 
 // Days since 1970-01-01 for a civil date (proleptic Gregorian).
 [[nodiscard]] std::int64_t days_from_civil(std::int64_t y, unsigned m, unsigned d) noexcept;

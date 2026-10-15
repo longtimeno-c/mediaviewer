@@ -40,6 +40,7 @@
 #include "addons/ai/cloud_files.h"
 #include "addons/ai/photos_source.h"
 #include "addons/ai/platform.h"
+#include "addons/ai/query.h"
 #include "addons/ai/transfer.h"
 #include "addons/ai/vectors.h"
 #include "core/result.h"
@@ -372,6 +373,8 @@ class engine {
     bool has_where = false;
     std::vector<std::string> fields;      // the search fields as shown (the why)
     std::string folded;                   // search.h's folded_text rule
+    // #405: rating, label and exposure (`rated` once level 2 was read).
+    query::exposure_facts exposure;
     // What in: / before: / after: / since: / until: and the filter-only
     // order go by (#404): the date taken, else the file's modification time.
     [[nodiscard]] std::int64_t when() const noexcept { return taken_at ? *taken_at : mtime; }
@@ -521,6 +524,9 @@ class engine {
   std::mutex photos_tags_m_;
   std::unordered_map<std::string, photos_tag> photos_tags_;
   std::atomic<bool> tags_pending_{true};
+  // The tag level this host can serve (#405): kTagsLevel, or 1 once its
+  // tag_facts came back without the rating and exposure fields.
+  std::atomic<int> tags_level_{kTagsLevel};
   // `replacing`: a piece reload, so an absent piece clears what it answered.
   void load_audio(const settings& s, std::uint32_t speech_quality, bool replacing);
   // Blocks until the viewer is quiet (or stopping): opening sessions contends

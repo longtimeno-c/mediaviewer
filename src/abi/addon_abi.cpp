@@ -153,6 +153,14 @@ bool tag_facts(const std::string& path, mv_addon_tag_facts& out) {
   put(out.lens_utf8, sizeof(out.lens_utf8), f.lens);
   put(out.made_with_utf8, sizeof(out.made_with_utf8), f.made_with);
   put(out.fields_utf8, sizeof(out.fields_utf8), mv::meta::joined_fields(f.fields, sizeof(out.fields_utf8)));
+  // #405: rating, label and exposure (the table's struct_size says they are there).
+  out.rating = f.rating;
+  out.iso = f.iso;
+  out.aperture_x100 = f.aperture_x100;
+  out.focal_mm = f.focal_mm;
+  out.shutter_den = f.shutter_den;
+  out.shutter_us = f.shutter_us;
+  put(out.label_utf8, sizeof(out.label_utf8), f.label);
   return true;
 }
 
