@@ -199,13 +199,13 @@ struct MetadataView: View {
   ]
 
   private func labelRow(_ row: MetaRow) -> some View {
-    HStack(alignment: .center, spacing: 10) {
+    HStack(alignment: .center, spacing: MVTheme.space(10)) {
       Text(row.label).foregroundStyle(MVTheme.body).frame(width: 100, alignment: .leading)
       Text(row.value.isEmpty ? "—" : row.value)
         .foregroundStyle(row.value.isEmpty ? MVTheme.disabled : MVTheme.title)
         .textSelection(.enabled)
         .frame(maxWidth: .infinity, alignment: .leading)
-      HStack(spacing: 4) {
+      HStack(spacing: MVTheme.space(4)) {
         ForEach(Self.labelSwatches, id: \.name) { swatch in
           let on = swatch.name.caseInsensitiveCompare(row.value) == .orderedSame
           Button {
@@ -298,8 +298,8 @@ struct MetadataView: View {
 
   private func locationRow(_ row: MetaRow) -> some View {
     let note = locationNote(store.parseLocation(locationDraft))
-    return VStack(alignment: .leading, spacing: 6) {
-      HStack(alignment: .firstTextBaseline, spacing: 10) {
+    return VStack(alignment: .leading, spacing: MVTheme.space(6)) {
+      HStack(alignment: .firstTextBaseline, spacing: MVTheme.space(10)) {
         Text(row.label).foregroundStyle(MVTheme.body).frame(width: 100, alignment: .leading)
         if editingLocation {
           TextField("38.7979, -9.3907", text: $locationDraft)
@@ -328,7 +328,7 @@ struct MetadataView: View {
         }
       }
       if editingLocation {
-        HStack(alignment: .firstTextBaseline, spacing: 4) {
+        HStack(alignment: .firstTextBaseline, spacing: MVTheme.space(4)) {
           Spacer().frame(width: 106)
           if note.error {
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Color(nsColor: .systemRed))
@@ -340,7 +340,7 @@ struct MetadataView: View {
             .fixedSize(horizontal: false, vertical: true)
             .accessibilityLabel(note.error ? "Error: " + note.text : note.text)
         }
-        HStack(spacing: 6) {
+        HStack(spacing: MVTheme.space(6)) {
           Spacer().frame(width: 100)
           Button("Save") { saveLocation() }.buttonStyle(FlatButtonStyle(selected: true, compact: true))
             .help("Return")
@@ -501,7 +501,7 @@ struct MetadataView: View {
     VStack(alignment: .leading, spacing: MVTheme.space(3)) {
       HStack(alignment: .firstTextBaseline, spacing: MVTheme.space(6)) {
         Text(p.label).font(MVTheme.font(14)).foregroundStyle(MVTheme.title)
-        Spacer(minLength: 4)
+        Spacer(minLength: MVTheme.space(4))
         if p.editable && editing != p.rawTag {
           Button("Edit") {
             cancelEdits()

@@ -341,9 +341,9 @@ public static partial class IslandHost
         grid.Children.Add(new Border
         {
             Background = new SolidColorBrush(ColorHelper.FromArgb(0xC0, 0, 0, 0)),
-            CornerRadius = new CornerRadius(2),
-            Padding = new Thickness(3, 0, 3, 1),
-            Margin = new Thickness(3),
+            CornerRadius = Corner(2),
+            Padding = Pad(3, 0, 3, 1),
+            Margin = Pad(3),
             HorizontalAlignment = HorizontalAlignment.Left,
             VerticalAlignment = VerticalAlignment.Top,
             IsHitTestVisible = false,
@@ -404,7 +404,7 @@ public static partial class IslandHost
         // AV in IItemsRepeaterMethods.set_ItemsSource on a populated listing.
         _repeater = new ItemsRepeater
         {
-            Layout = new StackLayout { Orientation = Orientation.Horizontal, Spacing = 6 },
+            Layout = new StackLayout { Orientation = Orientation.Horizontal, Spacing = 6 },  // the strip keeps its sizes (docs/ADDONS.md)
             ItemTemplate = new FilmstripFactory(),
         };
         _filmstripScroll = new ScrollViewer
@@ -460,14 +460,14 @@ public static partial class IslandHost
                 TextTrimming = TextTrimming.CharacterEllipsis,
                 MaxWidth = 88,
             };
-            var col = new StackPanel { Spacing = 4 };
+            var col = new StackPanel { Spacing = 4 };  // the cell fills the native strip (FilmstripDip): geometry, not density
             col.Children.Add(WithPlayBadge(WithBadge(image, vm.Badge), vm.IsClip, 28));
             col.Children.Add(name);
             var border = new Border
             {
                 Width = 96,
                 Padding = new Thickness(4),
-                CornerRadius = new CornerRadius(RadiusButton),
+                CornerRadius = Corner(RadiusButton),
                 BorderThickness = new Thickness(vm.Selected ? 2 : 0),
                 BorderBrush = Brush(ChromeColour.Accent),  // the Mac's accent outline
                 Child = col,

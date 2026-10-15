@@ -74,6 +74,8 @@ public static partial class IslandHost
     private static double GalleryTile = 152;
     // Mac: (width - 2*12 + 8) / (cell + 8). Same cell and gutter here so
     // Up/Down land in the same column on both hosts.
+    // The photo grid keeps its sizes under a theme's density (docs/ADDONS.md
+    // "A theme's shape"): the gutter, padding and tile literals here are geometry.
     private static double GalleryStride => GalleryTile + 8;
     private static double GalleryRowStride => GalleryTile + 28;
     private static int GalleryDecodeWidth => Math.Min(512, (int)Math.Ceiling(GalleryTile * 2));
@@ -510,7 +512,7 @@ public static partial class IslandHost
         };
         _folderChipRepeater = new ItemsRepeater
         {
-            Layout = new StackLayout { Orientation = Orientation.Horizontal, Spacing = 8 },
+            Layout = new StackLayout { Orientation = Orientation.Horizontal, Spacing = Space(8) },
             ItemTemplate = new FolderChipFactory(),
         };
         _galleryRepeater = new ItemsRepeater
@@ -525,7 +527,7 @@ public static partial class IslandHost
             FontSize = 13,
             FontWeight = Microsoft.UI.Text.FontWeights.Medium,
             Foreground = Brush(Title),
-            Margin = new Thickness(2, 8, 2, 4),
+            Margin = Pad(2, 8, 2, 4),
             Visibility = Visibility.Collapsed,
         };
         _folderStrip = new ScrollViewer
@@ -547,11 +549,11 @@ public static partial class IslandHost
             FontSize = UiFontSize,
             Foreground = Brush(Body),
             HorizontalAlignment = HorizontalAlignment.Center,
-            Margin = new Thickness(0, 60, 0, 0),
+            Margin = Pad(0, 60, 0, 0),
             Visibility = Visibility.Collapsed,
         };
 
-        _galleryStack = new StackPanel { Padding = new Thickness(12, 8, 12, 12) };
+        _galleryStack = new StackPanel { Padding = new Thickness(12, 8, 12, 12) };  // the grid's gutter (GalleryColumns)
         _galleryStack.Children.Add(BuildGallerySearchNote());
         _galleryStack.Children.Add(_folderFindLabel);
         _galleryStack.Children.Add(_folderStrip);
@@ -621,7 +623,7 @@ public static partial class IslandHost
         FontSize = 12,
         FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
         Foreground = Brush(Body),
-        Margin = new Thickness(2, 6, 2, 4),
+        Margin = Pad(2, 6, 2, 4),
         Visibility = Visibility.Collapsed,
     };
 
@@ -638,9 +640,9 @@ public static partial class IslandHost
         _barCrumbTrail = new StackPanel
         {
             Orientation = Orientation.Horizontal,
-            Spacing = 4,
+            Spacing = Space(4),
             VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(4, 0, 0, 0),
+            Margin = Pad(4, 0, 0, 0),
         };
         // Only as wide as the trail, up to a cap; past that it scrolls.
         // FitBarPath sets Width from the room the menus left, so a long
@@ -655,24 +657,24 @@ public static partial class IslandHost
             FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
             Foreground = Brush(Title), VerticalAlignment = VerticalAlignment.Center,
             MaxWidth = 200, TextTrimming = TextTrimming.CharacterEllipsis,
-            Margin = new Thickness(4, 0, 0, 0),
+            Margin = Pad(4, 0, 0, 0),
         };
         // Does what Ctrl+F does: the Local search panel (the same ISearchChrome
         // command), or file search without the pack. Beside the folder name,
         // or beside "Search: ..." while a result list is shown.
         _barSearchButton = PathIconButton("\uE721", OpenSearchFromPath);
         AutomationProperties.SetName(_barSearchButton, "Search");
-        _barSearchButton.Margin = new Thickness(4, 0, 0, 0);
+        _barSearchButton.Margin = Pad(4, 0, 0, 0);
         // Right-aligned in the bar's middle column. Every column is Auto:
         // a Star column here would swallow the spare width and open a gap
         // in the middle of the trail. FitBarPath gives the scroller and the
         // current name an explicit width so they are the parts that shrink.
         var row = new Grid
         {
-            ColumnSpacing = 2,
+            ColumnSpacing = Space(2),
             VerticalAlignment = VerticalAlignment.Center,
             HorizontalAlignment = HorizontalAlignment.Right,
-            Margin = new Thickness(0, 0, 4, 0),
+            Margin = Pad(0, 0, 4, 0),
             Visibility = Visibility.Collapsed,
             MinWidth = 0,
         };
@@ -689,7 +691,7 @@ public static partial class IslandHost
         {
             Width = 1, Height = 18,
             Background = Brush(Hairline),
-            Margin = new Thickness(8, 0, 0, 0),
+            Margin = Pad(8, 0, 0, 0),
             VerticalAlignment = VerticalAlignment.Center,
             IsHitTestVisible = false,
         }, 6);
@@ -792,7 +794,7 @@ public static partial class IslandHost
     {
         Button button = TextButton("", click);
         button.Content = new FontIcon { Glyph = glyph, FontSize = 12, Foreground = Brush(Title) };
-        button.Padding = new Thickness(7, 5, 7, 5);
+        button.Padding = Pad(7, 5, 7, 5);
         button.MinHeight = 26;
         return button;
     }
@@ -873,7 +875,7 @@ public static partial class IslandHost
                     Glyph = "\uE76C",
                     FontSize = 8,
                     Foreground = Brush(Body),
-                    Margin = new Thickness(2, 0, 2, 0),
+                    Margin = Pad(2, 0, 2, 0),
                     VerticalAlignment = VerticalAlignment.Center,
                 });
             }
@@ -891,7 +893,7 @@ public static partial class IslandHost
                 }
                 Button more = TextButton("…", () => { });
                 more.Flyout = menu;
-                more.Padding = new Thickness(4, 2, 4, 2);
+                more.Padding = Pad(4, 2, 4, 2);
                 more.MinHeight = 24;
                 AutomationProperties.SetName(more, "Hidden parent folders");
                 ToolTipService.SetToolTip(more, "Open a parent folder");
@@ -901,7 +903,7 @@ public static partial class IslandHost
             {
                 int index = piece.Index;
                 Button crumb = TextButton(piece.Name, () => Send(Command.OpenCrumb, index));
-                crumb.Padding = new Thickness(4, 2, 4, 2);
+                crumb.Padding = Pad(4, 2, 4, 2);
                 crumb.MinHeight = 24;
                 crumb.MaxWidth = 120;
                 if (crumb.Content is TextBlock label) label.TextTrimming = TextTrimming.CharacterEllipsis;
@@ -1102,7 +1104,7 @@ public static partial class IslandHost
                 MaxWidth = GalleryTile,
                 Margin = new Thickness(0, 2, 0, 0),
             };
-            var col = new StackPanel { Spacing = 4 };
+            var col = new StackPanel { Spacing = 4 };  // the tile's height (MinItemHeight): grid geometry
             // docs/design/25 PR 59: the add-ons' badges, from a table (no add-on call per
             // tile). With no add-on contributing badges the tile is exactly the plain one:
             // no extra element, no subscription (the tiles are rebuilt when that changes).
@@ -1115,7 +1117,7 @@ public static partial class IslandHost
             }
             var clipped = new Border
             {
-                CornerRadius = new CornerRadius(6),
+                CornerRadius = Corner(6),
                 Child = badged,
                 Width = GalleryTile,
                 Height = GalleryTile,
@@ -1138,7 +1140,7 @@ public static partial class IslandHost
             {
                 Width = GalleryTile,
                 Padding = new Thickness(0),
-                CornerRadius = new CornerRadius(6),
+                CornerRadius = Corner(6),
                 BorderThickness = new Thickness(vm.Selected && _folderCursor < 0 ? 2 : 0),
                 BorderBrush = Brush(ChromeColour.Accent),  // the Mac's accent outline
                 Child = col,
@@ -1227,9 +1229,9 @@ public static partial class IslandHost
             var count = new Border
             {
                 Background = new SolidColorBrush(ColorHelper.FromArgb(0xC0, 0, 0, 0)),
-                CornerRadius = new CornerRadius(10),
-                Padding = new Thickness(6, 2, 6, 2),
-                Margin = new Thickness(6),
+                CornerRadius = new CornerRadius(10),  // a pill (the Mac's Capsule), not a theme radius
+                Padding = Pad(6, 2, 6, 2),
+                Margin = Pad(6),
                 HorizontalAlignment = HorizontalAlignment.Left,
                 VerticalAlignment = VerticalAlignment.Bottom,
                 Child = new TextBlock
@@ -1243,7 +1245,7 @@ public static partial class IslandHost
             overlay.Children.Add(box);
             overlay.Children.Add(count);
 
-            var caption = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, Width = GalleryTile };
+            var caption = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(4), Width = GalleryTile };
             caption.Children.Add(new FontIcon { Glyph = "\uE8B7", FontSize = 12, Foreground = Brush(Body) });
             caption.Children.Add(new TextBlock
             {
@@ -1255,10 +1257,10 @@ public static partial class IslandHost
                 MaxWidth = GalleryTile - 20,
             });
 
-            var col = new StackPanel { Spacing = 4 };
+            var col = new StackPanel { Spacing = 4 };  // the tile's height (MinItemHeight): grid geometry
             var clipped = new Border
             {
-                CornerRadius = new CornerRadius(6),
+                CornerRadius = Corner(6),
                 Child = overlay,
                 Width = GalleryTile,
                 Height = GalleryTile,
@@ -1269,7 +1271,7 @@ public static partial class IslandHost
             {
                 Width = GalleryTile,
                 Padding = new Thickness(0),
-                CornerRadius = new CornerRadius(6),
+                CornerRadius = Corner(6),
                 BorderThickness = new Thickness(vm.Cursor ? 2 : 0),
                 BorderBrush = Brush(ChromeColour.Accent),  // the Mac's accent outline
                 Child = col,
@@ -1359,7 +1361,7 @@ public static partial class IslandHost
             };
             box.Children.Add(placeholder);
             box.Children.Add(cover);
-            var clipped = new Border { CornerRadius = new CornerRadius(4), Child = box, Width = 36, Height = 36 };
+            var clipped = new Border { CornerRadius = Corner(4), Child = box, Width = 36, Height = 36 };
 
             var name = new TextBlock
             {
@@ -1375,16 +1377,16 @@ public static partial class IslandHost
                 Foreground = Brush(Body),
                 TextTrimming = TextTrimming.CharacterEllipsis,
             };
-            var text = new StackPanel { Spacing = 1, Width = 120 };
+            var text = new StackPanel { Spacing = Space(1), Width = 120 };
             text.Children.Add(name);
             text.Children.Add(status);
-            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(6) };
             row.Children.Add(clipped);
             row.Children.Add(text);
             var border = new Border
             {
-                Padding = new Thickness(4),
-                CornerRadius = new CornerRadius(6),
+                Padding = Pad(4),
+                CornerRadius = Corner(6),
                 BorderThickness = new Thickness(vm.Cursor ? 2 : 0),
                 BorderBrush = Brush(ChromeColour.Accent),  // the Mac's accent outline
                 Background = Brush(vm.Cursor ? ChromeColour.Selection : ChromeColour.Surface),

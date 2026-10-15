@@ -71,8 +71,8 @@ public static partial class IslandHost
         b.Resources["ButtonBackgroundPointerOver"] = accent ? rest : Brush(ChromeColour.SettingsFillHover);
         b.Resources["ButtonBackgroundPressed"] = accent ? rest : Brush(ChromeColour.SettingsFillPressed);
         b.Resources["ButtonBackgroundDisabled"] = rest;
-        b.CornerRadius = new CornerRadius(RadiusSettingsButton);
-        b.Padding = new Thickness(12, 7, 12, 7);
+        b.CornerRadius = Corner(RadiusSettingsButton);
+        b.Padding = Pad(12, 7, 12, 7);
         if (!accent) return;
         SolidColorBrush ink = Brush(ChromeColour.AccentInk);
         b.Foreground = ink;

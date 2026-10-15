@@ -292,7 +292,7 @@ public static partial class IslandHost
             FontSize = UiFontSize - 3,
             Foreground = Brush(Body),
             VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(6, 0, 4, 0),
+            Margin = Pad(6, 0, 4, 0),
         };
         Button close = EditButton("", () =>
         {
@@ -300,10 +300,10 @@ public static partial class IslandHost
             FocusGalleryGrid();
         }, tip: "Close file search (Esc)");
         close.Content = new FontIcon { Glyph = "", FontSize = 11, Foreground = Brush(Body) };
-        close.Padding = new Thickness(6, 4, 6, 4);
+        close.Padding = Pad(6, 4, 6, 4);
         AutomationProperties.SetName(close, "Close file search");
 
-        var inner = new Grid { ColumnSpacing = 2 };
+        var inner = new Grid { ColumnSpacing = Space(2) };
         inner.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         inner.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         inner.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -314,7 +314,7 @@ public static partial class IslandHost
             FontSize = 13,
             Foreground = Brush(Body),
             VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(2, 0, 2, 0),
+            Margin = Pad(2, 0, 2, 0),
         };
         inner.Children.Add(glyph);
         Grid.SetColumn(_gsField, 1);
@@ -329,8 +329,8 @@ public static partial class IslandHost
             Background = Brush(ChromeColour.Surface),
             BorderBrush = Brush(Hairline),
             BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(6),
-            Padding = new Thickness(8, 1, 3, 1),
+            CornerRadius = Corner(6),
+            Padding = Pad(8, 1, 3, 1),
             MinHeight = 32,
             MaxWidth = 640,
             HorizontalAlignment = HorizontalAlignment.Stretch,
@@ -338,7 +338,7 @@ public static partial class IslandHost
 
         var bar = new Grid
         {
-            Padding = new Thickness(12, 8, 12, 2),
+            Padding = Pad(12, 8, 12, 2),
             // Built with every gallery; shown only while file search is open.
             Visibility = _gsOpen ? Visibility.Visible : Visibility.Collapsed,
         };
@@ -355,9 +355,9 @@ public static partial class IslandHost
     {
         _gsNote = new StackPanel
         {
-            Spacing = 10,
+            Spacing = Space(10),
             HorizontalAlignment = HorizontalAlignment.Center,
-            Margin = new Thickness(0, 60, 0, 0),
+            Margin = Pad(0, 60, 0, 0),
             MaxWidth = 520,
             Visibility = Visibility.Collapsed,
         };

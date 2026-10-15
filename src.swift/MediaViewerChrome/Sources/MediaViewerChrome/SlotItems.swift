@@ -61,7 +61,7 @@ struct SlotBarItems: View {
   @ObservedObject private var slots = SlotStore.shared
 
   var body: some View {
-    HStack(spacing: 2) {
+    HStack(spacing: MVTheme.space(2)) {
       ForEach(slots.items(in: "bar")) { item in
         Button {
           slots.invoke(item, paths: SlotTargets.paths(for: item))
@@ -78,7 +78,7 @@ struct SlotBarItems: View {
           .font(MVTheme.font(13))
           .foregroundStyle(MVTheme.body)
           .lineLimit(1)
-          .padding(.horizontal, 6)
+          .padding(.horizontal, MVTheme.space(6))
           .help(status.label)
           .accessibilityLabel("\(status.label): \(status.text)")
       }
@@ -99,7 +99,7 @@ struct SlotPathItems: View {
         Image(systemName: slotSymbol(item.symbol))
           .font(.system(size: 12, weight: .semibold))
           .frame(width: 26, height: 26)
-          .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(hover == item.id ? 0.06 : 0)))
+          .background(RoundedRectangle(cornerRadius: MVTheme.radius(4)).fill(Color.primary.opacity(hover == item.id ? 0.06 : 0)))
           .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
@@ -158,17 +158,17 @@ struct SlotTileBadges: View {
   var body: some View {
     let badges = slots.badges(forName: name)
     if !badges.isEmpty {
-      HStack(spacing: 2) {
+      HStack(spacing: MVTheme.space(2)) {
         ForEach(badges, id: \.key) { badge in
           Image(systemName: slotSymbol(badge.symbol))
             .font(.system(size: 10, weight: .semibold))
             .foregroundStyle(.white)
-            .padding(4)
+            .padding(MVTheme.space(4))
             .background(Circle().fill(MVTheme.accent.opacity(0.9)))
             .help(badge.label)
         }
       }
-      .padding(4)
+      .padding(MVTheme.space(4))
       .accessibilityElement(children: .ignore)
       .accessibilityLabel(badges.map(\.label).joined(separator: ", "))
     }
@@ -386,10 +386,10 @@ struct SlotAddonsSection: View {
   private var places: Row? { installed.rows.first { $0.id == "places" } }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
+    VStack(alignment: .leading, spacing: MVTheme.space(8)) {
       placesRow
       ForEach(installed.rows.filter { $0.id != "places" }) { row in
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: MVTheme.space(6)) {
           Text(row.name).font(MVTheme.font()).foregroundStyle(MVTheme.title)
           if !row.description.isEmpty { note(row.description) }
           note(stateText(row))
@@ -402,7 +402,7 @@ struct SlotAddonsSection: View {
   }
 
   private var placesRow: some View {
-    VStack(alignment: .leading, spacing: 6) {
+    VStack(alignment: .leading, spacing: MVTheme.space(6)) {
       Text("Places").font(MVTheme.font()).foregroundStyle(MVTheme.title)
       note(placesDescription)
       if mv_addon2_elsewhere() {

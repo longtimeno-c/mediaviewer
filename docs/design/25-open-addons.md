@@ -247,6 +247,16 @@ A theme file, one per theme the add-on lists:
   follow the appearance, not a token). The first-party add-ons' own windows read the host's
   tokens since PR 56 (Import and Duplicates on both hosts, Local search on the Mac; the Windows
   AI chrome already did).
+- **Where shape reaches** (theme schema 2; issue #402): every padding, spacing and corner radius
+  of the host chromes goes through the shape tokens: `MVTheme.space` / `MVTheme.radius` on the
+  Mac, `Space` / `Pad` / `Corner` on Windows. That includes the add-on slot surfaces (#348) and
+  script screens (PR 57). These stay literals because they are geometry, not spacing: the photo
+  grid's tiles, gutter and inset (the keyboard's column math), the filmstrip's cells and gutter
+  (on Windows the cells fill the native strip), the video transport bar (Windows sizes its
+  native island from `kTransportPadDip`), the editor timeline's tracks, pills and circles
+  (radius = half the height; the Mac's `Capsule`), hairlines and highlight outsets, and the
+  metadata pane's label column. The add-on windows (Import, Duplicates, Local search on the
+  Mac) scale corner radii only.
 - **Choosing one:** Settings → Appearance → **Theme**: Default, then nineteen host palettes
   compiled into both chromes — Dark, Light, Midnight (rain), Cyberpunk (a circuit), Retrowave
   (embers), Forest (petals), Starfield, Terminal (fireflies), Organs (slow rain), Ume (petals),
