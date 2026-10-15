@@ -17,8 +17,8 @@ filters by extension only to decide what is a candidate; decode always probes.
 | GIF | incl. animation | **giflib** |
 | WebP | still, animated, lossless | **libwebp** (+ demux) |
 | TIFF | tiled, striped, multi-page (pages with `Ctrl+PageUp/PageDown`) | **libtiff** |
-| ICO | largest entry, ranked by the payload's own dimensions | own reader (`codec/ico.cpp`) |
-| HEIF / HEIC | HEVC-coded stills, grids, sequences | **libheif** + **libde265** (Windows OS codec first for eligible stills, below) |
+| ICO | largest entry, ranked by the payload's own dimensions; every size a page | own reader (`codec/ico.cpp`) |
+| HEIF / HEIC | HEVC-coded stills, grids, sequences; several top-level images are pages | **libheif** + **libde265** (Windows OS codec first for eligible stills, below) |
 | AVIF | still + animated | **libavif** + **dav1d** |
 | RAW | CR2/CR3, NEF, ARW, ORF, RAF, RW2, DNG, … | **LibRaw** (OpenMP) |
 | PDF | every page, `/Rotate` applied, on white | the OS: **CoreGraphics** (`codec/pdf_mac.cpp`), **Windows.Data.Pdf** (`codec/pdf_win.cpp`) |
@@ -69,7 +69,9 @@ features off so no x265 encoder is linked.
 - On Windows a HEIC goes to WIC only when WIC can match the bundled result: one HEVC-coded
   still (`hvc1` or `grid`), 8-bit, no alpha, not PQ/HLG, colour either an embedded ICC or
   sRGB-in-effect nclx. It also requires WIC's HEIF decoder **and** a registered HEVC decoder
-  MFT. Anything else (Display P3 nclx, 10-bit, sequences) is bundled.
+  MFT. Anything else (Display P3 nclx, 10-bit, sequences) is bundled. A file with several
+  pages (top-level images) may take WIC for page 0: WIC's frame 0 is the primary, the size
+  check guards it, and `inspect_heic` supplies the count. Pages past 0 are always libheif.
 - Any OS failure other than cancellation falls through silently to libheif, which then judges
   the file.
 - On macOS `try_os_decode` always declines (ImageIO is not wired), so HEIC is always libheif.
@@ -304,21 +306,37 @@ A multi-page file is one navigation stop; its pages are `Ctrl+PageUp` / `Ctrl+Pa
 (`next_page` / `prev_page`). `codec::decode(bytes, ctx, threads, page)` decodes one page and the
 raster (then `display_image`, `gpu_image_mac`, `mv_image_info.page_count`) carries `page` and
 `page_count`. TIFF pages are the full-resolution IFDs in file order; reduced-resolution subfiles (a
-scanner's thumbnail) are skipped. Page 0 is the file as always — cached, prefetched, thumbnailed. A
+scanner's thumbnail) are skipped. An ICO's pages are its directory entries in the still's rank order
+(largest, then deepest: page 0 is the still, then the smaller sizes). A HEIC's pages are its
+top-level images (a burst or image collection): page 0 is the primary, then the others in file
+order; thumbnails, auxiliary images (alpha, depth, gain maps), a derived image's inputs and the
+primary's `altr` alternatives (a `tmap`) are not pages, and an `msf1` sequence stays an animation
+(`codec/heif.cpp`, `heic_pages`). A single-image HEIC pays one libheif call for the count. Page 0 is
+the file as always — cached, prefetched, thumbnailed. A
 page past 0 is one decode at the view generation the turn set: no cache, no prefetch, no first-pixel
 preview, published under its own key so the canvas fits it like a new stop. Windows turns pages
 through `mv_folder_select_page` (ABI 0.16); the Mac host calls `present_lab_mac::open_item(…, page)`.
 The host remembers the count the core last reported and shows "Page n of m" in its notice line.
 **Scrolling a document.** Over a PDF or DOCX with the filmstrip hidden, the wheel and trackpad
 scroll instead of zooming (`⌘`/`Ctrl`+wheel and a pinch still zoom; with the filmstrip shown the
-wheel zooms as on any still). The host turns each event into screen pixels
-(`input_snapshot::scroll_px_x/y`; a wheel notch is a tenth of the canvas) and the render thread pans
-with `camera::pan_by_screen`. The render thread publishes which vertical edges the camera rests on
-(`scroll_edges()`, both at fit); a scroll held 60 px past one turns the page with `page_land_seq`,
-and the new page keeps its on-screen width and lands at its top (forward) or bottom (back)
-(`camera::turn_page`) instead of fitting. One trackpad gesture, or one wheel burst, turns at most one
-page. Hosts: `-scrollDocument:` (main_mac.mm), `scroll_document` (main.cpp, `WM_MOUSEWHEEL` /
-`WM_MOUSEHWHEEL`).
+wheel zooms as on any still, and the "Press T" hint below says so). Both hosts feed each event to
+the shared `canvas::document_scroller` (`canvas/document_scroll.h`), which decides pan or page turn
+and turns the travel into whole screen pixels. A wheel notch is a tenth of the canvas and goes to
+`input_snapshot::scroll_px_x/y`: the render thread moves the camera *target*
+(`camera::pan_by_screen`) and the canvas spring (ω=18, ζ=1) glides the view there, so a notch never
+jumps. A trackpad's deltas and its momentum go to `scroll_direct_px_x/y`: `camera::scroll_direct`
+moves the view with the target, so the page stays under the fingers. The render thread publishes
+which vertical edges the camera rests on (`scroll_edges()`, both at fit). Pushing past one turns the
+page at once, with no hold: a notch, or any trackpad travel past the edge of a page taller than the
+canvas; at fit (the whole page on screen) a trackpad turns one page per third of the canvas height
+of travel. The new page keeps its on-screen width and lands at its top (forward) or bottom (back)
+(`camera::turn_page`) instead of fitting, and momentum carries on into it, so a fling runs through
+the document. Until the render thread acknowledges the turn (`page_land_ack()`, stored after the
+edges; 0.5 s timeout for a page that fails) the published edges are the old page's, so nothing turns
+again and the vertical travel is dropped. Pages are still separate stops, not one continuous strip:
+laying the next page out under the current one needs two pages on the canvas at once, which the
+one-still present path does not do. Hosts: `-scrollDocument:` (main_mac.mm), `scroll_document`
+(main.cpp, `WM_MOUSEWHEEL` / `WM_MOUSEHWHEEL`; a touchpad is a delta that is not a multiple of 120).
 
 ## Leaving kinds out of a listing
 
@@ -358,7 +376,5 @@ relists when done; nothing waits for them on the open or the first pixel.
 - Progressive refinement of progressive JPEG / interlaced PNG passes.
 - Disk thumbnail as first pixel for a still (used only for clip placeholders).
 - An "ignore orientation" toggle.
-- ICO size / HEIC sequence-frame navigation with `Ctrl+PageUp/PageDown` (TIFF, PDF and DOCX pages are built)
-  (`codec::decode_page` takes a page index; no command uses it).
 - Populating from the OS thumbnail cache; BC7 GPU-resident thumbnails; a content-hash key.
 - macOS ImageIO path for HEIC.

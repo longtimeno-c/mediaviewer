@@ -1,0 +1,9 @@
+{
+ "description": "Send photos, video and audio to a MediaViewer nearby, over Wi-Fi or Bluetooth. Both screens show the same code, and nothing moves until the other person accepts. No account, no cloud.",
+ "contributes": {
+  "api": {"min": 5, "max": 5},
+  "screens": [{"id": "sharepoint", "title": "Sharepoint", "place": "window", "width": 560, "height": 680}],
+  "context_menu": [{"id": "send_files", "label": "Send with Sharepoint…", "target": "files"}],
+  "commands": [{"id": "open", "name": "Sharepoint", "modes": "all", "payload": "marked_or_current"}]
+ }
+}

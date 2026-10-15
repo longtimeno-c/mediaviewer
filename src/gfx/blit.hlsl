@@ -14,7 +14,7 @@ cbuffer Camera : register(b0) {
   float2 image_size;
   float2 origin;
   float2 texture_size;
-  float background;
+  float unused0;  // the retired background mode (issue #408)
   float clipping;
   float time;
   float grid;
@@ -31,7 +31,7 @@ cbuffer Camera : register(b0) {
   // mv_adjust on every sample; the kernel itself never reads adj1.w.
   float4 adj0;
   float4 adj1;
-  float4 theme_background;  // linear RGB, mode 0
+  float4 theme_background;  // the theme's canvas, linear RGB
 };
 
 #include "adjust_kernel_tokens.h"
@@ -119,16 +119,10 @@ float4 sample_catmull(Texture2D tex, float2 uv, float2 tex_size) {
 }
 
 // Linear values: the render target view is _SRGB and encodes on write.
+// Issue #408: around the picture and through its alpha is the theme's canvas,
+// the colour the chrome paints; there is no canvas background of its own.
 float3 background_at(float2 screen) {
-  if (background < 0.5) return theme_background.rgb;
-  if (background < 1.5) return float3(0.214, 0.214, 0.214);
-  if (background < 2.5) return float3(1.0, 1.0, 1.0);
-  if (background > 3.5) return float3(0.016, 0.018, 0.024);
-  // Checkerboard: fixed 12 px cells in screen space, so it reads as "this is
-  // transparency" at every zoom instead of scaling with the image.
-  float2 cell = floor((screen - origin) / 12.0);
-  float odd = fmod(abs(cell.x + cell.y), 2.0);
-  return odd < 0.5 ? float3(0.527, 0.527, 0.527) : float3(0.815, 0.815, 0.815);
+  return theme_background.rgb;
 }
 
 float4 sample_filtered(float2 uv, float2 tex_size) {

@@ -19,6 +19,7 @@
 #include "addons/ai/query.h"
 #include "addons/ai/transfer.h"
 #include "addons/ai/vocabulary.h"
+#include "core/fold.h"
 #include "core/json.h"
 
 namespace mv::ai {
@@ -138,7 +139,19 @@ int media_kind_of_name(const std::string& name) noexcept {
   for (const char* e : videos) {
     if (ext == e) return 2;
   }
+  // #355: MP3 and iTunes M4A / M4P (io::is_audio_name's set).
+  for (const char* e : {"mp3", "m4a", "m4p"}) {
+    if (ext == e) return 3;
+  }
   return 0;
+}
+
+std::uint32_t kind_bit(asset_kind kind) noexcept {
+  switch (kind) {
+    case asset_kind::video: return MV_AI_KIND_VIDEOS;
+    case asset_kind::audio: return MV_AI_KIND_AUDIO;
+    default: return MV_AI_KIND_PHOTOS;
+  }
 }
 
 std::string path_key(const std::string& path) {
@@ -180,6 +193,7 @@ expected engine::start() {
     db_ = std::move(db);
   }
   load_assets();
+  load_cues();
   roots_cache_ = db_->roots();
   // A reader (the search agent) never touches PhotoKit: that would ask for
   // Photos access from a background process. It still knows the Photos root.
@@ -222,12 +236,179 @@ void engine::load_assets() {
     m.root = a.root_id;
     m.mtime = a.mtime;
     m.cloud = a.cloud;
+    m.motion = std::move(a.motion);
+    m.motion_cloud = a.motion_cloud;
     by_key[m.key] = a.id;
     all.emplace(a.id, std::move(m));
   }
+  {
+    std::lock_guard lock(assets_m_);
+    assets_ = std::move(all);
+    asset_by_key_ = std::move(by_key);
+    motion_by_key_.clear();
+    for (auto& [id, m] : assets_) {
+      if (m.motion.empty()) continue;
+      m.motion_key = path_key(m.motion);
+      motion_by_key_[m.motion_key] = id;
+    }
+  }
+  (void)db_->each_tags([this](const asset_tags& t) { adopt_tags(t); });
+  tags_pending_ = true;
+}
+
+namespace {
+// The fields as asset_text holds them: as shown, U+001F between.
+std::vector<std::string> split_fields(const std::string& s) {
+  std::vector<std::string> out;
+  std::size_t b = 0;
+  while (b <= s.size() && !s.empty()) {
+    const std::size_t e = s.find('\x1f', b);
+    out.push_back(s.substr(b, e == std::string::npos ? std::string::npos : e - b));
+    if (e == std::string::npos) break;
+    b = e + 1;
+  }
+  return out;
+}
+std::string folded_fields(const std::vector<std::string>& fields) {
+  std::string out;
+  for (std::size_t i = 0; i < fields.size(); ++i) {
+    if (i) out.push_back('\x1f');
+    text::fold_into(out, fields[i]);
+  }
+  return out;
+}
+// Where `word` starts a word of `folded` (at its start, or after a byte that
+// is not a letter or digit: "r5" in "canon eos r5", "70" in "rf24-70mm"), or
+// npos. A bare substring would rank "cat" in "location" or "dedicated" above
+// every picture of a cat.
+std::size_t find_word_start(const std::string& folded, const std::string& word) {
+  const auto letter = [](unsigned char c) {
+    return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c >= 0x80;
+  };
+  for (std::size_t at = folded.find(word); at != std::string::npos; at = folded.find(word, at + 1)) {
+    if (at == 0 || !letter(static_cast<unsigned char>(folded[at - 1]))) return at;
+  }
+  return std::string::npos;
+}
+// search.h's match_fields, at word starts (Local search ranks these first):
+// every word somewhere; the first word's field, or -1.
+int match_fields(const std::string& folded, const std::vector<std::string>& words) {
+  if (words.empty() || folded.empty()) return -1;
+  int first = -1;
+  for (std::size_t w = 0; w < words.size(); ++w) {
+    const std::size_t at = find_word_start(folded, words[w]);
+    if (at == std::string::npos) return -1;
+    if (w == 0) first = static_cast<int>(std::count(folded.begin(), folded.begin() + static_cast<std::ptrdiff_t>(at), '\x1f'));
+  }
+  return first;
+}
+}  // namespace
+
+void engine::adopt_tags(const asset_tags& t) {
   std::lock_guard lock(assets_m_);
-  assets_ = std::move(all);
-  asset_by_key_ = std::move(by_key);
+  auto it = assets_.find(t.id);
+  if (it == assets_.end()) return;
+  asset_meta& m = it->second;
+  m.tags = true;
+  m.camera = text::fold(t.camera);
+  m.lens = text::fold(t.lens);
+  m.made_with = text::fold(t.made_with);
+  m.ai = t.ai;
+  m.has_where = t.has_where;
+  m.taken_at = t.taken_at;
+  m.exposure = query::exposure_facts{};
+  if (t.level >= 2) {
+    m.exposure.rated = t.rating.has_value();
+    m.exposure.rating = t.rating.value_or(0);
+    m.exposure.label = text::fold(t.label);
+    m.exposure.iso = t.iso;
+    m.exposure.aperture_x100 = t.aperture_x100;
+    m.exposure.focal_mm = t.focal_mm;
+    m.exposure.shutter_us = t.shutter_us;
+  }
+  m.fields = split_fields(t.text);
+  m.folded = folded_fields(m.fields);
+}
+
+bool engine::backfill_tags() {
+  if (!tags_pending_.load()) return false;
+  const bool facts = host_.has_tag_facts();
+  if (!facts) {
+    // A host older than tag_facts (the pack updated first): leave every row
+    // at tags = 0, so the first host that serves them fills them, rather
+    // than marking them read with nothing in them.
+    tags_pending_ = false;
+    return false;
+  }
+  const auto started = std::chrono::steady_clock::now();
+  // A few seconds at most per control-loop turn: a scan or a model load waits
+  // no longer than that behind it.
+  while (!stopping_ && std::chrono::steady_clock::now() - started < std::chrono::seconds(2)) {
+    const int level = tags_level_.load();
+    std::vector<asset_row> todo = db_->assets_needing_tags(128, level);
+    if (todo.empty()) {
+      tags_pending_ = false;
+      return false;
+    }
+    std::vector<asset_tags> rows;
+    rows.reserve(todo.size());
+    for (const asset_row& a : todo) {
+      if (stopping_) return true;
+      // The viewer is presenting (panning, playing, loading): it goes first.
+      while (host_.should_yield() && !stopping_) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      asset_tags t;
+      t.id = a.id;
+      t.mtime = a.mtime;
+      t.size = a.size;
+      t.level = level;
+      if (is_photos_key(a.path)) {
+        std::lock_guard lock(photos_tags_m_);
+        if (auto p = photos_tags_.find(a.path); p != photos_tags_.end()) {
+          t.has_where = p->second.has_location;
+          t.lat = p->second.lat;
+          t.lon = p->second.lon;
+          if (p->second.created != 0) t.taken_at = p->second.created;
+        }
+      } else {
+        if (auto f = host_.tag_facts(a.path)) {
+          if (f->flags & MV_ADDON_TAG_HAS_DATE) t.taken_at = f->taken_unix;
+          if (f->flags & MV_ADDON_TAG_HAS_LOCATION) {
+            t.has_where = true;
+            t.lat = f->lat;
+            t.lon = f->lon;
+          }
+          t.ai = (f->flags & MV_ADDON_TAG_AI_GENERATED) != 0;
+          t.camera = f->camera_utf8;
+          t.lens = f->lens_utf8;
+          t.made_with = f->made_with_utf8;
+          t.text = f->fields_utf8;
+          if (f->struct_size >= MV_ADDON_TAG_FACTS_V2_SIZE) {
+            // #405: rating, label and exposure. Never search text.
+            t.rating = f->rating;
+            t.label.assign(f->label_utf8, strnlen(f->label_utf8, sizeof(f->label_utf8)));
+            t.iso = f->iso;
+            t.aperture_x100 = f->aperture_x100;
+            t.focal_mm = f->focal_mm;
+            t.shutter_den = f->shutter_den;
+            t.shutter_us = f->shutter_us;
+          } else {
+            // A host from before #405: read to level 1 and ask nothing more
+            // of it this run (the next host that knows them reads them).
+            t.level = 1;
+            tags_level_ = 1;
+          }
+        }
+        // else unreadable: an empty row stands, so it is not asked again.
+      }
+      rows.push_back(std::move(t));
+    }
+    // Try again next turn, after the loop's usual wait: "more" here would
+    // skip that wait, and an index that cannot take the write (a full disk)
+    // would spin the control thread re-reading the same 128 files.
+    if (!db_->commit_tags(rows)) return false;
+    for (const asset_tags& t : rows) adopt_tags(t);
+  }
+  return true;
 }
 
 void engine::unindex_key_locked(std::int64_t id, const std::string& key) {
@@ -238,7 +419,42 @@ void engine::erase_asset_locked(std::int64_t id) {
   auto it = assets_.find(id);
   if (it == assets_.end()) return;
   unindex_key_locked(id, it->second.key);
+  if (!it->second.motion_key.empty()) {
+    if (auto k = motion_by_key_.find(it->second.motion_key); k != motion_by_key_.end() && k->second == id) {
+      motion_by_key_.erase(k);
+    }
+  }
   assets_.erase(it);
+}
+
+void engine::set_motion_locked(std::int64_t id, asset_meta& m, const std::string& motion, bool cloud) {
+  m.motion_cloud = cloud;
+  if (m.motion == motion) return;
+  if (!m.motion_key.empty()) {
+    if (auto k = motion_by_key_.find(m.motion_key); k != motion_by_key_.end() && k->second == id) motion_by_key_.erase(k);
+  }
+  m.motion = motion;
+  m.motion_key = motion.empty() ? std::string() : path_key(motion);
+  if (!m.motion_key.empty()) motion_by_key_[m.motion_key] = id;
+}
+
+std::int64_t engine::asset_or_motion_locked(const std::string& key) const {
+  if (const std::int64_t id = asset_of_key_locked(key); id != 0) return id;
+  const auto it = motion_by_key_.find(key);
+  return it == motion_by_key_.end() ? 0 : it->second;
+}
+
+void engine::row_target_locked(std::int64_t asset, std::int64_t pts_ms, std::string& path, std::uint32_t& kind) const {
+  const auto it = assets_.find(asset);
+  if (it == assets_.end()) return;
+  const asset_meta& m = it->second;
+  path = m.path;
+  kind = kind_bit(m.kind);
+  // A Live Photo's moment opens its movie there, as a clip's moment does.
+  if (m.kind == asset_kind::photo && pts_ms >= 0 && !m.motion.empty()) {
+    path = m.motion;
+    kind = MV_AI_KIND_VIDEOS;
+  }
 }
 
 std::int64_t engine::asset_of_key_locked(const std::string& key) const {
@@ -287,6 +503,9 @@ void engine::load_settings() {
       doc->integer("precision").value_or(kPrecisionDefault), 0, kPrecisionLevels - 1));
   settings_.icloud_videos = doc->boolean("icloud_videos").value_or(false);
   settings_.cloud_files = doc->boolean("cloud_files").value_or(false);
+  settings_.read_text = doc->boolean("read_text").value_or(true);
+  settings_.audio_files = doc->boolean("audio_files").value_or(false);
+  audio_files_ = settings_.audio_files;
 }
 
 void engine::save_settings() const {
@@ -303,6 +522,8 @@ void engine::save_settings() const {
     w.key("precision").integer(settings_.precision);
     w.key("icloud_videos").boolean(settings_.icloud_videos);
     w.key("cloud_files").boolean(settings_.cloud_files);
+    w.key("read_text").boolean(settings_.read_text);
+    w.key("audio_files").boolean(settings_.audio_files);
     w.end_object();
   }
   const std::string tmp = join(data_dir_, "settings.json.tmp");
@@ -336,6 +557,12 @@ std::string engine::settings_json() const {
   w.key("precision").integer(s.precision);
   w.key("icloud_videos").boolean(s.icloud_videos);
   w.key("cloud_files").boolean(s.cloud_files);
+  w.key("read_text").boolean(s.read_text);
+  w.key("audio_files").boolean(s.audio_files);
+  // Whether the OS can read text here (Settings says why the switch does
+  // nothing when it cannot): true until the reader has been asked for. Not
+  // models_m_: this is the UI thread's call.
+  w.key("text_available").boolean(!text_none_.load());
   // A second window's reader (docs/design/18 "One host process"): it searches,
   // and the chrome hides what would change the index or the settings.
   w.key("read_only").boolean(options_.read_only);
@@ -408,6 +635,7 @@ expected engine::set_setting(const std::string& key, const std::string& value_js
   }
   bool reload = false;
   bool pieces = false;
+  int audio_turned = 0;  // #355: 1 on, -1 off
   {
     std::lock_guard lock(settings_m_);
     if (key == "compute") {
@@ -434,6 +662,14 @@ expected engine::set_setting(const std::string& key, const std::string& value_js
       settings_.icloud_videos = x != 0;
     } else if (key == "cloud_files") {
       settings_.cloud_files = x != 0;
+    } else if (key == "read_text") {
+      settings_.read_text = x != 0;  // #403: the next claim takes (or leaves) the text track
+      text_counts_due_ = true;
+    } else if (key == "audio_files") {
+      const bool on = x != 0;
+      if (on != settings_.audio_files) audio_turned = on ? 1 : -1;
+      settings_.audio_files = on;
+      audio_files_ = on;  // the search drops audio results from here on
     } else if (key == "precision") {
       // Read by each search as it starts: no reload, no re-index (docs/design/17
       // "Precision scale"). Out of range clamps to the nearest end.
@@ -447,11 +683,23 @@ expected engine::set_setting(const std::string& key, const std::string& value_js
     (reload ? reload_models_ : reload_pieces_) = true;
     control_cv_.notify_all();
   }
+  if (audio_turned != 0) {
+    // On: every enabled root is walked again and its audio files queued (the
+    // rest are unchanged by (mtime, size)). Off: the control thread deletes
+    // the audio rows; the search already leaves them out.
+    std::lock_guard lock(control_m_);
+    if (audio_turned > 0) {
+      rescan_all_ = true;
+    } else {
+      drop_audio_ = true;
+    }
+    control_cv_.notify_all();
+  }
   if (key == "icloud_videos" || key == "cloud_files") {
     fetch_wake_ = true;
     fetch_cv_.notify_all();
   }
-  if (key == "video_index") {
+  if (key == "video_index" || key == "read_text") {
     std::lock_guard lock(work_m_);
     queue_.clear();
     queue_exhausted_ = false;
@@ -579,6 +827,37 @@ void engine::refresh_counts() {
   const track_filter audio{false, MV_AI_MEDIA_SOUND, media, skip, held_now};
   const counts cs = sound_spec.empty() ? counts{} : db_->count(sound_spec, audio);
   const counts cp = speech_spec.empty() ? counts{} : db_->count(speech_spec, audio);
+  // The text passes: a clip's own text, then the text in photos and on the
+  // moments of clips whose pictures are done (claim's filters). Counted again
+  // only when they can have moved (text_counts_).
+  const std::string ocr_spec = text_spec();
+  const std::string cue_spec = host_.has_cues() ? std::string(kCueSpec) : std::string();
+  const std::string text_key = cue_spec + "|" + ocr_spec + "|" + build_spec + "|" + std::to_string(c.assets) + "|" +
+                               std::to_string(c.done + c.failed + c.unavailable) + "|" + std::to_string(skip) + "|" +
+                               std::to_string(held_now.size());
+  text_counts tc;
+  bool recount = text_counts_due_.exchange(false);
+  {
+    std::lock_guard lock(status_m_);
+    tc = text_counts_;
+  }
+  const auto open = [](const counts& k) { return k.assets > k.done + k.failed + k.unavailable + k.cloud_only; };
+  recount = recount || tc.key != text_key || open(tc.cues) || open(tc.photos) || open(tc.moments) ||
+            now_s() - tc.at >= 30.0;
+  if (recount) {
+    tc.cues = cue_spec.empty() ? counts{}
+                               : db_->count(cue_spec, track_filter{false, MV_AI_MEDIA_BOTH, media, skip, held_now});
+    tc.photos = ocr_spec.empty() ? counts{} : db_->count(ocr_spec, track_filter{true, 0, media, skip, held_now});
+    tc.moments = ocr_spec.empty() || build_spec.empty()
+                     ? counts{}
+                     : db_->count(ocr_spec + kMomentsSuffix,
+                                  track_filter{false, MV_AI_MEDIA_PICTURES, media, skip, held_now}, build_spec);
+    tc.key = text_key;
+    tc.at = now_s();
+  }
+  const counts& cc = tc.cues;
+  const counts& ct = tc.photos;
+  const counts& cm = tc.moments;
   std::map<std::int64_t, std::pair<std::uint64_t, std::uint64_t>> per_root;
   const std::vector<root_row> roots = db_->roots();
   const std::string root_spec = counting_spec();
@@ -625,6 +904,7 @@ void engine::refresh_counts() {
 
   std::unique_lock lock(status_m_);
   counts_ = c;
+  if (recount) text_counts_ = tc;
   // A folder's count moved (a file indexed, added or gone): Settings' folder
   // rows read roots_json on AI_ROOTS, so they follow the work, not only a
   // root being added (owner report, 2026-10-05: "0 of 26" after it finished).
@@ -641,6 +921,10 @@ void engine::refresh_counts() {
   status_.sound_done = cs.done + cs.failed + cs.unavailable;
   status_.speech_total = cp.assets;
   status_.speech_done = cp.done + cp.failed + cp.unavailable;
+  status_.cues_total = cc.assets;
+  status_.cues_done = cc.done + cc.failed + cc.unavailable;
+  status_.text_total = ct.assets + cm.assets;
+  status_.text_done = ct.done + ct.failed + ct.unavailable + cm.done + cm.failed + cm.unavailable;
   status_.frames_indexed = store_.live_rows();
   status_.index_bytes = bytes;
   status_.faces_total = face_total;
@@ -705,7 +989,10 @@ void engine::refresh_counts() {
   // fetch, whose own state says when one is on its way.
   const bool pending = c.assets > c.done + c.failed + c.unavailable + c.cloud_only ||
                        cs.assets > cs.done + cs.failed + cs.unavailable + cs.cloud_only ||
-                       cp.assets > cp.done + cp.failed + cp.unavailable + cp.cloud_only;
+                       cp.assets > cp.done + cp.failed + cp.unavailable + cp.cloud_only ||
+                       cc.assets > cc.done + cc.failed + cc.unavailable + cc.cloud_only ||
+                       ct.assets > ct.done + ct.failed + ct.unavailable + ct.cloud_only ||
+                       cm.assets > cm.done + cm.failed + cm.unavailable + cm.cloud_only;
   std::uint32_t state = MV_AI_STATE_INDEXING;
   if (models_failed_) {
     state = MV_AI_STATE_ERROR;
@@ -1209,6 +1496,22 @@ expected engine::people_reanalyse() {
   return {};
 }
 
+// #398: the index's coordinates for the host table's locations_of_index.
+// index.db is the only thing read: the tag backfill put lat / lon there.
+expected engine::each_location(const std::function<bool(const index_db::located&)>& visit) {
+  if (!db_) return err(status::not_found);
+  std::int64_t after = 0;
+  for (;;) {
+    if (stopping_.load(std::memory_order_relaxed)) return err(status::cancelled);
+    MV_TRY(std::vector<index_db::located> batch, db_->located_assets(after, kLocationBatch));
+    for (const index_db::located& l : batch) {
+      if (!visit(l)) return err(status::cancelled);
+    }
+    if (batch.size() < kLocationBatch) return {};
+    after = batch.back().id;
+  }
+}
+
 // The settle at the end of a re-run. Every face is this model's now, the
 // people are the user's (carried box by box); a full refinement with no
 // focus judges every unpinned face: it may leave a person the new vectors
@@ -1507,6 +1810,13 @@ void engine::maybe_finish_migration() {
 
 void engine::control_loop() {
   loading_ = true;
+  {
+    // #403: the OS text reader, on this thread (not a host's UI thread).
+    auto reader = deps_.text ? deps_.text() : make_text_reader();
+    std::lock_guard lock(models_m_);
+    text_none_ = reader == nullptr;
+    text_ = std::move(reader);
+  }
   load_models();
   const unsigned cores = std::max(1u, platform::hardware_threads());
   const unsigned n = std::max(1u, std::min(2u, cores / 4));
@@ -1540,6 +1850,7 @@ void engine::control_loop() {
       }
       if (t) run_transfer(std::move(*t));
     }
+    if (drop_audio_.exchange(false)) drop_audio();
     bool all = false;
     std::set<std::int64_t> some;
     const double t = now_s();
@@ -1577,6 +1888,10 @@ void engine::control_loop() {
     scanning_ = false;
     // The walk is over even when it found nothing new: the rows stop saying so.
     if (walked) post(MV_ADDON_EVENT_AI_ROOTS);
+    // #291: what the walk found (and an index migrated from schema 3) gets
+    // its tags, a few seconds' worth per turn; the wait below is skipped
+    // while more remain.
+    const bool more_tags = backfill_tags();
     if (walked || t - last_resume_write >= kResumeWriteSeconds) {
       // What a quit or a kill now would leave unfinished (issue #299): kept
       // current so the next launch can ask without loading the pack.
@@ -1640,9 +1955,9 @@ void engine::control_loop() {
     }
     if (people_changed_.exchange(false)) post(MV_ADDON_EVENT_AI_PEOPLE);
     std::unique_lock lock(control_m_);
-    control_cv_.wait_for(lock, std::chrono::milliseconds(1000), [this] {
+    control_cv_.wait_for(lock, std::chrono::milliseconds(more_tags ? 0 : 1000), [this] {
       if (stopping_.load() || reload_models_.load() || reload_pieces_.load() || rescan_all_ ||
-          !rescan_roots_.empty()) {
+          !rescan_roots_.empty() || drop_audio_.load()) {
         return true;
       }
       std::lock_guard tl(transfer_m_);  // control_m_ -> transfer_m_ (a leaf)
@@ -1812,6 +2127,7 @@ void engine::catch_up_reader() {
     }, reader_sound_);
   }
   if (!reader_speech_spec_.empty()) load_speech(reader_speech_spec_);
+  load_cues();
   end_answer_swap();
 }
 
@@ -1830,11 +2146,20 @@ bool engine::see_batch(const root_row& root, std::vector<index_db::seen_file>& b
     batch.clear();
     return false;
   }
+  std::vector<std::int64_t> motion;  // #407: a Live Photo's movie changed under its still
+  {
   std::lock_guard lock(assets_m_);
   for (std::size_t i = 0; i < batch.size(); ++i) {
     const index_db::upsert& u = (*r)[i];
     if (u.changed) changed.push_back(u.id);
+    if (u.motion_changed && !u.changed) motion.push_back(u.id);
     asset_meta& m = assets_[u.id];
+    if (u.changed || u.added) {
+      m.tags = false;  // read again by the backfill (the index set tags = 0)
+      m.taken_at.reset();  // dated by mtime until then (#404)
+      m.exposure = query::exposure_facts{};  // #405: no values until read again
+      tags_pending_ = true;
+    }
     m.path = batch[i].path;
     std::string key = path_key(m.path);
     if (key != m.key) {
@@ -1847,9 +2172,39 @@ bool engine::see_batch(const root_row& root, std::vector<index_db::seen_file>& b
     m.root = root.id;
     m.mtime = batch[i].mtime;
     m.cloud = batch[i].cloud;
+    set_motion_locked(u.id, m, batch[i].motion, batch[i].motion_cloud);
+  }
   }
   batch.clear();
+  motion_changed(motion);
   return true;
+}
+
+void engine::motion_changed(const std::vector<std::int64_t>& ids) {
+  if (ids.empty()) return;
+  // The index dropped the motion rows; the still's own vector comes back from
+  // its row, so only the movie's moments leave the matrix.
+  store_.remove_assets(ids);
+  std::string active;
+  {
+    std::lock_guard lock(models_m_);
+    active = answer_.meta.spec_key;
+    if (faces_) {
+      // The still's faces stay (people, pins, corrections); its movie's go,
+      // and the People pass looks at the asset again.
+      for (std::int64_t id : ids) {
+        (void)faces_->forget_moments(id);
+        faces_scanned_.erase(id);
+      }
+    }
+  }
+  if (!active.empty()) {
+    for (std::int64_t id : ids) {
+      (void)db_->each_frame_of(id, active, [&](const frame_out& f) {
+        if (f.pts_ms < 0) store_.add(id, f.pts_ms, f.generic, f.scale, f.emb);
+      });
+    }
+  }
 }
 
 void engine::scan_root(const root_row& root) {
@@ -1862,6 +2217,9 @@ void engine::scan_root(const root_row& root) {
     active_root_ = root.path;
   }
   const std::int64_t gen = db_->next_generation();
+  // One value for the whole walk: a toggle mid-walk is the next walk's (on)
+  // or drop_audio's (off).
+  const bool audio_files = audio_files_.load();
   std::vector<index_db::seen_file> batch;
   std::vector<std::int64_t> changed;
   bool failed = false;
@@ -1874,7 +2232,9 @@ void engine::scan_root(const root_row& root) {
   const expected walked = host_.walk(root.path, root.recursive ? 64 : 0, [&](const host::entry& e) {
     if (stopping_) return false;
     const std::string key = path_key(e.path);
-    if (housekeeping(key) || media_kind_of_name(e.path) == 0) return true;
+    const int k = media_kind_of_name(e.path);
+    // #355: audio only while the setting is on; off, it costs nothing past the name.
+    if (housekeeping(key) || k == 0 || (k == 3 && !audio_files)) return true;
     by_dir[key_parent(key)].push_back(e);
     return true;
   });
@@ -1912,6 +2272,13 @@ void engine::scan_root(const root_row& root) {
     }
     for (std::size_t i = 0; i < files.size(); ++i) {
       const int k = media_kind_of_name(names[i]);
+      if (k == 3) {
+        // #355: an audio file never pairs; its cover art is its picture.
+        batch.push_back(index_db::seen_file{files[i].path, files[i].mtime, files[i].size, asset_kind::audio,
+                                            files[i].cloud_only});
+        if (batch.size() >= 512) flush();
+        continue;
+      }
       if (partner[i] != UINT32_MAX) {
         const int other = media_kind_of_name(names[partner[i]]);
         // Keep the still: drop a Live Photo's clip, and a RAW's JPEG twin's RAW.
@@ -1926,6 +2293,15 @@ void engine::scan_root(const root_row& root) {
       // opt-in) but no track reads it: reading it would download it.
       batch.push_back(index_db::seen_file{files[i].path, files[i].mtime, files[i].size,
                                           k == 2 ? asset_kind::video : asset_kind::photo, files[i].cloud_only});
+      // #407: a Live Photo still keeps its movie, sampled onto the still's id.
+      if (partner[i] != UINT32_MAX && kind[i] == 2 && k == 1 && media_kind_of_name(names[partner[i]]) == 2) {
+        const host::entry& mov = files[partner[i]];
+        index_db::seen_file& still = batch.back();
+        still.motion = mov.path;
+        still.motion_mtime = mov.mtime;
+        still.motion_size = mov.size;
+        still.motion_cloud = mov.cloud_only;
+      }
       if (batch.size() >= 512) flush();
     }
   }
@@ -1984,6 +2360,10 @@ void engine::scan_photos(const root_row& root) {
   const expected walked = photos_->enumerate([&](const photos_item& it) {
     if (stopping_ || failed) return false;
     batch.push_back(index_db::seen_file{photos_key(it.id), it.mtime, it.size, it.kind});
+    {
+      std::lock_guard lock(photos_tags_m_);
+      photos_tags_[batch.back().path] = photos_tag{it.has_location, it.lat, it.lon, it.created};
+    }
     if (batch.size() >= 512 && !see_batch(root, batch, gen, changed)) failed = true;
     return !failed;
   });
@@ -1997,6 +2377,22 @@ bool engine::photos_local(const asset_row& a) const {
   const std::string_view id = photos_id(a.path);
   if (a.kind == asset_kind::video) return photos_->video_file(id).has_value();
   return photos_->still(id, kPhotosProbeEdge).has_value();
+}
+
+// #355: "audio_files" off. Every audio asset goes, as removing Sound from a
+// folder drops its audio rows; a walk with the setting off would delete them
+// too (end_scan), but not until the next one.
+void engine::drop_audio() {
+  auto gone = db_->remove_kind(asset_kind::audio);
+  if (!gone || gone->empty()) return;
+  {
+    std::lock_guard lock(assets_m_);
+    for (std::int64_t id : *gone) erase_asset_locked(id);
+  }
+  forget_vectors(*gone);
+  refresh_counts();
+  post(MV_ADDON_EVENT_AI_ROOTS);
+  post(MV_ADDON_EVENT_AI_STATUS);
 }
 
 void engine::forget_vectors(const std::vector<std::int64_t>& ids) {
@@ -2020,6 +2416,9 @@ void engine::forget_vectors(const std::vector<std::int64_t>& ids) {
     speech_rows_.erase(std::remove_if(speech_rows_.begin(), speech_rows_.end(),
                                       [&](const speech_row& r) { return drop.count(r.asset) != 0; }),
                        speech_rows_.end());
+    cue_rows_.erase(std::remove_if(cue_rows_.begin(), cue_rows_.end(),
+                                   [&](const cue_row& r) { return drop.count(r.asset) != 0; }),
+                    cue_rows_.end());
   }
   {
     std::lock_guard lock(work_m_);
@@ -2053,6 +2452,9 @@ void engine::end_root_scan(const root_row& root, std::int64_t gen, const std::ve
     speech_rows_.erase(std::remove_if(speech_rows_.begin(), speech_rows_.end(),
                                       [&](const speech_row& r) { return drop.count(r.asset) != 0; }),
                        speech_rows_.end());
+    cue_rows_.erase(std::remove_if(cue_rows_.begin(), cue_rows_.end(),
+                                   [&](const cue_row& r) { return drop.count(r.asset) != 0; }),
+                    cue_rows_.end());
   }
   store_.remove_assets(changed);
   sounds_.remove_assets(changed);
@@ -2167,14 +2569,18 @@ bool engine::fetch_wanted(std::int64_t asset) {
   const std::uint32_t media = default_media();
   const std::int64_t skip = skip_root();
   const std::int64_t ids[] = {asset};
-  const auto wants = [&](const std::string& track_spec, const track_filter& f) {
-    return !track_spec.empty() && !db_->pending_among(track_spec, ids, kMaxTries, f).empty();
+  const auto wants = [&](const std::string& track_spec, const track_filter& f, const std::string& after = {}) {
+    return !track_spec.empty() && !db_->pending_among(track_spec, ids, kMaxTries, f, after).empty();
   };
   // No picture tower yet (a model load): keep the file for when it comes.
   if (spec.empty()) return true;
   return wants(spec, track_filter{true, MV_AI_MEDIA_PICTURES, media, skip, {}}) ||
          wants(sound_spec, track_filter{false, MV_AI_MEDIA_SOUND, media, skip, {}}) ||
-         wants(speech_spec, track_filter{false, MV_AI_MEDIA_SOUND, media, skip, {}});
+         wants(speech_spec, track_filter{false, MV_AI_MEDIA_SOUND, media, skip, {}}) ||
+         wants(host_.has_cues() ? std::string(kCueSpec) : std::string(),
+               track_filter{false, MV_AI_MEDIA_BOTH, media, skip, {}}) ||
+         wants(text_spec(), track_filter{true, 0, media, skip, {}}) ||
+         wants(text_moments_spec(), track_filter{false, MV_AI_MEDIA_PICTURES, media, skip, {}}, spec);
 }
 
 void engine::fetch_reap(bool all) {
@@ -2556,6 +2962,12 @@ bool engine::claim(std::vector<work_item>& out, track& t) {
     if (speech_.model) speech_spec = speech_.spec_key;
   }
   if (spec.empty()) return false;
+  // #406: cues need the host's read_cues (an older host has none).
+  const std::string cue_spec = host_.has_cues() ? std::string(kCueSpec) : std::string();
+  // #403: text in photos, while the OS can read it and the setting is on, and
+  // on the moments a clip's picture pass kept, once it has.
+  const std::string ocr_spec = text_spec();
+  const std::string moments_spec = text_moments_spec();
   std::lock_guard lock(work_m_);
   {
     // A folder opened (note_folder_opened): it goes first from now on.
@@ -2571,9 +2983,10 @@ bool engine::claim(std::vector<work_item>& out, track& t) {
   if (queue_.empty() && !queue_exhausted_) {
     // Pictures first (fast, and what most searches need), then what clips
     // sound like, then what is said in them, then the People pass.
-    const auto take = [&](const std::string& track_spec, track which, const track_filter& f) {
+    const auto take = [&](const std::string& track_spec, track which, const track_filter& f,
+                          const std::string& after = {}) {
       if (!queue_.empty() || track_spec.empty()) return;
-      for (work_item& w : db_->pending(track_spec, 256, kMaxTries, f)) {
+      for (work_item& w : db_->pending(track_spec, 256, kMaxTries, f, after)) {
         if (!in_flight_.count(w.asset.id)) queue_.push_back(job{std::move(w), which});
       }
     };
@@ -2584,13 +2997,17 @@ bool engine::claim(std::vector<work_item>& out, track& t) {
       // until every track is done with them (fetch_reap).
       const std::vector<std::int64_t> fetched = fetched_ids();
       if (!fetched.empty()) {
-        const auto among = [&](const std::string& track_spec, track which, const track_filter& f) {
+        const auto among = [&](const std::string& track_spec, track which, const track_filter& f,
+                               const std::string& after = {}) {
           if (track_spec.empty()) return;
-          for (work_item& w : db_->pending_among(track_spec, fetched, kMaxTries, f)) {
+          for (work_item& w : db_->pending_among(track_spec, fetched, kMaxTries, f, after)) {
             if (!in_flight_.count(w.asset.id)) queue_.push_back(job{std::move(w), which});
           }
         };
         among(spec, track::picture, track_filter{true, MV_AI_MEDIA_PICTURES, media, skip, held_now});
+        among(cue_spec, track::cues, track_filter{false, MV_AI_MEDIA_BOTH, media, skip, held_now});
+        among(ocr_spec, track::text, track_filter{true, 0, media, skip, held_now});
+        among(moments_spec, track::text, track_filter{false, MV_AI_MEDIA_PICTURES, media, skip, held_now}, spec);
         among(sound_spec, track::sound, track_filter{false, MV_AI_MEDIA_SOUND, media, skip, held_now});
         among(speech_spec, track::speech, track_filter{false, MV_AI_MEDIA_SOUND, media, skip, held_now});
         if (queue_.empty() && faces_on) {
@@ -2599,6 +3016,7 @@ bool engine::claim(std::vector<work_item>& out, track& t) {
           for (std::int64_t id : fetched) {
             const auto it = assets_.find(id);
             if (it == assets_.end() || faces_scanned_.count(id) || in_flight_.count(id)) continue;
+            if (it->second.kind == asset_kind::audio) continue;  // cover art holds no People
             if (std::find(held_now.begin(), held_now.end(), it->second.root) != held_now.end()) continue;
             work_item w;
             w.asset.id = id;
@@ -2611,6 +3029,11 @@ bool engine::claim(std::vector<work_item>& out, track& t) {
       }
     }
     take(spec, track::picture, track_filter{true, MV_AI_MEDIA_PICTURES, media, skip, held_now});
+    // #406: a clip's own text, after its pictures (they never wait on it).
+    take(cue_spec, track::cues, track_filter{false, MV_AI_MEDIA_BOTH, media, skip, held_now});
+    // #403: the text in photos, after their pictures and the clips' own text.
+    take(ocr_spec, track::text, track_filter{true, 0, media, skip, held_now});
+    take(moments_spec, track::text, track_filter{false, MV_AI_MEDIA_PICTURES, media, skip, held_now}, spec);
     take(sound_spec, track::sound, track_filter{false, MV_AI_MEDIA_SOUND, media, skip, held_now});
     take(speech_spec, track::speech, track_filter{false, MV_AI_MEDIA_SOUND, media, skip, held_now});
     if (queue_.empty() && faces_on) {
@@ -2619,6 +3042,7 @@ bool engine::claim(std::vector<work_item>& out, track& t) {
       const std::int64_t skip_faces = skip_root();
       for (const auto& [id, m] : assets_) {
         if (faces_scanned_.count(id) || in_flight_.count(id)) continue;
+        if (m.kind == asset_kind::audio) continue;  // #355: cover art holds no People
         if (skip_faces != 0 && m.root == skip_faces) continue;
         if (std::find(held_now.begin(), held_now.end(), m.root) != held_now.end()) continue;
         if (m.cloud) continue;  // online-only: the fetch brings it down first
@@ -2647,11 +3071,12 @@ bool engine::claim(std::vector<work_item>& out, track& t) {
   }
   if (queue_.empty()) return false;
   t = queue_.front().t;
-  const bool photo = queue_.front().w.asset.kind == asset_kind::photo;
-  const std::size_t batch = photo && (t == track::picture || t == track::faces) ? kPhotoBatch : 1;
+  // An audio file's picture is a still (its cover art, #355): it batches with photos.
+  const bool photo = queue_.front().w.asset.kind != asset_kind::video;
+  const std::size_t batch = photo && (t == track::picture || t == track::faces || t == track::text) ? kPhotoBatch : 1;
   while (!queue_.empty() && out.size() < batch) {
     const job& j = queue_.front();
-    if ((j.w.asset.kind == asset_kind::photo) != photo || j.t != t) break;
+    if ((j.w.asset.kind != asset_kind::video) != photo || j.t != t) break;
     if (in_flight_.count(j.w.asset.id)) {  // another track of this asset is running
       queue_.pop_front();
       continue;
@@ -2686,7 +3111,13 @@ void engine::worker_loop(unsigned) {
       speech = speech_;
     }
     const bool faces_only = t == track::faces;
-    if (t == track::sound) {
+    if (t == track::cues) {
+      process_cues(items.front());
+      text_counts_due_ = true;  // done, failed or partial: the counts moved
+    } else if (t == track::text) {
+      process_text(items);
+      text_counts_due_ = true;
+    } else if (t == track::sound) {
       if (sound.model) process_sound(items.front(), sound);
     } else if (t == track::speech) {
       if (speech.model) process_speech(items.front(), speech);
@@ -2828,6 +3259,80 @@ void engine::process_sound(const work_item& item, const loaded_sound& sound) {
   (void)db_->commit_frames(item.asset.id, sound.spec_key, {}, work_state::done, done_ms, sound.dim);
 }
 
+void engine::process_cues(const work_item& item) {
+  // A clip's whole text is small; a cap keeps a hostile file small too
+  // (docs/design/17 "Cues": the first two hours, 8,000 lines).
+  constexpr std::int64_t kMaxMs = 2 * 3600 * 1000;
+  constexpr std::uint32_t kMaxCues = 8000;
+  constexpr std::size_t kBatch = 64;
+  auto file = file_of(item.asset.path);
+  if (!file) {
+    if (file.error() == status::permission_denied) {
+      photos_readable_ = false;
+      return;
+    }
+    if (file.error() == status::io && is_photos_key(item.asset.path)) {
+      (void)db_->mark_unavailable(item.asset.id, kCueSpec);
+    } else {
+      (void)db_->fail(item.asset.id, kCueSpec);
+    }
+    return;
+  }
+  // A resumed pass reads from the last committed cue's start and sends that
+  // cue and any beside it again: the first commit replaces what it had.
+  const bool resumed = item.state == work_state::partial;
+  const std::int64_t from = resumed ? item.resume_ms : 0;
+  std::int64_t replace_from = resumed ? from : -1;
+  std::vector<cue_in> batch;
+  bool stopping = false;
+  const auto flush = [&](work_state state, std::int64_t resume) -> bool {
+    if (!db_->commit_cues(item.asset.id, batch, state, resume, replace_from)) return false;
+    {
+      std::lock_guard lock(speech_m_);
+      if (replace_from >= 0) {
+        cue_rows_.erase(std::remove_if(cue_rows_.begin(), cue_rows_.end(),
+                                       [&](const cue_row& r) {
+                                         return r.asset == item.asset.id && r.kind != cue_kind::picture &&
+                                                r.start_ms >= replace_from;
+                                       }),
+                        cue_rows_.end());
+      }
+      for (cue_in& c : batch) {
+        std::vector<std::string> words = cue_words(c.text);
+        cue_rows_.push_back(cue_row{item.asset.id, c.start_ms, c.kind, std::move(c.text), std::move(words)});
+      }
+    }
+    replace_from = -1;
+    batch.clear();
+    return true;
+  };
+  bool write_failed = false;
+  const expected read = host_.read_cues(*file, from, kMaxMs, kMaxCues, [&](const host::cue& c) {
+    if (!wait_turn()) {
+      stopping = true;
+      return false;
+    }
+    batch.push_back(cue_in{c.start_ms, c.end_ms, c.kind == MV_ADDON_CUE_CHAPTER ? cue_kind::chapter : cue_kind::subtitle,
+                           c.text});
+    if (batch.size() >= kBatch && !flush(work_state::partial, batch.back().start_ms)) {
+      write_failed = true;
+      return false;
+    }
+    return true;
+  });
+  if (stopping) {
+    // Shutting down: what was read commits; the rest resumes.
+    if (!batch.empty()) (void)flush(work_state::partial, batch.back().start_ms);
+    return;
+  }
+  if (write_failed) return;  // left partial or pending: tried again
+  if (!read && read.error() != status::cancelled) {
+    (void)db_->fail(item.asset.id, kCueSpec);
+    return;
+  }
+  (void)flush(work_state::done, 0);
+}
+
 void engine::process_speech(const work_item& item, const loaded_speech& speech) {
   const mv_host_api* api = host_.api();
   if (!api->audio_open) return;
@@ -2935,10 +3440,36 @@ void engine::process_photos(std::vector<work_item>& items, const loaded_clip& cl
     if (faces_model_) face_spec = faces_model_->spec_key();
   }
   const std::uint32_t edge = faces_on ? 1024u : std::max<std::uint32_t>(448u, clip.meta.input_edge * 2);
+  // #407: each still's Live Photo movie ("" none).
+  std::unordered_map<std::int64_t, std::pair<std::string, bool>> motion;
+  {
+    std::lock_guard lock(assets_m_);
+    for (const work_item& w : items) {
+      if (auto it = assets_.find(w.asset.id); it != assets_.end() && !it->second.motion.empty()) {
+        motion[w.asset.id] = {it->second.motion, it->second.motion_cloud};
+      }
+    }
+  }
   std::vector<rgb_frame> imgs;
   std::vector<const work_item*> ok;
   for (const work_item& w : items) {
+    // Only its movie owed, and no faces to look for: the still is not read.
+    if (!faces_only && !faces_on && w.state == work_state::partial && motion.count(w.asset.id)) {
+      imgs.emplace_back();
+      ok.push_back(&w);
+      continue;
+    }
     auto img = still_of(w.asset.path, edge);
+    if (!img && w.asset.kind == asset_kind::audio && !faces_only &&
+        (img.error() == status::not_found || img.error() == status::unsupported_format)) {
+      // #355: no cover art (or none that decodes). Its tags still find it:
+      // done, with no picture.
+      if (db_->commit_frames(w.asset.id, clip.meta.spec_key, {}, work_state::done, 0, clip.meta.dim)) {
+        std::lock_guard lock(status_m_);
+        units_done_ += 1;
+      }
+      continue;
+    }
     if (!img) {
       // Photos access went away mid-run: leave it pending; the next scan
       // takes the library out of the work until access is back.
@@ -2966,10 +3497,16 @@ void engine::process_photos(std::vector<work_item>& items, const loaded_clip& cl
   }
   if (imgs.empty()) return;
   if (!faces_only) {
+    // A still whose movie alone is owed (#407: partial) is in the index already.
     std::vector<infer::rgb_view> views;
-    for (const rgb_frame& f : imgs) views.push_back(infer::rgb_view{f.rgb.data(), f.width, f.height});
+    std::vector<std::size_t> embed_idx;
+    for (std::size_t i = 0; i < ok.size(); ++i) {
+      if (ok[i]->state == work_state::partial && motion.count(ok[i]->asset.id)) continue;
+      views.push_back(infer::rgb_view{imgs[i].rgb.data(), imgs[i].width, imgs[i].height});
+      embed_idx.push_back(i);
+    }
     std::vector<float> embs;
-    if (!clip.model->embed_images(views, embs)) {
+    if (!views.empty() && !clip.model->embed_images(views, embs)) {
       for (const work_item* w : ok) (void)db_->fail(w->asset.id, clip.meta.spec_key);
       return;
     }
@@ -2978,15 +3515,20 @@ void engine::process_photos(std::vector<work_item>& items, const loaded_clip& cl
       std::lock_guard lock(models_m_);
       active = answer_.meta.spec_key;
     }
-    for (std::size_t i = 0; i < ok.size(); ++i) {
-      const std::span<const float> e(embs.data() + i * clip.meta.dim, clip.meta.dim);
+    std::vector<std::vector<float>> seeds(ok.size());
+    for (std::size_t j = 0; j < embed_idx.size(); ++j) {
+      const std::size_t i = embed_idx[j];
+      const std::span<const float> e(embs.data() + j * clip.meta.dim, clip.meta.dim);
       frame_in f;
       f.emb = e;
       f.generic = max_dot(e, clip.generic);
+      // A Live Photo's still commits first; the asset is done with its movie.
+      const bool owes_motion = motion.count(ok[i]->asset.id) != 0;
       if (!db_->commit_frames(ok[i]->asset.id, clip.meta.spec_key, std::span<const frame_in>(&f, 1),
-                              work_state::done, 0, clip.meta.dim)) {
+                              owes_motion ? work_state::partial : work_state::done, 0, clip.meta.dim)) {
         continue;
       }
+      seeds[i].assign(e.begin(), e.end());
       if (clip.meta.spec_key == active) {
         std::vector<std::int8_t> q;
         float scale = 1;
@@ -2997,10 +3539,23 @@ void engine::process_photos(std::vector<work_item>& items, const loaded_clip& cl
       units_done_ += 1;
       frames_done_ += 1;
     }
+    for (std::size_t i = 0; i < ok.size(); ++i) {
+      const auto m = motion.find(ok[i]->asset.id);
+      if (m == motion.end()) continue;
+      if (seeds[i].empty()) (void)store_.vector_of(ok[i]->asset.id, -1, seeds[i]);
+      if (!index_motion(*ok[i], m->second.first, m->second.second, clip, faces_on, std::move(seeds[i]))) return;
+    }
   }
   if (faces_on) {
     for (std::size_t i = 0; i < ok.size(); ++i) {
+      if (ok[i]->asset.kind == asset_kind::audio) continue;  // #355: cover art holds no People
       faces_of(ok[i]->asset.id, ok[i]->asset.path, -1, imgs[i]);
+      // #407: the People pass on its own looks at the movie's stored moments.
+      if (faces_only) {
+        if (const auto m = motion.find(ok[i]->asset.id); m != motion.end()) {
+          if (!faces_on_moments(ok[i]->asset.id, m->second.first, stored_moments(ok[i]->asset.id), 768)) return;
+        }
+      }
       std::lock_guard lock(models_m_);
       if (faces_) {
         (void)faces_->mark_scanned(ok[i]->asset.id, face_spec);
@@ -3008,6 +3563,128 @@ void engine::process_photos(std::vector<work_item>& items, const loaded_clip& cl
       }
     }
   }
+}
+
+std::vector<std::int64_t> engine::stored_moments(std::int64_t asset) {
+  std::string build, answer;
+  {
+    std::lock_guard lock(models_m_);
+    build = build_.meta.spec_key;
+    answer = answer_.meta.spec_key;
+  }
+  std::vector<std::int64_t> out;
+  if (!build.empty()) out = db_->moment_times(asset, build);
+  if (out.empty() && !answer.empty() && answer != build) out = db_->moment_times(asset, answer);
+  return out;
+}
+
+bool engine::faces_on_moments(std::int64_t asset, const std::string& media, const std::vector<std::int64_t>& moments,
+                              std::uint32_t edge) {
+  for (std::int64_t ms : moments) {
+    if (!wait_turn()) return false;
+    // The host's frame fetch at that moment: decoded again, never stored.
+    auto img = frame_of(media, ms, edge);
+    if (img) faces_of(asset, media, ms, *img);
+  }
+  return true;
+}
+
+bool engine::index_motion(const work_item& item, const std::string& motion, bool motion_cloud, const loaded_clip& clip,
+                          bool faces_on, std::vector<float> seed) {
+  const auto done = [&] {
+    (void)db_->commit_frames(item.asset.id, clip.meta.spec_key, {}, work_state::done, 0, clip.meta.dim);
+  };
+  // An online-only movie follows the cloud-file rule: read only with "Index
+  // online-only files" on and the fetch's gate open; the still stands alone
+  // otherwise (a later walk that finds it local re-queues the motion).
+  bool hydrated = false;
+  if (motion_cloud) {
+    if (!cloud_ || cloud_gate() != MV_AI_ICLOUD_DOWNLOADING || !cloud_->hydrate(motion, nullptr)) {
+      done();
+      return true;
+    }
+    hydrated = true;
+  }
+  struct give_back {
+    engine* e;
+    const std::string& path;
+    bool on;
+    ~give_back() {
+      if (on && e->cloud_) (void)e->cloud_->dehydrate(path);
+    }
+  } const back{this, motion, hydrated};
+  mv_addon_sampler_options o{};
+  o.struct_size = sizeof(o);
+  o.min_gap_ms = 500;
+  o.max_gap_ms = 2000;
+  o.max_long_edge = faces_on ? 768u : std::max<std::uint32_t>(448u, clip.meta.input_edge * 2);
+  auto sampler = host_.open_sampler(motion, o);
+  if (!sampler) {
+    done();  // the movie will not open: the still answers alone
+    return true;
+  }
+  const mv_addon_video_info info = (*sampler)->info();
+  if (info.duration_ms > 0) (void)db_->set_duration(item.asset.id, info.duration_ms);
+  // A Live Photo is a few seconds: a handful of frames. A long "movie" beside
+  // a still is capped rather than indexed as a clip under the photo.
+  constexpr std::size_t kMaxMotionFrames = 32;
+  std::vector<rgb_frame> frames;
+  while (frames.size() < kMaxMotionFrames) {
+    if (!wait_turn()) return false;
+    auto f = (*sampler)->next();
+    if (!f || (f->flags & MV_ADDON_FRAME_END)) break;
+    frames.push_back(std::move(*f));
+  }
+  std::vector<float> embs;
+  if (!frames.empty()) {
+    std::vector<infer::rgb_view> views;
+    for (const rgb_frame& f : frames) views.push_back(infer::rgb_view{f.rgb.data(), f.width, f.height});
+    if (!clip.model->embed_images(views, embs)) {
+      done();
+      return true;
+    }
+  }
+  std::vector<float> last_kept = std::move(seed);
+  std::vector<frame_in> keep;
+  std::vector<std::size_t> kept_idx;
+  for (std::size_t i = 0; i < frames.size(); ++i) {
+    const std::span<const float> e(embs.data() + i * clip.meta.dim, clip.meta.dim);
+    // The same 0.97 dedupe, seeded with the still: a movie frame that looks
+    // like it adds nothing the still does not answer.
+    if (last_kept.size() == clip.meta.dim && infer::dot(e, last_kept) >= clip.meta.dedupe) continue;
+    last_kept.assign(e.begin(), e.end());
+    frame_in f;
+    f.pts_ms = frames[i].pts_ms;
+    f.pts_tb = frames[i].pts_tb;
+    f.tb_num = frames[i].tb_num;
+    f.tb_den = frames[i].tb_den;
+    f.flags = frames[i].flags;
+    f.emb = e;
+    f.generic = max_dot(e, clip.generic);
+    keep.push_back(f);
+    kept_idx.push_back(i);
+  }
+  for (std::size_t i : kept_idx) (void)host_.moment_thumbnail(motion, frames[i].pts_ms, &frames[i]);
+  if (faces_on) {
+    for (std::size_t i : kept_idx) faces_of(item.asset.id, motion, frames[i].pts_ms, frames[i]);
+  }
+  if (!db_->commit_frames(item.asset.id, clip.meta.spec_key, keep, work_state::done, 0, clip.meta.dim)) return true;
+  std::string active;
+  {
+    std::lock_guard lock(models_m_);
+    active = answer_.meta.spec_key;
+  }
+  if (clip.meta.spec_key == active) {
+    for (const frame_in& f : keep) {
+      std::vector<std::int8_t> q;
+      float scale = 1;
+      quantise(f.emb, q, scale);
+      store_.add(item.asset.id, f.pts_ms, f.generic, scale, q);
+    }
+  }
+  std::lock_guard lock(status_m_);
+  frames_done_ += keep.size();
+  return true;
 }
 
 void engine::index_poster(const work_item& item, const loaded_clip& clip, std::uint32_t edge) {
@@ -3083,6 +3760,17 @@ void engine::process_video(const work_item& item, const loaded_clip& clip, bool 
     if (!faces_only) (void)db_->fail(item.asset.id, clip.meta.spec_key);
     no_faces();
     return;
+  }
+  // #407: the People pass on its own decodes the moments the picture pass
+  // kept (a face sharp on one indexed frame is seen), not a coarser grid of
+  // its own. Only a clip with no picture rows falls back to the 2 s / 10 s grid.
+  if (faces_only) {
+    const std::vector<std::int64_t> moments = stored_moments(item.asset.id);
+    if (!moments.empty()) {
+      if (!faces_on_moments(item.asset.id, item.asset.path, moments, o.max_long_edge)) return;  // stopping: resumes
+      no_faces();  // scanned: every stored moment was looked at
+      return;
+    }
   }
   auto sampler = host_.open_sampler(*file, o);
   if (!sampler) {
@@ -3212,7 +3900,8 @@ bool engine::wait_idle(int ms) {
       const bool reloading = reload_models_.load() || loading_.load();
       if (models_ready_ && !reloading && queue_exhausted_ && busy_workers_ == 0 && in_flight_.empty()) {
         std::lock_guard cl(control_m_);
-        idle = !rescan_all_ && rescan_roots_.empty() && !scanning_;
+        idle = !rescan_all_ && rescan_roots_.empty() && !scanning_ &&
+               (options_.read_only || !tags_pending_.load());  // #291: the tag backfill too
       }
     }
     if (idle) {
@@ -3270,6 +3959,8 @@ std::string engine::roots_json() {
     w.key("enabled").boolean(r.enabled);
     w.key("media").integer(r.media);
     w.key("assets").integer(static_cast<std::int64_t>(db_->assets_in_root(r.id)));
+    // #355: the audio files among them (0 while "audio_files" is off).
+    if (!photos) w.key("audio").integer(static_cast<std::int64_t>(db_->kind_in_root(r.id, asset_kind::audio)));
     w.key("done").integer(static_cast<std::int64_t>(spec.empty() ? 0 : db_->done_in_root(r.id, spec)));
     const std::uint64_t frames = spec.empty() ? 0 : db_->frames_in_root(r.id, spec);
     w.key("frames").integer(static_cast<std::int64_t>(frames));
@@ -3437,6 +4128,9 @@ expected engine::root_remove(std::int64_t id) {
     speech_rows_.erase(std::remove_if(speech_rows_.begin(), speech_rows_.end(),
                                       [&](const speech_row& r) { return drop.count(r.asset) != 0; }),
                        speech_rows_.end());
+    cue_rows_.erase(std::remove_if(cue_rows_.begin(), cue_rows_.end(),
+                                   [&](const cue_row& r) { return drop.count(r.asset) != 0; }),
+                    cue_rows_.end());
   }
   {
     std::lock_guard lock(models_m_);
@@ -3521,6 +4215,7 @@ expected engine::clear_index() {
   {
     std::lock_guard lock(speech_m_);
     speech_rows_.clear();
+    cue_rows_.clear();
   }
   {
     std::lock_guard lock(work_m_);
@@ -4009,6 +4704,7 @@ void engine::reload_from_db() {
     std::lock_guard lock(assets_m_);
     assets_.clear();
     asset_by_key_.clear();
+    motion_by_key_.clear();
     for (asset_row& a : db_->all_assets()) {
       asset_meta m;
       m.key = path_key(a.path);
@@ -4017,10 +4713,15 @@ void engine::reload_from_db() {
       m.kind = a.kind;
       m.root = a.root_id;
       m.mtime = a.mtime;
+      m.cloud = a.cloud;
       asset_by_key_[m.key] = a.id;
-      assets_.emplace(a.id, std::move(m));
+      const std::int64_t id = a.id;
+      auto& placed = assets_.emplace(id, std::move(m)).first->second;
+      set_motion_locked(id, placed, a.motion, a.motion_cloud);
     }
   }
+  // Their tags (and so their date taken) as the index holds them.
+  (void)db_->each_tags([this](const asset_tags& t) { adopt_tags(t); });
   std::string active, sound_spec, speech_spec;
   std::uint32_t dim = 0, sound_dim = 0;
   {
@@ -4046,6 +4747,7 @@ void engine::reload_from_db() {
     });
   }
   if (!speech_spec.empty()) load_speech(speech_spec);
+  load_cues();
   {
     std::lock_guard lock(work_m_);
     queue_.clear();
@@ -4103,14 +4805,18 @@ std::shared_ptr<std::set<std::int64_t>> engine::scope_assets(const std::string& 
                                                              std::int64_t to_unix) const {
   const std::string key = scope_dir.empty() ? std::string() : path_key(scope_dir);
   if ((kinds & MV_AI_KIND_ALL) == 0) kinds |= MV_AI_KIND_ALL;
+  // #355: no audio result while "audio_files" is off, from the moment it is
+  // turned off (its rows go on the control thread after).
+  if (!audio_files_.load()) kinds &= ~MV_AI_KIND_AUDIO;
   // A snapshot of the qualifying assets, so the scan never takes assets_m_.
   auto allowed = std::make_shared<std::set<std::int64_t>>();
   {
     std::lock_guard lock(assets_m_);
     for (const auto& [id, m] : assets_) {
-      const std::uint32_t k = m.kind == asset_kind::video ? MV_AI_KIND_VIDEOS : MV_AI_KIND_PHOTOS;
-      if (!(k & kinds)) continue;
-      if (m.mtime < from_unix || m.mtime >= to_unix) continue;
+      if (!(kind_bit(m.kind) & kinds)) continue;
+      // #404: the date taken when the tags gave one, else the file's time.
+      const std::int64_t when = m.when();
+      if (when < from_unix || when >= to_unix) continue;
       if (scope != MV_AI_SCOPE_ALL && !key.empty()) {
         if (scope == MV_AI_SCOPE_FOLDER && m.dir_key != key) continue;
         if (scope == MV_AI_SCOPE_TREE && m.dir_key != key && !under(m.dir_key, key)) continue;
@@ -4135,6 +4841,11 @@ void engine::add_row(search_state& st, std::int64_t asset, std::int64_t pts_ms, 
     ++r.more;
     r.match |= match;
     if (rank > r.rank) {  // a better moment of the same clip leads
+      if ((r.pts_ms < 0) != (pts_ms < 0)) {
+        // #407: a Live Photo's still and its movie's moment open different files.
+        std::lock_guard lock(assets_m_);
+        row_target_locked(asset, pts_ms, r.path, r.kind);
+      }
       r.pts_ms = pts_ms;
       r.score = score;
       r.rank = rank;
@@ -4154,10 +4865,8 @@ void engine::add_row(search_state& st, std::int64_t asset, std::int64_t pts_ms, 
   r.snippet = std::move(snippet);
   {
     std::lock_guard lock(assets_m_);
-    auto found = assets_.find(asset);
-    if (found == assets_.end()) return;
-    r.path = found->second.path;
-    r.kind = found->second.kind == asset_kind::video ? MV_AI_KIND_VIDEOS : MV_AI_KIND_PHOTOS;
+    if (assets_.find(asset) == assets_.end()) return;
+    row_target_locked(asset, pts_ms, r.path, r.kind);
   }
   st.row_of[asset] = st.rows.size();
   st.rows.push_back(std::move(r));
@@ -4196,6 +4905,180 @@ void engine::finish(search_state& st) {
   });
   st.row_of.clear();
   for (auto& [asset, list] : st.moments) std::sort(list.begin(), list.end());
+}
+
+void engine::load_cues() {
+  std::vector<cue_row> rows;
+  (void)db_->each_cue([&](std::int64_t asset, const cue_in& c) {
+    rows.push_back(cue_row{asset, c.start_ms, c.kind, c.text, cue_words(c.text)});
+  });
+  std::lock_guard lock(speech_m_);
+  cue_rows_ = std::move(rows);
+}
+
+std::string engine::cue_snippet(const cue_row& r) {
+  std::string text = r.text.size() > 150 ? r.text.substr(0, 147) + "..." : r.text;
+  const char* source = r.kind == cue_kind::chapter ? "Chapter: " : r.kind == cue_kind::picture ? "In the picture: "
+                                                                                                : "Subtitle: ";
+  return source + text;
+}
+
+std::vector<std::string> engine::cue_words(std::string_view utf8) { return infer::speech_words(text::fold(utf8)); }
+
+std::string engine::text_spec() const {
+  {
+    std::lock_guard lock(settings_m_);
+    if (!settings_.read_text) return {};
+  }
+  std::lock_guard lock(models_m_);
+  return text_ ? text_->spec_key() : std::string();
+}
+
+// Small text on a sign or a shirt needs pixels: a 2,048 px decode, not the
+// picture pass's 448. A clip's moment is decoded at the same edge (capped at
+// the clip's own size by the host).
+constexpr std::uint32_t kTextEdge = 2048;
+
+std::string engine::joined_text(const std::vector<std::string>& lines) {
+  // A wall of text (a screenshot, a page) keeps its first 4,000 bytes.
+  constexpr std::size_t kMaxBytes = 4000;
+  // One row for the picture, its lines joined, so a phrase split over two
+  // lines of a sign ("SUITED AND" / "BOOTED") is still one phrase.
+  std::string joined;
+  for (const std::string& l : lines) {
+    if (l.empty()) continue;
+    if (joined.size() + l.size() + 1 > kMaxBytes) break;
+    if (!joined.empty()) joined.push_back(' ');
+    joined += l;
+  }
+  return joined;
+}
+
+std::string engine::text_moments_spec() const {
+  const std::string spec = text_spec();
+  return spec.empty() ? spec : spec + kMomentsSuffix;
+}
+
+void engine::store_text(std::int64_t asset, std::int64_t replace_from, std::vector<cue_in>& rows) {
+  text_counts_due_ = true;  // a commit just moved the text counts
+  std::lock_guard lock(speech_m_);
+  if (replace_from != -1) {
+    cue_rows_.erase(std::remove_if(cue_rows_.begin(), cue_rows_.end(),
+                                   [&](const cue_row& r) {
+                                     return r.asset == asset && r.kind == cue_kind::picture &&
+                                            r.start_ms >= replace_from;
+                                   }),
+                    cue_rows_.end());
+  }
+  for (cue_in& c : rows) {
+    std::vector<std::string> words = cue_words(c.text);
+    cue_rows_.push_back(cue_row{asset, c.start_ms, cue_kind::picture, std::move(c.text), std::move(words)});
+  }
+  rows.clear();
+}
+
+void engine::process_text(std::vector<work_item>& items) {
+  text_reader* reader = nullptr;
+  {
+    std::lock_guard lock(models_m_);
+    reader = text_.get();  // set once, never replaced (engine.h)
+  }
+  if (!reader) return;
+  const std::string spec = reader->spec_key();
+  for (const work_item& w : items) {
+    if (!wait_turn()) return;  // stopping: the rest stay pending
+    if (w.asset.kind == asset_kind::video) {
+      process_text_moments(w, *reader, spec + kMomentsSuffix);
+      continue;
+    }
+    auto img = still_of(w.asset.path, kTextEdge);
+    if (!img) {
+      if (img.error() == status::permission_denied) {
+        photos_readable_ = false;
+        continue;
+      }
+      if (img.error() == status::io && is_photos_key(w.asset.path)) {
+        (void)db_->mark_unavailable(w.asset.id, spec);
+      } else {
+        (void)db_->fail(w.asset.id, spec);
+      }
+      continue;
+    }
+    auto lines = reader->read(*img);
+    if (!lines) {
+      (void)db_->fail(w.asset.id, spec);
+      continue;
+    }
+    const std::string joined = joined_text(*lines);
+    std::vector<cue_in> rows;
+    if (!joined.empty()) rows.push_back(cue_in{-1, -1, cue_kind::picture, joined});
+    // Read again (a new reader, a Live Photo's movie changed): the old row goes.
+    if (!db_->commit_cues(w.asset.id, rows, work_state::done, 0, kAllCues, spec)) continue;
+    store_text(w.asset.id, kAllCues, rows);
+  }
+}
+
+void engine::process_text_moments(const work_item& item, text_reader& reader, const std::string& spec) {
+  // The moments the picture pass kept (claim takes a clip only once it is
+  // done): each decoded again at the text edge, read, and dropped.
+  const std::vector<std::int64_t> moments = stored_moments(item.asset.id);
+  auto file = file_of(item.asset.path);
+  if (!file) {
+    if (file.error() == status::permission_denied) {
+      photos_readable_ = false;
+      return;
+    }
+    if (file.error() == status::io && is_photos_key(item.asset.path)) {
+      (void)db_->mark_unavailable(item.asset.id, spec);
+    } else {
+      (void)db_->fail(item.asset.id, spec);
+    }
+    return;
+  }
+  // A resumed clip goes on after the last moment it committed; a fresh one
+  // first drops what an earlier read of it stored.
+  const bool resumed = item.state == work_state::partial;
+  std::int64_t replace_from = resumed ? -1 : 0;
+  constexpr std::size_t kFlushEvery = 8;  // moments read between commits
+  std::vector<cue_in> rows;
+  std::string last;  // the previous moment's text: a sign held in shot is one row
+  std::size_t read_since = 0, tried = 0, failed = 0;
+  std::int64_t at = resumed ? item.resume_ms : -1;
+  const auto flush = [&](work_state state) -> bool {
+    if (!db_->commit_cues(item.asset.id, rows, state, std::max<std::int64_t>(at, 0), replace_from, spec)) return false;
+    store_text(item.asset.id, replace_from, rows);
+    replace_from = -1;
+    read_since = 0;
+    return true;
+  };
+  for (std::int64_t ms : moments) {
+    if (resumed && ms <= item.resume_ms) continue;
+    if (!wait_turn()) {
+      if (read_since > 0) (void)flush(work_state::partial);  // the rest resumes
+      return;
+    }
+    ++tried;
+    auto img = host_.video_frame(*file, ms, kTextEdge);
+    if (img) {
+      if (auto lines = reader.read(*img)) {
+        std::string joined = joined_text(*lines);
+        if (!joined.empty() && joined != last) rows.push_back(cue_in{ms, ms, cue_kind::picture, joined});
+        last = std::move(joined);
+      } else {
+        ++failed;
+      }
+    } else {
+      ++failed;
+    }
+    at = ms;
+    if (++read_since >= kFlushEvery && !flush(work_state::partial)) return;  // left partial: tried again
+  }
+  if (tried > 0 && failed == tried) {
+    // Not one moment decoded or read: the clip, not a frame, is the problem.
+    (void)db_->fail(item.asset.id, spec);
+    return;
+  }
+  (void)flush(work_state::done);
 }
 
 void engine::load_speech(const std::string& spec) {
@@ -4257,34 +5140,55 @@ void engine::merge_audio(search_state& st, const std::string& query, const std::
   std::string phrase;
   for (const std::string& w : infer::speech_words(query)) phrase += (phrase.empty() ? "" : " ") + w;
   const double need = speech_coverage_needed(want.size(), precision);
-  std::vector<std::tuple<float, std::int64_t, std::int64_t, std::string>> found;
+  std::vector<std::tuple<float, std::int64_t, std::int64_t, std::string, std::uint32_t>> found;
+  // A file's own text is matched folded (core/fold.h), the query too.
+  std::vector<std::string> want_f;
+  for (std::string& w : cue_words(query)) {
+    if (!stop_word(w) && std::find(want_f.begin(), want_f.end(), w) == want_f.end()) want_f.push_back(std::move(w));
+  }
+  std::string phrase_f;
+  for (const std::string& w : cue_words(query)) phrase_f += (phrase_f.empty() ? "" : " ") + w;
+  // How much of the query a line's words hold (-1: not enough).
+  const auto rank_by = [](const std::vector<std::string>& want, const std::string& phrase, double need,
+                          const std::vector<std::string>& words) -> float {
+    std::size_t hit = 0;
+    for (const std::string& q : want) {
+      for (const std::string& w : words) {
+        if (w == q || (q.size() >= 4 && w.size() > q.size() && w.compare(0, q.size(), q) == 0)) {
+          ++hit;
+          break;
+        }
+      }
+    }
+    if (want.empty()) return -1.0f;
+    const double coverage = static_cast<double>(hit) / static_cast<double>(want.size());
+    if (coverage < need) return -1.0f;
+    std::string joined;
+    for (const std::string& w : words) joined += (joined.empty() ? "" : " ") + w;
+    const bool exact = joined.find(phrase) != std::string::npos;
+    return static_cast<float>(0.6 + 0.8 * coverage + (exact ? 0.2 : 0.0));
+  };
+  const double need_f = speech_coverage_needed(want_f.size(), precision);
   {
     std::lock_guard lock(speech_m_);
     for (const speech_row& r : speech_rows_) {
       if (!allow(r.asset)) continue;
-      std::size_t hit = 0;
-      for (const std::string& q : want) {
-        for (const std::string& w : r.words) {
-          if (w == q || (q.size() >= 4 && w.size() > q.size() && w.compare(0, q.size(), q) == 0)) {
-            ++hit;
-            break;
-          }
-        }
-      }
-      const double coverage = static_cast<double>(hit) / static_cast<double>(want.size());
-      if (coverage < need) continue;
-      std::string joined;
-      for (const std::string& w : r.words) joined += (joined.empty() ? "" : " ") + w;
-      const bool exact = joined.find(phrase) != std::string::npos;
-      const float rank = static_cast<float>(0.6 + 0.8 * coverage + (exact ? 0.2 : 0.0));
-      found.emplace_back(rank, r.asset, r.start_ms, r.text);
+      const float rank = rank_by(want, phrase, need, r.words);
+      if (rank >= 0) found.emplace_back(rank, r.asset, r.start_ms, r.text, MV_AI_MATCH_SPEECH);
+    }
+    // #406: a chapter title or a subtitle line, said the same way; the
+    // snippet names which.
+    for (const cue_row& r : cue_rows_) {
+      if (!allow(r.asset)) continue;
+      const float rank = rank_by(want_f, phrase_f, need_f, r.words);
+      if (rank >= 0) found.emplace_back(rank, r.asset, r.start_ms, cue_snippet(r), MV_AI_MATCH_TEXT);
     }
   }
   std::sort(found.begin(), found.end(), [](const auto& a, const auto& b) { return std::get<0>(a) > std::get<0>(b); });
   if (found.size() > 2000) found.resize(2000);
-  for (auto& [rank, asset, start, text] : found) {
+  for (auto& [rank, asset, start, text, match] : found) {
     std::string snippet = text.size() > 160 ? text.substr(0, 157) + "..." : text;
-    add_row(st, asset, start, rank / 2.0f, rank, MV_AI_MATCH_SPEECH, std::move(snippet));
+    add_row(st, asset, start, rank / 2.0f, rank, match, std::move(snippet));
   }
 }
 
@@ -4395,6 +5299,43 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
         it = keep ? std::next(it) : allowed->erase(it);
       }
     }
+    // #291: camera: / lens: / made: / ai: against the tags read so far (an
+    // asset whose tags are not read yet does not match a tag term), and
+    // place: / in: (not a date) to the geotagged ones: which place is the
+    // Places add-on's provider's answer, merged by the slot registry.
+    if (plan.has_tags() || !plan.places.empty()) {
+      const auto all_in = [](const std::string& value, const std::vector<std::string>& terms) {
+        for (const std::string& t : terms) {
+          if (value.find(t) == std::string::npos) return false;
+        }
+        return true;
+      };
+      const auto none_in = [](const std::string& value, const std::vector<std::string>& terms) {
+        for (const std::string& t : terms) {
+          if (value.find(t) != std::string::npos) return false;
+        }
+        return true;
+      };
+      std::lock_guard lock(assets_m_);
+      for (auto it = allowed->begin(); it != allowed->end();) {
+        const auto m = assets_.find(*it);
+        bool keep = m != assets_.end();
+        if (keep) {
+          const asset_meta& a = m->second;
+          if (plan.has_tags()) {
+            keep = a.tags && all_in(a.camera, plan.cameras) && none_in(a.camera, plan.not_cameras) &&
+                   all_in(a.lens, plan.lenses) && none_in(a.lens, plan.not_lenses) &&
+                   all_in(a.made_with, plan.made) && none_in(a.made_with, plan.not_made) &&
+                   (plan.ai == 0 || (plan.ai > 0) == a.ai);
+            // #405: rating, label, exposure; an asset not read to level 2
+            // has no value yet, so a kept term does not match it.
+            if (keep && plan.has_exposure()) keep = plan.exposure_matches(a.exposure);
+          }
+          if (keep && !plan.places.empty()) keep = a.has_where;
+        }
+        it = keep ? std::next(it) : allowed->erase(it);
+      }
+    }
     const auto keep_only = [&](const std::set<std::int64_t>& keep) {
       for (auto it = allowed->begin(); it != allowed->end();) {
         it = keep.count(*it) ? std::next(it) : allowed->erase(it);
@@ -4411,17 +5352,22 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
     for (std::int64_t p : plan.not_people) {
       for (const face_row& f : faces_by_person[p]) allowed->erase(f.asset);
     }
-    // Words said: every quoted phrase, in the transcript (as consecutive words).
+    // Words said: every quoted phrase, in the transcript (as consecutive words),
+    // or (#406) in the clip's own text: a chapter title or a subtitle line.
     struct said {
       std::int64_t asset;
       std::int64_t start_ms;
-      std::string text;
+      std::string text;  // the snippet
+      std::uint32_t match = MV_AI_MATCH_SPEECH;
     };
     std::vector<said> said_rows;
     if (!plan.phrases.empty() || !plan.not_phrases.empty()) {
-      std::vector<std::vector<std::string>> want, not_want;
+      std::vector<std::vector<std::string>> want, not_want, want_f, not_want_f;
       for (const std::string& p : plan.phrases) want.push_back(query::words_of(p));
       for (const std::string& p : plan.not_phrases) not_want.push_back(query::words_of(p));
+      // A file's own text is matched folded (core/fold.h): "Köln" finds "KOLN".
+      for (const std::string& p : plan.phrases) want_f.push_back(cue_words(p));
+      for (const std::string& p : plan.not_phrases) not_want_f.push_back(cue_words(p));
       std::vector<std::set<std::int64_t>> have(want.size());
       std::set<std::int64_t> drop;
       {
@@ -4440,6 +5386,21 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
             if (query::contains_phrase(r.words, w, false)) drop.insert(r.asset);
           }
           if (any) said_rows.push_back({r.asset, r.start_ms, r.text});
+        }
+        for (const cue_row& r : cue_rows_) {
+          if (!allowed->count(r.asset)) continue;
+          bool any = false;
+          for (std::size_t i = 0; i < want_f.size(); ++i) {
+            const bool open = plan.last_phrase_open && i + 1 == want_f.size();
+            if (query::contains_phrase(r.words, want_f[i], open)) {
+              have[i].insert(r.asset);
+              any = true;
+            }
+          }
+          for (const auto& w : not_want_f) {
+            if (query::contains_phrase(r.words, w, false)) drop.insert(r.asset);
+          }
+          if (any) said_rows.push_back({r.asset, r.start_ms, cue_snippet(r), MV_AI_MATCH_TEXT});
         }
       }
       for (const auto& h : have) keep_only(h);
@@ -4469,6 +5430,24 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
         add_row(st, h.asset, h.pts_ms, h.score, 100.0f + h.score, MV_AI_MATCH_PICTURE, {});
       }
     }
+    // #291: a plain word that matches a file's tags ("R5", "chatgpt"): those
+    // files first, the tag as the snippet, then what the picture search finds.
+    if (!plan.tag_words.empty() && plan.people.empty()) {
+      std::vector<std::pair<std::int64_t, std::string>> tagged;
+      {
+        std::lock_guard lock(assets_m_);
+        for (std::int64_t a : *allowed) {
+          const auto m = assets_.find(a);
+          if (m == assets_.end() || !m->second.tags) continue;
+          const int f = match_fields(m->second.folded, plan.tag_words);
+          if (f >= 0 && static_cast<std::size_t>(f) < m->second.fields.size()) {
+            tagged.emplace_back(a, m->second.fields[static_cast<std::size_t>(f)]);
+          }
+        }
+      }
+      std::sort(tagged.begin(), tagged.end());
+      for (auto& [a, why] : tagged) add_row(st, a, -1, 1.0f, 200.0f, MV_AI_MATCH_TAGS, std::move(why));
+    }
     std::uint32_t find = k & (MV_AI_FIND_PICTURES | MV_AI_FIND_SOUNDS | MV_AI_FIND_SPEECH);
     if (find == 0) find = MV_AI_FIND_PICTURES | MV_AI_FIND_SOUNDS | MV_AI_FIND_SPEECH;
     if (!plan.text.empty()) {
@@ -4487,19 +5466,20 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
       for (said& r : said_rows) {
         if (!allowed->count(r.asset)) continue;
         std::string snippet = r.text.size() > 160 ? r.text.substr(0, 157) + "..." : std::move(r.text);
-        add_row(st, r.asset, r.start_ms, 0.7f, 1.4f, MV_AI_MATCH_SPEECH, std::move(snippet));
+        add_row(st, r.asset, r.start_ms, 0.7f, 1.4f, r.match, std::move(snippet));
       }
       said_rows.clear();
     } else if (plan.people_first.empty() &&
-               (plan.kinds != 0 || plan.has_dates() || plan.has_files() || !plan.not_people.empty() ||
+               (plan.kinds != 0 || plan.has_dates() || plan.has_files() || plan.has_tags() ||
+                !plan.places.empty() || !plan.not_people.empty() ||
                 !plan.not_text.empty() || !plan.not_phrases.empty())) {
       // Filters alone ("video in:2024", "file:IMG_12"): everything they allow,
       // newest first.
-      std::vector<std::pair<std::int64_t, std::int64_t>> by_date;  // (mtime, asset)
+      std::vector<std::pair<std::int64_t, std::int64_t>> by_date;  // (date taken else mtime, asset)
       {
         std::lock_guard lock(assets_m_);
         for (std::int64_t a : *allowed) {
-          if (auto it = assets_.find(a); it != assets_.end()) by_date.push_back({it->second.mtime, a});
+          if (auto it = assets_.find(a); it != assets_.end()) by_date.push_back({it->second.when(), a});
         }
       }
       std::sort(by_date.begin(), by_date.end(), std::greater<>());
@@ -4512,7 +5492,7 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
     for (said& r : said_rows) {
       if (!st.row_of.count(r.asset)) continue;
       std::string snippet = r.text.size() > 160 ? r.text.substr(0, 157) + "..." : std::move(r.text);
-      add_row(st, r.asset, r.start_ms, 0.0f, -1.0f, MV_AI_MATCH_SPEECH, std::move(snippet));
+      add_row(st, r.asset, r.start_ms, 0.0f, -1.0f, r.match, std::move(snippet));
     }
     finish(st);
   });
@@ -4548,7 +5528,7 @@ std::uint64_t engine::search_similar(const std::string& path, std::int64_t pts_m
     {
       const std::string key = path_key(path);
       std::lock_guard lock(assets_m_);
-      self = asset_of_key_locked(key);
+      self = asset_or_motion_locked(key);
     }
     // An indexed still or sampled moment is its own query; a paused frame
     // that was never sampled is embedded now (docs/design/17 "Find similar"). The
@@ -4733,7 +5713,7 @@ result<std::vector<std::pair<std::int64_t, float>>> engine::clip_matches(std::ui
   {
     const std::string key = path_key(path);
     std::lock_guard lock(assets_m_);
-    asset = asset_of_key_locked(key);
+    asset = asset_or_motion_locked(key);  // #407: a Live Photo's movie walks its still's moments
   }
   std::lock_guard lock(search_m_);
   auto it = searches_.find(id);

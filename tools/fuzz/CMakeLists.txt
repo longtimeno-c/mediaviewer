@@ -118,7 +118,7 @@ if(NOT MV_FUZZ_MODE MATCHES "^static")
 endif()
 
 # Instrument everything that links mv_project_options.
-set(MV_FUZZ_INSTRUMENTED mv_core mv_codec mv_image mv_gfx mv_io)
+set(MV_FUZZ_INSTRUMENTED mv_core mv_codec mv_image mv_gfx mv_io mv_meta_parse mv_geo mv_places_engine)
 set_target_properties(${MV_FUZZ_INSTRUMENTED} PROPERTIES
   MSVC_RUNTIME_LIBRARY "${MV_FUZZ_CRT}")
 target_compile_options(mv_project_options INTERFACE
@@ -134,7 +134,27 @@ target_compile_definitions(mv_project_options INTERFACE
   _DISABLE_OPTIONAL_ANNOTATION)
 
 set(MV_FUZZ_HARNESSES
-  jpeg png bmp gif webp tiff ico heic avif raw raw_preview decode animation thumbnail pdf docx)
+  jpeg png bmp gif webp tiff ico heic avif raw raw_preview decode animation thumbnail pdf docx
+  # #290: the metadata readers beyond Exiv2 (meta/parse.h), linked alone.
+  meta_c2pa meta_jpeg meta_png meta_webp meta_bmff meta_xmp meta_icc
+  # #352: the Location editor's parser (pure; built from its one source file).
+  meta_location
+  # #345: the AI badge's provenance probe, every container it seeks through.
+  meta_probe
+  # #344: the place database loader, and the Places add-on's map.
+  geo places_map
+  # docs/design/25 PR 56: settings pages, keymap packs and themes.
+  addon_contributions
+  # docs/design/25 PR 57: the script sandbox.
+  script
+  # #291: the Local search query language (pure; compiled from its source).
+  ai_query)
+
+# docs/design/25 PR 57: the script sandbox. Lua is not linked to
+# mv_project_options (it is not our code, and builds without our warnings), so
+# it gets the instrumentation here, and the add-on libraries the same CRT.
+set_target_properties(mv_lua mv_script mv_addon PROPERTIES MSVC_RUNTIME_LIBRARY "${MV_FUZZ_CRT}")
+target_compile_options(mv_lua PRIVATE -fsanitize=fuzzer-no-link /fsanitize=address)
 
 add_custom_target(mv_fuzzers)
 
@@ -142,9 +162,40 @@ foreach(name IN LISTS MV_FUZZ_HARNESSES)
   set(target fuzz_${name})
   add_executable(${target} fuzz_${name}.cpp fuzz_common.h)
   target_include_directories(${target} PRIVATE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}")
-  target_link_libraries(${target} PRIVATE mv_codec)
+  if(name STREQUAL "geo")
+    # docs/design/06 "Place": the place database loader, not a decoder.
+    target_link_libraries(${target} PRIVATE mv_geo)
+  elseif(name STREQUAL "script")
+    target_link_libraries(${target} PRIVATE mv_script)
+  elseif(name STREQUAL "places_map")
+    # docs/design/27 "The map": the Places add-on's rasteriser and view maths,
+    # driven by numbers over the committed test blob.
+    target_link_libraries(${target} PRIVATE mv_places_engine)
+    target_compile_definitions(${target} PRIVATE
+      MV_FUZZ_GEO_BLOB="${CMAKE_SOURCE_DIR}/tests/data/geo/places-test.mvgeo")
+  else()
+    target_link_libraries(${target} PRIVATE mv_codec)
+  endif()
   if(name STREQUAL "decode")
     target_link_libraries(${target} PRIVATE mv_image)
+  endif()
+  if(name MATCHES "^meta_")
+    target_sources(${target} PRIVATE fuzz_meta.h)
+    target_link_libraries(${target} PRIVATE mv_meta_parse)
+  endif()
+  if(name STREQUAL "meta_location")
+    target_sources(${target} PRIVATE "${CMAKE_SOURCE_DIR}/src/meta/location_edit.cpp")
+  endif()
+  # docs/design/25 PR 56: an open add-on's settings page, keymap packs and theme,
+  # from their sources (not mv_addon, which would pull libsodium in).
+  if(name STREQUAL "addon_contributions")
+    target_sources(${target} PRIVATE
+      "${CMAKE_SOURCE_DIR}/src/addon/settings_schema.cpp"
+      "${CMAKE_SOURCE_DIR}/src/addon/keymap.cpp"
+      "${CMAKE_SOURCE_DIR}/src/addon/theme.cpp")
+  endif()
+  if(name STREQUAL "ai_query")
+    target_sources(${target} PRIVATE "${CMAKE_SOURCE_DIR}/src/addons/ai/query.cpp")
   endif()
   # fuzz_docx links codec without image, so it reads font files itself.
   if(name STREQUAL "docx")
@@ -179,9 +230,13 @@ foreach(name IN LISTS MV_FUZZ_HARNESSES)
   # libFuzzer runs a unit, which is the shape of a dependency the loader could
   # not bring up. This is CMake's own answer to that question and it no-ops
   # for anything already deployed.
-  add_custom_command(TARGET ${target} POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_RUNTIME_DLLS:${target}>" "$<TARGET_FILE_DIR:${target}>"
-    COMMAND_EXPAND_LISTS)
+  # fuzz_geo and fuzz_places_map import no DLL of ours, and copy_if_different
+  # with an empty list is a usage error that fails the build.
+  if(NOT name MATCHES "^(geo|places_map)$")
+    add_custom_command(TARGET ${target} POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "$<TARGET_RUNTIME_DLLS:${target}>" "$<TARGET_FILE_DIR:${target}>"
+      COMMAND_EXPAND_LISTS)
+  endif()
   add_dependencies(mv_fuzzers ${target})
 endforeach()

@@ -121,4 +121,10 @@ class audio_reader {
                                               std::uint32_t max_long_edge,
                                               const std::atomic<bool>* cancel = nullptr);
 
+// An audio file's cover art (its attached picture), fitted to `max_long_edge`:
+// the picture Local search embeds for it (#355, docs/plans/audio-search.md).
+// Read with the header alone; no audio is decoded. status::not_found when the
+// file has none.
+[[nodiscard]] result<sample_rgb> cover_art_rgb(std::string_view utf8_path, std::uint32_t max_long_edge);
+
 }  // namespace mv::edit::clip

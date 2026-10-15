@@ -278,7 +278,7 @@ public static partial class IslandHost
         foreach (string key in new[] { "ButtonForegroundPointerOver", "ButtonForegroundPressed" })
             b.Resources[key] = Brush(Title);
         b.Resources["ButtonForegroundDisabled"] = Brush(ChromeColour.Disabled);
-        b.CornerRadius = new CornerRadius(RadiusButton);
+        b.CornerRadius = Corner(RadiusButton);
         b.BorderThickness = new Thickness(0);
         // IsEnabledChanged is not raised for a button set disabled before it
         // is in the live tree, so Loaded applies the dim as well.
@@ -301,7 +301,7 @@ public static partial class IslandHost
             },
             Background = Brush(Colors.Transparent),
             BorderThickness = new Thickness(0),
-            Padding = compact ? new Thickness(8, 5, 8, 5) : new Thickness(14, 7, 14, 7),
+            Padding = compact ? Pad(8, 5, 8, 5) : Pad(14, 7, 14, 7),
             FontFamily = UiFont,
             FontSize = size,
             HorizontalAlignment = stretch ? HorizontalAlignment.Stretch : HorizontalAlignment.Left,
@@ -347,7 +347,7 @@ public static partial class IslandHost
 
     private static StackPanel Row(params UIElement[] children)
     {
-        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(4) };
         foreach (UIElement c in children) row.Children.Add(c);
         return row;
     }
@@ -374,7 +374,7 @@ public static partial class IslandHost
         root.Children.Add(rule);
         if (_editTab == TabCrop || _editTab == TabTrim)
         {
-            var pane = new StackPanel { Spacing = 14, Padding = new Thickness(14, 12, 14, 14) };
+            var pane = new StackPanel { Spacing = Space(14), Padding = Pad(14, 12, 14, 14) };
             if (_editTab == TabTrim) BuildTrimPane(pane);
             else BuildCropPane(pane);
             var scroll = new ScrollViewer { Content = pane, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
@@ -385,6 +385,7 @@ public static partial class IslandHost
         // Issue #224: the island covers the canvas's WM_DROPFILES.
         WireFileDrop(root);
         RenderEditInPlace();
+        ThemeField.Lay(root);
         return root;
     }
 
@@ -408,7 +409,7 @@ public static partial class IslandHost
 
     private static UIElement BuildEditStrip()
     {
-        var col = new StackPanel { Spacing = 6, Padding = new Thickness(12, 10, 8, 8) };
+        var col = new StackPanel { Spacing = Space(6), Padding = Pad(12, 10, 8, 8) };
 
         var head = new Grid();
         head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -420,7 +421,7 @@ public static partial class IslandHost
         _editNameText = Text("", Body, UiFontSize - 2, maxLines: 1);
         _editNameText.TextTrimming = TextTrimming.CharacterEllipsis;
         _editNameText.VerticalAlignment = VerticalAlignment.Center;
-        _editNameText.Margin = new Thickness(8, 0, 4, 0);
+        _editNameText.Margin = Pad(8, 0, 4, 0);
         Grid.SetColumn(_editNameText, 1);
         head.Children.Add(_editNameText);
         string? enter = KeyOf(Command.EditWorkspace);
@@ -431,7 +432,7 @@ public static partial class IslandHost
         col.Children.Add(head);
 
         // Tabs: a row of plain buttons so each can carry its key.
-        var tabs = new Grid { ColumnSpacing = 4 };
+        var tabs = new Grid { ColumnSpacing = Space(4) };
         (int Tab, string Label, int KeyedBy)[] list = EditIsClip
             ? new[] { (TabTrim, "Trim", Command.TrimMode), (TabJobs, "Jobs", Command.JobsPane) }
             : new[] { (TabCrop, "Crop", Command.CropMode), (TabColour, "Colour", Command.AdjustPane),
@@ -484,7 +485,7 @@ public static partial class IslandHost
     private static void BuildCropPane(StackPanel pane)
     {
         // Start / apply / cancel.
-        var crop = new StackPanel { Spacing = 6 };
+        var crop = new StackPanel { Spacing = Space(6) };
         crop.Children.Add(SectionTitle("Crop"));
         if (_editCropActive)
         {
@@ -503,9 +504,9 @@ public static partial class IslandHost
         pane.Children.Add(crop);
 
         // Aspect presets: two rows of plain buttons, the chosen one washed.
-        var aspect = new StackPanel { Spacing = 6 };
+        var aspect = new StackPanel { Spacing = Space(6) };
         aspect.Children.Add(SectionTitle("Aspect ratio"));
-        var grid = new Grid { ColumnSpacing = 4, RowSpacing = 4 };
+        var grid = new Grid { ColumnSpacing = Space(4), RowSpacing = Space(4) };
         for (int c = 0; c < 4; c++)
         {
             grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -536,7 +537,7 @@ public static partial class IslandHost
         pane.Children.Add(aspect);
 
         // Straighten: ±45°, half-degree steps; the value is native's.
-        var straighten = new StackPanel { Spacing = 6 };
+        var straighten = new StackPanel { Spacing = Space(6) };
         var head = new Grid();
         head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -549,7 +550,7 @@ public static partial class IslandHost
         Grid.SetColumn(_editStraightenText, 1);
         head.Children.Add(_editStraightenText);
         Button level = EditButton("Level", () => Send(Command.CropStraightenSet, 0f), tip: "Back to 0°");
-        level.Margin = new Thickness(6, 0, 0, 0);
+        level.Margin = Pad(6, 0, 0, 0);
         AutomationProperties_SetName(level, "Straighten to zero");
         Grid.SetColumn(level, 2);
         head.Children.Add(level);
@@ -576,7 +577,7 @@ public static partial class IslandHost
         pane.Children.Add(straighten);
 
         // Rotate and flip: the PR 10 keys.
-        var turn = new StackPanel { Spacing = 6 };
+        var turn = new StackPanel { Spacing = Space(6) };
         turn.Children.Add(SectionTitle("Rotate and flip"));
         // Icons with their keys in the tooltip, as on the Mac (issue #198):
         // "⟲" and "⟳" are not in CozetteVector.
@@ -599,7 +600,7 @@ public static partial class IslandHost
         bool armed = (_editTrimFlags & TrimArmedFlag) != 0;
         bool previewing = (_editTrimFlags & TrimPreviewingFlag) != 0;
         bool marked = (_editTrimFlags & TrimHasMarkerFlag) != 0;
-        var trim = new StackPanel { Spacing = 6 };
+        var trim = new StackPanel { Spacing = Space(6) };
         trim.Children.Add(SectionTitle("Trim"));
         if (armed)
         {
@@ -633,7 +634,7 @@ public static partial class IslandHost
         }
         pane.Children.Add(trim);
 
-        var tools = new StackPanel { Spacing = 6 };
+        var tools = new StackPanel { Spacing = Space(6) };
         tools.Children.Add(SectionTitle("Tools"));
         tools.Children.Add(Row(EditButton("Split at playhead", () => Send(Command.ClipSplit),
                                           tip: KeyOf(Command.ClipSplit))));

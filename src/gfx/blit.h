@@ -31,10 +31,10 @@ struct blit_params {
   // is above this; fit/pan are in this rect, not the full client.
   float origin_x = 0.0f;
   float origin_y = 0.0f;
-  // docs/design/16 view overlays, all in the same draw (no extra pass):
-  // 0 system, 1 grey, 2 white, 3 checkerboard, 4 dark (the alpha case).
-  int background = 0;
-  // Linear RGB for mode 0, resolved by the native host's UI thread.
+  // What shows around the picture and through its alpha: the theme's canvas
+  // token, linear RGB, resolved by the host's UI thread (issue #408: there is
+  // no canvas background of its own). Then the docs/design/16 view overlays,
+  // all in the same draw (no extra pass).
   float theme_background[3] = {0.016f, 0.018f, 0.024f};
   // Display-referred clipping blinkies; they animate on `time_seconds`.
   bool clipping = false;
@@ -71,16 +71,6 @@ struct tile_quad {
   float content_w = 256.0f;  // level pixels of real content (edge tiles are smaller)
   float content_h = 256.0f;
 };
-
-// Linear clear colour for fixed backgrounds; mode 0 is supplied by the host.
-[[nodiscard]] constexpr float background_clear(int background) noexcept {
-  switch (background) {
-    case 1: return 0.214f;  // sRGB 128
-    case 2: return 1.0f;
-    case 3: return 0.527f;  // checkerboard mid tone
-    default: return 0.018f;
-  }
-}
 
 class blitter {
  public:

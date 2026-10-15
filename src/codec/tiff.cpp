@@ -33,6 +33,7 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <new>
 #include <vector>
 
@@ -542,14 +543,18 @@ status read_native(TIFF* tif, const layout& L, raster& out, const job_context* c
     return status::unsupported_format;
   }
 
-  std::vector<std::vector<std::uint8_t>> bufs;
+  // Not zero-filled: the sizes come from the file's tags, and a vector would
+  // touch every page before libtiff has read a byte (a 798-byte fuzz input
+  // reached 2 GB this way). Only rows below what a read returned are used.
+  std::vector<std::unique_ptr<std::uint8_t[]>> bufs;
   try {
     bufs.resize(planes);
   } catch (...) {
     return status::out_of_memory;
   }
   for (auto& b : bufs) {
-    if (!try_resize(b, buf_size)) return status::out_of_memory;
+    b.reset(new (std::nothrow) std::uint8_t[static_cast<std::size_t>(buf_size)]);
+    if (!b) return status::out_of_memory;
   }
   // Separate planes are gathered into one contiguous row. Sub-byte samples
   // (1/2/4-bit planes) are widened to 8 bits on the way: palette indices as
@@ -573,10 +578,10 @@ status read_native(TIFF* tif, const layout& L, raster& out, const job_context* c
         if (tiled) {
           const std::uint32_t tile = TIFFComputeTile(tif, static_cast<std::uint32_t>(bx),
                                                      static_cast<std::uint32_t>(by), 0, p);
-          n = TIFFReadEncodedTile(tif, tile, bufs[p].data(), static_cast<tmsize_t>(buf_size));
+          n = TIFFReadEncodedTile(tif, tile, bufs[p].get(), static_cast<tmsize_t>(buf_size));
         } else {
           const std::uint32_t strip = TIFFComputeStrip(tif, static_cast<std::uint32_t>(by), p);
-          n = TIFFReadEncodedStrip(tif, strip, bufs[p].data(), static_cast<tmsize_t>(buf_size));
+          n = TIFFReadEncodedStrip(tif, strip, bufs[p].get(), static_cast<tmsize_t>(buf_size));
         }
         if (n < 0 || static_cast<std::uint64_t>(n) < block_row * rows) return status::corrupt;
       }
@@ -585,19 +590,19 @@ status read_native(TIFF* tif, const layout& L, raster& out, const job_context* c
         std::uint8_t* dst = out.rgba.data() + static_cast<std::size_t>(((by + r) * w + bx) * 4);
         const std::size_t src_off = static_cast<std::size_t>(r * block_row);
         if (!separate) {
-          convert_row(L, bufs[0].data() + src_off, static_cast<std::uint32_t>(cols), dst);
+          convert_row(L, bufs[0].get() + src_off, static_cast<std::uint32_t>(cols), dst);
           continue;
         }
         for (std::uint64_t x = 0; x < cols; ++x) {
           for (std::uint16_t p = 0; p < planes; ++p) {
             if (packed_planes) {
-              const std::uint32_t v = fetch_uint(bufs[p].data() + src_off, static_cast<std::size_t>(x), L.bps);
+              const std::uint32_t v = fetch_uint(bufs[p].get() + src_off, static_cast<std::size_t>(x), L.bps);
               contig[static_cast<std::size_t>(x * L.spp + p)] =
                   (L.m == model::palette && p == 0) ? static_cast<std::uint8_t>(v) : to8(v, L.bps);
               continue;
             }
             std::memcpy(contig.data() + static_cast<std::size_t>((x * L.spp + p) * sample_bytes),
-                        bufs[p].data() + src_off + static_cast<std::size_t>(x * sample_bytes),
+                        bufs[p].get() + src_off + static_cast<std::size_t>(x * sample_bytes),
                         sample_bytes);
           }
         }

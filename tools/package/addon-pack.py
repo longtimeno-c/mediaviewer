@@ -3,9 +3,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Pack and sign an add-on (docs/design/18 "Add-ons: how Import is installed").
 
-    addon-pack.py pack [--addon import|ai|ai-faces|ai-cuda] --platform win-x64|macos \
+    addon-pack.py pack [--addon import|places|sharepoint|ai|ai-faces|ai-cuda] --platform win-x64|macos \
         --src build/addons/<addon> --version 1.0.0 --key <ed25519-private-key-hex-file> --out dist/
     addon-pack.py ceiling dist/mediaviewer-addon-ai*-<platform>.json
+    addon-pack.py stage-places --src build/addons/places [--downloads <cache> | --blob <places.mvgeo>]
 
 writes, for the release to publish beside the app's own assets:
 
@@ -19,7 +20,7 @@ or runtime-only pieces `ai-faces` and `ai-cuda` (`part_of: ai`, no native
 entry, no chrome). Model files carry the licence tools/package/ai-models.py
 recorded in the staged `licences.json`; a licence outside the allowed set
 fails the pack (the weights-licence gate). `ceiling` refuses a family whose
-supported installed combination exceeds 3 GB (docs/design/17).
+supported installed combination exceeds 5 GB (docs/design/17).
 
 The manifest lists every file with its SHA-256, size and licence, the host API
 range the add-on supports, and the archive's own name, size and SHA-256. It
@@ -46,9 +47,14 @@ import subprocess
 import sys
 import zipfile
 
+# Code licences, plus two for data (2026-10-11, docs/design/27): the Places add-on's
+# place database is GeoNames (CC-BY-4.0: attribution, which its LICENSES/NOTICE.txt,
+# the About box and THIRD-PARTY.md carry) and Natural Earth (public domain, which
+# SPDX has no identifier for, hence the LicenseRef marker). A file's licence may be
+# an SPDX "A AND B" expression; every part must be allowed.
 ALLOWED_LICENCES = {"GPL-3.0-or-later", "MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause",
-                    "Zlib", "ISC", "CC0-1.0"}
-CEILINGS = {"ai": 3_000_000_000}  # docs/design/17; src/addon/manifest.cpp family_ceiling agrees
+                    "Zlib", "ISC", "CC0-1.0", "CC-BY-4.0", "LicenseRef-PublicDomain"}
+CEILINGS = {"ai": 5_000_000_000}  # docs/design/17; src/addon/manifest.cpp family_ceiling agrees
 
 # What ships, per add-on and platform. Anything else in the build folder stays
 # out. `licences`: (prefix, SPDX) for files the staged licences.json does not
@@ -87,6 +93,47 @@ ADDONS = {
         "licences": [],
         "notice": ("Import add-on for MediaViewer. GPL-3.0-or-later. Uses SQLite (public domain).\n"
                    "Content hashes use BLAKE3 (CC0-1.0) and signatures libsodium (ISC), both in the app.\n"),
+    },
+    # Places (docs/design/27, 2026-10-11): an add-on that carries its own code and its
+    # own data. mv_places links src/geo; data/places.mvgeo is the place database the
+    # `stage-places` step builds into the add-on's folder before packing. No chrome:
+    # the hosts render its view tree. Its description and contributions (the Place
+    # section, the search provider, the settings page; no bar item, no window, owner
+    # 2026-10-12) live in src/addons/places/manifest.json, which the tests read too.
+    "places": {
+        "name": "Places",
+        "host_api": {"min": 3, "max": 3},  # table v3: screens and slots
+        "manifest_json": "src/addons/places/manifest.json",
+        "files": {
+            "win-x64": {"native": "mv_places.dll", "chrome": "", "include": ["mv_places.dll", "data"]},
+            "macos": {"native": "libmv_places.dylib", "chrome": "", "include": ["libmv_places.dylib", "data"]},
+        },
+        "licences": [("data/places.mvgeo", "CC-BY-4.0 AND LicenseRef-PublicDomain")],
+        "notice": ("Places add-on for MediaViewer. GPL-3.0-or-later.\n"
+                   "Place names: GeoNames (https://www.geonames.org), CC-BY 4.0.\n"
+                   "Country and region outlines: Natural Earth (https://www.naturalearthdata.com), public domain.\n"
+                   "Computed on this computer from the data in this package; no coordinates are sent anywhere.\n"),
+    },
+    # Sharepoint (docs/design/28, issues #410 / #413): send files to a MediaViewer
+    # nearby over Wi-Fi or Bluetooth. Code only, no chrome: the hosts render its
+    # window. Its description and contributions (one window, the "Send with
+    # Sharepoint…" context entry, one key-less command) live in
+    # src/addons/sharepoint/manifest.json, which the tests read too.
+    "sharepoint": {
+        "name": "Sharepoint",
+        "host_api": {"min": 3, "max": 3},  # table v3: screens and slots
+        "manifest_json": "src/addons/sharepoint/manifest.json",
+        "files": {
+            "win-x64": {"native": "mv_sharepoint.dll", "chrome": "", "include": ["mv_sharepoint.dll"]},
+            "macos": {"native": "libmv_sharepoint.dylib", "chrome": "",
+                      "include": ["libmv_sharepoint.dylib"]},
+        },
+        "licences": [],
+        "notice": ("Sharepoint add-on for MediaViewer. GPL-3.0-or-later.\n"
+                   "Its link is encrypted with libsodium (ISC) and files are checked with BLAKE3 (CC0-1.0):\n"
+                   "linked in on macOS, the app's own copies on Windows.\n"
+                   "Files move only to a MediaViewer the person there accepted, over the local network\n"
+                   "or Bluetooth. No account, no cloud, no internet relay.\n"),
     },
     "ai": {
         "name": "AI",
@@ -209,6 +256,47 @@ def licence_of(rel: str, addon: dict, staged: dict) -> str:
     return LICENCE
 
 
+def licence_allowed(spdx: str) -> bool:
+    """One allowed identifier, or an SPDX conjunction ("A AND B") of allowed ones."""
+    parts = [p.strip() for p in spdx.split(" AND ")]
+    return bool(parts) and all(p in ALLOWED_LICENCES for p in parts)
+
+
+def addon_metadata(addon: dict) -> dict:
+    """description and contributes, inline or from the add-on's manifest.json."""
+    meta = {k: addon[k] for k in ("description", "contributes") if addon.get(k)}
+    if addon.get("manifest_json"):
+        doc = json.loads((ROOT / addon["manifest_json"]).read_text(encoding="utf-8"))
+        meta.update({k: doc[k] for k in ("description", "contributes") if doc.get(k)})
+    return meta
+
+
+def stage_places(args) -> Path:
+    """Puts the place database into the Places add-on's build folder as
+    data/places.mvgeo: built now by tools/geo/build_places.py from its pinned
+    downloads (cached in --downloads), or copied from --blob (CI's cached build
+    of the same script revision). Nothing else goes into data/."""
+    src = Path(args.src)
+    data = src / "data"
+    if data.exists():
+        shutil.rmtree(data)
+    data.mkdir(parents=True)
+    out = data / "places.mvgeo"
+    if args.blob:
+        shutil.copy2(args.blob, out)
+    else:
+        cmd = [sys.executable, "-I", str(ROOT / "tools/geo/build_places.py"),
+               "--downloads", str(args.downloads), "--out", str(out)]
+        if args.accept_upstream:
+            cmd.append("--accept-upstream")
+        subprocess.run(cmd, check=True)
+    head = out.read_bytes()[:6]
+    if head != b"MVGEO\x1a":
+        raise ValueError(f"{out} is not a place database")
+    print(f"staged {out}: {out.stat().st_size} bytes")
+    return out
+
+
 def collect(src: Path, platform: str, stage: Path, addon_id: str = "import") -> list:
     addon = ADDONS[addon_id]
     spec = addon["files"][platform]
@@ -237,7 +325,7 @@ def collect(src: Path, platform: str, stage: Path, addon_id: str = "import") -> 
         if p.is_file():
             rel = p.relative_to(stage).as_posix()
             spdx = licence_of(rel, addon, staged)
-            if spdx not in ALLOWED_LICENCES:
+            if not licence_allowed(spdx):
                 raise ValueError(f"{rel} is licensed {spdx}: not redistributable in the pack")
             files.append({"path": rel, "sha256": sha256_file(p), "size": p.stat().st_size,
                           "licence": spdx})
@@ -276,10 +364,7 @@ def build_manifest(platform: str, version: str, files: list, archive: Path,
     }
     if addon.get("part_of"):
         manifest["part_of"] = addon["part_of"]
-    if addon.get("description"):
-        manifest["description"] = addon["description"]
-    if addon.get("contributes"):
-        manifest["contributes"] = addon["contributes"]
+    manifest.update(addon_metadata(addon))
     if spec.get("arch"):
         manifest["arch"] = spec["arch"]
     return (json.dumps(manifest, indent=1, sort_keys=False) + "\n").encode()
@@ -376,9 +461,19 @@ def main(argv=None) -> int:
     v.add_argument("--public-key", required=True, help="32-byte Ed25519 public key, hex")
     c = sub.add_parser("ceiling")
     c.add_argument("manifests", nargs="+")
+    s = sub.add_parser("stage-places", help="put data/places.mvgeo into the Places add-on's folder")
+    s.add_argument("--src", required=True, help="the add-on's build folder (build/addons/places)")
+    s.add_argument("--downloads", default="build/geo-downloads",
+                   help="build_places.py's download cache, outside the source tree")
+    s.add_argument("--blob", help="an already built place database to copy instead")
+    s.add_argument("--accept-upstream", action="store_true",
+                   help="pass to build_places.py: take changed GeoNames files (prints the hash to pin)")
     args = ap.parse_args(argv)
     if args.cmd == "pack":
         pack(args)
+        return 0
+    if args.cmd == "stage-places":
+        stage_places(args)
         return 0
     if args.cmd == "ceiling":
         return ceiling(args)

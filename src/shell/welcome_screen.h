@@ -17,7 +17,7 @@
 #include <cstring>
 
 #include "imgui.h"
-#include "shell/home_theme.h"
+#include "shell/home_ink.h"
 #include "shell/welcome_layout.h"
 
 namespace mv::shell {
@@ -56,7 +56,7 @@ inline const char* welcome_fit(ImFont* font, float fs, const char* text, float m
 // canvas; `scale` is the DPI scale. Everything is laid out in `scale` units so it
 // reads the same on a 100 % and a 200 % display. `recents` may be null.
 inline void draw_welcome(ImDrawList* bg, ImFont* font, float w, float h, float chrome,
-                         float scale, const welcome_text& text, const home_palette& theme,
+                         float scale, const welcome_text& text, const home_theme& theme,
                          float alpha = 1.0f, const welcome_recents* recents = nullptr) noexcept {
   if (bg == nullptr || font == nullptr || w <= 0.0f || h <= chrome || alpha <= 0.01f) return;
   // `alpha` < 1 is the hand-off to the runner (dino_draw.h): the card fades and
@@ -66,12 +66,20 @@ inline void draw_welcome(ImDrawList* bg, ImFont* font, float w, float h, float c
     return (c & ~IM_COL32_A_MASK) | (a << IM_COL32_A_SHIFT);
   };
 
-  const ImU32 c_title = fade(theme.title());
-  const ImU32 c_body = fade(theme.body());
-  const ImU32 c_mute = fade(theme.muted());
-  const ImU32 c_edge = fade(theme.edge());
-  const ImU32 c_fill = fade(theme.fill());
-  const ImU32 c_glyph = fade(theme.muted());
+  // Issue #408: the theme's own tokens, nothing derived. Surface fills the
+  // card and the hovered row, title and body set the type, hairline draws the
+  // rule and the edges, accent marks the hover and the glyphs.
+  // A translucent token (AppKit's label and separator colours are) is mixed
+  // over the card in sRGB first, as the chrome shows it (home_over).
+  const std::uint32_t card = home_over(theme.surface, theme.canvas | 0xFFu);
+  const auto on_card = [&](std::uint32_t token) { return fade(home_col(home_over(token, card))); };
+  const ImU32 c_title = on_card(theme.title);
+  const ImU32 c_body = on_card(theme.body);
+  const ImU32 c_mute = c_body;
+  const ImU32 c_edge = on_card(theme.hairline);
+  const ImU32 c_fill = fade(home_col(card));
+  const ImU32 c_glyph = on_card(theme.accent);
+  const ImU32 c_hover = c_glyph;
 
   const auto measure = [&](const char* s, float fs) {
     return font->CalcTextSizeA(fs, FLT_MAX, 0.0f, s);
@@ -117,8 +125,8 @@ inline void draw_welcome(ImDrawList* bg, ImFont* font, float w, float h, float c
 
   if (g.rows <= 0) return;
   // A hairline, the iCloud Photos library if it leads, then a quiet header and
-  // one row per folder. The hovered row gets the card's fill again so it reads
-  // as a button.
+  // one row per folder. The hovered row gets a surface fill and an accent
+  // edge so it reads as a button.
   const float rule_y = lo.y + (kWelcomeBaseH - 6.0f) * scale;
   bg->AddLine(ImVec2(lo.x + 24.0f * scale, rule_y), ImVec2(hi.x - 24.0f * scale, rule_y), c_edge,
               1.0f * scale);
@@ -134,7 +142,7 @@ inline void draw_welcome(ImDrawList* bg, ImFont* font, float w, float h, float c
       bg->AddRectFilled(ImVec2(g.row_x0, top + 1.0f * scale), ImVec2(g.row_x1, top + g.row_h - 1.0f * scale),
                         c_fill, 8.0f * scale);
       bg->AddRect(ImVec2(g.row_x0, top + 1.0f * scale), ImVec2(g.row_x1, top + g.row_h - 1.0f * scale),
-                  c_edge, 8.0f * scale, 0, 1.0f * scale);
+                  c_hover, 8.0f * scale, 0, 1.0f * scale);
     }
     const bool icloud_row = g.lead && i == 0;
     const float fx = g.row_x0 + 10.0f * scale;
@@ -176,7 +184,7 @@ inline void draw_welcome(ImDrawList* bg, ImFont* font, float w, float h, float c
     if (recents->hover == i && !icloud_row) {
       const ImVec2 c(g.row_x1 - kWelcomeRemoveW * 0.5f * scale, top + g.row_h * 0.5f);
       if (recents->hover_remove) bg->AddCircleFilled(c, 10.0f * scale, c_edge);
-      const ImU32 c_x = recents->hover_remove ? c_title : c_mute;
+      const ImU32 c_x = recents->hover_remove ? c_hover : c_mute;
       const float r = 4.0f * scale;
       bg->AddLine(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), c_x, 1.5f * scale);
       bg->AddLine(ImVec2(c.x - r, c.y + r), ImVec2(c.x + r, c.y - r), c_x, 1.5f * scale);

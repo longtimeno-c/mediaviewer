@@ -46,6 +46,7 @@
     },
     {
       "name": "sqlite3",
+      "features": ["fts5"],
       "platform": "osx"
     },
     {
@@ -69,6 +70,7 @@
     },
     {
       "name": "sqlite3",
+      "features": ["fts5"],
       "platform": "windows"
     },
     {
@@ -134,6 +136,7 @@
     "PR 2": "landed: libjpeg-turbo, libspng, lcms",
     "PR 17 (osx)": "landed: permissive still codecs use the default arm64-osx (or x64-osx on Intel) triplet in this manifest. LGPL libheif[core], libde265, libraw and ffmpeg use tools/mac/dependencies/vcpkg.json with arm64-osx-dynamic and a separate install root. See RELEASING.md; do not add the LGPL codecs to this manifest's osx dependencies.",
     "PR 18 (osx, folded-in PR 4)": "landed: sqlite3 on osx -- JPEG-512 thumbnail cache (image/thumb_mac.cpp), same spec jpg512.1 and schema as Windows (docs/design/12 2026-09-17).",
+    "#291": "sqlite3[fts5]: the AI index's asset_text (schema 4, docs/design/17). Public domain, part of SQLite; without it the index keeps a plain table of the same shape.",
     "PR 4": "landed: sqlite3. JPEG-512 thumbs in the island; DirectXTex/BC7 waits until a thumb must be GPU-resident (docs/design/12 2026-09-07).",
     "PR 4-deferred": ["directxtex"],
     "PR 5a": "landed: ffmpeg. NOTE the feature names here are the port's, not the plan's shorthand: `core` and `avutil` are NOT features of ffmpeg (avutil is always built), and passing them fails vcpkg outright. avfilter is required for PR 5c's atempo chain; dav1d is the AV1 software fallback (BSD-2, LGPL-compatible) for GPUs without an AV1 profile.",

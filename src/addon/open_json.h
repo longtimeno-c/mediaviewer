@@ -39,8 +39,34 @@ namespace mv::addon {
 
 // [{"folder", "id", "name", "version", "state": "ok|needs_update|invalid", "why",
 //   "description", "licence", "size", "update_url", "publisher": {...},
-//   "themes": [{"id", "name"}]}]. "[]" when none, or no folder.
+//   "themes": [{"id", "name"}], "settings": bool, "keymaps": [{"id", "name"}]}].
+// "[]" when none, or no folder.
 [[nodiscard]] std::string open_list_json(const open_store& store);
+
+// ---- PR 56: declarative contributions (contribution API 2) ----------------
+
+// The settings page of add-on `id` with each value folded in
+// (settings_values::page_json), or "" when it has none or is not installed
+// and verified. A dotted id is an open add-on in `open`; a plain one is a
+// first-party add-on in `first_party` (may be null: none then).
+[[nodiscard]] std::string addon_settings_page_json(const open_store& open, const store* first_party,
+                                                   std::string_view id);
+
+// Stores one value from that page: {"ok", "message"}. Refused with a
+// message when the add-on or key is gone or the value does not fit.
+[[nodiscard]] std::string addon_setting_set_json(const open_store& open, const store* first_party,
+                                                 std::string_view id, std::string_view key,
+                                                 std::string_view value_json);
+
+// Forgets everything chosen on add-on `id`'s page: removing it without
+// "keep its settings". True when nothing is left.
+[[nodiscard]] bool addon_settings_forget(std::string_view id);
+
+// One keymap pack of an installed, verified open add-on, as the shell
+// applies it (shell/keymap.h): {"addon", "id", "name", "bindings":
+// [{"command", "keys": [...]}]}; "" when gone.
+[[nodiscard]] std::string open_keymap_json(const open_store& open, std::string_view addon_id,
+                                           std::string_view pack_id);
 
 // The store over io::open_addons_dir().
 [[nodiscard]] result<open_store> default_open_store();

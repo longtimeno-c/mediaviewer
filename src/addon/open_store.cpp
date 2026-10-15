@@ -90,6 +90,13 @@ rejection check_themes(const open_manifest& m, std::string& detail, Read&& read)
       detail = t.id + ": " + theme_fault_name(r.fault);
       return rejection::invalid_theme;
     }
+    // Theme schema 2 (shape) is an API 2 point: a manifest that claims an
+    // older API may not ship one, as it may not name settings or keymaps
+    // (open_manifest.cpp). An API 1 host refuses the file outright.
+    if (r.schema >= 2 && m.api_max < kThemeSchema2Api) {
+      detail = t.id + ": a schema 2 theme needs api.max 2";
+      return rejection::malformed;
+    }
   }
   return rejection::none;
 }
@@ -374,6 +381,19 @@ expected open_store::remove(std::string_view id) const {
   const std::string addon_dir = io::join_path(root_, std::string(id));
   if (!io::stat_path(addon_dir)) return err(status::invalid_arg);
   return io::remove_tree(addon_dir);
+}
+
+result<std::string> open_store::verified_file(const open_installed& installed,
+                                              std::string_view path,
+                                              std::uint64_t max_bytes) const {
+  const auto f = std::find_if(installed.m.files.begin(), installed.m.files.end(),
+                              [&](const manifest_file& mf) { return mf.path == path; });
+  if (f == installed.m.files.end() || f->size > max_bytes || installed.dir.empty()) {
+    return err(status::invalid_arg);
+  }
+  MV_TRY(auto bytes, read_small(io::join_path(installed.dir, f->path), max_bytes));
+  if (bytes.size() != f->size || sha256_hex(bytes) != f->sha256) return err(status::corrupt);
+  return std::string(text_of(bytes));
 }
 
 result<std::string> open_store::theme_json(std::string_view addon_id,

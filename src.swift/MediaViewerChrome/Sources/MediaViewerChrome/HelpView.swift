@@ -61,12 +61,12 @@ struct HelpView: View {
   @ObservedObject private var store = HelpStore.shared
 
   var body: some View {
-    VStack(spacing: 16) {
+    VStack(spacing: MVTheme.space(16)) {
       Text("Keyboard shortcuts").font(MVTheme.font(20))
       ScrollView {
         LazyVGrid(
-          columns: [GridItem(.adaptive(minimum: 340), spacing: 24, alignment: .top)],
-          alignment: .leading, spacing: 6
+          columns: [GridItem(.adaptive(minimum: 340), spacing: MVTheme.space(24), alignment: .top)],
+          alignment: .leading, spacing: MVTheme.space(6)
         ) {
           ForEach(store.entries) { entry in
             HStack(alignment: .firstTextBaseline) {
@@ -78,14 +78,14 @@ struct HelpView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
           }
         }
-        .padding(.horizontal, 32)
+        .padding(.horizontal, MVTheme.space(32))
       }
       Text("Wheel zooms toward the cursor, drag pans. Keys change in Settings (⌘,). ? or Esc to close.")
         .font(MVTheme.font(12)).foregroundStyle(.secondary)
     }
     .font(MVTheme.font(14))  // the entries follow a theme's font
-    .padding(.top, 56)
-    .padding(.bottom, 16)
+    .padding(.top, MVTheme.space(56))
+    .padding(.bottom, MVTheme.space(16))
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .background(.regularMaterial)
     .onAppear { store.reload() }

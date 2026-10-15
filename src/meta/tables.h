@@ -8,15 +8,15 @@
 // platform header. Both hosts' chrome parse the same three formats:
 //
 //   summary:    "label\tvalue"                         every row for the kind; value may be empty
-//   properties: "space\tgroup\tlabel\tvalue\traw_tag"  space = exif|iptc|xmp|container|computed
+//   properties: "space\tgroup\tlabel\tvalue\traw_tag"  space = exif|iptc|xmp|container|computed|c2pa|png_text|icc|xmp_raw
 //   streams:    "S\tindex\tkind\tcodec" opens a stream, "F\tlabel\tvalue" adds a field to it,
 //               "C\tstart_ms\ttitle" is a chapter; empty for a still
 //
 // PR 29 (owner, 2026-09-26: every tag editable): editable_properties_table is
 // the properties form for a pane that edits -- the five columns above, then
 // "\traw\taccess": the value in the form an edit takes, and what an edit may
-// do (write.h access_of): e editable (set, remove), s set only (into the XMP
-// sidecar), r read-only. The Mac bridge (mv_chrome_meta_properties) writes the same.
+// do (write.h row_access; #290 rows are always r): e editable (set, remove), s set only (into the XMP
+// sidecar), r read-only. Both hosts send this table (the Mac bridge calls it too).
 #pragma once
 
 #include <string>

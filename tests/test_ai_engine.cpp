@@ -31,12 +31,20 @@
 #include <thread>
 #include <vector>
 
+#if !defined(_WIN32)
+#include <csignal>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
 #include "addon/host.h"
 #include "addons/ai/engine.h"
 #include "addons/ai/index_db.h"
+#include "addons/ai/query.h"
 #include "nle/search_session.h"
 #include "core/json.h"
 #include "import_fixture.h"
+#include "io/pairing.h"
 
 using namespace mv::test;
 using mv::ai::engine;
@@ -154,6 +162,30 @@ class fake_embedder final : public mv::infer::embedder {
   float spice_;
 };
 
+// #403: the OS text reader, faked. The fake still marks a photo's text in
+// pixel 1's green channel (the rig's still_rgb sets it from the name); a
+// "*sign*" clip's frames carry it from 3 s, and their second + 1 in pixel 1's
+// blue (fake_sampler).
+constexpr std::uint8_t kSignSuited = 77;  // "*sign*": a sign reading SUITED AND / BOOTED
+constexpr std::uint8_t kSignKoln = 78;    // "*koln*": Grüße aus / KÖLN
+class fake_text final : public mv::ai::text_reader {
+ public:
+  // `seen` is told of every picture before it is read (it may block).
+  explicit fake_text(std::function<void(const mv::ai::rgb_frame&)> seen) : seen_(std::move(seen)) {}
+  mv::result<std::vector<std::string>> read(const mv::ai::rgb_frame& img) override {
+    seen_(img);
+    if (img.rgb.size() < 6) return std::vector<std::string>{};
+    if (img.rgb[4] == kSignSuited) return std::vector<std::string>{"SUITED AND", "BOOTED"};
+    if (img.rgb[4] == kSignKoln) return std::vector<std::string>{"Grüße aus", "KÖLN"};
+    return std::vector<std::string>{};
+  }
+  const std::string& spec_key() const noexcept override { return key_; }
+
+ private:
+  std::function<void(const mv::ai::rgb_frame&)> seen_;
+  std::string key_ = "ocr/fake/1";
+};
+
 // Faces from the file name: "anna_*" holds Anna's face, "ben_*" Ben's.
 class fake_faces final : public mv::ai::face_analyzer {
  public:
@@ -186,9 +218,13 @@ class fake_faces final : public mv::ai::face_analyzer {
 
 // A clip named "*_rgb.mp4": red for 3 s, green for 3 s, blue for 3 s, one
 // keyframe a second. "*_slow*" sleeps per frame so a test can stop mid-clip.
+// "anna3s*" shows Anna's face on the frame at 3 s alone (#407). Frames closer
+// than `min_gap_ms` to the last one given are skipped, as the real sampler's
+// minimum gap does (the People-only grid's 2 s).
 class fake_sampler final : public mv::addon::video_sampler {
  public:
-  fake_sampler(std::string name, std::int64_t start) : name_(std::move(name)), t_(start) {
+  fake_sampler(std::string name, std::int64_t start, std::uint32_t min_gap_ms = 0)
+      : name_(std::move(name)), t_(start), min_gap_(min_gap_ms) {
     facts_.duration_ms = 9000;
     facts_.width = 64;
     facts_.height = 36;
@@ -203,8 +239,20 @@ class fake_sampler final : public mv::addon::video_sampler {
       return f;
     }
     if (name_.find("slow") != std::string::npos) std::this_thread::sleep_for(std::chrono::milliseconds(60));
+    while (last_ >= 0 && t_ - last_ < min_gap_ && t_ < facts_.duration_ms) t_ += 1000;
+    if (t_ >= facts_.duration_ms) {
+      f.end = true;
+      return f;
+    }
+    last_ = t_;
     const rgb c = t_ < 3000 ? rgb{220, 20, 20} : (t_ < 6000 ? rgb{20, 220, 20} : rgb{20, 20, 220});
     f.image = solid(c, 64, 36);
+    if (name_.rfind("anna3s", 0) == 0 && t_ == 3000) f.image.rgb[2] = 11;  // fake_faces: Anna
+    if (name_.find("sign") != std::string::npos) {
+      // #403: a sign in shot from 3 s (fake_text), and which second this is.
+      if (t_ >= 3000) f.image.rgb[4] = kSignSuited;
+      f.image.rgb[5] = static_cast<std::uint8_t>(t_ / 1000 + 1);
+    }
     f.pts_ms = t_;
     f.pts_tb = t_ * 90;
     f.tb_num = 1;
@@ -217,6 +265,8 @@ class fake_sampler final : public mv::addon::video_sampler {
  private:
   std::string name_;
   std::int64_t t_;
+  std::int64_t min_gap_ = 0;
+  std::int64_t last_ = -1;
   mv::addon::video_facts facts_;
 };
 
@@ -375,6 +425,7 @@ struct photos_lib {
     mv::ai::asset_kind kind = mv::ai::asset_kind::photo;
     bool local = true;       // false: only iCloud has the original
     std::string clip_file;   // a local clip's file (the fake sampler reads its name)
+    std::int64_t created = 0;  // creationDate, unix seconds (#404)
   };
   std::mutex m;
   mv::ai::photos_access access = mv::ai::photos_access::full;
@@ -411,7 +462,9 @@ class fake_photos final : public mv::ai::photos_source {
       items = lib_->items;
     }
     for (const auto& it : items) {
-      if (!visit(mv::ai::photos_item{it.id, it.mtime, 100, it.kind})) return mv::err(mv::status::cancelled);
+      mv::ai::photos_item pi{it.id, it.mtime, 100, it.kind};
+      pi.created = it.created;
+      if (!visit(pi)) return mv::err(mv::status::cancelled);
     }
     return {};
   }
@@ -538,6 +591,24 @@ mv_status MV_CALL walk2_with_cloud(void* host, const char* root, int32_t depth, 
   return real(host, root, depth, &flag_cloud, &c);
 }
 
+// #405: a host from before the rating and exposure fields: its tag_facts
+// answers the shorter struct, as an app not yet updated under a newer pack.
+std::atomic<bool> g_old_tag_host{false};
+std::mutex g_tag_m;
+std::map<void*, decltype(mv_host_api::tag_facts)> g_tag_facts;  // by host
+
+mv_status MV_CALL tag_facts_maybe_old(void* host, const char* path, mv_addon_tag_facts* out) {
+  decltype(mv_host_api::tag_facts) real = nullptr;
+  {
+    std::lock_guard lock(g_tag_m);
+    const auto it = g_tag_facts.find(host);
+    if (it == g_tag_facts.end()) return MV_ERR_INTERNAL;
+    real = it->second;
+  }
+  if (g_old_tag_host.load() && out) out->struct_size = MV_ADDON_TAG_FACTS_V1_SIZE;
+  return real(host, path, out);
+}
+
 struct rig {
   scratch_dir dir{"ai"};
   std::mutex events_m;
@@ -549,6 +620,20 @@ struct rig {
   std::atomic<bool> on_battery{false};  // the fake power source
   std::atomic<int> battery_percent{100};
   std::atomic<int> stills_decoded{0};
+  std::atomic<int> cue_reads{0};
+  std::atomic<int> samplers_opened{0};
+  std::atomic<bool> text_available{false};  // #403: off unless a test reads text
+  std::atomic<int> text_reads{0};           // photos read (a still: 32 px wide)
+  std::atomic<int> clip_text_reads{0};      // clip moments read (a frame: 64 px wide)
+  std::mutex text_m;
+  std::vector<int> sign_seconds;            // the second of each "*sign*" clip moment read
+  // Set: the reader waits on a clip moment (a pass still running). Never on a
+  // photo: with one worker (four cores) a photo's text can be claimed before
+  // the walk has listed a clip, and holding it would starve that clip's pictures.
+  std::atomic<bool> hold_text{false};
+  std::atomic<int> text_holding{0};  // reads that waited on hold_text
+  std::atomic<bool> hold_cues{false};       // set: read_cues waits
+  std::atomic<int> yield_after_clip_reads{-1};  // >= 0: the host asks to yield after that many
   std::unique_ptr<mv::addon::host_table> table;
   std::shared_ptr<cloud_world> cloud = std::make_shared<cloud_world>();
   mv_host_api api{};  // the table, its walk_files2 flagging `cloud`'s online-only names
@@ -604,15 +689,22 @@ struct rig {
         decoded.push_back(name);
       }
       if (name.find("broken") != std::string::npos) return mv::err(mv::status::corrupt);
+      // #355: an audio file's picture is its cover art; "*cover*" has one.
+      if (mv::io::is_audio_name(name) && name.find("cover") == std::string::npos) {
+        return mv::err(mv::status::not_found);
+      }
       auto img = solid(colour_named(name));
       if (name.rfind("anna", 0) == 0) img.rgb[2] = 11;
       if (name.rfind("ben", 0) == 0) img.rgb[2] = 22;
+      if (name.find("sign") != std::string::npos) img.rgb[4] = kSignSuited;
+      if (name.find("koln") != std::string::npos) img.rgb[4] = kSignKoln;
       return img;
     };
-    svc.open_sampler = [](const std::string& path, const mv::addon::sampler_options& o)
+    svc.open_sampler = [this](const std::string& path, const mv::addon::sampler_options& o)
         -> mv::result<std::unique_ptr<mv::addon::video_sampler>> {
+      ++samplers_opened;
       return std::unique_ptr<mv::addon::video_sampler>(
-          new fake_sampler(utf8(fs::path(path).filename()), o.start_ms));
+          new fake_sampler(utf8(fs::path(path).filename()), o.start_ms, o.min_gap_ms));
     };
     svc.video_frame = [](const std::string& path, std::int64_t ms, std::uint32_t) -> mv::result<mv::addon::rgb_image> {
       fake_sampler s(utf8(fs::path(path).filename()), ms);
@@ -647,6 +739,75 @@ struct rig {
       jpegs[path + "#" + std::to_string(ms)].assign(jpeg.begin(), jpeg.end());
       return {};
     };
+    // #291: the host's tag facts, by name: r5 a Canon EOS R5, gpt ChatGPT
+    // (AI), geo a position.
+    svc.tag_facts = [](const std::string& path, mv_addon_tag_facts& out) {
+      const std::string name = utf8(fs::path(path).filename());
+      if (name.find("broken") != std::string::npos) return false;
+      std::string fields;
+      if (name.find("r5") != std::string::npos) {
+        std::strcpy(out.camera_utf8, "Canon EOS R5");
+        std::strcpy(out.lens_utf8, "RF24-70mm F2.8 L IS USM");
+        fields = "Canon EOS R5\x1fRF24-70mm F2.8 L IS USM";
+      }
+      if (name.find("gpt") != std::string::npos) {
+        out.flags |= MV_ADDON_TAG_AI_GENERATED;
+        std::strcpy(out.made_with_utf8, "ChatGPT");
+        fields = "ChatGPT";
+      }
+      if (name.find("geo") != std::string::npos) {
+        out.flags |= MV_ADDON_TAG_HAS_LOCATION;
+        out.lat = 38.7975;
+        out.lon = -9.3883;
+      }
+      // #405: "iso400" is ISO 400, f/2.8, 1/250 s, 35 mm, five stars, Red;
+      // anything else is unrated with no exposure (a clip's case too).
+      if (name.find("iso400") != std::string::npos) {
+        out.rating = 5;
+        out.iso = 400;
+        out.aperture_x100 = 280;
+        out.focal_mm = 35;
+        out.shutter_den = 250;
+        out.shutter_us = 4000;
+        std::strcpy(out.label_utf8, "Red");
+      }
+      if (name.find("reject") != std::string::npos) out.rating = -1;
+      // #355: a song's tags (title, artist, album).
+      if (name.find("song") != std::string::npos) fields = "Hey Jude\x1fThe Beatles\x1fPast Masters";
+      // #404: "y2019" was taken on 2019-06-15 12:00 (wall clock read as UTC).
+      if (name.find("y2019") != std::string::npos) {
+        out.flags |= MV_ADDON_TAG_HAS_DATE;
+        out.taken_unix = mv::ai::query::days_from_civil(2019, 6, 15) * 86400 + 12 * 3600;
+      }
+      std::strcpy(out.fields_utf8, fields.c_str());
+      return true;
+    };
+    // #406: a clip named "*cues*" has a chapter "Birthday cake" at 4 s and a
+    // subtitle "suited and booted" at 7 s; "*manycues*" 200 subtitle lines a
+    // second apart; any other clip has none.
+    svc.read_cues = [this](const std::string& path, std::int64_t start_ms, std::int64_t max_ms, std::uint32_t max_cues,
+                           const std::function<bool(const mv::addon::host_services::cue&)>& visit) -> mv::expected {
+      ++cue_reads;
+      while (hold_cues) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      const std::string name = utf8(fs::path(path).filename());
+      std::vector<mv::addon::host_services::cue> all;
+      if (name.find("manycues") != std::string::npos) {
+        for (int i = 0; i < 200; ++i) {
+          all.push_back({MV_ADDON_CUE_SUBTITLE, i * 1000, i * 1000 + 900, "line number " + std::to_string(i)});
+        }
+      } else if (name.find("cues") != std::string::npos) {
+        all.push_back({MV_ADDON_CUE_CHAPTER, 4000, 7000, "Birthday cake"});
+        all.push_back({MV_ADDON_CUE_SUBTITLE, 7000, 8000, "suited and booted"});
+      }
+      std::uint32_t sent = 0;
+      for (const auto& c : all) {
+        if (c.start_ms < start_ms) continue;
+        if (c.start_ms > max_ms || sent >= max_cues) break;
+        ++sent;
+        if (!visit(c)) return mv::err(mv::status::cancelled);
+      }
+      return {};
+    };
     table = std::make_unique<mv::addon::host_table>(std::move(svc));
     table->set_negotiated(MV_ADDON_HOST_API);
     api = *table->api();
@@ -655,9 +816,18 @@ struct rig {
       g_walks[api.host] = {api.walk_files2, cloud.get()};
     }
     api.walk_files2 = &walk2_with_cloud;
+    {
+      std::lock_guard lock(g_tag_m);
+      g_tag_facts[api.host] = api.tag_facts;
+    }
+    api.tag_facts = &tag_facts_maybe_old;
   }
   ~rig() {
     eng.reset();
+    {
+      std::lock_guard lock(g_tag_m);
+      g_tag_facts.erase(api.host);
+    }
     std::lock_guard lock(g_walks_m);
     g_walks.erase(api.host);
   }
@@ -727,6 +897,25 @@ struct rig {
     d.photos = [this] { return std::unique_ptr<mv::ai::photos_source>(new fake_photos(library)); };
     d.photos_rescan_gap_s = 0;
     d.cloud = [this] { return std::unique_ptr<mv::ai::cloud_files>(new fake_cloud(cloud)); };
+    d.text = [this]() -> std::unique_ptr<mv::ai::text_reader> {
+      if (!text_available) return nullptr;
+      return std::make_unique<fake_text>([this](const mv::ai::rgb_frame& img) {
+        if (hold_text && img.width == 64) {
+          ++text_holding;
+          while (hold_text) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        if (img.width != 64) {
+          ++text_reads;
+          return;
+        }
+        const int n = ++clip_text_reads;
+        if (img.rgb.size() >= 6 && img.rgb[5] != 0) {
+          std::lock_guard lock(text_m);
+          sign_seconds.push_back(img.rgb[5] - 1);
+        }
+        if (n == yield_after_clip_reads) busy = true;
+      });
+    };
     d.open_speech = [this](std::uint32_t, std::uint32_t) -> mv::result<mv::ai::loaded_speech> {
       if (!audio_available) return mv::err(mv::status::io);
       mv::ai::loaded_speech s;
@@ -1323,6 +1512,9 @@ TEST_CASE("clearing the index frees it and a size cap stops indexing", "[ai][eng
   CHECK(r.status().state == MV_AI_STATE_PAUSED);
 }
 
+// The schema a fresh or migrated index ends at (index_db.cpp kSchemaVersion).
+constexpr const char* kSchemaNow = "8";
+
 TEST_CASE("an index migrates from schema 1, and again after a crash left a step half done", "[ai][engine]") {
   scratch_dir dir{"ai-migrate"};
   const std::string path = utf8(dir / "index.db");
@@ -1347,7 +1539,7 @@ TEST_CASE("an index migrates from schema 1, and again after a crash left a step 
   {
     auto d = mv::ai::index_db::open(path);
     REQUIRE(d);
-    CHECK((*d)->meta("schema") == "3");
+    CHECK((*d)->meta("schema") == kSchemaNow);
     const auto roots = (*d)->roots();
     REQUIRE(roots.size() == 1);
     CHECK(roots[0].media == 0);
@@ -1358,13 +1550,460 @@ TEST_CASE("an index migrates from schema 1, and again after a crash left a step 
   {
     auto d = mv::ai::index_db::open(path);
     REQUIRE(d);
-    CHECK((*d)->meta("schema") == "3");
+    CHECK((*d)->meta("schema") == kSchemaNow);
     REQUIRE((*d)->set_meta("schema", "2"));
   }
   auto d = mv::ai::index_db::open(path);
   REQUIRE(d);
-  CHECK((*d)->meta("schema") == "3");
+  CHECK((*d)->meta("schema") == kSchemaNow);
   CHECK((*d)->roots().size() == 1);
+}
+
+namespace {
+
+// A schema-3 index as #176's builds left it, with one asset.
+void make_schema3(const std::string& path) {
+  sqlite3* db = nullptr;
+  REQUIRE(sqlite3_open(path.c_str(), &db) == SQLITE_OK);
+  REQUIRE(sqlite3_exec(db,
+                       "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);"
+                       "CREATE TABLE roots(id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE,"
+                       " recursive INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,"
+                       " last_scan_at INTEGER NOT NULL DEFAULT 0, media INTEGER NOT NULL DEFAULT 0);"
+                       "CREATE TABLE assets(id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE,"
+                       " root_id INTEGER NOT NULL REFERENCES roots(id) ON DELETE CASCADE,"
+                       " mtime INTEGER NOT NULL, size INTEGER NOT NULL, kind INTEGER NOT NULL,"
+                       " duration_ms INTEGER NOT NULL DEFAULT 0, seen INTEGER NOT NULL DEFAULT 0,"
+                       " cloud INTEGER NOT NULL DEFAULT 0);"
+                       "INSERT INTO meta VALUES('schema', '3');"
+                       "INSERT INTO roots(path, recursive) VALUES('/photos', 1);"
+                       "INSERT INTO assets(path, root_id, mtime, size, kind) VALUES('/photos/r5.jpg', 1, 5, 10, 1);",
+                       nullptr, nullptr, nullptr) == SQLITE_OK);
+  sqlite3_close(db);
+}
+
+bool column_exists(const std::string& path, const char* column) {
+  sqlite3* db = nullptr;
+  if (sqlite3_open(path.c_str(), &db) != SQLITE_OK) return false;
+  sqlite3_stmt* st = nullptr;
+  sqlite3_prepare_v2(db, "PRAGMA table_info(assets)", -1, &st, nullptr);
+  bool found = false;
+  while (st && sqlite3_step(st) == SQLITE_ROW) {
+    if (std::strcmp(reinterpret_cast<const char*>(sqlite3_column_text(st, 1)), column) == 0) found = true;
+  }
+  sqlite3_finalize(st);
+  sqlite3_close(db);
+  return found;
+}
+
+}  // namespace
+
+TEST_CASE("schema 3 migrates to 4: the tag columns and asset_text, keeping the assets", "[ai][engine][schema4]") {
+  scratch_dir dir{"ai-schema4"};
+  const std::string path = utf8(dir / "index.db");
+  make_schema3(path);
+  {
+    auto d = mv::ai::index_db::open(path);
+    REQUIRE(d);
+    CHECK((*d)->meta("schema") == kSchemaNow);
+    for (const char* c : {"tags", "taken_at", "lat", "lon", "camera", "lens", "made_with", "ai", "place", "country",
+                          "region", "rating", "label", "iso", "aperture_x100", "focal_mm", "shutter_den",
+                          "shutter_us", "motion", "motion_mtime", "motion_size", "motion_cloud"}) {
+      CHECK(column_exists(path, c));
+    }
+    const auto all = (*d)->all_assets();
+    REQUIRE(all.size() == 1);
+    CHECK((*d)->tags_pending() == 1);  // the backfill reads it
+    mv::ai::asset_tags t;
+    t.id = all[0].id;
+    t.mtime = 5;
+    t.size = 10;
+    t.camera = "Canon EOS R5";
+    t.text = "Canon EOS R5";
+    t.ai = false;
+    t.has_where = true;
+    t.lat = 38.8;
+    t.lon = -9.4;
+    t.taken_at = 1714572202;
+    REQUIRE((*d)->commit_tags(std::span<const mv::ai::asset_tags>(&t, 1)));
+    CHECK((*d)->tags_pending() == 0);
+    // A stale read (the stamp moved since) is dropped.
+    mv::ai::asset_tags stale = t;
+    stale.mtime = 4;
+    stale.camera = "Nikon";
+    REQUIRE((*d)->commit_tags(std::span<const mv::ai::asset_tags>(&stale, 1)));
+    int seen = 0;
+    REQUIRE((*d)->each_tags([&](const mv::ai::asset_tags& r) {
+      ++seen;
+      CHECK(r.camera == "Canon EOS R5");
+      CHECK(r.has_where);
+      CHECK(r.taken_at == 1714572202);
+      CHECK(r.text == "Canon EOS R5");
+    }));
+    CHECK(seen == 1);
+    if ((*d)->meta("asset_text") == "fts5") {
+      CHECK((*d)->match_text("r5", 10) == std::vector<std::int64_t>{all[0].id});
+      CHECK((*d)->match_text("canon r5", 10) == std::vector<std::int64_t>{all[0].id});
+      // Typed text is never FTS5 syntax: operators, quotes, column filters
+      // and a lone star are words (no match, and never an SQL error).
+      for (const char* hostile : {"r5 OR", "\"", "canon\" OR \"x", "NEAR(canon r5)", "text:canon", "*", "-r5",
+                                  "^canon", "r5 AND NOT canon"}) {
+        CAPTURE(hostile);
+        const auto hits = (*d)->match_text(hostile, 10);
+        CHECK(hits.size() <= 1);
+      }
+      CHECK((*d)->match_text("nikon OR canon", 10).empty());  // OR is a word, not an operator
+    }
+    CHECK(mv::ai::index_db::fts_phrases(" a  \"b\" ") == "\"a\" \"\"\"b\"\"\"");
+    CHECK(mv::ai::index_db::fts_phrases("").empty());
+    // A changed file reads its tags again.
+    const mv::ai::index_db::seen_file f{"/photos/r5.jpg", 6, 11, mv::ai::asset_kind::photo};
+    REQUIRE((*d)->see_assets(1, std::span<const mv::ai::index_db::seen_file>(&f, 1), (*d)->next_generation()));
+    CHECK((*d)->tags_pending() == 1);
+    // A removed asset takes its text with it (the trigger).
+    REQUIRE((*d)->remove_root(1));
+    seen = 0;
+    REQUIRE((*d)->each_tags([&](const mv::ai::asset_tags&) { ++seen; }));
+    CHECK(seen == 0);
+  }
+  // Half done, as a crash before the schema bump could leave it: the columns
+  // there, the schema still 3. It migrates instead of failing.
+  {
+    auto d = mv::ai::index_db::open(path);
+    REQUIRE(d);
+    REQUIRE((*d)->set_meta("schema", "3"));
+  }
+  auto d = mv::ai::index_db::open(path);
+  REQUIRE(d);
+  CHECK((*d)->meta("schema") == kSchemaNow);
+}
+
+#if !defined(_WIN32)
+TEST_CASE("the 3 -> 4 migration survives a kill mid-step", "[ai][engine][schema4]") {
+  // The step is one transaction. A child process starts it as index_db does
+  // (BEGIN, the ALTERs, the FTS table) and is killed before COMMIT: the
+  // file is what a power cut or a force quit leaves. The next open finds
+  // schema 3, unchanged, and migrates.
+  scratch_dir dir{"ai-schema4-kill"};
+  const std::string path = utf8(dir / "index.db");
+  make_schema3(path);
+  {
+    sqlite3* db = nullptr;
+    REQUIRE(sqlite3_open(path.c_str(), &db) == SQLITE_OK);
+    REQUIRE(sqlite3_exec(db, "PRAGMA journal_mode=WAL;", nullptr, nullptr, nullptr) == SQLITE_OK);
+    sqlite3_close(db);
+  }
+  const pid_t child = fork();
+  REQUIRE(child >= 0);
+  if (child == 0) {
+    sqlite3* db = nullptr;
+    if (sqlite3_open(path.c_str(), &db) != SQLITE_OK) _exit(2);
+    sqlite3_exec(db, "BEGIN;"
+                     "ALTER TABLE assets ADD COLUMN tags INTEGER NOT NULL DEFAULT 0;"
+                     "ALTER TABLE assets ADD COLUMN taken_at INTEGER;"
+                     "ALTER TABLE assets ADD COLUMN lat REAL;"
+                     "CREATE VIRTUAL TABLE IF NOT EXISTS asset_text USING fts5(text);",
+                 nullptr, nullptr, nullptr);
+    // Make sure the uncommitted pages reach the WAL file, then die.
+    sqlite3_exec(db, "PRAGMA cache_spill=1;", nullptr, nullptr, nullptr);
+    ::kill(::getpid(), SIGKILL);
+    _exit(3);
+  }
+  int status = 0;
+  REQUIRE(waitpid(child, &status, 0) == child);
+  CHECK(WIFSIGNALED(status));
+  CHECK_FALSE(column_exists(path, "tags"));  // nothing of the step survived
+  auto d = mv::ai::index_db::open(path);
+  REQUIRE(d);
+  CHECK((*d)->meta("schema") == kSchemaNow);
+  CHECK(column_exists(path, "camera"));
+  CHECK((*d)->all_assets().size() == 1);
+}
+#endif
+
+TEST_CASE("camera:, ai:, made:, place: and a plain tag word in Local search", "[ai][engine][tags]") {
+  rig r;
+  r.file("red_r5.jpg");
+  r.file("green_gpt.jpg");
+  r.file("blue_geo.jpg");
+  r.file("red_plain.jpg");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  const auto names = [](const std::vector<std::pair<std::string, std::int64_t>>& rows) {
+    std::set<std::string> out;
+    for (const auto& [n, _] : rows) out.insert(n);
+    return out;
+  };
+  CHECK(names(r.search("camera:R5")) == std::set<std::string>{"red_r5.jpg"});
+  CHECK(names(r.search("camera:canon")) == std::set<std::string>{"red_r5.jpg"});
+  CHECK(names(r.search("lens:24-70")) == std::set<std::string>{"red_r5.jpg"});
+  CHECK(names(r.search("ai:yes")) == std::set<std::string>{"green_gpt.jpg"});
+  CHECK(names(r.search("made:chatgpt")) == std::set<std::string>{"green_gpt.jpg"});
+  CHECK(names(r.search("ai:no")).count("green_gpt.jpg") == 0);
+  CHECK(names(r.search("ai:no")).size() == 3);
+  CHECK(names(r.search("-camera:r5")).count("red_r5.jpg") == 0);
+  // place: keeps the geotagged; the Places provider says which place.
+  CHECK(names(r.search("place:portugal")) == std::set<std::string>{"blue_geo.jpg"});
+  CHECK(names(r.search("in:sintra")) == std::set<std::string>{"blue_geo.jpg"});
+  // in:2024 is still a date (no file is from 2024 here by mtime? it filters by date).
+  // A camera term narrows a description: red AND a Canon R5.
+  const auto red_r5 = r.search("red camera:r5");
+  REQUIRE_FALSE(red_r5.empty());
+  CHECK(names(red_r5) == std::set<std::string>{"red_r5.jpg"});
+
+  // A plain word that is a tag: that file first, the tag as the snippet.
+  const std::uint64_t id = r.eng->search_text("R5", "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+  REQUIRE(r.eng->wait_search(id, 5000));
+  const auto rows = r.rows(id);
+  REQUIRE_FALSE(rows.empty());
+  CHECK(rows.front().first == "red_r5.jpg");
+  auto first = r.eng->result_at(id, 0);
+  REQUIRE(first);
+  CHECK((first->match & MV_AI_MATCH_TAGS) != 0);
+  auto why = r.eng->result_snippet(id, 0);
+  REQUIRE(why);
+  CHECK(*why == "Canon EOS R5");
+  const std::uint64_t gpt = r.eng->search_text("chatgpt", "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+  REQUIRE(r.eng->wait_search(gpt, 5000));
+  const auto gpt_rows = r.rows(gpt);
+  REQUIRE_FALSE(gpt_rows.empty());
+  CHECK(gpt_rows.front().first == "green_gpt.jpg");
+  // #291 review: a tag word matches where a word starts ("r5", "24-70"), not
+  // anywhere inside one: "anon" is in "Canon" but is no tag hit.
+  const std::uint64_t mid = r.eng->search_text("anon", "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+  REQUIRE(r.eng->wait_search(mid, 5000));
+  const auto mid_rows = r.rows(mid);
+  for (std::size_t i = 0; i < mid_rows.size(); ++i) {
+    auto res = r.eng->result_at(mid, static_cast<std::uint32_t>(i));
+    REQUIRE(res);
+    CHECK((res->match & MV_AI_MATCH_TAGS) == 0);
+  }
+  const std::uint64_t lens = r.eng->search_text("70mm", "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+  REQUIRE(r.eng->wait_search(lens, 5000));
+  const auto lens_rows = r.rows(lens);
+  REQUIRE_FALSE(lens_rows.empty());
+  CHECK(lens_rows.front().first == "red_r5.jpg");
+}
+
+// #398: mv.ai.1 each_location, which the host serves to Places as
+// locations_of_index: the geotagged assets from index.db, no file read.
+TEST_CASE("the index lists its geotagged assets in batches, from index.db alone", "[ai][engine][tags][places]") {
+  SECTION("index_db: id order, batches, only rows with both coordinates") {
+    scratch_dir dir{"ai-located"};
+    auto d = mv::ai::index_db::open(utf8(dir / "index.db"));
+    REQUIRE(d);
+    auto root = (*d)->add_root("/library", true);
+    REQUIRE(root);
+    std::vector<mv::ai::index_db::seen_file> files;
+    for (int i = 0; i < 1200; ++i) {
+      mv::ai::index_db::seen_file f;
+      f.path = "/library/" + std::to_string(i) + ".jpg";
+      f.mtime = 1;
+      f.size = 100;
+      files.push_back(std::move(f));
+    }
+    auto ups = (*d)->see_assets(*root, files, (*d)->next_generation());
+    REQUIRE(ups);
+    CHECK((*d)->located_assets(0, 512)->empty());  // nothing read yet
+    // Every other asset geotagged; the rest read with no position.
+    std::vector<mv::ai::asset_tags> tags;
+    for (std::size_t i = 0; i < ups->size(); ++i) {
+      mv::ai::asset_tags t;
+      t.id = (*ups)[i].id;
+      t.mtime = 1;
+      t.size = 100;
+      t.has_where = i % 2 == 0;
+      t.lat = 38.0 + static_cast<double>(i) / 10000.0;
+      t.lon = -9.0;
+      tags.push_back(t);
+    }
+    REQUIRE((*d)->commit_tags(tags));
+    std::vector<mv::ai::index_db::located> all;
+    std::int64_t after = 0;
+    int batches = 0;
+    for (;;) {
+      auto batch = (*d)->located_assets(after, 512);
+      REQUIRE(batch);
+      ++batches;
+      all.insert(all.end(), batch->begin(), batch->end());
+      if (batch->size() < 512) break;
+      after = batch->back().id;
+    }
+    CHECK(batches == 2);
+    REQUIRE(all.size() == 600);
+    CHECK(all[0].path == "/library/0.jpg");
+    CHECK(std::abs(all[0].lat - 38.0) < 1e-9);
+    CHECK(all[1].path == "/library/2.jpg");
+    CHECK(std::abs(all[1].lon + 9.0) < 1e-9);
+    for (std::size_t i = 1; i < all.size(); ++i) CHECK(all[i].id > all[i - 1].id);
+  }
+  SECTION("engine: the geotagged file, and a visit that stops") {
+    rig r;
+    r.file("red_r5.jpg");
+    r.file("blue_geo.jpg");
+    r.file("green_geo.jpg");
+    r.start();
+    REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+    REQUIRE(r.idle());
+    std::vector<std::string> names;
+    REQUIRE(r.eng->each_location([&](const mv::ai::index_db::located& l) {
+      names.push_back(utf8(fs::path(l.path).filename()));
+      CHECK(std::abs(l.lat - 38.7975) < 1e-6);
+      CHECK(std::abs(l.lon + 9.3883) < 1e-6);
+      return true;
+    }));
+    std::sort(names.begin(), names.end());
+    CHECK(names == std::vector<std::string>{"blue_geo.jpg", "green_geo.jpg"});
+    int seen = 0;
+    const mv::expected stopped = r.eng->each_location([&](const mv::ai::index_db::located&) { return ++seen < 1; });
+    REQUIRE_FALSE(stopped);
+    CHECK(stopped.error() == mv::status::cancelled);
+    CHECK(seen == 1);
+  }
+}
+
+TEST_CASE("date terms use the date taken, and the file's time only when there is none", "[ai][engine][tags][dates]") {
+  rig r;
+  r.file("red_y2019.jpg");  // taken in 2019, written (mtime) today
+  r.file("red_plain.jpg");  // no date taken: its mtime, today
+  // A Photos item modified in 1970 (mtime 1) and created in 2018.
+  r.library->items = {{"red-old", 1, mv::ai::asset_kind::photo, true, "", 0}};
+  r.library->items.front().created = mv::ai::query::days_from_civil(2018, 3, 1) * 86400;
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.eng->index_photos_library());
+  REQUIRE(r.idle());
+  const int embedded = r.fast->images_embedded.load();
+  const auto names = [](const std::vector<std::pair<std::string, std::int64_t>>& rows) {
+    std::set<std::string> out;
+    for (const auto& [n, _] : rows) out.insert(n);
+    return out;
+  };
+  const auto now = std::chrono::system_clock::now();
+  const std::int64_t year_now =
+      1970 + std::chrono::duration_cast<std::chrono::hours>(now.time_since_epoch()).count() / (24 * 36525 / 100);
+  const std::string this_year = "in:" + std::to_string(year_now);
+
+  CHECK(names(r.search("in:2019")) == std::set<std::string>{"red_y2019.jpg"});
+  CHECK(names(r.search("before:2020")).count("red_y2019.jpg") == 1);
+  CHECK(names(r.search("before:2020")).count("red_plain.jpg") == 0);
+  CHECK(names(r.search("in:2019-06")) == std::set<std::string>{"red_y2019.jpg"});
+  CHECK(names(r.search("in:2019-07")).empty());
+  // The file's own time no longer dates it...
+  CHECK(names(r.search(this_year)).count("red_y2019.jpg") == 0);
+  // ...but a file with no date taken still matches on it.
+  CHECK(names(r.search(this_year)).count("red_plain.jpg") == 1);
+  // A Photos row goes by its creationDate.
+  CHECK(names(r.search("in:2018")) == std::set<std::string>{"photos:red-old"});
+  CHECK(names(r.search("in:1970")).empty());
+  // A description with a date narrows the same way.
+  CHECK(names(r.search("red in:2019")) == std::set<std::string>{"red_y2019.jpg"});
+  // Filters alone list newest first by the same date.
+  const auto all = r.search("after:2000");
+  REQUIRE(all.size() == 3);
+  CHECK(all[0].first == "red_plain.jpg");
+  CHECK(all[1].first == "red_y2019.jpg");
+  CHECK(all[2].first == "photos:red-old");
+  // Nothing was embedded again, and a restart reads the dates from the index.
+  CHECK(r.fast->images_embedded.load() == embedded);
+  r.start();
+  REQUIRE(r.idle());
+  CHECK(names(r.search("in:2019")) == std::set<std::string>{"red_y2019.jpg"});
+  CHECK(r.fast->images_embedded.load() == embedded);
+}
+
+TEST_CASE("rating:, label:, iso:, f:, mm: and shutter: in Local search (#405)", "[ai][engine][tags][exposure]") {
+  rig r;
+  r.file("red_iso400.jpg");  // ISO 400, f/2.8, 1/250, 35 mm, five stars, Red
+  r.file("red_plain.jpg");   // none of those, unrated
+  r.file("rgb_clip.mp4");    // a clip: no exposure block
+  r.file("blue_reject.jpg"); // rejected
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  const int embedded = r.fast->images_embedded.load();
+  const auto names = [](const std::vector<std::pair<std::string, std::int64_t>>& rows) {
+    std::set<std::string> out;
+    for (const auto& [n, _] : rows) out.insert(n);
+    return out;
+  };
+  const std::set<std::string> first{"red_iso400.jpg"};
+  for (const char* q : {"iso:400", "f:2.8", "mm:35", "shutter:1/250", "shutter:250", "rating:5", "rating:3+",
+                        "label:red", "label:Red", "iso:400 f:2.8 mm:35"}) {
+    CAPTURE(q);
+    CHECK(names(r.search(q)) == first);
+  }
+  CHECK(names(r.search("iso:100-200")).empty());
+  CHECK(names(r.search("iso:1600+")).empty());
+  CHECK(names(r.search("rating:0")) == std::set<std::string>{"red_plain.jpg", "rgb_clip.mp4"});
+  CHECK(names(r.search("rejected")) == std::set<std::string>{"blue_reject.jpg"});
+  CHECK(names(r.search("rating:-1")) == std::set<std::string>{"blue_reject.jpg"});
+  CHECK(names(r.search("-rating:5")).count("red_iso400.jpg") == 0);
+  CHECK(names(r.search("-rating:5")).size() == 3);
+  CHECK(names(r.search("-iso:400")).count("rgb_clip.mp4") == 1);  // no ISO: not in the range
+  // A description beside a term runs the picture tower on that subset.
+  CHECK(names(r.search("iso:400 red")) == first);
+  // The unrated red things: the photo and the clip whose first seconds are red.
+  CHECK(names(r.search("rating:0 red")) == std::set<std::string>{"red_plain.jpg", "rgb_clip.mp4"});
+  // A plain number is not a tag word: "400" finds no file by its ISO.
+  const std::uint64_t id = r.eng->search_text("400", "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+  REQUIRE(r.eng->wait_search(id, kSettleMs));
+  auto n = r.eng->result_count(id);
+  REQUIRE(n);
+  for (std::uint32_t i = 0; i < *n; ++i) {
+    auto res = r.eng->result_at(id, i);
+    REQUIRE(res);
+    CHECK((res->match & MV_AI_MATCH_TAGS) == 0);
+  }
+  CHECK(r.fast->images_embedded.load() == embedded);  // searching embeds no picture
+}
+
+TEST_CASE("an index read by an older host gains rating and exposure later without a re-embed (#405)",
+          "[ai][engine][tags][exposure]") {
+  rig r;
+  r.file("red_iso400.jpg");
+  r.file("green_r5.jpg");
+  g_old_tag_host = true;
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  const int embedded = r.fast->images_embedded.load();
+  CHECK(r.search("rating:5").empty());          // the old host said nothing of it
+  CHECK(r.search("camera:r5").size() == 1);     // what it did say is there
+  {
+    auto d = mv::ai::index_db::open(utf8(r.dir / "data" / "index.db"));
+    REQUIRE(d);
+    CHECK((*d)->tags_pending(1) == 0);
+    CHECK((*d)->tags_pending() == 2);  // level 2 owed, not spun on
+  }
+  // The app updates: the next run reads the new facts, embedding nothing.
+  g_old_tag_host = false;
+  r.start();
+  REQUIRE(r.idle());
+  CHECK(r.search("rating:5").size() == 1);
+  CHECK(r.search("iso:400").size() == 1);
+  CHECK(r.search("camera:r5").size() == 1);
+  CHECK(r.fast->images_embedded.load() == embedded);
+  r.eng.reset();
+  auto d = mv::ai::index_db::open(utf8(r.dir / "data" / "index.db"));
+  REQUIRE(d);
+  CHECK((*d)->tags_pending() == 0);
+}
+
+TEST_CASE("the tag backfill resumes after a restart and reads nothing twice", "[ai][engine][tags]") {
+  rig r;
+  r.file("red_r5.jpg");
+  r.file("green_gpt.jpg");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  CHECK(r.search("camera:r5").size() == 1);
+  // A restart: the tags come from the index, not from the host again.
+  r.start();
+  REQUIRE(r.idle());
+  CHECK(r.search("camera:r5").size() == 1);
+  CHECK(r.search("ai:yes").size() == 1);
 }
 
 TEST_CASE("find similar returns the other stills of the same look, not the query", "[ai][engine]") {
@@ -1550,6 +2189,87 @@ TEST_CASE("people in the open folder: only those with a face there, counted and 
   CHECK(r.eng->people_json(utf8(r.photos() / "sub"), MV_AI_SCOPE_ALL) == r.eng->people_json());
 }
 
+TEST_CASE("audio files are indexed only while Show audio files is on (#355)", "[ai][engine][audiofiles]") {
+  rig r;
+  r.file("red_photo.jpg");
+  r.file("red_cover.mp3");   // cover art: red
+  r.file("song.m4a");        // tags only: "Hey Jude", "The Beatles"
+  r.file("blank.m4p");       // neither: found by name alone (file:)
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  const auto names = [](const std::vector<std::pair<std::string, std::int64_t>>& rows) {
+    std::set<std::string> out;
+    for (const auto& [n, _] : rows) out.insert(n);
+    return out;
+  };
+  const auto audio_rows = [&] {
+    auto doc = mv::json::parse(r.eng->roots_json());
+    REQUIRE(doc);
+    REQUIRE(doc->k == mv::json::kind::array);
+    REQUIRE(doc->a.size() == 1);
+    return doc->a[0].integer("audio").value_or(-1);
+  };
+  const auto setting = [&] {
+    auto doc = mv::json::parse(r.eng->settings_json());
+    REQUIRE(doc);
+    return doc->boolean("audio_files");
+  };
+
+  // Off (the default): no row, no read, nothing found.
+  CHECK(setting() == false);
+  CHECK(r.status().assets_total == 1);
+  CHECK(audio_rows() == 0);
+  CHECK_FALSE(r.was_decoded("red_cover.mp3"));
+  CHECK(names(r.search("red")) == std::set<std::string>{"red_photo.jpg"});
+  CHECK(r.search("beatles").empty());
+
+  // On: the folder's audio files are walked and indexed like a new folder.
+  REQUIRE(r.eng->set_setting("audio_files", "1"));
+  CHECK(setting() == true);
+  REQUIRE(wait_for([&] { return audio_rows() == 3; }, kSettleMs));
+  REQUIRE(r.idle());
+  const mv_ai_status on = r.status();
+  CHECK(on.assets_total == 4);
+  CHECK(on.assets_done == 4);  // blank.m4p has no cover art: done, not failed
+  CHECK(on.assets_failed == 0);
+  CHECK(r.was_decoded("red_cover.mp3"));
+  CHECK(names(r.search("red")) == std::set<std::string>{"red_photo.jpg", "red_cover.mp3"});
+  CHECK(names(r.search("beatles")) == std::set<std::string>{"song.m4a"});
+  CHECK(names(r.search("hey jude")) == std::set<std::string>{"song.m4a"});
+  CHECK(names(r.search("file:blank")) == std::set<std::string>{"blank.m4p"});
+  // The kind: its own bit, the Show segment, is:audio, and an older chrome's 3.
+  {
+    const std::uint64_t id = r.eng->search_text("red", "", MV_AI_SCOPE_ALL, MV_AI_KIND_AUDIO);
+    REQUIRE(r.eng->wait_search(id, kSettleMs));
+    REQUIRE(names(r.rows(id)) == std::set<std::string>{"red_cover.mp3"});
+    auto res = r.eng->result_at(id, 0);
+    REQUIRE(res);
+    CHECK(res->kind == MV_AI_KIND_AUDIO);
+    CHECK(res->pts_ms == -1);
+  }
+  CHECK(names(r.search("red is:audio")) == std::set<std::string>{"red_cover.mp3"});
+  CHECK(names(r.search("red songs")) == std::set<std::string>{"red_cover.mp3"});
+  CHECK(names(r.search("red -is:music")) == std::set<std::string>{"red_photo.jpg"});
+  CHECK(names(r.search("red", MV_AI_SCOPE_ALL, "", MV_AI_KIND_PHOTOS | MV_AI_KIND_VIDEOS)) ==
+        std::set<std::string>{"red_photo.jpg"});
+
+  // Off again: gone from results at once, then from the index.
+  REQUIRE(r.eng->set_setting("audio_files", "0"));
+  CHECK(names(r.search("red")) == std::set<std::string>{"red_photo.jpg"});
+  CHECK(r.search("beatles").empty());
+  REQUIRE(wait_for([&] { return audio_rows() == 0; }, kSettleMs));
+  REQUIRE(r.idle());
+  CHECK(r.status().assets_total == 1);
+
+  // It persists, and a restart walks no audio back in.
+  r.start();
+  REQUIRE(r.idle());
+  CHECK(setting() == false);
+  CHECK(audio_rows() == 0);
+  CHECK(r.search("beatles").empty());
+}
+
 TEST_CASE("a file the host cannot decode fails without stopping the rest", "[ai][engine]") {
   rig r;
   r.file("broken_red.jpg");
@@ -1628,6 +2348,506 @@ TEST_CASE("audio: a clip's sounds and speech are indexed and found at their mome
   CHECK(has_row(not_said, "red_photo.jpg"));
   CHECK_FALSE(has_row(not_said, "party_talk_bark.mp4"));
   CHECK(r.search("\"make a wi").size() == 1);  // a quote still being typed
+}
+
+TEST_CASE("chapter titles and subtitle lines are found by quoted words, at their moment (#406)",
+          "[ai][engine][cues]") {
+  rig r;
+  r.file("clips/party_cues.mp4");  // red / green / blue frames, and its cues
+  r.file("clips/rgb_plain.mp4");   // no cues
+  r.start();  // no audio piece
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
+  REQUIRE(r.idle());
+  CHECK(r.status().assets_failed == 0);
+  const int embedded = r.fast->images_embedded.load();
+
+  const auto first = [&](const std::string& q) {
+    const std::uint64_t id = r.eng->search_text(q, "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+    REQUIRE(r.eng->wait_search(id, kSettleMs));
+    return id;
+  };
+  {
+    const std::uint64_t id = first("\"birthday cake\"");
+    const auto rows = r.rows(id);
+    REQUIRE(rows.size() == 1);
+    CHECK(rows[0].first == "party_cues.mp4");
+    CHECK(rows[0].second == 4000);
+    auto res = r.eng->result_at(id, 0);
+    REQUIRE(res);
+    CHECK((res->match & MV_AI_MATCH_TEXT) != 0);
+    CHECK((res->match & MV_AI_MATCH_SPEECH) == 0);
+    auto why = r.eng->result_snippet(id, 0);
+    REQUIRE(why);
+    CHECK(*why == "Chapter: Birthday cake");
+  }
+  for (const char* q : {"\"suited and booted\"", "said:suited", "said:\"and booted\""}) {
+    CAPTURE(q);
+    const std::uint64_t id = first(q);
+    const auto rows = r.rows(id);
+    REQUIRE(rows.size() == 1);
+    CHECK(rows[0].first == "party_cues.mp4");
+    CHECK(rows[0].second == 7000);
+    auto why = r.eng->result_snippet(id, 0);
+    REQUIRE(why);
+    CHECK(*why == "Subtitle: suited and booted");
+  }
+  CHECK(r.search("\"wedding cake\"").empty());
+  CHECK(r.search("-\"birthday cake\" video").size() == 1);  // the plain clip
+  // Unquoted words still run the picture tower, and the text is found too.
+  const auto red = r.search("red");
+  CHECK(has_row(red, "party_cues.mp4"));
+  CHECK(has_row(red, "rgb_plain.mp4"));
+  const auto plain = r.search("birthday cake");
+  REQUIRE_FALSE(plain.empty());
+  CHECK(plain.front().first == "party_cues.mp4");
+  CHECK(plain.front().second == 4000);
+  // Nothing is embedded for the text, and a restart reads it from the index.
+  CHECK(r.fast->images_embedded.load() == embedded);
+  const int reads = r.cue_reads.load();
+  r.start();
+  REQUIRE(r.idle());
+  CHECK(r.cue_reads.load() == reads);  // done: not read again
+  CHECK(r.rows(first("\"birthday cake\"")).size() == 1);
+  CHECK(r.fast->images_embedded.load() == embedded);
+}
+
+TEST_CASE("cues: a long clip's lines commit in batches, and a resume never doubles them", "[ai][engine][cues]") {
+  rig r;
+  r.file("clips/rgb_manycues.mp4");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
+  REQUIRE(r.idle());
+  CHECK_FALSE(r.search("\"line number 150\"").empty());
+  r.eng.reset();
+  // As a kill would leave it: progress partial at line 100's start, rows past
+  // it already in (the batch that held them was committed before the kill).
+  {
+    auto d = mv::ai::index_db::open(utf8(r.dir / "data" / "index.db"));
+    REQUIRE(d);
+    const auto all = (*d)->all_assets();
+    REQUIRE(all.size() == 1);
+    REQUIRE((*d)->commit_cues(all[0].id, {}, mv::ai::work_state::partial, 100000));
+  }
+  r.start();
+  REQUIRE(r.idle());
+  auto d = mv::ai::index_db::open(utf8(r.dir / "data" / "index.db"));
+  REQUIRE(d);
+  int n = 0;
+  REQUIRE((*d)->each_cue([&](std::int64_t, const mv::ai::cue_in&) { ++n; }));
+  CHECK(n == 200);
+  const std::uint64_t id = r.eng->search_text("\"line number 150\"", "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+  REQUIRE(r.eng->wait_search(id, kSettleMs));
+  const auto rows = r.rows(id);
+  REQUIRE(rows.size() == 1);
+  CHECK(rows[0].second == 150000);
+  auto more = r.eng->result_at(id, 0);
+  REQUIRE(more);
+  CHECK(more->more_in_clip == 0);  // one row, not a doubled line
+}
+
+TEST_CASE("re-analysing faces looks at the frames the picture pass kept (#407)", "[ai][engine][faces][moments]") {
+  rig r;
+  // Anna is on the 3 s frame alone: kept by the picture pass (it turns
+  // green there), 3 s from either kept neighbour. The People pass's own
+  // 2 s grid (0, 2, 4, 6, 8 s) would not see her.
+  r.file("clips/anna3s_rgb.mp4");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
+  REQUIRE(r.idle());
+  const int embedded = r.fast->images_embedded.load();
+  REQUIRE(r.eng->faces_enable(true));
+  REQUIRE(wait_for([&] { return (r.status().flags & MV_AI_STATUS_FACES_READY) != 0; }, kSettleMs));
+  REQUIRE(r.idle());
+  auto people = mv::json::parse(r.eng->people_json());
+  REQUIRE(people);
+  REQUIRE(people->a.size() == 1);
+  auto faces = mv::json::parse(r.eng->person_faces_json(*people->a[0].integer("id")));
+  REQUIRE(faces);
+  REQUIRE(faces->a.size() == 1);
+  CHECK(*faces->a[0].integer("pts_ms") == 3000);
+  CHECK(r.fast->images_embedded.load() == embedded);  // nothing embedded again
+}
+
+TEST_CASE("the People pass falls back to its own grid for a clip with no picture rows (#407)",
+          "[ai][engine][faces][moments]") {
+  rig r;
+  r.file("clips/anna3s_rgb.mp4");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
+  REQUIRE(r.idle());
+  r.eng.reset();
+  {
+    // As if the pictures had kept nothing for it (a poster-only clip).
+    sqlite3* db = nullptr;
+    REQUIRE(sqlite3_open(utf8(r.dir / "data" / "index.db").c_str(), &db) == SQLITE_OK);
+    REQUIRE(sqlite3_exec(db, "DELETE FROM frames;", nullptr, nullptr, nullptr) == SQLITE_OK);
+    sqlite3_close(db);
+  }
+  r.start();
+  REQUIRE(r.idle());
+  const int before = r.samplers_opened.load();
+  REQUIRE(r.eng->faces_enable(true));
+  REQUIRE(wait_for([&] { return (r.status().flags & MV_AI_STATUS_FACES_READY) != 0; }, kSettleMs));
+  REQUIRE(r.idle());
+  CHECK(r.samplers_opened.load() > before);  // the 2 s / 10 s grid ran
+  // It completes (scanned), and that grid misses the face on the 3 s frame.
+  CHECK(mv::json::parse(r.eng->people_json())->a.empty());
+}
+
+TEST_CASE("a Live Photo's motion is sampled onto its still and opens the movie (#407)", "[ai][engine][live]") {
+  rig r;
+  r.file("blue_live.jpg");  // the still: blue
+  r.file("blue_live.mov");  // its motion: red, green, then blue
+  r.file("red_raw.jpg");    // a RAW+JPEG pair stays one asset
+  r.file("red_raw.cr2");
+  r.start();
+  auto root = r.eng->index_folder(utf8(r.photos()), false);
+  REQUIRE(root);
+  REQUIRE(r.idle());
+  const mv_ai_status s = r.status();
+  CHECK(s.assets_total == 2);  // the Live Photo's still and the JPEG
+  CHECK(s.assets_failed == 0);
+
+  // "green" is only in the movie: the still's asset, at that moment, opening
+  // the movie as a clip.
+  const std::uint64_t id = r.eng->search_text("green", "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+  REQUIRE(r.eng->wait_search(id, kSettleMs));
+  const auto rows = r.rows(id);
+  REQUIRE(rows.size() == 1);
+  CHECK(rows[0].first == "blue_live.mov");
+  CHECK(rows[0].second == 3000);
+  auto res = r.eng->result_at(id, 0);
+  REQUIRE(res);
+  CHECK(res->kind == MV_AI_KIND_VIDEOS);
+  auto path = r.eng->result_path(id, 0);
+  REQUIRE(path);
+  CHECK(fs::path(*path).filename() == "blue_live.mov");
+  // N / Shift+N on the movie walk the still's moments.
+  auto moments = r.eng->clip_matches(id, *path);
+  REQUIRE(moments);
+  REQUIRE_FALSE(moments->empty());
+  CHECK(moments->front().first == 3000);
+  // The tile is the movie's moment from the viewer's cache.
+  auto thumb = r.eng->result_thumb(id, 0);
+  REQUIRE(thumb);
+  CHECK(thumb->find("blue_live.mov#3000") != std::string::npos);
+  // A match at no timestamp is the still.
+  const auto red = r.search("red");
+  CHECK(has_row(red, "red_raw.jpg"));
+  CHECK_FALSE(has_row(red, "red_raw.cr2"));
+
+  // The movie edited under the same still: only the motion is sampled again.
+  const int embeds = r.fast->images_embedded.load();
+  const int stills = r.stills_decoded.load();
+  std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+  write_bytes(r.photos() / "blue_live.mov", pattern(32, 9));
+  REQUIRE(r.eng->root_rescan(*root));
+  REQUIRE(wait_for([&] { return r.fast->images_embedded.load() > embeds; }, kSettleMs));
+  REQUIRE(r.idle());
+  CHECK(r.fast->images_embedded.load() - embeds == 9);  // the movie's nine frames, not the still
+  CHECK(r.stills_decoded.load() == stills);             // the still is not read again
+  const auto again = r.search("green");
+  REQUIRE(again.size() == 1);
+  CHECK(again[0].first == "blue_live.mov");
+}
+
+TEST_CASE("words in a photo are found by quoted and plain words (#403)", "[ai][engine][ocr]") {
+  rig r;
+  r.text_available = true;
+  r.file("red_sign.jpg");     // SUITED AND / BOOTED
+  r.file("blue_koln.jpg");    // Grüße aus / KÖLN
+  r.file("green_plain.jpg");  // no text
+  r.file("clips/rgb_clip.mp4");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
+  REQUIRE(r.idle());
+  CHECK(r.status().assets_failed == 0);
+  CHECK(r.text_reads.load() == 3);       // each photo once
+  CHECK(r.clip_text_reads.load() == 3);  // and the clip's three moments (red, green, blue)
+  const int embedded = r.fast->images_embedded.load();
+
+  const auto top = [&](const std::string& q) {
+    const std::uint64_t id = r.eng->search_text(q, "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+    REQUIRE(r.eng->wait_search(id, kSettleMs));
+    return id;
+  };
+  {
+    // The reporter's case: a phrase split over two lines of a sign.
+    const std::uint64_t id = top("\"suited and booted\"");
+    const auto rows = r.rows(id);
+    REQUIRE(rows.size() == 1);
+    CHECK(rows[0].first == "red_sign.jpg");
+    CHECK(rows[0].second == -1);
+    auto res = r.eng->result_at(id, 0);
+    REQUIRE(res);
+    CHECK((res->match & MV_AI_MATCH_TEXT) != 0);
+    auto why = r.eng->result_snippet(id, 0);
+    REQUIRE(why);
+    CHECK(*why == "In the picture: SUITED AND BOOTED");
+  }
+  {
+    // Plain words: the photo with the words leads, the picture search beside it.
+    const auto rows = r.rows(top("suited and booted"));
+    REQUIRE_FALSE(rows.empty());
+    CHECK(rows.front().first == "red_sign.jpg");
+  }
+  CHECK(r.search("\"booted and suited\"").empty());  // order matters in quotes
+  CHECK(r.search("said:booted").size() == 1);
+  // Folded both ways: "koln" finds KÖLN, "grusse" does not (ß stays itself).
+  CHECK(r.rows(top("\"koln\"")).size() == 1);
+  CHECK(r.rows(top("\"grüße aus köln\"")).size() == 1);
+  CHECK(r.rows(top("\"GRÜSSE\"")).empty());
+  // A description still runs: "red" finds the sign by its colour.
+  CHECK(has_row(r.search("red"), "red_sign.jpg"));
+  CHECK(r.fast->images_embedded.load() == embedded);  // reading text embeds nothing
+
+  // Read once, ever: a restart reads nothing again.
+  r.start();
+  REQUIRE(r.idle());
+  CHECK(r.text_reads.load() == 3);
+  CHECK(r.rows(top("\"suited and booted\"")).size() == 1);
+
+  // Turned off: a new photo is not read (and is when it comes back on).
+  REQUIRE(r.eng->set_setting("read_text", "0"));
+  r.file("blue_sign2.jpg");
+  REQUIRE(r.eng->root_rescan(1));
+  REQUIRE(wait_for([&] { return r.status().assets_total == 5; }, kSettleMs));
+  REQUIRE(r.idle());
+  CHECK(r.text_reads.load() == 3);
+  REQUIRE(r.eng->set_setting("read_text", "1"));
+  REQUIRE(wait_for([&] { return r.text_reads.load() == 4; }, kSettleMs));
+  REQUIRE(r.idle());
+  CHECK(r.rows(top("\"suited and booted\"")).size() == 2);
+}
+
+TEST_CASE("without an OS text reader nothing changes (#403)", "[ai][engine][ocr]") {
+  rig r;  // text_available false: make_text_reader's "none"
+  r.file("red_sign.jpg");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  CHECK(r.status().assets_done == 1);
+  CHECK(r.search("\"suited and booted\"").empty());
+  CHECK(r.text_reads.load() == 0);
+}
+
+TEST_CASE("words on a clip's moments find the clip at that moment (#403)", "[ai][engine][ocr][moments]") {
+  rig r;
+  r.text_available = true;
+  r.file("clips/street_sign.mp4");  // red 0-2 s, green 3-5 s, blue 6-8 s; a sign in shot from 3 s
+  r.file("green_plain.jpg");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
+  REQUIRE(r.idle());
+  CHECK(r.status().assets_failed == 0);
+  const int embedded = r.fast->images_embedded.load();
+  // Each moment the picture pass kept, read once; nothing more embedded.
+  CHECK(r.clip_text_reads.load() == 3);
+  {
+    std::lock_guard lock(r.text_m);
+    CHECK(r.sign_seconds == std::vector<int>{0, 3, 6});
+  }
+
+  const std::uint64_t id = r.eng->search_text("\"suited and booted\"", "", MV_AI_SCOPE_ALL, MV_AI_KIND_ALL);
+  REQUIRE(r.eng->wait_search(id, kSettleMs));
+  const auto rows = r.rows(id);
+  // The sign held in shot over two moments is one row, at the first.
+  REQUIRE(rows.size() == 1);
+  CHECK(rows[0].first == "street_sign.mp4");
+  CHECK(rows[0].second == 3000);
+  auto res = r.eng->result_at(id, 0);
+  REQUIRE(res);
+  CHECK((res->match & MV_AI_MATCH_TEXT) != 0);
+  CHECK(res->more_in_clip == 0);
+  auto why = r.eng->result_snippet(id, 0);
+  REQUIRE(why);
+  CHECK(*why == "In the picture: SUITED AND BOOTED");
+  CHECK(r.search("said:booted") == std::vector<std::pair<std::string, std::int64_t>>{{"street_sign.mp4", 3000}});
+
+  // Counted, and read once, ever: a restart reads nothing again.
+  CHECK(r.status().text_total == 2);  // the photo and the clip
+  CHECK(r.status().text_done == 2);
+  r.start();
+  REQUIRE(r.idle());
+  CHECK(r.clip_text_reads.load() == 3);
+  CHECK(r.search("\"suited and booted\"").size() == 1);
+  CHECK(r.fast->images_embedded.load() == embedded);
+
+  // Off: a new clip is not read; back on, it is.
+  REQUIRE(r.eng->set_setting("read_text", "0"));
+  r.file("clips/second_sign.mp4", 24);
+  REQUIRE(r.eng->root_rescan(1));
+  REQUIRE(wait_for([&] { return r.status().assets_total == 3; }, kSettleMs));
+  REQUIRE(r.idle());
+  CHECK(r.clip_text_reads.load() == 3);
+  CHECK(r.status().text_total == 0);  // no pass, nothing to count
+  REQUIRE(r.eng->set_setting("read_text", "1"));
+  REQUIRE(wait_for([&] { return r.clip_text_reads.load() == 6; }, kSettleMs));
+  REQUIRE(r.idle());
+  CHECK(r.search("\"suited and booted\"").size() == 2);
+}
+
+TEST_CASE("text on a clip's moments resumes after the last committed moment (#403)", "[ai][engine][ocr][moments]") {
+  rig r;
+  r.text_available = true;
+  r.yield_after_clip_reads = 1;  // the host gets busy as the first moment is read
+  r.file("clips/street_sign.mp4");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
+  REQUIRE(wait_for([&] { return r.clip_text_reads.load() == 1; }, kSettleMs));
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));  // yielding at the next moment
+  CHECK(r.clip_text_reads.load() == 1);
+  r.eng.reset();  // quit while yielding: the first moment commits, the rest wait
+  r.busy = false;
+  r.yield_after_clip_reads = -1;
+  r.start();
+  REQUIRE(r.idle());
+  {
+    // Every moment read once across the quit: none twice, none skipped.
+    std::lock_guard lock(r.text_m);
+    CHECK(r.sign_seconds == std::vector<int>{0, 3, 6});
+  }
+  const auto rows = r.search("\"suited and booted\"");
+  REQUIRE(rows.size() == 1);
+  CHECK(rows[0].second == 3000);
+}
+
+// Where a status wait stuck, for the failure that follows.
+static std::string status_dump(const mv_ai_status& s) {
+  std::ostringstream o;
+  o << "state " << s.state << ", yield " << s.yield_reason << ", assets " << s.assets_done << "/" << s.assets_total
+    << " (failed " << s.assets_failed << "), cues " << s.cues_done << "/" << s.cues_total << ", text " << s.text_done
+    << "/" << s.text_total << ", flags " << s.flags;
+  return o.str();
+}
+
+TEST_CASE("the status counts the cue pass, never idle while it runs (#406)", "[ai][engine][cues]") {
+  rig r;  // no OS text reader: only the cue pass is held
+  r.hold_cues = true;
+  struct release {
+    rig& r;
+    ~release() { r.hold_cues = false; }
+  } guard{r};
+  r.file("red_plain.jpg");
+  r.file("clips/birthday_cues.mp4");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
+  // The clip's cues are being read (after its pictures: claim's order).
+  const bool reading = wait_for([&] { return r.cue_reads.load() >= 1; }, kSettleMs);
+  UNSCOPED_INFO("cue reads " << r.cue_reads.load() << "; " << status_dump(r.status()));
+  REQUIRE(reading);
+  std::this_thread::sleep_for(std::chrono::milliseconds(1500));  // a status refresh or two
+  {
+    const mv_ai_status s = r.status();
+    INFO(status_dump(s));
+    CHECK(s.struct_size == sizeof(mv_ai_status));
+    CHECK(s.state != MV_AI_STATE_IDLE);
+    CHECK(s.cues_total == 1);
+    CHECK(s.cues_done == 0);
+    CHECK(s.text_total == 0);  // no reader, no text pass
+  }
+  CHECK_FALSE(r.eng->wait_idle(200));
+  r.hold_cues = false;
+  REQUIRE(r.idle());
+  const mv_ai_status s = r.status();
+  INFO(status_dump(s));
+  CHECK(s.cues_total == 1);
+  CHECK(s.cues_done == 1);
+}
+
+TEST_CASE("the status counts the text pass, never idle while it runs (#403)", "[ai][engine][ocr]") {
+  rig r;
+  r.text_available = true;
+  r.hold_text = true;  // clip moments only (rig)
+  struct release {
+    rig& r;
+    ~release() { r.hold_text = false; }
+  } guard{r};
+  r.file("red_sign.jpg");
+  r.file("clips/street_sign.mp4");
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
+  // A moment of the clip is being read (after its pictures: the `after` spec).
+  const bool reading = wait_for([&] { return r.text_holding.load() >= 1; }, kSettleMs);
+  UNSCOPED_INFO("photo reads " << r.text_reads.load() << "; " << status_dump(r.status()));
+  REQUIRE(reading);
+  std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+  {
+    const mv_ai_status s = r.status();
+    INFO(status_dump(s));
+    CHECK(s.state != MV_AI_STATE_IDLE);
+    CHECK(s.text_total == 2);  // the photo, and the clip whose pictures are done
+    CHECK(s.text_done < s.text_total);
+  }
+  CHECK_FALSE(r.eng->wait_idle(200));
+  r.hold_text = false;
+  REQUIRE(r.idle());
+  const mv_ai_status s = r.status();
+  INFO(status_dump(s));
+  CHECK(s.text_total == 2);
+  CHECK(s.text_done == 2);
+}
+
+TEST_CASE("read_text is in settings_json and outlives a restart (#403)", "[ai][engine][ocr]") {
+  rig r;
+  r.start();
+  const auto read_text = [&] {
+    auto doc = mv::json::parse(r.eng->settings_json());
+    REQUIRE(doc);
+    return doc->boolean("read_text");
+  };
+  CHECK(read_text() == true);  // on by default
+  REQUIRE(r.eng->set_setting("read_text", "0"));
+  CHECK(read_text() == false);
+  r.start();
+  CHECK(read_text() == false);
+  REQUIRE(r.eng->set_setting("read_text", "1"));
+  CHECK(read_text() == true);
+
+  // Whether the OS can read text here: the rig's has no reader until asked.
+  const auto available = [&] {
+    auto doc = mv::json::parse(r.eng->settings_json());
+    return doc && doc->boolean("text_available") == true;
+  };
+  REQUIRE(wait_for([&] { return !available(); }, kSettleMs));
+  r.text_available = true;
+  r.start();
+  REQUIRE(r.idle());
+  CHECK(available());
+}
+
+TEST_CASE("a Live Photo's movie changing keeps the still's named face (#407)", "[ai][engine][live][faces]") {
+  rig r;
+  r.file("anna_live.jpg");  // Anna on the still
+  r.file("anna_live.mov");
+  r.start();
+  auto root = r.eng->index_folder(utf8(r.photos()), false);
+  REQUIRE(root);
+  REQUIRE(r.eng->faces_enable(true));
+  REQUIRE(wait_for([&] { return (r.status().flags & MV_AI_STATUS_FACES_READY) != 0; }, kSettleMs));
+  REQUIRE(r.idle());
+  auto people = mv::json::parse(r.eng->people_json());
+  REQUIRE(people);
+  REQUIRE(people->a.size() == 1);
+  const std::int64_t anna = *people->a[0].integer("id");
+  REQUIRE(r.eng->person_rename(anna, "Anna"));
+  const auto face_ids = [&] {
+    std::set<std::int64_t> out;
+    auto faces = mv::json::parse(r.eng->person_faces_json(anna));
+    for (const auto& f : faces->a) out.insert(*f.integer("face"));
+    return out;
+  };
+  const std::set<std::int64_t> before = face_ids();
+  REQUIRE(before.size() == 1);
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+  write_bytes(r.photos() / "anna_live.mov", pattern(32, 9));
+  const int embeds = r.fast->images_embedded.load();
+  REQUIRE(r.eng->root_rescan(*root));
+  REQUIRE(wait_for([&] { return r.fast->images_embedded.load() > embeds; }, kSettleMs));
+  REQUIRE(r.idle());
+  CHECK(face_ids() == before);  // the same face row, still Anna's
+  CHECK(r.search("Anna").size() == 1);
 }
 
 TEST_CASE("audio: a folder indexed for pictures only does no audio work", "[ai][engine][audio]") {
@@ -3214,4 +4434,62 @@ TEST_CASE("re-analysing faces keeps the user's people and settles once at the en
   CHECK(*people->a[1].integer("faces") == 2);
   CHECK(r.status().faces_total == 5);  // replaced in place, not added again
   CHECK(r.search("photos of Anna").size() == 3);
+}
+
+// The status refresh runs once a second, indexing or idle (control_loop): what
+// the text passes' three counts add to it, against the picture count it
+// already makes, on a 25,000-asset index where every pass is done. Hidden:
+// `mv_ai_tests "[.perf-bench]"` prints the medians as JSON.
+TEST_CASE("perf: the text passes' status counts on a 25 k index", "[.perf-bench][ai][engine]") {
+  scratch_dir dir{"ai-counts"};
+  auto d = mv::ai::index_db::open(utf8(dir / "index.db"));
+  REQUIRE(d);
+  auto root = (*d)->add_root("/library", true);
+  REQUIRE(root);
+  std::vector<mv::ai::index_db::seen_file> files;
+  for (int i = 0; i < 25000; ++i) {
+    mv::ai::index_db::seen_file f;
+    f.kind = i % 5 == 0 ? mv::ai::asset_kind::video : mv::ai::asset_kind::photo;
+    f.path = "/library/" + std::to_string(i) + (f.kind == mv::ai::asset_kind::video ? ".mov" : ".jpg");
+    f.mtime = 1;
+    f.size = 100;
+    files.push_back(std::move(f));
+  }
+  const std::int64_t gen = (*d)->next_generation();
+  auto ups = (*d)->see_assets(*root, files, gen);
+  REQUIRE(ups);
+  const std::string pic = "fake/pic", ocr = "ocr/fake/1", moments = "ocr/fake/1/moments";
+  for (std::size_t i = 0; i < ups->size(); ++i) {
+    const std::int64_t id = (*ups)[i].id;
+    const bool video = files[i].kind == mv::ai::asset_kind::video;
+    REQUIRE((*d)->commit_cues(id, {}, mv::ai::work_state::done, 0, -1, pic));
+    REQUIRE((*d)->commit_cues(id, {}, mv::ai::work_state::done, 0, -1, video ? moments : ocr));
+    if (video) REQUIRE((*d)->commit_cues(id, {}, mv::ai::work_state::done, 0, -1));
+  }
+  const std::uint32_t media = MV_AI_MEDIA_PICTURES;
+  const auto time = [](const std::function<void()>& f) {
+    std::vector<double> ms;
+    for (int i = 0; i < 30; ++i) {
+      const auto t0 = std::chrono::steady_clock::now();
+      f();
+      ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+    }
+    std::sort(ms.begin(), ms.end());
+    return ms[ms.size() / 2];
+  };
+  const double pictures = time([&] {
+    CHECK((*d)->count(pic, mv::ai::track_filter{true, MV_AI_MEDIA_PICTURES, media, 0, {}}).done == 25000);
+  });
+  const double cues = time([&] {
+    CHECK((*d)->count(mv::ai::kCueSpec, mv::ai::track_filter{false, MV_AI_MEDIA_BOTH, media, 0, {}}).done == 5000);
+  });
+  const double photos_text = time([&] {
+    CHECK((*d)->count(ocr, mv::ai::track_filter{true, 0, media, 0, {}}).done == 20000);
+  });
+  const double moments_text = time([&] {
+    CHECK((*d)->count(moments, mv::ai::track_filter{false, MV_AI_MEDIA_PICTURES, media, 0, {}}, pic).done == 5000);
+  });
+  std::printf("{\"assets\":25000,\"pictures_count_ms\":%.2f,\"cues_count_ms\":%.2f,\"text_count_ms\":%.2f,"
+              "\"moments_count_ms\":%.2f,\"added_ms_per_refresh\":%.2f}\n",
+              pictures, cues, photos_text, moments_text, cues + photos_text + moments_text);
 }
