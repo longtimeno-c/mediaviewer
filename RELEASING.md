@@ -26,7 +26,7 @@ bump the version, commit changes, or push them for you.
 |---|---|---|
 | `artifacts` (default) | Unsigned installers in Actions artifacts, retained 30 days | None |
 | `preview` | Both installers and signed update feeds as a **Pre-release**, for the Preview update channel | Same as stable |
-| `stable` | Both installers, signed update feeds, and the Import, Places and Local search add-ons, marked **Latest** | Windows manifest key + all six Mac secrets; Azure optional |
+| `stable` | Both installers, signed update feeds, and the Import, Sharepoint, Places and Local search add-ons, marked **Latest** | Windows manifest key + all six Mac secrets; Azure optional |
 
 After the updated workflow is on `main`, the equivalent commands are:
 
