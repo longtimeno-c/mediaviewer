@@ -628,6 +628,22 @@ a virtualising `ItemsRepeater`. `input_snapshot` carries `chrome_bottom_px` / `c
 `ShouldConstrainToRootBounds = false` so they are siblings of the swapchain. Decoded pixels never
 go to a XAML `Image`.
 
+**Command bar menus stay visible (2026-10-15).** Open, View, Edit, Settings, About and `?` were
+losing the bar whenever a large change added an Auto-sized neighbour (the folder trail, an import
+hint, an indexing pill, an add-on icon). Those neighbours sat beside a Star column, the Star
+column shrank to nothing, and the new item painted over the menus. The menu cluster is an Auto
+column. The trail is the only column that gives up width, and `?` is its own Auto column on the
+right. New bar items go in the menu row or the trail, not in a new Star column on the left. The
+bar is one 48 DIP row. A star row under it is 0 tall while the island is only the bar, and content
+measured into that row blanks the menus — Settings is an overlay added after the island has grown
+to the client, not a child of a star row.
+
+**No XAML object in an `IslandHost` static initializer (2026-10-15).** From 2026-10-11 the chrome
+did not attach at all — no command bar, gallery or chrome keys. `Attach` touches `IslandHost`
+statics (`RegisterUiFont`) before `EnsureApp` starts XAML, and an eager `SymbolFont` `FontFamily`
+threw `RPC_E_WRONG_THREAD` from the type initializer. XAML statics are lazy (`IconFont`,
+`SymbolFont`), built on first use after XAML is up.
+
 **Tear the chrome down before `DestroyWindow` (2026-09-13).** Chrome-on exits fail-fast about one
 in five (`0xC0000602`, `CoreUIComponents.dll`) when islands were disposed during `WM_DESTROY`.
 In `WM_CLOSE`, while the parent is whole: detach every island, pump pending messages once
