@@ -340,6 +340,17 @@ internal sealed class Look
                 {
                     return $"Downloading from OneDrive ({(int)Math.Round(s.CloudFetchProgress * 100)}%) · {n(s.CloudFilesLeft)} left to index";
                 }
+                // After the pictures, the pack reads a clip's own text, then the
+                // text in pictures (before sound and speech, which have their own line).
+                bool picturesDone = s.AssetsDone + s.AssetsFailed + s.AssetsUnavailable + s.CloudFilesLeft >= s.AssetsTotal;
+                if (picturesDone && s.CuesDone < s.CuesTotal)
+                {
+                    return $"Reading chapters and subtitles {n(s.CuesDone)} of {n(s.CuesTotal)} clips";
+                }
+                if (picturesDone && s.TextDone < s.TextTotal)
+                {
+                    return $"Reading text in pictures {n(s.TextDone)} of {n(s.TextTotal)}";
+                }
                 // Online-only files wait for the fetch: they are not "of" the work in hand.
                 return $"Indexing {n(s.AssetsDone)} of {n(s.AssetsTotal - Math.Min(s.AssetsTotal, s.CloudFilesLeft))}" + Eta(s);
             default:

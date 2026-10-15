@@ -241,6 +241,25 @@ public sealed class AiChrome : IAddonChrome, ISearchChrome
         });
     }
 
+    /// <summary>"Show audio files" as last sent (#355): the Audio segment and
+    /// the Settings copy follow it.</summary>
+    internal bool AudioFiles { get; private set; }
+
+    public void OnShowAudioChanged(bool on)
+    {
+        bool changed = on != AudioFiles;
+        AudioFiles = on;
+        // A reader (a second window) changes nothing; it only follows.
+        if (_api is not null && !ReadOnly)
+        {
+            try { _api.SetSetting("audio_files", on ? "1" : "0"); }
+            catch (MediaViewerException) { }
+        }
+        if (!changed) return;
+        _window?.OnAudioFilesChanged();
+        _panel?.RefreshSettings();
+    }
+
     public object? BuildSettingsPanel()
     {
         if (_api is null || _host is null) return null;

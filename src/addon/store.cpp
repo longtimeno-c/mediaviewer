@@ -164,7 +164,7 @@ bool store::best_in(const std::string& name, installed& best) const {
   return have;
 }
 
-bool store::peek(const std::string& name, manifest& out) const {
+bool store::peek(const std::string& name, manifest& out, install_state* state) const {
   const std::string addon_dir = io::join_path(root_, name);
   if (io::stat_path(io::join_path(addon_dir, kRemoveMarker))) return false;
   for (const std::string& v : versions_newest_first(addon_dir)) {
@@ -175,10 +175,27 @@ bool store::peek(const std::string& name, manifest& out) const {
     const decision d = check_manifest(*bytes, *sig, key_, host_api_);
     if (d.trusted() || d.why == rejection::needs_update) {
       out = d.m;
+      if (state) {
+        *state = d.why == rejection::needs_update ? install_state::needs_update : install_state::ok;
+      }
       return true;
     }
   }
   return false;
+}
+
+std::vector<store::listed> store::manifests() const {
+  std::vector<listed> out;
+  auto dirs = io::child_directories(root_);
+  if (!dirs) return out;
+  for (const std::string& name : *dirs) {
+    listed l;
+    // .staging is a download in progress, not an install; a manifest in the
+    // wrong folder is list()'s unsafe_path, never a candidate.
+    if (!peek(name, l.m, &l.state) || dir_name_for(l.m) != name) continue;
+    out.push_back(std::move(l));
+  }
+  return out;
 }
 
 result<installed> store::find(const std::string& id) const {

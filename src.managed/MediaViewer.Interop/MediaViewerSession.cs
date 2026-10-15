@@ -170,6 +170,58 @@ public sealed partial class MediaViewerSession : IDisposable
 
     public string FolderDirectory => ReadUtf8(NativeMethods.mv_folder_directory);
 
+    /// <summary>
+    /// #291 (ABI 0.28): the folder's stops whose tags hold every word of
+    /// <paramref name="query"/>, as JSON {"done","total","reading","hits":[[index,"why"],...]}.
+    /// Empty on a core older than 0.20. Never reads a file.
+    /// </summary>
+    public string FolderTagSearch(string query)
+    {
+        try
+        {
+            NativeMethods.mv_folder_tag_search(_handle, query, IntPtr.Zero, 0, out uint need);
+            // The pass runs on a worker: the answer can grow between the size
+            // call and the copy, and a cut copy is JSON that does not parse
+            // (the search would then miss its hits and stop polling). Ask
+            // again with the bigger size; slack covers most growth at once.
+            for (int attempt = 0; attempt < 4 && need > 1; ++attempt)
+            {
+                uint cap = need + 4096;
+                IntPtr buf = Marshal.AllocHGlobal((int)cap);
+                try
+                {
+                    ThrowIfFailed(NativeMethods.mv_folder_tag_search(_handle, query, buf, cap, out need));
+                    if (need <= cap) return Marshal.PtrToStringUTF8(buf) ?? string.Empty;
+                }
+                finally
+                {
+                    Marshal.FreeHGlobal(buf);
+                }
+            }
+            return string.Empty;
+        }
+        catch (EntryPointNotFoundException)
+        {
+            return string.Empty;
+        }
+    }
+
+    /// <summary>#291: moves when the tag pass learns more (0 on an older core).</summary>
+    public ulong FolderTagGeneration
+    {
+        get
+        {
+            try
+            {
+                return NativeMethods.mv_folder_tag_generation(_handle, out ulong g) == MvStatus.Ok ? g : 0;
+            }
+            catch (EntryPointNotFoundException)
+            {
+                return 0;
+            }
+        }
+    }
+
     public uint FolderSubfolderCount
     {
         get

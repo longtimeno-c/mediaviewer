@@ -36,8 +36,14 @@ final class FileDragSource: NSObject, NSDraggingSource {
   /// Call from a gesture callback, on the main thread.
   @MainActor
   func begin(_ list: () -> [(path: String, image: CGImage?)]) {
+    guard let event = NSApp.currentEvent else { return }
+    begin(with: event, list)
+  }
+
+  /// As above, from `event` (a left-mouse drag an event monitor saw, #413).
+  @MainActor
+  func begin(with event: NSEvent, _ list: () -> [(path: String, image: CGImage?)]) {
     guard !active,
-          let event = NSApp.currentEvent,
           event.type == .leftMouseDragged || event.type == .leftMouseDown,
           let view = event.window?.contentView else { return }
     let files = list().filter { $0.path.hasPrefix("/") }

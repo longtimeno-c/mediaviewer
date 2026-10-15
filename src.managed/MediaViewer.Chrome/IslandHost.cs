@@ -80,6 +80,23 @@ public static partial class IslandHost
         public const int AddonState = 1010;
         public const int OpenPath = 1011;
         public const int HomeColour = 1016;
+        // Issue #408: the theme's other tokens and the built-in's ground for the
+        // native empty window, sent before HomeColour, which publishes them
+        // (chrome_host.h chrome_cmd_home_surface .. home_effect_size).
+        public const int HomeSurface = 1070;
+        public const int HomeTitle = 1071;
+        public const int HomeBody = 1072;
+        public const int HomeHairline = 1073;
+        public const int HomeAccent = 1074;
+        public const int HomeEffect = 1075;
+        public const int HomeEffectRgb = 1076;
+        public const int HomeEffectIntensity = 1077;
+        public const int HomeEffectSpeed = 1078;
+        public const int HomeEffectSize = 1079;
+        public const int HomeGroundInput = 1080;
+        // The filmstrip hint card's "Got it" (chrome_cmd_hint_learned,
+        // IslandHost.HintNotice.cs). Not in Checksum, as the Home ids are not.
+        public const int HintLearned = 1081;
         // Issue #38: arg 1 while a scrub or the More flyout holds the transport
         // up, 0 when it lets go (chrome_cmd_transport_hold).
         public const int TransportHold = 1017;
@@ -173,8 +190,15 @@ public static partial class IslandHost
         public const int VideoMuted = 1032;
         public const int VideoTrack = 1033;
         public const int VideoLoop = 1034;
+        // docs/design/25 PR 56: Settings applied a keymap pack; native pulls the
+        // pack's JSON with TakeTreePath (chrome_cmd_apply_keymap). Not in
+        // Checksum: chrome_command_checksum() does not list it either.
+        public const int ApplyKeymap = 1050;
         // Issue #210: the rename popup's Enter; native takes the parked name.
         public const int Rename = 1035;
+        // Issue #413: the gallery's shift-click range; native takes the parked
+        // indices (arg: the anchor, still selected).
+        public const int GalleryRange = 1036;
         public const int RotateCcw = 96;
         public const int RotateCw = 97;
         public const int FlipHorizontal = 98;
@@ -222,7 +246,7 @@ public static partial class IslandHost
                 DragItems, DragEnded, OpenRecent,
                 EditorTrimGrab, EditorTrimTo, OpenInApp,
                 VideoVolume, VideoMuted, VideoTrack, VideoLoop,
-                Rename,
+                Rename, GalleryRange,
             };
             unchecked
             {
@@ -263,8 +287,7 @@ public static partial class IslandHost
         public const int FilmstripForImage = 1 << 1;
         public const int Wrap = 1 << 2;
         public const int StickyZoom = 1 << 3;
-        public const int BackgroundShift = 4;
-        public const int BackgroundMask = 7 << 4;
+        // Bits 4-6 were the canvas background, removed by issue #408 (settings.h).
         // [update] auto_check, not a view setting (update_guard.h kChromeFlagUpdateAutoCheck).
         public const int UpdateAutoCheck = 1 << 8;
         // [telemetry] enabled / asked (telemetry.h kChromeFlagTelemetry*).
@@ -277,6 +300,9 @@ public static partial class IslandHost
         // Set = folders list the kind (settings.h kSettingShow*). Off by default.
         public const int ShowAudio = 1 << 12;
         public const int ShowDocuments = 1 << 13;
+        // #345: set = the AI badge is hidden (settings.h kSettingHideAiBadge), so
+        // it is on by default and in every word saved before the bit existed.
+        public const int HideAiBadge = 1 << 14;
     }
 
     // Telemetry is absent from this initial word on purpose: until native
@@ -374,6 +400,10 @@ public static partial class IslandHost
                 ? null
                 : Marshal.GetDelegateForFunctionPointer<NativeCommand>(checked((IntPtr)args.OnCommand));
             _themeWindow = parent;
+            // Issue #408: the ground's clock reads the window's visibility, and
+            // input over the islands reaches the native empty window's ground.
+            ThemeMotion.Window = parent;
+            ThemeMotion.ForwardInput = () => _onCommand?.Invoke(_context, Command.HomeGroundInput, 0);
             RefreshTheme();
 
             if (_source is not null) _source.TakeFocusRequested -= OnTakeFocusRequested;
@@ -502,7 +532,11 @@ public static partial class IslandHost
         try
         {
             int kind = FocusKind.CommandBar;
-            if (_popupTakesText || IsTypeInField(e.NewFocusedElement))
+            // #352: the Location confirmation's buttons take Enter / Tab and leave on
+            // Esc (= Cancel, through DropDraft), as a field does.
+            bool metaConfirm = _metaConfirmLocation && e.NewFocusedElement is UIElement inPane &&
+                               inPane.XamlRoot is XamlRoot paneRoot && OwnsRoot(_metaPane, paneRoot);
+            if (_popupTakesText || metaConfirm || IsTypeInField(e.NewFocusedElement))
             {
                 kind = FocusKind.Text;
             }
@@ -540,6 +574,7 @@ public static partial class IslandHost
             Move(_source, args.Width, args.Height, args.Y);
             _barTop = Math.Max(0, args.Y);
             PlaceResumeNotice();  // the bottom-right corner moved (issue #299)
+            PlaceHintNotice();
             return 0;
         }
         catch (Exception ex)
@@ -595,7 +630,14 @@ public static partial class IslandHost
         {
             if (arg == IntPtr.Zero || sizeBytes < FlagsArgsSize) return unchecked((int)0x80070057);
             ChromeFlagsArgs args = Marshal.PtrToStructure<ChromeFlagsArgs>(arg);
+            bool audioWas = HasFlag(SettingFlag.ShowAudio);
             _settingFlags = args.Flags;
+            if (HasFlag(SettingFlag.ShowAudio) != audioWas)
+            {
+                // #355: Local search indexes audio files only while this is on.
+                try { SearchChrome?.OnShowAudioChanged(!audioWas); }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
+            }
             _sortPacked = args.Sort & 0xFF;
             _kindFilter = (args.Sort >> 8) & 15;
             UpdateChannelApplied();
@@ -680,7 +722,7 @@ public static partial class IslandHost
     {
         Button speed = TextButton(SpeedLabel(_videoRate), () => { });
         if (speed.Content is TextBlock label) label.FontSize = TypeCaption;
-        speed.Padding = new Thickness(8, 7, 8, 7);
+        speed.Padding = Pad(8, 7, 8, 7);
         SetIconTip(speed, SpeedTip());
         var menu = new MenuFlyout
         {
@@ -767,6 +809,11 @@ public static partial class IslandHost
         }
         _busyDelay?.Stop();
         _busyDelay = null;
+        _hintNoticeTimer?.Stop();
+        _hintNoticeTimer = null;
+        // docs/design/25 PR 58: add-on screen windows are WinUI Windows on this
+        // thread's XAML runtime; they close before it goes.
+        CloseScreenWindowsForShutdown();
         ShutdownTheme();
         _xaml?.Dispose();
         _xaml = null;
@@ -817,11 +864,14 @@ public static partial class IslandHost
 
     // docs/design/16 Focus: the rings Tab crosses, in screen reading order —
     // command bar, folder tree, gallery, the right column (Edit, metadata,
-    // adjust, jobs), transport, filmstrip — and then the canvas. A ring is
-    // visible while its island has content (hidden ones are dropped and parked).
+    // adjust, jobs), transport, filmstrip, the AI badge while it is up (#345:
+    // it sits on the canvas, so it is the last ring before it) — and then the
+    // canvas. A ring is visible while its island has content (hidden ones are
+    // dropped and parked).
     private static DesktopWindowXamlSource?[] FocusOrder() => new[]
     {
         _source, _tree, _gallery, _editPane, _metaPane, _adjustPane, _jobsPane, _transport, _filmstrip,
+        _aiBadgeShown ? _aiBadge : null,
     };
 
     private static bool _focusWalking;
@@ -869,7 +919,8 @@ public static partial class IslandHost
     // after WindowsXamlManager; a static FontFamily ctor runs too early.
     private const string UiFontFile = "CozetteVector.ttf";
     private const string UiFontFamilyName = "CozetteVector";
-    private const double UiFontSize = 16;
+    // In the theme's type scale (IslandHost.Theme.cs TypeSize), 16 without one.
+    private static double UiFontSize => TypeSize(16);
     private static FontFamily? _uiFont;
     private static FontFamily UiFont => _uiFont ??= LoadUiFont();
     private static string? _gdiFontPath;
@@ -1006,8 +1057,8 @@ public static partial class IslandHost
         style.Setters.Add(new Setter(FlyoutPresenter.BackgroundProperty, Brush(Canvas)));
         style.Setters.Add(new Setter(FlyoutPresenter.BorderBrushProperty, Brush(Hairline)));
         style.Setters.Add(new Setter(FlyoutPresenter.BorderThicknessProperty, new Thickness(1)));
-        style.Setters.Add(new Setter(FlyoutPresenter.CornerRadiusProperty, new CornerRadius(RadiusFlyout)));
-        style.Setters.Add(new Setter(FlyoutPresenter.PaddingProperty, new Thickness(4)));
+        style.Setters.Add(new Setter(FlyoutPresenter.CornerRadiusProperty, Corner(RadiusFlyout)));
+        style.Setters.Add(new Setter(FlyoutPresenter.PaddingProperty, Pad(4)));
         style.Setters.Add(new Setter(FlyoutPresenter.FontFamilyProperty, UiFont));
         style.Setters.Add(new Setter(FlyoutPresenter.FontSizeProperty, UiFontSize));
         style.Setters.Add(new Setter(Control.AllowFocusOnInteractionProperty, true));
@@ -1020,8 +1071,8 @@ public static partial class IslandHost
         style.Setters.Add(new Setter(MenuFlyoutPresenter.BackgroundProperty, Brush(Canvas)));
         style.Setters.Add(new Setter(MenuFlyoutPresenter.BorderBrushProperty, Brush(Hairline)));
         style.Setters.Add(new Setter(MenuFlyoutPresenter.BorderThicknessProperty, new Thickness(1)));
-        style.Setters.Add(new Setter(MenuFlyoutPresenter.CornerRadiusProperty, new CornerRadius(RadiusFlyout)));
-        style.Setters.Add(new Setter(MenuFlyoutPresenter.PaddingProperty, new Thickness(4)));
+        style.Setters.Add(new Setter(MenuFlyoutPresenter.CornerRadiusProperty, Corner(RadiusFlyout)));
+        style.Setters.Add(new Setter(MenuFlyoutPresenter.PaddingProperty, Pad(4)));
         style.Setters.Add(new Setter(MenuFlyoutPresenter.FontFamilyProperty, UiFont));
         style.Setters.Add(new Setter(MenuFlyoutPresenter.FontSizeProperty, UiFontSize));
         return style;
@@ -1036,7 +1087,7 @@ public static partial class IslandHost
             FontFamily = UiFont,
             FontSize = UiFontSize,
             Background = new SolidColorBrush(Colors.Transparent),
-            Padding = new Thickness(12, 8, 12, 8),
+            Padding = Pad(12, 8, 12, 8),
         };
         // Lightweight resources, never a template (see TextButton): the
         // chrome's washes and colours in place of Windows' own.
@@ -1046,7 +1097,7 @@ public static partial class IslandHost
             item.Resources[key] = Brush(Title);
         item.Resources["MenuFlyoutItemForegroundDisabled"] = Brush(ChromeColour.Disabled);
         item.Resources["MenuFlyoutItemKeyboardAcceleratorTextForeground"] = Brush(Body);
-        item.CornerRadius = new CornerRadius(RadiusButton);
+        item.CornerRadius = Corner(RadiusButton);
         if (!string.IsNullOrEmpty(shortcut))
         {
             item.KeyboardAcceleratorTextOverride = shortcut;
@@ -1415,10 +1466,10 @@ public static partial class IslandHost
         var row = new StackPanel
         {
             Orientation = Orientation.Horizontal,
-            Spacing = 2,
+            Spacing = Space(2),
             HorizontalAlignment = HorizontalAlignment.Left,
             VerticalAlignment = VerticalAlignment.Center,
-            Padding = new Thickness(8, 0, 8, 0),
+            Padding = Pad(8, 0, 8, 0),
         };
         row.Children.Add(openBtn);
         row.Children.Add(viewBtn);
@@ -1435,10 +1486,28 @@ public static partial class IslandHost
 
         // Menus left; the folder trail, then `?` on the far right. Speed is in
         // the transport strip (issue #195).
+        //
+        // The menu cluster is Auto, never Star. A Star column here shrinks to
+        // nothing as soon as a change adds an Auto neighbour (the path, a hint,
+        // a pill, an add-on icon), and that neighbour paints over Open / View /
+        // Settings — the bar looks gone. New items belong in `row` (they keep
+        // their width; the window clips them after the menus) or in the path
+        // (FitBarPath is what shrinks). `?` is its own Auto column so it stays
+        // at the right edge. There is no star *row*: while this island is the
+        // 48 DIP bar a star row is 0 tall, and content measured into it blanks
+        // the menus. Settings is an overlay, added once the island has grown.
         FrameworkElement path = BuildBarPathRow();
-        var bar = new Grid { VerticalAlignment = VerticalAlignment.Stretch };
-        bar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        var bar = new Grid
+        {
+            Height = 48,
+            VerticalAlignment = VerticalAlignment.Top,
+        };
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        bar.ColumnDefinitions.Add(new ColumnDefinition
+        {
+            Width = new GridLength(1, GridUnitType.Star),
+            MinWidth = 0,
+        });
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         Grid.SetColumn(row, 0);
         bar.Children.Add(row);
@@ -1446,6 +1515,27 @@ public static partial class IslandHost
         bar.Children.Add(path);
         Grid.SetColumn(helpBtn, 2);
         bar.Children.Add(helpBtn);
+        _commandBar = bar;
+        _commandBarMenus = row;
+        bar.SizeChanged += (_, _) => FitBarPath();
+        row.SizeChanged += (_, _) => FitBarPath();
+        helpBtn.SizeChanged += (_, _) => FitBarPath();
+
+        var rule = new Border
+        {
+            Background = Brush(Hairline),
+            Height = 1,
+            VerticalAlignment = VerticalAlignment.Bottom,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            IsHitTestVisible = false,
+        };
+        Grid.SetColumnSpan(rule, 3);
+        bar.Children.Add(rule);
+        Grid busy = BuildBusyBar();
+        busy.VerticalAlignment = VerticalAlignment.Bottom;
+        busy.Margin = new Thickness(0, 0, 0, 1);  // sits on the 1-DIP rule: a hairline, not spacing
+        Grid.SetColumnSpan(busy, 3);
+        bar.Children.Add(busy);
 
         var root = new Grid
         {
@@ -1454,24 +1544,16 @@ public static partial class IslandHost
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Stretch,
         };
-        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(48) });
-        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1) });
-        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        Grid.SetRow(bar, 0);
         root.Children.Add(bar);
-        Grid busy = BuildBusyBar();
-        Grid.SetRow(busy, 0);
-        root.Children.Add(busy);
         _chromeRoot = root;
         WireFileDrop(root);
-        // Settings is built on first open. Building it into the 48 DIP bar at
-        // attach left the command row blank (star-row height 0).
-        var rule = new Border { Background = Brush(Hairline) };
-        Grid.SetRow(rule, 1);
-        root.Children.Add(rule);
+        // Settings is built on first open, into this grid, only after native
+        // has grown the island to the client. Building it into the 48 DIP bar
+        // left the screen blank.
         root.PreviewKeyDown += OnSettingsKeyDown;
         root.PreviewKeyUp += OnSettingsKeyUp;
         root.KeyDown += OnSettingsNavigationKeyDown;
+        ThemeField.Lay(root);
         return root;
     }
 

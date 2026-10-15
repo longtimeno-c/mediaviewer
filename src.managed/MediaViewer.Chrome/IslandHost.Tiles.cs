@@ -57,10 +57,17 @@ public static partial class IslandHost
     /// tile scrolled or arrowed past alive, and each thumb completion walks a
     /// growing list of dead elements.
     /// </summary>
-    private static void BindTile(Border tile, INotifyPropertyChanged vm, PropertyChangedEventHandler onChanged)
+    private static void BindTile(Border tile, INotifyPropertyChanged vm, PropertyChangedEventHandler onChanged,
+                                 Action? alsoUnsubscribe = null)
     {
         vm.PropertyChanged += onChanged;
-        tile.Tag = (Action)(() => vm.PropertyChanged -= onChanged);
+        tile.Tag = alsoUnsubscribe is null
+            ? (Action)(() => vm.PropertyChanged -= onChanged)
+            : (Action)(() =>
+            {
+                vm.PropertyChanged -= onChanged;
+                alsoUnsubscribe();
+            });
     }
 
     /// <summary>The other half of <see cref="BindTile"/>, for RecycleElement.</summary>

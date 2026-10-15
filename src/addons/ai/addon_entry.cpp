@@ -282,6 +282,20 @@ mv_status MV_CALL t_people_reanalyse(void* ctx) {
     return r ? MV_OK : to_mv(r.error());
   });
 }
+mv_status MV_CALL t_each_location(void* ctx, mv_addon_location_fn visit, void* user) {
+  return guard([&] {
+    if (!visit) return MV_ERR_INVALID_ARG;
+    auto r = eng(ctx).each_location([&](const mv::ai::index_db::located& l) {
+      mv_addon_location_entry e{};
+      e.path_utf8 = l.path.c_str();
+      e.location.has = 1;
+      e.location.lat = l.lat;
+      e.location.lon = l.lon;
+      return visit(user, &e) != 0;
+    });
+    return r ? MV_OK : to_mv(r.error());
+  });
+}
 mv_status MV_CALL t_search_person(void* ctx, uint64_t person, const char* scope_dir, uint32_t scope,
                                   uint64_t* out_id) {
   return guard([&] {
@@ -416,9 +430,14 @@ mv_status make(uint32_t host_api, const mv_host_api* host, mv_addon_api* out, bo
     if (host_api < kHostApiMin || host_api > kHostApiMax || host->host_api < kHostApiMin) {
       return MV_ERR_UNSUPPORTED_FORMAT;
     }
-    if (host->struct_size < sizeof(mv_host_api)) return MV_ERR_UNSUPPORTED_FORMAT;
+    // Every row up to read_cues is required; a row appended after it (#398's
+    // locations_of_index, which the pack serves rather than calls) may be
+    // missing from an older host's table and stays NULL in the copy.
+    constexpr std::size_t kNeeded = offsetof(mv_host_api, read_cues) + sizeof(host->read_cues);
+    if (host->struct_size < kNeeded) return MV_ERR_UNSUPPORTED_FORMAT;
     auto state = std::make_unique<addon_state>();
-    state->host = *host;
+    std::memcpy(&state->host, host, std::min<std::size_t>(host->struct_size, sizeof(mv_host_api)));
+    state->host.struct_size = static_cast<uint32_t>(std::min<std::size_t>(host->struct_size, sizeof(mv_host_api)));
     state->h = std::make_unique<mv::ai::host>(&state->host);
     auto data = state->h->data_dir();
     if (!data) return to_mv(data.error());
@@ -478,6 +497,7 @@ mv_status make(uint32_t host_api, const mv_host_api* host, mv_addon_api* out, bo
     a.people_dedupe = &t_people_dedupe;
 
     a.people_reanalyse = &t_people_reanalyse;
+    a.each_location = &t_each_location;
 
     *out = mv_addon_api{};
     out->struct_size = sizeof(mv_addon_api);

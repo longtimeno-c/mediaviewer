@@ -49,11 +49,21 @@ $allowed = [ordered]@{
     # through the host function table and may include only core's
     # header-only pieces (result.h, status.h, json.h) and themselves.
     'addon'  = @('addon', 'io', 'core')
+    # docs/design/06 "Place": the offline reverse geocoder. geo.cpp/fold.h use
+    # only core's header-only pieces so the Places add-on can link them; open.cpp
+    # maps a file through io/. Nothing in the app's own graph (meta, abi, shell)
+    # may include it: places arrive through the Places add-on, never hard-wired.
+    'geo'    = @('geo', 'io', 'core')
     # docs/design/17: infer/ is ONNX Runtime behind our own interface, linked
     # into the AI pack only. It needs nothing but core; the AI add-on
     # (addons/ai) is its one consumer.
     'infer'  = @('infer', 'core')
-    'addons' = @('addons', 'infer', 'core')
+    # 2026-10-15 (#410): io too. Sharepoint writes what it receives through the
+    # file port's exclusive create, durable flush and no-replace rename (the
+    # rules of io::verified_copy), compiled into its own module as Places
+    # compiles io/mapped_file: still nothing of the core is linked, and geo,
+    # which add-ons already use, sits on io.
+    'addons' = @('addons', 'geo', 'infer', 'io', 'core')
     'abi'    = @('abi', 'addon', 'canvas', 'edit', 'player', 'image', 'meta', 'codec', 'gfx', 'io', 'core')
     # docs/design/23: the Mac app's main() hands `--search-agent` to nle's agent.
     'shell'  = @('shell', 'abi', 'addon', 'nle', 'canvas', 'edit', 'player', 'image', 'meta', 'codec', 'gfx', 'io', 'core')

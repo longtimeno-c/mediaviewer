@@ -12,6 +12,11 @@ found while looking, and it comes first. Written 2026-10-05.
 **Owner calls taken (2026-10-05):**
 
 1. English-only text model, inside the 3 GB ceiling. No ceiling raise.
+   **Amended 2026-10-13 (owner):** the `ai` family ceiling is 5 GB
+   (`docs/design/12-decision-log.md`). "No ceiling raise" is superseded. About 2.0 GB is free
+   beside today's heaviest install (~2.93 GB). multilingual-e5-small fits (int8 ~118 MB, fp16
+   ~235 MB). D3's spike measures it with the English models. The ceiling no longer forces
+   English-only.
 2. PDFium in the pack, on both OSes.
 3. `doc_index` defaults to Words.
 4. Online-only cloud files get an opt-in fetch, as the Mac's iCloud videos do: OneDrive on
@@ -120,12 +125,11 @@ set of ~500 real-world PDFs and DOCX (receipts, contracts, papers, manuals, slid
 natural-language queries, P@5 and R@10, CPU passages/s at 2 threads, cosine to the ORT-Python
 reference ≥ 0.999.
 
-**The 3 GB ceiling is the binding constraint.** The worst supported combination is already
-~2.93 GB (17, "The AI pack"). That leaves ~70 MB: an int8 English model (~23–34 MB) plus
-PDFium (~6 MB, below) fits, and multilingual-e5-small does not. Whisper indexes speech in any
-language, so English-only document meaning would be an odd gap. **Owner call 1:** stay English
-(int8 bge-small or arctic-embed-s) inside 3 GB, or raise the family ceiling to ~3.2 GB for
-multilingual-e5-small int8. Raising it needs a row in `12-decision-log.md`.
+**The install ceiling is 5 GB (2026-10-13).** The pieces that ship today still reach ~2.93 GB
+(17, "The AI pack"), which leaves about 2.0 GB. An int8 English model (~23–34 MB) plus PDFium
+(~6 MB) fits, and so does multilingual-e5-small (int8 ~118 MB, fp16 ~235 MB). Whisper indexes
+speech in any language, so the spike should measure the multilingual model as well as the
+English ones. A text tower that would push the heaviest install past 5 GB does not fit.
 
 ## 2. Getting text and pages out of documents
 
@@ -284,7 +288,7 @@ with both present-loop gates and the arrow-key timings on the camera-dump folder
 | **0 — Folder add fix** (Windows-led, status text both) | §0 | §0's verify line |
 | **D1 — Document words** | `asset_kind::document`, host table v3, `docx_text`, PDFium in the Core pack, `passages`, keyword search over passages, `doc_index` + per-folder setting, Documents kind segment + Text token, page tiles, open at page, `is:document` / `text:` | On a folder of 300 photos + 200 PDFs/DOCX (incl. 2 encrypted, 2 broken, 1 × 500 pages): every text document searchable by a quoted phrase from page 1 and from its last page, Enter opens on the matching page; broken/locked files counted, never a crash; indexing 200 documents ≤ 60 s on the Windows dev box CPU and the M5; PR 1 soak with indexing running: 0 drops |
 | **D2 — Pages as pictures** | `docpage` spec, page frames through CLIP, "Words and pages" | 20 labelled visual queries ("a receipt", "a floor plan") P@5 ≥ 0.8 over the D1 set; no new model loaded |
-| **D3 — Documents piece** | `ai-docs` piece, chosen text model + tokenizer, `passage_vecs`, meaning ranking, calibration, `.mvindex` v2, ceiling decision | The spike's P@5 / R@10 targets on the 50-query set; embeddings within cosine 0.999 of ORT-Python on CPU on both platforms; `addon-pack.py ceiling` passes |
+| **D3 — Documents piece** | `ai-docs` piece, chosen text model + tokenizer, `passage_vecs`, meaning ranking, calibration, `.mvindex` v2. The family ceiling is 5 GB (2026-10-13); the model must leave the heaviest install under it | The spike's P@5 / R@10 targets on the 50-query set, including multilingual-e5-small; embeddings within cosine 0.999 of ORT-Python on CPU on both platforms; `addon-pack.py ceiling` passes |
 | **D4 — Scanned PDFs (OCR)** | OS OCR port (`Windows.Media.Ocr`, Vision), only for pages with no text layer, background and yield-gated | 50 scanned pages: ≥ 90 % of a page's words found by quoted search; a 100-page scan doesn't hold up the photo pass |
 
 D1 and D2 add no model, so they can land without owner call 1.

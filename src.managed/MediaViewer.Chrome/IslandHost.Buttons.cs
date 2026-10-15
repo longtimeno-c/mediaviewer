@@ -77,8 +77,8 @@ public static partial class IslandHost
         TextTrimming = trim ? TextTrimming.CharacterEllipsis : TextTrimming.None,
     };
 
-    private static readonly Thickness ButtonPadding = new(14, 7, 14, 7);
-    private static readonly Thickness CompactButtonPadding = new(8, 5, 8, 5);
+    private static Thickness ButtonPadding => Pad(14, 7, 14, 7);
+    private static Thickness CompactButtonPadding => Pad(8, 5, 8, 5);
 
     private static Button TextButton(string label, Action click) =>
         ChromeButton(ButtonLabel(label, UiFontSize), ButtonPadding, click);

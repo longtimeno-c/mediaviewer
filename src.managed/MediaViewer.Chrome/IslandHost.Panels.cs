@@ -30,8 +30,15 @@ namespace MediaViewer.Chrome;
 public static partial class IslandHost
 {
     internal const int PanelArgsSize = 24;
-    internal const int MetaDataArgsSize = 40;
+    internal const int MetaDataArgsSize = 80;
     internal const int MetaEditArgsSize = 24;
+    private const int MetaFactWhere = 1 << 0;
+    private const int MetaFactAltitude = 1 << 1;
+    private const int MetaFactAiGenerated = 1 << 2;
+    // #352: what the Summary's Location row may do (kMetaFactLocation* in chrome_host.h).
+    private const int MetaFactLocationSet = 1 << 3;
+    private const int MetaFactLocationClear = 1 << 4;
+    private const int MetaFactLocationInOriginal = 1 << 5;
 
     private static DesktopWindowXamlSource? _metaPane;
     private static DesktopWindowXamlSource? _tree;
@@ -65,6 +72,8 @@ public static partial class IslandHost
             MoveAt(NewIsland(ref _adjustPane, parent, takeFocus: true), 0, args.ClientHeight, 1, 1);
             MoveAt(NewIsland(ref _jobsPane, parent, takeFocus: true), 0, args.ClientHeight, 1, 1);
             MoveAt(NewIsland(ref _editPane, parent, takeFocus: true), 0, args.ClientHeight, 1, 1);
+            // #345: the AI badge, a small island of its own (IslandHost.AiBadge.cs).
+            AttachAiBadge(parent, args.ClientHeight);
             _metaPaneVisible = false;
             _editPaneVisible = false;
             _treeVisible = false;
@@ -95,6 +104,7 @@ public static partial class IslandHost
             DropTreeUi();
             DropAdjustUi();
             DropEditUi();
+            DetachAiBadge();
             DisposeSource(ref _metaPane);
             DisposeSource(ref _tree);
             DisposeSource(ref _adjustPane);
@@ -111,11 +121,16 @@ public static partial class IslandHost
 
     public static int ShowMetaPane(IntPtr arg, int sizeBytes) => ShowPanel(
         arg, sizeBytes, _metaPane, BuildMetaPane,
-        onShown: () => _metaPaneVisible = true,
+        onShown: () =>
+        {
+            _metaPaneVisible = true;
+            AskSlotInfo();  // docs/design/25 PR 59: the add-ons' sections, only while it shows
+        },
         onHidden: () =>
         {
             _metaPaneVisible = false;
             DropMetaUi();
+            AskSlotInfo();  // closed: the sections go, nothing is asked
         });
 
     public static int ShowFolderTree(IntPtr arg, int sizeBytes) => ShowPanel(
@@ -159,7 +174,9 @@ public static partial class IslandHost
 
     // ---- small builders -------------------------------------------------------
 
-    private static TextBlock Text(string text, ChromeColour color, double size = UiFontSize,
+    // size 0: the UI size (a default parameter must be a constant, and that one
+    // follows the theme's type scale).
+    private static TextBlock Text(string text, ChromeColour color, double size = 0,
                                   bool bold = false, int maxLines = 0)
     {
         var t = new TextBlock
@@ -167,7 +184,7 @@ public static partial class IslandHost
             Text = text,
             Foreground = Brush(color),
             FontFamily = UiFont,
-            FontSize = size,
+            FontSize = size > 0 ? size : UiFontSize,
             TextWrapping = TextWrapping.Wrap,
         };
         if (bold) t.FontWeight = FontWeights.SemiBold;
@@ -258,7 +275,7 @@ public static partial class IslandHost
             Content = new FontIcon { Glyph = Glyph.Close, FontFamily = IconFont, FontSize = TypeCaption, Foreground = Brush(Body) },
             Background = Brush(Colors.Transparent),
             BorderThickness = new Thickness(0),
-            Padding = new Thickness(8, 6, 8, 6),
+            Padding = Pad(8, 6, 8, 6),
             IsTabStop = false,
             AllowFocusOnInteraction = false,
         };
@@ -279,7 +296,7 @@ public static partial class IslandHost
         };
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        var header = new Grid { Padding = new Thickness(14, 10, 6, 6) };
+        var header = new Grid { Padding = Pad(14, 10, 6, 6) };
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         header.Children.Add(Text(title, Title, UiFontSize, bold: true));
@@ -290,6 +307,7 @@ public static partial class IslandHost
         body = new Grid();
         Grid.SetRow(body, 1);
         root.Children.Add(body);
+        ThemeField.Lay(root);
         // Issue #224: every pane (metadata, folder tree, adjust, jobs) is an
         // island over the canvas's WM_DROPFILES, so it takes a file drop too.
         WireFileDrop(root);
@@ -310,14 +328,25 @@ public static partial class IslandHost
         public bool Removable => Access == "e";
         public string LockReason => Space switch
         {
-            "container" => "Stored in the video container; container tags are read-only",
+            "container" => "Stored in the file's container; container tags are read-only",
             "computed" => "Worked out by the viewer, not stored in the file",
+            "c2pa" => "Content Credentials are signed by their maker; shown as stated, never changed",
+            "png_text" => "A PNG text chunk; shown, never rewritten",
+            "icc" => "Part of the embedded colour profile",
+            "xmp_raw" => "An XMP property read as written; it is shown, not edited here",
             _ => "Describes the file itself (size, layout, maker note); changing it would break the file",
         };
     }
 
     private static List<(string Label, string Value)> _metaSummary = new();
     private static List<TagRow> _metaTags = new();
+    // #290: the record's provenance and position as the core decided them. The
+    // summary's "Made with" row already shows the first two; these are for the
+    // map (#344) and the AI badge (#345).
+    private static string _metaMadeWith = "";
+    private static bool _metaAiGenerated;
+    private static (double Lat, double Lon, double? AltitudeM)? _metaWhere;
+    private static int _metaLocationFacts;  // #352: MetaFactLocation*
     private static List<string> _metaStreamLines = new();
     private static string _metaLast = "";
     private static FakeInput? _metaSearch;
@@ -337,6 +366,10 @@ public static partial class IslandHost
     private static string? _metaEditingKey;  // a tag row's raw key
     private static string _metaDraft = "";
     private static bool _metaEditingDate;
+    // #352: the Location editor (its text is _metaDraft), and the in-pane
+    // confirmation before a blank save removes the location.
+    private static bool _metaEditingLocation;
+    private static bool _metaConfirmLocation;
     private static bool _metaAddingTag;
     private static bool _metaEditingComment;  // Ctrl+I: the user comment, through PR 12's writer
     private static bool _metaCommentAsked;    // Ctrl+I came before the record it edits
@@ -349,6 +382,7 @@ public static partial class IslandHost
     {
         _metaLast = "";
         _metaContent = null;
+        _metaSlots = null;
         _metaLoadingText = null;
         _metaTabs = null;
         _metaRevert = null;
@@ -361,6 +395,8 @@ public static partial class IslandHost
     {
         _metaEditingKey = null;
         _metaEditingDate = false;
+        _metaEditingLocation = false;
+        _metaConfirmLocation = false;
         _metaAddingTag = false;
         _metaEditingComment = false;
         _metaDraft = "";
@@ -374,10 +410,10 @@ public static partial class IslandHost
         body.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         body.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
 
-        var bar = new Grid { Padding = new Thickness(14, 0, 14, 8) };
+        var bar = new Grid { Padding = Pad(14, 0, 14, 8) };
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        _metaTabs = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+        _metaTabs = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(4) };
         bar.Children.Add(_metaTabs);
         _metaLoadingText = Text("", Body);
         Grid.SetColumn(_metaLoadingText, 1);
@@ -387,6 +423,14 @@ public static partial class IslandHost
         _metaContent = new Border { BorderBrush = Brush(Hairline), BorderThickness = new Thickness(0, 1, 0, 0) };
         Grid.SetRow(_metaContent, 1);
         body.Children.Add(_metaContent);
+        // docs/design/25 PR 59 (owner, 2026-10-12): the add-ons' sections (Places' label,
+        // coordinates and map), placed by each tab's builder as the last items of its
+        // scrolling content (WithSlotSections); shown, never collapsed.
+        _metaSlots = new StackPanel();
+        // A wider or narrower pane: the sections are asked again at the new width
+        // (AskSlotInfo keys on width, so a height change asks nothing).
+        _metaSlots.SizeChanged += (_, _) => AskSlotInfo();
+        FillSlotSections();
 
         RenderMeta();
         return root;
@@ -464,7 +508,7 @@ public static partial class IslandHost
             },
             Background = on ? Brush(ChromeColour.PressedWash) : Brush(Colors.Transparent),
             BorderThickness = new Thickness(0),
-            Padding = new Thickness(10, 3, 10, 3),
+            Padding = Pad(10, 3, 10, 3),
             AllowFocusOnInteraction = false,
         };
         int index = MetaTabButtons.Count;
@@ -525,31 +569,29 @@ public static partial class IslandHost
         Send(Command.MetaTags);
     }
 
-    // GPS rows the file lets us remove (EXIF GPSInfo, XMP exif:GPS*).
-    private static List<string> LocationKeys() => _metaTags
-        .Where(t => t.Removable && (t.Raw.StartsWith("Exif.GPSInfo.", StringComparison.Ordinal) ||
-                                    t.Raw.StartsWith("Xmp.exif.GPS", StringComparison.Ordinal)))
-        .Select(t => t.Raw)
-        .Distinct()
-        .ToList();
-
     // A field the file does not have shows as a dash; nothing here is an error.
     private static UIElement BuildSummary()
     {
         if (_metaSummary.Count == 0)
         {
-            return new Border
+            var empty = new Border
             {
-                Padding = new Thickness(14),
+                Padding = Pad(14),
                 Child = Text(_metaLoading ? "Reading…" : "Nothing selected", Body),
             };
+            return new ScrollViewer { Content = WithSlotSections(empty), VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
         }
-        var rows = new StackPanel { Spacing = 6, Padding = new Thickness(14, 10, 14, 14) };
+        var rows = new StackPanel { Spacing = Space(6), Padding = Pad(14, 10, 14, 14) };
         foreach ((string label, string value) in _metaSummary)
         {
             if (label == "Date taken")
             {
                 rows.Children.Add(BuildDateRow(value));
+                continue;
+            }
+            if (label == "Location")
+            {
+                rows.Children.Add(BuildLocationRow(value));
                 continue;
             }
             if (label == "Label")
@@ -566,21 +608,9 @@ public static partial class IslandHost
             if (value.Length > 0) Selectable(v);
             Grid.SetColumn(v, 1);
             row.Children.Add(v);
-            if (label == "Location" && value.Length > 0)
-            {
-                List<string> keys = LocationKeys();
-                if (keys.Count > 0)
-                {
-                    Button remove = MetaButton("Remove", () => SendTagEdits(keys.Select(k => (k, (string?)null))),
-                                               tip: "Remove every GPS tag from this file");
-                    AutomationProperties_SetName(remove, "Remove location");
-                    Grid.SetColumn(remove, 2);
-                    row.Children.Add(remove);
-                }
-            }
             rows.Children.Add(row);
         }
-        rows.Children.Add(new Border { Height = 1, Background = Brush(Hairline), Margin = new Thickness(0, 4, 0, 4) });
+        rows.Children.Add(new Border { Height = 1, Background = Brush(Hairline), Margin = Pad(0, 4, 0, 4) });
         var foot = new Grid();
         foot.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         foot.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -593,7 +623,7 @@ public static partial class IslandHost
         Grid.SetColumn(_metaRevert, 1);
         foot.Children.Add(_metaRevert);
         rows.Children.Add(foot);
-        return new ScrollViewer { Content = rows, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        return new ScrollViewer { Content = WithSlotSections(rows), VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
     }
 
     // Issue #207: the colour label, XMP xmp:Label, in Lightroom's words. A swatch
@@ -622,7 +652,7 @@ public static partial class IslandHost
         v.VerticalAlignment = VerticalAlignment.Center;
         Grid.SetColumn(v, 1);
         row.Children.Add(v);
-        var swatches = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+        var swatches = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(4) };
         foreach ((string label, Color colour) in LabelSwatches)
         {
             bool on = string.Equals(label, value, StringComparison.OrdinalIgnoreCase);
@@ -633,7 +663,7 @@ public static partial class IslandHost
                 Padding = new Thickness(0),
                 MinWidth = 0,
                 MinHeight = 0,
-                CornerRadius = new CornerRadius(9),
+                CornerRadius = new CornerRadius(9),  // a circle: half of 18, not a theme radius
                 Background = Brush(colour),
                 BorderBrush = Brush(on ? ChromeColour.Title : ChromeColour.Hairline),
                 BorderThickness = new Thickness(on ? 2 : 1),
@@ -654,7 +684,7 @@ public static partial class IslandHost
     // write_fields::date_taken), so no reader sees two dates.
     private static UIElement BuildDateRow(string value)
     {
-        var col = new StackPanel { Spacing = 6 };
+        var col = new StackPanel { Spacing = Space(6) };
         var row = new Grid();
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(MetaLabelWidth) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -688,7 +718,7 @@ public static partial class IslandHost
                     CancelMetaEdits();
                     RenderMeta();
                 }, tip: "Esc"));
-            actions.Margin = new Thickness(MetaLabelWidth, 0, 0, 0);
+            actions.Margin = Pad(MetaLabelWidth, 0, 0, 0);
             col.Children.Add(actions);
             return col;
         }
@@ -711,6 +741,208 @@ public static partial class IslandHost
         return col;
     }
 
+    // ==== #352 (owner, 2026-10-12): the Location editor ========================
+    //
+    // Edit opens a field with the coordinates; the core reads the text on every
+    // keystroke (MetaNative.ParseLocation, ABI mv_meta_parse_location) for the
+    // preview line, and again natively when it is sent ("L\ttext" on MetaTags).
+    // A blank save removes the location, after an in-pane confirmation: a
+    // ContentDialog is a top-level-window control, and this pane is an island
+    // (the Settings / Add-ons confirmations are in-pane for the same reason).
+    // While the confirmation is up the pane reports text focus, so native hands
+    // it Enter, Space and Tab and turns Esc into DropDraft: Esc = Cancel, which
+    // closes the confirmation only (SetMetaEdit returns S_FALSE and native keeps
+    // the keyboard in the pane); the next Esc leaves the field.
+
+    private static bool LocationCanClear => (_metaLocationFacts & MetaFactLocationClear) != 0;
+
+    private static string LocationStartText() => _metaWhere is { } w
+        ? w.Lat.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture) + ", " +
+          w.Lon.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture)
+        : "";
+
+    // One line under the field: the point Save writes, or why it will not.
+    private static (string Text, bool Error) LocationNote(string draft)
+    {
+        (uint kind, _, _, string message) = MetaNative.ParseLocation(draft);
+        if (kind == MetaNative.LocationPoint) return ("→ " + message, false);
+        if (kind == MetaNative.LocationInvalid) return (message, true);
+        if (LocationCanClear) return ("Saving an empty field removes the location", false);
+        if ((_metaLocationFacts & MetaFactLocationInOriginal) != 0)
+        {
+            return ("This file's own location is in the original, which is never rewritten: change it, not remove it",
+                    true);
+        }
+        return ("Enter latitude and longitude, e.g. 38.7979, -9.3907", false);
+    }
+
+    private static UIElement BuildLocationRow(string value)
+    {
+        var col = new StackPanel { Spacing = Space(6) };
+        var row = new Grid();
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(MetaLabelWidth) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        TextBlock label = Text("Location", Body, TypeBody);
+        label.VerticalAlignment = VerticalAlignment.Center;
+        row.Children.Add(label);
+        if (_metaEditingLocation)
+        {
+            // Not a TextBox: that control fail-fasts in these islands (see FakeInput).
+            var box = new FakeInput("38.7979, -9.3907");
+            box.SetText(_metaDraft);
+            AutomationProperties_SetName(box, "Location, latitude and longitude");
+            Grid.SetColumn(box, 1);
+            Grid.SetColumnSpan(box, 2);
+            row.Children.Add(box);
+            col.Children.Add(row);
+
+            TextBlock note = Text("", Body, UiFontSize - 3);
+            note.Margin = new Thickness(MetaLabelWidth, 0, 0, 0);
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetLiveSetting(
+                note, Microsoft.UI.Xaml.Automation.Peers.AutomationLiveSetting.Polite);
+            void Refresh()
+            {
+                (string text, bool error) = LocationNote(_metaDraft);
+                note.Text = error ? "⚠ " + text : text;
+                AutomationProperties_SetName(note, error ? "Error: " + text : text);
+            }
+            Refresh();
+            box.Changed += () =>
+            {
+                try
+                {
+                    _metaDraft = box.Text;
+                    Refresh();
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine(ex);  // never out of a XAML event
+                }
+            };
+            col.Children.Add(note);
+
+            if (_metaConfirmLocation)
+            {
+                col.Children.Add(BuildLocationConfirm());
+                return col;
+            }
+            box.Submitted += () => SaveMetaLocation(_metaDraft);
+            var actions = Row(
+                MetaButton("Save", () => SaveMetaLocation(_metaDraft), tip: "Enter"),
+                MetaButton("Cancel", () =>
+                {
+                    CancelMetaEdits();
+                    RenderMeta();
+                }, tip: "Esc"));
+            actions.Margin = new Thickness(MetaLabelWidth, 0, 0, 0);
+            col.Children.Add(actions);
+            _metaFocusField = box;
+            return col;
+        }
+        TextBlock v = Text(value.Length == 0 ? "—" : value, value.Length == 0 ? ChromeColour.Disabled : Title, TypeBody);
+        if (value.Length > 0) Selectable(v);
+        v.VerticalAlignment = VerticalAlignment.Center;
+        Grid.SetColumn(v, 1);
+        row.Children.Add(v);
+        bool canSet = _metaCanEdit && (_metaLocationFacts & MetaFactLocationSet) != 0;
+        string tip = !canSet
+            ? "This item cannot be written"
+            : (_metaLocationFacts & MetaFactLocationInOriginal) != 0
+                ? "Change where this was taken. The original keeps its own; the new one goes in the XMP sidecar, which wins"
+                : "Change or remove where this was taken (decimal or degrees, minutes, seconds)";
+        Button edit = MetaButton("Edit", () =>
+        {
+            CancelMetaEdits();
+            _metaEditingLocation = true;
+            _metaDraft = LocationStartText();
+            RenderMeta();
+        }, tip: tip, enabled: canSet);
+        AutomationProperties_SetName(edit, "Edit location");
+        Grid.SetColumn(edit, 2);
+        row.Children.Add(edit);
+        col.Children.Add(row);
+        return col;
+    }
+
+    // The confirmation's second line; the Mac says the same (MetadataView.swift).
+    private const string RemoveLocationMessage =
+        "Revert all can bring it back until you quit MediaViewer. It also undoes your other changes to this file.";
+
+    // "Remove location from this file?" in the pane. Cancel is first and takes
+    // the keyboard: Enter on it cancels, and Remove must be chosen.
+    private static FrameworkElement BuildLocationConfirm()
+    {
+        var box = new StackPanel
+        {
+            Spacing = Space(8),
+            Padding = Pad(12),
+            Margin = new Thickness(MetaLabelWidth, 0, 0, 0),
+            Background = Brush(ChromeColour.Surface),
+            CornerRadius = Corner(8),
+        };
+        box.Children.Add(Text("Remove location from this file?", Title, bold: true));
+        // Revert all restores every tag as it was before this session's first
+        // write to the file, until the app quits (meta::revert, docs/design/06).
+        box.Children.Add(Text(RemoveLocationMessage, Body, UiFontSize - 2));
+        AutomationProperties_SetName(box, "Remove location from this file? " + RemoveLocationMessage);
+        Button cancel = MetaButton("Cancel", () =>
+        {
+            _metaConfirmLocation = false;
+            RenderMeta();
+        }, tip: "Esc");
+        AutomationProperties_SetName(cancel, "Cancel, keep the location");
+        Button remove = MetaButton("Remove", () =>
+        {
+            CancelMetaEdits();
+            SendLocation("");
+            RenderMeta();
+        }, tip: "Remove every GPS tag from this file");
+        AutomationProperties_SetName(remove, "Remove location");
+        box.Children.Add(Row(cancel, remove));
+        cancel.Loaded += (_, _) =>
+        {
+            try
+            {
+                cancel.Focus(FocusState.Keyboard);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine(ex);
+            }
+        };
+        return box;
+    }
+
+    private static void SaveMetaLocation(string text)
+    {
+        (uint kind, double lat, double lon, _) = MetaNative.ParseLocation(text);
+        if (kind == MetaNative.LocationInvalid) return;  // the note already says why
+        if (kind == MetaNative.LocationBlank)
+        {
+            if (!LocationCanClear) return;
+            _metaConfirmLocation = true;
+            RenderMeta();
+            return;
+        }
+        // Unchanged: no write, as an unchanged comment makes none. The starting
+        // text is rounded to 6 decimals, so saving it untouched must not count as
+        // an edit of a position the file holds more precisely.
+        bool untouched = _metaWhere is not null && text.Trim() == LocationStartText();
+        bool same = untouched ||
+                    (_metaWhere is { } w && Math.Abs(w.Lat - lat) < 1e-9 && Math.Abs(w.Lon - lon) < 1e-9);
+        CancelMetaEdits();
+        if (!same) SendLocation(text);
+        RenderMeta();
+    }
+
+    // Native reads the text again (main.cpp location_change); blank removes.
+    private static void SendLocation(string text)
+    {
+        _treePending = "L\t" + text.Replace('\t', ' ').Replace('\r', ' ').Replace('\n', ' ') + "\n";
+        Send(Command.MetaTags);
+    }
+
     private static void SaveMetaDate(string text)
     {
         CancelMetaEdits();
@@ -731,7 +963,7 @@ public static partial class IslandHost
         host.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
 
         // Not a TextBox: that control fail-fasts in these islands (see FakeInput).
-        var top = new Grid { Margin = new Thickness(10), ColumnSpacing = 6 };
+        var top = new Grid { Margin = Pad(10), ColumnSpacing = Space(6) };
         top.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         top.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         var search = new FakeInput("Search tags and values");
@@ -751,7 +983,7 @@ public static partial class IslandHost
 
         if (_metaAddingTag)
         {
-            var form = new StackPanel { Spacing = 6, Padding = new Thickness(10, 0, 10, 10) };
+            var form = new StackPanel { Spacing = Space(6), Padding = Pad(10, 0, 10, 10) };
             var key = new FakeInput("Key (Xmp.dc.subject)");
             key.SetText(_metaNewKey);
             AutomationProperties_SetName(key, "New tag key");
@@ -786,13 +1018,20 @@ public static partial class IslandHost
             host.Children.Add(form);
         }
 
-        // A plain scrolling stack, not a ListView: clearing and refilling a ListView of
-        // elements from a key event fail-fasts in these islands. A tag list is at most
-        // a few thousand rows, and the search narrows it, so the rows are capped.
-        var list = new StackPanel { Padding = new Thickness(10, 0, 10, 10) };
+        // #290: every row, virtualised. An ItemsRepeater realises only the rows near
+        // the viewport, so a 2 000-tag file opens and scrolls without building 2 000
+        // cells (the 400-row cap is gone). Not a ListView: clearing and refilling a
+        // ListView of elements from a key event fail-fasts in these islands; a search
+        // here replaces the repeater's ItemsSource with a new list instead.
+        var list = new ItemsRepeater
+        {
+            Layout = new StackLayout(),
+            ItemTemplate = new TagListFactory(),
+            Margin = Pad(10, 0, 10, 10),
+        };
         var scroll = new ScrollViewer
         {
-            Content = list,
+            Content = WithSlotSections(list),  // Fill() clears `list` only
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
         };
         Grid.SetRow(scroll, 2);
@@ -807,53 +1046,32 @@ public static partial class IslandHost
             e.Handled = true;
         };
 
-        // Cells are built once per tree and re-added as the search narrows or widens
-        // (issue #219): a keystroke then costs a filter pass and Children.Add, not
-        // 400 freshly built rows. A rebuild (a record landing, an edit) starts a new
-        // cache with the new tree.
-        var cells = new Dictionary<TagRow, UIElement>(ReferenceEqualityComparer.Instance);
-        const int MaxRows = 400;
         void Fill()
         {
-            list.Children.Clear();
+            var items = new List<object>();
             if (_metaTags.Count == 0)
             {
-                list.Children.Add(Text(_metaLoading ? "Reading…" : "No metadata in this file", Body));
+                items.Add(new TagListNote(_metaLoading ? "Reading…" : "No metadata in this file"));
+                list.ItemsSource = items;
                 return;
             }
             string needle = _metaQuery.Trim();
             string? group = null;
-            int shown = 0;
-            int matched = 0;
             foreach (TagRow t in _metaTags)
             {
                 if (needle.Length > 0 &&
                     !t.Label.Contains(needle, StringComparison.OrdinalIgnoreCase) &&
                     !t.Value.Contains(needle, StringComparison.OrdinalIgnoreCase) &&
                     !t.Raw.Contains(needle, StringComparison.OrdinalIgnoreCase)) continue;
-                matched++;
-                if (shown >= MaxRows) continue;
                 if (t.Group != group)
                 {
                     group = t.Group;
-                    // The Mac's List section header: regular, not bold (issue #198).
-                    var header = Text(group, Body, TypeBody);
-                    header.Margin = new Thickness(0, 10, 0, 2);
-                    list.Children.Add(header);
+                    items.Add(new TagListHeader(group));
                 }
-                if (!cells.TryGetValue(t, out UIElement? cell))
-                {
-                    cell = BuildTagCell(t);
-                    cells[t] = cell;
-                }
-                list.Children.Add(cell);
-                shown++;
+                items.Add(t);
             }
-            if (matched == 0) list.Children.Add(Text("No tag matches", Body));
-            else if (matched > shown)
-            {
-                list.Children.Add(Text($"{matched - shown} more: type to narrow the search", Body));
-            }
+            if (items.Count == 0) items.Add(new TagListNote("No tag matches"));
+            list.ItemsSource = items;
         }
 
         // Debounced like file search (~70 ms) so a typed word filters once, not once
@@ -872,8 +1090,42 @@ public static partial class IslandHost
             }
             _metaSearchDebounce.Start();
         };
-        Fill();
+        // Bind once the repeater is in a XamlRoot: setting ItemsSource on an
+        // unparented repeater is the native AV in set_ItemsSource that the
+        // filmstrip and gallery hit (IslandHost.Filmstrip.cs BuildFilmstrip).
+        list.Loaded += (_, _) => Fill();
         return host;
+    }
+
+    // #290: the All tags list's items besides TagRow, and the factory the
+    // ItemsRepeater asks for a cell when a row scrolls into view.
+    private sealed record TagListHeader(string Group);
+    private sealed record TagListNote(string Text);
+
+    private sealed partial class TagListFactory : IElementFactory
+    {
+        public UIElement GetElement(ElementFactoryGetArgs args)
+        {
+            switch (args.Data)
+            {
+                case TagRow t:
+                    return BuildTagCell(t);
+                case TagListHeader h:
+                {
+                    // The Mac's List section header: regular, not bold (issue #198).
+                    var header = Text(h.Group, Body, TypeBody);
+                    header.Margin = Pad(0, 10, 0, 2);
+                    return header;
+                }
+                case TagListNote n:
+                    return Text(n.Text, Body);
+                default:
+                    return new Grid();
+            }
+        }
+
+        // Cells carry per-row editing state, so they are rebuilt, not reused.
+        public void RecycleElement(ElementFactoryRecycleArgs args) { }
     }
 
     private static Action? _metaFill;
@@ -897,7 +1149,7 @@ public static partial class IslandHost
     {
         // A background so the whole row, not only its label, takes the hover
         // that shows the untranslated key (the Mac's .help on the row).
-        var cell = new StackPanel { Margin = new Thickness(0, 2, 0, 2), Spacing = 2, Background = Brush(Colors.Transparent) };
+        var cell = new StackPanel { Margin = Pad(0, 2, 0, 2), Spacing = Space(2), Background = Brush(Colors.Transparent) };
         var head = new Grid();
         head.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -915,7 +1167,7 @@ public static partial class IslandHost
                 FontSize = 12,
                 Foreground = Brush(Body),
                 VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(6, 0, 4, 0),
+                Margin = Pad(6, 0, 4, 0),
             };
             ToolTipService.SetToolTip(glyph, t.LockReason);
             AutomationProperties_SetName(glyph, "Read-only: " + t.LockReason);
@@ -960,7 +1212,10 @@ public static partial class IslandHost
             AutomationProperties_SetName(box, "New value for " + t.Label);
             cell.Children.Add(box);
             cell.Children.Add(Text("Enter saves · Esc cancels", Body, UiFontSize - 4));
+            // The repeater builds this cell during layout, after RenderMeta's
+            // FocusMetaFieldSoon has run, so the cell asks for focus itself.
             _metaFocusField = box;
+            FocusMetaFieldSoon();
         }
         else
         {
@@ -979,7 +1234,7 @@ public static partial class IslandHost
     // there whether or not the file has a comment yet.
     private static StackPanel BuildCommentForm()
     {
-        var form = new StackPanel { Spacing = 6, Padding = new Thickness(10, 0, 10, 10) };
+        var form = new StackPanel { Spacing = Space(6), Padding = Pad(10, 0, 10, 10) };
         form.Children.Add(Text("Comment", Title));
         var box = new FakeInput("Comment");
         box.SetText(_metaDraft);
@@ -1040,7 +1295,7 @@ public static partial class IslandHost
 
     private static UIElement BuildStreams()
     {
-        var col = new StackPanel { Spacing = 12, Padding = new Thickness(14, 10, 14, 14) };
+        var col = new StackPanel { Spacing = Space(12), Padding = Pad(14, 10, 14, 14) };
         StackPanel? current = null;
         bool chapters = false;
         int chapter = 0;
@@ -1050,7 +1305,7 @@ public static partial class IslandHost
             switch (f[0])
             {
                 case "S" when f.Length >= 4:
-                    current = new StackPanel { Spacing = 4 };
+                    current = new StackPanel { Spacing = Space(4) };
                     current.Children.Add(Text($"#{f[1]}  {Capitalise(f[2])}  —  {f[3]}", Title, TypeBody));
                     col.Children.Add(current);
                     break;
@@ -1087,7 +1342,23 @@ public static partial class IslandHost
         {
             col.Children.Add(Text(_metaLoading ? "Reading…" : "No streams", Body));
         }
-        return new ScrollViewer { Content = col, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        return new ScrollViewer { Content = WithSlotSections(col), VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+    }
+
+    // docs/design/25 PR 59 (owner, 2026-10-12): the add-ons' sections are the last
+    // items of the tab's scrolling content, after all the built-in metadata: they
+    // scroll with it and never squeeze it. One panel, moved into whichever tab is built.
+    private static StackPanel WithSlotSections(UIElement content)
+    {
+        var outer = new StackPanel();
+        outer.Children.Add(content);
+        StackPanel? slots = _metaSlots;
+        if (slots is not null)
+        {
+            if (slots.Parent is Panel old) old.Children.Remove(slots);
+            outer.Children.Add(slots);
+        }
+        return outer;
     }
 
     private static string Capitalise(string s) => s.Length == 0 ? s : char.ToUpperInvariant(s[0]) + s[1..];
@@ -1107,6 +1378,12 @@ public static partial class IslandHost
             string summary = Utf8(a.Summary, a.SummaryLen);
             string props = Utf8(a.Properties, a.PropertiesLen);
             string streams = Utf8(a.Streams, a.StreamsLen);
+            _metaMadeWith = Utf8(a.MadeWith, a.MadeWithLen);
+            _metaAiGenerated = (a.Facts & MetaFactAiGenerated) != 0;
+            _metaWhere = (a.Facts & MetaFactWhere) != 0
+                ? (a.WhereLat, a.WhereLon, (a.Facts & MetaFactAltitude) != 0 ? a.WhereAltitudeM : null)
+                : null;
+            _metaLocationFacts = a.Facts & (MetaFactLocationSet | MetaFactLocationClear | MetaFactLocationInOriginal);
 
             // Native re-pushes on every layout; identical data must not rebuild the
             // pane, which would drop the keyboard focus sitting on one of its rows.
@@ -1134,6 +1411,7 @@ public static partial class IslandHost
             _metaStreamLines = streams.Split('\n', StringSplitOptions.RemoveEmptyEntries).ToList();
             _metaIsClip = _metaStreamLines.Count > 0;
             _metaLoading = a.Loading != 0;
+            AskSlotInfo();
             if (_metaPaneVisible && !OpenAskedComment()) RenderMeta();
             return 0;
         }
@@ -1178,10 +1456,20 @@ public static partial class IslandHost
             _metaCanRevert = canRevert;
             if (!_metaPaneVisible) return 0;
             if (_metaRevert is not null) _metaRevert.IsEnabled = canRevert;
+            // #352: Esc on the Location remove confirmation is its Cancel: it closes
+            // and the field, still holding the draft, takes the keyboard back (as the
+            // Mac's alert). S_FALSE tells native the pane kept the keyboard, so its
+            // walk-back stops here instead of returning to the canvas.
+            if ((a.Flags & MetaEditFlags.DropDraft) != 0 && _metaConfirmLocation)
+            {
+                _metaConfirmLocation = false;
+                RenderMeta();
+                return 1;
+            }
             // Esc in a field: forget what was typed, show the file's.
             bool drop = (a.Flags & MetaEditFlags.DropDraft) != 0 &&
                         (_metaEditingKey is not null || _metaEditingDate || _metaAddingTag ||
-                         _metaEditingComment);
+                         _metaEditingComment || _metaEditingLocation);
             if (drop) CancelMetaEdits();
             if ((a.Flags & MetaEditFlags.DropDraft) != 0) _metaCommentAsked = false;
             // Ctrl+I: the comment editor opens once the item's record is in the
@@ -1231,9 +1519,9 @@ public static partial class IslandHost
         Grid root = PanelShell("Folders", Command.FolderTree, out Grid body);
         body.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         body.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        _treeUp = new Border { Padding = new Thickness(14, 2, 14, 8) };
+        _treeUp = new Border { Padding = Pad(14, 2, 14, 8) };
         body.Children.Add(_treeUp);
-        _treeList = new StackPanel { Padding = new Thickness(8, 0, 8, 12) };
+        _treeList = new StackPanel { Padding = Pad(8, 0, 8, 12) };
         var scroll = new ScrollViewer
         {
             Content = _treeList,
@@ -1307,7 +1595,7 @@ public static partial class IslandHost
             string name = Path.GetFileName(parent.TrimEnd('\\', '/'));
             string target = parent;
             Button up = FlatButton(
-                Text("↑  Up to " + (name.Length == 0 ? parent : name), Body), new Thickness(0, 2, 8, 2));
+                Text("↑  Up to " + (name.Length == 0 ? parent : name), Body), Pad(0, 2, 8, 2));
             up.Click += (_, _) => OpenTreePath(target);
             up.KeyDown += (_, e) => TreeArrow(up, e);
             _treeUp.Child = up;
@@ -1345,9 +1633,9 @@ public static partial class IslandHost
                 Text = "▸", FontFamily = UiFont, FontSize = UiFontSize, Foreground = Brush(Body),
                 Width = 16, TextAlignment = TextAlignment.Center,
             };
-            Button toggle = FlatButton(_glyph, new Thickness(0, 2, 0, 2), tabStop: false);
+            Button toggle = FlatButton(_glyph, Pad(0, 2, 0, 2), tabStop: false);
             Button open_folder = FlatButton(
-                Text(name, current ? Title : Body, UiFontSize, bold: current), new Thickness(2, 2, 8, 2));
+                Text(name, current ? Title : Body, UiFontSize, bold: current), Pad(2, 2, 8, 2));
             open_folder.Click += (_, _) => OpenTreePath(Path);
             toggle.Click += (_, _) => SetOpen(!_open);
             // Right opens a folder's children, Left closes them; Enter (the button's
@@ -1510,6 +1798,13 @@ internal struct ChromeMetaArgs
     public int PropertiesLen;
     public int StreamsLen;
     public int Loading;
+    // #290: provenance and position as numbers (chrome_host.h kMetaFact*).
+    public double WhereLat;
+    public double WhereLon;
+    public double WhereAltitudeM;
+    public ulong MadeWith;
+    public int MadeWithLen;
+    public int Facts;
 }
 
 [StructLayout(LayoutKind.Sequential)]
