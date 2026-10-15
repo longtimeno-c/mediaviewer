@@ -626,7 +626,10 @@ struct rig {
   std::atomic<int> clip_text_reads{0};      // clip moments read (a frame: 64 px wide)
   std::mutex text_m;
   std::vector<int> sign_seconds;            // the second of each "*sign*" clip moment read
-  std::atomic<bool> hold_text{false};       // set: the reader waits (a pass still running)
+  // Set: the reader waits on a clip moment (a pass still running). Never on a
+  // photo: with one worker (four cores) a photo's text can be claimed before
+  // the walk has listed a clip, and holding it would starve that clip's pictures.
+  std::atomic<bool> hold_text{false};
   std::atomic<bool> hold_cues{false};       // set: read_cues waits
   std::atomic<int> yield_after_clip_reads{-1};  // >= 0: the host asks to yield after that many
   std::unique_ptr<mv::addon::host_table> table;
@@ -889,7 +892,7 @@ struct rig {
     d.text = [this]() -> std::unique_ptr<mv::ai::text_reader> {
       if (!text_available) return nullptr;
       return std::make_unique<fake_text>([this](const mv::ai::rgb_frame& img) {
-        while (hold_text) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        while (hold_text && img.width == 64) std::this_thread::sleep_for(std::chrono::milliseconds(5));
         if (img.width != 64) {
           ++text_reads;
           return;
@@ -2557,7 +2560,7 @@ TEST_CASE("the status counts the cue and text passes, never idle while they run 
   r.file("clips/birthday_cues.mp4");
   r.start();
   REQUIRE(r.eng->index_folder(utf8(r.photos()), true));
-  // Pictures done, the clip's cues and the text both held.
+  // Pictures done, the clip's cues and its moments' text both held.
   REQUIRE(wait_for(
       [&] {
         const mv_ai_status s = r.status();
