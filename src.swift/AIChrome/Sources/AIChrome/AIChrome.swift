@@ -9,7 +9,8 @@
 //                 -shutdown (the selectors Import's chrome answers too), and the
 //                 optional -runCommand:, -folderChanged:, -itemChanged:, -settingsView.
 // To the host:    selectors on the host object (MvAddonHostMac): openList:,
-//                 closeList, viewerState, seekTo:, setMarkers:, viewerWindow.
+//                 closeList, viewerState, seekTo:, setMarkers:, viewerWindow,
+//                 placeTerms:.
 // The chrome never calls a host dispatcher from native code, and nothing here
 // logs a path, a query, or a name (rule 6).
 import AppKit
@@ -108,6 +109,7 @@ public final class MVAIChrome: NSObject {
       switch name {
       case "search_open":
         guard let p = panelController() else { return false }
+        search?.refreshPlaces()
         p.show(over: viewerWindow())
         return true
       case "search_similar":
@@ -232,6 +234,15 @@ public final class MVAIChrome: NSObject {
     guard let host, host.responds(to: sel),
           let v = host.perform(sel)?.takeUnretainedValue() as? [String: Any] else { return [:] }
     return v
+  }
+
+  /// #441: mv_slots_place_terms's bits for `query` (PlaceTerms); 0 from a
+  /// host without placeTerms:, which searches as before.
+  func hostPlaceTerms(_ query: String) -> UInt32 {
+    let sel = NSSelectorFromString("placeTerms:")
+    guard let host, host.responds(to: sel),
+          let n = host.perform(sel, with: query as NSString)?.takeUnretainedValue() as? NSNumber else { return 0 }
+    return n.uint32Value
   }
 
   func viewerWindow() -> NSWindow? {

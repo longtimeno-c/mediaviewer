@@ -799,6 +799,30 @@ mv_status MV_CALL t_locations_of_index(void* host, uint64_t g, mv_addon_location
   });
 }
 
+// #441: a place term's assets, from the add-on that answers `place:` (Places).
+// The caller (the AI pack's search worker) waits here; `visit` with NULL lets
+// it stop waiting.
+mv_status MV_CALL t_place_matches(void* host, const char* place, mv_addon_path_fn visit, void* user) {
+  return guarded([&] {
+    if (!place || !visit) return MV_ERR_INVALID_ARG;
+    host_table& t = self(host);
+    bool stopped = false;
+    const std::function<bool()> keep_going = [&] {
+      if (visit(user, nullptr) != 0) return true;
+      stopped = true;
+      return false;
+    };
+    const auto& svc = t.services().place_matches;
+    auto paths = svc ? svc(place, keep_going) : t.slots().provider_paths("place:", place, keep_going);
+    if (stopped) return MV_ERR_CANCELLED;
+    if (!paths) return to_mv(paths.error());
+    for (const std::string& p : *paths) {
+      if (visit(user, p.c_str()) == 0) return MV_ERR_CANCELLED;
+    }
+    return MV_OK;
+  });
+}
+
 void MV_CALL t_log(void*, int32_t, const char*) {
   // Deliberately nowhere yet: an add-on's messages are for a developer's
   // debugger, and the app has no log file that could leak a name (rule 6).
@@ -861,6 +885,8 @@ host_table::host_table(host_services services) : svc_(std::move(services)) {
   // Always set: whether an index is attached changes while the add-on runs
   // (MV_ERR_NOT_FOUND meanwhile).
   api_.locations_of_index = &t_locations_of_index;
+  // Always set too: whether Places is loaded changes while the add-on runs.
+  api_.place_matches = &t_place_matches;
 }
 
 void host_table::set_negotiated(std::uint32_t version) noexcept { api_.host_api = version; }

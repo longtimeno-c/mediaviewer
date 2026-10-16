@@ -31,6 +31,7 @@
 #pragma once
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -46,6 +47,7 @@
 
 #include "addon/contrib.h"
 #include "addon/screen.h"
+#include "core/result.h"
 #include "core/status.h"
 
 namespace mv::addon {
@@ -89,6 +91,13 @@ struct surface_pixels {
 // hosts' FoldedNames / FoldName, for the letters a place or tag uses).
 [[nodiscard]] std::string fold_query(std::string_view text);
 
+// #441: the Local search query names a place: a place:x term, or in:<word>
+// where the word does not start with a digit (in:2024 is a date), kept or
+// left out (-place:spain), outside "quotes". The AI pack's parser
+// (src/addons/ai/query.cpp) reads the same terms; the pack cannot be linked
+// here, so this is its rule for the operators alone.
+[[nodiscard]] bool has_place_terms(std::string_view query);
+
 class slot_registry {
  public:
   slot_registry();
@@ -127,7 +136,24 @@ class slot_registry {
   void settings_changed(const std::string& addon_id);
   // File search (MV_SLOT_SCOPE_FILES) or Local search (MV_SLOT_SCOPE_LOCAL).
   // An empty query clears the results and asks nobody.
+  // A Local search query with place terms (has_place_terms) asks nobody:
+  // the AI pack intersects them itself through place_paths (#441), so no
+  // provider's rows are offered beside its results.
   std::uint64_t search(std::uint32_t scope, const std::string& query, const std::string& folder);
+  // #441: whether an attached add-on's provider for `scope` declares `prefix`
+  // ("place:").
+  [[nodiscard]] bool answers_prefix(std::uint32_t scope, std::string_view prefix) const;
+  // #441 (the host table's place_matches): every path the Local search
+  // provider that declares `prefix` answers for `query` (the prefix already
+  // removed) over the whole index (folder ""). Blocks the calling worker
+  // until that provider is done; the request has its own generation, so
+  // neither the chrome's searches nor this one replaces the other.
+  // `keep_going` is asked about every 20 ms and before returning; false
+  // stops it (status::cancelled), and the provider sees the request go stale.
+  // not_found when no attached add-on declares the prefix, or it detaches
+  // meanwhile.
+  [[nodiscard]] result<std::vector<std::string>> provider_paths(const std::string& prefix, const std::string& query,
+                                                                const std::function<bool()>& keep_going);
   // The gallery shows `folder`: one badges request per add-on with badges.
   std::uint64_t request_badges(const std::string& folder);
   status open_screen(const std::string& addon_id, const std::string& screen_id,
@@ -266,6 +292,14 @@ class slot_registry {
   // Windows, panes and sheets that are open.
   std::map<std::pair<std::string, std::string>, screen_state> screens_;
   search_state search_[2];  // [0] files, [1] local
+  // provider_paths' requests in flight, by generation: what has arrived.
+  struct private_search {
+    std::string addon, provider;
+    std::vector<std::string> paths;
+    bool done = false;
+  };
+  std::map<std::uint64_t, private_search> private_;
+  std::condition_variable private_cv_;  // with m_: a row or done arrived, or an add-on went
   std::uint64_t badges_generation_ = 0;
   std::string badges_folder_;
   std::map<std::string, std::set<std::string>> badge_sets_;  // "addon/badge" -> paths
@@ -290,6 +324,11 @@ class slot_registry {
 // provider it answers with no extra rows. Both hosts call this when the pack
 // attaches (on = true) and goes.
 void set_local_search_provider(slot_registry& registry, bool on);
+
+// #441 (mv_slots_place_terms): MV_SLOTS_PLACE_TERMS when `query` has place
+// terms (has_place_terms), MV_SLOTS_PLACE_PROVIDER when an add-on answers
+// them for Local search (Places is loaded).
+[[nodiscard]] std::uint32_t place_terms(const slot_registry& registry, std::string_view query);
 
 // A file's coordinates, cached by path + size + mtime for the process (the
 // host table's location_of / locations_in). `read` is the host's metadata

@@ -316,6 +316,9 @@ typedef struct mv_addon_location_entry {
 } mv_addon_location_entry;
 /* Return non-zero to continue, zero to stop. */
 typedef int32_t(MV_CALL* mv_addon_location_fn)(void* user, const mv_addon_location_entry* entry);
+/* One path (place_matches). NULL `path_utf8`: nothing new yet, still wanted?
+ * Return non-zero to continue, zero to stop. */
+typedef int32_t(MV_CALL* mv_addon_path_fn)(void* user, const char* path_utf8);
 
 /* Asks for an info-pane section's tree for the file on screen. */
 typedef struct mv_slot_info_request {
@@ -656,6 +659,20 @@ typedef struct mv_host_api {
    * covers it and the pointer is non-NULL. */
   mv_status(MV_CALL* locations_of_index)(void* host, uint64_t generation, mv_addon_location_fn visit,
                                          void* user);
+  /* ---- place terms (#441, docs/design/17 "Places over the index") ---------- */
+  /* [worker-thread] Which assets of the Local search index are in the place
+   * `place_utf8` names ("portugal", the text after place: / in:), as the
+   * loaded add-on whose search provider declares the `place:` prefix for
+   * Local search (Places) answers it over the whole index. `visit` gets each
+   * matching path (the index's own key, as locations_of_index gives it); it
+   * is called on the caller's thread, and with NULL about every 20 ms while
+   * the provider works, so the caller can stop waiting. Blocks until the
+   * provider is done. MV_ERR_NOT_FOUND when no loaded add-on declares
+   * `place:` (Places is not installed) or it went meanwhile: the caller
+   * matches nothing, never every geotagged file. MV_ERR_CANCELLED when
+   * `visit` returned 0. Appended after locations_of_index: read it only when
+   * `struct_size` covers it and the pointer is non-NULL. */
+  mv_status(MV_CALL* place_matches)(void* host, const char* place_utf8, mv_addon_path_fn visit, void* user);
 } mv_host_api;
 
 typedef struct mv_addon_api {
@@ -857,6 +874,16 @@ MV_API mv_status MV_CALL mv_slots_surface(const char* addon, const char* screen,
  * pack attached (1) or went (0); the registry then lists it as the
  * local-scope provider. Its own results stay in its panel. */
 MV_API mv_status MV_CALL mv_slots_local_search_provider(uint32_t on);
+/* 0.31 (#441): what Local search can do with `query_utf8`'s place terms
+ * (place:x, in:<word>, and their -negations, read as the AI pack's parser
+ * reads them). Bits: MV_SLOTS_PLACE_TERMS the query has one;
+ * MV_SLOTS_PLACE_PROVIDER a loaded add-on answers them (Places is
+ * installed). NULL or "" asks only the second. A query with place terms and
+ * no provider gets no results and the chrome says Places is needed; the help
+ * line names place: only when there is a provider. */
+#define MV_SLOTS_PLACE_TERMS 1u
+#define MV_SLOTS_PLACE_PROVIDER 2u
+MV_API mv_status MV_CALL mv_slots_place_terms(const char* query_utf8, uint32_t* out_flags);
 /* [worker-thread] The viewer's JPEG-512 of a still, by path (a cache hit or
  * made now on the calling thread), for a screen's thumbnail / thumbnail_grid
  * tile. MV_ERR_UNSUPPORTED_FORMAT for a clip. */

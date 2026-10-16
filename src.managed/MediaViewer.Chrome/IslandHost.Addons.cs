@@ -635,6 +635,7 @@ public static partial class IslandHost
             HostOpenList(title, paths, momentsMs, selectIndex, gallery);
             // docs/design/25 PR 59: the same query to the other Local search providers;
             // their rows show in the path row when they arrive (IslandHost.Slots.cs).
+            // A query with place terms asks nobody: the pack intersected them (#441).
             _slotListTitle = title;
             SlotNative.Search(SlotNative.ScopeLocal, title, "");
         });

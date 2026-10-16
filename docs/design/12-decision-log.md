@@ -481,6 +481,16 @@ file search and Local search. AI index schema 4 adds the tag columns and an FTS5
 (`sqlite3[fts5]` in vcpkg). Its place / country / region columns stay NULL, and `place:` is
 answered at query time by the provider.
 
+**A place term needs Places, and intersects (2026-10-16, owner, #441).** Without the Places
+add-on, `place:Portugal` used to list every geotagged file, newest first, including a photo taken
+in England. With Places, the provider's rows were only offered beside the list ("+ N in
+Portugal"), never intersected, though doc 17 said they were. Now the AI pack's engine asks the
+`place:` provider for each place term through the host table's `place_matches` and keeps only
+those assets (`-place:` removes them). With no provider a place term matches nothing, and the
+search panel says Places is needed instead of guessing; the owner asked that `place:` leave the
+help line until Places is installed. The core still links no geocoder: the borders stay in the
+add-on.
+
 ---
 
 ## Photo editing

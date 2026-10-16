@@ -912,14 +912,23 @@ std::string read_bridge(int32_t (*fn)(char*, int32_t)) {
   const bool ok = mv_chrome_open_list(title.UTF8String ?: "", ptrs.data(), ms.data(),
                                       static_cast<int32_t>(ptrs.size()), select, gallery);
   // docs/design/25 PR 59: the same query to the other Local search providers
-  // (Places' `place:`), on their workers; their rows show under the result
-  // list's title when they arrive (CommandBarView ListTitleBar).
+  // (Places' "portugal"), on their workers; their rows show under the result
+  // list's title when they arrive (CommandBarView ListTitleBar). A query with
+  // place terms asks nobody: the pack intersected them already (#441).
   if (ok) (void)mv::addon::default_slots().search(MV_SLOT_SCOPE_LOCAL, title.UTF8String ?: "", "");
   return ok ? @YES : @NO;
 }
 
 - (void)closeList {
   mv_chrome_close_list();
+}
+
+// #441: what Local search can do with `query`'s place terms, as
+// mv_slots_place_terms's bits: 1 it has one, 2 a loaded add-on (Places)
+// answers them. "" asks only the second (the help line).
+- (NSNumber*)placeTerms:(NSString*)query {
+  NSString* q = [query isKindOfClass:[NSString class]] ? query : @"";
+  return @(mv::addon::place_terms(mv::addon::default_slots(), q.UTF8String ?: ""));
 }
 
 // What find-similar and N / Shift+N need: the item on the canvas, the folder

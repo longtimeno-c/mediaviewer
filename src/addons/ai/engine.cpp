@@ -5280,6 +5280,44 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
       }
     }
     if (plan.impossible) return;
+    // #441: which place a place: / in: term names is the Places add-on's
+    // answer (the host's place_matches, over the whole index), intersected
+    // here with the rest of the query: in every place named, in none left
+    // out. With nothing to answer (Places not installed) a place term matches
+    // nothing, never every geotagged file. Path keys, as assets_ holds them.
+    std::optional<std::set<std::string>> in_places;  // nullopt: no kept place term
+    std::set<std::string> out_places;
+    if (!plan.places.empty() || !plan.not_places.empty()) {
+      // A newer search queued behind this one makes it stale: stop waiting.
+      const std::function<bool()> keep_going = [this] {
+        if (stopping_.load()) return false;
+        std::lock_guard lock(search_m_);
+        return search_queue_.empty();
+      };
+      const auto keys_in = [&](const std::string& place) -> std::optional<std::set<std::string>> {
+        auto paths = host_.place_matches(place, keep_going);
+        if (!paths) return std::nullopt;
+        std::set<std::string> keys;
+        for (const std::string& p : *paths) keys.insert(path_key(p));
+        return keys;
+      };
+      for (const std::string& place : plan.places) {
+        auto keys = keys_in(place);
+        if (!keys) return;
+        if (!in_places) {
+          in_places = std::move(*keys);
+          continue;
+        }
+        for (auto it = in_places->begin(); it != in_places->end();) {
+          it = keys->count(*it) ? std::next(it) : in_places->erase(it);
+        }
+      }
+      for (const std::string& place : plan.not_places) {
+        auto keys = keys_in(place);
+        if (!keys) return;
+        out_places.merge(*keys);
+      }
+    }
     // Kinds: the chips' and the query's, both.
     std::uint32_t k = kinds;
     if (plan.kinds != 0) {
@@ -5301,9 +5339,8 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
     }
     // #291: camera: / lens: / made: / ai: against the tags read so far (an
     // asset whose tags are not read yet does not match a tag term), and
-    // place: / in: (not a date) to the geotagged ones: which place is the
-    // Places add-on's provider's answer, merged by the slot registry.
-    if (plan.has_tags() || !plan.places.empty()) {
+    // place: / in: (not a date) to the assets Places put there (above).
+    if (plan.has_tags() || in_places || !out_places.empty()) {
       const auto all_in = [](const std::string& value, const std::vector<std::string>& terms) {
         for (const std::string& t : terms) {
           if (value.find(t) == std::string::npos) return false;
@@ -5331,7 +5368,8 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
             // has no value yet, so a kept term does not match it.
             if (keep && plan.has_exposure()) keep = plan.exposure_matches(a.exposure);
           }
-          if (keep && !plan.places.empty()) keep = a.has_where;
+          if (keep && in_places) keep = in_places->count(a.key) != 0;
+          if (keep && !out_places.empty()) keep = out_places.count(a.key) == 0;
         }
         it = keep ? std::next(it) : allowed->erase(it);
       }
@@ -5471,7 +5509,7 @@ std::uint64_t engine::search_text(const std::string& query_text, const std::stri
       said_rows.clear();
     } else if (plan.people_first.empty() &&
                (plan.kinds != 0 || plan.has_dates() || plan.has_files() || plan.has_tags() ||
-                !plan.places.empty() || !plan.not_people.empty() ||
+                !plan.places.empty() || !plan.not_places.empty() || !plan.not_people.empty() ||
                 !plan.not_text.empty() || !plan.not_phrases.empty())) {
       // Filters alone ("video in:2024", "file:IMG_12"): everything they allow,
       // newest first.
