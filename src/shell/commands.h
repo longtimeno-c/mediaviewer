@@ -366,6 +366,10 @@ enum class command_id : std::uint16_t {
   // previous still beside the current one, under one camera. Appended.
   // Appended after #207's ids so every earlier wire id stays put.
   compare_two_up,
+  // Issue #429 (docs/design/16 "View"): the page sidebar of a PDF, DOCX or PPTX
+  // with the filmstrip hidden. Appended. Shift+T, beside T: the two strips
+  // share the job (the folder's files, this file's pages) and never show at once.
+  toggle_page_sidebar,
   count
 };
 inline constexpr int kAddonCommandSlots = 8;

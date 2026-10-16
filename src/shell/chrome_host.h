@@ -183,6 +183,13 @@ enum chrome_command : int {
   // The "Press T" filmstrip hint card's "Got it" (shell/filmstrip_hint.h): the
   // hint is learned, as T hiding the strip over a document teaches it.
   chrome_cmd_hint_learned = 1081,
+  // Issue #429: a page sidebar row was clicked; arg is the page (0-based).
+  // Native turns to it as Ctrl+PageDown would.
+  chrome_cmd_select_page = 1082,
+  // Issue #429: the island drained MV_COMPLETION_IMAGE_OPENED (native does not
+  // drain while it is attached), so the page count of what is on screen is
+  // known: native shows or updates the page sidebar.
+  chrome_cmd_image_opened = 1083,
 };
 
 // chrome_cmd_video_loop's argument. The C# side mirrors it.
@@ -476,6 +483,17 @@ struct chrome_panel_args {
 };
 
 static_assert(sizeof(chrome_panel_args) == 24, "keep in sync with ChromePanelArgs");
+
+// Issue #429: what the page sidebar lists. `count` 0 when there is nothing to
+// list; `current` the page on screen (0-based); `stop` changes whenever the
+// document does, so two documents of the same length are told apart.
+struct chrome_page_sidebar_args {
+  std::int32_t count;
+  std::int32_t current;
+  std::int32_t stop;
+};
+
+static_assert(sizeof(chrome_page_sidebar_args) == 12, "keep in sync with ChromePageSidebarArgs");
 
 // PR 13: trim mode on the transport's scrub bar (shell/trim_state.h). Times in
 // ns on the player's timeline; -1 = unset. `cut_*` is what Path 1 will write
@@ -886,6 +904,17 @@ class chrome_host {
                         bool focus = false) noexcept;
   [[nodiscard]] bool meta_pane_visible() const noexcept { return panels_attached_ && meta_visible_; }
   [[nodiscard]] bool folder_tree_visible() const noexcept { return panels_attached_ && tree_visible_; }
+  // Issue #429: the page sidebar, a panel island on the left edge that does
+  // inset the canvas (input.chrome_left_px). Optional like the panes: an older
+  // chrome without it makes these no-ops and page_sidebar_supported() false.
+  void show_page_sidebar(bool visible, int x, int y, int width, int height) noexcept;
+  void set_page_sidebar(std::int32_t count, std::int32_t current, std::int32_t stop) noexcept;
+  [[nodiscard]] bool page_sidebar_supported() const noexcept {
+    return panels_attached_ && show_page_sidebar_ && set_page_sidebar_;
+  }
+  [[nodiscard]] bool page_sidebar_visible() const noexcept {
+    return panels_attached_ && page_sidebar_visible_;
+  }
   // The record's tables, formatted once by the host; the pane re-renders from them.
   // #290: `facts` (null while loading) supplies made_with, ai_generated and where.
   void set_meta_data(bool loading, const std::string& summary, const std::string& properties,
@@ -1137,6 +1166,10 @@ class chrome_host {
   chrome_entry_fn detach_panels_ = nullptr;
   chrome_entry_fn show_meta_pane_ = nullptr;
   chrome_entry_fn show_folder_tree_ = nullptr;
+  chrome_entry_fn show_page_sidebar_ = nullptr;  // issue #429, optional
+  chrome_entry_fn set_page_sidebar_ = nullptr;
+  bool page_sidebar_visible_ = false;
+  chrome_page_sidebar_args page_sidebar_sent_{-1, -1, -1};
   chrome_entry_fn set_meta_data_ = nullptr;
   chrome_entry_fn set_tree_root_ = nullptr;
   chrome_entry_fn take_tree_path_ = nullptr;

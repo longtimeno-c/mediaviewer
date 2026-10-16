@@ -50,6 +50,7 @@
 #include "core/trace.h"
 #include "edit/histogram.h"
 #include "image/linear.h"
+#include "image/page_thumbs.h"
 #include "io/collision_name.h"
 #include "io/paths.h"
 #include "io/file.h"
@@ -345,6 +346,10 @@ constexpr int kEditorThumbs = 48;          // thumbnails across the source
 constexpr std::uint32_t kEditorThumbPx = 96;  // their height in pixels (48 pt at 2x)
 constexpr std::uint32_t kEditorPeaks = 1200;
 constexpr CGFloat kTreeWidthPoints = 280.0;
+// Issue #429: the page sidebar down the left of the canvas. It reserves its
+// width (input_snapshot.chrome_left_px) as the docked Edit pane reserves the
+// right, so a page is never framed under it.
+constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 
 // Declared in full (not just `@class`) because MvMetalView's own methods,
 // defined below, send it messages (navigatePrev etc.) -- a bare forward
@@ -380,6 +385,8 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 // gallery does. Mac has no horizontal canvas inset yet (docs/design/12 2026-09-24).
 @property(nonatomic, strong) NSView* metaHost;
 @property(nonatomic, strong) NSView* treeHost;
+// Issue #429: the page sidebar (left, under the command bar).
+@property(nonatomic, strong) NSView* pageSidebarHost;
 @property(nonatomic, strong) NSLayoutConstraint* metaBottom;
 @property(nonatomic, strong) NSLayoutConstraint* treeBottom;
 // PR 11: the adjust pane, on the metadata pane's edge (one at a time).
@@ -721,6 +728,10 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 // Points the Edit workspace docks on the right (0 when closed): the canvas
 // frames the picture left of it (input_snapshot.chrome_right_px).
 - (CGFloat)dockedRightPoints;
+// Issue #429: the page sidebar is on screen (MvMetalView's -syncSize reserves it).
+- (BOOL)pageSidebarShown;
+- (void)requestPageThumbsFrom:(int32_t)first count:(int32_t)count;
+- (void)selectPage:(int32_t)page;
 - (void)editViewInto:(mv_edit_view*)out;
 - (std::string)editName;
 - (void)editSelectTab:(int32_t)tab;
@@ -800,6 +811,14 @@ extern "C" void mv_chrome_set_thumb_ready_callback(mv_chrome_thumb_ready_fn call
 extern "C" void mv_chrome_request_thumb(int32_t index) {
   if (!g_chrome_app || index < 0) return;
   [g_chrome_app requestThumbAtIndex:index];
+}
+// Issue #429: the page sidebar.
+extern "C" void mv_chrome_request_page_thumbs(int32_t first, int32_t count) {
+  if (g_chrome_app) [g_chrome_app requestPageThumbsFrom:first count:count];
+}
+extern "C" void mv_chrome_select_page(int32_t page) {
+  (void)mv::shell::crash::note_native_call();
+  if (g_chrome_app) [g_chrome_app selectPage:page];
 }
 extern "C" void mv_chrome_menu(MvMenuCmd cmd) {
   (void)mv::shell::crash::note_native_call();
@@ -2015,6 +2034,10 @@ static mv::shell::key MvKeyFromEvent(NSEvent* event, std::uint8_t* mods_out) {
   self.snap->chrome_bottom_px = (self.app && [self.app filmstripVisible] && ![self.app editorOwnsCanvas])
       ? static_cast<std::uint32_t>(kFilmstripHeightPoints * self.window.backingScaleFactor)
       : 0;
+  // Issue #429: the page sidebar reserves the left edge the same way.
+  self.snap->chrome_left_px = (self.app && [self.app pageSidebarShown])
+      ? static_cast<std::uint32_t>(kPageSidebarWidthPoints * self.window.backingScaleFactor)
+      : 0;
   // PR 29: the Edit workspace docks instead of covering the picture.
   self.snap->chrome_right_px = self.app
       ? static_cast<std::uint32_t>([self.app dockedRightPoints] * self.window.backingScaleFactor)
@@ -2484,6 +2507,13 @@ static void MvAdoptNewDefaultViewerTypes() {
   // §2.3): 0 for the file itself; a new stop starts at 0.
   std::uint32_t _shownPage;
   std::uint32_t _shownPageCount;  // last count the lab reported for this stop; 0 unknown
+  // Issue #429, the page sidebar: wanted (Shift+T, NSUserDefaults
+  // mv.pageSidebar, on unless turned off), shown (-pageSidebarVisible) and
+  // the bookkeeping of its thumbnails, shared with jobs that outlive a call.
+  BOOL _pageSidebarWanted;
+  BOOL _pageSidebarShown;
+  std::uint32_t _pageSidebarListed;  // the count the strip was last given
+  std::shared_ptr<mv::image::page_thumb_book> _pageThumbs;
   // Document scrolling (docs/design/04 "Scrolling a document"): the shared
   // page-turn rule and its sub-pixel carry (canvas/document_scroll.h).
   mv::canvas::document_scroller _docScroll;
@@ -3048,6 +3078,18 @@ static void MvAdoptNewDefaultViewerTypes() {
   [container addSubview:self.metaHost];
   self.metaBottom = [self.metaHost.bottomAnchor constraintEqualToAnchor:container.bottomAnchor
                                                                constant:0.0];
+  // Issue #429: the page sidebar, left of the canvas from the command bar
+  // down. Added before the tree, so the tree (when open) floats over it.
+  self.pageSidebarHost = [MVChromeHost makePageSidebarView];
+  self.pageSidebarHost.hidden = YES;
+  self.pageSidebarHost.translatesAutoresizingMaskIntoConstraints = NO;
+  [container addSubview:self.pageSidebarHost];
+  [NSLayoutConstraint activateConstraints:@[
+    [self.pageSidebarHost.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
+    [self.pageSidebarHost.topAnchor constraintEqualToAnchor:self.commandBar.bottomAnchor],
+    [self.pageSidebarHost.bottomAnchor constraintEqualToAnchor:container.bottomAnchor],
+    [self.pageSidebarHost.widthAnchor constraintEqualToConstant:kPageSidebarWidthPoints],
+  ]];
   self.treeHost = [MVChromeHost makeFolderTreeView];
   self.treeHost.hidden = YES;
   self.treeHost.translatesAutoresizingMaskIntoConstraints = NO;
@@ -3238,7 +3280,18 @@ static void MvAdoptNewDefaultViewerTypes() {
                                    std::int64_t moment_ms) {
       return folder->cached_clip_thumb(path, mtime, size, moment_ms);
     };
+    _options.page_thumb = [folder](const std::string& path, std::int64_t mtime, std::uint64_t size,
+                                   std::uint32_t page) {
+      return folder->cached_page_thumb(path, mtime, size, page);
+    };
   }
+  // Issue #429: a document's page count arrives with its decode; the page
+  // sidebar appears on it, on the main thread, as the bridge calls do.
+  _options.page_count_known = [](std::uint64_t item, std::uint32_t count) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (g_chrome_app) [g_chrome_app pageCount:count knownForItem:item];
+    });
+  };
   if (auto started = _lab.start((__bridge void*)self.view, _options); !started) {
     MV_LOG_ERROR("present lab failed to start");
     [NSApp terminate:nil];
@@ -4692,6 +4745,7 @@ static void MvAdoptNewDefaultViewerTypes() {
   if (!visible) [self clearGalleryRange];  // #413: the range belongs to the grid
   _galleryVisible = visible;
   self.galleryHost.hidden = !visible;
+  [self applyPageSidebarLayout];  // issue #429: not under the grid
   [self textSync];
   [self layoutAIBadge];  // #345
   if (changed && visible) [self followGalleryFilter];
@@ -4729,6 +4783,8 @@ static void MvAdoptNewDefaultViewerTypes() {
 // screen already matches.
 - (void)applyFilmstripLayout {
   const BOOL shown = [self filmstripVisible];
+  // The page sidebar takes the filmstrip's role for a document (issue #429).
+  [self applyPageSidebarLayout];
   if (self.filmstripHost.hidden == !shown) return;
   self.filmstripHost.hidden = !shown;
   self.transportBottom.constant = -(shown ? kFilmstripHeightPoints + 10.0 : 10.0);
@@ -5336,6 +5392,7 @@ static mv::shell::command_id MvMenuCommand(NSInteger cmd) {
     case kMenuFit: return fit;
     case kMenuOneToOne: return one_to_one;
     case kMenuFilmstrip: return toggle_filmstrip;
+    case kMenuPageSidebar: return toggle_page_sidebar;
     case kMenuGallery: return toggle_gallery;
     case kMenuFullscreen: return fullscreen;
     case kMenuSlideshow: return slideshow_start;
@@ -5516,6 +5573,7 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
     case kMenuFit: mv_chrome_fit(); break;
     case kMenuOneToOne: mv_chrome_one_to_one(); break;
     case kMenuFilmstrip: [self toggleFilmstrip]; break;
+    case kMenuPageSidebar: [self togglePageSidebar]; break;
     case kMenuGallery: [self toggleGallery]; break;
     case kMenuFullscreen: [self toggleFullscreen]; break;
     case kMenuSlideshow: [self startSlideshow]; break;
@@ -5620,6 +5678,7 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
     return subject == mv::shell::edit_subject::still;
   }
   if (tag == kMenuFolderTree) item.state = _treeVisible ? NSControlStateValueOn : NSControlStateValueOff;
+  if (tag == kMenuPageSidebar) item.state = _pageSidebarWanted ? NSControlStateValueOn : NSControlStateValueOff;
   if ([self menuCmdBlocked:tag]) return NO;
   switch (static_cast<MvMenuCmd>(item.tag)) {
     case kMenuOpen: case kMenuOpenFolder: case kMenuFit: case kMenuOneToOne: case kMenuFullscreen: case kMenuHelp: case kMenuSettings: case kMenuOverlay:
@@ -5789,6 +5848,7 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
   [self addMenuItem:@"Actual Size" cmd:kMenuOneToOne key:@"" mods:0 toMenu:view];
   [view addItem:[NSMenuItem separatorItem]];
   [self addMenuItem:@"Filmstrip" cmd:kMenuFilmstrip key:@"" mods:0 toMenu:view];
+  [self addMenuItem:@"Page Sidebar" cmd:kMenuPageSidebar key:@"" mods:0 toMenu:view];
   [self addMenuItem:@"Gallery" cmd:kMenuGallery key:@"" mods:0 toMenu:view];
   [self addMenuItem:@"Metadata" cmd:kMenuMetadata key:@"" mods:0 toMenu:view];
   [self addMenuItem:@"Folder Tree" cmd:kMenuFolderTree key:@"" mods:0 toMenu:view];
@@ -6418,6 +6478,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
       return YES;
     case toggle_gallery: [self toggleGallery]; return YES;
     case toggle_filmstrip: [self toggleFilmstrip]; return YES;
+    case toggle_page_sidebar: [self togglePageSidebar]; return YES;
     case gallery_up: [self galleryMoveRows:-1]; return YES;
     case gallery_down: [self galleryMoveRows:1]; return YES;
     case gallery_open_selected:
@@ -6857,6 +6918,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
 // item's geometry moves to slot 1 so its texture keeps it until the new
 // pixels land; slot 0 is the new item's.
 - (void)editItemOpened:(const mv::io::dir_entry&)entry item:(std::uint64_t)item {
+  [self applyPageSidebarLayout];  // issue #429: a new stop or page
   _snap.edit[1] = _snap.edit[0];
   _itemId = item;
   mv::shell::edit_item e;
@@ -10967,6 +11029,7 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   MvAddonsShowAudioChanged((_viewFlags & mv::shell::kSettingShowAudio) != 0);
   MvAddonsShowDocumentsChanged((_viewFlags & mv::shell::kSettingShowDocuments) != 0);  // #354
   _stripHintLearned = [d boolForKey:@"mv.hint.filmstripT"];
+  _pageSidebarWanted = [d objectForKey:@"mv.pageSidebar"] == nil || [d boolForKey:@"mv.pageSidebar"];
   std::vector<mv::shell::key_remap> remaps;
   for (NSString* row in [d arrayForKey:kDefaultsKeys]) {
     int idx = 0, k = 0, m = 0;
@@ -11193,6 +11256,100 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   [self stripHintShow];
   [self pokeSnapshot];
   return YES;
+}
+
+// Issue #429 (docs/design/04 "Page sidebar"): a strip of page thumbnails down
+// the left of a PDF, DOCX or PPTX with more than one page, when the filmstrip
+// is hidden. It takes the filmstrip's role for a document, so the two never
+// show at once; Shift+T turns it off and on (remembered, on by default).
+- (void)pageCount:(std::uint32_t)count knownForItem:(std::uint64_t)item {
+  if (item != _shownItem || count == 0) return;
+  if (count == _shownPageCount && _pageSidebarShown) return;
+  _shownPageCount = count;
+  [self applyPageSidebarLayout];
+}
+- (BOOL)pageSidebarShown {
+  return _pageSidebarShown;
+}
+// The count the strip lists: the stop's own once the lab knows it. Until then,
+// while the last document's strip is up, that one's: arrowing from one
+// document to the next keeps the strip rather than taking it down and putting
+// it back, which would refit the canvas twice.
+- (std::uint32_t)pageSidebarCount {
+  if (_shownPageCount > 0) return _shownPageCount;
+  return _pageSidebarShown ? _pageSidebarListed : 0;
+}
+- (BOOL)pageSidebarVisible {
+  if (!_pageSidebarWanted || [self pageSidebarCount] <= 1) return NO;
+  if (_items.empty() || _shownItem == 0 || _shownPath.empty()) return NO;
+  if (_galleryVisible || [self filmstripVisible] || _editorOpen) return NO;
+  if (mv::shell::photos::is_key(_shownPath)) return NO;
+  return mv::io::is_document_name(_shownPath) ? YES : NO;
+}
+// Re-run whenever what decides it changes (a stop, a page, the count, the
+// filmstrip, the gallery). Tells the sidebar the page on screen every time,
+// so its highlight follows a scroll or a key.
+- (void)applyPageSidebarLayout {
+  if (!self.pageSidebarHost) return;
+  const BOOL shown = [self pageSidebarVisible];
+  if (!_pageThumbs) _pageThumbs = std::make_shared<mv::image::page_thumb_book>();
+  // The serial names the stop: a new one (or none) starts a new serial, so a
+  // thumbnail of the last document still in flight is never shown on this one.
+  std::uint32_t serial = 0;
+  if (shown) {
+    serial = _pageThumbs->want(_shownPath, 0, 0).serial;
+  } else {
+    _pageThumbs->clear();
+    serial = _pageThumbs->serial();
+  }
+  _pageSidebarListed = shown ? [self pageSidebarCount] : 0;
+  [MVChromeHost setPageSidebarWithCount:static_cast<int32_t>(_pageSidebarListed)
+                                current:static_cast<int32_t>(_shownPage)
+                                 serial:serial];
+  if (shown == _pageSidebarShown) return;
+  _pageSidebarShown = shown;
+  self.pageSidebarHost.hidden = !shown;
+  [self layoutHintNotice];
+  [self.view syncSize];  // chrome_left_px: the canvas frames right of it
+}
+- (void)togglePageSidebar {
+  _pageSidebarWanted = !_pageSidebarWanted;
+  [NSUserDefaults.standardUserDefaults setBool:_pageSidebarWanted forKey:@"mv.pageSidebar"];
+  [self applyPageSidebarLayout];
+  // Asked for over a document that cannot show it: say why rather than nothing.
+  if (_pageSidebarWanted && !_pageSidebarShown && mv::io::is_document_name(_shownPath) &&
+      [self filmstripVisible]) {
+    [self noticeShow:"Press T to hide the filmstrip and show the page sidebar"];
+  }
+}
+// The sidebar's visible window of pages (from the SwiftUI strip). Thumbnails
+// render on a background job from one open of the file; each lands on the
+// main thread with the serial it was made for.
+- (void)requestPageThumbsFrom:(int32_t)first count:(int32_t)count {
+  if (!_pageSidebarShown || first < 0 || count <= 0 || !_pageThumbs) return;
+  auto want = _pageThumbs->want(_shownPath, static_cast<std::uint32_t>(first),
+                                static_cast<std::uint32_t>(count));
+  if (want.pages.empty()) return;
+  const std::int64_t mtime = _shownMtime == kShownStampUnknown ? 0 : _shownMtime;
+  std::shared_ptr<mv::image::page_thumb_book> book = _pageThumbs;
+  const std::uint32_t serial = want.serial;
+  _folder.request_page_thumbs(
+      _shownPath, mtime, _shownSize, std::move(want.pages),
+      [book, serial](std::vector<std::uint32_t> pages) { return book->still_wanted(serial, pages); },
+      [book, serial](std::uint32_t page, std::string path) {
+        if (!book->landed(serial, page, path)) return false;
+        NSString* ns = [NSString stringWithUTF8String:path.c_str()] ?: @"";
+        dispatch_async(dispatch_get_main_queue(), ^{
+          [MVChromeHost pageThumbReadyWithSerial:serial page:static_cast<int32_t>(page) path:ns];
+        });
+        return true;
+      },
+      [book, serial](std::vector<std::uint32_t> pages) { book->finished(serial, pages); });
+}
+// A sidebar click: that page, fitted, as Ctrl+PageDown would show it.
+- (void)selectPage:(int32_t)page {
+  if (page < 0 || !_pageSidebarShown) return;
+  (void)[self turnPage:page - static_cast<int>(_shownPage) land:NO];
 }
 
 - (BOOL)documentScrolls {

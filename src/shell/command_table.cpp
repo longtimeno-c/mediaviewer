@@ -329,6 +329,9 @@ constexpr binding kBindings[] = {
     // previous still, `|` keeps it beside the current one. Video too, so the
     // toggle can be turned off from a clip (a clip never splits).
     row(C('|'), mod_none, kBrowse | kVideo, edge, compare_two_up),
+    // Issue #429. Appended. Shift+T beside T (the filmstrip): browse and the
+    // islands, as the page keys; the gallery types ahead.
+    row(C('T'), mod_shift, kBrowse | kIsland, edge, toggle_page_sidebar),
 };
 
 // The router's index stores row + 1 in a byte.
@@ -519,6 +522,7 @@ constexpr command_info kCommands[] = {
     {clear_label, "Clear label"},
     {zoom_af_point, "Zoom to AF point"},
     {compare_two_up, "Compare with previous"},
+    {toggle_page_sidebar, "Page sidebar"},
 };
 
 const char* named_key(key k) noexcept {

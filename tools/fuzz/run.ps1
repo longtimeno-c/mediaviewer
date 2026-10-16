@@ -55,6 +55,7 @@ $table = [ordered]@{
     animation   = @{ Seeds = @('gif', 'webp', 'png', 'heic', 'avif');   MaxLen = 131072 }
     pdf         = @{ Seeds = @('pdf');                                  MaxLen = 65536 }
     docx        = @{ Seeds = @('docx');                                 MaxLen = 65536 }
+    pptx        = @{ Seeds = @('pptx');                                 MaxLen = 65536 }
     # #290: the metadata readers beyond Exiv2 (meta/parse.h).
     meta_c2pa   = @{ Seeds = @('c2pa');                                 MaxLen = 65536 }
     meta_jpeg   = @{ Seeds = @('jpeg', 'c2pa');                         MaxLen = 65536 }
