@@ -161,6 +161,10 @@ class present_lab_mac {
   [[nodiscard]] std::uint64_t mark_navigation() noexcept;
   [[nodiscard]] bool navigation_done(std::uint64_t seq) const noexcept;
   [[nodiscard]] nav_sample navigation_sample(std::uint64_t seq) const noexcept;
+  // Mark -> the full-resolution image of that navigation's item adopted by the
+  // render thread; -1 until then (the first image was a placeholder or a
+  // preview, and the full one is still coming). --page-soak reads it.
+  [[nodiscard]] double navigation_full_ms(std::uint64_t seq) const noexcept;
   [[nodiscard]] bool showing_still() const noexcept {
     return shown_item_.load(std::memory_order_acquire) != 0;
   }
@@ -298,6 +302,7 @@ class present_lab_mac {
   std::uint64_t nav_item_ = 0;
   int nav_cached_ = 0;
   bool nav_have_ready_ = false;
+  std::atomic<double> nav_full_ms_[64]{};
   mutable std::mutex still_cache_mutex_;
   std::vector<cached_still> still_cache_;
   std::uint64_t still_cache_bytes_ = 0;

@@ -600,6 +600,10 @@ Windows lab adds `quick` steps — Right as soon as the last photo is on screen 
 `held` run — a Right every 50 ms, then the last photo timed to full resolution, with the
 run's decode job counts under `"held"`; every step carries `full_ms`. Those are the cases
 the in-flight decode hand-off is for, and `perf-browse.svg` ignores them),
+`--page-soak <path>` (macOS lab, issue #429: with a PDF, DOCX or PPTX, scroll the page sidebar
+from the first page to the last in 1.5 s, as a hard flick does, then go to pages 250, 10, 150, the
+last, 1, 250 and 100 the way a thumbnail click does, each timed to its first image, the present
+showing it and the full-size page; add `--soak N` to have the canvas pacing measured meanwhile),
 `--av-soak <seconds> --csv <path>` (headless A/V drift soak on a clip — see
 [Test](#test)), `--pan-soak` (with `--soak` and `--open`: pan the still at 100 % across
 the whole frame on a fixed path, to measure cached-image and tiled-pyramid pan),

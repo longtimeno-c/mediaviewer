@@ -18,6 +18,8 @@ final class PageSidebarStore: ObservableObject {
 
   @Published private(set) var count = 0
   @Published private(set) var current = 0
+  /// --page-soak only: the page a harness fling has scrolled the strip to.
+  @Published fileprivate(set) var harnessScroll = -1
   /// Names the document the thumbnails belong to (page_thumb_book's serial).
   private var serial: UInt32 = 0
   /// One slot per page, so a thumbnail landing re-renders its own cell only.
@@ -177,6 +179,12 @@ struct PageSidebarView: View {
       .onChange(of: store.count) { _, _ in
         proxy.scrollTo(store.current, anchor: .center)
       }
+      // --page-soak: the strip itself scrolls, so its cells come and go and
+      // ask for thumbnails as under a hard flick.
+      .onChange(of: store.harnessScroll) { _, page in
+        guard page >= 0 else { return }
+        proxy.scrollTo(page, anchor: .top)
+      }
     }
     .background(.regularMaterial)
     .overlay(alignment: .trailing) {
@@ -229,6 +237,11 @@ extension MVChromeHost {
   /// A page's thumbnail landed (main thread), for the document `serial` names.
   @MainActor @objc public static func pageThumbReady(serial: UInt32, page: Int32, path: String) {
     PageSidebarStore.shared.thumbReady(serial: serial, page: Int(page), path: path)
+  }
+
+  /// --page-soak only (main_mac.mm): scroll the strip so `page` is at its top.
+  @MainActor @objc public static func pageSidebarHarnessScroll(page: Int32) {
+    PageSidebarStore.shared.harnessScroll = Int(page)
   }
 
   @objc public static func makePageSidebarView() -> NSView {
