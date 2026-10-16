@@ -113,6 +113,7 @@ public static partial class IslandHost
             _filmstripRoot = null;
             Items.Clear();
             _selectedIndex = -1;
+            UpdateBarShareButton();
             SetBusy(false);
             return 0;
         }
@@ -271,6 +272,7 @@ public static partial class IslandHost
             if (Items[i].Selected) { selected = i; break; }
         }
         _selectedIndex = selected;
+        UpdateBarShareButton();
         if (selected >= 0) ScrollTo(selected);
         ReloadFolders();
         UpdateGalleryCount();
@@ -278,22 +280,33 @@ public static partial class IslandHost
         // this is how it learns a listing landed. Do not Send synchronously:
         // FolderReady -> apply_view_state -> ShowFilmstrip -> BuildFilmstrip
         // re-entered from DrainFolder and AccessViolation'd in set_ItemsSource.
+        // Issue #443: a result list's view (the panel's Enter or Ctrl+Enter) is
+        // applied after native has heard FolderReady, not before. Native learns
+        // there that a list landed, and a list opened over the empty window
+        // (a later window's first search) is what moves it off "nothing open";
+        // a ToggleGallery sent ahead of that was refused, so the grid and the
+        // strip never showed the results.
         int listed = Items.Count;
+        _listOpen = list;
         if (_dispatcher is not null)
-            _dispatcher.DispatcherQueue.TryEnqueue(() => Send(Command.FolderReady, listed));
+        {
+            _dispatcher.DispatcherQueue.TryEnqueue(() =>
+            {
+                Send(Command.FolderReady, listed);
+                if (list) ApplyPendingListView();
+            });
+        }
         else
+        {
             Send(Command.FolderReady, listed);
+            if (list) ApplyPendingListView();
+        }
 
         // Milestone H: Local search learns the folder (its index offer and
         // "This folder" scope), and a list asked for from the panel shows in
-        // the view it asked for.
-        _listOpen = list;
+        // the view it asked for (above, once FolderReady is sent).
         bool newFolder = false;
-        if (list)
-        {
-            ApplyPendingListView();
-        }
-        else
+        if (!list)
         {
             _pendingListGallery = null;
             string dir = _folderSession.FolderDirectory;
@@ -369,6 +382,7 @@ public static partial class IslandHost
         if (_selectedIndex >= 0 && _selectedIndex < Items.Count) Items[_selectedIndex].Selected = false;
         if (index >= 0 && index < Items.Count) Items[index].Selected = true;
         _selectedIndex = index;
+        UpdateBarShareButton();
         ScrollTo(index);
         GalleryScrollTo(index);
         AnnounceSelection(index);

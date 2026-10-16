@@ -139,7 +139,9 @@ filter (B = C = 1/3) in linear light, sRGB-encoded per level
 while panning. Level sizes follow D3D11: `max(1, floor(prev / 2))`; ceil halving produces a chain
 `CreateTexture2D` rejects for odd sizes. Sampling between levels is trilinear with 16× anisotropy.
 Tiled images use a floor-half Mitchell CPU pyramid with 256×256 tiles (2-texel border) over a resident
-overview ([04-image-pipeline.md](04-image-pipeline.md)).
+overview ([04-image-pipeline.md](04-image-pipeline.md)). Tile records go up in one per-instance
+buffer write per frame, not a constant-buffer rename per tile, and once the LOD's tiles cover the
+view neither the coarser levels nor the overview are drawn under them (issue #164).
 
 **Zoomed in** ([`src/gfx/blit.hlsl`](../../src/gfx/blit.hlsl)): Catmull-Rom between 100 % and 400 %,
 nearest-neighbour above 400 % (with an optional one-pixel grid). The Catmull-Rom result is saturated:

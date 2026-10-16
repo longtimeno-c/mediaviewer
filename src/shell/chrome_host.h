@@ -453,6 +453,17 @@ struct chrome_show_args {
 
 static_assert(sizeof(chrome_show_args) == 16, "keep in sync with ChromeShowArgs");
 
+// Issue #444: IslandHost.ShareMenu's header, followed by `bytes` of UTF-8 JSON.
+struct chrome_share_args {
+  std::int64_t hwnd;
+  std::int32_t target;  // shell::share_target
+  std::int32_t from;    // shell::share_from
+  std::int32_t bytes;
+  std::int32_t reserved;
+};
+
+static_assert(sizeof(chrome_share_args) == 24, "keep in sync with IslandHost.ShareMenu");
+
 // PR 9 panes. Native owns the geometry: x/y/width/height are client pixels, and a
 // hidden pane is parked below the client area (the gallery's rule).
 struct chrome_panel_args {
@@ -986,9 +997,13 @@ class chrome_host {
   // with the last preset (kind 1, Ctrl+Shift+F7). Optional entry point: a
   // chrome without it ignores the call.
   void show_import(std::int32_t kind, const std::string& paths_json) noexcept;
-  // PR 15, Ctrl+Shift+S: Windows Share over `window` with the files in
-  // `paths_json` (a UTF-8 JSON array). False when the chrome cannot share.
-  bool share_files(HWND window, const std::string& paths_json) noexcept;
+  // Issue #444 (docs/design/16 "Share"): the one share command's files are
+  // gathered. `target` and `from` are shell::share_target / share_from: the
+  // menu (Sharepoint, Windows Share) anchored where it was asked, or the entry
+  // picked from a right-click Share submenu. `files_json` is
+  // {"files": [...stops with pair halves...], "media": [...system sheet's...]}.
+  // False when the chrome cannot share.
+  bool share_menu(HWND window, std::int32_t target, std::int32_t from, const std::string& files_json) noexcept;
   // Text in images: the island's Windows.Media.Ocr entry
   // (chrome_text_recognition_args). It runs the recognition synchronously on
   // the thread that calls it, so only a worker calls it: the UI thread reads
@@ -1107,7 +1122,7 @@ class chrome_host {
   chrome_entry_fn apply_audio_ = nullptr;
   chrome_entry_fn set_command_table_ = nullptr;
   chrome_entry_fn show_import_ = nullptr;
-  chrome_entry_fn share_files_ = nullptr;
+  chrome_entry_fn share_menu_ = nullptr;
   chrome_entry_fn recognize_text_ = nullptr;  // text in images, optional
   chrome_entry_fn show_addon_ = nullptr;  // Milestone H
   chrome_entry_fn offer_addon_ = nullptr;  // docs/design/25, optional

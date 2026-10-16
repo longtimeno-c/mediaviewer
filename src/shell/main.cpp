@@ -41,6 +41,7 @@
 #include <cstring>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <thread>
 #include <cwctype>
 #include <utility>
@@ -89,6 +90,7 @@
 #include "core/json.h"
 #include "shell/listing_stamp.h"
 #include "shell/marks.h"
+#include "shell/share_menu.h"
 #include "shell/media_kind.h"
 #include "shell/meta_store.h"
 #include "shell/meta_writer.h"
@@ -152,6 +154,7 @@ constexpr UINT kMsgOpenWithReady = WM_APP + 0x7B;
 // stopped (wparam 2). Posted by the core's listener, on any thread.
 constexpr UINT kMsgScripts = WM_APP + 0x7C;
 constexpr UINT kMsgTextRead = WM_APP + 0x7E;  // text in images: a still was read (any thread posts)
+constexpr UINT kMsgShareReady = WM_APP + 0x7F;  // issue #444: a share's files were gathered (pool posts)
 // Text in images: the pointer rests on a still this long before it is read.
 constexpr UINT_PTR kTextDwellTimerId = 0x7C01;
 constexpr UINT kTextDwellMs = 500;
@@ -456,6 +459,8 @@ struct app_state {
   // selection, another folder or the grid closing ends it with no hook.
   std::vector<std::string> gallery_range;
   std::string gallery_range_anchor;
+  // Issue #444: the latest share request; an older gather is dropped.
+  std::uint64_t share_seq = 0;
   // Issue #206: View > Show. For this run only; the core filters the listing.
   mv::io::kind_filter kind_filter = mv::io::kind_filter::all;
   mv::shell::file_jobs files;
@@ -3833,6 +3838,7 @@ void update_client_metrics(app_state* app, HWND hwnd) noexcept;
 int right_pane_px(int client_width, std::uint32_t dpi) noexcept;
 void enable_dark_titlebar(HWND hwnd) noexcept;
 void set_editor_open(app_state* app, bool open);
+bool share_request_run(app_state* app, mv::shell::share_request request);
 
 std::string editor_name(const app_state* app) {
   const std::size_t slash = app->editor.path.find_last_of("\\/");
@@ -4763,6 +4769,14 @@ chrome_dispatch chrome_canvas_command(app_state* app, int command, float arg) {
         if (title[0] != '\0' && app->list_title.empty()) app->list_return_select = app->edit_path;
         app->list_title = title;
         if (app->list_title.empty()) app->list_return_select.clear();
+        // Issue #443: a result list opened over the empty window (a later
+        // window's first search, a search from the welcome) is a listing like
+        // a folder. Every open route moves `mode` off `none`
+        // (welcome_lists_recents); this one did not, so the gallery was not
+        // available, the strip was not wanted and the arrows had no item:
+        // only the chosen result showed. Back from it is return_to_welcome,
+        // which puts `none` back.
+        if (!app->list_title.empty() && app->mode == open_mode::none) app->mode = open_mode::folder;
       }
       refresh_item_info(app);
       refresh_mark_state(app);
@@ -4923,6 +4937,11 @@ bool chrome_edit_command(app_state* app, int command, float arg) {
       return true;
     case static_cast<int>(mv::shell::command_id::kind_filter_set):
       (void)set_kind_filter(app, mv::io::kind_filter_from(static_cast<int>(arg)));
+      return true;
+    // Issue #444: the share icon, the bar's share button and the right-click
+    // Share entries carry where they were asked and the clicked stop.
+    case static_cast<int>(mv::shell::command_id::share):
+      (void)share_request_run(app, mv::shell::unpack_share_request(arg));
       return true;
     // PR 29: the metadata pane's tag editor and Date taken.
     case mv::shell::chrome_cmd_meta_tags:
@@ -6520,17 +6539,85 @@ void on_text_read(app_state* app, std::unique_ptr<text_read_result> r) {
   }
 }
 
-// Ctrl+Shift+S: Windows Share with the marked (else current) file(s). The
-// share sheet is WinRT, so the chrome shows it (IslandHost.Share.cs).
-bool share_targets(app_state* app) {
-  if (!app || !app->window) return false;
-  const auto targets = expand_pair_targets(app, selection_targets(app));
-  if (targets.empty()) return false;
+// Issue #444 (docs/design/16 "Share"): the one share command. Ctrl+Shift+S,
+// the gallery's share icon, the bar's share button and the right-click Share
+// entries all land here. The UI thread only picks the stops (the range, else
+// the marks, else the current file; or the right-clicked file when it is not
+// one of them). The pair halves come from a walk of the whole listing, so that
+// runs on the pool; kMsgShareReady then hands the files to the chrome, which
+// shows the menu (Sharepoint, Windows Share) or runs the entry picked. Nothing
+// is read from disk and nothing is sent until the person picks a target.
+struct share_gathered {
+  std::uint64_t seq = 0;
+  mv::shell::share_request request;
+  std::vector<std::string> files;  // stops with their pair halves: Sharepoint's
+};
+
+// Pool thread: each stop followed by its pair's other half. mv_folder_entries
+// is [any-thread][no-block], one copy of the listing; the listing can change
+// between the size query and the fill, so it asks again.
+std::vector<std::string> share_gather(mv_session_t session, std::vector<std::string> stops) {
+  std::vector<mv_folder_entry> entries;
+  std::vector<char> strings;
+  bool ok = false;
+  for (int attempt = 0; attempt < 4 && !ok; ++attempt) {
+    std::uint32_t count = 0, bytes = 0;
+    if (mv_folder_entries(session, entries.data(), static_cast<std::uint32_t>(entries.size()), strings.data(),
+                          static_cast<std::uint32_t>(strings.size()), &count, &bytes) == MV_OK) {
+      entries.resize(count);
+      ok = true;
+    } else {
+      entries.assign(static_cast<std::size_t>(count) + 16, mv_folder_entry{});
+      strings.assign(static_cast<std::size_t>(bytes) + 4096, '\0');
+    }
+  }
+  if (!ok) return stops;
+  std::map<std::string, std::string, std::less<>> pairs;
+  const std::unordered_set<std::string_view> wanted(stops.begin(), stops.end());
+  for (const mv_folder_entry& e : entries) {
+    if (e.item.pair_kind == MV_PAIR_NONE) continue;
+    const char* path = strings.data() + e.path_offset;
+    const char* pair = strings.data() + e.pair_offset;
+    if (*pair == '\0' || !wanted.count(std::string_view{path})) continue;
+    pairs.emplace(path, pair);
+  }
+  return mv::shell::share_with_pairs(std::move(stops), pairs);
+}
+
+bool share_request_run(app_state* app, mv::shell::share_request request) {
+  if (!app || !app->window || !app->session) return false;
+  std::string clicked;
+  if (request.clicked >= 0) clicked = item_path_at(app, static_cast<std::uint32_t>(request.clicked));
+  std::vector<std::string> stops = mv::shell::share_stops(selection_targets(app), clicked);
+  if (stops.empty()) return false;
+  const std::uint64_t seq = ++app->share_seq;
+  const HWND hwnd = app->window;
+  const mv_session_t session = app->session;
+  app->jobs.submit_at(mv::background_generation,
+                      [session, hwnd, seq, request, stops = std::move(stops)](const mv::job_context&) mutable
+                      -> mv::status {
+                        auto* r = new (std::nothrow) share_gathered{seq, request, share_gather(session, std::move(stops))};
+                        if (r && !::PostMessageW(hwnd, kMsgShareReady, 0, reinterpret_cast<LPARAM>(r))) delete r;
+                        return mv::status::ok;
+                      });
+  return true;
+}
+
+// UI thread: the files are in. A newer request supersedes an older one.
+void on_share_ready(app_state* app, std::unique_ptr<share_gathered> r) {
+  if (!app || !r || !app->window || r->seq != app->share_seq || r->files.empty()) return;
   mv::json::writer w;
-  w.begin_array();
-  for (const std::string& t : targets) w.string(t);
+  w.begin_object();
+  w.key("files").begin_array();
+  for (const std::string& f : r->files) w.string(f);
   w.end_array();
-  return app->chrome.share_files(app->window, w.str());
+  // The system sheet's: media only, no sidecars (issue #444).
+  w.key("media").begin_array();
+  for (const std::string& f : mv::shell::share_system_files(r->files)) w.string(f);
+  w.end_array();
+  w.end_object();
+  (void)app->chrome.share_menu(app->window, static_cast<std::int32_t>(r->request.target),
+                               static_cast<std::int32_t>(r->request.from), w.str());
 }
 
 // The command line a jump list entry runs: the folder, quoted. A trailing
@@ -7214,7 +7301,7 @@ bool run_marks_command(app_state* app, mv::shell::command_id command) noexcept {
     case copy_flattened:
       return start_flatten(app);
     case share:
-      return share_targets(app);
+      return share_request_run(app, {});  // the key's request: the menu, on the selection
     // Marks (docs/design/16): a set separate from the selection, keyed by path.
     case toggle_mark: {
       const std::string current = current_item_path(app);
@@ -8193,6 +8280,10 @@ void apply_view_state(app_state* app) noexcept {
                                         : false);
   if (want_filmstrip != app->chrome.filmstrip_visible()) {
     app->chrome.show_filmstrip(want_filmstrip, width, height, dpi);
+    // The strip here is the shown state, not the wish (the Mac's
+    // -filmstripVisible is the wish): a clip or document that opened before
+    // its folder had a strip was not due then, so ask again now.
+    strip_hint_show(app);
   }
   const bool want_gallery = app->gallery_visible && !settings;
   if (want_gallery != app->chrome.gallery_visible()) {
@@ -8671,6 +8762,10 @@ std::optional<LRESULT> window_on_jobs(HWND hwnd, UINT msg, WPARAM wparam, LPARAM
 
     case kMsgTextRead:
       on_text_read(app, std::unique_ptr<text_read_result>(reinterpret_cast<text_read_result*>(lparam)));
+      return 0;
+
+    case kMsgShareReady:
+      on_share_ready(app, std::unique_ptr<share_gathered>(reinterpret_cast<share_gathered*>(lparam)));
       return 0;
 
     case kMsgEditorLoaded:  // PR 30: the Video Editor's probe and strip
