@@ -217,6 +217,19 @@ typedef struct mv_addon_cue {
 /* Return 0 to stop the read (read_cues then returns MV_ERR_CANCELLED). */
 typedef int32_t(MV_CALL* mv_addon_cue_fn)(void* user, const mv_addon_cue* cue);
 
+/* #354 (docs/plans/document-search.md §2): a document's text, a paragraph at a
+ * time in reading order, with the page (0-based) it starts on and the
+ * document's page count. */
+typedef struct mv_addon_doc_text {
+  uint32_t struct_size;
+  uint32_t page;
+  uint32_t page_count;
+  uint32_t reserved;
+  const char* text_utf8;    /* valid during the call */
+} mv_addon_doc_text;
+/* Return 0 to stop the read (document_text then returns MV_ERR_CANCELLED). */
+typedef int32_t(MV_CALL* mv_addon_doc_text_fn)(void* user, const mv_addon_doc_text* text);
+
 #define MV_ADDON_COPY_MAX_TARGETS 4
 
 typedef enum mv_addon_copy_outcome {
@@ -507,7 +520,9 @@ typedef struct mv_host_api {
                                    mv_addon_sampled_frame* out_frame);
   void(MV_CALL* sampler_close)(void* host, void* sampler);
   /* The frame shown at `pts_ms` (decoded forward from the keyframe before
-   * it), for "find similar" on a paused frame that was never sampled. */
+   * it), for "find similar" on a paused frame that was never sampled. For a
+   * document (PDF, DOCX; #354) `pts_ms` is a 0-based page index and the page
+   * is drawn by the viewer's own renderer: a document result's tile. */
   mv_status(MV_CALL* video_frame_rgb)(void* host, const char* path_utf8, int64_t pts_ms,
                                       uint32_t max_long_edge, uint8_t* out_rgb, uint64_t cap,
                                       uint32_t* out_width, uint32_t* out_height);
@@ -656,6 +671,19 @@ typedef struct mv_host_api {
    * covers it and the pointer is non-NULL. */
   mv_status(MV_CALL* locations_of_index)(void* host, uint64_t generation, mv_addon_location_fn visit,
                                          void* user);
+  /* ---- documents (#354, docs/plans/document-search.md §2) -------------------- */
+  /* [worker-thread] A document's text (mv_addon_doc_text above), in reading
+   * order: a DOCX as the viewer lays it out (paragraphs, table cells row by
+   * row, each with the page that shows it). MV_ERR_UNSUPPORTED_FORMAT for a
+   * PDF, whose text the AI pack reads itself (PDFium in the pack, so both
+   * hosts' indexes agree), and for anything not a document; MV_ERR_CORRUPT
+   * for one that does not parse; MV_ERR_PERMISSION_DENIED for one that is
+   * password-protected; MV_ERR_CANCELLED when `visit` returned 0.
+   * A document's page as pixels is video_frame_rgb with `pts_ms` its 0-based
+   * index (and moment_thumbnail stores its tile the same way). Appended after
+   * locations_of_index: read it only when `struct_size` covers it and the
+   * pointer is non-NULL. */
+  mv_status(MV_CALL* document_text)(void* host, const char* path_utf8, mv_addon_doc_text_fn visit, void* user);
 } mv_host_api;
 
 typedef struct mv_addon_api {

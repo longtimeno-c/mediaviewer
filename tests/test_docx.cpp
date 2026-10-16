@@ -245,6 +245,43 @@ TEST_CASE("A broken DOCX is an error, not a crash", "[docx]") {
   if (r) CHECK(r->page_count == 1);
 }
 
+TEST_CASE("DOCX text comes out in reading order with each paragraph's page", "[docx][text-index]") {
+  // #354 (docs/plans/document-search.md §2): what Local search indexes.
+  std::string body = fx::para("Heading one", R"(<w:pStyle w:val="Heading1"/>)") + fx::para("The lease runs for two years.");
+  body += R"(<w:p><w:r><w:t>Tab</w:t><w:tab/><w:t>bed</w:t><w:br/><w:t>line</w:t></w:r></w:p>)";
+  body += R"(<w:p><w:r><w:rPr><w:vanish/></w:rPr><w:t>hidden words</w:t></w:r><w:r><w:t>shown</w:t></w:r></w:p>)";
+  body += R"(<w:p><w:r><w:br w:type="page"/></w:r></w:p>)" + fx::para("Invoice 4471 is overdue.");
+  body += R"(<w:tbl><w:tblGrid><w:gridCol w:w="4680"/><w:gridCol w:w="4680"/></w:tblGrid>)"
+          R"(<w:tr><w:tc>)" + fx::para("A1") + R"(</w:tc><w:tc>)" + fx::para("B1") + R"(</w:tc></w:tr>)"
+          R"(<w:tr><w:tc>)" + fx::para("A2") + R"(</w:tc><w:tc>)" + fx::para("B2") + R"(</w:tc></w:tr></w:tbl>)";
+  const auto bytes = fx::docx(body);
+  auto text = mv::codec::docx_text(bytes);
+  REQUIRE(text);
+  std::vector<std::string> lines;
+  for (const auto& p : *text) lines.push_back(p.text);
+  CHECK(lines == std::vector<std::string>{"Heading one", "The lease runs for two years.", "Tab bed line", "shown",
+                                          "Invoice 4471 is overdue.", "A1", "B1", "A2", "B2"});
+  // The page each starts on is the page decode_docx draws it on.
+  const auto drawn = mv::codec::decode_docx(bytes, 0);
+  REQUIRE(drawn);
+  REQUIRE(drawn->page_count == 2);
+  CHECK((*text)[0].page == 0);
+  CHECK((*text)[3].page == 0);
+  CHECK((*text)[4].page == 1);
+  CHECK((*text)[8].page == 1);
+
+  // A list keeps its label; a broken package is an error, not a crash.
+  auto list = mv::codec::docx_text(fx::docx(fx::para("First", R"(<w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr>)")));
+  REQUIRE(list);
+  REQUIRE(list->size() == 1);
+  CHECK((*list)[0].text == "1. First");
+  auto cut = bytes;
+  cut.resize(cut.size() - 30);
+  CHECK_FALSE(mv::codec::docx_text(cut));
+  const std::vector<std::uint8_t> not_docx = {'%', 'P', 'D', 'F'};
+  CHECK(mv::codec::docx_text(not_docx).error() == status::unsupported_format);
+}
+
 // Not a check: `MV_DOCX_DUMP=out.jpg mv_tests "[.docx-dump]"` writes a sample
 // page (or MV_DOCX_FILE's page MV_DOCX_PAGE) to look at by eye.
 TEST_CASE("DOCX sample page, written for a look", "[.docx-dump]") {

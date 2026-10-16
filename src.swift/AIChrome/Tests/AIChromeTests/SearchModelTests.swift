@@ -72,12 +72,42 @@ final class SearchModelTests: XCTestCase {
     for _ in 0..<200 where !done() { try? await Task.sleep(nanoseconds: 5_000_000) }
   }
 
+  /// #354: the Documents segment and the Text token show only while "Show
+  /// documents" is on; turning it off while either is chosen goes back.
+  func testDocumentsFollowShowDocuments() {
+    let m = model()
+    XCTAssertFalse(SearchKinds.shown(audioFiles: false, documentFiles: m.documentFiles).contains(.documents))
+    XCTAssertFalse(m.availableFinds.contains(.text))
+    XCTAssertEqual(SearchKinds.allHelp(audioFiles: false, documentFiles: false), "Show photos and videos.")
+    m.documentFilesChanged(true)
+    XCTAssertTrue(SearchKinds.shown(audioFiles: false, documentFiles: m.documentFiles).contains(.documents))
+    XCTAssertTrue(m.availableFinds.contains(.text))
+    XCTAssertEqual(SearchKinds.allHelp(audioFiles: true, documentFiles: true),
+                   "Show photos, videos, documents and audio files.")
+    m.kinds = .documents
+    m.toggleMatch(.pictures)  // Text alone (and nothing else) on
+    XCTAssertTrue(m.matchOn(.text))
+    XCTAssertFalse(m.matchOn(.pictures))
+    m.documentFilesChanged(false)
+    XCTAssertEqual(m.kinds, .all)
+    XCTAssertFalse(m.finds.contains(.text))
+    // A document result's moment is its page, never a clip time.
+    let page = AIResult(index: 0, search: 1, path: "/d/lease.pdf", ptsMs: 2, kind: MV_AI_KIND_DOCUMENTS, more: 0,
+                        match: MV_AI_MATCH_TEXT)
+    XCTAssertTrue(page.isDocument)
+    XCTAssertFalse(page.isClip)
+    XCTAssertEqual(page.page, 3)
+    let clip = AIResult(index: 0, search: 1, path: "/d/a.mov", ptsMs: 2000, kind: MV_AI_KIND_VIDEOS, more: 0, match: 0)
+    XCTAssertTrue(clip.isClip)
+    XCTAssertNil(clip.page)
+  }
+
   /// #355: the Audio segment shows only while "Show audio files" is on, and
   /// turning it off while Audio is chosen goes back to All.
   func testAudioSegmentFollowsShowAudioFiles() {
     let m = model()
     XCTAssertFalse(SearchKinds.shown(audioFiles: m.audioFiles).contains(.audio))
-    XCTAssertEqual(SearchKinds.all.rawValue, 11)  // MV_AI_KIND_ALL
+    XCTAssertEqual(SearchKinds.all.rawValue, 15)  // MV_AI_KIND_ALL (#354 widened it)
     m.audioFilesChanged(true)
     XCTAssertTrue(SearchKinds.shown(audioFiles: m.audioFiles).contains(.audio))
     m.kinds = .audio

@@ -98,18 +98,25 @@ typedef enum mv_ai_scope {
 
 #define MV_AI_KIND_PHOTOS 1u
 #define MV_AI_KIND_VIDEOS 2u
+/* #354 (docs/plans/document-search.md): documents (PDF, DOCX), indexed only
+ * while the "document_files" setting is on, for their words. A result's
+ * pts_ms is then the 0-based page that matched. */
+#define MV_AI_KIND_DOCUMENTS 4u
 /* #355 (docs/plans/audio-search.md): standalone audio files (MP3, M4A, M4P),
- * indexed only while the "audio_files" setting is on. 4 is reserved for
- * documents (docs/plans/document-search.md). An older chrome's 3 still means
- * photos and videos; ALL widened from 3 to 11. */
+ * indexed only while the "audio_files" setting is on. An older chrome's 3
+ * still means photos and videos, and 11 photos, videos and audio; ALL widened
+ * from 3 to 11 (#355), then to 15 (#354). */
 #define MV_AI_KIND_AUDIO 8u
-#define MV_AI_KIND_ALL 11u
+#define MV_AI_KIND_ALL 15u
 
 /* What a search looks for, OR'ed into `kinds` (2026-09-27, audio). None of
  * these set means all three. */
 #define MV_AI_FIND_PICTURES 0x10u     /* what a photo or frame shows (CLIP) */
 #define MV_AI_FIND_SOUNDS 0x20u       /* what a clip sounds like (CLAP): "dog barking" */
 #define MV_AI_FIND_SPEECH 0x40u       /* what is said in a clip (Whisper transcripts) */
+#define MV_AI_FIND_TEXT 0x80u         /* the words in a document (#354): keyword match over its
+                                         passages. A quoted phrase is matched in documents too,
+                                         whatever these bits say */
 
 /* What a folder's VIDEOS are indexed for (Settings "Index videos for", and per
  * folder). Photos are always pictures. Sound needs the ai-audio piece and
@@ -118,6 +125,16 @@ typedef enum mv_ai_scope {
 #define MV_AI_MEDIA_PICTURES 1u
 #define MV_AI_MEDIA_SOUND 2u
 #define MV_AI_MEDIA_BOTH 3u
+
+/* What a folder's DOCUMENTS are indexed for (#354; Settings "Documents", and
+ * per folder with root_set_documents). The setting "doc_index" is 0 Off, 1
+ * Words (the default), 2 Words and pages; a folder's choice is that plus one,
+ * with 0 following the setting. Words and pages adds page pictures (slice D2)
+ * and reads as Words until then. */
+#define MV_AI_DOCS_DEFAULT 0u
+#define MV_AI_DOCS_OFF 1u
+#define MV_AI_DOCS_WORDS 2u
+#define MV_AI_DOCS_PAGES 3u
 
 /* Why a result matched (mv_ai_result.match), a bit set. */
 #define MV_AI_MATCH_PICTURE 1u
@@ -128,7 +145,8 @@ typedef enum mv_ai_scope {
 #define MV_AI_MATCH_TAGS 8u
 /* #406: text the file carries matched (a chapter title or a text subtitle
  * line); result_snippet says which ("Chapter: Birthday cake", "Subtitle:
- * suited and booted") and is shown as it is, unquoted. */
+ * suited and booted") and is shown as it is, unquoted. A document's words
+ * (#354) match as this too: the snippet is the passage, pts_ms its page. */
 #define MV_AI_MATCH_TEXT 16u
 
 #define MV_AI_STATUS_INDEX_FULL 1u     /* over the index size cap: indexing stopped */
@@ -242,6 +260,15 @@ typedef struct mv_ai_status {
   uint64_t cues_done;
   uint64_t text_total;
   uint64_t text_done;
+  /* Documents (#354): PDFs and DOCX files to read for their words, and those
+   * read (failed and locked counted as read, as above). docs_locked are
+   * password-protected and skipped ("3 protected PDFs skipped"); docs_failed
+   * did not open (broken, or no reader for them). 0 while "document_files"
+   * is off. Read these only when struct_size covers them. */
+  uint64_t docs_total;
+  uint64_t docs_done;
+  uint64_t docs_locked;
+  uint64_t docs_failed;
 } mv_ai_status;
 
 typedef enum mv_ai_icloud_fetch {
@@ -260,9 +287,9 @@ typedef enum mv_ai_icloud_fetch {
  * under it (docs/design/17 "Ranking"). */
 typedef struct mv_ai_result {
   uint64_t asset_id;
-  int64_t pts_ms;              /* -1 for a photo */
+  int64_t pts_ms;              /* -1 for a photo; a document's page (0-based, #354) */
   float score;                 /* cosine similarity, higher is closer */
-  uint32_t kind;               /* MV_AI_KIND_PHOTOS, _VIDEOS or _AUDIO */
+  uint32_t kind;               /* MV_AI_KIND_PHOTOS, _VIDEOS, _DOCUMENTS or _AUDIO */
   uint32_t more_in_clip;       /* other matching moments in the same clip */
   uint32_t match;              /* MV_AI_MATCH_*: what matched at pts_ms (picture, sound, speech) */
 } mv_ai_result;
@@ -285,6 +312,9 @@ typedef struct mv_ai_api {
    *  this Windows has no Cloud Files API, before 10 1709; 2026-10-07),
    *  "audio_files":false (index MP3 / M4A / M4P: the chrome forwards File types "Show audio
    *  files" here; #355),
+   *  "document_files":false (index PDF / DOCX: the chrome forwards File types "Show
+   *  documents" here; #354), "doc_index":0..2 (0 Off, 1 Words, the default, 2 Words and
+   *  pages), "pdf_available":bool (the pack's PDFium loaded: PDFs can be read here),
    *  "read_only":bool (loaded through MV_AI_READER_ENTRY_SYMBOL: a second window's reader,
    *  2026-10-07),
    *  "available":{"cuda":bool,"openvino":bool,"coreml":bool},
@@ -298,6 +328,12 @@ typedef struct mv_ai_api {
    * each chrome sends when the pack loads and when the toggle changes. On: every enabled root
    * is walked again and its audio files queued. Off: audio results go at once and their rows
    * are deleted)
+   * | "document_files" (1 / 0, saved; #354: File types "Show documents", sent as audio_files
+   * is. On: every enabled root is walked again and its documents queued. Off: document
+   * results go at once and their rows, text included, are deleted)
+   * | "doc_index" (0 Off, 1 Words, 2 Words and pages; saved; #354: what folders that follow
+   * the setting index their documents for. A change walks every root again: Off drops
+   * their documents and their text)
    * | "retry_large" (any value: forget that the accelerated provider failed the large tower
    * here, MV_AI_STATUS_SMALL_FALLBACK, and let Auto try it again; 2026-10-05)
    * | "video_index" (MV_AI_MEDIA_*, 0 = Pictures, plus
@@ -328,6 +364,8 @@ typedef struct mv_ai_api {
    *   "done":N,"frames":N,"bytes":N,"last_scan":unix,
    *   "cloud_only":N (online-only files not yet indexed, 2026-10-05),
    *   "audio":N (the audio files among "assets", folders only; #355),
+   *   "docs":0..3 (MV_AI_DOCS_*: the folder's Documents choice; #354), "documents":N (its
+   *   documents, not among "assets"), "documents_done":N (read, failed or locked),
    *   "error":"unreadable" (present when the last walk of the folder failed: offline,
    *   moved, no access; the rows are kept),
    *   "held":bool (left unfinished last session, it waits for set_setting "resume_root";
@@ -556,6 +594,13 @@ typedef struct mv_ai_api {
    * Appended: read it only when `struct_size` covers it and the pointer is
    * non-NULL. [worker-thread] */
   mv_status(MV_CALL* each_location)(void* ctx, mv_addon_location_fn visit, void* user);
+
+  /* ---- documents (#354, docs/plans/document-search.md) ----------------------------- */
+  /* What a remembered folder's documents are indexed for (MV_AI_DOCS_*; 0
+   * follows Settings "doc_index"). Off drops the folder's documents and their
+   * text at once (a walk), on queues them. Appended: read it only when
+   * `struct_size` covers it and the pointer is non-NULL. [no-block] */
+  mv_status(MV_CALL* root_set_documents)(void* ctx, uint64_t root_id, uint32_t docs);
 } mv_ai_api;
 
 #ifdef __cplusplus

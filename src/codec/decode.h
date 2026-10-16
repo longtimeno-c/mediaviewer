@@ -6,6 +6,7 @@
 
 #include <memory>
 #include <span>
+#include <string>
 #include <vector>
 
 #include "codec/anim.h"
@@ -112,6 +113,18 @@ inline constexpr std::uint32_t kDocxPreviewEdge = 1024;
 [[nodiscard]] result<raster> decode_docx(std::span<const std::uint8_t> bytes, std::uint32_t page = 0,
                                          const job_context* ctx = nullptr,
                                          std::uint32_t long_edge = kDocxLongEdge);
+// A DOCX's words for Local search (#354, docs/plans/document-search.md §2): one
+// entry per paragraph in reading order (table cells row by row), list labels
+// kept, tabs and breaks as spaces, hidden runs and pictures left out. `page` is
+// where decode_docx draws the paragraph's first line (a cell's: its row), so a
+// match opens on the page that shows it. Nothing is drawn and no picture is
+// decoded; the layout still shapes every word, so it belongs on a worker.
+struct docx_paragraph {
+  std::uint32_t page = 0;
+  std::string text;  // UTF-8
+};
+[[nodiscard]] result<std::vector<docx_paragraph>> docx_text(std::span<const std::uint8_t> bytes,
+                                                            const job_context* ctx = nullptr);
 
 // How many LibRaw threads the image on screen may use. Leaves processors for
 // the present loop; prefetch passes 1 instead. Output pixels do not depend on it.

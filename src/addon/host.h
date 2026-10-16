@@ -91,6 +91,11 @@ struct host_services {
   std::function<expected(const std::string& path, std::int64_t start_ms, std::int64_t max_ms, std::uint32_t max_cues,
                          const std::function<bool(const cue&)>& visit)>
       read_cues;
+  // #354: a document's text (media::document_text: a DOCX through codec/'s
+  // own reader; a PDF is the pack's, so unsupported_format). Empty leaves the
+  // table's document_text NULL. The visitor returning false stops the read.
+  std::function<expected(const std::string& path, const std::function<bool(const document_line&)>& visit)>
+      document_text;
   // #398: the Local search index's located assets (the host table's
   // locations_of_index). Empty: the process's published source
   // (addon/index_locations.h), which each host fills from the AI pack while it

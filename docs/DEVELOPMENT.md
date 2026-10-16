@@ -686,7 +686,11 @@ owed: [docs/design/17](design/17-local-ai-search.md); the Mac checklist is
    "CUDA 13 or cuDNN 9 not found — using CPU". Stable releases publish this piece.
 4. Run the app or `ai-bench --addons <folder> --index <media folder> --query "a dog"` with
    `MV_DEV_ADDONS_DIR=<folder>` and `MV_DEV_THUMBS_DIR=<another folder>`, so a real install
-   is untouched.
+   is untouched. `--documents` turns on File types "Show documents" for the run, so the
+   folder's PDFs and DOCX files are read for their words (#354); the status lines then carry
+   `"docs":[done,total,locked,failed]`. The pack stages PDFium beside `mv_ai` from its pinned
+   download (`cmake/ai.cmake`); set `MV_ORT_ARCHIVE_DIR` to a folder holding
+   `pdfium-<platform>-8066.tgz` (and ORT's archive) to configure offline.
 5. Quit's cost with a pack loaded: `ai-bench --addons <folder> --query dog --quit-after 1`
    quits the way both hosts do (the pack gets half a second to stop, then the exit skips static
    destructors; `src/addon/host.h`, "Quit") and prints the time it took; `--quit-legacy` is the
@@ -1707,6 +1711,42 @@ album artist, composer, genre). Sound and speech on audio files are slice A2.
 - **Owed:** the plan's A1 verify on a real folder (300 photos and 200 audio files) in the app on
   both hosts; both PR 1 gates with the pack indexing audio files; timing the walk with the
   setting off.
+
+### Local search over documents, slice D1 (#354, docs/plans/document-search.md, 2026-10-16)
+
+PDFs and DOCX files are indexed for their words while Settings → File types **Show documents**
+is on ([17](design/17-local-ai-search.md) "Documents"): a quoted phrase finds the page, Enter
+opens the document there, plain words rank by the speech rule. PDFium (pinned in
+`cmake/ai.cmake`) ships in the Core pack; the index goes to schema 9.
+
+- **Tests:** `mv_ai_tests "[documents],[query]"` (the gate on, off and through a restart; first
+  and last page phrases, page rows, `is:pdf`, `text:` / `said:`, locked and broken files, a
+  folder's Off and Settings' Off dropping the text, a 600-page PDF stopped mid-way and resumed
+  under the 500-page cap, no PDFium setting PDFs aside; the passage rule; PDFium on hand-built
+  PDFs; the host's DOCX text and page tiles; schema 8 → 9); `mv_tests "[docx]"` (`docx_text`
+  reading order and pages); `swift test --filter SearchModelTests`; `tools/package/test_addon_pack.py`
+  (PDFium and its notices in the pack). Mac (M5, 2026-10-16): `mv_ai_tests` 145 cases, 137
+  passed, 8 skipped (model-backed); `mv_tests` 856 cases, 845 passed, 11 skipped;
+  `mv_import_tests` 151 passed; the SwiftUI chrome's tests 9 passed; everything builds.
+- **Verify line, Mac (M5, 2026-10-16), through `ai-bench --documents` on a dev-signed pack:** a
+  synthetic folder of 200 documents (120 PDFs incl. one of 500 pages, two password-protected and
+  one cut short; 80 DOCX incl. one cut short), made by CoreGraphics / CoreText and a zip writer.
+  All 196 text documents found by a quoted phrase from their first page (page 0) and from their
+  last page (the PDF's last page, checked against CoreGraphics' page count): 392 of 392, slowest
+  query 4.1 ms. The 2 locked and 2 broken are counted, nothing crashed. Indexing the 200: within
+  3 s of the pack loading on three runs (all 200 done at the first 5 s status line), so ≤ 60 s
+  holds. Plain words ("tenant invoice") 70 ms over 190 matches.
+- **Mac PR 1 gate with documents indexing:** `frametime --seconds 60`, alone and then with
+  `ai-bench` reading 4,000 documents (the 200 hard-linked 20 times, about 90 a second, through
+  the first 45 s of the soak, in a separate process, so the viewer's yield never reached it):
+  animated 3,599 frames and 0 dropped both times, p99 16.95 → 16.90 ms, 0 idle presents. The
+  idle-CPU clause failed both times (5.55 % and 5.68 % of a core) on this used machine, as it
+  does on base.
+- **Not measured:** the verify line's 300 photos beside the documents, and Enter in the app (both
+  hosts open a document result on its page in code; only the core tests ran it). Windows: both
+  C# chromes compile on the Mac; `main.cpp`, `addon_abi.cpp`, `abi.cpp` and PDFium's Windows
+  build are compiled by CI only. The Windows timing on the dev box and the Windows PR 1 gate are
+  owed.
 
 ### Local search reads more of each file (#403–#407, 2026-10-15)
 

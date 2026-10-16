@@ -113,6 +113,18 @@ class host {
   [[nodiscard]] expected read_cues(const std::string& path, std::int64_t start_ms, std::int64_t max_ms,
                                    std::uint32_t max_cues, const std::function<bool(const cue&)>& visit) const;
 
+  // #354: a document's text from the host (a DOCX; a PDF is the pack's own,
+  // pdf_reader.h), a paragraph at a time with its page. An older host has
+  // none: has_document_text() false. `visit` false stops the read.
+  struct doc_line {
+    std::uint32_t page = 0;
+    std::uint32_t page_count = 1;
+    std::string text;
+  };
+  [[nodiscard]] bool has_document_text() const noexcept;
+  [[nodiscard]] expected document_text(const std::string& path,
+                                       const std::function<bool(const doc_line&)>& visit) const;
+
   [[nodiscard]] bool should_yield() const noexcept;
   void post(mv_addon_event_kind kind, mv_status status, std::uint64_t id,
             std::int64_t payload) const noexcept;

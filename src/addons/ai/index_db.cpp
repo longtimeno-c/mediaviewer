@@ -11,7 +11,7 @@
 namespace mv::ai {
 namespace {
 
-constexpr int kSchemaVersion = 8;
+constexpr int kSchemaVersion = 9;
 
 // A prepared statement that finalizes itself; binds are 1-based.
 class stmt {
@@ -73,7 +73,10 @@ asset_row asset_from(const stmt& s, int c0) {
   a.mtime = s.i64(c0 + 3);
   a.size = static_cast<std::uint64_t>(s.i64(c0 + 4));
   const std::int64_t kind = s.i64(c0 + 5);
-  a.kind = kind == 2 ? asset_kind::video : kind == 4 ? asset_kind::audio : asset_kind::photo;
+  a.kind = kind == 2   ? asset_kind::video
+           : kind == 3 ? asset_kind::document
+           : kind == 4 ? asset_kind::audio
+                       : asset_kind::photo;
   a.duration_ms = s.i64(c0 + 6);
   a.cloud = s.i64(c0 + 7) != 0;
   a.motion = s.text(c0 + 8);
@@ -309,6 +312,38 @@ result<std::unique_ptr<index_db>> index_db::open(const std::string& path) {
     MV_TRY_VOID(d->set_meta("schema", "8"));
     v = "8";
   }
+  // Schema 8 -> 9 (#354, documents): assets.kind may be 3, a PDF or DOCX; the
+  // roots gain their Documents choice (MV_AI_DOCS_*: 0 follows the setting);
+  // `passages` holds a document's text a few sentences at a time with the
+  // page that shows it, and `passage_text` its folded words for the keyword
+  // search (FTS5 when this SQLite has it, rowid = passage id; else a plain
+  // table the engine scans). A deleted passage takes its words with it (the
+  // trigger fires on the cascade from assets too). One transaction.
+  if (v == "8") {
+    if (!d->exec("BEGIN")) return err(status::corrupt);
+    bool ok = has_column(d->db_, "roots", "docs") ||
+              d->exec("ALTER TABLE roots ADD COLUMN docs INTEGER NOT NULL DEFAULT 0;");
+    ok = ok &&
+         d->exec("CREATE TABLE IF NOT EXISTS passages(id INTEGER PRIMARY KEY, asset_id INTEGER NOT NULL"
+                 " REFERENCES assets(id) ON DELETE CASCADE, spec TEXT NOT NULL, page INTEGER NOT NULL,"
+                 " ord INTEGER NOT NULL, text TEXT NOT NULL);") &&
+         d->exec("CREATE INDEX IF NOT EXISTS passages_asset ON passages(asset_id, spec, page);");
+    if (ok) {
+      const bool fts = d->exec("CREATE VIRTUAL TABLE IF NOT EXISTS passage_text USING fts5(words,"
+                               " tokenize = 'unicode61 remove_diacritics 2');");
+      ok = fts || d->exec("CREATE TABLE IF NOT EXISTS passage_text(rowid INTEGER PRIMARY KEY, words TEXT NOT NULL);");
+      ok = ok && static_cast<bool>(d->set_meta("passage_text", fts ? "fts5" : "plain"));
+    }
+    ok = ok &&
+         d->exec("CREATE TRIGGER IF NOT EXISTS passages_gone AFTER DELETE ON passages"
+                 " BEGIN DELETE FROM passage_text WHERE rowid = old.id; END;") &&
+         static_cast<bool>(d->set_meta("schema", "9"));
+    if (!ok || !d->exec("COMMIT")) {
+      d->exec("ROLLBACK");
+      return err(status::corrupt);
+    }
+    v = "9";
+  }
   if (v != std::to_string(kSchemaVersion)) {
     return err(status::unsupported_format);  // a newer add-on's index
   }
@@ -339,7 +374,7 @@ std::int64_t index_db::data_version() {
 std::vector<root_row> index_db::roots() {
   std::lock_guard lock(m_);
   std::vector<root_row> out;
-  stmt s(db_, "SELECT id, path, recursive, enabled, last_scan_at, media FROM roots ORDER BY id");
+  stmt s(db_, "SELECT id, path, recursive, enabled, last_scan_at, media, docs FROM roots ORDER BY id");
   while (s.step_row()) {
     root_row r;
     r.id = s.i64(0);
@@ -348,6 +383,7 @@ std::vector<root_row> index_db::roots() {
     r.enabled = s.i64(3) != 0;
     r.last_scan_at = s.i64(4);
     r.media = static_cast<std::uint32_t>(s.i64(5));
+    r.docs = static_cast<std::uint32_t>(s.i64(6));
     out.push_back(std::move(r));
   }
   return out;
@@ -380,6 +416,12 @@ expected index_db::set_root_media(std::int64_t id, std::uint32_t media) {
   std::lock_guard lock(m_);
   stmt s(db_, "UPDATE roots SET media = ?2 WHERE id = ?1");
   return s.bind(1, id).bind(2, std::int64_t{media}).run() ? expected{} : err(status::io);
+}
+
+expected index_db::set_root_docs(std::int64_t id, std::uint32_t docs) {
+  std::lock_guard lock(m_);
+  stmt s(db_, "UPDATE roots SET docs = ?2 WHERE id = ?1");
+  return s.bind(1, id).bind(2, std::int64_t{docs}).run() ? expected{} : err(status::io);
 }
 
 expected index_db::remove_root(std::int64_t id) {
@@ -448,6 +490,7 @@ result<std::vector<index_db::upsert>> index_db::see_assets(std::int64_t root,
     stmt f(db_, "DELETE FROM frames WHERE asset_id = ?1");
     stmt p(db_, "DELETE FROM progress WHERE asset_id = ?1");
     stmt c(db_, "DELETE FROM cues WHERE asset_id = ?1");
+    stmt pg(db_, "DELETE FROM passages WHERE asset_id = ?1");
     // #407: a Live Photo's movie changed under the same still: its frames go
     // and the picture pass comes back for the motion alone.
     stmt mf(db_, "DELETE FROM frames WHERE asset_id = ?1 AND pts_ms >= 0");
@@ -486,7 +529,9 @@ result<std::vector<index_db::upsert>> index_db::see_assets(std::int64_t root,
           f.reset();
           p.reset();
           c.reset();
-          if (!f.bind(1, u.id).run() || !p.bind(1, u.id).run() || !c.bind(1, u.id).run()) {
+          pg.reset();
+          if (!f.bind(1, u.id).run() || !p.bind(1, u.id).run() || !c.bind(1, u.id).run() ||
+              !pg.bind(1, u.id).run()) {
             ok = false;
             break;
           }
@@ -540,11 +585,18 @@ result<std::vector<std::int64_t>> index_db::end_scan(std::int64_t root, std::int
 // The assets a track covers (track_filter), as SQL over `a` and `r`. An audio
 // file (#355) is on the picture track alone (its cover art), as a still while
 // its root's media takes pictures; its sound and speech wait for slice A2.
+//
+// A document (#354) is on a track only when the filter asks for documents
+// (?9 = track_filter::docs_min, 0: none) and its root's Documents choice (or
+// the setting, ?10, for 0) is at least that. ?9 and ?10 unbound read as NULL:
+// no document, which keeps every older statement as it was.
 constexpr const char* kTrackWhere =
     " AND ((a.kind = 1 AND ?4 != 0) OR (a.kind = 2 AND"
     " ((CASE r.media WHEN 0 THEN ?5 ELSE r.media END) & ?6) != 0)"
     " OR (a.kind = 4 AND ?4 != 0 AND (?6 & 1) != 0 AND"
-    " ((CASE r.media WHEN 0 THEN ?5 ELSE r.media END) & 1) != 0)) AND a.root_id != ?7";
+    " ((CASE r.media WHEN 0 THEN ?5 ELSE r.media END) & 1) != 0)"
+    " OR (a.kind = 3 AND ?9 > 0 AND (CASE r.docs WHEN 0 THEN ?10 ELSE r.docs - 1 END) >= ?9))"
+    " AND a.root_id != ?7";
 
 // The filter's held roots, as SQL over `a` (integers only, so written in).
 static std::string held_where(const track_filter& filter) {
@@ -602,7 +654,8 @@ std::vector<work_item> index_db::pending_where(const std::string& spec, std::siz
   stmt s(db_, sql.c_str());
   s.bind(1, spec).bind(2, std::int64_t{max_tries}).bind(3, static_cast<std::int64_t>(limit))
       .bind(4, std::int64_t{filter.photos ? 1 : 0}).bind(5, std::int64_t{filter.default_media})
-      .bind(6, std::int64_t{filter.media_bit}).bind(7, filter.skip_root);
+      .bind(6, std::int64_t{filter.media_bit}).bind(7, filter.skip_root)
+      .bind(9, std::int64_t{filter.docs_min}).bind(10, std::int64_t{filter.default_docs});
   if (!after.empty()) s.bind(8, after);
   while (s.step_row()) {
     work_item w;
@@ -865,6 +918,103 @@ expected index_db::each_cue(const std::function<void(std::int64_t, const cue_in&
   return {};
 }
 
+expected index_db::commit_passages(std::int64_t asset, const std::string& spec, std::span<const passage_in> passages,
+                                   work_state state, std::int64_t resume, std::int64_t replace_from) {
+  std::lock_guard lock(m_);
+  if (!exec("BEGIN")) return err(status::io);
+  bool ok = true;
+  {
+    if (replace_from >= 0) {
+      stmt d(db_, "DELETE FROM passages WHERE asset_id = ?1 AND spec = ?2 AND page >= ?3");
+      ok = d.bind(1, asset).bind(2, spec).bind(3, replace_from).run();
+    }
+    std::int64_t ord = 0;
+    if (ok) {
+      stmt o(db_, "SELECT COALESCE(MAX(ord) + 1, 0) FROM passages WHERE asset_id = ?1 AND spec = ?2");
+      if (o.bind(1, asset).bind(2, spec).step_row()) ord = o.i64(0);
+    }
+    stmt ins(db_, "INSERT INTO passages(asset_id, spec, page, ord, text) VALUES(?1, ?2, ?3, ?4, ?5)");
+    stmt words(db_, "INSERT INTO passage_text(rowid, words) VALUES(?1, ?2)");
+    for (const passage_in& p : passages) {
+      if (!ok) break;
+      ins.reset();
+      ins.bind(1, asset).bind(2, spec).bind(3, std::int64_t{p.page}).bind(4, ord++).bind(5, p.text);
+      ok = ins.run();
+      if (!ok) break;
+      words.reset();
+      ok = words.bind(1, static_cast<std::int64_t>(sqlite3_last_insert_rowid(db_))).bind(2, p.words).run();
+    }
+    stmt pr(db_, "INSERT INTO progress(asset_id, spec, state, resume_ms, indexed_at)"
+                 " VALUES(?1, ?2, ?3, ?4, strftime('%s','now'))"
+                 " ON CONFLICT(asset_id, spec) DO UPDATE SET state = excluded.state,"
+                 " resume_ms = excluded.resume_ms, indexed_at = excluded.indexed_at");
+    ok = ok && pr.bind(1, asset).bind(2, spec).bind(3, std::int64_t{static_cast<int>(state)}).bind(4, resume).run();
+  }
+  if (!ok) {
+    exec("ROLLBACK");
+    return err(status::io);
+  }
+  return exec("COMMIT") ? expected{} : err(status::io);
+}
+
+expected index_db::reset_state(const std::string& spec, work_state state) {
+  std::lock_guard lock(m_);
+  stmt d(db_, "DELETE FROM progress WHERE spec = ?1 AND state = ?2");
+  return d.bind(1, spec).bind(2, std::int64_t{static_cast<int>(state)}).run() ? expected{} : err(status::io);
+}
+
+expected index_db::mark_locked(std::int64_t asset, const std::string& spec) {
+  std::lock_guard lock(m_);
+  stmt p(db_, "INSERT INTO progress(asset_id, spec, state, tries) VALUES(?1, ?2, 5, 0)"
+              " ON CONFLICT(asset_id, spec) DO UPDATE SET state = 5");
+  return p.bind(1, asset).bind(2, spec).run() ? expected{} : err(status::io);
+}
+
+bool index_db::has_passage_index() {
+  std::lock_guard lock(m_);
+  stmt k(db_, "SELECT value FROM meta WHERE key = 'passage_text'");
+  return k.step_row() && k.text(0) == "fts5";
+}
+
+expected index_db::find_passages(const std::string& fts_query, std::size_t limit,
+                                 const std::function<bool(const passage_out&)>& visit) {
+  std::lock_guard lock(m_);
+  bool fts = false;
+  {
+    stmt k(db_, "SELECT value FROM meta WHERE key = 'passage_text'");
+    fts = k.step_row() && k.text(0) == "fts5";
+  }
+  // With FTS5 the query narrows to the passages holding its words (best
+  // first); without it every passage is a candidate and the engine's own rule
+  // decides, as it does for each candidate anyway.
+  const bool narrowed = fts && !fts_query.empty();
+  stmt s(db_, narrowed ? "SELECT p.id, p.asset_id, p.page, p.text, t.words FROM passage_text t"
+                         " JOIN passages p ON p.id = t.rowid WHERE passage_text MATCH ?1 ORDER BY rank LIMIT ?2"
+                       : "SELECT p.id, p.asset_id, p.page, p.text, t.words FROM passages p"
+                         " JOIN passage_text t ON t.rowid = p.id LIMIT ?2");
+  if (!s.ok()) return err(status::io);
+  if (narrowed) s.bind(1, fts_query);
+  // Unnarrowed, every passage is a candidate (-1: no limit).
+  s.bind(2, narrowed ? static_cast<std::int64_t>(limit) : std::int64_t{-1});
+  while (s.step_row()) {
+    passage_out p;
+    p.id = s.i64(0);
+    p.asset = s.i64(1);
+    p.page = static_cast<std::uint32_t>(s.i64(2));
+    p.text = s.text(3);
+    p.words = s.text(4);
+    if (!visit(p)) break;
+  }
+  return {};
+}
+
+std::uint64_t index_db::passage_count(std::int64_t asset) {
+  std::lock_guard lock(m_);
+  stmt f(db_, asset > 0 ? "SELECT COUNT(*) FROM passages WHERE asset_id = ?1" : "SELECT COUNT(*) FROM passages");
+  if (asset > 0) f.bind(1, asset);
+  return f.step_row() ? static_cast<std::uint64_t>(f.i64(0)) : 0;
+}
+
 expected index_db::drop_spec(const std::string& spec) {
   std::lock_guard lock(m_);
   if (!exec("BEGIN")) return err(status::io);
@@ -889,13 +1039,15 @@ counts index_db::count(const std::string& spec, const track_filter& filter, cons
       "     THEN MAX(a.duration_ms - COALESCE(p.resume_ms, 0), 0) ELSE 0 END),"
       " SUM(CASE WHEN a.kind IN (1, 4) AND a.cloud = 0 AND (p.state IS NULL OR p.state < 2) THEN 1 ELSE 0 END),"
       " SUM(CASE WHEN p.state = 4 THEN 1 ELSE 0 END),"
-      " SUM(CASE WHEN a.cloud = 1 AND (p.state IS NULL OR p.state < 2) THEN 1 ELSE 0 END)"
+      " SUM(CASE WHEN a.cloud = 1 AND (p.state IS NULL OR p.state < 2) THEN 1 ELSE 0 END),"
+      " SUM(CASE WHEN p.state = 5 THEN 1 ELSE 0 END)"
       " FROM assets a JOIN roots r ON r.id = a.root_id AND r.enabled = 1"
       " LEFT JOIN progress p ON p.asset_id = a.id AND p.spec = ?1 WHERE 1") + kTrackWhere +
       held_where(filter) + after_where(after);
   stmt a(db_, sql.c_str());
   a.bind(4, std::int64_t{filter.photos ? 1 : 0}).bind(5, std::int64_t{filter.default_media})
-      .bind(6, std::int64_t{filter.media_bit}).bind(7, filter.skip_root);
+      .bind(6, std::int64_t{filter.media_bit}).bind(7, filter.skip_root)
+      .bind(9, std::int64_t{filter.docs_min}).bind(10, std::int64_t{filter.default_docs});
   if (!after.empty()) a.bind(8, after);
   if (a.bind(1, spec).step_row()) {
     c.assets = static_cast<std::uint64_t>(a.i64(0));
@@ -905,6 +1057,7 @@ counts index_db::count(const std::string& spec, const track_filter& filter, cons
     c.pending_photos = static_cast<std::uint64_t>(a.i64(4));
     c.unavailable = static_cast<std::uint64_t>(a.i64(5));
     c.cloud_only = static_cast<std::uint64_t>(a.i64(6));
+    c.locked = static_cast<std::uint64_t>(a.i64(7));
   }
   stmt f(db_, "SELECT COUNT(*) FROM frames WHERE spec = ?1");
   if (f.bind(1, spec).step_row()) c.frames = static_cast<std::uint64_t>(f.i64(0));
@@ -920,7 +1073,9 @@ std::uint64_t index_db::frames_in_root(std::int64_t root, const std::string& spe
 
 std::uint64_t index_db::assets_in_root(std::int64_t root) {
   std::lock_guard lock(m_);
-  stmt f(db_, "SELECT COUNT(*) FROM assets WHERE root_id = ?1");
+  // #354: documents are counted apart (kind_in_root): the picture pass never
+  // takes them, so a folder of photos and PDFs still reads "Up to date".
+  stmt f(db_, "SELECT COUNT(*) FROM assets WHERE root_id = ?1 AND kind != 3");
   return f.bind(1, root).step_row() ? static_cast<std::uint64_t>(f.i64(0)) : 0;
 }
 
@@ -949,7 +1104,8 @@ std::uint64_t index_db::pending_in_root(std::int64_t root, const std::string& sp
   stmt f(db_, sql.c_str());
   f.bind(1, spec).bind(2, std::int64_t{max_tries}).bind(3, root)
       .bind(4, std::int64_t{filter.photos ? 1 : 0}).bind(5, std::int64_t{filter.default_media})
-      .bind(6, std::int64_t{filter.media_bit}).bind(7, filter.skip_root);
+      .bind(6, std::int64_t{filter.media_bit}).bind(7, filter.skip_root)
+      .bind(9, std::int64_t{filter.docs_min}).bind(10, std::int64_t{filter.default_docs});
   return f.step_row() ? static_cast<std::uint64_t>(f.i64(0)) : 0;
 }
 
@@ -1056,8 +1212,8 @@ expected index_db::set_meta(const std::string& key, const std::string& value) {
 
 expected index_db::clear() {
   std::lock_guard lock(m_);
-  if (!exec("DELETE FROM speech; DELETE FROM cues; DELETE FROM frames; DELETE FROM progress; DELETE FROM asset_text;"
-            " DELETE FROM assets; DELETE FROM roots;")) {
+  if (!exec("DELETE FROM speech; DELETE FROM cues; DELETE FROM passages; DELETE FROM passage_text;"
+            " DELETE FROM frames; DELETE FROM progress; DELETE FROM asset_text; DELETE FROM assets; DELETE FROM roots;")) {
     return err(status::io);
   }
   // Give the space back (docs/design/17 PR 23 verify: "clearing the index frees the disk").

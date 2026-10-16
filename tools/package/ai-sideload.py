@@ -54,6 +54,10 @@ def gather(piece: str, platform: str, build: Path, models: Path, out: Path) -> N
     for n in notices.glob("*/ThirdPartyNotices.txt"):
         shutil.copy2(n, out / "ThirdPartyNotices.txt")
         break
+    # Folders of notices the pack ships under LICENSES/ (PDFium's, #354).
+    for folder, _ in addon_pack.ADDONS[piece].get("ship_notice_dirs", []):
+        if (built / folder).is_dir():
+            shutil.copytree(built / folder, out / folder)
 
 
 def main(argv=None) -> int:

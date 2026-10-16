@@ -796,7 +796,9 @@ void submit_thumb_at(mv_session* session, uint32_t index) {
         // Milestone H: a result list's clip tile shows its matched moment (the
         // pack's `path#t=ms` row, image/thumb.h), made here from that one frame
         // when the pack has not stored it; the poster below if it cannot be.
-        if (item.moment_ms >= 0 && video_path(item.path)) {
+        // #354: a document's moment is its matched page (page 0 is its own tile).
+        if ((item.moment_ms >= 0 && video_path(item.path)) ||
+            (item.moment_ms > 0 && mv::io::is_document_name(item.path))) {
           const mv::image::thumb_key mkey =
               mv::image::moment_thumb_key(item.path, item.moment_ms, item.mtime_unix, item.size);
           std::string moment_file;

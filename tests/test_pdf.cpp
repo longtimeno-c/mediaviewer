@@ -35,8 +35,8 @@ bool red(rgb c) { return c.r > 180 && c.g < 80 && c.b < 80; }
 // bottom half red, turned 90° clockwise by /Rotate — so on screen it is
 // landscape with the red on the left.
 std::vector<std::uint8_t> two_pages(const std::string& prefix = {}) {
-  return pdffx::make({{200, 100, 0, "0 0 1 rg 0 0 100 100 re f"},
-                      {100, 200, 90, "1 0 0 rg 0 0 100 100 re f"}},
+  return pdffx::make({{200, 100, 0, "0 0 1 rg 0 0 100 100 re f", ""},
+                      {100, 200, 90, "1 0 0 rg 0 0 100 100 re f", ""}},
                      prefix);
 }
 

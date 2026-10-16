@@ -312,6 +312,23 @@ mv_status MV_CALL t_read_cues(void* host, const char* path, int64_t start_ms, in
   });
 }
 
+mv_status MV_CALL t_document_text(void* host, const char* path, mv_addon_doc_text_fn visit, void* user) {
+  return guarded([&] {
+    if (!path || !visit) return MV_ERR_INVALID_ARG;
+    const auto& read = self(host).services().document_text;
+    if (!read) return MV_ERR_UNSUPPORTED_FORMAT;
+    const expected r = read(path, [&](const document_line& l) {
+      mv_addon_doc_text out{};
+      out.struct_size = sizeof(out);
+      out.page = l.page;
+      out.page_count = l.page_count;
+      out.text_utf8 = l.text.c_str();
+      return visit(user, &out) != 0;
+    });
+    return r ? MV_OK : to_mv(r.error());
+  });
+}
+
 mv_status MV_CALL t_pair(void*, const char* const* names, uint32_t count, uint32_t* partner,
                          uint32_t* kind) {
   return guarded([&] {
@@ -858,6 +875,7 @@ host_table::host_table(host_services services) : svc_(std::move(services)) {
   api_.locations_in = &t_locations_in;
   api_.tag_facts = svc_.tag_facts ? &t_tag_facts : nullptr;
   api_.read_cues = svc_.read_cues ? &t_read_cues : nullptr;
+  api_.document_text = svc_.document_text ? &t_document_text : nullptr;
   // Always set: whether an index is attached changes while the add-on runs
   // (MV_ERR_NOT_FOUND meanwhile).
   api_.locations_of_index = &t_locations_of_index;

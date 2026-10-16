@@ -460,6 +460,10 @@ class body_reader {
               const std::unordered_map<std::string, std::string>& rels, const job_context* ctx)
       : zip_(zip), st_(st), nb_(nb), rels_(rels), ctx_(ctx) {}
 
+  // docx_text (#354): pictures keep their size for the layout but are never
+  // decoded; the text does not need their pixels.
+  void skip_pixels() noexcept { decode_images_ = false; }
+
   status read(std::string_view doc, document& out) {
     xml::reader r(doc);
     for (token t = r.next(); t != token::eof; t = r.next()) {
@@ -733,6 +737,7 @@ class body_reader {
     if (rel.empty()) return nullptr;
     if (auto it = images_.find(rel); it != images_.end()) return it->second;
     std::shared_ptr<const raster> pixels;
+    if (!decode_images_) return pixels;
     if (auto target = rels_.find(rel); target != rels_.end() && images_loaded_ < kMaxImages) {
       ++images_loaded_;
       if (auto bytes = zip_.read(target->second, std::size_t{48} << 20)) {
@@ -850,6 +855,7 @@ class body_reader {
   const job_context* ctx_;
   std::size_t blocks_ = 0;
   int images_loaded_ = 0;
+  bool decode_images_ = true;
   std::unordered_map<long, std::vector<long>> counters_;
   std::unordered_map<std::string, std::shared_ptr<const raster>> images_;
 };
@@ -980,6 +986,9 @@ class layout {
 
   [[nodiscard]] std::uint32_t pages() const noexcept { return page_ + 1; }
   page_out& out() noexcept { return out_; }
+  // docx_text (#354): the page each paragraph's first line lands on, recorded
+  // while laying out (a table cell's paragraph: its row's page).
+  void record_pages(std::unordered_map<const paragraph*, std::uint32_t>* to) noexcept { pages_of_ = to; }
 
  private:
   struct piece {
@@ -1152,6 +1161,7 @@ class layout {
         new_page();
         y = y_;
       }
+      if (flow && li == 0 && pages_of_) pages_of_->emplace(&p, page_);
       const double baseline = y + (h - natural) * (rule == line_rule::exact ? 0.5 : 0.0) + ln.asc;
       double offset = 0.0, extra_per_space = 0.0;
       const double room = width - ln.width;
@@ -1247,6 +1257,13 @@ class layout {
       }
       height += 2 * kRule + 2.0;
       if (y_ + height > bottom_ && page_has_content_) new_page();
+      if (pages_of_) {
+        for (const cell& c : row) {
+          for (const block& b : c.blocks) {
+            if (b.para) pages_of_->emplace(b.para.get(), page_);
+          }
+        }
+      }
       if (drawing()) {
         cell_drawing_ = true;
         for (std::size_t i = 0; i < row.size(); ++i) {
@@ -1282,6 +1299,7 @@ class layout {
   bool page_has_content_ = false;
   bool cell_drawing_ = false;
   page_out out_;
+  std::unordered_map<const paragraph*, std::uint32_t>* pages_of_ = nullptr;
 };
 
 // Bilinear, straight into the page; a missing picture is a grey box.
@@ -1325,18 +1343,16 @@ void blit(raster& page, const draw_image& im, double scale) {
   }
 }
 
-}  // namespace
-
-result<raster> decode_docx(std::span<const std::uint8_t> bytes, std::uint32_t page,
-                           const job_context* ctx, std::uint32_t long_edge) {
+// The parts and the body, read: what decode_docx draws and docx_text reads.
+// `pixels` false leaves pictures undecoded (their size still lays out).
+expected read_docx(std::span<const std::uint8_t> bytes, const job_context* ctx, bool pixels, styles& st,
+                   document& doc) {
   if (probe(bytes) != format_family::docx) return err(status::unsupported_format);
-  long_edge = std::clamp<std::uint32_t>(long_edge, 16, kDocxLongEdge);
   MV_TRY(zip::archive zip, zip::archive::open(bytes));
   auto main = zip.read("word/document.xml");
   if (!main) return err(main.error() == status::out_of_memory ? status::out_of_memory : status::corrupt);
   if (ctx && ctx->cancelled()) return err(status::cancelled);
 
-  styles st;
   if (auto theme = zip.read("word/theme/theme1.xml")) {
     read_theme(std::string_view(reinterpret_cast<const char*>(theme->data()), theme->size()), st);
   }
@@ -1353,11 +1369,41 @@ result<raster> decode_docx(std::span<const std::uint8_t> bytes, std::uint32_t pa
     rels = read_rels(std::string_view(reinterpret_cast<const char*>(r->data()), r->size()));
   }
 
-  document doc;
   body_reader reader(zip, st, nb, rels, ctx);
+  if (!pixels) reader.skip_pixels();
   const status read = reader.read(
       std::string_view(reinterpret_cast<const char*>(main->data()), main->size()), doc);
   if (read != status::ok) return err(read);
+  return {};
+}
+
+// A paragraph's words as one line: tabs and breaks are spaces, pictures and
+// hidden runs drop out, a list keeps its number or bullet.
+std::string paragraph_text(const paragraph& p) {
+  std::string out = p.label;
+  if (!out.empty()) out.push_back(' ');
+  for (const item& it : p.items) {
+    if (it.r.hidden.value_or(false)) continue;
+    if (it.k == item::text) {
+      out += it.str;
+    } else if (it.k != item::image && !out.empty() && out.back() != ' ') {
+      out.push_back(' ');
+    }
+  }
+  while (!out.empty() && (out.back() == ' ' || out.back() == '\t')) out.pop_back();
+  std::size_t lead = 0;
+  while (lead < out.size() && (out[lead] == ' ' || out[lead] == '\t')) ++lead;
+  return out.substr(lead);
+}
+
+}  // namespace
+
+result<raster> decode_docx(std::span<const std::uint8_t> bytes, std::uint32_t page,
+                           const job_context* ctx, std::uint32_t long_edge) {
+  long_edge = std::clamp<std::uint32_t>(long_edge, 16, kDocxLongEdge);
+  styles st;
+  document doc;
+  MV_TRY_VOID(read_docx(bytes, ctx, true, st, doc));
 
   text::engine engine;
   layout lay(engine, st, doc, page);
@@ -1386,6 +1432,46 @@ result<raster> decode_docx(std::span<const std::uint8_t> bytes, std::uint32_t pa
     if (ctx && (i & 255) == 0 && ctx->cancelled()) return err(status::cancelled);
     const draw_word& w = draw.words[i];
     engine.draw(w.shaped, w.style, out, w.x, w.baseline, scale);
+  }
+  return out;
+}
+
+result<std::vector<docx_paragraph>> docx_text(std::span<const std::uint8_t> bytes, const job_context* ctx) {
+  styles st;
+  document doc;
+  MV_TRY_VOID(read_docx(bytes, ctx, false, st, doc));
+  // Laid out once, drawing nothing, to learn each paragraph's page. A layout
+  // that fails (cancelled aside) still gives the words, all on page one.
+  std::unordered_map<const paragraph*, std::uint32_t> pages;
+  std::uint32_t page_count = 1;
+  {
+    text::engine engine;
+    layout lay(engine, st, doc, UINT32_MAX);
+    lay.record_pages(&pages);
+    const status laid = lay.run(ctx);
+    if (laid == status::cancelled) return err(status::cancelled);
+    if (laid == status::ok) page_count = lay.pages();
+  }
+  std::vector<docx_paragraph> out;
+  const auto add = [&](const paragraph& p) {
+    std::string t = paragraph_text(p);
+    if (t.empty()) return;
+    const auto it = pages.find(&p);
+    const std::uint32_t at = it == pages.end() ? 0 : std::min(it->second, page_count - 1);
+    out.push_back(docx_paragraph{at, std::move(t)});
+  };
+  for (const block& b : doc.body) {
+    if (b.para) {
+      add(*b.para);
+    } else if (b.tbl) {
+      for (const auto& row : b.tbl->rows) {
+        for (const cell& c : row) {
+          for (const block& inner : c.blocks) {
+            if (inner.para) add(*inner.para);
+          }
+        }
+      }
+    }
   }
   return out;
 }

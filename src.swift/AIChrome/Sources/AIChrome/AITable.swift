@@ -340,10 +340,14 @@ struct StatusLine: Equatable {
         // With iCloud clips still queued (issue #417) the line says so, and
         // the note under it carries on with those clips, so the two read as
         // one run rather than a nearly finished index beside a stray download.
-        text = (s.sound_total > 0 || s.speech_total > 0 || s.cues_total > 0 || s.text_total > 0 ? "Indexing pictures " : "Indexing ")
+        text = (s.sound_total > 0 || s.speech_total > 0 || s.cues_total > 0 || s.text_total > 0 || s.docs_total > 0
+                ? "Indexing pictures " : "Indexing ")
           + "\(countText(Self.picturesDone(s))) of \(countText(s.assets_total))"
           + (Self.icloudQueued(s) ? " on this Mac" : "")
           + (eta.isEmpty ? "" : " · \(eta)")
+      case .documents:
+        // #354: the documents' words, after the pictures.
+        text = "Reading documents \(countText(s.docs_done)) of \(countText(s.docs_total))"
       case .cues:
         text = "Reading chapters and subtitles \(countText(s.cues_done)) of \(countText(s.cues_total)) clips"
       case .text:
@@ -388,8 +392,10 @@ struct StatusLine: Equatable {
       text = "Search is unavailable: the model would not load"
       idle = false
     default:
-      text = s.frames_indexed == 0 ? "Nothing indexed yet"
+      text = s.frames_indexed == 0 && s.docs_total == 0 ? "Nothing indexed yet"
         : "Up to date · \(countText(s.frames_indexed)) moments"
+      // #354: the documents read for their words.
+      if s.docs_total > 0 { text += " · " + (s.docs_total == 1 ? "1 document" : "\(countText(s.docs_total)) documents") }
       if s.cloud_files_left > 0 { text += " · \(countText(s.cloud_files_left)) only in iCloud Drive" }
     }
     // The ring follows the pass the line names.
@@ -399,6 +405,7 @@ struct StatusLine: Equatable {
     let phase = Self.phase(s)
     switch phase {
     case .pictures: progress = fraction(Self.picturesDone(s), s.assets_total)
+    case .documents: progress = fraction(s.docs_done, s.docs_total)
     case .cues: progress = fraction(s.cues_done, s.cues_total)
     case .text: progress = fraction(s.text_done, s.text_total)
     case .sound: progress = fraction(s.sound_done, s.sound_total)
@@ -430,6 +437,11 @@ struct StatusLine: Equatable {
     if s.flags & MV_AI_STATUS_INDEX_FULL != 0 {
       notes.append("Index is full — raise the cap or remove a folder")
     }
+    // #354: what could not be read, said once it has been tried.
+    if s.docs_locked > 0 {
+      notes.append(s.docs_locked == 1 ? "1 password-protected document skipped"
+                   : "\(countText(s.docs_locked)) password-protected documents skipped")
+    }
     // While the line above still counts this Mac's files, the iCloud clips are
     // the rest of the same run: "Then N clips from iCloud · …" (issue #417).
     let afterLocal = state == MV_AI_STATE_INDEXING.rawValue && phase == .pictures
@@ -460,7 +472,7 @@ struct StatusLine: Equatable {
     detail = notes.joined(separator: " · ")
   }
 
-  enum Phase { case pictures, cues, text, sound, speech }
+  enum Phase { case pictures, documents, cues, text, sound, speech }
 
   /// Whether the opt-in iCloud fetch still has clips to bring down and index
   /// this run (issue #417): a download in progress or any of its waits. Clips
@@ -526,6 +538,7 @@ struct StatusLine: Equatable {
   /// once everything is handled.
   static func phase(_ s: mv_ai_status) -> Phase {
     if picturesDone(s) < s.assets_total { return .pictures }
+    if s.docs_done < s.docs_total { return .documents }  // #354: the pack's order
     if s.cues_done < s.cues_total { return .cues }
     if s.text_done < s.text_total { return .text }
     if s.sound_done < s.sound_total { return .sound }

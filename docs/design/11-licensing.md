@@ -101,6 +101,19 @@ derivative of the code, and the attribution is a notice, not an added restrictio
 attributions"). `tools/package/addon-pack.py` allows code licences only. The Places package needs
 `CC-BY-4.0` and a public-domain marker added to its allowed set when the add-on is packed.
 
+## The Local search pack's own libraries
+
+The AI pack ([17](17-local-ai-search.md#the-ai-pack-delivery)) carries code the app does not:
+ONNX Runtime (MIT, with Microsoft's ThirdPartyNotices) and, from #354, **PDFium** for a PDF's
+text: bblanchon/pdfium-binaries chromium/8066, pinned by SHA-256 in `cmake/ai.cmake`, loaded at
+run time from the pack's folder. PDFium is BSD-3-Clause; the binary also carries FreeType (FTL),
+libjpeg-turbo (IJG / BSD-3 / Zlib), ICU (Unicode-3.0), libpng (libpng-2.0), OpenJPEG (BSD-2),
+Little CMS and simdutf (MIT), abseil and LLVM libc (Apache-2.0), zlib, and Anti-Grain Geometry
+2.3 (a notice-only permission, `LicenseRef-AGG-2.3`). All permissive and GPL-3.0-compatible. The
+pack's manifest labels the library with their conjunction, `addon-pack.py` allows those
+identifiers, and the upstream notices ship as `LICENSES/pdfium` in the pack. Nothing of PDFium
+is in the base install tree.
+
 ## Source offer
 
 About reads the version from the host exe's `VERSIONINFO` (filled from CMake's

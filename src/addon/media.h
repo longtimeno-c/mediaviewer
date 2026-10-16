@@ -67,4 +67,12 @@ class audio_stream {
                                                         std::int64_t& start_ms) = 0;
 };
 
+// #354: a document's text, one paragraph (or line) at a time, in reading
+// order: the page (0-based) where it starts and the document's page count.
+struct document_line {
+  std::uint32_t page = 0;
+  std::uint32_t page_count = 1;
+  std::string text;  // UTF-8
+};
+
 }  // namespace mv::addon

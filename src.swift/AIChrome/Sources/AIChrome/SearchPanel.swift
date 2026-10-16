@@ -446,9 +446,10 @@ struct SearchRootView: View {
   private func kindGroup(captioned: Bool) -> some View {
     FilterGroup(caption: captioned ? "Show" : nil) {
       SegmentTrack {
-        ForEach(SearchKinds.shown(audioFiles: model.audioFiles)) { k in
+        ForEach(SearchKinds.shown(audioFiles: model.audioFiles, documentFiles: model.documentFiles)) { k in
           FilterButton(label: k.label, on: model.kinds == k, style: .segment,
-                       help: k == .all && model.audioFiles ? "Show photos, videos and audio files." : k.help) {
+                       help: k == .all ? SearchKinds.allHelp(audioFiles: model.audioFiles,
+                                                             documentFiles: model.documentFiles) : k.help) {
             model.kinds = k
             model.chipsChanged()
           }
@@ -459,7 +460,8 @@ struct SearchRootView: View {
 
   // 2026-09-27: what the words are matched against. Sound and Speech need
   // the Sound piece (Settings → Local search); without it they stay visible,
-  // dimmed, and their tooltip says how to get them.
+  // dimmed, and their tooltip says how to get them. #354: Text, a document's
+  // words, needs documents shown (Settings → File types).
   private func matchGroup(captioned: Bool) -> some View {
     FilterGroup(caption: captioned ? "Match by" : nil) {
       HStack(spacing: 6) {
@@ -469,7 +471,9 @@ struct SearchRootView: View {
                        available: available,
                        help: available
                          ? f.help + (model.matchOn(f) ? "" : " Off: click to include it.")
-                         : "Needs the Sound piece: install it in Settings → Local search to find videos by what you hear.") {
+                         : f == .text
+                           ? "Turn on Show documents in Settings → File types to search PDFs and Word documents."
+                           : "Needs the Sound piece: install it in Settings → Local search to find videos by what you hear.") {
             model.toggleMatch(f)
           }
         }
@@ -948,7 +952,8 @@ private struct ResultTile: View {
           .clipped()
           .transition(.opacity)
       } else {
-        Image(systemName: result.isClip ? "film" : "photo").foregroundStyle(AITheme.body)
+        Image(systemName: result.isClip ? "film" : result.isDocument ? "doc.text" : "photo")
+          .foregroundStyle(AITheme.body)
       }
     }
     .frame(width: size, height: h)
@@ -988,11 +993,19 @@ private struct ResultTile: View {
           .padding(.horizontal, 5).padding(.vertical, 2)
           .background(Capsule().fill(.black.opacity(0.6)))
           .padding(5)
+      } else if let page = result.page {
+        // #354: the page that matched, where a clip shows its moment.
+        Text("p. \(page)")
+          .font(.system(size: 10, weight: .semibold).monospacedDigit())
+          .foregroundStyle(.white)
+          .padding(.horizontal, 5).padding(.vertical, 2)
+          .background(Capsule().fill(.black.opacity(0.6)))
+          .padding(5)
       }
     }
     .overlay(alignment: .bottomTrailing) {
       if result.more > 0 {
-        Text("+\(result.more) in this clip")
+        Text("+\(result.more) in this \(result.isDocument ? "document" : "clip")")
           .font(.system(size: 10, weight: .medium))
           .foregroundStyle(.white)
           .padding(.horizontal, 5).padding(.vertical, 2)
@@ -1051,7 +1064,8 @@ private struct ResultTile: View {
   }
 
   private var accessibilityText: String {
-    var text = result.isClip ? "\(result.name), at \(momentText(result.ptsMs))" : result.name
+    var text = result.isClip ? "\(result.name), at \(momentText(result.ptsMs))"
+      : result.page.map { "\(result.name), page \($0)" } ?? result.name
     if result.matchedSound { text += ", matched by sound" }
     if result.matchedSpeech { text += ", matched by speech" + (slot.snippet.isEmpty ? "" : ": \(slot.snippet)") }
     if result.matchedTags && !result.matchedSpeech && !result.matchedText {

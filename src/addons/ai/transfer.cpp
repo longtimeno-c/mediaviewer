@@ -303,7 +303,9 @@ result<export_counts> write(const std::string& dest, const export_options& o, co
   n.roots = roots.size();
   std::unordered_map<std::int64_t, thumb_want> file_of;  // for thumbnails
   {
-    stmt q(x, "SELECT id, path, mtime, size, kind, duration_ms FROM src.assets WHERE root_id = ?1");
+    // #354: no document travels in D1, nor its name: its passages are its
+    // text, and sharing them waits for .mvindex v2 (docs/plans/document-search.md D3).
+    stmt q(x, "SELECT id, path, mtime, size, kind, duration_ms FROM src.assets WHERE root_id = ?1 AND kind != 3");
     stmt ins(x, "INSERT INTO assets(id, root_id, rel, mtime, size, kind, duration_ms)"
                 " VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)");
     for (const auto& [id, rpath] : roots) {

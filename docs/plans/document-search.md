@@ -7,7 +7,15 @@ photo and video extensions only. This plan makes documents searchable, says whic
 needs, and lays out the Settings and search-panel changes on both hosts. Slice 0 is a Windows bug
 found while looking, and it comes first. Written 2026-10-05.
 
-## Status (2026-10-05)
+## Status (2026-10-05; D1 2026-10-16)
+
+**D1 is built** (#354, 2026-10-16): documents are indexed for their words behind File types "Show
+documents", as the issue asks; what it does is in [17](../design/17-local-ai-search.md)
+"Documents". Departures from §2-§4: no new host call for pages (a document's page is
+`video_frame_rgb` with `pts_ms` the page, and its tile a moment row); `document_open` /
+`document_close` were not needed; Settings offers Off / Words until D2 brings Words and pages;
+N / Shift+N do not step through a document's pages yet (`clip_matches` returns them). D2-D4 are
+not started.
 
 **Owner calls taken (2026-10-05):**
 

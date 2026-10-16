@@ -342,8 +342,11 @@ void folder_model::request_thumb(std::string path_utf8, std::int64_t mtime_unix,
 
                      // A result list's clip tile: the matched moment, not the
                      // clip's head. Made from that one frame when the pack has
-                     // not stored it; the poster below if it cannot be.
-                     if (moment_ms >= 0 && is_video_name(path)) {
+                     // not stored it; the poster below if it cannot be. #354:
+                     // a document's moment is its matched page (page 0 is its
+                     // own tile).
+                     if ((moment_ms >= 0 && is_video_name(path)) ||
+                         (moment_ms > 0 && io::is_document_name(path))) {
                        const image::thumb_key mkey =
                            image::moment_thumb_key(path, moment_ms, mtime_unix, size);
                        if (auto hit = state->thumbs.lookup(mkey); hit && !hit.value().empty()) {

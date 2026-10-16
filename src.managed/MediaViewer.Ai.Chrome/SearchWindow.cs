@@ -30,6 +30,10 @@ internal sealed class ResultTile
     public long PtsMs { get; init; } = -1;
     public uint More { get; init; }
     public bool Video { get; init; }
+    /// <summary>#354: a PDF or DOCX; <see cref="PtsMs"/> is then the page that matched.</summary>
+    public bool Document { get; init; }
+    /// <summary>The matched page, 1-based for people ("p. 3"); null when not a document page.</summary>
+    public long? Page => Document && PtsMs >= 0 ? PtsMs + 1 : null;
     public MvAiMatch Match { get; init; }
     /// <summary>For a speech match, the words that matched; fetched off the UI thread.</summary>
     public string? Snippet { get; set; }
@@ -82,8 +86,11 @@ internal sealed class SearchWindow : Window, IDisposable
     private Border _similarChip = null!;
     private TextBlock _similarText = null!;
     private readonly ToggleButton[] _scopeChips = new ToggleButton[2];
-    private readonly ToggleButton[] _kindChips = new ToggleButton[4];
-    private readonly ToggleButton[] _findChips = new ToggleButton[3];
+    private readonly ToggleButton[] _kindChips = new ToggleButton[5];
+    private readonly ToggleButton[] _findChips = new ToggleButton[4];
+    // _kindChips' optional segments: shown only while their File types setting is on.
+    private const int DocumentsChip = 3;
+    private const int AudioChip = 4;
     private readonly string[] _scopeTips = new string[2];
     private bool _findAudio;  // the audio availability ShowFind last drew
     private StackPanel _findRow = null!;
@@ -287,7 +294,9 @@ internal sealed class SearchWindow : Window, IDisposable
             ("All", "Show photos and videos.", MvAiKinds.All),
             ("Photos", "Show photos only.", MvAiKinds.Photos),
             ("Videos", "Show videos only.", MvAiKinds.Videos),
-            // #355: only while File types "Show audio files" is on (ShowAudioKind).
+            // #354 / #355: only while File types "Show documents" / "Show audio
+            // files" is on (ShowOptionalKinds).
+            ("Documents", "Show documents only (PDF, DOCX).", MvAiKinds.Documents),
             ("Audio", "Show audio files only (MP3, M4A, M4P).", MvAiKinds.Audio),
         };
         var kinds = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2 };
@@ -320,8 +329,10 @@ internal sealed class SearchWindow : Window, IDisposable
             ("Picture", GlyphPicture, MvAiKinds.FindPictures),
             ("Sound", GlyphSound, MvAiKinds.FindSounds),
             ("Speech", GlyphSpeech, MvAiKinds.FindSpeech),
+            // #354: a document's words, while documents are shown.
+            ("Text", GlyphText, MvAiKinds.FindText),
         };
-        for (int i = 0; i < 3; ++i)
+        for (int i = 0; i < finds.Length; ++i)
         {
             MvAiKinds bit = finds[i].Bit;
             _findChips[i] = Token(finds[i].Name, finds[i].Glyph, () => ToggleFind(bit), hc);
@@ -332,7 +343,7 @@ internal sealed class SearchWindow : Window, IDisposable
         WireArrows(_scopeChips);
         WireArrows(_kindChips);
         WireArrows(_findChips);
-        ShowAudioKind();
+        ShowOptionalKinds();
         _findAudio = AudioReady;
         ShowFind();
 
@@ -609,12 +620,15 @@ internal sealed class SearchWindow : Window, IDisposable
     private const string GlyphPicture = "";
     private const string GlyphSound = "";
     private const string GlyphSpeech = "";
+    private const string GlyphText = "";  // Document
     private static FontFamily IconFont => Look.IconFont;
 
-    private const MvAiKinds AllFinds = MvAiKinds.FindPictures | MvAiKinds.FindSounds | MvAiKinds.FindSpeech;
-
-    // What can be matched: sounds and speech need the Audio piece.
-    private MvAiKinds AvailableFinds => AudioReady ? AllFinds : MvAiKinds.FindPictures;
+    // What can be matched: sounds and speech need the Audio piece, text (#354)
+    // documents being shown.
+    private MvAiKinds AvailableFinds =>
+        MvAiKinds.FindPictures
+        | (AudioReady ? MvAiKinds.FindSounds | MvAiKinds.FindSpeech : 0)
+        | (_chrome.DocumentFiles ? MvAiKinds.FindText : 0);
 
     // The ones shown on: every available one when none is chosen (the stored
     // "all"), else the chosen ones. The row reads "all on" at rest.
@@ -653,14 +667,17 @@ internal sealed class SearchWindow : Window, IDisposable
             (MvAiKinds.FindPictures, "Match what is in the picture or the video frame."),
             (MvAiKinds.FindSounds, "Match what you hear in videos: “dog barking”, “applause”."),
             (MvAiKinds.FindSpeech, "Match words said in videos."),
+            (MvAiKinds.FindText, "Match the words in PDFs and Word documents."),
         };
-        for (int i = 0; i < 3; ++i)
+        for (int i = 0; i < finds.Length; ++i)
         {
             bool can = (available & finds[i].Bit) != 0;
             bool isOn = (on & finds[i].Bit) != 0;
             _findChips[i].IsChecked = isOn;
             SetAvailable(_findChips[i], can);
-            string tip = !can
+            string tip = !can && finds[i].Bit == MvAiKinds.FindText
+                ? "Turn on Show documents in Settings → File types to search PDFs and Word documents."
+                : !can
                 ? "Needs the Audio piece: install it in Settings → Local search to find videos by what you hear."
                 : isOn && on == finds[i].Bit ? finds[i].Tip + " At least one stays on."
                 : isOn ? finds[i].Tip + " On: click to leave it out."
@@ -672,8 +689,9 @@ internal sealed class SearchWindow : Window, IDisposable
 
     private bool AudioReady => _chrome.StatusValid && (_chrome.Status.Flags & MvAiStatus.FlagAudioReady) != 0;
 
-    // Without the Audio piece every search is a picture search: no row, no bits.
-    private MvAiKinds SearchKinds => AudioReady ? _kinds | _find : _kinds;
+    // Only what can match here goes in: a choice made while a piece (or
+    // documents) was in never narrows a search after it went.
+    private MvAiKinds SearchKinds => _kinds | (_find & AvailableFinds);
 
     // ---- showing ---------------------------------------------------------------------------
 
@@ -908,23 +926,46 @@ internal sealed class SearchWindow : Window, IDisposable
         _kindChips[0].IsChecked = kinds == MvAiKinds.All;
         _kindChips[1].IsChecked = kinds == MvAiKinds.Photos;
         _kindChips[2].IsChecked = kinds == MvAiKinds.Videos;
-        _kindChips[3].IsChecked = kinds == MvAiKinds.Audio;
+        _kindChips[DocumentsChip].IsChecked = kinds == MvAiKinds.Documents;
+        _kindChips[AudioChip].IsChecked = kinds == MvAiKinds.Audio;
         if (run && changed) RunQuery(quiet: false);
     }
 
-    // #355: the Audio segment, and "All" naming what it shows, follow "Show
-    // audio files". Turned off while Audio is chosen: back to All.
-    private void ShowAudioKind()
+    // #354 / #355: the Documents and Audio segments, and "All" naming what it
+    // shows, follow "Show documents" and "Show audio files". Turned off while
+    // chosen: back to All.
+    private void ShowOptionalKinds()
     {
-        bool on = _chrome.AudioFiles;
-        _kindChips[3].Visibility = on ? Visibility.Visible : Visibility.Collapsed;
-        _kindChips[3].IsEnabled = on;  // WireArrows skips it
-        ToolTipService.SetToolTip(_kindChips[0], on ? "Show photos, videos and audio files." : "Show photos and videos.");
+        bool docs = _chrome.DocumentFiles, audio = _chrome.AudioFiles;
+        _kindChips[DocumentsChip].Visibility = docs ? Visibility.Visible : Visibility.Collapsed;
+        _kindChips[DocumentsChip].IsEnabled = docs;  // WireArrows skips it
+        _kindChips[AudioChip].Visibility = audio ? Visibility.Visible : Visibility.Collapsed;
+        _kindChips[AudioChip].IsEnabled = audio;
+        var kinds = new List<string> { "photos", "videos" };
+        if (docs) kinds.Add("documents");
+        if (audio) kinds.Add("audio files");
+        string last = kinds[^1];
+        kinds.RemoveAt(kinds.Count - 1);
+        ToolTipService.SetToolTip(_kindChips[0], $"Show {string.Join(", ", kinds)} and {last}.");
+    }
+
+    internal void OnDocumentFilesChanged()
+    {
+        ShowOptionalKinds();
+        ShowFind();  // the Text token comes or goes
+        if (!_chrome.DocumentFiles && _kinds == MvAiKinds.Documents)
+        {
+            SetKinds(MvAiKinds.All);
+        }
+        else if (_query.Text.Trim().Length > 0 || _similar is not null)
+        {
+            RunQuery(quiet: true);  // document results come or go
+        }
     }
 
     internal void OnAudioFilesChanged()
     {
-        ShowAudioKind();
+        ShowOptionalKinds();
         if (!_chrome.AudioFiles && _kinds == MvAiKinds.Audio)
         {
             SetKinds(MvAiKinds.All);
@@ -1013,9 +1054,11 @@ internal sealed class SearchWindow : Window, IDisposable
                     {
                         Index = (int)i,
                         Path = api.ResultPath(id, i),
-                        PtsMs = r.Kind == MvAiKinds.Videos ? r.PtsMs : -1,
+                        // #354: a document's moment is the page that matched.
+                        PtsMs = r.Kind is MvAiKinds.Videos or MvAiKinds.Documents ? r.PtsMs : -1,
                         More = r.MoreInClip,
                         Video = r.Kind == MvAiKinds.Videos,
+                        Document = r.Kind == MvAiKinds.Documents,
                         Match = r.Match,
                     });
                 }
@@ -1370,7 +1413,8 @@ internal sealed class SearchWindow : Window, IDisposable
         if (title.Length == 0) title = "Search results";
         _chrome.SetActiveSearch(_search, _tiles.Where(t => t.Video).Select(t => t.Path));
         var paths = _tiles.Select(t => t.Path).ToList();
-        var moments = _tiles.Select(t => t.Video ? t.PtsMs : -1L).ToList();
+        // A clip opens paused on its moment; a document (#354) on its page.
+        var moments = _tiles.Select(t => t.Video || t.Document ? t.PtsMs : -1L).ToList();
         Hide();
         _chrome.Host.OpenList(title, paths, moments, select, gallery);
     }
@@ -1500,7 +1544,7 @@ internal sealed class SearchWindow : Window, IDisposable
         {
             ResultTile t = _tiles[_sel];
             AutomationProperties.SetName(_gridHost,
-                t.Video ? $"{t.Name}, {Look.Moment(t.PtsMs)}" : t.Name);
+                t.Video ? $"{t.Name}, {Look.Moment(t.PtsMs)}" : t.Page is long p ? $"{t.Name}, page {p}" : t.Name);
         }
     }
 
@@ -1583,6 +1627,12 @@ internal sealed class SearchWindow : Window, IDisposable
             layers.Children.Add(Badge(Look.Moment(tile.PtsMs), HorizontalAlignment.Left));
             if (tile.More > 0) layers.Children.Add(Badge($"+{tile.More} in this clip", HorizontalAlignment.Right));
         }
+        else if (tile.Page is long page)
+        {
+            // #354: the page that matched, where a clip shows its moment.
+            layers.Children.Add(Badge($"p. {page}", HorizontalAlignment.Left));
+            if (tile.More > 0) layers.Children.Add(Badge($"+{tile.More} in this document", HorizontalAlignment.Right));
+        }
         if (MatchBadge(tile.Match) is Border why) layers.Children.Add(why);
         var frame = new Border
         {
@@ -1613,7 +1663,8 @@ internal sealed class SearchWindow : Window, IDisposable
         var root = new StackPanel { Width = TileW, Height = TileH };
         root.Children.Add(frame);
         root.Children.Add(caption);
-        ToolTipService.SetToolTip(root, tile.Video ? $"{tile.Name} at {Look.Moment(tile.PtsMs)}" : tile.Name);
+        ToolTipService.SetToolTip(root, tile.Video ? $"{tile.Name} at {Look.Moment(tile.PtsMs)}"
+                                        : tile.Page is long pg ? $"{tile.Name}, page {pg}" : tile.Name);
         if (tile.Snippet is string known) ShowSnippet(tile, known);
         else RequestSnippet(tile);
         root.Tapped += (_, _) =>

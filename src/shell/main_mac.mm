@@ -4025,10 +4025,16 @@ static void MvAdoptNewDefaultViewerTypes() {
         _photosFetchCancel.reset();
         _shownItem = 0;
         [self openPhotosEntry:entry moment:moment];
+      } else if (moment > 0 && mv::io::is_document_name(entry.path_utf8)) {
+        // #354: a document from a result list opens on the page that matched.
+        _shownItem = _lab.open_item(entry.path_utf8, entry.mtime_unix, entry.size, -1,
+                                    static_cast<std::uint32_t>(std::min<std::int64_t>(moment, UINT32_MAX)));
       } else {
         _shownItem = _lab.open_item(entry.path_utf8, entry.mtime_unix, entry.size, moment);
       }
-      _shownPage = 0;
+      _shownPage = moment > 0 && mv::io::is_document_name(entry.path_utf8)
+                       ? static_cast<std::uint32_t>(std::min<std::int64_t>(moment, UINT32_MAX))
+                       : 0;
       _shownPageCount = 0;
     }
     _shownMoment = moment;
@@ -10878,6 +10884,10 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
   _viewFlags = flags;
   // #355: Local search indexes audio files only while they are shown.
   if (changed & mv::shell::kSettingShowAudio) MvAddonsShowAudioChanged((flags & mv::shell::kSettingShowAudio) != 0);
+  // #354: and documents only while they are shown.
+  if (changed & mv::shell::kSettingShowDocuments) {
+    MvAddonsShowDocumentsChanged((flags & mv::shell::kSettingShowDocuments) != 0);
+  }
   // Picked up on the main queue, like any relist.
   if (mv::shell::view_settings::from_flags(flags).hidden_kinds() != before) {
     _refilterListing = YES;
@@ -10913,6 +10923,7 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
                    : mv::shell::view_settings{}.flags();
   // #355: before the AI pack attaches, which reads it.
   MvAddonsShowAudioChanged((_viewFlags & mv::shell::kSettingShowAudio) != 0);
+  MvAddonsShowDocumentsChanged((_viewFlags & mv::shell::kSettingShowDocuments) != 0);  // #354
   _stripHintLearned = [d boolForKey:@"mv.hint.filmstripT"];
   mv::shell::reset_live_bindings();
   for (NSString* row in [d arrayForKey:kDefaultsKeys]) {

@@ -77,6 +77,13 @@ internal sealed partial class ManagePanel
     private readonly TextBlock _videoIndexHint;
     // #355: how audio files are indexed, or how to turn them on.
     private readonly TextBlock _audioFilesDetail;
+    // #354: Settings "Documents" (doc_index: Off | Words; "Words and pages"
+    // waits for slice D2), or how to turn documents on.
+    private readonly ToggleButton[] _docIndex = new ToggleButton[2];
+    private readonly StackPanel _docIndexTrack;
+    private readonly TextBlock _documentsDetail;
+    private uint _docIndexValue = 1;
+    private bool _pdfAvailable = true;
     private readonly TextBlock _audioLine;
     // Text in pictures (#403): "Read text in photos" (read_text, on by default),
     // greyed with a reason when this Windows has no OCR language.
@@ -240,6 +247,22 @@ internal sealed partial class ManagePanel
             "Pictures finds what a clip shows; Sound finds what it sounds like and what is said. Photos are always pictures.", 12));
         videoDetail.Children.Add(_videoIndexHint);
         Section("Videos").Children.Add(Row("Index videos for", videoDetail, _look.Track(segments, hc)));
+        // #354: documents, by their words, while File types "Show documents" is on.
+        var docSegments = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2 };
+        string[] docNames = { "Off", "Words" };
+        for (int i = 0; i < 2; ++i)
+        {
+            uint level = (uint)i;
+            ToggleButton b = _look.Segment(docNames[i], () => SetDocIndex(level), hc);
+            AutomationProperties.SetName(b, "Index documents for " + docNames[i]);
+            _docIndex[i] = b;
+            docSegments.Children.Add(b);
+        }
+        _docIndexTrack = new StackPanel();
+        _docIndexTrack.Children.Add(_look.Track(docSegments, hc));
+        _documentsDetail = _look.Text(DocumentsDetail(_chrome.DocumentFiles, _pdfAvailable), 12);
+        Section("Documents").Children.Add(Row("PDF and Word documents", _documentsDetail, _docIndexTrack));
+        ShowDocIndex();
         _audioFilesDetail = _look.Text(AudioFilesDetail(_chrome.AudioFiles), 12);
         Section("Audio files").Children.Add(Row("MP3, M4A and M4P", _audioFilesDetail, new StackPanel()));
 
@@ -537,6 +560,9 @@ internal sealed partial class ManagePanel
             _audioReady = r.TryGetProperty("audio_ready", out JsonElement ar) && ar.ValueKind == JsonValueKind.True;
             ShowVideoIndex();
             _audioFilesDetail.Text = AudioFilesDetail(_chrome.AudioFiles);
+            _docIndexValue = r.TryGetProperty("doc_index", out JsonElement di) ? Math.Min(2u, di.GetUInt32()) : 1;
+            _pdfAvailable = !r.TryGetProperty("pdf_available", out JsonElement pa) || pa.ValueKind != JsonValueKind.False;
+            ShowDocIndex();
             _cloudProvider = r.TryGetProperty("cloud_provider", out JsonElement cp) && cp.GetString() == "onedrive";
             _cloudUnsupported = r.TryGetProperty("cloud_supported", out JsonElement cs) && cs.ValueKind == JsonValueKind.False;
             _cloudSwitch.IsEnabled = !_cloudUnsupported;
@@ -633,6 +659,38 @@ internal sealed partial class ManagePanel
         ShowVideoIndex();
         Set("video_index", ((uint)media).ToString());
     }
+
+    // ---- documents (#354) ------------------------------------------------------------------
+
+    private void ShowDocIndex()
+    {
+        bool on = _chrome.DocumentFiles;
+        _docIndexTrack.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+        _docIndex[0].IsChecked = _docIndexValue == 0;
+        _docIndex[1].IsChecked = _docIndexValue >= 1;  // Words and pages (D2) reads as Words
+        _documentsDetail.Text = DocumentsDetail(on, _pdfAvailable);
+    }
+
+    private void SetDocIndex(uint level)
+    {
+        if (level == Math.Min(1u, _docIndexValue))
+        {
+            ShowDocIndex();
+            return;
+        }
+        _docIndexValue = level;
+        ShowDocIndex();
+        Set("doc_index", level.ToString());
+        RefreshRoots();
+    }
+
+    // #354: the Settings line under "Documents". Indexed only while File types
+    // "Show documents" is on; then by their words, the text kept on this PC.
+    private static string DocumentsDetail(bool on, bool pdf) => !on
+        ? "Not searched. Turn on Show documents in Settings → File types to search them."
+        : "Words finds PDFs and Word documents by the words in them, and opens one on the page that matched. "
+          + "Each folder can differ, from its menu below. An index of documents holds their text on this PC; it never leaves it."
+          + (pdf ? "" : " PDFs need the latest Core: update it above. Word documents are read meanwhile.");
 
     // ---- OneDrive online-only files -----------------------------------------------------
 
@@ -750,7 +808,7 @@ internal sealed partial class ManagePanel
     // Held (issue #299): left unfinished last session, it waits for Resume.
     private sealed record RootRow(ulong Id, string Path, bool Recursive, bool Enabled, long Assets, long Done, long Bytes,
                                   MvAiMedia Media, bool Scanning, long CloudOnly, bool Unreadable, long LastScan,
-                                  bool Held, long Audio);
+                                  bool Held, long Audio, MvAiDocs Docs, long Documents, long DocumentsDone);
 
     // #355: the Settings line under "Audio files". Indexed only while File
     // types "Show audio files" is on; then by their tags and cover art.
@@ -791,7 +849,11 @@ internal sealed partial class ManagePanel
                         r.TryGetProperty("error", out JsonElement er) && er.GetString() == "unreadable",
                         r.TryGetProperty("last_scan", out JsonElement ls) ? ls.GetInt64() : 0,
                         r.TryGetProperty("held", out JsonElement hd) && hd.ValueKind == JsonValueKind.True,
-                        r.TryGetProperty("audio", out JsonElement au) ? au.GetInt64() : 0));
+                        r.TryGetProperty("audio", out JsonElement au) ? au.GetInt64() : 0,
+                        r.TryGetProperty("docs", out JsonElement ds) && ds.GetUInt32() <= 3
+                            ? (MvAiDocs)ds.GetUInt32() : MvAiDocs.Default,
+                        r.TryGetProperty("documents", out JsonElement dn) ? dn.GetInt64() : 0,
+                        r.TryGetProperty("documents_done", out JsonElement dd) ? dd.GetInt64() : 0));
                 }
             }
             catch (Exception ex) when (ex is MediaViewerException or JsonException or KeyNotFoundException
@@ -850,12 +912,19 @@ internal sealed partial class ManagePanel
             long local = Math.Max(0, r.Assets - r.CloudOnly);
             string state = !r.Enabled ? "Paused"
                 : r.Unreadable ? "Couldn't read this folder: it may be offline, moved or renamed. Its index is kept."
-                : r.Assets == 0 && r.LastScan != 0 && !r.Scanning ? "No photos or videos found here"
+                : r.Assets == 0 && r.Documents == 0 && r.LastScan != 0 && !r.Scanning ? "No photos or videos found here"
+                : r.Assets == 0 && r.Documents > 0 ? $"{r.DocumentsDone:N0} of {r.Documents:N0} documents read"
                 : r.Done >= local ? (r.Scanning ? "Checking for changes…" : "Up to date")
                 : $"{r.Done:N0} of {local:N0}"
                   + (r.Held ? " · paused since last time" : r.Scanning ? " · checking for changes…" : "");
             if (r.CloudOnly > 0 && !r.Unreadable) state += $" · {r.CloudOnly:N0} only in OneDrive";
             if (r.Audio > 0 && !r.Unreadable) state += r.Audio == 1 ? " · 1 audio file" : $" · {r.Audio:N0} audio files";
+            // #354: its documents, counted apart from its photos and videos.
+            if (r.Documents > 0 && r.Assets > 0 && !r.Unreadable)
+            {
+                state += r.Documents == 1 ? " · 1 document" : $" · {r.Documents:N0} documents";
+                if (r.DocumentsDone < r.Documents) state += $" ({r.DocumentsDone:N0} read)";
+            }
             labels.Children.Add(_look.Text((r.Recursive ? "and subfolders · " : "") + state + " · " + Look.Size(r.Bytes), 12,
                 r.Unreadable ? AddonColour.Accent : AddonColour.Body));
             // Paused folders' bars are quiet (the Mac tints them secondary).
@@ -872,6 +941,7 @@ internal sealed partial class ManagePanel
             bool enabled = r.Enabled;
             string name = System.IO.Path.GetFileName(r.Path);
             buttons.Children.Add(MediaMenu(id, r.Media));
+            if (_chrome.DocumentFiles && _api.HasRootSetDocuments) buttons.Children.Add(DocsMenu(id, r.Docs));
             if (enabled && r.Held)
             {
                 // Issue #299: on from its last committed frame, as the launch notice's Resume.
@@ -962,6 +1032,39 @@ internal sealed partial class ManagePanel
         };
         AutomationProperties.SetName(button, "Index this folder's videos for");
         ToolTipService.SetToolTip(button, "What this folder's videos are indexed for: pictures, sound and speech, or both");
+        return button;
+    }
+
+    private static readonly string[] DocsNames = { "Default", "Off", "Words" };
+
+    // #354: "Documents: Default ▾" — whether this folder's documents are searched
+    // by their words (a Downloads folder that should not show bank statements).
+    private Button DocsMenu(ulong root, MvAiDocs current)
+    {
+        var shown = current == MvAiDocs.Pages ? MvAiDocs.Words : current;
+        var menu = new MenuFlyout();
+        for (int i = 0; i < DocsNames.Length; ++i)
+        {
+            var docs = (MvAiDocs)i;
+            var item = new ToggleMenuFlyoutItem
+            {
+                Text = i == 0 ? $"Default ({(_docIndexValue == 0 ? "Off" : "Words")})" : DocsNames[i],
+                IsChecked = docs == shown,
+            };
+            item.Click += (_, _) => RootCall(() => _api.RootSetDocuments(root, docs));
+            menu.Items.Add(item);
+        }
+        var button = new Button
+        {
+            Content = "Documents: " + DocsNames[(int)shown] + "  ▾",
+            FontFamily = _look.Font,
+            FontSize = _look.FontSize - 2,
+            Padding = new Thickness(12, 5, 8, 6),
+            CornerRadius = new CornerRadius(6),
+            Flyout = menu,
+        };
+        AutomationProperties.SetName(button, "Index this folder's documents for");
+        ToolTipService.SetToolTip(button, "Whether this folder's PDFs and Word documents are searched by their words");
         return button;
     }
 
