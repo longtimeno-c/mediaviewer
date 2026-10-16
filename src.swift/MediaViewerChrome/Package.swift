@@ -26,5 +26,10 @@ let package = Package(
       name: "MediaViewerChrome",
       dependencies: ["MVChromeBridge"]
     ),
+    // Issue #153: the command ids, shortcut names and the describe_commands()
+    // snapshot, checked against src/shell as text. It does not import the library:
+    // MVChromeBridge's functions resolve only in the app's final link.
+    // `swift test` here; CI runs it on the macOS job.
+    .testTarget(name: "MediaViewerChromeTests"),
   ]
 )

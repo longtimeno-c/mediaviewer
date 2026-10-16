@@ -44,6 +44,7 @@
          TextBox fail-fasts in this host). -->
     <Compile Include="..\Shared\FlatBar.cs" Link="Shared\FlatBar.cs" />
     <Compile Include="..\Shared\FakeInput.cs" Link="Shared\FakeInput.cs" />
+    <Compile Include="..\Shared\ByteSize.cs" Link="Shared\ByteSize.cs" />
   </ItemGroup>
 
   <ItemGroup>

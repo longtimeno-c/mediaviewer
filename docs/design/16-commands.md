@@ -6,8 +6,19 @@ without a mouse.
 
 Source of truth: [`src/shell/commands.h`](../../src/shell/commands.h) (ids, keys, modes),
 [`src/shell/command_table.cpp`](../../src/shell/command_table.cpp) (the default map and labels),
-[`src/shell/key_router.h`](../../src/shell/key_router.h) / `.cpp` (mode and `Esc` resolution).
-Both hosts use the same table and router; tests are `tests/test_key_router*.cpp`.
+[`src/shell/key_router.h`](../../src/shell/key_router.h) / `.cpp` (mode and `Esc` resolution),
+[`src/shell/command_coverage.inc`](../../src/shell/command_coverage.inc) (which host handles
+which id, and which area of `run_command` / `runCommand:` runs it).
+Both hosts use the same table and router; tests are `tests/test_key_router*.cpp` and
+`tests/test_command_coverage.cpp`.
+
+The Mac's Settings list (`MvCommandSupported`) is the Mac half of that coverage file, so a
+command cannot be handled and missing from Settings, or listed and not dispatched. Import
+(`open_import`, `import_now`) and similar-search stay hidden until their add-on is loaded.
+`search_open` stays listed: with no AI pack it is file search. A command the Mac dispatcher
+does not run is a row with a reason, not a gap in a hand-kept switch. Windows handles the
+same ids; a few (`back`, the island arguments) are handled outside `run_command` and the
+coverage file says so. A new `command_id` fails the test until it has a row.
 
 ## One table, editable
 
@@ -21,7 +32,11 @@ Both hosts use the same table and router; tests are `tests/test_key_router*.cpp`
   recorded.
 - A remap onto a key another row holds in an overlapping mode **swaps** the two rows, so nothing
   is silently left unbound. Remaps persist by row index (`settings.ini [keys]` on Windows,
-  `NSUserDefaults` on macOS), which is why new rows are only ever **appended**.
+  `NSUserDefaults` on macOS), which is why new rows are only ever **appended**. What is saved
+  is every row that differs from the default, a row a swap left unbound included (key 0), and a
+  reload sets those rows as saved (`live_key_remaps` / `apply_key_remaps`). Replaying them
+  through the swapping rebind did not round-trip: a swap moved rows the list did not name, and
+  an unbound row came back on its default key (issue #153, `test_command_contract.cpp`).
 - **Mac menu bar** (issue #182). The items that show a chord (Settings `⌘,`, New Window, Open,
   Folder Tree, Close Window) read it from the live table (`menu_chord`) after every remap, so a
   remap moves the menu with the router; a chord another command also holds stays the router's.
@@ -230,8 +245,20 @@ crop. Keys are shown Windows-style; on macOS read `⌘` for `Ctrl`.
 | `Ctrl+C` | Viewing | With words selected in the still ([Text in images](#text-in-images)): copy that text. With the eyedropper on: copy `#RRGGBB  rgb(r, g, b)  x y`. Otherwise copy the marked (else current / gallery-selected) file(s) |
 | hold `Z` | browse, video | Loupe: 100 % around the cursor or a keyboard point; arrows nudge it. Same texture, no decode |
 | hold `\` | browse, video | Previous item, for burst pick, from the five-slot GPU LRU (Mac: the last still shown, kept on the GPU) |
+| `\|` | browse, video | **Two-up compare** (issue #208): the previous still (the one hold `\` shows) on the left, the current one on the right, under one camera (below). Toggle; `--compare` starts with it on |
 | `;` | browse, video | Play a Live Photo's motion once, with audio, and return to the still. `;` again, `Esc` or navigation return early. **Mac: not built** |
 | `Ctrl+Shift+A` | all | Always on top (`HWND_TOPMOST`) |
+
+**Two-up compare.** `|` (the Shift twin of `\`, as `Shift+O` / `Shift+I` pair their keys)
+splits the canvas: the camera frames the current still in the right half, and the left half is a
+second draw of the previous still's texture, already resident, in the same present. No decode,
+no second present path; a tiled previous still draws its overview. Pan, zoom, the wheel (over
+either half, toward the same spot) and `0`–`4` move both: a same-size burst frame is the identical
+view, a different frame shows the same region at the same magnification relative to its fit
+(`shell/compare.h`, shared by both labs). Walking the folder keeps the split, so `D` through a burst
+compares each frame with the one before. Stills only: on a clip, in crop mode and under a
+slideshow blackout the canvas is one-up and the toggle waits; hold `\` does nothing while the split
+is up (the previous still is already on screen). A fitted view refits to its half.
 
 **Filmstrip hint.** Some input means something else while the filmstrip is up, and the hint says
 so (`shell/filmstrip_hint.h`, shared). Over a PDF or DOCX with the strip showing it reads "Press T
@@ -559,6 +586,7 @@ presents ([rendering](03-rendering.md)). Toggles request one redraw.
 |---|---|
 | Loupe (hold `Z`) | Camera / viewport change; same texture |
 | Hold-previous (hold `\`) | The five-slot LRU; no second session |
+| Two-up compare (`\|`) | A second blit of the resident previous texture into the left half; same present |
 | Clipping blinkies (`C`) | Shader; may present while on (it animates), labelled in F3 |
 | Pixel grid (≥ 400 %) | Shader |
 | Around the picture (no key) | The theme's `canvas` token as the clear and in the blit; there is no canvas background of its own (issue #408, [12](12-decision-log.md)) |

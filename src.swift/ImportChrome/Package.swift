@@ -21,5 +21,7 @@ let package = Package(
     // The C view of mediaviewer_import.h (the table's types).
     .target(name: "CImportApi"),
     .target(name: "ImportChrome", dependencies: ["CImportApi"]),
+    // Issue #153: the model's table-free pieces. `swift test` here; CI runs it.
+    .testTarget(name: "ImportChromeTests", dependencies: ["ImportChrome"]),
   ]
 )

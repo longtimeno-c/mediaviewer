@@ -477,7 +477,7 @@ public static partial class IslandHost
             Line("Adds", a.Adds);
             foreach (string can in a.Can) Line("Can", can);
             Line("Cannot", a.Cannot);
-            Line("Size", $"{OpenSizeText(a.Size)} · {a.Licence}");
+            Line("Size", $"{MediaViewer.Shared.ByteSize.Text(a.Size)} · {a.Licence}");
             sheet.Children.Add(lines);
         }
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8) };
@@ -522,11 +522,6 @@ public static partial class IslandHost
         };
         return card;
     }
-
-    private static string OpenSizeText(long bytes) =>
-        bytes >= 1024 * 1024 ? $"{bytes / (1024.0 * 1024.0):0.0} MB"
-        : bytes >= 1024 ? $"{Math.Max(1, (long)Math.Round(bytes / 1024.0))} KB"
-        : $"{bytes} bytes";
 
     // ---- from a file ----------------------------------------------------------------
 
@@ -622,8 +617,8 @@ public static partial class IslandHost
             // "1.2 MB of 3.4 MB" with a bar once the server sent a length; the
             // running size over a sweeping bar when it did not.
             _openFraction = p.Total > 0 ? Math.Min(1.0, (double)p.Done / p.Total) : null;
-            _openProgress = p.Total > 0 ? $"{OpenSizeText(p.Done)} of {OpenSizeText(p.Total)}"
-                                        : $"Downloading… {OpenSizeText(p.Done)}";
+            _openProgress = p.Total > 0 ? $"{MediaViewer.Shared.ByteSize.Text(p.Done)} of {MediaViewer.Shared.ByteSize.Text(p.Total)}"
+                                        : $"Downloading… {MediaViewer.Shared.ByteSize.Text(p.Done)}";
             if (_openProgressView is not null) _openProgressView.Show(_openFraction, _openProgress);
             else RefreshOpenAddonRow();
         });

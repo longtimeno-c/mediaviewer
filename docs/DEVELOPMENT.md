@@ -486,6 +486,7 @@ copy, and check Finder's **Open With** and a Quick Look thumbnail.
 | `S` | sticky zoom: keep zoom and position when you move to the next item (off by default) |
 | hold `Z` | loupe: 100 % (or 2x the current zoom) around the cursor |
 | hold `\` | show the previous image, for picking between burst frames |
+| `\|` | two-up compare: the previous image beside the current one, panned and zoomed together (stills; `--compare` starts with it on) |
 | `C` | clipping blinkies (red highlights, blue shadows). The canvas keeps presenting while on |
 | `O` | info line: file name, position in the folder, size, zoom |
 | `Ctrl+Shift+A` | always on top |
@@ -599,8 +600,11 @@ run's decode job counts under `"held"`; every step carries `full_ms`. Those are 
 the in-flight decode hand-off is for, and `perf-browse.svg` ignores them),
 `--av-soak <seconds> --csv <path>` (headless A/V drift soak on a clip — see
 [Test](#test)), `--pan-soak` (with `--soak` and `--open`: pan the still at 100 % across
-the whole frame on a fixed path, to measure cached-image and tiled-pyramid pan), or a
-positional file or folder.
+the whole frame on a fixed path, to measure cached-image and tiled-pyramid pan),
+`--compare` (start in the two-up compare; add it to `--pan-soak` to pan both halves, the
+left one drawing the same still again since one file has no previous, or to `--browse-soak`
+to walk a folder with the split up; `compare_frames` in the soak JSON counts the two-half
+presents), or a positional file or folder.
 
 A still's first pixel is a preview (JPEG DCT 1/4, or a RAW's embedded JPEG); the full
 decode then *refines* the same item rather than replacing it: the view you have — fit,
@@ -921,6 +925,20 @@ dotnet src.managed\MediaViewer.AbiSmokeTest\bin\Release\net8.0-windows\MediaView
 
 # WinUI chrome (also published beside mediaviewer_lab.exe by the CMake build)
 dotnet publish src.managed\MediaViewer.Chrome\MediaViewer.Chrome.csproj -c Release -r win-x64 --no-self-contained
+
+# Issue #153, the chromes' headless tests (no core build needed; CI's "WinUI chrome"
+# and "SwiftUI chrome" jobs run them). They read the chromes' sources as text and fail
+# when a copy of a command id, a captured key code, the rebind packing or a menu's
+# printed shortcut drifts from src/shell or from tests/data/command_table.snapshot.
+dotnet test src.managed\MediaViewer.Chrome.Tests\MediaViewer.Chrome.Tests.csproj -c Release
+# macOS: the same checks for the SwiftUI chrome, Import's model, AI's search model
+swift test --package-path src.swift/MediaViewerChrome
+swift test --package-path src.swift/ImportChrome
+swift test --package-path src.swift/AIChrome --filter SearchModelTests
+# The native half (part of plain ctest): key remaps survive persist and reload, and
+# describe_commands() by mode matches tests/data/command_table.snapshot. A change to
+# the default key map fails it on purpose; regenerate, then read the diff:
+$env:MV_UPDATE_SNAPSHOTS = "1"; .\build\bin\Release\mv_tests.exe "[snapshot]"; Remove-Item Env:MV_UPDATE_SNAPSHOTS
 
 # Milestone G: the Import add-on's suite (built with the core, both platforms)
 # Its verified copies flush durably and read back uncached in scratch folders
@@ -1472,7 +1490,7 @@ manifest, clients reject updates. The production public key is already pinned in
 
 ### Continuous integration
 
-Pushes to `main` and pull requests build four Windows variants (MSVC Release, MSVC Debug, clang-cl, ASan), run the C# ABI smoke test, and fuzz each decoder for a minute. A newer push to the same branch cancels the run it replaces. Dependencies are installed by one job and reused. The first run after `vcpkg.json` or the pinned vcpkg baseline changes spends about 45 minutes there, mostly building FFmpeg. Later runs restore that cache. The nightly schedule is the long fuzz run, separate from pull requests.
+Pushes to `main` and pull requests build four Windows variants (MSVC Release, MSVC Debug, clang-cl, ASan), run the C# ABI smoke test, and fuzz each decoder for a minute. On macOS they build the native core on macos-15 (arm64) and run the full `ctest` suite (`mv_tests`, `mv_import_tests`, `mv_ai_tests` and the Mac-only tests), build the three SwiftPM chrome packages, and run `swift test` on `src.swift/AIChrome`. The Mac job shares its vcpkg cache key with the release workflow's arm64 leg, so a cold cache costs the whole Mac manifest once. A newer push to the same branch cancels the run it replaces. Dependencies are installed by one job and reused. The first run after `vcpkg.json` or the pinned vcpkg baseline changes spends about 45 minutes there, mostly building FFmpeg. Later runs restore that cache. The nightly schedule is the long fuzz run, separate from pull requests.
 
 ### Releasing from CI
 
