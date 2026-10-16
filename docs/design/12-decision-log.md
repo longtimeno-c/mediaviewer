@@ -607,6 +607,12 @@ focus. The tree follows the directory watcher and diffs rows in place.
 **Add-on commands are gated rows (2026-09-24).** Static table rows enabled at run time
 (`set_addon_commands_available`); hidden from `?`, Settings and the router while absent.
 
+**Host dispatch is one coverage list (2026-10-12).** `command_coverage.inc` names, for every
+`command_id`, whether each host handles it and which area of `run_command` / `runCommand:`
+runs it. The Mac Settings list is that Mac set plus the Import and AI gates, so it cannot
+drift from the dispatcher. The island callback and the window procedure are split by area
+the same way. `tests/test_command_coverage.cpp` fails until a new id has a row.
+
 **File search and the path-bar icon (2026-09-28).** The gallery search bar is gone. A magnifier at
 the end of the folder path runs `Ctrl+F` / `⌘F`: with Local search loaded, starting, or installed
 and waiting for the first search (2026-10-11) it opens the search panel; without it, **file search**, a name filter over the listed folder with no index (the

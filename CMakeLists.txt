@@ -1182,7 +1182,10 @@ if(MV_BUILD_TESTS)
     src/shell/trim_state.cpp
     tests/test_corpus.cpp
     tests/test_key_router.cpp
+    # Issue #239: every command id is handled or explicitly excluded, per host.
+    tests/test_command_coverage.cpp
     tests/test_key_router_review.cpp
+    tests/test_command_contract.cpp
     # Issue #444: the one share command's file set and wire argument.
     tests/test_share_menu.cpp
     tests/test_keymap.cpp

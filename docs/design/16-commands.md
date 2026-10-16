@@ -6,8 +6,19 @@ without a mouse.
 
 Source of truth: [`src/shell/commands.h`](../../src/shell/commands.h) (ids, keys, modes),
 [`src/shell/command_table.cpp`](../../src/shell/command_table.cpp) (the default map and labels),
-[`src/shell/key_router.h`](../../src/shell/key_router.h) / `.cpp` (mode and `Esc` resolution).
-Both hosts use the same table and router; tests are `tests/test_key_router*.cpp`.
+[`src/shell/key_router.h`](../../src/shell/key_router.h) / `.cpp` (mode and `Esc` resolution),
+[`src/shell/command_coverage.inc`](../../src/shell/command_coverage.inc) (which host handles
+which id, and which area of `run_command` / `runCommand:` runs it).
+Both hosts use the same table and router; tests are `tests/test_key_router*.cpp` and
+`tests/test_command_coverage.cpp`.
+
+The Mac's Settings list (`MvCommandSupported`) is the Mac half of that coverage file, so a
+command cannot be handled and missing from Settings, or listed and not dispatched. Import
+(`open_import`, `import_now`) and similar-search stay hidden until their add-on is loaded.
+`search_open` stays listed: with no AI pack it is file search. A command the Mac dispatcher
+does not run is a row with a reason, not a gap in a hand-kept switch. Windows handles the
+same ids; a few (`back`, the island arguments) are handled outside `run_command` and the
+coverage file says so. A new `command_id` fails the test until it has a row.
 
 ## One table, editable
 
@@ -21,7 +32,11 @@ Both hosts use the same table and router; tests are `tests/test_key_router*.cpp`
   recorded.
 - A remap onto a key another row holds in an overlapping mode **swaps** the two rows, so nothing
   is silently left unbound. Remaps persist by row index (`settings.ini [keys]` on Windows,
-  `NSUserDefaults` on macOS), which is why new rows are only ever **appended**.
+  `NSUserDefaults` on macOS), which is why new rows are only ever **appended**. What is saved
+  is every row that differs from the default, a row a swap left unbound included (key 0), and a
+  reload sets those rows as saved (`live_key_remaps` / `apply_key_remaps`). Replaying them
+  through the swapping rebind did not round-trip: a swap moved rows the list did not name, and
+  an unbound row came back on its default key (issue #153, `test_command_contract.cpp`).
 - **Mac menu bar** (issue #182). The items that show a chord (Settings `⌘,`, New Window, Open,
   Folder Tree, Close Window) read it from the live table (`menu_chord`) after every remap, so a
   remap moves the menu with the router; a chord another command also holds stays the router's.
