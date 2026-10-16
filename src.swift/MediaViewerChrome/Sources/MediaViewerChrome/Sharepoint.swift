@@ -1,6 +1,6 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Sharepoint from the app's side (issues #410, #413; docs/design/28): the
+// Sharepoint from the app's side (issues #410, #413, #444; docs/design/28): the
 // gallery's share icon, its one-click install, and Settings' row while it is
 // not installed. The window itself is the add-on's view tree (ScreenView.swift);
 // nothing here talks to the network except the plain GETs of the add-on's
@@ -132,7 +132,7 @@ struct SharepointOffer: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
       Text("Sharepoint").font(MVTheme.font()).foregroundStyle(MVTheme.title)
-      Text("Send photos, video and audio to a MediaViewer nearby, over Wi-Fi or Bluetooth. Both screens show the same code, and nothing moves until the other person accepts.")
+      Text("Send photos, video and audio to a MediaViewer nearby, over Wi-Fi or Bluetooth. You type the code the other screen shows, and nothing moves until the other person accepts.")
         .font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
         .fixedSize(horizontal: false, vertical: true)
       if AddonStore.shared.elsewhere {
@@ -166,39 +166,22 @@ struct SharepointOffer: View {
 }
 
 /// The gallery's share icon (#413): one icon for the gallery's selection (its
-/// shift-click range, else the selected cell). It opens Sharepoint with those
-/// files and no others; without Sharepoint it offers the one-click install.
-/// Not the OS share sheet (⌘⇧S, "Share…").
+/// shift-click range, else the marks, else the selected cell). Issue #444: it
+/// opens the share menu, the one share command's (ShareMenu.swift): Sharepoint
+/// first, or its one-click install, then the system's targets.
 struct GalleryShareButton: View {
-  @ObservedObject private var sharepoint = SharepointStore.shared
-  @ObservedObject private var slots = SlotStore.shared
   @ObservedObject private var store = FolderStore.shared
-  @State private var offering = false
-  @State private var offerPaths: [String] = []
 
   var body: some View {
     Button {
-      let paths = store.gallerySelectionPaths()
-      guard !paths.isEmpty else { return }
-      if !sharepoint.open(paths: paths) {
-        offerPaths = paths
-        offering = true
-      }
+      ShareMenu.shared.request(.menu, from: .gallery)
     } label: {
-      Label(store.range.count > 1 ? "Send \(store.range.count)" : "Send", systemImage: "square.and.arrow.up")
+      Label(store.range.count > 1 ? "Share \(store.range.count)" : "Share", systemImage: "square.and.arrow.up")
         .font(MVTheme.font(13))
     }
     .buttonStyle(FlatButtonStyle(selected: false, compact: true))
-    .help("Send the selected photos to a MediaViewer nearby with Sharepoint")
-    .accessibilityLabel(store.range.count > 1 ? "Send \(store.range.count) photos with Sharepoint"
-                                              : "Send the selected photo with Sharepoint")
-    .popover(isPresented: $offering, arrowEdge: .bottom) {
-      SharepointOffer(paths: offerPaths)
-        .padding(14)
-        .frame(width: 320)
-    }
-    .onChange(of: slots.windowScreens) { _, screens in
-      if offering, screens[SharepointStore.addonID] != nil { offering = false }
-    }
+    .background(ShareAnchor(from: .gallery))
+    .help("Share the selection: Sharepoint, Mail, Messages, AirDrop and more")
+    .accessibilityLabel(store.range.count > 1 ? "Share \(store.range.count) files" : "Share the selection")
   }
 }

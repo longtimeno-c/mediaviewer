@@ -529,8 +529,8 @@ public static partial class IslandHost
         _galleryStack.Children.Add(_folderStrip);
         _galleryStack.Children.Add(_folderRepeater);
         // Issue #413: the photos' header, and one share icon for the grid's
-        // selection (the shift-click range, else the selected cell): Sharepoint,
-        // not the system share sheet.
+        // selection. Issue #444: it opens the share menu (Sharepoint, then
+        // Windows Share), the one share command's.
         var photosRow = new Grid();
         photosRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         photosRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -617,6 +617,15 @@ public static partial class IslandHost
         AutomationProperties.SetName(_barUpButton, "Up one folder");
         _barRootButton = PathIconButton("\uE80F", () => Send(Command.OpenCrumb, 0));
         AutomationProperties.SetName(_barRootButton, "Return to browsing root");
+        // Issue #444: Share beside Home, in Home's column so the trail's
+        // columns (2 and 3, FitBarPath) keep their numbers.
+        var rootAndShare = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = Space(2),
+            VerticalAlignment = VerticalAlignment.Center,
+            Children = { _barRootButton, BuildBarShareButton() },
+        };
         _barCrumbTrail = new StackPanel
         {
             Orientation = Orientation.Horizontal,
@@ -661,7 +670,7 @@ public static partial class IslandHost
         for (int i = 0; i < 7; ++i)
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto, MinWidth = 0 });
         Put(row, _barUpButton, 0);
-        Put(row, _barRootButton, 1);
+        Put(row, rootAndShare, 1);
         Put(row, scroller, 2);
         Put(row, _barPathCurrent, 3);
         Put(row, _barSearchButton, 4);
@@ -1159,8 +1168,9 @@ public static partial class IslandHost
                 if (ShiftDown()) ExtendGalleryRange(vm.Index);
                 else Send(Command.GalleryActivate, vm.Index);
             };
-            // docs/design/25 PR 59: the add-ons' context-menu entries, only when some exist.
-            if (_slotTileContext) AttachSlotContextMenu(border, vm);
+            // docs/design/25 PR 59: the add-ons' context-menu entries; issue #444:
+            // Share, always.
+            AttachSlotContextMenu(border, vm);
             WireFileDrag(border, vm);
             return border;
         }

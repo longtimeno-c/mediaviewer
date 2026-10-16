@@ -150,6 +150,19 @@ void camera::set_zoom(float zoom, float image_w, float image_h, float window_w,
   fill_mode_ = false;
 }
 
+void camera::zoom_to(float zoom, float centre_x, float centre_y, float image_w, float image_h,
+                     float window_w, float window_h) noexcept {
+  if (image_w <= 0.0f || image_h <= 0.0f || window_w <= 0.0f || window_h <= 0.0f) return;
+  clear_rubber();
+  if (zoom < kMinZoom) zoom = kMinZoom;
+  if (zoom > kMaxZoom) zoom = kMaxZoom;
+  target_zoom_ = zoom;
+  target_pan_x_ = clamp_centre(centre_x, image_w, window_w, zoom);
+  target_pan_y_ = clamp_centre(centre_y, image_h, window_h, zoom);
+  fit_mode_ = false;
+  fill_mode_ = false;
+}
+
 void camera::carry(float old_w, float old_h, float new_w, float new_h, float window_w,
                    float window_h) noexcept {
   if (old_w <= 0.0f || old_h <= 0.0f || new_w <= 0.0f || new_h <= 0.0f) return;

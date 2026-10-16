@@ -4,6 +4,7 @@
 #include "shell/video_report.h"
 #include "shell/dino_draw.h"
 #include "shell/error_screen.h"
+#include "shell/af_focus.h"
 #include "shell/home_ground.h"
 #include "shell/loupe.h"
 #include "shell/welcome_screen.h"
@@ -968,6 +969,24 @@ void present_lab::render_thread_main() noexcept {
         redraw = true;
       }
     }
+    if (snapshot.af_focus_seq != seen_af_focus_seq_) {
+      // Issue #209 (Shift+Z): 100 % centred on the AF point, carried through
+      // the edit map so a turned or cropped still lands on the same pixels.
+      // Camera state only; the refinement the zoom asks for is the usual one.
+      seen_af_focus_seq_ = snapshot.af_focus_seq;
+      if (current_image_ && !current_video_.texture) {
+        const edit::placement placed = place_image(*current_image_);
+        const auto picked = pick_af_focus(snapshot.meta);
+        const auto out = picked ? af_focus_in_output(*picked, placed.map) : std::nullopt;
+        if (out) {
+          const auto view = usable_canvas(snapshot);
+          const float pw = static_cast<float>(placed.cropped.w);
+          const float ph = static_cast<float>(placed.cropped.h);
+          camera_.zoom_to(1.0f, out->u * pw, out->v * ph, pw, ph, view.w, view.h);
+          redraw = true;
+        }
+      }
+    }
     if (snapshot.fill_seq != seen_fill_seq_) {
       seen_fill_seq_ = snapshot.fill_seq;
       if (current_image_ || current_video_.texture) {
@@ -1362,6 +1381,17 @@ void present_lab::render_thread_main() noexcept {
           blitter_.draw(device_.context(), working->srv.Get(), wp);
           return;  // the working image is the whole picture: no refine base, no tiles
         }
+        // Tiles join once the fade is over (80-250 ms); before that the
+        // overview is what fades in.
+        const bool tiles_on = with_tiles && tiled && !fade_now && !tile_draws_.empty();
+        if (tiles_on && shown->tiles->covers_view()) {
+          // Issue #164: the drawn level's tiles cover every image pixel in
+          // view, so the overview and any kept preview would be overdrawn.
+          // Only the background around (and under) the image is left.
+          blitter_.draw_background(device_.context(), cp);
+          blitter_.draw_tiles(device_.context(), tile_draws_, cp);
+          return;
+        }
         blitter_.draw(device_.context(), shown->srv.Get(), cp);
         if (is_current && refine_base_ && refine_base_->srv) {
           gfx::blit_params rp = cp;
@@ -1369,11 +1399,7 @@ void present_lab::render_thread_main() noexcept {
           rp.texture_h = static_cast<float>(refine_base_->texture_height);
           blitter_.draw(device_.context(), refine_base_->srv.Get(), rp);
         }
-        // Tiles join once the fade is over (80-250 ms); before that the
-        // overview is what fades in.
-        if (with_tiles && tiled && !fade_now && !tile_draws_.empty()) {
-          blitter_.draw_tiles(device_.context(), tile_draws_, cp);
-        }
+        if (tiles_on) blitter_.draw_tiles(device_.context(), tile_draws_, cp);
       };
       draw_still(bp, true);
 

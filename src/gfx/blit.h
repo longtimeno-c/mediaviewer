@@ -85,8 +85,16 @@ class blitter {
 
   void draw(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView* image, const blit_params& p) noexcept;
 
+  // The background `draw` puts down, without sampling a texture: the base
+  // pass of a tiled frame whose ready tiles cover the view
+  // (image::tile_set::covers_view), in place of an overview they would
+  // overdraw (issue #164).
+  void draw_background(ID3D11DeviceContext* ctx, const blit_params& p) noexcept;
+
   // Tiles over whatever `draw` put down, in order (coarse first). Only the
   // tiles' own rects are rasterised. `p` is the same camera as the base draw.
+  // The tiles' records go up in one buffer write per frame; each tile is one
+  // instanced draw, since each is its own texture.
   void draw_tiles(ID3D11DeviceContext* ctx, std::span<const tile_quad> tiles,
                   const blit_params& p) noexcept;
 
@@ -96,10 +104,12 @@ class blitter {
 
   com_ptr<ID3D11VertexShader> vs_;
   com_ptr<ID3D11PixelShader> ps_;
+  com_ptr<ID3D11PixelShader> background_ps_;
   com_ptr<ID3D11VertexShader> tile_vs_;
   com_ptr<ID3D11PixelShader> tile_ps_;
+  com_ptr<ID3D11InputLayout> tile_layout_;
   com_ptr<ID3D11Buffer> cb_;
-  com_ptr<ID3D11Buffer> tile_cb_;
+  com_ptr<ID3D11Buffer> tile_instances_;  // dynamic per-instance tile records
   com_ptr<ID3D11SamplerState> aniso_;
   com_ptr<ID3D11SamplerState> point_;
   com_ptr<ID3D11BlendState> blend_;

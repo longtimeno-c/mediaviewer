@@ -856,6 +856,8 @@ if(MV_BUILD_TESTS)
     tests/test_dir_mac.cpp
     tests/test_key_router.cpp
     tests/test_key_router_review.cpp
+    # Issue #444: the one share command's file set and wire argument.
+    tests/test_share_menu.cpp
     tests/test_keymap.cpp
     tests/test_kind_filter.cpp
     tests/test_rename_stop.cpp

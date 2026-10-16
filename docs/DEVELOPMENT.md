@@ -32,7 +32,8 @@ and a verify line on each platform (D9, amended). The order is:
 | 56 | **Declarative contributions** (the second half; contribution API 2): an add-on's settings page drawn from its manifest on both hosts, its values kept per add-on (and on remove unless asked), key layouts (keymap packs) applied once with Reset back to the defaults, theme shape (radius, density, type scale), and Import / Duplicates / Local search on the host's theme tokens ([docs/design/25](design/25-open-addons.md#pr-56-second-half-declarative-contributions-2026-10-11), [ADDONS.md](ADDONS.md)); ABI 0.24 | Mac: Catch2 (schema, values, keymaps over every built-in command, shape), the SDK cross-check, 2.5 M fuzz inputs, the full suite and the rig's PR 56 leg pass in the app; launch and pacing measured against the base on a loaded machine (no difference; the idle CPU clause fails on base too). Windows: every C# project compiles clean; the native half is CI's; nothing run in the app yet |
 | 57 | **Add-on scripts**: other makers' add-ons run Lua 5.4 (vendored, static) in a sandbox per add-on on its own worker, with commands on keys, permissions in the consent sheet (`folder.read`, `thumbnails`, `selection`; no network) and limits (64 MB, 100 M instructions and 1 s per task, a watchdog) that stop the add-on and say why in Settings ([docs/design/25-open-addons.md](design/25-open-addons.md#implementation-notes-pr-57-2026-10-11), [ADDONS.md](ADDONS.md#scripts)); ABI 0.26 | Mac: built, `mv_script_tests` and the SDK cross-check pass, the key walk runs in the app (`MV_SCRIPT_SELFTEST`), the fuzz harness ran ~15 min clean, Mac PR 1 gate and launch timings measured with a script spinning / installed. Windows: compiled in CI only (shell, ABI, chrome); the Windows key walk, the Windows gate with a script spinning and Narrator / VoiceOver on the new Settings lines owed |
 | 58–59 | **Screens and slots**: MediaViewer's own native add-ons add to pages that exist (an info-pane section at the very bottom of the Metadata pane, file search and Local search providers, command-bar / path-bar / status items, gallery tile badges, context-menu entries) and open windows, docked panes and sheets from a view tree both chromes render ([docs/design/25](design/25-open-addons.md#implementation-notes-prs-58-59-2026-10-11)); host table v3; ABI 0.25 | Mac: the shared suite passes (with a real test add-on through a signed store; also under ASan / UBSan and TSan); the app built and, with the test add-on sideloaded, drew its section at the bottom of the pane and its items. Windows: both C# projects compile; the native side is CI's. Measurements and the keyboard / VoiceOver / Narrator passes are owed ([Where this actually is](#screens-and-slots-prs-58-59-2026-10-11)). Script add-ons wait for PR 57; Places is #344 |
-| #410, #413 | **Sharepoint**: send photos, video and audio to a MediaViewer nearby over Wi-Fi or Bluetooth; both screens show the same code and nothing moves until the other person accepts; its window is a view tree both hosts draw ([docs/design/28](design/28-sharepoint.md)). The gallery's Shift-click range, drag-out from any gallery cell and one share icon that opens Sharepoint; ABI 0.29 | Mac: built; `mv_import_tests "[sharepoint]"` (two and three engines over loopback TCP), the full suites and the packer test pass; the window opened offline in a dev copy and the range drove copy path there; the PR 1 gate passed with the add-on installed. Windows: the C# compiles; native (sockets, WinRT Bluetooth, the range) is CI's. Two machines, Bluetooth and the hand checks are owed ([Where this actually is](#sharepoint-issues-410-413-2026-10-15)) |
+| #410, #413 | **Sharepoint**: send photos, video and audio to a MediaViewer nearby over Wi-Fi or Bluetooth; the receiver shows a code the sender types (#442) and nothing moves until the other person accepts; its window is a view tree both hosts draw ([docs/design/28](design/28-sharepoint.md)). The gallery's Shift-click range, drag-out from any gallery cell and one share icon that opens Sharepoint; ABI 0.29 | Mac: built; `mv_import_tests "[sharepoint]"` (two and three engines over loopback TCP), the full suites and the packer test pass; the window opened offline in a dev copy and the range drove copy path there; the PR 1 gate passed with the add-on installed. Windows: the C# compiles; native (sockets, WinRT Bluetooth, the range) is CI's. Two machines, Bluetooth and the hand checks are owed ([Where this actually is](#sharepoint-issues-410-413-2026-10-15)) |
+| #444 | **Share everywhere**: one share command (`Ctrl+Shift+S` / `⌘⇧S`, the gallery's share icon, a share button beside Home, right-click Share ▸ on a gallery cell, a filmstrip cell or the canvas) opens one menu: Sharepoint first (or its install), then Windows Share / the macOS picker (Mail, Messages, AirDrop…). A right-click on a selected file shares the selection, on any other file that file; the system sheet gets media only ([docs/design/16 "Share"](design/16-commands.md#share-444)) | Mac: built; `mv_tests "[share]"` passes (file set, wire argument, command row; the `[.perf-bench]` case, 500 of 20 000 stops: 0.12 ms); the macOS picker for 500 files opens in 21 ms warm (was 65) by showing one file per kind past 50 files. Windows: the C# compiles; native is CI's. Owed: Mail with 3 files on both, the right-click menus and bar button by hand, a 500-item open on Windows, both PR 1 gates |
 
 See [docs/design/10-roadmap.md](design/10-roadmap.md). Old Mac numbers in the history below map as
 PR 16 → Mac PR 1, 17 → Mac PR 2/7, 18 → Mac PR 3/4/6, 19 → Mac PR 5, 20 → Mac PR 8.
@@ -108,7 +109,7 @@ Then the **PR 12 metadata writes** (Windows and macOS, same core): keypad `0`–
 
 And **PR 13 / 14 clip editing** (Windows and macOS, same core): on a clip, `Ctrl+T` (`⌘T`) arms trim — `[` `]` set in and out, the scrub bar shows the keyframe grid and what will be kept, `P` previews the cut as a loop, `Enter` saves an instant keyframe cut (stream copy, no quality loss) and `Shift+Enter` a frame-accurate re-encode on the GPU's hardware encoder (NVENC / Quick Sync / AMF / Media Foundation, VideoToolbox on Mac; labelled slower). `Ctrl+S` on a clip opens the clip tools: lossless rotate, split, remove in–out, MP4 ↔ MKV remux, save the frame as PNG / JPEG, extract the audio (copy, WAV or FLAC), and GIF / WebP. Every result is a new file beside the clip (`<name>_trimmed.mp4`, …); the original is never touched, and jobs run in a Jobs pane (`Ctrl+J`) where they can be cancelled without leaving a partial file. Anything that decodes or encodes runs in a separate helper process (`MediaViewerClipJob`), so a crash in a GPU driver fails that one job and never the viewer. The shared core is also tested headless on Linux ([tools/portable](../tools/portable/README.md)).
 
-**PR 15 OS integration** (Windows and macOS, same command rows): `Ctrl+Shift+C` (`⌘⇧C`) copies the marked or current file's path as text; `Ctrl+Alt+C` (`⌘⌥C`) copies the photo as you see it, edits applied, as a PNG (both a file and an image, so it pastes into Explorer / Finder and into Word, Keynote or a chat; no EXIF rides along); `Ctrl+Shift+S` (`⌘⇧S`) opens the system Share sheet. The folders you open show up as **Recent folders** in the taskbar jump list and in the Dock icon's menu, in File ▸ Open Recent on the Mac, and as clickable rows on the empty window's welcome card (up to six, as many as the window has room for; a folder that has gone is dropped when clicked, and the × on a hovered row removes a folder from every recent list without touching it on disk). The card and the host share one layout (`src/shell/welcome_layout.h`), so the row drawn and the row hit are the same. The taskbar thumbnail gains previous / play-pause / next buttons, and on the Mac, Control Centre, the media keys and AirPods drive a clip through Now Playing. Explorer gets MediaViewer's thumbnails (HEIC, AVIF, RAW and the rest) for the file types you make MediaViewer the default for; the handler runs outside Explorer, so a damaged file can't take Explorer down. Explorer's Details-pane properties need a machine-wide install and are deferred. On the Mac, Spotlight learns the length, size and codecs of MKV, WebM, AVI and TS clips (macOS already indexes photos and MP4/MOV itself). `Ctrl+Alt`-drag (`⌘⌥`-drag) drags out the edited copy, and opening a file while MediaViewer is running opens it in the running window instead of starting a second one (`--new-instance` overrides). `Ctrl+N` (`⌘N`, File ▸ New Window) opens another window as its own process. Several windows grouped as tabs come in a later update ([docs/design/10](design/10-roadmap.md) PR 15). The macOS half is built, its tests pass and the Metal present-loop gate holds; the Windows half builds in CI. Neither platform's hands-on verify (Explorer / Finder, installed builds) has been run yet.
+**PR 15 OS integration** (Windows and macOS, same command rows): `Ctrl+Shift+C` (`⌘⇧C`) copies the marked or current file's path as text; `Ctrl+Alt+C` (`⌘⌥C`) copies the photo as you see it, edits applied, as a PNG (both a file and an image, so it pastes into Explorer / Finder and into Word, Keynote or a chat; no EXIF rides along); `Ctrl+Shift+S` (`⌘⇧S`) opens the share menu: Sharepoint, then the system Share sheet (#444). The folders you open show up as **Recent folders** in the taskbar jump list and in the Dock icon's menu, in File ▸ Open Recent on the Mac, and as clickable rows on the empty window's welcome card (up to six, as many as the window has room for; a folder that has gone is dropped when clicked, and the × on a hovered row removes a folder from every recent list without touching it on disk). The card and the host share one layout (`src/shell/welcome_layout.h`), so the row drawn and the row hit are the same. The taskbar thumbnail gains previous / play-pause / next buttons, and on the Mac, Control Centre, the media keys and AirPods drive a clip through Now Playing. Explorer gets MediaViewer's thumbnails (HEIC, AVIF, RAW and the rest) for the file types you make MediaViewer the default for; the handler runs outside Explorer, so a damaged file can't take Explorer down. Explorer's Details-pane properties need a machine-wide install and are deferred. On the Mac, Spotlight learns the length, size and codecs of MKV, WebM, AVI and TS clips (macOS already indexes photos and MP4/MOV itself). `Ctrl+Alt`-drag (`⌘⌥`-drag) drags out the edited copy, and opening a file while MediaViewer is running opens it in the running window instead of starting a second one (`--new-instance` overrides). `Ctrl+N` (`⌘N`, File ▸ New Window) opens another window as its own process. Several windows grouped as tabs come in a later update ([docs/design/10](design/10-roadmap.md) PR 15). The macOS half is built, its tests pass and the Metal present-loop gate holds; the Windows half builds in CI. Neither platform's hands-on verify (Explorer / Finder, installed builds) has been run yet.
 Windows DXGI soak is not that verify.
 
 PR 1's present-loop verify and PR 3's island-on-screen verify are inherited and
@@ -525,6 +526,7 @@ A one-pixel grid appears at 400 % and above.
 | `I` | metadata pane: summary card, searchable tag tree, and for clips the per-stream inspector (PR 9). Focuses the pane; `Esc` returns to the photo, a second `Esc` closes it |
 | `Ctrl+Shift+E` | folder tree, rooted at the open folder (PR 9). Focuses it: arrows walk, Right / Left open and close a folder, `Enter` opens it, `Esc` returns to the photo. It follows the folder as subfolders come and go |
 | `O` / `Shift+O` / `Shift+I` | info overlay with exposure lines / AF points / eyedropper (PR 9) |
+| `Shift+Z` | zoom to the AF point: 100 % centred on the in-focus point, for a focus check (issue #209) |
 | `Ctrl+C` | copy the eyedropper colour if it is on, otherwise the marked (or current) file(s) |
 
 The title bar shows the current file, its position in the folder, its size and
@@ -720,12 +722,15 @@ a pack with a new face model does the same by itself. Tests: `mv_ai_tests "[reru
 `"[.people-bench]"` with `MV_FACE_EVAL` (a vector file: uint32 n, uint32 dim, n int32 labels,
 n x dim float32) and optionally `MV_FACE_TUNING="same keep keep_weak margin ambiguous merge"`,
 which runs real vectors through faces.db's online clustering and the re-run's settle and prints
-BCubed precision and recall.
+BCubed precision and recall. Then a corrections phase: after 60 % of the faces, it merges each
+person's fragments and names everyone with 3+ photos, and files the remaining 40 % online
+(`corrected`, `new 40%`).
 LFW has only clear faces, so check a clustering or People-speed change on a real library too:
 copy its `faces.db` (`sqlite3 "file:<faces.db>?mode=ro" ".backup <copy>"`; opening migrates, so
 never the live one), then `MV_FACES_DB=<copy> mv_ai_tests "[.people-settle]"` (the settle, with
 people listed before and after) or `"[.people-api]"` (what each People read the chrome makes
-costs). Delete the copy after: it is face data.
+costs, then the copy's unfiled faces offered again through `add`: ms per face and where they
+went; it writes, so use a fresh copy per run). Delete the copy after: it is face data.
 
 The People grid (Settings → People, on both platforms) follows the folder
 the viewer has open: **People in · This folder | + Subfolders**, + Subfolders by default;
@@ -914,6 +919,9 @@ dotnet src.managed\MediaViewer.AbiSmokeTest\bin\Release\net8.0-windows\MediaView
 dotnet publish src.managed\MediaViewer.Chrome\MediaViewer.Chrome.csproj -c Release -r win-x64 --no-self-contained
 
 # Milestone G: the Import add-on's suite (built with the core, both platforms)
+# Its verified copies flush durably and read back uncached in scratch folders
+# under %TEMP%, so they run at the speed of that disk; CI points TMP/TEMP at
+# the runner's local disk (runner.temp), not C:.
 ctest --test-dir build -C Release -R import_ --output-on-failure
 # PR 54 find duplicates: time a first scan and a cached rescan (synthetic tree,
 # or MV_DUP_BENCH_DIR=<folder>, read only; the hash cache is a scratch import.db)
@@ -959,11 +967,14 @@ ctest --test-dir build -C Release -R "clip|trim" --output-on-failure
 
 # PR 7 broken-file corpus: every seed in tests/data/seeds truncated, stomped,
 # bit-flipped and given absurd dimensions, plus tests/data/broken, through every
-# decode entry point. Fails on a crash, an escaped exception, a call over 5 s,
-# or runaway memory. Part of plain ctest; this runs just that suite.
+# decode entry point. Fails on a crash, an escaped exception, a call over 5 s
+# (60 s for each family's first-use warm-up), or runaway memory. Part of plain
+# ctest; this runs just that suite.
 ctest --test-dir build -C Release -L broken --output-on-failure
 $env:MV_BROKEN_FULL = "1"          # exhaustive sweep (nightly CI)
 $env:MV_BROKEN_DUMP = "broken-dump" # write each failing input here
+$env:MV_BROKEN_TIMEOUT_MS = "5000"  # per-call budget (60000 in Debug/ASan)
+$env:MV_BROKEN_FIRST_USE_MS = "60000" # each family's warm-up call
 # seeds are synthetic and committed; regenerate with (needs Pillow, pillow-heif):
 python tools\testmedia\make-seeds.py
 
@@ -1064,6 +1075,8 @@ python3 tools/package/addon-pack.py pack --addon places --platform macos --src b
 # Sharepoint (docs/design/28): build/addons/sharepoint/(lib)mv_sharepoint.(dylib|dll)
 cmake --build build --target mv_sharepoint
 build/bin/mv_import_tests "[sharepoint]"       # wire, channel, 2-3 engines over loopback TCP, the add-on through the loader
+build/bin/mv_import_tests "[.sharepoint-bench]"   # MB/s against a plain copy over loopback (MV_BENCH_DIR, _BIG_MB, _SMALL, _SMALL_KB, _CASES)
+build/bin/mv_import_tests "[.sharepoint-idle]"    # CPU while Keep receiving is on, window closed (MV_IDLE_SECONDS)
 python3 -m unittest tools/package/test_addon_pack.py   # SharepointPackTest among them
 python3 tools/package/addon-pack.py pack --addon sharepoint --platform macos --src build/addons/sharepoint \
   --version 1.0.0 --key <key file> --out dist/
@@ -1455,7 +1468,7 @@ manifest, clients reject updates. The production public key is already pinned in
 
 ### Continuous integration
 
-Pushes to `main` and pull requests build four Windows variants (MSVC Release, MSVC Debug, clang-cl, ASan), run the C# ABI smoke test, and fuzz each decoder for a minute. A newer push to the same branch cancels the run it replaces. Dependencies are installed by one job and reused. The first run after `vcpkg.json` or the pinned vcpkg baseline changes spends about 45 minutes there, mostly building FFmpeg. Later runs restore that cache. The nightly schedule is the long fuzz run, separate from pull requests.
+Pushes to `main` and pull requests build four Windows variants (MSVC Release, MSVC Debug, clang-cl, ASan), run the C# ABI smoke test, and fuzz each decoder for a minute. On macOS they build the native core on macos-15 (arm64) and run the full `ctest` suite (`mv_tests`, `mv_import_tests`, `mv_ai_tests` and the Mac-only tests), build the three SwiftPM chrome packages, and run `swift test` on `src.swift/AIChrome`. The Mac job shares its vcpkg cache key with the release workflow's arm64 leg, so a cold cache costs the whole Mac manifest once. A newer push to the same branch cancels the run it replaces. Dependencies are installed by one job and reused. The first run after `vcpkg.json` or the pinned vcpkg baseline changes spends about 45 minutes there, mostly building FFmpeg. Later runs restore that cache. The nightly schedule is the long fuzz run, separate from pull requests.
 
 ### Releasing from CI
 
@@ -1539,6 +1552,43 @@ integers. There is no free-text field to put a filename in.
 There is no upload endpoint yet, exactly as there is none for crash reports.
 
 ## Where this actually is
+
+### Windows search: the typed space, the resume notice, a result list from an empty window (#443, 2026-10-15)
+
+Three Windows-only fixes; the Mac is unchanged.
+
+- **Space in a search box.** Every type-in field (`Shared/FakeInput.cs`: Local search, file
+  search, rename, Settings, add-on pages) draws its text in TextBlocks either side of the caret,
+  and a TextBlock measures no trailing space, so the caret sat against the last letter until the
+  next one came. The runs now draw spaces as no-break spaces (same advance); the text keeps plain
+  spaces. The key router already left every key but Esc to a focused field
+  (`test_key_router.cpp`, "a focused text control owns every key but Esc").
+- **Resume indexing notice.** It is now an island of its own over the canvas corner, as the AI
+  badge is, instead of a windowed `Popup` of the command bar that never showed. A launch read
+  that lands before the bar is up waits for it.
+- **A result list from an empty window** (a later window's first search, a search from the
+  welcome) left native on "nothing open": no gallery, no strip, no arrows, only the chosen
+  result. FolderReady for a list now moves it to a listing (`main.cpp`), and the chrome sends
+  the panel's Enter / Ctrl+Enter view after FolderReady, not before it.
+- **Checked:** the three C# chromes (Chrome, Ai.Chrome, Import.Chrome) compile on the Mac
+  (`dotnet msbuild -t:Compile`, warnings as errors); no banned WinUI control. Not run on Windows:
+  the native change (`main.cpp`) compiles only in CI, and the verify line, the placement of the
+  notice island (100 % / 200 %, resize, under Settings) and the PR 1 gate are owed to a Windows
+  machine.
+
+### Windows: the "Press T" filmstrip hint shows (#446, 2026-10-15)
+
+The hint card never appeared on Windows. It was the last windowed `Popup` in the chrome, built like
+the resume notice above, and is now an island of its own in the same corner
+(`IslandHost.HintNotice.cs`), made on the first show and parked, not disposed, when it fades. Native
+also asks again when the filmstrip comes up (`main.cpp`, the layout sync): on Windows the strip
+state is what is shown, so a clip or document that opened before its folder had a strip was never
+due. The Mac was already correct; a Mac that has learned the hint (`mv.hint.filmstripT`) shows
+nothing, by design.
+
+- **Checked:** the C# compiles on the Mac (warnings as errors). Not run on Windows: the native line
+  compiles only in CI, and the card's placement, stacking over the resume notice, "Got it" keeping
+  the keyboard on the canvas and the PR 1 gate are owed to a Windows machine.
 
 ### The AI badge on the canvas (#345, docs/plans/metadata-search-and-place.md slice 5, 2026-10-12)
 
@@ -1904,6 +1954,37 @@ What is built is in [docs/design/28](design/28-sharepoint.md).
   Mac–Windows, Windows–Windows), the crash-report check after a transfer, Windows anything in
   the app, both hosts' first-run prompts (local network and Bluetooth on the Mac, Defender
   Firewall on Windows), VoiceOver and Narrator over the window, the Windows PR 1 gate.
+
+### Sharepoint, AirDrop-smooth (issue #442, 2026-10-15)
+
+What changed is in [docs/design/28](design/28-sharepoint.md): the AirDrop-like window on both
+hosts and the screen vocabulary it added (`tiles`, card, ring, code field, display text); the
+sender types the code the receiver shows (three wrong codes end the link); received files go to
+Downloads and Save to is kept; Keep receiving is kept across launches with **Sharepoint:
+receiving** in the command bar; the receiver checks file N while N+1 arrives; the share icon no
+longer waits for an earlier selection; Windows screen windows have the app icon, a size floor and
+an owner, and Settings shows each add-on as one card.
+
+- **Mac (M-series, Mac17,4):** `MediaViewer.app`, the Swift chrome and `libmv_sharepoint.dylib`
+  build. `mv_import_tests` 150 cases and `mv_tests` 850 (839 passed, 11 skipped) pass;
+  `"[sharepoint]"` 33 cases and `"[screens]"` 13. ThreadSanitizer: `"[sharepoint]"` four runs at
+  once, 0 reports; `"[screens]"` 0. `test_addon_pack.py` passes.
+- **Measured (Mac):** `"[.sharepoint-bench]"` (loopback, alternated with the base three times):
+  500 × 2 MiB 124–141 → 158–180 MB/s, 1 GiB unchanged (crypto-bound); `"[.sharepoint-idle]"`
+  Keep receiving on, window closed: 0.020 % CPU, 6.4 switches a second, no present (off 0.0003 %).
+  The PR 1 gate (`frametime --seconds 60`) passed alone (3599 frames, p99 16.8 ms, max 16.9 ms,
+  idle 0 presents, 0.042 %) and with Sharepoint sending over loopback in another process the whole
+  time (p99 16.8 ms, max 16.8 ms, idle 0 presents, 0.037 %).
+- **Seen on the Mac:** every state of the window drawn by the chrome's own `ScreenNodeView` (light
+  and dark) in a scratch render harness, and the window opened in a dev copy of the app, offline
+  (`MV_SHAREPOINT_OFFLINE=1`, dev-signed, files handed over through `mv_chrome_slots_invoke`).
+- **Windows:** the C# compiles (warnings are errors). `net_win.cpp`'s Downloads lookup and lock
+  meet a compiler in CI only. Not run: the window's look, its icon, Settings' cards, the stall fix
+  in the app.
+- **Owed:** two machines (Wi-Fi and Bluetooth MB/s against a plain copy, typing the code, Keep
+  receiving after a relaunch seen from the other machine), Bluetooth's idle cost with Keep
+  receiving on, Windows screenshots and an ETW trace of the share icon on 500 items, the Windows
+  PR 1 gate, VoiceOver and Narrator over the new tiles and code field.
 
 ### Local search: ask before resuming an interrupted index (issue #299, 2026-10-11)
 

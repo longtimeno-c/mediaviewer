@@ -138,18 +138,6 @@ struct SlotBadgesOverlay: ViewModifier {
   }
 }
 
-struct SlotContextMenu: ViewModifier {
-  let on: Bool
-  let tile: Int
-  func body(content: Content) -> some View {
-    if on {
-      content.contextMenu { SlotContextEntries(tile: tile) }
-    } else {
-      content
-    }
-  }
-}
-
 /// A gallery tile's badges: a table lookup by name (SlotStore.badgesByName),
 /// never an add-on call (PR 59 verify: counted).
 struct SlotTileBadges: View {
@@ -178,21 +166,10 @@ struct SlotTileBadges: View {
 
 /// The add-ons' context-menu entries for a gallery or filmstrip tile
 /// (Control-click, or VoiceOver's Show Menu).
-struct SlotContextEntries: View {
-  let tile: Int
-  @ObservedObject private var slots = SlotStore.shared
-
-  var body: some View {
-    ForEach(slots.items(in: "context")) { item in
-      Button(item.label) { slots.invoke(item, paths: SlotTargets.paths(for: item, tile: tile)) }
-    }
-  }
-}
-
-/// The same entries as an AppKit menu, for the canvas (Control-click or a
-/// right-click on the file on screen, issue #402): the main_mac.mm view asks
-/// for it in menuForEvent:. Each entry targets the file on screen exactly as
-/// its gallery tile would (the marks when it is one of them).
+/// The add-ons' context-menu entries as an AppKit menu, for a tile and for the
+/// canvas (Control-click or a right-click, issues #402, #444): TileMenu adds
+/// Share after them. Each entry targets the file exactly as its gallery tile
+/// would (the marks when it is one of them).
 @MainActor
 enum SlotCanvasMenu {
   private final class Entry: NSObject {
@@ -207,10 +184,11 @@ enum SlotCanvasMenu {
     }
   }
 
-  static func make() -> NSMenu? {
+  static func make(tile: Int) -> NSMenu? {
     let store = FolderStore.shared
-    let tile = store.currentIndex
-    let entries = SlotStore.shared.items(in: "context")
+    // Issue #444: Sharepoint's own "Send with Sharepoint…" is the Share
+    // submenu's first entry (TileMenu), one route through the share command.
+    let entries = SlotStore.shared.items(in: "context").filter { !ShareMenu.routesThroughShare($0) }
     guard !entries.isEmpty, store.names.indices.contains(tile) else { return nil }
     let menu = NSMenu(title: "")
     for item in entries {

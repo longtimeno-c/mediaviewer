@@ -35,10 +35,14 @@ final class PeopleGridBench: XCTestCase {
   }()
 
   private static func people(bump: Int = 0) -> [Person] {
-    (0..<count).map { i in
+    (0..<count).map { (i: Int) -> Person in
       // Half named, face counts spread so the grid's order is the index's.
-      Person(id: UInt64(i + 1), name: i % 2 == 0 ? "Person \(i)" : "",
-             faces: 1 + (i * 7 + bump * (i % 3)) % 400, coverFace: 0, coverBox: [0.4, 0.3, 0.2, 0.2])
+      // Split into typed lets: as one expression the type checker gave up (CI).
+      let name: String = i % 2 == 0 ? "Person \(i)" : ""
+      let spread: Int = i * 7 + bump * (i % 3)
+      let faces: Int = 1 + spread % 400
+      let box: [Double] = [0.4, 0.3, 0.2, 0.2]
+      return Person(id: UInt64(i + 1), name: name, faces: faces, coverFace: 0, coverBox: box)
     }
   }
 

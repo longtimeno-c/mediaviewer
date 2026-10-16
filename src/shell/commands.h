@@ -357,6 +357,10 @@ enum class command_id : std::uint16_t {
   label_green,
   label_blue,
   clear_label,
+  // Issue #209 (docs/design/16 View): Shift+Z springs to 100 % centred on the
+  // active AF point from the maker notes already read. Camera state only.
+  // Appended after #207's ids so every earlier wire id stays put.
+  zoom_af_point,
   count
 };
 inline constexpr int kAddonCommandSlots = 8;

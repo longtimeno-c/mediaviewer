@@ -41,6 +41,8 @@ final class SettingsStore: ObservableObject {
   @Published private(set) var sort: Int32 = 0
   /// -1 without an updater (unsigned build), 0 stable, 1 preview.
   @Published private(set) var updateChannel: Int32 = -1
+  /// -1 without an updater, 0 off, 1 on (also the app menu's switch).
+  @Published private(set) var updateAutoCheck: Int32 = -1
 
   private var generation: UInt64 = .max
 
@@ -61,6 +63,8 @@ final class SettingsStore: ObservableObject {
     if sortNow != sort { sort = sortNow }
     let channelNow = mv_chrome_update_channel()
     if channelNow != updateChannel { updateChannel = channelNow }
+    let autoNow = mv_chrome_update_auto_check()
+    if autoNow != updateAutoCheck { updateAutoCheck = autoNow }
     let g = mv_chrome_keys_generation()
     if g == generation { return }
     generation = g
@@ -133,6 +137,11 @@ final class SettingsStore: ObservableObject {
   func setUpdateChannel(_ channel: Int32) {
     mv_chrome_set_update_channel(channel)
     updateChannel = mv_chrome_update_channel()
+  }
+
+  func setUpdateAutoCheck(_ on: Bool) {
+    mv_chrome_set_update_auto_check(on)
+    updateAutoCheck = mv_chrome_update_auto_check()
   }
 
   func beginCapture(_ row: Int32) { mv_chrome_key_capture_begin(row); generation = .max; poll() }
@@ -290,6 +299,15 @@ struct SettingsView: View {
         .id(ThemeStore.rowAnchor)
         if store.updateChannel >= 0 {
           section("Updates")
+          if store.updateAutoCheck >= 0 {
+            SettingsRow(title: "Automatic update checks",
+                        detail: "Ask GitHub for new versions at launch and every six hours.") {
+              Toggle("Check for updates automatically",
+                     isOn: Binding(get: { store.updateAutoCheck == 1 }, set: { store.setUpdateAutoCheck($0) }))
+                .toggleStyle(.switch).fixedSize()
+                .help("Asks GitHub for a newer version at launch and every 6 hours. The request reveals your IP address and app version, nothing about your files.")
+            }
+          }
           SettingsRow(title: "Update channel",
                       detail: "Preview gets signed test builds before they become stable. Switching back to Stable keeps this version until a newer stable one is released.") {
             Picker("Update channel", selection: Binding(get: { store.updateChannel },

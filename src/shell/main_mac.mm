@@ -61,6 +61,7 @@
 #include "shell/addons_mac.h"
 #include "shell/fcp_mac.h"
 #include "shell/filmstrip_hint.h"
+#include "shell/share_menu.h"
 #if defined(MV_WITH_SEARCH_AGENT)
 #include "nle/mac/agent_mac.h"
 #endif
@@ -175,6 +176,8 @@ static bool MvCommandSupported(mv::shell::command_id c) {
     case hold_previous_release: case blackout: case shuffle:
     // PR 9
     case info_overlay: case af_points: case eyedropper: case copy_clipboard: case metadata_pane: case folder_tree:
+    // Issue #209
+    case zoom_af_point:
     // PR 10
     case rotate_ccw: case rotate_cw: case flip_horizontal: case flip_vertical: case crop_mode:
     case crop_commit: case crop_move_left: case crop_move_right: case crop_move_up:
@@ -670,6 +673,8 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 // it holds files, copy, F7/F8, Delete, copy path, Share and drag-out act on it.
 - (void)setGalleryRangeIndices:(const int32_t*)indices count:(int32_t)count;
 - (void)clearGalleryRange;
+// Issue #444: the one share command (docs/design/16 "Share") and its files.
+- (BOOL)shareRequest:(mv::shell::share_request)request;
 - (uint64_t)galleryRangeGeneration;
 - (NSInteger)galleryRangeCount;
 - (uint64_t)thumbGeneration;
@@ -705,6 +710,10 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 // 1 preview (signed prereleases as well). Persisted in NSUserDefaults.
 - (int32_t)updateChannel;
 - (void)setUpdateChannel:(int32_t)channel;
+// Sparkle's automatic checks: -1 without an updater, 0 off, 1 on. The menu's
+// "Check for Updates Automatically" and Settings share it.
+- (int32_t)updateAutoCheck;
+- (void)setUpdateAutoCheck:(BOOL)on;
 // PR 11
 - (BOOL)adjustVisible;
 - (void)setAdjustVisible:(BOOL)visible;
@@ -1247,6 +1256,16 @@ extern "C" int32_t mv_chrome_item_thumb_key(int32_t index, char* buf, int32_t si
 extern "C" int32_t mv_chrome_listing(char* buf, int32_t size) {
   return MvCopyOut(g_chrome_app ? [g_chrome_app listingSnapshot] : std::string{}, buf, size);
 }
+// Issue #444: the share icon, the bar's share button and the right-click
+// Share entries run the one share command.
+extern "C" void mv_chrome_share(int32_t target, int32_t from, int32_t clicked) {
+  if (!g_chrome_app) return;
+  mv::shell::share_request r;
+  r.target = target >= 0 && target <= 2 ? static_cast<mv::shell::share_target>(target) : mv::shell::share_target::menu;
+  r.from = from >= 0 && from <= 3 ? static_cast<mv::shell::share_from>(from) : mv::shell::share_from::key;
+  r.clicked = clicked;
+  (void)[g_chrome_app shareRequest:r];
+}
 
 extern "C" uint64_t mv_chrome_meta_generation(void) {
   return g_chrome_app ? [g_chrome_app metaGeneration] : 0;
@@ -1506,6 +1525,12 @@ extern "C" int32_t mv_chrome_update_channel(void) {
 }
 extern "C" void mv_chrome_set_update_channel(int32_t channel) {
   if (g_chrome_app) [g_chrome_app setUpdateChannel:channel];
+}
+extern "C" int32_t mv_chrome_update_auto_check(void) {
+  return g_chrome_app ? [g_chrome_app updateAutoCheck] : -1;
+}
+extern "C" void mv_chrome_set_update_auto_check(bool on) {
+  if (g_chrome_app) [g_chrome_app setUpdateAutoCheck:on ? YES : NO];
 }
 
 extern "C" int32_t mv_chrome_export_last_choice(void) {
@@ -2646,6 +2671,8 @@ static void MvAdoptNewDefaultViewerTypes() {
   std::uint64_t _tagMapGeneration;
   std::unordered_map<std::string, std::size_t> _tagIndexOf;
   std::shared_ptr<const mv::meta::metadata> _metaRecord;
+  // Issue #209: Shift+Z waits for the record and fires when it is adopted.
+  BOOL _afFocusPending;
   std::uint64_t _metaGeneration;
   BOOL _metaPaneVisible;
   BOOL _treeVisible;
@@ -6093,7 +6120,7 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
 
 - (void)toggleAutomaticUpdateChecks:(NSMenuItem*)item {
   (void)item;
-  _updater.updater.automaticallyChecksForUpdates = !_updater.updater.automaticallyChecksForUpdates;
+  [self setUpdateAutoCheck:!_updater.updater.automaticallyChecksForUpdates];
 }
 
 // The preview channel reads the appcast of the newest release, prerelease or
@@ -6229,6 +6256,26 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   [self resolveFeedThenCheck:YES];
 #else
   (void)channel;
+#endif
+}
+
+- (int32_t)updateAutoCheck {
+#if MV_WITH_SPARKLE
+  return _updater ? (_updater.updater.automaticallyChecksForUpdates ? 1 : 0) : -1;
+#else
+  return -1;
+#endif
+}
+
+// Sparkle persists the choice (SUEnableAutomaticChecks in the app's defaults).
+// Turning it on checks now, as Windows pokes its updater.
+- (void)setUpdateAutoCheck:(BOOL)on {
+#if MV_WITH_SPARKLE
+  if (!_updater || _updater.updater.automaticallyChecksForUpdates == on) return;
+  _updater.updater.automaticallyChecksForUpdates = on;
+  if (on) [self resolveFeedThenCheck:YES];
+#else
+  (void)on;
 #endif
 }
 
@@ -6665,6 +6712,16 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
       if (_snap.af_points) [self requestMetadataNow];
       [self pokeSnapshot];
       return YES;
+    // Issue #209: 100 % on the AF point, from the record already held (or one
+    // read on the pool); the render thread moves the camera.
+    case zoom_af_point:
+      if (_metaRecord) {
+        [self afFocusFire];
+      } else {
+        _afFocusPending = YES;
+        [self requestMetadataNow];
+      }
+      return YES;
     case eyedropper:
       _snap.eyedropper = !_snap.eyedropper;
       [self pokeSnapshot];
@@ -6712,7 +6769,7 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
       return [board setString:[NSString stringWithUTF8String:text.c_str()] forType:NSPasteboardTypeString];
     }
     case copy_flattened: return [self copyFlattened];
-    case share: return [self shareMarkedOrCurrent];
+    case share: return [self shareRequest:{}];  // the key's request: the menu, on the selection
     case metadata_pane:
       if (!_metaPaneVisible && _adjust.visible()) [self setAdjustVisible:NO];
       if (!_metaPaneVisible && _jobsVisible) [self setJobsVisible:NO];
@@ -8913,7 +8970,20 @@ static double mv_wall_seconds() {
 // ---- PR 9: metadata, folder tree, sort ------------------------------------------
 
 - (BOOL)metadataWanted {
-  return _metaPaneVisible || _snap.info_overlay || _snap.af_points;
+  return _metaPaneVisible || _snap.info_overlay || _snap.af_points || _afFocusPending;
+}
+
+// Issue #209 (Shift+Z): the record is adopted, so the quads in _snap.meta are
+// this item's. Bump the edge, or say why there is nothing to zoom to.
+- (void)afFocusFire {
+  _afFocusPending = NO;
+  if (_snap.meta.af_count == 0) {
+    [self noticeShow:std::string("No AF point recorded in this file")];
+    return;
+  }
+  _zoomIntentAt = CACurrentMediaTime();
+  ++_snap.af_focus_seq;
+  [self pokeSnapshot];
 }
 
 // Selection moved: the old record is no longer the item on screen. The new one is
@@ -8922,6 +8992,7 @@ static double mv_wall_seconds() {
 - (void)metadataSelectionChanged {
   [_metaDebounce invalidate];
   _metaDebounce = nil;
+  _afFocusPending = NO;  // Shift+Z was for the item just left
   if (_metaRecord) _metaRecord.reset();
   ++_metaGeneration;
   _snap.meta = mv::shell::meta_overlay{};
@@ -8995,6 +9066,7 @@ static double mv_wall_seconds() {
   // #345: the full record is the badge's best answer (it reads what the probe
   // leaves out: a clip's software tag, a HEIF's XMP).
   [self aiBadgeRefresh];
+  if (_afFocusPending) [self afFocusFire];
 }
 
 - (BOOL)metaPaneVisible { return _metaPaneVisible; }
@@ -10592,22 +10664,54 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
   });
 }
 
-// ⌘⇧S: the system share picker with the marked files, else the current one,
-// anchored at the top centre of the canvas.
-- (BOOL)shareMarkedOrCurrent {
-  NSMutableArray<NSURL*>* urls = [NSMutableArray array];
+// Issue #444 (docs/design/16 "Share"): the one share command. ⌘⇧S, the
+// gallery's share icon, the bar's share button and the right-click Share
+// submenu all run it. The files are the range, else the marks, else the
+// current one (markedOrCurrentEntries), or the right-clicked file when it is
+// not one of them. The Mac lists both halves of a pair as items and keeps no
+// pairing, so this is a walk of the in-memory listing with no syscall: no
+// stat, no read (a Photos item without a file yet is left out). The chrome
+// (ShareMenu.swift) shows the menu: Sharepoint, then the system's picker.
+- (std::vector<std::string>)shareFilesForClicked:(NSInteger)clicked {
+  std::vector<std::string> selection;
   for (const auto& entry : [self markedOrCurrentEntries]) {
-    if (NSString* p = [NSString stringWithUTF8String:entry.path_utf8.c_str()]) {
-      [urls addObject:[NSURL fileURLWithPath:p]];
-    }
+    std::string file = [self fileForEntry:entry];
+    if (!file.empty()) selection.push_back(std::move(file));
   }
-  if (urls.count == 0 || !self.view) return NO;
-  NSSharingServicePicker* picker = [[NSSharingServicePicker alloc] initWithItems:urls];
-  const NSRect b = self.view.bounds;
-  const NSRect at = NSMakeRect(NSMidX(b) - 1.0, self.view.isFlipped ? NSMinY(b) : NSMaxY(b) - 1.0, 2.0, 1.0);
-  [picker showRelativeToRect:at
-                      ofView:self.view
-               preferredEdge:self.view.isFlipped ? NSRectEdgeMaxY : NSRectEdgeMinY];
+  std::string picked;
+  if (clicked >= 0 && static_cast<std::size_t>(clicked) < _items.size()) {
+    picked = [self fileForEntry:_items[static_cast<std::size_t>(clicked)]];
+    if (picked.empty()) return {};  // a Photos item still without its file
+  }
+  return mv::shell::share_stops(std::move(selection), picked);
+}
+
+// {"files": [...], "media": [...]}: Sharepoint's, and the system picker's
+// (media only, no sidecars).
+- (std::string)shareFilesJSONForClicked:(NSInteger)clicked {
+  const std::vector<std::string> files = [self shareFilesForClicked:clicked];
+  if (files.empty()) return {};
+  mv::json::writer w;
+  w.begin_object();
+  w.key("files").begin_array();
+  for (const std::string& f : files) w.string(f);
+  w.end_array();
+  w.key("media").begin_array();
+  for (const std::string& f : mv::shell::share_system_files(files)) w.string(f);
+  w.end_array();
+  w.end_object();
+  return w.str();
+}
+
+- (BOOL)shareRequest:(mv::shell::share_request)request {
+  const std::string json = [self shareFilesJSONForClicked:request.clicked];
+  if (json.empty()) {
+    NSBeep();
+    return NO;
+  }
+  [MVChromeHost presentShare:[NSString stringWithUTF8String:json.c_str()]
+                      target:static_cast<NSInteger>(request.target)
+                        from:static_cast<NSInteger>(request.from)];
   return YES;
 }
 

@@ -319,6 +319,11 @@ constexpr binding kBindings[] = {
     // they walk the folder (kWalk, first rows); A / D walk it in every case.
     row(key::left, mod_none, kSkim, tap_hold, skim_back, skim_back, skim_settle),
     row(key::right, mod_none, kSkim, tap_hold, skim_forward, skim_forward, skim_settle),
+    // Issue #209. Appended. The Shift twin of the loupe (hold `Z`, 100 % at the
+    // cursor): 100 % at the AF point, for a focus check in one key. Browse only:
+    // a clip has no AF points, and with the strip or gallery focused a shifted
+    // letter is typeahead. Held Z (loupe) falls back to browse, so it works there.
+    row(C('Z'), mod_shift, kBrowse, edge, zoom_af_point),
 };
 
 // The router's index stores row + 1 in a byte.
@@ -507,6 +512,7 @@ constexpr command_info kCommands[] = {
     {label_green, "Label green"},
     {label_blue, "Label blue"},
     {clear_label, "Clear label"},
+    {zoom_af_point, "Zoom to AF point"},
 };
 
 const char* named_key(key k) noexcept {

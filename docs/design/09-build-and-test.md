@@ -81,7 +81,9 @@ Suites are registered with CTest and run by `ctest` on both platforms; see
 4. **Broken-file corpus** (`test_broken_corpus.cpp`, label `broken`). Every seed in
    `tests/data/seeds` is truncated, stomped, bit-flipped and given absurd dimensions, plus the
    hand-made files in `tests/data/broken`, through every decode entry point. Fails on a crash,
-   an escaped exception, a call over 5 s, or runaway memory. `MV_BROKEN_FULL=1` is the
+   an escaped exception, a call over 5 s, or runaway memory. Each family's first call in the
+   process is a warm-up on its real seed with 60 s (`MV_BROKEN_FIRST_USE_MS`): loading an OS
+   decoder (Windows.Data.Pdf) on a cold runner is one-time setup, not a hang. `MV_BROKEN_FULL=1` is the
    exhaustive nightly sweep; `MV_BROKEN_DUMP` writes failing inputs.
 5. **Fuzzing.** One libFuzzer harness per decoder entry point (`tools/fuzz/fuzz_*.cpp`:
    JPEG, PNG, BMP, GIF, WebP, TIFF, ICO, HEIC, AVIF, RAW, RAW preview, animation, the
@@ -158,7 +160,8 @@ it replaces.
 | `windows-deps` | windows-latest | Installs the vcpkg manifest once and caches it (≈45 min after a manifest/baseline change, mostly FFmpeg) |
 | `build` | windows-latest | MSVC Release, MSVC Debug, clang-cl, ASan; full `ctest`; uploads broken-corpus reproducers |
 | `abi-smoke` | windows-latest | The C# ABI smoke test |
-| `windows-chrome`, `mac-chrome` | windows-latest, macos-14 | WinUI and SwiftUI chrome compile |
+| `windows-chrome`, `mac-chrome` | windows-latest, macos-14 | WinUI and SwiftUI chrome compile; `swift test` on `src.swift/AIChrome` |
+| `mac-build` | macos-15 | The native core on macOS (arm64): vcpkg trees cached under release.yml's key, the licence gate over both Mac trees, the full build and `ctest --no-tests=error` (`mv_tests`, `mv_import_tests`, `mv_ai_tests`, the Mac-only Metal pacer / AVFoundation / PDFKit / Photos-folder / write-guard tests) |
 | `mac-packaging` | ubuntu-latest | Release tooling tests and macOS bundle policy (`tools/mac/*`) |
 | `portable-core` | ubuntu-latest | `cmake/portable` under ASan + UBSan: the Import engine, add-on host and verified copy (`mv_import_tests`), the add-on packer and SDK cross-checks against the C++ verifier, and the clip and trim suites against the distro FFmpeg |
 | `frametime` | self-hosted `[windows, gpu]` | Swapchain recovery, then the 60 s animated + idle gates against the rolling baseline (cached per runner; updated only on `main`). Runs only when `MV_GPU_RUNNER_ENABLED` is set and never for fork PRs; hosted runners have no usable GPU, so a skip is not a pass |

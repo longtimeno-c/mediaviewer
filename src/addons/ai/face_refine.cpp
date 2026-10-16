@@ -390,6 +390,23 @@ refine_output refine_people(const refine_input& in, const refine_params& p) {
   return out;
 }
 
+person_proto build_person_proto(std::uint32_t dim, std::span<const float> emb, std::span<const refine_face> faces,
+                                std::int64_t person, bool named, const refine_params& p) {
+  refine_input in;
+  in.dim = dim;
+  in.emb = emb;
+  in.faces = faces;
+  std::vector<std::size_t> members(faces.size());
+  std::iota(members.begin(), members.end(), std::size_t{0});
+  return build_proto(in, p, person, std::move(members), named);
+}
+
+float exemplar_support(std::span<const float> v, const person_proto& p, std::int64_t self, std::uint32_t top_k) {
+  const auto dim = static_cast<std::uint32_t>(v.size());
+  if (dim == 0 || p.exemplars.size() != p.exemplar_ids.size() * dim) return kNoEvidence;
+  return support(v.data(), p, dim, self, top_k);
+}
+
 namespace {
 
 // How well b's exemplars vouch for a's: each of a's exemplars takes its

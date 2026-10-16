@@ -81,6 +81,92 @@ jobs:
       - run: swift build --package-path src.swift/MediaViewerChrome -c release
       - run: swift build --package-path src.swift/ImportChrome -c release
       - run: swift build --package-path src.swift/AIChrome -c release
+      # The People grid measurements (no baselines, so they report, not gate)
+      # and the chrome's own unit tests.
+      - run: swift test --package-path src.swift/AIChrome
+
+  # The native core on macOS, built and tested on every pull request (#144).
+  # From PR 9 every PR holds on both platforms; before this job the Mac-only
+  # tests (Metal pacer, AVFoundation EOF, PDFKit, the Photos virtual folder,
+  # the write guard) first ran at release time. The vcpkg steps mirror
+  # release.yml's macos-build arm64 leg, and the cache key is the same one, so
+  # a release run and a PR run share the dependency trees. A cold cache is the
+  # whole manifest plus the LGPL dylibs; a warm one is the build and ~20 s of
+  # tests.
+  mac-build:
+    name: macOS core (build + tests)
+    if: github.event_name != 'schedule'
+    runs-on: macos-15
+    timeout-minutes: 240
+    defaults:
+      run:
+        shell: bash
+    env:
+      TRIPLET: arm64-osx
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out vcpkg at the manifest baseline
+        uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          ref: ${{ env.VCPKG_COMMIT }}
+          path: vcpkg
+          fetch-depth: 0
+
+      - name: Bootstrap vcpkg
+        run: |
+          ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          echo "VCPKG_ROOT=${{ github.workspace }}/vcpkg" >> "$GITHUB_ENV"
+
+      # Keep this key identical to release.yml's macos-build (arm64 leg).
+      - name: Cache vcpkg packages
+        id: vcpkg-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            build/vcpkg_installed
+            build/vcpkg_dynamic
+          key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json', 'tools/mac/dependencies/vcpkg.json', 'tools/mac/triplets/*.cmake', 'tools/vcpkg/triplets/*-osx.cmake') }}-${{ env.TRIPLET }}-mixed-v2
+
+      # The LGPL dylibs have their own manifest and install tree, as in
+      # release.yml: a second manifest install would remove the other triplet.
+      - name: Install macOS dynamic codec libraries
+        run: |
+          brew install libomp nasm ninja autoconf autoconf-archive automake libtool
+          "$VCPKG_ROOT/vcpkg" install --triplet "$TRIPLET-dynamic" \
+            --overlay-triplets="$GITHUB_WORKSPACE/tools/mac/triplets" \
+            --x-manifest-root="$GITHUB_WORKSPACE/tools/mac/dependencies" \
+            --x-install-root="$GITHUB_WORKSPACE/build/vcpkg_dynamic"
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DVCPKG_TARGET_TRIPLET="$TRIPLET" \
+            -DMV_VCPKG_DYNAMIC_PREFIX="$GITHUB_WORKSPACE/build/vcpkg_dynamic/$TRIPLET-dynamic"
+
+      - name: Save dependencies before the build can fail
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            build/vcpkg_installed
+            build/vcpkg_dynamic
+          key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
+
+      - name: Licence policy (manifests + vcpkg trees)
+        shell: pwsh
+        run: ./tools/licence-check.ps1 -VcpkgInstalledRoot build/vcpkg_installed, build/vcpkg_dynamic
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Unit tests
+        timeout-minutes: 20
+        # A hosted macOS runner has no audio output device, so the audio clock
+        # never advances: "plays 0.6 s, then pauses" stays at the seek point. The
+        # one case that measures real playback time is left to a Mac with audio.
+        run: ctest --test-dir build -C Release --output-on-failure --no-tests=error -E "An audio-only clip seeks, pauses in place"
 
   windows-chrome:
     name: WinUI chrome
@@ -433,6 +519,16 @@ jobs:
           # required only then, so a GeoNames outage skips the table, not the leg.
           MV_GEO_BLOB: ${{ github.workspace }}/tools/testmedia/geo/places.mvgeo
           MV_REQUIRE_GEO: ${{ steps.geo.outputs.cache-hit == 'true' && '1' || '0' }}
+          # Scratch folders (fs::temp_directory_path) on the runner's local
+          # disk, where the build already is, not the profile's Temp on C:.
+          # Every verified copy flushes durably and reads back uncached. On C:
+          # the one-file 9 MB case took 1.5-70 s depending on the job, and the
+          # deep-path case (21 files) hit ctest's 300 s on msvc-asan on
+          # 2026-10-15 while Release ran it in 3 s. All of those tests were
+          # slow in the same jobs, so it is the disk, not a deadlock (80 TSan
+          # runs of the "[deep]" tests on the Mac, 4 at once, stay clean).
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
         run: ctest --test-dir build -C ${{ matrix.config }} --output-on-failure
 
       - name: Upload broken-corpus reproducers

@@ -141,8 +141,8 @@ struct GalleryView: View {
             .padding(.horizontal, inset)
             .padding(.top, MVTheme.space(8))
         }
-        // Issue #413: one share icon for the grid's selection (the shift-click
-        // range, else the selected cell): Sharepoint, not the OS share sheet.
+        // Issue #413: one share icon for the grid's selection; issue #444: it
+        // opens the share menu (Sharepoint, then the system's targets).
         if !store.names.isEmpty && (store.currentIndex >= 0 || !store.range.isEmpty) {
           HStack {
             if store.range.count > 1 {
@@ -205,13 +205,15 @@ struct GalleryView: View {
                         store.selectAndCloseGallery(index)
                       }
                     }
-                    // docs/design/25 PR 59: the add-ons' context-menu entries, only when some exist.
-                    .modifier(SlotContextMenu(on: tileFlags.context, tile: index))
                     // Drag out the original (the range or the marks, when this
                     // cell is in them). Started by GalleryDrag's event monitor:
                     // the grid's scroll view keeps a SwiftUI drag from reaching
-                    // the cell (#413).
-                    .onHover { inside in GalleryDrag.shared.hover(index, inside: inside) }
+                    // the cell (#413). Right-click: the add-ons' entries, then
+                    // Share (TileMenu, #444), picked up the same way.
+                    .onHover { inside in
+                      GalleryDrag.shared.hover(index, inside: inside)
+                      TileMenu.shared.hover(index, inside: inside, gallery: true)
+                    }
                   }
                 }
               }
