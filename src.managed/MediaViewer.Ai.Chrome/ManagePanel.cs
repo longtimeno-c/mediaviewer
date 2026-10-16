@@ -692,7 +692,7 @@ internal sealed partial class ManagePanel
     // limit box and Clear keep keyboard focus.
     private void RefreshIndexRow(in MvAiStatus s)
     {
-        _indexSize.Text = $"{Look.Size((long)s.IndexBytes)} on disk" +
+        _indexSize.Text = $"{MediaViewer.Shared.ByteSize.Text((long)s.IndexBytes)} on disk" +
                           (_capBytes > 0 ? $" of at most {CapText(_capBytes)}" : "") +
                           ". It is your data: it does not count toward the 5 GB.";
     }
@@ -856,7 +856,7 @@ internal sealed partial class ManagePanel
                   + (r.Held ? " · paused since last time" : r.Scanning ? " · checking for changes…" : "");
             if (r.CloudOnly > 0 && !r.Unreadable) state += $" · {r.CloudOnly:N0} only in OneDrive";
             if (r.Audio > 0 && !r.Unreadable) state += r.Audio == 1 ? " · 1 audio file" : $" · {r.Audio:N0} audio files";
-            labels.Children.Add(_look.Text((r.Recursive ? "and subfolders · " : "") + state + " · " + Look.Size(r.Bytes), 12,
+            labels.Children.Add(_look.Text((r.Recursive ? "and subfolders · " : "") + state + " · " + MediaViewer.Shared.ByteSize.Text(r.Bytes), 12,
                 r.Unreadable ? AddonColour.Accent : AddonColour.Body));
             // Paused folders' bars are quiet (the Mac tints them secondary).
             var bar = new MediaViewer.Shared.FlatBar(_look[AddonColour.Hairline],

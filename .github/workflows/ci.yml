@@ -72,7 +72,7 @@ jobs:
     name: SwiftUI chrome
     if: github.event_name != 'schedule'
     runs-on: macos-14
-    timeout-minutes: 15
+    timeout-minutes: 30
     defaults:
       run:
         shell: bash
@@ -81,6 +81,11 @@ jobs:
       - run: swift build --package-path src.swift/MediaViewerChrome -c release
       - run: swift build --package-path src.swift/ImportChrome -c release
       - run: swift build --package-path src.swift/AIChrome -c release
+      # Issue #153: the chromes' headless tests. MediaViewerChrome reads src/shell and
+      # tests/data/command_table.snapshot as text (its library cannot link without the
+      # host); ImportChrome tests its model.
+      - run: swift test --package-path src.swift/MediaViewerChrome
+      - run: swift test --package-path src.swift/ImportChrome
       # The People grid measurements (no baselines, so they report, not gate)
       # and the chrome's own unit tests.
       - run: swift test --package-path src.swift/AIChrome
@@ -180,6 +185,9 @@ jobs:
           dotnet-version: '8.0.x'
       - run: dotnet build src.managed/MediaViewer.Chrome/MediaViewer.Chrome.csproj -c Release
       - run: dotnet build src.managed/MediaViewer.Import.Chrome/MediaViewer.Import.Chrome.csproj -c Release
+      # Issue #153: the chrome's copies of command ids, key codes and menu shortcuts
+      # against src/shell and the describe_commands() snapshot (headless, no core).
+      - run: dotnet test src.managed/MediaViewer.Chrome.Tests/MediaViewer.Chrome.Tests.csproj -c Release
 
   mac-packaging:
     name: Release tooling and macOS bundle policy

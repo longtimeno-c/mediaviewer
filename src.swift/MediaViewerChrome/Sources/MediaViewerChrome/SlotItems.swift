@@ -245,12 +245,26 @@ struct SlotLocalMore: View {
   }
 }
 
-/// The Places release channel (docs/design/27). Optional: the app works without
-/// it. Preferred: Settings offers it whenever it is not installed. No chrome
-/// of its own; a fresh install loads through the slot add-ons.
+/// A slot add-on's release channel: Places' install (docs/design/27; optional,
+/// preferred, offered whenever it is not installed) and every installed slot
+/// add-on's update (Sharepoint, …), as Import's (docs/design/18 "Updates"). No
+/// chrome of its own; a fresh install loads through the slot add-ons.
 @MainActor
-final class PlacesOffer: ObservableObject {
-  static let shared = PlacesOffer()
+final class SlotAddonOffer: ObservableObject {
+  static let places = SlotAddonOffer(id: "places", name: "Places")
+  private static var others: [String: SlotAddonOffer] = [:]
+
+  /// The channel of an installed slot add-on, made once per id.
+  static func channel(id: String, name: String) -> SlotAddonOffer {
+    if id == places.id { return places }
+    if let made = others[id] { return made }
+    let made = SlotAddonOffer(id: id, name: name)
+    others[id] = made
+    return made
+  }
+
+  let id: String
+  let name: String
 
   @Published private(set) var offer: AddonChannel.Probe?
   @Published private(set) var checking = false
@@ -259,7 +273,13 @@ final class PlacesOffer: ObservableObject {
   @Published private(set) var message = ""
   private var probing = false
 
-  nonisolated private static let channel = AddonChannel(name: "mediaviewer-addon-places-macos")
+  private let channel: AddonChannel
+
+  private init(id: String, name: String) {
+    self.id = id
+    self.name = name
+    channel = AddonChannel(name: "mediaviewer-addon-\(id)-macos")
+  }
 
   /// The manifest's line, once the channel has answered.
   var channelDescription: String {
@@ -271,8 +291,9 @@ final class PlacesOffer: ObservableObject {
     guard !probing, !mv_addon2_elsewhere() else { return }
     probing = true
     checking = true
+    let channel = channel
     Task.detached {
-      let result = await Self.channel.probe()
+      let result = await channel.probe()
       await MainActor.run {
         self.probing = false
         self.checking = false
@@ -281,8 +302,8 @@ final class PlacesOffer: ObservableObject {
     }
   }
 
-  /// `wasLoaded`: this process is already running Places, so a newer copy
-  /// waits for a restart (a loaded library is not replaced underneath it).
+  /// `wasLoaded`: this process is already running it, so a newer copy waits
+  /// for a restart (a loaded library is not replaced underneath it).
   func install(wasLoaded: Bool, installedVersion: String, done: @escaping @MainActor () -> Void) {
     guard !busy else { return }
     let update = offer?.version.flatMap { v in
@@ -290,37 +311,40 @@ final class PlacesOffer: ObservableObject {
     }
     busy = true
     message = ""
+    let channel = channel, name = name, reinstall = !installedVersion.isEmpty
     Task.detached {
-      // `restart` is the version that has to wait for the next launch. A let,
-      // so the hop back to the main actor does not capture a mutable flag.
-      let outcome: (message: String, restart: String?)
+      // `restart` is the version that has to wait for the next launch; `load`,
+      // that the new copy loads now. Lets, so the hop back to the main actor
+      // does not capture a mutable flag.
+      let outcome: (message: String, restart: String?, load: Bool)
       do {
-        try await Self.channel.downloadAndInstall { p in
+        try await channel.downloadAndInstall { p in
           Task { @MainActor in self.phase = p }
         }
         if wasLoaded, let update {
-          outcome = ("Places \(update) is installed. Restart MediaViewer to use it.", update)
+          outcome = ("\(name) \(update) is installed. Restart MediaViewer to use it.", update, false)
+        } else if let update {
+          outcome = ("\(name) updated to \(update).", nil, true)
         } else {
-          outcome = (update.map { "Places updated to \($0)." } ?? "Places installed.", nil)
+          outcome = (reinstall ? "\(name) reinstalled." : "\(name) installed.", nil, true)
         }
       } catch is AddonChannel.NotPublished {
-        outcome = ("", nil)
+        outcome = ("", nil, false)
         await MainActor.run { self.offer = .notPublished }
       } catch let e as AddonChannel.AddonError {
-        outcome = (e.text, nil)
+        outcome = (e.text, nil, false)
       } catch {
-        outcome = ("Places could not be downloaded. Check the connection and try again.", nil)
+        outcome = ("\(name) could not be downloaded. Check the connection and try again.", nil, false)
       }
       let result = outcome.message
       let restart = outcome.restart
+      let load = outcome.load
       await MainActor.run {
         self.busy = false
         self.phase = nil
         self.message = result
-        if let restart { AddonRestart.shared.needed("Places \(restart)") }
-        else if result == "Places installed." || result.hasPrefix("Places updated") {
-          mv_chrome_slot_addons_refresh()
-        }
+        if let restart { AddonRestart.shared.needed("\(name) \(restart)") }
+        else if load { mv_chrome_slot_addons_refresh() }
         done()
       }
     }
@@ -393,7 +417,7 @@ struct SlotAddonsSection: View {
     "Optional, preferred. The app works without it: a geotagged photo still shows its coordinates."
 
   @ObservedObject private var settings = SettingsStore.shared
-  @ObservedObject private var offer = PlacesOffer.shared
+  @ObservedObject private var offer = SlotAddonOffer.places
   @ObservedObject private var installed = Installed.shared
   @ObservedObject private var slots = SlotStore.shared
   @ObservedObject private var sharepoint = SharepointStore.shared
@@ -413,6 +437,11 @@ struct SlotAddonsSection: View {
           Text(row.name).font(MVTheme.font()).foregroundStyle(MVTheme.title)
           if !row.description.isEmpty { note(row.description) }
           note(stateText(row))
+          if !mv_addon2_elsewhere() && confirming != row.id {
+            SlotAddonUpdate(row: row, offer: SlotAddonOffer.channel(id: row.id, name: row.name)) {
+              installed.reload()
+            }
+          }
           // #410: an add-on with a window of its own opens it from here, as
           // Import does ("Open Import"). A later window shows what the add-on
           // adds (issue #402) but leaves removing it to the first window, which
@@ -430,10 +459,27 @@ struct SlotAddonsSection: View {
         }
       }
     }
-    .onAppear { installed.reload(); offer.probe() }
-    .onChange(of: settings.visible) { _, visible in if visible { installed.reload(); offer.probe() } }
+    .onAppear { installed.reload(); probeAll() }
+    .onChange(of: settings.visible) { _, visible in if visible { installed.reload(); probeAll() } }
+    // Rows read after Settings opened ask for their updates too.
+    .onChange(of: installed.rows.map(\.id)) { _, _ in if settings.visible { probeOthers() } }
     // An add-on that just attached (Sharepoint after its one-click install).
     .onChange(of: slots.windowScreens) { _, _ in installed.reload() }
+  }
+
+  /// Opening Settings asks the channels, as Import does: Places for its install
+  /// or update, every other installed one for its update. A later window does
+  /// not install (the first one hosts the add-ons).
+  private func probeAll() {
+    offer.probe()
+    probeOthers()
+  }
+
+  private func probeOthers() {
+    guard !mv_addon2_elsewhere() else { return }
+    for row in installed.rows where row.id != "places" {
+      SlotAddonOffer.channel(id: row.id, name: row.name).probe()
+    }
   }
 
   private var placesRow: some View {
@@ -550,5 +596,43 @@ struct SlotAddonsSection: View {
       Task.detached(priority: .utility) { _ = forgotten.withCString { mv_addons_settings_forget($0) } }
     }
     installed.drop(id)
+  }
+}
+
+/// An installed slot add-on's Update to X (or Reinstall, for a copy that did
+/// not verify), its progress and its message, from its own channel.
+private struct SlotAddonUpdate: View {
+  let row: SlotAddonsSection.Row
+  @ObservedObject var offer: SlotAddonOffer
+  let done: @MainActor () -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: MVTheme.space(6)) {
+      if offer.busy, let phase = offer.phase {
+        AddonProgressView(phase: phase)
+      } else {
+        let update: (String, Int)? = {
+          guard let v = offer.offer?.version, case .available(let bytes, _, _, _, _) = offer.offer,
+                AddonChannel.isNewer(v, than: row.version) else { return nil }
+          return (v, bytes)
+        }()
+        if update != nil || row.state != "ok" {
+          HStack {
+            if let (v, bytes) = update {
+              Button("Update to \(v), \(AddonStore.sizeText(bytes))") { install() }.disabled(offer.busy)
+            }
+            if row.state != "ok" { Button("Reinstall") { install() }.disabled(offer.busy) }
+          }
+        }
+      }
+      if !offer.message.isEmpty {
+        Text(offer.message).font(MVTheme.font(13)).foregroundStyle(MVTheme.body)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+    }
+  }
+
+  private func install() {
+    offer.install(wasLoaded: row.loaded, installedVersion: row.version, done: done)
   }
 }

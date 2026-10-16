@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Copyright (C) 2026 longtimeno-c -->
+  <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+  <!-- Issue #153: headless tests of the state the chromes drive. MediaViewer.Chrome
+       is a WinUI class library the native host loads through hostfxr (D1), so it is
+       not referenced here: these tests read the chromes' sources as text (C# and
+       Swift) next to src/shell/commands.h, chrome_host.h and the describe_commands()
+       snapshot mv_tests keeps (tests/data/command_table.snapshot), and fail when a
+       chrome's copy of an id, a key code or a shortcut label drifts from the core's.
+       Plain net8.0, no Windows App SDK: runs on any runner with the .NET 8 SDK.
+       `dotnet test src.managed/MediaViewer.Chrome.Tests` -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>12.0</LangVersion>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+</Project>

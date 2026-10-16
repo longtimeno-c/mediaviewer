@@ -65,6 +65,24 @@ Suites are registered with CTest and run by `ctest` on both platforms; see
    lifetimes, struct layouts, completion drain against the built core. Structs C# mirrors by
    hand (`MvAiStatus`, `MvAiResult`) are compared field for field with `tools/abi-layout`'s
    dump of the native layout, so a mirror that misses an appended field fails CI.
+   **Chrome contract tests** (issue #153). Neither chrome is linked into a test: the WinUI
+   chrome is a class library the host loads through hostfxr, and the SwiftUI package calls
+   bridge functions that resolve only in the app's final link. So
+   `src.managed/MediaViewer.Chrome.Tests` (xUnit, plain net8.0) and the
+   `MediaViewerChromeTests` SwiftPM target read the chromes' sources as text against
+   `src/shell`: every command-id constant must name a `command_id` (or, C#, a
+   `chrome_command`) by the same value, the C# checksum list must follow
+   `chrome_command_checksum()`, Settings key capture must encode `commands.h`'s key codes
+   and the `chrome_cmd_rebind` packing native unpacks, and every shortcut a Windows menu
+   prints or a Mac menu looks up by name must be in the table. `mv_tests`
+   (`test_command_contract.cpp`) holds the native half: a remap survives persist and
+   reload exactly (`live_key_remaps` / `apply_key_remaps`, which both hosts persist with),
+   and `describe_commands()` by mode matches the committed
+   `tests/data/command_table.snapshot`, so a default-map change is a reviewed diff
+   (`MV_UPDATE_SNAPSHOTS=1` rewrites it). `ImportChromeTests` covers the Import model's
+   table-free pieces; AIChrome's tests run in CI, where its `PeopleGridBench` reports and
+   does not gate. Not built yet: a UI smoke test per platform (UIA, XCUITest) opening
+   `tests/data` and walking G → Enter → Esc.
 3. **Format corpus.** Not in git. `tools/testmedia/raw-manifest.json` and
    `heif-manifest.json` list each sample's URL, SHA-256, licence and source;
    `fetch-raw.ps1` / `fetch-heif.ps1` download and verify. The video corpus (~1.5 GB, incl. a
@@ -163,7 +181,7 @@ it replaces.
 | `windows-deps` | windows-latest | Installs the vcpkg manifest once and caches it (≈45 min after a manifest/baseline change, mostly FFmpeg) |
 | `build` | windows-latest | MSVC Release, MSVC Debug, clang-cl, ASan; full `ctest`; uploads broken-corpus reproducers |
 | `abi-smoke` | windows-latest | The C# ABI smoke test |
-| `windows-chrome`, `mac-chrome` | windows-latest, macos-14 | WinUI and SwiftUI chrome compile; `swift test` on `src.swift/AIChrome` |
+| `windows-chrome`, `mac-chrome` | windows-latest, macos-14 | WinUI and SwiftUI chrome compile; the chrome contract tests (`dotnet test`, `swift test`) |
 | `mac-build` | macos-15 | The native core on macOS (arm64): vcpkg trees cached under release.yml's key, the licence gate over both Mac trees, the full build and `ctest --no-tests=error` (`mv_tests`, `mv_import_tests`, `mv_ai_tests`, the Mac-only Metal pacer / AVFoundation / PDFKit / Photos-folder / write-guard tests) |
 | `mac-packaging` | ubuntu-latest | Release tooling tests and macOS bundle policy (`tools/mac/*`) |
 | `portable-core` | ubuntu-latest | `cmake/portable` under ASan + UBSan: the Import engine, add-on host and verified copy (`mv_import_tests`), the add-on packer and SDK cross-checks against the C++ verifier, and the clip and trim suites against the distro FFmpeg |

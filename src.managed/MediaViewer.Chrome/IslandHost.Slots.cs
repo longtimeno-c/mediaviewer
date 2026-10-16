@@ -72,6 +72,10 @@ public static partial class IslandHost
     // (not in AddonSlots, so LoadAddon never looks for a DLL beside it).
     private static readonly AddonSlot PlacesChannel = new("places", "Places", null, null);
     private static string _placesMessage = "";
+    // Every other installed slot add-on's release channel, so Settings offers
+    // its update as it does Places' (Sharepoint's is SharepointSlot). Keyed by id.
+    private static readonly Dictionary<string, AddonSlot> SlotChannels = new(StringComparer.Ordinal);
+    private static readonly Dictionary<string, string> SlotUpdateMessages = new(StringComparer.Ordinal);
     private static AddonSettingsPage? _placesPage;
     private static string _placesPageVersion = "";
     private static int _placesPageGen;
@@ -149,6 +153,7 @@ public static partial class IslandHost
     {
         SlotAddonRows.RemoveAll(r => r.Id == id);
         SlotAddonsLoaded.Remove(id);
+        SlotUpdateMessages.Remove(id);
         if (id == PlacesChannel.Id)
         {
             _placesPage = null;
@@ -808,10 +813,35 @@ public static partial class IslandHost
         _slotSettingsPanel = new StackPanel { Spacing = Space(10), Margin = Pad(0, 2, 0, 0) };
         view.Children.Add(_slotSettingsPanel);
         RefreshSlotSettings();
-        // Opening Settings asks the channel, as Import does. A later window
-        // does not install (the first one hosts the add-ons).
-        if (!_addonsElsewhere) ProbeOffer(PlacesChannel);
+        // Opening Settings asks the channel, as Import does: Places for its
+        // install or update, every other installed one for its update. A later
+        // window does not install (the first one hosts the add-ons).
+        if (_addonsElsewhere) return;
+        ProbeOffer(PlacesChannel);
+        foreach (SlotAddonRow row in SlotAddonRows)
+        {
+            if (row.Id != PlacesChannel.Id) ProbeOffer(SlotChannelFor(row));
+        }
     }
+
+    private static AddonSlot SlotChannelFor(SlotAddonRow row)
+    {
+        if (row.Id == PlacesChannel.Id) return PlacesChannel;
+        if (row.Id == SharepointId) return SharepointSlot;
+        if (!SlotChannels.TryGetValue(row.Id, out AddonSlot? slot))
+        {
+            slot = new AddonSlot(row.Id, row.Name, null, null);
+            SlotChannels[row.Id] = slot;
+        }
+        return slot;
+    }
+
+    private static bool IsSlotChannel(AddonSlot slot) => SlotChannels.ContainsValue(slot);
+
+    /// <summary>The installed row's channel has a newer signed version, or null.</summary>
+    private static string? SlotUpdateVersion(AddonSlot channel, SlotAddonRow row) =>
+        channel.Offer.Kind == OfferKind.Available && channel.Offer.Version.Length > 0 &&
+        IsNewer(channel.Offer.Version, row.Version) ? channel.Offer.Version : null;
 
     private static string? _slotConfirming;
 
@@ -853,13 +883,16 @@ public static partial class IslandHost
         (Border places, StackPanel placesBody) = AddonCard("Places");
         AddPlacesSettingsRow(placesBody);
         _slotSettingsPanel.Children.Add(places);
+        // Probed once the panel is built: a probe refreshes this panel, so one
+        // started inside the loop would rebuild it under the loop.
+        var probe = new List<AddonSlot>();
         // #410: Sharepoint, offered with one click while it is not installed.
         if (!SharepointInstalled)
         {
             (Border card, StackPanel body) = AddonCard("Sharepoint");
             BuildSharepointOffer(body, null, titled: false);
             _slotSettingsPanel.Children.Add(card);
-            if (SharepointSlot.Offer.Kind == OfferKind.Unknown) ProbeOffer(SharepointSlot);
+            if (SharepointSlot.Offer.Kind == OfferKind.Unknown) probe.Add(SharepointSlot);
         }
         foreach (SlotAddonRow row in SlotAddonRows)
         {
@@ -868,11 +901,32 @@ public static partial class IslandHost
             if (row.Description.Length > 0) body.Children.Add(Note(row.Description));
             bool loaded = SlotAddonsLoaded.Contains(row.Id);
             body.Children.Add(Note(SlotStateText(row, loaded)));
+            AddonSlot channel = SlotChannelFor(row);
+            if (!_addonsElsewhere && channel.Offer.Kind == OfferKind.Unknown) probe.Add(channel);
+            if (channel.Busy && channel.Phase is not null)
+            {
+                body.Children.Add(ProgressFor(channel, 320));
+                _slotSettingsPanel.Children.Add(card);
+                continue;
+            }
             // A later window shows what it adds (issue #402) but leaves removing
             // it to the first window, which owns the store.
             StackPanel buttons = _addonsElsewhere
                 ? new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(6) }
                 : SlotRemoveButtons(row);
+            if (!_addonsElsewhere && _slotConfirming != row.Id)
+            {
+                SlotAddonRow target = row;
+                if (row.State != "ok")
+                {
+                    buttons.Children.Insert(0, SettingsButton("Reinstall", () => StartSlotAddonInstall(target)));
+                }
+                if (SlotUpdateVersion(channel, row) is { } v)
+                {
+                    buttons.Children.Insert(0, SettingsButton($"Update to {v}, {DownloadSize(channel.Offer.ArchiveSize)}",
+                                                              () => StartSlotAddonInstall(target)));
+                }
+            }
             // #410: an add-on with a window of its own opens it from here, as
             // Import does ("Open Import").
             if (_slotConfirming != row.Id && loaded && SlotWindowScreens.TryGetValue(row.Id, out string? screen))
@@ -885,9 +939,11 @@ public static partial class IslandHost
             }
             if (buttons.Children.Count > 0) body.Children.Add(buttons);
             if (row.Id == SharepointId && _sharepointMessage.Length > 0) body.Children.Add(Note(_sharepointMessage));
+            if (SlotUpdateMessages.TryGetValue(row.Id, out string? updated) && updated.Length > 0) body.Children.Add(Note(updated));
             if (_addonsElsewhere) body.Children.Add(Note(AddonsElsewhereText));
             _slotSettingsPanel.Children.Add(card);
         }
+        foreach (AddonSlot slot in probe) ProbeOffer(slot);
     }
 
     private static void AddPlacesSettingsRow(StackPanel into)
@@ -933,7 +989,7 @@ public static partial class IslandHost
                 IsNewer(PlacesChannel.Offer.Version, installed.Version))
             {
                 buttons.Children.Insert(0, SettingsButton(
-                    $"Update to {PlacesChannel.Offer.Version}, {DownloadSize(PlacesChannel.Offer.ArchiveSize)}",
+                    $"Update to {PlacesChannel.Offer.Version}, {MediaViewer.Shared.ByteSize.Text(PlacesChannel.Offer.ArchiveSize)}",
                     StartPlacesInstall));
             }
             if (installed.State != "ok") buttons.Children.Insert(0, SettingsButton("Reinstall", StartPlacesInstall));
@@ -958,7 +1014,7 @@ public static partial class IslandHost
         {
             case OfferKind.Available:
                 Button install = SettingsButton(
-                    $"Install Places, {DownloadSize(PlacesChannel.Offer.ArchiveSize)}", StartPlacesInstall);
+                    $"Install Places, {MediaViewer.Shared.ByteSize.Text(PlacesChannel.Offer.ArchiveSize)}", StartPlacesInstall);
                 install.HorizontalAlignment = HorizontalAlignment.Left;
                 install.IsEnabled = !PlacesChannel.Busy;
                 into.Children.Add(install);
@@ -998,6 +1054,76 @@ public static partial class IslandHost
                 _placesPageLoading = false;
                 _placesPage = page;
                 _placesPageVersion = version;
+                RefreshSlotSettings();
+            });
+        });
+    }
+
+    // Update (or reinstall) an installed slot add-on other than Places, as
+    // Places does: a loaded copy is not replaced underneath itself, so a newer
+    // version waits for the restart Settings offers (docs/design/18 "Updates").
+    private static void StartSlotAddonInstall(SlotAddonRow row)
+    {
+        AddonSlot channel = SlotChannelFor(row);
+        if (channel.Busy || !_slotAddonsRead || _addonsElsewhere || _folderSession is not { } session) return;
+        bool wasLoaded = SlotAddonsLoaded.Contains(row.Id);
+        string? update = SlotUpdateVersion(channel, row);
+        string id = row.Id, name = row.Name;
+        channel.Busy = true;
+        channel.Phase = new AddonPhase(AddonPhaseKind.Downloading);
+        SlotUpdateMessages.Remove(id);
+        IProgress<AddonPhase> progress = PhaseReporter(channel);
+        RefreshSlotSettings();
+        _ = Task.Run(async () =>
+        {
+            string message;
+            bool restart = false;
+            try
+            {
+                await DownloadAndInstall(channel, null, progress).ConfigureAwait(false);
+                if (wasLoaded && update is not null)
+                {
+                    message = $"{name} {update} is installed. Restart MediaViewer to use it.";
+                    restart = true;
+                }
+                else
+                {
+                    message = update is null ? $"{name} reinstalled." : $"{name} updated to {update}.";
+                    StartSlotAddons(session);
+                }
+            }
+            catch (AddonNotPublishedException)
+            {
+                message = "";
+                DispatcherQueueControllerTryEnqueue(() => channel.Offer = new AddonOffer(OfferKind.NotPublished, 0));
+            }
+            catch (Exception ex) when (ex is HttpRequestException or IOException or MediaViewerException
+                                           or InvalidDataException or TaskCanceledException or JsonException)
+            {
+                System.Diagnostics.Debug.WriteLine(ex);
+                message = ex is MediaViewerException or InvalidDataException
+                    ? "The download did not verify, so nothing was installed."
+                    : $"{name} could not be downloaded. Check the connection and try again.";
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine(ex);
+                message = $"{name} could not be installed.";
+            }
+            DispatcherQueueControllerTryEnqueue(() =>
+            {
+                channel.Busy = false;
+                channel.Phase = null;
+                channel.Progress = null;
+                SlotUpdateMessages[id] = message;
+                if (restart && update is not null)
+                {
+                    AddonRestartNeeded($"{name} {update}");
+                    for (int i = 0; i < SlotAddonRows.Count; ++i)
+                    {
+                        if (SlotAddonRows[i].Id == id) SlotAddonRows[i] = SlotAddonRows[i] with { Version = update };
+                    }
+                }
                 RefreshSlotSettings();
             });
         });
