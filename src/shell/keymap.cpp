@@ -187,6 +187,7 @@ constexpr slug_row kSlugs[] = {
     {label_green, "label_green"},
     {label_blue, "label_blue"},
     {clear_label, "clear_label"},
+    {toggle_page_sidebar, "toggle_page_sidebar"},
 };
 
 struct claim {

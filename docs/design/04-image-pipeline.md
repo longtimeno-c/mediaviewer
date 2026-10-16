@@ -22,9 +22,10 @@ filters by extension only to decide what is a candidate; decode always probes.
 | AVIF | still + animated | **libavif** + **dav1d** |
 | RAW | CR2/CR3, NEF, ARW, ORF, RAF, RW2, DNG, … | **LibRaw** (OpenMP) |
 | PDF | every page, `/Rotate` applied, on white | the OS: **CoreGraphics** (`codec/pdf_mac.cpp`), **Windows.Data.Pdf** (`codec/pdf_win.cpp`) |
-| DOCX | every page; text, styles, lists, tables, pictures (below) | own layout (`codec/docx.cpp`) over **HarfBuzz** + **FreeType** (`codec/text.cpp`), fonts found by CoreText / DirectWrite (`codec/fonts_*.cpp`) |
+| DOCX | every page; text, styles, lists, tables, pictures, shapes, columns, headers, footnotes (below) | own layout (`codec/docx.cpp`) over **HarfBuzz** + **FreeType** (`codec/text.cpp`), fonts found by CoreText / DirectWrite (`codec/fonts_*.cpp`) |
+| PPTX | every slide; backgrounds, master and layout art, placeholders, shapes, pictures, groups, tables, text (below) | own layout (`codec/pptx.cpp`) over the DOCX path (`codec/doclayout`, `codec/text.cpp`) |
 
-That is the shipped set: JPEG, PNG, BMP, GIF, TIFF, WebP, HEIC/HEIF, AVIF, ICO, RAW, PDF and DOCX.
+That is the shipped set: JPEG, PNG, BMP, GIF, TIFF, WebP, HEIC/HEIF, AVIF, ICO, RAW, PDF, DOCX and PPTX.
 
 **PDF** (`%PDF-` in the first 1 KiB) renders through the OS, so no PDF library ships. A page is
 `kPdfLongEdge` (3200) px on its long edge in sRGB on white; the first pixel and the thumbnails
@@ -36,19 +37,52 @@ size is a resample of the 3200 px page, not a re-render.
 
 **DOCX** (a zip whose first parts are an Office package's; `word/document.xml` must exist) is laid
 out by `codec/docx.cpp`: readable pages, not a Word replica. It reads the styles (docDefaults,
-`basedOn` chains, theme fonts), numbering and relationships, then the body: paragraphs and runs
-(font, size, bold, italic, underline, strike, colour, caps, super/subscript), alignment incl.
-justify, indents, spacing, line spacing, numbered and bulleted lists, tabs, line / page / section
-breaks, inline and anchored pictures (at their extent, as inline), and tables (grid widths, spans,
-borders). Not drawn: headers and footers, footnotes, comments, text boxes and shapes, columns,
-floating placement, right-to-left reordering. Text is shaped by HarfBuzz in unhinted font units, so
-layout is in points and the page count does not depend on the drawing size; FreeType draws it. Fonts
+`basedOn` chains, theme fonts and colours), numbering and relationships, then the body: paragraphs
+and runs (font, size, bold, italic, underline, strike, colour, caps, super/subscript), alignment
+incl. justify, indents, spacing, line spacing, numbered and bulleted lists, tabs, line / column /
+page breaks, and tables (grid widths, spans, borders). Sections keep their page size and margins and
+start on a new page, an even or odd page, the next column or continuously; `w:cols` lays a section
+in equal or explicit-width columns with an optional rule, balanced before a continuous break.
+Headers and footers (default / first with `titlePg` / even with `evenAndOddHeaders`, inherited
+section to section) sit at the `pgMar` header and footer distances and push the body when taller;
+`PAGE` and `NUMPAGES` fields (`fldSimple` or `fldChar`/`instrText`) draw the number, the count
+filled in when the page is painted. Footnotes go to the foot of the page whose line cites them,
+under a short rule, shrinking that page's body; one that does not fit moves whole to the next page.
+Endnotes follow the body. Pictures and DrawingML shapes (`wps:wsp`: rect, roundRect, ellipse,
+lines; fill, outline, theme colours) draw inline or float at their `wp:anchor` (page / margin /
+column / paragraph, offset or aligned); square, tight and through wraps take their box out of the
+lines beside it (both sides, left, right or the larger), top-and-bottom skips the band, none and
+behind-text overlap. Text boxes lay their `txbxContent` paragraphs inside the shape; the
+`mc:AlternateContent` choice is taken when it is one of these, else the VML fallback (`v:rect`,
+`v:roundrect`, `v:oval`, `v:shape` with `v:textbox` / `v:imagedata`). A `w:bidi` paragraph is
+right-aligned by default with its indents mirrored; each line is reordered by a compact Unicode
+bidi subset (weak types, neutrals, implicit levels, L1/L2 — no explicit embeddings) and Arabic and
+Hebrew words are shaped right to left. Not drawn: comments, grouped shapes and drawing canvases,
+charts and SmartArt (a grey box), wrap polygons. The paragraph, line-breaking, bidi and shape code
+is `codec/doclayout`, kept free of WordprocessingML for the other Office formats. Text is shaped by
+HarfBuzz in unhinted font units, so layout is in points and the page count does not depend on the
+drawing size; FreeType draws it. Fonts
 are found by family through the OS (`codec/fonts.h`), with metric-compatible substitutes (Calibri →
 Carlito → Helvetica Neue / Arial …) and a per-platform fallback list for missing characters (CJK,
 Greek …). The file bytes are read by the reader `image/pipeline.cpp` installs before main
-(`text::set_font_reader`); `codec/` does not open the file. Every page before the one asked for is
-laid out; only that page is drawn. The zip reader
-caps every entry at 64 MiB and the XML reader refuses a DOCTYPE, so neither can be made to explode.
+(`text::set_font_reader`); `codec/` does not open the file. The whole document is laid out once;
+only the pages asked for keep a draw list (`decode_docx_pages`). The zip reader caps every entry at
+64 MiB and the XML reader refuses a DOCTYPE, so neither can be made to explode; the layout caps
+objects (4096), columns (16), floats on a page (256), sections, notes and nesting.
+**PPTX** (issue #429; a zip whose first parts name `ppt/`, or, when `[Content_Types].xml` comes
+first, whose central directory names `ppt/presentation.xml`; `codec/probe.cpp`) is drawn by
+`codec/pptx.cpp`: a slide a page at the presentation's slide size, readable slides rather than a
+PowerPoint replica. It reads the slide, its layout, master and theme: the background (solid, a
+gradient's first stop, a picture), the master's and layout's own art under the slide's (unless
+`showMasterSp` is off), placeholders taking position, insets and text styles from layout and master
+(`txStyles`, `lstStyle` levels, presentation `defaultTextStyle` for other text), shapes (rect,
+roundRect, ellipse, lines and connectors; any other geometry as its box) with fills, outlines and
+`p:style` references, pictures, groups, tables, and text with runs, alignment, indents, spacing,
+bullets and automatic numbers, tabs, right-to-left paragraphs, the slide number field, anchoring
+and `normAutofit`'s font scale; theme colours through the master's colour map with the DrawingML
+modifiers. Not drawn: rotation, custom geometry, effects, charts, SmartArt and media (a grey box),
+notes, comments, crops. Only the slide drawn is parsed, so page 250 costs one slide, not 250; a
+slide that will not read is a white page and the others still draw.
 TIFF-container RAWs probe as `tiff` and are reclassified by `looks_like_raw`.
 
 The registry is `codec::decode` in [`src/codec/decode.cpp`](../../src/codec/decode.cpp): one
@@ -328,6 +362,36 @@ again and the vertical travel is dropped. Pages are still separate stops, not on
 laying the next page out under the current one needs two pages on the canvas at once, which the
 one-still present path does not do. Hosts: `-scrollDocument:` (main_mac.mm), `scroll_document`
 (main.cpp, `WM_MOUSEWHEEL` / `WM_MOUSEHWHEEL`; a touchpad is a delta that is not a multiple of 120).
+
+### Page sidebar
+
+Issue #429 ([16](16-commands.md) "Page sidebar" for what the user sees). The thumbnails are small
+renders of the document's own pages, `kPageThumbLongEdge` (320) px on the long edge, drawn at that
+size rather than resampled from the 3200 px page, and kept in the folder thumbnail cache as rows
+keyed `path#page=N` under the file's own stamp (`image::page_thumb_key`, beside clip moments'
+`#t=`). They never come from the canvas's decode and never run on the UI or render thread.
+
+- **One open per batch.** `codec::decode_pages` renders a list of pages from one open of the file:
+  CoreGraphics / Windows.Data.Pdf open the PDF once; a DOCX or PPTX is read and laid out once and
+  only the asked-for pages are drawn. Opening per page would make page 250 of a DOCX cost 250
+  layouts. `image::make_page_thumbs` looks every page up in the cache first, then reads and renders
+  only the misses and stores each as it lands.
+- **The window, not the document.** The sidebar asks for the pages it shows and two either side.
+  `image::page_thumb_book` (shared by both hosts) keeps what is landed and in flight and the last
+  window; a queued job drops pages that have scrolled more than eight rows out of it before
+  rendering, so flinging a 300-page strip renders where it lands, not everything it passed. Nothing
+  is rendered up front: opening a document costs what it did before.
+- **Stale work.** The book's serial names the document. Another stop starts a new one; a page of
+  the last document still rendering is refused when it lands and never reaches the strip.
+- **Hosts.** Windows: `mv_folder_page_thumbs` / `MV_COMPLETION_PAGE_THUMB_READY` (ABI 0.31,
+  [14](14-abi.md)), drained by the island (`IslandHost.PageSidebar.cs`); native shows it from
+  `apply_view_state` (`page_sidebar_shows`) and learns the page count when the island sees
+  `IMAGE_OPENED` (`chrome_cmd_image_opened`). Mac: `folder_model::request_page_thumbs`, the lab's
+  `page_count_known`, `PageSidebarView.swift`. Both reserve the strip with
+  `input_snapshot::chrome_left_px`, so the canvas fits the page right of it, and both keep the
+  strip up while arrowing from one document to the next until the new count is known (otherwise
+  the canvas would refit twice).
+- **A click** turns the page the way `Ctrl+PageDown` does (`turn_page`): one decode of that page.
 
 ## Leaving kinds out of a listing
 

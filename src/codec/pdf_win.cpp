@@ -121,46 +121,9 @@ raster locked_page() {
   return out;
 }
 
-}  // namespace
-
-result<raster> decode_pdf(std::span<const std::uint8_t> bytes, std::uint32_t page,
-                          const job_context* ctx, std::uint32_t long_edge) {
-  long_edge = std::clamp<std::uint32_t>(long_edge, 16, kPdfLongEdge);
-  if (probe(bytes) != format_family::pdf) return err(status::unsupported_format);
-  if (bytes.size() > 0x7fffffffu) return err(status::unsupported_format);
-  if (ctx && ctx->cancelled()) return err(status::cancelled);
-  const com_scope com;
-  if (!com.usable()) return err(status::internal);
-
-  // The renderer reads a stream; SHCreateMemStream copies the bytes into one.
-  ComPtr<IStream> memory;
-  memory.Attach(SHCreateMemStream(bytes.data(), static_cast<UINT>(bytes.size())));
-  if (!memory) return err(status::out_of_memory);
-  ComPtr<wss::IRandomAccessStream> input;
-  if (FAILED(CreateRandomAccessStreamOverStream(memory.Get(), BSOS_DEFAULT, IID_PPV_ARGS(&input)))) {
-    return err(status::internal);
-  }
-
-  ComPtr<wpdf::IPdfDocumentStatics> statics;
-  if (FAILED(RoGetActivationFactory(HStringReference(RuntimeClass_Windows_Data_Pdf_PdfDocument).Get(),
-                                    IID_PPV_ARGS(&statics)))) {
-    return err(status::internal);
-  }
-  ComPtr<wf::IAsyncOperation<wpdf::PdfDocument*>> loading;
-  if (FAILED(statics->LoadFromStreamAsync(input.Get(), &loading))) return err(status::corrupt);
-  const wait_result loaded = wait_for(loading.Get(), ctx);
-  if (loaded == wait_result::wrong_password) {
-    // Needs a password: shown as the locked card, never asked for.
-    if (page != 0) return err(status::invalid_arg);
-    return locked_page();
-  }
-  if (loaded != wait_result::done) return err(from_wait(loaded));
-  ComPtr<wpdf::IPdfDocument> document;
-  if (FAILED(loading->GetResults(&document)) || !document) return err(status::corrupt);
-
-  UINT32 count = 0;
-  if (FAILED(document->get_PageCount(&count)) || count == 0) return err(status::corrupt);
-  if (page >= count) return err(status::invalid_arg);
+// One page of a loaded document at `long_edge`, white behind it.
+result<raster> render_page(wpdf::IPdfDocument* document, std::uint32_t page, UINT32 count,
+                           std::uint32_t long_edge, const job_context* ctx) {
   ComPtr<wpdf::IPdfPage> pdf_page;
   if (FAILED(document->GetPage(page, &pdf_page)) || !pdf_page) return err(status::corrupt);
 
@@ -235,6 +198,88 @@ result<raster> decode_pdf(std::span<const std::uint8_t> bytes, std::uint32_t pag
   out.page = page;
   out.page_count = count;
   return out;
+}
+
+// The document over a copy of `bytes`. `locked` when it needs a password,
+// which is shown as the locked card, never asked for.
+struct pdf_doc {
+  ComPtr<wpdf::IPdfDocument> document;
+  bool locked = false;
+  UINT32 count = 0;
+};
+
+status load_doc(std::span<const std::uint8_t> bytes, const job_context* ctx, pdf_doc& out) {
+  // The renderer reads a stream; SHCreateMemStream copies the bytes into one.
+  ComPtr<IStream> memory;
+  memory.Attach(SHCreateMemStream(bytes.data(), static_cast<UINT>(bytes.size())));
+  if (!memory) return status::out_of_memory;
+  ComPtr<wss::IRandomAccessStream> input;
+  if (FAILED(CreateRandomAccessStreamOverStream(memory.Get(), BSOS_DEFAULT, IID_PPV_ARGS(&input)))) {
+    return status::internal;
+  }
+
+  ComPtr<wpdf::IPdfDocumentStatics> statics;
+  if (FAILED(RoGetActivationFactory(HStringReference(RuntimeClass_Windows_Data_Pdf_PdfDocument).Get(),
+                                    IID_PPV_ARGS(&statics)))) {
+    return status::internal;
+  }
+  ComPtr<wf::IAsyncOperation<wpdf::PdfDocument*>> loading;
+  if (FAILED(statics->LoadFromStreamAsync(input.Get(), &loading))) return status::corrupt;
+  const wait_result loaded = wait_for(loading.Get(), ctx);
+  if (loaded == wait_result::wrong_password) {
+    out.locked = true;
+    out.count = 1;
+    return status::ok;
+  }
+  if (loaded != wait_result::done) return from_wait(loaded);
+  if (FAILED(loading->GetResults(&out.document)) || !out.document) return status::corrupt;
+  if (FAILED(out.document->get_PageCount(&out.count)) || out.count == 0) return status::corrupt;
+  return status::ok;
+}
+
+}  // namespace
+
+result<raster> decode_pdf(std::span<const std::uint8_t> bytes, std::uint32_t page,
+                          const job_context* ctx, std::uint32_t long_edge) {
+  long_edge = std::clamp<std::uint32_t>(long_edge, 16, kPdfLongEdge);
+  if (probe(bytes) != format_family::pdf) return err(status::unsupported_format);
+  if (bytes.size() > 0x7fffffffu) return err(status::unsupported_format);
+  if (ctx && ctx->cancelled()) return err(status::cancelled);
+  const com_scope com;
+  if (!com.usable()) return err(status::internal);
+  pdf_doc doc;
+  if (const status s = load_doc(bytes, ctx, doc); s != status::ok) return err(s);
+  if (page >= doc.count) return err(status::invalid_arg);
+  if (doc.locked) return locked_page();
+  return render_page(doc.document.Get(), page, doc.count, long_edge, ctx);
+}
+
+result<std::uint32_t> decode_pdf_pages(std::span<const std::uint8_t> bytes,
+                                       std::span<const std::uint32_t> pages,
+                                       std::uint32_t long_edge, const job_context* ctx,
+                                       void* user, page_sink sink) {
+  long_edge = std::clamp<std::uint32_t>(long_edge, 16, kPdfLongEdge);
+  if (probe(bytes) != format_family::pdf) return err(status::unsupported_format);
+  if (bytes.size() > 0x7fffffffu) return err(status::unsupported_format);
+  if (ctx && ctx->cancelled()) return err(status::cancelled);
+  const com_scope com;
+  if (!com.usable()) return err(status::internal);
+  pdf_doc doc;
+  if (const status s = load_doc(bytes, ctx, doc); s != status::ok) return err(s);
+  for (const std::uint32_t page : pages) {
+    if (page >= doc.count) continue;
+    if (ctx && ctx->cancelled()) return err(status::cancelled);
+    auto one = doc.locked ? result<raster>(locked_page())
+                          : render_page(doc.document.Get(), page, doc.count, long_edge, ctx);
+    if (!one) {
+      if (one.error() == status::cancelled || one.error() == status::out_of_memory) {
+        return err(one.error());
+      }
+      continue;  // a broken page leaves its thumbnail empty, not the others
+    }
+    if (!sink(user, std::move(one).value())) break;
+  }
+  return std::uint32_t{doc.count};
 }
 
 }  // namespace mv::codec

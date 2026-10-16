@@ -536,6 +536,7 @@ std::vector<field_site> dimension_sites(std::span<const std::uint8_t> b) {
     case format_family::avif:
     case format_family::pdf:
     case format_family::docx:
+    case format_family::pptx:
     case format_family::unknown:
       break;
   }
@@ -803,6 +804,7 @@ mv::result<mv::codec::raster> family_decoder(format_family f, std::span<const st
     case format_family::raw:  return mv::codec::decode_raw(b);
     case format_family::pdf:  return mv::codec::decode_pdf(b);
     case format_family::docx: return mv::codec::decode_docx(b);
+    case format_family::pptx: return mv::codec::decode_pptx(b);
     case format_family::unknown: break;
   }
   return mv::err(mv::status::unsupported_format);
@@ -921,6 +923,7 @@ format_family family_from_dir(std::string_view dir) {
   if (dir == "raw") return format_family::raw;
   if (dir == "pdf") return format_family::pdf;
   if (dir == "docx") return format_family::docx;
+  if (dir == "pptx") return format_family::pptx;
   return format_family::unknown;
 }
 
@@ -1005,6 +1008,7 @@ TEST_CASE("broken corpus: AVIF", "[codec][broken]") { run_family("avif"); }
 TEST_CASE("broken corpus: RAW (DNG)", "[codec][broken]") { run_family("raw"); }
 TEST_CASE("broken corpus: PDF", "[codec][broken]") { run_family("pdf"); }
 TEST_CASE("broken corpus: DOCX", "[codec][broken]") { run_family("docx"); }
+TEST_CASE("broken corpus: PPTX", "[codec][broken]") { run_family("pptx"); }
 
 TEST_CASE("broken corpus: hand-crafted files in tests/data/broken", "[codec][broken]") {
   const auto nasties = files_in(data_dir() / "broken", "broken/");

@@ -149,7 +149,7 @@ public static partial class IslandHost
         view.Children.Add(SettingsRow("Show audio files",
             "List MP3, M4A and M4P files in folders. A file you open directly still opens.", _showAudio));
         view.Children.Add(SettingsRow("Show documents",
-            "List PDF and Word (DOCX) files in folders. A file you open directly still opens.", _showDocuments));
+            "List PDF, Word (DOCX) and PowerPoint (PPTX) files in folders. A file you open directly still opens.", _showDocuments));
         // Issue #220: the installer's last page, again. Windows owns the choice
         // (docs/design/13); this only opens its Default apps page on MediaViewer.
         view.Children.Add(SettingsRow("Default app",

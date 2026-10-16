@@ -5,6 +5,7 @@
 #include <utility>
 
 #include "abi/addon_media.h"
+#include "image/page_thumbs.h"
 #include "image/thumb.h"
 #include "io/file.h"
 #include "io/file_port.h"
@@ -266,6 +267,12 @@ std::string folder_model::cached_clip_thumb(const std::string& path_utf8, std::i
   return {};
 }
 
+std::string folder_model::cached_page_thumb(const std::string& path_utf8, std::int64_t mtime_unix,
+                                            std::uint64_t size, std::uint32_t page) const {
+  auto hit = state_->thumbs.lookup_unverified(image::page_thumb_key(path_utf8, page, mtime_unix, size));
+  return hit ? std::move(hit).value() : std::string();
+}
+
 void folder_model::request_thumb(std::string path_utf8, std::int64_t mtime_unix,
                                  std::uint64_t size, thumb_ready_fn on_ready,
                                  std::int64_t moment_ms) {
@@ -412,6 +419,39 @@ void folder_model::request_thumb(std::string path_utf8, std::int64_t mtime_unix,
                      if (on_ready) on_ready(path, stored.value());
                      return status::ok;
                    });
+}
+
+void folder_model::request_page_thumbs(std::string path_utf8, std::int64_t mtime_unix,
+                                       std::uint64_t size, std::vector<std::uint32_t> pages,
+                                       page_filter_fn still_wanted, page_thumb_fn on_page,
+                                       page_done_fn on_done) {
+  if (!jobs_ || pages.empty()) {
+    if (on_done) on_done(std::move(pages));
+    return;
+  }
+  // Captures `state_`, never `this`, as request_thumb does.
+  jobs_->submit_at(
+      background_generation,
+      [state = state_, path = std::move(path_utf8), mtime_unix, size, pages = std::move(pages),
+       still_wanted = std::move(still_wanted), on_page = std::move(on_page),
+       on_done = std::move(on_done)](const job_context& ctx) -> status {
+        std::vector<std::uint32_t> todo = still_wanted ? still_wanted(pages) : pages;
+        status made = status::cancelled;
+        if (!todo.empty()) {
+          struct sink {
+            const page_thumb_fn* on_page;
+          } user{&on_page};
+          const image::thumb_key file{path, mtime_unix, size};
+          made = image::make_page_thumbs(
+              state->thumbs, file, todo, &ctx, &user,
+              [](void* u, std::uint32_t page, std::string_view jpeg) {
+                const auto& fn = *static_cast<sink*>(u)->on_page;
+                return !fn || fn(page, std::string(jpeg));
+              });
+        }
+        if (on_done) on_done(std::move(todo));
+        return made;
+      });
 }
 
 }  // namespace mv::shell

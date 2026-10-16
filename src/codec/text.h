@@ -51,6 +51,11 @@ struct shaped {
   bool synthetic_italic = false;
 };
 
+// The direction a word is shaped in. `automatic` takes it from the script
+// (Arabic and Hebrew right to left); a neutral word in a right-to-left run is
+// shaped `rtl` so its brackets mirror.
+enum class direction : std::uint8_t { automatic, ltr, rtl };
+
 class engine {
  public:
   engine();
@@ -61,7 +66,8 @@ class engine {
   // Shapes `utf8` in the style's family, falling back (fonts::fallbacks) to
   // the first family that has every character. Never fails: missing glyphs
   // draw as the font's .notdef.
-  [[nodiscard]] shaped shape(std::string_view utf8, const style& s);
+  [[nodiscard]] shaped shape(std::string_view utf8, const style& s,
+                             direction dir = direction::automatic);
 
   // The style's line metrics without shaping anything (an empty line).
   [[nodiscard]] shaped metrics(const style& s);

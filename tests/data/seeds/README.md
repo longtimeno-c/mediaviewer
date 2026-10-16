@@ -30,6 +30,7 @@ safe to redistribute. The real format corpus stays out of git (docs/design/09).
 | PDF | two pages, the second `/Rotate 90` | `pdf_two_pages()`, hand-written objects and xref |
 | Add-on data (`addon/`) | a settings page, a keymap pack and a schema 2 theme (docs/design/25 PR 56), the corpus of `fuzz_addon_contributions`; not read by the broken-corpus test | copied by hand from `examples/addons/settings-demo` and `vim-keys` |
 | DOCX | heading, bold run, list item, two-cell table, a small page size | `docx_small()`, Python `zipfile` |
+| PPTX | two slides over a master and layout: title and body placeholders, bullets, a numbered level, the slide number, a filled shape, a merged table cell, theme colours | `pptx_small()`, Python `zipfile` |
 | C2PA (#290) | a JUMBF store; it in JPEG APP11 segments, a PNG `caBX` (with SD / ComfyUI text chunks) and an MP4 `uuid` box | `mv_tests "[.write-seeds]"` (`tests/test_meta_provenance.cpp`) |
 | XMP (#290) | a Midjourney-like packet: unregistered namespace, struct, lang-alt, history | the same |
 | ICC (#290) | a v4 display profile with `desc` (mluc) and `cprt` | the same |

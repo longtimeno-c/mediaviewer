@@ -369,6 +369,76 @@ def docx_small() -> bytes:
     return buf.getvalue()
 
 
+def pptx_small() -> bytes:
+    """Two slides over a master and layout: a title placeholder, a bulleted body,
+    a filled shape, a table and a theme colour -- what decode_pptx reads (#429)."""
+    import io
+    import zipfile
+    ns = ('xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+          'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
+          'xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"')
+    rel_ns = 'xmlns="http://schemas.openxmlformats.org/package/2006/relationships"'
+    rt = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/"
+
+    def rels(*items: tuple[str, str, str]) -> str:
+        return f"<Relationships {rel_ns}>" + "".join(
+            f'<Relationship Id="{i}" Type="{rt}{t}" Target="{target}"/>' for i, t, target in items) + "</Relationships>"
+
+    def sp(ph: str, x: int, y: int, w: int, h: int, fill: str, text: str) -> str:
+        xfrm = f'<a:xfrm><a:off x="{x}" y="{y}"/><a:ext cx="{w}" cy="{h}"/></a:xfrm>' if w else ""
+        return (f'<p:sp><p:nvSpPr><p:cNvPr id="2" name="s"/><p:cNvSpPr/><p:nvPr>{ph}</p:nvPr></p:nvSpPr>'
+                f'<p:spPr>{xfrm}<a:prstGeom prst="roundRect"><a:avLst/></a:prstGeom>{fill}</p:spPr>'
+                f'<p:txBody><a:bodyPr anchor="ctr"/><a:lstStyle/>{text}</p:txBody></p:sp>')
+
+    tree = '<p:spTree><p:nvGrpSpPr/><p:grpSpPr/>'
+    title = sp('<p:ph type="title"/>', 0, 0, 0, 0, "", '<a:p><a:r><a:rPr sz="4400" b="1"/><a:t>Seed</a:t></a:r></a:p>')
+    body = sp('<p:ph idx="1"/>', 0, 0, 0, 0, "",
+              '<a:p><a:r><a:t>One</a:t></a:r></a:p><a:p><a:pPr lvl="1"><a:buAutoNum type="arabicPeriod"/></a:pPr>'
+              '<a:r><a:t>Two</a:t></a:r><a:br/><a:fld type="slidenum"><a:t>1</a:t></a:fld></a:p>')
+    box = sp("", 914400, 914400, 1828800, 914400,
+             '<a:solidFill><a:schemeClr val="accent1"><a:lumMod val="75000"/></a:schemeClr></a:solidFill>',
+             '<a:p><a:pPr algn="ctr" rtl="1"/><a:r><a:rPr sz="1800"><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:rPr><a:t>Box</a:t></a:r></a:p>')
+    table = ('<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="4" name="t"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr>'
+             '<p:xfrm><a:off x="914400" y="2743200"/><a:ext cx="3657600" cy="731520"/></p:xfrm><a:graphic><a:graphicData uri="t"><a:tbl>'
+             '<a:tblGrid><a:gridCol w="1828800"/><a:gridCol w="1828800"/></a:tblGrid><a:tr h="365760">'
+             '<a:tc gridSpan="2"><a:txBody><a:bodyPr/><a:p><a:r><a:t>A</a:t></a:r></a:p></a:txBody><a:tcPr/></a:tc>'
+             '<a:tc hMerge="1"><a:txBody><a:bodyPr/><a:p/></a:txBody><a:tcPr/></a:tc></a:tr></a:tbl></a:graphicData></a:graphic></p:graphicFrame>')
+    slide = f'<p:sld {ns}><p:cSld>{tree}{title}{body}{box}{table}</p:spTree></p:cSld></p:sld>'
+    parts = {
+        "[Content_Types].xml": '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>',
+        "_rels/.rels": rels(("rId1", "officeDocument", "ppt/presentation.xml")),
+        "ppt/presentation.xml": f'<p:presentation {ns}><p:sldIdLst><p:sldId id="256" r:id="rId2"/>'
+                                '<p:sldId id="257" r:id="rId3"/></p:sldIdLst><p:sldSz cx="6096000" cy="3429000"/></p:presentation>',
+        "ppt/_rels/presentation.xml.rels": rels(("rId2", "slide", "slides/slide1.xml"), ("rId3", "slide", "slides/slide2.xml")),
+        "ppt/slides/slide1.xml": slide,
+        "ppt/slides/_rels/slide1.xml.rels": rels(("rId1", "slideLayout", "../slideLayouts/slideLayout1.xml")),
+        "ppt/slides/slide2.xml": f'<p:sld {ns}><p:cSld><p:bg><p:bgRef idx="1001"><a:schemeClr val="bg2"/></p:bgRef></p:bg>{tree}{title}</p:spTree></p:cSld></p:sld>',
+        "ppt/slides/_rels/slide2.xml.rels": rels(("rId1", "slideLayout", "../slideLayouts/slideLayout1.xml")),
+        "ppt/slideLayouts/slideLayout1.xml": f'<p:sldLayout {ns}><p:cSld>{tree}</p:spTree></p:cSld></p:sldLayout>',
+        "ppt/slideLayouts/_rels/slideLayout1.xml.rels": rels(("rId1", "slideMaster", "../slideMasters/slideMaster1.xml")),
+        "ppt/slideMasters/slideMaster1.xml":
+            f'<p:sldMaster {ns}><p:cSld>{tree}'
+            + sp('<p:ph type="title"/>', 304800, 152400, 5486400, 609600, "", "<a:p/>")
+            + sp('<p:ph type="body" idx="1"/>', 304800, 914400, 5486400, 2286000, "", "<a:p/>")
+            + '</p:spTree></p:cSld><p:clrMap bg1="lt1" tx1="dk1" bg2="lt2" tx2="dk2" accent1="accent1"/>'
+            '<p:txStyles><p:titleStyle><a:lvl1pPr><a:defRPr sz="4400"/></a:lvl1pPr></p:titleStyle>'
+            '<p:bodyStyle><a:lvl1pPr marL="228600" indent="-228600"><a:buChar char="&#8226;"/><a:defRPr sz="2400"/></a:lvl1pPr></p:bodyStyle>'
+            '</p:txStyles></p:sldMaster>',
+        "ppt/slideMasters/_rels/slideMaster1.xml.rels": rels(("rId1", "theme", "../theme/theme1.xml")),
+        "ppt/theme/theme1.xml": '<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:themeElements>'
+                                '<a:clrScheme name="s"><a:dk1><a:srgbClr val="000000"/></a:dk1><a:lt1><a:srgbClr val="FFFFFF"/></a:lt1>'
+                                '<a:lt2><a:srgbClr val="E7E6E6"/></a:lt2><a:accent1><a:srgbClr val="4472C4"/></a:accent1></a:clrScheme>'
+                                '</a:themeElements></a:theme>',
+    }
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, text in parts.items():
+            info = zipfile.ZipInfo(name, date_time=(2026, 1, 1, 0, 0, 0))  # reproducible
+            info.compress_type = zipfile.ZIP_DEFLATED
+            z.writestr(info, text)
+    return buf.getvalue()
+
+
 def build(out_root: Path) -> list[str]:
     seeds = out_root / "seeds"
     broken = out_root / "broken"
@@ -381,6 +451,7 @@ def build(out_root: Path) -> list[str]:
     # Documents (docs/plans/audio-and-documents.md): no Pillow involved.
     files["pdf/two_pages.pdf"] = pdf_two_pages()
     files["docx/small.docx"] = docx_small()
+    files["pptx/small.pptx"] = pptx_small()
 
     # JPEG
     files["jpeg/baseline.jpg"] = save(rgb, "JPEG", quality=85)

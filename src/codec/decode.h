@@ -113,6 +113,43 @@ inline constexpr std::uint32_t kDocxPreviewEdge = 1024;
                                          const job_context* ctx = nullptr,
                                          std::uint32_t long_edge = kDocxLongEdge);
 
+// PPTX (issue #429): a slide a page, laid out and drawn by codec/ itself
+// (pptx.cpp over the DOCX zip, XML and text path), the same everywhere. A
+// slide is `long_edge` px on its long edge in sRGB; the raster carries page
+// and page_count. Readable slides, not PowerPoint's: see pptx.cpp.
+inline constexpr std::uint32_t kPptxLongEdge = 3200;
+inline constexpr std::uint32_t kPptxPreviewEdge = 1024;
+[[nodiscard]] result<raster> decode_pptx(std::span<const std::uint8_t> bytes, std::uint32_t page = 0,
+                                         const job_context* ctx = nullptr,
+                                         std::uint32_t long_edge = kPptxLongEdge);
+
+// Several pages of one document from one open of the file: the page sidebar
+// (issue #429) asks for a window of small pages at once, and opening a PDF or
+// laying out a DOCX per page would make page 250 cost 250 layouts. `pages` are
+// rendered in the order given at `long_edge`; a page past the end is skipped.
+// `sink` takes each page and returns false to stop early. Returns the page
+// count. PDF and DOCX (and PPTX) only; anything else is `unsupported_format`.
+using page_sink = bool (*)(void* user, raster&& page);
+[[nodiscard]] result<std::uint32_t> decode_pages(std::span<const std::uint8_t> bytes,
+                                                 std::span<const std::uint32_t> pages,
+                                                 std::uint32_t long_edge, const job_context* ctx,
+                                                 void* user, page_sink sink);
+[[nodiscard]] result<std::uint32_t> decode_pdf_pages(std::span<const std::uint8_t> bytes,
+                                                     std::span<const std::uint32_t> pages,
+                                                     std::uint32_t long_edge,
+                                                     const job_context* ctx, void* user,
+                                                     page_sink sink);
+[[nodiscard]] result<std::uint32_t> decode_docx_pages(std::span<const std::uint8_t> bytes,
+                                                      std::span<const std::uint32_t> pages,
+                                                      std::uint32_t long_edge,
+                                                      const job_context* ctx, void* user,
+                                                      page_sink sink);
+[[nodiscard]] result<std::uint32_t> decode_pptx_pages(std::span<const std::uint8_t> bytes,
+                                                      std::span<const std::uint32_t> pages,
+                                                      std::uint32_t long_edge,
+                                                      const job_context* ctx, void* user,
+                                                      page_sink sink);
+
 // How many LibRaw threads the image on screen may use. Leaves processors for
 // the present loop; prefetch passes 1 instead. Output pixels do not depend on it.
 [[nodiscard]] unsigned raw_foreground_threads() noexcept;

@@ -43,6 +43,7 @@
 #include "core/status.h"
 #include "core/trace.h"
 #include "gfx/device.h"
+#include "image/page_thumbs.h"
 #include "image/pipeline.h"
 #include "image/thumb.h"
 #include "image/tiles.h"
@@ -295,6 +296,10 @@ struct mv_session {
   std::atomic<std::uint32_t> folder_generation{1};
   mv::io::directory_watcher watcher;
   mv::image::thumb_store thumbs;
+
+  // 0.31 (issue #429): the page sidebar's thumbnails of the selected stop
+  // (mv_folder_page_thumbs): what is wanted, in flight and landed.
+  mv::image::page_thumb_book page_thumbs;
 
   // A decode already queued or running for a path. Without it, a held arrow
   // key re-submits the same neighbours every step as the LRU churns, and the
@@ -2664,10 +2669,15 @@ mv_status MV_CALL mv_folder_select_page(mv_session_t session, uint32_t page, uin
       return static_cast<status>(mv_folder_select(session, index, out_job_id));
     }
     std::string path;
+    std::int64_t mtime_unix = 0;
+    std::uint64_t size = 0;
     {
       std::lock_guard lock(session->folder_mutex);
       MV_REQUIRE(session->folder_selected < session->folder_items.size(), "nothing selected");
-      path = session->folder_items[session->folder_selected].path;
+      const auto& item = session->folder_items[session->folder_selected];
+      path = item.path;
+      mtime_unix = item.mtime_unix;
+      size = item.size;
     }
     MV_REQUIRE(!video_path(path), "a clip has no pages");
     const mv::generation gen = session->jobs.bump_generation();
@@ -2676,12 +2686,39 @@ mv_status MV_CALL mv_folder_select_page(mv_session_t session, uint32_t page, uin
     if (out_job_id) *out_job_id = 0;
     (void)session->jobs.submit_at(
         gen,
-        [session, path, page, folder_gen, correlation](const mv::job_context& ctx) -> status {
+        [session, path, page, mtime_unix, size, folder_gen,
+         correlation](const mv::job_context& ctx) -> status {
           const mv::crash_context::correlation_scope crash_cid(correlation);
           if (ctx.cancelled()) return status::cancelled;
           if (session->folder_generation.load(std::memory_order_relaxed) != folder_gen) {
             return status::cancelled;
           }
+          // The page's own key, so the canvas fits it like a new stop.
+          const std::uint64_t key = key_for(path + "\x1Fpage" + std::to_string(page));
+          // Issue #429, rule 3: the page sidebar's cached thumbnail of this
+          // page first (a lookup and a small JPEG decode), refined below by
+          // the page itself under the same key. In this job, so it can never
+          // land after the full page.
+          if (session->thumbs.is_open()) {
+            const auto thumb = session->thumbs.lookup_unverified(
+                mv::image::page_thumb_key(path, page, mtime_unix, size));
+            if (thumb && !thumb.value().empty()) {
+              if (auto jpeg = mv::io::read_all(thumb.value())) {
+                if (auto first = mv::image::decode_bytes(jpeg.value(), &ctx)) {
+                  if (ctx.cancelled()) return status::cancelled;
+                  if (auto dev = session->copy_device()) {
+                    auto up = mv::image::upload(dev.Get(), first.value(), ctx.gen(), &ctx, 1);
+                    if (up && path_is_selected(session, path)) {
+                      auto gpu = std::make_unique<mv::image::gpu_image>(std::move(up).value());
+                      gpu->quality = mv::image::gpu_quality::preview;
+                      publish_ready(session, key, info_from(first.value()), nullptr, std::move(gpu));
+                    }
+                  }
+                }
+              }
+            }
+          }
+          if (ctx.cancelled()) return status::cancelled;
           auto bytes = mv::io::read_all(path);
           if (!bytes) return bytes.error();
           auto decoded = mv::image::decode_bytes(bytes.value(), &ctx,
@@ -2698,8 +2735,6 @@ mv_status MV_CALL mv_folder_select_page(mv_session_t session, uint32_t page, uin
           if (ctx.cancelled()) return status::cancelled;
           auto cpu = std::make_shared<mv::image::display_image>(std::move(decoded).value());
           const mv_image_info info = info_from(*cpu);
-          // The page's own identity, so the canvas fits it like a new stop.
-          const std::uint64_t key = key_for(path + "\x1Fpage" + std::to_string(page));
           std::unique_ptr<mv::image::gpu_image> gpu;
           if (auto dev = session->copy_device()) {
             const status up = upload_still(session, dev.Get(), cpu, ctx, 0, gpu);
@@ -2729,6 +2764,80 @@ mv_status MV_CALL mv_folder_thumbs_visible(mv_session_t session, uint32_t first,
     MV_REQUIRE(valid(session), "session must not be null");
     submit_thumb_jobs(session, first, count);
     return status::ok;
+  }));
+}
+
+namespace {
+
+struct page_thumb_job {
+  mv_session* session = nullptr;
+  std::uint32_t serial = 0;
+  std::uint64_t correlation = 0;
+};
+
+bool page_thumb_landed(void* user, std::uint32_t page, std::string_view jpeg_path) {
+  const auto& job = *static_cast<const page_thumb_job*>(user);
+  if (!job.session->page_thumbs.landed(job.serial, page, jpeg_path)) return false;  // another stop
+  mv_completion c{};
+  c.kind = MV_COMPLETION_PAGE_THUMB_READY;
+  c.status = MV_OK;
+  c.correlation_id = job.correlation;
+  c.generation = job.serial;
+  c.payload = static_cast<int64_t>(page);
+  job.session->push_completion(c);
+  return true;
+}
+
+}  // namespace
+
+mv_status MV_CALL mv_folder_page_thumbs(mv_session_t session, uint32_t first, uint32_t count,
+                                        uint32_t* out_serial) {
+  return static_cast<mv_status>(guard("mv_folder_page_thumbs", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    mv_session::folder_item item;
+    {
+      std::lock_guard lock(session->folder_mutex);
+      MV_REQUIRE(session->folder_selected < session->folder_items.size(), "nothing selected");
+      item = session->folder_items[session->folder_selected];
+    }
+    MV_REQUIRE(!video_path(item.path), "a clip has no pages");
+    auto want = session->page_thumbs.want(item.path, first, count);
+    if (out_serial) *out_serial = want.serial;
+    if (want.pages.empty()) return status::ok;
+    if (!session->thumbs.is_open()) {
+      if (auto dir = mv::io::thumb_cache_dir()) {
+        (void)session->thumbs.open(dir.value());
+      }
+    }
+    const auto correlation = mv::abi::current_correlation_id();
+    (void)session->jobs.submit_at(
+        mv::background_generation,
+        [session, item, correlation, serial = want.serial,
+         pages = std::move(want.pages)](const mv::job_context& ctx) -> status {
+          const mv::crash_context::correlation_scope crash_cid(correlation);
+          // Pages flung past before this job ran are not rendered.
+          const std::vector<std::uint32_t> still = session->page_thumbs.still_wanted(serial, pages);
+          if (still.empty()) return status::cancelled;
+          page_thumb_job job{session, serial, correlation};
+          const mv::image::thumb_key file{item.path, item.mtime_unix, item.size};
+          const status made = mv::image::make_page_thumbs(session->thumbs, file, still, &ctx, &job,
+                                                          page_thumb_landed);
+          // Whatever did not land (a broken page, past the end, a failure)
+          // is no longer in flight: asking again retries it.
+          session->page_thumbs.finished(serial, still);
+          return made;
+        });
+    return status::ok;
+  }));
+}
+
+mv_status MV_CALL mv_folder_page_thumb_path(mv_session_t session, uint32_t page, char* utf8,
+                                            uint32_t cap, uint32_t* out_bytes) {
+  return static_cast<mv_status>(guard("mv_folder_page_thumb_path", [&]() -> status {
+    MV_REQUIRE(valid(session), "session must not be null");
+    const std::string path = session->page_thumbs.path(page);
+    if (path.empty()) return status::not_found;
+    return copy_utf8(path, utf8, cap, out_bytes);
   }));
 }
 

@@ -280,6 +280,7 @@ bool present_lab_mac::cache_publish(const std::string& path, std::int64_t mtime,
   hit->preview = false;
   pages_count_.store(hit->page_count, std::memory_order_release);
   pages_item_.store(item_id, std::memory_order_release);
+  if (options_.page_count_known) options_.page_count_known(item_id, hit->page_count);
   delete pending_image_.exchange(hit);
   wake();
   return true;
@@ -378,7 +379,8 @@ void present_lab_mac::submit_prefetch(const std::vector<std::string>& paths_utf8
 // item before it loaded -- ctx.cancelled() catches it below and the result
 // is discarded instead of clobbering the newer selection.
 void present_lab_mac::submit_image_load(std::string path_utf8, std::uint64_t item_id,
-                                        std::uint32_t page) noexcept {
+                                        std::uint32_t page, std::int64_t mtime_unix,
+                                        std::uint64_t size) noexcept {
   if (path_utf8.empty() || !options_.jobs) return;
 
   void* mtl_device = device_.native_device();
@@ -388,8 +390,8 @@ void present_lab_mac::submit_image_load(std::string path_utf8, std::uint64_t ite
   const std::uint64_t cid = *crash_context::last_call_address();
 
   options_.jobs->submit(
-      [this, path = std::move(path_utf8), mtl_device, pending, item_id, page,
-       cid](const job_context& ctx) -> status {
+      [this, path = std::move(path_utf8), mtl_device, pending, item_id, page, mtime_unix,
+       stamp_size = size, cid](const job_context& ctx) -> status {
         const crash_context::correlation_scope correlation(cid);
         std::ifstream f(path, std::ios::binary | std::ios::ate);
         if (!f) return status::io;
@@ -405,9 +407,14 @@ void present_lab_mac::submit_image_load(std::string path_utf8, std::uint64_t ite
         // RAW's embedded JPEG or a HEIC's thumbnail item goes up first; the full decode then replaces it
         // as a refinement of the same item (item_id), keeping the view.
         const double t_start = monotonic_seconds();
-        // A page past the first has no cheap first pixel of its own: the
-        // file's preview would be page 0.
+        // A page past the first: the file's preview would be page 0. Its own
+        // first pixel is the page sidebar's thumbnail when one is cached
+        // (issue #429), a lookup and a small JPEG decode; else none.
         if (page != 0) {
+          if (publish_page_thumb(path, mtime_unix, stamp_size, page, item_id, mtl_device, ctx) ==
+              status::cancelled) {
+            return status::cancelled;
+          }
         } else if (auto preview = image::decode_first_pixel(bytes, &ctx)) {
           if (ctx.cancelled()) return status::cancelled;
           if (auto up = image::upload(mtl_device, preview.value(), &ctx)) {
@@ -446,6 +453,9 @@ void present_lab_mac::submit_image_load(std::string path_utf8, std::uint64_t ite
         if (ctx.cancelled()) return status::cancelled;
         pages_count_.store(decoded.value().page_count, std::memory_order_release);
         pages_item_.store(item_id, std::memory_order_release);
+        if (options_.page_count_known) {
+          options_.page_count_known(item_id, decoded.value().page_count);
+        }
 
         if (page == 0 && cacheable_still(path)) {
           std::int64_t mtime = 0;
@@ -515,6 +525,37 @@ void present_lab_mac::submit_video_open(std::string path_utf8, std::uint64_t ite
         wake();
         return status::ok;
       });
+}
+
+// Issue #429: page `page`'s cached sidebar thumbnail up as the first pixel of a
+// page turn, inside the page's own load job (so the full page, which follows
+// in the same job, can never be overtaken by it). Anything missing is quiet.
+status present_lab_mac::publish_page_thumb(const std::string& path, std::int64_t mtime_unix,
+                                           std::uint64_t size, std::uint32_t page,
+                                           std::uint64_t item_id, void* mtl_device,
+                                           const job_context& ctx) noexcept {
+  if (!options_.page_thumb || mtime_unix == kNoStamp) return status::ok;
+  const std::string jpeg = options_.page_thumb(path, mtime_unix, size, page);
+  if (jpeg.empty()) return status::ok;
+  std::ifstream f(jpeg, std::ios::binary | std::ios::ate);
+  if (!f) return status::ok;
+  const std::streamoff bytes_size = f.tellg();
+  if (bytes_size <= 0) return status::ok;
+  std::vector<std::uint8_t> bytes(static_cast<std::size_t>(bytes_size));
+  f.seekg(0);
+  if (!f.read(reinterpret_cast<char*>(bytes.data()), bytes_size)) return status::ok;
+  if (ctx.cancelled()) return status::cancelled;
+  auto decoded = image::decode_bytes_mac(bytes, &ctx);
+  if (!decoded) return decoded.error() == status::cancelled ? status::cancelled : status::ok;
+  auto uploaded = image::upload(mtl_device, decoded.value(), &ctx);
+  if (!uploaded) return uploaded.error() == status::cancelled ? status::cancelled : status::ok;
+  if (ctx.cancelled()) return status::cancelled;
+  auto* img = new image::gpu_image_mac(std::move(uploaded).value());
+  img->item_id = item_id;
+  img->preview = true;
+  delete pending_image_.exchange(img);
+  wake();
+  return status::ok;
 }
 
 // A lookup and a 512-px JPEG decode on a worker, at the view generation
@@ -867,7 +908,7 @@ std::uint64_t present_lab_mac::open_item(std::string path_utf8, std::int64_t mti
   if (page != 0 || !cacheable_still(path_utf8) ||
       !cache_publish(path_utf8, mtime_unix, size, item)) {
     loading_item_.store(item, std::memory_order_release);
-    submit_image_load(std::move(path_utf8), item, page);
+    submit_image_load(std::move(path_utf8), item, page, mtime_unix, size);
   }
   return item;
 }

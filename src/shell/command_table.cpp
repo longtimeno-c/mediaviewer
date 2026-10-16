@@ -319,6 +319,9 @@ constexpr binding kBindings[] = {
     // they walk the folder (kWalk, first rows); A / D walk it in every case.
     row(key::left, mod_none, kSkim, tap_hold, skim_back, skim_back, skim_settle),
     row(key::right, mod_none, kSkim, tap_hold, skim_forward, skim_forward, skim_settle),
+    // Issue #429. Appended. Shift+T beside T (the filmstrip): browse and the
+    // islands, as the page keys; the gallery types ahead.
+    row(C('T'), mod_shift, kBrowse | kIsland, edge, toggle_page_sidebar),
 };
 
 // The router's index stores row + 1 in a byte.
@@ -507,6 +510,7 @@ constexpr command_info kCommands[] = {
     {label_green, "Label green"},
     {label_blue, "Label blue"},
     {clear_label, "Clear label"},
+    {toggle_page_sidebar, "Page sidebar"},
 };
 
 const char* named_key(key k) noexcept {

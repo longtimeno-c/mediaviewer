@@ -35,6 +35,28 @@ bool ftyp_heif(std::span<const std::uint8_t> header) noexcept {
   return false;
 }
 
+// Issue #429: a PowerPoint package. PowerPoint writes [Content_Types].xml and
+// _rels/ first, so its ppt/ parts may start past any header; when the span is
+// the whole file, the zip's central directory (at the end) names them. The
+// end record is in the last 64 KiB + 22 bytes (its comment is at most 64 KiB).
+bool zip_names_presentation(std::span<const std::uint8_t> bytes) noexcept {
+  static constexpr std::string_view kPart = "ppt/presentation.xml";
+  if (bytes.size() < 22) return false;
+  const std::size_t lowest = bytes.size() > 22 + 65535 ? bytes.size() - 22 - 65535 : 0;
+  for (std::size_t i = bytes.size() - 22 + 1; i-- > lowest;) {
+    const std::uint8_t* p = bytes.data() + i;
+    if (p[0] != 'P' || p[1] != 'K' || p[2] != 5 || p[3] != 6) continue;
+    const std::size_t cd_size = static_cast<std::size_t>(p[12]) | static_cast<std::size_t>(p[13]) << 8 |
+                                static_cast<std::size_t>(p[14]) << 16 | static_cast<std::size_t>(p[15]) << 24;
+    const std::size_t cd_at = static_cast<std::size_t>(p[16]) | static_cast<std::size_t>(p[17]) << 8 |
+                              static_cast<std::size_t>(p[18]) << 16 | static_cast<std::size_t>(p[19]) << 24;
+    if (cd_at > i || cd_size > i - cd_at) return false;
+    const std::string_view cd(reinterpret_cast<const char*>(bytes.data() + cd_at), cd_size);
+    return cd.find(kPart) != std::string_view::npos;
+  }
+  return false;
+}
+
 }  // namespace
 
 format_family probe(std::span<const std::uint8_t> header) noexcept {
@@ -92,15 +114,18 @@ format_family probe(std::span<const std::uint8_t> header) noexcept {
                               header[3] == 42))) {
     return format_family::tiff;
   }
-  // DOCX: a zip whose first parts are an Office package's. The first local
-  // header is "[Content_Types].xml" or a word/ part; decode_docx checks for
-  // word/document.xml before it believes it.
+  // DOCX and PPTX: a zip whose first parts are an Office package's. The first
+  // local header is "[Content_Types].xml" or a word/ (ppt/) part; decode_docx
+  // checks for word/document.xml, and decode_pptx for ppt/presentation.xml,
+  // before it believes it. A package whose first parts name neither is a
+  // presentation when its central directory says so, else a DOCX as before.
   if (header.size() >= 30 && header[0] == 'P' && header[1] == 'K' && header[2] == 3 && header[3] == 4) {
     const std::size_t limit = header.size() < 1024 ? header.size() : 1024;
     const std::string_view head(reinterpret_cast<const char*>(header.data()), limit);
-    if (head.find("word/") != std::string_view::npos ||
-        head.substr(30, 19) == "[Content_Types].xml") {
-      return format_family::docx;
+    if (head.find("word/") != std::string_view::npos) return format_family::docx;
+    if (head.find("ppt/") != std::string_view::npos) return format_family::pptx;
+    if (head.substr(30, 19) == "[Content_Types].xml") {
+      return zip_names_presentation(header) ? format_family::pptx : format_family::docx;
     }
   }
   // PDF allows bytes before the header; readers look in the first 1 KiB.

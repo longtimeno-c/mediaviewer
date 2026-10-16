@@ -357,6 +357,10 @@ enum class command_id : std::uint16_t {
   label_green,
   label_blue,
   clear_label,
+  // Issue #429 (docs/design/16 "View"): the page sidebar of a PDF, DOCX or PPTX
+  // with the filmstrip hidden. Appended. Shift+T, beside T: the two strips
+  // share the job (the folder's files, this file's pages) and never show at once.
+  toggle_page_sidebar,
   count
 };
 inline constexpr int kAddonCommandSlots = 8;

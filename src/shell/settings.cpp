@@ -100,6 +100,15 @@ void save_strip_hint_learned(settings_store& store) noexcept {
   store.update([](settings_doc& d) { d.set(kHints, "filmstrip_t", "1"); });
 }
 
+bool load_page_sidebar(const settings_store& store) noexcept {
+  const auto doc = store.snapshot();
+  return !doc || doc->get_int(kView, "page_sidebar", 1) != 0;
+}
+
+void save_page_sidebar(settings_store& store, bool on) noexcept {
+  store.update([on](settings_doc& d) { d.set(kView, "page_sidebar", on ? "1" : "0"); });
+}
+
 std::vector<std::string> load_destinations(const settings_store& store) noexcept {
   try {
     std::vector<std::string> out;
@@ -206,6 +215,8 @@ view_settings load_view_settings() noexcept { return load_view_settings(app_sett
 void save_view_settings(const view_settings& s) noexcept { save_view_settings(app_settings(), s); }
 bool load_strip_hint_learned() noexcept { return load_strip_hint_learned(app_settings()); }
 void save_strip_hint_learned() noexcept { save_strip_hint_learned(app_settings()); }
+bool load_page_sidebar() noexcept { return load_page_sidebar(app_settings()); }
+void save_page_sidebar(bool on) noexcept { save_page_sidebar(app_settings(), on); }
 std::vector<std::string> load_destinations() noexcept { return load_destinations(app_settings()); }
 void save_destinations(const std::vector<std::string>& list) noexcept { save_destinations(app_settings(), list); }
 std::vector<std::string> load_recent_folders() noexcept { return load_recent_folders(app_settings()); }

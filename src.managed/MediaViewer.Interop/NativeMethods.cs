@@ -139,6 +139,18 @@ internal static partial class NativeMethods
     internal static partial MvStatus mv_folder_thumbs_visible(MvSessionHandle session, uint first,
                                                               uint count);
 
+    // 0.31 (issue #429): the page sidebar's thumbnails.
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial MvStatus mv_folder_page_thumbs(MvSessionHandle session, uint first,
+                                                           uint count, out uint outSerial);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial MvStatus mv_folder_page_thumb_path(MvSessionHandle session, uint page,
+                                                               IntPtr utf8, uint cap,
+                                                               out uint outBytes);
+
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial MvStatus mv_folder_close(MvSessionHandle session);

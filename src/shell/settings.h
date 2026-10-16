@@ -118,6 +118,13 @@ void save_strip_hint_learned(settings_store& store) noexcept;
 [[nodiscard]] bool load_strip_hint_learned() noexcept;
 void save_strip_hint_learned() noexcept;
 
+// Issue #429: the page sidebar is wanted (Shift+T; `[view] page_sidebar`, on
+// unless turned off). Kept apart from view_settings for the same reason.
+[[nodiscard]] bool load_page_sidebar(const settings_store& store) noexcept;
+void save_page_sidebar(settings_store& store, bool on) noexcept;
+[[nodiscard]] bool load_page_sidebar() noexcept;
+void save_page_sidebar(bool on) noexcept;
+
 // F7 / F8 destinations, most recent first, at most five (docs/design/16). UTF-8
 // folder paths the user picked; they stay in the local settings file.
 inline constexpr std::size_t kMaxDestinations = 5;

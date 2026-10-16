@@ -178,6 +178,7 @@ public static partial class IslandHost
         bool? busy = null;
         bool video = false;
         bool itemChanged = false;
+        bool imageOpened = false;
         foreach (var c in _folderSession.Drain())
         {
             if (AddonCompletion.TryFrom(c, out AddonCompletion addon))
@@ -200,6 +201,10 @@ public static partial class IslandHost
                 int index = (int)c.Payload;
                 UpdateThumb(index);
             }
+            else if (c.Kind == MvCompletionKind.PageThumbReady && c.Status == MvStatus.Ok)
+            {
+                OnPageThumbReady(c.Generation, (int)c.Payload);  // issue #429 (IslandHost.PageSidebar.cs)
+            }
             else if (c.Kind == MvCompletionKind.FolderSummary)
             {
                 ApplyFolderSummary((int)c.Payload);
@@ -216,6 +221,7 @@ public static partial class IslandHost
                 // there is nothing left to wait for.
                 busy = false;
                 video = true;
+                if (c.Kind == MvCompletionKind.ImageOpened && c.Status == MvStatus.Ok) imageOpened = true;
             }
             else if (c.Kind is MvCompletionKind.VideoState or MvCompletionKind.VideoEnded)
             {
@@ -233,6 +239,11 @@ public static partial class IslandHost
         if (busy is bool want) SetBusy(want);
         if (video) UpdateVideoControls();
         if (itemChanged) NotifySearchItem();  // Milestone H (IslandHost.LocalSearch.cs)
+        // Issue #429: native learns the page count of what opened (it does not
+        // drain while we are attached). Queued, not sent from inside the drain,
+        // for FolderReady's reason (ReloadItems): native may show the sidebar.
+        if (imageOpened && _dispatcher is not null)
+            _dispatcher.DispatcherQueue.TryEnqueue(() => Send(Command.ImageOpened));
     }
 
     private static void ReloadItems()

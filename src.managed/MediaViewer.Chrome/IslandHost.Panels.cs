@@ -78,6 +78,7 @@ public static partial class IslandHost
             DisposeSource(ref _adjustPane);
             DisposeSource(ref _jobsPane);
             DisposeSource(ref _editPane);
+            DisposeSource(ref _pageSidebar);
             EnsureFocusHook();
             _metaPane = new DesktopWindowXamlSource();
             _metaPane.Initialize(Win32Interop.GetWindowIdFromWindow(parent));
@@ -97,6 +98,10 @@ public static partial class IslandHost
             _editPane = new DesktopWindowXamlSource();
             _editPane.Initialize(Win32Interop.GetWindowIdFromWindow(parent));
             _editPane.TakeFocusRequested += OnTakeFocusRequested;
+            // Issue #429: the page sidebar, on the folder tree's edge.
+            _pageSidebar = new DesktopWindowXamlSource();
+            _pageSidebar.Initialize(Win32Interop.GetWindowIdFromWindow(parent));
+            _pageSidebar.TakeFocusRequested += OnTakeFocusRequested;
             // Parked below the client area with no content until first shown: a
             // default full-client island would flash over the canvas.
             MoveAt(_metaPane, 0, args.ClientHeight, 1, 1);
@@ -104,6 +109,7 @@ public static partial class IslandHost
             MoveAt(_adjustPane, 0, args.ClientHeight, 1, 1);
             MoveAt(_jobsPane, 0, args.ClientHeight, 1, 1);
             MoveAt(_editPane, 0, args.ClientHeight, 1, 1);
+            MoveAt(_pageSidebar, 0, args.ClientHeight, 1, 1);
             // #345: the AI badge, a small island of its own (IslandHost.AiBadge.cs).
             AttachAiBadge(parent, args.ClientHeight);
             _metaPaneVisible = false;
@@ -136,12 +142,14 @@ public static partial class IslandHost
             DropTreeUi();
             DropAdjustUi();
             DropEditUi();
+            DropPageSidebarUi();
             DetachAiBadge();
             DisposeSource(ref _metaPane);
             DisposeSource(ref _tree);
             DisposeSource(ref _adjustPane);
             DisposeSource(ref _jobsPane);
             DisposeSource(ref _editPane);
+            DisposeSource(ref _pageSidebar);
             return 0;
         }
         catch (Exception ex)

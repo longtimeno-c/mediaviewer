@@ -183,7 +183,7 @@ crop. Keys are shown Windows-style; on macOS read `⌘` for `Ctrl`.
 | `Space` | browse | Next. On a clip or animation: play / pause; in a slideshow: pause; in the runner: jump |
 | `Home` / `End` | Walk | First / last |
 | `PageUp` / `PageDown` | Walk | Back / forward ten |
-| `Ctrl+PageUp` / `Ctrl+PageDown` | Browse, island | Previous / next page of a multi-page file (TIFF, PDF, DOCX, an ICO's sizes, a HEIC's top-level images); a notice says "Page n of m" |
+| `Ctrl+PageUp` / `Ctrl+PageDown` | Browse, island | Previous / next page of a multi-page file (TIFF, PDF, DOCX, PPTX, an ICO's sizes, a HEIC's top-level images); a notice says "Page n of m" |
 | `F5` | browse, video | Slideshow |
 | `F` / `F11` | all | Fullscreen |
 | `Ctrl+O` | All but crop | Open media… |
@@ -220,6 +220,7 @@ crop. Keys are shown Windows-style; on macOS read `⌘` for `Ctrl`.
 | `W` `S`, `↑` `↓` | gallery | Previous / next row |
 | `Enter` | gallery | Open the selection in the viewer (leaving fullscreen / slideshow, restoring the filmstrip if enabled) |
 | `T` | all | Filmstrip show / hide (stored per mode: folder open or single image) |
+| `Shift+T` | browse, island | Page sidebar show / hide: page thumbnails down the left of a PDF, DOCX or PPTX while the filmstrip is hidden (below). Remembered (Windows `settings.ini` `[view] page_sidebar`, Mac `mv.pageSidebar`), on by default. Also View ▸ Page Sidebar |
 | `S` | browse, video, island | Sticky zoom on advance |
 | `C` | Viewing | Clipping blinkies |
 | `O` | Viewing | On-canvas info overlay (filename, index, exposure triangle) |
@@ -231,6 +232,17 @@ crop. Keys are shown Windows-style; on macOS read `⌘` for `Ctrl`.
 | hold `\` | browse, video | Previous item, for burst pick, from the five-slot GPU LRU (Mac: the last still shown, kept on the GPU) |
 | `;` | browse, video | Play a Live Photo's motion once, with audio, and return to the still. `;` again, `Esc` or navigation return early. **Mac: not built** |
 | `Ctrl+Shift+A` | all | Always on top (`HWND_TOPMOST`) |
+
+**Page sidebar** (issue #429). With the filmstrip hidden and a PDF, DOCX or PPTX of more than one
+page on screen, a strip of its page thumbnails runs down the left of the canvas, like Preview's:
+one per page with its number, the page on screen outlined, a click turns to that page (as
+`Ctrl+PageDown` would), and the strip scrolls on its own and follows the page as the document
+scrolls. It takes the filmstrip's role for a document: the filmstrip lists the folder's files, the
+sidebar this file's pages, and the two never show at once. `Shift+T` turns it off and on; asked for
+while the filmstrip is up over a document, a notice says to press `T`. It reserves its width on the
+canvas, as the docked Edit pane does on the right. Hidden under the gallery, Settings and
+fullscreen chrome-off; the folder tree, when open, sits beside it (Windows) or over it (Mac). How it
+renders: [04](04-image-pipeline.md) "Page sidebar".
 
 **Filmstrip hint.** Some input means something else while the filmstrip is up, and the hint says
 so (`shell/filmstrip_hint.h`, shared). Over a PDF or DOCX with the strip showing it reads "Press T

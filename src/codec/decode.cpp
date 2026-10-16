@@ -22,6 +22,8 @@ result<raster> decode(std::span<const std::uint8_t> bytes, const job_context* ct
         return decode_pdf(bytes, page, ctx);
       case format_family::docx:
         return decode_docx(bytes, page, ctx);
+      case format_family::pptx:
+        return decode_pptx(bytes, page, ctx);
       case format_family::ico:
         return decode_ico_page(bytes, page, ctx);
       case format_family::heic:
@@ -62,11 +64,27 @@ result<raster> decode(std::span<const std::uint8_t> bytes, const job_context* ct
     case format_family::raw:  return decode_raw(bytes, ctx, raw_thread_limit);
     case format_family::pdf:  return decode_pdf(bytes, 0, ctx);
     case format_family::docx: return decode_docx(bytes, 0, ctx);
+    case format_family::pptx: return decode_pptx(bytes, 0, ctx);
     case format_family::unknown:
       if (looks_like_raw(bytes)) return decode_raw(bytes, ctx, raw_thread_limit);
       return err(status::unsupported_format);
   }
   return err(status::unsupported_format);
+}
+
+result<std::uint32_t> decode_pages(std::span<const std::uint8_t> bytes,
+                                   std::span<const std::uint32_t> pages, std::uint32_t long_edge,
+                                   const job_context* ctx, void* user, page_sink sink) {
+  switch (probe(bytes)) {
+    case format_family::pdf:
+      return decode_pdf_pages(bytes, pages, long_edge, ctx, user, sink);
+    case format_family::docx:
+      return decode_docx_pages(bytes, pages, long_edge, ctx, user, sink);
+    case format_family::pptx:
+      return decode_pptx_pages(bytes, pages, long_edge, ctx, user, sink);
+    default:
+      return err(status::unsupported_format);
+  }
 }
 
 result<std::unique_ptr<animation_source>> open_animation(
@@ -85,6 +103,7 @@ result<std::unique_ptr<animation_source>> open_animation(
     case format_family::raw:
     case format_family::pdf:
     case format_family::docx:
+    case format_family::pptx:
     case format_family::unknown:
       return err(status::unsupported_format);
   }

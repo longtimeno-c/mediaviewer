@@ -97,6 +97,11 @@ public static partial class IslandHost
         // The filmstrip hint card's "Got it" (chrome_cmd_hint_learned,
         // IslandHost.HintNotice.cs). Not in Checksum, as the Home ids are not.
         public const int HintLearned = 1081;
+        // Issue #429: a page sidebar row was clicked; arg is the page
+        // (chrome_cmd_select_page). Not in Checksum, as HintLearned is not.
+        public const int SelectPage = 1082;
+        // Issue #429: an image opened (chrome_cmd_image_opened); native reads its page count.
+        public const int ImageOpened = 1083;
         // Issue #38: arg 1 while a scrub or the More flyout holds the transport
         // up, 0 when it lets go (chrome_cmd_transport_hold).
         public const int TransportHold = 1017;
