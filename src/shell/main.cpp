@@ -5758,16 +5758,10 @@ void browse_tick(app_state* app) noexcept {
 }
 
 void persist_live_keys() noexcept {
-  std::vector<mv::shell::key_override> out;
-  const auto live = mv::shell::live_bindings();
-  const auto def = mv::shell::default_bindings();
-  const std::size_t n = live.size() < def.size() ? live.size() : def.size();
-  for (std::size_t i = 0; i < n; ++i) {
-    if (live[i].k == def[i].k && live[i].mods == def[i].mods) continue;
-    out.push_back(mv::shell::key_override{static_cast<int>(i),
-                                          static_cast<std::uint16_t>(live[i].k), live[i].mods});
+  try {
+    mv::shell::save_key_remaps(mv::shell::live_key_remaps());
+  } catch (...) {
   }
-  mv::shell::save_key_overrides(out);
 }
 
 void publish_command_table(app_state* app) noexcept {
@@ -9251,9 +9245,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   }
   // The toolbar is added when Explorer reports the button, not before.
   app.taskbar_created_msg = ::RegisterWindowMessageW(L"TaskbarButtonCreated");
-  for (const auto& o : mv::shell::load_key_overrides()) {
-    (void)mv::shell::set_live_key(o.row, static_cast<mv::shell::key>(o.k), o.mods);
-  }
+  mv::shell::apply_key_remaps(mv::shell::load_key_remaps());
   app.router.rebuild(mv::shell::live_bindings());
   if (!app.files.start()) MV_LOG_WARN("files: I/O worker did not start; F7 / F8 / Delete disabled");
   mv_session_config config{};

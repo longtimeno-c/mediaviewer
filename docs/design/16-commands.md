@@ -32,7 +32,11 @@ coverage file says so. A new `command_id` fails the test until it has a row.
   recorded.
 - A remap onto a key another row holds in an overlapping mode **swaps** the two rows, so nothing
   is silently left unbound. Remaps persist by row index (`settings.ini [keys]` on Windows,
-  `NSUserDefaults` on macOS), which is why new rows are only ever **appended**.
+  `NSUserDefaults` on macOS), which is why new rows are only ever **appended**. What is saved
+  is every row that differs from the default, a row a swap left unbound included (key 0), and a
+  reload sets those rows as saved (`live_key_remaps` / `apply_key_remaps`). Replaying them
+  through the swapping rebind did not round-trip: a swap moved rows the list did not name, and
+  an unbound row came back on its default key (issue #153, `test_command_contract.cpp`).
 - **Mac menu bar** (issue #182). The items that show a chord (Settings `⌘,`, New Window, Open,
   Folder Tree, Close Window) read it from the live table (`menu_chord`) after every remap, so a
   remap moves the menu with the router; a chord another command also holds stays the router's.

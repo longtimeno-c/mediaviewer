@@ -922,6 +922,20 @@ dotnet src.managed\MediaViewer.AbiSmokeTest\bin\Release\net8.0-windows\MediaView
 # WinUI chrome (also published beside mediaviewer_lab.exe by the CMake build)
 dotnet publish src.managed\MediaViewer.Chrome\MediaViewer.Chrome.csproj -c Release -r win-x64 --no-self-contained
 
+# Issue #153, the chromes' headless tests (no core build needed; CI's "WinUI chrome"
+# and "SwiftUI chrome" jobs run them). They read the chromes' sources as text and fail
+# when a copy of a command id, a captured key code, the rebind packing or a menu's
+# printed shortcut drifts from src/shell or from tests/data/command_table.snapshot.
+dotnet test src.managed\MediaViewer.Chrome.Tests\MediaViewer.Chrome.Tests.csproj -c Release
+# macOS: the same checks for the SwiftUI chrome, Import's model, AI's search model
+swift test --package-path src.swift/MediaViewerChrome
+swift test --package-path src.swift/ImportChrome
+swift test --package-path src.swift/AIChrome --filter SearchModelTests
+# The native half (part of plain ctest): key remaps survive persist and reload, and
+# describe_commands() by mode matches tests/data/command_table.snapshot. A change to
+# the default key map fails it on purpose; regenerate, then read the diff:
+$env:MV_UPDATE_SNAPSHOTS = "1"; .\build\bin\Release\mv_tests.exe "[snapshot]"; Remove-Item Env:MV_UPDATE_SNAPSHOTS
+
 # Milestone G: the Import add-on's suite (built with the core, both platforms)
 # Its verified copies flush durably and read back uncached in scratch folders
 # under %TEMP%, so they run at the speed of that disk; CI points TMP/TEMP at

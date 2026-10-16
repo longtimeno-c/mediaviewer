@@ -791,6 +791,43 @@ bool rebind_live(int index, key k, std::uint8_t mods) noexcept {
   return true;
 }
 
+std::vector<key_remap> live_key_remaps() {
+  std::vector<key_remap> out;
+  const auto live = live_bindings();
+  const std::size_t n = std::min(live.size(), std::size(kBindings));
+  for (std::size_t i = 0; i < n; ++i) {
+    if (live[i].k == kBindings[i].k && live[i].mods == kBindings[i].mods) continue;
+    out.push_back(key_remap{static_cast<int>(i), live[i].k, live[i].mods});
+  }
+  return out;
+}
+
+void apply_key_remaps(std::span<const key_remap> remaps) noexcept {
+  reset_live_bindings();
+  auto& live = live_store();
+  const auto valid = [](const key_remap& r) {
+    // key is uint16_t, so a >= 0 test is always true and GCC -Wtype-limits
+    // rejects it. 0 (key::none) stays in range: an unbound row must load back.
+    return r.row >= 0 && static_cast<std::size_t>(r.row) < std::size(kBindings) &&
+           static_cast<int>(r.k) < kKeyCount && r.mods < kModCombos;
+  };
+  // The list is the whole difference from the defaults, so it is set as it is.
+  // Replaying it through rebind_live is not the same table: a swap displaces a row
+  // the list does not name (it ended on its default), and nothing puts it back.
+  for (const key_remap& r : remaps) {
+    if (!valid(r)) continue;
+    binding& b = live[static_cast<std::size_t>(r.row)];
+    b.k = r.k;
+    // GCC -Wextra rejects a ternary of enum mod and uint8_t.
+    if (r.k == key::none) b.mods = mod_none;
+    else b.mods = r.mods;
+  }
+  // No collision pass: the default table already shares keys between rows whose
+  // modes overlap (the router's row order decides), and a rebind_live swap only
+  // moves the first such row, so Settings itself can save a shared key. A stale
+  // or hand-edited file that shares one is routed by the same row order.
+}
+
 std::span<const command_info> command_infos() noexcept { return kCommands; }
 
 // Every bound command is handled by run_command as of PR 6 (6f emptied this;
