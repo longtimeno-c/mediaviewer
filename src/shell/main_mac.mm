@@ -74,6 +74,7 @@
 #include "shell/browse_index.h"
 #include "shell/browse_path.h"
 #include "shell/commands.h"
+#include "shell/command_coverage.h"
 #include "shell/crash_reporter_mac.h"
 #include "shell/edit_session.h"
 #include "shell/text_in_image.h"
@@ -153,79 +154,22 @@ namespace {
 // lifetime as the window; the lab and its snapshot outlive the app delegate
 // only because both are ivars of the single MvLabApp instance that owns this
 // process's only window (docs/design/14-abi.md's shape, scoped to the lab).
+// command_coverage.inc is the set runCommand: handles, so Settings cannot list a
+// command the dispatcher does not run. Import and similar-search stay off until
+// that add-on is loaded. search_open stays on: with no AI pack it is file search.
 static bool MvCommandSupported(mv::shell::command_id c) {
+  if (!mv::shell::mac_dispatcher_handles(c)) return false;
   using enum mv::shell::command_id;
   switch (c) {
-    case open: case open_folder: case fit: case one_to_one: case overlay: case prev: case next:
-    case first: case last: case skip_back: case skip_forward: case back: case toggle_gallery:
-    case toggle_filmstrip: case gallery_up: case gallery_down: case gallery_open_selected:
-    case gallery_larger: case gallery_smaller: case fullscreen: case reset_view: case play_pause:
-    case pause: case jump_back: case jump_forward: case frame_back: case frame_forward:
-    case rate_down: case rate_up: case skim_back: case skim_forward: case skim_settle: case mute:
-    case toggle_mark: case mark_all: case unmark_all: case copy_to: case copy_to_pick:
-    case move_to: case move_to_pick: case delete_to_recycle_bin: case slideshow_start:
-    case slideshow_pause: case slideshow_faster: case slideshow_slower: case help:
-    case reveal_in_explorer: case open_settings: case sticky_zoom:
-    case reset_stats: case always_on_top: case close_window: case new_window: case pan_up: case pan_down:
-    case folder_up: case folder_prev: case folder_next:
-    // Issue #183: the View keys, the loupe, hold-previous and the slideshow's
-    // blackout and shuffle, ported from the Windows host.
-    case zoom_in: case zoom_out: case zoom_200: case zoom_400: case fill: case pan_left:
-    case pan_right: case clipping: case loupe: case loupe_release: case loupe_nudge_left:
-    case loupe_nudge_right: case loupe_nudge_up: case loupe_nudge_down: case hold_previous:
-    case hold_previous_release: case blackout: case shuffle:
-    // Issue #208: the two-up compare (shell/compare.h).
-    case compare_two_up:
-    // PR 9
-    case info_overlay: case af_points: case eyedropper: case copy_clipboard: case metadata_pane: case folder_tree:
-    // Issue #209
-    case zoom_af_point:
-    // PR 10
-    case rotate_ccw: case rotate_cw: case flip_horizontal: case flip_vertical: case crop_mode:
-    case crop_commit: case crop_move_left: case crop_move_right: case crop_move_up:
-    case crop_move_down: case crop_narrower: case crop_wider: case crop_shorter:
-    case crop_taller: case straighten_ccw: case straighten_cw: case export_image:
-    case undo_edit: case reset_edits:
-    // PR 11
-    case adjust_pane:
-    // PR 12
-    case set_rating_0: case set_rating_1: case set_rating_2: case set_rating_3:
-    case set_rating_4: case set_rating_5: case edit_comment:
-    // Issue #207
-    case reject: case label_red: case label_yellow: case label_green: case label_blue:
-    case clear_label:
-    // PR 13 / 14
-    case trim_mode: case trim_in: case trim_out: case trim_clear: case trim_preview:
-    case trim_keyframe: case trim_reencode: case trim_remove_middle: case keyframe_prev:
-    case keyframe_next: case jobs_pane: case clip_tools: case clip_split:
-    // PR 15
-    case copy_path: case copy_flattened: case share:
-    // Pages (docs/plans/audio-and-documents.md §2.3)
-    case next_page: case prev_page:
-    // PR 29
-    case edit_workspace: case crop_aspect_cycle: case crop_aspect_swap: case show_original:
-    case show_original_release:
-    // ⌘F is always there: Local search's panel while the pack is loaded, file
-    // search otherwise (docs/design/16 "File search", 2026-09-28).
-    case search_open:
-    // Issue #184: `/` (find by name in the gallery), the runner's `3`, and the
-    // rows an add-on's manifest fills; runCommand: handles each.
-    case typeahead: case game_toggle_3d:
-    // Issue #206: View > Show, cycled (unbound by default); the menus set it.
-    case kind_filter_next:
-    // Issue #210: F2.
-    case rename_file:
-    case addon_cmd_0: case addon_cmd_1: case addon_cmd_2: case addon_cmd_3:
-    case addon_cmd_4: case addon_cmd_5: case addon_cmd_6: case addon_cmd_7:
-      return true;
-    // Milestone G: only while the Import add-on is loaded (docs/design/18).
-    case open_import: case import_now:
+    case open_import:
+    case import_now:
       return mv::shell::addon_commands_available(mv::shell::addon_family::import);
-    // Milestone H: only while the AI pack is loaded (docs/design/17 "UI and commands").
-    case search_similar: case search_next_match: case search_prev_match:
+    case search_similar:
+    case search_next_match:
+    case search_prev_match:
       return mv::shell::addon_commands_available(mv::shell::addon_family::ai);
     default:
-      return false;
+      return true;
   }
 }
 mv::shell::input_snapshot* g_chrome_snap = nullptr;
@@ -607,6 +551,12 @@ constexpr CGFloat kTreeWidthPoints = 280.0;
 // route's command runs here. -handleKeyEvent: returns whether the key was ours.
 - (BOOL)handleKeyEvent:(NSEvent*)event;
 - (BOOL)runCommand:(mv::shell::command_id)command back:(mv::shell::back_target)back;
+- (BOOL)runCanvasCommand:(mv::shell::command_id)command back:(mv::shell::back_target)target;
+- (BOOL)runTransportCommand:(mv::shell::command_id)command;
+- (BOOL)runMarksCommand:(mv::shell::command_id)command;
+- (BOOL)runSlideshowCommand:(mv::shell::command_id)command;
+- (BOOL)runEditStackCommand:(mv::shell::command_id)command;
+- (BOOL)runSessionCommand:(mv::shell::command_id)command;
 - (void)cancelKeyHolds;
 // Issue #38: pointer, click, transport key or transport button. Wakes the
 // clip's controls and restarts their idle clock; a no-op with no clip.
@@ -6372,43 +6322,9 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
   }
 }
 
-- (BOOL)runCommand:(mv::shell::command_id)command back:(mv::shell::back_target)target {
+- (BOOL)runCanvasCommand:(mv::shell::command_id)command back:(mv::shell::back_target)target {
   using enum mv::shell::command_id;
-  // PR 11 (docs/design/13): every command is a native call with its own id, so a
-  // chrome exception or a crash in the work it starts carries the same one.
-  (void)mv::shell::crash::note_native_call();
   const bool clip = [self currentItemIsVideo];
-  const bool anim = !clip && _lab.anim_active();
-  // PR 29 (docs/design/20): the keys that open a tab of the Edit workspace. The
-  // workspace decides the tab; crop_mode and trim_mode then do their own work.
-  // PR 30 (docs/design/21, owner): video is edited in its own window, not a pane.
-  // Return (the bar's "Open in <app>") on a PDF or DOCX: its own app opens it.
-  if (command == edit_workspace && !_ws.open && !_editorOpen && [self currentItemIsDocument]) {
-    [self openDocumentInApp:nil];
-    return YES;
-  }
-  if (command == edit_workspace && (_editorOpen || [self editSubject] == mv::shell::edit_subject::clip)) {
-    if (_editorOpen) {
-      [self editorRequestClose];
-    } else {
-      [self setEditorOpen:YES];
-    }
-    return YES;
-  }
-  if (command == edit_workspace || command == crop_mode || command == adjust_pane ||
-      command == trim_mode || command == metadata_pane || command == jobs_pane) {
-    const mv::shell::workspace_step step = mv::shell::route_workspace(_ws, [self editSubject], command);
-    if (step.action != mv::shell::workspace_action::none) {
-      if (mv::shell::apply_step(_ws, step)) [self syncWorkspace];
-      if (command != crop_mode && command != trim_mode) return YES;
-    } else if (command == edit_workspace) {
-      NSBeep();  // nothing on the canvas to edit
-      return YES;
-    } else if (_ws.open && (command == metadata_pane || command == jobs_pane || command == adjust_pane)) {
-      // A pane the workspace does not hold here takes the edge on its own.
-      [self editClose];
-    }
-  }
   switch (command) {
     case open: [self openFolderPanel:NO]; return YES;
     case open_folder: [self openFolderPanel:YES]; return YES;
@@ -6524,6 +6440,258 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
     case gallery_larger: [self adjustGalleryCellSize:1]; return YES;
     case gallery_smaller: [self adjustGalleryCellSize:-1]; return YES;
     case fullscreen: [self toggleFullscreen]; return YES;
+    case sticky_zoom: [self setViewFlags:_viewFlags ^ mv::shell::kSettingStickyZoom]; return YES;
+    // docs/design/16: pan only when zoomed. At fit the view is locked, so the key is
+    // not ours and falls through; on a fitted clip ↑ ↓ are its volume.
+    case pan_up: case pan_down: case pan_left: case pan_right: {
+      const bool zooming = _zoomIntentAt > 0.0 && CACurrentMediaTime() - _zoomIntentAt < kZoomIntentSeconds;
+      if (_lab.view_fitted() && !zooming) {
+        if (!clip || (command != pan_up && command != pan_down)) return NO;
+        _snap.video_volume_steps += command == pan_up ? 1 : -1; [self pokeSnapshot]; return YES;
+      }
+      if (command == pan_up) --_snap.pan_steps_y;
+      if (command == pan_down) ++_snap.pan_steps_y;
+      if (command == pan_left) --_snap.pan_steps_x;
+      if (command == pan_right) ++_snap.pan_steps_x;
+      [self pokeSnapshot];
+      return YES;
+    }
+    // View state the render thread draws from (levels, not edges).
+    case clipping: _snap.clipping = !_snap.clipping; [self pokeSnapshot]; return YES;
+    case loupe: case loupe_release:
+      // The loupe magnifies a still. On a clip or an empty canvas Z is not
+      // ours: do not swallow it and then draw nothing.
+      if (command == loupe && (clip || _items.empty() || !_lab.showing_still())) return NO;
+      _snap.loupe = command == loupe;
+      if (command == loupe) {
+        // Each hold starts at the cursor, or the canvas centre with none.
+        _snap.loupe_steps_x = 0;
+        _snap.loupe_steps_y = 0;
+      }
+      [self pokeSnapshot];
+      return YES;
+    case loupe_nudge_left: --_snap.loupe_steps_x; [self pokeSnapshot]; return YES;
+    case loupe_nudge_right: ++_snap.loupe_steps_x; [self pokeSnapshot]; return YES;
+    case loupe_nudge_up: --_snap.loupe_steps_y; [self pokeSnapshot]; return YES;
+    case loupe_nudge_down: ++_snap.loupe_steps_y; [self pokeSnapshot]; return YES;
+    case hold_previous: case hold_previous_release:
+      _snap.hold_previous = command == hold_previous;
+      [self pokeSnapshot];
+      return YES;
+    case compare_two_up:
+      // A level: the render thread splits only while a still is up.
+      _snap.compare = !_snap.compare;
+      [self pokeSnapshot];
+      return YES;
+    // PR 9. The overlays are levels the render thread draws from `_snap.meta`;
+    // turning one on asks for the record if it is not already here, and never
+    // reads the file a second time.
+    case info_overlay:
+      _snap.info_overlay = !_snap.info_overlay;
+      if (_snap.info_overlay) [self requestMetadataNow];
+      [self pokeSnapshot];
+      return YES;
+    case af_points:
+      _snap.af_points = !_snap.af_points;
+      if (_snap.af_points) [self requestMetadataNow];
+      [self pokeSnapshot];
+      return YES;
+    // Issue #209: 100 % on the AF point, from the record already held (or one
+    // read on the pool); the render thread moves the camera.
+    case zoom_af_point:
+      if (_metaRecord) {
+        [self afFocusFire];
+      } else {
+        _afFocusPending = YES;
+        [self requestMetadataNow];
+      }
+      return YES;
+    case eyedropper:
+      _snap.eyedropper = !_snap.eyedropper;
+      [self pokeSnapshot];
+      return YES;
+    default:
+      // command_coverage.inc sent this id here. A missing case is a
+      // no-op, the same as the old switch's default.
+      return NO;
+  }
+}
+
+- (BOOL)runTransportCommand:(mv::shell::command_id)command {
+  using enum mv::shell::command_id;
+  const bool clip = [self currentItemIsVideo];
+  const bool anim = !clip && _lab.anim_active();
+  switch (command) {
+    // Clip / animation transport. Space, K and `,` `.` reach the render thread as
+    // latched counters (input_snapshot), like pan and zoom.
+    case play_pause: case pause:
+      if (!clip && !anim) return NO;
+      ++_snap.anim_toggle_seq; [self pokeSnapshot]; return YES;
+    case frame_back: case frame_forward:
+      if (!clip && !anim) return NO;
+      _snap.anim_steps += command == frame_forward ? 1 : -1; [self pokeSnapshot]; return YES;
+    case jump_back: case jump_forward:
+      if (!clip) return NO;
+      _snap.video_skip_ms += command == jump_forward ? 10000 : -10000; [self pokeSnapshot]; return YES;
+    case skim_back: case skim_forward:
+      if (!clip) return NO;
+      _snap.video_skip_ms += command == skim_forward ? 2000 : -2000; [self pokeSnapshot]; return YES;
+    case skim_settle: return YES;
+    case rate_down: case rate_up:
+      if (!clip) return NO;
+      _snap.video_speed_steps += command == rate_up ? 1 : -1; [self pokeSnapshot]; return YES;
+    case mute:
+      if (!clip) return NO;
+      ++_snap.video_mute_seq; [self pokeSnapshot]; return YES;
+    default:
+      // command_coverage.inc sent this id here. A missing case is a
+      // no-op, the same as the old switch's default.
+      return NO;
+  }
+}
+
+- (BOOL)runMarksCommand:(mv::shell::command_id)command {
+  using enum mv::shell::command_id;
+  switch (command) {
+    case reveal_in_explorer: {
+      // docs/design/26: a Photos library item is shown where it lives, in
+      // Photos, not as its rendition inside the library bundle or the cache.
+      if (!_items.empty() && _index.current() < _items.size() &&
+          mv::shell::photos::is_key(_items[_index.current()].path_utf8)) {
+        return mv::shell::photos::show_in_photos(_items[_index.current()].path_utf8) ? YES : NO;
+      }
+      NSString* path = [self currentItemPathForDrag];
+      if (!path) return NO;
+      [[NSWorkspace sharedWorkspace] activateFileViewerSelectingURLs:@[ [NSURL fileURLWithPath:path] ]];
+      return YES;
+    }
+    case toggle_mark: [self toggleMarkCurrent]; return YES;
+    case mark_all:
+      // With words selected in the still, Select All is every word (Photos);
+      // otherwise it marks every file.
+      if (_text.has_selection() && _text.select_all()) {
+        [self textPublish];
+        return YES;
+      }
+      [self markAll];
+      return YES;
+    case unmark_all: [self unmarkAll]; return YES;
+    case copy_to: [self copyMarkedPickDestination:NO]; return YES;
+    case copy_to_pick: [self copyMarkedPickDestination:YES]; return YES;
+    case move_to: [self moveMarkedPickDestination:NO]; return YES;
+    case move_to_pick: [self moveMarkedPickDestination:YES]; return YES;
+    case delete_to_recycle_bin:
+      if (_items.empty()) return NO;
+      [self deleteMarkedToTrash];
+      return YES;
+    case copy_clipboard: {
+      NSPasteboard* board = [NSPasteboard generalPasteboard];
+      // Words selected in the still (text in images): that text.
+      if (_text.has_selection()) {
+        const std::string text = _text.text();
+        [board clearContents];
+        if (![board setString:[NSString stringWithUTF8String:text.c_str()] forType:NSPasteboardTypeString]) {
+          NSBeep();
+          return YES;
+        }
+        [self noticeShow:mv::shell::copy_text_notice(_text.words())];
+        return YES;
+      }
+      // Eyedropper on and a pixel under the cursor: that colour.
+      if (_snap.eyedropper) {
+        const std::string text = _lab.eyedropper_text();
+        if (!text.empty()) {
+          [board clearContents];
+          [board setString:[NSString stringWithUTF8String:text.c_str()] forType:NSPasteboardTypeString];
+          return YES;
+        }
+      }
+      // Otherwise the file(s): the marks, else the current item, which is the selected
+      // cell while the gallery is up. Pasteable in Finder, Mail, Messages.
+      NSMutableArray<NSURL*>* urls = [NSMutableArray array];
+      for (const auto& entry : [self markedOrCurrentEntries]) {
+        [urls addObject:[NSURL fileURLWithPath:[NSString stringWithUTF8String:entry.path_utf8.c_str()]]];
+      }
+      if (urls.count == 0) return NO;
+      [board clearContents];
+      return [board writeObjects:urls] ? YES : NO;
+    }
+    // PR 15 (docs/design/16 View): the keyboard twins of drag-out.
+    case copy_path: {
+      std::vector<std::string> paths;
+      for (const auto& entry : [self markedOrCurrentEntries]) paths.push_back(entry.path_utf8);
+      const std::string text = mv::shell::paths_as_text(paths, "\n");
+      if (text.empty()) return NO;
+      NSPasteboard* board = [NSPasteboard generalPasteboard];
+      [board clearContents];
+      return [board setString:[NSString stringWithUTF8String:text.c_str()] forType:NSPasteboardTypeString];
+    }
+    case copy_flattened: return [self copyFlattened];
+    case share: return [self shareRequest:{}];  // the key's request: the menu, on the selection
+    default:
+      // command_coverage.inc sent this id here. A missing case is a
+      // no-op, the same as the old switch's default.
+      return NO;
+  }
+}
+
+- (BOOL)runSlideshowCommand:(mv::shell::command_id)command {
+  using enum mv::shell::command_id;
+  switch (command) {
+    case slideshow_start:
+      if (_items.empty()) return NO;
+      [self startSlideshow];
+      return YES;
+    case slideshow_pause: [self toggleSlideshowPause]; return YES;
+    case slideshow_faster: [self adjustSlideshowInterval:-1.0]; return YES;
+    case slideshow_slower: [self adjustSlideshowInterval:1.0]; return YES;
+    case blackout:
+      if (!_slideshowActive) return NO;
+      _snap.blackout = !_snap.blackout;
+      [self pokeSnapshot];
+      return YES;
+    case shuffle:
+      if (!_slideshowActive) return NO;
+      _slideshowOrder.toggle_shuffle(static_cast<std::uint32_t>(_index.current()),
+                                     static_cast<std::uint64_t>(CACurrentMediaTime() * 1000.0));
+      return YES;
+    default:
+      // command_coverage.inc sent this id here. A missing case is a
+      // no-op, the same as the old switch's default.
+      return NO;
+  }
+}
+
+- (BOOL)runEditStackCommand:(mv::shell::command_id)command {
+  using enum mv::shell::command_id;
+  const bool clip = [self currentItemIsVideo];
+  const bool anim = !clip && _lab.anim_active();
+  switch (command) {
+    // PR 11 (docs/design/16 Pane): ⇧A shows the adjust pane and focuses it.
+    case adjust_pane: [self setAdjustVisible:!_adjust.visible()]; return YES;
+    // PR 10 geometry, crop mode and export (docs/design/16 View + Crop).
+    case rotate_ccw: case rotate_cw: case flip_horizontal: case flip_vertical: case crop_mode:
+    case crop_commit: case crop_move_left: case crop_move_right: case crop_move_up:
+    case crop_move_down: case crop_narrower: case crop_wider: case crop_shorter:
+    case crop_taller: case straighten_ccw: case straighten_cw: case export_image:
+    case undo_edit: case reset_edits:
+    case crop_aspect_cycle: case crop_aspect_swap:
+      return [self runEditCommand:command];
+    // PR 29: Y held shows the original pixels; the stack is untouched.
+    case show_original: case show_original_release:
+      if (_items.empty() || clip || anim) return NO;
+      [self editShowOriginal:command == show_original];
+      return YES;
+    default:
+      // command_coverage.inc sent this id here. A missing case is a
+      // no-op, the same as the old switch's default.
+      return NO;
+  }
+}
+
+- (BOOL)runSessionCommand:(mv::shell::command_id)command {
+  using enum mv::shell::command_id;
+  switch (command) {
     case close_window: [self.window performClose:nil]; return YES;
     case new_window: [self openNewWindow]; return YES;
     case kind_filter_next:
@@ -6596,189 +6764,6 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
                                                         : "search_prev_match";
       return MvAddonsRunCommand(name) ? YES : NO;
     }
-    case reveal_in_explorer: {
-      // docs/design/26: a Photos library item is shown where it lives, in
-      // Photos, not as its rendition inside the library bundle or the cache.
-      if (!_items.empty() && _index.current() < _items.size() &&
-          mv::shell::photos::is_key(_items[_index.current()].path_utf8)) {
-        return mv::shell::photos::show_in_photos(_items[_index.current()].path_utf8) ? YES : NO;
-      }
-      NSString* path = [self currentItemPathForDrag];
-      if (!path) return NO;
-      [[NSWorkspace sharedWorkspace] activateFileViewerSelectingURLs:@[ [NSURL fileURLWithPath:path] ]];
-      return YES;
-    }
-    case sticky_zoom: [self setViewFlags:_viewFlags ^ mv::shell::kSettingStickyZoom]; return YES;
-    // Clip / animation transport. Space, K and `,` `.` reach the render thread as
-    // latched counters (input_snapshot), like pan and zoom.
-    case play_pause: case pause:
-      if (!clip && !anim) return NO;
-      ++_snap.anim_toggle_seq; [self pokeSnapshot]; return YES;
-    case frame_back: case frame_forward:
-      if (!clip && !anim) return NO;
-      _snap.anim_steps += command == frame_forward ? 1 : -1; [self pokeSnapshot]; return YES;
-    case jump_back: case jump_forward:
-      if (!clip) return NO;
-      _snap.video_skip_ms += command == jump_forward ? 10000 : -10000; [self pokeSnapshot]; return YES;
-    case skim_back: case skim_forward:
-      if (!clip) return NO;
-      _snap.video_skip_ms += command == skim_forward ? 2000 : -2000; [self pokeSnapshot]; return YES;
-    case skim_settle: return YES;
-    case rate_down: case rate_up:
-      if (!clip) return NO;
-      _snap.video_speed_steps += command == rate_up ? 1 : -1; [self pokeSnapshot]; return YES;
-    case mute:
-      if (!clip) return NO;
-      ++_snap.video_mute_seq; [self pokeSnapshot]; return YES;
-    // docs/design/16: pan only when zoomed. At fit the view is locked, so the key is
-    // not ours and falls through; on a fitted clip ↑ ↓ are its volume.
-    case pan_up: case pan_down: case pan_left: case pan_right: {
-      const bool zooming = _zoomIntentAt > 0.0 && CACurrentMediaTime() - _zoomIntentAt < kZoomIntentSeconds;
-      if (_lab.view_fitted() && !zooming) {
-        if (!clip || (command != pan_up && command != pan_down)) return NO;
-        _snap.video_volume_steps += command == pan_up ? 1 : -1; [self pokeSnapshot]; return YES;
-      }
-      if (command == pan_up) --_snap.pan_steps_y;
-      if (command == pan_down) ++_snap.pan_steps_y;
-      if (command == pan_left) --_snap.pan_steps_x;
-      if (command == pan_right) ++_snap.pan_steps_x;
-      [self pokeSnapshot];
-      return YES;
-    }
-    // View state the render thread draws from (levels, not edges).
-    case clipping: _snap.clipping = !_snap.clipping; [self pokeSnapshot]; return YES;
-    case loupe: case loupe_release:
-      // The loupe magnifies a still. On a clip or an empty canvas Z is not
-      // ours: do not swallow it and then draw nothing.
-      if (command == loupe && (clip || _items.empty() || !_lab.showing_still())) return NO;
-      _snap.loupe = command == loupe;
-      if (command == loupe) {
-        // Each hold starts at the cursor, or the canvas centre with none.
-        _snap.loupe_steps_x = 0;
-        _snap.loupe_steps_y = 0;
-      }
-      [self pokeSnapshot];
-      return YES;
-    case loupe_nudge_left: --_snap.loupe_steps_x; [self pokeSnapshot]; return YES;
-    case loupe_nudge_right: ++_snap.loupe_steps_x; [self pokeSnapshot]; return YES;
-    case loupe_nudge_up: --_snap.loupe_steps_y; [self pokeSnapshot]; return YES;
-    case loupe_nudge_down: ++_snap.loupe_steps_y; [self pokeSnapshot]; return YES;
-    case hold_previous: case hold_previous_release:
-      _snap.hold_previous = command == hold_previous;
-      [self pokeSnapshot];
-      return YES;
-    case compare_two_up:
-      // A level: the render thread splits only while a still is up.
-      _snap.compare = !_snap.compare;
-      [self pokeSnapshot];
-      return YES;
-    case toggle_mark: [self toggleMarkCurrent]; return YES;
-    case mark_all:
-      // With words selected in the still, Select All is every word (Photos);
-      // otherwise it marks every file.
-      if (_text.has_selection() && _text.select_all()) {
-        [self textPublish];
-        return YES;
-      }
-      [self markAll];
-      return YES;
-    case unmark_all: [self unmarkAll]; return YES;
-    case copy_to: [self copyMarkedPickDestination:NO]; return YES;
-    case copy_to_pick: [self copyMarkedPickDestination:YES]; return YES;
-    case move_to: [self moveMarkedPickDestination:NO]; return YES;
-    case move_to_pick: [self moveMarkedPickDestination:YES]; return YES;
-    case delete_to_recycle_bin:
-      if (_items.empty()) return NO;
-      [self deleteMarkedToTrash];
-      return YES;
-    case slideshow_start:
-      if (_items.empty()) return NO;
-      [self startSlideshow];
-      return YES;
-    case slideshow_pause: [self toggleSlideshowPause]; return YES;
-    case slideshow_faster: [self adjustSlideshowInterval:-1.0]; return YES;
-    case slideshow_slower: [self adjustSlideshowInterval:1.0]; return YES;
-    case blackout:
-      if (!_slideshowActive) return NO;
-      _snap.blackout = !_snap.blackout;
-      [self pokeSnapshot];
-      return YES;
-    case shuffle:
-      if (!_slideshowActive) return NO;
-      _slideshowOrder.toggle_shuffle(static_cast<std::uint32_t>(_index.current()),
-                                     static_cast<std::uint64_t>(CACurrentMediaTime() * 1000.0));
-      return YES;
-    // PR 9. The overlays are levels the render thread draws from `_snap.meta`;
-    // turning one on asks for the record if it is not already here, and never
-    // reads the file a second time.
-    case info_overlay:
-      _snap.info_overlay = !_snap.info_overlay;
-      if (_snap.info_overlay) [self requestMetadataNow];
-      [self pokeSnapshot];
-      return YES;
-    case af_points:
-      _snap.af_points = !_snap.af_points;
-      if (_snap.af_points) [self requestMetadataNow];
-      [self pokeSnapshot];
-      return YES;
-    // Issue #209: 100 % on the AF point, from the record already held (or one
-    // read on the pool); the render thread moves the camera.
-    case zoom_af_point:
-      if (_metaRecord) {
-        [self afFocusFire];
-      } else {
-        _afFocusPending = YES;
-        [self requestMetadataNow];
-      }
-      return YES;
-    case eyedropper:
-      _snap.eyedropper = !_snap.eyedropper;
-      [self pokeSnapshot];
-      return YES;
-    case copy_clipboard: {
-      NSPasteboard* board = [NSPasteboard generalPasteboard];
-      // Words selected in the still (text in images): that text.
-      if (_text.has_selection()) {
-        const std::string text = _text.text();
-        [board clearContents];
-        if (![board setString:[NSString stringWithUTF8String:text.c_str()] forType:NSPasteboardTypeString]) {
-          NSBeep();
-          return YES;
-        }
-        [self noticeShow:mv::shell::copy_text_notice(_text.words())];
-        return YES;
-      }
-      // Eyedropper on and a pixel under the cursor: that colour.
-      if (_snap.eyedropper) {
-        const std::string text = _lab.eyedropper_text();
-        if (!text.empty()) {
-          [board clearContents];
-          [board setString:[NSString stringWithUTF8String:text.c_str()] forType:NSPasteboardTypeString];
-          return YES;
-        }
-      }
-      // Otherwise the file(s): the marks, else the current item, which is the selected
-      // cell while the gallery is up. Pasteable in Finder, Mail, Messages.
-      NSMutableArray<NSURL*>* urls = [NSMutableArray array];
-      for (const auto& entry : [self markedOrCurrentEntries]) {
-        [urls addObject:[NSURL fileURLWithPath:[NSString stringWithUTF8String:entry.path_utf8.c_str()]]];
-      }
-      if (urls.count == 0) return NO;
-      [board clearContents];
-      return [board writeObjects:urls] ? YES : NO;
-    }
-    // PR 15 (docs/design/16 View): the keyboard twins of drag-out.
-    case copy_path: {
-      std::vector<std::string> paths;
-      for (const auto& entry : [self markedOrCurrentEntries]) paths.push_back(entry.path_utf8);
-      const std::string text = mv::shell::paths_as_text(paths, "\n");
-      if (text.empty()) return NO;
-      NSPasteboard* board = [NSPasteboard generalPasteboard];
-      [board clearContents];
-      return [board setString:[NSString stringWithUTF8String:text.c_str()] forType:NSPasteboardTypeString];
-    }
-    case copy_flattened: return [self copyFlattened];
-    case share: return [self shareRequest:{}];  // the key's request: the menu, on the selection
     case metadata_pane:
       if (!_metaPaneVisible && _adjust.visible()) [self setAdjustVisible:NO];
       if (!_metaPaneVisible && _jobsVisible) [self setJobsVisible:NO];
@@ -6794,29 +6779,70 @@ static NSString* MvNewestAppcastURL(NSData* listing) {
       return [self labelCurrentItem:static_cast<mv::shell::colour_label>(
                                         mv::shell::label_of_command(command))];
     case edit_comment: return [self focusCommentField];
-    // PR 11 (docs/design/16 Pane): ⇧A shows the adjust pane and focuses it.
-    case adjust_pane: [self setAdjustVisible:!_adjust.visible()]; return YES;
     // PR 13 / 14 (docs/design/08, docs/design/16 "Video and trim").
     case trim_mode: case trim_in: case trim_out: case trim_clear: case trim_preview:
     case trim_keyframe: case trim_reencode: case trim_remove_middle: case keyframe_prev:
     case keyframe_next: case jobs_pane: case clip_tools: case clip_split:
       return [self runClipCommand:command];
     case folder_tree: [self setTreeVisible:!_treeVisible]; return YES;
-    // PR 10 geometry, crop mode and export (docs/design/16 View + Crop).
-    case rotate_ccw: case rotate_cw: case flip_horizontal: case flip_vertical: case crop_mode:
-    case crop_commit: case crop_move_left: case crop_move_right: case crop_move_up:
-    case crop_move_down: case crop_narrower: case crop_wider: case crop_shorter:
-    case crop_taller: case straighten_ccw: case straighten_cw: case export_image:
-    case undo_edit: case reset_edits:
-    case crop_aspect_cycle: case crop_aspect_swap:
-      return [self runEditCommand:command];
-    // PR 29: Y held shows the original pixels; the stack is untouched.
-    case show_original: case show_original_release:
-      if (_items.empty() || clip || anim) return NO;
-      [self editShowOriginal:command == show_original];
-      return YES;
-    default: return NO;
+    default:
+      // command_coverage.inc sent this id here. A missing case is a
+      // no-op, the same as the old switch's default.
+      return NO;
   }
+}
+- (BOOL)runCommand:(mv::shell::command_id)command back:(mv::shell::back_target)target {
+  using enum mv::shell::command_id;
+  // PR 11 (docs/design/13): every command is a native call with its own id, so a
+  // chrome exception or a crash in the work it starts carries the same one.
+  (void)mv::shell::crash::note_native_call();
+  // PR 29 (docs/design/20): the keys that open a tab of the Edit workspace. The
+  // workspace decides the tab; crop_mode and trim_mode then do their own work.
+  // PR 30 (docs/design/21, owner): video is edited in its own window, not a pane.
+  // Return (the bar's "Open in <app>") on a PDF or DOCX: its own app opens it.
+  if (command == edit_workspace && !_ws.open && !_editorOpen && [self currentItemIsDocument]) {
+    [self openDocumentInApp:nil];
+    return YES;
+  }
+  if (command == edit_workspace && (_editorOpen || [self editSubject] == mv::shell::edit_subject::clip)) {
+    if (_editorOpen) {
+      [self editorRequestClose];
+    } else {
+      [self setEditorOpen:YES];
+    }
+    return YES;
+  }
+  if (command == edit_workspace || command == crop_mode || command == adjust_pane ||
+      command == trim_mode || command == metadata_pane || command == jobs_pane) {
+    const mv::shell::workspace_step step = mv::shell::route_workspace(_ws, [self editSubject], command);
+    if (step.action != mv::shell::workspace_action::none) {
+      if (mv::shell::apply_step(_ws, step)) [self syncWorkspace];
+      if (command != crop_mode && command != trim_mode) return YES;
+    } else if (command == edit_workspace) {
+      NSBeep();  // nothing on the canvas to edit
+      return YES;
+    } else if (_ws.open && (command == metadata_pane || command == jobs_pane || command == adjust_pane)) {
+      // A pane the workspace does not hold here takes the edge on its own.
+      [self editClose];
+    }
+  }
+  switch (mv::shell::mac_command_area(command)) {
+    case mv::shell::command_area::canvas:
+      return [self runCanvasCommand:command back:target];
+    case mv::shell::command_area::transport:
+      return [self runTransportCommand:command];
+    case mv::shell::command_area::marks:
+      return [self runMarksCommand:command];
+    case mv::shell::command_area::slideshow:
+      return [self runSlideshowCommand:command];
+    case mv::shell::command_area::edit:
+      return [self runEditStackCommand:command];
+    case mv::shell::command_area::session:
+      return [self runSessionCommand:command];
+    case mv::shell::command_area::excluded:
+      return NO;
+  }
+  return NO;
 }
 
 // ---- PR 10: edit stack, lossless rotate, crop, export ---------------------------

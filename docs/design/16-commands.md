@@ -6,8 +6,19 @@ without a mouse.
 
 Source of truth: [`src/shell/commands.h`](../../src/shell/commands.h) (ids, keys, modes),
 [`src/shell/command_table.cpp`](../../src/shell/command_table.cpp) (the default map and labels),
-[`src/shell/key_router.h`](../../src/shell/key_router.h) / `.cpp` (mode and `Esc` resolution).
-Both hosts use the same table and router; tests are `tests/test_key_router*.cpp`.
+[`src/shell/key_router.h`](../../src/shell/key_router.h) / `.cpp` (mode and `Esc` resolution),
+[`src/shell/command_coverage.inc`](../../src/shell/command_coverage.inc) (which host handles
+which id, and which area of `run_command` / `runCommand:` runs it).
+Both hosts use the same table and router; tests are `tests/test_key_router*.cpp` and
+`tests/test_command_coverage.cpp`.
+
+The Mac's Settings list (`MvCommandSupported`) is the Mac half of that coverage file, so a
+command cannot be handled and missing from Settings, or listed and not dispatched. Import
+(`open_import`, `import_now`) and similar-search stay hidden until their add-on is loaded.
+`search_open` stays listed: with no AI pack it is file search. A command the Mac dispatcher
+does not run is a row with a reason, not a gap in a hand-kept switch. Windows handles the
+same ids; a few (`back`, the island arguments) are handled outside `run_command` and the
+coverage file says so. A new `command_id` fails the test until it has a row.
 
 ## One table, editable
 
