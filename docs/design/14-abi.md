@@ -1,7 +1,7 @@
 # 14 — The C ABI
 
 The flat C ABI between the hosts' chrome and the C++ core, as declared in
-[`src/abi/include/mediaviewer/`](../../src/abi/include/mediaviewer/) (current version **0.31**).
+[`src/abi/include/mediaviewer/`](../../src/abi/include/mediaviewer/) (current version **0.32**).
 
 The Windows host is C# WinUI over `mediaviewer_core.dll` and calls this ABI through P/Invoke
 ([`src.managed/MediaViewer.Interop`](../../src.managed/MediaViewer.Interop/)). The Mac host links
@@ -250,7 +250,7 @@ mv_status mv_folder_close(mv_session_t);
 - `mv_folder_select` bumps the view generation, publishes an LRU hit or opens, prefetches ±2,
   and pushes `FOLDER_SELECTED` ([04-image-pipeline.md](04-image-pipeline.md)).
 - `mv_folder_thumbs_visible` makes on-screen thumbs first; skipping it still generates all.
-- `mv_folder_page_thumbs` (0.31, issue #429) is the page sidebar's: thumbnails of the selected
+- `mv_folder_page_thumbs` (0.32, issue #429) is the page sidebar's: thumbnails of the selected
   document's pages in a window, rendered by one background job from one open of the file
   (`image/page_thumbs.h`) and kept in the thumbnail cache as `path#page=N` rows. A request
   replaces the window, so a queued job skips pages flung past; pages landed or in flight are not
@@ -661,7 +661,8 @@ and inert unless set. The Mac host drives
 | 0.28 | `mv_folder_tag_search`, `mv_folder_tag_generation`, `mv_folder_forget_tags` (#291 file search by tag). Add-on host table: `tag_facts` appended last, after PR 56's `settings_get` and #348's v3 rows (no version bump; read when `struct_size` covers it). `mediaviewer_ai.h`: `MV_AI_MATCH_TAGS`. Mac bridge: `mv_chrome_tag_search`, `mv_chrome_tag_generation`. #405 (2026-10-15): `mv_addon_tag_facts` gained rating, ISO, aperture, focal length, shutter and label fields at its end (`MV_ADDON_TAG_FACTS_V1_SIZE` / `_V2_SIZE`); the host serves either size and returns the size it wrote. #406: host table `read_cues` appended after `tag_facts` (`mv_addon_cue`, `MV_ADDON_CUE_*`); `mediaviewer_ai.h`: `MV_AI_MATCH_TEXT` |
 | 0.29 | `mv_slots_command` (#410): one of a slot add-on's manifest commands, delivered to it as `MV_SLOT_EVENT_COMMAND` with the files its payload names (`slot_registry::run_command`). Screens: a `text_field` may carry `"pick": "folder"`. Mac bridge: `mv_chrome_slots_command`, and the gallery's range (#413) `mv_chrome_gallery_set_range`, `mv_chrome_gallery_range_generation`, `mv_chrome_gallery_range_count`. Island wire: `chrome_cmd_gallery_range` (1036) |
 | 0.30 | Slot add-ons in every window (#402): `mv_addon_load_guest` (a window that does not host the add-ons loads one that only reads, without touching the store) and `mv_addon_slot_addons_json` (which to load, from manifests, no file hashed). #398: host table `locations_of_index` appended after `read_cues` (the Local search index's located assets, generation-tagged, no file read); `mv_ai_api` `each_location` appended after `people_reanalyse`. The AI pack now requires the table only up to `read_cues` and copies what the host's `struct_size` covers |
-| 0.31 | The page sidebar (#429): `mv_folder_page_thumbs`, `mv_folder_page_thumb_path`, `MV_COMPLETION_PAGE_THUMB_READY` (13). Mac bridge: `mv_chrome_request_page_thumbs`, `mv_chrome_select_page`, `kMenuPageSidebar`; `MVChromeHost.setPageSidebar` / `pageThumbReady` the other way. Island wire: `chrome_cmd_select_page` (1082), `chrome_cmd_image_opened` (1083), entries `ShowPageSidebar` / `SetPageSidebar` (`chrome_page_sidebar_args`) |
+| 0.31 | Place terms (#441): `mv_slots_place_terms` (bits `MV_SLOTS_PLACE_TERMS`, `MV_SLOTS_PLACE_PROVIDER`: the Local search query has a `place:` / `in:<place>` term; a loaded add-on answers it). Host table `place_matches` appended after `locations_of_index`, with `mv_addon_path_fn`: the AI pack's engine gets the `place:` provider's paths for one place over the whole index (`slot_registry::provider_paths`), `MV_ERR_NOT_FOUND` with none. Mac bridge: the host's `placeTerms:` selector |
+| 0.32 | The page sidebar (#429): `mv_folder_page_thumbs`, `mv_folder_page_thumb_path`, `MV_COMPLETION_PAGE_THUMB_READY` (13). Mac bridge: `mv_chrome_request_page_thumbs`, `mv_chrome_select_page`, `kMenuPageSidebar`; `MVChromeHost.setPageSidebar` / `pageThumbReady` the other way. Island wire: `chrome_cmd_select_page` (1082), `chrome_cmd_image_opened` (1083), entries `ShowPageSidebar` / `SetPageSidebar` (`chrome_page_sidebar_args`) |
 
 ## Not built
 

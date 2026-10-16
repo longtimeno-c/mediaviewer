@@ -297,7 +297,7 @@ struct mv_session {
   mv::io::directory_watcher watcher;
   mv::image::thumb_store thumbs;
 
-  // 0.31 (issue #429): the page sidebar's thumbnails of the selected stop
+  // 0.32 (issue #429): the page sidebar's thumbnails of the selected stop
   // (mv_folder_page_thumbs): what is wanted, in flight and landed.
   mv::image::page_thumb_book page_thumbs;
 

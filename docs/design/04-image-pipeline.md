@@ -392,7 +392,7 @@ keyed `path#page=N` under the file's own stamp (`image::page_thumb_key`, beside 
   is rendered up front: opening a document costs what it did before.
 - **Stale work.** The book's serial names the document. Another stop starts a new one; a page of
   the last document still rendering is refused when it lands and never reaches the strip.
-- **Hosts.** Windows: `mv_folder_page_thumbs` / `MV_COMPLETION_PAGE_THUMB_READY` (ABI 0.31,
+- **Hosts.** Windows: `mv_folder_page_thumbs` / `MV_COMPLETION_PAGE_THUMB_READY` (ABI 0.32,
   [14](14-abi.md)), drained by the island (`IslandHost.PageSidebar.cs`); native shows it from
   `apply_view_state` (`page_sidebar_shows`) and learns the page count when the island sees
   `IMAGE_OPENED` (`chrome_cmd_image_opened`). Mac: `folder_model::request_page_thumbs`, the lab's

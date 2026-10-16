@@ -96,6 +96,11 @@ struct host_services {
   // (addon/index_locations.h), which each host fills from the AI pack while it
   // is attached. Tests inject a fake.
   std::function<expected(const index_location_visit& visit)> index_locations;
+  // #441: the index's assets in a place (the host table's place_matches).
+  // Empty: the slot registry's Local search provider for `place:`
+  // (slot_registry::provider_paths, Places). Tests inject a fake.
+  std::function<result<std::vector<std::string>>(const std::string& place, const std::function<bool()>& keep_going)>
+      place_matches;
   std::string data_dir;         // created by the table
   std::string default_library;  // Pictures\MediaViewer
   // Honour mv_addon_copy_request's fault injection (tests, the verify rig).

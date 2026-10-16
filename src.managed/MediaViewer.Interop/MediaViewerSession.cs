@@ -169,7 +169,7 @@ public sealed partial class MediaViewerSession : IDisposable
         ThrowIfFailed(NativeMethods.mv_folder_thumbs_visible(_handle, first, count));
 
     /// <summary>
-    /// Issue #429 (ABI 0.31): thumbnails of pages <paramref name="first"/> onward of the
+    /// Issue #429 (ABI 0.32): thumbnails of pages <paramref name="first"/> onward of the
     /// selected stop, for the page sidebar; each lands as
     /// <see cref="MvCompletionKind.PageThumbReady"/> (payload = page, generation = the
     /// returned serial). Returns the serial naming the stop, or 0 on a core without it.
