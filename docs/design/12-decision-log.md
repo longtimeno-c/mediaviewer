@@ -1153,6 +1153,17 @@ there; not a mirror, no schedule. Both platforms: the player honours a clip's di
 (`video_stream_info::rotation`), because portrait phone clips played sideways. See
 [26](26-photos-library.md).
 
+**The Photos backup's folders are a choice (2026-10-16, issue #414).** Was: always Import's
+`YYYY/YYYY-MM-DD`, so a library of a few years became thousands of day folders. Settings →
+Photos Library → *Folders* offers Year (`YYYY`, which Import does not have), Year and day (the
+default, so a backup already on a NAS keeps writing the tree it has), Year, month and day
+(`YYYY/MM/DD`), Day (`YYYY-MM-DD`) and Flat; remembered as `mv.photosBackup.layout` beside the
+destination. A change moves nothing: a verified file stays where the manifest says, and only a
+new or missing file is written in the layout chosen now. The manifest therefore stores each
+file's real place under the destination at whatever depth (`2024/IMG_0001.HEIC`), not the last
+three components; absolute rows from before 2026-10-05 were all year/day, so their last three
+components still rebase. Import's presets, camera and type folders stay Import's.
+
 **The index may download iCloud-only clips, opt-in (2026-10-05, owner).** Reverses "Indexing never
 downloads" below for videos only. With Optimize Mac Storage most of an iCloud library's clips are
 iCloud-only, so they were found by a poster frame alone: no moments, no sound, no speech, no faces

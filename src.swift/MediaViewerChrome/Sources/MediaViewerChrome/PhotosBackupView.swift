@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // docs/design/26 "Backup": Settings -> Photos Library. Every original of the Photos
 // library, copied and verified into a folder of the user's choosing (a NAS,
-// a drive) under YYYY/YYYY-MM-DD, by the host's engine (shell/photos_backup.h
-// over PhotoKit). This view only asks and watches: the destination picker,
-// Back Up Now / Cancel, the run's progress, and the last run. Shown once the
+// a drive) in the folder layout they pick (YYYY/YYYY-MM-DD unless changed; issue
+// #414), by the host's engine (shell/photos_backup.h over PhotoKit). This view
+// only asks and watches: the destination and layout pickers, Back Up Now /
+// Cancel, the run's progress, and the last run. Shown once the
 // library was added in Settings -> Local search.
 import AppKit
 import MVChromeBridge
@@ -16,6 +17,8 @@ final class PhotosBackupStore: ObservableObject {
 
   @Published private(set) var available = false
   @Published private(set) var destination = ""
+  /// backup::layout, as mv_chrome_photos_backup_layout numbers it.
+  @Published private(set) var layout: Int32 = 0
   @Published private(set) var run = mv_chrome_photos_backup()
   @Published private(set) var last: mv_chrome_photos_backup?
   @Published private(set) var startFailed = false
@@ -55,6 +58,8 @@ final class PhotosBackupStore: ObservableObject {
     let n = buf.withUnsafeMutableBufferPointer { mv_chrome_photos_backup_destination($0.baseAddress, Int32($0.count)) }
     let dest = n > 0 ? String(cString: buf) : ""
     if dest != destination { destination = dest }
+    let folders = mv_chrome_photos_backup_layout()
+    if folders != layout { layout = folders }
     var p = mv_chrome_photos_backup()
     mv_chrome_photos_backup_progress(&p)
     if !sameBackup(p, run) { run = p }
@@ -87,6 +92,11 @@ final class PhotosBackupStore: ObservableObject {
   }
 
   func cancel() { mv_chrome_photos_backup_cancel() }
+
+  func setLayout(_ l: Int32) {
+    mv_chrome_set_photos_backup_layout(l)
+    layout = mv_chrome_photos_backup_layout()
+  }
 
   func showReport() {
     guard !destination.isEmpty else { return }
@@ -137,8 +147,21 @@ private func dateText(_ unix: Int64) -> String {
   return f.string(from: d)
 }
 
+/// The layouts, in backup::layout's numbering, with what each writes.
+private let backupLayouts: [(value: Int32, label: String)] = [
+  (1, "Year — 2024/IMG_0001.HEIC"),
+  (0, "Year and day — 2024/2024-05-17/IMG_0001.HEIC"),
+  (2, "Year, month and day — 2024/05/17/IMG_0001.HEIC"),
+  (3, "Day — 2024-05-17/IMG_0001.HEIC"),
+  (4, "Flat — IMG_0001.HEIC"),
+]
+
 struct PhotosBackupSection: View {
   @ObservedObject private var store = PhotosBackupStore.shared
+
+  private var layoutBinding: Binding<Int32> {
+    Binding(get: { store.layout }, set: { store.setLayout($0) })
+  }
 
   private var destinationLabel: String {
     store.destination.isEmpty ? "No folder chosen yet" : (store.destination as NSString).abbreviatingWithTildeInPath
@@ -185,8 +208,9 @@ struct PhotosBackupSection: View {
           HStack(alignment: .top, spacing: MVTheme.space(24)) {
             VStack(alignment: .leading, spacing: MVTheme.space(4)) {
               Text("Back up originals to a folder").font(MVTheme.font()).foregroundStyle(MVTheme.title)
-              Text("Copies every original in your Photos library — iCloud Photos and hidden items included, a Live Photo's video and a RAW+JPEG pair's RAW too — into year and day folders, and verifies each copy. "
-                   + "Originals that are only in iCloud are downloaded for this. Run it again any time: only what is new or missing is copied. Your library is never changed.")
+              Text("Copies every original in your Photos library — iCloud Photos and hidden items included, a Live Photo's video and a RAW+JPEG pair's RAW too — into folders by date, and verifies each copy. "
+                   + "Originals that are only in iCloud are downloaded for this. Run it again any time: only what is new or missing is copied. Your library is never changed. "
+                   + "Changing the folders applies to files copied from then on; what is already backed up stays where it is.")
                 .font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
                 .fixedSize(horizontal: false, vertical: true)
             }
@@ -208,6 +232,15 @@ struct PhotosBackupSection: View {
             }
             Button(store.destination.isEmpty ? "Choose…" : "Change…") { store.chooseDestination() }
               .controlSize(.small).disabled(store.running)
+            Spacer(minLength: 0)
+          }
+          HStack(spacing: MVTheme.space(8)) {
+            Image(systemName: "folder").foregroundStyle(MVTheme.body)
+            Text("Folders").font(MVTheme.font(12)).foregroundStyle(MVTheme.body)
+            Picker("Folders", selection: layoutBinding) {
+              ForEach(backupLayouts, id: \.value) { Text($0.label).tag($0.value) }
+            }
+            .labelsHidden().controlSize(.small).fixedSize().disabled(store.running)
             Spacer(minLength: 0)
           }
           if store.running {

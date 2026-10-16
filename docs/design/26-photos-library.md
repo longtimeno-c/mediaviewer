@@ -32,9 +32,9 @@ doing them and is a viewer fix on both platforms.
    It opens Settings at *Photos Library* (the backup), not the listing (owner, 2026-10-05):
    from the empty window, the library's settings are what the row is for.
 2. **Backup.** Settings → *Photos Library* → **Back Up Now**: every original of the library,
-   copied and verified into a folder of the user's choosing (a NAS share, a drive), under
-   Import's layout `YYYY/YYYY-MM-DD/<original name>`. Run again, it copies only what is new or
-   missing.
+   copied and verified into a folder of the user's choosing (a NAS share, a drive), in the
+   folders the user picks — Import's `YYYY/YYYY-MM-DD/<original name>` unless changed (issue
+   #414). Run again, it copies only what is new or missing.
 3. **Clips play the right way up.** A portrait phone clip is coded landscape with a 90° display
    matrix in its container. The player ignored it, so every such clip — from Photos or from a
    card — played sideways, and its poster tile was sideways too. Both read the matrix now.
@@ -108,14 +108,27 @@ the deep network path once docs/design/24's PR 49 lands, since the copy goes thr
   video, a RAW+JPEG pair's RAW — the Hidden album included (a backup keeps what the user hid).
   Not Photos' edited renditions (edits are non-destructive; the original is what a backup
   keeps), not albums or metadata Photos holds outside the file.
-- **Where:** `<destination>/YYYY/YYYY-MM-DD/<original name>`, the day in local time; a second
-  asset with the same name on the same day gets ` (2)` (`io/collision_name.h`). Nothing is
-  overwritten.
+- **Where:** Settings → *Photos Library* → *Folders* (`backup::layout`, remembered as
+  `mv.photosBackup.layout` beside the destination; issue #414), from the asset's creation date in
+  local time:
+
+  | Layout | A file lands in |
+  |---|---|
+  | Year | `<destination>/YYYY/<original name>` (Import has no such layout) |
+  | Year and day (default) | `<destination>/YYYY/YYYY-MM-DD/<original name>` |
+  | Year, month and day | `<destination>/YYYY/MM/DD/<original name>` |
+  | Day | `<destination>/YYYY-MM-DD/<original name>` |
+  | Flat | `<destination>/<original name>` |
+
+  A second asset with the same name in the same folder gets ` (2)` (`io/collision_name.h`).
+  Nothing is overwritten. A layout change moves nothing: a file already verified stays where the
+  manifest says, and only a new or missing file is written in the layout chosen now.
 - **Resumable, idempotent:** `<destination>/.mediaviewer-photos-backup/manifest.sqlite` records
-  every file copied and verified, by its place under the destination (`YYYY/YYYY-MM-DD/name`),
-  not its absolute path, so a share that remounts elsewhere (`/Volumes/photos-1`) or a drive
-  whose letter moved is still the same backup (rows from before 2026-10-05 held absolute paths;
-  their last three components rebase the same way). The next run skips a recorded file that is still there (one
+  every file copied and verified, by its place under the destination at whatever depth its
+  layout gave it (`2024/2024-05-17/name`, `2024/name`, `name`), not its absolute path, so a share
+  that remounts elsewhere (`/Volumes/photos-1`) or a drive whose letter moved is still the same
+  backup (rows from before 2026-10-05 held absolute paths, all in the year/day layout; their last
+  three components rebase the same way). The next run skips a recorded file that is still there (one
   stat), copies one the user deleted again, and a cancelled run picks up where it stopped.
   Zero bytes are written for an asset already backed up. `last-run.txt` beside it lists what
   did not make it. If the destination itself disappears mid-run (the NAS drops off the
@@ -132,7 +145,8 @@ the deep network path once docs/design/24's PR 49 lands, since the copy goes thr
   buffers and leaves no part file. Progress (counts, bytes, the file being copied) is polled by
   Settings at 2 Hz; the last run is remembered.
 
-**Not done:** a schedule (run it from Settings); a mirror (a file deleted in Photos stays in
+**Not done:** a schedule (run it from Settings); moving an existing backup into a newly chosen
+layout; a mirror (a file deleted in Photos stays in
 the backup); hashing an existing destination file against the source when the manifest was
 lost (such a run copies beside it as ` (2)`); Photos' edited renditions as an option.
 

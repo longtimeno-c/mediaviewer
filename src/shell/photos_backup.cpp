@@ -36,12 +36,7 @@ std::string sanitize(std::string_view s) {
   return out;
 }
 
-// The last `n` components of a path, '/'-joined: a backed-up file's place
-// under the destination ("2024/2024-05-17/IMG_0001.HEIC"). The manifest keeps
-// this, not the absolute path, so the backup is still found when the share
-// mounts somewhere else (/Volumes/photos-1 after a stale /Volumes/photos, a
-// drive letter that moved). Rows written before this held absolute paths;
-// their tail is the same three components, so they rebase too.
+// The last `n` components of a path, '/'-joined.
 std::string tail_components(std::string_view path, int n) {
   std::size_t end = path.size();
   while (end > 0 && (path[end - 1] == '/' || path[end - 1] == '\\')) --end;
@@ -51,6 +46,28 @@ std::string tail_components(std::string_view path, int n) {
     if ((c == '/' || c == '\\') && ++seen == n) break;
   }
   std::string out(path.substr(begin, end - begin));
+  for (char& c : out) {
+    if (c == '\\') c = '/';
+  }
+  return out;
+}
+
+bool is_absolute(std::string_view path) {
+  if (path.empty()) return false;
+  if (path[0] == '/' || path[0] == '\\') return true;
+  return path.size() >= 2 && path[1] == ':';  // a drive letter
+}
+
+// A manifest row's place under the destination. The manifest keeps a backed-up
+// file's place there ("2024/2024-05-17/IMG_0001.HEIC", "2024/IMG_0001.HEIC",
+// "IMG_0001.HEIC": as deep as the layout it was written in), not the absolute
+// path, so the backup is still found when the share mounts somewhere else
+// (/Volumes/photos-1 after a stale /Volumes/photos, a drive letter that moved).
+// Rows written before 2026-10-05 held absolute paths, all in the year/day
+// layout (the only one then), so their last three components are that place.
+std::string stored_place(std::string_view row_path) {
+  if (is_absolute(row_path)) return tail_components(row_path, 3);
+  std::string out(row_path);
   for (char& c : out) {
     if (c == '\\') c = '/';
   }
@@ -184,9 +201,8 @@ void write_report(const std::string& dir, const progress& p, const std::vector<s
 
 }  // namespace
 
-std::string layout_dir(std::string_view destination, std::int64_t created_unix) {
-  char year[8] = {};
-  char day[16] = {};
+std::string layout_subdir(std::int64_t created_unix, layout folders) {
+  if (folders == layout::flat) return {};
   const time_t t = static_cast<time_t>(created_unix);
   struct tm tmv {};
 #if defined(_WIN32)
@@ -194,9 +210,22 @@ std::string layout_dir(std::string_view destination, std::int64_t created_unix) 
 #else
   localtime_r(&t, &tmv);
 #endif
-  std::strftime(year, sizeof(year), "%Y", &tmv);
-  std::strftime(day, sizeof(day), "%Y-%m-%d", &tmv);
-  return io::join_path(io::join_path(destination, year), day);
+  const char* format = "%Y/%Y-%m-%d";
+  switch (folders) {
+    case layout::year: format = "%Y"; break;
+    case layout::year_month_day: format = "%Y/%m/%d"; break;
+    case layout::day: format = "%Y-%m-%d"; break;
+    case layout::year_day:
+    case layout::flat: break;
+  }
+  char out[32] = {};
+  std::strftime(out, sizeof(out), format, &tmv);
+  return out;
+}
+
+std::string layout_dir(std::string_view destination, std::int64_t created_unix, layout folders) {
+  const std::string sub = layout_subdir(created_unix, folders);
+  return sub.empty() ? std::string(destination) : io::join_path(destination, io::native_relative(sub));
 }
 
 std::string housekeeping_dir(std::string_view destination) {
@@ -212,6 +241,7 @@ engine::~engine() {
 
 expected engine::start(std::unique_ptr<source> src, options opts) {
   if (!src || opts.destination.empty() || opts.scratch.empty()) return err(status::invalid_arg);
+  if (static_cast<std::uint8_t>(opts.folders) >= kLayoutCount) return err(status::invalid_arg);
   if (running_.load(std::memory_order_acquire)) return err(status::invalid_arg);
   join();
   source_ = std::move(src);
@@ -308,21 +338,23 @@ void engine::run() {
 
     // Already there: the manifest says so and the file is where it was.
     if (const auto row = log.lookup(f)) {
-      const std::string where =
-          io::join_path(options_.destination, io::native_relative(tail_components(row->path, 3)));
+      // Wherever it was written, in whichever layout: a layout change moves nothing.
+      const std::string where = io::join_path(options_.destination, io::native_relative(stored_place(row->path)));
       if (auto st = io::stat_path(where); st && !st->is_directory && st->size == row->bytes) {
         set([&](progress& p) { ++p.skipped; });
         continue;
       }
     }
 
-    const std::string dir = layout_dir(options_.destination, f.created_unix);
+    const std::string sub = layout_subdir(f.created_unix, options_.folders);
+    const std::string dir = sub.empty() ? options_.destination
+                                        : io::join_path(options_.destination, io::native_relative(sub));
     if (!io::make_directories(dir)) {
       if (fail_file(f)) break;
       continue;
     }
-    // Never overwrite: another asset's file of the same name on the same day
-    // gets "(2)" (io/collision_name.h, the F7/F8 rule).
+    // Never overwrite: another asset's file of the same name in the same
+    // folder gets "(2)" (io/collision_name.h, the F7/F8 rule).
     const std::string name = io::unique_name(
         f.filename, [&](std::string_view candidate) { return io::file_exists(io::join_path(dir, candidate)); });
     if (name.empty()) {
@@ -376,7 +408,7 @@ void engine::run() {
       if (fail_file(f)) break;
       continue;
     }
-    log.record(f, tail_components(final_path, 3), copied->bytes, copied->source_hash.hex());
+    log.record(f, sub.empty() ? name : sub + "/" + name, copied->bytes, copied->source_hash.hex());
     set([&](progress& p) {
       ++p.done;
       if (!tmp.empty()) ++p.fetched;
