@@ -603,6 +603,12 @@ focus. The tree follows the directory watcher and diffs rows in place.
 **Add-on commands are gated rows (2026-09-24).** Static table rows enabled at run time
 (`set_addon_commands_available`); hidden from `?`, Settings and the router while absent.
 
+**Host dispatch is one coverage list (2026-10-12).** `command_coverage.inc` names, for every
+`command_id`, whether each host handles it and which area of `run_command` / `runCommand:`
+runs it. The Mac Settings list is that Mac set plus the Import and AI gates, so it cannot
+drift from the dispatcher. The island callback and the window procedure are split by area
+the same way. `tests/test_command_coverage.cpp` fails until a new id has a row.
+
 **File search and the path-bar icon (2026-09-28).** The gallery search bar is gone. A magnifier at
 the end of the folder path runs `Ctrl+F` / `⌘F`: with Local search loaded, starting, or installed
 and waiting for the first search (2026-10-11) it opens the search panel; without it, **file search**, a name filter over the listed folder with no index (the
@@ -1107,6 +1113,14 @@ and clips, not faces, and Settings lists the first 24 with "Show all". The onlin
 made people of blurred clip frames that resembled each other more than anyone; numbers in
 docs/design/17 "People model". Libraries settle once under the new rules, nothing read again.
 
+**New faces meet a confirmed person's exemplars (2026-10-15, #434).** This amends the 2026-10-06
+rule that a new face joins by mean pairwise cosine to every member. The best 3 people by that mean
+are shortlisted. A shortlisted person with a pinned face (the user named, merged or split it) is
+then rescored by the refinement's exemplar `support`, so the faces the user confirmed are what new
+photos are matched against. Weak faces and unconfirmed people keep the mean. Exemplars for every
+person were tried and dropped: on LFW they cost online BCubed F 0.9975 → 0.9945, because a newcomer
+joined a lookalike. Numbers are in docs/design/17 "Online clustering".
+
 **People follow the open folder (2026-10-03).** While a folder is open the People grid offers
 "This folder | + Subfolders" only; everyone shows only with no folder open. A folder open is the
 user saying what they are looking at, and everyone-from-everywhere inside one read as a leak. A
@@ -1356,6 +1370,31 @@ the server's, and the server shows its key only after that. And the receiver's A
 not protect the sender: a machine claiming the receiver's id from another address could answer
 Accept itself. So the sender's person confirms the code before the offer (even the names) leaves,
 and a fresh peer keeps its address. Two clicks, one per side, as Bluetooth's numeric comparison.
+
+**Keep receiving is kept across launches (owner, 2026-10-15, #442; reverses "the toggle is for this
+run").** Turned on, it stays on after a relaunch until turned off: the add-on keeps it in its own
+data folder (`sharepoint.json`), and at load, only when it was on, makes the engine, whose control
+thread starts presence. That is after first pixel and off the foreground queue (slot add-ons load
+on the add-on queue / a worker), and in one window's process at a time (a lock file). Off at load
+is one small read and nothing else. While it is on the command bar shows **Sharepoint: receiving**,
+so a person knows the machine is discoverable. Measured idle cost with it on, window closed (Mac,
+`[.sharepoint-idle]`, 15 s): 0.020 % CPU, 6.4 context switches a second, no present; off 0.0003 %.
+The earlier call kept the idle viewer silent by default; it still is unless the person asked.
+
+**The sender types the code; it is not compared (owner, 2026-10-15, #442; amends "the sender
+confirms the code").** People clicked **Same code, send** without looking at the other screen. Now
+the receiver's window shows the code and the sender's person types it; the sender's screen never
+shows it. Commit, answer, reveal and the code's derivation are unchanged, so a machine in the
+middle still cannot make the two links' codes match, and the offer still leaves only after a right
+entry. The check is local to the sender (constant time, digits only, a partial entry is not a
+try); three wrong entries send `cancel` and end the link. The wire is unchanged (protocol 1): the
+receiver waits for the offer either way. Bluetooth's passkey entry is the pattern.
+
+**The receiver checks file N while file N+1 arrives (2026-10-15, #442).** Two verifier threads,
+at most four whole files waiting, each still flushed, read back uncached, hashed and renamed with
+no-replace before its `file_done`; the sender's `done` waits for every check. Measured on loopback
+(Mac, alternated): 500 × 2 MiB 124–141 → 158–180 MB/s; one 1 GiB file unchanged (crypto-bound).
+Reading ahead on the sender measured no faster and was not kept. `[.sharepoint-bench]`.
 
 **Each file's hash comes after its bytes, not in the offer (2026-10-15).** A hash list up front
 would make the sender read every file twice before the first byte moved (a large video read

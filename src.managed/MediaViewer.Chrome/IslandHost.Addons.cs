@@ -113,16 +113,11 @@ public static partial class IslandHost
         public string Text => Kind switch
         {
             AddonPhaseKind.Downloading when Done <= 0 => "Connecting…",
-            AddonPhaseKind.Downloading => Total > 0 ? $"{MbText(Done)} of {MbText(Total)}" : MbText(Done),
+            AddonPhaseKind.Downloading => Total > 0 ? $"{MediaViewer.Shared.ByteSize.Text(Done)} of {MediaViewer.Shared.ByteSize.Text(Total)}" : MediaViewer.Shared.ByteSize.Text(Done),
             AddonPhaseKind.Checking => "Checking the download…",
             _ => "Installing…",
         };
     }
-
-    // "412 MB", "1.08 GB": decimal units, as Explorer's download sizes.
-    private static string MbText(long bytes) => bytes >= 1_000_000_000
-        ? $"{bytes / 1e9:0.00} GB"
-        : $"{Math.Max(0, (long)Math.Round(bytes / 1e6))} MB";
 
     /// <summary>An install's bar: "412 MB of 1.08 GB" and the percentage
     /// under it while downloading, an indeterminate bar after.</summary>
@@ -888,7 +883,7 @@ public static partial class IslandHost
     {
         if (slot == ImportSlot) RefreshAddonRow();
         else if (slot == SharepointSlot) RefreshSharepointOffer();  // #410
-        else if (slot == PlacesChannel) RefreshSlotSettings();
+        else if (slot == PlacesChannel || IsSlotChannel(slot)) RefreshSlotSettings();
         else RefreshLocalSearch();
     }
 
@@ -927,9 +922,6 @@ public static partial class IslandHost
             return new AddonOffer(OfferKind.NotPublished, 0);
         }
     }
-
-    private static string DownloadSize(long bytes) =>
-        $"{Math.Max(1, (long)Math.Round(bytes / (1024.0 * 1024.0)))} MB";
 
     // ---- the one-time hint -----------------------------------------------------
 
@@ -999,8 +991,8 @@ public static partial class IslandHost
             string hint = ImportSlot.Offer.HintText.Length > 0 ? ImportSlot.Offer.HintText
                 : "Card inserted — install Import?";
             text.Text = hint.EndsWith('?')
-                ? $"{hint[..^1]} ({DownloadSize(ImportSlot.Offer.ArchiveSize)})?"
-                : $"{hint} ({DownloadSize(ImportSlot.Offer.ArchiveSize)})";
+                ? $"{hint[..^1]} ({MediaViewer.Shared.ByteSize.Text(ImportSlot.Offer.ArchiveSize)})?"
+                : $"{hint} ({MediaViewer.Shared.ByteSize.Text(ImportSlot.Offer.ArchiveSize)})";
         }
         Visibility v = show ? Visibility.Visible : Visibility.Collapsed;
         _importHint.Visibility = v;
@@ -1016,14 +1008,21 @@ public static partial class IslandHost
         heading.FontSize = TypeHeading;
         AutomationProperties.SetHeadingLevel(heading, Microsoft.UI.Xaml.Automation.Peers.AutomationHeadingLevel.Level2);
         view.Children.Add(heading);
-        _addonRow = new StackPanel { Spacing = Space(8) };
+        // #442: Import's card holds everything of Import: its row (name, line,
+        // state, buttons or the install bar), its settings page, its status and
+        // its restart, as the Mac's AddonsSection does.
+        (Border importCard, StackPanel importBody) = AddonCard("Import");
+        importBody.Children.Clear();  // RefreshAddonRow writes the title itself
+        _addonRow = new StackPanel { Spacing = Space(6) };
         _addonStatus = Note("");
-        view.Children.Add(_addonRow);
-        view.Children.Add(FirstPartyPageHost(ImportSlot));  // PR 56: its settings page
-        view.Children.Add(_addonStatus);
+        importBody.Children.Add(_addonRow);
+        importBody.Children.Add(FirstPartyPageHost(ImportSlot));  // PR 56: its settings page
+        importBody.Children.Add(_addonStatus);
         _importRestartButton = AddonRestartButton();
-        view.Children.Add(_importRestartButton);
-        // docs/design/25 PRs 58-59: MediaViewer's own add-ons that fill screens and slots.
+        importBody.Children.Add(_importRestartButton);
+        view.Children.Add(importCard);
+        // docs/design/25 PRs 58-59: MediaViewer's own add-ons that fill screens
+        // and slots, a card each (IslandHost.Slots.cs).
         AddSlotAddonsSettingsRows(view);
         RefreshAddonRow();
         // Opening Settings asks the channel, whatever the automatic-check
@@ -1107,7 +1106,7 @@ public static partial class IslandHost
             switch (ImportSlot.Offer.Kind)
             {
                 case OfferKind.Available:
-                    Button install = SettingsButton($"Install Import, {DownloadSize(ImportSlot.Offer.ArchiveSize)}",
+                    Button install = SettingsButton($"Install Import, {MediaViewer.Shared.ByteSize.Text(ImportSlot.Offer.ArchiveSize)}",
                         StartImportInstall);
                     install.HorizontalAlignment = HorizontalAlignment.Left;
                     install.IsEnabled = !ImportSlot.Busy;
@@ -1148,7 +1147,7 @@ public static partial class IslandHost
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = Space(8) };
         if (UpdateVersion(ImportSlot) is string newer)
         {
-            buttons.Children.Add(SettingsButton($"Update to {newer}, {DownloadSize(ImportSlot.Offer.ArchiveSize)}",
+            buttons.Children.Add(SettingsButton($"Update to {newer}, {MediaViewer.Shared.ByteSize.Text(ImportSlot.Offer.ArchiveSize)}",
                 StartImportInstall));
         }
         if (state.State != "ok") buttons.Children.Add(SettingsButton("Reinstall", StartImportInstall));

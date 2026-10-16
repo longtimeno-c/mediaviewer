@@ -168,6 +168,7 @@ std::vector<key_override> load_key_overrides(const settings_store& store) noexce
       if (!v || v->empty()) continue;
       int row = 0, k = 0, mods = 0;
       if (std::sscanf(v->c_str(), "%d,%d,%d", &row, &k, &mods) != 3) continue;
+      // k == 0 is a row a swap left unbound (save_key_remaps).
       if (row < 0 || k < 0 || k > 0xFFFF || mods < 0 || mods >= 8) continue;
       out.push_back(key_override{row, static_cast<std::uint16_t>(k), static_cast<std::uint8_t>(mods)});
     }
@@ -210,6 +211,31 @@ void save_crash_consent(settings_store& store, bool accepted) noexcept {
 }
 
 std::vector<key_override> load_key_overrides() noexcept { return load_key_overrides(app_settings()); }
+std::vector<key_remap> load_key_remaps(const settings_store& store) noexcept {
+  try {
+    std::vector<key_remap> out;
+    for (const key_override& o : load_key_overrides(store)) {
+      if (o.k >= kKeyCount) continue;
+      out.push_back(key_remap{o.row, static_cast<key>(o.k), o.mods});
+    }
+    return out;
+  } catch (...) {
+    return {};
+  }
+}
+void save_key_remaps(settings_store& store, std::span<const key_remap> list) noexcept {
+  try {
+    std::vector<key_override> out;
+    out.reserve(list.size());
+    for (const key_remap& r : list) {
+      out.push_back(key_override{r.row, static_cast<std::uint16_t>(r.k), r.mods});
+    }
+    save_key_overrides(store, out);
+  } catch (...) {
+  }
+}
+std::vector<key_remap> load_key_remaps() noexcept { return load_key_remaps(app_settings()); }
+void save_key_remaps(std::span<const key_remap> list) noexcept { save_key_remaps(app_settings(), list); }
 void save_key_overrides(std::span<const key_override> list) noexcept { save_key_overrides(app_settings(), list); }
 view_settings load_view_settings() noexcept { return load_view_settings(app_settings()); }
 void save_view_settings(const view_settings& s) noexcept { save_view_settings(app_settings(), s); }

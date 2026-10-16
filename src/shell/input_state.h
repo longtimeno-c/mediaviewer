@@ -180,6 +180,9 @@ struct input_snapshot {
   std::int32_t loupe_steps_x = 0;
   std::int32_t loupe_steps_y = 0;
   bool hold_previous = false;   // held backslash
+  // `|` (issue #208, shell/compare.h): the previous still beside the current
+  // one under one camera. A level; the render thread splits only over a still.
+  bool compare = false;
   bool info_overlay = false;    // O
   bool af_points = false;       // Shift+O: quads from `meta`, no file read
   bool eyedropper = false;      // Shift+I: one-pixel readout at the cursor
@@ -195,6 +198,10 @@ struct input_snapshot {
   // Bumped by the UI thread whenever `meta` is replaced, so an idle render
   // thread draws one frame for it (the struct is too big to compare).
   std::uint32_t meta_seq = 0;
+  // Issue #209 (Shift+Z): spring to 100 % on the AF point `af_focus.h` picks from
+  // `meta`. The host bumps it only once `meta` holds the item's record, so the
+  // render thread acts on the quads published with it.
+  std::uint32_t af_focus_seq = 0;
   // For the info overlay, filled by the UI thread when the selection changes.
   // The render thread never calls into the folder model.
   std::uint32_t item_index = 0;

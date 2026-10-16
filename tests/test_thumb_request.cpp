@@ -4,6 +4,7 @@
 // The COM wrapper is Windows-only; everything it decides is decided here.
 #include <catch2/catch_test_macros.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <thread>
@@ -116,27 +117,33 @@ TEST_CASE("abandoned decodes are capped, and the cap frees up", "[shellext]") {
 TEST_CASE("a request refused at the cap is busy, not abandoned", "[shellext]") {
   // Abandoned (status::cancelled) leaves a thread of ours running, so the
   // Explorer DLL pins itself; refused (status::busy) started nothing and must
-  // not. Fill every slot with requests still being waited for, then ask again.
-  std::vector<std::uint8_t> big = png(3000, 3000, 9, 9, 9, 255);
+  // not. Keep every slot filled with requests still being waited for, then ask
+  // again until one finds the cap full. The holders ask again as soon as their
+  // decode ends: filling the slots once is a race a slow machine loses (the
+  // 4-core Intel runner finished a holder's decode before the last one began).
+  const std::vector<std::uint8_t> big = png(3000, 3000, 9, 9, 9, 255);
+  const std::vector<std::uint8_t> small = png(64, 64, 9, 9, 9, 255);
+  std::atomic<bool> stop{false};
   std::vector<std::thread> holders;
   for (std::uint32_t i = 0; i < mv::shellext::kMaxInFlight; ++i) {
-    holders.emplace_back([&big] {
-      (void)mv::shellext::render_thumbnail_by(big, 256, std::chrono::seconds(30));
+    holders.emplace_back([&big, &stop] {
+      while (!stop.load(std::memory_order_relaxed)) {
+        auto r = mv::shellext::render_thumbnail_by(big, 256, std::chrono::seconds(30));
+        if (!r && r.error() == mv::status::busy) std::this_thread::yield();
+      }
     });
   }
-  for (auto end = std::chrono::steady_clock::now() + std::chrono::seconds(30);
-       mv::shellext::decodes_in_flight() < mv::shellext::kMaxInFlight &&
-       std::chrono::steady_clock::now() < end;)
-    std::this_thread::yield();
   bool refused = false;
-  while (mv::shellext::decodes_in_flight() == mv::shellext::kMaxInFlight) {
-    auto r = mv::shellext::render_thumbnail_by(png(64, 64, 9, 9, 9, 255), 32,
-                                               std::chrono::seconds(10));
-    if (!r && r.error() == mv::status::busy) {
-      refused = true;
-      break;
+  for (auto end = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+       !refused && std::chrono::steady_clock::now() < end;) {
+    if (mv::shellext::decodes_in_flight() < mv::shellext::kMaxInFlight) {
+      std::this_thread::yield();
+      continue;
     }
+    auto r = mv::shellext::render_thumbnail_by(small, 32, std::chrono::seconds(10));
+    refused = !r && r.error() == mv::status::busy;
   }
+  stop.store(true, std::memory_order_relaxed);
   for (auto& t : holders) t.join();
   CHECK(refused);
   for (auto end = std::chrono::steady_clock::now() + std::chrono::seconds(30);

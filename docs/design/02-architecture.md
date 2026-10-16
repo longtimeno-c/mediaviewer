@@ -177,7 +177,10 @@ Work the new view still needs is not thrown away: when the user lands on a neigh
 decode is already running, the ABI hands that job to the new generation
 (`job_context::handed_off_via`) instead of cancelling and restarting it. In-flight decodes are
 tracked by path (`inflight_decode` in `src/abi/abi.cpp`), so a neighbour is not decoded twice while
-the LRU churns.
+the LRU churns. Only a decode of the same listing counts: opening a folder or a result list moves the
+folder generation on and an older listing's decode cancels itself, so it never stands in for the new
+listing's decode of the same file (#435, a Local search result that was a neighbour of the photo on
+screen stayed unshown until the user stepped away and back).
 
 ## Memory budgets
 

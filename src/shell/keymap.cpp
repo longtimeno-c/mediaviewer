@@ -187,6 +187,8 @@ constexpr slug_row kSlugs[] = {
     {label_green, "label_green"},
     {label_blue, "label_blue"},
     {clear_label, "clear_label"},
+    {zoom_af_point, "zoom_af_point"},  // #209
+    {compare_two_up, "compare_two_up"},  // #208
     {toggle_page_sidebar, "toggle_page_sidebar"},
 };
 

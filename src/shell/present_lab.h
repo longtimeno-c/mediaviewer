@@ -37,6 +37,7 @@
 #include "mediaviewer/mediaviewer.h"
 #include "shell/dino_game.h"
 #include "shell/edit_view.h"
+#include "shell/compare.h"
 #include "shell/home_theme.h"
 #include "shell/input_state.h"
 
@@ -415,6 +416,21 @@ class present_lab {
   // Review must-have A, on the instrument: how many times hold-previous's
   // texture changed. Playing an animation must leave this where it was.
   std::uint32_t previous_image_changes_ = 0;
+  // `|` two-up compare (issue #208, shell/compare.h): this frame's split of the
+  // canvas, or !valid for one-up. The camera frames the current still in the
+  // right half; the left half is previous_image_ through linked_camera.
+  compare_split compare_split_;
+  // Presented frames that drew both halves, for the --json report: a compare
+  // soak must show it measured two draws, not one.
+  std::uint64_t compare_frames_ = 0;
+  // Splits the canvas for compare (or undoes it) on the render thread's copy
+  // of the snapshot, refitting a fitted / filled camera when the split moves.
+  // True when the split changed (one more frame).
+  bool apply_compare_split(input_snapshot& snapshot, std::uint32_t host_chrome_left) noexcept;
+  // The previous still in the left half of the split (or, in a --pan-soak,
+  // the current one, so the soak measures two full draws with one file).
+  void draw_compare_left(const input_snapshot& snapshot, double elapsed,
+                         const float theme_rgb[3]) noexcept;
   std::uint8_t seen_view_flags_ = 0;
   // Issue #408: the theme's tokens (one redraw when they change) and the
   // home's ground effect, which ticks at 10 Hz by its rest rule.
@@ -487,6 +503,7 @@ class present_lab {
   std::uint32_t seen_zoom_out_seq_ = 0;
   std::uint32_t seen_zoom_preset_seq_ = 0;
   std::uint32_t seen_fill_seq_ = 0;
+  std::uint32_t seen_af_focus_seq_ = 0;  // issue #209, Shift+Z
   std::uint32_t seen_discard_seq_ = 0;
   double animation_phase_ = 0.0;
   double last_input_time_ = -1.0;  // < 0: no input yet, do not fake a 500 ms tail

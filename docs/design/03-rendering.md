@@ -65,7 +65,8 @@ window; there is still one swapchain and one present path.
    ~0 % GPU). The loop presents every vblank while anything is live: video, an animation, a moving
    spring, a fade, or the **500 ms tail after the last input** (so a flick does not stutter at its end).
    Viewer overlays (info, AF points, pixel grid, loupe) are draws in the same present and idle-stop with
-   it. **Clipping blinkies are the exception**: they animate, so they present until toggled off; they
+   it, as is the two-up compare (`|`): the previous still is a second draw of its resident texture
+   into the left half of the canvas, under the current still's camera ([16](16-commands.md)). **Clipping blinkies are the exception**: they animate, so they present until toggled off; they
    are off by default ([16-commands.md](16-commands.md)).
    **The idle wait has no timeout** (except occlusion probes, soak deadlines and a pending video-gap
    deadline). A worker finishing a texture the canvas should show signals the session's image-ready
@@ -139,7 +140,9 @@ filter (B = C = 1/3) in linear light, sRGB-encoded per level
 while panning. Level sizes follow D3D11: `max(1, floor(prev / 2))`; ceil halving produces a chain
 `CreateTexture2D` rejects for odd sizes. Sampling between levels is trilinear with 16× anisotropy.
 Tiled images use a floor-half Mitchell CPU pyramid with 256×256 tiles (2-texel border) over a resident
-overview ([04-image-pipeline.md](04-image-pipeline.md)).
+overview ([04-image-pipeline.md](04-image-pipeline.md)). Tile records go up in one per-instance
+buffer write per frame, not a constant-buffer rename per tile, and once the LOD's tiles cover the
+view neither the coarser levels nor the overview are drawn under them (issue #164).
 
 **Zoomed in** ([`src/gfx/blit.hlsl`](../../src/gfx/blit.hlsl)): Catmull-Rom between 100 % and 400 %,
 nearest-neighbour above 400 % (with an optional one-pixel grid). The Catmull-Rom result is saturated:

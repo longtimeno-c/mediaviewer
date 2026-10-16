@@ -41,7 +41,7 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
 endif()
 
 project(mediaviewer
-  VERSION 0.1.31
+  VERSION 0.1.32
   DESCRIPTION "Media viewer for a real camera dump"
   LANGUAGES CXX)
 
@@ -265,6 +265,7 @@ set(_mv_blit_hlsl "${CMAKE_CURRENT_SOURCE_DIR}/src/gfx/blit.hlsl")
 set(_mv_kernel_tokens "${CMAKE_CURRENT_SOURCE_DIR}/src/gfx/adjust_kernel_tokens.h")
 mv_fxc(MV_GFX_SHADERS "${_mv_blit_hlsl}" vs_main vs_5_0 kBlitVsMain "${_mv_kernel_tokens}")
 mv_fxc(MV_GFX_SHADERS "${_mv_blit_hlsl}" ps_main ps_5_0 kBlitPsMain "${_mv_kernel_tokens}")
+mv_fxc(MV_GFX_SHADERS "${_mv_blit_hlsl}" ps_background ps_5_0 kBlitPsBackground "${_mv_kernel_tokens}")
 mv_fxc(MV_GFX_SHADERS "${_mv_blit_hlsl}" vs_tile vs_5_0 kBlitVsTile "${_mv_kernel_tokens}")
 mv_fxc(MV_GFX_SHADERS "${_mv_blit_hlsl}" ps_tile ps_5_0 kBlitPsTile "${_mv_kernel_tokens}")
 set(_mv_video_blit_hlsl "${CMAKE_CURRENT_SOURCE_DIR}/src/gfx/video_blit.hlsl")
@@ -837,6 +838,7 @@ add_executable(mediaviewer_lab WIN32
   src/shell/file_jobs.cpp
   src/shell/file_jobs.h
   src/shell/marks.h
+  src/shell/share_menu.h
   src/shell/meta_store.cpp
   src/shell/meta_store.h
   src/shell/meta_writer.cpp
@@ -1105,6 +1107,7 @@ if(MV_BUILD_TESTS)
     tests/test_abi_image.cpp
     tests/test_upload.cpp
     tests/test_tiles.cpp
+    tests/test_blit.cpp
     tests/test_refinement.cpp
     tests/test_chrome_host.cpp
     tests/test_dir.cpp
@@ -1186,7 +1189,12 @@ if(MV_BUILD_TESTS)
     src/shell/trim_state.cpp
     tests/test_corpus.cpp
     tests/test_key_router.cpp
+    # Issue #239: every command id is handled or explicitly excluded, per host.
+    tests/test_command_coverage.cpp
     tests/test_key_router_review.cpp
+    tests/test_command_contract.cpp
+    # Issue #444: the one share command's file set and wire argument.
+    tests/test_share_menu.cpp
     tests/test_keymap.cpp
     tests/test_collision_name.cpp
     tests/test_rename_stop.cpp

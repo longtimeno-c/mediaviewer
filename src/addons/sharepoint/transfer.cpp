@@ -3,11 +3,16 @@
 #include "addons/sharepoint/transfer.h"
 
 #include <algorithm>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <thread>
+#include <utility>
+#include <vector>
 
 #include "core/json.h"
 #include "io/collision_name.h"
@@ -350,17 +355,164 @@ expected send_decline(channel& ch, outcome why) {
   return ch.send(msg::decline, json_of([&](json::writer& w) { w.key("why").string(text); }));
 }
 
+namespace {
+
+// The receiver's verification of whole files, off the thread reading the link
+// (#442): flush to stable storage, read back uncached and hash again, rename
+// with no-replace, then file_done. While file N is flushed and read back, file
+// N+1 is already arriving. Every rule of verified_copy holds for each file
+// exactly as before; only the next file no longer waits for it. kVerifiers
+// threads take files in order; at most kVerifyAhead wait (each holds an open
+// temporary), past which the link reader waits.
+class verifier {
+ public:
+  verifier(channel& ch, const hooks& h) : ch_(ch), h_(h) {
+    // A file that arrived whole is checked to the end even after a cancel,
+    // as before the pipeline: what finished stays. The yield still applies.
+    h_.cancel = nullptr;
+    for (int i = 0; i < kVerifiers; ++i) threads_.emplace_back([this] { run(); });
+  }
+  ~verifier() { finish(); }
+
+  // Waits while kVerifyAhead files are queued. False once a file_done could
+  // not be sent (the link is gone).
+  bool push(std::unique_ptr<incoming> f, const io::content_hash& sent) {
+    std::unique_lock lock(m_);
+    room_.wait(lock, [&] { return queue_.size() < kVerifyAhead || broken_; });
+    if (broken_) return false;
+    queue_.push_back({std::move(f), sent});
+    work_.notify_one();
+    return true;
+  }
+  // Every queued file verified (or dropped); the threads end.
+  void finish() {
+    {
+      std::lock_guard lock(m_);
+      if (closing_) return;
+      closing_ = true;
+      work_.notify_all();
+    }
+    for (auto& t : threads_) t.join();
+  }
+  [[nodiscard]] std::uint32_t done() const { return done_.load(); }
+  [[nodiscard]] std::uint32_t failed() const { return failed_.load(); }
+  [[nodiscard]] bool broken() {
+    std::lock_guard lock(m_);
+    return broken_;
+  }
+  std::vector<std::string> take_written() {
+    std::lock_guard lock(m_);
+    std::sort(written_.begin(), written_.end());
+    std::vector<std::string> out;
+    out.reserve(written_.size());
+    for (auto& [i, path] : written_) out.push_back(std::move(path));
+    return out;
+  }
+
+ private:
+  static constexpr int kVerifiers = 2;
+  static constexpr std::size_t kVerifyAhead = 4;
+  struct job {
+    std::unique_ptr<incoming> f;
+    io::content_hash sent;
+  };
+
+  void run() {
+    for (;;) {
+      job j;
+      {
+        std::unique_lock lock(m_);
+        work_.wait(lock, [&] { return closing_ || !queue_.empty(); });
+        if (queue_.empty()) return;
+        j = std::move(queue_.front());
+        queue_.pop_front();
+        room_.notify_all();
+      }
+      bool ok = false;
+      try {
+        ok = verify(*j.f, j.sent);
+      } catch (...) {
+        ok = false;
+      }
+      if (ok) {
+        j.f->open = false;  // renamed into place: the temporary is the final file
+        done_.fetch_add(1);
+        std::lock_guard lock(m_);
+        written_.emplace_back(j.f->index, j.f->final_path);
+      } else {
+        j.f->drop();
+        failed_.fetch_add(1);
+      }
+      if (h_.progress) h_.progress(moved_hint_.load(), done_.load());
+      const std::uint32_t i = j.f->index;
+      if (!ch_.send(msg::file_done, json_of([&](json::writer& w) { w.key("i").integer(i).key("ok").boolean(ok); }))) {
+        std::lock_guard lock(m_);
+        broken_ = true;
+        room_.notify_all();
+      }
+    }
+  }
+
+  // Flushed, read back from the device, renamed never over anything.
+  bool verify(incoming& f, const io::content_hash& sent) {
+    if (!f.out.flush_durable()) return false;
+    if (f.mtime != 0) (void)f.out.set_mtime(f.mtime);
+    if (!f.out.close()) return false;
+    const auto back = read_back(f.temp_path, h_);
+    if (!back || !(*back == sent)) return false;
+    const std::string dir(io::parent_of(f.final_path));
+    const std::string leaf(io::file_name_of(f.final_path));
+    for (int a = 0; a < kRenameAttempts; ++a) {
+      auto r = io::rename_no_replace(f.temp_path, f.final_path);
+      if (!r) return false;
+      if (*r == io::rename_outcome::renamed) return true;
+      // A name taken since it was chosen (by another file of this offer still
+      // being verified, or by anyone): keep both.
+      f.final_path = free_name(dir, leaf);
+      if (f.final_path.empty()) return false;
+    }
+    return false;
+  }
+
+ public:
+  std::atomic<std::uint64_t> moved_hint_{0};
+
+ private:
+  channel& ch_;
+  hooks h_;
+  std::mutex m_;
+  std::condition_variable work_, room_;
+  std::deque<job> queue_;
+  bool closing_ = false;
+  bool broken_ = false;
+  std::vector<std::pair<std::uint32_t, std::string>> written_;
+  std::atomic<std::uint32_t> done_{0}, failed_{0};
+  std::vector<std::thread> threads_;
+};
+
+}  // namespace
+
 transfer_result receive_files(channel& ch, const incoming_offer& offer, const std::string& dest_dir, const hooks& h) {
   transfer_result res;
   std::unique_ptr<incoming> cur;  // the file being written, if any
   std::uint32_t next = 0;
-  std::uint32_t failed = 0;
+  std::uint32_t failed = 0;  // files whose streamed hash did not match
   std::uint64_t moved = 0;
+  verifier checks(ch, h);
+  auto settle = [&] {
+    checks.finish();
+    res.done = checks.done();
+    res.written = checks.take_written();
+    failed += checks.failed();
+  };
   auto end = [&](outcome o, bool tell, int line) {
     note(h, "receive", line, o);
     if (cur) cur->drop();
     if (tell) (void)ch.send(msg::cancel, std::string_view("{}"));
     ch.shutdown();
+    // Files already whole finish their checks: what arrived whole stays,
+    // nothing partial does (the one being written was dropped above).
+    settle();
     res.how = o;
     return res;
   };
@@ -368,6 +520,7 @@ transfer_result receive_files(channel& ch, const incoming_offer& offer, const st
   message m;
   for (;;) {
     if (cancelled(h)) return end(outcome::cancelled, true, __LINE__);
+    if (checks.broken()) return end(cancelled(h) ? outcome::cancelled : outcome::failed, false, __LINE__);
     if (auto r = ch.receive(m); !r) {
       note_status(h, "receive: link", __LINE__, r.error());
       return end(cancelled(h) ? outcome::cancelled : outcome::failed, false, __LINE__);
@@ -409,7 +562,8 @@ transfer_result receive_files(channel& ch, const incoming_offer& offer, const st
         cur->hash.update(m.body);
         cur->got += m.body.size();
         moved += m.body.size();
-        if (h.progress) h.progress(moved, res.done);
+        checks.moved_hint_.store(moved);
+        if (h.progress) h.progress(moved, checks.done());
         if (h.yield) h.yield();
         break;
       }
@@ -417,44 +571,21 @@ transfer_result receive_files(channel& ch, const incoming_offer& offer, const st
         if (!cur || !cur->open || m.body.size() != 32 || cur->got != cur->size) return end(outcome::failed, true, __LINE__);
         io::content_hash sent;
         std::memcpy(sent.bytes.data(), m.body.data(), 32);
-        bool ok = cur->hash.finish() == sent && cur->out.flush_durable().has_value();
-        if (ok && cur->mtime != 0) (void)cur->out.set_mtime(cur->mtime);
-        ok = ok && cur->out.close().has_value();
-        // From the device, as verified_copy's read-back.
-        if (ok) {
-          const auto back = read_back(cur->temp_path, h);
-          if (!back && cancelled(h)) return end(outcome::cancelled, true, __LINE__);
-          ok = back && *back == sent;
-        }
-        if (ok) {
-          // Never over anything: a name taken since we chose it moves on.
-          ok = false;
-          const std::string dir(io::parent_of(cur->final_path));
-          const std::string leaf(io::file_name_of(cur->final_path));
-          for (int a = 0; a < kRenameAttempts; ++a) {
-            auto r = io::rename_no_replace(cur->temp_path, cur->final_path);
-            if (!r) break;
-            if (*r == io::rename_outcome::renamed) {
-              ok = true;
-              break;
-            }
-            cur->final_path = free_name(dir, leaf);
-            if (cur->final_path.empty()) break;
-          }
-        }
-        if (ok) {
-          cur->open = false;
-          ++res.done;
-          res.written.push_back(cur->final_path);
-        } else {
-          cur->drop();
-          ++failed;
-        }
-        const std::uint32_t i = cur->index;
         ++next;
-        if (h.progress) h.progress(moved, res.done);
-        if (!ch.send(msg::file_done, json_of([&](json::writer& w) { w.key("i").integer(i).key("ok").boolean(ok); }))) {
-          return end(cancelled(h) ? outcome::cancelled : outcome::failed, false, __LINE__);
+        if (cur->hash.finish() == sent) {
+          // Flushed, read back and renamed on the verifier while the next
+          // file arrives; its file_done goes from there.
+          if (!checks.push(std::move(cur), sent)) {
+            return end(cancelled(h) ? outcome::cancelled : outcome::failed, false, __LINE__);
+          }
+        } else {
+          const std::uint32_t i = cur->index;
+          cur->drop();
+          cur.reset();
+          ++failed;
+          if (!ch.send(msg::file_done, json_of([&](json::writer& w) { w.key("i").integer(i).key("ok").boolean(false); }))) {
+            return end(cancelled(h) ? outcome::cancelled : outcome::failed, false, __LINE__);
+          }
         }
         break;
       }
@@ -468,6 +599,15 @@ transfer_result receive_files(channel& ch, const incoming_offer& offer, const st
       }
       case msg::done: {
         if ((cur && cur->open) || next != offer.files.size()) return end(outcome::failed, true, __LINE__);
+        // The last files' checks finish before done: the sender's done means
+        // every file is in place or reported.
+        settle();
+        if (checks.broken()) {
+          ch.shutdown();
+          res.how = cancelled(h) ? outcome::cancelled : outcome::failed;
+          return res;
+        }
+        if (h.progress) h.progress(moved, res.done);
         (void)ch.send(msg::done, std::string_view("{}"));
         ch.shutdown();
         res.how = failed == 0 ? outcome::delivered : outcome::failed;

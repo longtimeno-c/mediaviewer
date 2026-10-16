@@ -161,10 +161,18 @@ public final class MVChromeHost: NSObject {
   }
 
   /// docs/design/25, issue #402: the add-ons' context-menu entries for the file
-  /// on the canvas, as its gallery tile lists them. Nil when none contributes
-  /// one or no file is on screen (the canvas then shows no menu).
+  /// on the canvas, as its gallery tile lists them, then Share (issue #444).
+  /// Nil when no file is on screen (the canvas then shows no menu).
   @MainActor @objc public static func canvasContextMenu() -> NSMenu? {
-    SlotCanvasMenu.make()
+    TileMenu.make(tile: FolderStore.shared.currentIndex, event: NSApp.currentEvent)
+  }
+
+  /// Issue #444: the one share command's files are known (main_mac.mm's
+  /// shareRequest:). `target` / `from` are shell::share_target / share_from.
+  @MainActor @objc public static func presentShare(_ json: String, target: Int, from: Int) {
+    ShareMenu.shared.present(json: json,
+                             target: ShareMenu.Target(rawValue: Int32(clamping: target)) ?? .menu,
+                             from: ShareMenu.From(rawValue: Int32(clamping: from)) ?? .key)
   }
 
   /// PR 9: the metadata pane and folder tree, floating over the canvas.

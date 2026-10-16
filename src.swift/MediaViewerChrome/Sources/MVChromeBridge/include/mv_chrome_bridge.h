@@ -221,6 +221,12 @@ bool mv_chrome_is_marked(int32_t index);
 // path and Share act on it. The host clears it on any other selection, a
 // relist, another folder, or the grid closing (the generation moves).
 void mv_chrome_gallery_set_range(const int32_t* indices, int32_t count);
+// Issue #444 (docs/design/16 "Share"): run the one share command. `target` is
+// shell::share_target (0 the menu, 1 Sharepoint, 2 the system picker), `from`
+// shell::share_from (0 key, 1 bar, 2 gallery icon, 3 right-click), `clicked`
+// the right-clicked item or -1. The host answers through
+// MVChromeHost.presentShare. [main-thread]
+void mv_chrome_share(int32_t target, int32_t from, int32_t clicked);
 uint64_t mv_chrome_gallery_range_generation(void);
 int32_t mv_chrome_gallery_range_count(void);
 
@@ -516,6 +522,12 @@ bool mv_chrome_set_kind_filter(int32_t filter);
 // checks for updates on the new channel. [main-thread]
 int32_t mv_chrome_update_channel(void);
 void mv_chrome_set_update_channel(int32_t channel);
+
+// Automatic update checks (Sparkle, the same switch as the app menu's "Check
+// for Updates Automatically"): -1 without an updater, 0 off, 1 on. Turning it
+// on checks now. [main-thread]
+int32_t mv_chrome_update_auto_check(void);
+void mv_chrome_set_update_auto_check(bool on);
 
 // ---- PR 10: export sheet (docs/design/10 "SwiftUI crop mode and export sheet") -------
 //

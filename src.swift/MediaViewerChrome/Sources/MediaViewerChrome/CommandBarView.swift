@@ -402,6 +402,8 @@ struct PathBar: View {
       PathIcon(symbol: "house", enabled: crumbs.count > 1) { store.openCrumb(0) }
         .help(crumbs.first.map { "Return to browsing root: " + $0.path } ?? "No folder open")
         .accessibilityLabel("Return to browsing root")
+      // Issue #444: Share beside Home (ShareMenu.swift).
+      BarShareButton()
 
       ScrollView(.horizontal, showsIndicators: false) {
         HStack(spacing: MVTheme.space(4)) {

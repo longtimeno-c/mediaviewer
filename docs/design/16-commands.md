@@ -6,8 +6,19 @@ without a mouse.
 
 Source of truth: [`src/shell/commands.h`](../../src/shell/commands.h) (ids, keys, modes),
 [`src/shell/command_table.cpp`](../../src/shell/command_table.cpp) (the default map and labels),
-[`src/shell/key_router.h`](../../src/shell/key_router.h) / `.cpp` (mode and `Esc` resolution).
-Both hosts use the same table and router; tests are `tests/test_key_router*.cpp`.
+[`src/shell/key_router.h`](../../src/shell/key_router.h) / `.cpp` (mode and `Esc` resolution),
+[`src/shell/command_coverage.inc`](../../src/shell/command_coverage.inc) (which host handles
+which id, and which area of `run_command` / `runCommand:` runs it).
+Both hosts use the same table and router; tests are `tests/test_key_router*.cpp` and
+`tests/test_command_coverage.cpp`.
+
+The Mac's Settings list (`MvCommandSupported`) is the Mac half of that coverage file, so a
+command cannot be handled and missing from Settings, or listed and not dispatched. Import
+(`open_import`, `import_now`) and similar-search stay hidden until their add-on is loaded.
+`search_open` stays listed: with no AI pack it is file search. A command the Mac dispatcher
+does not run is a row with a reason, not a gap in a hand-kept switch. Windows handles the
+same ids; a few (`back`, the island arguments) are handled outside `run_command` and the
+coverage file says so. A new `command_id` fails the test until it has a row.
 
 ## One table, editable
 
@@ -21,7 +32,11 @@ Both hosts use the same table and router; tests are `tests/test_key_router*.cpp`
   recorded.
 - A remap onto a key another row holds in an overlapping mode **swaps** the two rows, so nothing
   is silently left unbound. Remaps persist by row index (`settings.ini [keys]` on Windows,
-  `NSUserDefaults` on macOS), which is why new rows are only ever **appended**.
+  `NSUserDefaults` on macOS), which is why new rows are only ever **appended**. What is saved
+  is every row that differs from the default, a row a swap left unbound included (key 0), and a
+  reload sets those rows as saved (`live_key_remaps` / `apply_key_remaps`). Replaying them
+  through the swapping rebind did not round-trip: a swap moved rows the list did not name, and
+  an unbound row came back on its default key (issue #153, `test_command_contract.cpp`).
 - **Mac menu bar** (issue #182). The items that show a chord (Settings `⌘,`, New Window, Open,
   Folder Tree, Close Window) read it from the live table (`menu_chord`) after every remap, so a
   remap moves the menu with the router; a chord another command also holds stays the router's.
@@ -225,13 +240,26 @@ crop. Keys are shown Windows-style; on macOS read `⌘` for `Ctrl`.
 | `C` | Viewing | Clipping blinkies |
 | `O` | Viewing | On-canvas info overlay (filename, index, exposure triangle) |
 | `Shift+O` | Viewing | AF-point quads from the maker notes already read |
+| `Shift+Z` | browse | Zoom to the AF point: springs to 100 % centred on the in-focus point (else the selected one; of several, the one nearest their middle), through any rotate / crop. Camera state only; the record is the one `Shift+O` reads (one read on the pool if nothing has asked yet). "No AF point recorded" when there is none; nothing when a crop has cut it away |
 | `I` | Viewing | Metadata pane: focuses it; `←` `→` change tab, `↓` reaches tag search; `Esc` returns to the canvas, a second `Esc` closes it |
 | `Shift+I` | Viewing | Eyedropper: one-pixel sRGB 8-bit + hex readout under the cursor (stills) |
 | `Ctrl+C` | Viewing | With words selected in the still ([Text in images](#text-in-images)): copy that text. With the eyedropper on: copy `#RRGGBB  rgb(r, g, b)  x y`. Otherwise copy the marked (else current / gallery-selected) file(s) |
 | hold `Z` | browse, video | Loupe: 100 % around the cursor or a keyboard point; arrows nudge it. Same texture, no decode |
 | hold `\` | browse, video | Previous item, for burst pick, from the five-slot GPU LRU (Mac: the last still shown, kept on the GPU) |
+| `\|` | browse, video | **Two-up compare** (issue #208): the previous still (the one hold `\` shows) on the left, the current one on the right, under one camera (below). Toggle; `--compare` starts with it on |
 | `;` | browse, video | Play a Live Photo's motion once, with audio, and return to the still. `;` again, `Esc` or navigation return early. **Mac: not built** |
 | `Ctrl+Shift+A` | all | Always on top (`HWND_TOPMOST`) |
+
+**Two-up compare.** `|` (the Shift twin of `\`, as `Shift+O` / `Shift+I` pair their keys)
+splits the canvas: the camera frames the current still in the right half, and the left half is a
+second draw of the previous still's texture, already resident, in the same present. No decode,
+no second present path; a tiled previous still draws its overview. Pan, zoom, the wheel (over
+either half, toward the same spot) and `0`–`4` move both: a same-size burst frame is the identical
+view, a different frame shows the same region at the same magnification relative to its fit
+(`shell/compare.h`, shared by both labs). Walking the folder keeps the split, so `D` through a burst
+compares each frame with the one before. Stills only: on a clip, in crop mode and under a
+slideshow blackout the canvas is one-up and the toggle waits; hold `\` does nothing while the split
+is up (the previous still is already on screen). A fitted view refits to its half.
 
 **Page sidebar** (issue #429). With the filmstrip hidden and a PDF, DOCX or PPTX of more than one
 page on screen, a strip of its page thumbnails runs down the left of the canvas, like Preview's:
@@ -250,8 +278,9 @@ to hide the filmstrip and scroll" (the wheel zooms until the strip is hidden); o
 to hide the filmstrip and skip 2 s with ← →" (the arrows walk the folder until it is hidden, issue
 #416). It is a small card in the window's bottom-right corner, above the filmstrip and above the
 resume-indexing notice when that is up, in that notice's look (Windows `IslandHost.HintNotice.cs`,
-entry `ShowHint`; Mac `HintNoticeView.swift`); it was the title's status line, which nobody saw. It
-shows when such a document or clip comes on screen, when the wheel zooms a document (at most once a
+entry `ShowHint`, an island of its own like the resume notice since #446; Mac `HintNoticeView.swift`);
+it was the title's status line, which nobody saw. It shows when such a document or clip comes on
+screen, when the filmstrip comes up under one, when the wheel zooms a document (at most once a
 second) and on a page turn, fades after eight seconds, and goes when nothing it covers is on screen.
 It takes no focus. Once `T` has hidden the strip over either subject, or the card's "Got it" was
 clicked, it never shows again (Windows `settings.ini` `[hints] filmstrip_t`, Mac
@@ -281,9 +310,43 @@ left of `?` (a long middle collapses into a menu), with Up and Root buttons outs
   `GalleryDrag`, as the grid's scroll view never handed it to the cell). A cell of the range drags
   the whole range, a marked cell the marks, any other cell itself; each file with its pair on
   Windows, copy-only, originals untouched. The filmstrip's drag is unchanged.
-- **One share icon** ("Send") over the grid sends the gallery's selection (the range, else the
-  selected cell) to [Sharepoint](28-sharepoint.md), with those files and no others. Without
-  Sharepoint it offers the one-click install. It is not the OS share sheet (`Ctrl+Shift+S`).
+- **One share icon** ("Share") over the grid opens the share menu (below) for the gallery's
+  selection.
+
+#### Share (#444)
+
+One command, `share` (id 149, `Ctrl+Shift+S` / `⌘⇧S`), and every way in runs it: the key, the
+gallery's share icon, the command bar's **share button beside Home**, File ▸ Share… / Open ▸
+Share…, and **Share ▸** on the right-click menu of a gallery cell, a filmstrip cell and the canvas.
+`shell/share_menu.h` is the part both hosts share.
+
+- **Which files.** The selection: the gallery's range while it stands, else the marks, else the
+  current file. A right-click on a file that is part of the selection shares the selection; on any
+  other file, that file alone (`share_stops`). The bar button is off with nothing to share.
+- **The menu.** [Sharepoint](28-sharepoint.md) first (its window with those files, or its
+  one-click install when it is not there), then the system's targets: **Windows Share** (Mail,
+  Phone Link, Nearby Share, apps; `DataTransferManager`) on Windows, `NSSharingServicePicker`
+  (Mail, Messages, AirDrop, Notes…) on the Mac, where Sharepoint is the picker's first entry (its
+  delegate puts it there). The right-click **Share ▸** submenu lists the same two entries; picking
+  one runs the command with that entry (`share_target`) and the clicked file.
+- **Sidecars.** Sharepoint gets the files with their pair halves and takes each XMP itself; the
+  system sheet gets the media files only, never a sidecar (`share_system_files`).
+- **Nothing is read before a target is asked for**, and nothing is sent until one is picked
+  (rule 6). The UI thread only picks the stops. Windows walks the listing for pair halves on the
+  pool (`mv_folder_entries`) and the chrome shows the menu when that lands; the Mac lists both
+  halves of a pair as items, so its set is a walk of the in-memory listing with no syscall.
+- **Large sets on the Mac.** Opening `NSSharingServicePicker` costs about 0.09 ms per file on the
+  main thread (ShareKit stats and sandbox-checks every URL to match its targets: 65 ms warm for 500
+  files). Past 50 files the picker is shown with one file per kind and every target it offers is
+  wrapped to receive all the files when picked; a target that will not take that many (Mail and
+  Messages cap attachments) says so and sends nothing. 500 files: 65 → 21 ms warm, 139 → 94 ms on
+  the first open in a process (the first open's ~90 ms loads the share services, whatever the count).
+- **One route.** Sharepoint's own **Send with Sharepoint…** context entry is left out of the
+  right-click menus on both hosts: Share ▸ Sharepoint is that route.
+- **Wire.** The island's command carries one float: `(clicked + 1) * 16 + from * 4 + target`
+  (`pack_share_request`; `from` only says where the menu is anchored). Native answers through the
+  chrome's `ShareMenu` entry (`chrome_share_args` + `{"files", "media"}`) on Windows and
+  `MVChromeHost.presentShare` on the Mac (`mv_chrome_share` is the Swift side's way in).
 
 ### Marks, copy, move
 
@@ -302,7 +365,7 @@ commands below act on it first.
 | `F2` | Viewing | Rename the current file (the gallery's selected cell); also File ▸ Rename… on the Mac |
 | `Ctrl+Shift+C` | Viewing | Copy path(s) as text |
 | `Ctrl+Alt+C` | browse | Copy the current still with edits baked, as PNG (worker thread) |
-| `Ctrl+Shift+S` | Viewing | Share (Windows Share / macOS share sheet) |
+| `Ctrl+Shift+S` | Viewing | Share: the share menu (Sharepoint, then Windows Share / the macOS picker) |
 
 These are on the mouse too: the Mac's File menu, and on Windows the command bar's **Open** flyout
 (Mark / Unmark, Copy / Move Marked To…, Move to Recycle Bin, Share…, Copy Path, Copy Edited
@@ -535,11 +598,13 @@ presents ([rendering](03-rendering.md)). Toggles request one redraw.
 |---|---|
 | Loupe (hold `Z`) | Camera / viewport change; same texture |
 | Hold-previous (hold `\`) | The five-slot LRU; no second session |
+| Two-up compare (`\|`) | A second blit of the resident previous texture into the left half; same present |
 | Clipping blinkies (`C`) | Shader; may present while on (it animates), labelled in F3 |
 | Pixel grid (≥ 400 %) | Shader |
 | Around the picture (no key) | The theme's `canvas` token as the clear and in the blit; there is no canvas background of its own (issue #408, [12](12-decision-log.md)) |
 | On-canvas info (`O`) | Overlay text from the folder model and metadata already read |
 | AF-point quads (`Shift+O`) | A few quads from maker notes already in the property model |
+| Zoom to AF point (`Shift+Z`) | Camera target only (`shell/af_focus.h` → `camera::zoom_to`); the zoom's refinement is the usual one |
 | Eyedropper (`Shift+I`) | One-pixel staging readback on demand, never a full-texture download |
 | Histogram | On the adjust pane, computed after the sliders settle |
 

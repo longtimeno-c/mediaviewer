@@ -218,10 +218,23 @@ void tile_set::push_draws(std::uint32_t level, const tile_range& r,
   }
 }
 
+bool tile_set::range_ready(std::uint32_t level, const tile_range& r) const noexcept {
+  const tile_layout& L = layout();
+  for (std::uint32_t ty = r.y0; ty < r.y1; ++ty) {
+    for (std::uint32_t tx = r.x0; tx < r.x1; ++tx) {
+      const slot& s = slots_[L.index(level, tx, ty)];
+      if (s.state.load(std::memory_order_acquire) != k_ready) return false;
+      if (!s.srv.load(std::memory_order_acquire)) return false;
+    }
+  }
+  return true;
+}
+
 void tile_set::frame(const tile_view& view, std::vector<gfx::tile_quad>& draws) noexcept {
   ++frame_;
   draws.clear();
   new_requests_ = false;
+  covers_view_ = false;
   const tile_layout& L = layout();
   const std::uint32_t ov = L.overview_level();
   const std::uint32_t lod = L.lod_for_zoom(view.zoom);
@@ -243,8 +256,18 @@ void tile_set::frame(const tile_view& view, std::vector<gfx::tile_quad>& draws) 
       }
     }
     // Coarse to fine: a finer ready tile overdraws its parent, a missing one
-    // leaves the parent (or the overview beneath everything) showing.
-    const std::uint32_t coarsest = std::min(ov - 1, lod + 2);
+    // leaves the parent (or the overview beneath everything) showing. Once
+    // every on-screen tile at `lod` is ready the coarser levels are wholly
+    // overdrawn (the tile shader writes every pixel it covers, background
+    // included), so they are not drawn: two hidden full-view Catmull-Rom
+    // passes per pan frame (issue #164). Their tiles stop being touched and
+    // age like any other in the LRU.
+    // The same test tells the caller the overview pass under them is hidden
+    // too (covers_view). Tiles are evicted only here, on this thread, so the
+    // ready tiles stay ready for push_draws below.
+    const bool lod_ready = range_ready(lod, inner);
+    covers_view_ = lod_ready && !inner.empty();
+    const std::uint32_t coarsest = lod_ready ? lod : std::min(ov - 1, lod + 2);
     std::size_t before_finest = 0;
     for (std::uint32_t l = coarsest + 1; l-- > lod;) {
       if (l == lod) before_finest = draws.size();

@@ -34,6 +34,7 @@
 #include "player/media_source.h"
 #include "player/playback_hold.h"
 #include "shell/dino_game.h"
+#include "shell/compare.h"
 #include "shell/home_theme.h"
 #include "shell/input_state.h"
 
@@ -400,6 +401,14 @@ class present_lab_mac {
   // Hold `\` (docs/design/16): the last *different* still, kept when the next
   // one lands, so burst pick swaps textures and never decodes.
   std::unique_ptr<image::gpu_image_mac> previous_image_;
+  // `|` two-up compare (issue #208, shell/compare.h): this frame's split of the
+  // canvas, or !valid for one-up. Same rule as the Windows lab: the current
+  // still keeps the camera in the right half, previous_image_ draws in the
+  // left through linked_camera. Render thread only.
+  compare_split compare_split_;
+  // Docks the split on the render thread's copy of the snapshot (chrome_left_px)
+  // and refits a fitted / filled camera when it moves. True when it changed.
+  bool apply_compare_split(input_snapshot& snapshot, std::uint32_t host_chrome_left) noexcept;
   canvas::crossfade fade_;
   std::atomic<std::uint32_t> stills_shown_{0};
 
@@ -540,6 +549,7 @@ class present_lab_mac {
   std::uint32_t seen_zoom_in_seq_ = 0;
   std::uint32_t seen_zoom_out_seq_ = 0;
   std::uint32_t seen_zoom_preset_seq_ = 0;
+  std::uint32_t seen_af_focus_seq_ = 0;  // issue #209, Shift+Z
   std::uint32_t seen_fill_seq_ = 0;
   std::atomic<bool> view_fitted_{true};
   std::uint32_t seen_page_land_seq_ = 0;

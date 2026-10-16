@@ -48,6 +48,7 @@ add_library(mv_sharepoint_engine STATIC
   ${_S}/bt_pipe.cpp ${_S}/bt_pipe.h
   ${_S}/net.h
   ${_S}/engine.cpp ${_S}/engine.h
+  ${_S}/prefs.cpp ${_S}/prefs.h
   ${_S}/tree.cpp
   ${_sharepoint_port}
 )
@@ -57,7 +58,8 @@ target_link_libraries(mv_sharepoint_engine PUBLIC mv_project_options ${MV_SODIUM
 set_target_properties(mv_sharepoint_engine PROPERTIES POSITION_INDEPENDENT_CODE ON
   CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
 if(WIN32)
-  target_link_libraries(mv_sharepoint_engine PUBLIC ws2_32)
+  # shell32 / ole32: the Downloads folder (SHGetKnownFolderPath, CoTaskMemFree).
+  target_link_libraries(mv_sharepoint_engine PUBLIC ws2_32 shell32 ole32)
 elseif(APPLE)
   target_link_libraries(mv_sharepoint_engine PUBLIC "-framework CoreFoundation" "-framework SystemConfiguration")
 endif()

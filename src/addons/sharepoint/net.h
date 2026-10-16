@@ -59,4 +59,19 @@ class beacon_socket {
 // computer name on Windows). Never a user name.
 [[nodiscard]] std::string machine_name();
 
+// The person's Downloads folder, where received files land unless they pick
+// another (#442, as AirDrop): FOLDERID_Downloads on Windows, ~/Downloads on
+// the Mac. "" when there is none. A local read; never blocks on the network.
+[[nodiscard]] std::string downloads_folder();
+
+// One process at a time: each MediaViewer window is its own process
+// (docs/design/18 "One host process"), and only one of them keeps receiving
+// at launch when Keep receiving was on (#442). Held until destroyed; the OS
+// lets go of it if the process dies. nullptr when another process holds it.
+class instance_lock {
+ public:
+  virtual ~instance_lock() = default;
+};
+[[nodiscard]] std::unique_ptr<instance_lock> try_lock_instance(const std::string& path);
+
 }  // namespace mv::sharepoint::net
