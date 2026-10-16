@@ -44,6 +44,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "addon/slots.h"
 #include "canvas/document_scroll.h"
 #include "core/job_system.h"
 #include "core/json.h"
@@ -773,6 +774,12 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 - (void)closeList;
 - (void)returnToWelcome;
 - (void)openNewWindow;
+// #452 (docs/design/28 "In the background"): an add-on keeps the process.
+- (void)quitFromMenu:(id)sender;
+- (void)enterBackground;
+- (void)leaveBackground;
+- (void)quitFromBackground;
+- (void)backgroundChanged;
 - (BOOL)listOpen;
 - (BOOL)liveClipIsShown;
 - (std::string)listTitle;
@@ -790,6 +797,25 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 // rather than beside mv_chrome_fit/mv_chrome_one_to_one above, which predate
 // MvLabApp's declaration in this file. [main-thread] -- see the header's
 // doc comment; every one of these just forwards to g_chrome_app.
+// #452: the menu-bar item and the notices (AddonNotices.swift). [main-thread]
+extern "C" void mv_chrome_background_show_viewer(void) {
+  if (MvLabApp* app = (MvLabApp*)NSApp.delegate; [app isKindOfClass:[MvLabApp class]]) [app leaveBackground];
+}
+extern "C" void mv_chrome_background_quit(void) {
+  if (MvLabApp* app = (MvLabApp*)NSApp.delegate; [app isKindOfClass:[MvLabApp class]]) [app quitFromBackground];
+}
+extern "C" void mv_chrome_background_changed(void) {
+  if (MvLabApp* app = (MvLabApp*)NSApp.delegate; [app isKindOfClass:[MvLabApp class]]) [app backgroundChanged];
+}
+// An add-on window is coming forward (a notification, the menu-bar item): the
+// app is a regular one again (Dock icon, menu bar) while it is on screen.
+extern "C" void mv_chrome_background_window_shown(void) {
+  if (NSApp.activationPolicy != NSApplicationActivationPolicyRegular) {
+    [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+  }
+  [NSApp activateIgnoringOtherApps:YES];
+}
+
 extern "C" int32_t mv_chrome_item_count(void) {
   return g_chrome_app ? static_cast<int32_t>([g_chrome_app itemCount]) : 0;
 }
@@ -2418,6 +2444,12 @@ static void MvAdoptNewDefaultViewerTypes() {
   mv::job_system _jobs;
   mv::shell::mac_lab_options _options;
   bool _terminating;
+  // #452: every window closed while an add-on keeps the process (Sharepoint's
+  // Receive when MediaViewer is closed). The viewer window is hidden, not
+  // closed, and comes back on reopen, a file open, or the menu-bar item.
+  bool _inBackground;
+  bool _quitForReal;
+  id _backgroundCloseWatch;
 
   // Folder navigation (PR 18, folded-in PR 4/6 -- docs/design/12 2026-09-17).
   // `_items`/`_index` are a cache: refreshed only when -refreshFolderIfChanged
@@ -5789,7 +5821,11 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
   [app addItem:[NSMenuItem separatorItem]];
   [app addItemWithTitle:@"Hide MediaViewer" action:@selector(hide:) keyEquivalent:@"h"];
   [app addItem:[NSMenuItem separatorItem]];
-  [app addItemWithTitle:@"Quit MediaViewer" action:@selector(terminate:) keyEquivalent:@"q"];
+  // #452: Quit goes to the background while an add-on keeps the process;
+  // otherwise it is terminate:, as before. Logout and the Dock's Quit still
+  // terminate.
+  NSMenuItem* quit = [app addItemWithTitle:@"Quit MediaViewer" action:@selector(quitFromMenu:) keyEquivalent:@"q"];
+  quit.target = self;
 
   NSMenu* file = submenu(@"File");
   [self addMenuItem:@"New Window" cmd:kMenuNewWindow key:@"" mods:0 toMenu:file];
@@ -5928,6 +5964,7 @@ static void MvSyncKeyEquivalents(NSMenu* menu, NSMenu* bar) {
     [paths addObject:url.path];
   }
   if (paths.count == 0) return NSBeep();
+  if (_inBackground) [self leaveBackground];
   [self.window makeKeyAndOrderFront:nil];
   [self openEntryPaths:paths failed:nil];
 }
@@ -8113,7 +8150,8 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
                   const BOOL closeViewer = me->_closeAfterEditor;
                   if (response == NSAlertSecondButtonReturn) [me setEditorOpen:NO];
                   me->_closeAfterEditor = NO;
-                  if (closeViewer && response == NSAlertSecondButtonReturn) [me.window close];
+                  // performClose: so a kept process (#452) hides the viewer rather than closing it.
+                  if (closeViewer && response == NSAlertSecondButtonReturn) [me.window performClose:nil];
                 }];
 }
 
@@ -8132,6 +8170,106 @@ static constexpr int kEditorIdleTicks = 30;  // half a second
   if (self.editorWindow != nil && sender == self.editorWindow && _editorOpen && _timeline.edited() &&
       _timeline.revision() != _editorExportedRevision) {
     [self editorRequestClose];
+    return NO;
+  }
+  // #452: the viewer window closing while an add-on keeps the process hides
+  // it instead; the process stays in the menu bar.
+  if (sender == self.window && !_quitForReal && mv::addon::default_slots().keeping_alive()) {
+    [self enterBackground];
+    return NO;
+  }
+  return YES;
+}
+
+// ---- #452: in the background (docs/design/28 "In the background") ----------------------
+// Off (the default) none of this runs: Quit terminates and the last window
+// closing quits. On, the viewer drops what it showed (returnToWelcome: no
+// clip plays, the folder and its watch close), its window is ordered out, and
+// with no window left the app leaves the Dock (accessory). The add-on's own
+// threads are all that run; the canvas presents nothing.
+
+- (void)quitFromMenu:(id)sender {
+  (void)sender;
+  if (!_quitForReal && mv::addon::default_slots().keeping_alive()) {
+    // Every window goes: add-on windows close (their add-on hears it), Settings closes.
+    for (NSWindow* w in [NSApp.windows copy]) {
+      if (w == self.window || !w.isVisible || w.sheetParent != nil) continue;
+      if (w == self.editorWindow) continue;  // windowShouldClose: of the viewer handles it
+      [w close];
+    }
+    if ([self windowShouldClose:self.window]) [self.window close];
+    return;
+  }
+  [NSApp terminate:nil];
+}
+
+- (void)enterBackground {
+  if (_inBackground) return;
+  _inBackground = true;
+  if (_slideshowActive) [self leaveSlideshow];
+  if ((self.window.styleMask & NSWindowStyleMaskFullScreen) != 0) [self.window toggleFullScreen:nil];
+  [self returnToWelcome];
+  [self.window orderOut:nil];
+  [self backgroundSettle];
+  if (!_backgroundCloseWatch) {
+    __weak MvLabApp* weakSelf = self;
+    _backgroundCloseWatch = [NSNotificationCenter.defaultCenter
+        addObserverForName:NSWindowWillCloseNotification
+                    object:nil
+                     queue:NSOperationQueue.mainQueue
+                usingBlock:^(NSNotification*) {
+                  // After the close: the window is still visible while it closes.
+                  dispatch_async(dispatch_get_main_queue(), ^{
+                    [weakSelf backgroundSettle];
+                  });
+                }];
+  }
+}
+
+// No window left on screen: out of the Dock and the app switcher; the
+// menu-bar item stays. A window still open (Sharepoint's) keeps the Dock icon.
+- (void)backgroundSettle {
+  if (!_inBackground) return;
+  for (NSWindow* w in NSApp.windows) {
+    if (w.isVisible && w != self.window && ![w isKindOfClass:NSClassFromString(@"NSStatusBarWindow")]) return;
+  }
+  if (!mv::addon::default_slots().keeping_alive()) {
+    // Turned off while hidden: nothing keeps the process any more.
+    [self quitFromBackground];
+    return;
+  }
+  if (NSApp.activationPolicy != NSApplicationActivationPolicyAccessory) {
+    [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+  }
+}
+
+- (void)leaveBackground {
+  if (NSApp.activationPolicy != NSApplicationActivationPolicyRegular) {
+    [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+  }
+  if (!_inBackground) return;
+  _inBackground = false;
+  [self.window makeKeyAndOrderFront:nil];
+  [NSApp activateIgnoringOtherApps:YES];
+}
+
+- (void)quitFromBackground {
+  _quitForReal = true;
+  [NSApp terminate:nil];
+}
+
+// The keep-alive list changed (the chrome's notice reader): off while hidden
+// with nothing on screen quits; an add-on window opening from the menu-bar
+// item or a notification brings the Dock icon back.
+- (void)backgroundChanged {
+  if (_inBackground) [self backgroundSettle];
+}
+
+- (BOOL)applicationShouldHandleReopen:(NSApplication*)sender hasVisibleWindows:(BOOL)flag {
+  (void)sender;
+  (void)flag;
+  if (_inBackground) {
+    [self leaveBackground];
     return NO;
   }
   return YES;
@@ -11487,6 +11625,18 @@ static NSString* const kDefaultsRecentFolders = @"mv.recentFolders";
 }
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication*)sender {
   (void)sender;
+  // #452: a Quit the person asked for (the Dock's, or another app's quit
+  // event) goes to the background while an add-on keeps the process, as ⌘Q
+  // does. Logout, restart and shut down carry a reason and quit; the app's own
+  // terminate: calls (an update's restart) have no event and quit.
+  if (!_terminating && !_quitForReal && mv::addon::default_slots().keeping_alive()) {
+    NSAppleEventDescriptor* event = NSAppleEventManager.sharedAppleEventManager.currentAppleEvent;
+    if (event.eventClass == kCoreEventClass && event.eventID == kAEQuitApplication &&
+        [event paramDescriptorForKeyword:kAEQuitReason] == nil) {
+      [self quitFromMenu:nil];
+      return NSTerminateCancel;
+    }
+  }
   if (_terminating) return NSTerminateLater;
   _terminating = true;
   // PR 12: writes the user asked for and has not seen land -- a rating inside

@@ -1246,7 +1246,14 @@ final class SlotWindows: NSObject, NSWindowDelegate {
     tokens.forEach { NotificationCenter.default.removeObserver($0) }
   }
 
-  func bringForward(_ address: ScreenAddress) {
+  /// #452: the window is on screen and in front (key or main): a notice about
+  /// it would only repeat what the person sees.
+  func isFront(_ address: ScreenAddress) -> Bool {
+    guard let w = windows[address], w.isVisible, !w.isMiniaturized else { return false }
+    return w.isKeyWindow || w.isMainWindow
+  }
+
+    func bringForward(_ address: ScreenAddress) {
     guard let w = windows[address], w.sheetParent == nil else { return }
     w.makeKeyAndOrderFront(nil)
   }

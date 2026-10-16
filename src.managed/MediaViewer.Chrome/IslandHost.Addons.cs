@@ -605,8 +605,12 @@ public static partial class IslandHost
             _importProgressLabel.Visibility = text is null ? Visibility.Collapsed : Visibility.Visible;
         });
 
-        public void Notify(string title, string body)
+        public void Notify(string title, string body) => DispatcherQueueControllerTryEnqueue(() =>
         {
+            // #452: registered for this unpackaged build (IslandHost.Notices.cs);
+            // before, Show threw without a registration and nothing appeared. Where
+            // the OS still refuses, the summary in the window is the notification.
+            if (!EnsureNotifications()) return;
             try
             {
                 var toast = new Microsoft.Windows.AppNotifications.Builder.AppNotificationBuilder()
@@ -615,11 +619,9 @@ public static partial class IslandHost
             }
             catch (Exception ex)
             {
-                // Unpackaged without a registered AUMID: the summary in the
-                // window is the notification.
                 System.Diagnostics.Debug.WriteLine(ex.Message);
             }
-        }
+        });
 
         // ---- IAddonHost2 (IslandHost.LocalSearch.cs) ----
         public IntPtr MainWindow => _themeWindow;

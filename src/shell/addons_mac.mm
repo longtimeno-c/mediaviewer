@@ -27,6 +27,7 @@
 // pack's additions are new optional selectors and the mv_addon2_* functions.
 #import <AppKit/AppKit.h>
 #import <Foundation/Foundation.h>
+#import <UserNotifications/UserNotifications.h>
 
 #include "shell/addons_mac.h"
 
@@ -866,11 +867,32 @@ std::string read_bridge(int32_t (*fn)(char*, int32_t)) {
   state().status = text ? std::string(text.UTF8String ?: "") : std::string();
 }
 - (void)notifyTitle:(NSString*)title body:(NSString*)body {
-  // UNUserNotificationCenter needs an authorization prompt; the summary in the
-  // Import window is the notification until the user allows them.
-  (void)title;
-  (void)body;
-  NSBeep();
+  // #452: a notification when the person has allowed them (Sharepoint asks,
+  // when one of its toggles is turned on); otherwise the summary in the Import
+  // window is the notification, and a beep. Never asked for here. The lab
+  // binary has no bundle and no notification centre.
+  if (![NSBundle.mainBundle.bundleURL.pathExtension isEqualToString:@"app"] || !title) {
+    NSBeep();
+    return;
+  }
+  UNUserNotificationCenter* center = UNUserNotificationCenter.currentNotificationCenter;
+  NSString* text = body ?: @"";
+  [center getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings* settings) {
+    const UNAuthorizationStatus st = settings.authorizationStatus;
+    if (st != UNAuthorizationStatusAuthorized && st != UNAuthorizationStatusProvisional) {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        NSBeep();
+      });
+      return;
+    }
+    UNMutableNotificationContent* content = [[UNMutableNotificationContent alloc] init];
+    content.title = title;
+    content.body = text;
+    [center addNotificationRequest:[UNNotificationRequest requestWithIdentifier:NSUUID.UUID.UUIDString
+                                                                         content:content
+                                                                         trigger:nil]
+             withCompletionHandler:nil];
+  }];
 }
 
 // ---- Milestone H: what the AI chrome asks of the viewer ----------------------

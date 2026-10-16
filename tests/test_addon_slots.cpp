@@ -228,7 +228,8 @@ TEST_CASE("contributions are tables resolved once at attach; detach removes ever
   r.detach("slotstest");
   REQUIRE(changes == (mv::addon::slot_changed_contributions | mv::addon::slot_changed_info |
                       mv::addon::slot_changed_screens | mv::addon::slot_changed_search |
-                      mv::addon::slot_changed_badges | mv::addon::slot_changed_status));
+                      mv::addon::slot_changed_badges | mv::addon::slot_changed_status |
+                      mv::addon::slot_changed_notices));
   REQUIRE_FALSE(r.attached("slotstest"));
   const auto after = mv::json::parse(r.contributions_json());
   REQUIRE(after->find("sections")->a.empty());
@@ -798,6 +799,98 @@ TEST_CASE("screens open from items, take checked events, and close", "[addon][sl
   REQUIRE(r.status_json() == "[]");
   REQUIRE(r.post_status("slotstest", "open", "x") == status::not_found);  // not a status item
   REQUIRE(r.post_status("slotstest", "count", std::string(200, 'x')) == status::invalid_arg);
+}
+
+TEST_CASE("notices and keep-alive are tables the hosts read; a notice's button reaches the add-on (#452)",
+          "[addon][slots][screens]") {
+  slot_registry r;
+  std::atomic<std::uint32_t> bits{0};
+  r.set_listener([&](std::uint32_t b) { bits |= b; });
+  // Before attach (an add-on calling from mv_addon_get): not found, so it retries.
+  REQUIRE(r.keep_alive("slotstest", true, "explorer", "Slots: on") == status::not_found);
+  auto client = std::make_unique<fake_client>(r, "slotstest");
+  fake_client* fc = client.get();
+  REQUIRE(r.attach("slotstest", "Slots test", every_point(), std::move(client)) == status::ok);
+  REQUIRE(*mv::json::parse(r.notices_json())->integer("ask") == 0);
+  REQUIRE_FALSE(r.keeping_alive());
+
+  bits = 0;
+  slot_registry::notice_fields n{"explorer", "Slots", "Ann wants to send you files.", "decline", "Decline"};
+  REQUIRE(r.post_notice("slotstest", "offer", n) == status::ok);
+  REQUIRE((bits & mv::addon::slot_changed_notices) != 0);
+  auto doc = mv::json::parse(r.notices_json());
+  REQUIRE(doc->find("notices")->a.size() == 1);
+  const auto& first = doc->find("notices")->a[0];
+  CHECK(*first.str("addon") == "slotstest");
+  CHECK(*first.str("id") == "offer");
+  CHECK(*first.str("screen") == "explorer");
+  CHECK(*first.str("body") == "Ann wants to send you files.");
+  CHECK(*first.str("action") == "decline");
+  const auto rev = *first.integer("revision");
+  // The same id replaces it, under a new revision (the host shows it again).
+  n.body = "Ann wants to send you 3 files, 2 MB.";
+  REQUIRE(r.post_notice("slotstest", "offer", n) == status::ok);
+  doc = mv::json::parse(r.notices_json());
+  REQUIRE(doc->find("notices")->a.size() == 1);
+  CHECK(*doc->find("notices")->a[0].integer("revision") > rev);
+
+  // Bounds: a screen it does not have, no title, text too long, a button without a label.
+  slot_registry::notice_fields bad = n;
+  bad.screen = "nowhere";
+  CHECK(r.post_notice("slotstest", "offer", bad) == status::not_found);
+  bad = n;
+  bad.title.clear();
+  CHECK(r.post_notice("slotstest", "offer", bad) == status::invalid_arg);
+  bad = n;
+  bad.body = std::string(401, 'x');
+  CHECK(r.post_notice("slotstest", "offer", bad) == status::invalid_arg);
+  bad = n;
+  bad.action_label.clear();
+  CHECK(r.post_notice("slotstest", "offer", bad) == status::invalid_arg);
+  CHECK(r.post_notice("slotstest", "", n) == status::invalid_arg);
+  CHECK(r.post_notice("ghost", "offer", n) == status::not_found);
+
+  // The button: an event to the add-on, never checked against a tree (no window open).
+  REQUIRE(r.notice_action("slotstest", "offer", "decline") == status::ok);
+  CHECK(r.notice_action("slotstest", "offer", "accept") == status::not_found);  // not its button
+  CHECK(r.notice_action("slotstest", "other", "decline") == status::not_found);
+  r.drain();
+  {
+    std::lock_guard lock(fc->m);
+    REQUIRE(fc->events.size() == 1);
+    CHECK(fc->events[0] == "13:decline:\"offer\"");
+  }
+  // Taken back; taking back what is gone wakes nobody.
+  REQUIRE(r.post_notice("slotstest", "offer", std::nullopt) == status::ok);
+  CHECK(mv::json::parse(r.notices_json())->find("notices")->a.empty());
+  bits = 0;
+  REQUIRE(r.post_notice("slotstest", "offer", std::nullopt) == status::ok);
+  CHECK(bits == 0);
+
+  // Permission asks count up; the hosts ask the OS when the count moves.
+  REQUIRE(r.ask_notice_permission("slotstest") == status::ok);
+  CHECK(*mv::json::parse(r.notices_json())->integer("ask") == 1);
+
+  // Keep-alive, with the screen's title for the host's "Open …".
+  REQUIRE(r.keep_alive("slotstest", true, "explorer", "Slots: on") == status::ok);
+  REQUIRE(r.keeping_alive());
+  doc = mv::json::parse(r.notices_json());
+  REQUIRE(doc->find("keep")->a.size() == 1);
+  CHECK(*doc->find("keep")->a[0].str("title") == "Explorer");
+  CHECK(*doc->find("keep")->a[0].str("label") == "Slots: on");
+  bits = 0;
+  REQUIRE(r.keep_alive("slotstest", true, "explorer", "Slots: on") == status::ok);
+  CHECK(bits == 0);  // unchanged: no wake
+  CHECK(r.keep_alive("slotstest", true, "nowhere", "x") == status::not_found);
+  REQUIRE(r.keep_alive("slotstest", false, "", "") == status::ok);
+  CHECK_FALSE(r.keeping_alive());
+
+  // Detach takes both with it.
+  REQUIRE(r.keep_alive("slotstest", true, "explorer", "Slots: on") == status::ok);
+  REQUIRE(r.post_notice("slotstest", "offer", n) == status::ok);
+  r.detach("slotstest");
+  CHECK_FALSE(r.keeping_alive());
+  CHECK(mv::json::parse(r.notices_json())->find("notices")->a.empty());
 }
 
 TEST_CASE("surfaces are copied, bounded, and go with their tree", "[addon][slots][screens]") {

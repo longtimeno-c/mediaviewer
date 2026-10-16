@@ -97,7 +97,8 @@ engine::engine(engine_host& host, options opts) : host_(host), opts_(std::move(o
   // What was kept from the last run (#442). A saved folder that is gone
   // falls back to the default; it is not forgotten until another is picked.
   const prefs kept = opts_.initial ? *opts_.initial : load_prefs(opts_.prefs_path).value_or(prefs{});
-  v_.receiving = kept.receiving;  // presence starts on the control thread, below
+  v_.receiving = kept.receiving || kept.background;  // presence starts on the control thread, below
+  v_.background = kept.background;
   v_.destination = host_.default_destination();
   if (!kept.destination.empty()) {
     if (auto st = io::stat_path(kept.destination); st && st->is_directory) v_.destination = kept.destination;
@@ -105,7 +106,7 @@ engine::engine(engine_host& host, options opts) : host_(host), opts_(std::move(o
   control_thread_ = std::thread([this] { control_loop(); });
   // Keep receiving was on at the last launch (#442): presence and the status
   // text come up on the control thread, never the caller's. Off: nothing.
-  if (kept.receiving) request_reconcile();
+  if (v_.receiving) request_reconcile();
 }
 
 engine::~engine() {
@@ -181,6 +182,7 @@ void engine::save_now() {
   {
     std::lock_guard lock(m_);
     p.receiving = v_.receiving;
+    p.background = v_.background;
     p.destination = v_.destination == host_.default_destination() ? std::string() : v_.destination;
   }
   {
@@ -192,13 +194,31 @@ void engine::save_now() {
 
 void engine::sync_status() {
   std::string want;
+  bool keep = false;
   {
     std::lock_guard lock(m_);
     want = v_.receiving && !stopping_.load() ? kReceivingStatus : "";
+    keep = v_.background && !stopping_.load();
   }
-  if (want == status_shown_) return;
-  if (host_.post_status(want)) {
-    status_shown_ = want;
+  if (want == status_shown_ && keep == keep_shown_) return;
+  bool taken = true;
+  if (want != status_shown_) {
+    if (host_.post_status(want)) {
+      status_shown_ = want;
+    } else {
+      taken = false;
+    }
+  }
+  // #452: the host keeps this process (menu-bar item / tray icon) with every
+  // window closed while Receive when MediaViewer is closed is on.
+  if (keep != keep_shown_) {
+    if (host_.keep_alive(keep)) {
+      keep_shown_ = keep;
+    } else {
+      taken = false;
+    }
+  }
+  if (taken) {
     status_tries_ = 0;
     std::lock_guard lock(control_m_);
     status_due_ = {};
@@ -739,13 +759,23 @@ void engine::on_event(const std::string& node, std::uint32_t kind, const std::st
   const std::string* text = value && value->k == json::kind::string ? &value->s : nullptr;
   constexpr std::uint32_t kClick = 1, kChange = 2, kSubmit = 3, kSelect = 4, kActivate = 5;
 
-  if (node == "receiving" && kind == kChange && value && value->k == json::kind::boolean) {
+  if ((node == "receiving" || node == "background") && kind == kChange && value &&
+      value->k == json::kind::boolean) {
     bool changed = false;
     {
       std::lock_guard lock(m_);
-      changed = v_.receiving != value->b;
-      v_.receiving = value->b;
+      const bool was_receiving = v_.receiving, was_background = v_.background;
+      if (node == "receiving") {
+        v_.receiving = value->b;
+        if (!value->b) v_.background = false;  // closed MediaViewer cannot receive without it
+      } else {
+        v_.background = value->b;
+        if (value->b) v_.receiving = true;  // #452: receiving with MediaViewer closed is receiving
+      }
+      changed = v_.receiving != was_receiving || v_.background != was_background;
     }
+    // #452: the OS asks, once, the first time either is turned on; never at launch.
+    if (value->b) host_.ask_to_notify();
     request_reconcile();
     if (changed) request_save();  // kept for the next launch (#442)
     post();
@@ -1162,7 +1192,18 @@ void engine::run_receive(std::unique_ptr<link> l) {
       open_window = !screen_open_;
     }
   }
-  if (open_window) host_.show_screen(true);
+  // #452: a system notification (the host shows it unless this window is in
+  // front) that opens the window; one without notifications opens it now.
+  // Taken back however this offer ends.
+  struct notice_guard {
+    engine& e;
+    bool shown = false;
+    ~notice_guard() {
+      if (shown) (void)e.host_.post_notice("", "");
+    }
+  } shown_notice{*this};
+  shown_notice.shown = notice(name, 0, 0);
+  if (open_window && !shown_notice.shown) host_.show_screen(true);
   post();
   auto offer = read_offer(*ch, kAskMs);
   if (!offer) {
@@ -1195,6 +1236,8 @@ void engine::run_receive(std::unique_ptr<link> l) {
       v_.in_names.emplace_back(leaf_name(f.rel));
     }
   }
+  // The count and size are known now: the notification says so (still no names).
+  if (shown_notice.shown) (void)notice(name, offer->files.size(), offer->bytes);
   post();
 
   auto ended = [&](std::string note) {
@@ -1234,6 +1277,10 @@ void engine::run_receive(std::unique_ptr<link> l) {
       return ended("Something went wrong with the offer from " + name + ". Nothing was received.");
     }
     if (r.error() != status::timeout) return ended("The connection to " + name + " was lost. Nothing was received.");
+  }
+  if (shown_notice.shown) {
+    (void)host_.post_notice("", "");  // decided: nothing waits any more
+    shown_notice.shown = false;
   }
   if (decision != 1) {
     (void)send_decline(*ch, outcome::declined);
@@ -1288,6 +1335,17 @@ void engine::run_receive(std::unique_ptr<link> l) {
   }
   ch->shutdown();
   end_transfer();
+}
+
+bool engine::notice(const std::string& peer, std::size_t count, std::uint64_t bytes) {
+  return host_.post_notice(kNoticeTitle, notice_body(peer, count, bytes));
+}
+
+std::string notice_body(const std::string& peer, std::size_t count, std::uint64_t bytes) {
+  const std::string who = peer.empty() ? std::string("A computer nearby") : peer;
+  if (count == 0) return who + " wants to send you files. Open Sharepoint to see the code.";
+  return who + " wants to send you " + std::to_string(count) + (count == 1 ? " file, " : " files, ") +
+         size_text(bytes) + ". Open Sharepoint to accept.";
 }
 
 // ---- tests ------------------------------------------------------------------------------

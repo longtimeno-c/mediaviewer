@@ -397,6 +397,26 @@ typedef struct mv_slot_badges_request {
 #define MV_SLOT_EVENT_ZOOM 10u     /* {"scale": factor (0.05..20, >1 in), "x", "y": the anchor} */
 #define MV_SLOT_EVENT_PAN 11u      /* {"dx", "dy"}: the drag, in surface widths / heights (-10..10) */
 #define MV_SLOT_EVENT_DOUBLE 12u   /* {"x", "y"}: a double-click */
+/* 0.33 (#452): the button of a notice the add-on posted (notice_post) was
+ * clicked in the system notification: screen_id = the notice's screen,
+ * node_id = its action_id, value_json = the notice id as a JSON string. Not
+ * checked against a tree (the window may be closed). */
+#define MV_SLOT_EVENT_NOTICE 13u
+
+/* 0.33 (#452): a system notification an add-on asks for (notice_post). The
+ * host shows it unless the screen it is about is the window in front of an
+ * active app; clicking it opens that screen and brings it forward. Text is
+ * the add-on's, and it is shown on a lock screen: never a path, a file name
+ * or a secret (rule 6). */
+typedef struct mv_addon_notice {
+  uint32_t struct_size;
+  uint32_t reserved;
+  const char* screen_id;     /* the add-on's screen a click opens */
+  const char* title_utf8;    /* <= 120 bytes */
+  const char* body_utf8;     /* <= 400 bytes */
+  const char* action_id;     /* one button (MV_SLOT_EVENT_NOTICE), or NULL / "" for none */
+  const char* action_label;  /* its label, <= 40 bytes */
+} mv_addon_notice;
 
 typedef struct mv_slot_event {
   uint32_t struct_size;
@@ -673,6 +693,27 @@ typedef struct mv_host_api {
    * `visit` returned 0. Appended after locations_of_index: read it only when
    * `struct_size` covers it and the pointer is non-NULL. */
   mv_status(MV_CALL* place_matches)(void* host, const char* place_utf8, mv_addon_path_fn visit, void* user);
+  /* ---- notices and the background (#452, docs/design/28 "In the background") */
+  /* [any-thread][no-block] Shows `notice` as a system notification under
+   * `notice_id` (a later post with the same id replaces it), or takes it back
+   * (NULL). Shown only while it is not in plain sight: the host skips it when
+   * its screen is the front window of the active app. A host that cannot
+   * show notifications (none allowed, or the OS has none for an unbundled
+   * build) opens the screen instead. MV_ERR_NOT_FOUND before the add-on is
+   * attached (retry) or for a screen it does not have. Appended after
+   * place_matches: read it, notice_authorize and keep_alive only when
+   * `struct_size` covers them and the pointer is non-NULL. */
+  mv_status(MV_CALL* notice_post)(void* host, const char* notice_id, const mv_addon_notice* notice);
+  /* [any-thread][no-block] The person turned on something that notifies: the
+   * host asks the OS for permission now (once; it never asks at launch). */
+  mv_status(MV_CALL* notice_authorize)(void* host);
+  /* [any-thread][no-block] While `on`, closing every MediaViewer window (and
+   * Quit, on the Mac) leaves this process running with a menu-bar item (Mac)
+   * or a notification-area icon (Windows): `label_utf8` (<= 120 bytes) as its
+   * first line, Open <screen_id's title>, Open MediaViewer, Quit MediaViewer.
+   * Off (the default) changes nothing: the last window closing quits.
+   * MV_ERR_NOT_FOUND before the add-on is attached (retry). */
+  mv_status(MV_CALL* keep_alive)(void* host, uint32_t on, const char* screen_id, const char* label_utf8);
 } mv_host_api;
 
 typedef struct mv_addon_api {
@@ -824,7 +865,7 @@ MV_API mv_status MV_CALL mv_addon_quit_wait(uint32_t timeout_ms);
  * ------------------------------------------------------------------------- */
 
 /* What changed (bits): 1 contributions, 2 info, 4 screens, 8 search, 16
- * badges, 32 status. Called on any thread; must not block (the chrome hops to
+ * badges, 32 status, 64 notices and keep-alive (0.33). Called on any thread; must not block (the chrome hops to
  * its dispatcher). NULL clears it. */
 typedef void(MV_CALL* mv_slots_changed_fn)(void* user, uint32_t bits);
 MV_API mv_status MV_CALL mv_slots_set_listener(mv_slots_changed_fn fn, void* user);
@@ -835,6 +876,13 @@ MV_API mv_status MV_CALL mv_slots_screens_json(char* out, uint32_t cap, uint32_t
 MV_API mv_status MV_CALL mv_slots_search_json(uint32_t scope, char* out, uint32_t cap, uint32_t* needed);
 MV_API mv_status MV_CALL mv_slots_badges_json(char* out, uint32_t cap, uint32_t* needed);
 MV_API mv_status MV_CALL mv_slots_status_json(char* out, uint32_t cap, uint32_t* needed);
+/* 0.33 (#452): {"ask": n (bumped by each notice_authorize), "keep": [{"addon","screen","title","label"}],
+ * "notices": [{"addon","id","screen","title","body","action","action_label","revision"}]}.
+ * Change bit 64. */
+MV_API mv_status MV_CALL mv_slots_notices_json(char* out, uint32_t cap, uint32_t* needed);
+/* 0.33 (#452): a notice's button was clicked: the add-on gets
+ * MV_SLOT_EVENT_NOTICE. MV_ERR_NOT_FOUND when the notice is gone. */
+MV_API mv_status MV_CALL mv_slots_notice_action(const char* addon, const char* notice_id, const char* action_id);
 
 /* The Metadata pane shows `path_utf8`; `location_text` is the pane's own
  * "Location" value ("" none). Sections that need a location are not asked

@@ -31,6 +31,7 @@ public enum SlotChange : uint
     Search = 8,
     Badges = 16,
     Status = 32,
+    Notices = 64,  // #452: notices, the keep-alive list, a permission ask
 }
 
 /// <summary>
@@ -83,6 +84,14 @@ public static unsafe partial class SlotNative
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     private static partial MvStatus mv_slots_status_json(byte* output, uint cap, uint* needed);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial MvStatus mv_slots_notices_json(byte* output, uint cap, uint* needed);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial MvStatus mv_slots_notice_action(byte* addon, byte* notice, byte* action);
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
@@ -205,6 +214,20 @@ public static unsafe partial class SlotNative
     public static string ScreensJson() => Json(mv_slots_screens_json);
     public static string BadgesJson() => Json(mv_slots_badges_json);
     public static string StatusJson() => Json(mv_slots_status_json);
+    /// <summary>#452: {"ask","keep":[...],"notices":[...]} (slot_registry::notices_json); "" on an older core.</summary>
+    public static string NoticesJson() => Json(mv_slots_notices_json);
+
+    /// <summary>#452: a notice's button was clicked in the system notification.</summary>
+    public static bool NoticeAction(string addon, string notice, string action) =>
+        Try(() =>
+        {
+            fixed (byte* a = Z(addon))
+            fixed (byte* n = Z(notice))
+            fixed (byte* c = Z(action))
+            {
+                return mv_slots_notice_action(a, n, c) == MvStatus.Ok;
+            }
+        }, false);
     public static string SearchJson(uint scope) => Json((o, c, n) => mv_slots_search_json(scope, o, c, n));
 
     private static T Try<T>(Func<T> call, T fallback)

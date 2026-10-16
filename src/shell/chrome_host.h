@@ -1053,6 +1053,9 @@ class chrome_host {
   // no such entry or the add-on declined.
   [[nodiscard]] bool run_addon_command(const std::string& addon, const std::string& id,
                                        const std::string& json) noexcept;
+  // #452: an add-on's screen, opened or brought forward (the notification-area
+  // icon's Open <screen>). False when the chrome has no such entry.
+  [[nodiscard]] bool open_addon_screen(const std::string& addon, const std::string& screen) noexcept;
   // docs/design/25: an add-on package (*.mvaddon) handed to the app. The chrome
   // shows what it is in Settings and asks; nothing is installed without the
   // answer. False when the chrome has no such entry.
@@ -1157,6 +1160,7 @@ class chrome_host {
   chrome_entry_fn offer_addon_ = nullptr;  // docs/design/25, optional
   chrome_entry_fn show_canvas_menu_ = nullptr;  // issue #402, optional
   chrome_entry_fn run_addon_command_ = nullptr;  // docs/design/25, optional
+  chrome_entry_fn open_addon_screen_ = nullptr;  // #452, optional
   chrome_entry_fn set_drag_paths_ = nullptr;
   chrome_entry_fn set_recent_folders_ = nullptr;
   chrome_entry_fn set_keymap_report_ = nullptr;  // PR 56, optional

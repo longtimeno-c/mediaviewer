@@ -34,6 +34,7 @@ and a verify line on each platform (D9, amended). The order is:
 | 58–59 | **Screens and slots**: MediaViewer's own native add-ons add to pages that exist (an info-pane section at the very bottom of the Metadata pane, file search and Local search providers, command-bar / path-bar / status items, gallery tile badges, context-menu entries) and open windows, docked panes and sheets from a view tree both chromes render ([docs/design/25](design/25-open-addons.md#implementation-notes-prs-58-59-2026-10-11)); host table v3; ABI 0.25 | Mac: the shared suite passes (with a real test add-on through a signed store; also under ASan / UBSan and TSan); the app built and, with the test add-on sideloaded, drew its section at the bottom of the pane and its items. Windows: both C# projects compile; the native side is CI's. Measurements and the keyboard / VoiceOver / Narrator passes are owed ([Where this actually is](#screens-and-slots-prs-58-59-2026-10-11)). Script add-ons wait for PR 57; Places is #344 |
 | #410, #413 | **Sharepoint**: send photos, video and audio to a MediaViewer nearby over Wi-Fi or Bluetooth; the receiver shows a code the sender types (#442) and nothing moves until the other person accepts; its window is a view tree both hosts draw ([docs/design/28](design/28-sharepoint.md)). The gallery's Shift-click range, drag-out from any gallery cell and one share icon that opens Sharepoint; ABI 0.29 | Mac: built; `mv_import_tests "[sharepoint]"` (two and three engines over loopback TCP), the full suites and the packer test pass; the window opened offline in a dev copy and the range drove copy path there; the PR 1 gate passed with the add-on installed. Windows: the C# compiles; native (sockets, WinRT Bluetooth, the range) is CI's. Two machines, Bluetooth and the hand checks are owed ([Where this actually is](#sharepoint-issues-410-413-2026-10-15)) |
 | #444 | **Share everywhere**: one share command (`Ctrl+Shift+S` / `⌘⇧S`, the gallery's share icon, a share button beside Home, right-click Share ▸ on a gallery cell, a filmstrip cell or the canvas) opens one menu: Sharepoint first (or its install), then Windows Share / the macOS picker (Mail, Messages, AirDrop…). A right-click on a selected file shares the selection, on any other file that file; the system sheet gets media only ([docs/design/16 "Share"](design/16-commands.md#share-444)) | Mac: built; `mv_tests "[share]"` passes (file set, wire argument, command row; the `[.perf-bench]` case, 500 of 20 000 stops: 0.12 ms); the macOS picker for 500 files opens in 21 ms warm (was 65) by showing one file per kind past 50 files. Windows: the C# compiles; native is CI's. Owed: Mail with 3 files on both, the right-click menus and bar button by hand, a 500-item open on Windows, both PR 1 gates |
+| #452 | **Sharepoint in the background**: opt-in **Receive when MediaViewer is closed** keeps the same process with a menu-bar item (Mac) / notification-area icon (Windows) after every window closes; an offer is a system notification (sender, count, size; never a file name or the code) that opens the window with the code, with Decline; Accept stays in the window ([docs/design/28](design/28-sharepoint.md#in-the-background-452)); ABI 0.33 | Mac: built; `"[sharepoint]"` and `"[slots]"` pass with new cases, full suites pass; the Mac PR 1 gate's animated soak passes (idle phase failed on base and new alike on a loaded machine). Windows: the C# compiles; native (tray, hide-on-close) is CI's. Owed: the windowless idle measurement in the app, the notification seen and clicked on both, two machines ([Where this actually is](#sharepoint-in-the-background-issue-452-2026-10-16)) |
 
 See [docs/design/10-roadmap.md](design/10-roadmap.md). Old Mac numbers in the history below map as
 PR 16 → Mac PR 1, 17 → Mac PR 2/7, 18 → Mac PR 3/4/6, 19 → Mac PR 5, 20 → Mac PR 8.
@@ -1097,6 +1098,7 @@ build/bin/mv_import_tests "[sharepoint]"       # wire, channel, 2-3 engines over
 build/bin/mv_import_tests "[.sharepoint-bench]"   # MB/s against a plain copy over loopback (MV_BENCH_DIR, _BIG_MB, _SMALL, _SMALL_KB, _CASES)
 build/bin/mv_import_tests "[.sharepoint-idle]"    # CPU while Keep receiving is on, window closed (MV_IDLE_SECONDS)
 python3 -m unittest tools/package/test_addon_pack.py   # SharepointPackTest among them
+build/bin/mv_import_tests "[.sharepoint-send]"    # #452: a sender on this machine (MV_SEND_FILE, MV_SEND_CODE_FILE or MV_SEND_HOLD)
 python3 tools/package/addon-pack.py pack --addon sharepoint --platform macos --src build/addons/sharepoint \
   --version 1.0.0 --key <key file> --out dist/
 ```
@@ -2001,6 +2003,39 @@ What is built is in [docs/design/28](design/28-sharepoint.md).
   Mac–Windows, Windows–Windows), the crash-report check after a transfer, Windows anything in
   the app, both hosts' first-run prompts (local network and Bluetooth on the Mac, Defender
   Firewall on Windows), VoiceOver and Narrator over the window, the Windows PR 1 gate.
+
+### Sharepoint in the background (issue #452, 2026-10-16)
+
+What changed is in [docs/design/28 "In the background"](design/28-sharepoint.md#in-the-background-452):
+**Receive when MediaViewer is closed** (off by default, implies Keep receiving) keeps the process
+with a menu-bar item / notification-area icon; offers are system notifications that open the
+window; the host table gains `notice_post`, `notice_authorize` and `keep_alive` (ABI 0.33).
+
+- **Mac (M-series):** the app, the Swift chrome and `libmv_sharepoint.dylib` build. `mv_tests`
+  (849 passed, 11 skipped) and `mv_import_tests` (154 cases) pass; new cases: the notice names the
+  sender and then the count and size, never the file name or the code, is taken back when the
+  offer ends, and its Decline declines; the toggle implies Keep receiving, keeps the process, is
+  kept across launches and asks for permission only when turned on; the registry's notice and
+  keep-alive tables (bounds, replace, the button's event, detach).
+- **In a dev copy (dev-signed, own bundle id and HOME):** with the toggle kept on, the add-on came
+  up receiving at load (listener and beacon, the lock held) and a quit event was refused as the
+  background path should. The run stopped there: macOS asked the dev copy for local-network
+  access and a first-run alert was open over the viewer, both needing the owner's click, so the
+  hide, the menu-bar item, the windowless idle cost and the notification were not seen.
+- **Measured (Mac, base and new built in their own trees, alternated, load average ~5 with
+  another session's lab at 99 % CPU and a Simulator running):** the PR 1 gate's animated soak
+  passed on both (3600 frames, p99 16.75 ms, max 16.82 ms new / 16.85 ms base); its idle phase
+  failed on both on CPU (8.2 % new, 5.7 % base, 0 presents each): the machine, not the change, so
+  the quiet-machine idle verdict is owed. Launch → first pixel (`--soak 6 --static`, a HEIC
+  fixture, 5 each): base 6–17 ms, new 3–17 ms, no difference within noise.
+- **Windows:** the C# compiles (warnings are errors). `main.cpp` (hide on close, the tray icon and
+  its menu, the `----AppNotificationActivated:` argument) and `chrome_host.cpp` meet a compiler in
+  CI only. Not run: anything in the app.
+- **Owed:** the issue's verify on two machines per platform (notification within ~2 s, click opens
+  the code, Accept saves); the windowless idle measurement in the app against `"[.sharepoint-idle]"`
+  (Keep receiving 0.020 %); note that a hidden viewer window is occluded, and the Mac render loop
+  polls occlusion every 200 ms (`k_occlusion_poll_ms`), which is in that number; with it off, no
+  process after quitting and no beacon seen by the other machine; start at login (not built).
 
 ### Sharepoint, AirDrop-smooth (issue #442, 2026-10-15)
 

@@ -722,6 +722,14 @@ How it works:
   It has no chrome to send the command to.
 - **Settings → Add-ons** gives such an add-on with a window screen an **Open …** button, as Import
   has; the window opens through `open_screen` with no file.
+- **Notices and keep-alive (#452, ABI 0.33)**, for a first-party native add-on (scripts have no
+  such entries): `notice_post` asks for a system notification about one of its screens (title,
+  body, one button that comes back as `MV_SLOT_EVENT_NOTICE`; the host skips it while that screen
+  is the front window and opens the screen on a click), `notice_authorize` asks the OS for
+  permission when the person turns something on, and `keep_alive` keeps the process, with a
+  menu-bar item / notification-area icon, after every window is closed. The registry holds them
+  (`notices_json`); the hosts draw them. Sharepoint is the one user
+  ([28 "In the background"](28-sharepoint.md#in-the-background-452)).
 
 **Added for an AirDrop-like Sharepoint (#442, 2026-10-15)**, generic, drawn by both hosts
 (`ScreenView.swift`, `IslandHost.Screens.cs`) and checked by the core (`"[screens]"`):
