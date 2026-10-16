@@ -107,6 +107,12 @@ enum SearchKinds: UInt32, CaseIterable, Identifiable {
   }
 }
 
+/// #441: mv_slots_place_terms's bits (the host's placeTerms:).
+enum PlaceTerms {
+  static let present: UInt32 = 1   // the query has place:x / in:<place>
+  static let provider: UInt32 = 2  // a loaded add-on (Places) answers them
+}
+
 @MainActor
 final class SearchModel: ObservableObject {
   let table: AITable
@@ -204,6 +210,12 @@ final class SearchModel: ObservableObject {
   @Published private(set) var searching = false
   @Published private(set) var finished = false      // a search came back (maybe empty)
   @Published private(set) var failed = false        // the last search did not finish
+  /// #441: the words name a place and no add-on answers place terms (Places
+  /// is not installed): nothing was searched, and the panel says Places is
+  /// needed rather than listing every geotagged file.
+  @Published private(set) var needsPlaces = false
+  /// #441: Places is loaded, so the help line offers place:.
+  @Published private(set) var placesAvailable = false
   @Published private(set) var coverage: UInt32 = 2  // 0 not indexed, 1 indexing, 2 complete
   let status = SearchStatus()
   @Published private(set) var indexing = false      // status.line.indexing, published on change
@@ -512,10 +524,17 @@ final class SearchModel: ObservableObject {
   private var runs: [UInt64: Run] = [:]
   private var runSeq = 0
 
+  /// The help line's place: example follows whether Places is loaded.
+  func refreshPlaces() {
+    let available = (chrome?.hostPlaceTerms("") ?? 0) & PlaceTerms.provider != 0
+    if available != placesAvailable { placesAvailable = available }
+  }
+
   func run(keepSelection: Bool) {
     debounce?.cancel()
     debounce = nil
     folderStale = false
+    needsPlaces = false
     // New words or chips: a Return waiting on the old ones no longer applies.
     if !keepSelection { focusResultsWhenReady = false }
     runSeq += 1
@@ -536,6 +555,24 @@ final class SearchModel: ObservableObject {
         }
       }
     } else if !text.isEmpty {
+      let places = chrome?.hostPlaceTerms(text) ?? 0
+      placesAvailable = places & PlaceTerms.provider != 0
+      if places & PlaceTerms.present != 0 && !placesAvailable {
+        // Nothing can say where: no search, and no results (the pack would
+        // answer none either).
+        let previous = pending
+        pending = 0
+        releaseIfUnused(previous)
+        searching = false
+        finished = true
+        failed = false
+        openWhenReady = nil
+        focusResultsWhenReady = false
+        freshDue = false
+        needsPlaces = true
+        setResults([], search: 0, run: nil)
+        return
+      }
       st = withOptionalCString(scopeDir) { dir in
         table.a.search_text?(table.ctx, text, dir, effectiveScope, kindBits, &id) ?? MV_ERR_INVALID_ARG
       }

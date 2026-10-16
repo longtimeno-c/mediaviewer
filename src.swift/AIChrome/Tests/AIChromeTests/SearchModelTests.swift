@@ -37,6 +37,17 @@ private final class FakePack: @unchecked Sendable {
 
 private let pack = FakePack()
 
+/// The viewer's placeTerms: (#441), as mv_slots_place_terms answers it: a
+/// "place:" word is a place term; `installed` says whether Places is loaded.
+private final class FakeViewer: NSObject {
+  var installed = false
+  @objc(placeTerms:) func placeTerms(_ query: NSString) -> NSNumber {
+    var flags: UInt32 = installed ? PlaceTerms.provider : 0
+    if (query as String).contains("place:") { flags |= PlaceTerms.present }
+    return NSNumber(value: flags)
+  }
+}
+
 @MainActor
 final class SearchModelTests: XCTestCase {
   private static let api: UnsafeMutablePointer<mv_ai_api> = {
@@ -123,6 +134,37 @@ final class SearchModelTests: XCTestCase {
     let before = pack.asked.count
     m.folderChanged("/B")
     XCTAssertEqual(pack.asked.count, before)
+    m.disappeared()
+  }
+
+  /// #441: place:Portugal without the Places add-on searches nothing and says
+  /// Places is needed (it used to list every geotagged file); with Places it
+  /// is an ordinary search, and the help line offers place:.
+  func testPlaceTermsNeedPlaces() {
+    let viewer = FakeViewer()
+    let chrome = MVAIChrome()
+    chrome.attach(table: NSValue(pointer: UnsafeRawPointer(Self.api)), host: viewer)
+    let m = model()
+    m.chrome = chrome
+    m.appeared()
+    m.query = "place:Portugal"
+    m.chipsChanged()
+    XCTAssertTrue(m.needsPlaces)
+    XCTAssertFalse(m.searching)
+    XCTAssertTrue(m.results.isEmpty)
+    XCTAssertTrue(pack.asked.isEmpty, "nothing is searched")
+    XCTAssertFalse(m.placesAvailable)
+    m.query = "beach"
+    m.chipsChanged()
+    XCTAssertFalse(m.needsPlaces)
+    XCTAssertEqual(pack.asked.count, 1)
+    viewer.installed = true
+    m.refreshPlaces()
+    XCTAssertTrue(m.placesAvailable)
+    m.query = "beach place:Portugal"
+    m.chipsChanged()
+    XCTAssertFalse(m.needsPlaces)
+    XCTAssertEqual(pack.asked.count, 2, "with Places the pack answers (and intersects)")
     m.disappeared()
   }
 

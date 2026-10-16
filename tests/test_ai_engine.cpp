@@ -42,6 +42,7 @@
 #include "addons/ai/index_db.h"
 #include "addons/ai/query.h"
 #include "nle/search_session.h"
+#include "core/fold.h"
 #include "core/json.h"
 #include "import_fixture.h"
 #include "io/pairing.h"
@@ -660,6 +661,9 @@ struct rig {
   std::shared_ptr<fake_speech> speech = std::make_shared<fake_speech>();
   // Never the real library: PhotoKit is not asked in a test.
   std::shared_ptr<photos_lib> library = std::make_shared<photos_lib>();
+  // #441: the Places add-on's answer for a place term (the host's
+  // place_matches). Unset: Places is not installed.
+  std::function<std::vector<std::string>(const std::string& place)> places;
   std::unique_ptr<engine> eng;
 
   rig() {
@@ -807,6 +811,12 @@ struct rig {
         if (!visit(c)) return mv::err(mv::status::cancelled);
       }
       return {};
+    };
+    svc.place_matches = [this](const std::string& place,
+                               const std::function<bool()>& keep_going) -> mv::result<std::vector<std::string>> {
+      if (!places) return mv::err(mv::status::not_found);
+      if (!keep_going()) return mv::err(mv::status::cancelled);
+      return places(place);
     };
     table = std::make_unique<mv::addon::host_table>(std::move(svc));
     table->set_negotiated(MV_ADDON_HOST_API);
@@ -1743,9 +1753,10 @@ TEST_CASE("camera:, ai:, made:, place: and a plain tag word in Local search", "[
   CHECK(names(r.search("ai:no")).count("green_gpt.jpg") == 0);
   CHECK(names(r.search("ai:no")).size() == 3);
   CHECK(names(r.search("-camera:r5")).count("red_r5.jpg") == 0);
-  // place: keeps the geotagged; the Places provider says which place.
-  CHECK(names(r.search("place:portugal")) == std::set<std::string>{"blue_geo.jpg"});
-  CHECK(names(r.search("in:sintra")) == std::set<std::string>{"blue_geo.jpg"});
+  // #441: place: is the Places add-on's answer; without it, nothing (the
+  // case "place terms intersect ..." below has it installed).
+  CHECK(r.search("place:portugal").empty());
+  CHECK(r.search("in:sintra").empty());
   // in:2024 is still a date (no file is from 2024 here by mtime? it filters by date).
   // A camera term narrows a description: red AND a Canon R5.
   const auto red_r5 = r.search("red camera:r5");
@@ -1784,6 +1795,72 @@ TEST_CASE("camera:, ai:, made:, place: and a plain tag word in Local search", "[
   const auto lens_rows = r.rows(lens);
   REQUIRE_FALSE(lens_rows.empty());
   CHECK(lens_rows.front().first == "red_r5.jpg");
+}
+
+// #441: a place term is the Places add-on's answer (the host's
+// place_matches), intersected with the rest of the query. Without Places it
+// matches nothing: never every geotagged file (the bug: place:Portugal
+// listed a photo taken in England).
+TEST_CASE("place terms intersect the Places add-on's answer; without it they match nothing",
+          "[ai][engine][tags][places]") {
+  rig r;
+  for (const char* n : {"blue_geo_pt.jpg", "red_geo_pt.jpg", "blue_geo_es.jpg", "blue_geo_uk.jpg", "blue_plain.jpg"}) {
+    r.file(n);
+  }
+  r.start();
+  REQUIRE(r.eng->index_folder(utf8(r.photos()), false));
+  REQUIRE(r.idle());
+  const auto names = [](const std::vector<std::pair<std::string, std::int64_t>>& rows) {
+    std::set<std::string> out;
+    for (const auto& [n, _] : rows) out.insert(n);
+    return out;
+  };
+  using names_t = std::set<std::string>;
+
+  SECTION("no Places: no rows, whatever else the query says") {
+    CHECK(r.search("place:portugal").empty());
+    CHECK(r.search("in:lisbon").empty());
+    CHECK(r.search("-place:spain").empty());
+    CHECK(r.search("blue place:portugal").empty());
+    CHECK(r.search("photo place:portugal").empty());
+  }
+  SECTION("with Places: only the assets it puts there") {
+    std::atomic<int> asked{0};
+    r.places = [&](const std::string& place) {
+      ++asked;
+      // "portugal" is the *_pt files, "spain" the *_es one; as the index keys them.
+      const std::string tag = mv::text::fold(place) == "portugal" ? "_pt" : mv::text::fold(place) == "spain" ? "_es" : "?";
+      std::vector<std::string> out;
+      for (const auto& e : fs::directory_iterator(r.photos())) {
+        if (utf8(e.path().filename()).find(tag) != std::string::npos) out.push_back(utf8(e.path()));
+      }
+      return out;
+    };
+    CHECK(names(r.search("place:portugal")) == names_t{"blue_geo_pt.jpg", "red_geo_pt.jpg"});
+    CHECK(names(r.search("in:Portugal")) == names_t{"blue_geo_pt.jpg", "red_geo_pt.jpg"});
+    // Left out: the provider's rows go; everything else stays.
+    CHECK(names(r.search("-place:spain")) ==
+          names_t{"blue_geo_pt.jpg", "red_geo_pt.jpg", "blue_geo_uk.jpg", "blue_plain.jpg"});
+    CHECK(names(r.search("place:portugal -place:spain")) == names_t{"blue_geo_pt.jpg", "red_geo_pt.jpg"});
+    // Two places: in both (none is).
+    CHECK(r.search("place:portugal place:spain").empty());
+    // A place nobody matches.
+    CHECK(r.search("place:atlantis").empty());
+    // beach place:portugal: the description ranks only Portugal's assets; the
+    // blue photos taken elsewhere never come.
+    const auto blue = r.search("blue place:portugal");
+    REQUIRE_FALSE(blue.empty());
+    CHECK(blue.front().first == "blue_geo_pt.jpg");
+    const names_t got = names(blue);
+    CHECK(got.count("blue_geo_es.jpg") == 0);
+    CHECK(got.count("blue_geo_uk.jpg") == 0);
+    CHECK(got.count("blue_plain.jpg") == 0);
+    // Kinds and scope still apply.
+    CHECK(r.search("video place:portugal").empty());
+    CHECK(names(r.search("place:portugal", MV_AI_SCOPE_FOLDER, utf8(r.photos()))) ==
+          names_t{"blue_geo_pt.jpg", "red_geo_pt.jpg"});
+    CHECK(asked > 0);
+  }
 }
 
 // #398: mv.ai.1 each_location, which the host serves to Places as
