@@ -60,6 +60,8 @@ result<display_image> decode_preview(std::span<const std::uint8_t> bytes, const 
     raster = codec::decode_pdf(bytes, 0, ctx, codec::kPdfPreviewEdge);
   } else if (family == codec::format_family::docx) {
     raster = codec::decode_docx(bytes, 0, ctx, codec::kDocxPreviewEdge);
+  } else if (family == codec::format_family::pptx) {
+    raster = codec::decode_pptx(bytes, 0, ctx, codec::kPptxPreviewEdge);
   } else {
     return err(status::unsupported_format);
   }

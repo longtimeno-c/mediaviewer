@@ -283,7 +283,7 @@ struct SettingsView: View {
                        detail: "List MP3, M4A and M4P files in folders. A file you open directly still opens.",
                        bit: SettingsStore.showAudio, store: store)
         SettingsToggle(title: "Show documents",
-                       detail: "List PDF and Word (DOCX) files in folders. A file you open directly still opens.",
+                       detail: "List PDF, Word (DOCX) and PowerPoint (PPTX) files in folders. A file you open directly still opens.",
                        bit: SettingsStore.showDocuments, store: store)
         section("Appearance")
         // docs/design/25: the chrome's colours. Default, then the built-in

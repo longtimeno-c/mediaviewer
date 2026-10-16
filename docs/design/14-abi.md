@@ -1,7 +1,7 @@
 # 14 — The C ABI
 
 The flat C ABI between the hosts' chrome and the C++ core, as declared in
-[`src/abi/include/mediaviewer/`](../../src/abi/include/mediaviewer/) (current version **0.31**).
+[`src/abi/include/mediaviewer/`](../../src/abi/include/mediaviewer/) (current version **0.32**).
 
 The Windows host is C# WinUI over `mediaviewer_core.dll` and calls this ABI through P/Invoke
 ([`src.managed/MediaViewer.Interop`](../../src.managed/MediaViewer.Interop/)). The Mac host links
@@ -161,6 +161,7 @@ uint32_t mv_completion_drain(mv_session_t, mv_completion* out, uint32_t capacity
 | `FOLDER_SUMMARY` | 10 | subfolder index |
 | `CLIP_INDEX` | 11 | keyframe count (`mediaviewer_clip.h`) |
 | `CLIP_JOB` | 12 | `mv_clip_job_state` (`mediaviewer_clip.h`) |
+| `PAGE_THUMB_READY` | 13 | page; `generation` = the serial `mv_folder_page_thumbs` returned |
 | `ADDON` | 100 | add-on event payload; `job_id` = event id, `generation` = `mv_addon_event_kind` |
 
 Draining is non-blocking and batched (a folder's 400 thumbnails are one drain). `IMAGE_OPENED`
@@ -238,6 +239,9 @@ mv_status mv_folder_item_name / _path / _thumb_path / _pair_path(mv_session_t, u
 mv_status mv_folder_select(mv_session_t, uint32_t index, uint64_t* out_job_id);
 mv_status mv_folder_selected(mv_session_t, uint32_t* out_index);
 mv_status mv_folder_thumbs_visible(mv_session_t, uint32_t first, uint32_t count);
+mv_status mv_folder_page_thumbs(mv_session_t, uint32_t first, uint32_t count, uint32_t* out_serial);
+mv_status mv_folder_page_thumb_path(mv_session_t, uint32_t page, char* utf8, uint32_t cap,
+                                    uint32_t* out_bytes);
 mv_status mv_folder_close(mv_session_t);
 ```
 
@@ -246,6 +250,13 @@ mv_status mv_folder_close(mv_session_t);
 - `mv_folder_select` bumps the view generation, publishes an LRU hit or opens, prefetches ±2,
   and pushes `FOLDER_SELECTED` ([04-image-pipeline.md](04-image-pipeline.md)).
 - `mv_folder_thumbs_visible` makes on-screen thumbs first; skipping it still generates all.
+- `mv_folder_page_thumbs` (0.32, issue #429) is the page sidebar's: thumbnails of the selected
+  document's pages in a window, rendered by one background job from one open of the file
+  (`image/page_thumbs.h`) and kept in the thumbnail cache as `path#page=N` rows. A request
+  replaces the window, so a queued job skips pages flung past; pages landed or in flight are not
+  asked for twice. Each lands as `PAGE_THUMB_READY`; the serial changes with the selected stop,
+  and a completion carrying an older one is stale. `mv_folder_page_thumb_path` is
+  `MV_ERR_NOT_FOUND` until then.
 - The folder is watched; a change relists and pushes `FOLDER_CHANGED`.
 - `mv_folder_entries` (0.20, issue #226) returns the whole listing in one call under one lock:
   an `mv_folder_entry` per stop (the `mv_folder_item`, the moment, and byte offsets of its
@@ -651,6 +662,7 @@ and inert unless set. The Mac host drives
 | 0.29 | `mv_slots_command` (#410): one of a slot add-on's manifest commands, delivered to it as `MV_SLOT_EVENT_COMMAND` with the files its payload names (`slot_registry::run_command`). Screens: a `text_field` may carry `"pick": "folder"`. Mac bridge: `mv_chrome_slots_command`, and the gallery's range (#413) `mv_chrome_gallery_set_range`, `mv_chrome_gallery_range_generation`, `mv_chrome_gallery_range_count`. Island wire: `chrome_cmd_gallery_range` (1036) |
 | 0.30 | Slot add-ons in every window (#402): `mv_addon_load_guest` (a window that does not host the add-ons loads one that only reads, without touching the store) and `mv_addon_slot_addons_json` (which to load, from manifests, no file hashed). #398: host table `locations_of_index` appended after `read_cues` (the Local search index's located assets, generation-tagged, no file read); `mv_ai_api` `each_location` appended after `people_reanalyse`. The AI pack now requires the table only up to `read_cues` and copies what the host's `struct_size` covers |
 | 0.31 | Place terms (#441): `mv_slots_place_terms` (bits `MV_SLOTS_PLACE_TERMS`, `MV_SLOTS_PLACE_PROVIDER`: the Local search query has a `place:` / `in:<place>` term; a loaded add-on answers it). Host table `place_matches` appended after `locations_of_index`, with `mv_addon_path_fn`: the AI pack's engine gets the `place:` provider's paths for one place over the whole index (`slot_registry::provider_paths`), `MV_ERR_NOT_FOUND` with none. Mac bridge: the host's `placeTerms:` selector |
+| 0.32 | The page sidebar (#429): `mv_folder_page_thumbs`, `mv_folder_page_thumb_path`, `MV_COMPLETION_PAGE_THUMB_READY` (13). Mac bridge: `mv_chrome_request_page_thumbs`, `mv_chrome_select_page`, `kMenuPageSidebar`; `MVChromeHost.setPageSidebar` / `pageThumbReady` the other way. Island wire: `chrome_cmd_select_page` (1082), `chrome_cmd_image_opened` (1083), entries `ShowPageSidebar` / `SetPageSidebar` (`chrome_page_sidebar_args`) |
 
 ## Not built
 

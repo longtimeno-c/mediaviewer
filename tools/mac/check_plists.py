@@ -53,12 +53,14 @@ VIDEO_UTIS = {"public.mpeg-4", "com.apple.m4v-video", "com.apple.quicktime-movie
 # them) and never thumbnailed by the Quick Look extension.
 OPEN_WITH_UTIS = {
     "Audio": {"public.mp3", "com.apple.m4a-audio", "com.apple.protected-mpeg-4-audio"},
-    "Document": {"com.adobe.pdf", "org.openxmlformats.wordprocessingml.document"},
+    "Document": {"com.adobe.pdf", "org.openxmlformats.wordprocessingml.document",
+                 "org.openxmlformats.presentationml.presentation"},
 }
 # format_family values that are documents: declared under "Document", not as
 # viewer stills, and not thumbnailed by the Quick Look extension.
 DOCUMENT_FAMILIES = {"pdf": {"com.adobe.pdf"},
-                     "docx": {"org.openxmlformats.wordprocessingml.document"}}
+                     "docx": {"org.openxmlformats.wordprocessingml.document"},
+                     "pptx": {"org.openxmlformats.presentationml.presentation"}}
 
 
 def configure(template: Path, extra: dict[str, str] | None = None) -> dict:

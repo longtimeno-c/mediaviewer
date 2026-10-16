@@ -469,8 +469,9 @@ copy, and check Finder's **Open With** and a Quick Look thumbnail.
 | `Space` / `Backspace` | next / previous. On a clip, `Space` is play/pause. It is no longer the lab sweep |
 | `Home` / `End` | first / last in the folder |
 | `PageUp` / `PageDown` | back / forward ten |
-| `Ctrl+PageUp` / `Ctrl+PageDown` | previous / next page of a TIFF, PDF or DOCX, size of an ICO, or image of a multi-image HEIC (`⌘` on the Mac). Within a page: zoom (wheel, `+` `-`, `1`–`4`) and drag to pan. On a PDF or DOCX with the filmstrip hidden the wheel / trackpad scrolls (a notch glides, a trackpad follows the fingers) and turns pages as soon as it pushes past an edge, momentum running on into the next page; `⌘`/`Ctrl`+wheel or a pinch zooms. With the filmstrip shown the notice line says "Press T to hide the filmstrip and scroll" until `T` has been used on a document |
-| `Enter` on a PDF or DOCX | open it in its default app (the bar's **Open in <app>**, ▾ for the others) |
+| `Ctrl+PageUp` / `Ctrl+PageDown` | previous / next page of a TIFF, PDF, DOCX or PPTX, size of an ICO, or image of a multi-image HEIC (`⌘` on the Mac). Within a page: zoom (wheel, `+` `-`, `1`–`4`) and drag to pan. On a PDF or DOCX with the filmstrip hidden the wheel / trackpad scrolls (a notch glides, a trackpad follows the fingers) and turns pages as soon as it pushes past an edge, momentum running on into the next page; `⌘`/`Ctrl`+wheel or a pinch zooms. With the filmstrip shown the notice line says "Press T to hide the filmstrip and scroll" until `T` has been used on a document |
+| `Enter` on a PDF, DOCX or PPTX | open it in its default app (the bar's **Open in <app>**, ▾ for the others) |
+| `Shift+T` | page sidebar on / off: page thumbnails down the left of a multi-page PDF, DOCX or PPTX while the filmstrip is hidden; a click turns to that page (remembered; View ▸ Page Sidebar on the Mac) |
 | `J` / `K` / `L` | clip transport: −10 s / pause / +10 s ([docs/design/16](design/16-commands.md)) |
 | `,` / `.` | frame step back / forward while paused |
 | `A` / `D` | previous / next beside the arrows, in every mode including on a clip |
@@ -2098,10 +2099,44 @@ the full suite: 597 cases, 8 skipped for the absent RAW corpus). `pdf_win.cpp`,
 
 **DOCX (slices 4–5):** pages laid out and drawn by `codec/docx.cpp` over HarfBuzz and FreeType
 (new vcpkg ports), with fonts found through CoreText / DirectWrite. Text, styles, lists, tables,
-pictures and breaks; not headers, footers, footnotes, text boxes or columns (docs/design/04).
-Measured on the Mac (`mv_tests "[docx]"`; a `textutil`-written DOCX rendered by
-`MV_DOCX_DUMP=out.jpg MV_DOCX_FILE=x.docx mv_tests "[.docx-dump]"` and looked at). The Windows font
-lookup (`fonts_win.cpp`) and the DLLs' packaging are compiled and staged by CI only.
+pictures and breaks; since issue #429 also headers and footers with page fields, footnotes and
+endnotes, columns, floating pictures and shapes with text wrap, text boxes and right-to-left text
+(the shared layout is `codec/doclayout`); not comments (docs/design/04). Measured on the Mac
+(`mv_tests "[docx]"`; a `textutil`-written DOCX rendered by
+`MV_DOCX_DUMP=out.jpg MV_DOCX_FILE=x.docx mv_tests "[.docx-dump]"` and looked at; the #429 verify
+report by `MV_DOCX_REPORT=1 MV_DOCX_PAGE=0 MV_DOCX_DUMP=out.jpg`, its bytes kept with
+`MV_DOCX_SAVE=report.docx`; `mv_tests "[.docx-mutate]"` damages a package's bytes and its XML).
+The Windows font lookup (`fonts_win.cpp`) and the DLLs' packaging are compiled and staged by CI
+only.
+
+**PPTX (issue #429, D5 amended 2026-10-15):** a slide a page, drawn by `codec/pptx.cpp` over the
+DOCX zip / XML / `codec/doclayout` path; what is and is not drawn is in docs/design/04 and the
+file's header. Only the slide being drawn is parsed (with its layout, master and theme). Tests:
+`mv_tests "[pptx]"`, `"[.pptx-mutate]"` (package bytes and slide XML, also clean under
+`-DMV_ASAN=ON`), the seed `tests/data/seeds/pptx/small.pptx` (`make-seeds.py pptx_small()`) for
+`tools/fuzz/fuzz_pptx.cpp` and the Windows broken-corpus sweep. A slide is looked at with the DOCX
+dump: `MV_DOCX_DUMP=out.jpg MV_DOCX_FILE=deck.pptx MV_DOCX_PAGE=n mv_tests "[.docx-dump]"`.
+
+**Page sidebar (issue #429):** both hosts, `Shift+T`, docs/design/04 "Page sidebar" and
+docs/design/16. Core: `codec::decode_pages` (PDF opened once, DOCX laid out once, PPTX slides
+parsed one by one), `image::make_page_thumbs` / `page_thumb_book`; Windows ABI 0.32
+`mv_folder_page_thumbs`. Tests: `mv_tests "[page-sidebar]"`. Numbers:
+`MV_BENCH_DOC=file mv_tests "[.perf-bench][page-sidebar]"` prints a JSON line (8 thumbnails cold
+at the top and at the far end, and a jump to page 250: the cached thumbnail's first pixel, then the
+full page). Measured 2026-10-16 on the Mac (M-series, release build), medians of 5:
+
+| Document | 8 thumbnails cold | jump: first pixel | jump: full page |
+|---|---|---|---|
+| PDF, 300 pages (`cupsfilter` text) | 5.3 ms | 0.22 ms | 3.4 ms |
+| DOCX, 78 pages (`textutil`) | 56 ms | 0.11 ms | 40 ms |
+| PPTX, 100 slides (pictures, table) | 5.3 ms | 0.22 ms | 7.3 ms |
+
+The machine was shared with other builds (load average 18–33) for later runs, which spread the
+DOCX numbers to 190–300 ms; the table is the first, quietest run. A DOCX page past the first lays
+out the whole document, as before #429. **Not done yet:** the Windows half (native `main.cpp`,
+`chrome_host`, ABI) is compiled by CI only and has not been run; the PR 1 present-loop soak while
+flinging the sidebar has not been run on either platform; first pixel of a document open is
+unchanged in code (the open path does not touch the sidebar) but was not re-measured.
 
 **Culling (issue #207):** `X` reject, colour labels on keypad / `Ctrl+Shift` `6`–`9`, `U`
 to clear, and the pane's Label swatches, on both hosts through PR 12's writer and sidecar rule
