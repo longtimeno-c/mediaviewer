@@ -324,6 +324,11 @@ constexpr binding kBindings[] = {
     // a clip has no AF points, and with the strip or gallery focused a shifted
     // letter is typeahead. Held Z (loupe) falls back to browse, so it works there.
     row(C('Z'), mod_shift, kBrowse, edge, zoom_af_point),
+    // Issue #208 (docs/design/16 View). Appended. `|` is the Shift twin of `\`
+    // (hold previous), as PR 9 / 10 paired O, I and C: hold `\` flips to the
+    // previous still, `|` keeps it beside the current one. Video too, so the
+    // toggle can be turned off from a clip (a clip never splits).
+    row(C('|'), mod_none, kBrowse | kVideo, edge, compare_two_up),
 };
 
 // The router's index stores row + 1 in a byte.
@@ -513,6 +518,7 @@ constexpr command_info kCommands[] = {
     {label_blue, "Label blue"},
     {clear_label, "Clear label"},
     {zoom_af_point, "Zoom to AF point"},
+    {compare_two_up, "Compare with previous"},
 };
 
 const char* named_key(key k) noexcept {

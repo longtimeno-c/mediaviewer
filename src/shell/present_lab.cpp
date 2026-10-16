@@ -5,6 +5,7 @@
 #include "shell/dino_draw.h"
 #include "shell/error_screen.h"
 #include "shell/af_focus.h"
+#include "shell/compare.h"
 #include "shell/home_ground.h"
 #include "shell/loupe.h"
 #include "shell/welcome_screen.h"
@@ -403,7 +404,10 @@ void present_lab::render_thread_main() noexcept {
   std::int64_t last_frame_qpc = start_qpc;
 
   while (running_.load(std::memory_order_acquire)) {
-    const input_snapshot snapshot = input_.acquire();
+    // Not const: the compare split (issue #208) docks the previous still on
+    // the left of the render thread's copy, as PR 29's Edit pane docks right.
+    input_snapshot snapshot = input_.acquire();
+    const std::uint32_t host_chrome_left = snapshot.chrome_left_px;
     edit_slots_[0] = snapshot.edit[0];
     edit_slots_[1] = snapshot.edit[1];
     const double elapsed = qpc_seconds(qpc_now() - start_qpc);
@@ -423,6 +427,9 @@ void present_lab::render_thread_main() noexcept {
     const bool input_activity = input_cursor_.consume_activity(snapshot);
     if (input_activity && warmed_up_ && !options_.start_animating) ++idle_stats_.input_events;
     bool redraw = input_activity;
+    // Before anything frames the camera: every usable_canvas below is then the
+    // right half while compare is up.
+    if (apply_compare_split(snapshot, host_chrome_left)) redraw = true;
 
     // --- Edge-triggered commands from the UI thread ---------------------
     if (snapshot.toggle_overlay_seq != seen_overlay_seq_) {
@@ -795,6 +802,9 @@ void present_lab::render_thread_main() noexcept {
       video_open_ = mv::abi::video_open(session_);
       if (video_open_ != was_video_open) redraw = true;
     }
+    // A still that just landed (or a clip that replaced it) may start or end
+    // the split; refit now, so no frame shows it framed for the wrong half.
+    if (apply_compare_split(snapshot, host_chrome_left)) redraw = true;
 
     // Animation (docs/design/04, PR 6). Frames come from the session's decode ring
     // into anim_frame_ — never through the ready-image branch — so hold-previous
@@ -957,7 +967,8 @@ void present_lab::render_thread_main() noexcept {
       // follows the cursor, and a fresh metadata record needs one frame. Idle
       // stays idle: none of this redraws unless one of these actually moved.
       const auto flags2 = static_cast<std::uint8_t>((snapshot.af_points ? 1 : 0) |
-                                                    (snapshot.eyedropper ? 2 : 0));
+                                                    (snapshot.eyedropper ? 2 : 0) |
+                                                    (snapshot.compare ? 4 : 0));
       const bool eye_moved = snapshot.eyedropper && (snapshot.mouse_x != seen_eye_x_ ||
                                                      snapshot.mouse_y != seen_eye_y_);
       if (flags2 != seen_view_flags2_ || snapshot.meta_seq != seen_meta_seq_ || eye_moved ||
@@ -1045,7 +1056,9 @@ void present_lab::render_thread_main() noexcept {
     const float wheel = input_cursor_.consume_wheel(snapshot);
     if ((current_image_ || current_video_.texture) && wheel != 0.0f) {
       const auto view = usable_canvas(snapshot);
-      camera_.wheel_toward(snapshot.mouse_x - view.x, snapshot.mouse_y - view.y, wheel,
+      // Over either half of a compare, toward the same spot of the picture.
+      camera_.wheel_toward(compare_cursor_x(snapshot.mouse_x, compare_split_) - view.x,
+                           snapshot.mouse_y - view.y, wheel,
                            view.w, view.h,
                            static_cast<float>(media_width()),
                            static_cast<float>(media_height()));
@@ -1275,8 +1288,13 @@ void present_lab::render_thread_main() noexcept {
         1.0f};
     device_.context()->ClearRenderTargetView(rtv, clear);
 
-    const bool show_previous =
-        snapshot.hold_previous && previous_image_ && previous_image_->srv && current_image_;
+    // Hold `\` flips one-up to the previous still; with compare up it is
+    // already on screen, so the hold changes nothing.
+    const bool show_previous = snapshot.hold_previous && !compare_split_.valid &&
+                               previous_image_ && previous_image_->srv && current_image_;
+    // Two-up compare: the previous still in the left half, a second draw of a
+    // texture already in VRAM, in this same present (shell/compare.h).
+    if (compare_split_.valid && !snapshot.blackout) draw_compare_left(snapshot, elapsed, theme_rgb);
     // The animation's current frame stands in for the still (same size), so the
     // loupe, blinkies, grid and background all draw it.
     const image::gpu_image* shown =
@@ -1452,6 +1470,7 @@ void present_lab::render_thread_main() noexcept {
       ++total_presents_;
       pacer_.frame_end(swapchain_.dxgi());
       if (!live) painted_static_ = true;
+      if (compare_split_.valid) ++compare_frames_;
       commit_nav_present();
     }
     else measurement_valid_ = false;
@@ -1642,6 +1661,81 @@ void present_lab::draw_crop_overlay(const input_snapshot& snapshot) noexcept {
               IM_COL32(235, 235, 240, 255), label);
 }
 
+bool present_lab::apply_compare_split(input_snapshot& snapshot,
+                                      std::uint32_t host_chrome_left) noexcept {
+  snapshot.chrome_left_px = host_chrome_left;
+  compare_split split;
+  // Stills only: a clip never splits, and neither does crop mode (its draft
+  // rect is drawn over the one framed picture) or a slideshow blackout.
+  const bool still = current_image_ && !current_video_.texture && !video_open_;
+  if (snapshot.compare && still && !snapshot.blackout && !snapshot.edit[0].crop_overlay) {
+    const canvas_view full = usable_canvas(snapshot);
+    split = split_compare(full.x, full.w, snapshot.dpi_scale);
+    if (split.valid) snapshot.chrome_left_px = static_cast<std::uint32_t>(split.right_x);
+  }
+  const bool changed = split.valid != compare_split_.valid ||
+                       (split.valid && (split.right_x != compare_split_.right_x ||
+                                        split.right_w != compare_split_.right_w));
+  compare_split_ = split;
+  if (!changed) return false;
+  if (current_image_) {
+    // A fitted (or filled) view stays fitted in its new frame, at once, as a
+    // resize does; a zoomed one keeps its zoom and pan.
+    const canvas_view view = usable_canvas(snapshot);
+    if (camera_.fit_mode()) {
+      camera_.fit(media_width(), media_height(), view.w, view.h, true);
+    } else if (camera_.fill_mode()) {
+      camera_.fill(media_width(), media_height(), view.w, view.h, true);
+    }
+  }
+  return true;
+}
+
+void present_lab::draw_compare_left(const input_snapshot& snapshot, double elapsed,
+                                    const float theme_rgb[3]) noexcept {
+  const image::gpu_image* prev =
+      previous_image_ && previous_image_->srv ? previous_image_.get()
+      : (options_.scripted_pan && current_image_ && current_image_->srv) ? current_image_.get()
+                                                                          : nullptr;
+  if (!prev) return;
+  const canvas_view view = usable_canvas(snapshot);  // the right half
+  const compare_split& sp = compare_split_;
+  const D3D11_VIEWPORT vp{sp.left_x, view.y, sp.left_w, view.h, 0.0f, 1.0f};
+  device_.context()->RSSetViewports(1, &vp);
+  const edit_view* ev = edit_for(*prev);
+  const edit::placement pl = place_through(ev, prev->width, prev->height);
+  const auto pw = static_cast<float>(pl.cropped.w);
+  const auto ph = static_cast<float>(pl.cropped.h);
+  gfx::blit_params bp{};
+  for (int i = 0; i < 6; ++i) bp.uv_map[i] = pl.map.m[i];
+  bp.clip_to_source = ev && ev->keep_frame;
+  const edit::affine inverse = edit::invert(pl.map);
+  for (int i = 0; i < 6; ++i) bp.uv_inverse[i] = inverse.m[i];
+  bp.source_w = static_cast<float>(prev->width);
+  bp.source_h = static_cast<float>(prev->height);
+  apply_adjust(ev, bp);
+  const compare_camera cam = linked_camera(camera_.pan_x(), camera_.pan_y(), camera_.zoom(),
+                                           media_width(), media_height(), pw, ph, sp.left_w,
+                                           view.h);
+  bp.pan_x = cam.pan_x;
+  bp.pan_y = cam.pan_y;
+  bp.zoom = cam.zoom;
+  bp.window_w = sp.left_w;
+  bp.window_h = view.h;
+  bp.origin_x = sp.left_x;
+  bp.origin_y = view.y;
+  bp.image_w = pw;
+  bp.image_h = ph;
+  // A tiled previous still draws its resident overview: its tiles would be a
+  // second set of requests for an item no longer current.
+  bp.texture_w = static_cast<float>(prev->texture_width);
+  bp.texture_h = static_cast<float>(prev->texture_height);
+  for (int i = 0; i < 3; ++i) bp.theme_background[i] = theme_rgb[i];
+  bp.clipping = snapshot.clipping;
+  bp.time_seconds = static_cast<float>(elapsed);
+  blitter_.draw(device_.context(), prev->srv.Get(), bp);
+}
+
 // Text in images (docs/design/16): publish where the still is for the host's
 // hit-test, then draw the selection the host published, one translucent box per
 // line, as Photos tints selected text. No still (a clip, an animation): no map.
@@ -1697,13 +1791,19 @@ void present_lab::draw_view_overlays(const input_snapshot& snapshot) noexcept {
     fg->AddText(font, fs, ImVec2(x, y), text, s);
   };
 
-  const bool show_previous = snapshot.hold_previous && previous_image_ && current_image_;
+  const bool show_previous =
+      snapshot.hold_previous && !compare_split_.valid && previous_image_ && current_image_;
   if (snapshot.loupe && current_image_ && !show_previous) {
     const loupe_box box = loupe_rect(snapshot, view);
     fg->AddRect(ImVec2(box.x, box.y), ImVec2(box.x + box.size, box.y + box.size), text, 0.0f,
                 0, 1.5f * scale);
   }
   if (show_previous) label(view.x + pad, view.y + pad, "\\  previous");
+  if (compare_split_.valid) {
+    // `view` is the right half here; the left one starts at the split.
+    label(compare_split_.left_x + pad, view.y + pad,
+          previous_image_ ? "|  previous" : "|  no previous still yet");
+  }
 
   // Marks are visible without the mouse and without O (PR 6 verify: "mark").
   if (snapshot.marked_count > 0) {
@@ -2177,6 +2277,7 @@ bool present_lab::write_json_report() const noexcept {
                "  \"tiles_vram_peak_mb\": %.1f,\n"
                "  \"tiles_max_create_ms\": %.3f,\n"
                "  \"tiles_incomplete_frames\": %llu,\n"
+               "  \"compare_frames\": %llu,\n"
                "  \"texture_creates\": %llu,\n"
                "  \"texture_creates_over_budget\": %llu,\n"
                "  \"texture_max_create_ms\": %.3f,\n"
@@ -2221,6 +2322,7 @@ bool present_lab::write_json_report() const noexcept {
                static_cast<double>(tile_stats.vram_peak_bytes) / 1048576.0,
                static_cast<double>(tile_stats.max_create_us) / 1000.0,
                static_cast<unsigned long long>(tile_stats.incomplete_frames),
+               static_cast<unsigned long long>(compare_frames_),
                static_cast<unsigned long long>(upload_stats.creates),
                static_cast<unsigned long long>(upload_stats.over_budget),
                static_cast<double>(upload_stats.max_create_us) / 1000.0,
