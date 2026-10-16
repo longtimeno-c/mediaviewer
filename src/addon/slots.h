@@ -72,6 +72,7 @@ enum slot_change : std::uint32_t {
   slot_changed_search = 1u << 3,
   slot_changed_badges = 1u << 4,
   slot_changed_status = 1u << 5,
+  slot_changed_notices = 1u << 6,  // #452: a notice, the keep-alive list or a permission ask
 };
 
 struct surface_pixels {
@@ -178,6 +179,13 @@ class slot_registry {
   [[nodiscard]] std::vector<std::string> badges_for(const std::string& path) const;
   // [{"addon","id","label","text"}] for the status items with text.
   [[nodiscard]] std::string status_json() const;
+  // #452: {"ask": n, "keep": [{"addon","screen","title","label"}],
+  //  "notices": [{"addon","id","screen","title","body","action","action_label","revision"}]}.
+  [[nodiscard]] std::string notices_json() const;
+  // #452: some add-on asks to keep the process with every window closed.
+  [[nodiscard]] bool keeping_alive() const;
+  // #452: a notice's button was clicked: MV_SLOT_EVENT_NOTICE to its add-on.
+  status notice_action(const std::string& addon_id, const std::string& notice_id, const std::string& action_id);
 
   // ---- the add-on answers (host table v3; any thread) ---------------------------
   status post_screen(const std::string& addon_id, const std::string& screen_id,
@@ -205,6 +213,14 @@ class slot_registry {
                      std::uint64_t generation, std::vector<std::string> paths, bool replace);
   status post_status(const std::string& addon_id, const std::string& item_id, std::string text);
   status show_screen(const std::string& addon_id, const std::string& screen_id, bool show);
+  // #452 (host table notice_post / notice_authorize / keep_alive).
+  struct notice_fields {
+    std::string screen, title, body, action, action_label;
+  };
+  status post_notice(const std::string& addon_id, const std::string& notice_id,
+                     std::optional<notice_fields> notice);
+  status ask_notice_permission(const std::string& addon_id);
+  status keep_alive(const std::string& addon_id, bool on, const std::string& screen_id, std::string label);
 
   // ---- for tests and the PR 59 verify --------------------------------------
   // Every call made into any add-on's client since construction.
@@ -270,6 +286,14 @@ class slot_registry {
   std::string badges_folder_;
   std::map<std::string, std::set<std::string>> badge_sets_;  // "addon/badge" -> paths
   std::map<std::pair<std::string, std::string>, std::string> status_;
+  struct notice_state {
+    notice_fields f;
+    std::uint64_t revision = 0;
+  };
+  std::map<std::pair<std::string, std::string>, notice_state> notices_;  // (addon, notice)
+  std::map<std::string, std::pair<std::string, std::string>> keep_;    // addon -> (screen, label)
+  std::uint64_t notice_asks_ = 0;
+  std::uint64_t notice_revision_ = 0;
   mv_slot_theme last_theme_{};
   float last_scale_ = 1.0f;
   std::uint64_t surface_revision_ = 0;  // under m_

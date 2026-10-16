@@ -150,8 +150,28 @@ class fake_host final : public sp::engine_host {
     status = text;
     return true;
   }
+  // #452: a host with notifications records them; without, the engine opens the window.
+  bool post_notice(const std::string& title, const std::string& body) override {
+    if (!notify.load()) return false;
+    std::lock_guard lock(m);
+    notices.push_back(title.empty() ? std::string() : title + "|" + body);
+    return true;
+  }
+  void ask_to_notify() override { ++asks; }
+  bool keep_alive(bool on) override {
+    keep = on;
+    return true;
+  }
+  std::string last_notice() {
+    std::lock_guard lock(m);
+    return notices.empty() ? std::string("(none)") : notices.back();
+  }
 
   std::mutex m;
+  std::vector<std::string> notices;
+  std::atomic<bool> notify{false};
+  std::atomic<int> asks{0};
+  std::atomic<bool> keep{false};
   std::string last_tree;
   std::string status;
   int posts = 0;
@@ -1027,6 +1047,99 @@ TEST_CASE("sharepoint: an offer to a closed window with receiving on opens it", 
   ann.eng.wait_idle();
 }
 
+TEST_CASE("sharepoint: an offer is a notification naming the sender and count, never a file or the code (#452)",
+          "[sharepoint]") {
+  scratch_dir s("sharepoint_notice");
+  bus b;
+  client ann(b, s / "ann_received", "Ann");
+  client bea(b, s / "bea_received", "Bea");
+  bea.host.notify = true;
+  bea.eng.on_event("receiving", 2, "true");
+  bea.eng.screen_closed();
+  write_text(s / "out" / "secret-name.jpg", "abc");
+  ann.pick({s / "out" / "secret-name.jpg"});
+  ann.send_to(bea, false);
+  // The code shows (in the window, when opened): the notification says who, not the code.
+  std::string code;
+  REQUIRE(eventually([&] {
+    const auto v = bea.eng.snapshot();
+    code = v.in_code;
+    return v.in == sp::view::in_phase::connecting && !code.empty();
+  }));
+  REQUIRE(eventually([&] { return bea.host.last_notice().find("Ann wants to send you files") != std::string::npos; }));
+  CHECK(bea.host.last_notice().find(code) == std::string::npos);
+  {
+    std::lock_guard lock(bea.host.m);
+    CHECK(bea.host.shown == 0);  // the notification opens it, not the engine
+  }
+  // The code typed over there: now the count and size, still no name and no code.
+  ann.type_code(code);
+  REQUIRE(eventually([&] { return bea.eng.snapshot().in == sp::view::in_phase::asking; }));
+  REQUIRE(eventually([&] { return bea.host.last_notice().find("1 file,") != std::string::npos; }));
+  CHECK(bea.host.last_notice().find("secret-name") == std::string::npos);
+  CHECK(bea.host.last_notice().find(code) == std::string::npos);
+  // The notification's Decline is the window's Decline; the notification goes.
+  bea.eng.on_event("decline", 1, "");  // what the add-on maps MV_SLOT_EVENT_NOTICE to
+  ann.eng.wait_idle();
+  bea.eng.wait_idle();
+  CHECK(ann.eng.snapshot().out_note == "Bea declined.");
+  CHECK(files_in(s / "bea_received").empty());
+  CHECK(bea.host.last_notice().empty());  // taken back
+
+  // Nothing is accepted from a notification: Accept is only in the window.
+  CHECK(sp::notice_body("Ann", 0, 0) == "Ann wants to send you files. Open Sharepoint to see the code.");
+  CHECK(sp::notice_body("Ann", 24, 412ull * 1000 * 1000).rfind("Ann wants to send you 24 files, ", 0) == 0);
+  CHECK(sp::notice_body("", 1, 10).rfind("A computer nearby wants to send you 1 file, ", 0) == 0);
+}
+
+TEST_CASE("sharepoint: Receive when MediaViewer is closed keeps receiving and the process, and is kept (#452)",
+          "[sharepoint]") {
+  scratch_dir s("sharepoint_background");
+  bus b;
+  fs::create_directories(s / "data");
+  sp::engine::options o = client::options(b, "Bea");
+  o.prefs_path = utf8(s / "data" / "sharepoint.json");
+  auto members = [&] {
+    std::lock_guard lock(b.m);
+    return b.members.size();
+  };
+  {
+    fake_host host(s / "in");
+    sp::engine e(host, o);
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    CHECK_FALSE(host.keep.load());  // off by default: nothing kept, nothing asked
+    CHECK(host.asks == 0);
+    CHECK(members() == 0);
+    e.screen_opened("");
+    e.on_event("background", 2, "true");
+    CHECK(e.snapshot().receiving);  // implies Keep receiving
+    CHECK(host.asks == 1);          // the OS is asked now, never at launch
+    e.screen_closed();
+    REQUIRE(eventually([&] { return host.keep.load(); }));
+    CHECK(members() == 1);
+  }
+  {
+    fake_host host(s / "in");
+    sp::engine e(host, o);  // the next launch: kept, nothing asked
+    REQUIRE(eventually([&] { return host.keep.load() && members() == 1; }));
+    CHECK(e.snapshot().background);
+    CHECK(e.snapshot().receiving);
+    CHECK(host.asks == 0);
+    // Keep receiving off turns this off too: the process is not kept.
+    e.on_event("receiving", 2, "false");
+    REQUIRE(eventually([&] { return !host.keep.load() && members() == 0; }));
+    CHECK_FALSE(e.snapshot().background);
+  }
+  {
+    fake_host host(s / "in");
+    sp::engine e(host, o);
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    CHECK_FALSE(host.keep.load());
+    CHECK_FALSE(e.snapshot().background);
+    CHECK(members() == 0);
+  }
+}
+
 TEST_CASE("sharepoint: with the window closed and receiving off there is no presence", "[sharepoint]") {
   scratch_dir s("sharepoint_idle");
   bus b;
@@ -1287,6 +1400,69 @@ TEST_CASE("sharepoint: idle cost of Keep receiving", "[.sharepoint-idle]") {
   phase("off_again");
 }
 #endif
+
+// ---- harness: a sender on this machine (#452) ------------------------------------------------------
+//
+// mv_import_tests "[.sharepoint-send]": stands in for the second machine of
+// #452's verify, on one computer. It sends MV_SEND_FILE to the first
+// MediaViewer it hears on the real UDP beacon (another process: the app with
+// Receive when MediaViewer is closed on), prints when the link is up (the
+// receiver's notification is due within ~2 s of it), then either waits for
+// the six digits the receiver's window shows in MV_SEND_CODE_FILE (written by
+// whoever reads that window) and types them, or, without it, holds the link
+// MV_SEND_HOLD seconds (default 10) and cancels. Prints JSON lines with
+// wall-clock milliseconds. Nothing here listens beyond what the engine does.
+TEST_CASE("sharepoint: send to the MediaViewer nearby (harness)", "[.sharepoint-send]") {
+  const char* file = std::getenv("MV_SEND_FILE");
+  REQUIRE(file);
+  const auto wall_ms = [] {
+    return static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                      std::chrono::system_clock::now().time_since_epoch())
+                                      .count());
+  };
+  scratch_dir s("sharepoint_send");
+  fake_host host(s / "in");
+  sp::engine::options o;
+  o.my_name = "Harness sender";
+  o.use_bluetooth = false;
+  sp::engine e(host, o);
+  e.screen_opened("");
+  e.set_files({file});
+  REQUIRE(eventually([&] {
+    const auto v = e.snapshot();
+    return !v.reading_folder && v.file_count == 1 && !v.peers.empty();
+  }, 30));
+  const auto peer = e.snapshot().peers.front();
+  std::printf("{\"event\":\"tile_clicked\",\"peer\":\"%s\",\"ms\":%lld}\n", peer.name.c_str(), wall_ms());
+  e.on_event("peers", 5, "\"" + peer.id + "\"");
+  REQUIRE(eventually([&] { return e.snapshot().out == sp::view::out_phase::confirming; }, 15));
+  std::printf("{\"event\":\"link_up\",\"ms\":%lld}\n", wall_ms());
+  std::fflush(stdout);
+  const char* code_file = std::getenv("MV_SEND_CODE_FILE");
+  if (!code_file) {
+    const char* hold = std::getenv("MV_SEND_HOLD");
+    std::this_thread::sleep_for(std::chrono::seconds(hold ? std::max(1, std::atoi(hold)) : 10));
+    e.on_event("out_cancel", 1, "");
+    e.wait_idle();
+    std::printf("{\"event\":\"cancelled\",\"ms\":%lld}\n", wall_ms());
+    return;
+  }
+  std::string code;
+  REQUIRE(eventually([&] {
+    std::ifstream in(code_file);
+    std::getline(in, code);
+    return code.size() >= 6;
+  }, 300));
+  e.on_event("out_code_entry", 3, "\"" + code + "\"");
+  std::printf("{\"event\":\"code_typed\",\"ms\":%lld}\n", wall_ms());
+  std::fflush(stdout);
+  REQUIRE(eventually([&] {
+    const auto out = e.snapshot().out;
+    return out == sp::view::out_phase::done || out == sp::view::out_phase::ended;
+  }, 300));
+  std::printf("{\"event\":\"%s\",\"note\":\"%s\",\"ms\":%lld}\n",
+              e.snapshot().out == sp::view::out_phase::done ? "done" : "ended", e.snapshot().out_note.c_str(), wall_ms());
+}
 
 // ---- harness: transfer throughput (#442) -----------------------------------------------------------
 //

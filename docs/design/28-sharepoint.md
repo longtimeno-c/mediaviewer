@@ -22,7 +22,8 @@ Narrator. Other makers' script add-ons still have no network permission (owner, 
   entry is left out of the hosts' right-click menus (#444), so there is one route. Its design is
   AirDrop's (#442), the same on both hosts, top to bottom:
   - this computer's name as others see it, and **Keep receiving when this window is closed** (kept
-    across launches; the command bar shows **Sharepoint: receiving** while it is on);
+    across launches; the command bar shows **Sharepoint: receiving** while it is on), then
+    **Receive when MediaViewer is closed** (#452, off by default; [In the background](#in-the-background-452));
   - **what is offered to this computer**, in a card of its own: the sender's round tile (its
     monogram, name and how it is connected), "… wants to send you files" and the **code** in large
     digits to type over there, **Decline**; then "… wants to send you 24 files, 412 MB", the first
@@ -86,6 +87,51 @@ the engine never touches the canvas.
   Wi-Fi here. A click on its tile then waits ("Waiting for … on Wi-Fi", with Cancel); the moment
   that peer's beacon arrives the send starts by itself, code and Accept as always. Presence stays up while it waits, window closed or not.
 - Sending prefers Wi-Fi when the peer's beacon is fresh, and falls back to Bluetooth.
+
+## In the background (#452)
+
+**Receive when MediaViewer is closed** is opt-in and off by default, like AirDrop or Nearby Share
+being reachable. It implies Keep receiving (turning that off turns this off too) and is kept in
+`sharepoint.json` with it. It is the same app, not a helper: the add-on asks the host to keep its
+process (`keep_alive`), and the hosts do the rest.
+
+- **Off** (the default) changes nothing: the last window closing quits, ⌘Q / Alt+F4 quit, and
+  with Keep receiving off there is no process, socket, beacon or Bluetooth after quitting.
+- **On**, closing the last window, ⌘Q or the Dock's Quit on the Mac, and closing the window on
+  Windows, leave the process running. The viewer drops what it showed (no clip plays, the folder
+  and its watch close; `returnToWelcome` / `return_to_welcome`) and its window is hidden, not
+  closed. On the Mac the app then leaves the Dock (accessory policy) and a **menu-bar item**
+  stays; on Windows a **notification-area icon**. Both menus: "Sharepoint: receiving", **Open
+  Sharepoint**, **Open MediaViewer**, **Quit MediaViewer** (which really quits). Opening the app
+  again (Finder, Spotlight, Start, a file) brings the hidden window back. Logout, restart and shut
+  down, and an update's restart, quit as before. Only the process that holds
+  `sharepoint.json.lock` keeps itself; another window's process quits as usual.
+- **A notification when someone sends** (both hosts, background or not). The engine posts a
+  notice (`notice_post`) the moment a sender's link is up, while its code shows: "Ann's MacBook
+  wants to send you files. Open Sharepoint to see the code." Once the sender has typed the code
+  and the offer arrives: "… wants to send you 24 files, 412 MB. Open Sharepoint to accept." It
+  never shows the code or a file name (rule 6: a lock screen shows it), only the sender's name, the
+  count and the size. **Clicking it opens the Sharepoint window** with the card and its code;
+  its one button is **Decline** (the window's own Decline). Accept is only in the window, after
+  the code: nothing is accepted from a notification. It is taken back however the offer ends.
+- The host skips the notification when the Sharepoint window is the front window of the active
+  app (the card is in plain sight), and shows it when the window is closed, behind another window
+  or the app is in the background: the Keep receiving case gets it too.
+- **Mac:** `UNUserNotificationCenter` (`AddonNotices.swift`). Permission is asked the first time
+  either toggle is turned on (`notice_authorize`), never at launch. Without permission, or in the
+  unbundled lab binary (no notification centre), the window opens and the Dock bounces, as
+  before #452. Import's finished-job notice (`notifyTitle:`) now uses the same centre when
+  allowed, and beeps otherwise.
+- **Windows:** `AppNotificationManager`, registered once for the unpackaged build under the
+  process's AUMID (`MediaViewer.Viewer`, set before the first window), on the first ask or notice
+  (`IslandHost.Notices.cs`); before #452 `Show` threw without a registration and Import's notices
+  never appeared. Where Windows refuses, the window opens instead. A notification clicked after
+  the process ended starts the app normally (`----AppNotificationActivated:` is accepted).
+- **Idle cost, windowless:** see [12](12-decision-log.md#sharepoint) and DEVELOPMENT.md. The
+  canvas presents nothing while hidden.
+- **Not built:** start at login / sign-in. A person turns the background on and starts the app
+  once after a restart; Keep receiving then comes up at load as before. `SMAppService` (Mac) and a
+  Run key (Windows) are a follow-up.
 
 ## The wire
 
@@ -220,8 +266,14 @@ second while bytes move; those posts update chrome and never present the canvas.
   a name.
 - Receiving is off until the window opens or the person turns it on. Turned on, it stays on across
   launches until turned off (#442), and the command bar says so (**Sharepoint: receiving**).
+- A notification (#452) names the sender and a count and size; never a file name, a path or the
+  code. It is shown by the OS on this machine only; nothing about it leaves the machine.
 
 ## Host pieces this added
+
+- **Notices and keep-alive** (#452, host table entries after `locations_of_index`, ABI 0.31):
+  generic, held by `slot_registry` and drawn by both hosts ([In the background](#in-the-background-452),
+  [25](25-open-addons.md#implementation-notes-prs-58-59-2026-10-11)).
 
 - **Screens vocabulary**: a `text_field` may carry `"pick": "folder"`; the hosts add **Choose…**
   (`NSOpenPanel`; WinUI's `FolderPicker`) and report the folder as the field's change
@@ -263,9 +315,10 @@ second while bytes move; those posts update chrome and never present the canvas.
 | Sockets, machine name, Downloads | `net.h`, `net_posix.cpp`, `net_win.cpp`, `machine_mac.cpp` |
 | Bluetooth | `bt_pipe.*`, `bt_mac.mm` (CoreBluetooth), `bt_win.cpp` (C++/WinRT), `bt_none.cpp` |
 | The add-on's export and manifest | `addon_entry.cpp`, `manifest.json`; `cmake/sharepoint.cmake` |
-| Mac chrome | `Sharepoint.swift` (offer, share icon), `SlotItems.swift` (Settings), `ScreenView.swift` (Choose…), `GalleryView.swift` / `FolderStore.swift` (range, drag) |
-| Windows chrome | `IslandHost.Sharepoint.cs`, `IslandHost.GalleryRange.cs`, `IslandHost.Slots.cs`, `IslandHost.Screens.cs` |
-| Native hosts | `src/shell/main_mac.mm`, `src/shell/main.cpp`, `src/shell/addons_mac.mm` |
+| Mac chrome | `Sharepoint.swift` (offer, share icon), `SlotItems.swift` (Settings), `ScreenView.swift` (Choose…), `GalleryView.swift` / `FolderStore.swift` (range, drag), `AddonNotices.swift` (notifications, the menu-bar item, #452) |
+| Windows chrome | `IslandHost.Sharepoint.cs`, `IslandHost.GalleryRange.cs`, `IslandHost.Slots.cs`, `IslandHost.Screens.cs`, `IslandHost.Notices.cs` (notifications, #452) |
+| Native hosts | `src/shell/main_mac.mm` (the background, #452), `src/shell/main.cpp` (the background and the notification-area icon, #452), `src/shell/addons_mac.mm` |
+| Notices and keep-alive (#452) | `src/addon/slots.*` (`post_notice`, `keep_alive`, `notices_json`), `src/addon/host.cpp` |
 | Tests | `tests/test_sharepoint.cpp`, `tests/test_sharepoint_addon.cpp` (`mv_import_tests "[sharepoint]"`), `tools/package/test_addon_pack.py` |
 
 ## Not built

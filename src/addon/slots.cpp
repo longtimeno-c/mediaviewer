@@ -323,6 +323,10 @@ void slot_registry::detach(const std::string& addon_id) {
     for (auto i = status_.begin(); i != status_.end();) {
       i = i->first.first == addon_id ? status_.erase(i) : std::next(i);
     }
+    for (auto i = notices_.begin(); i != notices_.end();) {
+      i = i->first.first == addon_id ? notices_.erase(i) : std::next(i);
+    }
+    keep_.erase(addon_id);
   }
   {
     std::lock_guard lk(e->w->m);
@@ -341,7 +345,7 @@ void slot_registry::detach(const std::string& addon_id) {
     }
   }
   notify(slot_changed_contributions | slot_changed_info | slot_changed_screens | slot_changed_search |
-         slot_changed_badges | slot_changed_status);
+         slot_changed_badges | slot_changed_status | slot_changed_notices);
 }
 
 bool slot_registry::attached(const std::string& addon_id) const {
@@ -1295,6 +1299,127 @@ status slot_registry::show_screen(const std::string& addon_id, const std::string
   }
   if (st == status::ok) notify(slot_changed_screens);
   return st;
+}
+
+// ---- #452: notices and keep-alive ---------------------------------------------------
+
+namespace {
+bool notice_text_ok(const std::string& s, std::size_t max) { return s.size() <= max && json::detail::valid_utf8(s); }
+bool has_screen(const contributions& c, const std::string& screen_id) {
+  return std::any_of(c.screens.begin(), c.screens.end(), [&](const screen_contrib& s) { return s.id == screen_id; });
+}
+}  // namespace
+
+status slot_registry::post_notice(const std::string& addon_id, const std::string& notice_id,
+                                  std::optional<notice_fields> notice) {
+  if (notice_id.empty() || notice_id.size() > 64 || !json::detail::valid_utf8(notice_id)) return status::invalid_arg;
+  if (notice && (notice->title.empty() || !notice_text_ok(notice->title, 120) || !notice_text_ok(notice->body, 400) ||
+                 notice->action.size() > 32 || !notice_text_ok(notice->action, 32) ||
+                 !notice_text_ok(notice->action_label, 40) || (!notice->action.empty() && notice->action_label.empty()))) {
+    return status::invalid_arg;
+  }
+  {
+    std::lock_guard lock(m_);
+    auto it = addons_.find(addon_id);
+    if (it == addons_.end()) return status::not_found;
+    const auto key = std::make_pair(addon_id, notice_id);
+    if (!notice) {
+      if (notices_.erase(key) == 0) return status::ok;  // nothing to take back: no wake
+    } else {
+      if (!has_screen(it->second->c, notice->screen)) return status::not_found;
+      notices_[key] = notice_state{std::move(*notice), ++notice_revision_};
+    }
+  }
+  notify(slot_changed_notices);
+  return status::ok;
+}
+
+status slot_registry::ask_notice_permission(const std::string& addon_id) {
+  {
+    std::lock_guard lock(m_);
+    if (addons_.find(addon_id) == addons_.end()) return status::not_found;
+    ++notice_asks_;
+  }
+  notify(slot_changed_notices);
+  return status::ok;
+}
+
+status slot_registry::keep_alive(const std::string& addon_id, bool on, const std::string& screen_id,
+                                 std::string label) {
+  if (on && (!notice_text_ok(label, 120))) return status::invalid_arg;
+  {
+    std::lock_guard lock(m_);
+    auto it = addons_.find(addon_id);
+    if (it == addons_.end()) return status::not_found;
+    if (!on) {
+      if (keep_.erase(addon_id) == 0) return status::ok;
+    } else {
+      if (!has_screen(it->second->c, screen_id)) return status::not_found;
+      auto want = std::make_pair(screen_id, std::move(label));
+      auto k = keep_.find(addon_id);
+      if (k != keep_.end() && k->second == want) return status::ok;
+      keep_[addon_id] = std::move(want);
+    }
+  }
+  notify(slot_changed_notices);
+  return status::ok;
+}
+
+bool slot_registry::keeping_alive() const {
+  std::lock_guard lock(m_);
+  return !keep_.empty();
+}
+
+std::string slot_registry::notices_json() const {
+  std::lock_guard lock(m_);
+  json::writer w;
+  w.begin_object().key("ask").integer(static_cast<std::int64_t>(notice_asks_)).key("keep").begin_array();
+  for (const auto& [addon, k] : keep_) {
+    std::string title = k.first;
+    if (auto it = addons_.find(addon); it != addons_.end()) {
+      for (const auto& sc : it->second->c.screens) {
+        if (sc.id == k.first) title = sc.title;
+      }
+    }
+    w.begin_object().key("addon").string(addon).key("screen").string(k.first).key("title").string(title);
+    w.key("label").string(k.second).end_object();
+  }
+  w.end_array().key("notices").begin_array();
+  for (const auto& [key, n] : notices_) {
+    w.begin_object()
+        .key("addon").string(key.first)
+        .key("id").string(key.second)
+        .key("screen").string(n.f.screen)
+        .key("title").string(n.f.title)
+        .key("body").string(n.f.body)
+        .key("action").string(n.f.action)
+        .key("action_label").string(n.f.action_label)
+        .key("revision").integer(static_cast<std::int64_t>(n.revision))
+        .end_object();
+  }
+  w.end_array().end_object();
+  return w.take();
+}
+
+status slot_registry::notice_action(const std::string& addon_id, const std::string& notice_id,
+                                    const std::string& action_id) {
+  std::lock_guard lock(m_);
+  auto it = addons_.find(addon_id);
+  if (it == addons_.end()) return status::not_found;
+  auto n = notices_.find(std::make_pair(addon_id, notice_id));
+  if (n == notices_.end() || n->second.f.action.empty() || n->second.f.action != action_id) return status::not_found;
+  json::writer v;
+  v.string(notice_id);
+  enqueue(*it->second, {}, [screen = n->second.f.screen, action_id, value = v.take()](slot_client& c) {
+    mv_slot_event ev{};
+    ev.struct_size = sizeof ev;
+    ev.kind = MV_SLOT_EVENT_NOTICE;
+    ev.screen_id = screen.c_str();
+    ev.node_id = action_id.c_str();
+    ev.value_json = value.c_str();
+    c.event(ev);
+  });
+  return status::ok;
 }
 
 slot_registry& default_slots() {

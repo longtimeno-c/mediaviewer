@@ -1,7 +1,8 @@
 // Copyright (C) 2026 longtimeno-c
 // SPDX-License-Identifier: GPL-3.0-or-later
 // What Sharepoint keeps across launches (issue #442): whether this machine
-// keeps receiving with the window closed, and the folder Save to last chose.
+// keeps receiving with the window closed (and with MediaViewer closed, #452),
+// and the folder Save to last chose.
 // A small JSON file in the add-on's own data folder (the host table's
 // data_dir), never the app's settings: Remove without keep takes it with the
 // add-on.
@@ -19,6 +20,9 @@ namespace mv::sharepoint {
 
 struct prefs {
   bool receiving = false;   // "Keep receiving when this window is closed"
+  // "Receive when MediaViewer is closed" (#452): the process stays (menu-bar
+  // item / tray icon) with every window closed. Implies `receiving`.
+  bool background = false;
   std::string destination;  // Save to; "" = the default (Downloads)
   bool operator==(const prefs&) const = default;
 };

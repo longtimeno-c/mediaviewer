@@ -297,6 +297,7 @@ expected chrome_host::load() noexcept {
   // Optional the same way (issue #402): without it the canvas has no context menu.
   show_canvas_menu_ = get_entry(L"ShowCanvasMenu");
   run_addon_command_ = get_entry(L"RunAddonCommand");
+  open_addon_screen_ = get_entry(L"OpenAddonScreen");  // #452, optional
   // Optional: without them a drag carries one cell and Open lists no recents.
   set_drag_paths_ = get_entry(L"SetDragPaths");
   set_recent_folders_ = get_entry(L"SetRecentFolders");
@@ -1040,6 +1041,18 @@ bool chrome_host::run_addon_command(const std::string& addon, const std::string&
     buf.push_back(0);
   }
   return run_addon_command_(buf.data(), static_cast<std::int32_t>(buf.size())) == 0;
+}
+
+bool chrome_host::open_addon_screen(const std::string& addon, const std::string& screen) noexcept {
+  if (!attached_ || !open_addon_screen_) return false;
+  // Two UTF-8 strings, each NUL-terminated, mirrored by IslandHost.OpenAddonScreen.
+  std::vector<std::uint8_t> buf;
+  buf.reserve(addon.size() + screen.size() + 2);
+  for (const std::string* part : {&addon, &screen}) {
+    buf.insert(buf.end(), part->begin(), part->end());
+    buf.push_back(0);
+  }
+  return open_addon_screen_(buf.data(), static_cast<std::int32_t>(buf.size())) == 0;
 }
 
 bool chrome_host::offer_addon(const std::string& path_utf8) noexcept {

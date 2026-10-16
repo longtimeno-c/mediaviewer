@@ -558,6 +558,17 @@ int32_t mv_chrome_slots_screens(char* buf, int32_t size);
 int32_t mv_chrome_slots_search_results(uint32_t scope, char* buf, int32_t size);  // 1 files, 2 local
 int32_t mv_chrome_slots_badges(char* buf, int32_t size);
 int32_t mv_chrome_slots_status(char* buf, int32_t size);
+// #452: {"ask","keep":[{"addon","screen","title","label"}],"notices":[{"addon","id","screen",
+// "title","body","action","action_label","revision"}]} (change bit 64), and a notice's button.
+int32_t mv_chrome_slots_notices(char* buf, int32_t size);
+bool mv_chrome_slots_notice_action(const char* addon, const char* notice, const char* action);
+// #452 (src/shell/main_mac.mm): the viewer comes back from the background, the
+// process quits for real (the menu-bar item's Quit), the keep-alive list
+// changed, and an add-on window is coming forward (the Dock icon returns). [main-thread]
+void mv_chrome_background_show_viewer(void);
+void mv_chrome_background_quit(void);
+void mv_chrome_background_changed(void);
+void mv_chrome_background_window_shown(void);
 uint64_t mv_chrome_slots_request_info(const char* path, const char* location_text,
                                       const mv_chrome_slot_theme* theme, float width, float scale);
 void mv_chrome_slots_clear_info(void);
