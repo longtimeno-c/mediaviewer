@@ -397,13 +397,13 @@ typedef struct mv_slot_badges_request {
 #define MV_SLOT_EVENT_ZOOM 10u     /* {"scale": factor (0.05..20, >1 in), "x", "y": the anchor} */
 #define MV_SLOT_EVENT_PAN 11u      /* {"dx", "dy"}: the drag, in surface widths / heights (-10..10) */
 #define MV_SLOT_EVENT_DOUBLE 12u   /* {"x", "y"}: a double-click */
-/* 0.32 (#452): the button of a notice the add-on posted (notice_post) was
+/* 0.33 (#452): the button of a notice the add-on posted (notice_post) was
  * clicked in the system notification: screen_id = the notice's screen,
  * node_id = its action_id, value_json = the notice id as a JSON string. Not
  * checked against a tree (the window may be closed). */
 #define MV_SLOT_EVENT_NOTICE 13u
 
-/* 0.32 (#452): a system notification an add-on asks for (notice_post). The
+/* 0.33 (#452): a system notification an add-on asks for (notice_post). The
  * host shows it unless the screen it is about is the window in front of an
  * active app; clicking it opens that screen and brings it forward. Text is
  * the add-on's, and it is shown on a lock screen: never a path, a file name
@@ -865,7 +865,7 @@ MV_API mv_status MV_CALL mv_addon_quit_wait(uint32_t timeout_ms);
  * ------------------------------------------------------------------------- */
 
 /* What changed (bits): 1 contributions, 2 info, 4 screens, 8 search, 16
- * badges, 32 status, 64 notices and keep-alive (0.32). Called on any thread; must not block (the chrome hops to
+ * badges, 32 status, 64 notices and keep-alive (0.33). Called on any thread; must not block (the chrome hops to
  * its dispatcher). NULL clears it. */
 typedef void(MV_CALL* mv_slots_changed_fn)(void* user, uint32_t bits);
 MV_API mv_status MV_CALL mv_slots_set_listener(mv_slots_changed_fn fn, void* user);
@@ -876,11 +876,11 @@ MV_API mv_status MV_CALL mv_slots_screens_json(char* out, uint32_t cap, uint32_t
 MV_API mv_status MV_CALL mv_slots_search_json(uint32_t scope, char* out, uint32_t cap, uint32_t* needed);
 MV_API mv_status MV_CALL mv_slots_badges_json(char* out, uint32_t cap, uint32_t* needed);
 MV_API mv_status MV_CALL mv_slots_status_json(char* out, uint32_t cap, uint32_t* needed);
-/* 0.32 (#452): {"ask": n (bumped by each notice_authorize), "keep": [{"addon","screen","title","label"}],
+/* 0.33 (#452): {"ask": n (bumped by each notice_authorize), "keep": [{"addon","screen","title","label"}],
  * "notices": [{"addon","id","screen","title","body","action","action_label","revision"}]}.
  * Change bit 64. */
 MV_API mv_status MV_CALL mv_slots_notices_json(char* out, uint32_t cap, uint32_t* needed);
-/* 0.32 (#452): a notice's button was clicked: the add-on gets
+/* 0.33 (#452): a notice's button was clicked: the add-on gets
  * MV_SLOT_EVENT_NOTICE. MV_ERR_NOT_FOUND when the notice is gone. */
 MV_API mv_status MV_CALL mv_slots_notice_action(const char* addon, const char* notice_id, const char* action_id);
 

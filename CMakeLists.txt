@@ -434,8 +434,11 @@ add_library(mv_codec STATIC
   src/codec/xml.h
   src/codec/text.cpp
   src/codec/text.h
+  src/codec/doclayout.cpp
+  src/codec/doclayout.h
   src/codec/fonts.h
   src/codec/docx.cpp
+  src/codec/pptx.cpp
   src/codec/fonts_win.cpp
   src/codec/crash_test_hook.cpp
   src/codec/crash_test_hook.h
@@ -475,6 +478,8 @@ add_library(mv_image STATIC
   src/image/tiles.cpp
   src/image/thumb.cpp
   src/image/thumb_store.cpp
+  src/image/page_thumbs.cpp
+  src/image/page_thumbs.h
   src/image/thumb_pixels.cpp
   src/image/colour.h
   src/image/pipeline.h
@@ -1121,7 +1126,9 @@ if(MV_BUILD_TESTS)
     tests/test_audio_files.cpp
     tests/test_pages.cpp
     tests/test_pdf.cpp
+    tests/test_page_thumbs.cpp
     tests/test_docx.cpp
+    tests/test_pptx.cpp
     # PR 9 (docs/design/12 2026-09-24)
     tests/test_meta.cpp
     tests/test_meta_provenance.cpp

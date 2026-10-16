@@ -352,6 +352,12 @@ struct app_state {
   std::uint32_t page = 0;
   std::uint32_t page_of = UINT32_MAX;
   std::uint32_t page_count = 0;
+  // Issue #429, the page sidebar: wanted (Shift+T, settings.ini [view]
+  // page_sidebar, on unless turned off), and a number bumped for every new
+  // stop, so the island tells two documents of the same length apart.
+  bool page_sidebar_wanted = true;
+  std::int32_t page_sidebar_stop = 0;
+  std::uint32_t page_sidebar_listed = 0;  // the count the island was last given
   // Document scrolling (docs/design/04 "Scrolling a document"): the shared
   // page-turn rule and its sub-pixel carry (canvas/document_scroll.h).
   mv::canvas::document_scroller doc_scroll;
@@ -2100,6 +2106,8 @@ void schedule_rotation_write(app_state* app) noexcept {
 void adjust_item_changed(app_state* app);
 void adjust_colour_changed(app_state* app);
 void strip_hint_show(app_state* app);
+bool sync_page_stop(app_state* app, bool opened);
+void page_sidebar_changed(app_state* app);
 
 // The canvas is about to show the selected item (a select, a listing landing,
 // a reselect after a rewrite). The previous slot keeps its geometry for the
@@ -2157,6 +2165,9 @@ void edit_item_opened(app_state* app) {
   workspace_item_changed(app);
   // A document or a clip arriving under the filmstrip: say what T changes.
   strip_hint_show(app);
+  // Issue #429: a new stop has no page count until it opens; the sidebar goes.
+  (void)sync_page_stop(app, false);
+  page_sidebar_changed(app);
 }
 
 void start_rotation_write(app_state* app) {
@@ -2589,19 +2600,30 @@ void strip_hint_toggled(app_state* app) {
 // still or a clip, the keys do nothing.
 // `land`: a scroll turned it, so the page keeps the zoom and lands at its top
 // (forward) or bottom (back) instead of fitting.
-bool turn_page(app_state* app, int delta, bool land = false) {
-  if (!app || !app->session || video_mode(app)) return false;
+// The page state follows the selection: another stop starts at page 0 with its
+// count unknown (and a new page_sidebar_stop). With `opened`, the count is the
+// core's for the image on screen.
+bool sync_page_stop(app_state* app, bool opened) {
   std::uint32_t index = 0;
-  if (mv_folder_selected(app->session, &index) != MV_OK) return false;
+  if (!app->session || mv_folder_selected(app->session, &index) != MV_OK) return false;
   if (app->page_of != index) {
     app->page_of = index;
     app->page = 0;
     app->page_count = 0;
+    ++app->page_sidebar_stop;
   }
   mv_image_info info{};
-  if (mv_session_image_info(app->session, &info) == MV_OK && info.page_count > 0) {
+  if (opened && mv_session_image_info(app->session, &info) == MV_OK && info.page_count > 0) {
     app->page_count = info.page_count;
   }
+  return true;
+}
+
+void page_sidebar_changed(app_state* app);
+
+bool turn_page(app_state* app, int delta, bool land = false) {
+  if (!app || !app->session || video_mode(app)) return false;
+  if (!sync_page_stop(app, true)) return false;
   if (app->page_count <= 1) return false;
   const std::int64_t want = std::clamp<std::int64_t>(static_cast<std::int64_t>(app->page) + delta, 0,
                                                      static_cast<std::int64_t>(app->page_count) - 1);
@@ -2613,6 +2635,7 @@ bool turn_page(app_state* app, int delta, bool land = false) {
   app->input.page_land = land ? (delta > 0 ? 1 : -1) : 0;
   notice_show(app, mv::shell::page_notice(app->page, app->page_count));
   strip_hint_show(app);
+  page_sidebar_changed(app);  // the highlight follows the page
   ++app->input.activity_seq;
   publish(app);
   return true;
@@ -2625,6 +2648,71 @@ bool document_scrolls(app_state* app) {
   if (!app || !app->session || app->mode == open_mode::none || app->edit_path.empty()) return false;
   if (app->gallery_visible || app->editor.open || app->chrome.filmstrip_visible()) return false;
   return mv::io::is_document_name(app->edit_path);
+}
+
+// ---- Issue #429: the page sidebar (docs/design/04 "Page sidebar") ----------------
+//
+// A strip of page thumbnails down the left of a PDF, DOCX or PPTX with more
+// than one page, while the filmstrip is hidden: it takes the strip's role for a
+// document, so the two never show at once. It reserves its width
+// (input.chrome_left_px), so a page is never framed under it. The island
+// (IslandHost.PageSidebar.cs) asks the core for the thumbnails itself.
+
+constexpr int kPageSidebarDip = 148;  // the Mac's kPageSidebarWidthPoints
+
+int page_sidebar_px(std::uint32_t dpi) noexcept {
+  return ::MulDiv(kPageSidebarDip, static_cast<int>(dpi), 96);
+}
+
+// The count the sidebar lists: the stop's own once it is known. Until then,
+// while the last document's sidebar is up, that one's: arrowing from one
+// document to the next keeps the strip rather than taking it down and putting
+// it back, which would refit the canvas twice.
+std::uint32_t page_sidebar_count(const app_state* app) {
+  if (app->page_count > 0) return app->page_count;
+  return app->chrome.page_sidebar_visible() ? app->page_sidebar_listed : 0;
+}
+
+bool page_sidebar_shows(const app_state* app) {
+  if (!app->page_sidebar_wanted || !app->chrome.page_sidebar_supported()) return false;
+  if (page_sidebar_count(app) <= 1 || app->mode == open_mode::none || app->edit_path.empty()) return false;
+  if (app->gallery_visible || app->editor.open || app->settings_open) return false;
+  if (app->chrome.filmstrip_visible() || (app->fullscreen && !app->fullscreen_reveal)) return false;
+  return mv::io::is_document_name(app->edit_path);
+}
+
+// After anything that decides it: the full view pass when it appears or goes
+// (the canvas refits), else only the page count and the highlight.
+void page_sidebar_changed(app_state* app) {
+  if (!app || !app->chrome.page_sidebar_supported()) return;
+  if (page_sidebar_shows(app) != app->chrome.page_sidebar_visible()) {
+    apply_view_state(app);
+    return;
+  }
+  if (app->chrome.page_sidebar_visible()) {
+    app->page_sidebar_listed = page_sidebar_count(app);
+    app->chrome.set_page_sidebar(static_cast<std::int32_t>(app->page_sidebar_listed),
+                                 static_cast<std::int32_t>(app->page), app->page_sidebar_stop);
+  }
+}
+
+// The island saw the image on screen open (chrome_cmd_image_opened): its page
+// count is known now.
+void page_sidebar_image_opened(app_state* app) {
+  if (!app || !sync_page_stop(app, true)) return;
+  page_sidebar_changed(app);
+}
+
+void toggle_page_sidebar_setting(app_state* app) {
+  if (!app) return;
+  app->page_sidebar_wanted = !app->page_sidebar_wanted;
+  mv::shell::save_page_sidebar(app->page_sidebar_wanted);
+  apply_view_state(app);
+  // Asked for over a document that cannot show it: say why rather than nothing.
+  if (app->page_sidebar_wanted && !app->chrome.page_sidebar_visible() &&
+      app->chrome.filmstrip_visible() && mv::io::is_document_name(app->edit_path)) {
+    notice_show(app, "Press T to hide the filmstrip and show the page sidebar");
+  }
 }
 
 // `dx` / `dy` in wheel units (120 a notch; a touchpad sends less), positive
@@ -4613,6 +4701,12 @@ chrome_dispatch chrome_canvas_command(app_state* app, int command, float arg) {
     }
     case mv::shell::chrome_cmd_hint_learned:
       if (!app->strip_hint_learned) strip_hint_learn(app);
+      return chrome_dispatch::done;
+    case mv::shell::chrome_cmd_select_page:  // issue #429: a sidebar row
+      if (arg >= 0.0f) (void)turn_page(app, static_cast<int>(arg) - static_cast<int>(app->page));
+      return chrome_dispatch::done;
+    case mv::shell::chrome_cmd_image_opened:
+      page_sidebar_image_opened(app);
       return chrome_dispatch::done;
     case mv::shell::chrome_cmd_home_ground_input:
       ++app->input.pointer_seq;
@@ -7099,6 +7193,7 @@ bool run_canvas_command(app_state* app, mv::shell::command_id command) noexcept 
       return true;
     }
     case toggle_filmstrip: toggle_filmstrip_setting(app); return true;
+    case toggle_page_sidebar: toggle_page_sidebar_setting(app); return true;
     case fit:
       app->zoom_intent_tick = 0;
       return bump_input(app, app->input.fit_seq);
@@ -8140,7 +8235,17 @@ void layout_panels(app_state* app) noexcept {
   app->chrome.show_adjust_pane(want_adjust, width - side, pane_top, side, pane_span, app->focus_adjust_next);
   app->chrome.show_jobs_pane(want_jobs, width - side, pane_top, side, pane_span, app->focus_jobs_next);
   if (want_jobs) app->focus_jobs_next = false;
-  app->chrome.show_folder_tree(want_tree, 0, top, tree_w, span, app->focus_tree_next);
+  // Issue #429: the page sidebar on the left edge; the tree, when open, sits
+  // beside it rather than over it.
+  const bool want_sidebar = page_sidebar_shows(app);
+  const int sidebar_w = want_sidebar ? std::min(width / 3, page_sidebar_px(dpi)) : 0;
+  app->chrome.show_page_sidebar(want_sidebar, 0, top, std::max(sidebar_w, 1), span);
+  if (want_sidebar) {
+    app->page_sidebar_listed = page_sidebar_count(app);
+    app->chrome.set_page_sidebar(static_cast<std::int32_t>(app->page_sidebar_listed),
+                                 static_cast<std::int32_t>(app->page), app->page_sidebar_stop);
+  }
+  app->chrome.show_folder_tree(want_tree, sidebar_w, top, tree_w, span, app->focus_tree_next);
   if (want_meta && !want_adjust && !want_jobs) app->focus_meta_next = false;
   if (want_adjust) app->focus_adjust_next = false;
   if (want_tree) app->focus_tree_next = false;
@@ -8262,6 +8367,11 @@ void update_client_metrics(app_state* app, HWND hwnd) noexcept {
   int bottom = 0;
   if (app->chrome.filmstrip_visible()) bottom += mv::shell::chrome_filmstrip_height_px(dpi);
   app->input.chrome_bottom_px = static_cast<std::uint32_t>(bottom);
+  // Issue #429: the page sidebar reserves the left edge the same way.
+  app->input.chrome_left_px =
+      app->chrome.page_sidebar_visible()
+          ? static_cast<std::uint32_t>(std::min(static_cast<int>(app->input.width) / 3, page_sidebar_px(dpi)))
+          : 0;
   // PR 29: the docked Edit workspace; the canvas frames the picture left of it.
   app->input.chrome_right_px =
       app->chrome.edit_pane_visible()
@@ -9407,6 +9517,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   (void)mv::shell::app_settings().start();
   app.settings = mv::shell::load_view_settings();
   app.strip_hint_learned = mv::shell::load_strip_hint_learned();
+  app.page_sidebar_wanted = mv::shell::load_page_sidebar();
   app.input.sticky_zoom = app.settings.sticky_zoom;
   app.input.reduce_motion = client_animations_off();
   app.input.compare = g_start_compare;

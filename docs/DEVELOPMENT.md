@@ -34,7 +34,7 @@ and a verify line on each platform (D9, amended). The order is:
 | 58–59 | **Screens and slots**: MediaViewer's own native add-ons add to pages that exist (an info-pane section at the very bottom of the Metadata pane, file search and Local search providers, command-bar / path-bar / status items, gallery tile badges, context-menu entries) and open windows, docked panes and sheets from a view tree both chromes render ([docs/design/25](design/25-open-addons.md#implementation-notes-prs-58-59-2026-10-11)); host table v3; ABI 0.25 | Mac: the shared suite passes (with a real test add-on through a signed store; also under ASan / UBSan and TSan); the app built and, with the test add-on sideloaded, drew its section at the bottom of the pane and its items. Windows: both C# projects compile; the native side is CI's. Measurements and the keyboard / VoiceOver / Narrator passes are owed ([Where this actually is](#screens-and-slots-prs-58-59-2026-10-11)). Script add-ons wait for PR 57; Places is #344 |
 | #410, #413 | **Sharepoint**: send photos, video and audio to a MediaViewer nearby over Wi-Fi or Bluetooth; the receiver shows a code the sender types (#442) and nothing moves until the other person accepts; its window is a view tree both hosts draw ([docs/design/28](design/28-sharepoint.md)). The gallery's Shift-click range, drag-out from any gallery cell and one share icon that opens Sharepoint; ABI 0.29 | Mac: built; `mv_import_tests "[sharepoint]"` (two and three engines over loopback TCP), the full suites and the packer test pass; the window opened offline in a dev copy and the range drove copy path there; the PR 1 gate passed with the add-on installed. Windows: the C# compiles; native (sockets, WinRT Bluetooth, the range) is CI's. Two machines, Bluetooth and the hand checks are owed ([Where this actually is](#sharepoint-issues-410-413-2026-10-15)) |
 | #444 | **Share everywhere**: one share command (`Ctrl+Shift+S` / `⌘⇧S`, the gallery's share icon, a share button beside Home, right-click Share ▸ on a gallery cell, a filmstrip cell or the canvas) opens one menu: Sharepoint first (or its install), then Windows Share / the macOS picker (Mail, Messages, AirDrop…). A right-click on a selected file shares the selection, on any other file that file; the system sheet gets media only ([docs/design/16 "Share"](design/16-commands.md#share-444)) | Mac: built; `mv_tests "[share]"` passes (file set, wire argument, command row; the `[.perf-bench]` case, 500 of 20 000 stops: 0.12 ms); the macOS picker for 500 files opens in 21 ms warm (was 65) by showing one file per kind past 50 files. Windows: the C# compiles; native is CI's. Owed: Mail with 3 files on both, the right-click menus and bar button by hand, a 500-item open on Windows, both PR 1 gates |
-| #452 | **Sharepoint in the background**: opt-in **Receive when MediaViewer is closed** keeps the same process with a menu-bar item (Mac) / notification-area icon (Windows) after every window closes; an offer is a system notification (sender, count, size; never a file name or the code) that opens the window with the code, with Decline; Accept stays in the window ([docs/design/28](design/28-sharepoint.md#in-the-background-452)); ABI 0.32 | Mac: built; `"[sharepoint]"` and `"[slots]"` pass with new cases, full suites pass; the Mac PR 1 gate's animated soak passes (idle phase failed on base and new alike on a loaded machine). Windows: the C# compiles; native (tray, hide-on-close) is CI's. Owed: the windowless idle measurement in the app, the notification seen and clicked on both, two machines ([Where this actually is](#sharepoint-in-the-background-issue-452-2026-10-16)) |
+| #452 | **Sharepoint in the background**: opt-in **Receive when MediaViewer is closed** keeps the same process with a menu-bar item (Mac) / notification-area icon (Windows) after every window closes; an offer is a system notification (sender, count, size; never a file name or the code) that opens the window with the code, with Decline; Accept stays in the window ([docs/design/28](design/28-sharepoint.md#in-the-background-452)); ABI 0.33 | Mac: built; `"[sharepoint]"` and `"[slots]"` pass with new cases, full suites pass; the Mac PR 1 gate's animated soak passes (idle phase failed on base and new alike on a loaded machine). Windows: the C# compiles; native (tray, hide-on-close) is CI's. Owed: the windowless idle measurement in the app, the notification seen and clicked on both, two machines ([Where this actually is](#sharepoint-in-the-background-issue-452-2026-10-16)) |
 
 See [docs/design/10-roadmap.md](design/10-roadmap.md). Old Mac numbers in the history below map as
 PR 16 → Mac PR 1, 17 → Mac PR 2/7, 18 → Mac PR 3/4/6, 19 → Mac PR 5, 20 → Mac PR 8.
@@ -470,8 +470,9 @@ copy, and check Finder's **Open With** and a Quick Look thumbnail.
 | `Space` / `Backspace` | next / previous. On a clip, `Space` is play/pause. It is no longer the lab sweep |
 | `Home` / `End` | first / last in the folder |
 | `PageUp` / `PageDown` | back / forward ten |
-| `Ctrl+PageUp` / `Ctrl+PageDown` | previous / next page of a TIFF, PDF or DOCX, size of an ICO, or image of a multi-image HEIC (`⌘` on the Mac). Within a page: zoom (wheel, `+` `-`, `1`–`4`) and drag to pan. On a PDF or DOCX with the filmstrip hidden the wheel / trackpad scrolls (a notch glides, a trackpad follows the fingers) and turns pages as soon as it pushes past an edge, momentum running on into the next page; `⌘`/`Ctrl`+wheel or a pinch zooms. With the filmstrip shown the notice line says "Press T to hide the filmstrip and scroll" until `T` has been used on a document |
-| `Enter` on a PDF or DOCX | open it in its default app (the bar's **Open in <app>**, ▾ for the others) |
+| `Ctrl+PageUp` / `Ctrl+PageDown` | previous / next page of a TIFF, PDF, DOCX or PPTX, size of an ICO, or image of a multi-image HEIC (`⌘` on the Mac). Within a page: zoom (wheel, `+` `-`, `1`–`4`) and drag to pan. On a PDF or DOCX with the filmstrip hidden the wheel / trackpad scrolls (a notch glides, a trackpad follows the fingers) and turns pages as soon as it pushes past an edge, momentum running on into the next page; `⌘`/`Ctrl`+wheel or a pinch zooms. With the filmstrip shown the notice line says "Press T to hide the filmstrip and scroll" until `T` has been used on a document |
+| `Enter` on a PDF, DOCX or PPTX | open it in its default app (the bar's **Open in <app>**, ▾ for the others) |
+| `Shift+T` | page sidebar on / off: page thumbnails down the left of a multi-page PDF, DOCX or PPTX while the filmstrip is hidden; a click turns to that page (remembered; View ▸ Page Sidebar on the Mac) |
 | `J` / `K` / `L` | clip transport: −10 s / pause / +10 s ([docs/design/16](design/16-commands.md)) |
 | `,` / `.` | frame step back / forward while paused |
 | `A` / `D` | previous / next beside the arrows, in every mode including on a clip |
@@ -2008,7 +2009,7 @@ What is built is in [docs/design/28](design/28-sharepoint.md).
 What changed is in [docs/design/28 "In the background"](design/28-sharepoint.md#in-the-background-452):
 **Receive when MediaViewer is closed** (off by default, implies Keep receiving) keeps the process
 with a menu-bar item / notification-area icon; offers are system notifications that open the
-window; the host table gains `notice_post`, `notice_authorize` and `keep_alive` (ABI 0.32).
+window; the host table gains `notice_post`, `notice_authorize` and `keep_alive` (ABI 0.33).
 
 - **Mac (M-series):** the app, the Swift chrome and `libmv_sharepoint.dylib` build. `mv_tests`
   (849 passed, 11 skipped) and `mv_import_tests` (154 cases) pass; new cases: the notice names the
@@ -2133,10 +2134,44 @@ the full suite: 597 cases, 8 skipped for the absent RAW corpus). `pdf_win.cpp`,
 
 **DOCX (slices 4–5):** pages laid out and drawn by `codec/docx.cpp` over HarfBuzz and FreeType
 (new vcpkg ports), with fonts found through CoreText / DirectWrite. Text, styles, lists, tables,
-pictures and breaks; not headers, footers, footnotes, text boxes or columns (docs/design/04).
-Measured on the Mac (`mv_tests "[docx]"`; a `textutil`-written DOCX rendered by
-`MV_DOCX_DUMP=out.jpg MV_DOCX_FILE=x.docx mv_tests "[.docx-dump]"` and looked at). The Windows font
-lookup (`fonts_win.cpp`) and the DLLs' packaging are compiled and staged by CI only.
+pictures and breaks; since issue #429 also headers and footers with page fields, footnotes and
+endnotes, columns, floating pictures and shapes with text wrap, text boxes and right-to-left text
+(the shared layout is `codec/doclayout`); not comments (docs/design/04). Measured on the Mac
+(`mv_tests "[docx]"`; a `textutil`-written DOCX rendered by
+`MV_DOCX_DUMP=out.jpg MV_DOCX_FILE=x.docx mv_tests "[.docx-dump]"` and looked at; the #429 verify
+report by `MV_DOCX_REPORT=1 MV_DOCX_PAGE=0 MV_DOCX_DUMP=out.jpg`, its bytes kept with
+`MV_DOCX_SAVE=report.docx`; `mv_tests "[.docx-mutate]"` damages a package's bytes and its XML).
+The Windows font lookup (`fonts_win.cpp`) and the DLLs' packaging are compiled and staged by CI
+only.
+
+**PPTX (issue #429, D5 amended 2026-10-15):** a slide a page, drawn by `codec/pptx.cpp` over the
+DOCX zip / XML / `codec/doclayout` path; what is and is not drawn is in docs/design/04 and the
+file's header. Only the slide being drawn is parsed (with its layout, master and theme). Tests:
+`mv_tests "[pptx]"`, `"[.pptx-mutate]"` (package bytes and slide XML, also clean under
+`-DMV_ASAN=ON`), the seed `tests/data/seeds/pptx/small.pptx` (`make-seeds.py pptx_small()`) for
+`tools/fuzz/fuzz_pptx.cpp` and the Windows broken-corpus sweep. A slide is looked at with the DOCX
+dump: `MV_DOCX_DUMP=out.jpg MV_DOCX_FILE=deck.pptx MV_DOCX_PAGE=n mv_tests "[.docx-dump]"`.
+
+**Page sidebar (issue #429):** both hosts, `Shift+T`, docs/design/04 "Page sidebar" and
+docs/design/16. Core: `codec::decode_pages` (PDF opened once, DOCX laid out once, PPTX slides
+parsed one by one), `image::make_page_thumbs` / `page_thumb_book`; Windows ABI 0.32
+`mv_folder_page_thumbs`. Tests: `mv_tests "[page-sidebar]"`. Numbers:
+`MV_BENCH_DOC=file mv_tests "[.perf-bench][page-sidebar]"` prints a JSON line (8 thumbnails cold
+at the top and at the far end, and a jump to page 250: the cached thumbnail's first pixel, then the
+full page). Measured 2026-10-16 on the Mac (M-series, release build), medians of 5:
+
+| Document | 8 thumbnails cold | jump: first pixel | jump: full page |
+|---|---|---|---|
+| PDF, 300 pages (`cupsfilter` text) | 5.3 ms | 0.22 ms | 3.4 ms |
+| DOCX, 78 pages (`textutil`) | 56 ms | 0.11 ms | 40 ms |
+| PPTX, 100 slides (pictures, table) | 5.3 ms | 0.22 ms | 7.3 ms |
+
+The machine was shared with other builds (load average 18–33) for later runs, which spread the
+DOCX numbers to 190–300 ms; the table is the first, quietest run. A DOCX page past the first lays
+out the whole document, as before #429. **Not done yet:** the Windows half (native `main.cpp`,
+`chrome_host`, ABI) is compiled by CI only and has not been run; the PR 1 present-loop soak while
+flinging the sidebar has not been run on either platform; first pixel of a document open is
+unchanged in code (the open path does not touch the sidebar) but was not re-measured.
 
 **Culling (issue #207):** `X` reject, colour labels on keypad / `Ctrl+Shift` `6`–`9`, `U`
 to clear, and the pane's Label swatches, on both hosts through PR 12's writer and sidecar rule

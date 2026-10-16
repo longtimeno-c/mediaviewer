@@ -722,7 +722,7 @@ How it works:
   It has no chrome to send the command to.
 - **Settings → Add-ons** gives such an add-on with a window screen an **Open …** button, as Import
   has; the window opens through `open_screen` with no file.
-- **Notices and keep-alive (#452, ABI 0.32)**, for a first-party native add-on (scripts have no
+- **Notices and keep-alive (#452, ABI 0.33)**, for a first-party native add-on (scripts have no
   such entries): `notice_post` asks for a system notification about one of its screens (title,
   body, one button that comes back as `MV_SLOT_EVENT_NOTICE`; the host skips it while that screen
   is the front window and opens the screen on a click), `notice_authorize` asks the OS for

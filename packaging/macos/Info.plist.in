@@ -139,6 +139,7 @@
       <array>
         <string>com.adobe.pdf</string>
         <string>org.openxmlformats.wordprocessingml.document</string>
+        <string>org.openxmlformats.presentationml.presentation</string>
       </array>
     </dict>
     <!-- docs/design/25: an add-on package (.mvaddon) is MediaViewer's own type, so

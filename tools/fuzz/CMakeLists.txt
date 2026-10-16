@@ -134,7 +134,7 @@ target_compile_definitions(mv_project_options INTERFACE
   _DISABLE_OPTIONAL_ANNOTATION)
 
 set(MV_FUZZ_HARNESSES
-  jpeg png bmp gif webp tiff ico heic avif raw raw_preview decode animation thumbnail pdf docx
+  jpeg png bmp gif webp tiff ico heic avif raw raw_preview decode animation thumbnail pdf docx pptx
   # #290: the metadata readers beyond Exiv2 (meta/parse.h), linked alone.
   meta_c2pa meta_jpeg meta_png meta_webp meta_bmff meta_xmp meta_icc
   # #352: the Location editor's parser (pure; built from its one source file).
@@ -197,8 +197,8 @@ foreach(name IN LISTS MV_FUZZ_HARNESSES)
   if(name STREQUAL "ai_query")
     target_sources(${target} PRIVATE "${CMAKE_SOURCE_DIR}/src/addons/ai/query.cpp")
   endif()
-  # fuzz_docx links codec without image, so it reads font files itself.
-  if(name STREQUAL "docx")
+  # fuzz_docx and fuzz_pptx link codec without image, so they read font files themselves.
+  if(name STREQUAL "docx" OR name STREQUAL "pptx")
     target_link_libraries(${target} PRIVATE mv_io)
   endif()
   # PR 15: the Explorer handler's request path, built from its source.

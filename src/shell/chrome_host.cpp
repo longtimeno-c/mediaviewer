@@ -261,6 +261,9 @@ expected chrome_host::load() noexcept {
   detach_panels_ = get_entry(L"DetachPanels");
   show_meta_pane_ = get_entry(L"ShowMetaPane");
   show_folder_tree_ = get_entry(L"ShowFolderTree");
+  // Issue #429, optional the same way: without it there is no page sidebar.
+  show_page_sidebar_ = get_entry(L"ShowPageSidebar");
+  set_page_sidebar_ = get_entry(L"SetPageSidebar");
   set_meta_data_ = get_entry(L"SetMetaData");
   set_tree_root_ = get_entry(L"SetTreeRoot");
   take_tree_path_ = get_entry(L"TakeTreePath");
@@ -704,6 +707,8 @@ expected chrome_host::attach_panels(HWND parent, void* context, chrome_command_f
   adjust_visible_ = false;
   jobs_visible_ = false;
   edit_visible_ = false;
+  page_sidebar_visible_ = false;
+  page_sidebar_sent_ = {-1, -1, -1};
 
   chrome_filmstrip_args args{};
   args.parent_hwnd = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(parent));
@@ -751,6 +756,25 @@ void chrome_host::show_folder_tree(bool visible, int x, int y, int width, int he
   if (!panels_attached_ || !show_folder_tree_) return;
   show_panel(show_folder_tree_, visible, x, y, width, height, focus, y + height + 1);
   tree_visible_ = visible;
+}
+
+void chrome_host::show_page_sidebar(bool visible, int x, int y, int width, int height) noexcept {
+  if (!panels_attached_ || !show_page_sidebar_) return;
+  show_panel(show_page_sidebar_, visible, x, y, width, height, false, y + height + 1);
+  page_sidebar_visible_ = visible;
+}
+
+// Sent only when it changes: the host calls it on every layout pass.
+void chrome_host::set_page_sidebar(std::int32_t count, std::int32_t current,
+                                   std::int32_t stop) noexcept {
+  if (!panels_attached_ || !set_page_sidebar_) return;
+  if (page_sidebar_sent_.count == count && page_sidebar_sent_.current == current &&
+      page_sidebar_sent_.stop == stop) {
+    return;
+  }
+  page_sidebar_sent_ = {count, current, stop};
+  chrome_page_sidebar_args args{count, current, stop};
+  (void)set_page_sidebar_(&args, static_cast<std::int32_t>(sizeof(args)));
 }
 
 void chrome_host::show_adjust_pane(bool visible, int x, int y, int width, int height,

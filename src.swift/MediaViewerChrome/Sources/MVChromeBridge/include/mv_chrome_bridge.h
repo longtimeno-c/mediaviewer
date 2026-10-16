@@ -43,6 +43,8 @@ enum MvMenuCmd : int32_t {
   kMenuShowBlue, kMenuShowPurple,
   // Issue #210: File > Rename… (F2).
   kMenuRename,
+  // Issue #429: View > Page Sidebar (Shift+T).
+  kMenuPageSidebar,
 };
 typedef enum MvMenuCmd MvMenuCmd;
 
@@ -160,6 +162,16 @@ void mv_chrome_set_thumb_ready_callback(mv_chrome_thumb_ready_fn callback);
 // folder_model job, same contract as folder_model::request_thumb).
 // A no-op if `index` is out of range.
 void mv_chrome_request_thumb(int32_t index);
+
+// Issue #429, the page sidebar. The host tells the sidebar what to show
+// through MVChromeHost (setPageSidebar(count:current:serial:), and
+// pageThumbReady(serial:page:path:) as each thumbnail lands); these are its
+// two calls back. request_page_thumbs: the pages the strip shows,
+// `first` .. `first + count - 1` (a background job renders the ones not
+// cached; a later call replaces the window). select_page: show that page,
+// as Ctrl+PageDown would. [main-thread]
+void mv_chrome_request_page_thumbs(int32_t first, int32_t count);
+void mv_chrome_select_page(int32_t page);
 
 // G toggles this from keyDown: (main_mac.mm); Swift polls it (a plain bool,
 // not worth a push channel the way thumbnails are) to decide whether to show

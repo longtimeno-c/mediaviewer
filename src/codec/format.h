@@ -23,6 +23,7 @@ enum class format_family : std::uint32_t {
   raw = 10,  // CR3/RAF/ORF/RW2 magics; CR2/NEF/ARW/DNG via LibRaw on TIFF
   pdf = 11,  // %PDF- in the first 1 KiB; rendered by the OS (codec/pdf.h), paged
   docx = 12, // a zip with word/ parts; laid out by codec/docx.cpp, paged
+  pptx = 13, // a zip with ppt/presentation.xml (issue #429); codec/pptx.cpp, a slide a page
 };
 
 // First bytes only. A short or empty span is unknown, not corrupt.
@@ -42,6 +43,7 @@ enum class format_family : std::uint32_t {
     case format_family::raw:  return "RAW";
     case format_family::pdf:  return "PDF";
     case format_family::docx: return "DOCX";
+    case format_family::pptx: return "PPTX";
     case format_family::unknown: return "unknown";
   }
   return "unknown";

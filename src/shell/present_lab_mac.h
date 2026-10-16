@@ -61,6 +61,16 @@ struct mac_lab_options {
   std::function<std::string(const std::string& path_utf8, std::int64_t mtime_unix,
                             std::uint64_t size, std::int64_t moment_ms)>
       clip_thumb;
+  // Issue #429: [any thread] a decode (or a cache hit) learned how many pages open_item's
+  // `item` has (page_count() reads the same). The page sidebar appears on it;
+  // the host hops to its own thread. Unset: nothing is told.
+  std::function<void(std::uint64_t item, std::uint32_t page_count)> page_count_known;
+  // Issue #429, rule 3 for a page turn: [pool thread] the page's cached
+  // sidebar thumbnail (image/page_thumbs.h), "" for none. A cache lookup,
+  // never a render: it goes up while the page itself renders.
+  std::function<std::string(const std::string& path_utf8, std::int64_t mtime_unix,
+                            std::uint64_t size, std::uint32_t page)>
+      page_thumb;
 };
 
 class present_lab_mac {
@@ -239,8 +249,12 @@ class present_lab_mac {
  private:
   void render_thread_main() noexcept;
   bool write_json_report() const noexcept;
-  void submit_image_load(std::string path_utf8, std::uint64_t item_id,
-                         std::uint32_t page = 0) noexcept;
+  void submit_image_load(std::string path_utf8, std::uint64_t item_id, std::uint32_t page = 0,
+                         std::int64_t mtime_unix = kNoStamp, std::uint64_t size = 0) noexcept;
+  [[nodiscard]] status publish_page_thumb(const std::string& path, std::int64_t mtime_unix,
+                                          std::uint64_t size, std::uint32_t page,
+                                          std::uint64_t item_id, void* mtl_device,
+                                          const job_context& ctx) noexcept;
 
   // Full-resolution stills already on the GPU, keyed by path + size + mtime:
   // the item on screen and its prefetched neighbours. Budgeted by bytes (a

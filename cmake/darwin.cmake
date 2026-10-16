@@ -184,8 +184,11 @@ add_library(mv_codec STATIC
   src/codec/xml.h
   src/codec/text.cpp
   src/codec/text.h
+  src/codec/doclayout.cpp
+  src/codec/doclayout.h
   src/codec/fonts.h
   src/codec/docx.cpp
+  src/codec/pptx.cpp
   src/codec/fonts_mac.cpp
   src/codec/os_decode.h
   src/codec/crash_test_hook.cpp
@@ -267,6 +270,8 @@ add_library(mv_image STATIC
   src/image/upload_mac.mm
   src/image/thumb_mac.cpp
   src/image/thumb_store.cpp
+  src/image/page_thumbs.cpp
+  src/image/page_thumbs.h
   src/image/colour.h
   src/image/pipeline.h
   src/image/pipeline_mac.h
@@ -894,7 +899,9 @@ if(MV_BUILD_TESTS)
     tests/test_audio_files.cpp
     tests/test_pages.cpp
     tests/test_pdf.cpp
+    tests/test_page_thumbs.cpp
     tests/test_docx.cpp
+    tests/test_pptx.cpp
     # Issue #43: Space at natural EOF restarts, on the real Metal player.
     tests/test_video_eof_mac.mm
     tests/test_audio_only_mac.mm

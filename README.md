@@ -132,8 +132,10 @@ The transport floats over the video and gets out of the way after a moment of pl
 ## Music and documents, when you want them
 
 - **MP3 and M4A** play with their cover art.
-- **PDF and Word (DOCX)** open page by page. The wheel or trackpad scrolls the page and turns to the next one at the edge;
+- **PDF, Word (DOCX) and PowerPoint (PPTX)** open page by page, slide by slide. The wheel or trackpad scrolls the page and turns to the next one at the edge;
   `Ctrl+PageUp` / `Ctrl+PageDown` jump a page, and `Ctrl/⌘`+wheel or a pinch zooms.
+- **A page sidebar.** Hide the filmstrip (`T`) and a strip of page thumbnails runs down the side, like Preview's: click page 250
+  to go straight there. `Shift+T` hides it.
 - **Open in your usual app.** On a document, the Edit button becomes *Open in &lt;app&gt;*, with every app that can open it one click away.
 - **Your camera folders stay clean.** Audio and documents are hidden in folders until you switch them on in
   **Settings → File types**; a file you open directly always shows. MediaViewer offers to open them, and never makes itself their default app.

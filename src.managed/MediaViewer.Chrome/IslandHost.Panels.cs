@@ -72,6 +72,8 @@ public static partial class IslandHost
             MoveAt(NewIsland(ref _adjustPane, parent, takeFocus: true), 0, args.ClientHeight, 1, 1);
             MoveAt(NewIsland(ref _jobsPane, parent, takeFocus: true), 0, args.ClientHeight, 1, 1);
             MoveAt(NewIsland(ref _editPane, parent, takeFocus: true), 0, args.ClientHeight, 1, 1);
+            // Issue #429: the page sidebar, on the tree's edge.
+            MoveAt(NewIsland(ref _pageSidebar, parent, takeFocus: true), 0, args.ClientHeight, 1, 1);
             // #345: the AI badge, a small island of its own (IslandHost.AiBadge.cs).
             AttachAiBadge(parent, args.ClientHeight);
             _metaPaneVisible = false;
@@ -104,12 +106,14 @@ public static partial class IslandHost
             DropTreeUi();
             DropAdjustUi();
             DropEditUi();
+            DropPageSidebarUi();
             DetachAiBadge();
             DisposeSource(ref _metaPane);
             DisposeSource(ref _tree);
             DisposeSource(ref _adjustPane);
             DisposeSource(ref _jobsPane);
             DisposeSource(ref _editPane);
+            DisposeSource(ref _pageSidebar);
             return 0;
         }
         catch (Exception ex)

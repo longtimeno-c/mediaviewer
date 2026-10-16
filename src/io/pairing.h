@@ -114,10 +114,10 @@ inline std::string key_of(std::string_view name) {
   return false;
 }
 
-// A document (PDF, DOCX), by its extension. Decoded page by page as a still
-// (docs/design/04 "Pages").
+// A document (PDF, DOCX, PPTX), by its extension. Decoded page by page as a
+// still (docs/design/04 "Pages").
 [[nodiscard]] inline bool is_document_name(std::string_view name) noexcept {
-  static constexpr const char* k[] = {".pdf", ".docx"};
+  static constexpr const char* k[] = {".pdf", ".docx", ".pptx"};
   const std::string_view ext = pairing_detail::extension(name);
   for (const char* e : k) {
     if (pairing_detail::eq_lower(ext, e)) return true;
