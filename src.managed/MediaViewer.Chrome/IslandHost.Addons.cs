@@ -888,7 +888,7 @@ public static partial class IslandHost
     {
         if (slot == ImportSlot) RefreshAddonRow();
         else if (slot == SharepointSlot) RefreshSharepointOffer();  // #410
-        else if (slot == PlacesChannel) RefreshSlotSettings();
+        else if (slot == PlacesChannel || IsSlotChannel(slot)) RefreshSlotSettings();
         else RefreshLocalSearch();
     }
 
