@@ -475,7 +475,8 @@ void mv_chrome_open_photos_library(void);
 
 // docs/design/26 "Backup": every original of the Photos library (iCloud Photos and
 // the Hidden album included; a Live Photo's video and a RAW+JPEG pair's RAW
-// too) copied, verified, into <destination>/YYYY/YYYY-MM-DD. Originals only
+// too) copied, verified, into <destination> in the chosen layout (YYYY/YYYY-MM-DD
+// by default; issue #414). Originals only
 // iCloud has are downloaded for it. A manifest in the destination makes the
 // next run copy only what is new or missing. One run at a time; it survives
 // Settings closing and is cancelled at quit (nothing half-written is left).
@@ -500,6 +501,11 @@ void mv_chrome_photos_backup_cancel(void);
 void mv_chrome_photos_backup_progress(mv_chrome_photos_backup* out);
 // The destination last used (persisted); length needed, "" when none.
 int32_t mv_chrome_photos_backup_destination(char* buf, int32_t size);
+// The folders new files go into (persisted beside the destination; issue #414):
+// 0 YYYY/YYYY-MM-DD (default), 1 YYYY, 2 YYYY/MM/DD, 3 YYYY-MM-DD, 4 flat.
+// Used by the next start; files already backed up are never moved.
+int32_t mv_chrome_photos_backup_layout(void);
+void mv_chrome_set_photos_backup_layout(int32_t layout);
 // The last run that finished, this session or an earlier one (persisted:
 // finished_unix, done, skipped, failed, state). False when there was none.
 bool mv_chrome_photos_backup_last(mv_chrome_photos_backup* out);

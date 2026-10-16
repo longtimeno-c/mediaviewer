@@ -486,6 +486,8 @@ constexpr CGFloat kPageSidebarWidthPoints = 148.0;
 - (void)cancelPhotosBackup;
 - (void)photosBackupProgress:(mv_chrome_photos_backup*)out;
 - (std::string)photosBackupDestination;
+- (int32_t)photosBackupLayout;
+- (void)setPhotosBackupLayout:(int32_t)layout;
 - (BOOL)photosBackupLast:(mv_chrome_photos_backup*)out;
 - (BOOL)openListTitled:(const std::string&)title
                entries:(std::vector<mv::shell::folder_model::list_entry>)entries
@@ -1503,6 +1505,12 @@ extern "C" void mv_chrome_photos_backup_progress(mv_chrome_photos_backup* out) {
 }
 extern "C" int32_t mv_chrome_photos_backup_destination(char* buf, int32_t size) {
   return MvCopyOut(g_chrome_app ? [g_chrome_app photosBackupDestination] : std::string{}, buf, size);
+}
+extern "C" int32_t mv_chrome_photos_backup_layout(void) {
+  return g_chrome_app ? [g_chrome_app photosBackupLayout] : 0;
+}
+extern "C" void mv_chrome_set_photos_backup_layout(int32_t layout) {
+  if (g_chrome_app) [g_chrome_app setPhotosBackupLayout:layout];
 }
 extern "C" bool mv_chrome_photos_backup_last(mv_chrome_photos_backup* out) {
   return g_chrome_app && out && [g_chrome_app photosBackupLast:out] == YES;
@@ -10399,6 +10407,7 @@ static std::string MvBadgeKey(const mv::io::dir_entry& e) {
 
 static NSString* const kPhotosBackupDestinationDefault = @"mv.photosBackup.destination";
 static NSString* const kPhotosBackupLastDefault = @"mv.photosBackup.last";
+static NSString* const kPhotosBackupLayoutDefault = @"mv.photosBackup.layout";  // backup::layout
 
 static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::progress& p) {
   *out = {};
@@ -10421,6 +10430,7 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
   if (!_photosBackup) _photosBackup = std::make_unique<mv::shell::backup::engine>();
   mv::shell::backup::options opts;
   opts.destination = destination;
+  opts.folders = static_cast<mv::shell::backup::layout>([self photosBackupLayout]);
   // Fetched originals wait here for their verified copy; emptied at the end.
   NSArray<NSString*>* caches = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
   NSString* base = caches.firstObject ?: [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Caches"];
@@ -10465,6 +10475,18 @@ static void MvFillBackup(mv_chrome_photos_backup* out, const mv::shell::backup::
 - (std::string)photosBackupDestination {
   NSString* dest = [[NSUserDefaults standardUserDefaults] stringForKey:kPhotosBackupDestinationDefault];
   return dest.UTF8String ? std::string(dest.UTF8String) : std::string();
+}
+
+// Absent (every backup before issue #414) is 0, year/day: an existing backup
+// keeps writing the tree it has.
+- (int32_t)photosBackupLayout {
+  const NSInteger v = [[NSUserDefaults standardUserDefaults] integerForKey:kPhotosBackupLayoutDefault];
+  return v >= 0 && v < mv::shell::backup::kLayoutCount ? static_cast<int32_t>(v) : 0;
+}
+
+- (void)setPhotosBackupLayout:(int32_t)layout {
+  if (layout < 0 || layout >= mv::shell::backup::kLayoutCount) return;
+  [[NSUserDefaults standardUserDefaults] setInteger:layout forKey:kPhotosBackupLayoutDefault];
 }
 
 - (BOOL)photosBackupLast:(mv_chrome_photos_backup*)out {

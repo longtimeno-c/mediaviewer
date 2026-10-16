@@ -5,8 +5,9 @@
 // directory"). Portable: the library is behind `source` (PhotoKit on the Mac,
 // shell/photos_backup_mac.mm; a fake in the tests), the copies are
 // io/verified_copy (hashed while read, read back, compared: the Import
-// add-on's rule, docs/design/18), and the layout is Import's default,
-// <destination>/YYYY/YYYY-MM-DD/<original file name>.
+// add-on's rule, docs/design/18), and the layout is the user's choice
+// (`layout`, issue #414): Import's default <destination>/YYYY/YYYY-MM-DD/<original
+// file name> unless they picked a year folder, YYYY/MM/DD, a day folder, or flat.
 //
 // What is backed up: every asset's ORIGINAL files -- the photo or video as
 // shot, a Live Photo's paired video, a RAW+JPEG pair's RAW. Not Photos' edited
@@ -70,9 +71,23 @@ class source {
                                        const std::atomic<bool>* cancel) = 0;
 };
 
+// The folders a new file is written into under the destination, from the
+// asset's creation date in local time. Files already verified stay where the
+// manifest says they are: a layout change moves nothing. Persisted by the Mac
+// host as a number, so the values do not change.
+enum class layout : std::uint8_t {
+  year_day = 0,        // YYYY/YYYY-MM-DD (the default; Import's default)
+  year = 1,            // YYYY
+  year_month_day = 2,  // YYYY/MM/DD
+  day = 3,             // YYYY-MM-DD
+  flat = 4,            // the destination itself
+};
+inline constexpr std::uint8_t kLayoutCount = 5;
+
 struct options {
   std::string destination;  // the folder the user chose
   std::string scratch;      // where fetched originals wait for their verified copy
+  layout folders = layout::year_day;
 };
 
 enum class run_state : std::uint8_t { idle = 0, listing = 1, copying = 2, done = 3, cancelled = 4, failed = 5 };
@@ -91,9 +106,12 @@ struct progress {
   std::string error;          // why state is `failed` (no path)
 };
 
-// Import's default layout: <destination>/YYYY/YYYY-MM-DD/<filename>, the day
-// in local time. Pure.
-[[nodiscard]] std::string layout_dir(std::string_view destination, std::int64_t created_unix);
+// The folder under the destination a new file goes into, '/'-separated, ""
+// for flat ("2024/2024-05-17" for year_day); the date in local time. Pure.
+[[nodiscard]] std::string layout_subdir(std::int64_t created_unix, layout folders);
+// <destination>/<layout_subdir>. Pure.
+[[nodiscard]] std::string layout_dir(std::string_view destination, std::int64_t created_unix,
+                                     layout folders = layout::year_day);
 // The manifest and report live here, beside the files.
 [[nodiscard]] std::string housekeeping_dir(std::string_view destination);
 

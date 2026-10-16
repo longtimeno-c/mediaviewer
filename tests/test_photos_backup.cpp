@@ -4,9 +4,13 @@
 // real one is PhotoKit (shell/photos_backup_mac.mm) and needs the user's
 // permission, so what is proved here is the engine: layout, verified copies,
 // the manifest making a second run free, a deleted file coming back, a cloud
-// fetch, a name collision, and a cancel that leaves nothing behind.
+// fetch, a name collision, a cancel that leaves nothing behind, and the
+// folder layouts (issue #414) with a manifest that finds a file in any of them.
 #include "catch_compat.h"
 
+#include <sqlite3.h>
+
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <ctime>
@@ -99,6 +103,41 @@ fake_file make(const scratch_dir& lib, const char* id, bk::file_kind kind, const
 bk::progress run_to_end(bk::engine& e) {
   e.join();
   return e.snapshot();
+}
+
+// The asset's date as the layout names it, derived here independently.
+std::string local(std::int64_t unix, const char* format) {
+  const time_t t = static_cast<time_t>(unix);
+  struct tm tmv {};
+#if defined(_WIN32)
+  localtime_s(&tmv, &t);
+#else
+  localtime_r(&t, &tmv);
+#endif
+  char out[32] = {};
+  std::strftime(out, sizeof(out), format, &tmv);
+  return out;
+}
+
+bk::options opts_for(const fs::path& dest, const scratch_dir& scratch, bk::layout folders) {
+  bk::options o{utf8(dest), utf8(scratch / "tmp")};
+  o.folders = folders;
+  return o;
+}
+
+// Every file under `root`, the housekeeping folder left out, as '/'-joined
+// places relative to it.
+std::vector<std::string> files_under(const fs::path& root) {
+  std::vector<std::string> out;
+  for (auto it = fs::recursive_directory_iterator(root); it != fs::recursive_directory_iterator(); ++it) {
+    if (it->is_directory() && it->path().filename() == ".mediaviewer-photos-backup") {
+      it.disable_recursion_pending();
+      continue;
+    }
+    if (it->is_regular_file()) out.push_back(fs::relative(it->path(), root).generic_string());
+  }
+  std::sort(out.begin(), out.end());
+  return out;
 }
 
 std::string hex_of(const fs::path& p) {
@@ -326,4 +365,139 @@ TEST_CASE("a destination that disappears stops the run instead of failing every 
   CHECK(p.done == 0);
   CHECK_FALSE(p.error.empty());
   CHECK(raw->fetches == 1);  // nothing more was downloaded for a folder that is gone
+}
+
+TEST_CASE("each layout writes its own folders", "[shell][photos_backup]") {
+  scratch_dir lib("pb_lib7");
+  scratch_dir dest("pb_dest7");
+  scratch_dir scratch("pb_scratch7");
+  const std::string y = local(kDay1, "%Y");
+  const std::string ymd = local(kDay1, "%Y-%m-%d");
+  struct expectation {
+    bk::layout folders;
+    std::string place;
+  };
+  const expectation cases[] = {
+      {bk::layout::year, y + "/IMG_0001.HEIC"},
+      {bk::layout::year_day, y + "/" + ymd + "/IMG_0001.HEIC"},
+      {bk::layout::year_month_day, y + "/" + local(kDay1, "%m") + "/" + local(kDay1, "%d") + "/IMG_0001.HEIC"},
+      {bk::layout::day, ymd + "/IMG_0001.HEIC"},
+      {bk::layout::flat, "IMG_0001.HEIC"},
+  };
+  int n = 0;
+  for (const expectation& c : cases) {
+    const fs::path root = dest / ("d" + std::to_string(n++));
+    auto src = std::make_unique<fake_library>();
+    src->files.push_back(make(lib, "A", bk::file_kind::original, "IMG_0001.HEIC", kDay1, 20'000, 17, true));
+    bk::engine e;
+    REQUIRE(e.start(std::move(src), opts_for(root, scratch, c.folders)));
+    CHECK(run_to_end(e).done == 1);
+    // Only that file, in only that folder: no day folder under a year-only
+    // backup, nothing but the file in a flat one.
+    CHECK(files_under(root) == std::vector<std::string>{c.place});
+    CHECK(fs::path(bk::layout_dir(utf8(root), kDay1, c.folders)) / "IMG_0001.HEIC" == root / fs::path(c.place));
+  }
+  CHECK(bk::layout_subdir(kDay1, bk::layout::flat).empty());
+  CHECK(bk::layout_dir(utf8(dest.root()), kDay1, bk::layout::flat) == utf8(dest.root()));
+}
+
+TEST_CASE("two originals with one name in one year are name and name (2) under that year",
+          "[shell][photos_backup]") {
+  scratch_dir lib("pb_lib8");
+  scratch_dir dest("pb_dest8");
+  scratch_dir scratch("pb_scratch8");
+  REQUIRE(local(kDay1, "%Y") == local(kDay2, "%Y"));
+  auto src = std::make_unique<fake_library>();
+  src->files.push_back(make(lib, "A", bk::file_kind::original, "IMG_0001.JPG", kDay1, 10'000, 18, true));
+  src->files.push_back(make(lib, "Z", bk::file_kind::original, "IMG_0001.JPG", kDay2, 20'000, 19, false));
+  bk::engine e;
+  REQUIRE(e.start(std::move(src), opts_for(dest.root(), scratch, bk::layout::year)));
+  CHECK(run_to_end(e).done == 2);
+  const fs::path year = dest / local(kDay1, "%Y");
+  CHECK(fs::file_size(year / "IMG_0001.JPG") == 10'000);
+  CHECK(fs::file_size(year / "IMG_0001 (2).JPG") == 20'000);
+  CHECK(files_under(dest.root()).size() == 2);
+}
+
+TEST_CASE("a layout change moves nothing; only a new file is written in the new layout",
+          "[shell][photos_backup]") {
+  scratch_dir lib("pb_lib9");
+  scratch_dir dest("pb_dest9");
+  scratch_dir scratch("pb_scratch9");
+  const fake_file a = make(lib, "A", bk::file_kind::original, "IMG_0001.HEIC", kDay1, 30'000, 20, false);
+  const fake_file b = make(lib, "B", bk::file_kind::original, "IMG_0002.HEIC", kDay2, 40'000, 21, false);
+  const fs::path old_root = dest / "photos";
+  const fs::path new_root = dest / "photos-1";
+  {
+    auto src = std::make_unique<fake_library>();
+    src->files.push_back(a);
+    bk::engine e;
+    REQUIRE(e.start(std::move(src), opts_for(old_root, scratch, bk::layout::year_day)));
+    CHECK(run_to_end(e).done == 1);
+  }
+  const std::string kept = local(kDay1, "%Y") + "/" + local(kDay1, "%Y-%m-%d") + "/IMG_0001.HEIC";
+  // The share remounts elsewhere too: only the place under the destination matches.
+  fs::rename(old_root, new_root);
+  auto src = std::make_unique<fake_library>();
+  src->files = {a, b};
+  fake_library* raw = src.get();
+  bk::engine e;
+  REQUIRE(e.start(std::move(src), opts_for(new_root, scratch, bk::layout::year)));
+  const bk::progress p = run_to_end(e);
+  CHECK(p.state == bk::run_state::done);
+  CHECK(p.skipped == 1);
+  CHECK(p.done == 1);
+  CHECK(raw->fetches == 1);  // only the new one
+  CHECK(files_under(new_root) == std::vector<std::string>{kept, local(kDay2, "%Y") + "/IMG_0002.HEIC"});
+
+  // And a third run in the year layout finds both where they are.
+  auto again = std::make_unique<fake_library>();
+  again->files = {a, b};
+  bk::engine e2;
+  REQUIRE(e2.start(std::move(again), opts_for(new_root, scratch, bk::layout::year)));
+  const bk::progress p2 = run_to_end(e2);
+  CHECK(p2.skipped == 2);
+  CHECK(p2.done == 0);
+}
+
+TEST_CASE("manifest rows from before 2026-10-05 (absolute paths) still match after a remount",
+          "[shell][photos_backup]") {
+  scratch_dir lib("pb_lib10");
+  scratch_dir dest("pb_dest10");
+  scratch_dir scratch("pb_scratch10");
+  const fake_file a = make(lib, "A", bk::file_kind::original, "IMG_0001.HEIC", kDay1, 30'000, 22, false);
+  const fs::path old_root = dest / "photos";
+  const fs::path new_root = dest / "photos-1";
+  {
+    auto src = std::make_unique<fake_library>();
+    src->files.push_back(a);
+    bk::engine e;
+    REQUIRE(e.start(std::move(src), opts_for(old_root, scratch, bk::layout::year_day)));
+    CHECK(run_to_end(e).done == 1);
+  }
+  // Rewrite the row as the old engine stored it: the absolute path.
+  const std::string absolute = bk::layout_dir(utf8(old_root), kDay1) + "/IMG_0001.HEIC";
+  {
+    sqlite3* db = nullptr;
+    const std::string manifest = utf8(fs::path(bk::housekeeping_dir(utf8(old_root))) / "manifest.sqlite");
+    REQUIRE(sqlite3_open(manifest.c_str(), &db) == SQLITE_OK);
+    sqlite3_stmt* st = nullptr;
+    REQUIRE(sqlite3_prepare_v2(db, "UPDATE files SET path=?", -1, &st, nullptr) == SQLITE_OK);
+    sqlite3_bind_text(st, 1, absolute.c_str(), -1, SQLITE_TRANSIENT);
+    CHECK(sqlite3_step(st) == SQLITE_DONE);
+    sqlite3_finalize(st);
+    sqlite3_close(db);
+  }
+  fs::rename(old_root, new_root);
+  REQUIRE_FALSE(fs::exists(absolute));
+  auto src = std::make_unique<fake_library>();
+  src->files.push_back(a);
+  fake_library* raw = src.get();
+  bk::engine e;
+  REQUIRE(e.start(std::move(src), opts_for(new_root, scratch, bk::layout::flat)));
+  const bk::progress p = run_to_end(e);
+  CHECK(p.skipped == 1);
+  CHECK(p.done == 0);
+  CHECK(raw->fetches == 0);
+  CHECK(files_under(new_root).size() == 1);
 }
