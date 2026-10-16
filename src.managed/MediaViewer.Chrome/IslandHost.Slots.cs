@@ -923,7 +923,7 @@ public static partial class IslandHost
                 }
                 if (SlotUpdateVersion(channel, row) is { } v)
                 {
-                    buttons.Children.Insert(0, SettingsButton($"Update to {v}, {DownloadSize(channel.Offer.ArchiveSize)}",
+                    buttons.Children.Insert(0, SettingsButton($"Update to {v}, {MediaViewer.Shared.ByteSize.Text(channel.Offer.ArchiveSize)}",
                                                               () => StartSlotAddonInstall(target)));
                 }
             }
