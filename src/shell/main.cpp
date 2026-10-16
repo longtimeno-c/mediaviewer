@@ -529,6 +529,9 @@ struct pending_restore {
 // PR 15: `--new-instance` runs a second, independent window (docs/design/09
 // "overridable"); without it a second start hands its paths to the first.
 bool g_new_instance = false;
+// `--compare` (issue #208): start with the two-up compare on, as `|` turns it
+// on. A start forwarded to a running viewer hands over its paths only.
+bool g_start_compare = false;
 // An add-on update's restart (update_guard.h relaunch_after_exit): the pid of
 // the MediaViewer that started this one and is exiting. 0 = not a relaunch.
 unsigned long g_relaunch_after = 0;
@@ -7337,6 +7340,11 @@ bool run_command(app_state* app, mv::shell::command_id command) noexcept {
     case hold_previous_release:
       app->input.hold_previous = command == hold_previous;
       return set_level(app);
+    case compare_two_up:
+      // A level, like the background: the render thread splits only while a
+      // still is up (shell/compare.h), so on a clip this just arms or clears it.
+      app->input.compare = !app->input.compare;
+      return set_level(app);
     case info_overlay:
       app->input.info_overlay = !app->input.info_overlay;
       refresh_item_info(app);
@@ -8945,6 +8953,8 @@ bool parse_options(lab_options& options, std::vector<std::wstring>& open_paths, 
       if (ok) g_relaunch_after = std::wcstoul(value.c_str(), nullptr, 10);
     } else if (arg == L"--new-instance") {
       g_new_instance = true;
+    } else if (arg == L"--compare") {
+      g_start_compare = true;
     } else if (arg == L"--restore-fullscreen") {
       g_restore.fullscreen = true;
     } else if (arg == L"--restore-gallery") {
@@ -9076,6 +9086,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
   app.strip_hint_learned = mv::shell::load_strip_hint_learned();
   app.input.sticky_zoom = app.settings.sticky_zoom;
   app.input.reduce_motion = client_animations_off();
+  app.input.compare = g_start_compare;
   app.destinations = mv::shell::load_destinations();
   app.recent_folders = mv::shell::load_recent_folders();
   app.home_utf8 = profile_folder_utf8();
