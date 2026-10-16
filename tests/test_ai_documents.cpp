@@ -60,7 +60,6 @@ pdffx::page text_page(const std::vector<std::string>& lines) {
   pdffx::page p;
   p.width = 612;
   p.height = 792;
-  p.resources = pdffx::text_resources();
   p.content = "BT /F1 10 Tf 12 TL 72 720 Td";
   for (const std::string& l : lines) p.content += " (" + l + ") Tj T*";
   p.content += " ET";
@@ -123,7 +122,8 @@ TEST_CASE("PDFium reads a PDF's text page by page", "[ai][documents][pdfium]") {
   if (!reader) SKIP("no PDFium staged (MV_AI_PDFIUM_LIB)");
   const auto bytes = pdffx::make({text_page({"Invoice 4471", "for the lease of the hall."}),
                                   text_page({"Items and quantities."}),
-                                  text_page({"Payment terms: net 30 days."})});
+                                  text_page({"Payment terms: net 30 days."})},
+                                 {}, pdffx::text_resources());
   temp_file f(bytes, "three.pdf");
   std::vector<std::pair<std::uint32_t, std::string>> pages;
   auto n = reader->read(f.utf8(), 0, mv::ai::pdf_limits{}, [&](std::uint32_t page, std::string_view text) {
@@ -178,7 +178,7 @@ TEST_CASE("PDFium reads a PDF's text page by page", "[ai][documents][pdfium]") {
 TEST_CASE("PDFium: a broken or missing PDF is an error, never a crash", "[ai][documents][pdfium]") {
   auto reader = pdfium();
   if (!reader) SKIP("no PDFium staged (MV_AI_PDFIUM_LIB)");
-  const auto good = pdffx::make({text_page({"Hello"})});
+  const auto good = pdffx::make({text_page({"Hello"})}, {}, pdffx::text_resources());
   const auto noop = [](std::uint32_t, std::string_view) { return true; };
   // Cut anywhere, and garbage: an error or whatever pages it still finds.
   for (std::size_t cut : {good.size() / 4, good.size() / 2, good.size() - 20}) {
@@ -222,7 +222,7 @@ TEST_CASE("the host reads a DOCX's text and draws a document's page as a moment"
   CHECK(lines[1].page_count == 2);
   // A PDF's text is the pack's (PDFium), never the host's; a password-protected
   // DOCX (an OLE container, not a zip) is locked, not broken.
-  write_bytes(dir / "a.pdf", pdffx::make({text_page({"Hello"})}));
+  write_bytes(dir / "a.pdf", pdffx::make({text_page({"Hello"})}, {}, pdffx::text_resources()));
   CHECK(mv::addon::media::document_text(utf8(dir / "a.pdf"), [](const auto&) { return true; }).error() ==
         mv::status::unsupported_format);
   std::vector<std::uint8_t> ole = {0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1};
