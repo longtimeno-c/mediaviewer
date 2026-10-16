@@ -271,7 +271,7 @@ second while bytes move; those posts update chrome and never present the canvas.
 
 ## Host pieces this added
 
-- **Notices and keep-alive** (#452, host table entries after `locations_of_index`, ABI 0.31):
+- **Notices and keep-alive** (#452, host table entries after `place_matches`, ABI 0.32):
   generic, held by `slot_registry` and drawn by both hosts ([In the background](#in-the-background-452),
   [25](25-open-addons.md#implementation-notes-prs-58-59-2026-10-11)).
 

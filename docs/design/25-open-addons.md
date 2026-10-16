@@ -194,7 +194,10 @@ Local search becomes a search provider in PR 59 instead of owning the path-bar b
 keeps its native pack and its own channel. As built (2026-10-11): while the pack is attached the
 host lists it in the registry as the local-scope provider, a Local search query goes to every
 other local-scope provider too, and the result list's path row offers their rows ("+ 3 in
-Portugal"); the pack's own rich results stay in its panel.
+Portugal"); the pack's own rich results stay in its panel. A query with place terms
+(`place:portugal`) is sent to no other provider (#441): the pack asks the `place:` provider
+itself, through the host table's `place_matches`, and intersects ([17](17-local-ai-search.md)
+"Places over the index").
 
 ## 8. Themes (API 1)
 
@@ -651,7 +654,9 @@ How it works:
   name hits show at once and a provider's rows join when they arrive, with its reason
   ("Portugal") or "Still reading tags — N of M" under the field. A query starting with a
   provider's prefix (`place:`) goes to that provider alone, prefix removed, unless a digit follows
-  (Local search's `in:2024` stays a date term). `locations_in` walks the folder at background
+  (Local search's `in:2024` stays a date term). In Local search a query with place terms goes to
+  no provider; the AI pack asks the `place:` provider for each term as a request of its own
+  (`slot_registry::provider_paths`, #441). `locations_in` walks the folder at background
   priority (it waits while the viewer presents) and caches coordinates by path + size + mtime, so
   a second query reads nothing. Local search with no folder open has `locations_of_index`
   instead (#398): the AI pack's index's coordinates, read from the index, never from the files
@@ -717,7 +722,7 @@ How it works:
   It has no chrome to send the command to.
 - **Settings → Add-ons** gives such an add-on with a window screen an **Open …** button, as Import
   has; the window opens through `open_screen` with no file.
-- **Notices and keep-alive (#452, ABI 0.31)**, for a first-party native add-on (scripts have no
+- **Notices and keep-alive (#452, ABI 0.32)**, for a first-party native add-on (scripts have no
   such entries): `notice_post` asks for a system notification about one of its screens (title,
   body, one button that comes back as `MV_SLOT_EVENT_NOTICE`; the host skips it while that screen
   is the front window and opens the screen on a click), `notice_authorize` asks the OS for

@@ -14,6 +14,7 @@
 
 #include <sodium.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -329,6 +330,216 @@ TEST_CASE("a slow provider never delays typing; a stale answer is dropped", "[ad
   r.drain();
   REQUIRE(fc->searches == before);
   REQUIRE(mv::json::parse(r.search_json(MV_SLOT_SCOPE_FILES))->find("rows")->a.empty());
+}
+
+// #441: which queries name a place, read as the AI pack's parser reads them.
+TEST_CASE("place terms are place:x and in:<word>, never a date or a quoted phrase", "[addon][slots][places]") {
+  using mv::addon::has_place_terms;
+  CHECK(has_place_terms("place:Portugal"));
+  CHECK(has_place_terms("beach place:portugal"));
+  CHECK(has_place_terms("PLACE:lisbon"));
+  CHECK(has_place_terms("in:lisbon"));
+  CHECK(has_place_terms("-place:spain"));
+  CHECK(has_place_terms("video -in:spain"));
+  CHECK(has_place_terms("place:\"new york\""));
+  CHECK(has_place_terms("place:\xE2\x80\x9Cnew york\xE2\x80\x9D"));
+  CHECK_FALSE(has_place_terms(""));
+  CHECK_FALSE(has_place_terms("portugal"));        // a plain word: the description, and tags
+  CHECK_FALSE(has_place_terms("in:2024"));         // a date
+  CHECK_FALSE(has_place_terms("in:2024-06 beach"));
+  CHECK_FALSE(has_place_terms("place:"));          // still being typed
+  CHECK_FALSE(has_place_terms("place:\""));
+  CHECK_FALSE(has_place_terms("\"we went place:x\""));  // words said, not an operator
+  CHECK_FALSE(has_place_terms("file:place"));
+  CHECK_FALSE(has_place_terms("replace:x"));       // not an operator the pack knows
+  CHECK_FALSE(has_place_terms("--place:x"));
+}
+
+namespace {
+
+// A Places stand-in: "portugal" is two files, posted in two batches; "slow"
+// waits for release(); "fail" returns an error having posted nothing.
+class place_client final : public mv::addon::slot_client {
+ public:
+  explicit place_client(slot_registry& r) : r_(r) {}
+  status info_section(const mv_slot_info_request&) override { return status::ok; }
+  status search(const mv_slot_search_request& q) override {
+    ++searches;
+    const std::string f = q.folded_utf8;
+    {
+      std::lock_guard lock(m);
+      folders.emplace_back(q.folder_utf8);
+      generations.push_back(q.generation);
+    }
+    if (f == "fail") return status::io;
+    if (f == "slow") {
+      std::unique_lock lock(m);
+      cv.wait(lock, [this] { return released; });
+      stale_seen = r_.is_stale("places", q.generation);
+      return status::ok;
+    }
+    if (f == "portugal") {
+      (void)r_.post_search("places", q.provider_id, q.generation, {{"/i/lisboa.jpg", "Lisbon, Portugal"}}, false);
+      (void)r_.post_search("places", q.provider_id, q.generation, {{"/i/porto.jpg", "Porto, Portugal"}}, true);
+      return status::ok;
+    }
+    return r_.post_search("places", q.provider_id, q.generation, {}, true);
+  }
+  status screen_open(const mv_slot_screen_request&) override { return status::unsupported_format; }
+  status badges(const mv_slot_badges_request&) override { return status::unsupported_format; }
+  void event(const mv_slot_event&) override {}
+
+  void release() {
+    {
+      std::lock_guard lock(m);
+      released = true;
+    }
+    cv.notify_all();
+  }
+
+  std::atomic<int> searches{0};
+  std::atomic<bool> stale_seen{false};
+  std::mutex m;
+  std::condition_variable cv;
+  bool released = false;
+  std::vector<std::string> folders;
+  std::vector<std::uint64_t> generations;
+
+ private:
+  slot_registry& r_;
+};
+
+mv::addon::contributions places_point() {
+  mv::addon::contributions c;
+  c.api_min = 5;
+  c.api_max = 5;
+  c.search_providers.push_back({"place", "Places", {"place:", "in:"}, true, true});
+  return c;
+}
+
+std::vector<std::string> sorted(std::vector<std::string> v) {
+  std::sort(v.begin(), v.end());
+  return v;
+}
+
+int32_t MV_CALL collect_path(void* user, const char* path) {
+  auto& out = *static_cast<std::vector<std::string>*>(user);
+  if (path) out.emplace_back(path);
+  return 1;
+}
+
+}  // namespace
+
+TEST_CASE("Local search's place terms are the pack's: no provider is asked beside it", "[addon][slots][places]") {
+  slot_registry r;
+  auto client = std::make_unique<fake_client>(r, "slotstest");
+  fake_client* fc = client.get();
+  REQUIRE(r.attach("slotstest", "Slots test", every_point(), std::move(client)) == status::ok);
+  auto places = std::make_unique<place_client>(r);
+  place_client* pc = places.get();
+  REQUIRE(r.attach("places", "Places", places_point(), std::move(places)) == status::ok);
+
+  // "place:portugal" and "beach place:portugal": the pack intersects; nobody
+  // posts "+ N in Portugal" rows beside its results.
+  for (const char* q : {"place:portugal", "beach place:portugal", "-place:spain"}) {
+    r.search(MV_SLOT_SCOPE_LOCAL, q, "");
+    r.drain();
+    const auto res = mv::json::parse(r.search_json(MV_SLOT_SCOPE_LOCAL));
+    CHECK(res->find("providers")->a.empty());
+    CHECK(res->find("rows")->a.empty());
+  }
+  CHECK(fc->searches == 0);
+  CHECK(pc->searches == 0);
+  // A plain word still goes to every Local search provider (Places' "portugal").
+  r.search(MV_SLOT_SCOPE_LOCAL, "portugal", "");
+  r.drain();
+  CHECK(pc->searches == 1);
+  // File search keeps its routing: "place:lisbon" is Places' alone.
+  r.search(MV_SLOT_SCOPE_FILES, "place:portugal", "/f");
+  r.drain();
+  CHECK(pc->searches == 2);
+  CHECK(fc->searches == 1);  // "portugal" above; not the routed one
+}
+
+TEST_CASE("a place term's assets come from the provider that declares place:, or none", "[addon][slots][places]") {
+  slot_registry r;
+  REQUIRE(r.attach("slotstest", "Slots test", every_point(), std::make_unique<fake_client>(r, "slotstest")) ==
+          status::ok);
+  const auto keep_going = [] { return true; };
+
+  // No add-on declares place: (Places not installed): not_found, no rows.
+  CHECK(mv::addon::place_terms(r, "") == 0u);
+  CHECK(mv::addon::place_terms(r, "place:portugal") == MV_SLOTS_PLACE_TERMS);
+  auto none = r.provider_paths("place:", "portugal", keep_going);
+  REQUIRE_FALSE(none);
+  CHECK(none.error() == status::not_found);
+
+  auto places = std::make_unique<place_client>(r);
+  place_client* pc = places.get();
+  REQUIRE(r.attach("places", "Places", places_point(), std::move(places)) == status::ok);
+  CHECK(mv::addon::place_terms(r, "") == MV_SLOTS_PLACE_PROVIDER);
+  CHECK(mv::addon::place_terms(r, "in:sintra") == (MV_SLOTS_PLACE_TERMS | MV_SLOTS_PLACE_PROVIDER));
+  CHECK(mv::addon::place_terms(r, "in:2024") == MV_SLOTS_PLACE_PROVIDER);
+
+  SECTION("every batch, over the whole index, beside the chrome's own search") {
+    const std::uint64_t chrome = r.search(MV_SLOT_SCOPE_FILES, "nothing", "/f");
+    auto paths = r.provider_paths("place:", " Portugal ", keep_going);
+    REQUIRE(paths);
+    CHECK(sorted(*paths) == std::vector<std::string>{"/i/lisboa.jpg", "/i/porto.jpg"});
+    CHECK(pc->folders.back().empty());  // the whole index (locations_of_index)
+    CHECK(r.is_stale(pc->generations.back()));  // finished: its generation is gone
+    CHECK_FALSE(r.is_stale(chrome));            // and the chrome's search was not replaced
+    // Nothing of it reached the chrome's results.
+    CHECK(mv::json::parse(r.search_json(MV_SLOT_SCOPE_LOCAL))->find("rows")->a.empty());
+  }
+  SECTION("a provider that fails says nothing: done, no rows") {
+    auto paths = r.provider_paths("place:", "fail", keep_going);
+    REQUIRE(paths);
+    CHECK(paths->empty());
+  }
+  SECTION("the caller stops waiting; the provider sees its request go stale") {
+    std::atomic<int> asked{0};
+    auto paths = r.provider_paths("place:", "slow", [&] { return ++asked < 3; });
+    REQUIRE_FALSE(paths);
+    CHECK(paths.error() == status::cancelled);
+    pc->release();
+    r.drain();
+    CHECK(pc->stale_seen);
+  }
+  SECTION("the provider is removed while it works") {
+    std::thread remover([&] {
+      (void)eventually([&] { return pc->searches.load() == 1; });
+      pc->release();  // detach joins the worker: let the call return
+      r.detach("places");
+    });
+    auto paths = r.provider_paths("place:", "slow", keep_going);
+    remover.join();
+    // Either it finished before the detach (no rows) or it went: never a hang.
+    if (!paths) CHECK(paths.error() == status::not_found);
+    CHECK(mv::addon::place_terms(r, "") == 0u);
+  }
+}
+
+TEST_CASE("the host table's place_matches serves the AI pack the provider's paths", "[addon][slots][places]") {
+  slot_registry r;
+  mv::addon::host_services svc;
+  svc.slots = &r;
+  mv::addon::host_table t(svc);
+  t.set_addon_id("ai");
+  const mv_host_api* api = t.api();
+  REQUIRE(api->struct_size >= offsetof(mv_host_api, place_matches) + sizeof(api->place_matches));
+  REQUIRE(api->place_matches);
+  std::vector<std::string> out;
+  CHECK(api->place_matches(api->host, "portugal", &collect_path, &out) == MV_ERR_NOT_FOUND);
+  CHECK(out.empty());
+  CHECK(api->place_matches(api->host, nullptr, &collect_path, &out) == MV_ERR_INVALID_ARG);
+
+  REQUIRE(r.attach("places", "Places", places_point(), std::make_unique<place_client>(r)) == status::ok);
+  REQUIRE(api->place_matches(api->host, "portugal", &collect_path, &out) == MV_OK);
+  CHECK(sorted(out) == std::vector<std::string>{"/i/lisboa.jpg", "/i/porto.jpg"});
+  // The visitor stops it.
+  const auto stop = [](void*, const char*) -> int32_t { return 0; };
+  CHECK(api->place_matches(api->host, "portugal", stop, nullptr) == MV_ERR_CANCELLED);
 }
 
 namespace {

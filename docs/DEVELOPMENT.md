@@ -34,7 +34,7 @@ and a verify line on each platform (D9, amended). The order is:
 | 58–59 | **Screens and slots**: MediaViewer's own native add-ons add to pages that exist (an info-pane section at the very bottom of the Metadata pane, file search and Local search providers, command-bar / path-bar / status items, gallery tile badges, context-menu entries) and open windows, docked panes and sheets from a view tree both chromes render ([docs/design/25](design/25-open-addons.md#implementation-notes-prs-58-59-2026-10-11)); host table v3; ABI 0.25 | Mac: the shared suite passes (with a real test add-on through a signed store; also under ASan / UBSan and TSan); the app built and, with the test add-on sideloaded, drew its section at the bottom of the pane and its items. Windows: both C# projects compile; the native side is CI's. Measurements and the keyboard / VoiceOver / Narrator passes are owed ([Where this actually is](#screens-and-slots-prs-58-59-2026-10-11)). Script add-ons wait for PR 57; Places is #344 |
 | #410, #413 | **Sharepoint**: send photos, video and audio to a MediaViewer nearby over Wi-Fi or Bluetooth; the receiver shows a code the sender types (#442) and nothing moves until the other person accepts; its window is a view tree both hosts draw ([docs/design/28](design/28-sharepoint.md)). The gallery's Shift-click range, drag-out from any gallery cell and one share icon that opens Sharepoint; ABI 0.29 | Mac: built; `mv_import_tests "[sharepoint]"` (two and three engines over loopback TCP), the full suites and the packer test pass; the window opened offline in a dev copy and the range drove copy path there; the PR 1 gate passed with the add-on installed. Windows: the C# compiles; native (sockets, WinRT Bluetooth, the range) is CI's. Two machines, Bluetooth and the hand checks are owed ([Where this actually is](#sharepoint-issues-410-413-2026-10-15)) |
 | #444 | **Share everywhere**: one share command (`Ctrl+Shift+S` / `⌘⇧S`, the gallery's share icon, a share button beside Home, right-click Share ▸ on a gallery cell, a filmstrip cell or the canvas) opens one menu: Sharepoint first (or its install), then Windows Share / the macOS picker (Mail, Messages, AirDrop…). A right-click on a selected file shares the selection, on any other file that file; the system sheet gets media only ([docs/design/16 "Share"](design/16-commands.md#share-444)) | Mac: built; `mv_tests "[share]"` passes (file set, wire argument, command row; the `[.perf-bench]` case, 500 of 20 000 stops: 0.12 ms); the macOS picker for 500 files opens in 21 ms warm (was 65) by showing one file per kind past 50 files. Windows: the C# compiles; native is CI's. Owed: Mail with 3 files on both, the right-click menus and bar button by hand, a 500-item open on Windows, both PR 1 gates |
-| #452 | **Sharepoint in the background**: opt-in **Receive when MediaViewer is closed** keeps the same process with a menu-bar item (Mac) / notification-area icon (Windows) after every window closes; an offer is a system notification (sender, count, size; never a file name or the code) that opens the window with the code, with Decline; Accept stays in the window ([docs/design/28](design/28-sharepoint.md#in-the-background-452)); ABI 0.31 | Mac: built; `"[sharepoint]"` and `"[slots]"` pass with new cases, full suites pass; the Mac PR 1 gate's animated soak passes (idle phase failed on base and new alike on a loaded machine). Windows: the C# compiles; native (tray, hide-on-close) is CI's. Owed: the windowless idle measurement in the app, the notification seen and clicked on both, two machines ([Where this actually is](#sharepoint-in-the-background-issue-452-2026-10-16)) |
+| #452 | **Sharepoint in the background**: opt-in **Receive when MediaViewer is closed** keeps the same process with a menu-bar item (Mac) / notification-area icon (Windows) after every window closes; an offer is a system notification (sender, count, size; never a file name or the code) that opens the window with the code, with Decline; Accept stays in the window ([docs/design/28](design/28-sharepoint.md#in-the-background-452)); ABI 0.32 | Mac: built; `"[sharepoint]"` and `"[slots]"` pass with new cases, full suites pass; the Mac PR 1 gate's animated soak passes (idle phase failed on base and new alike on a loaded machine). Windows: the C# compiles; native (tray, hide-on-close) is CI's. Owed: the windowless idle measurement in the app, the notification seen and clicked on both, two machines ([Where this actually is](#sharepoint-in-the-background-issue-452-2026-10-16)) |
 
 See [docs/design/10-roadmap.md](design/10-roadmap.md). Old Mac numbers in the history below map as
 PR 16 → Mac PR 1, 17 → Mac PR 2/7, 18 → Mac PR 3/4/6, 19 → Mac PR 5, 20 → Mac PR 8.
@@ -1769,6 +1769,34 @@ Five changes to the AI pack's index and query language
   pin that size (#388); the ABI smoke test compares the C# mirror with the header. Windows OCR on
   clips, both PR 1 gates with the pack indexing are owed.
 
+### Place terms need Places, and intersect (#441, 2026-10-16)
+
+Without the Places add-on, `place:portugal` in Local search now shows no results and "Place search
+needs the Places add-on". The help line names `place:` only while Places is loaded. With Places,
+the AI pack's engine asks it for each place term through the host table's new `place_matches`
+and intersects: `beach place:portugal` is Portugal's beaches only, and `-place:spain` takes
+Spain's out. The "+ N in Portugal" button no longer appears for place terms
+([17](design/17-local-ai-search.md) "Places over the index", ABI 0.31).
+
+- **Tests:** `mv_import_tests "[slots]"` (`has_place_terms`; Local search asks no provider for a
+  place term; `provider_paths` with no provider, every batch, a failing provider, a caller that
+  stops, a provider removed mid-request; the host table's `place_matches`);
+  `mv_import_tests "[places]"` (the real `mv_places` answering the pack's requests over a fake
+  `locations_of_index`); `mv_ai_tests "[places]"` (no Places: `place:` / `in:` / `-place:` and
+  `blue place:portugal` find nothing; with a fake Places: only its assets, `-place:`, two places,
+  `blue place:portugal` ranks only Portugal's, kinds and scope still apply);
+  `swift test --filter SearchModelTests` (`testPlaceTermsNeedPlaces`).
+- **Mac (M-series, 2026-10-16):** `mv_tests` 860 cases (849 passed, 11 skipped);
+  `mv_import_tests` 155 passed; `mv_ai_tests` 136 cases (128 passed, 8 skipped, model-backed as
+  before); AIChrome `SearchModelTests` 9 passed. `MediaViewer` and the AI chrome bundle build.
+  Not run: the live check with the pack and Places installed, and the PR 1 gate. The change adds
+  no render-thread or UI-thread work: a place-term search now waits on its own search worker for
+  Places' walk of the index's coordinates. That walk used to run after Return instead. Its
+  latency was not measured on a large index.
+- **Windows:** the core change (`slots.cpp`, `host.cpp`, `slots_abi.cpp`) is shared and compiled on
+  the Mac; MSVC builds it only in CI. The C# (`SearchWindow.cs`, `Slots.cs`) compiles on the Mac
+  (dotnet@8, compile-only). The live check is owed on Windows too.
+
 ### `place:` over the whole Local search index (#398, 2026-10-15)
 
 `place:portugal` in Local search with no folder open now finds the indexed Portuguese assets.
@@ -1980,7 +2008,7 @@ What is built is in [docs/design/28](design/28-sharepoint.md).
 What changed is in [docs/design/28 "In the background"](design/28-sharepoint.md#in-the-background-452):
 **Receive when MediaViewer is closed** (off by default, implies Keep receiving) keeps the process
 with a menu-bar item / notification-area icon; offers are system notifications that open the
-window; the host table gains `notice_post`, `notice_authorize` and `keep_alive` (ABI 0.31).
+window; the host table gains `notice_post`, `notice_authorize` and `keep_alive` (ABI 0.32).
 
 - **Mac (M-series):** the app, the Swift chrome and `libmv_sharepoint.dylib` build. `mv_tests`
   (849 passed, 11 skipped) and `mv_import_tests` (154 cases) pass; new cases: the notice names the

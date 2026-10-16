@@ -143,6 +143,10 @@ public static unsafe partial class SlotNative
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    private static partial MvStatus mv_slots_place_terms(byte* query, uint* flags);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     private static partial MvStatus mv_slots_thumbnail_path(byte* path, byte* output, uint cap, uint* needed);
 
     /// <summary>Worker thread: the JPEG-512 of a still, by path; null for none (a clip, unreadable).</summary>
@@ -366,4 +370,24 @@ public static unsafe partial class SlotNative
 
     /// <summary>docs/design/25 §7: the AI pack attached (true) or went: Local search is a provider.</summary>
     public static void LocalSearchProvider(bool on) => Try(() => mv_slots_local_search_provider(on ? 1u : 0u), MvStatus.Ok);
+
+    /// <summary>#441 (ABI 0.31): the query has place terms (place:x, in:&lt;place&gt;).</summary>
+    public const uint PlaceTerms = 1;
+    /// <summary>#441: a loaded add-on (Places) answers place terms.</summary>
+    public const uint PlaceProvider = 2;
+
+    /// <summary>
+    /// #441: <see cref="PlaceTerms"/> | <see cref="PlaceProvider"/> for <paramref name="query"/>
+    /// ("" asks only the second). 0 from an older core, which searches as before.
+    /// </summary>
+    public static uint PlaceTermsOf(string query) =>
+        Try(() =>
+        {
+            uint flags = 0;
+            fixed (byte* q = Z(query))
+            {
+                if (mv_slots_place_terms(q, &flags) != MvStatus.Ok) return 0u;
+            }
+            return flags;
+        }, 0u);
 }

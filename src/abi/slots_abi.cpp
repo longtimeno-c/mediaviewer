@@ -218,6 +218,14 @@ MV_API mv_status MV_CALL mv_slots_surface(const char* addon, const char* screen,
   }));
 }
 
+MV_API mv_status MV_CALL mv_slots_place_terms(const char* query_utf8, uint32_t* out_flags) {
+  return static_cast<mv_status>(mv::abi::guard("mv_slots_place_terms", [&] {
+    MV_REQUIRE(out_flags != nullptr, "out_flags");
+    *out_flags = mv::addon::place_terms(mv::addon::default_slots(), str(query_utf8));
+    return status::ok;
+  }));
+}
+
 MV_API mv_status MV_CALL mv_slots_local_search_provider(uint32_t on) {
   return static_cast<mv_status>(mv::abi::guard("mv_slots_local_search_provider", [&] {
     mv::addon::set_local_search_provider(mv::addon::default_slots(), on != 0);
