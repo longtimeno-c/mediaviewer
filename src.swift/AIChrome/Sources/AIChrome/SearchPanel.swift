@@ -548,6 +548,15 @@ struct SearchRootView: View {
         Image(systemName: "exclamationmark.magnifyingglass").font(.system(size: 30)).foregroundStyle(AITheme.body)
         Text("Search did not finish.").font(AITheme.font(15)).foregroundStyle(AITheme.title)
         Text("Try again, or change the words.").font(AITheme.font(13)).foregroundStyle(AITheme.body)
+      } else if model.needsPlaces {
+        // #441: a place term with no Places: say so, list nothing.
+        Image(systemName: "mappin.slash").font(.system(size: 30)).foregroundStyle(AITheme.body)
+        Text("Place search needs the Places add-on.")
+          .font(AITheme.font(15)).foregroundStyle(AITheme.title)
+        Text("Install it from Settings → Add-ons. It names places offline; nothing is sent anywhere.")
+          .font(AITheme.font(13)).foregroundStyle(AITheme.body)
+          .multilineTextAlignment(.center).frame(maxWidth: 460)
+          .fixedSize(horizontal: false, vertical: true)
       } else if model.finished && (model.reference != nil || !model.query.isEmpty) {
         Image(systemName: "sparkle.magnifyingglass").font(.system(size: 30)).foregroundStyle(AITheme.body)
         if let reference = model.reference {
@@ -557,7 +566,7 @@ struct SearchRootView: View {
           Text("Nothing matches “\(model.query)”. Try fewer words, or describe what's in the picture.")
             .font(AITheme.font(15)).foregroundStyle(AITheme.title)
             .multilineTextAlignment(.center).frame(maxWidth: 460)
-          SyntaxHint()
+          SyntaxHint(places: model.placesAvailable)
         }
         if model.indexing {
           Text("Indexing is still running; more may match soon.")
@@ -568,7 +577,7 @@ struct SearchRootView: View {
              + (model.audioReady ? " Or a sound, “dog barking”, or words someone said." : ""))
           .font(AITheme.font(14)).foregroundStyle(AITheme.body)
           .multilineTextAlignment(.center).frame(maxWidth: 460)
-        SyntaxHint()
+        SyntaxHint(places: model.placesAvailable)
         if model.indexing {
           Text("Results appear as the index grows.")
             .font(AITheme.font(13)).foregroundStyle(AITheme.body)
@@ -739,17 +748,22 @@ private struct SearchStatusPill: View {
 // MARK: query syntax
 
 /// The query language in one line (docs/design/17 "Query syntax"): the pack parses
-/// it, so the Windows panel shows the same examples.
+/// it, so the Windows panel shows the same examples. place: only while an
+/// add-on answers it (#441: Places is installed).
 private struct SyntaxHint: View {
+  let places: Bool
+
   var body: some View {
     VStack(spacing: 4) {
-      Text("Sam beach   ·   Sam “happy birthday”   ·   -video   ·   in:2024   ·   camera:R5   ·   ai:yes   ·   place:Portugal")
+      Text("Sam beach   ·   Sam “happy birthday”   ·   -video   ·   in:2024   ·   camera:R5   ·   ai:yes"
+           + (places ? "   ·   place:Portugal" : ""))
         .font(.system(size: 12, design: .monospaced))
         .foregroundStyle(AITheme.title.opacity(0.8))
       Text("A name finds that person; “quotes” find words said in videos; - leaves something out; "
            + "video or photo picks a kind; in:, before: and after: use the file's date; file: matches its name; "
-           + "camera:, lens: and made: match its tags, ai:yes its AI provenance; place: or in:<place> where it was "
-           + "taken (with the Places add-on); a plain word also matches tags.")
+           + "camera:, lens: and made: match its tags, ai:yes its AI provenance; "
+           + (places ? "place: or in:<place> where it was taken; " : "")
+           + "a plain word also matches tags.")
         .font(AITheme.font(12))
         .foregroundStyle(AITheme.body)
         .multilineTextAlignment(.center)

@@ -483,7 +483,7 @@ same thing by the same words. Terms narrow each other (AND).
 | `f:2.8`, `f:1.4-2.8` | aperture, within 0.05 stops of the stored value (f/2.8 and APEX's f/2.83 are one) |
 | `mm:35`, `mm:24-70` | focal length in whole millimetres |
 | `shutter:1/250`, `shutter:250`, `shutter:2s` | the exposure time (a bare number N is 1/N s, as a camera shows it; `s` or a decimal point is seconds), within a sixth of a stop |
-| `place:portugal`, `in:lisbon`, `-place:spain` | where it was taken. `in:` is a date when it reads as one (`in:2024`) and a place otherwise; a word that starts with a digit is never a place; `in:` never names a folder (the scope does). The engine keeps the geotagged assets; which place matches is the Places add-on's search provider's answer, merged by the slot registry ([25](25-open-addons.md) §7) |
+| `place:portugal`, `in:lisbon`, `-place:spain` | where it was taken. `in:` is a date when it reads as one (`in:2024`) and a place otherwise; a word that starts with a digit is never a place; `in:` never names a folder (the scope does). **Needs the Places add-on** (#441): which assets are in the place is its search provider's answer, which the engine asks for through the host and intersects with the rest of the query ("Places over the index" below). Without Places a place term matches nothing: the panel says "Place search needs the Places add-on" and its help line leaves `place:` out |
 | (any of the six above) | a file with no value for a kept term does not match it (an `iso:` term skips a clip); a left-out term drops only a value in its range. The terms filter before the towers run, so `iso:400 beach` ranks the ISO 400 frames by "beach" |
 | `R5`, `chatgpt`, `holiday` (plain words) | besides the picture / sound / speech search, files whose tags hold every word at the start of a word ("r5" in "Canon EOS R5", "70mm" in "RF24-70mm"; not "cat" inside "location") come first, with the tag as the snippet (`MV_AI_MATCH_TAGS`, shown unquoted under the tile) |
 
@@ -499,10 +499,32 @@ Words fold with the shared rule (`core/fold.h`, the hosts' name fold): decompose
 lowercase; ß, æ, ø and ł stay themselves. Before #291 the pack's own Latin-1 fold turned ß into
 "ss" and æ into "ae"; "strasse" no longer finds "Straße", as in file search on Windows and its tag half on the Mac (the Mac chrome's name half uses Swift's full case folding, which does turn ß into "ss"; see `core/fold.h`).
 
-**Places over the index (#398).** `place:` in Local search narrows to geotagged assets and
-relies on the Places provider's rows for the place itself. Over a folder the provider walks the
-host's `locations_in`; over the whole index (folder "", nothing open) it walks the host table's
-`locations_of_index`, appended after `read_cues`. That call streams (path, lat, lon) for every
+**Places over the index (#398, #441).** A place term in Local search is answered by the add-on
+whose search provider declares `place:` for Local search (Places), and intersected in the engine.
+For each `place:` / `in:<place>` term, kept or left out, the engine calls the host table's
+`place_matches` (appended after `locations_of_index`) on its search worker. The host routes it
+through the slot registry (`slot_registry::provider_paths`) to that provider as a request of its
+own, with its own generation and folder "" (the whole index), so a chrome's search never replaces
+it and it never replaces one. The registry collects the provider's rows and returns their paths
+when it posts done. The engine then keeps the assets the scope, kinds, dates and other terms
+allow that are in **every** kept place and in **none** left out (`-place:spain`), by path key.
+A pure `place:portugal` is the provider's rows within the scope and kinds, newest first. A
+description (`beach place:portugal`) ranks only those assets. Two kept places are their overlap.
+While it waits, the engine stops (no rows) once a newer search is queued or the pack is stopping.
+The registry asks it every 20 ms, and the provider sees the request go stale and stops its walk.
+With no such provider (Places not installed, or removed meanwhile), or a host table without the
+row, a place term matches nothing. Before #441 the engine kept every geotagged asset and listed
+them newest first, so `place:Portugal` without Places showed a photo taken in England as its
+first result; with Places the provider's rows were only offered beside the list ("+ N in
+Portugal"). Local search no longer sends a query with place terms to other providers
+(`has_place_terms`, the pack's rule for the operators, in `src/addon/slots.cpp`): the pack's list
+is the whole answer. A plain word (`portugal`) still goes to them. The chromes ask
+`mv_slots_place_terms` (Mac: the host's `placeTerms:`) whether the words have a place term and
+whether Places is loaded. With a term and no Places they search nothing and show the empty state;
+the help line names `place:` only while Places is loaded.
+
+Over a folder Places walks the host's `locations_in`; for Local search (folder "") it walks the
+host table's `locations_of_index`, appended after `read_cues`. That call streams (path, lat, lon) for every
 indexed asset with coordinates, from what index.db already holds (schema 4's `lat` / `lon`,
 filled by the tag backfill). No file and no file's metadata is read. The pack serves it as
 mv.ai.1 `each_location`, 512 rows a `SELECT` in id order (`index_db::located_assets`), with
@@ -514,9 +536,7 @@ stops at its next row, and the library is unloaded only once no walk is inside i
 on its add-on queue, never the main thread. The host's thunk is generation-tagged. A request that
 goes stale, or an add-on being removed (detach joins its worker), stops the walk with
 `MV_ERR_CANCELLED`; staleness is checked every 64 rows. With no pack attached the call returns
-`MV_ERR_NOT_FOUND`, and Places posts done with no rows. A combined query
-(`beach place:portugal`) is the intersection the chrome shows: the pack's geotagged beaches and
-the provider's Portuguese assets.
+`MV_ERR_NOT_FOUND`, and Places posts done with no rows.
 
 ## UI and commands
 
@@ -790,7 +810,7 @@ a text model for meaning (D3) and OCR for scans (D4) follow it.
   hostile-input code in this process: it runs on the index workers only, one call at a time
   (it is not thread-safe), at most 500 pages and 60 s a document, through a file reader that
   reads the blocks it asks for. A DOCX's is the **host's** (`document_text` on the host table,
-  appended after `locations_of_index`): `codec::docx_text`, the viewer's own DOCX reader and
+  appended after `place_matches`): `codec::docx_text`, the viewer's own DOCX reader and
   layout with no picture decoded, a paragraph at a time with the page that shows it.
 - **Passages** (`passages.h`): a few sentences each (a passage closes at a sentence end past 40
   words, and at 80 wherever it is), never across a page, at most 20,000 a document. A PDF page's

@@ -994,6 +994,25 @@ internal sealed class SearchWindow : Window, IDisposable
             ShowStart();
             return;
         }
+        if (_similar is null)
+        {
+            // #441: a place term with nothing to answer it (Places is not
+            // installed): no search, no results, and the panel says so,
+            // never every geotagged file.
+            uint places = SlotNative.PlaceTermsOf(q);
+            if ((places & SlotNative.PlaceTerms) != 0 && (places & SlotNative.PlaceProvider) == 0)
+            {
+                _chrome.ReleaseSearch(_pending);
+                _pending = 0;
+                _pendingFresh = false;
+                _focusWhenReady = 0;
+                _openWhenReady = null;
+                SetTiles(new List<ResultTile>(), ulong.MinValue);
+                ShowEmpty("Place search needs the Places add-on.",
+                          "Install it from Settings → Add-ons. It names places offline; nothing is sent anywhere.");
+                return;
+            }
+        }
         ulong id;
         try
         {
@@ -1240,16 +1259,20 @@ internal sealed class SearchWindow : Window, IDisposable
         {
             // The query language in one line (docs/design/17 "Query syntax"); the pack
             // parses it, so the Mac panel shows the same examples.
+            // place: only while an add-on answers it (#441: Places is installed).
+            bool places = (SlotNative.PlaceTermsOf("") & SlotNative.PlaceProvider) != 0;
             TextBlock examples = Centre(_look.Text(
-                "Sam beach   ·   Sam “happy birthday”   ·   -video   ·   in:2024   ·   camera:R5   ·   ai:yes   ·   place:Portugal", 12, AddonColour.Title));
+                "Sam beach   ·   Sam “happy birthday”   ·   -video   ·   in:2024   ·   camera:R5   ·   ai:yes" +
+                (places ? "   ·   place:Portugal" : ""), 12, AddonColour.Title));
             examples.FontFamily = new FontFamily("Cascadia Mono, Consolas");
             examples.Margin = new Thickness(0, 10, 0, 0);
             _empty.Children.Add(examples);
             _empty.Children.Add(Centre(_look.Text(
                 "A name finds that person; “quotes” find words said in videos; - leaves something out; " +
                 "video or photo picks a kind; in:, before: and after: use the file's date; file: matches its name; " +
-                "camera:, lens: and made: match its tags, ai:yes its AI provenance; place: or in:<place> where it was " +
-                "taken (with the Places add-on); a plain word also matches tags.", 12)));
+                "camera:, lens: and made: match its tags, ai:yes its AI provenance; " +
+                (places ? "place: or in:<place> where it was taken; " : "") +
+                "a plain word also matches tags.", 12)));
         }
         _empty.Visibility = Visibility.Visible;
         FadeIn(_empty);

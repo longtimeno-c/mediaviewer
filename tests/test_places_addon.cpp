@@ -316,34 +316,33 @@ TEST_CASE("places: the add-on answers the Place section and search through the v
   reg.drain();
   CHECK(mv::json::parse(reg.search_json(MV_SLOT_SCOPE_FILES))->find("rows")->a.empty());
 
-  // #398: Local search with no folder open walks the index's coordinates
-  // (locations_of_index over the fake index above): no file is read.
-  const auto local_found = [&] {
-    std::vector<std::string> out;
+  // #398 / #441: a Local search place term walks the index's coordinates
+  // (locations_of_index over the fake index above; no file is read), asked
+  // by the AI pack through the host's place_matches (provider_paths), and
+  // intersected there. Local search itself fans place terms out to nobody.
+  const auto keep_going = [] { return true; };
+  const auto place_paths = [&](const char* place) {
+    auto paths = reg.provider_paths("place:", place, keep_going);
+    REQUIRE(paths);
+    std::sort(paths->begin(), paths->end());
+    return *paths;
+  };
+  CHECK(place_paths("portugal") == std::vector<std::string>{"/index/funchal.heic", "/index/porto.mov", "/index/sintra.jpg"});
+  CHECK(index_walks.load() == 1);
+  CHECK(place_paths("spain") == std::vector<std::string>{"/index/badajoz.jpg", "/index/llivia.jpg"});
+  CHECK(place_paths("atlantis").empty());
+  reg.search(MV_SLOT_SCOPE_LOCAL, "place:portugal", "");
+  reg.drain();
+  {
     auto doc = mv::json::parse(reg.search_json(MV_SLOT_SCOPE_LOCAL));
     REQUIRE(doc);
-    for (const auto& row : doc->find("rows")->a) out.push_back(*row.str("path"));
-    std::sort(out.begin(), out.end());
-    return out;
-  };
-  const auto local_done = [&] {
-    auto doc = mv::json::parse(reg.search_json(MV_SLOT_SCOPE_LOCAL));
-    return doc && !doc->find("searching")->b;
-  };
-  reg.search(MV_SLOT_SCOPE_LOCAL, "place:portugal", "");
-  reg.drain();
-  CHECK(local_found() == std::vector<std::string>{"/index/funchal.heic", "/index/porto.mov", "/index/sintra.jpg"});
-  CHECK(local_done());
-  CHECK(index_walks.load() == 1);
-  reg.search(MV_SLOT_SCOPE_LOCAL, "in:spain", "");
-  reg.drain();
-  CHECK(local_found() == std::vector<std::string>{"/index/badajoz.jpg", "/index/llivia.jpg"});
+    CHECK(doc->find("rows")->a.empty());
+    CHECK(doc->find("providers")->a.empty());
+  }
+  CHECK(index_walks.load() == 3);  // portugal, spain, atlantis: none for the fan-out
   // No index attached (the AI pack not loaded): done, with no rows.
   index_attached = false;
-  reg.search(MV_SLOT_SCOPE_LOCAL, "place:portugal", "");
-  reg.drain();
-  CHECK(local_found().empty());
-  CHECK(local_done());
+  CHECK(place_paths("portugal").empty());
   index_attached = true;
 
   // Settings take effect at once (docs/design/27 "Settings"): a change re-asks

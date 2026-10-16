@@ -1807,6 +1807,34 @@ Five changes to the AI pack's index and query language
   pin that size (#388); the ABI smoke test compares the C# mirror with the header. Windows OCR on
   clips, both PR 1 gates with the pack indexing are owed.
 
+### Place terms need Places, and intersect (#441, 2026-10-16)
+
+Without the Places add-on, `place:portugal` in Local search now shows no results and "Place search
+needs the Places add-on". The help line names `place:` only while Places is loaded. With Places,
+the AI pack's engine asks it for each place term through the host table's new `place_matches`
+and intersects: `beach place:portugal` is Portugal's beaches only, and `-place:spain` takes
+Spain's out. The "+ N in Portugal" button no longer appears for place terms
+([17](design/17-local-ai-search.md) "Places over the index", ABI 0.31).
+
+- **Tests:** `mv_import_tests "[slots]"` (`has_place_terms`; Local search asks no provider for a
+  place term; `provider_paths` with no provider, every batch, a failing provider, a caller that
+  stops, a provider removed mid-request; the host table's `place_matches`);
+  `mv_import_tests "[places]"` (the real `mv_places` answering the pack's requests over a fake
+  `locations_of_index`); `mv_ai_tests "[places]"` (no Places: `place:` / `in:` / `-place:` and
+  `blue place:portugal` find nothing; with a fake Places: only its assets, `-place:`, two places,
+  `blue place:portugal` ranks only Portugal's, kinds and scope still apply);
+  `swift test --filter SearchModelTests` (`testPlaceTermsNeedPlaces`).
+- **Mac (M-series, 2026-10-16):** `mv_tests` 860 cases (849 passed, 11 skipped);
+  `mv_import_tests` 155 passed; `mv_ai_tests` 136 cases (128 passed, 8 skipped, model-backed as
+  before); AIChrome `SearchModelTests` 9 passed. `MediaViewer` and the AI chrome bundle build.
+  Not run: the live check with the pack and Places installed, and the PR 1 gate. The change adds
+  no render-thread or UI-thread work: a place-term search now waits on its own search worker for
+  Places' walk of the index's coordinates. That walk used to run after Return instead. Its
+  latency was not measured on a large index.
+- **Windows:** the core change (`slots.cpp`, `host.cpp`, `slots_abi.cpp`) is shared and compiled on
+  the Mac; MSVC builds it only in CI. The C# (`SearchWindow.cs`, `Slots.cs`) compiles on the Mac
+  (dotnet@8, compile-only). The live check is owed on Windows too.
+
 ### `place:` over the whole Local search index (#398, 2026-10-15)
 
 `place:portugal` in Local search with no folder open now finds the indexed Portuguese assets.

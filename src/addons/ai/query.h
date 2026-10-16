@@ -148,8 +148,9 @@ struct plan {
   // #291: tag terms, as parsed (folded).
   std::vector<std::string> cameras, not_cameras, lenses, not_lenses, made, not_made;
   int ai = 0;
-  // place: / in: (not a date). The engine keeps only geotagged assets; which
-  // place matches is the Places add-on's provider's answer (docs/design/17).
+  // place: / in: (not a date). Which assets are there is the Places add-on's
+  // answer (the host's place_matches), which the engine intersects; with no
+  // Places a place term matches nothing (#441, docs/design/17).
   std::vector<std::string> places, not_places;
   // #405: the rating, label and exposure terms, as parsed.
   std::vector<range> ratings, isos, apertures, focals, shutters;

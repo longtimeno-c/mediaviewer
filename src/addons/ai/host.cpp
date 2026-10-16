@@ -102,6 +102,31 @@ expected host::read_cues(const std::string& path, std::int64_t start_ms, std::in
   return s == MV_OK ? expected{} : err(to_status(s));
 }
 
+namespace {
+struct place_visit {
+  const std::function<bool()>* keep_going;
+  std::vector<std::string> paths;
+};
+int32_t MV_CALL place_thunk(void* user, const char* path) {
+  auto& v = *static_cast<place_visit*>(user);
+  if (!path) return (*v.keep_going)() ? 1 : 0;
+  v.paths.emplace_back(path);
+  return 1;
+}
+}  // namespace
+
+result<std::vector<std::string>> host::place_matches(const std::string& place,
+                                                     const std::function<bool()>& keep_going) const {
+  if (!api_ || api_->struct_size < offsetof(mv_host_api, place_matches) + sizeof(api_->place_matches) ||
+      !api_->place_matches) {
+    return err(status::not_found);
+  }
+  place_visit v{&keep_going, {}};
+  const mv_status s = api_->place_matches(api_->host, place.c_str(), &place_thunk, &v);
+  if (s != MV_OK) return err(to_status(s));
+  return std::move(v.paths);
+}
+
 bool host::has_document_text() const noexcept {
   return api_ && api_->struct_size >= offsetof(mv_host_api, document_text) + sizeof(api_->document_text) &&
          api_->document_text;

@@ -113,6 +113,13 @@ class host {
   [[nodiscard]] expected read_cues(const std::string& path, std::int64_t start_ms, std::int64_t max_ms,
                                    std::uint32_t max_cues, const std::function<bool(const cue&)>& visit) const;
 
+  // #441: the index's keys in a place (the text after place: / in:), as the
+  // add-on that answers `place:` says. not_found when none is loaded (or the
+  // host's table has no such row): a place term then matches nothing.
+  // `keep_going` false stops the wait: status::cancelled.
+  [[nodiscard]] result<std::vector<std::string>> place_matches(const std::string& place,
+                                                               const std::function<bool()>& keep_going) const;
+
   // #354: a document's text from the host (a DOCX; a PDF is the pack's own,
   // pdf_reader.h), a paragraph at a time with its page. An older host has
   // none: has_document_text() false. `visit` false stops the read.
