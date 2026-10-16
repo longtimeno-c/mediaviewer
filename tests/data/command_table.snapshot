@@ -41,7 +41,6 @@ F3	Frame-time overlay	7	1
 R	Reset frame stats	37	1
 G	Gallery	12	1
 T	Filmstrip	17	1
-B	Canvas background	44	1
 S	Sticky zoom	45	1
 C	Clipping	46	1
 O	Info overlay	52	1
@@ -115,6 +114,7 @@ Ctrl+Shift+7	Label yellow	177	1
 Ctrl+Shift+8	Label green	178	1
 Ctrl+Shift+9	Label blue	179	1
 U	Clear label	180	1
+Shift+Z	Zoom to AF point	181	1
 
 [video]
 Left	Previous	9	1
@@ -154,7 +154,6 @@ F3	Frame-time overlay	7	1
 R	Reset frame stats	37	1
 G	Gallery	12	1
 T	Filmstrip	17	1
-B	Canvas background	44	1
 S	Sticky zoom	45	1
 C	Clipping	46	1
 O	Info overlay	52	1
@@ -285,7 +284,6 @@ F3	Frame-time overlay	7	1
 R	Reset frame stats	37	1
 G	Gallery	12	1
 T	Filmstrip	17	1
-B	Canvas background	44	1
 S	Sticky zoom	45	1
 C	Clipping	46	1
 O	Info overlay	52	1
@@ -386,7 +384,6 @@ F3	Frame-time overlay	7	1
 R	Reset frame stats	37	1
 G	Gallery	12	1
 T	Filmstrip	17	1
-B	Canvas background	44	1
 C	Clipping	46	1
 O	Info overlay	52	1
 Ctrl+Shift+A	Always on top	51	1
@@ -396,6 +393,7 @@ F7	Copy to last folder	64	1
 Shift+F7	Copy to…	65	1
 F8	Move to last folder	66	1
 Shift+F8	Move to…	67	1
+Delete	Delete to Recycle Bin	68	1
 ?	Keyboard shortcuts	75	1
 Ctrl+,	Settings	84	1
 Ctrl+G	Go to index…	77	1
