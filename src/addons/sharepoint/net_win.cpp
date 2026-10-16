@@ -99,7 +99,8 @@ class tcp_link final : public link {
       if (down_.load()) return err(status::cancelled);
       int slice = 100;
       if (timeout_ms >= 0) {
-        const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(until - std::chrono::steady_clock::now());
+        // Rounded up, so a timeout of 1 ms polls once rather than none.
+        const auto left = std::chrono::ceil<std::chrono::milliseconds>(until - std::chrono::steady_clock::now());
         if (left.count() <= 0 && timeout_ms > 0) return err(status::timeout);
         slice = static_cast<int>(std::min<long long>(slice, std::max<long long>(left.count(), 0)));
       }

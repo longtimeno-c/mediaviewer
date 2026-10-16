@@ -450,6 +450,17 @@ TEST_CASE("sharepoint: pings keep a link alive but never stretch a deadline", "[
   CHECK(m.type == sp::msg::offer);
 }
 
+TEST_CASE("sharepoint: a receive that does not wait still reads what has arrived", "[sharepoint]") {
+  // The sender polls with receive(m, 0) while its person types the code; a
+  // deadline under 1 ms away must still read, or a busy refusal waits out kAskMs.
+  auto [a, b] = channel_pair();
+  REQUIRE(b->send(sp::msg::decline, std::string_view("{\"why\":\"busy\"}")));
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));  // on the wire, in a's buffer
+  sp::message m;
+  REQUIRE(a->receive(m, 0));
+  CHECK(m.type == sp::msg::decline);
+}
+
 TEST_CASE("sharepoint: another protocol version is refused at the hello", "[sharepoint]") {
   auto [a, b] = loopback_pair();
   std::uint8_t hello[37] = {'M', 'V', 'S', 'P', 9};
