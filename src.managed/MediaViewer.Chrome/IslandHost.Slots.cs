@@ -988,7 +988,7 @@ public static partial class IslandHost
                 IsNewer(PlacesChannel.Offer.Version, installed.Version))
             {
                 buttons.Children.Insert(0, SettingsButton(
-                    $"Update to {PlacesChannel.Offer.Version}, {DownloadSize(PlacesChannel.Offer.ArchiveSize)}",
+                    $"Update to {PlacesChannel.Offer.Version}, {MediaViewer.Shared.ByteSize.Text(PlacesChannel.Offer.ArchiveSize)}",
                     StartPlacesInstall));
             }
             if (installed.State != "ok") buttons.Children.Insert(0, SettingsButton("Reinstall", StartPlacesInstall));
@@ -1013,7 +1013,7 @@ public static partial class IslandHost
         {
             case OfferKind.Available:
                 Button install = SettingsButton(
-                    $"Install Places, {DownloadSize(PlacesChannel.Offer.ArchiveSize)}", StartPlacesInstall);
+                    $"Install Places, {MediaViewer.Shared.ByteSize.Text(PlacesChannel.Offer.ArchiveSize)}", StartPlacesInstall);
                 install.HorizontalAlignment = HorizontalAlignment.Left;
                 install.IsEnabled = !PlacesChannel.Busy;
                 into.Children.Add(install);

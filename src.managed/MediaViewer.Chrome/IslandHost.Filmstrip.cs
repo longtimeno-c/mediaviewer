@@ -38,18 +38,8 @@ public static partial class IslandHost
     {
         try
         {
-            if (arg == IntPtr.Zero || sizeBytes < FilmstripArgsSize) return unchecked((int)0x80070057);
-            ChromeFilmstripArgs args = Marshal.PtrToStructure<ChromeFilmstripArgs>(arg);
-            IntPtr parent = checked((IntPtr)args.ParentHwnd);
-            if (parent == IntPtr.Zero) return unchecked((int)0x80070057);
-
-            EnsureApp();
-            _context = checked((IntPtr)args.Context);
-            if (args.OnCommand != 0)
-            {
-                _onCommand = Marshal.GetDelegateForFunctionPointer<NativeCommand>(
-                    checked((IntPtr)args.OnCommand));
-            }
+            int hr = BeginAttach(arg, sizeBytes, out ChromeFilmstripArgs args, out IntPtr parent);
+            if (hr != 0) return hr;
 
             if (args.Session != 0)
             {
@@ -60,16 +50,11 @@ public static partial class IslandHost
                 StartVideoControls(parent);
             }
 
-            DisposeSource(ref _filmstrip);
-            _filmstrip = new DesktopWindowXamlSource();
-            EnsureFocusHook();
-            _filmstrip.Initialize(Win32Interop.GetWindowIdFromWindow(parent));
-            _filmstrip.TakeFocusRequested += OnTakeFocusRequested;  // Tab on (issue #217)
             // Park with no content, same as the gallery. Building the repeater
             // here and then immediately hiding it left an ItemsRepeater bound
             // to `Items`; the first folder-open show bound a second one and
             // AccessViolation'd in set_ItemsSource.
-            Move(_filmstrip, 1, 1, args.ClientHeight);
+            Move(NewIsland(ref _filmstrip, parent, takeFocus: true), 1, 1, args.ClientHeight);
             return 0;
         }
         catch (Exception ex)
@@ -491,16 +476,8 @@ public static partial class IslandHost
                 Child = col,
             };
 
-            void SetThumb()
-            {
-                if (string.IsNullOrEmpty(vm.ThumbPath)) return;
-                try
-                {
-                    // Enough for a 2x-DPI fill crop, not the full JPEG-512 disk thumb.
-                    image.Source = new BitmapImage(new Uri(vm.ThumbPath)) { DecodePixelWidth = FilmstripDecodeWidth };
-                }
-                catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
-            }
+            // Enough for a 2x-DPI fill crop, not the full JPEG-512 disk thumb.
+            void SetThumb() => ShowTileImage(image, vm.ThumbPath, FilmstripDecodeWidth);
             SetThumb();
 
             void OnChanged(object? _, System.ComponentModel.PropertyChangedEventArgs e)
@@ -509,10 +486,7 @@ public static partial class IslandHost
                 if (e.PropertyName is nameof(FolderItemVm.Selected) or null)
                     border.BorderThickness = new Thickness(vm.Selected ? 2 : 0);
             }
-            vm.PropertyChanged += OnChanged;
-            // Recycling without this leaks a handler per realisation (as the
-            // gallery's factory notes), keeping every tile arrowed past alive.
-            border.Tag = (Action)(() => vm.PropertyChanged -= OnChanged);
+            BindTile(border, vm, OnChanged);
 
             border.Tapped += (_, _) => Send(Command.SelectItem, vm.Index);
             // docs/design/25, issue #402: the add-ons' context-menu entries, as on the
@@ -523,14 +497,7 @@ public static partial class IslandHost
             return border;
         }
 
-        public void RecycleElement(ElementFactoryRecycleArgs args)
-        {
-            if (args.Element is Border { Tag: Action unsubscribe })
-            {
-                unsubscribe();
-                ((Border)args.Element).Tag = null;
-            }
-        }
+        public void RecycleElement(ElementFactoryRecycleArgs args) => UnbindTile(args.Element);
     }
 }
 
