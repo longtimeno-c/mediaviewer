@@ -115,6 +115,7 @@ Ctrl+Shift+8	Label green	178	1
 Ctrl+Shift+9	Label blue	179	1
 U	Clear label	180	1
 Shift+Z	Zoom to AF point	181	1
+|	Compare with previous	182	1
 
 [video]
 Left	Previous	9	1
@@ -229,6 +230,7 @@ Ctrl+Shift+7	Label yellow	177	1
 Ctrl+Shift+8	Label green	178	1
 Ctrl+Shift+9	Label blue	179	1
 U	Clear label	180	1
+|	Compare with previous	182	1
 
 [slideshow]
 Left	Previous	9	1
