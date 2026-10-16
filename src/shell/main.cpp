@@ -2094,6 +2094,8 @@ void schedule_rotation_write(app_state* app) noexcept {
 void adjust_item_changed(app_state* app);
 void adjust_colour_changed(app_state* app);
 void strip_hint_show(app_state* app);
+bool sync_page_stop(app_state* app, bool opened);
+void page_sidebar_changed(app_state* app);
 
 // The canvas is about to show the selected item (a select, a listing landing,
 // a reselect after a rewrite). The previous slot keeps its geometry for the
